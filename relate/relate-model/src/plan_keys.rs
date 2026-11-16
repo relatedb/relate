@@ -102,29 +102,63 @@ pub const FRONTIER_DECLINE_REASON: &str = "FrontierDeclineReason";
 /// executor's `FrontierRunDecline::as_str` names, then the plan-time
 /// gates' (ADR-0478), `FrontierDecline::as_str` — single-sourced here so
 /// a renamed decline fails loudly at the wire boundary, like the start
-/// reasons.
+/// reasons. Each name is its own constant, read by the executor's
+/// vocabulary macros and by the table below.
+pub const DECLINE_REARRIVAL_BUDGET: &str = "rearrival-budget";
+pub const DECLINE_TABLE_BUDGET: &str = "table-budget";
+pub const DECLINE_MULTIPLE_PATTERNS: &str = "multiple-patterns";
+pub const DECLINE_CARRYING_ROW: &str = "carrying-row";
+pub const DECLINE_MODE: &str = "mode";
+pub const DECLINE_NESTED_SPINE: &str = "nested-spine";
+pub const DECLINE_ALL_REDUCE_GROUP: &str = "all-reduce-group";
+pub const DECLINE_PINNED_BINDING: &str = "pinned-binding";
+pub const DECLINE_CONJUNCT: &str = "conjunct";
+pub const DECLINE_NFA_SHAPE: &str = "nfa-shape";
+pub const DECLINE_GUARDED_GROUP: &str = "guarded-group";
+pub const DECLINE_FULL_ENUMERATION: &str = "full-enumeration";
+pub const DECLINE_ORDERED_CAP: &str = "ordered-cap";
+pub const DECLINE_PATH_COUNT: &str = "path-count";
+pub const DECLINE_PATH_CONSUMER: &str = "path-consumer";
+pub const DECLINE_COST: &str = "cost";
+/// The decline names, in the vocabulary's own order.
 pub const DECLINE_REASONS: [&str; 16] = [
-    "rearrival-budget",
-    "table-budget",
-    "multiple-patterns",
-    "carrying-row",
-    "mode",
-    "nested-spine",
-    "all-reduce-group",
-    "pinned-binding",
-    "conjunct",
-    "nfa-shape",
-    "guarded-group",
-    "full-enumeration",
-    "ordered-cap",
-    "path-count",
-    "path-consumer",
-    "cost",
+    DECLINE_REARRIVAL_BUDGET,
+    DECLINE_TABLE_BUDGET,
+    DECLINE_MULTIPLE_PATTERNS,
+    DECLINE_CARRYING_ROW,
+    DECLINE_MODE,
+    DECLINE_NESTED_SPINE,
+    DECLINE_ALL_REDUCE_GROUP,
+    DECLINE_PINNED_BINDING,
+    DECLINE_CONJUNCT,
+    DECLINE_NFA_SHAPE,
+    DECLINE_GUARDED_GROUP,
+    DECLINE_FULL_ENUMERATION,
+    DECLINE_ORDERED_CAP,
+    DECLINE_PATH_COUNT,
+    DECLINE_PATH_CONSUMER,
+    DECLINE_COST,
 ];
 /// The start-reason vocabulary (LABS-369), the executor's
 /// `StartReason::as_str` names — single-sourced here so a renamed
 /// reason fails loudly at the wire boundary, like the warning names.
-pub const REASONS: [&str; 4] = ["bound-pivot", "cheapest", "seek-anchored", "index-0"];
+/// Each name is its own constant, so the variant↔name mapping reads the
+/// same spelling this table does (the shape [`KernelRungWire`] takes for
+/// the rungs).
+pub const REASONS: [&str; 4] = [
+    START_REASON_BOUND_PIVOT,
+    START_REASON_CHEAPEST,
+    START_REASON_SEEK_ANCHORED,
+    START_REASON_INDEX_ZERO,
+];
+/// The bound-pivot start reason: see [`REASONS`].
+pub const START_REASON_BOUND_PIVOT: &str = "bound-pivot";
+/// The cheapest-start reason: see [`REASONS`].
+pub const START_REASON_CHEAPEST: &str = "cheapest";
+/// The seek-anchored start reason: see [`REASONS`].
+pub const START_REASON_SEEK_ANCHORED: &str = "seek-anchored";
+/// The first-element (un-optimised) start reason: see [`REASONS`].
+pub const START_REASON_INDEX_ZERO: &str = "index-0";
 /// The typed warnings the node carries (typed node warnings): a list
 /// of warning maps from the [`PlanWarning`](crate::wire::PlanWarning)
 /// vocabulary, present only when the node carries one. Each map

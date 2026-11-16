@@ -2,7 +2,9 @@
 //! reports each statement-level clause operator's metrics to, the record it
 //! reports, and the typed facts the record carries (store-read mix, phase
 //! times, walk start, kernel rung, frontier counters). The thread-local
-//! clocks and counters that feed these live in [`crate::ctx`] and
+//! clocks and counters that feed these live beside the phase they count:
+//! the phase clocks and node reads in [`crate::ctx`], the hop,
+//! neighbor-walk, zone-skip and frontier tallies in
 //! [`crate::exec::profiling`].
 
 use crate::frontier_decline::FrontierDeclineReason;
@@ -279,13 +281,14 @@ pub enum StartReason {
 
 impl StartReason {
     /// The reason's stable wire name (LABS-369): the vocabulary the plan
-    /// args and the renderers spell, single-sourced here.
+    /// args and the renderers spell, read from its single source
+    /// ([`plan_keys`](relate_model::wire::plan_keys)), as the rung names are.
     pub fn as_str(self) -> &'static str {
         match self {
-            StartReason::BoundPivot => "bound-pivot",
-            StartReason::Cheapest => "cheapest",
-            StartReason::SeekAnchored => "seek-anchored",
-            StartReason::IndexZero => "index-0",
+            StartReason::BoundPivot => relate_model::wire::plan_keys::START_REASON_BOUND_PIVOT,
+            StartReason::Cheapest => relate_model::wire::plan_keys::START_REASON_CHEAPEST,
+            StartReason::SeekAnchored => relate_model::wire::plan_keys::START_REASON_SEEK_ANCHORED,
+            StartReason::IndexZero => relate_model::wire::plan_keys::START_REASON_INDEX_ZERO,
         }
     }
 }
@@ -347,13 +350,13 @@ pub struct ClauseMetricsRecord {
     /// Expression allocation bytes the clause's arm charged against the
     /// ADR-0463 statement budget — the delta of the view's expression
     /// counter across the arm, the same snapshot/delta shape as
-    /// [`ClauseMetricsRecord::db_hits`]. Zero for a clause that builds no
+    /// [`ClauseMetricsRecord::reads`]. Zero for a clause that builds no
     /// containers or strings.
     pub expression_built_bytes: u64,
     /// The operator's elapsed time, nanoseconds.
     pub time_ns: u128,
-    /// The store-read mix behind [`ClauseMetricsRecord::db_hits`]
-    /// (LABS-369): hops vs neighbor walks vs node reads.
+    /// The store-read mix (LABS-369) behind the operator's `Db Hits`
+    /// total: hops vs neighbor walks vs node reads.
     pub reads: StoreReads,
     /// The clause's inclusive phase times (LABS-448): the seek (candidate
     /// resolution and checks) and the walk (relationship traversal),

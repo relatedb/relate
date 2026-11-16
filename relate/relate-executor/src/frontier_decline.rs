@@ -15,7 +15,7 @@ macro_rules! decline_vocabulary {
     (
         $(#[$enum_meta:meta])*
         $vis:vis enum $name:ident {
-            $( $(#[$meta:meta])* $variant:ident => $wire:literal, )+
+            $( $(#[$meta:meta])* $variant:ident => $wire:path, )+
         }
     ) => {
         $(#[$enum_meta])*
@@ -30,8 +30,9 @@ macro_rules! decline_vocabulary {
             pub const ALL: [$name; [$($wire),+].len()] = [$($name::$variant),+];
 
             /// The decline's stable wire name: the vocabulary the plan
-            /// args and the renderers spell, single-sourced here against
-            /// the wire table the parity pin compares.
+            /// args and the renderers spell, read from its single source
+            /// (`plan_keys`'s `DECLINE_*` constants, which the wire table
+            /// derives from too).
             pub fn as_str(self) -> &'static str {
                 match self {
                     $( $name::$variant => $wire, )+
@@ -54,13 +55,13 @@ decline_vocabulary! {
         /// single-pattern, single-quantifier family (a UNION's arms are
         /// separate clauses, each decided on its own — the non-quantified arm
         /// needs no kernel at all).
-        MultiplePatterns => "multiple-patterns",
+        MultiplePatterns => relate_model::wire::plan_keys::DECLINE_MULTIPLE_PATTERNS,
         /// The entering row binds anything but the pattern's seed-side
         /// variable: a prebound group-list pin (the legacy exact-trail rule),
         /// a prebound target or path variable, or a mid-statement clause's
         /// outer bindings — per-row semantics the single-seed frontier does
         /// not reproduce.
-        CarryingRow => "carrying-row",
+        CarryingRow => relate_model::wire::plan_keys::DECLINE_CARRYING_ROW,
         /// The mode is outside the family: an explicit TRAIL/ACYCLIC/SIMPLE
         /// path mode outside the capped consumer (the capped emission's
         /// per-witness cycle checks serve exactly that consumer —
@@ -71,7 +72,7 @@ decline_vocabulary! {
         /// pool — REPEATABLE ELEMENTS keeps its authored
         /// `UnsafeRepeatableElements` rejection (ADR-0478 §5), and the
         /// bounded-WALK answer shape is bounded by definition.
-        Mode => "mode",
+        Mode => relate_model::wire::plan_keys::DECLINE_MODE,
         /// A nested quantifier inside the quantified spine — a var-length
         /// rel or a quantified group among its inner elements. The spine
         /// then unrolls (variable round length) or accumulates
@@ -80,20 +81,20 @@ decline_vocabulary! {
         /// keeps the shape, answers identical. Parser-unreachable (the
         /// front end's `NestedQuantification` rule rejects both spellings):
         /// the gate is the defensive bound for hand-built IR.
-        NestedSpine => "nested-spine",
+        NestedSpine => relate_model::wire::plan_keys::DECLINE_NESTED_SPINE,
         /// A MATCH-WHERE allReduce the inliner runs over one of this
         /// quantification's groups — ADR-0478 §2's hard decline: the
         /// inliner's per-branch prefix semantics cannot survive pair dedup
         /// (one (node, state) pair stands for many prefixes with different
         /// accumulator values), so that shape keeps the DFS with its
         /// inliner.
-        AllReduceGroup => "all-reduce-group",
+        AllReduceGroup => relate_model::wire::plan_keys::DECLINE_ALL_REDUCE_GROUP,
         /// A repeated element variable pins a binding the pair-dedup cannot
         /// reconcile: the target (or an interior node) repeating another
         /// node's variable, a rel variable repeated across hops or colliding
         /// with a node name — the walker's pre-bound reconciliation
         /// semantics.
-        PinnedBinding => "pinned-binding",
+        PinnedBinding => relate_model::wire::plan_keys::DECLINE_PINNED_BINDING,
         /// A MATCH-WHERE conjunct outside the closed predicate vocabulary on
         /// the boundary nodes: it does not decode (a function over the row,
         /// `OR`, a nondeterministic bound), it names a group list, the path
@@ -101,7 +102,7 @@ decline_vocabulary! {
         /// second predicate on one boundary variable. The one exception is
         /// `<>` between the two boundary variables, admitted for the
         /// distinct-endpoint consumer alone (`BoundaryPair`).
-        Conjunct => "conjunct",
+        Conjunct => relate_model::wire::plan_keys::DECLINE_CONJUNCT,
         /// The NFA compiler declined the shape — its declines are this arm's
         /// declines: a second top-level quantified element, a subpath
         /// variable, a pattern WHERE or a selector, rel-predicate inner
@@ -109,7 +110,7 @@ decline_vocabulary! {
         /// forced rung compiles them as guards), the 64-state ceiling, a
         /// nested unbounded quantifier, broken alternation, an uninterned
         /// type name, overflowing bounds.
-        NfaShape => "nfa-shape",
+        NfaShape => relate_model::wire::plan_keys::DECLINE_NFA_SHAPE,
         /// A quantified group whose `WHERE` references its own pattern
         /// variables (the fraud f03 shape) — the forced rung compiles it
         /// (the predicate rides the round-closing transition, each
@@ -117,34 +118,34 @@ decline_vocabulary! {
         /// proof covers serving a predicate-guarded run: the pair-dedup
         /// answers these shapes approximately, so every consumer declines
         /// and the DFS answers exactly.
-        GuardedGroup => "guarded-group",
+        GuardedGroup => relate_model::wire::plan_keys::DECLINE_GUARDED_GROUP,
         /// The consumer needs every row, not a pair-shaped answer: no cap and
         /// no distinct/aggregate fold — full enumeration (two trails to one
         /// node are two answers), a grouped or filtered suffix, a suffix that
         /// is not a RETURN/WITH, or a `LIMIT 0`/overflowing cap the cap rider
         /// itself declines.
-        FullEnumeration => "full-enumeration",
+        FullEnumeration => relate_model::wire::plan_keys::DECLINE_FULL_ENUMERATION,
         /// `ORDER BY` with `LIMIT`: ordered truncation needs the full
         /// candidate set to sort (ADR-0478 §2 — ordered caps keep the DFS,
         /// exactly as they keep full enumeration in ADR-0475).
-        OrderedCap => "ordered-cap",
+        OrderedCap => relate_model::wire::plan_keys::DECLINE_ORDERED_CAP,
         /// The answer counts or folds the path multiset, not the endpoint
         /// set: `count(p)`, `count(*)`, a non-DISTINCT `count`/`collect`, or
         /// a multiplicity-sensitive fold (`sum`, `avg`, …) — path counts are
         /// exponential by nature; the DFS keeps them on this rung (the one
         /// path count the family serves, the WALK pool's plain `count`, is
         /// the walk-count fold's — `frontier_count`, ADR-0523).
-        PathCount => "path-count",
+        PathCount => relate_model::wire::plan_keys::DECLINE_PATH_COUNT,
         /// A non-capped consumer consumes the path variable or a group list —
         /// only the ≤ `want` reconstructed witnesses of the capped shape
         /// carry those bindings, so a distinct/aggregate answer over them
         /// would read bindings the frontier never produced.
-        PathConsumer => "path-consumer",
+        PathConsumer => relate_model::wire::plan_keys::DECLINE_PATH_CONSUMER,
         /// The cost gate: a bounded recursion whose estimated trails cost the
         /// DFS less than the frontier's pairs and probes (or whose hops the
         /// statistics cannot price) — the DFS is cheaper (no reconstruction
         /// pass, the existing row plumbing) and keeps the clause.
-        Cost => "cost",
+        Cost => relate_model::wire::plan_keys::DECLINE_COST,
     }
 }
 
@@ -167,7 +168,7 @@ decline_vocabulary! {
         /// the production decline path — the run's outcome carries it
         /// (`frontier::RunOutcome::Declined`) and the rider wiring records
         /// it for the PROFILE record.
-        RearrivalBudget => "rearrival-budget",
+        RearrivalBudget => relate_model::wire::plan_keys::DECLINE_REARRIVAL_BUDGET,
         /// The run's sparse tables — sized by the (node, state) pairs it
         /// touched, never by the store's node-id span — plus the re-arrival
         /// rule's buffers crossed the allocation ceiling
@@ -176,7 +177,7 @@ decline_vocabulary! {
         /// its counters stay recorded beside the reason — never a compile
         /// gate: the run's buffered rows are discarded and the DFS, with its
         /// own caps, answers the clause.
-        TableBudget => "table-budget",
+        TableBudget => relate_model::wire::plan_keys::DECLINE_TABLE_BUDGET,
     }
 }
 

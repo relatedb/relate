@@ -79,7 +79,7 @@ use crate::UsedSet;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
-use relate_core::{Node, NodeId, Path, RelId, Relationship, Result, Value};
+use relate_core::{Error, Node, NodeId, Path, RelId, Relationship, Result, Value};
 use relate_ir::{PathMode, PathPattern, PatternElement, QuantifiedPathPattern};
 
 use crate::ctx::ExecCtx;
@@ -91,7 +91,7 @@ use crate::row::{Row, RowRung};
 use super::super::pattern_policies::{gpm_group_names, gpm_path_mode_allows, Matched};
 use super::frontier::{run_with_halt, FrontierRun, RunOutcome, WalkBudget};
 use super::frontier_match::FrontierContract;
-use super::frontier_tables::{Arrival, Chain, Endpoint, FrontierTables, Parents, Step};
+use super::frontier_tables::{Arm, Arrival, Chain, Endpoint, FrontierTables, Parents, Step};
 use super::nfa::{FrontierNfa, Pool};
 use super::program::{Admission, AdmissionPrepared, NodePred, NodeTarget};
 use super::rearival::{RearivalRule, RuleBuffers, Verdict};
@@ -292,6 +292,19 @@ enum PassBudget {
     Cut(FrontierCounters),
 }
 
+/// The admission tail's verdict for one witness: the bound row, or
+/// unproven — the chain out of the hop window (a below-min candidate the
+/// runner admitted through the rule's search), or a mode the
+/// representative path does not satisfy. The per-level pass defers an
+/// unproven witness to the rule's searches; the deferred pass receives a
+/// proof that already passed both, so an unproven one there is a
+/// divergence. (Named for the witness, not "declined": the run-level
+/// declines of this file are their own vocabulary.)
+enum Admitted {
+    Bound(Row, UsedSet),
+    Unproven,
+}
+
 impl<'a> Emission<'a> {
     /// One level boundary: decide every undecided endpoint through the
     /// target's admission and its own chain, in arrival order, while
@@ -311,40 +324,45 @@ impl<'a> Emission<'a> {
         endpoints: &[Endpoint],
     ) -> Result<bool> {
         let mut prepared: Option<AdmissionPrepared<'_>> = None;
-        while self.cursor < endpoints.len() && self.accepted.len() < self.want {
+        while self.cursor < endpoints.len() && !self.full() {
             let endpoint = endpoints[self.cursor];
             self.cursor += 1;
             if !pred.admits(&mut prepared, self.ctx, endpoint.node)? {
                 continue;
             }
-            match self.chain_witness(parents, &endpoint)? {
-                Some(bound) => self.accepted.push(bound),
-                None => self.deferred.push(endpoint),
+            // A declined witness defers — the chain is out of bounds (a
+            // below-min candidate the runner admitted through the rule's
+            // search) or fails the mode check (a search-admitted arrival
+            // whose representative is not the proven path) — the
+            // post-BFS pass re-asks it.
+            match self.admit_witness(&chain_of(parents, self.seed, &endpoint))? {
+                Admitted::Bound(row, used) => self.accepted.push((row, used)),
+                Admitted::Unproven => self.deferred.push(endpoint),
             }
         }
-        Ok(self.accepted.len() >= self.want)
+        Ok(self.full())
     }
 
-    /// One endpoint's own chain as a witness: the reconstructed chain,
-    /// in bounds, mode-allowed, and bound to its row. `None` defers —
-    /// the chain is out of bounds (a below-min candidate the runner
-    /// admitted through the rule's search) or fails the mode check (a
-    /// search-admitted arrival whose representative is not the proven
-    /// path) — the post-BFS pass re-asks it.
-    fn chain_witness(
-        &self,
-        parents: &Parents<'_>,
-        endpoint: &Endpoint,
-    ) -> Result<Option<(Row, UsedSet)>> {
-        let chain = chain_of(parents, self.seed, endpoint);
-        if !self.in_bounds(&chain) {
-            return Ok(None);
+    /// The admission tail every witness passes, the one spelling for the
+    /// per-level asks and the deferred pass: bounds, the mode check, then
+    /// the bound row.
+    fn admit_witness(&self, chain: &Chain) -> Result<Admitted> {
+        if !self.in_bounds(chain) {
+            return Ok(Admitted::Unproven);
         }
-        let records = self.chain_records(&chain);
+        let records = self.chain_records(chain);
         if !self.mode_allows(&records) {
-            return Ok(None);
+            return Ok(Admitted::Unproven);
         }
-        Ok(Some(self.bind_row(&chain, &records)?))
+        let (row, used) = self.bind_row(chain, &records)?;
+        Ok(Admitted::Bound(row, used))
+    }
+
+    /// Whether the cap is full — the runner's halt verdict's own
+    /// predicate, one spelling for the level pass's return and the
+    /// deferred loop's gate.
+    fn full(&self) -> bool {
+        self.accepted.len() >= self.want
     }
 
     /// The post-BFS pass: decide any endpoint the per-level asks never
@@ -357,50 +375,58 @@ impl<'a> Emission<'a> {
     /// caller builds the declined outcome from it), never a silently
     /// dropped row.
     fn finish(&mut self, walked: &FrontierRun, bufs: &mut RuleBuffers) -> Result<PassBudget> {
-        self.on_level(&walked.parents(), &walked.endpoints)?;
-        if self.accepted.len() >= self.want || self.deferred.is_empty() {
+        // The level pass's own verdict: whether the cap is full — the
+        // fact the deferred asks below are gated on, never re-derived.
+        let cap_full = self.on_level(&walked.parents(), &walked.endpoints)?;
+        if cap_full || self.deferred.is_empty() {
             // No deferred ask ran — a zero tally, the pass rule's own
             // fields at their defaults.
             return Ok(PassBudget::Held(FrontierCounters::default()));
         }
-        // The rule instance for the deferred asks: run-scoped like the
-        // runner's own (its searches answer these asks through the same
-        // bounded, budget-shared machinery, memoized within the
-        // emission — the runner's instance proved the admissions, this
-        // one returns the paths) — the clause's recycled buffers under
-        // a fresh run stamp, a fresh memo and budget exactly as a fresh
-        // instance would carry. The arms ride the run itself — the
-        // one name resolution per run, never rebuilt here.
+        self.deferred_pass(&walked.arms, bufs)
+    }
+
+    /// The deferred pass: answer the endpoints the per-level asks never
+    /// saw through the rule's searches, until the cap fills. The rule
+    /// instance is run-scoped like the runner's own (its searches answer
+    /// these asks through the same bounded, budget-shared machinery,
+    /// memoized within the emission — the runner's instance proved the
+    /// admissions, this one returns the paths) — the clause's recycled
+    /// buffers under a fresh run stamp, a fresh memo and budget exactly
+    /// as a fresh instance would carry. `arms` rides the run itself —
+    /// the one name resolution per run, never rebuilt here. The pass's
+    /// own budget answer rides the return (ADR-0516): a cut declines the
+    /// run, never a silently dropped row.
+    fn deferred_pass(&mut self, arms: &[Vec<Arm>], bufs: &mut RuleBuffers) -> Result<PassBudget> {
         let view = self.ctx.graph;
         #[cfg(test)]
         let budget = super::rearival_deferred_budget_override()
             .unwrap_or(crate::metrics::REARRIVAL_WORK_BUDGET);
         #[cfg(not(test))]
         let budget = crate::metrics::REARRIVAL_WORK_BUDGET;
-        let mut rule = RearivalRule::with_budget(
-            view,
-            self.nfa,
-            &walked.arms,
-            self.seed,
-            self.pool,
-            budget,
-            bufs,
-        );
+        let mut rule =
+            RearivalRule::with_budget(view, self.nfa, arms, self.seed, self.pool, budget, bufs);
         for endpoint in std::mem::take(&mut self.deferred) {
-            if self.accepted.len() >= self.want {
+            if self.full() {
                 break;
             }
             let Some(chain) = self.deferred_witness(&mut rule, endpoint.node)? else {
                 continue;
             };
-            if !self.in_bounds(&chain) {
-                continue;
+            // The chain here is a proven verdict, whose search already
+            // enforced the hop window and the mode — a declined witness
+            // would be a divergence between the rule's proof and the
+            // emission's own re-check, so it surfaces as a typed error,
+            // never a panic and never a skip.
+            match self.admit_witness(&chain)? {
+                Admitted::Bound(row, used) => self.accepted.push((row, used)),
+                Admitted::Unproven => {
+                    return Err(Error::internal(format!(
+                    "shortest-path route: the proven witness for node {} fails the admission tail",
+                    endpoint.node
+                )))
+                }
             }
-            let records = self.chain_records(&chain);
-            if !self.mode_allows(&records) {
-                continue;
-            }
-            self.accepted.push(self.bind_row(&chain, &records)?);
         }
         Ok(if rule.budget_exhausted() {
             PassBudget::Cut(rule.counters())
