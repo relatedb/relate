@@ -59,7 +59,7 @@ mod query;
 mod stemmer;
 mod wildcard;
 
-pub(crate) use analyzer::{Analyzer, Analyzers};
+pub(crate) use analyzer::{analyzer_catalog, Analyzer, Analyzers};
 use distance::bounded_distance;
 use query::{parse, Clause, Occur, Target};
 use wildcard::Pattern;

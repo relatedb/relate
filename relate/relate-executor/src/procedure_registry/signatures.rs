@@ -120,7 +120,7 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
             ProcArgMeta::described("description", "A description of the analyzer.", "STRING"),
             ProcArgMeta::described("stopwords", "The stopwords used by the analyzer.", "LIST<STRING>"),
         ])
-        .executable(false),
+        .rows(RowProducer::FulltextAnalyzers),
     // Cypher 25 deprecates the fulltext query procedures in favour of the
     // CIP-224 `SEARCH` clause, exactly like their vector counterparts below.
     ProcSignature::read("db.index.fulltext.queryNodes")

@@ -989,3 +989,8 @@ all five conflicts (§5).
   usage statistics, server configuration), the vector-property setters and the
   index-resampling pair left the registry, so the alignment table above has no
   rows for them any more. The corpus-alignment rule itself is unchanged.
+
+- **ADR-0609** — `db.index.fulltext.listAvailableAnalyzers` is executable:
+  the corpus does call it, so this table's `catalog-only` classification of
+  that row no longer holds. It answers from the engine's analyzer table; the
+  alignment rule itself is unchanged.

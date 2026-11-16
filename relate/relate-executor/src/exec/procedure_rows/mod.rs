@@ -130,6 +130,7 @@ impl crate::procedure_registry::RowProducer {
             Self::DbmsConfig => Ok(dbms_config_rows()),
             Self::DbmsLicenseAgreementDetails => Ok(dbms_license_agreement_rows()),
             Self::DbmsListCapabilities => Ok(dbms_list_capabilities_rows(graph)),
+            Self::FulltextAnalyzers => Ok(fulltext_analyzer_rows()),
             Self::DbStatsRetrieve => stats::stats_retrieve_rows(
                 graph,
                 args.get("section")
@@ -209,6 +210,28 @@ fn dbms_list_capabilities_rows(graph: &ExecGraph<'_>) -> Vec<BTreeMap<String, Va
 
 fn ping_rows() -> Vec<BTreeMap<String, Value>> {
     vec![BTreeMap::from([("success".into(), Value::Bool(true))])]
+}
+
+/// Rows for `db.index.fulltext.listAvailableAnalyzers`: one per analyzer the
+/// engine admits, from the one analyzer table.
+fn fulltext_analyzer_rows() -> Vec<BTreeMap<String, Value>> {
+    crate::exec::fulltext::analyzer_catalog()
+        .map(|entry| {
+            BTreeMap::from([
+                ("analyzer".to_string(), Value::String(entry.name.into())),
+                (
+                    "description".to_string(),
+                    Value::String(entry.description.into()),
+                ),
+                (
+                    "stopwords".to_string(),
+                    crate::exec::catalog::string_list(
+                        entry.stopwords.iter().map(|word| word.to_string()),
+                    ),
+                ),
+            ])
+        })
+        .collect()
 }
 
 /// Rows for `db.labels`: every distinct stored node label, sorted.
@@ -658,6 +681,54 @@ mod tests {
         assert_eq!(signature.returns[0].name, "success");
         assert_eq!(signature.returns[0].type_str, "BOOLEAN");
         assert!(signature.works_on_system);
+    }
+
+    /// `db.index.fulltext.listAvailableAnalyzers` answers one row per
+    /// admitted analyzer from the one analyzer table: the corpus pins the
+    /// swedish description verbatim, and `stopwords` reports what this
+    /// engine's analyzer actually filters.
+    #[test]
+    fn fulltext_list_available_analyzers_answers_the_analyzer_table() {
+        let graph = Graph::default();
+        let signature = crate::procedure_registry::builtin_procedure_signature(
+            "db.index.fulltext.listAvailableAnalyzers",
+        )
+        .expect("registered");
+        assert!(signature.executable && signature.works_on_system);
+
+        let rows = rows(&graph, "db.index.fulltext.listAvailableAnalyzers");
+        assert_eq!(rows.len(), 45);
+        let swedish = rows
+            .iter()
+            .find(|row| row["analyzer"] == string("swedish"))
+            .expect("swedish is listed");
+        assert_eq!(
+            swedish["description"],
+            string("Swedish analyzer with stemming and stop word filtering.")
+        );
+        let english = rows
+            .iter()
+            .find(|row| row["analyzer"] == string("english"))
+            .expect("english is listed");
+        assert!(matches!(
+            &english["stopwords"],
+            Value::List(words) if !words.is_empty()
+        ));
+        // Every other analyzer shares the standard tokenizer, which filters
+        // no stop words; the engine applies none, so the row states none.
+        let french = rows
+            .iter()
+            .find(|row| row["analyzer"] == string("french"))
+            .expect("french is listed");
+        assert_eq!(french["stopwords"], Value::List(Vec::new().into()));
+
+        // The `CALL` path reaches the producer through `YIELD`.
+        let result = crate::exec::test_support::exec_cypher(
+            &graph,
+            "CALL db.index.fulltext.listAvailableAnalyzers() YIELD analyzer \
+             WHERE analyzer = 'swedish' RETURN analyzer",
+        );
+        assert_eq!(result.rows, vec![vec![string("swedish")]]);
     }
 
     #[test]

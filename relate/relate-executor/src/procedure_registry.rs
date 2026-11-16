@@ -37,6 +37,7 @@ pub(crate) enum RowProducer {
     DbmsInfo,
     DbmsShowCurrentUser,
     DbmsConfig,
+    FulltextAnalyzers,
     DbmsLicenseAgreementDetails,
     DbmsListCapabilities,
     DbStatsRetrieve,
