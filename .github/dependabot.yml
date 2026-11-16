@@ -28,7 +28,7 @@ updates:
     directory: "/clients/java"
     schedule:
       interval: weekly
-  - package-ecosystem: go
+  - package-ecosystem: gomod
     directory: "/clients/go"
     schedule:
       interval: weekly
