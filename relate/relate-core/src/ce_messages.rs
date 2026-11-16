@@ -261,6 +261,20 @@ pub fn call_in_transactions_implicit_only() -> Error {
     ))
 }
 
+/// `TERMINATE TRANSACTIONS` with an id argument that names no transaction at
+/// all — the empty list, literal or parameter — instead of succeeding with
+/// zero rows (GQLSTATUS 22N06, "required input missing"). Live CE 2026.10.1
+/// raises it; a NULL id is not this case (it is one absent id and gets a
+/// row). Authored text from that probe, not CE-pinned: the fixture
+/// (`testdata/ce-errors/neo4j-ce.json`) carries no `TERMINATE TRANSACTIONS`
+/// case, so this wording is the source of truth.
+pub fn missing_transaction_id() -> Error {
+    Error::semantic(format!(
+        "{}: Missing transaction id to terminate, the transaction id can be found using `SHOW TRANSACTIONS`.",
+        TckErrorClass::SemanticError.as_str()
+    ))
+}
+
 /// ADR-0121 §3: a statement that calls `db.ontology.set` or
 /// `db.ontology.drop` may not write anything else (Neo4j's 42N03 text).
 pub fn cross_database_write() -> Error {
@@ -316,6 +330,18 @@ mod tests {
         assert_ce_text(
             &unsupported_administration_command("CREATE DATABASE foo"),
             "UnsupportedAdministrationCommand: Unsupported administration command: CREATE DATABASE foo",
+        );
+    }
+
+    /// The missing-transaction-id text carries the class-level
+    /// `SemanticError` token, the same shape every other class-level CE text
+    /// here has.
+    #[test]
+    fn missing_transaction_id_is_the_22n06_text() {
+        assert_ce_text(
+            &missing_transaction_id(),
+            "SemanticError: Missing transaction id to terminate, the transaction id can be \
+             found using `SHOW TRANSACTIONS`.",
         );
     }
 

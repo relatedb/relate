@@ -492,7 +492,10 @@ pub fn catalog_info(clause: &Clause) -> Option<CatalogInfo<'_>> {
             where_expr: None,
             stages: &[],
             prefill: false,
-            validate_columns: false,
+            // Live rejects an unknown YIELD column here too (`YIELD nope` is
+            // a SyntaxError), and this command's full set is exactly the
+            // three columns it can report.
+            validate_columns: true,
             composable: true,
             graph_schema_catalog: false,
             defaults: TERMINATE_TRANSACTION_COLUMNS,

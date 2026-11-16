@@ -13,26 +13,26 @@ use super::super::catalog::catalog_row;
 
 /// The ids one id argument yields, under the whole argument contract both
 /// transaction commands share: a list's elements, or the scalar itself as a
-/// one-element slice, each of which must be a STRING or NULL. Anything else
-/// is the argument's own type error — live raises it for `SHOW TRANSACTIONS
-/// 123` and `TERMINATE TRANSACTIONS 123` alike, so neither command may
-/// quietly filter such a value out or fold it onto the NULL id.
-///
-/// Borrowed, so neither a scalar nor a list argument is copied to be
-/// checked.
-fn transaction_ids(value: &Value) -> Result<&[Value]> {
+/// one-element slice. `None` is a NULL element (the absent id); every other
+/// element must be a STRING and surfaces as its text. Anything else is the
+/// argument's own type error — live raises it for `SHOW TRANSACTIONS 123`
+/// and `TERMINATE TRANSACTIONS 123` alike, so neither command may quietly
+/// filter such a value out or fold it onto the NULL id.
+fn transaction_ids(value: &Value) -> Result<Vec<Option<&str>>> {
     let items: &[Value] = match value {
         Value::List(items) => items,
         scalar => std::slice::from_ref(scalar),
     };
-    for item in items {
-        if !matches!(item, Value::String(_) | Value::Null) {
-            return Err(Error::invalid_argument_type(
+    items
+        .iter()
+        .map(|item| match item {
+            Value::String(s) => Ok(Some(&**s)),
+            Value::Null => Ok(None),
+            _ => Err(Error::invalid_argument_type(
                 "transaction id must be STRING",
-            ));
-        }
-    }
-    Ok(items)
+            )),
+        })
+        .collect()
 }
 
 pub(crate) fn show_transactions_rows(
@@ -49,8 +49,9 @@ pub(crate) fn show_transactions_rows(
         for row in rows {
             let value = eval(graph, row, &expr, params)?;
             found |= transaction_ids(&value)?
-                .iter()
-                .any(|v| matches!(v, Value::String(s) if **s == *txid));
+                .into_iter()
+                .flatten()
+                .any(|id| id == txid);
         }
     }
     Ok(if found {
@@ -75,6 +76,19 @@ pub(crate) fn show_transactions_rows(
     } else {
         Vec::new()
     })
+}
+
+/// The id live reports for one STRING id: the database name of a
+/// `<database>-transaction-<id>` id is lowercased (`'noDB-transaction-123'`
+/// reports `'nodb-transaction-123'`), the rest of the id is kept as written.
+/// Applied before the per-row dedup, so two spellings of one id collapse
+/// onto the canonical value live reports.
+fn reported_id(id: &str) -> Value {
+    let reported = match id.split_once("-transaction-") {
+        Some((database, rest)) => format!("{}-transaction-{rest}", database.to_lowercase()),
+        None => id.to_owned(),
+    };
+    Value::String(reported.into())
 }
 
 /// `TERMINATE TRANSACTIONS` projects over each input row independently: the
@@ -103,7 +117,16 @@ pub(crate) fn terminate_transactions_rows(
         let mut ids = Vec::new();
         for expr in &exprs {
             let value = eval(graph, row, expr, params)?;
-            ids.extend(transaction_ids(&value)?.iter().cloned());
+            ids.extend(transaction_ids(&value)?.into_iter().map(|id| match id {
+                Some(text) => reported_id(text),
+                None => Value::Null,
+            }));
+        }
+        // An argument that names no transaction at all is live's missing-id
+        // rejection, not an empty successful result; a NULL id is one absent
+        // id and stays a row.
+        if ids.is_empty() {
+            return Err(relate_core::ce_messages::missing_transaction_id());
         }
         Ok(crate::distinct_set::dedup_first_seen(ids)?
             .into_iter()

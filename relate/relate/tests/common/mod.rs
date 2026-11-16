@@ -324,25 +324,33 @@ pub fn empty_map() -> relate::Value {
     map(&[])
 }
 
+/// The one runner that requires `statement` to fail: `params` is always
+/// passed through `query_with_params` (an empty map *is* the parameterless
+/// call — `Connection::query` is exactly `query_with_params(cypher,
+/// BTreeMap::new())`), so the class tables and the rejection assertions share
+/// one run instead of each forking on an empty map.
+fn refused(
+    conn: &mut relate::Connection,
+    statement: &str,
+    params: BTreeMap<String, relate::Value>,
+) -> relate::Error {
+    // Statement-labelled, so a class table that iterates statements names
+    // the one that unexpectedly succeeded.
+    conn.query_with_params(statement, params)
+        .err()
+        .unwrap_or_else(|| panic!("`{statement}` unexpectedly succeeded"))
+}
+
 /// The openCypher TCK error *class* the language bindings expose for
 /// `statement`'s failure (the `tck_class` slot of
 /// [`relate::binding_error_metadata`]; the finer `kind` is not
-/// returned). The one spelling the DDL class tables read, so a class
-/// assertion never re-implements the empty-params/with-params fork.
+/// returned). The one spelling the DDL class tables read.
 pub fn error_class(
     conn: &mut relate::Connection,
     statement: &str,
     params: BTreeMap<String, relate::Value>,
 ) -> &'static str {
-    let result = if params.is_empty() {
-        conn.query(statement)
-    } else {
-        conn.query_with_params(statement, params)
-    };
-    let error = result
-        .err()
-        .unwrap_or_else(|| panic!("`{statement}` unexpectedly succeeded"));
-    binding_class_of(&error)
+    binding_class_of(&refused(conn, statement, params))
 }
 
 /// The openCypher binding class of a raised error — the one
@@ -370,11 +378,32 @@ pub fn assert_ce_rejection(
     expected_suffix: &str,
     expected_class: &str,
 ) {
+    assert_ce_rejection_with_params(
+        conn,
+        statement,
+        BTreeMap::new(),
+        expected_suffix,
+        expected_class,
+    )
+}
+
+/// [`assert_ce_rejection`] with a parameter map: the one body both spellings
+/// share, so a parameterized rejection is still one
+/// `(statement, params, suffix, class)` row (an empty map is the
+/// parameterless call — `Connection::query` is exactly
+/// `query_with_params(cypher, BTreeMap::new())`).
+pub fn assert_ce_rejection_with_params(
+    conn: &mut relate::Connection,
+    statement: &str,
+    params: BTreeMap<String, relate::Value>,
+    expected_suffix: &str,
+    expected_class: &str,
+) {
     // One execution, both facets: the error the statement produced, not a
     // second run of the same statement for its class. The class facet is
     // [`assert_error_class`]'s, so this module reads the class slot in one
     // place.
-    let error = conn.query(statement).expect_err("expected an error");
+    let error = refused(conn, statement, params);
     let text = error.to_string();
     assert!(
         text.ends_with(expected_suffix),

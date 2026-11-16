@@ -20,8 +20,9 @@ use relate::{Database, Namespace, Value};
 mod common;
 
 use common::{
-    assert_ce_rejection, connection, connection_in, err_text, preview_ontology, scalar_one,
-    NEEDS_SYSTEM_DATABASE_SUFFIX, USE_WITH_ADMIN_SUFFIX, WITH_ON_SYSTEM_SUFFIX,
+    assert_ce_rejection, assert_ce_rejection_with_params, connection, connection_in, err_text,
+    list, params, preview_ontology, scalar_one, string, NEEDS_SYSTEM_DATABASE_SUFFIX,
+    USE_WITH_ADMIN_SUFFIX, WITH_ON_SYSTEM_SUFFIX,
 };
 
 /// The statement is echoed verbatim; a leading `CYPHER n` preamble is
@@ -638,4 +639,60 @@ fn terminate_transactions_projects_per_input_row() {
             .collect();
         assert_eq!(got, expected, "{src}");
     }
+}
+
+/// The reported id is live's canonical form: the database name of a
+/// `<database>-transaction-<id>` id is lowercased, so the corpus's
+/// `'noDB-transaction-123'` reports `'nodb-transaction-123'` (verified
+/// against live 2026.10.1 enterprise, which also lowercases a mixed-case
+/// `'NoDB-transaction-123'`).
+#[test]
+fn terminate_transactions_reports_the_lowercased_database_name() {
+    let mut conn = connection();
+    for (src, expected) in [
+        (
+            "TERMINATE TRANSACTIONS 'noDB-transaction-123' YIELD transactionId RETURN transactionId",
+            "nodb-transaction-123",
+        ),
+        (
+            "TERMINATE TRANSACTIONS 'SYSTEM-transaction-7' YIELD * RETURN transactionId",
+            "system-transaction-7",
+        ),
+    ] {
+        assert_eq!(scalar_one(&mut conn, src), string(expected), "{src}");
+    }
+}
+
+/// An id argument that names no transaction at all — the empty list, literal
+/// or parameter — is live's 22N06 missing-required-input rejection (the
+/// `SemanticError` class), not an empty successful result. A NULL id stays
+/// one absent id and gets its own row.
+#[test]
+fn an_empty_transaction_id_list_is_a_missing_id() {
+    let mut conn = connection();
+    let message = "Missing transaction id to terminate, the transaction id can be \
+                   found using `SHOW TRANSACTIONS`.";
+    for (src, params) in [
+        ("TERMINATE TRANSACTIONS []", params(&[])),
+        (
+            "TERMINATE TRANSACTIONS $id",
+            params(&[("id", list(Vec::new()))]),
+        ),
+    ] {
+        assert_ce_rejection_with_params(&mut conn, src, params, message, "SemanticError");
+    }
+}
+
+/// An explicitly YIELD'd column the command does not report is live's
+/// invalid-column rejection — the `SyntaxError` class, like every other SHOW
+/// command's YIELD check.
+#[test]
+fn terminate_transactions_rejects_an_unknown_yield_column() {
+    let mut conn = connection();
+    assert_ce_rejection(
+        &mut conn,
+        "TERMINATE TRANSACTION 'neo4j-transaction-1' YIELD nope",
+        "'nope' is not a valid TERMINATE TRANSACTIONS column",
+        "SyntaxError",
+    );
 }
