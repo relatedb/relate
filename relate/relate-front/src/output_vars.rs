@@ -138,11 +138,7 @@ fn local_stage_output_vars(
             // separately), so any one of them (preferring the first WHEN branch,
             // falling back to ELSE) represents the whole clause's output.
             Clause::Conditional(cc) => {
-                let inner = cc
-                    .branches
-                    .first()
-                    .map(|b| &b.body)
-                    .or(cc.else_body.as_ref());
+                let inner = cc.representative_body();
                 last_projection =
                     inner.and_then(|s| compute_subquery_output_vars_seeded(s, &bound));
             }

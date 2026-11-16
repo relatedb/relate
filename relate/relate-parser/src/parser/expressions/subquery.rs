@@ -166,11 +166,7 @@ impl<'a> Parser<'a> {
         fn branch_shape(s: &Statement) -> BranchShape {
             let body = s.projection_stage();
             if let [Clause::Conditional(cc)] = body.clauses.as_slice() {
-                let inner = cc
-                    .branches
-                    .first()
-                    .map(|b| &b.body)
-                    .or(cc.else_body.as_ref());
+                let inner = cc.representative_body();
                 return match inner {
                     Some(inner) => branch_shape(inner),
                     None => BranchShape::Omitted,

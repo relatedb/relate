@@ -12,6 +12,19 @@ pub struct ConditionalClause {
     pub else_body: Option<Statement>,
 }
 
+impl ConditionalClause {
+    /// The one body that stands in for the whole clause's output shape:
+    /// every branch and the ELSE body project the same shape (validated
+    /// separately), so the first WHEN branch represents them, falling back
+    /// to ELSE. `None` only for a clause with neither.
+    pub fn representative_body(&self) -> Option<&Statement> {
+        self.branches
+            .first()
+            .map(|b| &b.body)
+            .or(self.else_body.as_ref())
+    }
+}
+
 /// One `WHEN <predicate> THEN <single-query>` branch of a `ConditionalClause`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WhenBranch {

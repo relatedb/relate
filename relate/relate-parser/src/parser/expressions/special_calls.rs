@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// The `trim(<spec> ...)` direction word of the keyword spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::parser) enum TrimSpec {
+    Both,
+    Leading,
+    Trailing,
+}
+
 impl<'a> Parser<'a> {
     /// The comma spelling's lowered form: the specification is an ordinary
     /// expression, so the direction cannot be baked into the dispatch name
@@ -16,11 +24,11 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub(in crate::parser) fn build_trim_call(spec: Option<&'static str>, args: Vec<Expr>) -> Expr {
+    pub(in crate::parser) fn build_trim_call(spec: Option<TrimSpec>, args: Vec<Expr>) -> Expr {
         let name = match spec {
-            Some("LEADING") => "trim_leading",
-            Some("TRAILING") => "trim_trailing",
-            _ => "trim",
+            Some(TrimSpec::Leading) => "trim_leading",
+            Some(TrimSpec::Trailing) => "trim_trailing",
+            Some(TrimSpec::Both) | None => "trim",
         };
         Expr::FunctionCall(FunctionCallExpr {
             name: SmallName::from_name(name),
@@ -118,13 +126,13 @@ impl<'a> Parser<'a> {
 
         let start = self.save_pos();
 
-        let mut spec: Option<&'static str> = None;
+        let mut spec: Option<TrimSpec> = None;
         let peek = self.peek().clone();
         if peek.ty == TokenType::Identifier {
             spec = match peek.literal.to_ascii_uppercase().as_str() {
-                "BOTH" => Some("BOTH"),
-                "LEADING" => Some("LEADING"),
-                "TRAILING" => Some("TRAILING"),
+                "BOTH" => Some(TrimSpec::Both),
+                "LEADING" => Some(TrimSpec::Leading),
+                "TRAILING" => Some(TrimSpec::Trailing),
                 _ => None,
             };
             if spec.is_some() {

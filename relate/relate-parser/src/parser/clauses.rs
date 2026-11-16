@@ -527,7 +527,7 @@ impl<'a> Parser<'a> {
             Vec::new()
         };
 
-        let skip = if self.peek_type() == TokenType::SKIP || self.peek_is_offset() {
+        let skip = if self.peek_is_skip_or_offset() {
             self.next_token();
             Some(self.parse_expression()?)
         } else {

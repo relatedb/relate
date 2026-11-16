@@ -411,4 +411,9 @@ impl<'a> Parser<'a> {
     pub(in crate::parser) fn peek_is_offset(&self) -> bool {
         self.peek_is_ident("offset")
     }
+
+    /// The paging-offset word: `SKIP` or its `OFFSET` synonym (CIP-168).
+    pub(in crate::parser) fn peek_is_skip_or_offset(&self) -> bool {
+        self.peek_type() == TokenType::SKIP || self.peek_is_offset()
+    }
 }

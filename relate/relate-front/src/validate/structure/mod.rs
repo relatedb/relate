@@ -231,11 +231,7 @@ fn union_branch_shape(clauses: &[Clause]) -> UnionBranchShape {
     // (validated separately), so any one of them stands in
     // for the whole clause.
     if let [Clause::Conditional(cc)] = clauses {
-        let inner = cc
-            .branches
-            .first()
-            .map(|b| &b.body)
-            .or(cc.else_body.as_ref());
+        let inner = cc.representative_body();
         return match inner {
             Some(s) => union_branch_shape(&s.clauses),
             None => UnionBranchShape::Omitted,

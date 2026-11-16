@@ -103,7 +103,7 @@ impl<'a> Parser<'a> {
     /// `parse_standalone_order_by_page`) and the SHOW family's YIELD
     /// paging (CIP-46/CIP-74) -- the one place
     /// the SKIP/OFFSET policy is decided: OFFSET is accepted everywhere
-    /// SKIP is (`peek_is_offset`, CIP-168), including inside SHOW paging.
+    /// SKIP is (`peek_is_skip_or_offset`, CIP-168), including inside SHOW paging.
     pub(in crate::parser) fn parse_page_stages(&mut self) -> ParseResult<Vec<PageStage>> {
         let mut stages = Vec::new();
         loop {
@@ -111,7 +111,7 @@ impl<'a> Parser<'a> {
                 self.next_token();
                 self.expect(TokenType::BY)?;
                 stages.push(PageStage::OrderBy(self.parse_order_by()?));
-            } else if self.peek_type() == TokenType::SKIP || self.peek_is_offset() {
+            } else if self.peek_is_skip_or_offset() {
                 self.next_token();
                 stages.push(PageStage::Skip(self.parse_expression()?));
             } else if self.peek_type() == TokenType::LIMIT {
