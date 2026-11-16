@@ -41,19 +41,30 @@ mkdir -p "$stubbin" "$fixtures" "$itmp"
 
 # --- 0. Drift guards ------------------------------------------------------------
 
-# The one extraction idiom for install.sh's single-quoted constants: the
-# value of VAR='...' on its own assignment line, empty when the constant
-# is absent (assert_same fails on an empty operand, so absence cannot
-# pass a guard vacuously).
-installer_literal() { # $1 = variable name
-	sed -n "s/^$1='\\(.*\\)'\$/\\1/p" "$INSTALLER"
+# The one extraction idiom for the two installers' single-quoted
+# constants: the value between the quotes on the assignment line whose
+# name matches $1, read from file $2. The name pattern is passed whole,
+# so install.sh's `NAME='...'` and install.ps1's `$Name = '...'` share
+# it. Empty when no line matches (assert_same fails on an empty operand,
+# so absence cannot pass a guard vacuously).
+quoted_literal() { # $1 = name pattern, $2 = file
+	sed -n "s/^$1 *= *'\\(.*\\)'\$/\\1/p" "$2"
+}
+installer_literal() { # $1 = variable name in install.sh
+	quoted_literal "$1" "$INSTALLER"
 }
 
 # The one extraction idiom for a Rust `const NAME: &str = "VALUE";`
-# declaration (an optional `pub(crate) ` visibility prefix): the value,
-# empty when the constant is absent.
+# declaration (an optional `pub(crate) ` visibility prefix): the value
+# with its escaped quotes unescaped, empty when the constant is absent.
+# The declaration may wrap — the value then starts on the line after the
+# `=`, as the Windows one-liner's does.
 rust_str_const() { # $1 = constant name, $2 = file
-	sed -n "s/^\(pub(crate) \)\{0,1\}const $1: &str = \"\(.*\)\";\$/\2/p" "$2"
+	sed -n "/^\(pub(crate) \)\{0,1\}const $1: &str =/{
+		/[;]\$/!n
+		s/^.*&str = *//
+		s/^ *\"\(.*\)\"[;]\$/\\1/p
+	}" "$2" | sed 's/\\"/"/g'
 }
 
 # The one extraction idiom for install.sh's override seams: the env var
@@ -157,19 +168,20 @@ assert_same "drift guard: install.sh's override env var matches download_route.r
 # held to install.sh's and the CLI's here, on every host, so a rotation or a
 # URL move cannot leave the Windows installer behind.
 PS_INSTALLER="$ROOT/distribution/install.ps1"
-ps_literal() { # $1 = variable name, without the leading $
-	sed -n "s/^\\\$$1 = '\\(.*\\)'\$/\\1/p" "$PS_INSTALLER"
-}
 assert_same "drift guard: install.ps1's pinned signing key matches distribution/release-signing-key.pub" \
-	"$(ps_literal RelateSigningKey)" "$pub_key"
+	"$(quoted_literal '\$RelateSigningKey' "$PS_INSTALLER")" "$pub_key"
 assert_same "drift guard: install.ps1's sums header prefix matches manifest.rs (ADR-0457)" \
-	"$(ps_literal RelateSumsVersionPrefix)" "$rust_prefix"
+	"$(quoted_literal '\$RelateSumsVersionPrefix' "$PS_INSTALLER")" \
+		"$rust_prefix"
 assert_same "drift guard: install.ps1's legacy ceiling matches manifest.rs (ADR-0457)" \
-	"$(ps_literal RelateLegacyManifestCeiling)" "$rust_ceiling"
+	"$(quoted_literal '\$RelateLegacyManifestCeiling' "$PS_INSTALLER")" \
+		"$rust_ceiling"
 assert_same "drift guard: install.ps1's releases.json URL matches releases_json.rs (ADR-0571)" \
-	"$(ps_literal RelateReleasesJsonUrl)" "$rust_releases_url"
+	"$(quoted_literal '\$RelateReleasesJsonUrl' "$PS_INSTALLER")" \
+		"$rust_releases_url"
 assert_same "drift guard: install.ps1's download base matches install.sh's (ADR-0585)" \
-	"$(ps_literal RelateDownloadBase)" "$installer_download_base"
+	"$(quoted_literal '\$RelateDownloadBase' "$PS_INSTALLER")" \
+		"$installer_download_base"
 grep -qF "Get-RelateHttpsSeam -Name '$rust_releases_env'" "$PS_INSTALLER" &&
 	grep -qF "Get-RelateHttpsSeam -Name '$rust_download_env'" "$PS_INSTALLER"
 tap_check "drift guard: install.ps1 reads the two override seams install.sh and the CLI read, through its https gate" $?
@@ -187,14 +199,14 @@ tap_check "drift guard: install.ps1 is pure ASCII (Windows PowerShell 5.1 reads 
 # $RelateSigner, held equal here.
 INSTALLER_SIGNER=$(installer_literal SIGNER)
 assert_same "drift guard: install.sh's SIGNER matches install.ps1's \$RelateSigner (ADR-0115)" \
-	"$INSTALLER_SIGNER" "$(ps_literal RelateSigner)"
+	"$INSTALLER_SIGNER" "$(quoted_literal '\$RelateSigner' "$PS_INSTALLER")"
 
 # The Windows one-liner is spelled in three places — install.sh's pointer
 # for Git Bash/MSYS/Cygwin, the CLI's Windows upgrade refusal, and
 # install.ps1's own header — and must be one string.
 installer_windows_one_liner=$(installer_literal WINDOWS_INSTALL_ONE_LINER)
-rust_windows_one_liner=$(sed -n '/^const WINDOWS_INSTALL_ONE_LINER: &str =$/{n;s/^ *"\(.*\)";$/\1/p;}' \
-	"$ROOT/surfaces/relate-cli/src/upgrade_cmd/mod.rs" | sed 's/\\"/"/g')
+rust_windows_one_liner=$(rust_str_const WINDOWS_INSTALL_ONE_LINER \
+	"$ROOT/surfaces/relate-cli/src/upgrade_cmd/mod.rs")
 assert_same "drift guard: the Windows install one-liner is one string in install.sh and upgrade_cmd (ADR-0586)" \
 	"$installer_windows_one_liner" "$rust_windows_one_liner"
 grep -qF "#   $installer_windows_one_liner" "$PS_INSTALLER"
@@ -227,8 +239,7 @@ install_sh_stubs
 
 reset_case
 install_run osarch-darwin
-[ "$RUN_STATUS" -eq 0 ]
-tap_check "Darwin/arm64: installer exits 0" $?
+tap_check "Darwin/arm64: installer exits 0" "$RUN_STATUS"
 grep -qF "$installer_download_base/$TEST_TAG/relate-darwin-arm64" "$RUN_LOG"
 tap_check "Darwin/arm64: downloads relate-darwin-arm64 over the direct route" $?
 ! grep -qF "$installer_download_base/$TEST_TAG/relate-linux-amd64" "$RUN_LOG"
@@ -240,8 +251,7 @@ reset_case
 STUB_UNAME_S=Linux
 STUB_UNAME_M=x86_64
 install_run osarch-linux
-[ "$RUN_STATUS" -eq 0 ]
-tap_check "Linux/x86_64: installer exits 0" $?
+tap_check "Linux/x86_64: installer exits 0" "$RUN_STATUS"
 grep -qF "$installer_download_base/$TEST_TAG/relate-linux-amd64" "$RUN_LOG"
 tap_check "Linux/x86_64: downloads relate-linux-amd64 over the direct route" $?
 cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-linux-amd64"
@@ -250,10 +260,7 @@ tap_check "Linux/x86_64: installed content is the linux-amd64 fixture" $?
 reset_case
 STUB_UNAME_S=FreeBSD
 install_run osarch-freebsd
-[ "$RUN_STATUS" -ne 0 ]
-tap_check "unsupported OS (FreeBSD): installer dies non-zero" $?
-grep -q "unsupported OS" "$RUN_ERR"
-tap_check "unsupported OS (FreeBSD): error mentions unsupported OS" $?
+assert_install_failure "unsupported OS (FreeBSD)" "unsupported OS"
 
 # Windows' POSIX-style shells get the PowerShell installer's one-liner
 # (ADR-0586) instead of `unsupported OS`, and nothing is downloaded.
@@ -261,31 +268,23 @@ for windows_uname in MINGW64_NT-10.0-22631 MSYS_NT-10.0-19045 CYGWIN_NT-10.0-261
 	reset_case
 	STUB_UNAME_S=$windows_uname
 	install_run "osarch-$windows_uname"
-	[ "$RUN_STATUS" -ne 0 ]
-	tap_check "Windows shell ($windows_uname): installer dies non-zero" $?
-	grep -qF "$installer_windows_one_liner" "$RUN_ERR"
-	tap_check "Windows shell ($windows_uname): error names the install.ps1 one-liner" $?
+	assert_preflight_failure "Windows shell ($windows_uname)" \
+		"$installer_windows_one_liner"
 	! grep -q "unsupported OS" "$RUN_ERR"
 	tap_check "Windows shell ($windows_uname): not reported as an unsupported OS" $?
-	[ ! -s "$RUN_LOG" ]
-	tap_check "Windows shell ($windows_uname): no request is made" $?
 done
 
 reset_case
 STUB_UNAME_M=i386
 install_run osarch-i386
-[ "$RUN_STATUS" -ne 0 ]
-tap_check "unsupported arch (i386): installer dies non-zero" $?
-grep -q "unsupported architecture" "$RUN_ERR"
-tap_check "unsupported arch (i386): error mentions unsupported architecture" $?
+assert_install_failure "unsupported arch (i386)" "unsupported architecture"
 
 # Piped execution says so once, on stderr, and still installs; a run from a
 # file stays quiet.
 reset_case
 RUN_VIA_PIPE=1
 install_run piped
-[ "$RUN_STATUS" -eq 0 ]
-tap_check "piped run: installer exits 0" $?
+tap_check "piped run: installer exits 0" "$RUN_STATUS"
 grep -qF "running from a pipe" "$RUN_ERR"
 tap_check "piped run: says it ran before it could be read, and where to review it" $?
 reset_case
@@ -301,8 +300,7 @@ tap_check "run from a file: no piped-execution note" $?
 
 reset_case
 install_run token-unset
-[ "$RUN_STATUS" -eq 0 ]
-tap_check "token unset: installer exits 0" $?
+tap_check "token unset: installer exits 0" "$RUN_STATUS"
 ! grep -q "Authorization" "$RUN_LOG"
 tap_check "token unset: no Authorization header in any curl call" $?
 [ "$(direct_call_count)" -eq 3 ]
@@ -311,8 +309,7 @@ tap_check "token unset: exactly three direct downloads (manifest + signature + b
 reset_case
 GITHUB_TOKEN=test-token
 install_run token-set
-[ "$RUN_STATUS" -eq 0 ]
-tap_check "token set: installer exits 0 — the token is not read" $?
+tap_check "token set: installer exits 0 — the token is not read" "$RUN_STATUS"
 ! grep -q "Authorization" "$RUN_LOG"
 tap_check "token set: no Authorization header anywhere (GITHUB_TOKEN never rides a request)" $?
 cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
@@ -320,40 +317,20 @@ tap_check "token set: installs the fixture binary" $?
 
 # --- 2a. Direct-route failures --------------------------------------------------
 #
-# The one assertion shape every installer-failure case shares: the
-# installer dies non-zero and its stderr carries the case's needle (the
-# authored failure message, matched as a fixed string). Each section wraps
-# it with its own postcondition — assert_download_failure here,
-# assert_resolution_failure in section 5 — and each case keeps only what
-# is specific to it beside the call.
-assert_install_failure() { # $1 = case label, $2 = stderr needle
-	[ "$RUN_STATUS" -ne 0 ]
-	tap_check "$1: installer dies non-zero" $?
-	grep -qF "$2" "$RUN_ERR"
-	tap_check "$1: stderr carries the expected message" $?
-}
-
-# A direct-route failure: the shared shape plus nothing landing at the
-# install path.
-assert_download_failure() { # $1 = case label, $2 = stderr needle
-	assert_install_failure "$1" "$2"
-	[ ! -e "$RUN_HOME/.local/bin/relate" ]
-	tap_check "$1: nothing installed" $?
-}
+# Every case asserts through the harness lib's failure-assertion helpers
+# and keeps only what is specific to it beside the call.
 
 reset_case
 STUB_MODE=sums_404
 install_run sums-404
-assert_download_failure \
+assert_manifest_failure \
 	"manifest 404" \
 	"GET $installer_download_base/$TEST_TAG/SHA256SUMS: http status: 404"
-[ "$(direct_call_count)" -eq 1 ]
-tap_check "manifest 404: only the manifest request was made" $?
 
 reset_case
 STUB_MODE=sums_403
 install_run sums-403
-assert_download_failure \
+assert_manifest_failure \
 	"manifest 403 (rate-limit shape)" \
 	"GET $installer_download_base/$TEST_TAG/SHA256SUMS: http status: 403"
 ! grep -qF "private" "$RUN_ERR"
@@ -362,13 +339,9 @@ tap_check "manifest 403 (rate-limit shape): no private-repository advice — tha
 reset_case
 STUB_MODE=sig_404
 install_run sig-404
-assert_download_failure \
+assert_verify_failure \
 	"signature 404" \
 	"GET $installer_download_base/$TEST_TAG/SHA256SUMS.sig: http status: 404"
-[ "$(direct_call_count)" -eq 2 ]
-tap_check "signature 404: manifest and signature were the only requests" $?
-! grep -qF "$installer_download_base/$TEST_TAG/relate-darwin-arm64" "$RUN_LOG"
-tap_check "signature 404: the binary is not downloaded" $?
 
 reset_case
 STUB_MODE=binary_404
@@ -378,16 +351,13 @@ assert_download_failure \
 	"GET $installer_download_base/$TEST_TAG/relate-darwin-arm64: http status: 404"
 [ "$(direct_call_count)" -eq 3 ]
 tap_check "binary 404: manifest and signature were fetched and verified first" $?
-[ -z "$(ls -A "$RUN_HOME/.local/bin" 2>/dev/null)" ]
-tap_check "binary 404: no temp names left in the bin dir" $?
 
 # --- 2b. Download-base override (RELATE_RELEASE_DOWNLOAD_URL) --------------------
 
 reset_case
 RELATE_RELEASE_DOWNLOAD_URL=https://mirror.test/releases/download
 install_run download-url-override
-[ "$RUN_STATUS" -eq 0 ]
-tap_check "download URL override: installer exits 0" $?
+tap_check "download URL override: installer exits 0" "$RUN_STATUS"
 grep -qF "https://mirror.test/releases/download/$TEST_TAG/SHA256SUMS" "$RUN_LOG"
 tap_check "download URL override: every asset is fetched from the override base" $?
 ! grep -qF "$installer_download_base" "$RUN_LOG"
@@ -396,27 +366,20 @@ tap_check "download URL override: the canonical base is not fetched" $?
 reset_case
 RELATE_RELEASE_DOWNLOAD_URL=http://mirror.test/releases/download
 install_run download-url-override-http
-assert_download_failure \
+assert_preflight_failure \
 	"download URL override, http scheme" \
 	"RELATE_RELEASE_DOWNLOAD_URL must be an https:// URL"
-[ "$(direct_call_count)" -eq 0 ]
-tap_check "download URL override, http scheme: no request of any kind is attempted" $?
-! grep -qF "$installer_releases_url" "$RUN_LOG"
-tap_check "download URL override, http scheme: not even the metadata fetch runs — the gate precedes every request" $?
 
 reset_case
 RELATE_RELEASE_DOWNLOAD_URL=http://127.0.0.1:9/releases/download
 install_run download-url-override-loopback
-assert_download_failure \
+assert_preflight_failure \
 	"download URL override, loopback http (the CLI seam's dev carve-out)" \
 	"RELATE_RELEASE_DOWNLOAD_URL must be an https:// URL"
-[ "$(direct_call_count)" -eq 0 ]
-tap_check "download URL override, loopback http: the installer's https-only narrowing is deliberate — refused before any request" $?
 reset_case
 RELATE_RELEASE_DOWNLOAD_URL=
 install_run download-url-override-empty
-[ "$RUN_STATUS" -eq 0 ]
-tap_check "download URL override, empty value: installer exits 0" $?
+tap_check "download URL override, empty value: installer exits 0" "$RUN_STATUS"
 grep -qF "$installer_download_base/$TEST_TAG/SHA256SUMS" "$RUN_LOG"
 tap_check "download URL override, empty value: the canonical base is fetched (empty means default)" $?
 
@@ -424,8 +387,7 @@ tap_check "download URL override, empty value: the canonical base is fetched (em
 
 reset_case
 install_run happy
-[ "$RUN_STATUS" -eq 0 ]
-tap_check "happy path: installer exits 0" $?
+tap_check "happy path: installer exits 0" "$RUN_STATUS"
 [ -f "$RUN_HOME/.local/bin/relate" ]
 tap_check "happy path: \$HOME/.local/bin/relate exists" $?
 [ -x "$RUN_HOME/.local/bin/relate" ]
@@ -454,8 +416,7 @@ tap_check "happy path: SHA256SUMS.sig is downloaded before the binary asset" $?
 reset_case
 STUB_MODE=publisher_doc
 install_run publisher-fixture
-[ "$RUN_STATUS" -eq 0 ]
-tap_check "publisher fixture as releases.json: installer exits 0" $?
+tap_check "publisher fixture as releases.json: installer exits 0" "$RUN_STATUS"
 grep -qF "$installer_download_base/$PUBLISHER_FIXTURE_TAG/SHA256SUMS" "$RUN_LOG"
 tap_check "publisher fixture as releases.json: the direct route is asked for the fixture's latest tag" $?
 cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
@@ -464,8 +425,7 @@ tap_check "publisher fixture as releases.json: installs that release's product b
 reset_case
 RELATE_RELEASES_JSON_URL=https://example.test/releases.json
 install_run releases-url-override
-[ "$RUN_STATUS" -eq 0 ]
-tap_check "metadata URL override: installer exits 0" $?
+tap_check "metadata URL override: installer exits 0" "$RUN_STATUS"
 grep -qF "https://example.test/releases.json" "$RUN_LOG"
 tap_check "metadata URL override: the override URL is fetched" $?
 ! grep -qF "$installer_releases_url" "$RUN_LOG"
@@ -477,10 +437,8 @@ tap_check "metadata URL override: the canonical URL is not fetched" $?
 reset_case
 RELATE_RELEASES_JSON_URL=http://example.test/releases.json
 install_run releases-url-override-http
-assert_download_failure "metadata URL override, plain http" \
+assert_preflight_failure "metadata URL override, plain http" \
 	"RELATE_RELEASES_JSON_URL must be an https:// URL"
-[ ! -s "$RUN_LOG" ]
-tap_check "metadata URL override, plain http: no request is made" $?
 
 reset_case
 install_run releases-fetch-pinned
@@ -493,16 +451,13 @@ for bad_home in relhome ''; do
 	reset_case
 	RUN_HOME_ENV=$bad_home
 	install_run "home-${bad_home:-empty}"
-	assert_download_failure "HOME '$bad_home'" "HOME must be an absolute directory"
-	[ ! -s "$RUN_LOG" ]
-	tap_check "HOME '$bad_home': no request is made" $?
+	assert_preflight_failure "HOME '$bad_home'" "HOME must be an absolute directory"
 done
 
 reset_case
 RELATE_RELEASES_JSON_URL=
 install_run releases-url-override-empty
-[ "$RUN_STATUS" -eq 0 ]
-tap_check "metadata URL override, empty value: installer exits 0" $?
+tap_check "metadata URL override, empty value: installer exits 0" "$RUN_STATUS"
 grep -qF "$installer_releases_url" "$RUN_LOG"
 tap_check "metadata URL override, empty value: the canonical URL is fetched (empty means default)" $?
 
@@ -511,67 +466,51 @@ tap_check "metadata URL override, empty value: the canonical URL is fetched (emp
 reset_case
 STUB_MODE=sig_invalid
 install_run sig-invalid
-assert_download_failure \
+assert_verify_failure \
 	"verify failure" \
 	"signature verification failed"
-[ "$(direct_call_count)" -eq 2 ]
-tap_check "verify failure: only SHA256SUMS and SHA256SUMS.sig were downloaded" $?
-! grep -qF "$installer_download_base/$TEST_TAG/relate-darwin-arm64" "$RUN_LOG"
-tap_check "verify failure: the binary asset is not downloaded before verification" $?
 
 # --- 3b'. Signed version binding (ADR-0457) ------------------------------------
 
 reset_case
 STUB_MODE=sums_no_version
 install_run sums-no-version
-assert_download_failure \
+assert_verify_failure \
 	"no version header above the legacy ceiling" \
 	"has no signed version header"
-[ "$(direct_call_count)" -eq 2 ]
-tap_check "no version header above the legacy ceiling: only SHA256SUMS and SHA256SUMS.sig were downloaded" $?
-! grep -qF "$installer_download_base/$TEST_TAG/relate-darwin-arm64" "$RUN_LOG"
-tap_check "no version header above the legacy ceiling: the binary is not downloaded" $?
 
 reset_case
 STUB_MODE=sums_wrong_version
 install_run sums-wrong-version
-assert_download_failure \
+assert_verify_failure \
 	"mismatched version header" \
 	"SHA256SUMS is for $SUMS_WRONG_TAG, not the requested release $TEST_TAG"
-[ "$(direct_call_count)" -eq 2 ]
-tap_check "mismatched version header: only SHA256SUMS and SHA256SUMS.sig were downloaded" $?
 
 reset_case
 STUB_MODE=sums_empty_version
 install_run sums-empty-version
-assert_download_failure \
+assert_verify_failure \
 	"empty version header" \
 	"carries an empty version header"
-[ "$(direct_call_count)" -eq 2 ]
-tap_check "empty version header: only SHA256SUMS and SHA256SUMS.sig were downloaded" $?
 
 reset_case
 STUB_MODE=sums_no_space_header
 install_run sums-no-space-header
-assert_download_failure \
+assert_verify_failure \
 	"no-space header spelling" \
 	"has no signed version header"
-[ "$(direct_call_count)" -eq 2 ]
-tap_check "no-space header spelling: only SHA256SUMS and SHA256SUMS.sig were downloaded" $?
 
 reset_case
 STUB_MODE=sums_extra_space_header
 install_run sums-extra-space-header
-[ "$RUN_STATUS" -eq 0 ]
-tap_check "extra-space header value: installer exits 0 (both parsers trim)" $?
+tap_check "extra-space header value: installer exits 0 (both parsers trim)" "$RUN_STATUS"
 cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
 tap_check "extra-space header value: installs the fixture binary" $?
 
 reset_case
 STUB_MODE=legacy_tag
 install_run legacy-tag
-[ "$RUN_STATUS" -eq 0 ]
-tap_check "headerless manifest at/below the legacy ceiling: installer exits 0" $?
+tap_check "headerless manifest at/below the legacy ceiling: installer exits 0" "$RUN_STATUS"
 grep -q "legacy manifest" "$RUN_ERR"
 tap_check "headerless manifest at/below the legacy ceiling: warns about the legacy manifest" $?
 cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
@@ -580,12 +519,7 @@ tap_check "headerless manifest at/below the legacy ceiling: installs the fixture
 reset_case
 RUN_PATH="$nosshbin"
 install_run no-ssh-keygen
-[ "$RUN_STATUS" -ne 0 ]
-tap_check "ssh-keygen absent: installer dies non-zero" $?
-grep -q "openssh-client" "$RUN_ERR"
-tap_check "ssh-keygen absent: error points at openssh-client" $?
-[ "$(direct_call_count)" -eq 0 ]
-tap_check "ssh-keygen absent: no download is attempted" $?
+assert_preflight_failure "ssh-keygen absent" "openssh-client"
 
 # --- 3c. Real ssh-keygen roundtrip ---------------------------------------------
 # The keypair, signing and patched-installer machinery lives in the harness
@@ -610,8 +544,7 @@ if build_real_roundtrip_fixtures; then
 	tap_check "$1" $?
 	# Case 2: a real signature verifies and installs.
 	real_install_run real-sig-ok "$real_fixtures"
-	[ "$RUN_STATUS" -eq 0 ]
-	tap_check "$2" $?
+	tap_check "$2" "$RUN_STATUS"
 	cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
 	tap_check "$3" $?
 	[ ! -s "$RUN_KEYGEN_LOG" ]
@@ -635,26 +568,13 @@ fi
 reset_case
 STUB_MODE=corrupt
 install_run checksum-fail
-[ "$RUN_STATUS" -ne 0 ]
-tap_check "checksum fail: installer dies non-zero" $?
-grep -q "checksum verification failed" "$RUN_ERR"
-tap_check "checksum fail: error mentions checksum verification" $?
-[ ! -e "$RUN_HOME/.local/bin/relate" ]
-tap_check "checksum fail: nothing at the final install path" $?
-[ -z "$(ls -A "$RUN_HOME/.local/bin" 2>/dev/null)" ]
-tap_check "checksum fail: no temp names left in the bin dir" $?
+assert_download_failure "checksum fail" "checksum verification failed"
 
 # --- 5. Resolution failure ------------------------------------------------------
 
-# A resolution failure: the shared shape (assert_install_failure, section
-# 2a) plus no download attempted — resolution dies before any request
-# beyond the metadata fetch. Each case keeps only what is specific to it
-# beside this call.
-assert_resolution_failure() { # $1 = case label, $2 = stderr needle
-	assert_install_failure "$1" "$2"
-	[ "$(direct_call_count)" -eq 0 ]
-	tap_check "$1: no download is attempted" $?
-}
+# Every case asserts through assert_resolution_failure, beside its stage
+# siblings in the harness lib, and keeps only what is specific to it
+# beside the call.
 
 reset_case
 STUB_MODE=metadata_unreachable

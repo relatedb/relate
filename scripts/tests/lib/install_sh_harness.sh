@@ -4,11 +4,12 @@
 # argv-log helpers.
 #
 # Expects from the caller, before sourcing: `tap_sandbox` has set
-# `$sandbox`, tap.sh (for the `tap_skip` the roundtrip skips use) and
-# scripts/lib/common.sh (for `sha256_of`) are sourced. The caller also
-# owns `$ROOT`, `$INSTALLER`, `$fixtures`, `$stubbin` and `$itmp` (its
-# sandbox layout), plus `$INSTALLER_SIGNER` (the identity the roundtrip
-# keypair and signatures carry). The factories — `install_sh_fixtures`,
+# `$sandbox`, tap.sh (for the `tap_check` the failure-assertion helpers
+# use and the `tap_skip` the roundtrip skips use) and scripts/lib/common.sh
+# (for `sha256_of`) are sourced. The caller also owns `$ROOT`,
+# `$INSTALLER`, `$fixtures`, `$stubbin` and `$itmp` (its sandbox layout),
+# plus `$INSTALLER_SIGNER` (the identity the roundtrip keypair and
+# signatures carry). The factories — `install_sh_fixtures`,
 # `install_sh_stubs` and `build_real_roundtrip_fixtures` — expect the
 # caller's section-0 guards to have set `$LEGACY_MANIFEST_TAG` and
 # `$PUBLISHER_FIXTURE_TAG` by the time they are called (the guards run
@@ -18,8 +19,10 @@
 # sets `$patched_installer`, `$real_fixtures`, `$wrong_fixtures` and
 # `$keygen_dir`, plus `$real_skip_reason` (the failure reason), and returns
 # non-zero when the real-keygen probe failed — the caller branches once on
-# that status and reads those outputs only in the success arm. Never
-# executed directly.
+# that status and reads those outputs only in the success arm. The run
+# harness also publishes the failure-assertion helpers the cases assert
+# through, from `assert_install_failure` down to its stage siblings.
+# Never executed directly.
 #
 # The two factories build the release-asset fixtures and the PATH stubs the
 # installer is exercised against; their shared table is below.
@@ -39,12 +42,14 @@ SUMS_WRONG_TAG=v9.9.8
 # the harness holds this and install.sh's copy to manifest.rs's constant.
 SUMS_VERSION_PREFIX='# relate-release-version: '
 
-# Emit the release-entry object for tag $1, every line prefixed with the
-# line indent $2 — the one spelling of the entry's fields. write_releases_fixture
-# derives both its slots from it (at their own indents), so a field change
-# cannot leave the latest object and the releases window disagreeing.
+# Emit the release-entry object for tag $1: every line but the opening
+# brace prefixed with the line indent $2. The brace is the caller's to
+# place, so the latest slot's can ride the "latest": line. The one
+# spelling of the entry's fields — write_releases_fixture derives both its
+# slots from it, so a field change cannot leave the latest object and the
+# releases window disagreeing.
 release_entry() { # $1 = tag, $2 = line indent
-	printf '%s{\n' "$2"
+	printf '{\n'
 	printf '%s  "tag": "%s",\n' "$2" "$1"
 	printf '%s  "published_at": "2026-09-01T00:00:00Z",\n' "$2"
 	printf '%s  "notes": "",\n' "$2"
@@ -81,9 +86,12 @@ write_releases_fixture() { # $1 = tag, $2 = output path
 		;;
 	*)
 		# The latest object's opening brace sits on the "latest": line
-		# (jq's shape), so its first line drops the entry indent.
-		_latest=$(release_entry "$_tag" '  ' | sed '1s/^  //')
-		_window=$(printf '[\n%s\n  ]' "$(release_entry "$_tag" '    ')")
+		# (jq's shape), so the entry is emitted as-is; the window's
+		# entries sit one indent deeper, its brace sharing that indent.
+		_window_indent='    '
+		_latest=$(release_entry "$_tag" '  ')
+		_window=$(printf '[\n%s%s\n  ]' "$_window_indent" \
+			"$(release_entry "$_tag" "$_window_indent")")
 		;;
 	esac
 	cat <<EOF >"$_out"
@@ -103,6 +111,13 @@ write_releases_fixture() { # $1 = tag, $2 = output path
   "releases": $_window
 }
 EOF
+}
+
+# Write a SHA256SUMS variant to $fixtures/SHA256SUMS.$1 whose ADR-0457
+# header line is replaced by $2: the one writer of the header-rewritten
+# fixtures (the headerless variant drops the line instead).
+sums_header_variant() { # $1 = fixture suffix, $2 = header line
+	sed "1s|.*|$2|" "$fixtures/SHA256SUMS" >"$fixtures/SHA256SUMS.$1"
 }
 
 # Build the release-asset fixtures under $fixtures: the two platform
@@ -140,25 +155,21 @@ EOF
 
 	# Header naming another release: a replay/mismatch the installer must
 	# reject.
-	sed "1s|.*|${SUMS_VERSION_PREFIX}${SUMS_WRONG_TAG}|" \
-		"$fixtures/SHA256SUMS" >"$fixtures/SHA256SUMS.wrong-version"
+	sums_header_variant wrong-version "${SUMS_VERSION_PREFIX}${SUMS_WRONG_TAG}"
 
 	# Present-but-empty header: a publish bug, not a legacy manifest — it
 	# must fail hard, mirroring the Rust empty-header arm.
-	sed "1s|.*|${SUMS_VERSION_PREFIX}|" \
-		"$fixtures/SHA256SUMS" >"$fixtures/SHA256SUMS.empty-version"
+	sums_header_variant empty-version "$SUMS_VERSION_PREFIX"
 
 	# No-space spelling (the prefix's trailing space removed): the Rust
 	# parser's prefix literal requires it, so this is a headerless legacy
 	# manifest.
-	sed "1s|.*|${SUMS_VERSION_PREFIX% }${TEST_TAG}|" \
-		"$fixtures/SHA256SUMS" >"$fixtures/SHA256SUMS.no-space-header"
+	sums_header_variant no-space-header "${SUMS_VERSION_PREFIX% }${TEST_TAG}"
 
 	# Extra leading whitespace in the value: Rust trims both ends before
 	# comparing, so the installer must too (the written form has exactly one
 	# space, but the parsers agree on the tolerance).
-	sed "1s|.*|${SUMS_VERSION_PREFIX} ${TEST_TAG}|" \
-		"$fixtures/SHA256SUMS" >"$fixtures/SHA256SUMS.extra-space-header"
+	sums_header_variant extra-space-header "${SUMS_VERSION_PREFIX} ${TEST_TAG}"
 
 	# The signature is opaque to the installer (it only feeds the file to
 	# ssh-keygen), so the fixture just needs to exist as a distinct asset.
@@ -195,8 +206,8 @@ EOF
 	# the version binding rejects the release.
 	cp "$ROOT/.github/scripts/tests/fixtures/publish-releases-json-expected.json" \
 		"$fixtures/releases-publisher.json"
-	sed "1s|.*|${SUMS_VERSION_PREFIX}${PUBLISHER_FIXTURE_TAG}|" \
-		"$fixtures/SHA256SUMS" >"$fixtures/SHA256SUMS.publisher-tag"
+	sums_header_variant publisher-tag \
+		"${SUMS_VERSION_PREFIX}${PUBLISHER_FIXTURE_TAG}"
 }
 
 # The STUB_MODE vocabulary is owned by the stub curl's dispatch (the
@@ -250,13 +261,13 @@ done
 
 # STUB_MODE is resolved once here, before the URL dispatch — the one
 # site a mode's complete behavior lives at: the metadata document, each
-# direct asset's body fixture and status. Every knob is a plain fixture
-# path with a 200 default; a mode overrides exactly what it changes, the
-# failure modes pointing their asset at the shared empty fixture beside a
-# non-2xx status. The dispatch is total and fail-closed — an unknown
-# mode fails every request loudly — so this case, not a side table, is
-# the one place the mode vocabulary lives.
-metadata_doc=releases.json
+# direct asset's body fixture and status. Every knob is an absolute
+# fixture path with a 200 default; a mode overrides exactly what it
+# changes — the failure modes point their asset at the shared empty
+# fixture beside a non-2xx status. The dispatch is total and fail-closed
+# — an unknown mode fails every request loudly — so this case, not a
+# side table, is the one place the mode vocabulary lives.
+metadata_doc="$STUB_FIXTURES/releases.json"
 sums_body="$STUB_FIXTURES/SHA256SUMS"
 sums_status=200
 sig_body="$STUB_FIXTURES/SHA256SUMS.sig"
@@ -266,15 +277,15 @@ darwin_status=200
 case "$STUB_MODE" in
 ok | sig_invalid) ;;
 metadata_unreachable) exit 22 ;;
-releases_malformed) metadata_doc=releases-malformed.json ;;
-releases_null_latest) metadata_doc=releases-null-latest.json ;;
-releases_bad_tag) metadata_doc=releases-bad-tag.json ;;
+releases_malformed) metadata_doc="$STUB_FIXTURES/releases-malformed.json" ;;
+releases_null_latest) metadata_doc="$STUB_FIXTURES/releases-null-latest.json" ;;
+releases_bad_tag) metadata_doc="$STUB_FIXTURES/releases-bad-tag.json" ;;
 legacy_tag)
-	metadata_doc=releases-legacy-tag.json
+	metadata_doc="$STUB_FIXTURES/releases-legacy-tag.json"
 	sums_body="$STUB_FIXTURES/SHA256SUMS.no-version"
 	;;
 publisher_doc)
-	metadata_doc=releases-publisher.json
+	metadata_doc="$STUB_FIXTURES/releases-publisher.json"
 	sums_body="$STUB_FIXTURES/SHA256SUMS.publisher-tag"
 	;;
 sums_no_version) sums_body="$STUB_FIXTURES/SHA256SUMS.no-version" ;;
@@ -310,18 +321,17 @@ esac
 # when -w asked for one. A missing fixture file fails loudly rather than
 # serving an empty success.
 serve() {
-	if [ -f "$1" ]; then
-		if [ -n "$out" ]; then cat "$1" >"$out"; else cat "$1"; fi
-	else
+	[ -f "$1" ] || {
 		echo "stub curl: missing fixture: $1" >&2
 		exit 22
-	fi
+	}
+	if [ -n "$out" ]; then cat "$1" >"$out"; else cat "$1"; fi
 	[ -z "$want_code" ] || printf '%s\n' "$2"
 	exit 0
 }
 
 case "$url" in
-*releases.json) serve "$STUB_FIXTURES/$metadata_doc" 200 ;;
+*releases.json) serve "$metadata_doc" 200 ;;
 *releases/download/*/SHA256SUMS) serve "$sums_body" "$sums_status" ;;
 *releases/download/*/SHA256SUMS.sig) serve "$sig_body" "$sig_status" ;;
 *releases/download/*/relate-darwin-arm64) serve "$darwin_body" "$darwin_status" ;;
@@ -412,7 +422,7 @@ reset_case() {
 	STUB_UNAME_S=Darwin
 	STUB_UNAME_M=arm64
 	unset GITHUB_TOKEN RELATE_RELEASES_JSON_URL RELATE_RELEASE_DOWNLOAD_URL
-	STUB_FIXTURES_DIR=$fixtures
+	STUB_FIXTURES=$fixtures
 	RUN_PATH="$stubbin:/usr/bin:/bin"
 	RUN_INSTALLER=$INSTALLER
 	RUN_VIA_PIPE=
@@ -453,7 +463,7 @@ install_run() { # $1 = case name
 		TMPDIR="$itmp" \
 		STUB_LOG="$RUN_LOG" \
 		STUB_KEYGEN_LOG="$RUN_KEYGEN_LOG" \
-		STUB_FIXTURES="$STUB_FIXTURES_DIR" \
+		STUB_FIXTURES="$STUB_FIXTURES" \
 		STUB_MODE="$STUB_MODE" \
 		STUB_UNAME_S="$STUB_UNAME_S" \
 		STUB_UNAME_M="$STUB_UNAME_M" \
@@ -481,6 +491,71 @@ curl_call_args() {
 # How many direct-route download requests the case made.
 direct_call_count() {
 	grep -c '/releases/download/' "$RUN_LOG"
+}
+
+# --- failure assertions ---------------------------------------------------------
+#
+# The shared shapes every failure case asserts through: the run harness owns
+# the RUN_* state and the curl log these read, so they live beside them and
+# the case script keeps only what is specific to it beside the call. Each
+# stage helper adds its postcondition to the base.
+
+# The base shape: the installer dies non-zero and its stderr carries the
+# case's needle (the authored failure message, matched as a fixed string).
+assert_install_failure() { # $1 = case label, $2 = stderr needle
+	[ "$RUN_STATUS" -ne 0 ]
+	tap_check "$1: installer dies non-zero" $?
+	grep -qF "$2" "$RUN_ERR"
+	tap_check "$1: stderr carries the expected message" $?
+}
+
+# A direct-route failure: the base shape plus nothing landing at the
+# install path — no final binary and no staged temp name beside it.
+assert_download_failure() { # $1 = case label, $2 = stderr needle
+	assert_install_failure "$1" "$2"
+	[ ! -e "$RUN_HOME/.local/bin/relate" ]
+	tap_check "$1: nothing installed" $?
+	# The bin dir either never appeared or holds nothing beside the
+	# absent binary — an absent dir is not a silently empty one.
+	[ ! -d "$RUN_HOME/.local/bin" ] || [ -z "$(ls -A "$RUN_HOME/.local/bin")" ]
+	tap_check "$1: no temp names left in the bin dir" $?
+}
+
+# A manifest-stage failure: the direct-route shape plus exactly one
+# direct request — the manifest, with nothing after it.
+assert_manifest_failure() { # $1 = case label, $2 = stderr needle
+	assert_download_failure "$1" "$2"
+	[ "$(direct_call_count)" -eq 1 ]
+	tap_check "$1: only the manifest was requested" $?
+}
+
+# A verification-stage failure: the direct-route shape plus exactly two
+# direct requests — the manifest and the signature, with no binary route
+# hit. The count is the whole postcondition: the metadata fetch is the
+# website's releases.json, not a /releases/download/ request. Serves the
+# direct-route signature failure and the signed-version-binding failures
+# alike.
+assert_verify_failure() { # $1 = case label, $2 = stderr needle
+	assert_download_failure "$1" "$2"
+	[ "$(direct_call_count)" -eq 2 ]
+	tap_check "$1: only the manifest and signature were requested" $?
+}
+
+# A preflight refusal: the direct-route shape plus an empty curl log —
+# the installer died before making any request at all, the metadata
+# fetch included.
+assert_preflight_failure() { # $1 = case label, $2 = stderr needle
+	assert_download_failure "$1" "$2"
+	[ ! -s "$RUN_LOG" ]
+	tap_check "$1: no request is made" $?
+}
+
+# A resolution failure: the base shape plus no download attempted —
+# resolution dies before any request beyond the metadata fetch.
+assert_resolution_failure() { # $1 = case label, $2 = stderr needle
+	assert_install_failure "$1" "$2"
+	[ "$(direct_call_count)" -eq 0 ]
+	tap_check "$1: no download is attempted" $?
 }
 
 # --- real ssh-keygen roundtrip machinery -------------------------------------
@@ -515,7 +590,7 @@ sign_manifest() {
 # keygen_dir exist only then.
 real_install_run() { # $1 = case name, $2 = fixture tree
 	reset_case
-	STUB_FIXTURES_DIR=$2
+	STUB_FIXTURES=$2
 	RUN_INSTALLER=$patched_installer
 	RUN_PATH="$nosshbin:$keygen_dir:/usr/bin:/bin"
 	install_run "$1"
