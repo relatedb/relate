@@ -8,6 +8,7 @@ use relate_ir::{Clause, Direction, PatternElement};
 use crate::exec::test_support::{build, Built};
 use crate::overlay::ExecGraph;
 
+use super::class_walk::ClassWalk;
 use super::layered::Dag;
 use super::pair::pair;
 use super::test_support::{counting_expands, keeping, search, sorted};
@@ -249,4 +250,51 @@ fn followable_needs_static_types_and_labels_and_no_property_map() {
     ] {
         assert!(!shape(rejected), "{rejected}");
     }
+}
+
+/// The start's whole reachable set is small and runs out first; the end's
+/// ball must keep growing on its own, or its radius freezes and an
+/// unbounded sweep never sees the bound `complete()` needs.
+#[test]
+fn an_exhausted_start_ball_leaves_the_end_ball_growing() {
+    // 0→1→2→3 is the only way to the end 3. 0 also leads down a 40-node
+    // dead-end spur, and three 100-node chains lead into 0, so the end's
+    // frontier stays wider than the start's.
+    let mut rels = vec![(0, 1, "R"), (1, 2, "R"), (2, 3, "R"), (0, 4, "R")];
+    rels.extend((4..43).map(|i| (i, i + 1, "R")));
+    for chain in 0..3 {
+        let first = 44 + 100 * chain;
+        rels.extend((first..first + 99).map(|i| (i, i + 1, "R")));
+        rels.push((first + 99, 0, "R"));
+    }
+    let Built {
+        graph: g, nodes: n, ..
+    } = build(&[&[][..]; 344], &rels);
+    let view = ExecGraph::read(&g);
+    let s = search(&view, Direction::Outgoing, u32::MAX);
+    let mut walk = ClassWalk::new(&s, n[0], n[3]);
+    walk.each_trail(100, |_, _| Ok(false)).unwrap();
+    let (end, start) = walk.radii();
+    assert!(start < 100, "the spur runs out");
+    assert_eq!(end + start, 100, "the end ball took the rest of the length");
+}
+
+/// The end's whole reachable set is small and runs out first: its bound is
+/// exact from then on, so the start ball must not keep growing over the
+/// start's large forward component.
+#[test]
+fn an_exhausted_end_ball_stops_the_start_ball() {
+    // 0→1→2→3 reaches the end 3; 0 also leads down a 400-node spur.
+    let mut rels = vec![(0, 1, "R"), (1, 2, "R"), (2, 3, "R"), (0, 4, "R")];
+    rels.extend((4..403).map(|i| (i, i + 1, "R")));
+    let Built {
+        graph: g, nodes: n, ..
+    } = build(&[&[][..]; 404], &rels);
+    let view = ExecGraph::read(&g);
+    let s = search(&view, Direction::Outgoing, u32::MAX);
+    let mut walk = ClassWalk::new(&s, n[0], n[3]);
+    walk.each_trail(300, |_, _| Ok(false)).unwrap();
+    let (end, start) = walk.radii();
+    assert!(end < 10, "the end ball runs out at its component");
+    assert!(start < 10, "the start ball did not outgrow it: {start}");
 }

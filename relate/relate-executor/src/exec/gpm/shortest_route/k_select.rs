@@ -9,6 +9,7 @@
 //! then node-id sequence, ADR-0203), so only that many trails are ever
 //! retained.
 
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::sync::Arc;
@@ -94,15 +95,31 @@ struct Candidate {
 }
 
 impl Candidate {
-    fn key(&self) -> (&[Arc<str>], &[NodeId], u64) {
-        (&self.types, &self.nodes, self.seq)
-    }
-
     fn bytes(&self) -> u64 {
         let ids = self.trail.len() * size_of::<RelId>() + self.nodes.len() * size_of::<NodeId>();
         let types = self.types.len() * size_of::<Arc<str>>();
         CANDIDATE_BYTES + (ids + types) as u64
     }
+}
+
+/// The selector's one order (ADR-0203): rel-type name sequence, then node-id
+/// sequence, of a trail given as parts against a held candidate. Both
+/// [`Ord`] for [`Candidate`] and the full heap's reject test compare through
+/// it, so an arriving trail is ordered without building a candidate. A full
+/// tie is the caller's to break by arrival position: the held trail came
+/// first, so an arrival that ties loses.
+fn cmp_parts<T: Borrow<str>>(
+    types: impl ExactSizeIterator<Item = T>,
+    nodes: &[NodeId],
+    other: &Candidate,
+) -> Ordering {
+    let len = types.len();
+    types
+        .zip(&other.types)
+        .map(|(mine, held)| mine.borrow().cmp(&**held))
+        .find(|order| order.is_ne())
+        .unwrap_or_else(|| len.cmp(&other.types.len()))
+        .then_with(|| nodes.cmp(&other.nodes[..]))
 }
 
 impl PartialEq for Candidate {
@@ -118,7 +135,8 @@ impl PartialOrd for Candidate {
 }
 impl Ord for Candidate {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.key().cmp(&other.key())
+        cmp_parts(self.types.iter().map(|t| &**t), &self.nodes, other)
+            .then_with(|| self.seq.cmp(&other.seq))
     }
 }
 
@@ -149,31 +167,39 @@ impl Retained {
 
     fn offer(&mut self, route: &Route<'_>, trail: &[RelId], nodes: &[NodeId]) -> Result<()> {
         let graph = route.ctx.graph;
+        let types = |rid: RelId| expect_enumerated_candidate(graph.rel_type_shared(rid), rid);
+        let seq = self.seq;
+        self.seq += 1;
+        // A full heap keeps only trails that beat its worst. Decide that on
+        // the borrowed trail, so a class of millions of trails builds a
+        // candidate (three vectors) only for the few that are kept. A tie
+        // is not better: the arrival is later in the walk.
+        let full = self.heap.len() >= self.cap;
+        if full {
+            let worst = self
+                .heap
+                .peek()
+                .expect("a zero-count selector never reaches the route");
+            if cmp_parts(trail.iter().map(|&rid| types(rid)), nodes, worst) != Ordering::Less {
+                return Ok(());
+            }
+        }
         let candidate = Candidate {
-            types: trail
-                .iter()
-                .map(|&rid| expect_enumerated_candidate(graph.rel_type_shared(rid), rid))
-                .collect(),
+            types: trail.iter().map(|&rid| types(rid)).collect(),
             nodes: nodes.to_vec(),
             trail: trail.to_vec(),
-            seq: self.seq,
+            seq,
         };
-        self.seq += 1;
-        if self.heap.len() < self.cap {
-            self.bytes += candidate.bytes();
-            self.heap.push(candidate);
-            self.recharge()
-        } else if self.heap.peek().is_some_and(|worst| candidate < *worst) {
-            // The count is at most `cap` and cap > 0 here: a zero-count
-            // selector never reaches the route.
-            if let Some(evicted) = self.heap.pop() {
-                self.bytes = self.bytes - evicted.bytes() + candidate.bytes();
-            }
-            self.heap.push(candidate);
-            self.recharge()
-        } else {
-            Ok(())
+        if full {
+            let evicted = self
+                .heap
+                .pop()
+                .expect("a full heap holds the worst trail it just compared");
+            self.bytes -= evicted.bytes();
         }
+        self.bytes += candidate.bytes();
+        self.heap.push(candidate);
+        self.recharge()
     }
 
     fn recharge(&mut self) -> Result<()> {

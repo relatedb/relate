@@ -146,12 +146,23 @@ impl Search<'_, '_> {
 
     /// Call `f` with each relationship followed out of `node` and the node
     /// it reaches.
-    fn each_hop(&self, node: NodeId, mut f: impl FnMut(NodeId, RelId) -> Result<()>) -> Result<()> {
+    fn each_hop(&self, node: NodeId, f: impl FnMut(NodeId, RelId) -> Result<()>) -> Result<()> {
+        self.each_hop_along(self.dir, node, f)
+    }
+
+    /// [`Self::each_hop`] along `dir` instead of the search's own direction:
+    /// one search value serves a walk and the balls grown against it.
+    fn each_hop_along(
+        &self,
+        dir: Direction,
+        node: NodeId,
+        mut f: impl FnMut(NodeId, RelId) -> Result<()>,
+    ) -> Result<()> {
         let graph = self.graph;
         // The hop spelling: the walk yields the peer from the one
         // version-chain read it already makes, instead of a rel walk plus
         // a `hop` lookup per followed relationship.
-        graph.try_for_each_hop_resolved(node, self.dir, &self.types, |rid, next| {
+        graph.try_for_each_hop_resolved(node, dir, &self.types, |rid, next| {
             graph.cancel_tick()?;
             note_expand();
             f(next, rid)
@@ -160,8 +171,13 @@ impl Search<'_, '_> {
 
     /// Every relationship followed out of `node`, with the node it reaches.
     pub(crate) fn hops(&self, node: NodeId) -> Result<Vec<(NodeId, RelId)>> {
+        self.hops_along(self.dir, node)
+    }
+
+    /// [`Self::hops`] along `dir`.
+    fn hops_along(&self, dir: Direction, node: NodeId) -> Result<Vec<(NodeId, RelId)>> {
         let mut out = Vec::new();
-        self.each_hop(node, |next, rid| {
+        self.each_hop_along(dir, node, |next, rid| {
             out.push((next, rid));
             Ok(())
         })?;

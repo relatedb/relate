@@ -13,7 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixed endpoints now walk the trails one length class at a time instead of
   enumerating every trail up to the hop bound, so a bounded pair query that
   never finished on a social graph answers in milliseconds. Results are
-  unchanged; a count selector with one open end still enumerates.
+  unchanged; a count selector with one open end still enumerates. A start
+  with a large neighbourhood is no longer scanned neighbour by neighbour:
+  the walk reads its steps near the end from the distance ball, and a full
+  top-k heap rejects a worse trail before building it.
 
 ## [1.0.2] — 2026-11-14
 

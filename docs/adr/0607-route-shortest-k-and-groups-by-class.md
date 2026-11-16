@@ -43,17 +43,23 @@ intended semantic change.
    live relationship count). `SHORTEST k` stops when k trails are fixed;
    `GROUPS` stops after k non-empty classes. A class is the exact set of
    trails of that length, so lengths and multiplicities equal enumeration.
-3. **Pruned class enumeration.** Two distance balls grow by whole layers, one
-   from the start along the pattern's direction and one from the end against
-   it, to radius half the class length (rounded up). A depth-first walk from
-   the start extends a trail only through relationships not yet used, and
-   abandons a prefix whose remaining length is below a lower bound on the
-   distance to the end: exact inside the end ball, one past its radius
-   outside it. Cost follows two balls of about half the distance rather than
-   every trail from the start. Parallel relationships, undirected hops and
-   closed trails (start equal to end) need no special case. A start ball
-   that empties before the end appears means no trail exists, and the
-   partition ends at once.
+3. **Pruned class enumeration.** A distance ball grows by whole layers from
+   the end against the pattern's direction, and a counting ball grows from
+   the start along it. They grow in turn, the one with the smaller frontier
+   first, until their radii sum to the class length or the end ball holds
+   everything it can reach, so a hub start stays at radius one while the end
+   side, whose layers are small, does the rest. A
+   depth-first walk from the start extends a trail only through
+   relationships not yet used, and abandons a prefix whose remaining length
+   is below a lower bound on the distance to the end: exact inside the end
+   ball, one past its radius outside it. Where the ball has scanned every
+   node a step could still use, the walk reads the step from the ball's
+   recorded hops instead of scanning the node, so a hub on the way is not
+   read to find the few neighbours near the end. Cost follows the two balls
+   rather than every trail from the start. Parallel relationships,
+   undirected hops and closed trails (start equal to end) need no special
+   case. A ball that empties before the other side appears means no trail
+   exists, and the partition ends at once.
 4. **Selection keeps the pinned tie-break.** Within a class the boundary
    choice follows the existing order (length, relationship-type sequence,
    node-id sequence, ADR-0203), so results equal enumeration. Classes that

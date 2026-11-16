@@ -257,3 +257,43 @@ fn an_unbounded_sweep_stops_at_the_real_longest_trail() {
         );
     }
 }
+
+/// A hub start: `HUBS` neighbours of the start, each with `LEAVES` dead-end
+/// leaves and one relationship to `m`, which reaches the end in two more
+/// hops. The shortest trails are the `HUBS` routes `0 - hub - m - y - end`.
+fn hub_start() -> (Graph, usize) {
+    const HUBS: usize = 60;
+    const LEAVES: usize = 200;
+    let leaves = HUBS * LEAVES;
+    let (m, y, end) = (HUBS + leaves + 1, HUBS + leaves + 2, HUBS + leaves + 3);
+    let mut rels = Vec::new();
+    for hub in 1..=HUBS {
+        rels.push((0, hub, "R"));
+        rels.push((hub, m, "R"));
+        for leaf in 0..LEAVES {
+            rels.push((hub, HUBS + 1 + (hub - 1) * LEAVES + leaf, "R"));
+        }
+    }
+    rels.extend([(m, y, "R"), (y, end, "R")]);
+    (graph(end + 1, &rels), end)
+}
+
+#[test]
+fn a_hub_start_does_not_scan_the_neighbours_it_cannot_leave_through() {
+    let (g, end) = hub_start();
+    for (selector, rows) in [("SHORTEST 2 ", 2), ("SHORTEST 2 GROUPS ", 60)] {
+        let q = format!(
+            "MATCH p = {selector}(a {{id: 0}})-[:R*..4]-(b {{id: {end}}}) RETURN length(p) AS len"
+        );
+        let (got, counts) = run(&g, &q);
+        assert!(counts.route_runs > 0, "declined: {q}");
+        assert_eq!(got.len(), rows, "{q}");
+        // The hubs hold 12 000 leaf hops. The walk reads each hub's one hop
+        // towards the end from the end ball instead of scanning the hub.
+        assert!(
+            counts.expands < 1_000,
+            "{q} followed {} relationships",
+            counts.expands
+        );
+    }
+}
