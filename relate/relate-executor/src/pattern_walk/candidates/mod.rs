@@ -74,7 +74,7 @@ fn seek_union(
     seek: &Seek,
     arms: &DisjunctionArms<'_>,
 ) -> Result<Option<Vec<NodeId>>> {
-    let mut served: Vec<Vec<NodeId>> = Vec::with_capacity(arms.len());
+    let mut per_arm: Vec<Vec<NodeId>> = Vec::with_capacity(arms.len());
     for arm in arms.arms() {
         // Map-bridge: the graph's label lookups stay String-keyed; one
         // arm's labels render once per candidate selection, at the graph
@@ -82,16 +82,14 @@ fn seek_union(
         let labels: Vec<String> = arm.map(|label| label.to_string()).collect();
         // Each arm IS a static conjunction by construction of the arm
         // classifier, so the arm's own label criterion passes; the
-        // crossover prices the arm's own scan population.
-        if !seek.servable(graph, &labels, true) {
-            return Ok(None);
-        }
-        let Some(ids) = seek.serve(graph, &labels) else {
+        // crossover prices the arm's own scan population. The union is
+        // all-or-nothing: one unserved arm declines the whole conjunct.
+        let Some(ids) = served(seek, graph, &labels, true) else {
             return Ok(None);
         };
-        served.push(ids.into_ids());
+        per_arm.push(ids.into_ids());
     }
-    union_dedup(served.into_iter()).map(Some)
+    union_dedup(per_arm.into_iter()).map(Some)
 }
 
 /// The union of the per-arm served answers, deduplicated by node id and
@@ -205,6 +203,22 @@ fn index_arm(var: &SmallName, expr: &Expr, ctx: &OrCtx<'_>) -> IndexArm {
     }
 }
 
+/// The plain serve path's one spelling: an index answers this seek when
+/// [`Seek::servable`] (the label criterion and the crossover, the caller's
+/// real facts — no literal standing in for a gate two frames up) and
+/// [`Seek::serve`] agree. A gated or unserved window is `None`.
+fn served(
+    seek: &Seek,
+    graph: &ExecGraph<'_>,
+    labels: &[String],
+    label_seekable: bool,
+) -> Option<ServedIds> {
+    if !seek.servable(graph, labels, label_seekable) {
+        return None;
+    }
+    seek.serve(graph, labels)
+}
+
 fn index_leaf(var: &SmallName, expr: &Expr, ctx: &OrCtx<'_>) -> IndexArm {
     let mut vars = HashSet::new();
     expr_vars(expr, &mut vars);
@@ -220,57 +234,119 @@ fn index_leaf(var: &SmallName, expr: &Expr, ctx: &OrCtx<'_>) -> IndexArm {
     let Some(seek) = leaf_seek(var, expr, ctx.graph, ctx.row, ctx.params) else {
         return IndexArm::Decline;
     };
-    // The caller's real label fact, threaded from binding_arm — the
-    // one eligibility call, both criteria, no literal standing in for
-    // a gate two frames up. A gated window abandons the conjunct to
-    // the scan tail exactly like an unserved arm.
-    if !seek.servable(ctx.graph, ctx.labels, ctx.label_seekable) {
-        return IndexArm::Unserved;
-    }
-    seek.serve(ctx.graph, ctx.labels)
+    served(&seek, ctx.graph, ctx.labels, ctx.label_seekable)
         .map_or(IndexArm::Unserved, IndexArm::Served)
 }
 
-/// Whether the funnel would answer `np` from a point seek (`=` / `IN` /
-/// id) one of `conjuncts` places on its variable: the seek recognizes,
-/// is eligible (label shape, crossover) and an index (or storage, for ids)
-/// actually serves it. The shortest route asks it before listing an
-/// endpoint from the residual, so an endpoint no index serves keeps its
-/// scan-territory handling instead of being sized from a label scan the
-/// residual never narrowed. A label-disjunction fold declines: its union
-/// serve may yield to the scan tail, which this probe does not mirror.
-pub(crate) fn point_seek_served(
+/// Every residual conjunct that is a seek on `v`, cheapest rank first —
+/// the one spelling of the funnel's seek collection.
+fn ranked_seeks(
+    v: &SmallName,
+    conjuncts: &[Expr],
     graph: &ExecGraph<'_>,
-    np: &NodePattern,
     row: &Row,
     params: &BTreeMap<String, Value>,
-    conjuncts: &[Expr],
-) -> bool {
-    let Some(v) = np.variable.as_ref() else {
-        return false;
-    };
-    if np.force_scan {
-        return false;
-    }
-    let label_seekable = label_index_seekable(np);
-    let disjunction = np.static_disjunction_arms().is_some();
-    let labels: Vec<String> = np.label_names().map(|label| label.to_string()).collect();
-    // The funnel serves the first seek, cheapest rank first, that an index
-    // answers — so the probe mirrors that order and asks whether THAT seek
-    // is a point lookup: a comparison window ranked ahead of the point
-    // conjunct would be the one materialized.
+) -> Vec<Seek> {
     let mut seeks: Vec<Seek> = conjuncts
         .iter()
         .filter_map(|c| leaf_seek(v, c, graph, row, params))
         .collect();
     seeks.sort_by_key(Seek::rank);
     seeks
-        .iter()
-        .filter(|seek| !(disjunction && seek.indexed()))
-        .find(|seek| {
-            seek.servable(graph, &labels, label_seekable) && seek.serve(graph, &labels).is_some()
+}
+
+/// The pattern's labels in the graph lookups' String key space — rendered
+/// once per candidate selection, never per row.
+fn pattern_labels(np: &NodePattern) -> Vec<String> {
+    np.label_names().map(|label| label.to_string()).collect()
+}
+
+/// One node pattern's seek-side preparation — the single derivation both
+/// the funnel's [`binding_arm`] and the shortest route's point-seek probe
+/// read: the ranked seeks over the residual's conjuncts on `v`, the
+/// eligibility inputs, and the label-disjunction fold's arm views
+/// (LABS-1083; `None` for every shape the single keyed arm or the scan
+/// tail already serves).
+pub(crate) struct Prepared<'a> {
+    seeks: Vec<Seek>,
+    /// Map-bridge: the graph's label lookups stay String-keyed.
+    labels: Vec<String>,
+    label_seekable: bool,
+    arms: Option<DisjunctionArms<'a>>,
+}
+
+/// The funnel's seek-side preparation, or `None` under `USING SCAN`: no
+/// seek may answer the variable then — the funnel's own arm scans it — so
+/// there is nothing to prepare, and no caller re-reads the fact.
+pub(crate) fn prepared<'a>(
+    v: &SmallName,
+    np: &'a NodePattern,
+    conjuncts: &[Expr],
+    graph: &ExecGraph<'_>,
+    row: &Row,
+    params: &BTreeMap<String, Value>,
+) -> Option<Prepared<'a>> {
+    if np.force_scan {
+        return None;
+    }
+    Some(Prepared {
+        seeks: ranked_seeks(v, conjuncts, graph, row, params),
+        labels: pattern_labels(np),
+        label_seekable: label_index_seekable(np),
+        arms: np.static_disjunction_arms(),
+    })
+}
+
+/// Which seek answers a variable's pattern: the disjunction fold's union
+/// ids, or one seek's own served ids.
+enum Answered {
+    Union(Vec<NodeId>),
+    Serve(ServedIds),
+}
+
+impl Prepared<'_> {
+    /// The fold's one rule (LABS-1083), the one spelling every walk over
+    /// the prepared seeks reads: under a label-disjunction fold an indexed
+    /// seek serves only as the union of the per-arm postings — the arms it
+    /// serves from. `None` is the plain path: a pattern with no fold, or a
+    /// label-blind ids seek (its serve never reads the labels, so it
+    /// answers unchanged, which the `indexed` test already states).
+    fn union_step(&self, seek: &Seek) -> Option<&DisjunctionArms<'_>> {
+        self.arms.as_ref().filter(|_| seek.indexed())
+    }
+
+    /// The funnel's "which seek answers" walk over the prepared seeks, in
+    /// rank order: the first seek an index serves. A union-only seek
+    /// answers as the union of the per-arm postings; every other seek
+    /// answers through [`served`].
+    fn first_answered(&self, graph: &ExecGraph<'_>) -> Result<Option<Answered>> {
+        for seek in &self.seeks {
+            if let Some(arms) = self.union_step(seek) {
+                if let Some(ids) = seek_union(graph, seek, arms)? {
+                    return Ok(Some(Answered::Union(ids)));
+                }
+                continue;
+            }
+            if let Some(served) = served(seek, graph, &self.labels, self.label_seekable) {
+                return Ok(Some(Answered::Serve(served)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The first seek an index serves, for a caller that only asks which
+    /// seek answered — the shortest route's endpoint sizing, before it
+    /// lists an endpoint. A union-only seek yields (the caller cannot use
+    /// a union answer, so it pays no per-arm index lookups for one it
+    /// would discard); the rest answer through [`Prepared::served`]. A
+    /// fold's label-blind ids seek still answers here and is point-shaped,
+    /// exactly as the funnel serves it.
+    pub(crate) fn first_served_seek(&self, graph: &ExecGraph<'_>) -> Option<&Seek> {
+        self.seeks.iter().find(|seek| {
+            self.union_step(seek).is_none()
+                && served(seek, graph, &self.labels, self.label_seekable).is_some()
         })
-        .is_some_and(Seek::is_point)
+    }
 }
 
 pub(crate) fn node_candidates(
@@ -422,51 +498,22 @@ fn binding_arm(
         Binding::Anonymous => return scan_ids(graph, np, props, cap),
         Binding::Unbound(v) => v,
     };
-    if np.force_scan {
-        // `USING SCAN`: no seek may answer this variable. The
-        // scan policy ([`scan_ids`]) with no property map IS the scan;
-        // `node_ok` and the residual conjuncts then apply `=` to every
-        // candidate — for a zoned-datetime DST overlap that matches both
-        // halves, which an index seek (instant plus zone) does not.
-        return scan_ids(graph, np, || Ok(BTreeMap::new()), cap);
-    }
-    let label_seekable = label_index_seekable(np);
-    // The disjunction fold's per-arm views (LABS-1083): `None` for every
-    // shape the single keyed arm or the scan tail already serves.
-    let disjunction_arms = np.static_disjunction_arms();
     // Every conjunct that is a seek on this variable, cheapest first.
     // The first one an index serves answers the pattern; an unserved
     // seek (no index, empty CONTAINS needle) yields to the next. The
     // residual still applies every predicate.
-    let mut seeks: Vec<Seek> = conjuncts
-        .iter()
-        .filter_map(|c| leaf_seek(v, c, graph, row, params))
-        .collect();
-    seeks.sort_by_key(Seek::rank);
-    // Map-bridge: the graph's label lookups stay String-keyed; the
-    // pattern's labels render once per candidate selection (not per row).
-    let labels: Vec<String> = np.label_names().map(|label| label.to_string()).collect();
-    for seek in &seeks {
-        // The disjunction fold: an indexed seek serves as the union of
-        // the per-arm postings. The ids seek never takes the union —
-        // it is label-blind (its serve never reads the labels), so the
-        // single serve below answers it unchanged.
-        if let Some(arms) = &disjunction_arms {
-            if seek.indexed() {
-                if let Some(ids) = seek_union(graph, seek, arms)? {
-                    return Ok(ids);
-                }
-                continue;
-            }
-        }
-        // The one per-seek eligibility call: the label criterion and
-        // ADR-0493's crossover, folded into `servable`.
-        if !seek.servable(graph, &labels, label_seekable) {
-            continue;
-        }
-        if let Some(served) = seek.serve(graph, &labels) {
-            return served.narrowed(graph, &labels, props);
-        }
+    let Some(p) = prepared(v, np, conjuncts, graph, row, params) else {
+        // `USING SCAN`: no seek may answer this variable. The scan policy
+        // ([`scan_ids`]) with no property map IS the scan; `node_ok` and
+        // the residual conjuncts then apply `=` to every candidate — for a
+        // zoned-datetime DST overlap that matches both halves, which an
+        // index seek (instant plus zone) does not.
+        return scan_ids(graph, np, || Ok(BTreeMap::new()), cap);
+    };
+    match p.first_answered(graph)? {
+        Some(Answered::Union(ids)) => return Ok(ids),
+        Some(Answered::Serve(served)) => return served.narrowed(graph, &p.labels, props),
+        None => {}
     }
     // An OR conjunct is a candidate set only when every arm is served.
     // One declined arm (missing index, empty CONTAINS needle, NOT, XOR,
@@ -482,11 +529,11 @@ fn binding_arm(
         graph,
         row,
         params,
-        labels: &labels,
-        label_seekable,
+        labels: &p.labels,
+        label_seekable: p.label_seekable,
     };
     if let Some(served) = or_union_candidates(v, conjuncts, &ctx) {
-        return served.narrowed(graph, &labels, props);
+        return served.narrowed(graph, &p.labels, props);
     }
     // No seek served the variable: the scan policy answers it.
     scan_ids(graph, np, props, cap)
@@ -515,7 +562,7 @@ fn scan_ids(
     // once, on the path its pattern's shape takes.
     if label_index_seekable(np) {
         // Same render-once bridge as the seek loop above.
-        let labels: Vec<String> = np.label_names().map(|label| label.to_string()).collect();
+        let labels = pattern_labels(np);
         if let Some(ids) = graph.lookup_nodes_upto(&labels, &props()?, cap) {
             return Ok(ids);
         }

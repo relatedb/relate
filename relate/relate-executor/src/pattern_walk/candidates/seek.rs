@@ -71,7 +71,7 @@ impl Seek {
     /// scan or a spatial region. A point lookup's answer is bounded by the
     /// matches it names, so a caller that sizes a candidate list from it
     /// (the shortest route's endpoint seek) never materializes a window.
-    pub(super) fn is_point(&self) -> bool {
+    pub(crate) fn is_point(&self) -> bool {
         matches!(
             self,
             Seek::Ids(_) | Seek::Range(_, RangeSeek::Eq(_) | RangeSeek::In(_))

@@ -13,8 +13,8 @@ use relate_ir::NodePattern;
 use crate::ctx::ExecCtx;
 use crate::exec::pushdown::expr_ready;
 use crate::pattern_walk::{
-    bound_node, node_candidates, node_candidates_capped, point_seek_served, scan_answers_exactly,
-    Capped,
+    binding, bound_node, node_candidates, node_candidates_capped, prepared, scan_answers_exactly,
+    Binding, Capped, NodeBinding, Prepared, Seek,
 };
 use crate::shortest::Search;
 
@@ -300,10 +300,19 @@ impl Route<'_> {
     /// [`SEEK_PAIR_LIMIT`], so a non-selective map never materializes
     /// every match to learn the pair product is over the bound.
     fn probe(&self, np: &NodePattern) -> Result<Option<Side>> {
-        if let Some(id) = self.bound(np) {
-            return Ok(Some(Side::One(id)));
+        // The one admission table, read once — the funnel's own
+        // classification of the endpoint: a null or non-node binding
+        // matches nothing (its empty answer, never scan territory, whose
+        // fan would run one search per row that the admission then
+        // rejects); a row-bound endpoint is one node; a nameless pattern
+        // has no variable a seek targets.
+        let class = binding(np, self.row);
+        match class {
+            Binding::Mismatch => return Ok(Some(Side::Many(Vec::new()))),
+            Binding::Bound(id) => return Ok(Some(Side::One(id))),
+            Binding::Anonymous | Binding::Unbound(_) => {}
         }
-        if !self.seekable(np) {
+        if !self.seekable(np, class) {
             return Ok(None);
         }
         Ok(Some(match self.capped_candidates(np, SEEK_PAIR_LIMIT)? {
@@ -336,7 +345,7 @@ impl Route<'_> {
     /// index serves, so that side keeps the fan's own handling). A bare
     /// label or unbound variable is scan territory, answered by the fan's
     /// own seek.
-    fn seekable(&self, np: &NodePattern) -> bool {
+    fn seekable(&self, np: &NodePattern, class: NodeBinding<'_>) -> bool {
         // The map must resolve from the input row: a variable the walk
         // binds later (the start's own `a` in `(a)-[*]->(b {id: a.id})`)
         // is fan territory — the fan resolves the start first, and the
@@ -349,17 +358,32 @@ impl Route<'_> {
         }
         match np.properties.as_ref() {
             Some(props) => expr_ready(props, self.row),
+            // The conjunct form seeks only a named, unbound variable, and
+            // only a point seek (`=` / `IN` / id) an index actually serves:
+            // an endpoint no index serves keeps its scan-territory handling
+            // instead of being sized from a label scan the residual never
+            // narrowed. A union-only seek (an indexed seek under a
+            // label-disjunction fold, LABS-1083) yields — a sizing decision
+            // cannot use a union answer — while a fold's label-blind ids
+            // seek still answers, point-shaped, as the funnel serves it.
             None => {
+                let Binding::Unbound(v) = class else {
+                    return false;
+                };
                 let ExecCtx { graph, params, .. } = self.ctx;
-                point_seek_served(
-                    graph,
-                    np,
-                    self.row,
-                    params,
-                    self.filters.endpoint_conjuncts(),
+                // `prepared` answers `None` under `USING SCAN`: no seek may
+                // answer the variable, the funnel's own arm scans it.
+                prepared(v, np, &self.filters.endpoint, graph, self.row, params).is_some_and(
+                    |p: Prepared<'_>| p.first_served_seek(graph).is_some_and(Seek::is_point),
                 )
             }
         }
+    }
+
+    /// The node `np`'s variable is bound to in the input row. The guard
+    /// admits only node bindings and unbound variables.
+    fn bound(&self, np: &NodePattern) -> Option<NodeId> {
+        bound_node(np, self.row)
     }
 
     /// A probed-`Over` side's full list, through the capped funnel: a side
@@ -375,26 +399,13 @@ impl Route<'_> {
         }
     }
 
-    /// The node `np`'s variable is bound to in the input row. The guard
-    /// admits only node bindings and unbound variables.
-    fn bound(&self, np: &NodePattern) -> Option<NodeId> {
-        bound_node(np, self.row)
-    }
-
     /// The funnel's capped scan or seek for `np` (the counted funnel — the
     /// seek phase is stamped inside it), from the route's endpoint-only
     /// residual, stopped at the first match past `cap`: the pair bound's probe ([`SEEK_PAIR_LIMIT`]) and the full listing's
     /// bound ([`SEEK_LIST_LIMIT`]).
     fn capped_candidates(&self, np: &NodePattern, cap: usize) -> Result<Capped> {
         let ExecCtx { graph, params, .. } = self.ctx;
-        node_candidates_capped(
-            graph,
-            np,
-            self.row,
-            params,
-            self.filters.endpoint_conjuncts(),
-            cap,
-        )
+        node_candidates_capped(graph, np, self.row, params, &self.filters.endpoint, cap)
     }
 
     /// The unbound start pattern's full candidate list through the counted
@@ -407,7 +418,7 @@ impl Route<'_> {
             self.shape.start,
             self.row,
             params,
-            self.filters.endpoint_conjuncts(),
+            &self.filters.endpoint,
         )
     }
 

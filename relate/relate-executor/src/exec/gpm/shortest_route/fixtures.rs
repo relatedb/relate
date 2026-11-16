@@ -110,21 +110,22 @@ pub(super) fn gpm_params(g: &Graph, q: &str, params: &BTreeMap<String, Value>) -
 }
 
 /// The route's answer to `q` is the GPM walk's — rows, or the same error —
-/// and returns the route's anchor arms and expansion count.
-pub(super) fn parity(g: &Graph, q: &str) -> (Vec<AnchorArm>, u64) {
+/// and returns the run's [`Counts`].
+pub(super) fn parity(g: &Graph, q: &str) -> Counts {
     let (routed, counts) = counting(|| try_exec_cypher(g, q));
     let (oracle, oracle_counts) = counting(|| with_forced_gpm(|| try_exec_cypher(g, q)));
     assert_eq!(
         oracle_counts.route_runs, 0,
         "the oracle must bypass the route for {q}"
     );
-    match (routed, oracle) {
-        (Ok(r), Ok(o)) => assert_eq!(sorted(r.rows), sorted(o.rows), "rows differ for {q}"),
-        (Err(r), Err(o)) => assert_eq!(r, o, "errors differ for {q}"),
-        (r, o) => panic!("route {:?} vs gpm {:?} for {q}", r.is_ok(), o.is_ok()),
-    }
+    // One equality over both answers: the rows, or the same typed error.
+    assert_eq!(
+        routed.map(|r| sorted(r.rows)),
+        oracle.map(|o| sorted(o.rows)),
+        "route and gpm disagree for {q}"
+    );
     assert!(counts.route_runs > 0, "the route must take {q}");
-    (counts.arms, counts.expands)
+    counts
 }
 
 /// `rows` in [`Value::order_by_cmp`] order, for order-insensitive

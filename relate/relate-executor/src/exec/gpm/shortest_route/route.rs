@@ -390,20 +390,12 @@ impl<'a> Route<'a> {
         let Err(rejection) = policy.reject(s, e, self.search.min) else {
             return Ok(false);
         };
-        match &self.filters.pair {
-            Some(pair)
-                if pair.drops(
-                    self.ctx,
-                    self.shape.end,
-                    e,
-                    srow,
-                    self.filters.endpoint_conjuncts(),
-                )? =>
-            {
-                Ok(true)
+        if let Some(pair) = &self.filters.pair {
+            if pair.drops(self.ctx, self.shape.end, e, srow, &self.filters.endpoint)? {
+                return Ok(true);
             }
-            _ => Err(rejection),
         }
+        Err(rejection)
     }
 
     /// The predicate-filtered partition: walk trails from `s` in ascending

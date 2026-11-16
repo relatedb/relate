@@ -90,9 +90,8 @@ impl<'a> PathFilter<'a> {
 
 /// The same-node-pair gate of one routed `MATCH`: present when the
 /// spelling needs it (see [`RouteFilters::split`]), it evaluates the
-/// route's endpoint-only conjuncts ([`RouteFilters::endpoint_conjuncts`],
-/// the one owned list) under the bound-name scope (the readiness rule's
-/// input).
+/// route's endpoint-only conjuncts ([`RouteFilters::endpoint`], the one
+/// owned list) under the bound-name scope (the readiness rule's input).
 pub(super) struct PairFilter<'a> {
     scope: &'a HashSet<String>,
 }
@@ -129,10 +128,13 @@ impl PairFilter<'_> {
 /// One routed `MATCH`'s residual conjuncts, partitioned once by whether
 /// they read the path.
 pub(super) struct RouteFilters<'a> {
-    /// The endpoint-only partition of the residual, whatever the spelling
-    /// (see [`RouteFilters::endpoint_conjuncts`]); `path` and `pair` are the
-    /// spelling-gated filters.
-    endpoint: Vec<Expr>,
+    /// The endpoint-only partition of the residual, whatever the spelling —
+    /// the slice the route hands the candidate funnel so a `WHERE`-borne
+    /// `=` / `IN` on an endpoint seeks it like an inline property map does
+    /// (ADR-0556). They stay in the residual, so the seek only narrows;
+    /// every emitted row is still checked against them. `path` and `pair`
+    /// are the spelling-gated filters.
+    pub endpoint: Vec<Expr>,
     /// `Some` when a predicate filters the *search* itself.
     pub path: Option<PathFilter<'a>>,
     /// `Some` when an endpoint-only conjunct exists to drop a same-node pair.
@@ -140,15 +142,6 @@ pub(super) struct RouteFilters<'a> {
 }
 
 impl<'p> RouteFilters<'p> {
-    /// The endpoint-only conjuncts — the slice the route hands the
-    /// candidate funnel so a `WHERE`-borne `=` / `IN` on an endpoint seeks
-    /// it like an inline property map does (ADR-0556). They stay in the
-    /// residual, so the seek only narrows; every emitted row is still
-    /// checked against them.
-    pub(super) fn endpoint_conjuncts(&self) -> &[Expr] {
-        &self.endpoint
-    }
-
     /// Split the residual by what each conjunct reads. `shape` carries the
     /// end node and the spelling: a keyword selector selects first, so its
     /// clause-level conjuncts all stay the residual's post-filter and only
