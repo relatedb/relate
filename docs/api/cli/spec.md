@@ -1403,6 +1403,27 @@ details reading `RANGE INDEX <var>:<Label>(<prop>)` (one target per arm,
 comma-joined, no `WHERE` clause: the bound is per row) with no count of
 its own, the label-count estimate staying.
 
+A seek-started `MATCH` also breaks down in the tree (ADR-0622): the fused
+operator carries **display-only child steps** — the seek step itself, then
+one `Expand` step per hop of the pattern, in pattern order —
+
+```
+NodeIndexSeek  RANGE INDEX p:Person(name) WHERE name = 'Alice'
+  NodeIndexSeek  RANGE INDEX p:Person(name) WHERE name = 'Alice'
+  Expand         (p:Person)-[:ACTED_IN]->(m:Movie)
+  Expand         (m:Movie)<-[:ACTED_IN]-(co:Person)
+```
+
+Each step carries its own `Estimated Rows` (chained off the seek count
+through the planner's degree ladder); the seek step alone carries
+measured values on a `PROFILE` tree (its seek-phase time and node reads —
+no per-hop counter exists, and the hop steps carry none rather than copy
+the parent's). Execution is unchanged — the clause stays the executed
+unit (ADR-0344) — and every step is flagged fused on the wire with its
+parent operator id, never carrying the operator metric block, so a
+consumer that requires per-operator metrics skips them (the speedscope
+export does; the timeline is the executed operators).
+
 In the machine modes, an `EXPLAIN` statement emits the **structured plan**
 — the tree itself, in Neo4j's structured-plan field shape, the
 agent-native form — and nothing else: no columns, no rows. The root's

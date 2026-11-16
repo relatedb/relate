@@ -40,7 +40,9 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-pub use plan_node::{ClauseMetrics, PlanArtifacts, PlanNode, PlanWarning};
+pub use plan_node::{
+    ClauseMetrics, FusedChild, FusedChildMetrics, PlanArtifacts, PlanNode, PlanWarning,
+};
 pub use relate_core::{
     node_element_id, parse_node_element_id, parse_rel_element_id, rel_element_id,
 };

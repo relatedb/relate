@@ -8,6 +8,18 @@
 use crate::wire::plan_keys;
 use crate::{CypherValue, IndexMap};
 
+/// The mutable args map of a hand-built wire node — the one unwrap
+/// preamble every fused/wire test shares, never a per-test copy.
+pub(crate) fn args_mut(node: &mut CypherValue) -> &mut IndexMap<String, CypherValue> {
+    let CypherValue::Map(entries) = node else {
+        unreachable!("the fixture builds a map")
+    };
+    let Some(CypherValue::Map(args)) = entries.get_mut(plan_keys::ARGS) else {
+        unreachable!("the fixture builds an args map")
+    };
+    args
+}
+
 /// A hand-built plan wire node: the operator, its id, PROFILE metric args
 /// when `time_ns` carries one (the read kinds along with them, as the
 /// engine emits), and the children composed in.
@@ -21,14 +33,18 @@ pub(crate) fn plan_wire_node(
     args.insert(plan_keys::ID.to_string(), CypherValue::Int(id));
     args.insert(plan_keys::DETAILS.to_string(), CypherValue::Str("x".into()));
     if let Some(time_ns) = time_ns {
-        args.insert(plan_keys::ROWS.to_string(), CypherValue::Int(1));
-        args.insert(plan_keys::TIME_NS.to_string(), CypherValue::Int(time_ns));
-        args.insert(plan_keys::DB_HITS.to_string(), CypherValue::Int(0));
-        args.insert(plan_keys::MEMORY_BYTES.to_string(), CypherValue::Int(0));
-        args.insert(
-            plan_keys::EXPRESSION_BUILT_BYTES.to_string(),
-            CypherValue::Int(0),
-        );
+        // The metric block's keys come from the one table; the fixture
+        // varies only the time and fixes the rest (rows 1, the others 0).
+        for key in plan_keys::METRIC_BLOCK_KEYS {
+            let value = if key == plan_keys::TIME_NS {
+                time_ns
+            } else if key == plan_keys::ROWS {
+                1
+            } else {
+                0
+            };
+            args.insert(key.to_string(), CypherValue::Int(value));
+        }
         args.insert(plan_keys::HOPS.to_string(), CypherValue::Int(0));
         args.insert(plan_keys::NEIGHBOR_WALKS.to_string(), CypherValue::Int(0));
         args.insert(plan_keys::NODE_READS.to_string(), CypherValue::Int(0));
@@ -62,12 +78,7 @@ pub(crate) fn plan_seek_wire_node(
     id: i64,
 ) -> CypherValue {
     let mut node = plan_wire_node(operator, id, None, vec![]);
-    let CypherValue::Map(entries) = &mut node else {
-        unreachable!("plan_wire_node builds a map")
-    };
-    let Some(CypherValue::Map(args)) = entries.get_mut(plan_keys::ARGS) else {
-        unreachable!("plan_wire_node builds the args map")
-    };
+    let args = args_mut(&mut node);
     args.insert(
         plan_keys::DETAILS.to_string(),
         CypherValue::Str(line.into()),

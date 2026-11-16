@@ -698,8 +698,23 @@ pub(crate) mod plan_test_fixtures;
 // `wire`.
 // ---------------------------------------------------------------------------
 
+// The plan args' scalar readers (the optional extraction policies and
+// the all-or-none group read) — their own module below the node accessor
+// and the fused-child parser, so both read it and neither reads the
+// other.
+
+#[path = "plan_args.rs"]
+mod plan_args;
+
 #[path = "plan_wire.rs"]
 mod plan_wire;
+
+// The fused virtual child's wire shape (virtual plan operators) — its
+// own module beside the node accessor that reads it, mirroring the key
+// vocabulary's placement.
+
+#[path = "plan_fused.rs"]
+mod plan_fused;
 
 // The plan wire form's key vocabulary, its own module beside the types and
 // decoder it names (`plan_keys.rs`); `wire::plan_keys` stays the one public
@@ -707,6 +722,7 @@ mod plan_wire;
 #[path = "plan_keys.rs"]
 pub mod plan_keys;
 
+pub use plan_fused::{FusedChildWire, PlanFusedMetricsWire};
 pub use plan_wire::{
     metric_i64, metric_u64, plan_node_wire, plan_subtree_totals, profiled_facts, time_ns_ms,
     KernelRungWire, PlanMetricsWire, PlanNodeWire, PlanPhasesWire, PlanProfiledFacts,

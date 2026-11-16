@@ -8,7 +8,7 @@
 use std::io::{self, Write};
 
 use indexmap::IndexMap;
-use relate_model::wire::plan_node_wire;
+use relate_model::wire::{plan_node_wire, PlanNodeWire};
 use relate_model::CypherValue;
 use serde_json::{json, Value};
 
@@ -91,7 +91,7 @@ fn speedscope_document(plan: &CypherValue) -> io::Result<Value> {
         .time_ns;
     let mut frames: Vec<String> = Vec::new();
     let mut events: Vec<Value> = Vec::new();
-    walk_events(plan, 0, root_time, &mut frames, &mut events)?;
+    walk_events(&root, 0, root_time, &mut frames, &mut events)?;
     Ok(json!({
         "$schema": SCHEMA_URL,
         "shared": { "frames": frames.iter().map(|name| json!({ "name": name })).collect::<Vec<_>>() },
@@ -112,31 +112,39 @@ fn speedscope_document(plan: &CypherValue) -> io::Result<Value> {
 /// The operator's interval is `[start, start + duration]`; children are
 /// laid out sequentially inside it (scaled down to fit when their
 /// inclusive times sum past it — see [`Formatter::format_speedscope`]).
+/// The node arrives already parsed, so one `plan_node_wire` call per
+/// operator feeds the fused skip, the time read and the recursion.
 fn walk_events(
-    plan: &CypherValue,
+    node: &PlanNodeWire<'_>,
     start: i64,
     duration: i64,
     frames: &mut Vec<String>,
     events: &mut Vec<Value>,
 ) -> io::Result<()> {
-    let node = plan_node_wire(plan);
     let frame = frames.len();
     frames.push(format!("{} {}", node.operator_type, node.id));
     events.push(json!({ "type": "O", "frame": frame, "at": start }));
-    // The children's own inclusive times — each child must carry PROFILE
-    // metrics too; a half-metriced tree is a wire-contract break, kept loud.
-    let child_times: Vec<i64> = node
-        .children
-        .iter()
-        .map(|child| {
-            plan_node_wire(child)
+    // The executed children with their own inclusive times — each must
+    // carry PROFILE metrics too; a half-metriced tree is a wire-contract
+    // break, kept loud. A fused virtual child is a display-only breakdown
+    // step with no metrics of its own, so it is skipped: the timeline is
+    // the executed operators, whose totals it would otherwise be counted
+    // against. The pair keeps the child and its time together, so the
+    // layout can never read them out of step.
+    let mut executed: Vec<(PlanNodeWire<'_>, i64)> = Vec::new();
+    for child in node.children {
+        let child_node = plan_node_wire(child);
+        if child_node.fused.is_none() {
+            let time = child_node
                 .metrics
-                .ok_or_else(|| no_profile_times("an operator carries no PROFILE metrics"))
-                .map(|m| m.time_ns)
-        })
-        .collect::<Result<_, _>>()?;
-    for (child, (child_start, child_span)) in
-        node.children
+                .ok_or_else(|| no_profile_times("an operator carries no PROFILE metrics"))?
+                .time_ns;
+            executed.push((child_node, time));
+        }
+    }
+    let child_times: Vec<i64> = executed.iter().map(|(_, time)| *time).collect();
+    for ((child, _), (child_start, child_span)) in
+        executed
             .iter()
             .zip(laid_out_children(&child_times, start, duration))
     {

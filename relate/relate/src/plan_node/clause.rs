@@ -29,6 +29,10 @@ pub(super) struct ClauseNode {
     /// The store's active pattern-engine rung (LABS-1117), set on a
     /// `MATCH` clause and `None` on every other.
     pub(super) pattern_engine: Option<relate_executor::PatternEngine>,
+    /// The fused MATCH's breakdown (virtual plan operators): the seek
+    /// step and one `Expand` step per hop, set on an index-seek-started
+    /// `MATCH` with at least one hop and `None` on every other clause.
+    pub(super) fused: Option<super::fused::FusedBreakdown>,
 }
 
 impl ClauseNode {
@@ -43,6 +47,7 @@ impl ClauseNode {
             warnings: Vec::new(),
             notifications: Vec::new(),
             pattern_engine: None,
+            fused: None,
         }
     }
 }
@@ -104,6 +109,16 @@ pub(super) fn clause_node(clause: &Clause, stats: &dyn PlanStats) -> ClauseNode 
             // read, so the narration and the estimate gate together on
             // the same `Option`.
             let seek = super::seek::index_seek(patterns, where_clause.as_ref(), stats);
+            // Virtual plan operators: the breakdown gates on the same
+            // `Option` as the narration — the plan never claims a seek
+            // the funnel would decline, so the steps exist exactly where
+            // the narrated seek does.
+            let fused = match (seek.as_ref(), patterns.as_slice()) {
+                (Some(seek), [pattern]) => super::fused::breakdown(pattern, seek, stats),
+                // A wider pattern list has no single seek-anchored chain to
+                // break down (the seek itself is derived from the one).
+                _ => None,
+            };
             let (subject_operator, mut details) =
                 super::subject::match_subject(patterns, *optional, seek.as_ref());
             if *optional {
@@ -116,6 +131,7 @@ pub(super) fn clause_node(clause: &Clause, stats: &dyn PlanStats) -> ClauseNode 
                 details += ", WHERE filter";
             }
             ClauseNode {
+                fused,
                 estimated_rows: super::subject::match_estimate(
                     patterns,
                     stats,

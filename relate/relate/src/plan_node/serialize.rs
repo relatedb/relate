@@ -154,6 +154,25 @@ impl PlanNode {
                 Value::String(engine.as_str().into()),
             );
         }
+        // Virtual plan operators: a fused child names its parent (the
+        // `FusedInto` key's presence IS the fused fact — no separate
+        // flag) and carries only the metrics a real counter measured
+        // for its step (the seek pair) — never the PROFILE metric
+        // block, which stays the fused parent's clause totals. The
+        // never-blocks half is enforced here, at the production
+        // boundary: a node the engine cannot write is one its own
+        // parser can never reject.
+        if let Some(fused) = &self.fused {
+            assert!(
+                self.metrics.is_none(),
+                "a fused virtual child never carries the operator metric block"
+            );
+            put_metric(&mut args, plan_keys::FUSED_INTO, fused.parent as u128);
+            if let Some(metrics) = fused.metrics {
+                put_metric(&mut args, plan_keys::SEEK_TIME_NS, metrics.seek_ns);
+                put_metric(&mut args, plan_keys::NODE_READS, metrics.node_reads as u128);
+            }
+        }
         // PROFILE metrics (ADR-0344 phase 2 + metric fields): present
         // only on PROFILE trees, emitted together — through the one
         // emission helper every metrics feature extends.

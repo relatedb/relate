@@ -366,6 +366,22 @@ fn node_is_unfiltered(node: &NodePattern) -> bool {
     is_label_less(node) && node.properties.is_none() && node.where_clause.is_none()
 }
 
+/// One hop's text: `(start)-[:R]->(end)` — the fused breakdown's per-hop
+/// subject (virtual plan operators), the same compact spelling the
+/// pattern text renders for the hop's slice.
+pub(super) fn hop_text(pattern: &PathPattern, hop: usize) -> String {
+    let mut text = String::new();
+    push_node(&mut text, &pattern.nodes[hop]);
+    let rel = &pattern.rels[hop];
+    push_rel(
+        &mut text,
+        rel,
+        (rel.var_length || rel.quantified).then_some((rel.min_hops, rel.max_hops)),
+    );
+    push_node(&mut text, &pattern.nodes[hop + 1]);
+    text
+}
+
 /// One pattern as text: the named-path prefix, then the elements (the
 /// lossless form) or the compact node/rel interleave.
 pub(super) fn pattern_text(pattern: &PathPattern) -> String {

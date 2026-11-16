@@ -44,7 +44,10 @@ pub(super) const NODE_BY_LABEL_SEEK: &str = "NodeByLabelSeek";
 /// never prices a narrated seek at anything but the seek's count. The
 /// count is `None` for the per-row keyed lookup (LABS-1083): a
 /// row-bound predicate has no pre-execution count, so the estimate
-/// keeps the fused path's.
+/// keeps the fused path's. `Clone`: the fused breakdown (virtual plan
+/// operators) holds the seek while the clause builder keeps its own for
+/// the estimate and warnings.
+#[derive(Clone)]
 pub(super) struct IndexSeek {
     /// [`NODE_INDEX_SEEK`] (the anchored-equality point read),
     /// [`NODE_INDEX_SEEK_BY_RANGE`] (the v1 comparison window), or
@@ -283,7 +286,9 @@ fn bound_text(bound: &Expr) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{compact, comparison, node, or_node, predicated, seeking};
+    use super::super::fixtures::{
+        compact, comparison, node, or_node, predicated, row_bound, seeking,
+    };
     use super::*;
 
     /// The anchored-equality point read (ADR-0486): the folded map's
@@ -481,14 +486,6 @@ mod tests {
 
     /// A row-bound reference — `n.id` on the bound's side, the LABS-1083
     /// repro's `m.id = n.id` shape — for the WHERE-conjunct fixtures.
-    fn row_bound(var: &str, prop: &str) -> Expr {
-        Expr::Property {
-            key_id: Default::default(),
-            expr: Box::new(Expr::Variable(SmallName::from_name(var))),
-            key: SmallName::from_name(prop),
-        }
-    }
-
     /// LABS-1083: an equality predicate whose bound the stats cannot
     /// price — a per-row expression — on a range-indexed pair narrates
     /// `NodeByLabelSeek` (the funnel keys it one bound row at a time),

@@ -44,6 +44,16 @@ pub(super) fn predicated(
     pattern
 }
 
+/// The per-row bound of a keyed lookup (LABS-1083): `var.prop` as an
+/// expression — the shape the funnel keys one bound row at a time, and
+/// the one the stats cannot price.
+pub(super) fn row_bound(var: &str, prop: &str) -> Expr {
+    Expr::property(
+        Expr::Variable(SmallName::from_name(var)),
+        SmallName::from_name(prop),
+    )
+}
+
 /// One rel pattern with the given types and quantifier bounds.
 pub(super) fn rel(types: &[&str], min: u32, max: Option<u32>) -> RelPattern {
     RelPattern {

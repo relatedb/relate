@@ -4,41 +4,26 @@
 
 use super::*;
 
-/// The canonical producer's own output (ADR-0344/0345), never a
-/// hand-copy of the wire form: a hand-built PROFILE tree with
-/// deterministic ids (`assign_ids`) and times, so the golden document is
-/// byte-stable. The children's inclusive times (4 + 7 microseconds) sum
-/// past the parent's (10 microseconds), pinning the scale-to-fit layout.
-fn profile_fixture() -> PlanFixture {
-    let scan = relate::PlanNode::new(
-        "AllNodesScan",
-        "n".to_string(),
-        vec!["n".to_string()],
-        Vec::new(),
-    )
-    .with_metrics(Some(relate::ClauseMetrics {
-        rows: 3,
-        db_hits: 3,
-        memory_bytes: 60,
-        expression_built_bytes: 0,
-        time_ns: 4_000,
-        reads: Default::default(),
-        phases: Default::default(),
-        start: None,
-        kernel: None,
-        batched: false,
-        zone_skips: 0,
-        frontier: Default::default(),
-        frontier_decline: None,
-    }));
-    let filter = relate::PlanNode::new("Filter", "n.age > 21".to_string(), Vec::new(), Vec::new())
-        .with_metrics(Some(relate::ClauseMetrics {
-            rows: 1,
-            db_hits: 0,
-            memory_bytes: 20,
+/// One profiled node of the test scaffold: the operator, its details and
+/// identifiers, the rows / db hits / inclusive microseconds the export's
+/// layout reads, and the children — every other metric field zeroed
+/// through the one spelling, so a field addition patches one place.
+fn profiled(
+    operator: &str,
+    details: &str,
+    identifiers: Vec<String>,
+    rows: u64,
+    db_hits: u64,
+    time_us: u128,
+    children: Vec<relate::PlanNode>,
+) -> relate::PlanNode {
+    relate::PlanNode::new(operator, details.to_string(), identifiers, children).with_metrics(Some(
+        relate::ClauseMetrics {
+            rows,
+            db_hits,
+            memory_bytes: 60,
             expression_built_bytes: 0,
-            // 7 us, so the children sum to 11 us inside the parent's 10 us.
-            time_ns: 7_000,
+            time_ns: time_us * 1_000,
             reads: Default::default(),
             phases: Default::default(),
             start: None,
@@ -47,28 +32,36 @@ fn profile_fixture() -> PlanFixture {
             zone_skips: 0,
             frontier: Default::default(),
             frontier_decline: None,
-        }));
-    let mut root = relate::PlanNode::new(
-        "ProduceResults",
-        "who".to_string(),
+        },
+    ))
+}
+
+/// The canonical producer's own output (ADR-0344/0345), never a
+/// hand-copy of the wire form: a hand-built PROFILE tree with
+/// deterministic ids (`assign_ids`) and times, so the golden document is
+/// byte-stable. The children's inclusive times (4 + 7 microseconds) sum
+/// past the parent's (10 microseconds), pinning the scale-to-fit layout.
+fn profile_fixture() -> PlanFixture {
+    let scan = profiled(
+        "AllNodesScan",
+        "n",
+        vec!["n".to_string()],
+        3,
+        3,
+        4,
         Vec::new(),
+    );
+    // 7 us, so the children sum to 11 us inside the parent's 10 us.
+    let filter = profiled("Filter", "n.age > 21", Vec::new(), 1, 0, 7, Vec::new());
+    let mut root = profiled(
+        "ProduceResults",
+        "who",
+        Vec::new(),
+        1,
+        0,
+        10,
         vec![scan, filter],
-    )
-    .with_metrics(Some(relate::ClauseMetrics {
-        rows: 1,
-        db_hits: 0,
-        memory_bytes: 20,
-        expression_built_bytes: 0,
-        time_ns: 10_000,
-        reads: Default::default(),
-        phases: Default::default(),
-        start: None,
-        kernel: None,
-        batched: false,
-        zone_skips: 0,
-        frontier: Default::default(),
-        frontier_decline: None,
-    }));
+    );
     root.assign_ids();
     PlanFixture::of(&root)
 }
@@ -76,6 +69,56 @@ fn profile_fixture() -> PlanFixture {
 /// Parse a speedscope-mode render, panicking with the output on failure.
 fn parse_speedscope(s: &str) -> serde_json::Value {
     serde_json::from_str(s).unwrap_or_else(|e| panic!("not JSON ({e}): {s}"))
+}
+
+/// The document's frame names, in the export's order, panicking with the
+/// output on a shape the export never writes.
+fn frame_names<'a>(doc: &'a serde_json::Value, s: &str) -> Vec<&'a str> {
+    doc["shared"]["frames"]
+        .as_array()
+        .unwrap_or_else(|| panic!("frames is an array: {s}"))
+        .iter()
+        .map(|frame| {
+            frame["name"]
+                .as_str()
+                .unwrap_or_else(|| panic!("frame name: {s}"))
+        })
+        .collect()
+}
+
+/// The document's event `at` values, in order — the laid-out timeline.
+fn event_ats(doc: &serde_json::Value, s: &str) -> Vec<i64> {
+    doc["profiles"][0]["events"]
+        .as_array()
+        .unwrap_or_else(|| panic!("events is an array: {s}"))
+        .iter()
+        .map(|event| {
+            event["at"]
+                .as_i64()
+                .unwrap_or_else(|| panic!("event at: {s}"))
+        })
+        .collect()
+}
+
+/// The two-step plan the layout pins share: an `AllNodesScan` (3 rows,
+/// 3 db hits, 2 us) under a `ProduceResults` (3 rows, 0 db hits, 9 us),
+/// with `extra` appended after the scan — the one place the scaffold's
+/// numbers live, so a test adds only what it exists for.
+fn two_step_plan(extra: Vec<relate::PlanNode>) -> PlanFixture {
+    let scan = profiled(
+        "AllNodesScan",
+        "n",
+        vec!["n".to_string()],
+        3,
+        3,
+        2,
+        Vec::new(),
+    );
+    let mut children = vec![scan];
+    children.extend(extra);
+    let mut root = profiled("ProduceResults", "n", Vec::new(), 3, 0, 9, children);
+    root.assign_ids();
+    PlanFixture::of(&root)
 }
 
 #[test]
@@ -94,17 +137,7 @@ fn speedscope_mode_exports_the_evented_profile_shape() {
         doc["exporter"],
         concat!("relate@", env!("CARGO_PKG_VERSION"))
     );
-    let frames = doc["shared"]["frames"]
-        .as_array()
-        .unwrap_or_else(|| panic!("frames is an array: {s}"));
-    let names: Vec<&str> = frames
-        .iter()
-        .map(|f| {
-            f["name"]
-                .as_str()
-                .unwrap_or_else(|| panic!("frame name: {s}"))
-        })
-        .collect();
+    let names = frame_names(&doc, &s);
     // One frame per operator, DFS (pre-order) — the operator plus its id.
     assert_eq!(
         names,
@@ -161,56 +194,38 @@ fn speedscope_mode_exports_the_evented_profile_shape() {
 fn speedscope_mode_keeps_unscaled_children_within_the_parent() {
     // Without the overflow, each child keeps its own inclusive time:
     // children tile the parent's interval exactly, sequentially.
-    let scan = relate::PlanNode::new(
-        "AllNodesScan",
-        "n".to_string(),
-        vec!["n".to_string()],
-        Vec::new(),
-    )
-    .with_metrics(Some(relate::ClauseMetrics {
-        rows: 3,
-        db_hits: 3,
-        memory_bytes: 60,
-        expression_built_bytes: 0,
-        time_ns: 2_000,
-        reads: Default::default(),
-        phases: Default::default(),
-        start: None,
-        kernel: None,
-        batched: false,
-        zone_skips: 0,
-        frontier: Default::default(),
-        frontier_decline: None,
-    }));
-    let mut root = relate::PlanNode::new("ProduceResults", "n".to_string(), Vec::new(), vec![scan])
-        .with_metrics(Some(relate::ClauseMetrics {
-            rows: 3,
-            db_hits: 0,
-            memory_bytes: 60,
-            expression_built_bytes: 0,
-            time_ns: 9_000,
-            reads: Default::default(),
-            phases: Default::default(),
-            start: None,
-            kernel: None,
-            batched: false,
-            zone_skips: 0,
-            frontier: Default::default(),
-            frontier_decline: None,
-        }));
-    root.assign_ids();
-    let plan = PlanFixture::of(&root);
+    let plan = two_step_plan(Vec::new());
     // The header is unused by the speedscope mode (ADR-0359: an EXPLAIN
     // result carries no rows), so the fixture carries none either.
     let header = vec!["Query: RETURN 1".to_string(), "Plan:".to_string()];
     let s = render_plan(Mode::Speedscope, &[], &[], &plan, &header);
-    let events = &parse_speedscope(&s)["profiles"][0]["events"];
-    let at: Vec<i64> = events
-        .as_array()
-        .expect("events is an array")
-        .iter()
-        .map(|e| e["at"].as_i64().expect("at is an integer"))
-        .collect();
+    let doc = parse_speedscope(&s);
+    let at = event_ats(&doc, &s);
+    assert_eq!(at, vec![0, 0, 2_000, 9_000]);
+}
+
+#[test]
+fn speedscope_mode_skips_fused_virtual_children_without_metrics() {
+    // A fused virtual child is a display-only breakdown step with no
+    // metrics of its own — the timeline exports the executed operators, so
+    // the export succeeds and never lays the step out (or counts it)
+    // against the parent's interval.
+    let fused = relate::PlanNode::new(
+        "NodeIndexSeek",
+        "RANGE INDEX n:User(age) WHERE age > 5".to_string(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .with_fused(0, None);
+    let plan = two_step_plan(vec![fused]);
+    let header = vec!["Query: RETURN 1".to_string(), "Plan:".to_string()];
+    let s = render_plan(Mode::Speedscope, &[], &[], &plan, &header);
+    let doc = parse_speedscope(&s);
+    assert_eq!(
+        frame_names(&doc, &s),
+        vec!["ProduceResults 0", "AllNodesScan 1"]
+    );
+    let at = event_ats(&doc, &s);
     assert_eq!(at, vec![0, 0, 2_000, 9_000]);
 }
 

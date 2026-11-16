@@ -13,6 +13,24 @@ pub const CHILDREN: &str = "children";
 pub const ID: &str = "Id";
 pub const DETAILS: &str = "Details";
 pub const ESTIMATED_ROWS: &str = "EstimatedRows";
+/// The fused parent operator's `Id` (virtual plan operators) — present
+/// exactly on a fused virtual child: a display-only breakdown step of its
+/// fused parent operator, never an executed one. The key's presence IS
+/// the fused fact (the `Batched` flag's presence-only shape); there is no
+/// separate flag. A fused child never carries the PROFILE metric block:
+/// rows, time and memory stay the fused parent's clause totals.
+pub const FUSED_INTO: &str = "FusedInto";
+/// The walk-side keys a fused virtual child never carries (virtual plan
+/// operators): the walk's read kinds and its phase time stay the fused
+/// parent's. The fused-child parser rejects these together with
+/// [`METRIC_BLOCK_KEYS`] at one site — never a hand-listed subset there.
+pub const FUSED_CHILD_NEVER: [&str; 3] = [HOPS, NEIGHBOR_WALKS, WALK_TIME_NS];
+/// The PROFILE metric block's five scalar keys (ADR-0344 phase 2) — one
+/// table for the accessor's scalar read, the fused-child parser's
+/// rejection set and the fixtures, so a sixth scalar metric extends one
+/// list instead of every hand-listed copy.
+pub const METRIC_BLOCK_KEYS: [&str; 5] =
+    [ROWS, TIME_NS, DB_HITS, MEMORY_BYTES, EXPRESSION_BUILT_BYTES];
 /// PROFILE metrics (ADR-0344 phase 2).
 pub const ROWS: &str = "Rows";
 pub const TIME_NS: &str = "TimeNs";
