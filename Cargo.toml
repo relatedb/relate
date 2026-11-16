@@ -149,7 +149,7 @@ pyo3 = { version = "0.23", features = ["extension-module"] }
 arrow = { version = "54", features = ["json"] }
 arrow-array = "54"
 arrow-schema = "54"
-arrow-ipc = "54"
+arrow-ipc = "60"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
 base64 = "0.22"
 # HTTP/1.1 request-head parsing for the HTTP surfaces (ADR-0234). Pure
