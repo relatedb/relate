@@ -18,13 +18,14 @@ use crate::pattern_walk::{
 };
 use crate::shortest::Search;
 
+use super::end_filter::End;
 use super::far_set::FarSet;
 use super::route::Route;
 
 /// The pair product's candidate bound: past it, the product's
 /// bidirectional searches would out-count the fan's one ball per start,
 /// and the fan covers the shape.
-const SEEK_PAIR_LIMIT: usize = 16;
+pub(super) const SEEK_PAIR_LIMIT: usize = 16;
 
 /// The most candidates one over-bound side is listed in full — the
 /// both-sides-over fan needs both lists to pick the shorter (ADR-0567).
@@ -238,7 +239,8 @@ impl Route<'_> {
         // `SEEK_PAIR_LIMIT`, and a bigger match is the length-only
         // `Side::Over` — its list is built only where both sides are over
         // (below). `None` is scan territory the fan answers itself.
-        Ok(Some(match (self.probe(start)?, self.probe(end)?) {
+        let probed = (self.probe(start, End::Start)?, self.probe(end, End::End)?);
+        Ok(Some(match probed {
             // Both past the bound: the fan runs from the shorter side,
             // which needs both lists in full.
             (Some(Side::Over), Some(Side::Over)) if counted => return Ok(None),
@@ -305,7 +307,7 @@ impl Route<'_> {
     /// funnel — the scan stops at the first match past
     /// [`SEEK_PAIR_LIMIT`], so a non-selective map never materializes
     /// every match to learn the pair product is over the bound.
-    fn probe(&self, np: &NodePattern) -> Result<Option<Side>> {
+    fn probe(&self, np: &NodePattern, which: End) -> Result<Option<Side>> {
         // The one admission table, read once — the funnel's own
         // classification of the endpoint: a null or non-node binding
         // matches nothing (its empty answer, never scan territory, whose
@@ -319,7 +321,9 @@ impl Route<'_> {
             Binding::Anonymous | Binding::Unbound(_) => {}
         }
         if !self.seekable(np, class) {
-            return Ok(None);
+            // No index serves the side: a scan filtered by its own `WHERE`
+            // may still list it (see `end_filter`).
+            return self.filtered_side(np, class, which);
         }
         Ok(Some(match self.capped_candidates(np, SEEK_PAIR_LIMIT)? {
             Capped::Within(ids) => Side::Many(ids),

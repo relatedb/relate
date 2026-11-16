@@ -22,6 +22,7 @@ use crate::exec::pushdown::Residual;
 use crate::row::Row;
 
 mod anchor;
+mod end_filter;
 mod far_set;
 mod filters;
 mod guard;
@@ -60,6 +61,8 @@ pub(super) fn with_override<V: Copy + 'static, T>(
 mod anchor_tests;
 #[cfg(test)]
 mod bounded_tests;
+#[cfg(test)]
+mod end_filter_tests;
 #[cfg(test)]
 mod expr_parity_tests;
 #[cfg(test)]

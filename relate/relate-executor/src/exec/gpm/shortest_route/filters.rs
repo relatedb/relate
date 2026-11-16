@@ -139,6 +139,9 @@ pub(super) struct RouteFilters<'a> {
     pub path: Option<PathFilter<'a>>,
     /// `Some` when an endpoint-only conjunct exists to drop a same-node pair.
     pub pair: Option<PairFilter<'a>>,
+    /// The MATCH's bound-variable scope, the readiness rule's input: which
+    /// names a conjunct reads count (see [`conjunct_ready`]).
+    pub scope: &'a HashSet<String>,
 }
 
 impl<'p> RouteFilters<'p> {
@@ -177,6 +180,7 @@ impl<'p> RouteFilters<'p> {
             pair: (filters_search && !endpoint.is_empty()).then_some(PairFilter { scope }),
             endpoint,
             path: (!predicates.is_empty()).then_some(PathFilter { predicates, scope }),
+            scope,
         }
     }
 

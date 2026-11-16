@@ -15,7 +15,7 @@ use super::fixtures::{counting, parity, sorted, Selector, SELECTORS};
 
 /// 200 `:N` nodes (`id` text, `g` parity) on a ring with `*3` chords;
 /// `indexed` declares the RANGE index the point seeks need.
-fn ring(indexed: bool) -> Graph {
+pub(super) fn ring(indexed: bool) -> Graph {
     let g = Graph::default();
     if indexed {
         exec_autocommit(&g, "CREATE INDEX FOR (n:N) ON (n.id)").unwrap();
@@ -127,11 +127,18 @@ fn in_lists_on_both_ends_fan_from_the_listed_start() {
     let counts = parity(&g, &q);
     assert_eq!(counts.arms, vec![AnchorArm::FanForward]);
     // The seek lists the 6 starts: 6 forward fans, not one per `:N` node.
+    // An unindexed store lists the same starts by their own filter.
     let unindexed = parity(&ring(false), &q).expands;
+    assert_eq!(counts.expands, unindexed);
+    let every_start = parity(
+        &ring(false),
+        &q.replace("a.id IN", "a.id IS NOT NULL OR a.id IN"),
+    );
     assert!(
-        counts.expands * 5 < unindexed,
-        "{} vs unindexed {unindexed}",
-        counts.expands
+        counts.expands * 5 < every_start.expands,
+        "{} vs unfiltered {}",
+        counts.expands,
+        every_start.expands
     );
 }
 
@@ -177,17 +184,19 @@ fn an_unserved_or_does_not_seek() {
     assert_eq!(arms, vec![AnchorArm::FanForward]);
 }
 
-/// No index serves the equality: the side keeps scan territory, the arm and
-/// rows are exactly the unseeked behavior.
+/// No index serves the equality: the side is not seeked, but its own
+/// `WHERE` lists it from a label scan (`end_filter`) — the pair, the walk's
+/// rows. The both-sides `IN` lists match more than the pair bound, so they
+/// keep the fan exactly as before.
 #[test]
-fn without_an_index_the_where_equality_is_not_seeked() {
+fn without_an_index_the_where_equality_lists_the_filtered_end() {
     let g = ring(false);
     let q = format!(
         "MATCH p = ANY SHORTEST (a:N {{id: '0'}}){BODY}(b:N) WHERE b.id = '150' \
          RETURN b.id, length(p)"
     );
     let arms = parity(&g, &q).arms;
-    assert_eq!(arms, vec![AnchorArm::FanForward]);
+    assert_eq!(arms, vec![AnchorArm::Pair]);
     let both = format!(
         "MATCH p = ANY SHORTEST (a:N){BODY}(b:N) \
          WHERE a.id IN {} AND b.id IN {} RETURN a.id, b.id, length(p)",

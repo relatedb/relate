@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A shortest-path endpoint whose `WHERE` no index serves (`WHERE b.id + 0 =
+  7`, a function over the property) is now listed by scanning its label with
+  that predicate, and the pair search runs for the few matches, instead of a
+  search that reaches every node and builds a row and a path for each. On a
+  1.6M-node social graph `SHORTEST 1 (a {id: …})-[*..6]->(b) WHERE b.id + 0 =
+  …` drops from 16 s to 0.5 s, the cost of the same predicate in a separate
+  `MATCH`. Results are unchanged; a predicate matching more than 16 nodes, a
+  nondeterministic one, one that reads another variable, or one that raises
+  keeps the earlier plan.
 - `SHORTEST k` (k above 1), `SHORTEST k GROUPS` and `ANY k` between two
   fixed endpoints now walk the trails one length class at a time instead of
   enumerating every trail up to the hop bound, so a bounded pair query that

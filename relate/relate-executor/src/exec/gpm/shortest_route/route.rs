@@ -54,7 +54,7 @@ pub(super) struct Route<'a> {
     halt: &'a Cell<bool>,
     /// The pattern's reach cache: consecutive pair partitions from one
     /// start share one reach set (see [`ReachCache`]).
-    reach: &'a ReachCache,
+    pub(super) reach: &'a ReachCache,
 }
 
 impl<'a> Route<'a> {
@@ -202,7 +202,7 @@ impl<'a> Route<'a> {
         filter.decidable_on(&probe)
     }
 
-    fn node_ok(&self, id: NodeId, np: &NodePattern, row: &Row) -> Result<bool> {
+    pub(super) fn node_ok(&self, id: NodeId, np: &NodePattern, row: &Row) -> Result<bool> {
         let ExecCtx { graph, params, .. } = self.ctx;
         node_ok(graph, id, np, row, params)
     }

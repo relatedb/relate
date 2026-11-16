@@ -145,8 +145,10 @@ fn fan_filter_over_labels_directions_and_bounds() {
         (4, 6)
     );
     // A conjunct the same-node pair fails for another reason drops it too.
+    // (Nondeterministic, so the end-side listing leaves it to the search:
+    // `n IS NULL` would list no end at all and never reach the pair.)
     assert_eq!(
-        totals(&g, &fan("1..3", "WHERE n <> p AND n IS NULL")),
+        totals(&g, &fan("1..3", "WHERE n <> p AND rand() > 2.0")),
         (0, 0)
     );
 }
