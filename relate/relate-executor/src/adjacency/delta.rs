@@ -36,6 +36,13 @@ pub(crate) struct TypedAdj {
 }
 
 impl TypedAdj {
+    /// Whether this delta holds no chunk at all — the pair's other half of
+    /// [`SealedAdj::is_empty`], the one spelling of the predicate that
+    /// decides whether a node keeps an entry in the table.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.chunks.is_empty()
+    }
+
     pub(crate) fn insert(&mut self, type_id: u32, rid: RelId, ts: Option<i64>) {
         let hop = AdjHop { ts, id: rid };
         if let Some(v) = self.chunk_mut(type_id) {
@@ -222,24 +229,43 @@ impl TypedAdj {
         }
     }
 
-    /// The type ids whose chunks are due at `horizon`. The caller takes the
-    /// node's sealed side-table entry only when this is non-empty, so a node
-    /// that never folds has no entry.
-    pub(crate) fn due_chunks(&self, sealed: Option<&SealedAdj>, horizon: u64) -> Vec<u32> {
+    /// The type ids of this node's chunks due at `horizon` — the one
+    /// spelling of the due-set query. A caller that only needs to know
+    /// whether there is one asks it for `.next()`; the fold collects it.
+    pub(crate) fn due_type_ids<'a>(
+        &'a self,
+        sealed: Option<&'a SealedAdj>,
+        horizon: u64,
+    ) -> impl Iterator<Item = u32> + 'a {
         self.chunks
             .iter()
+            .filter(move |(type_id, _)| self.chunk_due(sealed, *type_id, horizon))
             .map(|(type_id, _)| *type_id)
-            .filter(|type_id| self.chunk_due(sealed, *type_id, horizon))
-            .collect()
     }
 
-    /// Fold `due`'s chunks. Returns whether anything was folded.
-    pub(crate) fn fold_due(&mut self, sealed: &mut SealedAdj, due: &[u32], horizon: u64) -> bool {
+    /// Fold every chunk of this node due at `horizon` into `sealed`, and
+    /// report whether anything was folded — the one gate-then-fold sequence,
+    /// so the checkpoint's GC pass and a wholesale build share the gate, the
+    /// sort and the chunk order (ADR-0608). They do not share the *outcome*
+    /// in every case: a build's region is always fresh, so only the
+    /// never-sealed floor arm of [`chunk_due`](Self::chunk_due) can fire,
+    /// while the GC pass also folds a sealed chunk whose delta grew past the
+    /// ratio. `sealed` is this node's region: empty on a fresh build, the
+    /// existing one at the GC pass. The due set is collected before folding,
+    /// because folding mutates the chunks it names.
+    pub(crate) fn seal_due(&mut self, sealed: &mut SealedAdj, horizon: u64) -> bool {
+        let due: Vec<u32> = self.due_type_ids(Some(sealed), horizon).collect();
         let mut changed = false;
         for type_id in due {
-            if let Some(ci) = self.chunks.iter().position(|(t, _)| t == type_id) {
-                changed |= self.fold_chunk(sealed, ci, *type_id, horizon);
-            }
+            // A due type id's chunk is still there when its turn comes:
+            // `fold_chunk` removes only the chunk it just folded, and `due`
+            // holds each type id once.
+            let ci = self
+                .chunks
+                .iter()
+                .position(|(t, _)| *t == type_id)
+                .expect("a due chunk is still present");
+            changed |= self.fold_chunk(sealed, ci, type_id, horizon);
         }
         changed
     }

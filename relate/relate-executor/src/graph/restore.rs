@@ -118,7 +118,9 @@ impl Graph {
         restore(&self.rels, rel.id, live)
     }
 
-    /// End a checkpoint load, after its last row: build adjacency and clear
+    /// End a checkpoint load, after its last row: build adjacency — the
+    /// build itself emits the durable shape, the chunks at or above the
+    /// seal floor straight into their folded form (ADR-0608) — and clear
     /// the dirty ids, which the checkpoint already holds. Called once per
     /// load. The index rebuild is deliberately NOT here: the open flow's
     /// single post-replay site runs it exactly once per open, after the

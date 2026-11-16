@@ -225,6 +225,12 @@ pub(crate) struct SealedAdj {
 }
 
 impl SealedAdj {
+    /// Whether this region holds no chunk at all — the one spelling of the
+    /// predicate that decides whether a node keeps a side-table entry.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.chunks.is_empty()
+    }
+
     pub(crate) fn chunk(&self, type_id: u32) -> Option<&SealedChunk> {
         self.chunks
             .iter()

@@ -42,6 +42,61 @@ fn direct_restore_rejects_sentinel_before_mutating() {
     assert_eq!(graph.live_node_count(), 0);
 }
 
+/// The restore fixture: two nodes and one `rels`-hop `:T` chunk between
+/// them, commit ts set — the rows a checkpoint of the smallest graph with
+/// a `rels`-sized chunk holds.
+fn restored_graph(rels: RelId) -> Graph {
+    let g = Graph::default();
+    for id in 0..2 {
+        g.load_checkpoint_node(restored_node(id, "N", "n")).unwrap();
+    }
+    for id in 0..rels {
+        let rel = Relationship {
+            id,
+            ..restored_rel(0, 1, "T", id)
+        };
+        g.load_checkpoint_rel(rel).unwrap();
+    }
+    g.set_commit_ts(1);
+    g
+}
+
+/// LABS-1658: a store reopened from its checkpoint carries the folded
+/// chunks its GC pass had folded — the wholesale build emits the durable
+/// shape directly (ADR-0608), not a fresh all-delta rebuild.
+#[test]
+fn a_restore_builds_the_durable_folded_shape() {
+    let floor = crate::adjacency::COMPACTION_DELTA_FLOOR;
+    // Reset the thread-local seam, then count only this build's emission —
+    // the count is per-thread, so a sibling test's regions may still sit in
+    // it, exactly as `take_adj_builds` above.
+    crate::graph::take_sealed_builds();
+
+    let restored = restored_graph(floor as RelId);
+    restored.finish_restore();
+
+    // Both endpoints carry a floor-sized `:T` chunk here (node 0's out
+    // side, node 1's in side), so the build folds two regions.
+    assert_eq!(
+        crate::graph::take_sealed_builds(),
+        2,
+        "the restore emitted the floor chunks folded (LABS-1658)"
+    );
+    // The fold is a layout, not a fact: the adjacency answers the same.
+    assert_eq!(restored.degree_out(0).len(), floor);
+    assert_eq!(restored.degree_in(1).len(), floor);
+
+    // The floor gates the emission: the same rows with one hop fewer
+    // build nothing folded.
+    let below = restored_graph(floor as RelId - 1);
+    below.finish_restore();
+    assert_eq!(
+        crate::graph::take_sealed_builds(),
+        0,
+        "a run below the floor stays delta"
+    );
+}
+
 fn restored_node(id: NodeId, label: &str, name: &str) -> Node {
     Node {
         id,
@@ -323,12 +378,13 @@ fn checkpoint_load_and_wal_replay_build_adjacency_once() {
 }
 
 /// The checkpoint dumps node and rel rows and folds its adjacency afterwards
-/// (ADR-0551): restoring those rows rebuilds adjacency as a fresh delta — no
-/// sealed bytes or tombstones are serialized — and a WAL tail replayed onto
-/// it leaves the reader's adjacency equal to the writer's. The next
-/// checkpoint re-seals the restored delta.
+/// (ADR-0551): restoring those rows rebuilds adjacency, and the build emits
+/// the durable shape — the fold-sized chunks folded (ADR-0608), no sealed
+/// bytes or tombstones serialized — so a WAL tail replayed onto it leaves
+/// the reader's adjacency equal to the writer's, replayed deletes recording
+/// their tombstones against the folded chunks exactly as the writer's did.
 #[test]
-fn compaction_restore_roundtrip_rebuilds_a_fresh_delta() {
+fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
     use relate_ir::Direction;
 
     let floor = crate::adjacency::COMPACTION_DELTA_FLOOR;
@@ -431,31 +487,27 @@ fn compaction_restore_roundtrip_rebuilds_a_fresh_delta() {
             .collect()
     };
     assert_eq!(opened.commit_ts(), writer.commit_ts());
-    // Restore rebuilt adjacency from the rows: a fresh delta, no sealed hops
-    // (the replayed delete still records its tombstone on a zero-hop region).
-    for id in opened.all_node_ids_at(opened.commit_ts()) {
-        for map in [&opened.out_adj, &opened.in_adj] {
-            if let Some(adj) = map.get(&id) {
-                assert!(
-                    adj.chunk_lens(None).all(|(_, _, sealed)| sealed == 0),
-                    "restored node {id} must be delta-only"
-                );
-            }
-        }
-    }
-    assert_eq!(observable(&opened), observable(&writer));
-
-    // The dumped rows are the whole durable state: the next checkpoint
-    // re-seals the restored delta and the reader's adjacency does not move.
-    // The replayed delete's tombstone reclaims at the fold, so the sealed
-    // stream loses its hop — the writer still holds it only because its GC
-    // ran before the tail.
-    opened.gc_versions();
+    // The restore rebuilt the durable shape (ADR-0608): the fold-sized
+    // chunks folded, as the writer's checkpoint GC left them — the
+    // replayed delete then records its tombstone against the folded chunk
+    // the way it did on the writer.
     let type_id = opened.interner.get_id("T").unwrap();
     assert_eq!(
         opened.out_side().sealed.get(&0).unwrap().chunk_len(type_id),
+        floor,
+        "the restore folded the checkpointed chunk"
+    );
+    assert_eq!(observable(&opened), observable(&writer));
+
+    // The dumped rows are the whole durable state: the next checkpoint's
+    // fold reclaims the replayed delete's tombstone, so the sealed stream
+    // loses its hop — the writer still holds it only because its GC ran
+    // before the tail.
+    opened.gc_versions();
+    assert_eq!(
+        opened.out_side().sealed.get(&0).unwrap().chunk_len(type_id),
         floor - 1,
-        "the restored delta re-seals, without the deleted hop"
+        "the restored fold reclaims, without the deleted hop"
     );
     assert_eq!(observable(&opened), observable(&writer));
 }

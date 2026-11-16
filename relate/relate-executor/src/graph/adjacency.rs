@@ -43,6 +43,33 @@ impl AdjSide<'_> {
         Some(f(&adj, region.as_deref()))
     }
 
+    /// Install one node's wholesale build result: the delta always, the
+    /// sealed region only when the build folded one (ADR-0608). The one
+    /// writer of a build's output — the emptiness branch lives here, not at
+    /// the build site, so the predicate has one home and the seam counting
+    /// emitted regions cannot drift from what landed.
+    ///
+    /// The seam's counter is thread-local, and the increment sits here on
+    /// the calling thread — never beside `seal_due` in `build_node`, which
+    /// the shards' worker threads run: a thread-local bump there would
+    /// never reach the reader once a partition has more than one shard.
+    fn install(&self, node: NodeId, adj: TypedAdj, region: SealedAdj) {
+        self.delta.insert(node, adj);
+        if region.is_empty() {
+            return;
+        }
+        #[cfg(any(test, feature = "test-hooks"))]
+        SEALED_BUILDS.with(|n| n.set(n.get() + 1));
+        self.sealed.insert(node, region);
+    }
+
+    /// Drop both of this side's tables — the wholesale build's replacement
+    /// step, so a rebuild clears the pair it installs into in one place.
+    fn clear(&self) {
+        self.delta.clear();
+        self.sealed.clear();
+    }
+
     /// Every physical hop id of `node` in merged order, no visibility filter.
     fn flatten(&self, node: NodeId) -> Vec<RelId> {
         self.with_adj(node, |adj, region| adj.flatten(region))
@@ -122,9 +149,8 @@ impl AdjSide<'_> {
             let mut region = self.sealed.get_mut(&node);
             adj.remove(region.as_deref_mut(), type_id, id);
         }
-        self.delta.remove_if(&node, |adj| adj.chunks.is_empty());
-        self.sealed
-            .remove_if(&node, |region| region.chunks.is_empty());
+        self.delta.remove_if(&node, TypedAdj::is_empty);
+        self.sealed.remove_if(&node, SealedAdj::is_empty);
     }
 
     /// Record the versioned tombstone a delete places on `node`'s hop
@@ -149,9 +175,10 @@ impl AdjSide<'_> {
         // Two passes: the map's one write guard must not span other nodes' folds.
         let mut due_nodes = Vec::new();
         self.delta.for_each(|node, adj| {
-            if !adj
-                .due_chunks(self.sealed.get(&node).as_deref(), horizon)
-                .is_empty()
+            if adj
+                .due_type_ids(self.sealed.get(&node).as_deref(), horizon)
+                .next()
+                .is_some()
             {
                 due_nodes.push(node);
             }
@@ -160,14 +187,10 @@ impl AdjSide<'_> {
             let Some(mut adj) = self.delta.get_mut(&node) else {
                 continue;
             };
-            let due = adj.due_chunks(self.sealed.get(&node).as_deref(), horizon);
-            if due.is_empty() {
-                continue;
-            }
             let mut sealed_entry = self.sealed.entry(node);
-            adj.fold_due(sealed_entry.or_default(), &due, horizon);
+            adj.seal_due(sealed_entry.or_default(), horizon);
         }
-        self.sealed.retain(|_, region| !region.chunks.is_empty());
+        self.sealed.retain(|_, region| !region.is_empty());
     }
 
     /// Adjacency length without allocation or type/overlay filtering.
@@ -223,13 +246,23 @@ impl Side {
             Side::End => row.end,
         }
     }
+
+    /// This direction's adjacency pair — the one place the endpoint a
+    /// direction partitions rows by meets the tables it installs into, so
+    /// the two cannot be paired the wrong way round.
+    fn adj(self, graph: &Graph) -> AdjSide<'_> {
+        match self {
+            Side::Start => graph.out_side(),
+            Side::End => graph.in_side(),
+        }
+    }
 }
 
-/// One direction's wholesale build: `map` keyed by the row's `side`
-/// endpoint, each (node, type) run handed to [`TypedAdj::from_runs`] —
-/// no per-hop binary search or memmove, and the chunk order and hop order
+/// One direction's wholesale build: the direction's delta keyed by its
+/// [`Side`] endpoint, each (node, type) run handed to [`TypedAdj::from_runs`]
+/// — no per-hop binary search or memmove, and the chunk order and hop order
 /// are the store tier's, the order an id-ordered load's incremental
-/// [`adj_insert`]s leave (the wholesale build's pinned contract).
+/// [`AdjSide::insert`]s leave (the wholesale build's pinned contract).
 ///
 /// Sharded on that same endpoint (the partition its caller hands it), so
 /// a shard owns every row of every node it carries and builds those
@@ -237,10 +270,15 @@ impl Side {
 /// is shard-independent: `from_runs` derives a node's chunk order from
 /// each run's first rel id and sorts its hops `cmp_ts_desc`, both total
 /// orders over a node's own hops.
-fn build_side(map: &IdVec<TypedAdj>, rows: &[RelRow], side: Side, shards: &[Vec<usize>]) {
+fn build_side(graph: &Graph, rows: &[RelRow], side: Side, shards: &[Vec<usize>]) {
+    // The replace-wholesale step belongs to the build that replaces: this
+    // side's pair is emptied here, so a rebuild cannot leave a direction's
+    // stale chunks behind.
+    let adjacency = side.adj(graph);
+    adjacency.clear();
     let parts = shard::run_shards(shards, |shard| build_shard(rows, shard, side));
-    for (node, adj) in parts.into_iter().flatten() {
-        map.insert(node, adj);
+    for (node, node_adj, region) in parts.into_iter().flatten() {
+        adjacency.install(node, node_adj, region);
     }
 }
 
@@ -249,7 +287,7 @@ fn build_side(map: &IdVec<TypedAdj>, rows: &[RelRow], side: Side, shards: &[Vec<
 /// a local copy of the caller's shard — the partition is shared
 /// read-only across the rebuild's consumers, so this pass never
 /// reorders it.
-fn build_shard(rows: &[RelRow], shard: &[usize], side: Side) -> Vec<(NodeId, TypedAdj)> {
+fn build_shard(rows: &[RelRow], shard: &[usize], side: Side) -> Vec<(NodeId, TypedAdj, SealedAdj)> {
     let endpoint = |row: &RelRow| side.endpoint(row);
     let mut order = shard.to_vec();
     order.sort_unstable_by(|&a, &b| {
@@ -260,62 +298,96 @@ fn build_shard(rows: &[RelRow], shard: &[usize], side: Side) -> Vec<(NodeId, Typ
     });
     let mut built = Vec::new();
     for node_run in order.chunk_by(|&a, &b| endpoint(&rows[a]) == endpoint(&rows[b])) {
-        let node = endpoint(&rows[node_run[0]]);
-        // One run per type: its type id and its hops, unsorted and keyless —
-        // `TypedAdj::from_runs` derives the chunk-order key from the hops.
-        let runs = node_run
-            .chunk_by(|&a, &b| rows[a].type_id == rows[b].type_id)
-            .map(|run| {
-                let hops: Vec<AdjHop> = run
-                    .iter()
-                    .map(|&index| {
-                        let row = &rows[index];
-                        AdjHop {
-                            ts: row.ts,
-                            id: row.id,
-                        }
-                    })
-                    .collect();
-                (rows[run[0]].type_id, hops)
-            });
-        built.push((node, TypedAdj::from_runs(runs)));
+        let (adj, region) = build_node(rows, node_run);
+        built.push((endpoint(&rows[node_run[0]]), adj, region));
     }
     built
 }
 
-/// Install both adjacency maps wholesale from the live rel rows: `out_map`
-/// keyed by each row's start, `in_map` by its end. Both maps must be empty:
-/// this is the whole build, not a merge. `rows` is read-only — the start
-/// side reads the start-keyed partition `rebuild_adj` computed for every
-/// start-keyed consumer, the end side partitions by its own endpoint here,
-/// and no fold that follows a rebuild depends on the buffer's order.
+/// One node's whole build from its `(endpoint, type)`-sorted row indices:
+/// the per-type runs in one [`TypedAdj`], then the durable shape
+/// (ADR-0608).
 ///
-/// Memory shape: the shard parts and the maps they fill coexist at
+/// The durable shape: the build seals through the fold predicate's own
+/// gate-and-fold sequence, the same one call the checkpoint's GC pass
+/// makes — one gate, one sort, one chunk order, one code path — so a
+/// rebuilt graph and a checkpoint-folded one cannot land on different
+/// layouts. Nothing is sealed yet and no tombstones exist, so the
+/// never-sealed arm of `chunk_due` is the whole predicate and the horizon
+/// is inert. Both wholesale rebuilds (a restore and an aborted write's)
+/// emit it here, in the one pass that derives adjacency, instead of a
+/// second serial walk folding afterwards.
+fn build_node(rows: &[RelRow], node_run: &[usize]) -> (TypedAdj, SealedAdj) {
+    // One run per type: its type id and its hops, unsorted and keyless —
+    // `TypedAdj::from_runs` derives the chunk-order key from the hops.
+    let runs = node_run
+        .chunk_by(|&a, &b| rows[a].type_id == rows[b].type_id)
+        .map(|run| {
+            let hops: Vec<AdjHop> = run
+                .iter()
+                .map(|&index| {
+                    let row = &rows[index];
+                    AdjHop {
+                        ts: row.ts,
+                        id: row.id,
+                    }
+                })
+                .collect();
+            (rows[run[0]].type_id, hops)
+        });
+    let mut adj = TypedAdj::from_runs(runs);
+    let mut sealed = SealedAdj::default();
+    adj.seal_due(&mut sealed, 0);
+    (adj, sealed)
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    /// Sealed regions a whole-graph adjacency build emitted, this thread —
+    /// one per node the build gave a region to, not one per folded chunk.
+    /// Bumped from [`AdjSide::install`], which the build's caller runs;
+    /// `build_shard` runs on the shards' worker threads, so a bump there
+    /// would be invisible here. Test seam for the durable-shape emission
+    /// (ADR-0608) — same quarantine shape as `graph::take_index_rebuilds`.
+    static SEALED_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Take this thread's count of sealed regions whole-graph adjacency builds
+/// emitted, resetting it.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn take_sealed_builds() -> u64 {
+    SEALED_BUILDS.with(|n| n.replace(0))
+}
+
+/// Replace both adjacency pairs wholesale from the live rel rows: the
+/// start side's delta keyed by each row's start, the end side's by its end,
+/// with each pair's sealed table filled alongside it. Each side's pair is
+/// emptied by [`build_side`] as it is built, so a rebuild cannot leave a
+/// direction's stale chunks behind — this is the whole build, not a merge.
+/// `rows` is read-only — the start side reads the start-keyed partition
+/// `rebuild_adj` computed for every start-keyed consumer, the end side
+/// partitions by its own endpoint here, and no fold that follows a rebuild
+/// depends on the buffer's order.
+///
+/// Memory shape: the shard parts and the tables they fill coexist at
 /// peak, but each node's `TypedAdj` is **moved** from its part into
 /// the map, never copied — the build materializes one adjacency, not
 /// two. Above it sit the rebuild's declared transients: the row buffer
 /// and the index partitions (8 bytes per row per partition).
-pub(super) fn adj_build(
-    out_map: &IdVec<TypedAdj>,
-    in_map: &IdVec<TypedAdj>,
-    rows: &[RelRow],
-    start_shards: &[Vec<usize>],
-) {
-    debug_assert!(
-        out_map.is_empty() && in_map.is_empty(),
-        "adj_build is a wholesale build, not a merge"
-    );
-    build_side(out_map, rows, Side::Start, start_shards);
+pub(super) fn adj_build(graph: &Graph, rows: &[RelRow], start_shards: &[Vec<usize>]) {
+    build_side(graph, rows, Side::Start, start_shards);
     let end_shards = shard::shard_rows(rows, |row| row.end);
-    build_side(in_map, rows, Side::End, &end_shards);
+    build_side(graph, rows, Side::End, &end_shards);
 }
 
 impl Graph {
     /// Fold every due adjacency chunk's delta and reclaimed tombstones into
     /// its sealed stream (ADR-0551). Runs at the checkpoint (through
-    /// [`Graph::gc_versions`]); a chunk below the watermark stays delta. The
-    /// node's sealed side-table entry is taken only when a chunk is due, and
-    /// dropped when its last chunk recedes.
+    /// [`Graph::gc_versions`]); a chunk below the watermark stays delta. A
+    /// whole-graph rebuild does not fold here — it emits the durable shape
+    /// directly (ADR-0608). The node's sealed side-table entry is taken only
+    /// when a chunk is due, and dropped when its last chunk recedes.
     pub(super) fn compact_adjacency_at_watermark(&self, horizon: u64) {
         self.out_side().compact(horizon);
         self.in_side().compact(horizon);

@@ -108,6 +108,10 @@ pub use query_stats::QueryStats;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub use index::take_index_rebuilds;
+// ADR-0608's durable-shape emission seam: same quarantine shape.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use adjacency::take_sealed_builds;
 pub use relate_planner::ContainsCount;
 pub(crate) use services::StoreServices;
 

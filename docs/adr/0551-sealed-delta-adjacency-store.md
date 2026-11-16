@@ -138,3 +138,12 @@ shared home in `relate-core` is rejected for now.
   example-dataset coverage (48.7% vs 37.0%); a mid-degree memory shape
   with per-node degree straddling 32 is the follow-up that would show the
   floor's payoff in the shape gate.
+
+## Later references
+
+- ADR-0608 seals restored adjacency: a store opened from a checkpoint folds
+  the chunks that checkpoint's GC pass would have folded, so this ADR's
+  "a reloaded store is delta-only and the next checkpoint re-seals it"
+  consequence no longer holds. The floor, the horizon, the fold predicate
+  and the sealed representation are unchanged, and the WAL tail replayed
+  after a checkpoint still keeps its delta.

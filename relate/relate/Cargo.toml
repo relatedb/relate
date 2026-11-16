@@ -46,6 +46,8 @@ indexmap = { workspace = true }
 web-time = { workspace = true }
 
 [dev-dependencies]
+# test-hooks: the sealed-build count the reopen test pins (ADR-0608).
+relate-executor = { workspace = true, features = ["test-hooks"] }
 tempfile = { workspace = true }
 crc32fast = { workspace = true }
 relate-test-support = { workspace = true, features = ["durability", "fold_shapes", "nested_eval", "pokec", "vfs_walk"] }

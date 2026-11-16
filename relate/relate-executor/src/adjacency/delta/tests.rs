@@ -1,12 +1,5 @@
 use super::*;
 
-/// The production fold's two steps: due-ness against the node's sealed
-/// entry, then the fold into it. Returns whether anything was folded.
-fn fold(a: &mut TypedAdj, sealed: &mut SealedAdj, horizon: u64) -> bool {
-    let due = a.due_chunks(Some(sealed), horizon);
-    a.fold_due(sealed, &due, horizon)
-}
-
 #[test]
 fn typed_adj_chunks() {
     let mut a = TypedAdj::default();
@@ -125,7 +118,7 @@ fn chunk_lens_yields_delta_and_sealed_per_chunk() {
     for i in 0..COMPACTION_DELTA_FLOOR as i64 {
         a.insert(3, 100 + i, Some(i));
     }
-    assert!(fold(&mut a, &mut sealed, 0));
+    assert!(a.seal_due(&mut sealed, 0));
 
     let lens: Vec<_> = a.chunk_lens(Some(&sealed)).collect();
     assert_eq!(
@@ -152,7 +145,7 @@ fn sealed_and_delta_hops_merge_ts_desc_delta_first() {
         a.insert(type_id, i, Some(i));
     }
     assert!(a.chunk_due(Some(&sealed), type_id, u64::MAX));
-    assert!(fold(&mut a, &mut sealed, u64::MAX));
+    assert!(a.seal_due(&mut sealed, u64::MAX));
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR);
     assert!(a.chunk(type_id).is_empty(), "the delta folded");
 
@@ -184,7 +177,7 @@ fn delete_of_a_sealed_hop_records_a_versioned_tombstone() {
     for i in 0..COMPACTION_DELTA_FLOOR as i64 {
         a.insert(type_id, i, Some(i));
     }
-    fold(&mut a, &mut sealed, 0);
+    a.seal_due(&mut sealed, 0);
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR);
 
     a.remove(Some(&mut sealed), type_id, 5);
@@ -231,7 +224,7 @@ fn compaction_folds_on_floor_ratio_and_reclaimable_tombstone() {
     );
     a.insert(type_id, 1000, Some(1000));
     assert!(a.chunk_due(Some(&sealed), type_id, 0), "the floor");
-    assert!(fold(&mut a, &mut sealed, 0));
+    assert!(a.seal_due(&mut sealed, 0));
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR);
 
     // 2. Ratio: a delta past 25% of the sealed hops folds.
@@ -247,7 +240,7 @@ fn compaction_folds_on_floor_ratio_and_reclaimable_tombstone() {
         a.chunk_due(Some(&sealed), type_id, 0),
         "past 25% of the sealed hops"
     );
-    assert!(fold(&mut a, &mut sealed, 0));
+    assert!(a.seal_due(&mut sealed, 0));
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR + 9);
 
     // 3. Tombstone: a sealed hop reclaimable at the horizon folds away
@@ -261,7 +254,7 @@ fn compaction_folds_on_floor_ratio_and_reclaimable_tombstone() {
         a.chunk_due(Some(&sealed), type_id, 40),
         "the tombstone is reclaimable"
     );
-    assert!(fold(&mut a, &mut sealed, 40));
+    assert!(a.seal_due(&mut sealed, 40));
     assert!(sealed.chunk(type_id).unwrap().tombstones.is_empty());
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR + 8);
     assert!(
@@ -279,13 +272,13 @@ fn compaction_reclaims_at_the_horizon_and_is_idempotent() {
     for i in 0..COMPACTION_DELTA_FLOOR as i64 {
         a.insert(type_id, i, Some(i));
     }
-    assert!(fold(&mut a, &mut sealed, 0));
+    assert!(a.seal_due(&mut sealed, 0));
     sealed.tombstone_deleted(type_id, 5, 40, Supersede::Deleted);
     // Below the horizon nothing is due again.
     assert!(!a.chunk_due(Some(&sealed), type_id, 39));
-    assert!(!fold(&mut a, &mut sealed, 39));
+    assert!(!a.seal_due(&mut sealed, 39));
     // At the horizon the tombstone is reclaimable and the fold drops it.
-    assert!(fold(&mut a, &mut sealed, 40));
+    assert!(a.seal_due(&mut sealed, 40));
     let chunk = sealed.chunk(type_id).expect("still sealed");
     assert!(chunk.tombstones.is_empty());
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR - 1);
@@ -307,14 +300,14 @@ fn the_fold_drops_a_deleted_rows_delta_hop_at_the_horizon() {
     for i in 0..COMPACTION_DELTA_FLOOR as i64 {
         a.insert(type_id, i, Some(i));
     }
-    assert!(fold(&mut a, &mut sealed, 0));
+    assert!(a.seal_due(&mut sealed, 0));
     a.insert(type_id, 100, Some(100));
     sealed.tombstone_deleted(type_id, 100, 40, Supersede::Deleted);
     for i in 0..9 {
         a.insert(type_id, 200 + i, Some(200 + i));
     }
     assert!(
-        fold(&mut a, &mut sealed, 0),
+        a.seal_due(&mut sealed, 0),
         "the delta is past 25% of the sealed hops"
     );
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR + 10);
@@ -326,7 +319,7 @@ fn the_fold_drops_a_deleted_rows_delta_hop_at_the_horizon() {
         .any(|h| h.id == 100));
 
     assert!(
-        fold(&mut a, &mut sealed, 40),
+        a.seal_due(&mut sealed, 40),
         "the tombstone is at the horizon"
     );
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR + 9);
@@ -360,7 +353,7 @@ fn a_never_sealed_chunk_records_its_tombstone_and_folds_the_dead_hop_away() {
     );
     // At the horizon the fold is the reclaim alone: the tombstone still
     // names the delta hop, so nothing is reclaimed and nothing seals.
-    assert!(!fold(&mut small, &mut small_sealed, u64::MAX));
+    assert!(!small.seal_due(&mut small_sealed, u64::MAX));
     assert_eq!(small_sealed.chunk_len(11), 0, "no early seal");
 
     let mut a = TypedAdj::default();
@@ -395,7 +388,7 @@ fn a_never_sealed_chunk_records_its_tombstone_and_folds_the_dead_hop_away() {
 
     // Below the horizon the fold seals the dead hop under its tombstone,
     // so an older snapshot still sees it.
-    assert!(fold(&mut a, &mut sealed, 39));
+    assert!(a.seal_due(&mut sealed, 39));
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR + 1);
     let mut before = Vec::new();
     a.for_each_hop_of(Some(&sealed), type_id, 39, |hop| before.push(hop.id));
@@ -405,7 +398,7 @@ fn a_never_sealed_chunk_records_its_tombstone_and_folds_the_dead_hop_away() {
         a.chunk_due(Some(&sealed), type_id, 40),
         "the tombstone is reclaimable"
     );
-    assert!(fold(&mut a, &mut sealed, 40));
+    assert!(a.seal_due(&mut sealed, 40));
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR);
     assert!(sealed.chunk(type_id).unwrap().tombstones.is_empty());
     assert!(!a.flatten(Some(&sealed)).contains(&5), "no ghost hop");
@@ -427,7 +420,7 @@ fn a_never_sealed_reposition_then_delete_keeps_the_relocated_hop() {
 
     // A horizon between the two stamps changes nothing: the relocated hop
     // is the id's live position, so the fold guard keeps it in the delta.
-    fold(&mut a, &mut sealed, 40);
+    a.seal_due(&mut sealed, 40);
     assert_eq!(a.chunk(type_id).len(), COMPACTION_DELTA_FLOOR + 1);
     assert_eq!(sealed.chunk_len(type_id), 0);
     assert_eq!(
@@ -440,7 +433,7 @@ fn a_never_sealed_reposition_then_delete_keeps_the_relocated_hop() {
     );
 
     assert!(
-        fold(&mut a, &mut sealed, 60),
+        a.seal_due(&mut sealed, 60),
         "the delete stamp reaches the horizon"
     );
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR);
@@ -460,7 +453,7 @@ fn the_fold_guard_only_blocks_a_reposition_of_a_sealed_hop() {
     for i in 0..COMPACTION_DELTA_FLOOR as i64 {
         a.insert(type_id, i, Some(i));
     }
-    assert!(fold(&mut a, &mut sealed, 0));
+    assert!(a.seal_due(&mut sealed, 0));
 
     // A delta-only hop repositioned inside the sealed chunk: the
     // tombstone names no sealed position and is dropped, and the hop
@@ -470,7 +463,7 @@ fn the_fold_guard_only_blocks_a_reposition_of_a_sealed_hop() {
     for i in 0..9 {
         a.insert(type_id, 200 + i, Some(200 + i));
     }
-    assert!(fold(&mut a, &mut sealed, 0));
+    assert!(a.seal_due(&mut sealed, 0));
     assert!(sealed.chunk(type_id).unwrap().tombstones.is_empty());
     let mut seen = Vec::new();
     a.for_each_hop_of(Some(&sealed), type_id, u64::MAX, |hop| {
@@ -484,12 +477,9 @@ fn the_fold_guard_only_blocks_a_reposition_of_a_sealed_hop() {
     for i in 0..10 {
         a.insert(type_id, 300 + i, Some(300 + i));
     }
+    assert!(!a.seal_due(&mut sealed, 0), "the reposition holds the fold");
     assert!(
-        !fold(&mut a, &mut sealed, 0),
-        "the reposition holds the fold"
-    );
-    assert!(
-        fold(&mut a, &mut sealed, 40),
+        a.seal_due(&mut sealed, 40),
         "past the horizon the fold runs"
     );
     let mut seen = Vec::new();
@@ -513,7 +503,7 @@ fn the_fold_guard_blocks_a_delete_above_the_horizon_after_a_reposition() {
     for i in 0..COMPACTION_DELTA_FLOOR as i64 {
         a.insert(type_id, i, Some(i));
     }
-    assert!(fold(&mut a, &mut sealed, 0));
+    assert!(a.seal_due(&mut sealed, 0));
     // The sealed position is superseded at 40; the relocated hop is
     // deleted at 60.
     a.reposition(&mut sealed, type_id, 3, Some(40), 40);
@@ -522,15 +512,15 @@ fn the_fold_guard_blocks_a_delete_above_the_horizon_after_a_reposition() {
         a.insert(type_id, 300 + i, Some(300 + i));
     }
     assert!(
-        !fold(&mut a, &mut sealed, 0),
+        !a.seal_due(&mut sealed, 0),
         "nothing reclaims below both stamps"
     );
     assert!(
-        fold(&mut a, &mut sealed, 40),
+        a.seal_due(&mut sealed, 40),
         "the sealed position reclaims, the relocated hop stays"
     );
     assert!(
-        !fold(&mut a, &mut sealed, 40),
+        !a.seal_due(&mut sealed, 40),
         "the second pass has nothing left to do"
     );
     {
@@ -547,7 +537,7 @@ fn the_fold_guard_blocks_a_delete_above_the_horizon_after_a_reposition() {
         );
     }
     assert!(
-        fold(&mut a, &mut sealed, 60),
+        a.seal_due(&mut sealed, 60),
         "the delete stamp reaches the horizon"
     );
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR + 9);

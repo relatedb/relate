@@ -48,11 +48,7 @@ impl Graph {
         // one materialization in materialize order — no fold's result
         // depends on row order.
         let start_shards = shard_rows(&rows, |row| row.start);
-        self.out_adj.clear();
-        self.in_adj.clear();
-        self.sealed_out.clear();
-        self.sealed_in.clear();
-        adj_build(&self.out_adj, &self.in_adj, &rows, &start_shards);
+        adj_build(self, &rows, &start_shards);
         self.rebuild_degree_stats(&rows, &labels, &start_shards);
         self.rebuild_count_stats(&rows, &labels, &start_shards);
         // The wholesale rebuild replaces the histogram map: recompute the

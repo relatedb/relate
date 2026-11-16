@@ -119,7 +119,7 @@ pub use metrics::{
 // never in a shipped build.
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
-pub use graph::take_index_rebuilds;
+pub use graph::{take_index_rebuilds, take_sealed_builds};
 pub use query_engine::InMemoryQueryEngine;
 // Research-only (speed-of-light kernels), quarantined behind the
 // non-default `research` cargo feature (ADR-0476): the re-export (and the

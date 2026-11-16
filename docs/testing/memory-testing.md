@@ -30,9 +30,11 @@ interned `*` and `""`, 258 bytes (ADR-0229 dropped the empty
 `mid degree` is the degree-32–512 ladder (LABS-277): every node's
 out-degree sits at or above the adjacency seal floor (32 hops,
 [ADR-0551](../adr/0551-sealed-delta-adjacency-store.md)), so it is the
-shape whose adjacency chunks actually seal at a checkpoint — the other
-shapes' degrees (0–20) never reach the floor, which is why a sealed-tier
-win is invisible to them. The ladder repeats per 16 nodes (one 512,
+shape whose adjacency chunks actually seal at a checkpoint (and a reopen
+re-seals what that checkpoint folded,
+[ADR-0608](../adr/0608-seal-restored-adjacency.md)) — the other shapes'
+degrees (0–20) never reach the floor, which is why a sealed-tier win is
+invisible to them. The ladder repeats per 16 nodes (one 512,
 one 256, two 128, four 64, eight 32 — average degree exactly 96, every
 rung a power of two so the out-adjacency charge carries no capacity
 padding),
@@ -399,7 +401,8 @@ next `MID_DEGREE_LADDER[i % 16]` ids, wrapping with modulo — the same
 link shape as dense ring, at per-node degrees from the ladder: one 512,
 one 256, two 128, four 64, eight 32 per 16-node group, an average of
 exactly 96. Every rung is at or above the 32-hop adjacency seal floor
-(ADR-0551), so a mid-degree out-chunk always seals at a checkpoint —
+(ADR-0551), so a mid-degree out-chunk always seals at a checkpoint and a
+reopen re-seals it (ADR-0608) —
 no other shape's degree (0–20) ever reaches the floor, which is why the
 sealed-delta tier's memory win is invisible to them.
 
