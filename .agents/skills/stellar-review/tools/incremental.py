@@ -63,7 +63,9 @@ def incremental_patch(repo: str, base: str, head: str, pr_files: list[str]) -> s
     # the token-bearing post steps, so external diff drivers and textconv
     # filters (facts.py's pins, the same spelling) never run during it.
     return _git_ok(
-        repo, "--literal-pathspecs", "diff",
+        repo, "--literal-pathspecs",
+        "-c", "core.fsmonitor=", "-c", "core.pager=cat",
+        "diff",
         "--no-ext-diff", "--no-textconv", base, head, "--", *pr_files,
     ) or ""
 
