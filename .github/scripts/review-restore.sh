@@ -154,6 +154,14 @@ export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_COUNT=0
+# GIT_COMMON_DIR and its siblings redirect where git finds the common
+# directory — config, refs, the object store — so a model-published
+# value serves its own config to every git call in this step, bypassing
+# the replaced .git/config entirely (the round-16 finding: a smudge
+# filter defined in a redirected common dir executes during the reset).
+# Unset here as well as in the workflow's step blocks: defense for
+# contexts that source this script without them.
+unset GIT_COMMON_DIR GIT_NAMESPACE GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE
 # The runner's real HOME is shared with the model step (same user), so
 # every HOME-adjacent config the token-bearing commands consult is
 # model-writable: gh's hosts.yml (endpoint/credential redirect), the
@@ -217,6 +225,12 @@ rm -f .git/info/attributes
 # attributes, before the first git invocation; the step env also pins
 # GIT_GRAFT_FILE=/dev/null so a re-planted file cannot take effect.
 rm -f .git/info/grafts
+# The worktree .gitattributes is model-writable and parses during the
+# reset's checkout (bindings apply before the trusted tree restores it);
+# with the config sources dead a binding has no filter definition to
+# run, but the file is deleted anyway — the reset restores the trusted
+# copy (the round-16 finding's belt-and-braces).
+rm -f .gitattributes
 # The git invocations below carry the full per-invocation pin set: an
 # empty core.fsmonitor disables a model-written fsmonitor hook on every
 # index-refreshing command here (reset, clean, ls-files), core.pager=cat

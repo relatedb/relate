@@ -375,7 +375,28 @@ jobs:
                   # adjudicated accepted risk bounded by the
                   # spend-limited review key (LABS-1689).
                   {"action": "permission", "resource": "webfetch", "effect": "deny"},
-                  {"action": "permission", "resource": "websearch", "effect": "deny"}
+                  {"action": "permission", "resource": "websearch", "effect": "deny"},
+                  # The absolute-path and env-wrapper spellings of the
+                  # denied tools (the round-16 finding): prefix patterns
+                  # match only the literal command names, so
+                  # /usr/bin/sudo, env sudo, /usr/bin/docker and the
+                  # -C form of git's network verbs slip past them. These
+                  # close the named vectors; the pattern-vs-sandbox
+                  # class itself (anything not named can still run) is
+                  # the adjudicated residual — the bounds are the
+                  # container-topology redesign and the spend-limited
+                  # review key (LABS-1689).
+                  {"action": "permission", "resource": "shell:/usr/bin/sudo *", "effect": "deny"},
+                  {"action": "permission", "resource": "shell:/usr/bin/docker *", "effect": "deny"},
+                  {"action": "permission", "resource": "shell:/usr/bin/curl *", "effect": "deny"},
+                  {"action": "permission", "resource": "shell:/usr/bin/wget *", "effect": "deny"},
+                  {"action": "permission", "resource": "shell:env sudo*", "effect": "deny"},
+                  {"action": "permission", "resource": "shell:env docker*", "effect": "deny"},
+                  {"action": "permission", "resource": "shell:env curl*", "effect": "deny"},
+                  {"action": "permission", "resource": "shell:git -C * fetch*", "effect": "deny"},
+                  {"action": "permission", "resource": "shell:git -C * clone*", "effect": "deny"},
+                  {"action": "permission", "resource": "shell:git -C * pull*", "effect": "deny"},
+                  {"action": "permission", "resource": "shell:git -C * push*", "effect": "deny"}
                 ]
               }
             }
@@ -544,6 +565,7 @@ jobs:
           unset GIT_WORK_TREE GIT_DIR GIT_INDEX_FILE GIT_EXEC_PATH \
             GIT_CONFIG_PARAMETERS GIT_OBJECT_DIRECTORY \
             GIT_ALTERNATE_OBJECT_DIRECTORIES \
+            GIT_COMMON_DIR GIT_NAMESPACE GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE \
             HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY \
             SSL_CERT_FILE CURL_CA_BUNDLE
           # The staging show below reads the worktree's object store,
@@ -723,6 +745,7 @@ jobs:
           unset GIT_WORK_TREE GIT_DIR GIT_INDEX_FILE GIT_EXEC_PATH \
             GIT_CONFIG_PARAMETERS GIT_OBJECT_DIRECTORY \
             GIT_ALTERNATE_OBJECT_DIRECTORIES \
+            GIT_COMMON_DIR GIT_NAMESPACE GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE \
             HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY \
             SSL_CERT_FILE CURL_CA_BUNDLE
           # The staging show below reads the worktree's object store,
@@ -879,6 +902,7 @@ jobs:
           unset GIT_WORK_TREE GIT_DIR GIT_INDEX_FILE GIT_EXEC_PATH \
             GIT_CONFIG_PARAMETERS GIT_OBJECT_DIRECTORY \
             GIT_ALTERNATE_OBJECT_DIRECTORIES \
+            GIT_COMMON_DIR GIT_NAMESPACE GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE \
             HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY \
             SSL_CERT_FILE CURL_CA_BUNDLE
           # The staging show below reads the worktree's object store,
