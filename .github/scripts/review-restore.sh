@@ -225,6 +225,19 @@ if [ "$NO_CLEAN" -ne 1 ]; then
   git -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null clean -fdx -- . ':(exclude).stellar'
 fi
 
+# A force-added .stellar SYMLINK (e.g. .stellar -> docs) is tracked at
+# HEAD, so it survives the reset above and the .stellar-excluding clean
+# below — and the findings guard's literal paths then resolve into the
+# committed tree it points at, where a pass-shaped document poses as
+# model output whenever the model run wrote nothing (the round-12
+# finding, re-opening the tracked-pass bypass the guard exists to
+# close). .stellar must be a REAL directory: a symlink (or any
+# non-directory) is replaced outright before the guard runs.
+if [ -L .stellar ]; then
+  rm -f .stellar
+fi
+mkdir -p .stellar
+
 for f in "$@"; do
   if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; } || git -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
     echo "post: rejecting non-model output $f (symlink or tracked at HEAD) — deleting"

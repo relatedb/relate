@@ -363,7 +363,19 @@ jobs:
                   {"action": "permission", "resource": "shell:*> /dev/tcp/*", "effect": "deny"},
                   {"action": "permission", "resource": "shell:*<>/dev/tcp/*", "effect": "deny"},
                   {"action": "permission", "resource": "edit:/*", "effect": "deny"},
-                  {"action": "permission", "resource": "edit:/home/runner/work/_temp/*", "effect": "allow"}
+                  {"action": "permission", "resource": "edit:/home/runner/work/_temp/*", "effect": "allow"},
+                  # The model's own network-capable TOOLS are denied
+                  # outright (the round-12 finding): the shell rules
+                  # above name literal shell clients, but webfetch and
+                  # websearch are separate tools the model can call
+                  # without a shell — and the review lanes never need
+                  # them (the prompts already forbid fetching external
+                  # URLs). The interpreter-socket residual (python/node
+                  # opening sockets despite the shell rules) remains the
+                  # adjudicated accepted risk bounded by the
+                  # spend-limited review key (LABS-1689).
+                  {"action": "permission", "resource": "webfetch", "effect": "deny"},
+                  {"action": "permission", "resource": "websearch", "effect": "deny"}
                 ]
               }
             }
