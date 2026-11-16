@@ -508,6 +508,19 @@ jobs:
           # too late for shell/loader startup.
           BASH_ENV: ''
           ENV: ''
+          # Bash startup-option and trace-prompt pins: bash applies the
+          # options named in SHELLOPTS (and BASHOPTS) from the
+          # environment at startup, and xtrace expands PS4 — with
+          # command substitution — for every traced command, so a
+          # model-published SHELLOPTS=xtrace plus PS4='$(…)' executes
+          # in this step's very first shell command, inside the shell
+          # that holds GH_TOKEN and before the env -i re-exec runs (the
+          # round-26 finding). The empty pins hold from process start;
+          # the re-exec's rebuilt environment never carries these names
+          # at all.
+          SHELLOPTS: ''
+          BASHOPTS: ''
+          PS4: ''
           LD_PRELOAD: ''
           LD_LIBRARY_PATH: ''
           LD_AUDIT: ''
@@ -778,6 +791,19 @@ jobs:
           # too late for shell/loader startup.
           BASH_ENV: ''
           ENV: ''
+          # Bash startup-option and trace-prompt pins: bash applies the
+          # options named in SHELLOPTS (and BASHOPTS) from the
+          # environment at startup, and xtrace expands PS4 — with
+          # command substitution — for every traced command, so a
+          # model-published SHELLOPTS=xtrace plus PS4='$(…)' executes
+          # in this step's very first shell command, inside the shell
+          # that holds GH_TOKEN and before the env -i re-exec runs (the
+          # round-26 finding). The empty pins hold from process start;
+          # the re-exec's rebuilt environment never carries these names
+          # at all.
+          SHELLOPTS: ''
+          BASHOPTS: ''
+          PS4: ''
           LD_PRELOAD: ''
           LD_LIBRARY_PATH: ''
           LD_AUDIT: ''
@@ -1027,6 +1053,19 @@ jobs:
           # too late for shell/loader startup.
           BASH_ENV: ''
           ENV: ''
+          # Bash startup-option and trace-prompt pins: bash applies the
+          # options named in SHELLOPTS (and BASHOPTS) from the
+          # environment at startup, and xtrace expands PS4 — with
+          # command substitution — for every traced command, so a
+          # model-published SHELLOPTS=xtrace plus PS4='$(…)' executes
+          # in this step's very first shell command, inside the shell
+          # that holds GH_TOKEN and before the env -i re-exec runs (the
+          # round-26 finding). The empty pins hold from process start;
+          # the re-exec's rebuilt environment never carries these names
+          # at all.
+          SHELLOPTS: ''
+          BASHOPTS: ''
+          PS4: ''
           LD_PRELOAD: ''
           LD_LIBRARY_PATH: ''
           LD_AUDIT: ''
