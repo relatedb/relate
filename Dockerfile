@@ -74,7 +74,8 @@ ARG BINARY_SOURCE=build
 # Base images are pinned to their multi-arch index digest so a re-pushed tag
 # can't change what the release builds; bump the tag and digest together.
 FROM rust:1.88-alpine@sha256:9dfaae478ecd298b6b5a039e1f2cc4fc040fc818a2de9aa78fa714dea036574d AS chef
-RUN apk add --no-cache build-base ca-certificates curl python3
+# xz unpacks the cargo-auditable release tarball in the install below.
+RUN apk add --no-cache build-base ca-certificates curl python3 xz
 # sccache wraps rustc and cache-keys on content hash — cargo's own
 # fingerprints are mtime-based and `COPY . .` refreshes every mtime, so
 # without it every build recompiled the world even with a warm target
@@ -96,6 +97,32 @@ RUN --mount=type=bind,source=scripts/github-download.sh,target=/tmp/github-downl
     && echo "${SCCACHE_SHA256}  /tmp/sccache.tgz" | sha256sum -c - \
     && tar -xzf /tmp/sccache.tgz --strip-components=1 -C /usr/local/bin "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" \
     && rm /tmp/sccache.tgz && sccache --version
+# cargo-auditable, same version-plus-sha256 pinned-release pattern as
+# sccache above (the musl asset for this Alpine host). The build stage
+# below compiles the shipped `relate` and `entrypoint` binaries through
+# `cargo auditable build`, so each embeds its exact crate list —
+# Zlib-compressed JSON in the `.dep-v0` section — readable with
+# `cargo audit bin` and by grype/osv-scanner image scans, without the
+# Cargo.lock it was built from (RELEASING.md, "Embedded dependency
+# manifests"). Same version as scripts/install-cargo-auditable.sh; that
+# script pins the glibc/macOS/windows assets for the release.yml lanes,
+# while this pin carries the musl digest inline — the chef stage has no
+# bash, and the script's Linux case pins the glibc asset, not the musl
+# one this Alpine host needs.
+ARG CARGO_AUDITABLE_VERSION=0.7.7
+ARG CARGO_AUDITABLE_SHA256=7676443367c5e33d9fb22acef63cccb5e9202de12dae1b0579995eb3e2bc7a18
+RUN --mount=type=bind,source=scripts/github-download.sh,target=/tmp/github-download.sh \
+    --mount=type=secret,id=GITHUB_TOKEN,required=false \
+    if [ -s /run/secrets/GITHUB_TOKEN ]; then export GITHUB_TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; fi \
+    && export GITHUB_ACTIONS="${GITHUB_ACTIONS}" \
+    && sh /tmp/github-download.sh \
+        --repo rust-secure-code/cargo-auditable \
+        --tag "v${CARGO_AUDITABLE_VERSION}" \
+        --asset "cargo-auditable-x86_64-unknown-linux-musl.tar.xz" \
+        -o /tmp/cargo-auditable.tar.xz \
+    && echo "${CARGO_AUDITABLE_SHA256}  /tmp/cargo-auditable.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/cargo-auditable.tar.xz --strip-components=1 -C /usr/local/bin "cargo-auditable-x86_64-unknown-linux-musl/cargo-auditable" \
+    && rm /tmp/cargo-auditable.tar.xz && cargo auditable --version
 RUN cargo install cargo-chef --locked --version 0.1.78
 WORKDIR /src
 
@@ -119,10 +146,19 @@ COPY . .
 # Cache mounts are build-speed only and local-dev-oriented (they persist in
 # the local builder); nothing from a mount lands in the image — the runtime
 # stage copies binaries out of /out.
+# `cargo auditable build` chains cargo-auditable as RUSTC_WORKSPACE_WRAPPER
+# over the sccache RUSTC_WRAPPER and injects the `.dep-v0` section at the
+# two bins' link steps only: external dependencies are untouched, so the
+# chef-cooked dependency layer above stays valid (deps remain Fresh; only
+# workspace members recompile). sccache keys every compile on the CARGO_*
+# environment, and the wrapper sets CARGO_AUDITABLE_ORIG_ARGS — its
+# workspace-member entries are keyed apart from plain-build ones and the
+# chained compiles come out non-cacheable, so the members compile from
+# source here; the deps, the bulk of the tree, stay in the cooked layer.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/opt/sccache \
     RUSTC_WRAPPER=/usr/local/bin/sccache SCCACHE_DIR=/opt/sccache \
-    cargo build --release -p relate-cli -p relate-bolt \
+    cargo auditable build --release -p relate-cli -p relate-bolt \
     && mkdir -p /out \
     && cp target/release/relate target/release/entrypoint /out/
 

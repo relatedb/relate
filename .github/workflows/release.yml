@@ -437,7 +437,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      # Embedded dependency manifests: the non-Windows legs build through
+      # cargo-auditable (pinned install, the install-binaryen.sh pattern), so
+      # every shipped `relate` binary carries its crate list in the `.dep-v0`
+      # linker section — `cargo audit bin <binary>` reads it (RELEASING.md,
+      # "Embedded dependency manifests"). The Windows leg is owned by the
+      # windows-authenticode-signing lane and builds exactly as before —
+      # plain `cargo build`, same command and env; that lane integrates the
+      # manifest on Windows.
+      - name: Install cargo-auditable (pinned)
+        if: runner.os != 'Windows'
+        run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
+
+      - name: Build (auditable)
+        if: runner.os != 'Windows'
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo auditable build -p relate-cli --release --target ${{ matrix.target }}
+
       - name: Build
+        if: runner.os == 'Windows'
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build -p relate-cli --release --target ${{ matrix.target }}
@@ -553,10 +572,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      # Embedded dependency manifests for the shipped FFI libraries: every
+      # leg (Windows included — no lane owns a leg of this job) builds
+      # through cargo-auditable (pinned install, the install-binaryen.sh
+      # pattern), so the cdylib (.so/.dylib/.dll) carries its crate list in
+      # the `.dep-v0` section and answers `cargo audit bin`. The section is
+      # allocated data, not debuginfo: the Linux packaging's
+      # `strip --strip-unneeded` keeps it. The staticlib carries no manifest
+      # — archives have no link step for the injection; the cdylib is the
+      # auditable surface (the same tree's staticlibs for the Swift
+      # XCFramework are the xcframework lanes' exclusion reason).
+      - name: Install cargo-auditable (pinned)
+        shell: bash
+        run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
+
       - name: Build FFI
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build -p relate-ffi --release --target ${{ matrix.target }}
+        run: cargo auditable build -p relate-ffi --release --target ${{ matrix.target }}
 
       - name: Package FFI artifacts
         shell: bash
@@ -860,8 +893,15 @@ jobs:
       - name: Install binaryen (wasm-opt)
         run: bash scripts/install-binaryen.sh "$RUNNER_TEMP/binaryen" >> "$GITHUB_PATH"
 
+      # Embedded dependency manifest for the wasm bundle: build-wasm.sh
+      # --auditable drives the cargo step through the pinned cargo-auditable,
+      # so the shipped relate_bg.wasm carries its crate list in the .dep-v0
+      # custom section (verified to survive wasm-bindgen and wasm-opt).
+      - name: Install cargo-auditable (pinned)
+        run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
+
       - name: Build the wasm bundle
-        run: bash scripts/build-wasm.sh --mode release
+        run: bash scripts/build-wasm.sh --mode release --auditable
 
       - name: npm pack
         run: |

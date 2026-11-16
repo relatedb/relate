@@ -154,6 +154,45 @@ python3 scripts/third-party-licenses.py all                  # drift + policy re
   `-f enforce=true`) runs the same job alone; the freshly generated notices
   are uploaded as the `third-party-notices` artifact.
 
+## Embedded dependency manifests
+
+The release jobs that build shipped Rust binaries — the CLI (its non-Windows
+legs; the Windows leg belongs to the windows-authenticode-signing lane), the
+FFI cdylib, the wasm bundle, and the server image's in-container build (the
+Dockerfile's build stage, through a pinned cargo-auditable of its own) —
+build through
+[cargo-auditable](https://github.com/rust-secure-code/cargo-auditable),
+installed from a version-plus-SHA-256 pinned release
+(`scripts/install-cargo-auditable.sh`; the Dockerfile carries the musl
+digest inline, the same pinned-release pattern as its sccache install).
+Every built artifact embeds its
+exact crate list: a Zlib-compressed JSON dependency tree in the `.dep-v0`
+section, so a shipped binary can be audited without its `Cargo.lock`:
+
+```sh
+cargo audit bin relate-darwin-arm64   # prints the crate list, checks it against the RustSec advisory DB
+cargo audit bin librelate_ffi.so      # the FFI cdylib
+cargo audit bin relate_bg.wasm        # the wasm bundle (also: wasm-tools metadata show)
+docker create --name relate-audit relate-bolt:<version> \   # the server image's binaries
+  && docker cp relate-audit:/bin/relate . && docker rm relate-audit \
+  && cargo audit bin relate
+```
+
+`trivy`, `grype`, `syft`, and `osv-scanner` read the same section when
+scanning shipped artifacts — grype and osv-scanner read it directly off the
+shipped container image. Exceptions: the FFI and XCFramework staticlibs
+carry no manifest (archives have no link step for the injection), and the
+PyPI wheels are built by maturin inside manylinux containers the wrapper
+cannot reach. The injection is link-time only (a RUSTC_WORKSPACE_WRAPPER
+chained over the sccache RUSTC_WRAPPER) — external dependency compiles are
+byte-identical to plain builds, so the lanes' rust-cache keys, restored
+dependency artifacts, and the Dockerfile's chef-cooked dependency layer all
+stay valid; only workspace members recompile. sccache keys every compile on
+the `CARGO_*` environment, and the wrapper sets `CARGO_AUDITABLE_ORIG_ARGS`,
+so its entries are keyed apart from plain-build ones (dependency hits are
+served within auditable builds) while the chained workspace-member compiles
+come out non-cacheable and compile from source.
+
 ## Registry publishing
 
 npm (ADR-0278), PyPI, and crates.io (ADR-0560) publish from one workflow,
