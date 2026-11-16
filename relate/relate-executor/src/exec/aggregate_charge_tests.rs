@@ -505,6 +505,28 @@ fn a_fold_served_distinct_count_is_capped_by_its_running_total() {
     assert_crossing_element(used, cap, one_landing);
 }
 
+/// The path fold's keyless seed group lands through the same charge a
+/// row-loop landing pays: the map entry and key half *and* the per-group
+/// seats buffer. A cap equal to the entry-and-key figure alone (what the
+/// seed paid before it billed the seats buffer) must refuse the seed when
+/// nothing matched.
+#[test]
+fn a_path_fold_keyless_seed_bills_its_seats_buffer_like_a_landing() {
+    let builder = crate::exec::test_support::Builder::new();
+    builder.node("a0", &["A"]);
+    let mut g = builder.done();
+    let entry_and_key = crate::workspace::group_entry_insert_delta(0, &[])
+        + crate::workspace::value_buffer_bytes(0);
+    g.configure_expression_memory_limit(Some(entry_and_key));
+    let error = try_exec_cypher(
+        &g,
+        "MATCH (a:A)-[:E]->(:M)-[:E]->(b:B) RETURN count(*) AS c",
+    )
+    .err()
+    .expect("the seed's seats buffer must cross a cap sized to the entry alone");
+    assert_expression_cap(&error, entry_and_key);
+}
+
 /// LABS-781 (security round, folded from the bindings session's
 /// verification branch and reworked per the stellar round): the
 /// fixed-length path fold's group table is the same retaining

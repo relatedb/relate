@@ -17,7 +17,7 @@ use crate::eval::{eval, PercentileSample};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::table::GroupBill;
+use super::bill::GroupBill;
 
 /// One shared operand: what every group's buffer over it has in common.
 pub(super) struct PoolSite<'e> {

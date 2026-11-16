@@ -435,3 +435,22 @@ fn row_retained_heap_is_exact_whatever_order_the_values_land_in() {
         assert_eq!(row_retained_heap(&row(&order)), expected, "order {order:?}");
     }
 }
+
+/// An allocation the row references twice — from two row slots, or twice
+/// from inside one of its own containers — is one allocation: its figure
+/// is counted once, however many references the walk counts.
+#[test]
+fn a_value_referenced_twice_is_counted_once() {
+    let text = "payload-text";
+    let shared = Value::String(Arc::from(text));
+    assert_eq!(
+        row_retained_heap(&[shared.clone(), shared]),
+        str_logical_bytes(text)
+    );
+    let twice = Value::String(Arc::from(text));
+    let list = Value::List(Arc::new(vec![twice.clone(), twice]));
+    assert_eq!(
+        row_retained_heap(&[list]),
+        buffer_bytes(2, size_of::<Value>() as u64) + str_logical_bytes(text)
+    );
+}

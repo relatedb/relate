@@ -6,8 +6,6 @@ use std::cell::Cell;
 
 use relate_core::{Error, Result, Value};
 
-use crate::row::Row;
-
 use super::ExecGraph;
 
 /// ADR-0395: the fixed per-top-level-statement budget on nested
@@ -182,6 +180,25 @@ pub(crate) struct RetainedTotal {
     total: u64,
 }
 
+/// The per-group seats vector a streaming fold's group landing builds: how
+/// many seats and the size of one. Named by the seat type, so no caller
+/// writes the stride arithmetic.
+#[derive(Clone, Copy)]
+pub(crate) struct SeatShape {
+    count: usize,
+    stride: u64,
+}
+
+impl SeatShape {
+    /// `count` seats of type `T`.
+    pub(crate) fn of<T>(count: usize) -> Self {
+        Self {
+            count,
+            stride: size_of::<T>() as u64,
+        }
+    }
+}
+
 impl RetainedTotal {
     /// Grow by a payload already charged where it was built (a shared clone
     /// or a value whose own construction was charged). Shared/borrowed
@@ -208,8 +225,7 @@ impl RetainedTotal {
     /// containers call it, charged ahead of the landing so a refusal
     /// never leaves the row retained.
     pub(crate) fn add_row(&mut self, graph: &ExecGraph<'_>, values: &[Value]) -> Result<()> {
-        self.add_bytes(graph, crate::workspace::row_landing_bytes(values))?;
-        self.add_bytes(graph, std::mem::size_of::<Row>() as u64)
+        self.add_bytes(graph, crate::workspace::row_entry_bytes(values))
     }
 
     /// One group-table landing in a streaming fold: the map entry's
@@ -222,18 +238,27 @@ impl RetainedTotal {
     /// each payload gets. The one spelling of the group-landing charge —
     /// both folds' vacant arms and the keyless seeds call it, charged
     /// ahead of the insert so a refusal never leaves the group landed.
-    pub(crate) fn add_group_entry(
+    ///
+    /// The landing also builds the group's seats vector (its aggregate
+    /// state is inline counters, so the slot buffer is the whole figure):
+    /// [`SeatShape`]: the seat count and the seat type's size.
+    pub(crate) fn add_group_landing(
         &mut self,
         graph: &ExecGraph<'_>,
         map_slots: usize,
         key: &[crate::group_key::GroupKey],
         vals_len: usize,
+        seats: SeatShape,
     ) -> Result<()> {
         self.add_bytes(
             graph,
             crate::workspace::group_entry_insert_delta(map_slots, key),
         )?;
-        self.add_bytes(graph, crate::workspace::value_buffer_bytes(vals_len))
+        self.add_bytes(graph, crate::workspace::value_buffer_bytes(vals_len))?;
+        self.add_bytes(
+            graph,
+            crate::workspace::buffer_bytes(seats.count, seats.stride),
+        )
     }
 
     /// One just-built allocation that is also retained: record it as

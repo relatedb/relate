@@ -150,8 +150,7 @@ impl Builder {
 
     /// A node with `labels` and its name as `id`.
     pub(crate) fn node(&self, id: &str, labels: &[&str]) -> NodeId {
-        let props = BTreeMap::from([("id".into(), Value::String(id.into()))]);
-        self.create(labels, props)
+        self.prop_node(id, labels, &[])
     }
 
     /// A node with `labels`, its name as `id`, and extra properties.

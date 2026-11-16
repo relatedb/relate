@@ -26,7 +26,7 @@ impl<'e> FoldedGroup<'e> {
     }
 
     /// The value of the call at `expr` (by identity).
-    pub(super) fn value(&self, expr: &Expr) -> Result<Value> {
+    fn value(&self, expr: &Expr) -> Result<Value> {
         self.values
             .iter()
             .find(|(site, _)| std::ptr::eq(*site, expr))

@@ -26,10 +26,10 @@ use relate_ir::Expr;
 
 use crate::overlay::ExecGraph;
 #[cfg(test)]
-use crate::overlay::RetainedTotal;
-#[cfg(test)]
 use crate::row::Row;
 
+#[cfg(test)]
+use super::bill::GroupBill;
 use super::columns::AccTable;
 #[cfg(test)]
 use super::eval::FoldedGroup;
@@ -64,18 +64,24 @@ pub(crate) fn discover<'e>(
     Ok(AccTable::new(sites))
 }
 
-/// One group's accumulators on their own: a table holding group 0.
+/// One group's accumulators on their own: a table holding group 0, with
+/// the bill it settles into. The bill owns its own expression total, so a
+/// test reads the figure through [`Self::billed`] instead of lending the
+/// production bill a total to swap a placeholder into.
 #[cfg(test)]
-pub(crate) struct GroupAccs<'e>(AccTable<'e>);
+pub(crate) struct GroupAccs<'e> {
+    table: AccTable<'e>,
+    bill: GroupBill,
+}
 
 #[cfg(test)]
 impl<'e> GroupAccs<'e> {
     /// The single-group harness over a freshly discovered table: group 0
     /// opened, ready to offer.
-    pub(crate) fn open(table: AccTable<'e>) -> Self {
-        let mut table = table;
+    pub(crate) fn open(graph: &ExecGraph<'_>, mut table: AccTable<'e>) -> Result<Self> {
+        let bill = GroupBill::open(graph)?;
         table.open_group();
-        Self(table)
+        Ok(Self { table, bill })
     }
 
     pub(crate) fn offer(
@@ -83,23 +89,17 @@ impl<'e> GroupAccs<'e> {
         graph: &ExecGraph<'_>,
         row: &Row,
         params: &BTreeMap<String, Value>,
-        total: &mut RetainedTotal,
     ) -> Result<()> {
-        let mut bill = super::table::GroupBill::take_retained(total, graph)?;
-        let result = self.0.offer(0, graph, row, params, &mut bill);
-        bill.return_retained(total);
-        result
+        self.table.offer(0, graph, row, params, &mut self.bill)
     }
 
-    pub(crate) fn settle(
-        &mut self,
-        graph: &ExecGraph<'_>,
-        total: &mut RetainedTotal,
-    ) -> Result<()> {
-        let mut bill = super::table::GroupBill::take_retained(total, graph)?;
-        let result = self.0.settle(0, graph, &mut bill);
-        bill.return_retained(total);
-        result
+    pub(crate) fn settle(&mut self, graph: &ExecGraph<'_>) -> Result<()> {
+        self.table.settle(0, graph, &mut self.bill)
+    }
+
+    /// The bytes the offers and settles billed so far.
+    pub(crate) fn billed(&self) -> u64 {
+        self.bill.total()
     }
 
     pub(crate) fn finish(
@@ -108,6 +108,6 @@ impl<'e> GroupAccs<'e> {
         seed: Option<&Row>,
         params: &BTreeMap<String, Value>,
     ) -> FoldedGroup<'e> {
-        self.0.finish_group(0, graph, seed, params)
+        self.table.finish_group(0, graph, seed, params)
     }
 }

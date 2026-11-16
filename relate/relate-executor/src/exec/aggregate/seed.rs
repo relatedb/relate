@@ -237,12 +237,20 @@ pub(super) enum SeedStore {
 
 /// The item-kind precedence, spelled once: a `*` item, then an aggregate
 /// expression, then the residual a grouping key may answer (`None`).
-fn base_role(item: &Projection) -> Option<ItemRole> {
+pub(super) fn base_role(item: &Projection) -> Option<ItemRole> {
     match (is_star_item(item), is_agg_expr(&item.expr)) {
         (true, _) => Some(ItemRole::Star),
         (_, true) => Some(ItemRole::Aggregate),
         _ => None,
     }
+}
+
+/// The kept slots one group holds in the flat buffer: the key values its
+/// items read, then `columns` first-row columns. The one spelling of the
+/// stride — the landing bill and the take both read it, so what is billed
+/// and what is sliced out cannot disagree.
+fn slot_stride(key_slots: &[usize], columns: usize) -> usize {
+    key_slots.len() + columns
 }
 
 /// The expression's position in the grouping keys, `None` when it restates
@@ -320,11 +328,9 @@ impl SeedStore {
     /// is offered to the accumulators, while it still solely owns its
     /// payload (the same order the old whole-row charge used).
     pub(super) fn landing_bytes(&self, groups: usize, keys: &KeyValues, row: &Row) -> Result<u64> {
-        use crate::workspace::{buffer_growth, retained_rows_bytes, row_retained_heap};
+        use crate::workspace::{buffer_growth, row_entry_bytes};
         match self {
-            Self::Whole(_) => {
-                Ok(row_retained_heap(row.values()) + retained_rows_bytes(1, row.values().len()))
-            }
+            Self::Whole(_) => Ok(row_entry_bytes(row.values())),
             Self::Columns {
                 wanted,
                 resolved,
@@ -349,7 +355,7 @@ impl SeedStore {
                         .map(|(_, value)| value)
                         .collect(),
                 };
-                let stride = key_slots.len() + cols.len();
+                let stride = slot_stride(key_slots, cols.len());
                 Ok(buffer_growth(
                     groups * stride,
                     (groups + 1) * stride,
@@ -419,7 +425,7 @@ impl SeedStore {
                         keys: Vec::new(),
                     };
                 };
-                let stride = key_slots.len() + resolved.columns.len();
+                let stride = slot_stride(key_slots, resolved.columns.len());
                 let mut slots = values[group * stride..(group + 1) * stride]
                     .iter_mut()
                     .map(|kept| std::mem::take(kept).into_value());

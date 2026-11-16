@@ -9,7 +9,7 @@ use relate_core::Value;
 
 use crate::pattern_engine::PatternEngine;
 
-use super::test_support::{build, exec_cypher, profiled, same_rows, walk_only, Built};
+use super::test_support::{build, exec_cypher, profiled, same_rows, sort_rows, walk_only, Built};
 
 /// A hub (node 0) over `fan` children, each with two grandchildren, plus a
 /// back edge from the first grandchild to the hub so paths revisit it.
@@ -177,7 +177,7 @@ fn on_every_engine(cypher: &str) -> Vec<Vec<Value>> {
         );
     }
     let mut rows = baseline.rows;
-    rows.sort_by_cached_key(|row| format!("{row:?}"));
+    sort_rows(&mut rows);
     rows
 }
 

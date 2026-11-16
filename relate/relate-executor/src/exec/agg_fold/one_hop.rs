@@ -20,7 +20,7 @@ use relate_ir::{Expr, PathPattern, Projection};
 
 use crate::eval::{eval, expr_vars, expr_within, is_agg_expr, predicate_holds};
 use crate::group_key::GroupKey;
-use crate::overlay::ExecGraph;
+use crate::overlay::{ExecGraph, SeatShape};
 use crate::pattern_walk::{
     bind_node_stub, bind_trail, binding, node_candidates, rel_edge_ok, RelFilter,
 };
@@ -357,22 +357,18 @@ impl<'a> OneHopFold<'a> {
         // ADR-0463 (LABS-781): the group-table landing charge. An
         // occupied landing retains nothing new (this row's key is
         // dropped by the lookup and its vals with it); a new group's
-        // landing pays the one `add_group_entry` charge ahead of the
+        // landing pays the one `add_group_landing` charge ahead of the
         // insert.
         let map_slots = groups.len();
         let entry = match groups.entry(key) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                retained.add_group_entry(graph, map_slots, entry.key(), vals.len())?;
-                // The per-group seats vector the landing clones (its
-                // aggregate state is inline counters, so the slot buffer
-                // is the whole figure).
-                retained.add_bytes(
+                retained.add_group_landing(
                     graph,
-                    crate::workspace::buffer_bytes(
-                        proto_aggs.len(),
-                        size_of::<StreamSeat>() as u64,
-                    ),
+                    map_slots,
+                    entry.key(),
+                    vals.len(),
+                    SeatShape::of::<StreamSeat>(proto_aggs.len()),
                 )?;
                 entry.insert((vals, proto_aggs.clone()))
             }
@@ -508,9 +504,11 @@ impl<'a> OneHopFold<'a> {
     fn finish(mut self) -> Result<Vec<Row>> {
         if self.groups.is_empty() && self.key_items.is_empty() {
             // ADR-0463 (LABS-781): the keyless phantom group lands
-            // through the same `add_group_entry` charge every row-loop
+            // through the same `add_group_landing` charge every row-loop
             // landing pays (an empty key carries no payload).
-            self.retained.add_group_entry(self.graph, 0, &[], 0)?;
+            let seats = SeatShape::of::<StreamSeat>(self.proto_aggs.len());
+            self.retained
+                .add_group_landing(self.graph, 0, &[], 0, seats)?;
             let proto_aggs = std::mem::take(&mut self.proto_aggs);
             self.groups.insert(Vec::new(), (Vec::new(), proto_aggs));
         }

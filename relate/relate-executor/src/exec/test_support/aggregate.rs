@@ -44,14 +44,14 @@ pub(crate) fn fold_group_rows<'e>(
     params: &BTreeMap<String, Value>,
 ) -> relate_core::Result<(FoldedGroup<'e>, u64)> {
     let table = discover(graph, exprs, [], params)?;
-    let mut accs = GroupAccs::open(table);
-    let mut total = graph.retain_bytes(0)?;
+    let mut accs = GroupAccs::open(graph, table)?;
     for row in group {
-        accs.offer(graph, row, params, &mut total)?;
-        accs.settle(graph, &mut total)?;
+        accs.offer(graph, row, params)?;
+        accs.settle(graph)?;
     }
+    let billed = accs.billed();
     let folded = accs.finish(graph, group.first(), params);
-    Ok((folded, total.total()))
+    Ok((folded, billed))
 }
 
 /// Evaluate `expr` over `group` through the production path: discover the

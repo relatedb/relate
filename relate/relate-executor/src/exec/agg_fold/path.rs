@@ -11,7 +11,7 @@ use relate_names::NamedToken;
 use crate::eval::{binary, eval};
 use crate::group_key::GroupKey;
 use crate::hash_seed::{seeded_map, IdMap, SeededMap};
-use crate::overlay::{ExecGraph, RetainedTotal};
+use crate::overlay::{ExecGraph, RetainedTotal, SeatShape};
 use crate::pattern_walk::{binding, node_candidates, rel_props_ok, Binding, NodeBinding};
 use crate::row::Row;
 use crate::store::RelTypes;
@@ -547,7 +547,7 @@ fn absorb(env: &mut FoldEnv<'_>, bindings: &[Option<NodeId>]) -> Result<()> {
                 Some(cached) => cached.clone(),
                 None => {
                     // The payload charge rides the group landing's
-                    // `add_group_entry` below: its entry delta counts the
+                    // `add_group_landing` below: its entry delta counts the
                     // key's payload once, count-blind to the `Arc` shares
                     // the key cache and the props cache hold.
                     let cached = path_key(env.graph, env.plan, env.caches, &ids);
@@ -562,26 +562,17 @@ fn absorb(env: &mut FoldEnv<'_>, bindings: &[Option<NodeId>]) -> Result<()> {
     // ADR-0463 (LABS-781): the group-table landing charge. An occupied
     // landing retains nothing new (this row's key is dropped by the
     // lookup and its cached vals with it); a new group's landing pays
-    // the one `add_group_entry` charge ahead of the insert.
+    // the one `add_group_landing` charge ahead of the insert.
     let map_slots = env.groups.len();
     let entry = match env.groups.entry(cached.key) {
         Entry::Occupied(entry) => entry.into_mut(),
         Entry::Vacant(entry) => {
-            env.group_retained.add_group_entry(
+            env.group_retained.add_group_landing(
                 env.graph,
                 map_slots,
                 entry.key(),
                 cached.vals.len(),
-            )?;
-            // The per-group seats vector the landing builds (its
-            // aggregate state is inline counters, so the slot buffer is
-            // the whole figure).
-            env.group_retained.add_bytes(
-                env.graph,
-                crate::workspace::buffer_bytes(
-                    seats.len(),
-                    size_of::<(CountSeat, StreamAgg)>() as u64,
-                ),
+                SeatShape::of::<(CountSeat, StreamAgg)>(seats.len()),
             )?;
             entry.insert((cached.vals, fresh_group_aggs(seats)))
         }
@@ -717,9 +708,15 @@ pub(crate) fn try_fold_path_aggs(ctx: &FoldCtx<'_>) -> Result<Option<FoldedRetur
     // empty row set — one exit, no parallel early return.
     if groups.is_empty() && matches!(plan.key_plan, KeyPlan::None) {
         // ADR-0463 (LABS-781): the keyless seed lands through the same
-        // `add_group_entry` charge every row-loop landing pays (an empty
-        // key carries no payload).
-        group_retained.add_group_entry(graph, 0, &[], 0)?;
+        // charge every row-loop landing pays (an empty key carries no
+        // payload), seats buffer included.
+        group_retained.add_group_landing(
+            graph,
+            0,
+            &[],
+            0,
+            SeatShape::of::<(CountSeat, StreamAgg)>(plan.seats.len()),
+        )?;
         groups.insert(Vec::new(), (Vec::new(), fresh_group_aggs(&plan.seats)));
     }
     let out = groups

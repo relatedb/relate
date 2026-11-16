@@ -185,18 +185,26 @@ pub(crate) fn try_exec_cypher_on(graph: &ExecGraph<'_>, cypher: &str) -> Result<
     execute(graph, &ExecRequest::new(&p, &BTreeMap::new(), cypher))
 }
 
-/// The multiset row comparison (the kernels' own differential idiom):
-/// `Value` carries no total order, the debug form is one, and equal
-/// values print equal. The one spelling — the frontier rider suite and
-/// the statement differential compare their answer sets through it.
+/// Order `rows` by their debug form: `Value` carries no total order, the
+/// debug form is one, and equal values print equal. The one spelling of the
+/// multiset order — [`same_rows`] compares through it and the engine
+/// differentials sort the answer they pin against hard-coded rows with it.
+pub(crate) fn sort_rows(rows: &mut [Vec<Value>]) {
+    rows.sort_by_cached_key(|row| format!("{row:?}"));
+}
+
+/// The multiset row comparison (the kernels' own differential idiom): the
+/// columns agree and the rows agree as multisets ([`sort_rows`]). The one
+/// spelling — the frontier rider suite and the statement differential
+/// compare their answer sets through it.
 pub(crate) fn same_rows(a: &QueryResult, b: &QueryResult) -> bool {
     if a.columns != b.columns {
         return false;
     }
     let mut a = a.rows.clone();
     let mut b = b.rows.clone();
-    a.sort_by_cached_key(|row| format!("{row:?}"));
-    b.sort_by_cached_key(|row| format!("{row:?}"));
+    sort_rows(&mut a);
+    sort_rows(&mut b);
     a == b
 }
 

@@ -15,8 +15,8 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 use crate::workspace::buffer_growth;
 
+use super::bill::GroupBill;
 use super::pool::{SampleEnding, SortedPool};
-use super::table::GroupBill;
 
 /// Groups whose lenient site failed to fold: the error is parked here and
 /// surfaces when the site is read. Sparse — empty unless an `ORDER BY` key
@@ -93,6 +93,33 @@ impl<'e> Call<'e> {
     }
 }
 
+/// One group's slot of a streaming site: the fold and the peak payload
+/// bytes of the one value a `min`/`max` keeps, already charged. The slot
+/// is one value, so what a group pushes and what the column bills per
+/// group are the same type.
+pub(super) struct StreamSlot {
+    pub(super) fold: StreamFold,
+    pub(super) held: u64,
+}
+
+impl StreamSlot {
+    /// A fresh group's slot: the site's template fold, nothing held.
+    fn new(template: &StreamFold) -> Self {
+        Self {
+            fold: template.clone(),
+            held: 0,
+        }
+    }
+}
+
+/// One group's slot of a retaining site: the operands and how many of
+/// them are already charged.
+#[derive(Default)]
+pub(super) struct RetainSlot {
+    pub(super) vals: Vec<Value>,
+    pub(super) charged: usize,
+}
+
 /// One aggregate site's state across every group.
 pub(super) enum SiteState<'e> {
     CountStar(Vec<i64>),
@@ -102,18 +129,13 @@ pub(super) enum SiteState<'e> {
         call: Call<'e>,
         /// The fold a new group starts from.
         template: StreamFold,
-        folds: Vec<StreamFold>,
-        /// Per group, the peak payload bytes of the one value a `min`/`max`
-        /// keeps, already charged.
-        held: Vec<u64>,
+        slots: Vec<StreamSlot>,
     },
     /// `collect` and the DISTINCT percentiles: the operands are the state,
     /// charged to the aggregation's running total as they settle.
     Retain {
         call: Call<'e>,
-        vals: Vec<Vec<Value>>,
-        /// Per group, how many of `vals` are already charged.
-        charged: Vec<usize>,
+        slots: Vec<RetainSlot>,
     },
     /// A plain percentile call: its operands live in the shared pool
     /// column at this index, not here. The routing in
@@ -235,16 +257,14 @@ impl<'e> SiteColumn<'e> {
                 SiteState::Stream {
                     call,
                     template,
-                    folds: Vec::new(),
-                    held: Vec::new(),
+                    slots: Vec::new(),
                 },
                 dedups,
             ),
             None => (
                 SiteState::Retain {
                     call,
-                    vals: Vec::new(),
-                    charged: Vec::new(),
+                    slots: Vec::new(),
                 },
                 distinct,
             ),
@@ -297,12 +317,8 @@ impl<'e> SiteColumn<'e> {
             .map_or(0, |_| size_of::<DistinctSet>() as u64);
         match &self.state {
             SiteState::CountStar(_) => size_of::<i64>() as u64,
-            SiteState::Stream { .. } => {
-                (size_of::<StreamFold>() + size_of::<u64>()) as u64 + distinct
-            }
-            SiteState::Retain { .. } => {
-                (size_of::<Vec<Value>>() + size_of::<usize>()) as u64 + distinct
-            }
+            SiteState::Stream { .. } => size_of::<StreamSlot>() as u64 + distinct,
+            SiteState::Retain { .. } => size_of::<RetainSlot>() as u64 + distinct,
             SiteState::Pooled { .. } | SiteState::Rejected(_) => 0,
         }
     }
@@ -311,18 +327,9 @@ impl<'e> SiteColumn<'e> {
         match &mut self.state {
             SiteState::CountStar(counts) => counts.push(0),
             SiteState::Stream {
-                template,
-                folds,
-                held,
-                ..
-            } => {
-                folds.push(template.clone());
-                held.push(0);
-            }
-            SiteState::Retain { vals, charged, .. } => {
-                vals.push(Vec::new());
-                charged.push(0);
-            }
+                template, slots, ..
+            } => slots.push(StreamSlot::new(template)),
+            SiteState::Retain { slots, .. } => slots.push(RetainSlot::default()),
             SiteState::Pooled { .. } | SiteState::Rejected(_) => {}
         }
         if let Some(seen) = &mut self.seen {
@@ -346,19 +353,19 @@ impl<'e> SiteColumn<'e> {
         } = self;
         match state {
             SiteState::CountStar(counts) => counts[group] += 1,
-            SiteState::Stream { call, folds, .. } => {
+            SiteState::Stream { call, slots, .. } => {
                 if let Some(value) =
                     admitted_operand(failed, seen, group, call, graph, row, params)?
                 {
                     call.name()
-                        .with_str(|name| folds[group].offer(value, name))?;
+                        .with_str(|name| slots[group].fold.offer(value, name))?;
                 }
             }
-            SiteState::Retain { call, vals, .. } => {
+            SiteState::Retain { call, slots } => {
                 if let Some(value) =
                     admitted_operand(failed, seen, group, call, graph, row, params)?
                 {
-                    vals[group].push(value);
+                    slots[group].vals.push(value);
                 }
             }
             SiteState::Pooled { .. } | SiteState::Rejected(_) => {}
@@ -367,28 +374,23 @@ impl<'e> SiteColumn<'e> {
     }
 
     /// Drop what group `group`'s slot retained: the operands (or the fold)
-    /// with their charge cursors, and the DISTINCT seen-set — one reset
-    /// over the site's own fields, whichever shape its state holds. A
-    /// pooled site holds nothing here (its pool state releases the
-    /// sample).
+    /// with their charge cursors, and the DISTINCT seen-set — the same
+    /// reset the finish performs while it resolves the slot. A pooled
+    /// site holds nothing here (its pool state releases the sample).
     fn release(&mut self, group: usize) {
-        match &mut self.state {
+        let Self { state, seen, .. } = self;
+        match state {
             SiteState::Stream {
-                template,
-                folds,
-                held,
-                ..
+                template, slots, ..
             } => {
-                let _ = take_stream_slot(template, folds, held, group);
+                let _ = take_stream_slot(template, slots, group);
             }
-            SiteState::Retain { vals, charged, .. } => {
-                let _ = take_retain_slot(vals, charged, group);
+            SiteState::Retain { slots, .. } => {
+                let _ = take_retain_slot(slots, group);
             }
             SiteState::CountStar(_) | SiteState::Pooled { .. } | SiteState::Rejected(_) => {}
         }
-        if let Some(seen) = &mut self.seen {
-            seen[group] = DistinctSet::default();
-        }
+        reset_seen(seen, group);
     }
 
     /// A lenient site's operand failed for `group`: bill what the parked
@@ -417,24 +419,23 @@ impl<'e> SiteColumn<'e> {
             return Ok(());
         }
         match &mut self.state {
-            SiteState::Retain { vals, charged, .. } => {
-                for value in &vals[group][charged[group]..] {
-                    let slot_bytes = buffer_growth(
-                        charged[group],
-                        charged[group] + 1,
-                        size_of::<Value>() as u64,
-                    );
+            SiteState::Retain { slots, .. } => {
+                let RetainSlot { vals, charged } = &mut slots[group];
+                for value in &vals[*charged..] {
+                    let slot_bytes =
+                        buffer_growth(*charged, *charged + 1, size_of::<Value>() as u64);
                     bill.add(graph, slot_bytes)?;
                     bill.add(graph, crate::workspace::owned_heap(value))?;
-                    charged[group] += 1;
+                    *charged += 1;
                 }
             }
-            SiteState::Stream { folds, held, .. } => {
-                if let Some(best) = folds[group].held_value() {
+            SiteState::Stream { slots, .. } => {
+                let StreamSlot { fold, held } = &mut slots[group];
+                if let Some(best) = fold.held_value() {
                     let now = crate::workspace::owned_heap(best);
-                    if now > held[group] {
-                        bill.add(graph, now - held[group])?;
-                        held[group] = now;
+                    if now > *held {
+                        bill.add(graph, now - *held)?;
+                        *held = now;
                     }
                 }
             }
@@ -459,30 +460,30 @@ impl<'e> SiteColumn<'e> {
         // taker performs — the same reset a release performs — so the slot
         // a resolved group leaves behind holds neither its values nor a
         // cursor claiming bytes for them.
-        match &mut self.state {
+        let Self { state, seen, .. } = self;
+        let resolved = match state {
             SiteState::CountStar(counts) => Ok(Value::Int(counts[group])),
             SiteState::Stream {
-                template,
-                folds,
-                held,
-                ..
-            } => take_stream_slot(template, folds, held, group).finish(),
-            SiteState::Retain {
-                call,
-                vals,
-                charged,
-            } => finish_retained(
-                graph,
-                take_retain_slot(vals, charged, group),
-                *call,
-                seed,
-                params,
-            ),
+                template, slots, ..
+            } => take_stream_slot(template, slots, group).finish(),
+            SiteState::Retain { call, slots } => {
+                finish_retained(graph, take_retain_slot(slots, group), *call, seed, params)
+            }
             SiteState::Pooled { pool, call } => {
                 finish_pooled(graph, &pools[*pool], *call, seed, params)
             }
             SiteState::Rejected(error) => Err(error.clone()),
-        }
+        };
+        reset_seen(seen, group);
+        resolved
+    }
+}
+
+/// The DISTINCT seen-set's half of a slot reset: a fresh set in `group`'s
+/// place, for the shapes that keep one.
+fn reset_seen(seen: &mut Option<Vec<DistinctSet>>, group: usize) {
+    if let Some(seen) = seen {
+        seen[group] = DistinctSet::default();
     }
 }
 
@@ -490,21 +491,14 @@ impl<'e> SiteColumn<'e> {
 /// template back in its place, and the held-payload cursor zeroed with the
 /// value it described. One policy for the release a parked failure
 /// performs and the resolve a finish takes, so the two cannot disagree.
-fn take_stream_slot(
-    template: &StreamFold,
-    folds: &mut [StreamFold],
-    held: &mut [u64],
-    group: usize,
-) -> StreamFold {
-    held[group] = 0;
-    std::mem::replace(&mut folds[group], template.clone())
+fn take_stream_slot(template: &StreamFold, slots: &mut [StreamSlot], group: usize) -> StreamFold {
+    std::mem::replace(&mut slots[group], StreamSlot::new(template)).fold
 }
 
 /// The one retain-slot reset: group `group`'s operands taken out and the
 /// charge cursor zeroed with them.
-fn take_retain_slot(vals: &mut [Vec<Value>], charged: &mut [usize], group: usize) -> Vec<Value> {
-    charged[group] = 0;
-    std::mem::take(&mut vals[group])
+fn take_retain_slot(slots: &mut [RetainSlot], group: usize) -> Vec<Value> {
+    std::mem::take(&mut slots[group]).vals
 }
 
 /// The validated percentile argument of a percentile call. The percentile

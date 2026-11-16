@@ -59,59 +59,55 @@ fn word_hash(tag: WordTag) -> WordHash {
 
 /// The heap tiers, allocated on first need only. One word-tier slot per
 /// [`WordTag`] holds that tag's *parked* tier (promoted, moved wholesale
-/// in and out of the active seat); [`Spill::word_tier_mut`] is the one
-/// exhaustive tag→field map, so a new tag is a compile error there —
-/// never an ordinal drift or a silent under-count of the parked tiers.
-#[derive(Default)]
+/// in and out of the active seat); [`Spill::slot`] is the one exhaustive
+/// tag→index map, so a new tag is a compile error there, and every walk
+/// below goes over the one array.
 struct Spill {
-    bools: Option<TieredWordSet>,
-    ints: Option<TieredWordSet>,
-    floats: Option<TieredWordSet>,
-    nodes: Option<TieredWordSet>,
-    rels: Option<TieredWordSet>,
-    singles: Option<SeededSet<GroupKey>>,
-    rows: Option<SeededSet<Vec<GroupKey>>>,
+    parked: [Option<TieredWordSet>; WordTag::ALL.len()],
+    /// The general tables: an empty seeded set allocates nothing and bills
+    /// nothing, so "no table yet" is the empty set, not a second mode.
+    singles: SeededSet<GroupKey>,
+    rows: SeededSet<Vec<GroupKey>>,
+}
+
+impl Default for Spill {
+    fn default() -> Self {
+        Self {
+            parked: Default::default(),
+            singles: seeded_set(),
+            rows: seeded_set(),
+        }
+    }
 }
 
 impl Spill {
-    /// The one tag→tier map: exhaustive, so a new [`WordTag`] breaks the
-    /// build here.
+    /// The tag's slot: [`WordTag::index`], the exhaustive map the parked
+    /// array is sized and ordered by.
+    fn slot(tag: WordTag) -> usize {
+        tag.index()
+    }
+
     fn word_tier_mut(&mut self, tag: WordTag) -> &mut Option<TieredWordSet> {
-        match tag {
-            WordTag::Bool => &mut self.bools,
-            WordTag::Int => &mut self.ints,
-            WordTag::FloatBits => &mut self.floats,
-            WordTag::Node => &mut self.nodes,
-            WordTag::Rel => &mut self.rels,
-        }
+        &mut self.parked[Self::slot(tag)]
     }
 
     /// Every tag's parked tier, for the `len`/`bytes`/`promoted` walks.
-    /// The exhaustive destructure is the one field list: a new word-tier
-    /// field breaks the build here, so it cannot go missing from a walk
-    /// (the charged == bytes oracle the differential tests assert after
-    /// every offer would fail if it did).
     fn word_tiers(&self) -> impl Iterator<Item = &TieredWordSet> {
-        let Spill {
-            bools,
-            ints,
-            floats,
-            nodes,
-            rels,
-            singles: _,
-            rows: _,
-        } = self;
-        [bools, ints, floats, nodes, rels].into_iter().flatten()
+        self.parked.iter().flatten()
+    }
+
+    /// The one fold over the parked tiers: `read` summed across them.
+    fn parked_sum<N: std::iter::Sum>(&self, read: impl FnMut(&TieredWordSet) -> N) -> N {
+        self.word_tiers().map(read).sum()
     }
 
     /// The uncharged contents copy: parked tiers and general tables.
     fn clone_contents(&self) -> Self {
         Self {
-            bools: self.bools.as_ref().map(TieredWordSet::clone_contents),
-            ints: self.ints.as_ref().map(TieredWordSet::clone_contents),
-            floats: self.floats.as_ref().map(TieredWordSet::clone_contents),
-            nodes: self.nodes.as_ref().map(TieredWordSet::clone_contents),
-            rels: self.rels.as_ref().map(TieredWordSet::clone_contents),
+            parked: self
+                .parked
+                .each_ref()
+                .map(|tier| tier.as_ref().map(TieredWordSet::clone_contents)),
             singles: self.singles.clone(),
             rows: self.rows.clone(),
         }
@@ -122,32 +118,12 @@ impl Spill {
     /// releasing what it held). The general tables stay uncharged here —
     /// the set's own charge retains them.
     fn try_clone(&self) -> Result<Self> {
+        let mut parked: [Option<TieredWordSet>; WordTag::ALL.len()] = Default::default();
+        for (copy, tier) in parked.iter_mut().zip(&self.parked) {
+            *copy = tier.as_ref().map(TieredWordSet::try_clone).transpose()?;
+        }
         Ok(Self {
-            bools: self
-                .bools
-                .as_ref()
-                .map(TieredWordSet::try_clone)
-                .transpose()?,
-            ints: self
-                .ints
-                .as_ref()
-                .map(TieredWordSet::try_clone)
-                .transpose()?,
-            floats: self
-                .floats
-                .as_ref()
-                .map(TieredWordSet::try_clone)
-                .transpose()?,
-            nodes: self
-                .nodes
-                .as_ref()
-                .map(TieredWordSet::try_clone)
-                .transpose()?,
-            rels: self
-                .rels
-                .as_ref()
-                .map(TieredWordSet::try_clone)
-                .transpose()?,
+            parked,
             singles: self.singles.clone(),
             rows: self.rows.clone(),
         })
@@ -196,25 +172,37 @@ impl DistinctSet {
         }
     }
 
+    /// Every word tier's bytes: the active tier's and the parked ones'.
+    fn word_bytes(&self) -> u64 {
+        self.words.bytes()
+            + self
+                .spill_ref()
+                .map_or(0, |spill| spill.parked_sum(TieredWordSet::bytes))
+    }
+
     /// Clone with the workspace retain propagated: an empty set reserves
     /// nothing, a filled one retains its [`DistinctSet::bytes`], and a
     /// refusal is the caller's to decide (no silent fallback in the set).
     pub(crate) fn try_clone(&self) -> Result<Self> {
-        let mut copy = self.clone_contents();
         // The word share of bytes() is retained by the tiers' own
-        // try_clones (the active tier here, the parked ones below); the
-        // general tables' share is the remainder, retained once.
-        copy.words = self.words.try_clone()?;
-        if let Some(spill) = self.spill.as_ref() {
-            copy.spill = Some(Box::new(spill.try_clone()?));
-        }
-        let word_bytes = self.words.bytes()
-            + self.spill_ref().map_or(0, |spill| {
-                spill.word_tiers().map(TieredWordSet::bytes).sum::<u64>()
-            });
-        let general = self.bytes() - word_bytes;
-        copy.charge = WorkspaceCharge::retain_with(|| general)?;
-        Ok(copy)
+        // try_clones (the active tier here, the parked ones in the spill);
+        // the general tables' share is the remainder, retained once. The
+        // copy is built from those parts, never from a contents copy that
+        // is then discarded.
+        let words = self.words.try_clone()?;
+        let spill = self
+            .spill
+            .as_ref()
+            .map(|spill| spill.try_clone().map(Box::new))
+            .transpose()?;
+        let general = self.bytes() - self.word_bytes();
+        Ok(Self {
+            null: self.null,
+            word_tag: self.word_tag,
+            words,
+            spill,
+            charge: WorkspaceCharge::retain_with(|| general)?,
+        })
     }
 
     /// Insert one value's key. `Ok(true)` when new, `Ok(false)` for a
@@ -242,26 +230,22 @@ impl DistinctSet {
     /// Distinct keys held, across every tier.
     pub(crate) fn len(&self) -> usize {
         let words = self.words.len()
-            + self.spill_ref().map_or(0, |spill| {
-                spill.word_tiers().map(TieredWordSet::len).sum::<usize>()
-            });
-        let spilled = self.spill_ref().map_or(0, |spill| {
-            spill.singles.as_ref().map_or(0, SeededSet::len)
-                + spill.rows.as_ref().map_or(0, SeededSet::len)
-        });
+            + self
+                .spill_ref()
+                .map_or(0, |spill| spill.parked_sum(TieredWordSet::len));
+        let spilled = self
+            .spill_ref()
+            .map_or(0, |spill| spill.singles.len() + spill.rows.len());
         usize::from(self.null) + words + spilled
     }
 
     /// The accounted bytes of every held representation — the walk the
     /// per-insert deltas must sum to, and the figure a clone retains.
     pub(crate) fn bytes(&self) -> u64 {
-        let mut bytes = self.words.bytes()
-            + self.spill_ref().map_or(0, |spill| {
-                spill.word_tiers().map(TieredWordSet::bytes).sum::<u64>()
-            });
+        let mut bytes = self.word_bytes();
         if let Some(spill) = self.spill_ref() {
-            bytes += spill.singles.as_ref().map_or(0, group_key_set_bytes);
-            bytes += spill.rows.as_ref().map_or(0, distinct_row_set_bytes);
+            bytes += group_key_set_bytes(&spill.singles);
+            bytes += distinct_row_set_bytes(&spill.rows);
         }
         bytes
     }
@@ -280,9 +264,9 @@ impl DistinctSet {
     #[cfg(test)]
     pub(crate) fn charged(&self) -> u64 {
         self.words.charged()
-            + self.spill_ref().map_or(0, |spill| {
-                spill.word_tiers().map(TieredWordSet::charged).sum::<u64>()
-            })
+            + self
+                .spill_ref()
+                .map_or(0, |spill| spill.parked_sum(TieredWordSet::charged))
             + self.charge.bytes()
     }
 
@@ -338,16 +322,12 @@ impl DistinctSet {
     }
 
     fn insert_single(&mut self, key: GroupKey) -> Result<bool> {
-        let singles = Self::spill(&mut self.spill)
-            .singles
-            .get_or_insert_with(seeded_set);
+        let singles = &mut Self::spill(&mut self.spill).singles;
         insert_charged(&mut self.charge, singles, key, group_key_insert_delta)
     }
 
     fn insert_row_key(&mut self, key: Vec<GroupKey>) -> Result<bool> {
-        let rows = Self::spill(&mut self.spill)
-            .rows
-            .get_or_insert_with(seeded_set);
+        let rows = &mut Self::spill(&mut self.spill).rows;
         insert_charged(&mut self.charge, rows, key, distinct_row_insert_delta)
     }
 }
@@ -402,4 +382,17 @@ pub(crate) fn dedup_first_seen(vals: Vec<Value>) -> Result<Vec<Value>> {
     }
     drop(seen);
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `WordTag::ALL` lists the tags in index order, one per parked slot.
+    #[test]
+    fn word_tag_all_is_listed_in_index_order() {
+        for (position, tag) in WordTag::ALL.into_iter().enumerate() {
+            assert_eq!(Spill::slot(tag), position, "{tag:?}");
+        }
+    }
 }

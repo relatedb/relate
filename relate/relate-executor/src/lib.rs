@@ -75,9 +75,10 @@ mod store;
 mod test_support;
 // The tiered word-set utility (ADR-0522): the tier mechanics ADR-0507
 // built for the distinct set — one key class's words, inline then
-// promoted — freed of DISTINCT semantics so raw-key consumers (the
-// label-union planner work) can hold it; `distinct_set` delegates its
-// word storage to it. Private module, `pub(crate)` items.
+// promoted — freed of DISTINCT semantics so raw-key executor-internal
+// consumers (the pattern walker, frontier dedup) can hold it;
+// `distinct_set` delegates its word storage to it. Private module,
+// `pub(crate)` items.
 mod tiered_set;
 #[cfg(test)]
 mod tiered_set_tests;

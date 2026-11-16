@@ -3,25 +3,11 @@
 //! arithmetic across promotion, both hasher policies, the clone charge
 //! contract, and the module's layering guard.
 
-use std::sync::Arc;
+use relate_core::tokens::LedgerGuard;
 
-use relate_core::tokens::{LedgerGuard, TokenLedger};
-
-use crate::test_support::PeakPoolDouble;
+use crate::test_support::{assert_never_imports_exec_tree, refusing_ledger, roomy_ledger};
 use crate::tiered_set::{TieredWordSet, WordHash};
 use crate::workspace::{word_insert_delta, word_set_bytes};
-
-/// A ledger with room for everything: accounting on, nothing refused.
-fn roomy_ledger() -> TokenLedger {
-    let pool = Arc::new(PeakPoolDouble::new(u64::MAX / 2));
-    TokenLedger::new(u64::MAX / 2, 0, pool)
-}
-
-/// A ledger whose pool refuses any growth: the next positive delta fails.
-fn refusing_ledger() -> TokenLedger {
-    let pool = Arc::new(PeakPoolDouble::new(0));
-    TokenLedger::new(0, 0, pool)
-}
 
 fn insert(set: &mut TieredWordSet, word: u64) -> bool {
     set.insert(word).expect("no budget installed refuses")
@@ -216,7 +202,10 @@ fn clone_charge_semantics() {
     let guard = LedgerGuard::install(&mut ledger);
     let empty = TieredWordSet::new(WordHash::Value);
     assert_eq!(
-        empty.try_clone().unwrap().charged(),
+        empty
+            .try_clone()
+            .expect("an empty set reserves nothing")
+            .charged(),
         0,
         "an empty clone reserves nothing"
     );
@@ -224,7 +213,7 @@ fn clone_charge_semantics() {
     for word in 0..20 {
         insert(&mut set, word);
     }
-    let copy = set.try_clone().unwrap();
+    let copy = set.try_clone().expect("the roomy ledger admits the copy");
     assert_eq!(
         copy.charged(),
         set.bytes(),
@@ -244,11 +233,5 @@ fn clone_charge_semantics() {
 
 #[test]
 fn the_module_never_imports_the_exec_tree_or_the_walker() {
-    let source = include_str!("tiered_set.rs");
-    for forbidden in ["crate::exec", "crate::pattern_walk"] {
-        assert!(
-            !source.contains(forbidden),
-            "tiered_set.rs must not reference `{forbidden}` (the utility stays importable by the path engine)"
-        );
-    }
+    assert_never_imports_exec_tree("tiered_set.rs", include_str!("tiered_set.rs"));
 }

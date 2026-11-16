@@ -9,9 +9,9 @@
 //!
 //! # What a group costs
 //!
-//! [`GroupBill`] charges each landing once, from the real layout, and that
-//! one figure feeds both the expression budget's running total and the
-//! statement's workspace ledger. Per group:
+//! The aggregation's [`GroupBill`] (`bill`) charges each landing once,
+//! from the real layout, and that one figure feeds both the expression
+//! budget's running total and the statement's workspace ledger. Per group:
 //!
 //! * the index entry: the key tuple (24 bytes), its 8-byte hash and the
 //!   8-byte table slot, under the reservation model's doubling;
@@ -32,13 +32,13 @@
 
 use indexmap::map::Entry;
 use indexmap::IndexMap;
-use relate_core::tokens::{peak_hold, WorkspaceCharge};
 use relate_core::Result;
 
-use crate::overlay::{ExecGraph, RetainedTotal};
+use crate::overlay::ExecGraph;
 use crate::row::Row;
-use crate::workspace::{buffer_growth, RetainedRows};
+use crate::workspace::buffer_growth;
 
+use super::bill::GroupBill;
 use super::columns::AccTable;
 use super::key::{KeyTuple, KeyValues};
 use super::seed::SeedStore;
@@ -46,86 +46,6 @@ use super::seed::SeedStore;
 /// Bytes of one index entry: the key tuple, its cached hash, and the
 /// hash table's index slot.
 const INDEX_ENTRY: u64 = (size_of::<KeyTuple>() + 2 * size_of::<usize>()) as u64;
-
-/// The one bill for the aggregation's retained bytes: the group table
-/// (index, keys, seeds, and accumulator slots) and, as rows settle, what
-/// retaining accumulators keep (`collect` operands, percentile samples,
-/// the payload a `min`/`max` holds, parked errors). The expression
-/// budget's running total and the workspace ledger are fed the same figure.
-pub(super) struct GroupBill {
-    /// The aggregation's one retaining container: the group table and
-    /// what its retaining accumulators keep grow it together.
-    pub(super) retained: RetainedTotal,
-    /// The workspace-ledger twin of the table bytes billed so far (its own
-    /// [`WorkspaceCharge::bytes`] is the running total). Held
-    /// unconditionally, as every other owned structure here holds its
-    /// charge: an empty charge is a no-op while no ledger is installed, so
-    /// there is no second "accounting is off" spelling to keep in step.
-    workspace: WorkspaceCharge,
-}
-
-/// The one bill for the input vector the fold holds: its measured bytes
-/// and the workspace-ledger charge that follows them down as each row's
-/// payload moves into the group table.
-pub(super) struct InputBill {
-    retained: RetainedRows,
-    charge: WorkspaceCharge,
-}
-
-impl InputBill {
-    /// Bill the whole input vector up front.
-    pub(super) fn open(rows: &[Row]) -> Result<Self> {
-        let retained = RetainedRows::measure(rows);
-        let charge = WorkspaceCharge::retain(retained.bytes())?;
-        peak_hold("aggregation");
-        Ok(Self { retained, charge })
-    }
-
-    /// Release `row`'s share: its payload moves on to the group table.
-    pub(super) fn release(&mut self, row: &Row) -> Result<()> {
-        self.retained.release_row(row);
-        self.charge.resize(self.retained.bytes())
-    }
-}
-
-impl GroupBill {
-    pub(super) fn open(graph: &ExecGraph<'_>) -> Result<Self> {
-        Ok(Self {
-            retained: graph.retain_bytes(0)?,
-            workspace: WorkspaceCharge::empty(),
-        })
-    }
-
-    /// Bill `bytes` of retained aggregation state, ahead of the landing or
-    /// the append so a refusal never leaves that state retained. Group
-    /// landings and accumulator settles share this path, so a `collect`
-    /// payload reserves the same ledger bytes the expression cap already
-    /// counts.
-    pub(super) fn add(&mut self, graph: &ExecGraph<'_>, bytes: u64) -> Result<()> {
-        self.retained.add_bytes(graph, bytes)?;
-        let total = self.workspace.bytes().saturating_add(bytes);
-        self.workspace.resize_with(|| total)?;
-        peak_hold("aggregation");
-        Ok(())
-    }
-
-    /// Test settle drives a bill that already owns the expression total
-    /// and does not touch the workspace ledger. The placeholder left in
-    /// `total` is replaced when the settle returns the real total.
-    #[cfg(test)]
-    pub(super) fn take_retained(total: &mut RetainedTotal, graph: &ExecGraph<'_>) -> Result<Self> {
-        Ok(Self {
-            retained: std::mem::replace(total, graph.retain_bytes(0)?),
-            workspace: WorkspaceCharge::empty(),
-        })
-    }
-
-    /// Put the expression total back where the test settle found it.
-    #[cfg(test)]
-    pub(super) fn return_retained(self, total: &mut RetainedTotal) {
-        *total = self.retained;
-    }
-}
 
 /// Every group of one aggregation.
 pub(super) struct GroupTable<'e> {
@@ -135,7 +55,7 @@ pub(super) struct GroupTable<'e> {
     /// The keyless group seeded before any row arrives (the ADR-0453
     /// phantom group of an empty input) has no seed until its first row
     /// lands as one. Only that group is ever seedless.
-    pub(super) phantom: bool,
+    phantom: bool,
 }
 
 /// How an offered row's key met the table.
@@ -197,6 +117,10 @@ impl<'e> GroupTable<'e> {
                 let as_seed = self.phantom;
                 if as_seed {
                     bill.add(graph, self.seeds.landing_bytes(0, keys, row)?)?;
+                    // The seed this landing bills is the one the caller now
+                    // lands: the flag clears where it is owned, so a missed
+                    // clear cannot bill every later row's seed again.
+                    self.phantom = false;
                 }
                 Ok(Landing::Existing { group, as_seed })
             }

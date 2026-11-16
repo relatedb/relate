@@ -37,6 +37,9 @@ use crate::workspace::{charge_distinct_delta, word_insert_delta, word_set_bytes}
 /// T1's capacity: `2^4` words, 128 B — two cache lines.
 const INLINE_WORDS: usize = 16;
 
+// The inline probe's mask is a `u32`, one bit per lane.
+const _: () = assert!(INLINE_WORDS <= u32::BITS as usize);
+
 /// The promoted table's presize: `2^5`, the next power of two above T1.
 const PROMOTED_CAPACITY: usize = 32;
 
@@ -188,11 +191,9 @@ impl TieredWordSet {
         word_set_bytes(self.len())
     }
 
-    /// Whether the set has promoted to its table (T2). The distinct set
-    /// consults this from its test-only tier probe today; the utility's
-    /// raw-key consumers (the label-union planner work) arrive with
-    /// their own call sites.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Whether the set has promoted to its table (T2): a test-only probe,
+    /// like [`Self::charged`].
+    #[cfg(test)]
     pub(crate) fn promoted(&self) -> bool {
         matches!(self.tier, Tier::Promoted(_))
     }

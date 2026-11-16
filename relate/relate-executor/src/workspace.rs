@@ -81,6 +81,14 @@ pub(crate) fn retained_rows_bytes(count: usize, slots_per_row: usize) -> u64 {
     )
 }
 
+/// The bytes one row adds to a container that holds it in a row vector:
+/// [`row_landing_bytes`] plus the row's slot in that vector. The one
+/// spelling of the whole-row charge — the retained total's `add_row` and
+/// the aggregate seed's whole-row mode read it.
+pub(crate) fn row_entry_bytes(values: &[Value]) -> u64 {
+    row_landing_bytes(values).saturating_add(size_of::<Row>() as u64)
+}
+
 /// The entry storage of a map of `len` entries: one
 /// [`OVERHEAD_MAP_ENTRY`] per entry. The map container's own figure — a
 /// `BTreeMap` is not a `Vec`, so it must not be seeded with the value-slot

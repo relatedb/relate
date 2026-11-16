@@ -1,16 +1,18 @@
 //! Aggregation's grouped path (the file-size gate refused the single
 //! 986-line file): the group path ([`aggregate_ex`] and its key
 //! desugaring), the group table (`table`: the key index, `key`'s compact
-//! key tuple, `seed`'s narrowed first-row columns, and the one bill for a
-//! group's bytes), the streaming per-group accumulators (`stream` finds the
-//! sites, `site` the typed call and its classification and finish policy,
-//! `columns` holds their flat state, `pool` the percentile buffers)
-//! and the recursive aggregate-expression evaluator ([`agg_eval`]) each
-//! live in a sibling module; the shared folds and
-//! the horizontal family live one layer down, in `crate::eval::aggregate`.
+//! key tuple, `seed`'s narrowed first-row columns), the one bill for the
+//! aggregation's bytes (`bill`, beneath the table and the columns), the
+//! streaming per-group accumulators (`stream` finds the sites, `site` the
+//! typed call and its classification and finish policy, `columns` holds
+//! their flat state, `pool` the percentile buffers) and the recursive
+//! aggregate-expression evaluator ([`agg_eval`]) each live in a sibling
+//! module; the shared folds and the horizontal family live one layer
+//! down, in `crate::eval::aggregate`.
 //! The re-exports below are this module's one public face, so every
 //! caller keeps the `exec::aggregate::…` path.
 
+mod bill;
 mod columns;
 mod eval;
 mod group;

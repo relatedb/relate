@@ -25,10 +25,10 @@ use crate::row::Row;
 use crate::workspace::buffer_growth;
 use relate_ir::Expr;
 
+use super::bill::GroupBill;
 use super::eval::FoldedGroup;
 use super::pool::{shareable, Collecting, PoolSite, PoolState, SortedPool};
 use super::site::{Call, SiteColumn, SiteState};
-use super::table::GroupBill;
 
 /// The one strict-raises/lenient-parks rule of an offer: a failure on a
 /// lenient site (or a pool only lenient sites read) is handed back to be
@@ -235,9 +235,10 @@ impl<'e> AccTable<'e> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::bill::GroupBill;
+    use super::super::eval::{agg_eval, AggScope};
     use super::super::site::SiteState;
     use super::super::stream::discover;
-    use super::super::table::GroupBill;
     use super::*;
     use crate::exec::test_support::{
         agg_fn_over, group_with_vals, percentile_fn_over, OPERAND_COLUMN,
@@ -272,7 +273,7 @@ mod tests {
         ];
         let mut table = discover(&graph, [], calls.iter(), &params).expect("discovered");
         table.open_group();
-        let mut total = graph.retain_bytes(0).expect("a fresh total");
+        let mut bill = GroupBill::open(&graph).expect("a bill");
         // The production order the settle charge relies on: the offered row
         // is dropped before the settle, so the payloads the slots hold are
         // solely the group's.
@@ -285,36 +286,43 @@ mod tests {
                 .into(),
             )])
             .remove(0);
-            let mut bill = GroupBill::take_retained(&mut total, &graph).expect("a bill");
             table
                 .offer(0, &graph, &row, &params, &mut bill)
                 .expect("offered");
             drop(row);
             table.settle(0, &graph, &mut bill).expect("settled");
-            bill.return_retained(&mut total);
         }
-        let SiteState::Retain { vals, charged, .. } = &table.sites[0].state else {
+        let SiteState::Retain { slots, .. } = &table.sites[0].state else {
             panic!("collect retains")
         };
         assert_eq!(
-            (vals[0].len(), charged[0]),
+            (slots[0].vals.len(), slots[0].charged),
             (1, 1),
             "the operand is kept and charged"
         );
-        let SiteState::Stream { held, .. } = &table.sites[1].state else {
+        let SiteState::Stream { slots, .. } = &table.sites[1].state else {
             panic!("min streams")
         };
-        assert!(held[0] > 0, "the min site charged the payload it holds");
+        assert!(
+            slots[0].held > 0,
+            "the min site charged the payload it holds"
+        );
         table.finish_group(0, &graph, None, &params);
-        let SiteState::Retain { vals, charged, .. } = &table.sites[0].state else {
+        let SiteState::Retain { slots, .. } = &table.sites[0].state else {
             panic!("collect retains")
         };
-        assert!(vals[0].is_empty(), "the resolve takes the operands out");
-        assert_eq!(charged[0], 0, "and the cursor leaves with them");
-        let SiteState::Stream { held, .. } = &table.sites[1].state else {
+        assert!(
+            slots[0].vals.is_empty(),
+            "the resolve takes the operands out"
+        );
+        assert_eq!(slots[0].charged, 0, "and the cursor leaves with them");
+        let SiteState::Stream { slots, .. } = &table.sites[1].state else {
             panic!("min streams")
         };
-        assert_eq!(held[0], 0, "the held-payload cursor leaves with the fold");
+        assert_eq!(
+            slots[0].held, 0,
+            "the held-payload cursor leaves with the fold"
+        );
     }
 
     /// A lenient site that parks a failure releases what its group slot
@@ -334,7 +342,7 @@ mod tests {
         ];
         let mut table = discover(&graph, [], calls.iter(), &params).expect("discovered");
         table.open_group();
-        let mut total = graph.retain_bytes(0).expect("a fresh total");
+        let mut bill = GroupBill::open(&graph).expect("a bill");
         let ok = Value::Map(
             BTreeMap::from([
                 ("p".to_string(), Value::Int(1)),
@@ -349,53 +357,56 @@ mod tests {
         let fail_row = group_with_vals(&[Value::Int(5)]).remove(0);
         {
             let ok_row = group_with_vals(&[ok]).remove(0);
-            let mut bill = GroupBill::take_retained(&mut total, &graph).expect("a bill");
             table
                 .offer(0, &graph, &ok_row, &params, &mut bill)
                 .expect("offered");
             drop(ok_row);
             table.settle(0, &graph, &mut bill).expect("settled");
-            bill.return_retained(&mut total);
         }
-        let SiteState::Retain { vals, .. } = &table.sites[1].state else {
+        let SiteState::Retain { slots, .. } = &table.sites[1].state else {
             panic!("collect retains")
         };
-        assert_eq!(vals[0].len(), 1);
+        assert_eq!(slots[0].vals.len(), 1);
         assert_eq!(table.pools[0].states[0].held(), 1);
-        let SiteState::Stream { held, .. } = &table.sites[3].state else {
+        let SiteState::Stream { slots, .. } = &table.sites[3].state else {
             panic!("min streams")
         };
-        assert!(held[0] > 0, "the min site charged the payload it holds");
-        let before = total.total();
+        assert!(
+            slots[0].held > 0,
+            "the min site charged the payload it holds"
+        );
+        let before = bill.total();
 
         // `5.p` fails on every lenient site: parked, billed, released.
-        let mut bill = GroupBill::take_retained(&mut total, &graph).expect("a bill");
         table
             .offer(0, &graph, &fail_row, &params, &mut bill)
             .expect("parked");
-        bill.return_retained(&mut total);
-        assert!(total.total() > before, "the parked errors are billed");
-        let SiteState::Stream { folds, .. } = &table.sites[0].state else {
+        assert!(bill.total() > before, "the parked errors are billed");
+        let SiteState::Stream { slots, .. } = &table.sites[0].state else {
             panic!("count streams")
         };
         assert_eq!(
-            folds[0].clone().finish().expect("a fresh count"),
+            slots[0].fold.clone().finish().expect("a fresh count"),
             Value::Int(0)
         );
-        let SiteState::Retain { vals, charged, .. } = &table.sites[1].state else {
+        let SiteState::Retain { slots, .. } = &table.sites[1].state else {
             panic!("collect retains")
         };
-        assert!(vals[0].is_empty());
-        assert_eq!(charged[0], 0);
-        let SiteState::Stream { held, .. } = &table.sites[3].state else {
+        assert!(slots[0].vals.is_empty());
+        assert_eq!(slots[0].charged, 0);
+        let SiteState::Stream { slots, .. } = &table.sites[3].state else {
             panic!("min streams")
         };
-        assert_eq!(held[0], 0, "the held-payload charge drops with its value");
+        assert_eq!(
+            slots[0].held, 0,
+            "the held-payload charge drops with its value"
+        );
         assert_eq!(table.pools[0].states[0].held(), 0);
         assert!(table.sites.iter().all(|site| site.failed.contains_key(&0)));
         let folded = table.finish_group(0, &graph, Some(&fail_row), &params);
         for call in &calls {
-            assert!(folded.value(call).is_err(), "{call:?}");
+            let scope = AggScope::of_group(&folded, Some(&fail_row));
+            assert!(agg_eval(&graph, scope, call, &params).is_err(), "{call:?}");
         }
     }
 }

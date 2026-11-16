@@ -14,7 +14,9 @@ use relate_test_support::temporal::dst_overlap_half;
 
 use crate::distinct_set::DistinctSet;
 use crate::group_key::{row_key, GroupKey};
-use crate::test_support::{value_map, PeakPoolDouble};
+use crate::test_support::{
+    assert_never_imports_exec_tree, refusing_ledger, roomy_ledger, value_map, PeakPoolDouble,
+};
 
 fn int(i: i64) -> Value {
     Value::Int(i)
@@ -44,18 +46,6 @@ fn rel(id: i64) -> Value {
 
 fn list(items: Vec<Value>) -> Value {
     Value::List(items.into())
-}
-
-/// A ledger with room for everything: accounting on, nothing refused.
-fn roomy_ledger() -> TokenLedger {
-    let pool = Arc::new(PeakPoolDouble::new(u64::MAX / 2));
-    TokenLedger::new(u64::MAX / 2, 0, pool)
-}
-
-/// A ledger whose pool refuses any growth: the next positive delta fails.
-fn refusing_ledger() -> TokenLedger {
-    let pool = Arc::new(PeakPoolDouble::new(0));
-    TokenLedger::new(0, 0, pool)
 }
 
 fn insert(set: &mut DistinctSet, v: &Value) -> bool {
@@ -359,13 +349,7 @@ fn clone_charge_semantics() {
 
 #[test]
 fn the_module_never_imports_the_exec_tree_or_the_walker() {
-    let source = include_str!("distinct_set.rs");
-    for forbidden in ["crate::exec", "crate::pattern_walk"] {
-        assert!(
-            !source.contains(forbidden),
-            "distinct_set.rs must not reference `{forbidden}` (ADR §1)"
-        );
-    }
+    assert_never_imports_exec_tree("distinct_set.rs", include_str!("distinct_set.rs"));
 }
 
 /// A temporal or point value drawn from `i`: dates, local date-times,

@@ -15,13 +15,14 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::super::order::{park_order_keys, OrderKeys};
-use super::super::scope::{is_internal_column, is_star_item, visible_keys};
+use super::super::scope::{is_internal_column, visible_keys};
 use super::super::RowFeed;
+use super::bill::{GroupBill, InputBill};
 use super::eval::{agg_eval, AggScope};
 use super::key::KeyTuple;
-use super::seed::{ItemRole, SeedStore, Taken};
+use super::seed::{base_role, ItemRole, SeedStore, Taken};
 use super::stream::discover;
-use super::table::{GroupBill, GroupTable, InputBill, Landing};
+use super::table::{GroupTable, Landing};
 
 /// ADR-0453's one WHERE split, one mode: an aggregating path whose WHERE
 /// carries aggregate calls takes it as HAVING — evaluated once per group
@@ -95,9 +96,14 @@ pub(crate) struct GroupSubclauses<'a> {
 pub(crate) struct Aggregation<'a> {
     items: &'a [Projection],
     params: &'a BTreeMap<String, Value>,
-    /// The projection's `ORDER BY`, WHERE mode and import scope (the
-    /// finish reads them; the plain WHERE is read at planning only).
-    subclauses: GroupSubclauses<'a>,
+    /// The projection's `ORDER BY` keys, which the finish parks per group.
+    order: &'a OrderKeys<'a>,
+    /// The HAVING predicate the finish applies per group (the plain WHERE
+    /// is read at planning only, so it is not kept).
+    having: Option<&'a Expr>,
+    /// The importing subquery's scope row the phantom group's seed stands
+    /// in with.
+    import_scope: Option<&'a Row>,
     key_exprs: Vec<Cow<'a, Expr>>,
     /// How each projection item is answered at the finish (a kept key
     /// value, the folded sites, or the seed row) — decided once at plan
@@ -137,7 +143,9 @@ impl<'a> Aggregation<'a> {
         subclauses: &GroupSubclauses<'a>,
     ) -> Result<Self> {
         let GroupSubclauses {
-            order, where_mode, ..
+            order,
+            where_mode,
+            import_scope,
         } = *subclauses;
         // The HAVING predicate the sites discover and the finish reads;
         // the plain form carries no aggregate call, so it discovers none.
@@ -172,8 +180,8 @@ impl<'a> Aggregation<'a> {
             graph,
             items
                 .iter()
-                .filter(|p| !is_star_item(p) && is_agg_expr(&p.expr))
-                .map(|p| &p.expr),
+                .filter(|item| base_role(item) == Some(ItemRole::Aggregate))
+                .map(|item| &item.expr),
             order.exprs().chain(having),
             params,
         )?;
@@ -198,7 +206,9 @@ impl<'a> Aggregation<'a> {
         let mut this = Self {
             items,
             params,
-            subclauses: *subclauses,
+            order,
+            having,
+            import_scope,
             key_exprs,
             roles,
             groups: GroupTable::new(seeds, accs),
@@ -220,7 +230,7 @@ impl<'a> Aggregation<'a> {
     /// (the charging seam the memory-shape tests read).
     #[cfg(test)]
     pub(crate) fn billed_bytes(&self) -> u64 {
-        self.bill.retained.total()
+        self.bill.total()
     }
 
     /// Fold one input row into its group.
@@ -257,7 +267,6 @@ impl<'a> Aggregation<'a> {
         // is solely the group's and is charged in full.
         if as_seed {
             groups.seeds.land(key_values, row)?;
-            groups.phantom = false;
         } else {
             drop(row);
         }
@@ -270,12 +279,9 @@ impl<'a> Aggregation<'a> {
         let Self {
             items,
             params,
-            subclauses:
-                GroupSubclauses {
-                    order,
-                    where_mode,
-                    import_scope,
-                },
+            order,
+            having,
+            import_scope,
             roles,
             groups,
             bill,
@@ -301,9 +307,6 @@ impl<'a> Aggregation<'a> {
         // ADR-0198 ruling 1: a `*` item projects the row's carried
         // variables through alongside the aggregate aliases.
         let has_star = roles.iter().any(|role| matches!(role, ItemRole::Star));
-        // The HAVING predicate is loop-invariant, like `has_star`: decided
-        // once, read per group.
-        let having = where_mode.and_then(WhereMode::having);
         for group in 0..group_count {
             // The group's own first row — narrowed to the columns this
             // finish reads — is the seed every non-aggregate leaf reads;

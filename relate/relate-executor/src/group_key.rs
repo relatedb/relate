@@ -399,6 +399,30 @@ pub(crate) enum WordTag {
     Rel,
 }
 
+impl WordTag {
+    /// This tag's position in [`Self::ALL`]: an exhaustive match, so a new
+    /// variant is a compile error here (a unit test holds the list to it).
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            WordTag::Bool => 0,
+            WordTag::Int => 1,
+            WordTag::FloatBits => 2,
+            WordTag::Node => 3,
+            WordTag::Rel => 4,
+        }
+    }
+
+    /// Every tag: the one vocabulary the distinct set sizes its parked
+    /// tiers from.
+    pub(crate) const ALL: [WordTag; 5] = [
+        WordTag::Bool,
+        WordTag::Int,
+        WordTag::FloatBits,
+        WordTag::Node,
+        WordTag::Rel,
+    ];
+}
+
 /// True if a NaN occurs anywhere inside `v` (recursively, mirroring `norm`).
 fn value_has_nan(v: &Value) -> bool {
     match v {

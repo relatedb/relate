@@ -12,7 +12,7 @@ mod budget;
 mod idlists;
 
 pub use budget::NESTED_EVAL_BUDGET;
-pub(crate) use budget::{ExpressionBudgetCounter, NestedEvalCounter, RetainedTotal};
+pub(crate) use budget::{ExpressionBudgetCounter, NestedEvalCounter, RetainedTotal, SeatShape};
 pub(crate) use idlists::{intersect_ids, union_ids};
 
 /// The distinct labels of `labels`, in first-occurrence order — the one
