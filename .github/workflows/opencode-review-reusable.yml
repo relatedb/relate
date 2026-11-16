@@ -928,11 +928,13 @@ jobs:
           . "$RESTORE" .stellar/findings.json
           # Facts and the diff are recomputed from git — never from the
           # .stellar documents the model step could have rewritten.
-          .github/scripts/opencode-review-prep.sh post
           P=.github/scripts/opencode-review-post.py
-          # The no-op gate is recomputed here, never trusted from the
-          # environment.
-          if [ "$(python3 "$P" gate --kind "$REVIEW_KIND" --facts .stellar/facts.json)" = "true" ]; then
+          # The no-op gate is the prep's last stdout line — the freshly
+          # computed facts piped straight into the gate — never a
+          # re-read of model-writable .stellar/facts.json between the
+          # trusted write and this decision.
+          GATE=$(.github/scripts/opencode-review-prep.sh post | tail -n 1)
+          if [ "$GATE" = "true" ]; then
             python3 "$P" noop --kind "$REVIEW_KIND" --repo "$REPO" --pr "$PR_NUMBER"
             exit 0
           fi

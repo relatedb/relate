@@ -105,7 +105,12 @@ if [ -z "$verdict" ]; then
     exit 1
   fi
 
-  # Extract the latest review-bot body containing the kind marker.
+  # Extract the latest review-bot body whose own lane marker opens a
+  # line — anchored at line start, never a substring match: a finding's
+  # title quoting another lane's marker mid-line must not make the gate
+  # read that lane's summary, and with several lanes' summaries on one
+  # PR an unanchored contains() selects whichever posted newest, so a
+  # failing lane could inherit a later lane's pass verdict.
   # --slurp + --paginate yields [[page1...],[page2...]] hence .[][] to flatten.
   # --arg passes the marker to jq; never shell-interpolate REVIEW_KIND into a
   # jq filter string (quoting/injection hazard).
@@ -113,7 +118,8 @@ if [ -z "$verdict" ]; then
   if ! body="$(printf '%s\n' "$api_json" | jq -r --arg marker "**${REVIEW_KIND}:**" \
                                               --arg login "$VERDICT_BOT_LOGIN" '
     [ .[][] | select(.user.login == $login
-                     and (.body | contains($marker))) ]
+                     and (.body | split("\n")
+                          | any(.; sub("^[ \t]*"; "") | startswith($marker)))) ]
     | sort_by(.created_at) | last | .body // ""
   ')"; then
     echo "::error::Failed to parse PR comments with jq"
@@ -132,10 +138,13 @@ if [ -z "$verdict" ]; then
 
   # --- Tier 2: machine-readable HTML comment ---
   # grep -iE with hardcoded regex is safe here (not built from user data).
+  # The match is anchored at line start (leading whitespace tolerated):
+  # the verdict marker must OPEN a line, never ride mid-line — a finding
+  # quoted in a summary could otherwise carry a forged marker inline.
   # grep returns 1 on no-match, which with set -euo pipefail aborts a $()
   # subshell on bash 3.2 (macOS runner). || true keeps the assignment safe.
   tier2_line="$(printf '%s\n' "$clean_body" \
-    | grep -iE '<!--[[:space:]]*opencode-verdict:[[:space:]]*(pass|fail)[[:space:]]*-->' \
+    | grep -iE '^[[:space:]]*<!--[[:space:]]*opencode-verdict:[[:space:]]*(pass|fail)[[:space:]]*-->' \
     | tail -1 || true)"
   if [ -n "$tier2_line" ]; then
     # Capture the token from inside the HTML comment via a capture group from

@@ -46,13 +46,26 @@ MB=$(fetch_review_base "$AUTH" "$BASE_SHA" "$HEAD_SHA")
 BASE="${MB:-$BASE_SHA}"
 echo "review base: $BASE (merge-base of $BASE_SHA and $HEAD_SHA)"
 
-python3 "$T/facts.py" --base "$BASE" --head "$HEAD_SHA" --out .stellar/facts.json
-
 if [ "$MODE" = "model" ]; then
   # The kind's no-op gate is opencode-review-post.py's — the one
   # spelling; the post step recomputes the same decision, so only the
-  # env skip that gates the model step lives here.
-  if [ "$(python3 "$P" gate --kind "$REVIEW_KIND" --facts .stellar/facts.json)" = "true" ]; then
+  # env skip that gates the model step lives here. The gate consumes
+  # the facts straight from facts.py's stdout (--stdout-json) — the
+  # decision never round-trips through the .stellar documents, which
+  # become model-writable the moment the model step starts.
+  if [ "$(python3 "$T/facts.py" --base "$BASE" --head "$HEAD_SHA" --out .stellar/facts.json --stdout-json \
+          | python3 "$P" gate --kind "$REVIEW_KIND" --facts -)" = "true" ]; then
     echo 'SCRIPTED_NOOP=true' >> "${GITHUB_ENV:-/dev/null}"
   fi
+elif [ "$MODE" = "post" ]; then
+  # Post mode: the same pipe, and the boolean is this script's last
+  # stdout line — the run block captures it (the model step has run by
+  # now, so nothing here may trust .stellar on disk: a surviving
+  # model-spawned process could otherwise rewrite facts.json between
+  # the trusted write and a later gate read and flip the lane to a
+  # no-op pass). The file write still happens — the poster reads it
+  # after the verdict machinery below; only the gate decision rides
+  # the pipe.
+  python3 "$T/facts.py" --base "$BASE" --head "$HEAD_SHA" --out .stellar/facts.json --stdout-json \
+    | python3 "$P" gate --kind "$REVIEW_KIND" --facts -
 fi

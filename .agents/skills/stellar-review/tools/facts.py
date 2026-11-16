@@ -479,6 +479,11 @@ def main() -> None:
     ap.add_argument("--base", help="base SHA (default: merge-base HEAD origin/main)")
     ap.add_argument("--head", default="HEAD", help="head SHA (default: HEAD)")
     ap.add_argument("--out", help="output path (default: <repo>/.stellar/facts.json)")
+    ap.add_argument("--stdout-json", action="store_true",
+                    help="also print the facts JSON to stdout (a pipe channel: "
+                         "gates consume the bytes straight from this process, "
+                         "never from the model-writable file on disk; the file "
+                         "write is unchanged)")
     ap.add_argument("--repo", default=".", help="repository directory")
     ap.add_argument("--include-units-file",
                     help="file with newline-separated extra paths to inventory "
@@ -503,12 +508,20 @@ def main() -> None:
     with open(out, "w") as fh:
         json.dump(facts, fh, indent=2, sort_keys=True)
         fh.write("\n")
-
     n_files = len(facts["files"])
     n_units = len(facts["units"])
     n_changed = len(facts["changed_units"])
-    print(f"facts: {n_files} files, {n_units} units ({n_changed} changed), "
-          f"{len(facts['sites'])} sites, {len(facts['similarity'])} similar pairs -> {out}")
+    summary = (f"facts: {n_files} files, {n_units} units ({n_changed} changed), "
+               f"{len(facts['sites'])} sites, {len(facts['similarity'])} similar pairs -> {out}")
+    if args.stdout_json:
+        # Pipe mode: stdout carries ONLY the JSON, as its final content —
+        # the consumer parses the first JSON value from the stream, so
+        # nothing may follow it. The summary rides stderr (both land in
+        # the job log).
+        print(summary, file=sys.stderr)
+        sys.stdout.write(json.dumps(facts, indent=2, sort_keys=True) + "\n")
+    else:
+        print(summary)
 
 
 if __name__ == "__main__":

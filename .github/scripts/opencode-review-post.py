@@ -303,8 +303,24 @@ def build_summary(spec: KindSpec, kind: str, findings: list[dict], verdict: str,
 
 
 def cmd_gate(args: argparse.Namespace) -> None:
-    with open(args.facts) as fh:
-        facts = json.load(fh)
+    # --facts - reads the facts from stdin: the trusted producer (the
+    # prep, piping facts.py --stdout-json) hands the decision its bytes
+    # directly, so the gate never re-reads the model-writable
+    # .stellar/facts.json between a trusted write and this read.
+    if args.facts == "-":
+        # First JSON value from the stream, tolerantly: the producer may
+        # legitimately emit progress text elsewhere in the stream; the
+        # facts object is the value that matters (and, in pipe mode, the
+        # stream's final content). raw_decode parses from the first
+        # object opener, so leading progress lines cannot break it.
+        text = sys.stdin.read()
+        obj_at = text.find("{")
+        if obj_at < 0:
+            raise ValueError("gate: no JSON object in the piped facts stream")
+        facts, _ = json.JSONDecoder().raw_decode(text, obj_at)
+    else:
+        with open(args.facts) as fh:
+            facts = json.load(fh)
     spec = kind_spec(args.kind)
     print("true" if not spec.is_relevant(facts) else "false")
 

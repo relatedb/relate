@@ -19,6 +19,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -491,6 +492,28 @@ class GateTests(unittest.TestCase):
                 self.assertFalse(facts_doc["has_code_changes"])
                 self.assertIs(
                     SUBJECT.kind_spec("Security review").is_relevant(facts_doc), True)
+
+    def test_gate_command_reads_facts_from_stdin(self):
+        """--facts - consumes the facts from stdin: the prep pipes
+        facts.py --stdout-json straight into the gate, so the decision
+        never re-reads the model-writable .stellar/facts.json between
+        the trusted write and the gate read. The boolean mapping is the
+        file path's, pinned by the same docs-only/rust pair; the parse
+        takes the stream's FIRST JSON value, so leading progress text
+        cannot break it."""
+        docs_json = json.dumps(self.facts(["docs/adr/0001-x.md"]))
+        with patch("sys.stdin", io.StringIO(docs_json)):
+            code, out, _ = run_command(SUBJECT.cmd_gate, facts="-")
+        self.assertEqual((code, out.strip()), (0, "true"))
+        rust_json = json.dumps(self.facts(["relate/relate/src/lib.rs"]))
+        with patch("sys.stdin", io.StringIO(rust_json)):
+            code, out, _ = run_command(SUBJECT.cmd_gate, facts="-")
+        self.assertEqual((code, out.strip()), (0, "false"))
+        # leading non-JSON text ahead of the object: the first JSON
+        # value still wins
+        with patch("sys.stdin", io.StringIO("progress: fetching\n" + docs_json)):
+            code, out, _ = run_command(SUBJECT.cmd_gate, facts="-")
+        self.assertEqual((code, out.strip()), (0, "true"))
 
     def test_gate_command_prints_the_gate_boolean(self):
         """cmd_gate's output mapping, pinned once: 'true' when the gate

@@ -196,5 +196,56 @@ class TestIncludeUnits(RepoFixture):
         self.assertEqual(f["expanded_unit_files"], ["src/user.rs"])
 
 
+class StdoutJsonContract(unittest.TestCase):
+    """--stdout-json: the pipe channel the per-kind gate consumes. The
+    gate's decision must never re-read the model-writable
+    .stellar/facts.json, so facts.py hands the same bytes it wrote to
+    the file to stdout — as the stream's FINAL content, with the
+    progress summary on stderr."""
+
+    def test_stdout_json_is_the_file_and_ends_the_stream(self):
+        import subprocess
+        import tempfile
+        facts_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "facts.py")
+        with tempfile.TemporaryDirectory() as d:
+            def sh(*a):
+                subprocess.run(a, cwd=d, check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            sh("git", "init", "-q", ".")
+            sh("git", "config", "user.email", "t@example.com")
+            sh("git", "config", "user.name", "t")
+            with open(os.path.join(d, "main.rs"), "w") as fh:
+                fh.write("fn main() {}\n")
+            sh("git", "add", "main.rs")
+            sh("git", "commit", "-qm", "one")
+            with open(os.path.join(d, "lib.rs"), "w") as fh:
+                fh.write("pub fn f() {}\n")
+            sh("git", "add", "lib.rs")
+            sh("git", "commit", "-qm", "two")
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d,
+                                  check=True, capture_output=True, text=True).stdout.strip()
+            base = subprocess.run(["git", "rev-parse", "HEAD~1"], cwd=d,
+                                  check=True, capture_output=True, text=True).stdout.strip()
+            out = os.path.join(d, "facts.json")
+            r = subprocess.run([sys.executable, facts_py, "--repo", d,
+                                "--base", base, "--head", head,
+                                "--out", out, "--stdout-json"],
+                               check=True, capture_output=True, text=True)
+            # stdout parses as JSON and equals the file; the summary is
+            # on stderr, never after the JSON on stdout
+            stdout_facts = json.loads(r.stdout)
+            with open(out) as fh:
+                file_facts = json.load(fh)
+            self.assertEqual(stdout_facts, file_facts)
+            self.assertNotIn("facts:", r.stdout)
+            self.assertIn("facts:", r.stderr)
+            # and the plain mode is unchanged: summary on stdout, no JSON
+            r2 = subprocess.run([sys.executable, facts_py, "--repo", d,
+                                 "--base", base, "--head", head, "--out", out],
+                                check=True, capture_output=True, text=True)
+            self.assertIn("facts:", r2.stdout)
+            self.assertEqual(r2.stdout.count("{"), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
