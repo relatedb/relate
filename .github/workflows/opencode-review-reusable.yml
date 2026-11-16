@@ -564,6 +564,29 @@ jobs:
           RUNNER_TEMP: ${{ runner.temp }}
           TMPDIR: ${{ runner.temp }}
         run: |
+          # Bash imports exported functions (BASH_FUNC_<name>%%
+          # environment variables) at startup — including anything the
+          # model step published through the runner's env command file
+          # (blanking GITHUB_ENV in the model step does not remove that
+          # file) — and an imported function shadows every command this
+          # step runs by name: PATH-resolved binaries and regular builtins
+          # alike (printf, jq, git), so the PATH pin and every per-name
+          # unset below cannot reach it (the round-23 finding). The
+          # runner's environment therefore never reaches the shell that
+          # holds the token: this script re-execs into a fresh bash under
+          # a rebuilt environment (env -i plus the pass-through list
+          # below) that carries no BASH_FUNC_ entry, no env-file residue,
+          # and the same fixed-value pins the step env spells. Every
+          # construct the unclean outer shell evaluates is one an imported
+          # function cannot intercept: case/esac are reserved words (bash
+          # rejects a function definition named for one), and /usr/bin/env
+          # and /usr/bin/bash contain a slash (bash bypasses function and
+          # builtin lookup for names with a slash). The clean shell is this
+          # same script ($0, the runner's temp file) with __clean_reexec as
+          # $1 — an argv position the env-file channel cannot forge; the
+          # body below runs only there.
+          case "${1:-}" in
+            __clean_reexec)
           # Trusted-source the choreography (ADR-0603): the worktree
           # copy is model-writable, so the committed PR-head copy — git
           # show of the head SHA from the event payload, the reviewed
@@ -687,6 +710,28 @@ jobs:
             python3 "$T/post.py" fail --repo "$REPO" --pr "$PR_NUMBER" \
               --reason "model run produced no valid .stellar/findings.json — $VALID_MSG"
           fi
+            ;;
+            *)
+              /usr/bin/env -i \
+                PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                LANG=C.UTF-8 \
+                HOME="$HOME" RUNNER_TEMP="$RUNNER_TEMP" TMPDIR="$TMPDIR" \
+                GH_TOKEN="$GH_TOKEN" GH_HOST=github.com \
+                GH_ENTERPRISE_TOKEN= GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+              BASE_SHA="$BASE_SHA" HEAD_SHA="$HEAD_SHA" REPO="$REPO" \
+              PR_NUMBER="$PR_NUMBER" STELLAR_RESOLVE="$STELLAR_RESOLVE" \
+              RESTORE_SHA="$RESTORE_SHA" \
+                GITHUB_ENV=/dev/null \
+                BASH_ENV= ENV= LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= \
+                PYTHONSTARTUP= PYTHONPATH= PYTHONHOME= \
+                NODE_OPTIONS= NODE_PATH= PERL5OPT= PERL5LIB= PERLLIB= \
+                RUBYOPT= RUBYLIB= GEM_HOME= GEM_PATH= \
+                GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+                GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=0 \
+                GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null \
+                /usr/bin/bash --noprofile --norc -eo pipefail "$0" __clean_reexec
+            ;;
+          esac
 
       # Per-kind pipeline posting (ADR-0603): the stellar scripted path's
       # hardening, generalized to the rust and security lanes — the model
@@ -789,6 +834,29 @@ jobs:
           RUNNER_TEMP: ${{ runner.temp }}
           TMPDIR: ${{ runner.temp }}
         run: |
+          # Bash imports exported functions (BASH_FUNC_<name>%%
+          # environment variables) at startup — including anything the
+          # model step published through the runner's env command file
+          # (blanking GITHUB_ENV in the model step does not remove that
+          # file) — and an imported function shadows every command this
+          # step runs by name: PATH-resolved binaries and regular builtins
+          # alike (printf, jq, git), so the PATH pin and every per-name
+          # unset below cannot reach it (the round-23 finding). The
+          # runner's environment therefore never reaches the shell that
+          # holds the token: this script re-execs into a fresh bash under
+          # a rebuilt environment (env -i plus the pass-through list
+          # below) that carries no BASH_FUNC_ entry, no env-file residue,
+          # and the same fixed-value pins the step env spells. Every
+          # construct the unclean outer shell evaluates is one an imported
+          # function cannot intercept: case/esac are reserved words (bash
+          # rejects a function definition named for one), and /usr/bin/env
+          # and /usr/bin/bash contain a slash (bash bypasses function and
+          # builtin lookup for names with a slash). The clean shell is this
+          # same script ($0, the runner's temp file) with __clean_reexec as
+          # $1 — an argv position the env-file channel cannot forge; the
+          # body below runs only there.
+          case "${1:-}" in
+            __clean_reexec)
           # Trusted-source the choreography (ADR-0603): the worktree
           # copy is model-writable, so the committed PR-head copy — git
           # show of the head SHA from the event payload, the reviewed
@@ -886,6 +954,28 @@ jobs:
             python3 "$P" fail --kind "$REVIEW_KIND" --repo "$REPO" --pr "$PR_NUMBER" \
               --reason "model run produced no valid .stellar/findings.json — $VALID_MSG"
           fi
+            ;;
+            *)
+              /usr/bin/env -i \
+                PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                LANG=C.UTF-8 \
+                HOME="$HOME" RUNNER_TEMP="$RUNNER_TEMP" TMPDIR="$TMPDIR" \
+                GH_TOKEN="$GH_TOKEN" GH_HOST=github.com \
+                GH_ENTERPRISE_TOKEN= GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+              BASE_SHA="$BASE_SHA" HEAD_SHA="$HEAD_SHA" REPO="$REPO" \
+              PR_NUMBER="$PR_NUMBER" REVIEW_KIND="$REVIEW_KIND" \
+              RESTORE_SHA="$RESTORE_SHA" \
+                GITHUB_ENV=/dev/null \
+                BASH_ENV= ENV= LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= \
+                PYTHONSTARTUP= PYTHONPATH= PYTHONHOME= \
+                NODE_OPTIONS= NODE_PATH= PERL5OPT= PERL5LIB= PERLLIB= \
+                RUBYOPT= RUBYLIB= GEM_HOME= GEM_PATH= \
+                GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+                GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=0 \
+                GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null \
+                /usr/bin/bash --noprofile --norc -eo pipefail "$0" __clean_reexec
+            ;;
+          esac
 
       - name: Enforce verdict
         # Runs even if the review step fails: a failed review leaves no
@@ -991,6 +1081,29 @@ jobs:
           RUNNER_TEMP: ${{ runner.temp }}
           TMPDIR: ${{ runner.temp }}
         run: |
+          # Bash imports exported functions (BASH_FUNC_<name>%%
+          # environment variables) at startup — including anything the
+          # model step published through the runner's env command file
+          # (blanking GITHUB_ENV in the model step does not remove that
+          # file) — and an imported function shadows every command this
+          # step runs by name: PATH-resolved binaries and regular builtins
+          # alike (printf, jq, git), so the PATH pin and every per-name
+          # unset below cannot reach it (the round-23 finding). The
+          # runner's environment therefore never reaches the shell that
+          # holds the token: this script re-execs into a fresh bash under
+          # a rebuilt environment (env -i plus the pass-through list
+          # below) that carries no BASH_FUNC_ entry, no env-file residue,
+          # and the same fixed-value pins the step env spells. Every
+          # construct the unclean outer shell evaluates is one an imported
+          # function cannot intercept: case/esac are reserved words (bash
+          # rejects a function definition named for one), and /usr/bin/env
+          # and /usr/bin/bash contain a slash (bash bypasses function and
+          # builtin lookup for names with a slash). The clean shell is this
+          # same script ($0, the runner's temp file) with __clean_reexec as
+          # $1 — an argv position the env-file channel cannot forge; the
+          # body below runs only there.
+          case "${1:-}" in
+            __clean_reexec)
           # Trusted-source the choreography (ADR-0603): the worktree
           # copy is model-writable, so the committed PR-head copy — git
           # show of the head SHA from the event payload, the reviewed
@@ -1061,6 +1174,28 @@ jobs:
           # shellcheck disable=SC1090
           . "$RESTORE" --no-clean
           .github/scripts/enforce-opencode-verdict.sh
+            ;;
+            *)
+              /usr/bin/env -i \
+                PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                LANG=C.UTF-8 \
+                HOME="$HOME" RUNNER_TEMP="$RUNNER_TEMP" TMPDIR="$TMPDIR" \
+                GH_TOKEN="$GH_TOKEN" GH_HOST=github.com \
+                GH_ENTERPRISE_TOKEN= GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+              PR_NUMBER="$PR_NUMBER" REVIEW_KIND="$REVIEW_KIND" \
+              VERDICT_FILE="$VERDICT_FILE" HEAD_SHA="$HEAD_SHA" REPO="$REPO" \
+              RESTORE_SHA="$RESTORE_SHA" \
+                GITHUB_ENV=/dev/null \
+                BASH_ENV= ENV= LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= \
+                PYTHONSTARTUP= PYTHONPATH= PYTHONHOME= \
+                NODE_OPTIONS= NODE_PATH= PERL5OPT= PERL5LIB= PERLLIB= \
+                RUBYOPT= RUBYLIB= GEM_HOME= GEM_PATH= \
+                GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+                GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=0 \
+                GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null \
+                /usr/bin/bash --noprofile --norc -eo pipefail "$0" __clean_reexec
+            ;;
+          esac
 
       # LABS-615/582: every round's raw documents survive the run even
       # when the posting path dies — the findings documents (full and
