@@ -182,6 +182,18 @@ pub(crate) fn pages_eagerly(fields: &ProjectionFields<'_>) -> bool {
         && (fields.skip.is_some() || fields.limit.is_some())
 }
 
+/// The sort's bounds-free precondition: there is an ordering to cut, a
+/// `LIMIT` to bound it, and no `DISTINCT` pass (which runs *after* the
+/// sort, so a pre-distinct cut would answer fewer rows than the distinct
+/// page deserves). The one home of these three facts —
+/// [`ProjectionClass::sort_cut`] reads them for the cutoff, and the
+/// dispatcher's `UNWIND` park reads them to decide whether the follower
+/// may open a window at all, so the two cannot disagree about which
+/// clauses earn one.
+pub(crate) fn may_cut(fields: &ProjectionFields<'_>) -> bool {
+    !fields.distinct && !fields.order.is_empty() && fields.limit.is_some()
+}
+
 impl<'a> ProjectionClass<'a> {
     /// The plan over an already-decided shape — the one construction
     /// site of the parked-key plan and the output names.
@@ -240,18 +252,30 @@ impl<'a> ProjectionClass<'a> {
 
     /// The sort's cutoff — `skip + limit`, the most rows an ordered page can
     /// need ([`window_capacity`]) — or `None` when the sort must keep every
-    /// row: no order keys, no `LIMIT` (a `SKIP`-only window is unbounded),
-    /// a `DISTINCT` pass (its set is the declared breaker and the pass runs
-    /// *after* the sort, so a pre-distinct cut would answer fewer rows than
-    /// the distinct page deserves), or an overflowing sum. The one
-    /// derivation of the cutoff; [`Self::window_keep`] masks it for the
-    /// shape that takes a streaming window, and the finish tail's sort
-    /// reads this value rather than recomputing it.
+    /// row: [`may_cut`]'s precondition fails (no order keys, no `LIMIT`, a
+    /// `DISTINCT` pass) or the sum overflows. The one derivation of the
+    /// cutoff; [`Self::window_keep`] masks it for the shape that takes a
+    /// streaming window, and the finish tail's sort reads this value rather
+    /// than recomputing it.
     pub(crate) fn sort_cut(&self, bounds: PageBounds) -> Option<std::num::NonZeroUsize> {
-        if self.order_keys.is_empty() || self.fields.distinct {
+        if !may_cut(&self.fields) {
             return None;
         }
         window_capacity(bounds.skip, bounds.limit).and_then(std::num::NonZeroUsize::new)
+    }
+
+    /// Whether a *generated* feed reaching this projection stays generated:
+    /// the aggregation folds it into the group table, and the ordered
+    /// window folds it into the bounded heap — every row is evaluated to
+    /// compare it, so folding the generator changes no answer. This is the
+    /// projection's own decision over the bounds it resolved once; the
+    /// dispatcher's `UNWIND` arm parks on the static half only
+    /// ([`unwind_streams_into`][super::project::unwind_streams_into]), so a
+    /// parked feed that resolves to no window is collected, not folded.
+    /// [`materialize_feed`][super::project::materialize_feed] is its one
+    /// reader.
+    pub(crate) fn folds_feed(&self, bounds: PageBounds) -> bool {
+        self.shape.streams() || self.window_keep(bounds).is_some()
     }
 
     /// The bounded window this clause folds its producer into — its sort

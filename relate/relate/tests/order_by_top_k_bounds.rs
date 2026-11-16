@@ -47,37 +47,86 @@ fn top_five(conn: &mut relate::Connection, n: i64) -> Vec<Value> {
     common::first_column(&common::run(conn, &q))
 }
 
-/// The memory shape (ADR-0555): the projection's container is the bounded
-/// window, and the feed it drains is reserved **once** — not the three
-/// copies the collecting path reserved (the projection's own `Vec`, the
-/// sort's merged buffer, and the top-k selection's second vector). A
-/// windowed ordered `LIMIT` therefore serves a larger input under a fixed
-/// admission pool than the collecting path did.
+/// The generated feed never materializes: `UNWIND` streams into any
+/// consumer that can fold, and the ordered window is a fold — its `land`
+/// runs per row, every row is evaluated to compare it, so parking the
+/// generator changes no answer. The statement therefore holds only its
+/// `skip + limit` answer, and the admission pool sees nothing
+/// input-proportional: 2M rows answer under the same 16 MiB pool that
+/// refused 200k before the window existed.
 ///
-/// Measured against this pool (16 MiB), `UNWIND range(1, N) … ORDER BY v
-/// DESC LIMIT 5`: `main` refuses at 70k rows and answers at 60k; this branch
-/// answers at 130k and refuses at 140k — about 2.2x. The row below is the
-/// middle of that gap, where the two behaviours differ.
-///
-/// This is **not** input-count independence. The feed is live for the
-/// projection's whole lifetime, so the reservation stays proportional to the
-/// input and the 200k case is still refused — the reservation is what keeps
-/// the pool pricing what the statement really holds. Removing the last
-/// proportionality means not materializing the input at all, which is the
-/// producer fold (LABS-841/842).
+/// This test is also the **guard for the streaming invariant** — "an
+/// `UNWIND` feed is never materialized into a consumer that can fold" is
+/// pinned here, not in a doc: any change that collects the generated feed
+/// on this shape (a landing that no longer folds, a dispatcher guard that
+/// stops parking the generator) puts the input back on the pool and fails
+/// this test with a `concurrent-logical-workspace-limit` refusal.
 #[test]
-fn order_by_limit_reserves_one_feed_not_three() {
-    // 100k rows: `main` refuses this under the same 16 MiB pool (measured at
-    // 70k), the windowed path answers it (measured to 130k).
+fn unwind_streams_into_the_window_whatever_the_input_count() {
     let mut c = bounded_db();
     assert_eq!(
-        top_five(&mut c, 100_000),
+        top_five(&mut c, 2_000_000),
         vec![
-            Value::Int(100_000),
-            Value::Int(99_999),
-            Value::Int(99_998),
-            Value::Int(99_997),
-            Value::Int(99_996)
+            Value::Int(2_000_000),
+            Value::Int(1_999_999),
+            Value::Int(1_999_998),
+            Value::Int(1_999_997),
+            Value::Int(1_999_996)
+        ]
+    );
+}
+
+/// A held feed still reserves, once. A `MATCH`'s walk output is collected
+/// before the projection runs, so the window drains a vector it does not
+/// own and the projection reserves it against the admission pool for its
+/// lifetime — one reservation where the collecting path made three (its own
+/// projected `Vec`, the sort's merged buffer, the top-k selection's second
+/// vector). 30k one-column rows refuse under a 2 MiB pool and 5k answer
+/// under it; that boundary is the *reservation's*, so it fails if the held
+/// feed goes unbilled — and it is not the walk's own charge, which lands on
+/// the per-allocation cap, a different meter.
+#[test]
+fn a_held_feed_reserves_once_for_the_window() {
+    // The store is built unlimited (a write batch holds its rows too, and
+    // that hold is not this test's subject), then reopened under the pool.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    {
+        let build = Database::open_with(path.to_str().unwrap(), OpenOptions::default()).unwrap();
+        let mut c = build.connect().unwrap();
+        common::run(&mut c, "UNWIND range(1, 30_000) AS i CREATE (:N {a: i})");
+    }
+    let db = Database::open_with(
+        path.to_str().unwrap(),
+        OpenOptions {
+            concurrent_logical_workspace_limit: Some(2 << 20),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut c = db.connect().unwrap();
+    // The walk's whole 30k-row output is held before the projection runs,
+    // and the window reserves it once — crossing the 2 MiB pool.
+    let error =
+        common::err_text(c.query("MATCH (n:N) WITH n.a AS a ORDER BY a DESC LIMIT 5 RETURN a"));
+    assert!(
+        error.contains("concurrent-logical-workspace-limit"),
+        "the held feed must be reserved against the admission pool: {error}"
+    );
+    // A held feed a sixth the size answers under the same pool, so the
+    // refusal is the reservation's boundary, not the walk's own charge.
+    let values = common::first_column(&common::run(
+        &mut c,
+        "MATCH (n:N) WHERE n.a <= 5000 WITH n.a AS a ORDER BY a DESC LIMIT 5 RETURN a",
+    ));
+    assert_eq!(
+        values,
+        vec![
+            Value::Int(5_000),
+            Value::Int(4_999),
+            Value::Int(4_998),
+            Value::Int(4_997),
+            Value::Int(4_996)
         ]
     );
 }

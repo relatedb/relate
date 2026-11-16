@@ -318,6 +318,22 @@ rate.
   feature that makes memory scale with path or row count instead of
   distinct answers or groups ships a test showing peak memory independent
   of that count
+- **`UNWIND` never materializes into a consumer that can fold.** The
+  dispatcher parks the generator on the *static* half of the fold decision
+  (`unwind_streams_into`: the aggregation, or a clause whose fields satisfy
+  `may_cut` — the classification's one home for the bounds-free cutoff
+  facts, which `ProjectionClass::sort_cut` also reads) and the projection
+  decides fold against collect from its own once-resolved bounds
+  (`ProjectionClass::folds_feed`). The park predicate must stay a
+  **superset** of `folds_feed` — a folding consumer it does not admit
+  silently stops streaming, with no compile error. `may_cut` is read
+  without the aggregating mask here, so the superset holds by construction.
+  A path that collects a generated `UNWIND`
+  feed for a folding consumer is a regression:
+  `relate/relate/tests/order_by_top_k_bounds.rs::
+  unwind_streams_into_the_window_whatever_the_input_count` fails on it
+  (a 2M-row windowed answer refuses under a 16 MiB pool the moment the
+  input is held)
 - **No 1k-line creep.** Split before a file crosses 1000 lines (`wc -l`
   every file you grow). Exempt: pinned vendored artifacts byte-identical
   to upstream (e.g.

@@ -13,7 +13,7 @@ use crate::overlay::{ExecGraph, MaterializeCache};
 use crate::row::Row;
 
 use super::aggregate::{aggregate_ex, Aggregation, WhereMode};
-use super::classification::{ProjectionClass, ProjectionShape};
+use super::classification::{may_cut, ProjectionClass, ProjectionShape};
 use super::order::{page, PageBounds};
 use super::pattern_policies::MatchFold;
 use super::post_merge::{adopt_rows, finish_projection, land_feed, Landed};
@@ -81,26 +81,51 @@ pub(crate) fn maps_each_row(fields: &ProjectionFields<'_>) -> bool {
         && !fields.where_clause.is_some_and(is_agg_expr)
 }
 
-/// Whether a projection folds its input as it arrives, so an `UNWIND` or a
-/// `MATCH` feeding it can generate rows one at a time instead of
-/// materializing them: an aggregating projection with no `*` item (a `*`
-/// groups by every carried variable, which needs the rows' shape up front).
-/// The decision is the shape's ([`ProjectionShape::decide`] +
-/// [`ProjectionShape::streams`]), answered without building the
-/// parked-key plan. A shape `decide` rejects (the `DISTINCT *`
-/// aggregation) never folds a feed: the projection itself fails closed
-/// at the same decision when the clause reaches it, which every clause
-/// in the list does.
-pub(crate) fn streams_into_aggregation(fields: &ProjectionFields<'_>) -> bool {
-    ProjectionShape::decide(fields).is_ok_and(|shape| shape.streams())
+/// The next clause's projection fields and decided shape, when it is a
+/// `WITH`/`RETURN` at all — the prologue every follower-fold predicate
+/// reads. A shape [`ProjectionShape::decide`] rejects yields `None`: the
+/// clause never folds a feed, and the projection itself fails closed at
+/// the same decision when the clause reaches it.
+fn next_fold_shape<'a>(
+    next: Option<&'a Clause>,
+) -> Option<(ProjectionFields<'a>, ProjectionShape)> {
+    let fields = next.and_then(ProjectionFields::from_clause)?;
+    let shape = ProjectionShape::decide(&fields).ok()?;
+    Some((fields, shape))
 }
 
 /// Whether the clause after an `UNWIND` or a `MATCH` consumes its rows as a
 /// stream: a `WITH` or `RETURN` whose projection folds an aggregation as rows
-/// arrive. Every other follower takes the rows as a held vector, as ever.
+/// arrive ([`ProjectionShape::streams`] — an aggregating shape with no `*`
+/// item, since a `*` groups by every carried variable and needs the rows'
+/// shape up front). Every other follower takes the rows as a held vector, as
+/// ever.
 pub(crate) fn streams_into_projection(next: Option<&Clause>) -> bool {
-    next.and_then(ProjectionFields::from_clause)
-        .is_some_and(|fields| streams_into_aggregation(&fields))
+    next_fold_shape(next).is_some_and(|(_, shape)| shape.streams())
+}
+
+/// Whether the clause after an `UNWIND` keeps its generator: a follower that
+/// folds rows as rows arrive — the aggregation, or a clause that *may* take
+/// the ordered window. Every other follower still takes the rows as a held
+/// vector. `UNWIND` is the one producer whose output is always generatable,
+/// so it is the one this answers; a `MATCH` keeps
+/// [`streams_into_projection`], whose answer the match chain also reads for
+/// its stage runs.
+///
+/// Parking is deliberately the *static* half of the fold decision, answered
+/// from the clause's fields and shape alone: no page bounds are resolved
+/// here and no per-clause plan is built. The projection resolves the bounds
+/// once, from its own classification, and its `materialize_feed` decides
+/// fold against collect — so a parked feed that resolves to no window (a
+/// zero page, an overflowing `skip + limit`) collects there, a
+/// nondeterministic bound is one draw rather than two, and the shapes that
+/// never fold (`DISTINCT`, `SKIP`-only, unordered) are not parked at all.
+///
+/// The window half is [`may_cut`], the classification's own bounds-free
+/// precondition — read here without its aggregating mask, so the park
+/// admits a superset of [`ProjectionClass::window_keep`] by construction.
+pub(crate) fn unwind_streams_into(next: Option<&Clause>) -> bool {
+    next_fold_shape(next).is_some_and(|(fields, shape)| shape.streams() || may_cut(&fields))
 }
 
 /// Open the aggregation a streamed `MATCH` folds into, for the
@@ -233,7 +258,7 @@ pub(crate) fn project_rows(
     if bounds.answers_nothing() {
         return Ok(Vec::new());
     }
-    let (mut rows, stream) = materialize_feed(graph, feed, &class, bounds)?;
+    let (mut rows, stream) = materialize_feed(feed, &class, bounds)?;
     // The windowed shape no longer reserves the sort's merged buffer — the
     // window's own container is bounded — but the feed it drains is live for
     // this whole call, and the producer releases its own reservation as it
@@ -313,39 +338,34 @@ pub(crate) fn project_rows(
 }
 
 /// The feed as the merge paths consume it — the pipeline's materialization
-/// stage: a collected row vector, or — when the projection folds a stream
-/// ([`ProjectionShape::streams`]) — the rows still flowing. A generated
-/// feed reaching a non-streaming projection is collected here under the
-/// one retaining charge, and the eager pre-projection page applies at this
+/// stage: a collected row vector, or — when the projection folds a
+/// generated feed ([`ProjectionClass::folds_feed`]: the aggregation, or the
+/// ordered window over its once-resolved bounds) — the rows still flowing.
+/// A parked feed that resolves to no window is collected here under the one
+/// retaining charge, and the eager pre-projection page applies at this
 /// stage, so a `LIMIT 1` must not evaluate a later row whose projection
 /// raises an error (CIP-27).
 fn materialize_feed<'a>(
-    graph: &ExecGraph<'_>,
     feed: RowFeed<'a>,
     class: &ProjectionClass<'_>,
     bounds: PageBounds,
 ) -> Result<(Vec<Row>, Option<RowFeed<'a>>)> {
     let (rows, stream) = match feed {
         RowFeed::Held(rows) => (rows, None),
-        // A generated feed stays generated only for the shape that folds it
-        // as rows arrive: the aggregation. The ordered window does not
-        // extend this — a generated feed is materialized by its producer
-        // (`exec_unwind`) before this stage ever runs, so the window bounds
-        // the projection's own container, never the producer's.
-        RowFeed::Unwind(unwind) if class.shape.streams() => {
+        // A generated feed stays generated for the shapes that fold it as
+        // rows arrive — the aggregation and the ordered window
+        // ([`ProjectionClass::folds_feed`]): the window's `land` is a
+        // per-row fold, every row is evaluated to compare it, so the
+        // producer is never materialized on those shapes. The collecting
+        // shapes still land here.
+        RowFeed::Unwind(unwind) if class.folds_feed(bounds) => {
             (Vec::new(), Some(RowFeed::Unwind(unwind)))
         }
         folded @ RowFeed::Folded(_) => (Vec::new(), Some(folded)),
-        RowFeed::Unwind(unwind) => {
-            let mut retained = graph.retain_bytes(0)?;
-            let mut rows = Vec::new();
-            for row in unwind {
-                let row = row?;
-                retained.add_row(graph, row.values())?;
-                rows.push(row);
-            }
-            (rows, None)
-        }
+        // The generator's own materializing form — the one place a feed
+        // that cannot fold becomes rows, so its charge cannot drift from
+        // the one `exec_unwind` pays.
+        RowFeed::Unwind(unwind) => (unwind.materialize()?, None),
     };
     // The eager shape pages here, on the clause's one resolved bounds; every
     // other shape leaves the page to the finish tail.

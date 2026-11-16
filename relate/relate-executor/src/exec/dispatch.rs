@@ -31,7 +31,7 @@ use super::procedures::exec_call_clause;
 use super::profile_tick::{
     finish_parked_unwind, profile_tick, take_feed, ParkedUnwind, ProfileTick, UnwindFacts,
 };
-use super::project::{project_rows, return_result, streams_into_projection, RowSource};
+use super::project::{project_rows, return_result, unwind_streams_into, RowSource};
 use super::scope::{carry_scope_bindings, ProjectionFields};
 use super::stats_short_circuit::stats_short_circuit;
 use super::unwind::{UnwindFeed, UnwindStats};
@@ -167,10 +167,13 @@ fn run_clauses_mode(
     // so a user alias can never forge this state; the dispatcher is its one
     // authority.
     let mut rows_source = RowSource::Bindings;
-    // An `UNWIND` whose consumer folds rows as they arrive (an aggregating
-    // `WITH`/`RETURN`) is not run as a clause of its own: its generator is
-    // parked here and the consumer pulls rows from it, so the rows are never
-    // held. The parked value carries the generator with its own statistics
+    // An `UNWIND` whose follower folds rows as they arrive is not run as a
+    // clause of its own: its generator is parked here and the consumer pulls
+    // rows from it, so the rows are never held. The followers that fold are
+    // the ones `unwind_streams_into` admits — the aggregation, and a clause
+    // that may take the ordered window; a consumer that cannot fold says so
+    // by not being parked. The parked value carries the generator with its
+    // own statistics
     // and PROFILE position, so each streamed `UNWIND` reports its own facts
     // once the consumer has drained it.
     let mut pending_unwind: Option<ParkedUnwind<'_>> = None;
@@ -348,7 +351,7 @@ fn run_clauses_mode(
             Clause::Remove { items } => {
                 rows = exec_remove(graph, rows, items, params)?;
             }
-            Clause::Unwind { expression, alias } if streams_into_projection(clauses.get(i + 1)) => {
+            Clause::Unwind { expression, alias } if unwind_streams_into(clauses.get(i + 1)) => {
                 let stats = Rc::new(UnwindStats::new(profile.is_some()));
                 pending_unwind = Some(ParkedUnwind {
                     feed: UnwindFeed::new(
