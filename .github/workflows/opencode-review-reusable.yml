@@ -487,6 +487,19 @@ jobs:
           # from — never local HEAD, which the model step could have
           # moved with a commit.
           RESTORE_SHA: ${{ github.sha }}
+          # gh's target host and the enforce gate's repo variable are
+          # pinned too (the round-22 finding): the model can append to
+          # the runner's env command file under RUNNER_TEMP (blanking
+          # GITHUB_ENV does not remove that file), and an unpinned
+          # GH_HOST sends this step's GH_TOKEN to a host of the model's
+          # choosing on every gh api call; an unpinned
+          # GITHUB_REPOSITORY points the enforce gate's verdict-comment
+          # read at any public repository holding a forged pass
+          # verdict. The enterprise token is blanked alongside
+          # (github.com auth comes from GH_TOKEN alone).
+          GH_HOST: github.com
+          GH_ENTERPRISE_TOKEN: ''
+          GITHUB_REPOSITORY: ${{ github.repository }}
           # Process-start pinning (see the header note): these fixed
           # literals are the most specific Actions env scope, so they
           # override anything the model shell published into the job —
@@ -699,6 +712,19 @@ jobs:
           # from — never local HEAD, which the model step could have
           # moved with a commit.
           RESTORE_SHA: ${{ github.sha }}
+          # gh's target host and the enforce gate's repo variable are
+          # pinned too (the round-22 finding): the model can append to
+          # the runner's env command file under RUNNER_TEMP (blanking
+          # GITHUB_ENV does not remove that file), and an unpinned
+          # GH_HOST sends this step's GH_TOKEN to a host of the model's
+          # choosing on every gh api call; an unpinned
+          # GITHUB_REPOSITORY points the enforce gate's verdict-comment
+          # read at any public repository holding a forged pass
+          # verdict. The enterprise token is blanked alongside
+          # (github.com auth comes from GH_TOKEN alone).
+          GH_HOST: github.com
+          GH_ENTERPRISE_TOKEN: ''
+          GITHUB_REPOSITORY: ${{ github.repository }}
           # Process-start pinning (see the header note): these fixed
           # literals are the most specific Actions env scope, so they
           # override anything the model shell published into the job —
@@ -888,6 +914,19 @@ jobs:
           # from — never local HEAD, which the model step could have
           # moved with a commit.
           RESTORE_SHA: ${{ github.sha }}
+          # gh's target host and the enforce gate's repo variable are
+          # pinned too (the round-22 finding): the model can append to
+          # the runner's env command file under RUNNER_TEMP (blanking
+          # GITHUB_ENV does not remove that file), and an unpinned
+          # GH_HOST sends this step's GH_TOKEN to a host of the model's
+          # choosing on every gh api call; an unpinned
+          # GITHUB_REPOSITORY points the enforce gate's verdict-comment
+          # read at any public repository holding a forged pass
+          # verdict. The enterprise token is blanked alongside
+          # (github.com auth comes from GH_TOKEN alone).
+          GH_HOST: github.com
+          GH_ENTERPRISE_TOKEN: ''
+          GITHUB_REPOSITORY: ${{ github.repository }}
           # Process-start pinning (see the header note): these fixed
           # literals are the most specific Actions env scope, so they
           # override anything the model shell published into the job —
