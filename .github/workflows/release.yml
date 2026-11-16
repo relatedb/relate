@@ -1467,13 +1467,16 @@ jobs:
       # slack-announce job posts it after the whole pipeline is green.
       slack: false
     # Reusable workflows receive no secrets unless asked (the v0.9.2 run
-    # failed fast on the empty FIREWORKS_API_KEY check): exactly the two
-    # the callee declares — FIREWORKS_API_KEY for the agent run, and
-    # SLACK_WEBHOOK_URL for the inline leg this call leaves dormant
-    # (slack: false, ADR-0465).
+    # failed fast on the empty FIREWORKS_API_KEY check): exactly the one
+    # this path uses — FIREWORKS_API_KEY for the agent run. The webhook
+    # stays unpassed: slack is false on this call (ADR-0465 — the payload
+    # is posted by the release run's own slack-announce job, which reads
+    # the repository secret itself), the callee declares the secret
+    # optional with a logged skip when unset (LABS-133), and the agent
+    # run works over prompt-injectable changelog text — no secret rides
+    # along that its path does not need.
     secrets:
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
   # ADR-0129's update-website chain is gone: the website lives in the
   # separate relate-web repository (ADR-0546), which pulls what it needs —
   # this repo never pushes content into it. The only handoff is the
