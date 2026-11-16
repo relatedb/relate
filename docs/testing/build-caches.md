@@ -273,7 +273,7 @@ cold-compiled the full dependency tree per release.
 
 - The `xcframework` matrix legs (one Apple target each), the
   `swift-stamp` job (all five targets, for its rebase-rebuild retry
-  path), and the `cli`/`ffi` jobs use the `setup-rust-ci` preamble
+  path), and the `cli` job use the `setup-rust-ci` preamble
   with sccache on, **including the macOS and Windows legs**. This
   deviates from the CI OS lanes' `sccache: "false"`: those lanes are
   test-shaped and Linux-first, while the release poles are exactly the
@@ -281,6 +281,14 @@ cold-compiled the full dependency tree per release.
   fresh checkout's mtimes (ADR-0331's finding) — without sccache those
   legs stay cold every release. The `version` job itself compiles
   nothing since the ADR-0572 split (bump and push only, ubuntu).
+- The `ffi` job is the exception among the compile lanes: it builds
+  from the stamped release commit, so it runs the preamble cache-free
+  (`cache: "false"`, `sccache: "false"`) — a stamp-ref build must
+  neither restore cross-run state into the release artifacts nor save
+  cache entries written under code it just executed (the
+  cache-poisoning vehicle; the npm lanes beside it consume no cache
+  either). The cost is the pre-cache cold shape above, paid once per
+  release dispatch.
 - The wheel legs pass maturin-action's own `sccache: true` instead of
   the host preamble: the linux legs build inside manylinux containers a
   host-side `RUSTC_WRAPPER` never reaches, and the action wires the GHA

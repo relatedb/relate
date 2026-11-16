@@ -52,6 +52,13 @@ env:
   # the names listed under secrets in .sonic/ci.yml.
   GITHUB_TOKEN: ${{ github.token }}
 
+# Read-only token default: every job below inherits contents: read
+# unless it carries its own explicit block — the three PR-comment jobs
+# (loadtest-baselines, memory-controls, memory-shape) add
+# pull-requests: write; nothing in this workflow writes repo contents.
+permissions:
+  contents: read
+
 jobs:
   # One gosonic binary for every Linux lane. Stages run on separate runners,
   # so this job builds the CLI once and the gosonic action downloads it.
@@ -79,19 +86,19 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: triha74/gosonic
           ref: 36b8e47f575c2436515e3ba5f4819771131e83ff
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
 
       - name: Build gosonic
         run: CGO_ENABLED=0 go build -o gosonic .
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: gosonic
           path: gosonic
@@ -135,7 +142,7 @@ jobs:
           else
             echo "full=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -232,7 +239,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Previous run's failed checks
         id: prev
@@ -261,7 +268,7 @@ jobs:
           echo "lint=$lint" >> "$GITHUB_OUTPUT"
 
       # Keep @rev in sync with rust-toolchain.toml (channel = "1.88.0").
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
         if: steps.prev.outputs.lint == 'true'
         with:
           components: rustfmt
@@ -281,7 +288,7 @@ jobs:
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -327,7 +334,7 @@ jobs:
           - name: storage
           - name: planner
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -355,7 +362,7 @@ jobs:
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full_ci == 'false'
     runs-on: linux-4-core-x86
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/setup-rust-ci
         with:
@@ -409,7 +416,7 @@ jobs:
     steps:
       # Full history: the merge needs its merge base, and a depth-1
       # checkout does not have one.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -443,7 +450,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: linux-4-core-x86
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/setup-rust-ci
         with:
@@ -476,7 +483,7 @@ jobs:
     steps:
       # pull_request otherwise checks out the merge with main. Pin the head
       # so this job builds the branch.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
@@ -488,20 +495,20 @@ jobs:
           free-disk: "false"
           mold: "false"
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22"
 
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: "1.22"
 
@@ -597,7 +604,7 @@ jobs:
     steps:
       # Pin the head like os-smoke: pull_request otherwise checks out the
       # merge with main.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
@@ -608,7 +615,7 @@ jobs:
       # preamble step below receives them (OPLANE_REQ-00362889).
       - name: Read the Actions cache service for sccache
         id: cache-service
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const token = process.env.ACTIONS_RUNTIME_TOKEN || ''
@@ -704,7 +711,7 @@ jobs:
     steps:
       # pull_request otherwise checks out the merge with main. Pin the head
       # so this job builds the branch.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
@@ -759,7 +766,7 @@ jobs:
     steps:
       # pull_request otherwise checks out the merge with main. Pin the head
       # so this job builds the branch.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
@@ -776,14 +783,14 @@ jobs:
           mold: "false"
           cache-shared-key: os-surface
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: "1.22"
 
       # cl is the compiler on windows-16-core that can link an MSVC cdylib.
       # Load it before the dev build so rustc and cl share one linker.
       - name: MSVC developer environment
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
       - name: Build dev surface artifacts (compile/link checks)
         shell: bash
@@ -892,7 +899,7 @@ jobs:
     steps:
       # pull_request otherwise checks out the merge with main. Pin the head
       # so this job builds the branch.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
@@ -926,7 +933,7 @@ jobs:
     # the MIN_FREE_MB early-exit.
     runs-on: linux-4-core-x86
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -957,7 +964,7 @@ jobs:
       matrix:
         os: [linux-4-core-x86]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -977,7 +984,7 @@ jobs:
     needs: sonic-init
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -1020,7 +1027,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -1053,7 +1060,7 @@ jobs:
     # (see stack-release).
     runs-on: linux-4-core-x86
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -1076,7 +1083,7 @@ jobs:
     # (see stack-release).
     runs-on: linux-4-core-x86
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -1102,7 +1109,7 @@ jobs:
     # free-tier lane is unchanged. Success bar is a 2x wall drop.
     runs-on: linux-4-core-x86
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -1154,7 +1161,7 @@ jobs:
           - { leg: e2e }
           - { leg: smoke }
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -1180,7 +1187,7 @@ jobs:
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -1224,12 +1231,12 @@ jobs:
       # class, or the envelope compare goes INCOMPATIBLE on every PR.
       BASELINE_RUNNER: github-actions:${{ vars.LOADTEST_RUNNER }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # Same rate-limit relief as the loadtest-baselines gate (LABS-248).
       - name: Log in to Docker Hub
         if: env.DOCKERHUB_USERNAME != ''
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         with:
@@ -1242,7 +1249,7 @@ jobs:
 
       - name: Upload query-latency report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: query-latency-report
           path: target/query-latency/report-graph-benchmark-ldbc-sf0.1.json
@@ -1260,7 +1267,7 @@ jobs:
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -1282,7 +1289,7 @@ jobs:
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -1306,7 +1313,7 @@ jobs:
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -1348,12 +1355,12 @@ jobs:
     env:
       BASELINE_RUNNER: github-actions:${{ vars.LOADTEST_RUNNER }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # Same rate-limit relief as the bolt image build (LABS-248).
       - name: Log in to Docker Hub
         if: env.DOCKERHUB_USERNAME != ''
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         with:
@@ -1372,7 +1379,7 @@ jobs:
 
       - name: Upload fresh loadtest reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: loadtest-reports
           path: |
@@ -1422,11 +1429,11 @@ jobs:
       BASELINE_RUNNER: github-actions:${{ vars.LOADTEST_RUNNER }}
       CI_COMPARE: "1"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Log in to Docker Hub
         if: env.DOCKERHUB_USERNAME != ''
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         with:
@@ -1443,7 +1450,7 @@ jobs:
 
       - name: Upload memory-controls report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: memory-controls-report
           path: |
@@ -1490,11 +1497,11 @@ jobs:
       BASELINE_RUNNER: github-actions:${{ vars.LOADTEST_RUNNER }}
       CI_COMPARE: "1"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Log in to Docker Hub
         if: env.DOCKERHUB_USERNAME != ''
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         with:
@@ -1511,7 +1518,7 @@ jobs:
 
       - name: Upload memory-shape report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: memory-shape-report
           path: |
@@ -1573,7 +1580,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Validate the harness topology
         working-directory: testing/jepsen
@@ -1596,7 +1603,7 @@ jobs:
       matrix:
         shard: *test_shards
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:
@@ -1619,7 +1626,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
     runs-on: linux-8-core-x86
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: ./.github/actions/gosonic
         with:

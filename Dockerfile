@@ -74,28 +74,67 @@ ARG BINARY_SOURCE=build
 # Base images are pinned to their multi-arch index digest so a re-pushed tag
 # can't change what the release builds; bump the tag and digest together.
 FROM rust:1.88-alpine@sha256:9dfaae478ecd298b6b5a039e1f2cc4fc040fc818a2de9aa78fa714dea036574d AS chef
-RUN apk add --no-cache build-base ca-certificates curl python3
+# xz unpacks the cargo-auditable release tarball in the install below.
+RUN apk add --no-cache build-base ca-certificates curl python3 xz
 # sccache wraps rustc and cache-keys on content hash — cargo's own
 # fingerprints are mtime-based and `COPY . .` refreshes every mtime, so
 # without it every build recompiled the world even with a warm target
 # cache (measured in CI: restored cache, full rebuild). Version + sha256
-# pinned. The tarball is a GitHub release; github-download.sh uses the
-# API when the BuildKit secret is present. python3 reads the asset list.
+# pinned, the same version as the CI-host installer
+# scripts/install-sccache.sh (kept equal by the
+# scripts/tests/test_docker_tool_pins.py drift guard). The tarball is a
+# GitHub release; github-download.sh uses the API when the BuildKit
+# secret is present. python3 reads the asset list.
 ARG GITHUB_ACTIONS=
-ARG SCCACHE_VERSION=0.12.0
-ARG SCCACHE_SHA256=b0e89ead6899224a4ba2b90e9073bf1ce036d95bab30f3dc33c1e1468bc4ad44
+ARG SCCACHE_VERSION=0.19.0
+ARG SCCACHE_SHA256=aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd
+# One helper owns the pinned-tool install flow (download, digest
+# verify, unpack) for every tool below: scripts/install-pinned-tool.sh,
+# bind-mounted beside github-download.sh exactly like it. Each RUN is
+# one invocation of the helper plus the tool's own version smoke;
+# GITHUB_ACTIONS forwards so an Actions build without the token secret
+# fails loudly instead of downloading anonymously.
 RUN --mount=type=bind,source=scripts/github-download.sh,target=/tmp/github-download.sh \
+    --mount=type=bind,source=scripts/install-pinned-tool.sh,target=/tmp/install-pinned-tool.sh \
     --mount=type=secret,id=GITHUB_TOKEN,required=false \
-    if [ -s /run/secrets/GITHUB_TOKEN ]; then export GITHUB_TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; fi \
-    && export GITHUB_ACTIONS="${GITHUB_ACTIONS}" \
-    && sh /tmp/github-download.sh \
+    GITHUB_ACTIONS="${GITHUB_ACTIONS}" \
+    sh /tmp/install-pinned-tool.sh \
         --repo mozilla/sccache \
         --tag "v${SCCACHE_VERSION}" \
         --asset "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-        -o /tmp/sccache.tgz \
-    && echo "${SCCACHE_SHA256}  /tmp/sccache.tgz" | sha256sum -c - \
-    && tar -xzf /tmp/sccache.tgz --strip-components=1 -C /usr/local/bin "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" \
-    && rm /tmp/sccache.tgz && sccache --version
+        --sha256 "${SCCACHE_SHA256}" \
+        --tar-mode gz \
+        --strip 1 \
+        --binary sccache \
+    && sccache --version
+# cargo-auditable, same version-plus-sha256 pinned-release pattern as
+# sccache above (the musl asset for this Alpine host). The build stage
+# below compiles the shipped `relate` and `entrypoint` binaries through
+# `cargo auditable build`, so each embeds its exact crate list —
+# Zlib-compressed JSON in the `.dep-v0` section — readable with
+# `cargo audit bin` and by grype/osv-scanner image scans, without the
+# Cargo.lock it was built from (RELEASING.md, "Embedded dependency
+# manifests"). Same version as scripts/install-cargo-auditable.sh (kept
+# equal by the same drift guard); that script pins the
+# glibc/macOS/windows assets for the release.yml lanes, while this pin
+# carries the musl digest inline — the chef stage has no bash, and the
+# script's Linux case pins the glibc asset, not the musl one this
+# Alpine host needs.
+ARG CARGO_AUDITABLE_VERSION=0.7.7
+ARG CARGO_AUDITABLE_SHA256=7676443367c5e33d9fb22acef63cccb5e9202de12dae1b0579995eb3e2bc7a18
+RUN --mount=type=bind,source=scripts/github-download.sh,target=/tmp/github-download.sh \
+    --mount=type=bind,source=scripts/install-pinned-tool.sh,target=/tmp/install-pinned-tool.sh \
+    --mount=type=secret,id=GITHUB_TOKEN,required=false \
+    GITHUB_ACTIONS="${GITHUB_ACTIONS}" \
+    sh /tmp/install-pinned-tool.sh \
+        --repo rust-secure-code/cargo-auditable \
+        --tag "v${CARGO_AUDITABLE_VERSION}" \
+        --asset "cargo-auditable-x86_64-unknown-linux-musl.tar.xz" \
+        --sha256 "${CARGO_AUDITABLE_SHA256}" \
+        --tar-mode xz \
+        --strip 1 \
+        --binary cargo-auditable \
+    && cargo auditable --version
 RUN cargo install cargo-chef --locked --version 0.1.78
 WORKDIR /src
 
@@ -119,10 +158,19 @@ COPY . .
 # Cache mounts are build-speed only and local-dev-oriented (they persist in
 # the local builder); nothing from a mount lands in the image — the runtime
 # stage copies binaries out of /out.
+# `cargo auditable build` chains cargo-auditable as RUSTC_WORKSPACE_WRAPPER
+# over the sccache RUSTC_WRAPPER and injects the `.dep-v0` section at the
+# two bins' link steps only: external dependencies are untouched, so the
+# chef-cooked dependency layer above stays valid (deps remain Fresh; only
+# workspace members recompile). sccache keys every compile on the CARGO_*
+# environment, and the wrapper sets CARGO_AUDITABLE_ORIG_ARGS — its
+# workspace-member entries are keyed apart from plain-build ones and the
+# chained compiles come out non-cacheable, so the members compile from
+# source here; the deps, the bulk of the tree, stay in the cooked layer.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/opt/sccache \
     RUSTC_WRAPPER=/usr/local/bin/sccache SCCACHE_DIR=/opt/sccache \
-    cargo build --release -p relate-cli -p relate-bolt \
+    cargo auditable build --release -p relate-cli -p relate-bolt \
     && mkdir -p /out \
     && cp target/release/relate target/release/entrypoint /out/
 

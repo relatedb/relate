@@ -30,6 +30,10 @@
 # local env: none — the repo's own remote and gh auth serve the fetches
 set -euo pipefail
 
+# The endpoint fetch and merge-base resolution are shared with the
+# per-kind review pre-step (opencode-review-prep.sh) — one spelling.
+. "$(dirname "$0")/lib/review-endpoints.sh"
+
 MODE="${1:?usage: stellar-prep.sh model|post|local [--quick] [PR_NUMBER]}"
 shift
 
@@ -96,7 +100,15 @@ fetch_last_head() {
     # fetch errors visible in the pipeline log
     git fetch --depth=1 origin "$LAST" 2>/dev/null || true
   else
-    git -c http.https://github.com/.extraheader="$AUTH" fetch --depth=1 origin "$LAST" || true
+    # the CI arm fetches through the endpoint library's git_authed —
+    # the one authenticated fetch spelling (the round-6 pin set and
+    # the round-9 credential channel): the token rides git's
+    # env-numbered configuration channel, never the command line a
+    # surviving model-spawned process could read through ps, and the
+    # invocation carries the full per-invocation pin set (an insteadOf
+    # rewrite to an ext:: URL is refused, and a model-crafted
+    # .git/hooks script never executes)
+    git_authed "$AUTH" fetch --depth=1 origin "$LAST" || true
   fi
 }
 
@@ -153,27 +165,21 @@ fi
 run_pipeline() {
   # actions/checkout on pull_request lands the merge ref at depth 1;
   # facts.py reads trees by SHA, so fetch both endpoints explicitly.
-  # Credentials are not persisted (scripted pipeline), so each fetch
-  # authenticates inline and nothing token-bearing survives into the model
-  # step. Local mode needs no fetch: every SHA it resolves (HEAD, the
-  # merge base, an ancestor last_head) is already in the checkout.
+  # Credentials are not persisted, so each fetch authenticates inline and
+  # nothing token-bearing survives into the model step. Local mode needs
+  # no fetch: every SHA it resolves (HEAD, the merge base, an ancestor
+  # last_head) is already in the checkout. The fetch, the deepen loop
+  # and the merge-base resolution are lib/review-endpoints.sh's — the
+  # one spelling, shared with the per-kind lanes' pre-step.
   if [ "$MODE" != "local" ]; then
-    AUTH="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-    git -c http.https://github.com/.extraheader="$AUTH" fetch --depth=1 origin "$BASE_SHA" "$HEAD_SHA"
+    AUTH=$(review_auth "$GH_TOKEN")
+    MB=$(fetch_review_base "$AUTH" "$BASE_SHA" "$HEAD_SHA")
+  else
+    MB=$(git merge-base "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || true)
   fi
-
   # The PR's real diff is merge-base...head, not base-tip..head: when the
   # branch is behind main, a two-dot diff includes main's newer commits
   # REVERSED, and the review would flag code the PR never touched.
-  MB=$(git merge-base "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || true)
-  if [ "$MODE" != "local" ]; then
-    depth=2
-    while [ -z "$MB" ] && [ "$depth" -le 256 ]; do
-      git -c http.https://github.com/.extraheader="$AUTH" fetch --deepen="$depth" origin "$BASE_SHA" "$HEAD_SHA"
-      MB=$(git merge-base "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || true)
-      depth=$((depth * 2))
-    done
-  fi
   BASE="${MB:-$BASE_SHA}"
   echo "review base: $BASE (merge-base of $BASE_SHA and $HEAD_SHA)"
   NCOMMITS=$(git rev-list --count "$BASE..$HEAD_SHA" 2>/dev/null || echo 0)

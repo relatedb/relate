@@ -28,6 +28,9 @@ name: Release notes
 #   - SLACK_WEBHOOK_URL (optional): enables the Slack leg. When unset the
 #     workflow logs a skip and continues with exit 0 — never a failure (LABS-133).
 #   - GITHUB_TOKEN (implicit): used by `gh release edit` to update the release.
+#     On the `workflow_call` path the two named secrets are declared in the
+#     workflow_call `secrets:` block and passed explicitly by the caller; a
+#     manual dispatch reads them from the repository directly.
 #
 # Dry run:
 #   A `workflow_dispatch` run defaults to `publish=false`, so it generates and
@@ -60,6 +63,18 @@ on:
         required: false
         type: boolean
         default: true
+    # Both named secrets are declared here and passed explicitly by
+    # release.yml's release-notes job: a called workflow sees only the
+    # secrets its caller passes, never the ambient repository secrets —
+    # the least-privilege shape opencode-review-reusable.yml set. A
+    # manual dispatch reads them from the repository directly.
+    secrets:
+      FIREWORKS_API_KEY:
+        description: "Authenticates the `opencode run` generation step; required — the run fails fast before generation if it is unset"
+        required: true
+      SLACK_WEBHOOK_URL:
+        description: "Webhook for the inline Slack post; optional — unset is a logged skip, never a failure (LABS-133)"
+        required: false
   workflow_dispatch:
     inputs:
       version:
@@ -159,7 +174,7 @@ jobs:
           echo "[release-notes] RELEASE_TAG=v${INPUT_VERSION} RELEASE_VERSION=${INPUT_VERSION}"
 
       - name: Checkout main
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
           fetch-depth: 0
@@ -359,7 +374,7 @@ jobs:
         # if-no-files-found (warn) keeps a dry run without a payload green,
         # the graceful skip of ADR-0125 amendment 2.
         if: env.PUBLISH != 'true' || env.SLACK != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-notes-slack-payload
           path: target/release-notes/slack-payload.json

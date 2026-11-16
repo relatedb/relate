@@ -83,7 +83,7 @@ runs:
         cache-save-if-cold-only: ${{ inputs.cache-save-if-cold-only }}
         cache-workspace-crates: ${{ inputs.cache-workspace-crates }}
 
-    - uses: actions/download-artifact@v7
+    - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
       with:
         name: gosonic
         path: ${{ runner.temp }}/gosonic-bin

@@ -437,7 +437,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      # Embedded dependency manifests: the non-Windows legs build through
+      # cargo-auditable (pinned install, the install-binaryen.sh pattern), so
+      # every shipped `relate` binary carries its crate list in the `.dep-v0`
+      # linker section — `cargo audit bin <binary>` reads it (RELEASING.md,
+      # "Embedded dependency manifests"). The Windows leg is owned by the
+      # windows-authenticode-signing lane and builds exactly as before —
+      # plain `cargo build`, same command and env; that lane integrates the
+      # manifest on Windows.
+      - name: Install cargo-auditable (pinned)
+        if: runner.os != 'Windows'
+        run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
+
+      - name: Build (auditable)
+        if: runner.os != 'Windows'
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo auditable build -p relate-cli --release --target ${{ matrix.target }}
+
       - name: Build
+        if: runner.os == 'Windows'
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build -p relate-cli --release --target ${{ matrix.target }}
@@ -525,6 +544,46 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+      # The checkout ref below is a job output — untrusted input until
+      # proven otherwise (the CodeQL cache-poisoning alerts on this
+      # file's ffi and npm lanes). Prove it is the commit the
+      # swift-stamp job pushed to main BEFORE the checkout persists
+      # credentials or restores any cache. The release tag is cut only
+      # after every build is green (the `tag` job), so `gh api` of the
+      # tag is not yet possible; containment in branch-protected main —
+      # where only the release pipeline pushes — is the pre-tag
+      # equivalent. Least privilege: no secrets; the read-only default
+      # job token is all the check needs.
+      - name: Verify the stamp sha is trusted main content
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAMP_SHA: ${{ needs.swift-stamp.outputs.sha }}
+        run: |
+          set -euo pipefail
+          sha="${STAMP_SHA:?swift-stamp emitted no sha}"
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::malformed stamp sha '${sha}' — expected the 40-hex commit id swift-stamp pushed to main"
+            exit 1
+          fi
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${sha}...main" \
+            --jq .status 2>"$RUNNER_TEMP/stamp-compare.err")" || {
+            echo "::error::stamp sha ${sha} does not resolve against ${GITHUB_REPOSITORY} main — not the commit swift-stamp pushed: $(cat "$RUNNER_TEMP/stamp-compare.err")"
+            exit 1
+          }
+          case "$status" in
+            ahead | identical)
+              # ahead: main contains the stamp commit (maintainer work
+              # landed after the stamp push); identical: the stamp
+              # commit is main's tip.
+              echo "stamp sha ${sha} verified as ${GITHUB_REPOSITORY}@main content (compare: ${status})"
+              ;;
+            *)
+              echo "::error::stamp sha ${sha} is not on ${GITHUB_REPOSITORY}@main (compare: ${status}) — refusing the unverified checkout"
+              exit 1
+              ;;
+          esac
+
       # Build from the stamped release commit (ADR-0572) — the one tree
       # every artifact and the tag share — so artifacts carry the release
       # version.
@@ -532,19 +591,29 @@ jobs:
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
 
-      # Shared Rust preamble (sccache + rust-cache; the preamble's
-      # internal dtolnay@rev is the rust-toolchain.toml sync point, and
-      # toolchain-targets carries this leg's target). Every leg
-      # cold-compiled the full dependency tree per release before this;
-      # sccache makes those compiles content-addressed hits on the
-      # macOS/Windows legs too — the release poles — where a rust-cache
-      # restore alone is mtime-invalidated on a fresh checkout
-      # (ADR-0331; docs/testing/build-caches.md, "Release workflow
-      # lanes"). free-disk and mold stay at their defaults (Linux-only
-      # effects inside the action).
+      # Rust preamble, cache-free (the preamble's internal dtolnay@rev
+      # is the rust-toolchain.toml sync point, and toolchain-targets
+      # carries this leg's target). This lane builds from the stamp
+      # ref — the privileged checkout the gate above verified — and
+      # executes that tree's code (the install scripts below, the
+      # build, every dependency's build script), so it restores and
+      # saves nothing in the shared caches: no rust-cache (any CI lane
+      # saves entries under the same key) and no sccache GHA writes.
+      # Cross-run cache state must neither feed the release artifacts
+      # nor be left behind by a build that just ran stamp-ref code —
+      # the cache-poisoning vehicle the CodeQL alerts on this lane
+      # name. Trade-off, accepted: the pre-cache status quo — every
+      # leg cold-compiles the full dependency tree each release
+      # (measured cold release poles: CLI windows 15.9 min, wheels
+      # 14.6 min; docs/testing/build-caches.md, "Release workflow
+      # lanes"), paid once per manual release dispatch. The other release compile
+      # lanes (xcframework, swift-stamp from the bump commit; cli; the
+      # wheel legs) keep their caches. free-disk and mold stay at
+      # their defaults (Linux-only effects inside the action).
       - uses: ./.github/actions/setup-rust-ci
         with:
-          sccache: "true"
+          sccache: "false"
+          cache: "false"
           toolchain-targets: ${{ matrix.target }}
 
       - name: Install cross-compilation tools (Linux ARM64)
@@ -553,10 +622,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      # Embedded dependency manifests for the shipped FFI libraries: every
+      # leg (Windows included — no lane owns a leg of this job) builds
+      # through cargo-auditable (pinned install, the install-binaryen.sh
+      # pattern), so the cdylib (.so/.dylib/.dll) carries its crate list in
+      # the `.dep-v0` section and answers `cargo audit bin`. The section is
+      # allocated data, not debuginfo: the Linux packaging's
+      # `strip --strip-unneeded` keeps it. The staticlib carries no manifest
+      # — archives have no link step for the injection; the cdylib is the
+      # auditable surface (the same tree's staticlibs for the Swift
+      # XCFramework are the xcframework lanes' exclusion reason).
+      - name: Install cargo-auditable (pinned)
+        shell: bash
+        run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
+
       - name: Build FFI
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build -p relate-ffi --release --target ${{ matrix.target }}
+        run: cargo auditable build -p relate-ffi --release --target ${{ matrix.target }}
 
       - name: Package FFI artifacts
         shell: bash
@@ -577,9 +660,13 @@ jobs:
           # tables stay. Cross binutils for the arm64 ELF (installed with
           # the cross gcc above); never a Mach-O/PE image (the
           # llvm-objcopy __LINKEDIT misalignment).
-          if [[ "${{ matrix.target }}" == *unknown-linux-gnu ]]; then
+          # Assign once, compare the variable: actionlint's shellcheck pass
+          # sees a placeholder for the unexpanded ${{ matrix.target }} and
+          # flags the direct comparison as provably unequal (SC2193).
+          target="${{ matrix.target }}"
+          if [[ "${target}" == *unknown-linux-gnu ]]; then
             PREFIX=""
-            if [[ "${{ matrix.target }}" == aarch64-unknown-linux-gnu ]]; then
+            if [[ "${target}" == aarch64-unknown-linux-gnu ]]; then
               PREFIX=aarch64-linux-gnu-
             fi
             if [[ -f ffi-package/librelate_ffi.so ]]; then
@@ -594,7 +681,8 @@ jobs:
                     --remove-section .llvm_addrsig "$m"
                  done \
                 && rm ../librelate_ffi.a \
-                && "${PREFIX}ar" rcs ../librelate_ffi.a * )
+                && members=(*) \
+                && "${PREFIX}ar" rcs ../librelate_ffi.a "${members[@]}" )
               rm -rf ffi-package/a-members
             fi
           fi
@@ -777,6 +865,45 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+      # The checkout ref below is a job output — untrusted input until
+      # proven otherwise (the CodeQL cache-poisoning alerts on this
+      # file's ffi and npm lanes). Prove it is the commit the
+      # swift-stamp job pushed to main BEFORE the checkout persists
+      # credentials or restores any cache. The release tag is cut only
+      # after every build is green (the `tag` job), so `gh api` of the
+      # tag is not yet possible; containment in branch-protected main —
+      # where only the release pipeline pushes — is the pre-tag
+      # equivalent. Least privilege: no secrets; the read-only default
+      # job token is all the check needs.
+      - name: Verify the stamp sha is trusted main content
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAMP_SHA: ${{ needs.swift-stamp.outputs.sha }}
+        run: |
+          set -euo pipefail
+          sha="${STAMP_SHA:?swift-stamp emitted no sha}"
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::malformed stamp sha '${sha}' — expected the 40-hex commit id swift-stamp pushed to main"
+            exit 1
+          fi
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${sha}...main" \
+            --jq .status 2>"$RUNNER_TEMP/stamp-compare.err")" || {
+            echo "::error::stamp sha ${sha} does not resolve against ${GITHUB_REPOSITORY} main — not the commit swift-stamp pushed: $(cat "$RUNNER_TEMP/stamp-compare.err")"
+            exit 1
+          }
+          case "$status" in
+            ahead | identical)
+              # ahead: main contains the stamp commit (maintainer work
+              # landed after the stamp push); identical: the stamp
+              # commit is main's tip.
+              echo "stamp sha ${sha} verified as ${GITHUB_REPOSITORY}@main content (compare: ${status})"
+              ;;
+            *)
+              echo "::error::stamp sha ${sha} is not on ${GITHUB_REPOSITORY}@main (compare: ${status}) — refusing the unverified checkout"
+              exit 1
+              ;;
+          esac
+
       # Pack from the stamped release commit (ADR-0572) so the manifest
       # carries the release version stamped by scripts/release-bump.sh.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -836,6 +963,45 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+      # The checkout ref below is a job output — untrusted input until
+      # proven otherwise (the CodeQL cache-poisoning alerts on this
+      # file's ffi and npm lanes). Prove it is the commit the
+      # swift-stamp job pushed to main BEFORE the checkout persists
+      # credentials or restores any cache. The release tag is cut only
+      # after every build is green (the `tag` job), so `gh api` of the
+      # tag is not yet possible; containment in branch-protected main —
+      # where only the release pipeline pushes — is the pre-tag
+      # equivalent. Least privilege: no secrets; the read-only default
+      # job token is all the check needs.
+      - name: Verify the stamp sha is trusted main content
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAMP_SHA: ${{ needs.swift-stamp.outputs.sha }}
+        run: |
+          set -euo pipefail
+          sha="${STAMP_SHA:?swift-stamp emitted no sha}"
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::malformed stamp sha '${sha}' — expected the 40-hex commit id swift-stamp pushed to main"
+            exit 1
+          fi
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${sha}...main" \
+            --jq .status 2>"$RUNNER_TEMP/stamp-compare.err")" || {
+            echo "::error::stamp sha ${sha} does not resolve against ${GITHUB_REPOSITORY} main — not the commit swift-stamp pushed: $(cat "$RUNNER_TEMP/stamp-compare.err")"
+            exit 1
+          }
+          case "$status" in
+            ahead | identical)
+              # ahead: main contains the stamp commit (maintainer work
+              # landed after the stamp push); identical: the stamp
+              # commit is main's tip.
+              echo "stamp sha ${sha} verified as ${GITHUB_REPOSITORY}@main content (compare: ${status})"
+              ;;
+            *)
+              echo "::error::stamp sha ${sha} is not on ${GITHUB_REPOSITORY}@main (compare: ${status}) — refusing the unverified checkout"
+              exit 1
+              ;;
+          esac
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
@@ -860,8 +1026,15 @@ jobs:
       - name: Install binaryen (wasm-opt)
         run: bash scripts/install-binaryen.sh "$RUNNER_TEMP/binaryen" >> "$GITHUB_PATH"
 
+      # Embedded dependency manifest for the wasm bundle: build-wasm.sh
+      # --auditable drives the cargo step through the pinned cargo-auditable,
+      # so the shipped relate_bg.wasm carries its crate list in the .dep-v0
+      # custom section (verified to survive wasm-bindgen and wasm-opt).
+      - name: Install cargo-auditable (pinned)
+        run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
+
       - name: Build the wasm bundle
-        run: bash scripts/build-wasm.sh --mode release
+        run: bash scripts/build-wasm.sh --mode release --auditable
 
       - name: npm pack
         run: |
@@ -897,6 +1070,45 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+      # The checkout ref below is a job output — untrusted input until
+      # proven otherwise (the CodeQL cache-poisoning alerts on this
+      # file's ffi and npm lanes). Prove it is the commit the
+      # swift-stamp job pushed to main BEFORE the checkout persists
+      # credentials or restores any cache. The release tag is cut only
+      # after every build is green (the `tag` job), so `gh api` of the
+      # tag is not yet possible; containment in branch-protected main —
+      # where only the release pipeline pushes — is the pre-tag
+      # equivalent. Least privilege: no secrets; the read-only default
+      # job token is all the check needs.
+      - name: Verify the stamp sha is trusted main content
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAMP_SHA: ${{ needs.swift-stamp.outputs.sha }}
+        run: |
+          set -euo pipefail
+          sha="${STAMP_SHA:?swift-stamp emitted no sha}"
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::malformed stamp sha '${sha}' — expected the 40-hex commit id swift-stamp pushed to main"
+            exit 1
+          fi
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${sha}...main" \
+            --jq .status 2>"$RUNNER_TEMP/stamp-compare.err")" || {
+            echo "::error::stamp sha ${sha} does not resolve against ${GITHUB_REPOSITORY} main — not the commit swift-stamp pushed: $(cat "$RUNNER_TEMP/stamp-compare.err")"
+            exit 1
+          }
+          case "$status" in
+            ahead | identical)
+              # ahead: main contains the stamp commit (maintainer work
+              # landed after the stamp push); identical: the stamp
+              # commit is main's tip.
+              echo "stamp sha ${sha} verified as ${GITHUB_REPOSITORY}@main content (compare: ${status})"
+              ;;
+            *)
+              echo "::error::stamp sha ${sha} is not on ${GITHUB_REPOSITORY}@main (compare: ${status}) — refusing the unverified checkout"
+              exit 1
+              ;;
+          esac
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
@@ -1400,8 +1612,9 @@ jobs:
     # nested job requests but the caller does not grant (attestations:
     # read, added to the nested verify jobs by #180) invalidates the
     # whole workflow file at dispatch (startup failure, run 43064659136).
-    # No secrets: inherit — the called workflow runs on OIDC alone and
-    # needs none.
+    # No secrets are passed — the called workflow runs on OIDC alone and
+    # needs none (its dormant maven-central job reads the `release`
+    # environment's secrets through its own environment block).
     permissions:
       id-token: write
       contents: read
@@ -1427,8 +1640,13 @@ jobs:
       # slack-announce job posts it after the whole pipeline is green.
       slack: false
     # Reusable workflows receive no secrets unless asked (the v0.9.2 run
-    # failed fast on the empty FIREWORKS_API_KEY check).
-    secrets: inherit
+    # failed fast on the empty FIREWORKS_API_KEY check): exactly the two
+    # the callee declares — FIREWORKS_API_KEY for the agent run, and
+    # SLACK_WEBHOOK_URL for the inline leg this call leaves dormant
+    # (slack: false, ADR-0465).
+    secrets:
+      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
   # ADR-0129's update-website chain is gone: the website lives in the
   # separate relate-web repository (ADR-0546), which pulls what it needs —
   # this repo never pushes content into it. The only handoff is the

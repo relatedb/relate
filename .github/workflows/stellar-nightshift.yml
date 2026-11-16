@@ -61,7 +61,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Window gate
         id: gate
@@ -148,7 +148,7 @@ jobs:
             fi
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.gate.outputs.go == 'true'
         with:
           name: stellar-nightshift-queue
@@ -192,7 +192,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Window gate (07:00-09:00 Europe/Berlin)
         id: gate
@@ -295,20 +295,20 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1
           persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: stellar-nightshift-queue
           path: .stellar
 
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Install opencode
         run: .github/scripts/install-opencode.sh
@@ -371,7 +371,7 @@ jobs:
           git diff --cached --binary > .stellar/fix.patch
           echo "ok=true" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.verify.outputs.ok == 'true'
         with:
           name: stellar-nightshift-patch
@@ -409,16 +409,16 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1
           persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: stellar-nightshift-queue
           path: .stellar
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: stellar-nightshift-patch
           path: .stellar

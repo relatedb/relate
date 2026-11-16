@@ -34,6 +34,9 @@ on:
   # exercises every lane on a feature branch before merge.
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # CI is not a user session: the CLI's anonymous usage metrics
 # (ADR-0079) are opted out on every relate spawn a lane of this
 # workflow can reach — the multi-OS e2e_bundles sweeps and the docker
@@ -73,12 +76,12 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
       - name: Free runner disk (Linux)
         if: runner.os == 'Linux'
         run: scripts/free-disk.sh
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: ldbc
       - name: Fetch the SF0.1 extract (19 MB, cached in target/)
@@ -87,7 +90,7 @@ jobs:
         run: cargo run --release -p relate-query-latency -- run --sf 0.1 --min-time 5
       - name: Upload the latency report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ldbc-sf01-report
           path: target/query-latency/report-graph-benchmark-ldbc-sf0.1.json
@@ -107,14 +110,14 @@ jobs:
       BASELINE_RUNNER: github-actions:${{ vars.LOADTEST_RUNNER }}
       CI_COMPARE: "1"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Check the Sonic socket policy
         run: bash scripts/check-sonic-socket-policy.sh
 
       - name: Log in to Docker Hub
         if: env.DOCKERHUB_USERNAME != ''
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         with:
@@ -122,13 +125,13 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Check out gosonic
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: triha74/gosonic
           ref: 36b8e47f575c2436515e3ba5f4819771131e83ff
           path: gosonic-src
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: gosonic-src/go.mod
 
@@ -157,7 +160,7 @@ jobs:
 
       - name: Upload the full memory-controls report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: memory-controls-full-report
           path: |
@@ -179,14 +182,14 @@ jobs:
       BASELINE_RUNNER: github-actions:${{ vars.LOADTEST_RUNNER }}
       CI_COMPARE: "1"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Check the Sonic socket policy
         run: bash scripts/check-sonic-socket-policy.sh
 
       - name: Log in to Docker Hub
         if: env.DOCKERHUB_USERNAME != ''
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         with:
@@ -194,13 +197,13 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Check out gosonic
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: triha74/gosonic
           ref: 36b8e47f575c2436515e3ba5f4819771131e83ff
           path: gosonic-src
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: gosonic-src/go.mod
 
@@ -226,7 +229,7 @@ jobs:
 
       - name: Upload the memory-shape report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: memory-shape-report
           path: |
@@ -264,8 +267,8 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
       - run: python -m pip install neo4j
@@ -275,7 +278,7 @@ jobs:
       # (forks), so the step is guarded via env indirection.
       - name: Log in to Docker Hub
         if: env.DOCKERHUB_USERNAME != ''
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         with:
@@ -284,7 +287,7 @@ jobs:
       # The docker-container driver is required for `make docker`'s build,
       # and --load lands the image in the daemon store for the smoke run.
       # BUILDX_BUILDER points `docker build` at the created builder.
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
         id: buildx
       - name: Full in-container image build and smoke
         env:
@@ -318,12 +321,12 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
       - name: Free runner disk (Linux)
         if: runner.os == 'Linux'
         run: scripts/free-disk.sh
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: fixtures
       # Release: at scale=1.0 the debug profile crawls.
@@ -357,14 +360,14 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
         with:
           targets: wasm32-unknown-unknown
       - name: Free runner disk (Linux)
         if: runner.os == 'Linux'
         run: scripts/free-disk.sh
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: wasm
       # ADR-0255: prebuilt wasm-pack binary (~2 s) instead of the ~2-4 min
@@ -382,7 +385,7 @@ jobs:
         run: wasm-pack test --headless --firefox surfaces/relate-wasm
       - name: Build wasm bundle (release-wasm profile, ADR-0100)
         run: bash scripts/build-wasm.sh --mode release
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '22'
       # AGENTS.md §2: the documented API examples are tests.
@@ -407,9 +410,9 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
 
       # Same ImDisk ramdisk as ci.yml's Windows lanes (NTFS metadata I/O
       # dominates the Windows build/test wall-clock); macOS skips it.
@@ -418,13 +421,13 @@ jobs:
         shell: bash
         run: scripts/ramdisk-imdisk.sh
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: os-sweep
 
       - name: MSVC developer environment
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
       - name: Filesystem depth (storage)
         shell: bash

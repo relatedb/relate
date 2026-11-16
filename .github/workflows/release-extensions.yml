@@ -75,7 +75,7 @@ jobs:
           echo "Official Relate tags and releases are owned by relatedb/relate; refusing ${GITHUB_REPOSITORY}." >&2
           exit 1
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
 
@@ -105,7 +105,7 @@ jobs:
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       # The release channel publishes from main: the version the table's
       # manifest carries on main is the version this run releases.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
 
@@ -165,13 +165,15 @@ jobs:
             echo "::error::tag ${tag} is already published; bump the package version in ${manifest} first" >&2
             exit 1
           fi
-          echo "name=${name}"           >> "$GITHUB_OUTPUT"
-          echo "version=${version}"     >> "$GITHUB_OUTPUT"
-          echo "executable=${executable}" >> "$GITHUB_OUTPUT"
-          echo "crate_dir=${crate_dir}" >> "$GITHUB_OUTPUT"
-          echo "manifest=${manifest}"   >> "$GITHUB_OUTPUT"
-          echo "tag=${tag}"             >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "name=${name}"
+            echo "version=${version}"
+            echo "executable=${executable}"
+            echo "crate_dir=${crate_dir}"
+            echo "manifest=${manifest}"
+            echo "tag=${tag}"
+            echo "sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
           echo "releasing ${name} ${version} as ${tag} from ${crate_dir}"
 
   # The publish boundary's test gate: every first-party child crate's
@@ -198,14 +200,14 @@ jobs:
       # The gate tests the resolved commit — the version source the build
       # and pack legs already use — never whatever main has moved to
       # while the run is in flight.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.resolve.outputs.sha }}
 
       # Keep @rev in sync with rust-toolchain.toml (channel = "1.88.0") —
       # the release.yml note: the action installs the toolchain named by
       # @rev, including any components/targets.
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
 
       # Any test failure in the wire kit or a first-party child fails the
       # run here, before the tag. The crate list is every row of
@@ -241,14 +243,14 @@ jobs:
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       # Build from the resolved commit so artifacts carry the manifest's
       # version (the version source is the tree the dispatch resolved).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.resolve.outputs.sha }}
 
       # Keep @rev in sync with rust-toolchain.toml (channel = "1.88.0") —
       # the release.yml note: the action installs the toolchain named by
       # @rev, including any components/targets.
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
         with:
           targets: ${{ matrix.target }}
 
@@ -281,7 +283,7 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.os }}-${{ matrix.arch }}-bin
           path: target/${{ matrix.target }}/release/${{ needs.resolve.outputs.executable }}
@@ -308,11 +310,11 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.resolve.outputs.sha }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: bins
 
@@ -343,13 +345,15 @@ jobs:
             rm -rf "${stage}"
             echo "packed ${tarball}"
           done
-          count="$(ls dist/*.tar.gz | wc -l | tr -d ' ')"
+          shopt -s nullglob
+          tarballs=(dist/*.tar.gz)
+          count="${#tarballs[@]}"
           if [ "${count}" != "4" ]; then
             echo "::error::packed ${count} tarballs, expected the four platform legs" >&2
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: extension-tarballs
           path: dist/*.tar.gz
@@ -376,7 +380,7 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.resolve.outputs.sha }}
 
@@ -399,12 +403,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: extension-tarballs
           path: release
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.resolve.outputs.tag }}
           name: ${{ needs.resolve.outputs.name }} ${{ needs.resolve.outputs.version }}
@@ -414,8 +418,10 @@ jobs:
   # action-gh-release's GITHUB_TOKEN never triggers downstream workflows)
   # — the index is regenerated and re-signed from the complete asset
   # list, attached to the extension release's own assets, and relate-web
-  # is poked to pull it (ADR-0546). `secrets: inherit` carries
-  # RELEASE_SIGNING_PRIVATE_KEY through to the signing step.
+  # is poked to pull it (ADR-0546). Exactly the two secrets the callee
+  # declares are passed explicitly: RELEASE_SIGNING_PRIVATE_KEY for the
+  # signing step, and RELATE_WEB_DISPATCH_TOKEN for the relate-web poke
+  # (unset = a logged skip).
   publish-extensions-json:
     name: Publish extensions.json + notify relate-web
     needs: [resolve, create-release]
@@ -424,4 +430,6 @@ jobs:
     uses: ./.github/workflows/publish-extensions-json.yml
     with:
       tag: ${{ needs.resolve.outputs.tag }}
-    secrets: inherit
+    secrets:
+      RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY }}
+      RELATE_WEB_DISPATCH_TOKEN: ${{ secrets.RELATE_WEB_DISPATCH_TOKEN }}

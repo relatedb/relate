@@ -1,8 +1,44 @@
-# License policy for everything that ships in a Relate binary release
-# (scripts/third-party-licenses.py policy; the release workflow's
-# `licenses` job). The allow-list is the Apache-2.0-compatible set that the
-# shipped dependency closure uses today; a new license is a deliberate edit
-# here AND in about.toml, never an accident.
+# cargo-deny policy — one file, two gates:
+#
+# - The scheduled RustSec advisory scan
+#   (.github/workflows/cargo-deny.yml). Only `cargo deny check advisories`
+#   runs there, on a weekly cadence against the repo-root Cargo.lock and
+#   the RustSec advisory database cargo-deny fetches at run time — the
+#   [advisories] section below, not a pull-request gate.
+# - The license policy for everything that ships in a Relate binary
+#   release (scripts/third-party-licenses.py; the release workflow's
+#   `licenses` job). The [licenses] allow-list is the Apache-2.0-compatible
+#   set that the shipped dependency closure uses today; a new license is a
+#   deliberate edit here AND in about.toml, never an accident.
+
+[advisories]
+# Every advisory the scan reports is either fixed in Cargo.lock or listed
+# below with a reason and an expiry. An entry past its expiry is a
+# re-triage prompt, not a standing accept: delete it and either upgrade
+# the dependency or write a fresh reason with a new expiry. cargo-deny
+# 0.20.x ignore entries accept only `id` and `reason` — any other key
+# fails config parsing — so the expiry rides as a `# expiry: YYYY-MM-DD`
+# comment on the entry's `id` line, where scripts/check_deny_expiry.py
+# (the weekly workflow's gate) is the only enforcement.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste is a compile-time proc-macro reached only through parquet; upstream is unmaintained and no fixed release exists, so this entry is re-triaged at expiry or dropped when parquet moves off paste" }, # expiry: 2027-05-14
+    { id = "RUSTSEC-2025-0020", reason = "relate-python pins pyo3 0.23; the affected API (PyString::from_object) is never called by the bindings, and the fix needs a breaking pyo3 0.24+ upgrade of relate-python" }, # expiry: 2027-05-14
+    { id = "RUSTSEC-2026-0177", reason = "same pyo3 0.23 pin as RUSTSEC-2025-0020; the affected API (PyCFunction::new_closure) is never called by relate-python, and the fix needs the pyo3 0.29 breaking upgrade" }, # expiry: 2027-05-14
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.26 is reached only through pprof and inferno in testing/relate-test-support, parsing locally produced profiler output — never untrusted XML; the fix (0.41) needs an inferno release built on it" }, # expiry: 2027-05-14
+    { id = "RUSTSEC-2026-0195", reason = "same pprof and inferno tooling chain as RUSTSEC-2026-0194, reading local profile data only; no untrusted XML reaches the parser" }, # expiry: 2027-05-14
+    { id = "RUSTSEC-2025-0134", reason = "relate-bolt loads PEM key material through rustls-pemfile 2; the crate is unmaintained and its replacement (rustls-pki-types' PEM API) is a relate-bolt change beyond this scan — re-triage at expiry" }, # expiry: 2027-05-14
+    { id = "RUSTSEC-2026-0435", reason = "thrift 0.17 is parquet's metadata codec; relate reads only engine-written checkpoints from its own store directory, so the hostile-peer wire path the advisory describes is unreachable; the fix needs parquet on thrift 0.23" }, # expiry: 2027-05-14
+]
+
+[bans]
+# The workspace boundary rules (R1-R7) are deliberately NOT restated
+# here. ADR-0103 (as amended by ADR-0434) considered and rejected
+# cargo-deny bans as their enforcer — bans express per-crate allow/deny,
+# not the group-and-dependency-kind rules — and `cargo xtask
+# check-boundaries` owns them, running in CI next to fmt and clippy.
+# This section exists only for crate-level supply-chain bans, of which
+# there are none today.
+
 [graph]
 exclude-dev = true
 

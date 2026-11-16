@@ -38,16 +38,18 @@ wbg_version_from_lock() {
 }
 
 MODE="release"
+AUDITABLE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode) MODE="$2"; shift 2 ;;
     --mode=*) MODE="${1#*=}"; shift ;;
+    --auditable) AUDITABLE=1; shift ;;
     --print-bindgen-version)
       wbg_version_from_lock
       exit 0
       ;;
     -h|--help)
-      echo "usage: $0 [--mode dev|release] | $0 --print-bindgen-version" >&2
+      echo "usage: $0 [--mode dev|release] [--auditable] | $0 --print-bindgen-version" >&2
       exit 0
       ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -115,8 +117,21 @@ else
   echo "warning: could not read the binaryen version from 'wasm-opt --version'; need $MIN_BINARYEN or newer" >&2
 fi
 
-echo "[build-wasm] mode=$MODE  cargo build (--profile $PROFILE)"
-cargo build \
+# --auditable: build through `cargo auditable` so the shipped bundle embeds
+# its dependency list in the .dep-v0 custom section — verified to survive
+# the wasm-bindgen and wasm-opt stages below on both the -O2 (dev) and -Oz
+# (release) paths; read it back with `cargo audit bin <bundle>_bg.wasm`.
+# Opt-in for the release lane (.github/workflows/release.yml, npm-wasm);
+# the other callers (make build-wasm, background-cadences.yml) keep the
+# plain build and need no extra tool.
+CARGO_BUILD=(cargo build)
+if [[ "$AUDITABLE" = 1 ]]; then
+  need cargo-auditable "Install: bash scripts/install-cargo-auditable.sh DIR, then add DIR to PATH"
+  CARGO_BUILD=(cargo auditable build)
+fi
+
+echo "[build-wasm] mode=$MODE  ${CARGO_BUILD[*]} (--profile $PROFILE)"
+"${CARGO_BUILD[@]}" \
   --manifest-path "$CRATE_DIR/Cargo.toml" \
   --lib \
   --profile "$PROFILE" \

@@ -59,7 +59,13 @@ def incremental_patch(repo: str, base: str, head: str, pr_files: list[str]) -> s
         return ""
     # --literal-pathspecs: a PR-controlled file name like `:(exclude)*.rs`
     # must be a path, never pathspec magic that shrinks the anchoring diff.
-    return _git_ok(repo, "--literal-pathspecs", "diff", base, head, "--", *pr_files) or ""
+    # --no-ext-diff --no-textconv: the anchoring diff recomputes inside
+    # the token-bearing post steps, so external diff drivers and textconv
+    # filters (facts.py's pins, the same spelling) never run during it.
+    return _git_ok(
+        repo, "--literal-pathspecs", "diff",
+        "--no-ext-diff", "--no-textconv", base, head, "--", *pr_files,
+    ) or ""
 
 
 def main() -> None:

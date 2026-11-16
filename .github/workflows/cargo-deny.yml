@@ -1,0 +1,58 @@
+name: cargo-deny advisories
+
+# Scheduled RustSec advisory scan (supply-chain hardening).
+#
+# cargo-deny checks the repo-root Cargo.lock against the RustSec advisory
+# database it fetches at run time. That database moves independently of
+# this repository — a new advisory can name a crate version this lock has
+# carried for months — so the scan runs on a weekly cadence against
+# whatever is on main, rather than per PR (where it would re-check the
+# same lock and miss advisories published while no PR is open).
+#
+# Findings are triaged in deny.toml: every advisory is either fixed in
+# Cargo.lock or carries a reasoned, expiring ignore entry. A red run
+# means a new advisory, an expired entry, or a lock change that needs
+# re-triage.
+
+on:
+  schedule:
+    # 06:00 UTC every Monday.
+    - cron: "0 6 * * 1"
+  # The scheduled trigger only fires on the default branch; a manual run
+  # lets a feature branch exercise the scan before merge.
+  workflow_dispatch:
+
+# Read-only: the scan installs a pinned cargo-deny and reports findings.
+permissions:
+  contents: read
+
+env:
+  # The cargo-deny release asset comes through
+  # scripts/github-download.sh, which requires a token in Actions so the
+  # download is not anonymous. The job token is not in the environment
+  # unless named here.
+  GITHUB_TOKEN: ${{ github.token }}
+
+jobs:
+  advisories:
+    name: cargo deny check advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # cargo-deny shells out to `cargo metadata` only — no build — so
+      # the runner image's preinstalled cargo is enough; no toolchain
+      # step, no cache.
+      - name: Install the pinned cargo-deny
+        run: bash scripts/install-cargo-deny.sh
+
+      - name: Scan Cargo.lock against the RustSec advisory database
+        run: cargo deny check advisories
+
+      # An expired ignore entry is a re-triage prompt, not a standing
+      # accept (deny.toml [advisories] header) — cargo-deny 0.20.x
+      # cannot see the expiry comments its config rides, so this step
+      # enforces them: any entry past its date fails the run here,
+      # after the scan has reported the advisory state it suppressed.
+      - name: Fail on past-due deny.toml ignore entries
+        run: python3 scripts/check_deny_expiry.py

@@ -56,8 +56,12 @@ docs/api/extensions/examples/*
 target/*
 !target/docker-prebuilt
 # scripts/github-download.sh is the authenticated GitHub release GET
-# the chef stage uses for sccache. Re-include that one file; the rest
-# of scripts/ stays out of the context.
+# the chef stage uses for its pinned build tools, and
+# scripts/install-pinned-tool.sh is the one download-verify-unpack
+# helper each pinned-tool install RUN goes through (Dockerfile chef
+# stage). Re-include exactly those two files; the rest of scripts/
+# stays out of the context.
 !scripts
 scripts/*
 !scripts/github-download.sh
+!scripts/install-pinned-tool.sh
