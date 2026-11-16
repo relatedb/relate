@@ -567,7 +567,9 @@ jobs:
             GIT_ALTERNATE_OBJECT_DIRECTORIES \
             GIT_COMMON_DIR GIT_NAMESPACE GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE \
             HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY \
-            SSL_CERT_FILE CURL_CA_BUNDLE
+            https_proxy http_proxy all_proxy no_proxy \
+            SSL_CERT_FILE CURL_CA_BUNDLE \
+            GIT_SSL_NO_VERIFY GIT_SSL_CAINFO
           # The staging show below reads the worktree's object store,
           # which the model step could have subverted (the round-14
           # finding): a gitdir: redirect file in .git's place serving a
@@ -747,7 +749,9 @@ jobs:
             GIT_ALTERNATE_OBJECT_DIRECTORIES \
             GIT_COMMON_DIR GIT_NAMESPACE GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE \
             HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY \
-            SSL_CERT_FILE CURL_CA_BUNDLE
+            https_proxy http_proxy all_proxy no_proxy \
+            SSL_CERT_FILE CURL_CA_BUNDLE \
+            GIT_SSL_NO_VERIFY GIT_SSL_CAINFO
           # The staging show below reads the worktree's object store,
           # which the model step could have subverted (the round-14
           # finding): a gitdir: redirect file in .git's place serving a
@@ -904,7 +908,9 @@ jobs:
             GIT_ALTERNATE_OBJECT_DIRECTORIES \
             GIT_COMMON_DIR GIT_NAMESPACE GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE \
             HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY \
-            SSL_CERT_FILE CURL_CA_BUNDLE
+            https_proxy http_proxy all_proxy no_proxy \
+            SSL_CERT_FILE CURL_CA_BUNDLE \
+            GIT_SSL_NO_VERIFY GIT_SSL_CAINFO
           # The staging show below reads the worktree's object store,
           # which the model step could have subverted (the round-14
           # finding): a gitdir: redirect file in .git's place serving a

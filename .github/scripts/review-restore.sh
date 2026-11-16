@@ -228,9 +228,11 @@ rm -f .git/info/grafts
 # The worktree .gitattributes is model-writable and parses during the
 # reset's checkout (bindings apply before the trusted tree restores it);
 # with the config sources dead a binding has no filter definition to
-# run, but the file is deleted anyway — the reset restores the trusted
-# copy (the round-16 finding's belt-and-braces).
-rm -f .gitattributes
+# run, but every .gitattributes is deleted anyway — the root one AND
+# the per-directory ones (a model-written dir/.gitattributes parses
+# the same way, the round-17 finding) — and the reset restores the
+# trusted copies.
+find . -name .gitattributes -type f -delete
 # The git invocations below carry the full per-invocation pin set: an
 # empty core.fsmonitor disables a model-written fsmonitor hook on every
 # index-refreshing command here (reset, clean, ls-files), core.pager=cat
