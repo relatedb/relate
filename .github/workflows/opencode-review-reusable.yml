@@ -546,6 +546,22 @@ jobs:
             GIT_ALTERNATE_OBJECT_DIRECTORIES \
             HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY \
             SSL_CERT_FILE CURL_CA_BUNDLE
+          # The staging show below reads the worktree's object store,
+          # which the model step could have subverted (the round-14
+          # finding): a gitdir: redirect file in .git's place serving a
+          # fake store, an injected alternates file adding an object
+          # source, or loose objects rewritten under a target's name —
+          # git does not content-verify loose objects on read. Three
+          # checks close the channel before anything is staged and
+          # sourced: .git must be a real directory, no alternates file
+          # may remain, and fsck verifies every object's content
+          # against its name.
+          if [ ! -d .git ]; then
+            echo "post: .git is not a directory (gitdir: redirect?) — refusing to stage" >&2
+            exit 1
+          fi
+          rm -f .git/objects/info/alternates
+          git fsck --full --no-progress >/dev/null
           RESTORE="$(mktemp)"
           git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null show "$HEAD_SHA:.github/scripts/review-restore.sh" > "$RESTORE"
           # shellcheck disable=SC1090
@@ -709,6 +725,22 @@ jobs:
             GIT_ALTERNATE_OBJECT_DIRECTORIES \
             HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY \
             SSL_CERT_FILE CURL_CA_BUNDLE
+          # The staging show below reads the worktree's object store,
+          # which the model step could have subverted (the round-14
+          # finding): a gitdir: redirect file in .git's place serving a
+          # fake store, an injected alternates file adding an object
+          # source, or loose objects rewritten under a target's name —
+          # git does not content-verify loose objects on read. Three
+          # checks close the channel before anything is staged and
+          # sourced: .git must be a real directory, no alternates file
+          # may remain, and fsck verifies every object's content
+          # against its name.
+          if [ ! -d .git ]; then
+            echo "post: .git is not a directory (gitdir: redirect?) — refusing to stage" >&2
+            exit 1
+          fi
+          rm -f .git/objects/info/alternates
+          git fsck --full --no-progress >/dev/null
           RESTORE="$(mktemp)"
           git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null show "$HEAD_SHA:.github/scripts/review-restore.sh" > "$RESTORE"
           # shellcheck disable=SC1090
@@ -849,6 +881,22 @@ jobs:
             GIT_ALTERNATE_OBJECT_DIRECTORIES \
             HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY \
             SSL_CERT_FILE CURL_CA_BUNDLE
+          # The staging show below reads the worktree's object store,
+          # which the model step could have subverted (the round-14
+          # finding): a gitdir: redirect file in .git's place serving a
+          # fake store, an injected alternates file adding an object
+          # source, or loose objects rewritten under a target's name —
+          # git does not content-verify loose objects on read. Three
+          # checks close the channel before anything is staged and
+          # sourced: .git must be a real directory, no alternates file
+          # may remain, and fsck verifies every object's content
+          # against its name.
+          if [ ! -d .git ]; then
+            echo "post: .git is not a directory (gitdir: redirect?) — refusing to stage" >&2
+            exit 1
+          fi
+          rm -f .git/objects/info/alternates
+          git fsck --full --no-progress >/dev/null
           RESTORE="$(mktemp)"
           git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null show "$HEAD_SHA:.github/scripts/review-restore.sh" > "$RESTORE"
           # shellcheck disable=SC1090
