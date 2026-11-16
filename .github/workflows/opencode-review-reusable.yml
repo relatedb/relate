@@ -541,6 +541,15 @@ jobs:
           # merge-base the facts recomputation resolves. /dev/null is
           # a fixed non-empty value git accepts as "no grafts".
           GIT_GRAFT_FILE: /dev/null
+          # The timeout marker's channel is pinned to the runner's real
+          # temp directory (the round-19 finding): a model-published
+          # RUNNER_TEMP or TMPDIR would redirect both the wrapper's
+          # authoritative marker write and the restore's read to a
+          # model-chosen location. These are runner-provided values
+          # (never PR-controlled) and the step-env pin beats anything
+          # published through the runner env file.
+          RUNNER_TEMP: ${{ runner.temp }}
+          TMPDIR: ${{ runner.temp }}
         run: |
           # Trusted-source the choreography (ADR-0603): the worktree
           # copy is model-writable, so the committed PR-head copy — git
@@ -585,7 +594,21 @@ jobs:
             exit 1
           fi
           rm -f .git/objects/info/alternates
-          git fsck --full --no-progress >/dev/null
+          # A model-planted .git/commondir file redirects the object
+          # store (and refs/config resolution) to a directory of the
+          # model's choosing — sidestepping the alternates deletion and
+          # the fsck below, which both operate on .git itself (the
+          # round-19 finding). The runner's checkout has no commondir
+          # file (.git IS the common dir), so any present one is
+          # planted and removed.
+          rm -f .git/commondir
+          # fsck itself reads the repository config — still the
+          # model-written .git/config at this point, where
+          # fsck.badObjectSha1=ignore would suppress exactly the
+          # content-against-name check this guard exists to run (the
+          # round-19 finding). The pin forces the check to error level
+          # regardless of what the config says.
+          git -c fsck.badObjectSha1=error fsck --full --no-progress >/dev/null
           RESTORE="$(mktemp)"
           git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null show "$HEAD_SHA:.github/scripts/review-restore.sh" > "$RESTORE"
           # shellcheck disable=SC1090
@@ -723,6 +746,15 @@ jobs:
           # merge-base the facts recomputation resolves. /dev/null is
           # a fixed non-empty value git accepts as "no grafts".
           GIT_GRAFT_FILE: /dev/null
+          # The timeout marker's channel is pinned to the runner's real
+          # temp directory (the round-19 finding): a model-published
+          # RUNNER_TEMP or TMPDIR would redirect both the wrapper's
+          # authoritative marker write and the restore's read to a
+          # model-chosen location. These are runner-provided values
+          # (never PR-controlled) and the step-env pin beats anything
+          # published through the runner env file.
+          RUNNER_TEMP: ${{ runner.temp }}
+          TMPDIR: ${{ runner.temp }}
         run: |
           # Trusted-source the choreography (ADR-0603): the worktree
           # copy is model-writable, so the committed PR-head copy — git
@@ -767,7 +799,21 @@ jobs:
             exit 1
           fi
           rm -f .git/objects/info/alternates
-          git fsck --full --no-progress >/dev/null
+          # A model-planted .git/commondir file redirects the object
+          # store (and refs/config resolution) to a directory of the
+          # model's choosing — sidestepping the alternates deletion and
+          # the fsck below, which both operate on .git itself (the
+          # round-19 finding). The runner's checkout has no commondir
+          # file (.git IS the common dir), so any present one is
+          # planted and removed.
+          rm -f .git/commondir
+          # fsck itself reads the repository config — still the
+          # model-written .git/config at this point, where
+          # fsck.badObjectSha1=ignore would suppress exactly the
+          # content-against-name check this guard exists to run (the
+          # round-19 finding). The pin forces the check to error level
+          # regardless of what the config says.
+          git -c fsck.badObjectSha1=error fsck --full --no-progress >/dev/null
           RESTORE="$(mktemp)"
           git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null show "$HEAD_SHA:.github/scripts/review-restore.sh" > "$RESTORE"
           # shellcheck disable=SC1090
@@ -882,6 +928,15 @@ jobs:
           # merge-base the facts recomputation resolves. /dev/null is
           # a fixed non-empty value git accepts as "no grafts".
           GIT_GRAFT_FILE: /dev/null
+          # The timeout marker's channel is pinned to the runner's real
+          # temp directory (the round-19 finding): a model-published
+          # RUNNER_TEMP or TMPDIR would redirect both the wrapper's
+          # authoritative marker write and the restore's read to a
+          # model-chosen location. These are runner-provided values
+          # (never PR-controlled) and the step-env pin beats anything
+          # published through the runner env file.
+          RUNNER_TEMP: ${{ runner.temp }}
+          TMPDIR: ${{ runner.temp }}
         run: |
           # Trusted-source the choreography (ADR-0603): the worktree
           # copy is model-writable, so the committed PR-head copy — git
@@ -926,7 +981,21 @@ jobs:
             exit 1
           fi
           rm -f .git/objects/info/alternates
-          git fsck --full --no-progress >/dev/null
+          # A model-planted .git/commondir file redirects the object
+          # store (and refs/config resolution) to a directory of the
+          # model's choosing — sidestepping the alternates deletion and
+          # the fsck below, which both operate on .git itself (the
+          # round-19 finding). The runner's checkout has no commondir
+          # file (.git IS the common dir), so any present one is
+          # planted and removed.
+          rm -f .git/commondir
+          # fsck itself reads the repository config — still the
+          # model-written .git/config at this point, where
+          # fsck.badObjectSha1=ignore would suppress exactly the
+          # content-against-name check this guard exists to run (the
+          # round-19 finding). The pin forces the check to error level
+          # regardless of what the config says.
+          git -c fsck.badObjectSha1=error fsck --full --no-progress >/dev/null
           RESTORE="$(mktemp)"
           git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null show "$HEAD_SHA:.github/scripts/review-restore.sh" > "$RESTORE"
           # shellcheck disable=SC1090
