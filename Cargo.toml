@@ -166,7 +166,7 @@ sha2 = "0.10"
 ssh-key = { version = "0.6", default-features = false, features = ["alloc", "ed25519"] }
 
 # Relate storage / Bolt / CLI
-parquet = { version = "54", default-features = false, features = ["arrow", "snap"] }
+parquet = { version = "60", default-features = false, features = ["arrow", "snap"] }
 clap = { version = "4", features = ["derive", "env"] }
 # Bolt TLS (ADR-0109/ADR-0226): sync rustls over the peeked TcpStream. Keep
 # rustls on the pure-Rust `ring` provider: the tree already resolves

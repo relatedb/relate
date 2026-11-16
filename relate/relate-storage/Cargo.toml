@@ -38,7 +38,7 @@ web-time = { workspace = true }
 # No arrow features: the former `json` feature was dead config (nothing uses
 # arrow-json; the dylib is byte-identical without it).
 arrow = { version = "54", default-features = false, optional = true }
-parquet = { version = "54", default-features = false, features = ["arrow", "snap"], optional = true }
+parquet = { version = "60", default-features = false, features = ["arrow", "snap"], optional = true }
 # Experimental codec (default off). rkyv 0.8 is the archive library.
 # `bytecheck` validates the archive on load and `unaligned` lets it sit
 # in a plain byte buffer — both are what let the codec avoid unchecked
