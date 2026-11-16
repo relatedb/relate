@@ -247,5 +247,21 @@ class StdoutJsonContract(unittest.TestCase):
             self.assertEqual(r2.stdout.count("{"), 0)
 
 
+class IsDocsClassification(unittest.TestCase):
+    """The one classification, pinned directly: source files under
+    docs-classified directories (the API surfaces' runnable examples —
+    compiled and executed by CI) are code, not docs; everything the
+    DOCS_PATH table and documentation extensions name stays docs."""
+
+    def test_docs_code_extensions_are_not_docs(self):
+        self.assertFalse(facts.is_docs("docs/api/rust/examples/hello.rs"))
+        self.assertFalse(facts.is_docs("docs/api/c/examples/vector.c"))
+        self.assertFalse(facts.is_docs("docs/api/cli/examples/agent.sh"))
+        self.assertTrue(facts.is_docs("docs/api/rust/spec.md"))
+        self.assertTrue(facts.is_docs("docs/adr/0001-x.md"))
+        self.assertTrue(facts.is_docs("docs/api/javascript/README.md"))
+        self.assertTrue(facts.is_docs("website/index.md"))
+
+
 if __name__ == "__main__":
     unittest.main()

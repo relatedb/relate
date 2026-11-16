@@ -89,6 +89,15 @@ ALWAYS_RELEVANT_PREFIXES = (
     ".claude/agents/",
     "AGENTS.md",
     "CLAUDE.md",
+    # The shipped skill surfaces: the CLI's bundled skill (its
+    # references steer every agent that runs the skill) and the Python
+    # wheel's library skill (same, for Python users' agents) — .md
+    # files living under surfaces/, so every other classifier calls
+    # them docs; they are agent-instruction surfaces, always relevant
+    # (the round-27 finding, the same class as the .agents/ entries
+    # above).
+    "surfaces/relate-cli/src/skill/bundle/",
+    "surfaces/relate-python/python/relate/.agents/",
 )
 RUST_SUFFIXES = (".rs",)
 RUST_FILENAMES = ("Cargo.toml", "Cargo.lock")

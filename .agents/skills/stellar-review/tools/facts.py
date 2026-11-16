@@ -465,8 +465,16 @@ def extract_all_deps(repo: str, head: str) -> dict[str, list[str]]:
 
 DOCS_PATH = re.compile(r"^(?:docs/|website/|\.github/|baselines/|clients/.*/README|README|AGENTS\.md|CHANGELOG|LICENSE)")
 
+# Source files living under docs-classified directories: the API
+# surfaces' runnable examples (compiled and executed by CI — doctests,
+# client integration builds) are code in every sense that matters for
+# classification; a .rs under docs/ is a code change, not a docs edit.
+DOCS_CODE_EXT = (".rs", ".c", ".h", ".py", ".sh", ".js", ".ts", ".java", ".go", ".rb", ".swift")
+
 
 def is_docs(path: str) -> bool:
+    if path.endswith(DOCS_CODE_EXT):
+        return False
     if DOCS_PATH.match(path):
         return True
     return path.endswith((".md", ".mdx", ".txt", ".svg", ".png", ".mermaid"))

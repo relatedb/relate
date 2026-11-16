@@ -448,6 +448,20 @@ class GateTests(unittest.TestCase):
                         has_code_changes=False), True),
             # a docs-only rename stays a no-op: neither endpoint counts
             (self.facts([("docs/b.md", "docs/a.md")], has_code_changes=False), False),
+            # the shipped skill surfaces are always relevant — the CLI
+            # skill bundle's references and the Python wheel's library
+            # skill steer agents but live as .md under surfaces/ (the
+            # round-27 finding)
+            (self.facts(["surfaces/relate-cli/src/skill/bundle/references/client-cli.md"],
+                        has_code_changes=False), True),
+            (self.facts(["surfaces/relate-python/python/relate/.agents/skills/relate/SKILL.md"],
+                        has_code_changes=False), True),
+            # runnable example source under docs/ is code, not docs:
+            # CI compiles and executes it (doctests, client builds), so
+            # the code-ness branch — facts.py's one classification —
+            # counts it and the security model runs
+            (self.facts(["docs/api/rust/examples/hello.rs"], has_code_changes=False), True),
+            (self.facts(["docs/api/c/examples/vector.c"], has_code_changes=False), True),
         ]
         for facts_doc, relevant in cases:
             with self.subTest(files=[f["path"] for f in facts_doc["files"]]):
