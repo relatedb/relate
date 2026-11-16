@@ -54,10 +54,23 @@ pub(crate) fn show_transactions_rows(
         }
     }
     Ok(if found {
+        // The self row: the one running transaction an embedded engine
+        // holds. `database` follows the session's namespace; `username`
+        // is the connection's authenticated principal (ADR-0273), empty
+        // for an embedded connection. There is one embedded connection
+        // (`connectionId` empty) and no client socket (`clientAddress`
+        // null under Cypher 25).
         vec![catalog_row([
             ("transactionId", Value::String(txid.into())),
             ("currentQuery", Value::String(qctx.query_text.into())),
-            ("database", Value::String("neo4j".into())),
+            ("database", Value::String(graph.namespace().as_str().into())),
+            (
+                "username",
+                Value::String(qctx.principal.unwrap_or("").into()),
+            ),
+            ("status", Value::String("Running".into())),
+            ("connectionId", Value::String("".into())),
+            ("clientAddress", Value::Null),
         ])]
     } else {
         Vec::new()
@@ -103,4 +116,23 @@ pub(crate) fn terminate_transactions_rows(
             })
             .collect())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    /// Pins the `YIELD *` column set and order: the self row inserts keys in
+    /// exactly `DEFAULT_TRANSACTION_COLUMNS` order, so the producer's
+    /// hand-spelled pair list can never drift from the front table it
+    /// renders.
+    #[test]
+    fn show_transactions_row_key_order_matches_front_column_table() {
+        crate::exec::test_support::assert_row_keys_match(
+            None,
+            "SHOW TRANSACTIONS YIELD *",
+            &relate_front::show_columns::DEFAULT_TRANSACTION_COLUMNS
+                .iter()
+                .map(|column| (*column).to_string())
+                .collect::<Vec<_>>(),
+        );
+    }
 }

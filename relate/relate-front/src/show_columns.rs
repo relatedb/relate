@@ -233,7 +233,15 @@ pub const CURRENT_GRAPH_TYPE_COLUMNS: &[&str] = &["specification"];
 pub const CURRENT_GRAPH_TYPE_AS_GRAPH_COLUMNS: &[&str] = &["nodes", "relationships"];
 
 /// `SHOW TRANSACTION[S]`'s columns (no default-vs-full split).
-pub const DEFAULT_TRANSACTION_COLUMNS: &[&str] = &["transactionId", "currentQuery", "database"];
+pub const DEFAULT_TRANSACTION_COLUMNS: &[&str] = &[
+    "transactionId",
+    "currentQuery",
+    "database",
+    "username",
+    "status",
+    "connectionId",
+    "clientAddress",
+];
 
 /// `TERMINATE TRANSACTION[S]`'s columns (no default-vs-full split).
 pub const TERMINATE_TRANSACTION_COLUMNS: &[&str] = &["transactionId", "username", "message"];

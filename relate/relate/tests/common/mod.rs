@@ -95,13 +95,20 @@ pub fn assert_preview_closed(feature: relate_core::PreviewFeature, query: &str) 
     );
 }
 
-/// A fresh connection on a fresh in-memory store — the shared starting
-/// point of the fixed-namespace integration tests.
-pub fn connection() -> relate::Connection {
+/// A fresh connection on a fresh in-memory store, its session namespace set
+/// to `namespace` — the shared starting point of the fixed-namespace
+/// integration tests.
+pub fn connection_in(namespace: &str) -> relate::Connection {
     relate::Database::open(":memory:")
         .unwrap()
-        .connect()
+        .connect_namespace(namespace)
         .unwrap()
+}
+
+/// [`connection_in`] on the default namespace — the shared starting point of
+/// every other integration test.
+pub fn connection() -> relate::Connection {
+    connection_in(relate::Namespace::Neo4j.as_str())
 }
 
 /// The first column of every result row as a `String` — the shape the

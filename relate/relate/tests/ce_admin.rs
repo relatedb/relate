@@ -20,7 +20,7 @@ use relate::{Database, Namespace, Value};
 mod common;
 
 use common::{
-    assert_ce_rejection, connection, err_text, preview_ontology, scalar_one,
+    assert_ce_rejection, connection, connection_in, err_text, preview_ontology, scalar_one,
     NEEDS_SYSTEM_DATABASE_SUFFIX, USE_WITH_ADMIN_SUFFIX, WITH_ON_SYSTEM_SUFFIX,
 };
 
@@ -327,8 +327,7 @@ fn with_composing_a_show_command_is_rejected_on_system() {
     }
     // The same rejection through the session namespace alone (no `USE`
     // clause): §4 gates the *routed* namespace.
-    let db = Database::open(":memory:").unwrap();
-    let mut system = db.connect_namespace("system").unwrap();
+    let mut system = connection_in("system");
     assert_ce_rejection(
         &mut system,
         "SHOW DATABASES YIELD name AS d1 WITH 1 AS n RETURN n",
@@ -532,6 +531,54 @@ fn a_non_string_transaction_id_is_an_argument_type_error() {
         ),
         Value::Null,
         "a NULL id is an absent id, not a type error"
+    );
+}
+
+/// `SHOW TRANSACTIONS` reports the SHOW's own transaction with the values
+/// an embedded connection has: no authenticated user (`username` empty),
+/// one embedded connection (`connectionId` empty), no client socket
+/// (`clientAddress` null under Cypher 25), and the running query.
+#[test]
+fn show_transactions_self_row_carries_the_default_columns() {
+    let mut conn = connection();
+    let result = conn.query("SHOW TRANSACTIONS").unwrap();
+    assert_eq!(
+        result.header.columns,
+        [
+            "transactionId",
+            "currentQuery",
+            "database",
+            "username",
+            "status",
+            "connectionId",
+            "clientAddress",
+        ]
+    );
+    assert_eq!(
+        result.rows,
+        vec![vec![
+            Value::String("neo4j-transaction-1".into()),
+            Value::String("SHOW TRANSACTIONS".into()),
+            Value::String("neo4j".into()),
+            Value::String("".into()),
+            Value::String("Running".into()),
+            Value::String("".into()),
+            Value::Null,
+        ]]
+    );
+}
+
+/// The self row's `database` follows the session namespace: a connection
+/// opened on `system` reports its own SHOW there.
+#[test]
+fn show_transactions_self_row_reports_the_session_namespace() {
+    let mut conn = connection_in("system");
+    assert_eq!(
+        scalar_one(
+            &mut conn,
+            "SHOW TRANSACTIONS YIELD database RETURN database"
+        ),
+        Value::String("system".into())
     );
 }
 
