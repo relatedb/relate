@@ -38,14 +38,6 @@ db_names() { # $1 = sed extraction expression
 	sed -n "$1" "$sandbox/db" | tr -s ' \n' '\n' | sed '/^$/d' | sort -u
 }
 
-# The target-name grammar and the target-line shape, each spelled once
-# and shared by the definition grep and the suite-runner awk below: a
-# name, then a colon, then whitespace or end of line. The shape itself
-# excludes `:=` assignments (spaced or not) and `.`-special targets, so
-# no compensating filter is needed.
-NAME_GRAMMAR='[a-zA-Z0-9_][a-zA-Z0-9_-]*'
-TARGET_LINE="^${NAME_GRAMMAR}:([[:space:]]|$)"
-
 # One policy per helper: must_be_non_empty is the extraction guard (an
 # inventory that came back empty is a failure in its own right, never a
 # silent empty set); must_be_empty is the difference guard (offenders
@@ -82,15 +74,6 @@ gated_diff() {
 	fi
 }
 
-# --- the three inventories, each a checked step -----------------------------
-
-# Target definitions: literal target lines only — the shape carries the
-# invariant. A missing Makefile or broken grep rides its own stderr
-# into the log and leaves an empty inventory for the non-empty guard
-# below.
-grep -E "$TARGET_LINE" "$MAKEFILE" \
-	| cut -d: -f1 | sort -u >"$sandbox/targets"
-
 # make's own database: the one place ANNOTATED and .PHONY are both
 # spelled. A parse failure is a named failure with its first stderr
 # line on the not-ok; the database file still exists (possibly empty),
@@ -100,6 +83,28 @@ if make -C "$ROOT" --no-print-directory -p -n >"$sandbox/db" 2>"$sandbox/make-er
 else
 	tap_not_ok "make printed its database ($(head -n 1 "$sandbox/make-err" 2>/dev/null))"
 fi
+
+# The target-name grammar, read back from make's database (the Makefile's
+# TARGET_NAME variable, the one spelling ANNOTATED interpolates), and the
+# target-line shape built from it: a name, then a colon, then whitespace or
+# end of line. The shape itself excludes `:=` assignments (spaced or not)
+# and `.`-special targets, so no compensating filter is needed.
+NAME_GRAMMAR=$(sed -n 's/^TARGET_NAME :*= //p' "$sandbox/db")
+if [ -n "$NAME_GRAMMAR" ]; then
+	tap_ok "make's database names the target-name grammar"
+else
+	tap_not_ok "make's database names the target-name grammar (TARGET_NAME missing)"
+fi
+TARGET_LINE="^${NAME_GRAMMAR}:([[:space:]]|$)"
+
+# --- the three inventories, each a checked step -----------------------------
+
+# Target definitions: literal target lines only — the shape carries the
+# invariant. A missing Makefile or broken grep rides its own stderr
+# into the log and leaves an empty inventory for the non-empty guard
+# below.
+grep -E "$TARGET_LINE" "$MAKEFILE" \
+	| cut -d: -f1 | sort -u >"$sandbox/targets"
 
 # The annotated inventory, read back from the database's ANNOTATED
 # variable — the same derivation .PHONY consumes, never re-derived here.

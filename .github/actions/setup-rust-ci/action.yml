@@ -75,15 +75,21 @@ runs:
     # it served #317 a stale `ir` rlib). Set RUSTC_WRAPPER + the GHA backend
     # BEFORE rust-cache so they land in the env hash.
     # The binary is the pinned release, fetched through the GitHub API
-    # with the job token. releases/download is anonymous and 504s.
+    # with the job token. releases/download is anonymous and 504s. A failed
+    # install degrades to plain rustc (LABS-1165), never a red setup.
     - name: Install sccache
       if: inputs.sccache == 'true'
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
       run: |
-        dir="$(bash scripts/install-sccache.sh)"
-        echo "$dir" >> "$GITHUB_PATH"
+        if dir="$(bash scripts/install-sccache.sh)"; then
+          echo "$dir" >> "$GITHUB_PATH"
+        else
+          # A release-download outage must not fail setup: with no sccache
+          # on PATH the probe below warns and the lane compiles uncached.
+          echo "::warning::sccache install failed — compiling without the shared compile cache this run"
+        fi
     # The GHA cache backend hard-fails the entire build when the Actions
     # cache service is down (observed 2026-10-16: the service served "Our
     # services aren't available right now" and every sccache lane died on

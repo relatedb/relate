@@ -239,7 +239,7 @@ testing/                         conformance, evaluation, datasets, tooling
   relate-datasets                synthetic graphs + loadtest binaries
   relate-test-support            shared test-only helpers (big-stack runner)
   relate-query-latency           graph-benchmark-ldbc query latency suite (ADR-0243)
-  xtask                          boundary check (`cargo xtask check-boundaries`)
+  xtask                          boundary check (`cargo xtask check-boundaries`) + package check (`cargo xtask check-package`)
 
 extensions/                      first-party extension crates — the child processes of
                                  the extension program (ADR-0431 §11), spawned by the host,

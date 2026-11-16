@@ -6,7 +6,10 @@
 # own database — so the name grammar is spelled once and every drift
 # direction breaks a gate. (The hashes are escaped for make: an
 # assignment line strips comments at a bare '#', a rule line does not.)
-ANNOTATED := $(shell sed -n 's/^\#\# \([a-zA-Z0-9_-]*\):.*/\1/p' $(MAKEFILE_LIST))
+# TARGET_NAME is the one spelling of that grammar (an annotation name IS
+# a target name); the guard reads it back from make's database too.
+TARGET_NAME := [a-zA-Z0-9_][a-zA-Z0-9_-]*
+ANNOTATED := $(shell sed -n 's/^\#\# \($(TARGET_NAME)\):.*/\1/p' $(MAKEFILE_LIST))
 .PHONY: $(ANNOTATED)
 
 BASELINES ?= $(CURDIR)/baselines
