@@ -154,6 +154,20 @@ export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_COUNT=0
+# The runner's real HOME is shared with the model step (same user), so
+# every HOME-adjacent config the token-bearing commands consult is
+# model-writable: gh's hosts.yml (endpoint/credential redirect), the
+# Python user site (import hijack), and jq's HOME-resident state. The
+# choreography re-homes into a fresh directory from its first line on
+# (the round-13 finding): gh gets an empty config dir and authenticates
+# by env token, Python ignores the user site entirely, and nothing
+# under the shared HOME is consulted again in this step's shell. The
+# bats suite already runs hermetically homed — this brings the runner
+# to the same shape.
+RESTORE_HOME="$(mktemp -d)"
+export HOME="$RESTORE_HOME"
+export GH_CONFIG_DIR="$RESTORE_HOME/gh"
+export PYTHONNOUSERSITE=1
 # Replace objects are off from the first git call in this step on (the
 # round-8 finding): the model shell can create refs/replace/<SHA>
 # entries during the model step, and git resolves every SHA through
