@@ -67,7 +67,7 @@ jobs:
       # No stored credentials: this checkout is never used to push, and
       # the comment step passes github.token explicitly (ADR-0482 §5,
       # security review).
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -88,7 +88,7 @@ jobs:
       # world. HARNESS_READ_TOKEN must carry Contents: Read on the new
       # home or the cross-repo checkout fails (ADR-0482 §5).
       - name: Check out the spec harness (relatedb/relate-cypher-compat-private)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: relatedb/relate-cypher-compat-private
           path: harness
@@ -112,7 +112,7 @@ jobs:
             echo "::warning::HARNESS_READ_TOKEN is not set — using the default GITHUB_TOKEN for the harness checkout (ADR-0482 §5)."
           fi
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
 

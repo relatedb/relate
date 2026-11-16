@@ -100,7 +100,7 @@ jobs:
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1
           # Scripted pipelines give the model step no credentials at all:
@@ -380,7 +380,7 @@ jobs:
       # instead of guessing from a red X.
       - name: Preserve review outputs (artifact)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: review-outputs-${{ inputs.job_name }}
           path: |

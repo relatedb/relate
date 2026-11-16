@@ -64,15 +64,15 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Keep @rev in sync with rust-toolchain.toml (channel = "1.88.0"):
       # the action installs the toolchain named by @rev, including any
       # components/targets; @stable would put them on a toolchain nothing
       # uses because cargo resolves rust-toolchain.toml instead.
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: wal_proptest (PROPTEST_CASES=10000)
         run: cargo test -p relate-storage --test wal_proptest -- --nocapture
@@ -83,7 +83,7 @@ jobs:
       # ADR-0268 §3: fresh counterexamples must be visible for triage.
       - name: Upload proptest regression files
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: proptest-regressions-in-memory
           path: relate/relate-storage/tests/**/*.proptest-regressions
@@ -111,12 +111,12 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Keep @rev in sync with rust-toolchain.toml (channel = "1.88.0").
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       # Live: all three properties in `recovery_proptest` run for real, so
       # this step is a genuine crash-recovery gate at the fsync-bound
@@ -132,7 +132,7 @@ jobs:
 
       - name: Upload proptest regression files
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: proptest-regressions-recovery
           path: relate/relate-storage/tests/**/*.proptest-regressions

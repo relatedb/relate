@@ -79,7 +79,7 @@ jobs:
       # current script (a backfill dispatch runs from main as well), and
       # only the script directory is needed.
       - name: Checkout main (generator)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
           sparse-checkout: |
