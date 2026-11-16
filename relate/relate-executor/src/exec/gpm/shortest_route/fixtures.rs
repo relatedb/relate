@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use relate_core::Value;
 use relate_ir::Direction;
 
-use crate::exec::test_support::{build, try_exec_cypher, try_exec_cypher_params, Builder};
+use crate::exec::test_support::{
+    build, exec_autocommit, try_exec_cypher, try_exec_cypher_params, Builder,
+};
 use crate::graph::Graph;
 use crate::shortest::test_support::counting_expands;
 
@@ -74,6 +76,40 @@ pub(super) fn self_loops(loops: usize) -> Graph {
     }
     b.done()
 }
+
+/// 200 `:N` nodes (`id` text, `g` parity) on a ring with `*3` chords;
+/// `indexed` declares the RANGE index the point seeks need.
+fn ring_graph(indexed: bool) -> Graph {
+    let g = Graph::default();
+    if indexed {
+        exec_autocommit(&g, "CREATE INDEX FOR (n:N) ON (n.id)").unwrap();
+    }
+    exec_autocommit(
+        &g,
+        "UNWIND range(0, 199) AS i CREATE (:N {id: toString(i), g: i % 2})",
+    )
+    .unwrap();
+    exec_autocommit(
+        &g,
+        "MATCH (a:N), (b:N) WHERE (toInteger(a.id) + 1) % 200 = toInteger(b.id) \
+         OR (toInteger(a.id) * 3) % 200 = toInteger(b.id) CREATE (a)-[:R]->(b)",
+    )
+    .unwrap();
+    g
+}
+
+/// The ring with the RANGE index on `id` the point seeks need.
+pub(super) fn ring() -> Graph {
+    ring_graph(true)
+}
+
+/// The ring with no index: no seek serves an endpoint.
+pub(super) fn ring_unindexed() -> Graph {
+    ring_graph(false)
+}
+
+/// The variable-length relationship the ring tests walk.
+pub(super) const BODY: &str = "-[:R*..6]->";
 
 /// Rows of `q` and the [`Counts`] it caused.
 pub(super) fn run(g: &Graph, q: &str) -> (Vec<Vec<Value>>, Counts) {

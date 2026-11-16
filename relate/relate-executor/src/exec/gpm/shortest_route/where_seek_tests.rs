@@ -7,32 +7,11 @@
 
 use relate_core::{CapacityKind, Error};
 
-use crate::exec::test_support::{exec_autocommit, try_exec_cypher};
+use crate::exec::test_support::try_exec_cypher;
 use crate::graph::Graph;
 
 use super::anchor::{with_list_limit, AnchorArm};
-use super::fixtures::{counting, parity, sorted, Selector, SELECTORS};
-
-/// 200 `:N` nodes (`id` text, `g` parity) on a ring with `*3` chords;
-/// `indexed` declares the RANGE index the point seeks need.
-pub(super) fn ring(indexed: bool) -> Graph {
-    let g = Graph::default();
-    if indexed {
-        exec_autocommit(&g, "CREATE INDEX FOR (n:N) ON (n.id)").unwrap();
-    }
-    exec_autocommit(
-        &g,
-        "UNWIND range(0, 199) AS i CREATE (:N {id: toString(i), g: i % 2})",
-    )
-    .unwrap();
-    exec_autocommit(
-        &g,
-        "MATCH (a:N), (b:N) WHERE (toInteger(a.id) + 1) % 200 = toInteger(b.id) \
-         OR (toInteger(a.id) * 3) % 200 = toInteger(b.id) CREATE (a)-[:R]->(b)",
-    )
-    .unwrap();
-    g
-}
+use super::fixtures::{counting, parity, ring, ring_unindexed, sorted, Selector, BODY, SELECTORS};
 
 /// `ids` as a Cypher list literal of text ids, with a null and a duplicate
 /// spliced in (neither may change the answer).
@@ -45,11 +24,9 @@ fn list_with_noise(ids: std::ops::Range<usize>) -> String {
     format!("[{}]", items.join(", "))
 }
 
-const BODY: &str = "-[:R*..6]->";
-
 #[test]
 fn a_where_equality_end_seeks_the_pair() {
-    let g = ring(true);
+    let g = ring();
     let by_where = format!(
         "MATCH p = ANY SHORTEST (a:N {{id: '0'}}){BODY}(b:N) WHERE b.id = '150' \
          RETURN a.id, b.id, length(p)"
@@ -73,7 +50,7 @@ fn a_where_equality_end_seeks_the_pair() {
 /// expansions — instead of building rows for every reachable end.
 #[test]
 fn a_function_spelling_where_equality_seeks_the_end() {
-    let g = ring(true);
+    let g = ring();
     let by_where_counts = parity(
         &g,
         &format!(
@@ -98,7 +75,7 @@ fn a_function_spelling_where_equality_seeks_the_end() {
 /// has — the same expansions as the row-bound spelling.
 #[test]
 fn an_unwound_end_equality_costs_the_bound_pair_form() {
-    let g = ring(true);
+    let g = ring();
     let by_where = format!(
         "UNWIND ['150', '17', '99'] AS t MATCH p = ANY SHORTEST (a:N {{id: '0'}}){BODY}(b:N) \
          WHERE b.id = t RETURN t, length(p)"
@@ -117,7 +94,7 @@ fn an_unwound_end_equality_costs_the_bound_pair_form() {
 /// forward fan per start, lists carrying nulls and duplicates.
 #[test]
 fn in_lists_on_both_ends_fan_from_the_listed_start() {
-    let g = ring(true);
+    let g = ring();
     let q = format!(
         "MATCH p = ANY SHORTEST (a:N){BODY}(b:N) \
          WHERE a.id IN {} AND b.id IN {} RETURN a.id, b.id, length(p)",
@@ -128,10 +105,10 @@ fn in_lists_on_both_ends_fan_from_the_listed_start() {
     assert_eq!(counts.arms, vec![AnchorArm::FanForward]);
     // The seek lists the 6 starts: 6 forward fans, not one per `:N` node.
     // An unindexed store lists the same starts by their own filter.
-    let unindexed = parity(&ring(false), &q).expands;
+    let unindexed = parity(&ring_unindexed(), &q).expands;
     assert_eq!(counts.expands, unindexed);
     let every_start = parity(
-        &ring(false),
+        &ring_unindexed(),
         &q.replace("a.id IN", "a.id IS NOT NULL OR a.id IN"),
     );
     assert!(
@@ -144,7 +121,7 @@ fn in_lists_on_both_ends_fan_from_the_listed_start() {
 
 #[test]
 fn an_end_only_in_list_fans_backward_and_all_selectors_agree() {
-    let g = ring(true);
+    let g = ring();
     for Selector { open, close, .. } in SELECTORS {
         let q = format!(
             "MATCH p = {open}(a:N){BODY}(b:N) WHERE b.id IN {} \
@@ -160,7 +137,7 @@ fn an_end_only_in_list_fans_backward_and_all_selectors_agree() {
 /// the other conjuncts apply as the residual.
 #[test]
 fn mixed_conjuncts_seek_and_the_residual_still_filters() {
-    let g = ring(true);
+    let g = ring();
     let q = format!(
         "MATCH p = ANY SHORTEST (a:N {{id: '0'}}){BODY}(b:N) \
          WHERE b.id IN ['150', '17', '99', '4'] AND b.g = 1 AND length(p) >= 1 \
@@ -175,7 +152,7 @@ fn mixed_conjuncts_seek_and_the_residual_still_filters() {
 /// as before, same rows.
 #[test]
 fn an_unserved_or_does_not_seek() {
-    let g = ring(true);
+    let g = ring();
     let q = format!(
         "MATCH p = ANY SHORTEST (a:N {{id: '0'}}){BODY}(b:N) \
          WHERE b.id = '150' OR b.g = 1 RETURN b.id, length(p)"
@@ -190,7 +167,7 @@ fn an_unserved_or_does_not_seek() {
 /// keep the fan exactly as before.
 #[test]
 fn without_an_index_the_where_equality_lists_the_filtered_end() {
-    let g = ring(false);
+    let g = ring_unindexed();
     let q = format!(
         "MATCH p = ANY SHORTEST (a:N {{id: '0'}}){BODY}(b:N) WHERE b.id = '150' \
          RETURN b.id, length(p)"
@@ -213,7 +190,7 @@ fn without_an_index_the_where_equality_lists_the_filtered_end() {
 /// 51N23 for the function spelling, so the unindexed route is the baseline.
 #[test]
 fn same_node_pairs_keep_the_unseeked_answer() {
-    let (seeked, plain) = (ring(true), ring(false));
+    let (seeked, plain) = (ring(), ring_unindexed());
     let outcome = |g: &Graph, q: &str| {
         let (res, counts) = counting(|| try_exec_cypher(g, q));
         // The route-must-run assertion holds on the answering path only:
@@ -248,7 +225,7 @@ fn same_node_pairs_keep_the_unseeked_answer() {
 /// never a truncated list — the same refusal the property-map form gives.
 #[test]
 fn an_over_limit_where_seek_is_a_typed_refusal() {
-    let g = ring(true);
+    let g = ring();
     let q = format!(
         "MATCH p = ANY SHORTEST (a:N){BODY}(b:N) \
          WHERE a.id IN {} AND b.id IN {} RETURN count(p)",

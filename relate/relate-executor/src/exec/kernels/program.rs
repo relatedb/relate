@@ -26,7 +26,7 @@ use relate_ir::{var_prop_named, BinaryOp, Expr, NodePattern, UnaryOp};
 use relate_names::{NamedToken, SmallName, Token};
 
 use crate::ctx::ExecCtx;
-use crate::eval::{binary_pure, eval, expr_vars, is_nondeterministic, orient};
+use crate::eval::{binary_pure, eval, expr_vars, is_row_unstable_node, orient};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -456,12 +456,7 @@ pub(crate) fn decode_conjunct(expr: &Expr) -> Option<(String, Prog)> {
 pub(crate) fn bound_is_row_invariant(bound: &Expr) -> bool {
     let mut named = std::collections::HashSet::new();
     expr_vars(bound, &mut named);
-    named.is_empty()
-        && !bound.any(&mut |expr| {
-            matches!(expr, Expr::Function { name, .. }
-                if name.with_str(is_nondeterministic))
-                || expr.is_scope_bearing()
-        })
+    named.is_empty() && !bound.any(&mut is_row_unstable_node)
 }
 
 #[cfg(test)]

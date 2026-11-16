@@ -232,9 +232,7 @@ pub(super) fn import_invariant_body(query: &Query, check: &HashSet<String>) -> b
         query,
         &mut |clause| clauses_clean &= body_safe_clause(clause, check),
         &mut |expr| {
-            exprs_clean &= !matches!(expr, Expr::Function { name, .. }
-                if name.with_str(crate::eval::is_nondeterministic));
-            exprs_clean &= !expr.is_scope_bearing();
+            exprs_clean &= !crate::eval::is_row_unstable_node(expr);
         },
     );
     clauses_clean && exprs_clean

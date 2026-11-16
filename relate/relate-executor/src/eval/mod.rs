@@ -67,7 +67,7 @@ pub(crate) fn expr_within(expr: &Expr, allowed: &HashSet<String>) -> bool {
     used.iter().all(|name| allowed.contains(name))
 }
 
-pub(crate) use function::is_nondeterministic;
+pub(crate) use function::is_row_unstable_node;
 use function::{entity_backing_map, function};
 pub(crate) use function::{lazy_range, RangeValues};
 use predicates::comprehension_where_holds;

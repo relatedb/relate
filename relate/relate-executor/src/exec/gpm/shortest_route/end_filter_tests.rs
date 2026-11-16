@@ -4,19 +4,8 @@
 //! expansion counts pin that the side was listed — or, where it must not
 //! be, was not.
 
-use crate::graph::Graph;
-
 use super::anchor::AnchorArm;
-use super::fixtures::{parity, Selector, SELECTORS};
-use super::where_seek_tests::ring;
-
-const BODY: &str = "-[:R*..6]->";
-
-/// A ring graph with an index on `id`, so the start seeks and only the
-/// end's `toInteger(b.id) + 0 = …` has no seek to ride.
-fn indexed() -> Graph {
-    ring(true)
-}
+use super::fixtures::{parity, ring, Selector, BODY, SELECTORS};
 
 /// The shape of LABS-1763: a keyword selector whose end is filtered by an
 /// expression over its property. The end lists as one node, so the pair
@@ -24,7 +13,7 @@ fn indexed() -> Graph {
 /// seekable form — not one row and one path per reachable node.
 #[test]
 fn a_non_sargable_end_equality_lists_the_end_and_searches_the_pair() {
-    let g = indexed();
+    let g = ring();
     let non_sargable = parity(
         &g,
         &format!(
@@ -51,7 +40,7 @@ fn a_non_sargable_end_equality_lists_the_end_and_searches_the_pair() {
 /// the walk does.
 #[test]
 fn every_selector_agrees_on_a_filtered_end() {
-    let g = indexed();
+    let g = ring();
     for Selector { open, close, .. } in SELECTORS {
         let q = format!(
             "MATCH p = {open}(a:N {{id: '0'}}){BODY}(b:N) \
@@ -73,7 +62,7 @@ fn every_selector_agrees_on_a_filtered_end() {
 /// The function spelling filters the same way.
 #[test]
 fn the_function_spelling_agrees_on_a_filtered_end() {
-    let g = indexed();
+    let g = ring();
     let q = format!(
         "MATCH p = shortestPath((a:N {{id: '0'}}){BODY}(b:N)) \
          WHERE toInteger(b.id) + 0 = 150 RETURN b.id, length(p)"
@@ -85,7 +74,7 @@ fn the_function_spelling_agrees_on_a_filtered_end() {
 /// lists, and the product is a pair.
 #[test]
 fn a_non_sargable_start_is_listed_too() {
-    let g = indexed();
+    let g = ring();
     let q = format!(
         "MATCH p = ANY SHORTEST (a:N){BODY}(b:N {{id: '150'}}) \
          WHERE toInteger(a.id) + 0 = 0 RETURN a.id, b.id, length(p)"
@@ -96,7 +85,7 @@ fn a_non_sargable_start_is_listed_too() {
 /// A filter that matches nothing lists an empty side: no row, as the walk.
 #[test]
 fn a_filter_with_no_match_lists_nothing() {
-    let g = indexed();
+    let g = ring();
     let q = format!(
         "MATCH p = ANY SHORTEST (a:N {{id: '0'}}){BODY}(b:N) \
          WHERE toInteger(b.id) + 0 = 9999 RETURN b.id, length(p)"
@@ -108,7 +97,7 @@ fn a_filter_with_no_match_lists_nothing() {
 /// answers exactly as before.
 #[test]
 fn a_filter_past_the_pair_bound_keeps_the_fan() {
-    let g = indexed();
+    let g = ring();
     let q = format!(
         "MATCH p = ANY SHORTEST (a:N {{id: '0'}}){BODY}(b:N) \
          WHERE toInteger(b.id) % 2 = 0 RETURN b.id, length(p)"
@@ -121,7 +110,7 @@ fn a_filter_past_the_pair_bound_keeps_the_fan() {
 /// predicate that is always true.
 #[test]
 fn a_nondeterministic_conjunct_does_not_list() {
-    let g = indexed();
+    let g = ring();
     let q = format!(
         "MATCH p = ANY SHORTEST (a:N {{id: '0'}}){BODY}(b:N) \
          WHERE rand() < 2.0 AND toInteger(b.id) = 150 RETURN b.id, length(p)"
@@ -141,7 +130,7 @@ fn a_nondeterministic_conjunct_does_not_list() {
 /// since the fan evaluates it on the nodes it reaches.
 #[test]
 fn a_raising_conjunct_keeps_the_walks_behavior() {
-    let g = indexed();
+    let g = ring();
     let q = format!(
         "MATCH p = ANY SHORTEST (a:N {{id: '0'}}){BODY}(b:N) \
          WHERE 1 / (toInteger(b.id) - 150) = 1 RETURN b.id, length(p)"
@@ -153,7 +142,7 @@ fn a_raising_conjunct_keeps_the_walks_behavior() {
 /// listing is skipped, each row keeps the fan.
 #[test]
 fn a_row_dependent_conjunct_does_not_list() {
-    let g = indexed();
+    let g = ring();
     let q = format!(
         "UNWIND [150, 17] AS t MATCH p = ANY SHORTEST (a:N {{id: '0'}}){BODY}(b:N) \
          WHERE toInteger(b.id) + 0 = t RETURN t, b.id, length(p)"
@@ -168,10 +157,23 @@ fn a_row_dependent_conjunct_does_not_list() {
 /// read the cached side and still answer exactly.
 #[test]
 fn rows_of_one_clause_share_the_listing() {
-    let g = indexed();
+    let g = ring();
     let q = format!(
         "UNWIND ['0', '3', '9'] AS s MATCH p = ANY SHORTEST (a:N {{id: s}}){BODY}(b:N) \
          WHERE toInteger(b.id) + 0 = 150 RETURN s, b.id, length(p)"
     );
     assert_eq!(parity(&g, &q).arms, vec![AnchorArm::Pair; 3]);
+}
+
+/// A range conjunct is not a point seek, so the side is listed by its
+/// filter — and the funnel's served range seek narrows the label scan the
+/// filter reads.
+#[test]
+fn a_range_conjunct_lists_through_the_funnel() {
+    let g = ring();
+    let q = format!(
+        "MATCH p = ANY SHORTEST (a:N {{id: '0'}}){BODY}(b:N) \
+         WHERE b.id > '198' AND b.id < '2' RETURN b.id, length(p)"
+    );
+    assert_eq!(parity(&g, &q).arms, vec![AnchorArm::Pair]);
 }

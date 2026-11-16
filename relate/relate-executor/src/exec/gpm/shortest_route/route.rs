@@ -202,7 +202,7 @@ impl<'a> Route<'a> {
         filter.decidable_on(&probe)
     }
 
-    pub(super) fn node_ok(&self, id: NodeId, np: &NodePattern, row: &Row) -> Result<bool> {
+    fn node_ok(&self, id: NodeId, np: &NodePattern, row: &Row) -> Result<bool> {
         let ExecCtx { graph, params, .. } = self.ctx;
         node_ok(graph, id, np, row, params)
     }
@@ -234,11 +234,18 @@ impl<'a> Route<'a> {
     /// The input row with the start node bound, or `None` when `id` fails
     /// the start pattern.
     fn bind_start(&self, id: NodeId) -> Result<Option<Row>> {
-        if !self.node_ok(id, self.shape.start, self.row)? {
+        self.bind_candidate(id, self.shape.start)
+    }
+
+    /// The input row with `id` bound as the endpoint `np`, or `None` when
+    /// `id` fails the pattern or its binding — the one admission-then-bind
+    /// spelling the start partition and the endpoint listing share.
+    pub(super) fn bind_candidate(&self, id: NodeId, np: &NodePattern) -> Result<Option<Row>> {
+        if !self.node_ok(id, np, self.row)? {
             return Ok(None);
         }
         let mut row = self.row.clone();
-        Ok(gpm_bind_node(self.ctx.graph, self.shape.start, id, &mut row).then_some(row))
+        Ok(gpm_bind_node(self.ctx.graph, np, id, &mut row).then_some(row))
     }
 
     /// Both endpoints fixed: the pair search for single-path selectors, the

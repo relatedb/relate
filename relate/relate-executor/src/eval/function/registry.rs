@@ -31,6 +31,16 @@ pub(crate) fn is_nondeterministic(name: &str) -> bool {
         .is_some_and(|row| row.nondeterministic || row.implementation.samples_clock())
 }
 
+/// Whether `expr` itself (not its children) makes an expression unsafe to
+/// evaluate once and reuse across rows: a nondeterministic call, or a
+/// scope-bearing form whose interior reads its own scope. The one node
+/// predicate behind every "row-stable expression" walk — callers apply it
+/// with `Expr::any` or a walk's per-expression visitor.
+pub(crate) fn is_row_unstable_node(expr: &Expr) -> bool {
+    matches!(expr, Expr::Function { name, .. } if name.with_str(is_nondeterministic))
+        || expr.is_scope_bearing()
+}
+
 /// A builtin implementation.
 pub(super) type Builtin = fn(&ExecGraph<'_>, &str, Vec<Value>) -> Result<Value>;
 

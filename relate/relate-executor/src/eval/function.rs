@@ -29,7 +29,7 @@ mod temporal;
 mod vector;
 
 pub(super) use entity::entity_backing_map;
-pub(crate) use registry::is_nondeterministic;
+pub(crate) use registry::is_row_unstable_node;
 use registry::{arity_rejection, lookup_builtin, Applied, BuiltinImplementation, BuiltinRow};
 
 /// The one resolution of a call against the builtin table, shared by both
@@ -210,7 +210,8 @@ fn render_scalar(v: &Value) -> Option<Arc<str>> {
 mod tests {
     use super::convert::{bi_tostring, bi_tostringornull};
     use super::registry::{
-        builtins, Arity, ARITY_AT_LEAST_ONE, ARITY_AT_MOST_ONE, ARITY_EXACTLY_FOUR_ENGINE_ONLY,
+        builtins, is_nondeterministic, Arity, ARITY_AT_LEAST_ONE, ARITY_AT_MOST_ONE,
+        ARITY_EXACTLY_FOUR_ENGINE_ONLY,
     };
     use super::string::bi_string_interp;
     use super::*;
