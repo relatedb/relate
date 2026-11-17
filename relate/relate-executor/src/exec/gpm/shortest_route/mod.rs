@@ -27,6 +27,7 @@ mod far_set;
 mod filters;
 mod guard;
 mod k_select;
+mod multi_fan;
 mod reach_cache;
 mod route;
 mod trail_walk;

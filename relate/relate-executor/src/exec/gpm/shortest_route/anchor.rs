@@ -169,7 +169,7 @@ impl Side {
     }
 
     /// The candidates, in list order; `None` for a length-only side.
-    fn ids(&self) -> Option<&[NodeId]> {
+    pub(super) fn ids(&self) -> Option<&[NodeId]> {
         match self {
             Side::One(id) => Some(std::slice::from_ref(id)),
             Side::Many(ids) => Some(ids),

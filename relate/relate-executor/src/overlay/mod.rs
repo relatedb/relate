@@ -419,6 +419,27 @@ impl<'a> ExecGraph<'a> {
             .unwrap_or(false)
     }
 
+    /// One past the largest node id this view can show: committed ids are
+    /// below the graph's counter, and a write view's scratch-created ids
+    /// come from the scratch's own counter (seeded from the graph's, then
+    /// advanced independently), so the bound is the larger of the two. A
+    /// dense per-node table sized to it never misses a node.
+    pub(crate) fn node_id_bound(&self) -> NodeId {
+        let committed = self.base.next_node_id();
+        match self.scratch {
+            None => committed,
+            Some(cell) => {
+                let scratch = cell
+                    .borrow()
+                    .node_id_alloc
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                committed.max(
+                    NodeId::try_from(scratch).expect("the scratch id counter stops at i64::MAX"),
+                )
+            }
+        }
+    }
+
     /// Every live node id, ascending: the snapshot's ids minus the scratch's
     /// deletions plus its creations (ADR-0173). A copy-on-write entry was
     /// read from the snapshot, so it is a snapshot id already, and a delete

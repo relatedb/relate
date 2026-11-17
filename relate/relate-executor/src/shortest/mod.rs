@@ -7,6 +7,8 @@
 //! - [`Search::dag`]: a layered single-source BFS that keeps shortest-path
 //!   predecessors, with [`layered::Dag::trails`] enumerating them, and
 //!   [`Search::closed`] for the shortest closed trails through one node.
+//! - [`Search::sweep_levels`]: a multi-source bit-parallel level sweep that
+//!   answers distance only, for a fan with a listed far side.
 //! - [`class_walk::ClassWalk`]: the trails of one exact length between two
 //!   nodes, the class enumeration of `SHORTEST k` and `SHORTEST k GROUPS`
 //!   (ADR-0607).
@@ -29,6 +31,7 @@ use crate::store::RelTypes;
 
 pub(crate) mod class_walk;
 pub(crate) mod layered;
+pub(crate) mod multi_source;
 mod pair;
 mod reach;
 

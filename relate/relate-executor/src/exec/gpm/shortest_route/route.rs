@@ -159,7 +159,9 @@ impl<'a> Route<'a> {
                 })?;
             }
             Anchor::Fan { origins, way, far } => {
-                self.each_side(&origins, |origin| self.fan(origin, way, far.as_ref(), out))?;
+                if !self.fan_batched(&origins, way, far.as_ref(), out)? {
+                    self.each_side(&origins, |origin| self.fan(origin, way, far.as_ref(), out))?;
+                }
             }
             Anchor::Loop => {
                 self.each_start(|s| self.pair_partition(s, s, out))?;
@@ -233,7 +235,7 @@ impl<'a> Route<'a> {
 
     /// The input row with the start node bound, or `None` when `id` fails
     /// the start pattern.
-    fn bind_start(&self, id: NodeId) -> Result<Option<Row>> {
+    pub(super) fn bind_start(&self, id: NodeId) -> Result<Option<Row>> {
         self.bind_candidate(id, self.shape.start)
     }
 
@@ -268,7 +270,7 @@ impl<'a> Route<'a> {
     /// origin itself, is one partition — emitted as its layer of the search
     /// completes (ADR-0555), so a halted consumer stops the search before
     /// its deeper layers are expanded.
-    fn fan(
+    pub(super) fn fan(
         &self,
         origin: NodeId,
         way: Way,
@@ -351,6 +353,24 @@ impl<'a> Route<'a> {
         origin_row: Option<&Row>,
         out: &mut MatchedSink<'_, '_>,
     ) -> Result<()> {
+        self.fan_member(origin, far, way, origin_row, out, |_, _| {
+            Ok(way.orient(layer.trails(self.ctx.graph, far)?))
+        })
+    }
+
+    /// The one fan partition body: the start row, then `trails(s, e)` for
+    /// the oriented pair — the layered search's held trails
+    /// ([`Self::fan_partition`]) or the batched sweep's pair rebuild
+    /// ([`Self::fan_chunk`]).
+    pub(super) fn fan_member(
+        &self,
+        origin: NodeId,
+        far: NodeId,
+        way: Way,
+        origin_row: Option<&Row>,
+        out: &mut MatchedSink<'_, '_>,
+        trails: impl FnOnce(NodeId, NodeId) -> Result<Vec<Vec<RelId>>>,
+    ) -> Result<()> {
         let (s, e) = way.ends(origin, far);
         let srow = match origin_row {
             Some(row) => Cow::Borrowed(row),
@@ -359,9 +379,7 @@ impl<'a> Route<'a> {
                 None => return Ok(()),
             },
         };
-        self.partition(s, e, &srow, out, || {
-            Ok(way.orient(layer.trails(self.ctx.graph, far)?))
-        })
+        self.partition(s, e, &srow, out, || trails(s, e))
     }
 
     /// Emit the (s, e) partition of a row with the start bound: nothing

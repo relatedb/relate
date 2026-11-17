@@ -18,6 +18,7 @@ use crate::graph::Graph;
 
 use super::anchor::{with_list_limit, without_far_set, AnchorArm};
 use super::fixtures::{counting, gpm, run, sorted, DirectionExt, Selector, DIRS, SELECTORS};
+use super::multi_fan::{take_batches, without_batched_fan};
 
 /// Corpus seed; a failure names it with the graph index.
 const SEED: u64 = 0x0556_0001;
@@ -418,9 +419,15 @@ fn the_far_set_changes_cost_not_answers() {
             for sel in SELECTORS {
                 for dir in DIRS {
                     let q = query(shape, sel, dir);
-                    let (on, on_counts) = run(&g, &q);
-                    let (off, off_counts) = without_far_set(|| run(&g, &q));
-                    assert_eq!(sorted(on), sorted(off), "far set changed the answer of {q}");
+                    // The batched fan has its own cost claim (below); the
+                    // far set's is measured on the per-origin fan.
+                    let (on, on_counts) = without_batched_fan(|| run(&g, &q));
+                    let (off, off_counts) = without_batched_fan(|| without_far_set(|| run(&g, &q)));
+                    assert_eq!(
+                        comparable(on, sel),
+                        comparable(off, sel),
+                        "far set changed the answer of {q}"
+                    );
                     assert!(on_counts.expands <= off_counts.expands, "{q}");
                     saved |= on_counts.expands < off_counts.expands;
                 }
@@ -435,4 +442,175 @@ fn the_far_set_changes_cost_not_answers() {
         saved_any |= saved;
     }
     assert!(saved_any, "the early stop never saved an expansion");
+}
+
+/// The batched fan (ADR-0612) answers what the per-origin layered fan
+/// answers: every fan shape with a listed far side, on graphs wide enough
+/// that the origin list crosses the 64-lane batch boundary, unreachable
+/// pairs included (the sparse graphs leave components apart).
+#[test]
+fn the_batched_fan_changes_cost_not_answers() {
+    let mut rng = StdRng::seed_from_u64(SEED ^ 0x1698_0002);
+    let wide = [
+        // 150 origins (three batches, the last short) against 150.
+        ("fan wide", "(a {g: 0})", "(b {g: 1})", 300, 2, 330),
+        // The same, sparse: most pairs unreachable.
+        ("fan sparse", "(a {g: 0})", "(b {g: 1})", 300, 2, 140),
+        // Exactly one full batch.
+        ("fan 64", "(a {g: 0})", "(b {g: 1})", 128, 2, 150),
+    ];
+    let mut batched = false;
+    for (name, start, end, n, groups, rels) in wide {
+        let shape = Shape {
+            arm: AnchorArm::FanForward,
+            name,
+            cols: "a.id, b.id, length(p)",
+            start,
+            end,
+            n,
+            groups,
+            rels,
+        };
+        let g = graph(&mut rng, n, groups, rels);
+        for sel in SELECTORS {
+            for dir in DIRS {
+                let q = query(&shape, sel, dir);
+                let _ = take_batches();
+                let (on, _) = run(&g, &q);
+                batched |= take_batches() > 0;
+                let (off, _) = without_batched_fan(|| run(&g, &q));
+                assert_eq!(
+                    comparable(on, sel),
+                    comparable(off, sel),
+                    "{name}: the batch changed the answer of {q}"
+                );
+            }
+        }
+    }
+    assert!(batched, "no fan took the batched sweep");
+}
+
+/// A pair predicate in the `WHERE` (decided per partition, after the
+/// sweep), an end pattern the far list does not decide alone, and the
+/// backward fan all take the batched sweep to the same rows.
+#[test]
+fn the_batched_fan_keeps_the_end_admission_and_pair_predicates() {
+    let mut rng = StdRng::seed_from_u64(SEED ^ 0x1698_0003);
+    let g = graph(&mut rng, 200, 2, 260);
+    let queries = [
+        "MATCH p = ANY SHORTEST (a {g: 0})-[:R*..4]-(b {g: 1}) \
+         WHERE a.id <> b.id RETURN a.id, b.id, length(p)",
+        "MATCH p = ALL SHORTEST (a {g: 0})-[:R*..3]->(b {g: 0}) \
+         RETURN a.id, b.id, length(p), [n IN nodes(p) | n.id]",
+        "MATCH p = SHORTEST 1 (a {g: 0})<-[:R*..4]-(b {g: 1}) \
+         RETURN a.id, b.id, length(p)",
+    ];
+    for q in queries {
+        let _ = take_batches();
+        let (on, _) = run(&g, q);
+        assert!(take_batches() > 0, "the batched sweep must run for {q}");
+        let (off, _) = without_batched_fan(|| run(&g, q));
+        assert_eq!(sorted(on), sorted(off), "{q}");
+    }
+}
+
+/// A node-id span past the sweep's tables keeps the per-origin fan: the
+/// same rows, no batch run.
+#[test]
+fn a_wide_id_span_keeps_the_per_origin_fan() {
+    let mut rng = StdRng::seed_from_u64(SEED ^ 0x1698_0004);
+    let g = graph(&mut rng, 100, 2, 140);
+    let q = "MATCH p = ANY SHORTEST (a {g: 0})-[:R*..4]-(b {g: 1}) RETURN a.id, b.id, length(p)";
+    let (rows, _) = run(&g, q);
+    let _ = take_batches();
+    let (capped, _) = crate::shortest::multi_source::with_span_cap(8, || run(&g, q));
+    assert_eq!(take_batches(), 0);
+    assert_eq!(sorted(rows), sorted(capped));
+}
+
+/// The sweep keeps no predecessors, so work follows the graph, not the
+/// path count: 2^40 shortest trails through a chain of diamonds are never
+/// enumerated for a single-path selector, and the sweep follows each
+/// relationship about once per batch and each of the 25 trail rebuilds a
+/// bidirectional search's share, so expansions stay a small multiple of
+/// the relationship count.
+#[test]
+fn the_sweep_does_not_scale_with_path_count() {
+    let b = Builder::new();
+    let head = b.prop_node("head", &["N"], &[("g", Value::Int(2))]);
+    let mut rels = 0u64;
+    // Five starts feed the first diamond: 5 x 5 pairs, past the pair
+    // product's bound, so the fan answers.
+    for i in 0..5 {
+        let s = b.prop_node(&format!("s{i}"), &["N"], &[("g", Value::Int(0))]);
+        b.rel(s, head, "R", &[]);
+        rels += 1;
+    }
+    let mut prev = head;
+    for i in 0..40 {
+        let (l, r, next) = (
+            b.prop_node(&format!("l{i}"), &["N"], &[("g", Value::Int(2))]),
+            b.prop_node(&format!("r{i}"), &["N"], &[("g", Value::Int(2))]),
+            b.prop_node(&format!("j{i}"), &["N"], &[("g", Value::Int(2))]),
+        );
+        for (x, y) in [(prev, l), (prev, r), (l, next), (r, next)] {
+            b.rel(x, y, "R", &[]);
+        }
+        rels += 4;
+        prev = next;
+    }
+    for i in 0..5 {
+        let t = b.prop_node(&format!("t{i}"), &["N"], &[("g", Value::Int(1))]);
+        b.rel(prev, t, "R", &[]);
+        rels += 1;
+    }
+    let g = b.done();
+    let q = "MATCH p = ANY SHORTEST (a {g: 0})-[:R*..200]->(b {g: 1}) RETURN length(p)";
+    let _ = take_batches();
+    let (rows, counts) = run(&g, q);
+    assert!(take_batches() > 0, "the fan must take the batched sweep");
+    assert_eq!(rows.len(), 25, "one trail per (start, end) pair");
+    assert!(
+        counts.expands < 30 * rels,
+        "{} expansions over {rels} relationships",
+        counts.expands
+    );
+}
+
+/// A write view's scratch-created nodes carry ids past the committed
+/// counter: the batched fan's tables must cover them. Twenty starts and
+/// twenty ends are all created in the statement that then fans over them.
+#[test]
+fn the_batched_fan_covers_scratch_created_nodes() {
+    let g = Graph::default();
+    let q = "UNWIND range(0, 19) AS i \
+             CREATE (:N {id: 's' + toString(i), g: 0})-[:R]->(m:N {id: 'm' + toString(i), g: 2})\
+                    -[:R]->(:N {id: 't' + toString(i), g: 1}) \
+             WITH count(*) AS made \
+             MATCH p = ANY SHORTEST (a {g: 0})-[:R*..3]->(b {g: 1}) \
+             RETURN a.id, b.id, length(p)";
+    let _ = take_batches();
+    let rows = exec_write_uncommitted(&g, q).rows;
+    assert!(take_batches() > 0, "the fan must take the batched sweep");
+    let oracle = without_batched_fan(|| exec_write_uncommitted(&g, q).rows);
+    assert_eq!(rows.len(), 20);
+    assert_eq!(sorted(rows), sorted(oracle));
+}
+
+/// A trailing batch of one origin (65 origins = 64 + 1) takes the layered
+/// fan, and the answer is the per-origin fan's.
+#[test]
+fn a_lone_trailing_origin_keeps_the_layered_fan() {
+    let mut rng = StdRng::seed_from_u64(SEED ^ 0x1698_0005);
+    // 130 nodes in two groups: 65 origins, 65 far nodes.
+    let g = graph(&mut rng, 130, 2, 200);
+    let q = "MATCH p = ANY SHORTEST (a {g: 0})-[:R*..4]-(b {g: 1}) RETURN a.id, b.id, length(p)";
+    let _ = take_batches();
+    let (rows, _) = run(&g, q);
+    assert_eq!(take_batches(), 1, "only the full batch of 64 sweeps");
+    let (off, _) = without_batched_fan(|| run(&g, q));
+    assert_eq!(
+        comparable(rows, SELECTORS[0]),
+        comparable(off, SELECTORS[0])
+    );
 }

@@ -50,6 +50,20 @@ impl FarSet {
         self.len
     }
 
+    /// The members, ascending.
+    pub(super) fn ids(&self) -> Vec<NodeId> {
+        let mut ids = Vec::with_capacity(self.len);
+        for (word_at, &word) in self.words.iter().enumerate() {
+            let mut rest = word;
+            while rest != 0 {
+                let bit = rest.trailing_zeros() as usize;
+                rest &= rest - 1;
+                ids.push(NodeId::try_from(word_at * 64 + bit).expect("a node id fits NodeId"));
+            }
+        }
+        ids
+    }
+
     /// Whether `id` is a member.
     pub(super) fn contains(&self, id: NodeId) -> bool {
         let index = index(id);
@@ -67,6 +81,7 @@ mod tests {
     fn membership_len_and_out_of_range() {
         let set = FarSet::of(&[3, 64, 3, 130]).unwrap();
         assert_eq!(set.len(), 3);
+        assert_eq!(set.ids(), vec![3, 64, 130]);
         assert!([3, 64, 130].iter().all(|&id| set.contains(id)));
         assert!(![0, 4, 63, 65, 131, 100_000]
             .iter()
