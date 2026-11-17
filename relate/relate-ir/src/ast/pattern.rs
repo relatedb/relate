@@ -7,7 +7,7 @@
 //! public path is unchanged (`ast::call` and `ast::expr` set the same
 //! precedent).
 
-use relate_names::{NamedToken, SmallName, Token};
+use relate_names::{NamedToken, SmallName};
 
 use super::Expr;
 
@@ -17,7 +17,7 @@ pub fn pattern_prop_key(keys: &[NamedToken], name: &str) -> NamedToken {
     keys.iter()
         .find(|(known, _)| *known == name)
         .cloned()
-        .unwrap_or_else(|| (SmallName::from_name(name), Token::Unresolved))
+        .unwrap_or_else(|| relate_names::unresolved(SmallName::from_name(name)))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -637,7 +637,7 @@ mod tests {
     //! other shape declines — the same decline vocabulary
     //! `is_static_conjunction` keeps for its shapes.
 
-    use super::{Direction, DisjunctionArms, LabelExpr, RelPattern, SmallName, Token};
+    use super::{Direction, DisjunctionArms, LabelExpr, RelPattern, SmallName};
 
     fn label(name: &str) -> LabelExpr {
         LabelExpr::Label(SmallName::from_name(name))
@@ -736,7 +736,7 @@ mod tests {
             variable: None,
             types: types
                 .iter()
-                .map(|name| (SmallName::from_name(name), Token::Unresolved))
+                .map(|name| relate_names::unresolved(SmallName::from_name(name)))
                 .collect(),
             type_expr,
             direction: Direction::Outgoing,

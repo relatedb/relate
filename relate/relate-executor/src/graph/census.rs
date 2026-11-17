@@ -243,7 +243,7 @@ impl Graph {
         c.degree_hist_bytes = self.degree_stats_structure_bytes();
         c.constraint_key_bytes = self.constraint_keys_structure_bytes();
 
-        // Interner.
+        // Interner: interned strings plus the label-vec cache it retains.
         c.interner_keys = self.interner.key_count();
         c.interner_bytes = self.interner.bytes();
 

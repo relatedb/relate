@@ -66,6 +66,12 @@ pub enum Token {
 /// relationship-type lists.
 pub type NamedToken = (SmallName, Token);
 
+/// `name` beside [`Token::Unresolved`]: the one spelling of a name planning
+/// has not resolved, read by text wherever it is consumed.
+pub fn unresolved(name: SmallName) -> NamedToken {
+    (name, Token::Unresolved)
+}
+
 impl Token {
     /// The store id when planning resolved one: `Absent` and `Unresolved`
     /// answer `None` without any lookup. One dispatch with

@@ -236,10 +236,7 @@ fn lower_element_properties(
 
 /// Names as lowered: planning resolves their tokens later (ADR-0541).
 fn unresolved(names: Vec<SmallName>) -> Vec<(SmallName, Token)> {
-    names
-        .into_iter()
-        .map(|name| (name, Token::Unresolved))
-        .collect()
+    names.into_iter().map(relate_names::unresolved).collect()
 }
 
 pub(super) fn lower_node(n: &cl::NodePattern) -> Result<mdb::NodePattern> {

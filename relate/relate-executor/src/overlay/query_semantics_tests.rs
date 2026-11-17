@@ -54,6 +54,18 @@ fn deleted_entity_property_access_errors() {
 }
 
 #[test]
+fn deleted_entity_subscript_refuses_like_property_access() {
+    // A runtime-string subscript rides the same `prop` entry as `n.num`, so
+    // a deleted-but-bound node answers the same authored refusal instead of
+    // a silent `null`.
+    let err = run_write_err("CREATE ({num: 0}) WITH * MATCH (n) DELETE n RETURN n['num']");
+    assert!(
+        err.contains("DeletedEntityAccess"),
+        "expected DeletedEntityAccess, got {err}"
+    );
+}
+
+#[test]
 fn keys_over_deleted_node_refuses_like_property_access() {
     // keys() rides the one store-backed entity_properties read, so a
     // deleted-but-bound node answers the same authored refusal as

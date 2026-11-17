@@ -435,12 +435,8 @@ mod gate {
     fn node(variable: Option<&str>, properties: Option<Expr>) -> NodePattern {
         NodePattern {
             variable: variable.map(SmallName::from_name),
-            labels: Vec::new(),
-            label_expr: None,
             properties,
-            prop_keys: Vec::new(),
-            where_clause: None,
-            force_scan: false,
+            ..NodePattern::anonymous()
         }
     }
 

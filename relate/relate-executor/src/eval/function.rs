@@ -16,7 +16,7 @@ use super::eval;
 
 mod bar;
 mod convert;
-mod entity;
+pub(super) mod entity;
 mod list;
 pub(crate) use list::{RangePlan, RangeValues};
 mod math;

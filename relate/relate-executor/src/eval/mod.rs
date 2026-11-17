@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use relate_core::{Error, Result, Value};
 use relate_ir::{Expr, MapProjectionItem};
-use relate_names::{SmallName, Token};
+use relate_names::SmallName;
 
 use crate::ctx::EvalCtx;
 // The pattern-expression arms (PatternPred, PatternComp, ShortestPath)
@@ -222,7 +222,6 @@ pub fn eval(
             // Variable operands are read by reference (see Subscript): a
             // property read must not clone the whole map it reads from.
             let v = eval_operand(graph, row, expr, params)?;
-            reject_deleted_access(graph, &v)?;
             prop(graph, &v, &(key.clone(), *key_id))
         }
         Expr::DynamicProperty { expr, key } => {
@@ -230,9 +229,12 @@ pub fn eval(
             if v.is_null() {
                 return Ok(Value::Null);
             }
-            reject_deleted_access(graph, &v)?;
             let key = dynamic_property_key(eval(graph, row, key, params)?)?;
-            prop(graph, &v, &(SmallName::from_name(&key), Token::Unresolved))
+            prop(
+                graph,
+                &v,
+                &relate_names::unresolved(SmallName::from_name(&key)),
+            )
         }
         Expr::LabelPredicate {
             expr,
@@ -641,11 +643,11 @@ fn eval_map_projection(
     if target.is_null() {
         return Ok(Value::Null);
     }
-    // The one deleted-entity admission for the whole projection: the
-    // `Property` arm below reads the same target through the same
-    // policy, so it must be rejected once here rather than per item —
-    // otherwise `n{.*}` silently projects `{}` while `n.p` raises
-    // DeletedEntityAccess (one projection, two answers).
+    // The whole-projection admission: `n{.*}` and a `{k: v}`-only
+    // projection read no property off the target, so without this call they
+    // would silently project `{}` while `n.p` raises DeletedEntityAccess
+    // (one projection, two answers). The `Property` arm's read goes through
+    // `prop`, which applies the same policy idempotently.
     reject_deleted_access(graph, &target)?;
     // The projection's output is a runtime value map: its keys are
     // the value domain (String), rendered once per entry here.
@@ -656,7 +658,7 @@ fn eval_map_projection(
                 map.insert(key.to_string(), eval(graph, row, value, params)?);
             }
             MapProjectionItem::Property { key } => {
-                let value = prop(graph, &target, &(key.clone(), Token::Unresolved))?;
+                let value = prop(graph, &target, &relate_names::unresolved(key.clone()))?;
                 map.insert(key.to_string(), value);
             }
             MapProjectionItem::Variable { name } => {

@@ -7,7 +7,7 @@ use relate_ir::{
     Direction, DynamicLabelQuantifier, Expr, LabelExpr, NodePattern, PathPattern, PatternElement,
     RelPattern,
 };
-use relate_names::{NamedToken, SmallName, Token};
+use relate_names::{NamedToken, SmallName};
 
 use crate::eval::{dynamic_label_names, eval};
 use crate::overlay::ExecGraph;
@@ -116,10 +116,7 @@ fn resolve_element_names(
         .map(|name| SmallName::from_name(name.as_str()))
         .collect();
     let rebuilt = LabelExpr::And(names.iter().cloned().map(LabelExpr::Label).collect());
-    let names = names
-        .into_iter()
-        .map(|name| (name, Token::Unresolved))
-        .collect();
+    let names = names.into_iter().map(relate_names::unresolved).collect();
     Ok(Some((names, rebuilt)))
 }
 

@@ -7,12 +7,13 @@ use std::sync::Arc;
 
 use relate_core::{integer_args, temporal, Error, ErrorKind, Result, Value};
 use relate_ir::{BinaryOp, Expr, UnaryOp};
-use relate_names::{NamedToken, SmallName, Token};
+use relate_names::{NamedToken, SmallName};
 
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::arithmetic::{add, concat, div, mod_op, mul, pow, sub};
+use super::function::entity::virtual_own_prop;
 use super::regex_cache::regex_is_match;
 use super::string::char_range;
 use super::{bool_operand, eval, predicate_value_holds};
@@ -32,33 +33,40 @@ pub(crate) fn reject_deleted_access(graph: &ExecGraph<'_>, v: &Value) -> Result<
 /// `key` is the property name beside its plan-resolved token;
 /// `Token::Unresolved` for a key the plan never saw (a dynamic or
 /// projected key).
+///
+/// The one entry for every property read — including a runtime key,
+/// which arrives as [`relate_names::unresolved`] — so the deleted-entity
+/// policy below cannot be missed by a caller that only picks a subset of
+/// the dispatch (the subscript string arm used to answer `null` for a
+/// deleted node).
 pub(crate) fn prop(graph: &ExecGraph<'_>, v: &Value, key: &NamedToken) -> Result<Value> {
-    Ok(match v {
-        Value::Node(n) => graph
-            .node_prop_resolved(n.id, key)
-            .or_else(|| key.0.with_str(|text| n.properties.get(text).cloned()))
-            .unwrap_or(Value::Null),
-        Value::Relationship(r) => graph
-            .rel_prop_resolved(r.id, key)
-            .or_else(|| key.0.with_str(|text| r.properties.get(text).cloned()))
-            .unwrap_or(Value::Null),
-        Value::Map(m) => key
-            .0
-            .with_str(|text| m.get(text).cloned())
-            .unwrap_or(Value::Null),
-        Value::Temporal(t) => key.0.with_str(|text| t.component(text))?,
-        // The point accessor vocabulary is the data model's, beside the
-        // temporal one, so the executor only dispatches — and both answer
-        // the same typed rejection for a component their value lacks.
-        Value::Point(p) => key
-            .0
-            .with_str(|text| relate_core::point_component(p, text))?,
-        Value::Null => Value::Null,
-        _ => {
-            return Err(Error::invalid_argument_type(
-                "property access requires a map, node, relationship, temporal, or point value",
-            ))
-        }
+    reject_deleted_access(graph, v)?;
+    key.0.with_str(|text| {
+        Ok(match v {
+            // The own-map fallback is the virtual-entity half of the
+            // `properties()`/`keys()` policy (`backing_properties`), read
+            // through its single-key sibling — the map is never materialized.
+            Value::Node(n) => graph
+                .node_prop_resolved(n.id, key)
+                .or_else(|| virtual_own_prop(n.id, &n.properties, text))
+                .unwrap_or(Value::Null),
+            Value::Relationship(r) => graph
+                .rel_prop_resolved(r.id, key)
+                .or_else(|| virtual_own_prop(r.id, &r.properties, text))
+                .unwrap_or(Value::Null),
+            Value::Map(m) => m.get(text).cloned().unwrap_or(Value::Null),
+            Value::Temporal(t) => t.component(text)?,
+            // The point accessor vocabulary is the data model's, beside the
+            // temporal one, so the executor only dispatches — and both answer
+            // the same typed rejection for a component their value lacks.
+            Value::Point(p) => relate_core::point_component(p, text)?,
+            Value::Null => Value::Null,
+            _ => {
+                return Err(Error::invalid_argument_type(
+                    "property access requires a map, node, relationship, temporal, or point value",
+                ))
+            }
+        })
     })
 }
 
@@ -301,7 +309,11 @@ pub(crate) fn subscript(graph: &ExecGraph<'_>, v: &Value, index: Value) -> Resul
         // A string key rides the same dispatch as `n.k` (property access),
         // so the two paths cannot drift (the Map/Node/Relationship arms used
         // to be a hand-copied, subtly divergent subset of prop).
-        (_, Value::String(k)) => prop(graph, v, &(SmallName::from_name(&k), Token::Unresolved))?,
+        (_, Value::String(k)) => prop(
+            graph,
+            v,
+            &relate_names::unresolved(SmallName::from_name(&k)),
+        )?,
         (Value::Vector { .. }, _) => {
             return Err(Error::invalid_argument_type(
                 "vector indexing is not supported",

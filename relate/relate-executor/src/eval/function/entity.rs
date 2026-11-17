@@ -47,6 +47,13 @@ pub(crate) fn backing_properties(
     stored.or_else(|| is_virtual_id(id).then(|| Arc::clone(own)))
 }
 
+/// [`backing_properties`]' single-key sibling for a property read, which
+/// must not materialize the whole map: the own-map fallback applies only to
+/// a virtual entity, so a real id reads the store alone.
+pub(crate) fn virtual_own_prop(id: i64, own: &PropertyMap, key: &str) -> Option<Value> {
+    is_virtual_id(id).then(|| own.get(key).cloned()).flatten()
+}
+
 pub(super) fn bi_uuid(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
     Ok(match vals.as_slice() {
             [] => Value::Uuid(generate_uuid_v7()),

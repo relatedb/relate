@@ -559,7 +559,7 @@ fn add_labels(patterns: &mut [PathPattern], var: &SmallName, labels: &[SmallName
         // consumers look it up by name (`Token::Unresolved`).
         for l in labels {
             if !folded.iter().any(|(x, _)| x == l) {
-                folded.push((l.clone(), Token::Unresolved));
+                folded.push(relate_names::unresolved(l.clone()));
             }
         }
         n.labels = folded;
