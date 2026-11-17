@@ -7,7 +7,7 @@ use std::fmt;
 
 use relate::Database;
 use relate_auth::AuthConfig;
-use relate_wire::mcp::{decode_request, Response, RpcError, INVALID_PARAMS, METHOD_NOT_FOUND};
+use relate_wire::mcp::{decode_request, Response, RpcError, METHOD_NOT_FOUND};
 use serde_json::{json, Value};
 
 /// Which wire the server listens on (ADR-0232 §4: both stdio and streamable
@@ -300,14 +300,14 @@ impl McpServer {
     }
 
     fn call_tool(&self, params: &Value) -> Result<Value, RpcError> {
-        let Some(name) = params.get("name").and_then(Value::as_str) else {
-            return Err(RpcError {
-                code: INVALID_PARAMS,
-                message: "Invalid params: tools/call needs a string \"name\"".to_string(),
-            });
-        };
-        let empty = json!({});
-        let arguments = params.get("arguments").unwrap_or(&empty);
+        // The one extraction both surfaces run: a malformed payload is
+        // refused in the shared vocabulary, with the same words the
+        // extension mount answers.
+        let (name, arguments) =
+            crate::tools::call_parts(Some(params)).map_err(|error| RpcError {
+                code: error.code(),
+                message: error.to_string(),
+            })?;
         // One envelope shape; the call's outcome only picks the flag.
         let (text, is_error) = match crate::tools::call_tool(self, name, arguments) {
             Ok(text) => (text, false),

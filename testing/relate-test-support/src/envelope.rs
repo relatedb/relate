@@ -1,6 +1,7 @@
-//! The envelope-keys pin (ADR-0430 §6), shared by the first-party children's
-//! tests and the wire kit's own: a child's serialized request envelope and
-//! the committed manifest it serves must name the same keys.
+//! The first-party children's manifest pins (ADR-0430 §6): a child's
+//! serialized request envelope and the committed manifest it serves must
+//! name the same keys, and the manifest must declare the mount contract the
+//! wire kit defines.
 
 use serde_json::Value;
 
@@ -42,5 +43,29 @@ pub fn assert_envelope_keys(example: &Value, manifest: &Value) {
     assert_eq!(
         keys, declared,
         "the manifest's declared names and the envelope's keys must agree"
+    );
+}
+
+/// Assert the mount-contract half of a child's committed manifest: a
+/// `command` extension named `name`, speaking the wire kit's one MCP
+/// revision with no retired `wire` selector, committed per batch, taking
+/// the `DIR` positional on a store that need not be fresh. The flag table
+/// stays the child's own assertion.
+pub fn assert_mount_contract(manifest: &Value, name: &str) {
+    assert_eq!(manifest["kind"], "command");
+    assert_eq!(manifest["name"], name);
+    // The protocol names the MCP revision the mount serves, and the
+    // retired dual-wire selector is gone: a package declares the one wire
+    // ADR-0447 leaves.
+    assert_eq!(manifest["protocol"], relate_wire::mcp::MCP_PROTOCOL_VERSION);
+    assert!(
+        manifest.get("wire").is_none(),
+        "the manifest carries no wire field: the mount speaks MCP stdio only"
+    );
+    assert_eq!(manifest["commit"], relate_wire::PER_BATCH);
+    assert_eq!(manifest["positional"]["name"], "DIR");
+    assert_eq!(
+        manifest["requires-fresh-store"], false,
+        "the manifest declares requires-fresh-store: false"
     );
 }

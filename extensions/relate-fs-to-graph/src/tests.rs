@@ -368,19 +368,7 @@ fn walk_handles_a_deeply_nested_tree_without_recursion() {
 #[test]
 fn the_committed_manifest_declares_the_contract_this_child_speaks() {
     let manifest: Value = serde_json::from_str(include_str!("../package/extension.json")).unwrap();
-    assert_eq!(manifest["kind"], "command");
-    assert_eq!(manifest["name"], "fs-to-graph");
-    // The protocol names the MCP revision the mount serves, and the
-    // retired dual-wire selector is gone: a package declares the one wire
-    // ADR-0447 leaves.
-    assert_eq!(manifest["protocol"], relate_wire::mcp::MCP_PROTOCOL_VERSION);
-    assert!(
-        manifest.get("wire").is_none(),
-        "the manifest carries no wire field: the mount speaks MCP stdio only"
-    );
-    assert_eq!(manifest["commit"], relate_wire::PER_BATCH);
-    assert_eq!(manifest["positional"]["name"], "DIR");
-    assert!(!manifest["requires-fresh-store"].as_bool().unwrap());
+    relate_test_support::envelope::assert_mount_contract(&manifest, "fs-to-graph");
     // The flag table itself, name/kind/default in one spelling: the
     // defaults the child validates against are the same numbers this
     // lib's `Opts::default` resolves.

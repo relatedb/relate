@@ -295,21 +295,15 @@ pub fn stderr_truncated_marker(whose: &str) -> String {
 /// unchanged, like every helper here: only the caller knows its wording.
 pub fn drain_stderr(mut reader: impl Read, whose: &str) -> std::io::Result<Vec<u8>> {
     let mut retained = Vec::new();
-    let mut buffer = [0u8; 8192];
-    let mut truncated = false;
-    loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        let room = STDERR_DRAIN_CAP.saturating_sub(retained.len());
-        let keep = read.min(room);
-        retained.extend_from_slice(&buffer[..keep]);
-        if keep < read {
-            truncated = true;
-        }
-    }
+    // One byte past the cap tells "exactly at the cap" from "over it"; the
+    // rest of the stream is drained unread so the child never blocks on a
+    // full pipe.
+    (&mut reader)
+        .take(STDERR_DRAIN_CAP as u64 + 1)
+        .read_to_end(&mut retained)?;
+    let truncated = retained.len() > STDERR_DRAIN_CAP;
     if truncated {
+        std::io::copy(&mut reader, &mut std::io::sink())?;
         let marker = stderr_truncated_marker(whose);
         retained.truncate(STDERR_DRAIN_CAP.saturating_sub(marker.len()));
         retained.extend(marker.as_bytes());

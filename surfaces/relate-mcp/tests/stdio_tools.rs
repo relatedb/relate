@@ -451,6 +451,29 @@ fn stdio_protocol_errors_use_the_json_rpc_error_envelope() {
 /// The strict decode is the wire kit's, so a body that omits the `jsonrpc`
 /// member is refused with the same pinned text and code the extension mount
 /// answers with — never decoded as a request.
+/// A malformed `tools/call` payload is refused in the shared tool-layer
+/// vocabulary, the same words the extension mount answers.
+#[test]
+fn stdio_a_malformed_tools_call_is_refused_in_the_shared_words() {
+    let mut session = StdioSession::spawn();
+    session.initialize();
+    let response = session.call(json!({
+        "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {},
+    }));
+    assert_eq!(response["error"]["code"], json!(-32602));
+    assert_eq!(
+        response["error"]["message"],
+        json!("invalid params: missing string \"name\"")
+    );
+    let response = session.call(json!({
+        "jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": [1],
+    }));
+    assert_eq!(
+        response["error"]["message"],
+        json!("invalid params: \"params\" must be an object")
+    );
+}
+
 #[test]
 fn stdio_a_body_without_the_jsonrpc_member_is_refused_with_the_pinned_text() {
     let mut session = StdioSession::spawn_store(SpawnSpec::default());

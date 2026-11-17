@@ -37,6 +37,8 @@ relate-storage = { workspace = true, optional = true }
 # The `wire` fixture's gzip inflate helper (the wire tests' gzip bodies).
 flate2 = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+# The mount-contract pin (`envelope`) asserts the wire kit's own constants.
+relate-wire = { workspace = true, optional = true }
 # The shared pinned fetch kit (`fetch`, ADR-0243): the
 # per-data-set lock (fs4), the streamed sha256 (sha2) and the verified
 # download (ureq).
@@ -73,9 +75,9 @@ durability = ["dep:relate"]
 # (relate-executor and relate as dev-deps) enable it, so the
 # general-purpose users of this crate do not compile the engine.
 nested_eval = ["dep:relate-error", "dep:relate-executor"]
-# The envelope-keys pin (ADR-0430 §6) the first-party children's tests and
-# the wire kit's own call.
-envelope = ["dep:serde_json"]
+# The envelope-keys and mount-contract pins (ADR-0430 §6) the first-party
+# children's tests call.
+envelope = ["dep:serde_json", "dep:relate-wire"]
 # The wire fixtures: raw client, request builders, response parsers,
 # scripted servers. No loader.
 wire = ["dep:flate2"]
