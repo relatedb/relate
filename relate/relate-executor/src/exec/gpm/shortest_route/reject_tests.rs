@@ -91,9 +91,7 @@ fn routed_control_is_accepted() {
 /// lengths, the rows the GPM enumeration gives (ADR-0607).
 fn assert_takes_the_route(g: &Graph, q: &str, want: &[i64]) {
     assert!(guard_accepts(q), "guard rejected {q}");
-    let (rows, counts) = run(g, q);
-    assert!(counts.route_runs > 0, "route declined {q}");
-    let rows = sorted(rows);
+    let rows = on_route(g, q);
     assert_eq!(rows, gpm(g, q), "{q}");
     let want: Vec<_> = want.iter().map(|&n| vec![Value::Int(n)]).collect();
     assert_eq!(rows, want, "{q}");

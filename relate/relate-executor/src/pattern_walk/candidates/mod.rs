@@ -50,7 +50,7 @@ pub(crate) fn label_index_seekable(node: &NodePattern) -> bool {
 /// dynamic label) falls to the all-nodes tail, a superset the per-candidate
 /// check filters later — its length says nothing about how many nodes
 /// match, so a capped caller must not read it as a match count.
-pub(crate) fn scan_answers_exactly(node: &NodePattern) -> bool {
+fn scan_answers_exactly(node: &NodePattern) -> bool {
     label_index_seekable(node) || node.static_disjunction_arms().is_some()
 }
 
@@ -262,12 +262,12 @@ fn pattern_labels(np: &NodePattern) -> Vec<String> {
 }
 
 /// One node pattern's seek-side preparation — the single derivation both
-/// the funnel's [`binding_arm`] and the shortest route's point-seek probe
-/// read: the ranked seeks over the residual's conjuncts on `v`, the
-/// eligibility inputs, and the label-disjunction fold's arm views
-/// (LABS-1083; `None` for every shape the single keyed arm or the scan
-/// tail already serves).
-pub(crate) struct Prepared<'a> {
+/// funnel entries read ([`binding_arm`]'s seek strategy and the point
+/// ask's [`point_arm`]): the ranked seeks over the residual's conjuncts
+/// on `v`, the eligibility inputs, and the label-disjunction fold's arm
+/// views (LABS-1083; `None` for every shape the single keyed arm or the
+/// scan tail already serves).
+struct Prepared<'a> {
     seeks: Vec<Seek>,
     /// Map-bridge: the graph's label lookups stay String-keyed.
     labels: Vec<String>,
@@ -278,7 +278,7 @@ pub(crate) struct Prepared<'a> {
 /// The funnel's seek-side preparation, or `None` under `USING SCAN`: no
 /// seek may answer the variable then — the funnel's own arm scans it — so
 /// there is nothing to prepare, and no caller re-reads the fact.
-pub(crate) fn prepared<'a>(
+fn prepared<'a>(
     v: &SmallName,
     np: &'a NodePattern,
     conjuncts: &[Expr],
@@ -301,7 +301,7 @@ pub(crate) fn prepared<'a>(
 /// ids, or one seek's own served ids.
 enum Answered {
     Union(Vec<NodeId>),
-    Serve(ServedIds),
+    Serve { ids: ServedIds },
 }
 
 impl Prepared<'_> {
@@ -327,25 +327,39 @@ impl Prepared<'_> {
                 }
                 continue;
             }
-            if let Some(served) = served(seek, graph, &self.labels, self.label_seekable) {
-                return Ok(Some(Answered::Serve(served)));
+            if let Some(ids) = self.served_plain(seek, graph) {
+                return Ok(Some(Answered::Serve { ids }));
             }
         }
         Ok(None)
     }
 
-    /// The first seek an index serves, for a caller that only asks which
-    /// seek answered — the shortest route's endpoint sizing, before it
-    /// lists an endpoint. A union-only seek yields (the caller cannot use
-    /// a union answer, so it pays no per-arm index lookups for one it
-    /// would discard); the rest answer through [`Prepared::served`]. A
-    /// fold's label-blind ids seek still answers here and is point-shaped,
-    /// exactly as the funnel serves it.
-    pub(crate) fn first_served_seek(&self, graph: &ExecGraph<'_>) -> Option<&Seek> {
-        self.seeks.iter().find(|seek| {
-            self.union_step(seek).is_none()
-                && served(seek, graph, &self.labels, self.label_seekable).is_some()
-        })
+    /// One non-union seek's plain answer, the rule both walks read: a
+    /// union-only seek never answers this way (`None` — its answer is the
+    /// per-arm union, [`Self::first_answered`]'s own arm), every other
+    /// seek answers through [`served`] when an index serves it.
+    fn served_plain(&self, seek: &Seek, graph: &ExecGraph<'_>) -> Option<ServedIds> {
+        if self.union_step(seek).is_some() {
+            return None;
+        }
+        served(seek, graph, &self.labels, self.label_seekable)
+    }
+
+    /// The point-only walk ([`point_arm`]'s one question): the first seek
+    /// an index serves, skipping the union-only ones — a point ask cannot
+    /// use a union answer and pays no per-arm index lookups for one —
+    /// answers, but only when it is itself a point lookup
+    /// ([`Seek::is_point`]); the first served seek decides, so any other
+    /// served seek answers the pattern without a bounded list and the ask
+    /// declines. `None`: no point seek serves the pattern.
+    fn first_point(&self, graph: &ExecGraph<'_>) -> Option<ServedIds> {
+        for seek in &self.seeks {
+            let Some(ids) = self.served_plain(seek, graph) else {
+                continue;
+            };
+            return seek.is_point().then_some(ids);
+        }
+        None
     }
 }
 
@@ -369,7 +383,10 @@ pub(crate) fn node_candidates(
 }
 
 /// What one funnel call asks of its seek strategy: the residual's bare
-/// conjuncts, and the most candidates the caller will use (`None`: all).
+/// conjuncts and the most candidates the caller will use (`None`: all).
+/// Whether the ask is point-only is not a knob — it is the other entry
+/// ([`point_candidates_capped`]'s [`point_arm`]): the plain funnel has no
+/// point mode, and no arm of it declines.
 #[derive(Clone, Copy)]
 struct Ask<'a> {
     conjuncts: &'a [Expr],
@@ -379,17 +396,20 @@ struct Ask<'a> {
 /// A capped funnel answer: the complete candidate list when at most
 /// `cap` nodes match, or `Over` — more than `cap` match — with no list,
 /// carrying the first count past the cap (`cap + 1`) so a caller that
-/// refuses reads it instead of rebuilding it.
+/// refuses reads it instead of rebuilding it. Both capped entries answer
+/// `Option<Capped>`: `None` is "no answer a caller may size a side by" —
+/// a shape whose scan is a superset of its matches (the plain funnel
+/// reports it before scanning), or a point ask no point seek served.
 pub(crate) enum Capped {
     Within(Vec<NodeId>),
     Over(u64),
 }
 
 /// [`node_candidates`] for a caller that only needs the candidates when
-/// there are at most `cap` of them (the shortest route's pair bound): the
-/// residual scan stops at `cap + 1` matches instead of listing every
-/// match first. Counted and phase-stamped exactly like the uncapped
-/// funnel — the node reads are the ones the scan returned.
+/// there are at most `cap` of them (the shortest route's pair bound and
+/// full listing): the residual scan stops at `cap + 1` matches instead of
+/// listing every match first. Counted and phase-stamped exactly like the
+/// uncapped funnel — the node reads are the ones the scan returned.
 pub(crate) fn node_candidates_capped(
     graph: &ExecGraph<'_>,
     np: &NodePattern,
@@ -397,17 +417,80 @@ pub(crate) fn node_candidates_capped(
     params: &BTreeMap<String, Value>,
     conjuncts: &[Expr],
     cap: usize,
-) -> Result<Capped> {
-    let ask = Ask {
-        conjuncts,
-        cap: Some(cap),
-    };
-    let ids = funnel(graph, np, row, params, ask)?;
-    Ok(if ids.len() > cap {
+) -> Result<Option<Capped>> {
+    // A shape whose scan is a superset of its matches answers no count a
+    // caller may trust ([`scan_answers_exactly`]) — reported before the
+    // scan runs, so no caller has to know how the funnel would answer.
+    if !scan_answers_exactly(np) {
+        return Ok(None);
+    }
+    Ok(Some(cap_answer(
+        funnel(
+            graph,
+            np,
+            row,
+            params,
+            Ask {
+                conjuncts,
+                cap: Some(cap),
+            },
+        )?,
+        cap,
+    )))
+}
+
+/// [`node_candidates_capped`] as a point-only ask: a caller that sizes a
+/// candidate list from the answer (the shortest route's endpoint seek)
+/// wants it only when a point lookup — `id(n) = …`, `n IN [nodes…]`, a
+/// property `=` / `IN` — served it: a point lookup's answer is bounded by
+/// the matches it names, where a comparison window, a text scan, a
+/// spatial region or a label scan is not. `Ok(None)`: no point seek
+/// served the pattern — no list, and no scan ran.
+pub(crate) fn point_candidates_capped(
+    graph: &ExecGraph<'_>,
+    np: &NodePattern,
+    row: &Row,
+    params: &BTreeMap<String, Value>,
+    conjuncts: &[Expr],
+    cap: usize,
+) -> Result<Option<Capped>> {
+    point_funnel(graph, np, row, params, conjuncts)
+        .map(|answer| answer.map(|ids| cap_answer(ids, cap)))
+}
+
+/// The capped answer of a complete candidate list: `Over` — with the
+/// first count past the cap, `cap + 1` — once more than `cap` nodes
+/// match.
+fn cap_answer(ids: Vec<NodeId>, cap: usize) -> Capped {
+    if ids.len() > cap {
         Capped::Over(cap as u64 + 1)
     } else {
         Capped::Within(ids)
-    })
+    }
+}
+
+/// The counting every funnel entry wraps its arm in (LABS-375): one
+/// node-store read per candidate the match examines, counted HERE, the
+/// one funnel every node-match path reads (match_node, the cheapest-start
+/// expansion, gpm start nodes, the agg folds, the shortest-route and eval
+/// paths), so a scan or index seek reports its reads in PROFILE Db Hits
+/// wherever it runs. LABS-448's seek span lives here too, beside the read
+/// count it pairs with (the funnel inversion of the per-walker stamping):
+/// every path that bumps the `Nodes` counter carries seek time, and no
+/// caller re-stamps — the stamp is the funnel's, exactly once. Each entry
+/// names its own answered length: the plain funnel's list (always
+/// answered — every classification arm ends in a list, the scan tail) and
+/// the point ask's `Option` (a decline counts `0`).
+fn counted<T>(arm: impl FnOnce() -> Result<T>, answered: impl Fn(&T) -> usize) -> Result<T> {
+    let reads_before = crate::ctx::node_reads();
+    let candidates = crate::ctx::phase_seek(arm)?;
+    // A scan counts the nodes it examined as it reads them; an answer
+    // served whole from postings has examined exactly what it returns.
+    // A decline (the point ask's `None`) counts nothing — its zero.
+    if crate::ctx::node_reads() == reads_before {
+        crate::ctx::count_node_reads(answered(&candidates) as u64);
+    }
+    Ok(candidates)
 }
 
 fn funnel(
@@ -417,27 +500,53 @@ fn funnel(
     params: &BTreeMap<String, Value>,
     ask: Ask<'_>,
 ) -> Result<Vec<NodeId>> {
-    // One node-store read per candidate the match examines (LABS-375):
-    // counted HERE, the one funnel every node-match path reads (match_node,
-    // the cheapest-start expansion, gpm start nodes, the agg folds, the
-    // shortest-route and eval paths), so a scan or index seek reports its
-    // reads in PROFILE Db Hits wherever it runs. LABS-448's seek span
-    // lives here too, beside the read count it pairs with (the funnel
-    // inversion of the per-walker stamping): every path that bumps the
-    // `Nodes` counter carries seek time, and no caller re-stamps — the
-    // stamp is the funnel's, exactly once. The uncounted funnel itself
-    // is [`binding_arm`] — the classification dispatch, the unbound seek
-    // strategy, and the scan tail, one exhaustive match off the received
-    // classification per the rule its doc comment states.
-    let reads_before = crate::ctx::node_reads();
-    let candidates =
-        crate::ctx::phase_seek(|| binding_arm(binding(np, row), np, ask, graph, row, params))?;
-    // A scan counts the nodes it examined as it reads them; an answer
-    // served whole from postings has examined exactly what it returns.
-    if crate::ctx::node_reads() == reads_before {
-        crate::ctx::count_node_reads(candidates.len() as u64);
+    counted(
+        || binding_arm(binding(np, row), np, ask, graph, row, params),
+        |candidates: &Vec<NodeId>| candidates.len(),
+    )
+}
+
+/// The point ask's entry ([`point_candidates_capped`]'s arm): the same
+/// counting wrapper around [`point_arm`], whose `None` is the ask's
+/// decline.
+fn point_funnel(
+    graph: &ExecGraph<'_>,
+    np: &NodePattern,
+    row: &Row,
+    params: &BTreeMap<String, Value>,
+    conjuncts: &[Expr],
+) -> Result<Option<Vec<NodeId>>> {
+    counted(
+        || point_arm(binding(np, row), np, conjuncts, graph, row, params),
+        |answer: &Option<Vec<NodeId>>| answer.as_ref().map_or(0, Vec::len),
+    )
+}
+
+/// The classification's one answer table, the shape every consumer of a
+/// [`Binding`] starts from ([`binding_arm`] and [`point_arm`], each
+/// applying its own policy to the `Scan` state; the shortest route's
+/// endpoint probe, which maps the answers to its own sides): a row-bound
+/// variable is its one candidate, a null or non-node binding matches
+/// nothing, a nameless element has no variable a seek targets (scan
+/// territory), and a named unbound variable is the seek strategy's input.
+pub(crate) enum Admitted<'a> {
+    /// A row-bound variable: exactly one candidate, no list to build.
+    One(NodeId),
+    /// A null or non-node binding: no candidate at all.
+    Empty,
+    /// A nameless element: only a scan answers it.
+    Scan,
+    /// A named unbound variable: the seek strategy's input.
+    Seek(&'a SmallName),
+}
+
+pub(crate) fn admitted<'a>(class: NodeBinding<'a>) -> Admitted<'a> {
+    match class {
+        Binding::Bound(id) => Admitted::One(id),
+        Binding::Mismatch => Admitted::Empty,
+        Binding::Anonymous => Admitted::Scan,
+        Binding::Unbound(v) => Admitted::Seek(v),
     }
-    Ok(candidates)
 }
 
 /// The funnel's binding arm — the classification dispatch, the unbound
@@ -453,8 +562,9 @@ fn funnel(
 /// named-variable contract) and never re-spells the admission table
 /// beside the vocabulary. [`Binding::accepts`] stays the canonical
 /// predicate for the boolean-only per-candidate consumers (the agg
-/// folds, the trail gate); this exhaustive match is the one
-/// shape-returning spelling of the same table.
+/// folds, the trail gate); [`admitted`] is the one shape-returning
+/// spelling of the same table, and this entry's match is its policy over
+/// that table.
 ///
 /// The arms: a row-bound variable leaves the funnel exactly its one
 /// candidate; a null or non-node binding matches nothing (the walker's
@@ -466,9 +576,9 @@ fn funnel(
 /// scan IS the answer), the ranked seek loop over the residual's
 /// conjuncts (cheapest first, an unserved seek yields to the next),
 /// and the OR-union pass (a candidate set only when every arm is
-/// served) — every served answer narrowed at the one site,
-/// [`ServedIds::narrowed`]; when no seek serves it, the scan policy
-/// answers. The
+/// served) — every served answer narrowed through the one site both
+/// entries share ([`ServedIds::narrowed`]); when no seek
+/// serves it, the scan policy answers. The
 /// pattern-only facts (the label seekability, the lazy property map
 /// via [`pattern_props`]) are derived inside from `np` — only the
 /// classification is received, never re-derived.
@@ -483,20 +593,14 @@ fn binding_arm(
     let Ask { conjuncts, cap } = ask;
     // The pattern's property map, lazily and exactly once per arm that
     // needs it (binding the thunk itself derives nothing).
-    let props = || {
-        pattern_props(
-            graph,
-            row,
-            np.properties.as_ref(),
-            PatternMapRole::Match,
-            params,
-        )
-    };
-    let v = match class {
-        Binding::Bound(id) => return Ok(vec![id]),
-        Binding::Mismatch => return Ok(Vec::new()),
-        Binding::Anonymous => return scan_ids(graph, np, props, cap),
-        Binding::Unbound(v) => v,
+    let props = map_thunk(graph, row, np, params);
+    let v = match admitted(class) {
+        Admitted::One(id) => return Ok(vec![id]),
+        Admitted::Empty => return Ok(Vec::new()),
+        // A nameless element has no variable a seek targets: only a scan
+        // answers it.
+        Admitted::Scan => return scan_ids(graph, np, props, cap),
+        Admitted::Seek(v) => v,
     };
     // Every conjunct that is a seek on this variable, cheapest first.
     // The first one an index serves answers the pattern; an unserved
@@ -512,7 +616,9 @@ fn binding_arm(
     };
     match p.first_answered(graph)? {
         Some(Answered::Union(ids)) => return Ok(ids),
-        Some(Answered::Serve(served)) => return served.narrowed(graph, &p.labels, props),
+        Some(Answered::Serve { ids }) => {
+            return ids.narrowed(graph, &p.labels, props);
+        }
         None => {}
     }
     // An OR conjunct is a candidate set only when every arm is served.
@@ -537,6 +643,63 @@ fn binding_arm(
     }
     // No seek served the variable: the scan policy answers it.
     scan_ids(graph, np, props, cap)
+}
+
+/// The point ask's arm ([`point_candidates_capped`]): the classification
+/// read once, then the same seek walk as [`binding_arm`]'s `Unbound` arm
+/// reduced to its one question — does a point seek serve the pattern —
+/// with no scan, no OR-union and no union answer: none of those is a
+/// point lookup, so the ask declines (`None`) instead of running one it
+/// would discard. A row-bound variable is its one candidate; a null or
+/// non-node binding matches nothing; a nameless element and `USING SCAN`
+/// have no point seek to serve them.
+fn point_arm(
+    class: NodeBinding<'_>,
+    np: &NodePattern,
+    conjuncts: &[Expr],
+    graph: &ExecGraph<'_>,
+    row: &Row,
+    params: &BTreeMap<String, Value>,
+) -> Result<Option<Vec<NodeId>>> {
+    let v = match admitted(class) {
+        Admitted::One(id) => return Ok(Some(vec![id])),
+        Admitted::Empty => return Ok(Some(Vec::new())),
+        // A nameless element has no variable a seek targets, so no point
+        // seek serves it.
+        Admitted::Scan => return Ok(None),
+        Admitted::Seek(v) => v,
+    };
+    let Some(p) = prepared(v, np, conjuncts, graph, row, params) else {
+        // `USING SCAN`: no seek may answer this variable, a point seek
+        // included.
+        return Ok(None);
+    };
+    let Some(ids) = p.first_point(graph) else {
+        return Ok(None);
+    };
+    let props = map_thunk(graph, row, np, params);
+    ids.narrowed(graph, &p.labels, props).map(Some)
+}
+
+/// The pattern's match-role property-map thunk, the one derivation — the
+/// binding arm's scan paths, every served answer's narrowing
+/// ([`ServedIds::narrowed`]) and the point ask's answer all read it;
+/// bound once per arm and passed where the arm's diverging paths need it.
+fn map_thunk<'a>(
+    graph: &'a ExecGraph<'_>,
+    row: &'a Row,
+    np: &'a NodePattern,
+    params: &'a BTreeMap<String, Value>,
+) -> impl Fn() -> Result<BTreeMap<String, Value>> + Copy + 'a {
+    || {
+        pattern_props(
+            graph,
+            row,
+            np.properties.as_ref(),
+            PatternMapRole::Match,
+            params,
+        )
+    }
 }
 
 /// The one scan policy, every site that answers a node pattern with a

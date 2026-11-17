@@ -84,7 +84,7 @@ impl Search<'_, '_> {
     pub(crate) fn sweep_levels(
         &self,
         origins: &[NodeId],
-        mut active: u64,
+        active: u64,
         targets: &[NodeId],
         mut on_level: impl FnMut(u32, &[(NodeId, u64)]) -> Result<u64>,
     ) -> Result<()> {
@@ -93,94 +93,147 @@ impl Search<'_, '_> {
         let _charge = WorkspaceCharge::retain_with(|| {
             u64::try_from(span).map_or(u64::MAX, |n| n.saturating_mul(BYTES_PER_ID))
         })?;
+        let mut sweep = Sweep::seed(self, span, origins, active, targets)?;
+        let mut depth = 0;
+        while sweep.active != 0 && !sweep.frontier_nodes.is_empty() && depth < self.max {
+            // The final level the bound allows is pulled, never pushed.
+            if depth + 1 == self.max {
+                sweep.pull_final()?;
+            } else {
+                sweep.push_level()?;
+            }
+            depth += 1;
+            if !sweep.reached.is_empty() {
+                sweep.active &= !on_level(depth, &sweep.reached)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The tables of one multi-source sweep: per node-id slot, the origins that
+/// have `visited` it and those on the current `frontier` (and, while a
+/// level is pushed, on the `next` one), and the targets as a bitset.
+struct Sweep<'s, 'a, 'g> {
+    search: &'s Search<'a, 'g>,
+    /// The reversed search, the final level's pull reads.
+    back: Search<'a, 'g>,
+    span: usize,
+    targets: &'s [NodeId],
+    target_bits: Vec<u64>,
+    visited: Vec<u64>,
+    frontier: Vec<u64>,
+    next: Vec<u64>,
+    frontier_nodes: Vec<NodeId>,
+    next_nodes: Vec<NodeId>,
+    /// The targets the last level reached, with the lanes that did.
+    reached: Vec<(NodeId, u64)>,
+    /// The lanes still advancing.
+    active: u64,
+}
+
+impl<'s, 'a, 'g> Sweep<'s, 'a, 'g> {
+    /// The tables with every `active` origin seeded at depth 0.
+    fn seed(
+        search: &'s Search<'a, 'g>,
+        span: usize,
+        origins: &[NodeId],
+        active: u64,
+        targets: &'s [NodeId],
+    ) -> Result<Self> {
         let mut target_bits = vec![0u64; span.div_ceil(64)];
         for &target in targets {
             let at = slot_in(target, span)?;
             target_bits[at / 64] |= 1 << (at % 64);
         }
-        let back = self.reversed();
-        let mut visited = vec![0u64; span];
-        let mut frontier = vec![0u64; span];
-        let mut next = vec![0u64; span];
-        let mut frontier_nodes: Vec<NodeId> = Vec::new();
+        let mut sweep = Self {
+            search,
+            back: search.reversed(),
+            span,
+            targets,
+            target_bits,
+            visited: vec![0u64; span],
+            frontier: vec![0u64; span],
+            next: vec![0u64; span],
+            frontier_nodes: Vec::new(),
+            next_nodes: Vec::new(),
+            reached: Vec::new(),
+            active,
+        };
         for (lane, &origin) in origins.iter().enumerate() {
             if active & (1 << lane) == 0 {
                 continue;
             }
             let at = slot_in(origin, span)?;
-            visited[at] |= 1 << lane;
-            if frontier[at] == 0 {
-                frontier_nodes.push(origin);
+            sweep.visited[at] |= 1 << lane;
+            if sweep.frontier[at] == 0 {
+                sweep.frontier_nodes.push(origin);
             }
-            frontier[at] |= 1 << lane;
+            sweep.frontier[at] |= 1 << lane;
         }
-        let mut next_nodes: Vec<NodeId> = Vec::new();
-        let mut reached: Vec<(NodeId, u64)> = Vec::new();
-        let mut depth = 0;
-        while active != 0 && !frontier_nodes.is_empty() && depth < self.max {
-            if depth + 1 == self.max {
-                // The final level: pull, never push.
-                reached.clear();
-                for &target in targets {
-                    self.graph.cancel_tick()?;
-                    let at = slot_in(target, span)?;
-                    let mut lanes = 0;
-                    back.each_hop(target, |peer, _| {
-                        lanes |= frontier[slot_in(peer, span)?];
-                        Ok(())
-                    })?;
-                    lanes &= active & !visited[at];
-                    if lanes != 0 {
-                        reached.push((target, lanes));
-                    }
-                }
-                if !reached.is_empty() {
-                    on_level(depth + 1, &reached)?;
-                }
-                break;
-            }
-            for &node in &frontier_nodes {
-                self.graph.cancel_tick()?;
-                let lanes = frontier[slot_in(node, span)?] & active;
-                if lanes == 0 {
-                    continue;
-                }
-                self.each_hop(node, |peer, _| {
-                    let at = slot_in(peer, span)?;
-                    let fresh = lanes & !visited[at];
-                    if fresh != 0 {
-                        if next[at] == 0 {
-                            next_nodes.push(peer);
-                        }
-                        next[at] |= fresh;
-                    }
-                    Ok(())
-                })?;
-            }
-            for &node in &frontier_nodes {
-                frontier[slot_in(node, span)?] = 0;
-            }
-            frontier_nodes.clear();
-            depth += 1;
-            reached.clear();
-            for &node in &next_nodes {
-                let at = slot_in(node, span)?;
-                let lanes = std::mem::take(&mut next[at]) & active;
-                if lanes == 0 {
-                    continue;
-                }
-                visited[at] |= lanes;
-                frontier[at] = lanes;
-                frontier_nodes.push(node);
-                if target_bits[at / 64] & (1 << (at % 64)) != 0 {
-                    reached.push((node, lanes));
-                }
-            }
-            next_nodes.clear();
-            if !reached.is_empty() {
-                active &= !on_level(depth, &reached)?;
+        Ok(sweep)
+    }
+
+    /// The last level the bound allows, pulled: each target reads its own
+    /// neighbours' lanes. Fills `reached`; the frontier is left as it was.
+    fn pull_final(&mut self) -> Result<()> {
+        self.reached.clear();
+        for &target in self.targets {
+            self.search.graph.cancel_tick()?;
+            let at = slot_in(target, self.span)?;
+            let mut lanes = 0;
+            self.back.each_hop(target, |peer, _| {
+                lanes |= self.frontier[slot_in(peer, self.span)?];
+                Ok(())
+            })?;
+            lanes &= self.active & !self.visited[at];
+            if lanes != 0 {
+                self.reached.push((target, lanes));
             }
         }
+        Ok(())
+    }
+
+    /// One level pushed out of the frontier: the new frontier is the nodes
+    /// first reached, and `reached` the targets among them.
+    fn push_level(&mut self) -> Result<()> {
+        for &node in &self.frontier_nodes {
+            self.search.graph.cancel_tick()?;
+            let lanes = self.frontier[slot_in(node, self.span)?] & self.active;
+            if lanes == 0 {
+                continue;
+            }
+            self.search.each_hop(node, |peer, _| {
+                let at = slot_in(peer, self.span)?;
+                let fresh = lanes & !self.visited[at];
+                if fresh != 0 {
+                    if self.next[at] == 0 {
+                        self.next_nodes.push(peer);
+                    }
+                    self.next[at] |= fresh;
+                }
+                Ok(())
+            })?;
+        }
+        for &node in &self.frontier_nodes {
+            self.frontier[slot_in(node, self.span)?] = 0;
+        }
+        self.frontier_nodes.clear();
+        self.reached.clear();
+        for &node in &self.next_nodes {
+            let at = slot_in(node, self.span)?;
+            let lanes = std::mem::take(&mut self.next[at]) & self.active;
+            if lanes == 0 {
+                continue;
+            }
+            self.visited[at] |= lanes;
+            self.frontier[at] = lanes;
+            self.frontier_nodes.push(node);
+            if self.target_bits[at / 64] & (1 << (at % 64)) != 0 {
+                self.reached.push((node, lanes));
+            }
+        }
+        self.next_nodes.clear();
         Ok(())
     }
 }

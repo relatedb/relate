@@ -21,6 +21,7 @@ use crate::exec::candidates::expect_enumerated_candidate;
 use crate::row::Row;
 use crate::shortest::class_walk::ClassWalk;
 
+use super::super::selector::tie_break;
 use super::super::sink::MatchedSink;
 use super::guard::Keep;
 use super::route::Route;
@@ -37,10 +38,7 @@ pub(super) fn select_k(
     keep: Keep,
     out: &mut MatchedSink<'_, '_>,
 ) -> Result<()> {
-    let max = route
-        .shape
-        .max
-        .unwrap_or_else(|| route.memoized_unbounded_cap());
+    let max = route.walk_max();
     let mut walk = ClassWalk::new(&route.search, s, e);
     // Trails emitted (`Paths`) or non-empty classes completed (`Groups`).
     let mut taken = 0usize;
@@ -109,17 +107,16 @@ impl Candidate {
 /// tie is the caller's to break by arrival position: the held trail came
 /// first, so an arrival that ties loses.
 fn cmp_parts<T: Borrow<str>>(
-    types: impl ExactSizeIterator<Item = T>,
+    types: impl Iterator<Item = T>,
     nodes: &[NodeId],
     other: &Candidate,
 ) -> Ordering {
-    let len = types.len();
-    types
-        .zip(&other.types)
-        .map(|(mine, held)| mine.borrow().cmp(&**held))
-        .find(|order| order.is_ne())
-        .unwrap_or_else(|| len.cmp(&other.types.len()))
-        .then_with(|| nodes.cmp(&other.nodes[..]))
+    tie_break::<str, _, _>(
+        types,
+        nodes,
+        other.types.iter().map(|held| &**held),
+        &other.nodes,
+    )
 }
 
 impl PartialEq for Candidate {

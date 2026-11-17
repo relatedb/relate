@@ -66,6 +66,9 @@ struct Shape {
     arm: AnchorArm,
     /// The row's short name within its arm's family, for failure messages.
     name: &'static str,
+    /// Whether the fan's far side is listed, so the far set is in play
+    /// (the shapes the far-set cost test runs).
+    far_listed: bool,
     /// The `RETURN` columns before the trail, naming the pattern's
     /// endpoints (one name for the loop, two otherwise).
     cols: &'static str,
@@ -86,34 +89,34 @@ impl Shape {
 #[rustfmt::skip]
 const SHAPES: [Shape; 12] = [
     // 1 x 1: the plain pair.
-    Shape { arm: AnchorArm::Pair, name: "1x1", cols: "a.id, b.id, length(p)", start: "(a {id: '0'})", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
+    Shape { arm: AnchorArm::Pair, name: "1x1", far_listed: false, cols: "a.id, b.id, length(p)", start: "(a {id: '0'})", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
     // 4 x 1: several starts, one end, product within the bound.
-    Shape { arm: AnchorArm::Pair, name: "4x1", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
+    Shape { arm: AnchorArm::Pair, name: "4x1", far_listed: false, cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
     // 4 x 4 = 16: exactly the bound, still the pair product.
-    Shape { arm: AnchorArm::Pair, name: "4x4", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {g: 1})", n: 12, groups: 3, rels: 26 },
+    Shape { arm: AnchorArm::Pair, name: "4x4", far_listed: false, cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {g: 1})", n: 12, groups: 3, rels: 26 },
     // 6 x 6 = 36: past the bound, equal sides — the fan from the start.
-    Shape { arm: AnchorArm::FanForward, name: "6x6", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {g: 1})", n: 12, groups: 2, rels: 26 },
+    Shape { arm: AnchorArm::FanForward, name: "6x6", far_listed: true, cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {g: 1})", n: 12, groups: 2, rels: 26 },
     // 20 x 1: past the bound with the end the shorter side — the fan from the end.
-    Shape { arm: AnchorArm::FanBackward, name: "20x1", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {id: '5'})", n: 40, groups: 2, rels: 44 },
+    Shape { arm: AnchorArm::FanBackward, name: "20x1", far_listed: false, cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {id: '5'})", n: 40, groups: 2, rels: 44 },
     // bare start, end list past the bound: the start scan fans forward.
-    Shape { arm: AnchorArm::FanForward, name: "start scan", cols: "a.id, b.id, length(p)", start: "(a)", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
+    Shape { arm: AnchorArm::FanForward, name: "start scan", far_listed: false, cols: "a.id, b.id, length(p)", start: "(a)", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
     // 1 x 20: the end list is past the bound and never built — the fan
     // from the one start.
-    Shape { arm: AnchorArm::FanForward, name: "fan 1x20", cols: "a.id, b.id, length(p)", start: "(a {id: '0'})", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
+    Shape { arm: AnchorArm::FanForward, name: "fan 1x20", far_listed: false, cols: "a.id, b.id, length(p)", start: "(a {id: '0'})", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
     // 14 x 13: both lists listed in full (each within the probe bound), the
     // product past the pair bound and the end the shorter — the fan from the
     // end with the start list as its far set.
-    Shape { arm: AnchorArm::FanBackward, name: "backward listed", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {g: 1})", n: 40, groups: 3, rels: 120 },
+    Shape { arm: AnchorArm::FanBackward, name: "backward listed", far_listed: true, cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {g: 1})", n: 40, groups: 3, rels: 120 },
     // 20 x 20: both lists past the bound — each built in full for the
     // shorter-side choice.
-    Shape { arm: AnchorArm::FanForward, name: "fan 20x20", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
+    Shape { arm: AnchorArm::FanForward, name: "fan 20x20", far_listed: true, cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b {g: 1})", n: 40, groups: 2, rels: 44 },
     // start list past the bound, bare end: the start list fans forward.
-    Shape { arm: AnchorArm::FanForward, name: "20 x scan", cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b)", n: 40, groups: 2, rels: 44 },
+    Shape { arm: AnchorArm::FanForward, name: "20 x scan", far_listed: false, cols: "a.id, b.id, length(p)", start: "(a {g: 0})", end: "(b)", n: 40, groups: 2, rels: 44 },
     // bare start, one end: the end fans backward.
-    Shape { arm: AnchorArm::FanBackward, name: "scan x 1", cols: "a.id, b.id, length(p)", start: "(a)", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
+    Shape { arm: AnchorArm::FanBackward, name: "scan x 1", far_listed: false, cols: "a.id, b.id, length(p)", start: "(a)", end: "(b {id: '5'})", n: 12, groups: 3, rels: 26 },
     // one unbound variable at both ends: the loop anchor, even though the
     // map is property-seekable.
-    Shape { arm: AnchorArm::Loop, name: "same variable", cols: "a.id, length(p)", start: "(a {g: 0})", end: "(a)", n: 12, groups: 3, rels: 24 },
+    Shape { arm: AnchorArm::Loop, name: "same variable", far_listed: false, cols: "a.id, length(p)", start: "(a {g: 0})", end: "(a)", n: 12, groups: 3, rels: 24 },
 ];
 
 /// The `MATCH` of `shape` under selector `sel`, direction `dir` and a bound
@@ -409,10 +412,7 @@ fn a_negated_label_endpoint_is_never_refused_by_the_listing_limit() {
 fn the_far_set_changes_cost_not_answers() {
     let mut rng = StdRng::seed_from_u64(SEED ^ 0x1698);
     let mut saved_any = false;
-    for shape in SHAPES
-        .iter()
-        .filter(|s| matches!(s.name, "6x6" | "backward listed" | "fan 20x20"))
-    {
+    for shape in SHAPES.iter().filter(|s| s.far_listed) {
         let mut saved = false;
         for _ in 0..3 {
             let g = graph(&mut rng, shape.n, shape.groups, shape.rels);
@@ -464,6 +464,7 @@ fn the_batched_fan_changes_cost_not_answers() {
         let shape = Shape {
             arm: AnchorArm::FanForward,
             name,
+            far_listed: true,
             cols: "a.id, b.id, length(p)",
             start,
             end,

@@ -4,6 +4,8 @@
 //! before the exact end-pattern admission, which still decides every
 //! member, and the fan stops once every far node has been reached.
 
+use std::cell::Cell;
+
 use relate_core::NodeId;
 
 /// The widest id span a far set will cover, in ids (an 8 MiB bitset): the
@@ -71,6 +73,82 @@ impl FarSet {
             .get(index / 64)
             .is_some_and(|word| word & (1 << (index % 64)) != 0)
     }
+}
+
+/// How many far nodes each fan origin has reached, against its far set:
+/// the one home of the retire rule's count (every far node reached). A
+/// counter never exists without its far set — the set is borrowed here,
+/// so a settled count is always a count of *this* set's members. The
+/// layered fan runs one lane; the batched fan runs `LANES`
+/// (crate::shortest::multi_source) of them.
+pub(super) struct Settled<'f> {
+    /// One reached count per lane.
+    counts: Vec<Cell<usize>>,
+    far: &'f FarSet,
+}
+
+impl<'f> Settled<'f> {
+    /// `lanes` origins' reached counts, all zero, against `far`.
+    pub(super) fn new(lanes: usize, far: &'f FarSet) -> Self {
+        Self {
+            counts: vec![Cell::new(0); lanes],
+            far,
+        }
+    }
+
+    /// One more far node reached by `lane`.
+    pub(super) fn settle(&self, lane: usize) {
+        self.counts[lane].set(self.counts[lane].get() + 1);
+    }
+
+    /// Whether `lane` has reached every far node.
+    pub(super) fn done(&self, lane: usize) -> bool {
+        self.counts[lane].get() == self.far.len()
+    }
+
+    /// The bit test and the count in one step, the pairing the layered
+    /// fan's early stop relies on: `true` — `node` is a far member, now
+    /// counted — or `false` (nothing counted). The batched fan keeps the
+    /// plain [`Self::settle`] for its sweep-pre-filtered targets.
+    pub(super) fn settle_if_hit(&self, lane: usize, node: NodeId) -> bool {
+        if !self.far.contains(node) {
+            return false;
+        }
+        self.settle(lane);
+        true
+    }
+}
+
+/// The layered fan's one-lane counter: [`Settled`] with a single lane,
+/// its index implied — no caller writes the literal `0`.
+pub(super) struct OneLane<'f>(Settled<'f>);
+
+impl<'f> OneLane<'f> {
+    /// The counter of the one origin a layered fan runs, against `far`.
+    pub(super) fn new(far: &'f FarSet) -> Self {
+        Self(Settled::new(1, far))
+    }
+
+    /// The bit test and the count in one step (see
+    /// [`Settled::settle_if_hit`]).
+    pub(super) fn settle_if_hit(&self, node: NodeId) -> bool {
+        self.0.settle_if_hit(0, node)
+    }
+
+    /// Whether the origin has reached every far node.
+    pub(super) fn done(&self) -> bool {
+        self.0.done(0)
+    }
+}
+
+/// The fan's early-stop rule, the one spelling both fan drivers read (the
+/// layered fan, route.rs's `fan_layer`; the batched fan, multi_fan.rs's
+/// `fan_chunk`): an origin retires when it has reached every far node of
+/// its far set (`done`, each driver's own counter form) — or, a
+/// first-layer spelling, at the first level that produced a row
+/// (`productive`, each driver's own precondition folded in).
+pub(super) fn retires(done: bool, first_layer_only: bool, productive: bool) -> bool {
+    done || (first_layer_only && productive)
 }
 
 #[cfg(test)]

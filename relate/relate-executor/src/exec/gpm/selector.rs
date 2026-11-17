@@ -1,6 +1,8 @@
 //! Path selectors (`ANY`/`SHORTEST`, per-endpoint partitioning and
 //! groups) and path-count resolution.
 
+use std::borrow::Borrow;
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -178,6 +180,40 @@ pub(super) fn complete_and_select_candidates(
     })
 }
 
+/// The selector's one tie-break (ADR-0203) between two equal-length walks:
+/// the rel-type sequence, then the node-id sequence, lexicographically (a
+/// prefix sorts first). The type items are interned indices here and type
+/// names in the length-class route's retained candidates
+/// ([`super::shortest_route`]) — each side may hold its own borrowed form
+/// of the key `K` — and both order through this one function, so the two
+/// cannot drift.
+pub(super) fn tie_break<K, A, B>(
+    mut types: impl Iterator<Item = A>,
+    nodes: &[NodeId],
+    mut other_types: impl Iterator<Item = B>,
+    other_nodes: &[NodeId],
+) -> Ordering
+where
+    K: Ord + ?Sized,
+    A: Borrow<K>,
+    B: Borrow<K>,
+{
+    let by_types = loop {
+        match (types.next(), other_types.next()) {
+            (None, None) => break Ordering::Equal,
+            (None, Some(_)) => break Ordering::Less,
+            (Some(_), None) => break Ordering::Greater,
+            (Some(mine), Some(held)) => {
+                let order = mine.borrow().cmp(held.borrow());
+                if order.is_ne() {
+                    break order;
+                }
+            }
+        }
+    };
+    by_types.then_with(|| nodes.cmp(other_nodes))
+}
+
 /// The shared ordering for both selectors: by rel count, then the rel-type
 /// tiebreak, then the walk's node-id sequence, then the stable position.
 /// The node-sequence key reproduces the reference's equal-length tie order
@@ -193,8 +229,14 @@ fn sorted_members(members: &[Member]) -> Vec<&Member> {
     sorted.sort_by(|left, right| {
         left.rels_len
             .cmp(&right.rels_len)
-            .then_with(|| left.type_key.cmp(&right.type_key))
-            .then_with(|| left.node_seq.cmp(&right.node_seq))
+            .then_with(|| {
+                tie_break::<u32, _, _>(
+                    left.type_key.iter(),
+                    &left.node_seq,
+                    right.type_key.iter(),
+                    &right.node_seq,
+                )
+            })
             .then_with(|| left.index.cmp(&right.index))
     });
     sorted

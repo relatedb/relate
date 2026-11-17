@@ -13,8 +13,8 @@ use relate_ir::NodePattern;
 use crate::ctx::ExecCtx;
 use crate::exec::pushdown::expr_ready;
 use crate::pattern_walk::{
-    binding, bound_node, node_candidates, node_candidates_capped, prepared, scan_answers_exactly,
-    Binding, Capped, NodeBinding, Prepared, Seek,
+    admitted, binding, bound_node, node_candidates, node_candidates_capped,
+    point_candidates_capped, Admitted, Capped, NodeBinding,
 };
 use crate::shortest::Search;
 
@@ -59,7 +59,7 @@ thread_local! {
     static FAR_SET_OFF: Cell<bool> = const { Cell::new(false) };
 }
 
-/// The far-side set of a listed side, `None` for a length-only side or when
+/// The far-side set of a listed side, `None` when its ids span too wide or
 /// the test override turns the far set off (the per-reached-node end test
 /// is the oracle).
 fn far_set(side: &Side) -> Option<FarSet> {
@@ -67,7 +67,7 @@ fn far_set(side: &Side) -> Option<FarSet> {
     if FAR_SET_OFF.with(Cell::get) {
         return None;
     }
-    side.ids().and_then(FarSet::of)
+    FarSet::of(side.ids())
 }
 
 /// Run `f` with the far set disabled on this thread.
@@ -119,7 +119,7 @@ pub(super) enum Anchor {
         origins: Side,
         way: Way,
         /// The listed side the fan does not drive from; `None` when that
-        /// side is a pattern or length-only, tested per reached node.
+        /// side is a pattern or over the pair bound, tested per reached node.
         far: Option<FarSet>,
     },
     /// One unbound variable at both ends (`(a)-[*]-(a)`): the (s, s)
@@ -128,6 +128,16 @@ pub(super) enum Anchor {
 }
 
 impl Anchor {
+    /// A fan from `origins` along `way` with no listed far side: each
+    /// reached node is tested against the end pattern alone.
+    fn fan(origins: Side, way: Way) -> Self {
+        Anchor::Fan {
+            origins,
+            way,
+            far: None,
+        }
+    }
+
     /// The arm this anchoring is — the one derivation of [`AnchorArm`], so
     /// the recorded vocabulary cannot drift from the variants.
     #[cfg(test)]
@@ -146,41 +156,44 @@ impl Anchor {
 }
 
 /// One resolved endpoint side of a routed pattern: a row-bound endpoint
-/// is one node, a property seek or the start scan is a candidate list, and
-/// a seek matching more than [`SEEK_PAIR_LIMIT`] nodes is a length-only
-/// side — its list was never built, so it counts one past the bound and
-/// the one pair-versus-fan decision ([`Route::listed`]) reads it like any
-/// other side.
+/// is one node, a property seek or the start scan is a candidate list.
+/// A side past [`SEEK_PAIR_LIMIT`] is not a `Side`: its list was never
+/// built ([`Probed::Over`]).
 pub(super) enum Side {
     One(NodeId),
     Many(Vec<NodeId>),
-    Over,
 }
 
 impl Side {
-    /// Candidate count: a bound node is one, an over-bound side one past
-    /// the pair bound.
-    fn len(&self) -> usize {
+    /// The candidates, in list order.
+    pub(super) fn ids(&self) -> &[NodeId] {
         match self {
-            Side::One(_) => 1,
-            Side::Many(ids) => ids.len(),
-            Side::Over => SEEK_PAIR_LIMIT + 1,
+            Side::One(id) => std::slice::from_ref(id),
+            Side::Many(ids) => ids,
         }
     }
+}
 
-    /// The candidates, in list order; `None` for a length-only side.
-    pub(super) fn ids(&self) -> Option<&[NodeId]> {
-        match self {
-            Side::One(id) => Some(std::slice::from_ref(id)),
-            Side::Many(ids) => Some(ids),
-            Side::Over => None,
-        }
-    }
+/// One endpoint's bounded resolution ([`Route::probe`]).
+enum Probed {
+    /// Scan territory: the fan answers the endpoint itself.
+    Scan,
+    /// More than [`SEEK_PAIR_LIMIT`] nodes match: no list was built, and
+    /// the side counts as longer than any listed one. The ask that
+    /// produced it rides along: the full listing ([`Route::listed_side`])
+    /// re-asks through the same entry, never a re-derived one.
+    Over(OverAsk),
+    /// The complete candidate list, at most [`SEEK_PAIR_LIMIT`] long.
+    Within(Side),
+}
 
-    /// Whether the side's list was never built.
-    fn is_over(&self) -> bool {
-        matches!(self, Side::Over)
-    }
+/// The funnel entry an over-bound side was asked through — the two asks
+/// that can produce [`Probed::Over`]; a scan side never probes over, so
+/// `Scan` is unrepresentable here.
+#[derive(Clone, Copy)]
+enum OverAsk {
+    Point,
+    Map,
 }
 
 /// The endpoint a fan search starts from.
@@ -221,11 +234,16 @@ impl Way {
 }
 
 impl Route<'_> {
-    /// `None` declines a count selector (ADR-0607) before the one step that
-    /// would materialize a fan's origins: a count selector answers pair
-    /// partitions only, so a fan it cannot use is never built.
+    /// `None` declines a count selector (ADR-0607) before any row is
+    /// pushed: a count selector answers pair partitions only, so a fan it
+    /// cannot use is never built — the rule's one home is the tail check
+    /// below. The two early arms are more than fast paths: a two-over
+    /// pair declines *before* the listing, so it degenerates to no route
+    /// rather than the ADR-0567 refusal `listed_side` would raise; the
+    /// no-list pair skips the start scan as a pure pre-materialization
+    /// shortcut.
     pub(super) fn anchor(&self) -> Result<Option<Anchor>> {
-        let counted = self.shape.selection.counted().is_some();
+        let counted = self.counted();
         let (start, end) = (self.shape.start, self.shape.end);
         // The one shape pre-check: one unbound variable at both ends
         // (`(a)-[*]-(a)`) is the (s, s) partition of every start
@@ -236,56 +254,76 @@ impl Route<'_> {
         }
         // Each endpoint resolves once, bounded: a row-bound node is a
         // one-element side, a property map is a seeked list of at most
-        // `SEEK_PAIR_LIMIT`, and a bigger match is the length-only
-        // `Side::Over` — its list is built only where both sides are over
-        // (below). `None` is scan territory the fan answers itself.
+        // `SEEK_PAIR_LIMIT`, and a bigger match is [`Probed::Over`] — its
+        // list is built only where both sides are over (below).
+        // [`Probed::Scan`] is territory the fan answers itself.
         let ends = &self.reach.ends;
         let probed = (self.probe(start, &ends.start)?, self.probe(end, &ends.end)?);
-        Ok(Some(match probed {
+        let anchor = match probed {
             // Both past the bound: the fan runs from the shorter side,
-            // which needs both lists in full.
-            (Some(Side::Over), Some(Side::Over)) if counted => return Ok(None),
-            (Some(Side::Over), Some(Side::Over)) => {
-                Self::listed(self.listed_side(start)?, self.listed_side(end)?)
+            // which needs both lists in full. Under a count selector the
+            // listing is skipped: the fan it builds is declined below.
+            (Probed::Over(_), Probed::Over(_)) if counted => return Ok(None),
+            (Probed::Over(start_ask), Probed::Over(end_ask)) => Self::listed(
+                self.listed_side(start, start_ask)?,
+                self.listed_side(end, end_ask)?,
+            ),
+            (Probed::Within(starts), Probed::Within(ends)) => Self::listed(starts, ends),
+            // One listed side against a side with no list (over the bound,
+            // or scan territory): the fan runs from the listed side, or
+            // nothing when the listed side is empty — the same empty-side
+            // policy either way. The end side drives only when its list is
+            // bounded: one full-depth fan per property match must not beat
+            // the start scan's one ball per start (a non-selective map
+            // makes the backward fan pay |ends| balls).
+            (Probed::Within(starts), Probed::Over(_) | Probed::Scan) => {
+                Self::fan_or_empty(starts, Way::Forward)
             }
-            (Some(starts), Some(ends)) => Self::listed(starts, ends),
-            (Some(starts), None) if !starts.is_over() => Anchor::Fan {
-                origins: starts,
-                way: Way::Forward,
-                far: None,
-            },
-            // The end side drives only when its list is bounded: one
-            // full-depth fan per property match must not beat the start
-            // scan's one ball per start (a non-selective map makes the
-            // backward fan pay |ends| balls). Past the bound the start
-            // candidates fan forward.
-            (None, Some(ends)) if !ends.is_over() => Anchor::Fan {
-                origins: ends,
-                way: Way::Backward,
-                far: None,
-            },
+            (Probed::Over(_) | Probed::Scan, Probed::Within(ends)) => {
+                Self::fan_or_empty(ends, Way::Backward)
+            }
+            // Neither side has a list: the start candidates fan forward.
+            // Under a count selector the start scan is skipped: the fan it
+            // builds is declined below.
             _ if counted => return Ok(None),
-            _ => Anchor::Fan {
-                origins: Side::Many(self.start_candidates()?),
-                way: Way::Forward,
-                far: None,
-            },
-        }))
+            _ => Anchor::fan(Side::Many(self.start_candidates()?), Way::Forward),
+        };
+        // A count selector answers pair partitions only: any fan the arms
+        // above built (a pair product past the bound, a listed side
+        // against no list) is declined here, once.
+        if counted && matches!(anchor, Anchor::Fan { .. }) {
+            return Ok(None);
+        }
+        Ok(Some(anchor))
     }
 
-    /// Both endpoints as sides, an over-bound one length-only: the pair
-    /// product while it is within [`SEEK_PAIR_LIMIT`], else a fan from the
-    /// shorter side (fewer full-depth balls) — the over side, one past the
-    /// bound, is never the shorter. An empty side makes the product empty:
-    /// a pair of nothing, whatever the other side is, so a length-only
-    /// side never reaches [`Route::each_side`].
+    /// The pair of nothing: an empty side makes the product empty, whatever
+    /// the other side is.
+    fn empty_pair() -> Anchor {
+        Anchor::Pair {
+            starts: Side::Many(Vec::new()),
+            ends: Side::Many(Vec::new()),
+        }
+    }
+
+    /// A fan from the listed side of a pair whose other side is over the
+    /// bound; an empty listed side is the empty pair.
+    fn fan_or_empty(origins: Side, way: Way) -> Anchor {
+        if origins.ids().is_empty() {
+            Self::empty_pair()
+        } else {
+            Anchor::fan(origins, way)
+        }
+    }
+
+    /// Both endpoints as listed sides: the pair product while it is within
+    /// [`SEEK_PAIR_LIMIT`], else a fan from the shorter side (fewer
+    /// full-depth balls), the other side being its far set. An empty side
+    /// makes the product empty.
     fn listed(starts: Side, ends: Side) -> Anchor {
-        let (s, e) = (starts.len(), ends.len());
+        let (s, e) = (starts.ids().len(), ends.ids().len());
         if s == 0 || e == 0 {
-            Anchor::Pair {
-                starts: Side::Many(Vec::new()),
-                ends: Side::Many(Vec::new()),
-            }
+            Self::empty_pair()
         } else if s.saturating_mul(e) <= SEEK_PAIR_LIMIT {
             Anchor::Pair { starts, ends }
         } else if e < s {
@@ -304,90 +342,87 @@ impl Route<'_> {
     }
 
     /// One endpoint's bounded resolution, once: a row-bound node is
-    /// listed (`None`: scan territory); a row-resolvable property map (or a served `WHERE` point seek) is seeked through the capped
-    /// funnel — the scan stops at the first match past
+    /// listed; a row-resolvable property map (or a served `WHERE` point
+    /// seek) is seeked through the capped funnel — the scan stops at the first match past
     /// [`SEEK_PAIR_LIMIT`], so a non-selective map never materializes
     /// every match to learn the pair product is over the bound.
-    fn probe(&self, np: &NodePattern, cell: &SideCell) -> Result<Option<Side>> {
-        // The one admission table, read once — the funnel's own
-        // classification of the endpoint: a null or non-node binding
-        // matches nothing (its empty answer, never scan territory, whose
-        // fan would run one search per row that the admission then
-        // rejects); a row-bound endpoint is one node; a nameless pattern
-        // has no variable a seek targets.
+    fn probe(&self, np: &NodePattern, cell: &SideCell) -> Result<Probed> {
         let class = binding(np, self.row);
-        match class {
-            Binding::Mismatch => return Ok(Some(Side::Many(Vec::new()))),
-            Binding::Bound(id) => return Ok(Some(Side::One(id))),
-            Binding::Anonymous | Binding::Unbound(_) => {}
-        }
-        if !self.seekable(np, class) {
-            // No point seek serves the side: a scan filtered by its own `WHERE`
-            // may still list it (see `end_filter`).
-            return self.filtered_side(np, class, cell);
-        }
-        Ok(Some(match self.capped_candidates(np, SEEK_PAIR_LIMIT)? {
-            Capped::Within(ids) => Side::Many(ids),
-            Capped::Over(_) => Side::Over,
-        }))
+        // The classification's one table ([`admitted`]), read here as the
+        // sides it already answers — a row-bound endpoint is one node, a
+        // null or non-node binding matches nothing, never scan territory,
+        // whose fan would run one search per row the admission rejects —
+        // and the single fact the sizing needs: whether a named unbound
+        // variable the funnel may seek is present.
+        let unbound = match admitted(class) {
+            Admitted::One(id) => return Ok(Probed::Within(Side::One(id))),
+            Admitted::Empty => return Ok(Probed::Within(Side::Many(Vec::new()))),
+            Admitted::Scan => false,
+            Admitted::Seek(_) => true,
+        };
+        // The sizing, decided once: no ask answers a scan-territory side
+        // through the fan; the ask it chose rides into the over answer —
+        // one vocabulary, no re-projection.
+        let Some(ask) = self.side_sizing(np, unbound) else {
+            return self.scanned_side(np, class, cell);
+        };
+        Ok(match self.asked(np, ask, SEEK_PAIR_LIMIT)? {
+            Some(Capped::Within(ids)) => Probed::Within(Side::Many(ids)),
+            Some(Capped::Over(_)) => Probed::Over(ask),
+            // No ask answers this side: the side keeps the fan's own
+            // handling.
+            None => self.scanned_side(np, class, cell)?,
+        })
     }
 
-    /// One side's candidates through the one per-candidate loop.
-    pub(super) fn each_side(&self, side: &Side, f: impl FnMut(NodeId) -> Result<()>) -> Result<()> {
-        match side {
-            Side::One(id) => self.each_of(&[*id], f),
-            Side::Many(ids) => self.each_of(ids, f),
-            // `listed` turns every product with an over-bound side into a
-            // fan from the other side or an empty pair, so no caller
-            // iterates a list that was never built.
-            Side::Over => Err(Error::internal(
-                "shortest-path route: an over-bound side has no candidate list",
-            )),
-        }
+    /// The side no funnel ask answers (scan territory, or a point ask
+    /// that declined): a scan filtered by the side's own `WHERE` may still
+    /// list it (see `end_filter`); the fan's own seek answers it otherwise
+    /// — the one spelling of that fallback, every path into it.
+    fn scanned_side(
+        &self,
+        np: &NodePattern,
+        class: NodeBinding<'_>,
+        cell: &SideCell,
+    ) -> Result<Probed> {
+        Ok(self
+            .filtered_side(np, class, cell)?
+            .map_or(Probed::Scan, Probed::Within))
     }
 
-    /// Whether `np` is seekable: the funnel's scan answers its label shape
-    /// with exact matches ([`scan_answers_exactly`]; a negated label's
-    /// all-nodes superset would read as a match count and could trip the
-    /// listing refusal on a handful of real matches), and either a
-    /// row-resolvable property map is present or an endpoint-only `WHERE`
-    /// conjunct is a point seek (`=` / `IN` / id) an index serves
-    /// ([`point_seek_served`]; the conjunct form never seeks a side no
-    /// index serves, so that side keeps the fan's own handling). A bare
-    /// label or unbound variable is scan territory, answered by the fan's
-    /// own seek.
-    fn seekable(&self, np: &NodePattern, class: NodeBinding<'_>) -> bool {
-        // The map must resolve from the input row: a variable the walk
-        // binds later (the start's own `a` in `(a)-[*]->(b {id: a.id})`)
-        // is fan territory — the fan resolves the start first, and the
-        // partition's admission then reads the map with it bound. The
-        // canonical readiness kernel (pushdown) answers it. An unready map
-        // keeps the side unseeked even beside a seekable conjunct: the
-        // funnel would read the map against the same unresolvable row.
-        if !scan_answers_exactly(np) {
-            return false;
-        }
+    /// Which funnel ask, if any, answers `np`'s side — the one home of
+    /// the sizing, over the classification's single fact (`unbound`: a
+    /// named unbound variable the funnel may seek is present): a
+    /// row-resolvable property map is seeked through the full capped
+    /// funnel ([`OverAsk::Map`]), and that named, unbound variable's
+    /// endpoint-only `WHERE` conjuncts are asked point-only (an index
+    /// point lookup must serve it — [`OverAsk::Point`]). `None`: scan
+    /// territory, the fan's own answer.
+    ///
+    /// A shape whose scan is a superset (the funnel's own no-answer) is
+    /// not tested
+    /// here: the funnel reports it in its own answer, so the sizing stays
+    /// a statement about the facts the ask needs, never about how the
+    /// funnel would answer.
+    ///
+    /// The map must resolve from the input row: a variable the walk binds
+    /// later (the start's own `a` in `(a)-[*]->(b {id: a.id})`) is fan
+    /// territory — the fan resolves the start first, and the partition's
+    /// admission then reads the map with it bound. The canonical readiness
+    /// kernel (pushdown) answers it. An unready map keeps the side
+    /// unseeked even beside a seekable conjunct: the funnel would read the
+    /// map against the same unresolvable row.
+    ///
+    /// The split: a row-resolvable property map asks as
+    /// [`OverAsk::Map`]; a named, unbound variable with no map asks as
+    /// [`OverAsk::Point`] (a point seek serves it, or the side keeps the
+    /// fan's handling); anything else — a nameless pattern, an unready
+    /// map — is `None` (scan territory, the fan's own answer).
+    fn side_sizing(&self, np: &NodePattern, unbound: bool) -> Option<OverAsk> {
         match np.properties.as_ref() {
-            Some(props) => expr_ready(props, self.row),
-            // The conjunct form seeks only a named, unbound variable, and
-            // only a point seek (`=` / `IN` / id) an index actually serves:
-            // an endpoint no index serves keeps its scan-territory handling
-            // instead of being sized from a label scan the residual never
-            // narrowed. A union-only seek (an indexed seek under a
-            // label-disjunction fold, LABS-1083) yields — a sizing decision
-            // cannot use a union answer — while a fold's label-blind ids
-            // seek still answers, point-shaped, as the funnel serves it.
-            None => {
-                let Binding::Unbound(v) = class else {
-                    return false;
-                };
-                let ExecCtx { graph, params, .. } = self.ctx;
-                // `prepared` answers `None` under `USING SCAN`: no seek may
-                // answer the variable, the funnel's own arm scans it.
-                prepared(v, np, &self.filters.endpoint, graph, self.row, params).is_some_and(
-                    |p: Prepared<'_>| p.first_served_seek(graph).is_some_and(Seek::is_point),
-                )
-            }
+            Some(props) if expr_ready(props, self.row) => Some(OverAsk::Map),
+            None if unbound => Some(OverAsk::Point),
+            _ => None,
         }
     }
 
@@ -401,22 +436,38 @@ impl Route<'_> {
     /// matching more than `limit` nodes is refused with the typed capacity
     /// error (ADR-0567) — never truncated, never listed unbounded. The
     /// funnel's contract is ascending and deduplicated, so the list needs
-    /// no re-sorting.
-    fn listed_side(&self, np: &NodePattern) -> Result<Side> {
+    /// no re-sorting. The ask is the one the probe handed over
+    /// ([`Probed::Over`]): the listing re-asks through the same entry,
+    /// never a re-derived sizing.
+    fn listed_side(&self, np: &NodePattern, ask: OverAsk) -> Result<Side> {
         let limit = list_limit();
-        match self.capped_candidates(np, limit)? {
-            Capped::Within(ids) => Ok(Side::Many(ids)),
-            Capped::Over(stop) => Err(Error::capacity_seek_candidates(stop, limit as u64)),
-        }
+        let capped = self.asked(np, ask, limit)?.ok_or_else(|| {
+            Error::internal("shortest-path route: a probed side lost its point seek")
+        })?;
+        Ok(match capped {
+            Capped::Within(ids) => Side::Many(ids),
+            Capped::Over(stop) => return Err(Error::capacity_seek_candidates(stop, limit as u64)),
+        })
     }
 
-    /// The funnel's capped scan or seek for `np` (the counted funnel — the
-    /// seek phase is stamped inside it), from the route's endpoint-only
-    /// residual, stopped at the first match past `cap`: the pair bound's probe ([`SEEK_PAIR_LIMIT`]) and the full listing's
-    /// bound ([`SEEK_LIST_LIMIT`]).
-    fn capped_candidates(&self, np: &NodePattern, cap: usize) -> Result<Capped> {
+    /// The ask-to-entry dispatch, the one table ([`OverAsk`]'s two
+    /// entries), from the route's endpoint-only residual through the
+    /// counted funnel (the seek phase stamped inside it), stopped at the
+    /// first match past `cap` — the pair bound's probe
+    /// ([`SEEK_PAIR_LIMIT`]) and the full listing's bound
+    /// ([`SEEK_LIST_LIMIT`]): the full funnel for a map side
+    /// ([`OverAsk::Map`]), the point ask for a conjunct side
+    /// ([`OverAsk::Point`], no property map). Both answer
+    /// `Option<Capped>` — `None` is "no ask answers this side", the one
+    /// fact each caller declines on (a superset scan, or a point seek
+    /// that served nothing).
+    fn asked(&self, np: &NodePattern, ask: OverAsk, cap: usize) -> Result<Option<Capped>> {
         let ExecCtx { graph, params, .. } = self.ctx;
-        node_candidates_capped(graph, np, self.row, params, &self.filters.endpoint, cap)
+        let conjuncts = &self.filters.endpoint;
+        Ok(match ask {
+            OverAsk::Point => point_candidates_capped(graph, np, self.row, params, conjuncts, cap)?,
+            OverAsk::Map => node_candidates_capped(graph, np, self.row, params, conjuncts, cap)?,
+        })
     }
 
     /// The unbound start pattern's full candidate list through the counted

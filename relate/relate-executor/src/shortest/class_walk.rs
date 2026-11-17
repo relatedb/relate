@@ -25,17 +25,14 @@ use relate_core::{NodeId, RelId, Result};
 use relate_ir::Direction;
 
 use crate::hash_seed::IdMap;
+use crate::workspace::map_entries_bytes;
 use crate::UsedSet;
 
 use super::Search;
 
-/// Bytes charged per ball entry: the id, its depth and the table's control
-/// byte and load slack.
-const ENTRY_BYTES: u64 = 24;
-
-/// Bytes charged per recorded hop: its entry in the log and the `Vec` slot
-/// behind it, each about one ball entry.
-const RECORDED_BYTES: u64 = 2 * ENTRY_BYTES;
+/// A recorded hop's cost in ball entries: its entry in the log and the `Vec`
+/// slot behind it, each about one entry of the executor's map-entry model.
+const RECORDED_ENTRIES: usize = 2;
 
 /// Every hop a recording ball's growth followed, keyed by the node it
 /// reached: the relationship and the scanned node it came from. Read against
@@ -44,7 +41,7 @@ const RECORDED_BYTES: u64 = 2 * ENTRY_BYTES;
 #[derive(Default)]
 struct HopLog {
     into: IdMap<NodeId, Vec<(NodeId, RelId)>>,
-    count: u64,
+    count: usize,
 }
 
 /// The distances to one node, layer by layer: a breadth-first ball grown
@@ -119,9 +116,12 @@ impl<'a, 'g> Ball<'a, 'g> {
         self.radius = next_depth;
         self.charge.resize_with(|| {
             let logged = self.log.as_ref().map_or(0, |log| log.count);
-            (self.depth.capacity() as u64 + self.frontier.capacity() as u64)
-                .saturating_mul(ENTRY_BYTES)
-                .saturating_add(logged.saturating_mul(RECORDED_BYTES))
+            map_entries_bytes(
+                self.depth
+                    .capacity()
+                    .saturating_add(self.frontier.capacity()),
+            )
+            .saturating_add(map_entries_bytes(logged.saturating_mul(RECORDED_ENTRIES)))
         })
     }
 
@@ -145,6 +145,50 @@ impl<'a, 'g> Ball<'a, 'g> {
         let log = self.log.as_ref()?;
         (self.radius as usize >= left || self.exhausted())
             .then(|| log.into.get(&node).cloned().unwrap_or_default())
+    }
+}
+
+/// The trail the walk is on: the relationships taken, the nodes passed (one
+/// more than the relationships) and the relationships in use, so a trail
+/// never reuses one. One hop is entered and left through one pair.
+struct TrailState {
+    trail: Vec<RelId>,
+    nodes: Vec<NodeId>,
+    used: UsedSet,
+}
+
+impl TrailState {
+    /// The empty trail at `start`, with room for `length` relationships.
+    fn at(start: NodeId, length: usize) -> Self {
+        let mut nodes = Vec::with_capacity(length + 1);
+        nodes.push(start);
+        Self {
+            trail: Vec::with_capacity(length),
+            nodes,
+            used: UsedSet::default(),
+        }
+    }
+
+    /// Take `rid` to `node`; `false` — nothing taken — when the trail
+    /// already used `rid`: a trail never reuses one relationship, the
+    /// rule this pair owns (as `TrailWalk::enter` spells it for the
+    /// route's own walk).
+    fn enter(&mut self, rid: RelId, node: NodeId) -> bool {
+        if !self.used.insert(rid) {
+            return false;
+        }
+        self.trail.push(rid);
+        self.nodes.push(node);
+        debug_assert_eq!(self.nodes.len(), self.trail.len() + 1);
+        true
+    }
+
+    /// Undo the last hop; a no-op on the empty trail.
+    fn leave(&mut self) {
+        if let Some(rid) = self.trail.pop() {
+            self.used.remove(&rid);
+            self.nodes.pop();
+        }
     }
 }
 
@@ -267,13 +311,10 @@ impl<'a, 'g> ClassWalk<'a, 'g> {
             return Ok(false);
         }
         let length = length as usize;
-        let mut used = UsedSet::default();
-        let mut trail: Vec<RelId> = Vec::with_capacity(length);
-        let mut nodes: Vec<NodeId> = Vec::with_capacity(length + 1);
-        nodes.push(self.start);
+        let mut walk = TrailState::at(self.start, length);
         if length == 0 {
             return if self.start == self.end {
-                visit(&trail, &nodes)
+                visit(&walk.trail, &walk.nodes)
             } else {
                 Ok(false)
             };
@@ -287,22 +328,22 @@ impl<'a, 'g> ClassWalk<'a, 'g> {
             let Some(&(next, rid)) = frame.hops.get(frame.next) else {
                 frames.pop();
                 // Leave the hop that opened this frame, if any.
-                if let Some(rid) = trail.pop() {
-                    used.remove(&rid);
-                    nodes.pop();
-                }
+                walk.leave();
                 continue;
             };
             frame.next += 1;
-            let at = trail.len() + 1;
+            let at = walk.trail.len() + 1;
             let remaining = (length - at) as u64;
-            if used.contains(&rid) {
+            // A trail never reuses a relationship: `enter` refuses a
+            // consumed one, nothing taken.
+            if !walk.enter(rid, next) {
                 continue;
             }
             let bound = self.ball.lower_bound(next);
             if u64::from(bound) > remaining {
                 // A node outside the exhausted ball never reaches the end.
                 self.cut |= bound != u32::MAX;
+                walk.leave();
                 continue;
             }
             if at == length {
@@ -310,19 +351,13 @@ impl<'a, 'g> ClassWalk<'a, 'g> {
                 // the class.
                 // A trail ending here may extend through the end again.
                 self.cut = true;
-                trail.push(rid);
-                nodes.push(next);
-                let stop = visit(&trail, &nodes)?;
-                trail.pop();
-                nodes.pop();
+                let stop = visit(&walk.trail, &walk.nodes)?;
+                walk.leave();
                 if stop {
                     return Ok(true);
                 }
                 continue;
             }
-            used.insert(rid);
-            trail.push(rid);
-            nodes.push(next);
             frames.push(Frame {
                 hops: self.walk_hops(next, length - at)?,
                 next: 0,

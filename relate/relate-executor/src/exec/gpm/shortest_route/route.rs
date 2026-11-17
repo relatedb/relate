@@ -18,12 +18,61 @@ use crate::shortest::{path_from_trail, Search};
 
 use super::super::sink::MatchedSink;
 use super::anchor::{Anchor, Way};
-use super::far_set::FarSet;
+use super::far_set::{retires, FarSet, OneLane};
 use super::filters::{PathFilter, RouteFilters};
-use super::guard::Shape;
+use super::guard::{Keep, Shape};
 use super::k_select;
 use super::reach_cache::ReachCache;
 use super::trail_walk;
+
+/// One origin's fan run: what every layer of its search needs beside the
+/// layer itself.
+struct FanRun<'r> {
+    origin: NodeId,
+    /// The way this fan runs and where its partitions get their start row,
+    /// one value ([`OriginRow`]): the way is derived from it, so the two
+    /// cannot disagree.
+    origin_row: OriginRow,
+    /// The listed far side with this origin's reached count ([`OneLane`]):
+    /// a settled counter never exists without its far set. `None`: no
+    /// listed far side — each reached node is tested against the end
+    /// pattern alone.
+    far: Option<OneLane<'r>>,
+}
+
+/// Where a fan's partitions get their start row, and the way that follows
+/// from it: the forward fan binds the origin once (the row), the backward
+/// fan binds each reached node as its own start. One value, so the way and
+/// the row cannot disagree — a refused forward origin is `None` at
+/// [`Route::bind_origin`], never a third variant here.
+pub(super) enum OriginRow {
+    Bound(Row),
+    PerMember,
+}
+
+impl OriginRow {
+    /// The way this bind runs — the one derivation: a bound origin row is
+    /// a forward fan, a per-member binding a backward one.
+    pub(super) fn way(&self) -> Way {
+        match self {
+            Self::Bound(_) => Way::Forward,
+            Self::PerMember => Way::Backward,
+        }
+    }
+}
+
+/// How a (start, end) partition selects its trails, decided once per route
+/// in [`Route::try_new`].
+#[derive(Clone, Copy)]
+enum PartitionArm {
+    /// An inline predicate filters the search: walk trails in ascending
+    /// length and answer the first satisfying length.
+    Filtered,
+    /// A count selector: the length-class walk picks its `k`.
+    Counted(Keep),
+    /// The search's own trails.
+    Plain,
+}
 
 /// One routed pattern evaluated against one input row.
 pub(super) struct Route<'a> {
@@ -38,6 +87,8 @@ pub(super) struct Route<'a> {
     /// satisfies it, instead of the one shortest trail. `pair` drops a
     /// same-node pair before 51N23 can reject it.
     pub(super) filters: RouteFilters<'a>,
+    /// The partition's selection arm, from the selector and the filters.
+    arm: PartitionArm,
     /// The unbounded DFS cap memo — the route-granularity spelling of the
     /// walk memo `GpmCtx::unbounded_dfs_cap` takes: filled on the first
     /// unbounded filtered partition, read by every later one, so the rel
@@ -48,6 +99,10 @@ pub(super) struct Route<'a> {
     /// trail's row (every trail binds the same names against the one
     /// input row), one per route, stamped by every later trail.
     path_rung: Cell<Option<RowRung>>,
+    /// The rows this route offered, whatever the sink did with them: the
+    /// fan drivers' "did this layer produce a row" fact, read as a
+    /// before/after around a layer.
+    emitted: Cell<usize>,
     /// The consumer's halt cell — a probe's verdict, or the collecting
     /// sink's cap-full cell: raised once it needs no more rows, read only
     /// through [`Self::halted`]. Every sink has one, so it is not optional.
@@ -78,6 +133,15 @@ impl<'a> Route<'a> {
         // arguments that must happen to agree.
         let halt = sink.halt_cell();
         let filters = RouteFilters::split(path, &shape, sink.residual());
+        // A count selector under an inline predicate would have to pick its
+        // `k` among the trails that satisfy it; the length-class walk does
+        // not carry the predicate, so enumeration answers that shape.
+        let arm = match (shape.selection.counted(), filters.path.is_some()) {
+            (Some(_), true) => return None,
+            (Some(keep), false) => PartitionArm::Counted(keep),
+            (None, true) => PartitionArm::Filtered,
+            (None, false) => PartitionArm::Plain,
+        };
         let rel = shape.rel;
         let search = Search {
             graph: ctx.graph,
@@ -97,17 +161,13 @@ impl<'a> Route<'a> {
             shape,
             search,
             filters,
+            arm,
             halt,
             reach,
             unbounded_cap: OnceCell::new(),
             path_rung: Cell::new(None),
+            emitted: Cell::new(0),
         };
-        // A count selector under an inline predicate would have to pick its
-        // `k` among the trails that satisfy it; the length-class walk does
-        // not carry the predicate, so enumeration answers that shape.
-        if route.shape.selection.counted().is_some() && route.filters.path.is_some() {
-            return None;
-        }
         // A predicate the search cannot decide against the rows it binds
         // enumerates instead (see `predicates_decidable`).
         route
@@ -124,19 +184,40 @@ impl<'a> Route<'a> {
     /// DIFFERENT RELATIONSHIPS patterns (the admission fact's one home,
     /// `route_shape`), so the cap is that arm: the live rel count, the
     /// sound bound of a trail that never revisits a relationship.
-    pub(super) fn memoized_unbounded_cap(&self) -> u32 {
+    fn memoized_unbounded_cap(&self) -> u32 {
         *self
             .unbounded_cap
             .get_or_init(|| unbounded_dfs_cap(self.ctx.graph, MatchMode::DifferentRelationships))
     }
 
+    /// Whether a count selector (`SHORTEST k`, ADR-0607) picks this
+    /// route's trails.
+    pub(super) fn counted(&self) -> bool {
+        matches!(self.arm, PartitionArm::Counted(_))
+    }
+
+    /// The deepest length a trail walk explores: the one GPM bound policy
+    /// — a bounded pattern keeps its written bound, an unbounded one takes
+    /// the engine's unbounded DFS cap (`unbounded_dfs_cap`), the same
+    /// ceiling the GPM walk's two spellings read (`pattern_walk::
+    /// hop_bounds_with` for the var-length rel, the quantifier's
+    /// `unwrap_or_else` for the quantified element), so a walk explores to
+    /// the same depth the enumeration fallback would. The cap arm runs only
+    /// for an unbounded pattern, so a bounded one never pays the rel-table
+    /// enumeration behind the memo.
+    pub(super) fn walk_max(&self) -> u32 {
+        self.shape
+            .max
+            .unwrap_or_else(|| self.memoized_unbounded_cap())
+    }
+
     /// Push every selected row into `out` as it is bound: the row's
     /// anchoring, resolved once, picks the searches. A pattern whose
     /// minimum exceeds its maximum matches nothing (no row, no decline —
-    /// the route took it). Declining is the constructor's job
-    /// ([`Route::try_new`]), never the run's: once a route exists, every
-    /// row it binds is pushed. The run stops early once the sink is
-    /// halted.
+    /// the route took it). Declining is the anchoring's job
+    /// ([`Route::anchor`], beside the constructor's declines), never the
+    /// run's: once an anchor exists, every row it binds is pushed. The run
+    /// stops early once the sink is halted.
     pub(super) fn run(&self, out: &mut MatchedSink<'_, '_>) -> Result<bool> {
         if self.search.min > self.search.max {
             return Ok(true);
@@ -144,25 +225,22 @@ impl<'a> Route<'a> {
         let Some(anchor) = self.anchor()? else {
             return Ok(false);
         };
-        // The length-class walk answers a pair partition; a fan has one
-        // end open and keeps enumeration (ADR-0607). The decline happens
-        // here, after the anchor resolves and before any row is pushed.
-        if self.shape.selection.counted().is_some() && matches!(anchor, Anchor::Fan { .. }) {
-            return Ok(false);
-        }
         #[cfg(test)]
         super::anchor::note_anchor(anchor.arm());
         match anchor {
             Anchor::Pair { starts, ends } => {
-                self.each_side(&starts, |s| {
-                    self.each_side(&ends, |e| self.pair_partition(s, e, out))
+                self.each_of(starts.ids(), |s| {
+                    self.each_of(ends.ids(), |e| self.pair_partition(s, e, out))
                 })?;
             }
-            Anchor::Fan { origins, way, far } => {
-                if !self.fan_batched(&origins, way, far.as_ref(), out)? {
-                    self.each_side(&origins, |origin| self.fan(origin, way, far.as_ref(), out))?;
-                }
-            }
+            Anchor::Fan { origins, way, far } => match self.batch_plan(&origins, far.as_ref()) {
+                // The plan is the dispatch: a batched fan runs the sweep,
+                // anything else keeps the per-origin search.
+                Some((ids, far)) => self.fan_batched(ids, way, far, out)?,
+                None => self.each_of(origins.ids(), |origin| {
+                    self.fan(origin, way, far.as_ref(), out)
+                })?,
+            },
             Anchor::Loop => {
                 self.each_start(|s| self.pair_partition(s, s, out))?;
             }
@@ -239,6 +317,19 @@ impl<'a> Route<'a> {
         self.bind_candidate(id, self.shape.start)
     }
 
+    /// What a fan running `way` binds for `origin` — the one home of the
+    /// rule: a forward fan binds the origin once as its start
+    /// ([`OriginRow::Bound`]), or the start pattern refuses it (`None`, the
+    /// fan abandoned); a backward fan binds no row here
+    /// ([`OriginRow::PerMember`]) — each reached node is a start, bound in
+    /// its own partition.
+    pub(super) fn bind_origin(&self, origin: NodeId, way: Way) -> Result<Option<OriginRow>> {
+        match way {
+            Way::Forward => Ok(self.bind_start(origin)?.map(OriginRow::Bound)),
+            Way::Backward => Ok(Some(OriginRow::PerMember)),
+        }
+    }
+
     /// The input row with `id` bound as the endpoint `np`, or `None` when
     /// `id` fails the pattern or its binding — the one admission-then-bind
     /// spelling the start partition and the endpoint listing share.
@@ -256,13 +347,19 @@ impl<'a> Route<'a> {
         let Some(srow) = self.bind_start(s)? else {
             return Ok(());
         };
-        self.partition(s, e, &srow, out, || {
-            // A reachable end still takes the search below.
-            if self.reach.unreachable(&self.search, s, e)? {
-                return Ok(Vec::new());
-            }
-            self.search.pair_trails(s, e)
-        })
+        self.partition(
+            s,
+            e,
+            &srow,
+            out,
+            Some(|| {
+                // A reachable end still takes the search below.
+                if self.reach.unreachable(&self.search, s, e)? {
+                    return Ok(Vec::new());
+                }
+                self.search.pair_trails(s, e)
+            }),
+        )
     }
 
     /// One endpoint fixed: one layered search from it, `way` saying which,
@@ -277,26 +374,17 @@ impl<'a> Route<'a> {
         far: Option<&FarSet>,
         out: &mut MatchedSink<'_, '_>,
     ) -> Result<()> {
-        // Forward, the origin is the start, bound once; backward, each
-        // reached node is a start, bound in its own partition.
-        let origin_row = match way {
-            Way::Forward => match self.bind_start(origin)? {
-                Some(row) => Some(row),
-                None => return Ok(()),
-            },
-            Way::Backward => None,
+        let Some(origin_row) = self.bind_origin(origin, way)? else {
+            // A forward origin the start pattern refuses abandons the fan.
+            return Ok(());
         };
-        // The far nodes reached so far, for the fan's early stop.
-        let settled = Cell::new(0);
-        way.search(&self.search).dag_layers(origin, |layer| {
-            self.fan_layer(
-                &layer,
-                origin,
-                way,
-                (origin_row.as_ref(), far, &settled),
-                out,
-            )
-        })?;
+        let run = FanRun {
+            origin,
+            origin_row,
+            far: far.map(OneLane::new),
+        };
+        way.search(&self.search)
+            .dag_layers(origin, |layer| self.fan_layer(&layer, &run, out))?;
         Ok(())
     }
 
@@ -307,23 +395,28 @@ impl<'a> Route<'a> {
     fn fan_layer(
         &self,
         layer: &Layer<'_>,
-        origin: NodeId,
-        way: Way,
-        (origin_row, far_set, settled): (Option<&Row>, Option<&FarSet>, &Cell<usize>),
+        run: &FanRun<'_>,
         out: &mut MatchedSink<'_, '_>,
     ) -> Result<bool> {
-        // The layer rides the route's one per-candidate loop. A listed far
-        // side is one bit test per reached node: a node outside it fails
-        // the end pattern, so it is no partition.
-        let before = out.folded();
-        self.each_of(layer.nodes(), |far| {
-            if let Some(set) = far_set {
-                if !set.contains(far) {
-                    return Ok(());
-                }
-                settled.set(settled.get() + 1);
+        let FanRun {
+            origin,
+            origin_row,
+            far,
+        } = run;
+        // The layer rides the route's one per-candidate loop.
+        let before = self.emitted();
+        self.each_of(layer.nodes(), |far_node| {
+            // A listed far side is one bit test per reached node: a node
+            // outside it fails the end pattern, so it is no partition
+            // (and no count) — `settle_if_hit` owns the pairing.
+            let admitted = match far.as_ref() {
+                Some(settled) => settled.settle_if_hit(far_node),
+                None => true,
+            };
+            if admitted {
+                self.fan_partition(layer, *origin, far_node, origin_row, out)?;
             }
-            self.fan_partition(layer, origin, far, way, origin_row, out)
+            Ok(())
         })?;
         // The origin's own layer (depth 0) carries its closed trails or
         // zero-length path, which a shorter open trail still beats: it
@@ -333,11 +426,13 @@ impl<'a> Route<'a> {
         // still hold a shorter answer: the stop applies to unfiltered
         // routes only.
         let productive =
-            self.filters.path.is_none() && layer.nodes() != [origin] && out.folded() > before;
-        // Every far node reached and emitted: no deeper layer holds a
-        // partition.
-        let far_done = far_set.is_some_and(|set| settled.get() == set.len());
-        Ok(self.halted() || far_done || (self.shape.spelling.first_layer_only() && productive))
+            self.filters.path.is_none() && layer.nodes() != [*origin] && self.emitted() > before;
+        Ok(self.halted()
+            || retires(
+                far.as_ref().is_some_and(OneLane::done),
+                self.shape.spelling.first_layer_only(),
+                productive,
+            ))
     }
 
     /// The partition of `far`, a node a fan search reached from `origin`:
@@ -349,13 +444,16 @@ impl<'a> Route<'a> {
         layer: &Layer<'_>,
         origin: NodeId,
         far: NodeId,
-        way: Way,
-        origin_row: Option<&Row>,
+        origin_row: &OriginRow,
         out: &mut MatchedSink<'_, '_>,
     ) -> Result<()> {
-        self.fan_member(origin, far, way, origin_row, out, |_, _| {
-            Ok(way.orient(layer.trails(self.ctx.graph, far)?))
-        })
+        self.fan_member(
+            origin,
+            far,
+            origin_row,
+            out,
+            Some(|_, _| Ok(origin_row.way().orient(layer.trails(self.ctx.graph, far)?))),
+        )
     }
 
     /// The one fan partition body: the start row, then `trails(s, e)` for
@@ -366,20 +464,19 @@ impl<'a> Route<'a> {
         &self,
         origin: NodeId,
         far: NodeId,
-        way: Way,
-        origin_row: Option<&Row>,
+        origin_row: &OriginRow,
         out: &mut MatchedSink<'_, '_>,
-        trails: impl FnOnce(NodeId, NodeId) -> Result<Vec<Vec<RelId>>>,
+        trails: Option<impl FnOnce(NodeId, NodeId) -> Result<Vec<Vec<RelId>>>>,
     ) -> Result<()> {
-        let (s, e) = way.ends(origin, far);
+        let (s, e) = origin_row.way().ends(origin, far);
         let srow = match origin_row {
-            Some(row) => Cow::Borrowed(row),
-            None => match self.bind_start(s)? {
+            OriginRow::Bound(row) => Cow::Borrowed(row),
+            OriginRow::PerMember => match self.bind_start(s)? {
                 Some(row) => Cow::Owned(row),
                 None => return Ok(()),
             },
         };
-        self.partition(s, e, &srow, out, || trails(s, e))
+        self.partition(s, e, &srow, out, trails.map(|trails| move || trails(s, e)))
     }
 
     /// Emit the (s, e) partition of a row with the start bound: nothing
@@ -392,7 +489,7 @@ impl<'a> Route<'a> {
         e: NodeId,
         srow: &Row,
         out: &mut MatchedSink<'_, '_>,
-        trails: impl FnOnce() -> Result<Vec<Vec<RelId>>>,
+        trails: Option<impl FnOnce() -> Result<Vec<Vec<RelId>>>>,
     ) -> Result<()> {
         if !self.node_ok(e, self.shape.end, srow)? {
             return Ok(());
@@ -400,14 +497,29 @@ impl<'a> Route<'a> {
         if self.common_end_dropped(s, e, srow)? {
             return Ok(());
         }
-        if self.filters.path.is_some() {
-            return self.feasible_partition(s, e, srow, out);
+        match self.arm {
+            PartitionArm::Filtered => self.feasible_partition(s, e, srow, out),
+            PartitionArm::Counted(keep) => k_select::select_k(self, (s, e), srow, keep, out),
+            PartitionArm::Plain => self.plain_partition(s, e, srow, out, trails),
         }
-        if let Some(keep) = self.shape.selection.counted() {
-            return k_select::select_k(self, (s, e), srow, keep, out);
-        }
+    }
+
+    /// The unselected partition: every trail the search holds between the
+    /// pair, the zero-length path or the closed trails when `s = e`.
+    fn plain_partition(
+        &self,
+        s: NodeId,
+        e: NodeId,
+        srow: &Row,
+        out: &mut MatchedSink<'_, '_>,
+        trails: Option<impl FnOnce() -> Result<Vec<Vec<RelId>>>>,
+    ) -> Result<()> {
+        // The s = e partition builds its own trails (the zero-length path
+        // or the closed trails); only a real pair consults the source, so
+        // a caller that has none — the self-pair — passes `None` and no
+        // invented list is ever answered.
         let trails = if s != e {
-            trails()?
+            trails.expect("a non-self partition has a trail source")()?
         } else if self.search.min == 0 {
             vec![Vec::new()]
         } else {
@@ -455,21 +567,7 @@ impl<'a> Route<'a> {
         srow: &Row,
         out: &mut MatchedSink<'_, '_>,
     ) -> Result<()> {
-        // The one GPM bound policy: a bounded pattern keeps its written
-        // bound, an unbounded one takes the engine's unbounded DFS cap
-        // (`unbounded_dfs_cap`) — the same ceiling the GPM walk's two
-        // spellings read (`pattern_walk::hop_bounds_with` for the
-        // var-length rel, the quantifier's `unwrap_or_else` for the
-        // quantified element) — so this walk explores to the same depth
-        // the enumeration fallback would. Both bounds come from the one
-        // carrier of the pattern's written bounds (`shape`); the
-        // `unwrap_or_else` arm runs only for an unbounded pattern, so a
-        // bounded one never pays the rel-table enumeration behind the
-        // memoized cap.
-        let max = self
-            .shape
-            .max
-            .unwrap_or_else(|| self.memoized_unbounded_cap());
+        let max = self.walk_max();
         let mut walk = trail_walk::TrailWalk::new(self, s, e, srow);
         for length in self.shape.min..=max {
             if walk.any_of_length(s, length, out)? {
@@ -542,6 +640,13 @@ impl<'a> Route<'a> {
             }
         }
         out.offer(self.ctx, row, || trail.iter().copied().collect())?;
+        self.emitted.set(self.emitted.get() + 1);
         Ok(true)
+    }
+
+    /// The rows this route has offered so far — the fan drivers' emission
+    /// fact (see the `emitted` field).
+    pub(super) fn emitted(&self) -> usize {
+        self.emitted.get()
     }
 }

@@ -60,10 +60,6 @@ enum SinkKind<'r, 'a> {
     /// cap: the fold sees every bound row.
     Fold {
         fold: &'r mut dyn FnMut(Row) -> Result<()>,
-        /// Rows the fold has accepted (the fold ran to completion on them):
-        /// the Fold arm's own state — no other arm touches it, so it lives
-        /// here, not on the shared struct.
-        folded: usize,
     },
 }
 
@@ -117,7 +113,7 @@ impl<'r, 'a> MatchedSink<'r, 'a> {
     ) -> Self {
         Self {
             residual,
-            kind: SinkKind::Fold { fold, folded: 0 },
+            kind: SinkKind::Fold { fold },
             halt,
         }
     }
@@ -133,15 +129,6 @@ impl<'r, 'a> MatchedSink<'r, 'a> {
     /// at every level.
     pub(super) fn halt_cell(&self) -> &'r Cell<bool> {
         self.halt
-    }
-
-    /// Rows the fold has accepted so far (always 0 for a non-fold sink): a
-    /// caller comparing two reads learns whether a step produced any.
-    pub(super) fn folded(&self) -> usize {
-        match &self.kind {
-            SinkKind::Fold { folded, .. } => *folded,
-            _ => 0,
-        }
     }
 
     /// Whether the consumer is answered — the one halt query, over both
@@ -178,10 +165,7 @@ impl<'r, 'a> MatchedSink<'r, 'a> {
                     self.halt.set(true);
                 }
             }
-            SinkKind::Fold { fold, folded } => {
-                fold(row)?;
-                *folded += 1;
-            }
+            SinkKind::Fold { fold } => fold(row)?,
         }
         Ok(())
     }

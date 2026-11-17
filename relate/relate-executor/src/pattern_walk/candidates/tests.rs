@@ -19,7 +19,7 @@ use crate::overlay::{intersect_ids, union_ids, ExecGraph};
 use crate::row::Row;
 
 use super::seek::ServedIds;
-use super::{node_candidates, node_candidates_capped, Capped};
+use super::{node_candidates, node_candidates_capped, point_candidates_capped, Capped};
 
 /// One node with `labels` and the name/age pair the fixtures filter on —
 /// the fixture shape every test here reads. Callers batch their fixture
@@ -231,10 +231,44 @@ fn a_capped_funnel_is_complete_at_the_cap_and_over_past_it() {
     };
     let mut ids = same_name(&g, 4);
     ids.sort_unstable();
-    assert!(matches!(capped(&g, 4), Capped::Within(got) if got == ids));
-    assert!(matches!(capped(&g, 3), Capped::Over(_)));
-    assert!(matches!(capped(&g, 0), Capped::Over(_)));
+    assert!(matches!(capped(&g, 4), Some(Capped::Within(got)) if got == ids));
+    assert!(matches!(capped(&g, 3), Some(Capped::Over(_))));
+    assert!(matches!(capped(&g, 0), Some(Capped::Over(_))));
     assert_eq!(candidates(&g, &np), ids);
+}
+
+/// A point-only ask is answered only by a point seek: with no seek serving
+/// the variable the ask declines, and no scan runs, where the plain ask
+/// scans.
+#[test]
+fn a_point_only_funnel_declines_the_scan() {
+    let g = Graph::default();
+    same_name(&g, 5);
+    let np = pattern("p", &["Person"], None);
+    let _ = crate::ctx::take_node_reads();
+    let ask = point_candidates_capped(
+        &ExecGraph::read(&g),
+        &np,
+        &Row::new(),
+        &BTreeMap::new(),
+        &[],
+        100,
+    )
+    .unwrap();
+    assert!(ask.is_none());
+    assert_eq!(crate::ctx::take_node_reads(), 0);
+    assert!(matches!(
+        node_candidates_capped(
+            &ExecGraph::read(&g),
+            &np,
+            &Row::new(),
+            &BTreeMap::new(),
+            &[],
+            100
+        )
+        .unwrap(),
+        Some(Capped::Within(ids)) if ids.len() == 5
+    ));
 }
 
 /// The scan stops at the first match past the cap: the node reads the
@@ -259,7 +293,7 @@ fn a_capped_funnel_stops_scanning_past_the_cap() {
         16,
     )
     .unwrap();
-    assert!(matches!(capped, Capped::Over(_)));
+    assert!(matches!(capped, Some(Capped::Over(_))));
     assert_eq!(crate::ctx::take_node_reads(), 17);
     assert_eq!(candidates(&g, &np).len(), 200);
     assert_eq!(crate::ctx::take_node_reads(), 200);
@@ -544,7 +578,7 @@ fn a_capped_probe_reads_cap_plus_one_for_every_scan_shape() {
             CAP,
         )
         .unwrap();
-        assert!(matches!(got, Capped::Over(_)));
+        assert!(matches!(got, Some(Capped::Over(_))));
         crate::ctx::take_node_reads()
     };
     let name = [("name", Value::String("Bob".into()))];
