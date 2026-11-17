@@ -28,7 +28,10 @@ use crate::shapes::{
     census, mid_degree_hops, rss_matrix, FillCursor, GraphShape, IndexCounts, ShapeScale,
     DEFAULT_LOGICAL_TARGET_BYTES, DEFAULT_NODE_ATTRIBUTES,
 };
-use progress::{abbreviate, clear_active, format_elapsed, mark, progress, Heartbeat, Live};
+use progress::{
+    abbreviate, begin_phase, begin_statement, clear_active, end_statement, format_elapsed, mark,
+    progress, Heartbeat, Live,
+};
 
 pub const REPORT_SCHEMA_VERSION: u32 = 2;
 const RSS_SAMPLES: usize = 5;
@@ -262,7 +265,7 @@ fn measure_shape(
         format_elapsed(probe_started.elapsed())
     ));
 
-    mark(live, "bolt", "starting relate serve");
+    mark(live, "bolt", "starting relate serve")?;
     progress("      bolt   starting relate serve");
     reset_store(&bolt_store)?;
     let server = ServeChild::spawn_bolt(&cfg.bolt_bin, &bolt_store, limit)?;
@@ -363,7 +366,7 @@ fn probe_store(
         }
         filled
     };
-    mark(live, "probe", "checkpoint snapshot");
+    mark(live, "probe", "checkpoint snapshot")?;
     progress("      probe  checkpoint snapshot");
     db.checkpoint().map_err(|e| e.to_string())?;
     clear_active(live);
@@ -474,13 +477,7 @@ fn fill_to_target(
     mut run_one: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<Filled, String> {
     let target = shape_target(shape);
-    if let Ok(mut guard) = live.lock() {
-        guard.phase = phase;
-        guard.index = 0;
-        guard.total = 0;
-        guard.phase_started = Instant::now();
-        guard.active = false;
-    }
+    begin_phase(live, phase)?;
     let mut cursor = FillCursor::new(shape, attributes, indexes);
     let mut n = 0usize;
     loop {
@@ -526,40 +523,11 @@ fn fill_to_target(
         };
         n += 1;
         let label = abbreviate(&statement);
-        {
-            let Ok(mut guard) = live.lock() else {
-                return Err("progress lock poisoned".into());
-            };
-            guard.phase = phase;
-            guard.index = n;
-            guard.total = 0;
-            guard.label.clone_from(&label);
-            guard.statement_started = Instant::now();
-            guard.active = true;
-        }
+        begin_statement(live, phase, n, &label)?;
         match run_one(&statement) {
             Ok(()) => {
                 cursor.ack()?;
-                let Ok(mut guard) = live.lock() else {
-                    return Err("progress lock poisoned".into());
-                };
-                guard.active = false;
-                let elapsed = guard.statement_started.elapsed();
-                let phase_elapsed = guard.phase_started.elapsed();
-                let due = n == 1
-                    || elapsed >= Duration::from_secs(2)
-                    || n.is_multiple_of(25)
-                    || guard.last_print.elapsed() >= Duration::from_secs(10);
-                if due {
-                    let line = format!(
-                        "      {phase:<5} {n:>4}      {label:<52} {:>8}  total {}",
-                        format_elapsed(elapsed),
-                        format_elapsed(phase_elapsed)
-                    );
-                    guard.last_print = Instant::now();
-                    drop(guard);
-                    progress(&line);
-                }
+                end_statement(live, phase, n, &label)?;
             }
             Err(err) if is_capacity(&err) => {
                 cursor.nack()?;
@@ -592,27 +560,23 @@ fn fill_until_capacity(
     mut run_one: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<Filled, String> {
     let max_nodes = if shape == GraphShape::Base {
-        0
+        None
     } else {
-        census(
-            shape,
-            ShapeScale::Large {
-                logical_bytes: limit,
-            },
-            IndexCounts::NONE,
-            attributes,
-        )?
-        .nodes
-        .saturating_mul(8)
-        .max(1)
+        Some(
+            census(
+                shape,
+                ShapeScale::Large {
+                    logical_bytes: limit,
+                },
+                IndexCounts::NONE,
+                attributes,
+            )?
+            .nodes
+            .saturating_mul(8)
+            .max(1),
+        )
     };
-    if let Ok(mut guard) = live.lock() {
-        guard.phase = phase;
-        guard.index = 0;
-        guard.total = 0;
-        guard.phase_started = Instant::now();
-        guard.active = false;
-    }
+    begin_phase(live, phase)?;
     let mut cursor = FillCursor::new(shape, attributes, indexes);
     let mut n = 0usize;
     loop {
@@ -621,41 +585,12 @@ fn fill_until_capacity(
         };
         n += 1;
         let label = abbreviate(&statement);
-        {
-            let Ok(mut guard) = live.lock() else {
-                return Err("progress lock poisoned".into());
-            };
-            guard.phase = phase;
-            guard.index = n;
-            guard.total = 0;
-            guard.label.clone_from(&label);
-            guard.statement_started = Instant::now();
-            guard.active = true;
-        }
+        begin_statement(live, phase, n, &label)?;
         match run_one(&statement) {
             Ok(()) => {
                 cursor.ack()?;
-                let Ok(mut guard) = live.lock() else {
-                    return Err("progress lock poisoned".into());
-                };
-                guard.active = false;
-                let elapsed = guard.statement_started.elapsed();
-                let phase_elapsed = guard.phase_started.elapsed();
-                let due = n == 1
-                    || elapsed >= Duration::from_secs(2)
-                    || n.is_multiple_of(25)
-                    || guard.last_print.elapsed() >= Duration::from_secs(10);
-                if due {
-                    let line = format!(
-                        "      {phase:<5} {n:>4}      {label:<52} {:>8}  total {}",
-                        format_elapsed(elapsed),
-                        format_elapsed(phase_elapsed)
-                    );
-                    guard.last_print = Instant::now();
-                    drop(guard);
-                    progress(&line);
-                }
-                if max_nodes > 0 && cursor.nodes > max_nodes {
+                end_statement(live, phase, n, &label)?;
+                if max_nodes.is_some_and(|max| cursor.nodes > max) {
                     return Err(format!(
                         "{} reached {} nodes without the {limit} byte memory limit",
                         shape.as_str(),

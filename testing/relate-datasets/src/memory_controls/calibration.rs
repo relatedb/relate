@@ -216,8 +216,8 @@ pub(crate) fn case_workspace_memory(
         .iter()
         .copied()
         .map(|spec| summarize_family(Some(spec), &observations))
-        .collect::<Vec<_>>();
-    summaries.push(summarize_family(None, &observations));
+        .collect::<Result<Vec<_>, _>>()?;
+    summaries.push(summarize_family(None, &observations)?);
     let conservative_cgroup_ratio = observations
         .iter()
         .filter_map(|row| row.cgroup_to_logical_ratio)

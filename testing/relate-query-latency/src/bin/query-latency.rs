@@ -38,12 +38,8 @@ impl DataArgs {
     /// The one default resolution of the data-cache directory: the
     /// passed flag, else the env var, else the work-root default —
     /// every `--data` reader resolves through here.
-    fn root_of(dir: Option<PathBuf>) -> PathBuf {
-        dir.unwrap_or_else(data_root)
-    }
-
-    fn root(self) -> PathBuf {
-        Self::root_of(self.dir)
+    fn root(&self) -> PathBuf {
+        self.dir.clone().unwrap_or_else(data_root)
     }
 }
 
@@ -85,26 +81,21 @@ impl GraphBenchmarkLdbcStoreArgs {
 
 /// The data-cache flags, shared by the corpus workloads that fetch a
 /// data set: the [`CorpusCommand`] subcommands that flatten this group
-/// are the one home of which workloads those are. The
-/// `RELATE_QUERY_LATENCY_DATA` fallback lives in [`data_root`], not the
-/// clap arg.
+/// are the one home of which workloads those are. The shared `--data`
+/// is [`DataArgs`], flattened; only `--offline` is the group's own.
 #[derive(ClapArgs, Debug)]
 struct DataLaneArgs {
-    /// Data cache directory the data sets fetch and load from. Default:
-    /// $RELATE_QUERY_LATENCY_DATA,
-    /// else target/query-latency/data.
-    #[arg(long = "data")]
-    data: Option<PathBuf>,
+    #[command(flatten)]
+    data: DataArgs,
     /// Fail instead of downloading a data set that is not cached.
     #[arg(long)]
     offline: bool,
 }
 
 impl DataLaneArgs {
-    /// The one default resolution of the data-cache directory — the same
-    /// resolution [`DataArgs::root_of`] runs for the shared `--data`.
+    /// The data-cache directory, resolved by [`DataArgs::root`].
     fn root(&self) -> PathBuf {
-        DataArgs::root_of(self.data.clone())
+        self.data.root()
     }
 
     /// Whether a missing or mismatched file may be downloaded.
@@ -477,10 +468,12 @@ fn run() -> Result<i32, String> {
             };
             let report = run_suite(&opts)?;
             let out = out.unwrap_or_else(|| work_root().join(report_name(sf)));
-            report.write_json(&out)?;
-            print!("{}", report.table());
-            eprintln!("query-latency: wrote {}", out.display());
-            Ok(if report.failures().is_empty() { 0 } else { 1 })
+            finish_report(
+                &out,
+                report.write_json(&out),
+                &report.table(),
+                !report.failures().is_empty(),
+            )
         }
         Command::Profile {
             graph,
@@ -515,12 +508,29 @@ fn run() -> Result<i32, String> {
             let out = run
                 .out
                 .unwrap_or_else(|| work_root().join(config.lane.report_name()));
-            report.write_json(&out)?;
-            print!("{}", report.table());
-            eprintln!("query-latency: wrote {}", out.display());
-            Ok(if report.failures().is_empty() { 0 } else { 1 })
+            finish_report(
+                &out,
+                report.write_json(&out),
+                &report.table(),
+                !report.failures().is_empty(),
+            )
         }
     }
+}
+
+/// The report-finish tail every timed run shares: the JSON write's
+/// outcome, the table on stdout, the report path on stderr, and the exit
+/// code (1 when any entry failed).
+fn finish_report(
+    out: &std::path::Path,
+    written: Result<(), String>,
+    table: &str,
+    failed: bool,
+) -> Result<i32, String> {
+    written?;
+    print!("{table}");
+    eprintln!("query-latency: wrote {}", out.display());
+    Ok(i32::from(failed))
 }
 
 #[cfg(test)]

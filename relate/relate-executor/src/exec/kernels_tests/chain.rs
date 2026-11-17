@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use relate_core::Value;
 
 use super::super::test_support::{exec_autocommit, try_exec_cypher_params, Builder};
-use super::{differential, differential_with, families};
+use super::{differential, differential_with, families, Engagement};
 
 /// The chain family: the corridor walk with predicates at both ends, a
 /// mid predicate, undirected hops, a named rel, and a parameter bound.
@@ -19,7 +19,7 @@ fn chain_matches_the_row_path() {
         &g,
         "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) \
          WHERE a.k >= 1 AND g.name CONTAINS 'o' RETURN a.k AS ak, g.name AS gn LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     // a1 -> b1 -> {one, two}, a2 -> b2 -> two, a3 -> b1 -> {one, two}:
     // five trails.
@@ -31,7 +31,7 @@ fn chain_matches_the_row_path() {
         &g,
         "MATCH (a:Alpha)-[r:R]-(b:Beta)-[:S]-(g:Gamma) WHERE b.k > 15 \
          RETURN a.k AS ak, g.name AS gn LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(
         undirected.rows,
@@ -42,7 +42,9 @@ fn chain_matches_the_row_path() {
     let params = BTreeMap::from([("min".to_string(), Value::Int(2))]);
     let cypher = "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE a.k >= $min \
                   RETURN a.k AS ak LIMIT 99";
-    differential_with(cypher, true, || try_exec_cypher_params(&g, cypher, &params));
+    differential_with(cypher, Engagement::Engaged, || {
+        try_exec_cypher_params(&g, cypher, &params)
+    });
 }
 
 /// The chain's rel-uniqueness rule: two hops over the same type cannot
@@ -60,7 +62,7 @@ fn chain_keeps_the_different_relationships_rule() {
     let trails = differential(
         &g,
         "MATCH (x:X)-[:K]->(y:Y)-[:K]->(z:Z) RETURN x.k AS xk, z.k AS zk LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(trails.rows.len(), 4);
     // Two rels between one pair: both orderings of the undirected pair
@@ -69,7 +71,7 @@ fn chain_keeps_the_different_relationships_rule() {
     let both_ways = differential(
         &g,
         "MATCH (p:P)-[:Q]-(m:M)-[:Q]-(w:P) RETURN p.k AS pk LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(both_ways.rows.len(), 2);
     // One rel between the pair: no trail can take it twice — zero rows.
@@ -77,7 +79,7 @@ fn chain_keeps_the_different_relationships_rule() {
     let one_rel = differential(
         &g,
         "MATCH (s:S)-[:Q]-(n)-[:Q]-(w) RETURN s.k AS sk LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(one_rel.rows, Vec::<Vec<Value>>::new());
 }
@@ -110,7 +112,7 @@ fn the_chain_kernel_batches_past_one_chunk() {
     let trails = differential(
         &g,
         "MATCH (t:Tip)-[:PREV]->(b:Bulk)-[:TAIL]->(e:End) RETURN b.n AS bn LIMIT 999",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(trails.rows.len(), 100);
 }
@@ -139,7 +141,7 @@ fn anonymous_chain_shapes_match_the_row_path() {
     let anonymous = differential(
         &g,
         "MATCH (:Alpha)-[:R]->(:Beta)-[:S]->(:Gamma) RETURN 1 AS one LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(anonymous.rows.len(), 5);
     assert_eq!(anonymous.rows[0], vec![Value::Int(1)]);
@@ -148,7 +150,7 @@ fn anonymous_chain_shapes_match_the_row_path() {
     differential(
         &g,
         "MATCH ()-[:R]->()-[:S]->() RETURN 1 AS one LIMIT 99",
-        false,
+        Engagement::Declined,
     );
     // Partially anonymous: an anonymous mid, anonymous far ends — the
     // named remainder is the projection. The far-ends shape keeps the
@@ -157,24 +159,24 @@ fn anonymous_chain_shapes_match_the_row_path() {
     differential(
         &g,
         "MATCH (a:Alpha)-[:R]->()-[:S]->() RETURN a.k AS ak LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     differential(
         &g,
         "MATCH ()-[:R]->(b:Beta)-[:S]->() RETURN b.k AS bk LIMIT 99",
-        false,
+        Engagement::Declined,
     );
     differential(
         &g,
         "MATCH (a:Alpha)-[:R]->(b)-[:S]->(g:Gamma) RETURN a.k AS ak LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     // Existence over the fully anonymous chain: every complete binding
     // counts, none of them projects.
     let exists = differential(
         &g,
         "RETURN EXISTS { MATCH (:Alpha)-[:R]->(:Beta)-[:S]->(:Gamma) } AS hit",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(exists.rows, vec![vec![Value::Bool(true)]]);
 }

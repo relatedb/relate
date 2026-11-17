@@ -58,15 +58,69 @@ pub(super) fn abbreviate(statement: &str) -> String {
     format!("{truncated}…")
 }
 
-pub(super) fn mark(live: &Mutex<Live>, phase: &'static str, label: &str) {
-    if let Ok(mut guard) = live.lock() {
-        guard.phase = phase;
-        guard.index = 0;
-        guard.total = 0;
-        guard.label = label.to_string();
-        guard.statement_started = Instant::now();
-        guard.active = true;
+/// Open a fill phase; the fill loops' progress updates propagate a
+/// poisoned lock as an error.
+pub(super) fn begin_phase(live: &Mutex<Live>, phase: &'static str) -> Result<(), String> {
+    let mut guard = live.lock().map_err(|_| "progress lock poisoned")?;
+    guard.phase = phase;
+    guard.index = 0;
+    guard.total = 0;
+    guard.phase_started = Instant::now();
+    guard.active = false;
+    Ok(())
+}
+
+/// Mark statement `n` of the phase as running.
+pub(super) fn begin_statement(
+    live: &Mutex<Live>,
+    phase: &'static str,
+    n: usize,
+    label: &str,
+) -> Result<(), String> {
+    let mut guard = live.lock().map_err(|_| "progress lock poisoned")?;
+    guard.phase = phase;
+    guard.index = n;
+    guard.total = 0;
+    guard.label.clear();
+    guard.label.push_str(label);
+    guard.statement_started = Instant::now();
+    guard.active = true;
+    Ok(())
+}
+
+/// Mark statement `n` finished and print its progress line when due
+/// (the first, every 25th, a slow one, or ten seconds since the last).
+pub(super) fn end_statement(
+    live: &Mutex<Live>,
+    phase: &'static str,
+    n: usize,
+    label: &str,
+) -> Result<(), String> {
+    let mut guard = live.lock().map_err(|_| "progress lock poisoned")?;
+    guard.active = false;
+    let elapsed = guard.statement_started.elapsed();
+    let phase_elapsed = guard.phase_started.elapsed();
+    let due = n == 1
+        || elapsed >= Duration::from_secs(2)
+        || n.is_multiple_of(25)
+        || guard.last_print.elapsed() >= Duration::from_secs(10);
+    if due {
+        let line = format!(
+            "      {phase:<5} {n:>4}      {label:<52} {:>8}  total {}",
+            format_elapsed(elapsed),
+            format_elapsed(phase_elapsed)
+        );
+        guard.last_print = Instant::now();
+        drop(guard);
+        progress(&line);
     }
+    Ok(())
+}
+
+/// Mark a labelled step (index 0) as running; a poisoned lock is an
+/// error, like every fill-loop progress update.
+pub(super) fn mark(live: &Mutex<Live>, phase: &'static str, label: &str) -> Result<(), String> {
+    begin_statement(live, phase, 0, label)
 }
 
 pub(super) fn clear_active(live: &Mutex<Live>) {

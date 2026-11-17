@@ -67,10 +67,29 @@ pub(super) fn families() -> Graph {
     g
 }
 
+/// Whether a differential expects a kernel to take the statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Engagement {
+    /// A kernel takes the statement exactly once.
+    Engaged,
+    /// No kernel takes it (a gate decline).
+    Declined,
+}
+
+impl Engagement {
+    /// The kernel-engagement count this expectation asserts.
+    fn count(self) -> u32 {
+        match self {
+            Engagement::Engaged => 1,
+            Engagement::Declined => 0,
+        }
+    }
+}
+
 /// The differential: `cypher` must answer identically with the kernels on
-/// and forced off, and (when `engages`) a kernel must have taken it exactly
+/// and forced off, and (when [`Engagement::Engaged`]) a kernel must have taken it exactly
 /// once. Returns the kernel-path result.
-pub(super) fn differential(g: &Graph, cypher: &str, engages: bool) -> super::QueryResult {
+pub(super) fn differential(g: &Graph, cypher: &str, engages: Engagement) -> super::QueryResult {
     differential_with(cypher, engages, || try_exec_cypher(g, cypher))
 }
 
@@ -83,7 +102,7 @@ pub(super) fn differential(g: &Graph, cypher: &str, engages: bool) -> super::Que
 /// [`error_differential`]).
 pub(super) fn differential_with(
     label: &str,
-    engages: bool,
+    engages: Engagement,
     run: impl Fn() -> Result<super::QueryResult>,
 ) -> super::QueryResult {
     // The run first, the counter taken on both outcomes: an errored
@@ -94,9 +113,9 @@ pub(super) fn differential_with(
     let kernaled = ran.unwrap_or_else(|error| panic!("the differential runs {label}: {error}"));
     assert_eq!(
         engagements,
-        u32::from(engages),
+        engages.count(),
         "engagement for {label}: expected {}, took {}",
-        u32::from(engages),
+        engages.count(),
         engagements
     );
     let per_row = with_kernels_disabled(run)

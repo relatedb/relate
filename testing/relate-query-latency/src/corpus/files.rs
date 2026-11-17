@@ -26,7 +26,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::{Classification, CorpusQuery};
+use super::{Classification, CorpusQuery, Workload};
 use crate::workload::ScaleFactor;
 use crate::{read, Result};
 
@@ -153,6 +153,28 @@ impl<V> OracleFile<V> {
         self.table
             .get(id)
             .ok_or_else(|| format!("{id}: no oracle row in {}", self.path.display()))
+    }
+}
+
+impl OracleFile {
+    /// The rows-oracle build sequence every lane runs: derive the
+    /// workload's oracle path ([`Workload::oracle_path`], the one home of
+    /// the convention), load the table ([`load_rows_oracle`]) and validate
+    /// the workload against it ([`validate_rows_oracle`]). One home, so no
+    /// lane — and no test lane — can derive, load or validate differently
+    /// from another; a workload that carries no oracle file fails loudly
+    /// here rather than at the call site.
+    pub(super) fn load(
+        workload: Workload,
+        sf: ScaleFactor,
+        queries: &[CorpusQuery],
+    ) -> Result<Self> {
+        let path = workload
+            .oracle_path(sf)
+            .ok_or_else(|| format!("the {workload} workload carries no rows oracle"))?;
+        let oracle = load_rows_oracle(&path)?;
+        validate_rows_oracle(&oracle, queries)?;
+        Ok(oracle)
     }
 }
 

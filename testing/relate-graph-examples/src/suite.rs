@@ -10,7 +10,7 @@ use relate::value_to_cypher;
 use crate::adoc::{
     classify_block, cypher_blocks, is_ordered, strip_limit_skip, Classified, ClassifiedKind,
 };
-use crate::diff::{compare_rows, rows_subset, Relation};
+use crate::diff::{compare_rows, rows_subset, Relation, StatementOrder};
 use crate::docker::DatasetTest;
 use crate::manifest::Dataset;
 use crate::record::{Outcome, QueryResult};
@@ -123,7 +123,7 @@ fn verify_count(
         };
     // One row, one integer, no ordering question: anything but Exact is a
     // count mismatch.
-    let outcome = match compare_rows(&reference_rows, &engine_rows, true) {
+    let outcome = match compare_rows(&reference_rows, &engine_rows, StatementOrder::Ordered) {
         Relation::Exact => Outcome::Pass,
         Relation::UpToListOrder(why) | Relation::Different(why) => Outcome::SetupFailed(format!(
             "pull-verification count mismatch (ADR-0176 kind 3): {why}"
@@ -374,7 +374,12 @@ fn run_both(
     let relation = if crate::adoc::is_schema_visualization(statement) {
         crate::diff::compare_rows_schema_viz(&reference_rows, &engine_rows)
     } else {
-        compare_rows(&reference_rows, &engine_rows, ordered)
+        let order = if ordered {
+            StatementOrder::Ordered
+        } else {
+            StatementOrder::Unordered
+        };
+        compare_rows(&reference_rows, &engine_rows, order)
     };
     let outcome = match relation {
         Relation::Exact => Outcome::Pass,

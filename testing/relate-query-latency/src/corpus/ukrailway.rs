@@ -23,7 +23,7 @@
 //! crate's fetch machinery; it never imports the runner or the other
 //! lanes. What the lane owns itself is the import script and its
 //! loader, and the lane's own facts — its oracle file comes from the
-//! shared build sequence ([`super::load_oracle`]), which derives
+//! shared build sequence ([`OracleFile::load`]), which derives
 //! the path through [`Workload::oracle_path`].
 
 use std::path::{Path, PathBuf};
@@ -32,7 +32,6 @@ use relate::Connection;
 
 use super::files::OracleFile;
 use super::graph::{CorpusLane, GraphHandle, Routed};
-use super::load_oracle;
 use super::{CorpusQuery, Workload};
 use crate::fetch::{ensure_ukrailway, PINNED_COMMIT};
 use crate::workload::ScaleFactor;
@@ -97,7 +96,7 @@ impl UkrailwayLane {
         // The same shared build sequence `new` runs, so a test lane is
         // `new` minus the fetch and the import, never a lookalike that
         // skips the validation step.
-        let oracle = load_oracle(Workload::Ukrailway, ScaleFactor::Sf0_1, queries)?;
+        let oracle = OracleFile::load(Workload::Ukrailway, ScaleFactor::Sf0_1, queries)?;
         Ok(Self {
             graph: Box::new(graph),
             oracle,
@@ -112,7 +111,7 @@ impl UkrailwayLane {
     /// fetches), ensure the pinned data set is under the cache root, and
     /// import it into the lane's `:memory:` store.
     pub(super) fn new(data_root: &Path, download: bool, queries: &[CorpusQuery]) -> Result<Self> {
-        let oracle = load_oracle(Workload::Ukrailway, ScaleFactor::Sf0_1, queries)?;
+        let oracle = OracleFile::load(Workload::Ukrailway, ScaleFactor::Sf0_1, queries)?;
         let dir = ensure_ukrailway(
             data_root,
             &Workload::Ukrailway.dir().join("data.sha256"),

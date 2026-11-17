@@ -6,7 +6,7 @@
 use relate_core::Value;
 
 use super::super::test_support::{exec_autocommit, Builder};
-use super::{differential, families};
+use super::{differential, families, Engagement};
 
 /// The hub-star family: the open star (distinct terminals), the shared
 /// terminal (a bounded cycle), the 2-hop side, and mixed orientation.
@@ -19,7 +19,7 @@ fn hub_star_matches_the_row_path() {
         &g,
         "MATCH (h:Hub)-[:A]->(t:Tag), (h)-[:B]->(u:Tag) WHERE t.name = 'x' \
          RETURN h.k AS hk, u.name AS un LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(
         open.rows,
@@ -31,7 +31,7 @@ fn hub_star_matches_the_row_path() {
     let shared = differential(
         &g,
         "MATCH (h:Hub)-[:A]->(t:Tag), (h)-[:B]->(t) RETURN h.k AS hk, t.name AS tn LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(
         shared.rows,
@@ -48,7 +48,7 @@ fn hub_star_matches_the_row_path() {
         &g,
         "MATCH (h:Hub)-[:A]->(t:Tag), (h)-[:C]->(m:Mid)-[:D]->(t) \
          RETURN h.k AS hk, t.name AS tn LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(
         two_hop.rows,
@@ -60,7 +60,7 @@ fn hub_star_matches_the_row_path() {
         &g,
         "MATCH (h:Hub)-[:A]->(t:Tag), (u:Tag)<-[:B]-(h) WHERE t.name = 'y' \
          RETURN h.k AS hk, u.name AS un LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(
         mixed.rows,
@@ -81,7 +81,7 @@ fn hub_star_keeps_the_cross_side_uniqueness_rule() {
         &g,
         "MATCH (h:Hub)-[:A]->(t:Tag), (h)-[:A]->(u:Tag) \
          RETURN h.k AS hk, t.name AS tn, u.name AS un LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(pairs.rows.len(), 2);
 }
@@ -110,7 +110,7 @@ fn exists_counted_reads_every_pairing_of_a_b_row() {
         &g,
         "MATCH (h:Hub)-[:C]->(m:Mid)-[:D]->(t:Tag), (h)-[:A]->(u:Unk) \
          RETURN count(DISTINCT m.k) > 0 AS has",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(has.rows, vec![vec![Value::Bool(true)]]);
 }
@@ -125,13 +125,13 @@ fn hub_star_anonymous_terminals_match_the_row_path() {
     differential(
         &g,
         "MATCH (h:Hub)-[:A]->(), (h)-[:B]->(t:Tag) RETURN h.k AS hk, t.name AS tn LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     let none = differential(
         &g,
         "MATCH (h:Hub)-[:A]->(t:Tag), (h)-[:B]->(u:Tag) WHERE t.name = 'zz' \
          RETURN h.k AS hk LIMIT 99",
-        true,
+        Engagement::Engaged,
     );
     assert_eq!(none.rows, Vec::<Vec<Value>>::new());
 }

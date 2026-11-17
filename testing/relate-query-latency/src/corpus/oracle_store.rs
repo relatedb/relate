@@ -24,7 +24,6 @@
 
 use super::files::OracleFile;
 use super::graph::{CorpusLane, GraphHandle, Routed};
-use super::load_oracle;
 use super::report::graph_benchmark_ldbc_store_line;
 use super::{CorpusQuery, Workload};
 use crate::suite::GraphOptions;
@@ -58,7 +57,7 @@ impl RowsOracleStoreLane {
         opts: &GraphOptions,
         queries: &[CorpusQuery],
     ) -> Result<Self> {
-        let oracle = load_oracle(workload, opts.sf, queries)?;
+        let oracle = OracleFile::load(workload, opts.sf, queries)?;
         let (graph, origin) = GraphHandle::open_graph_benchmark_ldbc(opts)?;
         Ok(Self {
             graph: Box::new(graph),
@@ -68,7 +67,7 @@ impl RowsOracleStoreLane {
     }
 
     /// The tests' lane over a memory graph: the SAME oracle build
-    /// sequence [`Self::new`] runs ([`load_oracle`]), so a test lane can
+    /// sequence [`Self::new`] runs ([`OracleFile::load`]), so a test lane can
     /// never be wired to a different file — or validated differently —
     /// than the lane it stands in for. The report-only `line` field is
     /// empty here (the lane-under-test routes, never reports), stated
@@ -79,7 +78,7 @@ impl RowsOracleStoreLane {
         graph: GraphHandle,
         queries: &[CorpusQuery],
     ) -> Result<Self> {
-        let oracle = load_oracle(workload, ScaleFactor::Sf0_1, queries)?;
+        let oracle = OracleFile::load(workload, ScaleFactor::Sf0_1, queries)?;
         Ok(Self {
             graph: Box::new(graph),
             oracle,

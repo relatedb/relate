@@ -9,7 +9,7 @@ use relate_core::Value;
 
 use super::super::kernels::take_kernel_engagements;
 use super::super::test_support::{build, exec_cypher, Built};
-use super::differential;
+use super::{differential, Engagement};
 
 /// A five-node `:N` chain (`0 -> 1 -> 2 -> 3 -> 4`, rel type `R`), plus —
 /// when `hub_leaves > 0` — a separate hub node fanning out to that many
@@ -56,7 +56,7 @@ fn a_thin_graph_keeps_the_kernel_on_the_unpriced_chain() {
     // never grows, and the kernel stays engaged.
     let built = chain_with_hub(0);
     for cypher in SHAPES {
-        let result = differential(&built.graph, cypher, true);
+        let result = differential(&built.graph, cypher, Engagement::Engaged);
         assert_eq!(result.rows, vec![vec![Value::Int(1)]], "{cypher}");
     }
 }

@@ -100,11 +100,14 @@ pub struct PeakCalibrationReport {
 /// Summarize one scope's observations: a single family's, or — `None` —
 /// every observation for the overall row. The summary's `family` field
 /// carries the wire name, `overall` for the overall row; no caller
-/// discriminates a magic string.
+/// discriminates a magic string. A scope with no observations, or with no
+/// one-holder observation to fit the single-holder slope on, is an error:
+/// there is no honest fit to report.
 pub(super) fn summarize_family(
     family: Option<&'static FamilySpec>,
     observations: &[PeakCalibrationObservation],
-) -> PeakCalibrationSummary {
+) -> Result<PeakCalibrationSummary, String> {
+    let scope = family.map_or("overall", |spec| spec.name);
     let rows = observations
         .iter()
         .filter(|row| family.is_none_or(|spec| row.family == spec.name))
@@ -120,11 +123,11 @@ pub(super) fn summarize_family(
                 .map(|delta| (row.held_logical_bytes as f64, delta as f64))
         })
         .collect::<Vec<_>>();
-    let (rss_slope, rss_intercept, rss_r_squared) = linear_fit(&rss_points);
-    let cgroup_fit = (!cgroup_points.is_empty()).then(|| linear_fit(&cgroup_points));
-    let rss_max_abs_residual_bytes = max_abs_residual(&rss_points, rss_slope, rss_intercept);
-    let cgroup_max_abs_residual_bytes =
-        cgroup_fit.map(|fit| max_abs_residual(&cgroup_points, fit.0, fit.1));
+    let rss_fit = linear_fit(&rss_points)
+        .ok_or_else(|| format!("calibration scope {scope} has no observations"))?;
+    let cgroup_fit = linear_fit(&cgroup_points);
+    let rss_max_abs_residual_bytes = max_abs_residual(&rss_points, rss_fit);
+    let cgroup_max_abs_residual_bytes = cgroup_fit.map(|fit| max_abs_residual(&cgroup_points, fit));
     let single = rows
         .iter()
         .copied()
@@ -132,20 +135,17 @@ pub(super) fn summarize_family(
         .collect::<Vec<_>>();
     let rss_single = linear_fit(&logical_byte_points(&single, |row| {
         Some(row.rss_delta_bytes)
-    }));
+    }))
+    .ok_or_else(|| format!("calibration scope {scope} has no one-holder observations"))?;
     let cgroup_single_points = logical_byte_points(&single, |row| row.cgroup_delta_bytes);
-    let cgroup_single =
-        (!cgroup_single_points.is_empty()).then(|| linear_fit(&cgroup_single_points));
+    let cgroup_single = linear_fit(&cgroup_single_points);
     let per_family = family.is_some();
-    PeakCalibrationSummary {
-        family: family
-            .map(|spec| spec.name)
-            .unwrap_or("overall")
-            .to_string(),
+    Ok(PeakCalibrationSummary {
+        family: scope.to_string(),
         observations: rows.len(),
-        rss_slope,
-        rss_intercept_bytes: rss_intercept,
-        rss_r_squared,
+        rss_slope: rss_fit.slope,
+        rss_intercept_bytes: rss_fit.intercept,
+        rss_r_squared: rss_fit.r_squared,
         rss_max_abs_residual_bytes,
         max_rss_to_logical_ratio: rows
             .iter()
@@ -157,19 +157,19 @@ pub(super) fn summarize_family(
             Some(row.rss_delta_bytes as f64)
         })
         .unwrap_or(0.0),
-        rss_single_holder_slope: rss_single.0,
-        rss_single_holder_r_squared: rss_single.2,
+        rss_single_holder_slope: rss_single.slope,
+        rss_single_holder_r_squared: rss_single.r_squared,
         rss_per_holder_bytes: per_family
             .then(|| per_holder_bytes(&rows, |row| Some(row.rss_delta_bytes)))
             .flatten(),
-        cgroup_slope: cgroup_fit.map(|fit| fit.0),
-        cgroup_single_holder_slope: cgroup_single.map(|fit| fit.0),
-        cgroup_single_holder_r_squared: cgroup_single.map(|fit| fit.2),
+        cgroup_slope: cgroup_fit.map(|fit| fit.slope),
+        cgroup_single_holder_slope: cgroup_single.map(|fit| fit.slope),
+        cgroup_single_holder_r_squared: cgroup_single.map(|fit| fit.r_squared),
         cgroup_per_holder_bytes: per_family
             .then(|| per_holder_bytes(&rows, |row| row.cgroup_delta_bytes))
             .flatten(),
-        cgroup_intercept_bytes: cgroup_fit.map(|fit| fit.1),
-        cgroup_r_squared: cgroup_fit.map(|fit| fit.2),
+        cgroup_intercept_bytes: cgroup_fit.map(|fit| fit.intercept),
+        cgroup_r_squared: cgroup_fit.map(|fit| fit.r_squared),
         cgroup_max_abs_residual_bytes,
         max_cgroup_to_logical_ratio: rows
             .iter()
@@ -179,7 +179,7 @@ pub(super) fn summarize_family(
         cgroup_equal_total_concurrency_spread: equal_total_spread(&rows, |row| {
             row.cgroup_delta_bytes.map(|bytes| bytes as f64)
         }),
-    }
+    })
 }
 
 fn logical_byte_points(
@@ -213,13 +213,15 @@ fn per_holder_bytes(
         .iter()
         .map(|point| point.0 as usize)
         .collect::<std::collections::BTreeSet<_>>();
-    (holder_counts.len() >= 2).then(|| linear_fit(&points).0)
+    (holder_counts.len() >= 2)
+        .then(|| linear_fit(&points).map(|fit| fit.slope))
+        .flatten()
 }
 
-fn max_abs_residual(points: &[(f64, f64)], slope: f64, intercept: f64) -> f64 {
+fn max_abs_residual(points: &[(f64, f64)], fit: Fit) -> f64 {
     points
         .iter()
-        .map(|point| (point.1 - (intercept + slope * point.0)).abs())
+        .map(|point| (point.1 - (fit.intercept + fit.slope * point.0)).abs())
         .fold(0.0, f64::max)
 }
 
@@ -250,8 +252,7 @@ fn repeat_spread(
         for &(target, holders) in SHAPES {
             let values = shape_values(rows, spec.name, target, holders, &value);
             if values.len() > 1 {
-                let min = values.iter().copied().fold(f64::INFINITY, f64::min);
-                let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let (min, max) = min_max(&values);
                 largest = Some(largest.unwrap_or(0.0).max(max - min));
             }
         }
@@ -272,8 +273,7 @@ fn equal_total_spread(
             })
             .collect::<Vec<_>>();
         if means.len() == equal_total_shapes().count() {
-            let min = means.iter().copied().fold(f64::INFINITY, f64::min);
-            let max = means.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let (min, max) = min_max(&means);
             if min > 0.0 {
                 largest = Some(largest.unwrap_or(0.0).max(max / min - 1.0));
             }
@@ -282,9 +282,27 @@ fn equal_total_spread(
     largest
 }
 
-fn linear_fit(points: &[(f64, f64)]) -> (f64, f64, f64) {
+/// The smallest and largest of `values` (infinities for an empty slice;
+/// both callers hold at least one value).
+fn min_max(values: &[f64]) -> (f64, f64) {
+    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    (min, max)
+}
+
+/// A least-squares line through (logical bytes, delta bytes) points.
+#[derive(Debug, Clone, Copy)]
+struct Fit {
+    slope: f64,
+    intercept: f64,
+    r_squared: f64,
+}
+
+/// The fit through `points`; `None` for no points (there is no line to
+/// report, and a zero fit would read as a measured flat one).
+fn linear_fit(points: &[(f64, f64)]) -> Option<Fit> {
     if points.is_empty() {
-        return (0.0, 0.0, 0.0);
+        return None;
     }
     let n = points.len() as f64;
     let mean_x = points.iter().map(|point| point.0).sum::<f64>() / n;
@@ -312,7 +330,11 @@ fn linear_fit(points: &[(f64, f64)]) -> (f64, f64, f64) {
     } else {
         1.0 - residual / total
     };
-    (slope, intercept, r_squared)
+    Some(Fit {
+        slope,
+        intercept,
+        r_squared,
+    })
 }
 
 #[cfg(test)]
@@ -322,7 +344,11 @@ mod tests {
 
     #[test]
     fn linear_fit_recovers_slope_and_intercept() {
-        let (slope, intercept, r_squared) = linear_fit(&[(1.0, 7.0), (2.0, 9.0), (3.0, 11.0)]);
+        let Fit {
+            slope,
+            intercept,
+            r_squared,
+        } = linear_fit(&[(1.0, 7.0), (2.0, 9.0), (3.0, 11.0)]).expect("a fit");
         assert!((slope - 2.0).abs() < f64::EPSILON);
         assert!((intercept - 5.0).abs() < f64::EPSILON);
         assert!((r_squared - 1.0).abs() < f64::EPSILON);
@@ -359,13 +385,17 @@ mod tests {
             observation(bytes(2048), 2, bytes(4096), bytes(4096) * 2 + holder),
             observation(bytes(1024), 4, bytes(4096), bytes(4096) * 2 + 3 * holder),
         ];
-        let summary = summarize_family(family_spec("create").ok(), &rows);
+        let summary = summarize_family(family_spec("create").ok(), &rows).expect("summary");
         assert!((summary.rss_single_holder_slope - 2.0).abs() < 1e-9);
         assert!((summary.rss_single_holder_r_squared - 1.0).abs() < 1e-9);
         let per_holder = summary.rss_per_holder_bytes.expect("per-holder cost");
         assert!((per_holder - holder as f64).abs() < 1.0, "{per_holder}");
         assert!(summary.rss_slope > summary.rss_single_holder_slope);
-        assert!(summarize_family(None, &rows).rss_per_holder_bytes.is_none());
+        assert!(summarize_family(None, &rows)
+            .expect("summary")
+            .rss_per_holder_bytes
+            .is_none());
+        assert!(summarize_family(family_spec("sort").ok(), &rows).is_err());
     }
 
     #[test]

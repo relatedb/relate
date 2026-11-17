@@ -494,18 +494,26 @@ fn relate_through(left: &[Json], right: &[Json], ladder: &Ladder) -> Relation {
     }
 }
 
+/// Whether the statement under comparison fixes its row order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatementOrder {
+    /// The statement has an `ORDER BY`: rows compare positionally.
+    Ordered,
+    /// No `ORDER BY`: rows compare as a bag.
+    Unordered,
+}
+
 /// Compare one Neo4j Query API v2 result set against one relate result
-/// set. `ordered` = the statement has an `ORDER BY`, so rows compare
+/// set. [`StatementOrder::Ordered`] = the statement has an `ORDER BY`, so rows compare
 /// positionally; otherwise a multiset (bag) comparison decides, so
 /// engine-internal iteration order never fails a semantically equal result.
 /// `collect()` list order is unspecified anywhere, and `ORDER BY` with equal
 /// sort keys leaves the row order unspecified (ties) — a pure reordering is
 /// `UpToListOrder`, not `Different`.
-pub fn compare_rows(neo4j: &[Json], cypher: &[CypherValue], ordered: bool) -> Relation {
-    let ladder = if ordered {
-        &ORDERED_LADDER
-    } else {
-        &BAG_LADDER
+pub fn compare_rows(neo4j: &[Json], cypher: &[CypherValue], order: StatementOrder) -> Relation {
+    let ladder = match order {
+        StatementOrder::Ordered => &ORDERED_LADDER,
+        StatementOrder::Unordered => &BAG_LADDER,
     };
     relate_through(
         &normalize_reference_rows(neo4j),
@@ -658,12 +666,12 @@ fn values_equal(l: &Json, r: &Json, lists: ListOrder) -> bool {
             // rounding, so distinct integers above 2^53 stay distinct.
             (Some(x), Some(y)) => x == y,
             // At least one genuine float: relative/absolute epsilon.
-            // `as_f64` is total for stored i64/u64/f64; the NaN fallback
-            // never satisfies the epsilon.
+            // `as_f64` is total for stored i64/u64/f64 (serde_json without
+            // `arbitrary_precision`).
             _ => {
                 let (x, y) = (
-                    a.as_f64().unwrap_or(f64::NAN),
-                    b.as_f64().unwrap_or(f64::NAN),
+                    a.as_f64().expect("serde_json numbers convert to f64"),
+                    b.as_f64().expect("serde_json numbers convert to f64"),
                 );
                 (x - y).abs() <= 1e-9 * x.abs().max(y.abs()).max(1e-9)
             }

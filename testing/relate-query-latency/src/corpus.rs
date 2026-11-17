@@ -454,28 +454,6 @@ pub fn workload_queries(workload: Workload) -> Result<Vec<CorpusQuery>> {
     Ok(queries)
 }
 
-/// The rows-oracle build sequence every lane runs: derive the workload's
-/// oracle path ([`Workload::oracle_path`], the one home of the
-/// convention), load the table and validate the workload against it. One
-/// home, so no lane — and no test lane — can derive, load or validate
-/// differently from another; a workload that carries no oracle file
-/// fails loudly here rather than at the call site. Stated in this root —
-/// beside [`Workload::oracle_path`], the derivation it composes first —
-/// because it is root policy over the `files` submodule's format
-/// surface, never a piece of that leaf.
-fn load_oracle(
-    workload: Workload,
-    sf: ScaleFactor,
-    queries: &[CorpusQuery],
-) -> Result<files::OracleFile> {
-    let path = workload
-        .oracle_path(sf)
-        .ok_or_else(|| format!("the {workload} workload carries no rows oracle"))?;
-    let oracle = files::load_rows_oracle(&path)?;
-    files::validate_rows_oracle(&oracle, queries)?;
-    Ok(oracle)
-}
-
 /// How the run picks its seeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeedPolicy {

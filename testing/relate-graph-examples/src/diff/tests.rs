@@ -25,8 +25,8 @@ fn rows_cypher(names: &[&str]) -> Vec<CypherValue> {
 
 /// The strict failure text of a comparison that must come back `Different`;
 /// any other relation fails the test.
-fn expect_different(left: &[Json], right: &[CypherValue], ordered: bool) -> String {
-    match compare_rows(left, right, ordered) {
+fn expect_different(left: &[Json], right: &[CypherValue], order: StatementOrder) -> String {
+    match compare_rows(left, right, order) {
         Relation::Different(why) => why,
         other => panic!("expected Different, got {other:?}"),
     }
@@ -47,7 +47,10 @@ fn unordered_rows_compare_as_a_bag() {
                 .collect(),
         ),
     ];
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
 }
 
 #[test]
@@ -55,7 +58,7 @@ fn ordered_rows_compare_positionally() {
     let left = row_json(Json::Number(serde_json::Number::from(1)));
     let right = row_cypher(CypherValue::Int(2));
     assert!(matches!(
-        compare_rows(&left, &right, true),
+        compare_rows(&left, &right, StatementOrder::Ordered),
         Relation::Different(_)
     ));
 }
@@ -64,7 +67,10 @@ fn ordered_rows_compare_positionally() {
 fn floats_compare_with_epsilon() {
     let left = row_json(serde_json::json!(0.30000000000000004));
     let right = row_cypher(CypherValue::Float(0.3));
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
 }
 
 #[test]
@@ -77,7 +83,10 @@ fn neo4j_typed_dates_fold_to_strings() {
     ] {
         let left = row_json(typed);
         let right = row_cypher(CypherValue::Str("2024-03-14".into()));
-        assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+        assert_eq!(
+            compare_rows(&left, &right, StatementOrder::Unordered),
+            Relation::Exact
+        );
     }
 }
 
@@ -90,7 +99,7 @@ fn unknown_type_tags_stay_objects_and_diff_visibly() {
     let left = row_json(v);
     let right = row_cypher(CypherValue::Str("2024-03-14".into()));
     assert!(matches!(
-        compare_rows(&left, &right, false),
+        compare_rows(&left, &right, StatementOrder::Unordered),
         Relation::Different(_)
     ));
 }
@@ -113,7 +122,7 @@ fn non_finite_floats_fold_to_strings_not_null() {
     let left = row_json(Json::Null);
     let right = row_cypher(CypherValue::Float(f64::NAN));
     assert!(matches!(
-        compare_rows(&left, &right, false),
+        compare_rows(&left, &right, StatementOrder::Unordered),
         Relation::Different(_)
     ));
 }
@@ -124,12 +133,15 @@ fn integers_compare_exactly_above_the_f64_mantissa() {
     let left = row_json(serde_json::json!(9007199254740992i64));
     let right = row_cypher(CypherValue::Int(9007199254740993));
     assert!(matches!(
-        compare_rows(&left, &right, false),
+        compare_rows(&left, &right, StatementOrder::Unordered),
         Relation::Different(_)
     ));
     // …and equal large integers still match.
     let right = row_cypher(CypherValue::Int(9007199254740992));
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
 }
 
 #[test]
@@ -137,7 +149,10 @@ fn float_epsilon_applies_only_with_a_genuine_float() {
     // 0.1 + 0.2 vs 0.3: classic f64 drift, inside the epsilon.
     let left = row_json(serde_json::json!(0.1f64 + 0.2f64));
     let right = row_cypher(CypherValue::Float(0.3));
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
 }
 
 #[test]
@@ -159,14 +174,20 @@ fn typed_wire_points_compare_equal_to_engine_points() {
         "_value": "SRID=7203;POINT (1.0 2.0)"
     }));
     let right = row_cypher(CypherValue::Point(PointValue::cartesian_2d(1.0, 2.0)));
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
 
     let left = row_json(serde_json::json!({
         "$type": "Point",
         "_value": "SRID=9157;POINT Z (1.0 2.0 3.0)"
     }));
     let right = row_cypher(CypherValue::Point(PointValue::cartesian_3d(1.0, 2.0, 3.0)));
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
 }
 
 /// F-1-1: the suite's reference client requests plain JSON
@@ -176,7 +197,10 @@ fn typed_wire_points_compare_equal_to_engine_points() {
 fn plain_json_wire_points_compare_equal_to_engine_points() {
     let left = row_json(serde_json::json!("SRID=4326;POINT (-73.9857 40.7484)"));
     let right = row_cypher(CypherValue::Point(PointValue::wgs84_2d(-73.9857, 40.7484)));
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
 
     let left = row_json(serde_json::json!(
         "SRID=4979;POINT Z (-73.9857 40.7484 100.5)"
@@ -184,7 +208,10 @@ fn plain_json_wire_points_compare_equal_to_engine_points() {
     let right = row_cypher(CypherValue::Point(PointValue::wgs84_3d(
         -73.9857, 40.7484, 100.5,
     )));
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
 }
 
 #[test]
@@ -193,26 +220,26 @@ fn differing_or_unparseable_points_still_diff() {
     let left = row_json(serde_json::json!("SRID=7203;POINT (1.0 2.0)"));
     let right = row_cypher(CypherValue::Point(PointValue::cartesian_2d(1.0, 3.0)));
     assert!(matches!(
-        compare_rows(&left, &right, false),
+        compare_rows(&left, &right, StatementOrder::Unordered),
         Relation::Different(_)
     ));
     // Different SRID, same coordinates.
     let left = row_json(serde_json::json!("SRID=4326;POINT (1.0 2.0)"));
     assert!(matches!(
-        compare_rows(&left, &right, false),
+        compare_rows(&left, &right, StatementOrder::Unordered),
         Relation::Different(_)
     ));
     // SRID-less WKT cannot recover the CRS: it stays as-is and diffs
     // visibly rather than guessing a coordinate space.
     let left = row_json(serde_json::json!("POINT (1.0 2.0)"));
     assert!(matches!(
-        compare_rows(&left, &right, false),
+        compare_rows(&left, &right, StatementOrder::Unordered),
         Relation::Different(_)
     ));
     // A plain string that merely mentions POINT is not EWKT.
     let left = row_json(serde_json::json!("a POINT (1.0 2.0) of interest"));
     assert!(matches!(
-        compare_rows(&left, &right, false),
+        compare_rows(&left, &right, StatementOrder::Unordered),
         Relation::Different(_)
     ));
 }
@@ -226,7 +253,7 @@ fn list_order_only_difference_is_up_to_list_order() {
         CypherValue::Int(2),
         CypherValue::Int(1),
     ]));
-    match compare_rows(&left, &right, false) {
+    match compare_rows(&left, &right, StatementOrder::Unordered) {
         Relation::UpToListOrder(strict) => {
             assert!(strict.contains("with no relate match"), "{strict}");
         }
@@ -251,7 +278,7 @@ fn ordered_row_ties_are_up_to_list_order() {
                 .collect(),
         ),
     ];
-    match compare_rows(&left, &right, true) {
+    match compare_rows(&left, &right, StatementOrder::Ordered) {
         Relation::UpToListOrder(strict) => {
             assert!(strict.contains("row 0 differs"), "{strict}");
         }
@@ -264,7 +291,7 @@ fn ordered_row_ties_are_up_to_list_order() {
 fn row_count_mismatch_keeps_the_strict_text() {
     let left = vec![serde_json::json!({"n": 1}), serde_json::json!({"n": 2})];
     let right = row_cypher(CypherValue::Int(1));
-    let strict = expect_different(&left, &right, false);
+    let strict = expect_different(&left, &right, StatementOrder::Unordered);
     assert_eq!(strict, "row count differs: neo4j 2 vs relate 1");
 }
 
@@ -278,7 +305,7 @@ fn mismatch_messages_render_compact_json_not_rust_debug() {
         CypherValue::Str("x".into()),
         CypherValue::Str("y".into()),
     ]));
-    let msg = expect_different(&left, &right, false);
+    let msg = expect_different(&left, &right, StatementOrder::Unordered);
     assert!(!msg.contains("Array ["), "{msg}");
     assert!(!msg.contains("String("), "{msg}");
     assert!(msg.contains(r#"["a","b"]"#), "{msg}");
@@ -292,7 +319,7 @@ fn mismatch_messages_elide_long_rows() {
     let long = "x".repeat(ELIDE_AT * 2);
     let left = row_json(serde_json::json!([long]));
     let right = row_cypher(CypherValue::List(vec![CypherValue::Str("y".into())]));
-    let msg = expect_different(&left, &right, false);
+    let msg = expect_different(&left, &right, StatementOrder::Unordered);
     assert!(msg.contains('…'), "{msg}");
     assert!(msg.len() < ELIDE_AT * 3, "{}", msg.len());
 }
@@ -305,7 +332,7 @@ fn mismatch_messages_elide_long_rows() {
 fn no_match_message_frames_rows_one_by_one() {
     let left = row_json(serde_json::json!(["a", "b"]));
     let right = row_cypher(CypherValue::List(vec![CypherValue::Str("x".into())]));
-    let msg = expect_different(&left, &right, false);
+    let msg = expect_different(&left, &right, StatementOrder::Unordered);
     assert!(msg.contains("with no relate match"), "{msg}");
     assert!(
         msg.contains("neo4j rows with no relate match (1): row 0:"),
@@ -331,7 +358,7 @@ fn no_match_message_reports_the_completed_difference() {
         serde_json::json!("w"),
     ]);
     let right = rows_cypher(&["x", "y", "z", "w", "v"]);
-    let msg = expect_different(&left, &right, false);
+    let msg = expect_different(&left, &right, StatementOrder::Unordered);
     assert!(
         msg.contains("neo4j rows with no relate match (1): row 0:"),
         "{msg}"
@@ -353,7 +380,7 @@ fn no_match_message_names_the_unrendered_rows_by_count() {
         serde_json::json!(["i", "j"]),
     ]);
     let right = rows_cypher(&["x", "y", "z", "w", "v"]);
-    let msg = expect_different(&left, &right, false);
+    let msg = expect_different(&left, &right, StatementOrder::Unordered);
     assert!(msg.contains("neo4j rows with no relate match (5)"), "{msg}");
     assert!(msg.contains("relate rows left over (5)"), "{msg}");
     assert!(msg.contains("row 2:"), "{msg}");
@@ -369,7 +396,7 @@ fn no_match_message_names_the_unrendered_rows_by_count() {
 fn no_match_message_names_true_result_indices() {
     let left = rows_json(&[serde_json::json!("a"), serde_json::json!("c")]);
     let right = rows_cypher(&["a", "b"]);
-    let msg = expect_different(&left, &right, false);
+    let msg = expect_different(&left, &right, StatementOrder::Unordered);
     // Relate row 0 matched the first reference row; the row left
     // over is result-set row 1, whatever the pool order is.
     assert!(msg.contains("relate rows left over (1): row 1:"), "{msg}");
@@ -424,7 +451,10 @@ fn entities_compare_by_content_not_id() {
         .into_iter()
         .collect(),
     });
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
 
     // relationship: {elementId, startNodeElementId, endNodeElementId, type, properties}
     let left = row_json(serde_json::json!({
@@ -446,7 +476,10 @@ fn entities_compare_by_content_not_id() {
         .into_iter()
         .collect(),
     });
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
 }
 
 fn neo4j_node(element_id: &str, labels: &[&str], props: Json) -> Json {
@@ -514,7 +547,10 @@ fn one_hop_paths_compare_equal_across_wire_shapes() {
             vec![("since", CypherValue::Int(2020))],
         )],
     });
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
     // rows_subset (the LIMIT/SKIP check) shares the normalization.
     assert!(rows_subset(&left, &right).is_ok());
 }
@@ -539,7 +575,10 @@ fn multi_hop_paths_compare_equal_across_wire_shapes() {
             cypher_rel(1, "R2", vec![("w", CypherValue::Float(0.5))]),
         ],
     });
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
 }
 
 #[test]
@@ -573,7 +612,7 @@ fn differing_paths_still_diff() {
         relationships: vec![cypher_rel(0, "KNOWS", vec![])],
     });
     assert!(matches!(
-        compare_rows(&row_json(wire.clone()), &right, false),
+        compare_rows(&row_json(wire.clone()), &right, StatementOrder::Unordered),
         Relation::Different(_)
     ));
 
@@ -583,7 +622,7 @@ fn differing_paths_still_diff() {
         relationships: vec![cypher_rel(0, "LIKES", vec![])],
     });
     assert!(matches!(
-        compare_rows(&row_json(wire.clone()), &right, false),
+        compare_rows(&row_json(wire.clone()), &right, StatementOrder::Unordered),
         Relation::Different(_)
     ));
 
@@ -596,7 +635,7 @@ fn differing_paths_still_diff() {
         ],
     });
     assert!(matches!(
-        compare_rows(&row_json(wire), &right, false),
+        compare_rows(&row_json(wire), &right, StatementOrder::Unordered),
         Relation::Different(_)
     ));
 }
@@ -611,7 +650,7 @@ fn non_path_rows_compare_as_before() {
         CypherValue::Int(1),
     ]));
     assert!(matches!(
-        compare_rows(&left, &right, false),
+        compare_rows(&left, &right, StatementOrder::Unordered),
         Relation::UpToListOrder(_)
     ));
     // …and equal in order.
@@ -619,7 +658,10 @@ fn non_path_rows_compare_as_before() {
         CypherValue::Int(1),
         CypherValue::Int(2),
     ]));
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
     // Scalars and maps are untouched by the path canonicalization.
     let left = row_json(serde_json::json!({"a": 1, "b": "x"}));
     let right = row_cypher(CypherValue::Map(
@@ -630,7 +672,10 @@ fn non_path_rows_compare_as_before() {
         .into_iter()
         .collect(),
     ));
-    assert_eq!(compare_rows(&left, &right, false), Relation::Exact);
+    assert_eq!(
+        compare_rows(&left, &right, StatementOrder::Unordered),
+        Relation::Exact
+    );
 }
 
 /// A rendered JSON payload at the cap is untouched; one past the cap is
@@ -744,7 +789,7 @@ fn plain_rows_with_name_keys_keep_their_order() {
         ),
     ];
     assert_eq!(
-        compare_rows(neo4j.as_array().unwrap(), &cypher, true),
+        compare_rows(neo4j.as_array().unwrap(), &cypher, StatementOrder::Ordered),
         super::Relation::Exact,
         "ordered comparison keeps the real row order"
     );
