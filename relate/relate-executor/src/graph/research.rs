@@ -56,15 +56,7 @@ pub(super) fn live_neighbors(
     // The live read's merged delta+sealed hop stream (ADR-0551), at the
     // live read ts so a tombstoned sealed position is dropped.
     let ts = graph.read_ts();
-    // the pairing bound once: each adjacency map with its scan
-    // direction in the same row; Both walks both rows
-    for (side, scan_dir) in [
-        (graph.out_side(), Direction::Outgoing),
-        (graph.in_side(), Direction::Incoming),
-    ] {
-        if dir != Direction::Both && dir != scan_dir {
-            continue;
-        }
+    for (side, scan_dir) in graph.sides(dir) {
         side.with_adj(node, |adj, region| {
             adj.for_each_hop_of(region, tid, ts, |hop| {
                 if let Some(other) = live_other(graph, &hop, node, scan_dir) {
@@ -88,7 +80,7 @@ mod tests {
         let (a, b, _, type_id) = crate::graph::test_support::folded_floor_chunk(&g);
         let floor = crate::adjacency::COMPACTION_DELTA_FLOOR;
         assert_eq!(
-            g.out_side().sealed.region(a).unwrap().chunk_len(type_id),
+            crate::graph::test_support::sealed_chunk_len(&g.out_side(), a, type_id),
             floor
         );
 

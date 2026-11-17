@@ -1,5 +1,7 @@
 use relate_ir::BinaryOp;
 
+#[cfg(feature = "test-hooks")]
+use super::build_counter::BuildCounter;
 use super::*;
 
 /// Lazily materialized equality postings for one `(class, key)` pair
@@ -316,17 +318,17 @@ thread_local! {
     /// Whole-graph index rebuilds (`rebuild_indexes`) on this thread. Behind
     /// the off-by-default `test-hooks` feature, unlike the cfg(test)-only
     /// `ADJ_BUILDS` seam in `rebuild.rs`: the facade's reopen tests read it
-    /// across the
-    /// crate boundary to pin that a clean close's open skips the wholesale
-    /// rebuild (LABS-1112) — behavior with no other observable surface.
-    static INDEX_REBUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// across the crate boundary to pin that a clean close's open skips the
+    /// wholesale rebuild (LABS-1112) — behavior with no other observable
+    /// surface.
+    static INDEX_REBUILDS: BuildCounter = const { BuildCounter::new() };
 }
 
 /// Take this thread's whole-graph index-rebuild count, resetting it.
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub fn take_index_rebuilds() -> u64 {
-    INDEX_REBUILDS.with(|n| n.replace(0))
+    INDEX_REBUILDS.with(BuildCounter::take)
 }
 
 impl Graph {
@@ -337,7 +339,7 @@ impl Graph {
     /// open, after the graph is final (snapshot plus replayed tail).
     pub fn rebuild_indexes(&self) {
         #[cfg(feature = "test-hooks")]
-        INDEX_REBUILDS.with(|n| n.set(n.get() + 1));
+        INDEX_REBUILDS.with(BuildCounter::bump);
         // Equality and string postings are both lazy (ADR-0063), and
         // relationship equality pairs are lazy the same way (ADR-0185):
         // drop them; the next seek rebuilds from the live graph on demand.

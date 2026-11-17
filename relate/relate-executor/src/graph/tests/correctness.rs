@@ -139,11 +139,12 @@ impl Corpus {
     /// the commit boundary: the delta first, then the sealed stream, in
     /// `cmp_ts_desc` order — the read every adjacency consumer rides.
     fn merged(&self, node: NodeId, outgoing: bool, tid: u32) -> Vec<Hop> {
-        let (map, sealed) = if outgoing {
-            (&self.g.out_adj, &self.g.sealed_out)
+        let side = if outgoing {
+            self.g.out_side()
         } else {
-            (&self.g.in_adj, &self.g.sealed_in)
+            self.g.in_side()
         };
+        let (map, sealed) = (side.delta(), side.sealed());
         let mut hops = Vec::new();
         if let Some(adj) = map.get(&node) {
             adj.for_each_hop_of(sealed.region(node), tid, self.g.commit_ts(), |hop| {
@@ -178,7 +179,7 @@ fn sealed_arena_reads_answer_what_the_walker_answers() {
     // The corpus really sealed: no delta hop remains, and the hub's two
     // widest chunks hold their whole pattern at scale.
     for (_, node) in &c.names {
-        for map in [&g.out_adj, &g.in_adj] {
+        for map in [g.out_side().delta(), g.in_side().delta()] {
             let delta: usize = map
                 .get(node)
                 .map(|adj| adj.chunks.iter().map(|chunk| chunk.hops.len()).sum())
@@ -188,11 +189,11 @@ fn sealed_arena_reads_answer_what_the_walker_answers() {
     }
     let hub = c.node("hub");
     assert_eq!(
-        g.sealed_out.region(hub).unwrap().chunk_len(c.f_id),
+        crate::graph::test_support::sealed_chunk_len(&g.out_side(), hub, c.f_id),
         7 * COMPACTION_DELTA_FLOOR
     );
     assert_eq!(
-        g.sealed_in.region(hub).unwrap().chunk_len(c.f_id),
+        crate::graph::test_support::sealed_chunk_len(&g.in_side(), hub, c.f_id),
         8 * COMPACTION_DELTA_FLOOR
     );
 
@@ -233,13 +234,13 @@ fn sealed_arena_reads_answer_what_the_walker_answers() {
         ];
         for (dir, pattern, tids) in cases {
             let mut sealed = match dir {
-                Direction::Outgoing => arena_ids(*node, &g.sealed_out, tids),
-                Direction::Incoming => arena_ids(*node, &g.sealed_in, tids),
+                Direction::Outgoing => arena_ids(*node, g.out_side().sealed(), tids),
+                Direction::Incoming => arena_ids(*node, g.in_side().sealed(), tids),
                 // Both is the walk's own rule: the sides' union, deduped
                 // by rel id — a self-loop rides both of its node's sides.
                 Direction::Both => {
-                    let mut ids = arena_ids(*node, &g.sealed_out, tids);
-                    ids.extend(arena_ids(*node, &g.sealed_in, tids));
+                    let mut ids = arena_ids(*node, g.out_side().sealed(), tids);
+                    ids.extend(arena_ids(*node, g.in_side().sealed(), tids));
                     let mut seen = HashSet::new();
                     ids.retain(|id| seen.insert(*id));
                     ids
@@ -293,7 +294,7 @@ fn the_sixteen_byte_hop_preserves_the_option_semantics() {
             // A delta chunk really holds both presences: the 16-byte
             // tier's own mixed boundary, not only the sealed bitmap's.
             let mut mixed_delta = 0;
-            for map in [&c.g.out_adj, &c.g.in_adj] {
+            for map in [c.g.out_side().delta(), c.g.in_side().delta()] {
                 map.for_each(|_, adj| {
                     mixed_delta += adj
                         .chunks
@@ -322,7 +323,7 @@ fn the_sixteen_byte_hop_preserves_the_option_semantics() {
 fn a_zone_map_pruned_read_equals_the_full_read() {
     let c = sealed_corpus(0);
     let hub = c.node("hub");
-    let hops = c.g.sealed_in.region(hub).unwrap().decoded(c.f_id);
+    let hops = c.g.in_side().sealed().region(hub).unwrap().decoded(c.f_id);
     assert_eq!(hops.len(), 8 * COMPACTION_DELTA_FLOOR);
 
     let block = encode_block(&hops, &[], Some(8));

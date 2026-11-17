@@ -36,6 +36,8 @@ macro_rules! atomic_fetch_update {
 }
 
 mod accounting;
+#[cfg(any(test, feature = "test-hooks"))]
+mod build_counter;
 mod engine_api;
 
 mod adjacency;

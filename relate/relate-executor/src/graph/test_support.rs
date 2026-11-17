@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use relate_core::{NodeId, RelId, Value};
 
+use super::adjacency::AdjSide;
 use super::Graph;
 use crate::adjacency::COMPACTION_DELTA_FLOOR;
 
@@ -187,4 +188,13 @@ pub(crate) fn doomed_rel(g: &Graph, a: NodeId, b: NodeId, rel_type: &str) -> Rel
 /// LABS-1083): `materialize_range_index` itself stays `pub(super)`.
 pub(crate) fn range_index(g: &Graph, label: &str, property: &str) {
     g.materialize_range_index(label, property);
+}
+
+/// The length of `node`'s sealed chunk for `type_id` on one side — the one
+/// spelling of "the sealed region must exist, read its chunk".
+pub(super) fn sealed_chunk_len(side: &AdjSide<'_>, node: NodeId, type_id: u32) -> usize {
+    side.sealed()
+        .region(node)
+        .expect("the node has a sealed region")
+        .chunk_len(type_id)
 }

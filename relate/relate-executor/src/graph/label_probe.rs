@@ -6,7 +6,7 @@
 //! walk behind them exists exactly once ([`Graph::with_visible_node`]).
 
 #[cfg(test)]
-use std::cell::Cell;
+use super::build_counter::BuildCounter;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -24,19 +24,19 @@ thread_local! {
     /// (ADR-0171), visible or not. Test-only instrumentation (LABS-805):
     /// the probe's copy-schedule tests are the counter's only readers,
     /// so a production build pays no thread-local access per checked id.
-    static LABEL_PROBE_CHECKS: Cell<u64> = const { Cell::new(0) };
+    static LABEL_PROBE_CHECKS: BuildCounter = const { BuildCounter::new() };
 }
 
 #[cfg(test)]
 pub(crate) fn take_label_probe_checks() -> u64 {
-    LABEL_PROBE_CHECKS.with(|c| c.replace(0))
+    LABEL_PROBE_CHECKS.with(BuildCounter::take)
 }
 
 /// Count one checked id — test-only (see [`LABEL_PROBE_CHECKS`]): the
 /// one counting point, a no-op in production builds.
 #[cfg(test)]
 fn count_label_probe_check() {
-    LABEL_PROBE_CHECKS.with(|c| c.set(c.get() + 1));
+    LABEL_PROBE_CHECKS.with(BuildCounter::bump);
 }
 
 /// The production spelling of [`count_label_probe_check`]: nothing to

@@ -12,19 +12,21 @@
 //! inside `adjacency::adj_build`.
 
 use super::adjacency::adj_build;
+#[cfg(test)]
+use super::build_counter::BuildCounter;
 use super::shard::shard_rows;
 use super::{live_version, Graph, LabelCache, RelRow};
 
 #[cfg(test)]
 thread_local! {
     /// Whole-graph adjacency builds (`rebuild_adj`) on this thread.
-    static ADJ_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static ADJ_BUILDS: BuildCounter = const { BuildCounter::new() };
 }
 
 /// Take this thread's whole-graph adjacency-build count, resetting it.
 #[cfg(test)]
 pub(super) fn take_adj_builds() -> u64 {
-    ADJ_BUILDS.with(|n| n.replace(0))
+    ADJ_BUILDS.with(BuildCounter::take)
 }
 
 impl Graph {
@@ -39,7 +41,7 @@ impl Graph {
     /// node fields in [`Graph::rebuild_count_stats`].
     pub(super) fn rebuild_adj(&self) {
         #[cfg(test)]
-        ADJ_BUILDS.with(|n| n.set(n.get() + 1));
+        ADJ_BUILDS.with(BuildCounter::bump);
         let rows = self.materialize_rel_rows();
         let labels = self.endpoint_labels(&rows);
         // The one start-keyed partition: every row of a node lands in one

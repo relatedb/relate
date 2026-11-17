@@ -12,6 +12,7 @@ mod pattern_stats;
 mod point;
 mod poisoned;
 mod restore;
+mod sealed;
 mod sealed_arena;
 mod services;
 mod spatial_profile;

@@ -273,11 +273,14 @@ impl Graph {
     /// has a tail.
     pub(crate) fn pattern_any_degree_tail(&self) -> Option<u64> {
         let histograms = self.degree_histograms.lock().unwrap();
-        let type_ids: HashSet<u32> = histograms.keys().map(|&(_, type_id)| type_id).collect();
-        type_ids
-            .into_iter()
-            .filter_map(|type_id| Self::type_tail(&histograms, type_id))
-            .reduce(u64::saturating_add)
+        let mut per_type: HashMap<u32, u64> = HashMap::new();
+        for (&(_, type_id), buckets) in histograms.iter() {
+            if let Some(tail) = Self::bucket_tail(buckets) {
+                let max = per_type.entry(type_id).or_insert(tail);
+                *max = (*max).max(tail);
+            }
+        }
+        per_type.into_values().reduce(u64::saturating_add)
     }
 
     /// The highest tail over every label's histogram for one type id.

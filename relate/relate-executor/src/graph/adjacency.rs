@@ -25,11 +25,21 @@ pub(super) struct ChunkHops {
 /// cannot be written.
 #[derive(Clone, Copy)]
 pub(super) struct AdjSide<'a> {
-    pub(super) delta: &'a IdVec<TypedAdj>,
-    pub(super) sealed: &'a SealedArena,
+    delta: &'a IdVec<TypedAdj>,
+    sealed: &'a SealedArena,
 }
 
-impl AdjSide<'_> {
+impl<'a> AdjSide<'a> {
+    /// This side's live delta map.
+    pub(super) fn delta(&self) -> &'a IdVec<TypedAdj> {
+        self.delta
+    }
+
+    /// This side's sealed side table.
+    pub(super) fn sealed(&self) -> &'a SealedArena {
+        self.sealed
+    }
+
     /// `node`'s delta chunks and its sealed region, both read guards taken
     /// delta first (the order every adjacency accessor takes them in).
     /// `None` when the node has no delta entry.
@@ -193,6 +203,22 @@ impl Graph {
             delta: &self.out_adj,
             sealed: &self.sealed_out,
         }
+    }
+
+    /// The sides a walk in `dir` reads, each with the scan direction it
+    /// answers to: the one expansion of a (possibly `Both`) direction into
+    /// adjacency pairs, outgoing side first.
+    pub(super) fn sides(
+        &self,
+        dir: relate_ir::Direction,
+    ) -> impl Iterator<Item = (AdjSide<'_>, relate_ir::Direction)> {
+        use relate_ir::Direction;
+        [
+            (self.out_side(), Direction::Outgoing),
+            (self.in_side(), Direction::Incoming),
+        ]
+        .into_iter()
+        .filter(move |&(_, scan_dir)| dir == Direction::Both || dir == scan_dir)
     }
 
     /// The incoming adjacency pair — the one place `in_adj` meets
@@ -445,12 +471,9 @@ impl Graph {
         let Some(ids) = types.ids() else {
             return self.adj_len(id, dir);
         };
-        let len = |side: AdjSide<'_>| side.typed_len(id, ids.clone());
-        match dir {
-            relate_ir::Direction::Outgoing => len(self.out_side()),
-            relate_ir::Direction::Incoming => len(self.in_side()),
-            relate_ir::Direction::Both => len(self.out_side()) + len(self.in_side()),
-        }
+        self.sides(dir)
+            .map(|(side, _)| side.typed_len(id, ids.clone()))
+            .sum()
     }
 
     /// One node's out-degree on one rel type (the typed adjacency chunk
@@ -483,11 +506,7 @@ impl Graph {
     /// an approximate degree for choosing which side of an existence
     /// probe to walk (LABS-193).
     pub fn adj_len(&self, id: NodeId, dir: relate_ir::Direction) -> usize {
-        match dir {
-            relate_ir::Direction::Outgoing => self.out_side().len(id),
-            relate_ir::Direction::Incoming => self.in_side().len(id),
-            relate_ir::Direction::Both => self.out_side().len(id) + self.in_side().len(id),
-        }
+        self.sides(dir).map(|(side, _)| side.len(id)).sum()
     }
 
     pub fn degree_in(&self, id: NodeId) -> Vec<RelId> {

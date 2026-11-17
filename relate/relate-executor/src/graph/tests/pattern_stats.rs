@@ -435,7 +435,10 @@ fn pair_counts_include_sealed_hops_after_a_fold() {
     let g = Graph::default();
     let (a, _, _, type_id) = crate::graph::test_support::folded_floor_chunk(&g);
     let floor = crate::adjacency::COMPACTION_DELTA_FLOOR;
-    assert_eq!(g.sealed_out.region(a).unwrap().chunk_len(type_id), floor);
+    assert_eq!(
+        crate::graph::test_support::sealed_chunk_len(&g.out_side(), a, type_id),
+        floor
+    );
     assert_eq!(g.pattern_pair_rows("N", "T", "N"), Some(floor as u64));
 
     g.begin_write().unwrap();

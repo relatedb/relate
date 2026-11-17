@@ -124,7 +124,7 @@ fn self_loop_delete_charges_both_sealed_regions() {
     // helper it checks: one 12-byte arena entry into the existing column,
     // one tombstone slot (the zero-hop stream appends no arena bytes,
     // ADR-0599).
-    let (entries, tombstones) = g.sealed_out.entry_counts();
+    let (entries, tombstones) = g.out_side().sealed().entry_counts();
     let entry = std::mem::size_of::<crate::adjacency::Entry>() as u64;
     let column = std::mem::size_of::<Vec<crate::adjacency::Tombstone>>() as u64;
     let tombstone = crate::adjacency::tombstone_stride();
@@ -352,7 +352,7 @@ fn floor_reserves_node_ring_edge_and_dense_node() {
         crate::memory::reserved_len(live.props.len())
     );
 
-    let ring = g.out_adj.get(&ring_a).unwrap();
+    let ring = g.out_side().delta().get(&ring_a).unwrap();
     assert_eq!(ring.chunks.len(), 1);
     assert_eq!(ring.chunks.capacity(), crate::memory::reserved_len(1));
     assert_eq!(ring.chunks[0].hops.len(), 1);
@@ -361,7 +361,7 @@ fn floor_reserves_node_ring_edge_and_dense_node() {
         crate::memory::reserved_len(1)
     );
 
-    let dense = g.out_adj.get(&hub).unwrap();
+    let dense = g.out_side().delta().get(&hub).unwrap();
     assert_eq!(dense.chunks.len(), 1);
     assert_eq!(dense.chunks.capacity(), crate::memory::reserved_len(1));
     assert_eq!(dense.chunks[0].hops.len(), 20);
@@ -503,7 +503,8 @@ fn wholesale_build_clamps_at_the_span_length_wall() {
     g.rebuild_adj();
 
     let span = g
-        .sealed_out
+        .out_side()
+        .sealed()
         .region(a)
         .map(|r| r.type_ids().len())
         .unwrap_or(0);
@@ -528,7 +529,8 @@ fn wholesale_build_clamps_at_the_span_length_wall() {
         "the deleted row is gone"
     );
     assert_eq!(
-        g.sealed_out
+        g.out_side()
+            .sealed()
             .region(a)
             .map(|r| r.type_ids().len())
             .unwrap_or(0),
@@ -537,7 +539,7 @@ fn wholesale_build_clamps_at_the_span_length_wall() {
     );
     // Nothing folded past a replacement, so compaction has nothing to
     // reclaim and leaves the build's node-major layout untouched.
-    let before = g.sealed_out.arena_bytes();
-    g.sealed_out.compact();
-    assert_eq!(g.sealed_out.arena_bytes(), before);
+    let before = g.out_side().sealed().arena_bytes();
+    g.out_side().sealed().compact();
+    assert_eq!(g.out_side().sealed().arena_bytes(), before);
 }

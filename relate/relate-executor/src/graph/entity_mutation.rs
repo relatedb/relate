@@ -138,7 +138,7 @@ impl Graph {
         let (out_side, in_side) = (self.out_side(), self.in_side());
         let out_before = out_side.floor(start);
         let in_before = in_side.floor(end);
-        let adj_arrays = out_side.delta.array_bytes() + in_side.delta.array_bytes();
+        let adj_arrays = out_side.delta().array_bytes() + in_side.delta().array_bytes();
         let degree_before = self.out_chunk_len(start, live.type_id);
         out_side.insert(start, live.type_id, id, ts);
         in_side.insert(end, live.type_id, id, ts);
@@ -146,7 +146,7 @@ impl Graph {
         self.bump_rel_stats(start, live.type_id, end, CountDelta::Add);
         let adj = out_side.floor(start) as i64 - out_before as i64 + in_side.floor(end) as i64
             - in_before as i64
-            + (out_side.delta.array_bytes() + in_side.delta.array_bytes()) as i64
+            + (out_side.delta().array_bytes() + in_side.delta().array_bytes()) as i64
             - adj_arrays as i64;
         // ADR-0439: a created relationship introduces its constrained
         // tuple(s); relationship constraints have no backing-index postings.

@@ -58,8 +58,8 @@ impl Graph {
         // entries, the tombstones, and the dense span tables that index
         // them — the term the heap census reads as `slot_bytes`.
         for side in [self.out_side(), self.in_side()] {
-            n = n.saturating_add(side.delta.array_bytes());
-            side.delta
+            n = n.saturating_add(side.delta().array_bytes());
+            side.delta()
                 .for_each(|_id, adj| n = n.saturating_add(adj.floor_bytes()));
         }
         n = n.saturating_add(self.sealed_floor());
@@ -274,7 +274,10 @@ impl Graph {
         // whose live bytes sit above the bound — deletes included. A fold
         // the arena itself refuses degrades instead (see `put_chunk`), so
         // this wall is the early, loud spelling of the same bound.
-        for arena_bytes in [self.sealed_out.arena_bytes(), self.sealed_in.arena_bytes()] {
+        for arena_bytes in self
+            .sides(relate_ir::Direction::Both)
+            .map(|(side, _)| side.sealed().arena_bytes())
+        {
             if sealed_arena_breaches(arena_bytes, growth) {
                 return Err(Error::capacity_sealed_arena(
                     arena_bytes.saturating_add(growth),
@@ -302,13 +305,13 @@ impl Graph {
         let sealed_slot = sealed_slot();
         let sealed_overflow = crate::memory::overflow_entry_bytes(sealed_slot);
         price_side(
-            self.out_side().sealed,
+            self.out_side().sealed(),
             pending_out,
             sealed_slot,
             sealed_overflow,
             supersede,
         ) + price_side(
-            self.in_side().sealed,
+            self.in_side().sealed(),
             pending_in,
             sealed_slot,
             sealed_overflow,
@@ -338,7 +341,10 @@ impl Graph {
         let sealed_overflow = crate::memory::overflow_entry_bytes(sealed_slot);
         let mut refusable = 0i64;
         let mut spill = 0i64;
-        for (sealed, node) in [(&self.sealed_out, start), (&self.sealed_in, end)] {
+        for (sealed, node) in [
+            (self.out_side().sealed(), start),
+            (self.in_side().sealed(), end),
+        ] {
             let region = sealed.region(node);
             let (mut entries, mut tombstones) = sealed.entry_counts();
             spill += price_sealed_key(
@@ -620,7 +626,7 @@ struct SideAdmission<'a> {
 impl<'a> SideAdmission<'a> {
     fn new(side: AdjSide<'a>) -> Self {
         Self {
-            span: side.delta.span(),
+            span: side.delta().span(),
             side,
             wide: HashSet::new(),
             pending: HashMap::new(),
@@ -633,7 +639,7 @@ impl<'a> SideAdmission<'a> {
     /// node's slot when it has no adjacency entry yet, and the hop growth.
     fn create(&mut self, node: NodeId, type_id: u32) -> i64 {
         let mut bytes = 0;
-        if !self.side.delta.contains_key(&node) {
+        if !self.side.delta().contains_key(&node) {
             // A dense growth is committed structure (refusable); a
             // side-map entry is priced once per node per batch — the loop
             // can revisit a node across its ops, so the dedupe is here.
@@ -679,11 +685,11 @@ impl<'a> TypeWall<'a> {
         let (held, fresh) = self.nodes.entry(node).or_insert_with(|| {
             let mut held: HashSet<u32> = self
                 .side
-                .sealed
+                .sealed()
                 .region(node)
                 .map(|r| r.type_ids().into_iter().collect())
                 .unwrap_or_default();
-            if let Some(adj) = self.side.delta.get(&node) {
+            if let Some(adj) = self.side.delta().get(&node) {
                 held.extend(adj.chunks.iter().map(|c| c.type_id));
             }
             (held, HashSet::new())
@@ -716,7 +722,10 @@ impl Graph {
     /// (ADR-0599).
     pub(super) fn sealed_floor(&self) -> u64 {
         let mut n = 0u64;
-        for sealed in [&self.sealed_out, &self.sealed_in] {
+        for sealed in self
+            .sides(relate_ir::Direction::Both)
+            .map(|(side, _)| side.sealed())
+        {
             n = n.saturating_add(sealed.array_bytes());
             n = n.saturating_add(sealed.floor_bytes());
         }

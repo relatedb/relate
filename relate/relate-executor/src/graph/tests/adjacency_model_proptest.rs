@@ -252,10 +252,10 @@ fn adj_op_strategy() -> impl Strategy<Value = AdjOp> {
 /// sealed.
 fn observable(g: &Graph, node: NodeId, out: bool) -> ModelChunks {
     let side = if out { g.out_side() } else { g.in_side() };
-    let Some(adj) = side.delta.get(&node) else {
+    let Some(adj) = side.delta().get(&node) else {
         return Vec::new();
     };
-    let region = side.sealed.region(node);
+    let region = side.sealed().region(node);
     let ts = g.commit_ts();
     adj.chunks
         .iter()

@@ -102,15 +102,15 @@ impl AdjacencyCensus {
     }
 
     fn of(side: AdjSide<'_>) -> Self {
-        let tier = side.sealed.tier_bytes();
+        let tier = side.sealed().tier_bytes();
         let mut c = Self {
             arena_bytes: tier.arena,
             index_bytes: tier.index,
             dead_bytes: tier.dead,
             ..Self::default()
         };
-        side.delta.for_each(|id, adj| {
-            let region = side.sealed.region(id);
+        side.delta().for_each(|id, adj| {
+            let region = side.sealed().region(id);
             c.nodes += 1;
             c.chunks += adj.chunks.len() as u64;
             c.sealed_chunks += region.map_or(0, |s| s.chunk_count()) as u64;
@@ -120,7 +120,7 @@ impl AdjacencyCensus {
                 .sum::<u64>();
             c.delta_bytes += adj.floor_bytes();
         });
-        c.delta_bytes += side.delta.array_bytes();
+        c.delta_bytes += side.delta().array_bytes();
         c
     }
 }

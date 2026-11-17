@@ -75,12 +75,12 @@ fn a_restore_builds_the_durable_folded_shape() {
     // Both endpoints carry a floor-sized `:T` chunk here (node 0's out
     // side, node 1's in side), so the build folds both.
     assert_eq!(
-        restored.sealed_out.region(0).unwrap().chunk_len(type_id),
+        crate::graph::test_support::sealed_chunk_len(&restored.out_side(), 0, type_id),
         floor,
         "the restore emitted the floor chunk folded (LABS-1658)"
     );
     assert_eq!(
-        restored.sealed_in.region(1).unwrap().chunk_len(type_id),
+        crate::graph::test_support::sealed_chunk_len(&restored.in_side(), 1, type_id),
         floor
     );
     // The fold is a layout, not a fact: the adjacency answers the same.
@@ -91,8 +91,14 @@ fn a_restore_builds_the_durable_folded_shape() {
     // build nothing folded.
     let below = restored_graph(floor as RelId - 1);
     below.finish_restore();
-    assert!(below.sealed_out.region(0).is_none(), "below the floor");
-    assert!(below.sealed_in.region(1).is_none(), "below the floor");
+    assert!(
+        below.out_side().sealed().region(0).is_none(),
+        "below the floor"
+    );
+    assert!(
+        below.in_side().sealed().region(1).is_none(),
+        "below the floor"
+    );
 }
 
 fn restored_node(id: NodeId, label: &str, name: &str) -> Node {
@@ -435,7 +441,7 @@ fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
     writer.gc_versions();
     let type_id = writer.interner.get_id("T").unwrap();
     assert_eq!(
-        writer.sealed_out.region(0).unwrap().chunk_len(type_id),
+        crate::graph::test_support::sealed_chunk_len(&writer.out_side(), 0, type_id),
         floor
     );
     assert_eq!(
@@ -499,7 +505,7 @@ fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
     // the way it did on the writer.
     let type_id = opened.interner.get_id("T").unwrap();
     assert_eq!(
-        opened.sealed_out.region(0).unwrap().chunk_len(type_id),
+        crate::graph::test_support::sealed_chunk_len(&opened.out_side(), 0, type_id),
         floor,
         "the restore folded the checkpointed chunk"
     );
@@ -511,7 +517,7 @@ fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
     // before the tail.
     opened.gc_versions();
     assert_eq!(
-        opened.sealed_out.region(0).unwrap().chunk_len(type_id),
+        crate::graph::test_support::sealed_chunk_len(&opened.out_side(), 0, type_id),
         floor - 1,
         "the restored fold reclaims, without the deleted hop"
     );
@@ -662,20 +668,21 @@ fn restore_seals_multi_hop_chunks_and_leaves_short_ones_delta() {
     // The build ends with both arenas at exact size (ADR-0599): every
     // buffer at the capacity its floor charges, the byte buffer at its
     // encoded length. No entry carries a tombstone at a fresh restore.
-    assert_eq!(opened.sealed_out.assert_fit(), 0);
-    assert_eq!(opened.sealed_in.assert_fit(), 0);
+    assert_eq!(opened.out_side().sealed().assert_fit(), 0);
+    assert_eq!(opened.in_side().sealed().assert_fit(), 0);
 
     // (delta hops, sealed hops) of `node`'s `rel_type` chunk in one direction.
     let lens = |node: NodeId, rel_type: &str, out: bool| -> (usize, usize) {
         let type_id = opened.interner.get_id(rel_type).unwrap();
-        let (map, sealed) = if out {
-            (&opened.out_adj, &opened.sealed_out)
+        let side = if out {
+            opened.out_side()
         } else {
-            (&opened.in_adj, &opened.sealed_in)
+            opened.in_side()
         };
-        map.get(&node)
+        side.delta()
+            .get(&node)
             .unwrap()
-            .chunk_lens(sealed.region(node))
+            .chunk_lens(side.sealed().region(node))
             .find(|(tid, _, _)| *tid == type_id)
             .map(|(_, delta, sealed)| (delta, sealed))
             .unwrap()
