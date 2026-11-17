@@ -329,7 +329,10 @@ fn nested_struct_spatial_children_reuse_preflighted_srid() {
     );
 
     let mut metadata = child.metadata().clone();
-    metadata.insert(RELATE_SRID_KEY.into(), "bad".into());
+    // arrow-schema 60's typed Metadata::insert takes impl Into<String>:
+    // both args are &str and satisfy it directly — no .into() needed
+    // (and a blanket .into() is now ambiguous against the bound).
+    metadata.insert(RELATE_SRID_KEY, "bad");
     let invalid = Arc::new(
         StructArray::try_new(
             vec![Arc::new(child.with_metadata(metadata))].into(),
