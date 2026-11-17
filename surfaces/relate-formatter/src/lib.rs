@@ -24,6 +24,7 @@ mod toon;
 pub use cypher::{cypher_identifier, cypher_literal, is_cypher_scalar};
 pub(crate) use cypher::{is_bare_identifier, quoted_literal};
 pub use escape::{sanitize_error_text, strip_unsafe_output_chars};
+pub use layout::{text_grid_lines, ColumnAlign};
 pub use plan_table::{plan_header_lines, plan_presentation, plan_text_lines};
 
 use std::io::Write;

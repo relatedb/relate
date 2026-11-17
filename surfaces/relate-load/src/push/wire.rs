@@ -78,12 +78,12 @@ fn envelope(tag: WireTag, payload: Json) -> Json {
 /// `Map` envelopes — containers are enveloped too (verified on Aura: a
 /// plain JSON array of envelope objects answers 400, the enveloped form
 /// 202).
-pub(crate) fn envelope_rows(batch: &[Json]) -> Json {
+pub(crate) fn envelope_rows<'a>(batch: impl IntoIterator<Item = &'a Json>) -> Json {
     envelope(
         WireTag::List,
         Json::Array(
             batch
-                .iter()
+                .into_iter()
                 .map(|row| envelope(WireTag::Map, row.clone()))
                 .collect(),
         ),

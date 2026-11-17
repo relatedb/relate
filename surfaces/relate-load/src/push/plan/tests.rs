@@ -64,6 +64,12 @@ fn graph(nodes: Vec<LocalNode>, rels: Vec<LocalRel>) -> ScopeGraph {
         dangling_rels: 0,
     }
 }
+
+/// The statement of an entity the plan writes.
+fn statement_of(entity: &PlannedEntity) -> &str {
+    entity.statement.as_deref().expect("a writing entity")
+}
+
 /// The plan groups nodes by their full sorted label set (the merge
 /// identity is the set's keyed label — see
 /// `secondary_labels_form_their_own_groups_and_survive` for the
@@ -85,6 +91,7 @@ fn plan_groups_nodes_then_rels_with_resolved_keys() {
         EntityKind::NodeLabel {
             labels: vec!["Event".into()],
             keyed_label: "Event".into(),
+            policy: UpdatePolicy::Add,
         }
     );
     assert_eq!(events.rows.len(), 1);
@@ -95,6 +102,7 @@ fn plan_groups_nodes_then_rels_with_resolved_keys() {
         EntityKind::NodeLabel {
             labels: vec!["Person".into()],
             keyed_label: "Person".into(),
+            policy: UpdatePolicy::Add,
         }
     );
     assert_eq!(people.rows.len(), 2);
@@ -108,6 +116,7 @@ fn plan_groups_nodes_then_rels_with_resolved_keys() {
             start_key: vec!["name".into()],
             end_label: "Event".into(),
             end_key: vec!["tenant".into(), "code".into()],
+            policy: UpdatePolicy::Add,
         }
     );
     assert_eq!(rel.rows.len(), 2);
@@ -150,16 +159,15 @@ fn secondary_labels_form_their_own_groups_and_survive() {
         EntityKind::NodeLabel {
             labels: vec!["Chunk".into(), "Person".into()],
             keyed_label: "Person".into(),
+            policy: UpdatePolicy::Add,
         }
     );
     // The merge is on the KEYED label; the secondary is SET onto the
     // node it found — an update of the labels, never a fork.
     assert!(
-        first
-            .statement
-            .contains("MERGE (n:`Person` {`name`: row.key.`name`}) SET n:`Chunk`,"),
+        statement_of(first).contains("MERGE (n:`Person` {`name`: row.key.`name`}) SET n:`Chunk`,"),
         "merge on the keyed label, set the secondary: {}",
-        first.statement
+        first.statement.as_deref().unwrap_or_default()
     );
     let second = &plan.entities[1];
     assert_eq!(
@@ -167,14 +175,14 @@ fn secondary_labels_form_their_own_groups_and_survive() {
         EntityKind::NodeLabel {
             labels: vec!["Chunk".into(), "Person".into(), "SessionChunk".into()],
             keyed_label: "Person".into(),
+            policy: UpdatePolicy::Add,
         }
     );
     assert!(
-        second
-            .statement
+        statement_of(second)
             .contains("MERGE (n:`Person` {`name`: row.key.`name`}) SET n:`Chunk`:`SessionChunk`,"),
         "merge on the keyed label, set both secondaries: {}",
-        second.statement
+        second.statement.as_deref().unwrap_or_default()
     );
     // The rel resolves its endpoints through the keyed label.
     let rel = &plan.entities[2];
@@ -186,6 +194,7 @@ fn secondary_labels_form_their_own_groups_and_survive() {
             start_key: vec!["name".into()],
             end_label: "Person".into(),
             end_key: vec!["name".into()],
+            policy: UpdatePolicy::Add,
         }
     );
 }
@@ -232,15 +241,18 @@ fn unkeyed_labels_create_switches_to_create_rows() {
     assert_eq!(create.len(), 2, "{plan:?}");
     assert_eq!(
         create[0].kind,
-        EntityKind::NodeCreate { labels: Vec::new() }
+        EntityKind::NodeCreate {
+            labels: Vec::new(),
+            policy: UpdatePolicy::Add,
+        }
     );
     assert_eq!(
-        create[0].statement,
-        "UNWIND $rows AS row CREATE (n) SET n += row.props"
+        create[0].statement.as_deref(),
+        Some("UNWIND $rows AS row CREATE (n) SET n += row.props")
     );
     assert_eq!(
-        create[1].statement,
-        "UNWIND $rows AS row CREATE (n:`Untyped`) SET n += row.props"
+        create[1].statement.as_deref(),
+        Some("UNWIND $rows AS row CREATE (n:`Untyped`) SET n += row.props")
     );
 }
 
@@ -287,9 +299,7 @@ fn keyed_mode_uses_the_relationship_key_and_falls_back() {
     let plan = build_plan(&g, &keys(), &opts()).unwrap();
     let rel = &plan.entities[2];
     assert_eq!(rel.merge_key, ["slot".to_string()]);
-    assert!(rel
-        .statement
-        .contains("MERGE (a)-[r:`SPOKE_AT` {`slot`: row.key.`slot`}]->(b)"));
+    assert!(statement_of(rel).contains("MERGE (a)-[r:`SPOKE_AT` {`slot`: row.key.`slot`}]->(b)"));
     match &rel.rows[0] {
         EntityRow::Rel { key, .. } => assert_eq!(key["slot"], Value::Int(3)),
         other => panic!("a rel row, got {other:?}"),
@@ -301,13 +311,13 @@ fn keyed_mode_uses_the_relationship_key_and_falls_back() {
     let plan2 = build_plan(&g2, &keys(), &opts()).unwrap();
     let rel2 = &plan2.entities[2];
     assert_eq!(rel2.merge_key, Vec::<String>::new());
-    assert!(rel2.statement.contains("MERGE (a)-[r:`WROTE_ABT`]->(b)"));
+    assert!(statement_of(rel2).contains("MERGE (a)-[r:`WROTE_ABT`]->(b)"));
     // The structural force ignores a resolved key.
     let mut o = opts();
     o.rel_mode = RelMode::Structural;
     let plan3 = build_plan(&g, &keys(), &o).unwrap();
     let rel3 = &plan3.entities[2];
-    assert!(rel3.statement.contains("MERGE (a)-[r:`SPOKE_AT`]->(b)"));
+    assert!(statement_of(rel3).contains("MERGE (a)-[r:`SPOKE_AT`]->(b)"));
 }
 
 /// A node whose merge-key property is missing fails closed, naming the
@@ -409,9 +419,9 @@ fn per_entity_policies_reach_their_groups() {
     let mut o = opts();
     o.nodes_update = PolicySpec::parse("Event=replace").unwrap();
     let plan = build_plan(&g, &keys(), &o).unwrap();
-    assert_eq!(plan.entities[0].policy, Some(UpdatePolicy::Replace)); // Event
-    assert_eq!(plan.entities[1].policy, Some(UpdatePolicy::Add)); // Person
-    assert!(plan.entities[0].statement.contains("SET n = row.props"));
+    assert_eq!(plan.entities[0].kind.policy(), Some(UpdatePolicy::Replace)); // Event
+    assert_eq!(plan.entities[1].kind.policy(), Some(UpdatePolicy::Add)); // Person
+    assert!(statement_of(&plan.entities[0]).contains("SET n = row.props"));
 }
 
 /// A counted bucket writes nothing, so it carries no policy — never a
@@ -434,7 +444,8 @@ fn counted_buckets_carry_no_policy() {
             .iter()
             .find(|e| pred(&e.kind))
             .unwrap_or_else(|| panic!("no entity matched: {plan:?}"))
-            .policy
+            .kind
+            .policy()
     };
     assert_eq!(
         policy_of(|k| matches!(k, EntityKind::NodeLabel { .. })),
@@ -464,13 +475,15 @@ fn display_names_cover_every_kind() {
         EntityKind::NodeLabel {
             labels: vec!["Movie".into()],
             keyed_label: "Movie".into(),
+            policy: UpdatePolicy::Add,
         }
         .display_name(),
         "Movie"
     );
     assert_eq!(
         EntityKind::NodeCreate {
-            labels: vec!["Untyped".into()]
+            labels: vec!["Untyped".into()],
+            policy: UpdatePolicy::Add,
         }
         .display_name(),
         "Untyped"
@@ -489,6 +502,7 @@ fn display_names_cover_every_kind() {
             start_key: vec!["name".into()],
             end_label: "Movie".into(),
             end_key: vec!["title".into()],
+            policy: UpdatePolicy::Add,
         }
         .display_name(),
         "(Person)-[:ACTED_IN]->(Movie)"

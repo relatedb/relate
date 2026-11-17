@@ -584,7 +584,7 @@ fn unkeyed_labels_are_skipped_and_counted_then_created_on_opt_in() {
     let untyped = entity(&report, "Untyped (unkeyed)");
     assert_eq!(untyped.skipped_unkeyed, 1);
     assert_eq!(untyped.total, 1);
-    assert_eq!(untyped.statement, "");
+    assert_eq!(untyped.statement, None);
     // No request mentions the unkeyed label.
     assert!(!fixture.bodies().iter().any(|b| b.contains("Untyped")));
 
@@ -601,8 +601,8 @@ fn unkeyed_labels_are_skipped_and_counted_then_created_on_opt_in() {
     let created = entity(&report, "Untyped");
     assert_eq!(created.created, 1);
     assert_eq!(
-        created.statement,
-        "UNWIND $rows AS row CREATE (n:`Untyped`) SET n += row.props"
+        created.statement.as_deref(),
+        Some("UNWIND $rows AS row CREATE (n:`Untyped`) SET n += row.props")
     );
     // A --merge-key override supplies a key instead.
     let mut o_key = opts(port, PushScope::Labels(vec!["Untyped".into()]));
@@ -676,10 +676,16 @@ fn dry_run_never_touches_the_remote() {
     assert_eq!(movie.merge_key, ["title".to_string()]);
     assert!(movie
         .statement
+        .as_deref()
+        .unwrap()
         .contains("MERGE (n:`Movie` {`title`: row.key.`title`})"));
     assert_eq!(movie.batches, 1);
     let rel = entity(&report, "(Person)-[:ACTED_IN]->(Movie)");
-    assert!(rel.statement.contains("MERGE (a)-[r:`ACTED_IN`]->(b)"));
+    assert!(rel
+        .statement
+        .as_deref()
+        .unwrap()
+        .contains("MERGE (a)-[r:`ACTED_IN`]->(b)"));
 }
 
 /// A pre-read failure fails closed with the remote's own error (ADR-0401
@@ -738,6 +744,9 @@ fn failed_batch_reports_what_landed() {
             assert_eq!(report.statements_sent, 3);
             assert_eq!(report.rows_sent, 3);
             assert_eq!(entity(&report, "Movie").created, 2);
+            // Counters describe landed writes (LABS-626): Person's second
+            // batch failed, so only its first row counts as created.
+            assert_eq!(entity(&report, "Person").created, 1);
             assert_eq!(fixture.join().len(), 6);
         }
     }

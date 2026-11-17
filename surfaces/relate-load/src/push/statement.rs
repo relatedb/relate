@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use relate::Value;
 
 use super::plan::{EntityKind, EntityRow, PlannedEntity};
-use super::policy::{RelMode, UpdatePolicy};
+use super::policy::UpdatePolicy;
 use super::wire::{encode_props, quote_ident};
 use serde_json::Value as Json;
 
@@ -133,16 +133,38 @@ pub(crate) fn node_create_statement(
     ))
 }
 
+/// How a rel group is written (ADR-0401 §2/§5), the mode and the
+/// resolved key collapsed into the three shapes the statement spells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RelWrite<'a> {
+    /// `CREATE` — the non-idempotent escape hatch.
+    Create,
+    /// `MERGE` on the type's key properties (keyed mode, a key resolved:
+    /// override or constraint).
+    MergeOnKey(&'a [String]),
+    /// `MERGE` on the endpoint pair alone (structural mode, or keyed with
+    /// no resolved key — the structural fallback, ADR-0401 §5).
+    MergeOnPair,
+}
+
+impl<'a> RelWrite<'a> {
+    /// The key properties the write merges on, when it has any.
+    pub(crate) fn key(self) -> Option<&'a [String]> {
+        match self {
+            RelWrite::MergeOnKey(key) => Some(key),
+            RelWrite::Create | RelWrite::MergeOnPair => None,
+        }
+    }
+}
+
 /// The rel statement (ADR-0401 §2/§5): endpoints matched by their locally
-/// resolved keys, then merged structurally, on the type's key properties
-/// (keyed with a resolved key), or created.
-#[allow(clippy::too_many_arguments)]
+/// resolved keys, then merged structurally, on the type's key properties,
+/// or created.
 pub(crate) fn rel_statement(
     rel_type: &str,
     start: (&str, &[String]),
     end: (&str, &[String]),
-    rel_key: Option<&[String]>,
-    mode: RelMode,
+    write: RelWrite<'_>,
     policy: UpdatePolicy,
 ) -> Result<String, LoadError> {
     // The endpoint MATCH binds `a`/`b` but reads the row's `start`/`end`
@@ -155,18 +177,15 @@ pub(crate) fn rel_statement(
                 key_map(field, key)?
             ))
         };
-    // The mode decides two independent facts — the verb (`CREATE` for
-    // the non-idempotent escape hatch, `MERGE` otherwise) and whether
-    // the property-key map is spelled (keyed mode with a resolved key:
-    // override or constraint; keyed with none is the structural
-    // fallback, ADR-0401 §5) — so the pattern is spelled once.
-    let verb = match mode {
-        RelMode::Create => "CREATE",
-        RelMode::Structural | RelMode::Keyed => "MERGE",
+    // The write decides two independent facts — the verb and whether the
+    // property-key map is spelled — so the pattern is spelled once.
+    let verb = match write {
+        RelWrite::Create => "CREATE",
+        RelWrite::MergeOnKey(_) | RelWrite::MergeOnPair => "MERGE",
     };
-    let key = match (mode, rel_key) {
-        (RelMode::Keyed, Some(key)) => format!(" {{{}}}", key_map("key", key)?),
-        _ => String::new(),
+    let key = match write.key() {
+        Some(key) => format!(" {{{}}}", key_map("key", key)?),
+        None => String::new(),
     };
     let merge = format!("{verb} (a)-[r:{}{key}]->(b)", quote_ident(rel_type)?);
     Ok(format!(
@@ -334,26 +353,49 @@ mod tests {
         let compound = &["tenant".to_string(), "slot".to_string()][..];
         // Keyed (the default) with a resolved key: property-keyed MERGE.
         assert_eq!(
-            rel_statement("SPOKE_AT", start, end, Some(rel_key), RelMode::Keyed, UpdatePolicy::Add).unwrap(),
+            rel_statement(
+                "SPOKE_AT",
+                start,
+                end,
+                RelWrite::MergeOnKey(rel_key),
+                UpdatePolicy::Add,
+            )
+            .unwrap(),
             "UNWIND $rows AS row MATCH (a:`Person` {`name`: row.start.`name`}) MATCH (b:`Event` {`tenant`: row.end.`tenant`, `code`: row.end.`code`}) MERGE (a)-[r:`SPOKE_AT` {`slot`: row.key.`slot`}]->(b) SET r += row.props"
         );
         // Keyed with a compound key: every key property in the MERGE map.
         assert_eq!(
-            rel_statement("SPOKE_AT", start, end, Some(compound), RelMode::Keyed, UpdatePolicy::Add).unwrap(),
+            rel_statement(
+                "SPOKE_AT",
+                start,
+                end,
+                RelWrite::MergeOnKey(compound),
+                UpdatePolicy::Add,
+            )
+            .unwrap(),
             "UNWIND $rows AS row MATCH (a:`Person` {`name`: row.start.`name`}) MATCH (b:`Event` {`tenant`: row.end.`tenant`, `code`: row.end.`code`}) MERGE (a)-[r:`SPOKE_AT` {`tenant`: row.key.`tenant`, `slot`: row.key.`slot`}]->(b) SET r += row.props"
         );
         // Keyed with no resolved key: the structural fallback (no error).
         assert_eq!(
-            rel_statement("SPOKE_AT", start, end, None, RelMode::Keyed, UpdatePolicy::Add).unwrap(),
+            rel_statement(
+                "SPOKE_AT",
+                start,
+                end,
+                RelWrite::MergeOnPair,
+                UpdatePolicy::Add,
+            )
+            .unwrap(),
             "UNWIND $rows AS row MATCH (a:`Person` {`name`: row.start.`name`}) MATCH (b:`Event` {`tenant`: row.end.`tenant`, `code`: row.end.`code`}) MERGE (a)-[r:`SPOKE_AT`]->(b) SET r += row.props"
         );
-        // Structural forces the pair even when a key exists.
         assert_eq!(
-            rel_statement("SPOKE_AT", start, end, Some(rel_key), RelMode::Structural, UpdatePolicy::Add).unwrap(),
-            "UNWIND $rows AS row MATCH (a:`Person` {`name`: row.start.`name`}) MATCH (b:`Event` {`tenant`: row.end.`tenant`, `code`: row.end.`code`}) MERGE (a)-[r:`SPOKE_AT`]->(b) SET r += row.props"
-        );
-        assert_eq!(
-            rel_statement("SPOKE_AT", start, end, Some(rel_key), RelMode::Create, UpdatePolicy::Replace).unwrap(),
+            rel_statement(
+                "SPOKE_AT",
+                start,
+                end,
+                RelWrite::Create,
+                UpdatePolicy::Replace,
+            )
+            .unwrap(),
             "UNWIND $rows AS row MATCH (a:`Person` {`name`: row.start.`name`}) MATCH (b:`Event` {`tenant`: row.end.`tenant`, `code`: row.end.`code`}) CREATE (a)-[r:`SPOKE_AT`]->(b) SET r = row.props"
         );
     }

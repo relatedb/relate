@@ -9,7 +9,7 @@ use relate::Value;
 use super::collect::ScopeGraph;
 use super::keys::MergeKeys;
 use super::policy::{RelMode, UnkeyedAction, UpdatePolicy};
-use super::statement::{node_create_statement, node_merge_statement, rel_statement};
+use super::statement::{node_create_statement, node_merge_statement, rel_statement, RelWrite};
 use crate::LoadError;
 
 /// The push plan: one entry per entity group, nodes first, then rels, both
@@ -24,17 +24,11 @@ pub(crate) struct PushPlan {
 #[derive(Debug, Clone)]
 pub(crate) struct PlannedEntity {
     pub kind: EntityKind,
-    /// The scoped update policy — `Some` exactly for the kinds that write
-    /// (`NodeLabel`, `NodeCreate`, `Rel`). `None` for the counted buckets
-    /// (`NodeSkipped`, `RelSkipped`, `Dangling`), which never write and so
-    /// have no policy to state: a fabricated `skip` there would name a
-    /// real user-selectable policy the bucket never applies (LABS-932).
-    pub policy: Option<UpdatePolicy>,
     /// The merge key's properties (empty for an unkeyed `CREATE` group).
     pub merge_key: Vec<String>,
-    /// The statement shape: one text for every batch of this entity. Empty
-    /// for a skip-only group (nothing to write).
-    pub statement: String,
+    /// The statement shape: one text for every batch of this entity.
+    /// `None` for a group with nothing to write (the counted buckets).
+    pub statement: Option<String>,
     /// The group's rows, pre-classification. Execution splits them into
     /// batches of `batch_size`.
     pub rows: Vec<EntityRow>,
@@ -62,10 +56,14 @@ pub(crate) enum EntityKind {
     NodeLabel {
         labels: Vec<String>,
         keyed_label: String,
+        policy: UpdatePolicy,
     },
     /// An unkeyed label set switched to `CREATE` rows by
     /// `--unkeyed-labels create` (non-idempotent, documented).
-    NodeCreate { labels: Vec<String> },
+    NodeCreate {
+        labels: Vec<String>,
+        policy: UpdatePolicy,
+    },
     /// A label set skipped entirely (`--unkeyed-labels skip`, the
     /// default): counted, never written.
     NodeSkipped { labels: Vec<String> },
@@ -92,6 +90,7 @@ pub(crate) enum EntityKind {
         start_key: Vec<String>,
         end_label: String,
         end_key: Vec<String>,
+        policy: UpdatePolicy,
     },
 }
 
@@ -106,18 +105,51 @@ pub(crate) fn display_labels(labels: &[String]) -> String {
 }
 
 impl EntityKind {
-    /// Whether this kind classifies by a key — a positive list over the
-    /// kinds that actually pre-read, so a new counted bucket cannot
-    /// silently default into "keyed".
-    pub(crate) fn is_keyed(&self) -> bool {
-        matches!(self, EntityKind::NodeLabel { .. } | EntityKind::Rel { .. })
+    /// The scoped update policy — `Some` exactly for the kinds that write
+    /// (`NodeLabel`, `NodeCreate`, `Rel`). `None` for the counted buckets
+    /// (`NodeSkipped`, `RelSkipped`, `Dangling`), which never write and so
+    /// have no policy to state: a fabricated `skip` there would name a
+    /// real user-selectable policy the bucket never applies (LABS-932).
+    pub(crate) fn policy(&self) -> Option<UpdatePolicy> {
+        match self {
+            EntityKind::NodeLabel { policy, .. }
+            | EntityKind::NodeCreate { policy, .. }
+            | EntityKind::Rel { policy, .. } => Some(*policy),
+            EntityKind::NodeSkipped { .. }
+            | EntityKind::RelSkipped { .. }
+            | EntityKind::Dangling => None,
+        }
+    }
+
+    /// The policy of a keyed kind — the writing kinds that pre-read and
+    /// classify by a key. An unkeyed `CREATE` group writes but has no
+    /// identity to classify by, so it answers `None` here: the keyed
+    /// decision and its policy are one fact, never a flag beside an
+    /// `Option`.
+    pub(crate) fn keyed_policy(&self) -> Option<UpdatePolicy> {
+        match self {
+            EntityKind::NodeCreate { .. } => None,
+            other => other.policy(),
+        }
+    }
+
+    /// Whether the kind is a relationship entity (a written group, a
+    /// skipped one, or the dangling bucket) — one exhaustive answer, so
+    /// a new kind must state its side.
+    pub(crate) fn is_rel(&self) -> bool {
+        match self {
+            EntityKind::Rel { .. } | EntityKind::RelSkipped { .. } | EntityKind::Dangling => true,
+            EntityKind::NodeLabel { .. }
+            | EntityKind::NodeCreate { .. }
+            | EntityKind::NodeSkipped { .. } => false,
+        }
     }
 
     /// The display name of the kind: a node label set, a rel group's
     /// `(start)-[:TYPE]->(end)`, or the reserved buckets.
     pub(crate) fn display_name(&self) -> String {
         match self {
-            EntityKind::NodeLabel { labels, .. } | EntityKind::NodeCreate { labels } => {
+            EntityKind::NodeLabel { labels, .. } | EntityKind::NodeCreate { labels, .. } => {
                 display_labels(labels)
             }
             EntityKind::NodeSkipped { labels } => {
@@ -340,12 +372,12 @@ fn plan_nodes<'a>(
                 entities.push(PlannedEntity {
                     // The keyed-label/secondaries partition is derived
                     // inside the statement builder — one representation.
-                    statement: node_merge_statement(&labels, &label, &merge_key, policy)?,
+                    statement: Some(node_merge_statement(&labels, &label, &merge_key, policy)?),
                     kind: EntityKind::NodeLabel {
                         labels,
                         keyed_label: label,
+                        policy,
                     },
-                    policy: Some(policy),
                     merge_key,
                     rows,
                     skipped_unkeyed: 0,
@@ -355,9 +387,8 @@ fn plan_nodes<'a>(
             NodeDraft::Created { rows } => {
                 let policy = opts.nodes_update.resolve(&policy_label(&labels));
                 entities.push(PlannedEntity {
-                    statement: node_create_statement(&labels, policy)?,
-                    kind: EntityKind::NodeCreate { labels },
-                    policy: Some(policy),
+                    statement: Some(node_create_statement(&labels, policy)?),
+                    kind: EntityKind::NodeCreate { labels, policy },
                     merge_key: Vec::new(),
                     rows,
                     skipped_unkeyed: 0,
@@ -366,9 +397,8 @@ fn plan_nodes<'a>(
             }
             NodeDraft::Skipped { count } => {
                 entities.push(PlannedEntity {
-                    statement: String::new(),
+                    statement: None,
                     kind: EntityKind::NodeSkipped { labels },
-                    policy: None,
                     merge_key: Vec::new(),
                     rows: Vec::new(),
                     skipped_unkeyed: count,
@@ -378,6 +408,61 @@ fn plan_nodes<'a>(
         }
     }
     Ok((entities, node_groups))
+}
+
+/// One rel group's classification — the decision itself, made once at
+/// the draft's creation from the endpoint identities: every later row
+/// matches the variant it chose, so the keyed facts (the pair, the
+/// write mode) exist only where they are meaningful.
+enum RelDraft<'k> {
+    /// Both endpoints key-addressable: the two endpoint (label, merge
+    /// key) pairs, the resolved write mode, and the rows. The one
+    /// derivation feeds the rows' key maps, the statement and the
+    /// report's merge-key column.
+    Keyed {
+        start: (String, Vec<String>),
+        end: (String, Vec<String>),
+        write: RelWrite<'k>,
+        rows: Vec<EntityRow>,
+    },
+    /// An endpoint is not key-addressable: the report spellings of the
+    /// two endpoints and the counter of rels never written.
+    Unkeyed {
+        start: String,
+        end: String,
+        skipped: usize,
+    },
+}
+
+impl<'k> RelDraft<'k> {
+    /// The group's draft, derived once from its endpoint identities.
+    fn new(start: &EndpointId, end: &EndpointId, write: RelWrite<'k>) -> Self {
+        match (start, end) {
+            (
+                EndpointId::Keyed {
+                    label: start_label,
+                    merge_key: start_key,
+                },
+                EndpointId::Keyed {
+                    label: end_label,
+                    merge_key: end_key,
+                },
+            ) => RelDraft::Keyed {
+                start: (start_label.clone(), start_key.clone()),
+                end: (end_label.clone(), end_key.clone()),
+                write,
+                rows: Vec::new(),
+            },
+            // An unkeyed endpoint on either side: counted, never
+            // written. Both combinations are explicit so a third
+            // identity variant is a compile error here.
+            (EndpointId::Unkeyed(_), _) | (_, EndpointId::Unkeyed(_)) => RelDraft::Unkeyed {
+                start: start.display(),
+                end: end.display(),
+                skipped: 0,
+            },
+        }
+    }
 }
 
 /// The rel phase: group by `(type, start label set, end label set)`; a
@@ -391,14 +476,11 @@ fn plan_rels(
     node_groups: &BTreeMap<i64, EndpointSlot<'_>>,
     entities: &mut Vec<PlannedEntity>,
 ) -> Result<(), LoadError> {
-    // Keyed by the facts the group uses: the type and the two endpoint
-    // identities — keyedness included, so a keyed label and an unkeyed
-    // label set are different groups however they spell. The endpoint
-    // ids are the ONE mode decision: the group key, the row loop and
-    // the emit all consult them, never two views of the same slots.
-    // The value carries only what accumulates: rows, and the counter of
-    // the rels an unkeyed-keyed group never writes.
-    let mut rel_groups: BTreeMap<(String, EndpointId, EndpointId), RelGroup> = BTreeMap::new();
+    // Keyed by the facts the group is ordered by: the type and the two
+    // endpoint identities — keyedness included, so a keyed label and an
+    // unkeyed label set are different groups however they spell. The
+    // draft is the ONE mode decision, made when the group is created.
+    let mut rel_groups: BTreeMap<(String, EndpointId, EndpointId), RelDraft<'_>> = BTreeMap::new();
     for rel in &graph.rels {
         let start = node_groups
             .get(&rel.start)
@@ -406,125 +488,98 @@ fn plan_rels(
         let end = node_groups
             .get(&rel.end)
             .expect("finish_graph kept only endpointed rels");
-        // The group key is built from the slots' stored ids directly;
-        // the row loop below then borrows those same ids, so neither is
-        // cloned a second time (LABS-932).
-        let group = rel_groups
+        let draft = rel_groups
             .entry((rel.rel_type.clone(), start.id.clone(), end.id.clone()))
-            .or_default();
-        match (&start.id, &end.id) {
-            (
-                EndpointId::Keyed {
-                    label: start_label,
-                    merge_key: start_merge,
-                },
-                EndpointId::Keyed {
-                    label: end_label,
-                    merge_key: end_merge,
-                },
-            ) => {
+            .or_insert_with(|| {
+                RelDraft::new(&start.id, &end.id, rel_write(keys, opts, &rel.rel_type))
+            });
+        match draft {
+            RelDraft::Keyed {
+                start: (start_label, start_merge),
+                end: (end_label, end_merge),
+                write,
+                rows,
+            } => {
                 // Both endpoints key-addressable: the key values are
-                // read off the nodes the slots carry — the remote is
-                // never asked to guess (ADR-0401 §2) — so every miss
+                // read off the nodes the slots carry, so every miss
                 // below is a missing key property.
                 let start_key = keyed_props(start_label, &start.node.properties, start_merge)?;
                 let end_key = keyed_props(end_label, &end.node.properties, end_merge)?;
                 // Keyed (the default): merge on the resolved key when
                 // one exists — a --rel-key override, else the type's
                 // relationship constraint — and fall back to structural
-                // when neither does. The one derivation feeds both this
-                // row's key map and the group's merge key, so the two
-                // can never desync.
-                let row = match resolved_rel_key(keys, opts, &rel.rel_type) {
-                    Some(props) => EntityRow::Rel {
+                // when neither does.
+                rows.push(match write {
+                    RelWrite::MergeOnKey(props) => EntityRow::Rel {
                         start: start_key,
                         end: end_key,
                         key: keyed_props(&rel.rel_type, &rel.properties, props)?,
                         props: rel.properties.clone(),
                     },
-                    None => EntityRow::RelUnkeyed {
+                    RelWrite::Create | RelWrite::MergeOnPair => EntityRow::RelUnkeyed {
                         start: start_key,
                         end: end_key,
                         props: rel.properties.clone(),
                     },
-                };
-                group.rows.push(row);
+                });
             }
-            // An unkeyed endpoint on either side — the same explicit
-            // combinations the emit matches, so a third identity variant
-            // is a compile error in both loops, never a silently
-            // skipped group: counted, never written.
-            (EndpointId::Unkeyed(_), _) | (_, EndpointId::Unkeyed(_)) => {
-                group.skipped += 1;
-            }
+            RelDraft::Unkeyed { skipped, .. } => *skipped += 1,
         }
     }
-    for ((rel_type, start_id, end_id), group) in rel_groups {
-        // The same single derivation the row loop used (see
-        // resolved_rel_key): structural forces the pair, create writes
-        // without identity, and the keyed mode's key feeds both the
-        // statement and the report's merge-key column.
-        let resolved_key = resolved_rel_key(keys, opts, &rel_type);
-        let rel_merge_key = resolved_key.map(<[String]>::to_vec).unwrap_or_default();
-        // The mode is the group key's; each arm pushes its own entity —
-        // a Keyed-keyed group's rows are non-empty by construction (the
-        // group is created and its first row pushed in the same
-        // iteration), so no empty-rows branch exists.
-        match (&start_id, &end_id) {
-            (
-                EndpointId::Keyed {
-                    label: start_label,
-                    merge_key: start_key,
-                },
-                EndpointId::Keyed {
-                    label: end_label,
-                    merge_key: end_key,
-                },
-            ) => {
+    for ((rel_type, _, _), draft) in rel_groups {
+        match draft {
+            // A Keyed group's rows are non-empty by construction (the
+            // draft is created and its first row pushed in the same
+            // iteration), so no empty-rows branch exists.
+            RelDraft::Keyed {
+                start,
+                end,
+                write,
+                rows,
+            } => {
                 // The scoped policy is resolved here, where a writing
                 // kind is built — a counted group never resolves one
                 // (LABS-932).
                 let policy = opts.rels_update.resolve(&rel_type);
                 entities.push(PlannedEntity {
-                    statement: rel_statement(
+                    statement: Some(rel_statement(
                         &rel_type,
-                        (start_label, start_key),
-                        (end_label, end_key),
-                        resolved_key,
-                        opts.rel_mode,
+                        (&start.0, &start.1),
+                        (&end.0, &end.1),
+                        write,
                         policy,
-                    )?,
+                    )?),
                     kind: EntityKind::Rel {
                         rel_type,
-                        start_label: start_label.clone(),
-                        start_key: start_key.clone(),
-                        end_label: end_label.clone(),
-                        end_key: end_key.clone(),
+                        start_label: start.0,
+                        start_key: start.1,
+                        end_label: end.0,
+                        end_key: end.1,
+                        policy,
                     },
-                    policy: Some(policy),
-                    merge_key: rel_merge_key,
-                    rows: group.rows,
+                    // The keyed mode's key feeds the statement and the
+                    // report's merge-key column alike.
+                    merge_key: write.key().map(<[String]>::to_vec).unwrap_or_default(),
+                    rows,
                     skipped_unkeyed: 0,
                     skipped_dangling: 0,
                 });
             }
-            // An unkeyed endpoint on either side: counted, never
-            // written — the counted kind, never the writing one. The
-            // combinations are matched explicitly so a third identity
-            // variant is a compile error here, not a silently skipped
-            // group.
-            (EndpointId::Unkeyed(_), _) | (_, EndpointId::Unkeyed(_)) => {
+            RelDraft::Unkeyed {
+                start,
+                end,
+                skipped,
+            } => {
                 entities.push(PlannedEntity {
-                    statement: String::new(),
+                    statement: None,
                     kind: EntityKind::RelSkipped {
                         rel_type,
-                        start: start_id.display(),
-                        end: end_id.display(),
+                        start,
+                        end,
                     },
-                    policy: None,
                     merge_key: Vec::new(),
                     rows: Vec::new(),
-                    skipped_unkeyed: group.skipped,
+                    skipped_unkeyed: skipped,
                     skipped_dangling: 0,
                 });
             }
@@ -535,9 +590,8 @@ fn plan_rels(
         // one reserved bucket so the report never loses them.
         entities.push(PlannedEntity {
             kind: EntityKind::Dangling,
-            policy: None,
             merge_key: Vec::new(),
-            statement: String::new(),
+            statement: None,
             rows: Vec::new(),
             skipped_unkeyed: 0,
             skipped_dangling: graph.dangling_rels,
@@ -546,33 +600,24 @@ fn plan_rels(
     Ok(())
 }
 
-/// What accumulates in one rel group: the rows a keyed-keyed group
-/// writes, and the counter of the rels an unkeyed-keyed group never
-/// writes. The mode and every keyed fact live in the group key.
-#[derive(Default)]
-struct RelGroup {
-    rows: Vec<EntityRow>,
-    skipped: usize,
-}
-
 /// The reserved report name for labelless nodes (never an identifier).
 pub(crate) const LABELLESS: &str = "(no label)";
 
 /// The reserved report name for the dangling-rels bucket.
 pub(crate) const DANGLING: &str = "(dangling)";
 
-/// The resolved key of one relationship type under the plan's mode:
-/// the keyed mode consults the type's key (override or constraint),
-/// every other mode resolves nothing. One derivation, consulted by the
-/// row loop and the group loop alike.
-fn resolved_rel_key<'a>(
-    keys: &'a MergeKeys,
-    opts: &PlanOpts,
-    rel_type: &str,
-) -> Option<&'a [String]> {
-    (opts.rel_mode == RelMode::Keyed)
-        .then(|| keys.rel_key(rel_type))
-        .flatten()
+/// How one relationship type is written under the plan's mode: the
+/// keyed mode consults the type's key (override or constraint) and falls
+/// back to the structural pair when none resolves; every other mode
+/// resolves nothing. One derivation, made where a group is created.
+fn rel_write<'a>(keys: &'a MergeKeys, opts: &PlanOpts, rel_type: &str) -> RelWrite<'a> {
+    match opts.rel_mode {
+        RelMode::Create => RelWrite::Create,
+        RelMode::Structural => RelWrite::MergeOnPair,
+        RelMode::Keyed => keys
+            .rel_key(rel_type)
+            .map_or(RelWrite::MergeOnPair, RelWrite::MergeOnKey),
+    }
 }
 
 /// The keyed properties of one element, read in the merge key's order; a

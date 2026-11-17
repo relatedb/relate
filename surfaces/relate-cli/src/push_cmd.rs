@@ -8,9 +8,10 @@ use std::collections::BTreeMap;
 
 use crate::parse_error::ParseError;
 use relate::Database;
+use relate_formatter::{text_grid_lines, ColumnAlign};
 use relate_load::{
-    parse_key_spec, parse_updated_at_spec, push as push_load, PolicySpec, PushOpts, PushOutcome,
-    PushReport, PushScope, RelMode, UnkeyedAction, DEFAULT_BATCH_SIZE,
+    parse_key_spec, parse_updated_at_spec, push as push_load, EntityReport, PolicySpec, PushOpts,
+    PushOutcome, PushReport, PushScope, RelMode, UnkeyedAction, DEFAULT_BATCH_SIZE,
 };
 
 /// Parsed `push` command (flags + the required database path).
@@ -281,114 +282,125 @@ fn print_report(cmd: &PushCmd, report: &PushReport) {
     }
 }
 
-/// The human table: one row per entity, then the summary line. `skipped`
-/// sums the entity's skip reasons; `warn` counts the `--updated-at`
-/// incomparables. Entity and merge-key names come from the local catalog,
-/// not property values, but they are still echoed, so the table text is
-/// sanitized by the shared formatter at the one boundary below.
-fn print_table(report: &PushReport) {
-    // Column widths derived once, from the data and the header together.
-    // The one sanitization boundary for the table's text: entity names,
-    // merge keys, and statement shapes are catalog strings echoed to the
-    // terminal, so the shared formatter strips unsafe output characters
-    // here, once, where every cell is built.
-    let clean = |s: &str| relate_formatter::sanitize_error_text(s);
-    let rows: Vec<[String; 9]> = report
-        .entities
-        .iter()
-        .map(|entity| {
-            let skipped = entity.skipped_unkeyed
-                + entity.skipped_policy
-                + entity.skipped_remote_newer
-                + entity.skipped_dangling;
-            [
-                clean(&entity.name),
-                entity.total.to_string(),
-                entity.created.to_string(),
-                entity.updated.to_string(),
-                skipped.to_string(),
-                entity.incomparable.to_string(),
-                clean(&entity.merge_key.join(",")),
-                // A counted bucket (unkeyed-skip, unkeyed-rel, dangling)
-                // writes nothing and carries no policy — shown as "-".
-                entity
-                    .policy
-                    .map_or_else(|| "-".to_string(), |p| p.as_str().to_string()),
-                entity.batches.to_string(),
-            ]
-        })
-        .collect();
-    let header = [
-        "entity",
-        "total",
-        "created",
-        "updated",
-        "skipped",
-        "warn",
-        "merge key",
-        "policy",
-        "batches",
-    ];
-    let widths: Vec<usize> = (0..9)
-        .map(|i| {
-            rows.iter()
-                .map(|row: &[String; 9]| row[i].len())
-                .chain([header[i].len()])
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
-    let col = |i: usize| widths[i];
-    let line = |cells: [String; 9]| {
-        format!(
-            "{:<e$}  {:>t$}  {:>c$}  {:>u$}  {:>s$}  {:>w$}  {:<k$}  {:<p$}  {:>b$}",
-            cells[0],
-            cells[1],
-            cells[2],
-            cells[3],
-            cells[4],
-            cells[5],
-            cells[6],
-            cells[7],
-            cells[8],
-            e = col(0),
-            t = col(1),
-            c = col(2),
-            u = col(3),
-            s = col(4),
-            w = col(5),
-            k = col(6),
-            p = col(7),
-            b = col(8),
+/// One column of the human table: its header, alignment, and the cell
+/// it reads off an entity — the one model the header line, the cells,
+/// the widths and the alignment all derive from.
+struct Column {
+    header: &'static str,
+    align: ColumnAlign,
+    cell: fn(&EntityReport) -> String,
+}
+
+/// The table's columns, in print order. Entity names, merge keys and
+/// statement shapes are catalog strings echoed to the terminal, so each
+/// goes through the shared formatter's `sanitize_error_text`. `skipped` sums the entity's skip
+/// reasons; `warn` counts the `--updated-at` incomparables.
+const COLUMNS: [Column; 9] = [
+    Column {
+        header: "entity",
+        align: ColumnAlign::Left,
+        cell: |e| relate_formatter::sanitize_error_text(&e.name),
+    },
+    Column {
+        header: "total",
+        align: ColumnAlign::Right,
+        cell: |e| e.total.to_string(),
+    },
+    Column {
+        header: "created",
+        align: ColumnAlign::Right,
+        cell: |e| e.created.to_string(),
+    },
+    Column {
+        header: "updated",
+        align: ColumnAlign::Right,
+        cell: |e| e.updated.to_string(),
+    },
+    Column {
+        header: "skipped",
+        align: ColumnAlign::Right,
+        cell: |e| {
+            (e.skipped_unkeyed + e.skipped_policy + e.skipped_remote_newer + e.skipped_dangling)
+                .to_string()
+        },
+    },
+    Column {
+        header: "warn",
+        align: ColumnAlign::Right,
+        cell: |e| e.incomparable.to_string(),
+    },
+    Column {
+        header: "merge key",
+        align: ColumnAlign::Left,
+        cell: |e| relate_formatter::sanitize_error_text(&e.merge_key.join(",")),
+    },
+    Column {
+        header: "policy",
+        align: ColumnAlign::Left,
+        // A counted bucket (unkeyed-skip, unkeyed-rel, dangling) writes
+        // nothing and carries no policy — shown as "-".
+        cell: |e| {
+            e.policy
+                .map_or_else(|| "-".to_string(), |p| p.as_str().to_string())
+        },
+    },
+    Column {
+        header: "batches",
+        align: ColumnAlign::Right,
+        cell: |e| e.batches.to_string(),
+    },
+];
+
+/// The whole human report as lines: the entity grid, then either the
+/// dry-run plan dump with its planned-totals line or the run summary
+/// (ADR-0401 §6). Pure, so the output is assertable.
+fn report_lines(report: &PushReport) -> Vec<String> {
+    // The header is row zero; the grid lays every row out in display
+    // columns through the shared formatter.
+    let header: Vec<String> = COLUMNS.iter().map(|c| c.header.to_string()).collect();
+    let rows: Vec<Vec<String>> = std::iter::once(header)
+        .chain(
+            report
+                .entities
+                .iter()
+                .map(|entity| COLUMNS.iter().map(|column| (column.cell)(entity)).collect()),
         )
-    };
-    println!("{}", line(header.map(str::to_string)));
-    for row in rows {
-        println!("{}", line(row));
-    }
+        .collect();
+    let aligns: Vec<ColumnAlign> = COLUMNS.iter().map(|c| c.align).collect();
+    let mut lines = text_grid_lines(&rows, &aligns);
     if report.dry_run {
-        // The plan's statement shapes, one line per entity (ADR-0401 §6).
+        // The plan's statement shapes, one line per entity.
         for entity in &report.entities {
-            if !entity.statement.is_empty() {
-                let name = relate_formatter::sanitize_error_text(&entity.name);
-                let shape = relate_formatter::sanitize_error_text(&entity.statement);
-                println!("{name}: {shape}");
+            if let Some(statement) = &entity.statement {
+                lines.push(format!(
+                    "{}: {}",
+                    relate_formatter::sanitize_error_text(&entity.name),
+                    relate_formatter::sanitize_error_text(statement)
+                ));
             }
         }
         let rows: usize = report.entities.iter().map(|e| e.total).sum();
-        println!(
+        lines.push(format!(
             "dry run: {} entities, {} rows planned; nothing was sent",
             report.entities.len(),
             rows
-        );
+        ));
     } else {
-        println!(
+        lines.push(format!(
             "pushed {} rows in {} statements ({} bytes) in {} ms",
             report.rows_sent,
             report.statements_sent,
             report.bytes_sent,
             report.elapsed.as_millis()
-        );
+        ));
+    }
+    lines
+}
+
+/// The human report, printed.
+fn print_table(report: &PushReport) {
+    for line in report_lines(report) {
+        println!("{line}");
     }
 }
 
@@ -625,7 +637,29 @@ mod tests {
     #[test]
     fn table_renders_entities_and_summary() {
         let report = sample_report(false);
-        print_table(&report); // smoke: it prints without panicking
+        assert_eq!(
+            report_lines(&report),
+            [
+                "entity  total  created  updated  skipped  warn  merge key  policy  batches",
+                "Person      2        1        1        0     0  name       add           1",
+                "pushed 2 rows in 1 statements (120 bytes) in 3 ms",
+            ]
+        );
+        // The dry run adds the statement shapes and the planned totals.
+        let dry = report_lines(&sample_report(true));
+        assert!(
+            dry[2].starts_with("Person: UNWIND $rows AS row MERGE"),
+            "{dry:?}"
+        );
+        assert_eq!(
+            dry[3],
+            "dry run: 1 entities, 2 rows planned; nothing was sent"
+        );
+        // Wide characters stay aligned: the grid measures display columns.
+        let mut wide = sample_report(false);
+        wide.entities[0].name = "漢字".into();
+        let lines = report_lines(&wide);
+        assert!(lines[1].starts_with("漢字    "), "{lines:?}");
         let json = report.to_json();
         assert!(json["entities"][0]["entity"] == "Person");
     }
@@ -646,7 +680,7 @@ mod tests {
                 incomparable: 0,
                 merge_key: vec!["name".into()],
                 policy: Some(relate_load::UpdatePolicy::Add),
-                statement: "UNWIND $rows AS row MERGE (n:`Person` {`name`: row.key.`name`}) SET n += row.props".into(),
+                statement: Some("UNWIND $rows AS row MERGE (n:`Person` {`name`: row.key.`name`}) SET n += row.props".into()),
                 batches: 1,
             }],
             statements_sent: 1,

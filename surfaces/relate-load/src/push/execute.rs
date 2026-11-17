@@ -15,7 +15,7 @@ use serde_json::Value as Json;
 
 use super::plan::{EntityKind, EntityRow, PlannedEntity, PushPlan};
 use super::policy::{resolve_candidate, updated_at_decision, ConflictDecision, UpdatePolicy};
-use super::report::{BatchSize, EntityReport, PushReport, Totals};
+use super::report::{BatchSize, EntityReport, Outcome, PushReport, Totals};
 use super::statement::write_row;
 use super::wire::{encode_value, envelope_rows, quote_ident};
 use crate::{http, LoadError, PushOpts};
@@ -35,12 +35,21 @@ pub(crate) fn execute(
     let mut iter = plan.entities.iter();
     for entity in &mut iter {
         let mut report = EntityReport::planned(entity);
-        if entity.rows.is_empty() {
+        let statement = match writable_statement(entity) {
+            Ok(Some(statement)) => statement,
             // Nothing to write (a skip-only group, or the dangling bucket).
-            entities.push(report);
-            continue;
-        }
-        if let Err(error) = run_entity(opts, batch_size, entity, &mut report, &mut sent) {
+            Ok(None) => {
+                entities.push(report);
+                continue;
+            }
+            Err(error) => {
+                failure = Some(error);
+                entities.push(report);
+                break;
+            }
+        };
+        if let Err(error) = run_entity(opts, batch_size, entity, statement, &mut report, &mut sent)
+        {
             // The failing entity's counters are as far as they got.
             failure = Some(error);
             entities.push(report);
@@ -53,6 +62,21 @@ pub(crate) fn execute(
     entities.extend(iter.map(EntityReport::planned));
     let report = PushReport::build(false, entities, &sent, started.elapsed());
     (report, failure)
+}
+
+/// The statement an entity writes with: `None` for an entity with no rows
+/// (a skip-only group, or the dangling bucket). Rows without a statement
+/// break the plan's invariant — every writing entity is built with its
+/// statement — so it fails loudly instead of reporting nothing to write.
+fn writable_statement(entity: &PlannedEntity) -> Result<Option<&str>, LoadError> {
+    match (entity.statement.as_deref(), entity.rows.is_empty()) {
+        (_, true) => Ok(None),
+        (Some(statement), false) => Ok(Some(statement)),
+        (None, false) => Err(LoadError::Push(format!(
+            "entity {}: rows planned without a statement",
+            entity.kind.display_name()
+        ))),
+    }
 }
 
 /// The dry-run report (ADR-0401 §6): planned counts, merge keys, statement
@@ -77,34 +101,39 @@ fn run_entity(
     opts: &PushOpts,
     batch_size: BatchSize,
     entity: &PlannedEntity,
+    statement: &str,
     report: &mut EntityReport,
     sent: &mut Totals,
 ) -> Result<(), LoadError> {
     let apply = classify(opts, entity, report)?;
-    let rows: Vec<Json> = apply
+    let writes: Vec<(Json, Outcome)> = apply
         .iter()
-        .map(|row| write_row(entity, row))
+        .map(|&(row, outcome)| Ok((write_row(entity, row)?, outcome)))
         .collect::<Result<_, LoadError>>()?;
-    send_batches(opts, batch_size, entity, &rows, report, sent)
+    send_batches(opts, batch_size, entity, statement, &writes, report, sent)
 }
 
 /// The classification phase (ADR-0401 §4): which of the entity's rows
-/// apply, with the counter deltas each decision produced — the one
-/// owner of the keyed-ness decision. An unkeyed CREATE group has no
-/// identity to classify by: its rows apply wholesale, all counted
-/// created (documented in --help). A keyed group pre-reads the remote
-/// and folds the decision table over the map.
+/// apply, each with the outcome it will count as once its batch lands —
+/// the one owner of the keyed-ness decision. The never-written skips
+/// (`skipped_policy`, `skipped_remote_newer`) count here, at decision
+/// time. An unkeyed CREATE group has no identity to classify by: its
+/// rows apply wholesale, all created (documented in --help). A keyed
+/// group pre-reads the remote and folds the decision table over the map.
 fn classify<'a>(
     opts: &PushOpts,
     entity: &'a PlannedEntity,
     report: &mut EntityReport,
-) -> Result<Vec<&'a EntityRow>, LoadError> {
-    if !entity.kind.is_keyed() {
-        report.created += entity.rows.len();
-        return Ok(entity.rows.iter().collect());
-    }
+) -> Result<Vec<(&'a EntityRow, Outcome)>, LoadError> {
+    let Some(policy) = entity.kind.keyed_policy() else {
+        return Ok(entity
+            .rows
+            .iter()
+            .map(|row| (row, Outcome::Created))
+            .collect());
+    };
     let remote = pre_read(opts, entity)?;
-    classify_keyed(opts, entity, &remote, report)
+    classify_keyed(opts, entity, policy, &remote, report)
 }
 
 /// The keyed classification fold over a given pre-read map — pure, so
@@ -112,25 +141,18 @@ fn classify<'a>(
 fn classify_keyed<'a>(
     opts: &PushOpts,
     entity: &'a PlannedEntity,
+    policy: UpdatePolicy,
     remote: &BTreeMap<String, Option<Value>>,
     report: &mut EntityReport,
-) -> Result<Vec<&'a EntityRow>, LoadError> {
-    // Every keyed kind is a writing kind, so it always carries a policy
-    // (see `PlannedEntity::policy`); the caller's `is_keyed` check is the
-    // invariant. (The writing kinds are a superset — `NodeCreate` writes
-    // and is not keyed — but it never reaches this function.)
-    let policy = entity
-        .policy
-        .expect("a keyed entity carries an update policy");
-    let mut apply: Vec<&EntityRow> = Vec::new();
+) -> Result<Vec<(&'a EntityRow, Outcome)>, LoadError> {
+    let mut apply: Vec<(&EntityRow, Outcome)> = Vec::new();
     for row in &entity.rows {
         let identity = row_identity(entity, row)?;
         // One lookup decides the three-way fact: absent on the remote
         // (a new row), present without a candidate, present with one.
         let remote_value = match remote.get(&identity) {
             None => {
-                report.created += 1;
-                apply.push(row);
+                apply.push((row, Outcome::Created));
                 continue;
             }
             Some(value) => value.as_ref(),
@@ -148,41 +170,39 @@ fn classify_keyed<'a>(
             _ => ConflictDecision::Apply,
         };
         match decision {
-            ConflictDecision::Apply => {
-                report.updated += 1;
-                apply.push(row);
-            }
+            ConflictDecision::Apply => apply.push((row, Outcome::Updated)),
             ConflictDecision::RemoteNewer => report.skipped_remote_newer += 1,
-            ConflictDecision::Incomparable => {
-                report.incomparable += 1;
-                report.updated += 1;
-                apply.push(row);
-            }
+            ConflictDecision::Incomparable => apply.push((row, Outcome::UpdatedIncomparable)),
         }
     }
     Ok(apply)
 }
 
 /// The batched writes (ADR-0401 §6): one parameterized statement per
-/// `--batch-size` slice, one failure context per batch. `batches` counts
-/// what actually landed.
+/// `--batch-size` slice, one failure context per batch. `batches` and the
+/// created/updated counters count what actually landed: each batch's
+/// outcomes are recorded only after its statement succeeded.
 fn send_batches(
     opts: &PushOpts,
     batch_size: BatchSize,
     entity: &PlannedEntity,
-    rows: &[Json],
+    statement: &str,
+    writes: &[(Json, Outcome)],
     report: &mut EntityReport,
     sent: &mut Totals,
 ) -> Result<(), LoadError> {
     let name = entity.kind.display_name();
-    for (batch_no, offset, batch) in batch_size.batches(rows) {
+    for (batch_no, offset, batch) in batch_size.batches(writes) {
         let mut parameters = serde_json::Map::new();
         // The rows parameter is the wire module's List-of-Map envelope
         // (the one spelling of the typed-envelope shape).
-        parameters.insert("rows".into(), envelope_rows(batch));
+        parameters.insert(
+            "rows".into(),
+            envelope_rows(batch.iter().map(|(row, _)| row)),
+        );
         let (_, body_bytes) = http::run_query_typed_params(
             &opts.credentials,
-            &entity.statement,
+            statement,
             &parameters,
             opts.allow_plaintext,
         )
@@ -194,13 +214,13 @@ fn send_batches(
             LoadError::Push(format!(
                 "batch {batch_no} of {name} (rows {offset}..{end}) failed: {error}\nstatement: {statement}",
                 end = offset + batch.len(),
-                statement = entity.statement,
             ))
         })?;
         sent.statements += 1;
         sent.rows += batch.len();
         sent.bytes += body_bytes;
         report.batches += 1;
+        report.record_landed(batch.iter().map(|&(_, outcome)| outcome));
     }
     Ok(())
 }
@@ -444,4 +464,39 @@ fn row_identity(entity: &PlannedEntity, row: &EntityRow) -> Result<String, LoadE
         }
     };
     Ok(canonical_key(&encoded))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entity(statement: Option<&str>, rows: usize) -> PlannedEntity {
+        PlannedEntity {
+            kind: EntityKind::Dangling,
+            merge_key: Vec::new(),
+            statement: statement.map(str::to_string),
+            rows: (0..rows)
+                .map(|_| EntityRow::Node {
+                    key: BTreeMap::new(),
+                    props: BTreeMap::new(),
+                })
+                .collect(),
+            skipped_unkeyed: 0,
+            skipped_dangling: 0,
+        }
+    }
+
+    /// Rows without a statement are a plan invariant violation, reported
+    /// loudly; no rows means nothing to write, with or without a statement.
+    #[test]
+    fn writable_statement_pins_the_plan_invariant() {
+        assert_eq!(
+            writable_statement(&entity(Some("S"), 1)).unwrap(),
+            Some("S")
+        );
+        assert_eq!(writable_statement(&entity(Some("S"), 0)).unwrap(), None);
+        assert_eq!(writable_statement(&entity(None, 0)).unwrap(), None);
+        let error = writable_statement(&entity(None, 2)).unwrap_err();
+        assert!(error.to_string().contains("without a statement"), "{error}");
+    }
 }

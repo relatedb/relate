@@ -204,6 +204,54 @@ fn pad_display(s: &str, width: usize) -> String {
     }
 }
 
+/// Left-pad `s` with spaces until its display width reaches `width`.
+fn pad_display_start(s: &str, width: usize) -> String {
+    let w = UnicodeWidthStr::width(s);
+    format!("{}{}", " ".repeat(width.saturating_sub(w)), s)
+}
+
+/// Which side of its column a cell hugs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColumnAlign {
+    Left,
+    Right,
+}
+
+/// A borderless text grid: `rows` (the first is conventionally the
+/// header) laid out in columns two spaces apart, every width measured and
+/// padded in display columns — the same measure the table presenters use,
+/// so wide characters (CJK, emoji) stay aligned. `aligns` names each
+/// column's side; a row with fewer cells than `aligns` is padded as if
+/// its missing cells were empty.
+pub fn text_grid_lines(rows: &[Vec<String>], aligns: &[ColumnAlign]) -> Vec<String> {
+    // A missing cell reads as empty; cells are borrowed, never copied.
+    fn cell(row: &[String], i: usize) -> &str {
+        row.get(i).map_or("", String::as_str)
+    }
+    let widths: Vec<usize> = (0..aligns.len())
+        .map(|i| {
+            rows.iter()
+                .map(|row| UnicodeWidthStr::width(cell(row, i)))
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    rows.iter()
+        .map(|row| {
+            aligns
+                .iter()
+                .zip(&widths)
+                .enumerate()
+                .map(|(i, (align, &width))| match align {
+                    ColumnAlign::Left => pad_display(cell(row, i), width),
+                    ColumnAlign::Right => pad_display_start(cell(row, i), width),
+                })
+                .collect::<Vec<_>>()
+                .join("  ")
+        })
+        .collect()
+}
+
 /// The `+---+` border line for a grid of column `widths` — the one
 /// builder behind the table mode's header/row fences and the EXPLAIN plan
 /// boxes, so the border policy lives once.

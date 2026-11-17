@@ -710,3 +710,17 @@ fn row_cap_records_ride_in_band_per_mode() {
     let out = render_cap(Mode::Csv, &cols, &kept, cap);
     assert_eq!(out, "i\n1\n2\n");
 }
+
+/// The borderless text grid measures and pads in display columns, so a
+/// CJK or emoji cell lines up with ASCII rows in both alignments.
+#[test]
+fn text_grid_lines_align_wide_characters() {
+    let rows: Vec<Vec<String>> = [["name", "n"], ["漢字", "10"], ["🎉x", "2"], ["ab", "300"]]
+        .iter()
+        .map(|row| row.iter().map(|c| c.to_string()).collect())
+        .collect();
+    let lines = text_grid_lines(&rows, &[ColumnAlign::Left, ColumnAlign::Right]);
+    assert_eq!(lines, ["name    n", "漢字   10", "🎉x     2", "ab    300"]);
+    let widths: Vec<usize> = lines.iter().map(|l| line_width(l)).collect();
+    assert!(widths.iter().all(|&w| w == widths[0]), "{widths:?}");
+}

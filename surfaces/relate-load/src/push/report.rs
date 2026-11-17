@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value as Json};
 
-use super::plan::{EntityKind, PlannedEntity};
+use super::plan::PlannedEntity;
 use super::policy::UpdatePolicy;
 
 /// One push's whole outcome.
@@ -87,8 +87,8 @@ pub struct EntityReport {
     /// (unkeyed-skip, unkeyed-rel, dangling), which write nothing and so
     /// have no policy to report (LABS-932).
     pub policy: Option<UpdatePolicy>,
-    /// The statement shape (empty when nothing is written).
-    pub statement: String,
+    /// The statement shape (`None` when nothing is written).
+    pub statement: Option<String>,
     /// Write batches: the number of `--batch-size` slices the entity's
     /// apply rows were sent in (the planned slices in a dry run).
     pub batches: usize,
@@ -132,6 +132,19 @@ impl BatchSize {
     }
 }
 
+/// How one applying row was classified: the counter it adds to once its
+/// batch lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    /// Absent on the remote — a new row.
+    Created,
+    /// Present on the remote; the scoped policy applies.
+    Updated,
+    /// Present, its `--updated-at` pair incomparable: applied with a
+    /// warning.
+    UpdatedIncomparable,
+}
+
 impl EntityReport {
     /// The report row for one planned entity, before any classification:
     /// all rows apply-or-not, totals filled, counters zeroed. `batches`
@@ -142,18 +155,15 @@ impl EntityReport {
     /// skipped-unkeyed and skipped-dangling counters, the merge key, the
     /// policy and the statement; a dry run then fills `created` (and the
     /// planned `batches`) because it cannot tell created from updated;
-    /// a real run's classification fills `created`, `updated`, the
-    /// policy/remote-newer skips and `incomparable`, and `batches` as
-    /// writes land. An entity no run reached keeps this shape — the
+    /// a real run's classification fills the policy/remote-newer skips,
+    /// and `created`, `updated`, `incomparable` and `batches` advance as
+    /// each batch lands. An entity no run reached keeps this shape — the
     /// zeroed counters and `batches == 0` name "never attempted".
     pub(crate) fn planned(entity: &PlannedEntity) -> Self {
         let kind = &entity.kind;
         Self {
             name: kind.display_name(),
-            is_rel: matches!(
-                kind,
-                EntityKind::Rel { .. } | EntityKind::RelSkipped { .. } | EntityKind::Dangling
-            ),
+            is_rel: kind.is_rel(),
             total: entity.rows.len() + entity.skipped_unkeyed + entity.skipped_dangling,
             created: 0,
             updated: 0,
@@ -163,9 +173,26 @@ impl EntityReport {
             skipped_dangling: entity.skipped_dangling,
             incomparable: 0,
             merge_key: entity.merge_key.clone(),
-            policy: entity.policy,
+            policy: kind.policy(),
             statement: entity.statement.clone(),
             batches: 0,
+        }
+    }
+
+    /// Count the rows one batch landed, by the classification each was
+    /// made with (ADR-0401 §4): `created`/`updated` (and the `--updated-at`
+    /// `incomparable` warning) describe writes that reached the remote, so
+    /// a mid-entity failure never counts rows that were never sent.
+    pub(crate) fn record_landed(&mut self, outcomes: impl IntoIterator<Item = Outcome>) {
+        for outcome in outcomes {
+            match outcome {
+                Outcome::Created => self.created += 1,
+                Outcome::Updated => self.updated += 1,
+                Outcome::UpdatedIncomparable => {
+                    self.updated += 1;
+                    self.incomparable += 1;
+                }
+            }
         }
     }
 
@@ -214,7 +241,8 @@ impl EntityReport {
             "mergeKey": self.merge_key,
             // Null for the counted buckets, which carry no policy.
             "policy": self.policy.map(UpdatePolicy::as_str),
-            "statement": self.statement,
+            // The wire spelling of "nothing written" stays the empty string.
+            "statement": self.statement.as_deref().unwrap_or(""),
             "batches": self.batches,
         })
     }
@@ -223,7 +251,7 @@ impl EntityReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::push::plan::EntityRow;
+    use crate::push::plan::{EntityKind, EntityRow};
     use std::collections::BTreeMap;
 
     fn placeholder_row() -> EntityRow {
@@ -236,9 +264,8 @@ mod tests {
     fn planned_entity(kind: EntityKind, rows: usize) -> PlannedEntity {
         PlannedEntity {
             kind,
-            policy: Some(UpdatePolicy::Add),
             merge_key: vec!["name".to_string()],
-            statement: "UNWIND $rows AS row MERGE (n) SET n += row.props".to_string(),
+            statement: Some("UNWIND $rows AS row MERGE (n) SET n += row.props".to_string()),
             rows: (0..rows).map(|_| placeholder_row()).collect(),
             skipped_unkeyed: 0,
             skipped_dangling: 0,
@@ -263,6 +290,7 @@ mod tests {
             EntityKind::NodeLabel {
                 labels: vec!["Person".into()],
                 keyed_label: "Person".into(),
+                policy: UpdatePolicy::Add,
             },
             3,
         );
@@ -278,6 +306,30 @@ mod tests {
         assert_eq!(report.statement, entity.statement);
     }
 
+    /// Counters advance only through landed outcomes (LABS-626): an
+    /// incomparable pair is an update and a warning at once.
+    #[test]
+    fn record_landed_counts_by_outcome() {
+        let entity = planned_entity(
+            EntityKind::NodeLabel {
+                labels: vec!["Person".into()],
+                keyed_label: "Person".into(),
+                policy: UpdatePolicy::Add,
+            },
+            3,
+        );
+        let mut report = EntityReport::planned(&entity);
+        report.record_landed([
+            Outcome::Created,
+            Outcome::Updated,
+            Outcome::UpdatedIncomparable,
+        ]);
+        assert_eq!(
+            (report.created, report.updated, report.incomparable),
+            (1, 2, 1)
+        );
+    }
+
     /// A counted bucket writes nothing, so its report carries no policy:
     /// the field is `None` and the JSON column renders `null` rather than
     /// a fabricated policy (LABS-932).
@@ -285,9 +337,8 @@ mod tests {
     fn counted_bucket_report_has_no_policy() {
         let entity = PlannedEntity {
             kind: EntityKind::Dangling,
-            policy: None,
             merge_key: Vec::new(),
-            statement: String::new(),
+            statement: None,
             rows: Vec::new(),
             skipped_unkeyed: 0,
             skipped_dangling: 3,
@@ -307,6 +358,7 @@ mod tests {
             EntityKind::NodeLabel {
                 labels: vec!["Person".into()],
                 keyed_label: "Person".into(),
+                policy: UpdatePolicy::Add,
             },
             2,
         );
