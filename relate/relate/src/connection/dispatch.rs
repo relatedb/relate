@@ -65,11 +65,38 @@ impl QueryOutcome {
     }
 }
 
+/// What a running arm produced: the raw executor result with the commit
+/// sequence its WAL commit was assigned (ADR-0502 §7). Only the auto-commit
+/// write commits at the statement boundary; [`ArmOutput::read`] owns the
+/// `None` of every arm that does not.
+struct ArmOutput {
+    result: ExecResult,
+    commit_sequence: Option<u64>,
+}
+
+impl ArmOutput {
+    /// The output of an arm that commits nothing (read, explicit
+    /// transaction): no commit sequence.
+    fn read(result: ExecResult) -> Self {
+        Self {
+            result,
+            commit_sequence: None,
+        }
+    }
+
+    /// The output of the auto-commit write: `commit_write`'s result paired
+    /// with its commit sequence.
+    fn committed((result, commit_sequence): (ExecResult, Option<u64>)) -> Self {
+        Self {
+            result,
+            commit_sequence,
+        }
+    }
+}
+
 /// What one dispatch arm produced: either a refused admission (the
-/// statement never ran) or the run's own result — the raw executor result
-/// with the commit sequence its WAL commit was assigned (ADR-0502 §7, `None`
-/// for every arm that commits nothing) — with whether the run admitted its
-/// read first. One type across the transaction, write and read arms, so
+/// statement never ran) or the run's own result ([`ArmOutput`]) with whether
+/// the run admitted its read first. One type across the transaction, write and read arms, so
 /// "refused", "ran admitted" and "ran not admitted" are variants, not a
 /// nested `Result` beside a bare flag.
 enum ArmRun {
@@ -77,9 +104,9 @@ enum ArmRun {
     /// never ran. The one refusal path of every arm.
     Refused(Error),
     /// The arm admitted its read, then ran; the result may be a failure.
-    Admitted(Result<(ExecResult, Option<u64>)>),
+    Admitted(Result<ArmOutput>),
     /// The arm ran without a read admission (the auto-commit write).
-    NotAdmitted(Result<(ExecResult, Option<u64>)>),
+    NotAdmitted(Result<ArmOutput>),
 }
 
 /// The statement's token-budget reservation as one owner: the reserved
@@ -563,8 +590,9 @@ impl Connection {
                         // cannot follow a `Refused` (same budget); a refused
                         // grow leaves the plan uncharged by design — the
                         // statement already holds its own reservation.
-                        if let HoldAttempt::Held(hold) = budget.try_hold_grow(bytes) {
-                            park(reservation, hold);
+                        match budget.try_hold_grow(bytes) {
+                            HoldAttempt::Held(hold) => park(reservation, hold),
+                            HoldAttempt::Off | HoldAttempt::Refused => {}
                         }
                     }
                 }
@@ -602,8 +630,8 @@ impl Connection {
         // every arm funnels through, beside the ADR-0221 total.
         let execute_started = Instant::now();
         // The write arm carries its commit sequence (ADR-0502 §7) beside
-        // the executor result; every other arm pairs its result with
-        // `None` — nothing it runs commits at the statement boundary.
+        // the executor result (`ArmOutput`); every other arm's output has
+        // none — nothing it runs commits at the statement boundary.
         let arm = if let Some(txn) = self.txn.as_ref() {
             self.txn_arm(txn, &ctx, logical, params, cypher, token)
         } else if ctx.stamp.write_route {
@@ -615,21 +643,24 @@ impl Connection {
             // same group-commit pipeline (ADR-0120 §3).
             // ADR-0209 batched-vs-single commit strategy selection lives in
             // commit.rs (`commit_write`).
-            ArmRun::NotAdmitted(commit_write(
-                &self.inner,
-                // The statement's execution facts, the same bundle
-                // `commit_optimistic` executes.
-                &ExecRequest {
-                    plan: logical,
-                    params,
-                    query_text: cypher,
-                    principal: self.principal.as_deref(),
-                    batch_commit: None,
-                    plan_metrics: ctx.profile_metrics,
-                },
-                parse_plan_ns,
-                token,
-            ))
+            ArmRun::NotAdmitted(
+                commit_write(
+                    &self.inner,
+                    // The statement's execution facts, the same bundle
+                    // `commit_optimistic` executes.
+                    &ExecRequest {
+                        plan: logical,
+                        params,
+                        query_text: cypher,
+                        principal: self.principal.as_deref(),
+                        batch_commit: None,
+                        plan_metrics: ctx.profile_metrics,
+                    },
+                    parse_plan_ns,
+                    token,
+                )
+                .map(ArmOutput::committed),
+            )
         } else {
             // A refused admission (read guard, target, pin) is not-admitted;
             // the run's own result pairs with `admitted: true`.
@@ -680,8 +711,11 @@ impl Connection {
             // The auto-commit write's commit sequence (ADR-0502 §7) stamps
             // the result's bookmark at the same single tail — every other
             // arm's `None` leaves the result bookmark-free.
-            Ok((r, commit_sequence)) => Ok(Executed::Rows(
-                QueryResult::from_exec(r, ctx.stamp.namespace, ctx.stamp.qtype, stamp_tail)
+            Ok(ArmOutput {
+                result,
+                commit_sequence,
+            }) => Ok(Executed::Rows(
+                QueryResult::from_exec(result, ctx.stamp.namespace, ctx.stamp.qtype, stamp_tail)
                     .with_commit_sequence(commit_sequence),
             )),
             // `staged` derives the planned output names (the UNION
@@ -749,7 +783,7 @@ impl Connection {
                 cancel: Some(token),
                 ontology_document: ontology_document.as_deref(),
             })
-            .map(|r| (r, None)),
+            .map(ArmOutput::read),
         )
     }
 
@@ -795,7 +829,7 @@ impl Connection {
                 cypher,
                 token,
             )
-            .map(|r| (r, None)),
+            .map(ArmOutput::read),
         )
     }
 

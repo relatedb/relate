@@ -1,6 +1,8 @@
 //! Unit tests for the clause-shape detectors in [`super`].
 
+use super::super::scope::{call_imports, observe_subquery_scopes};
 use super::*;
+use relate_ir::Clause;
 use relate_names::SmallName;
 
 fn label(name: &str) -> LabelExpr {
@@ -97,6 +99,24 @@ fn wide_type_expression_declines_past_the_work_budget() {
     );
 }
 
+/// The `CREATE` self-reference notifications raised for the `CREATE` inside
+/// the statement's one leading `CALL { … }` body, under a fresh meter.
+fn create_self_reference_count(statement: &str) -> usize {
+    let query = relate_front::parse_and_lower(statement).unwrap();
+    let Clause::CallSubquery { query: inner, .. } = &query.parts[0].clauses[0] else {
+        panic!("expected a CALL subquery");
+    };
+    let Clause::Create { patterns } = &inner.parts[0].clauses[0] else {
+        panic!("expected a CREATE clause");
+    };
+    let mut notifications = Vec::new();
+    observe_create(
+        &mut ShapeCtx::new(&mut notifications, &mut WorkMeter::default()),
+        patterns,
+    );
+    notifications.len()
+}
+
 /// The sibling scans carry the same budget: a `CREATE` whose property map
 /// and created-entity count multiply past `SHAPE_CHECK_WORK_BUDGET`
 /// declines (no notification) instead of testing every pair.
@@ -113,41 +133,16 @@ fn wide_create_self_reference_scan_declines_past_the_work_budget() {
     for index in 1..WIDTH {
         body.push_str(&format!(", (n{index} {{q: n0.p}})"));
     }
-    let query = relate_front::parse_and_lower(&format!(
-        "CALL {{ CREATE {body} RETURN 1 AS one }} RETURN 1"
-    ))
-    .unwrap();
-    let Clause::CallSubquery { query: inner, .. } = &query.parts[0].clauses[0] else {
-        panic!("expected a CALL subquery");
-    };
-    let Clause::Create { patterns } = &inner.parts[0].clauses[0] else {
-        panic!("expected a CREATE clause");
-    };
-    let mut notifications = Vec::new();
-    observe_create(
-        &mut ShapeCtx::new(&mut notifications, &mut WorkMeter::default()),
-        patterns,
-    );
+    let wide = format!("CALL {{ CREATE {body} RETURN 1 AS one }} RETURN 1");
     assert!(
-        notifications.is_empty(),
+        create_self_reference_count(&wide) == 0,
         "a wide CREATE declines instead of testing every (value, name) pair"
     );
-
-    let small =
-        relate_front::parse_and_lower("CALL { CREATE (a), (b {q: a.p}) RETURN 1 AS one } RETURN 1")
-            .unwrap();
-    let Clause::CallSubquery { query: inner, .. } = &small.parts[0].clauses[0] else {
-        panic!("expected a CALL subquery");
-    };
-    let Clause::Create { patterns } = &inner.parts[0].clauses[0] else {
-        panic!("expected a CREATE clause");
-    };
-    let mut notifications = Vec::new();
-    observe_create(
-        &mut ShapeCtx::new(&mut notifications, &mut WorkMeter::default()),
-        patterns,
+    assert_eq!(
+        create_self_reference_count("CALL { CREATE (a), (b {q: a.p}) RETURN 1 AS one } RETURN 1"),
+        1,
+        "a small CREATE is still checked"
     );
-    assert_eq!(notifications.len(), 1, "a small CREATE is still checked");
 }
 
 /// A complex projection item is anything but a variable, literal, or

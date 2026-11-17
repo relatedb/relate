@@ -13,8 +13,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use relate_ir::{
-    expr_vars, is_agg_call, is_agg_expr, walk_pattern_payloads, CallScope, Clause, Expr, LabelExpr,
-    OrderItem, PathPattern, PatternPayload, Projection, Query, SearchSpec,
+    expr_vars, is_agg_call, is_agg_expr, walk_pattern_payloads, CallScope, Expr, LabelExpr,
+    OrderItem, PathPattern, PatternPayload, Projection,
 };
 use relate_model::wire::{Notification, NotificationKind};
 
@@ -70,7 +70,7 @@ impl WorkMeter {
 
     /// [`Self::charge`] for the product of two statement dimensions, the
     /// one shape every detector spends in.
-    fn charge_pairs(&mut self, a: u64, b: usize) -> bool {
+    pub(super) fn charge_pairs(&mut self, a: u64, b: usize) -> bool {
         self.charge(a.saturating_mul(u64::try_from(b).unwrap_or(u64::MAX)))
     }
 }
@@ -80,8 +80,8 @@ impl WorkMeter {
 /// entry detector takes both together, so a new detector cannot be handed
 /// the sink without the budget.
 pub(super) struct ShapeCtx<'a> {
-    notifications: &'a mut Vec<Notification>,
-    meter: &'a mut WorkMeter,
+    pub(super) notifications: &'a mut Vec<Notification>,
+    pub(super) meter: &'a mut WorkMeter,
 }
 
 impl<'a> ShapeCtx<'a> {
@@ -289,11 +289,26 @@ pub(super) fn observe_projection(
     where_clause: Option<&Expr>,
     distinct: bool,
 ) {
-    let (notifications, meter) = (&mut *ctx.notifications, &mut *ctx.meter);
     if items.is_empty() {
         return;
     }
-    let grouped = distinct || items.iter().any(|item| is_agg_expr(&item.expr));
+    // The subclause expressions both families test, bound once.
+    let subclause: Vec<&Expr> = order
+        .iter()
+        .map(|item| &item.expr)
+        .chain(where_clause)
+        .collect();
+    observe_ambiguous_references(ctx, items, &subclause);
+    // The complex-reference deprecation only applies under implicit
+    // grouping or `DISTINCT`.
+    if distinct || items.iter().any(|item| is_agg_expr(&item.expr)) {
+        observe_complex_references(ctx, items, &subclause);
+    }
+}
+
+/// The ambiguous-reference family: a subclause expression reading a
+/// variable a projection item shadows (`WITH a.x AS a ORDER BY a.y`).
+fn observe_ambiguous_references(ctx: &mut ShapeCtx<'_>, items: &[Projection], subclause: &[&Expr]) {
     let mut item_vars = HashSet::new();
     for item in items {
         expr_vars(&item.expr, &mut item_vars);
@@ -317,45 +332,45 @@ pub(super) fn observe_projection(
                 .then_some(alias_text)
         })
         .collect();
-    // The (subclause expression, shadowing name) pairs the ambiguous-reference
-    // scan tests: the family is declined past the shared budget, decided once
-    // here, while the complex-reference pass below keeps its own guard. One
-    // wide dimension therefore never silences the other family.
-    let shadowing_scan = meter.charge_pairs(
-        order.len() as u64 + u64::from(where_clause.is_some()),
-        shadowing.len(),
-    );
-    if shadowing_scan {
-        for expr in order.iter().map(|item| &item.expr).chain(where_clause) {
-            let bare_alias = matches!(expr, Expr::Variable(variable)
-                    if variable.with_str(|text| aliases.contains(text)));
-            if bare_alias {
-                continue;
-            }
-            let mut vars = HashSet::new();
-            expr_vars(expr, &mut vars);
-            for name in &shadowing {
-                if vars.contains(name.as_str()) {
-                    notifications.push(Notification::new(
-                        NotificationKind::AmbiguousSubclauseReference,
-                        format!(
-                            "The subclause expression contains an ambiguous reference to \
-                             variable `{name}`; reference the projection item by an alias \
-                             or use the GROUP BY clause."
-                        ),
-                    ));
-                }
+    // The (subclause expression, shadowing name) pairs the scan tests: the
+    // family is declined past the shared budget, decided once here, while
+    // the complex-reference family keeps its own guard. One wide dimension
+    // therefore never silences the other family.
+    if !ctx
+        .meter
+        .charge_pairs(subclause.len() as u64, shadowing.len())
+    {
+        return;
+    }
+    for expr in subclause {
+        let bare_alias = matches!(expr, Expr::Variable(variable)
+                if variable.with_str(|text| aliases.contains(text)));
+        if bare_alias {
+            continue;
+        }
+        let mut vars = HashSet::new();
+        expr_vars(expr, &mut vars);
+        for name in &shadowing {
+            if vars.contains(name.as_str()) {
+                ctx.notifications.push(Notification::new(
+                    NotificationKind::AmbiguousSubclauseReference,
+                    format!(
+                        "The subclause expression contains an ambiguous reference to \
+                         variable `{name}`; reference the projection item by an alias \
+                         or use the GROUP BY clause."
+                    ),
+                ));
             }
         }
     }
-    // The complex-reference deprecation only applies under implicit
-    // grouping or `DISTINCT`.
-    if !grouped {
-        return;
-    }
-    // The complex projection items, selected once. The per-pair loop below
-    // used to re-run the shape test for every (subclause expression, item)
-    // pair, so a large projection paid for the same answer once per pair.
+}
+
+/// The complex-reference family: a subclause expression reading a complex
+/// projection item's expression instead of its alias.
+fn observe_complex_references(ctx: &mut ShapeCtx<'_>, items: &[Projection], subclause: &[&Expr]) {
+    // The complex projection items, selected once. A per-pair loop would
+    // re-run the shape test for every (subclause expression, item) pair, so
+    // a large projection would pay for the same answer once per pair.
     let complex: Vec<(usize, &Projection)> = items
         .iter()
         .enumerate()
@@ -364,13 +379,13 @@ pub(super) fn observe_projection(
     if complex.is_empty() {
         return;
     }
-    for expr in order.iter().map(|item| &item.expr).chain(where_clause) {
-        for (index, item) in complex_references(meter, expr, &complex) {
+    for expr in subclause {
+        for (index, item) in complex_references(ctx.meter, expr, &complex) {
             let text = item
                 .source_text
                 .clone()
                 .unwrap_or_else(|| item.output_name(index));
-            notifications.push(Notification::new(
+            ctx.notifications.push(Notification::new(
                 NotificationKind::ComplexSubclauseReference,
                 format!(
                     "The subclause expression contains a reference to the complex \
@@ -381,314 +396,55 @@ pub(super) fn observe_projection(
     }
 }
 
-/// The variable-scope facts that need the clause tree: a `CALL { … }` body
-/// variable shadowing an outer name (03N60), and a `SEARCH` index identifier
-/// sharing a name with a variable in scope (03N63).
-///
-/// One structural recursion over the tree carries the scope it is in: each
-/// clause list (a statement part, a `CALL { … }` arm, a `WHEN`/`ELSE`
-/// branch, a `FOREACH` body) starts from the frame its enclosing position
-/// supplies and grows one clause at a time by [`introduced_names`], so a
-/// subquery body is analysed against the names actually visible at its CALL
-/// clause. Imported names — a scope clause's or a scope-less body's legacy
-/// leading `WITH` — are not shadowing.
-///
-/// An expression subquery (`EXISTS`/`COUNT`/`COLLECT`) lives in an
-/// expression, not in the clause tree, so the recursion above does not reach
-/// it. Its body still opens a scope of its own: a `CALL { … }` inside it is
-/// checked against the names the body binds before it, with an **empty**
-/// starting frame — a name bound only outside the expression subquery is not
-/// part of that body's "outer query" (verified against Neo4j 2026.10.1: the
-/// same `CALL` shape shadowing an enclosing-statement name raises nothing).
-/// Every such body is therefore analysed with a fresh frame, wherever it
-/// sits, including inside another expression subquery's body.
-pub(super) fn observe_subquery_scopes(ctx: &mut ShapeCtx<'_>, parts: &[&[Clause]]) {
-    let (notifications, meter) = (&mut *ctx.notifications, &mut *ctx.meter);
-    // The per-subquery work scales with the statement-wide name set (a
-    // wildcard import clones it): declined past the shared budget, like the
-    // sibling detectors. The SEARCH family stays checked — its cost is per
-    // index-specification name, not per scope.
-    let mut declared: BTreeSet<String> = BTreeSet::new();
-    let mut subqueries = 0u64;
-    let mut expression_bodies: Vec<&Query> = Vec::new();
-    for part in parts {
-        relate_ir::walk_clauses(
-            part,
-            &mut |clause| {
-                if matches!(clause, Clause::CallSubquery { .. }) {
-                    subqueries += 1;
-                }
-                declared.extend(introduced_names(clause));
-            },
-            &mut |expr| {
-                if let Some(query) = expr.subquery_body() {
-                    expression_bodies.push(query);
-                }
-            },
-        );
-    }
-    subqueries += expression_bodies.len() as u64;
-    let subquery_scan = meter.charge_pairs(subqueries, declared.len());
-    // A UNION arm and a `NEXT` stage are independent statements: each is its
-    // own clause list, so neither sees the other's names.
-    for part in parts {
-        observe_scope_frame(notifications, part, &Scope::new(), subquery_scan);
-    }
-    // `observe_query_frames` descends into clause-level bodies only, so each
-    // expression body is analysed exactly once here; a body nested in
-    // another expression body is its own entry in the list.
-    for query in expression_bodies {
-        observe_query_frames(notifications, query, &Scope::new(), subquery_scan);
-    }
-}
-
-/// The names in force at one point of the clause tree.
-type Scope = BTreeSet<String>;
-
-/// One structural recursion over a clause list, carrying the frame the list
-/// runs in.
-///
-/// `outer` is the frame the enclosing position supplies (empty for a
-/// top-level part, the frame at the `CALL { … }` clause for its body, plus
-/// the loop variable for a `FOREACH` body). A clause sees the frame its
-/// predecessors built; its own names join it for the clauses after it.
-fn observe_scope_frame(
-    notifications: &mut Vec<Notification>,
-    clauses: &[Clause],
-    outer: &Scope,
-    subquery_scan: bool,
-) {
-    let mut scope = outer.clone();
-    for clause in clauses {
-        let own = introduced_names(clause);
-        observe_scope_clause(notifications, clause, &scope, &own, subquery_scan);
-        scope.extend(own);
-    }
-}
-
-/// The per-clause half of [`observe_scope_frame`]: the `SEARCH` shadow test
-/// against the frame before the clause (plus the clause's own pattern
-/// variables, which its index specification sees), and the descent into
-/// whatever clause lists the clause carries.
-fn observe_scope_clause(
-    notifications: &mut Vec<Notification>,
-    clause: &Clause,
-    scope: &Scope,
-    own: &BTreeSet<String>,
-    subquery_scan: bool,
-) {
-    if let Clause::Match {
-        search: Some(search),
-        ..
-    } = clause
-    {
-        for name in search_index_names(&search.spec) {
-            if scope.contains(name) || own.contains(name) {
-                notifications.push(Notification::new(
-                    NotificationKind::SearchIdentifierShadowingVariable,
-                    format!(
-                        "The identifier `{name}` in the index specification clause has \
-                         the same name as a variable in scope."
-                    ),
-                ));
-            }
-        }
-    }
-    match clause {
-        Clause::CallSubquery {
-            query,
-            scope: call_scope,
-            ..
-        } => {
-            if subquery_scan {
-                observe_call_body(notifications, query, call_scope, scope);
-            }
-            // The body runs in the frame at the CALL clause, whichever arm.
-            observe_query_frames(notifications, query, scope, subquery_scan);
-        }
-        Clause::Conditional {
-            branches,
-            else_query,
-        } => {
-            for (_, query) in branches {
-                observe_query_frames(notifications, query, scope, subquery_scan);
-            }
-            if let Some(query) = else_query.as_deref() {
-                observe_query_frames(notifications, query, scope, subquery_scan);
-            }
-        }
-        Clause::Foreach {
-            variable, clauses, ..
-        } => {
-            let mut inner = scope.clone();
-            inner.insert(variable.to_string());
-            observe_scope_frame(notifications, clauses, &inner, subquery_scan);
-        }
-        _ => {}
-    }
-}
-
-/// Every part of a nested [`Query`], each against the same `outer` frame:
-/// UNION arms and `NEXT` stages do not see each other's names.
-fn observe_query_frames(
-    notifications: &mut Vec<Notification>,
-    query: &Query,
-    outer: &Scope,
-    subquery_scan: bool,
-) {
-    for part in &query.parts {
-        observe_scope_frame(notifications, &part.clauses, outer, subquery_scan);
-    }
-    if let Some(next) = query.next.as_deref() {
-        observe_query_frames(notifications, next, outer, subquery_scan);
-    }
-}
-
-/// The 03N60 test for one `CALL { … }` body: per UNION arm, the names the
-/// arm introduces and does not import, kept to those the outer frame holds.
-///
-/// Each arm introduces its own names and imports its own, so the test runs
-/// per arm: a name arm A declares is a shadow even when arm B imports a name
-/// with the same spelling. One notification per spelling, even when several
-/// arms shadow it.
-fn observe_call_body(
-    notifications: &mut Vec<Notification>,
-    query: &Query,
-    call_scope: &CallScope,
-    outer: &Scope,
-) {
-    let own_by_arm: Vec<BTreeSet<String>> = query
-        .parts
-        .iter()
-        .map(|part| part.clauses.iter().flat_map(introduced_names).collect())
-        .collect();
-    let imports_by_arm = call_imports(call_scope, query, outer);
-    let shadowing: BTreeSet<&String> = own_by_arm
-        .iter()
-        .zip(imports_by_arm.iter())
-        .flat_map(|(own, imports)| own.difference(imports))
-        .filter(|name| outer.contains(name.as_str()))
-        .collect();
-    for name in shadowing {
-        notifications.push(Notification::new(
-            NotificationKind::SubqueryVariableShadowing,
+/// The deprecated `MERGE` self-reference (`MERGE (a {prop: a.prop})`):
+/// the pattern's property map reads the entity it merges.
+pub(super) fn observe_merge(ctx: &mut ShapeCtx<'_>, pattern: &PathPattern) {
+    if let Some(name) = merge_self_reference(pattern) {
+        ctx.notifications.push(Notification::new(
+            NotificationKind::MergeSelfReference,
             format!(
-                "The variable `{name}` in the subquery uses the same name as a \
-                 variable in the outer scope; import the outer one with \
-                 `CALL ({name}) {{ … }}` or rename the inner one."
+                "Merging an entity (`{name}`) and referencing that entity in a \
+                 property definition in the same MERGE is deprecated."
             ),
         ));
     }
 }
 
-/// The names a clause introduces into the scope after it (the IR analog of
-/// the front's `clause_introduced_names`): pattern variables for
-/// MATCH/CREATE/MERGE, a WITH item's output name, and the alias of
-/// UNWIND/LOAD CSV/FOREACH or a procedure CALL's YIELD. `*` is not a name.
-fn introduced_names(clause: &Clause) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    match clause {
-        Clause::Match {
-            patterns, search, ..
-        } => {
-            for pattern in patterns {
-                collect_pattern_names(pattern, &mut names);
-            }
-            if let Some(score) = search.as_ref().and_then(|search| search.score_var.as_ref()) {
-                names.insert(score.to_string());
-            }
+/// The variable a MERGE pattern reads from its own property map
+/// (`MERGE (a {prop: a.prop})`), if any. MERGE patterns are simple,
+/// non-quantified paths, so the compact node/relationship views hold
+/// every payload exactly once.
+fn merge_self_reference(pattern: &PathPattern) -> Option<String> {
+    let elements = pattern
+        .nodes
+        .iter()
+        .map(|node| (node.variable.as_ref(), node.properties.as_ref()))
+        .chain(
+            pattern
+                .rels
+                .iter()
+                .map(|rel| (rel.variable.as_ref(), rel.properties.as_ref())),
+        );
+    for (variable, properties) in elements {
+        let (Some(variable), Some(properties)) = (variable, properties) else {
+            continue;
+        };
+        let mut vars = HashSet::new();
+        expr_vars(properties, &mut vars);
+        if variable.with_str(|text| vars.contains(text)) {
+            return Some(variable.to_string());
         }
-        Clause::Create { patterns } => {
-            for pattern in patterns {
-                collect_pattern_names(pattern, &mut names);
-            }
-        }
-        Clause::Merge { pattern, .. } => collect_pattern_names(pattern, &mut names),
-        Clause::Unwind { alias, .. } => {
-            names.insert(alias.to_string());
-        }
-        Clause::LoadCsv { variable, .. } => {
-            names.insert(variable.to_string());
-        }
-        Clause::Call { yield_items, .. } => {
-            names.extend(yield_items.effective_names().map(|name| name.to_string()));
-        }
-        // A `RETURN` is terminal and exports columns rather than binding
-        // names in a scope later clauses (or an outer scope) can shadow; a
-        // `WITH` replaces the scope, so its outputs count.
-        Clause::With { items, .. } => {
-            for (index, item) in items.iter().enumerate() {
-                if !matches!(item.expr, Expr::Star) {
-                    names.insert(item.output_name(index));
-                }
-            }
-        }
-        Clause::Foreach { variable, .. } => {
-            names.insert(variable.to_string());
-        }
-        _ => {}
     }
-    names
+    None
 }
 
-/// Every variable a path pattern binds: its path names, and every node and
-/// relationship variable including quantified groups.
-fn collect_pattern_names(pattern: &PathPattern, out: &mut BTreeSet<String>) {
-    // Text render: the collected scope names are the String sink.
-    out.extend(pattern.path_names().map(|name| name.to_string()));
-    walk_pattern_payloads(pattern, &mut |payload| match payload {
-        PatternPayload::Node(node) => {
-            if let Some(variable) = &node.variable {
-                out.insert(variable.to_string());
-            }
-        }
-        PatternPayload::Relationship(rel) => {
-            if let Some(variable) = &rel.variable {
-                out.insert(variable.to_string());
-            }
-        }
-        PatternPayload::Quantified(_) => {}
-    });
-}
-
-/// The names each UNION arm of a `CALL { … }` body imports from its outer
-/// scope, in arm order.
-///
-/// A scope clause declares one import set for the whole body (`*` imports
-/// everything in scope), so every arm reports it. A scope-less body imports
-/// per arm from that arm's own legacy leading `WITH`
-/// ([`relate_ir::SingleQuery::leading_imports`] — the same derivation
-/// the planner's 42I28 rule consults): one arm's import must never suppress
-/// a sibling arm's shadowing diagnostic.
-fn call_imports(
-    scope: &CallScope,
-    query: &Query,
-    outer: &BTreeSet<String>,
-) -> Vec<BTreeSet<String>> {
-    match scope {
-        CallScope::Wildcard => query.parts.iter().map(|_| outer.clone()).collect(),
-        CallScope::Vars(names) => {
-            // Text render: the import sets are the String scope domain.
-            let declared: BTreeSet<String> = names.iter().map(|name| name.to_string()).collect();
-            query.parts.iter().map(|_| declared.clone()).collect()
-        }
-        CallScope::None => query
-            .parts
-            .iter()
-            .map(|part| part.leading_imports(outer))
-            .collect(),
-    }
-}
-
-/// The index names a `SEARCH` source specification names.
-fn search_index_names(spec: &SearchSpec) -> Vec<&str> {
-    match spec {
-        SearchSpec::Index(index) => vec![index.index_name.as_str()],
-        SearchSpec::Combine(combine) => combine
-            .sources
-            .iter()
-            .flat_map(|source| search_index_names(&source.spec))
-            .collect(),
+/// The scope-less `CALL { … }` subquery deprecation.
+pub(super) fn observe_call_subquery(ctx: &mut ShapeCtx<'_>, scope: &CallScope) {
+    if !scope.has_scope_clause() {
+        ctx.notifications.push(Notification::new(
+            NotificationKind::CallSubqueryWithoutScope,
+            "The `CALL { … }` subquery has no variable scope clause.",
+        ));
     }
 }
 

@@ -218,6 +218,17 @@ pub(super) fn slot_with_ops(
     CommitSlot::for_test(snapshot_ts, txn_id, ops, Arc::clone(waiter))
 }
 
+/// A batch position as a slot's node id: batches are a handful of slots, so
+/// the conversion cannot fail, and a failure is a broken test, not a wrap.
+pub(super) fn node_id(index: usize) -> i64 {
+    i64::try_from(index).expect("a test batch index fits a node id")
+}
+
+/// A batch position as a commit timestamp / snapshot offset (see [`node_id`]).
+pub(super) fn ordinal(index: usize) -> u64 {
+    u64::try_from(index).expect("a test batch index fits a timestamp")
+}
+
 /// The two-slot batch of `Uncertain`-labelled creates the uncertain-WAL
 /// fault tests flush, one waiter per slot.
 pub(super) fn uncertain_batch(waiters: &[Arc<CommitWaiter>]) -> Vec<CommitSlot> {
@@ -226,11 +237,11 @@ pub(super) fn uncertain_batch(waiters: &[Arc<CommitWaiter>]) -> Vec<CommitSlot> 
         .enumerate()
         .map(|(i, waiter)| {
             let op = RedoOp::CreateNode {
-                id: i as i64 + 1,
+                id: node_id(i) + 1,
                 labels: Arc::new(vec!["Uncertain".into()]),
                 properties: relate_core::PropertyMap::share(BTreeMap::new()),
             };
-            slot_with_ops(vec![op], i as u64 + 2, 1, waiter)
+            slot_with_ops(vec![op], ordinal(i) + 2, 1, waiter)
         })
         .collect()
 }

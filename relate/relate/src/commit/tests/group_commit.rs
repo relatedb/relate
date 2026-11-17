@@ -17,7 +17,7 @@ fn group_flush_shares_one_fsync() {
     let n = 12usize;
     let waiters: Vec<Arc<CommitWaiter>> = (0..n).map(|_| CommitWaiter::new()).collect();
     let batch: Vec<_> = (0..n)
-        .map(|i| slot(i as i64, i as u64 + 1, 0, &waiters[i]))
+        .map(|i| slot(node_id(i), ordinal(i) + 1, 0, &waiters[i]))
         .collect();
     flush_group(&shared, batch).unwrap();
     for waiter in &waiters {
@@ -113,7 +113,7 @@ fn applicability_preflight_completes_all_waiters_in_batch() {
     let waiters: Vec<Arc<CommitWaiter>> = (0..3).map(|_| CommitWaiter::new()).collect();
     let mut batch = Vec::new();
     for (i, op) in [good.clone(), bad, good].into_iter().enumerate() {
-        batch.push(slot_with_ops(vec![op], (i + 1) as u64, 0, &waiters[i]));
+        batch.push(slot_with_ops(vec![op], ordinal(i) + 1, 0, &waiters[i]));
     }
 
     let res = flush_group(&shared, batch);
@@ -184,12 +184,12 @@ fn two_valid_candidates_share_exactly_one_barrier_and_keep_order() {
     let shared = db.shared();
     let waiters: Vec<_> = (0..2).map(|_| CommitWaiter::new()).collect();
     let batch: Vec<_> = (0..2)
-        .map(|i| slot(i as i64, i + 1, 0, &waiters[i as usize]))
+        .map(|i| slot(node_id(i), ordinal(i) + 1, 0, &waiters[i]))
         .collect();
     flush_group(&shared, batch).unwrap();
     // Each waiter learns the commit timestamp its own slot was assigned.
     for (i, waiter) in waiters.iter().enumerate() {
-        assert_eq!(waiter.wait().unwrap(), i as u64 + 1);
+        assert_eq!(waiter.wait().unwrap(), ordinal(i) + 1);
     }
     assert_eq!(shared.timing.lock().unwrap().sync_calls, 1);
     assert_eq!(
@@ -328,14 +328,14 @@ fn group_overlay_hold_from_an_earlier_slot_rejects_a_later_duplicate() {
             // The slot encodes the ops it carries, as admission does.
             slot_with_ops(
                 vec![RedoOp::CreateNode {
-                    id: i as i64,
+                    id: node_id(i),
                     labels: Arc::new(vec!["Person".into()]),
                     properties: relate_core::PropertyMap::share(BTreeMap::from([(
                         "email".into(),
                         Value::String("dup".into()),
                     )])),
                 }],
-                i as u64 + 1,
+                ordinal(i) + 1,
                 snapshot_ts,
                 &waiters[i],
             )

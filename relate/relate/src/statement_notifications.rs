@@ -78,17 +78,18 @@
 mod dynamic_property;
 mod hints;
 mod redundant_optional;
+mod scope;
 mod shape;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use relate_executor::{
     builtin_function_deprecation, builtin_procedure_deprecation, DeprecatedBy, DeprecationForm,
     ExecGraph, IndexFacts, Procedure,
 };
 use relate_ir::{
-    expr_vars, walk_pattern_payloads, Clause, Expr, ExprRole, LabelExpr, MapProjectionItem,
-    NodePattern, PathPattern, PatternPayload, RelPattern,
+    walk_pattern_payloads, Clause, Expr, ExprRole, LabelExpr, MapProjectionItem, NodePattern,
+    PathPattern, PatternPayload, RelPattern,
 };
 use relate_model::wire::{Notification, NotificationCategory, NotificationKind};
 use relate_names::{SmallName, Token};
@@ -157,27 +158,13 @@ pub(crate) fn statement_notifications(
         part_clauses.push(group);
     });
     let mut facts = Facts::default();
-    shape::observe_subquery_scopes(
-        &mut shape::ShapeCtx::new(&mut facts.notifications, &mut facts.meter),
-        &parts,
-    );
+    scope::observe_subquery_scopes(&mut facts.shape(), &parts);
     // One typed-index snapshot per statement (catalog state is
     // statement-scoped, not part- or clause-scoped): every part's fire
     // reads the same slice.
     let indexes = view.index_facts()?;
     for group in part_clauses {
-        let mut previous_nested = false;
-        for (clause, nested) in group {
-            // A scope boundary: entering or leaving a nested body, or
-            // moving between two nested clauses (which the walk cannot
-            // tell apart as same or different bodies).
-            if nested || previous_nested {
-                facts.flush_dynamic(&indexes);
-            }
-            previous_nested = nested;
-            facts.observe_clause(clause, view, nested, params, &indexes)?;
-        }
-        facts.flush_dynamic(&indexes);
+        facts.observe_part(group, view, params, &indexes)?;
     }
     for (expr, role) in exprs {
         facts.observe_expr(expr, role);
@@ -227,6 +214,37 @@ struct Facts {
 }
 
 impl Facts {
+    /// The shape pass's context over this accumulator's sink and meter: one
+    /// constructor for every detector entry, so the two are always handed
+    /// together.
+    fn shape(&mut self) -> shape::ShapeCtx<'_> {
+        shape::ShapeCtx::new(&mut self.notifications, &mut self.meter)
+    }
+
+    /// One plan part's clauses, with the 03N95 flush boundary owned here: a
+    /// scope boundary is entering or leaving a nested body, or moving
+    /// between two nested clauses (which the walk cannot tell apart as same
+    /// or different bodies); the part's end is the other. Each flush fires
+    /// the accumulator against the statement's one index snapshot.
+    fn observe_part(
+        &mut self,
+        clauses: Vec<(&Clause, bool)>,
+        view: &ExecGraph<'_>,
+        params: &BTreeMap<String, relate_core::Value>,
+        indexes: &[IndexFacts],
+    ) -> relate_core::Result<()> {
+        let mut previous_nested = false;
+        for (clause, nested) in clauses {
+            if nested || previous_nested {
+                self.flush_dynamic(indexes);
+            }
+            previous_nested = nested;
+            self.observe_clause(clause, view, nested, params, indexes)?;
+        }
+        self.flush_dynamic(indexes);
+        Ok(())
+    }
+
     /// One clause's contributions: a `MATCH` pattern's read payloads, a
     /// `CALL` deprecation, the redundant-`OPTIONAL` kinds (`03N61` over a
     /// void procedure, `03N62` over a unit subquery), and the scope-less
@@ -259,12 +277,7 @@ impl Facts {
                 for pattern in patterns {
                     self.observe_pattern(pattern);
                 }
-                shape::observe_match(
-                    &mut shape::ShapeCtx::new(&mut self.notifications, &mut self.meter),
-                    patterns,
-                    where_clause.as_ref(),
-                    nested,
-                );
+                shape::observe_match(&mut self.shape(), patterns, where_clause.as_ref(), nested);
                 self.dynamic.observe_match(patterns, where_clause.as_ref());
                 // The hint kinds have no scope boundary to accumulate
                 // across (each hint is its own clause's own fact), so
@@ -278,7 +291,7 @@ impl Facts {
                 where_clause,
                 ..
             } => shape::observe_projection(
-                &mut shape::ShapeCtx::new(&mut self.notifications, &mut self.meter),
+                &mut self.shape(),
                 items,
                 order,
                 where_clause.as_ref(),
@@ -289,17 +302,8 @@ impl Facts {
                 items,
                 order,
                 ..
-            } => shape::observe_projection(
-                &mut shape::ShapeCtx::new(&mut self.notifications, &mut self.meter),
-                items,
-                order,
-                None,
-                *distinct,
-            ),
-            Clause::Create { patterns } => shape::observe_create(
-                &mut shape::ShapeCtx::new(&mut self.notifications, &mut self.meter),
-                patterns,
-            ),
+            } => shape::observe_projection(&mut self.shape(), items, order, None, *distinct),
+            Clause::Create { patterns } => shape::observe_create(&mut self.shape(), patterns),
             Clause::Call { name, optional, .. } => {
                 // One lookup serves both readers: the deprecation detector's
                 // shadow check and the redundant-`OPTIONAL` void check. Each
@@ -315,35 +319,19 @@ impl Facts {
                     );
                 }
             }
-            // A MERGE property map reading the entity it merges
-            // (`MERGE (a {prop: a.prop})`) is the deprecated self-reference
-            // (MergeAcceptance [6]). The shape is a deprecation fact, not
-            // unknown-name evidence, so it is observed here even though a
-            // MERGE target pattern contributes no name evidence (decision
-            // 13).
-            Clause::Merge { pattern, .. } => {
-                if let Some(name) = Self::merge_self_reference(pattern) {
-                    self.notifications.push(Notification::new(
-                        NotificationKind::MergeSelfReference,
-                        format!(
-                            "Merging an entity (`{name}`) and referencing that entity in a \
-                             property definition in the same MERGE is deprecated."
-                        ),
-                    ));
-                }
-            }
+            // A MERGE property map reading the entity it merges is the
+            // deprecated self-reference (MergeAcceptance [6]). The shape is
+            // a deprecation fact, not unknown-name evidence, so it is
+            // observed here even though a MERGE target pattern contributes
+            // no name evidence (decision 13).
+            Clause::Merge { pattern, .. } => shape::observe_merge(&mut self.shape(), pattern),
             Clause::CallSubquery {
                 scope,
                 optional,
                 query,
                 ..
             } => {
-                if !scope.has_scope_clause() {
-                    self.notifications.push(Notification::new(
-                        NotificationKind::CallSubqueryWithoutScope,
-                        "The `CALL { … }` subquery has no variable scope clause.",
-                    ));
-                }
+                shape::observe_call_subquery(&mut self.shape(), scope);
                 if *optional {
                     redundant_optional::observe_subquery(&mut self.notifications, query);
                 }
@@ -351,34 +339,6 @@ impl Facts {
             _ => {}
         }
         Ok(())
-    }
-
-    /// The variable a MERGE pattern reads from its own property map
-    /// (`MERGE (a {prop: a.prop})`), if any. MERGE patterns are simple,
-    /// non-quantified paths, so the compact node/relationship views hold
-    /// every payload exactly once.
-    fn merge_self_reference(pattern: &PathPattern) -> Option<String> {
-        let elements = pattern
-            .nodes
-            .iter()
-            .map(|node| (node.variable.as_ref(), node.properties.as_ref()))
-            .chain(
-                pattern
-                    .rels
-                    .iter()
-                    .map(|rel| (rel.variable.as_ref(), rel.properties.as_ref())),
-            );
-        for (variable, properties) in elements {
-            let (Some(variable), Some(properties)) = (variable, properties) else {
-                continue;
-            };
-            let mut vars = HashSet::new();
-            expr_vars(properties, &mut vars);
-            if variable.with_str(|text| vars.contains(text)) {
-                return Some(variable.to_string());
-            }
-        }
-        None
     }
 
     /// One expression's contributions. Unknown-name evidence — property

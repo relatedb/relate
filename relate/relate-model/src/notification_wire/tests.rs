@@ -390,15 +390,17 @@ fn vocabulary_matches_the_adr_table_row_for_row() {
     for (kind, cells) in &expected {
         assert_eq!(&Cells::of(*kind), cells, "{kind:?}");
     }
-    let pinned: Vec<NotificationKind> = expected.iter().map(|(kind, _)| *kind).collect();
-    for kind in NotificationKind::ALL {
-        assert_eq!(
-            pinned.iter().filter(|pinned| *pinned == kind).count(),
-            1,
-            "{kind:?} must be pinned exactly once"
-        );
-    }
-    assert_eq!(pinned.len(), NotificationKind::ALL.len());
+    // Set equality both ways: every kind pinned, none pinned twice.
+    let pinned: std::collections::HashSet<NotificationKind> =
+        expected.iter().map(|(kind, _)| *kind).collect();
+    assert_eq!(
+        pinned.len(),
+        expected.len(),
+        "a kind is pinned more than once"
+    );
+    let all: std::collections::HashSet<NotificationKind> =
+        NotificationKind::ALL.iter().copied().collect();
+    assert_eq!(pinned, all, "the pin must cover exactly the vocabulary");
 }
 
 #[test]
