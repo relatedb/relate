@@ -262,9 +262,9 @@ fn alter_database_treats_the_hidden_namespace_as_unknown() {
     let err =
         err_text(conn.query("ALTER DATABASE system_ontologies SET DEFAULT LANGUAGE CYPHER 25"));
     assert!(
-        err.ends_with(
-            "Failed to alter the specified database 'system_ontologies': Database does not exist."
-        ),
+        err.ends_with(&relate_test_support::ce_text::alter_unknown_database(
+            "system_ontologies"
+        )),
         "{err}"
     );
     conn.query("ALTER DATABASE system_ontologies IF EXISTS SET DEFAULT LANGUAGE CYPHER 25")

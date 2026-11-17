@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use relate::{Connection, Value};
 
-use common::{connection, empty_map, map};
+use common::{connection, empty_map, map, scalar_one, string};
 
 /// Run `statement` and assert the result is empty: no rows, no columns.
 fn assert_omitted(conn: &mut Connection, statement: &str, params: BTreeMap<String, Value>) {
@@ -161,6 +161,44 @@ fn show_constraints_still_projects_its_rows() {
         1,
         "expected exactly one constraint row, got: {:?}",
         result.rows
+    );
+}
+
+/// LABS-1614: a constraint named by the NULL keyword is literally called
+/// "null" — not the unnamed form. The name flows through the catalog as
+/// an ordinary string: creatable, visible to SHOW, idempotent under IF
+/// NOT EXISTS, and droppable by the same spelling.
+#[test]
+fn a_constraint_named_null_round_trips_by_name() {
+    let mut conn = connection();
+    assert_omitted(
+        &mut conn,
+        "CREATE CONSTRAINT null FOR (n:Drug) REQUIRE n.name IS UNIQUE",
+        BTreeMap::new(),
+    );
+    let shown = conn.query("SHOW CONSTRAINTS YIELD name").unwrap();
+    assert_eq!(
+        shown.rows,
+        vec![vec![string("null")]],
+        "the constraint is named \"null\", got: {:?}",
+        shown.rows
+    );
+
+    // IF NOT EXISTS on the existing name is the idempotent no-op.
+    assert_omitted(
+        &mut conn,
+        "CREATE CONSTRAINT null IF NOT EXISTS FOR (n:Drug) REQUIRE n.name IS UNIQUE",
+        BTreeMap::new(),
+    );
+    assert_eq!(
+        scalar_one(&mut conn, "SHOW CONSTRAINTS YIELD name RETURN count(*)"),
+        Value::Int(1)
+    );
+
+    assert_omitted(&mut conn, "DROP CONSTRAINT null", BTreeMap::new());
+    assert_eq!(
+        scalar_one(&mut conn, "SHOW CONSTRAINTS YIELD name RETURN count(*)"),
+        Value::Int(0)
     );
 }
 

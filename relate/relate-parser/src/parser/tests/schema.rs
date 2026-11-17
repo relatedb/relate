@@ -1,4 +1,6 @@
 use super::*;
+use crate::parser::schema::{is_command_name_token, COMMAND_NAME_CONTINUATIONS};
+use crate::token::keyword_spellings;
 use crate::YieldMode;
 
 #[test]
@@ -198,6 +200,221 @@ fn test_parse_create_index_keyword_name() {
         }
         _ => panic!("expected create index"),
     }
+}
+
+// LABS-1614: the NULL keyword names a schema object literally called
+// "null" — it is not an unnamed form. Neo4j 2026.10's commandNameExpression
+// admits every keyword unquoted in the name position; NULL is the reported
+// spelling (the LABS-1600 EXPLAIN probe), and the derived predicate
+// (`is_command_name_token`) admits every keyword outside the commands'
+// name-slot continuations — TRUE, pinned in the table below through the
+// same IF NOT EXISTS shape, is one more such spelling.
+#[test]
+fn test_parse_create_constraint_null_name() {
+    // The exact reported repro: the name before IF NOT EXISTS.
+    let stmt =
+        parse("CREATE CONSTRAINT null IF NOT EXISTS FOR (n:L1) REQUIRE n.p1 IS UNIQUE").unwrap();
+    match &stmt.clauses[0] {
+        Clause::CreateConstraint(c) => {
+            assert_eq!(c.name, Some(SchemaName::Literal("null".into())));
+            assert!(c.if_not_exists);
+        }
+        _ => panic!("expected create constraint"),
+    }
+    // The plain form, the name after IF NOT EXISTS, the uppercase
+    // spelling (the name keeps the case as written), and a second
+    // newly-admitted keyword spelling through the repro's own shape.
+    for (q, want_name, if_not_exists) in [
+        (
+            "CREATE CONSTRAINT null FOR (n:L) REQUIRE n.p IS UNIQUE",
+            "null",
+            false,
+        ),
+        (
+            "CREATE CONSTRAINT IF NOT EXISTS null FOR (n:L) REQUIRE n.p IS UNIQUE",
+            "null",
+            true,
+        ),
+        (
+            "CREATE CONSTRAINT NULL FOR (n:L) REQUIRE n.p IS UNIQUE",
+            "NULL",
+            false,
+        ),
+        (
+            "CREATE CONSTRAINT true IF NOT EXISTS FOR (n:L1) REQUIRE n.p1 IS UNIQUE",
+            "true",
+            true,
+        ),
+    ] {
+        let stmt = parse(q).unwrap();
+        match &stmt.clauses[0] {
+            Clause::CreateConstraint(c) => {
+                assert_eq!(c.name, Some(SchemaName::Literal(want_name.into())), "{q}");
+                assert_eq!(c.if_not_exists, if_not_exists, "{q}");
+            }
+            _ => panic!("{q}: expected create constraint"),
+        }
+    }
+}
+
+// The same one-token fix covers the sibling name positions the shared
+// reader feeds: CREATE INDEX and both DROP readers. A name creatable in
+// one position must be droppable in the other, so DROP CONSTRAINT null
+// and DROP INDEX null pin the required-name side.
+#[test]
+fn test_parse_null_name_in_sibling_positions() {
+    let stmt = parse("CREATE INDEX null FOR (n:Label) ON (n.property)").unwrap();
+    match &stmt.clauses[0] {
+        Clause::CreateIndex(idx) => {
+            assert_eq!(idx.name, Some(SchemaName::Literal("null".into())));
+        }
+        _ => panic!("expected create index"),
+    }
+    for q in [
+        "DROP CONSTRAINT null",
+        "DROP CONSTRAINT null IF EXISTS",
+        "DROP CONSTRAINT IF EXISTS null",
+        "DROP INDEX null",
+    ] {
+        let stmt = parse(q).unwrap();
+        match &stmt.clauses[0] {
+            Clause::DropConstraint(d) => {
+                assert_eq!(d.name, SchemaName::Literal("null".into()), "{q}");
+            }
+            Clause::DropIndex(d) => {
+                assert_eq!(d.name, SchemaName::Literal("null".into()), "{q}");
+            }
+            other => panic!("{q}: expected a drop clause, got {other:?}"),
+        }
+    }
+}
+
+// Genuinely invalid name spellings stay rejected: an integer token, a
+// string literal (Neo4j's commandNameExpression has no string arm), and a
+// keyword that would collide with the name-position continuation (`IF`
+// would misparse `CREATE CONSTRAINT IF NOT EXISTS ...` as naming the
+// constraint "IF").
+#[test]
+fn test_parse_create_constraint_rejects_non_name_tokens() {
+    assert!(parse("CREATE CONSTRAINT 123 FOR (n:L) REQUIRE n.p IS UNIQUE").is_err());
+    assert!(parse("CREATE CONSTRAINT \"null\" FOR (n:L) REQUIRE n.p IS UNIQUE").is_err());
+    assert!(parse("CREATE CONSTRAINT if FOR (n:L) REQUIRE n.p IS UNIQUE").is_err());
+}
+
+/// LABS-1614: the command-name slot's admissible set, pinned as the one
+/// predicate the schema-name readers consult (`schema.rs`, beside
+/// `parse_optional_schema_name`). The predicate is layered --
+/// `is_schema_name() && !COMMAND_NAME_CONTINUATIONS` -- so a
+/// spelling-by-spelling re-assertion of that formula would be tautological;
+/// each half is pinned through its own named members instead: every
+/// continuation token stays rejected, its command (the const entry's
+/// second element, the one home of that fact) named in the failure
+/// message, the documented admissible keyword samples stay admitted, and
+/// the non-name token classes stay rejected. A token dropped from the
+/// closed set is caught in position, by
+/// `test_command_name_continuations_in_position` below.
+#[test]
+fn test_is_command_name_token() {
+    assert!(is_command_name_token(TokenType::Identifier));
+    // The closed set holds only keyword spellings of the one vocabulary
+    // declaration (read through the canonical iterator beside it) — the
+    // contract is "the commands' keyword tail starters", so a member no
+    // lexer can produce is dead weight this catches.
+    for (ty, _) in COMMAND_NAME_CONTINUATIONS {
+        assert!(
+            keyword_spellings().any(|(_, spelling_ty)| spelling_ty == ty),
+            "{ty:?} is not a keyword spelling"
+        );
+    }
+    // Every continuation token stays rejected, the command that reads it
+    // (the const's own second element) named in the failure message.
+    for (ty, command) in COMMAND_NAME_CONTINUATIONS {
+        assert!(!is_command_name_token(ty), "{ty:?} continues {command}");
+    }
+    // The admissible keyword samples: the bare schema keywords and the
+    // LABS-1614 repro spelling, plus two keywords that sit inside the
+    // commands' qualifiers but never at the name slot — TRUE and EXISTS —
+    // which the full-grammar derivation newly admits.
+    for ty in [
+        TokenType::INDEX,
+        TokenType::CONSTRAINT,
+        TokenType::NULL,
+        TokenType::TRUE,
+        TokenType::EXISTS,
+    ] {
+        assert!(is_command_name_token(ty), "{ty:?} must be a valid name");
+    }
+    // The non-name token classes: the predicate is only the
+    // keyword/identifier half of the slot — the reader's own Parameter
+    // arm admits the `$param` reference (CIP-134).
+    for ty in [TokenType::Parameter, TokenType::String, TokenType::Integer] {
+        assert!(!is_command_name_token(ty), "{ty:?}");
+    }
+}
+
+/// The continuations stay continuations in position — each command's
+/// unnamed, qualified, legacy-target, action and tail forms keep parsing
+/// with no keyword swallowed as a name — and the widened keyword
+/// spellings (EXISTS here; TRUE in the constraint-name table above) parse
+/// as names in the same slots.
+#[test]
+fn test_command_name_continuations_in_position() {
+    // CREATE INDEX/CONSTRAINT: the IF NOT EXISTS qualifier, the legacy
+    // ON target and the FOR target are all name-less spellings.
+    for q in [
+        "CREATE CONSTRAINT IF NOT EXISTS FOR (n:L) REQUIRE n.p IS UNIQUE",
+        "CREATE INDEX ON :L(a)",
+        "CREATE CONSTRAINT FOR (n:L) REQUIRE n.p IS UNIQUE",
+    ] {
+        let stmt = parse(q).unwrap();
+        let name = match &stmt.clauses[0] {
+            Clause::CreateConstraint(c) => &c.name,
+            Clause::CreateIndex(i) => &i.name,
+            other => panic!("{q}: expected a create clause, got {other:?}"),
+        };
+        assert_eq!(name, &None, "{q}: a continuation was swallowed as the name");
+    }
+    // IF always continues the command, so a constraint actually named
+    // `if` stays unreachable.
+    assert!(parse("CREATE CONSTRAINT if FOR (n:L) REQUIRE n.p IS UNIQUE").is_err());
+    // ALTER DATABASE: the name is required, and SET is the action after
+    // it — a missing name fails as a missing name, not by naming the
+    // database "set".
+    let stmt = parse("ALTER DATABASE movies IF EXISTS SET DEFAULT LANGUAGE CYPHER 25").unwrap();
+    let Clause::AlterDatabase(alter) = &stmt.clauses[0] else {
+        panic!("expected AlterDatabase, got {:?}", stmt.clauses[0]);
+    };
+    assert_eq!(alter.name, SchemaName::Literal("movies".into()));
+    assert!(alter.if_exists);
+    assert_eq!(alter.default_language, 25);
+    assert!(parse("ALTER DATABASE set SET DEFAULT LANGUAGE CYPHER 25").is_err());
+    // SHOW DATABASE: the YIELD projection, the paging stages and the
+    // WHERE tail all continue the unnamed form.
+    for (q, want_stages, want_where) in [
+        ("SHOW DATABASES YIELD name", 0, false),
+        ("SHOW DATABASES ORDER BY name SKIP 1 LIMIT 2", 3, false),
+        ("SHOW DATABASES WHERE name = 'neo4j'", 0, true),
+    ] {
+        let stmt = parse(q).unwrap();
+        let Clause::ShowDatabases(show) = &stmt.clauses[0] else {
+            panic!("{q}: expected ShowDatabases, got {:?}", stmt.clauses[0]);
+        };
+        assert_eq!(
+            show.filter,
+            DatabaseFilter::All,
+            "{q}: a continuation was swallowed as the name"
+        );
+        assert_eq!(show.stages.len(), want_stages, "{q}");
+        assert_eq!(show.where_expr.is_some(), want_where, "{q}");
+    }
+    // The widened EXISTS spelling: an index named "exists", followed by
+    // its own IF EXISTS qualifier.
+    let stmt = parse("DROP INDEX exists IF EXISTS").unwrap();
+    let Clause::DropIndex(drop) = &stmt.clauses[0] else {
+        panic!("expected DropIndex, got {:?}", stmt.clauses[0]);
+    };
+    assert_eq!(drop.name, SchemaName::Literal("exists".into()));
+    assert!(drop.if_exists);
 }
 
 // `$$param` (double-dollar) is not recognized

@@ -12,7 +12,7 @@ mod common;
 
 use relate::{QueryType, Value};
 
-use common::{connection, find_node, find_nodes, plan};
+use common::{connection, find_node, find_nodes, plan, scalar_one};
 
 #[test]
 fn explain_match_returns_the_plan() {
@@ -45,6 +45,32 @@ fn explain_executes_nothing() {
     // The write was planned, not executed: the graph is still empty.
     let count = conn.query("MATCH (n) RETURN count(n) AS c").unwrap();
     assert_eq!(count.rows[0][0], Value::Int(0));
+}
+
+/// LABS-1614: the NULL keyword in a name position names a constraint
+/// literally called "null" — it is not the unnamed form. Relate used to
+/// reject this with `expected FOR, got "null"` where Neo4j 2026.10 plans
+/// it; EXPLAIN now plans the DDL and, like every EXPLAIN, executes
+/// nothing.
+#[test]
+fn explain_plans_a_null_named_constraint() {
+    let mut conn = connection();
+    let result = conn
+        .query("EXPLAIN CREATE CONSTRAINT null IF NOT EXISTS FOR (n:L1) REQUIRE n.p1 IS UNIQUE")
+        .unwrap();
+    assert!(
+        result.header.columns.is_empty(),
+        "EXPLAIN returns no data columns"
+    );
+    assert!(result.rows.is_empty(), "EXPLAIN returns no data rows");
+    let tree = plan(&result);
+    let catalog = find_node(tree, "Catalog").expect("the planned DDL");
+    assert!(catalog.details.contains("CREATE CONSTRAINT"), "{tree:?}");
+    // Planned, not executed: no constraint exists.
+    assert_eq!(
+        scalar_one(&mut conn, "SHOW CONSTRAINTS YIELD name RETURN count(*)"),
+        Value::Int(0)
+    );
 }
 
 #[test]

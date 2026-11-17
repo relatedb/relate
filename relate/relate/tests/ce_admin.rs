@@ -119,14 +119,19 @@ fn alter_database_rejects_every_language_but_25_with_the_authored_error() {
 #[test]
 fn alter_database_unknown_name_fails_unless_if_exists() {
     let mut conn = connection();
-    let err = conn
-        .query("ALTER DATABASE movies SET DEFAULT LANGUAGE CYPHER 25")
-        .unwrap_err()
-        .to_string();
-    assert!(
-        err.ends_with("Failed to alter the specified database 'movies': Database does not exist."),
-        "wrong error: {err}"
-    );
+    // An unknown name fails with the authored DatabaseNotFound error —
+    // the NULL keyword included (LABS-1614: the admin-name readers share
+    // one token set), which parses and fails at execution like any
+    // unknown name, not as a parse error.
+    for name in ["movies", "null"] {
+        let err = err_text(conn.query(&format!(
+            "ALTER DATABASE {name} SET DEFAULT LANGUAGE CYPHER 25"
+        )));
+        assert!(
+            err.ends_with(&relate_test_support::ce_text::alter_unknown_database(name)),
+            "wrong error for {name}: {err}"
+        );
+    }
     // `IF EXISTS` makes the same command a no-op.
     conn.query("ALTER DATABASE movies IF EXISTS SET DEFAULT LANGUAGE CYPHER 25")
         .unwrap();
@@ -282,10 +287,15 @@ fn show_database_matches_case_insensitively_and_unknown_names_return_no_rows() {
         let result = conn.query(src).unwrap();
         assert_eq!(result.rows.len(), 1, "{src}");
     }
-    let result = conn
-        .query("SHOW DATABASE movies YIELD name RETURN name")
-        .unwrap();
-    assert!(result.rows.is_empty());
+    // An unknown name returns no rows — the NULL keyword included
+    // (LABS-1614's shared admin-name token set): a keyword name is an
+    // unknown name like any other, zero rows, not a parse error.
+    for name in ["movies", "null"] {
+        let result = conn
+            .query(&format!("SHOW DATABASE {name} YIELD name RETURN name"))
+            .unwrap();
+        assert!(result.rows.is_empty(), "{name}");
+    }
 }
 
 #[test]

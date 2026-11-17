@@ -225,23 +225,74 @@ impl<'a> Parser<'a> {
         self.expect(TokenType::RightParen)?;
         Ok(())
     }
+}
 
-    /// The optional `<name>` in `CREATE INDEX`/`CREATE CONSTRAINT`: a plain
-    /// identifier (including the schema keywords `INDEX`/`CONSTRAINT` used
-    /// bare, which Neo4j allows as a name here) or a `$param` reference
-    /// (CIP-134). Deliberately narrower than `TokenType::is_ident_like`:
-    /// that set also contains `IF`/`FOR`/`NOT`/`EXISTS`/etc., the very
-    /// tokens expected to immediately follow a name position, so accepting
-    /// them here would misparse `CREATE INDEX IF NOT EXISTS ...` (no name)
-    /// as naming the index `IF`. Absent (`None`) whenever the next token
-    /// isn't one of the safe cases, matching the un-named form.
+/// The name-slot continuation tokens of the commands that share the
+/// reader below -- the keyword starters that may follow the name instead
+/// of naming the object. One closed set, derived from those commands'
+/// grammars; a keyword outside it can never continue a name slot, so it
+/// is a name -- Neo4j 2026.10's `commandNameExpression` admits every
+/// keyword unquoted. Each entry is the token with the command whose name
+/// slot it continues -- the one home of both facts, the predicate's set
+/// and the tests' per-command pins. Two starters are deliberately absent
+/// and stay names (Neo4j-true): `REMOVE`, whose recognized-unsupported
+/// ALTER DATABASE arm only ever follows a name, and `RETURN`, which at a
+/// SHOW DATABASE name slot names a database -- composing a SHOW without
+/// `YIELD` fails the CIP-242 composability rule anyway.
+pub(super) const COMMAND_NAME_CONTINUATIONS: [(TokenType, &str); 9] = [
+    (
+        TokenType::IF,
+        "the IF [NOT] EXISTS qualifier of CREATE/DROP INDEX/CONSTRAINT and ALTER DATABASE",
+    ),
+    (
+        TokenType::ON,
+        "the legacy ON :Label(prop) target of CREATE/DROP INDEX",
+    ),
+    (TokenType::FOR, "the CREATE INDEX/CONSTRAINT target"),
+    (
+        TokenType::SET,
+        "ALTER DATABASE's action after the required name",
+    ),
+    (TokenType::YIELD, "SHOW DATABASE's projection"),
+    (TokenType::ORDER, "SHOW DATABASE's ORDER BY paging stage"),
+    (TokenType::SKIP, "SHOW DATABASE's SKIP paging stage"),
+    (TokenType::LIMIT, "SHOW DATABASE's LIMIT paging stage"),
+    (TokenType::WHERE, "SHOW DATABASE's WHERE filter tail"),
+];
+
+/// Returns true if the token can spell the `<name>` of a
+/// `CREATE INDEX`/`CREATE CONSTRAINT`/`DROP INDEX`/`DROP CONSTRAINT`,
+/// `ALTER DATABASE` or `SHOW DATABASE` command: any identifier-or-keyword
+/// spelling ([`TokenType::is_schema_name`]) except the
+/// [`COMMAND_NAME_CONTINUATIONS`] -- the same layered derivation
+/// `TokenType::is_ident_like` takes for variables (LABS-1614: Neo4j
+/// 2026.10's `commandNameExpression` admits every keyword unquoted and no
+/// string literal, and the continuations are exactly the commands' own
+/// tail starters). The one home of that set:
+/// `parse_optional_schema_name` routes its match through this predicate,
+/// and `parse_required_schema_name` -- the DROP INDEX/CONSTRAINT and
+/// ALTER DATABASE name reader -- delegates to that function. The
+/// predicate is only the keyword/identifier half of the slot: the
+/// reader's own `Parameter` arm admits the `$param` reference (CIP-134).
+pub(super) fn is_command_name_token(ty: TokenType) -> bool {
+    ty.is_schema_name() && !COMMAND_NAME_CONTINUATIONS.iter().any(|&(t, _)| t == ty)
+}
+
+impl<'a> Parser<'a> {
+    /// The optional `<name>` in `CREATE INDEX`/`CREATE CONSTRAINT` (and the
+    /// `SHOW DATABASE` name slot): an [`is_command_name_token`] spelling —
+    /// the derivation directly above, `is_schema_name()` minus the
+    /// [`COMMAND_NAME_CONTINUATIONS`], is the one home of the admissible
+    /// set and carries the per-command justification (LABS-1614) — or a
+    /// `$param` reference (CIP-134). Absent (`None`)
+    /// whenever the next token is neither, matching the un-named form.
     pub(super) fn parse_optional_schema_name(&mut self) -> Option<SchemaName> {
         match self.peek_type() {
             TokenType::Parameter => {
                 let tok = self.next_token();
                 Some(SchemaName::Parameter(tok.literal.into_owned()))
             }
-            TokenType::Identifier | TokenType::INDEX | TokenType::CONSTRAINT => {
+            ty if is_command_name_token(ty) => {
                 let tok = self.next_token();
                 Some(SchemaName::Literal(tok.literal.into_owned()))
             }
@@ -251,18 +302,13 @@ impl<'a> Parser<'a> {
 
     /// The mandatory `<name>` in `DROP INDEX`/`DROP CONSTRAINT` (CIP-134
     /// adds the `$param` form; unlike CREATE, DROP always requires a name
-    /// token here).
+    /// token here). Delegates to `parse_optional_schema_name` for the
+    /// admissible token set — one spelling of it, so the two readers
+    /// cannot drift apart.
     pub(super) fn parse_required_schema_name(&mut self, context: &str) -> ParseResult<SchemaName> {
-        match self.peek_type() {
-            TokenType::Parameter => {
-                let tok = self.next_token();
-                Ok(SchemaName::Parameter(tok.literal.into_owned()))
-            }
-            TokenType::Identifier | TokenType::INDEX | TokenType::CONSTRAINT => {
-                let tok = self.next_token();
-                Ok(SchemaName::Literal(tok.literal.into_owned()))
-            }
-            _ => {
+        match self.parse_optional_schema_name() {
+            Some(name) => Ok(name),
+            None => {
                 let tok = self.peek().clone();
                 Err(self.error_at_token(
                     &tok,
