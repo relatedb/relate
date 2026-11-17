@@ -10,7 +10,7 @@
 
 mod common;
 
-use common::{connection, plan};
+use common::{connection, plan, wire_arg};
 
 /// The operator whose metrics record a rung, at any depth — the clause a
 /// kernel or the walker served.
@@ -19,17 +19,6 @@ fn served(node: &relate::PlanNode) -> Option<&relate::PlanNode> {
         return Some(node);
     }
     node.children.iter().find_map(served)
-}
-
-/// One wire arg of a plan node: its serialized `args` map entry.
-fn wire_arg(node: &relate::PlanNode, key: &str) -> Option<relate::Value> {
-    let relate::Value::Map(map) = node.to_value() else {
-        panic!("to_value is a map");
-    };
-    let Some(relate::Value::Map(args)) = map.get("args") else {
-        panic!("args is a map");
-    };
-    args.get(key).cloned()
 }
 
 /// A six-node bidirectional ring: an unbounded quantifier's trail

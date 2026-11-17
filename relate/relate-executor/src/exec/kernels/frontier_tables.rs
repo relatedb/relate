@@ -508,16 +508,6 @@ pub(crate) fn arms(view: &ExecGraph<'_>, nfa: &FrontierNfa) -> Vec<Vec<Arm>> {
     arms
 }
 
-/// The epsilon edges indexed by from state — the runner's one view of
-/// the compiler's epsilon list.
-pub(crate) fn epsilon_index(nfa: &FrontierNfa) -> Vec<Vec<u32>> {
-    let mut eps_from = vec![Vec::new(); nfa.states as usize];
-    for &(from, to) in &nfa.epsilons {
-        eps_from[from as usize].push(to);
-    }
-    eps_from
-}
-
 /// The test seam's table set for one standalone run — fresh tables for
 /// the automaton. The production rider creates one set per engaged
 /// clause and recycles it across its seeds; a test driving a single run

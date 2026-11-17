@@ -41,6 +41,7 @@ use crate::graph::Graph;
 use crate::metrics::{FrontierCounters, WalkStart};
 use crate::overlay::RetainedTotal;
 use crate::row::Row;
+use crate::workspace;
 
 use super::super::graph_stats::GraphStats;
 use super::super::pattern_policies::{reduce_row, MatchReduce, Matched, ReduceSink, RowFold};
@@ -419,30 +420,31 @@ fn serve_parked_pairs(
         out,
         out_retained,
     } = serving;
-    // The charge and the replay below share the one context the callback
-    // is handed, so neither can drift to another binding of it.
-    let ctx = run.ctx;
     // The parked pair carries the entering row itself: `rows` outlives the
     // loop, so a reference needs no index to re-resolve at the replay.
     let mut parked: Vec<(&Row, NodeId, NodeId)> = Vec::new();
-    let mut parked_bytes = ctx.graph.retain_bytes(0)?;
-    if let Some(reason) =
-        for_each_admitted_endpoint(run, rows, |_ctx, entering, seed, endpoint| {
-            // The charge reads the value that is pushed, never a second
-            // spelling of its width.
-            let pair = (entering, seed, endpoint);
-            parked_bytes.add_bytes(ctx.graph, std::mem::size_of_val(&pair) as u64)?;
-            parked.push(pair);
-            Ok(())
-        })?
-    {
+    let mut parked_bytes = run.ctx.graph.retain_bytes(0)?;
+    if let Some(reason) = for_each_admitted_endpoint(run, rows, |ctx, entering, seed, endpoint| {
+        // The charge is the container's capacity growth — header and
+        // reservation included — over the stride of the value that is
+        // pushed.
+        let pair = (entering, seed, endpoint);
+        let growth = workspace::buffer_growth(
+            parked.len(),
+            parked.len() + 1,
+            std::mem::size_of_val(&pair) as u64,
+        );
+        parked_bytes.add_bytes(ctx.graph, growth)?;
+        parked.push(pair);
+        Ok(())
+    })? {
         return Ok(Some(reason));
     }
     // The parked pairs' emit, once every row's every seed has served.
     for (entering, seed, endpoint) in parked {
-        ctx.graph.cancel_tick()?;
+        run.ctx.graph.cancel_tick()?;
         emit_endpoint_row(
-            ctx,
+            run.ctx,
             entering,
             run.contract,
             run.reduce,

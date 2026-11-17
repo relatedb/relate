@@ -152,7 +152,7 @@ pub fn wire_arg(node: &relate::PlanNode, key: &str) -> Option<relate::Value> {
     let relate::Value::Map(map) = node.to_value() else {
         panic!("to_value is a map");
     };
-    let Some(relate::Value::Map(args)) = map.get("args") else {
+    let Some(relate::Value::Map(args)) = map.get(relate_model::wire::plan_keys::ARGS) else {
         panic!("args is a map");
     };
     args.get(key).cloned()
@@ -168,17 +168,11 @@ pub fn open_with_engine(engine: &str) -> relate::Connection {
     let _guard = ENV_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Restores the process-global variable on the way out — to its value
+    // before this call, the state every other test in the process assumes
+    // — even if the open panics, still under the lock.
+    let _restore = relate_test_support::EnvRestore::new("RELATE_PATTERN_ENGINE");
     std::env::set_var("RELATE_PATTERN_ENGINE", engine);
-    // Restores the process-global variable on the way out — unset, the
-    // state every other test in the process assumes — even if the open
-    // panics, still under the lock.
-    struct Unset;
-    impl Drop for Unset {
-        fn drop(&mut self) {
-            std::env::remove_var("RELATE_PATTERN_ENGINE");
-        }
-    }
-    let _unset = Unset;
     relate::Database::open(":memory:")
         .unwrap()
         .connect()

@@ -310,9 +310,7 @@ mod tests {
     #[test]
     fn finished_offers_drop_the_carried_rels() {
         // LABS-822: a finish tail's offers arrive with their used-sets
-        // dropped — the offered rels are not carried. (The
-        // shared-empty representation those drops read is the
-        // implementation's own cost story, in `UsedSet::default`.)
+        // dropped — the offered rels are not carried.
         let sets = offered_sets(MatchTail::Finish { reduce: None }, &[&[1, 2], &[3]]);
         assert_eq!(sets.len(), 2);
         assert!(sets.iter().all(|used| used.is_empty()));

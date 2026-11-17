@@ -1,13 +1,12 @@
-//! The forced rung's guard vocabulary and emission (ADR-0519's gap
-//! classes): the interior-node admission that compiles as a per-state
-//! guard (class K), the boundary facts one chain emission carries for the
-//! product-form split, the transition predicate a quantified group's own
-//! WHERE compiles to (class F), and the builder helpers that emit them —
-//! the guard attachment, the split form's open/close allocation, and the
-//! predicate compile. Split from [`super`] so the compiler's construction
-//! engine (`super`'s builder walk) and the forced-only machinery stay one
-//! concern per file; everything but the predicate type (the runner reads
-//! it off the compiled NFA's fields) is the parent module's own.
+//! The forced rung's guard vocabulary (ADR-0519's gap classes): the
+//! interior-node admission that compiles as a per-state guard (class K,
+//! [`interior_guard`] and its auto-rung half [`plain_node`]), the
+//! boundary facts one chain emission carries for the product-form split
+//! ([`ChainEdges`]), and the transition predicate a quantified group's
+//! own WHERE compiles to (class F). The construction engine and the
+//! forced-rung emission methods live in [`super::builder`]; this module
+//! is the leaf vocabulary that engine consults, so the dependency runs
+//! one way (`builder` → `guards`).
 
 use std::collections::HashSet;
 
@@ -15,7 +14,6 @@ use relate_ir::{Expr, LabelExpr, NodePattern, PatternElement};
 use relate_names::SmallName;
 
 use super::super::program::bound_is_row_invariant;
-use super::{plain_node, Builder};
 use crate::eval::expr_vars;
 
 /// One transition's group predicate (class F): the quantified group's
@@ -115,6 +113,26 @@ pub(super) fn interior_guard(node: &NodePattern) -> Option<InteriorGuard> {
         return None;
     }
     Some(InteriorGuard::Guard(node.clone()))
+}
+
+/// A node the auto rung cannot check must carry no admission facts: a
+/// variable name binds per-iteration group lists (the witness
+/// reconstruction's business, not the NFA's), but labels, label
+/// expressions, property maps, and element predicates would be silently
+/// unchecked — the auto NFA has no node-admission surface, so they
+/// decline. The forced rung's arrival-time node checks (ADR-0478 §2's
+/// extension, the gap class K) are [`interior_guard`]'s vocabulary
+/// instead, checked per (node, state) arrival; the one admission policy
+/// over both is `Builder::admit_interior`.
+pub(super) fn plain_node(node: &NodePattern) -> Option<()> {
+    if !node.labels.is_empty()
+        || node.label_expr.is_some()
+        || node.properties.is_some()
+        || node.where_clause.is_some()
+    {
+        return None;
+    }
+    Some(())
 }
 
 /// Whether the label expression needs no evaluation context: every
@@ -247,99 +265,4 @@ pub(super) fn compile_transition_predicate(
             vars,
         },
     ))
-}
-
-/// The builder's guard emission — the forced rung's half of the
-/// construction, beside the admission rules it applies.
-impl Builder<'_> {
-    /// Attach `guard` to `state` — a second guard on one state is the
-    /// conjunction of every pattern whose position occupies the state.
-    pub(super) fn guard(&mut self, state: u32, guard: NodePattern) {
-        self.guards.push((state, guard));
-    }
-
-    /// Whether `state` carries a guard yet — the split decision's entry
-    /// fact.
-    pub(super) fn state_guarded(&self, state: u32) -> bool {
-        self.guards.iter().any(|(at, _)| *at == state)
-    }
-
-    /// The interior-node admission policy, one spelling for the pattern
-    /// walk and the chain walk: under the forced rung the node compiles
-    /// to the guard of `state`, the state its position occupies (a plain
-    /// node to none); under the auto rung it must carry no admission
-    /// facts at all (`plain_node` — the v1 NFA has no node-admission
-    /// surface). `None` declines.
-    pub(super) fn admit_interior(&mut self, node: &NodePattern, state: u32) -> Option<()> {
-        if !self.forced {
-            return plain_node(node);
-        }
-        if let InteriorGuard::Guard(guard) = interior_guard(node)? {
-            self.guard(state, guard);
-        }
-        Some(())
-    }
-
-    /// The round boundary's states for one chain emission entered at
-    /// `entry`: the round's `open` state and the last hop's target.
-    /// Under the **product form** (a boundary-carrying chain) `open` is
-    /// a fresh state carrying the body's first pattern, entered by
-    /// epsilon from `entry`, and the last hop targets a fresh `close`
-    /// state carrying the body's last pattern, stitched back to `open`
-    /// by the repeat epsilon (and from `entry` by the zero-round
-    /// pass-through when the quantifier admits zero rounds). Otherwise
-    /// `open` is `entry` itself and the target is the caller's `close`
-    /// as given — the plain form's layout, unchanged.
-    pub(super) fn split_boundary(
-        &mut self,
-        entry: u32,
-        close: Option<u32>,
-        edges: &ChainEdges<'_>,
-    ) -> Option<(u32, Option<u32>)> {
-        let split_close = edges.needs_split_close();
-        let open = if edges.first.is_some() || split_close {
-            let open = self.alloc()?;
-            if let Some(guard) = &edges.first {
-                self.guard(open, guard.clone());
-            }
-            if open != entry {
-                self.epsilons.push((entry, open));
-            }
-            open
-        } else {
-            entry
-        };
-        if !split_close {
-            return Some((open, close));
-        }
-        let close_state = self.alloc()?;
-        if let Some(guard) = &edges.last {
-            self.guard(close_state, guard.clone());
-        }
-        // The repeat and the zero-round pass-through, the two ways the
-        // walk leaves the round boundary: the next round departs the open
-        // state (its guard re-checked on this same node), and a
-        // zero-round group skips straight to the close.
-        self.epsilons.push((close_state, open));
-        if edges.zero_rounds {
-            self.epsilons.push((entry, close_state));
-        }
-        Some((open, Some(close_state)))
-    }
-
-    /// The state the post-group node occupies, given the group's `close`
-    /// (the state every round ends at). A guarded post-group node gets a
-    /// fresh exit state, entered by epsilon from `close`, so its guard is
-    /// checked once the group is finished — on `close` itself it would
-    /// be checked at every round's end and drop each multi-round walk
-    /// whose intermediate round ends fail it. An unguarded one stays on
-    /// `close`.
-    pub(super) fn split_exit(&mut self, close: u32, exit_guarded: bool) -> Option<u32> {
-        if !exit_guarded {
-            return Some(close);
-        }
-        let exit = self.alloc()?;
-        self.epsilons.push((close, exit));
-        Some(exit)
-    }
 }

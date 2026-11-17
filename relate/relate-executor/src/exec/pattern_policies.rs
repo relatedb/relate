@@ -531,8 +531,8 @@ impl MatchTail<'_> {
     /// consumer routes through (whole row sets too: the materializing sink's
     /// arms): a carry tail keeps the set, built lazily so the drop arm
     /// never pays for it; a finish tail drops it and the closure never
-    /// runs, storing the empty carry (`UsedSet::default()`, LABS-822)
-    /// instead. The halves that differ stay with their arms:
+    /// runs, storing an empty set (`UsedSet::default()`, which allocates
+    /// nothing) instead. The halves that differ stay with their arms:
     /// the classic collector meters workspace bytes around this store,
     /// the GPM arm sets the walk's halt cell after it.
     pub(crate) fn store_row(&self, row: Row, set: impl FnOnce() -> UsedSet, out: &mut Matched) {
@@ -661,9 +661,7 @@ mod tests {
     #[test]
     fn store_row_drops_a_finish_tails_set() {
         // LABS-822: a finish tail drops whatever the producer would
-        // carry — the closure never runs and the stored set is the
-        // shared empty carry. (That representation is the
-        // implementation's own cost story, in `UsedSet::default()`.)
+        // carry — the closure never runs and the stored set is empty.
         let mut out: Matched = Vec::new();
         MatchTail::Finish { reduce: None }.store_row(
             Row::new(),

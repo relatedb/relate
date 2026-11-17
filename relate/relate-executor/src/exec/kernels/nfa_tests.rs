@@ -50,20 +50,31 @@ fn graph_with_types(names: &[&str]) -> Graph {
 /// Compile `cypher`'s first pattern against a store interning
 /// `names`, with the store kept for the expected interned ids.
 fn compiled(cypher: &str, names: &[&str]) -> (Graph, FrontierNfa) {
+    compiled_under(PatternEngine::Auto, cypher, names)
+}
+
+/// [`compiled`] on the given rung — the forced rung's suite is the same
+/// store with the rung the only difference.
+fn compiled_under(engine: PatternEngine, cypher: &str, names: &[&str]) -> (Graph, FrontierNfa) {
     let graph = graph_with_types(names);
     let pattern = &patterns(cypher)[0];
-    let nfa = compile(&graph, pattern, PatternEngine::Auto)
-        .unwrap_or_else(|| panic!("{cypher} should compile"));
+    let nfa = compile(&graph, pattern, engine)
+        .unwrap_or_else(|| panic!("{cypher} should compile on {engine:?}"));
     (graph, nfa)
 }
 
 /// Compile `cypher`'s first pattern and assert the decline.
 fn declines(cypher: &str, names: &[&str]) {
+    declines_under(PatternEngine::Auto, cypher, names);
+}
+
+/// [`declines`] on the given rung.
+fn declines_under(engine: PatternEngine, cypher: &str, names: &[&str]) {
     let graph = graph_with_types(names);
     let pattern = &patterns(cypher)[0];
     assert!(
-        compile(&graph, pattern, PatternEngine::Auto).is_none(),
-        "{cypher} should decline"
+        compile(&graph, pattern, engine).is_none(),
+        "{cypher} should decline on {engine:?}"
     );
 }
 

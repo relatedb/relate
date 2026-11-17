@@ -28,28 +28,30 @@ use super::super::frontier_tables::Arm;
 use super::super::frontier_tables::Chain;
 use super::super::guard_memo::StateMemos;
 use super::super::nfa::FrontierNfa;
+use super::REARRIVAL_DEPTH_CEILING;
 
 /// The immutable tables every bounded search reads: the overlay view,
-/// the NFA, the runner's per-state expansion table (name-resolved
-/// transition types — the one resolver, shared with the runner, never a
-/// second copy), the per-state epsilon closure, and the search's hop
-/// window. Built once per rule (per run); each search borrows it as one
-/// value, so the step core takes six parameters instead of a dozen.
+/// the NFA (the automaton's own epsilon closure and hop bounds are the
+/// search's, read through it), the runner's per-state expansion table
+/// (name-resolved transition types — the one resolver, shared with the
+/// runner, never a second copy), and the search's per-run guard memos.
+/// Built once per rule (per run); each search borrows it as one value,
+/// so the step core takes six parameters instead of a dozen.
 pub(super) struct SeekTables<'a, 'g> {
     pub(super) view: &'a ExecGraph<'g>,
     pub(super) nfa: &'a FrontierNfa,
     pub(super) arms: &'a [Vec<Arm>],
-    /// Per-state epsilon closure (`{s}` plus epsilon-reachable states):
-    /// the search's zero-cost positions, the runner's `close_epsilons`
-    /// in to-indexed form.
-    pub(super) eps_closure: Vec<Vec<u32>>,
-    pub(super) min_hops: u32,
-    pub(super) depth_cap: u32,
     /// The per-state guard verdict memos (LABS-1478), per run.
     pub(super) memos: StateMemos,
 }
 
 impl SeekTables<'_, '_> {
+    /// The search's depth ceiling: the automaton's own `max`, or the
+    /// ceiling for an unbounded quantifier.
+    pub(super) fn depth_cap(&self) -> u32 {
+        self.nfa.max_hops.unwrap_or(REARRIVAL_DEPTH_CEILING)
+    }
+
     /// Whether `node` satisfies the state's guards — the runner's own
     /// per-state check (the forced rung's class K) in the search's
     /// no-parameters form: the compile admits only context-free guards
@@ -147,7 +149,9 @@ pub(super) struct ArriveCtx<'a, 'g> {
     pub(super) target: NodeId,
     /// The current position's hop count — the close lands at `hops + 1`.
     pub(super) hops: u32,
-    pub(super) eps_closure: &'a [u32],
+    /// The transition's landing state — the close reads its epsilon
+    /// closure through [`Self::tables`], the closure's one owner.
+    pub(super) to: u32,
     pub(super) tables: &'a SeekTables<'a, 'g>,
 }
 
@@ -263,9 +267,9 @@ impl<const CLOSE: bool> SearchPolicy for NodeSimple<CLOSE> {
         if CLOSE
             && next == ctx.target
             && next == ctx.branch_seed
-            && ctx.hops + 1 >= ctx.tables.min_hops
+            && ctx.hops + 1 >= ctx.tables.nfa.min_hops
         {
-            for &state in ctx.eps_closure {
+            for &state in &ctx.tables.nfa.eps_closure[ctx.to as usize] {
                 if ctx.tables.nfa.accepting[state as usize]
                     && ctx.tables.state_admits(state, next)?
                 {
@@ -331,10 +335,10 @@ pub(super) fn seek<P: SearchPolicy>(
     at: Position,
 ) -> std::result::Result<(), Stop> {
     let Position { node, state, hops } = at;
-    if node == target && hops >= tables.min_hops && tables.nfa.accepting[state as usize] {
+    if node == target && hops >= tables.nfa.min_hops && tables.nfa.accepting[state as usize] {
         return Err(Stop::Found);
     }
-    if P::dead_end(policy, node, state, hops) || hops >= tables.depth_cap {
+    if P::dead_end(policy, node, state, hops) || hops >= tables.depth_cap() {
         return Ok(());
     }
     for arm in &tables.arms[state as usize] {
@@ -360,7 +364,7 @@ pub(super) fn seek<P: SearchPolicy>(
                         branch_seed: branch.nodes[0],
                         target,
                         hops,
-                        eps_closure: &tables.eps_closure[to as usize],
+                        to,
                         tables,
                     };
                     match P::arrive(policy, &ctx, rid, next)? {
@@ -376,7 +380,7 @@ pub(super) fn seek<P: SearchPolicy>(
                     }
                     branch.rels.push(rid);
                     branch.nodes.push(next);
-                    for &state in &tables.eps_closure[to as usize] {
+                    for &state in &tables.nfa.eps_closure[to as usize] {
                         if !tables.state_admits(state, next)? {
                             continue;
                         }

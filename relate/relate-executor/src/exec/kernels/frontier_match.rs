@@ -473,8 +473,6 @@ pub(crate) fn decode_consumer(
     for order in s.order {
         expr_vars(&order.expr, &mut referenced);
     }
-    let names_boundary_only =
-        |referenced: &HashSet<String>| names_boundary_only(referenced, start, target);
 
     // The aggregate calls: an endpoint fold is sound exactly when the
     // aggregate is idempotent over duplicates (min/max) or collapses them
@@ -489,7 +487,10 @@ pub(crate) fn decode_consumer(
         // `count(*)` counts rows — paths, not endpoints.
         return Err(FrontierDecline::PathCount);
     }
-    if !calls.is_empty() {
+    // Both endpoint-shaped answers (an endpoint fold, `RETURN DISTINCT`)
+    // are one consumer: the pair set, whose comparison the matcher fills
+    // in once it has read the clause's conjuncts.
+    if !calls.is_empty() || s.distinct {
         let endpoint_fold = |(kind, distinct): &(AggregateKind, bool)| {
             matches!(kind, AggregateKind::Min | AggregateKind::Max)
                 || (matches!(kind, AggregateKind::Count | AggregateKind::Collect) && *distinct)
@@ -497,17 +498,9 @@ pub(crate) fn decode_consumer(
         if !calls.iter().all(endpoint_fold) {
             return Err(FrontierDecline::PathCount);
         }
-        if !names_boundary_only(&referenced) {
+        if !names_boundary_only(&referenced, start, target) {
             // An endpoint fold over the path variable or a group list
             // (`min(length(p))`) reads bindings only witnesses carry.
-            return Err(FrontierDecline::PathConsumer);
-        }
-        return Ok(Consumer::DistinctEndpoints {
-            pair: BoundaryPair::Unconstrained,
-        });
-    }
-    if s.distinct {
-        if !names_boundary_only(&referenced) {
             return Err(FrontierDecline::PathConsumer);
         }
         return Ok(Consumer::DistinctEndpoints {

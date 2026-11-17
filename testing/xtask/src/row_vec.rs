@@ -163,14 +163,10 @@ fn mentions_word(ty: &str, word: &str) -> bool {
 /// Whether a whitespace-stripped type names `Vec<Row>` anywhere (whole-word
 /// `Vec`, so `SmallVec<Row>` is not one) or a [`ROW_VEC_CARRIERS`] type.
 fn mentions_row_vec(ty: &str) -> bool {
-    ty.match_indices("Vec<Row>").any(|(p, _)| {
-        !ty[..p]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_')
-    }) || ROW_VEC_CARRIERS
-        .iter()
-        .any(|(name, _)| mentions_word(ty, name))
+    mentions_word(ty, "Vec<Row>")
+        || ROW_VEC_CARRIERS
+            .iter()
+            .any(|(name, _)| mentions_word(ty, name))
 }
 
 /// Names of fns in `src` (outside `#[cfg(test)]`) whose return type
@@ -336,15 +332,28 @@ fn fine() -> Result<LadderRunner> { todo!() }
     fn carriers_still_hold_a_row_vec() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         for (name, file) in ROW_VEC_CARRIERS {
-            let src = fs::read_to_string(root.join(SCAN_DIR).join(file)).expect("carrier file");
-            let at = src
-                .find(&format!("struct {name}"))
-                .or_else(|| src.find(&format!("enum {name}")))
+            // Comments and strings masked: a doc line naming the type or
+            // `Vec<Row>` is not the definition.
+            let path = root.join(SCAN_DIR).join(file);
+            let code = mask(
+                &fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("carrier {name} readable at {path:?}: {e}")),
+            );
+            let at = ["struct ", "enum "]
+                .iter()
+                .flat_map(|kw| code.match_indices(kw).map(|(p, _)| p + kw.len()))
+                .find(|&p| {
+                    let ident: String = code[p..]
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    ident == name
+                })
                 .unwrap_or_else(|| panic!("{name} defined in {file}"));
-            let body = &src[at..];
+            let body = &code[at..];
             let body = &body[..body.find("\n}\n").expect("closing brace")];
             assert!(
-                body.contains("Vec<Row>"),
+                mentions_word(body, "Vec<Row>"),
                 "{name} no longer carries Vec<Row>"
             );
         }

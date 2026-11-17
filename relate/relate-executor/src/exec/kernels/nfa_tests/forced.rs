@@ -8,33 +8,11 @@
 use relate_ir::{NodePattern, PatternElement};
 
 use super::super::nfa::{compile, FrontierNfa};
-use super::{declines, graph_with_types};
+use super::{compiled_under, declines, declines_under, graph_with_types};
 use crate::exec::test_support::{
-    named_node, one_hop_rel, path_pattern, patterns, quantified, var_length_rel,
+    named_node, one_hop_rel, path_pattern, quantified, var_length_rel,
 };
-use crate::graph::Graph;
 use crate::pattern_engine::PatternEngine;
-
-/// Compile `cypher`'s first pattern on the forced rung — the same store
-/// the auto tests use, the rung the only difference.
-fn forced_compiled(cypher: &str, names: &[&str]) -> (Graph, FrontierNfa) {
-    let graph = graph_with_types(names);
-    let pattern = &patterns(cypher)[0];
-    let nfa = compile(&graph, pattern, PatternEngine::Nfa)
-        .unwrap_or_else(|| panic!("{cypher} should compile forced"));
-    (graph, nfa)
-}
-
-/// Compile `cypher`'s first pattern on the forced rung and assert the
-/// decline.
-fn forced_declines(cypher: &str, names: &[&str]) {
-    let graph = graph_with_types(names);
-    let pattern = &patterns(cypher)[0];
-    assert!(
-        compile(&graph, pattern, PatternEngine::Nfa).is_none(),
-        "{cypher} should decline even forced"
-    );
-}
 
 /// One state's guard labels, in attach order — the layout pin's
 /// assertion vocabulary.
@@ -52,7 +30,8 @@ fn guard_labels(nfa: &FrontierNfa, state: u32) -> Vec<String> {
 /// admits each next round's start. Two states, one hop per round.
 #[test]
 fn forced_guarded_round_start_compiles_as_the_open_state_guard() {
-    let (_, nfa) = forced_compiled(
+    let (_, nfa) = compiled_under(
+        PatternEngine::Nfa,
         "MATCH p = (x)((m:Start)-[:knows]-(n)){1,}(y) RETURN p LIMIT 100",
         &["knows"],
     );
@@ -73,7 +52,8 @@ fn forced_guarded_round_start_compiles_as_the_open_state_guard() {
 /// next round re-enters through the same positions.
 #[test]
 fn forced_guarded_round_end_compiles_as_the_split_close_state() {
-    let (_, nfa) = forced_compiled(
+    let (_, nfa) = compiled_under(
+        PatternEngine::Nfa,
         "MATCH p = (x)-[:ctx]-(k)((m)-[:knows]-(n:End)){1,}(y) RETURN p LIMIT 100",
         &["ctx", "knows"],
     );
@@ -96,7 +76,8 @@ fn forced_guarded_round_end_compiles_as_the_split_close_state() {
 /// an unreferenced mid position mapped nowhere.
 #[test]
 fn forced_group_where_compiles_as_the_closing_transition_guard() {
-    let (_, nfa) = forced_compiled(
+    let (_, nfa) = compiled_under(
+        PatternEngine::Nfa,
         "MATCH p = (x)((m)-[:knows]->(w)-[:likes]->(n) WHERE m.k < n.k){1,}(y) \
          RETURN p LIMIT 100",
         &["knows", "likes"],
@@ -163,9 +144,9 @@ fn fraud_gap_queries_compile_forced_and_decline_auto() {
                       [n IN nodes(p) WHERE n:Transaction | n.amount] AS amounts";
     for cypher in [f03, f04, f05, f06] {
         declines(cypher, &["FROM", "TO"]);
-        forced_compiled(cypher, &["FROM", "TO"]);
+        compiled_under(PatternEngine::Nfa, cypher, &["FROM", "TO"]);
     }
-    let (_, nfa) = forced_compiled(f03, &["FROM", "TO"]);
+    let (_, nfa) = compiled_under(PatternEngine::Nfa, f03, &["FROM", "TO"]);
     // The f03 layout: the account anchor (0), the anchored transaction
     // (1), the split round boundary — open/ti (2) and close/tj (3) — the
     // mid account (4), the post-group `last` on its own exit state (5,
@@ -211,25 +192,29 @@ fn fraud_gap_queries_compile_forced_and_decline_auto() {
 #[test]
 fn forced_guard_vocabulary_declines() {
     // An inline element WHERE on an interior node — per-path semantics.
-    forced_declines(
+    declines_under(
+        PatternEngine::Nfa,
         "MATCH p = (x)-[:ctx]-(m:Person WHERE m.k > 1)-[:knows*1..]-(y) RETURN p LIMIT 100",
         &["ctx", "knows"],
     );
     // A parameterized property-map value — the guard must evaluate
     // without the statement's parameter set.
-    forced_declines(
+    declines_under(
+        PatternEngine::Nfa,
         "MATCH p = (x)((m)-[:knows]-(n {k: $bound})){1,}(y) RETURN p LIMIT 100",
         &["knows"],
     );
     // A zero-round group whose close state would carry a guard: the
     // zero-round pass-through would apply the round-end pattern to a
     // node no round visited.
-    forced_declines(
+    declines_under(
+        PatternEngine::Nfa,
         "MATCH p = (x)((m)-[:knows]-(n:End)){0,2}(y) RETURN p LIMIT 100",
         &["knows"],
     );
     // A predicate referencing a name the body does not bind.
-    forced_declines(
+    declines_under(
+        PatternEngine::Nfa,
         "MATCH p = (x)((m)-[:knows]-(n) WHERE z.k > 1){1,}(y) RETURN p LIMIT 100",
         &["knows"],
     );
@@ -381,7 +366,8 @@ fn rolled_back_probe_leaves_no_stale_guard() {
 fn forced_guarded_post_group_node_takes_its_own_exit_state() {
     // The cycle form: `(s)` at 0, the self-loop round on 0 (no boundary
     // split — the body is plain), `(c:V)` on the exit state 1, `(d)` at 2.
-    let (_, nfa) = forced_compiled(
+    let (_, nfa) = compiled_under(
+        PatternEngine::Nfa,
         "MATCH (s)((a)-[:R]->(b)){2}(c:V)-[:S]->(d) RETURN d",
         &["R", "S"],
     );

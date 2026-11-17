@@ -42,6 +42,7 @@ use super::program::{NodeTarget, Prog};
 use super::rearival::RuleBuffers;
 use super::with_rearival_deferred_budget;
 use crate::ctx::ExecCtx;
+use crate::exec::pattern_policies::Matched;
 use crate::exec::test_support::{build, exec_cypher, patterns, Built};
 use crate::frontier_decline::FrontierRunDecline;
 use crate::graph::Graph;
@@ -61,7 +62,7 @@ fn capped(
     seed: NodeId,
     pool: Pool,
     want: usize,
-) -> (Vec<(Row, UsedSet)>, FrontierRun) {
+) -> (Matched, FrontierRun) {
     match capped_answer(graph, cypher, seed, pool, want) {
         CappedRun::Served { matched, run } => (matched, run),
         CappedRun::Declined { facts, reason } => {

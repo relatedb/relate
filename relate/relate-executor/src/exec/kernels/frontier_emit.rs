@@ -92,8 +92,8 @@ use super::super::pattern_policies::{gpm_group_names, gpm_path_mode_allows, Matc
 use super::frontier::{run_with_halt, FrontierRun, RunOutcome, WalkBudget};
 use super::frontier_match::FrontierContract;
 use super::frontier_tables::{Arm, Arrival, Chain, Endpoint, FrontierTables, Parents, Step};
-use super::nfa::{FrontierNfa, Pool};
-use super::program::{Admission, AdmissionPrepared, NodePred, NodeTarget};
+use super::nfa::Pool;
+use super::program::{Admission, AdmissionPrepared, NodePred};
 use super::rearival::{RearivalRule, RuleBuffers, Verdict};
 
 /// The capped emission's paired answer (ADR-0516): the accepted rows
@@ -177,13 +177,7 @@ pub(crate) fn capped_rows(
     let mut emission = Emission {
         ctx,
         seed,
-        pattern: contract.pattern,
-        nfa: &contract.nfa,
-        target: &contract.target,
-        pool,
-        mode: contract.pattern.mode,
-        min_hops: contract.nfa.min_hops,
-        max_hops: contract.nfa.max_hops,
+        contract,
         trailing: trailing_hops(contract.pattern),
         want,
         entering: entering.clone(),
@@ -211,8 +205,7 @@ pub(crate) fn capped_rows(
     // declined run runs no deferred pass either: its endpoint set is
     // unproven, there is nothing left to re-ask through the rule.
     Ok(match outcome {
-        RunOutcome::Served(walked) => {
-            let mut walked = walked;
+        RunOutcome::Served(mut walked) => {
             match emission.finish(&walked, bufs)? {
                 PassBudget::Held(deferred) => {
                     // The deferred pass's own tally rides the served run:
@@ -247,13 +240,9 @@ pub(crate) fn capped_rows(
 struct Emission<'a> {
     ctx: ExecCtx<'a>,
     seed: NodeId,
-    pattern: &'a PathPattern,
-    nfa: &'a FrontierNfa,
-    target: &'a NodeTarget<'a>,
-    pool: Pool,
-    mode: Option<PathMode>,
-    min_hops: u32,
-    max_hops: Option<u32>,
+    /// The clause's compiled contract — the pattern, NFA, target admission
+    /// and pool are its facts, read through it rather than re-stored.
+    contract: &'a FrontierContract<'a>,
     /// The top-level rel hops after the quantified spine — the reader
     /// the round count needs (`hops - leading - trailing` over the
     /// spine's fixed round length).
@@ -309,20 +298,11 @@ impl<'a> Emission<'a> {
     /// One level boundary: decide every undecided endpoint through the
     /// target's admission and its own chain, in arrival order, while
     /// the cap has room. Whether the cap is full — the runner's halt
-    /// verdict.
+    /// verdict. The admission is the wrapper predicate the kernels share
+    /// (Admission's own NodePred impl, `program.rs`), every check a
+    /// statically dispatched call.
     fn on_level(&mut self, parents: &Parents<'_>, endpoints: &[Endpoint]) -> Result<bool> {
-        self.level_pass(Admission::of(self.target), parents, endpoints)
-    }
-
-    /// The per-level pass over the target's admission — the wrapper
-    /// predicate the kernels share (Admission's own NodePred impl,
-    /// `program.rs`), every check a statically dispatched call.
-    fn level_pass(
-        &mut self,
-        pred: Admission<'_>,
-        parents: &Parents<'_>,
-        endpoints: &[Endpoint],
-    ) -> Result<bool> {
+        let pred = Admission::of(&self.contract.target);
         let mut prepared: Option<AdmissionPrepared<'_>> = None;
         while self.cursor < endpoints.len() && !self.full() {
             let endpoint = endpoints[self.cursor];
@@ -404,8 +384,15 @@ impl<'a> Emission<'a> {
             .unwrap_or(crate::metrics::REARRIVAL_WORK_BUDGET);
         #[cfg(not(test))]
         let budget = crate::metrics::REARRIVAL_WORK_BUDGET;
-        let mut rule =
-            RearivalRule::with_budget(view, self.nfa, arms, self.seed, self.pool, budget, bufs);
+        let mut rule = RearivalRule::with_budget(
+            view,
+            &self.contract.nfa,
+            arms,
+            self.seed,
+            self.contract.pool,
+            budget,
+            bufs,
+        );
         for endpoint in std::mem::take(&mut self.deferred) {
             if self.full() {
                 break;
@@ -470,9 +457,9 @@ impl<'a> Emission<'a> {
     /// engine's own `enforce_unique` fold), tightened by a written
     /// ACYCLIC/SIMPLE.
     fn witness_mode(&self) -> WitnessMode {
-        match self.pool {
+        match self.contract.pool {
             Pool::Walk => WitnessMode::Walk,
-            Pool::Default => match self.mode {
+            Pool::Default => match self.contract.pattern.mode {
                 Some(PathMode::Acyclic) => WitnessMode::Acyclic,
                 Some(PathMode::Simple) => WitnessMode::Simple,
                 Some(PathMode::Trail) | None | Some(PathMode::Walk) => WitnessMode::Trail,
@@ -483,7 +470,8 @@ impl<'a> Emission<'a> {
     /// Whether the chain's hop count is inside the run's bounds.
     fn in_bounds(&self, chain: &Chain) -> bool {
         let hops = chain.rels.len() as u32;
-        hops >= self.min_hops && self.max_hops.is_none_or(|max| hops <= max)
+        hops >= self.contract.nfa.min_hops
+            && self.contract.nfa.max_hops.is_none_or(|max| hops <= max)
     }
 
     /// The per-witness mode check — [`gpm_path_mode_allows`] itself,
@@ -562,7 +550,7 @@ impl<'a> Emission<'a> {
         // gate), so the hop count alone decomposes the chain.
         let hops = chain.rels.len();
         let mut pos = 0usize;
-        for element in &self.pattern.elements {
+        for element in &self.contract.pattern.elements {
             match element {
                 PatternElement::Node(node) => {
                     if let Some(name) = &node.variable {
@@ -598,8 +586,8 @@ impl<'a> Emission<'a> {
         // emission's memoized rung (pattern_walk's
         // `memoized_path_rung`): every witness binds the same names
         // against the one entering row.
-        let rung = memoized_path_rung(&self.path_rung, &row, self.pattern);
-        bind_path_names(&mut row, self.pattern, &rung, || {
+        let rung = memoized_path_rung(&self.path_rung, &row, self.contract.pattern);
+        bind_path_names(&mut row, self.contract.pattern, &rung, || {
             Value::from_path(Path {
                 nodes: nodes.clone(),
                 rels: rels.clone(),

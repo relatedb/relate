@@ -133,13 +133,7 @@ fn engages_distinct_endpoint_answers() {
     ] {
         decide(cypher, &graph, false, &Row::new(), |decision| {
             let contract = decision.unwrap_or_else(|e| panic!("{cypher} engages: {e:?}"));
-            assert_eq!(
-                contract.consumer,
-                Consumer::DistinctEndpoints {
-                    pair: BoundaryPair::Unconstrained
-                },
-                "{cypher}"
-            );
+            assert_eq!(contract.consumer, DISTINCT, "{cypher}");
         });
     }
 }
@@ -242,13 +236,7 @@ fn the_cost_gate_engages_a_branching_recursion_onto_an_unlabeled_target() {
     ] {
         decide(cypher, &graph, false, &Row::new(), |decision| {
             let contract = decision.unwrap_or_else(|e| panic!("{cypher} engages: {e:?}"));
-            assert_eq!(
-                contract.consumer,
-                Consumer::DistinctEndpoints {
-                    pair: BoundaryPair::Unconstrained
-                },
-                "{cypher}"
-            );
+            assert_eq!(contract.consumer, DISTINCT, "{cypher}");
         });
     }
 }

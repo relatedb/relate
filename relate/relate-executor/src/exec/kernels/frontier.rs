@@ -93,8 +93,8 @@ use crate::metrics::FrontierCounters;
 use crate::row::Row;
 
 use super::frontier_tables::{
-    arms, epsilon_index, within_table_budget, Arm, Arrival, Endpoint, FrontierTables, Parent,
-    Parents, Step, TableCeiling,
+    arms, within_table_budget, Arm, Arrival, Endpoint, FrontierTables, Parent, Parents, Step,
+    TableCeiling,
 };
 use super::guard_memo::StateMemos;
 use super::nfa::{FrontierNfa, Pool, STATE_CEILING};
@@ -354,7 +354,6 @@ pub(crate) fn run_with_halt<HALT: FnMut(&Parents<'_>, &[Endpoint]) -> Result<boo
     // arrival record per arrival — one per node, in arrival order.
     let mut endpoints: Vec<Endpoint> = Vec::new();
     let arms = arms(view, nfa);
-    let eps_from = epsilon_index(nfa);
     // The re-arrival rule (ADR-0478 §3), under the run's pool: the
     // default pool consults it at every accepting arrival it cannot
     // already prove a trail for; the walk pool's in-bounds arrivals are
@@ -395,7 +394,7 @@ pub(crate) fn run_with_halt<HALT: FnMut(&Parents<'_>, &[Endpoint]) -> Result<boo
     // arrival and closure can cross the ceiling: the crossing is the
     // same run-time decline, never an expect — it rides the one tail.
     if tables.arrive(seed, nfa.start, None).is_err()
-        || close_epsilons(seed, nfa.start, &guards, &mut tables, &eps_from)? == Closed::Ceiling
+        || close_epsilons(seed, nfa.start, &guards, &mut tables, &nfa.eps_from)? == Closed::Ceiling
     {
         over_ceiling = true;
     }
@@ -570,7 +569,7 @@ pub(crate) fn run_with_halt<HALT: FnMut(&Parents<'_>, &[Endpoint]) -> Result<boo
                     // Expansion only for the newly-marked pair: its
                     // epsilon closure joins the same level.
                     if arrived.new
-                        && close_epsilons(v, t.to, &guards, &mut tables, &eps_from)?
+                        && close_epsilons(v, t.to, &guards, &mut tables, &nfa.eps_from)?
                             == Closed::Ceiling
                     {
                         over_ceiling = true;
