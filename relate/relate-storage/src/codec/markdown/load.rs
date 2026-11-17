@@ -16,7 +16,6 @@ use serde_json::Value as Json;
 
 use super::super::catalog;
 use super::super::convert::props_from_cypher_json;
-use super::codec_error;
 use super::journal;
 use super::manifest::{read_manifest, write_manifest, LearnedSchema, VaultManifest};
 use super::vault::{vault_stats, walk_vault, VaultFile};
@@ -163,7 +162,7 @@ impl LinkEvidence {
             if vocabulary.contains(key) {
                 continue;
             }
-            return Err(codec_error(format!(
+            return Err(md::vault_error(format!(
                 "{path}: '{key}' holds map-form link entries but no file declares the \
                  relationship type with a bare wikilink; declare it or use a bare link"
             )));
@@ -174,7 +173,7 @@ impl LinkEvidence {
 
 fn split_doc(file: &VaultFile) -> Result<(Option<&str>, &str)> {
     let text = std::str::from_utf8(&file.bytes)
-        .map_err(|e| codec_error(format!("{} is not UTF-8: {e}", file.walked.path)))?;
+        .map_err(|e| md::vault_error(format!("{} is not UTF-8: {e}", file.walked.path)))?;
     Ok(md::split_frontmatter(text))
 }
 
@@ -232,7 +231,7 @@ fn parse_and_canonicalize_files(
             (VAULT_LABEL.to_string(), file.walked.stem().to_string())
         } else {
             let (label, name) = file.walked.stem().split_once('/').ok_or_else(|| {
-                codec_error(format!(
+                md::vault_error(format!(
                     "node file outside a label directory: {}",
                     file.walked.path
                 ))
@@ -247,7 +246,7 @@ fn parse_and_canonicalize_files(
         // `:Vault` namespace, so it fails closed here and is never
         // re-judged downstream with a second, exact-`==` spelling.
         if !file.walked.root_file && md::fold_case(&label) == md::fold_case(VAULT_LABEL) {
-            return Err(codec_error(format!(
+            return Err(md::vault_error(format!(
                 "{}: label directory '{label}' collides with the reserved implicit root \
                  label '{}'; rename the label or the file location",
                 file.walked.path, VAULT_LABEL
@@ -371,7 +370,7 @@ fn load_nodes(
                 // The same case-insensitivity the identity model uses
                 // everywhere (Unicode-aware `fold_case`, never ASCII).
                 if md::fold_case(&sanitized) != md::fold_case(&name_path) {
-                    return Err(codec_error(format!(
+                    return Err(md::vault_error(format!(
                         "{}: key property '{key_name}' value '{value}' does not match \
                          its filename '{name_path}'",
                         file.path
@@ -379,7 +378,7 @@ fn load_nodes(
                 }
             }
             Some(other) => {
-                return Err(codec_error(format!(
+                return Err(md::vault_error(format!(
                     "{}: key property '{key_name}' must be a string, found {other}",
                     file.path
                 )))
@@ -422,7 +421,7 @@ fn restore_embeddings(
     // cheap lookups rather than an inversion of the whole map.
     for (embedding_key, value) in &manifest.embeddings {
         let Some((vault_key, property)) = embedding_key.split_once('#') else {
-            return Err(codec_error(format!(
+            return Err(md::vault_error(format!(
                 "malformed embedding key '{embedding_key}'"
             )));
         };
@@ -441,7 +440,7 @@ fn restore_embeddings(
         // that fails to decode is corruption, not tolerance — every
         // other decode failure on this load path already fails closed.
         let decoded = props_from_cypher_json(&single, value_encoding)
-            .map_err(|e| codec_error(format!("restoring embedding '{embedding_key}': {e}")))?;
+            .map_err(|e| md::vault_error(format!("restoring embedding '{embedding_key}': {e}")))?;
         // `ids_by_key` only ever holds ids this load placed in the
         // graph — a miss here is a broken invariant, not a tolerance
         // case (the one tolerated skip, the externally deleted node,
@@ -463,7 +462,7 @@ fn restore_embeddings(
                 labels: node.labels.clone(),
                 properties: relate_core::PropertyMap::share(props),
             })
-            .map_err(|e| codec_error(format!("restoring embedding: {e}")))?;
+            .map_err(|e| md::vault_error(format!("restoring embedding: {e}")))?;
     }
     Ok(())
 }
@@ -564,7 +563,7 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
     // The same verdict the JSON codec gives its read-only marker: a
     // sidecar claiming read-only is not a loadable snapshot.
     if manifest.read_only {
-        return Err(codec_error("read-only snapshot not supported"));
+        return Err(md::vault_error("read-only snapshot not supported"));
     }
     let files = walk_vault(&*target.vfs())?;
     // One frontmatter parse per file, shared by every pass below.
@@ -611,8 +610,8 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
         value_encoding,
     )?;
     // The allocator's final values: the node side threaded through
-    // `restore_ids`'s clamp and the stub materializer's assignments,
-    // the rel side through the link plan above.
+    // `restore_ids` and the stub materializer's assignments, the rel
+    // side through the link plan above.
     graph.set_next_node_id(ids.next_fresh_id);
     graph.set_next_rel_id(rels.next_rel_id);
 

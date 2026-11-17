@@ -9,9 +9,8 @@ use std::collections::BTreeMap;
 
 use relate_markdown as md;
 
-use super::codec_error;
 use super::manifest::{FileStat, VaultManifest};
-use crate::vfs::{read_to_vec, Vfs, VfsMeta};
+use crate::vfs::{read_to_vec, virt_join, Vfs, VfsMeta};
 use relate_core::Result;
 
 /// One walked `.md` entry: its path, the stat the walk's own metadata
@@ -66,17 +65,6 @@ pub(super) fn walk_vault(vfs: &dyn Vfs) -> Result<Vec<VaultFile>> {
     Ok(files)
 }
 
-/// One directory entry as a store path: the dir prefix joined onto the
-/// bare name `list_dir` returns (the one path-joining policy, shared
-/// with the journal walk).
-pub(super) fn entry_path(dir: &str, name: &str) -> String {
-    if dir.is_empty() {
-        name.to_string()
-    } else {
-        format!("{dir}/{name}")
-    }
-}
-
 /// The path's final segment — the whole path at the vault root.
 pub(super) fn file_name(path: &str) -> &str {
     path.rsplit_once('/').map_or(path, |(_, name)| name)
@@ -92,7 +80,7 @@ pub(super) fn walked_entries(vfs: &dyn Vfs, dir: &str) -> Result<Vec<(String, Vf
     names.sort();
     let mut entries = Vec::new();
     for name in names {
-        let entry = entry_path(dir, &name);
+        let entry = virt_join(dir, &name);
         if is_hidden(&entry) {
             continue;
         }
@@ -158,7 +146,7 @@ fn walk_dir(vfs: &dyn Vfs, dir: &str, paths: &mut Vec<WalkedPath>) -> Result<()>
 fn refuse_symlink(vfs: &dyn Vfs, entry: &str) -> Result<VfsMeta> {
     let meta = vfs.metadata(entry)?;
     if meta.is_symlink() {
-        return Err(codec_error(format!(
+        return Err(md::vault_error(format!(
             "vault entry {entry} is a symlink; \
              a markdown vault refuses symlinked entries"
         )));
@@ -167,7 +155,7 @@ fn refuse_symlink(vfs: &dyn Vfs, entry: &str) -> Result<VfsMeta> {
     // refused at the walk with its own shape named, never deferred to
     // a later open's regular-file check.
     if meta.is_other() {
-        return Err(codec_error(format!(
+        return Err(md::vault_error(format!(
             "vault entry {entry} is not a plain file or directory; \
              a markdown vault holds only those"
         )));
@@ -277,7 +265,7 @@ fn prune_dir(vfs: &dyn Vfs, dir: &str) -> Result<()> {
     // The vault root itself is never a removal candidate.
     if !dir.is_empty() && vfs.list_dir(dir)?.is_empty() {
         vfs.remove_dir_all(dir)
-            .map_err(|e| codec_error(format!("removing empty directory {dir}: {e}")))?;
+            .map_err(|e| md::vault_error(format!("removing empty directory {dir}: {e}")))?;
     }
     Ok(())
 }

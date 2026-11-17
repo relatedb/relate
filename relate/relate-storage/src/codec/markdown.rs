@@ -49,6 +49,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::snapshot::DeferredOpenAction;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::SnapshotCodecKind;
 use crate::StoreTarget;
 
 pub(crate) use checkpoint::checkpoint_at;
@@ -378,12 +380,6 @@ fn rel_identity(
     format!("{source_key}\u{1}{rel_type}\u{1}{target_key}\u{1}{props}")
 }
 
-fn codec_error(message: impl Into<String>) -> Error {
-    // The grammar crate owns the `markdown vault: ` prefix policy; this
-    // codec reports through it instead of re-spelling the prefix.
-    md::vault_error(message)
-}
-
 /// Whether the vault changed on disk since the last checkpoint — the
 /// dirty-WAL open guard (ADR-0406 §5), through the one `vault_matches`
 /// predicate. `false` when there is no manifest yet.
@@ -400,7 +396,7 @@ fn vault_changed_since_checkpoint(target: &StoreTarget) -> Result<bool> {
 /// codec owns the policy; `open` dispatches per codec.
 fn check_open_guard(target: &StoreTarget, wal_lsn: u64, checkpoint_lsn: u64) -> Result<()> {
     if wal_lsn > checkpoint_lsn && vault_changed_since_checkpoint(target)? {
-        return Err(codec_error(
+        return Err(md::vault_error(
             "the markdown vault changed on disk while uncheckpointed writes were pending; \
              reopen without the edits or recover from a checkpointed state",
         ));
@@ -447,6 +443,50 @@ mod load;
 mod manifest;
 mod vault;
 mod views;
+
+/// The codec this open proves before the lease, for the pre-lease
+/// default-WAL routing: `Some(`[`SnapshotCodecKind::Markdown`]`)` when the
+/// open is markdown — requested, or an engine-written sidecar says so —
+/// otherwise `None`, no evidence (the classic codecs share one `wal/`
+/// layout). A folder of markdown files alone is not a store until it is
+/// opened as one. (The reset guard is the probe's other consumer, through
+/// `refuse_reset` → `probe_path`, manifest.rs.)
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn markdown_wal_hint(
+    path: &std::path::Path,
+    requested: Option<SnapshotCodecKind>,
+) -> Option<SnapshotCodecKind> {
+    // The sidecar classification — including the present-but-unparseable
+    // fail-closed verdict — is the codec's one typed probe.
+    if requested == Some(SnapshotCodecKind::Markdown) || probe_path(path) {
+        Some(SnapshotCodecKind::Markdown)
+    } else {
+        None
+    }
+}
+
+/// The explicit-markdown pre-lease guard: refuses only an *explicit*
+/// markdown request (a sidecar-driven hint was already classified
+/// fail-closed by its probe) over a directory carrying a classic codec's
+/// root-level store evidence (`graph.json`, a Parquet object family) —
+/// routing the default WAL into `.cypherlite/` and leasing it would write
+/// engine state into another codec's store before `resolve_codec` could
+/// refuse the mismatched request.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn refuse_markdown_over_classic_evidence(
+    path: &std::path::Path,
+    requested: Option<SnapshotCodecKind>,
+) -> Result<()> {
+    if requested == Some(SnapshotCodecKind::Markdown)
+        && crate::codec::has_classic_store_evidence_at(path)
+    {
+        return Err(Error::storage(
+            "mixed snapshot codecs: the directory carries snapshot-file evidence; an \
+             explicit markdown open would create WAL engine state inside it",
+        ));
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests;

@@ -144,6 +144,17 @@ impl FaultStage {
 
 type FaultStages = Arc<Vec<FaultStage>>;
 
+/// The harness's one event path: record the stage, then fail it when
+/// configured, with the one `injected <stage> failure` message.
+fn fire(events: &Mutex<Vec<FaultStage>>, fail: &[FaultStage], stage: FaultStage) -> Result<()> {
+    events.lock().unwrap().push(stage);
+    if fail.contains(&stage) {
+        Err(Error::io(format!("injected {} failure", stage.name())))
+    } else {
+        Ok(())
+    }
+}
+
 struct FaultVfs<'a> {
     inner: &'a dyn Vfs,
     events: Arc<Mutex<Vec<FaultStage>>>,
@@ -164,12 +175,7 @@ impl<'a> FaultVfs<'a> {
     }
 
     fn event(&self, stage: FaultStage) -> Result<()> {
-        self.events.lock().unwrap().push(stage);
-        if self.fail.contains(&stage) {
-            Err(Error::io(format!("injected {} failure", stage.name())))
-        } else {
-            Ok(())
-        }
+        fire(&self.events, &self.fail, stage)
     }
 
     fn trace(&self) -> Vec<FaultStage> {
@@ -192,10 +198,7 @@ impl Drop for FaultFile {
 
 impl VfsFile for FaultFile {
     fn write_all(&mut self, buf: &[u8]) -> Result<()> {
-        self.events.lock().unwrap().push(FaultStage::Write);
-        if self.fail.contains(&FaultStage::Write) {
-            return Err(Error::io("injected write failure"));
-        }
+        fire(&self.events, &self.fail, FaultStage::Write)?;
         self.inner.as_mut().unwrap().write_all(buf)
     }
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
@@ -205,10 +208,7 @@ impl VfsFile for FaultFile {
         self.inner.as_mut().unwrap().seek(pos)
     }
     fn sync_all(&mut self) -> Result<()> {
-        self.events.lock().unwrap().push(FaultStage::FileSync);
-        if self.fail.contains(&FaultStage::FileSync) {
-            return Err(Error::io("injected file_sync failure"));
-        }
+        fire(&self.events, &self.fail, FaultStage::FileSync)?;
         self.inner.as_mut().unwrap().sync_all()
     }
     fn len(&self) -> Result<u64> {
@@ -274,8 +274,10 @@ impl Vfs for FaultVfs<'_> {
     fn rename(&self, from: &str, to: &str) -> Result<()> {
         self.event(FaultStage::Rename)?;
         self.inner.rename(from, to)?;
+        // Fired only when configured: `fire` traces the stage, and an
+        // unconfigured run must keep the rename's trace unchanged.
         if self.fail.contains(&FaultStage::PostRenameError) {
-            return Err(Error::io("injected post_rename_error failure"));
+            self.event(FaultStage::PostRenameError)?;
         }
         Ok(())
     }
@@ -388,7 +390,9 @@ fn atomic_collision(vfs: &dyn Vfs) {
 
     let fault = FaultVfs::new(vfs, &[FaultStage::Collision]);
     let error = atomic_write(&fault, "collisions/value", b"other").unwrap_err();
-    assert!(error.to_string().contains("after 8 collisions"));
+    assert!(error
+        .to_string()
+        .contains(&format!("after {TEMP_ATTEMPTS} collisions")));
     assert_eq!(read_to_vec(vfs, "collisions/value").unwrap(), b"new");
     assert_eq!(
         fault

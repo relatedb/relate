@@ -204,6 +204,22 @@ pub(crate) fn root_envelope_names_classic(path: &std::path::Path) -> bool {
     probe.codec.engine_dir().is_none()
 }
 
+/// The path-level shape of the classic-codec evidence checks — the
+/// JSON codec's `graph.json`, a root envelope naming a classic codec
+/// (an envelope-only store, via
+/// [`root_envelope_names_classic`](root_envelope_names_classic)),
+/// and [`has_parquet_store_files_at`]'s Parquet object families — the
+/// same evidence vocabulary `resolve_codec` consults, probed before any
+/// VFS or lease exists, so an explicit markdown request cannot create
+/// WAL engine state inside a snapshot-file store before the codec
+/// resolver refuses it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn has_classic_store_evidence_at(path: &std::path::Path) -> bool {
+    path.join(json::GRAPH_JSON).exists()
+        || root_envelope_names_classic(path)
+        || snapshot::has_parquet_store_files_at(path)
+}
+
 /// The envelope's commit-timestamp policy, the one spelling every codec's
 /// load shares: `u64::MAX` is the exhaustion the writer refuses (a forged
 /// or corrupted value must not become the graph's commit ts), `0` means

@@ -23,8 +23,8 @@ use super::vault::{
 };
 use super::views;
 use super::{
-    codec_error, infer_key_for_checkpoint, raw_node_doc, rel_identity, vault_key,
-    MarkdownBodyProperties, VAULT_LABEL,
+    infer_key_for_checkpoint, raw_node_doc, rel_identity, vault_key, MarkdownBodyProperties,
+    VAULT_LABEL,
 };
 use crate::vfs::{atomic_write, read_to_vec, Vfs};
 use crate::StoreTarget;
@@ -38,7 +38,7 @@ fn checkpoint_millis() -> Result<u64> {
     web_time::SystemTime::now()
         .duration_since(web_time::UNIX_EPOCH)
         .map(|since| since.as_millis() as u64)
-        .map_err(|e| codec_error(format!("the system clock is before the epoch: {e}")))
+        .map_err(|e| md::vault_error(format!("the system clock is before the epoch: {e}")))
 }
 
 /// The node's primary label: the alphabetically first label — the one
@@ -209,7 +209,7 @@ fn plan_node(
     bodies: &MarkdownBodyProperties,
 ) -> Result<(NodePlan, Option<String>)> {
     let primary = primary_label(node).ok_or_else(|| {
-        codec_error(format!(
+        md::vault_error(format!(
             "node {} has no label; the markdown vault requires at least one label per node",
             node.id
         ))
@@ -223,14 +223,14 @@ fn plan_node(
         .expect("the by-label inference pass keyed every labeled node")
         .clone();
     let Value::String(key_value) = node.properties.get(&key_name).ok_or_else(|| {
-        codec_error(format!(
+        md::vault_error(format!(
             "node {} of label {primary} has no '{key_name}' property; the markdown \
              vault requires a non-null unique '{key_name}' on :{primary}",
             node.id
         ))
     })?
     else {
-        return Err(codec_error(format!(
+        return Err(md::vault_error(format!(
             "node {} of label {primary}: key property '{key_name}' must be a string",
             node.id
         )));
@@ -265,7 +265,7 @@ fn plan_node(
     // node would silently disappear at the next open (ADR-0406 §4 —
     // the walk skips the reserved names at every level).
     if path_is_view(&path) {
-        return Err(codec_error(format!(
+        return Err(md::vault_error(format!(
             "node {} of label {primary} would render to the reserved view file \
              '{path}'; rename its '{key_name}' value",
             node.id
@@ -277,13 +277,13 @@ fn plan_node(
     // files and label files alike, exact and case-only collisions
     // both included.
     if planned_paths_folded.contains(&md::fold_case(&path)) {
-        return Err(codec_error(format!(
+        return Err(md::vault_error(format!(
             "two nodes of label {primary} share the key value '{key_value}'; the vault \
              filename would collide"
         )));
     }
     if root_roundtrip && !existing_by_path.contains_key(&path) {
-        return Err(codec_error(format!(
+        return Err(md::vault_error(format!(
             "node {} has the reserved root label :{VAULT_LABEL} but no existing root file; \
              the engine never writes to the vault root — give it a real label directory",
             node.id
@@ -308,7 +308,7 @@ fn plan_node(
             None => false,
         };
         if !unmodified {
-            return Err(codec_error(format!(
+            return Err(md::vault_error(format!(
                 "node {} is a raw-frontmatter file the engine modified in-session; the \
                  vault's raw text never carries engine writes — edit the file by hand \
                  and reopen",
@@ -478,7 +478,7 @@ pub(crate) fn checkpoint_at(
     ontology: Option<&str>,
 ) -> Result<()> {
     if snapshot_ts == u64::MAX {
-        return Err(codec_error("markdown snapshot timestamp exhausted"));
+        return Err(md::vault_error("markdown snapshot timestamp exhausted"));
     }
     journal::recover(target)?;
     let previous = read_manifest(target)?;
@@ -495,7 +495,7 @@ pub(crate) fn checkpoint_at(
     // engine-owned for this first checkpoint.
     if let Some(previous) = &previous {
         if !vault_matches(&existing_stats, previous) {
-            return Err(codec_error(
+            return Err(md::vault_error(
                 "the vault changed on disk while the database was open; close the \
                  database, let your edits in, and reopen (concurrent writers are not \
                  merged)",
@@ -641,7 +641,7 @@ fn apply_checkpoint(
         .collect();
     for path in deletable {
         vfs.remove_file(&path)
-            .map_err(|e| codec_error(format!("removing {path}: {e}")))?;
+            .map_err(|e| md::vault_error(format!("removing {path}: {e}")))?;
     }
     for (path, bytes) in planned {
         // The byte-identical skip compares against the pre-deletion
@@ -664,7 +664,7 @@ fn apply_checkpoint(
     for view in walk_view_paths(vfs)? {
         if !planned_views.contains(view.as_str()) {
             vfs.remove_file(&view)
-                .map_err(|e| codec_error(format!("removing stale view {view}: {e}")))?;
+                .map_err(|e| md::vault_error(format!("removing stale view {view}: {e}")))?;
         }
     }
     prune_empty_dirs(vfs)?;

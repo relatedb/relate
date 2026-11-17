@@ -327,8 +327,8 @@ fn parse_filesystem_uri(
     // always resolves Parquet, so it hands the codec-config gate that
     // proof directly. `resolve_codec` after the lease stays authoritative
     // for every other conflict shape.
-    let hint = markdown_wal_hint(&path, requested);
-    refuse_markdown_over_classic_evidence(&path, requested)?;
+    let hint = codec::markdown::markdown_wal_hint(&path, requested);
+    codec::markdown::refuse_markdown_over_classic_evidence(&path, requested)?;
     // The codec-specific open-time configuration installs — or is
     // refused — before the lease below materializes a WAL directory and
     // its role marker, so a refused open on a fresh path leaves nothing
@@ -364,50 +364,6 @@ fn parse_filesystem_uri(
     };
     target.codec = codec::resolve_codec(&target, requested)?;
     install_config(target, config)
-}
-
-/// The codec this open proves before the lease, for the pre-lease
-/// default-WAL routing: `Some(`[`SnapshotCodecKind::Markdown`]`)` when the
-/// open is markdown — requested, or an engine-written sidecar says so —
-/// otherwise `None`, no evidence (the classic codecs share one `wal/`
-/// layout). A folder of markdown files alone is not a store until it is
-/// opened as one. (The reset guard is the probe's other consumer, through
-/// `codec::markdown::refuse_reset` → `probe_path`, manifest.rs.)
-#[cfg(not(target_arch = "wasm32"))]
-fn markdown_wal_hint(
-    path: &Path,
-    requested: Option<SnapshotCodecKind>,
-) -> Option<SnapshotCodecKind> {
-    // The sidecar classification — including the present-but-unparseable
-    // fail-closed verdict — is the codec's one typed probe.
-    if requested == Some(SnapshotCodecKind::Markdown) || codec::markdown::probe_path(path) {
-        Some(SnapshotCodecKind::Markdown)
-    } else {
-        None
-    }
-}
-
-/// The explicit-markdown pre-lease guard: refuses only an *explicit*
-/// markdown request (a sidecar-driven hint was already classified
-/// fail-closed by its probe) over a directory carrying a classic codec's
-/// root-level store evidence (`graph.json`, a Parquet object family) —
-/// routing the default WAL into `.cypherlite/` and leasing it would write
-/// engine state into another codec's store before `resolve_codec` could
-/// refuse the mismatched request.
-#[cfg(not(target_arch = "wasm32"))]
-fn refuse_markdown_over_classic_evidence(
-    path: &Path,
-    requested: Option<SnapshotCodecKind>,
-) -> Result<()> {
-    if requested == Some(SnapshotCodecKind::Markdown)
-        && crate::snapshot::has_classic_store_evidence_at(path)
-    {
-        return Err(Error::storage(
-            "mixed snapshot codecs: the directory carries snapshot-file evidence; an \
-             explicit markdown open would create WAL engine state inside it",
-        ));
-    }
-    Ok(())
 }
 
 pub fn memory_store() -> StoreTarget {

@@ -8,12 +8,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use relate_core::Result;
 use relate_engine_api::CheckpointTheater;
+use relate_markdown as md;
 use serde::{Deserialize, Serialize};
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::super::benign_absence;
 use super::super::catalog;
-use super::codec_error;
 use super::vault::crc;
 use super::MarkdownBodyProperties;
 use crate::codec::SnapshotCodecKind;
@@ -247,7 +247,7 @@ pub(crate) fn probe_path(dir: &std::path::Path) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn refuse_reset(dir: &std::path::Path) -> Result<()> {
     if probe_path(dir) {
-        return Err(codec_error(
+        return Err(md::vault_error(
             "refusing to reset a markdown vault store; delete the vault's .cypherlite/ \
              directory (and the markdown files) by hand",
         ));
@@ -276,10 +276,10 @@ pub(crate) fn read_manifest(target: &StoreTarget) -> Result<Option<VaultManifest
     match probe(&*target.vfs())? {
         ManifestProbe::Absent => Ok(None),
         ManifestProbe::Markdown(manifest) => Ok(Some(*manifest)),
-        ManifestProbe::Other(other) => Err(codec_error(format!(
+        ManifestProbe::Other(other) => Err(md::vault_error(format!(
             "sidecar manifest names codec {other}, not markdown"
         ))),
-        ManifestProbe::Unparseable => Err(codec_error(
+        ManifestProbe::Unparseable => Err(md::vault_error(
             "sidecar manifest names no codec or does not parse, not markdown",
         )),
     }
@@ -287,9 +287,9 @@ pub(crate) fn read_manifest(target: &StoreTarget) -> Result<Option<VaultManifest
 
 pub(super) fn write_manifest(vfs: &dyn Vfs, manifest: &VaultManifest) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(manifest)
-        .map_err(|e| codec_error(format!("serializing sidecar manifest: {e}")))?;
+        .map_err(|e| md::vault_error(format!("serializing sidecar manifest: {e}")))?;
     if bytes.len() as u64 > MAX_JSON_OBJECT {
-        return Err(codec_error(format!(
+        return Err(md::vault_error(format!(
             "{MANIFEST} exceeds {MAX_JSON_OBJECT}-byte metadata limit"
         )));
     }

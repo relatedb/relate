@@ -91,8 +91,10 @@ enum SnapshotInfo {
 impl SnapshotInfo {
     /// The snapshot's codec, from the one variant→codec mapping: an
     /// envelope's codec is its own field, a Parquet manifest's codec is
-    /// its variant, and a fresh store has none (`None`). Every renderer
-    /// consults this accessor; none re-spells the mapping.
+    /// its variant, and a fresh store has none (`None`). The JSON
+    /// projection consults it; the text renderer's arms already match
+    /// the variant and name its codec directly.
+    #[cfg(feature = "info")]
     fn codec(&self) -> Option<SnapshotCodecKind> {
         match self {
             SnapshotInfo::Fresh => None,
@@ -223,12 +225,9 @@ impl InfoReport {
                 commit_ts,
                 ..
             } => {
-                // The variant's codec from the one accessor
-                // (`SnapshotInfo::codec`), never re-spelled here.
+                // The arm's own variant is the codec.
                 lines.extend(checkpoint_rows(
-                    self.snapshot
-                        .codec()
-                        .expect("a parquet snapshot's codec is parquet"),
+                    SnapshotCodecKind::Parquet,
                     format_version.to_string(),
                     *checkpoint_lsn,
                     *commit_ts,

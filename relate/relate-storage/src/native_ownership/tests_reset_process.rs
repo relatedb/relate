@@ -268,9 +268,9 @@ fn failed_reset_after_fresh_root_keeps_old_wal_isolated_and_recoverable() {
     for entry in std::fs::read_dir(dir.path()).unwrap() {
         let entry = entry.unwrap();
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(".db.reset-") {
+        if name.starts_with(&format!(".db{RESET_TOMBSTONE_MARK}")) {
             old_root = Some(entry.path().join("data"));
-        } else if name.starts_with(".external-wal.reset-") {
+        } else if name.starts_with(&format!(".external-wal{RESET_TOMBSTONE_MARK}")) {
             old_wal = Some(entry.path().join("data"));
         }
     }

@@ -481,26 +481,10 @@ pub(crate) fn object_exists(target: &StoreTarget, name: &str) -> Result<bool> {
 /// family's existence vocabulary stays separate from the envelope and
 /// `graph.json` evidence beside it, like the VFS-level resolver's.
 #[cfg(not(target_arch = "wasm32"))]
-fn has_parquet_store_files_at(path: &std::path::Path) -> bool {
+pub(crate) fn has_parquet_store_files_at(path: &std::path::Path) -> bool {
     Kind::ALL
         .into_iter()
         .any(|kind| path.join(kind.legacy_names()[0]).exists() || path.join(kind.dir()).is_dir())
-}
-
-/// The path-level shape of the classic-codec evidence checks — the
-/// JSON codec's `graph.json`, a root envelope naming a classic codec
-/// (an envelope-only store, via
-/// [`root_envelope_names_classic`](crate::codec::root_envelope_names_classic)),
-/// and [`has_parquet_store_files_at`]'s Parquet object families — the
-/// same evidence vocabulary `resolve_codec` consults, probed before any
-/// VFS or lease exists, so an explicit markdown request cannot create
-/// WAL engine state inside a snapshot-file store before the codec
-/// resolver refuses it.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn has_classic_store_evidence_at(path: &std::path::Path) -> bool {
-    path.join(crate::codec::json::GRAPH_JSON).exists()
-        || crate::codec::root_envelope_names_classic(path)
-        || has_parquet_store_files_at(path)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

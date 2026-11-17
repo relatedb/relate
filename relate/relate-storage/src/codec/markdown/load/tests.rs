@@ -341,3 +341,34 @@ fn set_semantics_dedupes_identical_relationships() {
     let (_, rels) = signature(&loaded);
     assert_eq!(rels.len(), 1, "exact duplicates collapse: {rels:?}");
 }
+
+/// F-17-27: the corrupt-sidecar guard judges a restored id against the
+/// recorded seed, not the live allocator head. A key without an id takes
+/// the seed first; a later key whose recorded id equals that fresh id sits
+/// below the advanced head but not below the seed, and must be refused
+/// instead of colliding.
+#[test]
+fn restore_ids_refuses_a_recorded_id_colliding_with_an_earlier_fresh_id() {
+    let parsed_file = |key: &str| ParsedFile {
+        path: format!("Person/{key}.md"),
+        key: key.to_string(),
+        label: "Person".to_string(),
+        name: key.to_string(),
+        doc: md::NodeDoc::default(),
+    };
+    let mut manifest = VaultManifest {
+        next_node_id: 1,
+        ..VaultManifest::default()
+    };
+    manifest.node_ids.insert("Person/B".to_string(), 1);
+    let parsed = [parsed_file("Person/A"), parsed_file("Person/B")];
+    let error = restore_ids(&parsed, &manifest)
+        .err()
+        .expect("a recorded id at the seed is refused");
+    assert!(
+        error
+            .to_string()
+            .contains("not below the recorded next id 1"),
+        "{error}"
+    );
+}

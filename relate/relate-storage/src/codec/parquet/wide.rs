@@ -372,31 +372,18 @@ impl ColumnBuilder {
             self.append_null();
             return true;
         };
-        let carried = match (&mut *self, value) {
-            (Self::Bool(b), Value::Bool(v)) => {
-                b.append_value(*v);
-                true
-            }
-            (Self::Int(b), Value::Int(v)) => {
-                b.append_value(*v);
-                true
-            }
-            (Self::Float(b), Value::Float(v)) => {
-                b.append_value(*v);
-                true
-            }
-            (Self::Str(b), Value::String(v)) => {
-                b.append_value(v.as_ref());
-                true
-            }
+        match (&mut *self, value) {
+            (Self::Bool(b), Value::Bool(v)) => b.append_value(*v),
+            (Self::Int(b), Value::Int(v)) => b.append_value(*v),
+            (Self::Float(b), Value::Float(v)) => b.append_value(*v),
+            (Self::Str(b), Value::String(v)) => b.append_value(v.as_ref()),
             // Not the column's type: the value takes the residual column.
-            _ => false,
-        };
-        if !carried {
-            // Not the column's type: the value takes the residual column.
-            self.append_null();
+            _ => {
+                self.append_null();
+                return false;
+            }
         }
-        carried
+        true
     }
 
     fn finish(self) -> ArrayRef {

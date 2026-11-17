@@ -10,16 +10,16 @@
 //! journaled contents, remove the new files, and let the WAL replay as
 //! normal over the old base).
 
-use super::codec_error;
 use super::manifest::{
     write_manifest, VaultManifest, JOURNAL_DIR, JOURNAL_INTENT, JOURNAL_PREIMAGE,
 };
 use super::vault::{
-    entry_path, file_name, vault_matches, vault_stats, walk_vault, walk_view_paths, walked_entries,
+    file_name, vault_matches, vault_stats, walk_vault, walk_view_paths, walked_entries,
 };
-use crate::vfs::{atomic_write, read_to_vec, Vfs};
+use crate::vfs::{atomic_write, read_to_vec, virt_join, Vfs};
 use crate::StoreTarget;
 use relate_core::Result;
+use relate_markdown as md;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Recover a pending journaled checkpoint, if any (ADR-0406 §5).
@@ -31,7 +31,7 @@ pub(super) fn recover(target: &StoreTarget) -> Result<()> {
     if vfs.exists(JOURNAL_INTENT)? {
         let bytes = read_to_vec(&*vfs, JOURNAL_INTENT)?;
         let intent: VaultManifest = serde_json::from_slice(&bytes)
-            .map_err(|e| codec_error(format!("invalid checkpoint intent: {e}")))?;
+            .map_err(|e| md::vault_error(format!("invalid checkpoint intent: {e}")))?;
         let files = walk_vault(&*vfs)?;
         if vault_matches(&vault_stats(&files), &intent) {
             // Everything landed; publish the intent forward.
@@ -76,7 +76,7 @@ fn rollback(vfs: &dyn Vfs, intent: &VaultManifest) -> Result<()> {
     for path in intent.files.keys().cloned().chain(walk_view_paths(vfs)?) {
         if remove_created(path.clone())? {
             vfs.remove_file(&path)
-                .map_err(|e| codec_error(format!("rolling back new file {path}: {e}")))?;
+                .map_err(|e| md::vault_error(format!("rolling back new file {path}: {e}")))?;
         }
     }
     Ok(())
@@ -88,7 +88,7 @@ fn rollback(vfs: &dyn Vfs, intent: &VaultManifest) -> Result<()> {
 fn read_preimage(vfs: &dyn Vfs) -> Result<BTreeSet<String>> {
     let bytes = read_to_vec(vfs, JOURNAL_PREIMAGE)?;
     serde_json::from_slice(&bytes)
-        .map_err(|e| codec_error(format!("invalid checkpoint pre-image: {e}")))
+        .map_err(|e| md::vault_error(format!("invalid checkpoint pre-image: {e}")))
 }
 
 /// Collect every journaled file, keyed by its vault-relative path. The
@@ -106,7 +106,7 @@ fn collect_journaled(
     out: &mut BTreeMap<String, Vec<u8>>,
 ) -> Result<()> {
     for (full, meta) in walked_entries(vfs, dir)? {
-        let rel = entry_path(rel_dir, file_name(&full));
+        let rel = virt_join(rel_dir, file_name(&full));
         if meta.is_dir() {
             collect_journaled(vfs, &full, &rel, out)?;
             continue;
@@ -142,17 +142,17 @@ pub(super) fn stage(
         if !touched {
             continue;
         }
-        let journal_path = format!("{JOURNAL_DIR}/{path}");
+        let journal_path = virt_join(JOURNAL_DIR, path);
         atomic_write(&*vfs, &journal_path, old)?;
     }
     // The pre-image precedes the intent (the commit point): every
     // existing path at the moment the checkpoint began.
     let preimage: Vec<&String> = existing.keys().collect();
     let preimage = serde_json::to_vec(&preimage)
-        .map_err(|e| codec_error(format!("serializing checkpoint pre-image: {e}")))?;
+        .map_err(|e| md::vault_error(format!("serializing checkpoint pre-image: {e}")))?;
     atomic_write(&*vfs, JOURNAL_PREIMAGE, &preimage)?;
     let intent = serde_json::to_vec(manifest)
-        .map_err(|e| codec_error(format!("serializing checkpoint intent: {e}")))?;
+        .map_err(|e| md::vault_error(format!("serializing checkpoint intent: {e}")))?;
     atomic_write(&*vfs, JOURNAL_INTENT, &intent)?;
     Ok(())
 }
@@ -162,7 +162,7 @@ pub(super) fn clear(target: &StoreTarget) -> Result<()> {
     let vfs = target.vfs();
     if vfs.exists(JOURNAL_DIR)? {
         vfs.remove_dir_all(JOURNAL_DIR)
-            .map_err(|e| codec_error(format!("removing checkpoint journal: {e}")))?;
+            .map_err(|e| md::vault_error(format!("removing checkpoint journal: {e}")))?;
     }
     Ok(())
 }

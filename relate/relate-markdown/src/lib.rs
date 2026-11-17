@@ -77,8 +77,8 @@ use relate_core::Error;
 /// grammar module reports through this helper instead of re-spelling the
 /// prefix (doc-level and name-level errors share it; the YAML and body
 /// modules own their own, differently-scoped prefixes). The storage
-/// codec's `codec_error` delegates here too, so the prefix has one home
-/// across both crates.
+/// codec reports through it too, so the prefix has one home across both
+/// crates.
 pub fn vault_error(message: impl Into<String>) -> Error {
     Error::storage(format!("markdown vault: {}", message.into()))
 }

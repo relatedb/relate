@@ -19,19 +19,16 @@ use relate_markdown as md;
 use super::super::super::convert::props_from_cypher_json;
 use super::super::manifest::VaultManifest;
 use super::super::vault::file_name;
-use super::super::{codec_error, rel_identity, vault_key, DEFAULT_KEY_PROPERTY};
+use super::super::{rel_identity, vault_key, DEFAULT_KEY_PROPERTY};
 use super::ParsedFile;
 use relate_markdown::fold_case;
 
-/// The stable-id assignment's own state: every canonical key's id, the
-/// next fresh id, and the highest id this load ever hands out or
-/// restores. [`restore_ids`] reconciles the two counters before
-/// returning, so `next_fresh_id` is the one "next free id" fact every
-/// consumer reads.
+/// The stable-id assignment's own state: every canonical key's id
+/// and the next fresh id — the one "next free id" fact every consumer
+/// reads.
 pub(super) struct IdAssignment {
     pub(super) ids_by_key: BTreeMap<String, i64>,
     pub(super) next_fresh_id: i64,
-    pub(super) max_assigned_id: i64,
 }
 
 /// The rel side's assignment state, mirroring [`IdAssignment`]: the
@@ -50,8 +47,11 @@ pub(super) fn restore_ids(parsed: &[ParsedFile], manifest: &VaultManifest) -> Re
     let mut ids = IdAssignment {
         ids_by_key: BTreeMap::new(),
         next_fresh_id: manifest.next_node_id.max(1),
-        max_assigned_id: 0,
     };
+    // The recorded seed, captured before any fresh id advances the live
+    // allocator head: the guard below judges restored ids against it, so a
+    // sidecar id can never collide with a fresh id handed out earlier.
+    let seeded_next_id = ids.next_fresh_id;
     for file in parsed {
         let id = match manifest.node_ids.get(&file.key) {
             // The manifest invariant (ADR-0406 §5) keeps the seed above
@@ -59,10 +59,10 @@ pub(super) fn restore_ids(parsed: &[ParsedFile], manifest: &VaultManifest) -> Re
             // a fresh file an id a restored node already owns (the
             // later row silently replacing it), so it fails closed like
             // every other corrupt-sidecar shape instead.
-            Some(id) if *id >= ids.next_fresh_id => {
-                return Err(codec_error(format!(
+            Some(id) if *id >= seeded_next_id => {
+                return Err(md::vault_error(format!(
                     "sidecar node id {id} for '{}' is not below the recorded next id {}",
-                    file.key, ids.next_fresh_id
+                    file.key, seeded_next_id
                 )))
             }
             Some(id) => *id,
@@ -72,17 +72,8 @@ pub(super) fn restore_ids(parsed: &[ParsedFile], manifest: &VaultManifest) -> Re
                 id
             }
         };
-        ids.max_assigned_id = ids.max_assigned_id.max(id);
         ids.ids_by_key.insert(file.key.clone(), id);
     }
-    // One spelling of "the allocator's final value is the next free
-    // id": the manifest invariant (ADR-0406 §5) keeps the seed above
-    // every restored id, and this clamp is the one place that
-    // reconciles a sparse restored map which beat it — the stub
-    // materializer's every assignment then threads it upward. The
-    // graph's allocator and the recorded expectation both read this
-    // one field, never a second derivation.
-    ids.next_fresh_id = ids.next_fresh_id.max(ids.max_assigned_id + 1);
     Ok(ids)
 }
 
@@ -127,7 +118,6 @@ fn resolve_full_target(
                 .unwrap_or_else(|| DEFAULT_KEY_PROPERTY.to_string());
             let id = ids.next_fresh_id;
             ids.next_fresh_id += 1;
-            ids.max_assigned_id = ids.max_assigned_id.max(id);
             ids.ids_by_key.insert(target_key.clone(), id);
             let mut stub_props = BTreeMap::new();
             stub_props.insert(key_name, Value::String(key.into()));
@@ -137,7 +127,7 @@ fn resolve_full_target(
                     labels: Arc::new(vec![primary.clone()]),
                     properties: relate_core::PropertyMap::share(stub_props),
                 })
-                .map_err(|e| codec_error(format!("materializing stub {target_key}: {e}")))?;
+                .map_err(|e| md::vault_error(format!("materializing stub {target_key}: {e}")))?;
             id
         }
     };
@@ -163,7 +153,7 @@ fn resolve_short_target(ids: &IdAssignment, path: &str, name: &str) -> Result<(S
                 .get(*only)
                 .expect("the id pass keyed every parsed file"),
         )),
-        [] => Err(codec_error(format!(
+        [] => Err(md::vault_error(format!(
             "{path}: short-form link [[{name}]] has no candidate; use the \
              full form [[Label/<key>]] or create the note"
         ))),
@@ -173,7 +163,7 @@ fn resolve_short_target(ids: &IdAssignment, path: &str, name: &str) -> Result<(S
                 .map(|key| key.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            Err(codec_error(format!(
+            Err(md::vault_error(format!(
                 "{path}: short-form link [[{name}]] is ambiguous between {listed}; \
                  use the full form"
             )))
@@ -238,7 +228,7 @@ pub(super) fn resolve_links_and_stubs(
                 // error shape instead of silently colliding.
                 let id = match rel_ids.get(&identity).copied() {
                     Some(id) if id >= seeded_next_rel_id => {
-                        return Err(codec_error(format!(
+                        return Err(md::vault_error(format!(
                             "sidecar relationship id {id} for '{identity}' is not below \
                              the recorded next id {seeded_next_rel_id}"
                         )))

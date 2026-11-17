@@ -647,7 +647,7 @@ impl Vfs for BundleVfs {
         let b = self.lock();
         virtual_entry_meta(
             b.inodes.get(path).map(|inode| inode.len),
-            is_prefix(&b.inodes, path),
+            || is_prefix(&b.inodes, path),
             path,
         )
     }
