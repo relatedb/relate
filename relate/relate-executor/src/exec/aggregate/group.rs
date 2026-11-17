@@ -122,8 +122,8 @@ pub(crate) struct Aggregation<'a> {
     /// charges its operands to the same total as they settle.)
     bill: GroupBill,
     /// The input vector's bill, released row by row as payloads move into
-    /// the group table; `None` when workspace accounting is off.
-    input: Option<InputBill>,
+    /// the group table; inert when workspace accounting is off.
+    input: InputBill,
 }
 
 impl<'a> Aggregation<'a> {
@@ -185,12 +185,11 @@ impl<'a> Aggregation<'a> {
             order.exprs().chain(having),
             params,
         )?;
-        let account = relate_core::tokens::workspace_accounting();
         // The input vector stays allocated until the fold finishes. Bill it
         // up front, then hand each row's payload to the group map as it
         // moves. A generated feed holds no input vector: nothing to bill,
         // nothing to release row by row.
-        let input = account.then(|| InputBill::open(rows)).transpose()?;
+        let input = InputBill::open(rows)?;
         // What a group keeps of its first row (see `seed`). The plain
         // WHERE is evaluated after emission, against the emitted row — the
         // seed keeps what it reads so the row still carries the grouping
@@ -249,9 +248,7 @@ impl<'a> Aggregation<'a> {
         let (key, key_values) = KeyTuple::of(key_exprs.len(), |i| {
             eval(graph, &row, &key_exprs[i], params)
         })?;
-        if let Some(input) = input.as_mut() {
-            input.release(&row)?;
-        }
+        input.release(&row)?;
         // The landing bills what the row adds, ahead of the landing (see
         // [`GroupTable::land`]); the row's own payload is then spent into
         // the accumulators and, for the seed columns, the seed store.

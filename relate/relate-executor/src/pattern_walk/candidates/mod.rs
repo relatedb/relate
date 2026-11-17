@@ -105,7 +105,7 @@ fn union_dedup(served: impl Iterator<Item = Vec<NodeId>>) -> Result<Vec<NodeId>>
     let mut ids = Vec::new();
     for arm_ids in served {
         for id in arm_ids {
-            if seen.insert(id as u64)? {
+            if seen.insert(id as u64, "union")? {
                 ids.push(id);
             }
         }

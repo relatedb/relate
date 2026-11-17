@@ -44,8 +44,8 @@ use crate::group_key::{row_key, GroupKey, KeyClass, WordTag};
 use crate::hash_seed::{seeded_set, SeededSet};
 use crate::tiered_set::{TieredWordSet, WordHash};
 use crate::workspace::{
-    charge_distinct_delta, distinct_row_insert_delta, distinct_row_set_bytes,
-    group_key_insert_delta, group_key_set_bytes,
+    charge_set_delta, distinct_row_insert_delta, distinct_row_set_bytes, group_key_insert_delta,
+    group_key_set_bytes, DISTINCT_PEAK_FAMILY,
 };
 
 /// The tag→hasher policy of a word tier (ADR-0507 §4): engine ids hash
@@ -99,6 +99,18 @@ impl Spill {
     /// The one fold over the parked tiers: `read` summed across them.
     fn parked_sum<N: std::iter::Sum>(&self, read: impl FnMut(&TieredWordSet) -> N) -> N {
         self.word_tiers().map(read).sum()
+    }
+
+    /// Distinct keys held in the heap tiers: the parked word tiers and
+    /// the general tables.
+    fn len(&self) -> usize {
+        self.parked_sum(TieredWordSet::len) + self.singles.len() + self.rows.len()
+    }
+
+    /// The accounted bytes of the general tables (the parked word tiers
+    /// bill themselves).
+    fn general_bytes(&self) -> u64 {
+        group_key_set_bytes(&self.singles) + distinct_row_set_bytes(&self.rows)
     }
 
     /// The uncharged contents copy: parked tiers and general tables.
@@ -173,6 +185,7 @@ impl DistinctSet {
     }
 
     /// Every word tier's bytes: the active tier's and the parked ones'.
+    #[cfg(test)]
     fn word_bytes(&self) -> u64 {
         self.words.bytes()
             + self
@@ -195,7 +208,7 @@ impl DistinctSet {
             .as_ref()
             .map(|spill| spill.try_clone().map(Box::new))
             .transpose()?;
-        let general = self.bytes() - self.word_bytes();
+        let general = self.spill_ref().map_or(0, Spill::general_bytes);
         Ok(Self {
             null: self.null,
             word_tag: self.word_tag,
@@ -229,25 +242,15 @@ impl DistinctSet {
 
     /// Distinct keys held, across every tier.
     pub(crate) fn len(&self) -> usize {
-        let words = self.words.len()
-            + self
-                .spill_ref()
-                .map_or(0, |spill| spill.parked_sum(TieredWordSet::len));
-        let spilled = self
-            .spill_ref()
-            .map_or(0, |spill| spill.singles.len() + spill.rows.len());
-        usize::from(self.null) + words + spilled
+        usize::from(self.null) + self.words.len() + self.spill_ref().map_or(0, Spill::len)
     }
 
     /// The accounted bytes of every held representation — the walk the
-    /// per-insert deltas must sum to, and the figure a clone retains.
+    /// per-insert deltas must sum to. Test-only: a clone retains its parts'
+    /// own figures.
+    #[cfg(test)]
     pub(crate) fn bytes(&self) -> u64 {
-        let mut bytes = self.word_bytes();
-        if let Some(spill) = self.spill_ref() {
-            bytes += group_key_set_bytes(&spill.singles);
-            bytes += distinct_row_set_bytes(&spill.rows);
-        }
-        bytes
+        self.word_bytes() + self.spill_ref().map_or(0, Spill::general_bytes)
     }
 
     /// Whether the word tier has promoted to its per-tag tables (T2).
@@ -286,7 +289,7 @@ impl DistinctSet {
         if self.word_tag != Some(tag) {
             self.switch_word_tier(tag);
         }
-        self.words.insert(word)
+        self.words.insert(word, DISTINCT_PEAK_FAMILY)
     }
 
     /// A tag switch (or the first word): park the active tier — promoted
@@ -346,7 +349,7 @@ where
     K: Eq + Hash + Clone + std::borrow::Borrow<B>,
 {
     if !workspace_accounting() {
-        // Not a second copy of `charge_distinct_delta`'s gate (its delta
+        // Not a second copy of `charge_set_delta`'s gate (its delta
         // closure is already lazy): this skips the clone/undo probe
         // protocol itself when no budget can refuse it.
         return Ok(set.insert(key));
@@ -355,7 +358,7 @@ where
     if !set.insert(key.clone()) {
         return Ok(false);
     }
-    charge_distinct_delta(charge, || {
+    charge_set_delta(charge, DISTINCT_PEAK_FAMILY, || {
         delta(old_len, std::borrow::Borrow::<B>::borrow(&key))
     })
     .inspect_err(|_| {

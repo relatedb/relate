@@ -9,7 +9,9 @@ use relate_core::Value;
 
 use crate::pattern_engine::PatternEngine;
 
-use super::test_support::{build, exec_cypher, profiled, same_rows, sort_rows, walk_only, Built};
+use super::test_support::{
+    assert_written_agrees_with_held, build, exec_cypher, profiled, same_rows, sort_rows, Built,
+};
 
 /// A hub (node 0) over `fan` children, each with two grandchildren, plus a
 /// back edge from the first grandchild to the hub so paths revisit it.
@@ -33,14 +35,7 @@ fn hub(fan: usize) -> Built {
 fn assert_agrees(matched: &str, rest: &str) {
     let folded = format!("{matched} {rest}");
     let held = format!("{matched} WITH * {rest}");
-    let auto = hub(6);
-    let walk = walk_only(hub(6));
-    let expected = exec_cypher(&auto.graph, &held);
-    assert!(!expected.rows.is_empty(), "{folded}: the fixture matches");
-    let got = exec_cypher(&auto.graph, &folded);
-    assert!(same_rows(&got, &expected), "{folded}: folded vs held");
-    let walked = exec_cypher(&walk.graph, &folded);
-    assert!(same_rows(&walked, &expected), "{folded}: walk vs held");
+    assert_written_agrees_with_held(|| hub(6), "folded", &folded, &held);
 }
 
 #[test]

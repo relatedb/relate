@@ -31,25 +31,33 @@ pub(super) struct GroupBill {
 
 /// The one bill for the input vector the fold holds: its measured bytes
 /// and the workspace-ledger charge that follows them down as each row's
-/// payload moves into the group table.
+/// payload moves into the group table. Accounting off is this bill's own
+/// state (nothing measured, nothing to release), not a flag its holder keeps.
 pub(super) struct InputBill {
-    retained: RetainedRows,
-    charge: WorkspaceCharge,
+    held: Option<(RetainedRows, WorkspaceCharge)>,
 }
 
 impl InputBill {
-    /// Bill the whole input vector up front.
+    /// Bill the whole input vector up front when workspace accounting is on.
     pub(super) fn open(rows: &[Row]) -> Result<Self> {
+        if !relate_core::tokens::workspace_accounting() {
+            return Ok(Self { held: None });
+        }
         let retained = RetainedRows::measure(rows);
         let charge = WorkspaceCharge::retain(retained.bytes())?;
         peak_hold("aggregation");
-        Ok(Self { retained, charge })
+        Ok(Self {
+            held: Some((retained, charge)),
+        })
     }
 
     /// Release `row`'s share: its payload moves on to the group table.
     pub(super) fn release(&mut self, row: &Row) -> Result<()> {
-        self.retained.release_row(row);
-        self.charge.resize(self.retained.bytes())
+        let Some((retained, charge)) = &mut self.held else {
+            return Ok(());
+        };
+        retained.release_row(row);
+        charge.resize(retained.bytes())
     }
 }
 

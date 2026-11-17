@@ -133,20 +133,34 @@ impl Next<'_> {
 /// The run's retained output: what the barrier after the run takes as its
 /// input rows, charged per row (ADR-0463).
 struct Collector {
-    /// What the barrier after the run still names; `None` keeps every
-    /// binding — decided once at open: a sink projection's rows (their
-    /// columns are the output) and a `WITH`'s (its projection already
-    /// dropped the rest) are never trimmed.
-    live: Option<HashSet<String>>,
-    /// Whether the rows are bindings or the sink projection's columns.
-    source: RowSource,
+    shape: Collected,
     rows: RefCell<Vec<Row>>,
     retained: RefCell<RetainedTotal>,
 }
 
+/// What a collector's rows are, decided once at open.
+enum Collected {
+    /// Bindings; the set is what the barrier after the run still names,
+    /// `None` keeps every binding. A `WITH`'s rows (its projection already
+    /// dropped the rest) are never trimmed.
+    Bindings(Option<HashSet<String>>),
+    /// The sink projection's columns (their columns are the output),
+    /// never trimmed.
+    SinkProjected,
+}
+
+impl Collected {
+    fn source(&self) -> RowSource {
+        match self {
+            Self::Bindings(_) => RowSource::Bindings,
+            Self::SinkProjected => RowSource::SinkProjected,
+        }
+    }
+}
+
 impl RowFold for Collector {
     fn offer(&self, graph: &ExecGraph<'_>, mut row: Row) -> Result<()> {
-        if let Some(live) = &self.live {
+        if let Collected::Bindings(Some(live)) = &self.shape {
             trim_rows(std::slice::from_mut(&mut row), live);
         }
         self.retained.borrow_mut().add_row(graph, row.values())?;
@@ -293,8 +307,7 @@ pub(crate) fn open_match_chain<'a>(
         Some(fold) => Next::Fold(Box::new(fold)),
         None => {
             let mut collector = Collector {
-                live: None,
-                source: RowSource::Bindings,
+                shape: Collected::Bindings(None),
                 rows: RefCell::new(Vec::new()),
                 retained: RefCell::new(graph.retain_bytes(0)?),
             };
@@ -303,9 +316,9 @@ pub(crate) fn open_match_chain<'a>(
             if let Some(Transform::Match { projection, .. }) = transforms.last_mut() {
                 *projection = after.and_then(sinkable_projection);
                 if projection.is_some() {
-                    collector.source = RowSource::SinkProjected;
+                    collector.shape = Collected::SinkProjected;
                 } else {
-                    collector.live = live_from(&clauses[1 + stages..]);
+                    collector.shape = Collected::Bindings(live_from(&clauses[1 + stages..]));
                 }
             }
             Next::Rows(collector)
@@ -437,7 +450,7 @@ impl<'a> MatchChain<'a> {
                     Row::share_schemas(&mut rows);
                     return Ok(ChainOutput::Rows {
                         rows,
-                        source: collector.source,
+                        source: collector.shape.source(),
                     });
                 }
             }

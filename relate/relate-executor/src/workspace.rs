@@ -541,15 +541,21 @@ pub(crate) fn distinct_row_insert_delta(old_len: usize, key: &[GroupKey]) -> u64
     buffer_growth(old_len, old_len + 1, size_of::<Vec<GroupKey>>() as u64) + key_account(key)
 }
 
-/// The one distinct-entry charge policy, applied by
-/// [`DistinctSet`](crate::distinct_set::DistinctSet) to each new key: the
-/// delta is computed only while a ledger is installed, so an admission-off
-/// run never walks a key for bytes (ADR-0507 §5); a zero delta charges
-/// nothing; otherwise grow the meter and hold the peak. `delta` comes from
-/// the representation that took the key ([`word_insert_delta`],
-/// [`group_key_insert_delta`] or [`distinct_row_insert_delta`]).
-pub(crate) fn charge_distinct_delta(
+/// The peak-hold family the distinct set's charges bill under; a raw-key
+/// consumer of the tiered word set names its own family instead.
+pub(crate) const DISTINCT_PEAK_FAMILY: &str = "distinct";
+
+/// The one set-entry charge policy, applied to each new key of a charged
+/// set ([`DistinctSet`](crate::distinct_set::DistinctSet), the tiered word
+/// set): the delta is computed only while a ledger is installed, so an
+/// admission-off run never walks a key for bytes (ADR-0507 §5); a zero
+/// delta charges nothing; otherwise grow the meter and hold the peak under
+/// `family`. `delta` comes from the representation that took the key
+/// ([`word_insert_delta`], [`group_key_insert_delta`] or
+/// [`distinct_row_insert_delta`]).
+pub(crate) fn charge_set_delta(
     charge: &mut relate_core::tokens::WorkspaceCharge,
+    family: &'static str,
     delta: impl FnOnce() -> u64,
 ) -> relate_core::Result<()> {
     if !relate_core::tokens::workspace_accounting() {
@@ -560,7 +566,7 @@ pub(crate) fn charge_distinct_delta(
         return Ok(());
     }
     charge.resize(charge.bytes().saturating_add(delta))?;
-    relate_core::tokens::peak_hold("distinct");
+    relate_core::tokens::peak_hold(family);
     Ok(())
 }
 

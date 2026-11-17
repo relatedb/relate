@@ -22,7 +22,8 @@ use super::match_clause::{
 };
 use super::pattern_policies::RowFold;
 use super::test_support::{
-    build, error_of, exec_cypher, run_metered, same_rows, try_exec_cypher, walk_only, Built,
+    assert_written_agrees_with_held, build, error_of, exec_cypher, run_metered, same_rows,
+    try_exec_cypher, Built,
 };
 use crate::ctx::ExecCtx;
 use crate::overlay::ExecGraph;
@@ -57,14 +58,7 @@ fn chained_and_held(first: &str, second: &str, rest: &str) -> (String, String) {
 /// Chained as written, held with a barrier between them, and walked.
 fn assert_agrees(first: &str, second: &str, rest: &str) {
     let (chained, held) = chained_and_held(first, second, rest);
-    let auto = ring(40);
-    let walk = walk_only(ring(40));
-    let expected = exec_cypher(&auto.graph, &held);
-    assert!(!expected.rows.is_empty(), "{chained}: the fixture matches");
-    let got = exec_cypher(&auto.graph, &chained);
-    assert!(same_rows(&got, &expected), "{chained}: chained vs held");
-    let walked = exec_cypher(&walk.graph, &chained);
-    assert!(same_rows(&walked, &expected), "{chained}: walk vs held");
+    assert_written_agrees_with_held(|| ring(40), "chained", &chained, &held);
 }
 
 /// The same three-way agreement for a result whose row order is part of

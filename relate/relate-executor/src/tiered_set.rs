@@ -32,7 +32,7 @@ use relate_core::tokens::WorkspaceCharge;
 use relate_core::Result;
 
 use crate::hash_seed::{id_set_with_capacity, seeded_set_with_capacity, IdSet, SeededSet};
-use crate::workspace::{charge_distinct_delta, word_insert_delta, word_set_bytes};
+use crate::workspace::{charge_set_delta, word_insert_delta, word_set_bytes};
 
 /// T1's capacity: `2^4` words, 128 B — two cache lines.
 const INLINE_WORDS: usize = 16;
@@ -135,16 +135,17 @@ impl TieredWordSet {
         }
     }
 
-    /// Insert one word. `Ok(true)` when new, `Ok(false)` for a duplicate;
-    /// a refused workspace charge leaves the set unchanged — the tier
+    /// Insert one word, charging under the owner's peak-hold `family` (so
+    /// a raw-key consumer never bills as DISTINCT). `Ok(true)` when new,
+    /// `Ok(false)` for a duplicate; a refused workspace charge leaves the set unchanged — the tier
     /// `Empty` or untouched when the write had not happened yet, the word
     /// removed again when it had.
-    pub(crate) fn insert(&mut self, word: u64) -> Result<bool> {
+    pub(crate) fn insert(&mut self, word: u64, family: &'static str) -> Result<bool> {
         match &mut self.tier {
             Tier::Empty => {
                 // Charge first: a refusal leaves the tier Empty, so no
                 // rollback can strand a stale tier.
-                charge_distinct_delta(&mut self.charge, || word_insert_delta(0))?;
+                charge_set_delta(&mut self.charge, family, || word_insert_delta(0))?;
                 let mut slots = [0; INLINE_WORDS];
                 slots[0] = word;
                 self.tier = Tier::Inline { len: 1, slots };
@@ -157,7 +158,7 @@ impl TieredWordSet {
                 if usize::from(*len) < INLINE_WORDS {
                     let old_len = usize::from(*len);
                     // Charge first: a refusal leaves the tier untouched.
-                    charge_distinct_delta(&mut self.charge, || word_insert_delta(old_len))?;
+                    charge_set_delta(&mut self.charge, family, || word_insert_delta(old_len))?;
                     slots[old_len] = word;
                     *len += 1;
                     return Ok(true);
@@ -168,11 +169,11 @@ impl TieredWordSet {
                 // and a refused charge for the new word does not undo it.
                 let slots = *slots;
                 let mut table = promoted_table(self.hash, &slots);
-                let inserted = insert_table_word(&mut self.charge, &mut table, word);
+                let inserted = insert_table_word(&mut self.charge, family, &mut table, word);
                 self.tier = Tier::Promoted(table);
                 inserted
             }
-            Tier::Promoted(table) => insert_table_word(&mut self.charge, table, word),
+            Tier::Promoted(table) => insert_table_word(&mut self.charge, family, table, word),
         }
     }
 
@@ -242,6 +243,7 @@ impl TieredWordSet {
 /// removed again when the budget refuses it.
 fn insert_table_word(
     charge: &mut WorkspaceCharge,
+    family: &'static str,
     table: &mut WordTable,
     word: u64,
 ) -> Result<bool> {
@@ -249,7 +251,7 @@ fn insert_table_word(
         return Ok(false);
     }
     let old_len = table.len() - 1;
-    charge_distinct_delta(charge, || word_insert_delta(old_len))
+    charge_set_delta(charge, family, || word_insert_delta(old_len))
         .inspect_err(|_| table.remove(word))?;
     Ok(true)
 }

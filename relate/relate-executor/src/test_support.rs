@@ -73,10 +73,10 @@ pub(crate) fn refusing_ledger() -> TokenLedger {
 /// (`use crate::{exec::…}`) cannot evade a qualified-path match, and a
 /// `crate::{` group at all is refused: these modules name each import in full.
 pub(crate) fn assert_never_imports_exec_tree(file: &str, source: &str) {
-    for line in source
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-    {
+    for line in source.lines() {
+        // Code only: a trailing comment naming a forbidden path is prose,
+        // not an import.
+        let line = line.split_once("//").map_or(line, |(code, _)| code);
         for forbidden in ["crate::exec", "exec::", "pattern_walk", "crate::{"] {
             assert!(
                 !line.contains(forbidden),

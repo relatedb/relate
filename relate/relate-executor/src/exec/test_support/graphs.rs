@@ -6,6 +6,8 @@ use relate_core::{NodeId, RelId, Value};
 use crate::graph::Graph;
 use crate::test_support::map;
 
+use super::run::{exec_cypher, same_rows};
+
 /// The hub-and-fan graph with plain `E` rels (the pushdown shapes).
 pub(crate) fn hub_out(degree: i64) -> Graph {
     hub_fan(degree, false)
@@ -100,6 +102,27 @@ pub(crate) fn walk_only(mut built: Built) -> Built {
         .graph
         .configure_pattern_engine(crate::pattern_engine::PatternEngine::Walk);
     built
+}
+
+/// The three-way differential the streaming-fold tests share: `written`
+/// (the statement as the planner sees it) must answer like `held` (the
+/// same statement with a barrier clause defeating the stream) on a graph
+/// from `fixture`, and on the walker-only twin of it. `side` names what
+/// `written` exercised in the failure message.
+pub(crate) fn assert_written_agrees_with_held(
+    fixture: impl Fn() -> Built,
+    side: &str,
+    written: &str,
+    held: &str,
+) {
+    let auto = fixture();
+    let walk = walk_only(fixture());
+    let expected = exec_cypher(&auto.graph, held);
+    assert!(!expected.rows.is_empty(), "{written}: the fixture matches");
+    let got = exec_cypher(&auto.graph, written);
+    assert!(same_rows(&got, &expected), "{written}: {side} vs held");
+    let walked = exec_cypher(&walk.graph, written);
+    assert!(same_rows(&walked, &expected), "{written}: walk vs held");
 }
 
 /// A built graph and its node and relationship ids, by index.

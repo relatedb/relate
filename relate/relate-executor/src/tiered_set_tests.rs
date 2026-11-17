@@ -7,10 +7,11 @@ use relate_core::tokens::LedgerGuard;
 
 use crate::test_support::{assert_never_imports_exec_tree, refusing_ledger, roomy_ledger};
 use crate::tiered_set::{TieredWordSet, WordHash};
-use crate::workspace::{word_insert_delta, word_set_bytes};
+use crate::workspace::{word_insert_delta, word_set_bytes, DISTINCT_PEAK_FAMILY};
 
 fn insert(set: &mut TieredWordSet, word: u64) -> bool {
-    set.insert(word).expect("no budget installed refuses")
+    set.insert(word, DISTINCT_PEAK_FAMILY)
+        .expect("no budget installed refuses")
 }
 
 #[test]
@@ -99,7 +100,10 @@ fn refused_charge_leaves_every_tier_state_unchanged() {
     {
         let mut ledger = refusing_ledger();
         let _guard = LedgerGuard::install(&mut ledger);
-        assert!(set.insert(0).is_err(), "the budget refuses");
+        assert!(
+            set.insert(0, DISTINCT_PEAK_FAMILY).is_err(),
+            "the budget refuses"
+        );
     }
     assert_eq!(set.len(), 0);
     assert_eq!(set.bytes(), 0);
@@ -116,7 +120,7 @@ fn refused_charge_leaves_every_tier_state_unchanged() {
     {
         let mut ledger = refusing_ledger();
         let _guard = LedgerGuard::install(&mut ledger);
-        assert!(set.insert(99).is_err());
+        assert!(set.insert(99, DISTINCT_PEAK_FAMILY).is_err());
     }
     assert_eq!(set.len(), len);
     assert_eq!(set.bytes(), bytes);
@@ -133,7 +137,7 @@ fn refused_charge_leaves_every_tier_state_unchanged() {
     {
         let mut ledger = refusing_ledger();
         let _guard = LedgerGuard::install(&mut ledger);
-        assert!(set.insert(16).is_err());
+        assert!(set.insert(16, DISTINCT_PEAK_FAMILY).is_err());
     }
     assert!(set.promoted(), "rollback does not undo promotion");
     assert_eq!(set.len(), len);
@@ -155,7 +159,7 @@ fn refused_charge_leaves_every_tier_state_unchanged() {
     {
         let mut ledger = refusing_ledger();
         let _guard = LedgerGuard::install(&mut ledger);
-        assert!(set.insert(32).is_err());
+        assert!(set.insert(32, DISTINCT_PEAK_FAMILY).is_err());
     }
     assert_eq!(set.len(), len);
     assert_eq!(set.bytes(), bytes);
