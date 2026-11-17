@@ -79,12 +79,13 @@ GitHub release — so the jars on a release always carry the release
 version (the pom is a `release-bump` version surface like the npm
 manifests and `pyproject.toml`).
 
-Publication to Maven Central is prepared for but dormant — see
+Publication to Maven Central ships wired and on by default for
+`publish-registries` dispatches — see
 ["Publishing to Maven Central"](#publishing-to-maven-central) below.
 
 ## Publishing to Maven Central
 
-Everything needed ships in the repo, off by default:
+Everything needed ships in the repo:
 
 - the pom's `central-publish` profile (activated only by
   `-Pcentral-publish`): sources jar, javadoc jar, GPG signature, and the
@@ -93,14 +94,16 @@ Everything needed ships in the repo, off by default:
   Portal;
 - the `maven-central` job in `publish-registries.yml`: it downloads the
   release's five FFI archives, verifies their build attestations, stages
-  the natives and runs `mvn deploy -Pcentral-publish`. It runs only on a
-  manual dispatch of that workflow with `maven` on, so Maven can be
-  published alone without touching npm, PyPI or crates.io.
+  the natives and runs `mvn deploy -Pcentral-publish`. It runs on
+  manual dispatches of that workflow (`maven` on by default; off on the
+  chained release path, which passes no signing credentials), so Maven
+  can be published alone without touching npm, PyPI or crates.io.
 
 The coordinates are `ai.relatedb:relate` (the fat jar) plus one
-classifier jar per platform. Turning it on is an owner action — Central
-account, namespace verification, signing key and the four secrets — and
-the step-by-step is "Maven Central" in
+classifier jar per platform. Completing the owner setup — Central
+account, namespace verification, signing key and the four secrets — is
+what stands between the wired job and the first publish; the
+step-by-step is "Maven Central" in
 [`docs/PUBLISHING.md`](../../docs/PUBLISHING.md).
 
 ### Cross-building the five natives

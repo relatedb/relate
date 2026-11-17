@@ -34,6 +34,13 @@ on:
         required: false
         type: boolean
         default: true
+      # Off on the chained path only: the caller passes no secrets, and
+      # Maven Central publishes with static credentials — publish by
+      # direct dispatch, where maven defaults on.
+      maven:
+        required: false
+        type: boolean
+        default: false
       pypi-target:
         required: false
         type: string
@@ -43,10 +50,6 @@ on:
         type: boolean
         default: false
       crates-io-dry-run:
-        required: false
-        type: boolean
-        default: false
-      maven:
         required: false
         type: boolean
         default: false
@@ -71,6 +74,11 @@ on:
         required: false
         type: boolean
         default: true
+      maven:
+        description: "Publish the Java client jars to Maven Central"
+        required: false
+        type: boolean
+        default: true
       pypi-target:
         description: "PyPI for a real publish, TestPyPI for an auth/packaging dry run"
         required: false
@@ -86,11 +94,6 @@ on:
         default: false
       crates-io-dry-run:
         description: "cargo publish --dry-run: validate packaging without publishing"
-        required: false
-        type: boolean
-        default: false
-      maven:
-        description: "Publish the Java client jars to Maven Central (dormant: default off)"
         required: false
         type: boolean
         default: false
@@ -472,17 +475,18 @@ jobs:
             sleep 30
           done
 
-  # Maven Central (dormant). Off unless the dispatch opts in (maven=true,
-  # the input's default on both trigger paths); until then this job is
-  # skipped and the jars land only on the GitHub release. Unlike the OIDC
-  # registries above, Maven Central publishes with static credentials —
-  # the secrets below are available to manual dispatches; a chained
+  # Maven Central. On by default for manual dispatches (maven=true, the
+  # input's default on the dispatch path); unchecked, the jars land only
+  # on the GitHub release. Unlike the OIDC registries above, Maven
+  # Central publishes with static credentials — the secrets below are
+  # available to manual dispatches only, so the chained workflow_call
+  # path keeps maven off (its default on that path) and a chained
   # release call would additionally need the caller to pass them. The
   # pom's `central-publish` profile does the real work (sources,
   # javadoc, GPG, upload with autoPublish=false); see
   # clients/java/README.md, "Publishing to Maven Central".
   maven-central:
-    name: Publish the Java client to Maven Central (dormant)
+    name: Publish the Java client to Maven Central
     needs: registry-owner
     if: github.ref == 'refs/heads/main' && inputs.maven
     runs-on: ubuntu-latest

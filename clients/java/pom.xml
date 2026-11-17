@@ -91,6 +91,15 @@
       </resource>
     </resources>
 
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-enforcer-plugin</artifactId>
+          <version>3.7.0</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -207,7 +216,6 @@
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-enforcer-plugin</artifactId>
-            <version>3.7.0</version>
             <executions>
               <execution>
                 <id>all-natives-staged</id>
@@ -327,7 +335,6 @@
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-enforcer-plugin</artifactId>
-            <version>3.7.0</version>
             <executions>
               <execution>
                 <id>host-native-built</id>
@@ -454,7 +461,6 @@
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-enforcer-plugin</artifactId>
-            <version>3.7.0</version>
             <executions>
               <execution>
                 <id>central-requires-staged-natives</id>
@@ -463,11 +469,10 @@
                 </goals>
                 <configuration>
                   <rules>
-                    <requireProperty>
-                      <property>relate.natives.mode</property>
-                      <value>staged</value>
+                    <requireActiveProfile>
+                      <profiles>staged-natives</profiles>
                       <message>Central publication needs the staged five-platform natives: pass -Drelate.natives.dir=&lt;dir&gt; (ADR-0490) — a host-native-only bundle must never be signed and uploaded.</message>
-                    </requireProperty>
+                    </requireActiveProfile>
                   </rules>
                 </configuration>
               </execution>

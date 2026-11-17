@@ -280,8 +280,10 @@ JVMs with `RELATE_LIB`, `java.library.path`, `DYLD_LIBRARY_PATH` and
 `LD_LIBRARY_PATH` removed, and runs
 [`examples/BundledNative.java`](examples/BundledNative.java) and the
 end-to-end example
-[`examples/RelateE2E.java`](examples/RelateE2E.java). No workflow
-publishes the jars to Maven Central yet.
+[`examples/RelateE2E.java`](examples/RelateE2E.java). The jars reach
+Maven Central through the `maven-central` job of `publish-registries.yml`
+(on by default for manual dispatches); the pom sets `autoPublish=false`,
+so each deployment is released by hand on the Central Portal.
 
 **Measured jar sizes** (0.1.0, release natives): one native is ~24 MB
 uncompressed and DEFLATE brings a jar to ~8.4 MB (darwin-arm64) / ~9.2 MB

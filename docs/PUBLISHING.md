@@ -249,8 +249,12 @@ and uploads with a Central Portal token, both stored as secrets in the
 
    ```sh
    gh workflow run publish-registries.yml -f tag=vX.Y.Z \
-     -f maven=true -f npm=false -f pypi=false -f crates-io=false
+     -f npm=false -f pypi=false -f crates-io=false
    ```
+
+   `maven` is on by default on the dispatch form (and off on the chained
+   release path, which passes no signing credentials), so turning the
+   other registries off publishes Maven alone.
 
    The job verifies the five FFI archives' build attestations, stages the
    natives, signs and uploads the fat jar plus the five classifier jars.
