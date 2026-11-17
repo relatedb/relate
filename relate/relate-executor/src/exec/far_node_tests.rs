@@ -132,13 +132,35 @@ fn far_node_index_prefilters_a_comma_joined_second_pattern() {
 }
 
 #[test]
-fn far_node_without_an_index_stays_on_the_residual_path() {
+fn far_node_without_a_declared_index_prefilters_from_the_lazy_postings() {
     let g = far_node_index_graph();
     let _ = take_far_node_index_rejects();
     let r = exec_cypher(
         &g,
         "MATCH (a:A {id: 1})-[:R]->(b:B) \
          WHERE b.loose = 1 RETURN b.code AS code ORDER BY code",
+    );
+    assert_eq!(r.rows, vec![vec![Value::Int(1)], vec![Value::Int(3)]]);
+    // ADR-0614: the undeclared (B, loose) pair serves the probe from
+    // the lazy equality postings, so the prefilter arms — the loose-0
+    // neighbour is rejected by the probe, not left to the residual
+    // path. (Pre-ADR-0614 this pinned the opposite: no declared pair,
+    // no probe, the residual path.)
+    assert_eq!(take_far_node_index_rejects(), 1);
+}
+
+/// The residual path stays for a probe the postings cannot serve: a
+/// comparison window on the undeclared pair — the lazy postings answer
+/// equalities only, so the prefilter cannot arm and the walk checks the
+/// predicate per candidate (0 rejects, the same rows).
+#[test]
+fn far_node_comparison_window_without_an_index_stays_on_the_residual_path() {
+    let g = far_node_index_graph();
+    let _ = take_far_node_index_rejects();
+    let r = exec_cypher(
+        &g,
+        "MATCH (a:A {id: 1})-[:R]->(b:B) \
+         WHERE b.loose > 0 RETURN b.code AS code ORDER BY code",
     );
     assert_eq!(r.rows, vec![vec![Value::Int(1)], vec![Value::Int(3)]]);
     assert_eq!(take_far_node_index_rejects(), 0);

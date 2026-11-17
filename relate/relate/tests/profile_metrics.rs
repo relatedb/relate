@@ -13,28 +13,25 @@ use relate::Value;
 
 use common::{connection, plan};
 
-/// The hops of a whole plan tree: each node's metrics are its own clause
-/// arm's store reads, so the sum is the statement's hop total (the
-/// allReduce pruning test's helper, spelled once for its sibling tests).
+/// The hops of a whole plan tree — [`common::tree_metric`] over the
+/// clause arms' hop reads (the allReduce pruning test's helper, spelled
+/// once for its sibling tests).
 fn tree_hops(node: &relate::PlanNode) -> u64 {
-    node.metrics.map(|m| m.reads.hops).unwrap_or(0)
-        + node.children.iter().map(tree_hops).sum::<u64>()
+    common::tree_metric(node, |m| m.reads.hops)
 }
 
 /// The frontier levels of a whole plan tree (the `tree_hops` idiom): the
 /// clause the frontier family served reports its BFS levels, every other
 /// clause — and every clause the family declined — reports 0.
 fn tree_frontier_levels(node: &relate::PlanNode) -> u64 {
-    node.metrics.map(|m| m.frontier.levels).unwrap_or(0)
-        + node.children.iter().map(tree_frontier_levels).sum::<u64>()
+    common::tree_metric(node, |m| m.frontier.levels)
 }
 
 /// The neighbor walks of a whole plan tree (the `tree_hops` idiom): each
 /// node's metrics are its own clause arm's store reads, so the sum is
 /// the statement's walk total.
 fn tree_walks(node: &relate::PlanNode) -> u64 {
-    node.metrics.map(|m| m.reads.neighbor_walks).unwrap_or(0)
-        + node.children.iter().map(tree_walks).sum::<u64>()
+    common::tree_metric(node, |m| m.reads.neighbor_walks)
 }
 
 #[test]

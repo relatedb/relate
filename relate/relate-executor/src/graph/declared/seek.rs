@@ -4,10 +4,11 @@
 //! The pair wiring (build, drain, drop) these read stays in the parent.
 
 use std::collections::{BTreeMap, HashSet};
-use std::ops::ControlFlow;
 
 use relate_core::{NodeId, Value};
 
+use super::index_lookup::RecheckSpec;
+use super::index_postings::EqualityRoute;
 use super::order::{self, RangeSeek, SpatialSeek};
 use super::{intersect_acc, point, text, DrainState};
 use crate::graph::*;
@@ -82,8 +83,11 @@ impl Graph {
         ts: u64,
     ) -> Option<Vec<NodeId>> {
         match seek {
-            RangeSeek::Eq(v) => self.lookup_range_values(labels, key, std::slice::from_ref(v), ts),
-            RangeSeek::In(vs) => self.lookup_range_values(labels, key, vs, ts),
+            // The two equality shapes differ only in their values
+            // slice; the one route decision ([`Self::eq_serve`]) holds
+            // the declared-then-postings precedence.
+            RangeSeek::Eq(v) => self.eq_serve(labels, key, std::slice::from_ref(v), ts),
+            RangeSeek::In(vs) => self.eq_serve(labels, key, vs, ts),
             RangeSeek::Cmp { op, bound } => {
                 order::order_key(bound)?;
                 let op = *op;
@@ -105,6 +109,24 @@ impl Graph {
         }
     }
 
+    /// The `=`/`IN` id seek, one route decision (ADR-0614): the
+    /// declared postings (ordered, no lazy build) when a declared pair
+    /// covers the key; the lazy equality postings when the values pass
+    /// the decline predicate; `None` otherwise — the caller scans.
+    fn eq_serve(
+        &self,
+        labels: &[String],
+        key: &str,
+        values: &[Value],
+        ts: u64,
+    ) -> Option<Vec<NodeId>> {
+        match self.values_equality_route(labels, key, values) {
+            EqualityRoute::Declared => self.lookup_range_values(labels, key, values, ts),
+            EqualityRoute::Postings => Some(self.equality_postings_values(labels, key, values, ts)),
+            EqualityRoute::Scan => None,
+        }
+    }
+
     /// Upper bound on the ids [`Self::lookup_range_seek`] would collect from
     /// the index, counted from posting lengths. `None` when the index cannot
     /// serve the predicate. A comparison with unbounded temporal postings
@@ -116,8 +138,11 @@ impl Graph {
         seek: &RangeSeek,
     ) -> Option<usize> {
         match seek {
-            RangeSeek::Eq(v) => self.range_values_cardinality(labels, key, std::slice::from_ref(v)),
-            RangeSeek::In(vs) => self.range_values_cardinality(labels, key, vs),
+            // The two equality shapes differ only in their values
+            // slice; the one route decision
+            // ([`Self::eq_cardinality`]) holds the declared-only rule.
+            RangeSeek::Eq(v) => self.eq_cardinality(labels, key, std::slice::from_ref(v)),
+            RangeSeek::In(vs) => self.eq_cardinality(labels, key, vs),
             RangeSeek::Cmp { op, bound } => {
                 order::order_key(bound)?;
                 let op = *op;
@@ -150,6 +175,25 @@ impl Graph {
             cost = cost.saturating_add(n);
         }
         Some(cost)
+    }
+
+    /// The `=`/`IN` cardinality: declared posting lengths only — the
+    /// postings route has no count-without-build (ADR-0614 §6), so it
+    /// answers `None` exactly as the scan route does and the caller
+    /// keeps the eager probe.
+    fn eq_cardinality(&self, labels: &[String], key: &str, values: &[Value]) -> Option<usize> {
+        match self.values_equality_route(labels, key, values) {
+            EqualityRoute::Declared => self.range_values_cardinality(labels, key, values),
+            EqualityRoute::Postings | EqualityRoute::Scan => None,
+        }
+    }
+
+    /// True when a declared RANGE index covers `(labels, key)` — the
+    /// single-key form of [`Self::range_serves_equality`]'s map form,
+    /// the WHERE-form seek's half of the route decision.
+    pub(in crate::graph) fn range_serves_key(&self, labels: &[String], key: &str) -> bool {
+        self.indexed_labels(labels, key, &self.indexes.range_pairs)
+            .is_some()
     }
 
     fn range_values_cardinality(
@@ -239,24 +283,15 @@ impl Graph {
         }
         let (_, lid, kid, value) = best?;
         let st = self.indexes.range_pairs.get(&(lid, kid))?;
-        let (mut matched, mut examined) = (Vec::new(), 0u64);
-        order::equality_each(&st, value, |id| {
-            examined += 1;
-            let hit = self
-                .node_at(id, ts)
-                .is_some_and(|n| Self::node_matches(&n, labels, props));
-            if hit {
-                matched.push(id);
-            }
-            if matched.len() > cap {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        });
-        crate::ctx::count_node_reads(examined);
-        matched.sort_unstable();
-        Some(matched)
+        let spec = RecheckSpec {
+            labels,
+            props,
+            ts,
+            cap: Some(cap),
+        };
+        let mut walk = self.recheck_walk(&spec);
+        order::equality_each(&st, value, |id| walk.visit(id));
+        Some(walk.finish())
     }
 
     /// Drain the range pair and read its equality postings. `None` when the
@@ -288,42 +323,6 @@ impl Graph {
             |st| Some(point::spatial_ids(st, seek)),
             |v| point::spatial_holds(v, seek),
         )
-    }
-
-    /// Re-check each posted candidate against the snapshot at `ts`: the
-    /// visible version must carry every pattern label and a `key` value
-    /// that satisfies `pred`. Reads the raw version — interned label ids
-    /// and the one-slot `CompactProps::get` — never `node_at`, which
-    /// materializes the full property map per candidate (the profile-hot
-    /// `to_map` path, ADR-0033; LABS-853).
-    fn finish_ids(
-        &self,
-        acc: impl IntoIterator<Item = NodeId>,
-        labels: &[String],
-        key: &str,
-        ts: u64,
-        pred: impl Fn(&Value) -> bool,
-    ) -> Vec<NodeId> {
-        // Every stored label and key was interned before its version
-        // committed, so a pattern label or key the interner never saw is
-        // carried by no node: nothing survives the re-check.
-        let lids: Option<Vec<u32>> = labels.iter().map(|l| self.interner.get_id(l)).collect();
-        let (Some(lids), Some(kid)) = (lids, self.interner.get_id(key)) else {
-            return Vec::new();
-        };
-        let mut ids: Vec<_> = acc
-            .into_iter()
-            .filter(|id| {
-                self.nodes.get(id).is_some_and(|vers| {
-                    visible_version(&vers, ts).is_some_and(|ver| {
-                        ver.live.has_labels(&lids) && ver.live.props.get(kid).is_some_and(&pred)
-                    })
-                })
-            })
-            .collect();
-        ids.sort();
-        ids.dedup();
-        ids
     }
 
     /// True when every property has a range index on at least one pattern label.

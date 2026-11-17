@@ -225,3 +225,68 @@ fn the_scratch_half_matches_the_base_half_s_equality_mode() {
     crate::exec::test_support::exec_autocommit(&g, "CREATE INDEX FOR (e:E) ON (e.t)").unwrap();
     assert_eq!(view.lookup_nodes(&label, &needle), Some(vec![first]));
 }
+
+/// ADR-0614: a keyed lookup no declared index covers serves from the
+/// base's lazy equality postings, and the scratch half answers from its
+/// identity index — one relation in both halves over a populated base,
+/// the shape a within-transaction bulk load runs (base bucket + scratch
+/// keyed arm, never a scratch scan). The decline keeps `=` in both
+/// halves: the base's committed DST-overlap twin and the statement's
+/// scratch twin are found together by one lookup.
+#[test]
+fn postings_served_lookup_merges_base_and_scratch_halves() {
+    use relate_test_support::temporal::dst_overlap_half;
+
+    let g = Graph::default();
+    // Committed side: one node per lookup's pair.
+    let base_hit = g
+        .create_node(
+            vec!["A".into()],
+            BTreeMap::from([("x".into(), Value::Int(1))]),
+        )
+        .unwrap();
+    let base_twin = g
+        .create_node(
+            vec!["E".into()],
+            BTreeMap::from([("t".into(), dst_overlap_half(false))]),
+        )
+        .unwrap();
+    let scratch = write_scratch(&g);
+    let view = ExecGraph::write(&g, &scratch);
+    let added = view
+        .create_node(
+            vec!["A".into()],
+            BTreeMap::from([("x".into(), Value::Int(1))]),
+        )
+        .unwrap();
+    let _other_value = view
+        .create_node(
+            vec!["A".into()],
+            BTreeMap::from([("x".into(), Value::Int(2))]),
+        )
+        .unwrap();
+    let scratch_twin = view
+        .create_node(
+            vec!["E".into()],
+            BTreeMap::from([("t".into(), dst_overlap_half(true))]),
+        )
+        .unwrap();
+
+    // Served (no declared index on (A, x)): the base's postings bucket
+    // and the scratch's identity index answer one lookup — the
+    // different-value node stays out of both halves.
+    let a = ["A".to_string()];
+    let x1 = BTreeMap::from([("x".to_string(), Value::Int(1))]);
+    let mut served = vec![base_hit, added];
+    served.sort_unstable();
+    assert_eq!(view.lookup_nodes(&a, &x1), Some(served));
+
+    // Declined (a zoned-datetime value): both halves scan with `=` —
+    // the committed twin and the scratch twin found together, the
+    // answer an identity seek in either half would narrow.
+    let e = ["E".to_string()];
+    let needle = BTreeMap::from([("t".to_string(), dst_overlap_half(false))]);
+    let mut twins = vec![base_twin, scratch_twin];
+    twins.sort_unstable();
+    assert_eq!(view.lookup_nodes(&e, &needle), Some(twins));
+}

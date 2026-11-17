@@ -5,7 +5,26 @@
 //! orchestration.
 
 use super::index::PropPairIndex;
+use super::index_lookup::RecheckSpec;
 use super::*;
+
+use crate::group_key::identity_narrower_than_eq;
+
+/// How a keyed equality lookup is answered (ADR-0614): a declared
+/// RANGE pair (ordered postings, no lazy build) always wins; else the
+/// lazy equality postings when the values pass the decline predicate;
+/// else the scan. The one three-way decision the id seek, the
+/// cardinality, the keyed-lookup arm, and the overlay's scratch-mode
+/// flag all read — precedence and the decline in one place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::graph) enum EqualityRoute {
+    /// A declared RANGE pair covers the sought key(s).
+    Declared,
+    /// No declared pair; the values pass the decline predicate.
+    Postings,
+    /// Neither: the caller scans (ADR-0614's decline).
+    Scan,
+}
 
 impl Graph {
     /// `(label, key)` strings → interned pair key, honouring the `*`
@@ -172,6 +191,155 @@ impl Graph {
             return 0;
         };
         self.with_prop_pair(lid, kid, |st| st.postings.get(&gk).map_or(0, HashSet::len))
+    }
+
+    /// Whether the lazy equality postings can answer a keyed equality
+    /// lookup's values — a pattern map's or an `IN` list's (ADR-0614):
+    /// the labels are non-empty (the pair engine keys on interned
+    /// labels; the label-less shape scans) and no value's identity is
+    /// narrower than its `=` class — a named-zone datetime, bare or
+    /// nested, whose DST fall-back halves are `=`-equal but key apart,
+    /// so an identity bucket would miss a partner the scan finds. The
+    /// route deciders ([`Self::map_equality_route`],
+    /// [`Self::values_equality_route`]) read this one predicate, so
+    /// every route declines the same values by construction.
+    /// Emptiness is each caller's own invariant — the map form always
+    /// carries a first entry, and an empty `IN` list is the serve's
+    /// empty answer — so the predicate states only what it decides. A
+    /// NaN has no property-index key at all: the serve answers it
+    /// empty (a NaN equals nothing), never by decline.
+    pub(in crate::graph) fn equality_postings_serve<'a>(
+        labels: &[String],
+        mut values: impl Iterator<Item = &'a Value>,
+    ) -> bool {
+        !labels.is_empty() && !values.any(identity_narrower_than_eq)
+    }
+
+    /// The route for a keyed equality lookup over a property map
+    /// (ADR-0614). The map form's own invariant is a non-empty map —
+    /// an empty one has no pair to seek and never routes to the
+    /// postings. Read by the keyed-lookup arm
+    /// (`Graph::node_candidates`) and the overlay's scratch-mode
+    /// decision (`Graph::equality_served_by_index`).
+    pub(in crate::graph) fn map_equality_route(
+        &self,
+        labels: &[String],
+        props: &BTreeMap<String, Value>,
+    ) -> EqualityRoute {
+        if self.range_serves_equality(labels, props) {
+            EqualityRoute::Declared
+        } else if !props.is_empty() && Self::equality_postings_serve(labels, props.values()) {
+            EqualityRoute::Postings
+        } else {
+            EqualityRoute::Scan
+        }
+    }
+
+    /// The route for a single-key `=`/`IN` seek (ADR-0614). Read by the
+    /// WHERE-form id seek; the cardinality's postings arm is `None`
+    /// (ADR-0614 §6: the lazy bucket has no count-without-build).
+    pub(in crate::graph) fn values_equality_route(
+        &self,
+        labels: &[String],
+        key: &str,
+        values: &[Value],
+    ) -> EqualityRoute {
+        if self.range_serves_key(labels, key) {
+            EqualityRoute::Declared
+        } else if Self::equality_postings_serve(labels, values.iter()) {
+            EqualityRoute::Postings
+        } else {
+            EqualityRoute::Scan
+        }
+    }
+
+    /// The interned `(label, key)` pair a postings serve streams: the
+    /// first property (a `BTreeMap`, so the choice is deterministic),
+    /// on the pattern label with the smallest label-index bucket — the
+    /// one shared shortest-bucket choice the scan tail also reads
+    /// ([`Graph::smallest_interned_bucket`]), fail-closed on an
+    /// uninterned label or key alike: no node carries either, so the
+    /// serve answers empty, exactly what a scan against no bucket finds.
+    fn smallest_serve_pair(&self, labels: &[String], key: &str) -> Option<(u32, u32)> {
+        let kid = self.interner.get_id(key)?;
+        let lid = self.smallest_interned_bucket(labels)?;
+        Some((lid, kid))
+    }
+
+    /// The keyed lookup `labels × props` served from the lazy equality
+    /// postings (ADR-0614) — call on [`EqualityRoute::Postings`]; the
+    /// route owns the decline. The identity bucket of the smallest
+    /// interned `(label, key)` pair, streamed under the pair's guard
+    /// (the lock order the declared arm's capped serve already uses)
+    /// through the shared re-check walk, so the capped path never
+    /// materializes the id set — the ADR-0063 superset contract, a
+    /// stale posting costs a read, never a wrong answer. With `cap`
+    /// the walk stops at the first `cap + 1` matches
+    /// ([`Graph::lookup_nodes_upto_at`]'s contract). A value with no
+    /// property-index key (a NaN) or an uninterned name matches
+    /// nothing: the empty answer, as the scan would give.
+    pub(in crate::graph) fn equality_postings_upto(
+        &self,
+        labels: &[String],
+        props: &BTreeMap<String, Value>,
+        ts: u64,
+        cap: Option<usize>,
+    ) -> Vec<NodeId> {
+        // The map form's own invariant: a keyed lookup carries a first
+        // entry to seek (the route never sends an empty map here).
+        let Some((key, value)) = props.first_key_value() else {
+            return Vec::new();
+        };
+        let Some(gk) = GroupKey::for_property_index(value) else {
+            return Vec::new();
+        };
+        let Some((lid, kid)) = self.smallest_serve_pair(labels, key) else {
+            return Vec::new();
+        };
+        let spec = RecheckSpec {
+            labels,
+            props,
+            ts,
+            cap,
+        };
+        let mut walk = self.recheck_walk(&spec);
+        self.with_prop_pair(lid, kid, |st| {
+            for id in st.postings.get(&gk).into_iter().flat_map(HashSet::iter) {
+                if walk.visit(*id).is_break() {
+                    break;
+                }
+            }
+        });
+        walk.finish()
+    }
+
+    /// The single-key `=`/`IN` serve from the lazy equality postings
+    /// (ADR-0614) — call on [`EqualityRoute::Postings`]; the route owns
+    /// the decline. Each value's identity bucket on the smallest
+    /// interned `(label, key)` pair, unioned, then re-verified through
+    /// the declared seek family's snapshot filter — so a WHERE-form
+    /// runtime seek answers exactly what the declared index's equality
+    /// serve would. A NaN value contributes nothing (it equals
+    /// nothing); an uninterned name answers empty.
+    pub(in crate::graph) fn equality_postings_values(
+        &self,
+        labels: &[String],
+        key: &str,
+        values: &[Value],
+        ts: u64,
+    ) -> Vec<NodeId> {
+        let Some((lid, kid)) = self.smallest_serve_pair(labels, key) else {
+            return Vec::new();
+        };
+        let mut acc: HashSet<NodeId> = HashSet::new();
+        for value in values {
+            if let Some(gk) = GroupKey::for_property_index(value) {
+                acc.extend(self.prop_postings(lid, kid, gk));
+            }
+        }
+        self.finish_ids(acc, labels, key, ts, |v| {
+            values.iter().any(|b| v.eq_non_null(b))
+        })
     }
 
     /// Candidate ids of a `(label, key)` pair: the label index, or every

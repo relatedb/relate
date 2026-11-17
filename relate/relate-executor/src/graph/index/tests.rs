@@ -240,3 +240,32 @@ fn gc_prunes_the_adjacency_hops_of_collected_chains() {
     // chunk, so the chunk enumeration reports no phantom.
     assert!(g.out_chunks(a).is_empty());
 }
+
+/// The label-only multi-label lookup answers ascending — the contract
+/// `lookup_nodes_at` documents and its consumers (`union_ids`'s
+/// ascending merge, `far_probe`'s serve assumption) rely on. The
+/// label-index intersection is a `HashSet`; a restructure once let its
+/// iteration order leak as the answer (the rust-review round that
+/// caught it: row order for `MATCH (n:A:B)` went process-random).
+#[test]
+fn label_only_multi_label_lookup_answers_ascending() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    for i in 0..25 {
+        g.create_node(
+            vec!["A".into(), "B".into()],
+            BTreeMap::from([("i".into(), Value::Int(i))]),
+        )
+        .unwrap();
+    }
+    g.commit_write();
+    let labels = vec!["A".to_string(), "B".to_string()];
+    let ids = g
+        .lookup_nodes(&labels, &BTreeMap::new())
+        .expect("the label-only lookup always serves");
+    assert_eq!(ids.len(), 25);
+    assert!(
+        ids.windows(2).all(|w| w[0] < w[1]),
+        "ascending and deduplicated: {ids:?}"
+    );
+}

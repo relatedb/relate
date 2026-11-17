@@ -75,3 +75,10 @@ Composite, relationship, full-text, and vector indexes are out of scope.
 ADR-0063: "postings stay always-on" now reads as **always available, built
 on demand** — prefix/trigram postings materialize lazily per `(label,
 property)` pair on first seek. The DDL still does not opt them in or out.
+
+ADR-0614: "MATCH continues to seek whether or not a named entry exists"
+holds again for equality — the lazy equality postings serve a keyed
+lookup no declared pair covers, so the entry names an ordered structure,
+not a gate. (Between the declared index structures landing in 2026-10
+and ADR-0614, equality MATCH was declared-pair-only, without a reversing
+decision; ADR-0614 restores the always-available intent.)

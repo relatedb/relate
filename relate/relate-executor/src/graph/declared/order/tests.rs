@@ -1,0 +1,227 @@
+//! The RANGE order-key unit tests — posting maintenance, the numeric
+//! cross-type scans, the temporal key-tie groups, and the eq_only
+//! identity buckets. A child module of `order` (the `constraint_keys`
+//! precedent): the pins construct the private key and posting types
+//! directly, so the tests live where those are visible and stay private
+//! to their module.
+
+use super::*;
+
+#[test]
+fn prefix_without_successor_scans_to_string_variant_end() {
+    let mut st = RangeIndex::default();
+    insert_order(&mut st, &Value::String("\u{10FFFF}".into()), 10);
+    insert_order(&mut st, &Value::String("\u{10FFFF}z".into()), 11);
+    insert_order(&mut st, &Value::String("abc".into()), 12);
+    let date = Value::Temporal(Temporal::Date(
+        chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+    ));
+    insert_order(&mut st, &date, 13);
+    // Every char is at the max code point, so no successor prefix
+    // exists: the scan runs to the end of the String variant.
+    assert!(prefix_successor("\u{10FFFF}").is_none());
+    let ids = prefix_ids(&st.order, "\u{10FFFF}");
+    assert_eq!(ids, HashSet::from([10, 11]));
+}
+
+#[test]
+fn numeric_cross_type_scan_stays_within_numeric_variants() {
+    let mut st = RangeIndex::default();
+    insert_order(&mut st, &Value::Int(1), 1);
+    insert_order(&mut st, &Value::Int(3), 2);
+    insert_order(&mut st, &Value::Float(0.5), 3);
+    insert_order(&mut st, &Value::Float(2.5), 4);
+    insert_order(&mut st, &Value::Float(3.5), 5);
+    insert_order(&mut st, &Value::String("s".into()), 6);
+    insert_order(&mut st, &Value::Int(-100), 7);
+
+    // Float bound: the int side of the cross scan runs up to the Float
+    // variant lower bound and never reaches the String variant.
+    let gt = range_ids(&st.order, BinaryOp::Gt, &Value::Float(2.5));
+    assert!(gt.is_superset(&HashSet::from([2, 5])));
+    assert!(!gt.contains(&6));
+    assert!(!gt.contains(&7));
+
+    // Int bound, other direction: the float side runs from the Float
+    // variant lower bound and never reaches the String variant.
+    let lt = range_ids(&st.order, BinaryOp::Lt, &Value::Int(3));
+    assert_eq!(lt, HashSet::from([1, 3, 4, 7]));
+}
+
+#[test]
+fn strict_temporal_seek_includes_the_key_tie_group() {
+    // `12:00+01:00` and `11:00Z` share the order key (the same instant)
+    // but not the predicate's ordering: `Temporal::compare` breaks the
+    // tie on the offset, so the wall clock 12:00 is strictly greater
+    // than 11:00. A strict `>` seek must still collect it — the
+    // boundary is inclusive and `cmp_holds` rejects what it should.
+    let mut st = RangeIndex::default();
+    let plus_one = Value::Temporal(Temporal::Time {
+        time: chrono::NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+        offset: 3600,
+    });
+    let zulu = Value::Temporal(Temporal::Time {
+        time: chrono::NaiveTime::from_hms_opt(11, 0, 0).unwrap(),
+        offset: 0,
+    });
+    insert_order(&mut st, &plus_one, 10);
+    insert_order(&mut st, &zulu, 11);
+    assert_eq!(
+        order_key(&plus_one),
+        order_key(&zulu),
+        "one key, two orders"
+    );
+    // The key scan is a superset (it carries the tie group, bound
+    // included); the production pipeline filters it through the
+    // evaluator predicate, and that is what must answer exactly.
+    let scanned = range_ids(&st.order, BinaryOp::Gt, &zulu);
+    assert!(
+        scanned.contains(&10),
+        "the tie-broken greater value is scanned"
+    );
+    assert!(
+        scanned.contains(&11),
+        "the bound's own key group is scanned too"
+    );
+    let kept: HashSet<NodeId> = [(10, plus_one.clone()), (11, zulu.clone())]
+        .into_iter()
+        .filter(|(_, v)| cmp_holds(v, BinaryOp::Gt, &zulu))
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(kept, HashSet::from([10]));
+}
+
+#[test]
+fn unique_key_stays_one_posting_until_a_second_node() {
+    let mut st = RangeIndex::default();
+    insert_order(&mut st, &Value::Int(1), 10);
+    assert!(matches!(
+        st.order.get(&OrderKey::Int(1)),
+        Some(Postings::One(10))
+    ));
+    assert!(matches!(st.by_node.get(&10), Some(RevKeys::One(_))));
+    insert_order(&mut st, &Value::Int(1), 11);
+    assert!(matches!(
+        st.order.get(&OrderKey::Int(1)),
+        Some(Postings::Many(_))
+    ));
+    assert!(st.order.get(&OrderKey::Int(1)).unwrap().contains(10));
+    assert!(st.order.get(&OrderKey::Int(1)).unwrap().contains(11));
+}
+
+#[test]
+fn second_value_on_one_node_promotes_the_reverse_key() {
+    let mut st = RangeIndex::default();
+    insert_order(&mut st, &Value::Int(1), 10);
+    insert_order(&mut st, &Value::Int(2), 10);
+    assert!(matches!(st.by_node.get(&10), Some(RevKeys::Many(keys)) if keys.len() == 2));
+    order_remove_node(&mut st, 10);
+    assert!(st.order.is_empty());
+    assert!(st.by_node.is_empty());
+}
+
+#[test]
+fn exact_integral_float_shares_the_int_bucket() {
+    let mut st = RangeIndex::default();
+    insert_order(&mut st, &Value::Int(1), 10);
+    insert_order(&mut st, &Value::Float(1.0), 11);
+    insert_order(&mut st, &Value::Float(-0.0), 12);
+    assert_eq!(
+        equality_ids(&st, &Value::Float(1.0)),
+        HashSet::from([10, 11])
+    );
+    assert_eq!(equality_ids(&st, &Value::Int(0)), HashSet::from([12]));
+    insert_order(&mut st, &Value::Float(1.5), 13);
+    assert!(matches!(
+        order_key(&Value::Float(1.5)),
+        Some(OrderKey::Float(_))
+    ));
+    assert_eq!(equality_ids(&st, &Value::Float(1.5)), HashSet::from([13]));
+}
+
+#[test]
+fn unordered_value_is_found_by_equality() {
+    let list = Value::List(vec![Value::Int(1)].into());
+    let mut st = RangeIndex::default();
+    insert_order(&mut st, &list, 20);
+    assert!(st.order.is_empty());
+    assert_eq!(equality_ids(&st, &list), HashSet::from([20]));
+    order_remove_node(&mut st, 20);
+    assert!(equality_ids(&st, &list).is_empty());
+}
+
+#[test]
+fn range_count_sums_posting_lengths() {
+    let mut st = RangeIndex::default();
+    insert_order(&mut st, &Value::Int(50), 1);
+    for id in [2, 3, 4] {
+        insert_order(&mut st, &Value::Int(150), id);
+    }
+    for id in [5, 6] {
+        insert_order(&mut st, &Value::Int(250), id);
+    }
+    let bound = Value::Int(100);
+    let count = range_count(&st.order, BinaryOp::Gt, &bound);
+    let summed: usize = st
+        .order
+        .range((
+            Bound::Excluded(OrderKey::Int(100)),
+            Bound::Excluded(variant_upper(&OrderKey::Int(100))),
+        ))
+        .map(|(_, postings)| postings.len())
+        .sum();
+    assert_eq!(count, 5);
+    assert_eq!(count, summed);
+    assert_eq!(range_ids(&st.order, BinaryOp::Gt, &bound).len(), count);
+    assert_eq!(equality_count(&st, &Value::Int(150)), 3);
+}
+
+#[test]
+fn out_of_window_datetime_is_not_an_order_key() {
+    let far = chrono::NaiveDate::from_ymd_opt(9999, 1, 1)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap();
+    let value = Value::Temporal(Temporal::LocalDateTime(far));
+    let mut st = RangeIndex::default();
+    insert_order(&mut st, &value, 7);
+    assert!(st.order.is_empty());
+    assert!(st.unbounded.contains(&7));
+    order_remove_node(&mut st, 7);
+    assert!(st.unbounded.is_empty());
+}
+
+/// The range index posts a zoned datetime under its *order* key (instant)
+/// and under its *identity* key (instant + zone); the equality probe
+/// reads the latter, so the DST fall-back overlap's other half is a miss
+/// — Neo4j's index behaviour (LABS-785).
+#[test]
+fn zoned_datetime_equality_bucket_keeps_the_instant() {
+    let local = chrono::NaiveDate::from_ymd_opt(2025, 10, 26)
+        .unwrap()
+        .and_hms_opt(2, 30, 0)
+        .unwrap();
+    // hours is the offset east of UTC; the UTC instant and the stored
+    // offset both derive from it, so no incoherent half is expressible.
+    let half = |hours: i64| {
+        Value::Temporal(Temporal::DateTime {
+            utc: local - chrono::Duration::hours(hours),
+            offset: (hours * 3600) as i32,
+            zone: Some("Europe/Stockholm".into()),
+        })
+    };
+    let first = half(2);
+    let second = half(1);
+    let mut st = RangeIndex::default();
+    insert_order(&mut st, &first, 1);
+    assert_eq!(equality_ids(&st, &first), HashSet::from([1]));
+    // The `=`-equal other half is a different instant, hence a miss.
+    assert!(equality_ids(&st, &second).is_empty());
+    // A different zone identity never joins the bucket.
+    let other_zone = Value::Temporal(Temporal::DateTime {
+        utc: local - chrono::Duration::hours(1),
+        offset: 3600,
+        zone: Some("Europe/Berlin".into()),
+    });
+    assert!(equality_ids(&st, &other_zone).is_empty());
+}

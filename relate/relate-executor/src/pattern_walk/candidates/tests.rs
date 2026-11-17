@@ -363,26 +363,55 @@ fn nested_disjunction_seeks_per_arm_conjunctions() {
     assert_eq!(ids, expected);
 }
 
-/// A disjunct label with no index on the sought pair declines the whole
-/// union (the OR-union pass's every-arm-served rule): the funnel falls
-/// to the scan tail, whose answer is every node id — the label
-/// expression and the predicate are re-applied per candidate by the
-/// walk, so the decline keeps the answer, only the seek is lost.
+/// A disjunct label with no declared index still serves its arm — from
+/// the lazy equality postings (ADR-0614): the OR-union's every-arm-
+/// served rule holds without DDL, so the union answers the arms' keyed
+/// candidates (each arm once, the decoys out) instead of falling to the
+/// whole-store scan the pre-ADR-0614 decline took.
 #[test]
-fn an_unindexed_disjunct_arm_declines_to_the_scan_tail() {
+fn an_undeclared_disjunct_arm_serves_from_the_lazy_postings() {
     let g = Graph::default();
     g.begin_write().unwrap();
     let model = labeled_node(&g, &["Model"], "m", 7);
     let source = labeled_node(&g, &["Source"], "s", 7);
     let _other_label = labeled_node(&g, &["Other"], "o", 7);
     g.commit_write();
-    // Only :Model(age) carries an index: the :Source arm cannot serve.
+    // Only :Model(age) carries a declared index; the :Source arm serves
+    // from the lazy postings.
     test_support::range_index(&g, "Model", "age");
 
     let ids = candidates_with(
         &g,
         &or_node(Some("p"), &["Model", "Source"]),
         &[comparison("p", "age", BinaryOp::Eq, Expr::Int(7))],
+    );
+    let mut expected = vec![model, source];
+    expected.sort_unstable();
+    assert_eq!(ids, expected);
+}
+
+/// A disjunct arm whose seek the postings cannot serve — a comparison
+/// window, not an equality — still declines the whole union (the
+/// OR-union pass's every-arm-served rule): the funnel falls to the scan
+/// tail, whose answer is every node id — the label expression and the
+/// predicate are re-applied per candidate by the walk, so the decline
+/// keeps the answer, only the seek is lost.
+#[test]
+fn an_unservable_disjunct_arm_declines_to_the_scan_tail() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let model = labeled_node(&g, &["Model"], "m", 7);
+    let source = labeled_node(&g, &["Source"], "s", 7);
+    let _other_label = labeled_node(&g, &["Other"], "o", 7);
+    g.commit_write();
+    // Only :Model(age) carries an index: the :Source arm's window cannot
+    // serve — the lazy postings answer equalities, not comparisons.
+    test_support::range_index(&g, "Model", "age");
+
+    let ids = candidates_with(
+        &g,
+        &or_node(Some("p"), &["Model", "Source"]),
+        &[comparison("p", "age", BinaryOp::Gt, Expr::Int(6))],
     );
     // The scan tail's answer: every node id, the per-candidate check
     // filters from here.

@@ -49,3 +49,7 @@ relationship-type index ADR-0010 deferred).
 ADR-0040: `CREATE` / `DROP` / `SHOW INDEX` name a `(label, property)`
 pair in the catalog. Access methods stay always-on; the DDL does not
 enable or disable seeks.
+
+ADR-0614: equality MATCH seeks the lazy always-on postings again when
+no declared RANGE index covers the pair; a zoned-datetime value
+declines to the scan so the un-indexed answer keeps `=` semantics.

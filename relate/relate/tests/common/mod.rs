@@ -276,6 +276,19 @@ pub fn find_nodes<'a>(node: &'a relate::PlanNode, operator: &str) -> Vec<&'a rel
     collected
 }
 
+/// One plan-tree metric, folded: `of` over every node's stamped
+/// metrics, summed — a whole statement's store work, for shapes too
+/// small to pin per operator. An unstamped node (a never-executed arm)
+/// contributes zero: it did no work.
+pub fn tree_metric(node: &relate::PlanNode, of: fn(&relate::ClauseMetrics) -> u64) -> u64 {
+    node.metrics.as_ref().map_or(0, of)
+        + node
+            .children
+            .iter()
+            .map(|child| tree_metric(child, of))
+            .sum::<u64>()
+}
+
 fn collect_nodes<'a>(
     node: &'a relate::PlanNode,
     operator: &str,
