@@ -629,6 +629,12 @@ test-opencode-review-post:
 test-install-sh:
 	sh $(CURDIR)/scripts/tests/test_install_sh.sh
 
+## test-common-sh: The scripts/lib/common.sh helper suite — sha256_of's
+##   bare-hex contract holds whatever the file's name looks like (the
+##   release runners' Windows legs hash $RUNNER_TEMP paths)
+test-common-sh:
+	sh $(CURDIR)/scripts/tests/test_common_sh.sh
+
 ## test-stage-setup-scripts: Tests for the shared CI stage-setup scripts
 ##   (wait-for-port.sh, the wasm-toolchain and Docker-baseline wrappers)
 ##   and the .sonic/ci.yml drift-guard keeping each setup spelled once
@@ -674,7 +680,8 @@ test-build-xcframework:
 ##   flow. The prerequisite list is the member inventory; membership is
 ##   enforced by test_makefile_targets.sh (every target whose recipe
 ##   runs a scripts/tests suite hangs off this list)
-test-scripts: test-compare-loadtest test-install-sh test-stage-setup-scripts \
+test-scripts: test-compare-loadtest test-install-sh test-common-sh \
+	test-stage-setup-scripts \
 	test-baseline-scripts test-bolt-compat-scripts test-adr-scripts \
 	test-release-scripts test-front-bench-scripts test-opencode-review-post \
 	test-stamp-swift-package \
