@@ -257,10 +257,8 @@ public class DatabaseTest {
         Exception e = assertThrows(Exception.class,
                 () -> Json.STRICT.readValue(json, Notification.class));
         RelateException refusal = refusalOf(e);
-        assertTrue(refusal.getMessage().contains("unknown severity"), refusal.getMessage());
+        WireSanitizeAssertions.assertSanitizedAndBounded(refusal.getMessage(), "unknown severity", 1000);
         assertTrue(refusal.getMessage().contains("\\u000d"), refusal.getMessage());
-        WireSanitizeAssertions.assertNoRawUnprintables(refusal.getMessage());
-        assertTrue(refusal.getMessage().length() < 1000, refusal.getMessage());
     }
 
     /** The {@link RelateException} in the throwable chain; fails the test when there is none. */

@@ -282,18 +282,12 @@ fn discard_success_carries_db_and_hello_is_unchanged() {
         Message::Route.signature(),
         vec![Pack::Map(vec![])],
     );
-    let route = success_map(read_msg(&mut client));
+    let route = Pack::Map(success_map(read_msg(&mut client)));
     let rt = route
-        .iter()
-        .find(|(k, _)| k.as_str() == Some("rt"))
-        .and_then(|(_, v)| v.as_map())
+        .get("rt")
+        .and_then(Pack::as_map)
         .expect("ROUTE answers a routing table");
-    let db = rt
-        .iter()
-        .find(|(k, _)| k.as_str() == Some("db"))
-        .and_then(|(_, v)| v.as_str())
-        .expect("routing table carries db");
-    assert_eq!(db, "neo4j");
+    assert_eq!(success_db(rt), "neo4j");
 }
 
 #[test]

@@ -13,7 +13,8 @@ use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::summary::ROUTE_TTL_SECS;
 use crate::testutil::{
-    failure_map, field, read_msg, send_pull, send_run_at, send_struct, spawn_handler, success_map,
+    failure_map, field, read_msg, send_pull, send_route, send_run_at, send_struct, spawn_handler,
+    success_map,
 };
 use crate::version::BoltVersion;
 use std::io::Read;
@@ -296,17 +297,10 @@ fn route_rt<S: Read + std::io::Write>(client: &mut S, routing: Vec<(Pack, Pack)>
         crate::testutil::hello_fields(),
     );
     success_map(read_msg(client));
-    send_struct(
+    send_route(
         client,
-        Message::Route.signature(),
-        vec![
-            Pack::Map(routing),
-            Pack::List(vec![]),
-            Pack::Map(vec![(
-                Pack::String("db".into()),
-                Pack::String("system".into()),
-            )]),
-        ],
+        routing,
+        vec![(Pack::String("db".into()), Pack::String("system".into()))],
     );
     let m = Pack::Map(success_map(read_msg(client)));
     m.get("rt")
@@ -366,17 +360,13 @@ fn route_without_a_db_answers_the_home_database() {
         vec![(Pack::String("db".into()), Pack::Null)],
         vec![(Pack::String("db".into()), Pack::String(String::new()))],
     ] {
-        send_struct(
+        send_route(
             &mut client,
-            Message::Route.signature(),
-            vec![
-                Pack::Map(vec![(
-                    Pack::String("address".into()),
-                    Pack::String("localhost:7687".into()),
-                )]),
-                Pack::List(vec![]),
-                Pack::Map(extra),
-            ],
+            vec![(
+                Pack::String("address".into()),
+                Pack::String("localhost:7687".into()),
+            )],
+            extra,
         );
         let m = Pack::Map(success_map(read_msg(&mut client)));
         let rt = m.get("rt").expect("ROUTE SUCCESS must carry an rt map");

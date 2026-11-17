@@ -77,26 +77,18 @@ final class ResultReader {
     /**
      * Check the ABI's query_type string against its closed vocabulary; any
      * other value (or NULL) is an ABI contract violation and surfaces as
-     * {@link RelateException}, never a lenient string.
+     * {@link RelateException}, never a lenient string. The refusal policy is
+     * {@link Json#decodeWire}'s: the untrusted string is echoed through
+     * {@link Json#quoted}, so a hostile native library cannot inject control
+     * characters into the message (CWE-117).
      */
     static QueryType decodeQueryType(String raw) {
-        return decodeWire(QueryType.class, "query type", raw);
+        return Json.decodeWire(QueryType.class, raw, "ABI contract violated: query type");
     }
 
     /** As {@link #decodeQueryType}, for the resolved namespace. */
     static Namespace decodeNamespace(String raw) {
-        return decodeWire(Namespace.class, "namespace", raw);
-    }
-
-    /**
-     * The one refusal policy for a closed-vocabulary ABI string, owned by
-     * {@link Json#decodeWire}: the untrusted string is echoed through
-     * {@link Json#quoted}, so a hostile native library cannot inject control
-     * characters into the message (CWE-117).
-     */
-    private static <E extends Enum<E> & WireEnum> E decodeWire(Class<E> type, String what,
-                                                               String raw) {
-        return Json.decodeWire(type, raw, "ABI contract violated: " + what, "");
+        return Json.decodeWire(Namespace.class, raw, "ABI contract violated: namespace");
     }
 
     /**

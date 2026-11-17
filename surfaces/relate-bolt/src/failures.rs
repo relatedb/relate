@@ -25,6 +25,14 @@ pub(crate) const REQUEST_INVALID_CODE: &str = "Neo.ClientError.Request.Invalid";
 /// per connection per second. A successful HELLO is answered immediately.
 pub(crate) const FAILED_HELLO_DELAY_MS: u64 = 1000;
 
+/// The worked example of the open-limit text: one row of three integer
+/// fields costs about this many decoded bytes (the value-limit tests
+/// bracket it between the over-budget and the admitted batches) ...
+pub(crate) const EXAMPLE_ROW_DECODED_BYTES: usize = 230;
+/// ... and this many rows make the example batch, whose size in MiB the
+/// text derives from the two figures rather than restating it.
+const EXAMPLE_ROWS: usize = 100_000;
+
 /// The FAILURE text for a message over its decode limit: what was
 /// measured, the limit, how the cost is counted, and what to do.
 /// `at_least_bytes` is a lower bound — the decoder stops at the limit — so
@@ -37,6 +45,7 @@ pub(crate) fn decode_budget_message(
     const MIB: usize = 1024 * 1024;
     let limit_mib = limit.bytes() / MIB;
     let at_least_mib = at_least_bytes / MIB;
+    let example_mib = (EXAMPLE_ROWS * EXAMPLE_ROW_DECODED_BYTES).div_ceil(MIB);
     let measured = format!(
         "Bolt message of {wire_bytes} bytes decodes to at least {at_least_mib} MiB of values, \
          over the per-message limit of {limit_mib} MiB"
@@ -48,8 +57,9 @@ pub(crate) fn decode_budget_message(
         ),
         DecodeLimit::Open => format!(
             "{measured} (every value costs a fixed node plus its string bytes: a row of 3 \
-             integer fields is about 230 bytes). Send fewer rows per request: split the batch \
-             into smaller UNWIND chunks, for example 100000 rows of 3 fields is about 22 MiB."
+             integer fields is about {EXAMPLE_ROW_DECODED_BYTES} bytes). Send fewer rows per \
+             request: split the batch into smaller UNWIND chunks, for example {EXAMPLE_ROWS} \
+             rows of 3 fields is about {example_mib} MiB."
         ),
     }
 }

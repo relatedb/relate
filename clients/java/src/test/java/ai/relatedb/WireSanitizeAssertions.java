@@ -1,6 +1,7 @@
 package ai.relatedb;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The shared sanitization assertions for the wire-refusal tests (Oplane
@@ -31,5 +32,16 @@ final class WireSanitizeAssertions {
             assertFalse(Json.isUnprintable(codePoint),
                     "raw non-printable U+" + Integer.toHexString(codePoint) + " in: " + s);
         }
+    }
+
+    /**
+     * The refusal-message policy every wire-refusal test shares: the message
+     * names {@code fragment}, carries no raw non-printable code point, and is
+     * shorter than {@code bound} characters.
+     */
+    static void assertSanitizedAndBounded(String message, String fragment, int bound) {
+        assertTrue(message.contains(fragment), message);
+        assertNoRawUnprintables(message);
+        assertTrue(message.length() < bound, "bounded: " + message.length());
     }
 }

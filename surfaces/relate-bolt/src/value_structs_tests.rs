@@ -8,6 +8,7 @@
 use super::*;
 use crate::dialect::Dialect;
 use crate::param_structs::{struct_to_value, ParamPath};
+use crate::testutil::wrapped_in_lists;
 use crate::value_codec::{MdbPackError, ValueCodec};
 use relate::Value;
 
@@ -342,10 +343,7 @@ fn structures_apply_at_any_depth_and_vectors_stay_strings() {
 /// shared nesting limit, like a 129th list.
 #[test]
 fn a_structure_counts_against_the_nesting_limit() {
-    let mut value = eval("date('1970-01-01')");
-    for _ in 0..127 {
-        value = Value::List(vec![value].into());
-    }
+    let value = wrapped_in_lists(eval("date('1970-01-01')"), 127);
     assert!(Pack::from_mdb(&value, ValueCodec::plain_44()).is_ok());
     let over = Value::List(vec![value].into());
     assert_eq!(

@@ -10,9 +10,10 @@ use crate::failures::{FAILED_HELLO_DELAY_MS, REQUEST_INVALID_CODE};
 use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
-    assert_closes, assert_ignored, failure_map, field, handshaken, map, read_msg, send_pull,
-    send_reset, send_run, send_struct, success_map,
+    assert_closes, assert_ignored, failure_map, field, handshaken, hello_extra_at_overriding, map,
+    read_msg, send_pull, send_reset, send_run, send_struct, success_map,
 };
+use crate::version::BoltVersion;
 
 /// F-07: HELLO SUCCESS is server, connection_id and the default
 /// `connection.recv_timeout_seconds` hint of 120.
@@ -107,14 +108,14 @@ fn hello_without_user_agent_is_rejected() {
         Some(Pack::String(String::new())),
     ] {
         let mut client = handshaken(ConnConfig::default());
-        let mut extra = vec![(Pack::String("scheme".into()), Pack::String("none".into()))];
-        if let Some(value) = user_agent.clone() {
-            extra.push((Pack::String("user_agent".into()), value));
-        }
         send_struct(
             &mut client,
             Message::Hello.signature(),
-            vec![Pack::Map(extra)],
+            vec![hello_extra_at_overriding(
+                BoltVersion::V4_4,
+                "user_agent",
+                user_agent.clone(),
+            )],
         );
         let failure = failure_map(read_msg(&mut client));
         assert_eq!(

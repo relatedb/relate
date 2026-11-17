@@ -25,15 +25,20 @@ import (
 var ErrClosed = errors.New("relate: handle is closed")
 
 // callMode is a handle kind's concurrency contract for calls under its
-// lifecycle guard. It has no usable zero value: a handle kind must pick one
-// explicitly, so a new kind cannot silently inherit another's contract.
-type callMode uint8
+// lifecycle guard: the acquire/release pair a call takes the guard's mutex
+// with, chosen once per kind. It has no usable zero value: a handle kind must
+// pick one explicitly, so a new kind cannot silently inherit another's
+// contract (a zero callMode fails on its first call). The pair are method
+// expressions, so a lifecycle stays safe to build by value.
+type callMode struct {
+	acquire, release func(*sync.RWMutex)
+}
 
-const (
+var (
 	// callsOverlap admits calls concurrently (they hold the read side).
-	callsOverlap callMode = iota + 1
+	callsOverlap = callMode{(*sync.RWMutex).RLock, (*sync.RWMutex).RUnlock}
 	// callsSerialize admits one call at a time (they hold the write side).
-	callsSerialize
+	callsSerialize = callMode{(*sync.RWMutex).Lock, (*sync.RWMutex).Unlock}
 )
 
 // lifecycle is the one open/closed guard both handle types embed. A call
@@ -56,21 +61,12 @@ func newLifecycle(mode callMode) lifecycle {
 
 // use admits one call: it returns the release func to defer, or ErrClosed.
 func (l *lifecycle) use() (func(), error) {
-	var acquire, release func()
-	switch l.mode {
-	case callsOverlap:
-		acquire, release = l.mu.RLock, l.mu.RUnlock
-	case callsSerialize:
-		acquire, release = l.mu.Lock, l.mu.Unlock
-	default:
-		panic("relate: lifecycle built without a call mode")
-	}
-	acquire()
+	l.mode.acquire(&l.mu)
 	if l.closed {
-		release()
+		l.mode.release(&l.mu)
 		return nil, ErrClosed
 	}
-	return release, nil
+	return func() { l.mode.release(&l.mu) }, nil
 }
 
 // guarded runs call under l's guard, the one acquire/check/release prologue

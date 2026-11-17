@@ -184,9 +184,7 @@ public class ErrorsTest {
                     () -> RelateException.fromErrorJson(
                             "{\"code\":\"c\",\"gql_status\":\"g\",\"stage\":\"" + value + "\","
                                     + "\"retryable\":false,\"message\":\"m\"}", "test"));
-            assertTrue(e.getMessage().contains("unknown stage"), e.getMessage());
-            WireSanitizeAssertions.assertNoRawUnprintables(e.getMessage());
-            assertTrue(e.getMessage().length() < 2000, "bounded: " + e.getMessage().length());
+            WireSanitizeAssertions.assertSanitizedAndBounded(e.getMessage(), "unknown stage", 2000);
         }
     }
 
@@ -209,8 +207,7 @@ public class ErrorsTest {
     private static void assertDecodeRefuses(Executable decode, String prefix) {
         RelateException e = assertThrows(RelateException.class, decode);
         assertTrue(e.getMessage().startsWith(prefix), e.getMessage());
-        WireSanitizeAssertions.assertNoRawUnprintables(e.getMessage());
-        assertTrue(e.getMessage().length() < 200, "bounded: " + e.getMessage().length());
+        WireSanitizeAssertions.assertSanitizedAndBounded(e.getMessage(), prefix, 200);
     }
 
     @Test
@@ -232,10 +229,8 @@ public class ErrorsTest {
         String hostilePayload = WireSanitizeAssertions.HOSTILE_PAYLOAD;
         RelateException e = assertThrows(RelateException.class,
                 () -> Json.requireWire(RelateException.Stage.class, node, "stage", "error shape", hostilePayload));
-        assertTrue(e.getMessage().contains("unknown stage"), e.getMessage());
+        WireSanitizeAssertions.assertSanitizedAndBounded(e.getMessage(), "unknown stage", 512);
         assertTrue(e.getMessage().contains("...(truncated)"), e.getMessage());
-        WireSanitizeAssertions.assertNoRawUnprintables(e.getMessage());
-        assertTrue(e.getMessage().length() < 512, "bounded: " + e.getMessage().length());
     }
 
     @Test
@@ -254,8 +249,7 @@ public class ErrorsTest {
                 () -> Json.optionalLong(nonLong, "n", "error shape", hostile));
         for (Executable refusal : refusals) {
             RelateException e = assertThrows(RelateException.class, refusal);
-            WireSanitizeAssertions.assertNoRawUnprintables(e.getMessage());
-            assertTrue(e.getMessage().length() < 512, "bounded: " + e.getMessage().length());
+            WireSanitizeAssertions.assertSanitizedAndBounded(e.getMessage(), "error shape", 512);
         }
     }
 

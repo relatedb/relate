@@ -4,7 +4,7 @@
 //! transient failure). Before the session is open (ADR-0579) the same
 //! refusal is the gate's breach: the FAILURE, then the close.
 
-use crate::failures::{decode_budget_message, REQUEST_INVALID_CODE};
+use crate::failures::{decode_budget_message, EXAMPLE_ROW_DECODED_BYTES, REQUEST_INVALID_CODE};
 use crate::packstream::{decode_message, encode, DecodeError, DecodeLimit, Pack, NODE_BYTES};
 use crate::protocol::ConnConfig;
 use crate::requests::Message;
@@ -103,6 +103,10 @@ fn the_over_budget_rows_are_over_the_open_budget_and_the_notebook_rows_fit() {
         Err(DecodeError::BudgetExceeded { .. })
     ));
     assert!(decode(NOTEBOOK_ROWS).is_ok());
+    // The FAILURE text's worked per-row figure sits between the two.
+    let budget = DecodeLimit::Open.bytes();
+    assert!(EXAMPLE_ROW_DECODED_BYTES * OVER_BUDGET_ROWS > budget);
+    assert!(EXAMPLE_ROW_DECODED_BYTES * NOTEBOOK_ROWS < budget);
 }
 
 #[test]

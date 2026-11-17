@@ -124,46 +124,31 @@ fn discard_honours_n_and_its_qid() {
     assert_eq!(rows, [10, 20]);
 }
 
-/// A qid that names no open result, while another is open, fails with
-/// `Neo.ClientError.Request.Invalid` and the failed state; RESET recovers.
+/// A qid that names no open result (ADR-0311), or is present but not an
+/// Int (ADR-0342 — never the `-1` default, which would silently address
+/// the most recent result), fails with `Neo.ClientError.Request.Invalid`
+/// and the failed state while another result is open; RESET recovers.
 #[test]
-fn an_unknown_qid_is_a_request_invalid_failure() {
-    let mut client = connected_client();
-    begin(&mut client);
-    run_qid(&mut client, "RETURN 1 AS a");
-    send_pull(&mut client, Message::Pull, vec![("qid", Pack::Int(7))]);
-    let failure = failure_map(read_msg(&mut client));
-    assert_eq!(field(&failure, "code"), REQUEST_INVALID_CODE);
-    assert_eq!(field(&failure, "message"), "no open result with qid 7");
-    send_run(&mut client, "RETURN 2 AS b");
-    assert_ignored(&mut client, "a RUN in the failed state");
-    send_reset(&mut client);
-    success_map(read_msg(&mut client));
-}
-
-/// ADR-0342: a `qid` that is present but not an Int is a request failure
-/// like an unknown qid — never the `-1` default, which would silently
-/// address the most recent result.
-#[test]
-fn a_malformed_qid_is_a_request_invalid_failure() {
-    let mut client = connected_client();
-    begin(&mut client);
-    run_qid(&mut client, "RETURN 1 AS a");
-    send_pull(
-        &mut client,
-        Message::Pull,
-        vec![("qid", Pack::String("0".into()))],
-    );
-    let failure = failure_map(read_msg(&mut client));
-    assert_eq!(field(&failure, "code"), REQUEST_INVALID_CODE);
-    assert_eq!(
-        field(&failure, "message"),
-        "unsupported extra value for qid: String (must be an Int)"
-    );
-    send_run(&mut client, "RETURN 2 AS b");
-    assert_ignored(&mut client, "a RUN in the failed state");
-    send_reset(&mut client);
-    success_map(read_msg(&mut client));
+fn an_unknown_or_malformed_qid_is_a_request_invalid_failure() {
+    for (qid, message) in [
+        (Pack::Int(7), "no open result with qid 7"),
+        (
+            Pack::String("0".into()),
+            "unsupported extra value for qid: String (must be an Int)",
+        ),
+    ] {
+        let mut client = connected_client();
+        begin(&mut client);
+        run_qid(&mut client, "RETURN 1 AS a");
+        send_pull(&mut client, Message::Pull, vec![("qid", qid.clone())]);
+        let failure = failure_map(read_msg(&mut client));
+        assert_eq!(field(&failure, "code"), REQUEST_INVALID_CODE, "{qid:?}");
+        assert_eq!(field(&failure, "message"), message, "{qid:?}");
+        send_run(&mut client, "RETURN 2 AS b");
+        assert_ignored(&mut client, "a RUN in the failed state");
+        send_reset(&mut client);
+        success_map(read_msg(&mut client));
+    }
 }
 
 /// ADR-0342: a `n` that is present but not an Int fails the same way

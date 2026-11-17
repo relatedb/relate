@@ -74,18 +74,24 @@ final class Json {
                                                          String key, String what,
                                                          String payload) {
         String wire = requireText(node, key, what, payload);
-        return decodeWire(type, wire, what + " carries an unknown " + key,
+        return decode(type, wire, what + " carries an unknown " + key,
                 ": " + safe(payload, PAYLOAD_MAX));
     }
 
     /**
-     * The one decode-or-refuse step for a closed-vocabulary string: the
-     * {@link WireEnum} constant for {@code raw} (possibly null), or a
-     * {@link RelateException} reading {@code refusal}, the quoted value,
-     * then {@code tail} when {@code raw} is outside the vocabulary.
+     * The raw-string entry point of the decode-or-refuse step, beside
+     * {@link #requireWire}: the {@link WireEnum} constant for {@code raw}
+     * (possibly null), or a {@link RelateException} reading {@code refusal}
+     * then the quoted value when {@code raw} is outside the vocabulary.
      */
     static <E extends Enum<E> & WireEnum> E decodeWire(Class<E> type, String raw,
-                                                        String refusal, String tail) {
+                                                        String refusal) {
+        return decode(type, raw, refusal, "");
+    }
+
+    /** The one body: {@code tail} follows the quoted value in the refusal. */
+    private static <E extends Enum<E> & WireEnum> E decode(Class<E> type, String raw,
+                                                            String refusal, String tail) {
         E constant = WireEnum.fromWire(type, raw);
         if (constant == null) {
             throw new RelateException(refusal + " " + quoted(raw) + tail);

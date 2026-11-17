@@ -1,5 +1,6 @@
 use super::*;
 use crate::packstream::{decode, encode, MAX_DEPTH};
+use crate::testutil::wrapped_in_lists;
 use relate::Value;
 
 /// ADR-0328: a byte array result is PackStream Bytes, with the shortest
@@ -76,16 +77,6 @@ fn engine_depth_cap_value_is_a_typed_bolt_refusal() {
 /// over [`wrapped_in_lists`].
 fn nested_value(depth: usize) -> relate::Value {
     wrapped_in_lists(relate::Value::Null, depth)
-}
-
-/// `base` wrapped in `depth` nested lists: the one spelling of the
-/// wrap-in-N-lists loop this file's nesting tests share.
-fn wrapped_in_lists(base: relate::Value, depth: usize) -> relate::Value {
-    let mut value = base;
-    for _ in 0..depth {
-        value = relate::Value::List(vec![value].into());
-    }
-    value
 }
 
 fn test_node(id: i64) -> relate::Node {
