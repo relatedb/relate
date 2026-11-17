@@ -281,10 +281,25 @@ fn has_duplicates<'a, T: Hash + Eq + 'a>(mut items: impl Iterator<Item = &'a T>)
     items.any(|item| !seen.insert(item))
 }
 
+/// The label text the catalog records for a `CREATE INDEX` clause — the
+/// one place the label-less rule lives. A LOOKUP index is the one
+/// label-less form (the legacy catalog encoding stores it with an empty
+/// label); every other kind must name a label or relationship type, a
+/// statement-shape `SyntaxError` — never a fabricated empty label.
+pub(crate) fn index_label(c: &relate_parser::CreateIndexClause) -> Result<String> {
+    match c.labels.first() {
+        Some(label) => Ok(label.to_string()),
+        None if c.kind == IndexKind::Lookup => Ok(String::new()),
+        None => Err(Error::syntax(
+            "a non-LOOKUP index must name a label or relationship type",
+        )),
+    }
+}
+
 /// The `CREATE INDEX` target-shape policy: the single-property kinds'
 /// property count and the duplicated-token rule (22N76 — the label and the
 /// property vocabularies are separate sets, each without duplicates, for
-/// every index kind). Runs before the OPTIONS shape so a target rejection
+/// every index kind), and the label-less rule (LOOKUP only). Runs before the OPTIONS shape so a target rejection
 /// wins over a config one.
 fn validate_index_target(c: &relate_parser::CreateIndexClause) -> Result<()> {
     if let Some(detail) = single_property_rejection(c.kind) {
@@ -292,6 +307,8 @@ fn validate_index_target(c: &relate_parser::CreateIndexClause) -> Result<()> {
             return Err(Error::syntax(detail));
         }
     }
+    // Raised before the conflict gate so `IF NOT EXISTS` can never mask it.
+    index_label(c)?;
     if has_duplicates(c.labels.iter())
         || has_duplicates(c.properties.iter().chain(&c.with_properties))
     {
@@ -319,16 +336,8 @@ pub(crate) fn resolve_index_options(
         &ddl_option_key_policy(),
         "InvalidInputValue: OPTIONS parameter must be a MAP",
     )?;
+    // Validation and the kind's defaults are the one policy's two halves.
     ConfigPolicy::for_kind(c.kind).validate(&mut options)?;
-    // Point and fulltext indexes record their kind's default config so
-    // SHOW INDEXES' `options` and `createStatement` carry Neo4j's shape; a
-    // caller-supplied entry wins. The per-kind table is
-    // `IndexKindSpec::default_config`, not a match here.
-    if let Some(defaults) = crate::redo::IndexKindSpec::from(c.kind).default_config() {
-        let mut config = index_config(&options)?.cloned().unwrap_or_default();
-        defaults(&mut config);
-        options.insert(KEY_INDEX_CONFIG.into(), Value::Map(config.into()));
-    }
     Ok(options)
 }
 
@@ -467,8 +476,15 @@ enum ConfigPolicy {
     /// The kind consumes no config: absent or empty is fine, anything else
     /// is rejected.
     Nothing { non_empty: &'static str },
-    /// A key/value family, validated by the shared loop.
-    Family(&'static ConfigFamily),
+    /// A key/value family, validated by the shared loop, then completed
+    /// with the kind's default config so SHOW INDEXES' `options` and
+    /// `createStatement` carry Neo4j's shape; a caller-supplied entry wins.
+    /// The per-kind table is `IndexKindSpec::default_config`, not a match
+    /// here.
+    Family {
+        family: &'static ConfigFamily,
+        kind: crate::redo::IndexKindSpec,
+    },
     /// VECTOR: the typed parse and the DDL defaults are
     /// [`create_config`]'s navigate-and-default pipeline.
     Vector,
@@ -484,8 +500,14 @@ impl ConfigPolicy {
             IndexKind::Range | IndexKind::Text => Self::Nothing {
                 non_empty: "InvalidIndexConfig",
             },
-            IndexKind::Point => Self::Family(&POINT_FAMILY),
-            IndexKind::Fulltext => Self::Family(&FULLTEXT_FAMILY),
+            IndexKind::Point => Self::Family {
+                family: &POINT_FAMILY,
+                kind: crate::redo::IndexKindSpec::from(kind),
+            },
+            IndexKind::Fulltext => Self::Family {
+                family: &FULLTEXT_FAMILY,
+                kind: crate::redo::IndexKindSpec::from(kind),
+            },
             IndexKind::Vector => Self::Vector,
         }
     }
@@ -501,10 +523,17 @@ impl ConfigPolicy {
                 Some(map) if map.is_empty() => Ok(()),
                 Some(_) => Err(Error::argument_error(*non_empty)),
             },
-            Self::Family(family) => match index_config(options)? {
-                None => Ok(()),
-                Some(map) => validate_config_family(map, family),
-            },
+            Self::Family { family, kind } => {
+                // One navigation: validate the working map, then complete
+                // it with the kind's defaults.
+                let mut config = index_config(options)?.cloned().unwrap_or_default();
+                validate_config_family(&config, family)?;
+                if let Some(defaults) = kind.default_config() {
+                    defaults(&mut config);
+                    options.insert(KEY_INDEX_CONFIG.into(), Value::Map(config.into()));
+                }
+                Ok(())
+            }
             Self::Vector => {
                 let config = create_config(options)?;
                 options.insert(KEY_INDEX_CONFIG.into(), config);
@@ -539,4 +568,38 @@ fn validate_config_family(map: &BTreeMap<String, Value>, family: &ConfigFamily) 
         shape.check(key, value)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use relate_parser::SchemaEntityType;
+
+    fn clause(
+        kind: IndexKind,
+        labels: Vec<relate_names::SmallName>,
+    ) -> relate_parser::CreateIndexClause {
+        relate_parser::CreateIndexClause {
+            name: None,
+            entity_type: SchemaEntityType::Node,
+            labels,
+            properties: Vec::new(),
+            if_not_exists: true,
+            kind,
+            on_each: false,
+            with_properties: Vec::new(),
+            options: OptionsForm::Absent,
+        }
+    }
+
+    /// The label-less rejection is a statement-shape `SyntaxError`, raised by
+    /// the target-shape policy that runs ahead of the conflict gate (even
+    /// under `IF NOT EXISTS`); LOOKUP stays the one label-less form.
+    #[test]
+    fn a_label_less_non_lookup_index_is_a_syntax_error_before_the_gate() {
+        let err = validate_index_target(&clause(IndexKind::Range, Vec::new()))
+            .expect_err("label-less RANGE must be rejected");
+        assert!(matches!(err, Error::Syntax(_)), "{err:?}");
+        validate_index_target(&clause(IndexKind::Lookup, Vec::new())).unwrap();
+    }
 }

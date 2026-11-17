@@ -238,6 +238,35 @@ fn a_deferred_search_counts_only_surviving_candidates() {
     assert_eq!(first_column_strings(&result), vec!["Gamma".to_string()]);
 }
 
+/// The deferred path gates survival on the MATCH's outer WHERE, as the
+/// direct path does: a WHERE-rejected best-ranked candidate must not take
+/// the LIMIT's only slot, so the window widens to Delta.
+#[test]
+fn a_deferred_search_where_rejection_frees_the_limit_slot() {
+    set_preview_once("complex-search-patterns");
+    let mut c = connection();
+    c.query("CREATE VECTOR INDEX plotVectors FOR (m:Movie) ON m.embedding")
+        .unwrap();
+    c.query(
+        "CREATE (pacino:Actor {name: 'Pacino', embedding: [1.0, 0.0]}), \
+                (gamma:Movie {title: 'Gamma', embedding: [0.9, 0.2]}), \
+                (delta:Movie {title: 'Delta', embedding: [0.85, 0.3]}), \
+                (pacino)-[:ACTED_IN]->(gamma), \
+                (pacino)-[:ACTED_IN]->(delta)",
+    )
+    .unwrap();
+    let result = c
+        .query(
+            "MATCH (movie:Movie)<-[:ACTED_IN]-(actor {name: 'Pacino'}) \
+             SEARCH movie IN (VECTOR INDEX plotVectors FOR actor.embedding LIMIT 1) \
+             SCORE AS score \
+             WHERE movie.title <> 'Gamma' \
+             RETURN movie.title AS title ORDER BY score DESC",
+        )
+        .unwrap();
+    assert_eq!(first_column_strings(&result), vec!["Delta".to_string()]);
+}
+
 /// The relationship-index corpus: three ACTED_IN edges whose similarity
 /// falls with their distance from the query vector, the middle one with a
 /// born-1950 actor (`born < 1940` rejects it).

@@ -54,45 +54,42 @@ pub(super) fn deferred_search_rows(
     let binding_prebound = input.get_name(&search.binding_var).is_some();
     let grows = top_k_grows(search, !binding_prebound);
     let mut extra = 0usize;
-    // The outer WHERE's verdict per matched row, cached at the row's
-    // first in-window resolution: the binding's rank and score in its
-    // own candidate list are window-invariant (a wider window only
-    // appends lower-ranked candidates), so the verdict cannot change
-    // between growth rounds.
-    let mut where_ok: Vec<Option<bool>> = vec![None; matched.len()];
-    // The terminal round's per-row binding and score, for the emitted
-    // rows.
-    let mut resolved: Vec<Option<(i64, f64)>> = vec![None; matched.len()];
+    // Per matched row, the outer WHERE's verdict (cached at the row's first
+    // in-window resolution: the binding's rank and score in its own
+    // candidate list are window-invariant -- a wider window only appends
+    // lower-ranked candidates -- so the verdict cannot change between
+    // growth rounds) and the terminal round's binding and score for the
+    // emitted rows. One state per row, not parallel vectors.
+    let mut states = vec![RowState::default(); matched.len()];
     loop {
         let mut round = DeferredRound::default();
-        for (index, row) in matched.iter().enumerate() {
+        for (row, state) in matched.iter().zip(states.iter_mut()) {
             // One binding entry per matched row, by construction.
             let Some((id, rank, score)) =
                 deferred_row_binding(env, row, extra, binding_kind, search, &mut round)?
             else {
                 continue;
             };
-            if where_ok[index].is_none() {
-                let mut scored = row.clone();
-                attach_score(&mut scored, search.score_var.as_ref(), Value::Float(score));
-                // The canonical optional-WHERE gate (stellar round 2,
-                // F-2-22): the one spelling every other optional-WHERE
-                // site reads — a non-boolean predicate is the typed
-                // rejection, never a silent drop.
-                where_ok[index] = Some(where_clause_holds(
-                    ctx.graph,
-                    &scored,
-                    where_clause,
-                    ctx.params,
-                )?);
-            }
-            resolved[index] = Some((id, score));
-            if where_ok[index] == Some(true) {
-                round.survivors.entry(id).and_modify(|slot| {
-                    if rank < slot.0 {
-                        *slot = (rank, score);
-                    }
-                });
+            let where_ok = match state.where_ok {
+                Some(verdict) => verdict,
+                None => {
+                    let mut scored = row.clone();
+                    attach_score(&mut scored, search.score_var.as_ref(), Value::Float(score));
+                    // The canonical optional-WHERE gate (stellar round 2,
+                    // F-2-22): the one spelling every other optional-WHERE
+                    // site reads -- a non-boolean predicate is the typed
+                    // rejection, never a silent drop.
+                    let verdict = where_clause_holds(ctx.graph, &scored, where_clause, ctx.params)?;
+                    state.where_ok = Some(verdict);
+                    verdict
+                }
+            };
+            state.resolved = Some((id, score));
+            // Only a WHERE-passing row makes its candidate a survivor: the
+            // LIMIT counts candidates with a surviving row, as the direct
+            // path's per-candidate MATCH ... WHERE does.
+            if where_ok {
+                round.survive(id, rank, score);
             }
         }
         let needed = round.limit.unwrap_or(usize::MAX);
@@ -116,11 +113,11 @@ pub(super) fn deferred_search_rows(
         // rides along when its WHERE verdict is true and its candidate is
         // among the kept survivors.
         let mut out = Vec::with_capacity(matched.len());
-        for (index, mut row) in matched.into_iter().enumerate() {
-            if where_ok[index] != Some(true) {
+        for (state, mut row) in states.into_iter().zip(matched) {
+            if state.where_ok != Some(true) {
                 continue;
             }
-            let Some((id, score)) = resolved[index] else {
+            let Some((id, score)) = state.resolved else {
                 continue;
             };
             if !kept.contains(&id) {
@@ -139,7 +136,7 @@ pub(super) fn deferred_search_rows(
 /// row of one input row yields the same value; `None` until the first
 /// row states it, and an absent combined LIMIT stays `usize::MAX`
 /// without colliding with the sentinel), whether any row's scan could
-/// widen, and each surviving candidate's best `(rank, score)` pair —
+/// widen, and each WHERE-surviving candidate's best `(rank, score)` pair —
 /// replaced whole, so the score always travels with the ranking that
 /// kept it.
 #[derive(Default)]
@@ -149,9 +146,32 @@ struct DeferredRound {
     survivors: HashMap<i64, (usize, f64)>,
 }
 
+impl DeferredRound {
+    /// Record a WHERE-passing row's candidate, keeping its best (lowest)
+    /// rank with the score that ranking carries.
+    fn survive(&mut self, id: i64, rank: usize, score: f64) {
+        self.survivors
+            .entry(id)
+            .and_modify(|slot| {
+                if rank < slot.0 {
+                    *slot = (rank, score);
+                }
+            })
+            .or_insert((rank, score));
+    }
+}
+
+/// One matched row's cached deferred state across growth rounds.
+#[derive(Clone, Default)]
+struct RowState {
+    where_ok: Option<bool>,
+    resolved: Option<(i64, f64)>,
+}
+
 /// One matched row's deferred binding: the row's own candidate list
 /// decides whether its binding is a survivor, and at which rank and
-/// score. Exactly one value per row, by construction.
+/// score. Exactly one value per row, by construction; the caller
+/// decides survival once the row's WHERE verdict is known.
 fn deferred_row_binding(
     env: &SearchEnv<'_>,
     row: &Row,
@@ -182,14 +202,5 @@ fn deferred_row_binding(
     };
     let id = candidate_entity_id(bound)?;
     let score = fetched.candidates[rank].1;
-    round
-        .survivors
-        .entry(id)
-        .and_modify(|slot| {
-            if rank < slot.0 {
-                *slot = (rank, score);
-            }
-        })
-        .or_insert((rank, score));
     Ok(Some((id, rank, score)))
 }

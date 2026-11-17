@@ -4,12 +4,9 @@
 
 use super::*;
 
-/// Every non-`Uncategorized` kind, straight from the `error_kinds!` list.
-const ALL_KINDS: &[ErrorKind] = ErrorKind::ALL;
-
 #[test]
 fn kind_name_round_trips_through_from_name() {
-    for kind in ALL_KINDS {
+    for kind in ErrorKind::ALL {
         let name = kind.as_str();
         assert_eq!(
             ErrorKind::from_name(name),
@@ -58,7 +55,7 @@ fn from_name_rejects_unknown_prefixes() {
 #[test]
 fn tck_class_is_total_and_stable() {
     // Total mapping: every kind (including Uncategorized) resolves.
-    for kind in ALL_KINDS {
+    for kind in ErrorKind::ALL {
         let _ = kind.tck_class();
     }
     assert_eq!(
@@ -148,7 +145,7 @@ fn missing_parameter_alias_round_trips_without_touching_display() {
 /// `from_tck_detail` is its inverse (delegating to `from_name`).
 #[test]
 fn tck_detail_matches_as_str_except_aliases() {
-    for kind in ALL_KINDS {
+    for kind in ErrorKind::ALL {
         if *kind == ErrorKind::ParameterMissing {
             assert_eq!(kind.tck_detail(), "MissingParameter");
             continue;

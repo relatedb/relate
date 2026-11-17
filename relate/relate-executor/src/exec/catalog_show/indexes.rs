@@ -87,10 +87,12 @@ fn scalar_option_text(value: &Value) -> Option<String> {
 fn index_create_statement(
     detail: &IndexDetailSpec,
     name: &str,
-    entity: EntityKind,
     stored_options: &BTreeMap<String, Value>,
 ) -> Option<String> {
     let kind = detail.kind;
+    // The entity kind is the detail's own `relationship` flag — derived
+    // once here, never threaded in beside the detail that carries it.
+    let entity = EntityKind::from_relationship_flag(detail.relationship);
     let variable = entity_variable(entity);
     let name = backtick(name);
     // The EACH form ([`is_lookup`]'s one LOOKUP decision): Neo4j CE's
@@ -154,13 +156,11 @@ fn stored_options<'a>(
 /// the one [`index_create_statement`] renderer (one renderer, two callers
 /// — never a second copy). `None` is the SHOW column's NULL.
 fn index_statement(
-    facts: &IndexFacts,
     detail: Option<&IndexDetailSpec>,
     name: &str,
     options: &BTreeMap<String, Value>,
 ) -> Option<String> {
-    let entity = EntityKind::from_relationship_flag(facts.relationship);
-    detail.and_then(|d| index_create_statement(d, name, entity, options))
+    detail.and_then(|d| index_create_statement(d, name, options))
 }
 
 /// The index's CREATE statement for the checkpoint's schema mirror
@@ -184,11 +184,8 @@ pub(super) fn index_ddl_statement(
     if backing_constraint_by_name(&idx.name, constraints).is_some() {
         return None;
     }
-    let detail = details.get(&idx.name);
-    let facts = IndexFacts::resolve(idx, detail, None);
     index_statement(
-        &facts,
-        detail,
+        details.get(&idx.name),
         &idx.name,
         stored_options(index_options, &idx.name),
     )
@@ -212,7 +209,7 @@ fn index_row(
 ) -> Row {
     let options = stored_options(ctx.index_options, &idx.name);
     let entity = EntityKind::from_relationship_flag(facts.relationship);
-    let index_statement = index_statement(facts, detail, &idx.name, options);
+    let index_statement = index_statement(detail, &idx.name, options);
     // A constraint's backing index shows the owning constraint's CREATE
     // CONSTRAINT (Neo4j parity); every standalone index shows its own.
     let create_statement = match backing {

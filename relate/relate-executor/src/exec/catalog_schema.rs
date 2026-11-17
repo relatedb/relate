@@ -18,7 +18,7 @@ use super::catalog::schema_name_value;
 use super::ddl::{
     index_conflict_gate, push_index_detail, skip_existing, ExistingRule, Gate, IndexFacts,
 };
-use super::ddl_options::{resolve_index_options, validate_constraint_options};
+use super::ddl_options::{index_label, resolve_index_options, validate_constraint_options};
 
 pub(crate) fn catalog_create_index(
     graph: &ExecGraph<'_>,
@@ -44,11 +44,9 @@ pub(crate) fn catalog_create_index(
 
     // Catalog records own String text (ADR-0509: catalog-facing storage
     // stays string-keyed); the parsed names render once, at this feed.
-    let label = c
-        .labels
-        .first()
-        .map(|label| label.to_string())
-        .unwrap_or_default();
+    // Already validated ahead of the conflict gate (`validate_index_target`),
+    // so this resolves the label through the same one rule.
+    let label = index_label(c)?;
     let joined = c
         .properties
         .iter()

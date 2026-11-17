@@ -256,6 +256,45 @@ fn compose_catalog_rows(
     output
 }
 
+/// Undo the source-name shadowing (see the marker coupling invariant
+/// above) on one output row: restore an outer variable the SHOW column
+/// shadowed, remove a source name it introduced. Only a genuinely absent
+/// marker means "nothing to restore"; skipping a present-but-wrong-shape
+/// row would silently drop the restore and leak the internal marker key
+/// into the output, so a broken write-site invariant fails loud for both
+/// markers alike.
+fn restore_source_names(row: &mut Row) -> Result<()> {
+    let marker_invariant_broken = |marker: &str, found: Option<&Value>| {
+        Error::internal(format!(
+            "SHOW source-name restore: {marker} did not hold the map the write \
+             site inserts (found {found:?}); {SOURCE_CELLS} and {SOURCE_PREVIOUS} \
+             are always written together"
+        ))
+    };
+    let sources = match row.shift_remove(SOURCE_CELLS) {
+        None => return Ok(()),
+        Some(Value::Map(sources)) => sources,
+        Some(other) => return Err(marker_invariant_broken(SOURCE_CELLS, Some(&other))),
+    };
+    // `SOURCE_PREVIOUS` is written by the same site, so an absent or
+    // non-map value here is the same broken invariant.
+    let previous = match row.shift_remove(SOURCE_PREVIOUS) {
+        Some(Value::Map(previous)) => previous,
+        other => return Err(marker_invariant_broken(SOURCE_PREVIOUS, other.as_ref())),
+    };
+    for key in sources.keys() {
+        match previous.get(key) {
+            Some(value) => {
+                row.insert(key.clone(), value.clone());
+            }
+            None => {
+                row.shift_remove(key);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The stage half of the catalog projection, applied once over the composed
 /// cross join: the clause's own `ORDER BY`/`SKIP`/`LIMIT` in written order,
 /// then the trailing WHERE, then the source-name restore. Paging before the
@@ -278,44 +317,8 @@ fn finish_catalog_rows(
         // filtering every row; a null value still filters.
         output = filter_rows_where(graph, params, predicate, output)?;
     }
-    // Undo the source-name shadowing (see the marker coupling invariant
-    // above): restore an outer variable the SHOW column shadowed, remove a
-    // source name it introduced. Only a genuinely absent marker means
-    // "nothing to restore"; skipping a present-but-wrong-shape row would
-    // silently drop the restore and leak the internal marker key into the
-    // output, so a broken write-site invariant fails loud for both markers
-    // alike.
-    let marker_invariant_broken = |marker: &str, found: Option<&Value>| {
-        Error::internal(format!(
-            "SHOW source-name restore: {marker} did not hold the map the write \
-             site inserts (found {found:?}); {SOURCE_CELLS} and {SOURCE_PREVIOUS} \
-             are always written together"
-        ))
-    };
     for row in &mut output {
-        let sources = match row.shift_remove(SOURCE_CELLS) {
-            None => continue,
-            Some(Value::Map(sources)) => sources,
-            Some(other) => {
-                return Err(marker_invariant_broken(SOURCE_CELLS, Some(&other)));
-            }
-        };
-        // `SOURCE_PREVIOUS` is written by the same site, so an absent or
-        // non-map value here is the same broken invariant.
-        let previous = match row.shift_remove(SOURCE_PREVIOUS) {
-            Some(Value::Map(previous)) => previous,
-            other => return Err(marker_invariant_broken(SOURCE_PREVIOUS, other.as_ref())),
-        };
-        for key in sources.keys() {
-            match previous.get(key) {
-                Some(value) => {
-                    row.insert(key.clone(), value.clone());
-                }
-                None => {
-                    row.shift_remove(key);
-                }
-            }
-        }
+        restore_source_names(row)?;
     }
     Ok(output)
 }
