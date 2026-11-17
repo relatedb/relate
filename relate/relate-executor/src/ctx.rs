@@ -20,8 +20,10 @@ use crate::row::Row;
 /// statement's source text (which feeds `SHOW TRANSACTIONS`'
 /// `currentQuery` column) and the connection's authenticated principal
 /// (ADR-0273: set by a surface that verified an identity — the Bolt server
-/// after a validated HELLO — else `None`, and `dbms.showCurrentUser`
-/// reports the documented placeholder).
+/// after a validated HELLO — else `None`). The principal is display-only;
+/// both readers (`dbms.showCurrentUser`, `SHOW TRANSACTIONS`) render it
+/// through `exec::catalog::principal_cell`, each passing the placeholder its command
+/// documents for an unauthenticated connection.
 #[derive(Clone, Copy)]
 pub(crate) struct QueryCtx<'a> {
     pub query_text: &'a str,

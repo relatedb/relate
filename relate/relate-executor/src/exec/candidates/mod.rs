@@ -26,6 +26,7 @@ use crate::overlay::ExecGraph;
 use crate::pattern_walk::{
     id_fn_conversion, pattern_match_props, static_rel_type_ok, IdConversion,
 };
+use crate::props::props_all_match;
 use crate::redo::{IndexDetailSpec, IndexKindSpec};
 use crate::row::Row;
 use crate::store::RelTypes;
@@ -429,13 +430,7 @@ pub(crate) fn node_ok(
         }
     }
     let want = pattern_match_props(graph, row, np.properties.as_ref(), &np.prop_keys, params)?;
-    for (key, v) in want {
-        match view.prop(graph, id, &key) {
-            Some(have) if have.eq_non_null(&v) => {}
-            _ => return Ok(false),
-        }
-    }
-    Ok(true)
+    Ok(props_all_match(&want, |key| view.prop(graph, id, key)))
 }
 
 /// The candidate's one read view (F-1-8): the row's tombstone for a

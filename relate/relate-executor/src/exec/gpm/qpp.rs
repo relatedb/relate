@@ -231,9 +231,6 @@ pub(super) fn gpm_expand_quantified(
     Ok(out)
 }
 
-/// The predicate-referenced names of `qpp` that `row` does not bind and the
-/// quantification's own group `names` will not bind — the later-declared
-/// non-local singletons [`gpm_expand_quantified`] binds to null.
 /// Every predicate a quantified pattern carries: each inner element's own
 /// `WHERE` in pattern order, then the pattern-level `WHERE` — the one
 /// policy both the iteration check and the unbound-name scan walk.
@@ -248,6 +245,9 @@ fn qpp_predicates(qpp: &QuantifiedPathPattern) -> impl Iterator<Item = &Expr> {
         .chain(qpp.where_clause.as_ref())
 }
 
+/// The predicate-referenced names of `qpp` that `row` does not bind and the
+/// quantification's own group `names` will not bind — the later-declared
+/// non-local singletons [`gpm_expand_quantified`] binds to null.
 fn qpp_unbound_predicate_names(
     qpp: &QuantifiedPathPattern,
     row: &Row,

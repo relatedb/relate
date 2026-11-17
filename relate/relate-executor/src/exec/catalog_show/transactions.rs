@@ -9,7 +9,7 @@ use crate::eval::eval;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::super::catalog::catalog_row;
+use super::super::catalog::{catalog_row, principal_cell};
 
 /// The ids one id argument yields, under the whole argument contract both
 /// transaction commands share: a list's elements, or the scalar itself as a
@@ -43,6 +43,8 @@ pub(crate) fn show_transactions_rows(
     qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
     const TXID: &str = "neo4j-transaction-1";
+    // Every id argument is evaluated even after one matches: a malformed
+    // later argument is the argument's own type error, never skipped.
     let mut found = c.ids.is_empty();
     for expr in &c.ids {
         let expr = relate_front::lower_expr(expr)?;
@@ -65,10 +67,7 @@ pub(crate) fn show_transactions_rows(
             ("transactionId", Value::String(TXID.into())),
             ("currentQuery", Value::String(qctx.query_text.into())),
             ("database", Value::String(graph.namespace().as_str().into())),
-            (
-                "username",
-                Value::String(qctx.principal.unwrap_or("").into()),
-            ),
+            ("username", principal_cell(qctx.principal, "")),
             ("status", Value::String("Running".into())),
             ("connectionId", Value::String("".into())),
             ("clientAddress", Value::Null),

@@ -84,6 +84,12 @@ fn plan_call_names(logical: &LogicalPlan) -> PlanCallNames {
     PlanCallNames { all, ontology }
 }
 
+/// The shared form of the gates' `Option<Error>` verdict: `None` admits,
+/// `Some` is the statement's rejection.
+fn passes(verdict: Option<Error>) -> Result<()> {
+    verdict.map_or(Ok(()), Err)
+}
+
 impl Connection {
     /// Plan, preview gate, compile-time CALL validation, the namespace gate
     /// and the query-type classification, under one read guard: all of them
@@ -153,9 +159,7 @@ impl Connection {
         // validation and every later gate (see `preview_gate_error`), so a
         // disabled `db.ontology.*` call reports the authored preview error
         // even when it is also malformed or routed to `system_ontologies`.
-        if let Some(e) = self.preview_gate_error(&call_names) {
-            return Err(e);
-        }
+        passes(self.preview_gate_error(&call_names))?;
         // ADR-0116 §3: `USE` routes the statement; the planner resolved
         // the target eagerly, so the resolved target picks the graph and
         // the namespace rules it runs under. Derived once here — the one
@@ -176,9 +180,7 @@ impl Connection {
         // namespace.
         namespace.require_visible(self.inner.graph.preview())?;
         validate_calls(&self.inner.graph, logical, params)?;
-        if let Some(e) = self.transaction_gate_error(logical) {
-            return Err(e);
-        }
+        passes(self.transaction_gate_error(logical))?;
         // ADR-0116 §2 (2026-11-04): the 42N79 auto-routing gate — after
         // CALL validation (a doubly-invalid statement reports the
         // procedure error, the ordering the namespace gates below keep)
@@ -190,21 +192,15 @@ impl Connection {
         // the explicit-`USE` rejection outranks the routed-namespace gate.
         // `logical` is already a reference: the cache serves the same plan
         // the fresh path plans.
-        if let Some(e) = self.admin_use_gate_error(logical) {
-            return Err(e);
-        }
+        passes(self.admin_use_gate_error(logical))?;
         // ADR-0116 §4: the gates are plan-based (CE raises 42N17/42N18 at
         // semantic-check time), so they apply to EXPLAIN too.
-        if let Some(e) = self.namespace_gate_error(logical, namespace) {
-            return Err(e);
-        }
+        passes(self.namespace_gate_error(logical, namespace))?;
         // ADR-0121/ADR-0227: the ontology-procedure gates run after the §4
         // namespace gates — after ADR-0229 §1 every procedure routed to
         // `system_ontologies` fails 42N17 there, before the ontology
         // target text, which now fires only on `system`.
-        if let Some(e) = self.ontology_gate_error(logical, namespace, &call_names) {
-            return Err(e);
-        }
+        passes(self.ontology_gate_error(logical, namespace, &call_names))?;
         // ADR-0162: the query type is plan-based and total, classified
         // under the same read guard, so EXPLAIN/PROFILE report the
         // wrapped statement's type without executing it. The predicate

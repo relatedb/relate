@@ -400,6 +400,13 @@ pub(crate) fn catalog_row(pairs: impl IntoIterator<Item = (&'static str, Value)>
     pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
 }
 
+/// The display cell for a connection's authenticated principal: its name, or
+/// the caller's command-specific `placeholder` when the surface set none.
+/// The one spelling every principal reader renders through.
+pub(crate) fn principal_cell(principal: Option<&str>, placeholder: &str) -> Value {
+    Value::String(principal.unwrap_or(placeholder).into())
+}
+
 pub(crate) fn string_list(values: impl IntoIterator<Item = String>) -> Value {
     Value::List(
         values

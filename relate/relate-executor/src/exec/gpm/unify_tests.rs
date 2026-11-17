@@ -314,7 +314,7 @@ fn repeatable_unbounded_dfs_cap_is_one_rule_across_spellings() {
             .max()
     };
     // The unified rule is the satiety cap, not the raw rel count (6): the
-    // deepest enumerated walk is 7 hops.
+    // deepest enumerated walk is 7 hops. The rows are equal (above), so one
+    // read of the cap covers both spellings.
     assert_eq!(longest(&quantified), Some(7));
-    assert_eq!(longest(&legacy), Some(7));
 }

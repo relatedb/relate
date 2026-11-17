@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use relate_core::{Error, Result, Value};
 
+use crate::exec::catalog::principal_cell;
 use crate::graph::Procedure;
 use crate::overlay::ExecGraph;
 use crate::procedure_registry::ProcSignature;
@@ -306,10 +307,7 @@ fn dbms_info_rows() -> Vec<BTreeMap<String, Value>> {
 /// (Relate has no user flags).
 fn dbms_show_current_user_rows(principal: Option<&str>) -> Vec<BTreeMap<String, Value>> {
     vec![BTreeMap::from([
-        (
-            "username".into(),
-            Value::String(principal.unwrap_or("relate").into()),
-        ),
+        ("username".into(), principal_cell(principal, "relate")),
         (
             "roles".into(),
             Value::List(vec![Value::String("admin".into())].into()),

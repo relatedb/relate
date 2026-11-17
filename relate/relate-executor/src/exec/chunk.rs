@@ -625,16 +625,14 @@ impl Chunk {
     /// the buffer-length invariant is the chunk's contract, not something
     /// a caller may fabricate around.
     pub(crate) fn from_columns(names: &[String], columns: Vec<Column>) -> Self {
+        let rows = columns.first().map_or(0, Column::len);
         assert!(
-            names.len() == columns.len()
-                && columns
-                    .iter()
-                    .all(|c| c.len() == columns.first().map_or(0, Column::len)),
+            names.len() == columns.len() && columns.iter().all(|c| c.len() == rows),
             "a chunk's names and columns agree in count and every column in length"
         );
         Self {
             names: RowNames::new(names),
-            rows: columns.first().map_or(0, Column::len),
+            rows,
             columns,
         }
     }
