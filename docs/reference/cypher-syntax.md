@@ -197,7 +197,8 @@ is mandatory, and an optional `SCORE AS <var>` exposes the relevance score:
 -- Vector search (exact top-k): nearest neighbours of a query vector
 MATCH (n:Doc)
 SEARCH n IN (VECTOR INDEX doc_embed FOR $queryVector LIMIT 10)
-RETURN n.title, score AS relevance;
+SCORE AS relevance
+RETURN n.title, relevance;
 
 -- Full-text search: term match over the indexed string properties
 MATCH (n:Doc)

@@ -45,8 +45,15 @@ CREATE VECTOR INDEX article_embed FOR (a:Article) ON a.embedding WITH [a.topic];
 
 MATCH (a:Article)
 SEARCH a IN (VECTOR INDEX article_embed FOR $queryVector LIMIT 10)
-RETURN a.title, score AS similarity;
+SCORE AS similarity
+RETURN a.title, similarity;
 ```
+
+The relevance score is not an implicit variable: `SCORE AS <var>`, written
+after the search's closing parenthesis, declares it — a `RETURN score`
+without one is an `UndefinedVariable` error (the
+[syntax reference](../reference/cypher-syntax.md#search) has the full
+grammar).
 
 `search` filters candidates by the index's `WITH [...]`-declared properties
 with simple comparisons joined by `AND` — applied before the ranking and the
@@ -57,7 +64,8 @@ MATCH (a:Article)
 SEARCH a IN (VECTOR INDEX article_embed FOR $queryVector
              WHERE a.topic = 'graph'
              LIMIT 10)
-RETURN a.title, score AS similarity;
+SCORE AS similarity
+RETURN a.title, similarity;
 ```
 
 Filtering on a property the index does not declare in `WITH [...]` raises
@@ -78,7 +86,8 @@ MATCH (a:Article)
 SEARCH a IN (VECTOR INDEX article_embed FOR $queryVector LIMIT 50)
 WITH a
 MATCH (a) SEARCH a IN (FULLTEXT INDEX article_text FOR 'graph database' LIMIT 50)
-RETURN a.title, score AS text_score;
+SCORE AS text_score
+RETURN a.title, text_score;
 ```
 
 Semantics, matching Neo4j:
