@@ -296,6 +296,15 @@ pub fn namespace_change_in_transaction() -> Error {
 mod tests {
     use super::*;
 
+    /// The `Display` suffix assertion both class checks share.
+    fn assert_display_ends_with(error: &Error, expected_suffix: &str) {
+        let display = error.to_string();
+        assert!(
+            display.ends_with(expected_suffix),
+            "Display {display:?} does not end with {expected_suffix:?}"
+        );
+    }
+
     /// Every formatter returns a `Semantic` error whose `Display` ends with
     /// `"<Kind>: <CE text>"` (the variant prefix is `"semantic error: "`).
     fn assert_ce_text(error: &Error, expected_suffix: &str) {
@@ -303,11 +312,7 @@ mod tests {
             matches!(error, Error::Semantic(_)),
             "expected Error::Semantic, got {error:?}"
         );
-        let display = error.to_string();
-        assert!(
-            display.ends_with(expected_suffix),
-            "Display {display:?} does not end with {expected_suffix:?}"
-        );
+        assert_display_ends_with(error, expected_suffix);
     }
 
     /// A formatter whose CE class is Statement.SyntaxError (42NA5's
@@ -318,11 +323,7 @@ mod tests {
             matches!(error, Error::Syntax(_)),
             "expected Error::Syntax, got {error:?}"
         );
-        let display = error.to_string();
-        assert!(
-            display.ends_with(expected_suffix),
-            "Display {display:?} does not end with {expected_suffix:?}"
-        );
+        assert_display_ends_with(error, expected_suffix);
     }
 
     #[test]

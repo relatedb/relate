@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 
 use saphyr::{Mapping, Scalar, ScalarStyle, Yaml, YamlEmitter};
 
-use crate::error::OntologyError;
+use crate::error::{Construct, OntologyError};
 use crate::value::Value;
 
 /// The serialization depth limit, mirroring the parse screen's 128-level
@@ -50,7 +50,9 @@ fn check_serializable_depth(value: &Value) -> Result<(), OntologyError> {
                 stack.extend(map.values().map(|item| (item, depth + 1)));
             }
             Value::Float(f) if !f.is_finite() => {
-                return Err(OntologyError::NonFiniteFloat);
+                return Err(OntologyError::UnsupportedConstruct(
+                    Construct::NonFiniteFloat,
+                ));
             }
             _ => {}
         }

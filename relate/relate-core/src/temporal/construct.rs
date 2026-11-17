@@ -655,8 +655,14 @@ fn duration_from_map(m: &Fields) -> Result<Temporal> {
     if values.is_empty() {
         return Err(field_rules::at_least_one_unit());
     }
-    if values.values().all(ExactNumber::is_int) {
-        return integral_duration(&values);
+    // Integer-only maps take the lane arithmetic; the all-integral split is
+    // taken once, here, so the lane sum never re-checks it.
+    let integers: Option<std::collections::BTreeMap<DurationField, i128>> = values
+        .iter()
+        .map(|(field, number)| number.as_int().map(|n| (*field, n)))
+        .collect();
+    if let Some(integers) = integers {
+        return integral_duration(&integers);
     }
     let mut tiers = DurationTiers::default();
     for (field, number) in &values {
@@ -674,23 +680,17 @@ fn duration_from_map(m: &Fields) -> Result<Temporal> {
 /// the one representability seam every producer shares. Sub-second nanos fold
 /// into the seconds lane for that bound; the stored value keeps the exact i128
 /// nanosecond total.
-fn integral_duration(
-    values: &std::collections::BTreeMap<DurationField, ExactNumber>,
-) -> Result<Temporal> {
+fn integral_duration(values: &std::collections::BTreeMap<DurationField, i128>) -> Result<Temporal> {
     // Every lane is summed from the one field table
     // ([`DurationField::lane_and_unit`], walked in cascade order), so a
-    // field added to the vocabulary cannot be dropped from a lane. The
-    // all-integral guard makes every present field an Int; an absent field
-    // contributes zero. The nanosecond tier splits at whole seconds: its
+    // field added to the vocabulary cannot be dropped from a lane. An absent
+    // field contributes zero. The nanosecond tier splits at whole seconds: its
     // seconds lane counts in seconds, its sub-second lane in nanoseconds.
     let mut lanes = [0i128; DurationLane::COUNT];
     for field in DurationField::CASCADE {
-        let Some(number) = values.get(&field) else {
+        let Some(n) = values.get(&field) else {
             continue;
         };
-        let n = number
-            .as_int()
-            .expect("the all-integral guard makes every present field an Int");
         let (lane, unit) = field.lane_and_unit();
         lanes[lane as usize] += n * unit;
     }

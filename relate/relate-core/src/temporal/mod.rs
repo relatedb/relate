@@ -187,7 +187,7 @@ impl Temporal {
     /// against Neo4j 5: `duration({months: 4000000000000})` errors, while the
     /// same value via `* 1.0` errors identically).
     pub(crate) fn duration_checked(months: i64, days: i64, nanos: i128) -> Result<Temporal, Error> {
-        let seconds = nanos.div_euclid(NANOS_PER_SECOND);
+        let (seconds, _) = split_seconds(nanos);
         if !(-MAX_DURATION_SECONDS..=MAX_DURATION_SECONDS).contains(&seconds) {
             return Err(range_err());
         }
@@ -531,6 +531,18 @@ pub(super) fn utc_time_nanos(t: NaiveTime, offset: i32) -> i64 {
 /// per payload, so `a = b` still implies one bucket.
 fn local_of(utc: NaiveDateTime, offset: i32) -> NaiveDateTime {
     add_offset(utc, offset).unwrap_or(utc)
+}
+
+/// The one floored decomposition of a stored nanosecond count: whole
+/// seconds and the non-negative sub-second remainder. The split floors, so
+/// a negative sub-second duration lands on seconds = -1 with a
+/// non-negative remainder — Neo4j's own stored model — and every reader of
+/// the seconds/sub-second pair shares the one rounding convention.
+fn split_seconds(nanos: i128) -> (i128, i128) {
+    (
+        nanos.div_euclid(NANOS_PER_SECOND),
+        nanos.rem_euclid(NANOS_PER_SECOND),
+    )
 }
 
 /// `n` is always a within-day nanosecond count (rem_euclid at the call sites),

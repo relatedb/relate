@@ -44,10 +44,9 @@ pub(super) fn parse_duration_iso(s: &str) -> Result<Temporal> {
     if is_datetime_style_duration(date, time) {
         parse_duration_datetime_style(date, time, &mut tiers)?;
     } else {
-        let mut fractional = false;
-        parse_duration_part(date, Part::Date, &mut tiers, &mut fractional)?;
+        let decimal_seen = parse_duration_part(date, Part::Date, &mut tiers, false)?;
         if let Some(t) = time {
-            parse_duration_part(t, Part::Time, &mut tiers, &mut fractional)?;
+            parse_duration_part(t, Part::Time, &mut tiers, decimal_seen)?;
         }
     }
     let (mut months, mut days, mut nanos) = tiers.finish()?;
@@ -72,33 +71,40 @@ enum Part {
 }
 
 /// One scanned duration component: the numeral's sign-applied whole part, its
-/// sign-applied `f64` fractional remainder, the unit letter it qualifies, and
-/// whether the numeral carried a decimal mark (the ISO grammar's
-/// decimal-only-in-the-last-component rule reads the spelling, not the
-/// value, so `P1.0Y2.5M` is rejected while `P1Y2.5M` is legal).
+/// sign-applied `f64` fractional remainder, and the unit letter it qualifies.
+/// (The ISO grammar's decimal-only-in-the-last-component rule reads the
+/// numeral's spelling, not its value, so `P1.0Y2.5M` is rejected while
+/// `P1Y2.5M` is legal; the scanner applies it.)
 struct Component {
     whole: i128,
     frac: f64,
     unit: char,
-    decimal: bool,
 }
 
 /// The component scanner for one half of an ISO duration. It owns the
-/// numeral accumulation, the one-sign-per-numeral rule, and the
+/// numeral accumulation, the one-sign-per-numeral rule, the
+/// decimal-only-in-the-last-component rule (which spans both halves, so the
+/// scanner starts from the first half's state) and the
 /// empty/trailing/dangling validation, so [`parse_duration_part`] keeps only
 /// the letter → field match and the accumulator call.
 struct ComponentScanner<'a> {
     chars: std::str::Chars<'a>,
     num: String,
     sign: i64,
+    /// A decimal numeral has been scanned in this run or an earlier half:
+    /// no component may follow it.
+    decimal_seen: bool,
 }
 
 impl<'a> ComponentScanner<'a> {
-    fn new(s: &'a str) -> Self {
+    /// A scanner over one half's run; `decimal_seen` carries the earlier
+    /// half's state (`false` for the first half).
+    fn new(s: &'a str, decimal_seen: bool) -> Self {
         Self {
             chars: s.chars(),
             num: String::new(),
             sign: 1,
+            decimal_seen,
         }
     }
 
@@ -137,11 +143,19 @@ impl<'a> ComponentScanner<'a> {
                 .ok_or_else(range_err)?;
             let frac = frac * self.sign as f64;
             self.sign = 1;
+            // Neo4j rejects a component after a decimal one with a parse
+            // failure under 22007, so the whole spelling is a typed
+            // `ArgumentError` here.
+            if self.decimal_seen {
+                return Err(Error::argument_error(
+                    "Text cannot be parsed to a Duration: a decimal is only allowed in the last component",
+                ));
+            }
+            self.decimal_seen = decimal;
             return Ok(Some(Component {
                 whole,
                 frac,
                 unit: c,
-                decimal,
             }));
         }
         // Only a unit letter flushes a component. A trailing numeral with no
@@ -156,29 +170,23 @@ impl<'a> ComponentScanner<'a> {
     }
 }
 
-/// Parse one half's component run. `fractional` is the run-spanning flag:
+/// Parse one half's component run. `decimal_seen` is the run-spanning flag:
 /// the ISO grammar allows a decimal numeral only in the duration's final
-/// component (`P1Y1.5M` is not a duration; `PT1H1.5M` is). Neo4j rejects the
-/// former with a parse failure under 22007, so the whole spelling is a typed
-/// `ArgumentError` here.
+/// component (`P1Y1.5M` is not a duration; `PT1H1.5M` is), so the first
+/// half's final state seeds the second. Returns the state after this half.
 fn parse_duration_part(
     s: &str,
     part: Part,
     tiers: &mut DurationTiers,
-    fractional: &mut bool,
-) -> Result<()> {
-    let mut scanner = ComponentScanner::new(s);
+    decimal_seen: bool,
+) -> Result<bool> {
+    let mut scanner = ComponentScanner::new(s, decimal_seen);
     while let Some(component) = scanner.next_component()? {
-        if *fractional {
-            return Err(Error::argument_error(
-                "Text cannot be parsed to a Duration: a decimal is only allowed in the last component",
-            ));
-        }
-        *fractional = component.decimal;
         // Integer parts stay exact (checked i128): a component above 2^53
         // must keep every digit, or `PT9223372036854775807S` renders
         // minutes/seconds off by one. Only the fraction goes through f64 —
         // it feeds the sub-day remainder, below the nanosecond resolution.
+        //
         // The ISO spelling's thin letter→field match; the field's tier and
         // scale are the one [`DurationField`] table's facts. The fraction
         // parks in the month tier and [`DurationTiers`]'s cascade owns the
@@ -200,7 +208,7 @@ fn parse_duration_part(
         slot.accumulator
             .add_unit(component.whole, component.frac, slot.scale)?;
     }
-    Ok(())
+    Ok(scanner.decimal_seen)
 }
 
 /// Split a duration component numeral (`"12"`, `"1.5"`, `".5"`, `"1."`)

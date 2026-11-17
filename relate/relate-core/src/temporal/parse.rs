@@ -10,8 +10,8 @@ use super::duration::parse_duration_iso;
 use super::duration_pattern::parse_duration_pattern;
 use super::pattern::{invalid_value, parse_instant_pattern};
 use super::zone::{
-    ambiguous_datetime_err, parse_offset, resolve_wall_forward, sub_offset, wall_clock, zone_kind,
-    WallClock, ZoneSpec,
+    parse_offset, resolve_wall_forward, sub_offset, zone_kind, zone_offset_mismatch, OverlapPolicy,
+    ZoneSpec,
 };
 use super::{range_err, weekday_from_i, Temporal};
 
@@ -377,10 +377,6 @@ fn parse_zoned_time(s: &str) -> Result<Temporal> {
 }
 
 /// The one spelling of a named zone contradicted by a supplied offset.
-fn zone_offset_mismatch(zone: &str) -> Error {
-    Error::ty(format!("Timezone and offset do not match: {zone}"))
-}
-
 /// A supplied offset must name the zone's own offset at that wall clock; a
 /// contradicting offset is rejected, never silently replaced by the zone's.
 /// The one check every non-overlap zone arm shares.
@@ -410,28 +406,11 @@ fn parse_zoned_dt(s: &str) -> Result<Temporal> {
         // keep — and the value is built once.
         let (local, offset, zone) = match zone_kind(z) {
             ZoneSpec::Iana(_) | ZoneSpec::Other(_) => {
-                let (local, offset) = match wall_clock(z, local)? {
-                    // A supplied offset must name the zone's own offset at
-                    // that wall clock; a contradicting offset is rejected,
-                    // never silently replaced by the zone's offset.
-                    WallClock::Unique { offset } => {
-                        check_matching_offset(z, want, offset)?;
-                        (local, offset)
-                    }
-                    WallClock::Ambiguous { earlier, later } => {
-                        let offset = match want {
-                            Some(want) if want == earlier => earlier,
-                            Some(want) if want == later => later,
-                            _ => return Err(ambiguous_datetime_err()),
-                        };
-                        (local, offset)
-                    }
-                    // An explicit offset cannot name a wall clock that never
-                    // occurs; without one, Neo4j shifts the clock forward by
-                    // the gap (ADR-0178's gap rule refined).
-                    WallClock::Gap { .. } if want.is_some() => return Err(ambiguous_datetime_err()),
-                    WallClock::Gap { .. } => resolve_wall_forward(z, local, None)?,
-                };
+                // A supplied offset must name the zone's own occurrence of
+                // the wall clock (never silently replaced), an overlap needs
+                // one, and a gap shifts forward only when none was written.
+                let policy = want.map_or(OverlapPolicy::Reject, OverlapPolicy::Require);
+                let (local, offset) = resolve_wall_forward(z, local, policy)?;
                 (local, offset, Some(z.to_string()))
             }
             ZoneSpec::Utc => {

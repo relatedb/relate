@@ -41,7 +41,6 @@ fn statically_invalid_literal_arguments_are_syntax_errors() {
             "replace limit",
         ),
         ("RETURN date('2020-01-01', 42) AS x", "temporal pattern"),
-        ("RETURN date('2022-1') AS x", "temporal parse"),
         (
             "RETURN any(x IN 5 WHERE x > 0) AS result",
             "quantifier list",

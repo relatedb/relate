@@ -15,7 +15,7 @@ use super::{note_field, pattern_error};
 /// (`y`/`u` are both [`Self::Year`]), so duplicate detection and resolution
 /// read one vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum FieldKind {
+pub(in crate::temporal) enum FieldKind {
     Year,
     WeekYear,
     Month,
@@ -50,7 +50,7 @@ pub(super) enum FieldKind {
 impl FieldKind {
     /// The Java `DateTimeFormatter` pattern letters Neo4j accepts. A
     /// letter outside this table is an invalid pattern character.
-    fn from_letter(letter: char) -> Option<Self> {
+    pub(in crate::temporal) fn from_letter(letter: char) -> Option<Self> {
         Some(match letter {
             'G' => Self::Era,
             'y' | 'u' => Self::Year,

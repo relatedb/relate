@@ -15,7 +15,7 @@ use crate::{Error, Result, Value};
 use super::clock::ClockKind;
 use super::zone::{add_offset, zone_kind, ZoneSpec};
 use super::{
-    format_zone_offset, lookup, Temporal, NANOS_PER_MICRO, NANOS_PER_MILLI, NANOS_PER_SECOND,
+    format_zone_offset, lookup, split_seconds, Temporal, NANOS_PER_MICRO, NANOS_PER_MILLI,
     SECONDS_PER_HOUR, SECONDS_PER_MINUTE,
 };
 
@@ -310,15 +310,12 @@ fn duration_component(
     nanos: i128,
     component: DurationComponent,
 ) -> Result<Value> {
-    // One decomposition, not two: the Euclidean split of the stored i128
-    // nanos into whole seconds (which floors, so a negative sub-second
-    // duration lands on seconds = -1 with a non-negative remainder — Neo4j's
-    // own stored model) and the sub-second remainder the `…OfSecond`
-    // accessors read. Every arm below is expressed over it, so the two
-    // rounding conventions cannot disagree again (the truncating fields
-    // divide the whole-second count, exactly Neo4j's accessors).
-    let total_seconds = nanos.div_euclid(NANOS_PER_SECOND);
-    let sub_nanos = nanos.rem_euclid(NANOS_PER_SECOND);
+    // One decomposition, not two: the floored split of the stored i128
+    // nanos into whole seconds and the sub-second remainder the
+    // `…OfSecond` accessors read. Every arm below is expressed over it, so
+    // the two rounding conventions cannot disagree again (the truncating
+    // fields divide the whole-second count, exactly Neo4j's accessors).
+    let (total_seconds, sub_nanos) = split_seconds(nanos);
     let total_minutes = total_seconds / SECONDS_PER_MINUTE;
     let hours = total_seconds / SECONDS_PER_HOUR;
     // Totals derived from the i128 nanosecond count can exceed i64 for

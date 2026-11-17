@@ -31,7 +31,8 @@ pub enum Construct {
     /// A YAML anchor or alias; the value model has no alias concept.
     #[error("anchors and aliases are not supported")]
     AnchorsAndAliases,
-    /// A non-finite float (`.inf` / `.nan`).
+    /// A non-finite float (`.inf` / `.nan`): rejected by the parse path and,
+    /// for a hand-built value the parser never saw, by the serializers.
     #[error("non-finite floats (.inf/.nan) are not supported")]
     NonFiniteFloat,
     /// A mapping key that is not a string.
@@ -128,9 +129,4 @@ pub enum OntologyError {
         /// The enforced nesting limit.
         limit: usize,
     },
-    /// A hand-built value carried a non-finite float (NaN/±Inf) into a
-    /// serializer. The parse path rejects non-finite floats; this error
-    /// bounds publicly-constructed values the parser never saw.
-    #[error("non-finite floats cannot be serialized; the parse path rejects them")]
-    NonFiniteFloat,
 }

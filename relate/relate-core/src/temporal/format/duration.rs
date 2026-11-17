@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 
 use crate::{Error, Result};
 
-use super::super::checked_lane;
 use super::super::duration_tokens::{self as tokens, Token, UnclosedEscape};
-use super::super::field::{DurationField, DurationTier, PatternSymbol, NANOS_PER_SECOND};
+use super::super::field::{DurationField, DurationTier, PatternSymbol};
+use super::super::{checked_lane, split_seconds};
 use super::fraction_width;
 
 /// The pattern's token stream from the shared tokenizer, with each fraction
@@ -110,10 +110,7 @@ fn cascade(
 /// sub-second fraction is the nanosecond-of-second.
 fn units(months: i64, days: i64, nanos: i128, present: &BTreeSet<DurationField>) -> Result<Units> {
     let mut units = Units {
-        fraction: checked_lane(
-            nanos.rem_euclid(NANOS_PER_SECOND),
-            DurationField::Nanos.name(),
-        )?,
+        fraction: checked_lane(split_seconds(nanos).1, DurationField::Nanos.name())?,
         ..Units::default()
     };
     // Neo4j computes the total-nanoseconds lane unconditionally, so an

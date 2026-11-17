@@ -35,6 +35,7 @@ use super::{range_err, Temporal};
 use fields::{match_tokens, Fields};
 use resolve::{resolve_date, resolve_datetime, resolve_time};
 use token::tokenize;
+pub(in crate::temporal) use token::FieldKind;
 
 /// The one spelling of a pattern/value failure. Neo4j reports pattern
 /// parse and match failures as `InvalidArgumentValue`; the harness's GQL
@@ -124,6 +125,13 @@ pub(super) fn read_number(
         range_err()
     })?;
     Ok(Some(Digits { value, digits }))
+}
+
+/// [`read_number`] for the duration grammar, whose every numeric field is a
+/// mandatory digit run (never fixed-width): a shape mismatch is the one
+/// typed [`mismatch`] error.
+pub(super) fn read_number_or_mismatch(input: &str, pos: &mut usize, sign: bool) -> Result<Digits> {
+    read_number(input, pos, None, sign)?.ok_or_else(mismatch)
 }
 
 /// The nanosecond value of a fraction's digits: `digits` fraction digits

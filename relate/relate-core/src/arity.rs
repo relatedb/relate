@@ -52,7 +52,7 @@ impl ArityContract {
     }
 
     /// Between `min` and `max` arguments, inclusive.
-    pub const fn range(min: usize, max: usize, detail: &'static str) -> Self {
+    pub(crate) const fn range(min: usize, max: usize, detail: &'static str) -> Self {
         Self { min, max, detail }
     }
 

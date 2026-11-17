@@ -92,13 +92,10 @@ impl DurationLane {
 }
 
 /// A duration field's landing slot (see [`DurationField::slot`]): the
-/// accumulator its components sum into, the unit scale of that sum, and the
-/// field's unit in its storage lane (the width a pattern component is
-/// checked against in `i64`).
+/// accumulator its components sum into and the unit scale of that sum.
 pub(super) struct FieldSlot<'a> {
     pub(super) accumulator: &'a mut exact::ExactAccumulator,
     pub(super) scale: i128,
-    pub(super) lane_unit: i128,
 }
 
 /// One resolved CIP-223 duration-pattern spelling: either a duration field
@@ -106,7 +103,7 @@ pub(super) struct FieldSlot<'a> {
 /// digits. The pattern alphabet resolves each letter to this once, so the
 /// tokenizer, the token's field projection and the renderer never re-decide
 /// what a letter means.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum PatternSymbol {
     Field(DurationField),
     /// Sub-second fraction digits (`n`, `S`) — not a field's cascade share.
@@ -198,23 +195,16 @@ impl DurationField {
         }
     }
 
-    /// Where a component of this field lands: its accumulator in `tiers`,
-    /// its unit scale and its lane unit, from one read of the field table —
-    /// no caller runs [`Self::tier_and_scale`] and [`Self::lane_and_unit`]
-    /// separately for the same field.
+    /// Where a component of this field lands: its accumulator in `tiers`
+    /// and its unit scale, from one read of the field table.
     pub(super) fn slot(self, tiers: &mut exact::DurationTiers) -> FieldSlot<'_> {
         let (tier, scale) = self.tier_and_scale();
-        let (_, lane_unit) = self.lane_and_unit();
         let accumulator = match tier {
             DurationTier::Months => &mut tiers.months,
             DurationTier::Days => &mut tiers.days,
             DurationTier::Nanos => &mut tiers.nanos,
         };
-        FieldSlot {
-            accumulator,
-            scale,
-            lane_unit,
-        }
+        FieldSlot { accumulator, scale }
     }
 
     /// The CIP-223 pattern spelling of this field — the one letter table the

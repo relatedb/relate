@@ -4,6 +4,7 @@ use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
 
 use crate::{Error, Result};
 
+use super::pattern::FieldKind;
 use super::zone::{add_offset, zone_display};
 use super::{time_to_nanos, Temporal};
 
@@ -88,7 +89,11 @@ struct PatternParts<'a> {
 }
 
 /// One pattern letter run (`len` repetitions of `c`) rendered from `parts`:
-/// the symbol table, apart from the walk over quoting and padding.
+/// the symbol table, apart from the walk over quoting and padding. The
+/// letter is classified by the instant parser's one alphabet
+/// ([`FieldKind::from_letter`]) and the match over the resulting kind is
+/// exhaustive, so a field added to the alphabet cannot be left unrendered;
+/// `c` is kept only for the spellings a kind shares (`y`/`u`, `h`/`K`, …).
 fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String> {
     let PatternParts {
         date,
@@ -96,8 +101,9 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
         offset,
         zone,
     } = parts;
-    Ok(match c {
-        'y' | 'u' | 'Y' => {
+    let kind = FieldKind::from_letter(c).ok_or_else(|| invalid_pattern_symbol(c))?;
+    Ok(match kind {
+        FieldKind::Year | FieldKind::WeekYear => {
             let d = supported_field(date)?;
             let y = if c == 'Y' {
                 d.iso_week().year()
@@ -114,7 +120,7 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
                 format!("{y:0len$}")
             }
         }
-        'M' | 'L' => {
+        FieldKind::Month => {
             let month = supported_field(date)?.month();
             if len >= 3 {
                 let full = MONTH_NAMES[month as usize - 1];
@@ -133,7 +139,7 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
                 format!("{month:0len$}")
             }
         }
-        'q' | 'Q' => {
+        FieldKind::Quarter => {
             let q = (supported_field(date)?.month0() / 3) + 1;
             match len {
                 1 => q.to_string(),
@@ -149,14 +155,14 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
                 _ => return Err(invalid_pattern_character()),
             }
         }
-        'd' => {
+        FieldKind::Day => {
             if len > 2 {
                 return Err(invalid_pattern_character());
             }
             format!("{:0len$}", supported_field(date)?.day())
         }
-        'D' => format!("{:0len$}", supported_field(date)?.ordinal()),
-        'E' => {
+        FieldKind::DayOfYear => format!("{:0len$}", supported_field(date)?.ordinal()),
+        FieldKind::DayOfWeekName => {
             let weekday = supported_field(date)?.weekday();
             let name = WEEKDAY_NAMES[weekday.num_days_from_monday() as usize];
             if len >= 4 {
@@ -165,9 +171,11 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
                 name.chars().take(3).collect()
             }
         }
-        'e' | 'c' => (supported_field(date)?.weekday().num_days_from_sunday() + 1).to_string(),
-        'w' => supported_field(date)?.iso_week().week().to_string(),
-        'W' => {
+        FieldKind::DayOfWeekNum => {
+            (supported_field(date)?.weekday().num_days_from_sunday() + 1).to_string()
+        }
+        FieldKind::Week => supported_field(date)?.iso_week().week().to_string(),
+        FieldKind::WeekOfMonth => {
             let date = supported_field(date)?;
             let first = date
                 .with_day(1)
@@ -176,33 +184,35 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
                 .num_days_from_sunday();
             ((date.day() + first - 1) / 7 + 1).to_string()
         }
-        'F' => (supported_field(date)?.day0() / 7 + 1).to_string(),
-        'g' => (supported_field(date)?.num_days_from_ce() - 678_576).to_string(),
-        'G' => {
+        FieldKind::AlignedDayOfWeek => (supported_field(date)?.day0() / 7 + 1).to_string(),
+        FieldKind::ModifiedJulianDay => {
+            (supported_field(date)?.num_days_from_ce() - 678_576).to_string()
+        }
+        FieldKind::Era => {
             if supported_field(date)?.year() <= 0 {
                 "BC".into()
             } else {
                 "AD".into()
             }
         }
-        'H' => format!("{:0len$}", supported_field(time)?.hour()),
-        'k' => {
+        FieldKind::HourOfDay => format!("{:0len$}", supported_field(time)?.hour()),
+        FieldKind::ClockHour => {
             let h = supported_field(time)?.hour();
             format!("{:0len$}", if h == 0 { 24 } else { h })
         }
-        'h' => {
+        FieldKind::HourOfAmPm if c == 'h' => {
             let h = supported_field(time)?.hour() % 12;
             format!("{:0len$}", if h == 0 { 12 } else { h })
         }
-        'K' => format!("{:0len$}", supported_field(time)?.hour() % 12),
-        'a' => {
+        FieldKind::HourOfAmPm => format!("{:0len$}", supported_field(time)?.hour() % 12),
+        FieldKind::AmPm => {
             if supported_field(time)?.hour() < 12 {
                 "AM".into()
             } else {
                 "PM".into()
             }
         }
-        'B' => {
+        FieldKind::PeriodOfDay => {
             let hour = supported_field(time)?.hour();
             match hour {
                 0..=5 => "at night",
@@ -212,17 +222,17 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
             }
             .into()
         }
-        'm' => format!("{:0len$}", supported_field(time)?.minute()),
-        's' => format!("{:0len$}", supported_field(time)?.second()),
-        'S' => {
+        FieldKind::Minute => format!("{:0len$}", supported_field(time)?.minute()),
+        FieldKind::Second => format!("{:0len$}", supported_field(time)?.second()),
+        FieldKind::Fraction => {
             let nanos = supported_field(time)?.nanosecond();
             let width = fraction_width(len)?;
             format!("{nanos:09}").chars().take(width).collect()
         }
-        'n' => supported_field(time)?.nanosecond().to_string(),
-        'N' => time_to_nanos(supported_field(time)?).to_string(),
-        'A' => (time_to_nanos(supported_field(time)?) / 1_000_000).to_string(),
-        'Z' => {
+        FieldKind::NanoOfSecond => supported_field(time)?.nanosecond().to_string(),
+        FieldKind::NanoOfDay => time_to_nanos(supported_field(time)?).to_string(),
+        FieldKind::MilliOfDay => (time_to_nanos(supported_field(time)?) / 1_000_000).to_string(),
+        FieldKind::OffsetZ => {
             let offset = supported_field(offset)?;
             match len {
                 1..=3 => format_offset(offset).replace(':', ""),
@@ -232,7 +242,7 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
                 _ => return Err(invalid_pattern_character()),
             }
         }
-        'X' | 'x' => {
+        FieldKind::OffsetFractional => {
             let offset = supported_field(offset)?;
             if offset == 0 && c == 'X' {
                 "Z".into()
@@ -253,7 +263,7 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
                 }
             }
         }
-        'O' => {
+        FieldKind::OffsetLocalized => {
             let offset = supported_field(offset)?;
             match (len, offset) {
                 (1 | 4, 0) => "GMT".into(),
@@ -265,7 +275,14 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
                 _ => return Err(invalid_pattern_character()),
             }
         }
-        'z' | 'v' => {
+        // `V` (zone id) needs an actual zone: a zoned time or local
+        // datetime has no zone, so per the matrix it is an unsupported
+        // pattern character there — not an offset fallback.
+        FieldKind::ZoneId if c == 'V' && len == 2 => supported_field(zone)?.to_string(),
+        FieldKind::ZoneId if c == 'V' => return Err(invalid_pattern_symbol(c)),
+        // `z` (zone name) and `v` (generic zone name) share the display
+        // table.
+        FieldKind::ZoneName | FieldKind::ZoneId => {
             let zone = supported_field(zone)?;
             if (c == 'z' && len > 4) || (c == 'v' && !matches!(len, 1 | 4)) {
                 return Err(invalid_pattern_character());
@@ -277,13 +294,6 @@ fn render_symbol(c: char, len: usize, parts: PatternParts<'_>) -> Result<String>
                 (Some(d), _, _) => d.short_generic.into(),
                 (None, ..) => zone.into(),
             }
-        }
-        // `V` (zone id) needs an actual zone: a zoned time or local
-        // datetime has no zone, so per the matrix it is an unsupported
-        // pattern character there — not an offset fallback.
-        'V' if len == 2 => supported_field(zone)?.to_string(),
-        _ => {
-            return Err(invalid_pattern_symbol(c));
         }
     })
 }

@@ -147,9 +147,13 @@ const CONFIG_KEYS: [(&str, KeyRule); 7] = [
     (KEY_SEARCH_EXPANSION, KeyRule::Shape(KeyShape::Number)),
 ];
 
-/// The DDL bound on `vector.dimensions` and a `vector()` call's dimension.
-pub(crate) const VECTOR_DIMENSIONS_MIN: usize = 1;
-pub(crate) const VECTOR_DIMENSIONS_MAX: usize = 4096;
+/// The DDL bound on `vector.dimensions` and a `vector()` call's dimension,
+/// the `usize` image of the one shared [`relate_model::VECTOR_DIMENSION_RANGE`]
+/// the parser and the front end consult.
+pub(crate) const VECTOR_DIMENSIONS_MIN: usize =
+    *relate_model::VECTOR_DIMENSION_RANGE.start() as usize;
+pub(crate) const VECTOR_DIMENSIONS_MAX: usize =
+    *relate_model::VECTOR_DIMENSION_RANGE.end() as usize;
 
 /// The dimension a `vector.dimensions` leaf or a `vector()` call's
 /// dimension argument may carry: within the bound, as a `usize` — the

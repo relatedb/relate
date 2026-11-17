@@ -23,14 +23,15 @@ impl DocumentFormat {
         }
     }
 
+    /// Every format, the one list [`DocumentFormat::from_name`] searches.
+    const ALL: [DocumentFormat; 2] = [DocumentFormat::Json, DocumentFormat::Yaml];
+
     /// The inverse of [`DocumentFormat::as_str`]: the format a
     /// `db.ontology.get` format argument names, `None` for any other
     /// spelling.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        [DocumentFormat::Json, DocumentFormat::Yaml]
-            .into_iter()
-            .find(|format| format.as_str() == name)
+        Self::ALL.into_iter().find(|format| format.as_str() == name)
     }
 }
 

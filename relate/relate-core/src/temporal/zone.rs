@@ -133,7 +133,7 @@ pub fn zone_offset_at(zone: &str, local: NaiveDateTime) -> std::result::Result<i
 /// policy. [`resolve_local`] folds a gap into `None`; construction needs the
 /// two offsets on either side to shift the clock forward (Neo4j's
 /// `ZonedDateTime` rule), so they are carried here.
-pub(super) enum WallClock {
+enum WallClock {
     /// Exactly one offset maps to the wall clock.
     Unique { offset: i32 },
     /// A DST fall-back overlap: the wall clock occurs twice.
@@ -141,6 +141,56 @@ pub(super) enum WallClock {
     /// A DST gap: `local` never occurs; the zone's offset steps from
     /// `before` to `after` across the transition.
     Gap { before: i32, after: i32 },
+}
+
+/// How a wall clock resolves against its zone — the one typed policy every
+/// wall-clock resolver consults instead of re-spelling the earlier/later
+/// match. Its main decision is which occurrence of a DST overlap (a wall
+/// clock that occurs twice) is kept; [`Self::admits_unique`] and
+/// [`Self::shifts_gap`] answer the two other questions a supplied offset
+/// (`Require`/`Reject`) changes, so the resolver never re-matches variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OverlapPolicy {
+    /// The earliest (pre-transition) occurrence (ADR-0178).
+    Earliest,
+    /// The occurrence at this offset when it is one of the two (a source
+    /// `datetime`'s stored offset), else the earliest.
+    Prefer(i32),
+    /// Only the occurrence at this offset (an offset written beside a
+    /// bracketed zone); another offset is ambiguous.
+    Require(i32),
+    /// Neither occurrence: the overlap itself is ambiguous (a literal that
+    /// wrote no offset).
+    Reject,
+}
+
+impl OverlapPolicy {
+    /// Whether a wall clock that occurs once, at `offset`, is accepted: only
+    /// a [`Self::Require`]d offset can contradict the zone's own.
+    pub(super) fn admits_unique(self, offset: i32) -> bool {
+        match self {
+            Self::Require(want) => want == offset,
+            Self::Earliest | Self::Prefer(_) | Self::Reject => true,
+        }
+    }
+
+    /// Whether a wall clock inside a DST gap (it never occurs) may shift
+    /// forward: an explicit [`Self::Require`]d offset cannot name it.
+    pub(super) fn shifts_gap(self) -> bool {
+        !matches!(self, Self::Require(_))
+    }
+
+    /// The offset of the occurrence this policy keeps, or `None` when the
+    /// overlap is ambiguous under it.
+    pub(super) fn pick(self, earlier: i32, later: i32) -> Option<i32> {
+        match self {
+            Self::Earliest => Some(earlier),
+            Self::Prefer(want) if want == later => Some(later),
+            Self::Prefer(_) => Some(earlier),
+            Self::Require(want) if want == earlier || want == later => Some(want),
+            Self::Require(_) | Self::Reject => None,
+        }
+    }
 }
 
 /// The offset at a UTC instant, without the wall-clock resolution policy.
@@ -151,7 +201,7 @@ fn offset_at_utc(tz: Tz, utc: NaiveDateTime) -> i32 {
 /// Classify `local` in `zone` (the wall-clock twin of
 /// [`zone_offset_at_utc`]). An unknown zone name is the only error; a gap
 /// carries the offsets on either side so a caller can shift forward.
-pub(super) fn wall_clock(zone: &str, local: NaiveDateTime) -> Result<WallClock> {
+fn wall_clock(zone: &str, local: NaiveDateTime) -> Result<WallClock> {
     let tz: Tz = zone.parse().map_err(|_| unknown_zone_err(zone))?;
     Ok(match resolve_local(tz, local) {
         LocalResolution::Unique(dt) => WallClock::Unique {
@@ -178,27 +228,35 @@ pub(super) fn wall_clock(zone: &str, local: NaiveDateTime) -> Result<WallClock> 
     })
 }
 
+/// The one spelling of a supplied offset contradicting its zone's own.
+pub(super) fn zone_offset_mismatch(zone: &str) -> Error {
+    Error::ty(format!("Timezone and offset do not match: {zone}"))
+}
+
 /// Resolve a wall clock the way Neo4j's constructors do: a unique time
-/// stands; an overlap picks the occurrence at `preferred` when that offset
-/// is one of the two (a source `datetime`'s stored offset), else the
-/// earliest; a gap shifts the wall clock forward by the gap and resolves at
-/// the post-transition offset (`datetime('2020-03-29T02:30[Europe/Stockholm]')`
-/// is `03:30+02:00`). Returns the resolved wall clock and its offset.
+/// stands (under [`OverlapPolicy::Require`] its offset must be the supplied
+/// one, else [`zone_offset_mismatch`]); an overlap picks its occurrence by
+/// `overlap` (an unpicked overlap is the ambiguous-datetime error); a gap
+/// shifts the wall clock forward by the gap and resolves at the
+/// post-transition offset (`datetime('2020-03-29T02:30[Europe/Stockholm]')`
+/// is `03:30+02:00`) — except under `Require`, where an explicit offset
+/// cannot name a wall clock that never occurs (ambiguous-datetime error).
+/// Returns the resolved wall clock and its offset.
 pub(super) fn resolve_wall_forward(
     zone: &str,
     local: NaiveDateTime,
-    preferred: Option<i32>,
+    overlap: OverlapPolicy,
 ) -> Result<(NaiveDateTime, i32)> {
     match wall_clock(zone, local)? {
-        WallClock::Unique { offset } => Ok((local, offset)),
+        WallClock::Unique { offset } if overlap.admits_unique(offset) => Ok((local, offset)),
+        WallClock::Unique { .. } => Err(zone_offset_mismatch(zone)),
         WallClock::Ambiguous { earlier, later } => {
-            let offset = match preferred {
-                Some(want) if want == earlier => earlier,
-                Some(want) if want == later => later,
-                _ => earlier,
-            };
+            let offset = overlap
+                .pick(earlier, later)
+                .ok_or_else(ambiguous_datetime_err)?;
             Ok((local, offset))
         }
+        WallClock::Gap { .. } if !overlap.shifts_gap() => Err(ambiguous_datetime_err()),
         WallClock::Gap { before, after } => {
             let shift = after - before;
             if shift <= 0 {
@@ -495,14 +553,15 @@ pub(super) fn offset_from_map(
     }
 }
 
-/// A map's inherited zone source: the [`ResolvedZone`] plus whether its
-/// stored offset may disambiguate a DST overlap. Only a `datetime` field is
-/// authoritative for that (Neo4j's `datetime({datetime: x})` keeps `x`'s
-/// offset, while `datetime({date: x, time: x})` resolves the new wall clock
-/// at the zone's earliest occurrence).
+/// A map's inherited zone source: the [`ResolvedZone`] plus
+/// the overlap policy its construction fact fixes. Only a `datetime` field's
+/// stored offset is authoritative for a DST overlap (Neo4j's
+/// `datetime({datetime: x})` keeps `x`'s offset, while
+/// `datetime({date: x, time: x})` resolves the new wall clock at the zone's
+/// earliest occurrence).
 struct SourceZone {
     zone: ResolvedZone,
-    prefer_offset: bool,
+    overlap: OverlapPolicy,
 }
 
 /// The [`SourceZone`] a map's inherited source contributes, probing the
@@ -513,27 +572,22 @@ struct SourceZone {
 fn source_offset_zone(m: &std::collections::BTreeMap<String, Value>) -> Option<SourceZone> {
     for k in ["time", "datetime"] {
         if let Some(t) = map_temporal(m, k) {
-            match t {
-                Temporal::Time { offset, .. } => {
-                    return Some(SourceZone {
-                        zone: ResolvedZone {
-                            offset: *offset,
-                            zone: None,
-                        },
-                        prefer_offset: false,
-                    })
+            // Only a `datetime` field's stored offset is authoritative for a
+            // DST overlap; every other source resolves at the earliest.
+            let (offset, zone, overlap) = match (k, t) {
+                (_, Temporal::Time { offset, .. }) => (*offset, None, OverlapPolicy::Earliest),
+                ("datetime", Temporal::DateTime { offset, zone, .. }) => {
+                    (*offset, zone.clone(), OverlapPolicy::Prefer(*offset))
                 }
-                Temporal::DateTime { offset, zone, .. } => {
-                    return Some(SourceZone {
-                        zone: ResolvedZone {
-                            offset: *offset,
-                            zone: zone.clone(),
-                        },
-                        prefer_offset: k == "datetime",
-                    })
+                (_, Temporal::DateTime { offset, zone, .. }) => {
+                    (*offset, zone.clone(), OverlapPolicy::Earliest)
                 }
-                _ => {}
-            }
+                _ => continue,
+            };
+            return Some(SourceZone {
+                zone: ResolvedZone { offset, zone },
+                overlap,
+            });
         }
     }
     None
@@ -562,31 +616,31 @@ pub(super) fn apply_timezone(
     local: NaiveDateTime,
     m: &std::collections::BTreeMap<String, Value>,
 ) -> Result<(NaiveDateTime, ResolvedZone)> {
-    let source = source_offset_zone(m);
-    if m.contains_key("timezone") {
-        if let Some(src) = source {
-            // Resolve the source zone at the local wall clock, then read the
-            // instant in the explicitly named zone.
-            let (local, src_off) = source_wall(&src, local)?;
-            let utc = sub_offset(local, src_off)?;
-            return Ok((utc, offset_from_map(m, IanaAt::Utc(utc))?));
+    match source_offset_zone(m) {
+        Some(src) => {
+            // Resolve the source zone at the local wall clock; an explicitly
+            // named zone then reads that instant, else the source keeps its
+            // own offset and zone.
+            let (local, offset) = source_wall(&src, local)?;
+            let utc = sub_offset(local, offset)?;
+            if m.contains_key("timezone") {
+                return Ok((utc, offset_from_map(m, IanaAt::Utc(utc))?));
+            }
+            Ok((
+                utc,
+                ResolvedZone {
+                    offset,
+                    zone: src.zone.zone,
+                },
+            ))
         }
-        let (local, resolved) = offset_from_map_local(m, local, None)?;
-        let utc = sub_offset(local, resolved.offset)?;
-        return Ok((utc, resolved));
+        // No inherited source: the map's own `timezone` (or UTC when it
+        // names none) resolves the wall clock.
+        None => {
+            let (local, resolved) = offset_from_map_local(m, local)?;
+            Ok((sub_offset(local, resolved.offset)?, resolved))
+        }
     }
-    if let Some(src) = source {
-        let (local, offset) = source_wall(&src, local)?;
-        let utc = sub_offset(local, offset)?;
-        return Ok((
-            utc,
-            ResolvedZone {
-                offset,
-                zone: src.zone.zone,
-            },
-        ));
-    }
-    Ok((local, ResolvedZone::utc()))
 }
 
 /// Resolve an inherited [`SourceZone`] at the local wall clock: an IANA
@@ -596,18 +650,14 @@ pub(super) fn apply_timezone(
 /// offset.
 fn source_wall(source: &SourceZone, local: NaiveDateTime) -> Result<(NaiveDateTime, i32)> {
     match source.zone.zone.as_deref().map(zone_kind) {
-        Some(ZoneSpec::Iana(name)) => resolve_wall_forward(
-            name,
-            local,
-            source.prefer_offset.then_some(source.zone.offset),
-        ),
+        Some(ZoneSpec::Iana(name)) => resolve_wall_forward(name, local, source.overlap),
         _ => Ok((local, source.zone.offset)),
     }
 }
 
 /// [`offset_from_map`]'s local-wall-clock reading for the constructors: the
 /// wall clock (shifted forward when it falls in a DST gap) and the zone it
-/// resolves in. `preferred` disambiguates an overlap.
+/// resolves in; an overlap resolves at its earliest occurrence.
 ///
 /// Only an IANA region has a wall clock to shift or an overlap to
 /// disambiguate; every other spelling answers through the one
@@ -617,7 +667,6 @@ fn source_wall(source: &SourceZone, local: NaiveDateTime) -> Result<(NaiveDateTi
 pub(super) fn offset_from_map_local(
     m: &std::collections::BTreeMap<String, Value>,
     local: NaiveDateTime,
-    preferred: Option<i32>,
 ) -> Result<(NaiveDateTime, ResolvedZone)> {
     match m.get("timezone") {
         None => Ok((local, ResolvedZone::utc())),
@@ -625,7 +674,8 @@ pub(super) fn offset_from_map_local(
             let spec = zone_kind(z);
             Ok(match spec {
                 ZoneSpec::Iana(name) => {
-                    let (local, offset) = resolve_wall_forward(name, local, preferred)?;
+                    let (local, offset) =
+                        resolve_wall_forward(name, local, OverlapPolicy::Earliest)?;
                     (
                         local,
                         ResolvedZone {
@@ -646,6 +696,66 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::*;
+
+    /// The one overlap policy: each variant keeps or rejects its own
+    /// occurrence, so no resolver re-spells the earlier/later match.
+    #[test]
+    fn overlap_policy_picks_the_occurrence_it_names() {
+        let (earlier, later) = (7200, 3600);
+        assert_eq!(OverlapPolicy::Earliest.pick(earlier, later), Some(earlier));
+        assert_eq!(
+            OverlapPolicy::Prefer(later).pick(earlier, later),
+            Some(later)
+        );
+        assert_eq!(OverlapPolicy::Prefer(0).pick(earlier, later), Some(earlier));
+        assert_eq!(
+            OverlapPolicy::Require(later).pick(earlier, later),
+            Some(later)
+        );
+        assert_eq!(OverlapPolicy::Require(0).pick(earlier, later), None);
+        assert_eq!(OverlapPolicy::Reject.pick(earlier, later), None);
+    }
+
+    /// A supplied offset is `Require`d by the one resolver: it must name the
+    /// zone's own occurrence, and cannot name a wall clock in a DST gap.
+    #[test]
+    fn resolve_wall_forward_requires_a_supplied_offset() {
+        let at = |m, d, h| {
+            NaiveDate::from_ymd_opt(2020, m, d)
+                .unwrap()
+                .and_hms_opt(h, 30, 0)
+                .unwrap()
+        };
+        let zone = "Europe/Stockholm";
+        // Unique wall clock: the matching offset stands, another is a mismatch.
+        let summer = at(7, 1, 12);
+        assert_eq!(
+            resolve_wall_forward(zone, summer, OverlapPolicy::Require(7200)).unwrap(),
+            (summer, 7200)
+        );
+        assert_eq!(
+            resolve_wall_forward(zone, summer, OverlapPolicy::Require(3600))
+                .unwrap_err()
+                .to_string(),
+            zone_offset_mismatch(zone).to_string()
+        );
+        // Overlap: `Require` picks the named occurrence, `Reject` refuses.
+        let overlap = at(10, 25, 2);
+        assert_eq!(
+            resolve_wall_forward(zone, overlap, OverlapPolicy::Require(3600))
+                .unwrap()
+                .1,
+            3600
+        );
+        assert!(resolve_wall_forward(zone, overlap, OverlapPolicy::Reject).is_err());
+        // Gap: an explicit offset is ambiguous; without one the clock shifts.
+        let gap = at(3, 29, 2);
+        assert!(resolve_wall_forward(zone, gap, OverlapPolicy::Require(3600)).is_err());
+        assert_eq!(
+            resolve_wall_forward(zone, gap, OverlapPolicy::Reject).unwrap(),
+            (at(3, 29, 3), 7200)
+        );
+    }
 
     /// ADR-0340: the UTC-instant resolver shares the typed failure
     /// vocabulary; an instant is never ambiguous, so an unknown zone is

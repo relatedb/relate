@@ -26,13 +26,8 @@ pub(super) enum ExactNumber {
 }
 
 impl ExactNumber {
-    /// `true` for an exact integer field — the map constructor's
-    /// all-integral split consults this instead of carrying a mode flag.
-    pub(super) fn is_int(&self) -> bool {
-        matches!(self, Self::Int(_))
-    }
-
-    /// The exact integer contribution, or `None` for a float field.
+    /// The exact integer contribution, or `None` for a float field — the map
+    /// constructor's all-integral split collects these.
     pub(super) fn as_int(&self) -> Option<i128> {
         match self {
             Self::Int(value) => Some(*value),
