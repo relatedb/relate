@@ -543,17 +543,10 @@ fn a_non_string_transaction_id_is_an_argument_type_error() {
 fn show_transactions_self_row_carries_the_default_columns() {
     let mut conn = connection();
     let result = conn.query("SHOW TRANSACTIONS").unwrap();
+    // Against the canonical table, so the rendered set is stated once.
     assert_eq!(
         result.header.columns,
-        [
-            "transactionId",
-            "currentQuery",
-            "database",
-            "username",
-            "status",
-            "connectionId",
-            "clientAddress",
-        ]
+        relate_front::show_columns::DEFAULT_TRANSACTION_COLUMNS
     );
     assert_eq!(
         result.rows,
@@ -581,6 +574,48 @@ fn show_transactions_self_row_reports_the_session_namespace() {
         ),
         Value::String("system".into())
     );
+}
+
+/// `SHOW TRANSACTIONS` rejects a YIELD name it does not accept: live CE
+/// 2026.10.1 answers `YIELD nope` with a SyntaxError ("Trying to YIELD
+/// non-existing column: `nope`", 42001), never a silently null column. The
+/// accepted set is wider than the rendered one (see
+/// `CatalogInfo::accepted_columns`), so a server-observability column the
+/// embedded engine has no value for stays a valid name and composes as
+/// Null, while the rendered set must not widen with it.
+#[test]
+fn show_transactions_rejects_an_unknown_yield_column() {
+    let mut conn = connection();
+    assert_ce_rejection(
+        &mut conn,
+        "SHOW TRANSACTIONS YIELD nope",
+        "is not a valid SHOW TRANSACTIONS column",
+        "SyntaxError",
+    );
+    // Driven from the canonical table, so a name added to the accepted set
+    // is covered here without the test re-spelling it.
+    for column in relate_front::show_columns::ACCEPTED_ONLY_TRANSACTION_COLUMNS {
+        let src = format!("SHOW TRANSACTIONS YIELD {column} RETURN {column}");
+        assert_eq!(
+            scalar_one(&mut conn, &src),
+            Value::Null,
+            "{src}: a live-valid column the self row does not render composes as Null"
+        );
+    }
+    // The accepted set is wider than the rendered one, so it must not reach
+    // the `YIELD *` shape: the star row and the zero-row header both stay
+    // the rendered columns, matched or not.
+    for src in [
+        "SHOW TRANSACTIONS YIELD *",
+        "SHOW TRANSACTIONS 'none-transaction-9' YIELD *",
+    ] {
+        let result = conn.query(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        assert_eq!(
+            result.header.columns,
+            relate_front::show_columns::DEFAULT_TRANSACTION_COLUMNS,
+            "{src}: YIELD * stays the rendered set"
+        );
+    }
 }
 
 /// `TERMINATE TRANSACTIONS` projects over each input row independently: a

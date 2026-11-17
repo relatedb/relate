@@ -24,18 +24,20 @@ use relate_parser::{Clause, Expr, Statement, YieldList, YieldMode};
 
 use crate::ast::collect::{check_expr_vars_defined, clause_introduced_names, projected_names};
 
-/// Every explicitly YIELD'd column must be one the command actually
-/// projects: the one validity guard the SHOW validator family shares.
+/// Every explicitly YIELD'd column must be one the command accepts in a
+/// `YIELD`: the one validity guard the SHOW validator family shares. The
+/// accepted set is the command's `YIELD *` columns, except where the
+/// descriptor overrides it ([`CatalogInfo::accepted_columns`]).
 fn check_yield_column_names(
     yields: &YieldList,
-    full: &[String],
+    accepted: &[String],
     command: &str,
 ) -> Result<(), EngineError> {
     if yields.mode() == YieldMode::Star {
         return Ok(());
     }
     for y in yields.names() {
-        if !full.iter().any(|c| c.as_str() == y) {
+        if !accepted.iter().any(|c| c.as_str() == y) {
             return Err(EngineError::semantic(
                 ErrorKind::InvalidShowColumn,
                 format!("'{y}' is not a valid {command} column"),
@@ -52,7 +54,7 @@ fn validate_show_columns(
     info: &crate::show_columns::CatalogInfo<'_>,
     outer_scope: &IdentHashSet<SmallName>,
 ) -> Result<(), EngineError> {
-    check_yield_column_names(info.yields, &info.full_columns, info.command)?;
+    check_yield_column_names(info.yields, info.accepted_columns(), info.command)?;
     validate_show_row_expressions(info, outer_scope)
 }
 

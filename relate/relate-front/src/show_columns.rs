@@ -19,6 +19,17 @@
 use relate_names::SmallName;
 use relate_parser::{Clause, Expr, PageStage, YieldList, YieldMode};
 
+/// One column table followed by another: the merge every `full_*_columns()`
+/// builder delegates to, and the one `SHOW TRANSACTIONS` uses to widen its
+/// accepted `YIELD` names past its `YIELD *` columns.
+fn merged_columns(first: &[&str], second: &[&str]) -> Vec<String> {
+    first
+        .iter()
+        .chain(second.iter())
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// `SHOW FUNCTIONS`'s default (bare, no-`YIELD`) columns -- CIP-157
 /// `show-functions-deprecatedby.feature` [7]/[9] confirm bare `SHOW
 /// FUNCTIONS` returns exactly `name`/`category`/`description`, proving
@@ -44,11 +55,7 @@ pub const NON_DEFAULT_FUNCTION_COLUMNS: &[&str] = &[
 ];
 
 pub fn full_function_columns() -> Vec<String> {
-    DEFAULT_FUNCTION_COLUMNS
-        .iter()
-        .chain(NON_DEFAULT_FUNCTION_COLUMNS.iter())
-        .map(|s| s.to_string())
-        .collect()
+    merged_columns(DEFAULT_FUNCTION_COLUMNS, NON_DEFAULT_FUNCTION_COLUMNS)
 }
 
 /// `SHOW CONSTRAINTS`'s default (bare, no-`YIELD`) columns -- CIP-46's
@@ -77,11 +84,7 @@ pub const NON_DEFAULT_CONSTRAINT_COLUMNS: &[&str] =
     &["classification", "options", "createStatement"];
 
 pub fn full_constraint_columns() -> Vec<String> {
-    DEFAULT_CONSTRAINT_COLUMNS
-        .iter()
-        .chain(NON_DEFAULT_CONSTRAINT_COLUMNS.iter())
-        .map(|s| s.to_string())
-        .collect()
+    merged_columns(DEFAULT_CONSTRAINT_COLUMNS, NON_DEFAULT_CONSTRAINT_COLUMNS)
 }
 
 /// `SHOW INDEXES`'s default (bare, no-`YIELD`) columns -- CIP-46's
@@ -118,11 +121,7 @@ pub const NON_DEFAULT_INDEX_COLUMNS: &[&str] = &[
 ];
 
 pub fn full_index_columns() -> Vec<String> {
-    DEFAULT_INDEX_COLUMNS
-        .iter()
-        .chain(NON_DEFAULT_INDEX_COLUMNS.iter())
-        .map(|s| s.to_string())
-        .collect()
+    merged_columns(DEFAULT_INDEX_COLUMNS, NON_DEFAULT_INDEX_COLUMNS)
 }
 
 /// `SHOW DATABASES`'s columns that are visible to a bare (no-`YIELD`)
@@ -159,11 +158,7 @@ pub const NON_DEFAULT_DATABASE_COLUMNS: &[&str] = &[
 ];
 
 pub fn full_database_columns() -> Vec<String> {
-    DEFAULT_DATABASE_COLUMNS
-        .iter()
-        .chain(NON_DEFAULT_DATABASE_COLUMNS.iter())
-        .map(|s| s.to_string())
-        .collect()
+    merged_columns(DEFAULT_DATABASE_COLUMNS, NON_DEFAULT_DATABASE_COLUMNS)
 }
 
 /// `SHOW PROCEDURES`'s default (bare, no-`YIELD`) columns -- CIP-157
@@ -190,11 +185,7 @@ pub const NON_DEFAULT_PROCEDURE_COLUMNS: &[&str] = &[
 ];
 
 pub fn full_procedure_columns() -> Vec<String> {
-    DEFAULT_PROCEDURE_COLUMNS
-        .iter()
-        .chain(NON_DEFAULT_PROCEDURE_COLUMNS.iter())
-        .map(|s| s.to_string())
-        .collect()
+    merged_columns(DEFAULT_PROCEDURE_COLUMNS, NON_DEFAULT_PROCEDURE_COLUMNS)
 }
 
 /// `SHOW SETTINGS`'s default (bare, no-`YIELD`) columns: live Neo4j
@@ -214,11 +205,7 @@ pub const NON_DEFAULT_SETTING_COLUMNS: &[&str] = &[
 ];
 
 pub fn full_setting_columns() -> Vec<String> {
-    DEFAULT_SETTING_COLUMNS
-        .iter()
-        .chain(NON_DEFAULT_SETTING_COLUMNS.iter())
-        .map(|s| s.to_string())
-        .collect()
+    merged_columns(DEFAULT_SETTING_COLUMNS, NON_DEFAULT_SETTING_COLUMNS)
 }
 
 /// `SHOW GRAPH TYPE <name>`: a fixed `name`/`body` column pair (CIP-180; no
@@ -232,7 +219,8 @@ pub const GRAPH_TYPE_COLUMNS: &[&str] = &["name", "body"];
 pub const CURRENT_GRAPH_TYPE_COLUMNS: &[&str] = &["specification"];
 pub const CURRENT_GRAPH_TYPE_AS_GRAPH_COLUMNS: &[&str] = &["nodes", "relationships"];
 
-/// `SHOW TRANSACTION[S]`'s columns (no default-vs-full split).
+/// `SHOW TRANSACTION[S]`'s default columns: the seven the embedded engine's
+/// single self row renders, and the whole of a bare `SHOW TRANSACTIONS`.
 pub const DEFAULT_TRANSACTION_COLUMNS: &[&str] = &[
     "transactionId",
     "currentQuery",
@@ -241,6 +229,48 @@ pub const DEFAULT_TRANSACTION_COLUMNS: &[&str] = &[
     "status",
     "connectionId",
     "clientAddress",
+];
+
+/// `SHOW TRANSACTION[S]`'s accepted-but-not-rendered columns: the
+/// server-observability names live accepts in `YIELD` that the embedded
+/// engine's self row has no value for, so they compose as Null. Unlike every
+/// other `NON_DEFAULT_*` table in this module this is not the second half of
+/// a `full_*_columns()` builder -- these names are not in `full_columns` at
+/// all, they only widen what an explicit `YIELD` may name.
+pub const ACCEPTED_ONLY_TRANSACTION_COLUMNS: &[&str] = &[
+    "activeLockCount",
+    "allocatedDirectBytes",
+    "cpuTime",
+    "currentQueryActiveLockCount",
+    "currentQueryAllocatedBytes",
+    "currentQueryCpuTime",
+    "currentQueryElapsedTime",
+    "currentQueryId",
+    "currentQueryIdleTime",
+    "currentQueryPageFaults",
+    "currentQueryPageHits",
+    "currentQueryProgress",
+    "currentQueryStartTime",
+    "currentQueryStatus",
+    "currentQueryWaitTime",
+    "elapsedTime",
+    "estimatedUsedHeapMemory",
+    "idleTime",
+    "indexes",
+    "initializationStackTrace",
+    "metaData",
+    "outerTransactionId",
+    "pageFaults",
+    "pageHits",
+    "parameters",
+    "planner",
+    "protocol",
+    "requestUri",
+    "resourceInformation",
+    "runtime",
+    "startTime",
+    "statusDetails",
+    "waitTime",
 ];
 
 /// `TERMINATE TRANSACTION[S]`'s columns (no default-vs-full split).
@@ -263,9 +293,9 @@ pub struct CatalogInfo<'a> {
     pub where_expr: Option<&'a Expr>,
     pub stages: &'a [PageStage],
     pub prefill: bool,
-    /// Whether the front-end SHOW validator owns this command's YIELD/WHERE
-    /// check (the seven pre-existing families; the CIP-68 additions keep
-    /// their prior behavior).
+    /// Whether the front-end SHOW validator owns this command's YIELD-name
+    /// and WHERE-scope check. Set wherever live rejects an unknown `YIELD`
+    /// name; the commands that keep their own error ordering leave it unset.
     pub validate_columns: bool,
     /// Whether the command belongs to the CIP-123/242/253 composability
     /// family. The two graph-type commands do not: they carry their own
@@ -278,6 +308,12 @@ pub struct CatalogInfo<'a> {
     pub graph_schema_catalog: bool,
     pub default_columns: &'static [&'static str],
     pub full_columns: Vec<String>,
+    /// The override for the names an explicit `YIELD` may name, for the one
+    /// command whose accepted set differs from its `YIELD *` columns.
+    /// `None` -- every command but `SHOW TRANSACTIONS` -- means it accepts
+    /// exactly what it carries. Read through [`Self::accepted_columns`],
+    /// never directly.
+    accepted_columns: Option<Vec<String>>,
 }
 
 /// How a catalog clause projects its columns: `YIELD *` passes the raw row
@@ -291,6 +327,17 @@ pub enum CatalogProjection {
 }
 
 impl CatalogInfo<'_> {
+    /// The names an explicit `YIELD` may name: the override when a command
+    /// has one, its `YIELD *` set otherwise. `SHOW TRANSACTIONS` is the one
+    /// command that overrides -- live accepts far more names there than the
+    /// self row renders, so the validator's set and the row's shape are two
+    /// different questions, and this is the one place that records it.
+    pub fn accepted_columns(&self) -> &[String] {
+        self.accepted_columns
+            .as_deref()
+            .unwrap_or(&self.full_columns)
+    }
+
     /// The one derivation from the yield mode to the projection columns.
     pub fn projection(&self) -> CatalogProjection {
         match self.yields.mode() {
@@ -329,6 +376,7 @@ pub fn catalog_info(clause: &Clause) -> Option<CatalogInfo<'_>> {
             graph_schema_catalog: $graph_schema:expr,
             defaults: $defaults:expr,
             full: $full:expr,
+            $(accepted: $accepted:expr,)?
             $(arguments: $arguments:expr,)?
         ) => {
             Some(CatalogInfo {
@@ -350,6 +398,14 @@ pub fn catalog_info(clause: &Clause) -> Option<CatalogInfo<'_>> {
                 graph_schema_catalog: $graph_schema,
                 default_columns: $defaults,
                 full_columns: $full,
+                // Optional so only the command whose accepted YIELD names
+                // differ from its `YIELD *` columns spells them.
+                accepted_columns: {
+                    #[allow(unused_mut)]
+                    let mut accepted: Option<Vec<String>> = None;
+                    $(accepted.get_or_insert_with(|| $accepted);)?
+                    accepted
+                },
             })
         };
     }
@@ -476,7 +532,9 @@ pub fn catalog_info(clause: &Clause) -> Option<CatalogInfo<'_>> {
             where_expr: c.where_expr.as_ref(),
             stages: &c.stages,
             prefill: false,
-            validate_columns: false,
+            // Live rejects an unknown YIELD column here (`YIELD nope` is a
+            // 42001 SyntaxError), so the check runs.
+            validate_columns: true,
             composable: true,
             graph_schema_catalog: false,
             defaults: DEFAULT_TRANSACTION_COLUMNS,
@@ -484,6 +542,14 @@ pub fn catalog_info(clause: &Clause) -> Option<CatalogInfo<'_>> {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            // The one command whose accepted YIELD names are wider than the
+            // columns it renders: live rejects an unknown name here but
+            // accepts its server-observability columns too, and those compose
+            // as Null rather than being refused.
+            accepted: merged_columns(
+                DEFAULT_TRANSACTION_COLUMNS,
+                ACCEPTED_ONLY_TRANSACTION_COLUMNS,
+            ),
             arguments: c.ids.iter(),
         ),
         Clause::TerminateTransactions(c) => info!(
@@ -726,6 +792,38 @@ mod tests {
             for d in defaults {
                 assert!(full.iter().any(|c| c == d), "full set lost default {d}");
             }
+        }
+    }
+
+    /// `SHOW TRANSACTIONS` is the one command whose accepted `YIELD` names
+    /// are wider than the columns a `YIELD *` row carries. Pinned at the
+    /// descriptor, not at the table arithmetic: what can break is the
+    /// wiring -- which set the command renders and which it accepts -- and
+    /// the two tables must stay disjoint or the same name would be both
+    /// rendered and accepted-only.
+    #[test]
+    fn show_transactions_renders_the_defaults_and_accepts_both_tables() {
+        let show_transactions = clause("SHOW TRANSACTIONS");
+        let info = catalog_info(&show_transactions).expect("a catalog command");
+        assert_eq!(
+            info.full_columns, DEFAULT_TRANSACTION_COLUMNS,
+            "YIELD * stays the rendered set"
+        );
+        // Equality, not containment: a name accepted from neither table -- a
+        // stray literal on the arm -- would pass a membership loop.
+        assert_eq!(
+            info.accepted_columns(),
+            merged_columns(
+                DEFAULT_TRANSACTION_COLUMNS,
+                ACCEPTED_ONLY_TRANSACTION_COLUMNS
+            ),
+            "the accepted set is both tables"
+        );
+        for name in ACCEPTED_ONLY_TRANSACTION_COLUMNS {
+            assert!(
+                !DEFAULT_TRANSACTION_COLUMNS.contains(name),
+                "{name} is both rendered and accepted-only"
+            );
         }
     }
 }
