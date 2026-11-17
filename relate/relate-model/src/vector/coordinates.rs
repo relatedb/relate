@@ -54,8 +54,16 @@ pub enum VectorCoordToken {
 impl VectorCoordToken {
     fn classify(token: &str) -> Self {
         let token = token.trim();
-        if let Ok(value) = token.replace('_', "").parse::<f64>() {
-            return VectorCoordToken::Number(value);
+        // Rust's `f64` grammar is wider than the dialect's number literal
+        // (`inf`, `nan`, `infinity`): only a token that opens like a numeric
+        // literal is a number; a bare word falls through to `NonNumeric`.
+        let opens_numeric = token
+            .trim_start_matches(['+', '-'])
+            .starts_with(|c: char| c.is_ascii_digit() || c == '.');
+        if opens_numeric {
+            if let Ok(value) = token.replace('_', "").parse::<f64>() {
+                return VectorCoordToken::Number(value);
+            }
         }
         let quoted = token.starts_with('\'') || token.starts_with('"');
         let word = token
@@ -83,4 +91,51 @@ pub fn dimension_range_text() -> String {
         VECTOR_DIMENSION_RANGE.start(),
         VECTOR_DIMENSION_RANGE.end()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numeric_literals_classify_as_numbers() {
+        for token in ["1", "-2.5", " 1_000 ", ".5", "+3", "1e3"] {
+            assert!(
+                matches!(
+                    VectorCoordToken::classify(token),
+                    VectorCoordToken::Number(_)
+                ),
+                "{token}"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_only_float_spellings_are_not_numbers() {
+        for token in ["inf", "NaN", "infinity"] {
+            assert_eq!(
+                VectorCoordToken::classify(token),
+                VectorCoordToken::NonNumeric,
+                "{token}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_signed_word_is_malformed() {
+        assert_eq!(
+            VectorCoordToken::classify("-inf"),
+            VectorCoordToken::Malformed
+        );
+    }
+
+    #[test]
+    fn parse_coordinates_rejects_non_numbers() {
+        assert_eq!(
+            VectorCoordKind::parse_coordinates("[1, 2.5]"),
+            Some(vec![1.0, 2.5])
+        );
+        assert_eq!(VectorCoordKind::parse_coordinates("[1, inf]"), None);
+        assert_eq!(VectorCoordKind::parse_coordinates("1, 2"), None);
+    }
 }

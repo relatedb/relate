@@ -786,7 +786,7 @@ impl<'a> Parser<'a> {
             rel.where_expr = tail.where_expr;
 
             if legacy_pipe_colon
-                && (rel.variable.is_some() || rel.has_properties || rel.min_hops.is_some())
+                && (rel.variable.is_some() || rel.has_properties || rel.is_variable_length())
             {
                 return Err(self.error(
                     "InvalidRelationshipPattern: the semantics of using colon in the separation of alternative relationship types in conjunction with the use of variable binding, inlined property predicates, or variable length is no longer supported. Please separate the relationship types with a single bar between them instead",

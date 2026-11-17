@@ -108,8 +108,8 @@ pub use self::functions::{
     KNOWN_FUNCTIONS,
 };
 pub use self::index_hint::validate_index_hints;
-pub(crate) use self::match_shape::validate_expr_pattern_shape;
 pub use self::match_shape::validate_match_shape;
+pub(crate) use self::match_shape::validate_shortest_path_expr_shape;
 pub use self::page_bounds::validate_limit_skip;
 pub(crate) use self::safe_mode::validate_statement_shape;
 pub use self::scope::validate_variable_types;
@@ -493,7 +493,7 @@ pub(crate) fn validate_statement_tree_with_options_and_policy(
             validate_expr_traversal_bounds(expr, policy.max_traversal_depth)?;
             // The expression-embedded pattern shapes: a shortest-path
             // expression's own shape and its bound endpoints.
-            validate_expr_pattern_shape(expr)?;
+            validate_shortest_path_expr_shape(expr)?;
             // The expression-node half of the non-aggregating-position
             // policy (comprehension/quantifier/reduce slots): the walk
             // visits every expression of every clause at every depth, so a

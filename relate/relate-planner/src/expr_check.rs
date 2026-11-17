@@ -13,7 +13,7 @@ use relate_front::agg::is_aggregate_name as is_agg_fn;
 use relate_ir::{BinaryOp, Clause, Expr, MapProjectionItem, UnaryOp};
 use relate_names::SmallName;
 
-use crate::binding::{pattern_local_bindings, Binding, Env, EnvBridge};
+use crate::binding::{pattern_local_bindings, require_bound, Binding, Env, EnvBridge};
 use crate::expr_text::graph_call_text;
 use crate::names::query_output_names_with_seed;
 use crate::names::query_with_persistent_imports;
@@ -49,15 +49,14 @@ impl ExprPos {
         matches!(self, ExprPos::Boolean(_))
     }
 
-    /// The position `expr`'s operands enter: a boolean connective or `NOT`
-    /// reads booleans, every other node reads values.
-    fn of_operands(expr: &Expr) -> Self {
-        match expr {
-            Expr::Unary {
-                op: UnaryOp::Not, ..
-            } => ExprPos::Boolean("NOT"),
-            Expr::Binary { op, .. } if op.is_boolean() => ExprPos::Boolean(op.as_str()),
-            _ => ExprPos::Value,
+    /// The position a binary operator's operands enter: a boolean connective
+    /// reads booleans, every other operator reads values (`NOT` is the one
+    /// boolean-reading unary, spelled at its arm).
+    fn of_binary_operands(op: BinaryOp) -> Self {
+        if op.is_boolean() {
+            ExprPos::Boolean(op.as_str())
+        } else {
+            ExprPos::Value
         }
     }
 
@@ -281,9 +280,7 @@ fn check_expr_ctx(
 ) -> Result<()> {
     match expr {
         Expr::Variable(v) => {
-            if !env.contains_name(v) {
-                return Err(v.with_str(Error::undefined_variable));
-            }
+            require_bound(env, v)?;
         }
         Expr::Star => {}
         Expr::Function { name, args, .. } => {
@@ -295,15 +292,17 @@ fn check_expr_ctx(
             }
             expr.try_each_child(&mut |child| check_expr(env, &mut *is_write_procedure, child))?;
         }
-        Expr::Unary { .. } => {
-            let operand_pos = ExprPos::of_operands(expr);
-            expr.try_each_child(&mut |c| {
-                check_expr_ctx(env, &mut *is_write_procedure, c, operand_pos)?;
-                operand_pos.reject_static_non_bool(c)
-            })?;
+        Expr::Unary { op, expr: operand } => {
+            let operand_pos = match op {
+                UnaryOp::Not => ExprPos::Boolean("NOT"),
+                UnaryOp::Plus | UnaryOp::Minus | UnaryOp::IsNull | UnaryOp::IsNotNull => {
+                    ExprPos::Value
+                }
+            };
+            check_operands(env, is_write_procedure, operand_pos, &[operand.as_ref()])?;
         }
         Expr::Binary { op, left, right } => {
-            check_binary(env, is_write_procedure, expr, *op, left, right)?;
+            check_binary(env, is_write_procedure, *op, left, right)?;
         }
         Expr::Case {
             when_then,
@@ -461,9 +460,7 @@ fn check_expr_ctx(
                         }
                     }
                     MapProjectionItem::Variable { name } => {
-                        if !env.contains_name(name) {
-                            return Err(name.with_str(Error::undefined_variable));
-                        }
+                        require_bound(env, name)?;
                     }
                     MapProjectionItem::AllProperties => {}
                 }
@@ -559,12 +556,29 @@ fn check_call(
     Ok(())
 }
 
+/// Walk every operand at `pos`, then reject a statically non-boolean one when
+/// `pos` reads booleans: all operands are walked first, so a name error
+/// outranks the static type rejection.
+fn check_operands(
+    env: &Env,
+    is_write_procedure: &mut impl FnMut(&str) -> bool,
+    pos: ExprPos,
+    operands: &[&Expr],
+) -> Result<()> {
+    for operand in operands {
+        check_expr_ctx(env, is_write_procedure, operand, pos)?;
+    }
+    for operand in operands {
+        pos.reject_static_non_bool(operand)?;
+    }
+    Ok(())
+}
+
 /// A binary node's checks: the absorbing-constant fold, operand walks, the
 /// boolean-operand requirement, and the `IN` list rule.
 fn check_binary(
     env: &Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
-    expr: &Expr,
     op: BinaryOp,
     left: &Expr,
     right: &Expr,
@@ -579,15 +593,12 @@ fn check_binary(
     if op.absorbing_constant(left, right).is_some() {
         return Ok(());
     }
-    let operand_pos = ExprPos::of_operands(expr);
-    for c in [left, right] {
-        check_expr_ctx(env, is_write_procedure, c, operand_pos)?;
-    }
-    // The boolean operators require boolean operands: both operands are
-    // walked first, so a name error outranks the static type rejection.
-    for c in [left, right] {
-        operand_pos.reject_static_non_bool(c)?;
-    }
+    check_operands(
+        env,
+        is_write_procedure,
+        ExprPos::of_binary_operands(op),
+        &[left, right],
+    )?;
     if op == BinaryOp::In {
         if let Expr::Bool(_) | Expr::Int(_) | Expr::Float(_) | Expr::String(_) = right {
             return Err(Error::syntax(format!(

@@ -79,6 +79,15 @@ pub(crate) fn shadowable_imports(env: &Env) -> std::collections::HashSet<String>
         .collect()
 }
 
+/// The one undefined-variable check: `name` must already be bound in `env`.
+pub(crate) fn require_bound(env: &Env, name: &SmallName) -> Result<()> {
+    if env.contains_name(name) {
+        Ok(())
+    } else {
+        Err(name.with_str(Error::undefined_variable))
+    }
+}
+
 /// Whether a NEW pattern binding of `name` collides with the scope. A
 /// shadowable non-entity import is *fresh* for a pattern binding (the
 /// pattern rebinds it), so it does not count as already bound — the binder's
@@ -156,12 +165,8 @@ pub(crate) fn bind(
     env: &mut Env,
     name: &SmallName,
     kind: Binding,
-    create: bool,
     shadowable: &std::collections::HashSet<String>,
 ) -> Result<()> {
-    if create && env.contains_name(name) {
-        return Err(name.with_str(Error::duplicate_variable));
-    }
     // A shadowable non-entity import is a fresh binding inside this scope
     // ([`effectively_bound`]'s answer): the pattern's own declaration
     // replaces it, whichever entity kind it is (a node, a relationship, or
@@ -170,25 +175,23 @@ pub(crate) fn bind(
         env.insert_name(name.clone(), kind);
         return Ok(());
     }
+    let prev = env
+        .get_name(name)
+        .copied()
+        .expect("effectively_bound is true only for a bound name");
     // A path may not rebind an existing name at all (a path is never the
     // reuse shape: its element variables were bound moments ago).
     if kind == Binding::Path {
         return Err(name.with_str(Error::duplicate_variable));
     }
-    match env.get_name(name).copied() {
-        None => {
-            env.insert_name(name.clone(), kind);
-            Ok(())
-        }
-        Some(prev) if prev == kind => Ok(()),
-        // A list of relationships may be reused as a var-length pattern.
-        Some(Binding::List) if kind == Binding::Rel => Ok(()),
+    match prev {
+        prev if prev == kind => Ok(()),
         // The unconstrained `Value` adopts any concrete kind.
-        Some(Binding::Value) => {
+        Binding::Value => {
             env.insert_name(name.clone(), kind);
             Ok(())
         }
-        Some(_) => Err(variable_type_conflict(name)),
+        _ => Err(variable_type_conflict(name)),
     }
 }
 
@@ -202,41 +205,10 @@ fn variable_type_conflict(name: &SmallName) -> Error {
 pub(crate) fn bind_path(
     env: &mut Env,
     p: &PathPattern,
-    create: bool,
     shadowable: &std::collections::HashSet<String>,
 ) -> Result<()> {
-    // openCypher TCK `clauses/match/Match3.feature` #29 (the language floor):
-    // a relationship variable reused in a pattern that closes back onto a
-    // repeated node variable is a compile-time RelationshipUniquenessViolation.
-    if !create
-        && p.nodes
-            .first()
-            .and_then(|node| node.variable.as_ref())
-            .zip(p.nodes.last().and_then(|node| node.variable.as_ref()))
-            .is_some_and(|(first, last)| first == last)
-    {
-        let mut rels = std::collections::HashSet::new();
-        if p.rels
-            .iter()
-            .filter_map(|rel| rel.variable.as_ref())
-            .any(|name| !rels.insert(name))
-        {
-            return Err(Error::syntax(
-                "RelationshipUniquenessViolation: a relationship variable cannot be reused in a closed legacy pattern",
-            ));
-        }
-    }
     for (name, binding) in pattern_local_bindings(p) {
-        // A non-var-length relationship variable reusing a name already
-        // bound to a list is a type clash (the var-length reuse is the
-        // legal shape; `bind` admits it below).
-        if binding == Binding::Rel
-            && effectively_bound(env, shadowable, name)
-            && env.get_name(name) == Some(&Binding::List)
-        {
-            return Err(variable_type_conflict(name));
-        }
-        bind(env, name, binding, create, shadowable)?;
+        bind(env, name, binding, shadowable)?;
     }
     Ok(())
 }

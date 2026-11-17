@@ -57,7 +57,7 @@ pub(super) fn check_match_clause(
     crate::pattern::check_shortest_path_bound_relationships(patterns, env, shadowable)?;
     for p in patterns {
         check_juxtaposition(p)?;
-        bind_path(env, p, false, shadowable)?;
+        bind_path(env, p, shadowable)?;
     }
     for p in patterns {
         check_path_exprs(env, is_write_procedure, p)?;
@@ -74,8 +74,6 @@ pub(super) fn check_match_clause(
         for expr in search.spec.exprs() {
             check_expr(env, is_write_procedure, expr)?;
         }
-    }
-    if let Some(search) = search {
         if let Some(score_var) = &search.score_var {
             env.insert_name(score_var.clone(), Binding::Value);
         }
@@ -325,7 +323,7 @@ pub(super) fn check_with_clause(
         if matches!(item.expr, Expr::Star) {
             continue;
         }
-        if item.alias.is_none() && !matches!(item.expr, Expr::Variable(_)) {
+        if super::is_unaliased_expression(item) {
             return Err(Error::syntax(
                 "NoExpressionAlias: WITH expressions must be aliased",
             ));
@@ -609,21 +607,11 @@ pub(super) fn check_foreach_clause(
         unreachable!("clause arm");
     };
     check_expr(env, is_write_procedure, list)?;
-    let mut inner = env.clone();
-    inner.insert_name(variable.clone(), Binding::Value);
-    // The body is a fresh scope: every name the enclosing scopes bound is
-    // shadowable by a CREATE/MERGE declaration there, while the loop variable
-    // — declared in the body's own scope, even when an enclosing scope bound
-    // the same name — is not.
-    let mut body_shadowable: std::collections::HashSet<String> = env.keys().cloned().collect();
-    variable.with_str(|text| {
-        body_shadowable.remove(text);
-    });
     validate_part_with_env(
         &SingleQuery {
             clauses: clauses.clone(),
         },
-        super::Scope::foreach_body(inner, body_shadowable),
+        super::Scope::foreach_body(env, variable),
         is_write_procedure,
     )?;
 

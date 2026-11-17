@@ -7,7 +7,7 @@ use relate_core::{Error, Result};
 use relate_ir::{any_pattern_payload, expr_vars, PathPattern, PatternElement, PatternPayload};
 use relate_names::SmallName;
 
-use crate::binding::{Binding, Env, EnvBridge};
+use crate::binding::{require_bound, Binding, Env, EnvBridge};
 use crate::expr_check::{check_expr, check_pred};
 
 pub(crate) fn check_path_exprs(
@@ -173,15 +173,11 @@ pub(crate) fn check_pattern_pred_vars(
     p: &PathPattern,
 ) -> Result<()> {
     for name in p.path_names() {
-        if !env.contains_name(name) {
-            return Err(name.with_str(Error::undefined_variable));
-        }
+        require_bound(env, name)?;
     }
     for n in &p.nodes {
         if let Some(v) = &n.variable {
-            if !env.contains_name(v) {
-                return Err(v.with_str(Error::undefined_variable));
-            }
+            require_bound(env, v)?;
         }
         if let Some(e) = &n.properties {
             check_expr(env, is_write_procedure, e)?;
@@ -189,9 +185,7 @@ pub(crate) fn check_pattern_pred_vars(
     }
     for r in &p.rels {
         if let Some(v) = &r.variable {
-            if !env.contains_name(v) {
-                return Err(v.with_str(Error::undefined_variable));
-            }
+            require_bound(env, v)?;
         }
         if let Some(e) = &r.properties {
             check_expr(env, is_write_procedure, e)?;

@@ -3,8 +3,9 @@
 
 use relate_core::{Error, Result};
 use relate_ir::{Clause, Expr, Query, SingleQuery};
+use relate_names::SmallName;
 
-use crate::binding::Env;
+use crate::binding::{Binding, Env, EnvBridge};
 use crate::expr_check::check_expr;
 
 mod clause;
@@ -65,11 +66,18 @@ impl Scope {
         }
     }
 
-    /// A FOREACH body: it shares the enclosing scope, so nothing is an
-    /// aggregation import; the enclosing names are shadowable by the body's
-    /// own CREATE/MERGE declarations (the loop variable excluded by the
-    /// caller).
-    pub(crate) fn foreach_body(env: Env, shadowable: std::collections::HashSet<String>) -> Self {
+    /// A FOREACH body: it shares the enclosing scope (`outer`), so nothing is
+    /// an aggregation import; the enclosing names are shadowable by the
+    /// body's own CREATE/MERGE declarations, while the loop variable —
+    /// declared in the body's own scope, even when an enclosing scope bound
+    /// the same name — is not.
+    pub(crate) fn foreach_body(outer: &Env, loop_variable: &SmallName) -> Self {
+        let mut shadowable: std::collections::HashSet<String> = outer.keys().cloned().collect();
+        loop_variable.with_str(|text| {
+            shadowable.remove(text);
+        });
+        let mut env = outer.clone();
+        env.insert_name(loop_variable.clone(), Binding::Value);
         Self {
             env,
             imports: crate::agg::Imports::new(),
@@ -219,16 +227,10 @@ pub(crate) fn validate_stage_with_env(
     }
     for part in &query.parts {
         validate_part_with_env(part, Scope::stage(seed_env.clone()), is_write_procedure)?;
-        if query.next.is_some() {
-            if let Some(Clause::Return { items, .. }) = part.clauses.last() {
-                if items.iter().any(|item| {
-                    item.alias.is_none() && !matches!(item.expr, Expr::Variable(_) | Expr::Star)
-                }) {
-                    return Err(Error::syntax(
-                        "NoExpressionAlias: expression in RETURN followed by NEXT must use AS",
-                    ));
-                }
-            }
+        if query.next.is_some() && last_return_has_unaliased_expression(part) {
+            return Err(Error::syntax(
+                "NoExpressionAlias: expression in RETURN followed by NEXT must use AS",
+            ));
         }
         if matches!(
             part.clauses.last(),
@@ -386,16 +388,28 @@ fn check_bare_import_redeclaration(
     Ok(())
 }
 
+/// The one spelling of the projection alias rule the `NEXT` tail, a
+/// conditional branch and a `WITH` share: an item with no `AS` must be a bare
+/// variable or `*`; any other expression needs its alias. Each site keeps its
+/// own text.
+fn is_unaliased_expression(item: &relate_ir::Projection) -> bool {
+    item.alias.is_none() && !matches!(item.expr, Expr::Variable(_) | Expr::Star)
+}
+
+/// Whether the part's terminal `RETURN` carries an unaliased expression.
+fn last_return_has_unaliased_expression(part: &SingleQuery) -> bool {
+    matches!(
+        part.clauses.last(),
+        Some(Clause::Return { items, .. }) if items.iter().any(is_unaliased_expression)
+    )
+}
+
 fn validate_conditional_returns(query: &Query) -> Result<()> {
     for part in &query.parts {
-        if let Some(Clause::Return { items, .. }) = part.clauses.last() {
-            for item in items {
-                if item.alias.is_none() && !matches!(item.expr, Expr::Variable(_) | Expr::Star) {
-                    return Err(Error::syntax(
-                        "NoExpressionAlias: expressions returned by conditional clauses must use AS",
-                    ));
-                }
-            }
+        if last_return_has_unaliased_expression(part) {
+            return Err(Error::syntax(
+                "NoExpressionAlias: expressions returned by conditional clauses must use AS",
+            ));
         }
     }
     Ok(())

@@ -169,9 +169,9 @@ pub fn validate_foreach_body(clauses: &[Clause]) -> Result<(), EngineError> {
 ///
 /// The parser's [`Clause::keyword`] is the one keyword table; only the
 /// spellings it cannot serve stay here — the `FOR` alias (reported as
-/// `FOR`, not `UNWIND`), the grouped catalog names Neo4j words as a phrase,
-/// and the updating-clause fallback (those never reach this renderer:
-/// `is_updating_clause` admits them first).
+/// `FOR`, not `UNWIND`) and the grouped catalog names Neo4j words as a phrase
+/// (an updating clause never reaches this renderer: `is_updating_clause`
+/// admits it first).
 fn foreach_body_clause_name(clause: &Clause) -> &'static str {
     match clause {
         Clause::Unwind(unwind) if unwind.for_syntax => "FOR",
@@ -190,12 +190,6 @@ fn foreach_body_clause_name(clause: &Clause) -> &'static str {
         | Clause::ShowSettings(_)
         | Clause::ShowTransactions(_)
         | Clause::TerminateTransactions(_) => "SHOW/TERMINATE",
-        Clause::Create(_)
-        | Clause::Merge(_)
-        | Clause::Delete(_)
-        | Clause::Set(_)
-        | Clause::Remove(_)
-        | Clause::Foreach(_) => "updating clause",
         other => other.keyword(),
     }
 }
@@ -595,6 +589,16 @@ mod tests {
              q = shortestPath((c)-[r*]->(d)) RETURN p, q",
         )
         .unwrap();
+        let error = validate_relationship_uniqueness(&stmt.clauses).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::RelationshipUniquenessViolation);
+    }
+
+    /// openCypher TCK Match3 #29: a relationship variable reused in a pattern
+    /// that closes back onto a repeated node variable is rejected here, the
+    /// one owner of the rule (the planner's binder does not re-state it).
+    #[test]
+    fn relationship_reused_in_a_closed_pattern_is_rejected() {
+        let stmt = relate_parser::parse("MATCH (a)-[r]->(b)-[r]->(a) RETURN a").unwrap();
         let error = validate_relationship_uniqueness(&stmt.clauses).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::RelationshipUniquenessViolation);
     }

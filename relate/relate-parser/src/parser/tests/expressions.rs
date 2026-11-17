@@ -78,6 +78,7 @@ fn test_legacy_pipe_colon_relationship_types() {
         "MATCH ()-[x:A|:B]->() RETURN 1",
         "MATCH ()-[:A|:B {p: 1}]->() RETURN 1",
         "MATCH ()-[:A|:B*1..2]->() RETURN 1",
+        "MATCH ()-[:A|:B*..2]->() RETURN 1",
         // Regression (fail-open): the legacy-pipe-colon fact is returned
         // from the type-spec parse, not carried in a clause-scoped flag.
         // The earlier `a:X|:Y` predicate used to leave that flag set (its

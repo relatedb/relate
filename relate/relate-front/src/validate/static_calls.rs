@@ -211,9 +211,8 @@ fn coordinate_text_is_malformed(text: &str) -> bool {
 /// null. A literal list element of any other static type makes the list a
 /// compile-time type error.
 fn require_vector_operand(arg: &Expr, what: &str) -> Result<(), EngineError> {
-    if static_literal_type(arg) == Some(StaticLitType::List) {
-        return require_numeric_list_elements(arg, what);
-    }
+    // A no-op for a non-list; a list literal passes the type gate below.
+    require_numeric_list_elements(arg, what)?;
     require_static_type(arg, &[StaticLitType::List, StaticLitType::Null], |ty| {
         format!(
             "Type mismatch: expected Vector, List<Float>, List<Integer> or \

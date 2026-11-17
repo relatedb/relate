@@ -41,7 +41,7 @@ use relate_parser::{
     PatternElement, PatternPath, RelPattern,
 };
 
-use crate::ast::collect::{collect_expr_variables, pattern_of_expr};
+use crate::ast::collect::collect_expr_variables;
 
 /// The `MATCH`-shape rule battery, one pass per `MATCH` clause.
 pub fn validate_match_shape(clauses: &[Clause]) -> Result<(), EngineError> {
@@ -75,13 +75,11 @@ pub fn validate_match_shape(clauses: &[Clause]) -> Result<(), EngineError> {
 /// The expression-embedded half: a shortest-path expression's own shape, its
 /// relationship-property rule and its bound endpoints. Rides the whole-tree
 /// walk's expression visitor.
-pub(crate) fn validate_expr_pattern_shape(expr: &Expr) -> Result<(), EngineError> {
-    let Some(path) = pattern_of_expr(expr) else {
-        return Ok(());
-    };
+pub(crate) fn validate_shortest_path_expr_shape(expr: &Expr) -> Result<(), EngineError> {
     let Expr::ShortestPath(shortest) = expr else {
         return Ok(());
     };
+    let path = &shortest.pattern;
     let name = shortest_path_function_name(shortest.all);
     reject_shortest_path_property_map(path)?;
     reject_shortest_path_shape(name, path)?;
