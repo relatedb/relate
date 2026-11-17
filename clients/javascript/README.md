@@ -188,6 +188,15 @@ The package also ships a library skill for AI agents
 
 ## Development (repo checkout)
 
+`npm ci` works from every repository checkout: the platform
+optionalDependencies resolve as `file:platforms/` links to the
+in-repo platform directories (ADR-0616), so the lockfile is complete
+regardless of what the registry holds. The platform directories are
+manifest-only — no native library — so the loader's fallback order
+(`RELATE_LIB`, then the platform package, then the repository build)
+serves development exactly as before. The published package pins the
+registry packages at the release version, injected at pack time.
+
 ```sh
 cd clients/javascript
 npm install

@@ -29,9 +29,16 @@ class NpmJsonTest(unittest.TestCase):
                 "packages": {
                     "": {
                         "version": "1.0.1",
-                        "optionalDependencies": {"@relate/a": "1.0.1", "@relate/b": "0.9.0"},
+                        "optionalDependencies": {
+                            "@relate/relate-a": "file:platforms/a",
+                            "@relate/relate-b": "file:platforms/b",
+                        },
+                        # the linked entries the lock witness reads
+                        "platforms-note": None,
                     },
                     "node_modules/koffi": {"version": "2.0.0"},
+                    "platforms/a": {"version": "1.0.1"},
+                    "platforms/b": {"version": "1.0.1"},
                 },
             },
             indent,
@@ -44,19 +51,67 @@ class NpmJsonTest(unittest.TestCase):
     def test_root_version_ignores_other_packages(self):
         self.assertEqual(run("root-version", self.lock(4)).stdout.strip(), "1.0.1")
 
-    def test_pins_counts_matching_relate_deps_in_lockfile_root(self):
-        self.assertEqual(run("lock-pins", self.lock(), "1.0.1").stdout.strip(), "1")
+    def test_file_links_counts_manifest_deps(self):
+        path = self.write({"version": "1", "optionalDependencies": {"@relate/relate-a": "file:platforms/a", "left": "1"}})
+        self.assertEqual(run("file-links", path).stdout.strip(), "1")
 
-    def test_pins_counts_manifest_deps(self):
-        path = self.write({"version": "1", "optionalDependencies": {"@relate/a": "1", "left": "1"}})
-        self.assertEqual(run("pins", path, "1").stdout.strip(), "1")
+    def test_lock_file_links_reads_the_default_fixture(self):
+        self.assertEqual(run("lock-file-links", self.lock()).stdout.strip(), "2")
+
+    def test_file_links_refuses_a_registry_pin_loudly(self):
+        # the guard: a versioned @relate pin in the repository manifest is
+        # the exact shape the release-broken npm ci came from — refuse it,
+        # never count it
+        path = self.write({"version": "1", "optionalDependencies": {"@relate/relate-a": "1.0.3"}})
+        res = run("file-links", path)
+        self.assertNotEqual(res.returncode, 0)
+
+    def test_file_links_refuses_a_crossed_link_loudly(self):
+        # the ADR-0562 correspondence: a platform link must resolve the
+        # package it names — a link to another platform's directory is
+        # refused, never counted
+        path = self.write({"version": "1", "optionalDependencies": {"@relate/relate-a": "file:platforms/b"}})
+        res = run("file-links", path)
+        self.assertNotEqual(res.returncode, 0)
+
+    def test_file_links_refuses_a_non_platform_relate_dep_loudly(self):
+        # @relate-scoped but not a platform package name: the scoped set
+        # and the platform set are one predicate, not two
+        path = self.write({"version": "1", "optionalDependencies": {"@relate/other": "file:platforms/x"}})
+        res = run("file-links", path)
+        self.assertNotEqual(res.returncode, 0)
+
+    def test_lock_platform_versions_witnesses_the_linked_entries(self):
+        self.assertEqual(run("lock-platform-versions", self.lock(), "1.0.1").stdout.strip(), "2")
+        self.assertEqual(run("lock-platform-versions", self.lock(), "9.9.9").stdout.strip(), "0")
+
+    def test_pin_rewrites_only_the_platform_links_to_the_manifests_version(self):
+        path = self.write({
+            "version": "1.0.3",
+            "optionalDependencies": {
+                "@relate/relate-a": "file:platforms/a",
+                "left": "2.0.0",
+            },
+        })
+        res = run("pin", path)
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(json.loads(res.stdout), {"@relate/relate-a": "1.0.3"})
+        doc = json.loads(Path(path).read_text())
+        # only the platform links are pinned; other optionals untouched
+        self.assertEqual(doc["optionalDependencies"]["@relate/relate-a"], "1.0.3")
+        self.assertEqual(doc["optionalDependencies"]["left"], "2.0.0")
+
+    def test_pin_refuses_a_manifest_without_platform_links(self):
+        path = self.write({"version": "1", "optionalDependencies": {"left": "1"}})
+        res = run("pin", path)
+        self.assertNotEqual(res.returncode, 0)
 
     def test_lockfile_without_packages_fails_not_zero(self):
-        res = run("lock-pins", self.write({"version": "1"}), "1")
+        res = run("lock-file-links", self.write({"version": "1"}))
         self.assertNotEqual(res.returncode, 0)
 
     def test_manifest_without_optional_dependencies_fails_not_zero(self):
-        res = run("pins", self.write({"version": "1"}), "1")
+        res = run("file-links", self.write({"version": "1"}))
         self.assertNotEqual(res.returncode, 0)
 
     def test_missing_version_fails_loudly(self):
@@ -71,7 +126,7 @@ class NpmJsonTest(unittest.TestCase):
 
     def test_non_string_pin_value_fails_loudly(self):
         path = self.write({"optionalDependencies": {"@relate/a": 1}})
-        res = run("pins", path, "1")
+        res = run("file-links", path)
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("is not a string", res.stderr)
 

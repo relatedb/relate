@@ -27,16 +27,16 @@
     "koffi": "^3.3.8"
   },
   "optionalDependencies": {
-    "@relate/relate-darwin-arm64": "1.0.3",
-    "@relate/relate-darwin-x64": "1.0.3",
-    "@relate/relate-linux-arm64": "1.0.3",
-    "@relate/relate-linux-x64": "1.0.3",
-    "@relate/relate-win32-x64": "1.0.3"
+    "@relate/relate-darwin-arm64": "file:platforms/darwin-arm64",
+    "@relate/relate-darwin-x64": "file:platforms/darwin-x64",
+    "@relate/relate-linux-arm64": "file:platforms/linux-arm64",
+    "@relate/relate-linux-x64": "file:platforms/linux-x64",
+    "@relate/relate-win32-x64": "file:platforms/win32-x64"
   },
   "scripts": {
     "test": "node test.js && node loadtest/test.js"
   },
   "allowScripts": {
-    "koffi@2.16.3": true
+    "koffi@3.3.8": true
   }
 }

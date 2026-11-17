@@ -271,7 +271,12 @@ carries is unpublished by construction. `cargo package -p relate` on
 next release publishes that version: the verification resolves the
 facade's dependencies against crates.io, which does not hold `main`'s
 workspace version yet. Between releases that failure is the expected
-state, not a packaging regression.
+state, not a packaging regression. The JavaScript client used to share
+it — the platform optionalDependencies named the next unpublished
+version, so `npm ci` from a checkout failed the same way — until
+ADR-0616 split the shapes: the repository manifest's `file:` platform
+links resolve at every commit (npm ci holds), and the registry pins
+are injected into the packed manifest at release time.
 
 The advance is the release-bot step in `release.yml` that ADR-0580
 records — never a manual checklist item in this runbook. A manual step

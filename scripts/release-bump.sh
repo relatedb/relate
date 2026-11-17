@@ -20,9 +20,10 @@
 #   clients/java/pom.xml                               (the project's own
 #                                                      <version>, anchored to
 #                                                      the artifactId block)
-#   clients/javascript/package.json                    ("version" + the five
+#   clients/javascript/package.json                    ("version"; its five
 #                                                       optionalDependencies
-#                                                       platform pins)
+#                                                       are file: links, no
+#                                                       version to bump)
 #   clients/javascript/package-lock.json               (regenerated with
 #                                                       npm install
 #                                                       --package-lock-only,
@@ -189,13 +190,14 @@ sedi "$pyinit" "s/return \"[0-9][^\"]*\"/return \"$next\"/g"
 # membership rule sits at the docs_version_files definition above.
 python3 scripts/version_tokens.py rewrite --to "$next" "${docs_version_files[@]}"
 
-# npm manifests (ADR-0278). The platform package.json files carry exactly one
-# "version" key; the main package.json additionally pins the five platform
-# packages in optionalDependencies. The top-level "version" sits at 2-space
-# indent while the pins are scoped-name keys at 4-space indent, so the two
-# anchored substitutions are unambiguous.
+# npm manifests (ADR-0278, ADR-0616). The platform package.json files carry
+# exactly one "version" key; the main package.json's optionalDependencies
+# are file:platforms/ links to the in-repo platform directories (the
+# repository shape — they carry no version, so nothing here pins: the
+# published registry pins are injected at pack time by
+# npm_json.py's pin verb). The top-level "version" sits at
+# 2-space indent.
 sedi "$js_main_pkg" "s/^  \"version\": \"[^\"]*\"/  \"version\": \"$next\"/"
-sedi "$js_main_pkg" -E "s/\"(@relate\/[a-z0-9-]+)\": \"[^\"]*\"/\"\1\": \"$next\"/g"
 for f in "${js_platform_pkgs[@]}"; do
   sedi "$f" "s/^  \"version\": \"[^\"]*\"/  \"version\": \"$next\"/"
 done
@@ -208,10 +210,11 @@ python3 "$pom_py" set "$java_pom" "$next"
 # Regenerate the npm lockfile from the bumped manifest instead of sed'ing it:
 # the lockfile's root-entry "version" sits at a different indent than the
 # manifest anchor, and hand-editing lockfiles drifts from what npm would
-# write. Without this the committed lockfile goes stale after a release and
-# npm ci hard-fails. --package-lock-only writes no node_modules; the five
-# platform pins are optionalDependencies, so npm tolerates the new version
-# not existing on the registry yet (nothing is published at bump time).
+# write. --package-lock-only writes no node_modules. The platform
+# optionalDependencies are file: links to the in-repo directories, so the
+# regen resolves them at every commit — the lockfile is always complete and
+# `npm ci` holds from a repo checkout at every point of the release cycle
+# (registry pins exist only inside the packed release manifest).
 npm install --package-lock-only --prefix clients/javascript
 
 # --- 2. Cargo.lock ------------------------------------------------------------
@@ -307,28 +310,38 @@ read_back_eq "$java_pom project version" \
   "$java_pom has no readable project <version> entry" \
   python3 "$pom_py" get "$java_pom"
 
-# npm manifests: the main package's "version" and its five platform pins, and
-# each platform package's "version". Both pin checks (here and in the
-# lockfile below) expect the platform-package list's length — the same count
-# the sweep above iterates, never a second copy of the number.
+# npm manifests: the main package's "version", the five file: platform
+# links in its optionalDependencies, and each platform package's "version".
+# Both link checks (here and in the lockfile below) expect the
+# platform-package list's length — the same count the sweep above iterates,
+# never a second copy of the number. The links are version-free: a value
+# that is not a file:platforms/ link fails loudly (npm_json refuses it), so
+# a future edit cannot quietly reintroduce registry pins into the repo
+# manifest — the shape the release-broken npm ci came from.
 js_pin_count="${#js_platform_pkgs[@]}"
 check_js_main="$(npm_json version "$js_main_pkg")"
 expect_eq "$js_main_pkg version" "$next" "$check_js_main"
-check_js_pins="$(npm_json pins "$js_main_pkg" "$next")"
-expect_eq "$js_main_pkg optionalDependencies pins at $next" "$js_pin_count" "$check_js_pins"
+check_js_links="$(npm_json file-links "$js_main_pkg")"
+expect_eq "$js_main_pkg optionalDependencies file: links" "$js_pin_count" "$check_js_links"
 for f in "${js_platform_pkgs[@]}"; do
   check_platform="$(npm_json version "$f")"
   expect_eq "$f version" "$next" "$check_platform"
 done
 
 # npm lockfile: the top-level "version", the packages[""] root entry's
-# "version", and the five platform pins.
+# "version", and the five file: platform links mirrored into the lock.
 check_js_lock_root="$(npm_json version "$js_lockfile")"
 expect_eq "$js_lockfile top-level version" "$next" "$check_js_lock_root"
 check_js_lock_pkg="$(npm_json root-version "$js_lockfile")"
 expect_eq "$js_lockfile root-entry version" "$next" "$check_js_lock_pkg"
-check_js_lock_pins="$(npm_json lock-pins "$js_lockfile" "$next")"
-expect_eq "$js_lockfile optionalDependencies pins at $next" "$js_pin_count" "$check_js_lock_pins"
+check_js_lock_links="$(npm_json lock-file-links "$js_lockfile")"
+expect_eq "$js_lockfile optionalDependencies file: links" "$js_pin_count" "$check_js_lock_links"
+# The linked entries carry the platform packages' own versions — the
+# same versions the sweep just wrote into their manifests, mirrored by
+# the lockfile regen. Witness every one of them (the old value check
+# lived on the root pins; the values moved into the linked entries).
+check_js_lock_platvers="$(npm_json lock-platform-versions "$js_lockfile" "$next")"
+expect_eq "$js_lockfile linked platform versions at $next" "$js_pin_count" "$check_js_lock_platvers"
 
 # Docs sweep: once the rewrite is done every version token in a listed file is
 # the product version. The check runs the same tokenizer the sweep used, so the

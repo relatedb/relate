@@ -100,3 +100,7 @@ npmjs.com — are runbook items in `docs/PUBLISHING.md`, not automation.
   serves a copy of `surfaces/relate-wasm/pkg/`; no in-tree mirror remains.
 - ADR-0562 renames the five platform packages to
   `@relate/relate-<os>-<arch>`; the main and wasm names are unchanged.
+- ADR-0616 splits the platform optionalDependencies into two shapes:
+  the repository manifest resolves them as `file:` links (npm ci holds
+  from every checkout), and the published manifest's registry pins are
+  injected at pack time; the exact-pin consumer contract is unchanged.

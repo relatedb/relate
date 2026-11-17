@@ -33,8 +33,9 @@ chmod +x "$stubbin/cargo"
 
 # Stub npm: the bump calls `npm install --package-lock-only --prefix
 # clients/javascript` to regenerate the lockfile from the bumped manifest;
-# the stub rewrites the lockfile's root versions and @relate pins the same
-# way, from the manifest the bump just edited.
+# the stub rewrites the lockfile's root versions the same way, from the
+# manifest the bump just edited. The optionalDependencies file: links pass
+# through untouched, as the real npm regen leaves them.
 cat >"$stubbin/npm" <<'EOF'
 #!/bin/sh
 prefix=""
@@ -63,9 +64,17 @@ with open(path) as fh:
 data["version"] = version
 root = data["packages"][""]
 root["version"] = version
-for name in root.get("optionalDependencies", {}):
-    if name.startswith("@relate/"):
-        root["optionalDependencies"][name] = version
+# file: links mirror the linked platform manifests' versions into
+# packages["platforms/<dir>"] entries (what the real regen writes); the
+# stub reads each platform manifest's bumped version the same way.
+import glob, os
+manifest_dir = os.path.dirname(path)
+for manifest in sorted(glob.glob(os.path.join(manifest_dir, "platforms", "*", "package.json"))):
+    with open(manifest) as fh:
+        plat = json.load(fh)
+    entry = os.path.join("platforms", os.path.basename(os.path.dirname(manifest)))
+    data["packages"].setdefault(entry, {})
+    data["packages"][entry]["version"] = plat["version"]
 with open(path, "w") as fh:
     json.dump(data, fh, indent=2)
     fh.write("\n")
@@ -135,11 +144,11 @@ EOF
   "name": "@relate/relate",
   "version": "0.16.1",
   "optionalDependencies": {
-    "@relate/relate-linux-x64": "0.16.1",
-    "@relate/relate-linux-arm64": "0.16.1",
-    "@relate/relate-darwin-x64": "0.16.1",
-    "@relate/relate-darwin-arm64": "0.16.1",
-    "@relate/relate-win32-x64": "0.16.1"
+    "@relate/relate-linux-x64": "file:platforms/linux-x64",
+    "@relate/relate-linux-arm64": "file:platforms/linux-arm64",
+    "@relate/relate-darwin-x64": "file:platforms/darwin-x64",
+    "@relate/relate-darwin-arm64": "file:platforms/darwin-arm64",
+    "@relate/relate-win32-x64": "file:platforms/win32-x64"
   }
 }
 EOF
@@ -150,13 +159,18 @@ EOF
     "": {
       "version": "0.16.1",
       "optionalDependencies": {
-        "@relate/relate-linux-x64": "0.16.1",
-        "@relate/relate-linux-arm64": "0.16.1",
-        "@relate/relate-darwin-x64": "0.16.1",
-        "@relate/relate-darwin-arm64": "0.16.1",
-        "@relate/relate-win32-x64": "0.16.1"
+        "@relate/relate-linux-x64": "file:platforms/linux-x64",
+        "@relate/relate-linux-arm64": "file:platforms/linux-arm64",
+        "@relate/relate-darwin-x64": "file:platforms/darwin-x64",
+        "@relate/relate-darwin-arm64": "file:platforms/darwin-arm64",
+        "@relate/relate-win32-x64": "file:platforms/win32-x64"
       }
-    }
+    },
+    "platforms/darwin-arm64": { "version": "0.16.1" },
+    "platforms/darwin-x64": { "version": "0.16.1" },
+    "platforms/linux-arm64": { "version": "0.16.1" },
+    "platforms/linux-x64": { "version": "0.16.1" },
+    "platforms/win32-x64": { "version": "0.16.1" }
   }
 }
 EOF

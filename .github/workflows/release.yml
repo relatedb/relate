@@ -945,10 +945,34 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Pin the platform optionalDependencies for the published manifest
+        # The repo manifest carries file: links (the npm platform ADR):
+        # repo checkouts and npm ci hold at every commit. The published
+        # package pins the registry packages at this release's version —
+        # injected here from the checkout's own version field, so the
+        # pins are correct by construction and the repository manifest
+        # carries no version to bump. The one implementation is
+        # npm_json.py's pin verb (the same module every release-sweep
+        # read goes through). The pack below fails closed on the
+        # injection: the packed manifest must carry registry pins, never
+        # a file: link.
+        run: |
+          python3 scripts/lib/npm_json.py pin clients/javascript/package.json
       - name: npm pack
         run: |
           mkdir -p dist
           npm pack ./clients/javascript --pack-destination dist
+          # Fail closed on the injection: the tarball's manifest must pin
+          # every platform package at this release's version, never carry
+          # the repository's file: links into a published artifact.
+          T="$(ls dist/*.tgz)"
+          V="$(python3 -c 'import json;print(json.load(open("clients/javascript/package.json"))["version"])')"
+          tar -xOf "$T" package/package.json | python3 -c '
+          import json, sys
+          pins = json.load(sys.stdin)["optionalDependencies"]
+          assert pins and all(v == sys.argv[1] for v in pins.values()), pins
+          assert all(not str(v).startswith("file:") for v in pins.values()), pins
+          print("published platform pins verified:", pins)' "$V"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

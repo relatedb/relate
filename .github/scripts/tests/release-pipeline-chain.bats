@@ -328,3 +328,24 @@ poke_if_line() {
   ! sed -n '/^      - name: Attach releases.json and install.sh to the release$/,/^      [^ ]/p' "${RELEASE_YML}" \
     | grep -q '^        if:'
 }
+
+@test "npm-main injects the platform registry pins and verifies the packed manifest (the repo manifest stays file:-linked)" {
+  # ADR-0616 (npm platform resolution): the repository manifest resolves
+  # the platform packages as file: links, so repo checkouts and npm ci
+  # hold at every commit; the published manifest pins the registry
+  # packages, injected at pack time from the checkout's own version. The
+  # job must run the shared injection (the one spelling) before packing
+  # and fail closed on the packed manifest.
+  sed -n '/^  npm-main:/,/^  tag:/p' "${RELEASE_YML}" >"${BATS_TMPDIR}/npm-main.yml"
+  pin_step="$(grep -n 'Pin the platform optionalDependencies' "${BATS_TMPDIR}/npm-main.yml" | head -1 | cut -d: -f1)"
+  pack_step="$(grep -n '^      - name: npm pack$' "${BATS_TMPDIR}/npm-main.yml" | head -1 | cut -d: -f1)"
+  echo "pin step: ${pin_step}, pack step: ${pack_step}"
+  [ -n "${pin_step}" ]
+  [ -n "${pack_step}" ]
+  [ "${pin_step}" -lt "${pack_step}" ]
+  # The injection is the one shared script, never an inline rewrite
+  grep -qF 'python3 scripts/lib/npm_json.py pin clients/javascript/package.json' "${BATS_TMPDIR}/npm-main.yml"
+  # Fail closed: the packed manifest must carry registry pins at the
+  # release version, never a surviving file: link
+  grep -qF 'assert all(not str(v).startswith("file:") for v in pins.values()), pins' "${BATS_TMPDIR}/npm-main.yml"
+}

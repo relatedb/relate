@@ -47,3 +47,9 @@ workflow) follows the package manifests.
 - Tarball names become `relate-relate-<os>-<arch>-<version>.tgz`; the
   smoke gate and the publish workflow's main-vs-platform selection key
   off the version segment, which is unchanged.
+
+## Later references
+
+- ADR-0616 changes how the five names resolve: `file:` links in the
+  repository manifest, registry pins injected into the packed manifest
+  at the release version. The names themselves are unchanged.
