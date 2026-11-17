@@ -836,6 +836,9 @@ pub mod graph_stats;
 mod graph_stats_tests;
 #[cfg(test)]
 mod id_seek_tests;
+mod index_aggregates;
+#[cfg(test)]
+mod index_aggregates_tests;
 #[cfg(test)]
 mod integer_arg_tests;
 #[cfg(test)]
@@ -871,6 +874,7 @@ mod range_start_tests;
 mod rel_list_binding_tests;
 #[cfg(test)]
 mod rel_seek_tests;
+mod shortcut_common;
 #[cfg(test)]
 mod shortest_expression_tests;
 #[cfg(test)]

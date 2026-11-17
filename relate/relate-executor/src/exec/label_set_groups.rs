@@ -12,25 +12,23 @@
 //! exactness window (the seed gate is the caller's), then lets
 //! the ordinary projection finish ordering and paging over the grouped rows.
 
-use std::collections::HashMap;
-
 use relate_core::{NodeId, Result, Value};
-use relate_ir::{classify_aggregate, AggregateKind, Clause, Expr, OrderItem, Projection};
+use relate_ir::{Clause, Expr, Projection};
 use relate_names::SmallName;
 
 use crate::ctx::ExecCtx;
 use crate::eval::{eval, named_call};
 use crate::graph::LabelSetCount;
-use crate::group_key::GroupKey;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 use crate::store::empty_properties;
 
-use super::count_stats::{plain_match_pattern, whole_population_node_var};
-use super::order::folded_order_items;
-use super::project::{project_rows, return_result, RowSource};
-use super::scope::ProjectionFields;
-use super::{QueryResult, RowFeed};
+use super::order::order_on_columns;
+use super::shortcut_common::{
+    finish_grouped_rows, is_node_count, match_return_pattern, whole_population_node_var,
+    CountedGroups, GroupedPage,
+};
+use super::QueryResult;
 
 /// The id every stand-in node carries. No key the recognizer admits reads a
 /// node's id (a key depends on the node only through its label list), so
@@ -47,9 +45,9 @@ struct LabelGroupShape<'a> {
     var: &'a SmallName,
     items: &'a [Projection],
     count_at: usize,
-    order: Vec<OrderItem>,
-    skip: &'a Option<Expr>,
-    limit: &'a Option<Expr>,
+    /// The paging half, carried once: the ORDER BY rewritten onto output
+    /// columns and the statement's own SKIP and LIMIT.
+    page: GroupedPage<'a>,
 }
 
 /// `expr` is `labels(var)`.
@@ -78,41 +76,6 @@ fn is_label_key(expr: &Expr, var: &SmallName) -> bool {
     }
 }
 
-/// `count(*)`, or `count(var)` over the pattern's own node (bound on every
-/// row, so equal to `count(*)`).
-fn is_node_count(expr: &Expr, var: &SmallName) -> bool {
-    match expr {
-        Expr::CountStar => true,
-        Expr::Function {
-            name,
-            distinct: false,
-            args,
-        } if name.with_str(classify_aggregate) == Some(AggregateKind::Count) => {
-            matches!(&args[..], [Expr::Variable(v)] if v == var)
-        }
-        _ => false,
-    }
-}
-
-/// Rewrite the ORDER BY onto output columns: each key resolves to its
-/// projection item through the canonical [`folded_order_items`] (an
-/// expression equal to an output item, or a bare reference to an output
-/// name), and becomes a reference to that item's column. A key the
-/// grouped rows cannot evaluate is `None`.
-fn order_on_columns(order: &[OrderItem], items: &[Projection]) -> Option<Vec<OrderItem>> {
-    let resolved = folded_order_items(order, items)?;
-    Some(
-        order
-            .iter()
-            .zip(resolved)
-            .map(|(key, item)| OrderItem {
-                expr: Expr::Variable(SmallName::from_name(&items[item].output_name(item))),
-                ascending: key.ascending,
-            })
-            .collect(),
-    )
-}
-
 /// Recognize the label-group shape. Deliberately conservative: exactly
 /// `[Match, Return]`; the MATCH is the plain one-node whole-population
 /// pattern with a bound variable ([`plain_match_pattern`],
@@ -122,18 +85,19 @@ fn order_on_columns(order: &[OrderItem], items: &[Projection]) -> Option<Vec<Ord
 /// named like the node variable (an alias-shadowed order key is the
 /// scan's to resolve).
 fn recognize_label_groups(clauses: &[Clause]) -> Option<LabelGroupShape<'_>> {
-    let [first, Clause::Return {
+    let pattern = match_return_pattern(clauses)?;
+    let Clause::Return {
         distinct: false,
         group_by: None,
         items,
         order,
         skip,
         limit,
-    }] = clauses
+    } = &clauses[1]
     else {
         return None;
     };
-    let var = whole_population_node_var(plain_match_pattern(first)?)?;
+    let var = whole_population_node_var(pattern)?;
     let mut counts = items
         .iter()
         .enumerate()
@@ -150,21 +114,18 @@ fn recognize_label_groups(clauses: &[Clause]) -> Option<LabelGroupShape<'_>> {
     if !keys_only {
         return None;
     }
-    if items
-        .iter()
-        .enumerate()
-        .any(|(i, p)| var.with_str(|text| p.output_name(i) == text))
-    {
-        return None;
-    }
-    let order = order_on_columns(order, items)?;
+    // The node-variable gate is [`order_on_columns`]'s own precondition —
+    // an alias-shadowed order key is the scan's to resolve.
+    let page_order = order_on_columns(order, items, var)?;
     Some(LabelGroupShape {
         var,
         items,
         count_at,
-        order,
-        skip,
-        limit,
+        page: GroupedPage {
+            order: page_order,
+            skip: skip.as_ref(),
+            limit: limit.as_ref(),
+        },
     })
 }
 
@@ -196,10 +157,7 @@ fn group_label_sets(
                 .saturating_add(labels.iter().map(|l| l.len() as u64).sum::<u64>()),
         )?;
     }
-    let mut index: HashMap<Vec<GroupKey>, usize> = HashMap::new();
-    // Per group: its first-seen key values (one per Key item, item order)
-    // and its summed node count.
-    let mut groups: Vec<(Vec<Value>, u64)> = Vec::new();
+    let mut groups = CountedGroups::new();
     let var_name = shape.var.to_string();
     for (labels, count) in sets {
         let node = relate_core::Node {
@@ -218,47 +176,22 @@ fn group_label_sets(
         {
             keys.push(eval(graph, &row, &p.expr, ctx.params)?);
         }
-        let identity: Vec<GroupKey> = keys.iter().map(GroupKey::new).collect();
-        match index.get(&identity) {
-            Some(&g) => {
-                groups[g].1 = groups[g]
-                    .1
-                    .checked_add(count)
-                    .expect("count overflow: a group sum past u64 is a broken store");
-            }
-            None => {
-                retained.add_bytes(
-                    graph,
-                    crate::workspace::group_entry_insert_delta(groups.len(), &identity),
-                )?;
-                for key in &keys {
-                    retained.add_owned(graph, key)?;
-                }
-                index.insert(identity, groups.len());
-                groups.push((keys, count));
-            }
-        }
+        groups.add(graph, &mut retained, keys, count)?;
     }
-    groups
-        .into_iter()
-        .map(|(keys, count)| {
-            let mut keys = keys.into_iter();
-            let mut row = Row::new();
-            for (i, name) in names.iter().enumerate() {
-                let value = if i == shape.count_at {
-                    Value::Int(
-                        i64::try_from(count).expect("a group count past i64 is a broken store"),
-                    )
-                } else {
-                    keys.next()
-                        .expect("every key item evaluated one value per set")
-                };
-                row.insert(name.clone(), value);
-            }
-            retained.add_row(graph, row.values())?;
-            Ok(row)
-        })
-        .collect()
+    groups.into_rows(graph, &mut retained, |keys, count| {
+        let mut keys = keys.into_iter();
+        let mut row = Row::new();
+        for (i, name) in names.iter().enumerate() {
+            let value = if i == shape.count_at {
+                Value::Int(i64::try_from(count).expect("a group count past i64 is a broken store"))
+            } else {
+                keys.next()
+                    .expect("every key item evaluated one value per set")
+            };
+            row.insert(name.clone(), value);
+        }
+        row
+    })
 }
 
 /// ADR-0589: recognize the label-group shape and answer it from the
@@ -285,39 +218,7 @@ pub(super) fn label_set_groups_result(
         return Ok(None);
     };
     let grouped = group_label_sets(graph, ctx, &shape, sets)?;
-    // The finish: ordering and paging over the grouped rows by the
-    // ordinary projection — an identity projection of the output columns,
-    // the ORDER BY already rewritten onto them, the statement's own
-    // SKIP/LIMIT.
-    let identity: Vec<Projection> = shape
-        .items
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let name = p.output_name(i);
-            Projection {
-                expr: Expr::Variable(SmallName::from_name(&name)),
-                alias: Some(SmallName::from_name(&name)),
-                source_text: None,
-            }
-        })
-        .collect();
-    let mut rows = project_rows(
-        ctx,
-        RowFeed::Held(grouped),
-        &ProjectionFields {
-            items: &identity,
-            distinct: false,
-            group_by: None,
-            order: &shape.order,
-            skip: shape.skip.as_ref(),
-            limit: shape.limit.as_ref(),
-            where_clause: None,
-        },
-        true,
-        RowSource::Bindings,
-        scope,
-    )?;
-    let result = return_result(graph, shape.items, clauses, &mut rows)?;
+    let (rows, result) =
+        finish_grouped_rows(ctx, clauses, shape.items, shape.page, grouped, scope)?;
     Ok(Some((rows, result)))
 }

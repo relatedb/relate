@@ -2,7 +2,8 @@
 //! answers from the maintained counts, byte-identical to the scan's
 //! answer, and the shapes it declines (the scan stays).
 
-use super::count_stats::{count_only_stats_result, stats_view_serves};
+use super::count_stats::count_only_stats_result;
+use super::stats_short_circuit::stats_view_serves;
 use super::test_support::{
     clauses_of, commit_scratch, exec_autocommit, exec_cypher, exec_cypher_on, exec_write,
     write_scratch,
@@ -22,7 +23,7 @@ fn declines_the_shortcircuit(g: &Graph, cypher: &str) {
     let clauses = clauses_of(cypher);
     let view = ExecGraph::read(g);
     assert!(
-        count_only_stats_result(&view, &clauses).is_none(),
+        count_only_stats_result(&view, &clauses).unwrap().is_none(),
         "must decline to the scan: {cypher}"
     );
 }
@@ -287,7 +288,7 @@ fn count_only_declines_seeded_rows_beyond_one_unbound_seed() {
     // The statement's opening stage: exactly one row, no bindings — the
     // one shape the short-circuit answers.
     assert!(stats_view_serves(&view, &[Row::new()]));
-    assert!(count_only_stats_result(&view, &clauses).is_some());
+    assert!(count_only_stats_result(&view, &clauses).unwrap().is_some());
     // N = 0: a seeded stage with no rows must answer 0, not the
     // population — decline.
     assert!(!stats_view_serves(&view, &[]));

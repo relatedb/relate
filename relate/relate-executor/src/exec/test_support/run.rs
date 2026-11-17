@@ -193,6 +193,17 @@ pub(crate) fn sort_rows(rows: &mut [Vec<Value>]) {
     rows.sort_by_cached_key(|row| format!("{row:?}"));
 }
 
+/// The scan oracle every shortcut suite shares: the statement's `RETURN`
+/// gains a `WITH n` stage, a shape no shortcut recognizer takes, so the
+/// rewritten statement's answer is the scan's — the differential the
+/// shortcut's answer is compared against. Asserts the rewrite applied
+/// and the shortcut declines the oracle.
+pub(crate) fn with_n_stage(cypher: &str) -> String {
+    let scan = cypher.replacen(") RETURN", ") WITH n RETURN", 1);
+    assert_ne!(scan, cypher, "the oracle rewrite must apply: {cypher}");
+    scan
+}
+
 /// The multiset row comparison (the kernels' own differential idiom): the
 /// columns agree and the rows agree as multisets ([`sort_rows`]). The one
 /// spelling — the frontier rider suite and the statement differential

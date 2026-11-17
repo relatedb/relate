@@ -79,6 +79,12 @@ impl Graph {
         if !st.dirty.is_empty() {
             let ids = std::mem::take(&mut st.dirty);
             for id in ids {
+                // The remove-then-post order the range index's drain uses:
+                // the id's `unposted` mark dies with the version it
+                // described, so the set means "the current version cannot
+                // post" — an overwrite with a postable value stops
+                // declining instead of poisoning the pair forever.
+                st.unposted.remove(&id);
                 values(self, id, &mut |val| prop_pair_post(&mut st, id, val));
             }
         }
@@ -123,13 +129,28 @@ impl Graph {
         }
     }
 
+    /// Whether `(lid, kid)` has an equality pair an earlier seek already
+    /// built — the lazy pair's own one answer for its readiness, so a
+    /// reader outside this module never reaches into the pair map to ask.
+    pub(super) fn prop_pair_built(&self, pair: (u32, u32)) -> bool {
+        self.indexes
+            .prop_pairs
+            .get(&pair)
+            .is_some_and(|st| st.built)
+    }
+
     /// Build `(label_id, key_id)` from the label index on first use, drain
     /// the ids written since the pair was last current, and hand the pair to
     /// `read` while its write guard is held (ADR-0063) — the node adapter of
     /// [`Self::with_pair`], whose lock order applies here. `prop_postings`
     /// and `equality_postings_len` both read through this, so a bucket's
     /// contents and its size cannot drift.
-    fn with_prop_pair<R>(&self, lid: u32, kid: u32, read: impl FnOnce(&PropPairIndex) -> R) -> R {
+    pub(super) fn with_prop_pair<R>(
+        &self,
+        lid: u32,
+        kid: u32,
+        read: impl FnOnce(&PropPairIndex) -> R,
+    ) -> R {
         self.with_pair(
             &self.indexes.prop_pairs,
             (lid, kid),
@@ -394,7 +415,12 @@ impl Graph {
 }
 
 fn prop_pair_post(st: &mut PropPairIndex, id: NodeId, val: &Value) {
-    if let Some(gk) = GroupKey::for_property_index(val) {
-        st.postings.entry(gk).or_default().insert(id);
+    match GroupKey::for_property_index(val) {
+        Some(gk) => {
+            st.postings.entry(gk).or_default().insert(id);
+        }
+        None => {
+            st.unposted.insert(id);
+        }
     }
 }

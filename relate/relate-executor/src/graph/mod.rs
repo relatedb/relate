@@ -93,7 +93,7 @@ mod research;
 pub(crate) mod test_support;
 mod theater;
 
-pub(crate) use declared::{spatial_holds, trigram_count, RangeSeek, SpatialSeek};
+pub(crate) use declared::{spatial_holds, trigram_count, Extremum, RangeSeek, SpatialSeek};
 use declared::{GramIndex, PointIndex, RangeIndex};
 #[cfg(test)]
 pub(crate) use index::CONTAINS_SAMPLE_BOUND;

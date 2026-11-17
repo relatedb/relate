@@ -295,7 +295,7 @@ impl<'a> ExecGraph<'a> {
             .is_some_and(|cell| cell.borrow().changes_node_membership())
     }
 
-    fn snapshot_ts(&self) -> u64 {
+    pub(crate) fn snapshot_ts(&self) -> u64 {
         self.scratch
             .map(|s| s.borrow().snapshot_ts())
             .unwrap_or(self.pinned_ts)

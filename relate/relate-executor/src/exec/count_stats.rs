@@ -1,100 +1,23 @@
 //! LABS-370 (v1): the count-only statistics short-circuit — the shape
 //! recognizer that answers a whole-population count from the maintained
-//! statistics instead of scanning its population. Declared beside
-//! `count_stats_tests`, its contract tests (ADR-0387).
+//! statistics instead of scanning its population. The pattern population
+//! helpers and the count grammar live in [`shortcut_common`](super::shortcut_common);
+//! this module owns the count-only recognizer and its answer. Declared
+//! beside `count_stats_tests`, its contract tests (ADR-0387).
 
-use std::collections::HashSet;
+use relate_core::{Result, Value};
+use relate_ir::{Clause, Direction, Projection};
 
-use relate_core::Value;
-use relate_ir::{
-    classify_aggregate, AggregateKind, Clause, Direction, Expr, MatchMode, PathPattern, Projection,
-};
-use relate_names::SmallName;
-
-use crate::graph::{CountProbe, QueryStats};
+use crate::graph::CountProbe;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::{label_expr_ok, QueryResult};
-
-/// The population a pattern node's own shape can answer a whole-count
-/// for — the one classification both node arms share (LABS-851's
-/// structure round: one enumeration of the predicate-bearing
-/// `NodePattern` fields, not two that must stay in sync — round 3,
-/// F-1-3's enumeration lives here once, so a new predicate-bearing field
-/// lands here and both arms follow):
-///
-/// * [`Pop::Label`] — exactly one label, no properties, no inline WHERE,
-///   and a label expression the counts can mirror (a statically
-///   mirroring expression — the raw front-lowered shape — is accepted,
-///   round 4, F-4-1; a multi-label node needs label-set intersections
-///   the per-label counts cannot answer).
-/// * [`Pop::Any`] — no label and no label expression at all (a label
-///   expression on an unlabeled node is dynamic or degenerate; the
-///   whole-population count cannot mirror it) — the whole node
-///   population, the label-less nodes included.
-/// * [`Pop::No`] — anything else: the scan's filters own the answer.
-enum Pop<'a> {
-    Label(&'a SmallName),
-    Any,
-    No,
-}
-
-fn node_population(np: &relate_ir::NodePattern) -> Pop<'_> {
-    // The node-level predicate fields the counts never check, one
-    // spelling: no properties, no inline WHERE.
-    let plain = np.properties.is_none() && np.where_clause.is_none();
-    if np.labels.len() == 1 && plain && label_expr_ok(&np.label_expr, &np.labels) {
-        Pop::Label(&np.labels[0].0)
-    } else if np.labels.is_empty() && np.label_expr.is_none() && plain {
-        Pop::Any
-    } else {
-        Pop::No
-    }
-}
-
-/// The one pattern of a plain whole-population `MATCH` — the recognizer
-/// ladder's first rung, shared by the count-only shapes and the label-set
-/// group shapes (ADR-0589): non-optional, the default match mode, exactly
-/// one pattern, no clause WHERE, no search, and no path-level predicate (a
-/// path WHERE, a mode (WALK/TRAIL/ACYCLIC/SIMPLE) or a selector
-/// (ANY/SHORTEST/...) changes which rows the scan emits; round 3, F-1-3:
-/// every predicate-bearing field on the IR's pattern types is enumerated,
-/// none silently accepted).
-pub(super) fn plain_match_pattern(clause: &Clause) -> Option<&PathPattern> {
-    let Clause::Match {
-        optional: false,
-        match_mode: MatchMode::DifferentRelationships,
-        patterns,
-        where_clause: None,
-        search: None,
-        using_index: _,
-        using_join: _,
-    } = clause
-    else {
-        return None;
-    };
-    let [pattern] = &patterns[..] else {
-        return None;
-    };
-    if pattern.where_clause.is_some() || pattern.mode.is_some() || pattern.selector.is_some() {
-        return None;
-    }
-    Some(pattern)
-}
-
-/// The variable of a one-node, relationship-free pattern whose node is
-/// the whole node population ([`Pop::Any`]: no label, no property, no
-/// inline WHERE). `None` for an anonymous node and every other shape.
-pub(super) fn whole_population_node_var(pattern: &PathPattern) -> Option<&SmallName> {
-    let ([node], true) = (&pattern.nodes[..], pattern.rels.is_empty()) else {
-        return None;
-    };
-    match node_population(node) {
-        Pop::Any => node.variable.as_ref(),
-        Pop::Label(_) | Pop::No => None,
-    }
-}
+use super::label_expr_ok;
+use super::project::return_result;
+use super::shortcut_common::{
+    count_of, match_return_pattern, node_population, node_vars_unique, Count, Pop,
+};
+use super::QueryResult;
 
 /// LABS-370 (v1): the count-only shape recognizer (LABS-425, the round-6
 /// decomposition of the round-1 F-1-4 finding — the recognizer, the
@@ -102,11 +25,10 @@ pub(super) fn whole_population_node_var(pattern: &PathPattern) -> Option<&SmallN
 /// 160-line function). Deliberately conservative — every shape it does
 /// not recognize returns `None` and the caller falls back to the clause
 /// loop's scan:
-/// exactly `[Match, Return]`; the MATCH is non-optional, the default
-/// match mode, one pattern, no WHERE, no search; the pattern carries no
-/// path-level predicate either (no path WHERE, mode or selector — round
-/// 3, F-1-3: every predicate-bearing field on the IR's pattern types is
-/// enumerated, none silently accepted); the pattern's nodes each answer
+/// exactly `[Match, Return]` (the `MATCH` half is
+/// [`match_return_pattern`](super::shortcut_common::match_return_pattern), the one
+/// plain-pattern gate every short-circuit recognizer starts from); the
+/// pattern's nodes each answer
 /// one population ([`node_population`]): exactly one plain label, or —
 /// LABS-851 — no label at all (the whole-population arms: the total
 /// node count, the per-type and total rel counts); its rel — when present — is
@@ -120,20 +42,15 @@ pub(super) fn whole_population_node_var(pattern: &PathPattern) -> Option<&SmallN
 /// equals `count(*)` when the pattern binds the variable on every row
 /// it emits — the binding check is recognition, so it lives here.
 fn recognize_count_shape(clauses: &[Clause]) -> Option<(CountProbe, &Projection)> {
-    if clauses.len() != 2 {
-        return None;
-    }
-    let (
-        Some(pattern),
-        Clause::Return {
-            distinct: false,
-            group_by: None,
-            items,
-            order,
-            skip: None,
-            limit: None,
-        },
-    ) = (plain_match_pattern(&clauses[0]), &clauses[1])
+    let pattern = match_return_pattern(clauses)?;
+    let Clause::Return {
+        distinct: false,
+        group_by: None,
+        items,
+        order,
+        skip: None,
+        limit: None,
+    } = &clauses[1]
     else {
         return None;
     };
@@ -141,33 +58,13 @@ fn recognize_count_shape(clauses: &[Clause]) -> Option<(CountProbe, &Projection)
         return None;
     }
     let item = &items[0];
-    let counted_var: Option<&SmallName> = match &item.expr {
-        Expr::CountStar => None,
-        // The aggregate vocabulary's own classifier (ADR-0217): match
-        // the kind, not a re-derived name literal.
-        Expr::Function {
-            name,
-            distinct: false,
-            args,
-        } if name.with_str(classify_aggregate) == Some(AggregateKind::Count) && args.len() == 1 => {
-            match &args[0] {
-                Expr::Variable(v) => Some(v),
-                _ => return None,
-            }
-        }
-        _ => return None,
-    };
-    // Round 3, F-1-4: repeated node variables (a same-variable self-loop
-    // shape, `(a:A)-[:R]->(a:A)`) would answer from the (A,R,A) pair
-    // count, which includes distinct-endpoint rels the scan's
-    // same-variable shape excludes — decline when the variables repeat.
-    let mut node_vars: HashSet<&SmallName> = HashSet::new();
-    if pattern
-        .nodes
-        .iter()
-        .filter_map(|n| n.variable.as_ref())
-        .any(|v| !node_vars.insert(v))
-    {
+    // The one count grammar (ADR-0217: the vocabulary's own classifier
+    // via `count_of`, never a re-derived name literal): `count(*)`, or
+    // `count(var)` — every other expression is the scan's.
+    let counted_var = count_of(&item.expr)?;
+    // Round 3, F-1-4: repeated node variables decline (the pair count
+    // includes distinct-endpoint rels the same-variable shape excludes).
+    if !node_vars_unique(pattern) {
         return None;
     }
     let probe = if pattern.rels.is_empty() {
@@ -252,7 +149,7 @@ fn recognize_count_shape(clauses: &[Clause]) -> Option<(CountProbe, &Projection)
     // `count(var)` is answerable only when the pattern binds the
     // variable on every row it emits — recognition, not answer: an
     // unbound variable's count rides the scan's expression semantics.
-    if let Some(v) = counted_var {
+    if let Count::Of(v) = counted_var {
         let bound = pattern
             .nodes
             .iter()
@@ -266,58 +163,42 @@ fn recognize_count_shape(clauses: &[Clause]) -> Option<(CountProbe, &Projection)
     Some((probe, item))
 }
 
-/// The eligibility prologue both statistics short-circuits share.
-///
-/// The exactness precondition: the base stats are only exact for a view
-/// of the latest published state with no overlay — anything else
-/// (in-tx scratch, pinned snapshot, in-flight apply) declines to the
-/// scan, which reads its own writes (the overlay's predicate, ADR-0387
-/// follow-up). A check that passes here can go stale (a writer opens
-/// after it) — the windowed reads re-check under the stats lock and
-/// close that gap; a check that fails is stable (a finished writer
-/// advances `commit_ts`, so the pinned-equality never turns true again
-/// for this view).
-///
-/// Round 3, F-1-3: the short-circuits answer a whole-population
-/// statement — one unbound seed row, the statement's opening stage.
-/// Anything else (zero rows, N > 1 rows, or a bound row) is a seeded
-/// stage whose answer scales with the seeds — decline to the scan.
-pub(super) fn stats_view_serves(graph: &ExecGraph<'_>, seed_rows: &[Row]) -> bool {
-    graph.sees_exact_base_stats() && seed_rows.len() == 1 && seed_rows[0].is_empty()
-}
-
 /// LABS-370 (v1): recognize the count-only shape and answer it from the
 /// statistics. The answer lives here; the exactness and seed gate is
-/// [`stats_view_serves`], checked once by the short-circuit's owner; the
-/// shape decline-ladder lives in [`recognize_count_shape`] (LABS-425,
-/// the round-6 decomposition of the round-1 F-1-4 finding). The boundary
-/// never fails — `Option` is the whole contract: `Some` = answered,
-/// `None` = decline to the clause loop's scan. The seed rows must be
-/// exactly one row with no bindings (round 3, F-1-3:
+/// [`stats_view_serves`](super::stats_short_circuit::stats_view_serves),
+/// checked once by the short-circuit's owner; the shape decline-ladder
+/// lives in [`recognize_count_shape`] (LABS-425, the round-6 decomposition
+/// of the round-1 F-1-4 finding). The contract is two states plus the
+/// result boundary's error: `Ok(Some)` = answered, `Ok(None)` = decline to
+/// the clause loop's scan, `Err` = the shared result boundary failed. The
+/// seed rows must be exactly one row with no bindings (round 3, F-1-3:
 /// `run_clauses_mode` runs per part with the previous stage's rows — a
 /// NEXT/WHEN/ELSE body seeded with N rows must answer N × population, 0
 /// when N = 0, which the single-population read cannot express).
 pub(super) fn count_only_stats_result(
     graph: &ExecGraph<'_>,
     clauses: &[Clause],
-) -> Option<(Vec<Row>, QueryResult)> {
-    let (probe, item) = recognize_count_shape(clauses)?;
+) -> Result<Option<(Vec<Row>, QueryResult)>> {
+    let Some((probe, item)) = recognize_count_shape(clauses) else {
+        return Ok(None);
+    };
     // Round 3, F-1-5: the consistency window — the exactness check and
     // the count read under BOTH count-map locks (the pre-check above
     // only filters; a writer that opens between it and here is closed by
     // the under-lock re-check). The None≡0-by-exactness boundary lives
     // inside the stats family (a drained entry leaves the map).
-    let count = graph
+    let Some(count) = graph
         .base()
-        .windowed_stats_count(|| graph.sees_exact_base_stats(), probe)?;
-    let column = item.output_name(0);
-    // Round 3, F-1-18: the value is constructed once, shared by the row
-    // and the result.
+        .windowed_stats_count(|| graph.sees_exact_base_stats(), probe)
+    else {
+        return Ok(None);
+    };
+    // Round 3, F-1-18: the value is constructed once.
     let value =
         Value::Int(i64::try_from(count).expect("a node or rel count past i64 is a broken store"));
-    let row = Row::from([(column.clone(), value.clone())]);
-    Some((
-        vec![row],
-        QueryResult::intermediate(vec![column], vec![vec![value]], QueryStats::default()),
-    ))
+    // The same result boundary the ladder's other two rungs finish
+    // through — columns, the strict cell move, the view's own stats.
+    let mut rows = vec![Row::from([(item.output_name(0), value)])];
+    let result = return_result(graph, std::slice::from_ref(item), clauses, &mut rows)?;
+    Ok(Some((rows, result)))
 }

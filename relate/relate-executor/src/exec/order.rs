@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{Error, Result, Value};
 use relate_ir::{Expr, Projection};
+use relate_names::SmallName;
 
 use crate::eval::{eval, is_agg_expr};
 use crate::overlay::ExecGraph;
@@ -285,27 +286,57 @@ fn reads_name_outside(expr: &Expr, columns: &[String]) -> bool {
         .any(|name| !columns.iter().any(|column| column == name))
 }
 
-/// The projection item each folded `ORDER BY` key answers from, or `None`
-/// when a key needs more than the folded row. The fold keeps no input rows,
-/// so a key is answerable only when it is one of the projection's items
-/// verbatim (an aggregate item's folded value included) or a bare variable
-/// naming a projected column; any other key declines the fold and the
-/// grouping path answers it.
-pub(crate) fn folded_order_items(
-    order: &[relate_ir::OrderItem],
-    items: &[Projection],
-) -> Option<Vec<usize>> {
+/// The resolved ORDER BY of a folded shape: each key's projection item
+/// and that item's output name, the pair both consumers actually read
+/// (the fold's item lookup and the column rewrite) — so the caller never
+/// indexes back into the slice with an unchecked position.
+pub(crate) fn folded_order_names<'a>(
+    order: &'a [relate_ir::OrderItem],
+    items: &'a [Projection],
+) -> Option<Vec<(&'a relate_ir::OrderItem, String)>> {
     order
         .iter()
         .map(|key| {
-            items.iter().enumerate().position(|(index, item)| {
-                !is_star_item(item)
-                    && (item.expr == key.expr
-                        || matches!(&key.expr, Expr::Variable(name)
-                    if name == item.output_name(index).as_str()))
-            })
+            items
+                .iter()
+                .enumerate()
+                .position(|(index, item)| {
+                    !is_star_item(item)
+                        && (item.expr == key.expr
+                            || matches!(&key.expr, Expr::Variable(name)
+                        if name == item.output_name(index).as_str()))
+                })
+                .map(|item| (key, items[item].output_name(item)))
         })
         .collect()
+}
+
+/// Rewrite the ORDER BY onto output columns: each key resolves to its
+/// output column through the canonical [`folded_order_names`] (an
+/// expression equal to an output item, or a bare reference to an output
+/// name), and becomes a reference to that item's column. A key the
+/// grouped rows cannot evaluate is `None`.
+pub(crate) fn order_on_columns(
+    order: &[relate_ir::OrderItem],
+    items: &[Projection],
+    var: &SmallName,
+) -> Option<Vec<relate_ir::OrderItem>> {
+    // The rewrite's own precondition, enforced at the boundary: no output
+    // column may be named like the pattern's node variable, or a
+    // rewritten key resolves against the scan's binding, not the grouped
+    // row (the caller no longer has to remember the gate).
+    if super::scope::projects_name(items, var) {
+        return None;
+    }
+    Some(
+        folded_order_names(order, items)?
+            .into_iter()
+            .map(|(key, name)| relate_ir::OrderItem {
+                expr: Expr::Variable(SmallName::from_name(&name)),
+                ascending: key.ascending,
+            })
+            .collect(),
+    )
 }
 
 pub(crate) fn cmp_sort_keys(

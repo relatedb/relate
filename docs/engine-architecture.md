@@ -293,7 +293,17 @@ not clone the full input row.
 **Operators worth calling out.** One-hop aggregates
 (`sum` / `count` / `CASE` + `count` over a bound node’s out-edges)
 can fold while walking adjacency instead of allocating one row per
-edge. Expand that is ordered by a relationship property (`ORDER BY
+edge. An aggregate over one labeled property — `MATCH (n:L) RETURN
+n.p, count(*)`, or `min(n.p)` / `max(n.p)` / `count(n.p)` — answers
+from the pair’s existing index instead of scanning the label
+([ADR-0611](adr/0611-index-backed-aggregates.md)): the grouped count
+reads the postings, an extremum the range index’s first or last key.
+Postings are a superset, so every posted id is checked against the
+statement’s snapshot. Everything else declines to the scan: any
+predicate, an unlabeled or multi-label pattern, `sum`/`avg`, a view
+that is not the latest committed state, and a pair with no index — the
+shortcut never builds one. PROFILE and EXPLAIN keep the scan’s plan.
+Expand that is ordered by a relationship property (`ORDER BY
 t.ts`) can walk a sorted view of that type’s chunk. `shortestPath` /
 `allShortestPaths` are **BFS**, not “expand every trail then keep the
 shortest”, both as expressions and in the `MATCH` clause forms
@@ -320,7 +330,8 @@ one-to-many, all-shortest and closed paths. An expression with
 [0036](adr/0036-fold-one-hop-aggregates.md) agg fold,
 [0037](adr/0037-shallow-bound-shortestpath.md) shallow bound,
 [0186](adr/0186-match-clause-shortest-path-bfs.md) MATCH-clause BFS,
-[0189](adr/0189-shared-shortest-path-search.md) shared search.
+[0189](adr/0189-shared-shortest-path-search.md) shared search,
+[0611](adr/0611-index-backed-aggregates.md) index-backed aggregates.
 
 ## Planner
 

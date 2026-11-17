@@ -83,9 +83,6 @@ fn leaf_of(id: NodeId, x: f64, y: f64) -> Option<PointLeaf> {
 }
 
 impl DrainState for PointIndex {
-    fn dirty(&self) -> &HashSet<NodeId> {
-        &self.dirty
-    }
     fn dirty_mut(&mut self) -> &mut HashSet<NodeId> {
         &mut self.dirty
     }

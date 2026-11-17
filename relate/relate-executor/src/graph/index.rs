@@ -18,6 +18,13 @@ pub(super) struct PropPairIndex {
     pub(super) built: bool,
     /// Property value → ids that have carried it for this pair.
     pub(super) postings: HashMap<GroupKey, HashSet<NodeId>>,
+    /// Ids whose **current** version carries a value the pair cannot post
+    /// (a NaN, alone or inside a list or map). A walk of `postings` misses
+    /// them, so the aggregate reads decline while this is non-empty;
+    /// seeks are unaffected (a NaN equals nothing). Pruned on the
+    /// remove-then-post drain, so an overwrite with a postable value
+    /// stops declining.
+    pub(super) unposted: HashSet<NodeId>,
     /// Ids written since `postings` was last brought current for this pair.
     pub(super) dirty: HashSet<NodeId>,
 }

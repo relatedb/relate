@@ -183,7 +183,7 @@ impl fmt::Display for PointValue {
 /// runtime `CypherValue::Vector` variant can carry it without a circular
 /// crate dependency -- the parser re-exports this same type as
 /// `relate_parser::VectorCoordKind`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VectorCoordKind {
     Int8,
     Int16,

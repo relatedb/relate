@@ -40,7 +40,11 @@ exec/clause_arms.rs::exec_remove # clause arm materializes its output rows; to b
 exec/clause_arms.rs::exec_set # clause arm materializes its output rows; to be replaced by streaming
 exec/clause_arms.rs::exec_unwind # clause arm materializes its output rows; to be replaced by streaming
 exec/count_stats.rs::count_only_stats_result # bounded count-only result, one row per statement
-exec/stats_short_circuit.rs::stats_short_circuit # the one dispatch seam over the two statistics short-circuits, bounded by their own results (count-only: one row; label-set groups: ADR-0589)
+exec/stats_short_circuit.rs::stats_short_circuit # the one dispatch seam over the three statistics short-circuits, bounded by their own results (count-only: one row; label-set groups: ADR-0589; index aggregates: the final page of the charged group table, ADR-0611)
+exec/index_aggregates.rs::index_aggregates_result # the final page of the grouped answer, bounded by the charged first-seen group table (ADR-0611); the fold arm is one row
+exec/index_aggregates.rs::group_values # one row per distinct value, bounded by the charged first-seen group table (ADR-0611)
+exec/shortcut_common.rs::finish_grouped_rows # the grouped finish both shortcuts share: the page over the charged group table's rows (ADR-0589 / ADR-0611)
+exec/shortcut_common.rs::into_rows # the charged CountedGroups table's emission: one row per distinct group (the label-set and index-aggregate folds)
 exec/dispatch.rs::run_clauses # clause driver hands its driving table to the next clause; to be replaced by streaming
 exec/dispatch.rs::run_clauses_mode # clause driver hands its driving table to the next clause; to be replaced by streaming
 exec/dispatch.rs::run_nested_clauses # clause driver hands its driving table to the next clause; to be replaced by streaming

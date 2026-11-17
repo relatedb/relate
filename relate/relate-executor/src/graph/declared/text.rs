@@ -96,9 +96,6 @@ impl GramIndex {
 }
 
 impl DrainState for GramIndex {
-    fn dirty(&self) -> &HashSet<NodeId> {
-        &self.dirty
-    }
     fn dirty_mut(&mut self) -> &mut HashSet<NodeId> {
         &mut self.dirty
     }

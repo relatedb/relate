@@ -155,7 +155,7 @@ impl Temporal {
 /// fall-back overlap stay equal — and every other spelling (`Z`, `+00:00`,
 /// `UTC`, …) by the UTC offset it denotes, so `Z` equals `+00:00` while a
 /// named zone never equals the offset it happens to denote.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ZoneId {
     Named(String),
     Offset(i32),

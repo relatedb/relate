@@ -14,6 +14,7 @@ to each release's assets and pokes relate-web to pull them.
 | [`reference/`](reference/) | Deep references: Cypher syntax, functions, ontology procedures, CLI flags, storage formats, dot-commands, client libraries, Bolt, C ABI |
 | [`adr/`](adr/) | Architecture Decision Records (immutable, numbered) |
 | [`design/`](design/) | Design studies and research: the extension-system tiering, the loader-plugin study, memory optimization, swappable query and write engines, Swift platforms, token budgets, the embedded driver-provider spikes (LABS-447), the kernel-composition direction, the [kernel coverage inventory](design/kernel-coverage-inventory.md) |
+| [`research/`](research/) | Prior-art studies: how other engines answer aggregates from indexes |
 | [`tck/`](tck/) | the retired in-repo TCK pin's history; language coverage lives in the spec harness (ADR-0482, ADR-0520) |
 | [`testing/`](testing/) | Test notes. [Memory pins and Bolt RSS](testing/memory-testing.md) |
 | [`datasets.md`](datasets.md) | Dataset / load-test binary flag tables (agent contract) |

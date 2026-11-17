@@ -82,7 +82,7 @@ fn next_nan_nonce() -> u64 {
 /// A number normalized so that Int/Float and `+0.0`/`-0.0` collapse while
 /// every NaN stays unique. The Int/Float collapse is the one exact rule from
 /// [`relate_model::canonical_key`]; the NaN nonce is GroupKey-specific.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum NormNum {
     /// An exact integer value -- integral floats within `i64` range land here
     /// too, so `Int(1)` and `Float(1.0)` share one key.
@@ -119,7 +119,7 @@ fn norm_f64(f: f64) -> NormNum {
 /// apart from the offset it denotes while `Z` shares `+00:00`'s key, and
 /// the two halves of a DST fall-back overlap (same wall clock and zone,
 /// different instants) stay apart.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum NormTemporal {
     Date(NaiveDate),
     CivilDate {
@@ -202,7 +202,7 @@ fn norm_temporal(t: &Temporal) -> NormTemporal {
 /// The normalized equivalence tree. Distinct enum variants carry an implicit
 /// type tag, so cross-type collisions (a string vs a list, a bool vs an int)
 /// are impossible.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Norm {
     /// All nulls share this one key (reflexive), the sole divergence from `=`.
     Null,
@@ -287,7 +287,10 @@ fn norm(v: &Value) -> Norm {
 /// property the old `to_cypher_literal`-string key lacked -- there
 /// `Int(1)`/`Float(1.0)` collided-wrong-way while `"1,2"`/`[1,2]` and
 /// quote-bearing strings aliased.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// The derived [`Ord`] is the canonical total order over the key space
+/// (variant order, then payload) — the order any deterministic walk of
+/// group keys states, never a printed form of the key.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct GroupKey(Norm);
 
 impl GroupKey {

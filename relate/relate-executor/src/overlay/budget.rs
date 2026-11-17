@@ -212,6 +212,13 @@ impl SeatShape {
             stride: size_of::<T>() as u64,
         }
     }
+
+    /// A table with no per-group aggregate state (a bare count fold): the
+    /// seats charge nothing.
+    pub(crate) const ZERO_SEATS: SeatShape = SeatShape {
+        count: 0,
+        stride: 0,
+    };
 }
 
 impl RetainedTotal {

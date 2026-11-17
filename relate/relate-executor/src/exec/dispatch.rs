@@ -155,6 +155,10 @@ fn run_clauses_mode(
         // recognizer declines on anything but that one row.
         // ADR-0589: the grouped label aggregates answer from the
         // maintained label-set counts under the same exactness window.
+        // The statistics short-circuits, one ladder: the count-only
+        // operator (LABS-370), the label-set groups (ADR-0589), and the
+        // index-backed aggregates over one labeled property (ADR-0611)
+        // — tried in order behind one eligibility gate.
         if let Some((rows, result)) = stats_short_circuit(ctx, clauses, &rows, scope)? {
             return Ok((rows, Some(result)));
         }

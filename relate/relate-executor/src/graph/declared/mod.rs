@@ -12,13 +12,14 @@ use crate::redo::{IndexDetailSpec, IndexKindSpec};
 
 use super::*;
 
+mod aggregate;
 mod order;
 mod point;
 mod seek;
 mod text;
 
 pub(super) use order::RangeIndex;
-pub(crate) use order::{RangeSeek, SpatialSeek};
+pub(crate) use order::{Extremum, RangeSeek, SpatialSeek};
 pub(crate) use point::spatial_holds;
 pub(super) use point::PointIndex;
 /// Profile-only: the bench harness drives the point backend directly
@@ -31,7 +32,6 @@ pub(super) use text::GramIndex;
 /// One declared index's postings for a `(label, property)` pair. The
 /// graph wiring below is written once against this trait.
 pub(super) trait DrainState: Default {
-    fn dirty(&self) -> &HashSet<NodeId>;
     fn dirty_mut(&mut self) -> &mut HashSet<NodeId>;
     /// Post one version's value for `id`. A value of another type posts
     /// nothing.
@@ -207,18 +207,24 @@ impl Graph {
     /// Repost every dirty node of one pair. The write guard is held across
     /// the whole drain, so a concurrent `declared_dirty` lands either before
     /// the take (reposted here) or after it (kept for the next drain).
-    fn drain_pair<St: DrainState>(&self, pairs: &CoreMap<(u32, u32), St>, lid: u32, kid: u32) {
+    /// Drains the pair's dirty postings and reports whether the pair
+    /// exists — the one presence spelling, so a caller asking "is this
+    /// pair declared, and current?" never restates the guard beside it.
+    fn drain_pair<St: DrainState>(
+        &self,
+        pairs: &CoreMap<(u32, u32), St>,
+        lid: u32,
+        kid: u32,
+    ) -> bool {
         let Some(mut st) = pairs.get_mut(&(lid, kid)) else {
-            return;
+            return false;
         };
-        if st.dirty().is_empty() {
-            return;
-        }
         let ids = std::mem::take(st.dirty_mut());
         for id in ids {
             st.remove_node(id);
             self.for_each_node_pair_value(id, lid, kid, |value| st.insert(id, value));
         }
+        true
     }
 }
 
@@ -286,9 +292,11 @@ impl Graph {
                     c.range_bytes += vec_heap(keys.len(), size_of::<order::OrderKey>() as u64);
                 }
             }
-            // Both sets are charged by element count: they are transient
-            // and small next to the postings above.
-            c.range_bytes += hashset_i64_bytes(st.dirty.len() + st.unbounded.len());
+            // The per-id sets are charged by element count: the transient
+            // dirty queue, and the retained `unbounded` temporals and
+            // `unposted` NaN values — small next to the postings above.
+            c.range_bytes +=
+                hashset_i64_bytes(st.dirty.len() + st.unbounded.len() + st.unposted.len());
         }
         for pair in self.indexes.gram_pairs.iter() {
             c.text_pairs += 1;

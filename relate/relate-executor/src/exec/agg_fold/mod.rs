@@ -38,7 +38,7 @@ impl CachedKey {
 }
 
 use super::order::{
-    folded_order_items, page, park_values, resolve_page_bounds, sort_rows_by_parked_keys,
+    folded_order_names, page, park_values, resolve_page_bounds, sort_rows_by_parked_keys,
     unpark_order_keys, OrderKeys,
 };
 use super::scope::{has_star_item, projection_collides_with_internal_names, result_column};
@@ -81,7 +81,7 @@ pub(super) fn note_path_binding() {
 /// (the reservation [`super::scope::projection_collides_with_internal_names`]
 /// owns — the contract and its rationale live there), and every `ORDER BY`
 /// key answerable from the folded row (the fold keeps no input rows; see
-/// [`folded_order_items`]). The gate fills the shared [`FoldOutput`]
+/// [`folded_order_names`]). The gate fills the shared [`FoldOutput`]
 /// directly — the run's params and Cypher version ride in, so no second
 /// struct transcribes the gated fields beside it.
 pub(super) fn fold_return<'a>(
@@ -109,13 +109,9 @@ pub(super) fn fold_return<'a>(
     if !items.iter().any(|item| is_agg_expr(&item.expr)) {
         return None;
     }
-    let order = order
-        .iter()
-        .zip(folded_order_items(order, items)?)
-        .map(|(key, index)| FoldOrderKey {
-            key,
-            source: items[index].output_name(index),
-        })
+    let order = folded_order_names(order, items)?
+        .into_iter()
+        .map(|(key, source)| FoldOrderKey { key, source })
         .collect();
     Some(FoldOutput {
         items,
@@ -133,7 +129,7 @@ pub(super) fn fold_return<'a>(
 pub(super) struct FoldOutput<'a> {
     items: &'a [Projection],
     /// Per `ORDER BY` key: the key and the output column its folded value
-    /// was written to (`folded_order_items`), resolved once here — one entry
+    /// was written to (`folded_order_names`), resolved once here — one entry
     /// per key, owned so the output outlives the [`FoldedReturn`] it was
     /// computed for.
     order: Vec<FoldOrderKey<'a>>,
@@ -157,7 +153,7 @@ pub(super) fn finish_folded_rows(
     let bounds = resolve_page_bounds(graph, output.params, output.skip, output.limit)?;
     if !output.order.is_empty() {
         // The folded row is the only row the fold kept: each key parks the
-        // value of the item `folded_order_items` resolved for it, and the
+        // value of the item `folded_order_names` resolved for it, and the
         // shared sort entry point orders the rows by those parked columns.
         let keys =
             OrderKeys::parked_only(output.order.iter().map(|folded| folded.key), output.items);

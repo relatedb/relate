@@ -73,10 +73,29 @@ impl Postings {
         }
     }
 
+    /// The bucket's ids copied out in ascending id order — the one way a
+    /// walker takes the postings without the pair's guard: the copy is
+    /// made under the guard and the walk runs outside it, so no
+    /// `Postings` clone and no guard across node reads. The order is the
+    /// walk's contract (ascending ids within a key), not an artifact of
+    /// the set's hash layout.
+    pub(super) fn copy_ids(&self) -> Vec<NodeId> {
+        match self {
+            Postings::One(id) => vec![*id],
+            Postings::Many(set) => {
+                let mut ids: Vec<NodeId> = set.iter().copied().collect();
+                ids.sort_unstable();
+                ids
+            }
+        }
+    }
+
     /// The one posting walk: each id in turn until `visit` breaks. A
     /// consumer that needs only some of the postings stops pulling and the
-    /// rest are never read.
-    fn each(&self, mut visit: impl FnMut(NodeId) -> ControlFlow<()>) {
+    /// rest are never read. A walker that must carry an answer out without
+    /// holding the pair's guard copies the ids ([`Self::copy_ids`]) and
+    /// walks the copy itself.
+    pub(super) fn each(&self, mut visit: impl FnMut(NodeId) -> ControlFlow<()>) {
         match self {
             Postings::One(id) => {
                 let _ = visit(*id);
@@ -131,6 +150,16 @@ impl<T: PartialEq + Clone> RevKeys<T> {
     }
 }
 
+/// Which end of an ordered index a read walks toward — the one
+/// vocabulary for the extremum direction, from the aggregate's
+/// `min`/`max` ask to the step's end choice; the bool it used to be is
+/// gone, not derived.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Extremum {
+    Min,
+    Max,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct RangeIndex {
     pub(super) order: BTreeMap<OrderKey, Postings>,
@@ -146,13 +175,68 @@ pub(crate) struct RangeIndex {
     /// seek must scan while this is non-empty: serving the index would miss
     /// them.
     pub(super) unbounded: HashSet<NodeId>,
+    /// Nodes whose value reaches neither `order` nor `eq_only` (a NaN, alone
+    /// or inside a list or map): they are posted nowhere, so a walk of the
+    /// postings does not see them. Comparison seeks are unaffected (a NaN
+    /// satisfies no comparison); only the aggregate reads consult it.
+    pub(super) unposted: HashSet<NodeId>,
     pub(super) dirty: HashSet<NodeId>,
 }
 
-impl DrainState for RangeIndex {
-    fn dirty(&self) -> &HashSet<NodeId> {
-        &self.dirty
+impl RangeIndex {
+    /// Every posting sits in the order map: no equality-only side map, no
+    /// unbounded temporals and no unposted NaN values, so each posted value's
+    /// order key is its own `=` identity and a walk of the map sees every
+    /// node holding a value.
+    pub(super) fn order_is_complete(&self) -> bool {
+        self.eq_only.is_empty() && self.unbounded.is_empty() && self.unposted.is_empty()
     }
+
+    /// Whether the first and last keys can answer a min/max read: every
+    /// posted value sorts by an order key that is its own `=` identity (no
+    /// side-map or unbounded postings), and both ends are the same Int or
+    /// String variant, so no other type's keys sit between them. An empty
+    /// index qualifies (its answer is no value).
+    pub(super) fn answers_extremum(&self) -> bool {
+        let one_variant = match (self.order.first_key_value(), self.order.last_key_value()) {
+            (Some((lo, _)), Some((hi, _))) => matches!(
+                (lo, hi),
+                (OrderKey::Int(_), OrderKey::Int(_)) | (OrderKey::String(_), OrderKey::String(_))
+            ),
+            // Both ends come from the one map, so an index has either
+            // both or neither; the mixed arms are unreachable but named,
+            // not silently permissive.
+            (None, None) => true,
+            (None, Some(_)) | (Some(_), None) => {
+                debug_assert!(false, "one end of a one-map index cannot exist alone");
+                false
+            }
+        };
+        self.order_is_complete() && one_variant
+    }
+
+    /// The posting just past `from` toward `extremum`; the first (last)
+    /// one when `from` is `None`. Borrowed: the caller walks the bucket
+    /// under the same guard it stepped with — no bucket clone per step.
+    pub(super) fn step_from(
+        &self,
+        from: Option<&OrderKey>,
+        extremum: Extremum,
+    ) -> Option<(&OrderKey, &Postings)> {
+        let entry = match (from, extremum) {
+            (None, Extremum::Max) => self.order.last_key_value(),
+            (None, Extremum::Min) => self.order.first_key_value(),
+            (Some(k), Extremum::Max) => self.order.range(..k.clone()).next_back(),
+            (Some(k), Extremum::Min) => self
+                .order
+                .range((Bound::Excluded(k.clone()), Bound::Unbounded))
+                .next(),
+        };
+        entry
+    }
+}
+
+impl DrainState for RangeIndex {
     fn dirty_mut(&mut self) -> &mut HashSet<NodeId> {
         &mut self.dirty
     }
@@ -418,18 +502,36 @@ pub(super) fn insert_order(st: &mut RangeIndex, value: &Value, id: NodeId) {
     } else if unorderable_temporal(value) {
         st.unbounded.insert(id);
     }
-    // A value with an order key only needs the `eq_only` copy when its order
-    // key is not a coarsening of `=` (see [`order_key_finer_than_equality`]).
-    if ordered.is_none() || order_key_finer_than_equality(value) {
-        if let Some(gk) = GroupKey::for_property_index(value) {
+    // The one posting-destination decision: a value with an order key
+    // only needs the `eq_only` copy when its order key is not a
+    // coarsening of `=` (see [`order_key_finer_than_equality`]); a value
+    // that landed nowhere and is not an unbounded temporal is unposted.
+    let eq_posted = post_equality_side(st, value, ordered.is_some(), id);
+    if ordered.is_none() && !eq_posted && !st.unbounded.contains(&id) {
+        st.unposted.insert(id);
+    }
+}
+
+/// Post `value` on the equality side map when it needs the copy, and
+/// report whether it landed — `false` for a value that posts on its
+/// order key alone and for one no map can hold (a NaN).
+fn post_equality_side(st: &mut RangeIndex, value: &Value, has_order: bool, id: NodeId) -> bool {
+    if has_order && !order_key_finer_than_equality(value) {
+        return false;
+    }
+    match GroupKey::for_property_index(value) {
+        Some(gk) => {
             remember(&mut st.eq_by_node, id, gk.clone());
             st.eq_only.entry(gk).or_insert(Postings::One(id)).insert(id);
+            true
         }
+        None => false,
     }
 }
 
 pub(super) fn order_remove_node(st: &mut RangeIndex, id: NodeId) {
     st.unbounded.remove(&id);
+    st.unposted.remove(&id);
     forget(&mut st.by_node, &mut st.order, id);
     forget(&mut st.eq_by_node, &mut st.eq_only, id);
 }

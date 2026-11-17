@@ -1227,6 +1227,13 @@ cargo run --profile profiling -p relate-query-latency --bin pokec_profile -- sma
 | `--profile` | Print the `PROFILE` result of the group's query at start id 1 instead of timing it. Needs `--group`. |
 | `--help` | The generated usage and flag list. |
 
+`scan_agg_global` is `MATCH (n:User) RETURN n.age, count(*) ORDER BY n.age`,
+the grouped shape the index-backed aggregate shortcut recognizes
+([ADR-0611](adr/0611-index-backed-aggregates.md)); the fixture’s `user_age`
+range index serves it, so the group times the index path, not a label scan
+plus aggregation. PROFILE keeps the scan’s plan, so the group’s plan line is
+unchanged.
+
 The shortest-path groups time the forms ADR-0556, ADR-0567 and ADR-0568 route
 onto the shortest route, each over start ids `1..=N` and, for the pair groups,
 the end `start + 5000` (a mid-range user on both shapes):

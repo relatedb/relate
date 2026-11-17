@@ -124,6 +124,10 @@ perf record --call-graph dwarf -- target/profiling/query-latency profile --qid 1
   missing; the Rust allocator entry points (`allocator`) still show.
 - The flame graph (`flame.svg`) is pprof-rs's own rendering, with the
   thread name as the root frame.
+- The 30 queries all carry a predicate or a relationship pattern; none is
+  the single-label property shape the index-backed aggregate shortcut
+  recognizes ([ADR-0611](../adr/0611-index-backed-aggregates.md)), so the
+  shortcut never fires in this suite and its timings do not cover it.
 
 ## Example: q19 at SF0.1
 
