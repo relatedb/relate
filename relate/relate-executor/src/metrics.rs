@@ -9,6 +9,72 @@
 
 use crate::frontier_decline::FrontierDeclineReason;
 
+/// Declares a counter struct of same-typed monotonic fields together with
+/// the field-wise delta `since` — a decrease is a broken invariant, so the
+/// subtraction is checked and stays loud in release as in debug, never a
+/// wrapped or clamped value. One field list generates both, so a new
+/// counter can neither miss the delta nor the `since`. A `merge`
+/// declaration additionally generates the field-wise merge
+/// (`AddAssign`), for the counter whose documented semantic is
+/// accumulation across runs. The family is the *monotone* counters;
+/// `exec::profile_tick`'s `ExpressionBytes` stays outside it because its
+/// meter falls when an arm releases memory, so its delta saturates.
+macro_rules! delta_counters {
+    // The accumulating counter: the declaration plus the merge.
+    (merge $($rest:tt)*) => {
+        delta_counters!(@declare [merge] $($rest)*);
+    };
+    // The one parse of the declaration grammar: the struct, its `since`,
+    // and — when declared `merge` — the field-wise merge.
+    (@declare [$($mode:ident)?]
+        $(#[$meta:meta])*
+        pub struct $name:ident: $ty:ty {
+            $($(#[$fmeta:meta])* $field:ident,)+
+        }
+    ) => {
+        $(#[$meta])*
+        pub struct $name {
+            $($(#[$fmeta])* pub $field: $ty,)+
+        }
+
+        impl $name {
+            /// The field-wise delta from `earlier` — the one spelling every
+            /// reader uses. The counters only ever increase, so a decrease
+            /// is a broken invariant: the subtraction is checked, never a
+            /// wrapped or clamped value.
+            pub fn since(self, earlier: $name) -> $name {
+                $name {
+                    $(
+                        $field: self.$field
+                            .checked_sub(earlier.$field)
+                            .expect("the counters only ever increase"),
+                    )+
+                }
+            }
+        }
+
+        delta_counters!(@maybe_merge $($mode)? $name { $($field,)+ });
+    };
+    // The merge: the per-run accumulation in
+    // `exec::profiling::count_frontier`, the delta's checked spelling.
+    (@maybe_merge merge $name:ident { $($field:ident,)+ }) => {
+        impl std::ops::AddAssign for $name {
+            fn add_assign(&mut self, run: $name) {
+                $(
+                    self.$field = self.$field
+                        .checked_add(run.$field)
+                        .expect("the counters only ever accumulate");
+                )+
+            }
+        }
+    };
+    (@maybe_merge $name:ident { $($field:ident,)+ }) => {};
+    // The plain counter: the declaration only.
+    ($($rest:tt)*) => {
+        delta_counters!(@declare [] $($rest)*);
+    };
+}
+
 /// The statement's PROFILE site (ADR-0344 phase 2): the metrics sink and
 /// the `(stage, part)` position its keys ride — one fact, built by the
 /// statement-level walkers when they call the clause loop, so the sink
@@ -34,47 +100,38 @@ impl<'a> PlanMetricsSite<'a> {
     }
 }
 
-/// The store-read mix a clause's arm performed (LABS-369): the kinds the
-/// single `Db Hits` total blends. A `Rows=103` operator that spent 300k
-/// relationship hops and 0 node reads is a different animal from one that
-/// read 103 nodes — the one-glance diagnosis for the scan-turned-traversal
-/// family.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct StoreReads {
-    /// Relationship hops taken.
-    pub hops: u64,
-    /// Neighbors the walk traversed (counted at the adjacency walk).
-    pub neighbor_walks: u64,
-    /// Node-store reads: one per candidate a node match examined (the
-    /// all-nodes scan, the label scan, the index seek).
-    pub node_reads: u64,
+delta_counters! {
+    /// The store-read mix a clause's arm performed (LABS-369): the kinds the
+    /// single `Db Hits` total blends. A `Rows=103` operator that spent 300k
+    /// relationship hops and 0 node reads is a different animal from one that
+    /// read 103 nodes — the one-glance diagnosis for the scan-turned-traversal
+    /// family.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct StoreReads: u64 {
+        /// Relationship hops taken.
+        hops,
+        /// Neighbors the walk traversed (counted at the adjacency walk).
+        neighbor_walks,
+        /// Node-store reads: one per candidate a node match examined (the
+        /// all-nodes scan, the label scan, the index seek).
+        node_reads,
+    }
 }
 
-/// The clause's inclusive phase times (LABS-448): the elapsed time spent
-/// resolving node candidates (the seek — the store work behind the
-/// `Nodes` kind) and following relationships (the walk — the store work
-/// behind the `Rels`/`Degree` kinds); the per-candidate admission checks
-/// and the arm's binding/cloning stay unattributed. Inclusive of the nesting
-/// a compound operator performs: a walk that triggers nested seeks counts
-/// both, like the table's `Total` column.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PhaseTimes {
-    /// The seek phase's elapsed nanoseconds.
-    pub seek_ns: u128,
-    /// The walk phase's elapsed nanoseconds.
-    pub walk_ns: u128,
-}
-
-impl PhaseTimes {
-    /// The phases one clause's arm performed: `self` minus the snapshot
-    /// taken when the arm started. The sums only ever increase, so a
-    /// decrease is a broken invariant — the same loud subtraction
-    /// [`StoreReads::since`] uses, never a clamp to a fabricated zero.
-    pub fn since(self, earlier: PhaseTimes) -> PhaseTimes {
-        PhaseTimes {
-            seek_ns: self.seek_ns - earlier.seek_ns,
-            walk_ns: self.walk_ns - earlier.walk_ns,
-        }
+delta_counters! {
+    /// The clause's inclusive phase times (LABS-448): the elapsed time spent
+    /// resolving node candidates (the seek — the store work behind the
+    /// `Nodes` kind) and following relationships (the walk — the store work
+    /// behind the `Rels`/`Degree` kinds); the per-candidate admission checks
+    /// and the arm's binding/cloning stay unattributed. Inclusive of the nesting
+    /// a compound operator performs: a walk that triggers nested seeks counts
+    /// both, like the table's `Total` column.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct PhaseTimes: u128 {
+        /// The seek phase's elapsed nanoseconds.
+        seek_ns,
+        /// The walk phase's elapsed nanoseconds.
+        walk_ns,
     }
 }
 
@@ -89,56 +146,51 @@ impl PhaseTimes {
 /// beside the counter it calibrates.
 pub const REARRIVAL_WORK_BUDGET: u64 = 1_000_000;
 
-/// The frontier family's run counters (ADR-0478), one clause's sum over
-/// its per-seed BFS runs: the edge visits (the work the walk budget
-/// caps), the completed levels, the accepted endpoints, and the NFA
-/// rung's own PROFILE facts — the (node, state) cells the runs created,
-/// the re-arrival work spent, the rule memo's hits and misses, and the
-/// admission asks by verdict. Zero on every clause the frontier
-/// declined — `levels > 0` is the engagement marker (a run always
-/// completes its level 0).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FrontierCounters {
-    /// Incident-edge visits across the clause's frontier runs — the
-    /// budget's own work counter.
-    pub edge_visits: u64,
-    /// BFS levels completed (level 0 included).
-    pub levels: u64,
-    /// Endpoints the runs accepted, in arrival order.
-    pub endpoints: u64,
-    /// (node, state) cells the runs created — the pairs that occupied
-    /// the span×states tables, the BFS's own memory shape.
-    pub cells: u64,
-    /// Re-arrival rule work spent, summed over the runs — the numerator
-    /// of [`Self::budget_fraction`].
-    pub rearrival_work: u64,
-    /// Rule-memo hits: asks the run's verdict table answered without a
-    /// search.
-    pub memo_hits: u64,
-    /// Rule-memo misses: asks that ran the bounded search.
-    pub memo_misses: u64,
-    /// Admission asks the representative-chain proof settled — no
-    /// search.
-    pub representative_proofs: u64,
-    /// Admission asks the bounded search proved (an in-bounds path
-    /// found).
-    pub search_proven: u64,
-    /// Admission asks the bounded search disproved within its bounds.
-    pub search_disproven: u64,
-    /// Admission asks the shared work budget cut — the run-time decline's
-    /// verdict class (ADR-0516).
-    pub declined_exhausted: u64,
+delta_counters! {
+    merge
+    /// The frontier family's run counters (ADR-0478), one clause's sum over
+    /// its per-seed BFS runs: the edge visits (the work the walk budget
+    /// caps), the completed levels, the accepted endpoints, and the NFA
+    /// rung's own PROFILE facts — the (node, state) cells the runs created,
+    /// the re-arrival work spent, the rule memo's hits and misses, and the
+    /// admission asks by verdict. Zero on every clause the frontier
+    /// declined — `levels > 0` is the engagement marker (a run always
+    /// completes its level 0).
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct FrontierCounters: u64 {
+        /// Incident-edge visits across the clause's frontier runs — the
+        /// budget's own work counter.
+        edge_visits,
+        /// BFS levels completed (level 0 included).
+        levels,
+        /// Endpoints the runs accepted, in arrival order.
+        endpoints,
+        /// (node, state) cells the runs created — the pairs that occupied
+        /// the span×states tables, the BFS's own memory shape.
+        cells,
+        /// Re-arrival rule work spent, summed over the runs — the numerator
+        /// of [`Self::budget_fraction`].
+        rearrival_work,
+        /// Rule-memo hits: asks the run's verdict table answered without a
+        /// search.
+        memo_hits,
+        /// Rule-memo misses: asks that ran the bounded search.
+        memo_misses,
+        /// Admission asks the representative-chain proof settled — no
+        /// search.
+        representative_proofs,
+        /// Admission asks the bounded search proved (an in-bounds path
+        /// found).
+        search_proven,
+        /// Admission asks the bounded search disproved within its bounds.
+        search_disproven,
+        /// Admission asks the shared work budget cut — the run-time decline's
+        /// verdict class (ADR-0516).
+        declined_exhausted,
+    }
 }
 
 impl FrontierCounters {
-    /// The counters one clause's arm performed: `self` minus the snapshot
-    /// taken when the arm started — the counters only ever increase, so
-    /// a decrease is a broken invariant, the same loud subtraction
-    /// [`StoreReads::since`] uses.
-    pub fn since(self, earlier: FrontierCounters) -> FrontierCounters {
-        self - earlier
-    }
-
     /// The fraction of one run's re-arrival work budget the clause's
     /// runs spent: summed [`Self::rearrival_work`] over
     /// [`REARRIVAL_WORK_BUDGET`] — `1.0` on a run the budget cut
@@ -151,86 +203,7 @@ impl FrontierCounters {
     }
 }
 
-/// The field-wise delta, the one spelling [`FrontierCounters::since`]
-/// reads: destructured, so a new counter cannot be silently dropped.
-impl std::ops::Sub for FrontierCounters {
-    type Output = FrontierCounters;
-
-    fn sub(self, earlier: FrontierCounters) -> FrontierCounters {
-        let FrontierCounters {
-            edge_visits,
-            levels,
-            endpoints,
-            cells,
-            rearrival_work,
-            memo_hits,
-            memo_misses,
-            representative_proofs,
-            search_proven,
-            search_disproven,
-            declined_exhausted,
-        } = earlier;
-        FrontierCounters {
-            edge_visits: self.edge_visits - edge_visits,
-            levels: self.levels - levels,
-            endpoints: self.endpoints - endpoints,
-            cells: self.cells - cells,
-            rearrival_work: self.rearrival_work - rearrival_work,
-            memo_hits: self.memo_hits - memo_hits,
-            memo_misses: self.memo_misses - memo_misses,
-            representative_proofs: self.representative_proofs - representative_proofs,
-            search_proven: self.search_proven - search_proven,
-            search_disproven: self.search_disproven - search_disproven,
-            declined_exhausted: self.declined_exhausted - declined_exhausted,
-        }
-    }
-}
-
-/// The field-wise merge, the one spelling the per-run accumulation
-/// (`exec::profiling::count_frontier`) and the rule's tally merge read:
-/// destructured, so a new counter cannot be silently dropped.
-impl std::ops::AddAssign for FrontierCounters {
-    fn add_assign(&mut self, run: FrontierCounters) {
-        let FrontierCounters {
-            edge_visits,
-            levels,
-            endpoints,
-            cells,
-            rearrival_work,
-            memo_hits,
-            memo_misses,
-            representative_proofs,
-            search_proven,
-            search_disproven,
-            declined_exhausted,
-        } = run;
-        self.edge_visits += edge_visits;
-        self.levels += levels;
-        self.endpoints += endpoints;
-        self.cells += cells;
-        self.rearrival_work += rearrival_work;
-        self.memo_hits += memo_hits;
-        self.memo_misses += memo_misses;
-        self.representative_proofs += representative_proofs;
-        self.search_proven += search_proven;
-        self.search_disproven += search_disproven;
-        self.declined_exhausted += declined_exhausted;
-    }
-}
-
 impl StoreReads {
-    /// The reads one clause's arm performed: `self` minus the snapshot
-    /// taken when the arm started. The counters only ever increase, so a
-    /// decrease is a broken invariant — the same loud subtraction the
-    /// store-access total uses, never a clamp to a fabricated zero.
-    pub fn since(self, earlier: StoreReads) -> StoreReads {
-        StoreReads {
-            hops: self.hops - earlier.hops,
-            neighbor_walks: self.neighbor_walks - earlier.neighbor_walks,
-            node_reads: self.node_reads - earlier.node_reads,
-        }
-    }
-
     /// The kinds' sum — the one `Db Hits` total, derived rather than
     /// snapshotted a second time.
     pub fn total(self) -> u64 {

@@ -109,8 +109,8 @@ mod frontier_rider_tests;
 pub(crate) mod frontier_run;
 
 // The walk-count arm: a non-DISTINCT `count` over a bounded WALK-pool
-// quantified pattern with an unfiltered target, answered from per-level
-// (node, state) multiplicities and a last-leg degree sum — a MATCH fold,
+// quantified pattern, answered from per-level (node, state)
+// multiplicities and a last-leg degree sum over the admitted arrivals — a MATCH fold,
 // tried first in `dispatch::try_match_folds`.
 pub(crate) mod frontier_count;
 #[cfg(test)]

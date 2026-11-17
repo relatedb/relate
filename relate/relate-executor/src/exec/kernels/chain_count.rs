@@ -4,7 +4,7 @@
 //! every decline keeps the unchanged plan.
 
 use relate_core::Result;
-use relate_ir::{Clause, Direction, MatchMode};
+use relate_ir::{Clause, MatchMode};
 
 use crate::ctx::ExecCtx;
 use crate::metrics::WalkStart;
@@ -51,28 +51,15 @@ pub(crate) fn try_fold_chain_count(ctx: &FoldCtx<'_>) -> Result<Option<FoldedRet
     // `*k` spellings unroll virtually onto the fixed-hop chain; the
     // unrolled pattern lives for the compile. The spelling gate lives in
     // the matcher, beside the plain-pattern proof it shares facts with.
-    let unrolled = matcher::unroll_fixed(pattern);
-    let compiled = unrolled
-        .as_ref()
-        .map(std::slice::from_ref)
-        .unwrap_or(patterns.as_slice());
+    let compiled = matcher::chain_spelling(patterns);
     let Some(Contract::Chain(contract)) = matcher::compile(
-        compiled,
+        &compiled,
         MatchMode::DifferentRelationships,
         entering,
         &conjuncts,
     ) else {
         return Ok(None);
     };
-    // Undirected hops keep the unchanged plan for now: their trail
-    // corrections (a rel met from both ends) are the walker's.
-    if contract
-        .hops
-        .iter()
-        .any(|hop| hop.rel.direction == Direction::Both)
-    {
-        return Ok(None);
-    }
     let stats = GraphStats::new(graph.base(), params);
     // The cost gate prices the hops the walk lands; the tally hop is the
     // one it never lands — `Chain::split_last_hop`'s one spelling of the
@@ -86,7 +73,7 @@ pub(crate) fn try_fold_chain_count(ctx: &FoldCtx<'_>) -> Result<Option<FoldedRet
     let ctx = ExecCtx::new(graph, params);
     let residual = Residual {
         conjuncts: &conjuncts,
-        scope: &match_scope(entering, compiled),
+        scope: &match_scope(entering, &compiled),
     };
     record_walk_start(WalkStart::seed_side_forward());
     let starts = scan_segment(ctx, &contract.start, &residual)?;

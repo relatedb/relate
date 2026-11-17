@@ -34,6 +34,7 @@
 //! vocabulary (`program`) onto exactly one pattern node variable, at most
 //! one per variable.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 
 use relate_ir::{
@@ -236,6 +237,21 @@ fn plain_pattern(path: &PathPattern) -> Option<()> {
     Some(())
 }
 
+/// The patterns the chain count fold compiles: the lone pattern's
+/// exact-`*k` unrolling ([`unroll_fixed`]) when it has one, the written
+/// patterns otherwise. The count fold is the one consumer — the rows
+/// kernel and the existence probe compile the written patterns, and the
+/// `*k` spelling reaches only this fold; the caller holds the returned
+/// value for the compile's lifetime.
+pub(super) fn chain_spelling(patterns: &[PathPattern]) -> Cow<'_, [PathPattern]> {
+    match patterns {
+        [only] => unroll_fixed(only).map_or(Cow::Borrowed(patterns), |unrolled| {
+            Cow::Owned(vec![unrolled])
+        }),
+        _ => Cow::Borrowed(patterns),
+    }
+}
+
 /// The pattern with every exact `*k` relationship spelled out as `k`
 /// anonymous single hops (`(a)-[:R*3]->(b)` becomes
 /// `(a)-[:R]->()-[:R]->()-[:R]->(b)`), or `None` when no relationship is
@@ -249,9 +265,9 @@ fn plain_pattern(path: &PathPattern) -> Option<()> {
 /// It lives here, beside [`rel_plain`] and [`plain_pattern`]: the three
 /// are the pattern-spelling gates, and this one shares its rel-spelling
 /// facts with the proof that declines var-length outright. Its consumer
-/// is the chain count fold, which preprocesses the exact-`*k` spelling
-/// into a fixed-hop pattern before compiling — `compile` itself never
-/// calls it. The walker-facing var-length semantics stay
+/// is [`chain_spelling`], which preprocesses the exact-`*k` spelling
+/// into a fixed-hop pattern for the chain count fold's compile —
+/// `compile` itself never calls it. The walker-facing var-length semantics stay
 /// `relate-front`'s `quantify_var_length` (ADR-0471), which lowers the
 /// parser's spellings into these bounds.
 pub(super) fn unroll_fixed(path: &PathPattern) -> Option<PathPattern> {

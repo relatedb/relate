@@ -158,13 +158,27 @@ pub(crate) trait NodePred: Copy {
     /// [`NodePred::admits`]'s lazy path (and once per run).
     fn prepare(&self, ctx: ExecCtx<'_>) -> Result<Self::Prepared>;
 
-    /// Whether `node` admits.
+    /// Whether `node` admits, over the prepared facts alone.
+    fn check(&self, prepared: &mut Self::Prepared, ctx: ExecCtx<'_>, node: NodeId) -> Result<bool>;
+
+    /// Whether `node` admits: the prepared slot filled at the first
+    /// candidate that reaches the check — the lazy once-per-stage
+    /// evaluation, spelled here once so no impl carries the preamble.
     fn admits(
         &self,
         prepared: &mut Option<Self::Prepared>,
         ctx: ExecCtx<'_>,
         node: NodeId,
-    ) -> Result<bool>;
+    ) -> Result<bool> {
+        if prepared.is_none() {
+            *prepared = Some(self.prepare(ctx)?);
+        }
+        self.check(
+            prepared.as_mut().expect("prepared before the check"),
+            ctx,
+            node,
+        )
+    }
 }
 
 /// Labels only.
@@ -197,16 +211,7 @@ impl<'a> NodePred for LabelsOnly<'a> {
         Ok(InternedLabels::resolve(ctx, self.pattern))
     }
 
-    fn admits(
-        &self,
-        prepared: &mut Option<Self::Prepared>,
-        ctx: ExecCtx<'_>,
-        node: NodeId,
-    ) -> Result<bool> {
-        if prepared.is_none() {
-            *prepared = Some(self.prepare(ctx)?);
-        }
-        let prepared = prepared.as_ref().expect("prepared before the label check");
+    fn check(&self, prepared: &mut Self::Prepared, ctx: ExecCtx<'_>, node: NodeId) -> Result<bool> {
         Ok(prepared.admits(ctx.graph, node))
     }
 }
@@ -263,16 +268,7 @@ impl<'a> NodePred for PropCmp<'a> {
         })
     }
 
-    fn admits(
-        &self,
-        prepared: &mut Option<Self::Prepared>,
-        ctx: ExecCtx<'_>,
-        node: NodeId,
-    ) -> Result<bool> {
-        if prepared.is_none() {
-            *prepared = Some(self.prepare(ctx)?);
-        }
-        let prepared = prepared.as_ref().expect("prepared before the comparison");
+    fn check(&self, prepared: &mut Self::Prepared, ctx: ExecCtx<'_>, node: NodeId) -> Result<bool> {
         prepared.admits(ctx, node)
     }
 }
@@ -288,16 +284,7 @@ impl<'a> NodePred for PropNull<'a> {
         })
     }
 
-    fn admits(
-        &self,
-        prepared: &mut Option<Self::Prepared>,
-        ctx: ExecCtx<'_>,
-        node: NodeId,
-    ) -> Result<bool> {
-        if prepared.is_none() {
-            *prepared = Some(self.prepare(ctx)?);
-        }
-        let prepared = prepared.as_ref().expect("prepared before the null check");
+    fn check(&self, prepared: &mut Self::Prepared, ctx: ExecCtx<'_>, node: NodeId) -> Result<bool> {
         prepared.admits(ctx, node)
     }
 }
@@ -328,9 +315,9 @@ impl PreparedNull<'_> {
 /// The monomorphic admission of one [`NodeTarget`] — the one runtime
 /// dispatch per stage: the caller passes it to its kernel loop, after
 /// which every per-candidate check inside the loop is
-/// [`NodePred::admits`], statically dispatched and inlined. The three
-/// arms are the whole vocabulary; a program outside them is
-/// unconstructible (the decoder declines before a stage exists).
+/// [`NodePred::admits`], statically dispatched and inlined. The arms are
+/// the whole vocabulary; a program outside them is unconstructible (the
+/// decoder declines before a stage exists).
 #[derive(Clone, Copy)]
 pub(crate) enum Admission<'a> {
     Bare(LabelsOnly<'a>),
@@ -371,18 +358,7 @@ impl<'a> NodePred for Admission<'a> {
         })
     }
 
-    fn admits(
-        &self,
-        prepared: &mut Option<Self::Prepared>,
-        ctx: ExecCtx<'_>,
-        node: NodeId,
-    ) -> Result<bool> {
-        if prepared.is_none() {
-            *prepared = Some(self.prepare(ctx)?);
-        }
-        let prepared = prepared
-            .as_ref()
-            .expect("the wrapper prepares before the check");
+    fn check(&self, prepared: &mut Self::Prepared, ctx: ExecCtx<'_>, node: NodeId) -> Result<bool> {
         prepared.admits(ctx, node)
     }
 }

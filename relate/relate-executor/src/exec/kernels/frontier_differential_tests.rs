@@ -65,7 +65,7 @@ struct Statement {
 /// (the distinct-endpoint family with a riding boundary WHERE, the
 /// capped pair `LIMIT` / `SKIP + LIMIT`, the EXISTS subquery) plus the
 /// three decline representatives (full enumeration, the ordered cap,
-/// the path count) — ten shapes, each run under both pools.
+/// the grouped count) — ten shapes, each run under both pools.
 const STATEMENTS: &[Statement] = &[
     Statement {
         template: "MATCH {mode}{body} RETURN DISTINCT y AS y",
@@ -108,7 +108,7 @@ const STATEMENTS: &[Statement] = &[
         kind: Kind::Decline,
     },
     Statement {
-        template: "MATCH {mode}{body} RETURN count(*) AS n",
+        template: "MATCH {mode}{body} RETURN x.id AS x, count(*) AS n",
         kind: Kind::Decline,
     },
 ];

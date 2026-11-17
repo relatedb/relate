@@ -25,22 +25,27 @@ fn chain_with_hub(hub_leaves: usize) -> Built {
     build(&labels, &rels)
 }
 
-/// Every spelling the walk model leaves unpriced: untyped, typed through
+/// Every pattern the walk model leaves unpriced: untyped, typed through
 /// unlabeled interior nodes, and untyped through labeled ones.
 const SHAPES: [&str; 3] = [
-    "MATCH (s:N {id: 0})-->()-->()-->()-->(n:N) RETURN count(n)",
-    "MATCH (s:N {id: 0})-[:R]->()-[:R]->()-[:R]->()-[:R]->(n:N) RETURN count(n)",
-    "MATCH (s:N {id: 0})-->(:N)-->(:N)-->(:N)-->(n:N) RETURN count(n)",
+    "(s:N {id: 0})-->()-->()-->()-->(n:N)",
+    "(s:N {id: 0})-[:R]->()-[:R]->()-[:R]->()-[:R]->(n:N)",
+    "(s:N {id: 0})-->(:N)-->(:N)-->(:N)-->(n:N)",
 ];
+
+/// The rows-kernel statement over `pattern`: a `LIMIT` keeps the count
+/// fold (LABS-1293) out — a plain `RETURN count` rides the fold, which
+/// never lands the last stage and so prices one hop fewer — so the rows
+/// kernel's gate is what the two tests pin.
+fn rows_statement(pattern: &str) -> String {
+    format!("MATCH {pattern} RETURN count(n) AS c LIMIT 5")
+}
 
 #[test]
 fn a_high_degree_node_declines_the_unpriced_chain_to_the_walker() {
-    // `LIMIT` spellings: a plain `RETURN count` rides the count fold
-    // (LABS-1293), which never lands the last stage and so prices one hop
-    // fewer — the rows kernel's gate is what this pins.
     let built = chain_with_hub(64);
-    for cypher in SHAPES {
-        let cypher = cypher.replace("RETURN count(n)", "RETURN count(n) AS c LIMIT 5");
+    for pattern in SHAPES {
+        let cypher = rows_statement(pattern);
         let _ = take_kernel_engagements();
         let answer = exec_cypher(&built.graph, &cypher).rows;
         assert_eq!(take_kernel_engagements(), 0, "declined: {cypher}");
@@ -55,10 +60,8 @@ fn a_thin_graph_keeps_the_kernel_on_the_unpriced_chain() {
     // No node out-degree above 1: the any-label tail is 1, the bound
     // never grows, and the kernel stays engaged.
     let built = chain_with_hub(0);
-    for cypher in SHAPES {
-        // `LIMIT` keeps the count fold out, so the rows kernel's gate (under
-        // the count rider) is what is pinned.
-        let cypher = cypher.replace("RETURN count(n)", "RETURN count(n) AS c LIMIT 5");
+    for pattern in SHAPES {
+        let cypher = rows_statement(pattern);
         let _ = take_kernel_engagements();
         let answer = exec_cypher(&built.graph, &cypher).rows;
         assert_eq!(take_kernel_engagements(), 1, "engaged: {cypher}");

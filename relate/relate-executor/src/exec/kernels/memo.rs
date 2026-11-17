@@ -513,16 +513,16 @@ impl MemoTable for PagedBits {
 }
 
 /// A [`NodePred`] answered through a [`NodeMemo`]: the wrapped predicate's
-/// own `admits` is the check, called at most once per distinct node once
+/// own `check` is the check, called at most once per distinct node once
 /// the stage is warm. The wrapper is `Copy` and monomorphic like the
 /// predicate it wraps — the kernel loop's per-candidate call stays static.
 #[derive(Clone, Copy)]
 pub(crate) struct Memoized<P>(pub(crate) P);
 
 /// The memoised predicate's per-run state: the wrapped predicate's own
-/// prepared form (lazily filled, as unmemoised) beside the memo.
+/// prepared form beside the memo.
 pub(crate) struct MemoState<T> {
-    inner: Option<T>,
+    inner: T,
     memo: NodeMemo,
 }
 
@@ -530,29 +530,18 @@ impl<P: NodePred> NodePred for Memoized<P> {
     type Prepared = MemoState<P::Prepared>;
 
     fn prepare(&self, ctx: ExecCtx<'_>) -> Result<Self::Prepared> {
-        // The wrapped predicate prepares itself at its first real check
-        // (the lazy once-per-stage evaluation of its bound), so a stage
-        // with no candidates evaluates nothing, memoised or not.
+        // The trait's lazy slot defers this call to the first candidate,
+        // so a stage with no candidates evaluates nothing, memoised or
+        // not — the wrapped predicate keeps its once-per-stage bound.
         Ok(MemoState {
-            inner: None,
+            inner: self.0.prepare(ctx)?,
             memo: NodeMemo::new(MemoPolicy::MODERATE, Some(ctx.graph.memo_live())),
         })
     }
 
-    fn admits(
-        &self,
-        prepared: &mut Option<Self::Prepared>,
-        ctx: ExecCtx<'_>,
-        node: NodeId,
-    ) -> Result<bool> {
-        if prepared.is_none() {
-            *prepared = Some(self.prepare(ctx)?);
-        }
-        let state = prepared
-            .as_mut()
-            .expect("prepared before the memoised check");
+    fn check(&self, state: &mut Self::Prepared, ctx: ExecCtx<'_>, node: NodeId) -> Result<bool> {
         let MemoState { inner, memo } = state;
-        memo.answer(ctx.graph, node, || self.0.admits(inner, ctx, node))
+        memo.answer(ctx.graph, node, || self.0.check(inner, ctx, node))
     }
 }
 

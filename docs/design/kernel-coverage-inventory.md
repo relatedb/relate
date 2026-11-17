@@ -37,7 +37,7 @@ arm bypasses it, `dispatch.rs:295-314`). The fold tier below runs before any
 | Tier | Operator | Engages at | Serves |
 | --- | --- | --- | --- |
 | fold A | boolean-count exists fold | `exec/exists_probe.rs:333`, gate `boolean_count_span` `exists_probe.rs:238`, threshold `counted_existence` `:299` | one or more plain `MATCH` clauses + ungrouped `count(DISTINCT e) > 0 \| >= 1` |
-| fold B | walk-count | `exec/kernels/frontier_count.rs:54` | bounded `REPEATABLE ELEMENTS` under a plain `count`, unfiltered target, walk pool |
+| fold B | walk-count | `exec/kernels/frontier_count.rs:54` | bounded `REPEATABLE ELEMENTS` under a plain `count`, walk pool (a target filter counts the admitted arrivals) |
 | fold C | REPEATABLE decline | `dispatch.rs:725-736` | multi-hop `REPEATABLE ELEMENTS` falls to the ladder |
 | fold D | path agg fold | `exec/agg_fold/path.rs:635`, return gate `agg_fold/mod.rs:92`, shape gate `agg_fold/plan.rs:349` | one streamable pattern of 1–2 hops, or two 1-hop patterns sharing one node; ≥1 aggregate |
 | fold E | one-hop agg fold | `exec/agg_fold/one_hop.rs:170` | exactly one pattern, exactly one rel, key items within the hop |

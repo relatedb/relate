@@ -379,11 +379,7 @@ impl<'a> Emission<'a> {
     /// run, never a silently dropped row.
     fn deferred_pass(&mut self, arms: &[Vec<Arm>], bufs: &mut RuleBuffers) -> Result<PassBudget> {
         let view = self.ctx.graph;
-        #[cfg(test)]
-        let budget = super::rearival_deferred_budget_override()
-            .unwrap_or(crate::metrics::REARRIVAL_WORK_BUDGET);
-        #[cfg(not(test))]
-        let budget = crate::metrics::REARRIVAL_WORK_BUDGET;
+        let budget = deferred_budget();
         let mut rule = RearivalRule::with_budget(
             view,
             &self.contract.nfa,
@@ -758,4 +754,19 @@ fn chain_of(parents: &Parents<'_>, seed: NodeId, endpoint: &Endpoint) -> Chain {
     nodes.reverse();
     rels.reverse();
     Chain { nodes, rels }
+}
+
+/// The deferred pass's rule work budget: the production constant, or the
+/// test hook's override so a test can force the pass's own cut without
+/// touching the runner's instance — the one fork, here, so the call site
+/// reads a single value.
+fn deferred_budget() -> u64 {
+    #[cfg(test)]
+    {
+        super::rearival_deferred_budget_override().unwrap_or(crate::metrics::REARRIVAL_WORK_BUDGET)
+    }
+    #[cfg(not(test))]
+    {
+        crate::metrics::REARRIVAL_WORK_BUDGET
+    }
 }

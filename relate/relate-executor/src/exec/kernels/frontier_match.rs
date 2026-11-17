@@ -92,7 +92,7 @@ pub(crate) enum Consumer {
     /// set the comparison filters, so no other consumer can hold one.
     DistinctEndpoints { pair: BoundaryPair },
     /// A walk count (`count(*)`/`count(<boundary var>)`, no DISTINCT)
-    /// under the bounded WALK pool with an unfiltered target — the
+    /// under the bounded WALK pool (a target filter rides the last leg) — the
     /// counting arm (`frontier_count`): the walk multiset contracts to
     /// per-level (node, state) multiplicities and the last leg to a
     /// degree sum, so no walk is enumerated. Constructed by that fold's

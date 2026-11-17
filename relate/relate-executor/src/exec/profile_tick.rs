@@ -18,9 +18,12 @@ use super::match_clause::{LadderFacts, MatchOperator};
 use super::unwind::{UnwindFeed, UnwindStats};
 use super::RowFeed;
 
-/// The expression-built meter's typed per-clause snapshot (ADR-0463): the
-/// same delta protocol as `StoreReads` and `PhaseTimes` — a value taken at
-/// the arm's start and a loud `since` delta, never a bare u64 pair.
+/// The expression-built meter's typed per-clause snapshot (ADR-0463): a
+/// snapshot taken at the arm's start and its delta at the record. Unlike
+/// `StoreReads`, `PhaseTimes` and `FrontierCounters` — monotone counters
+/// with a checked delta — this meter is a live allocation figure that
+/// falls when an arm releases expression memory, so its delta saturates
+/// and yields a bare byte count, never a counter type.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct ExpressionBytes(u64);
 

@@ -74,13 +74,15 @@ pub(super) fn walk_start(
             reason: crate::metrics::StartReason::Cheapest,
         },
         None => crate::metrics::WalkStart {
-            element: 0,
-            backward: false,
+            // The index-0 start, forward — `seed_side_forward`'s one
+            // spelling — with the seek-anchored reason when the walk
+            // rides a relationship seek.
             reason: if seek_anchored {
                 crate::metrics::StartReason::SeekAnchored
             } else {
                 crate::metrics::StartReason::IndexZero
             },
+            ..crate::metrics::WalkStart::seed_side_forward()
         },
     }
 }

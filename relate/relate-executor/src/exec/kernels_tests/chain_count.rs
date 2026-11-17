@@ -70,14 +70,14 @@ const DIRECTED: [Step; 4] = [
     },
 ];
 
-/// An undirected hop: the count fold declines it (its trail corrections
-/// are the walker's) and nothing takes the starred form, but spelled out
-/// at three-plus hops the chain **rows** kernel takes the clause — a
-/// kernel engagement all the same.
+/// An undirected hop: the count fold tallies it like a directed one — the
+/// shared expansion's lineage check already settles a rel met from both
+/// ends (the self-loops and reciprocal pairs the corpus carries), so the
+/// differential ties it to the walker (LABS-1384).
 const UNDIRECTED: Step = Step {
     hop: "-[:F]-",
     star: "-[:F*{k}]-",
-    star_engages: Engagement::Declined,
+    star_engages: Engagement::Engaged,
     spelled_engages_from: Some(3),
 };
 
