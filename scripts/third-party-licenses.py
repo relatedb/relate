@@ -17,10 +17,16 @@ Subcommands:
                               warnings unless --enforce
   all     [--enforce]         notices --check, then policy
 
+The accepted-license vocabulary is spelled once, in deny.toml's
+`[licenses] allow` — the list the policy step enforces. The notices step
+hands cargo-about a config carrying the same list derived from it
+(`about_config`), so no second copy exists to drift.
+
 Exit status: 0 unless --enforce is set and a license violates the policy, or
 the tooling itself failed (a missing tool or an unreadable run is never a
 silent pass). Drift in the committed notices is always a warning.
-Requires cargo-about and cargo-deny on PATH.
+Requires Python 3.11+ (the stdlib TOML reader) and cargo-about and cargo-deny
+on PATH.
 """
 import argparse
 import json
@@ -30,9 +36,14 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
+from dataclasses import dataclass, field
+from typing import NamedTuple
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 NOTICES = ROOT / "THIRDPARTY-NOTICES.md"
+ABOUT = ROOT / "about.toml"
+DENY = ROOT / "deny.toml"
 SHIPPED = [
     "surfaces/relate-cli",
     "surfaces/relate-ffi",
@@ -53,10 +64,10 @@ def run(cmd, **kw):
         sys.exit(f"error: {cmd[0]} not found; install with `cargo install --locked {cmd[0]}`")
 
 
-def about_json(manifest_dir, out):
+def about_json(manifest_dir, config, out):
     r = run(
         [
-            "cargo", "about", "generate", "--config", "about.toml", "--locked",
+            "cargo", "about", "generate", "--config", str(config), "--locked",
             "--format", "json", "--manifest-path", f"{manifest_dir}/Cargo.toml",
             "-o", str(out),
         ]
@@ -80,19 +91,24 @@ def is_copyright_line(line):
     return bool(_COPYRIGHT_LINE.match(line.strip()))
 
 
-def copyright_lines(text):
-    """The crate-specific copyright lines of a license text (the template
-    placeholders of the standard texts are not notices)."""
-    found = []
-    for line in normalize_newlines(text).split("\n"):
-        line = line.strip()
-        if is_copyright_line(line) and not _PLACEHOLDER.search(line) and line not in found:
-            found.append(line)
-    return found
-
-
 def _squash(text):
     return " ".join(text.split())
+
+
+def copyright_notices(text):
+    """The crate-specific copyright notices of a license text, each in its
+    whitespace-squashed spelling — a notice's identity and the text shown
+    for it are one value, so the result never depends on how its whitespace
+    is spelled or on the order the lines arrive in (the template
+    placeholders of the standard texts are not notices)."""
+    found = set()
+    for line in text.splitlines():
+        # squashing is also the line-ending normalization: it eats every
+        # whitespace run, a lone \r included
+        line = _squash(line)
+        if is_copyright_line(line) and not _PLACEHOLDER.search(line):
+            found.add(line)
+    return found
 
 
 def canonical_text(texts):
@@ -108,26 +124,98 @@ def canonical_text(texts):
 def standard_text(lic_id):
     """The SPDX list's standard text for a license id (committed under
     scripts/license-texts/, refreshed from github.com/spdx/license-list-data
-    when the allow-list gains a license), or None."""
+    when the allow-list gains a license), or None when there is none.
+
+    None is the one value for "no standard text": a missing committed file,
+    an empty one, and a compound expression like
+    `Apache-2.0 WITH LLVM-exception` (no single standard text exists for it)
+    all answer the same.
+    """
     path = TEXTS / f"{lic_id}.txt"
-    return normalize_newlines(path.read_bytes().decode("utf-8")) if path.is_file() else None
+    if not path.is_file():
+        return None
+    return normalize_newlines(path.read_bytes().decode("utf-8")) or None
 
 
-def render(groups):
-    """Markdown for {(license id, text): {(crate, version): repository}}:
-    one section per license id with its text once and every crate that uses
-    it, each with the copyright notices found in its own license file."""
-    by_id = {}  # id -> {"std", "texts", "crates": {(name, version): (repo, [notices])}}
+class CrateEntry(NamedTuple):
+    """One crate using a license: its identity, its repository (None when
+    the crate declares none), and the copyright notices its own license
+    texts carry, sorted."""
+
+    name: str
+    version: str
+    repo: str | None
+    notices: tuple[str, ...]
+
+
+class LicenseSection(NamedTuple):
+    """One license's unit of the notices document: the id, the text shown
+    once for it, and every crate that uses it."""
+
+    lic_id: str
+    text: str
+    crates: tuple[CrateEntry, ...]
+
+
+@dataclass
+class _Crate:
+    """One crate while its license entries are folded in: the repository it
+    declares (None when it declares none) and the notices seen so far."""
+
+    repo: str | None = None
+    notices: set[str] = field(default_factory=set)
+
+
+@dataclass
+class _Grouping:
+    """The mutable working state of one license id while its group entries
+    are folded together: the texts its crates carry, and one record per
+    crate."""
+
+    texts: list[str] = field(default_factory=list)
+    crates: dict[tuple[str, str], _Crate] = field(default_factory=dict)
+
+
+def license_sections(groups):
+    """The grouping step: {(license id, text): {(crate, version): repository
+    or None}} -> the license sections, sorted by id.
+
+    A license's text is its standard text when the committed SPDX list has
+    one, else the most common of the texts its crates carry
+    (`canonical_text`). A crate's notices are the copyright notices of every
+    text it was seen under, keyed by their squashed form so one notice is one
+    entry, and sorted.
+    """
+    by_id = {}  # id -> _Grouping
     for (lic_id, text), bucket in groups.items():
-        if lic_id not in by_id:
-            by_id[lic_id] = {"std": standard_text(lic_id), "texts": [], "crates": {}}
-        entry = by_id[lic_id]
-        entry["texts"].append(text)
-        notices = copyright_lines(text)
-        for key, repo in bucket.items():
-            old_repo, old = entry["crates"].get(key, ("", []))
-            entry["crates"][key] = (repo or old_repo, old + [n for n in notices if n not in old])
-    crates = {k for e in by_id.values() for k in e["crates"]}
+        grouping = by_id.setdefault(lic_id, _Grouping())
+        grouping.texts.append(text)
+        notices = copyright_notices(text)
+        for crate, repo in bucket.items():
+            folded = grouping.crates.setdefault(crate, _Crate())
+            # the first repository a crate declares wins, and None is the
+            # only "declares none" — a later one never clears an earlier
+            if folded.repo is None:
+                folded.repo = repo
+            folded.notices |= notices
+    return [
+        LicenseSection(
+            lic_id,
+            standard_text(lic_id) or normalize_newlines(canonical_text(grouping.texts)),
+            tuple(
+                CrateEntry(name, version, folded.repo, tuple(sorted(folded.notices)))
+                for (name, version), folded in sorted(grouping.crates.items())
+            ),
+        )
+        for lic_id, grouping in sorted(by_id.items())
+    ]
+
+
+def format_sections(sections):
+    """The pure formatter: the license sections as the THIRDPARTY-NOTICES.md
+    body. Everything it prints is on the sections — nothing is derived from
+    the raw groups here."""
+    crates = {(c.name, c.version) for section in sections for c in section.crates}
     out = [
         "# Third-party notices",
         "",
@@ -140,50 +228,72 @@ def render(groups):
         "Generated by `scripts/third-party-licenses.py notices --write`; do not",
         "edit by hand. See RELEASING.md.",
         "",
-        f"{len(crates)} crates under {len(by_id)} licenses.",
+        f"{len(crates)} crates under {len(sections)} licenses.",
         "",
     ]
-    for lic_id in sorted(by_id):
-        entry = by_id[lic_id]
-        out += [f"## {lic_id}", "", f"Used by {len(entry['crates'])} crates:", ""]
-        for (name, version), (repo, notices) in sorted(entry["crates"].items()):
-            out.append(f"- {name} {version}" + (f" ({repo})" if repo else ""))
-            out += [f"  - {n}" for n in sorted(notices)]
-        text = entry["std"] or normalize_newlines(canonical_text(entry["texts"]))
-        out += ["", "```text", text.strip("\n"), "```", ""]
+    for section in sections:
+        out += [f"## {section.lic_id}", "", f"Used by {len(section.crates)} crates:", ""]
+        for crate in section.crates:
+            repo = f" ({crate.repo})" if crate.repo is not None else ""
+            out.append(f"- {crate.name} {crate.version}{repo}")
+            out += [f"  - {notice}" for notice in crate.notices]
+        out += ["", "```text", section.text.strip("\n"), "```", ""]
     return "\n".join(out).rstrip("\n") + "\n"
 
 
+def notices_body(groups):
+    """The notices document body for a cargo-about grouping: the grouping
+    step then the formatter. The one composition of the two — the generator
+    calls it, and so do the tests, so a step added here cannot leave them
+    testing a stale pipeline."""
+    return format_sections(license_sections(groups))
+
+
 def build_notices():
-    groups = {}  # (license id, text) -> {(crate, version): repository}
+    groups = {}  # (license id, text) -> {(crate, version): repository or None}
     with tempfile.TemporaryDirectory() as tmp:
+        config = pathlib.Path(tmp) / "about.toml"
+        config.write_text(about_config())
         for i, manifest_dir in enumerate(SHIPPED):
-            data = about_json(manifest_dir, pathlib.Path(tmp) / f"{i}.json")
+            data = about_json(manifest_dir, config, pathlib.Path(tmp) / f"{i}.json")
             for lic in data["licenses"]:
                 bucket = groups.setdefault((lic["id"], lic["text"]), {})
                 for used in lic["used_by"]:
                     c = used["crate"]
-                    bucket[(c["name"], c["version"])] = c.get("repository") or ""
-    return render(groups)
+                    bucket[(c["name"], c["version"])] = c.get("repository")
+    return notices_body(groups)
 
 
+def deny_allow_list():
+    """deny.toml's `[licenses] allow` list, read structurally through the
+    stdlib TOML reader — no bespoke array parser to mis-truncate the list."""
+    try:
+        return tomllib.loads(DENY.read_text())["licenses"]["allow"]
+    except (tomllib.TOMLDecodeError, KeyError) as exc:
+        sys.exit(f"error: deny.toml carries no `[licenses] allow` list: {exc}")
 
-def license_list(path, key):
-    """The quoted entries of `key = [ ... ]` in a flat TOML file."""
-    m = re.search(rf"^{key}\s*=\s*\[(.*?)\]", (ROOT / path).read_text(), re.S | re.M)
-    if not m:
-        sys.exit(f"error: no `{key}` array in {path}")
-    return sorted(re.findall(r'"([^"]+)"', m.group(1)))
 
+def about_config():
+    """cargo-about's config for one run: about.toml with the `accepted`
+    license list derived from deny.toml's `[licenses] allow` appended.
 
-def check_lists_agree():
-    """about.toml's accepted list must equal deny.toml's allow list."""
-    accepted, allow = license_list("about.toml", "accepted"), license_list("deny.toml", "allow")
-    if accepted != allow:
-        sys.exit(
-            "error: about.toml `accepted` and deny.toml `allow` differ: "
-            f"{sorted(set(accepted) ^ set(allow))}"
-        )
+    cargo-about and cargo-deny each read their policy from a file, so the
+    vocabulary is spelled once — in deny.toml, the list the policy step
+    enforces — and this is the one derivation of cargo-about's copy.
+    about.toml carries only the settings cargo-about alone needs.
+
+    The derived line goes ahead of about.toml's text, so it is a root key
+    whatever tables the document carries after it, and the combined document
+    is parsed here: a base document holding an `accepted` of its own fails
+    to parse rather than silently deciding which list cargo-about sees.
+    """
+    accepted = ", ".join(f'"{lic}"' for lic in deny_allow_list())
+    config = f"accepted = [{accepted}]\n" + ABOUT.read_text()
+    try:
+        tomllib.loads(config)
+    except tomllib.TOMLDecodeError as exc:
+        sys.exit(f"error: the generated cargo-about config does not parse: {exc}")
+    return config
 
 
 def notices_drift():
@@ -213,7 +323,6 @@ def cmd_notices(args):
 
 
 def cmd_policy(args):
-    check_lists_agree()
     bad = 0
     for manifest_dir in SHIPPED:
         r = run(

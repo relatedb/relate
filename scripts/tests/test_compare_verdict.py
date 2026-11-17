@@ -10,7 +10,7 @@ docs/datasets.md.
 
 import unittest
 
-from comparator_runner import render, run_pair
+from comparator_runner import render, render_mode, run_pair
 from loadtest_fixtures import ENV, checkpoint_report, memory_report, report
 
 
@@ -35,7 +35,7 @@ class VerdictPinningTests(unittest.TestCase):
             "| query | 100 | 1.00 ms | 1.30 ms | +0.30 ms (+30.0%) | fail (above limit) |",
             table,
         )
-        gate, _, _ = run_pair(base, cur)
+        gate, _ = run_pair(base, cur)
         self.assertEqual(gate.returncode, 1)
         self.assertIn(
             "usecase query p99 1300000 > max(1.15 * baseline 1000000, "
@@ -54,7 +54,7 @@ class VerdictPinningTests(unittest.TestCase):
             table,
         )
         self.assertIn("| p99 | — | — | — | n/a (no comparable use cases) |", table)
-        gate, _, _ = run_pair(base, cur)
+        gate, _ = run_pair(base, cur)
         self.assertEqual(gate.returncode, 0, gate.stderr)
         self.assertIn("compare-loadtest: ok", gate.stdout)
 
@@ -64,7 +64,7 @@ class VerdictPinningTests(unittest.TestCase):
         result, table = render(base, cur)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("| b | — | 2.00 ms | — | — | fail (missing in PR) |", table)
-        gate, _, _ = run_pair(base, cur)
+        gate, _ = run_pair(base, cur)
         self.assertEqual(gate.returncode, 1)
         self.assertIn("missing usecase b", gate.stderr)
 
@@ -88,13 +88,13 @@ class FailureCountTests(unittest.TestCase):
         other = dict(ENV, runner="local")
         base = report(p99=1_000_000)
         cur = report(p99=1_000_000, env=other, errors=1)
-        local, _, _ = run_pair(base, cur)
+        local, _ = run_pair(base, cur)
         self.assertEqual(local.returncode, 1)
         self.assertIn("errors=1", local.stderr)
         self.assertIn("INCOMPATIBLE", local.stderr)
         self.assertIn("skipping ops/s and p99 (environment class mismatch)", local.stderr)
         self.assertIn("2 check(s) failed", local.stderr)
-        ci, _, _ = run_pair(base, cur, extra_env={"GITHUB_ACTIONS": "true"})
+        ci, _ = run_pair(base, cur, extra_env={"GITHUB_ACTIONS": "true"})
         self.assertEqual(ci.returncode, 1)
         self.assertIn("2 check(s) failed", ci.stderr)
 
@@ -102,18 +102,18 @@ class FailureCountTests(unittest.TestCase):
         other = dict(ENV, runner="local")
         base = memory_report(logical=1000, ratio=2.0)
         cur = memory_report(logical=1001, ratio=2.0, env=other)
-        local, _, _ = run_pair(base, cur)
+        local, _ = run_pair(base, cur)
         self.assertEqual(local.returncode, 1)
         self.assertIn("logical_bytes", local.stderr)
         self.assertIn("skipping rss ratio (environment class mismatch)", local.stderr)
         self.assertIn("2 check(s) failed", local.stderr)
-        ci, _, _ = run_pair(base, cur, extra_env={"GITHUB_ACTIONS": "true"})
+        ci, _ = run_pair(base, cur, extra_env={"GITHUB_ACTIONS": "true"})
         self.assertEqual(ci.returncode, 1)
         self.assertIn("2 check(s) failed", ci.stderr)
 
     def test_pure_mismatch_in_ci_still_counts_exactly_one(self) -> None:
         other = dict(ENV, runner="local")
-        result, _, _ = run_pair(
+        result, _ = run_pair(
             report(p99=1_000_000),
             report(p99=1_000_000, env=other, ops_per_sec=1.0),
             extra_env={"GITHUB_ACTIONS": "true"},
@@ -125,12 +125,12 @@ class FailureCountTests(unittest.TestCase):
         other = dict(ENV, runner="local")
         base = report(p99=1_000_000, schema=5)
         cur = report(p99=1_000_000, schema=6, env=other, errors=1)
-        result, _, _ = run_pair(base, cur)
+        result, _ = run_pair(base, cur)
         self.assertEqual(result.returncode, 1)
         self.assertIn("3 check(s) failed", result.stderr)
 
     def test_plain_band_breach_counts_stay_unchanged(self) -> None:
-        result, _, _ = run_pair(
+        result, _ = run_pair(
             report(p99=1_000_000),
             report(p99=1_300_000, ops_per_sec=50.0, logical_used_bytes=2000),
         )
@@ -209,11 +209,10 @@ class StatusOutTests(unittest.TestCase):
     """--status-out writes one machine-readable token per rendered pair."""
 
     def status(self, baseline, current, flags=(), extra_env=None):
-        result, _, token = run_pair(
-            baseline, current, ("--render-only", *flags), status=True,
-            extra_env=extra_env,
+        result, written = render_mode(
+            baseline, current, flags, sidecars=("--status-out",), extra_env=extra_env
         )
-        return result, token
+        return result, written["--status-out"]
 
     def test_ok_pair_writes_ok(self) -> None:
         result, token = self.status(
@@ -257,11 +256,11 @@ class StatusOutTests(unittest.TestCase):
     def test_status_out_is_inert_in_gate_mode(self) -> None:
         base = report(p99=1_000_000)
         cur = report(p99=1_300_000, ops_per_sec=50.0)
-        plain, _, _ = run_pair(base, cur)
-        flagged, _, token = run_pair(
-            base, cur, ("--report-kind", "generic"), status=True
+        plain, _ = run_pair(base, cur)
+        flagged, written = run_pair(
+            base, cur, ("--report-kind", "generic"), sidecars=("--status-out",)
         )
-        self.assertIsNone(token)  # never written without --render-only
+        self.assertIsNone(written["--status-out"])  # never written without --render-only
         self.assertEqual(flagged.returncode, plain.returncode)
         self.assertEqual(flagged.stdout, plain.stdout)
         self.assertEqual(flagged.stderr, plain.stderr)
@@ -317,7 +316,7 @@ class ReportKindTests(unittest.TestCase):
         self.assertIn("| rss ratio — deep/none | 2.000 | 2.200 | +0.200 (+10.0%) | ok |", table)
 
     def test_unknown_report_kind_is_rejected(self) -> None:
-        result, _, _ = run_pair(
+        result, _ = run_pair(
             report(p99=1_000_000), report(p99=1_000_000), ("--report-kind", "bogus")
         )
         self.assertEqual(result.returncode, 2)
@@ -327,8 +326,8 @@ class ReportKindTests(unittest.TestCase):
         # gate mode dispatches on workload.kind itself; the flag is inert
         base = memory_report(logical=1000, ratio=2.0)
         cur = memory_report(logical=1001, ratio=2.0)
-        plain, _, _ = run_pair(base, cur)
-        flagged, _, _ = run_pair(base, cur, ("--report-kind", "generic"))
+        plain, _ = run_pair(base, cur)
+        flagged, _ = run_pair(base, cur, ("--report-kind", "generic"))
         self.assertEqual(flagged.returncode, plain.returncode)
         self.assertIn("logical_bytes", flagged.stderr)  # still the memory-shape gate
         self.assertEqual(flagged.stderr, plain.stderr)

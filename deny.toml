@@ -8,8 +8,10 @@
 # - The license policy for everything that ships in a Relate binary
 #   release (scripts/third-party-licenses.py; the release workflow's
 #   `licenses` job). The [licenses] allow-list is the Apache-2.0-compatible
-#   set that the shipped dependency closure uses today; a new license is a
-#   deliberate edit here AND in about.toml, never an accident.
+#   set that the shipped dependency closure uses today, and it is the ONE
+#   spelling of that vocabulary: the script derives cargo-about's copy from
+#   it at run time, so a new license is a deliberate edit here alone, never
+#   an accident and never a second list to keep in step.
 
 [advisories]
 # Every advisory the scan reports is either fixed in Cargo.lock or listed

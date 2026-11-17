@@ -50,9 +50,6 @@ mkdir -p "$stubbin" "$fixtures" "$itmp"
 quoted_literal() { # $1 = name pattern, $2 = file
 	sed -n "s/^$1 *= *'\\(.*\\)'\$/\\1/p" "$2"
 }
-installer_literal() { # $1 = variable name in install.sh
-	quoted_literal "$1" "$INSTALLER"
-}
 
 # The one extraction idiom for a Rust `const NAME: &str = "VALUE";`
 # declaration (an optional `pub(crate) ` visibility prefix): the value
@@ -77,7 +74,7 @@ installer_override_env() { # $1 = install.sh variable, $2 = its default constant
 # The pinned SIGNING_KEY in install.sh must match the canonical public key
 # committed at distribution/release-signing-key.pub; a release that rotates one
 # without the other breaks verification for every user.
-pinned_key=$(installer_literal SIGNING_KEY)
+pinned_key=$(quoted_literal SIGNING_KEY "$INSTALLER")
 pub_key=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
 	"$ROOT/distribution/release-signing-key.pub")
 assert_same "drift guard: install.sh's pinned SIGNING_KEY matches distribution/release-signing-key.pub" \
@@ -99,7 +96,7 @@ assert_same "drift guard: install.sh's LEGACY_MANIFEST_CEILING matches manifest.
 # harness fixture writer's constant must all equal the literal manifest.rs
 # carries, and install.sh's case pattern must match the header through that
 # one variable rather than a re-spelled literal.
-installer_prefix=$(installer_literal SUMS_VERSION_PREFIX)
+installer_prefix=$(quoted_literal SUMS_VERSION_PREFIX "$INSTALLER")
 rust_prefix=$(rust_str_const SUMS_VERSION_PREFIX "$manifest_rs")
 release_prefix=$(sed -n "s/^[[:space:]]*printf '\(.*\)%s\\\\n'.*> SHA256SUMS\$/\1/p" \
 	"$ROOT/.github/workflows/release.yml")
@@ -115,7 +112,7 @@ tap_check "drift guard: install.sh matches the header through the shared prefix"
 # constant — held equal here so the two consumers cannot drift onto
 # different metadata sources.
 releases_rs="$ROOT/surfaces/relate-cli/src/upgrade_cmd/releases_json.rs"
-installer_releases_url=$(installer_literal RELEASES_JSON_URL)
+installer_releases_url=$(quoted_literal RELEASES_JSON_URL "$INSTALLER")
 rust_releases_url=$(rust_str_const RELEASES_JSON_URL "$releases_rs")
 assert_same "drift guard: install.sh's RELEASES_JSON_URL matches releases_json.rs (ADR-0571)" \
 	"$installer_releases_url" "$rust_releases_url"
@@ -148,7 +145,7 @@ tap_check "drift guard: install.sh consults no GitHub API endpoint (ADR-0585)" $
 route_rs="$ROOT/surfaces/relate-cli/src/release_channel/download_route.rs"
 channel_rs="$ROOT/surfaces/relate-cli/src/release_channel/mod.rs"
 repo_slug=$(rust_str_const REPO "$channel_rs")
-installer_download_base=$(installer_literal DOWNLOAD_BASE)
+installer_download_base=$(quoted_literal DOWNLOAD_BASE "$INSTALLER")
 rust_base_template=$(sed -n 's|.*format!("\([^"]*\)/{repo}/releases/download").*|\1|p' "$route_rs")
 assert_same "drift guard: install.sh's DOWNLOAD_BASE matches download_route.rs's canonical base (ADR-0585)" \
 	"$installer_download_base" "$rust_base_template/$repo_slug/releases/download"
@@ -197,14 +194,14 @@ tap_check "drift guard: install.ps1 is pure ASCII (Windows PowerShell 5.1 reads 
 # The signer identity and namespace is one value per installer: install.sh's
 # SIGNER, which the real-roundtrip machinery signs under, and install.ps1's
 # $RelateSigner, held equal here.
-INSTALLER_SIGNER=$(installer_literal SIGNER)
+INSTALLER_SIGNER=$(quoted_literal SIGNER "$INSTALLER")
 assert_same "drift guard: install.sh's SIGNER matches install.ps1's \$RelateSigner (ADR-0115)" \
 	"$INSTALLER_SIGNER" "$(quoted_literal '\$RelateSigner' "$PS_INSTALLER")"
 
 # The Windows one-liner is spelled in three places — install.sh's pointer
 # for Git Bash/MSYS/Cygwin, the CLI's Windows upgrade refusal, and
 # install.ps1's own header — and must be one string.
-installer_windows_one_liner=$(installer_literal WINDOWS_INSTALL_ONE_LINER)
+installer_windows_one_liner=$(quoted_literal WINDOWS_INSTALL_ONE_LINER "$INSTALLER")
 rust_windows_one_liner=$(rust_str_const WINDOWS_INSTALL_ONE_LINER \
 	"$ROOT/surfaces/relate-cli/src/upgrade_cmd/mod.rs")
 assert_same "drift guard: the Windows install one-liner is one string in install.sh and upgrade_cmd (ADR-0586)" \
@@ -236,6 +233,10 @@ install_sh_fixtures
 install_sh_stubs
 
 # --- 1. OS/arch mapping -------------------------------------------------------
+#
+# Every refusal asserts the shape of the last stage it reached: the two uname
+# switches are the installer's first step, so each of the three refusals below
+# dies before any request and carries the preflight shape.
 
 reset_case
 install_run osarch-darwin
@@ -244,8 +245,8 @@ grep -qF "$installer_download_base/$TEST_TAG/relate-darwin-arm64" "$RUN_LOG"
 tap_check "Darwin/arm64: downloads relate-darwin-arm64 over the direct route" $?
 ! grep -qF "$installer_download_base/$TEST_TAG/relate-linux-amd64" "$RUN_LOG"
 tap_check "Darwin/arm64: does not download the linux-amd64 asset" $?
-cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
-tap_check "Darwin/arm64: installed content is the darwin-arm64 fixture" $?
+assert_installed "Darwin/arm64: installed content is the darwin-arm64 fixture" \
+	"$fixtures/relate-darwin-arm64"
 
 reset_case
 STUB_UNAME_S=Linux
@@ -254,13 +255,13 @@ install_run osarch-linux
 tap_check "Linux/x86_64: installer exits 0" "$RUN_STATUS"
 grep -qF "$installer_download_base/$TEST_TAG/relate-linux-amd64" "$RUN_LOG"
 tap_check "Linux/x86_64: downloads relate-linux-amd64 over the direct route" $?
-cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-linux-amd64"
-tap_check "Linux/x86_64: installed content is the linux-amd64 fixture" $?
+assert_installed "Linux/x86_64: installed content is the linux-amd64 fixture" \
+	"$fixtures/relate-linux-amd64"
 
 reset_case
 STUB_UNAME_S=FreeBSD
 install_run osarch-freebsd
-assert_install_failure "unsupported OS (FreeBSD)" "unsupported OS"
+assert_preflight_failure "unsupported OS (FreeBSD)" "unsupported OS"
 
 # Windows' POSIX-style shells get the PowerShell installer's one-liner
 # (ADR-0586) instead of `unsupported OS`, and nothing is downloaded.
@@ -277,7 +278,7 @@ done
 reset_case
 STUB_UNAME_M=i386
 install_run osarch-i386
-assert_install_failure "unsupported arch (i386)" "unsupported architecture"
+assert_preflight_failure "unsupported arch (i386)" "unsupported architecture"
 
 # Piped execution says so once, on stderr, and still installs; a run from a
 # file stays quiet.
@@ -312,8 +313,7 @@ install_run token-set
 tap_check "token set: installer exits 0 — the token is not read" "$RUN_STATUS"
 ! grep -q "Authorization" "$RUN_LOG"
 tap_check "token set: no Authorization header anywhere (GITHUB_TOKEN never rides a request)" $?
-cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
-tap_check "token set: installs the fixture binary" $?
+assert_installed "token set: installs the fixture binary" "$fixtures/relate-darwin-arm64"
 
 # --- 2a. Direct-route failures --------------------------------------------------
 #
@@ -392,8 +392,7 @@ tap_check "happy path: installer exits 0" "$RUN_STATUS"
 tap_check "happy path: \$HOME/.local/bin/relate exists" $?
 [ -x "$RUN_HOME/.local/bin/relate" ]
 tap_check "happy path: installed file is executable" $?
-cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
-tap_check "happy path: installed content matches the fixture" $?
+assert_installed "happy path: installed content matches the fixture" "$fixtures/relate-darwin-arm64"
 [ "$(ls -A "$RUN_HOME/.local/bin")" = "relate" ]
 tap_check "happy path: bin dir holds exactly the installed binary (no temp leftovers)" $?
 grep -q '^-Y$' "$RUN_KEYGEN_LOG" && grep -q '^verify$' "$RUN_KEYGEN_LOG" &&
@@ -419,8 +418,8 @@ install_run publisher-fixture
 tap_check "publisher fixture as releases.json: installer exits 0" "$RUN_STATUS"
 grep -qF "$installer_download_base/$PUBLISHER_FIXTURE_TAG/SHA256SUMS" "$RUN_LOG"
 tap_check "publisher fixture as releases.json: the direct route is asked for the fixture's latest tag" $?
-cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
-tap_check "publisher fixture as releases.json: installs that release's product binary" $?
+assert_installed "publisher fixture as releases.json: installs that release's product binary" \
+	"$fixtures/relate-darwin-arm64"
 
 reset_case
 RELATE_RELEASES_JSON_URL=https://example.test/releases.json
@@ -504,8 +503,7 @@ reset_case
 STUB_MODE=sums_extra_space_header
 install_run sums-extra-space-header
 tap_check "extra-space header value: installer exits 0 (both parsers trim)" "$RUN_STATUS"
-cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
-tap_check "extra-space header value: installs the fixture binary" $?
+assert_installed "extra-space header value: installs the fixture binary" "$fixtures/relate-darwin-arm64"
 
 reset_case
 STUB_MODE=legacy_tag
@@ -513,8 +511,8 @@ install_run legacy-tag
 tap_check "headerless manifest at/below the legacy ceiling: installer exits 0" "$RUN_STATUS"
 grep -q "legacy manifest" "$RUN_ERR"
 tap_check "headerless manifest at/below the legacy ceiling: warns about the legacy manifest" $?
-cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
-tap_check "headerless manifest at/below the legacy ceiling: installs the fixture binary" $?
+assert_installed "headerless manifest at/below the legacy ceiling: installs the fixture binary" \
+	"$fixtures/relate-darwin-arm64"
 
 reset_case
 RUN_PATH="$nosshbin"
@@ -545,8 +543,7 @@ if build_real_roundtrip_fixtures; then
 	# Case 2: a real signature verifies and installs.
 	real_install_run real-sig-ok "$real_fixtures"
 	tap_check "$2" "$RUN_STATUS"
-	cmp -s "$RUN_HOME/.local/bin/relate" "$fixtures/relate-darwin-arm64"
-	tap_check "$3" $?
+	assert_installed "$3" "$fixtures/relate-darwin-arm64"
 	[ ! -s "$RUN_KEYGEN_LOG" ]
 	tap_check "$4" $?
 	# Case 3: the second key's own fixture tree fails closed —

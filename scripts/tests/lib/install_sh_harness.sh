@@ -11,18 +11,19 @@
 # plus `$INSTALLER_SIGNER` (the identity the roundtrip keypair and
 # signatures carry). The factories — `install_sh_fixtures`,
 # `install_sh_stubs` and `build_real_roundtrip_fixtures` — expect the
-# caller's section-0 guards to have set `$LEGACY_MANIFEST_TAG` and
-# `$PUBLISHER_FIXTURE_TAG` by the time they are called (the guards run
-# after this file is sourced and before the factories). Each factory
-# publishes outputs the cases consume beside those caller-owned names:
-# `install_sh_stubs` sets `$nosshbin`; `build_real_roundtrip_fixtures`
+# caller's section-0 guards to have set `$LEGACY_MANIFEST_TAG`,
+# `$PUBLISHER_FIXTURE_TAG` and `$publisher_fixture` (the committed publisher
+# document the guard derived the tag from) by the time they are called (the
+# guards run after this file is sourced and before the factories). Each
+# factory publishes outputs the cases consume beside those caller-owned
+# names: `install_sh_stubs` sets `$nosshbin`; `build_real_roundtrip_fixtures`
 # sets `$patched_installer`, `$real_fixtures`, `$wrong_fixtures` and
 # `$keygen_dir`, plus `$real_skip_reason` (the failure reason), and returns
 # non-zero when the real-keygen probe failed — the caller branches once on
 # that status and reads those outputs only in the success arm. The run
-# harness also publishes the failure-assertion helpers the cases assert
-# through, from `assert_install_failure` down to its stage siblings.
-# Never executed directly.
+# harness also publishes the assertion helpers the cases assert through,
+# from `assert_installed` and `assert_install_failure` down to its stage
+# siblings. Never executed directly.
 #
 # The two factories build the release-asset fixtures and the PATH stubs the
 # installer is exercised against; their shared table is below.
@@ -63,42 +64,19 @@ release_entry() { # $1 = tag, $2 = line indent
 	printf '%s}\n' "$2"
 }
 
-# Write the releases.json document whose latest names tag $1 to path $2, in
-# the publisher's jq serialization (one key per line, two-space indents) —
-# the shape install.sh's parse reads. A null tag emits the null-latest
-# shape (ADR-0250 §2's nullable slot: no stable release published) over the
-# same template: `"latest": null` and the empty releases window.
-# latest_prerelease is non-null with a different tag on purpose: a parse
-# that reads the wrong slot must fail the install loudly, never install the
-# prerelease.
-write_releases_fixture() { # $1 = tag, $2 = output path
-	_tag="$1"
-	_out="$2"
-	# The latest slot and the releases window are the only tag-driven
-	# parts of the one template below: a real tag fills both from the one
-	# release_entry, each at its slot's indent (the parser reads latest's
-	# four-space-indented keys, so the window's deeper indent never
-	# matches); the null arm fills the null keyword and the empty array.
-	case "$_tag" in
-	null)
-		_latest=null
-		_window='[]'
-		;;
-	*)
-		# The latest object's opening brace sits on the "latest": line
-		# (jq's shape), so the entry is emitted as-is; the window's
-		# entries sit one indent deeper, its brace sharing that indent.
-		_window_indent='    '
-		_latest=$(release_entry "$_tag" '  ')
-		_window=$(printf '[\n%s%s\n  ]' "$_window_indent" \
-			"$(release_entry "$_tag" "$_window_indent")")
-		;;
-	esac
-	cat <<EOF >"$_out"
+# Write the releases.json document to path $3 whose latest slot is the JSON
+# in $1 and whose releases window is the JSON in $2, in the publisher's jq
+# serialization (one key per line, two-space indents) — the shape
+# install.sh's parse reads. The one template: the two writers below fill
+# their slots and nothing else varies. latest_prerelease is non-null with a
+# different tag on purpose: a parse that reads the wrong slot must fail the
+# install loudly, never install the prerelease.
+write_releases_document() { # $1 = latest slot JSON, $2 = releases window JSON, $3 = output path
+	cat <<EOF >"$3"
 {
   "schema_version": 1,
   "generated_at": "2026-09-01T00:00:00Z",
-  "latest": $_latest,
+  "latest": $1,
   "latest_prerelease": {
     "tag": "v0.11.0-rc.1",
     "published_at": "2026-09-01T00:00:00Z",
@@ -108,9 +86,30 @@ write_releases_fixture() { # $1 = tag, $2 = output path
       "relate-darwin-arm64"
     ]
   },
-  "releases": $_window
+  "releases": $2
 }
 EOF
+}
+
+# Write the releases.json document whose latest names tag $1 to path $2: both
+# the latest slot and the releases window derive from the one release_entry.
+# The latest object's opening brace sits on the "latest": line (jq's shape),
+# so the entry is emitted as-is; the window's entries sit one indent deeper,
+# its brace sharing that indent — and the parser reads latest's
+# four-space-indented keys, so the window's deeper indent never matches.
+write_releases_fixture() { # $1 = tag, $2 = output path
+	_window_indent='    '
+	write_releases_document "$(release_entry "$1" '  ')" \
+		"$(printf '[\n%s%s\n  ]' "$_window_indent" \
+			"$(release_entry "$1" "$_window_indent")")" \
+		"$2"
+}
+
+# Write the null-latest document to path $1 (ADR-0250 §2's nullable slot: no
+# stable release published): its own writer over the shared template, so a
+# tag positional never doubles as a document-shape switch.
+write_null_latest_fixture() { # $1 = output path
+	write_releases_document null '[]' "$1"
 }
 
 # Write a SHA256SUMS variant to $fixtures/SHA256SUMS.$1 whose ADR-0457
@@ -176,9 +175,9 @@ EOF
 	printf 'untrusted comment: relate test signature fixture\n' \
 		>"$fixtures/SHA256SUMS.sig"
 
-	# The empty body the failure modes serve: a 404/403 response whose
-	# bytes are never used (install.sh dies on the status), as one shared
-	# fixture rather than a per-arm sentinel.
+	# The empty body every non-200 response serves: its bytes are never
+	# used (install.sh dies on the status), and serve() picks this one
+	# fixture for every failure mode rather than a per-arm sentinel.
 	: >"$fixtures/empty"
 
 	# The releases.json documents the stub's metadata arm serves: the
@@ -192,7 +191,7 @@ EOF
 	# A valid document whose latest is null (ADR-0250 §2's nullable slot:
 	# no stable release published) — the prerelease slot stays non-null so
 	# a parse that falls into it still fails loudly.
-	write_releases_fixture null "$fixtures/releases-null-latest.json"
+	write_null_latest_fixture "$fixtures/releases-null-latest.json"
 	# Not JSON at all: the bluntest malformed body.
 	printf 'not json\n' >"$fixtures/releases-malformed.json"
 
@@ -200,12 +199,12 @@ EOF
 	# bats suite compares publish-releases-json.sh's output against —
 	# served byte-for-byte (publisher_doc mode): the end-to-end pin that
 	# the serialization the producer writes is the grammar install.sh's
-	# latest_tag_of reads. Its latest.tag is PUBLISHER_FIXTURE_TAG
-	# (derived by the caller's section-0 guard). The SHA256SUMS variant
-	# follows: the manifest's ADR-0457 header must name the same tag or
-	# the version binding rejects the release.
-	cp "$ROOT/.github/scripts/tests/fixtures/publish-releases-json-expected.json" \
-		"$fixtures/releases-publisher.json"
+	# latest_tag_of reads. The path and its latest.tag are both the
+	# caller's ($publisher_fixture, $PUBLISHER_FIXTURE_TAG, set by its
+	# section-0 guard). The SHA256SUMS variant follows: the manifest's
+	# ADR-0457 header must name the same tag or the version binding
+	# rejects the release.
+	cp "$publisher_fixture" "$fixtures/releases-publisher.json"
 	sums_header_variant publisher-tag \
 		"${SUMS_VERSION_PREFIX}${PUBLISHER_FIXTURE_TAG}"
 }
@@ -263,10 +262,10 @@ done
 # site a mode's complete behavior lives at: the metadata document, each
 # direct asset's body fixture and status. Every knob is an absolute
 # fixture path with a 200 default; a mode overrides exactly what it
-# changes — the failure modes point their asset at the shared empty
-# fixture beside a non-2xx status. The dispatch is total and fail-closed
-# — an unknown mode fails every request loudly — so this case, not a
-# side table, is the one place the mode vocabulary lives.
+# changes — the failure modes set their asset's status alone, and serve()
+# turns any non-200 into the shared empty fixture. The dispatch is total
+# and fail-closed — an unknown mode fails every request loudly — so this
+# case, not a side table, is the one place the mode vocabulary lives.
 metadata_doc="$STUB_FIXTURES/releases.json"
 sums_body="$STUB_FIXTURES/SHA256SUMS"
 sums_status=200
@@ -293,39 +292,31 @@ sums_wrong_version) sums_body="$STUB_FIXTURES/SHA256SUMS.wrong-version" ;;
 sums_empty_version) sums_body="$STUB_FIXTURES/SHA256SUMS.empty-version" ;;
 sums_no_space_header) sums_body="$STUB_FIXTURES/SHA256SUMS.no-space-header" ;;
 sums_extra_space_header) sums_body="$STUB_FIXTURES/SHA256SUMS.extra-space-header" ;;
-sums_404)
-	sums_body="$STUB_FIXTURES/empty"
-	sums_status=404
-	;;
-sums_403)
-	sums_body="$STUB_FIXTURES/empty"
-	sums_status=403
-	;;
-sig_404)
-	sig_body="$STUB_FIXTURES/empty"
-	sig_status=404
-	;;
+sums_404) sums_status=404 ;;
+sums_403) sums_status=403 ;;
+sig_404) sig_status=404 ;;
 corrupt) darwin_body="$STUB_FIXTURES/relate-darwin-arm64.corrupt" ;;
-binary_404)
-	darwin_body="$STUB_FIXTURES/empty"
-	darwin_status=404
-	;;
+binary_404) darwin_status=404 ;;
 *)
 	echo "stub curl: unexpected STUB_MODE: $STUB_MODE" >&2
 	exit 22
 	;;
 esac
 
-# serve $1 (a body fixture file) with status $2: the body to the -o
-# target when one was given (stdout otherwise), the status after it only
-# when -w asked for one. A missing fixture file fails loudly rather than
-# serving an empty success.
+# serve $1 (a body fixture file) with status $2: a non-200 status serves
+# the shared empty fixture instead of $1 — the failure modes above name
+# only their status, and "non-2xx means an empty body" is one rule here,
+# not one per mode. The body goes to the -o target when one was given
+# (stdout otherwise), the status after it only when -w asked for one. A
+# missing fixture file fails loudly rather than serving an empty success.
 serve() {
-	[ -f "$1" ] || {
-		echo "stub curl: missing fixture: $1" >&2
+	body="$1"
+	[ "$2" = 200 ] || body="$STUB_FIXTURES/empty"
+	[ -f "$body" ] || {
+		echo "stub curl: missing fixture: $body" >&2
 		exit 22
 	}
-	if [ -n "$out" ]; then cat "$1" >"$out"; else cat "$1"; fi
+	if [ -n "$out" ]; then cat "$body" >"$out"; else cat "$body"; fi
 	[ -z "$want_code" ] || printf '%s\n' "$2"
 	exit 0
 }
@@ -353,9 +344,8 @@ EOF
 # and any other argument fails loudly rather than answering with a
 # fabricated default.
 case "${1:-}" in
--s) printf '%s\n' "$STUB_UNAME_S" ;;
+-s | '') printf '%s\n' "$STUB_UNAME_S" ;;
 -m) printf '%s\n' "$STUB_UNAME_M" ;;
-'') printf '%s\n' "$STUB_UNAME_S" ;;
 *)
 	echo "stub uname: unexpected argument: $1" >&2
 	exit 22
@@ -430,8 +420,8 @@ reset_case() {
 }
 
 # Run the installer fully sandboxed. Populates RUN_STATUS, RUN_HOME, RUN_LOG
-# (stub curl argv log), RUN_KEYGEN_LOG (stub ssh-keygen argv log) and RUN_ERR
-# (installer stderr). RUN_INSTALLER selects
+# (stub curl argv log), RUN_KEYGEN_LOG (stub ssh-keygen argv log), RUN_OUT
+# (installer stdout) and RUN_ERR (installer stderr). RUN_INSTALLER selects
 # the script under test: the shipped install.sh everywhere except the
 # real-roundtrip cases, which run a sed-patched copy (see section 3c).
 # RUN_VIA_PIPE=1 feeds the script on stdin, as `curl ... | sh` does, instead
@@ -453,6 +443,7 @@ install_run() { # $1 = case name
 	RUN_HOME="$sandbox/home-$case_name"
 	RUN_LOG="$sandbox/curl-$case_name.log"
 	RUN_KEYGEN_LOG="$sandbox/keygen-$case_name.log"
+	RUN_OUT="$sandbox/out-$case_name.log"
 	RUN_ERR="$sandbox/err-$case_name.log"
 	mkdir -p "$RUN_HOME"
 	: >"$RUN_LOG"
@@ -470,7 +461,7 @@ install_run() { # $1 = case name
 		${GITHUB_TOKEN+GITHUB_TOKEN="$GITHUB_TOKEN"} \
 		${RELATE_RELEASES_JSON_URL+RELATE_RELEASES_JSON_URL="$RELATE_RELEASES_JSON_URL"} \
 		${RELATE_RELEASE_DOWNLOAD_URL+RELATE_RELEASE_DOWNLOAD_URL="$RELATE_RELEASE_DOWNLOAD_URL"} \
-		"$@" <"$run_stdin" >"$sandbox/out-$case_name.log" 2>"$RUN_ERR"
+		"$@" <"$run_stdin" >"$RUN_OUT" 2>"$RUN_ERR"
 	RUN_STATUS=$?
 }
 
@@ -493,19 +484,31 @@ direct_call_count() {
 	grep -c '/releases/download/' "$RUN_LOG"
 }
 
-# --- failure assertions ---------------------------------------------------------
+# --- assertions -----------------------------------------------------------------
 #
-# The shared shapes every failure case asserts through: the run harness owns
-# the RUN_* state and the curl log these read, so they live beside them and
-# the case script keeps only what is specific to it beside the call. Each
-# stage helper adds its postcondition to the base.
+# The shared shapes the cases assert through: the run harness owns the RUN_*
+# state and the curl log these read, so they live beside them and the case
+# script keeps only what is specific to it beside the call. `assert_installed`
+# is the success-side postcondition; each failure-stage helper adds its
+# postcondition to the base, and a case asserts the shape of the last stage it
+# reached.
+
+# The installed-content postcondition of every successful case: the binary at
+# the install path is byte-for-byte the expected fixture. The description is
+# the case's own.
+assert_installed() { # $1 = description, $2 = expected fixture file
+	cmp -s "$RUN_HOME/.local/bin/relate" "$2"
+	tap_check "$1" $?
+}
 
 # The base shape: the installer dies non-zero and its stderr carries the
 # case's needle (the authored failure message, matched as a fixed string).
+# The needle is a precondition, like assert_same's operands: an empty one
+# would match any line and pass vacuously.
 assert_install_failure() { # $1 = case label, $2 = stderr needle
 	[ "$RUN_STATUS" -ne 0 ]
 	tap_check "$1: installer dies non-zero" $?
-	grep -qF "$2" "$RUN_ERR"
+	[ -n "$2" ] && grep -qF "$2" "$RUN_ERR"
 	tap_check "$1: stderr carries the expected message" $?
 }
 

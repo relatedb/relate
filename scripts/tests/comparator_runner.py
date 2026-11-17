@@ -27,6 +27,9 @@ runs a comparator over it. `run_pair` is its compare-loadtest.py binding
 (positional pair arguments); the query-latency gate suite binds the same
 primitive to compare-query-latency.py's `--baseline`/`--report` spelling
 instead of carrying a third copy of the temp-dir-and-two-reports core.
+`run_pair` returns the sidecar contents keyed by the flag that wrote them,
+so a caller asks for the flags it wants out of the one PAIR_SIDECARS table
+and reads the result back under the same names.
 
 Imported as a plain sibling module: the Makefile runs each test file
 directly with `python3`, so `sys.path[0]` is `scripts/tests/`.
@@ -51,6 +54,12 @@ COMPARE = ROOT / "scripts" / "compare-loadtest.py"
 # ADR-0245 bands (QUERY_LATENCY_*). A future comparator knob extends
 # this tuple — never a second scrub branch.
 SCRUB_PREFIXES = ("LOADTEST_", "QUERY_LATENCY_")
+
+# compare-loadtest.py's sidecar flags -> the file each writes inside the
+# run's temp dir. The one table of them: a caller names the subset it wants
+# by flag (never a boolean per flag), and reads the contents back under the
+# same flag names.
+PAIR_SIDECARS = {"--markdown-out": "table.md", "--status-out": "status.txt"}
 
 
 def scrubbed_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -127,37 +136,56 @@ def run_pair(
     current: dict,
     flags: tuple[str, ...] = (),
     *,
-    markdown: bool = False,
-    status: bool = False,
+    sidecars: tuple[str, ...] = (),
     extra_env: dict[str, str] | None = None,
-) -> tuple[subprocess.CompletedProcess[str], str | None, str | None]:
+) -> tuple[subprocess.CompletedProcess[str], dict[str, str | None]]:
     """Run `scripts/compare-loadtest.py` on a report pair; return
-    (process, table, status token).
+    (process, sidecar contents keyed by flag).
 
     The compare-loadtest.py binding of `run_comparator`: it states the
-    comparator's positional pair spelling and its own sidecar flags
-    (compare-query-latency.py takes neither), while the temp dir, the
-    report pair, the child environment and the run stay the primitive's.
+    comparator's positional pair spelling and resolves the `sidecars`
+    subset through PAIR_SIDECARS (compare-query-latency.py takes neither),
+    while the temp dir, the report pair, the child environment and the run
+    stay the primitive's. A flag outside PAIR_SIDECARS is a KeyError, never
+    a silently unwritten file.
 
-    `table`/`token` are the --markdown-out/--status-out file contents when
-    the corresponding kwarg is set (None when the flag was absent or the
-    file was never written).
+    The returned map holds one entry per requested flag, its file's
+    contents or None when the comparator never wrote it.
     """
-    sidecars = {}
-    if markdown:
-        sidecars["--markdown-out"] = "table.md"
-    if status:
-        sidecars["--status-out"] = "status.txt"
-    result, written = run_comparator(
+    return run_comparator(
         COMPARE,
         baseline,
         current,
         lambda base, cur: [str(base), str(cur)],  # compare-loadtest: BASE CURRENT
         flags,
         extra_env=extra_env,
-        sidecars=sidecars,
+        sidecars={flag: PAIR_SIDECARS[flag] for flag in sidecars},
     )
-    return result, written.get("--markdown-out"), written.get("--status-out")
+
+
+def render_mode(
+    baseline: dict,
+    current: dict,
+    flags: tuple[str, ...] = (),
+    *,
+    sidecars: tuple[str, ...] = (),
+    extra_env: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], dict[str, str | None]]:
+    """Run the comparator in render mode; return (process, sidecar contents
+    keyed by flag).
+
+    The render-mode invocation both comparator suites share: `--render-only`
+    with the requested `sidecars`, through the same scrubbed environment as
+    `run_pair`. Extra `flags` (e.g. `--report-kind`) are appended after
+    `--render-only`. `render` is this call's markdown binding.
+    """
+    return run_pair(
+        baseline,
+        current,
+        ("--render-only", *flags),
+        sidecars=sidecars,
+        extra_env=extra_env,
+    )
 
 
 def render(
@@ -175,12 +203,9 @@ def render(
     appended after `--render-only`; the child environment is scrubbed
     exactly as in `run_pair`, and `extra_env` opts variables back in.
     """
-    result, table, _ = run_pair(
-        baseline,
-        current,
-        ("--render-only", *flags),
-        markdown=True,
-        extra_env=extra_env,
+    result, written = render_mode(
+        baseline, current, flags, sidecars=("--markdown-out",), extra_env=extra_env
     )
+    table = written["--markdown-out"]
     assert table is not None
     return result, table

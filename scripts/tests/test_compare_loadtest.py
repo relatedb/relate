@@ -12,7 +12,7 @@ class CompareLoadtestTests(unittest.TestCase):
         current: dict,
         extra_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        result, _, _ = run_pair(baseline, current, extra_env=extra_env)
+        result, _ = run_pair(baseline, current, extra_env=extra_env)
         return result
 
     def test_allows_submillisecond_p99_jitter(self) -> None:
@@ -170,7 +170,7 @@ class RenderMarkdownTests(unittest.TestCase):
             table,
         )
         # the same pair still fails the default gate
-        gate, _, _ = run_pair(base, cur)
+        gate, _ = run_pair(base, cur)
         self.assertEqual(gate.returncode, 1)
         self.assertIn("ops_per_sec", gate.stderr)
 
@@ -219,10 +219,10 @@ class RenderMarkdownTests(unittest.TestCase):
         self.assertNotIn("Wall-clock metrics", table)
         self.assertNotIn("Re-freeze", table)
         # gate mode never emits it, locally or in GitHub Actions
-        local, _, _ = run_pair(base, cur)
+        local, _ = run_pair(base, cur)
         self.assertEqual(local.returncode, 0, local.stderr)
         self.assertNotIn("Wall-clock metrics", local.stdout + local.stderr)
-        ci, _, _ = run_pair(base, cur, extra_env={"GITHUB_ACTIONS": "true"})
+        ci, _ = run_pair(base, cur, extra_env={"GITHUB_ACTIONS": "true"})
         self.assertEqual(ci.returncode, 1)
         self.assertNotIn("Wall-clock metrics", ci.stdout + ci.stderr)
 
@@ -302,7 +302,7 @@ class RenderMarkdownTests(unittest.TestCase):
         self.assertIn("| data_file_bytes | 678,934 | 678,934 | +0 (+0.0%) | info |", table)
 
     def test_render_only_writes_table_to_stdout_without_markdown_out(self) -> None:
-        result, _, _ = run_pair(
+        result, _ = run_pair(
             report(p99=1_000_000), report(p99=1_000_000), flags=("--render-only",)
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -314,20 +314,21 @@ class RenderMarkdownTests(unittest.TestCase):
     def test_markdown_out_sidecar_leaves_gate_untouched(self) -> None:
         base = report(p99=1_000_000)
         cur = report(p99=1_300_000, ops_per_sec=50.0, logical_used_bytes=2000, errors=1)
-        plain, _, _ = run_pair(base, cur)
-        sidecar, table, _ = run_pair(base, cur, markdown=True)
+        plain, _ = run_pair(base, cur)
+        sidecar, written = run_pair(base, cur, sidecars=("--markdown-out",))
+        table = written["--markdown-out"]
         self.assertEqual(sidecar.returncode, plain.returncode)
         self.assertEqual(sidecar.stdout, plain.stdout)
         self.assertEqual(sidecar.stderr, plain.stderr)
         self.assertIn(
             "| ops/s | 100.00 | 50.00 | -50.00 (-50.0%) | fail (< 0.9× baseline) |", table
         )
-        ok, ok_table, _ = run_pair(
-            report(p99=1_000_000), report(p99=1_000_000), markdown=True
+        ok, written = run_pair(
+            report(p99=1_000_000), report(p99=1_000_000), sidecars=("--markdown-out",)
         )
         self.assertEqual(ok.returncode, 0, ok.stderr)
         self.assertIn("compare-loadtest: ok", ok.stdout)
-        self.assertIn("| errors | 0 | 0 | +0 | ok |", ok_table)
+        self.assertIn("| errors | 0 | 0 | +0 | ok |", written["--markdown-out"])
 
     def test_details_block_lists_every_usecase(self) -> None:
         base_ucs = [

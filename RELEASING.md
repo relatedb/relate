@@ -138,13 +138,15 @@ shipped crate's closure) — and re-check it at release time:
 
 ```sh
 cargo install --locked cargo-about@0.9.2 cargo-deny@0.20.2   # once
-python3 scripts/third-party-licenses.py notices --write      # regenerate, commit
+python3 scripts/third-party-licenses.py notices --write      # regenerate, commit (Python 3.11+)
 python3 scripts/third-party-licenses.py all                  # drift + policy report
 ```
 
-- **Policy** (`deny.toml`, mirrored by `about.toml`): the allow-list is the
-  Apache-2.0-compatible permissive set the closure uses today. A new license
-  is a deliberate edit to both files — never an accident — and anything
+- **Policy** (`deny.toml`): the allow-list is the Apache-2.0-compatible
+  permissive set the closure uses today, and it is the one spelling of that
+  vocabulary — the tool derives cargo-about's accepted list from it, and
+  `about.toml` holds only cargo-about's own settings. A new license is a
+  deliberate edit to `deny.toml` alone — never an accident — and anything
   copyleft or non-commercial must be raised with the maintainers first.
 - **Report-only today.** `third-party-licenses.yml` warns on a violation or a
   stale notices file; it does not fail the release. Once a few releases show

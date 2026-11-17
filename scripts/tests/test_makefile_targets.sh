@@ -88,13 +88,13 @@ fi
 # TARGET_NAME variable, the one spelling ANNOTATED interpolates), and the
 # target-line shape built from it: a name, then a colon, then whitespace or
 # end of line. The shape itself excludes `:=` assignments (spaced or not)
-# and `.`-special targets, so no compensating filter is needed.
-NAME_GRAMMAR=$(sed -n 's/^TARGET_NAME :*= //p' "$sandbox/db")
-if [ -n "$NAME_GRAMMAR" ]; then
-	tap_ok "make's database names the target-name grammar"
-else
-	tap_not_ok "make's database names the target-name grammar (TARGET_NAME missing)"
-fi
+# and `.`-special targets, so no compensating filter is needed. The read-back
+# rides the shared extraction guard like every inventory above: a database
+# without the variable is a named failure, never an empty grammar silently
+# matching nothing.
+sed -n 's/^TARGET_NAME :*= //p' "$sandbox/db" >"$sandbox/name-grammar"
+must_be_non_empty "$sandbox/name-grammar" "make's database names the target-name grammar"
+NAME_GRAMMAR=$(cat "$sandbox/name-grammar")
 TARGET_LINE="^${NAME_GRAMMAR}:([[:space:]]|$)"
 
 # --- the three inventories, each a checked step -----------------------------
