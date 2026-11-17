@@ -251,7 +251,7 @@ fn setup_resolves_auth_only_after_the_open_and_the_binds() {
 #[cfg(feature = "mcp")]
 #[test]
 fn mcp_config_advertises_the_opened_handles_mode() {
-    // ADR-0306 §3: write-cypher is listed exactly when the store accepts
+    // ADR-0306 §3: write_cypher is listed exactly when the store accepts
     // writes — the config's read_only follows the handle.
     let auth = relate_auth::AuthConfig::None;
     let admission = crate::serve_cmd::Admission {

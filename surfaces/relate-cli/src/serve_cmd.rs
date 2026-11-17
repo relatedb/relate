@@ -25,7 +25,7 @@
 //!   store; `=live` (the former `--follow`) tails the WAL beside a
 //!   writable open. Post-verb, the value attached only, and once-only; the
 //!   banner names a non-writable mode, and the MCP surface hides
-//!   `write-cypher` on a read-only handle.
+//!   `write_cypher` on a read-only handle.
 //! - `--load SOURCE` (LABS-903, ADR-0500) is the two-axis store grammar's
 //!   source half, resolved by the shared `crate::load` exactly as the
 //!   query session resolves it: a `:memory:` target turns the source into

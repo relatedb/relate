@@ -38,13 +38,13 @@ pub struct McpServerConfig {
     /// consults it; stdio skips the challenge entirely.
     pub auth: AuthConfig,
     /// Optional tool-name prefix: with namespace `"db"`, the tools list as
-    /// `db-get-schema`, `db-read-cypher`, `db-write-cypher` (mirrors the
+    /// `db-get_schema`, `db-read_cypher`, `db-write_cypher` (mirrors the
     /// reference server's namespacing).
     pub namespace: String,
-    /// When true, `write-cypher` is not listed and cannot be called (the
+    /// When true, `write_cypher` is not listed and cannot be called (the
     /// reference server's `--read-only`).
     pub read_only: bool,
-    /// Default per-label sample size for `get-schema`; `None` scans every
+    /// Default per-label sample size for `get_schema`; `None` scans every
     /// node (the `-1` of the wire/CLI edge, converted on the way in). A
     /// call's `sample_size` argument overrides it.
     pub schema_sample_size: Option<u64>,
@@ -197,12 +197,12 @@ impl McpServer {
         }
     }
 
-    /// Whether `write-cypher` is disabled.
+    /// Whether `write_cypher` is disabled.
     pub fn read_only(&self) -> bool {
         self.config.read_only
     }
 
-    /// The default `get-schema` sample size (`None` = full scan).
+    /// The default `get_schema` sample size (`None` = full scan).
     pub fn schema_sample_size(&self) -> Option<u64> {
         self.config.schema_sample_size
     }

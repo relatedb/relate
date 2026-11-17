@@ -4,7 +4,7 @@
 //! of the pre-created store, refuses writes on every surface — the HTTP
 //! error envelope carries the engine's read-only error, a Bolt write RUN
 //! answers a FAILURE carrying it, and the MCP surface does not list
-//! `write-cypher` — holds no writer lease (a separate writer process
+//! `write_cypher` — holds no writer lease (a separate writer process
 //! commits beside it, exit 0, while the served handle keeps the LSN it
 //! opened at), and writes nothing on shutdown (no final checkpoint: the
 //! manifest is byte-identical after a clean SIGINT exit). A follow serve
@@ -65,7 +65,7 @@ fn served_count(http_port: u16) -> i64 {
 /// A read-only serve answers reads of the pre-created store and refuses
 /// writes on both served surfaces: the HTTP error envelope carries the
 /// engine's read-only error (400), and the MCP surface does not list
-/// `write-cypher` — an always-failing tool would be a dead end for hosts
+/// `write_cypher` — an always-failing tool would be a dead end for hosts
 /// that auto-approve `readOnlyHint` tools (ADR-0306 §3).
 #[test]
 fn test_read_only_serve_refuses_writes_and_hides_write_cypher() {

@@ -4,11 +4,11 @@
 //! `rmcp`/external MCP SDK, per the charter — and exposes the three tools of
 //! the reference `mcp-neo4j-cypher` server, adapted to Relate names:
 //!
-//! - `get-schema` — the store's schema (labels, relationship types, property
+//! - `get_schema` — the store's schema (labels, relationship types, property
 //!   keys with inferred types) in the official server's output shape,
-//! - `read-cypher` — runs a read-only statement; a write statement is
+//! - `read_cypher` — runs a read-only statement; a write statement is
 //!   rejected with `"Only MATCH queries are allowed for read-query"`,
-//! - `write-cypher` — runs a write statement and returns the mutation
+//! - `write_cypher` — runs a write statement and returns the mutation
 //!   counters in the snake_case wire vocabulary (ADR-0223).
 //!
 //! Transports: **stdio** (newline-delimited JSON-RPC, for MCP hosts that

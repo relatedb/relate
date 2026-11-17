@@ -1,4 +1,4 @@
-//! `get-schema` backing: infer the store's schema from the catalog and a
+//! `get_schema` backing: infer the store's schema from the catalog and a
 //! sampled scan, in the reference `mcp-neo4j-cypher` server's output shape
 //! (ADR-0232 §4).
 //!

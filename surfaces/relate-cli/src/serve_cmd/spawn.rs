@@ -128,7 +128,7 @@ pub(super) fn spawn_http(
 
 /// The MCP surface's config from the opened handle (ADR-0306 §3): the
 /// surface advertises the handle's mode — `read_only` follows
-/// `Database::is_read_only`, so `write-cypher` is listed exactly when the
+/// `Database::is_read_only`, so `write_cypher` is listed exactly when the
 /// store accepts writes (an always-failing tool would be a dead end for
 /// hosts that auto-approve `readOnlyHint` tools). `admission` supplies the
 /// two ADR-0451 HTTP admission deadlines.

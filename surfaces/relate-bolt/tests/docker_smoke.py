@@ -18,6 +18,7 @@ RELATE_DOCKER_IMAGE overrides the image tag (default
 `relate-bolt:<workspace version>`, matching `make docker`).
 """
 
+import json
 import os
 import re
 import shutil
@@ -181,6 +182,25 @@ def count(driver, label):
     return records[0]["c"]
 
 
+def bolt_driver(c, auth=None):
+    """The container's Bolt driver on its published 7687 port. The port is
+    read per call — an ephemeral host port moves on `docker restart` —
+    and waited on before connecting; `auth` is the driver's credential
+    (None = no auth, the driver default)."""
+    from neo4j import GraphDatabase
+
+    port = c.port(7687)
+    wait_port(port)
+    return GraphDatabase.driver(f"bolt://127.0.0.1:{port}", auth=auth)
+
+
+def bolt_count(c, token, label):
+    """The label's node count over Bolt with the generated-token
+    credential."""
+    with bolt_driver(c, ("relate", token)) as driver:
+        return count(driver, label)
+
+
 def http_post(port, path, body, token=None):
     """POST JSON to the HTTP or MCP surface; returns (status, body)."""
     import base64
@@ -207,8 +227,6 @@ def boot_seed_restart():
     """Env-fallback seed, generated-token auth via `docker logs`, restart
     keeps the database and the token (seed skipped, token reused) — and the
     one token unlocks all three surfaces (Bolt, HTTP, MCP; ADR-0249)."""
-    from neo4j import GraphDatabase
-
     with volume() as data, Container(
         "cl-smoke-boot",
         "-p", "0:7687", "-p", "0:7474", "-p", "0:7475",
@@ -218,11 +236,7 @@ def boot_seed_restart():
     ) as c:
         c.wait_for_log("serve: Bolt listening")
         token = token_from(c.logs())
-        port = c.port(7687)
-        wait_port(port)
-        driver = GraphDatabase.driver(f"bolt://127.0.0.1:{port}", auth=("relate", token))
-        assert count(driver, "Person") == 100
-        driver.close()
+        assert bolt_count(c, token, "Person") == 100
 
         # The same generated token unlocks the HTTP Query API and MCP.
         http_port, mcp_port = c.port(7474), c.port(7475)
@@ -230,14 +244,16 @@ def boot_seed_restart():
             http_port, "/db/neo4j/query/v2",
             '{"statement": "MATCH (n:Person) RETURN count(n) AS c"}', token,
         )
-        assert status == 200 and "100" in body, (status, body)
+        assert status == 200 and json.loads(body)["data"]["values"] == [[100]], (status, body)
         status, _ = http_post(http_port, "/db/neo4j/query/v2", '{"statement": "RETURN 1"}')
         assert status == 401, status
         status, body = http_post(
             mcp_port, "/",
             '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}', token,
         )
-        assert status == 200 and "read-cypher" in body, (status, body)
+        assert status == 200 and {"write_cypher", "read_cypher", "get_schema"} <= {
+            t["name"] for t in json.loads(body)["result"]["tools"]
+        }, (status, body)
         status, _ = http_post(mcp_port, "/", '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}')
         assert status == 401, status
 
@@ -246,11 +262,7 @@ def boot_seed_restart():
         logs = c.logs()
         assert "exists, skipping seed" in logs, logs
         assert "token reused from /data/graph.auth-token" in logs, logs
-        port = c.port(7687)  # an ephemeral host port moves on restart
-        wait_port(port)
-        driver = GraphDatabase.driver(f"bolt://127.0.0.1:{port}", auth=("relate", token))
-        assert count(driver, "Person") == 100
-        driver.close()
+        assert bolt_count(c, token, "Person") == 100  # the ephemeral port moved on restart
         print("boot/seed/restart: seeded, one token unlocks bolt+http+mcp, token persisted and reused")
 
 
