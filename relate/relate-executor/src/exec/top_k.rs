@@ -20,8 +20,8 @@ use super::order::{cmp_sort_keys, fill_parked_keys, OrderKeys};
 /// `Ord` is the sort's own comparator ([`cmp_sort_keys`] over the parked
 /// keys, the sequence as the tiebreak): better sorts *smaller*, so a
 /// `BinaryHeap`'s root is the entry the next better row evicts.
-struct TopKEntry<'k> {
-    keys: &'k OrderKeys<'k>,
+struct TopKEntry<'k, 'a> {
+    keys: &'k OrderKeys<'a>,
     parked: Vec<Value>,
     seq: usize,
     row: Row,
@@ -31,21 +31,21 @@ struct TopKEntry<'k> {
     bytes: u64,
 }
 
-impl PartialEq for TopKEntry<'_> {
+impl PartialEq for TopKEntry<'_, '_> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == CmpOrdering::Equal
     }
 }
 
-impl Eq for TopKEntry<'_> {}
+impl Eq for TopKEntry<'_, '_> {}
 
-impl PartialOrd for TopKEntry<'_> {
+impl PartialOrd for TopKEntry<'_, '_> {
     fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for TopKEntry<'_> {
+impl Ord for TopKEntry<'_, '_> {
     fn cmp(&self, other: &Self) -> CmpOrdering {
         cmp_sort_keys(self.keys, &self.parked, self.seq, &other.parked, other.seq)
     }
@@ -64,12 +64,12 @@ impl Ord for TopKEntry<'_> {
 /// the input. The projection's per-row charge (`plain_rows`'s
 /// `retain_bytes`) does not exist on this path — the window is that
 /// charge's bounded replacement.
-pub(crate) struct TopKWindow<'k> {
-    keys: &'k OrderKeys<'k>,
+pub(crate) struct TopKWindow<'k, 'a> {
+    keys: &'k OrderKeys<'a>,
     keep: std::num::NonZeroUsize,
     seq: usize,
     /// Worst entry at the root — the one the next better row evicts.
-    heap: BinaryHeap<TopKEntry<'k>>,
+    heap: BinaryHeap<TopKEntry<'k, 'a>>,
     /// The comparison scratch: one key vector refilled per offered row, so
     /// a row the window *rejects* — the overwhelming majority on a large
     /// input — costs no allocation. While the scratch holds the vector it
@@ -86,7 +86,7 @@ pub(crate) struct TopKWindow<'k> {
     charge: relate_core::tokens::WorkspaceCharge,
 }
 
-impl<'k> TopKWindow<'k> {
+impl<'k, 'a> TopKWindow<'k, 'a> {
     /// `keep` entries at most. The capacity is a [`std::num::NonZeroUsize`], so the
     /// "at least one entry" invariant is the type's rather than a promise
     /// the caller keeps: a zero-capacity page is the clause's own decision
@@ -94,7 +94,7 @@ impl<'k> TopKWindow<'k> {
     /// reaches a window. The
     /// charge starts empty and tracks the live window — no reservation to
     /// make yet, so the construction cannot fail.
-    pub(crate) fn new(keys: &'k OrderKeys<'k>, keep: std::num::NonZeroUsize) -> Self {
+    pub(crate) fn new(keys: &'k OrderKeys<'a>, keep: std::num::NonZeroUsize) -> Self {
         Self {
             keys,
             keep,
@@ -203,5 +203,5 @@ fn entry_bytes(row: &Row, key_columns: usize) -> u64 {
     // inline headers, so no `size_of::<Row>()` is added beside it.
     crate::workspace::row_landing_bytes(values)
         + crate::workspace::value_buffer_bytes(key_columns)
-        + std::mem::size_of::<TopKEntry<'_>>() as u64
+        + std::mem::size_of::<TopKEntry<'_, '_>>() as u64
 }

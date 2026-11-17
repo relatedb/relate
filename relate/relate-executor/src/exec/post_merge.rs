@@ -114,7 +114,7 @@ enum OutputContainer<'k, 'a> {
     /// evaluation environment arrives with each row, in
     /// [`OutputContainer::land`]'s arguments.
     Window {
-        window: TopKWindow<'k>,
+        window: TopKWindow<'k, 'a>,
         predicate: Option<&'a Expr>,
     },
 }

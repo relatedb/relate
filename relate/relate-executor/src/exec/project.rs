@@ -185,7 +185,7 @@ pub(crate) fn open_match_fold<'a>(
 /// refresh through the projection's one cache. One value carries both the
 /// per-value policy and whether the post-projection row sweep runs, so the
 /// two cannot disagree.
-pub(crate) enum Refresh<'a> {
+enum Refresh<'a> {
     Identity,
     Materialize(&'a mut MaterializeCache),
 }
@@ -258,7 +258,7 @@ pub(crate) fn project_rows(
     if bounds.answers_nothing() {
         return Ok(Vec::new());
     }
-    let (mut rows, stream) = materialize_feed(feed, &class, bounds)?;
+    let feed = materialize_feed(feed, &class, bounds)?;
     // The windowed shape no longer reserves the sort's merged buffer — the
     // window's own container is bounded — but the feed it drains is live for
     // this whole call, and the producer releases its own reservation as it
@@ -268,7 +268,7 @@ pub(crate) fn project_rows(
     // rather than only the `skip + limit` window it answers with.
     let _held_feed = if class.window_keep(bounds).is_some() {
         Some(relate_core::tokens::WorkspaceCharge::retain_with(|| {
-            crate::workspace::row_buffer_bytes(&rows)
+            crate::workspace::row_buffer_bytes(feed.probe())
         })?)
     } else {
         None
@@ -290,6 +290,11 @@ pub(crate) fn project_rows(
         // the container (ADR-0463's retaining `Vec`, or the ordered
         // window's bounded heap).
         (RowSource::SinkProjected, ProjectionShape::Plain) => {
+            let RowFeed::Held(mut rows) = feed else {
+                return Err(Error::internal(
+                    "a sink-projected feed arrived as a generated feed",
+                ));
+            };
             refresh.rows(graph, &mut rows);
             adopt_rows(graph, params, &class, bounds, rows)?
         }
@@ -302,36 +307,17 @@ pub(crate) fn project_rows(
             ))
         }
         (RowSource::Bindings, shape) => match shape {
-            ProjectionShape::Star => star_rows(
-                graph,
-                params,
-                stream.unwrap_or(RowFeed::Held(rows)),
-                &class,
-                &mut refresh,
-                bounds,
-            )?,
+            ProjectionShape::Star => star_rows(graph, params, feed, &class, &mut refresh, bounds)?,
             // The aggregating path lands no container: its charge lives in
             // the aggregation's own emission loop, and its rows are an
             // unordered table the tail still sorts.
             ProjectionShape::Aggregate { .. } => Landed {
-                rows: aggregate_rows(
-                    graph,
-                    params,
-                    stream.unwrap_or(RowFeed::Held(rows)),
-                    &class,
-                    scope,
-                    &mut refresh,
-                )?,
+                rows: aggregate_rows(graph, params, feed, &class, scope, &mut refresh)?,
                 windowed: false,
             },
-            ProjectionShape::Plain => plain_rows(
-                graph,
-                params,
-                stream.unwrap_or(RowFeed::Held(rows)),
-                &class,
-                &mut refresh,
-                bounds,
-            )?,
+            ProjectionShape::Plain => {
+                plain_rows(graph, params, feed, &class, &mut refresh, bounds)?
+            }
         },
     };
     finish_projection(graph, params, &class, merged, bounds)
@@ -349,32 +335,29 @@ fn materialize_feed<'a>(
     feed: RowFeed<'a>,
     class: &ProjectionClass<'_>,
     bounds: PageBounds,
-) -> Result<(Vec<Row>, Option<RowFeed<'a>>)> {
-    let (rows, stream) = match feed {
-        RowFeed::Held(rows) => (rows, None),
+) -> Result<RowFeed<'a>> {
+    let rows = match feed {
+        RowFeed::Held(rows) => rows,
         // A generated feed stays generated for the shapes that fold it as
         // rows arrive — the aggregation and the ordered window
         // ([`ProjectionClass::folds_feed`]): the window's `land` is a
         // per-row fold, every row is evaluated to compare it, so the
         // producer is never materialized on those shapes. The collecting
-        // shapes still land here.
-        RowFeed::Unwind(unwind) if class.folds_feed(bounds) => {
-            (Vec::new(), Some(RowFeed::Unwind(unwind)))
-        }
-        folded @ RowFeed::Folded(_) => (Vec::new(), Some(folded)),
+        // shapes still land below.
+        unwind @ RowFeed::Unwind(_) if class.folds_feed(bounds) => return Ok(unwind),
+        folded @ RowFeed::Folded(_) => return Ok(folded),
         // The generator's own materializing form — the one place a feed
         // that cannot fold becomes rows, so its charge cannot drift from
         // the one `exec_unwind` pays.
-        RowFeed::Unwind(unwind) => (unwind.materialize()?, None),
+        RowFeed::Unwind(unwind) => unwind.materialize()?,
     };
     // The eager shape pages here, on the clause's one resolved bounds; every
     // other shape leaves the page to the finish tail.
-    let rows = if class.eager_paged {
+    Ok(RowFeed::Held(if class.eager_paged {
         page(rows, bounds)
     } else {
         rows
-    };
-    Ok((rows, stream))
+    }))
 }
 
 /// The `RETURN *` mode: the visible incoming bindings plus the explicit

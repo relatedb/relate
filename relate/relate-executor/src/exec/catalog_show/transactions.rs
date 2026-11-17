@@ -42,7 +42,7 @@ pub(crate) fn show_transactions_rows(
     params: &BTreeMap<String, Value>,
     qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
-    let txid = "neo4j-transaction-1".to_string();
+    const TXID: &str = "neo4j-transaction-1";
     let mut found = c.ids.is_empty();
     for expr in &c.ids {
         let expr = relate_front::lower_expr(expr)?;
@@ -51,7 +51,7 @@ pub(crate) fn show_transactions_rows(
             found |= transaction_ids(&value)?
                 .into_iter()
                 .flatten()
-                .any(|id| id == txid);
+                .any(|id| id == TXID);
         }
     }
     Ok(if found {
@@ -62,7 +62,7 @@ pub(crate) fn show_transactions_rows(
         // (`connectionId` empty) and no client socket (`clientAddress`
         // null under Cypher 25).
         vec![catalog_row([
-            ("transactionId", Value::String(txid.into())),
+            ("transactionId", Value::String(TXID.into())),
             ("currentQuery", Value::String(qctx.query_text.into())),
             ("database", Value::String(graph.namespace().as_str().into())),
             (
