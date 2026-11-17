@@ -17,29 +17,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   detection and the `relate upgrade` refresh treat it like every other
   agent.
 
-## [1.1.0] — 2026-11-17
-
 ### Changed
 
-- A shortest-path endpoint whose `WHERE` no index serves (`WHERE b.id + 0 =
-  7`, a function over the property) is now listed by scanning its label with
-  that predicate, and the pair search runs for the few matches, instead of a
-  search that reaches every node and builds a row and a path for each. On a
-  1.6M-node social graph `SHORTEST 1 (a {id: …})-[*..6]->(b) WHERE b.id + 0 =
-  …` drops from 16 s to 0.5 s, the cost of the same predicate in a separate
-  `MATCH`. Results are unchanged; a predicate matching more than 16 nodes, a
-  nondeterministic one, one that reads another variable, or one that raises
-  keeps the earlier plan.
-- `SHORTEST k` (k above 1), `SHORTEST k GROUPS` and `ANY k` between two
-  fixed endpoints now walk the trails one length class at a time instead of
-  enumerating every trail up to the hop bound, so a bounded pair query that
-  never finished on a social graph answers in milliseconds. Results are
-  unchanged; a count selector with one open end still enumerates. A start
-  with a large neighbourhood is no longer scanned neighbour by neighbour:
-  the walk reads its steps near the end from the distance ball, and a full
-  top-k heap rejects a worse trail before building it.
+- `MATCH (n:L) RETURN n.p, count(*)` and the min, max and `count(n.p)`
+  aggregates over one labeled property now answer from the existing
+  `(L, p)` index instead of scanning every node of the label — the
+  `group_by_age` query of the SF0.1 latency suite drops from 17.3 ms to
+  6.2 ms. Results are unchanged: whenever the index cannot serve the
+  answer exactly, the aggregate falls back to the scan's exact answer
+  (ADR-0611).
+- Redundant parentheses around a projection item no longer change its
+  meaning: `WITH (n)`, `WITH DISTINCT(n)`,
+  `RETURN DISTINCT(n.p1) ORDER BY n.p1` and `GROUP BY (a)` now behave
+  exactly like their unparenthesized forms — alias rules, ordering under
+  `DISTINCT`, grouping keys and exemptions, `CALL` imports and the
+  rendered column names — as Neo4j treats them. A property access keeps
+  Neo4j's verbatim column name (`(n.p1)` names its column `(n.p1)`), and
+  no restriction is loosened: every pinned refusal keeps its verdict.
+- A constraint, index or database can now be literally named `null`:
+  `CREATE CONSTRAINT null …`, `CREATE INDEX null`, `DROP CONSTRAINT
+  null`, `DROP INDEX null`, `ALTER DATABASE null` and
+  `SHOW DATABASE null` parse and run, as in Neo4j. String-literal names
+  and the continuation keywords stay rejected.
+- Two parameter-name spellings Neo4j accepts now plan and run: the
+  backtick-quoted name (``$`p1``, ``$`p 1``) and whitespace between `$`
+  and the name (`$ p2`) — both previously failed at the lexer with
+  `InvalidParameterName`. Every `$name` render now goes through one
+  canonical quoting policy, so two different parameter names can never
+  collide in a plan-cache key; `$ €`, a bare `$` and `$ (x)` keep their
+  rejections.
+- Cypher text may carry `\uXXXX` unicode escapes in the whitespace
+  between tokens and in identifier text — `\u2028` between two tokens
+  reads as whitespace, `\u0041` as the identifier `A` — matching the
+  reference server's decoding. Parameters, numbers, comments and
+  backtick names keep their rejections: an escape cannot spell a
+  parameter name or any other token (ADR-0619).
+- A fixed-length clause entered by two or more rows now runs on the
+  frontier kernel, one run per entering row, instead of falling to the
+  per-row walker — the walker enumerates trails, exponentially on a
+  dense cyclic component. A single row whose run declines at run time
+  still drags the clause to the walker.
+- Dense id-span stores reserve the smaller of a 1.5-growth ladder rung
+  and the old power-of-two doubling, and the memory floor charges
+  exactly that reservation — the worst-case slot slack in a restored
+  store drops from below 2× to below 1.5× (ADR-0617).
+- The Java client now publishes to Maven Central by default from a
+  Publish-to-registries workflow dispatch, over a repaired natives gate
+  (the `release` environment still gates the credentials, and
+  `autoPublish=false` still leaves the Central Portal release in hand;
+  uncheck `maven` to publish only the other registries).
+- Every release now publishes the Java client to Maven Central
+  automatically through the release pipeline, and the publish profile
+  gains a dry run that rehearses it against `main` without uploading.
+- A checkpoint reopen now decodes and installs across all cores — one
+  Parquet reader per row-group span, a slice-based bulk install that
+  reads rows in place — so reopening a large store drops from 1225 ms
+  to 461 ms on the measured fraud shape (2.66×; 1.36× on a shape whose
+  restore work was already sharded). Restore rows are read in place and
+  installed in bounded slices, so peak restore memory is
+  `max(rows, graph)`, not `rows + graph`.
+- `EXPLAIN`/`PROFILE` plan trees show display-only child steps under an
+  index-seek-started `MATCH` — the seek step plus one `Expand` step per
+  hop, in the CLI's plan table and as fused-flagged children in the
+  structured plan (Bolt `queryPlan`/`profiledQueryPlan`, HTTP v2, the
+  CLI's machine modes). Execution is unchanged: the clause stays the
+  executed unit; consumers that require per-operator metrics skip the
+  children.
 
-## [1.0.2] — 2026-11-14
+### Notes
+
+- The 1.1.0 Swift entries were misfiled under [1.0.2] by their pull requests and moved to their release (ADR-0618).
+- The shortest-route fan, anchor, selector and class-walk work landed as consolidation campaigns — no user-facing change (#499, #497).
+- The PR cycle is now stated as one loop in the repository's agent contract, the ready flip the agent's own signal and the merge a separate authorization (#525).
+
+## [1.1.0] — 2026-11-17
 
 ### Added
 
@@ -65,11 +116,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A guide, "Relate in an iOS app" (`docs/guides/ios-apps.md`), and the
   `examples/ios-snotel` app moved to live queries and the asynchronous,
   typed Swift API.
-- Swift: `Database(url:readOnly:)`, `connect(namespace:)` and
-  `setNamespace(_:)` taking the typed namespace, and error predicates on
-  `EngineError` (`isConstraintViolation`, `isSyntaxError`,
-  `isMissingParameter`, `isWriteConflict`, `classification`) plus
-  `RelateError.isRetryable`.
 - Swift: bridges between `CypherValue` and platform types.
   `Foundation.Date` to and from `DATETIME`, `LOCAL DATETIME` and `DATE`;
   `Swift.Duration`; `[Float]` and Core ML arrays to `FLOAT32` vectors;
@@ -96,6 +142,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is always rolled back; `runInTransaction(_:retries:)` runs a list of
   statements all-or-none; `Connection.isPoisoned()` probes for a poisoned
   handle.
+
+### Changed
+
+- A shortest-path endpoint whose `WHERE` no index serves (`WHERE b.id + 0 =
+  7`, a function over the property) is now listed by scanning its label with
+  that predicate, and the pair search runs for the few matches, instead of a
+  search that reaches every node and builds a row and a path for each. On a
+  1.6M-node social graph `SHORTEST 1 (a {id: …})-[*..6]->(b) WHERE b.id + 0 =
+  …` drops from 16 s to 0.5 s, the cost of the same predicate in a separate
+  `MATCH`. Results are unchanged; a predicate matching more than 16 nodes, a
+  nondeterministic one, one that reads another variable, or one that raises
+  keeps the earlier plan.
+- `SHORTEST k` (k above 1), `SHORTEST k GROUPS` and `ANY k` between two
+  fixed endpoints now walk the trails one length class at a time instead of
+  enumerating every trail up to the hop bound, so a bounded pair query that
+  never finished on a social graph answers in milliseconds. Results are
+  unchanged; a count selector with one open end still enumerates. A start
+  with a large neighbourhood is no longer scanned neighbour by neighbour:
+  the walk reads its steps near the end from the distance ball, and a full
+  top-k heap rejects a worse trail before building it.
+- Swift: `QueryResult.records` returns `[Record]` instead of
+  `[[String: CypherValue]]`. Reading a record by column name
+  (`record["name"]`) is unchanged; `record.dictionary` is the old form.
+- Swift: `RelateError` has two new cases, `unexpectedResult` and `misuse`;
+  an exhaustive `switch` over it needs them. `QueryResult.scalar()` now
+  throws `unexpectedResult`, rather than `decoding`, for a result that is
+  not one row and one column.
+- Swift: a `transaction(_:)` body receives a `Transaction` instead of the
+  `Connection`. A body that only runs statements on its parameter compiles
+  unchanged; one that called `begin`, `commit`, `rollback` or `setNamespace`
+  on it does not.
+
+### Deprecated
+
+- Swift: `connect(namespace:)` and `setNamespace(_:)` taking a namespace
+  name as a `String`. The namespaces are fixed; pass a
+  `DatabaseNamespace`.
+## [1.0.2] — 2026-11-14
+
+### Added
+
+- Swift: `Database(url:readOnly:)`, `connect(namespace:)` and
+  `setNamespace(_:)` taking the typed namespace, and error predicates on
+  `EngineError` (`isConstraintViolation`, `isSyntaxError`,
+  `isMissingParameter`, `isWriteConflict`, `classification`) plus
+  `RelateError.isRetryable`.
 
 ### Changed
 
@@ -134,23 +226,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NotificationSeverity` and `NotificationCategory`, with deprecated aliases.
 - Swift: calls that can only fail with the package's own error are
   `throws(RelateError)`.
-- Swift: `QueryResult.records` returns `[Record]` instead of
-  `[[String: CypherValue]]`. Reading a record by column name
-  (`record["name"]`) is unchanged; `record.dictionary` is the old form.
-- Swift: `RelateError` has two new cases, `unexpectedResult` and `misuse`;
-  an exhaustive `switch` over it needs them. `QueryResult.scalar()` now
-  throws `unexpectedResult`, rather than `decoding`, for a result that is
-  not one row and one column.
-- Swift: a `transaction(_:)` body receives a `Transaction` instead of the
-  `Connection`. A body that only runs statements on its parameter compiles
-  unchanged; one that called `begin`, `commit`, `rollback` or `setNamespace`
-  on it does not.
-
-### Deprecated
-
-- Swift: `connect(namespace:)` and `setNamespace(_:)` taking a namespace
-  name as a `String`. The namespaces are fixed; pass a
-  `DatabaseNamespace`.
 
 ## [1.0.1] — 2026-11-12
 
