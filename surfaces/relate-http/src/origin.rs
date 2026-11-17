@@ -165,10 +165,9 @@ pub struct GuardRejection {
 ///   vocabulary** — which types are valid statement request types and what
 ///   each decodes — is the statement route's
 ///   (`typed_params::request_dialect`): the guard passes every non-simple
-///   type through to the route's own 400s, so the wired surface answers an
-///   unversioned or unknown request type with the route's fail-closed 400
-///   naming the accepted spellings, exactly like the real servers. Only the
-///   simple set is a `415` here.
+///   type through to the route, which rejects unsupported request types
+///   with a 400 naming the accepted spellings. Only the simple set is a
+///   `415` here.
 pub fn browser_guard(head: &RequestHead, origins: &OriginAllowlist) -> Result<(), GuardRejection> {
     match method_scope(&head.method) {
         MethodScope::Safe => Ok(()),
@@ -316,8 +315,7 @@ mod tests {
         // Every non-simple type passes the guard (ADR-0425: the guard owns
         // only the CSRF property; the statement route's dialect resolver
         // owns the vocabulary and its 400s) — the JSON types, the
-        // versioned Query API family, and the types the route will 400
-        // (the unversioned root, an unknown type) alike.
+        // Query API family, and unknown types the route will reject alike.
         for passes in [
             "application/json",
             "application/json; charset=utf-8",

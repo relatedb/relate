@@ -133,15 +133,10 @@ fn browser_media_types_negotiate_on_the_wire() {
         Database::open(":memory:").unwrap(),
         HttpConfig::new(AuthConfig::None),
     );
-    // The request content type is the versioned Query API form
-    // (ADR-0425: the unversioned spelling is rejected by every real
-    // server, ours now too); the Browser Accept list negotiates the
-    // response to it — Browser's client requires that content type and
-    // decodes the typed body (LABS-376).
     let body = r#"{"statement": "RETURN 1 AS n"}"#;
     let request = post_with_content_type(
         "/db/neo4j/query/v2",
-        "application/vnd.neo4j.query.v1.2",
+        "application/vnd.neo4j.query",
         body,
         &[("accept", crate::query_api::tests::BROWSER_ACCEPT)],
     );
@@ -158,40 +153,43 @@ fn browser_media_types_negotiate_on_the_wire() {
     let probe = r#"{"statement": "CALL db.ping()"}"#;
     let request = post_with_content_type(
         "/db/system/query/v2",
-        "application/vnd.neo4j.query.v1.2",
+        "application/vnd.neo4j.query",
         probe,
         &[],
     );
-    let (status, body) = exchange(port, request.as_bytes());
+    let (status, body) = exchange_json(port, request);
     assert_eq!(status, 200, "{body}");
-    assert!(
-        body.contains("\"fields\":[\"success\"]") && body.contains("\"values\":[[true]]"),
+    assert_eq!(
+        body["data"]["fields"],
+        serde_json::json!(["success"]),
+        "{body}"
+    );
+    assert_eq!(
+        body["data"]["values"],
+        serde_json::json!([[true]]),
         "{body}"
     );
 }
 
 #[test]
-fn wired_unversioned_request_type_is_the_routes_400() {
+fn wired_unsupported_request_type_is_the_routes_400() {
     let port = start(
         Database::open(":memory:").unwrap(),
         HttpConfig::new(AuthConfig::None),
     );
-    // ADR-0425's wired-path pin: the unversioned request type is not
-    // browser-simple, so the guard passes it — and the statement
-    // route's fail-closed 400 (naming the accepted spellings) is
-    // what the wire answers, the same 400 every real server gives.
-    // The pre-PR guard would have pre-empted it with a 415.
     let request = post_with_content_type(
         "/db/neo4j/query/v2",
-        "application/vnd.neo4j.query",
+        "application/xml",
         r#"{"statement": "RETURN 1"}"#,
         &[],
     );
-    let (status, body) = exchange(port, request.as_bytes());
-    assert_eq!(status, 400, "{body:?}");
+    let (status, body) = exchange_json(port, request);
+    assert_eq!(status, 400, "{body}");
     assert!(
-        body.contains("vnd.neo4j.query.v1.2"),
-        "the 400 names the versioned spelling: {body:?}"
+        body["errors"][0]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("vnd.neo4j.query.v1.2")),
+        "the 400 names the versioned spelling: {body}"
     );
 }
 

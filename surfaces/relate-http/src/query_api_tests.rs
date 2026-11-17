@@ -52,24 +52,41 @@ pub(super) fn dispatch(
 pub(crate) const BROWSER_ACCEPT: &str =
     "application/vnd.neo4j.query.v1.0+jsonl, application/vnd.neo4j.query, application/json";
 
-/// The Browser request header pair (ADR-0425's request dialect): the
-/// versioned content type plus the LABS-376 Accept list — one spelling
-/// for every Browser-scenario test.
-pub(super) fn browser_request_headers() -> Vec<(String, String)> {
-    vec![
-        (
-            "content-type".to_string(),
-            "application/vnd.neo4j.query.v1.2".to_string(),
-        ),
-        ("accept".to_string(), BROWSER_ACCEPT.to_string()),
-    ]
+/// The unversioned Query API request content type the hosted Browser
+/// and Console wrapper sends — the v1.0 alias (ADR-0425), beside the
+/// Accept list it negotiates the response with.
+pub(crate) const BROWSER_CONTENT_TYPE: &str = "application/vnd.neo4j.query";
+
+/// The hosted Browser and Console wrapper's Accept negotiation, added
+/// to any statement request — the one decoration both Browser
+/// delegates below share.
+fn with_browser_accept(mut request: Request) -> Request {
+    request
+        .headers
+        .push(("accept".to_string(), BROWSER_ACCEPT.to_string()));
+    request
+}
+
+/// The hosted Browser and Console wrapper's statement POST at an
+/// explicit path: the unversioned content type plus its Accept list —
+/// the fixed-dialect twin of [`tx_post`], so no Browser-scenario test
+/// builds a request through one dialect and swaps its headers.
+pub(super) fn tx_post_browser(path: &str, body: &str) -> Request {
+    with_browser_accept(tx_post_with_type(path, Some(BROWSER_CONTENT_TYPE), body))
+}
+
+/// The hosted Browser and Console wrapper's statement POST at the
+/// auto-commit query route of one database — [`post_with_type`]'s
+/// Browser spelling, the fixed-dialect twin of [`post_typed`].
+pub(super) fn post_browser(database: &str, body: &str) -> Request {
+    with_browser_accept(post_with_type(database, Some(BROWSER_CONTENT_TYPE), body))
 }
 
 /// A statement POST at an explicit path with an explicit content type
 /// (or none) — the one in-process request construction the fixed-dialect
 /// helpers and the fail-closed cases share (ADR-0425: a statement POST
-/// carries a content type; the negative cases spell the missing and the
-/// unversioned one).
+/// carries a content type; negative cases exercise missing or unsupported
+/// types).
 fn tx_post_with_type(path: &str, content_type: Option<&str>, body: &str) -> Request {
     let headers: Vec<(&str, &str)> = content_type
         .map(|value| vec![("content-type", value)])

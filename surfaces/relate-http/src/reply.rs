@@ -14,7 +14,7 @@ use relate::{
 use relate_error::{GQLSTATUS_GENERAL, GQLSTATUS_SYNTAX};
 use relate_model::wire::{self, WireStatsSnapshot};
 
-use crate::http::{is_versioned_query_family, APPLICATION_JSON, VND_NEO4J_QUERY};
+use crate::http::{is_query_family, APPLICATION_JSON, VND_NEO4J_QUERY};
 use crate::typed_params::{request_params, RequestDialect};
 use crate::v2_envelope::ReplyBody;
 use crate::v2_json::v2_value_json;
@@ -278,7 +278,7 @@ impl AcceptEntry {
         // content-type") and then decodes with its typed (`{"$type":…}`)
         // codec, so the body carries the typed encoding under this type
         // (LABS-376).
-        if media_type == VND_NEO4J_QUERY || is_versioned_query_family(&media_type) {
+        if is_query_family(&media_type) {
             return Self::Neo4jQuery;
         }
         match media_type.as_str() {

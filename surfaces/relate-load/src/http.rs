@@ -214,11 +214,8 @@ pub const TYPED_ACCEPT_HEADER: &str = "application/vnd.neo4j.query.v1.2;q=1.0, a
 
 /// The typed Query API v2 **request** media type: parameter values sent as
 /// `{"$type": …, "_value": …}` envelopes, the inverse of the typed response
-/// ladder above. The **versioned** `v1.2` spelling is the one the official
-/// docs specify for typed input (neo4j.com/docs/query-api/current/typed-json)
-/// — the unversioned `application/vnd.neo4j.query` is rejected by every real
-/// server (5.26, 2025.10, 2026.09-enterprise, and Aura all answer 400), a
-/// distinction verified by PR #463's docker and Aura e2e.
+/// ladder above. The push client uses v1.2 for types added after the
+/// unversioned v1.0 dialect, including vectors and UUIDs (ADR-0401).
 pub const TYPED_CONTENT_TYPE: &str = "application/vnd.neo4j.query.v1.2";
 
 /// The request `Content-Type` a Query API v2 POST sends: plain JSON
@@ -229,10 +226,7 @@ pub const TYPED_CONTENT_TYPE: &str = "application/vnd.neo4j.query.v1.2";
 enum ContentFormat {
     /// `Content-Type: application/json`.
     PlainJson,
-    /// `Content-Type: application/vnd.neo4j.query.v1.2` (ADR-0401) — the
-    /// versioned spelling every real server accepts (the unversioned
-    /// `vnd.neo4j.query` answers 400; verified against 5.26, 2025.10,
-    /// 2026.09-enterprise and Aura).
+    /// The v1.2 typed request form used by push (ADR-0401).
     TypedJson,
 }
 

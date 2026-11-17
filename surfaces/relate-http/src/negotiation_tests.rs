@@ -79,12 +79,6 @@ fn typed_and_plain_value_encoding_follow_the_neo4j_contract() {
     );
 }
 
-/// ADR-0425's request acceptance matrix, pinned to the real servers'
-/// behavior: the versioned content type decodes envelope parameters;
-/// plain `application/json` keeps an envelope-shaped object a user map
-/// (byte-for-byte what a real server delivers to Cypher); the
-/// unversioned `application/vnd.neo4j.query` and a missing content type
-/// are fail-closed 400s naming the two accepted spellings.
 #[test]
 fn request_dialect_matrix_follows_the_real_servers() {
     let db = db();
@@ -109,27 +103,73 @@ fn request_dialect_matrix_follows_the_real_servers() {
     let reply = dispatch(&db, &req, OPEN, &txs());
     assert_eq!(reply.status, 200, "{}", body_json(&reply));
     assert_eq!(body_json(&reply)["data"]["values"], json!([["2026-10-25"]]));
-    // The unversioned request type: 400 naming the accepted spellings —
-    // every real server rejects it, ours does too.
-    let req = crate::query_api::tests::post_with_type(
-        "neo4j",
-        Some("application/vnd.neo4j.query"),
-        r#"{"statement": "RETURN 1"}"#,
+    for content_type in [
+        "application/vnd.neo4j.query",
+        "application/vnd.neo4j.query.v1.0",
+        "application/vnd.neo4j.query.v1.2",
+        "Application/Vnd.Neo4j.Query; charset=utf-8",
+    ] {
+        let req = post_with_type(
+            "neo4j",
+            Some(content_type),
+            r#"{"statement": "RETURN $n AS n, $items AS items", "parameters": {
+                "n": {"$type": "Integer", "_value": "42"},
+                "items": {"$type": "List", "_value": [
+                    {"$type": "Map", "_value": {
+                        "name": {"$type": "String", "_value": "Oslo"}
+                    }}
+                ]}
+            }}"#,
+        );
+        let reply = dispatch(&db, &req, OPEN, &txs());
+        assert_eq!(reply.status, 200, "{content_type}: {}", body_json(&reply));
+        assert_eq!(
+            body_json(&reply)["data"]["values"],
+            json!([[42, [{"name": "Oslo"}]]]),
+            "{content_type}"
+        );
+    }
+    for content_type in [
+        None,
+        Some("application/xml"),
+        Some("application/vnd.neo4j.querying"),
+    ] {
+        let req = post_with_type("neo4j", content_type, r#"{"statement": "RETURN 1"}"#);
+        let reply = dispatch(&db, &req, OPEN, &txs());
+        assert_eq!(reply.status, 400, "{content_type:?}: {}", body_json(&reply));
+        assert_eq!(body_json(&reply)["errors"][0]["code"], "42000");
+    }
+}
+
+#[test]
+fn unversioned_requests_decode_parameters_on_every_transaction_route() {
+    let db = db();
+    let txs = txs();
+    let request = |path: &str, value: i64| {
+        let body = json!({
+            "statement": "RETURN $n AS n",
+            "parameters": {"n": {"$type": "Integer", "_value": value.to_string()}},
+            "accessMode": "READ"
+        });
+        tx_post_browser(path, &body.to_string())
+    };
+    let begin = dispatch(&db, &request("/db/neo4j/query/v2/tx", 42), OPEN, &txs);
+    assert_eq!(begin.status, 201, "{}", body_json(&begin));
+    assert_eq!(
+        body_json(&begin)["data"]["values"],
+        json!([[{"$type": "Integer", "_value": "42"}]])
     );
-    let reply = dispatch(&db, &req, OPEN, &txs());
-    assert_eq!(reply.status, 400, "{}", body_json(&reply));
-    assert!(
-        body_json(&reply)
-            .to_string()
-            .contains("vnd.neo4j.query.v1.2"),
-        "the 400 names the versioned spelling: {}",
-        body_json(&reply)
-    );
-    // No content type at all: the same fail-closed 400.
-    let req =
-        crate::query_api::tests::post_with_type("neo4j", None, r#"{"statement": "RETURN 1"}"#);
-    let reply = dispatch(&db, &req, OPEN, &txs());
-    assert_eq!(reply.status, 400, "{}", body_json(&reply));
+    let id = tx_id(&begin);
+    for (suffix, value) in [("", 43), ("/commit", 44)] {
+        let path = format!("/db/neo4j/query/v2/tx/{id}{suffix}");
+        let reply = dispatch(&db, &request(&path, value), OPEN, &txs);
+        assert_eq!(reply.status, 200, "{path}: {}", body_json(&reply));
+        assert_eq!(reply.content_type, "application/vnd.neo4j.query");
+        assert_eq!(
+            body_json(&reply)["data"]["values"],
+            json!([[{"$type": "Integer", "_value": value.to_string()}]])
+        );
+    }
 }
 
 /// ADR-0425's code split, pinned at the route: parameter DECODE failures
@@ -216,15 +256,10 @@ fn the_exact_browser_connectivity_probe_decodes() {
     // what Browser's client requires (it rejects `application/json`), and
     // the encoding it decodes (LABS-376).
     let db = db();
-    let mut req = post(
+    let req = post_browser(
         "system",
         r#"{"statement":"CALL db.ping()","includeCounters":true,"accessMode":"READ"}"#,
     );
-    // ADR-0425: the request content type is the versioned spelling (the
-    // unversioned `application/vnd.neo4j.query` is rejected by every
-    // real server — our earlier acceptance of it was the divergence).
-    // The Accept list stays verbatim.
-    req.headers = browser_request_headers();
     let reply = dispatch(&db, &req, OPEN, &txs());
     assert_eq!(reply.status, 200);
     assert_eq!(reply.content_type, "application/vnd.neo4j.query");
@@ -257,12 +292,10 @@ fn the_typed_plan_keeps_every_structural_field_plain() {
         OPEN,
         &txs(),
     );
-    let mut req = post("neo4j", r#"{"statement":"EXPLAIN MATCH (n) RETURN n"}"#);
-    // The Browser Accept list, verbatim: the typed media type must be
-    // NEGOTIATED (the content type alone does not select the typed
-    // encoding — the test would pass vacuously without this). The
-    // request type is the versioned spelling (ADR-0425).
-    req.headers = browser_request_headers();
+    let req = post_browser("neo4j", r#"{"statement":"EXPLAIN MATCH (n) RETURN n"}"#);
+    // The Browser Accept list, verbatim in the builder: the typed media
+    // type must be NEGOTIATED (the content type alone does not select
+    // the typed encoding — the test would pass vacuously without it).
     let reply = dispatch(&db, &req, OPEN, &txs());
     assert_eq!(reply.status, 200);
     assert_eq!(reply.content_type, "application/vnd.neo4j.query");

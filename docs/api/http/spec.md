@@ -193,10 +193,10 @@ from browser tooling on loopback. On a state-changing method:
   property this guard owns (ADR-0425). Every non-simple type passes to
   the statement route, which owns the media-type **vocabulary**: the
   accepted request types and their dialects are `application/json`
-  (plain parameters) and `application/vnd.neo4j.query.v1.2` (typed
-  envelopes); anything else — the unversioned
-  `application/vnd.neo4j.query`, which no real server accepts, included —
-  is a route-level **400** naming the two accepted spellings. The
+  (plain parameters), `application/vnd.neo4j.query` (the legacy v1.0 typed
+  alias), and its versioned family, including `.v1.0` and `.v1.2` (typed
+  envelopes). Other non-simple statement request types receive a
+  route-level **400** naming the accepted spellings. The
   content-type rule is **POST-specific** (ADR-0425, ADR-0455): a
   cross-origin form can only submit as `POST`, and the body-less `DELETE`
   rollback carries no body.
@@ -398,7 +398,7 @@ a server error. No server-side flag silences it.
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `statement` | string | required | One Cypher statement |
-| `parameters` | object | none | `$name` bindings. The request's **Content-Type selects the parameter dialect** (ADR-0425): under `application/vnd.neo4j.query.v1.2` values may be plain JSON **or** the typed form `{"$type": …, "_value": …}` the official clients send (decoded per ADR-0236's encoding, recursively; an object is typed only when its keys are exactly `$type` and `_value` — a user map with a `$type` key among others stays a map); under plain `application/json` values are plain JSON — an envelope-shaped object stays a user **map**, byte-for-byte what a real server delivers. Temporal payloads decode to their ISO strings (build typed values in Cypher, e.g. `date($p)`), a Point to its `{coordinates, crs}` map, a Vector to its number list; graph entities and unknown `$type`s are a 400. Any other request Content-Type — the unversioned `application/vnd.neo4j.query` included, which no real server accepts — is a **400** naming the two accepted spellings |
+| `parameters` | object | none | `$name` bindings. The request's **Content-Type selects the parameter dialect** (ADR-0425): under `application/vnd.neo4j.query` (the legacy v1.0 alias) or its versioned family, including `.v1.0` and `.v1.2`, values may be plain JSON **or** the typed form `{"$type": …, "_value": …}` the official clients send (decoded per ADR-0236's encoding, recursively; an object is typed only when its keys are exactly `$type` and `_value` — a user map with a `$type` key among others stays a map); under plain `application/json` values are plain JSON — an envelope-shaped object stays a user **map**, byte-for-byte what a real server delivers. Temporal payloads decode to their ISO strings (build typed values in Cypher, e.g. `date($p)`), a Point to its `{coordinates, crs}` map, a Vector to its number list; graph entities and unknown `$type`s are a 400. Other non-simple request Content-Types receive a **400** naming the accepted spellings; browser-simple or missing types are rejected by the guard described above |
 | `includeCounters` | boolean | `false` | Force the `counters` object onto the response |
 
 A malformed body (not JSON, or missing `statement`) is **400** with code

@@ -8,6 +8,11 @@ Query API clients — and the reverse direction of `relate-load`
 (ADR-0080), which reads this shape from Neo4j/Aura — work against Relate
 unchanged.
 
+Typed requests accept `application/vnd.neo4j.query`, the legacy v1.0
+alias used by hosted Neo4j Browser and Console, as well as versioned
+Query API media types. Plain `application/json` requests keep plain
+parameter semantics.
+
 The surface is deliberately the charter's minimal subset: no managed
 transactions, no routing or discovery endpoints, no batching. Each request is
 an independent auto-commit statement against one of the fixed namespaces

@@ -1,6 +1,6 @@
 //! The Query API v2 **request** parameter folds, one per request
-//! dialect (ADR-0425): the versioned typed request
-//! (`application/vnd.neo4j.query.v1.2`) carries
+//! dialect (ADR-0425): a typed request (`application/vnd.neo4j.query`
+//! or its versioned family) carries
 //! `{"$type": <Cypher type>, "_value": …}` envelopes — the encoding
 //! official clients send — while a plain `application/json` request
 //! carries plain JSON values, where an envelope-shaped object is a user
@@ -22,14 +22,10 @@ use serde_json::{Map, Value as Json};
 use std::collections::BTreeMap;
 
 /// A statement request's parameter dialect, resolved from its
-/// Content-Type (ADR-0425): the versioned Query API family is the
-/// typed envelope dialect, plain `application/json` is plain values —
-/// and anything else, the **unversioned** `application/vnd.neo4j.query`
-/// included, is a fail-closed 400 naming the two accepted spellings
-/// (every real server tested rejects the unversioned request type).
+/// Content-Type (ADR-0425): the Query API family, including the unversioned
+/// v1.0 alias, carries typed envelopes; `application/json` carries plain values.
 pub(crate) enum RequestDialect {
-    /// `Content-Type: application/vnd.neo4j.query.v1.2` (the versioned
-    /// family): envelope parameters decode via [`typed_request_params`].
+    /// Query API envelope parameters decode via [`typed_request_params`].
     Typed,
     /// `Content-Type: application/json`: plain values through the
     /// engine's [`relate::params_from_map`] — an envelope-shaped
@@ -39,15 +35,13 @@ pub(crate) enum RequestDialect {
 
 /// The accepted-request-types guidance, stated once — both fail-closed
 /// messages carry it (single-line, no reflow artifacts).
-const ACCEPTED_REQUEST_TYPES: &str = "application/json for plain parameters, or application/vnd.neo4j.query.v1.2 for typed envelope parameters";
+const ACCEPTED_REQUEST_TYPES: &str = "application/json for plain parameters, or application/vnd.neo4j.query (v1.0 alias) and its versioned family, including application/vnd.neo4j.query.v1.2, for typed envelope parameters";
 
 /// Resolve the dialect from a request's Content-Type: plain JSON (with
 /// any `; charset=…` parameter ignored) is [`RequestDialect::Plain`], a
-/// versioned member of the `application/vnd.neo4j.query` family is
-/// [`RequestDialect::Typed`] (the classifier is
-/// [`crate::http::is_versioned_query_family`]) — minus the bare root,
-/// which no real server accepts as a request type; anything else, the
-/// missing header included, fails closed with the accepted spellings.
+/// member of the `application/vnd.neo4j.query` family, including its bare
+/// v1.0 alias, is [`RequestDialect::Typed`]. Missing or unsupported types
+/// fail closed with the accepted spellings.
 pub(crate) fn request_dialect(content_type: Option<&str>) -> Result<RequestDialect, String> {
     let Some(value) = content_type else {
         return Err(format!(
@@ -58,7 +52,7 @@ pub(crate) fn request_dialect(content_type: Option<&str>) -> Result<RequestDiale
     if media_type == crate::http::APPLICATION_JSON {
         return Ok(RequestDialect::Plain);
     }
-    if crate::http::is_versioned_query_family(&media_type) {
+    if crate::http::is_query_family(&media_type) {
         return Ok(RequestDialect::Typed);
     }
     Err(format!(

@@ -238,12 +238,8 @@ fn post_dialect(request: &Request) -> Result<RequestDialect, Reply> {
     resolve_dialect(request)
 }
 
-/// Resolve a statement request's parameter dialect from its Content-Type
-/// (ADR-0425): the versioned Query API family is typed envelopes, plain
-/// `application/json` is plain values — and anything else, the
-/// unversioned `application/vnd.neo4j.query` every real server rejects
-/// included, fails closed with 400 (the route's GQLSTATUS_GENERAL) naming the
-/// two accepted spellings.
+/// Resolve the request dialect, mapping missing or unsupported media types
+/// to the route's 400/GQLSTATUS_GENERAL error (ADR-0425).
 fn resolve_dialect(request: &Request) -> Result<RequestDialect, Reply> {
     crate::typed_params::request_dialect(request.header("content-type"))
         .map_err(|message| crate::reply::bad_request(&message))

@@ -1,53 +1,40 @@
-# ADR-0425: The typed request wire follows the real Query API — v1.2 envelopes, plain JSON stays plain
+# ADR-0425: Query API request media types select typed or plain parameters
 
 Status: Proposed
 Claim: 4df4360904944100c47c59e38c426ffa11288f3c
 
 ## Context
 
-The push work (ADR-0401, PR #463) empirically mapped the Query API v2
-typed **request** wire against real servers (Neo4j 5.26, 2025.10,
-2026.09-enterprise, and Aura):
+The Query API v2 distinguishes plain JSON parameters from typed
+`{"$type": …, "_value": …}` envelopes, including nested `List` and `Map`
+values. Under `application/json`, an envelope-shaped object is a user
+map; decoding it as a typed value changes the query's meaning.
 
-- `Content-Type: application/vnd.neo4j.query.v1.2` with
-  `{"$type": …, "_value": …}` envelope parameters is the real typed
-  request dialect — containers included (every parameter value an
-  envelope, `rows` a `List` envelope of `Map` envelopes).
-- The **unversioned** `application/vnd.neo4j.query` request
-  content-type is rejected (400) by every server tested.
-- Under plain `application/json`, an envelope-shaped object arrives as
-  a **map** — real servers pass it through, they do not coerce it.
-
-Our `cypherlite-http` server (ADR-0236) diverges in both directions:
-`typed_params.rs` decodes envelope parameters **unconditionally** —
-under plain `application/json` our server coerces what every real
-server passes through as a map, and it never discriminates by request
-content-type at all (the origin guard checks media types only for
-browser-shaped requests, and its vocabulary names the unversioned
-spelling). A client developed against our serve therefore works here
-and fails against the real remote — exactly the trap that produced
-PR #463's invented wire (LABS-475's origin).
-
-LABS-475 tracks the whole conformance gap; this ADR records the
-request-side alignment decision.
+The typed request vocabulary includes the unversioned
+`application/vnd.neo4j.query` as the legacy v1.0 alias. Neo4j registers
+it with the same request reader as `application/vnd.neo4j.query.v1.0`.
+Both spellings accept typed parameters on Neo4j 2026.10.1. The hosted
+Neo4j Browser and Console send the unversioned type through their
+shared Query API wrapper, so rejecting it prevents their connectivity
+probe from running even though the typed payload is supported.
 
 ## Decision
 
 1. **The request media-type vocabulary** is `application/json` (plain
-   parameters) and the versioned Query API family
-   `application/vnd.neo4j.query.v1.2` (envelope parameters), enforced by
-   the statement routes' dialect resolution. The browser guard owns only
-   the CSRF property — it rejects browser-"simple" content types
-   (`text/plain`, the form types, none) and passes everything else
-   through to the route, so the wired surface answers a bad request type
-   with the route's 400, not a pre-empting 415. The **unversioned
-   `application/vnd.neo4j.query` is not a request media type**: a
-   request carrying it fails closed with 400, its message naming the
-   versioned spelling — matching every real server tested.
+   parameters), `application/vnd.neo4j.query` (the legacy v1.0 typed
+   alias), and the versioned Query API family, including `.v1.0` and
+   `.v1.2` (typed envelopes). The statement routes share one dialect
+   resolver for auto-commit, begin, run, and commit. Media-type matching
+   ignores case and parameters such as `charset=utf-8`.
+
+   The browser guard owns only the CSRF property: it rejects
+   browser-"simple" content types (`text/plain`, the form types, none)
+   and passes everything else through to the route. Unsupported request
+   types receive the route's 400 with the accepted spellings.
 
 2. **Envelope decoding is bound to the request media type.** The one
    parameters fold (`typed_params`) takes the request dialect: the
-   versioned typed request decodes `{"$type","_value"}` envelopes
+   typed request decodes `{"$type","_value"}` envelopes
    (today's decoder, unchanged); a plain `application/json` request
    uses plain JSON semantics — an envelope-shaped object is a user
    **map**, byte-for-byte what a real server delivers to Cypher.
@@ -60,30 +47,27 @@ request-side alignment decision.
    (the versioned ladder, ADR-0236) is the real, verified response
    wire and stays as is.
 
-5. **The conformance lane** (LABS-475 item 3): a gated test drives the
-   same request shapes at our serve and at a dockerized real Neo4j and
-   asserts identical accept/reject/decode behavior, so a future wire
-   divergence fails CI instead of shipping.
+5. **Regression coverage** checks typed request aliases, plain map
+   semantics, the Browser connectivity probe over HTTP, and typed
+   parameters across the managed-transaction routes.
 
 ## Alternatives considered
 
 - **Keep the lenient decode (envelopes under any JSON request)** —
-  rejected: it is precisely the trap (works against us, fails against
-  every real server); LABS-475 exists because of it.
-- **Accept the unversioned media type as an alias** — rejected: no
-  real server accepts it as a request type; an alias re-creates the
-  trap in the other direction.
+  rejected: envelope-shaped user maps must remain maps under
+  `application/json`.
+- **Accept only versioned typed media types** — rejected: Neo4j accepts
+  the unversioned v1.0 alias, and the hosted clients still send it.
 - **Reject envelope parameters entirely (plain-only requests)** —
   rejected: the v1.2 envelope dialect is real, verified, and what
   official clients send; our own push client sends it.
 
 ## Consequences
 
-- Our serve's request acceptance matches the real remote's in every
-  probed direction — a client that works against `cypherlite serve`
-  works against Aura (the conformance lane keeps it that way).
+- Hosted Browser and Console requests reach the existing typed decoder
+  without a proxy or a client-side header rewrite.
 - Clients that relied on envelope parameters under plain
   `application/json` (none known — our surfaces send v1.2 or plain)
-  must move to the versioned content type.
-- ADR-0236's request-side note gets a Later-references pointer here;
-  the browser guard's media-type vocabulary update rides this change.
+  must use a typed request content type.
+- Response negotiation, authentication, and origin restrictions are
+  unchanged. Accepting the alias does not add new parameter types.

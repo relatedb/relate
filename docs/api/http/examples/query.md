@@ -37,3 +37,17 @@ curl --compressed -u neo4j:s3cret -X POST http://127.0.0.1:7474/db/neo4j/query/v
   -d '{"statement": "RETURN range(1, 500) AS r"}'
 # {"data":{"fields":["r"],"values":[[[1,2,…,500]]]},"bookmarks":[]}
 ```
+
+Hosted Neo4j Browser and Console use the unversioned v1.0 alias for typed
+requests. The request type selects parameter decoding; `Accept` selects
+the response encoding independently:
+
+```sh
+curl -u neo4j:s3cret -X POST http://127.0.0.1:7474/db/neo4j/query/v2 \
+  -H 'Content-Type: application/vnd.neo4j.query' \
+  -H 'Accept: application/vnd.neo4j.query' \
+  -d '{"statement": "RETURN $n AS n",
+       "parameters": {"n": {"$type": "Integer", "_value": "42"}}}'
+```
+
+The result's `data.values` is `[[{"$type":"Integer","_value":"42"}]]`.

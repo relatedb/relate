@@ -62,7 +62,6 @@ with ADR-0235 (`db.ping`) and the media-type negotiation.
   `params_from_value` (`cypherlite_http::typed_params`, also used by the
   MCP tools), with the exactly-two-keys ambiguity rule.
   ADR-0425 later aligned the request side with the real servers: the
-  envelope decode binds to the versioned content type
-  (`application/vnd.neo4j.query.v1.2`); plain `application/json`
-  parameters keep an envelope-shaped object a map, the unversioned
-  request type is rejected, and the MCP tools take the plain fold.
+  envelope decode binds to the typed Query API content types, including
+  the unversioned v1.0 alias; plain `application/json` parameters keep
+  an envelope-shaped object a map, and the MCP tools take the plain fold.

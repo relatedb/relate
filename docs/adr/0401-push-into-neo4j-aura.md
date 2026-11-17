@@ -78,11 +78,9 @@ parameter value is a `{"$type", "_value"}` envelope, **containers
 included** — the batch's `rows` travel as a `List` envelope whose
 elements are `Map` envelopes, whose inner maps (keys, endpoints,
 properties) are `Map` envelopes in turn, so dates, points, durations,
-and vectors keep their Cypher type remotely by construction. All of
-this is verified empirically (the docker and Aura e2e of this PR): the
-**unversioned** `application/vnd.neo4j.query` is not a request media
-type — every server (5.26, 2025.10, 2026.09 Enterprise, Aura) answers
-400 to it; a plain JSON array of envelope objects answers 400 (the
+and vectors keep their Cypher type remotely by construction. The v1.2
+dialect retains types added after the unversioned v1.0 alias, including
+vectors and UUIDs. A plain JSON array of envelope objects answers 400 (the
 fully enveloped form answers 202); an envelope under plain
 `application/json` arrives remotely as a map, not a coerced value; and
 a plain JSON object nested in the typed structure reads as a typed
