@@ -177,3 +177,16 @@ fn a_range_conjunct_lists_through_the_funnel() {
     );
     assert_eq!(parity(&g, &q).arms, vec![AnchorArm::Pair]);
 }
+
+/// A conjunct that reads the input row is not part of the cached listing: the
+/// funnel only narrows the scan by the conjuncts the listing filters by, so a
+/// later row with a wider bound still sees every match.
+#[test]
+fn a_row_dependent_bound_does_not_narrow_the_cached_listing() {
+    let g = ring();
+    let q = format!(
+        "UNWIND ['9', '0'] AS s MATCH p = ANY SHORTEST (a:N {{id: '0'}}){BODY}(b:N) \
+         WHERE b.id > s AND toInteger(b.id) + 0 = 150 RETURN s, b.id, length(p)"
+    );
+    assert_eq!(parity(&g, &q).arms, vec![AnchorArm::Pair; 2]);
+}

@@ -142,9 +142,11 @@ impl Route<'_> {
     fn scan_matches(&self, np: &NodePattern, usable: &[&Expr]) -> Result<Option<Vec<NodeId>>> {
         let graph = self.ctx.graph;
         let params = self.ctx.params;
-        // The route's endpoint-only conjuncts ride the funnel as for every
-        // other side, so a served range seek narrows the label scan.
-        let candidates = node_candidates(graph, np, self.row, params, &self.filters.endpoint)?;
+        // The listing's own conjuncts ride the funnel, so a served range seek
+        // narrows the label scan. Only those: the listing is cached for the
+        // clause, so no conjunct outside it (one reading the row) may shape it.
+        let ridden: Vec<Expr> = usable.iter().map(|&conjunct| conjunct.clone()).collect();
+        let candidates = node_candidates(graph, np, self.row, params, &ridden)?;
         let mut matches = Vec::new();
         for id in candidates {
             graph.cancel_tick()?;
