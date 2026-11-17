@@ -36,12 +36,13 @@
 //! discipline.
 
 use relate_core::{NodeId, RelId, Result, Value};
-use relate_ir::{var_prop_named, Expr};
-use relate_names::SmallName;
+use relate_ir::var_prop_named;
+use relate_names::{NamedToken, SmallName};
 
 use relate_core::Error;
 
 use crate::ctx::ExecCtx;
+use crate::overlay::ExecGraph;
 use crate::pattern_walk::{bind_node_stub, bind_rel_stub};
 use crate::store::RelTypes;
 
@@ -100,15 +101,28 @@ pub(super) fn run(
     // inside the side-B stream (the halt stops the stream when it fills),
     // and existence decides inside the stream the same way.
     let mut side_a = Vec::new();
-    // The breaker's accumulating binding columns, one per named element —
-    // the hub is one of them by construction (the family is defined by a
-    // shared variable), so a pushed binding fills every column.
-    let names = binding_names(star);
-    let mut columns: Vec<Vec<Value>> = vec![Vec::new(); names.len()];
-    // Complete bindings pushed — the row count's source. The count never
-    // rides a column's length: the zero-binding answer is the counter's
-    // zero, not an emptiness read off column 0.
-    let mut bindings = 0usize;
+    // The star's pattern-order projection, built once: the rows mode
+    // accumulates through it and the exists mode resolves its counted
+    // variable in it — never a second walk of the same vocabulary.
+    let projection = Projection::new(star);
+    // The exists mode's counted read, resolved once per run: the parse
+    // and the slot lookup are run-invariant, so only the per-pair node
+    // read is left inside the stream.
+    let counted_read = match &mode {
+        KernelMode::Rows { .. } => None,
+        KernelMode::Exists { counted } => (*counted).map(|expr| {
+            let (var, key) = var_prop_named(expr)
+                .expect("the engagement proof admits only var.prop counted expressions");
+            let slot = projection
+                .node_slot(var)
+                .expect("the engagement proof checked the counted variable is bound");
+            (slot, key)
+        }),
+    };
+    // The breaker's accumulating bindings: one column per projected slot
+    // — the hub is one of them by construction (the family is defined by
+    // a shared variable), so a pushed binding fills every column.
+    let mut bindings = Bindings::new(&projection, halt);
     let mut hit = false;
     // LABS-805: the whole hub loop's hop/walk counts tally locally and
     // flush on drop at the run's end — never a thread-local access per
@@ -125,7 +139,7 @@ pub(super) fn run(
         // The halt's per-hub guard, the chain kernel's per-row guard's
         // twin: a halt filled at an earlier hub ends the loop before this
         // hub expands either side.
-        if halt.is_some_and(|h| bindings >= h) {
+        if bindings.full() {
             break;
         }
         side_a.clear();
@@ -146,19 +160,22 @@ pub(super) fn run(
             // relationship-uniqueness rule, per pair.
             for a in &side_a {
                 if (!star.shared_terminal || a.terminal() == b.terminal()) && !a.rels_overlap(&b) {
-                    match mode {
+                    let binding = Binding {
+                        hub,
+                        sides: [*a, b],
+                    };
+                    match &mode {
                         KernelMode::Rows { .. } => {
                             // The halt, ahead of the push: `want == 0`
                             // answers zero rows and the checked-ahead form
                             // keeps the count exact for every `want`; a
                             // filled halt also ends this hub's B stream.
-                            if halt.is_some_and(|h| bindings >= h) {
+                            if bindings.full() {
                                 return Ok(false);
                             }
-                            push_binding(ctx, star, hub, a, &b, &names, &mut columns);
-                            bindings += 1;
+                            bindings.push(graph, &binding);
                         }
-                        KernelMode::Exists { counted } => {
+                        KernelMode::Exists { .. } => {
                             // Existence needs SOME complete binding to
                             // pass, and every pairing of this B row is a
                             // distinct complete binding — a mid node of a
@@ -168,7 +185,7 @@ pub(super) fn run(
                             // passes (the terminal is the only value the
                             // pairings share, and only in the
                             // shared-terminal mode).
-                            if counted_nonnull(ctx, star, hub, a, &b, counted) {
+                            if counted_nonnull(ctx, &binding, &counted_read) {
                                 found = true;
                                 return Ok(false);
                             }
@@ -185,15 +202,10 @@ pub(super) fn run(
     }
     match mode {
         KernelMode::Rows { .. } => {
-            let mut rows = Vec::new();
-            if bindings > 0 {
-                let encoded: Vec<Column> = columns
-                    .iter()
-                    .map(|column| Column::from_values(column))
-                    .collect();
-                rows = Chunk::from_columns(&names, encoded).to_rows();
-            }
-            Ok(KernelOutput::Rows(rows))
+            let (names, columns) = bindings.into_columns();
+            Ok(KernelOutput::Rows(
+                Chunk::from_columns(&names, columns).to_rows(),
+            ))
         }
         KernelMode::Exists { .. } => Ok(KernelOutput::Exists(hit)),
     }
@@ -341,100 +353,175 @@ fn step_hop<P: NodePred>(
     }
 }
 
-/// The binding names the breaker projects: the hub variable, then each
-/// side's rel and node variables in hop order — exactly the walker's
-/// bindings, pattern order.
-fn binding_names(star: &HubStar<'_>) -> Vec<String> {
-    // Text render: the binding-name list feeds the row schema (String).
-    let mut names = Vec::new();
-    if let Some(var) = star.hub[0].pattern.variable.as_ref() {
-        names.push(var.to_string());
-    }
-    for side in &star.sides {
-        for hop in side {
-            if let Some(var) = hop.rel.variable.as_ref() {
-                names.push(var.to_string());
-            }
-            if let Some(var) = hop.target.pattern.variable.as_ref() {
-                names.push(var.to_string());
-            }
-        }
-    }
-    names
+/// Where one projected column's value comes from.
+#[derive(Clone, Copy)]
+enum At {
+    /// The shared hub node.
+    Hub,
+    /// Side `side`'s rel at hop `hop`.
+    Rel { side: usize, hop: usize },
+    /// Side `side`'s arrival node at hop `hop`.
+    Node { side: usize, hop: usize },
 }
 
-/// Push one complete binding's values onto the breaker's columns.
-fn push_binding(
-    ctx: ExecCtx<'_>,
-    star: &HubStar<'_>,
+/// One column of the breaker's projection, in pattern order: the variable
+/// it binds and the position holding it.
+struct Slot {
+    var: SmallName,
+    at: At,
+}
+
+/// The star's pattern-order projection — the one walk that names a
+/// binding's positions. Both modes consult it: rows mode projects each
+/// binding through it, existence mode resolves its counted variable in
+/// it, so no two of them can disagree.
+struct Projection {
+    slots: Vec<Slot>,
+}
+
+impl Projection {
+    /// The hub is always named — the family is defined by one shared
+    /// variable — so its absence is a broken compile, not a shape.
+    fn new(star: &HubStar<'_>) -> Self {
+        let hub = star.hub[0]
+            .pattern
+            .variable
+            .as_ref()
+            .expect("the hub-star family is defined by one shared variable");
+        let mut slots = vec![Slot {
+            var: hub.clone(),
+            at: At::Hub,
+        }];
+        for (side, hops) in star.sides.iter().enumerate() {
+            for (hop, h) in hops.iter().enumerate() {
+                if let Some(var) = h.rel.variable.as_ref() {
+                    slots.push(Slot {
+                        var: var.clone(),
+                        at: At::Rel { side, hop },
+                    });
+                }
+                if let Some(var) = h.target.pattern.variable.as_ref() {
+                    slots.push(Slot {
+                        var: var.clone(),
+                        at: At::Node { side, hop },
+                    });
+                }
+            }
+        }
+        Projection { slots }
+    }
+
+    /// The column names, in pattern order — the row schema's text render.
+    fn names(&self) -> Vec<String> {
+        self.slots.iter().map(|slot| slot.var.to_string()).collect()
+    }
+
+    /// The node position binding variable `var` — the slot's position
+    /// itself, so the node-only proof travels with the value.
+    fn node_slot(&self, var: &SmallName) -> Option<At> {
+        self.slots
+            .iter()
+            .find(|slot| slot.var == *var && !matches!(slot.at, At::Rel { .. }))
+            .map(|slot| slot.at)
+    }
+}
+
+/// One complete binding: the hub and both sides' rows.
+#[derive(Clone, Copy)]
+struct Binding {
     hub: NodeId,
-    a: &SideRow,
-    b: &SideRow,
-    names: &[String],
-    columns: &mut [Vec<Value>],
-) {
-    let graph = ctx.graph;
-    let mut values = Vec::with_capacity(names.len());
-    if star.hub[0].pattern.variable.is_some() {
-        values.push(bind_node_stub(graph, hub));
+    sides: [SideRow; 2],
+}
+
+impl Binding {
+    fn node(&self, side: usize, hop: usize) -> NodeId {
+        self.sides[side].nodes[hop]
     }
-    for (row, side) in [a, b].iter().zip(&star.sides) {
-        for (index, hop) in side.iter().enumerate() {
-            if hop.rel.variable.is_some() {
-                values.push(bind_rel_stub(graph, row.rels[index]));
-            }
-            if hop.target.pattern.variable.is_some() {
-                values.push(bind_node_stub(graph, row.nodes[index]));
-            }
+
+    fn rel(&self, side: usize, hop: usize) -> RelId {
+        self.sides[side].rels[hop]
+    }
+
+    /// The node at a node position; `None` for a rel position.
+    fn node_at(&self, at: At) -> Option<NodeId> {
+        match at {
+            At::Hub => Some(self.hub),
+            At::Node { side, hop } => Some(self.node(side, hop)),
+            At::Rel { .. } => None,
         }
-    }
-    for (slot, value) in columns.iter_mut().zip(values) {
-        slot.push(value);
     }
 }
 
-/// The existence check for one complete binding: the counted expression
-/// is a single `<var>.<key>` read of a variable the patterns bind (the
-/// engagement proof), or nothing (an `EXISTS { MATCH }` — every complete
-/// binding counts).
+/// The rows mode's accumulator over the projection: one column of values
+/// per slot and the halt. The columns are the row count's one owner —
+/// `into_columns` hands them to [`Chunk::from_columns`], which takes the
+/// row count from column 0.
+struct Bindings<'p> {
+    projection: &'p Projection,
+    columns: Vec<Vec<Value>>,
+    halt: Option<usize>,
+}
+
+impl<'p> Bindings<'p> {
+    fn new(projection: &'p Projection, halt: Option<usize>) -> Self {
+        let columns = vec![Vec::new(); projection.slots.len()];
+        Bindings {
+            projection,
+            columns,
+            halt,
+        }
+    }
+
+    /// Whether the rows mode's halt is filled: `want == 0` is full from
+    /// the start, so the pairing loop answers zero rows. The pushed count
+    /// is column 0's length, and column 0 always exists — the family
+    /// names its hub.
+    fn full(&self) -> bool {
+        self.halt.is_some_and(|halt| self.columns[0].len() >= halt)
+    }
+
+    /// Append one complete binding, projected through the slots.
+    fn push(&mut self, graph: &ExecGraph<'_>, binding: &Binding) {
+        for (slot, column) in self.projection.slots.iter().zip(&mut self.columns) {
+            column.push(match slot.at {
+                At::Hub => bind_node_stub(graph, binding.hub),
+                At::Rel { side, hop } => bind_rel_stub(graph, binding.rel(side, hop)),
+                At::Node { side, hop } => bind_node_stub(graph, binding.node(side, hop)),
+            });
+        }
+    }
+
+    /// The accumulated columns and their names, ready for the chunk
+    /// layer. The row construction stays in the caller, whose output type
+    /// is the ladder's rather than a row vector (ADR-0555).
+    fn into_columns(self) -> (Vec<String>, Vec<Column>) {
+        let names = self.projection.names();
+        let encoded = self
+            .columns
+            .iter()
+            .map(|column| Column::from_values(column))
+            .collect();
+        (names, encoded)
+    }
+}
+
+/// The existence check for one complete binding. `counted` is the run's
+/// resolved counted read — the slot holding the variable and its property
+/// key, parsed once — or nothing (an `EXISTS { MATCH }`, where every
+/// complete binding counts).
 fn counted_nonnull(
     ctx: ExecCtx<'_>,
-    star: &HubStar<'_>,
-    hub: NodeId,
-    a: &SideRow,
-    b: &SideRow,
-    counted: Option<&Expr>,
+    binding: &Binding,
+    counted: &Option<(At, NamedToken)>,
 ) -> bool {
-    let Some(expr) = counted else {
+    let Some((at, key)) = counted else {
         return true;
     };
-    let (var, key) = var_prop_named(expr)
-        .expect("the engagement proof admits only var.prop counted expressions");
-    let node = node_of_var(star, hub, a, b, var)
-        .expect("the engagement proof checked the counted variable is bound");
+    let node = binding
+        .node_at(*at)
+        .expect("the engagement proof checked the counted variable is bound to a node");
     matches!(
-        ctx.graph.node_prop_resolved(node, &key),
+        ctx.graph.node_prop_resolved(node, key),
         Some(v) if !v.is_null()
     )
-}
-
-/// The node id the binding gives `var` — the hub, or one side's arrival.
-fn node_of_var(
-    star: &HubStar<'_>,
-    hub: NodeId,
-    a: &SideRow,
-    b: &SideRow,
-    var: &SmallName,
-) -> Option<NodeId> {
-    if star.hub[0].pattern.variable.as_ref() == Some(var) {
-        return Some(hub);
-    }
-    for (row, side) in [(a, &star.sides[0]), (b, &star.sides[1])] {
-        for (index, hop) in side.iter().enumerate() {
-            if hop.target.pattern.variable.as_ref() == Some(var) {
-                return Some(row.nodes[index]);
-            }
-        }
-    }
-    None
 }

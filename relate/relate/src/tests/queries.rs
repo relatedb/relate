@@ -656,6 +656,23 @@ fn cip_expression_types_reductions_and_values() {
         .unwrap();
     assert_eq!(r.rows, vec![vec![Value::Float(f64::INFINITY)]]);
 }
+
+/// `eq_non_null` answers false for a null on either side, which is what
+/// lets `nullif` drop its own null guard: a null operand keeps the first
+/// value (three-valued NULLIF).
+#[test]
+fn nullif_keeps_the_first_value_on_a_null_operand() {
+    let db = Database::open(":memory:").unwrap();
+    let mut c = db.connect().unwrap();
+    let r = c
+        .query(
+            "RETURN NULLIF(null, 1) AS null_first, NULLIF(1, null) AS null_second, \
+             NULLIF(null, null) AS both_null",
+        )
+        .unwrap();
+    assert_eq!(r.rows[0], vec![Value::Null, Value::Int(1), Value::Null]);
+}
+
 /// A deleted entity stays addressable through the variable that bound it:
 /// the row keeps an **empty tombstone** (the same id, no labels, no
 /// properties — a returned deleted node renders `()`),

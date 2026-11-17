@@ -62,17 +62,16 @@ pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
     if vals.iter().any(Value::is_null) {
         return Ok(Value::Null);
     }
-    let parsed;
-    let items: &[Value] = match &vals[0] {
-        Value::List(items) => items,
-        Value::String(s) => {
-            parsed = VectorCoordKind::parse_coordinates(s)
-                .ok_or_else(|| Error::ty("InvalidVectorCoordinates"))?
-                .into_iter()
-                .map(Value::Float)
-                .collect::<Vec<_>>();
-            &parsed
-        }
+    // Both sources reduce to one numbers-or-not sequence: a coordinate
+    // text parses straight to floats, a list maps each element once. A
+    // non-number is reported only after the dimension checks below.
+    let numbers: Vec<Option<f64>> = match &vals[0] {
+        Value::List(items) => items.iter().map(Value::as_number).collect(),
+        Value::String(s) => VectorCoordKind::parse_coordinates(s)
+            .ok_or_else(|| Error::ty("InvalidVectorCoordinates"))?
+            .into_iter()
+            .map(Some)
+            .collect(),
         _ => return Err(Error::ty("vector() requires a numeric list")),
     };
     let dim = vals[1]
@@ -91,7 +90,7 @@ pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
             ),
         ));
     };
-    if dimension != items.len() {
+    if dimension != numbers.len() {
         return Err(Error::ty("vector() dimension does not match list"));
     }
     let coord_name = vals[2]
@@ -103,11 +102,9 @@ pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
     // Choose the coordinate conversion once: it depends only on the
     // loop-invariant `coord`, not on the element being converted.
     let convert = coord_converter(coord);
-    let mut values = Vec::with_capacity(items.len());
-    for item in items {
-        let n = item
-            .as_number()
-            .ok_or_else(|| Error::ty("vector() coordinates must be numbers"))?;
+    let mut values = Vec::with_capacity(numbers.len());
+    for n in numbers {
+        let n = n.ok_or_else(|| Error::ty("vector() coordinates must be numbers"))?;
         values.push(convert(n)?);
     }
     Ok(Value::Vector {

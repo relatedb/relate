@@ -460,6 +460,7 @@ impl<'a> Builder<'a> {
             // chain always ends with a node. It is the hop the close
             // target serves.
             let last_hop = i + 2 == elements.len();
+            let exit = if last_hop { last_target } else { None };
             match element {
                 PatternElement::Node(node) if i % 2 == 0 => {
                     // Under the forced rung the boundary positions' guards
@@ -475,7 +476,6 @@ impl<'a> Builder<'a> {
                     node_states.push((node.variable.clone(), current));
                 }
                 PatternElement::Relationship(rel) if i % 2 == 1 => {
-                    let exit = if last_hop { last_target } else { None };
                     if rel.var_length {
                         // The nested var-length rel: predicates on the
                         // traversed edges decline before the
@@ -510,7 +510,6 @@ impl<'a> Builder<'a> {
                     // shape exists; the same nested rules apply, its own
                     // WHERE included (only the spine's group predicate
                     // compiles).
-                    let exit = if last_hop { last_target } else { None };
                     (current, len) = self.nest(quantified, current, exit, len)?;
                 }
                 // A node at a hop position, a rel or group at a node

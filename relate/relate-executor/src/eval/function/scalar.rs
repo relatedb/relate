@@ -21,10 +21,9 @@ pub(super) fn bi_coalesce(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) ->
 
 pub(super) fn bi_nullif(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
     // The two-argument count is the registry row's contract, enforced before
-    // any argument is evaluated.
-    Ok(if vals[0].is_null() || vals[1].is_null() {
-        vals[0].clone()
-    } else if vals[0].eq_non_null(&vals[1]) {
+    // any argument is evaluated. `eq_non_null` answers false for a null on
+    // either side, so a null needs no guard of its own.
+    Ok(if vals[0].eq_non_null(&vals[1]) {
         Value::Null
     } else {
         vals[0].clone()

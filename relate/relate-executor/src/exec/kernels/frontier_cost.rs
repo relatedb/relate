@@ -41,7 +41,7 @@ const FRONTIER_NS_PER_PROBE: f64 = 65.0;
 /// expansion passes it has a multiplicity saturated beyond pricing (a
 /// degree tail chained per hop), so the estimate engages rather than
 /// underestimates it.
-const MAX_ESTIMATE_HOPS: usize = 1024;
+pub(super) const MAX_ESTIMATE_HOPS: usize = 1024;
 
 /// What the DFS would enumerate and what the frontier would pay for it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -98,9 +98,10 @@ pub(super) fn estimate(
     seeds: u128,
     endpoints: u128,
     start: &NodePattern,
-    hops: &[&RelPattern],
+    hops: &Expansion<'_>,
 ) -> Option<CostEstimate> {
-    let (first, rest) = hops.split_first()?;
+    let (&first, rest) = hops.sequence.split_first()?;
+    let first = hops.distinct[first];
     let start_population = start
         .labels
         .iter()
@@ -115,14 +116,15 @@ pub(super) fn estimate(
     // degree-moments consult scans the histograms: price each distinct
     // rel once, so a crafted pattern costs consults in proportion to its
     // size, never to its expanded hop count.
-    let mut priced: Vec<(&RelPattern, f64)> = Vec::new();
-    for rel in rest {
-        let fanout = match priced.iter().find(|(seen, _)| std::ptr::eq(*seen, *rel)) {
-            Some(&(_, fanout)) => fanout,
+    let mut fanouts: Vec<Option<f64>> = vec![None; hops.distinct.len()];
+    for &index in rest {
+        let fanout = match fanouts[index] {
+            Some(fanout) => fanout,
             None => {
+                let rel = hops.distinct[index];
                 let landing = stats.degree_moments(&[], &rel.types)?;
                 let fanout = excess_degree(landing) * sides(rel);
-                priced.push((rel, fanout));
+                fanouts[index] = Some(fanout);
                 fanout
             }
         };
@@ -188,43 +190,114 @@ pub(super) fn excess_degree(moments: DegreeMoments) -> f64 {
     (moments.sum_sq as f64 / moments.sum as f64 - 1.0).max(0.0)
 }
 
+/// The hops of a pattern with every quantifier expanded to its maximum
+/// count: the DFS's path multiplicity. `distinct` holds each rel the
+/// pattern spells once; `sequence` lists, in hop order, an index into it
+/// per hop, so a repetition repeats an index, never a rel, and
+/// [`estimate`] prices per `distinct` entry without comparing rels.
+#[derive(Debug, Default)]
+pub(super) struct Expansion<'a> {
+    distinct: Vec<&'a RelPattern>,
+    sequence: Vec<usize>,
+}
+
+impl<'a> Expansion<'a> {
+    /// One hop per listed rel, each priced on its own.
+    #[cfg(test)]
+    pub(super) fn chain(rels: &[&'a RelPattern]) -> Self {
+        Expansion {
+            distinct: rels.to_vec(),
+            sequence: (0..rels.len()).collect(),
+        }
+    }
+
+    /// `count` hops over the one `rel`, as a quantifier expands.
+    #[cfg(test)]
+    pub(super) fn repeat(rel: &'a RelPattern, count: usize) -> Self {
+        Expansion {
+            distinct: vec![rel],
+            sequence: vec![0; count],
+        }
+    }
+
+    /// The expanded hop count.
+    #[cfg(test)]
+    pub(super) fn hops(&self) -> usize {
+        self.sequence.len()
+    }
+
+    /// The ceiling's one comparison: `Some(())` when `extra` more hops
+    /// stay within [`MAX_ESTIMATE_HOPS`].
+    fn reserve(&self, extra: usize) -> Option<()> {
+        if self.sequence.len().checked_add(extra)? > MAX_ESTIMATE_HOPS {
+            return None;
+        }
+        Some(())
+    }
+
+    /// Append one hop's distinct index, under the ceiling.
+    fn push(&mut self, index: usize) -> Option<()> {
+        self.reserve(1)?;
+        self.sequence.push(index);
+        Some(())
+    }
+
+    /// Register one rel the pattern spells: its distinct index, then the
+    /// hop — the registry and the ceiling keep one owner.
+    fn push_rel(&mut self, rel: &'a RelPattern) -> Option<()> {
+        let index = self.distinct.len();
+        self.push(index)?;
+        self.distinct.push(rel);
+        Some(())
+    }
+
+    /// Repeat the quantifier body the recursion left at `start..` `times`
+    /// in total, in place: the ceiling is checked once for the whole
+    /// repetition, and `extend_from_within` re-reads the one copy already
+    /// there instead of a split-off buffer.
+    fn repeat_from(&mut self, start: usize, times: u32) -> Option<()> {
+        let end = self.sequence.len();
+        let times = times as usize;
+        if times == 0 {
+            self.sequence.truncate(start);
+            return Some(());
+        }
+        self.reserve((end - start).checked_mul(times - 1)?)?;
+        for _ in 1..times {
+            self.sequence.extend_from_within(start..end);
+        }
+        Some(())
+    }
+}
+
 /// The rels of `elements` with every quantifier expanded to its maximum
 /// count — the trail estimate's input for the DFS's path multiplicity.
 /// `None` when the expansion cannot be priced — it passes
 /// [`MAX_ESTIMATE_HOPS`] (the multiplicity is saturated) or a quantifier
 /// is unbounded — and the caller engages rather than underestimates it.
-///
-/// Every repetition pushes the *same* `&RelPattern` the body holds, not a
-/// copy: [`estimate`] keys its per-rel price cache on that reference
-/// identity, so a change that clones a rel here must change the cache key.
-fn expand_max_hops(elements: &[PatternElement]) -> Option<Vec<&RelPattern>> {
-    let mut hops = Vec::new();
+pub(super) fn expand_max_hops(elements: &[PatternElement]) -> Option<Expansion<'_>> {
+    let mut hops = Expansion::default();
+    expand_into(elements, &mut hops)?;
+    Some(hops)
+}
+
+fn expand_into<'a>(elements: &'a [PatternElement], hops: &mut Expansion<'a>) -> Option<()> {
     for element in elements {
-        if hops.len() > MAX_ESTIMATE_HOPS {
-            return None;
-        }
         match element {
             // Only the rels matter to the estimate: nodes carry no
             // fanout of their own.
             PatternElement::Node(_) => {}
-            PatternElement::Relationship(rel) => hops.push(rel),
+            PatternElement::Relationship(rel) => hops.push_rel(rel)?,
             PatternElement::Quantified(qpp) => {
                 let max = qpp.max?;
                 // The body expands once; a body with no rel adds no
                 // hops, and every repetition of one that does grows the
-                // spine, so the ceiling bounds the loop.
-                let body = expand_max_hops(&qpp.elements)?;
-                if body.is_empty() {
-                    continue;
-                }
-                for _ in 0..max {
-                    hops.extend_from_slice(&body);
-                    if hops.len() > MAX_ESTIMATE_HOPS {
-                        return None;
-                    }
-                }
+                // spine, so the ceiling bounds the repetition.
+                let start = hops.sequence.len();
+                expand_into(&qpp.elements, hops)?;
+                hops.repeat_from(start, max)?;
             }
         }
     }
-    Some(hops)
+    Some(())
 }

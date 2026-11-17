@@ -641,7 +641,10 @@ mod tests {
             bi_cardinality(&graph, "cardinality", vec![ints(&[1, 2])]).unwrap(),
             Value::Int(2)
         );
-        assert!(bi_length(&graph, "length", vec![ints(&[1, 2])]).is_err());
+        assert_eq!(
+            bi_length(&graph, "length", vec![ints(&[1, 2])]).unwrap_err(),
+            Error::invalid_argument_type(LENGTH_REQUIRES_A_PATH)
+        );
     }
 
     /// `coll.min`/`coll.max` use the one openCypher ORDER BY rank
