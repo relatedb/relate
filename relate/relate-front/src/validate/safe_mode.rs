@@ -12,6 +12,7 @@ use relate_parser::{CallSubqueryClause, Clause, Expr, PatternElement, PatternPat
 use crate::agg::{
     contains_non_collect_aggregation, contains_pattern_comprehension, contains_unbounded_aggregate,
 };
+use crate::ast::collect::effective_expr;
 use crate::ast::collect::{clause_node_names, projected_node_scope};
 
 /// The opt-in safe-mode shape rules (LABS-680, ADR-0477).
@@ -272,7 +273,12 @@ fn validate_bounded_reads(clauses: &[Clause]) -> Result<(), EngineError> {
     // another `MATCH` re-expands the stream.
     if proj.position > 0 {
         if let Clause::With(with) = &proj.owner[proj.position - 1] {
-            if with.limit.is_some() || with.items.iter().all(|item| is_bounding_item(&item.expr)) {
+            if with.limit.is_some()
+                || with
+                    .items
+                    .iter()
+                    .all(|item| is_bounding_item(effective_expr(item)))
+            {
                 return Ok(());
             }
         }
@@ -296,7 +302,11 @@ fn validate_bounded_reads(clauses: &[Clause]) -> Result<(), EngineError> {
     // *every* item reduces to a scalar — a reducing aggregate or a constant.
     // A bare variable or property is a grouping key, and Cypher returns one
     // row per distinct key, so `RETURN n, count(*)` is still unbounded.
-    if proj.items.iter().all(|item| is_bounding_item(&item.expr)) {
+    if proj
+        .items
+        .iter()
+        .all(|item| is_bounding_item(effective_expr(item)))
+    {
         return Ok(());
     }
     Err(safe_mode_violation(
@@ -314,6 +324,9 @@ const UNBOUNDED_READ_SHAPE: &str =
 /// `count(*)`) yields one scalar per group, and a constant is a single value
 /// per group. Anything else — a bare variable or property — is a grouping
 /// key whose distinct values are unbounded.
+/// Both callers pass [`effective_expr`] — the paren-transparent item
+/// form (LABS-1615/1616) — so `WITH (1) AS c` bounds exactly like
+/// `WITH 1 AS c` and no arm re-derives the policy callee-side.
 fn is_bounding_item(expr: &Expr) -> bool {
     contains_non_collect_aggregation(expr) || matches!(expr, Expr::Literal(_))
 }

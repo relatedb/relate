@@ -32,7 +32,8 @@ use super::writes::{
     validate_dynamic_label_scope, validate_merge_bindings,
 };
 use crate::ast::collect::{
-    bind_pattern_vars, clause_introduced_names, effective_name, projected_names,
+    bind_pattern_vars, clause_introduced_names, effective_expr, effective_name, item_variable,
+    projected_names,
 };
 use crate::call_scope::duplicate_outer_variable;
 use crate::output_vars::{compute_subquery_output_vars, compute_subquery_output_vars_seeded};
@@ -192,8 +193,10 @@ fn apply_with(
             continue;
         };
 
-        // Determine the type of the projected expression
-        match &item.expr {
+        // Determine the type of the projected expression — through the
+        // paren-transparent form (LABS-1615/1616), so `WITH (n)` passes
+        // the variable's type through exactly like `WITH n`.
+        match effective_expr(item) {
             Expr::Variable(v) => {
                 // Pass through the existing type
                 if let Some(t) = var_types.get(v) {
@@ -438,19 +441,24 @@ enum LegacyImportForm {
 
 /// Classify a leading WITH's items into the legacy-importing form above,
 /// or `None` when it is not one (an aliased or non-variable item, or an
-/// empty list).
+/// empty list). The variable test reads [`effective_expr`] —
+/// paren-transparent (LABS-1615/1616): `CALL { WITH (n) ... }` imports
+/// `n`, the paren-free spelling of `WITH n`, the lowered item being the
+/// bare variable. A star item is the `Expr::Star` marker and cannot match
+/// the variable arm, so the AST invariant (`all` ⇒ `Star`) needs no
+/// explicit guard here.
 fn legacy_import_form(items: &[ReturnItem]) -> Option<LegacyImportForm> {
     if items.len() == 1 && items[0].all {
         return Some(LegacyImportForm::Star);
     }
     let mut named = IdentHashSet::default();
     for item in items {
-        match (&item.expr, &item.alias) {
-            (Expr::Variable(v), None) if !item.all => {
-                named.insert(v.clone());
-            }
-            _ => return None,
+        // Two linear guards, both failures the same fact — not the legacy
+        // importing form: an aliased item, or a non-variable one.
+        if item.alias.is_some() {
+            return None;
         }
+        named.insert(item_variable(item)?.clone());
     }
     (!named.is_empty()).then_some(LegacyImportForm::Named(named))
 }
@@ -578,6 +586,20 @@ mod tests {
         // No bare importing WITH at the head of the subquery -- the new
         // check must not fire at all.
         let result = parse_and_validate("CALL { MATCH (n) RETURN n } RETURN n");
+        assert!(result.is_ok(), "Expected valid query: {result:?}");
+    }
+
+    /// LABS-1615/1616's paren family: `WITH (a)` is the legacy importing
+    /// form — redundant parens around the variable are transparent, the
+    /// paren-free spelling of `WITH a` (the lowered item is the bare
+    /// variable). The collision behaves like the bare form's, and a new
+    /// name under the parenthesized import is fine.
+    #[test]
+    fn test_call_subquery_parenthesized_importing_with_imports() {
+        let error = parse_and_validate("WITH 1 AS a CALL { WITH (a) RETURN * } RETURN a")
+            .expect_err("a parenthesized import must collide like the bare one");
+        assert!(error.contains("VariableAlreadyBound"), "{error}");
+        let result = parse_and_validate("WITH 1 AS a CALL { WITH (a) RETURN a AS b } RETURN a, b");
         assert!(result.is_ok(), "Expected valid query: {result:?}");
     }
 

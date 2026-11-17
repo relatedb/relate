@@ -8,6 +8,7 @@
 
 use relate_core::DynamicNameToken;
 use relate_error::{EngineError, ErrorKind};
+use relate_names::SmallName;
 use relate_parser::{Clause, Expr, ExprEdge, LocalDefinitionBody, PatternElement, Statement};
 
 use super::stmt_ref::StmtRef;
@@ -517,6 +518,41 @@ pub(crate) fn unparen(expr: &Expr) -> &Expr {
         Expr::Paren(inner) => unparen(inner),
         other => other,
     }
+}
+
+/// The `v.key` static property access — a property of a variable by a
+/// static name, never a dynamic `n[expr]` bracket access. The one
+/// recognizer for the parser AST, beside [`unparen`], owning the whole
+/// paren-transparency policy (LABS-1615/1616): the expression is read
+/// through [`unparen`] at entry — outer wrappers and the property's base
+/// alike — the same depth the lowering unwraps, so `(n.p1)` and `(n).p1`
+/// are the same access and no call site can opt out by omission. The
+/// naming rule's canonical arm (matching the IR's `var_prop`/
+/// `canonical_name` vocabulary) and the search filter's property
+/// predicates read it.
+pub(crate) fn var_property(e: &Expr) -> Option<(&SmallName, &SmallName)> {
+    if let Expr::Property(pa) = unparen(e) {
+        if pa.key_expr.is_none() {
+            if let Expr::Variable(v) = unparen(&pa.expr) {
+                return Some((v, &pa.property));
+            }
+        }
+    }
+    None
+}
+
+/// A map projection over a variable — the projected variable, the shape
+/// that carries its own name (`RETURN n {.p}` projects the column `n`).
+/// The one recognizer, sharing [`var_property`]'s home and whole-policy
+/// paren transparency (outer wrapper and projected base alike): the
+/// naming rule's arm and the 42N21 item gate both read it.
+pub(crate) fn map_projection_var(e: &Expr) -> Option<&SmallName> {
+    if let Expr::MapProjection(mp) = unparen(e) {
+        if let Expr::Variable(v) = unparen(&mp.expr) {
+            return Some(v);
+        }
+    }
+    None
 }
 
 /// The four-field descent a node and a relationship element share: the

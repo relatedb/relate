@@ -584,9 +584,14 @@ impl Projection {
 }
 
 /// The canonical names Neo4j spells identically regardless of source
-/// formatting: a bare variable (`n`), `*`, a `v.key` property access, and
-/// a map projection on a variable (`n {.name, .age}` → `n`). `None` for
-/// any other expression shape.
+/// formatting: a bare variable (`n`, and a parenthesized one — `(n)`
+/// names its column `n`), `*`, and a map projection on a variable
+/// (`n {.name, .age}` → `n`, parenthesized included). `None` for any
+/// other expression shape — a property access included: Neo4j (2026.10,
+/// probed live) names `n.name`, `n . name`, `n.` + backtick + `name` +
+/// backtick and `(n.name)` each by its verbatim source text, so every
+/// property spelling beyond the plain one is its own column name, and
+/// the verbatim `source_text` fallback owns it.
 fn canonical_name(expr: &Expr) -> Option<String> {
     // Rendering (a user-visible column name): the text arms resolve
     // through Display (ADR-0509 §2), once per name, not per lookup.
@@ -597,7 +602,7 @@ fn canonical_name(expr: &Expr) -> Option<String> {
             Expr::Variable(v) => Some(v.to_string()),
             _ => None,
         },
-        other => var_prop(other).map(|(v, key)| format!("{v}.{key}")),
+        _ => None,
     }
 }
 

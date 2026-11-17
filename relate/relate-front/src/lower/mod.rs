@@ -6,6 +6,7 @@ use relate_core::{Error, Result, Value};
 use relate_ir as mdb;
 use relate_parser as cl;
 
+use crate::ast::tree::{unparen, var_property};
 use crate::validate::StatementPolicy;
 
 /// Lower a statement with the default policy (no safe mode, the default
@@ -221,6 +222,43 @@ fn lower_clauses(clauses: &[cl::Clause]) -> Result<Vec<mdb::Clause>> {
 /// projection alias resolves to that item's expression; `()`
 /// lowers to the empty key set (global aggregation) and `ALL` to the
 /// non-aggregating items (which equals inference).
+/// Lower one explicit `GROUP BY` key — the paren-transparent spellings
+/// included (LABS-1615): the key is read through `unparen` at entry, then
+/// resolves in one pass. A bare variable naming an aliased item lowers
+/// that item's expression (the one shared alias predicate,
+/// `crate::validate::is_aliased`). A static `v.key` whose base is a
+/// self-shadowing alias (`a.p AS a` + `GROUP BY a.p`, the GBN1.5 rule,
+/// GroupByAcceptance [46]) rewrites through the alias to `(a.p).p`. The
+/// shadow resolution is one decision — the first item aliased to the
+/// static-property base, kept when it self-shadows — resolved once, so
+/// both spellings (`GROUP BY (a)`, `GROUP BY (a).p`) lower exactly like
+/// their unparenthesized forms, in lockstep with the validation battery
+/// (`grouping_key_exprs`, `check_grouping_element_aliases`). Every other
+/// key lowers as written.
+fn lower_grouping_key(key: &cl::Expr, items: &[cl::ReturnItem]) -> Result<mdb::Expr> {
+    let key = unparen(key);
+    let shadowed = var_property(key).and_then(|(base, prop)| {
+        items
+            .iter()
+            .find(|i| crate::validate::is_aliased(i, base))
+            .filter(|i| crate::validate::alias_shadows_its_own_base(base, &i.expr))
+            .map(|item| (item, prop))
+    });
+    Ok(match (shadowed, key) {
+        // GBN1.5: the key rewrites through the self-shadowing alias.
+        (Some((item, prop)), _) => mdb::Expr::property(lower_expr(&item.expr)?, prop.clone()),
+        // Alias reference: the aliased item's expression.
+        (None, cl::Expr::Variable(name)) => items
+            .iter()
+            .find(|i| crate::validate::is_aliased(i, name))
+            .map(|i| lower_expr(&i.expr))
+            .transpose()?
+            .unwrap_or_else(|| mdb::Expr::Variable(name.clone())),
+        // Everything else lowers as written.
+        (None, other) => lower_expr(other)?,
+    })
+}
+
 fn lower_group_by(
     spec: &Option<cl::GroupBySpec>,
     items: &[cl::ReturnItem],
@@ -228,53 +266,16 @@ fn lower_group_by(
     let Some(spec) = spec else { return Ok(None) };
     Ok(Some(match spec {
         cl::GroupBySpec::Empty => Vec::new(),
-        cl::GroupBySpec::All => items
-            .iter()
-            .filter(|i| !crate::agg::contains_aggregation(&i.expr))
+        // `GROUP BY ALL` is the non-aggregating partition — its one
+        // home (`validate::aggregation::non_aggregating`), the same
+        // partition the inferred grouping keys derive from.
+        cl::GroupBySpec::All => crate::validate::non_aggregating(items)
             .map(|i| lower_expr(&i.expr))
             .collect::<Result<Vec<_>>>()?,
-        cl::GroupBySpec::Keys(keys) => {
-            let mut out = Vec::with_capacity(keys.len());
-            for k in keys {
-                out.push(match k {
-                    // Alias reference: resolve to the aliased item's
-                    // expression — through the one shared alias
-                    // predicate (`crate::validate::is_aliased`).
-                    cl::Expr::Variable(name) => items
-                        .iter()
-                        .find(|i| crate::validate::is_aliased(i, name))
-                        .map(|i| lower_expr(&i.expr))
-                        .transpose()?
-                        .unwrap_or_else(|| mdb::Expr::Variable(name.clone())),
-                    // GBN1.5: a property of a self-shadowing alias
-                    // (`a.p AS a` + `GROUP BY a.p`) resolves the base to the
-                    // aliased expression, so the key is `(a.p).p`
-                    // (GroupByAcceptance [46]: evaluated, not rejected).
-                    // One scan: the first item aliased `base`, kept when it
-                    // self-shadows.
-                    cl::Expr::Property(property) => match &property.expr {
-                        cl::Expr::Variable(base) => {
-                            let aliased = items
-                                .iter()
-                                .find(|i| crate::validate::is_aliased(i, base))
-                                .filter(|i| {
-                                    crate::validate::alias_shadows_its_own_base(base, &i.expr)
-                                });
-                            match aliased {
-                                Some(item) => mdb::Expr::property(
-                                    lower_expr(&item.expr)?,
-                                    property.property.clone(),
-                                ),
-                                None => lower_expr(k)?,
-                            }
-                        }
-                        _ => lower_expr(k)?,
-                    },
-                    other => lower_expr(other)?,
-                });
-            }
-            out
-        }
+        cl::GroupBySpec::Keys(keys) => keys
+            .iter()
+            .map(|k| lower_grouping_key(k, items))
+            .collect::<Result<Vec<_>>>()?,
     }))
 }
 

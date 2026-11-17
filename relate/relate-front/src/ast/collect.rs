@@ -19,7 +19,7 @@ use relate_parser::{
     Statement, UnionPart,
 };
 
-use super::tree::{nesting_depth_error, walk_expr_with};
+use super::tree::{map_projection_var, nesting_depth_error, unparen, walk_expr_with};
 use super::MAX_NESTING_DEPTH;
 use crate::show_columns::{catalog_output_names, is_catalog_clause};
 
@@ -68,25 +68,59 @@ pub(crate) fn is_updating_clause(clause: &Clause) -> bool {
     )
 }
 
+/// The paren-transparent form of a projection item's expression — the one
+/// home of the paren-transparency policy (LABS-1615/1616): redundant
+/// `Expr::Paren` layers change nothing about an item, because the lowering
+/// unwraps them and the IR's `Projection::output_name` therefore always
+/// judges the unparenthesized form. Every consumer that *classifies* an
+/// item's expression — names, alias requirements, node-safety, restatement
+/// matching, import classification — reads it through here, never
+/// `item.expr` directly; a consumer that walks or lowers the whole
+/// expression keeps the raw form (parens are transparent to walkers by
+/// descent, and the lowering owns the unwrap).
+pub(crate) fn effective_expr(item: &ReturnItem) -> &Expr {
+    unparen(&item.expr)
+}
+
+/// The item's bare variable, when its (paren-transparent) expression is
+/// one — the "this item is the variable `n`" model every alias gate,
+/// import classifier and node-safety fold reads, spelled once beside
+/// [`effective_expr`] instead of re-matched at each site (LABS-1615/1616).
+pub(crate) fn item_variable(item: &ReturnItem) -> Option<&SmallName> {
+    match effective_expr(item) {
+        Expr::Variable(v) => Some(v),
+        _ => None,
+    }
+}
+
 pub(crate) fn effective_name(item: &ReturnItem) -> Option<SmallName> {
     // The name arms hand the AST's already-classified `SmallName` straight
     // to the scope sets (ADR-0509 §1's wired shape). The `source_text` arm
     // is the one classification point here: an unaliased expression's
     // column name is its verbatim source text, which the parser carries as
     // text, not as a name — classified once, where it becomes a column.
+    // The classification runs on [`effective_expr`] — the
+    // paren-transparent form, LABS-1615/1616 — and mirrors the IR
+    // `Projection::output_name`'s canonical vocabulary by construction:
+    // an alias, a bare variable (parenthesized included — `(n)` names the
+    // column `n`), and a map projection on one are the shapes Neo4j names
+    // canonically regardless of source formatting (probed live 2026.10);
+    // every other shape — property accesses included: `n.name`, `n . name`,
+    // `n.` + backtick + `name` + backtick and `(n.name)` each name their
+    // column by verbatim source text — keeps the text as written, so two
+    // spellings of one property are two distinct columns and only an
+    // exact-text duplicate conflicts.
     if let Some(alias) = &item.alias {
         Some(alias.clone())
-    } else if let Expr::Variable(v) = &item.expr {
+    } else if let Some(v) = item_variable(item) {
         Some(v.clone())
-    } else if let Expr::MapProjection(mp) = &item.expr {
+    } else if let Some(v) = map_projection_var(&item.expr) {
         // A map projection on a variable is a view of that variable and
         // carries the variable's name (matching the executor's
         // `Projection::output_name`), which is what a CALL subquery
-        // exports for the `RETURN n {.prop}` shape.
-        match &mp.expr {
-            Expr::Variable(v) => Some(v.clone()),
-            _ => source_text_name(item),
-        }
+        // exports for the `RETURN n {.prop}` shape — the one shared
+        // recognizer reads the (paren-transparent) projected variable.
+        Some(v.clone())
     } else {
         source_text_name(item)
     }
@@ -469,8 +503,21 @@ pub(crate) fn projected_names(
     items: &[ReturnItem],
     bound: &IdentHashSet<SmallName>,
 ) -> IdentHashSet<SmallName> {
-    // Pre-sized (ADR-0505 §4): a `*` passes at most `bound.len()` names
-    // through and every other item contributes at most one name.
+    project_names_with(items, bound, effective_name)
+}
+
+/// The one projection fold every name projection shares: a `*` item
+/// passes the incoming scope through, every other item contributes the
+/// name its `contribute` derives. Pre-sized (ADR-0505 §4): a `*` passes
+/// at most `bound.len()` names through and each other item at most one.
+/// [`projected_names`] contributes [`effective_name`];
+/// [`projected_node_scope`] the bound-gated variable carry — one
+/// star/pacing policy, two contributions.
+fn project_names_with(
+    items: &[ReturnItem],
+    bound: &IdentHashSet<SmallName>,
+    contribute: impl Fn(&ReturnItem) -> Option<SmallName>,
+) -> IdentHashSet<SmallName> {
     let mut out =
         IdentHashSet::with_capacity_and_hasher(bound.len() + items.len(), IdentBuildHasher);
     for item in items {
@@ -478,7 +525,7 @@ pub(crate) fn projected_names(
             out.extend(bound.iter().cloned());
             continue;
         }
-        if let Some(name) = effective_name(item) {
+        if let Some(name) = contribute(item) {
             out.insert(name);
         }
     }
@@ -493,26 +540,20 @@ pub(crate) fn projected_names(
 /// `WITH o` over a may-be-null `OPTIONAL MATCH` binding does not make `o`
 /// node-safe. Safe mode's label-less-write guardrail and the default
 /// validation walk both thread it instead of [`projected_names`].
+/// Redundant parens around the variable are transparent — the lowered item
+/// is the bare variable, so `WITH (n)` carries node-ness exactly like
+/// `WITH n` (LABS-1615/1616's paren-transparency family).
 pub(crate) fn projected_node_scope(
     items: &[ReturnItem],
     bound: &IdentHashSet<SmallName>,
 ) -> IdentHashSet<SmallName> {
-    // Pre-sized (ADR-0505 §4): same bound as [`projected_names`] — a `*`
-    // passes at most the incoming scope through, each other item at most
-    // one name. The fold clones the AST's `SmallName`s — no text render,
-    // no re-classification (ADR-0509 §1).
-    let mut out =
-        IdentHashSet::with_capacity_and_hasher(bound.len() + items.len(), IdentBuildHasher);
-    for item in items {
-        if item.all {
-            out.extend(bound.iter().cloned());
-        } else if let Expr::Variable(name) = &item.expr {
-            if bound.contains(name) {
-                out.insert(item.alias.clone().unwrap_or_else(|| name.clone()));
-            }
-        }
-    }
-    out
+    project_names_with(items, bound, |item| {
+        item_variable(item).and_then(|name| {
+            bound
+                .contains(name)
+                .then(|| item.alias.clone().unwrap_or_else(|| name.clone()))
+        })
+    })
 }
 
 /// The **node-safe** names a clause introduces: the pattern node variables of
@@ -866,99 +907,4 @@ fn walk_expr_scoped_at(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::tree::tests::return_expr_of;
-    use super::*;
-    use crate::agg::contains_aggregation;
-
-    #[test]
-    fn collect_expr_variables_matches_historical_reach() {
-        // The walker-based collector must visit exactly the node set the
-        // hand-rolled recursion did.
-        let collected = |query: &str| {
-            let e = return_expr_of(query);
-            let mut vars = IdentHashSet::default();
-            collect_expr_variables(&e, &mut vars);
-            vars
-        };
-        // Plain combinators are descended into.
-        let vars = collected("RETURN a.prop + (b IN [c]) AND CASE WHEN d THEN e ELSE f END");
-        for v in ["a", "b", "c", "d", "e", "f"] {
-            assert!(vars.contains(&SmallName::from(v)), "missing `{v}`");
-        }
-        // Scope-introducing constructs are NOT descended into at all — not
-        // even their list expressions (historical semantics).
-        let vars = collected("RETURN [x IN n.list | x + q]");
-        assert!(vars.is_empty(), "comprehension leaked: {vars:?}");
-        let vars = collected("RETURN reduce(s = i, y IN m.list | s + y)");
-        assert!(vars.is_empty(), "reduce leaked: {vars:?}");
-        // CIP-214: the bare distance-metric keyword is not a variable.
-        let vars = collected("RETURN vector_distance(v1, v2, EUCLIDEAN)");
-        assert!(vars.contains(&SmallName::from("v1")) && vars.contains(&SmallName::from("v2")));
-        assert!(
-            !vars.contains(&SmallName::from("EUCLIDEAN")),
-            "metric keyword collected"
-        );
-        // A dynamic property KEY (`n[<expr>]`) is not descended into; the
-        // value side is. (Only SET/REMOVE targets parse key_expr, so build
-        // the node directly.)
-        let e = Expr::Property(Box::new(relate_parser::PropertyAccess {
-            expr: Expr::Variable(SmallName::from_name("n")),
-            property: SmallName::from_name(""),
-            key_expr: Some(Expr::Variable(SmallName::from_name("k"))),
-        }));
-        let mut vars = IdentHashSet::default();
-        collect_expr_variables(&e, &mut vars);
-        assert!(vars.contains(&SmallName::from("n")));
-        assert!(
-            !vars.contains(&SmallName::from("k")),
-            "dynamic property key collected"
-        );
-    }
-
-    #[test]
-    fn contains_aggregation_matches_historical_reach() {
-        // The walker-based check must look through exactly the combinators
-        // the hand-rolled recursion did: function args, binary/unary/
-        // comparison operands, parens, property values — and nothing else.
-        assert!(contains_aggregation(&return_expr_of("RETURN count(*)")));
-        assert!(contains_aggregation(&return_expr_of("RETURN 1 + count(*)")));
-        assert!(contains_aggregation(&return_expr_of(
-            "RETURN abs((sum(x)))"
-        )));
-        assert!(contains_aggregation(&return_expr_of(
-            "RETURN n.p < max(m.q)"
-        )));
-        // Aggregates inside a list literal, CASE arm, IN operand or
-        // comprehension are NOT "contained" (historical verdict); a
-        // subscript/slice *index or bound* is not walked either, but the
-        // postfix *base* is.
-        assert!(!contains_aggregation(&return_expr_of("RETURN [count(*)]")));
-        assert!(!contains_aggregation(&return_expr_of(
-            "RETURN CASE WHEN true THEN count(*) ELSE 0 END"
-        )));
-        assert!(!contains_aggregation(&return_expr_of("RETURN n[count(*)]")));
-        assert!(!contains_aggregation(&return_expr_of(
-            "RETURN 1 IN [count(*)]"
-        )));
-        assert!(!contains_aggregation(&return_expr_of(
-            "RETURN [x IN [1] | count(*)]"
-        )));
-        // Aggregates in the postfix base of a subscript or slice ARE
-        // "contained" (the walker descends into the base, not the
-        // index/bounds).
-        assert!(contains_aggregation(&return_expr_of(
-            "RETURN collect(x)[..1]"
-        )));
-        assert!(contains_aggregation(&return_expr_of(
-            "RETURN collect(x)[0]"
-        )));
-        // Nor one hiding in a dynamic property key.
-        let e = Expr::Property(Box::new(relate_parser::PropertyAccess {
-            expr: Expr::Variable(SmallName::from_name("n")),
-            property: SmallName::from_name(""),
-            key_expr: Some(Expr::CountStar),
-        }));
-        assert!(!contains_aggregation(&e));
-    }
-}
+pub(crate) mod tests;

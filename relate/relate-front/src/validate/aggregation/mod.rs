@@ -32,8 +32,10 @@ use relate_parser::{
 };
 
 use crate::agg::contains_aggregation;
-use crate::ast::collect::{clause_introduced_names, collect_expr_variables, projected_names};
-use crate::ast::tree::walk_expr_with;
+use crate::ast::collect::{
+    clause_introduced_names, collect_expr_variables, effective_expr, projected_names,
+};
+use crate::ast::tree::{unparen, var_property, walk_expr_with};
 
 use crate::agg::SINGLE_INPUT_AGGREGATES;
 
@@ -290,12 +292,21 @@ fn star_sliced_names(
 /// grouping-key ambiguity check all decide this same fact, so they ask it
 /// here instead of re-spelling the comparison.
 ///
+/// Redundant parens are transparent on both sides, through the one
+/// paren-transparency home ([`effective_expr`], LABS-1615/1616): the
+/// projection item `(n.p1)` and the restatement `n.p1` are the same
+/// column, exactly as Neo4j's paren-free AST sees them — and no paren
+/// spelling invents or loses a column.
+///
 /// The `RETURN *` / `WITH *` (and the `ALL` spelling) item projects the
 /// incoming scope rather than an expression — its `Expr::Star` is a
 /// marker, never a value being compared — so it never answers the item
 /// question. Deciding that here keeps every caller star-agnostic.
 fn is_projected_item(items: &[ReturnItem], expr: &Expr) -> bool {
-    items.iter().any(|item| !item.all && item.expr == *expr)
+    let expr = unparen(expr);
+    items
+        .iter()
+        .any(|item| !item.all && effective_expr(item) == expr)
 }
 
 /// The one construction of the grouping-key ambiguity rejection: the
@@ -472,13 +483,22 @@ fn grouping_key_exprs<'a>(
         Some(GroupBySpec::Empty) => Vec::new(),
         Some(GroupBySpec::Keys(keys)) => keys
             .iter()
-            .map(|k| match k {
-                Expr::Variable(name) => items
-                    .iter()
-                    .find(|i| is_aliased(i, name))
-                    .map(|i| &i.expr)
-                    .unwrap_or(k),
-                _ => k,
+            .map(|k| {
+                // The key reads the paren-transparent form (LABS-1615):
+                // `GROUP BY (a)` resolves through the alias exactly like
+                // `GROUP BY a` — the same form the lowering's key
+                // resolution (`lower_group_by`) and
+                // `check_grouping_element_aliases` read, so both spellings
+                // group identically.
+                let k = unparen(k);
+                match k {
+                    Expr::Variable(name) => items
+                        .iter()
+                        .find(|i| is_aliased(i, name))
+                        .map(|i| &i.expr)
+                        .unwrap_or(k),
+                    _ => k,
+                }
             })
             .collect(),
     }
@@ -487,7 +507,7 @@ fn grouping_key_exprs<'a>(
 /// The projection items that do not aggregate — the one partition the
 /// inferred grouping keys ([`grouping_key_exprs`]) and the alias
 /// extension of the WITH ORDER BY check both derive from.
-fn non_aggregating(items: &[ReturnItem]) -> impl Iterator<Item = &ReturnItem> {
+pub(crate) fn non_aggregating(items: &[ReturnItem]) -> impl Iterator<Item = &ReturnItem> {
     items.iter().filter(|i| !contains_aggregation(&i.expr))
 }
 
@@ -507,11 +527,14 @@ pub(crate) fn is_aliased(item: &ReturnItem, name: &SmallName) -> bool {
 /// element that references an alias with a property access is an invalid
 /// grouping element (GBN1.6, GroupByAcceptance [47]/[49]/[80]).
 pub(crate) fn alias_shadows_its_own_base(alias: &SmallName, item_expr: &Expr) -> bool {
-    matches!(
-        item_expr,
-        Expr::Property(property)
-            if matches!(&property.expr, Expr::Variable(root) if root == alias)
-    )
+    // The item side reads the paren-transparent form (LABS-1615): the
+    // validation battery and the lowering's GBN shadow filter call this
+    // one predicate and agree by construction — `RETURN (a.p) AS a` and
+    // the base-parenthesized `RETURN (a).p AS a` shadow exactly like
+    // `RETURN a.p AS a`. The shape is the one shared recognizer's
+    // (`tree::var_property`, static key, paren-transparent base), so the
+    // variable-base-and-static-key match lives nowhere else.
+    var_property(item_expr).is_some_and(|(root, _)| root == alias)
 }
 
 /// Validate the grouping elements of an explicit `GROUP BY` key list that
@@ -528,6 +551,11 @@ fn check_grouping_element_aliases(
         return Ok(());
     };
     for key in keys {
+        // The key side reads the paren-transparent form (LABS-1615), the
+        // same form the item side (projection_item_expr) resolves through:
+        // `GROUP BY (a)` is the key `a`, judged like its unparenthesized
+        // spelling — no paren spelling of a key loses the alias exemption.
+        let key = unparen(key);
         // A bare variable naming an alias is the valid form (it resolves to
         // the item expression).
         if matches!(key, Expr::Variable(_)) {
@@ -540,19 +568,24 @@ fn check_grouping_element_aliases(
         // (ADR-0505 §4; `SmallName`'s `Ord` is name-text order).
         let mut key_vars: Vec<SmallName> = key_vars.into_iter().collect();
         key_vars.sort_unstable();
+        // The key's static-property shape does not vary with the base: it
+        // is decided once above the base loop, and only `root == base`
+        // varies per candidate.
+        let key_property = var_property(key);
         for base in &key_vars {
             let Some(item_expr) = projection_item_expr(items, base) else {
                 continue;
             };
             // GBN1.5: `a.p AS a` + `GROUP BY a.p` resolves through the
             // shadowing alias to `(a.p).p`; every other alias reference in a
-            // grouping element is invalid (GBN1.6).
-            if let Expr::Property(property) = key {
-                if matches!(&property.expr, Expr::Variable(root) if root == base)
-                    && alias_shadows_its_own_base(base, item_expr)
-                {
-                    continue;
-                }
+            // grouping element is invalid (GBN1.6). The key's shape is the
+            // one shared recognizer's (`tree::var_property`, static key,
+            // paren-transparent base) — `GROUP BY (a).p` is the key `a.p`
+            // (LABS-1615's base-paren spellings).
+            if key_property.is_some_and(|(root, _)| root == base)
+                && alias_shadows_its_own_base(base, item_expr)
+            {
+                continue;
             }
             return Err(EngineError::semantic(
                 ErrorKind::InvalidAggregation,
@@ -571,15 +604,21 @@ fn check_grouping_element_aliases(
 /// The expression a projected name stands for: an explicit alias, or a
 /// bare-variable item's own name (`RETURN a` projects the name `a` with the
 /// expression `a`). Neo4j's 42I80 speaks of the "projection item alias",
-/// which covers both spellings.
+/// which covers both spellings. The item side reads [`effective_expr`] —
+/// paren-transparent (LABS-1615/1616), `RETURN (n)` projects the name `n`
+/// with the expression `n` — and the returned expression is that same
+/// normalized form, so a consumer never re-derives the unwrap: the GBN1.5
+/// shadow check (`RETURN (a.p) AS a GROUP BY a.p`) sees the property
+/// access through the parens like every other site.
 fn projection_item_expr<'a>(items: &'a [ReturnItem], name: &SmallName) -> Option<&'a Expr> {
     items
         .iter()
         .find(|item| {
             is_aliased(item, name)
-                || (item.alias.is_none() && matches!(&item.expr, Expr::Variable(v) if v == name))
+                || (item.alias.is_none()
+                    && matches!(effective_expr(item), Expr::Variable(v) if v == name))
         })
-        .map(|item| &item.expr)
+        .map(effective_expr)
 }
 
 /// Render a grouping element for the 42I80 description: the expression's
@@ -604,204 +643,4 @@ fn grouping_element_text(expr: &Expr) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // LABS-260: an ORDER BY aggregate over the projection's input scope is
-    // valid when the DISTINCT projection itself aggregates.
-    #[test]
-    fn distinct_return_order_by_aggregate_uses_input_scope() {
-        // Direct re-aggregation of a projected aggregate.
-        let ok = validate_semantics(
-            "MATCH (p:Person) RETURN DISTINCT p.community, count(p) ORDER BY count(p) DESC",
-        );
-        assert!(ok.is_ok(), "projected aggregate in ORDER BY: {ok:?}");
-
-        // Ordering by the aggregate's alias keeps working.
-        let ok = validate_semantics(
-            "MATCH (p:Person) RETURN DISTINCT p.community, count(p) AS c ORDER BY c DESC",
-        );
-        assert!(ok.is_ok(), "alias ordering: {ok:?}");
-
-        // A variable that only exists pre-projection but is referenced
-        // outside any aggregation is still undefined (ReturnOrderBy2 [13]
-        // shape: DISTINCT does not preserve it).
-        let err = validate_semantics(
-            "MATCH (p:Person) RETURN DISTINCT p.community, count(p) ORDER BY p.name",
-        )
-        .unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::UndefinedVariable);
-
-        // A variable inside the ORDER BY aggregate that was never in scope
-        // is still undefined.
-        let err = validate_semantics(
-            "MATCH (p:Person) RETURN DISTINCT p.community, count(p) ORDER BY count(z)",
-        )
-        .unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::UndefinedVariable);
-    }
-
-    // LABS-276 / ADR-0225: every single-input aggregate requires exactly
-    // one argument (Neo4j 42I13), wherever it appears in the projection
-    // clause — items, GROUP BY keys, ORDER BY expressions, and both the
-    // RETURN and WITH forms.
-    #[test]
-    fn zero_argument_single_input_aggregates_error() {
-        // The canonical SINGLE_INPUT_AGGREGATES table drives the loop, so
-        // a name added to the table without validation reach fails here
-        // first.
-        for agg in SINGLE_INPUT_AGGREGATES {
-            let err = validate_semantics(&format!("CREATE (n) RETURN {agg}()")).unwrap_err();
-            assert_eq!(
-                err.kind(),
-                ErrorKind::InvalidNumberOfArguments,
-                "{agg}() item: {err:?}"
-            );
-            let err = validate_semantics(&format!("UNWIND [1] AS x WITH {agg}() AS s RETURN s"))
-                .unwrap_err();
-            assert_eq!(
-                err.kind(),
-                ErrorKind::InvalidNumberOfArguments,
-                "WITH {agg}() item: {err:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn zero_argument_aggregate_nested_in_expression_errors() {
-        let err = validate_semantics("MATCH (n) RETURN 1 + sum()").unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidNumberOfArguments);
-        let err = validate_semantics("MATCH (n) RETURN count(*) ORDER BY min()").unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidNumberOfArguments);
-        let err = validate_semantics("MATCH (n) RETURN n.id GROUP BY max()").unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidNumberOfArguments);
-    }
-
-    // ADR-0217: the front's arity rejection and the executor's `agg_eval`
-    // backstop rejection are one contract — the `AggregateArity` table in
-    // `relate-ir`. The core-`Error` channel spells the kind inline in
-    // the contract's `rejection`; the front's `EngineError` carries the
-    // kind typed and `Display` prefixes it. This pins the byte-equivalence
-    // of the two renderings, so neither spelling can drift alone.
-    #[test]
-    fn front_arity_rejection_matches_the_ir_contract_text() {
-        for (name, got) in [("sum", 0), ("stDev", 2), ("collect_list", 3)] {
-            let front = arity_rejection(name, got).to_string();
-            let contract = AggregateArity::SingleInput.rejection(name, got);
-            assert_eq!(
-                front, contract,
-                "{name} rejection drifted from the contract"
-            );
-        }
-    }
-
-    #[test]
-    fn grouping_element_referencing_an_alias_must_be_bare() {
-        for query in [
-            "WITH 1 AS a RETURN a, count(*) GROUP BY a + 1",
-            "WITH {p: 1} AS c, 2 AS b RETURN c AS a, sum(b) AS s GROUP BY a.p",
-        ] {
-            let err = validate_semantics(query).unwrap_err();
-            assert_eq!(
-                err.kind(),
-                ErrorKind::InvalidAggregation,
-                "{query}: {err:?}"
-            );
-        }
-        // A bare alias reference resolves to the aliased item.
-        assert!(validate_semantics("WITH 1 AS a RETURN a, count(*) GROUP BY a").is_ok());
-    }
-
-    #[test]
-    fn one_argument_aggregates_and_the_matching_shapes_still_validate() {
-        // One-argument calls, count(*), count(x), and the zero-input-row
-        // semantics (sum=0, avg/min/max/collect of nothing) are unchanged.
-        assert!(validate_semantics(
-            "UNWIND [] AS x RETURN sum(x), avg(x), min(x), max(x), collect(x), count(x), count(*)"
-        )
-        .is_ok());
-        assert!(validate_semantics("MATCH (n:Person) RETURN n.age GROUP BY n.age").is_ok());
-        assert!(
-            validate_semantics("MATCH (n:Person) RETURN count(n) ORDER BY count(n) DESC").is_ok()
-        );
-    }
-
-    // LABS-744: aggregates under the aggregation-transparent positions are
-    // not this module's to reject. The finding's shapes (`RETURN
-    // -count(*)`, `-sum(n.v)`) already pass front validation: a Unary
-    // operand sits inside the aggregation-transparent reach
-    // ([`agg_enter_child`] here, `historical_enter_child` in `crate::agg`),
-    // so the item is classified aggregating, and no plan-time rejection of
-    // these shapes exists anywhere in the front. The error users see is the
-    // executor's scalar-eval backstop ("count(*) only valid in
-    // aggregation", eval/mod.rs; "<fn>() is an aggregating function",
-    // eval/function.rs), reached through `agg_eval`'s `_` wildcard arm —
-    // the gap LABS-744 closes with a shared aggregate-transparent child
-    // map in `relate-ir`'s walk.rs, consumed by `agg_eval`. Pin the
-    // front's acceptance so that cross-crate fix cannot regress into a
-    // plan-time rejection added here.
-    #[test]
-    fn aggregates_under_transparent_positions_are_not_rejected_here() {
-        for query in [
-            "MATCH (n) RETURN -count(*)",
-            "MATCH (n) RETURN -sum(n.v)",
-            "MATCH (n) RETURN n.age, -count(*) GROUP BY n.age",
-        ] {
-            let ok = validate_semantics(query);
-            assert!(ok.is_ok(), "{query} must pass front validation: {ok:?}");
-        }
-    }
-
-    // The percentile aggregates stay out of the arity table (ADR-0225):
-    // their two-argument check lives at their call site, not here.
-    #[test]
-    fn percentile_aggregates_keep_their_own_call_site_arity_check() {
-        assert!(validate_semantics("MATCH (n) RETURN percentileCont(n.age, 0.5)").is_ok());
-        // Zero or one argument is not this module's error — the call-site
-        // check in the executor rejects it.
-        assert!(validate_semantics("MATCH (n) RETURN percentileCont()").is_ok());
-        assert!(validate_semantics("MATCH (n) RETURN percentileDisc(n.age)").is_ok());
-    }
-
-    // Only a projected *key* is a grouping key: a non-aggregating item the
-    // GROUP BY list does not name stays ambiguous, while a `GROUP BY`
-    // expression the projection never restates is a key of its own (both
-    // sides of the pre-helper behaviour the shared predicate must keep).
-    #[test]
-    fn grouping_keys_are_the_key_list_not_every_projected_item() {
-        let err =
-            validate_semantics("MATCH (n) RETURN n.age * 2 + count(*), n.age * 2 GROUP BY n.age")
-                .unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::AmbiguousAggregationExpression);
-
-        assert!(
-            validate_semantics("MATCH (n) RETURN n.age * 2 + count(*) GROUP BY n.age * 2").is_ok(),
-            "a GROUP BY expression the projection does not restate is a key"
-        );
-    }
-
-    // The projected-item predicate owns the RETURN `*`/`ALL` decision: a
-    // star item projects the incoming scope, not an expression, so it never
-    // answers the item question for any caller.
-    #[test]
-    fn projected_item_excludes_star_items() {
-        let star = ReturnItem {
-            expr: Expr::Star,
-            alias: None,
-            all: true,
-            source_text: None,
-        };
-        let named = ReturnItem {
-            expr: Expr::Variable("n".into()),
-            alias: None,
-            all: false,
-            source_text: None,
-        };
-        assert!(!is_projected_item(std::slice::from_ref(&star), &Expr::Star));
-        assert!(is_projected_item(
-            &[star, named.clone()],
-            &Expr::Variable("n".into())
-        ));
-        assert!(!is_projected_item(&[named], &Expr::Variable("m".into())));
-    }
-}
+mod tests;

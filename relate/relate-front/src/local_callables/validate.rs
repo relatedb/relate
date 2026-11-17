@@ -15,6 +15,7 @@ use relate_parser::{
 use relate_names::SmallName;
 
 use super::walker_error;
+use crate::ast::collect::item_variable;
 use crate::ast::tree::{walk_expr, walk_statement_tree};
 
 /// The body of a definition, validated: the CIP-231 authored define-time
@@ -251,7 +252,15 @@ fn check_emitting_returns_aliased(body: &Statement) -> Result<()> {
 
 fn check_items_aliased(ret: &ReturnClause) -> Result<()> {
     for item in &ret.items {
-        let aliased = item.alias.is_some() || matches!(item.expr, Expr::Variable(_));
+        // Paren-transparent through the one home (LABS-1615/1616): a
+        // `RETURN (v)` item is the bare variable `v` and carries its name.
+        // The member set is deliberately narrower than the CALL body's
+        // 42N21 vocabulary (which also exempts a map projection over a
+        // variable): a procedure body's unaliased exports bind its
+        // declared return columns, and only a bare variable names one —
+        // recorded here so the two gates' difference is a decision, not
+        // drift.
+        let aliased = item.alias.is_some() || item_variable(item).is_some();
         if item.all || !aliased {
             return Err(Error::syntax(
                 "Expression in DEFINE PROCEDURE ... { RETURN ... } must be aliased (use AS).",

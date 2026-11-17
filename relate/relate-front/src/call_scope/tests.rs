@@ -70,3 +70,45 @@ fn a_with_filter_on_a_name_the_body_never_binds_still_fails() {
         "{error}"
     );
 }
+
+/// LABS-1615/1616's paren family, the call-scope side: a strict
+/// scope-clause body's `WITH (a)` is the bare pass-through of `a` — the
+/// paren-transparent spelling of `WITH a`, the lowered item being the
+/// variable — so it is not a forbidden redeclaration of the imported
+/// name, exactly like its unparenthesized twin. Before the paren
+/// transparency reached `pass_through_var`, this spelling failed the
+/// redeclaration gate its bare twin passed.
+#[test]
+fn a_parenthesized_with_pass_through_in_a_scope_clause_body_is_not_a_redeclaration() {
+    accepts("WITH 1 AS a CALL (a) { WITH (a) RETURN a AS b } RETURN a, b");
+    accepts("WITH 1 AS a CALL (a) { WITH a RETURN a AS b } RETURN a, b");
+}
+
+/// The 42N21 item rule reads the paren-transparent form too: a CALL
+/// body's `RETURN (n)` carries the variable's name like the top-level
+/// alias rule, not a divergent verdict.
+#[test]
+fn a_call_body_return_item_in_parens_carries_its_name() {
+    accepts("CALL { MATCH (n) RETURN (n) } RETURN n");
+    accepts("CALL { MATCH (n) RETURN n } RETURN n");
+}
+
+/// The 42N21 exemption vocabulary is a recorded, deliberately narrower
+/// subset of the canonical-name shapes: a `v.key` property access names
+/// a column at top level but is NOT exempt in a CALL body — the
+/// rejection its unparenthesized twin has always gotten, pinned here so
+/// the gate's member set is a decision, not a synchronization accident.
+#[test]
+fn a_call_body_return_of_a_property_access_still_requires_an_alias() {
+    for query in [
+        "CALL { MATCH (n) RETURN (n.p1) } RETURN n",
+        "CALL { MATCH (n) RETURN n.p1 } RETURN n",
+    ] {
+        let error = validate_call_scope_clauses(&relate_parser::parse(query).unwrap()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "NoExpressionAlias: Expression in CALL { RETURN ... } must be aliased (use AS).",
+            "{query}"
+        );
+    }
+}

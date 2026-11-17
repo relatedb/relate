@@ -19,7 +19,7 @@ use crate::ast::collect::{
     check_names_allowed, clause_introduced_names, collect_expr_variables, expr_child_reaches_scope,
 };
 use crate::ast::stmt_ref::StmtRef;
-use crate::ast::tree::{walk_expr_with, walk_statement_tree};
+use crate::ast::tree::{unparen, walk_expr_with, walk_statement_tree};
 
 /// The post-projection subclause driver (LABS-665): one entry for a
 /// `RETURN`/`WITH` projection's ORDER BY and a WITH's `WHERE`, so the
@@ -189,37 +189,41 @@ fn check_post_projection_expr(expr: &Expr, restatable: &Restatable<'_>) -> Resul
 impl Restatable<'_> {
     /// The whole expression restates a column: a projected item under
     /// implicit grouping (any shape), a `GROUP BY` key under an explicit
-    /// one (any shape).
+    /// one (any shape). Redundant parens are transparent on both sides of
+    /// every comparison — the item `(n.p1)`, the key `(a.p)` and the
+    /// subclause `n.p1` all name the same column (LABS-1615). This is the
+    /// shared core [`restates_child`] builds on: its two gates plus this
+    /// match, so a key-matching change lands once.
     fn restates_whole(&self, expr: &Expr) -> bool {
         match self.keys {
-            Some(keys) => keys.iter().any(|key| **key == *expr),
+            Some(keys) => keys.iter().any(|key| unparen(key) == unparen(expr)),
             None => is_projected_item(self.items, expr),
         }
     }
 
-    /// A subexpression restates a column without being re-resolved: a
-    /// projected item under implicit grouping, or a *simple* (variable or
-    /// property access) explicit grouping key. A subquery never restates —
-    /// it re-evaluates over the projected row ([`is_subquery`]).
+    /// A subexpression restates a column without being re-resolved:
+    /// [`restates_whole`] plus two gates — never a subquery (it
+    /// re-evaluates over the projected row, [`is_subquery`]), and a
+    /// *simple* (variable or property access) shape under an explicit
+    /// `GROUP BY` (a complex key is whole-expression-only).
     fn restates_child(&self, expr: &Expr) -> bool {
-        if is_subquery(expr) {
-            return false;
-        }
-        match self.keys {
-            Some(keys) => {
-                matches!(expr, Expr::Variable(_) | Expr::Property(_))
-                    && keys.iter().any(|key| **key == *expr)
-            }
-            None => is_projected_item(self.items, expr),
-        }
+        // The paren-transparent form is bound once — the subquery gate (a
+        // wrapped subquery, `((COUNT { ... }))`, is still a subquery,
+        // never a restated column), the simple-shape gate and the
+        // restatement core all judge the same value.
+        let expr = unparen(expr);
+        !is_subquery(expr)
+            && (self.keys.is_none() || matches!(expr, Expr::Variable(_) | Expr::Property(_)))
+            && self.restates_whole(expr)
     }
 
     /// A bare variable that is itself an explicit grouping key
-    /// (`GROUP BY a ORDER BY 1 + a`).
+    /// (`GROUP BY a ORDER BY 1 + a` — spelled `GROUP BY (a)` too, the
+    /// paren-transparent spelling of the same key).
     fn is_variable_key(&self, name: &SmallName) -> bool {
         self.keys.is_some_and(|keys| {
             keys.iter()
-                .any(|key| matches!(key, Expr::Variable(v) if v == name))
+                .any(|key| matches!(unparen(key), Expr::Variable(v) if v == name))
         })
     }
 }
@@ -462,6 +466,13 @@ mod tests {
         let prelude = "UNWIND [1] AS x WITH x AS a ";
         for tail in [
             "RETURN COUNT { RETURN a.p } AS b, sum(a.p) AS s ORDER BY 1 + COUNT { RETURN a.p }",
+            // Paren-wrapped as a sub-expression: the subquery gate reads
+            // the paren-transparent form, so the wrapped spelling refuses
+            // exactly like the bare twin instead of bypassing the
+            // restates_child guard as a "restated column" (the exact
+            // whole-item restatement, wrapped or not, stays accepted —
+            // pinned in the accepted list below).
+            "RETURN COUNT { RETURN a.p } AS b, sum(a.p) AS s ORDER BY 0 + ((COUNT { RETURN a.p }))",
             "RETURN COUNT { RETURN a.p } + 0 AS b, sum(a.p) AS s \
              ORDER BY 0 + COUNT { RETURN a.p } + 0",
             "WITH a.p + 0 AS b, sum(a.p) AS s WHERE 0 < 1 + COUNT { RETURN a.p } RETURN s",
@@ -571,5 +582,30 @@ mod tests {
         assert_undefined(
             "UNWIND [1] AS x WITH x AS a WITH DISTINCT a.p AS w WHERE a.q > 0 RETURN w",
         );
+    }
+
+    // LABS-1615: redundant parens around a DISTINCT projection item — or
+    // around the ORDER BY key restating it — are transparent: `(n.p1)` and
+    // `n.p1` are the same column on either side of the match, exactly as
+    // Neo4j's paren-free AST sees them.
+    #[test]
+    fn distinct_order_by_matches_parenthesized_projections() {
+        for query in [
+            "MATCH (n:L1) RETURN DISTINCT(n.p1) ORDER BY n.p1",
+            "MATCH (n:L1) RETURN DISTINCT (n.p1) ORDER BY (n.p1)",
+            "MATCH (b) RETURN DISTINCT (b.name) AS w ORDER BY b.name DESC",
+            "MATCH (b) RETURN DISTINCT b.name AS w ORDER BY (b.name) DESC",
+            "MATCH (b) WITH DISTINCT (b.name) AS w ORDER BY b.name RETURN w",
+        ] {
+            assert_accepted(query);
+        }
+        // The restriction itself is unchanged: a non-projected expression
+        // is still refused, however the projected item is spelled.
+        for query in [
+            "MATCH (b) RETURN DISTINCT (b.name) AS w ORDER BY b.age DESC",
+            "MATCH (b) RETURN DISTINCT b.name AS w ORDER BY (b.age) DESC",
+        ] {
+            assert_undefined(query);
+        }
     }
 }

@@ -96,7 +96,7 @@ mod static_types;
 mod structure;
 mod writes;
 
-pub(crate) use self::aggregation::{alias_shadows_its_own_base, is_aliased};
+pub(crate) use self::aggregation::{alias_shadows_its_own_base, is_aliased, non_aggregating};
 pub use self::aggregation::{
     validate_aggregation_semantics, validate_clause_slots, validate_expression_slots,
     validate_order_by_aggregation,

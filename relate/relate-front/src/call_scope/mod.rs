@@ -31,14 +31,15 @@ use relate_names::SmallName;
 
 use relate_error::{EngineError, ErrorKind};
 use relate_parser::{
-    CallScope, CallSubqueryClause, Clause, ConditionalClause, Expr, PatternPath, ReturnClause,
+    CallScope, CallSubqueryClause, Clause, ConditionalClause, PatternPath, ReturnClause,
     ReturnItem, Statement, WithClause,
 };
 
 use crate::ast::collect::{
     check_expr_vars_defined, check_names_allowed, clause_introduced_names, effective_name,
-    pattern_vars, projected_names, search_score_var, union_chain,
+    item_variable, pattern_vars, projected_names, search_score_var, union_chain,
 };
+use crate::ast::tree::map_projection_var;
 // The lenient naked-CALL fallback consults the output-vars family at
 // the crate root (its other consumer is `validate::scope`, importing
 // downward) — no upward edge into `validate` remains.
@@ -329,6 +330,17 @@ fn walk_branch_seeded(
 /// branch reports the same exported names (enforced on the
 /// lowered IR by the planner's `validate_conditional_returns`),
 /// so the resulting union-of-exports is exactly that one shared set.
+/// The one "every branch body, then the ELSE body" enumeration the
+/// conditional walks share — the check_return recursion, the scope walk
+/// and the nested-call walk all read it instead of re-spelling the
+/// branches-then-else chain.
+fn conditional_bodies(cc: &ConditionalClause) -> impl Iterator<Item = &Statement> {
+    cc.branches
+        .iter()
+        .map(|b| &b.body)
+        .chain(cc.else_body.iter())
+}
+
 fn walk_conditional_bodies(
     cc: &ConditionalClause,
     imported: &IdentHashSet<SmallName>,
@@ -342,13 +354,9 @@ fn walk_conditional_bodies(
             check_expr_vars_defined(&branch.predicate, &seed)?;
         }
     }
-    // Every branch body, plus the ELSE body, each with its own UNION chain.
-    let bodies = cc
-        .branches
-        .iter()
-        .map(|b| &b.body)
-        .chain(cc.else_body.iter());
-    for body in bodies {
+    // Every branch body, plus the ELSE body, each with its own UNION
+    // chain — the one enumeration.
+    for body in conditional_bodies(cc) {
         for s in union_chain(body) {
             walk_branch_seeded(&s.clauses, imported, carry, strict, &mut *sink)?;
         }
@@ -370,11 +378,13 @@ enum AliasPolicy {
 
 /// One WITH item's pass-through variable under `policy`: the item's
 /// variable under its own output name when the item is a pass-through
-/// the policy accepts, `None` otherwise.
+/// the policy accepts, `None` otherwise. The variable test reads
+/// [`item_variable`] — paren-transparent (LABS-1615/1616): a `WITH (a)`
+/// item is the bare variable `a`, exactly like its unparenthesized
+/// spelling, so the redeclaration gate below and the scope driver's own
+/// name rule hold one answer for the same item.
 fn pass_through_var(item: &ReturnItem, policy: AliasPolicy) -> Option<&SmallName> {
-    let Expr::Variable(v) = &item.expr else {
-        return None;
-    };
+    let v = item_variable(item)?;
     match item.alias.as_ref() {
         None => Some(v),
         Some(a) if policy == AliasPolicy::AllowSelfAlias && a == v => Some(v),
@@ -649,15 +659,29 @@ fn check_brace_return_items_aliased(stmt: &Statement) -> Result<(), EngineError>
 
 /// The one item rule behind both 42N21 wordings: every RETURN item must
 /// carry a name — an alias, a bare variable, or a map projection over one.
+/// The item shapes read [`item_variable`] and [`map_projection_var`] — paren-transparent
+/// (LABS-1615/1616): `RETURN (n)` and `RETURN (n {.p})` carry their names
+/// exactly like the unparenthesized spellings, matching the top-level
+/// alias rule instead of diverging from it.
 fn check_return_items_aliased(stmt: &Statement, message: &str) -> Result<(), EngineError> {
     fn check_return(rc: &ReturnClause, message: &str) -> Result<(), EngineError> {
         for item in &rc.items {
             if item.all {
                 continue;
             }
+            // The 42N21 exemption vocabulary is a deliberately narrower
+            // subset of the canonical-name shapes — recorded here, not an
+            // accident of synchronization: Neo4j exempts a bare variable
+            // and a map projection over one (both carry their own name in
+            // a CALL body's projected row), but NOT a `v.key` property
+            // access, which names a column top-level yet stays an
+            // expression here — `CALL { MATCH (n) RETURN (n.p1) }` is
+            // the rejection its unparenthesized twin gets. Both shape
+            // tests read the one shared homes, paren-transparent
+            // (LABS-1615/1616).
             let named = item.alias.is_some()
-                || matches!(item.expr, Expr::Variable(_))
-                || matches!(&item.expr, Expr::MapProjection(mp) if matches!(mp.expr, Expr::Variable(_)));
+                || item_variable(item).is_some()
+                || map_projection_var(&item.expr).is_some();
             if !named {
                 return Err(EngineError::semantic(
                     ErrorKind::NoExpressionAlias,
@@ -672,11 +696,8 @@ fn check_return_items_aliased(stmt: &Statement, message: &str) -> Result<(), Eng
             match clause {
                 Clause::Return(rc) => check_return(rc, message)?,
                 Clause::Conditional(cc) => {
-                    for branch in &cc.branches {
-                        check_return_items_aliased(&branch.body, message)?;
-                    }
-                    if let Some(else_body) = &cc.else_body {
-                        check_return_items_aliased(else_body, message)?;
+                    for body in conditional_bodies(cc) {
+                        check_return_items_aliased(body, message)?;
                     }
                 }
                 _ => {}
@@ -793,11 +814,8 @@ fn walk_top_level(
             // whatever list it's in, so there is no "after" scope to
             // thread back out from it.
             Clause::Conditional(cc) => {
-                for branch in &cc.branches {
-                    walk_union_chain(&branch.body, scope.clone())?;
-                }
-                if let Some(else_body) = &cc.else_body {
-                    walk_union_chain(else_body, scope.clone())?;
+                for body in conditional_bodies(cc) {
+                    walk_union_chain(body, scope.clone())?;
                 }
             }
             // A WITH replaces the scope (a projection), so it cannot ride

@@ -307,23 +307,25 @@ mod tests {
         );
     }
 
-    /// `n.name` and `` n.`name` `` differ verbatim, so the front-end's
-    /// ColumnNameConflict check passes them, but they resolve to one output
-    /// name. The sink must decline rather than write both over one row.
+    /// `n.name` and `` n.`name` `` are two distinct columns — Neo4j
+    /// (probed live 2026.10) names an unaliased property access by its
+    /// verbatim source text, so the two spellings never share one output
+    /// name: the projection is a plain two-column projection (sinkable
+    /// like any other), and the end-to-end answer carries both columns
+    /// with their verbatim names. Only an exact-text duplicate conflicts,
+    /// and the front-end's ColumnNameConflict check rejects that before
+    /// the sink ever sees it — so the old decline premise ("one resolved
+    /// column name twice") no longer arises from the grammar.
     #[test]
-    fn a_projection_repeating_a_resolved_column_name_declines_the_sink() {
+    fn two_spellings_of_one_property_are_two_columns() {
         let query = parse_and_lower("RETURN n.name, n.`name`").unwrap();
         assert!(
-            sinkable_projection(&query.parts[0].clauses[0]).is_none(),
-            "the sink must decline a projection with one resolved column name twice"
+            sinkable_projection(&query.parts[0].clauses[0]).is_some(),
+            "two verbatim names are two columns: an ordinary sinkable projection"
         );
 
-        // The ordinary projection answers the query instead. Its result
-        // shape is not this path's: the shared result-column dedup
-        // (`return_columns`) already keeps one column for a repeated
-        // resolved name, and the collapse downstream of it is the
-        // pre-existing LABS-1135 bug, not the sink's. Pinned here only so
-        // the decline's end-to-end answer stays visible.
+        // The end-to-end answer keeps both columns, verbatim names
+        // included — the Neo4j parity pin for the naming rule.
         let graph = Graph::default();
         graph.begin_write().unwrap();
         graph
@@ -334,7 +336,7 @@ mod tests {
             .unwrap();
         graph.commit_write();
         let result = exec_cypher(&graph, "MATCH (n:A) RETURN n.name, n.`name`");
-        assert_eq!(result.columns, ["n.name"]);
+        assert_eq!(result.columns, ["n.name", "n.`name`"]);
         assert_eq!(result.rows.len(), 1);
     }
 }

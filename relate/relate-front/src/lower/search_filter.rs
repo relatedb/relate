@@ -18,6 +18,7 @@ use relate_parser::Expr;
 
 use super::expr::{bin_op, cmp_op, unary_op};
 use super::lower_expr;
+use crate::ast::tree::{unparen, var_property};
 
 /// Decompose and lower a `SEARCH` clause's inner `WHERE <search condition>`
 /// into its predicate list against the clause's `binding_var` and
@@ -48,7 +49,7 @@ pub(super) fn lower_search_filters(
     flatten_and(where_expr, &mut terms);
     let mut predicates = Vec::with_capacity(terms.len());
     for term in terms {
-        predicates.push(to_predicate(binding_var, for_var.as_ref(), term)?);
+        predicates.push(to_predicate(binding_var, for_var, term)?);
     }
     validate_and_combination(&predicates)?;
     Ok(predicates)
@@ -68,22 +69,8 @@ fn flatten_and<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
 /// The index source's entity variable, when `FOR <expr>` names an entity
 /// property (`FOR m.embedding`); a literal or any other query expression
 /// (`FOR [1, 2, 3]`) names no entity variable.
-fn for_entity_var(for_expr: &Expr) -> Option<SmallName> {
+fn for_entity_var(for_expr: &Expr) -> Option<&SmallName> {
     var_property(for_expr).map(|(var, _)| var)
-}
-
-/// A bare `<var>.<prop>` reference (a "static property reference" --
-/// never a dynamic `n[expr]` bracket access, which leaves `property` empty
-/// and carries a `key_expr` instead).
-fn var_property(e: &Expr) -> Option<(SmallName, SmallName)> {
-    if let Expr::Property(pa) = e {
-        if pa.key_expr.is_none() {
-            if let Expr::Variable(v) = &pa.expr {
-                return Some((v.clone(), pa.property.clone()));
-            }
-        }
-    }
-    None
 }
 
 /// The same error the pre-lowering validation phase raised for this
@@ -169,7 +156,7 @@ fn to_predicate(
             };
             // The NOT rewrite carries no user RHS, so it cannot identify
             // the binding variable through one.
-            validate_property_rule(&var, binding_var, for_var, None)?;
+            validate_property_rule(var, binding_var, for_var, None)?;
             // The NOT rewrite's RHS is the FALSE literal.
             Ok(SearchFilterPred::Comparison {
                 property: prop.to_string(),
@@ -198,15 +185,22 @@ fn to_predicate(
             // the LHS variable (e.g. `movie.year = movie.rating`).
             let left_property = var_property(&c.left);
             let right_property = var_property(&c.right);
+            // One guarded step picks the candidate side — the binding
+            // variable's own property is the LHS — then one arm per
+            // shape: both sides are properties with the binding on the
+            // right (the left is the RHS), any left-property shape (the
+            // right is the RHS), left-is-not-a-property (the right is
+            // the LHS), neither (not a property predicate).
             let (var, prop, op, rhs_expr) = match (left_property, right_property) {
-                (Some((var, prop)), _) if &var == binding_var => (var, prop, op, &c.right),
-                (_, Some((var, prop))) if &var == binding_var => (var, prop, op.flip(), &c.left),
+                (Some(l), Some(r)) if r.0 == binding_var && l.0 != binding_var => {
+                    (r.0, r.1, op.flip(), &c.left)
+                }
                 (Some((var, prop)), _) => (var, prop, op, &c.right),
                 (None, Some((var, prop))) => (var, prop, op.flip(), &c.left),
                 (None, None) => return Err(invalid_predicate_error()),
             };
             let rhs = lower_expr(rhs_expr)?;
-            validate_property_rule(&var, binding_var, for_var, Some(&rhs))?;
+            validate_property_rule(var, binding_var, for_var, Some(&rhs))?;
             Ok(SearchFilterPred::Comparison {
                 property: prop.to_string(),
                 op,
@@ -219,7 +213,7 @@ fn to_predicate(
             let Some((var, prop)) = var_property(&i.expr) else {
                 return Err(invalid_predicate_error());
             };
-            validate_property_rule(&var, binding_var, for_var, None)?;
+            validate_property_rule(var, binding_var, for_var, None)?;
             Ok(if i.negated {
                 SearchFilterPred::Exists {
                     property: prop.to_string(),
@@ -232,26 +226,32 @@ fn to_predicate(
         }
         // `<property> IN <expr>` is a property-in-set filter;
         // `<binding variable> IN <expr>` is the entity-set match filter.
-        Expr::In(i) => match &i.expr {
-            Expr::Variable(var) => {
-                let rhs = lower_expr(&i.list)?;
-                // The entity-set LHS deliberately gets no FOR-entity
-                // exception: the match filter is over the binding variable.
-                validate_property_rule(var, binding_var, None, Some(&rhs))?;
-                Ok(SearchFilterPred::EntityInSet { rhs })
+        // The LHS is bound once and classified in one form — the same
+        // paren-transparent spelling the rest of the front reads.
+        Expr::In(i) => {
+            let lhs = unparen(&i.expr);
+            match lhs {
+                Expr::Variable(var) => {
+                    let rhs = lower_expr(&i.list)?;
+                    // The entity-set LHS deliberately gets no FOR-entity
+                    // exception: the match filter is over the binding
+                    // variable.
+                    validate_property_rule(var, binding_var, None, Some(&rhs))?;
+                    Ok(SearchFilterPred::EntityInSet { rhs })
+                }
+                _ => {
+                    let Some((var, prop)) = var_property(lhs) else {
+                        return Err(invalid_predicate_error());
+                    };
+                    let rhs = lower_expr(&i.list)?;
+                    validate_property_rule(var, binding_var, for_var, Some(&rhs))?;
+                    Ok(SearchFilterPred::InSet {
+                        property: prop.to_string(),
+                        rhs,
+                    })
+                }
             }
-            _ => {
-                let Some((var, prop)) = var_property(&i.expr) else {
-                    return Err(invalid_predicate_error());
-                };
-                let rhs = lower_expr(&i.list)?;
-                validate_property_rule(&var, binding_var, for_var, Some(&rhs))?;
-                Ok(SearchFilterPred::InSet {
-                    property: prop.to_string(),
-                    rhs,
-                })
-            }
-        },
+        }
         _ => Err(invalid_predicate_error()),
     }
 }
