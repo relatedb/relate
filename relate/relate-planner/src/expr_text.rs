@@ -13,6 +13,7 @@
 //! when it exists, so these summaries are the synthetic-projection fallback.
 
 use relate_ir::{ChronoOp, Expr, LabelExpr, MapProjectionItem, QuantifierKind, TypeExpr};
+use relate_model::identifier::parameter_reference;
 use relate_names::SmallName;
 
 /// Render `expr` the way the query spelled it, as far as the IR retains the
@@ -26,7 +27,7 @@ pub(crate) fn expr_text(expr: &Expr) -> String {
         Expr::Int(value) => value.to_string(),
         Expr::Float(value) => value.to_string(),
         Expr::String(value) => format!("'{value}'"),
-        Expr::Parameter(name) => format!("${name}"),
+        Expr::Parameter(name) => parameter_reference(name.as_str()),
         Expr::Variable(name) => name.to_string(),
         Expr::Star => "*".to_string(),
         Expr::CountStar => "count(*)".to_string(),

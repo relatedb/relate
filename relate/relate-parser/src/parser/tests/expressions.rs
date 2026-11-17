@@ -366,6 +366,26 @@ fn test_parse_parameter() {
 }
 
 #[test]
+fn test_parse_parameter_name_spellings() {
+    // LABS-1602/1612: the alternate parameter-name spellings lower to the
+    // same `Expr::Parameter` — a backtick-quoted name (spaces and doubled
+    // backticks included) and a whitespace-separated `$ p2`.
+    for (query, name) in [
+        ("RETURN $`p1` AS x", "p1"),
+        ("RETURN $`p 1` AS x", "p 1"),
+        ("RETURN $`a``b` AS x", "a`b"),
+        ("RETURN $ p2 AS x", "p2"),
+        ("RETURN $\np2 AS x", "p2"),
+    ] {
+        let stmt = parse_ok(query);
+        match return_expr(&stmt) {
+            Expr::Parameter(n) => assert_eq!(n, name, "{query:?}"),
+            other => panic!("{query:?}: expected a parameter, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn test_parse_property_access() {
     let stmt = parse("RETURN n.name").unwrap();
     match &stmt.clauses[0] {

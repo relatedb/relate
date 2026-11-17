@@ -237,6 +237,35 @@ fn parameters_render_with_dollar() {
     );
 }
 
+/// LABS-1602: a parameter name that is not identifier-shaped — a space,
+/// an embedded backtick — renders through the canonical backtick-quoted
+/// form, so the template re-parses to the same one parameter and two
+/// different names never share a template (a raw `$<text>` render let a
+/// spaced name collide with the bare prefix's own text).
+#[test]
+fn parameter_names_render_through_the_canonical_shaped_form() {
+    assert_eq!(
+        template("MATCH (n {id: $`p 1`}) RETURN n"),
+        "MATCH ( n { id : $`p 1` } ) RETURN n"
+    );
+    assert_eq!(
+        template("MATCH (n {id: $`a``b`}) RETURN n"),
+        "MATCH ( n { id : $`a``b` } ) RETURN n"
+    );
+    // Distinct names stay distinct templates.
+    assert_ne!(
+        template("MATCH (n {id: $`p 1`}) RETURN n"),
+        template("MATCH (n {id: $p1}) RETURN n")
+    );
+    // The two spellings of one name share one template — the shaped form
+    // is the name's canonical spelling, so `$`p1`` hits the plan-cache
+    // entry `$p1` already warmed.
+    assert_eq!(
+        template("MATCH (n {id: $`p1`}) RETURN n"),
+        template("MATCH (n {id: $p1}) RETURN n")
+    );
+}
+
 /// Backtick-quoted identifiers render through the canonical quoting
 /// policy, so a name that cannot appear bare never aliases a bare one.
 #[test]

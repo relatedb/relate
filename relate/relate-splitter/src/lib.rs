@@ -121,8 +121,13 @@ fn scan(input: &str) -> Scan {
             }
             continue;
         }
-        // Inside a backtick-quoted identifier: no escape processing (matches the
-        // lexer's `read_backtick_identifier`); the next backtick closes it.
+        // Inside a backtick-quoted identifier the lexer's pair-escape rule
+        // does not apply — this scan closes on the next single backtick.
+        // The two terminate at the same place anyway: a top-level backtick
+        // run of even length stays inside the quoted name under both rules
+        // (each pair is one escaped backtick there, one toggle here), and
+        // an odd run closes it — so the splitter's spans match the lexer's
+        // without sharing its scanner.
         if st.in_backtick {
             current.push(ch);
             if ch == '`' {

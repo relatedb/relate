@@ -48,9 +48,45 @@ pub fn quote_identifier_shaped(name: &str) -> String {
     }
 }
 
+/// Renders a parameter reference `$name` for text that must stay
+/// collision-free across every spelling (plan-cache templates, expression
+/// text, plan-node details): the `$` sigil plus the shaped name — bare
+/// when [`has_plain_identifier_shape`] holds, otherwise the
+/// backtick-quoted form. The domain is names: the empty string is the
+/// `$(expr)` dynamic-opener sentinel, never a parameter's name — callers
+/// bail on the sentinel before rendering (asserted in debug builds). The
+/// gate is the one identifier shape `[A-Za-z_][A-Za-z0-9_]*`, deliberately
+/// reused here and therefore narrower than the parameter-name grammar
+/// (which also admits a digit start, ADR-0182): a digit-start name
+/// over-quotes to `$`1x`` — a conservative render that still round-trips
+/// — and a name that is not identifier-shaped at all (a space, an
+/// embedded backtick) must quote to re-parse as itself. Two different
+/// names never render alike, and one name always re-parses as itself
+/// (LABS-1602's backtick-quoted names).
+pub fn parameter_reference(name: &str) -> String {
+    debug_assert!(
+        !name.is_empty(),
+        "the empty literal is the `$(expr)` opener sentinel, never a name"
+    );
+    format!("${}", quote_identifier_shaped(name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parameter_reference_is_shaped_and_round_trips() {
+        // The canonical `$name` render: bare for plain-shaped names, the
+        // backtick-quoted form otherwise — so one name always re-parses as
+        // itself (the backtick scan decodes the doubled pair) and two
+        // different names never render alike.
+        assert_eq!(parameter_reference("uid"), "$uid");
+        assert_eq!(parameter_reference("p 1"), "$`p 1`");
+        assert_eq!(parameter_reference("1x"), "$`1x`");
+        assert_eq!(parameter_reference("a`b"), "$`a``b`");
+        assert_ne!(parameter_reference("p 1"), parameter_reference("p"));
+    }
 
     #[test]
     fn plain_identifier_shape_is_ascii_only() {

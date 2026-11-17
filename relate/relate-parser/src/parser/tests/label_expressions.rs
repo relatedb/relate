@@ -181,9 +181,20 @@ fn test_label_expr_dynamic_label_quantifiers_parse() {
             "MATCH (n) WHERE n:$ALL(['A']) RETURN n",
             DynamicLabelQuantifier::All,
         ),
+        // The quantifier openers are names followed by `(` — the name
+        // rule's whitespace transparency (LABS-1612) carries them, a
+        // decided fact pinned here, not an accident of the skip.
+        (
+            "MATCH (n) WHERE n:$ all(['A']) RETURN n",
+            DynamicLabelQuantifier::All,
+        ),
         // $any(...) -- Any quantifier.
         (
             "MATCH (n) WHERE n:$any(['A']) RETURN n",
+            DynamicLabelQuantifier::Any,
+        ),
+        (
+            "MATCH (n) WHERE n:$ ANY(['A']) RETURN n",
             DynamicLabelQuantifier::Any,
         ),
     ] {

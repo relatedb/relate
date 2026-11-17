@@ -63,6 +63,26 @@ fn explain_with_parameters_plans() {
     );
 }
 
+/// The alternate parameter-name spellings plan end to end (LABS-1602/1612):
+/// a backtick-quoted name — plain, and one that is not identifier-shaped at
+/// all (`$`p 1``) — and a whitespace-separated `$ p2`. `EXPLAIN` plans
+/// without executing, so the parameters need no values.
+#[test]
+fn explain_alternate_parameter_name_spellings_plan() {
+    let result = connection().query("EXPLAIN RETURN $`p1` AS x").unwrap();
+    assert_eq!(plan(&result).operator, "ProduceResults");
+    for src in [
+        "EXPLAIN MATCH (n:L1) WHERE n.p1 = $ p2 RETURN n",
+        "EXPLAIN MATCH (n:L1) WHERE n.p1 = $`p 1` RETURN n",
+    ] {
+        let result = connection().query(src).unwrap();
+        assert!(
+            find_node(plan(&result), "NodeByLabelScan").is_some(),
+            "{src}: the parameterized MATCH plans a label scan"
+        );
+    }
+}
+
 #[test]
 fn explain_next_chain_plans_every_stage() {
     let result = connection()

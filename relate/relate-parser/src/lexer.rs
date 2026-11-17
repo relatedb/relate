@@ -306,7 +306,18 @@ impl<'a> Lexer<'a> {
                     self.read_string(line, col);
                 }
                 b'`' => {
-                    self.read_backtick_identifier(line, col);
+                    // The one canonical backtick scan (string.rs): it
+                    // returns the decoded name and owns the
+                    // unterminated-backtick error; this arm owns the token
+                    // type. An empty backtick-quoted name (` `` `) emits an
+                    // Identifier with an empty literal — the historical
+                    // behavior, unchanged here and pinned by
+                    // `test_empty_backtick_identifier_lexes_as_today` —
+                    // unlike the parameter path, whose empty literal is the
+                    // reserved `$(expr)` sentinel and therefore rejected.
+                    if let Some(name) = self.read_backtick_name(line, col) {
+                        self.emit(TokenType::Identifier, name, line, col);
+                    }
                 }
                 b'0'..=b'9' => {
                     self.read_number(line, col);
@@ -608,38 +619,73 @@ impl<'a> Lexer<'a> {
         // Neo4j reference (LABS-209): a part-only character such as `€` is
         // rejected with the reference's error shape; an arbitrary name (spaces,
         // part-only characters) is spelled through the backtick form
-        // `$`name``, which this lexer does not offer yet (LABS-209's
-        // acceptance criteria).
-        // `(` after `$` is the dynamic-expression opener (`$(expr)`,
-        // e.g. `n IS LABELED $('A')`): it lexes as an empty parameter token
-        // whose expansion the parser owns, so it stays on the pass-through
-        // path below.
-        let start_ok = self.at_ident_start()
-            || self
-                .peek_char()
-                .is_some_and(|(c, _)| c.is_ascii_digit() || c == '(');
+        // $`name`, offered through the shared backtick scan below (LABS-1602
+        // delivering LABS-209's acceptance criteria).
+        // `(` glued to the `$` is the dynamic-expression opener (`$(expr)`,
+        // e.g. `n IS LABELED $('A')`): it lexes as an intentionally empty
+        // Parameter token whose expansion the parser owns. Glued only —
+        // whitespace between the sigil and the `(` is not this opener (the
+        // empty-literal sentinel keeps exactly the shape it had before
+        // LABS-1612's whitespace skip existed). The `$all(...)`/`$any(...)`
+        // quantifier openers are names followed by `(` — they follow the
+        // name rule, whitespace-transparent like any parameter name
+        // (pinned in the label-expression quantifier table).
+        if self.peek() == b'(' {
+            self.emit(TokenType::Parameter, "", line, col);
+            return;
+        }
+        // Whitespace may sit between the `$` and the name (LABS-1612): a
+        // space, tab or newline — `$ p2` names `p2` — so the whitespace
+        // skip runs before the start rules; whatever follows it still faces
+        // them (`$ €`, or whitespace to end of input, keeps the rejection).
+        self.skip_whitespace();
+        if self.peek() == b'`' {
+            // The backtick form: the one canonical backtick scan, emitted
+            // as a Parameter token with the unescaped name (a doubled
+            // backtick collapses to one), so a name that is not
+            // identifier-shaped at all — $`p 1` — is one Parameter token.
+            // An empty backtick-quoted name ($``) is rejected: the empty
+            // Parameter literal is the reserved sentinel of the `$(expr)`
+            // dynamic opener, never a parameter's name.
+            if let Some(name) = self.read_backtick_name(line, col) {
+                if name.is_empty() {
+                    self.reject_parameter_name("", line, col);
+                } else {
+                    self.emit(TokenType::Parameter, name, line, col);
+                }
+            }
+            return;
+        }
+        let start_ok =
+            self.at_ident_start() || self.peek_char().is_some_and(|(c, _)| c.is_ascii_digit());
         // One consume-and-derive for both outcomes: the accepted name and
         // the rejected run are the same identifier-part run from the same
         // position; the guard above only classifies its first character.
         let start = self.pos;
         let run = self.take_ident_run(start);
         if !start_ok {
-            // The offending run becomes one error token, not a cascade (the
-            // `emit_malformed_number` shape).
-            let literal = if run.is_empty() {
-                Cow::Borrowed("Invalid input after '$': expected an identifier or an integer value")
-            } else {
-                Cow::Owned(format!(
-                    "Invalid input '{run}': expected an identifier or an integer value"
-                ))
-            };
-            self.emit_error_detail(literal, line, col, "InvalidParameterName");
+            self.reject_parameter_name(run, line, col);
             return;
         }
         self.emit(TokenType::Parameter, run, line, col);
     }
+
+    /// The one InvalidParameterName rejection (LABS-209's reference error
+    /// shape): the offending run — empty for a bare `$` or an empty
+    /// backtick-quoted name — becomes one error token, not a cascade (the
+    /// `emit_malformed_number` shape). The message's two spellings (the
+    /// bare-`$` and the run-naming one) and the detail code live here, so
+    /// every rejection path in `read_parameter` emits the same shape.
+    fn reject_parameter_name(&mut self, offending: &str, line: usize, col: usize) {
+        const EXPECTED: &str = "expected an identifier or an integer value";
+        let literal = if offending.is_empty() {
+            format!("Invalid input after '$': {EXPECTED}")
+        } else {
+            format!("Invalid input '{offending}': {EXPECTED}")
+        };
+        self.emit_error_detail(Cow::Owned(literal), line, col, "InvalidParameterName");
+    }
 }
 
 #[cfg(test)]
-#[path = "lexer_tests.rs"]
 mod tests;

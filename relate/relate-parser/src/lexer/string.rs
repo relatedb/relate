@@ -173,24 +173,31 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
-    /// Read a backtick-quoted identifier. The literal is the input slice
-    /// between the backticks (borrowed, ADR-0505) unless the name contains a
-    /// doubled backtick — the one form whose decoded text differs from the
-    /// raw slice — which switches to an owned `String` seeded with the
-    /// prefix before the first pair.
-    pub(super) fn read_backtick_identifier(&mut self, line: usize, col: usize) {
+    /// Read a backtick-quoted name and return its decoded literal — the
+    /// one canonical backtick scan, shared by the backtick-quoted
+    /// identifier and the backtick-quoted parameter name (`$`name``,
+    /// LABS-1602). The literal is the input slice between the backticks
+    /// (borrowed, ADR-0505) unless the name contains a doubled backtick —
+    /// the one form whose decoded text differs from the raw slice — which
+    /// switches to an owned `String` seeded with the prefix before the
+    /// first pair. Returns `None` when the name is unterminated: the scan
+    /// emits the one unterminated-backtick error token itself, so the
+    /// caller has nothing to emit. The caller owns the token type (and any
+    /// empty-name policy), so one scan serves every spelling without a
+    /// per-flavor wrapper.
+    pub(super) fn read_backtick_name(&mut self, line: usize, col: usize) -> Option<Cow<'a, str>> {
         self.advance(); // skip opening backtick
         let body_start = self.pos;
         let mut owned: Option<String> = None;
         while self.pos < self.input.len() {
             let ch = self.advance();
             if ch == b'`' {
-                // A doubled backtick inside a backtick-quoted identifier is an
+                // A doubled backtick inside a backtick-quoted name is an
                 // escaped literal backtick, mirroring the formatter's
                 // `cypher_identifier` (which doubles every embedded backtick).
                 // Peek the next byte: another backtick means "one literal
                 // backtick, keep reading"; anything else terminates the
-                // identifier. Without this the `.dump` / `.mode cypher` output
+                // name. Without this the `.dump` / `.mode cypher` output
                 // for a label/type/key containing a backtick would not re-parse.
                 if self.pos < self.input.len() && self.input[self.pos] == b'`' {
                     self.advance(); // consume the second backtick of the pair
@@ -199,12 +206,10 @@ impl<'a> Lexer<'a> {
                         .push('`');
                     continue;
                 }
-                let literal = match owned {
+                return Some(match owned {
                     Some(s) => Cow::Owned(s),
                     None => Cow::Borrowed(self.slice(body_start, self.pos - 1)),
-                };
-                self.emit(TokenType::Identifier, literal, line, col);
-                return;
+                });
             }
             if let Some(s) = owned.as_mut() {
                 push_utf8(self, s, ch);
@@ -216,6 +221,7 @@ impl<'a> Lexer<'a> {
             line,
             col,
         );
+        None
     }
 
     /// Read a CIP-261 interpolated string literal: the opening `s` and quote

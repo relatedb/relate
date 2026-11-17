@@ -1,4 +1,5 @@
 use super::*;
+use relate_model::identifier::parameter_reference;
 use relate_names::SmallName;
 
 use relate_core::{Error, Result};
@@ -528,7 +529,9 @@ pub(super) fn canonical_constraint(
         // text never silently claims a constraint has no OPTIONS. (Every
         // stored body resolves its parameters before capture, so this arm is
         // reachable only for a pre-resolution body.)
-        relate_parser::OptionsForm::Parameter(name) => format!(" OPTIONS ${name}"),
+        relate_parser::OptionsForm::Parameter(name) => {
+            format!(" OPTIONS {}", parameter_reference(name.as_str()))
+        }
         relate_parser::OptionsForm::Absent => String::new(),
     };
 

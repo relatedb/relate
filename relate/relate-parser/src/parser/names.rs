@@ -115,8 +115,11 @@ impl<'a> Parser<'a> {
         {
             return None;
         }
-        let literal = &self.peek_at(offset).literal;
-        if literal.is_empty() {
+        // The opener token is bound once — the sentinel check and the
+        // spelling arms read the same token, not two peeks.
+        let opener = self.peek_at(offset);
+        let literal = &opener.literal;
+        if opener.is_dynamic_opener_sentinel() {
             Some(DynamicLabelQuantifier::Default)
         } else if literal.eq_ignore_ascii_case("all") {
             Some(DynamicLabelQuantifier::All)

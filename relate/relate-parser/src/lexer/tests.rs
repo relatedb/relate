@@ -12,6 +12,9 @@ fn tok_literals(input: &str) -> Vec<String> {
         .collect()
 }
 
+// The parameter-name tests live in their own topic module; every
+// other topic stays in this file until it earns its own.
+mod parameters;
 #[test]
 fn test_decode_char_bounds_validation_to_its_sequence() {
     // PR #61 review: `decode_char` must validate only the 2–4 byte sequence
@@ -313,6 +316,22 @@ fn test_backtick_identifier() {
 }
 
 #[test]
+fn test_empty_backtick_identifier_lexes_as_today() {
+    // An empty backtick-quoted identifier emits an Identifier with an
+    // empty literal — the historical behavior, deliberately pinned so the
+    // divergence from the parameter path stays a recorded fact, not a
+    // silent default: the parameter path's empty literal is the reserved
+    // `$(expr)` sentinel and is rejected, while an identifier's empty
+    // name has no reserved meaning to collide with. Changing this
+    // acceptance (Neo4j's verdict on `` `` `` is unverified) is its own
+    // change, not a side effect of the parameter work.
+    let tokens = tokenize("``");
+    assert_eq!(tokens.len(), 1, "one identifier token: {tokens:?}");
+    assert_eq!(tokens[0].ty, TokenType::Identifier);
+    assert_eq!(tokens[0].literal, "");
+}
+
+#[test]
 fn test_backtick_identifier_doubled_backtick_is_escaped() {
     // A doubled backtick inside a backtick-quoted identifier collapses to a
     // single literal backtick, mirroring the formatter's `cypher_identifier`
@@ -333,15 +352,6 @@ fn test_backtick_identifier_doubled_backtick_is_escaped() {
     assert_eq!(two.len(), 2);
     assert_eq!(two[0].literal, "a");
     assert_eq!(two[1].literal, "b");
-}
-
-#[test]
-fn test_parameter() {
-    let tokens = tokenize("$name $value");
-    assert_eq!(tokens.len(), 2);
-    assert_eq!(tokens[0].ty, TokenType::Parameter);
-    assert_eq!(tokens[0].literal, "name");
-    assert_eq!(tokens[1].literal, "value");
 }
 
 #[test]
@@ -602,84 +612,6 @@ fn test_unicode_identifier_start_rejects_non_start_characters() {
             "{query:?}: {tokens:?}"
         );
     }
-}
-
-#[test]
-fn test_parameter_start_rejects_part_only_characters() {
-    // A parameter's first character is an identifier start or an ASCII digit
-    // (ADR-0182's Consequences prose, confirmed against the live Neo4j
-    // reference — LABS-209): `€`-class part-only starts are rejected with the
-    // reference's error shape, and the offending run is consumed as one error
-    // token, not a cascade.
-    for (query, bad) in [("RETURN $€ AS v", "€"), ("RETURN $€a AS v", "€a")] {
-        let tokens = tokenize(query);
-        let err = tokens
-            .iter()
-            .find(|t| t.ty == TokenType::Error)
-            .unwrap_or_else(|| panic!("{query:?} must produce an error token"));
-        assert_eq!(err.detail, Some("InvalidParameterName"), "{query:?}");
-        assert!(
-            err.literal.contains(bad),
-            "{query:?}: literal must name {bad:?}: {:?}",
-            err.literal
-        );
-        assert!(
-            err.literal
-                .contains("expected an identifier or an integer value"),
-            "{query:?}: message shape: {:?}",
-            err.literal
-        );
-    }
-}
-
-#[test]
-fn test_parameter_start_accepts_digits_and_identifier_starts() {
-    // Neo4j 5.26 accepts `$1`, `$1x` and Unicode identifier starts
-    // (`$名前`, `$café`) bare (LABS-209's probe); backticks are only needed
-    // for names that are not identifier-shaped at all.
-    for query in [
-        "RETURN $1 AS v",
-        "RETURN $1x AS v",
-        "RETURN $名前 AS v",
-        "RETURN $café AS v",
-    ] {
-        let tokens = tokenize(query);
-        assert!(
-            !tokens.iter().any(|t| t.ty == TokenType::Error),
-            "{query:?} must lex clean: {tokens:?}"
-        );
-    }
-}
-
-#[test]
-fn test_parameter_dynamic_opener_lexes_clean() {
-    // The `(` after `$` is the dynamic-expression opener (`$(expr)`, e.g.
-    // `n IS LABELED $('A')`) — a separate contract from the
-    // identifier-start/digit acceptance above: the lexer emits the
-    // intentionally empty parameter token whose expansion the parser owns.
-    let tokens = tokenize("MATCH (n:$(x)) RETURN n");
-    assert!(
-        !tokens.iter().any(|t| t.ty == TokenType::Error),
-        "the dynamic opener must lex clean: {tokens:?}"
-    );
-}
-
-#[test]
-fn test_bare_parameter_rejected() {
-    // A `$` with no name (EOF or whitespace next) is an error token naming
-    // what was expected, never the old silent empty-named parameter.
-    let tokens = tokenize("RETURN $");
-    let err = tokens
-        .iter()
-        .find(|t| t.ty == TokenType::Error)
-        .unwrap_or_else(|| panic!("bare $ must produce an error token"));
-    assert_eq!(err.detail, Some("InvalidParameterName"));
-    assert!(
-        err.literal
-            .contains("expected an identifier or an integer value"),
-        "message shape: {:?}",
-        err.literal
-    );
 }
 
 // ---- ASCII fast path (SWAR batches, ADR-0505) ----

@@ -393,6 +393,21 @@ pub struct Token<'a> {
 }
 
 impl<'a> Token<'a> {
+    /// The `$(expr)` dynamic-opener sentinel: a Parameter token with the
+    /// empty literal — the reserved encoding the lexer emits for the `(`
+    /// glued to the `$`, the parser expands
+    /// (`dynamic_label_quantifier_at`'s Default arm) and the normalizer
+    /// declines to render (the empty literal is an encoding, never a
+    /// name — see `cache_insert_eligible` for the separate
+    /// dynamic-operand uncacheability rule). The one home of the
+    /// encoding: no call site re-tests the raw literal. `pub(crate)`: both
+    /// consumers are in-crate (the normalizer, the parser's quantifier) —
+    /// widen only when a crate outside `relate-parser` must decode the
+    /// sentinel.
+    pub(crate) fn is_dynamic_opener_sentinel(&self) -> bool {
+        matches!(self.ty, TokenType::Parameter) && self.literal.is_empty()
+    }
+
     /// Build a token whose text is borrowed (`&'a str` / `&'static str`) or
     /// owned (`String`), per the ADR-0505 literal rule — `Into<Cow>` accepts
     /// all three without a hidden copy.

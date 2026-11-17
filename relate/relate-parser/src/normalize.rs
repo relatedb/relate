@@ -12,8 +12,11 @@
 //!   part of the key, so `42` and `'42'` never share a template); a
 //!   bracket group of only such literals (recursively) collapses to one
 //!   `$__AUTO_LIST_n__` placeholder; identifiers render through the
-//!   canonical quoting policy ([`quote_identifier`]), parameters as
-//!   `$name`, and every other token — keywords included — as written.
+//!   canonical quoting policy ([`quote_identifier`]), parameters through
+//!   [`parameter_reference`] (the shaped `$name` render — a
+//!   non-identifier-shaped name renders backtick-quoted, so two different
+//!   names never share a template and the two spellings of one name
+//!   share one), and every other token — keywords included — as written.
 //!   Two statements share a template only if they parse identically.
 //!   Keyword case is deliberately NOT folded: the dialect keeps keyword
 //!   spellings as case-sensitive names (`(o:Order)`, `-[:ORDER]->`,
@@ -54,6 +57,7 @@ use crate::parser::{parse_int_literal, MAX_NESTING_DEPTH, MAX_QUERY_BYTES};
 use crate::token::{
     is_field_terminator_word, line_starts_of, quote_identifier, token_start_byte, Token, TokenType,
 };
+use relate_model::identifier::parameter_reference;
 
 /// The reserved prefix of every auto-parameter name. A statement whose
 /// token stream references a parameter with this prefix, or a caller whose
@@ -221,7 +225,19 @@ impl<'a, 't> Pass<'a, 't> {
                     if tok.literal.starts_with(AUTO_PARAM_PREFIX) {
                         return None;
                     }
-                    self.push_rendered(&format!("${}", tok.literal));
+                    if tok.is_dynamic_opener_sentinel() {
+                        // The empty literal is the `$(expr)` encoding,
+                        // never a name — `parameter_reference` cannot
+                        // render it, so the template declines. (The
+                        // dynamic-operand uncacheability rule is a
+                        // separate fact, enforced where it lives,
+                        // `cache_insert_eligible`.) The sentinel's
+                        // encoding is the token layer's one fact
+                        // (`Token::is_dynamic_opener_sentinel`), never
+                        // re-tested as a raw literal here.
+                        return None;
+                    }
+                    self.push_rendered(&parameter_reference(&tok.literal));
                 }
                 // A CIP-261 interpolated string embeds expressions, and an
                 // embedded parameter reference is invisible to the
@@ -357,8 +373,9 @@ impl<'a, 't> Pass<'a, 't> {
         let name = self.fresh_name(&value);
         // One placeholder value feeds both outputs, so the template's
         // rendering and the rewritten span are the same text by
-        // construction.
-        let placeholder = format!("${name}");
+        // construction — the one parameter render, shaped names included
+        // (fresh names are always plain, but the spelling stays canonical).
+        let placeholder = parameter_reference(&name);
         self.push_rendered(&placeholder);
         let start = self.start_byte(open)?;
         let end = self.end_byte(close)?;

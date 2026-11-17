@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 
 use relate_ir::{BinaryOp, DisjunctionArms, Expr, NodePattern, PathPattern};
+use relate_model::identifier::parameter_reference;
 use relate_names::SmallName;
 use relate_planner::{best_seek, where_conjuncts_of, SeekPick};
 
@@ -269,10 +270,11 @@ fn seek_line(
 /// so the live stats' `Some` counts always spell. ADR-0503: plan trees
 /// never render cached plans (preamble-flagged statements never hit and
 /// `explain_plan` bypasses the cache), so a tree's `$name` is always the
-/// statement's own spelling — never an `$__AUTO_*__` placeholder.
+/// parameter's canonical spelling — the shaped `$name` render, never an
+/// `$__AUTO_*__` placeholder.
 fn bound_text(bound: &Expr) -> Option<String> {
     match bound {
-        Expr::Parameter(name) => Some(format!("${name}")),
+        Expr::Parameter(name) => Some(parameter_reference(name.as_str())),
         other => other
             .seek_value(&BTreeMap::new())
             .map(|value| value.to_cypher_literal()),
