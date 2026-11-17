@@ -61,14 +61,7 @@ pub(crate) enum ExtensionAction {
     /// the installed set, offline; with `--available` (compiled with
     /// `extension-install`) the signed channel's catalog; with `--trust`
     /// the recorded GitHub pins.
-    List {
-        /// `--available`: read the channel index (verified as the install
-        /// reads it) and answer what exists to install.
-        available: bool,
-        /// `--trust`: print the recorded `--github` pins (the per-user
-        /// trust store), offline.
-        trust: bool,
-    },
+    List(ListMode),
     /// `extension remove <name> [--forget-pin]` (ADR-0431 §3, ADR-0449):
     /// take one package off, optionally clearing its recorded pin.
     Remove {
@@ -85,13 +78,27 @@ pub(crate) enum ExtensionAction {
     Check { dir: String },
 }
 
+/// Which question `extension list` answers: the two flags are mutually
+/// exclusive at the grammar, so the mode is one value, never a bool pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ListMode {
+    /// No flag: the installed set, offline.
+    Installed,
+    /// `--available`: read the channel index (verified as the install
+    /// reads it) and answer what exists to install.
+    Available,
+    /// `--trust`: print the recorded `--github` pins (the per-user trust
+    /// store), offline.
+    Trust,
+}
+
 impl ExtensionAction {
     /// The CLI spelling of the action (also the telemetry event value).
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             ExtensionAction::Init(_) => ACTION_INIT,
             ExtensionAction::Install(_) => ACTION_INSTALL,
-            ExtensionAction::List { .. } => ACTION_LIST,
+            ExtensionAction::List(_) => ACTION_LIST,
             ExtensionAction::Remove { .. } => ACTION_REMOVE,
             ExtensionAction::Check { .. } => ACTION_CHECK,
         }
@@ -299,14 +306,19 @@ fn parse_list(rest: &[String]) -> Result<ExtensionAction, ParseError> {
             other => return Err(ParseError::unexpected("extension list", other)),
         }
     }
-    if available && trust {
-        return Err(
-            "extension list: --trust and --available ask different questions (recorded \
-             pins vs the channel catalog)"
-                .into(),
-        );
-    }
-    Ok(ExtensionAction::List { available, trust })
+    let mode = match (available, trust) {
+        (false, false) => ListMode::Installed,
+        (true, false) => ListMode::Available,
+        (false, true) => ListMode::Trust,
+        (true, true) => {
+            return Err(
+                "extension list: --trust and --available ask different questions (recorded \
+                 pins vs the channel catalog)"
+                    .into(),
+            )
+        }
+    };
+    Ok(ExtensionAction::List(mode))
 }
 
 /// The `remove` grammar: exactly one positional (the package name) and
@@ -360,7 +372,7 @@ pub(crate) fn run(action: ExtensionAction) -> i32 {
     match action {
         ExtensionAction::Init(spec) => crate::extension_init::run(spec),
         ExtensionAction::Install(spec) => run_install_action(spec),
-        ExtensionAction::List { available, trust } => run_list(available, trust),
+        ExtensionAction::List(mode) => run_list(mode),
         ExtensionAction::Remove { name, forget_pin } => run_remove(&name, forget_pin),
         ExtensionAction::Check { dir } => run_check(&dir),
     }
@@ -401,32 +413,18 @@ fn run_install_action(_args: InstallArgs) -> i32 {
 /// channel index, hidden packages staying hidden in no listing, and
 /// `--trust` prints the recorded `--github` pins (name, repo, tag,
 /// commit, asset SHA256) from the per-user trust store.
-fn run_list(available: bool, trust: bool) -> i32 {
-    // The channel listing rides the feature; a build without it answers
-    // the parsed flag with the not-included error (ADR-0137), never a
-    // silent fallback to the installed set.
-    #[cfg(not(feature = "extension-install"))]
-    if available {
-        crate::print_error(
-            "Error: the 'extension list --available' listing is not included in this build \
-             of relate (enable the \"extension-install\" feature)",
-        );
-        return 2;
-    }
+fn run_list(mode: ListMode) -> i32 {
     // The recorded pins are the trust store's rows — offline and
     // dependency-free in every `extensions` build (ADR-0449).
-    #[cfg(feature = "extension-install")]
-    let rows = if trust {
-        trust_rows()
-    } else {
-        list_rows(available)
-    };
-    #[cfg(not(feature = "extension-install"))]
-    let rows = if trust {
-        trust_rows()
-    } else {
-        installed_rows()
-    };
+    match mode {
+        ListMode::Installed => print_rows(installed_rows()),
+        ListMode::Trust => print_rows(trust_rows()),
+        ListMode::Available => run_list_available(),
+    }
+}
+
+/// Print the rows (exit 0) or the listing's failure (exit 1).
+fn print_rows(rows: Result<Vec<String>, String>) -> i32 {
     match rows {
         Ok(rows) => {
             for row in rows {
@@ -441,13 +439,27 @@ fn run_list(available: bool, trust: bool) -> i32 {
     }
 }
 
-/// The list's rows: the installed set, or — with `extension-install` —
-/// the channel's catalog (§9).
+/// `extension list --available`: the channel listing rides the feature.
 #[cfg(feature = "extension-install")]
-fn list_rows(available: bool) -> Result<Vec<String>, String> {
-    if !available {
-        return installed_rows();
-    }
+fn run_list_available() -> i32 {
+    print_rows(available_rows())
+}
+
+/// A build without the feature answers the parsed flag with the
+/// not-included error (ADR-0137), never a silent fallback to the
+/// installed set.
+#[cfg(not(feature = "extension-install"))]
+fn run_list_available() -> i32 {
+    crate::print_error(
+        "Error: the 'extension list --available' listing is not included in this build \
+         of relate (enable the \"extension-install\" feature)",
+    );
+    2
+}
+
+/// The channel catalog's rows (§9), `extension list --available`.
+#[cfg(feature = "extension-install")]
+fn available_rows() -> Result<Vec<String>, String> {
     let index =
         crate::extensions::channel::fetch_verified_index().map_err(|err| err.to_string())?;
     let registry = ActionRegistry::load().map_err(|err| err.to_string())?;
@@ -472,10 +484,7 @@ fn installed_rows() -> Result<Vec<String>, String> {
 /// resolving is the same environment failure the install verbs answer.
 fn trust_rows() -> Result<Vec<String>, String> {
     let Some(config_dir) = crate::config_dir::config_dir() else {
-        return Err(format!(
-            "no config directory resolves: {}",
-            crate::config_dir::NO_BASE_HINT
-        ));
+        return Err(crate::config_dir::no_config_dir_text());
     };
     let store = TrustStore::load(&trust_path(&config_dir)).map_err(|e| e.to_string())?;
     Ok(store
@@ -562,10 +571,7 @@ fn remove(name: &str, forget_pin: bool) -> Result<(), String> {
     // reinstall is still compared against it).
     let forget = if forget_pin {
         let Some(config_dir) = crate::config_dir::config_dir() else {
-            return Err(format!(
-                "no config directory resolves: {}",
-                crate::config_dir::NO_BASE_HINT
-            ));
+            return Err(crate::config_dir::no_config_dir_text());
         };
         let mut store = TrustStore::load(&trust_path(&config_dir)).map_err(|e| e.to_string())?;
         let cleared = store.remove(name).is_some();

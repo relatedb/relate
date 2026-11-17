@@ -85,14 +85,8 @@ pub(super) fn install_from_index(
         crate::print_error(note);
     }
     let tarball = probe.probe_bytes;
-    let actual = sha256_hex(&tarball);
-    if actual != row.sha256 {
-        // Change nothing: the extensions dir keeps its prior state.
-        return Err(InstallError::Runtime(format!(
-            "checksum verification failed for {} (expected {}, got {}); not installing",
-            row.asset, row.sha256, actual
-        )));
-    }
+    // Change nothing on a mismatch: the extensions dir keeps its prior state.
+    verify_checksum(row.asset, &row.sha256, &tarball)?;
     let manifest = unpack_and_check(name, &tarball, staged)?;
     Ok((
         Provenance {
@@ -105,6 +99,21 @@ pub(super) fn install_from_index(
         },
         manifest,
     ))
+}
+
+/// The one checksum gate both pinned tiers apply to a fetched tarball: the
+/// bytes' SHA256 must equal the signed (channel) or resolved (GitHub) value,
+/// else the install stops before anything is unpacked.
+fn verify_checksum(asset: &str, expected: &str, bytes: &[u8]) -> Result<(), InstallError> {
+    let actual = sha256_hex(bytes);
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(InstallError::Runtime(format!(
+            "checksum verification failed for {asset} (expected {expected}, got {actual}); \
+             not installing"
+        )))
+    }
 }
 
 /// The explicit third-party trust act (§6): the URL names the package
@@ -326,13 +335,7 @@ pub(super) fn install_from_github(
         crate::print_error(note);
     }
     let tarball = probe.probe_bytes;
-    let actual = sha256_hex(&tarball);
-    if actual != pin.asset_sha256 {
-        return Err(InstallError::Runtime(format!(
-            "checksum verification failed for {} (expected {}, got {}); not installing",
-            resolved.asset, pin.asset_sha256, actual
-        )));
-    }
+    verify_checksum(&resolved.asset, &pin.asset_sha256, &tarball)?;
     let manifest = unpack_and_check(name, &tarball, staged)?;
     // The asset verified against the resolved SHA256 and the package passed
     // every load check; the pin rides back in the provenance and is

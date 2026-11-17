@@ -8,6 +8,9 @@
 //! - [`opt_out`] is the layered opt-out resolution (`DO_NOT_TRACK`, the
 //!   environment, the config key) and the deciding layer,
 //!   `relate telemetry status` reports.
+//! - [`atomic_file`] is the staged-write kit (non-predictable staging
+//!   names, exclusive private create, atomic replace) the state files and
+//!   the CLI's own staged files share.
 //! - [`state`] is the config-directory state files: the install ID, the
 //!   one-time first-run-notice flag, and the persistent config keys.
 //! - [`report`], [`policy`], [`authorization`], [`outcome`] and [`submit`]
@@ -20,6 +23,7 @@
 //! The crate takes the config directory and an environment lookup as
 //! arguments; the CLI keeps its one config-directory rule.
 
+pub mod atomic_file;
 pub mod authorization;
 pub mod client;
 pub mod ids;

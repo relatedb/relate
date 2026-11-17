@@ -25,9 +25,8 @@
 //! drop the keys it could not parse.
 
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use fs4::FileExt;
 
@@ -44,10 +43,6 @@ const CONFIG_LOCK_FILE: &str = "config.lock";
 
 /// Lock filename serializing the `state.json` claim read-edit-write.
 const STATE_LOCK_FILE: &str = "state.lock";
-
-/// Process-local sequence that makes each staging name unique even within
-/// one process (two writes in the same nanosecond still differ).
-static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Contents of `state.json` (ADR-0079 §3, §6). The serde derive is the one
 /// schema statement — `save_state` and `read_state` serialize and
@@ -320,62 +315,11 @@ fn is_uuid_shape(s: &str) -> bool {
             .all(|(p, len)| p.len() == len && p.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// Persist `bytes` to `path` atomic-ish: a non-predictable staging file in
-/// the same directory, created exclusively with 0600 at birth (both state
-/// files hold private data — the install UUID and the opt-out choice), then
-/// renamed over the target; the parent directory is fsynced after the
-/// rename.
-///
-/// Crate-local by necessity: the CLI's staged-file kit is not callable from
-/// here (the CLI is this crate's consumer), so the state files' writer
-/// states the same hardening once in the module that owns them.
+/// Persist `bytes` to `path` through the crate's staged-write kit, created
+/// 0600 at birth: both state files hold private data — the install UUID and
+/// the opt-out choice.
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let dir = path
-        .parent()
-        .filter(|d| !d.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    fs::create_dir_all(dir)?;
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("relate");
-    let seq = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp = dir.join(format!(".{name}.tmp-{}-{seq}-{nanos}", std::process::id()));
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&tmp)?;
-    let staged = file.write_all(bytes).and_then(|()| file.sync_all());
-    // Close the staging file before renaming: on Windows an open handle
-    // blocks the rename.
-    drop(file);
-    let result = staged
-        .and_then(|()| fs::rename(&tmp, path))
-        .and_then(|()| sync_parent_dir(dir));
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
-}
-
-/// fsync the parent directory so the rename itself is durable. Non-unix
-/// platforms cannot portably open a directory for syncing.
-#[cfg(unix)]
-fn sync_parent_dir(dir: &Path) -> io::Result<()> {
-    fs::File::open(dir)?.sync_all()
-}
-
-#[cfg(not(unix))]
-fn sync_parent_dir(_dir: &Path) -> io::Result<()> {
-    Ok(())
+    crate::atomic_file::write_atomic(path, bytes, 0o600)
 }
 
 #[cfg(test)]

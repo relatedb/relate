@@ -172,22 +172,34 @@ pub(super) fn check_target(
         return Ok(()); // fresh install
     }
     // The target directory exists: its marker decides.
-    match Provenance::read(&target).map_err(|e| e.to_string()) {
+    decide_marked_dir(name, &target, &target, incoming, force)
+}
+
+/// The one marker decision both the pre-fetch snapshot ([`check_target`])
+/// and the land-time re-decision ([`recheck_parked_install`]) apply: a
+/// broken marker is a runtime error, a marked package of another tier is
+/// the cross-tier refusal, the same tier replaces cleanly, and an unmarked
+/// directory is foreign (needs `--force`). `marker_dir` is where the marker
+/// is read (the target, or the package parked aside); `foreign_dir` is the
+/// directory a foreign refusal names.
+fn decide_marked_dir(
+    name: &str,
+    marker_dir: &Path,
+    foreign_dir: &Path,
+    incoming: Tier,
+    force: bool,
+) -> Result<(), InstallError> {
+    match Provenance::read(marker_dir).map_err(|e| e.to_string()) {
         Err(text) => Err(InstallError::Runtime(text)),
-        Ok(Some(provenance)) => {
-            if provenance.tier != incoming {
-                Err(cross_tier_refusal(
-                    name,
-                    provenance.tier,
-                    incoming,
-                    &provenance.source,
-                ))
-            } else {
-                // Same tier, same name: the clean replace (§3).
-                Ok(())
-            }
-        }
-        Ok(None) => foreign_target(&target, force),
+        Ok(Some(provenance)) if provenance.tier != incoming => Err(cross_tier_refusal(
+            name,
+            provenance.tier,
+            incoming,
+            &provenance.source,
+        )),
+        // Same tier, same name: the clean replace (§3).
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => foreign_target(foreign_dir, force),
     }
 }
 
@@ -235,20 +247,5 @@ pub(super) fn recheck_parked_install(
     incoming: Tier,
     force: bool,
 ) -> Result<(), InstallError> {
-    match Provenance::read(parked).map_err(|e| e.to_string()) {
-        Err(text) => Err(InstallError::Runtime(text)),
-        Ok(Some(provenance)) => {
-            if provenance.tier != incoming {
-                Err(cross_tier_refusal(
-                    name,
-                    provenance.tier,
-                    incoming,
-                    &provenance.source,
-                ))
-            } else {
-                Ok(())
-            }
-        }
-        Ok(None) => foreign_target(target, force),
-    }
+    decide_marked_dir(name, parked, target, incoming, force)
 }

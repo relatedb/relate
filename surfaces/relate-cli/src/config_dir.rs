@@ -56,6 +56,14 @@ pub(crate) fn config_dir() -> Option<PathBuf> {
 /// extension surfaces' no-base refusals.
 pub(crate) const NO_BASE_HINT: &str = "set $XDG_CONFIG_HOME, $HOME, $APPDATA, or $USERPROFILE";
 
+/// The unresolved-base failure text the extension surfaces return as an
+/// `Err` (the install, list and remove verbs): one spelling beside the
+/// hint it carries.
+#[cfg(feature = "extensions")]
+pub(crate) fn no_config_dir_text() -> String {
+    format!("no config directory resolves: {NO_BASE_HINT}")
+}
+
 /// The unresolved-base refusal, printed and answered with exit 1: one
 /// message and one exit code for every config writer, `command` naming the
 /// verb whose write could not start (e.g. `telemetry`, `feedback enable`).

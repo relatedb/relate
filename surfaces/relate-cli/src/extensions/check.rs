@@ -496,8 +496,12 @@ fn tool_names(table: &serde_json::Value) -> Vec<String> {
         .and_then(serde_json::Value::as_array)
         .expect("the wire kit's tools/list carries a tools array")
         .iter()
-        .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
-        .map(str::to_string)
+        .map(|tool| {
+            tool.get("name")
+                .and_then(serde_json::Value::as_str)
+                .expect("the wire kit's every tool carries a name")
+                .to_string()
+        })
         .collect()
 }
 

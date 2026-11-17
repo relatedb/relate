@@ -78,7 +78,10 @@ fn run_inner(
             println!("{}", telemetry.effective_state().status_line());
             0
         }
-        TelemetryAction::On => persist(dir, true).err().unwrap_or(0),
+        TelemetryAction::On => match persist(dir, true) {
+            Ok(_) => 0,
+            Err(code) => code,
+        },
         TelemetryAction::Off => {
             // One ordered transition (ADR-0545 §5): disarm the run's
             // pipeline first — the drain starts at the first recorded

@@ -33,13 +33,7 @@ fn the_grammar_reads_each_action() {
         assert_eq!(parsed.as_str(), "install");
     }
     let parsed = parse_extension_args(&args(&["list"])).unwrap();
-    assert_eq!(
-        parsed,
-        ExtensionAction::List {
-            available: false,
-            trust: false
-        }
-    );
+    assert_eq!(parsed, ExtensionAction::List(ListMode::Installed));
     assert_eq!(parsed.as_str(), "list");
     let parsed = parse_extension_args(&args(&["remove", "greet"])).unwrap();
     assert_eq!(
@@ -185,13 +179,7 @@ fn list_reads_available_once() {
     // `extension-install` answers it at run time with the not-included
     // error — pinned end to end in `tests/e2e_bundles.rs`.
     let parsed = parse_extension_args(&args(&["list", "--available"])).unwrap();
-    assert_eq!(
-        parsed,
-        ExtensionAction::List {
-            available: true,
-            trust: false
-        }
-    );
+    assert_eq!(parsed, ExtensionAction::List(ListMode::Available));
     assert_eq!(
         err_of(&["list", "--available", "--available"]),
         "extension list --available may be given only once"
@@ -414,10 +402,7 @@ fn github_grammar_violations_are_usage_errors() {
 fn list_trust_and_remove_forget_pin_parse_in_every_build() {
     assert_eq!(
         parse_extension_args(&args(&["list", "--trust"])).unwrap(),
-        ExtensionAction::List {
-            available: false,
-            trust: true
-        }
+        ExtensionAction::List(ListMode::Trust)
     );
     assert_eq!(
         err_of(&["list", "--trust", "--available"]),
