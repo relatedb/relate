@@ -238,6 +238,11 @@ fn main() {
     }
 
     if show_version {
+        // A non-query exit (ADR-0615): its exit joins the drain, bounded,
+        // instead of killing it mid-POST — `--version` is also the
+        // installer's verification step, and a fresh install's first
+        // delivery window.
+        telemetry.deliver_backlog_at_exit();
         telemetry.emit(telemetry::Event::Startup {
             kind: telemetry::StartupKind::Version,
         });
@@ -556,8 +561,11 @@ fn resolve_store(
 
 /// Flush pending telemetry events, then exit with `code`. Every exit path
 /// after the shared handle is constructed goes through this helper. The
-/// flush is one local spool append — never a network wait (ADR-0079 §5,
-/// ADR-0545): pending events are delivered by the next enabled run.
+/// flush is one local spool append wherever no exit join applied — never
+/// a network wait (ADR-0079 §5, ADR-0545 §1) — and where the run's shape
+/// earned one, the bounded join has already happened inside `flush`
+/// (ADR-0615): pending events are confirmed at this exit or ride the next
+/// enabled run.
 fn exit_flushed(telemetry: &mut telemetry::Telemetry, code: i32) -> ! {
     // A remote `--load` source's staged bundle is this process's temp file
     // (LABS-872); every post-fetch exit — success, a failed open, a failed
@@ -573,7 +581,10 @@ fn exit_flushed(telemetry: &mut telemetry::Telemetry, code: i32) -> ! {
 /// The one help-exit sequence, shared by the top-level `--help` path and a
 /// per-command `--help`: `Startup{kind: Help}`, the `RELATE-CLI_HELP`
 /// event (ADR-0079 §4), the page, then exit 0 through the shared flush path.
+/// A non-query exit (ADR-0615): the delivery window opens before the page
+/// prints, and the exit joins the drain, bounded.
 fn exit_help(telemetry: &mut telemetry::Telemetry, page: &str) -> ! {
+    telemetry.deliver_backlog_at_exit();
     telemetry.emit(telemetry::Event::Startup {
         kind: telemetry::StartupKind::Help,
     });
@@ -651,6 +662,16 @@ fn run_lifecycle_command(
     telemetry: &mut telemetry::Telemetry,
     surface: agent_mode::FeedbackSurface,
 ) -> ! {
+    // The lifecycle run's delivery window (ADR-0615): the drain starts
+    // here — the command's own runtime (a download, a copy, a serve
+    // lifetime) is the window it POSTs in, instead of the microseconds
+    // after the command body that the event's emit used to allow — and
+    // the exit joins it. The off transition is the one carve-out
+    // (the vocabulary predicate): a run about to forbid delivery never
+    // starts one (ADR-0545 §5).
+    if !cmd.forbids_delivery_window() {
+        telemetry.deliver_backlog_at_exit();
+    }
     // The command word for the RELATE-CLI_COMMAND event, captured before
     // the match consumes cmd.
     let name = cmd.name();

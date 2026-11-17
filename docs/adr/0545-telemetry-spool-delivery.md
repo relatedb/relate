@@ -130,3 +130,12 @@ which requires an absolute value: a relative `$HOME` (on Windows, also a
 driveless one such as `/c/Users/u`) names no base, like a relative
 `$XDG_CONFIG_HOME`, so the config directory falls through to the next tier
 instead of resolving against the working directory or the current drive.
+
+ADR-0615 revises the delivery shape: the drain thread now starts when the
+pipeline arms it (not at the first recorded event), non-query exits join
+it with a small budget, and the first run of a new CLI version drains the
+whole accumulated backlog once — because next-run-only delivery never
+delivered on runs that outlived neither their POSTs (sub-second
+one-shots) nor their event (lifecycle commands emitted only at exit), and
+undelivered claims walled off newer spool files until the retention bound
+shed them at random. §1's exit contract stands for query-session exits.

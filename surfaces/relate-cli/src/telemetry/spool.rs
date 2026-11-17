@@ -18,6 +18,13 @@
 //! the config directory is never claimed, never read, never renamed —
 //! only this module's own regular files are.
 //!
+//! Ordering is by file age — content mtime, which survives the claim
+//! rename, so a file's age is the age of the events it holds, not the
+//! moment a sweep took it. Claims and spool files share the one order,
+//! so a batch of undeliverable claims cannot sort ahead of newer spool
+//! files and wall them off; the oldest pending events are always the
+//! first delivered and the last dropped.
+//!
 //! Parsing is attempt-once: lines of a claimed file that do not parse
 //! are dropped when the claim is removed after a confirmed delivery — a
 //! corrupt line can never be delivered, and keeping its file alive would
@@ -29,7 +36,10 @@
 //! events), the sweep cap (a drain claims at most
 //! [`MAX_CLAIMS_PER_SWEEP`] files, the rest waiting for the next run),
 //! and the retention cap (past [`MAX_PENDING_FILES`] pending files a
-//! sweep drops the excess). Undeliverable content is attempt-once — a
+//! sweep drops the NEWEST overflow — the pile becomes the archive of a
+//! machine's oldest undelivered events, which cannot be re-recorded,
+//! while the newest overflow is statistically redundant with the runs
+//! that follow it). Undeliverable content is attempt-once — a
 //! corrupt line is dropped with its file after the delivery attempt,
 //! and a claim that cannot be read at all is removed on the spot:
 //! retained, it would sort to the head of every later sweep and starve
@@ -38,6 +48,7 @@
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
@@ -58,16 +69,50 @@ const CLAIM_PREFIX: &str = "telemetry-claim-";
 /// The spool and claim file extension.
 const EXTENSION: &str = ".jsonl";
 
+/// The bound on one spool file's bytes (ADR-0615's hardening of the
+/// hostile-co-tenant shape): a real file carries at most the backlog
+/// cap's worth of envelopes, each a few hundred bytes — 1 MiB is two
+/// orders above that. A file past the bound is not this module's output
+/// and is refused by the capped read (at most the cap plus one byte is
+/// ever read — the overflow byte is what refuses it); it is then removed
+/// attempt-once, like unreadable content, so it cannot starve a sweep.
+pub(crate) const MAX_SPOOL_FILE_BYTES: u64 = 1024 * 1024;
+
 /// Claim files one drain sweep takes; the rest wait for the next enabled
 /// run, so a pathological spool directory cannot keep a drain thread
-/// alive indefinitely.
-const MAX_CLAIMS_PER_SWEEP: usize = 8;
+/// alive indefinitely. `pub(crate)` for the drain-side tests that pin
+/// the steady one-sweep shape.
+pub(crate) const MAX_CLAIMS_PER_SWEEP: usize = 8;
 
-/// The spool's total pending-file bound: past it a sweep drops the
-/// excess, mirroring the in-memory backlog's drop-on-overflow, so a
-/// machine that stays offline keeps a bounded backlog of its newest
-/// pending runs instead of an unbounded one.
+/// The spool's total pending-file bound: past it a sweep drops the newest
+/// overflow, keeping the oldest pending files — the machine's earliest
+/// undelivered events, which nothing can re-record, while the newest
+/// overflow is redundant with the runs that follow it. Mirrors the
+/// in-memory backlog's bounded-drop posture so a machine that stays
+/// offline keeps a bounded backlog of its oldest pending runs.
 const MAX_PENDING_FILES: usize = 64;
+
+/// One file's age: its content mtime, the moment the run that wrote it
+/// flushed. The claim rename preserves mtime, so a claimed file keeps the
+/// age of the events it holds. A file whose mtime cannot be read sorts as
+/// the epoch — the oldest by default: the sweep still claims it, and the
+/// rename and read carry their own failure handling.
+fn modified_at(path: &Path) -> SystemTime {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .unwrap_or(UNIX_EPOCH)
+}
+
+/// The pending files under `dir`, oldest first — the one ordering the
+/// sweep claims in and the retention bound cuts from: `(age, name)`, so
+/// same-age files (one second's burst of runs) still order deterministically.
+fn pending_oldest_first(dir: &Path) -> Vec<PathBuf> {
+    let mut keyed: Vec<(SystemTime, PathBuf)> = spool_paths(dir)
+        .map(|path| (modified_at(&path), path))
+        .collect();
+    keyed.sort();
+    keyed.into_iter().map(|(_, path)| path).collect()
+}
 
 /// This run's spool file path under `dir` (ADR-0545 §1): one per process,
 /// so concurrent runs never share a target.
@@ -132,16 +177,16 @@ pub(crate) struct Claim {
 }
 
 /// Claim up to [`MAX_CLAIMS_PER_SWEEP`] spool and leftover-claim files
-/// under `dir`, renaming each to a fresh claim name and parsing its
-/// lines. Regular files only — a symbolic link is never claimed, read,
-/// or renamed. Files beyond the cap stay for the next sweep; so do the
-/// files of a concurrent drain this one raced (its rename fails). Every
-/// I/O error is swallowed (ADR-0079 §5).
+/// under `dir`, oldest first, renaming each to a fresh claim name and
+/// parsing its lines. Regular files only — a symbolic link is never
+/// claimed, read, or renamed. Files beyond the cap stay for the next
+/// sweep; so do the files of a concurrent drain this one raced (its
+/// rename fails). Every I/O error is swallowed (ADR-0079 §5).
 pub(crate) fn claim_all(dir: &Path) -> Vec<Claim> {
-    let mut paths: Vec<PathBuf> = spool_paths(dir).collect();
-    // Sorted for a deterministic sweep order, stable for tests and fair
-    // across runs.
-    paths.sort();
+    // Oldest first: the sweep's ordering and the retention cut share the
+    // one helper, so what claims first and what survives the bound can
+    // never disagree about age.
+    let paths = pending_oldest_first(dir);
     let mut claims = Vec::new();
     // Every rename counts against the sweep cap — an unreadable claim is
     // still work the sweep did, and a directory full of them must not
@@ -164,17 +209,17 @@ pub(crate) fn claim_all(dir: &Path) -> Vec<Claim> {
         // — and a non-regular claim is removed (the link itself, never
         // its target) and skipped.
         if !fs::symlink_metadata(&claim_path).is_ok_and(|meta| meta.file_type().is_file()) {
-            remove(&claim_path);
+            let _ = remove(&claim_path);
             continue;
         }
         // An unreadable claim is attempt-once, like a corrupt line: the
-        // content is undeliverable, and retaining it would sort it to
-        // the head of every later sweep (claim names sort before spool
-        // names) — eight such files would wall off delivery for good.
-        // A transient failure loses one best-effort batch, never a
-        // slot forever.
+        // content is undeliverable, and retaining it would put it at the
+        // head of every later sweep (the oldest, by its preserved mtime)
+        // — eight such files would wall off delivery for good. A
+        // transient failure loses one best-effort batch, never a slot
+        // forever.
         let Some(events) = read_lines(&claim_path) else {
-            remove(&claim_path);
+            let _ = remove(&claim_path);
             continue;
         };
         claims.push(Claim {
@@ -182,28 +227,33 @@ pub(crate) fn claim_all(dir: &Path) -> Vec<Claim> {
             path: claim_path,
         });
     }
-    // The retention bound, applied to the survivors: the sweep renamed
-    // up to `MAX_CLAIMS_PER_SWEEP` entries into fresh claim names, so
-    // the pre-scan list is stale — re-read the directory and drop the
-    // excess past `MAX_PENDING_FILES`. Unreadable claims count like any
-    // other pending file, so the bound holds on the failure path too.
-    // (Uuid order — the names carry no timestamps; the bound is what
-    // matters, not which — mirroring the in-memory backlog's
-    // drop-on-overflow so a machine that stays offline keeps a bounded
-    // backlog, not an unbounded one.)
-    let mut survivors: Vec<PathBuf> = spool_paths(dir).collect();
-    survivors.sort();
-    for excess in survivors.iter().skip(MAX_PENDING_FILES) {
-        remove(excess);
-    }
+    // The retention bound, with the claim survivors it applies to
+    // (its own policy and doc: [`enforce_retention_bound`]).
+    enforce_retention_bound(dir);
     claims
 }
 
-/// Remove a claim file after confirmed delivery (or an empty one).
-/// Swallowed: an undeletable claim is re-claimed and re-delivered by a
-/// later run, which the sink dedups.
-pub(crate) fn remove(path: &Path) {
-    let _ = fs::remove_file(path);
+/// The retention bound applied to the survivors of a sweep (ADR-0615):
+/// re-read the directory — the sweep renamed up to its cap into fresh
+/// claim names, so any pre-scan list is stale — oldest first, and drop
+/// the excess past [`MAX_PENDING_FILES`] from the NEWEST end. Unreadable
+/// claims count like any other pending file, so the bound holds on the
+/// failure path too.
+fn enforce_retention_bound(dir: &Path) {
+    let survivors = pending_oldest_first(dir);
+    for excess in survivors.iter().skip(MAX_PENDING_FILES) {
+        let _ = remove(excess);
+    }
+}
+
+/// Remove a claim file after its disposition. The result reaches the
+/// sweep, which counts a failed removal as retryable: the claim stays
+/// on disk for the next run (which the sink dedups), and the pass stops
+/// instead of re-POSTing it. The retention bound and the unreadable and
+/// symlink removals ignore it — their files leave with the sweep either
+/// way or starve it.
+pub(crate) fn remove(path: &Path) -> std::io::Result<()> {
+    fs::remove_file(path)
 }
 
 /// Remove every spool and claim file under `dir` — `telemetry off`
@@ -242,17 +292,40 @@ fn is_telemetry_name(name: &str) -> bool {
 
 /// The parsed envelopes of one file — one JSON value per non-empty line,
 /// a line that does not parse absent (attempt-once, module doc), and
-/// `None` when the file cannot be read at all: the caller's one signal
-/// for the attempt-once removal — undeliverable content, never an
-/// empty claim.
+/// `None` when the file cannot be read at all or sits past
+/// [`MAX_SPOOL_FILE_BYTES`]: the caller's one signal for the
+/// attempt-once removal — undeliverable content, never an empty claim,
+/// and never an unbounded read.
 fn read_lines(path: &Path) -> Option<Vec<Value>> {
-    let text = fs::read_to_string(path).ok()?;
+    // The one bounded read the workspace owns (relate-wire's read_cap):
+    // at most the cap plus one byte is read — the overflow byte is what
+    // refuses an oversized file — so a file that grows past the cap
+    // between the claim and this read is still refused, and an
+    // unopenable or non-UTF-8 file is undeliverable, like the unreadable
+    // claim. An empty line needs no case of its own: strict JSON rejects
+    // it, exactly as it rejects any corrupt line.
+    let file = fs::File::open(path).ok()?;
+    let bytes = match relate_wire::read_cap::read_capped(file, MAX_SPOOL_FILE_BYTES) {
+        Ok(relate_wire::read_cap::CappedRead::Complete(bytes)) => bytes,
+        // The cap refused the file, or the read failed.
+        _ => return None,
+    };
+    let text = String::from_utf8(bytes).ok()?;
     Some(
         text.lines()
-            .filter(|line| !line.is_empty())
             .filter_map(|line| serde_json::from_str(line).ok())
             .collect(),
     )
+}
+
+/// The one pending telemetry file's contents — exactly one file, or
+/// the helper names what it found instead. The scan is the production
+/// sweep's own ([`spool_paths`]).
+#[cfg(test)]
+pub(super) fn spool_contents(dir: &Path) -> String {
+    let mut found: Vec<PathBuf> = spool_paths(dir).collect();
+    assert_eq!(found.len(), 1, "expected one spool file, found {found:?}");
+    std::fs::read_to_string(found.remove(0)).expect("read spool file")
 }
 
 #[cfg(test)]
@@ -260,7 +333,9 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use crate::home_dir::permission_bits_enforced;
+    use crate::telemetry::event_names;
     use serde_json::json;
+    use std::time::Duration;
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
@@ -339,12 +414,9 @@ mod tests {
         .expect("seed claim");
         let claims = claim_all(dir.path());
         assert_eq!(claims.len(), 3, "both spools and the leftover claim");
-        let mut events: Vec<&str> = claims
-            .iter()
-            .flat_map(|c| c.events.iter().map(|e| e["event"].as_str().expect("event")))
-            .collect();
+        let mut events = event_names(claims.iter().flat_map(|c| c.events.iter()));
         events.sort();
-        assert_eq!(events, &["e1", "e1", "e2", "e2", "e3"]);
+        assert_eq!(events, ["e1", "e1", "e2", "e2", "e3"]);
         // Every claim is renamed out of the swept names.
         assert!(spool_files(dir.path()).is_empty());
         for claim in &claims {
@@ -392,8 +464,27 @@ mod tests {
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].events.len(), 1);
         assert_eq!(claims[0].events[0]["event"], "good");
-        remove(&claims[0].path);
+        let _ = remove(&claims[0].path);
         assert!(!file.exists());
+    }
+
+    /// A file past the byte bound is not this module's output — the
+    /// capped read refuses it after at most cap-plus-one bytes, and a
+    /// planted oversized file is removed attempt-once (the
+    /// hostile-co-tenant shape the bound exists for).
+    #[test]
+    fn an_oversized_file_is_capped_and_removed() {
+        let dir = tmp();
+        let file = spool_file(dir.path());
+        fs::write(&file, "x".repeat(MAX_SPOOL_FILE_BYTES as usize + 1)).expect("plant");
+        let claims = claim_all(dir.path());
+        assert!(claims.is_empty(), "the oversized file yields no claim");
+        assert_eq!(
+            spool_paths(dir.path()).count(),
+            0,
+            "the capped claim is removed attempt-once — counted through the module's
+             own residue view, so the rename alone cannot satisfy this"
+        );
     }
 
     #[test]
@@ -407,7 +498,7 @@ mod tests {
         let claims = claim_all(dir.path());
         assert_eq!(claims.len(), 1);
         assert!(claims[0].events.is_empty());
-        remove(&claims[0].path);
+        let _ = remove(&claims[0].path);
         assert!(!file.exists());
     }
 
@@ -496,9 +587,9 @@ mod tests {
 
     #[test]
     fn the_retention_bound_drops_the_excess_pending_files() {
-        // Past MAX_PENDING_FILES the sweep drops the excess (uuid order,
-        // the bound is what matters): a machine that stays offline keeps
-        // a bounded backlog, mirroring the in-memory drop-on-overflow.
+        // Past MAX_PENDING_FILES the sweep drops the excess (from the
+        // newest end, oldest first): a machine that stays offline keeps a
+        // bounded backlog of its oldest pending runs.
         let dir = tmp();
         for _ in 0..(MAX_PENDING_FILES + 2) {
             fs::write(spool_file(dir.path()), "{\"event\":\"e\"}\n").expect("seed");
@@ -509,6 +600,63 @@ mod tests {
         // stay at the bound: 8 claims + 56 spool files = 64 pending.
         let pending = spool_paths(dir.path()).count();
         assert_eq!(pending, MAX_PENDING_FILES, "the spool is bounded");
+    }
+
+    /// The sweep claims oldest first: the file written earliest is the
+    /// first claim, so the events closest to being shed by the retention
+    /// bound are the first delivered. The gaps between the seeds keep
+    /// their mtimes distinct on the coarsest filesystem a suite runs on.
+    #[test]
+    fn the_sweep_claims_oldest_files_first() {
+        let dir = tmp();
+        for i in 0..3 {
+            fs::write(spool_file(dir.path()), format!("{{\"event\":\"e{i}\"}}\n")).expect("seed");
+            if i < 2 {
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        }
+        let claims = claim_all(dir.path());
+        let events = event_names(claims.iter().flat_map(|c| c.events.iter()));
+        assert_eq!(events, ["e0", "e1", "e2"]);
+    }
+
+    /// Past the bound the drop is from the NEWEST end: the pile keeps the
+    /// machine's oldest undelivered events (the irreplaceable history —
+    /// an install's first events included) and sheds the newest overflow
+    /// (statistically redundant with the runs that follow it).
+    #[test]
+    fn the_retention_bound_drops_the_newest_files() {
+        let dir = tmp();
+        let seeds = MAX_PENDING_FILES + 2;
+        for i in 0..seeds {
+            fs::write(spool_file(dir.path()), format!("{{\"event\":\"e{i}\"}}\n")).expect("seed");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let claims = claim_all(dir.path());
+        assert_eq!(claims.len(), MAX_CLAIMS_PER_SWEEP);
+        assert_eq!(spool_paths(dir.path()).count(), MAX_PENDING_FILES);
+        // Every marker that still exists anywhere — claimed or pending —
+        // through the one extraction, with the pending side read by the
+        // module's own read/parse policy so the test's view of "still
+        // present" cannot drift from the drain's.
+        let mut present = event_names(claims.iter().flat_map(|c| c.events.iter()));
+        let pending_events: Vec<serde_json::Value> = spool_paths(dir.path())
+            .filter_map(|path| read_lines(&path))
+            .flatten()
+            .collect();
+        present.extend(event_names(pending_events.iter()));
+        assert!(
+            event_names(claims.first().expect("a claim").events.iter()).contains(&"e0".to_string()),
+            "the sweep's first claims are the oldest files"
+        );
+        let all_markers: std::collections::BTreeSet<String> = present.into_iter().collect();
+        let shed_markers = (1..=2).map(|back| format!("e{}", seeds - back));
+        for shed in shed_markers {
+            assert!(
+                !all_markers.contains(&shed),
+                "the newest overflow is shed, {shed} must be gone; still present: {all_markers:?}"
+            );
+        }
     }
 
     #[cfg(unix)]

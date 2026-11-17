@@ -36,6 +36,9 @@ relate-load = { workspace = true, optional = true }
 relate-storage = { workspace = true, optional = true }
 # The `wire` fixture's gzip inflate helper (the wire tests' gzip bodies).
 flate2 = { workspace = true, optional = true }
+# The capture sink's JSON-array accessor (`json_bodies`, wire side) and
+# the `envelope`/`loopback` corners parse bodies and objects, so the
+# dependency rides `wire` and those features, not the whole crate.
 serde_json = { workspace = true, optional = true }
 # The mount-contract pin (`envelope`) asserts the wire kit's own constants.
 relate-wire = { workspace = true, optional = true }
@@ -77,13 +80,13 @@ durability = ["dep:relate"]
 nested_eval = ["dep:relate-error", "dep:relate-executor"]
 # The envelope-keys and mount-contract pins (ADR-0430 §6) the first-party
 # children's tests call.
-envelope = ["dep:serde_json", "dep:relate-wire"]
+envelope = ["dep:relate-wire", "dep:serde_json"]
 # The wire fixtures: raw client, request builders, response parsers,
 # scripted servers. No loader.
-wire = ["dep:flate2"]
+wire = ["dep:flate2", "dep:serde_json"]
 # The full loopback Query API fixture: `wire` plus the `LoadOpts` bridge the
 # pull/loader tests use.
-loopback = ["wire", "dep:relate-load", "dep:serde_json"]
+loopback = ["wire", "dep:relate-load"]
 # The recursive `Vfs` traversal (`vfs_walk`): the golden-store and
 # markdown-vault suites' one walk policy.
 vfs_walk = ["dep:relate-storage"]

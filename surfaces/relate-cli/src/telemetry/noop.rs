@@ -20,5 +20,10 @@ impl Telemetry {
     /// the live receiver so call sites are identical in every bundle.
     pub fn emit(&mut self, _event: Event) {}
 
+    /// The no-op twin of the live handle's
+    /// `deliver_backlog_at_exit`: with telemetry compiled out there is
+    /// no backlog to deliver and no exit to wait at.
+    pub fn deliver_backlog_at_exit(&mut self) {}
+
     pub fn flush(&mut self) {}
 }

@@ -7,9 +7,15 @@ use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 
 mod mock_mixpanel;
+mod telemetry;
 
 #[allow(unused_imports)] // Each test binary uses a subset of the mock harness.
 pub use mock_mixpanel::{FollowupRun, MockMixpanel, DELIVERY_WAIT, QUIET_GRACE};
+#[allow(unused_imports)] // Each test binary uses a subset of the fixtures.
+pub use telemetry::{
+    pending_telemetry_contents_in, pending_telemetry_files_in, seed_spool, spool_files_in,
+    CLAIM_FILE_PREFIX, DELIVERY_WORK_QUERY, SPOOL_FILE_PREFIX,
+};
 
 /// The `serve` e2e harness (spawn/wait/SIGINT on one spawned server, plus
 /// the pinned credential pair): shared by `e2e_serve.rs` and
@@ -448,68 +454,6 @@ fn spawn_cli(mut cmd: Command, stdin: Option<&[u8]>) -> (ExitStatus, String, Str
 #[allow(dead_code)]
 pub fn tempdir() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
-}
-
-/// The telemetry spool's file-name prefix, pinned for the e2e suites —
-/// the e2e twin of the CLI's own fact (`SPOOL_PREFIX` in
-/// `src/telemetry/spool.rs`; e2e binaries cannot reach the bin's private
-/// items). Every e2e spelling of a spool file name — scans and seeds —
-/// derives from this one constant, like the other pinned strings here.
-#[allow(dead_code)]
-pub const SPOOL_FILE_PREFIX: &str = "telemetry-spool-";
-
-/// The claim file-name prefix, the e2e twin of `CLAIM_PREFIX` — a
-/// sweep's in-flight rename target. The pending-file scan below counts
-/// both, so a drain that has claimed (renamed) files mid-test can never
-/// make the spool look falsely empty.
-#[allow(dead_code)]
-pub const CLAIM_FILE_PREFIX: &str = "telemetry-claim-";
-
-/// The delivery follow-ups' work query (ADR-0545 §2): a follow-up's
-/// whole job is to stay alive long enough for its drain thread to POST,
-/// and engine work buys that window even on a saturated runner where a
-/// `RETURN 1` run may live only milliseconds. The one spelling of the
-/// query, shared by every suite's follow-up closure — the env wiring
-/// around it stays per-suite.
-#[allow(dead_code)]
-pub const DELIVERY_WORK_QUERY: &str = "UNWIND range(1, 100000) AS i RETURN count(i) AS c";
-
-/// The `telemetry-spool-*.jsonl` files currently under `dir` — the one
-/// spool-scan helper for the e2e suites, so the scan shape cannot drift
-/// between them.
-#[allow(dead_code)]
-pub fn spool_files_in(dir: &Path) -> Vec<std::path::PathBuf> {
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with(SPOOL_FILE_PREFIX))
-        })
-        .map(|entry| entry.path())
-        .collect()
-}
-
-/// The pending telemetry files currently under `dir` — spool files and
-/// claims alike, the sweep's whole vocabulary: a drain renames spool
-/// files to claim names while it delivers, so a scan that counts only
-/// one prefix can race the drain and report a falsely empty spool.
-#[allow(dead_code)]
-pub fn pending_telemetry_files_in(dir: &Path) -> Vec<std::path::PathBuf> {
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| {
-            entry.file_name().to_str().is_some_and(|name| {
-                name.starts_with(SPOOL_FILE_PREFIX) || name.starts_with(CLAIM_FILE_PREFIX)
-            })
-        })
-        .map(|entry| entry.path())
-        .collect()
 }
 
 /// How many nodes the store at `db` holds, read through the CLI's JSONL

@@ -2403,7 +2403,10 @@ Every event also carries the Mixpanel envelope and base dimensions:
 
 **Identity.** The install ID is a random UUID generated once and persisted
 in `state.json` under `<config>/relate/`. It is not a hardware or OS
-machine identifier — none is ever read.
+machine identifier — none is ever read. `state.json` also records the
+last-run CLI version (the once-per-version delivery drain's claim) and
+the delivery backoff window's end after a failed delivery attempt —
+nothing about the machine's user or its hardware.
 
 **Never collected.** Query text, database paths, and parameter values are
 structurally excluded: the event-builder types have no fields for them, so
@@ -2412,19 +2415,37 @@ capturing them is a compile error, not a policy violation (ADR-0079 §4).
 **Delivery.** A run's exit writes its pending events to a local spool
 file under `<config>/relate/` — one fresh JSONL file per run, mode 0600
 on unix, never touching a file that already existed — and that is the
-whole exit cost: no network wait, ever (ADR-0079 §5, ADR-0545). The
-next enabled run's background drain thread (started at that run's
-first recorded event) claims the spool files (spooled files and any
-claims a killed drain left behind; regular files only, never symbolic
-links — a planted link is neither claimed, read, nor followed) and
-POSTs them in batches of at most 50 with a 2-second HTTP timeout — at
-most 8 files per sweep, the rest waiting for the next run — deleting
-each claim only after every batch is confirmed; an undelivered claim
-waits for the next enabled run, and a claim whose content cannot be
-read is removed on the spot — attempt-once, like a corrupt line — so
-undeliverable content never starves a sweep. Each file is bounded by the run's in-memory backlog cap,
+whole exit cost wherever no exit join applies: no network wait, ever
+(ADR-0079 §5, ADR-0545 §1). The drain thread starts when the pipeline
+arms it — at the first recorded event, or when a non-query exit
+(`--version`, help, a lifecycle command) opens its delivery window
+before the work begins — and only when the spool holds files to
+deliver: a clean machine spawns no thread and holds no delivery stack.
+It claims the spool files (spooled files and
+any claims a killed drain left behind; regular files only, never
+symbolic links — a planted link is neither claimed, read, nor
+followed), oldest first, POSTing them in batches of at most 50 with a
+2-second HTTP timeout — at most 8 files per sweep, the rest waiting for
+the next run — deleting each claim only after every batch is confirmed;
+an undelivered claim waits for the next enabled run, and a claim whose
+content cannot be read is removed on the spot — attempt-once, like a
+corrupt line — so undeliverable content never starves a sweep. A
+query-session exit keeps the pure local write — its backlog and its own
+events ride the next enabled run; a run's own events always do (the
+drain's pass covers only the backlog). A non-query exit joins the
+drain, bounded by a 1-second budget — the thread had the whole run as
+a head start, so the join pays the POST tail, not the POST — and the
+first run of a new CLI version joins with an elevated, pending-scaled
+budget (1 s plus 150 ms per pending file, at most 10 s) whatever its
+shape, draining the whole accumulated backlog once per version; the
+run records its version in `state.json` whether or not delivery
+succeeded. A join that fails or runs out stamps a 15-minute backoff
+window in `state.json`; exits inside the window skip the wait, so a
+machine with a pending backlog and an unreachable sink does not stall
+every exit. Each file is bounded by the run's in-memory backlog cap,
 and the spool holds at most 64 pending files — past that a sweep drops
-the excess. Delivery is at-least-once — the sink dedups on
+the newest overflow, keeping the oldest pending events. Delivery is
+at-least-once — the sink dedups on
 `$insert_id`, making it effectively-once — and event `time` is stamped
 at emit, so late delivery does not skew time-based reports. A run with
 no resolvable config directory records nothing — the same degraded

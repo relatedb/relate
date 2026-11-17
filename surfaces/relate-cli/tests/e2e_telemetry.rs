@@ -9,15 +9,22 @@
 //! [`with_default_telemetry`](support::CliRunOptions::with_default_telemetry)
 //! or points at the mock sink.
 //!
-//! Delivery is the spool model (ADR-0545): a run's exit appends its
-//! events to a local spool file — never a network wait — and the next
-//! enabled run's drain thread claims and POSTs them. The second half of
-//! this file runs the binary against a mock Mixpanel sink
-//! ([`MockMixpanel`]): a tiny HTTP server on 127.0.0.1 that captures
-//! `/track` request bodies so the tests can assert the exact events and
-//! property keys the real binary emits (ADR-0079 §4), that every opt-out
-//! layer sends nothing at all (ADR-0079 §6), and that spooled events
-//! reach the sink through a follow-up run (ADR-0545 §2).
+//! Delivery is the spool model (ADR-0545, revised by ADR-0615 — the
+//! delivery-lifetime revision): a query-session run's exit appends its
+//! events to a local spool file — never a network wait — and a later
+//! enabled run's drain thread claims and POSTs them; a non-query exit
+//! (`--version`, help, a lifecycle command) opens the delivery window
+//! before its work and joins the drain at exit, bounded, so its backlog
+//! is confirmed before the process ends; the first run of a new CLI
+//! version drains the whole accumulated backlog at its own exit,
+//! whatever its shape. The second half of this file runs the binary
+//! against mock Mixpanel sinks ([`MockMixpanel`]): a tiny HTTP server
+//! on 127.0.0.1 that captures `/track` request bodies — instant, and
+//! delayed for the exit-join regression — so the tests can assert the
+//! exact events and property keys the real binary emits (ADR-0079 §4),
+//! that every opt-out layer sends nothing at all (ADR-0079 §6), and
+//! that spooled events reach the sink through a follow-up run
+//! (ADR-0545 §2) or a joined exit (ADR-0615).
 
 #![cfg(feature = "telemetry")]
 
@@ -27,9 +34,7 @@ use std::process::ExitStatus;
 
 mod support;
 
-use support::{
-    run_cli, spool_files_in, tempdir, CliRunOptions as Opts, MockMixpanel, SPOOL_FILE_PREFIX,
-};
+use support::{run_cli, spool_files_in, tempdir, CliRunOptions as Opts, MockMixpanel};
 
 /// The one-time first-run notice text (must match main.rs's `FIRST_RUN_NOTICE`).
 const NOTICE_FRAGMENT: &str = "relate collects anonymous usage metrics";
@@ -652,9 +657,7 @@ fn test_an_opted_out_run_neither_drains_nor_clears_the_spool() {
     // Seed a spool file exactly as an earlier enabled run's exit append
     // would have left it, named from the one pinned prefix.
     let cfg = home.path().join(".config").join("relate");
-    std::fs::create_dir_all(&cfg).expect("create config dir");
-    let seeded = format!("{SPOOL_FILE_PREFIX}seeded.jsonl");
-    std::fs::write(cfg.join(&seeded), "{\"event\":\"SEEDED\"}\n").expect("seed spool");
+    let seeded = support::seed_spool(&cfg, "SEEDED");
     // An opted-out run touches nothing: no drain, no clear — the spool
     // waits for a later enabled run.
     let (status, stdout, stderr) = run_cli(
@@ -667,7 +670,7 @@ fn test_an_opted_out_run_neither_drains_nor_clears_the_spool() {
     assert!(stdout.contains('1'), "expected query output, got: {stdout}");
     mock.assert_quiet("an opted-out run");
     assert!(
-        cfg.join(&seeded).exists(),
+        seeded.exists(),
         "an opted-out run must leave the spool untouched"
     );
 }
@@ -682,9 +685,7 @@ fn test_telemetry_off_clears_a_seeded_spool_and_records_nothing_of_its_own() {
     let mock = MockMixpanel::start();
     let home = tempdir();
     let cfg = home.path().join(".config").join("relate");
-    std::fs::create_dir_all(&cfg).expect("create config dir");
-    let seeded = format!("{SPOOL_FILE_PREFIX}seeded.jsonl");
-    std::fs::write(cfg.join(&seeded), "{\"event\":\"SEEDED\"}\n").expect("seed spool");
+    support::seed_spool(&cfg, "SEEDED");
     let (status, _, stderr) = run_cli(
         Opts::new(&["telemetry", "off"])
             .in_home(home.path())
@@ -697,4 +698,118 @@ fn test_telemetry_off_clears_a_seeded_spool_and_records_nothing_of_its_own() {
         "off must clear the seed and write no new spool file of its own"
     );
     mock.assert_quiet("the run that turns telemetry off");
+}
+
+// === the delivery-lifetime revision (ADR-0615): joined exits and the
+// one-run lag ===
+
+/// The joined-exit regression (ADR-0615): a non-query exit against a
+/// sink slower than the run's whole lifetime delivers its backlog before
+/// the process ends — no follow-up run. On the pre-revision code the
+/// drain thread died mid-POST at `process::exit` and the seed never
+/// arrived; this test is the pin that it cannot come back.
+#[test]
+fn test_version_exit_delivers_a_seeded_backlog_without_a_followup_run() {
+    let mock = MockMixpanel::start_with_delay(std::time::Duration::from_millis(600));
+    let home = tempdir();
+    let cfg = home.path().join(".config").join("relate");
+    support::seed_spool(&cfg, "SEEDED");
+    let (status, stdout, stderr) = run_cli(
+        Opts::new(&["--version"])
+            .in_home(home.path())
+            .with_endpoint(&mock.url()),
+    );
+    assert!(status.success(), "--version failed: {stderr}");
+    assert!(
+        stdout.contains("Relate"),
+        "expected version output: {stdout}"
+    );
+    // The join confirmed the delivery before the process exited: the
+    // seed is at the sink the moment the run is over.
+    let events = mock.events();
+    assert!(
+        events.iter().any(|e| e["event"] == "SEEDED"),
+        "the joined exit must deliver the seeded backlog; captured: {:?}",
+        events
+            .iter()
+            .map(|e| e["event"].clone())
+            .collect::<Vec<_>>()
+    );
+    // Sweep-before-flush: the run's own events still spool for the next
+    // run — never delivered by the run that emitted them.
+    assert!(
+        !events.iter().any(|e| e["event"] == "RELATE-CLI_STARTUP"),
+        "the run's own events ride the next run, not this exit"
+    );
+    let pending = support::pending_telemetry_contents_in(&cfg);
+    assert!(
+        pending.len() == 1,
+        "the run's own spool file is the only pending residue: {pending:?}"
+    );
+    let (_, own) = &pending[0];
+    assert!(
+        own.contains("RELATE-CLI_STARTUP"),
+        "the pending file carries the run's own events: {own}"
+    );
+}
+
+/// The one-run lag (ADR-0545 §1 as revised): a query-session run's own
+/// events are never delivered by that run — the drain's sweep ran before
+/// the run's file existed, and its exit never joins. Deterministic by
+/// construction, independent of how long the run happened to live.
+#[test]
+fn test_query_oneshot_events_spool_for_the_next_run_not_their_own() {
+    let mock = MockMixpanel::start();
+    let home = tempdir();
+    // Record the version first, so the run under test is the steady
+    // query shape the one-run lag is the rule of. The stamping run must
+    // actually ARM the drain to claim the version (ADR-0615's arming
+    // semantics: an empty spool never arms): give it a pending file and
+    // the mock sink, so the `--version` exit delivers the seed through
+    // its join and records the version — a refused endpoint with
+    // nothing pending would leave the claim unstamped and the run under
+    // test would silently be the version drain instead.
+    let cfg = home.path().join(".config").join("relate");
+    support::seed_spool(&cfg, "STAMP");
+    let (status, _, stderr) = run_cli(
+        Opts::new(&["--version"])
+            .in_home(home.path())
+            .with_endpoint(&mock.url()),
+    );
+    assert!(
+        status.success(),
+        "the version-stamping run failed: {stderr}"
+    );
+    let (status, stdout, stderr) = run_cli(
+        Opts::new(&["RETURN 1"])
+            .in_home(home.path())
+            .with_endpoint(&mock.url()),
+    );
+    assert!(status.success(), "oneshot exited non-zero: {stderr}");
+    assert!(stdout.contains('1'), "expected query output, got: {stdout}");
+    // The run's own events sit in a pending spool file…
+    let own_events: String = support::pending_telemetry_contents_in(&cfg)
+        .into_iter()
+        .map(|(_, contents)| contents)
+        .collect();
+    assert!(
+        own_events.contains("RELATE-CLI_STARTUP") && own_events.contains("RELATE-CLI_QUERY"),
+        "the run's own events spooled: {own_events}"
+    );
+    // …and are not at the sink: not this run's exit, the next one's. The
+    // previous run's STARTUP (`--version`, kind "version") is exactly
+    // what this run's sweep SHOULD have claimed and delivered — the
+    // one-run lag doing its job — so the absence here is scoped to this
+    // run's own events: its QUERY, and its STARTUP (kind "oneshot").
+    let captured = mock.events();
+    assert!(
+        !captured.iter().any(|e| e["event"] == "RELATE-CLI_QUERY"),
+        "a query-session exit delivers nothing of its own: the QUERY event"
+    );
+    assert!(
+        !captured
+            .iter()
+            .any(|e| e["event"] == "RELATE-CLI_STARTUP" && e["properties"]["kind"] == "oneshot"),
+        "a query-session exit delivers nothing of its own: its STARTUP"
+    );
 }

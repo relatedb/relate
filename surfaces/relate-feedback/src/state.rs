@@ -5,8 +5,13 @@
 //!
 //! - `state.json` holds `install_id` (a random UUID v4, generated once and
 //!   reused thereafter), `notice_shown` (the one-time first-run-notice
-//!   flag) and `feedback_ask_last` (when the feedback grant ask last ran —
-//!   one record both ask policies derive from, ADR-0588 §3 as revised).
+//!   flag), `feedback_ask_last` (when the feedback grant ask last ran —
+//!   one record both ask policies derive from, ADR-0588 §3 as revised),
+//!   `cli_version_last_run` (the CLI version this config directory last
+//!   ran under — the once-per-version delivery drain's trigger and
+//!   claim) and `delivery_backoff_until` (until when exits skip the
+//!   delivery drain's wait after a failed attempt — the delivery
+//!   cooldown).
 //! - `config.json` holds the persistent opt-out key `telemetry` (bool) and
 //!   the feedback consent record.
 //!
@@ -65,6 +70,22 @@ pub struct State {
     /// suppresses re-asks for a window, not forever.
     #[serde(default)]
     pub feedback_ask_last: Option<chrono::DateTime<chrono::Utc>>,
+    /// The CLI version this config directory last ran under: a run whose
+    /// version differs from the recorded one is the once-per-version
+    /// delivery drain (the spool's accumulated backlog drains at that
+    /// run's exit), and the run records its version whether or not the
+    /// delivery succeeded — attempt-once per version, so a machine that
+    /// cannot deliver yet does not pay the elevated drain budget on every
+    /// subsequent run.
+    #[serde(default)]
+    pub cli_version_last_run: Option<String>,
+    /// Until when CLI exits skip the delivery drain's wait: stamped after
+    /// a drain attempt that failed or ran out of budget, so a machine
+    /// with a pending backlog and an unreachable sink does not pay the
+    /// wait on every exit. `None` or a past stamp means exits wait again;
+    /// the drain thread itself still attempts delivery inside every run.
+    #[serde(default)]
+    pub delivery_backoff_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl State {
@@ -92,6 +113,40 @@ impl State {
     ) -> io::Result<()> {
         self.update_locked(dir, |current| {
             current.feedback_ask_last = Some(now);
+            true
+        })
+        .map(|_| ())
+    }
+
+    /// Record the CLI version this config directory now runs under (the
+    /// once-per-version delivery drain's claim): writes only when the
+    /// recorded version differs, so every run after the claim compares
+    /// and writes nothing. Same locked shape as the notice claim, so
+    /// concurrent first runs of the same version claim it once.
+    pub fn stamp_cli_version(&mut self, dir: &Path, version: &str) -> io::Result<()> {
+        self.update_locked(dir, |current| {
+            if current.cli_version_last_run.as_deref() == Some(version) {
+                false
+            } else {
+                current.cli_version_last_run = Some(version.to_string());
+                true
+            }
+        })
+        .map(|_| ())
+    }
+
+    /// Stamp the delivery backoff window's end (the drain's failed-attempt
+    /// cooldown): exits inside the window skip the drain wait; the next
+    /// enabled run's drain thread still attempts delivery regardless.
+    /// Unconditional like the ask stamp — the window is the latest
+    /// failure's, and a fresh timestamp never repeats.
+    pub fn stamp_delivery_backoff(
+        &mut self,
+        dir: &Path,
+        until: chrono::DateTime<chrono::Utc>,
+    ) -> io::Result<()> {
+        self.update_locked(dir, |current| {
+            current.delivery_backoff_until = Some(until);
             true
         })
         .map(|_| ())
@@ -177,6 +232,8 @@ fn fresh_state() -> State {
         install_id: uuid_v4(),
         notice_shown: false,
         feedback_ask_last: None,
+        cli_version_last_run: None,
+        delivery_backoff_until: None,
     }
 }
 
@@ -437,9 +494,72 @@ mod tests {
             install_id: "123e4567-e89b-42d3-a456-426614174000".to_string(),
             notice_shown: false,
             feedback_ask_last: None,
+            cli_version_last_run: None,
+            delivery_backoff_until: None,
         };
         assert!(state.claim_notice(&dir).is_err());
         assert!(!state.notice_shown, "an unrecorded claim is not claimed");
+    }
+
+    #[test]
+    fn cli_version_stamp_writes_only_on_change_and_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let (mut state, _) = load_or_create_state(dir);
+        // A fresh state has no recorded version; the first stamp writes,
+        // the second (same version) does not, and a later different
+        // version writes again — the once-per-version claim.
+        assert_eq!(state.cli_version_last_run, None);
+        state.stamp_cli_version(dir, "1.0.3").unwrap();
+        state.stamp_cli_version(dir, "1.0.3").unwrap();
+        assert_eq!(
+            load_or_create_state(dir).0.cli_version_last_run,
+            Some("1.0.3".to_string())
+        );
+        state.stamp_cli_version(dir, "1.0.4").unwrap();
+        assert_eq!(
+            load_or_create_state(dir).0.cli_version_last_run,
+            Some("1.0.4".to_string())
+        );
+    }
+
+    #[test]
+    fn delivery_backoff_stamp_persists_and_overwrites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let (mut state, _) = load_or_create_state(dir);
+        let first = chrono::Utc::now() + chrono::Duration::minutes(15);
+        state.stamp_delivery_backoff(dir, first).unwrap();
+        assert_eq!(
+            load_or_create_state(dir).0.delivery_backoff_until,
+            Some(first)
+        );
+        // A later stamp overwrites — the window is the latest failure's.
+        let second = first + chrono::Duration::minutes(15);
+        state.stamp_delivery_backoff(dir, second).unwrap();
+        assert_eq!(
+            load_or_create_state(dir).0.delivery_backoff_until,
+            Some(second)
+        );
+    }
+
+    /// A state file written before the two delivery fields existed loads
+    /// with both absent — the schema addition is additive, and an older
+    /// binary reading a newer file ignores the keys it does not know.
+    #[test]
+    fn pre_delivery_state_files_load_with_both_fields_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            state_path(&dir),
+            r#"{"install_id": "123e4567-e89b-42d3-a456-426614174000", "notice_shown": true}"#,
+        )
+        .unwrap();
+        let (state, _) = load_or_create_state(&dir);
+        assert_eq!(state.cli_version_last_run, None);
+        assert_eq!(state.delivery_backoff_until, None);
+        assert!(state.notice_shown);
     }
 
     #[test]

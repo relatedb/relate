@@ -13,7 +13,9 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use relate_test_support::loopback::{spawn_capture_server, CaptureSink};
+use relate_test_support::loopback::{
+    spawn_capture_server, spawn_capture_server_with_delay, CaptureSink,
+};
 
 use super::{run_cli, CliRunOptions};
 
@@ -84,6 +86,17 @@ impl MockMixpanel {
         Self { sink, port }
     }
 
+    /// [`Self::start`] with a per-request response delay: the sink whose
+    /// answer is slower than a short-lived run's whole lifetime — the
+    /// network-latency shape the delivery revision's exit join exists
+    /// for. A client that dies before the delay passes leaves neither a
+    /// recorded request nor a confirmed delivery, exactly as against a
+    /// distant production endpoint.
+    pub fn start_with_delay(delay: Duration) -> Self {
+        let (sink, port) = spawn_capture_server_with_delay("200 OK", "1", delay);
+        Self { sink, port }
+    }
+
     /// The URL to hand to `RELATE_MIXPANEL_ENDPOINT`.
     pub fn url(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
@@ -93,21 +106,12 @@ impl MockMixpanel {
         self.sink.request_count()
     }
 
-    /// All captured events: every request body is a JSON array of Mixpanel
-    /// envelopes; flatten them into one event list.
+    /// All captured events: the sink's recorded `/track` bodies, each
+    /// parsed as the JSON array of envelopes it must be (the one
+    /// array-body policy, stated on the capture sink), flattened into
+    /// one event list.
     pub fn events(&self) -> Vec<serde_json::Value> {
-        self.sink
-            .bodies()
-            .iter()
-            .flat_map(|body| {
-                let value: serde_json::Value = serde_json::from_str(body)
-                    .unwrap_or_else(|e| panic!("mock received a non-JSON body: {e}: {body}"));
-                value
-                    .as_array()
-                    .expect("/track body must be a JSON array")
-                    .clone()
-            })
-            .collect()
+        self.sink.json_bodies()
     }
 
     /// Poll the captured events until `pred` holds or `timeout` passes.

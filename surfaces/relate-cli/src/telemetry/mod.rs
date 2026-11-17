@@ -19,6 +19,8 @@
 mod event;
 
 #[cfg(feature = "telemetry")]
+mod drain;
+#[cfg(feature = "telemetry")]
 mod envelope;
 #[cfg(feature = "telemetry")]
 mod handle;
@@ -43,4 +45,47 @@ pub(crate) fn env_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Op
             .find(|(key, _)| *key == k)
             .map(|(_, v)| v.to_string())
     }
+}
+
+/// The event names inside captured envelopes — the one extraction every
+/// test module's claim-side and sink-side assertions read, so the view
+/// of "what the spool held" or "what the sink took" cannot drift between
+/// them.
+#[cfg(all(test, feature = "telemetry"))]
+pub(crate) fn event_names<'a>(
+    values: impl IntoIterator<Item = &'a serde_json::Value>,
+) -> Vec<String> {
+    values
+        .into_iter()
+        .map(|event| event["event"].as_str().expect("event").to_string())
+        .collect()
+}
+
+/// Seed one pending spool file carrying `marker`: the backlog a
+/// delivery test finds at its arming, written the way the run before it
+/// would have. The e2e suites have their own fixture (the support
+/// module's `seed_spool`) — this is the src-side spelling.
+#[cfg(all(test, feature = "telemetry"))]
+pub(crate) fn seed_spool(dir: &std::path::Path, marker: &str) {
+    spool::write(
+        &spool::spool_file(dir),
+        &[serde_json::json!({"event": marker})],
+    );
+}
+
+/// The one enabled-handle constructor the telemetry test modules share
+/// (ADR-0615): a live pipeline against a loopback endpoint the test
+/// controls — the refused-port shape the handle-lifecycle tests use and
+/// the mock-sink shape the delivery tests use are the two endpoints of
+/// this one constructor. Behind the `telemetry` feature, which owns the
+/// live `enable`.
+#[cfg(all(test, feature = "telemetry"))]
+pub(crate) fn handle_in(dir: &std::path::Path, endpoint: &str) -> Telemetry {
+    let pairs = [("RELATE_MIXPANEL_ENDPOINT", endpoint)];
+    let env = env_of(&pairs);
+    Telemetry::enable(
+        relate_feedback::opt_out::EffectiveState::Default,
+        &env,
+        Some(dir.to_path_buf()),
+    )
 }

@@ -95,11 +95,17 @@ impl Client {
     }
 }
 
-/// Classify an HTTP status: 2xx accepted, 4xx refused, everything else —
-/// 5xx and the unfollowed 3xx — a server-side failure.
+/// Classify an HTTP status: 2xx accepted; the request-shaped retryables —
+/// 408 (the sink timed out reading the request) and 429 (rate limited) —
+/// as server-side failures, because the sink asks for the same batch
+/// again later and a caller that drops "refused" content would lose it;
+/// every other 4xx refused, since resending it unchanged cannot help;
+/// everything else — 5xx and the unfollowed 3xx — a server-side
+/// failure.
 fn classify_status(status: u16) -> Reply {
     match status {
         200..=299 => Reply::Accepted,
+        408 | 429 => Reply::ServerError,
         400..=499 => Reply::Rejected,
         _ => Reply::ServerError,
     }
@@ -290,8 +296,19 @@ mod tests {
         for accepted in [200, 202, 299] {
             assert_eq!(classify_status(accepted), Reply::Accepted, "{accepted}");
         }
-        for rejected in [400, 404, 429] {
+        for rejected in [400, 401, 403, 404, 413] {
             assert_eq!(classify_status(rejected), Reply::Rejected, "{rejected}");
+        }
+        // The request-shaped retryables classify as server-side
+        // failures: the sink asks for the batch again (429's rate
+        // window, 408's read timeout), so dropping them as refusals
+        // would lose deliverable content.
+        for retryable in [408, 429] {
+            assert_eq!(
+                classify_status(retryable),
+                Reply::ServerError,
+                "{retryable}"
+            );
         }
         for failed in [301, 302, 500, 503] {
             assert_eq!(classify_status(failed), Reply::ServerError, "{failed}");

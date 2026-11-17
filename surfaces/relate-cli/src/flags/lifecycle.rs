@@ -181,6 +181,21 @@ impl LifecycleCommand {
         }
     }
 
+    /// Whether dispatching this command must not open the telemetry
+    /// delivery window (ADR-0545 §5, ADR-0615): the `telemetry off`
+    /// transition is the one carve-out — a run about to forbid delivery
+    /// never starts one. The policy lives here, beside the command
+    /// vocabulary it reads, so the dispatcher stays dispatch-only.
+    pub(crate) fn forbids_delivery_window(&self) -> bool {
+        match self {
+            #[cfg(feature = "telemetry")]
+            Self::Telemetry {
+                action: crate::telemetry_cmd::TelemetryAction::Off,
+            } => true,
+            _ => false,
+        }
+    }
+
     /// The command word as diagnostics and telemetry report it (`update`
     /// reports "upgrade", ADR-0079 §4). Static because
     /// [`crate::telemetry::Event::Command`] stores `&'static str`.

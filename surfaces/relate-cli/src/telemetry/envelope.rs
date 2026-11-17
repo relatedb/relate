@@ -15,8 +15,10 @@ use crate::agent_mode::{launched_by, Launched};
 
 use super::Event;
 
-/// CLI version, single-sourced from the crate's `Cargo.toml`.
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// CLI version, single-sourced from the crate's `Cargo.toml`. Read by the
+/// telemetry envelope's base dimensions and by the once-per-version
+/// delivery drain's state claim (the version `state.json` records).
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Serialize one already-built envelope as a JSON line — the pipeline's
 /// one serializer seam, always the swallowed form (ADR-0079 §5: no
