@@ -428,9 +428,9 @@ fn neighbor_walk_drops_a_reused_rel_ids_stale_hops() {
     assert_eq!(named(3, Direction::Both), vec![6]);
 }
 
-/// The sealed tier is a side table, not a per-node field: a node whose
-/// chunks never folded has no entry there, and the checkpoint fold lands one
-/// where it seals.
+/// The sealed tier is a graph-level arena, not a per-node field: a node
+/// whose chunks never folded has no region there, and the checkpoint fold
+/// lands one where it seals.
 #[test]
 fn sealed_side_table_entry_exists_only_where_a_fold_lands() {
     let g = Graph::default();
@@ -439,7 +439,7 @@ fn sealed_side_table_entry_exists_only_where_a_fold_lands() {
     g.create_rel(a, b, "T".into(), BTreeMap::new()).unwrap();
     g.commit_write();
     assert!(
-        g.out_side().sealed.get(&a).is_none() && g.in_side().sealed.get(&b).is_none(),
+        g.sealed_out.region(a).is_none() && g.sealed_in.region(b).is_none(),
         "a chunk below the floor has no sealed entry"
     );
 
@@ -457,13 +457,9 @@ fn sealed_side_table_entry_exists_only_where_a_fold_lands() {
     g.commit_write();
     g.gc_versions();
 
-    let sealed = g
-        .out_side()
-        .sealed
-        .get(&a)
-        .expect("the fold lands an entry");
-    assert!(sealed.chunks.iter().all(|(_, chunk)| chunk.len() > 0));
-    assert!(g.in_side().sealed.get(&b).is_some());
+    let sealed = g.sealed_out.region(a).expect("the fold lands an entry");
+    assert!(sealed.chunk_count() > 0);
+    assert!(g.sealed_in.region(b).is_some());
 }
 
 /// One checkpoint pass folds several nodes' due chunks, each under its own
@@ -495,23 +491,16 @@ fn a_multi_node_fold_seals_every_due_chunk() {
 
     for ((from, to), ids) in [((a, b), &created[0]), ((c, d), &created[1])] {
         let sealed = g
-            .out_side()
-            .sealed
-            .get(&from)
+            .sealed_out
+            .region(from)
             .expect("the fold lands a sealed entry");
-        let mut sealed_ids: Vec<_> = sealed
-            .chunk(type_id)
-            .expect("the sealed chunk")
-            .decoded()
-            .iter()
-            .map(|hop| hop.id)
-            .collect();
+        let mut sealed_ids: Vec<_> = sealed.decoded(type_id).iter().map(|hop| hop.id).collect();
         let mut expected = ids.clone();
         sealed_ids.sort_unstable();
         expected.sort_unstable();
         assert_eq!(sealed_ids, expected, "the out fold of {from}");
         assert_eq!(
-            g.in_side().sealed.get(&to).unwrap().chunk_len(type_id),
+            g.sealed_in.region(to).unwrap().chunk_len(type_id),
             crate::adjacency::COMPACTION_DELTA_FLOOR,
             "the in side of {to} seals too"
         );
@@ -526,7 +515,7 @@ fn delete_of_a_sealed_hop_records_the_versioned_tombstone() {
     let g = Graph::default();
     let (a, _, ids, type_id) = crate::graph::test_support::folded_floor_chunk(&g);
     assert_eq!(
-        g.out_side().sealed.get(&a).unwrap().chunk_len(type_id),
+        g.sealed_out.region(a).unwrap().chunk_len(type_id),
         crate::adjacency::COMPACTION_DELTA_FLOOR
     );
 
@@ -534,16 +523,16 @@ fn delete_of_a_sealed_hop_records_the_versioned_tombstone() {
     g.delete_rel(ids[5]);
     g.commit_write();
 
-    let region = g.out_side().sealed.get(&a).expect("sealed region");
-    let sealed = region.chunk(type_id).expect("sealed chunk");
+    let region = g.sealed_out.region(a).expect("sealed region");
     assert_eq!(
-        sealed.len(),
+        region.chunk_len(type_id),
         crate::adjacency::COMPACTION_DELTA_FLOOR,
         "the sealed hop stays physical until reclaimed"
     );
-    assert_eq!(sealed.tombstones.len(), 1);
-    assert_eq!(sealed.tombstones[0].id, ids[5]);
-    assert!(sealed.tombstones[0].xmax > 0);
+    let tombstones = region.tombstones(type_id);
+    assert_eq!(tombstones.len(), 1);
+    assert_eq!(tombstones[0].id, ids[5]);
+    assert!(tombstones[0].xmax > 0);
 }
 
 /// A delete records its tombstone without a delta entry: `AdjSide::remove` drops
@@ -560,22 +549,24 @@ fn delete_without_a_delta_entry_still_tombstones_the_sealed_hop() {
         "the fold leaves a delta entry"
     );
     assert!(g.out_adj.get(&a).is_none(), "delta entry absent");
-    assert!(
-        g.out_side().sealed.get(&a).is_some(),
-        "sealed region present"
-    );
+    assert!(g.sealed_out.region(a).is_some(), "sealed region present");
 
     g.begin_write().unwrap();
     g.delete_rel(ids[5]);
     g.commit_write();
 
-    let region = g.out_side().sealed.get(&a).expect("sealed region");
-    let sealed = region.chunk(type_id).expect("sealed chunk");
-    assert_eq!(sealed.tombstones.len(), 1);
-    let tombstone = sealed.tombstones[0];
+    let region = g.sealed_out.region(a).expect("sealed region");
+    let tombstones = region.tombstones(type_id);
+    assert_eq!(tombstones.len(), 1);
+    let tombstone = tombstones[0];
     assert_eq!(tombstone.id, ids[5]);
     assert!(tombstone.deleted.is_some());
-    let visible = |ts: u64| sealed.visible_hops(ts).iter().any(|h| h.id == ids[5]);
+    let visible = |ts: u64| {
+        region
+            .visible_hops(type_id, ts)
+            .iter()
+            .any(|h| h.id == ids[5])
+    };
     assert!(
         visible(tombstone.xmax - 1),
         "an older snapshot sees the hop"
@@ -608,7 +599,7 @@ fn deleted_delta_hop_reclaims_out_of_the_sealed_stream_without_a_ghost() {
     let type_id = g.interner.get_id("T").unwrap();
     g.compact_adjacency_at_watermark(0);
     assert_eq!(
-        g.out_side().sealed.get(&a).unwrap().chunk_len(type_id),
+        g.sealed_out.region(a).unwrap().chunk_len(type_id),
         floor as usize
     );
 
@@ -638,14 +629,9 @@ fn deleted_delta_hop_reclaims_out_of_the_sealed_stream_without_a_ghost() {
     // older snapshot still sees it (ADR-0551).
     g.compact_adjacency_at_watermark(0);
     {
-        let sealed = g.out_side().sealed.get(&a).unwrap();
+        let sealed = g.sealed_out.region(a).unwrap();
         assert_eq!(sealed.chunk_len(type_id), (floor + delta) as usize);
-        assert!(sealed
-            .chunk(type_id)
-            .unwrap()
-            .decoded()
-            .iter()
-            .any(|h| h.id == deleted));
+        assert!(sealed.decoded(type_id).iter().any(|h| h.id == deleted));
     }
     let mut walked = Vec::new();
     g.for_each_neighbor_at(
@@ -665,16 +651,11 @@ fn deleted_delta_hop_reclaims_out_of_the_sealed_stream_without_a_ghost() {
     g.gc_versions();
     {
         let adj = g.out_adj.get(&a).unwrap();
-        let sealed = g.out_side().sealed.get(&a).unwrap();
+        let sealed = g.sealed_out.region(a).unwrap();
         assert_eq!(sealed.chunk_len(type_id), (floor + delta - 1) as usize);
-        assert!(!sealed
-            .chunk(type_id)
-            .unwrap()
-            .decoded()
-            .iter()
-            .any(|h| h.id == deleted));
+        assert!(!sealed.decoded(type_id).iter().any(|h| h.id == deleted));
         let mut physical = Vec::new();
-        adj.for_each_hop_of(Some(&sealed), type_id, 0, |hop| physical.push(hop.id));
+        adj.for_each_hop_of(Some(sealed), type_id, 0, |hop| physical.push(hop.id));
         assert!(!physical.contains(&deleted), "no ghost hop");
     }
     assert_eq!(
@@ -710,10 +691,9 @@ fn a_never_sealed_chunk_never_seals_a_deleted_hop() {
     g.commit_write();
     let type_id = g.interner.get_id("T").unwrap();
     assert!(g
-        .out_side()
-        .sealed
-        .get(&a)
-        .is_none_or(|region| region.chunk(type_id).is_none()));
+        .sealed_out
+        .region(a)
+        .is_none_or(|region| !region.has_chunk(type_id)));
 
     let deleted = ids[5];
     g.begin_write().unwrap();
@@ -722,10 +702,10 @@ fn a_never_sealed_chunk_never_seals_a_deleted_hop() {
     g.gc_versions();
 
     let adj = g.out_adj.get(&a).unwrap();
-    let sealed = g.out_side().sealed.get(&a).unwrap();
+    let sealed = g.sealed_out.region(a).unwrap();
     assert_eq!(sealed.chunk_len(type_id), floor as usize);
     assert!(
-        !adj.flatten(Some(&sealed)).contains(&deleted),
+        !adj.flatten(Some(sealed)).contains(&deleted),
         "no ghost hop"
     );
     assert_eq!(g.adj_len(a, Direction::Outgoing), floor as usize);
@@ -771,21 +751,21 @@ fn a_zero_hop_sealed_region_reclaims_its_tombstones_at_the_checkpoint() {
         g.delete_rel(id);
         g.commit_write();
         assert!(
-            g.out_side()
-                .sealed
-                .get(&a)
-                .is_some_and(|region| region.chunk(type_id).is_some()),
+            g.sealed_out
+                .region(a)
+                .is_some_and(|region| region.has_chunk(type_id)),
             "round {round}: the write records the zero-hop region"
         );
 
         g.gc_versions();
-        let sealed_tombstones = match g.out_side().sealed.get(&a) {
-            Some(region) => region
-                .chunk(type_id)
-                .map_or(0, |chunk| chunk.tombstones.len()),
-            None => 0,
-        };
-        let live_delta = g.out_adj.get(&a).map_or(0, |adj| adj.chunk(type_id).len());
+        let sealed_tombstones = g
+            .sealed_out
+            .region(a)
+            .map_or(0, |region| region.tombstones(type_id).len());
+        let live_delta = g
+            .out_adj
+            .get(&a)
+            .map_or(0, |adj| adj.chunk_hops(type_id).len());
         assert_eq!(
             live_delta, 2,
             "round {round}: the churned hop reclaimed, the live delta stays"
@@ -847,13 +827,13 @@ fn delta_hop_delete_and_reposition_record_the_tombstone_without_a_decode() {
     g.commit_write();
 
     let tombstones = {
-        let sealed = g.out_side().sealed.get(&a).unwrap();
+        let sealed = g.sealed_out.region(a).unwrap();
         assert_eq!(
             sealed.chunk_len(type_id),
             floor as usize,
             "the write touches no sealed bytes"
         );
-        sealed.chunk(type_id).unwrap().tombstones.clone()
+        sealed.tombstones(type_id)
     };
     let t = tombstones
         .iter()
@@ -865,10 +845,7 @@ fn delta_hop_delete_and_reposition_record_the_tombstone_without_a_decode() {
     g.begin_write().unwrap();
     g.set_property_rel(moved, "ts", Value::Int(floor + 5));
     g.commit_write();
-    let tombstones = {
-        let sealed = g.out_side().sealed.get(&a).unwrap();
-        sealed.chunk(type_id).unwrap().tombstones.clone()
-    };
+    let tombstones = g.sealed_out.region(a).unwrap().tombstones(type_id);
     let t = tombstones
         .iter()
         .find(|t| t.id == moved)
@@ -909,21 +886,19 @@ fn gc_at_the_pinned_horizon_keeps_a_relocated_delta_hop() {
 
     {
         let adj = g.out_adj.get(&a).unwrap();
-        let sealed = g.out_side().sealed.get(&a).unwrap();
+        let sealed = g.sealed_out.region(a).unwrap();
         assert_eq!(
             sealed.chunk_len(type_id),
             crate::adjacency::COMPACTION_DELTA_FLOOR - 1,
             "the sealed position is reclaimed at the pinned horizon"
         );
         assert_eq!(
-            adj.chunk(type_id).len(),
+            adj.chunk_hops(type_id).len(),
             1,
             "the relocated hop stays delta while its delete stamp is above the horizon"
         );
         let t = sealed
-            .chunk(type_id)
-            .unwrap()
-            .tombstones
+            .tombstones(type_id)
             .first()
             .copied()
             .expect("the tombstone still names the deleted delta hop");
@@ -954,7 +929,7 @@ fn sealed_chunk_write_path_charges_match_the_recount_oracle() {
     let (a, b, ids, type_id) = crate::graph::test_support::folded_floor_chunk(&g);
     let floor = crate::adjacency::COMPACTION_DELTA_FLOOR as i64;
     assert_eq!(
-        g.out_side().sealed.get(&a).unwrap().chunk_len(type_id),
+        g.sealed_out.region(a).unwrap().chunk_len(type_id),
         floor as usize
     );
     assert_eq!(g.used_bytes(), g.accounted_bytes());
@@ -988,14 +963,13 @@ fn sealed_chunk_write_path_charges_match_the_recount_oracle() {
     assert_eq!(g.used_bytes(), g.accounted_bytes());
 }
 
-/// The sealed tier's floor is `vec_heap(len, stride)`, i.e.
-/// `reserved_len(len) * stride`, so every vector it charges must hold
-/// exactly that capacity — the reservation discipline the rest of the store
-/// keeps. A sealed region after a fold, and the tombstone a delete records.
+/// The sealed arena's floor charges the immutable byte buffer at its exact
+/// length ([`vec_heap_exact`]) and the push-grown vectors at their
+/// reservation ([`vec_heap`]), so every buffer it charges must hold exactly
+/// that capacity. A sealed region after a fold, and the tombstone a delete
+/// records.
 #[test]
-fn sealed_vectors_hold_exactly_the_reserved_capacity() {
-    use crate::memory::reserved_len;
-
+fn sealed_vectors_hold_exactly_the_capacity_their_floor_charges() {
     let g = Graph::default();
     let (a, _, ids, type_id) = crate::graph::test_support::folded_floor_chunk(&g);
     g.begin_write().unwrap();
@@ -1003,60 +977,36 @@ fn sealed_vectors_hold_exactly_the_reserved_capacity() {
     g.commit_write();
 
     let mut tombstoned = 0;
-    for side in [g.out_side().sealed, g.in_side().sealed] {
-        side.for_each(|_id, region| {
-            assert_eq!(
-                region.chunks.capacity(),
-                reserved_len(region.chunks.len()),
-                "the chunk vector holds its reservation"
-            );
-            for (_, chunk) in &region.chunks {
-                assert_eq!(
-                    chunk.bytes.capacity(),
-                    reserved_len(chunk.bytes.len()),
-                    "the sealed stream holds its reservation"
-                );
-                assert_eq!(
-                    chunk.tombstones.capacity(),
-                    reserved_len(chunk.tombstones.len()),
-                    "the tombstones hold their reservation"
-                );
-                if !chunk.tombstones.is_empty() {
-                    tombstoned += 1;
-                }
-            }
-        });
+    for side in [&g.sealed_out, &g.sealed_in] {
+        tombstoned += side.assert_fit();
     }
     assert_eq!(
         tombstoned, 2,
         "the delete tombstoned the sealed stream on both endpoints"
     );
     assert!(
-        g.out_side().sealed.get(&a).unwrap().chunk_len(type_id) > 0,
+        g.sealed_out.region(a).unwrap().chunk_len(type_id) > 0,
         "the fold sealed the hops"
     );
 }
 
-/// F-1-58: the floor's recount charges the sealed tier's slot arrays beside
-/// each region's own floor — the term the heap census reads as
-/// `slot_bytes`. Dropping the side-table entries drops exactly those two
-/// terms and nothing else.
+/// F-1-58: the floor's recount charges the sealed arena's span tables beside
+/// each arena's own floor — the span-table share of the heap census's sealed
+/// `index_bytes`. Dropping the arenas drops exactly those terms and nothing
+/// else.
 #[test]
 fn the_floor_charges_the_sealed_slot_arrays() {
     let g = Graph::default();
     crate::graph::test_support::folded_floor_chunk(&g);
     let arrays = g.out_side().sealed.array_bytes() + g.in_side().sealed.array_bytes();
     assert!(arrays > 0, "the fold created sealed entries");
-    let mut floors = 0u64;
-    for sealed in [g.out_side().sealed, g.in_side().sealed] {
-        sealed.for_each(|_id, region| floors += region.floor_bytes());
-    }
+    let floors = g.sealed_out.floor_bytes() + g.sealed_in.floor_bytes();
     let with_sealed = g.structure_bytes();
     g.out_side().sealed.clear();
     g.in_side().sealed.clear();
     assert_eq!(
         with_sealed - g.structure_bytes(),
         arrays + floors,
-        "the slot arrays are charged beside the regions' floors"
+        "the span tables are charged beside the arenas' floors"
     );
 }

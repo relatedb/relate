@@ -72,37 +72,55 @@ pub struct HeapCensus {
     pub accounted_bytes: u64,
 }
 
-/// One direction's adjacency: node count, chunk/hop counts, and the slot
-/// plus heap bytes. Both directions go through [`Self::of`]. Hops count the
+/// One direction's adjacency: node count, chunk/hop counts, and the floor
+/// split (ADR-0599). Both directions go through [`Self::of`]. Hops count the
 /// live delta and the sealed stream (`TypedAdj::chunk_lens`), so a folded
-/// chunk keeps its degree; `sealed_chunks` names how many are folded.
+/// chunk keeps its degree; `sealed_chunks` names how many are folded. The
+/// byte terms partition the tier's whole floor: `delta_bytes` is the delta
+/// map's slot array plus every chunk's reserved heap; the sealed tier is
+/// `arena_bytes` charged at the exact encoded length plus `index_bytes` the
+/// span table, side map, entries and tombstones ([`Self::sealed_bytes`]),
+/// and `dead_bytes` the arena ranges a fold replaced, the share of
+/// `arena_bytes` the next compaction reclaims.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AdjacencyCensus {
     pub nodes: u64,
     pub chunks: u64,
     pub sealed_chunks: u64,
     pub hops: u64,
-    pub slot_bytes: u64,
-    pub heap_bytes: u64,
+    pub delta_bytes: u64,
+    pub arena_bytes: u64,
+    pub index_bytes: u64,
+    pub dead_bytes: u64,
 }
 
 impl AdjacencyCensus {
+    /// The sealed tier's whole floor: the arena at its exact encoded length
+    /// plus the index structures around it.
+    pub fn sealed_bytes(&self) -> u64 {
+        self.arena_bytes + self.index_bytes
+    }
+
     fn of(side: AdjSide<'_>) -> Self {
+        let tier = side.sealed.tier_bytes();
         let mut c = Self {
-            slot_bytes: side.array_bytes(),
+            arena_bytes: tier.arena,
+            index_bytes: tier.index,
+            dead_bytes: tier.dead,
             ..Self::default()
         };
         side.delta.for_each(|id, adj| {
-            let region = side.sealed.get(&id);
+            let region = side.sealed.region(id);
             c.nodes += 1;
             c.chunks += adj.chunks.len() as u64;
-            c.sealed_chunks += region.as_ref().map_or(0, |s| s.chunks.len()) as u64;
+            c.sealed_chunks += region.map_or(0, |s| s.chunk_count()) as u64;
             c.hops += adj
-                .chunk_lens(region.as_deref())
+                .chunk_lens(region)
                 .map(|(_, delta, sealed)| (delta + sealed) as u64)
                 .sum::<u64>();
-            c.heap_bytes += adj.floor_bytes() + region.as_ref().map_or(0, |s| s.floor_bytes());
+            c.delta_bytes += adj.floor_bytes();
         });
+        c.delta_bytes += side.delta.array_bytes();
         c
     }
 }
@@ -121,10 +139,10 @@ impl HeapCensus {
             + self.rel_slot_bytes
             + self.rel_record_bytes
             + self.rel_chain_bytes
-            + self.out.slot_bytes
-            + self.out.heap_bytes
-            + self.r#in.slot_bytes
-            + self.r#in.heap_bytes
+            + self.out.delta_bytes
+            + self.out.sealed_bytes()
+            + self.r#in.delta_bytes
+            + self.r#in.sealed_bytes()
             + self.label_index_bytes
             + self.declared.range_bytes
             + self.declared.text_bytes
@@ -153,7 +171,7 @@ impl Graph {
         c.node_slot_bytes = self.nodes.array_bytes();
         self.nodes.for_each(|_id, vers| {
             c.node_chains.count(vers.shape());
-            c.node_chain_bytes += memory::node_chain_bytes(vers.shape());
+            c.node_chain_bytes += memory::chain_bytes(vers.shape(), super::node_version_stride());
             for v in vers.iter() {
                 c.node_record_bytes +=
                     memory::live_node_account_live(v.live, &self.interner, &charge);
@@ -175,7 +193,7 @@ impl Graph {
         c.rel_slot_bytes = self.rels.array_bytes();
         self.rels.for_each(|_id, vers| {
             c.rel_chains.count(vers.shape());
-            c.rel_chain_bytes += memory::rel_chain_bytes(vers.shape());
+            c.rel_chain_bytes += memory::chain_bytes(vers.shape(), super::rel_version_stride());
             for v in vers.iter() {
                 c.rel_record_bytes += memory::live_rel_account_live(v.live);
                 match &v.live.payload {
@@ -241,6 +259,10 @@ impl Graph {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use relate_core::Value;
+
     use super::Graph;
 
     /// The census reads one model: hops count delta plus sealed
@@ -257,5 +279,41 @@ mod tests {
         assert_eq!(c.out.sealed_chunks, 1);
         assert_eq!(c.r#in.hops, floor);
         assert_eq!(c.r#in.sealed_chunks, 1);
+    }
+
+    /// The floor split (ADR-0599) is exposed per side: on a store holding
+    /// both sealed and delta content every byte term is present and
+    /// non-negative — the content-bearing ones positive — and the dead
+    /// ranges sit inside the arena.
+    #[test]
+    fn census_exposes_the_floor_split() {
+        let g = Graph::default();
+        let (a, b, _, _) = crate::graph::test_support::folded_floor_chunk(&g);
+        // one more rel: the delta tier holds a hop beside the sealed chunk
+        g.begin_write().unwrap();
+        g.create_rel(
+            a,
+            b,
+            "T".into(),
+            BTreeMap::from([(
+                "ts".into(),
+                Value::Int(crate::adjacency::COMPACTION_DELTA_FLOOR as i64),
+            )]),
+        )
+        .unwrap();
+        g.commit_write();
+
+        let c = g.heap_census();
+        for side in [&c.out, &c.r#in] {
+            assert!(side.chunks > 0, "a delta chunk exists");
+            assert!(side.hops > 0, "sealed plus delta hops exist");
+            assert!(side.delta_bytes > 0, "the delta tier holds the fresh hop");
+            assert!(side.arena_bytes > 0, "the arena holds the folded stream");
+            assert!(side.index_bytes > 0, "the fold created an entry and span");
+            assert!(
+                side.dead_bytes <= side.arena_bytes,
+                "dead ranges sit in the arena"
+            );
+        }
     }
 }

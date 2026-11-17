@@ -8,6 +8,7 @@
 
 use super::id_vec::IdVec;
 use super::*;
+use crate::adjacency::Supersede;
 
 impl Graph {
     pub fn create_node(
@@ -69,8 +70,10 @@ impl Graph {
         // only after the version is installed (apply-before-dirty ordering).
         self.string_dirty_mark_node(id);
         self.charge(
-            charge as i64 + crate::memory::node_chain_bytes(self.node_chain_shape(id)) as i64
-                - crate::memory::node_chain_bytes(before_shape) as i64
+            charge as i64
+                + crate::memory::chain_bytes(self.node_chain_shape(id), node_version_stride())
+                    as i64
+                - crate::memory::chain_bytes(before_shape, node_version_stride()) as i64
                 + self.nodes.array_bytes() as i64
                 - before_array as i64,
         );
@@ -161,8 +164,9 @@ impl Graph {
         // only after the version is installed (apply-before-dirty ordering).
         self.rel_index_add(id);
         self.charge(
-            charge as i64 + crate::memory::rel_chain_bytes(self.rel_chain_shape(id)) as i64
-                - crate::memory::rel_chain_bytes(before_shape) as i64
+            charge as i64
+                + crate::memory::chain_bytes(self.rel_chain_shape(id), rel_version_stride()) as i64
+                - crate::memory::chain_bytes(before_shape, rel_version_stride()) as i64
                 + self.rels.array_bytes() as i64
                 - before_array as i64
                 + adj,
@@ -268,12 +272,20 @@ impl Graph {
         self.put_rel(id, r);
         if old_ts != new_ts {
             // A sealed position is superseded at `xmax` (ADR-0551); the
-            // new hop lands in the delta.
+            // new hop lands in the delta. The sealed charge is the event's
+            // price_side terms — the one formula the admission estimate
+            // prices batches with — never a whole-tier floor walk.
             let (out_side, in_side) = (self.out_side(), self.in_side());
             let adj_before = out_side.floor(start) + in_side.floor(end);
+            let (sealed_refusable, sealed_spill) =
+                self.price_sealed_event(start, end, type_id, id, Supersede::Repositioned);
             out_side.reposition(start, type_id, id, new_ts, xmax);
             in_side.reposition(end, type_id, id, new_ts, xmax);
-            self.charge((out_side.floor(start) + in_side.floor(end)) as i64 - adj_before as i64);
+            self.charge(
+                (out_side.floor(start) + in_side.floor(end)) as i64 - adj_before as i64
+                    + sealed_refusable
+                    + sealed_spill,
+            );
         }
         // Dirty-mark only after the new version is installed — the
         // ADR-0185 invariant: `rel_index_add` reads the installed version's
@@ -365,7 +377,11 @@ impl Graph {
         let (start, end, type_id) = deleted;
         let (out_side, in_side) = (self.out_side(), self.in_side());
         let adj_before = out_side.floor(start) + in_side.floor(end);
-        let sealed_arrays_before = out_side.sealed.array_bytes() + in_side.sealed.array_bytes();
+        // The sealed charge is the event's price_side terms — the one
+        // formula the admission estimate prices batches with — priced
+        // before the tombstones land, never a whole-tier floor walk.
+        let (sealed_refusable, sealed_spill) =
+            self.price_sealed_event(start, end, type_id, id, Supersede::Deleted);
         // ADR-0551: the hop keeps its slot with a versioned tombstone so an
         // older snapshot still sees it — in the delta (visibility filters it)
         // or in the sealed stream. Recording it unconditionally keeps the
@@ -375,12 +391,12 @@ impl Graph {
         in_side.tombstone_deleted(end, type_id, id, ts);
         let adj_after = out_side.floor(start) + in_side.floor(end);
         self.charge(
-            crate::memory::rel_chain_bytes(before_shape.after_delete()) as i64
-                - crate::memory::rel_chain_bytes(before_shape) as i64
+            crate::memory::chain_bytes(before_shape.after_delete(), rel_version_stride()) as i64
+                - crate::memory::chain_bytes(before_shape, rel_version_stride()) as i64
                 + adj_after as i64
                 - adj_before as i64
-                + (out_side.sealed.array_bytes() + in_side.sealed.array_bytes()) as i64
-                - sealed_arrays_before as i64,
+                + sealed_refusable
+                + sealed_spill,
         );
         self.bump_stats(|s| s.relationships_deleted += 1);
         self.push_redo(RedoOp::delete_rel(id));
@@ -428,8 +444,9 @@ impl Graph {
         }
         if found {
             self.charge(
-                crate::memory::node_chain_bytes(before_shape.after_delete()) as i64
-                    - crate::memory::node_chain_bytes(before_shape) as i64,
+                crate::memory::chain_bytes(before_shape.after_delete(), node_version_stride())
+                    as i64
+                    - crate::memory::chain_bytes(before_shape, node_version_stride()) as i64,
             );
             self.bump_stats(|s| s.nodes_deleted += 1);
             self.push_redo(RedoOp::delete_node(id));

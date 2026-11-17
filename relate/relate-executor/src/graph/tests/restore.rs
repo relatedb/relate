@@ -63,24 +63,25 @@ fn restored_graph(rels: RelId) -> Graph {
 
 /// LABS-1658: a store reopened from its checkpoint carries the folded
 /// chunks its GC pass had folded — the wholesale build emits the durable
-/// shape directly (ADR-0608), not a fresh all-delta rebuild.
+/// shape directly (ADR-0608), not a fresh all-delta rebuild. The build's
+/// gate is this tier's own 4-hop break-even, below the write path's floor.
 #[test]
 fn a_restore_builds_the_durable_folded_shape() {
-    let floor = crate::adjacency::COMPACTION_DELTA_FLOOR;
-    // Reset the thread-local seam, then count only this build's emission —
-    // the count is per-thread, so a sibling test's regions may still sit in
-    // it, exactly as `take_adj_builds` above.
-    crate::graph::take_sealed_builds();
-
+    let floor = crate::adjacency::RESTORE_SEAL_HOPS;
     let restored = restored_graph(floor as RelId);
     restored.finish_restore();
+    let type_id = restored.interner.get_id("T").unwrap();
 
     // Both endpoints carry a floor-sized `:T` chunk here (node 0's out
-    // side, node 1's in side), so the build folds two regions.
+    // side, node 1's in side), so the build folds both.
     assert_eq!(
-        crate::graph::take_sealed_builds(),
-        2,
-        "the restore emitted the floor chunks folded (LABS-1658)"
+        restored.sealed_out.region(0).unwrap().chunk_len(type_id),
+        floor,
+        "the restore emitted the floor chunk folded (LABS-1658)"
+    );
+    assert_eq!(
+        restored.sealed_in.region(1).unwrap().chunk_len(type_id),
+        floor
     );
     // The fold is a layout, not a fact: the adjacency answers the same.
     assert_eq!(restored.degree_out(0).len(), floor);
@@ -90,11 +91,8 @@ fn a_restore_builds_the_durable_folded_shape() {
     // build nothing folded.
     let below = restored_graph(floor as RelId - 1);
     below.finish_restore();
-    assert_eq!(
-        crate::graph::take_sealed_builds(),
-        0,
-        "a run below the floor stays delta"
-    );
+    assert!(below.sealed_out.region(0).is_none(), "below the floor");
+    assert!(below.sealed_in.region(1).is_none(), "below the floor");
 }
 
 fn restored_node(id: NodeId, label: &str, name: &str) -> Node {
@@ -413,12 +411,20 @@ fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
         let nodes: u64 = g
             .all_node_ids_at(1)
             .into_iter()
-            .filter_map(|id| g.node_checkpoint_bytes(id, 1).unwrap())
+            .map(|id| {
+                g.node_checkpoint_bytes(id, 1)
+                    .unwrap()
+                    .expect("a live node at ts has checkpoint bytes")
+            })
             .sum();
         let rels: u64 = g
             .all_rel_ids_at(1)
             .into_iter()
-            .filter_map(|id| g.rel_checkpoint_bytes(id, 1).unwrap())
+            .map(|id| {
+                g.rel_checkpoint_bytes(id, 1)
+                    .unwrap()
+                    .expect("a live rel at ts has checkpoint bytes")
+            })
             .sum();
         nodes + rels
     };
@@ -429,7 +435,7 @@ fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
     writer.gc_versions();
     let type_id = writer.interner.get_id("T").unwrap();
     assert_eq!(
-        writer.out_side().sealed.get(&0).unwrap().chunk_len(type_id),
+        writer.sealed_out.region(0).unwrap().chunk_len(type_id),
         floor
     );
     assert_eq!(
@@ -493,7 +499,7 @@ fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
     // the way it did on the writer.
     let type_id = opened.interner.get_id("T").unwrap();
     assert_eq!(
-        opened.out_side().sealed.get(&0).unwrap().chunk_len(type_id),
+        opened.sealed_out.region(0).unwrap().chunk_len(type_id),
         floor,
         "the restore folded the checkpointed chunk"
     );
@@ -505,7 +511,7 @@ fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
     // before the tail.
     opened.gc_versions();
     assert_eq!(
-        opened.out_side().sealed.get(&0).unwrap().chunk_len(type_id),
+        opened.sealed_out.region(0).unwrap().chunk_len(type_id),
         floor - 1,
         "the restored fold reclaims, without the deleted hop"
     );
@@ -603,4 +609,82 @@ fn sharded_rebuild_matches_the_single_shard_one() {
     crate::graph::shard::with_workers(4, || g.rebuild_adj());
     assert_eq!(take_shards_run(), 16);
     assert_eq!(rebuild_state(&g), serial);
+}
+
+/// The wholesale build's emission (ADR-0599 / ADR-0608): a restored store's
+/// chunks at or above [`crate::adjacency::RESTORE_SEAL_HOPS`] seal in the
+/// build pass itself, those below stay delta — the measured break-even, not
+/// the write path's 32-hop floor — and both directions fold.
+#[test]
+fn restore_seals_multi_hop_chunks_and_leaves_short_ones_delta() {
+    use crate::adjacency::RESTORE_SEAL_HOPS;
+
+    // Node 0 carries two out types: one at and above the threshold, one
+    // below. Their far endpoints (1 and 2) get the matching incoming chunks.
+    let long = RESTORE_SEAL_HOPS as RelId + 1;
+    let short = RESTORE_SEAL_HOPS as RelId - 1;
+    let mut checkpointed: Vec<RedoOp> = (0..3)
+        .map(|id| RedoOp::CreateNode {
+            id,
+            labels: Arc::new(vec!["N".into()]),
+            properties: relate_core::PropertyMap::share(BTreeMap::new()),
+        })
+        .collect();
+    checkpointed.extend((0..long).map(|id| create_rel(id, 0, 1, "LONG")));
+    checkpointed.extend((long..long + short).map(|id| create_rel(id, 0, 2, "SHORT")));
+
+    let writer = Graph::default();
+    writer.apply_redo(checkpointed, 1).unwrap();
+    let nodes: Vec<Node> = writer
+        .all_node_ids_at(1)
+        .into_iter()
+        .map(|id| writer.node_at(id, 1).unwrap())
+        .collect();
+    let rels: Vec<Relationship> = writer
+        .all_rel_ids_at(1)
+        .into_iter()
+        .map(|id| writer.rel_at(id, 1).unwrap())
+        .collect();
+
+    // The open sequence: restore the rows, then the completion steps. The
+    // build inside `finish_restore` is the emission; no pass follows it.
+    let opened = Graph::default();
+    opened.set_commit_ts(1);
+    for node in nodes {
+        opened.load_checkpoint_node(node).unwrap();
+    }
+    for rel in rels {
+        opened.load_checkpoint_rel(rel).unwrap();
+    }
+    opened.finish_restore();
+    opened.rebuild_indexes();
+
+    // The build ends with both arenas at exact size (ADR-0599): every
+    // buffer at the capacity its floor charges, the byte buffer at its
+    // encoded length. No entry carries a tombstone at a fresh restore.
+    assert_eq!(opened.sealed_out.assert_fit(), 0);
+    assert_eq!(opened.sealed_in.assert_fit(), 0);
+
+    // (delta hops, sealed hops) of `node`'s `rel_type` chunk in one direction.
+    let lens = |node: NodeId, rel_type: &str, out: bool| -> (usize, usize) {
+        let type_id = opened.interner.get_id(rel_type).unwrap();
+        let (map, sealed) = if out {
+            (&opened.out_adj, &opened.sealed_out)
+        } else {
+            (&opened.in_adj, &opened.sealed_in)
+        };
+        map.get(&node)
+            .unwrap()
+            .chunk_lens(sealed.region(node))
+            .find(|(tid, _, _)| *tid == type_id)
+            .map(|(_, delta, sealed)| (delta, sealed))
+            .unwrap()
+    };
+
+    // The long type seals on both sides: no delta left, its hops in the stream.
+    assert_eq!(lens(0, "LONG", true), (0, long as usize));
+    assert_eq!(lens(1, "LONG", false), (0, long as usize));
+    // The short type stays delta: nothing sealed, its hops untouched.
+    assert_eq!(lens(0, "SHORT", true), (short as usize, 0));
+    assert_eq!(lens(2, "SHORT", false), (short as usize, 0));
 }

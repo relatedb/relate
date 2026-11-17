@@ -83,7 +83,7 @@ const NODE_POOL: usize = 6;
 /// inside one node's adjacency.
 const TYPES: [&str; 3] = ["TA", "TB", "TC"];
 
-/// One hop in the reference model: `(ts, id)`, mirroring `AdjHop`.
+/// One hop in the reference model: `(ts, id)`, mirroring `Hop`.
 type ModelHop = (Option<i64>, RelId);
 
 /// A node's chunk list in one direction: `(type_id, hops)` pairs in
@@ -255,20 +255,18 @@ fn observable(g: &Graph, node: NodeId, out: bool) -> ModelChunks {
     let Some(adj) = side.delta.get(&node) else {
         return Vec::new();
     };
-    let region = side.sealed.get(&node);
+    let region = side.sealed.region(node);
     let ts = g.commit_ts();
     adj.chunks
         .iter()
-        .map(|(type_id, _)| {
+        .map(|chunk| {
             let mut hops = Vec::new();
-            adj.for_each_hop_of(region.as_deref(), *type_id, ts, |hop| {
-                hops.push((hop.ts, hop.id))
-            });
+            adj.for_each_hop_of(region, chunk.type_id, ts, |hop| hops.push((hop.ts, hop.id)));
             let hops: Vec<ModelHop> = hops
                 .into_iter()
                 .filter(|(_, id)| g.rel_exists(*id))
                 .collect();
-            (*type_id, hops)
+            (chunk.type_id, hops)
         })
         .filter(|(_, hops)| !hops.is_empty())
         .collect()

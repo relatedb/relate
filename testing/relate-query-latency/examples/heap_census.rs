@@ -225,19 +225,39 @@ fn print_census(c: &HeapCensus) {
         format!("{} props, {} string bytes", c.rel_props, c.rel_string_bytes),
     );
     line(
-        "out adjacency (slots+heap)",
-        c.out.slot_bytes + c.out.heap_bytes,
+        "out adjacency (delta)",
+        c.out.delta_bytes,
         format!(
             "{} nodes, {} hops, {} chunks ({} sealed)",
             c.out.nodes, c.out.hops, c.out.chunks, c.out.sealed_chunks
         ),
     );
     line(
-        "in adjacency (slots+heap)",
-        c.r#in.slot_bytes + c.r#in.heap_bytes,
+        "out adjacency (sealed)",
+        c.out.sealed_bytes,
+        format!(
+            "arena {:.1} MB, index {:.1} MB, dead {:.1} MB",
+            mb(c.out.arena_bytes),
+            mb(c.out.index_bytes),
+            mb(c.out.dead_bytes)
+        ),
+    );
+    line(
+        "in adjacency (delta)",
+        c.r#in.delta_bytes,
         format!(
             "{} nodes, {} hops, {} chunks ({} sealed)",
             c.r#in.nodes, c.r#in.hops, c.r#in.chunks, c.r#in.sealed_chunks
+        ),
+    );
+    line(
+        "in adjacency (sealed)",
+        c.r#in.sealed_bytes,
+        format!(
+            "arena {:.1} MB, index {:.1} MB, dead {:.1} MB",
+            mb(c.r#in.arena_bytes),
+            mb(c.r#in.index_bytes),
+            mb(c.r#in.dead_bytes)
         ),
     );
     line(

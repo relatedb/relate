@@ -10,7 +10,7 @@ use relate_core::NodeId;
 use relate_ir::Direction;
 
 use super::{live_version, Graph};
-use crate::adjacency::AdjHop;
+use crate::adjacency::Hop;
 use crate::store::{hop_other, LiveNode};
 
 /// Run `f` on `node`'s live record under one short `nodes` guard — the
@@ -30,7 +30,7 @@ pub(super) fn with_node<R>(
 /// match `node` — the liveness and endpoint checks the executor's
 /// `hop` applies to a superset-list hop, the endpoint half delegated
 /// to the canonical `store::hop_other`.
-fn live_other(graph: &Graph, hop: &AdjHop, node: NodeId, dir: Direction) -> Option<NodeId> {
+fn live_other(graph: &Graph, hop: &Hop, node: NodeId, dir: Direction) -> Option<NodeId> {
     let vers = graph.rels.get(&hop.id)?;
     let v = live_version(&vers)?;
     hop_other(node, v.live.start, v.live.end, dir)
@@ -88,7 +88,7 @@ mod tests {
         let (a, b, _, type_id) = crate::graph::test_support::folded_floor_chunk(&g);
         let floor = crate::adjacency::COMPACTION_DELTA_FLOOR;
         assert_eq!(
-            g.out_side().sealed.get(&a).unwrap().chunk_len(type_id),
+            g.out_side().sealed.region(a).unwrap().chunk_len(type_id),
             floor
         );
 

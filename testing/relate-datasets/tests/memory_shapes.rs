@@ -28,18 +28,22 @@ use relate_datasets::shapes::{
 // the array reserves the next power of two, so flat (1,000 nodes, no
 // relationships) drops another 22,080. Relationship shapes also drop the
 // relationship and adjacency map slots.
+// ADR-0599: the adjacency floor's 16-byte hop and the sealed tier's
+// exact-size pricing move the rel-bearing shapes down — ring -16,000,
+// fanout -16,160, dense ring -128,000, mid-degree -1,796,096; the
+// relationship-free shapes are untouched.
 // ADR-0589: each distinct label set adds one entry to the label-set map
 // (148 bytes for a one-label set): flat and ring carry one set, fanout two.
 const BASE: u64 = 258;
-const RING: u64 = 575_784;
-const FANOUT: u64 = 520_046;
+const RING: u64 = 559_784;
+const FANOUT: u64 = 503_886;
 const FLAT: u64 = 222_688;
-const DENSE_RING: u64 = 2_256_986;
+const DENSE_RING: u64 = 2_128_986;
 /// One label set like ring and dense ring (ADR-0589's +148), one node
 /// label count entry, and the same per-relationship terms as dense ring
 /// at 96,512 relationships — 12× dense ring's volume. The adjacency is
 /// the dominant term: 96 average hops on both endpoints of every node.
-const MID_DEGREE: u64 = 28_850_522;
+const MID_DEGREE: u64 = 27_054_426;
 /// Flat, one attribute, one range index on `id`. `1,000 × 62` on top of [`FLAT`].
 const FLAT_RANGE: u64 = 284_688;
 /// Flat, one attribute, plus one text, one point, and one range index.

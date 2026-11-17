@@ -15,39 +15,13 @@ use relate_core::Value;
 use crate::graph::Graph;
 
 use super::super::kernels::matcher::MAX_CHAIN_HOPS;
-use super::super::test_support::Builder;
 use super::differential;
 
+/// The hand-built adversarial multigraph — the shared differential corpus
+/// ([`crate::graph::test_support::adversarial_multigraph`]) at its native
+/// one-rel-per-edge scale.
 fn adversarial_graph() -> Graph {
-    let b = Builder::new();
-    let a = b.node("a", &["U"]);
-    let n: Vec<_> = (0..7).map(|i| b.node(&format!("n{i}"), &["U"])).collect();
-    let bare = b.node("bare", &[]);
-    let hub = b.node("hub", &["U", "Hub"]);
-    // Self-loops at the start, a middle node and an end node.
-    b.rel(a, a, "F", &[]);
-    b.rel(n[1], n[1], "F", &[]);
-    b.rel(n[3], n[3], "F", &[]);
-    // Parallel same-type and cross-type edges.
-    b.rel(a, n[0], "F", &[]);
-    b.rel(a, n[0], "F", &[]);
-    b.rel(a, n[0], "G", &[]);
-    // Reciprocal pairs.
-    b.rel(n[0], n[1], "F", &[]);
-    b.rel(n[1], n[0], "F", &[]);
-    b.rel(n[1], n[2], "F", &[]);
-    b.rel(n[2], n[3], "G", &[]);
-    b.rel(n[3], n[4], "F", &[]);
-    b.rel(n[4], a, "F", &[]);
-    // Unlabelled node and the hub.
-    b.rel(n[2], bare, "F", &[]);
-    b.rel(bare, n[3], "F", &[]);
-    for m in &n {
-        b.rel(*m, hub, "F", &[]);
-        b.rel(hub, *m, "F", &[]);
-    }
-    b.rel(a, hub, "F", &[]);
-    b.done()
+    crate::graph::test_support::adversarial_multigraph(1).0
 }
 
 /// One step spelling as the sweep states it, with the engagement its

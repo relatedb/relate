@@ -2,7 +2,9 @@
 //! against the live walk, and the redo-delta estimate against the apply.
 
 use super::*;
-use crate::graph::accounting::AdjDelta;
+use crate::adjacency::{MAX_SPAN_TYPES, RESTORE_SEAL_HOPS};
+use crate::graph::accounting::{sealed_arena_breaches, AdjDelta};
+use relate_core::{CapacityKind, Error};
 
 #[test]
 fn used_bytes_matches_live_walk_after_mutate_and_delete() {
@@ -118,14 +120,16 @@ fn self_loop_delete_charges_both_sealed_regions() {
     g.delete_rel(x2);
     g.commit_write();
 
-    // The founding region term derived from the layout primitives, not the
-    // helper it checks: one chunks-vec entry from empty, the empty encoded
-    // stream, one tombstone slot.
-    let entry = std::mem::size_of::<(u32, crate::adjacency::SealedChunk)>() as u64;
+    // The joining-chunk term derived from the layout primitives, not the
+    // helper it checks: one 12-byte arena entry into the existing column,
+    // one tombstone slot (the zero-hop stream appends no arena bytes,
+    // ADR-0599).
+    let (entries, tombstones) = g.sealed_out.entry_counts();
+    let entry = std::mem::size_of::<crate::adjacency::Entry>() as u64;
+    let column = std::mem::size_of::<Vec<crate::adjacency::Tombstone>>() as u64;
     let tombstone = crate::adjacency::tombstone_stride();
-    let empty_stream = crate::adjacency::encode_chunk(&[]).len();
-    let region = (crate::memory::vec_heap(1, entry)
-        + crate::memory::vec_heap(empty_stream, 1)
+    let region = (crate::memory::vec_growth(entries, 1, entry)
+        + crate::memory::vec_growth(tombstones, 1, column)
         + crate::memory::vec_heap(1, tombstone)) as i64;
     let AdjDelta {
         refusable: loop_refusable,
@@ -351,15 +355,189 @@ fn floor_reserves_node_ring_edge_and_dense_node() {
     let ring = g.out_adj.get(&ring_a).unwrap();
     assert_eq!(ring.chunks.len(), 1);
     assert_eq!(ring.chunks.capacity(), crate::memory::reserved_len(1));
-    assert_eq!(ring.chunks[0].1.len(), 1);
-    assert_eq!(ring.chunks[0].1.capacity(), crate::memory::reserved_len(1));
+    assert_eq!(ring.chunks[0].hops.len(), 1);
+    assert_eq!(
+        ring.chunks[0].hops.capacity(),
+        crate::memory::reserved_len(1)
+    );
 
     let dense = g.out_adj.get(&hub).unwrap();
     assert_eq!(dense.chunks.len(), 1);
     assert_eq!(dense.chunks.capacity(), crate::memory::reserved_len(1));
-    assert_eq!(dense.chunks[0].1.len(), 20);
+    assert_eq!(dense.chunks[0].hops.len(), 20);
     assert_eq!(
-        dense.chunks[0].1.capacity(),
+        dense.chunks[0].hops.capacity(),
         crate::memory::reserved_len(20)
     );
+}
+
+/// The span-length wall (ADR-0599): a node at `MAX_SPAN_TYPES` distinct
+/// out types refuses the next *new* type at admission — a held type, the
+/// other direction, and another node stay free — and the refusal leaves
+/// the graph serving (the walk holds read guards only, so nothing is
+/// poisoned). The direct mutation path is admission-free, so the store
+/// reaches the wall through it; `enforce_adjacency_limits` is the seam
+/// that would have refused the write before it logged.
+#[test]
+fn enforce_adjacency_limits_refuses_the_65_536th_type_on_a_node() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let a = g.create_node(Vec::new(), BTreeMap::new()).unwrap();
+    let b = g.create_node(Vec::new(), BTreeMap::new()).unwrap();
+    for i in 0..MAX_SPAN_TYPES {
+        g.create_rel(a, b, format!("T{i}"), BTreeMap::new())
+            .unwrap();
+    }
+    g.commit_write();
+
+    let op = |start, end, ty: &str| RedoOp::CreateRel {
+        id: 1,
+        start,
+        end,
+        rel_type: ty.into(),
+        properties: relate_core::PropertyMap::share(BTreeMap::new()),
+    };
+    // The 65,536th distinct out type on `a` (and in type on `b`) is the
+    // span length's u16 wall, refused before the redo is logged.
+    let refusal = g
+        .enforce_adjacency_limits(&[op(a, b, "wall")], &[])
+        .unwrap_err();
+    assert!(matches!(
+        &refusal,
+        Error::Capacity {
+            kind: CapacityKind::AdjacencyTypes,
+            ..
+        }
+    ));
+    // A held type prices no fresh slot, a delete founds only held types,
+    // and the two reverse directions of the same nodes are free.
+    g.enforce_adjacency_limits(&[op(a, b, "T0")], &[]).unwrap();
+    g.enforce_adjacency_limits(&[RedoOp::DeleteRel { id: 0 }], &[])
+        .unwrap();
+    g.enforce_adjacency_limits(&[op(b, a, "wall")], &[])
+        .unwrap();
+    // The refused walk held read guards only: adjacency still answers.
+    assert_eq!(g.out_side().hop_counts(a).len(), MAX_SPAN_TYPES);
+}
+
+/// The wall is per group commit: a slot that passes alone is refused when
+/// an already-accepted slot of the same group contributed types to the
+/// same node and direction — the two half-wall slots must not both land.
+#[test]
+fn enforce_adjacency_limits_counts_the_whole_group() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let a = g.create_node(Vec::new(), BTreeMap::new()).unwrap();
+    let b = g.create_node(Vec::new(), BTreeMap::new()).unwrap();
+    for i in 0..MAX_SPAN_TYPES.saturating_sub(1) {
+        g.create_rel(a, b, format!("T{i}"), BTreeMap::new())
+            .unwrap();
+    }
+    g.commit_write();
+    let op = |ty: &str| RedoOp::CreateRel {
+        id: 1,
+        start: a,
+        end: b,
+        rel_type: ty.into(),
+        properties: relate_core::PropertyMap::share(BTreeMap::new()),
+    };
+    // One short of the wall: the first slot's single new type admits.
+    g.enforce_adjacency_limits(&[op("slot-a")], &[]).unwrap();
+    // The second slot also passes alone — but on top of the accepted
+    // first slot it is the 65,536th type, refused.
+    let earlier = [vec![op("slot-a")]];
+    let earlier_slices: Vec<&[RedoOp]> = earlier.iter().map(|v| v.as_slice()).collect();
+    let refusal = g
+        .enforce_adjacency_limits(&[op("slot-b")], &earlier_slices)
+        .unwrap_err();
+    assert!(matches!(
+        &refusal,
+        Error::Capacity {
+            kind: CapacityKind::AdjacencyTypes,
+            ..
+        }
+    ));
+}
+
+/// The entry-offset wall (ADR-0599) is the `u32` the arena's entry offsets
+/// address: one direction's arena streams plus the store's live charge
+/// refuse past it, and the saturating sum never wraps an over-bound store
+/// back under.
+#[test]
+fn sealed_arena_bound_is_the_u32_offset_wall() {
+    assert!(!sealed_arena_breaches(u32::MAX as u64, 0));
+    assert!(sealed_arena_breaches(u32::MAX as u64, 1));
+    assert!(sealed_arena_breaches(u64::MAX, u64::MAX));
+}
+
+/// The wholesale build clamps at the tier's field walls instead of dying
+/// in the write guard (ADR-0599): a node whose sealable types exceed the
+/// span length's `u16` bound rebuilds with its span exactly at the bound
+/// and the surplus types still delta — every row answers, nothing panics,
+/// and a delete of a surplus type retires its hop without founding past
+/// the wall. The build is the one fold path no admission guards, so it is
+/// the one that must degrade rather than trust the wall.
+#[test]
+fn wholesale_build_clamps_at_the_span_length_wall() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let a = g.create_node(Vec::new(), BTreeMap::new()).unwrap();
+    let b = g.create_node(Vec::new(), BTreeMap::new()).unwrap();
+    // Every type carries RESTORE_SEAL_HOPS hops, so the build's gate takes
+    // every one of them and the span wall is what stops it. The last type
+    // is one the wall leaves delta; its first rel is the delete victim.
+    let types = MAX_SPAN_TYPES + 8;
+    let mut victim = RelId::default();
+    for i in 0..types {
+        for hop in 0..RESTORE_SEAL_HOPS {
+            let id = g
+                .create_rel(a, b, format!("T{i}"), BTreeMap::new())
+                .unwrap();
+            if i == types - 1 && hop == 0 {
+                victim = id;
+            }
+        }
+    }
+    g.commit_write();
+
+    g.rebuild_adj();
+
+    let span = g
+        .sealed_out
+        .region(a)
+        .map(|r| r.type_ids().len())
+        .unwrap_or(0);
+    assert_eq!(span, MAX_SPAN_TYPES, "the span holds exactly the bound");
+    let hops: usize = g.out_side().hop_counts(a).iter().map(|c| c.hops).sum();
+    assert_eq!(
+        hops,
+        types * RESTORE_SEAL_HOPS,
+        "every row still answers, sealed or delta"
+    );
+    // A delete of a surplus type's hop retires it — the version map holds
+    // the truth, the tier founds nothing past the wall, nothing panics.
+    // The hop prunes at the GC pass (LABS-1116), so it is counted after it.
+    g.begin_write().unwrap();
+    g.delete_rel(victim);
+    g.commit_write();
+    g.gc_versions();
+    let hops: usize = g.out_side().hop_counts(a).iter().map(|c| c.hops).sum();
+    assert_eq!(
+        hops,
+        types * RESTORE_SEAL_HOPS - 1,
+        "the deleted row is gone"
+    );
+    assert_eq!(
+        g.sealed_out
+            .region(a)
+            .map(|r| r.type_ids().len())
+            .unwrap_or(0),
+        MAX_SPAN_TYPES,
+        "the delete founded no span entry"
+    );
+    // Nothing folded past a replacement, so compaction has nothing to
+    // reclaim and leaves the build's node-major layout untouched.
+    let before = g.sealed_out.arena_bytes();
+    g.sealed_out.compact();
+    assert_eq!(g.sealed_out.arena_bytes(), before);
 }

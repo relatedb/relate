@@ -6,11 +6,13 @@ mod accounting;
 mod adjacency;
 mod adjacency_model_proptest;
 mod chain;
+mod correctness;
 mod label_set_counts;
 mod pattern_stats;
 mod point;
 mod poisoned;
 mod restore;
+mod sealed_arena;
 mod services;
 mod spatial_profile;
 

@@ -120,7 +120,12 @@ pub use metrics::{
 // never in a shipped build.
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
-pub use graph::{take_index_rebuilds, take_sealed_builds};
+pub use graph::take_index_rebuilds;
+// The adjacency side the `test-hooks` sealed-chunk count takes — the storage
+// open tests' wiring surface across the crate boundary.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub use graph::Side;
 pub use query_engine::InMemoryQueryEngine;
 // Research-only (speed-of-light kernels), quarantined behind the
 // non-default `research` cargo feature (ADR-0476): the re-export (and the

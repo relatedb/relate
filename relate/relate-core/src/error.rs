@@ -29,6 +29,18 @@ pub enum CapacityKind {
     /// the match count at which the bounded scan stopped — a lower bound,
     /// never the full match count — and `limit` the cap it consulted.
     SeekCandidates,
+    /// The sealed adjacency tier's per-node type cap (ADR-0599): one node
+    /// holds at most `u16::MAX` distinct relationship types in one
+    /// direction — the span-length field's structural bound, refused at
+    /// admission before the redo is logged. `used` is the distinct-type
+    /// count the node would reach, `limit` the bound.
+    AdjacencyTypes,
+    /// The sealed adjacency tier's stream cap (ADR-0599): one direction's
+    /// arena holds at most `u32::MAX` bytes of encoded hop streams — the
+    /// entry-offset field's structural bound, refused at admission.
+    /// `used` is the arena-plus-live-charge bound at which the batch was
+    /// refused, `limit` the bound.
+    SealedArena,
 }
 
 /// The one rendering of the three capacity contracts: the graph line is
@@ -62,6 +74,21 @@ fn capacity_detail(kind: CapacityKind, used: u64, limit: u64) -> String {
              the search lists at most {limit} to choose its side. This is a \
              safety limit protecting against memory exhaustion — bind the \
              endpoint or narrow it with an indexed property."
+        ),
+        CapacityKind::AdjacencyTypes => format!(
+            "One node would hold {used} distinct relationship types in a \
+             single direction; the in-memory adjacency arena addresses at \
+             most {limit}. This is a structural bound of the store, not a \
+             tunable limit — reduce the distinct relationship types on the \
+             node."
+        ),
+        CapacityKind::SealedArena => format!(
+            "One direction's in-memory adjacency arena holds at most {} of \
+             encoded relationship streams; this write would take it to {}. \
+             This embedded store is not built for that scale — keep the \
+             graph's adjacency under the bound.",
+            human_bytes(limit),
+            human_bytes(used)
         ),
     }
 }
@@ -522,6 +549,28 @@ impl Error {
             used: counted,
             limit,
             kind: CapacityKind::SeekCandidates,
+        }
+    }
+
+    /// The ADR-0599 per-node type refusal: one node would reach `counted`
+    /// distinct relationship types in a single direction, over the span
+    /// length's structural `limit`.
+    pub fn capacity_adjacency_types(counted: u64, limit: u64) -> Self {
+        Self::Capacity {
+            used: counted,
+            limit,
+            kind: CapacityKind::AdjacencyTypes,
+        }
+    }
+
+    /// The ADR-0599 sealed-arena refusal: one direction's arena streams
+    /// plus the batch's growth stand at `counted`, over the entry offset's
+    /// structural `limit`.
+    pub fn capacity_sealed_arena(counted: u64, limit: u64) -> Self {
+        Self::Capacity {
+            used: counted,
+            limit,
+            kind: CapacityKind::SealedArena,
         }
     }
 

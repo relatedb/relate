@@ -614,7 +614,11 @@ fn admit_slot(
     if conflict {
         return Err(Error::conflict());
     }
-    let mut earlier_ops = accepted.iter().map(|(_, a)| a.record.ops.as_slice());
+    let earlier: Vec<&[RedoOp]> = accepted
+        .iter()
+        .map(|(_, a)| a.record.ops.as_slice())
+        .collect();
+    let mut earlier_ops = earlier.iter().copied();
     let (pending, constraint_growth) =
         constraint_admission.check_with_earlier(&slot.ops, &mut earlier_ops, position)?;
     // Timestamp overflow rejects the slot like the conflict and capacity
@@ -627,7 +631,8 @@ fn admit_slot(
         .checked_add(1)
         .map(|next| next.max(slot.txn_id))
         .ok_or_else(|| Error::storage("commit timestamp overflow"))?;
-    *reserved = shared.admit_redo_capacity_with(&slot.ops, *reserved, Some(constraint_growth))?;
+    *reserved =
+        shared.admit_redo_capacity_with(&slot.ops, *reserved, Some(constraint_growth), &earlier)?;
     constraint_admission.accept(pending);
     Ok(Admitted {
         record: Accepted {

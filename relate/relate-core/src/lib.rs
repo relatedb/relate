@@ -23,6 +23,7 @@ pub mod integer_args;
 mod memory_limit;
 mod namespace;
 mod output_safety;
+mod presence_bits;
 mod preview;
 pub mod temporal;
 pub mod tokens;
@@ -59,6 +60,7 @@ pub use namespace::{
     GRAPH_SELECTOR_FUNCTION_NAMES,
 };
 pub use output_safety::is_unsafe_output_char;
+pub use presence_bits::PresenceBits;
 pub use preview::{
     preview_feature_disabled_text, PreviewFeature, PreviewFeatures, PREVIEW_FEATURES,
 };

@@ -3,12 +3,14 @@
 //! helpers every mutation seam rides. Split out of `graph/mod.rs` (LABS-677).
 
 use std::collections::HashMap;
+use std::mem::size_of;
 use std::sync::Arc;
 
-use relate_core::{Node, NodeId, RelId};
+use relate_core::{Error, Node, NodeId, RelId};
 
 use super::adjacency::{AdjSide, ChunkHops};
 use super::*;
+use crate::adjacency::{AdjHop, SealedRegion, Supersede, MAX_SPAN_TYPES};
 
 impl Graph {
     /// Live graph + index logical bytes (ADR-0042, ADR-0202).
@@ -29,7 +31,10 @@ impl Graph {
         let mut n = 0u64;
         n = n.saturating_add(self.nodes.array_bytes());
         self.nodes.for_each(|_id, vers| {
-            n = n.saturating_add(crate::memory::node_chain_bytes(vers.shape()));
+            n = n.saturating_add(crate::memory::chain_bytes(
+                vers.shape(),
+                node_version_stride(),
+            ));
             for v in vers.iter() {
                 n = n.saturating_add(crate::memory::live_node_account_live(
                     v.live,
@@ -40,23 +45,24 @@ impl Graph {
         });
         n = n.saturating_add(self.rels.array_bytes());
         self.rels.for_each(|_id, vers| {
-            n = n.saturating_add(crate::memory::rel_chain_bytes(vers.shape()));
+            n = n.saturating_add(crate::memory::chain_bytes(
+                vers.shape(),
+                rel_version_stride(),
+            ));
             for v in vers.iter() {
                 n = n.saturating_add(crate::memory::live_rel_account_live(v.live));
             }
         });
-        // Each side's slot arrays and retained entries: the delta hops,
-        // and the sealed side table (ADR-0551) — each entry's compressed
-        // chunks and tombstones, the floor ADR-0551 prices, plus the slot
-        // arrays that hold them, the term the heap census reads as
-        // `slot_bytes`.
+        // Each side's slot arrays and retained delta entries, and the sealed
+        // arenas (ADR-0551 / ADR-0599) — the arena bytes, the 12-byte
+        // entries, the tombstones, and the dense span tables that index
+        // them — the term the heap census reads as `slot_bytes`.
         for side in [self.out_side(), self.in_side()] {
-            n = n.saturating_add(side.array_bytes());
+            n = n.saturating_add(side.delta.array_bytes());
             side.delta
                 .for_each(|_id, adj| n = n.saturating_add(adj.floor_bytes()));
-            side.sealed
-                .for_each(|_id, region| n = n.saturating_add(region.floor_bytes()));
         }
+        n = n.saturating_add(self.sealed_floor());
         // LABS-351 / LABS-370: the degree histograms and the count
         // bundle's charged maps are retained structure — the recount
         // oracle must include them or the incremental entry charges
@@ -111,6 +117,8 @@ impl Graph {
             |id| self.rel_form(id),
             |id| self.node_chain_shape(id),
             |id| self.rel_chain_shape(id),
+            |s| crate::memory::chain_bytes(s, node_version_stride()),
+            |s| crate::memory::chain_bytes(s, rel_version_stride()),
             self.nodes.span(),
             self.rels.span(),
             &after,
@@ -210,7 +218,71 @@ impl Graph {
         // refuse a batch (ADR-0529: a delete at the cap commits). The
         // founding side-table slot is the exception — the dense span only
         // grows (ADR-0086) — so it stays refusable.
-        delta + self.estimate_delete_spill(&pending_out, &pending_in)
+        delta + self.estimate_delete_spill(&pending_out, &pending_in, Supersede::Deleted)
+    }
+
+    /// The adjacency tier's structural limits (ADR-0599), the ones its
+    /// field widths state: a node holds at most [`MAX_SPAN_TYPES`] distinct
+    /// rel types in one direction (the span length's `u16`), and one
+    /// direction's arena at most `u32::MAX` stream bytes (the entry
+    /// offset's `u32`). Enforced here, at admission, before the redo is
+    /// logged — the tier's own mutation paths are infallible by design, so
+    /// the wall they must never hit is refused upstream. A delete never
+    /// breaches either: it founds a sealed entry only for a type the node
+    /// already holds, and its tombstone terms reclaim at the fold.
+    ///
+    /// `earlier` are the ops of slots this group commit already accepted:
+    /// the type wall is per group, not per slot — two slots that each add
+    /// types under the bound must be refused when their combined types
+    /// cross it, so this slot's creates are counted on top of the group's.
+    /// Each earlier slot passed the same walk at its own admission, so the
+    /// combined walk never fails on the earlier batches alone.
+    pub fn enforce_adjacency_limits(&self, ops: &[RedoOp], earlier: &[&[RedoOp]]) -> Result<()> {
+        let mut fresh_ids = FreshIds::new();
+        let mut out = TypeWall::new(self.out_side());
+        let mut inn = TypeWall::new(self.in_side());
+        // A second accumulator beside `SideAdmission`, stated: the byte
+        // estimate is per slot and only runs under a configured size limit,
+        // while the wall is per group and unconditional — the two walks
+        // cannot share a gate.
+        let mut growth = 0u64;
+        for batch in earlier.iter().copied().chain(std::iter::once(ops)) {
+            for op in batch {
+                if let RedoOp::CreateRel {
+                    start,
+                    end,
+                    rel_type,
+                    ..
+                } = op
+                {
+                    let type_id = fresh_ids.resolve(self, rel_type);
+                    out.record(*start, type_id)?;
+                    inn.record(*end, type_id)?;
+                    // One stored hop per endpoint reaches an arena at the
+                    // fold. A delete adds none: its tombstones live in the
+                    // entry column, never in the arena's byte buffer, so a
+                    // delete is never refused for a bound it shrinks toward
+                    // (ADR-0529's rule for the byte cap, on the field bound).
+                    growth = growth.saturating_add(2 * size_of::<AdjHop>() as u64);
+                }
+            }
+        }
+        // The arena wall, per direction — each arena's own streams plus this
+        // batch's sealed-tier growth against its own offset field. The
+        // store's whole live charge is deliberately not compared: it prices
+        // structures no arena holds, and refusing on it would freeze a store
+        // whose live bytes sit above the bound — deletes included. A fold
+        // the arena itself refuses degrades instead (see `put_chunk`), so
+        // this wall is the early, loud spelling of the same bound.
+        for arena_bytes in [self.sealed_out.arena_bytes(), self.sealed_in.arena_bytes()] {
+            if sealed_arena_breaches(arena_bytes, growth) {
+                return Err(Error::capacity_sealed_arena(
+                    arena_bytes.saturating_add(growth),
+                    u32::MAX as u64,
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// The batch's delete terms: every delete
@@ -225,20 +297,71 @@ impl Graph {
         &self,
         pending_out: &PendingTombstones,
         pending_in: &PendingTombstones,
+        supersede: Supersede,
     ) -> AdjDelta {
         let sealed_slot = sealed_slot();
-        let sealed_overflow = crate::memory::overflow_entry_bytes(sealed_value());
+        let sealed_overflow = crate::memory::overflow_entry_bytes(sealed_slot);
         price_side(
             self.out_side().sealed,
             pending_out,
             sealed_slot,
             sealed_overflow,
+            supersede,
         ) + price_side(
             self.in_side().sealed,
             pending_in,
             sealed_slot,
             sealed_overflow,
+            supersede,
         )
+    }
+
+    /// One write event's sealed-tier price on both endpoints' sides — the
+    /// per-event spelling of [`price_side`], the one formula the admission
+    /// estimate prices whole batches with. A delete records its tombstone on
+    /// demand, founding the entry when the region holds none (ADR-0551); a
+    /// reposition supersedes only a position a sealed chunk holds, so its
+    /// missing-chunk arm prices nothing. Priced before the event lands, so
+    /// the counts the terms read are the pre-mutation ones.
+    pub(super) fn price_sealed_event(
+        &self,
+        start: NodeId,
+        end: NodeId,
+        type_id: u32,
+        id: RelId,
+        supersede: Supersede,
+    ) -> (i64, i64) {
+        // The one-event spelling of [`price_side`]: the per-key and per-node
+        // bodies called once per endpoint, no nested batch maps.
+        let ids = HashSet::from([id]);
+        let sealed_slot = sealed_slot();
+        let sealed_overflow = crate::memory::overflow_entry_bytes(sealed_slot);
+        let mut refusable = 0i64;
+        let mut spill = 0i64;
+        for (sealed, node) in [(&self.sealed_out, start), (&self.sealed_in, end)] {
+            let region = sealed.region(node);
+            let (mut entries, mut tombstones) = sealed.entry_counts();
+            spill += price_sealed_key(
+                region,
+                type_id,
+                &ids,
+                &mut entries,
+                &mut tombstones,
+                supersede,
+            );
+            let mut span = sealed.span();
+            let (node_refusable, node_spill) = price_sealed_node(
+                &mut span,
+                region,
+                node,
+                sealed_slot,
+                sealed_overflow,
+                supersede,
+            );
+            refusable += node_refusable;
+            spill += node_spill;
+        }
+        (refusable, spill)
     }
 
     fn estimate_intern_delta(&self, ops: &[RedoOp]) -> i64 {
@@ -343,8 +466,8 @@ impl Graph {
         let after_shape = self.rel_chain_shape(id);
         let after_bytes = self.visible_rel_account(id);
         if after_shape != before_shape {
-            let growth = crate::memory::rel_chain_bytes(after_shape) as i64
-                - crate::memory::rel_chain_bytes(before_shape) as i64;
+            let growth = crate::memory::chain_bytes(after_shape, rel_version_stride()) as i64
+                - crate::memory::chain_bytes(before_shape, rel_version_stride()) as i64;
             self.charge(after_bytes as i64 + growth);
         } else {
             self.charge(after_bytes as i64 - before_bytes as i64);
@@ -381,8 +504,8 @@ impl Graph {
                 .as_ref()
                 .map(|n| crate::memory::live_node_account(n, &charge))
                 .unwrap_or(0);
-            let growth = crate::memory::node_chain_bytes(after_shape) as i64
-                - crate::memory::node_chain_bytes(before_shape) as i64;
+            let growth = crate::memory::chain_bytes(after_shape, node_version_stride()) as i64
+                - crate::memory::chain_bytes(before_shape, node_version_stride()) as i64;
             self.charge(added as i64 + growth);
         } else {
             self.charge_node_swap(before, after.as_ref());
@@ -527,71 +650,189 @@ impl<'a> SideAdmission<'a> {
     }
 }
 
-/// One side's share of the delete terms
+/// One direction's share of the span-length limit
+/// ([`Graph::enforce_adjacency_limits`]): per touched node, the distinct
+/// types it already holds and the new types this batch would add. Held is
+/// the sealed span's own entries unioned with the delta chunks — the same
+/// vocabulary the span length counts, never the hop-bearing chunk list
+/// alone (a type whose delta chunk a fold's fully-reclaimed arm removed
+/// keeps its sealed entry, so `hop_counts` would undercount it). A type
+/// the node holds is free; a fresh one counts against
+/// [`MAX_SPAN_TYPES`].
+struct TypeWall<'a> {
+    side: AdjSide<'a>,
+    nodes: HashMap<NodeId, (HashSet<u32>, HashSet<u32>)>,
+}
+
+impl<'a> TypeWall<'a> {
+    fn new(side: AdjSide<'a>) -> Self {
+        Self {
+            side,
+            nodes: HashMap::new(),
+        }
+    }
+
+    /// One created rel's `(node, type)` pair. The held set is read once
+    /// per touched node; the fresh set dedupes a batch that repeats a new
+    /// type on the same node.
+    fn record(&mut self, node: NodeId, type_id: u32) -> Result<()> {
+        let (held, fresh) = self.nodes.entry(node).or_insert_with(|| {
+            let mut held: HashSet<u32> = self
+                .side
+                .sealed
+                .region(node)
+                .map(|r| r.type_ids().into_iter().collect())
+                .unwrap_or_default();
+            if let Some(adj) = self.side.delta.get(&node) {
+                held.extend(adj.chunks.iter().map(|c| c.type_id));
+            }
+            (held, HashSet::new())
+        });
+        if !held.contains(&type_id) && fresh.insert(type_id) {
+            let count = held.len() + fresh.len();
+            if count > MAX_SPAN_TYPES {
+                return Err(Error::capacity_adjacency_types(
+                    count as u64,
+                    MAX_SPAN_TYPES as u64,
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The entry-offset bound ([`Graph::enforce_adjacency_limits`]): one
+/// arena's own stream bytes plus the batch's growth stay under the `u32`
+/// the entry offsets address. Saturating so an over-bound store refuses,
+/// never wraps.
+pub(super) fn sealed_arena_breaches(arena_bytes: u64, growth: u64) -> bool {
+    arena_bytes.saturating_add(growth) > u32::MAX as u64
+}
+
+impl Graph {
+    /// The sealed tier's whole reserved heap, both directions — the recount
+    /// oracle's term ([`Graph::structure_bytes`]); the write path charges
+    /// its events per region through [`Graph::price_sealed_event`] instead
+    /// (ADR-0599).
+    pub(super) fn sealed_floor(&self) -> u64 {
+        let mut n = 0u64;
+        for sealed in [&self.sealed_out, &self.sealed_in] {
+            n = n.saturating_add(sealed.array_bytes());
+            n = n.saturating_add(sealed.floor_bytes());
+        }
+        n
+    }
+}
+
+/// One side's share of the sealed-tier terms
 /// ([`Graph::estimate_delete_spill`](Graph::estimate_delete_spill)'s phase
-/// 2): per node, the region-level terms —
-/// the node's dense slot span (permanent, refusable) or its reclaimed
-/// side-map entry (spill), and the chunks-vec entry growth across every
-/// joining type, one
-/// before-and-after term per region, never one per type, or the reserved
-/// model's pow2 steps misprice a batch that joins several — then each key's
-/// own terms (all fold-reclaimed, spill): a sealed chunk's tombstone-vec
-/// growth, or a joining chunk's empty stream and tombstones.
+/// 2, and the write path's per-event spelling
+/// [`Graph::price_sealed_event`]): per
+/// node, the dense span-table growth (permanent, refusable), the entry-array
+/// growth across every joining type — one before-and-after term per region,
+/// never one per type, or the reserved model's pow2 steps misprice a batch
+/// that joins several — then each key's own terms (all fold-reclaimed,
+/// spill): a sealed chunk's tombstone-vec growth, or a joining chunk's
+/// tombstones. `supersede` selects the missing-chunk arm: a delete records
+/// its tombstone on demand and so founds the entry (ADR-0551); a
+/// reposition only supersedes a position a sealed chunk holds
+/// ([`AdjSide::reposition`]'s delta-only arm writes no tombstone), so a
+/// missing chunk prices nothing.
 fn price_side(
-    sealed: &IdVec<SealedAdj>,
+    sealed: &SealedArena,
     pending: &PendingTombstones,
     sealed_slot: u64,
     sealed_overflow: u64,
+    supersede: Supersede,
 ) -> AdjDelta {
     let mut span = sealed.span();
+    let (mut entries, mut tombstones) = sealed.entry_counts();
     let mut priced = AdjDelta::default();
     for (node, keys) in pending {
         // One key loop prices every key's own term: a chunk the region
         // already holds grows its tombstone vec (a delete after a
         // reposition updates the existing slot in place), a type the
-        // region does not hold joins it, bringing the empty stream and
-        // its tombstones — priced once, here, never again in a
+        // region does not hold joins it, inserting its zero-hop entry and
+        // bringing its tombstones — priced once, here, never again in a
         // region-level arm.
-        let region = sealed.get(node);
-        let mut joining = 0;
+        let region = sealed.region(*node);
         for (type_id, ids) in keys {
-            match region.as_ref().and_then(|region| region.chunk(*type_id)) {
-                Some(chunk) => {
-                    let fresh = chunk.fresh_tombstone_count(ids);
-                    priced.spill += chunk.tombstone_growth_bytes(fresh) as i64;
-                }
-                None => {
-                    joining += 1;
-                    priced.spill +=
-                        crate::adjacency::fresh_sealed_chunk_floor_bytes(ids.len()) as i64;
-                }
-            }
+            priced.spill += price_sealed_key(
+                region,
+                *type_id,
+                ids,
+                &mut entries,
+                &mut tombstones,
+                supersede,
+            );
         }
         // The region-level term, once per node: a founding delete grows the
-        // node's slot in the side table — the dense span permanently
-        // (refusable), a wide id's side-map entry only until the region
-        // empties (spill) — and its chunks-vec entry growth is one
-        // before-and-after term over every joining type. An existing region
-        // prices the same entry growth (zero when nothing joined).
-        match region {
-            None => {
-                // Each node reaches this arm once (`pending` is keyed by
-                // node), so the entry prices unconditionally — the
-                // per-batch dedupe is the create loop's, where a node can
-                // recur.
-                let placed = place(&mut span, *node, sealed_slot);
-                priced.refusable += placed.dense;
-                if placed.side_entry {
-                    priced.spill += sealed_overflow as i64;
-                }
-                priced.spill += crate::adjacency::fresh_sealed_chunk_entry_bytes(joining) as i64;
-            }
-            Some(region) => {
-                priced.spill += region.chunk_entry_growth_bytes(joining) as i64;
-            }
-        }
+        // node's dense span permanently (refusable). Each node reaches this
+        // arm once (`pending` is keyed by node), so the entry prices
+        // unconditionally — the per-batch dedupe is the create loop's, where
+        // a node can recur.
+        let (node_refusable, node_spill) = price_sealed_node(
+            &mut span,
+            region,
+            *node,
+            sealed_slot,
+            sealed_overflow,
+            supersede,
+        );
+        priced.refusable += node_refusable;
+        priced.spill += node_spill;
     }
     priced
+}
+
+/// One `(node, key)` entry's sealed-tier spill terms — the per-key body
+/// [`price_side`] loops and [`Graph::price_sealed_event`] calls once per
+/// endpoint. `entries`/`tombstones` are the running entry-column counts a
+/// joining chunk grows.
+fn price_sealed_key(
+    region: Option<SealedRegion<'_>>,
+    type_id: u32,
+    ids: &HashSet<RelId>,
+    entries: &mut usize,
+    tombstones: &mut usize,
+    supersede: Supersede,
+) -> i64 {
+    match region.filter(|r| r.has_chunk(type_id)) {
+        Some(region) => {
+            let fresh = region.fresh_tombstone_count(type_id, ids);
+            region.tombstone_growth_bytes(type_id, fresh) as i64
+        }
+        None if supersede == Supersede::Deleted => {
+            let mut spill = crate::adjacency::fresh_sealed_chunk_floor_bytes(ids.len()) as i64;
+            spill += crate::adjacency::entry_column_growth(*entries, *tombstones, 1) as i64;
+            *entries += 1;
+            *tombstones += 1;
+            spill
+        }
+        None => 0,
+    }
+}
+
+/// One node's founding-delete span term — the per-node body [`price_side`]
+/// and [`Graph::price_sealed_event`] share: the dense span a founding delete
+/// grows (refusable) or the side-map entry it takes (spill, reclaimed with
+/// the region it founds).
+fn price_sealed_node(
+    span: &mut usize,
+    region: Option<SealedRegion<'_>>,
+    node: NodeId,
+    sealed_slot: u64,
+    sealed_overflow: u64,
+    supersede: Supersede,
+) -> (i64, i64) {
+    if region.is_none() && supersede == Supersede::Deleted {
+        match crate::memory::place_in_span(span, node, sealed_slot) {
+            None | Some(crate::memory::SpanPlacement::Inside) => {}
+            Some(crate::memory::SpanPlacement::Grew(bytes)) => return (bytes as i64, 0),
+            Some(crate::memory::SpanPlacement::SideEntry) => return (0, sealed_overflow as i64),
+        }
+    }
+    (0, 0)
 }
 
 fn bump_adj(
@@ -601,14 +842,11 @@ fn bump_adj(
     init: impl FnOnce() -> Vec<ChunkHops>,
 ) -> i64 {
     let chunks = sim.entry(node).or_insert_with(init);
-    let bytes = |chunks: &[ChunkHops]| {
-        crate::memory::adjacency_bytes(&chunks.iter().map(|c| c.hops).collect::<Vec<_>>())
-    };
-    let before = bytes(chunks);
+    let before = crate::adjacency::adjacency_bytes(chunks.iter().map(|c| c.hops));
     if let Some(slot) = chunks.iter_mut().find(|c| c.type_id == type_id) {
         slot.hops += 1;
     } else {
         chunks.push(ChunkHops { type_id, hops: 1 });
     }
-    bytes(chunks) as i64 - before as i64
+    crate::adjacency::adjacency_bytes(chunks.iter().map(|c| c.hops)) as i64 - before as i64
 }

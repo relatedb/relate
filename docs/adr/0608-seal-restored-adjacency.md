@@ -96,3 +96,12 @@ happens inside the build pass, so an open runs no extra whole-graph pass
 over it. The durable format, the fold predicate, the floor and the sealed
 representation are unchanged; a store's on-disk bytes and its query
 answers are the same with or without the emission.
+
+## Later references
+
+- ADR-0599's node-major floor arena carries this decision: the build seals
+  through the arena's fold in its one pass, and the gate it keeps is that
+  tier's 4-hop restore break-even, not the write path's 32-hop floor. A
+  reopened store therefore lands at or below the checkpointed charge, and
+  on it only when every chunk sits over the 32-hop live floor — the
+  accepted drift.

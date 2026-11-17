@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use relate_catalog::{Catalog, ConstraintDef, IndexDef};
 use relate_core::{Namespace, Node, NodeId, RelId, Relationship, Result, Value};
 
-use crate::adjacency::{SealedAdj, TypedAdj};
+use crate::adjacency::{SealedArena, Span, TypedAdj};
 use crate::group_key::GroupKey;
 use crate::memory::ChainShape;
 use crate::pull_identity::PullIdentityIndex;
@@ -108,10 +108,11 @@ pub use query_stats::QueryStats;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub use index::take_index_rebuilds;
-// ADR-0608's durable-shape emission seam: same quarantine shape.
-#[cfg(any(test, feature = "test-hooks"))]
+// The adjacency side the `test-hooks` sealed-chunk seam is read by, so the
+// storage open tests can name the direction across the crate boundary.
+#[cfg(feature = "test-hooks")]
 #[doc(hidden)]
-pub use adjacency::take_sealed_builds;
+pub use adjacency::Side;
 pub use relate_planner::ContainsCount;
 pub(crate) use services::StoreServices;
 
@@ -327,13 +328,10 @@ pub(crate) fn adj_slot() -> u64 {
     std::mem::size_of::<Option<TypedAdj>>() as u64
 }
 
-/// One sealed side-table id slot, the stride of the sealed stores' arrays.
+/// One sealed span-table id slot, the stride of the sealed arena's dense
+/// span array (ADR-0599).
 fn sealed_slot() -> u64 {
-    std::mem::size_of::<Option<SealedAdj>>() as u64
-}
-
-fn sealed_value() -> u64 {
-    std::mem::size_of::<SealedAdj>() as u64
+    std::mem::size_of::<Span>() as u64
 }
 
 pub(crate) fn node_value() -> u64 {
@@ -382,12 +380,13 @@ pub struct Graph {
     rels: IdVec<Chain<LiveRel>>,
     out_adj: IdVec<TypedAdj>,
     in_adj: IdVec<TypedAdj>,
-    /// The sealed tier, one side table per direction keyed by node (ADR-0551):
-    /// a node's compressed chunks and versioned tombstones. An entry exists
-    /// only where a fold or a delete's tombstone landed, so a node that never
-    /// folds pays nothing; the delta slot stays 24 bytes.
-    sealed_out: IdVec<SealedAdj>,
-    sealed_in: IdVec<SealedAdj>,
+    /// The sealed tier, one graph-level node-major arena per direction
+    /// (ADR-0551 / ADR-0599): a node's compressed chunks and versioned
+    /// tombstones. An entry exists only where a fold or a delete's tombstone
+    /// landed, so a node that never folds pays nothing; the delta slot stays
+    /// 24 bytes.
+    sealed_out: SealedArena,
+    sealed_in: SealedArena,
     /// LABS-851 (the structure round): the counting operator's count
     /// state — per-type rel counts, (start-label, type, end-label) pair
     /// counts, per-label live node counts, and the total live node
@@ -470,8 +469,8 @@ impl Default for Graph {
             rels: IdVec::default(),
             out_adj: IdVec::default(),
             in_adj: IdVec::default(),
-            sealed_out: IdVec::default(),
-            sealed_in: IdVec::default(),
+            sealed_out: SealedArena::default(),
+            sealed_in: SealedArena::default(),
             count_stats: Mutex::new(CountStats::default()),
             degree_histograms: Mutex::new(degree_stats::DegreeHistograms::default()),
             constraint_keys: Mutex::new(ConstraintKeyIndex::default()),

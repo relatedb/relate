@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use relate_core::{NodeId, RelId, Value};
-use relate_executor::{Graph, RedoOp};
+use relate_executor::{Graph, RedoOp, Side};
 use relate_storage::{
     checkpoint_with_lsn, memory_store_with_codec, open_store, open_store_readonly,
     SnapshotCodecKind, Wal,
@@ -145,6 +145,57 @@ fn opened_store_has_the_adjacency_of_the_graph_that_wrote_it() {
                 assert!(hidden, "{codec:?}: {deleted}");
             }
             assert_eq!(opened.all_rel_ids(), [1, 2, 3], "{codec:?}");
+        }
+    }
+}
+
+/// The wholesale build every fresh open runs emits the folded shape in its
+/// one pass (ADR-0608): a restored chunk at the 4-hop break-even
+/// (ADR-0599) seals, one a hop short stays delta. The `test-hooks`
+/// sealed-chunk count is the emission's observable surface across the crate
+/// boundary; 4 is the executor's `RESTORE_SEAL_HOPS`, the threshold the ADR
+/// records.
+#[test]
+fn fresh_open_seals_the_four_hop_chunk_and_leaves_the_three_hop_one_delta() {
+    for codec in SnapshotCodecKind::compiled()
+        .iter()
+        .copied()
+        .filter(|codec| reload_preserves_raw_ids(*codec))
+    {
+        let store = memory_store_with_codec(codec).unwrap();
+        let mut wal = Wal::open(store.vfs(), "wal", 0).unwrap();
+        let writer = Graph::default();
+        commit(
+            &writer,
+            &mut wal,
+            vec![
+                create_node(0),
+                create_node(1),
+                create_node(2),
+                create_node(3),
+            ],
+        );
+        // Node 0's out-chunk of "LONG" holds 4 hops — the threshold; node
+        // 2's out-chunk of "SHORT" holds 3, one short. Nodes 1 and 3 carry
+        // the matching incoming chunks.
+        let mut rels: Vec<RedoOp> = (0..4).map(|id| create_rel(id, 0, 1, "LONG")).collect();
+        rels.extend((4..7).map(|id| create_rel(id, 2, 3, "SHORT")));
+        commit(&writer, &mut wal, rels);
+        checkpoint_with_lsn(&store, &writer, wal.lsn, None).unwrap();
+        drop(wal);
+
+        for readonly in [false, true] {
+            let (opened, _) = if readonly {
+                open_store_readonly::<Graph>(&store).unwrap()
+            } else {
+                open_store::<Graph>(&store).unwrap()
+            };
+            // The 4-hop chunk sealed, in both directions; the 3-hop one
+            // stayed delta — no sealed chunk for its nodes.
+            assert_eq!(opened.sealed_chunk_count(0, Side::Start), 1, "{codec:?}");
+            assert_eq!(opened.sealed_chunk_count(1, Side::End), 1, "{codec:?}");
+            assert_eq!(opened.sealed_chunk_count(2, Side::Start), 0, "{codec:?}");
+            assert_eq!(opened.sealed_chunk_count(3, Side::End), 0, "{codec:?}");
         }
     }
 }

@@ -577,17 +577,25 @@ impl Shared {
     /// total — the caller that admits a batch carries it forward; a
     /// single-record caller ignores it.
     pub(crate) fn admit_redo_capacity(&self, ops: &[RedoOp], reserved: u64) -> Result<u64> {
-        self.admit_redo_capacity_with(ops, reserved, None)
+        self.admit_redo_capacity_with(ops, reserved, None, &[])
     }
 
     /// [`Shared::admit_redo_capacity`] with the constraint-key entry growth
-    /// already computed by the group admission walk (ADR-0439).
+    /// already computed by the group admission walk (ADR-0439). `earlier`
+    /// are the ops of slots this group commit already accepted — the
+    /// adjacency tier's type wall counts this slot's creates on top of the
+    /// group's (ADR-0599); the single-record path passes none.
     pub(crate) fn admit_redo_capacity_with(
         &self,
         ops: &[RedoOp],
         reserved: u64,
         constraint_growth: Option<i64>,
+        earlier: &[&[RedoOp]],
     ) -> Result<u64> {
+        // ADR-0599's structural limits hold with no size limit configured
+        // too: the adjacency tier's field-width walls are refused here,
+        // before the redo is logged, whatever `limit` says.
+        self.graph.enforce_adjacency_limits(ops, earlier)?;
         let limit = self.resolved.logical_graph_size_limit;
         if limit == 0 {
             return Ok(reserved);

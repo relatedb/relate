@@ -202,14 +202,12 @@ fn gc_folds_a_lone_live_version_and_drops_a_collected_tombstone() {
 
 #[test]
 fn inline_slot_charges_no_version_list_or_xmax() {
-    use crate::memory::{node_chain_bytes, ChainShape};
+    use crate::memory::{chain_bytes, ChainShape};
     // The row lives in the id slot. A spilled chain adds its version
     // buffer, and nothing else, on the heap.
-    assert_eq!(node_chain_bytes(ChainShape::Inline), 0);
-    assert_eq!(
-        node_chain_bytes(ChainShape::Spilled(1)),
-        crate::graph::node_version_stride()
-    );
+    let stride = crate::graph::node_version_stride();
+    assert_eq!(chain_bytes(ChainShape::Inline, stride), 0);
+    assert_eq!(chain_bytes(ChainShape::Spilled(1), stride), stride);
 }
 
 /// The estimate-then-apply oracle both charge-exactness tests run: the

@@ -7,7 +7,7 @@
 use super::id_vec::IdVec;
 use super::shard;
 use super::*;
-use crate::adjacency::AdjHop;
+use crate::adjacency::{Hop, SealedRegion};
 
 /// One adjacency chunk's type and delta + sealed hop count — named, because
 /// the two integers swap silently as a tuple.
@@ -26,7 +26,7 @@ pub(super) struct ChunkHops {
 #[derive(Clone, Copy)]
 pub(super) struct AdjSide<'a> {
     pub(super) delta: &'a IdVec<TypedAdj>,
-    pub(super) sealed: &'a IdVec<SealedAdj>,
+    pub(super) sealed: &'a SealedArena,
 }
 
 impl AdjSide<'_> {
@@ -36,31 +36,11 @@ impl AdjSide<'_> {
     pub(super) fn with_adj<R>(
         &self,
         node: NodeId,
-        f: impl FnOnce(&TypedAdj, Option<&SealedAdj>) -> R,
+        f: impl FnOnce(&TypedAdj, Option<SealedRegion<'_>>) -> R,
     ) -> Option<R> {
         let adj = self.delta.get(&node)?;
-        let region = self.sealed.get(&node);
-        Some(f(&adj, region.as_deref()))
-    }
-
-    /// Install one node's wholesale build result: the delta always, the
-    /// sealed region only when the build folded one (ADR-0608). The one
-    /// writer of a build's output — the emptiness branch lives here, not at
-    /// the build site, so the predicate has one home and the seam counting
-    /// emitted regions cannot drift from what landed.
-    ///
-    /// The seam's counter is thread-local, and the increment sits here on
-    /// the calling thread — never beside `seal_due` in `build_node`, which
-    /// the shards' worker threads run: a thread-local bump there would
-    /// never reach the reader once a partition has more than one shard.
-    fn install(&self, node: NodeId, adj: TypedAdj, region: SealedAdj) {
-        self.delta.insert(node, adj);
-        if region.is_empty() {
-            return;
-        }
-        #[cfg(any(test, feature = "test-hooks"))]
-        SEALED_BUILDS.with(|n| n.set(n.get() + 1));
-        self.sealed.insert(node, region);
+        let region = self.sealed.region(node);
+        Some(f(&adj, region))
     }
 
     /// Drop both of this side's tables — the wholesale build's replacement
@@ -76,20 +56,12 @@ impl AdjSide<'_> {
             .unwrap_or_default()
     }
 
-    /// One node's adjacency floor: the delta hop bytes plus its sealed
-    /// side-table entry's compressed chunks and tombstones.
+    /// One node's adjacency floor in this direction: the delta hop bytes.
+    /// The sealed tier is a graph-level arena (ADR-0599); the write path
+    /// charges its events per region through `Graph::price_sealed_event`,
+    /// never a whole-tier walk.
     pub(super) fn floor(&self, node: NodeId) -> u64 {
         self.delta.get(&node).map_or(0, |adj| adj.floor_bytes())
-            + self
-                .sealed
-                .get(&node)
-                .map_or(0, |region| region.floor_bytes())
-    }
-
-    /// Slot-array bytes of both tables — the term the census reads as
-    /// `slot_bytes`.
-    pub(super) fn array_bytes(&self) -> u64 {
-        self.delta.array_bytes() + self.sealed.array_bytes()
     }
 
     /// One [`ChunkHops`] per chunk of `node`, in first-seen type order.
@@ -121,19 +93,19 @@ impl AdjSide<'_> {
         // Only a sealed chunk can hold a position to supersede; a delta-only
         // hop is removed outright, so recording its tombstone would leave an
         // empty region — and its slot array — behind for nothing.
-        if self
+        let region = self
             .sealed
-            .get(&node)
-            .is_some_and(|region| region.chunk(type_id).is_some())
-        {
-            let mut sealed_entry = self.sealed.entry(node);
-            adj_entry
+            .region(node)
+            .filter(|region| region.has_chunk(type_id));
+        match region {
+            Some(region) => adj_entry
                 .or_default()
-                .reposition(sealed_entry.or_default(), type_id, id, ts, xmax);
-        } else {
-            let adj = adj_entry.or_default();
-            adj.remove(None, type_id, id);
-            adj.insert(type_id, id, ts);
+                .reposition(region, type_id, id, ts, xmax),
+            None => {
+                let adj = adj_entry.or_default();
+                adj.remove(None, type_id, id);
+                adj.insert(type_id, id, ts);
+            }
         }
     }
 
@@ -142,15 +114,13 @@ impl AdjSide<'_> {
     /// version map no longer holds). A node left with no chunks leaves no
     /// adjacency entry behind — `remove_if` re-checks emptiness under the
     /// store's write lock, so a racing insert that recreated a chunk wins and
-    /// the entry stays. A sealed region the removal emptied drops its
-    /// side-table entry too.
+    /// the entry stays. A sealed region the removal emptied drops its arena
+    /// entry too (the fold's `put_chunk` with an empty stream drops it).
     pub(super) fn remove(&self, node: NodeId, type_id: u32, id: RelId) {
         if let Some(mut adj) = self.delta.get_mut(&node) {
-            let mut region = self.sealed.get_mut(&node);
-            adj.remove(region.as_deref_mut(), type_id, id);
+            adj.remove(self.sealed.region(node), type_id, id);
         }
         self.delta.remove_if(&node, TypedAdj::is_empty);
-        self.sealed.remove_if(&node, SealedAdj::is_empty);
     }
 
     /// Record the versioned tombstone a delete places on `node`'s hop
@@ -162,7 +132,8 @@ impl AdjSide<'_> {
     /// of the sealed region's, and the tombstone must land in that window
     /// too.
     pub(super) fn tombstone_deleted(&self, node: NodeId, type_id: u32, id: RelId, xmax: u64) {
-        self.sealed.entry(node).or_default().tombstone_deleted(
+        self.sealed.tombstone_deleted(
+            node,
             type_id,
             id,
             xmax,
@@ -170,27 +141,29 @@ impl AdjSide<'_> {
         );
     }
 
-    /// Fold every due chunk of this side at `horizon` (ADR-0551).
-    fn compact(&self, horizon: u64) {
-        // Two passes: the map's one write guard must not span other nodes' folds.
-        let mut due_nodes = Vec::new();
+    /// One fold pass of this side under `gate` (ADR-0551 / ADR-0599). Two
+    /// passes: the map's one write guard must not span other nodes' folds.
+    fn fold(&self, horizon: u64, gate: FoldGate) {
+        // The collection pass computes each due node's chunks once, carrying
+        // the pair into the write pass — the fold's one due computation.
+        let mut due_nodes: Vec<(NodeId, Vec<u32>)> = Vec::new();
         self.delta.for_each(|node, adj| {
-            if adj
-                .due_type_ids(self.sealed.get(&node).as_deref(), horizon)
-                .next()
-                .is_some()
-            {
-                due_nodes.push(node);
+            let due = gate.due(adj, self.sealed.region(node), horizon);
+            if !due.is_empty() {
+                due_nodes.push((node, due));
             }
         });
-        for node in due_nodes {
+        for (node, due) in due_nodes {
             let Some(mut adj) = self.delta.get_mut(&node) else {
                 continue;
             };
-            let mut sealed_entry = self.sealed.entry(node);
-            adj.seal_due(sealed_entry.or_default(), horizon);
+            adj.fold_due(
+                self.sealed.region_or_default(node),
+                &due,
+                horizon,
+                gate.floor(),
+            );
         }
-        self.sealed.retain(|_, region| !region.is_empty());
     }
 
     /// Adjacency length without allocation or type/overlay filtering.
@@ -232,11 +205,49 @@ impl Graph {
     }
 }
 
-/// Which endpoint of a [`RelRow`] one direction's grouping pass keys on.
+/// Which endpoint of a [`RelRow`] one direction's grouping pass keys on —
+/// the start side (the out adjacency) or the end side (the in adjacency).
 #[derive(Clone, Copy)]
-enum Side {
+pub enum Side {
     Start,
     End,
+}
+
+/// Which chunks a fold pass takes, and the never-sealed floor it folds
+/// them at — the typed gate the checkpoint pass and the wholesale build
+/// select their candidates and their floor from, so the two folds are one
+/// pass that differs only here.
+#[derive(Clone, Copy)]
+enum FoldGate {
+    /// The checkpoint's watermark gate (ADR-0551): chunks due at `horizon`
+    /// — a never-sealed chunk at
+    /// [`COMPACTION_DELTA_FLOOR`](crate::adjacency::COMPACTION_DELTA_FLOOR),
+    /// a delta past 25% of the sealed hops, or a reclaimable tombstone.
+    Watermark,
+    /// The wholesale build's gate (ADR-0599 / ADR-0608): every chunk whose
+    /// delta reaches
+    /// [`RESTORE_SEAL_HOPS`](crate::adjacency::RESTORE_SEAL_HOPS) — a
+    /// fresh build is all-delta, so the threshold alone decides, no
+    /// sealed-length ratio or tombstone horizon.
+    BuildSeal,
+}
+
+impl FoldGate {
+    /// The gate's candidate selection: the type ids it folds for `adj`.
+    fn due(&self, adj: &TypedAdj, sealed: Option<SealedRegion<'_>>, horizon: u64) -> Vec<u32> {
+        match self {
+            FoldGate::Watermark => adj.due_chunks(sealed, horizon),
+            FoldGate::BuildSeal => adj.sealable_chunks(),
+        }
+    }
+
+    /// The never-sealed fold floor the gate folds at.
+    fn floor(&self) -> usize {
+        match self {
+            FoldGate::Watermark => crate::adjacency::COMPACTION_DELTA_FLOOR,
+            FoldGate::BuildSeal => crate::adjacency::RESTORE_SEAL_HOPS,
+        }
+    }
 }
 
 impl Side {
@@ -266,20 +277,25 @@ impl Side {
 ///
 /// Sharded on that same endpoint (the partition its caller hands it), so
 /// a shard owns every row of every node it carries and builds those
-/// nodes whole. The install is the only writer, and the per-node result
-/// is shard-independent: `from_runs` derives a node's chunk order from
-/// each run's first rel id and sorts its hops `cmp_ts_desc`, both total
-/// orders over a node's own hops.
+/// nodes whole. The per-node delta follows `from_runs`'s order (each run's
+/// first rel id, hops `cmp_ts_desc`, both total orders over a node's own
+/// hops), and the sealed chunks land in the arena from the shards' threads
+/// — the build pass's own emission (ADR-0608), not a second walk. The
+/// arena's buffers are fitted to their charged size at the end, with no
+/// dead ranges to compact.
 fn build_side(graph: &Graph, rows: &[RelRow], side: Side, shards: &[Vec<usize>]) {
     // The replace-wholesale step belongs to the build that replaces: this
     // side's pair is emptied here, so a rebuild cannot leave a direction's
     // stale chunks behind.
     let adjacency = side.adj(graph);
     adjacency.clear();
-    let parts = shard::run_shards(shards, |shard| build_shard(rows, shard, side));
-    for (node, node_adj, region) in parts.into_iter().flatten() {
-        adjacency.install(node, node_adj, region);
+    let parts = shard::run_shards(shards, |shard| {
+        build_shard(rows, shard, side, adjacency.sealed)
+    });
+    for (node, adj) in parts.into_iter().flatten() {
+        adjacency.delta.insert(node, adj);
     }
+    adjacency.sealed.fit();
 }
 
 /// One shard's whole build: sort its row indices by `(endpoint, type)`,
@@ -287,7 +303,12 @@ fn build_side(graph: &Graph, rows: &[RelRow], side: Side, shards: &[Vec<usize>])
 /// a local copy of the caller's shard — the partition is shared
 /// read-only across the rebuild's consumers, so this pass never
 /// reorders it.
-fn build_shard(rows: &[RelRow], shard: &[usize], side: Side) -> Vec<(NodeId, TypedAdj, SealedAdj)> {
+fn build_shard(
+    rows: &[RelRow],
+    shard: &[usize],
+    side: Side,
+    sealed: &SealedArena,
+) -> Vec<(NodeId, TypedAdj)> {
     let endpoint = |row: &RelRow| side.endpoint(row);
     let mut order = shard.to_vec();
     order.sort_unstable_by(|&a, &b| {
@@ -298,8 +319,7 @@ fn build_shard(rows: &[RelRow], shard: &[usize], side: Side) -> Vec<(NodeId, Typ
     });
     let mut built = Vec::new();
     for node_run in order.chunk_by(|&a, &b| endpoint(&rows[a]) == endpoint(&rows[b])) {
-        let (adj, region) = build_node(rows, node_run);
-        built.push((endpoint(&rows[node_run[0]]), adj, region));
+        built.push(build_node(rows, node_run, side, sealed));
     }
     built
 }
@@ -309,25 +329,32 @@ fn build_shard(rows: &[RelRow], shard: &[usize], side: Side) -> Vec<(NodeId, Typ
 /// (ADR-0608).
 ///
 /// The durable shape: the build seals through the fold predicate's own
-/// gate-and-fold sequence, the same one call the checkpoint's GC pass
-/// makes — one gate, one sort, one chunk order, one code path — so a
-/// rebuilt graph and a checkpoint-folded one cannot land on different
-/// layouts. Nothing is sealed yet and no tombstones exist, so the
-/// never-sealed arm of `chunk_due` is the whole predicate and the horizon
-/// is inert. Both wholesale rebuilds (a restore and an aborted write's)
-/// emit it here, in the one pass that derives adjacency, instead of a
-/// second serial walk folding afterwards.
-fn build_node(rows: &[RelRow], node_run: &[usize]) -> (TypedAdj, SealedAdj) {
+/// gate-and-fold sequence, the same one the checkpoint's GC pass calls —
+/// one gate, one sort, one chunk order, one code path — so a rebuilt graph
+/// and a checkpoint-folded one cannot land on different layouts. Nothing is
+/// sealed yet and no tombstones exist, so the never-sealed floor arm is the
+/// whole predicate and the horizon is inert. Both wholesale rebuilds (a
+/// restore and an aborted write's) emit it here, in the one pass that
+/// derives adjacency, instead of a second serial walk folding afterwards.
+/// The node is one shard's alone, so the arena's one write lock serializes
+/// the emission's appends but never two folds of the same node.
+fn build_node(
+    rows: &[RelRow],
+    node_run: &[usize],
+    side: Side,
+    sealed: &SealedArena,
+) -> (NodeId, TypedAdj) {
+    let node = side.endpoint(&rows[node_run[0]]);
     // One run per type: its type id and its hops, unsorted and keyless —
     // `TypedAdj::from_runs` derives the chunk-order key from the hops.
     let runs = node_run
         .chunk_by(|&a, &b| rows[a].type_id == rows[b].type_id)
         .map(|run| {
-            let hops: Vec<AdjHop> = run
+            let hops: Vec<Hop> = run
                 .iter()
                 .map(|&index| {
                     let row = &rows[index];
-                    AdjHop {
+                    Hop {
                         ts: row.ts,
                         id: row.id,
                     }
@@ -336,28 +363,10 @@ fn build_node(rows: &[RelRow], node_run: &[usize]) -> (TypedAdj, SealedAdj) {
             (rows[run[0]].type_id, hops)
         });
     let mut adj = TypedAdj::from_runs(runs);
-    let mut sealed = SealedAdj::default();
-    adj.seal_due(&mut sealed, 0);
-    (adj, sealed)
-}
-
-#[cfg(any(test, feature = "test-hooks"))]
-thread_local! {
-    /// Sealed regions a whole-graph adjacency build emitted, this thread —
-    /// one per node the build gave a region to, not one per folded chunk.
-    /// Bumped from [`AdjSide::install`], which the build's caller runs;
-    /// `build_shard` runs on the shards' worker threads, so a bump there
-    /// would be invisible here. Test seam for the durable-shape emission
-    /// (ADR-0608) — same quarantine shape as `graph::take_index_rebuilds`.
-    static SEALED_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// Take this thread's count of sealed regions whole-graph adjacency builds
-/// emitted, resetting it.
-#[cfg(any(test, feature = "test-hooks"))]
-#[doc(hidden)]
-pub fn take_sealed_builds() -> u64 {
-    SEALED_BUILDS.with(|n| n.replace(0))
+    let gate = FoldGate::BuildSeal;
+    let due = gate.due(&adj, None, 0);
+    adj.fold_due(sealed.region_or_default(node), &due, 0, gate.floor());
+    (node, adj)
 }
 
 /// Replace both adjacency pairs wholesale from the live rel rows: the
@@ -385,12 +394,37 @@ impl Graph {
     /// Fold every due adjacency chunk's delta and reclaimed tombstones into
     /// its sealed stream (ADR-0551). Runs at the checkpoint (through
     /// [`Graph::gc_versions`]); a chunk below the watermark stays delta. A
-    /// whole-graph rebuild does not fold here — it emits the durable shape
-    /// directly (ADR-0608). The node's sealed side-table entry is taken only
-    /// when a chunk is due, and dropped when its last chunk recedes.
+    /// whole-graph rebuild does not fold here — it emits the durable shape in
+    /// its own pass (ADR-0608). The node's sealed region is taken only when a
+    /// chunk is due, and dropped when its last chunk recedes. The arena is
+    /// compacted after the fold (ADR-0599): the fold appends the new encodings
+    /// and marks the replaced spans dead, and compaction reclaims them.
     pub(super) fn compact_adjacency_at_watermark(&self, horizon: u64) {
-        self.out_side().compact(horizon);
-        self.in_side().compact(horizon);
+        self.fold_adjacency_at_watermark(horizon);
+        self.sealed_out.compact();
+        self.sealed_in.compact();
+    }
+
+    /// The checkpoint pass's fold half, without the trailing compaction —
+    /// the seam the reclaim test reads the dead ranges through before
+    /// compaction reclaims them.
+    pub(super) fn fold_adjacency_at_watermark(&self, horizon: u64) {
+        self.out_side().fold(horizon, FoldGate::Watermark);
+        self.in_side().fold(horizon, FoldGate::Watermark);
+    }
+
+    /// How many sealed chunks `node`'s adjacency holds on `side` — the out
+    /// (`Side::Start`) or in (`Side::End`) direction — the wholesale build's
+    /// emission (ADR-0608), read by the storage open tests across the crate
+    /// boundary. Test seam behind the off-by-default `test-hooks` feature,
+    /// never in a shipped build.
+    #[cfg(feature = "test-hooks")]
+    pub fn sealed_chunk_count(&self, node: NodeId, side: Side) -> usize {
+        let sealed = match side {
+            Side::Start => &self.sealed_out,
+            Side::End => &self.sealed_in,
+        };
+        sealed.region(node).map_or(0, |region| region.chunk_count())
     }
 
     pub fn degree_out(&self, id: NodeId) -> Vec<RelId> {
