@@ -7,7 +7,7 @@ use relate_ir::QuantifierKind;
 
 use crate::overlay::ExecGraph;
 
-use super::{fold_extreme, fold_quantifier, membership, Extreme};
+use super::{fold_extreme, fold_quantifier, member_of, Extreme};
 
 pub(crate) fn collection_flatten(graph: &ExecGraph<'_>, vals: &[Value]) -> Result<Value> {
     let Some(value) = vals.first() else {
@@ -250,8 +250,8 @@ fn list_arg(value: Value, op: &str) -> Result<Option<Arc<Vec<Value>>>> {
 }
 
 /// `coll.hasAnyOf` / `coll.hasAllOf` / `coll.hasNoneOf` (CIP-286): the
-/// [`QuantifierKind`] reduction over the canonical membership predicate
-/// [`membership`], via the one shared three-valued quantifier fold
+/// [`QuantifierKind`] reduction over the one production membership entry
+/// (`eval::member_of`), via the one shared three-valued quantifier fold
 /// (`eval::fold_quantifier`). Each quantifier exits early on
 /// its decided value — `Any` on the first member, `All` on the first
 /// non-member, `None` on the first member — and otherwise returns null
@@ -274,8 +274,10 @@ pub(crate) fn collection_has(kind: QuantifierKind, vals: &[Value]) -> Result<Val
     };
     fold_quantifier(kind, values.iter(), |x| {
         // A null element of `list` could equal `x`: the membership is
-        // unknown, never decided for this quantifier's exit.
-        Ok(membership(x, list.as_slice()).truthy())
+        // unknown, never decided for this quantifier's exit. The one
+        // production membership entry decides index-or-scan, so a long
+        // bound list is as indexed here as it is for `IN`.
+        Ok(member_of(x, &list).truthy())
     })
 }
 

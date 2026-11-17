@@ -157,6 +157,7 @@ use self::search::{
     seek, NodeSimple, Position, SearchPolicy, SeekTables, Stop, TrailPolicy, WalkPolicy,
 };
 use super::frontier_tables::{epsilon_index, Arm, Chain, Parents, Step};
+use super::guard_memo::StateMemos;
 use super::nfa::{FrontierNfa, Pool};
 use super::node_map::NodeMap;
 
@@ -350,6 +351,7 @@ impl<'a, 'g> RearivalRule<'a, 'g> {
                 eps_closure,
                 min_hops: nfa.min_hops,
                 depth_cap: nfa.max_hops.unwrap_or(REARRIVAL_DEPTH_CEILING),
+                memos: StateMemos::new(view, nfa.states as usize),
             },
             seed,
             bufs,

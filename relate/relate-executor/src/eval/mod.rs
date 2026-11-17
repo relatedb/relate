@@ -31,9 +31,11 @@ mod fold;
 mod function;
 mod items;
 mod labels;
+mod membership_index;
 mod numeric;
 mod predicates;
 mod quantifier;
+mod regex_cache;
 mod string;
 mod temporal;
 #[cfg(test)]
@@ -45,11 +47,12 @@ pub(crate) use aggregate::{
     fold_aggregate, needs_numbers, rewrite_horizontal_aggregates, FoldInput, Percentile,
     PercentileSample, StreamFold, SumAcc,
 };
-pub(crate) use fold::{extreme_offer, fold_extreme, fold_quantifier, membership, Extreme};
+pub(crate) use fold::{extreme_offer, fold_extreme, fold_quantifier, Extreme};
 pub(crate) use items::{into_items, iterated, Items};
 pub(crate) use labels::{
     dynamic_label_names, dynamic_property_key, label_expr_matches, resolve_write_labels,
 };
+pub(crate) use membership_index::member_of;
 // The expression walkers live in `relate-ir` next to `Expr::children`
 // so planner and executor share one traversal.
 pub(crate) use relate_ir::{

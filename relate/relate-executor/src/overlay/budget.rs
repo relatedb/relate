@@ -3,6 +3,8 @@
 //! constants, their counters, and the [`ExecGraph`] charge/limit seam.
 
 use std::cell::Cell;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 use relate_core::{Error, Result, Value};
 
@@ -93,6 +95,14 @@ impl ExpressionBudgetCounter {
     }
 }
 
+/// The whole query's live memo bytes, across every stage's memos (a
+/// refusal freezes the asking memo, never fails the query; LABS-1478).
+pub(crate) const MEMO_QUERY_BUDGET: u64 = 16 << 20;
+
+/// The per-statement live-bytes counter every memo of a query shares,
+/// owned by the execution view beside the other statement budgets.
+pub(crate) type MemoLive = Arc<AtomicU64>;
+
 impl<'a> ExecGraph<'a> {
     /// Refuse one expression-built allocation larger than the view's cap
     /// (ADR-0463). The size is the allocation about to be made, so the
@@ -131,6 +141,11 @@ impl<'a> ExecGraph<'a> {
     pub(crate) fn charge_retained(&self, total: &mut u64, added: u64) -> Result<()> {
         *total = total.saturating_add(added);
         self.check_expression_allocation(*total)
+    }
+
+    /// The statement's shared live-memo-bytes counter (LABS-1478).
+    pub(crate) fn memo_live(&self) -> MemoLive {
+        self.memo_live.clone()
     }
 
     /// The configured per-allocation cap (`None` = no cap).

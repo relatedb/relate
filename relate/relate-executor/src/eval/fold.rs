@@ -3,7 +3,9 @@
 //! expressions (`quantifier.rs`), the `coll.*` functions (`collection.rs`),
 //! the aggregates (`aggregate/`), and the `IN` operator (`expr.rs`) all
 //! reduce onto. Sibling feature modules import these downward from the eval
-//! layer, never sideways from each other.
+//! layer, never sideways from each other — with one sanctioned exception:
+//! `membership_index` reads [`membership`] from here, the reference scan
+//! behind its one production entry.
 
 use std::cmp::Ordering;
 
@@ -59,9 +61,11 @@ pub(crate) fn fold_quantifier<V>(
 /// is null (an unknown value), `false` otherwise — and `false` for a null `x`
 /// in an empty list, `null` in a non-empty one: a null `x` decides through
 /// the same equals relation (every comparison is unknown), never a special
-/// case. The one membership policy of the `IN` operator and the
+/// case. The reference membership policy of the `IN` operator and the
 /// `coll.has*Of` functions (CIP-286), which are quantifiers over exactly
-/// this predicate.
+/// this predicate — production reaches it through `membership_index`'s one
+/// entry, which answers from its index when it has one and scans here
+/// otherwise.
 pub(crate) fn membership(x: &Value, xs: &[Value]) -> Value {
     // The Any column of the one shared fold: the first true decides, an
     // unknown comparison stays unknown, no member is false. The predicate

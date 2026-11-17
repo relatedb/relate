@@ -127,7 +127,7 @@ fn entity_set_ids(value: &Value, kind: EntityKind) -> Result<HashSet<i64>> {
         return Ok(HashSet::new());
     };
     let mut ids = HashSet::new();
-    for item in members {
+    for item in members.iter() {
         match (item, kind) {
             (Value::Node(node), EntityKind::Node) => {
                 ids.insert(node.id);

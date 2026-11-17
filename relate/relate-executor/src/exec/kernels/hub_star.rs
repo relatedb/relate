@@ -48,6 +48,7 @@ use crate::store::RelTypes;
 use super::super::chunk::{Chunk, Column};
 use super::super::WalkTallies;
 use super::matcher::{Hop, HubStar};
+use super::memo::Memoized;
 use super::program::{Admission, NodePred};
 use super::{KernelMode, KernelOutput};
 
@@ -266,7 +267,7 @@ fn expand_hop_at(
         rels,
         nodes,
         on_row,
-        Admission::of(&hop.target),
+        Memoized(Admission::of(&hop.target)),
     )
 }
 

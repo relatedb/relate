@@ -3,6 +3,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use relate_core::{integer_args, temporal, Error, ErrorKind, Result, Value};
 use relate_ir::{BinaryOp, Expr, UnaryOp};
@@ -12,6 +13,7 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::arithmetic::{add, concat, div, mod_op, mul, pow, sub};
+use super::regex_cache::regex_is_match;
 use super::string::char_range;
 use super::{bool_operand, eval, predicate_value_holds};
 
@@ -174,11 +176,9 @@ fn binary_inner(charge: Option<&ExecGraph<'_>>, op: BinaryOp, l: Value, r: Value
         BinaryOp::Contains => str_pred(l, r, |a, b| a.contains(b)),
         BinaryOp::Regex => match (&l, &r) {
             (Value::Null, _) | (_, Value::Null) => Value::Null,
-            (Value::String(a), Value::String(b)) => match regex_is_match(a, b) {
-                Ok(m) => Value::Bool(m),
-                // 22N11 is an invalid-argument (data exception) rejection.
-                Err(_) => return Err(Error::argument_error("invalid regular expression")),
-            },
+            // 22N11 is an invalid-argument (data exception) rejection,
+            // mapped where the cache module's seam ends.
+            (Value::String(a), Value::String(b)) => Value::Bool(regex_is_match(a, b)?),
             // A non-null non-string operand is 22NB1, a type mismatch
             // (Neo4j), not a null result.
             _ => {
@@ -188,13 +188,6 @@ fn binary_inner(charge: Option<&ExecGraph<'_>>, op: BinaryOp, l: Value, r: Value
             }
         },
     })
-}
-
-pub(crate) fn regex_is_match(text: &str, pattern: &str) -> std::result::Result<bool, regex::Error> {
-    // `=~` is a whole-string match (Neo4j's `Pattern.matches`), not a
-    // substring search: `'21_val' =~ '1_.*'` is false. The non-capturing
-    // group keeps an alternation (`a|b`) inside the anchors.
-    regex::Regex::new(&format!("^(?:{pattern})$")).map(|re| re.is_match(text))
 }
 
 /// One ordering operator: whether an incomparable-but-equal pair satisfies it
@@ -248,11 +241,12 @@ pub(crate) fn cmp_bool(
 }
 
 /// The one `IN`-operand policy: `None` for a null operand (`x IN null` is
-/// null) and the member list otherwise; a non-list is the typed shape
+/// null) and the member list otherwise (the list's shared allocation, which
+/// the membership index is keyed on); a non-list is the typed shape
 /// error. Every `IN` consumer -- the membership operator, the CIP-240
 /// property-in-set filter, and the entity-set filter -- reads its operand
 /// through here, so the three cannot disagree about null.
-pub(crate) fn in_rhs(value: &Value) -> Result<Option<&[Value]>> {
+pub(crate) fn in_rhs(value: &Value) -> Result<Option<&Arc<Vec<Value>>>> {
     if value.is_null() {
         return Ok(None);
     }
@@ -266,7 +260,10 @@ pub(crate) fn in_rhs(value: &Value) -> Result<Option<&[Value]>> {
 
 pub(crate) fn in_op(l: Value, r: Value) -> Result<Value> {
     Ok(match in_rhs(&r)? {
-        Some(members) => super::membership(&l, members),
+        // The one production membership entry: a long list bound once per
+        // statement answers an exact same-typed probe from its once-built
+        // index; everything the index cannot decide exactly takes the scan.
+        Some(list) => super::member_of(&l, list),
         None => Value::Null,
     })
 }
