@@ -25,8 +25,8 @@ export LC_ALL=C.UTF-8
 #                     only when the target is not writable.
 # ============================================================
 
-OPENCODE_VERSION=2.0.12
-OPENCODE_SHA256=93efabd6af0fb253fe473c9678b3b959f52a6c132e658226dffacbf52e676122
+OPENCODE_VERSION=2.3.0
+OPENCODE_SHA256=fc0f81522aceeabac47693d88389efa2bc517ce74c2c38fd6967819fcc6e4d3b
 
 INSTALL_DIR="${OPENCODE_INSTALL_DIR:-/usr/local/bin}"
 TARBALL=/tmp/opencode.tgz
