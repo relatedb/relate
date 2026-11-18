@@ -39,15 +39,16 @@ impl Agent {
     }
 
     /// Returns the expanded `skills_dir`, or `None` when the base env var
-    /// can't be resolved. All 11 catalog entries have a skills dir.
+    /// can't be resolved. Every catalog entry has a skills dir.
     pub fn skills_path(&self) -> Option<PathBuf> {
         expand_path(self.skills_dir)
     }
 }
 
 /// The supported agent catalog. Order is preserved for stable list output.
-/// Exactly the 11 skill-capable entries from neo4j-cli; the MCP-only
-/// claude-desktop entry is intentionally excluded.
+/// Eleven entries are the skill-capable agents from neo4j-cli (the MCP-only
+/// claude-desktop entry is intentionally excluded); `vibe` (Mistral Vibe,
+/// detected at `~/.vibe`) is the Relate-side addition.
 pub const AGENTS: &[Agent] = &[
     Agent {
         name: "claude-code",
@@ -115,6 +116,12 @@ pub const AGENTS: &[Agent] = &[
         detect_dir: "~/.junie",
         skills_dir: "~/.junie/skills",
     },
+    Agent {
+        name: "vibe",
+        display_name: "Mistral Vibe",
+        detect_dir: "~/.vibe",
+        skills_dir: "~/.vibe/skills",
+    },
 ];
 
 /// Returns only agents whose expanded `detect_dir` exists on the real
@@ -133,7 +140,7 @@ pub fn find_agent(name: &str) -> Option<&'static Agent> {
     AGENTS.iter().find(|a| a.name == lower)
 }
 
-/// Returns the 11 catalog names, for error listings.
+/// Returns the catalog names, for error listings.
 pub fn agent_names() -> Vec<&'static str> {
     AGENTS.iter().map(|a| a.name).collect()
 }
@@ -206,11 +213,9 @@ mod tests {
     }
 
     #[test]
-    fn catalog_has_eleven_entries_in_order() {
-        assert_eq!(AGENTS.len(), 11);
-        let names: Vec<_> = AGENTS.iter().map(|a| a.name).collect();
+    fn catalog_entries_in_order() {
         assert_eq!(
-            names,
+            agent_names(),
             vec![
                 "claude-code",
                 "cursor",
@@ -223,6 +228,7 @@ mod tests {
                 "pi",
                 "opencode",
                 "junie",
+                "vibe",
             ]
         );
     }
@@ -454,10 +460,5 @@ mod tests {
             expand_path_with("$XDG_CONFIG_HOME/opencode", &env),
             Some(PathBuf::from(&xdg).join("opencode"))
         );
-    }
-
-    #[test]
-    fn agent_names_returns_eleven() {
-        assert_eq!(agent_names().len(), 11);
     }
 }

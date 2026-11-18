@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Mistral Vibe joins the `relate skill install` agent catalog. A machine
+  with `~/.vibe` gets a `vibe:` row in `relate skill list`, and
+  `relate skill install --agent vibe` (or a bare `relate skill install`,
+  which targets every detected agent) writes the skill bundle to
+  `~/.vibe/skills/relate` — detection, install, `skill check` drift
+  detection and the `relate upgrade` refresh treat it like every other
+  agent.
+
 ## [1.1.0] — 2026-11-17
 
 ### Changed
