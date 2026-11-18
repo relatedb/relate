@@ -154,7 +154,7 @@ arrow-array = "60"
 arrow-schema = "60"
 arrow-ipc = "60"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
-base64 = "0.22"
+base64 = "0.23"
 # HTTP/1.1 request-head parsing for the HTTP surfaces (ADR-0234). Pure
 # byte-slice parser, zero transitive deps.
 httparse = "1.10"
@@ -199,7 +199,7 @@ xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }
 rstar = "0.12"
 # Advisory file locks: relate-storage's bundle locks and the
 # query-latency per-dataset ensure lock (single pin for both consumers).
-fs4 = "=0.8.4"
+fs4 = "=1.1.0"
 # Native uses std::time::Instant; wasm32 has no monotonic clock in std. `web-time`
 # is a drop-in that maps to `performance.now()` on wasm32 (ADR-0085).
 web-time = "1"

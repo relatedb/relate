@@ -7,7 +7,7 @@ use relate_core::{Error, Result};
 
 use crate::native_ownership::reject_nested;
 
-use super::super::native::lease::{map_lock_result, OpenAdmit};
+use super::super::native::lease::{take_lock, LockMode, OpenAdmit};
 use super::super::native::{native_entry_kind, NativeEntryKind, NativeVfs};
 use super::catalog::{init_empty, load_existing, load_peek};
 use super::{Bundle, BundleVfs, Inner};
@@ -25,6 +25,21 @@ pub(crate) enum HostAdmit {
     Exclusive,
     /// Shared lock of an existing regular file.
     Shared,
+}
+
+impl HostAdmit {
+    /// The lock mode this admit policy takes, from the one typed home
+    /// (`LockMode` in the lease module) rather than re-derived per call
+    /// site: readers take a shared lock, every writer/owner policy an
+    /// exclusive one.
+    pub(crate) fn lock_mode(self) -> LockMode {
+        match self {
+            HostAdmit::Shared => LockMode::Shared,
+            HostAdmit::Create | HostAdmit::CreateExclusive | HostAdmit::Exclusive => {
+                LockMode::Exclusive
+            }
+        }
+    }
 }
 
 fn resolve_bundle_path(path: &Path, admit: HostAdmit) -> Result<PathBuf> {
@@ -216,7 +231,6 @@ impl BundleVfs {
     /// selects the open primitive; the lock is shared for
     /// [`HostAdmit::Shared`] and exclusive otherwise.
     pub(crate) fn lock_host(path: &Path, admit: HostAdmit) -> Result<(PathBuf, File)> {
-        use fs4::FileExt;
         let path = resolve_bundle_path(path, admit)?;
         let file = match admit {
             HostAdmit::Create => NativeVfs::open_regular_file(&path, OpenAdmit::OpenOrCreate)?,
@@ -226,12 +240,7 @@ impl BundleVfs {
             HostAdmit::Exclusive => NativeVfs::open_regular_file(&path, OpenAdmit::Existing)?,
             HostAdmit::Shared => open_shared_readonly(&path)?,
         };
-        let locked = if matches!(admit, HostAdmit::Shared) {
-            fs4::FileExt::try_lock_shared(&file)
-        } else {
-            file.try_lock_exclusive()
-        };
-        map_lock_result(locked, &path)?;
+        let file = take_lock(file, admit.lock_mode(), &path)?;
         // A reset can rename the entry between resolve and lock; prove the
         // locked handle still names `path`. Reset's own preflight
         // (HostAdmit::Exclusive) skips this re-check by design.
@@ -257,11 +266,5 @@ impl BundleVfs {
 /// `flock` probe there would report contention the lock-free read ignores.
 #[cfg(windows)]
 fn windows_lock_probe(file: &File, path: &Path) -> Result<()> {
-    map_lock_result(fs4::FileExt::try_lock_shared(file), path)?;
-    // The release is load-bearing: `file` is borrowed here but lives on in
-    // the returned BundleVfs for the whole peek session, so a failed unlock
-    // must fail the peek through the same typed mapping rather than be
-    // silently dropped.
-    map_lock_result(fs4::FileExt::unlock(file), path)?;
-    Ok(())
+    super::super::native::lease::probe_lock(file, LockMode::Shared, path)
 }

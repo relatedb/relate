@@ -33,8 +33,6 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use fs4::FileExt;
-
 use crate::ids::uuid_v4;
 
 /// State filename holding the install ID and notice flag.
@@ -312,7 +310,7 @@ fn lock_file(dir: &Path, name: &str) -> io::Result<File> {
         .create(true)
         .truncate(false)
         .open(dir.join(name))?;
-    file.lock_exclusive()?;
+    fs4::FileExt::lock(&file)?;
     Ok(file)
 }
 
@@ -714,7 +712,7 @@ mod tests {
             done_rx.recv_timeout(Duration::from_millis(200)).is_err(),
             "the second writer waits while the lock is held"
         );
-        FileExt::unlock(&held).unwrap();
+        drop(held);
         done_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("the waiting update runs once the lock is free");

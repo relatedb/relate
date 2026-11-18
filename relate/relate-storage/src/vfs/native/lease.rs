@@ -174,7 +174,7 @@ impl NativeVfs {
         opts.read(true);
         nofollow(&mut opts);
         let file = Self::open_checked_existing(path, &opts)?;
-        map_lock_result(FileExt::try_lock_shared(&file), path)?;
+        lock_in_place(&file, LockMode::Shared, path)?;
         Ok(file)
     }
 
@@ -228,16 +228,7 @@ impl NativeVfs {
     }
 
     fn lock_file(path: &Path, admit: OpenAdmit, mode: LockMode) -> Result<File> {
-        let file = Self::open_regular_file(path, admit)?;
-        let locked = match mode {
-            LockMode::Exclusive => FileExt::try_lock_exclusive(&file),
-            LockMode::Shared => FileExt::try_lock_shared(&file),
-        };
-        if let Err(e) = map_lock_result(locked, path) {
-            let _ = FileExt::unlock(&file);
-            return Err(e);
-        }
-        Ok(file)
+        take_lock(Self::open_regular_file(path, admit)?, mode, path)
     }
 
     /// Write `bytes` while `file` holds `LOCK_SH` (ADR-0136).
@@ -245,32 +236,26 @@ impl NativeVfs {
     /// A Windows shared `LockFileEx` rejects `WriteFile` on every handle,
     /// including the owner. The write takes a brief exclusive lock and then
     /// restores the shared one. Unix `flock` lets the owner write under
-    /// `LOCK_SH`.
+    /// `LOCK_SH`. The write result surfaces only after the shared lock is
+    /// back: an early return would hand the lease owner's handle back still
+    /// holding the exclusive upgrade.
     pub(crate) fn write_under_shared_lock(file: &File, path: &Path, bytes: &[u8]) -> Result<()> {
+        // `path` names the lease only for the Windows lock transitions.
+        #[cfg(not(windows))]
+        let _ = path;
+        #[cfg(windows)]
+        swap_lock(file, LockMode::Shared, LockMode::Exclusive, path)?;
+        let wrote = (&*file).write_all(bytes).and_then(|_| file.sync_all());
         #[cfg(windows)]
         {
-            FileExt::unlock(file)?;
-            if let Err(e) = map_lock_result(FileExt::try_lock_exclusive(file), path) {
-                let _ = FileExt::try_lock_shared(file);
-                return Err(e);
-            }
-            let wrote = (&*file).write_all(bytes).and_then(|_| file.sync_all());
-            let _ = FileExt::unlock(file);
-            map_lock_result(FileExt::try_lock_shared(file), path)?;
+            swap_lock(file, LockMode::Exclusive, LockMode::Shared, path)?;
             // The exclusive upgrade unlocked the marker. A reset can rename
             // the directory in that window; refuse the lease if the handle
             // no longer names `path`.
             Self::check_identity(file, path)?;
-            wrote?;
-            return Ok(());
         }
-        #[cfg(not(windows))]
-        {
-            let _ = path;
-            (&*file).write_all(bytes)?;
-            file.sync_all()?;
-            Ok(())
-        }
+        wrote?;
+        Ok(())
     }
 
     pub(crate) fn read_locked_marker(file: &File, path: &Path) -> Result<Vec<u8>> {
@@ -375,16 +360,67 @@ impl NativeVfs {
     }
 }
 
-/// Map a `try_lock_*`/`unlock` outcome to a typed result: success passes
-/// through and lock contention becomes [`Error::Locked`]; every other I/O
-/// failure is returned unchanged. Shared by the Native and `.rl` bundle hosts,
-/// both of which take an OS exclusive lock on the same marker file.
-pub(crate) fn map_lock_result(result: std::io::Result<()>, path: &Path) -> Result<()> {
+/// Map a `try_lock`/`try_lock_shared` outcome to a typed result: success
+/// passes through and lock contention becomes [`Error::Locked`]; every other
+/// I/O failure is returned unchanged. fs4 1.x reports contention through the
+/// `WouldBlock` variant instead of a platform os-error code. Private to this
+/// module: the lock-taking policy is exported as the two operations the
+/// backends call — [`take_lock`] and [`probe_lock`] — never as the mapping
+/// step or the internal helpers for a backend to hand-roll.
+fn map_lock_result(result: std::result::Result<(), fs4::TryLockError>, path: &Path) -> Result<()> {
     match result {
         Ok(()) => Ok(()),
-        Err(e) if e.raw_os_error() == fs4::lock_contended_error().raw_os_error() => {
-            Err(Error::Locked(path.display().to_string()))
-        }
-        Err(e) => Err(e.into()),
+        Err(fs4::TryLockError::WouldBlock) => Err(Error::Locked(path.display().to_string())),
+        Err(fs4::TryLockError::Error(e)) => Err(e.into()),
     }
+}
+
+/// Take the `mode` try-lock on a borrowed handle, mapping contention to
+/// [`Error::Locked`] — the one home of the lock-taking policy every lock
+/// site in the crate consults.
+fn lock_in_place(file: &File, mode: LockMode, path: &Path) -> Result<()> {
+    let locked = match mode {
+        LockMode::Exclusive => FileExt::try_lock(file),
+        LockMode::Shared => FileExt::try_lock_shared(file),
+    };
+    map_lock_result(locked, path)
+}
+
+/// [`lock_in_place`] on an owned handle — shared by the Native lease opens
+/// and the `.rl` bundle host lock so the two cannot drift. A failed take
+/// acquires nothing, so the handle simply drops on the `?`.
+pub(crate) fn take_lock(file: File, mode: LockMode, path: &Path) -> Result<File> {
+    lock_in_place(&file, mode, path)?;
+    Ok(file)
+}
+
+/// Probe the `mode` lock on a borrowed handle and release immediately — the
+/// Windows bundle peek's contention probe. The release is load-bearing:
+/// the handle lives on after the probe, so a failed unlock fails the probe
+/// rather than being silently dropped.
+#[cfg(windows)]
+pub(crate) fn probe_lock(file: &File, mode: LockMode, path: &Path) -> Result<()> {
+    lock_in_place(file, mode, path)?;
+    FileExt::unlock(file)?;
+    Ok(())
+}
+
+/// Swap the handle's lock from `from` to `to`: unlock, take `to`, and on a
+/// failed take restore `from`. A failed restore gets its own error — the
+/// take's error would hide that the old lock is gone and the handle is
+/// lockless. The Windows shared-lock write uses this for its exclusive
+/// upgrade and shared restore (ADR-0136).
+#[cfg(windows)]
+fn swap_lock(file: &File, from: LockMode, to: LockMode, path: &Path) -> Result<()> {
+    FileExt::unlock(file)?;
+    if let Err(e) = lock_in_place(file, to, path) {
+        if let Err(restore) = lock_in_place(file, from, path) {
+            return Err(Error::storage(format!(
+                "restoring the {from:?} lock on {} failed after a failed {to:?} take: {restore}",
+                path.display()
+            )));
+        }
+        return Err(e);
+    }
+    Ok(())
 }

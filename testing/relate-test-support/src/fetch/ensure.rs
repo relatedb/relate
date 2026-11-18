@@ -150,7 +150,7 @@ impl DatasetLock {
             .truncate(false)
             .open(path)
             .map_err(|e| io_error(format!("opening {}", path.display()), e))?;
-        fs4::FileExt::lock_exclusive(&file)
+        fs4::FileExt::lock(&file)
             .map_err(|e| io_error(format!("locking {}", path.display()), e))?;
         Ok(Self(file))
     }
