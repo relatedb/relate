@@ -262,6 +262,14 @@ fn a_filled_cap_stops_the_clause_before_the_next_row_runs() {
     );
     let reference = take_frontier_counters();
     assert_eq!(one_row.rows.len(), 1, "the cap fills on the one row");
+    // The reference must be a served run's counters, not a default: an
+    // all-zero reference would let the comparison below pass on two
+    // declined clauses as readily as on two served ones.
+    assert!(
+        reference.levels > 0 && reference.edge_visits > 0,
+        "the one-row statement engaged the frontier, so the reference is a \
+         served run's counters: {reference:?}"
+    );
     let two_rows = exec_cypher(
         &g,
         "MATCH (x:Web) WITH x LIMIT 2 MATCH p = (x)-[:LINK*]-(y:Web) RETURN p LIMIT 1",
@@ -272,9 +280,9 @@ fn a_filled_cap_stops_the_clause_before_the_next_row_runs() {
     );
     let engaged = take_frontier_counters();
     assert_eq!(
-        (engaged.levels, engaged.edge_visits, engaged.endpoints),
-        (reference.levels, reference.edge_visits, reference.endpoints),
-        "the filled cap stopped the clause: the second row never ran"
+        engaged, reference,
+        "the filled cap stopped the clause: the second row never ran, so every \
+         counter matches the one-row statement's"
     );
 }
 
