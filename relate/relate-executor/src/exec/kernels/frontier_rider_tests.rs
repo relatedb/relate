@@ -262,21 +262,31 @@ fn a_filled_cap_stops_the_clause_before_the_next_row_runs() {
     );
     let reference = take_frontier_counters();
     assert_eq!(one_row.rows.len(), 1, "the cap fills on the one row");
-    // The reference must be a served run's counters, not a default: an
-    // all-zero reference would let the comparison below pass on two
-    // declined clauses as readily as on two served ones.
+    // The reference must be a *served* run's counters. Non-zero counters
+    // are not enough: a run-time-declined run still walks and still
+    // records its facts, so two declined clauses would satisfy both this
+    // guard and the equality below. The engagement tick fires only on the
+    // rung's served path, so it is the one fact a decline cannot fake.
+    assert_eq!(
+        take_kernel_engagements(),
+        1,
+        "the one-row statement was served by the rung, not declined"
+    );
     assert!(
         reference.levels > 0 && reference.edge_visits > 0,
-        "the one-row statement engaged the frontier, so the reference is a \
-         served run's counters: {reference:?}"
+        "the served run recorded its counters: {reference:?}"
     );
     let two_rows = exec_cypher(
         &g,
         "MATCH (x:Web) WITH x LIMIT 2 MATCH p = (x)-[:LINK*]-(y:Web) RETURN p LIMIT 1",
     );
-    assert_eq!(
-        two_rows.rows, one_row.rows,
-        "the same capped prefix is served"
+    // A capped prefix is a contract-free ordering, so the answers compare
+    // as multisets — the module's one spelling for that.
+    assert!(
+        same_rows(&one_row, &two_rows),
+        "the same capped prefix is served: {:?} vs {:?}",
+        one_row.rows,
+        two_rows.rows
     );
     let engaged = take_frontier_counters();
     assert_eq!(
