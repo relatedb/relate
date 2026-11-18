@@ -1,0 +1,16 @@
+<Project>
+  <PropertyGroup>
+    <!-- The client root (this directory); the repository root is two levels up. -->
+    <ClientRoot>$(MSBuildThisFileDirectory)</ClientRoot>
+    <RepositoryRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))</RepositoryRoot>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <Deterministic>true</Deterministic>
+
+    <Authors>Peter Villadsen</Authors>
+    <Copyright>Copyright (c) 2026 Peter Villadsen</Copyright>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+</Project>

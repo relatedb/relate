@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <None Include="$(RepositoryRoot)surfaces/relate-ffi/include/relate.h" Link="relate.h" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

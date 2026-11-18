@@ -310,6 +310,15 @@ result, err := conn.Query("MATCH (p:Person) RETURN p.name")
 
 Spec: [`docs/api/go/`](docs/api/go/).
 
+### .NET
+
+C#, F# and Visual Basic via `Relate.Net` (.NET 8+), over the typed C ABI.
+The adopted client lives under [`clients/dotnet`](clients/dotnet), with typed
+parameters, graph values, transactions and result metadata. Build the native
+library from this checkout, then reference the managed project. See the
+[API specification](docs/api/dotnet/spec.md) and
+[runnable example](docs/api/dotnet/examples/Program.cs).
+
 ### Swift
 
 A SwiftPM package (iOS 16+ / macOS 13+, Swift 6) wrapping the C ABI, with

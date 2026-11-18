@@ -1,0 +1,19 @@
+# Build output
+bin/
+obj/
+artifacts/
+*.nupkg
+*.snupkg
+
+# Local native staging (build/RelateNative.targets uses the current checkout)
+native/
+
+# Tooling
+.vs/
+.vscode/
+.idea/
+*.user
+TestResults/
+
+# Isolated NuGet cache for source-mapped restores
+.packages/

@@ -1,0 +1,29 @@
+<Project>
+  <!-- Build the native library from this checkout; never download an older release. -->
+  <PropertyGroup>
+    <RelateNativeRuntimeIdentifier Condition="'$(RelateNativeRuntimeIdentifier)' == ''">$(NETCoreSdkRuntimeIdentifier)</RelateNativeRuntimeIdentifier>
+    <!-- The one supported-RID vocabulary, delimiter-bounded for exact membership checks. -->
+    <RelateNativeRuntimeIdentifiers>;win-x64;linux-x64;linux-arm64;osx-x64;osx-arm64;</RelateNativeRuntimeIdentifiers>
+    <_RelateNativeName Condition="$([MSBuild]::IsOSPlatform('Windows'))">relate_ffi.dll</_RelateNativeName>
+    <_RelateNativeName Condition="$([MSBuild]::IsOSPlatform('OSX'))">librelate_ffi.dylib</_RelateNativeName>
+    <_RelateNativeName Condition="$([MSBuild]::IsOSPlatform('Linux'))">librelate_ffi.so</_RelateNativeName>
+    <RelateNativeLibraryPath Condition="'$(RelateNativeLibraryPath)' == '' And '$(RelateNativeRuntimeIdentifier)' == '$(NETCoreSdkRuntimeIdentifier)'">$(RepositoryRoot)target/debug/$(_RelateNativeName)</RelateNativeLibraryPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(RelateNativeLibraryPath)"
+          Link="$([System.IO.Path]::GetFileName('$(RelateNativeLibraryPath)'))"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          Visible="false" Pack="true"
+          PackagePath="runtimes/$(RelateNativeRuntimeIdentifier)/native/" />
+  </ItemGroup>
+  <Target Name="CheckRelateNative" BeforeTargets="PrepareForBuild;_GetPackageFiles">
+    <Error Condition="'$(_RelateNativeName)' == ''"
+           Text="Building the native library from this checkout is not configured for this host OS; supply -p:RelateNativeLibraryPath explicitly." />
+    <Error Condition="'$(RelateNativeLibraryPath)' == '' And '$(RelateNativeRuntimeIdentifier)' != '$(NETCoreSdkRuntimeIdentifier)'"
+           Text="A different RelateNativeRuntimeIdentifier requires an explicit RelateNativeLibraryPath for that platform." />
+    <Error Condition="!Exists('$(RelateNativeLibraryPath)')"
+           Text="Build the current native library first: cargo build -p relate-ffi. Or pass -p:RelateNativeLibraryPath=/absolute/path/to/the/native/library." />
+    <Error Condition="!$([System.String]::Copy('$(RelateNativeRuntimeIdentifiers)').Contains(';$(RelateNativeRuntimeIdentifier);'))"
+           Text="Set RelateNativeRuntimeIdentifier to a supported RID of the native library: $([System.String]::Copy('$(RelateNativeRuntimeIdentifiers)').Trim(';').Replace(';', ', '))." />
+  </Target>
+</Project>

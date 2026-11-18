@@ -75,7 +75,7 @@ Every public surface ships docs under `docs/api/<surface>/`: `spec.md`
 product fit), `examples/` (runnable).
 
 Surfaces: `rust`, `c`, `cli`, `python`, `javascript`, `java`, `go`, `swift`,
-`bolt`, `http`, `mcp`, `wasm`, `extensions`.
+`dotnet`, `bolt`, `http`, `mcp`, `wasm`, `extensions`.
 
 - No public function, type, or protocol message ships without spec +
   description + ≥ 1 example. Examples are tests (Rust doctests /

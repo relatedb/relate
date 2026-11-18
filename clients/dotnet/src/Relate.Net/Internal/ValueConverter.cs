@@ -1,0 +1,179 @@
+using System.Collections;
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+
+namespace Relate.Net;
+
+/// <summary>Converts materialized relate values to a requested .NET type for <c>Get&lt;T&gt;</c>.</summary>
+internal static class ValueConverter
+{
+    /// <summary>
+    /// Converts to <typeparamref name="T"/>; the result may be <see langword="null"/> for a Cypher
+    /// null read into a nullable target — the contract <see cref="RelateRecord.Get{T}(string)"/> states.
+    /// </summary>
+    [return: MaybeNull]
+    internal static T Convert<T>(object? value) => (T)Convert(value, typeof(T))!;
+
+    internal static object? Convert(object? value, Type target)
+    {
+        if (value is null)
+        {
+            if (!target.IsValueType || Nullable.GetUnderlyingType(target) is not null)
+            {
+                return null;
+            }
+
+            throw new InvalidCastException($"Cannot convert a Cypher null to the non-nullable type {target}.");
+        }
+
+        // One instance check, after the Nullable unwrap: a boxed T already satisfies Nullable<T>.
+        Type type = Nullable.GetUnderlyingType(target) ?? target;
+        if (type.IsInstanceOfType(value))
+        {
+            return value;
+        }
+
+        switch (value)
+        {
+            case CypherZonedDateTime zoned when type == typeof(DateTimeOffset):
+                return zoned.DateTimeOffset;
+            case CypherDuration duration when type == typeof(TimeSpan):
+                return duration.ToTimeSpan();
+            case CypherVector vector when type == typeof(double[]):
+                return vector.ToDoubleArray();
+            case CypherVector vector when type == typeof(float[]):
+                return vector.ToSingleArray();
+            case CypherVector vector when type == typeof(long[]):
+                return vector.ToInt64Array();
+            case string s when type == typeof(Guid):
+                return Guid.Parse(s);
+            case string s when type.IsEnum:
+                return Enum.Parse(type, s, ignoreCase: true);
+            case long l when type.IsEnum:
+                return Enum.ToObject(type, l);
+            case string s when type == typeof(char) && s.Length == 1:
+                return s[0];
+        }
+
+        // The string target has its own rendering before ChangeType; string sources stay excluded
+        // so a string-to-numeric Get<T> keeps throwing rather than silently parsing.
+        if (type == typeof(string))
+        {
+            return System.Convert.ToString(value, CultureInfo.InvariantCulture);
+        }
+
+        if (value is IConvertible && typeof(IConvertible).IsAssignableFrom(type) && value is not string)
+        {
+            return System.Convert.ChangeType(value, type, CultureInfo.InvariantCulture);
+        }
+
+        if (value is IReadOnlyDictionary<string, object?> map && TryConvertMap(map, type, out object? convertedMap))
+        {
+            return convertedMap;
+        }
+
+        if (value is IReadOnlyList<object?> list && TryConvertList(list, type, out object? convertedList))
+        {
+            return convertedList;
+        }
+
+        throw new InvalidCastException($"Cannot convert a value of type {value.GetType()} to {target}.");
+    }
+
+    private static bool TryConvertList(IReadOnlyList<object?> list, Type type, out object? result)
+    {
+        Type? element = ElementTypeOf(type);
+        if (element is null)
+        {
+            result = null;
+            return false;
+        }
+
+        var typed = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(element), list.Count)!;
+        foreach (object? item in list)
+        {
+            typed.Add(Convert(item, element));
+        }
+
+        // One fill loop; an array target copies the filled list into its final shape.
+        if (!type.IsSZArray)
+        {
+            result = typed;
+            return true;
+        }
+
+        Array array = Array.CreateInstance(element, typed.Count);
+        for (int i = 0; i < typed.Count; i++)
+        {
+            array.SetValue(typed[i], i);
+        }
+
+        result = array;
+        return true;
+    }
+
+    /// <summary>
+    /// The element type of a list target: an SZ array's element, or the argument of the six
+    /// list-ish generic interfaces; <see langword="null"/> when the target is not a list.
+    /// </summary>
+    private static Type? ElementTypeOf(Type type)
+    {
+        if (type.IsSZArray)
+        {
+            return type.GetElementType()!;
+        }
+
+        if (type.IsGenericType)
+        {
+            Type definition = type.GetGenericTypeDefinition();
+            if (definition == typeof(List<>) || definition == typeof(IList<>) || definition == typeof(ICollection<>)
+                || definition == typeof(IEnumerable<>) || definition == typeof(IReadOnlyList<>) || definition == typeof(IReadOnlyCollection<>))
+            {
+                return type.GetGenericArguments()[0];
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryConvertMap(IReadOnlyDictionary<string, object?> map, Type type, out object? result)
+    {
+        result = null;
+        if (!type.IsGenericType)
+        {
+            return false;
+        }
+
+        Type definition = type.GetGenericTypeDefinition();
+        Type[] args = type.GetGenericArguments();
+        if ((definition != typeof(Dictionary<,>) && definition != typeof(IDictionary<,>) && definition != typeof(IReadOnlyDictionary<,>))
+            || args[0] != typeof(string))
+        {
+            return false;
+        }
+
+        var typed = (IDictionary)Activator.CreateInstance(typeof(Dictionary<,>).MakeGenericType(typeof(string), args[1]))!;
+        foreach (KeyValuePair<string, object?> entry in map)
+        {
+            typed.Add(entry.Key, Convert(entry.Value, args[1]));
+        }
+
+        result = typed;
+        return true;
+    }
+}
+
+/// <summary>Formats values Cypher-style for <c>ToString()</c> diagnostics.</summary>
+internal static class ValueFormatter
+{
+    internal static string Format(object? value) => value switch
+    {
+        null => "null",
+        string s => $"'{s.Replace("'", "\\'", StringComparison.Ordinal)}'",
+        bool b => b ? "true" : "false",
+        IReadOnlyDictionary<string, object?> map => "{" + string.Join(", ", map.Select(e => $"{e.Key}: {Format(e.Value)}")) + "}",
+        IEnumerable list and not string => "[" + string.Join(", ", list.Cast<object?>().Select(Format)) + "]",
+        IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
+        _ => value.ToString() ?? string.Empty,
+    };
+}

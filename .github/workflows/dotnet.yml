@@ -1,0 +1,82 @@
+name: .NET client
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'clients/dotnet/**'
+      - 'docs/api/dotnet/**'
+      - 'relate/**'
+      - 'surfaces/relate-ffi/**'
+      - 'testing/relate-test-support/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - '.github/workflows/dotnet.yml'
+  push:
+    branches: [main, 'feat/**']
+    paths:
+      - 'clients/dotnet/**'
+      - 'docs/api/dotnet/**'
+      - 'relate/**'
+      - 'surfaces/relate-ffi/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - '.github/workflows/dotnet.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dotnet-${{ github.ref }}-${{ github.event.pull_request.draft || false }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+  DO_NOT_TRACK: '1'
+
+jobs:
+  test:
+    name: .NET (${{ matrix.os }})
+    # Drafts run one host; ready PRs, main and manual runs cover all three.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.draft && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
+        with:
+          toolchain: '1.88'
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Build native library from this commit
+        run: cargo build --locked -p relate-ffi
+      - name: Restore locked managed dependencies
+        run: dotnet restore clients/dotnet/Relate.Net.sln --locked-mode
+      - name: Test C#, F# and Visual Basic
+        run: dotnet test clients/dotnet/Relate.Net.sln --no-restore --logger trx --results-directory clients/dotnet/TestResults
+      - name: Run documented example
+        run: dotnet run --project docs/api/dotnet/examples
+      - name: Pack local native RID
+        run: dotnet pack clients/dotnet/src/Relate.Net --no-restore --output clients/dotnet/artifacts
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: dotnet-${{ matrix.os }}
+          path: |
+            clients/dotnet/TestResults/*.trx
+            clients/dotnet/artifacts/*.nupkg
+          if-no-files-found: warn

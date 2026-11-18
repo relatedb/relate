@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Relate.Net</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- NuGet package -->
+    <PackageId>Relate.Net</PackageId>
+    <Version>1.1.1-local</Version>
+    <Description>.NET client for Relate, the embedded property-graph database, over its typed C ABI. Adapted from Peter Villadsen’s Relate.Net client.</Description>
+    <PackageTags>relate;graph;database;cypher;neo4j;embedded</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/relatedb/relate</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/relatedb/relate.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+
+    <!-- Source Link (built into the .NET 8+ SDK) + symbol package for debugging into the library. -->
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(ClientRoot)README.md" Pack="true" PackagePath="" Visible="false" />
+    <None Include="$(ClientRoot)UPSTREAM.md" Pack="true" PackagePath="" Visible="false" />
+    <None Include="$(ClientRoot)LICENSE" Pack="true" PackagePath="" Visible="false" />
+    <None Include="$(ClientRoot)THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="" Visible="false" />
+    <None Include="$(ClientRoot)docs\UserGuide.md" Pack="true" PackagePath="docs" Visible="false" />
+  </ItemGroup>
+
+  <Import Project="$(ClientRoot)build\RelateNative.targets" />
+
+</Project>

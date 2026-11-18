@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New .NET client `Relate.Net` under `clients/dotnet` (ADR-0625): an
+  embedded C#, F# and Visual Basic API over the typed C ABI v2, with
+  disposable databases, connections and transactions, typed parameters,
+  graph and temporal values, result metadata and structured errors. CI
+  builds the native library from the same checkout and runs the
+  three-language tests on Linux, macOS and Windows.
 - Mistral Vibe joins the `relate skill install` agent catalog. A machine
   with `~/.vibe` gets a `vibe:` row in `relate skill list`, and
   `relate skill install --agent vibe` (or a bare `relate skill install`,
