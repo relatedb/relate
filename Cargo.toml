@@ -182,7 +182,7 @@ rustls-pemfile = "2"
 # terminated by rustls (ADR-0109), so no tungstenite TLS feature.
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 # SIGINT/SIGTERM handling without a runtime (ADR-0264/ADR-0226).
-signal-hook = "0.3"
+signal-hook = "0.4"
 libc = "0.2"
 bytes = "1"
 url = "2"
