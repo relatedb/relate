@@ -594,6 +594,10 @@ test-bolt-compat-scripts:
 ## test-release-scripts: Unit-test the release sweep's version-token rule
 ##   (scripts/version_tokens.py) and the CHANGELOG rotation
 ##   (scripts/changelog_rotate.py) that scripts/release-bump.sh runs,
+##   the CHANGELOG placement guard (scripts/check_changelog_placement.py,
+##   ADR-0618 §4) that CI runs on every pull request,
+##   the release-notes output-boundary guard
+##   (scripts/release_notes_validate.py, ADR-0618 §1),
 ##   the npm JSON reader (scripts/lib/npm_json.py),
 ##   the portable in-place sed (scripts/lib/sedi.sh),
 ##   the bump script end to end (first-release, steady-state and
@@ -605,6 +609,9 @@ test-release-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_pom_py.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_npm_json.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_changelog_rotate.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_check_changelog_placement.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_check_changelog_presence.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_release_notes_validate.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_third_party_licenses.py
 	sh $(CURDIR)/scripts/tests/test_release_bump.sh
 	sh $(CURDIR)/scripts/tests/test_release_advance.sh

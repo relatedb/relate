@@ -431,6 +431,23 @@ Process, not code shape:
   user-facing, and verification evidence naming what actually ran. The
   body describes the final squashed diff — re-check it after every
   re-squash
+- **A user-facing change lands its CHANGELOG.md entry in the same PR,
+  under `## [Unreleased]`** — never under a released section: the
+  release-cut rotation collects only `[Unreleased]`, so a misfiled entry
+  ships without ever reaching its release's changelog section or notes
+  (ADR-0618). CI refuses a changelog diff outside `[Unreleased]`
+  (`scripts/check_changelog_placement.py`, in the Changelog placement
+  job) and warns when a kept *User-facing impact* section has no
+  matching changelog diff (`scripts/check_changelog_presence.py` —
+  advisory, reviewer judgment stays in charge); correcting the published
+  record is the one labeled exception (`changelog-repair`). An empty
+  *User-facing impact* means no entry — the changelog is curated, not an
+  audit log. Notable but not user-facing (tooling migrations,
+  consolidation campaigns, baseline policy) files one line under
+  `[Unreleased]`'s `### Notes` subsection instead — it rides the
+  rotation into the released section as maintainer record, and the
+  release-notes generator treats it as Internal-rollup source only,
+  never as release-notes material
 
 ## Merge bar and review-loop bounds
 

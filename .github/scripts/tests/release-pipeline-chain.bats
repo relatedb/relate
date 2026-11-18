@@ -142,6 +142,13 @@ validate_payload_lines() {
     | grep 'slack-payload.json' || true
 }
 
+# The whole Validate artifacts step, verbatim — the probe loop and its
+# key gate do not mention the payload by name, so their locks read the
+# full step text.
+validate_step_lines() {
+  sed -n '/^      - name: Validate artifacts$/,/^      [^ ]/p' "${RELEASE_NOTES_YML}" || true
+}
+
 # The `if:` line authored on a release.yml job (job-scoped sed range, same
 # shape as slack_announce_needs_line). Empty when the job or its gate is
 # gone.
@@ -252,36 +259,40 @@ poke_if_line() {
 
 @test "Validate artifacts scans the Slack payload for the FIREWORKS_API_KEY value" {
   payload_lines="$(validate_payload_lines)"
+  step_lines="$(validate_step_lines)"
   echo "payload lines: ${payload_lines}"
   [ -n "${payload_lines}" ]
-  # Fixed-string grep against the env var — the notes.md scan's idiom; the
+  # The scan sweeps every probe — the raw value and its base64 encoding
+  # — over both artifacts, plus the hex probe case-insensitively; the
   # secret value itself is never echoed.
-  grep -qF 'grep -qF "${FIREWORKS_API_KEY}" target/release-notes/slack-payload.json' <<< "${payload_lines}"
+  grep -qF 'for probe in "${FIREWORKS_API_KEY}" "${KEY_B64}"; do' <<< "${step_lines}"
+  grep -qF 'grep -qF "${probe}" target/release-notes/slack-payload.json' <<< "${payload_lines}"
+  grep -qF 'grep -qiF "${KEY_HEX}" target/release-notes/slack-payload.json' <<< "${payload_lines}"
 }
 
-@test "the payload secret scan is gated only on the key and the payload existing (every upload path)" {
-  payload_lines="$(validate_payload_lines)"
-  echo "payload lines: ${payload_lines}"
-  [ -n "${payload_lines}" ]
+@test "the payload secret scan is gated only on the key existing (every upload path)" {
+  step_lines="$(validate_step_lines)"
+  echo "step lines captured"
+  [ -n "${step_lines}" ]
   # No PUBLISH/SLACK term in the gate: the chained producer leg
   # (publish=true, slack=false), a slack=false manual run, and a dry run
   # all upload the artifact, so every one of them must scan it. The -s
   # term keeps non-producer paths tolerant of a missing payload.
-  grep -qF 'if [ -n "${FIREWORKS_API_KEY}" ] && [ -s target/release-notes/slack-payload.json ] \' <<< "${payload_lines}"
+  grep -qF 'if [ -n "${FIREWORKS_API_KEY}" ]; then' <<< "${step_lines}"
 }
 
 @test "a secret-bearing payload fails closed with an ::error:: naming the payload file" {
   payload_lines="$(validate_payload_lines)"
   echo "payload lines: ${payload_lines}"
   [ -n "${payload_lines}" ]
-  grep -qF '::error::target/release-notes/slack-payload.json contains the FIREWORKS_API_KEY value — refusing to upload' <<< "${payload_lines}"
+  grep -qF '::error::target/release-notes/slack-payload.json contains the FIREWORKS_API_KEY value (raw or encoded) - refusing to upload' <<< "${payload_lines}"
 }
 
 @test "the payload secret scan sits before the upload step" {
   # The scan must fail the run before the artifact leaves the runner, so
-  # lock the authored order: the scan's grep line precedes the upload
+  # lock the authored order: the scan's probe loop precedes the upload
   # step's header line in release-notes.yml.
-  scan_at="$(grep -nF 'grep -qF "${FIREWORKS_API_KEY}" target/release-notes/slack-payload.json' "${RELEASE_NOTES_YML}" | head -n 1 | cut -d: -f1)"
+  scan_at="$(grep -nF 'for probe in "${FIREWORKS_API_KEY}" "${KEY_B64}"; do' "${RELEASE_NOTES_YML}" | head -n 1 | cut -d: -f1)"
   upload_at="$(grep -n '^      - name: Upload Slack payload for the announce job$' "${RELEASE_NOTES_YML}" | cut -d: -f1)"
   echo "scan at line ${scan_at:-<gone>}, upload step at line ${upload_at:-<gone>}"
   [ -n "${scan_at}" ]
