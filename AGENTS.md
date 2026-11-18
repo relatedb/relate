@@ -509,13 +509,24 @@ Process, not code shape:
     failed checks
   - `/gbuild:status <feature>` — frontier, blocked, in-flight, verdicts,
     cluster shapes
-- **Open every PR as draft; mark ready only on human direction.** Drafts
-  run the fast gate only — clippy, lint, the draft smoke lane (8 light
-  crates' unit suites on a warm shared cache), three opencode reviews
-  (code/stellar, security, rust). The full matrix (OS sweeps, Bolt
+- **The PR cycle is one loop, in this order: draft → review → fix →
+  defer → flip → watch → review → fix → defer → merge.** Draft runs the
+  fast gate and the three bot reviews; every finding at or above medium
+  is fixed in the same squashed commit, nits and lows are deferred to a
+  `review-tasks` ticket (Agent Backlog); the clean fast gate is the flip
+  signal; the full matrix is watched round by round, newest findings
+  first, repeating fix/defer until it is clean; a clean matrix is the
+  merge signal. **The flip and the merge are separate authorizations** —
+  the flip carries no merge permission, and the merge needs the explicit
+  per-PR instruction below
+- **Open every PR as draft.** Drafts run the fast gate only — clippy,
+  lint, the draft smoke lane (8 light crates' unit suites on a warm
+  shared cache), three opencode reviews (code/stellar, security, rust).
+  The full matrix (OS sweeps, Bolt
   driver smokes, corpus, feature bundles, loadtest gates,
-  clients, WASM/site) runs only when ready. A clean fast gate = the
-  signal to ask a human to mark it ready
+  clients, WASM/site) runs only when ready. **A clean fast gate is the
+  agent's own flip signal: mark the PR ready then** — the flip starts the
+  full matrix and authorizes nothing beyond it
 - **Catch findings locally first** — local gates are cheaper and faster
   than any CI round. Run the stellar round through its one entry point,
   `.github/scripts/stellar-prep.sh local [--quick] [PR_NUMBER]` (no PR →
@@ -555,7 +566,9 @@ Process, not code shape:
   The skill at `.agents/skills/agent-backlog-autopilot/SKILL.md` carries
   standing, invocation-gated authorization to drive one LABS
   agent-backlog card end to end and squash-merge its own PR. Bounds:
-  the ready flip stays human-gated; steering inputs bounded to CI
+  unlike the general cycle, this agent leaves the ready flip to the
+  human — it is the one agent whose flip is not its own; steering inputs
+  bounded to CI
   results, the three bot reviews, and invoking the human; a diff
   touching anything CI executes or gates on, auth, dependency
   manifests, or agent-instruction surfaces is never self-merged. The
