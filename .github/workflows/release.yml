@@ -1474,6 +1474,34 @@ jobs:
     with:
       tag: ${{ needs.version.outputs.tag }}
 
+  # Maven Central rides every release, outside the `registries` opt-in
+  # above: it publishes with static environment credentials, so the
+  # registry never inspects the run's identity — the mismatch that keeps
+  # the OIDC registries on a direct dispatch does not apply, and a
+  # release must not be able to ship without its Java client. The OIDC
+  # call leaves `maven` at its false default, so a release with
+  # `registries` on deploys the jars exactly once. The job still stops in
+  # Central Portal → Deployments: the pom sets autoPublish=false, so the
+  # release step stays a deliberate human act.
+  publish-maven-central:
+    name: Publish the Java client to Maven Central
+    needs: [version, create-release]
+    if: ${{ !inputs.offline }}
+    # Same grant as the OIDC call: a nested job's scope the caller does
+    # not grant invalidates the whole workflow file at dispatch, whether
+    # or not that job runs.
+    permissions:
+      id-token: write
+      contents: read
+      attestations: read
+    uses: ./.github/workflows/publish-registries.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
+      maven: true
+      npm: false
+      pypi: false
+      crates-io: false
+
   # Chained explicitly because the `release: published` event fired by
   # action-gh-release (GITHUB_TOKEN) never triggers downstream workflows
   # (ADR-0265) — release-notes.yml must be called as a reusable workflow.

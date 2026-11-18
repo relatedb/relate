@@ -55,3 +55,10 @@ not own, so that namespace cannot be verified.
   dormant until they exist.
 - A published version cannot be changed or removed, so a bad upload is
   fixed by the next version.
+
+## Later references
+
+ADR-0620 publishes the client with every release rather than by manual
+dispatch alone, and adds the publish profile's dry run. The coordinates,
+the static-credential split and the hand-released first uploads above are
+unchanged.

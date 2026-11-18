@@ -14,7 +14,9 @@ name: Publish registries
 #
 # Dry runs: pypi-target=testpypi exercises the OIDC trusted publisher end
 # to end; npm-dry-run and crates-io-dry-run validate packaging only (npm
-# and crates.io have no staging registry).
+# and crates.io have no staging registry); maven-dry-run runs the publish
+# profile's enforcer, packaging and GPG signing against main, stopping
+# short of the Central upload.
 on:
   workflow_call:
     inputs:
@@ -34,10 +36,14 @@ on:
         required: false
         type: boolean
         default: true
-      # Off on the chained path only: the caller passes no secrets, and
-      # Maven Central publishes with static credentials — publish by
-      # direct dispatch, where maven defaults on.
+      # Off by default on this path so release.yml's OIDC call never
+      # deploys the jars a second time: the release publishes Maven from
+      # its own call, which sets the flag.
       maven:
+        required: false
+        type: boolean
+        default: false
+      maven-dry-run:
         required: false
         type: boolean
         default: false
@@ -79,6 +85,11 @@ on:
         required: false
         type: boolean
         default: true
+      maven-dry-run:
+        description: "mvn verify -Pcentral-publish against main: run the publish profile's enforcer, packaging and GPG signing without uploading"
+        required: false
+        type: boolean
+        default: false
       pypi-target:
         description: "PyPI for a real publish, TestPyPI for an auth/packaging dry run"
         required: false
@@ -475,16 +486,21 @@ jobs:
             sleep 30
           done
 
-  # Maven Central. On by default for manual dispatches (maven=true, the
-  # input's default on the dispatch path); unchecked, the jars land only
-  # on the GitHub release. Unlike the OIDC registries above, Maven
-  # Central publishes with static credentials — the secrets below are
-  # available to manual dispatches only, so the chained workflow_call
-  # path keeps maven off (its default on that path) and a chained
-  # release call would additionally need the caller to pass them. The
-  # pom's `central-publish` profile does the real work (sources,
-  # javadoc, GPG, upload with autoPublish=false); see
+  # Maven Central. On for manual dispatches (maven=true, the input's
+  # default on the dispatch path) and for the release's own chained call,
+  # which sets the flag; off on release.yml's OIDC call, so a release
+  # with `registries` on still deploys the jars exactly once. Unlike the
+  # OIDC registries above, Maven Central publishes with static
+  # credentials, so the release's identity is not what the registry
+  # checks. The pom's `central-publish` profile does the real work
+  # (sources, javadoc, GPG, upload with autoPublish=false); see
   # clients/java/README.md, "Publishing to Maven Central".
+  #
+  # maven-dry-run rehearses the profile without uploading: the checkout
+  # is main rather than the tag, so the run validates the config the next
+  # release will carry — the profile is otherwise never exercised, and a
+  # broken one is discovered at release time (a `requireProperty` rule
+  # enforcer 3.7.0 no longer accepts reached the v1.1.0 publish this way).
   maven-central:
     name: Publish the Java client to Maven Central
     needs: registry-owner
@@ -510,10 +526,12 @@ jobs:
       # release shipped. In release.yml this job consumed the ffi job's
       # workflow artifacts; a separate workflow run cannot see those, so
       # the natives come from the release's own assets — the same five
-      # FFI archives the release attached.
+      # FFI archives the release attached. A dry run takes main instead:
+      # it validates the config the next release will carry, and nothing
+      # is signed into a registry, so the tag's tree is not the subject.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.registry-owner.outputs.sha }}
+          ref: ${{ inputs.maven-dry-run && 'main' || needs.registry-owner.outputs.sha }}
 
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
@@ -539,7 +557,7 @@ jobs:
             --source-ref refs/heads/main
           done
 
-      - name: Stage natives, import the signing key, deploy
+      - name: Stage natives, import the signing key, run the publish profile
         env:
           MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_KEY }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
@@ -577,5 +595,13 @@ jobs:
           </settings>
           SETTINGS
           echo "$MAVEN_GPG_KEY" | base64 --decode | gpg --batch --import
-          mvn -B -f clients/java/pom.xml deploy -Pcentral-publish \
-            -Drelate.natives.dir="$PWD/natives"
+          # The Central upload binds to `deploy`; `verify` stops after the
+          # GPG signature, so a dry run exercises the profile end to end
+          # without reaching the registry.
+          if [ "${{ inputs.maven-dry-run }}" = "true" ]; then
+            mvn -B -f clients/java/pom.xml verify -Pcentral-publish \
+              -Drelate.natives.dir="$PWD/natives"
+          else
+            mvn -B -f clients/java/pom.xml deploy -Pcentral-publish \
+              -Drelate.natives.dir="$PWD/natives"
+          fi

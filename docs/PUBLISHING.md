@@ -245,16 +245,31 @@ and uploads with a Central Portal token, both stored as secrets in the
 5. **Store the four secrets** (Settings → Environments → `release` →
    Environment secrets): `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_TOKEN`,
    `MAVEN_GPG_KEY`, `MAVEN_GPG_PASSPHRASE`.
-6. **Publish Maven only**, against an existing release tag:
+6. **Rehearse against `main`** before the first release that carries
+   this — the profile is otherwise only exercised at publish time, and a
+   config the pinned plugin rejects surfaces there:
+
+   ```sh
+   gh workflow run publish-registries.yml -f tag=vX.Y.Z -f maven-dry-run=true \
+     -f npm=false -f pypi=false -f crates-io=false
+   ```
+
+   A dry run checks out `main` rather than the tag — it validates the
+   config the next release will carry — stages the tag's natives, imports
+   the signing key and runs `mvn verify -Pcentral-publish`: enforcer,
+   packaging, sources, javadoc and the GPG signatures, stopping short of
+   the Central upload.
+7. **Publish Maven only**, against an existing release tag:
 
    ```sh
    gh workflow run publish-registries.yml -f tag=vX.Y.Z \
      -f npm=false -f pypi=false -f crates-io=false
    ```
 
-   `maven` is on by default on the dispatch form (and off on the chained
-   release path, which passes no signing credentials), so turning the
-   other registries off publishes Maven alone.
+   `maven` is on by default on the dispatch form, so turning the other
+   registries off publishes Maven alone. Every release also chains this
+   job (`publish-maven-central` in `release.yml`), which passes the
+   signing credentials from the `release` environment.
 
    The job verifies the five FFI archives' build attestations, stages the
    natives, signs and uploads the fat jar plus the five classifier jars.

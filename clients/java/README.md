@@ -94,10 +94,12 @@ Everything needed ships in the repo:
   Portal;
 - the `maven-central` job in `publish-registries.yml`: it downloads the
   release's five FFI archives, verifies their build attestations, stages
-  the natives and runs `mvn deploy -Pcentral-publish`. It runs on
-  manual dispatches of that workflow (`maven` on by default; off on the
-  chained release path, which passes no signing credentials), so Maven
-  can be published alone without touching npm, PyPI or crates.io.
+  the natives and runs `mvn deploy -Pcentral-publish`. Every release
+  chains it (`publish-maven-central` in `release.yml`), so the jars
+  cannot ship without the client; a manual dispatch of that workflow
+  publishes Maven alone — `maven` is on by default there — without
+  touching npm, PyPI or crates.io, and `maven-dry-run=true` rehearses
+  the profile against `main` without uploading.
 
 The coordinates are `ai.relatedb:relate` (the fat jar) plus one
 classifier jar per platform. Completing the owner setup — Central
