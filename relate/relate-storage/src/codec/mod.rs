@@ -121,7 +121,7 @@ pub(crate) fn codec_unavailable(codec: SnapshotCodecKind) -> Error {
 
 /// The never-written state a root `manifest.json` naming the markdown
 /// codec is (ADR-0406 §3): the markdown store's manifest home is the
-/// `.cypherlite/` sidecar, so a root envelope naming it — with or
+/// `.relate/` sidecar, so a root envelope naming it — with or
 /// without a sidecar — is invalid evidence everywhere it is classified.
 /// The refusal lives in [`read_envelope`], so every envelope reader
 /// (open's codec resolution and the cold `store_info` read alike)
@@ -129,7 +129,7 @@ pub(crate) fn codec_unavailable(codec: SnapshotCodecKind) -> Error {
 pub(crate) fn root_envelope_names_markdown() -> Error {
     Error::storage(
         "mixed snapshot codecs: a root manifest.json names the markdown codec; the \
-         markdown store's manifest is the .cypherlite/ sidecar",
+         markdown store's manifest is the .relate/ sidecar",
     )
 }
 
@@ -163,7 +163,7 @@ struct ClassicProbe {
 /// a root `manifest.json` that parses as an engine envelope naming a
 /// classic codec (an envelope-only classic store — its graph objects
 /// removed — still carries its envelope). A markdown store never
-/// writes a root manifest.json (its manifest is the `.cypherlite/`
+/// writes a root manifest.json (its manifest is the `.relate/`
 /// sidecar), and a vault folder's own unrelated `manifest.json` does
 /// not parse as the probe above, so this never false-refuses a
 /// legitimate markdown open.
@@ -204,20 +204,52 @@ pub(crate) fn root_envelope_names_classic(path: &std::path::Path) -> bool {
     probe.codec.engine_dir().is_none()
 }
 
+/// One root-layout codec's path-level store evidence — the row probe
+/// [`has_classic_store_evidence_at`] derives from the codec
+/// vocabulary. The exhaustive match is compile-forced over the
+/// vocabulary's rows, so a codec added to [`SnapshotCodecKind::ALL`]
+/// fails to compile until its evidence row exists — none can be
+/// silently absent again.
+#[cfg(not(target_arch = "wasm32"))]
+fn classic_evidence_at(path: &std::path::Path, kind: SnapshotCodecKind) -> bool {
+    match kind {
+        // Parquet's evidence is its object families — the shard
+        // directories and the retired monolith an envelope-less store
+        // still carries.
+        SnapshotCodecKind::Parquet => snapshot::has_parquet_store_files_at(path),
+        // An envelope-only codec's evidence is its payload checkpoint
+        // object beside the shared envelope (graph.json, graph.rkyv):
+        // presence at the root. The shared envelope object itself is
+        // the parse-classified row in `has_classic_store_evidence_at` —
+        // a vault folder's own unrelated manifest.json is not engine
+        // evidence.
+        SnapshotCodecKind::Json | SnapshotCodecKind::Rkyv => kind
+            .checkpoint_objects()
+            .iter()
+            .filter(|object| **object != snapshot::MANIFEST_JSON)
+            .any(|object| path.join(object).exists()),
+        // The sidecar family never carries root-layout evidence; the
+        // guard's vocabulary filter never asks this row.
+        SnapshotCodecKind::Markdown => false,
+    }
+}
+
 /// The path-level shape of the classic-codec evidence checks — the
-/// JSON codec's `graph.json`, a root envelope naming a classic codec
-/// (an envelope-only store, via
-/// [`root_envelope_names_classic`](root_envelope_names_classic)),
-/// and [`has_parquet_store_files_at`]'s Parquet object families — the
 /// same evidence vocabulary `resolve_codec` consults, probed before any
 /// VFS or lease exists, so an explicit markdown request cannot create
 /// WAL engine state inside a snapshot-file store before the codec
-/// resolver refuses it.
+/// resolver refuses it. The rows come from the one vocabulary: every
+/// root-layout codec (`ALL` minus the sidecar family) contributes its
+/// evidence row through [`classic_evidence_at`], and the shared root
+/// envelope carries its parse-classified probe — so no codec can be
+/// silently absent from the guard.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn has_classic_store_evidence_at(path: &std::path::Path) -> bool {
-    path.join(json::GRAPH_JSON).exists()
-        || root_envelope_names_classic(path)
-        || snapshot::has_parquet_store_files_at(path)
+    root_envelope_names_classic(path)
+        || SnapshotCodecKind::ALL
+            .into_iter()
+            .filter(|kind| kind.engine_dir().is_none())
+            .any(|kind| classic_evidence_at(path, kind))
 }
 
 /// The envelope's commit-timestamp policy, the one spelling every codec's
@@ -264,15 +296,16 @@ pub(crate) fn resolve_codec(
     // codec's own named probe (the stub module answers "no evidence" for a
     // build without the codec).
     let has_rkyv = rkyv::has_store_files(target)?;
-    // The markdown store's evidence is its sidecar manifest (ADR-0406
-    // §5): explicit opt-in or an engine-written `.cypherlite/`, read
-    // through the codec's one typed reader (bounded, fail-closed — a
-    // present-but-not-markdown sidecar is its typed error).
-    let has_markdown = markdown::read_manifest(target)?.is_some();
+    // The markdown store's evidence is its sidecar manifest at either
+    // spelling (ADR-0406 §5, ADR-0623): the codec's side-effect-free
+    // presence probe — the classification and its refusals stay the
+    // manifest reader's, so an un-adopted legacy store counts as
+    // markdown evidence here and meets its refusal where it reads.
+    let has_markdown = markdown::has_store_files(target)?;
     // A root envelope naming the markdown codec never reaches this far:
     // `read_envelope` refuses it at the one typed reader, so every
     // caller inherits that error (ADR-0406 §3 — the markdown store's
-    // manifest home is the `.cypherlite/` sidecar).
+    // manifest home is the `.relate/` sidecar).
     let envelope = read_envelope(target)?;
     // The evidence set, modeled once: every piece of evidence the
     // directory carries — the markdown sidecar, the root envelope's

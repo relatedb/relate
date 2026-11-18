@@ -63,14 +63,13 @@ fn cl_bundle_roundtrips_with_json_codec() {
 
 #[test]
 fn a_root_envelope_naming_the_markdown_codec_is_refused() {
-    // The markdown codec's manifest home is the `.cypherlite/` sidecar
+    // The markdown codec's manifest home is the `.relate/` sidecar
     // (ADR-0406 §3): a root manifest.json naming it is a never-written
     // state and fails closed like the mixed cases.
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("manifest.json"), r#"{"codec":"markdown"}"#).unwrap();
     let error = crate::parse_uri(dir.path().to_str().unwrap())
-        .err()
-        .expect("a root envelope naming markdown must not open");
+        .expect_err("a root envelope naming markdown must not open");
     assert!(
         error.to_string().contains("mixed snapshot codecs"),
         "{error}"
@@ -151,17 +150,13 @@ fn root_envelope_names_classic_separates_absence_errors_and_unrelated_manifests(
 fn a_markdown_sidecar_beside_other_evidence_is_refused() {
     // The evidence set check (one codec per directory): a markdown
     // sidecar beside `graph.json` names two codecs and fails.
+    use crate::codec::markdown::{ENGINE_DIR, MANIFEST};
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join(".cypherlite")).unwrap();
-    std::fs::write(
-        dir.path().join(".cypherlite/manifest.json"),
-        r#"{"codec":"markdown"}"#,
-    )
-    .unwrap();
+    std::fs::create_dir(dir.path().join(ENGINE_DIR)).unwrap();
+    std::fs::write(dir.path().join(MANIFEST), r#"{"codec":"markdown"}"#).unwrap();
     std::fs::write(dir.path().join("graph.json"), "{}").unwrap();
     let error = crate::parse_uri(dir.path().to_str().unwrap())
-        .err()
-        .expect("a markdown sidecar beside graph.json must not open");
+        .expect_err("a markdown sidecar beside graph.json must not open");
     assert!(
         error
             .to_string()
@@ -198,8 +193,7 @@ mod without_parquet {
         }
         for dir in [&manifest_only, &shards_only, &legacy_file] {
             let error = crate::parse_uri(dir.path().to_str().unwrap())
-                .err()
-                .expect("parquet store must not open");
+                .expect_err("parquet store must not open");
             assert_unavailable(error);
         }
     }
@@ -211,9 +205,8 @@ mod without_parquet {
         let bundle = crate::BundleVfs::open_or_create(&path).unwrap();
         crate::atomic_write(&bundle, "manifest.json", LEGACY_MANIFEST.as_bytes()).unwrap();
         drop(bundle);
-        let error = crate::parse_uri(path.to_str().unwrap())
-            .err()
-            .expect("parquet bundle must not open");
+        let error =
+            crate::parse_uri(path.to_str().unwrap()).expect_err("parquet bundle must not open");
         assert_unavailable(error);
     }
 
@@ -224,8 +217,7 @@ mod without_parquet {
         let bundle = dir.path().join("graph.rl");
         for uri in [":memory:", db.to_str().unwrap(), bundle.to_str().unwrap()] {
             let error = crate::parse_uri_with_options(uri, None, Some(SnapshotCodecKind::Parquet))
-                .err()
-                .expect("explicit parquet must not open");
+                .expect_err("explicit parquet must not open");
             assert_unavailable(error);
         }
         assert!(!db.exists());
@@ -235,8 +227,40 @@ mod without_parquet {
     #[test]
     fn explicit_parquet_memory_store_fails_closed() {
         let error = crate::memory_store_with_codec(SnapshotCodecKind::Parquet)
-            .err()
-            .expect("parquet memory store must not open");
+            .expect_err("parquet memory store must not open");
         assert_unavailable(error);
     }
+}
+
+#[test]
+fn a_bare_rkyv_archive_refuses_an_explicit_markdown_request_at_the_guard() {
+    // The guard's rows derive from the codec vocabulary, so the rkyv
+    // row can no longer be silently absent: a directory carrying a
+    // bare archive (no envelope, nothing else) refuses an explicit
+    // markdown request at the pre-lease guard — before any WAL engine
+    // state is created inside it — instead of at codec resolution,
+    // after the lease has already materialized `.relate/wal`.
+    // (`rkyv_evidence_refuses_a_mixed_store` pins the resolver's
+    // evidence-set coherence over a full archive beside a JSON store;
+    // this is the path-level guard's own rkyv row, and it needs no
+    // rkyv feature — the row probes the object's presence.)
+    use crate::codec::markdown::ENGINE_DIR;
+    use crate::codec::GRAPH_RKYV;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(GRAPH_RKYV), b"archive").unwrap();
+    let error = crate::parse_uri_with_options(
+        dir.path().to_str().unwrap(),
+        None,
+        Some(SnapshotCodecKind::Markdown),
+    )
+    .expect_err("an explicit markdown open over a bare archive must refuse at the guard");
+    assert!(
+        error
+            .to_string()
+            .contains("an explicit markdown open would create WAL engine state"),
+        "{error}"
+    );
+    // The refusal fired before the lease: no WAL engine state exists.
+    assert!(!dir.path().join(ENGINE_DIR).exists());
+    assert!(!dir.path().join("wal").exists());
 }

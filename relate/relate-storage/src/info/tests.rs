@@ -126,6 +126,41 @@ fn missing_manifest_is_snapshot_none_not_an_error() {
     assert_eq!(info.wal_segments, 0);
 }
 
+/// ADR-0623 + ADR-0165: a pre-rename vault is exactly the store this
+/// cold read serves — it never adopts and never renames, but it still
+/// answers "what is in this store?": the envelope projects from the
+/// legacy `.cypherlite/` sidecar, never `StoreSnapshot::None` ("a
+/// fresh store") and never an un-adopted-store refusal, and the legacy
+/// spelling survives the read untouched.
+#[test]
+fn a_pre_rename_vault_projects_its_envelope_cold() {
+    use crate::codec::markdown::{SidecarSpelling, ENGINE_DIR, LEGACY_ENGINE_DIR};
+    let legacy_manifest = SidecarSpelling::Legacy.manifest();
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("db");
+    std::fs::create_dir_all(db.join(LEGACY_ENGINE_DIR)).unwrap();
+    std::fs::write(
+        db.join(legacy_manifest),
+        br#"{"codec":"markdown","checkpoint_lsn":7,"commit_ts":9}"#,
+    )
+    .unwrap();
+    let info = store_info(&db).unwrap();
+    assert!(
+        matches!(
+            &info.snapshot,
+            StoreSnapshot::Envelope {
+                codec: crate::SnapshotCodecKind::Markdown,
+                checkpoint_lsn: 7,
+                commit_ts: 9,
+            }
+        ),
+        "{:?}",
+        info.snapshot
+    );
+    assert!(db.join(legacy_manifest).exists());
+    assert!(!db.join(ENGINE_DIR).exists());
+}
+
 #[test]
 fn fresh_bundle_is_snapshot_none_not_an_error() {
     // Same fresh-store state through the bundle path: open_or_create writes
@@ -198,7 +233,7 @@ fn store_info_beside_a_checkpointing_writer_never_panics() {
 }
 
 /// A root `manifest.json` naming the markdown codec is a never-written
-/// state (the markdown manifest home is the `.cypherlite/` sidecar,
+/// state (the markdown manifest home is the `.relate/` sidecar,
 /// ADR-0406 §3): the cold read refuses it with the same typed error
 /// open's `resolve_codec` head guard returns, instead of projecting an
 /// unopenable directory as an envelope-only store.

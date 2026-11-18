@@ -14,7 +14,7 @@ pub enum SnapshotCodecKind {
     Json,
     /// The snapshot is a folder of markdown files (ADR-0406): an
     /// Obsidian-compatible vault read and written by the engine, with
-    /// the WAL and the engine sidecar under `.cypherlite/`.
+    /// the WAL and the engine sidecar under `.relate/`.
     Markdown,
     /// EXPERIMENTAL (default off, `rkyv-codec`): one zero-copy rkyv
     /// archive. Measurement only until an ADR promotes it.
@@ -36,7 +36,7 @@ impl SnapshotCodecKind {
     /// compile-forced arm in each layout fact ([`Self::wal_dir`],
     /// [`Self::checkpoint_image`], [`Self::engine_dir`],
     /// [`Self::feature_name`]).
-    const ALL: [Self; 4] = [Self::Parquet, Self::Json, Self::Markdown, Self::Rkyv];
+    pub(crate) const ALL: [Self; 4] = [Self::Parquet, Self::Json, Self::Markdown, Self::Rkyv];
 
     /// Whether this codec is compiled into the build. JSON always is;
     /// Parquet needs the `parquet` feature on a non-wasm32 target (ADR-0105).
@@ -72,7 +72,7 @@ impl SnapshotCodecKind {
 
     /// The compiled codecs whose engine state lives at the store root —
     /// the set the layout-asserting suites iterate: the markdown codec
-    /// keeps its engine state in the `.cypherlite/` sidecar
+    /// keeps its engine state in the `.relate/` sidecar
     /// (ADR-0406 §5), so its stores are not root-layout.
     pub fn compiled_with_root_layout() -> impl Iterator<Item = SnapshotCodecKind> {
         Self::compiled()
@@ -122,8 +122,8 @@ impl SnapshotCodecKind {
     }
 
     /// The store-relative directory holding this codec's WAL segments:
-    /// `wal/` for the classic codecs, `.cypherlite/wal/` for a markdown
-    /// store — the engine sidecar lives under `.cypherlite/` beside the
+    /// `wal/` for the classic codecs, `.relate/wal/` for a markdown
+    /// store — the engine sidecar lives under `.relate/` beside the
     /// vault's own files (ADR-0406 §3).
     pub const fn wal_dir(self) -> &'static str {
         match self {
@@ -134,7 +134,7 @@ impl SnapshotCodecKind {
 
     /// The store-relative file this codec publishes its checkpoint
     /// envelope to: `manifest.json` (Parquet, ADR-0050), `graph.json`
-    /// (JSON), and the `.cypherlite/manifest.json` sidecar a markdown
+    /// (JSON), and the `.relate/manifest.json` sidecar a markdown
     /// store publishes last (ADR-0406 §3). The classic arms are spelled
     /// through the same constants their writers consult
     /// ([`crate::snapshot::MANIFEST_JSON`], [`super::json::GRAPH_JSON`]),
@@ -162,7 +162,7 @@ impl SnapshotCodecKind {
     }
 
     /// The store-relative directory holding this codec's engine state:
-    /// the markdown codec's hidden `.cypherlite/`, or
+    /// the markdown codec's hidden `.relate/`, or
     /// `None` — never a sentinel string — for the snapshot-file codecs,
     /// whose engine state lives at the store root. Beside
     /// [`wal_dir`](Self::wal_dir) and [`checkpoint_image`](Self::checkpoint_image):

@@ -11,7 +11,7 @@ store's recorded codec pick the form.
 | --- | --- | --- | --- |
 | **Parquet** (default) | directory | machine-efficient storage: columnar shards, compact, fast bulk reload | `manifest.json`, `nodes/*.parquet`, `relationships/*.parquet` |
 | **JSON** | directory | human-readable snapshots with no build feature required | `manifest.json`, `graph.json` |
-| **Markdown vault** | directory (the vault) | human-authorable knowledge bases — OKF notes, Obsidian vaults, git-diffable text | `Label/name.md` files + regenerated `index.md`/`log.md` views + `.cypherlite/` engine sidecar |
+| **Markdown vault** | directory (the vault) | human-authorable knowledge bases — OKF notes, Obsidian vaults, git-diffable text | `Label/name.md` files + regenerated `index.md`/`log.md` views + `.relate/` engine sidecar |
 | **`.rl` bundle** | any path ending in `.rl` (legacy `.cl` still opens) | single-file stores: copy, attach, archive | one file (a zip of the store) |
 
 ## Choosing
@@ -29,7 +29,7 @@ store's recorded codec pick the form.
   tool), edit notes by hand while the database is closed, and the next open
   picks the edits up; `index.md` and `log.md` views are regenerated at every
   checkpoint. Machine state (WAL, manifest, journal) hides under
-  `.cypherlite/`. Which properties render as the body — the first one
+  `.relate/`. Which properties render as the body — the first one
   bare, the rest as `## <property>` sections — is configured per label
   with `--markdown-body-properties`
   ([ADR-0460](../adr/0460-markdown-body-properties.md)); unconfigured,
@@ -71,7 +71,7 @@ directory whose files name a different codec than requested.
 
 The rename changes names, not stored bytes. A store's marker files
 (`.cypherlite.lock`, `.cypherlite.writer`), the markdown vault's
-`.cypherlite/` sidecar (with its `.cypherlite/schema/` mirror), and the
+`.relate/` sidecar (with its `.relate/schema/` mirror), and the
 `MDBWAL01` / `MDBWAL02` / `MDBCLB01` magics keep their exact spelling and
 bytes, so every store written by v0.8.0 through v0.16.x opens unchanged
 ([ADR-0517 §4](../adr/0517-rename-to-relate.md)). They deliberately carry

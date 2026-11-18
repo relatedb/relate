@@ -178,16 +178,36 @@ impl Database {
     /// Snapshot and WAL share `vfs` (prefix `wal`). `opts.wal_dir` is ignored.
     /// Follow is rejected because the store has no native directory.
     /// `snapshot_codec: None` uses [`SnapshotCodecKind::default`].
+    ///
+    /// ADR-0623 runs mode-aware in the construction
+    /// ([`StoreTarget::from_vfs_with_codec_opening`]): a writable open
+    /// adopts a legacy `.cypherlite/` engine directory on the VFS
+    /// through one [`Vfs::rename`](relate_storage::Vfs::rename) before
+    /// the store is built; a read-only open never adopts — it refuses a
+    /// legacy markdown sidecar closed, naming the one writable pass that
+    /// adopts it, and a legacy `.cypherlite/` without the manifest (a
+    /// classic store's schema mirror alone) is inert, opened unchanged.
     pub fn open_vfs(vfs: Arc<dyn Vfs>, opts: OpenOptions) -> Result<Self> {
         let knobs = Self::open_preflight(&opts)?;
         // No lease to protect here (the VFS is caller-supplied): the
-        // target's own installer refuses a mismatched codec config.
-        let codec = knobs.snapshot_codec.unwrap_or_default();
-        let store = StoreTarget::from_vfs_with_codec(vfs, codec)?;
-        let store = match knobs.codec_config.clone() {
-            Some(config) => store.with_codec_config(config)?,
-            None => store,
+        // construction itself gates the codec configuration before its
+        // pre-read step, so a config-refused open never reaches the
+        // writable leg's adoption rename — the native leg's
+        // fail-before-mutation order, shared by both legs.
+        // The open's mode threads once into the storage construction
+        // (the typed twin of the `read_only` bool `open_with` derives
+        // for its parse): every read-only shape — frozen, follow,
+        // ephemeral — is a read-only construction; follow itself is
+        // refused below for a store with no native directory.
+        let mode = match opts.mode {
+            OpenMode::Writable => relate_storage::OpenMode::OpenOrCreate,
+            OpenMode::ReadOnly | OpenMode::Follow | OpenMode::Ephemeral => {
+                relate_storage::OpenMode::ReadOnly
+            }
         };
+        let codec = knobs.snapshot_codec.unwrap_or_default();
+        let store =
+            StoreTarget::from_vfs_with_codec_opening(vfs, codec, mode, knobs.codec_config.clone())?;
         Self::open_store(store, opts, knobs)
     }
 

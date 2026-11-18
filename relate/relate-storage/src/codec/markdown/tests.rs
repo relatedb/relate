@@ -249,7 +249,7 @@ fn an_explicit_markdown_open_over_an_envelope_only_store_is_refused_before_the_l
     };
     assert!(err.to_string().contains("mixed snapshot codecs"), "{err}");
     assert!(
-        !dir.path().join(".cypherlite").exists(),
+        !dir.path().join(ENGINE_DIR).exists(),
         "the refusal must precede any engine-state creation"
     );
     // (A root manifest.json is engine-reserved namespace in any codec:
@@ -301,7 +301,7 @@ fn a_case_only_key_rename_survives_checkpoint() {
 fn an_explicit_markdown_open_over_a_classic_store_is_refused_before_the_lease() {
     // The directory already carries a classic codec's root evidence
     // (`graph.json`): an explicit markdown request must fail closed
-    // before the default-WAL lease materializes `.cypherlite/wal` and
+    // before the default-WAL lease materializes `.relate/wal` and
     // its role marker inside that store.
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("graph.json"), "{}").unwrap();
@@ -315,7 +315,7 @@ fn an_explicit_markdown_open_over_a_classic_store_is_refused_before_the_lease() 
     };
     assert!(err.to_string().contains("mixed snapshot codecs"), "{err}");
     assert!(
-        !dir.path().join(".cypherlite").exists(),
+        !dir.path().join(ENGINE_DIR).exists(),
         "the refusal must precede any engine-state creation"
     );
 }
@@ -613,3 +613,5 @@ fn node_and_relationship_ids_are_stable_across_checkpoints() {
 /// The ADR-0460 body-properties suite, split from this file's shared
 /// builders (the no-1k-line rule).
 mod bodies;
+
+mod legacy_adoption;

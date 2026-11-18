@@ -22,7 +22,7 @@ pub(crate) use unavailable::{
 };
 
 // ADR-0086, per metadata object. The one home of the bound: the markdown
-// codec's sidecar manifest (`.cypherlite/manifest.json`) is a metadata
+// codec's sidecar manifest (`.relate/manifest.json`) is a metadata
 // object too and spells its ceiling through this constant.
 pub(crate) const MAX_JSON_OBJECT: u64 = 16 * 1024 * 1024;
 
@@ -136,9 +136,10 @@ pub(crate) enum ObjectName {
     Manifest,
     /// An immutable `ontology/<128-bit-hex>.json` document object.
     Ontology,
-    /// A `.cypherlite/schema/` text-mirror file (ADR-0481): written only
-    /// by the checkpoint tail, read only by the open-time drift guard —
-    /// both through the schema-mirror size class of
+    /// A text-mirror file under the schema mirror's directory
+    /// (`schema_files::SCHEMA_DIR`, ADR-0481): written only by the
+    /// checkpoint tail, read only by the open-time drift guard — both
+    /// through the schema-mirror size class of
     /// [`bounded_read_for`].
     SchemaMirror,
     /// A retired pre-shard monolith object (`nodes.parquet`, …).
@@ -288,7 +289,7 @@ const SCHEMA_MIRROR: BoundedRead = BoundedRead {
 
 /// The size class of an object name: the manifest is bounded JSON metadata
 /// (ADR-0086), an `ontology/<128-bit-hex>.json` object is a bounded
-/// ontology document (ADR-0120 §5), a `.cypherlite/schema/` mirror file
+/// ontology document (ADR-0120 §5), a `.relate/schema/` mirror file
 /// is bounded by the schema-mirror class (ADR-0481); every other object
 /// is unbounded payload. The one lookup the read, write, and
 /// byte-accounting paths all consult.

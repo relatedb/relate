@@ -1,59 +1,71 @@
 //! `Vfs` over the slot pool.
 
+#[cfg(target_arch = "wasm32")]
 use std::collections::BTreeMap;
 use std::io::SeekFrom;
 use std::sync::{Arc, Mutex};
 
 use relate::Error;
 use relate_storage::{Vfs, VfsFile, VfsMeta, VfsOpen};
-use wasm_bindgen::prelude::*;
 
 use super::catalog::{read_catalog, Inner};
-use super::js::{checked_u32, js_open_err, js_storage, js_u32};
-use super::path::{check_path, is_prefix, list_names};
-use super::slot::{prepare_opfs, JsSlot, SyncSlot, OPFS_SLOT_COUNT};
+use super::path::{check_path, family_keys, is_prefix, list_names};
+use super::slot::SyncSlot;
 
 pub(crate) struct OpfsVfs {
     inner: Arc<Mutex<Inner>>,
 }
 
+#[cfg(target_arch = "wasm32")]
+mod prepare {
+    use super::*;
+
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen_futures::JsFuture;
+
+    use crate::opfs::js::{checked_u32, js_open_err, js_storage, js_u32};
+    use crate::opfs::slot::{prepare_opfs, JsSlot, OPFS_SLOT_COUNT};
+
+    impl super::OpfsVfs {
+        pub(crate) async fn prepare(name: &str) -> relate::Result<Arc<Self>> {
+            let promise = prepare_opfs(name).map_err(js_storage)?;
+            let prepared = JsFuture::from(promise).await.map_err(js_open_err)?;
+            Self::from_prepared(&prepared)
+        }
+
+        fn from_prepared(prepared: &JsValue) -> relate::Result<Arc<Self>> {
+            // Wrap each id before the next check. Drop closes every handle that
+            // was accepted, including when the slot count is wrong.
+            let catalog = Box::new(JsSlot {
+                id: js_u32(prepared, "catalog")?,
+            });
+            let slots_js =
+                js_sys::Reflect::get(prepared, &JsValue::from_str("slots")).map_err(js_storage)?;
+            let slots_js = js_sys::Array::from(&slots_js);
+            let mut slots = Vec::with_capacity(slots_js.length() as usize);
+            for (index, id) in slots_js.iter().enumerate() {
+                let key = format!("slot {index}");
+                let Some(id) = id.as_f64() else {
+                    return Err(relate::Error::storage(format!(
+                        "OPFS {key} is not a number"
+                    )));
+                };
+                slots.push(Box::new(JsSlot {
+                    id: checked_u32(id, &key)?,
+                }) as Box<dyn SyncSlot>);
+            }
+            if slots.len() != OPFS_SLOT_COUNT {
+                return Err(relate::Error::storage(format!(
+                    "OPFS prepare returned {} slots, expected {OPFS_SLOT_COUNT}",
+                    slots.len()
+                )));
+            }
+            Self::open_slots(catalog, slots).map(Arc::new)
+        }
+    }
+}
+
 impl OpfsVfs {
-    pub(crate) async fn prepare(name: &str) -> relate::Result<Arc<Self>> {
-        let promise = prepare_opfs(name).map_err(js_storage)?;
-        let prepared = wasm_bindgen_futures::JsFuture::from(promise)
-            .await
-            .map_err(js_open_err)?;
-        Self::from_prepared(&prepared)
-    }
-
-    fn from_prepared(prepared: &JsValue) -> relate::Result<Arc<Self>> {
-        // Wrap each id before the next check. Drop closes every handle that
-        // was accepted, including when the slot count is wrong.
-        let catalog = Box::new(JsSlot {
-            id: js_u32(prepared, "catalog")?,
-        });
-        let slots_js =
-            js_sys::Reflect::get(prepared, &JsValue::from_str("slots")).map_err(js_storage)?;
-        let slots_js = js_sys::Array::from(&slots_js);
-        let mut slots = Vec::with_capacity(slots_js.length() as usize);
-        for (index, id) in slots_js.iter().enumerate() {
-            let key = format!("slot {index}");
-            let Some(id) = id.as_f64() else {
-                return Err(Error::storage(format!("OPFS {key} is not a number")));
-            };
-            slots.push(Box::new(JsSlot {
-                id: checked_u32(id, &key)?,
-            }) as Box<dyn SyncSlot>);
-        }
-        if slots.len() != OPFS_SLOT_COUNT {
-            return Err(Error::storage(format!(
-                "OPFS prepare returned {} slots, expected {OPFS_SLOT_COUNT}",
-                slots.len()
-            )));
-        }
-        Self::open_slots(catalog, slots).map(Arc::new)
-    }
-
     pub(crate) fn open_slots(
         catalog: Box<dyn SyncSlot>,
         slots: Vec<Box<dyn SyncSlot>>,
@@ -83,6 +95,9 @@ impl OpfsVfs {
         })
     }
 
+    /// The JS surface's reset tail (bindings.rs): wipe every slot and
+    /// rebind the catalog empty. Wasm32-only — the engine never calls it.
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn wipe(&self) -> relate::Result<()> {
         self.with_mut(|inner| {
             let freelist = (0..inner.slots.len() as u32).collect();
@@ -179,51 +194,71 @@ impl Vfs for OpfsVfs {
 
     fn remove_file(&self, path: &str) -> relate::Result<()> {
         self.with_mut(|inner| {
+            // A missing file is already the wanted state — no catalog write.
             if !inner.entries.contains_key(path) {
                 return Ok(());
             }
-            let mut entries = inner.entries.clone();
-            let slot = entries.remove(path).expect("path was present");
-            let mut freelist = inner.freelist.clone();
-            freelist.push(slot);
-            inner.commit(entries, freelist)
+            inner.stage(|entries, freelist| {
+                let slot = entries
+                    .remove(path)
+                    .expect("the pre-check proved the entry present");
+                freelist.push(slot);
+                Ok(())
+            })
         })
     }
 
     fn remove_dir_all(&self, path: &str) -> relate::Result<()> {
         self.with_mut(|inner| {
-            let mut entries = inner.entries.clone();
-            let mut freelist = inner.freelist.clone();
-            let prefix = format!("{path}/");
-            let doomed: Vec<String> = entries
-                .keys()
-                .filter(|key| path.is_empty() || key.as_str() == path || key.starts_with(&prefix))
-                .cloned()
-                .collect();
-            for key in doomed {
-                if let Some(slot) = entries.remove(&key) {
+            inner.stage(|entries, freelist| {
+                for (key, _suffix) in family_keys(entries, path) {
+                    let slot = entries
+                        .remove(&key)
+                        .expect("the key was just collected from the family");
                     freelist.push(slot);
                 }
-            }
-            inner.commit(entries, freelist)
+                Ok(())
+            })
         })
     }
 
     fn rename(&self, from: &str, to: &str) -> relate::Result<()> {
+        check_path(from)?;
         check_path(to)?;
         self.with_mut(|inner| {
-            let slot = inner.require(from)?;
             if from == to {
                 return Ok(());
             }
-            let mut entries = inner.entries.clone();
-            entries.remove(from);
-            let replaced = entries.insert(to.to_string(), slot);
-            let mut freelist = inner.freelist.clone();
-            if let Some(old) = replaced {
-                freelist.push(old);
-            }
-            inner.commit(entries, freelist)
+            // Directories are prefix families (ADR-0145): the rename
+            // re-keys the bare entry and every `from/`-prefixed child
+            // through the one family decision, composing each new name
+            // from the suffix the decision carries — an implicit
+            // directory (no bare entry, children only) renames cleanly
+            // and a directory rename moves the whole tree (the engine's
+            // legacy-sidecar adoption, ADR-0623, renames exactly that
+            // directory through this call). A destination key that
+            // already exists is replaced and its slot recycled, the
+            // same replace semantics a single-entry rename always had.
+            inner.stage(|entries, freelist| {
+                let moved = family_keys(entries, from);
+                if moved.is_empty() {
+                    return Err(Error::io(format!("missing {from}")));
+                }
+                for (key, suffix) in moved {
+                    let slot = entries
+                        .remove(&key)
+                        .expect("the key was just collected from the family");
+                    let target = if suffix.is_empty() {
+                        to.to_string()
+                    } else {
+                        format!("{to}/{suffix}")
+                    };
+                    if let Some(old) = entries.insert(target, slot) {
+                        freelist.push(old);
+                    }
+                }
+                Ok(())
+            })
         })
     }
 

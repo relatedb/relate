@@ -40,7 +40,7 @@ pub fn vault_signature(store: &StoreTarget) -> BTreeMap<String, u64> {
 
 /// The one recursive fixture traversal with one entry policy, for both
 /// destinations: dot entries are skipped — `.git` and friends, and any
-/// `.cypherlite/` sidecar an earlier run left in a source vault — so a
+/// `.relate/` sidecar an earlier run left in a source vault — so a
 /// copied fixture is the vault's own files only, wherever it lands.
 /// `sink` receives each file's store-relative path (joined through the
 /// one store-relative join, `relate_test_support::vfs_walk::virt_join`)

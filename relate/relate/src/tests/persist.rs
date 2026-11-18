@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::{Database, DurabilityMode, OpenOptions, SnapshotCodecKind, Value};
 
-fn no_timer() -> OpenOptions {
+pub(super) fn no_timer() -> OpenOptions {
     OpenOptions {
         checkpoint_interval: Some(Duration::ZERO),
         ..OpenOptions::default()

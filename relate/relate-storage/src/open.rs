@@ -89,7 +89,7 @@ pub(crate) fn codec_ops(codec: SnapshotCodecKind) -> CodecOps {
 
 /// A fresh snapshot load of a store — the guarded preamble
 /// ([`load_snapshot_with_schema_guard`]) included, like every other
-/// fresh load: a drifted `.cypherlite/schema/` mirror refuses here too.
+/// fresh load: a drifted `.relate/schema/` mirror refuses here too.
 ///
 /// The snapshot-only materialization boundary: no WAL is replayed here, so
 /// this path completes its own indexes (the no-replay half of the split

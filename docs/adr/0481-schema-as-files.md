@@ -159,3 +159,9 @@ is normative; implementation follows it verbatim.
   tolerating (or migrating) the previous form.
 - Stores written before this ADR open unchanged; the folder appears at
   their first checkpoint.
+
+## Later references
+
+- ADR-0623 renames the engine directory the mirror lives under to
+  `.relate/`, adopting existing stores by one directory rename at their
+  first writable open; the mirror's layout beneath it is unchanged.

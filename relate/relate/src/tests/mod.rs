@@ -2,6 +2,7 @@
 //! `Connection`), split by concern. Machinery-internal tests live next to
 //! their modules (`binding`, `commit`, `checkpoint`, `procedures`).
 
+mod adoption;
 mod bookmarks;
 mod catalog;
 mod ephemeral;

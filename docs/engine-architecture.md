@@ -154,7 +154,7 @@ Parquet requests at open with a typed storage error; it never falls
 back to JSON ([ADR-0105](adr/0105-optional-parquet-codec.md)). Every
 checkpoint of every codec — Parquet, JSON, and the markdown vault —
 also rewrites the store's schema text mirror under
-`.cypherlite/schema/` ([ADR-0481](adr/0481-schema-as-files.md)): the
+`.relate/schema/` ([ADR-0481](adr/0481-schema-as-files.md)): the
 canonical graph type body, the verbatim ontology document, and one
 SHOW-rendered `CREATE` statement per renderable catalog entry in the
 catalog's name order. The manifest and WAL stay authoritative; at open

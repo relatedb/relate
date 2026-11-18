@@ -4,6 +4,7 @@
 
 use super::super::tests::{int, node_by_name, person_graph, props, signature, string};
 use super::*;
+use crate::codec::markdown::manifest::FileStat;
 use crate::codec::SnapshotCodecKind;
 use crate::vfs::atomic_write;
 use relate_core::Relationship;
@@ -40,7 +41,7 @@ fn write_external_vault(root: &std::path::Path) {
 fn a_root_level_wal_label_directory_is_user_content_not_the_direct_wal_slot() {
     // A `:wal` label's files land in a root-level `wal/` directory —
     // exactly the classic codecs' direct-WAL spelling. The vault's
-    // engine WAL is the `.cypherlite/` sidecar, so the label directory
+    // engine WAL is the `.relate/` sidecar, so the label directory
     // must never be misread as the direct-WAL slot (an ambiguity the
     // open would otherwise refuse): the engine must open the layout it
     // itself writes.
@@ -371,4 +372,47 @@ fn restore_ids_refuses_a_recorded_id_colliding_with_an_earlier_fresh_id() {
             .contains("not below the recorded next id 1"),
         "{error}"
     );
+}
+
+#[test]
+fn the_publication_gate_compares_every_overwritten_field() {
+    // The gate is one whole-value comparison, so every field the load
+    // overwrites participates by construction: each field alone, with
+    // every other left equal, is drift and republishes — pinned per
+    // field so a future derivation that decouples one cannot skip the
+    // re-baseline, and a future eighth overwrite joins the gate for
+    // free instead of hunting a hand-kept list.
+    let store = crate::memory_store_with_codec(SnapshotCodecKind::Markdown).unwrap();
+    crate::checkpoint(&store, &person_graph(), None).unwrap();
+    let manifest = read_manifest(&store).unwrap().unwrap();
+
+    fn alone(manifest: &VaultManifest, field: &str, mutate: impl Fn(&mut VaultManifest)) {
+        let mut drifted = manifest.clone();
+        mutate(&mut drifted);
+        assert!(drifted != *manifest, "{field} alone must be drift");
+    }
+    alone(&manifest, "files", |m| {
+        m.files.insert("Person/X.md".into(), FileStat::of(b"x"));
+    });
+    alone(&manifest, "bodies", |m| {
+        m.bodies.default.push("summary".into());
+    });
+    alone(&manifest, "learned", |m| {
+        m.learned.rel_types.insert("STALE".into());
+    });
+    alone(&manifest, "node_ids", |m| {
+        m.node_ids.insert("Person/X".into(), 99);
+    });
+    alone(&manifest, "rel_ids", |m| {
+        m.rel_ids.insert("stale identity".into(), 99);
+    });
+    alone(&manifest, "next_node_id", |m| {
+        m.next_node_id += 1;
+    });
+    alone(&manifest, "next_rel_id", |m| {
+        m.next_rel_id += 1;
+    });
+    // The untouched recording is never drift: an unchanged vault keeps
+    // its sidecar.
+    assert!(manifest.clone() == manifest);
 }

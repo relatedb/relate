@@ -13,7 +13,7 @@
 //!
 //! ## Load
 //!
-//! Read `.cypherlite/manifest.json` (or bootstrap when absent), recover
+//! Read `.relate/manifest.json` (or bootstrap when absent), recover
 //! a journaled checkpoint if one is pending, walk the vault
 //! (`<Label>/<key>.md`; reserved view files skipped), infer or consult
 //! the learned schema (per-label key properties, the rel-type
@@ -27,7 +27,7 @@
 //! Render every node file plus the derived `index.md`/`log.md` views,
 //! guard against external writes (stat-first: length + crc), copy each
 //! to-be-overwritten file's current content into
-//! `.cypherlite/checkpoint-journal/` with an intent manifest, then write
+//! `.relate/checkpoint-journal/` with an intent manifest, then write
 //! only changed files atomically, delete files whose node is gone,
 //! prune empty label directories, publish the sidecar manifest last,
 //! and remove the journal. The pipeline is phased — the learned schema,
@@ -53,13 +53,39 @@ use crate::snapshot::DeferredOpenAction;
 use crate::SnapshotCodecKind;
 use crate::StoreTarget;
 
+/// ADR-0623's adoption subsystem: the shape-verdict classification,
+/// the adoption refusals and rename error, and the
+/// caller-supplied-VFS adapter — the one home for the knowledge both
+/// adoptions share.
+mod adoption;
+/// The sidecar family's layout vocabulary — the module below both
+/// `adoption` and `manifest`: the engine-directory spellings, the
+/// paths derived from them, and the probe-context and legacy-repair
+/// constructors (F-11-1).
+mod layout;
+
 pub(crate) use checkpoint::checkpoint_at;
 pub(crate) use load::load_with_checkpoint_lsn;
-pub(crate) use manifest::{
-    engine_dir, read_manifest, VaultManifest, ENGINE_DIR, MANIFEST, WAL_DIR,
-};
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use manifest::{probe_path, refuse_reset};
+pub(crate) use manifest::probe_manifest_at;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use manifest::refuse_reset;
+#[cfg(not(target_arch = "wasm32"))]
+use manifest::sidecar_at_either;
+// The adoption family (`adoption_refusal`, the legacy spellings) rides
+// ungated: the caller-supplied-VFS adoption compiles on wasm32 and
+// speaks the same refusals the native adoption does.
+pub(crate) use adoption::{
+    adoption_refusal, adoption_rename_error, prepare_legacy_engine_dir_vfs, AdoptionVerdict,
+    EngineEntry,
+};
+pub(crate) use layout::{
+    engine_dir, engine_dir_probe_error, legacy_sidecar_error, LegacySidecarRepair, SidecarSpelling,
+    ENGINE_DIR, LEGACY_ENGINE_DIR, MANIFEST, WAL_DIR,
+};
+pub(crate) use manifest::{
+    has_store_files, read_manifest, read_manifest_cold, ManifestProbe, VaultManifest,
+};
 use vault::*;
 
 /// The markdown vault's body-property configuration (ADR-0460): an
@@ -444,48 +470,36 @@ mod manifest;
 mod vault;
 mod views;
 
-/// The codec this open proves before the lease, for the pre-lease
-/// default-WAL routing: `Some(`[`SnapshotCodecKind::Markdown`]`)` when the
-/// open is markdown — requested, or an engine-written sidecar says so —
-/// otherwise `None`, no evidence (the classic codecs share one `wal/`
-/// layout). A folder of markdown files alone is not a store until it is
-/// opened as one. (The reset guard is the probe's other consumer, through
-/// `refuse_reset` → `probe_path`, manifest.rs.)
+/// The markdown codec's one pre-lease entry point (ADR-0406 §3,
+/// ADR-0623): it decides "is this open markdown" once, here at the
+/// composition site — an explicit request, or an engine-written sidecar
+/// at **either** spelling, so no pre-lease check depends on the
+/// store-layer adoption having happened (the adoption runs last,
+/// immediately before the lease) — and the steps below work from that
+/// one fact, never re-deriving. The explicit-request guard fires only
+/// for a request over a directory carrying a classic codec's
+/// root-level store evidence (`graph.json`, a Parquet object family):
+/// routing the default WAL into `.relate/` and leasing it would write
+/// engine state into another codec's store before `resolve_codec`
+/// could refuse the mismatched request. The fact then becomes the
+/// pre-lease WAL hint — `Some(`[`SnapshotCodecKind::Markdown`]`)` or
+/// `None`, no evidence (the classic codecs share one `wal/` layout; a
+/// folder of markdown files alone is not a store until it is opened as
+/// one).
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn markdown_wal_hint(
+pub(crate) fn prepare_lease(
     path: &std::path::Path,
     requested: Option<SnapshotCodecKind>,
-) -> Option<SnapshotCodecKind> {
-    // The sidecar classification — including the present-but-unparseable
-    // fail-closed verdict — is the codec's one typed probe.
-    if requested == Some(SnapshotCodecKind::Markdown) || probe_path(path) {
-        Some(SnapshotCodecKind::Markdown)
-    } else {
-        None
-    }
-}
-
-/// The explicit-markdown pre-lease guard: refuses only an *explicit*
-/// markdown request (a sidecar-driven hint was already classified
-/// fail-closed by its probe) over a directory carrying a classic codec's
-/// root-level store evidence (`graph.json`, a Parquet object family) —
-/// routing the default WAL into `.cypherlite/` and leasing it would write
-/// engine state into another codec's store before `resolve_codec` could
-/// refuse the mismatched request.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn refuse_markdown_over_classic_evidence(
-    path: &std::path::Path,
-    requested: Option<SnapshotCodecKind>,
-) -> Result<()> {
-    if requested == Some(SnapshotCodecKind::Markdown)
-        && crate::codec::has_classic_store_evidence_at(path)
-    {
+) -> Result<Option<SnapshotCodecKind>> {
+    let requested_markdown = requested == Some(SnapshotCodecKind::Markdown);
+    let markdown = requested_markdown || sidecar_at_either(path);
+    if requested_markdown && crate::codec::has_classic_store_evidence_at(path) {
         return Err(Error::storage(
             "mixed snapshot codecs: the directory carries snapshot-file evidence; an \
              explicit markdown open would create WAL engine state inside it",
         ));
     }
-    Ok(())
+    Ok(markdown.then_some(SnapshotCodecKind::Markdown))
 }
 
 #[cfg(test)]

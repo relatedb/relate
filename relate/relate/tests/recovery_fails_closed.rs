@@ -209,7 +209,7 @@ fn parquet_format_version_gate_precedes_wal_recovery() {
 /// publishes the ontology and its mirror together, so a test that crafts
 /// an ontology-carrying store by hand writes both — the open guard refuses
 /// a durable-form ontology whose mirror is missing.
-const ONTOLOGY_MIRROR: &str = ".cypherlite/schema/ontology.json";
+const ONTOLOGY_MIRROR: &str = ".relate/schema/ontology.json";
 
 fn write_ontology_mirror(root: &Path) {
     // The mirror's directory, derived from the one file constant —

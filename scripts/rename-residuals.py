@@ -4,8 +4,9 @@
 The rename (ADR-0517, PR #749) keeps a deliberate keep-list: frozen records
 (accepted ADRs, baseline envelopes, vendored corpora, golden stores, dated
 research notes, the CHANGELOG), the on-disk store artifacts whose bytes
-existing stores depend on (`.cypherlite.lock`, the `.cypherlite` sidecar,
- `CYPHERLITE-LOCK-v1`), the still-set-old-env guard
+existing stores depend on (`.cypherlite.lock`, `CYPHERLITE-LOCK-v1`) and
+ the legacy `.cypherlite` sidecar spelling the open-time adoption
+ (ADR-0623) renames away, the still-set-old-env guard
 (LABS-973), and pre-cutover external names (the harness repository) that
 flip at the relatedb cutover. Everything else carrying the old name is a
 stray the rename missed.

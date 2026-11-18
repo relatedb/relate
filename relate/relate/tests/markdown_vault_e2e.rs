@@ -1,7 +1,7 @@
 //! End-to-end: an Obsidian-style vault is a Relate database
 //! (ADR-0406). External markdown files load as a queryable graph, Cypher
 //! writes materialize as markdown files, and the same folder stays a
-//! valid vault — with the engine sidecar hidden under `.cypherlite/`.
+//! valid vault — with the engine sidecar hidden under `.relate/`.
 
 mod common;
 

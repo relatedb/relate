@@ -273,8 +273,7 @@ fn a_body_property_config_on_a_non_markdown_store_fails_the_install() {
         .with_codec_config(CodecOpenConfig::MarkdownBodies(
             MarkdownBodyProperties::parse("summary").unwrap(),
         ))
-        .err()
-        .expect("the install must refuse a non-markdown store");
+        .expect_err("the install must refuse a non-markdown store");
     assert!(
         err.to_string()
             .contains("the configuration would be ignored"),

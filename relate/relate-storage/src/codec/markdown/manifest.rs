@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use relate_core::Result;
+use relate_core::{Error, Result};
 use relate_engine_api::CheckpointTheater;
 use relate_markdown as md;
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,10 @@ use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "wasm32"))]
 use super::super::benign_absence;
 use super::super::catalog;
+use super::layout::{
+    engine_dir, engine_dir_probe_error, legacy_sidecar_error, LegacySidecarRepair, SidecarSpelling,
+    ENGINE_DIR, LEGACY_ENGINE_DIR, LEGACY_MANIFEST, MANIFEST,
+};
 use super::vault::crc;
 use super::MarkdownBodyProperties;
 use crate::codec::SnapshotCodecKind;
@@ -21,30 +25,21 @@ use crate::snapshot::MAX_JSON_OBJECT;
 use crate::vfs::{atomic_write, read_to_vec, Vfs};
 use crate::StoreTarget;
 
-/// The engine directory's one spelling as a literal, so `concat!` can build
-/// the paths under it (the schema mirror's directory derives from it).
-macro_rules! engine_dir {
+/// The copy-on-write journal directory (ADR-0406 §5): its own macro so
+/// the three journal paths build from one spelling of the segment.
+macro_rules! journal_dir {
     () => {
-        ".cypherlite"
+        concat!(engine_dir!(), "/checkpoint-journal")
     };
 }
-pub(crate) use engine_dir;
-
-/// The hidden engine directory inside the vault (the `.obsidian/`
-/// convention): WAL, journal, and the sidecar manifest.
-pub(crate) const ENGINE_DIR: &str = engine_dir!();
-/// The sidecar manifest, published last (the manifest-last rule).
-pub(crate) const MANIFEST: &str = ".cypherlite/manifest.json";
-/// The default WAL directory for a markdown store (ADR-0406 §3).
-pub(crate) const WAL_DIR: &str = ".cypherlite/wal";
-/// The copy-on-write journal of an in-flight checkpoint (ADR-0406 §5).
-pub(super) const JOURNAL_DIR: &str = ".cypherlite/checkpoint-journal";
-pub(super) const JOURNAL_INTENT: &str = ".cypherlite/checkpoint-journal/intent.json";
+pub(super) const JOURNAL_DIR: &str = journal_dir!();
+pub(super) const JOURNAL_INTENT: &str = concat!(journal_dir!(), "/intent.json");
 /// The pre-image of a journaled checkpoint: the paths that existed
 /// before it began. Rollback deletes only intent files absent from
 /// this set — a file that predates the checkpoint is restored, never
 /// deleted (ADR-0406 §5).
-pub(super) const JOURNAL_PREIMAGE: &str = ".cypherlite/checkpoint-journal/preimage.json";
+pub(super) const JOURNAL_PREIMAGE: &str = concat!(journal_dir!(), "/preimage.json");
+
 // The sidecar's metadata bound is the ADR-0086 per-metadata-object
 // ceiling, spelled through the one crate-visible home
 // (`snapshot::MAX_JSON_OBJECT`) at every check site below — never a
@@ -52,7 +47,7 @@ pub(super) const JOURNAL_PREIMAGE: &str = ".cypherlite/checkpoint-journal/preima
 /// The generated/learned schema (ADR-0406 §2): descriptive, never
 /// prescriptive — the vault stays authoritative and drift regenerates
 /// it at the next checkpoint.
-#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
 pub(super) struct LearnedSchema {
     /// Label → its key property name (the filename source).
     #[serde(default)]
@@ -75,7 +70,12 @@ pub(super) struct LearnedSchema {
     pub(super) folded_keys: BTreeSet<String>,
 }
 
-#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+/// Equality is the publication gate's comparison basis (ADR-0406 §5):
+/// the load's re-baselined expectation compares against the sidecar it
+/// read as one whole value, so every field the load overwrites
+/// participates by construction — `FileStat`'s content-only equality
+/// (mtime excluded) carries through the derive.
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
 pub(crate) struct VaultManifest {
     pub(super) codec: Option<SnapshotCodecKind>,
     #[serde(default)]
@@ -174,10 +174,11 @@ impl FileStat {
 
 /// What the sidecar manifest says about a directory (ADR-0406 §5) —
 /// the one typed classification every "is this a markdown store"
-/// question consults: codec resolution, the pre-lease default-WAL
-/// routing, the reset refusal, and the manifest reader itself.
+/// question consults, at either spelling: codec resolution, the
+/// pre-lease default-WAL routing, the reset refusal, the manifest
+/// readers, and the legacy presence probes below.
 #[derive(Clone, Debug)]
-enum ManifestProbe {
+pub(crate) enum ManifestProbe {
     /// No sidecar: not a markdown store (yet).
     Absent,
     /// A sidecar naming the markdown codec, parsed.
@@ -187,57 +188,104 @@ enum ManifestProbe {
     /// A sidecar that is present but oversized, unreadable,
     /// unparseable, or names no codec: every fail-closed decision
     /// treats the directory as a markdown store anyway (the reset
-    /// refusal and `.cypherlite/` WAL routing must not be bypassable
+    /// refusal and `.relate/` WAL routing must not be bypassable
     /// by a corrupt manifest).
     Unparseable,
 }
 
-/// The one bounded read + classification of the sidecar. The metadata
-/// length bounds the read before any byte is fetched.
-fn probe(vfs: &dyn Vfs) -> Result<ManifestProbe> {
-    if !vfs.exists(MANIFEST)? {
+/// The one bounded read + classification of the sidecar at a spelling
+/// (either, ADR-0623): the metadata length bounds the read before any
+/// byte is fetched, the bytes classify through the one bytes-level
+/// classifier, and every probe failure — `exists`, `metadata`, the
+/// read itself — speaks the one probe-context sentence naming the
+/// spelling's engine directory, the directory actually probed: the
+/// [`SidecarSpelling`] value pairs the path with the name, so neither
+/// spelling's failures can ever name the other's.
+pub(super) fn probe_sidecar(vfs: &dyn Vfs, spelling: SidecarSpelling) -> Result<ManifestProbe> {
+    let name = spelling.manifest();
+    let fail = |err: Error| engine_dir_probe_error(spelling.engine_dir(), &err);
+    if !vfs.exists(name).map_err(fail)? {
         return Ok(ManifestProbe::Absent);
     }
-    let len = vfs.metadata(MANIFEST)?.len;
+    let len = vfs.metadata(name).map_err(fail)?.len;
     if len > MAX_JSON_OBJECT {
         return Ok(ManifestProbe::Unparseable);
     }
-    let bytes = read_to_vec(vfs, MANIFEST)?;
+    let bytes = read_to_vec(vfs, name).map_err(fail)?;
     Ok(classify_manifest_bytes(&bytes))
 }
 
-/// The pre-lease path probe (the default-WAL routing and reset refusal
-/// run before any VFS exists): the same classification over a host
-/// directory, collapsed to "treat as a markdown store".
+/// The markdown codec's evidence probe — the family's
+/// `has_store_files`, the shape every other codec's evidence row
+/// speaks: the sidecar manifest's presence at either spelling, through
+/// the canonical existence probe the other rows use. Side-effect-free:
+/// no parse, no classification, no refusal — the classification stays
+/// the manifest reader's, and the evidence table only counts the
+/// store's presence (ADR-0623: an un-adopted legacy store is still
+/// markdown evidence).
+pub(crate) fn has_store_files(target: &StoreTarget) -> Result<bool> {
+    Ok(crate::snapshot::object_exists(target, MANIFEST)?
+        || crate::snapshot::object_exists(target, LEGACY_MANIFEST)?)
+}
+
+/// The host-side presence collapse of the one typed classification
+/// ([`probe_manifest_at`]) at one spelling: a markdown or unparseable
+/// sidecar is a markdown store, and so is a probe that failed — the
+/// reset refusal must not be bypassable by an unreadable sidecar.
+/// Another codec's sidecar is not.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn probe_path(dir: &std::path::Path) -> bool {
-    let sidecar = dir.join(MANIFEST);
-    // The same metadata-first bound as the VFS probe. The fail-closed
-    // verdict is spelled once, in the read match below: a benign
-    // absence is "not a markdown store"; every other metadata or read
-    // error — and any oversized sidecar — routes as a markdown store,
-    // never as "not a store" (the reset refusal must not be bypassable
-    // by an unreadable sidecar).
+fn sidecar_presence_at(dir: &std::path::Path, spelling: SidecarSpelling) -> bool {
+    matches!(
+        probe_manifest_at(dir, spelling),
+        Ok(ManifestProbe::Markdown(_)) | Ok(ManifestProbe::Unparseable) | Err(_)
+    )
+}
+
+/// The sidecar's one typed presence answer at a host path (ADR-0623):
+/// the same metadata-bounded, fail-closed classification as the VFS
+/// probe ([`probe_sidecar`]), at the given spelling — a benign absence
+/// is `Absent`, an oversized or unparseable sidecar is `Unparseable`,
+/// a parsed one classifies by its codec, and a present-but-unreadable
+/// sidecar classifies fail-closed as `Unparseable` (never bypassable
+/// as "not a store"). A probe that could not even ask — a stat error
+/// that is not a benign absence — is `Err`: the consumers that surface
+/// probe failures (the read-only refusals) speak it through the
+/// adoption module's probe error, and the ones that must not be
+/// bypassed (the reset guard) collapse it to a markdown-store verdict
+/// above.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn probe_manifest_at(
+    dir: &std::path::Path,
+    spelling: SidecarSpelling,
+) -> Result<ManifestProbe> {
+    let sidecar = dir.join(spelling.manifest());
+    // The same metadata-first bound as the VFS probe.
     match std::fs::metadata(&sidecar) {
-        // A benign absence is the read's own arm below; every other
-        // metadata error fails closed with the one verdict.
-        Err(err) if benign_absence(&err) => {}
-        Err(_) => return true,
-        Ok(meta) if meta.len() > MAX_JSON_OBJECT => return true,
+        Err(err) if benign_absence(&err) => return Ok(ManifestProbe::Absent),
+        Err(err) => return Err(err.into()),
+        Ok(meta) if meta.len() > MAX_JSON_OBJECT => return Ok(ManifestProbe::Unparseable),
         Ok(_) => {}
     }
     match std::fs::read(&sidecar) {
-        Ok(bytes) => {
-            // The same bytes-level classification as the VFS probe: a
-            // markdown or unparseable sidecar routes as a markdown
-            // store; another codec does not. The read succeeded, so
-            // the classification is never `Absent` (only the probes'
-            // existence checks produce it).
-            !matches!(classify_manifest_bytes(&bytes), ManifestProbe::Other(_))
-        }
-        Err(err) if benign_absence(&err) => false,
-        Err(_) => true,
+        // A present sidecar that cannot be read classifies fail-closed
+        // as unparseable: never "not a store".
+        Err(err) if !benign_absence(&err) => Ok(ManifestProbe::Unparseable),
+        // A benign read absence is a removal race with the metadata
+        // above: the sidecar is gone.
+        Err(_) => Ok(ManifestProbe::Absent),
+        Ok(bytes) => Ok(classify_manifest_bytes(&bytes)),
     }
+}
+
+/// Whether a markdown sidecar exists at either spelling (ADR-0623) —
+/// the host-side presence collapse the reset guard and the pre-lease
+/// WAL hint both consult: a vault that has not been adopted yet is
+/// still a markdown store for both, so neither check can depend on the
+/// adoption having happened.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn sidecar_at_either(dir: &std::path::Path) -> bool {
+    sidecar_presence_at(dir, SidecarSpelling::Adopted)
+        || sidecar_presence_at(dir, SidecarSpelling::Legacy)
 }
 
 /// Refuse [`crate::reset`](super::super::super::reset) on a markdown
@@ -246,11 +294,12 @@ pub(crate) fn probe_path(dir: &std::path::Path) -> bool {
 /// The codec owns the policy; the reset entry stays codec-neutral.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn refuse_reset(dir: &std::path::Path) -> Result<()> {
-    if probe_path(dir) {
-        return Err(md::vault_error(
-            "refusing to reset a markdown vault store; delete the vault's .cypherlite/ \
-             directory (and the markdown files) by hand",
-        ));
+    if sidecar_at_either(dir) {
+        return Err(md::vault_error(format!(
+            "refusing to reset a markdown vault store; delete the vault's {ENGINE_DIR}/ \
+             directory (or the legacy {LEGACY_ENGINE_DIR}/ one) and the markdown files \
+             by hand"
+        )));
     }
     Ok(())
 }
@@ -272,17 +321,80 @@ fn classify_manifest_bytes(bytes: &[u8]) -> ManifestProbe {
     }
 }
 
-pub(crate) fn read_manifest(target: &StoreTarget) -> Result<Option<VaultManifest>> {
-    match probe(&*target.vfs())? {
-        ManifestProbe::Absent => Ok(None),
-        ManifestProbe::Markdown(manifest) => Ok(Some(*manifest)),
-        ManifestProbe::Other(other) => Err(md::vault_error(format!(
-            "sidecar manifest names codec {other}, not markdown"
-        ))),
-        ManifestProbe::Unparseable => Err(md::vault_error(
-            "sidecar manifest names no codec or does not parse, not markdown",
-        )),
+/// A sidecar that parses but names another codec — the one refusal,
+/// shared by both spellings' readers.
+fn not_markdown_sidecar(other: SnapshotCodecKind) -> Error {
+    md::vault_error(format!(
+        "sidecar manifest names codec {other}, not markdown"
+    ))
+}
+
+/// A sidecar that is present but does not parse, or names no codec —
+/// the one refusal, shared by both spellings' readers.
+fn unparseable_sidecar() -> Error {
+    md::vault_error("sidecar manifest names no codec or does not parse, not markdown")
+}
+
+/// The reachable legacy-sidecar repair for this store (ADR-0623): a
+/// native root adopts at its next writable open; a caller-supplied VFS
+/// has no folder rename every backend can perform, so its owner does
+/// it — or constructs the store writable once, which adopts through
+/// the backend's own `Vfs::rename`.
+fn legacy_repair_for(target: &StoreTarget) -> LegacySidecarRepair {
+    if target.native_root.is_some() {
+        LegacySidecarRepair::AdoptAtNextWritableOpen
+    } else {
+        LegacySidecarRepair::CallerRenames
     }
+}
+
+/// How the manifest reader answers a legacy-spelling markdown sidecar
+/// (ADR-0623): the load refuses — resolving it would open a
+/// split-brain store, reads at `.cypherlite/` and writes at
+/// `.relate/` — while the cold read accepts: a cold read never adopts,
+/// but an un-adopted store still deserves its envelope. Every other
+/// legacy shape (unparseable, another codec) refuses identically
+/// either way.
+enum LegacyRead {
+    Refuse,
+    Accept,
+}
+
+/// The one manifest reader (ADR-0406 §5, ADR-0623): the bounded probe
+/// and classification at the adopted spelling first, the legacy
+/// spelling second — [`LegacyRead`] supplies the one difference between
+/// its two callers, the legacy markdown outcome; everything else is
+/// spelled once here.
+fn read_manifest_with(target: &StoreTarget, legacy: LegacyRead) -> Result<Option<VaultManifest>> {
+    match probe_sidecar(&*target.vfs(), SidecarSpelling::Adopted)? {
+        ManifestProbe::Markdown(manifest) => Ok(Some(*manifest)),
+        ManifestProbe::Other(other) => Err(not_markdown_sidecar(other)),
+        ManifestProbe::Unparseable => Err(unparseable_sidecar()),
+        ManifestProbe::Absent => match probe_sidecar(&*target.vfs(), SidecarSpelling::Legacy)? {
+            ManifestProbe::Absent => Ok(None),
+            ManifestProbe::Markdown(manifest) => match legacy {
+                LegacyRead::Refuse => Err(legacy_sidecar_error(legacy_repair_for(target))),
+                LegacyRead::Accept => Ok(Some(*manifest)),
+            },
+            ManifestProbe::Unparseable => Err(legacy_sidecar_error(legacy_repair_for(target))),
+            ManifestProbe::Other(other) => Err(not_markdown_sidecar(other)),
+        },
+    }
+}
+
+/// The load's manifest reader: the legacy markdown sidecar refuses
+/// with the reachable repair (ADR-0623).
+pub(crate) fn read_manifest(target: &StoreTarget) -> Result<Option<VaultManifest>> {
+    read_manifest_with(target, LegacyRead::Refuse)
+}
+
+/// The cold read's sidecar projection (ADR-0165, ADR-0623): the same
+/// reader at either spelling, accepting the legacy markdown sidecar
+/// instead of refusing it — a cold read never adopts and never
+/// renames, but a pre-rename vault still projects its envelope instead
+/// of reporting a fresh store.
+pub(crate) fn read_manifest_cold(target: &StoreTarget) -> Result<Option<VaultManifest>> {
+    read_manifest_with(target, LegacyRead::Accept)
 }
 
 pub(super) fn write_manifest(vfs: &dyn Vfs, manifest: &VaultManifest) -> Result<()> {

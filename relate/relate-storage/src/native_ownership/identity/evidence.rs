@@ -16,9 +16,18 @@ use super::is_same_dir;
 /// Whether an entry exists by lstat: `NotFound` means absent, every other
 /// error propagates — the one typed spelling of the existence idiom.
 pub(crate) fn lstat_exists(path: &Path) -> Result<bool> {
+    Ok(lstat_meta(path)?.is_some())
+}
+
+/// The existence idiom's meta-carrying spelling: `None` means absent,
+/// every other error propagates — and the entry's own metadata rides
+/// the `Some`, so the shape classification the idiom's consumers add
+/// (a regular file, a directory) never re-stats through a second,
+/// hand-spelled copy of the absence match.
+pub(crate) fn lstat_meta(path: &Path) -> Result<Option<std::fs::Metadata>> {
     match fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Ok(meta) => Ok(Some(meta)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
     }
 }
@@ -42,50 +51,42 @@ pub(super) fn lock_and_read_marker(path: &Path, locked: Option<&File>) -> Result
     if let Some(file) = locked {
         return NativeVfs::read_locked_marker(file, &marker);
     }
-    match fs::symlink_metadata(&marker) {
-        Ok(meta) if matches!(native_entry_kind(&meta), NativeEntryKind::File) => {
+    match lstat_meta(&marker)? {
+        Some(meta) if matches!(native_entry_kind(&meta), NativeEntryKind::File) => {
             NativeVfs::read_locked_marker(
                 &*NativeVfs::lock_existing_regular_file(&marker)?,
                 &marker,
             )
         }
-        Ok(_) => Err(Error::storage(format!(
+        Some(_) => Err(Error::storage(format!(
             "invalid lock marker {}",
             marker.display()
         ))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(e.into()),
+        None => Ok(Vec::new()),
     }
 }
 
 pub(super) fn root_specific_evidence(path: &Path) -> Result<bool> {
-    // The per-codec root-evidence registry, consulted through the codec
-    // dispatch surface: each codec's checkpoint image is the file whose
-    // presence proves that codec's root (manifest.json / graph.json /
-    // .cypherlite/manifest.json). COORDINATION NOTE (stellar F-14-3):
-    // codec/* is another change's file in this round, so the registry is
-    // iterated through the existing `checkpoint_image()` mapping rather
-    // than a dedicated `SnapshotCodecKind::root_evidence_files()` beside
-    // `wal_dir()` in codec/kind.rs; if a codec's admission evidence ever
-    // diverges from its checkpoint image, promote this to that method and
-    // iterate it here.
-    for name in [
-        SnapshotCodecKind::Parquet.checkpoint_image(),
-        SnapshotCodecKind::Json.checkpoint_image(),
-        SnapshotCodecKind::Markdown.checkpoint_image(),
-    ] {
-        match fs::symlink_metadata(path.join(name)) {
-            Ok(meta) if matches!(native_entry_kind(&meta), NativeEntryKind::File) => {
+    // The per-codec root-evidence registry, derived from the one
+    // vocabulary table (`ALL`): each codec's checkpoint image is the
+    // file whose presence proves that codec's root (manifest.json /
+    // graph.json / .relate/manifest.json). A codec added to `ALL` is
+    // admitted here by construction; a shared image (Rkyv aliases
+    // Parquet's manifest.json) just checks the same file twice and
+    // never disagrees.
+    for kind in SnapshotCodecKind::ALL {
+        let name = kind.checkpoint_image();
+        match lstat_meta(&path.join(name))? {
+            Some(meta) if matches!(native_entry_kind(&meta), NativeEntryKind::File) => {
                 return Ok(true)
             }
-            Ok(_) => {
+            Some(_) => {
                 return Err(Error::storage(format!(
                     "invalid root evidence at {}",
                     path.join(name).display()
                 )))
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-            Err(e) => return Err(e.into()),
+            None => (),
         }
     }
     Ok(false)

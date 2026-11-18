@@ -107,8 +107,7 @@ fn rkyv_evidence_refuses_a_mixed_store() {
     // Release the writer lock before resolving the directory afresh.
     drop(json_target);
     let error = crate::parse_uri(dir.path().join("db").to_str().unwrap())
-        .err()
-        .expect("a mixed store must not open");
+        .expect_err("a mixed store must not open");
     assert!(
         error.to_string().contains("mixed snapshot codecs"),
         "unexpected error: {error}"

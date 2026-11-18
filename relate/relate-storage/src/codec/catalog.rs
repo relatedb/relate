@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::model::SnapshotContents;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct JsonIndex {
     pub name: String,
     #[serde(default, alias = "label", deserialize_with = "deserialize_labels")]
@@ -26,7 +26,7 @@ pub(crate) struct JsonIndex {
     pub entity_type: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct JsonConstraint {
     pub name: String,
     #[serde(default)]
@@ -144,7 +144,7 @@ pub(crate) fn to_json(contents: &SnapshotContents, theater: &CheckpointTheater) 
 /// the one wire carrier both codecs embed (the JSON codec spreads it
 /// into `graph.json`, the markdown sidecar `#[serde(flatten)]`s it), so
 /// a manifest never re-spells the field set.
-#[derive(Default, Serialize, Deserialize, Clone, Debug)]
+#[derive(Default, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct CatalogWire {
     #[serde(default)]
     pub indexes: Vec<JsonIndex>,

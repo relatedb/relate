@@ -1,4 +1,4 @@
-//! The `.cypherlite/schema/` text mirror (ADR-0481): every checkpoint of
+//! The `.relate/schema/` text mirror (ADR-0481): every checkpoint of
 //! the native (Parquet) and JSON codecs writes the three-file contract —
 //! the canonical graph type body, the verbatim ontology document, and
 //! the SHOW-rendered catalog DDL — and clears the stale spellings a
@@ -83,7 +83,7 @@ use crate::schema_files::{
     GRAPH_TYPE_FILE, ONTOLOGY_JSON_FILE, ONTOLOGY_YAML_FILE, SCHEMA_DDL_FILE, SCHEMA_DIR,
 };
 
-/// The mirror spells its directory under the `.cypherlite` engine
+/// The mirror spells its directory under the `.relate` engine
 /// directory name the markdown codec's sidecar family owns — one fact,
 /// two constants, pinned together so they cannot drift — and every
 /// contract file sits inside that directory.
@@ -186,7 +186,7 @@ fn json_checkpoint_writes_the_same_schema_text_mirror() {
 }
 
 /// ADR-0481 acceptance 5, markdown leg: the vault's checkpoint writes the
-/// same three-file mirror beside its `.cypherlite/manifest.json` sidecar
+/// same three-file mirror beside its `.relate/manifest.json` sidecar
 /// — `graph-type.cypher` byte-equal to the flattened `CatalogWire` text
 /// the sidecar carries, `ontology.json` byte-verbatim when the sidecar
 /// records an ontology document, `schema.cypher` always present — and a
@@ -356,7 +356,7 @@ fn refuses_open_naming(store: &StoreTarget, file: &str) {
     };
     let text = error.to_string();
     assert!(text.contains(file), "expected {file} in: {text}");
-    assert!(text.contains(".cypherlite/schema"), "repair in: {text}");
+    assert!(text.contains(SCHEMA_DIR), "repair in: {text}");
 }
 
 /// The store targets every cross-codec open test runs: the JSON-codec
@@ -400,7 +400,7 @@ fn untouched_checkpointed_store_opens_clean() {
 }
 
 /// ADR-0481 §4 acceptance 1: a hand-edited
-/// `.cypherlite/schema/graph-type.cypher` fails the open closed with
+/// `.relate/schema/graph-type.cypher` fails the open closed with
 /// the authored error naming that file — the writable and the read-only
 /// open alike — and the documented repair (delete the folder, reopen,
 /// let the next checkpoint regenerate the mirror) restores the store.
@@ -438,7 +438,7 @@ fn hand_edited_graph_type_mirror_refuses_the_open() {
 
 /// ADR-0481 §4, the markdown-vault leg: the guard the classic codecs'
 /// tests exercise holds over a real vault directory too — a hand-edited
-/// `graph-type.cypher` or `schema.cypher` under `.cypherlite/schema/`
+/// `graph-type.cypher` or `schema.cypher` under `.relate/schema/`
 /// refuses the open (writable and read-only alike) naming that file, and
 /// the documented repair — deleting the folder, the pre-ADR-0481 shape —
 /// restores the open, the next checkpoint regenerating the mirror beside
@@ -496,7 +496,7 @@ fn markdown_vault_guard_refuses_a_hand_edited_mirror_and_repairs_by_deletion() {
     open_store::<relate_executor::Graph>(&store).unwrap();
 }
 
-/// ADR-0481 §4 acceptance 2: a store whose whole `.cypherlite/schema/`
+/// ADR-0481 §4 acceptance 2: a store whose whole `.relate/schema/`
 /// folder is gone — the pre-ADR-0481 shape, or the documented repair —
 /// opens with no refusal and no regeneration until the next checkpoint.
 #[test]
@@ -567,7 +567,7 @@ fn drifted_mirror_files_refuse_the_open_naming_the_file() {
 }
 
 /// The guard's mirror reads are bounded like every other untrusted-VFS
-/// read in the crate: a planted `.cypherlite/schema/graph-type.cypher`
+/// read in the crate: a planted `.relate/schema/graph-type.cypher`
 /// past the family's 16 MiB class — written straight through the VFS,
 /// past the checkpoint object path's own bound check — refuses the open
 /// with the bounded-read class's limit error naming the file, in the

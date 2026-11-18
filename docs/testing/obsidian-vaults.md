@@ -55,4 +55,4 @@ vaults marked below also run their named passes.
 - No dangling links in engine state (stubs materialized).
 - Idempotent re-checkpoint: zero file writes on the second pass.
 - The vault remains a valid Obsidian vault (wikilinks resolve, no
-  engine-owned files outside `.cypherlite/`).
+  engine-owned files outside `.relate/`).

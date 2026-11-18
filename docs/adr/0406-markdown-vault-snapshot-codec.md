@@ -548,3 +548,9 @@ those numbers.
   every build; the dispatch sites, `resolve_codec`, the docs
   (`docs/api/rust/spec.md`, `docs/api/cli/spec.md`) and AGENTS.md's
   crate table change in the same commit.
+
+## Later references
+
+- ADR-0623 renames the sidecar directory this ADR placed at
+  `.cypherlite/` to `.relate/`, adopting existing stores by one
+  directory rename at their first writable open.

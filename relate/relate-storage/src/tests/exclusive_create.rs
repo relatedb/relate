@@ -9,6 +9,8 @@ use super::*;
 /// storage error. A site needing a looser or narrower assertion matches on
 /// the error itself instead (see the dangling-symlink site below).
 fn expect_destination_exists<T>(result: Result<T>) {
+    // `.err().expect` — not `expect_err` — because T is any destination
+    // type, and not all of them implement Debug.
     let err = result.err().expect("exclusive create must refuse");
     assert!(
         matches!(err, Error::Storage(ref msg) if msg.starts_with(DESTINATION_EXISTS)),
@@ -124,8 +126,7 @@ fn parse_uri_creating_never_follows_a_symlinked_destination() {
     let dangling = dir.path().join("dangling.rl");
     symlink(dir.path().join("missing"), &dangling).unwrap();
     let err = parse_uri_creating(dangling.to_str().unwrap(), None, None)
-        .err()
-        .expect("exclusive create must refuse");
+        .expect_err("exclusive create must refuse");
     assert!(matches!(err, Error::Storage(_) | Error::Io(_)), "{err}");
     assert!(std::fs::symlink_metadata(&dangling).is_ok());
     assert!(!dir.path().join("missing").exists());

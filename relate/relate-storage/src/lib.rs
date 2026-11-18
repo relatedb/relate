@@ -108,8 +108,11 @@ pub(crate) fn storage_context(error: Error, context: impl std::fmt::Display) -> 
 /// How a filesystem URI opens its destination (ADR-0136 read-only,
 /// ADR-0161 exclusive create). One enum, not two booleans: the meaningless
 /// read-only-plus-exclusive-create combination is unrepresentable.
+/// Public as the mode [`StoreTarget::from_vfs_with_codec_opening`]
+/// threads — the typed twin of the writability bool it replaces, so no
+/// call site negates a read-only predicate into it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OpenMode {
+pub enum OpenMode {
     /// Adopt an existing store or create a missing one.
     OpenOrCreate,
     /// Shared locks on an existing store; never creates (ADR-0136).
@@ -210,6 +213,24 @@ pub fn parse_uri_creating_with_config(
     parse_uri_inner(uri, wal_dir, requested, OpenMode::CreateExclusive, config)
 }
 
+/// Rebase a caller-supplied WAL path that lies under the store's
+/// legacy engine spelling onto the adopted one (ADR-0623): the
+/// pre-rename `<root>/.cypherlite/wal` layout this entry point
+/// supported meant "the engine's WAL directory", so the path follows
+/// the adopted spelling — a fresh vault is born carrying one spelling
+/// instead of both, and a legacy vault's caller WAL is leased where
+/// the adoption moved it. The match is component-typed
+/// (`Path::strip_prefix` over the root-joined legacy directory), never
+/// a string prefix; a path outside the engine directory — a genuinely
+/// external WAL location — is returned verbatim.
+fn rebase_legacy_wal_dir(root: &Path, wal_dir: PathBuf) -> PathBuf {
+    let legacy = root.join(codec::markdown::LEGACY_ENGINE_DIR);
+    match wal_dir.strip_prefix(&legacy) {
+        Ok(under) => root.join(codec::markdown::ENGINE_DIR).join(under),
+        Err(_) => wal_dir,
+    }
+}
+
 fn parse_uri_inner(
     uri: &str,
     wal_dir: Option<PathBuf>,
@@ -305,30 +326,28 @@ fn parse_filesystem_uri(
         // is removed by the publish path's cleanup).
         return install_config(target, config);
     }
-    // A markdown store's engine state lives under `.cypherlite/`
-    // (ADR-0406 §3), so its default WAL is `<vault>/.cypherlite/wal`.
-    // The codec is probed from the requested kind or the sidecar
-    // manifest before the lease; `resolve_codec` below stays
-    // authoritative for conflicts.
-    // An explicit markdown request must not create engine state (the
-    // lease below materializes a WAL directory and its role marker —
-    // the default under `.cypherlite/`, or a caller-supplied `wal_dir`)
-    // inside a directory that already carries a classic codec's root
-    // evidence — refuse before the lease, whichever WAL directory the
-    // open would use; `resolve_codec` below stays authoritative for
-    // every other conflict shape. A sidecar-driven hint is never
-    // refused here: the sidecar probe already classified the directory
-    // fail-closed.
+    // ADR-0623's mode split, read-only first: a read-only open refuses
+    // an un-adopted legacy markdown sidecar before any other check —
+    // the order the pins assert. A create-exclusive open leaves the
+    // store untouched (its lease refuses a populated directory, so
+    // adoption must not mutate one first). The writable adoption runs
+    // LAST, immediately before the lease — after every check below
+    // that can still refuse this open — so a refused open never
+    // renames the user's directory.
+    if mode == OpenMode::ReadOnly {
+        native_ownership::refuse_unadopted_legacy(&path)?;
+    }
     // One hint decision, derived once: the codec whose evidence this open
     // proves before the lease — `Some(Markdown)` when the open is markdown
-    // (requested, or an engine-written sidecar says so), otherwise `None`:
-    // no evidence, the classic family's shared `wal/` layout. The bundle
-    // create-check above does not read the hint at all: a created bundle
-    // always resolves Parquet, so it hands the codec-config gate that
-    // proof directly. `resolve_codec` after the lease stays authoritative
-    // for every other conflict shape.
-    let hint = codec::markdown::markdown_wal_hint(&path, requested);
-    codec::markdown::refuse_markdown_over_classic_evidence(&path, requested)?;
+    // (requested, or an engine-written sidecar at either spelling says
+    // so), otherwise `None`: no evidence, the classic family's shared
+    // `wal/` layout. The either-spelling probe is what lets the
+    // adoption run last: no check below needs the rename to have
+    // happened. The bundle create-check above does not read the hint
+    // at all: a created bundle always resolves Parquet, so it hands
+    // the codec-config gate that proof directly. `resolve_codec` after
+    // the lease stays authoritative for every other conflict shape.
+    let hint = codec::markdown::prepare_lease(&path, requested)?;
     // The codec-specific open-time configuration installs — or is
     // refused — before the lease below materializes a WAL directory and
     // its role marker, so a refused open on a fresh path leaves nothing
@@ -337,8 +356,23 @@ fn parse_filesystem_uri(
     if let Some(config) = &config {
         config.ensure_pre_lease(hint.or(requested))?;
     }
+    // The last step before the lease (ADR-0623): every check that can
+    // still refuse this open has spoken — now the writable pass adopts
+    // the legacy engine directory, under the writer lease, and the
+    // lease below locks the adopted layout.
+    if mode == OpenMode::OpenOrCreate {
+        native_ownership::adopt_legacy_engine_dir(&path)?;
+    }
+    // Computed after the adoption, so a caller-supplied WAL path under
+    // the legacy engine spelling rebases onto the spelling the store
+    // now carries: the pre-rename `<root>/.cypherlite/wal` layout this
+    // entry point supported meant "the engine's WAL directory", and
+    // that directory follows the adoption — taken verbatim before the
+    // rename, it stranded the caller's WAL both ways (a fresh vault was
+    // born carrying both spellings; a legacy vault's WAL was renamed
+    // away from under the lease pointing at it).
     let wal_path = match wal_dir {
-        Some(dir) => dir,
+        Some(dir) => rebase_legacy_wal_dir(&path, dir),
         // The hint codec's `wal_dir` owns the directory layout for both
         // arms (ADR-0406 §3); no evidence takes the build default's, the
         // classic codecs' shared `wal/`.
@@ -426,6 +460,18 @@ pub fn adopt_native_default_wal(root: &Path) -> Result<()> {
     native_ownership::adopt_default_wal(root)
 }
 
+/// Manual because the trait-object fields cannot derive it: the
+/// identifying facts only — the codec, and whether a native root
+/// stands behind the store.
+impl std::fmt::Debug for StoreTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoreTarget")
+            .field("codec", &self.codec)
+            .field("native_root", &self.native_root)
+            .finish()
+    }
+}
+
 impl StoreTarget {
     /// Snapshot and WAL on one caller-supplied [`Vfs`] (ADR-0145).
     ///
@@ -438,9 +484,55 @@ impl StoreTarget {
 
     /// [`from_vfs`](Self::from_vfs) with an explicit codec. A codec this build
     /// cannot write fails before the store is returned.
+    ///
+    /// The constructor is ADR-0623's writable pass on a caller-supplied
+    /// VFS ([`from_vfs_with_codec_opening`](Self::from_vfs_with_codec_opening)
+    /// at [`OpenMode::OpenOrCreate`]): a legacy `.cypherlite/` engine
+    /// directory is adopted through one [`Vfs::rename`] before the
+    /// sidecar is first read, with the same shape classification and
+    /// refusals as the native adoption. [`from_vfs`] never adopts — it
+    /// cannot fail — so the cold reads keep theirs.
     pub fn from_vfs_with_codec(vfs: Arc<dyn Vfs>, codec: SnapshotCodecKind) -> Result<Self> {
+        Self::from_vfs_with_codec_opening(vfs, codec, OpenMode::OpenOrCreate, None)
+    }
+
+    /// [`from_vfs_with_codec`](Self::from_vfs_with_codec) carrying the
+    /// open's mode and codec-specific open-time configuration — the
+    /// `parse_uri_opening_with_config` shape for a caller-supplied VFS:
+    /// the configuration is gated **before** ADR-0623's pre-read step,
+    /// so a config-refused construction never reaches the writable
+    /// leg's adoption rename — the native leg's fail-before-mutation
+    /// order (every refusing check first, the rename last), shared by
+    /// both legs. The pre-read step then runs mode-aware inside the
+    /// construction (`codec::markdown::prepare_legacy_engine_dir_vfs`,
+    /// the twin of the native open's pre-lease legs), so the mode
+    /// threads past the refusal into the adoption itself — no bare
+    /// writability bool at this boundary, the same way `open_store`
+    /// threads `read_only` and `follow`. A writable construction adopts
+    /// a legacy `.cypherlite/` engine directory; a read-only one refuses
+    /// an un-adopted legacy markdown sidecar and leaves the mirror-only
+    /// legacy shape (a classic store's schema mirror alone) inert —
+    /// never renaming, exactly as the native read-only open behaves;
+    /// a create-exclusive construction is left untouched. `None`
+    /// configures nothing and gates nothing.
+    pub fn from_vfs_with_codec_opening(
+        vfs: Arc<dyn Vfs>,
+        codec: SnapshotCodecKind,
+        mode: OpenMode,
+        config: Option<CodecOpenConfig>,
+    ) -> Result<Self> {
         codec::check_available(codec)?;
-        Ok(on_vfs(vfs, codec))
+        // The codec-configuration gate runs before the pre-read step:
+        // the writable leg's adoption rename is a mutation, and a
+        // config-refused construction must leave the caller's tree
+        // untouched. The requested codec is the gate's proof — it is
+        // the codec this construction resolves, mirroring the native
+        // leg's `ensure_pre_lease(hint.or(requested))`.
+        if let Some(config) = &config {
+            config.ensure_pre_lease(Some(codec))?;
+        }
+        codec::markdown::prepare_legacy_engine_dir_vfs(&*vfs, mode)?;
+        install_config(on_vfs(vfs, codec), config)
     }
 
     /// In-process WAL (`:memory:`). No timed checkpoint (ADR-0041).

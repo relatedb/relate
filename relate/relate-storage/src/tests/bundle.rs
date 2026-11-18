@@ -114,9 +114,7 @@ fn rl_directory_is_error() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("graph.rl");
     std::fs::create_dir(&path).unwrap();
-    let err = parse_uri(path.to_str().unwrap())
-        .err()
-        .expect("directory named .rl");
+    let err = parse_uri(path.to_str().unwrap()).expect_err("directory named .rl");
     assert!(err.to_string().contains("directory"), "{err}");
 }
 
@@ -125,8 +123,7 @@ fn rl_rejects_wal_dir() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("graph.rl");
     let err = parse_uri_with_wal(path.to_str().unwrap(), Some(dir.path().join("wal")))
-        .err()
-        .expect("wal_dir rejected");
+        .expect_err("wal_dir rejected");
     assert!(err.to_string().contains("wal_dir"), "{err}");
 }
 
@@ -146,8 +143,6 @@ fn garbage_rl_file_is_error() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("graph.rl");
     std::fs::write(&path, b"not a bundle").unwrap();
-    let err = parse_uri(path.to_str().unwrap())
-        .err()
-        .expect("garbage .rl");
+    let err = parse_uri(path.to_str().unwrap()).expect_err("garbage .rl");
     assert!(err.to_string().contains("MDBCLB01"), "{err}");
 }

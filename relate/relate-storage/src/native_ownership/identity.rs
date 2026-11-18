@@ -54,7 +54,7 @@ impl DirectoryRole {
 
 /// The root's storage shape (ADR-0406): an ordinary engine-owned root, or a
 /// markdown vault whose content is hand-authored and whose WAL lives under
-/// `.cypherlite/wal`.
+/// `.relate/wal`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RootShape {
     Ordinary,
@@ -68,7 +68,7 @@ pub(super) fn markdown_wal(root: &Path) -> PathBuf {
 }
 
 /// The root's shape per its WAL spelling (ADR-0406 §3): the markdown default
-/// `<root>/.cypherlite/wal` marks a vault root. Lexical: the open path
+/// `<root>/.relate/wal` marks a vault root. Lexical: the open path
 /// constructs the spelling; canonicalization is the caller's.
 pub(crate) fn markdown_root_shape(root: &Path, wal: &Path) -> RootShape {
     if *wal == markdown_wal(root) {

@@ -107,8 +107,7 @@ fn codec_mismatch_is_error() {
     wal.recycle(wal.lsn).unwrap();
     drop(target);
     let err = parse_uri_with_options(uri, None, Some(SnapshotCodecKind::Json))
-        .err()
-        .expect("json flag vs parquet dir");
+        .expect_err("json flag vs parquet dir");
     assert!(err.to_string().contains("mismatch"), "{err}");
 }
 

@@ -15,7 +15,7 @@ separate data copy; the files you already edit are the durable store.
 - Your notes as a graph: every top-level folder is a label, every note
   is a node, and every `[[wikilink]]` in a relationship key is a
   relationship.
-- A hidden `.cypherlite/` sidecar folder inside the vault (like
+- A hidden `.relate/` sidecar folder inside the vault (like
   Obsidian's own `.obsidian/`) holding the engine's state: the WAL,
   indexes, and a manifest. Everything else stays exactly where your
   notes are.
@@ -32,7 +32,7 @@ $ RELATE_SNAPSHOT_FORMAT=markdown relate --database ~/vaults/notes "MATCH (n) RE
 ```
 
 or on the Rust API via `OpenOptions::snapshot_codec`. Once a vault has
-a `.cypherlite/manifest.json`, it opens as a markdown store from then
+a `.relate/manifest.json`, it opens as a markdown store from then
 on without the variable.
 
 ## What happens on first open
@@ -114,7 +114,7 @@ re-renders the canonical form (`## notes` on its own line, the kept
 title heading as the first content line, the first section bare) — same
 values, normalized layout.
 
-The configuration is recorded in `.cypherlite/manifest.json` at
+The configuration is recorded in `.relate/manifest.json` at
 every checkpoint, so **you only pass the flag when changing it** — every
 later open (including plain Obsidian-side edits while closed) uses the
 recorded one. Two rules to know: a heading line whose first word is a
@@ -152,11 +152,11 @@ for the Python path — embedded and via Bolt — with visualizations.
 ## FAQ
 
 **Can I keep using Obsidian?** Yes — the vault stays a valid Obsidian
-vault; wikilinks resolve and the graph view works. Only `.cypherlite/`
+vault; wikilinks resolve and the graph view works. Only `.relate/`
 is new.
 
 **Does it work with git?** Well: the note files are the store, so
-history is per-file and human-readable. The `.cypherlite/` sidecar
+history is per-file and human-readable. The `.relate/` sidecar
 (engine state) is usually ignored or committed alongside.
 
 **Can it delete my vault?** `reset` refuses to run on a markdown store.

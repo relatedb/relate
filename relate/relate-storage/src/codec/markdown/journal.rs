@@ -2,7 +2,7 @@
 //!
 //! Before a checkpoint overwrites or deletes the first vault file, the
 //! current content of every to-be-touched file is copied under
-//! `.cypherlite/checkpoint-journal/<relpath>` and the *intent* — the
+//! `.relate/checkpoint-journal/<relpath>` and the *intent* — the
 //! full new manifest — is written atomically into the journal. An open
 //! that finds a journal therefore knows the mismatch it may see is an
 //! engine crash, not an external edit, and either rolls forward (the

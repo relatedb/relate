@@ -7,7 +7,7 @@ use super::*;
 
 #[test]
 fn opfs_uri_is_rejected_without_a_vfs() {
-    let err = parse_uri("opfs://playground").err().expect("opfs rejected");
+    let err = parse_uri("opfs://playground").expect_err("opfs rejected");
     assert!(err.to_string().contains("opfs://"), "{err}");
     let vfs: Arc<dyn Vfs> = Arc::new(MemoryVfs::new());
     let store = StoreTarget::from_vfs(Arc::clone(&vfs));
@@ -18,7 +18,7 @@ fn opfs_uri_is_rejected_without_a_vfs() {
 
 #[test]
 fn s3_uri_is_rejected() {
-    let err = parse_uri("s3://bucket/prefix").err().expect("s3 rejected");
+    let err = parse_uri("s3://bucket/prefix").expect_err("s3 rejected");
     assert!(err.to_string().contains("s3://"), "{err}");
     assert!(
         err.to_string()
@@ -27,7 +27,7 @@ fn s3_uri_is_rejected() {
     );
     let err = reset_uri("s3://bucket/prefix", None).unwrap_err();
     assert!(err.to_string().contains("s3://"), "{err}");
-    let err = parse_uri("gs://bucket/prefix").err().expect("gs rejected");
+    let err = parse_uri("gs://bucket/prefix").expect_err("gs rejected");
     assert!(err.to_string().contains("gs://"), "{err}");
 }
 
@@ -38,7 +38,7 @@ fn single_slash_remote_uri_is_rejected_without_touching_disk() {
     // `s3:` directory tree. It must now be rejected. No cwd juggling:
     // the parse fails at scheme validation, before any disk I/O, so a
     // literal `s3:` directory can never appear relative to the cwd.
-    let err = parse_uri("s3:/bucket/prefix").err().expect("s3:/ rejected");
+    let err = parse_uri("s3:/bucket/prefix").expect_err("s3:/ rejected");
     assert!(err.to_string().contains("s3://"), "{err}");
     let err = reset_uri("s3:/bucket/prefix", None).unwrap_err();
     assert!(err.to_string().contains("s3://"), "{err}");

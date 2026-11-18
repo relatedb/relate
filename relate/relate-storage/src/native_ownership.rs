@@ -1,4 +1,10 @@
-//! Native root/WAL lease and offline adoption (ADR-0097/0088).
+//! Native root/WAL lease and offline adoption (ADR-0097/0088), plus the
+//! native adapter of ADR-0623's engine-directory adoption — the host
+//! probes, the writer lease, and the no-replace rename. The shared
+//! knowledge (the shape verdict and its classification, both refusal
+//! families, the probe/rename error vocabulary) and the
+//! caller-supplied-VFS adapter live in `codec::markdown::adoption`, the
+//! sidecar family's one home for them.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,6 +13,8 @@ use std::sync::Arc;
 mod identity;
 mod reset;
 
+use crate::codec::markdown::EngineEntry;
+use crate::vfs::native::{native_entry_kind, NativeEntryKind};
 use crate::vfs::{NativeLease, NativeVfs};
 use identity::{
     accept_readonly_marker, check_locked_role, direct_wal, empty_except_lock, is_same_dir,
@@ -34,6 +42,167 @@ pub const LOCK_MARKER: &str = ".cypherlite.lock";
 /// Not a database identity: nested scans still key on [`LOCK_MARKER`] and
 /// `.rl` bundles. Never unlinked on close.
 pub const WRITER_LEASE: &str = ".cypherlite.writer";
+
+/// ADR-0623's read-only leg, run first for every native read-only open
+/// (the order the pins assert): read-only cannot adopt, and resolving
+/// the store as a fresh classic directory would probe its WAL at the
+/// wrong spelling — refuse closed naming the one writable open that
+/// adopts it. The one typed legacy presence classifier decides: any
+/// present sidecar — markdown, unparseable, or naming another codec —
+/// refuses (the adoption renames on the directory's shape, never on
+/// content); a legacy `.cypherlite/` without the manifest (a classic
+/// store's schema mirror alone) is inert, and the open proceeds. The
+/// engine directory's names and every verdict, refusal, and error the
+/// two adoptions share belong to the sidecar family's homes
+/// (`codec::markdown::layout` for the vocabulary,
+/// `codec::markdown::adoption` for the classification); what stays
+/// here is the native substrate — the host probes, the writer lease,
+/// and the no-replace rename.
+pub(crate) fn refuse_unadopted_legacy(root: &Path) -> Result<()> {
+    use crate::codec::markdown::{
+        engine_dir_probe_error, legacy_sidecar_error, probe_manifest_at, LegacySidecarRepair,
+        ManifestProbe, SidecarSpelling, LEGACY_ENGINE_DIR,
+    };
+    match probe_manifest_at(root, SidecarSpelling::Legacy) {
+        Ok(ManifestProbe::Absent) => Ok(()),
+        Ok(_) => Err(legacy_sidecar_error(
+            LegacySidecarRepair::AdoptAtNextWritableOpen,
+        )),
+        Err(err) => Err(engine_dir_probe_error(LEGACY_ENGINE_DIR, &err)),
+    }
+}
+
+/// One engine-directory entry's shape at a host path — the native
+/// adoption's one probe, returning the shared
+/// [`crate::codec::markdown::EngineEntry`] verdict (the adoption
+/// module holds the classification's one home): a benign absence is
+/// `Absent`, every other error is an error through
+/// [`crate::codec::markdown::engine_dir_probe_error`] (never folded
+/// into absence), and a present entry is a directory or something else
+/// (a file, an alias).
+fn engine_entry(root: &Path, name: &str) -> Result<EngineEntry> {
+    match fs::symlink_metadata(root.join(name)) {
+        Err(err) if crate::codec::benign_absence(&err) => Ok(EngineEntry::Absent),
+        Err(err) => Err(crate::codec::markdown::engine_dir_probe_error(name, &err)),
+        Ok(meta) => Ok(match native_entry_kind(&meta) {
+            NativeEntryKind::Dir => EngineEntry::Dir,
+            _ => EngineEntry::Other,
+        }),
+    }
+}
+
+/// Whether a failed exclusive rename is the platform's "no such
+/// primitive here" answer — the one class the adoption falls back to a
+/// plain rename on, read from how the host helper actually reports it:
+/// `ErrorKind::Unsupported`, its documented signal, constructed on
+/// targets without the syscall and decoded from `ENOSYS` where the
+/// kernel has none. `ENOTSUP`/`EOPNOTSUPP` — a filesystem's "no
+/// `RENAME_NOREPLACE` here" answer to this one call — stay
+/// `Uncategorized` in std's decode on this toolchain, so the errno is
+/// matched directly. Everything else stays a failure: `EEXIST`
+/// (decoded `AlreadyExists`) is a genuinely occupied destination, the
+/// strict primitive's answer for a raced-in `.relate/`, and `EINVAL`
+/// (decoded `InvalidInput`) is indistinguishable from a real argument
+/// error — both fail the adoption closed.
+#[cfg(unix)]
+fn exclusive_rename_unsupported(err: &std::io::Error) -> bool {
+    if err.kind() == std::io::ErrorKind::Unsupported {
+        return true;
+    }
+    // Compared as a value, never an or-pattern over the constants:
+    // Linux defines ENOTSUP and EOPNOTSUPP to the same errno (95), and
+    // an or-pattern over equal constants is an unreachable-pattern
+    // warning the lint lane fails on.
+    match err.raw_os_error() {
+        Some(code) => code == libc::ENOTSUP || code == libc::EOPNOTSUPP,
+        None => false,
+    }
+}
+
+/// The non-unix arm: the platform's exclusive rename (Windows
+/// `MoveFileW`) always exists, so the unsupported class cannot occur.
+#[cfg(not(unix))]
+fn exclusive_rename_unsupported(_: &std::io::Error) -> bool {
+    false
+}
+
+/// The adoption's one directory rename (ADR-0623): the host's
+/// exclusive-rename primitive, falling back to a plain rename exactly
+/// when the primitive reports the unsupported class — without it, a
+/// writable open of a legacy `.cypherlite/` store could not adopt at
+/// all on platforms without the syscall. The fallback is safe here and
+/// only here: the caller holds the root's exclusive writer lease
+/// across the classification and this rename, and the classification
+/// returns `Proceed` only with the adopted spelling proven `Absent`
+/// under that lease — destination absence is the guard, the
+/// no-replace property belt-and-braces. The primitive's other caller,
+/// the reset rollback, has no such guarantee and keeps strict
+/// no-replace.
+fn adopt_rename(from: &Path, to: &Path) -> std::io::Result<()> {
+    match crate::vfs::host::host_rename_noreplace(from, to) {
+        Ok(()) => Ok(()),
+        Err(err) if exclusive_rename_unsupported(&err) => std::fs::rename(from, to),
+        Err(err) => Err(err),
+    }
+}
+
+/// Adopt a legacy engine directory (ADR-0623): the writable open's
+/// rename of `<root>/{LEGACY_ENGINE_DIR}` to `<root>/{ENGINE_DIR}` —
+/// one rename of the whole tree, no dual-read path — through the one
+/// shape verdict and the one refusals the caller-supplied-VFS adoption
+/// shares (`codec::markdown::adoption`). A store carrying both
+/// directories refuses closed with the hand repair; a store carrying
+/// neither is fresh and untouched. The composition in
+/// `parse_filesystem_uri` runs this LAST, immediately before the lease:
+/// every check that can still refuse the open has already spoken, so a
+/// refused open never renames the user's directory.
+// shortcut: the rename is not parent-dir-fsynced — a crash inside the
+// window leaves the legacy name, and the next writable open re-adopts.
+pub(crate) fn adopt_legacy_engine_dir(root: &Path) -> Result<()> {
+    use crate::codec::markdown::{
+        adoption_refusal, adoption_rename_error, AdoptionVerdict, ENGINE_DIR, LEGACY_ENGINE_DIR,
+    };
+    // Hold the root's exclusive writer lease across the classification
+    // as well as the rename: a live writable opener of the same store
+    // never has its engine directory moved underneath it, a concurrent
+    // open that cannot take the lease refuses here — with the store
+    // untouched — instead of mutating first and failing at the lease
+    // below, and no second open can interleave its own adoption between
+    // these probes and this rename. The lease's file lives at the root,
+    // outside both spellings, so the rename moves nothing it locks.
+    // `wal == root`: the adoption runs before the WAL directory is
+    // known, and the root lease alone is what a concurrent writable
+    // open of this store must take first.
+    // The cheap existence pre-check stays outside the lease: a fresh
+    // store takes no lease here at all (creating the writer-lease file
+    // in an empty root trips the lease preflight's ambiguity refusal),
+    // and an absent legacy directory decides nothing else.
+    if matches!(engine_entry(root, LEGACY_ENGINE_DIR)?, EngineEntry::Absent) {
+        return Ok(());
+    }
+    let _lease = take_writer_lease(root, root)?;
+    // The lease lives to the end of this function: a probe or rename
+    // failure below returns through its drop, and success drops it
+    // after the rename and before the open's own lease runs.
+    match EngineEntry::adoption(
+        engine_entry(root, LEGACY_ENGINE_DIR)?,
+        engine_entry(root, ENGINE_DIR)?,
+    ) {
+        AdoptionVerdict::Nothing => Ok(()),
+        // The one folder rename: exclusive where the platform has the
+        // primitive, plain where it does not (`adopt_rename` — the
+        // lease plus the classification's proven absence is the guard,
+        // so the no-replace property is belt-and-braces here). A
+        // `.relate/` that appears after the probes still fails the
+        // adoption wherever the primitive exists, and the plain rename
+        // of a directory onto an existing nonempty one fails with it.
+        AdoptionVerdict::Proceed => {
+            adopt_rename(&root.join(LEGACY_ENGINE_DIR), &root.join(ENGINE_DIR))
+                .map_err(adoption_rename_error)
+        }
+        AdoptionVerdict::Refuse(refusal) => Err(adoption_refusal(refusal)),
+    }
+}
 
 pub(crate) fn lease(root: &Path, wal: &Path) -> Result<(PathBuf, PathBuf, Arc<NativeLease>)> {
     lease_with(root, wal, || {})

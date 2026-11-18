@@ -1,4 +1,4 @@
-//! The `.cypherlite/schema/` text mirror (ADR-0481): the store's graph
+//! The `.relate/schema/` text mirror (ADR-0481): the store's graph
 //! type, ontology document and index/constraint catalog persisted as
 //! canonical, human-diffable text files inside the store directory,
 //! rewritten from the same in-memory state a checkpoint persists. The
@@ -29,31 +29,37 @@ use relate_ontology::{detect_format, DocumentFormat};
 use crate::StoreTarget;
 
 /// The schema mirror's directory (ADR-0481 §5):
-/// `<store>/.cypherlite/schema/` — under the `.cypherlite` engine
+/// `<store>/.relate/schema/` — under the `.relate` engine
 /// directory whose name the markdown codec's sidecar family owns
 /// (`codec::markdown::ENGINE_DIR`), which this path derives from.
-pub(crate) const SCHEMA_DIR: &str = concat!(crate::codec::markdown::engine_dir!(), "/schema");
+macro_rules! schema_dir {
+    () => {
+        concat!(crate::codec::markdown::engine_dir!(), "/schema")
+    };
+}
+
+pub(crate) const SCHEMA_DIR: &str = schema_dir!();
 
 /// The store's graph type as its canonical DDL body (ADR-0481 §1):
 /// exactly the `SnapshotContents.graph_type` text, absent when the store
 /// has no graph type. `pub(crate)` for the unit tests that pin the
 /// mirror's paths.
-pub(crate) const GRAPH_TYPE_FILE: &str = ".cypherlite/schema/graph-type.cypher";
+pub(crate) const GRAPH_TYPE_FILE: &str = concat!(schema_dir!(), "/graph-type.cypher");
 
 /// The ontology document's two possible mirrors (ADR-0481 §2): the
 /// verbatim document bytes under the extension naming their format —
 /// `.json` for a strict-JSON document, `.yaml` otherwise — at most one
 /// of the two, both absent when the store holds no ontology.
 /// `pub(crate)` for the unit tests that pin the mirror's paths.
-pub(crate) const ONTOLOGY_JSON_FILE: &str = ".cypherlite/schema/ontology.json";
-pub(crate) const ONTOLOGY_YAML_FILE: &str = ".cypherlite/schema/ontology.yaml";
+pub(crate) const ONTOLOGY_JSON_FILE: &str = concat!(schema_dir!(), "/ontology.json");
+pub(crate) const ONTOLOGY_YAML_FILE: &str = concat!(schema_dir!(), "/ontology.yaml");
 
 /// The catalog DDL mirror (ADR-0481 §3): one `CREATE INDEX` /
 /// `CREATE CONSTRAINT` statement per renderable catalog entry,
 /// semicolon-terminated one per line, always present (possibly empty)
 /// for a checkpointed store. `pub(crate)` for the unit tests that pin
 /// the mirror's paths.
-pub(crate) const SCHEMA_DDL_FILE: &str = ".cypherlite/schema/schema.cypher";
+pub(crate) const SCHEMA_DDL_FILE: &str = concat!(schema_dir!(), "/schema.cypher");
 
 /// The one registry (the `preview_feature_registry` pattern,
 /// relate-core/src/preview.rs): each contract file's variant and
@@ -238,7 +244,7 @@ pub(crate) fn finish_checkpoint(
 }
 
 /// The open-time drift guard (ADR-0481 §4): when the store dir has the
-/// `.cypherlite/schema/` mirror, every file must byte-equal the
+/// `.relate/schema/` mirror, every file must byte-equal the
 /// rendering of the state this open's snapshot load restored. The
 /// comparison basis is the checkpoint the manifest names — the same
 /// state the mirror was written from — so WAL records past the
@@ -247,7 +253,7 @@ pub(crate) fn finish_checkpoint(
 /// checkpoint rewrites the mirror from the state they produce. Any
 /// drift — a changed, missing, or extra file — fails the open closed
 /// with an authored error naming the file and the repair. An absent
-/// `.cypherlite/schema/` folder is a store written before ADR-0481 (or
+/// `.relate/schema/` folder is a store written before ADR-0481 (or
 /// one repaired by deleting the mirror) and never refuses the open.
 pub(crate) fn verify_open_schema_files(
     target: &StoreTarget,

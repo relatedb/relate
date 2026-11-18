@@ -717,6 +717,6 @@ fn codec_mix_is_error() {
     let uri = dir.path().to_str().unwrap();
     std::fs::write(dir.path().join("graph.json"), "{}").unwrap();
     std::fs::write(dir.path().join("nodes.parquet"), b"not parquet").unwrap();
-    let err = parse_uri(uri).err().expect("mixed files");
+    let err = parse_uri(uri).expect_err("mixed files");
     assert!(err.to_string().contains("mixed"), "{err}");
 }

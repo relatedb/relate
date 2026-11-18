@@ -499,7 +499,7 @@ fn record_expectation(
     // walked vault's stats, the ids it assigned or restored, the
     // learned schema, and the next free ids.
     // A bootstrap publishes immediately: hidden engine state under
-    // `.cypherlite/`, so the explicit schema — not a re-derivation —
+    // `.relate/`, so the explicit schema — not a re-derivation —
     // governs every later load and checkpoint; the vault files stay
     // untouched. A drifted manifest is ADR-0406 §5's edit-while-closed
     // re-baseline, and publishing it is DEFERRED — the writable open's
@@ -526,16 +526,15 @@ fn record_expectation(
             write_manifest(&*target.vfs(), &expectation)?;
             None
         }
-        // An unchanged vault keeps the sidecar it has — unchanged in
-        // its *configuration* too: a replaced body-property list on an
-        // otherwise untouched vault publishes here, so the vault is
-        // self-describing from this open on, exactly as the comment
-        // above promises. Both sides are the raw recording form, so a
-        // pre-0460 sidecar compares equal and is never rewritten for
-        // this field alone.
-        true if expectation.files == manifest.files && expectation.bodies == manifest.bodies => {
-            None
-        }
+        // An unchanged vault keeps the sidecar it has: the expectation
+        // is this manifest plus exactly the overwrites above, so one
+        // whole-value comparison is the drift decision — every
+        // overwritten field participates by construction (a future
+        // eighth overwrite joins the gate for free), and every field
+        // left untouched compares equal because it was cloned. The
+        // bodies stay in the raw recording form, so a pre-0460 sidecar
+        // compares equal and is never rewritten for that field alone.
+        true if &expectation == manifest => None,
         // The re-baseline's publication is deferred: `finish_open`'s
         // dirty-WAL guard must first prove no WAL deltas are pending.
         true => Some(DeferredOpenAction::new(move |target| {

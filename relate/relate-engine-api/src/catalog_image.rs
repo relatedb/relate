@@ -14,7 +14,7 @@ use crate::redo::IndexDetailSpec;
 /// serialized checkpoint image (`CheckpointTheater`'s flattened `data`) and
 /// the read-admission snapshot (`ShowSchema`'s `data`). The databases table
 /// is NOT here: it is the store-level databases table (ADR-0276).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TheaterData {
     pub index_details: BTreeMap<String, IndexDetailSpec>,
     pub index_options: BTreeMap<String, BTreeMap<String, Value>>,
@@ -78,7 +78,7 @@ pub fn map_put_database(
 /// Typed committed SHOW metadata stored with a checkpoint's named catalog.
 /// Missing images in older snapshots use the historical empty theater.
 #[doc(hidden)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CheckpointTheater {
     /// Store-level databases table at the checkpoint cut (ADR-0276; ADR-0116
     /// §8 invariants).

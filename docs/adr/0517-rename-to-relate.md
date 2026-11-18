@@ -211,3 +211,7 @@ every load-bearing on-disk artifact byte-identical. The canonical map:
   contract's `version`, and the checker's file-scoped keep for the
   pre-cutover `neo4j-labs.github.io/cypherlite` URL (§3) goes with the
   file. The repository's own pre-cutover name is unaffected.
+- ADR-0623 renames the `.cypherlite` engine sidecar family (§4's
+  on-disk keep of it) to `.relate/`, adopting existing stores by one
+  directory rename at their first writable open. The lock and writer
+  markers and the lock role bytes stay as this ADR kept them.

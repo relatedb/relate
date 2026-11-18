@@ -37,7 +37,7 @@ Mixing `graph.json` with Parquet shards is an error. A mismatched
 |-------|---------------------------|---------------------|------------|
 | **parquet** (default; requires the `parquet` feature) | omit flag, `--snapshot-format parquet`, or `RELATE_SNAPSHOT_FORMAT=parquet` | `manifest.json`, `nodes/{lo}-{hi}.parquet`, `relationships/…` | Rewrite dirty id windows ([ADR-0022](https://github.com/relatedb/relate/blob/main/docs/adr/0022-id-window-checkpoint-shards.md)) |
 | **json** (default without the `parquet` feature) | `--snapshot-format json` or `RELATE_SNAPSHOT_FORMAT=json` | `manifest.json`, `graph.json` | Full rewrite of GraphData |
-| **markdown** ([ADR-0406](https://github.com/relatedb/relate/blob/main/docs/adr/0406-markdown-vault-snapshot-codec.md)) | `--snapshot-format markdown` or `RELATE_SNAPSHOT_FORMAT=markdown` — an empty directory becomes the vault root | One `Label/name.md` per node (frontmatter properties, body text, `[[wikilinks]]`), regenerated `index.md`/`log.md` views, and a `.cypherlite/` engine sidecar (manifest, WAL, journal) | Rewrite changed guarded files, regenerate views wholesale; hand edits made while the database was closed are picked up at the next open — see the [Obsidian vault guide](obsidian-vault.md) |
+| **markdown** ([ADR-0406](https://github.com/relatedb/relate/blob/main/docs/adr/0406-markdown-vault-snapshot-codec.md)) | `--snapshot-format markdown` or `RELATE_SNAPSHOT_FORMAT=markdown` — an empty directory becomes the vault root | One `Label/name.md` per node (frontmatter properties, body text, `[[wikilinks]]`), regenerated `index.md`/`log.md` views, and a `.relate/` engine sidecar (manifest, WAL, journal) | Rewrite changed guarded files, regenerate views wholesale; hand edits made while the database was closed are picked up at the next open — see the [Obsidian vault guide](obsidian-vault.md) |
 | **`:memory:`** | URI `:memory:` | In-process `MemoryVfs` + WAL | Process-ephemeral; no OS files. Automatic checkpoints only recycle the WAL; an explicit `checkpoint()` writes an in-process snapshot |
 
 The durable forms — Parquet for machine efficiency, JSON for readable
@@ -46,7 +46,7 @@ single-file `.rl` bundle — are compared in the
 [storage formats reference](../reference/storage-formats.md).
 
 Every codec's checkpoint also rewrites the store's **schema text mirror**
-under `.cypherlite/schema/` (ADR-0481) — the graph type, the ontology
+under `.relate/schema/` (ADR-0481) — the graph type, the ontology
 document, and the index/constraint catalog as canonical text files. See the
 [schema folder guide](schema-as-files.md).
 
@@ -54,7 +54,7 @@ WAL layout (`wal/`, segment magic `MDBWAL01`, or `MDBWAL02` for segments
 created while the store holds an ontology —
 [ADR-0120](https://github.com/relatedb/relate/blob/main/docs/adr/0120-ontology-document-persistence.md))
 does not change with the codec.
-The markdown store records its codec in the `.cypherlite/manifest.json`
+The markdown store records its codec in the `.relate/manifest.json`
 sidecar, not a root `manifest.json`; directory codecs record
 `"codec": "parquet" | "json"` there (absent codec means
 parquet). Existing files win over the flag.
@@ -66,7 +66,7 @@ each note's body is configured per label
 `--markdown-body-properties summary,notes;Book=summary,review` renders the
 list's first entry as the bare body and each subsequent one as a
 `## <property>` section — Obsidian-readable, hand-editable, and recorded in
-the vault's `.cypherlite/manifest.json` so later opens need no flag. The
+the vault's `.relate/manifest.json` so later opens need no flag. The
 unconfigured form is the single `body` property. See the
 [Obsidian vault guide](obsidian-vault.md).
 
@@ -223,7 +223,7 @@ On a filesystem directory URI:
 <dir>/nodes/{lo}-{hi}.parquet    # parquet codec
 <dir>/relationships/{lo}-{hi}.parquet
 <dir>/graph.json                 # json codec instead of shards
-<dir>/.cypherlite/schema/        # schema text mirror (ADR-0481)
+<dir>/.relate/schema/        # schema text mirror (ADR-0481)
 <dir>/wal/NNNNNNNN.log
 ```
 

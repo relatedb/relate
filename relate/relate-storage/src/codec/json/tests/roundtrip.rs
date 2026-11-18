@@ -188,7 +188,7 @@ fn ontology_document_roundtrips_inline_at_value_encoding_3() {
 /// on a durable store normalizes the marker to the content's version
 /// without losing the document. The crafted stores edit the durable form
 /// the way a writer that maintains the ADR-0481 mirror would — content
-/// and `.cypherlite/schema/` mirror moving together — because the
+/// and `.relate/schema/` mirror moving together — because the
 /// open-time drift guard (ADR-0481 §4) refuses a durable form whose
 /// schema content and mirror disagree, before any migration runs.
 #[test]

@@ -33,9 +33,49 @@ impl Inner {
         Ok(())
     }
 
+    /// The one staged-catalog-mutation discipline every structural change
+    /// follows (`remove_file`, `remove_dir_all`, `rename`, `alloc`): the
+    /// working copies mutate — the live maps never do — and [`commit`](Self::commit)
+    /// publishes them or fails with both untouched, so a failed change
+    /// leaves the catalog exactly as it was.
+    pub(crate) fn stage<T>(
+        &mut self,
+        mutate: impl FnOnce(&mut BTreeMap<String, u32>, &mut Vec<u32>) -> relate::Result<T>,
+    ) -> relate::Result<T> {
+        let mut entries = self.entries.clone();
+        let mut freelist = self.freelist.clone();
+        let outcome = mutate(&mut entries, &mut freelist)?;
+        self.commit(entries, freelist)?;
+        Ok(outcome)
+    }
+
+    /// The publish with the refused-flush rollback: a failed
+    /// publication — most importantly a flush that refuses after the
+    /// new bytes have already clobbered the slot — restores the
+    /// previous generation onto the slot before failing. The persisted
+    /// catalog therefore always decodes as the last committed
+    /// generation (the canonical re-encode of the still-unchanged live
+    /// entries), never the half-published new one; the restore's own
+    /// flush is best-effort, because its `write_at` has already landed
+    /// the previous bytes and the next successful publish syncs them.
+    /// (The catalog slot itself is fixed — JavaScript prepares exactly
+    /// one catalog handle — so a spare-slot rotation would strand the
+    /// live catalog on a slot the next prepare does not hand back.)
     fn write_catalog(&self, entries: &BTreeMap<String, u32>) -> relate::Result<()> {
         let bytes = encode_catalog(entries)?;
-        self.catalog.write_at(0, &bytes)?;
+        if let Err(err) = self.flush_generation(&bytes) {
+            let previous = encode_catalog(&self.entries)?;
+            let _ = self.flush_generation(&previous);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// One generation onto the catalog slot: write, truncate to length,
+    /// flush. Any step failing leaves the slot's bytes undefined — the
+    /// caller's rollback decides what it should hold.
+    fn flush_generation(&self, bytes: &[u8]) -> relate::Result<()> {
+        self.catalog.write_at(0, bytes)?;
         self.catalog.truncate(bytes.len() as u64)?;
         self.catalog
             .flush()
@@ -48,11 +88,11 @@ impl Inner {
         };
         self.slots[slot as usize].truncate(0)?;
         self.slots[slot as usize].flush()?;
-        let mut entries = self.entries.clone();
-        entries.insert(path.to_string(), slot);
-        let mut freelist = self.freelist.clone();
-        freelist.pop();
-        self.commit(entries, freelist)
+        self.stage(|entries, freelist| {
+            entries.insert(path.to_string(), slot);
+            freelist.pop();
+            Ok(())
+        })
     }
 
     pub(crate) fn require(&self, path: &str) -> relate::Result<u32> {

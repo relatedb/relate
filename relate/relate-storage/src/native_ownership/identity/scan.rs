@@ -31,7 +31,7 @@ pub(crate) enum WalExemption<'a> {
 ///
 /// The one spelling of the exemption decision (ADR-0406 §3): the slot is
 /// the direct `wal/` child when the root retains one, else the markdown
-/// vault's `.cypherlite/wal/` when the caller's WAL is that spelling. An
+/// vault's `.relate/wal/` when the caller's WAL is that spelling. An
 /// owned WAL is trusted exactly when it is that slot itself — the direct
 /// layout proves it by physical alias, the vault layout by spelling; every
 /// other WAL-shaped candidate re-verifies by preflight. A pre-existing
@@ -44,7 +44,7 @@ fn owned_wal_exemption(root: &Path, exemption: WalExemption<'_>) -> Result<Optio
     };
     let direct = root.join(crate::codec::SnapshotCodecKind::Json.wal_dir());
     // The vault shape is decided first: a markdown store's engine WAL is
-    // the `.cypherlite/` sidecar layout, so a root-level `wal/`
+    // the `.relate/` sidecar layout, so a root-level `wal/`
     // directory in a vault is an ordinary label directory of user
     // content (the engine itself writes `wal/<name>.md` for a `:wal`
     // label) — never the classic direct-WAL slot, and never an
@@ -221,7 +221,7 @@ fn owned_identity_marker(path: &Path, root: &Path, exempt_wal: Option<&Path>) ->
     }
     // The exempt WAL's own marker — the direct `wal/` child (including a
     // differently-cased alias of it) or the markdown vault's
-    // `.cypherlite/wal/` (ADR-0406 §3) — is owned exactly like the root's:
+    // `.relate/wal/` (ADR-0406 §3) — is owned exactly like the root's:
     // verified through inode identity, never by lexical path spelling.
     let Some(wal) = exempt_wal else {
         return Ok(false);

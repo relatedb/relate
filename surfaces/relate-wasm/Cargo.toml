@@ -17,10 +17,14 @@ relate = { workspace = true }
 # The recording renderer (`renderResult`, ADR-0131).
 relate-formatter = { workspace = true }
 serde_json = { workspace = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The OPFS virtual directory's plain-Rust core: the `Vfs` impl and the
+# slot catalog. Ungated so the crate's own unit tests run natively —
+# the wasm32 wrapper (bindings.rs) is the only gated consumer besides
+# them, and the wasm32 build resolves the identical versions.
 relate-storage = { workspace = true }
 crc32fast = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

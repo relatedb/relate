@@ -585,6 +585,9 @@ fn typed_wal_with_root_evidence_and_unknown_roles_fail_without_rewriting_marker(
 // The reset-refusal and reset-process arcs: sibling files keeping this
 // module under the no-1k-line rule (LABS-311). Each shares this file's
 // imports and helpers through `use super::*`.
+#[path = "tests_adoption.rs"]
+mod adoption;
+
 #[path = "tests_reset_refusal.rs"]
 mod reset_refusal;
 
