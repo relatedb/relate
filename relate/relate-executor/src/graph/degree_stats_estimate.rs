@@ -20,7 +20,8 @@ use relate_core::{NodeId, RelId};
 use super::accounting::FreshIds;
 use super::count_state::CountDelta;
 use super::degree_stats_incident::IncidentRel;
-use super::{fill_labels, Graph};
+use super::rebuild::fill_labels;
+use super::Graph;
 use crate::redo::RedoOp;
 
 impl Graph {

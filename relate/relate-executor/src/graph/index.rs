@@ -276,7 +276,7 @@ impl Graph {
         let Some(vers) = self.nodes.get(&id) else {
             return;
         };
-        let Some(v) = vers.visible_at(ts) else {
+        let Some(v) = visible_version(&vers, ts) else {
             return;
         };
         let live = &v.live;

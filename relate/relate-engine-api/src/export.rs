@@ -32,7 +32,11 @@ pub trait GraphExport {
     fn catalog_ddl(&self) -> Vec<String>;
 }
 
-pub trait GraphImport: GraphExport {
+/// The fill side of a graph: what a codec installs checkpoint rows through.
+/// `Sync` because the restore installs one worker's rows per core — a
+/// slice's install is the same interior-mutable call the single-threaded
+/// path made.
+pub trait GraphImport: GraphExport + Sync {
     fn set_next_node_id(&self, id: i64);
     fn set_next_rel_id(&self, id: i64);
     fn set_commit_ts(&self, ts: u64);
@@ -41,8 +45,24 @@ pub trait GraphImport: GraphExport {
     fn restore_checkpoint_theater(&self, theater: CheckpointTheater) -> Result<()>;
     fn mark_legacy_unenforced(&self);
     fn finish_restore(&self);
-    fn load_checkpoint_node(&self, node: Node) -> Result<()>;
-    fn load_checkpoint_rel(&self, rel: Relationship) -> Result<()>;
+    /// Install a slice of checkpoint nodes — one decoded batch, a
+    /// window-disjoint run of ids. The installer owns the row-id check:
+    /// every id in the slice is validated here, so a caller does not
+    /// repeat it, and an earlier row for an id is replaced by the later one.
+    fn load_checkpoint_nodes(&self, nodes: &[Node]) -> Result<()>;
+    /// Relationship sibling of [`Self::load_checkpoint_nodes`], with the
+    /// same id obligation over a row's id and both endpoints.
+    fn load_checkpoint_rels(&self, rels: &[Relationship]) -> Result<()>;
+    /// Restore one node: the one-element slice of
+    /// [`Self::load_checkpoint_nodes`].
+    fn load_checkpoint_node(&self, node: Node) -> Result<()> {
+        self.load_checkpoint_nodes(std::slice::from_ref(&node))
+    }
+    /// Restore one relationship: the one-element slice of
+    /// [`Self::load_checkpoint_rels`].
+    fn load_checkpoint_rel(&self, rel: Relationship) -> Result<()> {
+        self.load_checkpoint_rels(std::slice::from_ref(&rel))
+    }
     fn apply_replayed_redo(&self, ops: Vec<RedoOp>, commit_ts: u64) -> Result<()>;
     fn rebuild_indexes(&self);
     fn restore_graph_type_spec(&self, spec: Option<&str>) -> Result<()>;

@@ -17,7 +17,7 @@ use crate::vfs::Vfs;
 
 use super::encode::{ShardError, ShardWriter};
 use super::wide::{self, ColumnType};
-use super::{preflight, source_error, ShardRules, VfsChunkReader, DECODE_BATCH_ROWS};
+use super::{preflight, source_error, IdWindow, ShardRules, VfsChunkReader, DECODE_BATCH_ROWS};
 
 /// A forward cursor over one previous shard's rows, in ascending id order.
 /// Every failure to read the shard is fatal: fewer rows do not avoid it.
@@ -26,7 +26,7 @@ pub(crate) struct ShardCursor {
     path: String,
     source: VfsChunkReader,
     reader: ParquetRecordBatchReader,
-    rules: ShardRules,
+    window: IdWindow,
     held: Option<Held>,
 }
 
@@ -106,7 +106,7 @@ impl ShardCursor {
             path: path.to_owned(),
             source: previous.source,
             reader,
-            rules: previous.rules,
+            window: previous.rules.restart(),
             held: None,
         })
     }
@@ -197,7 +197,7 @@ impl ShardCursor {
             let batch =
                 batch.map_err(|e| source_error(&self.path, Error::storage(e.to_string())))?;
             let ids = self
-                .rules
+                .window
                 .ids(&batch)
                 .map_err(|e| source_error(&self.path, e))?;
             self.held = Some(Held {

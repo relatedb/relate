@@ -6,9 +6,9 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 
-use relate_core::{Error, Result, Value};
+use relate_core::{Error, PropertyMap, Result, Value};
 
-use super::Interner;
+use super::{Interner, NameCache};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CompactProps {
@@ -18,12 +18,31 @@ pub(crate) struct CompactProps {
 
 impl CompactProps {
     pub(crate) fn from_map(interner: &Interner, map: BTreeMap<String, Value>) -> Self {
-        let mut keys = Vec::with_capacity(map.len());
-        let mut vals = Vec::with_capacity(map.len());
-        for (k, v) in map {
-            keys.push(interner.intern(&k));
-            vals.push(v);
-        }
+        Self::from_entries(
+            map.into_iter()
+                .map(|(key, value)| (interner.intern(&key), value)),
+        )
+    }
+
+    /// [`Self::from_map`] over a shared map read in place — the restore
+    /// row's shape: keys are interned through the slice's [`NameCache`] and
+    /// values cloned (each a shared payload or a scalar), so the map is never
+    /// deep-cloned and each distinct key is looked up once per slice.
+    pub(crate) fn from_map_ref(
+        interner: &Interner,
+        names: &mut NameCache,
+        map: &PropertyMap,
+    ) -> Self {
+        Self::from_entries(
+            map.iter()
+                .map(|(key, value)| (names.id(interner, key), value.clone())),
+        )
+    }
+
+    /// The one fill both spellings feed: interned key ids beside their
+    /// values, fitted.
+    fn from_entries(entries: impl Iterator<Item = (u32, Value)>) -> Self {
+        let (keys, vals) = entries.unzip();
         let mut props = Self { keys, vals };
         props.fit();
         props
@@ -150,28 +169,6 @@ impl serde::Serialize for BorrowedProps<'_> {
         for (key, value) in self.props.iter() {
             map.serialize_entry(self.interner.get(key).as_ref(), value)?;
         }
-        map.end()
-    }
-}
-
-/// `{amount, id, ts}` in the same tagged JSON as a property map, without
-/// cloning the triple fields. Key order does not change the byte length.
-pub(super) struct BorrowedTriple<'a> {
-    pub(super) id: &'a str,
-    pub(super) amount: &'a Value,
-    pub(super) ts: i64,
-}
-
-impl serde::Serialize for BorrowedTriple<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(3))?;
-        map.serialize_entry(super::TRIPLE_KEYS[0], self.amount)?;
-        map.serialize_entry(super::TRIPLE_KEYS[1], &relate_core::tagged_str(self.id))?;
-        map.serialize_entry(super::TRIPLE_KEYS[2], &Value::Int(self.ts))?;
         map.end()
     }
 }

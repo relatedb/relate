@@ -211,11 +211,11 @@ impl GraphImport for InMemoryQueryEngine {
     fn finish_restore(&self) {
         Graph::finish_restore(&self.graph)
     }
-    fn load_checkpoint_node(&self, node: relate_core::Node) -> Result<()> {
-        Graph::load_checkpoint_node(&self.graph, node)
+    fn load_checkpoint_nodes(&self, nodes: &[relate_core::Node]) -> Result<()> {
+        Graph::load_checkpoint_nodes(&self.graph, nodes)
     }
-    fn load_checkpoint_rel(&self, rel: relate_core::Relationship) -> Result<()> {
-        Graph::load_checkpoint_rel(&self.graph, rel)
+    fn load_checkpoint_rels(&self, rels: &[relate_core::Relationship]) -> Result<()> {
+        Graph::load_checkpoint_rels(&self.graph, rels)
     }
     fn apply_replayed_redo(&self, ops: Vec<RedoOp>, commit_ts: u64) -> Result<()> {
         Graph::apply_replayed_redo(&self.graph, ops, commit_ts)

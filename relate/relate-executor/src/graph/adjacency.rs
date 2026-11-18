@@ -5,6 +5,7 @@
 //! accessors read and write: the typed hop chunks, the sealed stream, and
 //! the fold between them.
 use super::id_vec::IdVec;
+use super::rebuild::RelRow;
 use super::shard;
 use super::*;
 use crate::adjacency::{Hop, SealedRegion};

@@ -91,11 +91,11 @@ impl GraphImport for Graph {
     fn finish_restore(&self) {
         Graph::finish_restore(self)
     }
-    fn load_checkpoint_node(&self, node: Node) -> Result<()> {
-        Graph::load_checkpoint_node(self, node)
+    fn load_checkpoint_nodes(&self, nodes: &[Node]) -> Result<()> {
+        Graph::load_checkpoint_nodes(self, nodes)
     }
-    fn load_checkpoint_rel(&self, rel: Relationship) -> Result<()> {
-        Graph::load_checkpoint_rel(self, rel)
+    fn load_checkpoint_rels(&self, rels: &[Relationship]) -> Result<()> {
+        Graph::load_checkpoint_rels(self, rels)
     }
     fn apply_replayed_redo(&self, ops: Vec<RedoOp>, commit_ts: u64) -> Result<()> {
         Graph::apply_replayed_redo(self, ops, commit_ts)

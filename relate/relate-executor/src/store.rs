@@ -2,13 +2,12 @@
 //! adjacency chunks live in [`crate::adjacency`].
 //! Public `Node` / `Relationship` maps are materialized at the API boundary.
 
-use std::collections::BTreeMap;
-use std::ops::ControlFlow;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
-use relate_core::{Node, NodeId, RelId, Relationship, Result, Value};
+use relate_core::{Node, NodeId, PropertyMap, RelId, Relationship, Result, Value};
 use relate_ir::Direction;
 
 /// Other endpoint of `rid` given `current` and direction.
@@ -48,6 +47,36 @@ pub(crate) struct Interner {
     /// One label vector per distinct label-id list. Walk stubs clone the
     /// `Arc` instead of rebuilding the strings.
     label_vecs: DashMap<Vec<u32>, Arc<Vec<String>>>,
+}
+
+/// One restore slice's names: one interner lookup per distinct name
+/// instead of one per row, so concurrent load workers do not convoy on the
+/// interner's shard locks. Interned ids never change, so a slice-lived
+/// cache cannot go stale.
+#[derive(Default)]
+pub(crate) struct NameCache {
+    names: HashMap<Box<str>, (u32, Arc<str>)>,
+}
+
+impl NameCache {
+    /// `name`'s id and shared spelling, interning it on first sight.
+    pub(crate) fn shared(&mut self, interner: &Interner, name: &str) -> (u32, Arc<str>) {
+        if let Some((id, spelling)) = self.names.get(name) {
+            return (*id, Arc::clone(spelling));
+        }
+        let id = interner.intern(name);
+        let spelling = interner.get(id);
+        self.names.insert(name.into(), (id, Arc::clone(&spelling)));
+        (id, spelling)
+    }
+
+    /// `name`'s id, interning it on first sight.
+    pub(crate) fn id(&mut self, interner: &Interner, name: &str) -> u32 {
+        if let Some((id, _)) = self.names.get(name) {
+            return *id;
+        }
+        self.shared(interner, name).0
+    }
 }
 
 #[cfg(test)]
@@ -156,12 +185,14 @@ impl Interner {
 }
 
 mod compact_props;
+mod payload;
 mod rel_types;
 
+pub(crate) use self::payload::{PayloadForm, PayloadKeyIds, RelPayload};
 pub(crate) use self::rel_types::RelTypes;
 
+use self::compact_props::add_bytes;
 pub(crate) use self::compact_props::CompactProps;
-use self::compact_props::{add_bytes, json_len, BorrowedTriple};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LiveNode {
@@ -170,17 +201,37 @@ pub(crate) struct LiveNode {
 }
 
 impl LiveNode {
+    /// The one constructor both spellings feed: the interned label ids and
+    /// the compact property record, with the label buffer fitted.
+    fn with(mut labels: Vec<u32>, props: CompactProps) -> Self {
+        crate::memory::fit_reserved(&mut labels);
+        Self { labels, props }
+    }
+
     pub(crate) fn from_parts(
         interner: &Interner,
         labels: Vec<String>,
         properties: BTreeMap<String, Value>,
     ) -> Self {
-        let mut labels: Vec<u32> = labels.iter().map(|l| interner.intern(l)).collect();
-        crate::memory::fit_reserved(&mut labels);
-        Self {
-            labels,
-            props: CompactProps::from_map(interner, properties),
-        }
+        let label_ids = labels.iter().map(|l| interner.intern(l)).collect();
+        Self::with(label_ids, CompactProps::from_map(interner, properties))
+    }
+
+    /// [`Self::from_parts`] over a restore slice's [`NameCache`] and a row
+    /// read in place: the labels' interner lookups collapse to one per
+    /// distinct label, and the row's shared properties are read, not
+    /// cloned out of their map.
+    pub(crate) fn from_parts_cached(
+        interner: &Interner,
+        names: &mut NameCache,
+        labels: &[String],
+        properties: &PropertyMap,
+    ) -> Self {
+        let label_ids = labels.iter().map(|l| names.id(interner, l)).collect();
+        Self::with(
+            label_ids,
+            CompactProps::from_map_ref(interner, names, properties),
+        )
     }
 
     pub(crate) fn to_node(&self, id: NodeId, interner: &Interner) -> Node {
@@ -240,378 +291,6 @@ impl LiveNode {
     }
 }
 
-/// A payload's property key ids with its own interner reads already done:
-/// `Triple` carries its three fixed names resolved once, `Other` carries its
-/// stored ids (which need no interner). A caller that probes another lock
-/// against these ids — the ADR-0439 constraint map's scope, held under its
-/// lock — builds this before taking that lock, so the probe never takes an
-/// interner shard guard.
-pub(crate) enum PayloadKeyIds<'a> {
-    Triple([Option<u32>; 3]),
-    Other(&'a CompactProps),
-}
-
-impl PayloadKeyIds<'_> {
-    /// Visit every property key id the payload carries, in payload order.
-    /// The one `Triple`/`Other` dispatch — [`any`](Self::any) derives from
-    /// it instead of repeating the match.
-    pub(crate) fn for_each(&self, mut f: impl FnMut(u32) -> ControlFlow<()>) -> ControlFlow<()> {
-        match self {
-            Self::Triple(ids) => {
-                for id in ids.iter().flatten() {
-                    f(*id)?;
-                }
-            }
-            Self::Other(props) => {
-                for (kid, _) in props.iter() {
-                    f(kid)?;
-                }
-            }
-        }
-        ControlFlow::Continue(())
-    }
-
-    /// Whether any of the payload's key ids satisfies `f`. Built on
-    /// [`Self::for_each`] so the Triple/Other walk stays single-sourced;
-    /// `ControlFlow` keeps the first-match short-circuit the create-seam hot
-    /// path wants.
-    pub(crate) fn any(&self, mut f: impl FnMut(u32) -> bool) -> bool {
-        self.for_each(|kid| {
-            if f(kid) {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        })
-        .is_break()
-    }
-}
-
-/// One relationship payload: the `Triple` fast shape or a property map. `P`
-/// is the props representation — [`CompactProps`] for the live record,
-/// `BTreeMap<String, Value>` for the interner-free redo estimate — so the
-/// shape choice and every method over it are implemented once.
-///
-/// `from_map` stores a `Triple` only when the map is created in this shape.
-/// `Other` never turns back into a `Triple`, so a later `SET` that happens
-/// to produce `{id, amount, ts}` still occupies property vectors.
-/// Accounting has to follow this form, not re-read the map.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Payload<P> {
-    Triple {
-        id: Arc<str>,
-        amount: Value,
-        ts: i64,
-    },
-    Other(P),
-}
-
-/// The props representation a [`Payload`] is generic over.
-pub(crate) trait PayloadProps: Sized {
-    fn from_map(interner: &Interner, map: BTreeMap<String, Value>) -> Self;
-    fn set(&mut self, interner: &Interner, key: &str, value: Value);
-    fn remove(&mut self, interner: &Interner, key: &str);
-    fn get(&self, interner: &Interner, key: &str) -> Option<Value>;
-    fn to_map(&self, interner: &Interner) -> BTreeMap<String, Value>;
-}
-
-impl PayloadProps for BTreeMap<String, Value> {
-    fn from_map(_interner: &Interner, map: BTreeMap<String, Value>) -> Self {
-        map
-    }
-
-    fn set(&mut self, _interner: &Interner, key: &str, value: Value) {
-        self.insert(key.to_string(), value);
-    }
-
-    fn remove(&mut self, _interner: &Interner, key: &str) {
-        BTreeMap::remove(self, key);
-    }
-
-    fn get(&self, _interner: &Interner, key: &str) -> Option<Value> {
-        BTreeMap::get(self, key).cloned()
-    }
-
-    fn to_map(&self, _interner: &Interner) -> BTreeMap<String, Value> {
-        self.clone()
-    }
-}
-
-impl PayloadProps for CompactProps {
-    fn from_map(interner: &Interner, map: BTreeMap<String, Value>) -> Self {
-        CompactProps::from_map(interner, map)
-    }
-
-    fn set(&mut self, interner: &Interner, key: &str, value: Value) {
-        self.set(interner.intern(key), value);
-    }
-
-    fn remove(&mut self, interner: &Interner, key: &str) {
-        // Read-only lookup: a miss means nothing to remove, never a new
-        // interned id.
-        if let Some(kid) = interner.get_id(key) {
-            self.remove(kid);
-        }
-    }
-
-    fn get(&self, interner: &Interner, key: &str) -> Option<Value> {
-        self.get(interner.get_id(key)?).cloned()
-    }
-
-    fn to_map(&self, interner: &Interner) -> BTreeMap<String, Value> {
-        CompactProps::to_map(self, interner)
-    }
-}
-
-/// The live counter's payload shape.
-pub(crate) type RelPayload = Payload<CompactProps>;
-/// The redo estimate's payload shape (no interned ids).
-pub(crate) type PayloadForm = Payload<BTreeMap<String, Value>>;
-
-/// What an in-place triple write does with `(key, value)`.
-enum TripleWrite<'a> {
-    /// Set the `id` field to this string.
-    Id(&'a str),
-    /// Set the `amount` field to this value.
-    Amount(&'a Value),
-    /// Set the `ts` field to this integer.
-    Ts(i64),
-    /// The pair does not fit the triple's shape: promote to a property map
-    /// and re-apply there.
-    Promote,
-}
-
-/// Apply an in-place triple write to its fields; `true` when the write does
-/// not fit the triple's shape and the caller must promote and re-dispatch.
-/// The one field-update spelling both payload shapes share.
-fn apply_triple_write(
-    id: &mut Arc<str>,
-    amount: &mut Value,
-    ts: &mut i64,
-    write: TripleWrite<'_>,
-) -> bool {
-    match write {
-        TripleWrite::Id(s) => *id = Arc::from(s),
-        TripleWrite::Amount(v) => *amount = v.clone(),
-        TripleWrite::Ts(i) => *ts = i,
-        TripleWrite::Promote => return true,
-    }
-    false
-}
-
-/// The one in-place-vs-promote decision both payload shapes consult: a write
-/// updates a triple field only when it names that field with its own type;
-/// every other write — and every removal — promotes.
-fn triple_write<'a>(key: &str, value: &'a Value) -> TripleWrite<'a> {
-    match (key, value) {
-        ("id", Value::String(s)) => TripleWrite::Id(s),
-        ("amount", Value::Int(_) | Value::Float(_)) => TripleWrite::Amount(value),
-        ("ts", Value::Int(i)) => TripleWrite::Ts(*i),
-        _ => TripleWrite::Promote,
-    }
-}
-
-/// The `Triple` payload's three fixed property names, in field order — the
-/// one spelling `keys`, `key_ids`, `for_each_key_value`, the promotes,
-/// `to_map`, and the borrowed serializer all consult.
-pub(crate) const TRIPLE_KEYS: [&str; 3] = ["amount", "id", "ts"];
-
-/// The three fixed properties as a map — the one conversion `to_map` and
-/// both promotes share.
-fn triple_map(id: Arc<str>, amount: Value, ts: i64) -> BTreeMap<String, Value> {
-    let mut map = BTreeMap::new();
-    map.insert(TRIPLE_KEYS[0].to_string(), amount);
-    map.insert(TRIPLE_KEYS[1].to_string(), Value::String(id));
-    map.insert(TRIPLE_KEYS[2].to_string(), Value::Int(ts));
-    map
-}
-
-impl<P: PayloadProps> Payload<P> {
-    pub(crate) fn from_map(interner: &Interner, mut map: BTreeMap<String, Value>) -> Self {
-        if map.len() == 3
-            && matches!(
-                (map.get("id"), map.get("amount"), map.get("ts")),
-                (
-                    Some(Value::String(_)),
-                    Some(Value::Int(_) | Value::Float(_)),
-                    Some(Value::Int(_))
-                )
-            )
-        {
-            let Value::String(id) = map.remove("id").expect("id checked") else {
-                unreachable!("id checked as a string");
-            };
-            let amount = map.remove("amount").expect("amount checked");
-            let Value::Int(ts) = map.remove("ts").expect("ts checked") else {
-                unreachable!("ts checked as an int");
-            };
-            return Payload::Triple { id, amount, ts };
-        }
-        Payload::Other(P::from_map(interner, map))
-    }
-
-    pub(crate) fn set(&mut self, interner: &Interner, key: &str, value: Value) {
-        if value.is_null() {
-            self.remove(interner, key);
-            return;
-        }
-        match self {
-            Payload::Triple { id, amount, ts } => {
-                if apply_triple_write(id, amount, ts, triple_write(key, &value)) {
-                    self.promote(interner);
-                    self.set(interner, key, value);
-                }
-            }
-            Payload::Other(props) => props.set(interner, key, value),
-        }
-    }
-
-    /// Removal always promotes (the [`triple_write`] policy's `Promote`
-    /// arm).
-    pub(crate) fn remove(&mut self, interner: &Interner, key: &str) {
-        if matches!(self, Payload::Triple { .. }) {
-            self.promote(interner);
-        }
-        if let Payload::Other(props) = self {
-            props.remove(interner, key);
-        }
-    }
-
-    fn promote(&mut self, interner: &Interner) {
-        let Payload::Triple { id, amount, ts } = self else {
-            return;
-        };
-        *self = Payload::Other(P::from_map(
-            interner,
-            triple_map(
-                std::mem::take(id),
-                std::mem::replace(amount, Value::Null),
-                *ts,
-            ),
-        ));
-    }
-
-    pub(crate) fn to_map(&self, interner: &Interner) -> BTreeMap<String, Value> {
-        match self {
-            Payload::Triple { id, amount, ts } => triple_map(id.clone(), amount.clone(), *ts),
-            Payload::Other(props) => props.to_map(interner),
-        }
-    }
-
-    pub(crate) fn ts(&self, interner: &Interner) -> Option<i64> {
-        match self {
-            Payload::Triple { ts, .. } => Some(*ts),
-            Payload::Other(props) => match props.get(interner, "ts") {
-                Some(Value::Int(i)) => Some(i),
-                _ => None,
-            },
-        }
-    }
-
-    pub(crate) fn get(&self, interner: &Interner, key: &str) -> Option<Value> {
-        match self {
-            Payload::Triple { id, amount, ts } => triple_prop(id, amount, *ts, key),
-            Payload::Other(props) => props.get(interner, key),
-        }
-    }
-}
-
-/// The `Triple` payload's property named `key`.
-fn triple_prop(id: &Arc<str>, amount: &Value, ts: i64, key: &str) -> Option<Value> {
-    match key {
-        "id" => Some(Value::String(id.clone())),
-        "amount" => Some(amount.clone()),
-        "ts" => Some(Value::Int(ts)),
-        _ => None,
-    }
-}
-
-impl RelPayload {
-    /// [`Self::get`] with the key already interned: `kid` is the id of
-    /// `key` (a plan-resolved token), so no interner lookup is paid.
-    pub(crate) fn get_by_id(&self, key: &str, kid: u32) -> Option<Value> {
-        match self {
-            Payload::Triple { id, amount, ts } => triple_prop(id, amount, *ts, key),
-            Payload::Other(props) => props.get(kid).cloned(),
-        }
-    }
-}
-
-impl Payload<CompactProps> {
-    /// The storage choice the byte account has to follow. `Other` stays
-    /// `Other` even when its keys are `id`, `amount`, and `ts`.
-    pub(crate) fn form(&self, interner: &Interner) -> PayloadForm {
-        match self {
-            Payload::Triple { id, amount, ts } => Payload::Triple {
-                id: id.clone(),
-                amount: amount.clone(),
-                ts: *ts,
-            },
-            Payload::Other(props) => Payload::Other(props.to_map(interner)),
-        }
-    }
-
-    pub(crate) fn keys(&self, interner: &Interner) -> Vec<String> {
-        match self {
-            Payload::Triple { .. } => TRIPLE_KEYS.iter().map(|k| (*k).into()).collect(),
-            Payload::Other(props) => props.keys_as_strings(interner),
-        }
-    }
-
-    /// The property key ids only, with this payload's interner reads done
-    /// here and once. See [`PayloadKeyIds`] for the callers that must build
-    /// it before taking another lock.
-    pub(crate) fn key_ids(&self, interner: &Interner) -> PayloadKeyIds<'_> {
-        match self {
-            Payload::Triple { .. } => {
-                PayloadKeyIds::Triple(TRIPLE_KEYS.map(|key| interner.get_id(key)))
-            }
-            Payload::Other(props) => PayloadKeyIds::Other(props),
-        }
-    }
-
-    /// One pass over every property as (interned key id, value) pairs
-    /// (ADR-0185): `Other` zips its stored ids and values; `Triple`
-    /// resolves its three fixed keys once and yields from its fields. No
-    /// string de-interning or re-hashing.
-    pub(crate) fn for_each_key_value(&self, interner: &Interner, mut f: impl FnMut(u32, &Value)) {
-        match self {
-            Payload::Triple { id, amount, ts } => {
-                // Only the two synthesized fields materialize; `amount` is
-                // lent by reference.
-                let id_value = Value::String(id.clone());
-                let ts_value = Value::Int(*ts);
-                let pairs = [
-                    (TRIPLE_KEYS[0], amount),
-                    (TRIPLE_KEYS[1], &id_value),
-                    (TRIPLE_KEYS[2], &ts_value),
-                ];
-                for (k, v) in pairs {
-                    if let Some(kid) = interner.get_id(k) {
-                        f(kid, v);
-                    }
-                }
-            }
-            Payload::Other(props) => {
-                for (k, v) in props.iter() {
-                    f(k, v);
-                }
-            }
-        }
-    }
-
-    pub(crate) fn tagged_json_len(&self, interner: &Interner) -> Result<u64> {
-        match self {
-            Payload::Triple { id, amount, ts } => json_len(&BorrowedTriple {
-                id,
-                amount,
-                ts: *ts,
-            }),
-            Payload::Other(props) => props.tagged_json_len(interner),
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct LiveRel {
     pub start: NodeId,
@@ -622,6 +301,24 @@ pub(crate) struct LiveRel {
 }
 
 impl LiveRel {
+    /// The one constructor both spellings feed: the interned type id and
+    /// its shared spelling beside the payload.
+    fn with(
+        start: NodeId,
+        end: NodeId,
+        type_id: u32,
+        type_name: Arc<str>,
+        payload: RelPayload,
+    ) -> Self {
+        Self {
+            start,
+            end,
+            type_id,
+            type_name,
+            payload,
+        }
+    }
+
     pub(crate) fn from_parts(
         interner: &Interner,
         start: NodeId,
@@ -630,13 +327,35 @@ impl LiveRel {
         properties: BTreeMap<String, Value>,
     ) -> Self {
         let type_id = interner.intern(rel_type);
-        Self {
+        Self::with(
             start,
             end,
             type_id,
-            type_name: interner.get(type_id),
-            payload: RelPayload::from_map(interner, properties),
-        }
+            interner.get(type_id),
+            RelPayload::from_map(interner, properties),
+        )
+    }
+
+    /// [`Self::from_parts`] over a restore slice's [`NameCache`] and a row
+    /// read in place: the type's interner lookups collapse to one per
+    /// distinct type, and the row's shared properties are read, not cloned
+    /// out of their map.
+    pub(crate) fn from_parts_cached(
+        interner: &Interner,
+        names: &mut NameCache,
+        start: NodeId,
+        end: NodeId,
+        rel_type: &str,
+        properties: &PropertyMap,
+    ) -> Self {
+        let (type_id, type_name) = names.shared(interner, rel_type);
+        Self::with(
+            start,
+            end,
+            type_id,
+            type_name,
+            RelPayload::from_map_ref(interner, names, properties),
+        )
     }
 
     pub(crate) fn to_rel(&self, id: RelId, interner: &Interner) -> Relationship {

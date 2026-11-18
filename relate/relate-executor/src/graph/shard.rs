@@ -12,7 +12,7 @@
 
 use relate_core::NodeId;
 
-use super::RelRow;
+use super::rebuild::RelRow;
 
 /// Rows a shard must carry to be worth a thread. Below it the rebuild
 /// runs on the calling thread, which is what keeps the sharded and

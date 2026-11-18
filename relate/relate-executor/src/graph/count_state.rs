@@ -12,8 +12,9 @@ use std::collections::{HashMap, HashSet};
 
 use relate_core::NodeId;
 
+use super::rebuild::{LabelCache, RelRow};
 use super::shard;
-use super::{Graph, LabelCache, RelRow};
+use super::Graph;
 
 /// One count-map mutation's direction: every caller
 /// mutates one entry at a time, so the delta is ±1 by construction — the

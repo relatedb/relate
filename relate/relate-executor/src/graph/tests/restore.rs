@@ -1,9 +1,6 @@
 use super::*;
-use crate::graph::count_state::CountStats;
-use crate::graph::degree_stats::DegreeHistograms;
 use crate::graph::rebuild::take_adj_builds;
-use crate::graph::shard::take_shards_run;
-use crate::graph::test_support::endpoints;
+use crate::graph::test_support::{live_rows, node_adjacencies, node_expansions};
 use std::sync::Arc;
 
 #[test]
@@ -125,6 +122,78 @@ fn restored_rel(start: NodeId, end: NodeId, rel_type: &str, ts: i64) -> Relation
     }
 }
 
+/// A multi-element slice install equals the one-element slice install of
+/// the same rows: two node part windows and three rel part windows, the
+/// shape the Parquet codec hands one part over in batch-sized slices. The
+/// batch methods are required, so this also pins the per-row default
+/// adapters over a one-element slice.
+#[test]
+fn multi_element_slice_install_equals_one_element_slice_install() {
+    let node_parts: Vec<Vec<Node>> = vec![
+        (0..3).map(|id| restored_node(id, "N", "n")).collect(),
+        (3..6).map(|id| restored_node(id, "M", "m")).collect(),
+    ];
+    let rel_parts: Vec<Vec<Relationship>> = vec![
+        (0..3)
+            .map(|id| Relationship {
+                id,
+                ..restored_rel(id, (id + 1) % 3, "T", id)
+            })
+            .collect(),
+        vec![
+            Relationship {
+                id: 3,
+                ..restored_rel(0, 3, "U", 3)
+            },
+            Relationship {
+                id: 4,
+                ..restored_rel(3, 4, "T", 4)
+            },
+        ],
+        vec![Relationship {
+            id: 5,
+            ..restored_rel(4, 5, "U", 5)
+        }],
+    ];
+
+    let bulk = Graph::default();
+    for part in &node_parts {
+        bulk.load_checkpoint_nodes(part).unwrap();
+    }
+    for part in &rel_parts {
+        bulk.load_checkpoint_rels(part).unwrap();
+    }
+    let serial = Graph::default();
+    for node in node_parts.iter().flatten() {
+        serial.load_checkpoint_node(node.clone()).unwrap();
+    }
+    for rel in rel_parts.iter().flatten() {
+        serial.load_checkpoint_rel(rel.clone()).unwrap();
+    }
+    for g in [&bulk, &serial] {
+        g.set_commit_ts(1);
+        g.finish_restore();
+        g.rebuild_indexes();
+    }
+
+    let (bulk_nodes, bulk_rels) = live_rows(&bulk, 1);
+    let (serial_nodes, serial_rels) = live_rows(&serial, 1);
+    let catalog = |g: &Graph| -> (Vec<String>, Vec<String>) {
+        let catalog = g.catalog.lock().unwrap();
+        (
+            catalog.labels.iter().cloned().collect(),
+            catalog.rel_types.iter().cloned().collect(),
+        )
+    };
+
+    assert_eq!(bulk_nodes, serial_nodes);
+    assert_eq!(bulk_rels, serial_rels);
+    assert_eq!(node_adjacencies(&bulk), node_adjacencies(&serial));
+    assert_eq!(catalog(&bulk), catalog(&serial));
+    assert_eq!(bulk.next_node_id(), serial.next_node_id());
+    assert_eq!(bulk.next_rel_id(), serial.next_rel_id());
+}
+
 /// Overlapping legacy parts (ADR-0183) can restore an id twice; the later
 /// row replaces the earlier one, so a delete leaves no copy visible.
 #[test]
@@ -171,12 +240,9 @@ fn restoring_a_rel_twice_keeps_one_version_and_one_hop_per_endpoint() {
     assert_eq!(g.rels.get(&0).unwrap().len(), 1);
     // Restore leaves adjacency to `finish_restore`.
     assert!(g.degree_out(0).is_empty());
-    g.set_commit_ts(1);
-    g.finish_restore();
-    assert_eq!(g.degree_out(0), [0]);
-    assert_eq!(g.degree_in(1), [0]);
     // Other endpoints and type: the later row wins entirely.
     g.load_checkpoint_rel(restored_rel(2, 3, "S", 3)).unwrap();
+    g.set_commit_ts(1);
     g.finish_restore();
     assert_eq!(g.rels.get(&0).unwrap().len(), 1);
     let rel = g.rel(0).unwrap();
@@ -250,6 +316,29 @@ fn restore_during_an_open_write_is_a_storage_error() {
     assert_eq!(g.all_node_ids(), [0, written]);
 }
 
+/// The refusal keys on the restore phase, not on a slot's chain shape: a
+/// committed single-version write leaves the `Inline` chain a restored row
+/// holds, and the load is still refused, the written row untouched.
+#[test]
+fn restore_over_a_committed_single_version_write_is_refused() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let written = g.create_node(vec!["W".into()], BTreeMap::new()).unwrap();
+    g.commit_write();
+    assert!(g.nodes.get(&written).unwrap().is_inline());
+
+    assert!(matches!(
+        g.load_checkpoint_node(restored_node(written, "N", "restored")),
+        Err(relate_core::Error::Storage(ref message))
+            if message == "checkpoint restore into a graph with committed writes"
+    ));
+    assert_eq!(g.nodes.get(&written).unwrap().len(), 1);
+    assert_eq!(
+        g.node(written).unwrap().labels.as_slice(),
+        ["W".to_string()].as_slice()
+    );
+}
+
 #[test]
 fn restore_over_a_committed_write_is_a_storage_error() {
     let g = Graph::default();
@@ -271,23 +360,6 @@ fn restore_over_a_committed_write_is_a_storage_error() {
         g.node(0).unwrap().properties,
         restored_node(0, "N", "second").properties
     );
-}
-
-/// Every live node's adjacency, raw and as each direction expands it.
-type NodeAdjacency = (NodeId, Vec<RelId>, Vec<RelId>, [Vec<RelId>; 3]);
-
-fn adjacency(g: &Graph) -> Vec<NodeAdjacency> {
-    use relate_ir::Direction;
-
-    let ts = g.commit_ts();
-    g.all_node_ids_at(ts)
-        .into_iter()
-        .map(|id| {
-            let expands = [Direction::Outgoing, Direction::Incoming, Direction::Both]
-                .map(|dir| g.neighbors_at(id, dir, ts));
-            (id, g.degree_out(id), g.degree_in(id), expands)
-        })
-        .collect()
 }
 
 fn create_rel(id: RelId, start: NodeId, end: NodeId, rel_type: &str) -> RedoOp {
@@ -341,16 +413,7 @@ fn checkpoint_load_and_wal_replay_build_adjacency_once() {
     // The writer commits the checkpointed rows, then the tail.
     let writer = Graph::default();
     writer.apply_redo(checkpointed, 1).unwrap();
-    let nodes: Vec<Node> = writer
-        .all_node_ids_at(1)
-        .into_iter()
-        .map(|id| writer.node_at(id, 1).unwrap())
-        .collect();
-    let rels: Vec<Relationship> = writer
-        .all_rel_ids_at(1)
-        .into_iter()
-        .map(|id| writer.rel_at(id, 1).unwrap())
-        .collect();
+    let (nodes, rels) = live_rows(&writer, 1);
     for (ops, ts) in tail.iter().cloned().zip(2..) {
         writer.apply_redo(ops, ts).unwrap();
     }
@@ -372,11 +435,15 @@ fn checkpoint_load_and_wal_replay_build_adjacency_once() {
     assert_eq!(take_adj_builds(), 1);
 
     assert_eq!(opened.commit_ts(), writer.commit_ts());
-    assert_eq!(adjacency(&opened), adjacency(&writer));
+    assert_eq!(node_adjacencies(&opened), node_adjacencies(&writer));
     // Relationships the tail deleted expand nowhere.
-    for (id, _, _, expands) in adjacency(&opened) {
-        for rels in expands {
-            assert!(!rels.contains(&0) && !rels.contains(&4), "{id}: {rels:?}");
+    for adj in node_adjacencies(&opened) {
+        for rels in adj.expands {
+            assert!(
+                !rels.contains(&0) && !rels.contains(&4),
+                "{}: {rels:?}",
+                adj.id
+            );
         }
     }
 }
@@ -389,8 +456,6 @@ fn checkpoint_load_and_wal_replay_build_adjacency_once() {
 /// their tombstones against the folded chunks exactly as the writer's did.
 #[test]
 fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
-    use relate_ir::Direction;
-
     let floor = crate::adjacency::COMPACTION_DELTA_FLOOR;
     let mut checkpointed: Vec<RedoOp> = (0..2)
         .map(|id| RedoOp::CreateNode {
@@ -403,16 +468,7 @@ fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
 
     let writer = Graph::default();
     writer.apply_redo(checkpointed, 1).unwrap();
-    let nodes: Vec<Node> = writer
-        .all_node_ids_at(1)
-        .into_iter()
-        .map(|id| writer.node_at(id, 1).unwrap())
-        .collect();
-    let rels: Vec<Relationship> = writer
-        .all_rel_ids_at(1)
-        .into_iter()
-        .map(|id| writer.rel_at(id, 1).unwrap())
-        .collect();
+    let (nodes, rels) = live_rows(&writer, 1);
     let serialized = |g: &Graph| -> u64 {
         let nodes: u64 = g
             .all_node_ids_at(1)
@@ -487,17 +543,6 @@ fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
     }
     opened.rebuild_indexes();
 
-    let observable = |g: &Graph| -> Vec<(NodeId, [Vec<RelId>; 3])> {
-        let ts = g.commit_ts();
-        g.all_node_ids_at(ts)
-            .into_iter()
-            .map(|id| {
-                let expands = [Direction::Outgoing, Direction::Incoming, Direction::Both]
-                    .map(|dir| g.neighbors_at(id, dir, ts));
-                (id, expands)
-            })
-            .collect()
-    };
     assert_eq!(opened.commit_ts(), writer.commit_ts());
     // The restore rebuilt the durable shape (ADR-0608): the fold-sized
     // chunks folded, as the writer's checkpoint GC left them — the
@@ -509,7 +554,7 @@ fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
         floor,
         "the restore folded the checkpointed chunk"
     );
-    assert_eq!(observable(&opened), observable(&writer));
+    assert_eq!(node_adjacencies(&opened), node_adjacencies(&writer));
 
     // The dumped rows are the whole durable state: the next checkpoint's
     // fold reclaims the replayed delete's tombstone, so the sealed stream
@@ -521,100 +566,7 @@ fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
         floor - 1,
         "the restored fold reclaims, without the deleted hop"
     );
-    assert_eq!(observable(&opened), observable(&writer));
-}
-
-/// An aborted write drops its relationships from adjacency: `abort_write`
-/// still rebuilds it from the live versions.
-#[test]
-fn abort_write_rebuilds_adjacency() {
-    let g = Graph::default();
-    let (a, b) = endpoints(&g);
-    g.begin_write().unwrap();
-    let kept = g.create_rel(a, b, "R".into(), BTreeMap::new()).unwrap();
-    g.commit_write();
-    g.begin_write().unwrap();
-    g.create_rel(a, b, "R".into(), BTreeMap::new()).unwrap();
-    take_adj_builds();
-    g.abort_write();
-    assert_eq!(take_adj_builds(), 1);
-    assert_eq!(g.degree_out(a), [kept]);
-    assert_eq!(g.degree_in(b), [kept]);
-}
-
-/// Everything `rebuild_adj` publishes: both adjacency directions with their
-/// hop order, the degree histograms, the count bundle itself, and the
-/// `used_bytes` the rebuild's tail recomputes from them. The bundle is held
-/// whole, not re-listed field by field — a field added to `CountStats`
-/// later is covered by this comparison, not silently escaped by it, and
-/// this is the one test that would catch a new fold's sharding bug.
-#[derive(Debug, PartialEq)]
-struct RebuildState {
-    adjacency: Vec<NodeAdjacency>,
-    histograms: DegreeHistograms,
-    stats: CountStats,
-    used_bytes: u64,
-}
-
-fn rebuild_state(g: &Graph) -> RebuildState {
-    RebuildState {
-        adjacency: adjacency(g),
-        histograms: g.degree_histograms.lock().unwrap().clone(),
-        stats: g.count_stats.lock().unwrap().clone(),
-        used_bytes: g.used_bytes.load(std::sync::atomic::Ordering::Relaxed),
-    }
-}
-
-/// The sharded rebuild is the single-shard one. `shard::shard_rows` keys
-/// on a node endpoint, so a shard owns every row of every node it carries
-/// and nothing the rebuild publishes depends on where the shard boundaries
-/// fall: `from_runs` derives each node's chunk order from its own runs'
-/// first rel ids and sorts its hops `cmp_ts_desc`, both total orders over
-/// that node's hops, and both folds are order-independent aggregates.
-#[test]
-fn sharded_rebuild_matches_the_single_shard_one() {
-    let g = Graph::default();
-    g.begin_write().unwrap();
-    let starts: Vec<NodeId> = (0..6)
-        .map(|i| {
-            g.create_node(vec![format!("S{}", i % 3)], BTreeMap::new())
-                .unwrap()
-        })
-        .collect();
-    let ends: Vec<NodeId> = (0..5)
-        .map(|i| {
-            g.create_node(vec![format!("E{}", i % 2)], BTreeMap::new())
-                .unwrap()
-        })
-        .collect();
-    // Every start node carries one rel per type, so its out-adjacency has
-    // several chunks to order and hops to sort; the ends take several rels
-    // each, the same on the incoming side. The vocabulary is bound once: the
-    // loop bound and the name both read it, so neither can drift.
-    const TYPES: [&str; 3] = ["T0", "T1", "T2"];
-    for (i, &start) in starts.iter().enumerate() {
-        for j in 0..TYPES.len() {
-            g.create_rel(
-                start,
-                ends[(i + j) % ends.len()],
-                TYPES[(i + j) % TYPES.len()].to_string(),
-                BTreeMap::new(),
-            )
-            .unwrap();
-        }
-    }
-    g.commit_write();
-
-    g.rebuild_adj();
-    // One rebuild is four `run_shards` calls — both adjacency sides, the
-    // degree fold, the count fold — so the single-shard run accumulates 4
-    // and the four-shard run 16. Asserting the sum pins every one of the
-    // four, the adjacency build included.
-    assert_eq!(take_shards_run(), 4);
-    let serial = rebuild_state(&g);
-    crate::graph::shard::with_workers(4, || g.rebuild_adj());
-    assert_eq!(take_shards_run(), 16);
-    assert_eq!(rebuild_state(&g), serial);
+    assert_eq!(node_expansions(&opened), node_expansions(&writer));
 }
 
 /// The wholesale build's emission (ADR-0599 / ADR-0608): a restored store's
@@ -641,16 +593,7 @@ fn restore_seals_multi_hop_chunks_and_leaves_short_ones_delta() {
 
     let writer = Graph::default();
     writer.apply_redo(checkpointed, 1).unwrap();
-    let nodes: Vec<Node> = writer
-        .all_node_ids_at(1)
-        .into_iter()
-        .map(|id| writer.node_at(id, 1).unwrap())
-        .collect();
-    let rels: Vec<Relationship> = writer
-        .all_rel_ids_at(1)
-        .into_iter()
-        .map(|id| writer.rel_at(id, 1).unwrap())
-        .collect();
+    let (nodes, rels) = live_rows(&writer, 1);
 
     // The open sequence: restore the rows, then the completion steps. The
     // build inside `finish_restore` is the emission; no pass follows it.

@@ -123,7 +123,7 @@ impl<'g> DecodedBudget<'g> {
             let Some(row) = self.measure(id)? else {
                 continue;
             };
-            check_row(row)
+            check_row(row, envelope())
                 .map_err(|e| storage_context(e, format_args!("{} {id}", self.kind.noun())))?;
             let next = add(self.bytes, row)?;
             if !self.admits(self.rows + 1, next) && !self.is_empty() {

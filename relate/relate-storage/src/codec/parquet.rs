@@ -7,10 +7,12 @@ mod envelope;
 #[cfg(test)]
 mod fixtures;
 mod rules;
+mod span;
 mod wide;
 use envelope::invalid;
 pub(crate) use envelope::{preflight, VfsChunkReader};
-use rules::{id_column, ShardRules};
+use rules::{IdWindow, ShardRules};
+pub(crate) use span::SpanReaders;
 
 pub(crate) use budget::DecodedBudget;
 #[cfg(test)]
@@ -27,6 +29,7 @@ pub(crate) use wide::{ColumnType, MAX_PROMOTED_COLUMNS};
 
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arrow::array::{Array, Int64Array, ListArray, StringArray};
 use arrow::record_batch::RecordBatch;
@@ -105,19 +108,17 @@ impl Kind {
     }
 
     /// The kind's error phrases — the one table the per-kind error
-    /// vocabulary comes from (the row noun, the row-envelope phrase, the
-    /// id phrase), so no decoder hand-spells a sibling's.
+    /// vocabulary comes from (the row noun, the row-envelope phrase), so
+    /// no decoder hand-spells a sibling's.
     fn phrases(self) -> KindPhrases {
         match self {
             Self::Node => KindPhrases {
                 noun: "node",
                 row_bytes: "node row bytes",
-                id: "node ID",
             },
             Self::Rel => KindPhrases {
                 noun: "relationship",
                 row_bytes: "relationship row bytes",
-                id: "relationship ID",
             },
         }
     }
@@ -128,7 +129,6 @@ impl Kind {
 struct KindPhrases {
     noun: &'static str,
     row_bytes: &'static str,
-    id: &'static str,
 }
 
 #[cfg(test)]
@@ -223,8 +223,7 @@ pub(crate) fn with_test_envelope<T>(page: u64, row: u64, decoded: u64, f: impl F
 /// ([`Decoded::row`]) and the checkpoint side ([`DecodedBudget`]): it must
 /// fit the row envelope, and the decoded envelope by itself. The error names
 /// the envelope the row misses.
-fn check_row(bytes: u64) -> Result<()> {
-    let limits = envelope();
+fn check_row(bytes: u64, limits: Envelope) -> Result<()> {
     if bytes > limits.row {
         return Err(invalid("384 MiB decoded row"));
     }
@@ -236,7 +235,7 @@ fn check_row(bytes: u64) -> Result<()> {
 
 /// Whether a row passes [`check_row`].
 fn row_fits(bytes: u64) -> bool {
-    check_row(bytes).is_ok()
+    check_row(bytes, envelope()).is_ok()
 }
 
 fn bounded(value: i64, limit: u64, what: &str) -> Result<u64> {
@@ -255,36 +254,60 @@ fn accumulate(sum: &mut u64, value: u64, limit: u64, what: &str) -> Result<()> {
     Ok(())
 }
 
-/// Read-side row-envelope accounting (ADR-0086): the row's decoded bytes
-/// toward its bound — the one byte of slack so the check that follows
-/// (`Decoded::row` over `check_row`) refuses a row at exactly the bound
-/// instead of passing it. Every per-row decoder site charges through
-/// here, never its own copy of the bound.
-fn count_row_bytes(sum: &mut u64, add: u64, what: &str) -> Result<()> {
-    accumulate(sum, add, envelope().row.saturating_add(1), what)
+/// Charge `add` to one of the file's shared counters, refusing when the
+/// running total crosses `limit`. Every charge counts exactly once whichever
+/// worker makes it, so the totals are the file's rather than a worker's.
+fn charge(counter: &AtomicU64, add: u64, limit: u64, what: &str) -> Result<()> {
+    let total = counter.fetch_add(add, Ordering::Relaxed).checked_add(add);
+    match total {
+        Some(total) if total <= limit => Ok(()),
+        _ => Err(invalid(what)),
+    }
 }
 
 /// Actual rows and decoded row bytes of one loaded file, held to the
-/// ADR-0086 row and decoded envelopes across all of its batches.
-#[derive(Default)]
+/// ADR-0086 row and decoded envelopes across all of its batches. One
+/// `Decoded` per file is shared by every span worker: the counters are
+/// atomic adds and the limits are read once where the load starts, so the
+/// file's envelopes hold while its spans decode concurrently — the batch
+/// that crosses an envelope refuses before it installs, not after the
+/// workers join.
 struct Decoded {
-    rows: u64,
-    bytes: u64,
+    limits: Envelope,
+    rows: AtomicU64,
+    bytes: AtomicU64,
 }
 
 impl Decoded {
-    fn batch(&mut self, rows: usize) -> Result<()> {
-        accumulate(&mut self.rows, rows as u64, MAX_ROWS, "actual decoded rows")
+    fn new() -> Self {
+        Self {
+            limits: envelope(),
+            rows: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+        }
     }
 
-    fn row(&mut self, bytes: u64) -> Result<()> {
-        check_row(bytes)?;
-        accumulate(
-            &mut self.bytes,
+    fn batch(&self, rows: usize) -> Result<()> {
+        charge(&self.rows, rows as u64, MAX_ROWS, "actual decoded rows")
+    }
+
+    fn row(&self, bytes: u64) -> Result<()> {
+        check_row(bytes, self.limits)?;
+        charge(
+            &self.bytes,
             bytes,
-            envelope().decoded,
+            self.limits.decoded,
             "actual decoded bytes",
         )
+    }
+
+    /// Read-side row-envelope accounting (ADR-0086): the row's decoded bytes
+    /// toward its bound — the one byte of slack so the check that follows
+    /// (`row` over `check_row`) refuses a row at exactly the bound instead of
+    /// passing it. Every per-row decoder site charges through here, never its
+    /// own copy of the bound.
+    fn count_row_bytes(&self, sum: &mut u64, add: u64, what: &str) -> Result<()> {
+        accumulate(sum, add, self.limits.row.saturating_add(1), what)
     }
 }
 
@@ -358,6 +381,17 @@ impl Origin {
     }
 }
 
+/// One decoded batch's rows, installed into the graph: the per-kind row
+/// decoder a load worker runs on the batch it just decoded.
+type RowLoader = fn(
+    &dyn relate_engine_api::GraphImport,
+    &Origin,
+    &RecordBatch,
+    &Int64Array,
+    &Decoded,
+    &[(String, ColumnType)],
+) -> Result<()>;
+
 /// Read one loaded file's batches into `load` with its id column and, for
 /// a manifest part, its promoted columns — read once per file from the
 /// schema the part carries (ADR-0534): preflighted, counted against the
@@ -366,36 +400,36 @@ impl Origin {
 /// fixed layout, which is the wide schema with none — so one decode
 /// path serves both shapes; it alone tolerates the pre-shard writers'
 /// null label and type slots.
+///
+/// The file decodes through one reader per [`SpanReaders`] span, one span
+/// per worker ([`span::load`]): every worker decodes its own batches and
+/// installs them as it goes, charging the file's one [`Decoded`] as it goes,
+/// so decode and install share the worker and the file's decode runs across
+/// the cores. A file too small to shard runs its one reader on the current
+/// thread.
 fn load_batches(
+    graph: &dyn relate_engine_api::GraphImport,
     bytes: Vec<u8>,
     kind: Kind,
     origin: &Origin,
-    mut load: impl FnMut(&RecordBatch, &Int64Array, &mut Decoded, &[(String, ColumnType)]) -> Result<()>,
+    load: RowLoader,
 ) -> Result<()> {
-    let builder = preflight(Bytes::from(bytes))?;
-    let mut rules = match origin {
+    let file = Bytes::from(bytes);
+    let builder = preflight(file.clone())?;
+    let rules = match origin {
         Origin::Part(range) => Some(ShardRules::open(&builder, kind, range.clone())?),
         Origin::Monolith => None,
     };
-    // A manifest part decodes its own promoted columns (ADR-0534); a
-    // monolith carries none — the fixed layout, which is the wide schema
-    // with no promoted columns, so one decode path serves both.
-    let columns = rules
-        .as_ref()
-        .map(|rules| rules.columns().to_vec())
-        .unwrap_or_default();
-    let reader = builder.build().map_err(|e| Error::storage(e.to_string()))?;
-    let mut decoded = Decoded::default();
-    for batch in reader {
-        let batch = batch.map_err(|e| Error::storage(e.to_string()))?;
-        decoded.batch(batch.num_rows())?;
-        let ids = match &mut rules {
-            Some(rules) => rules.ids(&batch)?,
-            None => id_column(&batch).ok_or_else(|| Error::storage("id column"))?,
-        };
-        load(&batch, &ids, &mut decoded, &columns)?;
-    }
-    Ok(())
+    // A monolith's ids are not held to the ascending-and-unique rule (only
+    // parts are), so its rows install on one thread: a duplicate id keeps
+    // file order instead of racing the spans.
+    let workers = if rules.is_some() {
+        span::load_workers()
+    } else {
+        1
+    };
+    let spans = SpanReaders::open(file, builder.metadata(), workers)?;
+    span::load(spans, rules.as_ref(), graph, origin, load)
 }
 
 /// A shard's properties column: one tagged-JSON object per row.
@@ -433,12 +467,7 @@ pub(crate) fn load_nodes(
     bytes: Vec<u8>,
     origin: Origin,
 ) -> Result<()> {
-    load_batches(
-        bytes,
-        Kind::Node,
-        &origin,
-        |batch, ids, decoded, columns| wide_node_rows(graph, &origin, batch, ids, decoded, columns),
-    )
+    load_batches(graph, bytes, Kind::Node, &origin, wide_node_rows)
 }
 
 /// One node batch (ADR-0534): the reserved head, one typed column per
@@ -451,7 +480,7 @@ fn wide_node_rows(
     origin: &Origin,
     batch: &RecordBatch,
     ids: &Int64Array,
-    decoded: &mut Decoded,
+    decoded: &Decoded,
     columns: &[(String, ColumnType)],
 ) -> Result<()> {
     let head = wide::reserved_width(Kind::Node);
@@ -470,6 +499,7 @@ fn wide_node_rows(
         .collect::<Result<_>>()?;
     let props = Properties::column(batch, head + columns.len())?;
     let phrases = Kind::Node.phrases();
+    let mut nodes = Vec::with_capacity(batch.num_rows());
     for i in 0..batch.num_rows() {
         let mut row_bytes = encode::fixed_column_bytes(Kind::Node);
         let mut row_labels = Vec::new();
@@ -482,7 +512,11 @@ fn wide_node_rows(
             for j in 0..items.len() {
                 if !items.is_null(j) {
                     let label = items.value(j);
-                    count_row_bytes(&mut row_bytes, label.len() as u64, phrases.row_bytes)?;
+                    decoded.count_row_bytes(
+                        &mut row_bytes,
+                        label.len() as u64,
+                        phrases.row_bytes,
+                    )?;
                     row_labels.push(label.to_string());
                 } else {
                     origin.tolerated::<()>("node shard: null label", ())?;
@@ -499,13 +533,13 @@ fn wide_node_rows(
             props: &props,
         };
         let properties = row.properties(Kind::Node, decoded, row_bytes)?;
-        graph.load_checkpoint_node(Node {
+        nodes.push(Node {
             id: row.id,
             labels: std::sync::Arc::new(row_labels),
             properties: relate_core::PropertyMap::share(properties),
-        })?;
+        });
     }
-    Ok(())
+    graph.load_checkpoint_nodes(&nodes)
 }
 
 pub(crate) fn load_rels(
@@ -513,9 +547,7 @@ pub(crate) fn load_rels(
     bytes: Vec<u8>,
     origin: Origin,
 ) -> Result<()> {
-    load_batches(bytes, Kind::Rel, &origin, |batch, ids, decoded, columns| {
-        wide_rel_rows(graph, &origin, batch, ids, decoded, columns)
-    })
+    load_batches(graph, bytes, Kind::Rel, &origin, wide_rel_rows)
 }
 
 /// One relationship batch (ADR-0534), the sibling of [`wide_node_rows`]:
@@ -527,7 +559,7 @@ fn wide_rel_rows(
     origin: &Origin,
     batch: &RecordBatch,
     ids: &Int64Array,
-    decoded: &mut Decoded,
+    decoded: &Decoded,
     columns: &[(String, ColumnType)],
 ) -> Result<()> {
     let head = wide::reserved_width(Kind::Rel);
@@ -556,13 +588,14 @@ fn wide_rel_rows(
         .collect::<Result<_>>()?;
     let props = Properties::column(batch, head + columns.len())?;
     let phrases = Kind::Rel.phrases();
+    let mut rels = Vec::with_capacity(batch.num_rows());
     for i in 0..batch.num_rows() {
         let mut row_bytes = encode::fixed_column_bytes(Kind::Rel);
         let rel_type = if types.is_null(i) {
             origin.tolerated("relationship shard: null type", String::new())?
         } else {
             let rel_type = types.value(i);
-            count_row_bytes(&mut row_bytes, rel_type.len() as u64, phrases.row_bytes)?;
+            decoded.count_row_bytes(&mut row_bytes, rel_type.len() as u64, phrases.row_bytes)?;
             rel_type.to_string()
         };
         let row = RowColumns {
@@ -572,22 +605,18 @@ fn wide_rel_rows(
             values: &values,
             props: &props,
         };
+        // The bulk installer checks the id and both endpoints, so the
+        // decode does not re-validate them.
         let properties = row.properties(Kind::Rel, decoded, row_bytes)?;
-        let id = row.id;
-        let start = starts.value(i);
-        let end = ends.value(i);
-        relate_core::validate_persisted_id(id, phrases.id)?;
-        relate_core::validate_persisted_id(start, "relationship start ID")?;
-        relate_core::validate_persisted_id(end, "relationship end ID")?;
-        graph.load_checkpoint_rel(Relationship {
-            id,
-            start,
-            end,
+        rels.push(Relationship {
+            id: row.id,
+            start: starts.value(i),
+            end: ends.value(i),
             rel_type,
             properties: relate_core::PropertyMap::share(properties),
-        })?;
+        });
     }
-    Ok(())
+    graph.load_checkpoint_rels(&rels)
 }
 
 /// One row's column side: everything the shared row tail reads — the
@@ -606,12 +635,13 @@ impl RowColumns<'_> {
     /// the batch builders' shared loop): the row-envelope accounting over
     /// the columns' values — the retained key beside its value, the same
     /// bytes the legacy column counted inside its text — and the residual
-    /// text, the decoded-row check, the id validation, and the residual
-    /// decode with the column overlay, returning the row's properties.
+    /// text, the decoded-row check, and the residual decode with the
+    /// column overlay, returning the row's properties. The row id is
+    /// checked by the bulk installer, not here.
     fn properties(
         &self,
         kind: Kind,
-        decoded: &mut Decoded,
+        decoded: &Decoded,
         mut row_bytes: u64,
     ) -> Result<BTreeMap<String, Value>> {
         let phrases = kind.phrases();
@@ -619,15 +649,14 @@ impl RowColumns<'_> {
             // A null slot retains neither the key nor its value; a carried
             // one retains both, and the envelope counts both.
             if value.carries(self.i) {
-                count_row_bytes(&mut row_bytes, key.len() as u64, phrases.row_bytes)?;
+                decoded.count_row_bytes(&mut row_bytes, key.len() as u64, phrases.row_bytes)?;
             }
-            count_row_bytes(&mut row_bytes, value.bytes(self.i), phrases.row_bytes)?;
+            decoded.count_row_bytes(&mut row_bytes, value.bytes(self.i), phrases.row_bytes)?;
         }
         if let Some(text) = self.props.text(self.i) {
-            count_row_bytes(&mut row_bytes, text.len() as u64, phrases.row_bytes)?;
+            decoded.count_row_bytes(&mut row_bytes, text.len() as u64, phrases.row_bytes)?;
         }
         decoded.row(row_bytes)?;
-        relate_core::validate_persisted_id(self.id, phrases.id)?;
         let mut properties = self.props.decode(self.i)?;
         wide::overlay_values(self.values, &mut properties, self.columns, self.i);
         Ok(properties)

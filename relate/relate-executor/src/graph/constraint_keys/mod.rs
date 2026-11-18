@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
 
 use relate_catalog::ConstraintDef;
-use relate_core::{NodeId, RelId, Value};
+use relate_core::{NodeId, RelId, Result, Value};
 use relate_model::{Constraint, ConstraintType};
 
 use crate::group_key::GroupKey;
@@ -563,6 +563,19 @@ pub(super) fn spec_from_model(interner: &Interner, constraint: &Constraint) -> O
 }
 
 impl Graph {
+    /// Install a replayed `CreateConstraint` record: the catalog validates
+    /// the kind first (its vocabulary is closed), so the spec builds before
+    /// the insert moves the def; a uniqueness constraint then backfills its
+    /// committed tuple map from the live graph (ADR-0439).
+    pub(super) fn apply_create_constraint(&self, def: ConstraintDef) -> Result<()> {
+        let spec = spec_from_def(&self.interner, &def);
+        self.catalog.lock().unwrap().insert_constraint(def)?;
+        if let Some(spec) = spec {
+            self.constraint_keys_install(spec);
+        }
+        Ok(())
+    }
+
     /// Install (or re-install) a uniqueness constraint's entries: backfill
     /// from the live graph ([`KeyedConstraint::backfilled`]), hand it to the
     /// index, and charge the new entries net of the refund the index returns

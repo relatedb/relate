@@ -1,4 +1,5 @@
 use super::*;
+use crate::redo::PullKind;
 
 impl Graph {
     pub fn apply_redo(&self, ops: Vec<RedoOp>, commit_ts: u64) -> Result<()> {
@@ -116,26 +117,15 @@ impl Graph {
                     kind,
                     property_type,
                     enforced_label,
-                } => {
-                    let def = ConstraintDef {
-                        name,
-                        relationship,
-                        label,
-                        properties,
-                        kind,
-                        property_type,
-                        enforced_label,
-                    };
-                    // ADR-0439: a uniqueness constraint backfills its
-                    // committed tuple map from the live graph. The catalog
-                    // validates the kind first (its vocabulary is closed), so
-                    // the spec builds before the insert moves the def.
-                    let spec = super::constraint_keys::spec_from_def(&self.interner, &def);
-                    self.catalog.lock().unwrap().insert_constraint(def)?;
-                    if let Some(spec) = spec {
-                        self.constraint_keys_install(spec);
-                    }
-                }
+                } => self.apply_create_constraint(ConstraintDef {
+                    name,
+                    relationship,
+                    label,
+                    properties,
+                    kind,
+                    property_type,
+                    enforced_label,
+                })?,
                 RedoOp::DropConstraint { name } => {
                     self.catalog.lock().unwrap().drop_constraint(&name);
                     self.theater
@@ -223,69 +213,7 @@ impl Graph {
                 RedoOp::PutGraphType { name, body } => {
                     self.theater.lock().unwrap().graph_types.insert(name, body);
                 }
-                RedoOp::SetCurrentGraphType { body } => {
-                    let (previous, derived) = {
-                        let mut theater = self.theater.lock().unwrap();
-                        let previous = theater.derived_constraints.clone();
-                        super::theater::set_current_graph_type(&mut theater, &body)?;
-                        (previous, theater.derived_constraints.clone())
-                    };
-                    // A record written before a generated-name or derivation
-                    // change installs rows under names this binary no longer
-                    // derives. Re-keying them here is what keeps a replayed
-                    // store's catalog equal to its re-derived index (a stale
-                    // row would otherwise survive every purge and turn the
-                    // next `ALTER CURRENT GRAPH TYPE` into a conflict). This
-                    // record replaces the set wholesale — the statement's own
-                    // purge already dropped every record it named — so a
-                    // record the new derivation does not produce goes. Each
-                    // half runs under its own lock: schema capture takes the
-                    // catalog without waiting for the theater, so no path may
-                    // hold both.
-                    let migration = (!previous.is_empty() && previous != derived).then(|| {
-                        super::derived_migration::plan_derived_migration(
-                            &previous,
-                            &derived,
-                            super::derived_migration::UnmatchedRecords::Drop,
-                        )
-                    });
-                    let installed = match &migration {
-                        Some(migration) => {
-                            migration.apply_to_theater(&mut self.theater.lock().unwrap());
-                            migration.apply_to_catalog(&mut self.catalog.lock().unwrap())?
-                        }
-                        None => Vec::new(),
-                    };
-                    {
-                        let catalog = self.catalog.lock().unwrap();
-                        self.legacy_unenforced.lock().unwrap().retain(|name, _| {
-                            !catalog.constraints.get(name).is_some_and(|def| {
-                                derived.get(name).is_some_and(|constraint| {
-                                    matching_enforced_label(def, constraint)
-                                })
-                            })
-                        });
-                    }
-                    if let Some(migration) = migration {
-                        migration
-                            .install_theater_details(&mut self.theater.lock().unwrap(), &installed);
-                        self.refresh_index_charge();
-                        self.recompute_used();
-                    }
-                    // ADR-0439: this arm is the constraint-key map's fourth
-                    // rebuild trigger. The derived set was just replaced
-                    // wholesale from the persisted body, and the per-op row
-                    // stream does not mirror it in every reachable shape:
-                    // a legacy replay record may carry `SetCurrentGraphType`
-                    // alone, without the `CreateConstraint` rows a current
-                    // statement emits first, and a current statement's
-                    // `sync_derived_constraints` skips a derived constraint
-                    // that is schema-equivalent to a surviving catalog one,
-                    // so that derived name has no row either. Rebuild from
-                    // the committed catalog + the re-derived set so the map
-                    // still covers both.
-                    self.rebuild_constraint_keys();
-                }
+                RedoOp::SetCurrentGraphType { body } => self.apply_current_graph_type(&body)?,
                 RedoOp::PullIdentityPut {
                     source,
                     kind,
@@ -302,9 +230,7 @@ impl Graph {
                 }
             }
         }
-        self.pending_redo.lock().unwrap().clear();
-        self.set_commit_ts(commit_ts);
-        self.in_write.store(false, Ordering::Release);
+        self.end_write(commit_ts);
         self.record_redo.store(true, Ordering::Release);
         // ADR-0595: reclaim the label postings the removal sites
         // suspected — here, the single-writer apply's tail, after every

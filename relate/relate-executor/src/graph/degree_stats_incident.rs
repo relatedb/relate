@@ -9,7 +9,8 @@
 use relate_core::NodeId;
 
 use super::count_state::CountDelta;
-use super::{Graph, LabelCache};
+use super::rebuild::LabelCache;
+use super::Graph;
 
 /// One rel incident to a node, in the one record shape every
 /// label-mutation path sees it (LABS-515): the apply walk

@@ -11,11 +11,71 @@
 //! folds); the end-side build keys on the other endpoint and partitions
 //! inside `adjacency::adj_build`.
 
+use std::collections::HashMap;
+
+use relate_core::{NodeId, RelId};
+
 use super::adjacency::adj_build;
 #[cfg(test)]
 use super::build_counter::BuildCounter;
 use super::shard::shard_rows;
-use super::{live_version, Graph, LabelCache, RelRow};
+use super::{live_version, Graph};
+
+/// One live rel row of a wholesale adjacency build — the seam
+/// `rebuild_adj` materializes once and hands to `adjacency::adj_build`
+/// and both rebuild folds (`rebuild_degree_stats`,
+/// `rebuild_count_stats`) consume. Named fields rather than a positional
+/// tuple: `start` and `end` share a type, so a swapped pair would compile
+/// and only the adjacency tests would catch it.
+pub(in crate::graph) struct RelRow {
+    pub(in crate::graph) id: RelId,
+    pub(in crate::graph) start: NodeId,
+    pub(in crate::graph) type_id: u32,
+    pub(in crate::graph) end: NodeId,
+    pub(in crate::graph) ts: Option<i64>,
+}
+
+/// The wholesale rebuild folds' shared label cache: one live-label
+/// read per distinct endpoint node ([`Graph::live_label_ids`]), the
+/// same seam [`Graph::rebuild_count_stats`] and
+/// [`Graph::rebuild_degree_stats`] both fold over — one spelling of
+/// the ensure-then-expect read, never a hand-rolled map per file.
+#[derive(Default)]
+pub(in crate::graph) struct LabelCache(HashMap<NodeId, Vec<u32>>);
+
+/// The one label-cache fill both label maps ride: `node`'s live labels
+/// read exactly once into `map`, then the entry borrowed — the
+/// cache-fill-and-borrow pattern, so no per-lookup clone of the live set
+/// rides a walk. The two maps' *read* contracts differ and stay their
+/// own: [`LabelCache::get`] is the apply fold's read-only view (its miss
+/// is an invariant break, loudly), while the stats estimate's simulated
+/// set (`BatchSim::node_labels`) is mutable — an `AddLabels` step extends
+/// it and the pair phase reads the extended set back.
+pub(in crate::graph) fn fill_labels<'m>(
+    map: &'m mut HashMap<NodeId, Vec<u32>>,
+    graph: &Graph,
+    node: NodeId,
+) -> &'m mut Vec<u32> {
+    map.entry(node)
+        .or_insert_with(|| graph.live_label_ids(node))
+}
+
+impl LabelCache {
+    /// Read `node`'s live labels into the cache exactly once, through the
+    /// one fill shape.
+    pub(in crate::graph) fn ensure(&mut self, graph: &Graph, node: NodeId) {
+        fill_labels(&mut self.0, graph, node);
+    }
+
+    /// The cached labels — the fold ensured the node's entry first, so
+    /// a miss is the fold's own invariant broken, loudly.
+    pub(in crate::graph) fn get(&self, node: NodeId) -> &[u32] {
+        self.0
+            .get(&node)
+            .expect("the fold cached every endpoint's labels")
+            .as_slice()
+    }
+}
 
 #[cfg(test)]
 thread_local! {

@@ -16,6 +16,7 @@ use relate_core::{Error, Result};
 use crate::redo;
 
 use super::theater::TheaterData;
+use super::Graph;
 
 /// Re-derive the current graph type's constraint index into `data` and carry
 /// the catalog rows (and their backing indexes' details) that belong to the
@@ -55,6 +56,70 @@ pub(super) fn rederive_derived_constraints(
     let installed = migration.apply_to_catalog(catalog)?;
     migration.install_theater_details(data, &installed);
     Ok(())
+}
+
+impl Graph {
+    /// Install a `SetCurrentGraphType` record: replace the theater's
+    /// current graph type and derived index with the persisted body, then
+    /// re-key the catalog rows (and their index details) a previous
+    /// derivation under a changed naming or derivation had left behind.
+    pub(super) fn apply_current_graph_type(
+        &self,
+        body: &crate::graph_type::GraphTypeSpec,
+    ) -> Result<()> {
+        let (previous, derived) = {
+            let mut theater = self.theater.lock().unwrap();
+            let previous = theater.derived_constraints.clone();
+            super::theater::set_current_graph_type(&mut theater, body)?;
+            (previous, theater.derived_constraints.clone())
+        };
+        // A record written before a generated-name or derivation change
+        // installs rows under names this binary no longer derives. Re-keying
+        // them here is what keeps a replayed store's catalog equal to its
+        // re-derived index (a stale row would otherwise survive every purge
+        // and turn the next `ALTER CURRENT GRAPH TYPE` into a conflict). This
+        // record replaces the set wholesale — the statement's own purge
+        // already dropped every record it named — so a record the new
+        // derivation does not produce goes. Each half runs under its own
+        // lock: schema capture takes the catalog without waiting for the
+        // theater, so no path may hold both.
+        let migration = (!previous.is_empty() && previous != derived)
+            .then(|| plan_derived_migration(&previous, &derived, UnmatchedRecords::Drop));
+        let installed = match &migration {
+            Some(migration) => {
+                migration.apply_to_theater(&mut self.theater.lock().unwrap());
+                migration.apply_to_catalog(&mut self.catalog.lock().unwrap())?
+            }
+            None => Vec::new(),
+        };
+        {
+            let catalog = self.catalog.lock().unwrap();
+            self.legacy_unenforced.lock().unwrap().retain(|name, _| {
+                !catalog.constraints.get(name).is_some_and(|def| {
+                    derived
+                        .get(name)
+                        .is_some_and(|constraint| super::matching_enforced_label(def, constraint))
+                })
+            });
+        }
+        if let Some(migration) = migration {
+            migration.install_theater_details(&mut self.theater.lock().unwrap(), &installed);
+            self.refresh_index_charge();
+            self.recompute_used();
+        }
+        // ADR-0439: this arm is the constraint-key map's fourth rebuild
+        // trigger. The derived set was just replaced wholesale from the
+        // persisted body, and the per-op row stream does not mirror it in
+        // every reachable shape: a legacy replay record may carry
+        // `SetCurrentGraphType` alone, without the `CreateConstraint` rows a
+        // current statement emits first, and a current statement's
+        // `sync_derived_constraints` skips a derived constraint that is
+        // schema-equivalent to a surviving catalog one, so that derived name
+        // has no row either. Rebuild from the committed catalog + the
+        // re-derived set so the map still covers both.
+        self.rebuild_constraint_keys();
+        Ok(())
+    }
 }
 
 /// What a re-derivation moves and drops, split into the theater half and the

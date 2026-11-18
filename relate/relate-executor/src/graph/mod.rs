@@ -9,7 +9,7 @@ use crate::adjacency::{SealedArena, TypedAdj};
 use crate::group_key::GroupKey;
 use crate::memory::ChainShape;
 use crate::pull_identity::PullIdentityIndex;
-use crate::redo::{self, PullKind, RedoOp};
+use crate::redo::{self, RedoOp};
 use crate::store::{Interner, LiveNode, LiveRel, RelTypes};
 
 use constraint_keys::ConstraintKeyIndex;
@@ -35,6 +35,7 @@ macro_rules! atomic_fetch_update {
     }};
 }
 
+mod access;
 mod accounting;
 #[cfg(any(test, feature = "test-hooks"))]
 mod build_counter;
@@ -125,82 +126,6 @@ use theater::TheaterData;
 /// (LABS-337/LABS-358); ADR-0355's rule: a key that is attacker-writable
 /// must not use it.
 pub(crate) type CoreMap<K, V> = dashmap::DashMap<K, V, crate::hash_seed::FxBuildHasher>;
-
-/// The visible version at `ts` — the one walk every `*_at` read takes
-/// over a version chain (LABS-337's extraction of the previously
-/// five-times-spelled rev-find).
-fn visible_version<Live>(vers: &Chain<Live>, ts: u64) -> Option<VerRef<'_, Live>> {
-    vers.visible_at(ts)
-}
-
-/// The LIVE version — the last `xmax == 0` one, not a ts-probe: the
-/// maintained-statistics paths run inside the write window, where a rel
-/// created earlier in the same batch is invisible at `commit_ts` and one
-/// deleted in the batch keeps a live-looking pre-delete version. The
-/// `xmax == 0` convention is the one every live-version reader in the graph
-/// module uses (`live_label_ids`, the rebuild's live-rel scan, and the
-/// constraint_keys family's snapshots and backfills).
-fn live_version<Live>(vers: &Chain<Live>) -> Option<VerRef<'_, Live>> {
-    vers.live()
-}
-
-/// One live rel row of a wholesale adjacency build — the seam
-/// `rebuild_adj` materializes once and hands to `adjacency::adj_build`
-/// and both rebuild folds (`rebuild_degree_stats`,
-/// `rebuild_count_stats`) consume. It lives here beside [`LabelCache`],
-/// not in the adjacency-accessor sibling: the folds read it without
-/// touching adjacency. Named fields rather than a positional tuple:
-/// `start` and `end` share a type, so a swapped pair would compile and
-/// only the adjacency tests would catch it.
-pub(in crate::graph) struct RelRow {
-    pub(in crate::graph) id: RelId,
-    pub(in crate::graph) start: NodeId,
-    pub(in crate::graph) type_id: u32,
-    pub(in crate::graph) end: NodeId,
-    pub(in crate::graph) ts: Option<i64>,
-}
-
-/// The wholesale rebuild folds' shared label cache: one live-label
-/// read per distinct endpoint node ([`Graph::live_label_ids`]), the
-/// same seam [`Graph::rebuild_count_stats`] and
-/// [`Graph::rebuild_degree_stats`] both fold over — one spelling of
-/// the ensure-then-expect read, never a hand-rolled map per file.
-#[derive(Default)]
-pub(in crate::graph) struct LabelCache(HashMap<NodeId, Vec<u32>>);
-
-/// The one label-cache fill both label maps ride: `node`'s live labels
-/// read exactly once into `map`, then the entry borrowed — the
-/// cache-fill-and-borrow pattern, so no per-lookup clone of the live set
-/// rides a walk. The two maps' *read* contracts differ and stay their
-/// own: [`LabelCache::get`] is the apply fold's read-only view (its miss
-/// is an invariant break, loudly), while the stats estimate's simulated
-/// set (`BatchSim::node_labels`) is mutable — an `AddLabels` step extends
-/// it and the pair phase reads the extended set back.
-pub(in crate::graph) fn fill_labels<'m>(
-    map: &'m mut HashMap<NodeId, Vec<u32>>,
-    graph: &Graph,
-    node: NodeId,
-) -> &'m mut Vec<u32> {
-    map.entry(node)
-        .or_insert_with(|| graph.live_label_ids(node))
-}
-
-impl LabelCache {
-    /// Read `node`'s live labels into the cache exactly once, through the
-    /// one fill shape.
-    pub(in crate::graph) fn ensure(&mut self, graph: &Graph, node: NodeId) {
-        fill_labels(&mut self.0, graph, node);
-    }
-
-    /// The cached labels — the fold ensured the node's entry first, so
-    /// a miss is the fold's own invariant broken, loudly.
-    pub(in crate::graph) fn get(&self, node: NodeId) -> &[u32] {
-        self.0
-            .get(&node)
-            .expect("the fold cached every endpoint's labels")
-            .as_slice()
-    }
-}
 
 /// The store's token resolver (ADR-0541): the facade hands the graph to the
 /// planner beside its statistics, so plan-time resolution reads the same
@@ -299,7 +224,8 @@ pub struct Procedure {
     pub rows: Vec<BTreeMap<String, Value>>,
 }
 
-use chain::{Chain, Ver, VerRef};
+use access::{live_version, visible_version};
+use chain::{Chain, Ver};
 use id_vec::IdVec;
 
 /// The one MVCC version-chain record: node and rel chains share the shape
@@ -377,6 +303,14 @@ pub struct Graph {
     published_ts: AtomicU64,
     write_ts: AtomicU64,
     in_write: AtomicBool,
+    /// The graph's restore phase: one latch, born open and closed once by
+    /// `graph/restore.rs::close_restoring` (`finish_restore`, a published
+    /// commit, a redo apply). Checkpoint rows install only while it is open
+    /// (`graph/restore.rs::check_restoring`). The phase is the refusal's
+    /// evidence, never a slot's version-chain shape: a committed
+    /// single-version write leaves an `Inline` chain, indistinguishable
+    /// from an earlier row of an overlapping legacy part (ADR-0183).
+    restoring: AtomicBool,
     record_redo: AtomicBool,
     nodes: IdVec<Chain<LiveNode>>,
     rels: IdVec<Chain<LiveRel>>,
@@ -466,6 +400,7 @@ impl Default for Graph {
             published_ts: AtomicU64::new(0),
             write_ts: AtomicU64::new(0),
             in_write: AtomicBool::new(false),
+            restoring: AtomicBool::new(true),
             record_redo: AtomicBool::new(true),
             nodes: IdVec::default(),
             rels: IdVec::default(),
@@ -645,19 +580,34 @@ impl Graph {
         std::mem::take(&mut *self.pending_redo.lock().unwrap())
     }
 
-    /// Publish after WAL fsync.
-    pub fn commit_write(&self) {
-        self.set_commit_ts(self.write_ts.load(Ordering::Acquire));
+    /// The write window's one close: publish `commit_ts`, then the shared
+    /// window end — a graph that took a write is live, whatever shape its
+    /// version chains hold.
+    fn end_write(&self, commit_ts: u64) {
+        self.set_commit_ts(commit_ts);
+        self.close_window();
+        self.close_restoring();
+    }
+
+    /// Drop the in-flight flag and the buffered redo — the half of the
+    /// window's end a commit and an abort share. An abort leaves the restore
+    /// phase alone: it never opened a load, and the phase is the load's
+    /// guard, not the write's.
+    fn close_window(&self) {
         self.in_write.store(false, Ordering::Release);
         self.pending_redo.lock().unwrap().clear();
+    }
+
+    /// Publish after WAL fsync.
+    pub fn commit_write(&self) {
+        self.end_write(self.write_ts.load(Ordering::Acquire));
     }
 
     pub fn abort_write(&self) {
         let ts = self.write_ts.load(Ordering::Acquire);
         self.nodes.retain(|_, vers| vers.abort(ts));
         self.rels.retain(|_, vers| vers.abort(ts));
-        self.in_write.store(false, Ordering::Release);
-        self.pending_redo.lock().unwrap().clear();
+        self.close_window();
         self.rebuild_adj();
         self.rebuild_indexes();
     }
@@ -737,8 +687,7 @@ impl Graph {
         self.nodes
             .get(&id)
             .and_then(|vers| {
-                vers.visible_at(ts)
-                    .map(|v| v.live.props.keys_as_strings(&self.interner))
+                visible_version(&vers, ts).map(|v| v.live.props.keys_as_strings(&self.interner))
             })
             .unwrap_or_default()
     }
@@ -747,8 +696,7 @@ impl Graph {
         self.rels
             .get(&id)
             .and_then(|vers| {
-                vers.visible_at(ts)
-                    .map(|v| v.live.payload.keys(&self.interner))
+                visible_version(&vers, ts).map(|v| v.live.payload.keys(&self.interner))
             })
             .unwrap_or_default()
     }
@@ -774,8 +722,7 @@ impl Graph {
         self.rels
             .get(&id)
             .and_then(|vers| {
-                vers.visible_at(ts)
-                    .map(|v| crate::memory::live_rel_account_live(v.live))
+                visible_version(&vers, ts).map(|v| crate::memory::live_rel_account_live(v.live))
             })
             .unwrap_or(0)
     }
@@ -783,8 +730,7 @@ impl Graph {
     fn rel_form(&self, id: RelId) -> Option<crate::store::PayloadForm> {
         let ts = self.read_ts();
         self.rels.get(&id).and_then(|vers| {
-            vers.visible_at(ts)
-                .map(|v| v.live.payload.form(&self.interner))
+            visible_version(&vers, ts).map(|v| v.live.payload.form(&self.interner))
         })
     }
 
@@ -828,35 +774,8 @@ impl Graph {
             }
         }
     }
-
-    pub fn node_value(&self, id: NodeId) -> Value {
-        self.node(id).map(Value::from_node).unwrap_or(Value::Null)
-    }
-
-    pub fn rel_value(&self, id: RelId) -> Value {
-        self.rel(id)
-            .map(Value::from_relationship)
-            .unwrap_or(Value::Null)
-    }
-
-    pub fn pull_identity_get(&self, source: &str, kind: PullKind, remote_id: &str) -> Option<i64> {
-        self.pull_identity.get(source, kind, remote_id)
-    }
-
-    pub fn pull_identity_put(
-        &self,
-        source: String,
-        kind: PullKind,
-        remote_id: String,
-        local_id: i64,
-    ) {
-        self.pull_identity.put(source, kind, remote_id, local_id);
-    }
-
-    pub fn drop_pull_identity(&self, kind: PullKind, local_id: i64) {
-        self.pull_identity.remove(kind, local_id);
-    }
 }
+
 /// Whether a graph-type spec could carry property default values
 /// (CIP-262): any element type's property declares one, or any implied
 /// label identifies another node element type (whose chain may inherit
@@ -893,36 +812,6 @@ impl Graph {
     /// `None` selects every type, `Some(wanted)` the listed ids.
     pub(crate) fn selects_type(wanted: Option<&[u32]>, type_id: u32) -> bool {
         wanted.is_none_or(|wanted| wanted.contains(&type_id))
-    }
-
-    pub fn all_rel_ids(&self) -> Vec<RelId> {
-        self.all_rel_ids_at(self.read_ts())
-    }
-
-    pub fn all_rel_ids_at(&self, ts: u64) -> Vec<RelId> {
-        let mut ids: Vec<_> = self
-            .rels
-            .keys()
-            .into_iter()
-            .filter(|id| self.rel_visible_at(*id, ts))
-            .collect();
-        ids.sort();
-        ids
-    }
-
-    pub fn all_node_ids(&self) -> Vec<NodeId> {
-        self.all_node_ids_at(self.read_ts())
-    }
-
-    pub fn all_node_ids_at(&self, ts: u64) -> Vec<NodeId> {
-        let mut ids: Vec<_> = self
-            .nodes
-            .keys()
-            .into_iter()
-            .filter(|id| self.node_visible_at(*id, ts))
-            .collect();
-        ids.sort();
-        ids
     }
 
     pub(crate) fn node_visible_at(&self, id: NodeId, ts: u64) -> bool {

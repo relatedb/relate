@@ -20,8 +20,9 @@ use relate_core::NodeId;
 use relate_planner::DegreeMoments;
 
 use super::count_state::{CountDelta, LabelMutation};
+use super::rebuild::{LabelCache, RelRow};
 use super::shard;
-use super::{Graph, LabelCache, RelRow};
+use super::Graph;
 
 /// The histogram family's map: per-(label, rel-type) out-degree bucket
 /// counts, [`Graph::DEGREE_BUCKETS`] each. A type rather than a bare

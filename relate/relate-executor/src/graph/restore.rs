@@ -3,29 +3,31 @@
 
 use super::id_vec::IdVec;
 use super::*;
+use crate::store::NameCache;
 
 /// Every checkpoint row is restored as a version born at ts 1.
 const RESTORED_XMIN: u64 = 1;
 
-/// Install a checkpoint row as `id`'s only version, inline. Before any
-/// write a slot holds at most an earlier row for the same id — overlapping
-/// legacy parts (ADR-0183) can hold an id twice — and the later row replaces
-/// it rather than stacking a second live version a delete would leave visible.
-fn restore<Live>(map: &IdVec<Chain<Live>>, id: i64, live: Live) -> Result<()> {
-    match map.entry(id) {
-        super::id_vec::Entry::Vacant(mut slot) => {
-            slot.insert(Chain::inline(RESTORED_XMIN, live));
-        }
-        super::id_vec::Entry::Occupied(mut slot) => match slot.get_mut() {
-            prev @ Chain::Inline { .. } => *prev = Chain::inline(RESTORED_XMIN, live),
-            Chain::Spilled(_) => {
-                return Err(relate_core::Error::storage(
-                    "checkpoint restore into a graph with committed writes",
-                ))
-            }
-        },
-    }
-    Ok(())
+/// Install a slice's checkpoint rows as each id's only version, inline,
+/// under one store lock. Before any write a slot holds at most an earlier
+/// row for the same id — overlapping legacy parts (ADR-0183) can hold an id
+/// twice — and the later row replaces it rather than stacking a second
+/// live version a delete would leave visible. One lock for the slice, not
+/// one per row: concurrent load workers would otherwise convoy on the
+/// store's lock and land slower than the serial load. The slice's rows are
+/// admitted whole before the first write: a slice with a committed write in
+/// it refuses without restoring a single row.
+fn restore_slice<Live>(map: &IdVec<Chain<Live>>, rows: Vec<(i64, Live)>) -> Result<()> {
+    let rows = rows
+        .into_iter()
+        .map(|(id, live)| (id, Chain::inline(RESTORED_XMIN, live)))
+        .collect();
+    map.install_batch(rows, |previous| match previous {
+        None | Some(Chain::Inline { .. }) => Ok(()),
+        Some(Chain::Spilled(_)) => Err(relate_core::Error::storage(
+            "checkpoint restore into a graph with committed writes",
+        )),
+    })
 }
 
 /// Checkpoint payload of `id`'s version visible at `ts`, measured by
@@ -39,7 +41,9 @@ fn visible_checkpoint_bytes<Live>(
     let Some(vers) = map.get(&id) else {
         return Ok(None);
     };
-    vers.visible_at(ts).map(|v| bytes(v.live)).transpose()
+    visible_version(&vers, ts)
+        .map(|v| bytes(v.live))
+        .transpose()
 }
 
 impl Graph {
@@ -77,67 +81,143 @@ impl Graph {
     }
 
     /// Restore a node from a checkpoint (visible at commit_ts). Loading an
-    /// id again replaces its row; the later row wins. Only valid on a graph
-    /// being restored, before any write: an open write is `Error::Storage`.
-    /// The label index is built by `Graph::finish_restore` after the load.
+    /// id again replaces its row; the later row wins. Only valid in the
+    /// graph's restore phase, before any write and before
+    /// `Graph::finish_restore` closes it: either is `Error::Storage`. The
+    /// label index is built by `Graph::finish_restore` after the load.
     pub fn load_checkpoint_node(&self, node: Node) -> Result<()> {
-        self.check_restoring()?;
-        let next = checked_persisted_id(node.id, "node")?;
-        self.next_node_id.fetch_max(next, Ordering::Relaxed);
-        self.catalog
-            .lock()
-            .unwrap()
-            .record_labels(node.labels.iter().cloned());
-        let live = LiveNode::from_parts(
-            &self.interner,
-            std::sync::Arc::unwrap_or_clone(node.labels),
-            std::sync::Arc::unwrap_or_clone(node.properties).into(),
-        );
-        restore(&self.nodes, node.id, live)
+        self.load_checkpoint_nodes(&[node])
     }
 
     /// Restore a relationship from a checkpoint. Loading an id again
     /// replaces its row, endpoints and type included; the later row wins.
-    /// Only valid on a graph being restored, before any write: an open
-    /// write is `Error::Storage`. Adjacency is built from the restored rows
-    /// by `Graph::finish_restore` after the load.
+    /// Only valid in the graph's restore phase, before any write and before
+    /// `Graph::finish_restore` closes it: either is `Error::Storage`.
+    /// Adjacency is built from the restored rows by `Graph::finish_restore`
+    /// after the load.
     pub fn load_checkpoint_rel(&self, rel: Relationship) -> Result<()> {
-        self.check_restoring()?;
-        let next = checked_persisted_id(rel.id, "relationship")?;
-        checked_persisted_id(rel.start, "relationship start")?;
-        checked_persisted_id(rel.end, "relationship end")?;
-        self.next_rel_id.fetch_max(next, Ordering::Relaxed);
-        let live = LiveRel::from_parts(
-            &self.interner,
-            rel.start,
-            rel.end,
-            &rel.rel_type,
-            std::sync::Arc::unwrap_or_clone(rel.properties).into(),
-        );
-        self.catalog.lock().unwrap().record_rel_type(rel.rel_type);
-        restore(&self.rels, rel.id, live)
+        self.load_checkpoint_rels(&[rel])
     }
 
-    /// End a checkpoint load, after its last row: build adjacency — the
-    /// build itself emits the durable shape, the chunks at or above the
-    /// seal floor straight into their folded form (ADR-0608) — and clear
-    /// the dirty ids, which the checkpoint already holds. Called once per
-    /// load. The index rebuild is deliberately NOT here: the open flow's
-    /// single post-replay site runs it exactly once per open, after the
-    /// graph is final (snapshot plus replayed tail) — a snapshot+tail
-    /// reopen must not pay the whole-graph rebuild twice (LABS-1112).
+    /// Install a slice of checkpoint nodes — one decoded batch, a
+    /// window-disjoint run of ids from one part. The installer validates
+    /// every row id in the slice, so a caller does not repeat the check;
+    /// the next-id bump, the catalog update and the store lock are one per
+    /// slice instead of one per row, so concurrent load workers install
+    /// without contending on a per-row lock.
+    pub fn load_checkpoint_nodes(&self, nodes: &[Node]) -> Result<()> {
+        self.begin_restoring()?;
+        let mut next = 0;
+        for node in nodes {
+            next = next.max(checked_persisted_id(node.id, "node")?);
+        }
+        self.next_node_id.fetch_max(next, Ordering::Relaxed);
+        self.catalog
+            .lock()
+            .unwrap()
+            .record_labels(nodes.iter().flat_map(|node| node.labels.iter().cloned()));
+        let mut names = NameCache::default();
+        let rows = nodes
+            .iter()
+            .map(|node| {
+                let live = LiveNode::from_parts_cached(
+                    &self.interner,
+                    &mut names,
+                    &node.labels,
+                    &node.properties,
+                );
+                (node.id, live)
+            })
+            .collect();
+        restore_slice(&self.nodes, rows)
+    }
+
+    /// Relationship sibling of [`Self::load_checkpoint_nodes`]: it
+    /// validates each row's id and both endpoints, and the later row wins
+    /// by id, endpoints and type included.
+    pub fn load_checkpoint_rels(&self, rels: &[Relationship]) -> Result<()> {
+        self.begin_restoring()?;
+        let mut next = 0;
+        for rel in rels {
+            next = next.max(checked_persisted_id(rel.id, "relationship")?);
+            checked_persisted_id(rel.start, "relationship start")?;
+            checked_persisted_id(rel.end, "relationship end")?;
+        }
+        self.next_rel_id.fetch_max(next, Ordering::Relaxed);
+        {
+            let mut catalog = self.catalog.lock().unwrap();
+            for rel in rels {
+                catalog.record_rel_type(rel.rel_type.clone());
+            }
+        }
+        let mut names = NameCache::default();
+        let rows = rels
+            .iter()
+            .map(|rel| {
+                let live = LiveRel::from_parts_cached(
+                    &self.interner,
+                    &mut names,
+                    rel.start,
+                    rel.end,
+                    &rel.rel_type,
+                    &rel.properties,
+                );
+                (rel.id, live)
+            })
+            .collect();
+        restore_slice(&self.rels, rows)
+    }
+
+    /// End a checkpoint load, after its last row: close the restore phase
+    /// first — "the load is over" is true from the first step of
+    /// finalization, so no slice is admitted while the tail runs — then
+    /// build adjacency (the build itself emits the durable shape, the
+    /// chunks at or above the seal floor straight into their folded form,
+    /// ADR-0608) and clear the dirty ids, which the checkpoint already
+    /// holds. Called once per load. The index rebuild is deliberately NOT
+    /// here: the open flow's single post-replay site runs it exactly once
+    /// per open, after the graph is final (snapshot plus replayed tail) — a
+    /// snapshot+tail reopen must not pay the whole-graph rebuild twice
+    /// (LABS-1112).
     #[doc(hidden)]
     pub fn finish_restore(&self) {
+        self.close_restoring();
         self.rebuild_adj();
         self.clear_checkpoint_dirty();
     }
 
-    fn check_restoring(&self) -> Result<()> {
+    /// A checkpoint load's entry: take the graph's restore phase for a
+    /// slice. The phase is one latch — born open, closed once by
+    /// [`Self::close_restoring`] — so every later slice of the same load
+    /// takes the same open latch; a graph that left it is refused in
+    /// [`Self::check_restoring`].
+    fn begin_restoring(&self) -> Result<()> {
         if self.in_write.load(Ordering::Acquire) {
             return Err(relate_core::Error::storage(
                 "checkpoint restore while a write is open",
             ));
         }
+        self.check_restoring()
+    }
+
+    /// The latch's read half: refuse a load the graph no longer accepts —
+    /// the restore phase closed by `finish_restore` or a published commit.
+    /// The phase, never a slot's version-chain shape, is the evidence: a
+    /// committed single-version write leaves the `Inline` chain a restored
+    /// row itself holds, and shape cannot tell the two apart.
+    fn check_restoring(&self) -> Result<()> {
+        if !self.restoring.load(Ordering::Acquire) {
+            return Err(relate_core::Error::storage(
+                "checkpoint restore into a graph with committed writes",
+            ));
+        }
         Ok(())
+    }
+
+    /// The latch's one transition: open -> closed, final. Every entry that
+    /// ends the restore phase — [`Self::finish_restore`], a published
+    /// commit, a redo apply — closes through here.
+    pub(super) fn close_restoring(&self) {
+        self.restoring.store(false, Ordering::Release);
     }
 }

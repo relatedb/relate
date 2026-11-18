@@ -283,13 +283,9 @@ fn a_case_only_key_rename_survives_checkpoint() {
     .unwrap();
     let (graph, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     let node = node_by_name(&graph, "ada");
-    graph
-        .load_checkpoint_node(Node {
-            id: node.id,
-            labels: node.labels.clone(),
-            properties: props(&[("name", string("Ada")), ("body", string("body"))]),
-        })
-        .unwrap();
+    graph.begin_write().unwrap();
+    graph.set_property_node(node.id, "name", string("Ada"));
+    graph.commit_write();
     crate::checkpoint(&store, &graph, None).unwrap();
     // The renamed node's file holds the new spelling's content, and the
     // node survives a reopen.
@@ -440,14 +436,15 @@ fn an_open_engine_write_survives_its_own_checkpoint_and_reopen() {
     crate::checkpoint(&store, &person_graph(), None).unwrap();
     let (graph, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
     // A node added in-session (id above the loaded range).
-    graph
-        .load_checkpoint_node(Node {
-            id: 9,
-            labels: Arc::new(vec!["Person".into()]),
-            properties: props(&[("name", string("Mary"))]),
-        })
+    graph.begin_write().unwrap();
+    let mary = graph
+        .create_node(
+            vec!["Person".into()],
+            BTreeMap::from([("name".to_string(), string("Mary"))]),
+        )
         .unwrap();
-    graph.set_next_node_id(10);
+    graph.commit_write();
+    assert!(mary > 3, "the added node lands above the loaded range");
     crate::checkpoint_with_lsn(&store, &graph, 1, None).unwrap();
     assert!(store.vfs().exists("Person/Mary.md").unwrap());
     let (reloaded, _wal) = crate::open_store::<relate_executor::Graph>(&store).unwrap();

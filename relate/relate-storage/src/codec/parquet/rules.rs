@@ -22,14 +22,23 @@ use super::wide::{self, ColumnType};
 /// row outside it would be lost or loaded twice. One value checks one file,
 /// batch by batch.
 pub(super) struct ShardRules {
-    /// The part's declared id range.
-    range: Range<i64>,
-    /// The last id of the batches checked so far.
-    last: Option<i64>,
     /// The part's promoted columns (ADR-0534), read from the file's own
     /// schema — empty for the fixed shape, which is the wide schema with
     /// no promoted columns.
     columns: Vec<(String, ColumnType)>,
+    /// The part's declared id range and the last id checked so far.
+    window: IdWindow,
+}
+
+/// The id half of [`ShardRules`]: the part's declared id range, and the last
+/// id of the batches checked so far. Every reader of one file checks from
+/// its own window — the copy cursor walking the file, and each span of a
+/// concurrent load.
+pub(super) struct IdWindow {
+    /// The part's declared id range.
+    range: Range<i64>,
+    /// The last id of the batches checked so far.
+    last: Option<i64>,
 }
 
 /// The id column of `batch`, the first, when it is Int64.
@@ -40,6 +49,16 @@ pub(super) fn id_column(batch: &RecordBatch) -> Option<Int64Array> {
         .as_any()
         .downcast_ref::<Int64Array>()
         .cloned()
+}
+
+/// The one ascending-id refusal: `next` follows `last` strictly, so no id
+/// repeats. A file's ids ascend across its batches ([`IdWindow::ids`])
+/// and across the spans a concurrent load cuts it into; both check here.
+pub(super) fn ascending(last: Option<i64>, next: i64) -> Result<()> {
+    match last {
+        Some(last) if last >= next => Err(Error::storage("ids are not strictly ascending")),
+        _ => Ok(()),
+    }
 }
 
 impl ShardRules {
@@ -55,10 +74,19 @@ impl ShardRules {
         let columns = wide::recover_columns(kind, builder.schema())
             .ok_or_else(|| Error::storage("schema differs from the shard schema"))?;
         Ok(Self {
-            range,
-            last: None,
             columns,
+            window: IdWindow { range, last: None },
         })
+    }
+
+    /// The id window over the validated rules, from the file's start: one
+    /// per span, so a load worker checks the ids it decodes while the file's
+    /// rules stay the column set recovered once from its schema.
+    pub(super) fn restart(&self) -> IdWindow {
+        IdWindow {
+            range: self.window.range.clone(),
+            last: None,
+        }
     }
 
     /// The part's promoted columns (ADR-0534), in file order: a wide
@@ -66,7 +94,9 @@ impl ShardRules {
     pub(super) fn columns(&self) -> &[(String, ColumnType)] {
         &self.columns
     }
+}
 
+impl IdWindow {
     /// Check the ids of the file's next batch, across batches too, and
     /// return them. They ascend, so the batch's first and last ids bound
     /// the rest within the range.
@@ -75,13 +105,9 @@ impl ShardRules {
         if ids.null_count() > 0 {
             return Err(Error::storage("null id"));
         }
-        if !self
-            .last
-            .iter()
-            .chain(ids.values())
-            .is_sorted_by(|a, b| a < b)
-        {
-            return Err(Error::storage("ids are not strictly ascending"));
+        for id in ids.values() {
+            ascending(self.last, *id)?;
+            self.last = Some(*id);
         }
         let ends = ids.values().first().into_iter().chain(ids.values().last());
         if let Some(outside) = ends.copied().find(|id| !self.range.contains(id)) {
@@ -90,7 +116,6 @@ impl ShardRules {
                 self.range.start, self.range.end
             )));
         }
-        self.last = ids.values().last().copied().or(self.last);
         Ok(ids)
     }
 }
@@ -173,10 +198,9 @@ mod tests {
     fn the_range_rule_holds_across_batches() {
         // Ids ascend across batches, so each batch's ends bound it; a later
         // batch that leaves the range fails once it is read.
-        let mut rules = ShardRules {
+        let mut rules = IdWindow {
             range: 0..10,
             last: None,
-            columns: Vec::new(),
         };
         let batch = |ids: Vec<i64>| {
             let ids: Arc<dyn Array> = Arc::new(Int64Array::from(ids));

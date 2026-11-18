@@ -100,15 +100,18 @@ pub(crate) struct SnapshotRows {
     pub(crate) next_rel_id: i64,
 }
 
+/// Rows per install slice: one batch-sized run.
+const INSTALL_SLICE_ROWS: usize = 1024;
+
 impl SnapshotRows {
     /// Rebuild the in-memory graph from these rows — the load tail every
     /// codec that decodes into rows shares: id validation, next-id
     /// seeding, the checkpoint rows, the commit-timestamp floor, then the
-    /// catalog restore. Takes `self` and moves the rows out: no caller
-    /// needs them afterwards, and a shared tail must not add a clone per
-    /// row to the load path.
+    /// catalog restore. Each kind installs in bounded slices: the graph's
+    /// bulk impl reads a slice in place, and the row order is kept, so the
+    /// later row of an id still wins.
     pub(crate) fn into_graph<G: SnapshotGraph>(
-        mut self,
+        self,
         wire: CatalogWire,
         envelope_commit_ts: Option<u64>,
         theater: Option<CheckpointTheater>,
@@ -116,19 +119,17 @@ impl SnapshotRows {
         if self.next_node_id < 0 || self.next_rel_id < 0 {
             return Err(Error::storage("snapshot has unsupported next ID"));
         }
-        // Row ids are not re-validated here: the loaders below install
-        // each row through `load_checkpoint_node`/`load_checkpoint_rel`,
-        // which validate the identical ids (one pass per row type, not
-        // two).
+        // Row ids are not re-validated here: the bulk installers below
+        // validate the identical ids (one pass per row type, not two).
         let graph = G::default();
         graph.set_next_node_id(self.next_node_id);
         graph.set_next_rel_id(self.next_rel_id);
         let rows = self.nodes.len() + self.relationships.len();
-        for n in self.nodes.drain(..) {
-            graph.load_checkpoint_node(n)?;
+        for slice in self.nodes.chunks(INSTALL_SLICE_ROWS) {
+            graph.load_checkpoint_nodes(slice)?;
         }
-        for r in self.relationships.drain(..) {
-            graph.load_checkpoint_rel(r)?;
+        for slice in self.relationships.chunks(INSTALL_SLICE_ROWS) {
+            graph.load_checkpoint_rels(slice)?;
         }
         if let Some(ts) = envelope_commit_ts {
             graph.set_commit_ts(ts);

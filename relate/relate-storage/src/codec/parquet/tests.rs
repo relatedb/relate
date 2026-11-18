@@ -129,6 +129,22 @@ fn max_node_relationship_and_endpoint_ids_fail_before_graph_restore() {
     assert_eq!(graph.next_rel_id(), i64::MAX);
 }
 
+/// The decode does not check a row's persisted id: the bulk installer is
+/// the one home, and it still refuses a bad restore row — exactly one
+/// storage error, in the installer's own phrase, nothing installed.
+#[test]
+fn bad_persisted_id_is_refused_once_by_the_bulk_installer() {
+    let bytes = write_table(vec![-1], vec![Some(vec![])], vec![Some("{}".into())]).unwrap();
+    let graph = Graph::default();
+    let err = load_nodes(&graph, bytes, Origin::Monolith).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "storage error: node ID -1 is outside 0..i64::MAX"
+    );
+    assert_eq!(graph.next_node_id(), 0);
+    assert_eq!(graph.live_node_count(), 0);
+}
+
 #[test]
 fn max_id_shards_fail_checkpoint_recovery_before_graph_install() {
     let node = write_table(vec![i64::MAX], vec![Some(vec![])], vec![Some("{}".into())]).unwrap();
@@ -343,7 +359,7 @@ fn footer_metadata_and_actual_rows_have_independent_limits() {
     let err = load_part(load_rels, &Graph::default(), &bytes).unwrap_err();
     assert!(err.to_string().contains("footer metadata"), "{err}");
 
-    let mut decoded = Decoded::default();
+    let decoded = Decoded::new();
     decoded.batch(600_000).unwrap();
     decoded.row(100).unwrap();
     decoded.batch(400_000).unwrap();
@@ -361,7 +377,7 @@ fn footer_metadata_and_actual_rows_have_independent_limits() {
         .unwrap_err()
         .to_string()
         .contains("actual decoded bytes"));
-    assert!(Decoded::default().row(MAX_ROW_BYTES + 1).is_err());
+    assert!(Decoded::new().row(MAX_ROW_BYTES + 1).is_err());
 }
 
 #[test]
@@ -449,9 +465,9 @@ fn isolated_page_and_row_limits_are_inclusive() {
         .to_string()
         .contains("page uncompressed size"));
 
-    let mut decoded = Decoded::default();
+    let decoded = Decoded::new();
     decoded.row(MAX_ROW_BYTES).unwrap();
-    assert!(Decoded::default()
+    assert!(Decoded::new()
         .row(MAX_ROW_BYTES + 1)
         .unwrap_err()
         .to_string()
@@ -461,7 +477,7 @@ fn isolated_page_and_row_limits_are_inclusive() {
     // decoded envelope by itself misses that one.
     with_test_envelope(MAX_PAGE, 100, 50, || {
         assert!(row_fits(50) && !row_fits(51));
-        let err = check_row(51).unwrap_err();
+        let err = check_row(51, envelope()).unwrap_err();
         assert!(err.to_string().contains("actual decoded bytes"), "{err}");
     });
 }

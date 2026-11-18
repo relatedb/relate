@@ -10,9 +10,11 @@
 //! including from [`IdVec::for_each`]: the lock is not re-entrant.
 
 use std::collections::HashMap;
-use std::mem::size_of;
+use std::mem::{replace, size_of};
 use std::ops::{Deref, DerefMut};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+use relate_core::Result;
 
 use crate::memory::{dense_or_side, span_table_bytes};
 
@@ -193,6 +195,59 @@ fn try_grow<T>(dense: &mut Vec<Option<T>>, idx: usize) -> bool {
     dense_or_side(dense, idx, slot::<T>(), || None)
 }
 
+/// Where `id` sits under an already held write lock: its occupied location,
+/// or the vacant location the placement policy gives it — the dense array
+/// grown to cover a `Grew` id, the side map otherwise.
+enum Placed {
+    Occupied(Loc),
+    Vacant(Loc),
+}
+
+/// The one copy of the placement policy's lock-held effect: [`occupied`]
+/// first, then [`try_grow`]'s answer for an id it does not hold.
+fn place<T>(store: &mut Store<T>, id: i64, idx: usize) -> Placed {
+    if let Some(loc) = occupied(&store.dense, &store.overflow, id, idx) {
+        return Placed::Occupied(loc);
+    }
+    if try_grow(&mut store.dense, idx) {
+        Placed::Vacant(Loc::Dense(idx))
+    } else {
+        Placed::Vacant(Loc::Overflow(id))
+    }
+}
+
+impl Placed {
+    /// The slot either way: a fill and a replace write the same place.
+    fn loc(self) -> Loc {
+        match self {
+            Self::Occupied(loc) | Self::Vacant(loc) => loc,
+        }
+    }
+}
+
+impl<T> Store<T> {
+    /// The value at `loc`, whichever side it is on. A dense hole reads as
+    /// `None`.
+    fn read_at(&self, loc: &Loc) -> Option<&T> {
+        match loc {
+            Loc::Dense(idx) => self.dense[*idx].as_ref(),
+            Loc::Overflow(id) => self.overflow.get(id),
+        }
+    }
+
+    /// Store `value` at `loc` and return the value it held; `None` clears
+    /// the slot, and a dense slot stays as a hole.
+    fn write_at(&mut self, loc: &Loc, value: Option<T>) -> Option<T> {
+        match loc {
+            Loc::Dense(idx) => replace(&mut self.dense[*idx], value),
+            Loc::Overflow(id) => match value {
+                Some(value) => self.overflow.insert(*id, value),
+                None => self.overflow.remove(id),
+            },
+        }
+    }
+}
+
 impl<T> Default for IdVec<T> {
     fn default() -> Self {
         Self {
@@ -302,17 +357,8 @@ impl<T> IdVec<T> {
     pub(super) fn insert(&self, id: i64, value: T) -> Option<T> {
         let idx = index(id).expect("id fits an index");
         let mut store = self.slots.write().expect("id store lock");
-        if let Some(loc) = occupied(&store.dense, &store.overflow, id, idx) {
-            return match loc {
-                Loc::Dense(idx) => store.dense[idx].replace(value),
-                Loc::Overflow(id) => store.overflow.insert(id, value),
-            };
-        }
-        if try_grow(&mut store.dense, idx) {
-            store.dense[idx].replace(value)
-        } else {
-            store.overflow.insert(id, value)
-        }
+        let loc = place(&mut store, id, idx).loc();
+        store.write_at(&loc, Some(value))
     }
 
     /// Drop the value. A dense slot stays, so the span does not shrink.
@@ -321,11 +367,8 @@ impl<T> IdVec<T> {
     pub(super) fn remove(&self, id: &i64) -> Option<T> {
         let idx = index(*id)?;
         let mut store = self.slots.write().expect("id store lock");
-        match occupied(&store.dense, &store.overflow, *id, idx) {
-            Some(Loc::Dense(idx)) => store.dense[idx].take(),
-            Some(Loc::Overflow(id)) => store.overflow.remove(&id),
-            None => None,
-        }
+        let loc = occupied(&store.dense, &store.overflow, *id, idx)?;
+        store.write_at(&loc, None)
     }
 
     /// Drop the value when `pred` holds, checked under the same write lock
@@ -335,25 +378,11 @@ impl<T> IdVec<T> {
     pub(super) fn remove_if(&self, id: &i64, pred: impl FnOnce(&T) -> bool) -> Option<T> {
         let idx = index(*id)?;
         let mut store = self.slots.write().expect("id store lock");
-        match occupied(&store.dense, &store.overflow, *id, idx) {
-            Some(Loc::Dense(idx)) => {
-                let value = store.dense[idx].as_ref().expect("the slot is occupied");
-                if pred(value) {
-                    store.dense[idx].take()
-                } else {
-                    None
-                }
-            }
-            Some(Loc::Overflow(id)) => {
-                let value = store.overflow.get(&id).expect("the side entry is present");
-                if pred(value) {
-                    store.overflow.remove(&id)
-                } else {
-                    None
-                }
-            }
-            None => None,
+        let loc = occupied(&store.dense, &store.overflow, *id, idx)?;
+        if !store.read_at(&loc).is_some_and(pred) {
+            return None;
         }
+        store.write_at(&loc, None)
     }
 
     pub(super) fn retain(&self, mut f: impl FnMut(&i64, &mut T) -> bool) {
@@ -410,20 +439,35 @@ impl<T> IdVec<T> {
     pub(super) fn entry(&self, id: i64) -> Entry<'_, T> {
         let idx = index(id).expect("id fits an index");
         let mut guard = self.slots.write().expect("id store lock");
-        if let Some(loc) = occupied(&guard.dense, &guard.overflow, id, idx) {
-            return Entry::Occupied(Occupied { guard, loc });
+        match place(&mut guard, id, idx) {
+            Placed::Occupied(loc) => Entry::Occupied(Occupied { guard, loc }),
+            Placed::Vacant(loc) => Entry::Vacant(Vacant { guard, loc }),
         }
-        if try_grow(&mut guard.dense, idx) {
-            Entry::Vacant(Vacant {
-                guard,
-                loc: Loc::Dense(idx),
-            })
-        } else {
-            Entry::Vacant(Vacant {
-                guard,
-                loc: Loc::Overflow(id),
-            })
+    }
+
+    /// Install a batch of slots under one write lock, all or nothing.
+    /// `admit` sees every slot's current value (`None` when vacant) before
+    /// the first write, so an `Err` leaves the store as it was — not even a
+    /// grown dense array — and `Ok` over an empty batch stays the one empty
+    /// answer. A vacant slot takes the batch's value; an occupied one is
+    /// replaced.
+    pub(super) fn install_batch(
+        &self,
+        rows: Vec<(i64, T)>,
+        admit: impl Fn(Option<&T>) -> Result<()>,
+    ) -> Result<()> {
+        let mut store = self.slots.write().expect("id store lock");
+        for (id, _) in &rows {
+            let idx = index(*id).expect("id fits an index");
+            let previous = occupied(&store.dense, &store.overflow, *id, idx);
+            admit(previous.and_then(|loc| store.read_at(&loc)))?;
         }
+        for (id, value) in rows {
+            let idx = index(id).expect("id fits an index");
+            let loc = place(&mut store, id, idx).loc();
+            store.write_at(&loc, Some(value));
+        }
+        Ok(())
     }
 
     /// Occupied ids, copied so the caller can re-enter the store.
@@ -576,6 +620,32 @@ mod tests {
         assert_eq!(*ids.get(&high).unwrap(), 5);
         assert_eq!(ids.remove_if(&high, |v| *v == 5), Some(5));
         assert!(ids.get(&high).is_none(), "the side entry goes too");
+    }
+
+    #[test]
+    fn a_refused_batch_leaves_the_store_untouched() {
+        let ids = IdVec::new();
+        ids.insert(0, "warm");
+        let refused =
+            ids.install_batch(
+                vec![(1, "a"), (2, "b"), (0, "refused")],
+                |previous| match previous {
+                    Some(value) if *value == "warm" => Err(relate_core::Error::storage("refused")),
+                    _ => Ok(()),
+                },
+            );
+        assert!(refused.is_err());
+        assert_eq!(*ids.get(&0).unwrap(), "warm");
+        assert!(ids.get(&1).is_none() && ids.get(&2).is_none());
+        assert_eq!(ids.span(), 1, "no row was planted, no slot was grown");
+
+        assert!(
+            ids.install_batch(Vec::new(), |_| Err(relate_core::Error::storage(
+                "never run"
+            )))
+            .is_ok(),
+            "an empty batch is not a refusal"
+        );
     }
 
     #[test]

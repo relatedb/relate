@@ -1,4 +1,5 @@
 use super::*;
+use crate::redo::PullKind;
 use relate_names::SmallName;
 use relate_planner::DegreeMoments;
 
@@ -11,6 +12,7 @@ mod label_set_counts;
 mod pattern_stats;
 mod point;
 mod poisoned;
+mod rebuild;
 mod restore;
 mod sealed;
 mod sealed_arena;

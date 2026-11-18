@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use relate_core::{NodeId, RelId, Value};
+use relate_core::{Node, NodeId, RelId, Relationship, Value};
 
 use super::adjacency::AdjSide;
 use super::Graph;
@@ -219,4 +219,68 @@ pub(super) fn sealed_chunk_len(side: &AdjSide<'_>, node: NodeId, type_id: u32) -
         .region(node)
         .expect("the node has a sealed region")
         .chunk_len(type_id)
+}
+
+/// One node's adjacency, raw and as each direction expands it — the
+/// observation the restore and rebuild submodules compare graphs by.
+#[derive(Debug, PartialEq)]
+pub(crate) struct NodeAdjacency {
+    pub(crate) id: NodeId,
+    pub(crate) out: Vec<RelId>,
+    pub(crate) r#in: Vec<RelId>,
+    /// `Outgoing`, `Incoming`, then `Both` hops.
+    pub(crate) expands: [Vec<RelId>; 3],
+}
+
+/// Every live node's [`NodeAdjacency`] at the graph's commit ts.
+pub(crate) fn node_adjacencies(g: &Graph) -> Vec<NodeAdjacency> {
+    use relate_ir::Direction;
+
+    let ts = g.commit_ts();
+    g.all_node_ids_at(ts)
+        .into_iter()
+        .map(|id| {
+            let expands = [Direction::Outgoing, Direction::Incoming, Direction::Both]
+                .map(|dir| g.neighbors_at(id, dir, ts));
+            NodeAdjacency {
+                id,
+                out: g.degree_out(id),
+                r#in: g.degree_in(id),
+                expands,
+            }
+        })
+        .collect()
+}
+
+/// Every live node's and rel's rows at `ts`, in id order — the dump a
+/// checkpoint writes and a restore installs.
+pub(crate) fn live_rows(g: &Graph, ts: u64) -> (Vec<Node>, Vec<Relationship>) {
+    let nodes = g
+        .all_node_ids_at(ts)
+        .into_iter()
+        .map(|id| g.node_at(id, ts).unwrap())
+        .collect();
+    let rels = g
+        .all_rel_ids_at(ts)
+        .into_iter()
+        .map(|id| g.rel_at(id, ts).unwrap())
+        .collect();
+    (nodes, rels)
+}
+
+/// Every live node's raw adjacency as each direction expands it — the
+/// narrower observation for tests whose subject is the adjacency alone,
+/// without the derived degree lists [`node_adjacencies`] also carries.
+pub(crate) fn node_expansions(g: &Graph) -> Vec<(NodeId, [Vec<RelId>; 3])> {
+    use relate_ir::Direction;
+
+    let ts = g.commit_ts();
+    g.all_node_ids_at(ts)
+        .into_iter()
+        .map(|id| {
+            let expands = [Direction::Outgoing, Direction::Incoming, Direction::Both]
+                .map(|dir| g.neighbors_at(id, dir, ts));
+            (id, expands)
+        })
+        .collect()
 }
