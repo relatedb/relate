@@ -172,39 +172,42 @@ fn current_properties(graph: &ExecGraph<'_>, value: &Value) -> Option<BTreeMap<S
 /// The two SET map forms: `=` replaces every property, `+=` merges. The
 /// form owns everything the arms differ by — the entry null policy
 /// ([`NullPolicy`]), what a null *source* coerces to, and the expected-map
-/// error text — so the three can never disagree.
+/// error text — one table ([`SetMapForm::rules`]), so the three can never
+/// disagree.
 #[derive(Clone, Copy)]
 enum SetMapForm {
     Replace,
     Merge,
 }
 
-impl SetMapForm {
+/// What one [`SetMapForm`] decides, read from the one table
+/// ([`SetMapForm::rules`]).
+struct SetMapRules {
     /// The null-*entry* policy of the admission walk: `=` stores no null;
     /// `+=` keeps it — it records the key's removal (`merge_properties_*`
     /// runs it through the set verb).
-    fn nulls(self) -> NullPolicy {
-        match self {
-            SetMapForm::Replace => NullPolicy::Drop,
-            SetMapForm::Merge => NullPolicy::Keep,
-        }
-    }
-
-    /// The map a null source coerces to, or `None` when it is not
-    /// admissible: `SET n = null` clears (the empty map); `+=` fails a
-    /// null source like every other non-map source.
-    fn null_source(self) -> Option<BTreeMap<String, Value>> {
-        match self {
-            SetMapForm::Replace => Some(BTreeMap::new()),
-            SetMapForm::Merge => None,
-        }
-    }
-
+    nulls: NullPolicy,
+    /// Whether a null *source* coerces to the empty map: `SET n = null`
+    /// clears; `+=` fails a null source like every other non-map source.
+    null_source_clears: bool,
     /// The expected-map error text of the form.
-    fn expected_map_error(self) -> &'static str {
+    expected_map_error: &'static str,
+}
+
+impl SetMapForm {
+    /// The one match over the form vocabulary.
+    fn rules(self) -> SetMapRules {
         match self {
-            SetMapForm::Replace => "SET all properties requires a map",
-            SetMapForm::Merge => "+= requires a map",
+            SetMapForm::Replace => SetMapRules {
+                nulls: NullPolicy::Drop,
+                null_source_clears: true,
+                expected_map_error: "SET all properties requires a map",
+            },
+            SetMapForm::Merge => SetMapRules {
+                nulls: NullPolicy::Keep,
+                null_source_clears: false,
+                expected_map_error: "+= requires a map",
+            },
         }
     }
 }
@@ -216,22 +219,24 @@ impl SetMapForm {
 /// live Neo4j 2026 rejects it, so the engine keeps the TCK floor), and
 /// anything else fails with the form's expected-map error. The
 /// [`SetMapForm`] owns the whole null semantics — the source half via
-/// [`SetMapForm::null_source`], the entry half via the [`NullPolicy`]
+/// [`SetMapRules::null_source_clears`], the entry half via the [`NullPolicy`]
 /// [`admit_props`] applies — so `=` and `+=` differ by exactly the form.
 fn set_map_source(
     graph: &ExecGraph<'_>,
     v: Value,
     form: SetMapForm,
 ) -> Result<BTreeMap<String, Value>> {
-    let not_a_map = || Error::ty(form.expected_map_error());
+    let rules = form.rules();
+    let not_a_map = || Error::ty(rules.expected_map_error);
     let raw = match v {
         // By value: a uniquely-owned map Arc unwraps into the raw map
         // (zero-copy) instead of deep-cloning through a borrowed Value.
         Value::Map(m) => Arc::unwrap_or_clone(m),
-        Value::Null => form.null_source().ok_or_else(not_a_map)?,
+        Value::Null if rules.null_source_clears => BTreeMap::new(),
+        Value::Null => return Err(not_a_map()),
         v => current_properties(graph, &v).ok_or_else(not_a_map)?,
     };
-    admit_props(raw, form.nulls())
+    admit_props(raw, rules.nulls)
 }
 
 fn resolve_sets(
@@ -270,7 +275,7 @@ fn resolve_sets(
             SetItem::MergeMap { target, value } => {
                 let val = eval(graph, row, value, params)?;
                 // `+=`: a null entry survives admission and records the
-                // key's removal (see [`SetMapForm::nulls`]).
+                // key's removal (see [`SetMapRules::nulls`]).
                 let map = set_map_source(graph, val, SetMapForm::Merge)?;
                 resolved.push(ResolvedSet::MergeMap(
                     eval(graph, row, target, params)?,

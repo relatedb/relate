@@ -23,21 +23,32 @@ use crate::row::Row;
 
 mod anchor;
 mod end_filter;
+mod fan_drivers;
 mod far_set;
 mod filters;
 mod guard;
 mod k_select;
-mod multi_fan;
 mod reach_cache;
 mod route;
 mod trail_walk;
 
-pub(crate) use reach_cache::ReachCache;
+use reach_cache::ReachCache;
 use route::Route;
 
 use super::sink::MatchedSink;
 use super::GpmFilters;
 use guard::{route_shape, Spelling};
+
+/// The pattern-tier state of the shortest-path route, shared by one
+/// clause's input rows (so it never spans a write): the last start's reach
+/// set and the filtered endpoint sides, each keeping its own meaning.
+#[derive(Default)]
+pub(crate) struct RouteCaches {
+    /// The last start's reach set (see [`ReachCache`]).
+    pub(super) reach: ReachCache,
+    /// The pattern's filtered endpoint sides (see [`end_filter`]).
+    pub(super) ends: end_filter::EndFilterCache,
+}
 
 #[cfg(test)]
 /// Run `f` with the thread-local test override `slot` set to `value`,
@@ -141,7 +152,7 @@ pub(super) fn match_shortest_route<'a>(
     ctx: ExecCtx<'a>,
     path: &'a PathPattern,
     filters: &'a GpmFilters,
-    reach: &'a ReachCache,
+    caches: &'a RouteCaches,
     row: &'a Row,
     used: &UsedSet,
     match_mode: MatchMode,
@@ -151,7 +162,7 @@ pub(super) fn match_shortest_route<'a>(
         ctx,
         path,
         filters,
-        reach,
+        caches,
         row,
         used,
         match_mode,
@@ -177,7 +188,7 @@ pub(crate) fn fold_shortest_route(
     fold: &mut dyn FnMut(Row) -> Result<()>,
 ) -> Result<bool> {
     let filters = GpmFilters::resolve(ctx.graph, path);
-    let reach = ReachCache::default();
+    let caches = RouteCaches::default();
     let residual = Residual::empty();
     let halt = Cell::new(false);
     // The expression form is the function spelling: its lowered pattern
@@ -187,7 +198,7 @@ pub(crate) fn fold_shortest_route(
         ctx,
         path,
         &filters,
-        &reach,
+        &caches,
         row,
         &UsedSet::default(),
         MatchMode::DifferentRelationships,
@@ -205,7 +216,7 @@ fn run_route<'a>(
     ctx: ExecCtx<'a>,
     path: &'a PathPattern,
     filters: &'a GpmFilters,
-    reach: &'a ReachCache,
+    caches: &'a RouteCaches,
     row: &'a Row,
     used: &UsedSet,
     match_mode: MatchMode,
@@ -222,7 +233,7 @@ fn run_route<'a>(
     // The constructor declines (`None`) before the sink is touched, and
     // takes the sink itself — its halt cell and residual are the route's
     // by construction, not two arguments that must agree.
-    let Some(route) = Route::try_new(ctx, path, row, shape, &sink, reach) else {
+    let Some(route) = Route::try_new(ctx, path, row, shape, &sink, caches) else {
         return Ok(false);
     };
     let taken = route.run(&mut sink)?;

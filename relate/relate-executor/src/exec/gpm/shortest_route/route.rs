@@ -2,10 +2,9 @@
 //! resolved once, picks the searches; each (start, end) partition binds
 //! its selected trails the way the GPM walker does.
 
-use std::borrow::Cow;
 use std::cell::{Cell, OnceCell};
 
-use relate_core::{NodeId, RelId, Result, Value};
+use relate_core::{Error, NodeId, RelId, Result, Value};
 use relate_ir::{MatchMode, NodePattern, PathPattern};
 
 use crate::ctx::ExecCtx;
@@ -13,53 +12,20 @@ use crate::exec::candidates::node_ok;
 use crate::exec::gpm::{gpm_bind_node, unbounded_dfs_cap};
 use crate::pattern_walk::{bind_path_names, bind_rel_stub_list, memoized_path_rung};
 use crate::row::{Row, RowRung};
-use crate::shortest::layered::Layer;
 use crate::shortest::{path_from_trail, Search};
 
 use super::super::sink::MatchedSink;
-use super::anchor::{Anchor, Way};
-use super::far_set::{retires, FarSet, OneLane};
+use super::anchor::Anchor;
 use super::filters::{PathFilter, RouteFilters};
 use super::guard::{Keep, Shape};
 use super::k_select;
-use super::reach_cache::ReachCache;
 use super::trail_walk;
+use super::RouteCaches;
 
-/// One origin's fan run: what every layer of its search needs beside the
-/// layer itself.
-struct FanRun<'r> {
-    origin: NodeId,
-    /// The way this fan runs and where its partitions get their start row,
-    /// one value ([`OriginRow`]): the way is derived from it, so the two
-    /// cannot disagree.
-    origin_row: OriginRow,
-    /// The listed far side with this origin's reached count ([`OneLane`]):
-    /// a settled counter never exists without its far set. `None`: no
-    /// listed far side — each reached node is tested against the end
-    /// pattern alone.
-    far: Option<OneLane<'r>>,
-}
-
-/// Where a fan's partitions get their start row, and the way that follows
-/// from it: the forward fan binds the origin once (the row), the backward
-/// fan binds each reached node as its own start. One value, so the way and
-/// the row cannot disagree — a refused forward origin is `None` at
-/// [`Route::bind_origin`], never a third variant here.
-pub(super) enum OriginRow {
-    Bound(Row),
-    PerMember,
-}
-
-impl OriginRow {
-    /// The way this bind runs — the one derivation: a bound origin row is
-    /// a forward fan, a per-member binding a backward one.
-    pub(super) fn way(&self) -> Way {
-        match self {
-            Self::Bound(_) => Way::Forward,
-            Self::PerMember => Way::Backward,
-        }
-    }
-}
+/// The (s, e) pair trail reader a partition's source holds — the fn
+/// pointer spelling names it for the one sourceless call site
+/// ([`Route::no_pair_source`]); every real source is a closure.
+type PairSource = fn(NodeId, NodeId) -> Result<Vec<Vec<RelId>>>;
 
 /// How a (start, end) partition selects its trails, decided once per route
 /// in [`Route::try_new`].
@@ -107,9 +73,10 @@ pub(super) struct Route<'a> {
     /// sink's cap-full cell: raised once it needs no more rows, read only
     /// through [`Self::halted`]. Every sink has one, so it is not optional.
     halt: &'a Cell<bool>,
-    /// The pattern's reach cache: consecutive pair partitions from one
-    /// start share one reach set (see [`ReachCache`]).
-    pub(super) reach: &'a ReachCache,
+    /// The pattern-tier route caches (see [`RouteCaches`]): the last
+    /// start's reach set and the filtered endpoint sides, one carrier the
+    /// route reads both through.
+    pub(super) caches: &'a RouteCaches,
 }
 
 impl<'a> Route<'a> {
@@ -124,7 +91,7 @@ impl<'a> Route<'a> {
         row: &'a Row,
         shape: Shape<'a>,
         sink: &MatchedSink<'a, '_>,
-        reach: &'a ReachCache,
+        caches: &'a RouteCaches,
     ) -> Option<Self> {
         // The route's halt cell and its path filter both come FROM the
         // sink: the route stops when its sink halts, and the filter is
@@ -163,7 +130,7 @@ impl<'a> Route<'a> {
             filters,
             arm,
             halt,
-            reach,
+            caches,
             unbounded_cap: OnceCell::new(),
             path_rung: Cell::new(None),
             emitted: Cell::new(0),
@@ -194,6 +161,26 @@ impl<'a> Route<'a> {
     /// route's trails.
     pub(super) fn counted(&self) -> bool {
         matches!(self.arm, PartitionArm::Counted(_))
+    }
+
+    /// Whether an inline predicate filters this route's search — the
+    /// arm's own fact ([`PartitionArm::Filtered`]), read through it so the
+    /// selector+filter decision keeps its one home ([`Self::try_new`]'s
+    /// match) and the fan drivers never re-derive it from the filter
+    /// object.
+    pub(super) fn filtered(&self) -> bool {
+        matches!(self.arm, PartitionArm::Filtered)
+    }
+
+    /// The fan drivers' productivity fact, the one home of the rule
+    /// [`retires`](super::far_set::retires) reads: a level produced a row
+    /// (`emitted` grew past `before`) and may end a first-layer spelling —
+    /// never the origins' own level (`own_level`: its depth-0 layer carries
+    /// the origin's closed trails or zero-length path, which a shorter open
+    /// trail still beats), and never a filtered route, whose shortest
+    /// *satisfying* trail can be longer than the layer's depth.
+    pub(super) fn productive(&self, own_level: bool, before: usize) -> bool {
+        !own_level && !self.filtered() && self.emitted() > before
     }
 
     /// The deepest length a trail walk explores: the one GPM bound policy
@@ -233,16 +220,11 @@ impl<'a> Route<'a> {
                     self.each_of(ends.ids(), |e| self.pair_partition(s, e, out))
                 })?;
             }
-            Anchor::Fan { origins, way, far } => match self.batch_plan(&origins, far.as_ref()) {
-                // The plan is the dispatch: a batched fan runs the sweep,
-                // anything else keeps the per-origin search.
-                Some((ids, far)) => self.fan_batched(ids, way, far, out)?,
-                None => self.each_of(origins.ids(), |origin| {
-                    self.fan(origin, way, far.as_ref(), out)
-                })?,
-            },
-            Anchor::Loop => {
-                self.each_start(|s| self.pair_partition(s, s, out))?;
+            Anchor::Fan { origins, way, far } => {
+                self.fan_origins(&origins, way, far.as_ref(), out)?;
+            }
+            Anchor::Loop { starts } => {
+                self.each_of(&starts, |s| self.self_partition(s, out))?;
             }
         };
         Ok(true)
@@ -288,8 +270,8 @@ impl<'a> Route<'a> {
     }
 
     /// The route's one per-candidate loop: tick the statement's
-    /// cancellation window, then drive the candidate. `each_start`, the
-    /// fan arms and the pair product all ride it.
+    /// cancellation window, then drive the candidate. The loop
+    /// anchor, the fan arms and the pair product all ride it.
     pub(super) fn each_of(
         &self,
         ids: &[NodeId],
@@ -317,19 +299,6 @@ impl<'a> Route<'a> {
         self.bind_candidate(id, self.shape.start)
     }
 
-    /// What a fan running `way` binds for `origin` — the one home of the
-    /// rule: a forward fan binds the origin once as its start
-    /// ([`OriginRow::Bound`]), or the start pattern refuses it (`None`, the
-    /// fan abandoned); a backward fan binds no row here
-    /// ([`OriginRow::PerMember`]) — each reached node is a start, bound in
-    /// its own partition.
-    pub(super) fn bind_origin(&self, origin: NodeId, way: Way) -> Result<Option<OriginRow>> {
-        match way {
-            Way::Forward => Ok(self.bind_start(origin)?.map(OriginRow::Bound)),
-            Way::Backward => Ok(Some(OriginRow::PerMember)),
-        }
-    }
-
     /// The input row with `id` bound as the endpoint `np`, or `None` when
     /// `id` fails the pattern or its binding — the one admission-then-bind
     /// spelling the start partition and the endpoint listing share.
@@ -341,8 +310,9 @@ impl<'a> Route<'a> {
         Ok(gpm_bind_node(self.ctx.graph, np, id, &mut row).then_some(row))
     }
 
-    /// Both endpoints fixed: the pair search for single-path selectors, the
-    /// bidirectional layered search for all-path ones.
+    /// Both endpoints fixed, a real (s, e) pair: the pair search for
+    /// single-path selectors, the bidirectional layered search for
+    /// all-path ones.
     fn pair_partition(&self, s: NodeId, e: NodeId, out: &mut MatchedSink<'_, '_>) -> Result<()> {
         let Some(srow) = self.bind_start(s)? else {
             return Ok(());
@@ -352,9 +322,9 @@ impl<'a> Route<'a> {
             e,
             &srow,
             out,
-            Some(|| {
+            Some(|s, e| {
                 // A reachable end still takes the search below.
-                if self.reach.unreachable(&self.search, s, e)? {
+                if self.caches.reach.unreachable(&self.search, s, e)? {
                     return Ok(Vec::new());
                 }
                 self.search.pair_trails(s, e)
@@ -362,134 +332,34 @@ impl<'a> Route<'a> {
         )
     }
 
-    /// One endpoint fixed: one layered search from it, `way` saying which,
-    /// reaches every node at the other end. Each reached node, and the
-    /// origin itself, is one partition — emitted as its layer of the search
-    /// completes (ADR-0555), so a halted consumer stops the search before
-    /// its deeper layers are expanded.
-    pub(super) fn fan(
-        &self,
-        origin: NodeId,
-        way: Way,
-        far: Option<&FarSet>,
-        out: &mut MatchedSink<'_, '_>,
-    ) -> Result<()> {
-        let Some(origin_row) = self.bind_origin(origin, way)? else {
-            // A forward origin the start pattern refuses abandons the fan.
+    /// The loop anchor's (s, s) partition: the start row, then the
+    /// partition's own constructed trails (no source — the zero-length
+    /// path at a zero bound, else the closed trails), never a search.
+    fn self_partition(&self, s: NodeId, out: &mut MatchedSink<'_, '_>) -> Result<()> {
+        let Some(srow) = self.bind_start(s)? else {
             return Ok(());
         };
-        let run = FanRun {
-            origin,
-            origin_row,
-            far: far.map(OneLane::new),
-        };
-        way.search(&self.search)
-            .dag_layers(origin, |layer| self.fan_layer(&layer, &run, out))?;
-        Ok(())
+        self.partition(s, s, &srow, out, Self::no_pair_source())
     }
 
-    /// Drive one completed fan layer: each reached node is one partition,
-    /// and the layer is emitted as the search completes it (ADR-0555), so a
-    /// halted consumer stops the search before its deeper layers expand.
-    /// Returns whether the consumer halted.
-    fn fan_layer(
-        &self,
-        layer: &Layer<'_>,
-        run: &FanRun<'_>,
-        out: &mut MatchedSink<'_, '_>,
-    ) -> Result<bool> {
-        let FanRun {
-            origin,
-            origin_row,
-            far,
-        } = run;
-        // The layer rides the route's one per-candidate loop.
-        let before = self.emitted();
-        self.each_of(layer.nodes(), |far_node| {
-            // A listed far side is one bit test per reached node: a node
-            // outside it fails the end pattern, so it is no partition
-            // (and no count) — `settle_if_hit` owns the pairing.
-            let admitted = match far.as_ref() {
-                Some(settled) => settled.settle_if_hit(far_node),
-                None => true,
-            };
-            if admitted {
-                self.fan_partition(layer, *origin, far_node, origin_row, out)?;
-            }
-            Ok(())
-        })?;
-        // The origin's own layer (depth 0) carries its closed trails or
-        // zero-length path, which a shorter open trail still beats: it
-        // never ends the fan.
-        // A filtered partition answers the shortest *satisfying* trail,
-        // which can be longer than its layer's depth, so a deeper layer may
-        // still hold a shorter answer: the stop applies to unfiltered
-        // routes only.
-        let productive =
-            self.filters.path.is_none() && layer.nodes() != [*origin] && self.emitted() > before;
-        Ok(self.halted()
-            || retires(
-                far.as_ref().is_some_and(OneLane::done),
-                self.shape.spelling.first_layer_only(),
-                productive,
-            ))
-    }
-
-    /// The partition of `far`, a node a fan search reached from `origin`:
-    /// the start row (the forward fan's one bound origin row, or the reached
-    /// node's own binding for a backward fan), then the trails the search
-    /// holds to `far`.
-    fn fan_partition(
-        &self,
-        layer: &Layer<'_>,
-        origin: NodeId,
-        far: NodeId,
-        origin_row: &OriginRow,
-        out: &mut MatchedSink<'_, '_>,
-    ) -> Result<()> {
-        self.fan_member(
-            origin,
-            far,
-            origin_row,
-            out,
-            Some(|_, _| Ok(origin_row.way().orient(layer.trails(self.ctx.graph, far)?))),
-        )
-    }
-
-    /// The one fan partition body: the start row, then `trails(s, e)` for
-    /// the oriented pair — the layered search's held trails
-    /// ([`Self::fan_partition`]) or the batched sweep's pair rebuild
-    /// ([`Self::fan_chunk`]).
-    pub(super) fn fan_member(
-        &self,
-        origin: NodeId,
-        far: NodeId,
-        origin_row: &OriginRow,
-        out: &mut MatchedSink<'_, '_>,
-        trails: Option<impl FnOnce(NodeId, NodeId) -> Result<Vec<Vec<RelId>>>>,
-    ) -> Result<()> {
-        let (s, e) = origin_row.way().ends(origin, far);
-        let srow = match origin_row {
-            OriginRow::Bound(row) => Cow::Borrowed(row),
-            OriginRow::PerMember => match self.bind_start(s)? {
-                Some(row) => Cow::Owned(row),
-                None => return Ok(()),
-            },
-        };
-        self.partition(s, e, &srow, out, trails.map(|trails| move || trails(s, e)))
+    /// The sourceless pair (the statically-known self-pair) — `None` for
+    /// the pair source, typed once here: the fn pointer is never
+    /// constructed or called, it only names the source type the self-pair
+    /// carries none of.
+    fn no_pair_source() -> Option<PairSource> {
+        None
     }
 
     /// Emit the (s, e) partition of a row with the start bound: nothing
-    /// when `e` fails the end pattern, else every trail `trails` returns.
-    /// The only home of the s = e partition: the zero-length path when `min`
-    /// is 0, otherwise the shortest closed trail(s) through `s`.
-    fn partition(
+    /// when `e` fails the end pattern, else every trail `trails` holds for
+    /// the pair — the s = e partition is [`Self::plain_partition`]'s.
+    pub(super) fn partition(
         &self,
         s: NodeId,
         e: NodeId,
         srow: &Row,
         out: &mut MatchedSink<'_, '_>,
-        trails: Option<impl FnOnce() -> Result<Vec<Vec<RelId>>>>,
+        trails: Option<impl FnOnce(NodeId, NodeId) -> Result<Vec<Vec<RelId>>>>,
     ) -> Result<()> {
         if !self.node_ok(e, self.shape.end, srow)? {
             return Ok(());
@@ -512,18 +382,31 @@ impl<'a> Route<'a> {
         e: NodeId,
         srow: &Row,
         out: &mut MatchedSink<'_, '_>,
-        trails: Option<impl FnOnce() -> Result<Vec<Vec<RelId>>>>,
+        trails: Option<impl FnOnce(NodeId, NodeId) -> Result<Vec<Vec<RelId>>>>,
     ) -> Result<()> {
-        // The s = e partition builds its own trails (the zero-length path
-        // or the closed trails); only a real pair consults the source, so
-        // a caller that has none — the self-pair — passes `None` and no
-        // invented list is ever answered.
-        let trails = if s != e {
-            trails.expect("a non-self partition has a trail source")()?
-        } else if self.search.min == 0 {
-            vec![Vec::new()]
+        // The constructed trails of a partition that resolves to one node:
+        // the zero-length path at a zero bound, else the shortest closed
+        // trail(s) — the search's pair trails never answer s = e.
+        let constructed = || {
+            if self.search.min == 0 {
+                Ok(vec![Vec::new()])
+            } else {
+                self.search.closed(s)
+            }
+        };
+        // The pair's ids decide, once: a pair that resolves to one node
+        // constructs its own trails — the statically-known self-pairs (no
+        // source at all) and a product or swept fan pair the ids collapsed
+        // — and a real pair consults the search's trails, which only a
+        // sourced partition can. A sourceless real pair is a bug, not a
+        // fallback: its trails would be fabricated.
+        let trails = if s == e {
+            constructed()?
         } else {
-            self.search.closed(s)?
+            match trails {
+                Some(trails) => trails(s, e)?,
+                None => return Err(Error::internal("a non-self partition has no trail source")),
+            }
         };
         for trail in &trails {
             if self.halted() {

@@ -142,8 +142,8 @@ impl<'f> OneLane<'f> {
 }
 
 /// The fan's early-stop rule, the one spelling both fan drivers read (the
-/// layered fan, route.rs's `fan_layer`; the batched fan, multi_fan.rs's
-/// `fan_chunk`): an origin retires when it has reached every far node of
+/// layered fan's `fan_layer`, the batched fan's `fan_chunk`): an origin
+/// retires when it has reached every far node of
 /// its far set (`done`, each driver's own counter form) — or, a
 /// first-layer spelling, at the first level that produced a row
 /// (`productive`, each driver's own precondition folded in).

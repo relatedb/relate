@@ -17,8 +17,8 @@ use crate::exec::test_support::{
 use crate::graph::Graph;
 
 use super::anchor::{with_list_limit, without_far_set, AnchorArm};
+use super::fan_drivers::{take_batches, without_batched_fan};
 use super::fixtures::{counting, gpm, run, sorted, DirectionExt, Selector, DIRS, SELECTORS};
-use super::multi_fan::{take_batches, without_batched_fan};
 
 /// Corpus seed; a failure names it with the graph index.
 const SEED: u64 = 0x0556_0001;

@@ -126,8 +126,6 @@ struct Held {
 #[derive(Default)]
 pub(crate) struct ReachCache {
     state: RefCell<Option<Held>>,
-    /// The pattern's filtered endpoint sides (see [`super::end_filter`]).
-    pub(super) ends: super::end_filter::EndFilterCache,
 }
 
 impl ReachCache {

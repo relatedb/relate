@@ -20,7 +20,7 @@ use crate::pattern_walk::RelFilter;
 use crate::row::Row;
 
 use super::expand::match_resolved_path;
-use super::gpm::{match_gpm_path, GpmFilters, ReachCache};
+use super::gpm::{match_gpm_path, GpmFilters, RouteCaches};
 use super::pattern_policies::{MatchTail, Matched};
 use super::pushdown::Residual;
 use super::rider::{PathSink, Rider};
@@ -33,16 +33,16 @@ use super::rider::{PathSink, Rider};
 /// empty — see [`GpmFilters`]). The variant is chosen by the one
 /// engine-fork predicate, so the table and the walk below can never
 /// disagree about which engine the pattern takes. The GPM variant also
-/// carries the shortest-path route's [`ReachCache`]: a graph read, so its
+/// carries the shortest-path route's [`RouteCaches`]: a graph read, so its
 /// life is the one `match_clause` call that built it (one input batch) and
 /// never spans a write; only the GPM arm reads it.
 pub(crate) enum PathFilters {
     /// One filter per `path.rels` entry, in order.
     Classic(Vec<RelFilter>),
-    /// The GPM engine's element-order table and the route's reach cache.
+    /// The GPM engine's element-order table and the route's caches.
     Gpm {
         table: GpmFilters,
-        reach: ReachCache,
+        caches: RouteCaches,
     },
 }
 
@@ -55,7 +55,7 @@ impl PathFilters {
         if match_mode == MatchMode::RepeatableElements || path.needs_gpm() {
             PathFilters::Gpm {
                 table: GpmFilters::resolve(graph, path),
-                reach: ReachCache::default(),
+                caches: RouteCaches::default(),
             }
         } else {
             PathFilters::Classic(
@@ -124,14 +124,14 @@ pub(crate) fn match_one_path(
     // filters arrive resolved beside them (LABS-801): the fork reads the
     // variant, the same fact [`PathFilters::resolve`] built it from.
     match filters {
-        PathFilters::Gpm { table, reach } => {
+        PathFilters::Gpm { table, caches } => {
             // A cap rider is the LIMIT pull-in (`gpm::emit`): every complete
             // state is offered as it emerges and the walk halts once the cap
             // is full, instead of materializing the whole enumeration for the
             // caller's projection to truncate. A probe rider is the early
             // exit: the first complete row the chain accepts halts the walk.
             match_gpm_path(
-                ctx, path, table, reach, row, used, match_mode, tail, residual, rider,
+                ctx, path, table, caches, row, used, match_mode, tail, residual, rider,
             )
         }
         PathFilters::Classic(table) => {

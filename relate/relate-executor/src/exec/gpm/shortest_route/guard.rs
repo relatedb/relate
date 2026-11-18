@@ -143,10 +143,16 @@ pub(super) fn route_shape<'p>(
     params: &BTreeMap<String, Value>,
     spelling: Spelling,
 ) -> Option<Shape<'p>> {
-    if match_mode != MatchMode::DifferentRelationships
-        || !used.is_empty()
-        || !matches!(path.mode, None | Some(PathMode::Walk | PathMode::Trail))
-    {
+    // The route takes the `None`, `WALK` and `TRAIL` path modes only — the
+    // vocabulary decoded once, here. An explicit `WALK` (whose longer
+    // answers may reuse a relationship) stays on GPM: the length-class
+    // walk enumerates trails, so a count selector declines it (ADR-0607).
+    let explicit_walk = match path.mode {
+        Some(PathMode::Walk) => true,
+        None | Some(PathMode::Trail) => false,
+        Some(_) => return None,
+    };
+    if match_mode != MatchMode::DifferentRelationships || !used.is_empty() {
         return None;
     }
     let selection = match path.selector.as_ref()? {
@@ -172,9 +178,7 @@ pub(super) fn route_shape<'p>(
         }
         PathSelector::Shortest { .. } | PathSelector::Any(_) | PathSelector::All => return None,
     };
-    // The length-class walk enumerates trails, so an explicit `WALK` (whose
-    // longer answers may reuse a relationship) stays on GPM.
-    if selection.counted().is_some() && !matches!(path.mode, None | Some(PathMode::Trail)) {
+    if explicit_walk && selection.counted().is_some() {
         return None;
     }
     let hop = routed_hop(path, filters, selection, spelling)?;

@@ -119,12 +119,16 @@ pub(super) enum Anchor {
         origins: Side,
         way: Way,
         /// The listed side the fan does not drive from; `None` when that
-        /// side is a pattern or over the pair bound, tested per reached node.
+        /// side is a pattern or over the pair bound, or its ids span too
+        /// wide ([`far_set`]'s `None` reasons, the one spelling) — tested
+        /// per reached node.
         far: Option<FarSet>,
     },
     /// One unbound variable at both ends (`(a)-[*]-(a)`): the (s, s)
-    /// partition of every start candidate.
-    Loop,
+    /// partition of every start candidate — the loop's starts are a
+    /// materialized list by construction (the pre-check above excludes a
+    /// row-bound start), resolved once here.
+    Loop { starts: Vec<NodeId> },
 }
 
 impl Anchor {
@@ -150,7 +154,7 @@ impl Anchor {
             Anchor::Fan {
                 way: Way::Backward, ..
             } => AnchorArm::FanBackward,
-            Anchor::Loop => AnchorArm::Loop,
+            Anchor::Loop { .. } => AnchorArm::Loop,
         }
     }
 }
@@ -250,15 +254,20 @@ impl Route<'_> {
         // candidate.
         if start.variable.is_some() && start.variable == end.variable && self.bound(start).is_none()
         {
-            return Ok(Some(Anchor::Loop));
+            return Ok(Some(Anchor::Loop {
+                starts: self.start_candidates()?,
+            }));
         }
         // Each endpoint resolves once, bounded: a row-bound node is a
         // one-element side, a property map is a seeked list of at most
         // `SEEK_PAIR_LIMIT`, and a bigger match is [`Probed::Over`] — its
         // list is built only where both sides are over (below).
         // [`Probed::Scan`] is territory the fan answers itself.
-        let ends = &self.reach.ends;
-        let probed = (self.probe(start, &ends.start)?, self.probe(end, &ends.end)?);
+        let side_caches = &self.caches.ends;
+        let probed = (
+            self.probe(start, &side_caches.start)?,
+            self.probe(end, &side_caches.end)?,
+        );
         let anchor = match probed {
             // Both past the bound: the fan runs from the shorter side,
             // which needs both lists in full. Under a count selector the
@@ -282,11 +291,13 @@ impl Route<'_> {
             (Probed::Over(_) | Probed::Scan, Probed::Within(ends)) => {
                 Self::fan_or_empty(ends, Way::Backward)
             }
-            // Neither side has a list: the start candidates fan forward.
-            // Under a count selector the start scan is skipped: the fan it
-            // builds is declined below.
+            // Neither side has a list: the start candidates fan forward —
+            // through the same empty-side policy, so an empty scan is the
+            // empty pair like an empty listed side. Under a count selector
+            // the start scan is skipped: the fan it builds is declined
+            // below.
             _ if counted => return Ok(None),
-            _ => Anchor::fan(Side::Many(self.start_candidates()?), Way::Forward),
+            _ => Self::fan_or_empty(Side::Many(self.start_candidates()?), Way::Forward),
         };
         // A count selector answers pair partitions only: any fan the arms
         // above built (a pair product past the bound, a listed side
@@ -432,7 +443,7 @@ impl Route<'_> {
         bound_node(np, self.row)
     }
 
-    /// A probed-`Over` side's full list, through the capped funnel: a side
+    /// A probed-over side's full list, through the capped funnel: a side
     /// matching more than `limit` nodes is refused with the typed capacity
     /// error (ADR-0567) — never truncated, never listed unbounded. The
     /// funnel's contract is ascending and deduplicated, so the list needs
@@ -471,8 +482,8 @@ impl Route<'_> {
     }
 
     /// The unbound start pattern's full candidate list through the counted
-    /// funnel (the fan anchor's driver — the same call `each_start` makes for
-    /// the loop anchor); a `WHERE`-borne `=` / `IN` on the side seeks it.
+    /// funnel (the fan anchor's and the loop anchor's one driver); a
+    /// `WHERE`-borne `=` / `IN` on the side seeks it.
     fn start_candidates(&self) -> Result<Vec<NodeId>> {
         let ExecCtx { graph, params, .. } = self.ctx;
         node_candidates(
@@ -482,12 +493,5 @@ impl Route<'_> {
             params,
             &self.filters.endpoint,
         )
-    }
-
-    /// Call `f` with every candidate of the unbound start pattern (the
-    /// loop anchor's driver).
-    pub(super) fn each_start(&self, f: impl FnMut(NodeId) -> Result<()>) -> Result<()> {
-        let starts = self.start_candidates()?;
-        self.each_of(&starts, f)
     }
 }

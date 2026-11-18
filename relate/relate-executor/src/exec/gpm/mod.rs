@@ -35,7 +35,7 @@ use early::{early_predicates, EarlyPredicates};
 use emit::GpmEmit;
 use qpp::gpm_expand_quantified;
 use shortest_route::match_shortest_route;
-pub(crate) use shortest_route::{fold_shortest_route, ReachCache};
+pub(crate) use shortest_route::{fold_shortest_route, RouteCaches};
 use sink::MatchedSink;
 use walk::gpm_walk_elements;
 
@@ -454,7 +454,7 @@ pub(crate) fn match_gpm_path(
     ctx: ExecCtx<'_>,
     path: &PathPattern,
     rel_filters: &GpmFilters,
-    reach: &ReachCache,
+    caches: &RouteCaches,
     row: Row,
     used: UsedSet,
     match_mode: MatchMode,
@@ -489,7 +489,16 @@ pub(crate) fn match_gpm_path(
         tail,
         &mut routed,
     );
-    if match_shortest_route(sink, ctx, path, rel_filters, reach, &row, &used, match_mode)? {
+    if match_shortest_route(
+        sink,
+        ctx,
+        path,
+        rel_filters,
+        caches,
+        &row,
+        &used,
+        match_mode,
+    )? {
         return Ok(routed);
     }
     if path.elements.is_empty() {

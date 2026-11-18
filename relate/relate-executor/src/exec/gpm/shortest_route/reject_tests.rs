@@ -227,8 +227,10 @@ fn postfix_quantified_relationship_with_outer_path_where_agrees_with_gpm() {
 #[test]
 fn dynamic_relationship_type_stays_on_gpm() {
     let g = shortcut();
-    // The CIP-28 postfix quantifier keeps the type expression legal, and
-    // the route declines a quantified element.
+    // The CIP-28 postfix quantifier keeps the type expression legal; the
+    // route declines because a dynamic relationship type is not followable
+    // (a plain quantified hop takes the route, see
+    // `postfix_quantified_relationship_takes_the_route`).
     let q = "WITH 'R' AS t MATCH (a {id: 0}), (b {id: 3}) \
              MATCH p = ANY SHORTEST (a)-[:$(t)]->*(b) RETURN length(p)";
     assert_stays_on_gpm(&g, q, &[2]);
