@@ -443,7 +443,7 @@ pub(crate) fn match_paths(
                 residual,
                 // A fold-only reduce rides the join: its rows take the same
                 // reduce below that the nested loop's rows take in the sink.
-                cap.is_none() && reduce.is_none_or(|r| matches!(r.sink, ReduceSink::Fold(_))),
+                cap.is_none() && reduce.is_none_or(|r| r.sink.irrevocable()),
             )? {
                 let mut out = Vec::with_capacity(rows.len());
                 for row in rows {

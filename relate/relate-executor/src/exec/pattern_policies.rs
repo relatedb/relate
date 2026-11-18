@@ -415,6 +415,15 @@ impl<'a> ReduceSink<'a> {
             (None, None) => Self::Filter,
         }
     }
+
+    /// Whether this sink takes rows irrevocably: a fold consumes each raw
+    /// row and returns nothing, so a consumer that could still hand rows
+    /// back — a later run's decline, the walker's re-offer — must park
+    /// them instead of emitting. The one spelling of that classification:
+    /// the variant, never a second `matches!(…, Fold(_))` at a use site.
+    pub(crate) fn irrevocable(&self) -> bool {
+        matches!(self, Self::Fold(_))
+    }
 }
 
 /// What the last pattern of a `MATCH` evaluates before a row is stored

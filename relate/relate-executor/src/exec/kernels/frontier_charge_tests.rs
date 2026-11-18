@@ -1,8 +1,8 @@
 //! The frontier row rung's per-push retained-row charge (ADR-0463,
 //! LABS-781's MATCH-container protocol, LABS-1077 /
 //! OPLANE_REQ-00345609 item 6): the rung's two emission points — the
-//! capped consumer's served loop and the distinct-endpoint consumer's
-//! `endpoint_rows` — charge every row through the one `add_row`
+//! capped consumer's served loop and the distinct-endpoint shapes'
+//! `emit_endpoint_row` — charge every row through the one `add_row`
 //! spelling ahead of the landing, so a kernel-served MATCH refuses at
 //! ~the cap while the rows land, never after the container is whole.
 //!
@@ -106,7 +106,7 @@ fn refused_mid_emission(
 }
 
 /// LABS-1077: the distinct-endpoint consumer's rows charge as they land
-/// inside `endpoint_rows`. A distinct-endpoint projection whose rows
+/// inside `emit_endpoint_row`. A distinct-endpoint projection whose rows
 /// each construct a ~200-byte string crosses a 5 KB cap mid-emission:
 /// the refusal is the typed expression-capacity error carrying the
 /// crossing row's own figure, and the frontier counters show the rung

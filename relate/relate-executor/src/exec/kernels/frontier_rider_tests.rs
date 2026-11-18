@@ -272,13 +272,16 @@ fn a_filled_cap_stops_the_clause_before_the_next_row_runs() {
         1,
         "the one-row statement was served by the rung, not declined"
     );
-    assert!(
-        reference.levels > 0 && reference.edge_visits > 0,
-        "the served run recorded its counters: {reference:?}"
-    );
     let two_rows = exec_cypher(
         &g,
         "MATCH (x:Web) WITH x LIMIT 2 MATCH p = (x)-[:LINK*]-(y:Web) RETURN p LIMIT 1",
+    );
+    // The second statement must be *served* too, or the comparison below
+    // would hold between two declined clauses' DFS answers.
+    assert_eq!(
+        take_kernel_engagements(),
+        1,
+        "the two-row statement was served by the rung, not declined"
     );
     // A capped prefix is a contract-free ordering, so the answers compare
     // as multisets — the module's one spelling for that.

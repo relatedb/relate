@@ -517,6 +517,13 @@ pub(crate) fn decode_consumer(
     // The capped shape: `LIMIT` without `ORDER BY`, the cap rider's own
     // `Plain` want (`SKIP + LIMIT`). Any projection rides — the ≤ want
     // reconstructed witnesses bind everything the DFS's rows bind.
+    //
+    // A fold never reaches here: the aggregate branches above answer
+    // `DistinctEndpoints` for every suffix a `RowFold` rides, and the
+    // capped arm is only reached by a plain non-distinct `RETURN`. That
+    // is what keeps `Consumer::Capped` free of the fold's park-and-replay
+    // discipline — a capped shape emits as it goes and cannot hand rows
+    // back — so the two cannot be paired.
     let want = match s.skip_limit_want(graph, params) {
         Ok(want) => want,
         // A LIMIT that errors here declines; the DFS path's own cap
