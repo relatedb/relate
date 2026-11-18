@@ -8,7 +8,11 @@
   `release.yml`; the `release: published` event never fired because the
   release is published with `GITHUB_TOKEN`); amended by ADR-0465 (the
   Slack publish step moved from the release-notes run to the release
-  pipeline's final job)
+  pipeline's final job); amended by ADR-0618 (the generator reads a
+  harvested pull-request corpus and organizes its output under fixed
+  area groups, the model is a pinned strong tier with a
+  `RELEASE_NOTES_MODEL` override, and CI guards CHANGELOG.md entry
+  placement)
 
 ## Context
 

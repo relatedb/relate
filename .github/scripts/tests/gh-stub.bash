@@ -31,11 +31,13 @@ write_gh_stub() {
       'case "${1:-} ${2:-}" in'
     while IFS= read -r line; do
       printf '%s\n' "$line"
-      # An arm pattern line ("release list") introduces an arm: inject
-      # the GH_STUB_FAIL guard for that subcommand right after it.
-      if [[ "$line" =~ ^[[:space:]]*\"release\ ([a-z]+)\"\)$ ]]; then
-        printf '    [ "${GH_STUB_FAIL:-}" != "%s" ] || { echo "gh stub: simulated release %s failure" >&2; exit 1; }\n' \
-          "${BASH_REMATCH[1]}" "${BASH_REMATCH[1]}"
+      # An arm pattern line ("release list", "pr list") introduces an arm:
+      # inject the GH_STUB_FAIL guard for that subcommand right after it.
+      # The guard stays keyed on the bare subcommand word (list, view, …)
+      # — the pre-existing contract the suites set GH_STUB_FAIL against.
+      if [[ "$line" =~ ^[[:space:]]*\"(release|pr)\ ([a-z]+)\"\)$ ]]; then
+        printf '    [ "${GH_STUB_FAIL:-}" != "%s" ] || { echo "gh stub: simulated %s failure" >&2; exit 1; }\n' \
+          "${BASH_REMATCH[2]}" "${BASH_REMATCH[2]}"
       fi
     done
     printf '%s\n' \

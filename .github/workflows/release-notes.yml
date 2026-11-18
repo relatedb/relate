@@ -1,10 +1,12 @@
 name: Release notes
 
 # Generates richer release notes with OpenCode after a Relate release, then
-# publishes them. The agent writes two artifacts under target/release-notes/:
-# notes.md (markdown for the GitHub release body) and slack-payload.json
-# (Block Kit JSON for the Slack webhook). This workflow validates them, prints
-# them, optionally posts to Slack, and prepends the notes to the GitHub release.
+# publishes them. A trusted step first harvests the tag range's merged
+# pull requests into target/release-notes/corpus.md (ADR-0618); the agent
+# then writes two artifacts under target/release-notes/: notes.md
+# (markdown for the GitHub release body) and slack-payload.json (Block Kit
+# JSON for the Slack webhook). This workflow validates them, prints them,
+# optionally posts to Slack, and prepends the notes to the GitHub release.
 #
 # Trigger:
 #   - `workflow_call` — chained from release.yml's `release-notes` job, which
@@ -39,7 +41,10 @@ name: Release notes
 #   slack-announce job — while a `publish=true` dispatch posts inline unless
 #   the operator sets `slack: false`.
 #
-# Contract: ADR-0124. Runner install is pinned in
+# Contract: ADR-0124, amended by ADR-0618 (the harvested corpus input,
+# the fixed area groups in the prompt, the pinned strong model with the
+# RELEASE_NOTES_MODEL override, and CI's changelog-placement guard).
+# Runner install is pinned in
 # .github/scripts/install-opencode.sh (the ADR-0258 tarball-plus-sha256
 # pattern) — the single source of truth shared with the review workflows.
 
@@ -71,6 +76,13 @@ on:
         required: true
       SLACK_WEBHOOK_URL:
         description: "Webhook for the inline Slack post; optional — unset is a logged skip, never a failure (LABS-133)"
+        required: false
+      # Declared explicitly instead of `secrets: inherit`: a called
+      # workflow sees only these knobs, never every repo secret (least
+      # privilege — the same shape opencode-review-reusable.yml set for
+      # its model overrides).
+      RELEASE_NOTES_MODEL:
+        description: "Model override for the generation run (ADR-0618); empty = repo variable, then the built-in default"
         required: false
   workflow_dispatch:
     inputs:
@@ -196,6 +208,27 @@ jobs:
           echo "PREV_TAG=${PREV_TAG}" >> "$GITHUB_ENV"
           echo "[release-notes] PREV_TAG=${PREV_TAG:-<none>}"
 
+      - name: Harvest the usage corpus
+        # ADR-0618 §1, as amended: the released changelog section —
+        # reviewed at pull-request time, frozen at merge — is the
+        # complete what-changed source. This trusted step harvests ONLY
+        # each merged pull request's Example usage section (number,
+        # subject, quoted example; zero-render markup stripped) into
+        # target/release-notes/corpus.md BEFORE the agent runs — quoted
+        # runnable material for highlights. The sandboxed agent cannot
+        # reach gh or the range itself, so the workflow harvests and the
+        # agent reads; the untrusted text that remains enters exactly
+        # where ADR-0125 amendment 3 already confines it, the agent's
+        # own output directory, and the output guard judges what
+        # survives. The script fails closed when gh fails while the
+        # range carries pull requests.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          .github/scripts/release-notes-corpus.sh \
+            "${PREV_TAG}" "${RELEASE_TAG}" target/release-notes/corpus.md
+          echo "[release-notes] usage corpus: $(wc -l < target/release-notes/corpus.md) lines"
+
       - name: Verify Fireworks API key
         env:
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
@@ -214,10 +247,17 @@ jobs:
       - name: Generate release notes
         env:
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          # ADR-0618 §3: release notes are judgment-heavy, public-facing
+          # prose — a strong pinned model, not the review lanes' cheap
+          # checklist tier. RELEASE_NOTES_MODEL (secret or variable)
+          # overrides the pin, the same shape the review workflows use
+          # for their model pins.
+          RELEASE_NOTES_MODEL: ${{ secrets.RELEASE_NOTES_MODEL || vars.RELEASE_NOTES_MODEL || 'fireworks-ai/accounts/fireworks/models/glm-5p3' }}
           # Deny-by-default tool permissions for the agent (ADR-0125
           # amendment 3). OPENCODE_CONFIG is opencode's documented
           # custom-config-path mechanism; the committed file allowlists only
-          # the Bash commands the prompt needs and denies webfetch/websearch.
+          # the agent's one shell lens (the validating read wrapper,
+          # release-notes-read.sh) and jq, and denies webfetch/websearch.
           # No repo-root opencode.json exists, so nothing overrides this file.
           # OPENCODE_CONFIG must be absolute (or paired with --standalone):
           # opencode v2's managed background service chdirs to $HOME before
@@ -227,8 +267,9 @@ jobs:
           OPENCODE_CONFIG: ${{ github.workspace }}/.github/opencode-release-notes.json
           # RELEASE_TAG, RELEASE_VERSION and PREV_TAG are exported to
           # $GITHUB_ENV by earlier steps, so they are already in this step's
-          # environment. The prompt selects its source (CHANGELOG.md first, git
-          # log fallback) and writes
+          # environment. The prompt reads the changelog section (primary),
+          # the harvested corpus (completeness, ADR-0618) and the tag's
+          # grounding files, and writes
           # target/release-notes/{notes.md,slack-payload.json}.
         run: |
           # Fail closed BEFORE generation if the permission config is missing:
@@ -238,14 +279,19 @@ jobs:
             echo "ERROR: opencode permission config '${OPENCODE_CONFIG}' is missing or empty — refusing to run the agent without deny-by-default permissions" >&2
             exit 1
           fi
+          if [ ! -s target/release-notes/corpus.md ]; then
+            echo "ERROR: target/release-notes/corpus.md is missing or empty — the harvest step must run before generation (ADR-0618)" >&2
+            exit 1
+          fi
           mkdir -p target/release-notes
           # Feed the versioned prompt file as the run message. The agent has the
-          # Bash/Read/Write tools and the env above, so it can read CHANGELOG.md
-          # and the git log and write the two artifacts under target/release-notes/.
+          # Bash/Read/Write tools and the env above, so it can read the
+          # changelog, the corpus and the grounding files, and write the two
+          # artifacts under target/release-notes/.
           # --standalone spawns the server with the startup cwd (no chdir to
           # $HOME, no cross-invocation managed-service reuse), so the absolute
           # OPENCODE_CONFIG above is always honored.
-          opencode run --standalone --model fireworks-ai/accounts/fireworks/routers/kimi-latest \
+          opencode run --standalone --model "${RELEASE_NOTES_MODEL}" \
             "$(cat .github/prompts/release-notes.md)"
 
       - name: Validate artifacts
@@ -278,30 +324,49 @@ jobs:
             echo "ERROR: target/release-notes/slack-payload.json is missing or empty" >&2
             exit 1
           fi
-          # Fail closed if the agent output leaked the API key into the notes
-          # (prompt-injection exfiltration guard): notes.md is auto-published
-          # to the public release body. Fixed-string grep against the env
-          # var — the secret value itself is never echoed.
-          if [ -n "${FIREWORKS_API_KEY}" ] && grep -qF "${FIREWORKS_API_KEY}" target/release-notes/notes.md; then
-            echo "::error::target/release-notes/notes.md contains the FIREWORKS_API_KEY value — refusing to publish" >&2
-            exit 1
-          fi
           # Fail closed if the agent output leaked the API key into the
-          # Slack payload too. The payload leaves the runner as the
-          # release-notes-slack-payload artifact on every non-inline path
-          # — the chained producer leg (publish=true, slack=false) and any
-          # slack=false manual run upload it, and the release pipeline's
-          # final slack-announce job POSTs it off-runner — so the scan must
-          # fail the run before the upload step, not only at POST time
-          # (the script's active-leg scan). Same idiom as the notes.md scan
-          # above: fixed-string grep against the env var — the secret value
-          # itself is never echoed. The -s guard keeps non-producer paths
-          # tolerant of a missing payload (dry run, inline post).
-          if [ -n "${FIREWORKS_API_KEY}" ] && [ -s target/release-notes/slack-payload.json ] \
-            && grep -qF "${FIREWORKS_API_KEY}" target/release-notes/slack-payload.json; then
-            echo "::error::target/release-notes/slack-payload.json contains the FIREWORKS_API_KEY value — refusing to upload" >&2
-            exit 1
+          # notes (prompt-injection exfiltration guard): notes.md is
+          # auto-published to the public release body. The scan matches
+          # the raw value AND its base64 and hex encodings - a model can
+          # encode in its head what it cannot pipe through a command.
+          # Fixed-string greps against the env var - no probe value is
+          # ever echoed.
+          if [ -n "${FIREWORKS_API_KEY}" ]; then
+            KEY_B64="$(printf '%s' "${FIREWORKS_API_KEY}" | base64)"
+            KEY_HEX="$(printf '%s' "${FIREWORKS_API_KEY}" | od -An -tx1 | tr -d ' \n')"
+            for probe in "${FIREWORKS_API_KEY}" "${KEY_B64}"; do
+              if grep -qF "${probe}" target/release-notes/notes.md; then
+                echo "::error::target/release-notes/notes.md contains the FIREWORKS_API_KEY value (raw or encoded) - refusing to publish" >&2
+                exit 1
+              fi
+              if [ -s target/release-notes/slack-payload.json ] \
+                && grep -qF "${probe}" target/release-notes/slack-payload.json; then
+                echo "::error::target/release-notes/slack-payload.json contains the FIREWORKS_API_KEY value (raw or encoded) - refusing to upload" >&2
+                exit 1
+              fi
+            done
+            if grep -qiF "${KEY_HEX}" target/release-notes/notes.md \
+              || { [ -s target/release-notes/slack-payload.json ] \
+                && grep -qiF "${KEY_HEX}" target/release-notes/slack-payload.json; }; then
+              echo "::error::an artifact contains the FIREWORKS_API_KEY value in hex - refusing to publish" >&2
+              exit 1
+            fi
           fi
+          # The output-boundary guard (ADR-0618 §1): the artifacts are the
+          # one place untrusted pull-request prose can reach a public
+          # surface without a human reading it. The sandbox bounds what the
+          # agent can do and the scans above bound the API key; this bounds
+          # the CONTENT. Design (scripts/release_notes_validate.py):
+          # presence-refusal plus real parsers — urllib.parse judges every
+          # literal URL (userinfo, ports and off-allowlist hosts refused;
+          # code fences included, a fenced command is a copy-paste target),
+          # encodable markup outside code fences is refused outright rather
+          # than decoded, the payload is decoded by a JSON parser and judged
+          # the same way, and internal reference ids never reach the page.
+          # Unit-tested in scripts/tests/test_release_notes_validate.py.
+          python3 scripts/release_notes_validate.py \
+            --notes target/release-notes/notes.md \
+            --payload target/release-notes/slack-payload.json
           echo "[release-notes] generated notes: $(wc -c < target/release-notes/notes.md) bytes"
 
       - name: Print generated release notes

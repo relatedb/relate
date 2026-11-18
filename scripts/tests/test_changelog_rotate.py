@@ -66,6 +66,26 @@ class RotateTests(unittest.TestCase):
         self.assertIn(f"[0.1.0]: {BASE}releases/tag/v0.1.0\n", out)
         self.assertLess(out.index("[0.1.1]:"), out.index("[0.1.0]:"))
 
+    def test_notes_subsection_rides_the_rotation(self) -> None:
+        # The [Unreleased] body may carry a `### Notes` subsection (the
+        # notable-but-not-user-facing valve, ADR-0618 §4): the rotation
+        # moves the whole body, so Notes freezes into the released
+        # section as maintainer record — no special-casing anywhere.
+        with_notes = STEADY_STATE.replace(
+            "## [Unreleased]\n",
+            "## [Unreleased]\n\n### Notes\n\n- The loadtest comparator moved to one primitive.\n",
+            1,
+        )
+        out = changelog_rotate.rotate(with_notes, version="0.1.1", date="2026-11-09")
+        self.assertIn("### Notes\n", out)
+        self.assertIn(
+            "- The loadtest comparator moved to one primitive.\n", out
+        )
+        # The Notes subsection landed under the released heading, not
+        # under [Unreleased] (now empty again).
+        self.assertLess(out.index("## [0.1.1]"), out.index("### Notes"))
+        self.assertLess(out.index("### Notes"), out.index("[Unreleased]:"))
+
     def test_no_unreleased_heading_refuses(self) -> None:
         with self.assertRaises(changelog_rotate.RotateError) as ctx:
             changelog_rotate.rotate(

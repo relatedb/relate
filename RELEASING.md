@@ -76,7 +76,19 @@ from this repository; the old repository’s tags never came across.
    `RELEASE_SIGNING_PRIVATE_KEY` is unset, so a release cannot ship unsigned
    (see [Signing key](#signing-key), [ADR-0115](docs/adr/0115-sshsig-release-signing.md)).
 6. **GitHub release** — the release is created for the tag with all artifacts,
-   `SHA256SUMS`, `SHA256SUMS.sig`, and generated release notes.
+   `SHA256SUMS`, `SHA256SUMS.sig`, and GitHub's auto-generated notes (the
+   full pull-request list). The chained **Release notes** workflow then
+   regenerates the narrative: a trusted step harvests the tag range's
+   merged pull requests into a corpus
+   ([`.github/scripts/release-notes-corpus.sh`](.github/scripts/release-notes-corpus.sh),
+   ADR-0618), a pinned strong model
+   (`RELEASE_NOTES_MODEL` secret or variable overrides it) writes the
+   curated highlights and the fixed-area change list from the changelog
+   section plus the corpus, and the result is prepended to the release
+   body above the auto-generated list. Re-run it for a published tag
+   with `gh workflow run release-notes.yml -f version=<X.Y.Z>` —
+   `publish=false` (the default) is a dry run that only prints the
+   artifacts.
 7. **Release discovery files** — the `publish-releases-json` job regenerates
    `releases.json` — the release-discovery document `relate upgrade` /
    `update` reads
