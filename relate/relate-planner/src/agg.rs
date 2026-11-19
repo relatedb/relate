@@ -129,6 +129,12 @@ fn contains_subquery_expression(expr: &Expr) -> bool {
 /// projectable — GroupByAcceptance [46] evaluates the key and reports the
 /// type error, not a grouping-key rejection.
 fn key_is_property_of(key: &Expr, item: &Expr) -> bool {
+    // A static property key's base: under implicit grouping, projecting
+    // the base beside its property key rides the key. The dynamic
+    // spelling is deliberately absent — a dynamic key (`a[$k]`) exempts
+    // nothing: its value is the keyed property, and the base variable
+    // beside it is a fresh grouping decision the walk must actually
+    // make, not one the key's shape answers.
     matches!(key, Expr::Property { expr, .. } if **expr == *item)
 }
 
@@ -158,7 +164,7 @@ fn check_item_grouping(
     outer_names: &crate::binding::Env,
 ) -> Result<()> {
     let mut leaves = Vec::new();
-    collect_non_agg_leaves(expr, false, &mut leaves);
+    collect_non_agg_leaves(expr, &mut leaves);
     let mut offending: Vec<String> = Vec::new();
     // A rejected leaf whose shape names no variable (a chained property
     // `a.p.q`, a parameter property `$p.x`, map-projection shorthand on a
@@ -181,15 +187,8 @@ fn check_item_grouping(
 /// Record the variable a rejected leaf reads from, once — the description
 /// names each offending variable, mirroring Neo4j's 42I18 text.
 fn push_offending_name(leaf: &Expr, out: &mut Vec<String>) {
-    let name = match leaf {
-        Expr::Variable(v) => Some(v.to_string()),
-        Expr::Property { expr, .. } => match expr.as_ref() {
-            Expr::Variable(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
-    };
-    if let Some(name) = name {
+    if let Some(name) = leaf_root_name(leaf) {
+        let name = name.to_string();
         if !out.contains(&name) {
             out.push(name);
         }
@@ -345,7 +344,11 @@ fn leaf_allowed_in_aggregating_scope(
     }
     let base_var = match leaf {
         Expr::Variable(v) => v.clone(),
-        Expr::Property { expr, .. } => match expr.as_ref() {
+        // A property — static or dynamic — resolves through its base
+        // variable: an exact key match was already checked above, so the
+        // leaf is admitted by a grouped base variable, a projected
+        // output name, or a CALL-subquery import, never unconditionally.
+        Expr::Property { expr, .. } | Expr::DynamicProperty { expr, .. } => match expr.as_ref() {
             Expr::Variable(v) => v.clone(),
             _ => return false,
         },
@@ -408,7 +411,8 @@ fn check_nested_scope_refs(
 fn leaf_root_name(leaf: &Expr) -> Option<&SmallName> {
     match leaf {
         Expr::Variable(v) => Some(v),
-        Expr::Property { expr, .. } => match expr.as_ref() {
+        // A property — static or dynamic — reads its base variable.
+        Expr::Property { expr, .. } | Expr::DynamicProperty { expr, .. } => match expr.as_ref() {
             Expr::Variable(v) => Some(v),
             _ => None,
         },
@@ -426,28 +430,36 @@ fn collect_nested_scope_leaves(expr: &Expr, bound: &mut Vec<SmallName>, out: &mu
     if is_agg_call(expr) {
         return;
     }
+    fn is_bound(name: &SmallName, bound: &[SmallName]) -> bool {
+        bound.iter().any(|b| b == name)
+    }
+
     fn read(name: &SmallName, bound: &[SmallName], out: &mut Vec<Expr>) {
-        if !bound.iter().any(|b| b == name) {
+        if !is_bound(name, bound) {
             out.push(Expr::Variable(name.clone()));
         }
     }
-    match expr {
-        Expr::Variable(v) => {
-            read(v, bound, out);
+    // Inner-scope leaves keep the direct walker's shape through the one
+    // classification (`is_row_leaf`) and the one base-name extractor
+    // (`leaf_root_name`): a leaf whose base is bound in this scope is
+    // its own binding and reads nothing; a leaf whose base reads the
+    // enclosing row is pushed whole, so it resolves against a property
+    // grouping key (`{foo: a.name = 'Andres', kids: collect(..)}` beside
+    // a projected `a.name`, TCK Return6 [6]). A shape `is_row_leaf`
+    // calls atomic but whose base no name extracts (a chained property)
+    // falls through and descends — the direct walker keeps a chained
+    // property whole as one leaf (its own pin), while this walk resolves
+    // the inner scopes through their bases: the two verdicts differ by
+    // design for that one shape, and both read the same predicate.
+    if is_row_leaf(expr) {
+        if let Some(base) = leaf_root_name(expr) {
+            if !is_bound(base, bound) {
+                out.push(expr.clone());
+            }
             return;
         }
-        // Inner-scope leaves keep the direct walker's shape: a property
-        // leaf is the property expression, so it resolves against a
-        // property grouping key (`{foo: a.name = 'Andres', kids:
-        // collect(..)}` beside a projected `a.name`, TCK Return6 [6]).
-        Expr::Property { expr: target, .. } => {
-            if let Expr::Variable(v) = target.as_ref() {
-                if !bound.iter().any(|b| b == v) {
-                    out.push(expr.clone());
-                }
-                return;
-            }
-        }
+    }
+    match expr {
         // A pattern predicate correlates the pattern against already-bound
         // names; its element variables are reads, never bindings here.
         Expr::PatternPred { path } | Expr::ShortestPath { path, .. } => {
@@ -532,13 +544,44 @@ fn collect_nested_scope_leaves(expr: &Expr, bound: &mut Vec<SmallName>, out: &mu
     });
 }
 
-fn collect_non_agg_leaves(expr: &Expr, inside_agg: bool, out: &mut Vec<Expr>) {
-    if matches!(expr, Expr::CountStar) {
+/// The atomic-leaf classification the grouping walks share: a bare
+/// variable, a static property whose target carries no aggregation
+/// (chains stay whole — `a.p.q` is one leaf), or a dynamic property
+/// whose target is a bare variable AND whose key is a per-row constant
+/// (`is_seek_const`'s literal-and-parameter set, the one home of that
+/// vocabulary). The dynamic arm's variable-target gate is the
+/// resolution contract: a dynamic leaf resolves through its base
+/// variable (`leaf_root_name`), so a dynamic property of a chained or
+/// computed target (`a.meta[$k]`, `f(a)[$k]`) is NOT an atomic leaf —
+/// it descends, and its base leaf resolves through the base-variable
+/// allowance exactly as it did before the dynamic shape landed. A
+/// property whose target carries an aggregation is not a row leaf
+/// either — its value comes from the aggregate's own result
+/// (`max(a.p).q`, `collect(n)[0].q`) — and a dynamic property with a
+/// row-expression key is not one: the key is a row read the grouping
+/// discipline must see as its own leaf (`a[k]` under `GROUP BY a` with
+/// a per-row `k` stays rejected, so the base-variable allowance can
+/// never admit a group-varying key).
+fn is_row_leaf(expr: &Expr) -> bool {
+    match expr {
+        Expr::Variable(_) => true,
+        Expr::Property { expr: target, .. } => !is_agg_expr(target),
+        Expr::DynamicProperty { expr: target, key } => {
+            matches!(target.as_ref(), Expr::Variable(_)) && key.is_seek_const()
+        }
+        _ => false,
+    }
+}
+
+fn collect_non_agg_leaves(expr: &Expr, out: &mut Vec<Expr>) {
+    // An aggregate call's whole subtree is its own input: the walk never
+    // enters it — the sibling walker's prune
+    // (`collect_nested_scope_leaves`), in place of a carried `inside_agg`
+    // mode no caller ever set.
+    if is_agg_call(expr) {
         return;
     }
-    let inside_agg =
-        inside_agg || matches!(expr, Expr::Function { name, .. } if name.with_str(is_agg_fn));
-    if matches!(expr, Expr::Variable(_) | Expr::Property { .. }) && !inside_agg {
+    if is_row_leaf(expr) {
         out.push(expr.clone());
         return;
     }
@@ -553,23 +596,21 @@ fn collect_non_agg_leaves(expr: &Expr, inside_agg: bool, out: &mut Vec<Expr>) {
         items,
     } = expr
     {
-        if !inside_agg {
-            // The variable/property shorthand items are leaves with the same
-            // shape the pre-typed pseudo-call produced.
-            for item in items {
-                match item {
-                    MapProjectionItem::Variable { name } => {
-                        out.push(Expr::Variable(name.clone()));
-                    }
-                    MapProjectionItem::Property { key } => {
-                        out.push(Expr::property((**target).clone(), key.clone()));
-                    }
-                    MapProjectionItem::KeyValue { .. } | MapProjectionItem::AllProperties => {}
+        // The variable/property shorthand items are leaves with the same
+        // shape the pre-typed pseudo-call produced.
+        for item in items {
+            match item {
+                MapProjectionItem::Variable { name } => {
+                    out.push(Expr::Variable(name.clone()));
                 }
+                MapProjectionItem::Property { key } => {
+                    out.push(Expr::property((**target).clone(), key.clone()));
+                }
+                MapProjectionItem::KeyValue { .. } | MapProjectionItem::AllProperties => {}
             }
         }
     }
-    expr.each_child(&mut |child| collect_non_agg_leaves(child, inside_agg, out));
+    expr.each_child(&mut |child| collect_non_agg_leaves(child, out));
 }
 
 fn leaf_allowed_as_group(leaf: &Expr, group_keys: &[&Expr], imports: &Imports) -> bool {
@@ -592,8 +633,11 @@ fn leaf_allowed_as_group(leaf: &Expr, group_keys: &[&Expr], imports: &Imports) -
             return true;
         }
     }
-    if let Expr::Property { expr, .. } = leaf {
-        if let Expr::Variable(v) = expr.as_ref() {
+    // A property — static or dynamic — of a bare-variable grouping key
+    // or import resolves like the key itself (`a.p` under `GROUP BY a`,
+    // `a[$k]` under `GROUP BY a`).
+    if matches!(leaf, Expr::Property { .. } | Expr::DynamicProperty { .. }) {
+        if let Some(v) = leaf_root_name(leaf) {
             if v.with_str(|text| imports.contains(text)) {
                 return true;
             }
@@ -621,7 +665,7 @@ fn subexpr_contains(haystack: &Expr, needle: &Expr) -> bool {
 /// parameters) pass.
 pub(crate) fn order_key_within_projection(expr: &Expr, items: &[Projection]) -> bool {
     let mut leaves = Vec::new();
-    collect_non_agg_leaves(expr, false, &mut leaves);
+    collect_non_agg_leaves(expr, &mut leaves);
     leaves
         .iter()
         .all(|leaf| items.iter().any(|item| subexpr_contains(&item.expr, leaf)))
@@ -688,7 +732,7 @@ pub(crate) fn check_subclause_agg_leaves(
         .map(|(i, item)| item.output_name(i))
         .collect();
     let mut leaves = Vec::new();
-    collect_non_agg_leaves(expr, false, &mut leaves);
+    collect_non_agg_leaves(expr, &mut leaves);
     for leaf in &leaves {
         if matches!(leaf, Expr::Variable(v) if v.with_str(|t| reintroduced.iter().any(|r| r == t)))
         {

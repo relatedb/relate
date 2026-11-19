@@ -1,8 +1,10 @@
-//! LABS-149 repro matrix: slice/subscript postfix on an aggregating
-//! expression (`collect(x)[..n]`, `collect(x)[0]`) must evaluate the
-//! aggregate first and then apply the postfix — in `RETURN`, in `WITH`,
-//! and inside per-branch `RETURN`s of a `UNION ALL` (the Neo4j Browser
-//! sidebar metadata query).
+//! Postfix on an aggregating expression — slice/subscript
+//! (`collect(x)[..n]`, `collect(x)[0]`) and property (`max(n.p).p2`,
+//! `collect(n)[0].p1`) — must evaluate the aggregate first and then
+//! apply the postfix, in `RETURN`, in `WITH`, and inside per-branch
+//! `RETURN`s of a `UNION ALL` (the Neo4j Browser sidebar metadata
+//! query). LABS-149 pinned the slice/subscript forms; the property
+//! postfix rides the same evaluator path.
 
 mod common;
 
@@ -189,4 +191,86 @@ fn labs_149_aggregate_in_subscript_index_still_errors() {
         err.to_string().contains("AmbiguousAggregationExpression"),
         "error should reject the aggregate in the subscript, got: {err}"
     );
+}
+
+/// Property postfix on an aggregating expression: `max(n.p1).p2` plans
+/// (the repro's shape — a property whose target carries an aggregation
+/// is itself aggregating, never a non-grouping leaf), and over a
+/// node-typed aggregate result the property reads through —
+/// `collect(n)[0].p1` is the first collected node's property.
+#[test]
+fn property_postfix_on_an_aggregating_expression() {
+    let mut c = connection();
+    c.query("CREATE (:L1 {p1: 5})").unwrap();
+    // The repro's exact shape: EXPLAIN plans it.
+    c.query("EXPLAIN MATCH (n:L1) RETURN max(n.p1).p2 AS x")
+        .unwrap();
+    // Executing evaluates the aggregate first and applies the property
+    // to its scalar result — the same typed property-on-scalar policy
+    // `(n.p1 + 1).p2` already raises.
+    let err = c
+        .query("MATCH (n:L1) RETURN max(n.p1).p2 AS x")
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("property access requires a map"),
+        "got: {err}"
+    );
+    // Over the node-typed aggregate the property reads through.
+    let result = c
+        .query("MATCH (n:L1) RETURN collect(n)[0].p1 AS x")
+        .unwrap();
+    assert_eq!(result.rows, vec![vec![Value::Int(5)]]);
+    // A non-aggregated leaf beside the property still raises: the
+    // discipline is narrowed, not removed.
+    let err = c
+        .query("MATCH (n:L1) RETURN max(n.p1).p2 + n.q AS x")
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("non-grouped variables"),
+        "got: {err}"
+    );
+}
+
+/// The grouping discipline's read-position bracket shapes: a subscript
+/// on a row expression (`a.tags[0]`, `a[$k]`) descends to its base leaf
+/// and resolves through the base-variable allowance — the reachable
+/// spelling of the dynamic-key policy (read-position brackets lower to
+/// `Expr::Subscript`, whose base leaf `a.tags` resolves under
+/// `GROUP BY a`), pinned end to end.
+#[test]
+fn row_subscripts_resolve_through_their_base_under_grouping() {
+    let mut c = connection();
+    c.query("CREATE (:L1 {tags: ['x', 'y']})").unwrap();
+    for (query, params, expected) in [
+        (
+            "MATCH (a:L1) RETURN a.tags[0] AS t, count(*) AS n",
+            BTreeMap::new(),
+            string("x"),
+        ),
+        (
+            "MATCH (a:L1) RETURN a[$i] AS t, count(*) AS n",
+            BTreeMap::from([("i".to_string(), string("tags"))]),
+            list(vec![string("x"), string("y")]),
+        ),
+    ] {
+        let r = c.query_with_params(query, params).unwrap();
+        assert_eq!(r.rows.len(), 1, "{query}: rows: {:?}", r.rows);
+        assert_eq!(r.rows[0][0], expected, "{query}");
+    }
+}
+
+/// A row-varying subscript index is currently admitted — pinned here as
+/// its own record, separate from the base-resolution table above: the
+/// index subtree's read is not seen by the grouping discipline through
+/// the shared child walk (a pre-existing coverage gap — Neo4j rejects
+/// the shape; closing it is its own change, and this pin flips when it
+/// lands).
+#[test]
+fn a_varying_subscript_index_is_currently_admitted() {
+    let mut c = connection();
+    c.query("CREATE (:L1 {tags: ['x', 'y']})").unwrap();
+    let r = c
+        .query("MATCH (a:L1), (k:L1) RETURN a[k.name] AS t, count(*) AS n")
+        .unwrap();
+    assert_eq!(r.rows.len(), 1, "rows: {:?}", r.rows);
 }
