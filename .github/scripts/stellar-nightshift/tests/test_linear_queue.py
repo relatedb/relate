@@ -8,6 +8,15 @@ import os
 import sys
 import unittest
 
+# The ledger fixtures and nightshift's own imports pull pipeline modules
+# (facts) from the stellar-review plugin (ADR-0623): STELLAR_ROOT names
+# the installed opencode-stellar-review package root. linear_queue and
+# nightshift are this repository's, beside these tests.
+if not os.environ.get("STELLAR_ROOT"):
+    raise unittest.SkipTest(
+        "STELLAR_ROOT not set — point it at an installed "
+        "opencode-stellar-review package root (ADR-0623)")
+sys.path.insert(0, os.path.join(os.environ["STELLAR_ROOT"], "skills", "stellar-review", "tools"))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import linear_queue  # noqa: E402

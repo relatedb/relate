@@ -101,9 +101,10 @@ on:
         required: true
         type: string
       prompt_header:
-        description: 'Per-kind prompt header file name under .github/prompts/ (e.g. opencode-review-rust.md). Concatenated with opencode-review-protocol.md.'
-        required: true
+        description: 'Per-kind prompt header file name under .github/prompts/ (e.g. opencode-review-rust.md), concatenated with opencode-review-protocol.md. Unused by the scripted pipeline — its header ships with the stellar-review plugin (ADR-0623).'
+        required: false
         type: string
+        default: ''
       job_name:
         description: 'Lowercase kind label used in step names (e.g. "rust"). The check name itself comes from the caller workflow name and job id.'
         required: true
@@ -150,6 +151,11 @@ on:
 # environment hash is untouched.
 env:
   DO_NOT_TRACK: "1"
+  # The stellar-review plugin (ADR-0623) — npm opencode-stellar-review —
+  # owns the review pipeline this workflow drives. Pinned exact; bump
+  # deliberately and in lockstep with every workflow that installs it
+  # (scripts/tests/test_stellar_plugin_wiring.py asserts they agree).
+  STELLAR_REVIEW_VERSION: "0.1.2"
 
 jobs:
   review:
@@ -199,17 +205,28 @@ jobs:
         # the single source shared with release-notes.yml.
         run: .github/scripts/install-opencode.sh
 
-      # Per-pass model overrides (ADR-0302): writes agents.stellar-<pass>.model
-      # into the runner's OpenCode config before the model step. Unset vars
-      # write no config, so that pass inherits the run-level model.
-      - name: Apply stellar pass-model overrides (scripted)
-        if: inputs.pipeline == 'scripted'
-        env:
-          STELLAR_MODEL_STRUCTURE: ${{ secrets.STELLAR_MODEL_STRUCTURE || vars.STELLAR_MODEL_STRUCTURE }}
-          STELLAR_MODEL_BRANCHING: ${{ secrets.STELLAR_MODEL_BRANCHING || vars.STELLAR_MODEL_BRANCHING }}
-          STELLAR_MODEL_BOUNDARIES: ${{ secrets.STELLAR_MODEL_BOUNDARIES || vars.STELLAR_MODEL_BOUNDARIES }}
-          STELLAR_MODEL_COMPARISON: ${{ secrets.STELLAR_MODEL_COMPARISON || vars.STELLAR_MODEL_COMPARISON }}
-        run: python3 .agents/skills/stellar-review/tools/pass_models.py
+      # The stellar-review plugin (ADR-0623): the pipeline scripts, pass
+      # briefs and posting core live in the npm package, no longer in
+      # this repository. Two installs of the same pinned version, each
+      # for one consumer: the npm prefix gives the shell steps a stable
+      # tools path — STELLAR_ROOT, published as a fixed runner-authored
+      # value the PRE-MODEL steps may read (the post steps never trust
+      # it: they pin the same path from runner.temp in their step env,
+      # the round-22 finding class) — and `opencode plugin add` pre-seeds
+      # the CLI's plugin cache so the model step's `opencode run` loads
+      # the skill immediately instead of racing a background install.
+      # Both lanes need it: scripted runs the stellar pipeline, the
+      # per-kind lanes import the plugin's facts.py/post.py core.
+      - name: Install the stellar-review plugin (pinned)
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/stellar-review" \
+            "opencode-stellar-review@${STELLAR_REVIEW_VERSION}"
+          STELLAR_ROOT="$RUNNER_TEMP/stellar-review/node_modules/opencode-stellar-review"
+          test -x "$STELLAR_ROOT/scripts/stellar-prep.sh"
+          test -f "$STELLAR_ROOT/skills/stellar-review/tools/post.py"
+          echo "STELLAR_ROOT=$STELLAR_ROOT" >> "$GITHUB_ENV"
+          opencode plugin add "opencode-stellar-review@${STELLAR_REVIEW_VERSION}"
 
       # Scripted pipeline (stellar, ADR-0271): deterministic facts, ledger
       # and briefs BEFORE the model runs, so the model only judges. The
@@ -224,9 +241,9 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          .github/scripts/stellar-prep.sh model
+          "$STELLAR_ROOT/scripts/stellar-prep.sh" model
           if [ "$(jq -r .has_code_changes .stellar/facts.json)" = "false" ]; then
-            python3 .agents/skills/stellar-review/tools/post.py noop --repo "$REPO" --pr "$PR_NUMBER"
+            python3 "$STELLAR_ROOT/skills/stellar-review/tools/post.py" noop --repo "$REPO" --pr "$PR_NUMBER"
           fi
 
       # Per-kind pipeline (rust, security — ADR-0603): the stellar
@@ -269,8 +286,12 @@ jobs:
             echo "PR NUMBER: ${{ github.event.pull_request.number }}"
             echo "HEAD SHA: ${{ github.event.pull_request.head.sha }}"
             echo
-            cat ".github/prompts/${{ inputs.prompt_header }}"
-            if [ "${{ inputs.pipeline }}" != "scripted" ]; then
+            if [ "${{ inputs.pipeline }}" = "scripted" ]; then
+              # The stellar lane's header ships with the plugin (ADR-0623)
+              # — one spelling, no repo-side copy to drift from.
+              cat "$STELLAR_ROOT/templates/ci/opencode-review-stellar.md"
+            else
+              cat ".github/prompts/${{ inputs.prompt_header }}"
               echo
               cat .github/prompts/opencode-review-protocol.md
             fi
@@ -297,6 +318,15 @@ jobs:
           # subtracts the shutdown headroom from it.
           REVIEW_TIMEOUT_MINUTES: ${{ inputs.review_timeout_minutes }}
           OPENCODE_REVIEW_MODEL: ${{ secrets.OPENCODE_REVIEW_MODEL || vars.OPENCODE_REVIEW_MODEL || 'fireworks-ai/accounts/fireworks/routers/glm-fast-latest' }}
+          # Per-pass model overrides (ADR-0302, the ADR-0623 arm): the
+          # plugin's skill reads STELLAR_MODEL_<PASS> per dispatch (its
+          # SKILL.md Step 2) — the generated per-agent config writer is
+          # gone with the vendored copy. Unset or empty = no override;
+          # the pass inherits the run-level model above.
+          STELLAR_MODEL_STRUCTURE: ${{ secrets.STELLAR_MODEL_STRUCTURE || vars.STELLAR_MODEL_STRUCTURE }}
+          STELLAR_MODEL_BRANCHING: ${{ secrets.STELLAR_MODEL_BRANCHING || vars.STELLAR_MODEL_BRANCHING }}
+          STELLAR_MODEL_BOUNDARIES: ${{ secrets.STELLAR_MODEL_BOUNDARIES || vars.STELLAR_MODEL_BOUNDARIES }}
+          STELLAR_MODEL_COMPARISON: ${{ secrets.STELLAR_MODEL_COMPARISON || vars.STELLAR_MODEL_COMPARISON }}
           # No pipeline path hands the model a real token (ADR-0603): the
           # literal string "none" is an invalid token, so any gh call
           # fails loudly — the model reads its inputs from the scripted
@@ -487,6 +517,12 @@ jobs:
           # from — never local HEAD, which the model step could have
           # moved with a commit.
           RESTORE_SHA: ${{ github.sha }}
+          # The plugin's tools location, pinned from runner-provided
+          # values — never the GITHUB_ENV-published copy, which the
+          # model step could have overwritten through the runner env
+          # file (the round-22 finding class): the prep step installs
+          # to this exact fixed path under runner.temp.
+          STELLAR_ROOT: ${{ runner.temp }}/stellar-review/node_modules/opencode-stellar-review
           # gh's target host and the enforce gate's repo variable are
           # pinned too (the round-22 finding): the model can append to
           # the runner's env command file under RUNNER_TEMP (blanking
@@ -669,8 +705,8 @@ jobs:
           git --no-replace-objects -c core.fsmonitor= -c core.pager=cat -c core.worktree=. -c protocol.ext.allow=never -c core.attributesFile= -c core.hooksPath=/dev/null show "$HEAD_SHA:.github/scripts/review-restore.sh" > "$RESTORE"
           # shellcheck disable=SC1090
           . "$RESTORE" .stellar/findings.json .stellar/findings.partial.json
-          .github/scripts/stellar-prep.sh post
-          T=.agents/skills/stellar-review/tools
+          "$STELLAR_ROOT/scripts/stellar-prep.sh" post
+          T="$STELLAR_ROOT/skills/stellar-review/tools"
           # noop is recomputed here, never trusted from the environment
           if [ "$(jq -r .has_code_changes .stellar/facts.json)" = "false" ]; then
             python3 "$T/post.py" noop --repo "$REPO" --pr "$PR_NUMBER"
@@ -733,7 +769,7 @@ jobs:
                 GH_ENTERPRISE_TOKEN= GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
               BASE_SHA="$BASE_SHA" HEAD_SHA="$HEAD_SHA" REPO="$REPO" \
               PR_NUMBER="$PR_NUMBER" STELLAR_RESOLVE="$STELLAR_RESOLVE" \
-              RESTORE_SHA="$RESTORE_SHA" \
+              RESTORE_SHA="$RESTORE_SHA" STELLAR_ROOT="$STELLAR_ROOT" \
                 GITHUB_ENV=/dev/null \
                 BASH_ENV= ENV= LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= \
                 PYTHONSTARTUP= PYTHONPATH= PYTHONHOME= \
@@ -770,6 +806,14 @@ jobs:
           # from — never local HEAD, which the model step could have
           # moved with a commit.
           RESTORE_SHA: ${{ github.sha }}
+          # The plugin's tools location, pinned from runner-provided
+          # values — never the GITHUB_ENV-published copy, which the
+          # model step could have overwritten through the runner env
+          # file (the round-22 finding class): the prep step installs
+          # to this exact fixed path under runner.temp. The per-kind
+          # poster and prep resolve the plugin's facts.py/post.py core
+          # through it (ADR-0623).
+          STELLAR_ROOT: ${{ runner.temp }}/stellar-review/node_modules/opencode-stellar-review
           # gh's target host and the enforce gate's repo variable are
           # pinned too (the round-22 finding): the model can append to
           # the runner's env command file under RUNNER_TEMP (blanking
@@ -992,7 +1036,7 @@ jobs:
                 GH_ENTERPRISE_TOKEN= GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
               BASE_SHA="$BASE_SHA" HEAD_SHA="$HEAD_SHA" REPO="$REPO" \
               PR_NUMBER="$PR_NUMBER" REVIEW_KIND="$REVIEW_KIND" \
-              RESTORE_SHA="$RESTORE_SHA" \
+              RESTORE_SHA="$RESTORE_SHA" STELLAR_ROOT="$STELLAR_ROOT" \
                 GITHUB_ENV=/dev/null \
                 BASH_ENV= ENV= LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= \
                 PYTHONSTARTUP= PYTHONPATH= PYTHONHOME= \

@@ -39,7 +39,6 @@ jobs:
     uses: ./.github/workflows/opencode-review-reusable.yml
     with:
       review_kind: Stellar review
-      prompt_header: opencode-review-stellar.md
       job_name: stellar
       pipeline: scripted
       # 25 over the default 15: the squash-and-force-push workflow (one

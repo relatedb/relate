@@ -23,6 +23,13 @@ from unittest.mock import patch
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 
+# The subject imports the stellar-review plugin's posting core through
+# STELLAR_ROOT (ADR-0623); without it there is nothing to test.
+if not os.environ.get("STELLAR_ROOT"):
+    raise unittest.SkipTest(
+        "STELLAR_ROOT not set — the subject imports the stellar-review "
+        "plugin's posting core through it (ADR-0623)")
+
 from script_loader import load
 
 SUBJECT = load(

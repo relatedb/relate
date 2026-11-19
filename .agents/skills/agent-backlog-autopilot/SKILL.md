@@ -82,8 +82,8 @@ manufacture work.
 Local gates run BEFORE the first push — findings caught locally are cheaper
 than any CI round (run them in parallel where you can): fmt, clippy
 `-D warnings` (workspace, minus relate-python), the touched crates' test
-suites, and the local stellar pipeline
-(`.github/scripts/stellar-prep.sh model`, then the pass briefs) for anything
+suites, and the local stellar pipeline (the stellar-review plugin's
+`stellar-prep.sh model`, then the pass briefs — ADR-0623) for anything
 non-trivial.
 
 Then: one squashed commit → open the PR as a **draft** against the default

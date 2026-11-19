@@ -43,7 +43,6 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fileout import ensure_parent  # noqa: E402
 
 TZ = ZoneInfo("Europe/Berlin")
 SEV_RANK = {"blocker": 0, "medium": 1, "nit": 2}
@@ -241,7 +240,13 @@ def main() -> None:
     q = plan(ledgers, busy, parse_now(args.now), args.escalate_at, args.max_files, args.force, tasks)
     text = json.dumps(q, indent=1, sort_keys=True) + "\n"
     if args.out:
-        with open(ensure_parent(args.out), "w") as fh:
+        # The plugin's tools carry an ensure-parent helper (fileout.py);
+        # this worker must stay runnable from a pristine checkout with
+        # no plugin install (the fix job's verifier, ADR-0292), so the
+        # two-line idiom is spelled inline here.
+        out = os.path.abspath(args.out)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w") as fh:
             fh.write(text)
     else:
         sys.stdout.write(text)

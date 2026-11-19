@@ -285,7 +285,7 @@ needing formatter, loader, binding, or harness moves to a surface or
 
 Recurring stellar findings (135 from the #263/#278/#288/#295 rounds) are
 prevented here, not re-caught in review;
-`.agents/skills/stellar-review/tools/recurrence.py` tracks the recurrence
+`.github/scripts/stellar-nightshift/recurrence.py` tracks the recurrence
 rate.
 
 - **No silent fallbacks.** No `unwrap_or(Value::Null)`, `filter_map`
@@ -490,9 +490,9 @@ Process, not code shape:
   never `git merge <base>` — merge commits break GitHub's stacked-PR
   tooling and create conflicts the stack UI cannot resolve
 - **Local reviews run on the cheapest model tier that follows a checklist
-  against a pre-digested brief** (stellar-review SKILL.md model-tier
-  rule); reserve strong models for judgment-heavy work. Per-pass
-  override: `STELLAR_MODEL_*` env vars (ADR-0302)
+  against a pre-digested brief** (the stellar-review plugin's SKILL.md
+  model-tier rule); reserve strong models for judgment-heavy work.
+  Per-pass override: `STELLAR_MODEL_*` env vars (ADR-0302)
 - **Run local gates in parallel — 8-16 cores.** fmt + clippy + per-crate
   suites as concurrent background shells; per-invocation `--target-dir`
   or sequential retry resolves cargo lock contention
@@ -546,10 +546,12 @@ Process, not code shape:
   full matrix and authorizes nothing beyond it
 - **Catch findings locally first** — local gates are cheaper and faster
   than any CI round. Run the stellar round through its one entry point,
-  `.github/scripts/stellar-prep.sh local [--quick] [PR_NUMBER]` (no PR →
-  round-1 against unpushed commits), plus the touched crates' test
-  suites **before every push**, not once per PR. **The full round
-  (carried ledger + dependency expansion + sharded briefs) is
+  the stellar-review plugin's `stellar-prep.sh local [--quick]
+  [PR_NUMBER]` (no PR → round-1 against unpushed commits; the plugin is
+  installed per ADR-0623 — `opencode plugin add opencode-stellar-review`
+  / `claude plugin install stellar-review@oskars.ai`), plus the touched
+  crates' test suites **before every push**, not once per PR. **The full
+  round (carried ledger + dependency expansion + sharded briefs) is
   the mandatory pre-push gate, not optional** — it reviews approximately
   what CI's round will judge; fix what the passes find so CI's stellar
   round confirms instead of discovering. `--quick` (delta-only scope,
@@ -557,7 +559,7 @@ Process, not code shape:
   clean quick round does NOT predict a clean CI round; a clean full
   round is the best local predictor of CI's verdict (still not
   identical — CI pins pass models via `STELLAR_MODEL_*` secrets; full
-  option table: stellar-review SKILL.md Step 0)
+  option table: the plugin's SKILL.md Step 0)
 - **After pushing a draft, watch checks in ~10-minute loops**: read new
   review findings, fix in the same squashed commit, re-push, repeat
   until the fast gate is clean

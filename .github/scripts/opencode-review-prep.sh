@@ -32,8 +32,12 @@ MODE="${1:?usage: opencode-review-prep.sh model|post}"
 : "${HEAD_SHA:?opencode-review-prep.sh: HEAD_SHA required}"
 : "${GH_TOKEN:?opencode-review-prep.sh: GH_TOKEN required}"
 : "${REVIEW_KIND:?opencode-review-prep.sh: REVIEW_KIND required}"
+# The stellar pipeline's facts.py lives in the stellar-review plugin
+# (ADR-0623): STELLAR_ROOT names the installed opencode-stellar-review
+# package root (the workflow's pinned install step provides it).
+: "${STELLAR_ROOT:?opencode-review-prep.sh: STELLAR_ROOT required}"
 
-T=.agents/skills/stellar-review/tools
+T="$STELLAR_ROOT/skills/stellar-review/tools"
 P=.github/scripts/opencode-review-post.py
 
 # The PR's real diff is merge-base...head, never base-tip..head (a

@@ -11,9 +11,8 @@ on:
       - "distribution/extension-packages.json"
       - "extensions/*/Cargo.toml"
       - "extensions/*/package/extension.json"
-      - ".agents/skills/stellar-review/tools/**"
-      - ".agents/skills/stellar-review/passes/**"
-      - ".agents/skills/stellar-review/SKILL.md"
+      - ".agents/skills/**"
+      - ".github/scripts/stellar-nightshift/**"
       - ".opencode/agents/**"
       - ".claude/agents/**"
       - ".github/workflows/opencode-review-*.yml"
@@ -47,6 +46,17 @@ jobs:
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The per-kind poster test imports the stellar-review plugin's
+      # posting core through STELLAR_ROOT (ADR-0623); make test-scripts
+      # below runs it. Pinned to the version the review workflows use
+      # (scripts/tests/test_stellar_plugin_wiring.py asserts agreement).
+      - name: Install the stellar-review plugin (pinned)
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/stellar-review" \
+            "opencode-stellar-review@0.1.2"
+          echo "STELLAR_ROOT=$RUNNER_TEMP/stellar-review/node_modules/opencode-stellar-review" >> "$GITHUB_ENV"
+
       - name: Install bats
         run: |
           sudo apt-get update
@@ -77,7 +87,7 @@ jobs:
       - name: Run the scripts/tests suites (one owner, the aggregate)
         run: make test-scripts
 
-  stellar-tools:
+  stellar-nightshift-tools:
     runs-on: ubuntu-latest
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
@@ -98,5 +108,13 @@ jobs:
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Run stellar-review tool tests (facts, ledger, poster, agent sync)
-        run: python3 -m unittest discover -s .agents/skills/stellar-review/tools/tests -v
+      - name: Run the stellar night-shift tool tests (plan, queue, passstats)
+        env:
+          # The tests import the plugin's pipeline modules (facts,
+          # incremental) through STELLAR_ROOT (ADR-0623).
+          STELLAR_ROOT: ${{ runner.temp }}/stellar-review/node_modules/opencode-stellar-review
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/stellar-review" \
+            "opencode-stellar-review@0.1.2"
+          python3 -m unittest discover -s .github/scripts/stellar-nightshift/tests -v

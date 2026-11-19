@@ -44,13 +44,18 @@ import sys
 from collections.abc import Callable
 
 # The stellar poster owns the one gh/posting core (the same dependency
-# .github/scripts/stellar-prep.sh already spells); it is imported, not
-# duplicated. post.py puts its own directory on sys.path at import, so
-# its sibling modules resolve from any import site.
-_STELLAR_TOOLS = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    ".agents", "skills", "stellar-review", "tools",
-)
+# the review lanes' prep already spells); it is imported, not duplicated.
+# The core lives in the stellar-review plugin (ADR-0623) — npm
+# opencode-stellar-review — and STELLAR_ROOT names the installed package
+# root. post.py puts its own directory on sys.path at import, so its
+# sibling modules resolve from any import site.
+_STELLAR_ROOT = os.environ.get("STELLAR_ROOT")
+if not _STELLAR_ROOT:
+    raise SystemExit(
+        "opencode-review-post.py: STELLAR_ROOT not set — point it at the "
+        "installed opencode-stellar-review package root (ADR-0623)"
+    )
+_STELLAR_TOOLS = os.path.join(_STELLAR_ROOT, "skills", "stellar-review", "tools")
 sys.path.insert(0, _STELLAR_TOOLS)
 import post as stellar_post  # noqa: E402
 import facts as stellar_facts  # noqa: E402

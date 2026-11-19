@@ -33,6 +33,12 @@ permissions:
 # environment hash is untouched.
 env:
   DO_NOT_TRACK: "1"
+  # The stellar-review plugin (ADR-0623) — npm opencode-stellar-review —
+  # owns the ledger transport (post.py fetch-ledger) this workflow's plan
+  # and recurrence jobs call. Pinned exact, in lockstep with every
+  # workflow that installs it (scripts/tests/test_stellar_plugin_wiring.py
+  # asserts they agree).
+  STELLAR_REVIEW_VERSION: "0.1.2"
 
 jobs:
   plan:
@@ -63,10 +69,22 @@ jobs:
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The ledger transport (post.py fetch-ledger below) lives in the
+      # stellar-review plugin (ADR-0623): install the pinned npm package
+      # and publish its root as a fixed runner-authored value.
+      - name: Install the stellar-review plugin (pinned)
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/stellar-review" \
+            "opencode-stellar-review@${STELLAR_REVIEW_VERSION}"
+          STELLAR_ROOT="$RUNNER_TEMP/stellar-review/node_modules/opencode-stellar-review"
+          test -f "$STELLAR_ROOT/skills/stellar-review/tools/post.py"
+          echo "STELLAR_ROOT=$STELLAR_ROOT" >> "$GITHUB_ENV"
+
       - name: Window gate
         id: gate
         run: |
-          T=.agents/skills/stellar-review/tools
+          T=.github/scripts/stellar-nightshift
           if [ "${{ inputs.force }}" = "true" ] || python3 $T/nightshift.py window; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
@@ -79,7 +97,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          T=.agents/skills/stellar-review/tools
+          N=.github/scripts/stellar-nightshift
           mkdir -p .stellar/ledgers
           : > .stellar/busy.txt
           # every *active* PR: its carried ledger, and its files count as busy.
@@ -92,7 +110,7 @@ jobs:
                      | select((now - (.updatedAt | fromdateiso8601)) < 86400)
                      | .number')
           for pr in $ACTIVE; do
-            python3 $T/post.py fetch-ledger --repo "$REPO" --pr "$pr" --out ".stellar/ledgers/$pr.json" || echo "skip ledger of #$pr"
+            python3 "$STELLAR_ROOT/skills/stellar-review/tools/post.py" fetch-ledger --repo "$REPO" --pr "$pr" --out ".stellar/ledgers/$pr.json" || echo "skip ledger of #$pr"
             gh pr diff "$pr" --repo "$REPO" --name-only >> .stellar/busy.txt || true
           done
           sort -u -o .stellar/busy.txt .stellar/busy.txt
@@ -101,14 +119,14 @@ jobs:
         continue-on-error: true
         if: steps.gate.outputs.go == 'true' && env.LINEAR_API_KEY != ''
         run: |
-          python3 .agents/skills/stellar-review/tools/linear_queue.py pull --out .stellar/tasks.json
+          python3 .github/scripts/stellar-nightshift/linear_queue.py pull --out .stellar/tasks.json
           jq -r '"review-tasks open: \(length); workable: \([.[]|select(.clusters and (.clusters|length)>0)]|length); skipped: \([.[]|select(.skipped!="" and .scope!="auto-filed")|"\(.identifier) (\(.skipped))"]|join(", "))"' \
             .stellar/tasks.json | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Plan queue
         if: steps.gate.outputs.go == 'true'
         run: |
-          T=.agents/skills/stellar-review/tools
+          T=.github/scripts/stellar-nightshift
           shopt -s nullglob
           args=(); for l in .stellar/ledgers/*.json; do args+=(--ledger "$l"); done
           [ -f .stellar/tasks.json ] && args+=(--tasks .stellar/tasks.json)
@@ -123,7 +141,7 @@ jobs:
         continue-on-error: true
         if: steps.gate.outputs.go == 'true' && env.LINEAR_API_KEY != ''
         run: |
-          T=.agents/skills/stellar-review/tools
+          T=.github/scripts/stellar-nightshift
           [ -f .stellar/queue.json ] || exit 0
           # hand-filed TASK-* clusters already have their issue; sync only the ledger clusters
           jq '.runnable |= map(select(.task|not)) | .deferred_outside_window |= map(select(.task|not))' \
@@ -194,6 +212,18 @@ jobs:
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The ledger transport (post.py fetch-ledger below) lives in the
+      # stellar-review plugin (ADR-0623): install the pinned npm package
+      # and publish its root as a fixed runner-authored value.
+      - name: Install the stellar-review plugin (pinned)
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/stellar-review" \
+            "opencode-stellar-review@${STELLAR_REVIEW_VERSION}"
+          STELLAR_ROOT="$RUNNER_TEMP/stellar-review/node_modules/opencode-stellar-review"
+          test -f "$STELLAR_ROOT/skills/stellar-review/tools/post.py"
+          echo "STELLAR_ROOT=$STELLAR_ROOT" >> "$GITHUB_ENV"
+
       - name: Window gate (07:00-09:00 Europe/Berlin)
         id: gate
         run: |
@@ -215,11 +245,10 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          T=.agents/skills/stellar-review/tools
           mkdir -p .stellar/ledgers
           PRS=$(gh pr list --repo "$REPO" --state open --limit 200 --json number --jq '.[].number')
           for pr in $PRS; do
-            python3 $T/post.py fetch-ledger --repo "$REPO" --pr "$pr"               --out ".stellar/ledgers/$pr.json" || echo "skip ledger of #$pr"
+            python3 "$STELLAR_ROOT/skills/stellar-review/tools/post.py" fetch-ledger --repo "$REPO" --pr "$pr"               --out ".stellar/ledgers/$pr.json" || echo "skip ledger of #$pr"
           done
           python3 - <<'PY' > .stellar/recurrence-report.md
           import glob, json
@@ -315,7 +344,7 @@ jobs:
 
       - name: Build task prompt
         run: |
-          T=.agents/skills/stellar-review/tools
+          T=.github/scripts/stellar-nightshift
           {
             echo 'PROMPT<<PROMPT_EOF'
             cat .github/prompts/stellar-nightshift.md
@@ -348,7 +377,7 @@ jobs:
       - name: Verify scope and fast-tier checks, emit patch
         id: verify
         run: |
-          T=/tmp/pristine/.agents/skills/stellar-review/tools
+          T=/tmp/pristine/.github/scripts/stellar-nightshift
           Q=$PWD/.stellar/queue.json
           git -C /tmp/pristine stash -q 2>/dev/null || true
           git add -A -- .
@@ -425,14 +454,14 @@ jobs:
 
       - name: Apply patch, re-check scope
         run: |
-          T=.agents/skills/stellar-review/tools
+          T=.github/scripts/stellar-nightshift
           git apply --index .stellar/fix.patch
           git diff --cached --name-only > .stellar/changed.txt
           python3 $T/nightshift.py check-scope --queue .stellar/queue.json --id "$KEY" < .stellar/changed.txt
 
       - name: Commit, push, open PR
         run: |
-          T=.agents/skills/stellar-review/tools
+          T=.github/scripts/stellar-nightshift
           export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null
           git config user.name "stellar-nightshift"
           git config user.email "stellar-nightshift@users.noreply.github.com"

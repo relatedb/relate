@@ -1,5 +1,13 @@
 # ADR-0302: Review-agent models are overridable via environment variables
 
+**Later references**: ADR-0623 moves the stellar review pipeline into
+the stellar-review plugin and retires the `pass_models.py` CI arm below
+(the generated `agents.stellar-<pass>.model` config): the run step now
+exports `STELLAR_MODEL_<PASS>` directly and the plugin's skill applies
+each value per dispatch. The environment variables, their
+secrets → vars → default resolution, and the run-level models stand
+unchanged.
+
 Status: Accepted
 Claim: ef2714799e6705c36e2e68c44443744911ab4e60
 Date: 2026-10-15
