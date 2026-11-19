@@ -292,17 +292,15 @@ struct Parser<'a> {
     /// gate) verdict memo, and the node-pattern tree cache — one owner
     /// with the policies documented on it (`parser/speculation.rs`).
     speculation: Speculation,
-    /// Memo of `scan_label_primary_extent`'s group-case extents, keyed by
-    /// the opener's absolute token index and the scan's nesting depth. The
-    /// scan is a pure function of `self.tokens` (fixed for the parse) and
-    /// that depth -- `dynamic_label_quantifier_at(pos - self.pos)` reads
-    /// `tokens[self.pos + (pos - self.pos)]` == `tokens[pos]`, so `self.pos`
-    /// cancels out, and scan positions always stay at or past `self.pos` --
-    /// so a cached entry always equals a fresh scan. Without it each level
-    /// of a nested wide label disjunction re-walks its whole child subtree
-    /// (O(width * depth^2), ~31 s on a slow Windows debug runner); with it
-    /// every group extent is computed once (O(tokens)).
-    label_group_extent_memo: std::collections::HashMap<(usize, u32), Option<usize>>,
+    /// Nesting depth of pattern-element label/type chain parses (a node
+    /// pattern's labels, a relationship pattern's types), guarded by the
+    /// `depth_guard_family!` registration below. Inside an element's own
+    /// chain a `{` is the element's inline property map, not a map
+    /// projection, so the comprehension pipe-ambiguity rule's `{` dead
+    /// end must not fire there — `token_ends_label_expr_dead_end` reads
+    /// this; the element parsers scope their `parse_label_spec` calls
+    /// through [`Parser::with_pattern_element_depth`].
+    pattern_element_depth: u32,
     /// The parse-affecting preview opt-ins for this parse (see
     /// [`crate::lexer::ParseOptions`]). Set once by `Parser::new` from the
     /// entry point's options; never mutated mid-parse, so nested and
@@ -444,7 +442,7 @@ impl<'a> Parser<'a> {
             comprehension_where_map_required: false,
             exists_subquery_depth: 0,
             speculation: Speculation::default(),
-            label_group_extent_memo: std::collections::HashMap::new(),
+            pattern_element_depth: 0,
             options,
         })
     }
@@ -689,6 +687,26 @@ impl<'a> Parser<'a> {
             stages in one block and backtracking/speculative parses keep the \
             counter balanced.",
         with_doc = "[`Parser::with_expr_depth`] for `block_depth`.",
+    }
+
+    depth_guard_family! {
+        field = pattern_element_depth,
+        enter = enter_pattern_element_depth,
+        exit = exit_pattern_element_depth,
+        with = with_pattern_element_depth,
+        enter_doc = "Enter one level of pattern-element label/type chain \
+            nesting (a node pattern's labels, a relationship pattern's \
+            types). Scoped by the element parsers around their \
+            `parse_label_spec` calls so the comprehension pipe-ambiguity \
+            rule's `{` dead end stays suppressed for exactly that chain \
+            (see `token_ends_label_expr_dead_end`).",
+        exit_doc = "Pairs with [`Parser::enter_pattern_element_depth`]; \
+            balanced by construction through \
+            [`Parser::with_pattern_element_depth`].",
+        with_doc = "Runs `f` one pattern-element chain level deep: the \
+            element parsers' one way to scope a `parse_label_spec` call, \
+            so the depth is balanced by construction and no `?` can sit \
+            between enter and exit.",
     }
 
     /// Parses an `Integer` token as a `u32` bound (relationship hop count,

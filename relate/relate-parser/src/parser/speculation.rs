@@ -83,7 +83,8 @@ pub(super) struct Speculation {
     /// re-descends the whole nested term at every level; with the memo
     /// each position's verdict is computed once.
     verdicts: HashMap<(usize, ProbeGate), bool>,
-    /// Parked node-pattern trees — see the cache policy on [`Self`].
+    /// Parked node-pattern parse verdicts, keyed by the `(`'s absolute
+    /// token index — see the cache policy on [`Self`].
     node_patterns: HashMap<usize, CachedNodePattern>,
 }
 

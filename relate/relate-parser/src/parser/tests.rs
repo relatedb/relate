@@ -215,6 +215,21 @@ fn return_expr(s: &Statement) -> &Expr {
     }
 }
 
+/// Whether a comprehension WHERE is a plain `HasLabel` on a single label —
+/// the shape the pipe-ambiguity tests assert stays the label predicate.
+fn is_plain_label(e: &Option<Expr>) -> bool {
+    matches!(
+        e.as_ref(),
+        Some(Expr::HasLabel(h)) if matches!(&h.label_expr, LabelExpr::Label(_))
+    )
+}
+
+/// Whether a comprehension's map expression is a map projection — the
+/// one spelling every comprehension-split test asserts with.
+fn is_map_projection(e: &Expr) -> bool {
+    matches!(e, Expr::MapProjection(_))
+}
+
 /// ADR-0191's probe fixture covers all four name groups and every row id
 /// (`<shape>/<keyword>`) is unique across the fixture, so each group module
 /// can index its rows by id.

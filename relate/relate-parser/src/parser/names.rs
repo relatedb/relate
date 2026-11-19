@@ -94,7 +94,17 @@ impl<'a> Parser<'a> {
         };
         self.next_token(); // consume the '$' parameter token (empty/"all"/"any")
         self.next_token(); // consume (
-        let expr = self.parse_expression()?;
+                           // The atom's inner expression is a full expression context, not
+                           // part of the element's own label/type chain: a comprehension
+                           // nested here resolves its `|` ambiguity as an expression would,
+                           // so the element-chain scope (pattern_element_depth, which
+                           // suppresses the `{` dead-end for the chain's own inline
+                           // property map) must not leak into it.
+        let element_depth = self.pattern_element_depth;
+        self.pattern_element_depth = 0;
+        let expr = self.parse_expression();
+        self.pattern_element_depth = element_depth;
+        let expr = expr?;
         self.expect(TokenType::RightParen)?;
         Ok(LabelExpr::Dynamic(DynamicLabelExpr {
             expr: Box::new(expr),

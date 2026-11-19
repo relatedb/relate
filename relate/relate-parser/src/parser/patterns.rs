@@ -667,7 +667,13 @@ impl<'a> Parser<'a> {
         }
 
         if matches!(self.peek_type(), TokenType::Colon | TokenType::IS) {
-            node.label_expr = Some(self.parse_label_spec(false)?.expr);
+            // An element's own label chain: a `{` after it is the
+            // element's inline property map, never a map projection, so
+            // the comprehension pipe-ambiguity rule must not treat it as
+            // a dead end here (see `token_ends_label_expr_dead_end`).
+            // The scoped guard keeps the depth balanced across the `?`.
+            let spec = self.with_pattern_element_depth(|p| p.parse_label_spec(false))?;
+            node.label_expr = Some(spec.expr);
         }
 
         // Property spec, then the element-pattern WHERE: `(var:LE {props} WHERE ...)`
@@ -762,7 +768,10 @@ impl<'a> Parser<'a> {
             // leave it set behind this element.
             let mut legacy_pipe_colon = false;
             if matches!(self.peek_type(), TokenType::Colon | TokenType::IS) {
-                let spec = self.parse_label_spec(true)?;
+                // Same element-chain scope as the node arm above: the
+                // `{` of an inline rel property map is not a projection.
+                // The scoped guard keeps the depth balanced across the `?`.
+                let spec = self.with_pattern_element_depth(|p| p.parse_label_spec(true))?;
                 rel.type_expr = Some(spec.expr);
                 legacy_pipe_colon = spec.saw_legacy_pipe_colon;
             }

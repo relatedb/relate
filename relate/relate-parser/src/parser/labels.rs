@@ -249,13 +249,22 @@ impl<'a> Parser<'a> {
         // never sets it.
         let mut saw_legacy_pipe_colon = false;
         while self.peek_type() == TokenType::Pipe {
-            if self.comprehension_where_ambiguous_pipe && self.label_or_pipe_is_ambiguous() {
-                break;
-            }
             if !pipe_is_legacy {
                 self.note_gql_label_symbol();
             }
-            self.next_token();
+            // The comprehension-WHERE `|` ambiguity, resolved inline
+            // (commit-on-success — ADR-0626's reader-driven shape without
+            // a probe): consume the `|`, parse the label-`and` chain that
+            // would continue the disjunction, and keep it when it is a
+            // real continuation; restore and leave the `|` for the
+            // comprehension's map separator when it is not (the chain
+            // cannot parse, or the token after it ends the chain's
+            // usefulness as a continuation). The chain parses once and is
+            // kept on success — nothing downstream re-parses it, so no
+            // cache or verdict memo is involved.
+            let pipe_saved_pos = self.save_pos();
+            let pipe_saved_flags = self.side_effects;
+            self.next_token(); // consume the `|`
             if pipe_is_legacy && self.peek_type() == TokenType::Colon {
                 // Legacy relationship type list allows an optional repeated
                 // colon after `|`, e.g. `[:T|:T]` / `[:A|:B]`. The form is
@@ -265,7 +274,17 @@ impl<'a> Parser<'a> {
                 saw_legacy_pipe_colon = true;
                 self.next_token();
             }
-            parts.push(self.parse_label_and()?);
+            let chain = self.parse_label_and();
+            let not_a_continuation = match &chain {
+                Ok(_) => self.chain_tail_ends_where(self.peek_type()),
+                Err(_) => true,
+            };
+            if self.comprehension_where_ambiguous_pipe && not_a_continuation {
+                self.restore_pos(pipe_saved_pos);
+                self.side_effects = pipe_saved_flags;
+                break;
+            }
+            parts.push(chain?);
         }
         let expr = if parts.len() == 1 {
             parts.pop().unwrap()
@@ -278,32 +297,39 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Speculatively checks whether the `|` at the current position, inside
-    /// a list/pattern comprehension's `WHERE`-part, should be treated as the
-    /// comprehension's map-expression separator rather than a
-    /// label-expression disjunction continuation. Only called when
-    /// `comprehension_where_ambiguous_pipe` is set. Pure token-level
-    /// lookahead (no speculative parse): scans one label-`and` chain past
-    /// the `|`; if there isn't one, or there is but a `.` (property access,
-    /// which can never validly follow a label expression) immediately
-    /// follows it, the `|` is ambiguous and is left for the comprehension
-    /// grammar instead. A pattern comprehension additionally treats a `]`
-    /// right after the chain as ambiguous (it must still emit `| <map>`;
-    /// `comprehension_where_map_required`). Consumes no input and sets no
-    /// flags.
-    pub(super) fn label_or_pipe_is_ambiguous(&mut self) -> bool {
-        debug_assert_eq!(self.peek_type(), TokenType::Pipe);
-        match self.scan_label_and_extent(self.pos + 1, self.expr_depth) {
-            // `]` only disambiguates where the comprehension must still
-            // produce a map expression (a pattern comprehension); a list
-            // comprehension may end right after its label disjunction.
-            Some(end) => {
-                self.token_type_at(end) == TokenType::Dot
-                    || (self.comprehension_where_map_required
-                        && self.token_type_at(end) == TokenType::RightBracket)
-            }
-            None => true,
-        }
+    /// Whether the token after a label chain ends the chain's usefulness
+    /// as a disjunction continuation, so the `|` in front of the chain is
+    /// the comprehension's map separator instead: the dead-end set (see
+    /// [`Parser::token_ends_label_expr_dead_end`]), plus — where the
+    /// comprehension must still produce its map — the `]` that ends the
+    /// whole bracket. The one tail classification
+    /// [`Parser::label_or_pipe_is_ambiguous`] reads.
+    fn chain_tail_ends_where(&self, ty: TokenType) -> bool {
+        self.token_ends_label_expr_dead_end(ty)
+            || (self.comprehension_where_map_required
+                && ty == TokenType::RightBracket
+                // Inside a pattern element's own label/type chain, a `]`
+                // closes the element's type brackets — never the
+                // comprehension the map-required rule serves — so a `|`
+                // in a type disjunction there (`[:S|T]` in a
+                // comprehension's WHERE) stays a disjunction.
+                && self.pattern_element_depth == 0)
+    }
+
+    /// A token that can never continue the expression a label-expression
+    /// chain sits inside: property access (`.`) and a map projection (`{`)
+    /// both postfix a *variable*, and the chain's trailing term is a label
+    /// name the surrounding expression consumed as a label — so a `|` in
+    /// front of such a chain is the comprehension's map separator, not a
+    /// disjunction continuation. The one dead-end set
+    /// [`Parser::chain_tail_ends_where`] reads. The `{` arm is suppressed
+    /// inside a pattern element's own label/type chain
+    /// ([`Parser::pattern_element_depth`]): there the `{` is the element's
+    /// inline property map (`(x:A|B {p: 1})`, `-[r:S|T {w: 1}]->`), never a
+    /// projection.
+    fn token_ends_label_expr_dead_end(&self, ty: TokenType) -> bool {
+        matches!(ty, TokenType::Dot)
+            || (self.pattern_element_depth == 0 && matches!(ty, TokenType::LeftBrace))
     }
 
     /// Type of the token at absolute index `pos` (`EOF` past the end) --
@@ -314,99 +340,6 @@ impl<'a> Parser<'a> {
             Some(t) => t.ty,
             None => TokenType::EOF,
         }
-    }
-
-    /// Token-level extent scan of one label-`and` chain (`unary (&
-    /// unary)*`, the scan counterpart of `parse_label_and`) starting at
-    /// absolute token index `pos`: returns the index one past the chain's
-    /// end, or `None` when the tokens there do not form one. `depth`
-    /// mirrors the `with_expr_depth` budget (ADR-0257): entering a `!`
-    /// step or a group consumes one nesting level, and exhausting the
-    /// budget fails the scan exactly as the depth guard fails the parse,
-    /// so the scan itself never recurses past [`MAX_NESTING_DEPTH`].
-    fn scan_label_and_extent(&mut self, pos: usize, depth: u32) -> Option<usize> {
-        let mut pos = self.scan_label_unary_extent(pos, depth)?;
-        while self.token_type_at(pos) == TokenType::Ampersand {
-            pos = self.scan_label_unary_extent(pos + 1, depth)?;
-        }
-        Some(pos)
-    }
-
-    /// [`Parser::scan_label_and_extent`] for one `unary` term: a `!` chain
-    /// bottoming out in a primary.
-    fn scan_label_unary_extent(&mut self, mut pos: usize, mut depth: u32) -> Option<usize> {
-        while self.token_type_at(pos) == TokenType::Bang {
-            if depth >= MAX_NESTING_DEPTH {
-                return None;
-            }
-            depth += 1;
-            pos += 1;
-        }
-        self.scan_label_primary_extent(pos, depth)
-    }
-
-    /// [`Parser::scan_label_and_extent`] for one primary: the `%`
-    /// wildcard, a `(`/`[` group (whose label-`or` body is scanned
-    /// recursively, pipe-ambiguity rule included, mirroring
-    /// `parse_label_primary`'s recursion into `parse_label_or`), or a
-    /// label atom (a schema-name token, or a `$(...)`/`$all(...)`/
-    /// `$any(...)` dynamic atom whose balanced `(...)` group is skipped
-    /// without validating the inner expression -- a malformed one still
-    /// fails the real parse that a not-ambiguous verdict lets run).
-    fn scan_label_primary_extent(&mut self, pos: usize, depth: u32) -> Option<usize> {
-        match self.token_type_at(pos) {
-            TokenType::Percent => Some(pos + 1),
-            opener @ (TokenType::LeftParen | TokenType::LeftBracket) => {
-                if depth >= MAX_NESTING_DEPTH {
-                    return None;
-                }
-                if let Some(&extent) = self.label_group_extent_memo.get(&(pos, depth)) {
-                    return extent;
-                }
-                let closer = if opener == TokenType::LeftParen {
-                    TokenType::RightParen
-                } else {
-                    TokenType::RightBracket
-                };
-                let extent = match self.scan_label_or_extent(pos + 1, depth + 1) {
-                    Some(inner_end) if self.token_type_at(inner_end) == closer => {
-                        Some(inner_end + 1)
-                    }
-                    _ => None,
-                };
-                self.label_group_extent_memo.insert((pos, depth), extent);
-                extent
-            }
-            ty if ty.is_schema_name() => Some(pos + 1),
-            // Scan positions always stay at or past `self.pos`, so the
-            // relative-offset quantifier check applies.
-            _ if self.dynamic_label_quantifier_at(pos - self.pos).is_some() => {
-                // The `(` follows the `$` parameter token.
-                self.skip_balanced_parens(pos + 1)
-            }
-            _ => None,
-        }
-    }
-
-    /// [`Parser::scan_label_and_extent`] for a group's label-`or` body
-    /// (`label_and (| label_and)*`, `parse_label_or`'s scan counterpart).
-    /// Each `|` joins the disjunction only when a full label-`and` chain
-    /// follows it that does not end in front of a `.` -- the same
-    /// ambiguity rule `label_or_pipe_is_ambiguous` applies at the top
-    /// level, which `parse_label_or` also applies to nested groups while
-    /// `comprehension_where_ambiguous_pipe` is set.
-    fn scan_label_or_extent(&mut self, pos: usize, depth: u32) -> Option<usize> {
-        let mut pos = self.scan_label_and_extent(pos, depth)?;
-        while self.token_type_at(pos) == TokenType::Pipe {
-            let Some(end) = self.scan_label_and_extent(pos + 1, depth) else {
-                break;
-            };
-            if self.token_type_at(end) == TokenType::Dot {
-                break;
-            }
-            pos = end;
-        }
-        Some(pos)
     }
 
     /// Skips the balanced `(...)` group opening at absolute index `open`
