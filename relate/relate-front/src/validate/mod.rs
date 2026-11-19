@@ -83,6 +83,7 @@ mod graph_type_gate;
 mod index_hint;
 mod match_shape;
 mod page_bounds;
+mod pattern;
 mod safe_mode;
 mod scope;
 mod search;

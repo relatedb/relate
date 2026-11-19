@@ -9,25 +9,29 @@ use crate::ident_hash::IdentHashSet;
 use relate_names::SmallName;
 
 use relate_error::{EngineError, ErrorKind};
-use relate_parser::{Clause, Expr, PatternElement, PatternPath, Statement};
+use relate_parser::{Clause, Expr, PatternElement, Statement};
 
 use super::delete::check_delete_expr;
 use super::writes::{walk_write_elements, WriteClause};
 use crate::agg::contains_aggregation;
 use crate::ast::collect::{
-    bind_node_name_refs, check_expr_vars_defined, check_name_defined, check_pattern_vars_allowed,
-    clause_introduced_names, collect_expr_variables, collect_pattern_element_vars,
-    has_relationship, interp_embeds, projected_names, projected_node_scope, search_score_var,
-    union_chain, walk_expr_scoped, ScopedExprVisitor,
+    bind_node_name_refs, check_expr_vars_defined, check_name_defined, clause_introduced_names,
+    collect_expr_variables, collect_pattern_element_vars, interp_embeds, projected_names,
+    projected_node_scope, search_score_var, union_chain, walk_expr_scoped, ScopedExprVisitor,
 };
-use crate::ast::tree::{is_boolean_operator, walk_clause_expr_roots, walk_expr, walk_expr_with};
+use crate::ast::tree::{walk_clause_expr_roots, walk_expr};
 
 /// Validate expression-position constraints:
 /// - Pattern predicates in WHERE must not introduce new (unbound) variables for relationships
 ///   or nodes that aren't already in scope.
 /// - A single-node pattern predicate like `(n)` is not valid (InvalidArgumentType).
-/// - Pattern predicates must not appear in RETURN/WITH projections or SET values (UnexpectedSyntax).
-/// - size() on a pattern predicate is invalid (UnexpectedSyntax).
+/// - Pattern predicates are legal only in the homes the pattern-position
+///   policy names (predicate positions, a comprehension's WHERE filter,
+///   the legacy `exists(<pattern>)` argument) and rejected in every value
+///   position — a RETURN/WITH projection item, a SET value (the policy
+///   lives in [`super::pattern`]).
+/// - size() on a pattern predicate is invalid (UnexpectedSyntax, owned by
+///   [`super::pattern`]).
 /// - Property access and labels() on named path variables are invalid (InvalidArgumentType).
 /// - `type()` on a statically-known node variable (a MATCH/CREATE/MERGE
 ///   pattern node, carried through the clause walk) is invalid
@@ -325,7 +329,7 @@ fn validate_match_clause(
     }
     // Validate WHERE expression
     if let Some(where_expr) = &mc.where_expr {
-        validate_expr_in_where(where_expr, scope)?;
+        super::pattern::validate_expr_in_where(where_expr, scope)?;
         // Check for undefined variables in WHERE
         check_expr_vars_defined(where_expr, scope)?;
         // Check for property access on path variables
@@ -349,7 +353,7 @@ fn validate_with_clause(
     // Check for patterns in WITH projection items
     for item in &wc.items {
         if !item.all {
-            check_no_pattern_in_projection(&item.expr, "WITH")?;
+            super::pattern::check_no_pattern_in_value_position(&item.expr, "WITH projection")?;
             // Inside a CALL-subquery body, an outer name the body never
             // imported must not fall through to the enclosing row.
             reject_unimported_outer_refs(&item.expr, scope, outer_visibility)?;
@@ -362,7 +366,7 @@ fn validate_with_clause(
     }
     // WITH WHERE can have pattern predicates
     if let Some(where_expr) = &wc.where_expr {
-        validate_expr_in_where(where_expr, scope)?;
+        super::pattern::validate_expr_in_where(where_expr, scope)?;
     }
     // Reset scope to the projected names through the one WITH/RETURN
     // projection rule (`projected_names` also keeps names projected before
@@ -387,12 +391,10 @@ fn validate_return_clause(
     // Check for patterns in RETURN projection items
     for item in &rc.items {
         if !item.all {
-            check_no_pattern_in_projection(&item.expr, "RETURN")?;
+            super::pattern::check_no_pattern_in_value_position(&item.expr, "RETURN projection")?;
             // Inside a CALL-subquery body, an outer name the body never
             // imported must not fall through to the enclosing row.
             reject_unimported_outer_refs(&item.expr, scope, outer_visibility)?;
-            // Check for size() on paths/patterns in RETURN
-            check_size_constraints(&item.expr, scope)?;
             // labels() on a named-path variable (Graph3 [8]).
             check_labels_on_paths(&item.expr, path_vars)?;
             // `type()` on a statically-known node variable.
@@ -603,7 +605,7 @@ fn check_set_items(
 ) -> Result<(), EngineError> {
     for item in items {
         if let Some(val) = &item.value {
-            check_no_pattern_in_set_value(val)?;
+            super::pattern::check_no_pattern_in_value_position(val, "SET values")?;
             check_expr_vars_defined(val, scope)?;
         }
         check_dynamic_label_expressions(&item.labels, scope)?;
@@ -676,173 +678,6 @@ fn check_dynamic_label_expressions(
         }
     }
     Ok(())
-}
-
-/// Check that an expression used in WHERE doesn't violate pattern predicate rules.
-fn validate_expr_in_where(expr: &Expr, scope: &IdentHashSet<SmallName>) -> Result<(), EngineError> {
-    // `size(<pattern>)` is illegal anywhere in the WHERE.
-    check_size_constraints(expr, scope)?;
-    // Visit exactly the predicate positions the shared
-    // [`predicate_position`] names (plus a parenthesized group, which it
-    // makes transparent): a pattern predicate is legal there and must be
-    // validated (relationship-bearing, bound variables) — including one
-    // under a `CASE WHEN` condition, which the former hand-rolled
-    // recursion skipped — and a parenthesized single variable used as a
-    // predicate is the single-node rejection.
-    walk_expr_with(
-        expr,
-        &mut |e| match e {
-            Expr::PatternPredicate(pp) => validate_pattern_predicate(&pp.pattern, scope),
-            Expr::Paren(inner) => match inner.as_ref() {
-                Expr::Variable(v) => {
-                    check_name_defined(v, scope)?;
-                    Err(single_node_predicate_error())
-                }
-                _ => Ok(()),
-            },
-            _ => Ok(()),
-        },
-        // A parenthesized group is transparent for the WHERE walk: its body
-        // is a predicate exactly when the group is.
-        |parent, child| predicate_position(parent, child) || matches!(parent, Expr::Paren(_)),
-    )
-}
-
-/// Validate a pattern predicate used in WHERE.
-/// - Must have at least one relationship (not just a single node).
-/// - Must not introduce new unbound variables.
-fn validate_pattern_predicate(
-    pattern: &PatternPath,
-    scope: &IdentHashSet<SmallName>,
-) -> Result<(), EngineError> {
-    // Check: single-node pattern predicate like `(n)` is invalid — the
-    // canonical relationship-bearing test, the same depth model the
-    // variable walk below uses.
-    if !has_relationship(pattern) {
-        return Err(single_node_predicate_error());
-    }
-
-    // Check for unbound variables introduced by the pattern predicate: the
-    // canonical pattern-variable walk gated by the canonical
-    // every-name-must-be-allowed fold.
-    check_pattern_vars_allowed(std::slice::from_ref(pattern), |v| scope.contains(v))
-}
-
-/// The one "a single node is not a valid pattern predicate" rejection: the
-/// paren-variable arm and the no-relationship pattern arm report the same
-/// shape.
-fn single_node_predicate_error() -> EngineError {
-    EngineError::semantic(
-        ErrorKind::InvalidArgumentType,
-        "a single node is not a valid pattern predicate".to_string(),
-    )
-}
-
-/// Check that a projection expression does not contain pattern predicates.
-/// Patterns like `(n)-[]->()` are not valid in RETURN or WITH projections,
-/// except in the predicate positions the front end reads (the operand of
-/// `NOT`, either side of `AND`/`OR`/`XOR`, a `CASE WHEN` condition), except
-/// as a comprehension's WHERE filter — a list/map comprehension's
-/// (`[t IN ts WHERE (t)<--()]`, CaseExpression.feature "Shorthand case with
-/// filtering pattern comprehension") and a pattern comprehension's own
-/// (`[(a)-->(b) WHERE (b)--() | b]`) — and except as the sole argument of
-/// the legacy `exists(<pattern>)` function (`RETURN n, exists((n)--())`).
-/// The walk stops at those edges; every other position in the projection
-/// still rejects a pattern predicate.
-fn check_no_pattern_in_projection(expr: &Expr, ctx: &str) -> Result<(), EngineError> {
-    walk_expr_with(
-        expr,
-        &mut |e| {
-            if matches!(e, Expr::PatternPredicate(_)) {
-                Err(EngineError::semantic(
-                    ErrorKind::UnexpectedSyntax,
-                    format!("pattern expressions are not allowed in {ctx} projection"),
-                ))
-            } else {
-                Ok(())
-            }
-        },
-        |parent, child| {
-            // Descend everywhere except the legal pattern-predicate homes:
-            // a comprehension's WHERE filter, a pattern predicate that *is
-            // itself* the sole argument of `exists`, and a (possibly
-            // parenthesized) pattern predicate in a predicate position
-            // (`NOT`, `AND`/`OR`/`XOR`, a `CASE WHEN` condition). Neo4j
-            // accepts a pattern expression wherever a predicate is read and
-            // rejects it wherever a value is. The child must BE the pattern:
-            // pruning on the *slot* alone let a pattern buried in a value
-            // subexpression of a boolean operand (`(n)--() OR
-            // size((m)--())`) escape the rejection.
-            !(is_comprehension_where(parent, child)
-                || is_exists_pattern_arg(parent, child)
-                || (parens_wrap_pattern(child) && predicate_position(parent, child)))
-        },
-    )
-}
-
-/// Whether `child` is a pattern predicate, possibly behind transparent
-/// parentheses — the shape a predicate position reads as a predicate.
-/// `NOT ((n)--())` is therefore a legal predicate, while a bare
-/// `RETURN ((n)--())` is still a value position and stays rejected: the
-/// group is transparent, its *position* is not.
-fn parens_wrap_pattern(child: &Expr) -> bool {
-    match child {
-        Expr::PatternPredicate(_) => true,
-        Expr::Paren(inner) => parens_wrap_pattern(inner),
-        _ => false,
-    }
-}
-
-/// Whether `child` is the sole argument of the legacy `exists(<pattern>)`
-/// call `parent`, and is itself the pattern: only that exact node is the
-/// legal home for a pattern in a projection. An `exists` over any other
-/// expression is descended into — a pattern buried below it
-/// (`exists(1 + (n)--())`) is not the legacy form and stays rejected by
-/// the walk above.
-fn is_exists_pattern_arg(parent: &Expr, child: &Expr) -> bool {
-    matches!(child, Expr::PatternPredicate(_))
-        && matches!(
-            parent,
-            Expr::FunctionCall(fc) if fc.name.with_str(|n| n.eq_ignore_ascii_case("exists")) && fc.args.len() == 1
-        )
-}
-
-/// Whether `child` is the WHERE filter of the comprehension `parent` (by
-/// identity, so the filter rides the exact node the walk would otherwise
-/// descend into).
-fn is_comprehension_where(parent: &Expr, child: &Expr) -> bool {
-    let where_expr = match parent {
-        Expr::ListComprehension(lc) => lc.where_expr.as_ref(),
-        Expr::MapComprehension(mc) => mc.where_expr.as_ref(),
-        Expr::PatternComprehension(pc) => pc.where_expr.as_ref(),
-        _ => return false,
-    };
-    where_expr.is_some_and(|w| std::ptr::eq(w, child))
-}
-
-/// Whether `child` sits in a position the front end reads as a predicate: the
-/// operand of `NOT`, either side of an `AND`/`OR`/`XOR`, or a `CASE WHEN`
-/// condition. This is the one vocabulary shared by the WHERE walk
-/// ([`validate_expr_in_where`]) and the projection prune
-/// ([`check_no_pattern_in_projection`]); a pattern expression is legal
-/// exactly here, in a comprehension's WHERE filter, and as the legacy
-/// `exists(<pattern>)` argument, and illegal in every value position (a bare
-/// projection item, a list element, another function's argument). A
-/// parenthesized group is handled at each walk's edge — transparent in the
-/// WHERE walk, and a home in the projection only when it wraps the pattern
-/// itself ([`parens_wrap_pattern`]).
-fn predicate_position(parent: &Expr, child: &Expr) -> bool {
-    match parent {
-        Expr::Unary(u) if is_boolean_operator(u.op) => std::ptr::eq(&u.expr, child),
-        Expr::Binary(b) if is_boolean_operator(b.op) => {
-            std::ptr::eq(&b.left, child) || std::ptr::eq(&b.right, child)
-        }
-        Expr::Case(c) => c
-            .whens
-            .iter()
-            .any(|when| std::ptr::eq(&when.condition, child)),
-        _ => false,
-    }
 }
 
 /// Check for property access on path variables.
@@ -923,44 +758,6 @@ fn find_root_variable(expr: &Expr) -> Option<SmallName> {
     }
 }
 
-/// Check that a SET value expression doesn't contain patterns.
-fn check_no_pattern_in_set_value(expr: &Expr) -> Result<(), EngineError> {
-    // A pattern predicate is illegal anywhere in a SET value.
-    walk_expr(expr, &mut |e| {
-        if matches!(e, Expr::PatternPredicate(_)) {
-            Err(EngineError::semantic(
-                ErrorKind::UnexpectedSyntax,
-                "pattern expressions are not allowed in SET values".to_string(),
-            ))
-        } else {
-            Ok(())
-        }
-    })
-}
-
-/// Check the size() constraint this pass owns: size() on a pattern
-/// predicate is invalid (UnexpectedSyntax). (size() on a path *variable* is
-/// rejected on the lowered IR by the planner's `size()` argument check.)
-fn check_size_constraints(
-    expr: &Expr,
-    _scope: &IdentHashSet<SmallName>,
-) -> Result<(), EngineError> {
-    // `size(<pattern predicate>)` is illegal anywhere.
-    walk_expr(expr, &mut |e| {
-        if let Expr::FunctionCall(fc) = e {
-            if fc.name.with_str(str::to_lowercase) == "size"
-                && fc.args.len() == 1
-                && matches!(&fc.args[0], Expr::PatternPredicate(_))
-            {
-                return Err(EngineError::semantic(
-                    ErrorKind::UnexpectedSyntax,
-                    "size() cannot be applied to a pattern predicate".to_string(),
-                ));
-            }
-        }
-        Ok(())
-    })
-}
 /// `type()` on a statically-known node variable is a compile-time
 /// `InvalidArgumentType`. The node set is carried clause by clause through
 /// the canonical node-scope facts in [`validate_expression_constraints`]'s
@@ -985,88 +782,6 @@ fn check_type_on_nodes(
 mod tests {
     use super::*;
     use crate::validate::parse_and_validate_expression_constraints;
-
-    // The `exists(<pattern>)` exemption covers only a pattern that *is*
-    // the call's sole argument. A pattern buried inside a larger argument
-    // is not the legacy form, so the projection walk descends into it and
-    // rejects it like any other projection pattern.
-    /// A pattern expression is a predicate in the boolean positions
-    /// (`NOT`, `AND`/`OR`/`XOR`, a `CASE WHEN` condition, a comprehension
-    /// filter) and stays rejected as a value (a bare projection item).
-    #[test]
-    fn pattern_predicates_are_legal_in_boolean_positions_only() {
-        for query in [
-            "MATCH (n) RETURN NOT (n)--() AS x",
-            "MATCH (n) RETURN (n)--() OR (n)--()--() AS x",
-            "MATCH (n) RETURN CASE WHEN (n)--() THEN 1 ELSE 0 END AS x",
-            "MATCH (n) RETURN [(n)-->(m) WHERE (m)--() | m] AS x",
-        ] {
-            parse_and_validate_expression_constraints(query)
-                .unwrap_or_else(|e| panic!("{query}: {e}"));
-        }
-        let bare = parse_and_validate_expression_constraints("MATCH (n) RETURN (n)--() AS x")
-            .expect_err("a bare pattern projection item stays rejected");
-        assert_eq!(bare.kind(), ErrorKind::UnexpectedSyntax);
-    }
-
-    /// Regression: the boolean-operand exemption covers the pattern operand
-    /// itself, not a whole value subexpression. A pattern buried under a
-    /// value position inside a boolean operand — `size(<pattern>)` here —
-    /// stays rejected; pruning the operand's whole subtree had let it
-    /// escape.
-    #[test]
-    fn a_pattern_in_a_value_subexpression_of_a_boolean_operand_is_rejected() {
-        let error = parse_and_validate_expression_constraints(
-            "MATCH (n) RETURN (n)--() OR size((n)--()) AS x",
-        )
-        .expect_err("a pattern in a value subexpression stays rejected");
-        assert_eq!(error.kind(), ErrorKind::UnexpectedSyntax);
-    }
-
-    /// A parenthesized group is transparent for its *position*: a pattern
-    /// behind parentheses is a predicate when the group is one, and stays a
-    /// value when the group is a bare projection item (Neo4j accepts
-    /// `NOT ((n)--())` and rejects `RETURN ((n)--())` with 42I34).
-    #[test]
-    fn parens_are_transparent_for_a_patterns_position() {
-        parse_and_validate_expression_constraints("MATCH (n) RETURN NOT ((n)--()) AS x")
-            .expect("a parenthesized pattern predicate stays legal under NOT");
-        parse_and_validate_expression_constraints("MATCH (n) RETURN (n)--() OR (((n)--())) AS x")
-            .expect("a parenthesized pattern predicate stays legal as an OR operand");
-        let error = parse_and_validate_expression_constraints("MATCH (n) RETURN ((n)--()) AS x")
-            .expect_err("a parenthesized pattern is still a value as a bare projection item");
-        assert_eq!(error.kind(), ErrorKind::UnexpectedSyntax);
-    }
-
-    /// Regression: a `CASE WHEN` condition is a predicate position, so its
-    /// pattern predicate must be validated in a WHERE too (unbound pattern
-    /// variables rejected), not skipped by the WHERE walk.
-    #[test]
-    fn a_case_when_pattern_in_a_where_is_validated() {
-        parse_and_validate_expression_constraints(
-            "MATCH (n)--(m) WHERE CASE WHEN (n)--(m) THEN true ELSE false END RETURN n",
-        )
-        .expect("a bound CASE WHEN pattern predicate is legal in a WHERE");
-        let error = parse_and_validate_expression_constraints(
-            "MATCH (n) WHERE CASE WHEN (n)-->(m) THEN true ELSE false END RETURN n",
-        )
-        .expect_err("an unbound variable in a CASE WHEN pattern must be rejected");
-        assert_eq!(error.kind(), ErrorKind::UndefinedVariable);
-    }
-
-    #[test]
-    fn exists_exemption_covers_only_a_direct_pattern_argument() {
-        parse_and_validate_expression_constraints("MATCH (n) RETURN exists((n)--()) AS x")
-            .expect("the legacy exists(<pattern>) form is legal in a projection");
-        let error =
-            parse_and_validate_expression_constraints("MATCH (n) RETURN exists(1 + (n)--()) AS x")
-                .expect_err("a pattern under a non-pattern exists() argument is rejected");
-        assert_eq!(error.kind(), ErrorKind::UnexpectedSyntax);
-        assert_eq!(
-            error.to_string(),
-            "UnexpectedSyntax: pattern expressions are not allowed in RETURN projection"
-        );
-    }
 
     /// `type()` on a statically-known node variable is rejected in the
     /// clause walk, with node-ness carried through the canonical

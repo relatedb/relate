@@ -145,3 +145,55 @@ fn pattern_predicate_and_comprehension_admit_label_expressions() {
         vec![vec![Value::List(vec![int(10), int(40)].into())]]
     );
 }
+
+/// The `exists(<pattern>)` form as a SET value: the predicate evaluates
+/// per row and the property stores its boolean, exactly as the same
+/// expression projects in a RETURN (`SET n.p1 = EXISTS((n)-[:R]->(:L2))`
+/// previously died at the blanket pattern-in-SET-value rejection; a bare
+/// pattern value keeps it, and an unbound pattern variable in the value
+/// stays undefined).
+#[test]
+fn set_value_reads_an_exists_pattern_predicate_per_row() {
+    let mut conn = connection();
+    conn.query("CREATE (:L1 {name: 'a'})-[:R]->(:L2), (:L1 {name: 'b'})")
+        .unwrap();
+    let result = conn
+        .query(
+            "MATCH (n:L1) SET n.p1 = EXISTS((n)-[:R]->(:L2)) \
+             RETURN n.name AS name, n.p1 AS p1 ORDER BY n.name",
+        )
+        .unwrap();
+    assert_eq!(
+        result.rows,
+        vec![
+            vec![Value::String("a".into()), Value::Bool(true)],
+            vec![Value::String("b".into()), Value::Bool(false)],
+        ]
+    );
+    // The write persists.
+    let result = conn
+        .query("MATCH (n:L1) RETURN n.p1 AS p1 ORDER BY n.name")
+        .unwrap();
+    assert_eq!(
+        result.rows,
+        vec![vec![Value::Bool(true)], vec![Value::Bool(false)]]
+    );
+    // A bare pattern value keeps the rejection, with the SET spelling.
+    let error = conn
+        .query("MATCH (n:L1) SET n.p1 = (n)-[:R]->(:L2)")
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("pattern expressions are not allowed in SET values"),
+        "got: {error}"
+    );
+    // An unbound pattern variable inside the value stays undefined.
+    let error = conn
+        .query("MATCH (n:L1) SET n.p1 = EXISTS((m)-[:R]->(:L2))")
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("variable 'm' not defined"),
+        "got: {error}"
+    );
+}
