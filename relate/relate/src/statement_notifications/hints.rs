@@ -1,11 +1,12 @@
-//! The `USING [RANGE] INDEX` / `USING JOIN ON` hint notifications
+//! The `USING [RANGE|TEXT] INDEX` / `USING JOIN ON` hint notifications
 //! (ADR-0363).
 //!
 //! Live-verified against 2026.10.1 (2026-11-07/08): a `USING INDEX` hint
 //! the catalog cannot serve warns `01N31` — one notification per
 //! unfulfilled hint, naming the hinted index — and a `USING JOIN ON` hint
-//! warns `01N30` per hint. The range-typed `USING RANGE INDEX` spelling
-//! rides the same rule and is named as written in the notification.
+//! warns `01N30` per hint. The typed `USING RANGE INDEX` and
+//! `USING TEXT INDEX` spellings ride the same rule and are named as
+//! written in the notification.
 //! Relate's planner is not cost-based: it never plans a hint-directed
 //! join, so every join hint is unfulfillable. An index hint is served by
 //! any node index on the hinted label that covers every hinted property

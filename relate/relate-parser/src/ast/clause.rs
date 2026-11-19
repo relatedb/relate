@@ -86,32 +86,37 @@ pub struct ScanHint {
 }
 
 /// The index kind a `USING INDEX`-family hint names: the plain
-/// `USING INDEX [SEEK]` form or the range-typed `USING RANGE INDEX` form.
-/// The kinds share one fulfillability policy — the front end validates the
-/// variable, label and WHERE predicate for both, exactly as it does for the
-/// plain hint — and differ only in the spelling rendered back to the user.
+/// `USING INDEX [SEEK]` form, the range-typed `USING RANGE INDEX` form,
+/// or the text-typed `USING TEXT INDEX` form. The kinds share one
+/// fulfillability policy — the front end validates the variable, label
+/// and WHERE predicate for every kind, exactly as it does for the plain
+/// hint — and differ only in the spelling rendered back to the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexHintKind {
     Index,
     RangeIndex,
+    TextIndex,
 }
 
 impl IndexHintKind {
-    /// The kind as written between `USING` and the variable — `INDEX` or
-    /// `RANGE INDEX` — the one spelling the front end's
-    /// unfulfillable-hint error (42N76) and the plan-time `01N31`
-    /// description render.
+    /// The kind as written between `USING` and the variable — `INDEX`,
+    /// `RANGE INDEX`, or `TEXT INDEX` — the one spelling the front
+    /// end's unfulfillable-hint error (42N76), the plan-time `01N31`
+    /// description and the parser's after-USING expected-list render;
+    /// every consumer reads it here, none re-stores it.
     pub fn as_written(&self) -> &'static str {
         match self {
             IndexHintKind::Index => "INDEX",
             IndexHintKind::RangeIndex => "RANGE INDEX",
+            IndexHintKind::TextIndex => "TEXT INDEX",
         }
     }
 }
 
-/// One `USING [RANGE] INDEX <variable>:<Label>(<property>[, …])` hint —
-/// the `[SEEK]` modifier belongs to the plain spelling only
-/// (`USING INDEX SEEK`; `USING RANGE INDEX` takes no modifier).
+/// One index hint — `USING INDEX`, `USING RANGE INDEX`, or `USING TEXT
+/// INDEX` — naming `<variable>:<Label>(<property>[, …])`; the `[SEEK]`
+/// modifier belongs to the plain spelling only (`USING INDEX SEEK`; the
+/// RANGE and TEXT spellings take no modifier).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexHint {
     pub kind: IndexHintKind,

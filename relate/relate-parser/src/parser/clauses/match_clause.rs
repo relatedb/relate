@@ -4,36 +4,67 @@ use super::*;
 /// word after `USING`, the dispatch, and the fallthrough error's
 /// expected-list all read [`UsingHintKind::ALL`] — a new kind forces the
 /// enum, the table, and (through the exhaustive `match`) an arm, so the
-/// three cannot drift apart (TEXT is its own ticket, LABS-1608).
+/// three cannot drift apart. The index family is one variant carrying
+/// its AST kind ([`IndexOf`]): a new index spelling is an
+/// [`IndexHintKind`] variant plus one `ALL` row, never a copied arm, and
+/// the spelling a row renders comes from [`Self::as_written`] — for the
+/// index family [`IndexHintKind::as_written`], the one home of that
+/// fact — so the table stores no text column to drift from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UsingHintKind {
-    Index,
-    RangeIndex,
+    /// The index-hint family: which [`IndexHintKind`] the introducer
+    /// word names — the plain `INDEX`, `RANGE INDEX` and `TEXT INDEX`
+    /// spellings are rows of this one variant, parsed by one dispatch
+    /// arm.
+    IndexOf(IndexHintKind),
     Join,
     Scan,
 }
 
 impl UsingHintKind {
-    /// (kind, introducer word, rendered text) — the one table.
-    const ALL: [(Self, &'static str, &'static str); 4] = [
-        (Self::Index, "index", "INDEX"),
-        (Self::RangeIndex, "range", "RANGE INDEX"),
-        (Self::Join, "join", "JOIN"),
-        (Self::Scan, "scan", "SCAN"),
+    /// (kind, introducer word) — the one table; the rendered spelling is
+    /// derived ([`Self::as_written`]), never stored beside it.
+    const ALL: [(Self, &'static str); 5] = [
+        (Self::IndexOf(IndexHintKind::Index), "index"),
+        (Self::IndexOf(IndexHintKind::RangeIndex), "range"),
+        (Self::IndexOf(IndexHintKind::TextIndex), "text"),
+        (Self::Join, "join"),
+        (Self::Scan, "scan"),
     ];
 
-    /// The kind a contextual introducer word names, or `None`.
+    /// The kind a contextual introducer word names, or `None`. The table
+    /// owns the case-insensitive comparison (`eq_ignore_ascii_case` —
+    /// the same recognition `peek_is_ident` applies to contextual
+    /// words), so no caller allocates a lowered copy and case cannot
+    /// silently break recognition.
     fn from_introducer(word: &str) -> Option<Self> {
         Self::ALL
             .iter()
-            .find(|(_, introducer, _)| *introducer == word)
-            .map(|(kind, _, _)| *kind)
+            .find(|(_, introducer)| introducer.eq_ignore_ascii_case(word))
+            .map(|(kind, _)| *kind)
+    }
+
+    /// The kind as the fallthrough error's expected-list spells it —
+    /// the index family's spellings come from
+    /// [`IndexHintKind::as_written`] (the one home of the fact: the
+    /// 42N76/01N31 renderings and this list share it); `JOIN` and
+    /// `SCAN` are their own.
+    fn as_written(&self) -> &'static str {
+        match self {
+            Self::IndexOf(kind) => kind.as_written(),
+            Self::Join => "JOIN",
+            Self::Scan => "SCAN",
+        }
     }
 
     /// The kinds as the fallthrough error lists them —
-    /// `INDEX, RANGE INDEX, JOIN, or SCAN` — rendered from [`Self::ALL`].
+    /// `INDEX, RANGE INDEX, TEXT INDEX, JOIN, or SCAN` — rendered from
+    /// [`Self::ALL`] through [`Self::as_written`].
     fn rendered_list() -> String {
-        let rendered: Vec<&str> = Self::ALL.iter().map(|(_, _, text)| *text).collect();
+        let rendered: Vec<&str> = Self::ALL
+            .iter()
+            .map(|(kind, _)| kind.as_written())
+            .collect();
         // ALL is a fixed non-empty table; an empty kind list is a state
         // the type cannot produce, so it is a loud invariant failure —
         // never a fabricated empty expected-list.
@@ -122,12 +153,13 @@ impl<'a> Parser<'a> {
     /// CIP-79: zero or more USING planner hints directly after a MATCH
     /// clause's pattern — `USING INDEX [SEEK] <var>:<Label>(<prop>[,
     /// <prop>...])`, `USING RANGE INDEX <var>:<Label>(<prop>[, ...])`
-    /// (no SEEK modifier), `USING SCAN <var>:<Label>` and `USING JOIN ON
-    /// <var>[, <var>...]`. `USING` is a non-reserved
+    /// and `USING TEXT INDEX <var>:<Label>(<prop>[, ...])` (neither
+    /// typed spelling takes a SEEK modifier), `USING SCAN <var>:<Label>`
+    /// and `USING JOIN ON <var>[, <var>...]`. `USING` is a non-reserved
     /// word (never added to `token.rs`'s keyword table), recognized by
     /// spelling like `SEARCH`/`FILTER` above. The SCAN variable is
     /// returned because the executor must honour it, and the INDEX hints
-    /// (plain and range-typed alike) because the front end validates
+    /// (plain and typed alike) because the front end validates
     /// their fulfillability; the JOIN hints are returned because the
     /// planner never fulfils one and the `01N30` plan-time notification
     /// reports each (see [`MatchClause::using_scan`] /
@@ -137,27 +169,24 @@ impl<'a> Parser<'a> {
         while self.peek_is_ident("using") {
             self.next_token(); // consume USING
             let kind_tok = self.next_token();
-            match UsingHintKind::from_introducer(&kind_tok.literal.to_ascii_lowercase()) {
-                Some(UsingHintKind::Index) => {
-                    // Optional `SEEK` after `INDEX` (`USING INDEX SEEK
-                    // n:Label(prop)`) -- same hint, just a stronger one.
-                    if self.peek_is_ident("seek") {
+            match UsingHintKind::from_introducer(&kind_tok.literal) {
+                Some(UsingHintKind::IndexOf(ast_kind)) => {
+                    // The index family, one arm; the spellings differ
+                    // only in what follows the kind word. A typed
+                    // spelling (`RANGE INDEX`, `TEXT INDEX`): the INDEX
+                    // word is part of the spelling, gated exactly like
+                    // the join arm's `ON` (a bare `USING RANGE` or
+                    // `USING TEXT` names no hint). The plain spelling:
+                    // the kind word *was* the INDEX token, and the
+                    // optional `SEEK` modifier may follow --
+                    // `USING INDEX [SEEK] n:Label(prop)` -- same hint,
+                    // just a stronger one.
+                    if ast_kind != IndexHintKind::Index {
+                        self.expect(TokenType::INDEX)?;
+                    } else if self.peek_is_ident("seek") {
                         self.next_token();
                     }
-                    hints
-                        .index
-                        .push(self.parse_index_hint_tail(IndexHintKind::Index)?);
-                }
-                Some(UsingHintKind::RangeIndex) => {
-                    // `USING RANGE INDEX n:Label(prop)` -- the range-typed
-                    // index hint. The `INDEX` word is part of the spelling
-                    // (a bare `USING RANGE <var>` names no hint); the tail
-                    // is the plain INDEX hint's own shape. The mandatory
-                    // keyword is gated exactly like the join arm's `ON`.
-                    self.expect(TokenType::INDEX)?;
-                    hints
-                        .index
-                        .push(self.parse_index_hint_tail(IndexHintKind::RangeIndex)?);
+                    hints.index.push(self.parse_index_hint_tail(ast_kind)?);
                 }
                 Some(UsingHintKind::Join) => {
                     // `ON` is mandatory in `USING JOIN ON <var>…` — every
@@ -188,9 +217,10 @@ impl<'a> Parser<'a> {
         Ok(hints)
     }
 
-    /// `USING [RANGE] INDEX <variable>:<Label>(<property>[, …])`'s tail
-    /// after the kind words: the one parse of both index-hint kinds'
-    /// variable, label and property list.
+    /// The index-hint tail after the kind words —
+    /// `<variable>:<Label>(<property>[, …])` — shared by the plain,
+    /// RANGE and TEXT spellings: the one parse of the variable, label
+    /// and property list.
     fn parse_index_hint_tail(&mut self, kind: IndexHintKind) -> ParseResult<crate::ast::IndexHint> {
         let variable = self.parse_bare_name("identifier")?; // variable
         self.expect(TokenType::Colon)?;

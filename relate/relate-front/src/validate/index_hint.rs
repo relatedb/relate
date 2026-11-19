@@ -11,12 +11,14 @@
 //! neo4j:2026.09-enterprise; Relate's planner is not cost-based, so the
 //! hint steers nothing — only the compile-time rejection is reproduced.
 //!
-//! A `USING RANGE INDEX <var>:<Label>(<prop>)` hint carries
-//! `relate_parser::IndexHintKind::RangeIndex` and passes through this same battery
-//! unchanged: the RANGE spelling was verified against Neo4j 2026.10.1 only
-//! as accepted-with-an-equality-predicate, so no RANGE-specific predicate
-//! narrowing is invented here — the kinds differ only in the spelling the
-//! 42N76 text renders.
+//! The typed spellings — `USING RANGE INDEX <var>:<Label>(<prop>)`
+//! (`relate_parser::IndexHintKind::RangeIndex`) and `USING TEXT INDEX
+//! <var>:<Label>(<prop>)` (`relate_parser::IndexHintKind::TextIndex`) —
+//! pass through this same battery unchanged: RANGE was verified against
+//! Neo4j 2026.10.1 accepted-with-an-equality-predicate and TEXT with a
+//! CONTAINS predicate, so no kind-specific predicate narrowing is
+//! invented here — the kinds differ only in the spelling the 42N76 text
+//! renders.
 //!
 //! Label and property identity is exact (labels are case-sensitive
 //! everywhere else in the engine; only function names are matched
@@ -267,9 +269,9 @@ mod tests {
 
     /// The fulfillable shapes stay accepted: label on the pattern or
     /// asserted by a conjunction in WHERE, and an equality/range/IN/string
-    /// predicate on the hinted property. A RANGE INDEX hint passes through
-    /// the same battery — the kinds differ only in the spelling the
-    /// rejection renders.
+    /// predicate on the hinted property. The RANGE INDEX and TEXT INDEX
+    /// hints pass through the same battery — the kinds differ only in
+    /// the spelling the rejection renders.
     #[test]
     fn fulfillable_index_hints_are_accepted() {
         for query in [
@@ -283,23 +285,34 @@ mod tests {
             // The range-typed spelling: the LABS-1600 repro's shape.
             "MATCH (n:L1) USING RANGE INDEX n:L1(p1) WHERE n.p1 = 1 RETURN n",
             "MATCH (n:Person) USING RANGE INDEX n:Person(age) WHERE n.age > 30 RETURN n",
+            // The text-typed spelling: the LABS-1608 repro's CONTAINS
+            // shape, and an equality predicate — no kind-specific
+            // narrowing exists.
+            "MATCH (n:L1) USING TEXT INDEX n:L1(p1) WHERE n.p1 CONTAINS 'a' RETURN n",
+            "MATCH (n:Person) USING TEXT INDEX n:Person(age) WHERE n.age = 30 RETURN n",
         ] {
             assert!(validate(query).is_ok(), "{query}: {:?}", validate(query));
         }
     }
 
-    /// 42N76 renders the hint as written: a `USING RANGE INDEX` hint that
-    /// cannot be served names `USING RANGE INDEX`, not the plain spelling.
+    /// 42N76 renders the hint as written: a typed hint (`RANGE INDEX`,
+    /// `TEXT INDEX`) that cannot be served names its own spelling, not
+    /// the plain one — one row per spelling, so a new kind is a row
+    /// here, not a copy of the test.
     #[test]
-    fn an_unfulfillable_range_hint_names_its_spelling() {
-        let err = validate(
-            "MATCH (n:Person) USING RANGE INDEX n:Person(name) WHERE n.lastname = 'Teleman' \
-             RETURN n",
-        )
-        .unwrap_err();
-        assert!(
-            err.contains("USING RANGE INDEX n:Person(name) cannot be fulfilled"),
-            "{err}"
-        );
+    fn an_unfulfillable_typed_hint_names_its_spelling() {
+        for spelling in ["RANGE INDEX", "TEXT INDEX"] {
+            let err = validate(&format!(
+                "MATCH (n:Person) USING {spelling} n:Person(name) \
+                 WHERE n.lastname = 'Teleman' RETURN n"
+            ))
+            .unwrap_err();
+            assert!(
+                err.contains(&format!(
+                    "USING {spelling} n:Person(name) cannot be fulfilled"
+                )),
+                "{spelling}: {err}"
+            );
+        }
     }
 }

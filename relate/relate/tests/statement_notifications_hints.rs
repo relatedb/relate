@@ -3,6 +3,9 @@
 //! index can serve, and every join hint (the planner never fulfils one),
 //! verified against live Neo4j 2026.10.1 (probed 2026-11-07). Split from
 //! `statement_notifications.rs` to keep both files under the 1k ceiling.
+//! The hints' end-to-end execution pins live here too — this file is the
+//! hints' integration home: a hinted query must ride the engine whole
+//! (the TEXT INDEX spelling's live-verified contract).
 
 mod common;
 
@@ -10,7 +13,7 @@ mod common;
 // Relate is allowed to warn more than Neo4j (LABS-710), so an exact-list
 // assertion would pin the extra coverage as if it were the contract; the
 // hint kinds are what these tests pin.
-use common::{connection, has_notification, kinds, notifications_of_kind, run};
+use common::{connection, has_notification, kinds, notifications_of_kind, run, scalar_one, string};
 use relate_model::wire::NotificationKind;
 
 /// The index-hint rule: a hint with no catalog index on its label warns
@@ -20,41 +23,46 @@ use relate_model::wire::NotificationKind;
 #[test]
 fn index_hint_notification_fires_and_suppresses() {
     let mut conn = connection();
-    // Fire: no index on :Person(name) — one row per hint spelling, the
-    // 01N31 text naming the hint as written (the range-typed kind rides
-    // the same rule and the same serving logic).
-    for (hint_spelling, named_index) in [
-        ("USING INDEX", "INDEX :Person(name)"),
-        ("USING RANGE INDEX", "RANGE INDEX :Person(name)"),
+    // Fire: no index serves the hint — one row per hint spelling, the
+    // 01N31 text naming the hint as written (the range- and text-typed
+    // kinds ride the same rule and the same serving logic; the TEXT row
+    // is the LABS-1608 repro's own shape, CONTAINS predicate included).
+    for (query, named_index) in [
+        (
+            "EXPLAIN MATCH (n:Person) USING INDEX n:Person(name) \
+             WHERE n.name = 'John' RETURN n",
+            "INDEX :Person(name)",
+        ),
+        (
+            "EXPLAIN MATCH (n:Person) USING RANGE INDEX n:Person(name) \
+             WHERE n.name = 'John' RETURN n",
+            "RANGE INDEX :Person(name)",
+        ),
+        (
+            "EXPLAIN MATCH (n:L1) USING TEXT INDEX n:L1(p1) \
+             WHERE n.p1 CONTAINS 'a' RETURN n",
+            "TEXT INDEX :L1(p1)",
+        ),
     ] {
-        let explained = conn
-            .query(&format!(
-                "EXPLAIN MATCH (n:Person) {hint_spelling} n:Person(name) \
-                 WHERE n.name = 'John' RETURN n"
-            ))
-            .unwrap();
+        let explained = conn.query(query).unwrap();
         let fired = notifications_of_kind(&explained, NotificationKind::HintedIndexNotFound);
-        assert_eq!(fired.len(), 1, "{hint_spelling}: {:?}", kinds(&explained));
+        assert_eq!(fired.len(), 1, "{query}: {:?}", kinds(&explained));
         let notification = fired[0];
         assert_eq!(
             notification.code(),
             "Neo.ClientNotification.Schema.HintedIndexNotFound",
-            "{hint_spelling}"
+            "{query}"
         );
-        assert_eq!(notification.gql_status(), "01N31", "{hint_spelling}");
-        assert_eq!(
-            notification.severity().as_str(),
-            "WARNING",
-            "{hint_spelling}"
-        );
-        assert_eq!(notification.category().as_str(), "HINT", "{hint_spelling}");
+        assert_eq!(notification.gql_status(), "01N31", "{query}");
+        assert_eq!(notification.severity().as_str(), "WARNING", "{query}");
+        assert_eq!(notification.category().as_str(), "HINT", "{query}");
         assert_eq!(
             notification.description(),
             format!(
                 "warn: hinted index does not exist. Unable to create a plan with \
                  '{named_index}' because the index does not exist."
             ),
-            "{hint_spelling}"
+            "{query}"
         );
     }
     // Suppress: the index exists and covers the hinted property.
@@ -284,5 +292,22 @@ fn hint_notifications_quote_exotic_identifiers() {
             .contains("'JOIN ON `a``b`, `friend`'"),
         "the exotic key renders escaped: {}",
         fired[0].description()
+    );
+}
+
+/// The TEXT INDEX spelling's end-to-end execution pin, live-verified
+/// against 2026.10.1: the hint steers nothing (the planner is not
+/// cost-based), but the whole statement rides the engine — the CONTAINS
+/// predicate filters the created node's property into the returned row.
+#[test]
+fn a_text_index_hint_query_returns_its_rows() {
+    let mut conn = connection();
+    run(&mut conn, "CREATE (:L1 {p1: 'alpha'})");
+    assert_eq!(
+        scalar_one(
+            &mut conn,
+            "MATCH (n:L1) USING TEXT INDEX n:L1(p1) WHERE n.p1 CONTAINS 'a' RETURN n.p1 AS p1"
+        ),
+        string("alpha")
     );
 }

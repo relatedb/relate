@@ -296,32 +296,50 @@ fn test_using_index_hint_is_parsed_and_ignored() {
     let stmt =
         parse("MATCH (n:Person) USING INDEX n:Person(age) WHERE n.age = 30 RETURN n").unwrap();
     match &stmt.clauses[0] {
-        Clause::Match(m) => assert!(m.where_expr.is_some()),
+        Clause::Match(m) => {
+            assert!(m.where_expr.is_some());
+            // The plain spelling carries its own kind and renders it
+            // back. It has no row in the typed table below: its bare
+            // introducer word already is the hint, so only the typed
+            // kinds have a missing-INDEX refusal and a shared row set.
+            assert_eq!(m.using_index.len(), 1);
+            assert_eq!(m.using_index[0].kind, IndexHintKind::Index);
+            assert_eq!(m.using_index[0].kind.as_written(), "INDEX");
+        }
         other => panic!("expected Match clause, got {other:?}"),
     }
     // `USING INDEX SEEK` is the explicit-seek spelling of the same hint.
     assert!(parse("MATCH (n:Person) USING INDEX SEEK n:Person(age) RETURN n").is_ok());
 }
 
-/// `USING RANGE INDEX n:L1(p1)`: the range-typed hint parses into the same
-/// index-hint list with its kind recorded, and the malformed spellings
-/// (a bare `USING RANGE`, a missing INDEX word) are authored errors.
+/// One row per typed index-hint spelling: (bare introducer word, query,
+/// kind, kind-as-written) — the typed vocabulary stated once and shared
+/// by the typed-kind tests below (parse-with-kind, the missing-INDEX
+/// refusal, the multi-property tail), so a new kind adds a row here and
+/// every test picks it up. The plain `INDEX` spelling has no row — its
+/// bare introducer word already is the hint — and is pinned in
+/// `test_using_index_hint_is_parsed_and_ignored` above.
+const TYPED_INDEX_HINTS: [(&str, &str, IndexHintKind, &str); 2] = [
+    (
+        "RANGE",
+        "MATCH (n:Person) USING RANGE INDEX n:Person(age) WHERE n.age = 30 RETURN n",
+        IndexHintKind::RangeIndex,
+        "RANGE INDEX",
+    ),
+    // The LABS-1608 repro's shape (a CONTAINS predicate).
+    (
+        "TEXT",
+        "MATCH (n:L1) USING TEXT INDEX n:L1(p1) WHERE n.p1 CONTAINS 'a' RETURN n",
+        IndexHintKind::TextIndex,
+        "TEXT INDEX",
+    ),
+];
+
+/// The typed index hints — `USING RANGE INDEX` and `USING TEXT INDEX` —
+/// parse into the same index-hint list with their kind recorded.
 #[test]
-fn test_using_range_index_hint_is_parsed_with_its_kind() {
-    // One row per hint spelling: (query, kind, kind-as-written). The TEXT
-    // kind (its own ticket) adds a row here, not a third scaffold.
-    for (query, kind, as_written) in [
-        (
-            "MATCH (n:Person) USING RANGE INDEX n:Person(age) WHERE n.age = 30 RETURN n",
-            IndexHintKind::RangeIndex,
-            "RANGE INDEX",
-        ),
-        (
-            "MATCH (n:Person) USING INDEX n:Person(age) RETURN n",
-            IndexHintKind::Index,
-            "INDEX",
-        ),
-    ] {
+fn test_typed_index_hints_are_parsed_with_their_kind() {
+    for (_, query, kind, as_written) in TYPED_INDEX_HINTS {
         let stmt = parse(query).unwrap();
         match &stmt.clauses[0] {
             Clause::Match(m) => {
@@ -332,20 +350,54 @@ fn test_using_range_index_hint_is_parsed_with_its_kind() {
             other => panic!("{query}: expected Match clause, got {other:?}"),
         }
     }
-    // `USING RANGE` without its INDEX word names no hint — the parser's
-    // own refusal message, not the Display rendering (which echoes the
-    // source line and caret).
-    let error = parse("MATCH (n:Person) USING RANGE n:Person(age) RETURN n").unwrap_err();
+}
+
+/// A typed spelling without its INDEX word names no hint — the parser's
+/// own refusal at the missing keyword, not the Display rendering (which
+/// echoes the source line and caret).
+#[test]
+fn test_typed_index_hint_without_the_index_word_is_rejected() {
+    for (introducer, _, _, _) in TYPED_INDEX_HINTS {
+        let error = parse(&format!(
+            "MATCH (n:Person) USING {introducer} n:Person(age) RETURN n"
+        ))
+        .unwrap_err();
+        assert!(
+            error.message.starts_with("expected INDEX"),
+            "{introducer}: the error should name the missing INDEX: {}",
+            error.message
+        );
+    }
+}
+
+/// An unknown introducer word after USING is refused naming every kind,
+/// TEXT INDEX included — the fallthrough's expected-list rendering.
+#[test]
+fn test_unknown_using_introducer_lists_every_kind() {
+    let error = parse("MATCH (n:Person) USING bogus n:Person(age) RETURN n").unwrap_err();
     assert!(
-        error.message.starts_with("expected INDEX"),
-        "the error should name the missing INDEX: {}",
+        error
+            .message
+            .contains("INDEX, RANGE INDEX, TEXT INDEX, JOIN, or SCAN after USING"),
+        "the rendered list names every kind: {}",
         error.message
     );
-    // The multi-property tail parses for the range kind too.
-    assert!(parse(
-        "MATCH (n:Person) USING RANGE INDEX n:Person(name, age) WHERE n.age = 30 RETURN n"
-    )
-    .is_ok());
+}
+
+/// The multi-property tail parses for the typed spellings too — the
+/// plain INDEX hint's own tail shape, shared by every kind.
+#[test]
+fn test_typed_index_hint_multi_property_tail_parses() {
+    for (_, _, _, as_written) in TYPED_INDEX_HINTS {
+        assert!(
+            parse(&format!(
+                "MATCH (n:Person) USING {as_written} n:Person(name, age) \
+                 WHERE n.age = 30 RETURN n"
+            ))
+            .is_ok(),
+            "{as_written}"
+        );
+    }
 }
 
 #[test]
