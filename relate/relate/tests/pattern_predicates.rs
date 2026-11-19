@@ -6,7 +6,7 @@ mod common;
 
 use relate::Value;
 
-use common::connection;
+use common::{connection, err_text, params, string, strings};
 
 fn int(n: i64) -> Value {
     Value::Int(n)
@@ -195,5 +195,118 @@ fn set_value_reads_an_exists_pattern_predicate_per_row() {
     assert!(
         error.to_string().contains("variable 'm' not defined"),
         "got: {error}"
+    );
+}
+
+/// A pattern predicate inside a quantifier's WHERE filter is a predicate
+/// home (the LABS-1610 shape): the projection validates, and the executor
+/// evaluates the pattern once per list element with the loop variable
+/// bound into the pattern's node property filters — the same per-row
+/// evaluation the `exists(<pattern>)` SET value reads. The pinned
+/// scenario's parameterized repro returns false over `['a', 'b']`; a list
+/// whose every element matches reads true, and `any` over a partially
+/// matching list reads true. An unbound name inside the pattern keeps the
+/// planner binder's rejection, and `size()` over the pattern keeps its
+/// own — the home exemption lifts the pattern-position rejection only.
+#[test]
+fn quantifier_filters_read_pattern_predicates_per_element() {
+    let mut conn = connection();
+    // The pinned scenario [15] graph: the L1 'a' carries an R to the L2
+    // 'z'; over the parameter list ['a', 'b'] the answer is false ('b'
+    // has no incoming-R match at all).
+    conn.query("CREATE (:L1 {p1: 'a'})-[:R]->(:L2 {p1: 'z'})")
+        .unwrap();
+    let repro = "RETURN all(x IN $p1 WHERE (:L1 {p1: x})<-[:R]-(:L2 {p1: $p2})) AS result";
+    let p = |names: &[&str]| params(&[("p1", strings(names)), ("p2", string("z"))]);
+    let result = conn.query_with_params(repro, p(&["a", "b"])).unwrap();
+    assert_eq!(result.rows, vec![vec![Value::Bool(false)]]);
+    // The issue's literal statement, EXPLAIN-wrapped, plans.
+    conn.query_with_params(&format!("EXPLAIN {repro}"), p(&["a", "b"]))
+        .unwrap();
+    // The reversed edge gives the L1 'a' the incoming R the pattern asks
+    // for, so every element of ['a'] matches and `all` reads true, while
+    // `any` over ['a', 'b'] reads true on 'a' alone.
+    conn.query("CREATE (:L2 {p1: 'z'})-[:R]->(:L1 {p1: 'a'})")
+        .unwrap();
+    let result = conn.query_with_params(repro, p(&["a"])).unwrap();
+    assert_eq!(result.rows, vec![vec![Value::Bool(true)]]);
+    let result = conn
+        .query_with_params(
+            "RETURN any(x IN $p1 WHERE (:L1 {p1: x})<-[:R]-(:L2 {p1: $p2})) AS result",
+            p(&["a", "b"]),
+        )
+        .unwrap();
+    assert_eq!(result.rows, vec![vec![Value::Bool(true)]]);
+    // The home exemption lifts the pattern-position rejection only: an
+    // unbound name inside the quantifier's pattern keeps the planner
+    // binder's rejection, and `size()` over the pattern keeps its own
+    // (the planner's argument rule) — the exemption admits the predicate
+    // slot, never a value subexpression buried inside it.
+    for (statement, expected) in [
+        (
+            "MATCH (n) WHERE all(x IN [1] WHERE (n)-[:R]->(y)) RETURN n",
+            "UndefinedVariable: variable 'y' not defined",
+        ),
+        (
+            "MATCH (n) RETURN all(x IN [1] WHERE size((n)--()) > 0) AS y",
+            "UnexpectedSyntax: size() cannot be applied to a pattern predicate",
+        ),
+    ] {
+        let text = err_text(conn.query(statement));
+        assert!(text.contains(expected), "{statement}: {text}");
+    }
+}
+
+/// `allReduce`'s trailing predicate is the same scope-introducing
+/// predicate slot as a quantifier's WHERE filter (the one home table's
+/// row beside it): a pattern predicate inside it is legal in a
+/// projection, and the executor evaluates the pattern once per element
+/// with the accumulator and the loop variable bound — the fold fails at
+/// the first element whose pattern does not hold.
+#[test]
+fn allreduce_predicates_read_pattern_predicates_per_element() {
+    let mut conn = connection();
+    // The L2 'z' gives the L1 'a' the incoming R the pattern asks for;
+    // there is no L1 'b' at all.
+    conn.query("CREATE (:L2 {p1: 'z'})-[:R]->(:L1 {p1: 'a'})")
+        .unwrap();
+    let result = conn
+        .query(
+            "MATCH (n:L2 {p1: 'z'}) \
+             RETURN allReduce(acc = 0, x IN ['a'] | acc + 1, (:L1 {p1: x})<-[:R]-(n)) AS r",
+        )
+        .unwrap();
+    assert_eq!(result.rows, vec![vec![Value::Bool(true)]]);
+    // The 'b' element's pattern does not hold, so the fold fails there.
+    let result = conn
+        .query(
+            "MATCH (n:L2 {p1: 'z'}) \
+             RETURN allReduce(acc = 0, x IN ['a', 'b'] | acc + 1, (:L1 {p1: x})<-[:R]-(n)) AS r",
+        )
+        .unwrap();
+    assert_eq!(result.rows, vec![vec![Value::Bool(false)]]);
+}
+
+/// The quantifier-filter home reaches SET values (the value-position
+/// policy's third position, beside WITH/RETURN projections): the pattern
+/// predicate evaluates per element per row and the property stores its
+/// boolean, exactly as the `exists(<pattern>)` SET value does.
+#[test]
+fn set_value_reads_a_quantifier_filter_pattern_predicate_per_row() {
+    let mut conn = connection();
+    conn.query("CREATE (:L2 {p1: 'z'})-[:R]->(:L1 {p1: 'a'}), (:L1 {p1: 'b'})")
+        .unwrap();
+    let result = conn
+        .query(
+            "MATCH (n:L1) SET n.flag = all(x IN ['z'] WHERE (n)<-[:R]-(:L2 {p1: x})) \
+             RETURN n.p1 AS p1, n.flag AS flag ORDER BY n.p1",
+        )
+        .unwrap();
+    assert_eq!(
+        result.rows,
+        vec![
+            vec![string("a"), Value::Bool(true)],
+            vec![string("b"), Value::Bool(false)],
+        ]
     );
 }

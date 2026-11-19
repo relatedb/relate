@@ -1,7 +1,8 @@
 //! The pattern-position policy: where a pattern expression is legal —
 //! the predicate positions the front end reads (a `WHERE`, the operand
 //! of `NOT`, either side of `AND`/`OR`/`XOR`, a `CASE WHEN` condition, a
-//! comprehension's WHERE filter) and the legacy `exists(<pattern>)`
+//! comprehension's WHERE filter, a quantifier's WHERE predicate, an
+//! `allReduce`'s trailing predicate) and the legacy `exists(<pattern>)`
 //! argument — and where it is a value and rejected (a bare projection
 //! item, a SET value, a list element, another function's argument).
 //! Neo4j accepts a pattern expression wherever a predicate is read and
@@ -52,12 +53,13 @@ pub(super) fn validate_expr_in_where(
         // `exists(<pattern>)` argument (its variables are enclosing-scope)
         // and parenthesized groups (a group is transparent: its body is a
         // predicate exactly when the group is). A comprehension's WHERE
-        // filter is NOT descended: it binds its own variable, so
-        // validating its patterns against this clause's scope would
-        // false-reject them (`WHERE NOT [n IN [a] WHERE (n)-[:R]->(a) |
-        // 1]` — the regression the shape-agnostic descent round
-        // introduced; the value-position walk still exempts that slot
-        // through pattern_home, where exemption is the right reading).
+        // filter and a quantifier's WHERE predicate are NOT descended:
+        // they bind their own loop variable, so validating their patterns
+        // against this clause's scope would false-reject them (`WHERE NOT
+        // [n IN [a] WHERE (n)-[:R]->(a) | 1]` — the regression the
+        // shape-agnostic descent round introduced; the value-position walk
+        // still exempts those slots through pattern_home, where exemption
+        // is the right reading).
         |parent, child| {
             predicate_position(parent, child)
                 || is_exists_pattern_arg(parent, child)
@@ -123,9 +125,11 @@ fn single_node_predicate_error() -> EngineError {
 /// The one value-position policy every clause-specific pattern check rides
 /// (a `WITH`/`RETURN` projection item, a SET value): reject a pattern
 /// predicate everywhere except the predicate homes — a comprehension's
-/// WHERE filter, a pattern predicate that *is itself* the sole argument of
-/// `exists`, and a (possibly parenthesized) pattern predicate in a
-/// predicate position (`NOT`, `AND`/`OR`/`XOR`, a `CASE WHEN` condition).
+/// WHERE filter, a quantifier's WHERE predicate, an `allReduce`'s
+/// trailing predicate, a pattern predicate that *is itself* the sole
+/// argument of `exists`, and a (possibly parenthesized) pattern predicate
+/// in a predicate position (`NOT`, `AND`/`OR`/`XOR`, a `CASE WHEN`
+/// condition).
 /// `position` names the value position in the rejection text (`WITH
 /// projection`, `RETURN projection`, `SET values`), and the error kind and
 /// construction stay owned here. The child must BE the pattern: pruning on
@@ -152,18 +156,22 @@ pub(super) fn check_no_pattern_in_value_position(
 }
 
 /// The one pattern-predicate home vocabulary: a comprehension's WHERE
-/// filter, the sole argument of the legacy `exists(<pattern>)` call, and
-/// a (possibly parenthesized) pattern predicate in a predicate position
-/// (`NOT`, `AND`/`OR`/`XOR`, a `CASE WHEN` condition). The value-position
-/// walk exempts exactly these slots. The WHERE walk descends the homes
-/// too, but its predicate-position descent is shape-agnostic (any child
-/// of a predicate position is visited, so its visitor keeps the
-/// single-node rejection for a parenthesized variable). The paren
+/// filter, a quantifier's WHERE predicate, an `allReduce`'s trailing
+/// predicate, the sole argument of the legacy `exists(<pattern>)` call,
+/// and a (possibly parenthesized) pattern predicate in a predicate
+/// position (`NOT`, `AND`/`OR`/`XOR`, a `CASE WHEN` condition). The
+/// value-position walk exempts exactly these slots. The WHERE walk
+/// descends the predicate-position and `exists` homes too, but its
+/// predicate-position descent is shape-agnostic (any child of a predicate
+/// position is visited, so its visitor keeps the single-node rejection
+/// for a parenthesized variable); the scope-introducing homes
+/// ([`binds_own_variable_slot`]'s slots) it never descends — their loop
+/// variable is not in the enclosing clause's scope. The paren
 /// transparency is [`unparen`]'s: a group is transparent for the shape
 /// (`NOT ((n)--())` reads the pattern), never for the position (a bare
 /// `RETURN ((n)--())` is still a value position).
 fn pattern_home(parent: &Expr, child: &Expr) -> bool {
-    is_comprehension_where(parent, child)
+    binds_own_variable_slot(parent, child)
         || is_exists_pattern_arg(parent, child)
         || (matches!(unparen(child), Expr::PatternPredicate(_))
             && predicate_position(parent, child))
@@ -186,17 +194,25 @@ fn is_exists_pattern_arg(parent: &Expr, child: &Expr) -> bool {
     }
 }
 
-/// Whether `child` is the WHERE filter of the comprehension `parent` (by
-/// identity, so the filter rides the exact node the walk would otherwise
-/// descend into).
-fn is_comprehension_where(parent: &Expr, child: &Expr) -> bool {
-    let where_expr = match parent {
+/// Whether `child` is the scope-introducing predicate slot of `parent` —
+/// the WHERE filter of a list/map/pattern comprehension, the WHERE
+/// predicate of a quantifier (`all`/`any`/`none`/`single(x IN list WHERE
+/// pred)`), or the trailing predicate of `allReduce(acc = init, x IN
+/// list | expr, pred)` (a non-optional slot, so its arm wraps the plain
+/// reference in `Some`) — by identity, so the slot rides the exact node
+/// the walk would otherwise descend into. One table: every construct
+/// whose slot binds its own loop variable is a predicate home
+/// ([`pattern_home`]'s first disjunct), never a value position.
+fn binds_own_variable_slot(parent: &Expr, child: &Expr) -> bool {
+    let slot = match parent {
         Expr::ListComprehension(lc) => lc.where_expr.as_ref(),
         Expr::MapComprehension(mc) => mc.where_expr.as_ref(),
         Expr::PatternComprehension(pc) => pc.where_expr.as_ref(),
+        Expr::Quantifier(q) => q.predicate.as_ref(),
+        Expr::AllReduce(ar) => Some(&ar.predicate),
         _ => return false,
     };
-    where_expr.is_some_and(|w| std::ptr::eq(w, child))
+    slot.is_some_and(|s| std::ptr::eq(s, child))
 }
 
 /// Whether `child` sits in a position the front end reads as a predicate:

@@ -36,15 +36,20 @@ fn a_pattern_in_a_value_subexpression_of_a_boolean_operand_is_rejected() {
 }
 
 /// A SET value rides the same value-position policy as a projection
-/// item: `SET n.p1 = exists((n)--())` plans (the repro's shape), a
-/// bare pattern value and a pattern buried in a value subexpression
-/// keep their rejections with the SET spelling.
+/// item: `SET n.p1 = exists((n)--())` plans (the repro's shape) and so
+/// does a pattern inside a quantifier filter's slot, while a bare
+/// pattern value and a pattern buried in a value subexpression keep
+/// their rejections with the SET spelling.
 #[test]
 fn set_values_share_the_projection_pattern_policy() {
     parse_and_validate_expression_constraints(
         "MATCH (n:L1) SET n.p1 = exists((n)-[:R]->(:L2)) RETURN n",
     )
     .expect("the legacy exists(<pattern>) form is legal in a SET value");
+    parse_and_validate_expression_constraints(
+        "MATCH (n:L1) SET n.p1 = all(x IN ['a', 'b'] WHERE (n)-[:R]->(:L2)) RETURN n",
+    )
+    .expect("a pattern in a quantifier filter is legal in a SET value");
     for query in [
         "MATCH (n:L1) SET n.p1 = (n)-[:R]->(:L2) RETURN n",
         "MATCH (n:L1) SET n.p1 = size((n)-[:R]->(:L2)) RETURN n",
@@ -146,6 +151,70 @@ fn a_pattern_predicate_in_a_comprehension_filter_binds_locally() {
         "MATCH p=(a:L1)-[:R]->(b:L2) \
          WHERE size([n IN nodes(p) WHERE (n)-[:R]->(b) | n]) > 0 RETURN p",
         "MATCH (a:L1) WHERE NOT [n IN [a] WHERE (n)-[:R]->(a) | 1] RETURN a",
+    ] {
+        parse_and_validate_expression_constraints(query).unwrap_or_else(|e| panic!("{query}: {e}"));
+    }
+}
+
+/// A quantifier's WHERE predicate — `all/any/none/single(x IN list WHERE
+/// pred)` — is a predicate home of the comprehension-filter kind: it binds
+/// its own loop variable, so a pattern predicate inside it is legal in a
+/// projection (the LABS-1610 repro's shape) and in a WITH item, while the
+/// quantifier's LIST slot stays a value position (LABS-1610).
+#[test]
+fn quantifier_predicates_are_pattern_homes_in_projections() {
+    for query in [
+        "RETURN all(x IN $p1 WHERE (:L1 {p1: x})<-[:R]-(:L2 {p1: $p2})) AS result",
+        "RETURN all(x IN ['a', 'b'] WHERE (:L1 {p1: x})<-[:R]-(:L2 {p1: 'z'})) AS result",
+        "RETURN any(x IN ['a', 'b'] WHERE (:L1 {p1: x})<-[:R]-(:L2 {p1: 'z'})) AS result",
+        "RETURN none(x IN ['a', 'b'] WHERE (:L1 {p1: x})<-[:R]-(:L2 {p1: 'z'})) AS result",
+        "RETURN single(x IN ['a', 'b'] WHERE (:L1 {p1: x})<-[:R]-(:L2 {p1: 'z'})) AS result",
+        "MATCH (n:L1) WITH all(x IN ['a'] WHERE (n)-[:R]->(:L2)) AS result RETURN result",
+    ] {
+        parse_and_validate_expression_constraints(query).unwrap_or_else(|e| panic!("{query}: {e}"));
+    }
+    // The exemption is the predicate slot only: the quantifier's LIST is a
+    // value position, so a pattern buried in a list element keeps the
+    // projection rejection.
+    let error = parse_and_validate_expression_constraints(
+        "MATCH (n) RETURN all(x IN [size((n)--())] WHERE x) AS y",
+    )
+    .expect_err("a pattern in the quantifier's list slot stays a value position");
+    assert_eq!(error.kind(), ErrorKind::UnexpectedSyntax);
+    assert_eq!(
+        error.to_string(),
+        "UnexpectedSyntax: pattern expressions are not allowed in RETURN projection"
+    );
+}
+
+/// A pattern predicate inside a quantifier's WHERE predicate binds against
+/// the quantifier's OWN loop variable, not the enclosing scope — the WHERE
+/// walk must not descend into that slot and validate it there (the
+/// comprehension-filter precedent; a descent would false-reject the loop
+/// variable of the second query). An unbound name inside the pattern keeps
+/// its rejection from the planner's binder, pinned engine-side (LABS-1610).
+#[test]
+fn a_pattern_predicate_in_a_quantifier_filter_binds_locally() {
+    for query in [
+        "MATCH (n) WHERE all(x IN [1] WHERE (n)-[:R]->(n)) RETURN n",
+        "MATCH (a:L1) WHERE NOT all(x IN [a] WHERE (x)-[:R]->(a)) RETURN a",
+    ] {
+        parse_and_validate_expression_constraints(query).unwrap_or_else(|e| panic!("{query}: {e}"));
+    }
+}
+
+/// `allReduce`'s trailing predicate is the quantifier-filter shape too —
+/// a non-optional slot evaluated per element with the accumulator and the
+/// loop variable bound — so a pattern predicate inside it is a predicate
+/// home in a projection and in a WITH item (the one table
+/// `binds_own_variable_slot` carries beside the comprehension filters and
+/// quantifier predicates), and binds its own loop variable in a WHERE.
+#[test]
+fn allreduce_predicates_are_pattern_homes() {
+    for query in [
+        "MATCH (n) RETURN allReduce(acc = 0, x IN [1] | acc + x, (n)--()) AS r",
+        "MATCH (n:L1) WITH allReduce(acc = 0, x IN [1] | acc, (n)-[:R]->(:L2)) AS r RETURN r",
+        "MATCH (a:L1) WHERE NOT allReduce(acc = 0, x IN [a] | acc + 1, (x)-[:R]->(a)) RETURN a",
     ] {
         parse_and_validate_expression_constraints(query).unwrap_or_else(|e| panic!("{query}: {e}"));
     }
