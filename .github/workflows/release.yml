@@ -247,7 +247,7 @@ jobs:
           ( cd "$(dirname "$lib")" && shasum -a 256 "$(basename "$lib")" > "$(basename "$lib")".sha256 )
           cat "$lib.sha256"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: xcframework-${{ matrix.target }}
           path: |
@@ -373,7 +373,7 @@ jobs:
 
       # After the push: the artifact is the FINAL zip (a retried rebase
       # rebuilt it), byte-identical to what the tagged Package.swift pins.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: swift-xcframework
           path: target/apple/RelateFFI.xcframework.zip
@@ -510,7 +510,7 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}*
@@ -633,7 +633,7 @@ jobs:
           fi
           tar czf relate-ffi-${{ matrix.target }}.tar.gz -C ffi-package .
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: relate-ffi-${{ matrix.target }}
           path: relate-ffi-${{ matrix.target }}.tar.gz
@@ -694,7 +694,7 @@ jobs:
           manylinux: auto
           sccache: true
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-wheels-${{ matrix.runner }}-${{ matrix.target }}
           path: |
@@ -776,7 +776,7 @@ jobs:
           mvn -B -f clients/java/pom.xml package -Drelate.natives.dir="$PWD/natives"
           ls clients/java/target/*.jar
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: java-jars
           path: clients/java/target/*.jar
@@ -839,7 +839,7 @@ jobs:
           mkdir -p dist
           npm pack "./clients/javascript/platforms/${{ matrix.npm_name }}" --pack-destination dist
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: npm-platform-${{ matrix.npm_name }}
           path: dist/*.tgz
@@ -908,7 +908,7 @@ jobs:
           mkdir -p dist
           npm pack ./surfaces/relate-wasm/pkg --pack-destination dist
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: npm-wasm
           path: dist/*.tgz
@@ -974,7 +974,7 @@ jobs:
           assert all(not str(v).startswith("file:") for v in pins.values()), pins
           print("published platform pins verified:", pins)' "$V"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: npm-main
           path: dist/*.tgz
@@ -1096,7 +1096,7 @@ jobs:
 
       # create-release downloads every artifact in the run and attaches
       # relate-* and *.tar.gz files, so the tarball's name must match neither.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: server-image
           path: server-image.tar
