@@ -181,8 +181,11 @@ rustls-pemfile = "2"
 # ("handshake" is the RFC 6455 handshake machinery); TLS is already
 # terminated by rustls (ADR-0109), so no tungstenite TLS feature.
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
-# SIGINT/SIGTERM handling without a runtime (ADR-0264/ADR-0226).
-signal-hook = "0.3"
+# SIGINT/SIGTERM handling without a runtime (ADR-0264/ADR-0226). On 0.4
+# while crossterm's chain still carries 0.3 (signal-hook-mio): the two
+# majors' `Signals`/`SigId` types are distinct, so no helper may be
+# generic over signal-hook — one major throughout when crossterm moves.
+signal-hook = "0.4"
 libc = "0.2"
 bytes = "1"
 url = "2"
