@@ -113,7 +113,7 @@ fn column_type_names_agree_across_the_wire_envelope_and_the_ffi_path() {
         .map(String::as_str)
         .collect();
     assert_eq!(engine, ["INTEGER"]);
-    let wire = relate::query_result_to_wire(&result);
+    let wire = relate::query_result_to_wire(&result).unwrap();
     assert_eq!(wire["columnTypes"], serde_json::json!(["INTEGER"]));
     // One type name per column, same length and order as `columns`.
     assert_eq!(
@@ -122,7 +122,7 @@ fn column_type_names_agree_across_the_wire_envelope_and_the_ffi_path() {
     );
     // An empty result stamps no columns and no types anywhere.
     let empty = conn.query("CREATE (:Empty)").unwrap();
-    let wire_empty = relate::query_result_to_wire(&empty);
+    let wire_empty = relate::query_result_to_wire(&empty).unwrap();
     assert_eq!(empty.header.column_types, Vec::<String>::new());
     assert_eq!(wire_empty["columnTypes"], serde_json::json!([]));
 }

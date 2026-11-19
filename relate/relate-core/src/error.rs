@@ -41,6 +41,13 @@ pub enum CapacityKind {
     /// `used` is the arena-plus-live-charge bound at which the batch was
     /// refused, `limit` the bound.
     SealedArena,
+    /// The plan-wire budget (ADR-0628, the rust round's refinement): an
+    /// EXPLAIN/PROFILE plan tree nested past
+    /// [`crate::MAX_PLAN_WIRE_DEPTH`](crate::convert::MAX_PLAN_WIRE_DEPTH)
+    /// container levels, refused at the plan-wire crossing before any
+    /// consumer walk recurses. `used` is the level the crossing stopped at
+    /// — a lower bound of the plan's true depth — and `limit` the budget.
+    PlanWire,
 }
 
 /// The one rendering of the three capacity contracts: the graph line is
@@ -89,6 +96,13 @@ fn capacity_detail(kind: CapacityKind, used: u64, limit: u64) -> String {
              graph's adjacency under the bound.",
             human_bytes(limit),
             human_bytes(used)
+        ),
+        CapacityKind::PlanWire => format!(
+            "This statement's query plan nests at least {used} container \
+             levels; the plan-wire budget is {limit}. This is a safety limit \
+             protecting against stack exhaustion — the statement itself \
+             executed; only its plan document is refused. Split the \
+             statement into shorter clause chains to see the plan."
         ),
     }
 }
@@ -571,6 +585,19 @@ impl Error {
             used: counted,
             limit,
             kind: CapacityKind::SealedArena,
+        }
+    }
+
+    /// The ADR-0628 plan-wire budget refusal: a plan tree nesting past
+    /// [`MAX_PLAN_WIRE_DEPTH`](crate::convert::MAX_PLAN_WIRE_DEPTH)
+    /// container levels, refused at the plan-wire crossing. `used` is the
+    /// level the crossing stopped at (a lower bound of the plan's true
+    /// depth), `limit` the budget.
+    pub fn capacity_plan_wire(used: u64, limit: u64) -> Self {
+        Self::Capacity {
+            used,
+            limit,
+            kind: CapacityKind::PlanWire,
         }
     }
 

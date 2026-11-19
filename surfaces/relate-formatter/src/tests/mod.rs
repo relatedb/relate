@@ -201,7 +201,8 @@ impl PlanFixture {
     /// node's own classification and metrics.
     fn of(node: &relate::PlanNode) -> PlanFixture {
         PlanFixture {
-            value: relate::value_to_cypher(&node.to_value()),
+            value: relate::plan_value_to_cypher(&node.to_value())
+                .expect("a fixture's plan tree sits far under the budget"),
             profiled: node.is_profiled(),
             metrics: node.metrics,
         }

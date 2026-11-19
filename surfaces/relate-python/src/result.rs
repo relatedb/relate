@@ -108,10 +108,13 @@ impl QueryResult {
         // projection over the engine's plan root, with the result's
         // notifications joined in per operator — `None` when the statement
         // carried no plan (a plain run). Built before `header` is moved
-        // out below.
+        // out below. A plan past the plan-wire budget (ADR-0628) raises
+        // the typed refusal — its text states the scope: the statement
+        // itself executed; only its plan document is refused.
         let plan = match relate::plan_wire_json(&result) {
-            Some(document) => Some(json_to_py(py, &document)?.bind(py).extract()?),
-            None => None,
+            Ok(Some(document)) => Some(json_to_py(py, &document)?.bind(py).extract()?),
+            Ok(None) => None,
+            Err(e) => return Err(crate::relate_err_to_py(py, &e)),
         };
         let column_types = result.header.column_types;
         Ok(QueryResult {

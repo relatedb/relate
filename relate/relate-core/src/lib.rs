@@ -11,6 +11,7 @@ mod auto_literal;
 mod cancel;
 pub mod ce_messages;
 mod convert;
+mod convert_walk;
 mod dynamic;
 mod error;
 /// The shared error-kind vocabulary (ADR-0502 §2 moved it here from
@@ -38,7 +39,9 @@ pub use arity::{
 };
 pub use auto_literal::{auto_literal, AutoLiteralGuard};
 pub use cancel::CancelToken;
-pub use convert::{column_type_name, cypher_to_value, value_to_cypher};
+pub use convert::{
+    column_type_name, cypher_to_value, plan_value_to_cypher, value_to_cypher, MAX_PLAN_WIRE_DEPTH,
+};
 pub use dynamic::{
     dynamic_label_names, dynamic_property_key, DynamicAccessError, DynamicNameToken,
 };

@@ -47,7 +47,8 @@ pub use relate_core::{
     node_element_id, parse_node_element_id, parse_rel_element_id, rel_element_id,
 };
 pub use relate_storage::{
-    cypher_to_value, value_to_cypher, MarkdownBodyProperties, SnapshotCodecKind, WalRecord,
+    cypher_to_value, plan_value_to_cypher, value_to_cypher, MarkdownBodyProperties,
+    SnapshotCodecKind, WalRecord, MAX_PLAN_WIRE_DEPTH,
 };
 
 pub use binding::{

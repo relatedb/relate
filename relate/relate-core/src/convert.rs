@@ -1,4 +1,10 @@
 //! Relate `Value` <-> CypherValue bridge (relate-model).
+//!
+//! The forward crossing (engine `Value` -> `CypherValue`) is the one
+//! iterative walk in [`crate::convert_walk`], shared by both policies —
+//! ADR-0462's data-value cap and ADR-0628's plan-wire budget; this module
+//! holds the walk's two public front ends, the reverse crossing, and the
+//! temporal arm of the mapping.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -8,8 +14,65 @@ use relate_model::value::IsoDuration;
 use relate_model::wire::ColumnTypeKind;
 use relate_model::{CypherValue, IndexMap};
 
+use crate::convert_walk::{value_to_cypher_walk, DepthPolicy};
+// The budget const's one public path runs through this module (the plan
+// front end below is its consumer); the walk owns its definition.
+pub use crate::convert_walk::MAX_PLAN_WIRE_DEPTH;
 use crate::temporal::Temporal;
-use crate::value::{next_depth, Node, Path, Relationship, Value};
+use crate::value::{Node, Path, Relationship, Value};
+
+pub fn value_to_cypher(v: &Value) -> CypherValue {
+    // The data policy saturates at its cap (ADR-0462), never errors: the
+    // Result channel exists for the plan policy's budget (ADR-0628), so
+    // this front end's unwrap states an invariant, never a reachable
+    // error.
+    value_to_cypher_walk(v, DepthPolicy::Data)
+        .expect("the data-value crossing saturates at its cap, never errors")
+}
+
+/// The plan-wire form of [`value_to_cypher`] (ADR-0628): the identical
+/// mapping under the plan policy — **not** the ADR-0462 data-value cap (a
+/// plan tree is engine-produced metadata whose depth scales with the
+/// statement's clause count, not a runtime data value that cap governs)
+/// but [`MAX_PLAN_WIRE_DEPTH`], the walk-sized budget above. The one
+/// conversion every plan-path crossing routes through — the wire
+/// envelope's plan document, the formatter's plan-wire composition, the
+/// HTTP Query API v2 plan field — never a per-surface re-derivation.
+/// Iterative: the crossing holds constant stack on any caller's thread.
+///
+/// # Errors
+///
+/// Past [`MAX_PLAN_WIRE_DEPTH`] container levels the crossing fails with
+/// the typed [`Error::Capacity`] refusal in the
+/// [`crate::CapacityKind::PlanWire`] class — never a silent truncation,
+/// never a panic. The error's text states the scope: the statement itself
+/// executed; only its plan document is refused.
+///
+/// ```
+/// use relate_core::{plan_value_to_cypher, Value};
+/// use relate_model::CypherValue;
+///
+/// // A plan tree nests as deep as the statement has clauses — past the
+/// // ADR-0462 data-value cap — and the crossing keeps every level under
+/// // its budget.
+/// let mut tree = Value::Int(1);
+/// for _ in 0..600 {
+///     tree = Value::List(vec![tree].into());
+/// }
+/// let crossed =
+///     plan_value_to_cypher(&tree).expect("600 levels sit far under the budget");
+/// let mut node = &crossed;
+/// for _ in 0..600 {
+///     let CypherValue::List(items) = node else {
+///         panic!("every plan-wire level crosses as a list, got {node:?}")
+///     };
+///     node = &items[0];
+/// }
+/// assert_eq!(*node, CypherValue::Int(1));
+/// ```
+pub fn plan_value_to_cypher(v: &Value) -> crate::Result<CypherValue> {
+    value_to_cypher_walk(v, DepthPolicy::Plan)
+}
 
 /// Classify an engine `Value` into its canonical ADR-0224 kind — the
 /// engine-side spelling of `relate_model::wire::column_type_kind`,
@@ -53,119 +116,6 @@ pub fn column_type_kind(value: &Value) -> ColumnTypeKind {
 /// `QueryResult::column_types` stamp.
 pub fn column_type_name(value: &Value) -> &'static str {
     column_type_kind(value).name()
-}
-
-pub fn value_to_cypher(v: &Value) -> CypherValue {
-    value_to_cypher_at(v, 0)
-}
-
-/// [`value_to_cypher`] with the ADR-0462 `depth` (the number of containers
-/// enclosing `v`): past [`crate::MAX_VALUE_DEPTH`] a container crosses as
-/// `CypherValue::Null` instead of recursing. Unreachable behind the checked
-/// constructors; the bridge has no error channel of its own.
-fn value_to_cypher_at(v: &Value, depth: u32) -> CypherValue {
-    match v {
-        Value::Null => CypherValue::Null,
-        Value::Bool(b) => CypherValue::Bool(*b),
-        Value::Int(i) => CypherValue::Int(*i),
-        Value::Float(f) => CypherValue::Float(*f),
-        Value::String(s) => CypherValue::Str(String::from(&**s)),
-        // CIP-246 documented deviation: the model-level CypherValue (FFI /
-        // Python surface) has no UUID variant, so UUIDs cross as their
-        // canonical STRING form.
-        Value::Uuid(u) => CypherValue::Str(crate::value::uuid_hyphenated(*u)),
-        // ADR-0327 documented deviation: CypherValue has no byte-array
-        // variant, so bytes cross as the LIST<INTEGER> of their byte values
-        // 0-255 — the representation ADR-0219 gives Python `bytes`
-        // parameters. Only the Bolt surface carries real bytes.
-        Value::Bytes(b) => {
-            CypherValue::List(b.iter().map(|&x| CypherValue::Int(x.into())).collect())
-        }
-        Value::List(xs) => {
-            let Some(next) = next_depth(depth) else {
-                return CypherValue::Null;
-            };
-            CypherValue::List(xs.iter().map(|v| value_to_cypher_at(v, next)).collect())
-        }
-        Value::Map(m) => {
-            let Some(next) = next_depth(depth) else {
-                return CypherValue::Null;
-            };
-            CypherValue::Map(
-                m.iter()
-                    .map(|(k, v)| (k.clone(), value_to_cypher_at(v, next)))
-                    .collect(),
-            )
-        }
-        Value::Node(n) => node_to_cypher(n, depth),
-        Value::Relationship(r) => rel_to_cypher(r, depth),
-        Value::Path(p) => {
-            if next_depth(depth).is_none() {
-                return CypherValue::Null;
-            }
-            // A path's embedded entities are not an extra container level
-            // (ADR-0462 depth accounting); they share the path's.
-            CypherValue::Path {
-                nodes: p.nodes.iter().map(|n| node_to_cypher(n, depth)).collect(),
-                relationships: p.rels.iter().map(|r| rel_to_cypher(r, depth)).collect(),
-            }
-        }
-        Value::Point(p) => CypherValue::Point(p.clone()),
-        Value::Vector { coord, values } => {
-            let Some(next) = next_depth(depth) else {
-                return CypherValue::Null;
-            };
-            let mapped: Vec<CypherValue> =
-                values.iter().map(|v| value_to_cypher_at(v, next)).collect();
-            CypherValue::Vector {
-                coord: *coord,
-                dim: mapped.len(),
-                values: mapped,
-            }
-        }
-        Value::Temporal(t) => temporal_to_cypher(t),
-    }
-}
-
-/// Node -> CypherValue, shared by the [`Value::Node`] arm and the
-/// [`Value::Path`] arm, which converts each path element directly instead
-/// of cloning it into a [`Value`] and re-entering the generic dispatcher
-/// (which cloned labels and properties a second time).
-fn node_to_cypher(n: &Node, depth: u32) -> CypherValue {
-    // `depth` is the node's ancestor-container count; its property values
-    // sit one container deeper. The same guard at the entity boundary keeps
-    // all four renderers agreeing (ADR-0462).
-    let Some(next) = next_depth(depth) else {
-        return CypherValue::Null;
-    };
-    CypherValue::Node {
-        id: n.id,
-        labels: (*n.labels).clone(),
-        properties: n
-            .properties
-            .iter()
-            .map(|(k, v)| (k.clone(), value_to_cypher_at(v, next)))
-            .collect(),
-    }
-}
-
-/// Relationship -> CypherValue, shared by the [`Value::Relationship`] arm
-/// and the [`Value::Path`] arm (see [`node_to_cypher`]).
-fn rel_to_cypher(r: &Relationship, depth: u32) -> CypherValue {
-    let Some(next) = next_depth(depth) else {
-        return CypherValue::Null;
-    };
-    CypherValue::Relationship {
-        id: r.id,
-        start_id: r.start,
-        end_id: r.end,
-        rel_type: r.rel_type.clone(),
-        properties: r
-            .properties
-            .iter()
-            .map(|(k, v)| (k.clone(), value_to_cypher_at(v, next)))
-            .collect(),
-    }
 }
 
 pub fn cypher_to_value(v: &CypherValue) -> Value {
@@ -340,7 +290,7 @@ fn cypher_to_relationship(v: &CypherValue) -> Result<Relationship, String> {
     }
 }
 
-fn temporal_to_cypher(t: &Temporal) -> CypherValue {
+pub(crate) fn temporal_to_cypher(t: &Temporal) -> CypherValue {
     match t {
         Temporal::Date(d) => CypherValue::Date(*d),
         // Both civil arms cross as the value's own ISO rendering when the
@@ -416,7 +366,7 @@ fn civil_naive_date(year: i64, month: u32, day: u32) -> Option<chrono::NaiveDate
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use crate::Error;
     fn node(id: i64) -> Node {
         Node {
             id,
@@ -578,5 +528,89 @@ mod tests {
         assert!(bad.contains("INTEGER"), "unexpected error: {bad}");
         let bad = cypher_to_relationship(&cypher).expect_err("path accepted as relationship");
         assert!(bad.contains("PATH"), "unexpected error: {bad}");
+    }
+
+    // ADR-0628: a container chain deeper than MAX_VALUE_DEPTH — a plan
+    // tree's own shape — converts intact through the plan-wire crossing
+    // (501 levels, far under the plan budget), while the data crossing
+    // saturates at the ADR-0462 cap. Both sides of the contrast pinned on
+    // one value.
+    #[test]
+    fn a_past_cap_chain_converts_intact_as_plan_wire_and_nulls_as_data() {
+        // Built raw, the way the plan producer builds its tree: the checked
+        // constructors reject this depth by design (ADR-0462), and a plan
+        // tree never goes through them.
+        let mut deep = Value::Int(7);
+        for _ in 0..=crate::MAX_VALUE_DEPTH {
+            deep = Value::List(vec![deep].into());
+        }
+
+        // The plan-wire crossing keeps every one of the 501 levels.
+        let plan =
+            plan_value_to_cypher(&deep).expect("501 levels sit far under the plan-wire budget");
+        let mut node = &plan;
+        for _ in 0..=crate::MAX_VALUE_DEPTH {
+            let CypherValue::List(items) = node else {
+                panic!("every plan-wire level crosses as a list, got {node:?}");
+            };
+            assert_eq!(items.len(), 1, "each level keeps its single member");
+            node = &items[0];
+        }
+        assert_eq!(*node, CypherValue::Int(7), "the innermost scalar survives");
+
+        // The data crossing saturates: the 501st container crosses as Null
+        // inside the capped 500th (ADR-0462's valve).
+        let data = value_to_cypher(&deep);
+        let mut node = &data;
+        for _ in 1..crate::MAX_VALUE_DEPTH {
+            let CypherValue::List(items) = node else {
+                panic!("the data crossing keeps the 500 capped levels, got {node:?}");
+            };
+            node = &items[0];
+        }
+        let CypherValue::List(items) = node else {
+            panic!("the 500th level stays a list, got {node:?}");
+        };
+        assert_eq!(
+            items[0],
+            CypherValue::Null,
+            "the past-cap container crosses as Null (ADR-0462)"
+        );
+    }
+
+    // ADR-0628's stack-safe budget (the rust round's final shape): exactly
+    // MAX_PLAN_WIRE_DEPTH container levels cross intact, one more refuses
+    // with the typed capacity error naming the budget — never a silent
+    // truncation, never a panic. The crossing is iterative (constant
+    // stack), and the crossed values' recursive drops — the by-design
+    // per-level frames the budget still admits — are the walk-sized
+    // ~100 KB a 1 000-level value costs, held by any ordinary thread.
+    #[test]
+    fn the_plan_wire_budget_pins_its_boundary() {
+        let build =
+            |levels: u32| (0..levels).fold(Value::Int(7), |v, _| Value::List(vec![v].into()));
+        let at = plan_value_to_cypher(&build(crate::MAX_PLAN_WIRE_DEPTH));
+        let past = plan_value_to_cypher(&build(crate::MAX_PLAN_WIRE_DEPTH + 1));
+        assert!(
+            at.is_ok(),
+            "exactly the budget's levels cross intact: {at:?}"
+        );
+        match past {
+            Err(Error::Capacity {
+                kind: crate::CapacityKind::PlanWire,
+                limit,
+                ..
+            }) => {
+                assert_eq!(
+                    limit,
+                    u64::from(crate::MAX_PLAN_WIRE_DEPTH),
+                    "the refusal names the budget"
+                );
+            }
+            other => panic!(
+                "one level past the budget refuses with the typed plan-wire \
+                 capacity class, got {other:?}"
+            ),
+        }
     }
 }

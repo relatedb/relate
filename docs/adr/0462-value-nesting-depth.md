@@ -229,3 +229,6 @@ maps it to 400, and the CLI files it `Fatal`.
 - [ADR-0257](./0257-query-input-limits.md): query input limits (4 MiB, static nesting 500).
 - [ADR-0259](./0259-query-execution-stack-provisioning.md): the per-connection 64 MiB query worker.
 - [ADR-0395](./0395-nested-evaluation-budget.md): the per-statement nested evaluation budget.
+- [ADR-0628](./0628-plan-wire-conversion-uncapped.md): the plan wire conversion does
+  not ride this cap — engine-produced plan metadata crosses the model bridge
+  uncapped (`plan_value_to_cypher`); the cap governs runtime data values only.

@@ -1,13 +1,13 @@
 //! The boundary's plan-text rendering (ADR-0359): the engine emits the
 //! plan tree only; every surface renders the text through this crate's
-//! one layout — `plan_text_lines` over the engine's own wire form
-//! (`PlanNode::to_value` converted), the `Query:` echo header included.
-//! The CLI's table, Bolt's `string-representation` and the HTTP plan text
-//! all carry these same bytes.
+//! one layout — the text entry (`plan_text_of`) over the engine's own
+//! wire form (`PlanNode::to_value` crossed once inside it), the `Query:`
+//! echo header included. The CLI's table, Bolt's `string-representation`
+//! and the HTTP plan text all carry these same bytes.
 //!
 //! Run with `cargo run -p relate-formatter --example plan_text`.
 
-use relate_formatter::{plan_text_lines, Formatter, Mode, PlanPresentation, StatementMeta};
+use relate_formatter::{plan_text_of, Formatter, Mode, PlanPresentation, StatementMeta};
 
 fn main() -> relate::Result<()> {
     let db = relate::Database::open(":memory:")?;
@@ -24,12 +24,11 @@ fn main() -> relate::Result<()> {
     assert!(result.rows.is_empty());
     let tree = result.plan_root().expect("EXPLAIN stamps the plan");
 
-    // The canonical producer pipeline every boundary runs: the engine's
-    // own wire form, then the formatter's one layout.
-    let lines = plan_text_lines(
-        &relate::value_to_cypher(&tree.to_value()),
-        tree.statement_echo(),
-    );
+    // The boundary's text-only entry (ADR-0628): the engine's own wire
+    // form crossed once, then the formatter's one layout over that
+    // crossing — the same render the plan-wire composition runs for the
+    // Neo4j-facing `string-representation`.
+    let lines = plan_text_of(tree)?;
     assert_eq!(
         lines[0],
         "Query: MATCH (p:Person)-[k:KNOWS]->(f:Person) WHERE f.name = 'Bob' RETURN p.name AS who"
@@ -55,6 +54,7 @@ fn main() -> relate::Result<()> {
     let presentation = result
         .plan_root()
         .map(|tree| PlanPresentation::of(tree, result.notifications()))
+        .transpose()?
         .expect("EXPLAIN stamps the plan");
     let view = presentation.as_view();
     let formatter = Formatter::new(Mode::Table);

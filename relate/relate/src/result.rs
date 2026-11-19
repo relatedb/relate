@@ -503,7 +503,7 @@ mod tests {
         assert_eq!(result.header.columns, ["id"]);
         assert_eq!(result.header.column_types, ["STRING"]);
 
-        let envelope = crate::query_result_to_wire(&result);
+        let envelope = crate::query_result_to_wire(&result).unwrap();
         assert_eq!(envelope["columnTypes"], serde_json::json!(["STRING"]));
     }
 

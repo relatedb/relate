@@ -436,7 +436,8 @@ fn the_wire_and_tree_roles_are_distinct() {
         Vec::new(),
     );
     node.estimated_rows = Some(3);
-    let wire = relate::value_to_cypher(&node.to_neo4j_value("Query: RETURN 1\nPlan:"));
+    let wire = relate::plan_value_to_cypher(&node.to_neo4j_value("Query: RETURN 1\nPlan:"))
+        .expect("the fixture's plan sits far under the budget");
     let tree = PlanFixture::of(&node);
     let header = vec!["Query: RETURN 1".to_string(), "Plan:".to_string()];
     let cols = vec!["plan".to_string()];

@@ -36,7 +36,7 @@ fn query_result_carries_engine_elapsed() {
 fn wire_envelope_carries_elapsed_ms() {
     let mut conn = common::connection();
     let r = common::run(&mut conn, "RETURN 1 AS n");
-    let env = query_result_to_wire(&r);
+    let env = query_result_to_wire(&r).unwrap();
     let elapsed_ms = env["elapsed_ms"]
         .as_f64()
         .expect("envelope carries elapsed_ms");

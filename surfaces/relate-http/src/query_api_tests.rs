@@ -580,14 +580,14 @@ fn query_plan_field_projects_the_plain_json_node() {
     let db = db();
     let mut conn = db.connect().unwrap();
     let explained = conn.query("EXPLAIN RETURN 1 AS n").unwrap();
-    let (key, node) = crate::query_plan_field(explained.plan_root().unwrap());
+    let (key, node) = crate::query_plan_field(explained.plan_root().unwrap()).unwrap();
     assert_eq!(key, "queryPlan");
     assert_eq!(node["operatorType"], json!("ProduceResults@relate"));
     assert!(node["arguments"].is_object());
     assert!(node["arguments"].get("$type").is_none());
 
     let profiled = conn.query("PROFILE RETURN 1 AS n").unwrap();
-    let (key, node) = crate::query_plan_field(profiled.plan_root().unwrap());
+    let (key, node) = crate::query_plan_field(profiled.plan_root().unwrap()).unwrap();
     assert_eq!(key, "profiledQueryPlan");
     assert!(node["records"].is_number());
     assert!(node["arguments"].get("$type").is_none());

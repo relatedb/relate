@@ -15,7 +15,7 @@ use indexmap::IndexMap;
 use relate_error::{nested_error_class, NestedErrorClass};
 use relate_model::serde_value::try_json_to_param_value;
 use relate_model::wire;
-use relate_storage::{cypher_to_value, value_to_cypher};
+use relate_storage::{cypher_to_value, plan_value_to_cypher, value_to_cypher};
 
 use crate::{ArithmeticFailure, Connection, Error, QueryResult, QueryStats, Value};
 
@@ -190,10 +190,13 @@ fn optional_params(
     }
 }
 
-/// A statement's wire envelope: its result, or an error envelope.
+/// A statement's wire envelope: its result, or an error envelope. A plan
+/// past the plan-wire budget (ADR-0628) lands in the error-envelope arm —
+/// its text states the scope: the statement itself executed; only its
+/// plan document is refused.
 fn statement_envelope(result: Result<QueryResult, Error>) -> serde_json::Value {
-    match result {
-        Ok(result) => query_result_to_wire(&result),
+    match result.and_then(|result| query_result_to_wire(&result)) {
+        Ok(envelope) => envelope,
         Err(e) => wire::error_envelope(&e.to_string()),
     }
 }
@@ -251,23 +254,26 @@ pub fn run_script_wire(
 /// per-phase timing split (`parse_ms`/`plan_ms`/`execute_ms`) beside
 /// `elapsed_ms`, fed from the header's phase timing through the
 /// `QueryResult` phase accessors.
-pub fn query_result_to_wire(result: &QueryResult) -> serde_json::Value {
+pub fn query_result_to_wire(result: &QueryResult) -> crate::Result<serde_json::Value> {
     let rows = query_result_to_cypher_rows(result);
     let wire_rows = relate_model::wire::rows_for_result(&result.header.columns, &rows);
     let stats = relate_model::wire::stats_to_wire_json(&query_stats_to_wire(&result.stats));
     // The structured plan document (LABS-418, ADR-0381) rides the envelope
     // as `plan` — null on a plain run — so a wire consumer (the WASM surface,
     // any C-ABI envelope reader) gets the plan beside the metadata. The
-    // canonical builder owns the key.
-    relate_model::wire::response_envelope(
+    // canonical builder owns the key. A plan past the plan-wire budget
+    // (ADR-0628) fails the whole envelope with the typed refusal: the error
+    // text states the scope — the statement itself executed; only its plan
+    // document is refused.
+    Ok(relate_model::wire::response_envelope(
         &result.header.columns,
         &result.header.column_types,
         wire_rows,
         stats,
         result.notifications(),
         timing_stamp_ms(result),
-        plan_wire_json(result),
-    )
+        plan_wire_json(result)?,
+    ))
 }
 
 /// The statement's timing stamp for the canonical wire envelope (ADR-0491,
@@ -298,13 +304,28 @@ pub fn timing_stamp_ms(result: &QueryResult) -> relate_model::wire::TimingStampM
 /// no plan. The one projection the surfaces hand out: the model's
 /// [`relate_model::wire::plan_document`] over the engine's plan root,
 /// with the result's remedy-bearing notifications joined per operator.
-pub fn plan_wire_json(result: &QueryResult) -> Option<serde_json::Value> {
-    let root = result.plan_root()?;
-    Some(relate_model::wire::plan_document(
-        &value_to_cypher(&root.to_value()),
+///
+/// # Errors
+///
+/// A plan nesting past [`crate::MAX_PLAN_WIRE_DEPTH`] container levels —
+/// ADR-0628's stack-safe budget — fails with the typed capacity refusal
+/// whose text states the scope: the statement itself executed; only its
+/// plan document is refused.
+pub fn plan_wire_json(result: &QueryResult) -> crate::Result<Option<serde_json::Value>> {
+    let Some(root) = result.plan_root() else {
+        return Ok(None);
+    };
+    // The budget fires BEFORE the recursive producer build (the security
+    // round's closure): the probe walks the typed tree iteratively, so a
+    // past-budget plan refuses here — the typed error, its text stating
+    // the scope — without `to_value` ever building the engine `Value`
+    // tree on the caller's thread.
+    root.ensure_plan_wire_budget()?;
+    Ok(Some(relate_model::wire::plan_document(
+        &plan_value_to_cypher(&root.to_value())?,
         root.statement_echo_opt(),
         result.notifications(),
-    ))
+    )))
 }
 
 /// Stable error metadata for Python's DB-API exception adapter.
@@ -402,7 +423,7 @@ mod tests {
         let db = Database::open(":memory:").unwrap();
         let mut c = db.connect().unwrap();
         let result = c.query("CREATE (:N {v: 1}) RETURN 7 AS n").unwrap();
-        let wire = query_result_to_wire(&result);
+        let wire = query_result_to_wire(&result).unwrap();
         assert_eq!(wire["columns"], serde_json::json!(["n"]));
         assert_eq!(wire["rows"][0]["n"], 7);
         assert_eq!(wire["stats"]["nodes_created"], 1);

@@ -717,7 +717,13 @@ fn result_envelope_json(
     // The structured plan document (LABS-418, ADR-0381) rides the tool
     // result as `plan` — the classification EXPLAIN's tree, so an agent
     // reads the plan structurally, never as text it must parse. The
-    // canonical builder owns the key.
+    // canonical builder owns the key. A plan past the plan-wire budget
+    // (ADR-0628) is a tool error carrying the typed refusal's text, which
+    // states the scope: the statement itself executed; only its plan
+    // document is refused.
+    let plan = relate::plan_wire_json(explained).map_err(|e| ToolError::Engine {
+        detail: e.to_string(),
+    })?;
     let envelope = relate_model::wire::response_envelope(
         &result.header.columns,
         &result.header.column_types,
@@ -725,7 +731,7 @@ fn result_envelope_json(
         relate_model::wire::stats_to_wire_json(&stats),
         explained.notifications(),
         timings,
-        relate::plan_wire_json(explained),
+        plan,
     );
     serde_json::to_string(&envelope).map_err(|error| ToolError::Engine {
         detail: error.to_string(),

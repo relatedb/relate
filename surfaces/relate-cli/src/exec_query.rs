@@ -200,9 +200,27 @@ fn exec_relate_query_to(
             // notification block that follows it) to the diagnostic writer,
             // while every other mode ignores that writer and keeps its
             // payload on the output stream.
-            let presentation = r
+            let mut plan_refused = false;
+            let presentation = match r
                 .plan_root()
-                .map(|tree| PlanPresentation::of(tree, r.notifications()));
+                .map(|tree| PlanPresentation::of(tree, r.notifications()))
+            {
+                Some(Ok(presentation)) => Some(presentation),
+                // ADR-0628's plan-wire budget: the statement executed; only
+                // its plan document is refused — the typed error goes to the
+                // diagnostic writer and the data rows still render, the
+                // effect stays, and the run exits 1: for an EXPLAIN the plan
+                // IS the payload, so a script reading the exit status can
+                // tell a refused plan from a rendered one (the
+                // render-failure arm's contract below).
+                Some(Err(e)) => {
+                    write_error(diagnostics, e);
+                    plan_refused = true;
+                    None
+                }
+                // A plain run carries no plan (and no presentation).
+                None => None,
+            };
             // One read of the plan fact for both `StatementRun` arms below.
             let plan_produced = presentation.is_some();
             let plan = presentation
@@ -253,7 +271,11 @@ fn exec_relate_query_to(
             // and keeps its effect for the transaction ledger while its plan
             // table is the run's own report.
             StatementRun {
-                code: 0,
+                // Exit 1 when the render failed OR the plan was refused
+                // (ADR-0628: for an EXPLAIN the plan IS the payload) — the
+                // effect is the execution's fact either way and still
+                // rides below.
+                code: if plan_refused { 1 } else { 0 },
                 effect: r.effect,
                 plan_produced,
             }
@@ -357,6 +379,53 @@ mod render_failure_tests {
                 ledger
             ),
             "a commit over the persisted write never says it changed nothing"
+        );
+    }
+
+    /// ADR-0628's plan-wire budget: a plan past it is refused loudly — the
+    /// typed error to the diagnostic sink, the data rows still rendered,
+    /// the effect kept — and the run exits 1: for an EXPLAIN the plan IS
+    /// the payload, so a script reading the exit status can tell a refused
+    /// plan from a rendered one (this module's render-failure contract).
+    #[test]
+    fn a_refused_plan_document_exits_one_with_the_effect_kept() {
+        let db = relate::Database::open(":memory:").unwrap();
+        let mut conn = db.connect_typed(relate::Namespace::Neo4j).unwrap();
+        let formatter = Formatter::new(Mode::Jsonl);
+        let mut out = Vec::new();
+        let mut diagnostics = Vec::new();
+        // A chain past the plan-wire budget (~4 container levels per chain
+        // node — the shared deep-plan fixture's builder).
+        let nodes = relate::MAX_PLAN_WIRE_DEPTH as usize / 4 + 50;
+        let statement = format!(
+            "EXPLAIN {}",
+            relate_test_support::deep_plan::create_chain(nodes)
+        );
+        let run = exec_relate_query_to(
+            &mut conn,
+            &statement,
+            &std::collections::BTreeMap::new(),
+            &formatter,
+            RenderOpts::default(),
+            &mut out,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            run.code, 1,
+            "the refused plan is a failed run for a script reading the exit status"
+        );
+        assert!(!run.plan_produced, "no plan artifact rode the run");
+        assert_eq!(
+            run.effect,
+            StatementEffect::None,
+            "an EXPLAIN never executed: its effect is None either way"
+        );
+        let diagnostics = String::from_utf8(diagnostics).expect("diagnostics are text");
+        assert!(
+            diagnostics.contains("plan-wire budget")
+                && diagnostics.contains("only its plan document is refused"),
+            "the typed refusal's scope text reaches the caller's sink: {diagnostics:?}"
         );
     }
 

@@ -24,7 +24,7 @@ fn wire_envelope_carries_the_phase_split() {
         "PROFILE MATCH (n:P) RETURN n.x AS x",
     ] {
         let r = common::run(&mut conn, stmt);
-        let env = query_result_to_wire(&r);
+        let env = query_result_to_wire(&r).unwrap();
         for (key, re_sourced) in [
             ("parse_ms", r.parse_ms()),
             ("plan_ms", r.plan_ms()),
@@ -52,7 +52,7 @@ fn wire_envelope_phase_split_never_exceeds_elapsed_ms() {
     let mut conn = common::connection();
     conn.query("CREATE (:P {x: 1})").unwrap();
     let r = common::run(&mut conn, "MATCH (n:P) WHERE n.x = 1 RETURN n.x AS x");
-    let env = query_result_to_wire(&r);
+    let env = query_result_to_wire(&r).unwrap();
     let parse = env["parse_ms"].as_f64().expect("parse_ms");
     let plan = env["plan_ms"].as_f64().expect("plan_ms");
     let execute = env["execute_ms"].as_f64().expect("execute_ms");

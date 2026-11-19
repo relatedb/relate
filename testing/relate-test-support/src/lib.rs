@@ -7,6 +7,7 @@
 
 #[cfg(feature = "bolt")]
 pub mod bolt;
+pub mod deep_plan;
 #[cfg(feature = "durability")]
 pub mod durability;
 #[cfg(feature = "envelope")]

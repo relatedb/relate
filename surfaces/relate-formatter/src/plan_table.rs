@@ -699,35 +699,12 @@ impl PlanWalk {
     }
 }
 
-/// The boundary's plan presentation for one result (ADR-0359): the engine's
-/// Neo4j-facing value with the plan text rendered through the one layout
-/// inside it — the composition every surface (CLI, Bolt, HTTP) calls, so
-/// the rendering and the decoration cannot drift. The summary KEY stays
-/// surface-specific (`plan`/`profile` for Bolt, `queryPlan`/
-/// `profiledQueryPlan` for HTTP, the formatter's own modes for the CLI),
-/// read off `tree.is_profiled()` at the caller. A caller needing the text
-/// itself (a header) reads [`plan_header_lines`], not this return.
-///
-/// Unlike [`plan_text_lines`], this takes the engine's `PlanNode`: it must
-/// call the engine's decorator, and the wire value alone cannot produce the
-/// decorated form. ADR-0359's rejected alternative was the *renderer*
-/// taking `PlanNode`; the renderer still takes the wire value.
-pub fn plan_presentation(tree: &relate::PlanNode) -> relate::Value {
-    // The echo is a plain accessor (empty on a hand-built tree): a public
-    // helper never panics on a tree the engine did not stamp.
-    let text = plan_text_lines(
-        &relate::value_to_cypher(&tree.to_value()),
-        tree.statement_echo(),
-    )
-    .join("\n");
-    tree.to_neo4j_value(&text)
-}
-
 /// The plan's text lines (ADR-0359): the `Query:` echo header and the
 /// boxed operator table, rendered through this module's one layout — the
-/// boundary's rendering, called by the CLI, Bolt's `string-representation`
-/// and the HTTP plan text. `tree` is the engine's own wire form
-/// ([`relate::PlanNode::to_value`] converted), `echo` the
+/// boundary's rendering, run by the plan-wire composition
+/// ([`crate::plan_wire`]) and by the header/text entries re-exported from
+/// the crate root. `tree` is the engine's own wire form
+/// ([`relate::PlanNode::to_value`] crossed to the model value), `echo` the
 /// engine-stamped statement echo (ADR-0359).
 pub fn plan_text_lines(tree: &CypherValue, echo: &str) -> Vec<String> {
     let header = plan_header_lines(echo);

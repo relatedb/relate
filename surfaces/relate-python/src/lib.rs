@@ -98,8 +98,10 @@ create_exception!(
 /// semantic wrapper), so no message re-scanning happens here — and
 /// `relate::error_info` is the single source of the Neo4j code,
 /// GQLSTATUS, stage and retryable verdict: the binding holds no
-/// kind-to-code table.
-fn relate_err_to_py(py: Python<'_>, e: &RelateError) -> PyErr {
+/// kind-to-code table. Crate-visible so the result assembly raises the
+/// same error shape a failed statement does (the plan-wire budget's
+/// post-execution refusal, ADR-0628).
+pub(crate) fn relate_err_to_py(py: Python<'_>, e: &RelateError) -> PyErr {
     let (kind, tck_class) = binding_error_metadata(e);
     native_error(py, e.to_string(), kind, tck_class, Some(error_info(e)))
 }

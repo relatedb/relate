@@ -108,9 +108,56 @@ impl PlanNode {
     /// and tooling consumers that already read Neo4j plans read this
     /// engine's plans unmodified, and the later `PROFILE` phases add their
     /// metrics as further `args` entries. Surfaces convert to their wire
-    /// value type (`value_to_cypher`) at their own boundary.
+    /// value type (`plan_value_to_cypher`, the plan-wire crossing under
+    /// its walk-sized budget, ADR-0628) at their own boundary — gated by
+    /// [`Self::ensure_plan_wire_budget`] first, so this recursive build
+    /// never runs on a past-budget tree.
     pub fn to_value(&self) -> Value {
         Value::Map(std::sync::Arc::new(self.node_map(self.base_args())))
+    }
+
+    /// The tree's container depth in the plan-wire crossing's accounting
+    /// (ADR-0628's probe): each node contributes its map (one level) and,
+    /// when it carries children, the list around them (one more), so the
+    /// deepest chain of a real plan is the children chain; every other
+    /// branch (the `args` map, `identifiers`, the warnings) holds scalars
+    /// and never dominates a tree at the budget's scale. **Iterative** —
+    /// an explicit worklist over the children slices, no recursion, no
+    /// building, no allocation beyond the worklist — so probing a
+    /// past-budget tree costs nothing on the caller's stack. Every
+    /// plan-crossing boundary runs this before any recursive build (see
+    /// [`Self::ensure_plan_wire_budget`]).
+    pub fn plan_wire_depth(&self) -> u32 {
+        let mut max = 0u32;
+        // (node, its own level): the root's map is level 1.
+        let mut work: Vec<(&PlanNode, u32)> = vec![(self, 1)];
+        while let Some((node, level)) = work.pop() {
+            max = max.max(level);
+            // The children's list is one level deeper than this node's
+            // map, each child's map one deeper still.
+            work.extend(node.children.iter().map(|child| (child, level + 2)));
+        }
+        max
+    }
+
+    /// The plan-wire budget check (ADR-0628): `Ok` when this tree's
+    /// [`Self::plan_wire_depth`] sits within `MAX_PLAN_WIRE_DEPTH`, else
+    /// the typed capacity refusal every plan-crossing boundary raises
+    /// **before** any recursive build (`to_value`/`to_neo4j_value`) or
+    /// crossing runs — the abort class the security round closed: those
+    /// builds recurse per plan operator on the caller's thread, so a
+    /// past-budget plan must refuse here, from the typed tree, without
+    /// ever being built.
+    pub fn ensure_plan_wire_budget(&self) -> crate::Result<()> {
+        let depth = self.plan_wire_depth();
+        if depth > crate::MAX_PLAN_WIRE_DEPTH {
+            Err(crate::Error::capacity_plan_wire(
+                u64::from(depth),
+                u64::from(crate::MAX_PLAN_WIRE_DEPTH),
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     /// The node's base args (ADR-0345): `Id` (the pre-order number), the
@@ -589,5 +636,67 @@ mod tests {
         .map(|rung| rung.as_str())
         .collect();
         assert_eq!(rungs, plan_keys::KERNEL_RUNGS);
+    }
+
+    /// ADR-0628's probe: the children-chain depth the plan-wire crossing
+    /// counts — each node its map, the children list around the next —
+    /// returned by an iterative DFS whose worklist is its only
+    /// allocation. The 50 000-node chain pins the no-recursion shape
+    /// twice over: a recursive probe over it would overflow a test
+    /// thread's stack, and — dropped here on the ordinary test thread —
+    /// it is the iterative `PlanNode` drop's regression proof (the
+    /// derived recursive drop overflows at this depth).
+    #[test]
+    fn plan_wire_depth_counts_the_children_chain_iteratively() {
+        let chain = |nodes: usize| {
+            let mut root = PlanNode::new("ProduceResults", String::new(), Vec::new(), Vec::new());
+            for _ in 1..nodes {
+                root = PlanNode::new("Create", String::new(), Vec::new(), vec![root]);
+            }
+            root
+        };
+        assert_eq!(chain(1).plan_wire_depth(), 1, "a lone node is its own map");
+        assert_eq!(
+            chain(3).plan_wire_depth(),
+            5,
+            "a map and a children list per link"
+        );
+        // The deep chain, dropped at the end of this scope on the ordinary
+        // test thread: with the iterative `Drop` that is a constant-stack
+        // drain — the derived recursive drop overflows a test thread at
+        // this depth, so this drop is the drain's regression proof as
+        // much as the probe's own iterativity is.
+        let deep = chain(50_000);
+        assert_eq!(
+            deep.plan_wire_depth(),
+            2 * 50_000 - 1,
+            "the deep chain, probed iteratively"
+        );
+        drop(deep);
+        // The budget check over the same facts: a chain within the budget
+        // passes, one past it takes the typed refusal.
+        assert!(
+            chain(2).ensure_plan_wire_budget().is_ok(),
+            "a three-level chain sits far under the budget"
+        );
+        let past = chain(crate::MAX_PLAN_WIRE_DEPTH as usize / 2 + 2);
+        assert_eq!(
+            past.plan_wire_depth(),
+            2 * (crate::MAX_PLAN_WIRE_DEPTH / 2 + 2) - 1
+        );
+        match past.ensure_plan_wire_budget() {
+            Err(crate::Error::Capacity {
+                kind: crate::CapacityKind::PlanWire,
+                limit,
+                ..
+            }) => {
+                assert_eq!(
+                    limit,
+                    u64::from(crate::MAX_PLAN_WIRE_DEPTH),
+                    "the refusal names the budget"
+                );
+            }
+            other => panic!("a past-budget tree takes the typed refusal: {other:?}"),
+        }
     }
 }

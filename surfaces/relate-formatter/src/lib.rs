@@ -3,11 +3,13 @@
 //! Formats query results as table, CSV, JSON, JSONL, Markdown, TOON,
 //! Cypher, or a speedscope evented profile. The renderers live in
 //! per-family modules: [`table`] (table + markdown) and [`plan_table`]
-//! (the EXPLAIN/PROFILE plan table), both laying out through the shared
-//! grid engine in [`layout`], plus [`csv`], [`json`] (json/jsonl/envelope
-//! and the shared row projection), [`cypher`] (`.mode cypher` and the
-//! canonical literal rendering), [`toon`], and `speedscope` (a PROFILE
-//! plan tree as a speedscope evented-profile document).
+//! (the EXPLAIN/PROFILE plan table layout), both laying out through the
+//! shared grid engine in [`layout`], plus [`csv`], [`json`] (json/jsonl/
+//! envelope and the shared row projection), [`cypher`] (`.mode cypher` and
+//! the canonical literal rendering), [`toon`], and `speedscope` (a PROFILE
+//! plan tree as a speedscope evented-profile document). The boundary's
+//! plan-wire composition — the one crossing and render every
+//! plan-carrying surface reads — lives in `plan_wire`.
 
 mod csv;
 mod cypher;
@@ -16,6 +18,7 @@ mod json;
 mod layout;
 mod notifications;
 mod plan_table;
+mod plan_wire;
 pub mod recording;
 mod speedscope;
 mod table;
@@ -25,7 +28,8 @@ pub use cypher::{cypher_identifier, cypher_literal, is_cypher_scalar};
 pub(crate) use cypher::{is_bare_identifier, quoted_literal};
 pub use escape::{sanitize_error_text, strip_unsafe_output_chars};
 pub use layout::{text_grid_lines, ColumnAlign};
-pub use plan_table::{plan_header_lines, plan_presentation, plan_text_lines};
+pub use plan_table::{plan_header_lines, plan_text_lines};
+pub use plan_wire::{plan_presentation, plan_text_of, plan_wire_forms, PlanWireForms};
 
 use std::io::Write;
 
@@ -250,24 +254,14 @@ pub struct StatementMeta<'a> {
     pub row_cap: Option<RowCap>,
     /// The bundled plan-presentation facts of an `EXPLAIN`/`PROFILE`
     /// statement (ADR-0344/0345, ADR-0357) — a borrowed
-    /// [`PlanPresentation`] view, `None` on plain runs; the bundle's
-    /// inventory and invariants are spelled once on its own doc. The
-    /// serializing modes (`json`,
-    /// `jsonl`, `envelope`, `toon`) emit `PlanView::wire` — one
-    /// `{"plan": ...}` object (json family) or one `plan:` entry with the
-    /// tree beneath it (toon's nested-value rule) — while the typed
-    /// table/speedscope walk reads `PlanView::tree`, the undecorated
-    /// engine form (speedscope renders one document from it). The `table`
-    /// mode's plan presentation reads `PlanView::header` — the header
-    /// only, never the whole rendered text; its rows come from the wire
-    /// tree's walk, never the result's data rows. `csv` and `cypher`
-    /// render only the rows (the plan reaches them only for `EXPLAIN`,
-    /// whose rows are the rendered lines); `markdown` renders the rows
-    /// plus the complete notification list, never the plan table. In
-    /// `table` mode its presence is the explicit marker that selects the
-    /// plan presentation — never the result's data shape. The view owns
-    /// the engine-derived notification list (ADR-0363), so a non-empty
-    /// list without its plan view is unrepresentable.
+    /// [`PlanPresentation`] view, `None` on plain runs. The bundle's
+    /// inventory, its invariants, and which renderer reads which field are
+    /// spelled once, on the presentation's own field docs — never
+    /// re-spelled here. In `table` mode the view's presence is the
+    /// explicit marker that selects the plan presentation — never the
+    /// result's data shape. The view owns the engine-derived notification
+    /// list (ADR-0363), so a non-empty list without its plan view is
+    /// unrepresentable.
     pub plan: Option<PlanView<'a>>,
     /// The statement's timing stamp (LABS-1120): the ADR-0221 total, its
     /// PARSE / PLAN / EXECUTE split, the fine sub-split, and the
@@ -303,18 +297,19 @@ impl<'a> StatementMeta<'a> {
 /// fact, mirrored by [`PlanPresentation::as_view`]. What the bundle
 /// holds and the invariants that hold it together are spelled once, on
 /// the bundle's own doc (the sealed field list is the inventory); this
-/// view carries them, it never re-spells them.
+/// view carries them, it never re-spells them — including which renderer
+/// reads which field, whose one home is the presentation's field docs.
 #[derive(Debug, Clone, Copy)]
 pub struct PlanView<'a> {
-    /// The Neo4j-facing plan value (ADR-0357), already in wire form
-    /// (`PlanNode::to_neo4j_value` converted once at the caller): the root
-    /// decorated with the Neo4j-facing args. The serializing modes
-    /// (`json`, `jsonl`, `envelope`, `toon`) emit this one.
+    /// The Neo4j-facing plan value (ADR-0357), already in wire form —
+    /// crossed once by the boundary's one plan-wire composition
+    /// ([`plan_wire_forms`], ADR-0628): the root decorated with the
+    /// Neo4j-facing args.
     pub wire: &'a CypherValue,
-    /// The engine's own wire form (`PlanNode::to_value`), converted once at
-    /// the caller: the typed table/speedscope walk reads this one, whose
-    /// `EstimatedRows` stays an integer — the decorated `wire` form's float
-    /// mirror never reaches the engine-form accessors.
+    /// The engine's own wire form (`PlanNode::to_value`), crossed once by
+    /// the same composition — its `EstimatedRows` stays an integer, so
+    /// the decorated `wire` form's float mirror never reaches the
+    /// engine-form accessors.
     pub tree: &'a CypherValue,
     /// The table presentation's header lines (`Query:` echo + `Plan:`
     /// marker) — this crate's one header rendering
@@ -322,21 +317,13 @@ pub struct PlanView<'a> {
     pub header: &'a [String],
     /// The engine-derived query notifications (ADR-0363), one flat list
     /// derived with this plan tree; empty when the statement raised none.
-    /// The `envelope` mode emits the complete list under `"notifications"`
-    /// (native keys, always present, empty array included); `json`/`jsonl`
-    /// carry it inside the plan object; `toon` renders a `notifications:`
-    /// section beside `plan:`; `table` renders one `Notifications:` text
-    /// block after the plan table, filtered to the kinds the plan table
-    /// does not already render (ADR-0363 decision 8), and `markdown` —
-    /// which never renders the plan table — renders the complete list.
-    /// `csv` and `cypher` render only the rows. The list derives with the
-    /// plan tree, so it is one fact with this view.
+    /// The list derives with the plan tree, so it is one fact with this
+    /// view.
     pub notifications: &'a [Notification],
     /// The typed classification ([`relate::PlanNode::is_profiled`], ADR-0344):
     /// `true` for a `PROFILE` statement, `false` for `EXPLAIN` — stamped
     /// once at the boundary where the typed tree lives, never re-derived
-    /// here from the result's shape. The serializing modes' plan-only arm
-    /// and the row-cap invariant both consult it.
+    /// here from the result's shape.
     pub profiled: bool,
 }
 
@@ -352,18 +339,44 @@ pub struct PlanView<'a> {
 /// The fields are sealed (`pub(crate)`): [`PlanPresentation::of`] and
 /// [`PlanPresentation::as_view`] are the only paths, so the
 /// cannot-desync claim in the doc above holds by compiler enforcement,
-/// never by review.
+/// never by review. The per-field mode routing — which renderer reads
+/// which field — lives on the fields below, its one home: the view
+/// ([`PlanView`]) and [`StatementMeta::plan`] carry the facts, never the
+/// routing.
 pub struct PlanPresentation<'a> {
-    /// The Neo4j-facing wire value, converted once from the typed tree.
+    /// The Neo4j-facing wire value, crossed once by the boundary's one
+    /// plan-wire composition ([`plan_wire_forms`]): the root decorated
+    /// with the Neo4j-facing args. The serializing modes (`json`,
+    /// `jsonl`, `envelope`, `toon`) emit this one — one `{"plan": …}`
+    /// object (json family) or one `plan:` entry with the tree beneath it
+    /// (toon's nested-value rule).
     pub(crate) wire: CypherValue,
-    /// The engine's own wire form, converted once.
+    /// The engine's own wire form, crossed once by the same composition —
+    /// its `EstimatedRows` stays an integer, so the decorated `wire`
+    /// form's float mirror never reaches the engine-form accessors. The
+    /// typed table/speedscope walk reads this one (speedscope renders one
+    /// document from it); the `table` mode's plan rows come from this
+    /// walk, never the result's data rows.
     pub(crate) tree: CypherValue,
-    /// The table presentation's header lines.
+    /// The table presentation's header lines. The `table` mode's plan
+    /// presentation reads this header only, never the whole rendered
+    /// text.
     pub(crate) header: Vec<String>,
     /// The engine-derived notification list, borrowed from the result.
+    /// The `envelope` mode emits the complete list under
+    /// `"notifications"` (native keys, always present, empty array
+    /// included); `json`/`jsonl` carry it inside the plan object; `toon`
+    /// renders a `notifications:` section beside `plan:`; `table` renders
+    /// one `Notifications:` text block after the plan table, filtered to
+    /// the kinds the plan table does not already render (ADR-0363
+    /// decision 8); and `markdown` — which never renders the plan table —
+    /// renders the complete list. `csv` and `cypher` render only the
+    /// rows.
     pub(crate) notifications: &'a [Notification],
     /// The typed classification ([`PlanView::profiled`]'s source), stamped
     /// from the typed tree — never re-derived from the result's shape.
+    /// The serializing modes' plan-only arm and the row-cap invariant
+    /// both consult it.
     pub(crate) profiled: bool,
 }
 
@@ -373,14 +386,28 @@ impl<'a> PlanPresentation<'a> {
     /// statement's own data rows, so the header comes from the tree, not the
     /// rows. The notification list is the engine's (derived with the same
     /// tree), stored on the bundle so the view never takes facts beside it.
-    pub fn of(tree: &relate::PlanNode, notifications: &'a [Notification]) -> PlanPresentation<'a> {
-        PlanPresentation {
-            wire: relate::value_to_cypher(&plan_presentation(tree)),
-            tree: relate::value_to_cypher(&tree.to_value()),
+    /// Both wire forms come from the boundary's one plan-wire composition
+    /// ([`plan_wire_forms`], ADR-0628) — crossed once inside it, never
+    /// re-derived here.
+    ///
+    /// # Errors
+    ///
+    /// A plan nesting past [`relate::MAX_PLAN_WIRE_DEPTH`] container
+    /// levels — ADR-0628's stack-safe budget — fails with the typed
+    /// capacity refusal whose text states the scope: the statement itself
+    /// executed; only its plan document is refused.
+    pub fn of(
+        tree: &relate::PlanNode,
+        notifications: &'a [Notification],
+    ) -> relate::Result<PlanPresentation<'a>> {
+        let forms = plan_wire_forms(tree)?;
+        Ok(PlanPresentation {
+            wire: forms.wire,
+            tree: forms.tree,
             header: plan_header_lines(tree.statement_echo()),
             notifications,
             profiled: tree.is_profiled(),
-        }
+        })
     }
 
     /// The formatter's view of this bundle: every presentation fact comes

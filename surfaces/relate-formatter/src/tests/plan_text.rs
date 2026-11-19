@@ -1,7 +1,8 @@
 //! The plan-text rendering tests (ADR-0359): the boundary's one rendering
 //! of an `EXPLAIN`/`PROFILE` plan — `plan_text_lines` / `plan_header_lines`
 //! over a real engine plan tree (built through the canonical producer
-//! `PlanNode::to_value` + `value_to_cypher`, never hand-copied wire forms).
+//! `PlanNode::to_value` + `plan_value_to_cypher`, never hand-copied wire
+//! forms).
 //! These pin the text-layout facts the engine tests used to own before the
 //! engine's own renderer was deleted: the header echo (preamble stripped,
 //! `CYPHER 25` preserved), the boxed operator table, the estimate column's
@@ -10,6 +11,7 @@
 
 use super::*;
 use relate::PlanWarning;
+use relate_model::wire::plan_keys;
 
 /// A fresh in-memory connection — the one fixture entry these tests need.
 fn conn() -> relate::Connection {
@@ -26,7 +28,11 @@ fn text_of(conn: &mut relate::Connection, statement: &str) -> Vec<String> {
     let result = conn.query(statement).unwrap();
     let tree = result.plan_root().expect("EXPLAIN/PROFILE stamps the plan");
     let echo = tree.statement_echo();
-    plan_text_lines(&relate::value_to_cypher(&tree.to_value()), echo)
+    plan_text_lines(
+        &relate::plan_value_to_cypher(&tree.to_value())
+            .expect("these plans sit far under the budget"),
+        echo,
+    )
 }
 
 /// The header (ADR-0359): `echo` is the ENGINE-stamped statement echo —
@@ -332,7 +338,8 @@ fn warnings_footer_line_names_each_affected_id() {
         "the engine tree carries the typed warning the text renders"
     );
     let lines = plan_text_lines(
-        &relate::value_to_cypher(&tree.to_value()),
+        &relate::plan_value_to_cypher(&tree.to_value())
+            .expect("this plan sits far under the budget"),
         "PROFILE MATCH (n:Person) WHERE n.flag RETURN n",
     );
     assert!(
@@ -591,5 +598,86 @@ fn the_kernel_rung_marks_the_clause_it_served() {
             .lines()
             .any(|l| l.contains("ProduceResults") && l.contains("[kernel")),
         "a non-MATCH operator carries no rung: {walked}"
+    );
+}
+
+/// ADR-0628: a plan tree deeper than the ADR-0462 data-value cap — the
+/// 251-clause CREATE chain (~502 container levels, the shared `deep_plan`
+/// fixture the engine's plan-wire test also pins) — crosses through
+/// `PlanPresentation::of` in both its forms (the decorated `wire` value
+/// and the engine `tree` form) and renders through the one layout without
+/// panicking. The count is the fixture's published CREATE total, asserted
+/// exactly on both forms — every clause renders its own row and the
+/// decorated chain walks to the same leaf, so any level lost at the
+/// crossing fails here.
+#[test]
+fn a_past_cap_plan_tree_renders_through_the_presentation() {
+    let mut conn = conn();
+    let statement = format!(
+        "EXPLAIN {}",
+        relate_test_support::deep_plan::long_create_chain()
+    );
+
+    let result = conn.query(&statement).unwrap();
+    let tree = result.plan_root().expect("EXPLAIN stamps the plan");
+    let presentation = PlanPresentation::of(tree, result.notifications())
+        .expect("the chain sits far under the budget");
+    let view = presentation.as_view();
+    let lines = plan_text_lines(view.tree, tree.statement_echo());
+
+    assert!(
+        lines.iter().any(|l| l.contains("ProduceResults")),
+        "the root renders: {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("NodeByLabelScan") && l.contains("(r:L1)")),
+        "the chain's leaf — the MATCH's label scan — renders: {lines:?}"
+    );
+    // `Create` is the one operator name both CREATE kinds render under (the
+    // engine has no separate relationship spelling), so one predicate
+    // counts every CREATE row — never a disjunct whose second arm matches
+    // nothing.
+    let create_rows = lines.iter().filter(|l| l.contains("Create")).count();
+    assert_eq!(
+        create_rows,
+        relate_test_support::deep_plan::NODE_CREATES + relate_test_support::deep_plan::REL_CREATES,
+        "every CREATE clause renders its own row: {lines:?}"
+    );
+
+    // The decorated `wire` form carries the same chain (the "both its
+    // forms" claim, made true): the same single-child walk over the wire
+    // value, exactly as deep, landing on the same leaf operator.
+    let mut node = view.wire;
+    let mut wire_operators = 1usize;
+    loop {
+        let CypherValue::Map(map) = node else {
+            panic!("a decorated wire node is a map, got {node:?}")
+        };
+        let Some(CypherValue::List(children)) = map.get(plan_keys::CHILDREN) else {
+            match map.get(plan_keys::OPERATOR_TYPE) {
+                Some(CypherValue::Str(op)) => assert_eq!(
+                    op.as_str(),
+                    "NodeByLabelScan",
+                    "the wire chain's leaf is the MATCH's label scan, same \
+                     as the engine form's walk: {node:?}"
+                ),
+                other => panic!("a wire node names its operator, got {other:?}"),
+            }
+            break;
+        };
+        assert!(
+            !children.is_empty(),
+            "a wire node's children list is never empty: {node:?}"
+        );
+        node = &children[0];
+        wire_operators += 1;
+    }
+    assert_eq!(
+        wire_operators,
+        relate_test_support::deep_plan::CLAUSES,
+        "the decorated wire form carries the same operator chain: \
+         {wire_operators}"
     );
 }

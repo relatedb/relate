@@ -102,6 +102,34 @@ pub struct PlanNode {
     pub fused: Option<FusedChild>,
 }
 
+/// The typed plan tree drops **iteratively** (ADR-0628's security-round
+/// closure): the tree is built on the engine's big-stack worker but
+/// dropped wherever the caller's `QueryResult` drops — an FFI host
+/// thread (~1 MiB) — and a derived recursive drop overflows on a deep
+/// chain (~10k+ clauses). The drain below takes each node's children
+/// into a heap worklist and lets every other field drop naturally in
+/// place — all of them shallow: `FusedChild` carries the parent id and
+/// the seek metrics, never a nested node; the warnings, identifiers and
+/// metrics hold scalars — so dropping an arbitrary-depth plan tree
+/// costs constant stack. `children` is the struct's only PlanNode-bearing
+/// field; a future one must join the worklist here.
+impl Drop for PlanNode {
+    fn drop(&mut self) {
+        // A leaf needs no drain: its remaining fields are shallow, and
+        // the derived field drops after this body return suffice.
+        if self.children.is_empty() {
+            return;
+        }
+        // Each popped node surrenders its children to the worklist before
+        // it goes out of scope, so its own drop sees an empty children
+        // vector and stays one frame deep.
+        let mut work = std::mem::take(&mut self.children);
+        while let Some(mut node) = work.pop() {
+            work.append(&mut node.children);
+        }
+    }
+}
+
 /// The PROFILE metrics collected per `(stage, part, clause)` — one
 /// spelling of the key type every metric-threading signature reads.
 pub(crate) type ClauseMetricsMap = std::collections::BTreeMap<(usize, usize, usize), ClauseMetrics>;

@@ -168,10 +168,18 @@ pub(crate) fn pack_result(r: QueryResult) -> *mut relate_query_result {
     // one result-construction boundary, from the engine's plan tree through
     // the shared model projection — empty when the statement planned none.
     // The canonical read half of `QueryResult::plan`, like every other
-    // surface that renders a tree.
-    let plan_json = relate::plan_wire_json(&r).map(|document| {
-        CString::new(document.to_string()).expect("the plan JSON contains no interior NUL")
-    });
+    // surface that renders a tree. A plan past the plan-wire budget
+    // (ADR-0628) is the one refusal this infallible packer can hit: it
+    // installs the error result the C ABI's statement failures use — the
+    // typed error's text states the scope (the statement itself executed;
+    // only its plan document is refused), so a C client reads the commit
+    // state from the message.
+    let plan_json = match relate::plan_wire_json(&r) {
+        Ok(document) => document.map(|document| {
+            CString::new(document.to_string()).expect("the plan JSON contains no interior NUL")
+        }),
+        Err(e) => return pack_error_result(&e),
+    };
     // ADR-0363 decision 9: serialized once here, through the shared
     // engine-native serializer every surface projects from.
     let notifications_json =

@@ -33,24 +33,28 @@ const V2_PAGE_CACHE_HIT_RATIO: &str = "pageCacheHitRatio";
 /// EXPLAIN, `profiledQueryPlan` for PROFILE — one interrogation of the
 /// tree's typed fact) and the v2 plan node.
 ///
-/// The walk reads the **undecorated** engine wire form
-/// ([`PlanNode::to_value`] converted): the decorated root's
+/// Both forms come from the formatter boundary's one plan-wire composition
+/// (`relate_formatter::plan_wire_forms`, ADR-0628) — crossed once inside
+/// it, never re-derived here. The walk reads the **undecorated** engine
+/// wire form (the composition's `tree()`): the decorated root's
 /// `EstimatedRows` is a Neo4j-facing float, which the engine-form accessor
 /// rejects (ADR-0345). The root's `arguments` are overlaid with the
 /// Neo4j-facing set the decoration produces (the identity and
-/// `string-representation` args, ADR-0357) — resolved once, here, never a
-/// second lookup inside the walk.
-pub fn plan_field(tree: &PlanNode, typed: bool) -> (&'static str, Json) {
-    let decorated = relate::value_to_cypher(&relate_formatter::plan_presentation(tree));
-    let root_args = match &decorated {
-        CypherValue::Map(map) => map.get(plan_keys::ARGS),
-        other => panic!("the decorated plan is a map (ADR-0357), got {other:?}"),
-    };
-    let root_args = match root_args {
-        Some(CypherValue::Map(args)) => args,
-        other => panic!("the decorated plan carries an args map (ADR-0357), got {other:?}"),
-    };
-    let mut node = v2_plan_node(&relate::value_to_cypher(&tree.to_value()), typed);
+/// `string-representation` args, ADR-0357) — read through the carrier's
+/// one narrowing accessor (`root_args`, the single place its map
+/// invariant is asserted), resolved once here, never a second lookup
+/// inside the walk.
+///
+/// # Errors
+///
+/// A plan nesting past `relate::MAX_PLAN_WIRE_DEPTH` container levels —
+/// ADR-0628's stack-safe budget — fails with the typed capacity refusal
+/// whose text states the scope: the statement itself executed; only its
+/// plan document is refused.
+pub fn plan_field(tree: &PlanNode, typed: bool) -> relate::Result<(&'static str, Json)> {
+    let forms = relate_formatter::plan_wire_forms(tree)?;
+    let root_args = forms.root_args();
+    let mut node = v2_plan_node(forms.tree(), typed);
     // One producer for `arguments`: the walker built the node's own args,
     // and the root's Neo4j-facing set replaces them here — never a second
     // pass narrowing the walker's output back to a map.
@@ -63,7 +67,7 @@ pub fn plan_field(tree: &PlanNode, typed: bool) -> (&'static str, Json) {
     } else {
         "queryPlan"
     };
-    (key, Json::Object(node))
+    Ok((key, Json::Object(node)))
 }
 
 /// Plain-JSON Query API v2 plan field for an embedder's own success envelope
@@ -73,8 +77,10 @@ pub fn plan_field(tree: &PlanNode, typed: bool) -> (&'static str, Json) {
 /// `PROFILE` tree, with the node in the same shape [`plan_field`] writes when
 /// `typed` is false. The HTTP server's negotiated `{"$type","_value"}` form
 /// stays inside that server; embedders that speak plain JSON call this
-/// instead of copying the walk.
-pub fn query_plan_field(tree: &PlanNode) -> (&'static str, Json) {
+/// instead of copying the walk. Fails with ADR-0628's typed plan-wire
+/// budget refusal for a plan past `relate::MAX_PLAN_WIRE_DEPTH` — the
+/// statement itself executed; only its plan document is refused.
+pub fn query_plan_field(tree: &PlanNode) -> relate::Result<(&'static str, Json)> {
     plan_field(tree, false)
 }
 

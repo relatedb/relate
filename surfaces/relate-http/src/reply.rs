@@ -201,12 +201,7 @@ pub(crate) fn run_on(
         // `values`, the order both reply writers emit (ADR-0386 §3), and
         // the one negotiated media type drives the value encoding and the
         // content type the reply advertises.
-        Ok(result) => Ok(success_envelope(
-            &result,
-            include_counters,
-            media_type,
-            success_status,
-        )),
+        Ok(result) => success_envelope(&result, include_counters, media_type, success_status),
         Err(e) => Err(run_error(&e)),
     }
 }
@@ -368,13 +363,15 @@ impl ResponseMediaType {
 ///
 /// The row array is moved in, never rebuilt, so no writer re-reads the JSON
 /// tree. The negotiated media type decides the value encoding here, beside the
-/// content type the reply advertises.
+/// content type the reply advertises. Fails only on the plan-wire budget
+/// refusal (ADR-0628) — an error Reply through the one engine-error policy,
+/// the statement itself having executed.
 fn success_envelope(
     result: &QueryResult,
     include_counters: bool,
     media_type: ResponseMediaType,
     success_status: u16,
-) -> Reply {
+) -> Result<Reply, Reply> {
     let typed = media_type.typed();
     let fields = Json::Array(
         result
@@ -420,7 +417,11 @@ fn success_envelope(
     // encoding the row values use. Absent on plain runs. The whole v2
     // translation lives in [`crate::v2_plan`], beside the value encoding.
     if let Some(tree) = result.plan_root() {
-        let (key, node) = v2_plan::plan_field(tree, typed);
+        // ADR-0628's plan-wire budget: a plan past it files through the one
+        // engine-error policy (the typed Capacity refusal, a 507) — the
+        // statement already executed; the error text states only its plan
+        // document is refused.
+        let (key, node) = v2_plan::plan_field(tree, typed).map_err(|e| run_error(&e))?;
         members.push((key.to_string(), node));
     }
     let stats: WireStatsSnapshot = query_stats_to_wire(&result.stats);
@@ -459,7 +460,11 @@ fn success_envelope(
         "planCache".to_string(),
         Json::String(timings.plan_cache.into()),
     ));
-    Reply::json_as(success_status, ReplyBody::new(members), media_type)
+    Ok(Reply::json_as(
+        success_status,
+        ReplyBody::new(members),
+        media_type,
+    ))
 }
 
 /// Whether any mutation counter is nonzero (the statement updated the graph).

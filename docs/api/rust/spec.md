@@ -1141,7 +1141,20 @@ level 1; `[[]]` is level 2); 501 is rejected. The cap is checked in the
 `Value::checked_list`/`Value::checked_map` constructors, iteratively, and
 also applies to JSON parameters at `params_from_map`. It is a fixed
 constant: no option or environment override, matching the input limits'
-house rule.
+house rule. The cap governs runtime **data values** only: the plan tree an
+`EXPLAIN`/`PROFILE` result carries is engine-produced metadata whose depth
+scales with the statement's clause count, and the plan-wire crossing
+`relate::plan_value_to_cypher` (the one conversion behind every
+plan-rendering surface's crossing, **iterative** — an explicit heap work
+stack, constant caller-stack depth however deep the value nests) converts
+it under its own walk-sized budget — `relate::MAX_PLAN_WIRE_DEPTH`,
+**1 000 container levels** — erroring loudly past it with the typed
+capacity refusal whose text states the scope (the statement itself
+executed; only its plan document is refused); the budget sizes the
+consumer walks of the crossed value (its recursive drop, the document
+builds), which still recurse per level on the calling surface's thread —
+see
+[ADR-0628](../../adr/0628-plan-wire-conversion-uncapped.md).
 
 ## Nested evaluation budget (ADR-0395)
 
@@ -1412,13 +1425,16 @@ The plan representation is the `PlanNode` tree:
   (ADR-0359): the engine emits the tree only, and the removed
   `PlanNode::render_lines`/`render_with`/`render_lines_for_statement`/
   `render_header_for_statement` (and `PlanRenderOptions`) have no
-  successors here. The one plan renderer is `relate-formatter`'s
+  successors here. The one plan layout is `relate-formatter`'s
   `plan_text_lines(tree, echo)` — the `Query:` echo header (the
   statement's one `EXPLAIN`/`PROFILE` preamble keyword stripped by the
   engine, stamped on the tree as `statement_echo`, then
   whitespace-collapsed) plus the `Plan:` marker and the boxed operator
   table (`| +` tree glyphs, per-column borders) — with the header pieces
-  `plan_header_lines(echo)`. The table-mode composition — the same text
+  `plan_header_lines(echo)` and the boundary's text entry
+  `plan_text_of(tree)` (the engine's own wire form crossed once, then
+  this layout) serving a text-only consumer. The table-mode composition —
+  the same text
   followed by the one `Notifications:` block (ADR-0363 decision 8) — is
   the formatter's internal plan arm, not a public function: the data table
   goes to the main writer and that composition goes to the diagnostic
@@ -1429,15 +1445,19 @@ The plan representation is the `PlanNode` tree:
   every non-table mode ignores `diagnostics` and carries its plan payload
   on `data` — while `Formatter::format(w, columns, rows, meta)` is the
   one-writer form whose diagnostics are `w` itself (the CLI's machine
-  modes and every embedded caller). The CLI, Bolt and HTTP call
-  `plan_presentation(tree)` — the one composition (render the text, then
-  decorate through `to_neo4j_value`) every plan-carrying surface shares,
-  so the rendering and the decoration cannot drift; it takes the engine's
-  `PlanNode` because it must call the engine's decorator, while the
-  renderer itself keeps the wire-value contract. An embedded consumer
-  that wants plan text depends on the formatter crate
-  (`relate-formatter` is a surface crate — not available to, and not
-  used by, the engine).
+  modes and every embedded caller). The CLI, Bolt and HTTP read the
+  boundary's one composition (`relate-formatter`'s `plan_wire` module:
+  render the text, then decorate through `to_neo4j_value`) every
+  plan-carrying surface shares, so the rendering and the decoration cannot
+  drift — Bolt through `plan_presentation(tree)`, the engine `Value` form
+  its packer reads, the CLI and HTTP through `plan_wire_forms(tree)`, the
+  same composition with both forms crossed to the model value once inside
+  (ADR-0628), and a text-only consumer through `plan_text_of(tree)`. The
+  composition takes the engine's `PlanNode` because it must call the
+  engine's decorator, while the renderer itself keeps the wire-value
+  contract. An embedded consumer that wants plan text depends on the
+  formatter crate (`relate-formatter` is a surface crate — not available
+  to, and not used by, the engine).
 - `PlanNode::to_neo4j_value(plan_text)` — the Neo4j-facing plan value
   (ADR-0357), called on a result's plan root: the machine-native form
   decorated with the root args Neo4j's plan carries —
@@ -1450,14 +1470,31 @@ The plan representation is the `PlanNode` tree:
   row-materialization bytes) — with `EstimatedRows` mirrored as Neo4j's
   float. `plan_text: Option<&str>` is the surface's rendering of the plan
   (ADR-0359: the boundary renders it through `relate-formatter`'s
-  `plan_text_lines`); the engine only heads it with the identity block.
+  `plan_text_of`); the engine only heads it with the identity block.
   `None` leaves `string-representation` off — what a consumer with no
   text rendering (a machine-mode consumer) asks for. It is the one
   decoration every surface calls at its boundary before converting the
   value to its own wire type, so the plan metadata cannot drift between
   Bolt, the HTTP Query API and the CLI's machine modes. `to_value` stays
   the undecorated engine form — the typed table/speedscope renderers walk
-  it, so the float mirror never reaches their engine-form accessors.
+  it, so the float mirror never reaches their engine-form accessors. Either
+  form crosses to the model value inside the boundary's one plan-wire
+  composition (`plan_wire_forms`), through
+  `relate::plan_value_to_cypher` — the plan-wire bridge conversion that
+  does not ride the ADR-0462 data-value depth cap (the plan tree's depth
+  scales with the statement's clause count) but carries its own
+  walk-sized budget, `relate::MAX_PLAN_WIRE_DEPTH` (1 000 container
+  levels). Every plan-crossing boundary gates on the budget FIRST, from
+  the typed tree — `PlanNode::ensure_plan_wire_budget`, an iterative
+  depth probe, no build — so the recursive producer builds
+  (`to_value`/`to_neo4j_value`) never run on a past-budget plan; the
+  typed tree's own `Drop` is an iterative drain, so a deep plan drops
+  stack-flat wherever the caller's result drops; past it the crossing —
+  and every composition and projection over it, including
+  `query_result_to_wire`'s `plan` member — fails with the typed capacity
+  refusal whose text states the scope (the statement itself executed;
+  only its plan document is refused);
+  [ADR-0628](../../adr/0628-plan-wire-conversion-uncapped.md).
 
 - `QueryResult.plan: Option<Box<PlanArtifacts>>` — the plan artifact stamped on
   the result when the statement was `EXPLAIN` **or `PROFILE`**; its `root` is

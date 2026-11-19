@@ -20,8 +20,8 @@ unicode-width = "0.2"
 
 [dev-dependencies]
 # The plan fixtures are built through the canonical producer
-# (PlanNode::to_value + value_to_cypher), never hand-copies of the wire
-# form, so producer-to-consumer vocabulary drift fails a test.
+# (PlanNode::to_value + plan_value_to_cypher), never hand-copies of the
+# wire form, so producer-to-consumer vocabulary drift fails a test.
 relate = { workspace = true }
 # The shared traversal-rung fixture (LABS-1117): the same corridor and
 # statement the engine and surface tests pin, never a local copy.

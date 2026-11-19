@@ -38,7 +38,9 @@ pub use open::{
     open_store_notifying, open_store_readonly_with_ontology, open_store_with_report,
     open_writer_wal_notifying, OpenReport,
 };
-pub use relate_core::{cypher_to_value, value_to_cypher};
+pub use relate_core::{
+    cypher_to_value, plan_value_to_cypher, value_to_cypher, MAX_PLAN_WIRE_DEPTH,
+};
 #[cfg(parquet_codec)]
 pub use snapshot::native::{window_width, DEFAULT_SHARD_TARGET_BYTES};
 pub use snapshot::ShardPart;
