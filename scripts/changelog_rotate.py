@@ -2,7 +2,8 @@
 """Rotate CHANGELOG.md for a release — the one implementation of the
 Keep-a-Changelog rotation policy behind scripts/release-bump.sh, including
 the [Unreleased] link-ref shape policy and the idempotence decision (the
-heading grammar lives here only; the shell side never re-spells it):
+document grammar is shared through scripts/lib/changelog.py; the shell
+side never re-spells it):
 
   - `<base>/compare/v<PREV>...HEAD` — steady state: the new version's ref
     compares against v<PREV> (`<base>/compare/v<PREV>...v<NEXT>`, inserted
@@ -40,17 +41,18 @@ import sys
 from dataclasses import dataclass
 from datetime import date as date_type
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 
 from atomic_write import atomic_write
+# The changelog document grammar — semver, the [Unreleased] heading, the
+# locate-a-line-with-refusal scan — is shared with the placement guard and
+# the fragment collector through scripts/lib/changelog.py, the one
+# spelling (the refusal type stays this module's own).
+from changelog import SEMVER, find_line, unreleased_region
 
 UNRELEASED_REF = "[Unreleased]:"
-
-# The one semver shape, shared by the link-ref grammar and the --version
-# boundary — the CLI never emits a ref its own parser would refuse.
-SEMVER = r"[0-9]+\.[0-9]+\.[0-9]+"
 
 # The base is non-empty and never ends in a slash (the line builders add
 # it); the repo URL's two segments are GitHub's owner/repo alphabet, so a
@@ -141,20 +143,9 @@ class SteadyState:
             lambda l: l.startswith(self.anchor),
             f"changelog_rotate: no [{self.prev}] link ref found",
             start=ref_idx + 1,
+            error=RotateError,
         )
         return insert_at, [self.new_ref_line(version)]
-
-
-def find_line(
-    lines: list[str], pred: Callable[[str], bool], refusal: str, start: int = 0
-) -> tuple[int, str]:
-    """The absolute index and newline-stripped text of the first line at or
-    after `start` matching pred, or the refusal."""
-    for idx in range(start, len(lines)):
-        text = lines[idx].rstrip("\n")
-        if pred(text):
-            return idx, text
-    raise RotateError(refusal)
 
 
 @dataclass(frozen=True)
@@ -177,6 +168,7 @@ def parse_unreleased_ref(lines: list[str], *, start: int) -> UnreleasedRef:
         lambda l: l.startswith(UNRELEASED_REF),
         "changelog_rotate: no [Unreleased] link ref found",
         start=start,
+        error=RotateError,
     )
     url = ref_line[len(UNRELEASED_REF):].strip()
     compare = COMPARE_REF.match(url)
@@ -200,16 +192,16 @@ def rotate(text: str, *, version: str, date: str) -> str:
     up once — each missing position is its refusal. Each mode computes
     only where and what to insert; the splice happens once."""
     lines = text.splitlines(keepends=True)
-    heading_idx, _ = find_line(
+    region = unreleased_region(
         lines,
-        lambda l: l == version_heading("Unreleased"),
-        "changelog_rotate: no ## [Unreleased] heading found",
+        refusal="changelog_rotate: no ## [Unreleased] heading found",
+        error=RotateError,
     )
-    ref = parse_unreleased_ref(lines, start=heading_idx + 1)
+    ref = parse_unreleased_ref(lines, start=region.heading_idx + 1)
     mode, ref_idx = ref.mode, ref.line_idx
-    out = lines[: heading_idx + 1]
+    out = lines[: region.heading_idx + 1]
     out += ["\n", f"{version_heading(version)} — {date}\n"]
-    out += lines[heading_idx + 1 : ref_idx]
+    out += lines[region.heading_idx + 1 : ref_idx]
     out.append(unreleased_ref_line(mode.base_url, version))
     insert_at, insertion = mode.insertion(lines, ref_idx, version)
     out += lines[ref_idx + 1 : insert_at]

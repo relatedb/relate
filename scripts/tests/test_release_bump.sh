@@ -1,10 +1,13 @@
 #!/bin/sh
 # Offline, hermetic test harness for scripts/release-bump.sh's CHANGELOG
-# rotation — the one place the release-cut paths are pinned end to end:
-# the first release (no prior tag, the [Unreleased] ref carrying the
-# plain repository URL), the steady-state compare-link path, and the
-# populated cut ([Unreleased] carrying entries since the last release —
-# they move under the new heading and survive it). The advance's scoped
+# collection and rotation — the one place the release-cut paths are
+# pinned end to end: the first release (no prior tag, the [Unreleased]
+# ref carrying the plain repository URL), the steady-state compare-link
+# path, and the populated cut ([Unreleased] carrying entries since the
+# last release — they move under the new heading and survive it). The
+# fragment cut (ADR-0627): the .changes/ pool splices under
+# [Unreleased], rides into the version section, and the consumed files
+# are deleted while the pool's README survives. The advance's scoped
 # mode (--skip-changelog, ADR-0580) is pinned in
 # scripts/tests/test_release_advance.sh.
 #
@@ -179,5 +182,77 @@ tap_check "dirty tree: the unrelated edit survives byte-identical" $?
 
 cmp -s "$sandbox/changelog-first.md" "$fx5/CHANGELOG.md"
 tap_check "dirty tree: nothing else was rewritten" $?
+
+# --- Case 6: the fragment cut (ADR-0627) ---------------------------------------
+#
+# The pool rides the cut: every .changes/ fragment splices under
+# [Unreleased] (canonical section order, ascending PR order), the
+# rotation moves the assembled section under the version heading, the
+# consumed files are deleted, and the pool's README survives.
+
+fx6="$sandbox/fragments"
+after_cut_changelog "$sandbox/changelog-after-cut.md"
+build_fixture "$fx6" "$sandbox/changelog-after-cut.md"
+seed_fragments "$fx6"
+
+run_bump "$fx6" 0.1.1
+tap_check "fragment cut: bump exits 0" $?
+
+grep -q '^## \[0\.1\.1\] — ' "$fx6/CHANGELOG.md"
+tap_check "fragment cut: ## [0.1.1] heading inserted" $?
+
+grep -qF -- '- A flag.' "$fx6/CHANGELOG.md"
+tap_check "fragment cut: the Added fragment's entry reached the changelog" $?
+
+grep -qF -- '- An internal note.' "$fx6/CHANGELOG.md"
+tap_check "fragment cut: the Notes fragment's entry reached the changelog" $?
+
+# Canonical section order under the new heading: Added above Notes.
+section_headings="$(awk '/^## \[0\.1\.1\]/,/^## \[0\.1\.0\]/' "$fx6/CHANGELOG.md" \
+	| grep '^### ')"
+[ "$section_headings" = "$(printf '### Added\n### Notes')" ]
+tap_check "fragment cut: sections land in canonical order" $?
+
+# [Unreleased] is empty again, directly above the assembled section.
+expected_head="$(printf '## [Unreleased]\n\n## [0.1.1] — %s' "$(date +%F)")"
+actual_head="$(sed -n '3,5p' "$fx6/CHANGELOG.md")"
+[ "$actual_head" = "$expected_head" ]
+tap_check "fragment cut: [Unreleased] sits empty above the assembled section" $?
+
+# The pool is cleared except its README.
+fragments_left="$(ls -A "$fx6/.changes")"
+[ "$fragments_left" = "README.md" ]
+tap_check "fragment cut: the pool is cleared; the README survives" $?
+
+# --- Case 7: refusal (an untracked fragment file) ------------------------------
+#
+# The rollback restores through git checkout, which cannot restore an
+# untracked path — and rejects the whole pathspec list on one — so an
+# untracked pool file is refused up front, named, before the traps arm
+# and before the sweep starts.
+
+fx7="$sandbox/untracked"
+after_cut_changelog "$sandbox/changelog-after-cut.md"
+build_fixture "$fx7" "$sandbox/changelog-after-cut.md"
+seed_fragments "$fx7"
+# One more fragment, never committed: untracked.
+cat >"$fx7/.changes/9-stray.md" <<'EOF'
+### Added
+
+- A stray, untracked entry.
+EOF
+
+run_bump "$fx7" 0.1.1
+[ $? -ne 0 ]
+tap_check "untracked fragment: bump refuses (exits non-zero)" $?
+
+grep -q 'untracked fragment files' "$fx7/stderr.log"
+tap_check "untracked fragment: the diagnostic names the cause" $?
+
+grep -qF '9-stray.md' "$fx7/stderr.log"
+tap_check "untracked fragment: the stray file itself is named" $?
+
+cmp -s "$sandbox/changelog-after-cut.md" "$fx7/CHANGELOG.md"
+tap_check "untracked fragment: CHANGELOG.md untouched — nothing ran" $?
 
 tap_done

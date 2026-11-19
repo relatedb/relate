@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The changelog-entry presence warning behind CI's Changelog placement
-job (ADR-0618 §4): a pull request that describes user-facing impact but
-changes no CHANGELOG.md entry is the coverage gap — release notes are
-built from changelog entries, so the change would ship unreported.
+job (ADR-0618 §4, ADR-0627): a pull request that describes user-facing
+impact but adds no changelog fragment is the coverage gap — release notes
+are built from changelog entries, so the change would ship unreported.
 
 Warning only, never a failure: what counts as user-facing is reviewer
 judgment, and the body-section presence is a heuristic — the template's
@@ -20,6 +20,15 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+
+# The fragment-name grammar — what counts as a fragment file — is the one
+# membership rule in scripts/lib/changelog.py, which the presence
+# warning's entry-evidence check consults here (the collector's
+# discovery consults the same grammar's facts for its per-cause
+# refusals), so nothing that is not a fragment can quiet this warning.
+from changelog import is_fragment
 
 SECTION_HEADING = "## User-facing impact"
 
@@ -52,13 +61,19 @@ def declares_user_facing_impact(body: str) -> bool:
     return False
 
 
-def changes_changelog(changed_files: list[str]) -> bool:
-    return any(path == "CHANGELOG.md" for path in changed_files)
+def adds_fragment(changed_files: list[str]) -> bool:
+    """True when the change adds or edits a changelog fragment — the
+    entry channel (ADR-0627), named by the one membership rule
+    (scripts/lib/changelog.py): a number-prefixed .md under the pool,
+    never the pool's README. A CHANGELOG.md path does not count: a pull
+    request never edits that file (the placement guard refuses it), so
+    it is never entry evidence."""
+    return any(is_fragment(path) for path in changed_files)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Warn when a user-facing pull request has no changelog entry"
+        description="Warn when a user-facing pull request has no changelog fragment"
     )
     parser.add_argument("--pr-body", required=True, type=Path)
     parser.add_argument("--changed-files", required=True, type=Path)
@@ -71,12 +86,12 @@ def main(argv: list[str] | None = None) -> int:
         else []
     )
 
-    if declares_user_facing_impact(body) and not changes_changelog(changed):
+    if declares_user_facing_impact(body) and not adds_fragment(changed):
         print(
             "::warning::this pull request describes user-facing impact"
-            " but changes no CHANGELOG.md entry — release notes are built"
-            " from changelog entries (ADR-0618); add the entry under"
-            " '## [Unreleased]'"
+            " but adds no changelog fragment — release notes are built"
+            " from changelog entries (ADR-0627); add"
+            " .changes/<PR number>-<slug>.md (see .changes/README.md)"
         )
     return 0
 

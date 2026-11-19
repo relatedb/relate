@@ -126,3 +126,14 @@ entry discipline at pull-request time — a user-facing change without
 its changelog entry ships unreported, and the warning plus the
 pull-request template's duty are what catch it. Example usage sections
 become load-bearing for highlights, so they are worth writing well.
+
+## Later references
+
+- [ADR-0627](./0627-changelog-entry-fragments.md) moves the entry channel:
+  pull requests file `.changes/` fragment files instead of editing
+  `[Unreleased]`, and the placement guard refuses any CHANGELOG.md
+  pull-request diff (`changelog-repair` unchanged as the escape). §4's
+  warning keeps its shape — a declared user-facing impact with no
+  fragment — and §5's trust model holds: fragments are
+  pull-request-reviewed text frozen at merge, assembled into the
+  released section before the tag.

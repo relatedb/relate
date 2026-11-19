@@ -1,41 +1,42 @@
 #!/usr/bin/env python3
-"""Refuse a CHANGELOG.md diff that edits anything but the [Unreleased]
-section — the placement guard behind CI's changelog-placement job
-(ADR-0618 §4). A merged pull request once filed its user-facing entries
-under an already-released section; the release-cut rotation only collects
-[Unreleased], so the entries shipped in the release but never reached its
-changelog section, and the release-notes generator (ADR-0124) — which
-reads exactly that section — never saw them. This check turns that silent
-loss into a pull-request-time failure with a message that says where the
-entry belongs.
+"""Refuse any CHANGELOG.md diff in a pull request — the placement guard
+behind CI's changelog-placement job. Changelog entries arrive as .changes/
+fragment files (ADR-0627), one per pull request; the release cut collects
+them into the version section and clears the directory. CHANGELOG.md is
+release-owned: the only writers are the release machinery's own commits on
+main (the bump, the stamp, the advance), which never travel through a
+pull request, and the changelog-repair escape below.
+
+Before ADR-0627 the guard allowed pull requests to edit the [Unreleased]
+section; every entry-carrying pull request then conflicted with every
+other at rebase time, and re-applying an entry around those conflicts is
+how entries landed under released sections (ADR-0618 §4's original
+failure). Refusing the whole file closes both: the conflict source is
+gone, and the published record stays untouched.
 
 Policy (the one home of the placement grammar; nothing else re-spells it):
 
-  A pull request may change CHANGELOG.md only inside
-  - the preamble (everything before the first `## [` heading), and
-  - the [Unreleased] section (heading and body), and
-  - the `[Unreleased]:` link-ref line.
+  A pull request may not change CHANGELOG.md at all — not the released
+  sections, not [Unreleased], not the preamble, not the link refs.
 
-  Everything else — a released version heading (`## [X.Y.Z] …`), its body,
-  its `[X.Y.Z]:` link ref — is the published record and fails the check.
-  Blank lines count: the refusal is about *where* the diff lands, not
-  about what it says. The sanctioned escape for correcting the historical
-  record is the repository's `changelog-repair` label, which the CI job
-  reads before invoking this script (the script itself never grants
-  escapes — it is pure text policy, same convention as
-  release-notes-prepend.sh).
+  The sanctioned escape for correcting the published record is the
+  repository's changelog-repair label, which the CI job reads before
+  invoking this script (the script itself never grants escapes — it is
+  pure text policy, same convention as release-notes-prepend.sh).
 
 Classification is per side: an inserted or replaced line is classified in
 the after text, a deleted line in the before text, so a hunk that only
-deletes released content is caught exactly like one that edits it.
+deletes released content is caught exactly like one that edits it. Each
+finding names the section it touches, so the refusal says what was being
+edited, not merely that something was.
 
 Usage: check_changelog_placement.py --before BEFORE_FILE --after AFTER_FILE
 
 Both files must exist (the CI job materializes a missing before side as an
 empty file; an empty before side with a populated after side means the
-changelog is new, and every `## [` heading in it is a released heading to
-refuse unless it is [Unreleased]). Exit 0 when the placement is clean,
-exit 1 with one finding line per offending hunk side on stderr otherwise.
+changelog is new, and every hunk in it is a refusal). Exit 0 when the pull
+request changes no line of CHANGELOG.md, exit 1 with one finding line per
+offending hunk side on stderr otherwise.
 """
 
 from __future__ import annotations
@@ -44,64 +45,120 @@ import argparse
 import difflib
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
-# The one semver shape, kept identical to changelog_rotate.py's (the CLI
-# and the section grammar never disagree about what a version looks like).
-SEMVER = r"[0-9]+\.[0-9]+\.[0-9]+"
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 
-RELEASED_HEADING = re.compile(rf"^## \[(?P<version>{SEMVER})\](?P<tail>.*)$")
-UNRELEASED_HEADING = "## [Unreleased]"
-# A link-ref line: `[key]: destination`. The key decides the policy.
-LINK_REF = re.compile(r"^\[(?P<key>[^\]]+)\]:")
+# The changelog document grammar — the [Unreleased] heading, the
+# released-section heading, the link-ref line, the semver — is shared
+# with the rotation and the fragment collector through
+# scripts/lib/changelog.py, the one spelling.
+from changelog import LINK_REF, RELEASED_HEADING, SEMVER, is_unreleased_heading
 
 
-def classify(lines: list[str]) -> list[str]:
-    """Classify every line of one changelog text as 'unreleased' (the
-    diff may touch it) or a released-section name (it may not).
+@dataclass(frozen=True)
+class Preamble:
+    """Everything before the first section heading."""
 
-    Returns a list of section names, one per line: 'preamble' or
-    '[Unreleased]' for allowed lines, the released section's name (e.g.
-    '[1.0.2]') for refused ones. Link-ref lines classify by their key:
-    the [Unreleased] ref is allowed, a released version's ref carries
-    that version's name. A released version's ref with no preceding
-    heading still names its version — the ref block is the section list
-    mirrored at the bottom of the file, so it polices the same record.
-    """
-    out: list[str] = []
-    section = "preamble"
+
+@dataclass(frozen=True)
+class Unreleased:
+    """The [Unreleased] section."""
+
+
+@dataclass(frozen=True)
+class Released:
+    """A released version's section; `version` is its display name."""
+
+    version: str
+
+
+@dataclass(frozen=True)
+class OtherRef:
+    """A link ref keyed outside the section grammar — neither
+    [Unreleased] nor a version; `key` is its display name."""
+
+    key: str
+
+
+Line = Preamble | Unreleased | Released | OtherRef
+
+
+def classify(lines: list[str]) -> list[Line]:
+    """Classify every line of one changelog text by the section it
+    belongs to, as a typed classification: Preamble, Unreleased, or
+    Released(version); link-ref lines classify by their key — the
+    [Unreleased] ref is Unreleased, a released version's ref is
+    Released(version), any other key is OtherRef(key). The types are the
+    discriminator; the display names are attributes, so the refusal
+    names exactly what was touched."""
+    out: list[Line] = []
+    section: Line = Preamble()
     for line in lines:
         text = line.rstrip("\n")
         heading = RELEASED_HEADING.match(text)
         if heading is not None:
-            section = f"[{heading.group('version')}]"
-        elif text.startswith(UNRELEASED_HEADING):
-            section = "[Unreleased]"
+            section = Released(version=heading.group("version"))
+            out.append(section)
+            continue
+        if is_unreleased_heading(text):
+            section = Unreleased()
+            out.append(Unreleased())
+            continue
         ref = LINK_REF.match(text)
         if ref is not None:
             key = ref.group("key")
             if key == "Unreleased":
-                out.append("[Unreleased]")
+                out.append(Unreleased())
             elif re.fullmatch(SEMVER, key):
-                out.append(f"[{key}]")
+                out.append(Released(version=key))
             else:
-                # A ref neither Unreleased nor a version: not part of the
-                # section grammar, but still below the published record's
-                # ref block line — refuse it rather than guess.
-                out.append(f"[{key}]")
+                out.append(OtherRef(key=key))
             continue
         out.append(section)
     return out
 
 
+def finding_for(kind: Line, side: str, line_no: int) -> str:
+    """The one message per touched classification — an explicit arm per
+    variant, no catch-all: where the edit landed and what to do
+    instead."""
+    where = f"line {line_no} ({side})"
+    if isinstance(kind, Preamble):
+        return (
+            f"{where}: touches the changelog preamble — the whole file is"
+            " release-owned; a wording change needs the changelog-repair"
+            " label"
+        )
+    if isinstance(kind, Unreleased):
+        return (
+            f"{where}: touches the [Unreleased] section — it is assembled"
+            " from .changes/ fragments at the release cut; add"
+            " .changes/<PR number>-<slug>.md instead (see"
+            " .changes/README.md)"
+        )
+    if isinstance(kind, Released):
+        return (
+            f"{where}: touches the released section [{kind.version}] —"
+            " the published record is edited only through a labeled"
+            " changelog repair"
+        )
+    return (
+        f"{where}: touches the [{kind.key}] ref — a link ref outside the"
+        " section grammar, still release-owned; editing it needs the"
+        " changelog-repair label"
+    )
+
+
 def check(before: str, after: str) -> list[str]:
     """The placement policy as a pure function: the CHANGELOG.md texts
     before and after a change in, the list of refusal findings out. One
-    finding per refused section per hunk: a replace or insert hunk is
+    finding per touched section per hunk: a replace or insert hunk is
     reported from the added side (the text that lands), a pure delete
     from the removed side — one offending edit never stacks two
-    findings. Each finding names the released section and the first
-    offending line number in that side's text."""
+    findings. Each finding names the section and the first offending
+    line number in that side's text."""
     before_lines = before.splitlines(keepends=True)
     after_lines = after.splitlines(keepends=True)
     before_kinds = classify(before_lines)
@@ -114,38 +171,25 @@ def check(before: str, after: str) -> list[str]:
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             continue
-        if tag in ("replace", "insert"):
-            seen: dict[str, int] = {}
-            for idx in range(j1, j2):
-                kind = after_kinds[idx]
-                if kind in ("preamble", "[Unreleased]"):
-                    continue
-                seen.setdefault(kind, idx + 1)
-            for kind, line_no in seen.items():
-                findings.append(
-                    f"line {line_no} (added side): touches the released"
-                    f" section {kind} — new entries go under"
-                    f" '## [Unreleased]'"
-                )
+        # One scan-and-emit body: the side the hunk lands on selects the
+        # kinds, the index range, and the label; a replace or insert is
+        # reported from the added side (the text that lands), a pure
+        # delete from the removed side.
         if tag == "delete":
-            seen_before: dict[str, int] = {}
-            for idx in range(i1, i2):
-                kind = before_kinds[idx]
-                if kind in ("preamble", "[Unreleased]"):
-                    continue
-                seen_before.setdefault(kind, idx + 1)
-            for kind, line_no in seen_before.items():
-                findings.append(
-                    f"line {line_no} (removed side): touches the released"
-                    f" section {kind} — the published record is edited"
-                    f" only through a labeled changelog repair"
-                )
+            kinds, lo, hi, side = before_kinds, i1, i2, "removed side"
+        else:
+            kinds, lo, hi, side = after_kinds, j1, j2, "added side"
+        seen: dict[Line, int] = {}
+        for idx in range(lo, hi):
+            seen.setdefault(kinds[idx], idx + 1)
+        for kind, line_no in seen.items():
+            findings.append(finding_for(kind, side, line_no))
     return findings
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Refuse CHANGELOG.md edits outside the [Unreleased] section"
+        description="Refuse any CHANGELOG.md edit in a pull request"
     )
     parser.add_argument(
         "--before", required=True, type=Path, help="CHANGELOG.md before the change"
@@ -162,13 +206,14 @@ def main(argv: list[str] | None = None) -> int:
         for finding in findings:
             print(f"check_changelog_placement: {finding}", file=sys.stderr)
         print(
-            "check_changelog_placement: add new entries under"
-            " '## [Unreleased]'; to correct a released section, ask a"
-            " maintainer for the changelog-repair label",
+            "check_changelog_placement: a pull request never changes"
+            " CHANGELOG.md — file the entry as a .changes/ fragment; to"
+            " correct the published record, ask a maintainer for the"
+            " changelog-repair label",
             file=sys.stderr,
         )
         return 1
-    print("check_changelog_placement: [Unreleased] placement clean")
+    print("check_changelog_placement: CHANGELOG.md untouched")
     return 0
 
 

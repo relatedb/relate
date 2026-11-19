@@ -202,16 +202,14 @@ jobs:
         if: always() && runner.os == 'Linux'
         run: scripts/report-disk.sh
 
-  # ADR-0618 §4: a pull request may only add CHANGELOG.md entries under
-  # [Unreleased]. An entry filed under a released section is invisible to
-  # the release-cut rotation, ships without reaching its release's
-  # changelog section, and the release-notes generator never sees it —
-  # the v1.1.0 notes inherited exactly that. This job runs on every pull
-  # request, unconditioned on the code gate (a changelog-only edit is
-  # precisely the case it exists for); push events skip it because the
-  # release machinery's own commits (the bump, the stamp, the advance)
-  # edit released sections on main by design. The `changelog-repair`
-  # label is the sanctioned escape for correcting the published record.
+  # ADR-0627: a pull request never changes CHANGELOG.md — entries arrive
+  # as .changes/ fragment files, one per pull request, and the release
+  # cut assembles them. This job runs on every pull request,
+  # unconditioned on the code gate (a changelog-only edit is precisely
+  # the case it exists for); push events skip it because the release
+  # machinery's own commits (the bump, the stamp, the advance) edit
+  # released sections on main by design. The `changelog-repair` label is
+  # the sanctioned escape for correcting the published record.
   changelog-placement:
     name: Changelog placement
     runs-on: ubuntu-latest
@@ -256,13 +254,21 @@ jobs:
           python3 scripts/check_changelog_placement.py \
             --before "${RUNNER_TEMP}/changelog-before.md" \
             --after CHANGELOG.md
+      - name: Validate changelog fragments
+        # ADR-0627: every .changes/ fragment the pool carries must parse
+        # — the number-prefixed name, a known section heading, bullets
+        # — before it rides toward a release cut that would refuse it.
+        # The whole pool is validated, not just this PR's additions:
+        # the pool is the unit the cut consumes.
+        run: python3 scripts/changes_collect.py --check --changes-dir .changes
       - name: Warn on a missing changelog entry
-        # ADR-0618 §4: a pull request that describes user-facing impact
-        # but changes no CHANGELOG.md entry is the coverage gap — the
-        # release notes are built from changelog entries. A warning
-        # annotation only, never a failure: what counts as user-facing
-        # is reviewer judgment, and the body-section heuristic stays
-        # advisory. The script exits 0 in every outcome.
+        # ADR-0618 §4, ADR-0627: a pull request that describes
+        # user-facing impact but adds no changelog fragment is the
+        # coverage gap — the release notes are built from changelog
+        # entries. A warning annotation only, never a failure: what
+        # counts as user-facing is reviewer judgment, and the
+        # body-section heuristic stays advisory. The script exits 0 in
+        # every outcome.
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_BODY: ${{ github.event.pull_request.body }}

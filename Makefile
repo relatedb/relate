@@ -609,6 +609,7 @@ test-release-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_pom_py.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_npm_json.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_changelog_rotate.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_changes_collect.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_check_changelog_placement.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_check_changelog_presence.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_release_notes_validate.py

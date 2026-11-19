@@ -43,13 +43,14 @@ incident, a rejection record. Otherwise the why stays in Summary.>
 <Only when something a user touches changed — API, CLI, config, UI,
 output. What users now see or do differently. Drop the section entirely
 for internal-only changes. A kept section carries a duty: the PR adds
-its matching CHANGELOG.md entry under `## [Unreleased]` in the same
-change — the released sections are the published record, and CI
-(`scripts/check_changelog_placement.py`) refuses an entry filed
-anywhere else. These two sections are what the release-notes generator
-reads when it writes the published notes. Notable but not user-facing?
-One line under `[Unreleased]`'s `### Notes` subsection instead —
-maintainer record, never release-notes material.>
+its matching changelog fragment — a new `.changes/<PR-number>-<slug>.md`
+file (format: `.changes/README.md`) — in the same change. CHANGELOG.md
+itself is release-owned: CI (`scripts/check_changelog_placement.py`)
+refuses any edit to it in a pull request, and the release cut collects
+the fragments into the version section. These two sections are what the
+release-notes generator reads when it writes the published notes.
+Notable but not user-facing? A `### Notes` block in the PR's fragment
+instead — maintainer record, never release-notes material.>
 
 ## Example usage
 <Only when user-facing, immediately after impact: concrete before/after —

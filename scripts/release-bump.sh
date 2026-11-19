@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# release-bump.sh — bump every version surface, rotate CHANGELOG.md, and
-# refresh Cargo.lock for a Relate release.
+# release-bump.sh — bump every version surface, collect the .changes/
+# changelog fragments into CHANGELOG.md's [Unreleased] and rotate it under
+# the release version, and refresh Cargo.lock for a Relate release.
 #
 # Usage:
 #   NEXT_VERSION=0.4.0 scripts/release-bump.sh
@@ -11,9 +12,10 @@
 # PEP 440 translation).
 #
 # --skip-changelog is the advance's scoped mode (ADR-0580): every version
-# surface and Cargo.lock, minus the CHANGELOG rotation. The changelog rotates
-# only at a release cut, so the advance never mints a release section for a
-# version that was never cut.
+# surface and Cargo.lock, minus the fragment collection and the CHANGELOG
+# rotation. The changelog rotates only at a release cut, so the advance
+# never mints a release section for a version that was never cut, and
+# fragments are version-independent — they ride into the next cut.
 #
 # Version surfaces beyond the Rust/Python pair (ADR-0278; every client
 # package is lockstep with the release tag):
@@ -48,7 +50,8 @@ usage() {
   echo "usage: NEXT_VERSION=<X.Y.Z> $0 [--skip-changelog]" >&2
   echo "  NEXT_VERSION: release version without a v prefix, e.g. 0.4.0" >&2
   echo "  --skip-changelog: the advance's scoped mode (ADR-0580) — the" >&2
-  echo "    version-surface sweep without the CHANGELOG rotation" >&2
+  echo "    version-surface sweep without the fragment collection or the" >&2
+  echo "    CHANGELOG rotation" >&2
 }
 
 next="${NEXT_VERSION:-}"
@@ -94,6 +97,7 @@ pyproject="surfaces/relate-python/pyproject.toml"
 pyinit="surfaces/relate-python/python/relate/__init__.py"
 lockfile="Cargo.lock"
 changelog="CHANGELOG.md"
+changes_dir=".changes"
 java_pom="clients/java/pom.xml"
 js_main_pkg="clients/javascript/package.json"
 js_lockfile="clients/javascript/package-lock.json"
@@ -120,6 +124,18 @@ docs_version_files=(
   "docs/api/java/examples/RelateE2E.java"
 )
 touched=("$cargo_toml" "$pyproject" "$pyinit" "$lockfile" "$changelog" "$java_pom" "$js_main_pkg" "$js_lockfile" "${js_platform_pkgs[@]}" "${docs_version_files[@]}")
+
+# Changelog fragments (ADR-0627): consumed at the release cut. Globbed up
+# front — before the collector can delete them — so the up-front dirty-tree
+# refusal and the rollback both see every file; README.md rides along
+# harmlessly (the collector never consumes or modifies it). The pool's
+# location is the one surface variable, the shell side of the grammar's
+# CHANGES_DIR. The expansions are guarded for bash 3.2 (macOS rehearsals),
+# where an empty array under set -u is an unbound variable.
+shopt -s nullglob
+changes_fragments=("$changes_dir"/*.md)
+shopt -u nullglob
+touched+=(${changes_fragments[@]+"${changes_fragments[@]}"})
 # The rollback flag; when the EXIT trap restores is the failure policy's one
 # statement (section 0).
 ok=0
@@ -174,6 +190,25 @@ if in_git_work_tree \
   git diff --name-only HEAD -- "${touched[@]}" >&2
   exit 1
 fi
+# The rollback restores through `git checkout --`, which knows only
+# tracked paths — and rejects the WHOLE pathspec list when one path is
+# untracked, so a single untracked fragment would abort the restore of
+# every other touched file too. The guard above asks about tracked
+# modifications; this one asks the question the rollback must answer
+# about the pool: an untracked fragment file is a refusal, named, still
+# before the traps arm.
+if in_git_work_tree; then
+  untracked_fragments=()
+  for fragment in ${changes_fragments[@]+"${changes_fragments[@]}"}; do
+    git ls-files --error-unmatch -- "$fragment" >/dev/null 2>&1 \
+      || untracked_fragments+=("$fragment")
+  done
+  if [ "${#untracked_fragments[@]}" -gt 0 ]; then
+    echo "release-bump: refusing to run: untracked fragment files (the rollback cannot restore them):" >&2
+    printf '  %s\n' ${untracked_fragments[@]+"${untracked_fragments[@]}"} >&2
+    exit 1
+  fi
+fi
 trap '(( ok )) || restore_touched "unexpected failure"' EXIT
 trap 'restore_touched "interrupted"' INT TERM HUP
 
@@ -221,20 +256,30 @@ npm install --package-lock-only --prefix clients/javascript
 
 cargo metadata --format-version 1 > /dev/null
 
-# --- 3. CHANGELOG rotation ----------------------------------------------------
+# --- 3. CHANGELOG collection and rotation -------------------------------------
 
-# The whole rotation policy — the [Unreleased] ref's shape (compare link =
-# steady state, plain repository URL = first release), the heading grammar,
-# the idempotence decision, the link-ref rewrites — lives in
-# scripts/changelog_rotate.py, the one implementation, unit-tested directly.
-# Already-rotated is the module's own skip notice on stdout, exit 0. The
-# advance's scoped mode skips the step: the changelog rotates only at a
-# release cut (ADR-0580).
+# The fragment collection (ADR-0627) and the rotation, in that order: the
+# collector splices every .changes/ fragment under [Unreleased] (the
+# fragment grammar — names, sections, bullets — lives in
+# scripts/changes_collect.py, the one implementation, unit-tested
+# directly; its refusals name every invalid fragment and leave everything
+# untouched) and deletes the consumed files; the rotation then moves the
+# assembled section under the new version heading. The whole rotation
+# policy — the [Unreleased] ref's shape (compare link = steady state,
+# plain repository URL = first release), the heading grammar, the
+# idempotence decision, the link-ref rewrites — lives in
+# scripts/changelog_rotate.py, the one implementation, unit-tested
+# directly. Already-rotated is the module's own skip notice on stdout,
+# exit 0. The advance's scoped mode skips both steps: the changelog
+# rotates only at a release cut (ADR-0580), and fragments are
+# version-independent — they ride into the next cut untouched.
 if (( ! skip_changelog )); then
+  python3 scripts/changes_collect.py \
+    --changelog "$changelog" --changes-dir "$changes_dir"
   python3 scripts/changelog_rotate.py "$changelog" \
     --version "$next" --date "$(date +%F)"
 else
-  echo "release-bump: CHANGELOG rotation skipped (the advance's scoped mode); the changelog rotates only at a release cut"
+  echo "release-bump: CHANGELOG collection and rotation skipped (the advance's scoped mode); the changelog rotates only at a release cut"
 fi
 
 # --- 4. Consistency self-check (after editing) --------------------------------

@@ -90,6 +90,7 @@ build_fixture() {
 		"$fx/docs/reference" "$fx/docs/api/cli/examples" "$fx/docs/api/java/examples"
 	cp "$ROOT/scripts/release-bump.sh" "$fx/scripts/"
 	cp "$ROOT/scripts/changelog_rotate.py" "$fx/scripts/"
+	cp "$ROOT/scripts/changes_collect.py" "$fx/scripts/"
 	cp -R "$ROOT/scripts/lib" "$fx/scripts/lib"
 	cp "$ROOT/scripts/version_tokens.py" "$fx/scripts/"
 
@@ -190,10 +191,38 @@ EOF
 	done
 	cp "$changelog_src" "$fx/CHANGELOG.md"
 
+	# The fragment directory every checkout of the repository carries
+	# (ADR-0627): its README, so the collector's pool is empty but the
+	# directory exists. The seed_fragments helper below fills the pool.
+	mkdir -p "$fx/.changes"
+	printf '%s\n' "# Changelog fragments" >"$fx/.changes/README.md"
+
 	git -C "$fx" init -q
 	git -C "$fx" add -A
 	git -C "$fx" -c user.email=test@example.com -c user.name=test \
 		commit -qm fixture
+}
+
+# seed_fragments <dir>: commit one valid fragment pool into a fixture —
+# an Added entry and a Notes entry, the shapes a real cut consumes. The
+# files are committed (the rollback's git checkout restores them from
+# HEAD), never left untracked.
+seed_fragments() {
+	local fx="$1"
+	mkdir -p "$fx/.changes"
+	cat >"$fx/.changes/2-flag.md" <<'EOF'
+### Added
+
+- A flag.
+EOF
+	cat >"$fx/.changes/3-notes.md" <<'EOF'
+### Notes
+
+- An internal note.
+EOF
+	git -C "$fx" add .changes
+	git -C "$fx" -c user.email=test@example.com -c user.name=test \
+		commit -qm fragments
 }
 
 run_bump() { # $1 = fixture dir, $2 = NEXT_VERSION, the rest = release-bump arguments

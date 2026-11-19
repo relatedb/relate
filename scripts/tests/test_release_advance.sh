@@ -2,15 +2,16 @@
 # Offline, hermetic check for the advance's scoped bump (ADR-0580): the
 # advance job in release.yml sweeps the version surfaces through
 # scripts/release-bump.sh --skip-changelog, which must leave CHANGELOG.md
-# untouched — an advance is not a release cut, and rotating then would mint
-# a release section for a version that never shipped. Against the
-# empty-[Unreleased] changelog main carries right after a cut, the scoped
-# bump leaves CHANGELOG.md byte-identical while the version surfaces
-# still advance. The cut direction itself — what the bump does without
-# the flag — is pinned in scripts/tests/test_release_bump.sh, the one
-# place the release-cut paths live. The scoped flag is also the one
-# argument the bump script accepts: any other is refused — usage,
-# exit 1, nothing touched.
+# and the .changes/ fragment pool untouched — an advance is not a
+# release cut, and rotating then would mint a release section for a
+# version that never shipped; fragments are version-independent and ride
+# into the next cut (ADR-0627). Against the empty-[Unreleased] changelog
+# main carries right after a cut, the scoped bump leaves CHANGELOG.md
+# byte-identical while the version surfaces still advance. The cut
+# direction itself — what the bump does without the flag — is pinned in
+# scripts/tests/test_release_bump.sh, the one place the release-cut
+# paths live. The scoped flag is also the one argument the bump script
+# accepts: any other is refused — usage, exit 1, nothing touched.
 #
 # Reuses the release-bump harness (stubs, fixture factory, run helper):
 # run_bump takes the fixture and NEXT_VERSION and forwards any further
@@ -47,6 +48,26 @@ tap_check "advance: empty-[Unreleased] CHANGELOG.md byte-identical — no headin
 
 grep -qF 'version = "0.1.1"' "$fx1/Cargo.toml"
 tap_check "advance: the version surfaces still advanced" $?
+
+# --- Case 1b: the advance leaves the fragment pool alone (ADR-0627) -----------
+#
+# Fragments are version-independent — they ride into the next cut, so
+# the scoped bump collects nothing: the pool is intact and CHANGELOG.md
+# still byte-identical.
+
+fx1b="$sandbox/fragments"
+build_fixture "$fx1b" "$sandbox/changelog-after-cut.md"
+seed_fragments "$fx1b"
+
+run_bump "$fx1b" 0.1.2 --skip-changelog
+tap_check "advance with fragments: scoped bump exits 0" $?
+
+cmp -s "$sandbox/changelog-after-cut.md" "$fx1b/CHANGELOG.md"
+tap_check "advance with fragments: CHANGELOG.md byte-identical" $?
+
+pool="$(ls -A "$fx1b/.changes" | sort | tr '\n' ' ')"
+[ "$pool" = "2-flag.md 3-notes.md README.md " ]
+tap_check "advance with fragments: the pool rides to the next cut intact" $?
 
 # --- Case 2: refusal (an argument other than --skip-changelog) ----------------
 #
