@@ -15,18 +15,24 @@ The package offers two API styles:
 
 ## Installation
 
-The package is not on PyPI yet (LABS-17), so there are two routes today.
+**From PyPI** (`relate-db`; import `relate`) — wheels for Linux (x86-64,
+aarch64), macOS (arm64, x86-64) and Windows (x86-64), Python 3.9+:
 
-**From a release wheel** — no Rust toolchain needed. Wheels are published for
-Linux (x86-64, aarch64), macOS (arm64) and Windows (x86-64) beside the CLI
-binaries on the [releases page](https://github.com/relatedb/relate/releases):
+```bash
+pip install relate-db
+# optional Arrow IPC decoding
+pip install relate-db[arrow]
+# optional DataFrame conversion (cursor.to_df())
+pip install relate-db[pandas]
+```
+
+**From a release wheel** — for a version predating a tagged PyPI release,
+wheels are also published beside the CLI binaries on the
+[releases page](https://github.com/relatedb/relate/releases):
 
 ```bash
 pip install relate_db-<version>-<platform>.whl
 ```
-
-Because it is not on an index, downstream projects cannot yet declare it as a
-dependency — vendoring the wheel or fetching it in CI is the workaround.
 
 **From a checkout** — requires the Rust toolchain:
 
@@ -40,15 +46,6 @@ Or, from the repository root, use the Make target (creates a virtualenv, install
 
 ```bash
 make install-python
-```
-
-Once the PyPI project is registered (trusted publishing on tagged releases) the
-install becomes (`relate-db`; import `relate`):
-
-```bash
-pip install relate-db
-# optional Arrow IPC decoding
-pip install relate-db[arrow]
 ```
 
 :::note

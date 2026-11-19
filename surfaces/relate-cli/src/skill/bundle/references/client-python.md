@@ -9,8 +9,8 @@ pip install 'relate-db[pandas]'  # + cursor.to_df()
 ```
 
 Python 3.9+; a PyO3 extension embedding the engine in-process — it does
-not wrap the C ABI and needs no native library on a path. Until the first
-tagged PyPI publish, build from a checkout with `make install-python`.
+not wrap the C ABI and needs no native library on a path. For an
+unreleased version, build from a checkout with `make install-python`.
 
 ## Minimal usage
 

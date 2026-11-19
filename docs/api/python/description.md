@@ -2,7 +2,7 @@
 
 The product Python binding is the native extension in `surfaces/relate-python`.
 Wheels publish to GitHub Releases and to PyPI as `relate-db` on tagged
-releases when trusted publishing is configured (`import relate`).
+releases via trusted publishing (`import relate`).
 
 The DB-API connection selects its session namespace at connect time
 (`relate.connect(database=":memory:", namespace="neo4j")`) and switches it
