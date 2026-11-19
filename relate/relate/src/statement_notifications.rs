@@ -59,6 +59,11 @@
 //! - **The scope-less subquery** is the lowered `CallScope` without a scope
 //!   clause (`!CallScope::has_scope_clause()`); the scoped forms
 //!   (`CALL (n) { … }`, `CALL () { … }`) never fire.
+//! - **Undefined parameters** read the ADR-0308 predicate,
+//!   [`relate_planner::plan_missing_parameters`] — the planner's one spelling,
+//!   which the facade's admission gate calls too — so the notice and the
+//!   refusal can never disagree about which names are unbound. One `01N60`
+//!   per statement names every missing parameter.
 //!
 //! `DeprecatedFunction` and `DeprecatedProcedure` map to the vocabulary's
 //! `FeatureDeprecationWarning` 01N01 rows; a catalog entry is deprecated
@@ -120,7 +125,10 @@ pub(crate) fn merge(
 /// decision 5). The plan is walked through the planner's canonical
 /// part/stage walk and the IR's exhaustive clause-tree walk, so `NEXT`
 /// stages, `UNION` arms, `CALL { … }` bodies, `WHEN` branches, `FOREACH`
-/// bodies and expression subqueries all contribute.
+/// bodies and expression subqueries all contribute. The unbound-parameter
+/// notice is the one source derived outside that walk: it reads
+/// [`relate_planner::plan_missing_parameters`], which rides the planner's
+/// full-descent `walk_plan`.
 pub(crate) fn statement_notifications(
     plan: &LogicalPlan,
     view: &ExecGraph<'_>,
@@ -169,7 +177,22 @@ pub(crate) fn statement_notifications(
     for (expr, role) in exprs {
         facts.observe_expr(expr, role);
     }
-    Ok(facts.finish(view))
+    let mut notifications = facts.finish(view);
+    // The unbound-parameter predicate is the planner's one spelling — the
+    // same call the ADR-0308 admission gate makes
+    // (`connection::dispatch::post_explain_gates`) — so the notice and the
+    // refusal cannot disagree about which *names* are unbound. They can still
+    // see different maps: the gate runs on the admission's effective map (the
+    // caller's plus the extracted auto-literal values), this reads the
+    // caller's.
+    let missing = relate_planner::plan_missing_parameters(plan, params);
+    if !missing.is_empty() {
+        notifications.push(Notification::new(
+            NotificationKind::ParameterMissing,
+            missing_parameters_description(&missing),
+        ));
+    }
+    Ok(notifications)
 }
 
 /// The ADR-0363 decision 6 statement-scoped sort key: category rank,
@@ -182,10 +205,10 @@ fn statement_order_key(notification: &Notification) -> (u8, &'static str, &str) 
     )
 }
 
-/// `UNRECOGNIZED` before `DEPRECATION` before `SCHEMA` before `HINT`.
-/// Performance kinds are operator-scoped and never reach this list;
-/// ranking them last keeps the order total and deterministic if a future
-/// classification does.
+/// `UNRECOGNIZED` before `DEPRECATION` before `SCHEMA` before `HINT` before
+/// `PERFORMANCE`. Only the unbound-parameter notice is a performance kind
+/// here (the operator-scoped ones never reach this list), and ranking the
+/// category last keeps the order total and deterministic.
 fn category_rank(category: NotificationCategory) -> u8 {
     match category {
         NotificationCategory::Unrecognized => 0,
@@ -469,6 +492,27 @@ impl Facts {
         }
         notifications
     }
+}
+
+/// The `01N60` description — the instance detail, naming every unbound
+/// parameter and the consequence (ADR-0363 decision 1: the kind supplies the
+/// metadata and the remedy, so this adds no title or action of its own).
+/// One notification covers the whole statement; the names keep
+/// [`relate_planner::plan_missing_parameters`]' order, and each renders
+/// through [`relate_model::identifier::parameter_reference`] — the one `$name`
+/// spelling. The list then joins exactly as `Error::parameters_missing` joins
+/// the refusal's, so the notice and the refusal list the same set in the same
+/// order. What the predicate reaches is the IR expression walks' coverage:
+/// the catalog/admin clause family is a leaf there (the documented
+/// over-approximation on `expr_vars`), so a parameter appearing only inside
+/// such a clause is left to the executor's own run-time refusal.
+fn missing_parameters_description(missing: &[&str]) -> String {
+    let list = missing
+        .iter()
+        .map(|name| relate_model::identifier::parameter_reference(name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("The undefined parameter(s) {list} prevent plan reuse.")
 }
 
 /// The three name classes the unknown-name loop resolves against the view's

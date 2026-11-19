@@ -147,6 +147,24 @@ pub fn plan_parameter_names(plan: &LogicalPlan) -> Vec<&str> {
     names
 }
 
+/// The parameters `plan` references but `params` does not supply — the
+/// ADR-0308 predicate, in one place. Two consumers read it: the facade's
+/// admission gate, which refuses the statement (`connection::dispatch::
+/// post_explain_gates`), and the `01N60` notice the notification derivation
+/// raises under `EXPLAIN` (ADR-0363), so the refusal and the notice can
+/// never disagree about which names are unbound.
+///
+/// The order is [`plan_parameter_names`]' — first appearance, each once.
+pub fn plan_missing_parameters<'a>(
+    plan: &'a LogicalPlan,
+    params: &std::collections::BTreeMap<String, relate_core::Value>,
+) -> Vec<&'a str> {
+    plan_parameter_names(plan)
+        .into_iter()
+        .filter(|name| !params.contains_key(*name))
+        .collect()
+}
+
 /// The canonical way to visit a [`LogicalPlan`] PART BY PART: each part's
 /// TOP-LEVEL clause slice (UNION arms are parts), recursing into `NEXT`
 /// stages — with no descent into `CALL { … }` bodies, `WHEN`/`ELSE`

@@ -283,6 +283,18 @@ notification_vocabulary! {
         plan_warning: false,
         occurrence_scoped: false,
     }
+    /// A statement referencing a parameter the caller did not supply.
+    ParameterMissing {
+        code: "Neo.ClientNotification.Statement.ParameterMissing",
+        gql_status: "01N60",
+        severity: NotificationSeverity::Warning,
+        category: NotificationCategory::Performance,
+        title: "Parameter missing",
+        remedy: "Supply the parameter(s): without them the statement can only be \
+                 planned, never run.",
+        plan_warning: false,
+        occurrence_scoped: false,
+    }
     /// A function call resolving to a deprecated catalog entry.
     DeprecatedFunction {
         code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",

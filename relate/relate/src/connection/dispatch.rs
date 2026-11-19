@@ -286,11 +286,10 @@ fn final_return_items(
 fn post_explain_gates(logical: &LogicalPlan, params: &BTreeMap<String, Value>) -> Result<()> {
     // ADR-0308: a referenced parameter the caller did not supply fails the
     // statement before anything executes (EXPLAIN, above, plans without
-    // values, as in Neo4j).
-    let missing: Vec<&str> = relate_planner::plan_parameter_names(logical)
-        .into_iter()
-        .filter(|name| !params.contains_key(*name))
-        .collect();
+    // values, as in Neo4j). The predicate is the planner's one spelling —
+    // the same call the `01N60` notice makes, so the refusal and the notice
+    // cannot disagree.
+    let missing = relate_planner::plan_missing_parameters(logical, params);
     if !missing.is_empty() {
         return Err(Error::parameters_missing(missing));
     }

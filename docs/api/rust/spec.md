@@ -1542,8 +1542,9 @@ The vocabulary is the one table in `relate_model::wire`
 the statement-scoped `UnknownLabelWarning` (`01N50`),
 `UnknownRelationshipTypeWarning` (`01N51`), `UnknownPropertyKeyWarning`
 (`01N52`), `DeprecatedFunction`/`DeprecatedProcedure`
-(`FeatureDeprecationWarning`, `01N01`) and `CallSubqueryWithoutScope`
-(`01N00`). The three existing `PlanWarning` variants project to their rows by
+(`FeatureDeprecationWarning`, `01N01`), `CallSubqueryWithoutScope`
+(`01N00`) and `ParameterMissing` (`01N60`). The three existing `PlanWarning`
+variants project to their rows by
 an exhaustive match; their message text is the notification description, so
 the plan table's warnings column/footer and the list cannot drift. `EstimationMiss` is
 `PROFILE`-only: it needs actual rows.
@@ -1561,6 +1562,7 @@ The statement-scoped kinds have no operator to attach to, so they carry no
 | `DeprecatedFunction` | `Neo.ClientNotification.Statement.FeatureDeprecationWarning` | `01N01` | A function call resolves to a function catalog entry whose `deprecated_by` is `Some` (`id()` today). | The remedy renders the replacement identifier (`id(n)` → `elementId`); the catalog's display prose is never backticked. |
 | `DeprecatedProcedure` | `Neo.ClientNotification.Statement.FeatureDeprecationWarning` | `01N01` | A `CALL` resolves to a procedure registry signature whose `deprecated_by` is `Some` (e.g. `db.index.vector.queryNodes`). A registered procedure of the same name shadows the built-in, as it does for execution. | The remedy names the replacement for what it is: an identifier or a clause (`SEARCH`). |
 | `CallSubqueryWithoutScope` | `Neo.ClientNotification.Statement.FeatureDeprecationWarning` | `01N00` | A `CALL { … }` subquery lowers to `CallScope::None`. The scoped forms `CALL (n) { … }` and `CALL () { … }` do not fire. | Add the scope clause the body imports: `CALL (n) { … }`, or `CALL () { … }` when it imports nothing. |
+| `ParameterMissing` | `Neo.ClientNotification.Statement.ParameterMissing` | `01N60` | An `EXPLAIN`ed statement references a parameter the caller did not supply (`relate_planner::plan_missing_parameters` — the ADR-0308 predicate). The plain path refuses the statement instead (ADR-0308), and `PROFILE` refuses it too, so the notice is `EXPLAIN`-only. The predicate reads the IR expression walks, which treat the catalog/admin clause family as a leaf (`Clause::Catalog` — the over-approximation documented on `expr_vars`), so a parameter appearing only inside a `SHOW` or index-DDL clause is not seen here; the executor refuses that statement at run time instead. | Supply the parameter(s): without them the statement can only be planned, never run. |
 
 The detectors read the facts the existing surfaces already expose, never a
 second vocabulary (ADR-0363 decision 5):

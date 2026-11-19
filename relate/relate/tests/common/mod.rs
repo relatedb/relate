@@ -251,6 +251,25 @@ pub fn has_notification(
     !notifications_of_kind(result, kind).is_empty()
 }
 
+/// The result's one notification of `kind` — the guarded accessor for the
+/// "exactly one notice, and it says X" shape. A count other than one panics
+/// listing the whole notification list, so the failure names what the engine
+/// raised instead of an index-out-of-bounds.
+pub fn only_notification(
+    result: &relate::QueryResult,
+    kind: relate_model::wire::NotificationKind,
+) -> &relate::Notification {
+    let matches = notifications_of_kind(result, kind);
+    match matches.as_slice() {
+        [only] => only,
+        _ => panic!(
+            "expected exactly one {kind:?} notification, got {}: {:?}",
+            matches.len(),
+            result.notifications()
+        ),
+    }
+}
+
 /// The first node with the given operator name, pre-order — the shared
 /// fixture for pinning an affected operator in a plan tree (ADR-0359:
 /// the engine emits the tree only, so assertions target operators, not

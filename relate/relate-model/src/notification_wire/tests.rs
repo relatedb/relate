@@ -160,6 +160,18 @@ fn vocabulary_matches_the_adr_table_row_for_row() {
             },
         ),
         (
+            NotificationKind::ParameterMissing,
+            Cells {
+                code: "Neo.ClientNotification.Statement.ParameterMissing",
+                gql_status: "01N60",
+                severity: NotificationSeverity::Warning,
+                category: NotificationCategory::Performance,
+                title: "Parameter missing",
+                remedy: "Supply the parameter(s): without them the statement can only be \
+                 planned, never run.",
+            },
+        ),
+        (
             NotificationKind::DeprecatedFunction,
             Cells {
                 code: "Neo.ClientNotification.Statement.FeatureDeprecationWarning",

@@ -1,8 +1,9 @@
 //! Statement-scoped query notifications (ADR-0363 decisions 3, 5 and 6):
 //! unknown labels, relationship types and property keys, deprecated
-//! functions and procedures, and the scope-less `CALL { … }` subquery.
-//! Every detector runs only where an `EXPLAIN`/`PROFILE` tree is built, so
-//! the same statement without a prefix returns an empty list.
+//! functions and procedures, the scope-less `CALL { … }` subquery, and the
+//! parameters the caller left undefined. Every detector runs only where an
+//! `EXPLAIN`/`PROFILE` tree is built, so the same statement without a prefix
+//! returns an empty list.
 
 mod common;
 

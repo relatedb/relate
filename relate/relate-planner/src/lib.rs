@@ -68,9 +68,9 @@ pub use crate::order::{
 pub use crate::order::{crossover_scan_rows, range_seek_gated};
 pub use crate::plan::{
     plan, plan_any_clause, plan_contains_dynamic_operands, plan_contains_in_transactions,
-    plan_has_bound_float_integer_site, plan_output_names, plan_output_names_expect,
-    plan_parameter_names, plan_with_stats, plan_with_tokens, query_any_clause, walk_plan_clauses,
-    walk_plan_parts, walk_query_parts, LogicalPlan,
+    plan_has_bound_float_integer_site, plan_missing_parameters, plan_output_names,
+    plan_output_names_expect, plan_parameter_names, plan_with_stats, plan_with_tokens,
+    query_any_clause, walk_plan_clauses, walk_plan_parts, walk_query_parts, LogicalPlan,
 };
 pub use crate::query_type::{query_type, QueryType};
 pub use crate::stats::{ContainsCount, DegreeMoments, NoPatternStats, PatternStats};
