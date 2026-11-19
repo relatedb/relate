@@ -1,6 +1,7 @@
 //! The query and update clause nodes.
 
 use super::*;
+use relate_model::identifier::quote_identifier_shaped;
 
 /// CIP-135 conditional clause: `WHEN <pred> THEN { <body> } [WHEN <pred>
 /// THEN { <body> }]* [ELSE { <body> }]`. Each branch's `body`/`else_body`
@@ -84,9 +85,36 @@ pub struct ScanHint {
     pub label: SmallName,
 }
 
-/// One `USING INDEX [SEEK] <variable>:<Label>(<property>[, …])` hint.
+/// The index kind a `USING INDEX`-family hint names: the plain
+/// `USING INDEX [SEEK]` form or the range-typed `USING RANGE INDEX` form.
+/// The kinds share one fulfillability policy — the front end validates the
+/// variable, label and WHERE predicate for both, exactly as it does for the
+/// plain hint — and differ only in the spelling rendered back to the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexHintKind {
+    Index,
+    RangeIndex,
+}
+
+impl IndexHintKind {
+    /// The kind as written between `USING` and the variable — `INDEX` or
+    /// `RANGE INDEX` — the one spelling the front end's
+    /// unfulfillable-hint error (42N76) and the plan-time `01N31`
+    /// description render.
+    pub fn as_written(&self) -> &'static str {
+        match self {
+            IndexHintKind::Index => "INDEX",
+            IndexHintKind::RangeIndex => "RANGE INDEX",
+        }
+    }
+}
+
+/// One `USING [RANGE] INDEX <variable>:<Label>(<property>[, …])` hint —
+/// the `[SEEK]` modifier belongs to the plain spelling only
+/// (`USING INDEX SEEK`; `USING RANGE INDEX` takes no modifier).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexHint {
+    pub kind: IndexHintKind,
     pub variable: SmallName,
     pub label: SmallName,
     pub properties: Vec<SmallName>,
@@ -95,11 +123,15 @@ pub struct IndexHint {
 impl IndexHint {
     /// The hinted property list as one text — `name`, `name, surname` —
     /// the one spelling both the front end's unfulfillable-hint error
-    /// (42N76) and the plan-time `01N31` description render.
+    /// (42N76) and the plan-time `01N31` description render. Each name
+    /// goes through the canonical display quoting
+    /// (`quote_identifier_shaped`: bare when plain, backtick-escaped
+    /// otherwise), so an exotic name cannot break the message carrying
+    /// it.
     pub fn properties_text(&self) -> String {
         self.properties
             .iter()
-            .map(|property| property.to_string())
+            .map(|property| property.with_str(quote_identifier_shaped))
             .collect::<Vec<_>>()
             .join(", ")
     }

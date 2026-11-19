@@ -303,6 +303,51 @@ fn test_using_index_hint_is_parsed_and_ignored() {
     assert!(parse("MATCH (n:Person) USING INDEX SEEK n:Person(age) RETURN n").is_ok());
 }
 
+/// `USING RANGE INDEX n:L1(p1)`: the range-typed hint parses into the same
+/// index-hint list with its kind recorded, and the malformed spellings
+/// (a bare `USING RANGE`, a missing INDEX word) are authored errors.
+#[test]
+fn test_using_range_index_hint_is_parsed_with_its_kind() {
+    // One row per hint spelling: (query, kind, kind-as-written). The TEXT
+    // kind (its own ticket) adds a row here, not a third scaffold.
+    for (query, kind, as_written) in [
+        (
+            "MATCH (n:Person) USING RANGE INDEX n:Person(age) WHERE n.age = 30 RETURN n",
+            IndexHintKind::RangeIndex,
+            "RANGE INDEX",
+        ),
+        (
+            "MATCH (n:Person) USING INDEX n:Person(age) RETURN n",
+            IndexHintKind::Index,
+            "INDEX",
+        ),
+    ] {
+        let stmt = parse(query).unwrap();
+        match &stmt.clauses[0] {
+            Clause::Match(m) => {
+                assert_eq!(m.using_index.len(), 1, "{query}");
+                assert_eq!(m.using_index[0].kind, kind, "{query}");
+                assert_eq!(m.using_index[0].kind.as_written(), as_written, "{query}");
+            }
+            other => panic!("{query}: expected Match clause, got {other:?}"),
+        }
+    }
+    // `USING RANGE` without its INDEX word names no hint — the parser's
+    // own refusal message, not the Display rendering (which echoes the
+    // source line and caret).
+    let error = parse("MATCH (n:Person) USING RANGE n:Person(age) RETURN n").unwrap_err();
+    assert!(
+        error.message.starts_with("expected INDEX"),
+        "the error should name the missing INDEX: {}",
+        error.message
+    );
+    // The multi-property tail parses for the range kind too.
+    assert!(parse(
+        "MATCH (n:Person) USING RANGE INDEX n:Person(name, age) WHERE n.age = 30 RETURN n"
+    )
+    .is_ok());
+}
+
 #[test]
 fn test_using_scan_is_parsed_and_join_hints_are_retained() {
     assert!(parse("MATCH (n:Person) USING SCAN n:Person RETURN n").is_ok());

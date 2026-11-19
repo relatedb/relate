@@ -22,6 +22,23 @@ impl<'a> Parser<'a> {
         Ok(SmallName::from_name(&tok.literal))
     }
 
+    /// A comma-separated list of bare identifiers (`a, b, c`) — the shape
+    /// the USING hint family reads twice (a JOIN's keys, an INDEX hint's
+    /// property list) and other clause parsers read alike. One spelling
+    /// of the loop beside its element reader.
+    pub(super) fn parse_identifier_list(&mut self) -> ParseResult<Vec<SmallName>> {
+        let mut names = Vec::new();
+        loop {
+            names.push(self.parse_bare_name("identifier")?);
+            if self.peek_type() == TokenType::Comma {
+                self.next_token();
+                continue;
+            }
+            break;
+        }
+        Ok(names)
+    }
+
     /// Reads one symbolic-name token (`TokenType::is_schema_name()`: an
     /// `Identifier` or any keyword, ADR-0191) and returns its literal as
     /// written; anything else is `expected <what>, got ...`. The

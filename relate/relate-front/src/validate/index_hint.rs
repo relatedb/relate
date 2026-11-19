@@ -11,11 +11,19 @@
 //! neo4j:2026.09-enterprise; Relate's planner is not cost-based, so the
 //! hint steers nothing — only the compile-time rejection is reproduced.
 //!
+//! A `USING RANGE INDEX <var>:<Label>(<prop>)` hint carries
+//! `relate_parser::IndexHintKind::RangeIndex` and passes through this same battery
+//! unchanged: the RANGE spelling was verified against Neo4j 2026.10.1 only
+//! as accepted-with-an-equality-predicate, so no RANGE-specific predicate
+//! narrowing is invented here — the kinds differ only in the spelling the
+//! 42N76 text renders.
+//!
 //! Label and property identity is exact (labels are case-sensitive
 //! everywhere else in the engine; only function names are matched
 //! case-insensitively).
 
 use crate::ident_hash::IdentHashMap;
+use relate_model::identifier::quote_identifier_shaped;
 use relate_names::SmallName;
 
 use relate_error::{EngineError, ErrorKind};
@@ -60,9 +68,14 @@ fn unfulfillable_hint(hint: &IndexHint) -> EngineError {
     EngineError::semantic(
         ErrorKind::InvalidPatternCharacter,
         format!(
-            "unfulfillable hints: the hint(s) USING INDEX {}:{}({}) cannot be fulfilled",
-            hint.variable,
-            hint.label,
+            "unfulfillable hints: the hint(s) USING {} {}:{}({}) cannot be fulfilled",
+            hint.kind.as_written(),
+            // Both names render through the canonical display quoting
+            // (bare when plain, backtick-escaped otherwise — the same
+            // policy `properties_text` applies), so an exotic name
+            // cannot break the message carrying it.
+            hint.variable.with_str(quote_identifier_shaped),
+            hint.label.with_str(quote_identifier_shaped),
             hint.properties_text()
         ),
     )
@@ -254,7 +267,9 @@ mod tests {
 
     /// The fulfillable shapes stay accepted: label on the pattern or
     /// asserted by a conjunction in WHERE, and an equality/range/IN/string
-    /// predicate on the hinted property.
+    /// predicate on the hinted property. A RANGE INDEX hint passes through
+    /// the same battery — the kinds differ only in the spelling the
+    /// rejection renders.
     #[test]
     fn fulfillable_index_hints_are_accepted() {
         for query in [
@@ -265,8 +280,26 @@ mod tests {
             "MATCH (n:Person) USING INDEX n:Person(age) WHERE n.age > 30 RETURN n",
             // A conjunctive label expression asserts both labels.
             "MATCH (n:A&B) USING INDEX n:A(p) WHERE n.p = 1 RETURN n",
+            // The range-typed spelling: the LABS-1600 repro's shape.
+            "MATCH (n:L1) USING RANGE INDEX n:L1(p1) WHERE n.p1 = 1 RETURN n",
+            "MATCH (n:Person) USING RANGE INDEX n:Person(age) WHERE n.age > 30 RETURN n",
         ] {
             assert!(validate(query).is_ok(), "{query}: {:?}", validate(query));
         }
+    }
+
+    /// 42N76 renders the hint as written: a `USING RANGE INDEX` hint that
+    /// cannot be served names `USING RANGE INDEX`, not the plain spelling.
+    #[test]
+    fn an_unfulfillable_range_hint_names_its_spelling() {
+        let err = validate(
+            "MATCH (n:Person) USING RANGE INDEX n:Person(name) WHERE n.lastname = 'Teleman' \
+             RETURN n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("USING RANGE INDEX n:Person(name) cannot be fulfilled"),
+            "{err}"
+        );
     }
 }

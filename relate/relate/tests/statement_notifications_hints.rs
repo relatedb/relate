@@ -20,25 +20,43 @@ use relate_model::wire::NotificationKind;
 #[test]
 fn index_hint_notification_fires_and_suppresses() {
     let mut conn = connection();
-    // Fire: no index on :Person(name).
-    let explained = conn
-        .query("EXPLAIN MATCH (n:Person) USING INDEX n:Person(name) WHERE n.name = 'John' RETURN n")
-        .unwrap();
-    let fired = notifications_of_kind(&explained, NotificationKind::HintedIndexNotFound);
-    assert_eq!(fired.len(), 1, "{:?}", kinds(&explained));
-    let notification = fired[0];
-    assert_eq!(
-        notification.code(),
-        "Neo.ClientNotification.Schema.HintedIndexNotFound"
-    );
-    assert_eq!(notification.gql_status(), "01N31");
-    assert_eq!(notification.severity().as_str(), "WARNING");
-    assert_eq!(notification.category().as_str(), "HINT");
-    assert_eq!(
-        notification.description(),
-        "warn: hinted index does not exist. Unable to create a plan with \
-         'INDEX :Person(name)' because the index does not exist."
-    );
+    // Fire: no index on :Person(name) — one row per hint spelling, the
+    // 01N31 text naming the hint as written (the range-typed kind rides
+    // the same rule and the same serving logic).
+    for (hint_spelling, named_index) in [
+        ("USING INDEX", "INDEX :Person(name)"),
+        ("USING RANGE INDEX", "RANGE INDEX :Person(name)"),
+    ] {
+        let explained = conn
+            .query(&format!(
+                "EXPLAIN MATCH (n:Person) {hint_spelling} n:Person(name) \
+                 WHERE n.name = 'John' RETURN n"
+            ))
+            .unwrap();
+        let fired = notifications_of_kind(&explained, NotificationKind::HintedIndexNotFound);
+        assert_eq!(fired.len(), 1, "{hint_spelling}: {:?}", kinds(&explained));
+        let notification = fired[0];
+        assert_eq!(
+            notification.code(),
+            "Neo.ClientNotification.Schema.HintedIndexNotFound",
+            "{hint_spelling}"
+        );
+        assert_eq!(notification.gql_status(), "01N31", "{hint_spelling}");
+        assert_eq!(
+            notification.severity().as_str(),
+            "WARNING",
+            "{hint_spelling}"
+        );
+        assert_eq!(notification.category().as_str(), "HINT", "{hint_spelling}");
+        assert_eq!(
+            notification.description(),
+            format!(
+                "warn: hinted index does not exist. Unable to create a plan with \
+                 '{named_index}' because the index does not exist."
+            ),
+            "{hint_spelling}"
+        );
+    }
     // Suppress: the index exists and covers the hinted property.
     run(&mut conn, "CREATE INDEX hint_ix FOR (n:Person) ON (n.name)");
     let explained = conn
@@ -216,5 +234,55 @@ fn a_vector_index_does_not_serve_but_a_text_index_does() {
         !has_notification(&explained, NotificationKind::HintedIndexNotFound),
         "a text index serves the hint: {:?}",
         kinds(&explained)
+    );
+}
+
+/// The notifications' identifiers render through the canonical display
+/// quoting: a name that needs backticks is backticked and a name
+/// carrying an embedded backtick escapes it, so an exotic identifier
+/// cannot break the message that carries it. Plain names stay bare in
+/// the index-hint text and backticked in the join text — byte-identical
+/// to the live-pinned spellings the tests above assert.
+#[test]
+fn hint_notifications_quote_exotic_identifiers() {
+    let mut conn = connection();
+    // Index hint: the label needs quotes and the hinted property carries
+    // an embedded backtick. The hint stays servable (the variable is
+    // bound as the labeled node with an equality on the hinted property)
+    // so it is the 01N31 description — not a 42N76 rejection — that
+    // renders both.
+    let explained = conn
+        .query(
+            "EXPLAIN MATCH (n:`A B`) USING INDEX n:`A B`(`p``1`) \
+             WHERE n.`p``1` = 1 RETURN n",
+        )
+        .unwrap();
+    let fired = notifications_of_kind(&explained, NotificationKind::HintedIndexNotFound);
+    assert_eq!(fired.len(), 1, "{:?}", kinds(&explained));
+    assert_eq!(
+        fired[0].description(),
+        "warn: hinted index does not exist. Unable to create a plan with \
+         'INDEX :`A B`(`p``1`)' because the index does not exist."
+    );
+    // Join hint: a key carrying an embedded backtick — the
+    // always-backticked 01N30 spelling escapes it instead of ending the
+    // name early.
+    let explained = conn
+        .query(
+            "EXPLAIN MATCH (`a``b`) \
+             WITH `a``b`, avg(`a``b`.weight) AS weight \
+             OPTIONAL MATCH (`a``b`)-[]->(friend) \
+             USING JOIN ON `a``b`, friend \
+             RETURN *",
+        )
+        .unwrap();
+    let fired = notifications_of_kind(&explained, NotificationKind::JoinHintUnfulfillable);
+    assert_eq!(fired.len(), 1, "{:?}", kinds(&explained));
+    assert!(
+        fired[0]
+            .description()
+            .contains("'JOIN ON `a``b`, `friend`'"),
+        "the exotic key renders escaped: {}",
+        fired[0].description()
     );
 }

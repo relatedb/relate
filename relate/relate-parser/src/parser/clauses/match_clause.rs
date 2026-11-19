@@ -1,5 +1,49 @@
 use super::*;
 
+/// The USING-hint kind words, one table: recognition of the contextual
+/// word after `USING`, the dispatch, and the fallthrough error's
+/// expected-list all read [`UsingHintKind::ALL`] — a new kind forces the
+/// enum, the table, and (through the exhaustive `match`) an arm, so the
+/// three cannot drift apart (TEXT is its own ticket, LABS-1608).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UsingHintKind {
+    Index,
+    RangeIndex,
+    Join,
+    Scan,
+}
+
+impl UsingHintKind {
+    /// (kind, introducer word, rendered text) — the one table.
+    const ALL: [(Self, &'static str, &'static str); 4] = [
+        (Self::Index, "index", "INDEX"),
+        (Self::RangeIndex, "range", "RANGE INDEX"),
+        (Self::Join, "join", "JOIN"),
+        (Self::Scan, "scan", "SCAN"),
+    ];
+
+    /// The kind a contextual introducer word names, or `None`.
+    fn from_introducer(word: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .find(|(_, introducer, _)| *introducer == word)
+            .map(|(kind, _, _)| *kind)
+    }
+
+    /// The kinds as the fallthrough error lists them —
+    /// `INDEX, RANGE INDEX, JOIN, or SCAN` — rendered from [`Self::ALL`].
+    fn rendered_list() -> String {
+        let rendered: Vec<&str> = Self::ALL.iter().map(|(_, _, text)| *text).collect();
+        // ALL is a fixed non-empty table; an empty kind list is a state
+        // the type cannot produce, so it is a loud invariant failure —
+        // never a fabricated empty expected-list.
+        let (last, init) = rendered
+            .split_last()
+            .expect("UsingHintKind::ALL is never empty");
+        format!("{}, or {last}", init.join(", "))
+    }
+}
+
 impl<'a> Parser<'a> {
     pub(in crate::parser) fn parse_match(&mut self, optional: bool) -> ParseResult<Clause> {
         // Cypher 25 (Neo4j 2025.06, CIP-60): the path variable declaration
@@ -75,13 +119,15 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    /// CIP-79: zero or more `USING INDEX <var>:<Label>(<prop>[, <prop>...])`
-    /// / `USING INDEX SEEK ...` / `USING JOIN ON <var>[, <var>...]` /
-    /// `USING SCAN <var>:<Label>` planner hints directly after a MATCH
-    /// clause's pattern. `USING` is a non-reserved word (never added to
-    /// `token.rs`'s keyword table), recognized by spelling like `SEARCH`/
-    /// `FILTER` above. The SCAN variable is returned because the executor
-    /// must honour it, and the INDEX hints because the front end validates
+    /// CIP-79: zero or more USING planner hints directly after a MATCH
+    /// clause's pattern — `USING INDEX [SEEK] <var>:<Label>(<prop>[,
+    /// <prop>...])`, `USING RANGE INDEX <var>:<Label>(<prop>[, ...])`
+    /// (no SEEK modifier), `USING SCAN <var>:<Label>` and `USING JOIN ON
+    /// <var>[, <var>...]`. `USING` is a non-reserved
+    /// word (never added to `token.rs`'s keyword table), recognized by
+    /// spelling like `SEARCH`/`FILTER` above. The SCAN variable is
+    /// returned because the executor must honour it, and the INDEX hints
+    /// (plain and range-typed alike) because the front end validates
     /// their fulfillability; the JOIN hints are returned because the
     /// planner never fulfils one and the `01N30` plan-time notification
     /// reports each (see [`MatchClause::using_scan`] /
@@ -91,60 +137,48 @@ impl<'a> Parser<'a> {
         while self.peek_is_ident("using") {
             self.next_token(); // consume USING
             let kind_tok = self.next_token();
-            match kind_tok.literal.to_ascii_lowercase().as_str() {
-                "index" => {
+            match UsingHintKind::from_introducer(&kind_tok.literal.to_ascii_lowercase()) {
+                Some(UsingHintKind::Index) => {
                     // Optional `SEEK` after `INDEX` (`USING INDEX SEEK
                     // n:Label(prop)`) -- same hint, just a stronger one.
                     if self.peek_is_ident("seek") {
                         self.next_token();
                     }
-                    let variable = self.parse_bare_name("identifier")?; // variable
-                    self.expect(TokenType::Colon)?;
-                    let label = self.parse_label_name()?;
-                    self.expect(TokenType::LeftParen)?;
-                    let mut properties = Vec::new();
-                    loop {
-                        properties.push(self.parse_bare_name("identifier")?); // property
-                        if self.peek_type() == TokenType::Comma {
-                            self.next_token();
-                            continue;
-                        }
-                        break;
-                    }
-                    self.expect(TokenType::RightParen)?;
-                    hints.index.push(crate::ast::IndexHint {
-                        variable,
-                        label,
-                        properties,
-                    });
+                    hints
+                        .index
+                        .push(self.parse_index_hint_tail(IndexHintKind::Index)?);
                 }
-                "join" => {
+                Some(UsingHintKind::RangeIndex) => {
+                    // `USING RANGE INDEX n:Label(prop)` -- the range-typed
+                    // index hint. The `INDEX` word is part of the spelling
+                    // (a bare `USING RANGE <var>` names no hint); the tail
+                    // is the plain INDEX hint's own shape. The mandatory
+                    // keyword is gated exactly like the join arm's `ON`.
+                    self.expect(TokenType::INDEX)?;
+                    hints
+                        .index
+                        .push(self.parse_index_hint_tail(IndexHintKind::RangeIndex)?);
+                }
+                Some(UsingHintKind::Join) => {
                     // `ON` is mandatory in `USING JOIN ON <var>…` — every
                     // sibling parse of the keyword in this crate expects
                     // it, and live Neo4j rejects the bare form.
                     self.expect(TokenType::ON)?;
-                    let mut variables = Vec::new();
-                    loop {
-                        variables.push(self.parse_bare_name("identifier")?); // variable
-                        if self.peek_type() == TokenType::Comma {
-                            self.next_token();
-                            continue;
-                        }
-                        break;
-                    }
+                    let variables = self.parse_identifier_list()?;
                     hints.join.push(crate::ast::JoinHint { variables });
                 }
-                "scan" => {
+                Some(UsingHintKind::Scan) => {
                     let variable = self.parse_bare_name("identifier")?;
                     self.expect(TokenType::Colon)?;
                     let label = self.parse_label_name()?;
                     hints.scan.push(crate::ast::ScanHint { variable, label });
                 }
-                _ => {
+                None => {
                     return Err(self.error_at_token(
                         &kind_tok,
                         format!(
-                            "expected INDEX, JOIN, or SCAN after USING, got {:?}",
+                            "expected {} after USING, got {:?}",
+                            UsingHintKind::rendered_list(),
                             kind_tok.literal
                         ),
                     ))
@@ -152,6 +186,24 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(hints)
+    }
+
+    /// `USING [RANGE] INDEX <variable>:<Label>(<property>[, …])`'s tail
+    /// after the kind words: the one parse of both index-hint kinds'
+    /// variable, label and property list.
+    fn parse_index_hint_tail(&mut self, kind: IndexHintKind) -> ParseResult<crate::ast::IndexHint> {
+        let variable = self.parse_bare_name("identifier")?; // variable
+        self.expect(TokenType::Colon)?;
+        let label = self.parse_label_name()?;
+        self.expect(TokenType::LeftParen)?;
+        let properties = self.parse_identifier_list()?;
+        self.expect(TokenType::RightParen)?;
+        Ok(crate::ast::IndexHint {
+            kind,
+            variable,
+            label,
+            properties,
+        })
     }
 
     /// The CIP-51/CIP-60 match mode whose two-word phrase

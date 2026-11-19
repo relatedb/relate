@@ -1,13 +1,16 @@
-//! The `USING INDEX` / `USING JOIN ON` hint notifications (ADR-0363).
+//! The `USING [RANGE] INDEX` / `USING JOIN ON` hint notifications
+//! (ADR-0363).
 //!
 //! Live-verified against 2026.10.1 (2026-11-07/08): a `USING INDEX` hint
 //! the catalog cannot serve warns `01N31` — one notification per
 //! unfulfilled hint, naming the hinted index — and a `USING JOIN ON` hint
-//! warns `01N30` per hint. Relate's planner is not cost-based: it never
-//! plans a hint-directed join, so every join hint is unfulfillable. An
-//! index hint is served by any node index on the hinted label that covers
-//! every hinted property and is not a vector index — live fulfills the
-//! hint through range, text, point and fulltext indexes alike (an
+//! warns `01N30` per hint. The range-typed `USING RANGE INDEX` spelling
+//! rides the same rule and is named as written in the notification.
+//! Relate's planner is not cost-based: it never plans a hint-directed
+//! join, so every join hint is unfulfillable. An index hint is served by
+//! any node index on the hinted label that covers every hinted property
+//! and is not a vector index — live fulfills the hint through range,
+//! text, point and fulltext indexes alike (an
 //! equality, range or string predicate), and never through a vector one.
 //! Both kinds are occurrence-scoped (one row per hint, never collapsed),
 //! matching live's per-hint reporting.
@@ -19,6 +22,7 @@
 //! statement's notification list.
 
 use relate_executor::{IndexFacts, IndexKindSpec};
+use relate_model::identifier::{quote_identifier_always, quote_identifier_shaped};
 use relate_model::wire::{Notification, NotificationKind};
 use relate_parser::{IndexHint, JoinHint};
 
@@ -58,17 +62,27 @@ pub(super) fn observe(
                 NotificationKind::HintedIndexNotFound,
                 format!(
                     "warn: hinted index does not exist. Unable to create a plan with \
-                     'INDEX :{}({})' because the index does not exist.",
-                    hint.label, properties
+                     '{} :{}({})' because the index does not exist.",
+                    hint.kind.as_written(),
+                    // The label renders through the canonical display
+                    // quoting (bare when plain, backtick-escaped
+                    // otherwise — `properties_text` does the same for
+                    // the property list), so an exotic name cannot break
+                    // the message carrying it.
+                    hint.label.with_str(quote_identifier_shaped),
+                    properties
                 ),
             ));
         }
     }
     for hint in join_hints {
+        // Always backticked (the live-pinned 01N30 spelling), with an
+        // embedded backtick escaped through the canonical always-form —
+        // a hand-spelled `format!("`{v}`")` could not encode one.
         let variables = hint
             .variables
             .iter()
-            .map(|v| format!("`{v}`"))
+            .map(|v| v.with_str(quote_identifier_always))
             .collect::<Vec<_>>()
             .join(", ");
         notifications.push(Notification::new(
