@@ -1,8 +1,20 @@
-# 0199. Statement progress when a multi-statement run fails
+---
+type: adr
+area: cli
+date: 2026-10-09
+deciders: CypherLite maintainers
+name: 0199-statement-progress-on-failure
+status: proposed
+tags:
+  - errors
+  - output
+title: Statement progress when a multi-statement run fails
+REFERENCES:
+  - "[[adr/0164-exit-open-transaction]]"
+  - "[[adr/0194-cli-error-envelope-and-exit-codes]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-10-09
-- **Deciders**: CypherLite maintainers (Linear [LABS-240](https://linear.app/neo4j/issue/LABS-240))
+# 0199. Statement progress when a multi-statement run fails
 
 ## Context
 
@@ -15,7 +27,7 @@ statement to fix and resume from.
 
 Whether the earlier statements are durable depends on the session: each
 statement commits on its own, except inside an explicit `.begin` transaction,
-where nothing is committed until `.commit` and an exit discards it (ADR-0164).
+where nothing is committed until `.commit` and an exit discards it ([ADR-0164](./0164-exit-open-transaction.md)).
 
 ## Decision
 
@@ -28,7 +40,7 @@ where nothing is committed until `.commit` and an exit discards it (ADR-0164).
    `statement 2 of 3 failed; 1 completed and committed; 1 not run`.
    Inside an open `.begin` transaction the middle clause reads
    `1 completed, not committed (open transaction)`.
-3. **The error envelope gains three optional fields** (additive to ADR-0194),
+3. **The error envelope gains three optional fields** (additive to [ADR-0194](./0194-cli-error-envelope-and-exit-codes.md)),
    present only for a multi-statement run:
 
    | Field | Meaning |
@@ -46,10 +58,10 @@ where nothing is committed until `.commit` and an exit discards it (ADR-0164).
    fragments, so a trailing `;` does not add one. **Only a failed Cypher
    statement reports.** A failed `.`-command (for example `.commit` with no open
    transaction) stops the run as it does today, with its existing error line and
-   exit code and no envelope (ADR-0194 keeps dot-commands outside the error
+ exit code and no envelope ([ADR-0194](./0194-cli-error-envelope-and-exit-codes.md) keeps dot-commands outside the error
    object); giving them one is a separate decision.
 5. **No change to execution.** A failure still stops a piped or one-shot batch
-   at the first error (ADR-0194's exit code is that statement's class). This ADR
+ at the first error ([ADR-0194](./0194-cli-error-envelope-and-exit-codes.md)'s exit code is that statement's class). This ADR
    adds reporting only.
 6. **Interactive sessions** report nothing extra. A line holding several
    statements keeps going after a failure in the shell, so "N not run" would be
@@ -69,7 +81,7 @@ where nothing is committed until `.commit` and an exit discards it (ADR-0164).
 - **Always print a summary, even on success.** Rejected: it changes the output of
   every successful run and every existing script.
 - **Put the progress in the `message` text only.** Rejected: an agent should
-  branch on a field, not parse a sentence (ADR-0194).
+ branch on a field, not parse a sentence ([ADR-0194](./0194-cli-error-envelope-and-exit-codes.md)).
 
 ## Consequences
 

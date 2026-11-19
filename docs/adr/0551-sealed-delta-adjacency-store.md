@@ -1,11 +1,29 @@
-# ADR-0551: Sealed + delta adjacency store — data model and invariants
+---
+type: adr
+area: engine
+claim: 4d0ad33b50986d6984e6fdc7b31739a7642e0155
+name: 0551-sealed-delta-adjacency-store
+status: proposed
+tags:
+  - storage
+title: Sealed + delta adjacency store — data model and invariants
+REFERENCES:
+  - "[[adr/0035-ordered-expand-ts]]"
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0202-graph-floor-memory]]"
+  - "[[adr/0203-newest-first-expansion-order]]"
+  - "[[adr/0206-compressed-topology-storage]]"
+  - "[[adr/0608-seal-restored-adjacency]]"
+---
 
-Status: Proposed
-Claim: 4d0ad33b50986d6984e6fdc7b31739a7642e0155
+# ADR-0551: Sealed + delta adjacency store — data model and invariants
 
 ## Context
 
-The compressed-topology ADR (ADR-0206) conditionally adopted compressed
+The compressed-topology ADR ([ADR-0206](./0206-compressed-topology-storage.md)) conditionally adopted compressed
 committed adjacency chunks: its hybrid codec saves 95.89–99.31% of
 topology-twin bytes with scalar decode 33x–173x off the live expansion
 critical path, but compression is append-hostile, so adoption was
@@ -25,9 +43,9 @@ visibility, is unchanged. A committed delta region materializes the
 overlay's operations on commit as the net effect per touched rel id
 (last-write-wins, not an op log) into a per-chunk delta vector keeping
 today's sorted ts-DESC insert semantics, plus a per-chunk tombstone set. A
-sealed region holds compressed immutable chunks in the ADR-0206 hybrid
-codec; the ts-DESC chunk order (ADR-0035) and newest-first expansion
-(ADR-0203) stay.
+sealed region holds compressed immutable chunks in the [ADR-0206](./0206-compressed-topology-storage.md) hybrid
+codec; the ts-DESC chunk order ([ADR-0035](./0035-ordered-expand-ts.md)) and newest-first expansion
+([ADR-0203](./0203-newest-first-expansion-order.md)) stay.
 
 **Read merge.** Delta first, then the sealed stream; both are ts-DESC and
 fresh hops are almost always newer, so the common case is
@@ -79,11 +97,11 @@ bounds delta memory by distinct touched rels since the last compaction,
 not by operation count.
 
 **Accounting and codec source.** Sealed chunks are charged at compressed
-size and the delta at live size, per ADR-0042 as amended by ADR-0202; the
-memory-shape loadtest baselines need re-freezing through ADR-0071's CI
+size and the delta at live size, per [ADR-0042](./0042-graph-memory-limit.md) as amended by [ADR-0202](./0202-graph-floor-memory.md); the
+memory-shape loadtest baselines need re-freezing through [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md)'s CI
 dispatch, never by hand. The hybrid codec moves from the `relate-datasets`
 testing crate into `relate-executor` as a new adjacency codec module —
-engine crates depend only on engine crates (ADR-0103 rule R1) and the move
+engine crates depend only on engine crates ([ADR-0103](./0103-engine-surfaces-testing-layout.md) rule R1) and the move
 adds no new external dependency. The experiment crate keeps its own pinned
 copy, since a testing crate cannot import engine-internal modules; a
 shared home in `relate-core` is rejected for now.
@@ -91,14 +109,14 @@ shared home in `relate-core` is rejected for now.
 ## Alternatives considered
 
 - **Rebuild-on-write per adjacency list.** Rejected: O(degree) per write
-  to hub nodes, the redo-path regression ADR-0206 warned against.
+ to hub nodes, the redo-path regression [ADR-0206](./0206-compressed-topology-storage.md) warned against.
 - **Raw-overflow slack inside compressed blocks.** Rejected: per-block
   fragmentation bookkeeping in a footprint-first engine.
 - **CSR as the primary store.** Rejected: batch-built CSR fights the redo
   path; checkpoint-rebuilt read-only CSR stays a future acceleration
   structure only.
 - **Uncompressed-only delta, no sealed region.** Rejected: no memory win —
-  ADR-0206's 95.89–99.31% saving is the sealed form.
+ [ADR-0206](./0206-compressed-topology-storage.md)'s 95.89–99.31% saving is the sealed form.
 - **Elias-Fano for the id stream.** Rejected: decode too slow for
   transactional latency.
 - **SIMD decode.** Rejected: the NEON block decoder does not beat scalar
@@ -127,10 +145,10 @@ shared home in `relate-core` is rejected for now.
   it; the dump horizon is the durability floor. Durable sealed bytes would
   be a snapshot-codec change and its own ADR.
 - The codec exists in two places on purpose; the experiment copy stays
-  pinned while ADR-0206's numbers are the reference evidence. Baselines
-  under `baselines/` are re-frozen via ADR-0071's CI dispatch; local
+ pinned while [ADR-0206](./0206-compressed-topology-storage.md)'s numbers are the reference evidence. Baselines
+ under `baselines/` are re-frozen via [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md)'s CI dispatch; local
   baseline runs on the branch are not gate-comparable until then
-  (ADR-0070).
+ ([ADR-0070](./0070-docker-baseline-loadtest-environment.md)).
 - The existing memory shapes do not model mid-degree graphs (flat 0, ring
   1, dense-ring ~20, fanout leaves 1 hop per chunk — all below the 32-hop
   floor; only the fanout hubs seal, as they already did at 1024), so their
@@ -141,7 +159,7 @@ shared home in `relate-core` is rejected for now.
 
 ## Later references
 
-- ADR-0608 seals restored adjacency: a store opened from a checkpoint folds
+- [ADR-0608](./0608-seal-restored-adjacency.md) seals restored adjacency: a store opened from a checkpoint folds
   the chunks that checkpoint's GC pass would have folded, so this ADR's
   "a reloaded store is delta-only and the next checkpoint re-seals it"
   consequence no longer holds. The floor, the horizon, the fold predicate

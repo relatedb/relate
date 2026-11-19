@@ -1,12 +1,26 @@
-# ADR-0556: Shortest routes search property-seekable endpoints as pairs
+---
+type: adr
+area: engine
+claim: 2a0d5f739d91e848bb4c1304b9322d032c866215
+name: 0556-shortest-route-pair-search-for-seekable-endpoints
+status: proposed
+tags:
+  - index
+  - pattern-matching
+title: Shortest routes search property-seekable endpoints as pairs
+REFERENCES:
+  - "[[adr/0186-match-clause-shortest-path-bfs]]"
+  - "[[adr/0189-shared-shortest-path-search]]"
+  - "[[adr/0473-contracted-traversal-kernels]]"
+  - "[[adr/0478-frontier-nfa-qpp-kernel]]"
+---
 
-Status: Proposed
-Claim: 2a0d5f739d91e848bb4c1304b9322d032c866215
+# ADR-0556: Shortest routes search property-seekable endpoints as pairs
 
 ## Context
 
-ADR-0186 routes `MATCH`-clause shortest paths onto a breadth-first search,
-and ADR-0189 shares that search with the expression form. The route
+[ADR-0186](./0186-match-clause-shortest-path-bfs.md) routes `MATCH`-clause shortest paths onto a breadth-first search,
+and [ADR-0189](./0189-shared-shortest-path-search.md) shares that search with the expression form. The route
 anchors each input row by which endpoints are bound. A pattern whose
 endpoints are property maps rather than bound variables
 (`(a:User {id: 1})-[*..6]-(b:User {id: 2})`) was anchored as "free": a
@@ -17,8 +31,8 @@ pattern takes when both ends are bound meets in the middle after a small
 fraction of the work. The measured gap on a ten-million-node social graph
 was two orders of magnitude on exactly this shape.
 
-Separately, every walk in the engine — the traversal kernels (ADR-0473),
-the frontier NFA (ADR-0478), the GPM hop walk, the path fold and the
+Separately, every walk in the engine — the traversal kernels ([ADR-0473](./0473-contracted-traversal-kernels.md)),
+the frontier NFA ([ADR-0478](./0478-frontier-nfa-qpp-kernel.md)), the GPM hop walk, the path fold and the
 shortest searches — read a relationship's neighbour with a rel walk
 followed by a separate endpoint lookup, two version-chain reads per hop.
 

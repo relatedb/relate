@@ -1,13 +1,28 @@
+---
+type: adr
+area: cli
+date: 2026-10-02
+deciders: CypherLite maintainers
+name: 0286-fs-to-graph-explicit-db-exits
+status: accepted
+tags:
+  - commands
+  - load
+title: "`fs-to-graph` exits when `--db` is set"
+REFERENCES:
+  - "[[adr/0157-fs-to-graph-import]]"
+  - "[[adr/0383-lab-database-flag]]"
+SUPERSEDES:
+  - "[[adr/0157-fs-to-graph-import]]"
+---
+
 # 0286. `fs-to-graph` exits when `--db` is set
 
-- **Status**: Accepted
 - **Renumbered**: from 0166 (shared-number cleanup)
-- **Date**: 2026-10-02
-- **Deciders**: CypherLite maintainers (Linear LABS-166)
 
 ## Context
 
-ADR-0157's UX rule opens the interactive shell after a successful
+[ADR-0157](./0157-fs-to-graph-import.md)'s UX rule opens the interactive shell after a successful
 `cypherlite lab fs-to-graph` whenever stdin is a TTY and the `repl` feature
 is compiled in. That rule does not distinguish an omitted `--db` from an
 explicit one.
@@ -29,7 +44,7 @@ checkpoints a persistent target, and exits 0. This includes `--db :memory:`:
 passing the flag is the request to finish, even when the target is not
 durable.
 
-**Omitting `--db`** is unchanged from ADR-0157. The import uses `:memory:`,
+**Omitting `--db`** is unchanged from [ADR-0157](./0157-fs-to-graph-import.md). The import uses `:memory:`,
 and on a TTY with the `repl` feature the shell opens on that graph.
 Without a TTY, or without `repl`, the command prints the summary and exits.
 
@@ -55,13 +70,13 @@ Without a TTY, or without `repl`, the command prints the summary and exits.
 - `docs/api/cli/spec.md`, the hand-written `--help` text, and
   `docs/reference/cli-flags.md` state that an explicit `--db` exits without
   the shell.
-- ADR-0157's unconditional TTY-shell sentence is superseded for the
+- [ADR-0157](./0157-fs-to-graph-import.md)'s unconditional TTY-shell sentence is superseded for the
   explicit-`--db` case; a **Later references** note there points here. The
   omitted-`--db` shell is unchanged.
 
 ## Later references
 
-ADR-0383 renames the flag this rule keys on: an explicit `-d` / `--database`,
+[ADR-0383](./0383-lab-database-flag.md) renames the flag this rule keys on: an explicit `-d` / `--database`,
 not `--db`, is the signal that the import exits without the shell. The
 supersession is the flag spelling only; the explicit-versus-omitted rule
 above stands.

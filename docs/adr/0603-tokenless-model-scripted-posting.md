@@ -1,14 +1,25 @@
-# ADR-0603: Tokenless review model, scripted posting on every lane
+---
+type: adr
+area: infra
+claim: c33e656bfe606e62e96c5834b1d0828eb62710d0
+name: 0603-tokenless-model-scripted-posting
+status: proposed
+tags:
+  - review
+title: Tokenless review model, scripted posting on every lane
+REFERENCES:
+  - "[[adr/0258-automated-pr-reviews]]"
+  - "[[adr/0271-stellar-review-deterministic-pipeline]]"
+---
 
-Status: Proposed
-Claim: c33e656bfe606e62e96c5834b1d0828eb62710d0
+# ADR-0603: Tokenless review model, scripted posting on every lane
 
 ## Context
 
-ADR-0258 runs three OpenCode review lanes off one reusable workflow. The
-stellar lane was rebuilt as a deterministic pipeline (ADR-0271): scripts
+[ADR-0258](./0258-automated-pr-reviews.md) runs three OpenCode review lanes off one reusable workflow. The
+stellar lane was rebuilt as a deterministic pipeline ([ADR-0271](./0271-stellar-review-deterministic-pipeline.md)): scripts
 compute the inputs before the model and post after it, so its model step
-runs with no GitHub token. The rust and security lanes kept ADR-0258's
+runs with no GitHub token. The rust and security lanes kept [ADR-0258](./0258-automated-pr-reviews.md)'s
 original shape: the checkout persists its token, the model receives it as
 `GH_TOKEN`, and the model itself reads the PR diff through `gh`, posts
 every inline comment, writes the verdict file, and upserts the summary
@@ -41,7 +52,7 @@ Every lane runs the model tokenless; all posting is scripted.
    `.stellar/findings.json` — accepted only as a regular untracked file —
    and owns the inline comments (one reviews call), the single summary
    comment with the marker line, `.opencode-verdict.txt`, and the
-   verdict (ADR-0258's severity gate: any Critical/High/Medium finding
+ verdict ([ADR-0258](./0258-automated-pr-reviews.md)'s severity gate: any Critical/High/Medium finding
    fails). It reuses the stellar poster's gh mechanics and choreography,
    and the stellar post-step hardening: pinned PATH, neutralized hooks,
    reset to the event payload's merge SHA (local HEAD is model-moveable),
@@ -67,7 +78,7 @@ Every lane runs the model tokenless; all posting is scripted.
   access to do its job.
 - **Harden the prompt against shell use instead** — rejected: the prompt
   is advisory to a process reading attacker-controlled diff content;
-  ADR-0271 already established that posting is deterministic work a
+ [ADR-0271](./0271-stellar-review-deterministic-pipeline.md) already established that posting is deterministic work a
   script does better and cheaper.
 
 ## Consequences

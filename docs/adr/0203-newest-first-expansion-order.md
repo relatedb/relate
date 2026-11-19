@@ -1,11 +1,30 @@
+---
+type: adr
+area: engine
+date: 2026-10-11
+deciders: CypherLite maintainers
+name: 0203-newest-first-expansion-order
+status: proposed
+tags:
+  - conformance
+  - pattern-matching
+title: Newest-first expansion order (Neo4j relationship-chain parity)
+REFERENCES:
+  - "[[adr/0031-typed-adjacency]]"
+  - "[[adr/0033-compact-live-records-typed-csr]]"
+  - "[[adr/0034-bidirectional-shortestpath]]"
+  - "[[adr/0035-ordered-expand-ts]]"
+  - "[[adr/0037-shallow-bound-shortestpath]]"
+  - "[[adr/0144-graph-examples-differential-suite]]"
+SUPERSEDES:
+  - "[[adr/0035-ordered-expand-ts]]"
+---
+
 # 0203. Newest-first expansion order (Neo4j relationship-chain parity)
 
-- **Status**: Proposed
-- **Date**: 2026-10-11
-- **Deciders**: CypherLite maintainers (LABS-255, LABS-258)
-- **Related**: ADR-0031 (typed adjacency), ADR-0033, ADR-0035 (ordered
-  expand; tie-break superseded here), ADR-0034 / ADR-0037 (shortest-path
-  searches), ADR-0144 (differential suite)
+- **Related**: [ADR-0031](./0031-typed-adjacency.md) (typed adjacency), [ADR-0033](./0033-compact-live-records-typed-csr.md), [ADR-0035](./0035-ordered-expand-ts.md) (ordered
+ expand; tie-break superseded here), [ADR-0034](./0034-bidirectional-shortestpath.md) / [ADR-0037](./0037-shallow-bound-shortestpath.md) (shortest-path
+ searches), [ADR-0144](./0144-graph-examples-differential-suite.md) (differential suite)
 
 ## Context
 
@@ -31,23 +50,23 @@ relationship chain, so reference expansions see a node's relationships
 **newest-first** (descending relationship id within a type). Verified
 empirically via LABS-255: with per-chunk adjacency ordered by descending
 `RelId`, cypherlite's clock→Zoo School sum is 212.19, matching the
-reference exactly. CypherLite's typed adjacency chunks (ADR-0031/0033)
-were sorted by ascending `RelId` — the ADR-0035 "then `RelId`"
+reference exactly. CypherLite's typed adjacency chunks ([ADR-0031](./0031-typed-adjacency.md)/[ADR-0033](./0033-compact-live-records-typed-csr.md))
+were sorted by ascending `RelId` — the [ADR-0035](./0035-ordered-expand-ts.md) "then `RelId`"
 tie-break — i.e. oldest-first.
 
 ## Decision
 
 Within each per-node, per-type adjacency chunk, relationships iterate
-**newest-first**: the ADR-0035 chunk order keeps missing-`ts` first and
+**newest-first**: the [ADR-0035](./0035-ordered-expand-ts.md) chunk order keeps missing-`ts` first and
 present `ts` descending, but the final tie-break flips from ascending
 `RelId` to **descending `RelId`** (`cmp_ts_desc` in
-`cypherlite-executor/src/store.rs`). ADR-0035's "then `RelId`" is read
+`cypherlite-executor/src/store.rs`). [ADR-0035](./0035-ordered-expand-ts.md)'s "then `RelId`" is read
 as descending from here on.
 
 This one order is the whole parity contract for expansion-driven row
 order, with one addition for the GPM selector:
 
-- `shortestPath` (ADR-0034 bidirectional BFS, ADR-0037 shallow
+- `shortestPath` ([ADR-0034](./0034-bidirectional-shortestpath.md) bidirectional BFS, [ADR-0037](./0037-shallow-bound-shortestpath.md) shallow
   intersection) inherits the tie-break from the walk: the equal-hop
   path reached through the newest relationships is found first and kept
   (both searches record the first meet and never replace it with an
@@ -74,7 +93,7 @@ order, with one addition for the GPM selector:
 ## Alternatives considered
 
 - **Keep ascending ids; treat tie order as unspecified** — rejected:
-  the differential suite (ADR-0144) compares exactly these outputs, and
+ the differential suite ([ADR-0144](./0144-graph-examples-differential-suite.md)) compares exactly these outputs, and
   the order-only diffs keep recurring across datasets.
 - **Re-order only the shortest-path searches** (sort hops per node by
   descending id at expansion time) — rejected: LABS-258 shows the same
@@ -91,7 +110,7 @@ order, with one addition for the GPM selector:
   both directions of one type interleave by id.
 - **Overlay scratch (uncommitted creates) first, reversed** — the
   strict newest-first order for a write-transaction MATCH. Deferred:
-  the overlay scratch is explicitly unordered (ADR-0031/0035), the
+ the overlay scratch is explicitly unordered ([ADR-0031](./0031-typed-adjacency.md)/[ADR-0035](./0035-ordered-expand-ts.md)), the
   differential repros read committed stores, and no differential
   failure is traced to in-transaction order. A later ADR can extend the
   contract if one appears.
@@ -103,7 +122,7 @@ order, with one addition for the GPM selector:
   the reference's newest-first walk. Pinned expectations authored
   against the old walk (e.g. the recommendations-walkthrough rows in
   `cypherlite/tests/keyword_aliases.rs`) are re-pinned.
-- The ADR-0035 `ORDER BY ts DESC LIMIT` early-stop walk is unaffected:
+- The [ADR-0035](./0035-ordered-expand-ts.md) `ORDER BY ts DESC LIMIT` early-stop walk is unaffected:
   `ts` still leads the chunk order; only the same-`ts` tie-break flips.
 - Unit tests pin the semantics: `store::tests::typed_adj_chunks`
   (chunk order), `shortest::tests::pair_search_tie_breaks_to_the_newest_relationship`
@@ -119,4 +138,4 @@ order, with one addition for the GPM selector:
 
 ## Later references
 
-ADR-0035: its `RelId` tie-break sentence is superseded by this ADR.
+[ADR-0035](./0035-ordered-expand-ts.md): its `RelId` tie-break sentence is superseded by this ADR.

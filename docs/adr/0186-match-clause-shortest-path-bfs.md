@@ -1,12 +1,28 @@
-# 0186. MATCH-clause shortest paths run on BFS
+---
+type: adr
+area: engine
+date: 2026-10-08
+deciders: Oskar Hane (agreed in the planning conversation), CypherLite maintainers
+name: 0186-match-clause-shortest-path-bfs
+status: accepted
+tags:
+  - pattern-matching
+title: MATCH-clause shortest paths run on BFS
+REFERENCES:
+  - "[[adr/0025-shortestpath-bfs]]"
+  - "[[adr/0034-bidirectional-shortestpath]]"
+  - "[[adr/0037-shallow-bound-shortestpath]]"
+  - "[[adr/0189-shared-shortest-path-search]]"
+  - "[[adr/0466-traversal-depth-admission-limit]]"
+  - "[[adr/0600-keyword-selector-where-is-a-post-filter]]"
+  - "[[adr/0607-route-shortest-k-and-groups-by-class]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-08
-- **Deciders**: Oskar Hane (agreed in the LABS-192 planning conversation), CypherLite maintainers (Linear LABS-192)
+# 0186. MATCH-clause shortest paths run on BFS
 
 ## Context
 
-ADR-0025, ADR-0034 and ADR-0037 made `shortestPath` /
+[ADR-0025](./0025-shortestpath-bfs.md), [ADR-0034](./0034-bidirectional-shortestpath.md) and [ADR-0037](./0037-shallow-bound-shortestpath.md) made `shortestPath` /
 `allShortestPaths` a breadth-first search. Only the expression form
 (`Expr::ShortestPath`, e.g. `RETURN shortestPath(...)` or
 `WITH shortestPath(...) AS p`) reaches that search
@@ -124,7 +140,7 @@ Per (start node, end node) partition:
   `ALL SHORTEST`) return every trail of length `D`.
 - `[*]` without an upper bound has no hop cap; only the graph bounds
   the search, as under GPM. The 32-hop default of the expression form
-  (ADR-0025) is unchanged.
+ ([ADR-0025](./0025-shortestpath-bfs.md)) is unchanged.
 - Start = end: the zero-length path when `min` is 0; the shortest closed
   trail through that node when `min` is 1.
 - Which trail a single-path selector returns among equal-length trails
@@ -143,11 +159,11 @@ The route lives under the GPM engine (`exec/gpm/shortest_route/`) and
 is tried at the top of `match_gpm_path`. A pattern its guard rejects
 falls through to enumerate-then-select. Its searches come from the
 shared module `cypherlite/cypherlite-executor/src/shortest/`, which the
-expression form also uses (ADR-0189).
+expression form also uses ([ADR-0189](./0189-shared-shortest-path-search.md)).
 
 - **Both endpoints bound, start ≠ end:** one search per pair.
   - Single-path selectors use the shared pair search: the shallow
-    intersection (ADR-0037) or the bidirectional BFS (ADR-0034) behind
+ intersection ([ADR-0037](./0037-shallow-bound-shortestpath.md)) or the bidirectional BFS ([ADR-0034](./0034-bidirectional-shortestpath.md)) behind
     one dispatch rule.
   - All-path selectors use the layered predecessor-DAG search from the
     start, stopped after the layer that reaches the end.
@@ -224,7 +240,7 @@ number of trails within the hop bound.
   graph where enumeration is exponential. Together they carry the
   contract; the TCK and the frozen CIP-eval selector scenarios stay
   green.
-- The ADR-0034 bidirectional BFS changes its stop rule (LABS-196).
+- The [ADR-0034](./0034-bidirectional-shortestpath.md) bidirectional BFS changes its stop rule.
   After a meet of length `L`, with `df` and `db` the depths of the two
   frontiers:
   - start ≠ end and `min_hops` ≤ 1: stop once `df + db + 1 ≥ L`. There
@@ -233,7 +249,7 @@ number of trails within the hop bound.
   - otherwise: the per-side rule. Stop once neither frontier can beat
     `L` (`df + 1 ≥ L` and `db + 1 ≥ L`). A `min_hops` cut or a closed
     trail can reject the shortest split and leave a shorter meet to a
-    later layer. Per ADR-0189 the pair search is only called with
+ later layer. Per [ADR-0189](./0189-shared-shortest-path-search.md) the pair search is only called with
     start ≠ end and `min_hops` ≤ 1, so the per-side stop rule has no
     caller left.
 - Every search checks cancellation per neighbour
@@ -241,24 +257,24 @@ number of trails within the hop bound.
   layer. The bidirectional BFS checks in O(1) whether a relationship is
   already on a node's tree trail, against that node's parent edge,
   instead of walking the parent chain for every edge.
-- ADR-0189 moves the expression form onto the same shared search module
+- [ADR-0189](./0189-shared-shortest-path-search.md) moves the expression form onto the same shared search module
   and removes `bfs_shortest_all`. The expression form keeps one value
-  per row and its 32-hop default for an unbounded `[*]` (ADR-0025).
-  ADR-0025 gains Later references notes naming this ADR and ADR-0189.
+ per row and its 32-hop default for an unbounded `[*]` ([ADR-0025](./0025-shortestpath-bfs.md)).
+ [ADR-0025](./0025-shortestpath-bfs.md) gains Later references notes naming this ADR and [ADR-0189](./0189-shared-shortest-path-search.md).
 - No public API change. `docs/engine-architecture.md` and
   `docs/reference/cypher-syntax.md` describe the clause form.
 
 ## Later references
 
-ADR-0466: statement admission now rejects an explicit traversal hop bound
+[ADR-0466](./0466-traversal-depth-admission-limit.md): statement admission now rejects an explicit traversal hop bound
 above `--max-traversal-depth` (default 500, ceiling 2000). That limit
 applies only to an explicit `max_hops`; the uncapped unbounded `[*]`
 route this ADR describes is unchanged, and remains bounded by the
 relationship count rather than by a hop cap.
 
-ADR-0600: for the keyword selectors, a clause-level `WHERE` that reads the
+[ADR-0600](./0600-keyword-selector-where-is-a-post-filter.md): for the keyword selectors, a clause-level `WHERE` that reads the
 path is a post-filter of the selected paths, as this ADR first recorded; the
 function spellings and inline `WHERE`s filter the search.
 
-ADR-0607: `SHORTEST k` (k above 1) and `SHORTEST k GROUPS` on pair anchors
+[ADR-0607](./0607-route-shortest-k-and-groups-by-class.md): `SHORTEST k` (k above 1) and `SHORTEST k GROUPS` on pair anchors
 take the route, by length class, instead of enumeration.

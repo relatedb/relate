@@ -1,9 +1,22 @@
+---
+type: adr
+area: infra
+date: 2026-10-11
+deciders: CypherLite maintainers
+name: 0204-nightly-pull-retry-and-diagnostics
+status: proposed
+tags:
+  - ci
+  - conformance
+title: "Nightly differential: bounded pull retry and pre-cleanup reference diagnostics"
+REFERENCES:
+  - "[[adr/0144-graph-examples-differential-suite]]"
+  - "[[adr/0176-graph-examples-report-only-nightly]]"
+---
+
 # 0204. Nightly differential: bounded pull retry and pre-cleanup reference diagnostics
 
-- **Status**: Proposed
-- **Date**: 2026-10-11
-- **Deciders**: CypherLite maintainers
-- **Related**: ADR-0144 (graph-examples differential suite), ADR-0176
+- **Related**: [ADR-0144](./0144-graph-examples-differential-suite.md) (graph-examples differential suite), [ADR-0176](./0176-graph-examples-report-only-nightly.md)
   (report-only nightly and infrastructure-failure kinds)
 
 ## Context
@@ -24,7 +37,7 @@ failure surfaced two robustness gaps:
 1. **No retry.** `pull_fresh_copy` runs `cypherlite pull` exactly once.
    A transient mid-statement disconnect — Neo4j's Query API v2 closing a
    response whose client stalls, per the error's own hint — fails the
-   whole dataset as an ADR-0176 infrastructure failure even though a
+ whole dataset as an [ADR-0176](./0176-graph-examples-report-only-nightly.md) infrastructure failure even though a
    fresh re-run would very likely succeed.
 2. **No reference logs on a graceful-but-failing exit.** The suite's
    `DatasetTest`/`CleanupGuard` `Drop`s remove the reference container
@@ -92,7 +105,7 @@ failure surfaced two robustness gaps:
 ## Consequences
 
 - A transient stream disconnect costs one extra pull of one dataset
-  instead of failing the whole dataset (and the run) as an ADR-0176
+ instead of failing the whole dataset (and the run) as an [ADR-0176](./0176-graph-examples-report-only-nightly.md)
   infrastructure failure; permanent failures are untouched.
 - Every future infrastructure-failure nightly ships the reference
   container's logs in the uploaded artifact, whether the run panicked

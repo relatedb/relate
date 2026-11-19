@@ -1,33 +1,50 @@
-# 0104. Cargo feature bundles, starting with the CLI
+---
+type: adr
+area: infra
+date: 2026-09-25
+deciders: CypherLite maintainers
+name: 0104-cargo-feature-bundles
+status: accepted
+tags:
+  - workspace
+title: Cargo feature bundles, starting with the CLI
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0073-interactive-cli-line-editing]]"
+  - "[[adr/0079-anonymous-usage-metrics]]"
+  - "[[adr/0080-cli-pull-command]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0105-optional-parquet-codec]]"
+  - "[[adr/0267-cli-fetch-params-flag]]"
+  - "[[adr/0270-cli-flag-parse-fetch-split]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-25
-- **Deciders**: CypherLite maintainers
+# 0104. Cargo feature bundles, starting with the CLI
 
 ## Context
 
 Linear LABS-103 asks to separate CypherLite into a minimal engine core with a
 layer above it for surfaces, integrations, and UX, and to offer
 "use-case-specific bundles that cherry-pick features, plus a larger bundle
-containing all features". ADR-0103 does the structural half: it moves the
+containing all features". [ADR-0103](./0103-engine-surfaces-testing-layout.md) does the structural half: it moves the
 engine crates under `cypherlite/`, the product surfaces under `surfaces/`, and
 test/benchmark tooling under `testing/`. The `cypherlite` CLI crate
-(`cypherlite-cli`) lands at `surfaces/cypherlite-cli`. ADR-0103 does not decide
+(`cypherlite-cli`) lands at `surfaces/cypherlite-cli`. [ADR-0103](./0103-engine-surfaces-testing-layout.md) does not decide
 how a single crate offers less or more capability; that is this ADR.
 
 Today the CLI is monolithic. Every build links:
 
 - `repl.rs` — the `rustyline` line editor for the interactive shell
-  (ADR-0073). It already has a `run_plain_interactive` plain-stdin fallback
+ ([ADR-0073](./0073-interactive-cli-line-editing.md)). It already has a `run_plain_interactive` plain-stdin fallback
   used when the editor cannot start.
-- `pull_cmd.rs` — `cypherlite pull` (ADR-0080), which depends on
+- `pull_cmd.rs` — `cypherlite pull` ([ADR-0080](./0080-cli-pull-command.md)), which depends on
   `cypherlite-load` (Neo4j/Aura Query API v2 client).
 - `skill/` + `skill_cmd.rs` — `cypherlite skill install|remove`, which writes
   the embedded agent skill bundle into agent config directories.
 - `upgrade_cmd.rs` — `cypherlite upgrade` / `update`, which downloads and
   verifies release binaries using `ureq` and `sha2`.
 - `telemetry/` + `telemetry_cmd.rs` — `cypherlite telemetry on|off|status` and
-  anonymous usage-metrics emission (ADR-0079), using `ureq` (and `rand` for
+ anonymous usage-metrics emission ([ADR-0079](./0079-anonymous-usage-metrics.md)), using `ureq` (and `rand` for
   event identifiers).
 
 The first concrete use case for a smaller build is sandbox and Docker images
@@ -37,7 +54,7 @@ network calls, and they gain nothing from an interactive line editor.
 Operators currently get all of that whether they want it or not, plus the HTTP
 and TLS dependency surface that comes with it.
 
-ADR-0069 fixes the CLI command grammar: exit-after lifecycle verbs (`skill`,
+[ADR-0069](./0069-cli-lifecycle-commands.md) fixes the CLI command grammar: exit-after lifecycle verbs (`skill`,
 `upgrade`/`update`, `telemetry`, `pull`) are positional commands recognized
 only as the first argument, and a database path that collides with a command
 word stays reachable through `./` or `--`. Any way of removing commands must
@@ -66,7 +83,7 @@ this.
    command**. As the first argument (not after `--`, not `./`-prefixed), it
    prints `Error: the '<command>' command is not included in this build of
    cypherlite` to stderr and exits with code **2**. The argv grammar from
-   ADR-0069 is therefore identical in every bundle: `cypherlite pull` never
+ [ADR-0069](./0069-cli-lifecycle-commands.md) is therefore identical in every bundle: `cypherlite pull` never
    silently opens a database named `pull`, and `./pull` or `-- pull` is the
    escape in every build.
 5. The hand-written `--help` text lists only the commands compiled into the
@@ -117,7 +134,7 @@ databases.
   example `--no-telemetry` or an env var disabling `upgrade`). The code and
   its HTTP/TLS dependencies still ship, so the attack surface and binary size
   do not shrink, and a sandbox operator must trust that every entry point
-  honours the switch. It also breaks the ADR-0069 rule that flags configure a
+ honours the switch. It also breaks the [ADR-0069](./0069-cli-lifecycle-commands.md) rule that flags configure a
   query run and never encode lifecycle policy. Rejected: sandbox images need
   the capability to be physically absent, not merely switched off.
 - **Negative `no-*` features** (for example `no-telemetry` subtracting from a
@@ -128,7 +145,7 @@ databases.
   features are the only kind Cargo composes safely.
 - **Starting with engine-level features first** (Parquet, VFS backends, and
   similar in the engine crates). Engine features cross crate boundaries
-  (storage, executor, FFI, clients) and interact with the ADR-0103 moves that
+ (storage, executor, FFI, clients) and interact with the [ADR-0103](./0103-engine-surfaces-testing-layout.md) moves that
   are still landing. The CLI features are self-contained within one crate and
   directly serve the agent-sandbox use case. Rejected as the starting point:
   the CLI proves the rules at low risk, and engine features follow later
@@ -155,14 +172,14 @@ databases.
 
 ## Later references
 
-ADR-0105 adds a `parquet` feature to the engine crates and the CLI. Every flag
+[ADR-0105](./0105-optional-parquet-codec.md) adds a `parquet` feature to the engine crates and the CLI. Every flag
 still parses in every bundle, but the `--snapshot-format parquet` value, like
 `CYPHERLITE_SNAPSHOT_FORMAT=parquet`, needs that feature and fails at open
 without it, so "storage knobs are never gated" no longer holds for that one
 value.
 
-ADR-0267 adds a `fetch-params` feature to the CLI and adds it to the `full`
-and `agent` bundles (`minimal` stays query-only). Per ADR-0270, the flag
+[ADR-0267](./0267-cli-fetch-params-flag.md) adds a `fetch-params` feature to the CLI and adds it to the `full`
+and `agent` bundles (`minimal` stays query-only). Per [ADR-0270](./0270-cli-flag-parse-fetch-split.md), the flag
 parses in every build (the parse half is ungated in `params.rs`) and, like
 `--snapshot-format parquet` without `parquet`, fails closed at resolution
 without the feature with a typed not-compiled message — so "every flag

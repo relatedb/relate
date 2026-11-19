@@ -1,9 +1,23 @@
+---
+type: adr
+area: infra
+date: 2026-10-01
+deciders: CypherLite maintainers
+name: 0278-npm-distribution
+status: accepted
+tags:
+  - release
+title: npm distribution
+REFERENCES:
+  - "[[adr/0054-one-c-abi-env-python]]"
+  - "[[adr/0530-playground-moves-to-relate-web]]"
+  - "[[adr/0562-npm-platform-package-names]]"
+  - "[[adr/0616-npm-platform-file-links-repo-pins-at-pack]]"
+---
+
 # 0278. npm distribution
 
-- **Status**: Accepted
 - **Renumbered**: from 0154 (shared-number cleanup)
-- **Date**: 2026-10-01
-- **Deciders**: CypherLite maintainers (Linear LABS-19, parent LABS-64)
 
 ## Context
 
@@ -21,7 +35,7 @@ installable from npm:
   exists.
 
 The unscoped name `cypherlite` on npm is taken by an unrelated project
-(v2.1.0) — the same situation as PyPI (ADR-0054). The scoped names
+(v2.1.0) — the same situation as PyPI ([ADR-0054](./0054-one-c-abi-env-python.md)). The scoped names
 `@neo4j-labs/cypherlite` and `@neo4j-labs/cypherlite-wasm` are verified
 available.
 
@@ -96,11 +110,11 @@ npmjs.com — are runbook items in `docs/PUBLISHING.md`, not automation.
 
 ## Later references
 
-- ADR-0530 moves the playground to the relate-web repository, which
+- [ADR-0530](./0530-playground-moves-to-relate-web.md) moves the playground to the relate-web repository, which
   serves a copy of `surfaces/relate-wasm/pkg/`; no in-tree mirror remains.
-- ADR-0562 renames the five platform packages to
+- [ADR-0562](./0562-npm-platform-package-names.md) renames the five platform packages to
   `@relate/relate-<os>-<arch>`; the main and wasm names are unchanged.
-- ADR-0616 splits the platform optionalDependencies into two shapes:
+- [ADR-0616](./0616-npm-platform-file-links-repo-pins-at-pack.md) splits the platform optionalDependencies into two shapes:
   the repository manifest resolves them as `file:` links (npm ci holds
   from every checkout), and the published manifest's registry pins are
   injected at pack time; the exact-pin consumer contract is unchanged.

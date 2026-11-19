@@ -1,15 +1,28 @@
+---
+type: adr
+area: engine
+claim: 5efd49cff276940712830bac133a102878862bd7
+name: 0612-batch-the-shortest-fan-with-a-multi-source-sweep
+status: proposed
+tags:
+  - pattern-matching
+  - perf
+title: Batch the shortest-path fan with a multi-source level sweep
+REFERENCES:
+  - "[[adr/0186-match-clause-shortest-path-bfs]]"
+  - "[[adr/0463-expression-allocation-budget]]"
+  - "[[adr/0555-operators-stream-rows-never-accumulate]]"
+  - "[[adr/0556-shortest-route-pair-search-for-seekable-endpoints]]"
+---
+
 # ADR-0612: Batch the shortest-path fan with a multi-source level sweep
-
-Status: Proposed
-
-Claim: 5efd49cff276940712830bac133a102878862bd7
 
 ## Context
 
 A shortest-path pattern with both endpoints listed but past the pair
 product's bound is answered by a fan: one layered breadth-first search per
-origin, each keeping predecessors for every node it reaches (ADR-0186,
-ADR-0556). With a listed far side the fan stops early once every far node
+origin, each keeping predecessors for every node it reaches ([ADR-0186](./0186-match-clause-shortest-path-bfs.md),
+[ADR-0556](./0556-shortest-route-pair-search-for-seekable-endpoints.md)). With a listed far side the fan stops early once every far node
 is reached and tests reached nodes against a far bitset, but each origin
 still pays a full ball. On a low-diameter graph twenty origins with a
 three-hop bound each cover most of the store, so twenty near-identical
@@ -44,8 +57,8 @@ other node reached are never read.
   after the first level that produced a row; the sweep ends when no
   origin is left or the consumer halts.
 - The sweep's tables (three words per node id) are charged to the
-  workspace for the batch's life (ADR-0463). Rows stream per level
-  (ADR-0555); the sweep retains nothing that grows with path or row
+ workspace for the batch's life ([ADR-0463](./0463-expression-allocation-budget.md)). Rows stream per level
+ ([ADR-0555](./0555-operators-stream-rows-never-accumulate.md)); the sweep retains nothing that grows with path or row
   count, and memory is the tables plus at most one entry per far node per
   level.
 - The per-origin layered fan is the fallback, taken before any row is

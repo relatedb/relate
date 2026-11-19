@@ -1,16 +1,29 @@
-# ADR-0564: Charge the workspace as the commit redo is encoded
+---
+type: adr
+area: engine
+claim: 9ea5823967dca6a159678c170c4f399f38bbba0c
+name: 0564-charge-the-workspace-as-the-commit-redo-is-encoded
+status: accepted
+tags:
+  - memory
+  - wal
+title: Charge the workspace as the commit redo is encoded
+REFERENCES:
+  - "[[adr/0558-encode-commit-redo-once-at-admission]]"
+SUPERSEDES:
+  - "[[adr/0558-encode-commit-redo-once-at-admission]]"
+---
 
-Status: Accepted
-Claim: 9ea5823967dca6a159678c170c4f399f38bbba0c
+# ADR-0564: Charge the workspace as the commit redo is encoded
 
 ## Context
 
-ADR-0558 encodes a commit's redo ops once, at admission, and charges the
+[ADR-0558](./0558-encode-commit-redo-once-at-admission.md) encodes a commit's redo ops once, at admission, and charges the
 workspace for the finished buffer. The size is only known after encoding,
 so the charge followed the allocation: the serializer's buffer grew up to
 the 64 MiB record cap before any charge landed. N concurrent large writers
 could therefore allocate N buffers past the workspace limit before the
-first charge was attempted, and only then be refused. ADR-0558 recorded
+first charge was attempted, and only then be refused. [ADR-0558](./0558-encode-commit-redo-once-at-admission.md) recorded
 that transient as an accepted cost; with several writers it is unbounded
 in N, which defeats the purpose of the workspace limit.
 
@@ -32,7 +45,7 @@ in N, which defeats the purpose of the workspace limit.
    admitted before any growth is charged, so the cap's refusal, its
    figures and its text are unchanged, and it fires at the same write.
 5. **The retained buffer is charged at its capacity.** The trimming copy of
-   ADR-0558 decision 4 is dropped for records that outgrew the first step:
+ [ADR-0558](./0558-encode-commit-redo-once-at-admission.md) decision 4 is dropped for records that outgrew the first step:
    their charge equals the buffer's capacity (at most twice the record),
    held until the commit's waiter completes as before. Records that fit the
    first 64 KiB are still trimmed to their length, which is a cheap copy.
@@ -42,10 +55,10 @@ in N, which defeats the purpose of the workspace limit.
 
 ## Alternatives considered
 
-- **Charge after encoding, as in ADR-0558.** Rejected: concurrent writers
+- **Charge after encoding, as in [ADR-0558](./0558-encode-commit-redo-once-at-admission.md).** Rejected: concurrent writers
   allocate past the limit before any is refused.
 - **Count the record first and charge the exact size.** Rejected: it is the
-  extra serialization pass ADR-0558 removed.
+ extra serialization pass [ADR-0558](./0558-encode-commit-redo-once-at-admission.md) removed.
 - **Fixed-size steps instead of doubling.** Rejected: the copy transient is
   then small but the number of copies for a large record grows linearly,
   and charging the transient in full is simple enough.
@@ -62,4 +75,4 @@ in N, which defeats the purpose of the workspace limit.
 - The trimming copy of large buffers is gone, which also removes its
   transient.
 - Supersedes decision 4 and the transient noted in the consequences of
-  ADR-0558; the rest of ADR-0558 stands.
+ [ADR-0558](./0558-encode-commit-redo-once-at-admission.md); the rest of [ADR-0558](./0558-encode-commit-redo-once-at-admission.md) stands.

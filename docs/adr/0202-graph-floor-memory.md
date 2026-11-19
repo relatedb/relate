@@ -1,17 +1,33 @@
+---
+type: adr
+area: engine
+date: 2026-10-10
+deciders: MemoryDB maintainers
+name: 0202-graph-floor-memory
+status: accepted
+tags:
+  - memory
+title: Graph floor includes retained structure
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0063-lazy-string-index-postings]]"
+  - "[[adr/0289-graph-shape-memory-pins]]"
+  - "[[adr/0529-inline-single-version-rows]]"
+  - "[[adr/0532-dense-id-stores]]"
+  - "[[adr/0617-dense-slot-reservation-ladder]]"
+---
+
 # 0202. Graph floor includes retained structure
 
-- **Status**: Accepted
-- **Date**: 2026-10-10
-- **Deciders**: MemoryDB maintainers
-- **Amends**: ADR-0042
-- **Later references**: ADR-0529 (a single-version row is an inline
-  slot, charged without a version list or `xmax`); ADR-0532 (the four
+- **Amends**: [ADR-0042](./0042-graph-memory-limit.md)
+- **Later references**: [ADR-0529](./0529-inline-single-version-rows.md) (a single-version row is an inline
+ slot, charged without a version list or `xmax`); [ADR-0532](./0532-dense-id-stores.md) (the four
   core stores are id-indexed vectors, and the hash-map slot is not
   charged for them)
 
 ## Context
 
-ADR-0042 caps `Database::memory_usage` with a portable formula: payload
+[ADR-0042](./0042-graph-memory-limit.md) caps `Database::memory_usage` with a portable formula: payload
 bytes plus a few fixed proxies (a 24-byte version, a 16-byte hop). That
 integer does not move with the allocator, which is what the pre-WAL
 check needs. It also does not move with the containers that still own
@@ -19,7 +35,7 @@ the payload. A ring and a dense ring with the same logical size keep
 very different resident graphs, because a relationship is a version
 record plus two adjacency vectors, not 16 bytes of hop.
 
-Two exclusions in ADR-0042 make the counter drop while the bytes are
+Two exclusions in [ADR-0042](./0042-graph-memory-limit.md) make the counter drop while the bytes are
 still there. A delete clears the charge immediately, and the version
 stays until checkpoint GC. The intern table is charged again on every
 `Arc` clone if it is charged at all, so it was left out.
@@ -27,7 +43,7 @@ stays until checkpoint GC. The intern table is charged again on every
 ## Decision
 
 `memory_usage` stays `(used, Option<limit>)`. `used` is the graph floor:
-the ADR-0042 payload, plus the containers that still hold it.
+the [ADR-0042](./0042-graph-memory-limit.md) payload, plus the containers that still hold it.
 
 **In the floor.**
 
@@ -45,7 +61,7 @@ the ADR-0042 payload, plus the containers that still hold it.
   the hop bytes come from the adjacency vectors.
 - Label-index postings, and the TEXT, POINT, and RANGE postings
   `node_account` already names. The text-gram term stays a formula of
-  the live string (ADR-0063). A range index on an integer is one
+ the live string ([ADR-0063](./0063-lazy-string-index-postings.md)). A range index on an integer is one
   posting, so it is no longer zero.
 - The string interner, once per distinct label, relationship type, or
   property name: two dashmap slots and one `Arc<str>`. A clone of that
@@ -57,7 +73,7 @@ and rows, transaction overlays, WAL and checkpoint buffers, the
 procedure registry, the pin table, and pages the allocator has kept
 after the graph dropped the allocation. Dashmap shard tables are not
 charged; the entry is. RSS stays a separate Bolt-child measurement
-(ADR-0289).
+([ADR-0289](./0289-graph-shape-memory-pins.md)).
 
 The pre-commit check is unchanged: `estimate_redo_delta` uses the same
 functions as the live walk, and `used_bytes == accounted_bytes`.
@@ -78,6 +94,6 @@ makes room for a write until a checkpoint has collected the tombstones.
 
 ## Later references
 
-- ADR-0617 moves the dense span arrays' reservation and charge to a 1.5
+- [ADR-0617](./0617-dense-slot-reservation-ladder.md) moves the dense span arrays' reservation and charge to a 1.5
   growth ladder; the power-of-two charge above stands for every other
   reserved vector.

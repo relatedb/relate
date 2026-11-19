@@ -1,13 +1,27 @@
+---
+type: adr
+area: engine
+date: 2026-09-19
+deciders: CypherLite maintainers
+name: 0077-embedded-durability-boundary
+status: accepted
+tags:
+  - wal
+title: Configurable WAL durability boundaries
+REFERENCES:
+  - "[[adr/0014-single-wal-write-path]]"
+  - "[[adr/0019-group-commit-shared-fsync]]"
+  - "[[adr/0051-wasm-memory-database]]"
+  - "[[adr/0114-wal-recovery-rejects-undecodable-records]]"
+---
+
 # 0077. Configurable WAL durability boundaries
 
-- **Status**: Accepted
-- **Date**: 2026-09-19
 - **Amended**: 2026-09-24
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
-Durable commits fsync once per group. Group commit (ADR-0019) is implemented
+Durable commits fsync once per group. Group commit ([ADR-0019](./0019-group-commit-shared-fsync.md)) is implemented
 and effective: on the on-disk fraud loadtest, 50 workers yield **26 commits
 per fsync**; fsync is 4.36 ms p50 while parse + encode + apply are ~0.2 ms,
 so ~97% of write wall-time is the barrier. More batching is not the lever at
@@ -56,7 +70,7 @@ tunes the normal `snapshot` loss window; `0` disables only the timed
 checkpoint. Explicit checkpoints, clean-close checkpointing, and the 64 MiB /
 10,000-commit thresholds remain active.
 
-WASM has no fsync; the debounced whole-graph flush (ADR-0051) is the
+WASM has no fsync; the debounced whole-graph flush ([ADR-0051](./0051-wasm-memory-database.md)) is the
 durability point, and commit points align with it.
 
 ## Alternatives considered
@@ -108,8 +122,8 @@ durability point, and commit points align with it.
 - Method, the group-commit table, and the cross-system survey:
   [`docs/performance-notes.md`](../performance-notes.md).
 - Group commit already fits the flat-combining pattern (one leader takes the
-  whole queue and applies it in one unit); no change to ADR-0019/0014 is
+ whole queue and applies it in one unit); no change to [ADR-0019](./0019-group-commit-shared-fsync.md)/[ADR-0014](./0014-single-wal-write-path.md) is
   implied by this ADR.
-- ADR-0114 narrows the recovery consequence above: a final frame on the
+- [ADR-0114](./0114-wal-recovery-rejects-undecodable-records.md) narrows the recovery consequence above: a final frame on the
   active segment is trimmed only when its checksum fails. A checksum-valid
   frame that does not decode fails open.

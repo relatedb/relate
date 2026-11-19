@@ -1,17 +1,43 @@
-# ADR-0431: Extension distribution — the first-party channel, the install verbs, and trust tiers (LABS-469)
+---
+type: adr
+area: cli
+claim: ae2bab2dd5107b1926d6051bed12f020b08c6db5
+name: 0431-cli-extension-distribution
+status: proposed
+tags:
+  - extensions
+  - release
+title: Extension distribution — the first-party channel, the install verbs, and trust tiers
+REFERENCES:
+  - "[[adr/0068-cli-install-script-via-github-pages]]"
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0079-anonymous-usage-metrics]]"
+  - "[[adr/0080-cli-pull-command]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0104-cargo-feature-bundles]]"
+  - "[[adr/0115-sshsig-release-signing]]"
+  - "[[adr/0250-releases-json-update-discovery]]"
+  - "[[adr/0261-upgrade-skill-refresh-ownership]]"
+  - "[[adr/0279-lab-command-namespace]]"
+  - "[[adr/0358-upgrade-download-route]]"
+  - "[[adr/0368-one-product-binary-serve-absorbs-bins]]"
+  - "[[adr/0385-http-gzip-response-compression]]"
+  - "[[adr/0429-cli-extension-registry]]"
+  - "[[adr/0430-cli-extension-wire-protocol]]"
+  - "[[adr/0449-github-install-trust-pins]]"
+---
 
-Status: Proposed
-Claim: ae2bab2dd5107b1926d6051bed12f020b08c6db5
+# ADR-0431: Extension distribution — the first-party channel, the install verbs, and trust tiers
 
 ## Context
 
-ADR-0429 and ADR-0430 fix the host side of command-kind extensions: one
+[ADR-0429](./0429-cli-extension-registry.md) and [ADR-0430](./0430-cli-extension-wire-protocol.md) fix the host side of command-kind extensions: one
 extension is one package directory under
-`$XDG_CONFIG_HOME/cypherlite/extensions/<name>/` (ADR-0429 §2) that mounts
+`$XDG_CONFIG_HOME/cypherlite/extensions/<name>/` ([ADR-0429](./0429-cli-extension-registry.md) §2) that mounts
 as `cypherlite run <name> [flags]` and speaks wire v1 to a host that owns
-the store (ADR-0430). The host ships with zero installed extensions and
+the store ([ADR-0430](./0430-cli-extension-wire-protocol.md)). The host ships with zero installed extensions and
 every unknown name fails closed with the discovery hint naming first-party
-availability (ADR-0429 §7). Nothing decided yet can put a package on the
+availability ([ADR-0429](./0429-cli-extension-registry.md) §7). Nothing decided yet can put a package on the
 machine: who publishes one, how the CLI verifies it, which verbs manage
 it, and what the user is trusting at each tier. That distribution half is
 this ADR (LABS-469).
@@ -19,13 +45,13 @@ this ADR (LABS-469).
 Every primitive it needs is already in production:
 
 - `cypherlite upgrade` reads the static `releases.json` from the website
-  (ADR-0250), downloads through the probe-then-fallback route (ADR-0358),
+ ([ADR-0250](./0250-releases-json-update-discovery.md)), downloads through the probe-then-fallback route ([ADR-0358](./0358-upgrade-download-route.md)),
   and authenticates the `SHA256SUMS` manifest against the one Ed25519
-  SSHSIG key pinned in the binary (ADR-0115) before the checksum step —
+ SSHSIG key pinned in the binary ([ADR-0115](./0115-sshsig-release-signing.md)) before the checksum step —
   ureq + sha2 + ssh-key, already the CLI's optional dependencies.
-- `pull --from FILE` (ADR-0080 §3) is the local-file-instead-of-network
+- `pull --from FILE` ([ADR-0080](./0080-cli-pull-command.md) §3) is the local-file-instead-of-network
   precedent.
-- `skill install` / `skill remove` (ADR-0261) is the marker-owned
+- `skill install` / `skill remove` ([ADR-0261](./0261-upgrade-skill-refresh-ownership.md)) is the marker-owned
   install/remove precedent: write what you own, refuse what you don't.
 - The P0 seam (#502, LABS-467) holds the three `lab` actions in one
   static table — the extraction seam LABS-552 builds on.
@@ -62,26 +88,26 @@ platform binary:
 
 - **The channel index** — `extensions.json` at the website root beside
   `releases.json`, written only by the release pipeline, never
-  hand-edited (ADR-0250's rules carry over). One row per package: the
+ hand-edited ([ADR-0250](./0250-releases-json-update-discovery.md)'s rules carry over). One row per package: the
   `name`, its published versions, and for each version its `protocol`
   and per-platform assets (the release tag, the asset filename, the
   SHA256).
 - **The packages** — one tarball per platform per version (§2),
   published as release assets on the tag the index names.
 - **Authentication** — the index is signed by the one release signing
-  key (ADR-0115: Ed25519 SSHSIG, namespace `cypherlite-release`, public
+ key ([ADR-0115](./0115-sshsig-release-signing.md): Ed25519 SSHSIG, namespace `cypherlite-release`, public
   key pinned in the binary, never fetched), and each tarball verifies
   by its SHA256 against the signed index. This is the upgrade chain
   generalized: the index is the checksum manifest, the tarball the
   payload, the verification identical in shape to `SHA256SUMS` →
   binary.
 - **Transport** — asset downloads ride the same route machinery
-  `upgrade` already runs: the ADR-0358 probe-then-fallback with its
+ `upgrade` already runs: the [ADR-0358](./0358-upgrade-download-route.md) probe-then-fallback with its
   `GITHUB_TOKEN` advice, and os/arch selection as the installer already
   does; `releases_json.rs`'s asset selection generalizes to extension
   rows (LABS-469).
 
-Platform scope matches the release channel's (ADR-0068): macOS and
+Platform scope matches the release channel's ([ADR-0068](./0068-cli-install-script-via-github-pages.md)): macOS and
 Linux. A host platform with no matching row refuses with an authored
 error naming the platform and the package.
 
@@ -92,12 +118,12 @@ package directory: `extension.json` and the executable, regular files
 only. The member contract is closed and enforced by the unpacker: no
 symlinks, no hardlinks, no device nodes, no paths that escape the
 package directory, no members the manifest does not account for — each
-is a loud refusal (ADR-0429 §2's escaping-executable rule extended to
+is a loud refusal ([ADR-0429](./0429-cli-extension-registry.md) §2's escaping-executable rule extended to
 every member), never a skipped entry. The executable lands with its
 exec bit from the member's mode field.
 
 Decompression is `flate2` with the pure-Rust `miniz_oxide` backend —
-already a workspace dependency (ADR-0385) — and the ustar reader is a
+already a workspace dependency ([ADR-0385](./0385-http-gzip-response-compression.md)) — and the ustar reader is a
 small in-tree reader for this closed contract. No new external
 dependency lands (the `tar` crate is rejected below); R6 is not
 triggered.
@@ -111,10 +137,10 @@ cypherlite extension remove <name>
 ```
 
 - `extension` is a first-positional command word in the hand-rolled
-  parser (the ADR-0069 shape), reserved in `COMMAND_WORDS` in every
-  build (ADR-0104): a build without the feature prints the shared
+ parser (the [ADR-0069](./0069-cli-lifecycle-commands.md) shape), reserved in `COMMAND_WORDS` in every
+ build ([ADR-0104](./0104-cargo-feature-bundles.md)): a build without the feature prints the shared
   not-included error (exit 2), and `./extension` / `-- extension`
-  keep the path reachable — exactly `run`'s reservation (ADR-0429 §1).
+ keep the path reachable — exactly `run`'s reservation ([ADR-0429](./0429-cli-extension-registry.md) §1).
 - The three actions are exit-after lifecycle actions in the
   resource-action shape: exactly one positional (the name) on
   `install` and `remove`, none on `list`; action names are closed.
@@ -126,12 +152,12 @@ cypherlite extension remove <name>
   the version.
 - `--force` clobbers a foreign target directory — one without the
   install marker — on `install` only, the `skill install` refusal
-  (ADR-0261): default install refuses to touch what it does not own,
+ ([ADR-0261](./0261-upgrade-skill-refresh-ownership.md)): default install refuses to touch what it does not own,
   exit 1, pinned text. A marked install of the same name replaces
   cleanly (reinstall or version change; there is no `extension
   upgrade` verb). `remove` carries no `--force`: a foreign or unknown
   directory is a refusal naming what it found.
-- Feature gating (ADR-0104, ADR-0429 §8): the `extensions` feature
+- Feature gating ([ADR-0104](./0104-cargo-feature-bundles.md), [ADR-0429](./0429-cli-extension-registry.md) §8): the `extensions` feature
   owns the registry, the `run` mount, `list` and `remove` —
   dependency-free. A second feature, `extension-install`, adds the
   install verbs and pulls the network/unpack code (`dep:ureq`,
@@ -143,8 +169,8 @@ cypherlite extension remove <name>
   install verbs only (LABS-469).
 - Telemetry: command `extension`, action the action word
   (`install` / `list` / `remove` — `&'static str`s, never a package
-  name, ADR-0079 anonymity), the `skill` command's pattern.
-- Exit codes follow ADR-0430 §5's split: flag problems and manifest
+ name, [ADR-0079](./0079-anonymous-usage-metrics.md) anonymity), the `skill` command's pattern.
+- Exit codes follow [ADR-0430](./0430-cli-extension-wire-protocol.md) §5's split: flag problems and manifest
   problems (a reserved-word package name, an unknown kind, a protocol
   the host does not speak) exit 2; name-resolution, environment,
   network, verification and unpack failures exit 1. Every refusal has
@@ -156,7 +182,7 @@ The default path (no `--url`, no `--from`), in order:
 
 1. Fetch the channel index and its signature; verify the SSHSIG
    against the pinned key — fail closed on a missing or invalid
-   signature, no signature-optional path (ADR-0115 §6).
+ signature, no signature-optional path ([ADR-0115](./0115-sshsig-release-signing.md) §6).
 2. Resolve the row: the name (an unknown name is an authored error
    naming the package and the channel), the version (`--version` or
    the newest listed — an unlisted `--version` is an authored refusal
@@ -167,7 +193,7 @@ The default path (no `--url`, no `--from`), in order:
    directory, then rename into place — the `skill install` staging
    shape (`.cypherlite-stage-*` → rename): a failed install never
    leaves a half-written package.
-5. Load the manifest and run every ADR-0429 load refusal — unknown
+5. Load the manifest and run every [ADR-0429](./0429-cli-extension-registry.md) load refusal — unknown
    kind, unknown field, bad flag kind, an escaping executable path —
    plus the protocol check (§8) and the name-collision checks (§7),
    at install time: an install that would fail at load fails here,
@@ -175,7 +201,7 @@ The default path (no `--url`, no `--from`), in order:
 
 The network is touched only by this verb (and `list --available`, §9).
 Discovery, `run`, and every failure on an uninstalled name never fetch
-— ADR-0429 §7 stands unchanged: the `no installed action '<name>'`
+— [ADR-0429](./0429-cli-extension-registry.md) §7 stands unchanged: the `no installed action '<name>'`
 error is offline knowledge.
 
 ### 5. `--from DIR`: the offline and CI story
@@ -184,7 +210,7 @@ error is offline knowledge.
 `extension.json` plus the executable, exactly what a channel install
 would unpack into the XDG dir. No network, no signature: the local
 directory is the trust act, the posture `pull --from FILE` already
-pinned (ADR-0080 §3) — whoever provisions the directory owns what is
+pinned ([ADR-0080](./0080-cli-pull-command.md) §3) — whoever provisions the directory owns what is
 in it, exactly as whoever provisions a credentials file owns the
 credentials. The executable must *resolve* inside the directory it is
 named in, not merely be spelled inside it: an intermediate-directory
@@ -227,7 +253,7 @@ Three tiers, one ladder:
 — the lightest ceremony — recorded here so the ladder is one table.)
 
 Every install writes a provenance marker beside the manifest (the
-`skill install` marker, ADR-0261) recording the tier and the source
+`skill install` marker, [ADR-0261](./0261-upgrade-skill-refresh-ownership.md)) recording the tier and the source
 reference — the channel version, the URL, or the directory path.
 `list` reads it; `remove` requires it.
 
@@ -238,15 +264,15 @@ knowable, dependency-free) or with an installed extension of any
 provenance; both refusals name both sides. Since every install records
 provenance and every collision refuses, a first-party package can never
 be replaced by a third-party one, or the reverse, without an explicit
-`remove`: there is no silent substitution path. ADR-0429 §6's
+`remove`: there is no silent substitution path. [ADR-0429](./0429-cli-extension-registry.md) §6's
 load-time collision refusals remain the backstop for a hand-edited
 registry.
 
 ### 8. Compatibility: the protocol version is the only coupling
 
-The extension never touches the store (ADR-0430 §6 — the child receives
+The extension never touches the store ([ADR-0430](./0430-cli-extension-wire-protocol.md) §6 — the child receives
 neither a store path nor raw argv), so the host and a package are
-coupled by the manifest's `protocol` (ADR-0429 §4) and nothing else:
+coupled by the manifest's `protocol` ([ADR-0429](./0429-cli-extension-registry.md) §4) and nothing else:
 not the CLI version, not the release tag, not a compatibility matrix.
 First-party packages release on their own cadence — a package release
 bumps only its index row, and the CLI release need not move — and the
@@ -255,7 +281,7 @@ extension while `protocol: 1` holds.
 
 Enforced at install: the manifest's `protocol` must be one this host
 speaks, else an authored refusal naming both numbers (the manifest's
-value and the host's) — the fail-closed-no-negotiation rule ADR-0430
+value and the host's) — the fail-closed-no-negotiation rule [ADR-0430](./0430-cli-extension-wire-protocol.md)
 §2 pins for the `hello` echo, caught one boundary earlier. The index's
 `protocol` column lets the refusal fire before the tarball download.
 
@@ -268,7 +294,7 @@ the other question (LABS-552's open item, decided here): what exists
 to install. It fetches the channel index and its signature (verified
 as §4 step 1) and prints one row per package: the name, its newest
 version, its `protocol`, and whether it is installed. Hidden packages
-stay hidden in no listing (ADR-0429 §2's hidden policy) —
+stay hidden in no listing ([ADR-0429](./0429-cli-extension-registry.md) §2's hidden policy) —
 `--available` does not advertise what the `run` listing would not.
 
 Offline, `--available` fails closed: an authored, pinned, exit-1 error
@@ -283,7 +309,7 @@ zero extensions and every `run <name>` fails closed with the discovery
 hint. Capabilities arrive only through the explicit install verb;
 nothing auto-installs, suggests-and-fetches, or background-syncs. The
 Docker image is unchanged by this program — `cypherlite` and
-`entrypoint` only (ADR-0368): image authors who want capabilities baked
+`entrypoint` only ([ADR-0368](./0368-one-product-binary-serve-absorbs-bins.md)): image authors who want capabilities baked
 in layer them themselves (a package directory plus `install --from`,
 or the XDG dir), and everyone else installs on demand.
 
@@ -301,7 +327,7 @@ is parallel state at feature scale, and a channel with zero
 first-party content proves nothing about the distribution story —
 the LABS-469 "keep the importers compiled-in" option is rejected
 below. The extension crate sources are workspace crates placed under
-the ADR-0103 group and boundary rules; where the three groups do not
+the [ADR-0103](./0103-engine-surfaces-testing-layout.md) group and boundary rules; where the three groups do not
 fit them, the extraction change records the placement decision.
 
 ### 12. The `lab` retirement: a clean break
@@ -318,9 +344,9 @@ word gets. LABS-552 §5's dispatch concern (the fall-through above) is
 answered by accepting it, not by a stub: the retirement is recorded in
 the release notes and this ADR, not carried in the binary.
 
-ADR-0279's Later references note (its namespace superseded by `run`)
+[ADR-0279](./0279-lab-command-namespace.md)'s Later references note (its namespace superseded by `run`)
 lands with the extraction change, when the supersession happens;
-ADR-0368's note — the one-binary posture gains a multi-artifact
+[ADR-0368](./0368-one-product-binary-serve-absorbs-bins.md)'s note — the one-binary posture gains a multi-artifact
 distribution dimension — lands in this same change, because the
 distribution decision is made here.
 
@@ -340,7 +366,7 @@ distribution decision is made here.
   two homes for the same importers is the parallel-state shape at
   feature scale. LABS-552 settled the extraction as mandatory.
 - **Extract the hidden `neo` into a first-party extension crate with
-  the importers.** Rejected: the egg is a lab easter egg (ADR-0279),
+ the importers.** Rejected: the egg is a lab easter egg ([ADR-0279](./0279-lab-command-namespace.md)),
   not a capability — extraction would mint a signed, supported,
   first-party package out of a joke and put the channel on the hook
   for publishing it. The 2026-10-28 user direction settles it: `neo`
@@ -386,7 +412,7 @@ distribution decision is made here.
   devices, sparse, pax extensions) — the refusal list is the security
   property — and it adds an external dependency for a contract an
   in-tree ustar reader of a hundred-odd lines enforces better (the
-  no-new-dependency posture of ADR-0430; R6's spirit).
+ no-new-dependency posture of [ADR-0430](./0430-cli-extension-wire-protocol.md); R6's spirit).
 - **An `extension upgrade` verb.** Rejected: install over a marked
   package already replaces it cleanly; a second verb for the same
   write is a second code path for one policy.
@@ -396,7 +422,7 @@ distribution decision is made here.
   pins `--from` as local input replacing the network input — for
   install, the package directory. The signed path stays
   pointable-at-mirrors through the documented URL seams (the
-  ADR-0250 §1 / ADR-0358 §8 pattern), so no second shape is needed.
+ [ADR-0250](./0250-releases-json-update-discovery.md) §1 / [ADR-0358](./0358-upgrade-download-route.md) §8 pattern), so no second shape is needed.
 
 ## Consequences
 
@@ -413,7 +439,7 @@ distribution decision is made here.
   reserved-word name, collision with an installed name, foreign
   directory, offline catalog.
 - The index and download URLs get the same documented env seams the
-  upgrade path has (ADR-0250 §1, ADR-0358 §8), so e2e drives the
+ upgrade path has ([ADR-0250](./0250-releases-json-update-discovery.md) §1, [ADR-0358](./0358-upgrade-download-route.md) §8), so e2e drives the
   channel from a loopback fixture and the signature checks stay
   pure-function tests with fixture keys (the `TEST_SIGNER` pattern).
 - Docs rule §2 lands with the implementation change:
@@ -426,15 +452,15 @@ distribution decision is made here.
   tests, help section — and retires `lab` outright with it: the
   `COMMAND_WORDS` row, the `lab` feature, the command code and help
   page, and every doc row, all in that one change (§11, §12).
-- ADR-0368's one-binary posture gains the multi-artifact distribution
-  dimension — the note lands in this same change; ADR-0279's
+- [ADR-0368](./0368-one-product-binary-serve-absorbs-bins.md)'s one-binary posture gains the multi-artifact distribution
+ dimension — the note lands in this same change; [ADR-0279](./0279-lab-command-namespace.md)'s
   namespace-supersession note lands with the extraction change.
 - An Oplane threat model runs on the implementation diff (download +
   verify + unpack paths) before merge, per LABS-466's rules.
 
 ## Later references
 
-- ADR-0449 adds a fourth trust tier, `github-pin`: a GitHub release
+- [ADR-0449](./0449-github-install-trust-pins.md) adds a fourth trust tier, `github-pin`: a GitHub release
   installed with `--github OWNER/REPO@TAG|@SHA`, its tag-to-commit and
   platform-asset SHA256 recorded in a per-user trust store and refused
   when the pin moves. §7's ladder gains the rung; the three tiers above

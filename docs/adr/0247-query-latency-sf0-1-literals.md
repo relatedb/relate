@@ -1,25 +1,37 @@
+---
+type: adr
+area: infra
+date: 2026-10-14
+name: 0247-query-latency-sf0-1-literals
+status: accepted
+tags:
+  - latency-suite
+title: SF0.1 literals for the query-latency suite
+REFERENCES:
+  - "[[adr/0230-command-did-you-mean-on-parse-errors]]"
+  - "[[adr/0243-query-latency-suite]]"
+  - "[[adr/0245-query-latency-baseline-environment-and-gate]]"
+  - "[[adr/0246-defer-query-latency-plan-goldens]]"
+---
+
 # ADR-0247: SF0.1 literals for the query-latency suite
 
-> Renamed from ADR-0230: the number collided with
+> Renamed from [ADR-0230](./0230-command-did-you-mean-on-parse-errors.md): the number collided with
 > docs/adr/0230-command-did-you-mean-on-parse-errors.md in #280 (both were
 > taken by parallel PRs). The decision is unchanged; references were
 > updated in the same change.
 
-Status: Accepted
-
-Date: 2026-10-14
-
 ## Context
 
-ADR-0243 runs the 30 graph-benchmark-ldbc queries verbatim at both scale
+[ADR-0243](./0243-query-latency-suite.md) runs the 30 graph-benchmark-ldbc queries verbatim at both scale
 factors. Upstream chose each query's literals (names, tags, places, IDs,
 thresholds) on SF1, and most of them do not exist at SF0.1. Neo4j's SF0.1
 answers (`expected-sf0.1.json`) are "nothing found" for 19 of the 30:
 empty for q1-q7, q9 and q10, 0 for q13, q16 and q20, and `false` for q21
-and q23-q27, q29. ADR-0243's Consequences record this: those queries still
+and q23-q27, q29. [ADR-0243](./0243-query-latency-suite.md)'s Consequences record this: those queries still
 search, but as answer checks they are weak, because an engine bug that
 drops rows passes them. SF0.1 is the level that runs on every PR
-(ADR-0243, ADR-0245), so the weakness sits exactly where the checks run
+([ADR-0243](./0243-query-latency-suite.md), [ADR-0245](./0245-query-latency-baseline-environment-and-gate.md)), so the weakness sits exactly where the checks run
 most.
 
 Five of the 19 are "nothing found" at SF1 too, by upstream's design: q7
@@ -80,19 +92,19 @@ SF0.1.
   its false-positive checks at the PR level. It can be revisited by a
   later ADR.
 - **Check SF0.1 answers only at SF1** — rejected: SF1 is local-only
-  (ADR-0243), so the per-PR level would keep 14 weak checks.
+ ([ADR-0243](./0243-query-latency-suite.md)), so the per-PR level would keep 14 weak checks.
 - **Choose literals with CypherLite's own answers** — rejected as the
   oracle: CypherLite was used only to explore the data for candidates;
-  the recorded answers come from Neo4j (ADR-0243).
+ the recorded answers come from Neo4j ([ADR-0243](./0243-query-latency-suite.md)).
 
 ## Consequences
 
 - 14 SF0.1 answer checks now have rows, counts or `true` to get right.
   SF0.1 latency for those queries measures the substituted text; no
-  baseline has been frozen yet (ADR-0245), so nothing is re-frozen.
+ baseline has been frozen yet ([ADR-0245](./0245-query-latency-baseline-environment-and-gate.md)), so nothing is re-frozen.
 - The table is part of the workload: changing it means regenerating
   `expected-sf0.1.json` with the lane.
 - The SF0.1 statements differ from upstream's, so SF0.1 numbers are not
   comparable with upstream's (which are SF1 only anyway). `NOTICE`
   records the modification.
-- ADR-0243 and ADR-0246 get **Later references** notes naming this ADR.
+- [ADR-0243](./0243-query-latency-suite.md) and [ADR-0246](./0246-defer-query-latency-plan-goldens.md) get **Later references** notes naming this ADR.

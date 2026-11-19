@@ -1,8 +1,24 @@
+---
+type: adr
+area: engine
+claim: 54a63c6c690668d0f3afb2ef59fad79450bba7c1
+name: 0529-inline-single-version-rows
+status: proposed
+tags:
+  - perf
+  - storage
+title: Inline single-version rows; spill to a chain on the first update
+REFERENCES:
+  - "[[adr/0012-wal-and-parquet-checkpoints]]"
+  - "[[adr/0038-lock-free-snapshot-pins]]"
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0202-graph-floor-memory]]"
+  - "[[adr/0532-dense-id-stores]]"
+---
+
 # ADR-0529: Inline single-version rows; spill to a chain on the first update
 
-Status: Proposed
-Claim: 54a63c6c690668d0f3afb2ef59fad79450bba7c1
-Later references: ADR-0532 (the dense id store this record deferred)
+Later references: [ADR-0532](./0532-dense-id-stores.md) (the dense id store this record deferred)
 
 ## Context
 
@@ -15,7 +31,7 @@ that is 32 logical bytes of 136 per node, plus one allocation per id.
 An earlier sketch derived the inline row's `xmin` from a graph-wide
 epoch watermark. A watermark cannot answer "was this row created after
 the pin" once it has moved past the create, so it cannot serve snapshot
-reads (ADR-0012, ADR-0038).
+reads ([ADR-0012](./0012-wal-and-parquet-checkpoints.md), [ADR-0038](./0038-lock-free-snapshot-pins.md)).
 
 ## Decision
 
@@ -42,12 +58,12 @@ slot returns to inline with that version's `xmin`. An inline row has no
 later write pops its versions and clears the tail's `xmax`; one live
 version left folds back to inline.
 
-**Floor (ADR-0202).** An inline slot is charged one map slot, the
+**Floor ([ADR-0202](./0202-graph-floor-memory.md)).** An inline slot is charged one map slot, the
 8-byte birth timestamp, and the live row's own size. A spilled slot is
 charged as before. The estimate and the live walk share the shape
 functions, so `used_bytes == accounted_bytes` still holds.
 
-**Admission (ADR-0042).** Spilling an inline row on delete grows the
+**Admission ([ADR-0042](./0042-graph-memory-limit.md)).** Spilling an inline row on delete grows the
 floor until GC returns it. That growth alone never refuses a batch: the
 check compares the delta net of tombstone spills against the limit, and
 the reservation still carries the full delta. A delete at the cap
@@ -59,7 +75,7 @@ commits, as it did before.
   loses snapshot correctness once the watermark moves. Rejected.
 - **Charge a one-version tombstone at the inline price.** Keeps
   admission unchanged but undercounts retained structure until GC,
-  which ADR-0202 charges. Rejected.
+ which [ADR-0202](./0202-graph-floor-memory.md) charges. Rejected.
 - **A third, tombstoned inline shape.** Delete would grow 8 bytes
   instead of a list, but every slot widens by 8 bytes. Rejected.
 - **Replace the core map with a dense store.** Larger change with its

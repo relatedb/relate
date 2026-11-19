@@ -1,11 +1,22 @@
-# ADR-0441: Yield a follower gap instead of loading a second graph
+---
+type: adr
+area: engine
+claim: 60d7f923d88571613b63820efdcc05aab830f637
+name: 0441-follower-gap-yield
+status: proposed
+tags:
+  - memory
+  - wal
+title: Yield a follower gap instead of loading a second graph
+REFERENCES:
+  - "[[adr/0137-wal-follow]]"
+---
 
-Status: Proposed
-Claim: 60d7f923d88571613b63820efdcc05aab830f637
+# ADR-0441: Yield a follower gap instead of loading a second graph
 
 ## Context
 
-ADR-0137 reloads a follower that cannot keep applying: a checkpoint
+[ADR-0137](./0137-wal-follow.md) reloads a follower that cannot keep applying: a checkpoint
 recycled WAL it had not applied, a trimmed tail moved under its cursor,
 or a redo batch applied only a prefix. The reload loads the snapshot and
 the surviving WAL beside the installed graph, then swaps. Queries already
@@ -21,7 +32,7 @@ after in-flight work releases it, and open one new follower.
 ## Decision
 
 1. **`FollowGapPolicy` on `OpenOptions`.** `Reload` is the default and is
-   ADR-0137 unchanged: `WalCatchUp::Gap` and a torn redo batch call
+ [ADR-0137](./0137-wal-follow.md) unchanged: `WalCatchUp::Gap` and a torn redo batch call
    `follow::reload`. `Yield` does not load a snapshot. It records a
    permanent follow failure whose error is `Error::resource_limit`
    (`Error::FOLLOW_GAP`, limit 0, `retryable: true`) and returns that
@@ -47,7 +58,7 @@ after in-flight work releases it, and open one new follower.
   this decision: a correct ack crosses processes or files and is the
   start of a replication protocol. A host that can restart its own
   engine does not need it.
-- **Reload on every checkpoint.** Already rejected by ADR-0137. A caught-up
+- **Reload on every checkpoint.** Already rejected by [ADR-0137](./0137-wal-follow.md). A caught-up
   follower still does not reload.
 
 ## Consequences

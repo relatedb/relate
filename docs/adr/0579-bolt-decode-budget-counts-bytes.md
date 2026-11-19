@@ -1,20 +1,34 @@
-# 0579. The Bolt decode budget counts decoded bytes, not values
+---
+type: adr
+area: surface
+claim: 7c712f7498badaa8d0812d3f980be34be2add7d5
+date: 2026-11-11
+deciders: the maintainers
+name: 0579-bolt-decode-budget-counts-bytes
+status: proposed
+tags:
+  - bolt
+  - security
+title: The Bolt decode budget counts decoded bytes, not values
+REFERENCES:
+  - "[[adr/0082-bound-bolt-decoded-value-count]]"
+  - "[[adr/0577-over-budget-bolt-message-fails-the-request]]"
+SUPERSEDES:
+  - "[[adr/0082-bound-bolt-decoded-value-count]]"
+---
 
-- **Status**: Proposed
-Claim: 7c712f7498badaa8d0812d3f980be34be2add7d5
-- **Date**: 2026-11-11
-- **Deciders**: the maintainers
+# 0579. The Bolt decode budget counts decoded bytes, not values
 
 ## Context
 
-ADR-0082 caps an incoming Bolt message at 262,144 decoded PackStream values
+[ADR-0082](./0082-bound-bolt-decoded-value-count.md) caps an incoming Bolt message at 262,144 decoded PackStream values
 to bound heap amplification: a one-byte scalar on the wire becomes a whole
 decoded node. The count is a poor proxy for that memory. A row of three
 integer fields is seven values but only a couple of hundred bytes, so the cap
 refuses batches of about 37,000 such rows, far below what the wire cap and
 the memory the decoder actually uses would allow. Neo4j accepts these
 messages, and loaders written for it send batches of well over 100,000 rows.
-ADR-0577 made the refusal actionable; this decision removes the arbitrary
+[ADR-0577](./0577-over-budget-bolt-message-fails-the-request.md) made the refusal actionable; this decision removes the arbitrary
 threshold.
 
 ## Decision
@@ -34,7 +48,7 @@ the rest of its batch. The counting rules below are the same for both:
 - A declared container size whose bare nodes cannot fit the remaining budget is
   refused before any child is decoded, so a hostile header allocates nothing.
 - The decoder still reports the budget as its own typed error and the session
-  still answers with the failure of ADR-0577; the failure text now states the
+ still answers with the failure of [ADR-0577](./0577-over-budget-bolt-message-fails-the-request.md); the failure text now states the
   measured size and the limit in MiB (rounded down, since the measured size is
   a lower bound), with a worked example of a row batch; the pre-auth text
   tells the client to authenticate first instead.
@@ -68,5 +82,5 @@ authentication it is about 2 MiB per connection, not 128 MiB.
 - A pre-auth message over 1 MiB is refused by the gate it reaches (the
   unauthorized close before HELLO, the limit FAILURE and close in the 5.x
   AUTHENTICATION state) naming the pre-auth limit.
-- ADR-0082's counting rule is superseded; its reasoning and the structure of
+- [ADR-0082](./0082-bound-bolt-decoded-value-count.md)'s counting rule is superseded; its reasoning and the structure of
   the check stand.

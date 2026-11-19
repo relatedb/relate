@@ -1,11 +1,24 @@
-# ADR-0524: The plain limit cap rides the contracted kernels — the rows mode's want halt
+---
+type: adr
+area: engine
+claim: 3bc8f289368b3375e7ec332e368594686ef0ac9e
+name: 0524-plain-cap-rides-the-contracted-kernels
+status: proposed
+tags:
+  - memory
+  - pattern-matching
+title: The plain limit cap rides the contracted kernels — the rows mode's want halt
+REFERENCES:
+  - "[[adr/0473-contracted-traversal-kernels]]"
+  - "[[adr/0475-gpm-early-conjuncts-and-riders]]"
+  - "[[adr/0478-frontier-nfa-qpp-kernel]]"
+---
 
-Status: Proposed
-Claim: 3bc8f289368b3375e7ec332e368594686ef0ac9e
+# ADR-0524: The plain limit cap rides the contracted kernels — the rows mode's want halt
 
 ## Context
 
-ADR-0473's contracted kernels (the fixed-k chain and the hub-star) take a
+[ADR-0473](./0473-contracted-traversal-kernels.md)'s contracted kernels (the fixed-k chain and the hub-star) take a
 `MATCH` clause only through the operator ladder's shared admission gate. Since
 the batch substrate landed, that gate's one exception has been the
 **plain limit cap**: a `RETURN/WITH … [SKIP s] LIMIT n` suffix arms
@@ -13,7 +26,7 @@ the batch substrate landed, that gate's one exception has been the
 operator for exactly the shapes that operator proves — but the operator
 **dropped the cap on the floor**. The trailing projection's own LIMIT
 truncated afterwards, so the *rows* were the same as before the cap existed;
-the *work* was not. The walker's own cap (ADR-0475's rider) halts its
+the *work* was not. The walker's own cap ([ADR-0475](./0475-gpm-early-conjuncts-and-riders.md)'s rider) halts its
 enumeration at `want` stored rows; the kernels enumerated the full path
 product first and handed the projection a finished container to trim.
 
@@ -24,7 +37,7 @@ the LIMIT applies. From the average start that is 3.2M bindings (≈1.4–3 GB o
 collected rows); from the lane's hub start (out-degree 6,661) it is ~1.25B:
 the statement ran 240 s without producing a first row, and the 2026-11-04
 pokec-loadtest warmup was OOM-killed at the container's 12 GB cap. The
-frontier family (ADR-0478) already serves **capped emission** for the
+frontier family ([ADR-0478](./0478-frontier-nfa-qpp-kernel.md)) already serves **capped emission** for the
 quantified shapes; the fixed-k shapes had no capped serving at all.
 
 ## Decision
@@ -54,7 +67,7 @@ policy:
    pairing below `want`.
 
 4. **Row selection** is the kernel's enumeration order — a contract-free
-   prefix under LIMIT without ORDER BY, the rule ADR-0478 §4 states for the
+ prefix under LIMIT without ORDER BY, the rule [ADR-0478](./0478-frontier-nfa-qpp-kernel.md) §4 states for the
    frontier's capped emission: LIMIT promises a count, not a selection.
    Which `want` rows arrive may differ from the walker's prefix; both are
    valid. The TCK's order-insensitive comparisons are unaffected, and the

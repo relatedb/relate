@@ -1,12 +1,22 @@
+---
+type: adr
+area: engine
+claim: 07e17f5a9c9169de7172dc5790d999b6e353209c
+name: 0542-engine-only-callable-unlisted-functions
+status: proposed
+tags:
+  - functions
+  - procedures
+title: Engine-only, callable, unlisted built-in functions
+REFERENCES:
+  - "[[adr/0497-catalogue-corpus-alignment]]"
+---
+
 # ADR-0542: Engine-only, callable, unlisted built-in functions
-
-Status: Proposed
-
-Claim: 07e17f5a9c9169de7172dc5790d999b6e353209c
 
 ## Context
 
-ADR-0497 aligned the built-in function catalogue with the Cypher-25 corpus
+[ADR-0497](./0497-catalogue-corpus-alignment.md) aligned the built-in function catalogue with the Cypher-25 corpus
 and settled four release-status rules: a name is default-surface (implemented,
 advertised, callable), preview-gated, removed, or added from the corpus. All
 four assume that every callable name is either part of the corpus or on its
@@ -27,7 +37,7 @@ Introduce a fifth admission class, **engine-only, callable, unlisted**: a
 built-in function that the engine owns, that is not part of the Cypher-25
 corpus, and that works in every build and dialect without an opt-in, but that
 is absent from the `SHOW FUNCTIONS` catalogue. It is a recorded exception to
-ADR-0497's four rules, not a change to them.
+[ADR-0497](./0497-catalogue-corpus-alignment.md)'s four rules, not a change to them.
 
 - **Mechanism.** The name joins the executor's builtin registry and the
   front's unadvertised-name list, the same list the lowering-internal names
@@ -36,7 +46,7 @@ ADR-0497's four rules, not a change to them.
 - **Admission test.** A name qualifies only if it is not in the corpus, it
   has no preview-flag lifecycle (no CIP to track), and its behaviour is fully
   specified by the engine's own documentation. A name the corpus or an
-  approved CIP carries follows ADR-0497 instead.
+ approved CIP carries follows [ADR-0497](./0497-catalogue-corpus-alignment.md) instead.
 - **Disclosure.** Because the catalogue is silent, the functions reference
   carries a clearly labelled section for unlisted functions. That section is
   the only place such a name is documented.
@@ -50,7 +60,7 @@ ADR-0497's four rules, not a change to them.
   numbers, an empty or inverted range, and a width outside a fixed cap are
   typed errors.
 - **Exit.** If a reference server or an approved CIP later adds a function by
-  the same name, ADR-0497's rules apply from then on and this class no longer
+ the same name, [ADR-0497](./0497-catalogue-corpus-alignment.md)'s rules apply from then on and this class no longer
   covers it; the semantics must then be reconciled by a new ADR.
 
 ## Alternatives considered
@@ -78,4 +88,4 @@ ADR-0497's four rules, not a change to them.
   that is intended.
 - The registry's lockstep test carries one explicit engine-only arity whose
   names are listed in the test rather than derived from a reference spec.
-- ADR-0497 gains a Later references note pointing here.
+- [ADR-0497](./0497-catalogue-corpus-alignment.md) gains a Later references note pointing here.

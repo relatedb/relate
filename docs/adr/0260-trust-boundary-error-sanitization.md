@@ -1,9 +1,26 @@
+---
+type: adr
+area: surface
+date: 2026-09-26
+deciders: CypherLite maintainers
+name: 0260-trust-boundary-error-sanitization
+status: accepted
+tags:
+  - errors
+  - security
+title: Sanitize internal-class errors at the Bolt and load trust boundaries
+REFERENCES:
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+  - "[[adr/0080-cli-pull-command]]"
+  - "[[adr/0097-exclusive-storage-ownership]]"
+  - "[[adr/0122-pull-auth-hardening]]"
+  - "[[adr/0138-bolt-procedure-not-found-code]]"
+  - "[[adr/0307-bolt-failure-carries-neo4j-status-codes]]"
+---
+
 # 0260. Sanitize internal-class errors at the Bolt and load trust boundaries
 
-- **Status**: Accepted
 - **Renumbered**: from 0109 (shared-number cleanup)
-- **Date**: 2026-09-26
-- **Deciders**: CypherLite maintainers (Linear LABS-113)
 
 ## Context
 
@@ -21,8 +38,8 @@ That message can describe host paths, memory layout, or other engine
 internals to any connected client. `Storage`, `Io`, and `Locked` likewise
 name filesystem state (`storage locked: <path>`) that is operator
 information, not client information; `Storage`/`Locked` exist to enforce
-exclusive storage ownership (ADR-0097), an operator-only concern that no
-remote client can act on. Bolt is a network transport (ADR-0057),
+exclusive storage ownership ([ADR-0097](./0097-exclusive-storage-ownership.md)), an operator-only concern that no
+remote client can act on. Bolt is a network transport ([ADR-0057](./0057-embedded-c-abi-and-bolt.md)),
 so its bytes cross a trust boundary.
 
 **cypherlite-load / `pull`.** `query_api_url` formats the whole `NEO4J_URI`
@@ -30,7 +47,7 @@ with `{uri:?}` when the host or scheme is missing
 (`surfaces/cypherlite-load/src/http.rs:23, 26`). A URI such as
 `user:pass@host` with no scheme therefore prints the password to stderr
 through `surfaces/cypherlite-cli/src/pull_cmd.rs:80`. `pull` is the CLI face
-of the ADR-0080 Query API v2 loader.
+of the [ADR-0080](./0080-cli-pull-command.md) Query API v2 loader.
 
 The engine's own errors are grouped as `Syntax`, `Semantic`, `Type`,
 `Execution`, `Conflict`, `Capacity`, `Storage`, `Locked`, `Io`, `Internal`.
@@ -57,7 +74,7 @@ caller-facing errors keep their text.**
    unknown-tag `FAILURE` is unchanged.
 
 3. **The generic code uses the `CypherLite` namespace, not `Neo.*`.** Bolt
-   is a transport (ADR-0057), not Neo4j feature parity; CypherLite does not
+ is a transport ([ADR-0057](./0057-embedded-c-abi-and-bolt.md)), not Neo4j feature parity; CypherLite does not
    claim Neo4j's status-code taxonomy. The genericized code is
    `CypherLite.InternalError`, consistent with the existing
    `CypherLite.Error`.
@@ -80,7 +97,7 @@ errors with full messages, and server-side diagnostics are not reduced.
   `write-write conflict` / `capacity exceeded` messages.
 - **Log nothing and send the full detail to the client.** Rejected: it is
   the status quo that leaks panic payloads and host paths across the trust
-  boundary; ADR-0057 makes Bolt remote transport, so its messages must be
+ boundary; [ADR-0057](./0057-embedded-c-abi-and-bolt.md) makes Bolt remote transport, so its messages must be
   safe for an untrusted peer.
 - **Use a `Neo.ClientError.*` / `Neo.DatabaseError.*` code for the generic
   case.** Rejected: CypherLite is not Neo4j and does not implement Neo4j's
@@ -111,7 +128,7 @@ errors with full messages, and server-side diagnostics are not reduced.
   the new code.
 - `cypherlite-load` no longer prints credentials when a `NEO4J_URI` is
   missing its host or scheme; `docs/api/cli/spec.md` should note the redacted
-  error. ADR-0080's `pull` command behavior is otherwise unchanged.
+ error. [ADR-0080](./0080-cli-pull-command.md)'s `pull` command behavior is otherwise unchanged.
 - Tests must cover each genericized variant mapping to
   `CypherLite.InternalError` + `internal error`, each pass-through variant
   mapping to `CypherLite.Error`, the stderr log, and a
@@ -119,16 +136,16 @@ errors with full messages, and server-side diagnostics are not reduced.
 
 ## Later references
 
-- ADR-0138 revises item 2 for one caller-facing error: a `Syntax` error
+- [ADR-0138](./0138-bolt-procedure-not-found-code.md) revises item 2 for one caller-facing error: a `Syntax` error
   whose message starts with `ProcedureNotFound: ` is sent verbatim under
   `Neo.ClientError.Procedure.ProcedureNotFound` instead of
   `CypherLite.Error`, because neo4j-browser branches on that exact code.
   Every other variant keeps the partitioning pinned here.
-- ADR-0122 supersedes item 4: `cypherlite-load` no longer strips userinfo
+- [ADR-0122](./0122-pull-auth-hardening.md) supersedes item 4: `cypherlite-load` no longer strips userinfo
   for error formatting. All `NEO4J_URI` error text is fixed (no URI
   interpolation at all), and any URI carrying userinfo — including passwords
   containing `/` — is rejected outright at the `query_api_url` boundary.
-- ADR-0307 supersedes items 2 and 3 and the `CypherLite.InternalError` code
+- [ADR-0307](./0307-bolt-failure-carries-neo4j-status-codes.md) supersedes items 2 and 3 and the `CypherLite.InternalError` code
   of item 1: every Bolt FAILURE now carries a Neo4j status code, mapped by
   typed engine variant (`Syntax` → `Neo.ClientError.Statement.SyntaxError`,
   `Conflict` → `Neo.TransientError.Transaction.Outdated`, …), and the

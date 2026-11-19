@@ -1,7 +1,24 @@
-# ADR-0344: Query plan node tree and per-operator metrics
+---
+type: adr
+area: engine
+claim: dd027d24e2a5cb4acd660cd567008ab773573d26
+name: 0344-query-plan-node-tree-and-per-operator-metrics
+status: accepted
+tags:
+  - observability
+  - planner
+title: Query plan node tree and per-operator metrics
+REFERENCES:
+  - "[[adr/0218-stats-based-match-orientation]]"
+  - "[[adr/0345-plan-surface-alignment-cli-bolt-http]]"
+  - "[[adr/0348-profile-metric-fields-db-hits-memory-bytes]]"
+  - "[[adr/0363-query-notifications]]"
+  - "[[adr/0400-plan-table-presentation-lives-with-consumer]]"
+  - "[[adr/0463-expression-allocation-budget]]"
+  - "[[adr/0555-operators-stream-rows-never-accumulate]]"
+---
 
-Claim: dd027d24e2a5cb4acd660cd567008ab773573d26
-Status: Accepted
+# ADR-0344: Query plan node tree and per-operator metrics
 
 ## Context
 
@@ -14,7 +31,7 @@ clause-at-a-time dispatcher (`exec/dispatch.rs`) over specialized mechanisms
 (node/rel candidates, id seeks, hop expansion, far-node probes, exists probes,
 agg folds, pushdown folds, GPM, shortest path, vector SEARCH, bulk writes),
 already carrying thread-local counters (`HOP_EXPANDS`, `NEIGHBOR_WALKS`,
-`FAR_PROBE`) and ADR-0218 `PatternStats` cardinality estimates that are
+`FAR_PROBE`) and [ADR-0218](./0218-stats-based-match-orientation.md) `PatternStats` cardinality estimates that are
 computed in the planner but never surfaced.
 
 LABS-163 research (comment 786f7de1) verified the Neo4j contract live
@@ -33,7 +50,7 @@ which is what client tooling (Browser, drivers) renders.
    EagerAggregation, ProduceResults) and this engine's own names where it
    does not (FarNodeProbe, ExistsProbe, AggFold, GpmMatch, VectorSearchMatch,
    BulkWritePlan).
-2. EXPLAIN returns the tree with `estimated_rows` filled from ADR-0218
+2. EXPLAIN returns the tree with `estimated_rows` filled from [ADR-0218](./0218-stats-based-match-orientation.md)
    stats and no execution; PROFILE returns the same tree with actual
    `metrics` (later phases: rows + time first, db-hits counters, then
    estimates-everywhere, then memory).
@@ -66,22 +83,22 @@ which is what client tooling (Browser, drivers) renders.
 - EXPLAIN/PROFILE become first-class debugging surfaces; LABS-315-class RCA
   becomes a PROFILE read-off.
 - Deterministic metrics (rows, db-hits, estimates) are test-assertable.
-- The `_profile_*` result columns are deprecated (ADR-0345 governs their
+- The `_profile_*` result columns are deprecated ([ADR-0345](./0345-plan-surface-alignment-cli-bolt-http.md) governs their
   removal path).
 - Each PROFILE phase that adds hot-path instrumentation must show a
   loadtest comparison proving the off-path is unaffected.
 
 ## Later references
 
-- ADR-0348 defines the metric fields this ADR anticipated (`db_hits`,
+- [ADR-0348](./0348-profile-metric-fields-db-hits-memory-bytes.md) defines the metric fields this ADR anticipated (`db_hits`,
   `memory_bytes` as row-materialization bytes) and the never-executed and
   estimate-skew markers.
-- ADR-0363 defines the Neo4j notification model and its per-surface transport
+- [ADR-0363](./0363-query-notifications.md) defines the Neo4j notification model and its per-surface transport
   that extends this ADR's typed plan warnings.
 
 ## Later references
 
-- ADR-0400 supersedes the shared-module placement this ADR's presentation
+- [ADR-0400](./0400-plan-table-presentation-lives-with-consumer.md) supersedes the shared-module placement this ADR's presentation
   vocabulary rode ("shared by the engine renderer and every surface"):
   the engine's own text renderer was deleted, leaving one consumer, and
   the presentation moved to `cypherlite-formatter`. The metric contract
@@ -92,7 +109,7 @@ which is what client tooling (Browser, drivers) renders.
   accessor's parse: name, payload, notification projection, and message
   text are owned once by the enum instead of three review-coordinated
   layers. `cypherlite::PlanWarning` and the wire shape are unchanged.
-- ADR-0555 fixes the operator boundary this ADR's per-operator metrics
+- [ADR-0555](./0555-operators-stream-rows-never-accumulate.md) fixes the operator boundary this ADR's per-operator metrics
   observe: a pull stream of rows or bounded batches rather than a whole
   vector. Row counts describe rows passing that boundary, and retained
-  state is charged by the declared breakers (ADR-0463), not by every operator.
+ state is charged by the declared breakers ([ADR-0463](./0463-expression-allocation-budget.md)), not by every operator.

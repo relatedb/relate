@@ -1,12 +1,25 @@
-# 0132. Single-file recipes: embedded data, table and gram results
+---
+type: adr
+area: ecosystem
+date: 2026-09-25
+deciders: CypherLite maintainers
+name: 0132-single-file-recipes
+status: accepted
+tags:
+  - cookbook
+title: "Single-file recipes: embedded data, table and gram results"
+REFERENCES:
+  - "[[adr/0130-cookbook-tested-recipes]]"
+  - "[[adr/0131-wasm-script-execution]]"
+  - "[[adr/0135-cookbook-diagrams]]"
+  - "[[adr/0528-cookbook-moves-to-relate-web]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-25
-- **Deciders**: CypherLite maintainers
+# 0132. Single-file recipes: embedded data, table and gram results
 
 ## Context
 
-ADR-0130 made each cookbook recipe a directory: `README.md` for prose and
+[ADR-0130](./0130-cookbook-tested-recipes.md) made each cookbook recipe a directory: `README.md` for prose and
 cells, `data/*.json` for fixtures, and `expected.json` for the recorded wire
 envelopes, with each cell's rendered table repeated in an `output` block.
 A recipe was therefore four to ten files, and its authoritative results lived
@@ -54,7 +67,7 @@ people read rather than a wire dump.
      `` \` `` where Cypher doubles it, and gram has no `\u` escape.
    One renderer, `cypherlite_formatter::recording`, makes this text: the
    native harness calls it directly and the browser through the WASM
-   `renderResult` (ADR-0131). The harness and the WASM parity check compare it
+ `renderResult` ([ADR-0131](./0131-wasm-script-execution.md)). The harness and the WASM parity check compare it
    to the block; `COOKBOOK_UPDATE=1` rewrites the blocks. Only a cell's last
    statement is rendered; the counters are summed over the cell.
 4. **Website.** Data blocks and result blocks never render as code blocks on
@@ -67,7 +80,7 @@ people read rather than a wire dump.
    only recipe parser. The Node tools (the site build, the diagram renderer)
    read its parse as JSON from `cookbook-export`, a binary of that crate that
    builds without the engine; they do not parse recipes themselves.
-6. Everything else in ADR-0130 stands: cells, CI gates, publication from the
+6. Everything else in [ADR-0130](./0130-cookbook-tested-recipes.md) stands: cells, CI gates, publication from the
    latest release tag, the Web Worker runtime, playground hand-off.
 
 ## Alternatives considered
@@ -107,13 +120,13 @@ people read rather than a wire dump.
 - Result blocks can be long: up to 200 rows (the existing cap), untruncated.
 - `scripts/cookbook/build.mjs` needs the WASM bundle at build time to execute
   recipes (it already copies it).
-- ADR-0130 gains a Later references note.
+- [ADR-0130](./0130-cookbook-tested-recipes.md) gains a Later references note.
 
 ## Later references
 
-- ADR-0135 adds ```` ```mermaid ```` diagram blocks to recipes. The block is
+- [ADR-0135](./0135-cookbook-diagrams.md) adds ```` ```mermaid ```` diagram blocks to recipes. The block is
   the source and stays in the recipe file; the website uses SVG renderings of
   it kept beside the recipes in `docs/cookbook/diagrams/`, so for the website
   a recipe is no longer entirely one file.
-- ADR-0528 moves the cookbook to the relate-web repository: the recipe
+- [ADR-0528](./0528-cookbook-moves-to-relate-web.md) moves the cookbook to the relate-web repository: the recipe
   format this ADR defined continues there, maintained by that repository.

@@ -1,13 +1,28 @@
+---
+type: adr
+area: surface
+date: 2026-09-29
+deciders: CypherLite maintainers
+name: 0272-bolt-path-struct
+status: accepted
+tags:
+  - bolt
+title: Bolt Path values encode as a PackStream structure
+REFERENCES:
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+  - "[[adr/0082-bound-bolt-decoded-value-count]]"
+  - "[[adr/0266-bolt-websocket-transport]]"
+  - "[[adr/0325-bolt-temporal-results-as-packstream-structs]]"
+  - "[[adr/0326-bolt-point-results-as-packstream-structs]]"
+---
+
 # 0272. Bolt Path values encode as a PackStream structure
 
-- **Status**: Accepted
 - **Renumbered**: from 0143 (shared-number cleanup)
-- **Date**: 2026-09-29
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
-CypherLite's Bolt transport (ADR-0057) maps engine values to PackStream via
+CypherLite's Bolt transport ([ADR-0057](./0057-embedded-c-abi-and-bolt.md)) maps engine values to PackStream via
 `from_mdb_at` in `surfaces/cypherlite-bolt/src/packstream.rs`. Nodes and
 relationships already encode as proper PackStream structures — a Node is
 `Struct 0x4E` (id, labels, properties) and a Relationship is `Struct 0x52`
@@ -27,7 +42,7 @@ current negotiation. The engine builds `Path { nodes, rels }` in traversal
 order at every construction site, and hop `i` is forward exactly when
 `rels[i].start == nodes[i].id`.
 
-This fix must respect the decode-side bounds of ADR-0082 and must not disturb
+This fix must respect the decode-side bounds of [ADR-0082](./0082-bound-bolt-decoded-value-count.md) and must not disturb
 the Temporal/Point/Vector string encodings that share the same match arm
 family. The decision was agreed by the maintainer in LABS-147 before this ADR
 was written.
@@ -83,24 +98,24 @@ and Vector arms remain **string encodings**, unchanged.
   Node encoding and a new three-field relationship form.
 - The PackStream encoder must gain the `0x50` structure and the `0x72`
   unbound-relationship struct; no new protocol version or handshake change
-  is needed, preserving ADR-0057's "Bolt is a transport" boundary.
+ is needed, preserving [ADR-0057](./0057-embedded-c-abi-and-bolt.md)'s "Bolt is a transport" boundary.
 - Encoding stays bounded by the existing `child_depth` recursion and
-  ADR-0082's decode limits; no new nesting budget is introduced.
+ [ADR-0082](./0082-bound-bolt-decoded-value-count.md)'s decode limits; no new nesting budget is introduced.
 - Temporal, Point, and Vector stringification is unchanged, so existing
   client expectations for those types are untouched.
 - Tests must pin the `0x50` tag and field order, the `0x72` field order,
   forward and reverse hop signs, the two-entries-per-hop sequence, and that a
   Path nested in a collection encodes identically.
-- Builds on ADR-0057 (Bolt transport boundary) and ADR-0082 (decode bounds),
-  and is compatible with ADR-0266 (Bolt over WebSocket / browser clients),
+- Builds on [ADR-0057](./0057-embedded-c-abi-and-bolt.md) (Bolt transport boundary) and [ADR-0082](./0082-bound-bolt-decoded-value-count.md) (decode bounds),
+ and is compatible with [ADR-0266](./0266-bolt-websocket-transport.md) (Bolt over WebSocket / browser clients),
   which carries the same values over an alternate transport.
 
 ## Later references
 
-- ADR-0325: supersedes "The Temporal ... arms remain string encodings".
+- [ADR-0325](./0325-bolt-temporal-results-as-packstream-structs.md): supersedes "The Temporal ... arms remain string encodings".
   Temporal results encode as the Bolt 4.4 PackStream temporal structures
   (`0x44`, `0x54`, `0x74`, `0x46`, `0x66`, `0x64`, `0x45`).
-- ADR-0326: supersedes "The ... Point ... arms remain string encodings".
+- [ADR-0326](./0326-bolt-point-results-as-packstream-structs.md): supersedes "The ... Point ... arms remain string encodings".
   Point results encode as Point2D `0x58` / Point3D `0x59` with Float
   coordinates. Vector results stay strings; the Path decision here is
   unchanged.

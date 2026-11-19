@@ -1,11 +1,27 @@
-# ADR-0333: Processing memory controls
+---
+type: adr
+area: engine
+claim: 33d34f99055871c1a4106c56306ffc1e75998e7d
+name: 0333-processing-memory-controls
+status: accepted
+tags:
+  - memory
+title: Processing memory controls
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0232-network-surfaces-charter]]"
+  - "[[adr/0249-docker-unified-serve-image]]"
+  - "[[adr/0259-query-execution-stack-provisioning]]"
+  - "[[adr/0352-drop-processing-byte-limits]]"
+  - "[[adr/0451-bound-unauthenticated-network-connections]]"
+  - "[[adr/0452-workspace-limit-enables-admission]]"
+---
 
-Status: Accepted
-Claim: 33d34f99055871c1a4106c56306ffc1e75998e7d
+# ADR-0333: Processing memory controls
 
 ## Context
 
-`--memory-limit` caps Logical Graph memory (ADR-0042). It does not cap
+`--memory-limit` caps Logical Graph memory ([ADR-0042](./0042-graph-memory-limit.md)). It does not cap
 the memory used to run queries, hold sessions, or checkpoint. That
 processing memory scales with connections, concurrent queries, retained
 rows, write scratch, and checkpoint work. Without a control on those
@@ -13,7 +29,7 @@ vectors, Operating RSS has no ceiling an operator can set, and a
 container memory limit is a guess that ends in an OOM kill.
 
 `cypherlite serve` listens on Bolt, HTTP, and MCP in one process
-(ADR-0232, ADR-0249). Each listener currently builds its own connection
+([ADR-0232](./0232-network-surfaces-charter.md), [ADR-0249](./0249-docker-unified-serve-image.md)). Each listener currently builds its own connection
 cap of 128, so three surfaces admit 384 sessions. Session cost is
 process-wide: a Bolt session and an HTTP session both take a connection
 thread and, after the first query, a parked query worker.
@@ -23,7 +39,7 @@ thread and, after the first query, a parked query worker.
 Four controls. Each ships unlimited: omitting the flag, leaving its
 environment variable unset, or passing `0` turns that control off. A
 positive value enables it. `--memory-limit` stays the Logical Graph cap.
-The query-worker stack size stays the fixed ADR-0259 value.
+The query-worker stack size stays the fixed [ADR-0259](./0259-query-execution-stack-provisioning.md) value.
 
 - `--max-connections` (`CYPHERLITE_MAX_CONNECTIONS`) bounds sessions in
   the process. Over cap is accept-then-close. The log names the flag,
@@ -71,7 +87,7 @@ the controls and from RSS samples. It is not itself a flag.
   work which runs today is a behavior change. Operators opt in.
 - **An operator-set worker stack size.** Rejected for now. The 64 MiB
   stack is the budget the nesting cap was calibrated against
-  (ADR-0259). Lowering it without re-proving that cap reopens
+ ([ADR-0259](./0259-query-execution-stack-provisioning.md)). Lowering it without re-proving that cap reopens
   stack-abort failures.
 
 ## Consequences
@@ -89,7 +105,7 @@ the controls and from RSS samples. It is not itself a flag.
 
 ## Later references
 
-ADR-0352 drops `--query-memory-limit` and `--processing-memory-limit`.
+[ADR-0352](./0352-drop-processing-byte-limits.md) drops `--query-memory-limit` and `--processing-memory-limit`.
 Those flags, their environment variables, the byte-charge rules, and the
 `--processing-memory-limit` term in the operating ceiling above no
 longer apply.
@@ -99,10 +115,10 @@ longer apply.
 admission is the only query-concurrency control, and it is opt-in.
 `--max-connections` stays the session cap.
 
-ADR-0452 removes the separate `--token-admission` switch. A positive
+[ADR-0452](./0452-workspace-limit-enables-admission.md) removes the separate `--token-admission` switch. A positive
 `--concurrent-logical-workspace-limit` is what turns admission on.
 
-ADR-0451 restores a non-zero default for `--max-connections` (128,
+[ADR-0451](./0451-bound-unauthenticated-network-connections.md) restores a non-zero default for `--max-connections` (128,
 process-wide) and adds the absolute request-header and body deadlines.
 The flag, its environment variable, and the one-shared-cap decision above
 still apply; the unlimited default and the `0`-only posture do not — `0`

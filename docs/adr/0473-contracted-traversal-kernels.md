@@ -1,12 +1,24 @@
+---
+type: adr
+area: engine
+claim: 8d20b3491db8ecc22a763783a01aa8d9c6848a48
+name: 0473-contracted-traversal-kernels
+status: proposed
+tags:
+  - pattern-matching
+  - perf
+title: Contracted traversal kernels over the batch substrate
+REFERENCES:
+  - "[[adr/0218-stats-based-match-orientation]]"
+  - "[[adr/0468-soa-batch-substrate]]"
+  - "[[adr/0478-frontier-nfa-qpp-kernel]]"
+---
+
 # ADR-0473: Contracted traversal kernels over the batch substrate
-
-Status: Proposed
-
-Claim: 8d20b3491db8ecc22a763783a01aa8d9c6848a48
 
 ## Context
 
-ADR-0468 landed the structure-of-arrays substrate and its first consumer —
+[ADR-0468](./0468-soa-batch-substrate.md) landed the structure-of-arrays substrate and its first consumer —
 the scan-filter chain (`exec/batch.rs`, LABS-359). Layer 3 of the execution
 architecture (2026-10-31 session)
 is the contracted traversal kernel set: a small number of compiled
@@ -43,7 +55,7 @@ with three parts, all fail-through:
    pattern size, that recognizes exactly two traversal families and
    compiles everything the kernel runs on:
    - the **unrolled fixed-k chain** — one pattern of 2..=4 fixed single
-     hops, walked from the planner-oriented selective end (ADR-0218's
+ hops, walked from the planner-oriented selective end ([ADR-0218](./0218-stats-based-match-orientation.md)'s
      `reverse_path`), with a scan segment at that end; and
    - the **hub-star** — exactly two patterns of 1..=2 fixed single hops
      sharing one hub node variable at an end of both (the q19/q01/q26
@@ -80,7 +92,7 @@ with three parts, all fail-through:
    per-pair disjointness check (at most four rels again).
 
 3. **A cost gate** (`kernels/mod.rs`) over the planner's own estimate
-   machinery (ADR-0218's endpoint ladder and degree tails through the live
+ machinery ([ADR-0218](./0218-stats-based-match-orientation.md)'s endpoint ladder and degree tails through the live
    `GraphStats`, never a second statistics implementation). The chain
    engages under an affordability ceiling on each stage's estimated width.
    The hub-star engages only when the hub-driven plan's estimated work is
@@ -132,7 +144,7 @@ construction.
   matcher's closed proofs plus one dispatch per stage keep the failure
   mode a decline, never a misinterpretation.
 - **JIT / runtime codegen** (the pgrust/Gavity approach, HyPer-style):
-  rejected in ADR-0468 already for this workload — sub-ms embedded
+ rejected in [ADR-0468](./0468-soa-batch-substrate.md) already for this workload — sub-ms embedded
   traversals, WASM build forbidding runtime codegen, MSRV 1.88 — and
   nothing in the kernel measurements reopened it: the hand-loop gap was
   closed by removing machinery and interning, not by compiling plans.
@@ -182,7 +194,7 @@ construction.
 
 ## Later references
 
-ADR-0478 adds the frontier family to this kernel layer: a third matcher
+[ADR-0478](./0478-frontier-nfa-qpp-kernel.md) adds the frontier family to this kernel layer: a third matcher
 arm answering the recursive QPP shapes (a Thompson NFA compiled from the
 `QuantifiedPathPattern` IR, level-synchronous BFS over deduplicated
 (node, state) pairs) under the same fail-through discipline — every shape

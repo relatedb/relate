@@ -1,11 +1,29 @@
+---
+type: adr
+area: cypher
+date: 2026-10-11
+deciders: CypherLite maintainers
+name: 0210-call-in-transactions-batching
+status: proposed
+tags:
+  - transactions
+title: |-
+  `CALL { … } IN TRANSACTIONS`: legacy WITH-import, concluding results, per-batch commits
+REFERENCES:
+  - "[[adr/0016-write-overlay]]"
+  - "[[adr/0019-group-commit-shared-fsync]]"
+  - "[[adr/0137-wal-follow]]"
+  - "[[adr/0172-incremental-constraint-validation]]"
+  - "[[adr/0173-overlay-owned-redo-log-and-scratch-index]]"
+  - "[[adr/0287-catalog-ddl-unit-output-in-next-chains]]"
+  - "[[adr/0570-call-in-transactions-implicit-transaction]]"
+---
+
 # 0210. `CALL { … } IN TRANSACTIONS`: legacy WITH-import, concluding results, per-batch commits
 
-- **Status**: Proposed
-- **Date**: 2026-10-11
-- **Deciders**: CypherLite maintainers (Linear [LABS-264](https://linear.app/neo4j/issue/LABS-264))
-- **Related**: ADR-0016 (optimistic write overlay), ADR-0019 (group
-  commit), ADR-0172 (incremental constraint validation), ADR-0173
-  (overlay-owned redo log), ADR-0287 (NEXT unit output). LABS-263
+- **Related**: [ADR-0016](./0016-write-overlay.md) (optimistic write overlay), [ADR-0019](./0019-group-commit-shared-fsync.md) (group
+ commit), [ADR-0172](./0172-incremental-constraint-validation.md) (incremental constraint validation), [ADR-0173](./0173-overlay-owned-redo-log-and-scratch-index.md)
+ (overlay-owned redo log), [ADR-0287](./0287-catalog-ddl-unit-output-in-next-chains.md) (NEXT unit output). 
   (internal batching of global bulk ops) is parallel work; this ADR is
   scoped to the `CALL { … } IN TRANSACTIONS` surface only.
 
@@ -103,7 +121,7 @@ containing `IN TRANSACTIONS` therefore do **not** hold the publication
 read guard across execution (the group commit needs the publication
 write lock; holding a read guard on the same thread would deadlock).
 The statement's snapshot pin — which already outlives the read guard
-and keeps the `GraphCell` from being replaced (ADR-0137) — plus the
+and keeps the `GraphCell` from being replaced ([ADR-0137](./0137-wal-follow.md)) — plus the
 store's timestamped version retention (pins define the GC horizon) keep
 mid-execution reads sound while own batch commits apply at newer
 timestamps. The statement-level remainder after the last batch (usually
@@ -176,7 +194,7 @@ facade commit entry; it does not alter global-bulk detection.
 
 ## Later references
 
-- ADR-0570 supersedes the last consequence above: live Neo4j 2026.10.1
+- [ADR-0570](./0570-call-in-transactions-implicit-transaction.md) supersedes the last consequence above: live Neo4j 2026.10.1
   refuses a `CALL { … } IN TRANSACTIONS` statement inside an open explicit
   transaction (GQLSTATUS 25N17) rather than batching into the transaction's
   overlay, and the engine now refuses it at admission. The

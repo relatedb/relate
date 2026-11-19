@@ -1,15 +1,32 @@
-# ADR-0585: The installer downloads release assets over the direct route
+---
+type: adr
+area: infra
+claim: 149adbb71aa163c5711d79edb6162140bf2671a7
+name: 0585-installer-downloads-via-direct-route
+status: proposed
+tags:
+  - release
+title: The installer downloads release assets over the direct route
+REFERENCES:
+  - "[[adr/0068-cli-install-script-via-github-pages]]"
+  - "[[adr/0115-sshsig-release-signing]]"
+  - "[[adr/0358-upgrade-download-route]]"
+  - "[[adr/0457-signed-manifest-carries-version]]"
+  - "[[adr/0571-installer-resolves-via-releases-json]]"
+  - "[[adr/0586-windows-powershell-installer]]"
+SUPERSEDES:
+  - "[[adr/0068-cli-install-script-via-github-pages]]"
+---
 
-Status: Proposed
-Claim: 149adbb71aa163c5711d79edb6162140bf2671a7
+# ADR-0585: The installer downloads release assets over the direct route
 
 ## Context
 
-`install.sh` (ADR-0068) resolves its release tag from `releases.json`
-(ADR-0571) but then asked the GitHub API for that release's asset ids
-and downloaded every asset through the API — the mechanism ADR-0068 §6
+`install.sh` ([ADR-0068](./0068-cli-install-script-via-github-pages.md)) resolves its release tag from `releases.json`
+([ADR-0571](./0571-installer-resolves-via-releases-json.md)) but then asked the GitHub API for that release's asset ids
+and downloaded every asset through the API — the mechanism [ADR-0068](./0068-cli-install-script-via-github-pages.md) §6
 fixed while the repository was internal, where the browser download
-route answers 404 regardless of token (ADR-0358's measurement). The
+route answers 404 regardless of token ([ADR-0358](./0358-upgrade-download-route.md)'s measurement). The
 repository is public now, so those requests were anonymous, and
 anonymous GitHub API requests are limited to 60/hour per IP address.
 Users behind shared egress addresses — VPNs, corporate NAT, Cloudflare
@@ -20,9 +37,9 @@ repository, a cause that no longer exists.
 
 `releases.json` already names every asset the installer needs; on the
 public repository the direct download URL is determined by the tag and
-the asset name alone. ADR-0571 reserved this move — "a future ADR can
+the asset name alone. [ADR-0571](./0571-installer-resolves-via-releases-json.md) reserved this move — "a future ADR can
 adopt the direct route once the repository is public" — and `upgrade`
-made it in ADR-0358, whose own record names the shared-IP anonymous
+made it in [ADR-0358](./0358-upgrade-download-route.md), whose own record names the shared-IP anonymous
 quota as the failure the direct route removes.
 
 ## Decision
@@ -31,10 +48,10 @@ quota as the failure the direct route removes.
 `SHA256SUMS` manifest, its `SHA256SUMS.sig` signature, and the platform
 binary — is downloaded from
 `https://github.com/<repo>/releases/download/<tag>/<asset>`, the direct
-browser route `upgrade` probes (ADR-0358 §1), unauthenticated.
+browser route `upgrade` probes ([ADR-0358](./0358-upgrade-download-route.md) §1), unauthenticated.
 
 1. **One transport.** `releases.json` remains the only metadata source
-   (ADR-0571); its tag and the asset names determine every URL. Any
+ ([ADR-0571](./0571-installer-resolves-via-releases-json.md)); its tag and the asset names determine every URL. Any
    non-2xx answer dies with the request and the HTTP status — the same
    pinned status text the CLI's release channel carries. The transport
    is TLS-only: the seam's base is gated to `https://` before the first
@@ -53,13 +70,13 @@ browser route `upgrade` probes (ADR-0358 §1), unauthenticated.
    with empty meaning the canonical default and no fallback between the
    two; a harness drift guard holds it to the CLI's constant.
 4. **The integrity chain is unchanged.** `releases.json` selects but is
-   never trusted; SSHSIG verification (ADR-0115), the signed
-   version-header binding (ADR-0457) and the checksum gate run before
+ never trusted; SSHSIG verification ([ADR-0115](./0115-sshsig-release-signing.md)), the signed
+ version-header binding ([ADR-0457](./0457-signed-manifest-carries-version.md)) and the checksum gate run before
    the binary is trusted, whichever route delivered the bytes.
 
 ## Alternatives considered
 
-- **ADR-0358's probe-then-fallback (keep the authenticated API arm)** —
+- **[ADR-0358](./0358-upgrade-download-route.md)'s probe-then-fallback (keep the authenticated API arm)** —
   rejected: the repository is public and the one-liner's audience holds
   no token; the arm would keep the API machinery, its JSON parse surface
   and its token plumbing alive for a case that no longer exists.
@@ -67,10 +84,10 @@ browser route `upgrade` probes (ADR-0358 §1), unauthenticated.
 - **Keep the API route, reword the failure** — rejected: the failure is
   structural — every tokenless install spent about four anonymous API
   requests against a shared 60/hour quota.
-- **Carry asset ids in `releases.json`** — rejected (ADR-0358's own
+- **Carry asset ids in `releases.json`** — rejected ([ADR-0358](./0358-upgrade-download-route.md)'s own
   record): a publisher change plus a backfill, to save requests the
   direct route already eliminates.
-- **Host the assets on the project file host** — rejected (ADR-0358's
+- **Host the assets on the project file host** — rejected ([ADR-0358](./0358-upgrade-download-route.md)'s
   own record): GitHub release assets are the release contract; the file
   host serves metadata, not artifacts.
 
@@ -88,8 +105,8 @@ browser route `upgrade` probes (ADR-0358 §1), unauthenticated.
   visibility change needs a new decision.
 - The installer loses its GitHub JSON parse surface (asset ids,
   `tag_name`) — the direct URLs need neither.
-- ADR-0068 §6's authentication model is superseded for the installer,
-  ADR-0571's reserved future decision is taken, and ADR-0358's "always
+- [ADR-0068](./0068-cli-install-script-via-github-pages.md) §6's authentication model is superseded for the installer,
+ [ADR-0571](./0571-installer-resolves-via-releases-json.md)'s reserved future decision is taken, and [ADR-0358](./0358-upgrade-download-route.md)'s "always
   the API asset route" characterization of `install.sh` becomes history
   — Later references notes on all three.
 - The offline harness pins the no-API contract: its stub fails any
@@ -100,6 +117,6 @@ browser route `upgrade` probes (ADR-0358 §1), unauthenticated.
 
 ## Later references
 
-ADR-0586 extends the `https://` gate to the metadata seam
+[ADR-0586](./0586-windows-powershell-installer.md) extends the `https://` gate to the metadata seam
 (`RELATE_RELEASES_JSON_URL`) in both installers, and pins `install.sh`'s
 metadata fetch to https across redirects like its asset downloads.

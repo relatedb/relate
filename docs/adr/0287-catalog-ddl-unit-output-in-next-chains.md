@@ -1,9 +1,18 @@
+---
+type: adr
+area: engine
+date: 2026-10-07
+deciders: Oskar Hane (agreed in the end-of-feature review conversation), CypherLite maintainers
+name: 0287-catalog-ddl-unit-output-in-next-chains
+status: accepted
+tags:
+  - catalog
+title: Catalog DDL stages seed NEXT chains with a unit row
+---
+
 # 0287. Catalog DDL stages seed NEXT chains with a unit row
 
-- **Status**: Accepted
 - **Renumbered**: from 0176 (shared-number cleanup)
-- **Date**: 2026-10-07
-- **Deciders**: Oskar Hane (agreed in the end-of-feature review conversation), CypherLite maintainers
 
 ## Context
 

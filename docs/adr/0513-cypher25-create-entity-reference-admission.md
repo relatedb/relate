@@ -1,7 +1,22 @@
-# ADR-0513: Cypher 25 CREATE/INSERT entity-reference admission, and the TCK setup re-pin it forces
+---
+type: adr
+area: cypher
+claim: 37bb8f9563e4f754cb82c5a35ed253dd02a0aa4c
+name: 0513-cypher25-create-entity-reference-admission
+status: proposed
+tags:
+  - conformance
+  - dialect
+title: Cypher 25 CREATE/INSERT entity-reference admission, and the TCK setup re-pin it forces
+REFERENCES:
+  - "[[adr/0002-cypher-25-semantic-target]]"
+  - "[[adr/0188-remove-superseded-tck-scenario-from-pin]]"
+  - "[[adr/0472-repin-order-by-scenarios]]"
+  - "[[adr/0498-null-bound-endpoint-matches-nothing]]"
+  - "[[adr/0584-one-cypher-version-cypher25-noop]]"
+---
 
-Status: Proposed
-Claim: 37bb8f9563e4f754cb82c5a35ed253dd02a0aa4c
+# ADR-0513: Cypher 25 CREATE/INSERT entity-reference admission, and the TCK setup re-pin it forces
 
 ## Context
 
@@ -71,7 +86,7 @@ and cannot pass against it.
 2. **A null (or otherwise non-node) binding in a CREATE/MERGE node
    position is 22N01.** It is neither a fresh node (today) nor a lenient
    no-op: the statement fails with Neo4j's message and `TypeError` class.
-   This is the write-side companion of ADR-0498's MATCH ruling (a
+ This is the write-side companion of [ADR-0498](./0498-null-bound-endpoint-matches-nothing.md)'s MATCH ruling (a
    null-bound pattern endpoint matches nothing when *reading*; a write
    cannot manufacture the entity the row did not bind).
 3. **Re-pin the three openCypher 2024.3 TCK setup queries** that use the
@@ -81,7 +96,7 @@ and cannot pass against it.
    per pattern produces the identical fixture graph. The scenarios stay in
    the pin, allowlisted and passing — the 2024.3 corpus is not a Cypher 25
    corpus and this is the smallest local deviation that keeps its intent
-   (the ADR-0188 / ADR-0472 precedent, under ADR-0002's authority
+ (the [ADR-0188](./0188-remove-superseded-tck-scenario-from-pin.md) / [ADR-0472](./0472-repin-order-by-scenarios.md) precedent, under [ADR-0002](./0002-cypher-25-semantic-target.md)'s authority
    ordering: a live-verified current-Neo4j behaviour outranks the 2024.3
    floor).
 
@@ -157,7 +172,7 @@ and cannot pass against it.
 
 ## Later references
 
-ADR-0584 removes Decision 1's CYPHER-5 arm — "The rule remains
+[ADR-0584](./0584-one-cypher-version-cypher25-noop.md) removes Decision 1's CYPHER-5 arm — "The rule remains
 Cypher-25-only; an explicit `CYPHER 5` preamble keeps the 01N00 warning
 semantics." With CYPHER 25 the only admitted version, a preamble can no
 longer select Cypher 5, the stand-down is unreachable, and the

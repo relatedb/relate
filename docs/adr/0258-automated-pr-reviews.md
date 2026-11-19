@@ -1,9 +1,20 @@
+---
+type: adr
+area: infra
+date: 2026-09-22
+deciders: CypherLite maintainers
+name: 0258-automated-pr-reviews
+status: proposed
+tags:
+  - review
+title: Automated PR reviews with OpenCode
+REFERENCES:
+  - "[[adr/0302-review-model-env-override]]"
+---
+
 # 0258. Automated PR reviews with OpenCode
 
-- **Status**: Proposed
 - **Renumbered**: from 0080 (shared-number cleanup)
-- **Date**: 2026-09-22
-- **Deciders**: CypherLite maintainers (Linear LABS-68)
 
 ## Context
 
@@ -126,10 +137,10 @@ runner, one workflow per review skill, gated fail-closed on severity.
 
 ## Later references
 
-- ADR-0302 amends the pinned-model decision: the review-agent models are
+- [ADR-0302](./0302-review-model-env-override.md) amends the pinned-model decision: the review-agent models are
   overridable through repository secrets or variables
   (`OPENCODE_REVIEW_MODEL`, `STELLAR_NIGHTSHIFT_MODEL`, and the four
-  `STELLAR_MODEL_*` pass tiers). ADR-0302 also switches the default from
+ `STELLAR_MODEL_*` pass tiers). [ADR-0302](./0302-review-model-env-override.md) also switches the default from
   the `fireworks-ai/accounts/fireworks/models/kimi-k3` pin to the
   `fireworks-ai/accounts/fireworks/routers/glm-fast-latest` router,
   accepting the drift this ADR's router alternative rejected; a pinned

@@ -1,12 +1,24 @@
-# 0151. Cookbook graph view: interactive NVL with double-click expand
+---
+type: adr
+area: ecosystem
+date: 2026-09-30
+deciders: CypherLite maintainers
+name: 0151-cookbook-graph-view-nvl
+status: proposed
+tags:
+  - cookbook
+title: "Cookbook graph view: interactive NVL with double-click expand"
+REFERENCES:
+  - "[[adr/0130-cookbook-tested-recipes]]"
+  - "[[adr/0135-cookbook-diagrams]]"
+  - "[[adr/0528-cookbook-moves-to-relate-web]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-30
-- **Deciders**: CypherLite maintainers
+# 0151. Cookbook graph view: interactive NVL with double-click expand
 
 ## Context
 
-ADR-0130 Decision item 6 draws a cookbook step's graph result with
+[ADR-0130](./0130-cookbook-tested-recipes.md) Decision item 6 draws a cookbook step's graph result with
 `d3-force` into a static SVG: 300 iterations of layout, then fixed
 circles and curves with `<title>` tooltips. The reader can look at it, but
 not zoom into a dense result, move a node that covers another, read a
@@ -15,7 +27,7 @@ connects to beyond the rows the step returned. Neo4j's own tools (Browser,
 Bloom, the playground's graph view) do all of these, and recipe readers
 come from them.
 
-ADR-0130 rejected NVL, Neo4j's visualization library and what the
+[ADR-0130](./0130-cookbook-tested-recipes.md) rejected NVL, Neo4j's visualization library and what the
 playground draws with, because "NVL's layout workers rely on Vite's worker
 bundling … a static-page bundle built with esbuild cannot load them
 cleanly", and because the NVL chunk is large. Looking at NVL 1.2.2 closely:
@@ -66,7 +78,7 @@ included, when steps run in order).
    the graph to the pane, and put back the step's result after expansions,
    and the pane can be resized. Colours and captions are unchanged: labels
    are coloured as
-   the recipe's data-model diagram colours them (ADR-0135), and a node's
+ the recipe's data-model diagram colours them ([ADR-0135](./0135-cookbook-diagrams.md)), and a node's
    caption is its `name`, `title`, `text`, `id`, `label`, or `key`
    property.
 3. **Double-click expands a node from the page's database.** The graph view
@@ -81,7 +93,7 @@ included, when steps run in order).
    to the one whose graph is on screen have not all run, expanding runs
    them first, in order, the way Run does (a step that has run does not run
    again), then expands. The double-click is the reader's click that
-   ADR-0130 Decision item 4 requires before anything runs, and a failed
+ [ADR-0130](./0130-cookbook-tested-recipes.md) Decision item 4 requires before anything runs, and a failed
    step stops it the same way it stops a Run. Expansions are view state:
    they last while the reader switches between a step's tabs, and a run
    that gives the step a new result starts its graph view over from that
@@ -91,7 +103,7 @@ included, when steps run in order).
    nodes, NVL's canvas-renderer comfort zone.
 6. **The build checks the expand queries.** When the build replays a
    recipe through the browser build of the engine (the WASM parity check,
-   ADR-0130 Decision item 2), it also expands the first node of every graph
+ [ADR-0130](./0130-cookbook-tested-recipes.md) Decision item 2), it also expands the first node of every graph
    result right after its step runs, and fails if the queries error or miss
    one of that node's relationships the step recorded.
 
@@ -108,7 +120,7 @@ included, when steps run in order).
   result out in milliseconds, so the workers buy nothing. Rejected.
 - **Needle's `GraphVisualization` (`@neo4j-ndl/react-graph`), as the
   playground uses.** It wraps NVL with a side panel, but brings React and
-  the Needle stylesheet into pages that ADR-0130 keeps framework-free.
+ the Needle stylesheet into pages that [ADR-0130](./0130-cookbook-tested-recipes.md) keeps framework-free.
   Rejected.
 - **WebGL renderer.** Scales past 100,000 nodes but drops caption fidelity;
   cookbook results are small and label-rich. Rejected.
@@ -156,11 +168,11 @@ included, when steps run in order).
 - The graph view still has no recorded form of its own: the WASM parity
   check covers the data it draws, `lib/graph-model.mjs` has unit tests, and
   the drawing itself is checked by eye.
-- ADR-0130 Decision item 6 and its "Render the graph view with NVL"
+- [ADR-0130](./0130-cookbook-tested-recipes.md) Decision item 6 and its "Render the graph view with NVL"
   alternative are replaced by this ADR (a **Later references** note is
   added there).
 
 ## Later references
 
-- ADR-0528 moves the cookbook to the relate-web repository: the graph view
+- [ADR-0528](./0528-cookbook-moves-to-relate-web.md) moves the cookbook to the relate-web repository: the graph view
   moves there with the pages.

@@ -1,16 +1,27 @@
-# 0192. CLI "did you mean" suggestion for unknown flags
+---
+type: adr
+area: cli
+date: 2026-10-09
+deciders: CypherLite maintainers
+name: 0192-cli-unknown-flag-suggestions
+status: proposed
+tags:
+  - did-you-mean
+title: CLI "did you mean" suggestion for unknown flags
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0190-scoped-cli-help]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-10-09
-- **Deciders**: CypherLite maintainers
+# 0192. CLI "did you mean" suggestion for unknown flags
 
 ## Context
 
-ADR-0190 scoped usage errors to the relevant command's synopsis plus a help
+[ADR-0190](./0190-scoped-cli-help.md) scoped usage errors to the relevant command's synopsis plus a help
 hint. An unknown flag still gives no hint about what was meant: a user typing
 `--readonly` (the flag is `--read-only`) gets `unknown flag: --readonly` and
 must scan the help to find the spelling. The CLI parses flags by hand
-(ADR-0069), so there is no parser library providing suggestions.
+([ADR-0069](./0069-cli-lifecycle-commands.md)), so there is no parser library providing suggestions.
 
 ## Decision
 
@@ -49,7 +60,7 @@ must scan the help to find the spelling. The CLI parses flags by hand
 ## Alternatives considered
 
 - **Adopt clap for the CLI.** Gives suggestions for free, but replaces the
-  hand-rolled parser and its byte-for-byte pinned help (ADR-0069, ADR-0190).
+ hand-rolled parser and its byte-for-byte pinned help ([ADR-0069](./0069-cli-lifecycle-commands.md), [ADR-0190](./0190-scoped-cli-help.md)).
   Rejected: far larger than the problem.
 - **Add the `strsim` crate.** Rejected: a dependency for a dozen lines of code.
 - **Fold the suggestion into the `Error:` line.** Rejected: `print_error`

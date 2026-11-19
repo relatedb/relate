@@ -1,12 +1,25 @@
+---
+type: adr
+area: cli
+claim: 6f77dc329a909082c162abd012dc35e28a288a92
+name: 0518-command-did-you-mean-on-usage-errors
+status: proposed
+tags:
+  - did-you-mean
+title: Command did-you-mean on query-run usage errors
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0104-cargo-feature-bundles]]"
+  - "[[adr/0192-cli-unknown-flag-suggestions]]"
+  - "[[adr/0200-query-command-and-database-flag]]"
+  - "[[adr/0230-command-did-you-mean-on-parse-errors]]"
+---
+
 # ADR-0518: Command did-you-mean on query-run usage errors
-
-Status: Proposed
-
-Claim: 6f77dc329a909082c162abd012dc35e28a288a92
 
 ## Context
 
-ADR-0230 added the command did-you-mean as a **fallback after a failed
+[ADR-0230](./0230-command-did-you-mean-on-parse-errors.md) added the command did-you-mean as a **fallback after a failed
 parse**: a first positional that is not a command word is a Cypher
 statement, and when the engine rejects it with a `Syntax` error, stderr
 gains `did you mean "serve"?  -- <synopsis>`.
@@ -31,7 +44,7 @@ Usage: cypherlite [OPTIONS] [--database PATH] [QUERY]
 Run 'cypherlite --help' for more information.
 ```
 
-The flag suggestion (ADR-0192) that this exit does carry cannot help
+The flag suggestion ([ADR-0192](./0192-cli-unknown-flag-suggestions.md)) that this exit does carry cannot help
 here: its candidate list is the exit's own usage scope — the query run's
 flags — while `--bolt` is a perfectly valid `serve` flag. The user's
 mistake is the command word, and no suggestion names it.
@@ -40,7 +53,7 @@ mistake is the command word, and no suggestion names it.
 
 The two query-run usage-error exits that fire while a statement is
 pending — the unknown-flag exit and the unexpected-argument exit — carry
-the ADR-0230 command suggestion for the pending statement:
+the [ADR-0230](./0230-command-did-you-mean-on-parse-errors.md) command suggestion for the pending statement:
 
 1. **Applicability.** When the exit fires and a statement is already
    pending (the first positional, or `--command`'s value), the
@@ -52,7 +65,7 @@ the ADR-0230 command suggestion for the pending statement:
    word that is not a plausible command typo (`RETURN 1 --bolt`) — no
    suggestion, byte-for-byte today's output.
 2. **Parsing stays authoritative.** Nothing new is rejected or rerouted;
-   the suggestion is printed by the exit that already fired. ADR-0230's
+ the suggestion is printed by the exit that already fired. [ADR-0230](./0230-command-did-you-mean-on-parse-errors.md)'s
    rejection of a pre-check stands: a statement that would parse is
    never decorated, because no exit fires for it.
 3. **One suggestion slot.** The exit carries at most one did-you-mean
@@ -62,10 +75,10 @@ the ADR-0230 command suggestion for the pending statement:
    meant, so a flag suggestion beside a command suggestion can only add
    noise (`servcie --databse x` suggests `serve`; the retry then gets
    `--database` from the flag matcher on its own exit). No command match
-   — the flag suggestion behaves exactly as before (ADR-0192).
+ — the flag suggestion behaves exactly as before ([ADR-0192](./0192-cli-unknown-flag-suggestions.md)).
 4. **Scope.** Exit codes are unchanged (still 2 for usage errors), the
    JSON envelope gains no field, and the engine-error fallback
-   (ADR-0230 §1) is untouched. Lifecycle verbs' own parsers are
+ ([ADR-0230](./0230-command-did-you-mean-on-parse-errors.md) §1) is untouched. Lifecycle verbs' own parsers are
    untouched: their exits have no pending statement, so there is nothing
    to suggest.
 
@@ -73,7 +86,7 @@ the ADR-0230 command suggestion for the pending statement:
 
 - **Pre-check the first positional against the command words before the
   walk, refusing early with a suggestion.** Rejected for the same reason
-  ADR-0230 rejected it: it changes what parses. A statement within edit
+ [ADR-0230](./0230-command-did-you-mean-on-parse-errors.md) rejected it: it changes what parses. A statement within edit
   distance of a command word would be refused even when the engine
   would accept it; the fallback-only shape keeps valid Cypher untouched
   by construction.
@@ -96,7 +109,7 @@ the ADR-0230 command suggestion for the pending statement:
 
 - `cypherlite service --bolt 7687` and `cypherlite service extra` keep
   their usage error as the headline and gain the `serve` suggestion;
-  `cypherlite service` (no parameters) is unchanged from ADR-0230.
+ `cypherlite service` (no parameters) is unchanged from [ADR-0230](./0230-command-did-you-mean-on-parse-errors.md).
 - `usage_error`'s suggestion parameter becomes one `UsageSuggestion`
   slot (flag text or command line) instead of an `Option<&'static str>`;
   every other call site passes `None` or a flag suggestion and is
@@ -104,7 +117,7 @@ the ADR-0230 command suggestion for the pending statement:
 - `suggest.rs` keeps one renderer for the suggestion line, shared by the
   engine-error fallback and the usage-error exits, so the two cannot
   drift.
-- Related: ADR-0230 (command did-you-mean, engine fallback — amended
-  here), ADR-0192 (flag did-you-mean), ADR-0069/ADR-0200 (positional
-  verbs, the `query` verb), ADR-0104 (feature bundles: compiled-out
+- Related: [ADR-0230](./0230-command-did-you-mean-on-parse-errors.md) (command did-you-mean, engine fallback — amended
+ here), [ADR-0192](./0192-cli-unknown-flag-suggestions.md) (flag did-you-mean), [ADR-0069](./0069-cli-lifecycle-commands.md)/[ADR-0200](./0200-query-command-and-database-flag.md) (positional
+ verbs, the `query` verb), [ADR-0104](./0104-cargo-feature-bundles.md) (feature bundles: compiled-out
   commands are not candidates).

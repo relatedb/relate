@@ -1,11 +1,21 @@
-# ADR-0301: ADR claim proof via the mint ledger
+---
+type: adr
+area: ecosystem
+claim: d5d2272c53bced231f5ea777fc65321c46fcddae
+name: 0301-adr-claim-proof
+status: accepted
+tags:
+  - adr-process
+title: ADR claim proof via the mint ledger
+REFERENCES:
+  - "[[adr/0300-adr-number-mint-counter-branch]]"
+---
 
-Status: Accepted
-Claim: d5d2272c53bced231f5ea777fc65321c46fcddae
+# ADR-0301: ADR claim proof via the mint ledger
 
 ## Context
 
-ADR-0300 moves ADR numbering to an atomic mint on the append-only
+[ADR-0300](./0300-adr-number-mint-counter-branch.md) moves ADR numbering to an atomic mint on the append-only
 `ADR-NUMBER-MINT-DO-NOT-DELETE` ledger and adds a PR check
 (`scripts/check_adr_numbers.py`, the `adr-numbers` job in
 `.github/workflows/ci.yml`) that flags an added `docs/adr/NNNN-*.md`
@@ -25,7 +35,7 @@ Second, a bare `claim NNNN` ledger commit proves a number was minted,
 but not by whom or for which file. Nothing ties a PR's
 `docs/adr/NNNN-*.md` to the claim for that number: the check can only
 compare against `main`'s state, never against the ledger. The
-authoring-time guarantee ADR-0300 promises — the author holds the real,
+authoring-time guarantee [ADR-0300](./0300-adr-number-mint-counter-branch.md) promises — the author holds the real,
 final number — is not verifiable after the fact.
 
 The fix chosen in conversation is proof-of-mint: each ADR names the
@@ -53,7 +63,7 @@ against the ledger.
    stale when other PRs merge, so a green cannot be invalidated by a
    later merge and no merge queue is needed for ADR numbers. Exclusivity
    lives at authoring time in the mint's compare-and-swap push
-   (ADR-0300), so a second PR can never mint the same number.
+ ([ADR-0300](./0300-adr-number-mint-counter-branch.md)), so a second PR can never mint the same number.
 6. **This ADR is the first proof-carrying one**: its own `Claim:` header
    proves itself, and the checker verifies it like any other.
 
@@ -78,7 +88,7 @@ against the ledger.
 
 ## Consequences
 
-- ADR-0300 carries its real claim SHA (added when this requirement
+- [ADR-0300](./0300-adr-number-mint-counter-branch.md) carries its real claim SHA (added when this requirement
   landed; it was minted before the mint printed the SHA, and its claim
   commit is on the ledger). ADRs older than the proof requirement are
   never re-checked: the checker only examines the ADRs a change adds.
@@ -93,5 +103,5 @@ against the ledger.
   protection there); the proof is enforced on PRs, not by the
   repository.
 - The `adr-numbers` job stays a numbering-hygiene gate, not a security
-  boundary: it runs the PR's own copy of the checker (ADR-0300), and a
+ boundary: it runs the PR's own copy of the checker ([ADR-0300](./0300-adr-number-mint-counter-branch.md)), and a
   PR that edits the checker only defeats its own check.

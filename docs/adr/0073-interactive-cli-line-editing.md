@@ -1,12 +1,24 @@
-# 0073. Interactive CLI line editing via rustyline
+---
+type: adr
+area: cli
+date: 2026-09-21
+deciders: CypherLite maintainers
+name: 0073-interactive-cli-line-editing
+status: accepted
+tags:
+  - repl
+title: Interactive CLI line editing via rustyline
+REFERENCES:
+  - "[[adr/0058-interactive-shell-surface-reduction]]"
+SUPERSEDES:
+  - "[[adr/0058-interactive-shell-surface-reduction]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-21
-- **Deciders**: CypherLite maintainers (Linear LABS-59)
+# 0073. Interactive CLI line editing via rustyline
 
 ## Context
 
-ADR-0058 reduced the interactive shell to a thin stdin loop
+[ADR-0058](./0058-interactive-shell-surface-reduction.md) reduced the interactive shell to a thin stdin loop
 (`read_line` + `input_is_complete`) over `cypherlite::Database` and
 explicitly withdrew rustyline: no line editing, tab completion, or
 persistent history. That decision recorded that rustyline "can return
@@ -60,16 +72,16 @@ Reinstating tab completion or a persistent history file needs a later ADR.
   rejected: reimplements readline (encoding, redraw, history, signals)
   for no product difference.
 - **reedline** — rejected: a second REPL crate while `rustyline = "14"`
-  is already pinned and is the library ADR-0058 named as the return path.
+ is already pinned and is the library [ADR-0058](./0058-interactive-shell-surface-reduction.md) named as the return path.
 - **Full rustyline restoration** (tab completion, `~/.cypherlite_history`,
-  advertised Ctrl-R search) — rejected: that is the surface ADR-0058
+ advertised Ctrl-R search) — rejected: that is the surface [ADR-0058](./0058-interactive-shell-surface-reduction.md)
   declined; LABS-59 asks for cursor-key editing, not a second completion
   language. Ctrl-R remains whatever rustyline's default emacs map does
   against in-session history; it is not a documented product feature.
 
 ## Consequences
 
-- ADR-0058's "no line editing" clause is superseded for TTY sessions;
+- [ADR-0058](./0058-interactive-shell-surface-reduction.md)'s "no line editing" clause is superseded for TTY sessions;
   its withdrawn **dot-command** list is unchanged.
 - `cypherlite-cli` depends on the existing workspace `rustyline` pin.
 - Docs that stated "no line editing" (getting-started, dot-commands,

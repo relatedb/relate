@@ -1,13 +1,28 @@
+---
+type: adr
+area: engine
+claim: 333c359ec76fa2bea937705945bf682ab8dec3a0
+name: 0446-temporal-identity-three-relations
+status: proposed
+status_note: 2026-10-29
+tags:
+  - values
+title: Temporal identity — equality, ordering and equivalence are three relations
+REFERENCES:
+  - "[[adr/0021-opencypher-temporal-values]]"
+  - "[[adr/0056-opencypher-tck-language-contract]]"
+  - "[[adr/0063-lazy-string-index-postings]]"
+  - "[[adr/0172-incremental-constraint-validation]]"
+  - "[[adr/0184-composite-key-smallest-bucket-probe]]"
+  - "[[adr/0185-relationship-equality-postings]]"
+---
+
 # ADR-0446: Temporal identity — equality, ordering and equivalence are three relations
-
-Status: Proposed (2026-10-29)
-
-Claim: 333c359ec76fa2bea937705945bf682ab8dec3a0
 
 ## Context
 
 A temporal value answers three distinct questions, and the pinned openCypher
-TCK 2024.3 (ADR-0021, ADR-0056) pins them apart on the zoned-date-time DST
+TCK 2024.3 ([ADR-0021](./0021-opencypher-temporal-values.md), [ADR-0056](./0056-opencypher-tck-language-contract.md)) pins them apart on the zoned-date-time DST
 fall-back overlap — `2025-10-26T02:30+02:00[Europe/Stockholm]` versus
 `2025-10-26T02:30+01:00[Europe/Stockholm]`:
 
@@ -21,8 +36,8 @@ fall-back overlap — `2025-10-26T02:30+02:00[Europe/Stockholm]` versus
 
 Everything that *buckets* values to answer an equality question was keyed by
 the equivalence relation: the lazily materialized property-equality postings
-(ADR-0063/ADR-0185), the RANGE index's equality probe, the uniqueness probe
-and scan re-check (ADR-0172, ADR-0184) and the pattern match `MERGE` runs.
+([ADR-0063](./0063-lazy-string-index-postings.md)/[ADR-0185](./0185-relationship-equality-postings.md)), the RANGE index's equality probe, the uniqueness probe
+and scan re-check ([ADR-0172](./0172-incremental-constraint-validation.md), [ADR-0184](./0184-composite-key-smallest-bucket-probe.md)) and the pattern match `MERGE` runs.
 Each of those verifies candidates with `Value::eq_non_null` (i.e. `=`), so a
 bucket finer than `=` silently loses answers: `GroupKey` keyed a zoned
 datetime by its UTC instant plus zone, while `=` also equates the DST overlap
@@ -38,7 +53,7 @@ index-backed constraint owns a backing range index):
   one.
 
 Without an index the same statements scanned and answered by `=`, so the
-presence of an index changed the answer. ADR-0021 decided that comparison
+presence of an index changed the answer. [ADR-0021](./0021-opencypher-temporal-values.md) decided that comparison
 follows the TCK but never said which of the three relations an equality
 *bucket* must encode.
 
@@ -98,5 +113,5 @@ a second node — while a label scan still applies `=` and matches both.
 - An indexed equality seek and an unindexed scan can disagree for the overlap
   pair (`=` is coarser than the index identity). That asymmetry is Neo4j's
   own, not an engine defect.
-- ADR-0021's "comparison follows the TCK" is refined, not replaced: this ADR
-  names which relation each consumer uses (see ADR-0021's Later references).
+- [ADR-0021](./0021-opencypher-temporal-values.md)'s "comparison follows the TCK" is refined, not replaced: this ADR
+ names which relation each consumer uses (see [ADR-0021](./0021-opencypher-temporal-values.md)'s Later references).

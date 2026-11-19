@@ -1,7 +1,21 @@
-# ADR-0395: A per-statement nested evaluation budget
+---
+type: adr
+area: engine
+claim: 7835e5f478866710db7dbcc57e00184b17285948
+name: 0395-nested-evaluation-budget
+status: proposed
+tags:
+  - memory
+  - security
+title: A per-statement nested evaluation budget
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0111-engine-bounded-execution]]"
+  - "[[adr/0257-query-input-limits]]"
+  - "[[adr/0382-local-callables]]"
+---
 
-Status: Proposed
-Claim: 7835e5f478866710db7dbcc57e00184b17285948
+# ADR-0395: A per-statement nested evaluation budget
 
 ## Context
 
@@ -34,7 +48,7 @@ depth — roughly doubling per +1 level for the canonical doubling bombs.
 Nested `CALL` is pinned openCypher (the TCK floor), un-gated and available
 on every surface — Rust, Bolt, HTTP, the CLI, the C ABI — so any client of
 an embedded engine can submit one; chained `DEFINE` bodies (local
-callables, preview-gated, ADR-0382) reach the same curve with per-body state.
+callables, preview-gated, [ADR-0382](./0382-local-callables.md)) reach the same curve with per-body state.
 
 Nothing bounds the curve. The measurements behind LABS-416: a bare
 nested-CALL doubling bomb costs ~7.7 µs per nested pass in release, a
@@ -42,10 +56,10 @@ chained-`DEFINE` bomb ~26–31 µs, and both double per +1 depth; depth 16
 on the engine path is already 131,070 passes, and the depth-19 case
 (524,288 passes) ran 16.3 s in release on a laptop — with the cost
 doubling per further level. The query text of such a bomb is a few hundred
-bytes, far under ADR-0257's 4 MiB and depth-500 input limits, which bound
-*static* shape, not dynamic multiplication. ADR-0042's stored-graph
+bytes, far under [ADR-0257](./0257-query-input-limits.md)'s 4 MiB and depth-500 input limits, which bound
+*static* shape, not dynamic multiplication. [ADR-0042](./0042-graph-memory-limit.md)'s stored-graph
 capacity engages only for writes at commit. And the compile-side budget of
-ADR-0382 — `MAX_CLONED_NODES = 100_000` cloned rewrite nodes per
+[ADR-0382](./0382-local-callables.md) — `MAX_CLONED_NODES = 100_000` cloned rewrite nodes per
 compilation unit
 (`cypherlite-front/src/local_callables/rewrite.rs:101`) — never engages
 here: a nested-CALL bomb uses no rewrite at all, and a chained-`DEFINE`
@@ -86,7 +100,7 @@ top-level statement driver (`exec/mod.rs:433`) does not tick.
 The per-part granularity is the security-correct one: per-invocation
 counting leaves a body's UNION width outside the budget, so a wide body
 (each part linear in its own size, the whole body bounded by the
-ADR-0257 text cap) driven by `UNWIND`-fan rows multiplies rows × parts
+[ADR-0257](./0257-query-input-limits.md) text cap) driven by `UNWIND`-fan rows multiplies rows × parts
 with only the row axis counted; per-part counting spends rows × parts
 on the counter, and the multiplicative case crosses the budget at the
 100 001st pass. The flat top-level statement is untouched — its own
@@ -120,7 +134,7 @@ it to 400 (`surfaces/cypherlite-http/src/reply.rs`), and the CLI files it
 `Fatal` (`surfaces/cypherlite-cli/src/errors.rs`).
 
 **Fixed const, no knob.** The budget is a compile-time constant, the same
-style as ADR-0257's fixed 4 MiB/500 and the twin's fixed
+style as [ADR-0257](./0257-query-input-limits.md)'s fixed 4 MiB/500 and the twin's fixed
 `MAX_CLONED_NODES`. No env var, no `OpenOptions` field: a knob re-opens
 the axis an untrusted client drives, and the house precedent is a fixed
 number. If legitimate work ever needs more, the remedy is a new ADR — at
@@ -133,30 +147,30 @@ depth-19 case — turning an unbounded exponential into a bounded, typed
 failure.
 
 **Documentation.** The budget is part of the public query contract for
-generators and clients, documented beside the ADR-0257 input limits in
+generators and clients, documented beside the [ADR-0257](./0257-query-input-limits.md) input limits in
 `docs/api/rust/spec.md` and `docs/api/bolt/spec.md` in the same change as
 the implementation.
 
 ## Alternatives considered
 
 - **No runtime budget; rely on the compile-side `MAX_CLONED_NODES`
-  (ADR-0382).** Rejected: the twin bounds *rewrite* work — cloned AST
+ ([ADR-0382](./0382-local-callables.md)).** Rejected: the twin bounds *rewrite* work — cloned AST
   nodes per compilation unit. A nested-CALL bomb uses no rewrite at all,
   and a chained-`DEFINE` bomb with small bodies stays far below 100 000
   cloned nodes while its evaluation count doubles per depth. The runtime
   axis is orthogonal and unbounded.
-- **Rely on the existing input and capacity limits (ADR-0257, ADR-0042).**
-  Rejected: ADR-0257 bounds static query shape (text bytes, parse depth) —
+- **Rely on the existing input and capacity limits ([ADR-0257](./0257-query-input-limits.md), [ADR-0042](./0042-graph-memory-limit.md)).**
+ Rejected: [ADR-0257](./0257-query-input-limits.md) bounds static query shape (text bytes, parse depth) —
   a doubling bomb is tiny and shallow statically; its cost is dynamic
-  multiplication, which no static bound sees. ADR-0042 caps stored-graph
+ multiplication, which no static bound sees. [ADR-0042](./0042-graph-memory-limit.md) caps stored-graph
   growth at commit; these bombs can be pure reads that never commit.
 - **A wall-clock timeout or the cancel token instead of a pass counter.**
-  Rejected: the host's `CancelToken` (ADR-0111) stays available, but a
+ Rejected: the host's `CancelToken` ([ADR-0111](./0111-engine-bounded-execution.md)) stays available, but a
   timeout is nondeterministic — the same query passes or fails by machine
   load — untestable at exactly the limit, and the embedded C-ABI host
   cannot be assumed to run a watchdog. A deterministic counter is
   reproducible and testable at exactly the limit and the limit + 1, like
-  ADR-0257's test obligations.
+ [ADR-0257](./0257-query-input-limits.md)'s test obligations.
 - **Count something other than passes (rows produced, bytes allocated, or
   one tick per subquery *site*).** Rejected: the attacker's spend is many
   passes of the same small body, and only per-pass counting tracks it. A
@@ -166,7 +180,7 @@ the implementation.
   unpredictably.
 - **An env var or `OpenOptions` knob for the ceiling.** Rejected: a knob
   the host must remember to set re-opens the axis; the house precedent
-  (ADR-0257, `MAX_CLONED_NODES`) is a fixed constant. The remedy for
+ ([ADR-0257](./0257-query-input-limits.md), `MAX_CLONED_NODES`) is a fixed constant. The remedy for
   legitimate work that needs more is a new ADR — at most a typed
   `OpenOptions` field — never ambient environment.
 - **Per-subquery or per-depth budgets instead of per top-level
@@ -189,7 +203,7 @@ the implementation.
 - The per-pass overhead is one integer increment at the nested entry
   points, outside the shared clause loop; flat queries and the top-level
   driver never tick.
-- The compile-side twin (ADR-0382) and this budget now bound both axes of
+- The compile-side twin ([ADR-0382](./0382-local-callables.md)) and this budget now bound both axes of
   the same attack at the same number, 100 000; LABS-416 closes when the
   implementing nodes land.
 - Surfaces need no new arms: Bolt `SEMANTIC_ERROR_CODE`, HTTP 400 and the

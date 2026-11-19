@@ -1,10 +1,22 @@
-# ADR-0220: Tabular C ABI — one canonical entry point per operation
+---
+type: adr
+area: surface
+name: 0220-tabular-abi-single-entry-points
+status: accepted
+tags:
+  - ffi
+title: Tabular C ABI — one canonical entry point per operation
+REFERENCES:
+  - "[[adr/0054-one-c-abi-env-python]]"
+  - "[[adr/0117-namespace-selection-apis-and-bolt]]"
+  - "[[adr/0502-typed-c-abi-v2]]"
+---
 
-Status: Accepted
+# ADR-0220: Tabular C ABI — one canonical entry point per operation
 
 ## Context
 
-The tabular / multi-connection C ABI (ADR-0054, `cypherlite-ffi`'s
+The tabular / multi-connection C ABI ([ADR-0054](./0054-one-c-abi-env-python.md), `cypherlite-ffi`'s
 `tabular.rs`) grew two paired forms for each of its two core operations:
 
 - `cypherlite_connect(db, &conn)` and
@@ -13,7 +25,7 @@ The tabular / multi-connection C ABI (ADR-0054, `cypherlite-ffi`'s
   `cypherlite_query_params(conn, cypher, json_params, &result)`
 
 Each pair is one operation with an optional trailing argument that gained
-its own entry point when the argument was added (namespaces in ADR-0117,
+its own entry point when the argument was added (namespaces in [ADR-0117](./0117-namespace-selection-apis-and-bolt.md),
 parameters earlier). That leaves four exported symbols for two operations,
 and every language client (JS/koffi, Java/JNA, Go/cgo) binds both forms and
 hand-picks between them — duplication in every client for a distinction a
@@ -80,7 +92,7 @@ exported symbol is dropped.
 
 ## Later references
 
-- ADR-0502: the typed C ABI v2 removes the `cypherlite_query` /
+- [ADR-0502](./0502-typed-c-abi-v2.md): the typed C ABI v2 removes the `cypherlite_query` /
   `cypherlite_connect` aliases. Its `cypherlite_abi_version()` = 2 (the
   JSON-era ABI is version 1 by definition) is the major-version bump the
   Consequences above require, delivered pre-public.

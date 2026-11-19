@@ -1,17 +1,33 @@
+---
+type: adr
+area: ecosystem
+claim: 7be011d47c05e1c6fbf9879015a9fd81041bf569
+name: 0528-cookbook-moves-to-relate-web
+status: proposed
+tags:
+  - cookbook
+title: The cookbook moves to the relate-web repository
+REFERENCES:
+  - "[[adr/0130-cookbook-tested-recipes]]"
+  - "[[adr/0131-wasm-script-execution]]"
+  - "[[adr/0132-single-file-recipes]]"
+  - "[[adr/0133-cookbook-public-links-only]]"
+  - "[[adr/0134-whole-recipe-playground-link]]"
+  - "[[adr/0135-cookbook-diagrams]]"
+  - "[[adr/0151-cookbook-graph-view-nvl]]"
+  - "[[adr/0288-cookbook-nav-links-internal-repository]]"
+---
+
 # ADR-0528: The cookbook moves to the relate-web repository
-
-Status: Proposed
-
-Claim: 7be011d47c05e1c6fbf9879015a9fd81041bf569
 
 ## Context
 
-ADR-0130 made the cookbook's recipes tests of this repository: each recipe
+[ADR-0130](./0130-cookbook-tested-recipes.md) made the cookbook's recipes tests of this repository: each recipe
 ran natively in a dedicated harness crate, and a Node build here turned the
 recipes into the `/cookbook/` pages, replayed every step through the WASM
 bundle, and published them from the latest release tag. Later ADRs shaped
-the recipe file (ADR-0132), its links (ADR-0133, ADR-0288), the playground
-hand-off (ADR-0134), its diagrams (ADR-0135), and the graph view (ADR-0151).
+the recipe file ([ADR-0132](./0132-single-file-recipes.md)), its links ([ADR-0133](./0133-cookbook-public-links-only.md), [ADR-0288](./0288-cookbook-nav-links-internal-repository.md)), the playground
+hand-off ([ADR-0134](./0134-whole-recipe-playground-link.md)), its diagrams ([ADR-0135](./0135-cookbook-diagrams.md)), and the graph view ([ADR-0151](./0151-cookbook-graph-view-nvl.md)).
 
 The website now lives in its own repository, relate-web, which builds and
 publishes relatedb.ai. Keeping the recipes here split the cookbook from the
@@ -32,11 +48,11 @@ repository's CI.
    result, rendered by `renderResult`; it runs in CI, before every deploy,
    and in a headless browser.
 3. The engine contract the cookbook depends on stays here and stays
-   stable: the WASM `executeScript` and `renderResult` exports (ADR-0131)
-   and the recording format of `relate_formatter::recording` (ADR-0132).
+ stable: the WASM `executeScript` and `renderResult` exports ([ADR-0131](./0131-wasm-script-execution.md))
+ and the recording format of `relate_formatter::recording` ([ADR-0132](./0132-single-file-recipes.md)).
    A change to either changes the cookbook's recorded results; relate-web
    sees it when it refreshes its bundle and re-records.
-4. ADR-0130, ADR-0132, ADR-0133, ADR-0134, ADR-0135, ADR-0151, and ADR-0288
+4. [ADR-0130](./0130-cookbook-tested-recipes.md), [ADR-0132](./0132-single-file-recipes.md), [ADR-0133](./0133-cookbook-public-links-only.md), [ADR-0134](./0134-whole-recipe-playground-link.md), [ADR-0135](./0135-cookbook-diagrams.md), [ADR-0151](./0151-cookbook-graph-view-nvl.md), and [ADR-0288](./0288-cookbook-nav-links-internal-repository.md)
    stay as the record of how the cookbook was designed here; each gains a
    Later references note pointing to this ADR.
 
@@ -58,7 +74,7 @@ repository's CI.
   recipe's result; relate-web's check fails when it next refreshes its
   WASM bundle, and the change is reviewed there as a re-recording.
 - Recipes run only on the WASM build, not natively. Both builds share the
-  script runner and the renderer (ADR-0131), so the gap is a divergence
+ script runner and the renderer ([ADR-0131](./0131-wasm-script-execution.md)), so the gap is a divergence
   that only the native build would show.
 - The playground no longer loads recipes; a hand-off can return in
   relate-web when the playground moves there.

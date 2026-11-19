@@ -1,20 +1,39 @@
-# ADR-0430: The extension wire protocol v1 (LABS-470)
+---
+type: adr
+area: ecosystem
+claim: d31cc31e20106ac2143e29241da25ed21a9478e6
+name: 0430-cli-extension-wire-protocol
+status: proposed
+tags:
+  - extensions
+title: The extension wire protocol v1
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0157-fs-to-graph-import]]"
+  - "[[adr/0286-fs-to-graph-explicit-db-exits]]"
+  - "[[adr/0377-import-resource-bounds]]"
+  - "[[adr/0383-lab-database-flag]]"
+  - "[[adr/0392-git-import-per-batch-commit]]"
+  - "[[adr/0394-fresh-store-import-create-edges]]"
+  - "[[adr/0429-cli-extension-registry]]"
+  - "[[adr/0447-extension-single-wire]]"
+  - "[[adr/0598-extension-stream-cap-whole-import-only]]"
+---
 
-Status: Proposed
-Claim: d31cc31e20106ac2143e29241da25ed21a9478e6
+# ADR-0430: The extension wire protocol v1
 
-Later references: **superseded by [ADR-0447](0447-extension-single-wire.md)**
+Later references: **superseded by [ADR-0447](./0447-extension-single-wire.md)**
 (2026-10-29). The mount speaks MCP stdio only: the records, the `hello`
 handshake, the manifest `wire` field and the v1 child kit are retired.
 The caps (§4), the commit-intent vocabulary (§7), the request envelope
 (§6) and the exit classification (§5) survive in substance under the MCP
-mount. ADR-0598 narrows §4's total stream cap to `whole-import`
+mount. [ADR-0598](./0598-extension-stream-cap-whole-import-only.md) narrows §4's total stream cap to `whole-import`
 sessions; a `per-batch` session keeps the per-call caps and the store's
 live-graph limit.
 
 ## Context
 
-ADR-0429 (minted beside this one) fixes where a command-kind extension
+[ADR-0429](./0429-cli-extension-registry.md) (minted beside this one) fixes where a command-kind extension
 lives, how the host discovers it, and how it mounts as
 `cypherlite run <name> [flags]`. This ADR fixes what the hosted child
 process says while it runs: the wire v1 records, the protocol
@@ -23,9 +42,9 @@ rule everything else follows — the child never gets a store path.
 
 The core decision is LABS-466's: **the host owns the `Database`.**
 Everything the `lab` import lifecycle already owns stays owned — the
-`:memory:` default with interactive REPL handoff (ADR-0286), WAL and
-memory limits, resource caps (ADR-0377), the fresh-store check
-(ADR-0394), typed error rendering and output sanitization, telemetry,
+`:memory:` default with interactive REPL handoff ([ADR-0286](./0286-fs-to-graph-explicit-db-exits.md)), WAL and
+memory limits, resource caps ([ADR-0377](./0377-import-resource-bounds.md)), the fresh-store check
+([ADR-0394](./0394-fresh-store-import-create-edges.md)), typed error rendering and output sanitization, telemetry,
 exit codes — and the child is a pure source walker. The design maps 1:1
 onto the existing importer decomposition: `lab/write.rs` separates
 `RowSource` (generation) from `run_phases` (execution); the wire is a
@@ -34,12 +53,12 @@ onto the existing importer decomposition: `lab/write.rs` separates
 The host builds on the P0 seam — the static descriptor registry in
 `surfaces/cypherlite-cli/src/lab_cmd.rs`, merged as #502 (LABS-467) —
 whose descriptor shape the manifest-loaded `run` actions join
-(ADR-0429), and it reuses `run_import`'s lifecycle end to end (§7).
+([ADR-0429](./0429-cli-extension-registry.md)), and it reuses `run_import`'s lifecycle end to end (§7).
 Spawning a child and decoding a capped stdout stream is established
 in-tree behavior, not a new risk class: `lab git-to-graph` shells out to
 `git log` and reads its stdout through the crate's `read_capped` guard
-under ADR-0377's 128 MiB bound. The deciding tickets are LABS-470 (this
-phase) and LABS-552 (the mount and surface the host serves).
+under [ADR-0377](./0377-import-resource-bounds.md)'s 128 MiB bound. The deciding work arrives in phases: this
+phase, and the mount and surface the host serves.
 
 ## Decision
 
@@ -81,7 +100,7 @@ naming both versions, not a negotiation.
 
 ### 3. Per-mount-point protocol versioning
 
-`protocol` in the manifest (ADR-0429 §4) is the wire's version at that
+`protocol` in the manifest ([ADR-0429](./0429-cli-extension-registry.md) §4) is the wire's version at that
 mount point. The wire never negotiates: the manifest declares, the host
 enforces. Later strata (`callables` P2, LABS-468; `starter` P3,
 LABS-533; `engine-plugin` P4, LABS-472) carry their own protocol
@@ -89,11 +108,11 @@ versions at their own mount points, so their evolution cannot break
 `command` hosts. A `command` protocol bump is a new number, fail-closed
 on old hosts.
 
-### 4. Host-side caps, ADR-0377 semantics
+### 4. Host-side caps, [ADR-0377](./0377-import-resource-bounds.md) semantics
 
 The host caps what an untrusted child can make it hold, with numeric
 bounds enforced host-side, each a named constant, each refusal a typed
-error variant with pinned text a test asserts (ADR-0377's error-text
+error variant with pinned text a test asserts ([ADR-0377](./0377-import-resource-bounds.md)'s error-text
 contract):
 
 - a per-record byte cap — the child's stdout is read through the
@@ -106,7 +125,7 @@ contract):
 
 Every cap refuses before the store write it would have fed; none
 truncates, drops a record, or continues with a default. On the first
-refusal the child is killed and reaped, exactly ADR-0377's behavior
+refusal the child is killed and reaped, exactly [ADR-0377](./0377-import-resource-bounds.md)'s behavior
 toward an oversized `git log`.
 
 ### 5. The error mapping: protocol exit 1, manifest/flag exit 2
@@ -114,11 +133,11 @@ toward an oversized `git log`.
 - **Runtime failures — exit 1**, one `Error:` line: a protocol violation
   (unknown record, unknown field, malformed line, `hello` mismatch, a
   cap exceeded), a killed child, a non-zero child exit, a store error
-  during a batch. These match ADR-0377's runtime refusals: the work was
+ during a batch. These match [ADR-0377](./0377-import-resource-bounds.md)'s runtime refusals: the work was
   invited and failed.
-- **Usage errors — exit 2**, the synopsis/usage shape (ADR-0069): a
+- **Usage errors — exit 2**, the synopsis/usage shape ([ADR-0069](./0069-cli-lifecycle-commands.md)): a
   manifest problem (unknown kind, unknown field, bad flag kind, a name
-  collision, an escaping executable path — ADR-0429's load refusals) or
+ collision, an escaping executable path — [ADR-0429](./0429-cli-extension-registry.md)'s load refusals) or
   a flag problem (unknown flag, a value that does not parse as its
   kind). These match the parse-time refusals: the invocation was
   malformed before anything ran.
@@ -132,10 +151,10 @@ line, ANSI, or control characters into the host's output.
 The child receives exactly one parsed JSON envelope on stdin — its
 resolved flag values and positional from the manifest flag table —
 never raw argv, and never the `--database` value, a store path, or any
-other host flag. All `--database` handling is host-side (ADR-0383), so
+other host flag. All `--database` handling is host-side ([ADR-0383](./0383-lab-database-flag.md)), so
 the child cannot even see the flag. Every store write flows through the
 host-owned `Database`; the child can neither address nor name the store
-it feeds. This is the rule the trust model (ADR-0429 §7) and the caps
+it feeds. This is the rule the trust model ([ADR-0429](./0429-cli-extension-registry.md) §7) and the caps
 (§4) both lean on: the child's only power is the rows it emits.
 
 ### 7. Host execution
@@ -143,9 +162,9 @@ it feeds. This is the rule the trust model (ADR-0429 §7) and the caps
 Batches execute against the host-owned `Database` through the existing
 `lab/write.rs` phase-runner shape: `RowSource` framing (rows stream
 batch by batch, never copied), `CommitPolicy` from the manifest
-(`whole-import` ADR-0157 / `per-batch` ADR-0392), reusing
+(`whole-import` [ADR-0157](./0157-fs-to-graph-import.md) / `per-batch` [ADR-0392](./0392-git-import-per-batch-commit.md)), reusing
 `run_import`'s lifecycle — the `:memory:` default, the optional
-interactive handoff (`run_lab_interactive`, ADR-0286), the
+interactive handoff (`run_lab_interactive`, [ADR-0286](./0286-fs-to-graph-explicit-db-exits.md)), the
 `final_checkpoint` — with the summary printed through sanitization and
 the starters offered to the REPL.
 
@@ -158,17 +177,17 @@ the starters offered to the REPL.
   engine vocabulary, so the ABI buys nothing. The wire keeps the child
   outside the process and the host the sole store writer.
 - **WASM as the isolation boundary.** Rejected: the dependency and
-  author-toolchain cost ADR-0429 records, and command-kind actions need
+ author-toolchain cost [ADR-0429](./0429-cli-extension-registry.md) records, and command-kind actions need
   fs/git access whose capability grants re-open the hole WASM was meant
   to close; process isolation reaches the same boundary with std pipes.
 - **exec-full-command, git-style (`cypherlite-x-foo`).** Rejected: with
   no wire, the child owns the store — the host could not enforce caps,
-  the fresh-store check (ADR-0394), commit policies, the REPL handoff
-  (ADR-0286), or uniform summary/telemetry/checkpoint behavior; every
+ the fresh-store check ([ADR-0394](./0394-fresh-store-import-create-edges.md)), commit policies, the REPL handoff
+ ([ADR-0286](./0286-fs-to-graph-explicit-db-exits.md)), or uniform summary/telemetry/checkpoint behavior; every
   helper would re-implement the lifecycle the lab importers already
   share.
 - **Direct top-level mounting of installed actions.** Rejected with
-  ADR-0429: it is a grammar-level alternative, but it would also take
+ [ADR-0429](./0429-cli-extension-registry.md): it is a grammar-level alternative, but it would also take
   the host out of the execution path the wire pins — the mount and the
   wire are one design.
 - **Raw argv passthrough to the child.** Rejected: the child would

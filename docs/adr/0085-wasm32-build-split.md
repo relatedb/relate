@@ -1,12 +1,27 @@
-# 0085. wasm32 build split for the engine crates
+---
+type: adr
+area: surface
+date: 2026-09-24
+deciders: CypherLite maintainers
+name: 0085-wasm32-build-split
+status: accepted
+tags:
+  - wasm
+title: wasm32 build split for the engine crates
+REFERENCES:
+  - "[[adr/0022-id-window-checkpoint-shards]]"
+  - "[[adr/0051-wasm-memory-database]]"
+  - "[[adr/0077-embedded-durability-boundary]]"
+  - "[[adr/0084-reinstate-wasm-distribution]]"
+  - "[[adr/0105-optional-parquet-codec]]"
+  - "[[adr/0259-query-execution-stack-provisioning]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-24
-- **Deciders**: CypherLite maintainers
+# 0085. wasm32 build split for the engine crates
 
 ## Context
 
-ADR-0084 reinstates `crates/cypherlite-wasm` as a distributed `wasm-pack`
+[ADR-0084](./0084-reinstate-wasm-distribution.md) reinstates `crates/cypherlite-wasm` as a distributed `wasm-pack`
 package. That package depends transitively on `cypherlite` and
 `cypherlite-storage`, but three things in those crates do not build on
 `wasm32-unknown-unknown` as written:
@@ -15,20 +30,20 @@ package. That package depends transitively on `cypherlite` and
   monotonic clock. Every WAL, commit-group, and query-worker timing
   path uses `Instant::now`.
 - **`std::thread::spawn`** and `thread::scope` — wasm32 has no threads.
-  The 64 MiB query-worker thread from ADR-0259 and the background
+ The 64 MiB query-worker thread from [ADR-0259](./0259-query-execution-stack-provisioning.md) and the background
   checkpoint timer + `schedule_checkpoint` spawner in `cypherlite`
   both spawn.
 - **`arrow` + `parquet`** — neither builds on wasm32 (native FFI, C++
   code paths). They power the on-disk Parquet snapshot codec that
-  ADR-0022 introduced.
+ [ADR-0022](./0022-id-window-checkpoint-shards.md) introduced.
 
 Additionally, the wasm32 default main-thread stack is 1 MiB. The
 planner and executor recurse deep enough that even trivial queries
 (`MATCH (n) RETURN n`) exhaust it, which the browser surfaces as
 "memory access out of bounds" (a wasm trap).
 
-`:memory:` on `MemoryVfs` (ADR-0051) is the only browser database URI;
-there is no wasm durability boundary (ADR-0077 already records this).
+`:memory:` on `MemoryVfs` ([ADR-0051](./0051-wasm-memory-database.md)) is the only browser database URI;
+there is no wasm durability boundary ([ADR-0077](./0077-embedded-durability-boundary.md) already records this).
 That constrains what the wasm build must include and lets us cut the
 Parquet snapshot writer/reader out entirely.
 
@@ -47,7 +62,7 @@ No new cargo features.
    background threads and no durability boundary for `:memory:`),
    `schedule_checkpoint` runs the dump inline, and `run_on_query_worker`
    calls the closure directly on the current thread. Native keeps the
-   64 MiB worker thread from ADR-0259 unchanged. The two paths are
+ 64 MiB worker thread from [ADR-0259](./0259-query-execution-stack-provisioning.md) unchanged. The two paths are
    cfg-gated at the function level, not sprinkled inside a shared body.
 3. **Storage codec.** `arrow` and `parquet` move under
    `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]` in
@@ -67,7 +82,7 @@ No new cargo features.
    `-zstack-size=16777216` (16 MiB), a browser-friendly middle ground
    between the 1 MiB wasm32 default and the 64 MiB native worker stack.
    Native builds are unaffected.
-6. **CI gate (from ADR-0084).** The `wasm` job runs
+6. **CI gate (from [ADR-0084](./0084-reinstate-wasm-distribution.md)).** The `wasm` job runs
    `cargo check -p cypherlite-storage --target wasm32-unknown-unknown`
    and `cargo check -p cypherlite-wasm --target wasm32-unknown-unknown`
    in addition to `wasm-pack build`, so any dep upgrade that breaks
@@ -91,7 +106,7 @@ No new cargo features.
 
 ## Consequences
 
-- One tree builds native and wasm32. The `wasm` CI job (ADR-0084) is
+- One tree builds native and wasm32. The `wasm` CI job ([ADR-0084](./0084-reinstate-wasm-distribution.md)) is
   the gate that enforces the split doesn't rot.
 - `web-time = "1"` becomes a workspace dep of `cypherlite-storage` and
   `cypherlite`. It is a shim, not a runtime dep on native, so the
@@ -110,7 +125,7 @@ No new cargo features.
 
 ## Later references
 
-ADR-0105 adds an additive `parquet` Cargo feature (default on) so native
+[ADR-0105](./0105-optional-parquet-codec.md) adds an additive `parquet` Cargo feature (default on) so native
 builds can also leave the Parquet codec out. The target gates above stay
 for platform limits; Parquet code compiles only under
 `all(feature = "parquet", not(target_arch = "wasm32"))`.

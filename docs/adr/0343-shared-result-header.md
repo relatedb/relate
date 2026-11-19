@@ -1,11 +1,26 @@
-# ADR-0343: One shared result header for QueryResult and ExecutionFailure
+---
+type: adr
+area: engine
+claim: d1c20032bb03ba8749426f4d099085880357cab2
+name: 0343-shared-result-header
+status: proposed
+tags:
+  - errors
+  - result-metadata
+title: One shared result header for QueryResult and ExecutionFailure
+REFERENCES:
+  - "[[adr/0117-namespace-selection-apis-and-bolt]]"
+  - "[[adr/0162-query-type-on-result-and-bolt]]"
+  - "[[adr/0221-engine-reported-statement-elapsed]]"
+  - "[[adr/0224-result-column-types]]"
+  - "[[adr/0319-bolt-execution-failures-at-pull]]"
+---
 
-Status: Proposed
-Claim: d1c20032bb03ba8749426f4d099085880357cab2
+# ADR-0343: One shared result header for QueryResult and ExecutionFailure
 
 ## Context
 
-ADR-0319 added the staged entry point: a statement that planned but failed
+[ADR-0319](./0319-bolt-execution-failures-at-pull.md) added the staged entry point: a statement that planned but failed
 while executing is reported as `ExecutionFailure` so a surface can announce
 the result before it reports the error. `ExecutionFailure` re-declared the
 five result-metadata fields `QueryResult` already declared — `columns`,
@@ -16,9 +31,9 @@ duplication, finding F-1-88, under the repository's "parallel state is a
 bug" and "don't re-split a fact" code-shape rules).
 
 Both types are stamped from the same construction facts: the planned output
-names (`cypherlite_planner::plan_output_names`), the ADR-0224 per-column
-type stamp, the ADR-0162 plan-derived query type, the ADR-0117 §7 resolved
-namespace and the ADR-0221 wall-clock elapsed. There is no reason for the
+names (`cypherlite_planner::plan_output_names`), the [ADR-0224](./0224-result-column-types.md) per-column
+type stamp, the [ADR-0162](./0162-query-type-on-result-and-bolt.md) plan-derived query type, the [ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §7 resolved
+namespace and the [ADR-0221](./0221-engine-reported-statement-elapsed.md) wall-clock elapsed. There is no reason for the
 finished-result and failed-statement shapes to declare them separately.
 
 ## Decision

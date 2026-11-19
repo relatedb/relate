@@ -1,8 +1,20 @@
+---
+type: adr
+area: cypher
+claim: ddb2c047a5851e2d7cb354634e5382c2b81b8111
+name: 0388-graph-type-trio-optional-properties-default-values-implied-labels
+status: accepted
+tags:
+  - dialect
+  - ontology
+title: The graph-type trio (optional properties, default values, implied-label inheritance) behind three preview gates
+REFERENCES:
+  - "[[adr/0079-anonymous-usage-metrics]]"
+  - "[[adr/0371-preview-feature-gating]]"
+  - "[[adr/0379-hybrid-search-combine]]"
+---
+
 # ADR-0388: The graph-type trio (optional properties, default values, implied-label inheritance) behind three preview gates
-
-Status: Accepted
-
-Claim: ddb2c047a5851e2d7cb354634e5382c2b81b8111
 
 ## Context
 
@@ -30,7 +42,7 @@ sublanguage in one coherent direction — richer element types:
   element type cannot be dropped while a child implies it.
 
 None of the three is part of the pinned openCypher TCK floor, so per
-ADR-0371 each ships behind its own reserved `CYPHERLITE_PREVIEW` row —
+[ADR-0371](./0371-preview-feature-gating.md) each ships behind its own reserved `CYPHERLITE_PREVIEW` row —
 `graph-type-opt-props`, `graph-type-default-values`,
 `graph-type-implied-labels` — independently enableable, as the registry
 already reserved.
@@ -44,17 +56,17 @@ same grammar family, one gate family, one semantic layer.
 
 ## Decision
 
-Adopt all three, each behind its own ADR-0371 gate, as one graph-type
+Adopt all three, each behind its own [ADR-0371](./0371-preview-feature-gating.md) gate, as one graph-type
 semantic layer:
 
 - **Grammar (default values only; the other two need none)**: the
   parser's graph-type property list gains an optional `DEFAULT ON COMMIT
   <value expression>` clause after the value type, parsed as a full
   expression (grammar-only, like the rest of a graph-type body; the
-  expression parser's existing ADR-0079 depth limit covers it — no new
+ expression parser's existing [ADR-0079](./0079-anonymous-usage-metrics.md) depth limit covers it — no new
   recursion family). `DEFAULT`/`COMMIT` match as non-reserved words; `ON`
   is the keyword token.
-- **Gates (ADR-0371)**: two halves, the same authored error.
+- **Gates ([ADR-0371](./0371-preview-feature-gating.md))**: two halves, the same authored error.
   - *In-body* (the statement's own text): the front's statement
     admission runs one `GraphTypeGates` collector over the parsed AST —
     a bare `ANY` element-type property, a `DEFAULT ON COMMIT` clause, an
@@ -140,7 +152,7 @@ semantic layer:
 - **Gate everything in the executor only.** Rejected: it would let a
   gated statement lower and plan before failing, and it would need the
   preview set threaded through every DDL dispatch layer; the front
-  admission check (the ADR-0379 shape) fails earlier with less plumbing.
+ admission check (the [ADR-0379](./0379-hybrid-search-combine.md) shape) fails earlier with less plumbing.
 - **Apply defaults at write time instead of the statement boundary.**
   Rejected: the proposal fixes the observable semantics at transaction
   commit (the creating statement's RETURN still sees null); the

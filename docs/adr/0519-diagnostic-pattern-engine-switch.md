@@ -1,25 +1,39 @@
+---
+type: adr
+area: engine
+claim: aee82c9112e1597f2af78744f215ba1362f959c7
+name: 0519-diagnostic-pattern-engine-switch
+status: proposed
+tags:
+  - pattern-matching
+title: The diagnostic pattern-engine switch `RELATE_PATTERN_ENGINE` (auto|nfa|walk)
+REFERENCES:
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0277-one-cypher-parser]]"
+  - "[[adr/0371-preview-feature-gating]]"
+  - "[[adr/0473-contracted-traversal-kernels]]"
+  - "[[adr/0478-frontier-nfa-qpp-kernel]]"
+  - "[[adr/0516-frontier-rearrival-budget-fallthrough]]"
+---
+
 # ADR-0519: The diagnostic pattern-engine switch `RELATE_PATTERN_ENGINE` (auto|nfa|walk)
-
-Status: Proposed
-
-Claim: aee82c9112e1597f2af78744f215ba1362f959c7
 
 ## Context
 
 The pattern-engine spike (the `perf/pattern-engine-spike` line) needs to
 A/B the executor's pattern engines against each other on whole workloads
-— the frontier NFA rung (ADR-0478) against the per-row GPM DFS, and both
-against the contracted kernels (ADR-0473) — from a real process: the CLI,
+— the frontier NFA rung ([ADR-0478](./0478-frontier-nfa-qpp-kernel.md)) against the per-row GPM DFS, and both
+against the contracted kernels ([ADR-0473](./0473-contracted-traversal-kernels.md)) — from a real process: the CLI,
 the network surfaces, the loadtest harnesses. The only existing steering
 is `#[cfg(test)]` thread-local hooks (`with_kernels_disabled`,
 `with_frontier_disabled`), which a real process cannot reach; a benchmark
 binary cannot link them.
 
 The repo has the precedent for exactly this shape of knob:
-`RELATE_PARSER` (ADR-0046, retired by ADR-0277) was a diagnostic
+`RELATE_PARSER` ([ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md), retired by [ADR-0277](./0277-one-cypher-parser.md)) was a diagnostic
 engine switch resolved once at `Database::open` — unset keeps the day's
 behavior exactly, an unknown value fails the open loudly, and the value
-never enters the language. `RELATE_PREVIEW` (ADR-0371) carries the
+never enters the language. `RELATE_PREVIEW` ([ADR-0371](./0371-preview-feature-gating.md)) carries the
 same fail-closed open contract today.
 
 ## Decision
@@ -33,7 +47,7 @@ three values:
   frontier-compilable clause: `frontier_match::compile_frontier` bypasses
   its cost gate (`frontier_engages`) alone. Every other proof stands —
   the structural and answer-shape gates, the table-allocation ceiling,
-  the re-arrival budget's run-time fall-through (ADR-0516) — and every
+ the re-arrival budget's run-time fall-through ([ADR-0516](./0516-frontier-rearrival-budget-fallthrough.md)) — and every
   decline still fails through to the rungs below. The batch
   scan-filter chain and the chain/hub-star kernels stand down for the
   clauses the frontier takes: they sit below it on both operator

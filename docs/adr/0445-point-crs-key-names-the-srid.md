@@ -1,12 +1,23 @@
+---
+type: adr
+area: cypher
+claim: 904a8b42a7e6a406e7a76c198eddd916ff0883dc
+name: 0445-point-crs-key-names-the-srid
+status: proposed
+status_note: 2026-10-29
+tags:
+  - conformance
+  - functions
+title: "`point` reads the `crs` key as the name spelling of `srid`"
+REFERENCES:
+  - "[[adr/0167-point-accepts-map-like-entities]]"
+---
+
 # ADR-0445: `point()` reads the `crs` key as the name spelling of `srid`
-
-Status: Proposed (2026-10-29)
-
-Claim: 904a8b42a7e6a406e7a76c198eddd916ff0883dc
 
 ## Context
 
-ADR-0167 records that Neo4j also reads a `crs` key (e.g. `crs: 'wgs-84'`)
+[ADR-0167](./0167-point-accepts-map-like-entities.md) records that Neo4j also reads a `crs` key (e.g. `crs: 'wgs-84'`)
 from `point()` maps and entities, defers it, and leaves the note "a later
 ADR can add it". CypherLite has ignored the key, so
 `point({x: 2.3, y: 4.5, crs: 'WGS-84'})` builds a cartesian 7203 point:
@@ -32,7 +43,7 @@ four-code CRS domain `srid` selects:
 - `crs` and `srid` may both be present only when they name the same code;
   a conflict is an error.
 - The coordinate keys still decide the family (`x`/`y` cartesian,
-  `latitude`/`longitude` geographic) exactly as ADR-0167 ruled:
+ `latitude`/`longitude` geographic) exactly as [ADR-0167](./0167-point-accepts-map-like-entities.md) ruled:
   `{x, y, crs: 'wgs-84'}` is a 4326 point whose `x`/`y` are its
   coordinates, per the harness rows. The dimension check (3D code iff `z`
   is present) and the geographic-keys-reject-cartesian-code rule apply to
@@ -40,7 +51,7 @@ four-code CRS domain `srid` selects:
 
 ## Alternatives considered
 
-- **Keep ignoring `crs` (ADR-0167's deferred state).** Rejected: the
+- **Keep ignoring `crs` ([ADR-0167](./0167-point-accepts-map-like-entities.md)'s deferred state).** Rejected: the
   harness's `Spatial` and `TernaryEquality` rows require the name to
   select the CRS, and ignoring it makes points from different CRSs equal,
   so the ordering operators answer on incomparable values.

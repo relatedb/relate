@@ -1,10 +1,22 @@
-# ADR-0255: mold links every Linux CI build; CARGO_INCREMENTAL and the dev debug-info trim are workflow-level env
+---
+type: adr
+area: infra
+name: 0255-mold-linker-linux-ci
+status: accepted
+tags:
+  - ci
+title: mold links every Linux CI build; CARGO_INCREMENTAL and the dev debug-info trim are workflow-level env
+REFERENCES:
+  - "[[adr/0251-test-architecture]]"
+  - "[[adr/0252-corpus-family-single-job]]"
+  - "[[adr/0253-test-profile-opt-level]]"
+---
 
-Status: Accepted
+# ADR-0255: mold links every Linux CI build; CARGO_INCREMENTAL and the dev debug-info trim are workflow-level env
 
 ## Context
 
-The CI runtime follow-up round (after ADR-0251/0252/0253) profiled the
+The CI runtime follow-up round (after [ADR-0251](./0251-test-architecture.md)/[ADR-0252](./0252-corpus-family-single-job.md)/[ADR-0253](./0253-test-profile-opt-level.md)) profiled the
 remaining lane time. Two structural costs stood out:
 
 1. **Linking.** The workspace's debug-profile test/example binaries are
@@ -25,7 +37,7 @@ remaining lane time. Two structural costs stood out:
 The mold flag env var (a CARGO_TARGET_*_RUSTFLAGS, also a CARGO_* var) is part of the Swatinem/rust-cache environment hash (it hashes
 all `CARGO*`/`CC`/`CFLAGS`/`CXX`/`RUST*` env vars into the key), so the
 linker flag must be identical across all lanes that share a cache key or
-the `dev`/`release`/`corpus` sharing of ADR-0251 §5 silently splits.
+the `dev`/`release`/`corpus` sharing of [ADR-0251](./0251-test-architecture.md) §5 silently splits.
 
 Not in scope: local builds (`.cargo/config.toml` would leak CI choices
 onto developer machines — deliberately not used), macOS/Windows lanes

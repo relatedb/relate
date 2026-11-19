@@ -1,8 +1,19 @@
+---
+type: adr
+area: cypher
+claim: 9ddeb5a417f3977c391d314e2142eac1c06b7b43
+name: 0379-hybrid-search-combine
+status: accepted
+tags:
+  - dialect
+  - search
+title: Hybrid search `COMBINE` behind the `hybrid-search` gate
+REFERENCES:
+  - "[[adr/0371-preview-feature-gating]]"
+  - "[[adr/0378-ontology-procedures-preview-gate]]"
+---
+
 # ADR-0379: Hybrid search `COMBINE` behind the `hybrid-search` gate
-
-Status: Accepted
-
-Claim: 9ddeb5a417f3977c391d314e2142eac1c06b7b43
 
 ## Context
 
@@ -11,7 +22,7 @@ of the pinned openCypher TCK floor, extends the `SEARCH` MATCH subclause
 with a `<combined specification clause>`: `COMBINE ( <weighted source
 clause>, ... ) USING WRRF [ WITH CONSTANT <expr> ] [ LIMIT <expr> ]`, where
 each weighted source is an index specification or a nested combined one,
-each with an optional `WEIGHT`. Per ADR-0371 it ships behind the
+each with an optional `WEIGHT`. Per [ADR-0371](./0371-preview-feature-gating.md) it ships behind the
 `hybrid-search` row of the `CYPHERLITE_PREVIEW` registry.
 
 The existing SEARCH pipeline modeled exactly one index specification per
@@ -34,11 +45,11 @@ Adopt the hybrid-search canonical grammar and WRRF semantics, gated:
   validators/lowerer, IR walkers, planner binder, pushdown liveness,
   executor) reads the source tree through it; the per-index search
   validations run for every index specification in the tree, recursively.
-- **Gate (ADR-0371)**: the engine's statement admission threads the
+- **Gate ([ADR-0371](./0371-preview-feature-gating.md))**: the engine's statement admission threads the
   store's resolved `PreviewFeatures` into a new front entry,
   `parse_and_lower_statement_with_preview(src, preview)`: a statement
   whose AST uses a `COMBINE` source requires `PreviewFeature::HybridSearch`
-  before anything of it lowers or plans, failing closed with ADR-0371's
+ before anything of it lowers or plans, failing closed with [ADR-0371](./0371-preview-feature-gating.md)'s
   authored error. The ungated `parse_and_lower_statement` stays the
   dialect-floor entry for callers without a store. This is the first
   production reader of `Shared.preview`; its interim
@@ -63,7 +74,7 @@ Adopt the hybrid-search canonical grammar and WRRF semantics, gated:
 ## Alternatives considered
 
 - **Ship `COMBINE` ungated, widening the dialect floor per PR.**
-  Rejected: ADR-0371's core reason — the pinned TCK corpus is the language
+ Rejected: [ADR-0371](./0371-preview-feature-gating.md)'s core reason — the pinned TCK corpus is the language
   contract (`docs/tck/compliance.md`); the syntax would be user-visible
   before it is contractual.
 - **Thread `PreviewFeatures` into `cypherlite_parser::parse` itself, so
@@ -99,14 +110,14 @@ Adopt the hybrid-search canonical grammar and WRRF semantics, gated:
   in the ratchet test).
 - When the TCK pin moves to include hybrid search `COMBINE`, the gate
   check, the registry row, and this ADR's gating rationale are removed in
-  that same change (ADR-0371's scope policy).
+ that same change ([ADR-0371](./0371-preview-feature-gating.md)'s scope policy).
 - The front layer now has two parse entries (gated and ungated); the
   gated one is the only one that consults the preview registry, and every
   engine statement path goes through it via connection admission.
 
 ## Later references
 
-- ADR-0378 moves the resolved preview set off `Shared.preview` onto the
+- [ADR-0378](./0378-ontology-procedures-preview-gate.md) moves the resolved preview set off `Shared.preview` onto the
   store-level executor services; the `COMBINE` parse gate now receives the
   set from `Graph::preview()` under the admission read guard. The gated
   front entry and the hybrid-search registry row are unchanged.

@@ -1,25 +1,47 @@
+---
+type: adr
+area: engine
+date: 2026-09-04
+deciders: MemoryDB maintainers
+name: 0042-graph-memory-limit
+status: accepted
+tags:
+  - memory
+title: Logical cap on the live graph and data-dependent indexes
+REFERENCES:
+  - "[[adr/0004-memory-first-parquet-object-store]]"
+  - "[[adr/0010-label-property-indexes]]"
+  - "[[adr/0014-single-wal-write-path]]"
+  - "[[adr/0015-optimistic-wal-commits]]"
+  - "[[adr/0017-client-conflict]]"
+  - "[[adr/0030-string-prefix-trigram-indexes]]"
+  - "[[adr/0033-compact-live-records-typed-csr]]"
+  - "[[adr/0040-create-drop-index]]"
+  - "[[adr/0063-lazy-string-index-postings]]"
+  - "[[adr/0202-graph-floor-memory]]"
+  - "[[adr/0207-packed-text-trigrams]]"
+  - "[[adr/0529-inline-single-version-rows]]"
+---
+
 # 0042. Logical cap on the live graph and data-dependent indexes
 
-- **Status**: Accepted
-- **Date**: 2026-09-04
-- **Deciders**: MemoryDB maintainers
-- **Later references**: amended by ADR-0202 (the floor keeps retained
+- **Later references**: amended by [ADR-0202](./0202-graph-floor-memory.md) (the floor keeps retained
   versions, vector capacity, adjacency containers, and interned names);
-  ADR-0529 (a never-updated row is inline, with no `xmax`; a delete's
+ [ADR-0529](./0529-inline-single-version-rows.md) (a never-updated row is inline, with no `xmax`; a delete's
   tombstone spill does not refuse admission)
 
 ## Context
 
-The working set is RAM (ADR-0004, ADR-0033). Operators need a **customer
+The working set is RAM ([ADR-0004](./0004-memory-first-parquet-object-store.md), [ADR-0033](./0033-compact-live-records-typed-csr.md)). Operators need a **customer
 data** ceiling so a busy writer cannot grow the process without bound.
 Process RSS is the wrong meter: it includes WAL, Parquet buffers, query
 scratch, and allocator slack (load-test reports already show that).
 
-`CREATE INDEX` names a `(label, property)` pair (ADR-0040). The RAM that
+`CREATE INDEX` names a `(label, property)` pair ([ADR-0040](./0040-create-drop-index.md)). The RAM that
 grows with customer data is the always-on label, equality, prefix, and
-trigram postings (ADR-0010, ADR-0030). Those must be in the budget.
+trigram postings ([ADR-0010](./0010-label-property-indexes.md), [ADR-0030](./0030-string-prefix-trigram-indexes.md)). Those must be in the budget.
 
-ADR-0015 serializes commits at WAL append. A check after `apply_redo`
+[ADR-0015](./0015-optimistic-wal-commits.md) serializes commits at WAL append. A check after `apply_redo`
 would fsync a record the engine then refuses to represent.
 
 ## Decision
@@ -57,7 +79,7 @@ set, `delta > 0`, and `used + reserved + delta > L`, complete that
 waiter with `Error::Capacity { used, limit }` and skip the slot. Reserve
 positive deltas inside the batch so two concurrent commits cannot both
 pass. The engine does not retry (same client-visible rule as
-ADR-0017).
+[ADR-0017](./0017-client-conflict.md)).
 
 **Reads** never check. **Open and WAL/Parquet replay always apply**,
 even when the snapshot is already over the limit. Growing writes after
@@ -78,7 +100,7 @@ message `capacity exceeded: used={used} limit={limit}`.
 - **Process RSS / cgroup** — unstable and includes WAL and query heap.
   Rejected; the cap is graph + indexes.
 - **Check only after `apply_redo`** — durable commit the engine cannot
-  keep. Rejected; WAL is the serialize point (ADR-0014 / ADR-0015).
+ keep. Rejected; WAL is the serialize point ([ADR-0014](./0014-single-wal-write-path.md) / [ADR-0015](./0015-optimistic-wal-commits.md)).
 - **Fail `open` when snapshot > limit** — crash recovery of a full
   store would not load. Rejected; replay always applies.
 - **Block reads when full** — operators need `MATCH` / `DELETE` to
@@ -96,11 +118,11 @@ message `capacity exceeded: used={used} limit={limit}`.
 
 ## Later references
 
-ADR-0063: prefix/trigram postings are lazily materialized, so their budget
+[ADR-0063](./0063-lazy-string-index-postings.md): prefix/trigram postings are lazily materialized, so their budget
 charge is a deterministic **formula** of the live node (1–3-gram window
 positions per `(label, key)` string property) rather than a count of
 materialized postings. `used` still cannot move from a read, and the
 incremental counter and the live-walk oracle share one accounting core.
 
-ADR-0207: the text term of that formula is now one posting per width-3
+[ADR-0207](./0207-packed-text-trigrams.md): the text term of that formula is now one posting per width-3
 window, `char_len - 2`, instead of the 1–3-gram window sum.

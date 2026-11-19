@@ -1,12 +1,23 @@
+---
+type: adr
+area: engine
+claim: 9279b680b2ca11ab1bc47174bb472d577202c5e7
+name: 0475-gpm-early-conjuncts-and-riders
+status: proposed
+tags:
+  - pattern-matching
+title: Early conjunct evaluation and riders in the GPM walk
+REFERENCES:
+  - "[[adr/0335-unbound-variable-fails-not-null]]"
+  - "[[adr/0469-allreduce-inline-pruning]]"
+  - "[[adr/0471-one-var-length-traversal-engine]]"
+---
+
 # ADR-0475: Early conjunct evaluation and riders in the GPM walk
-
-Status: Proposed
-
-Claim: 9279b680b2ca11ab1bc47174bb472d577202c5e7
 
 ## Context
 
-ADR-0471 made the GPM quantified traversal the one engine for every
+[ADR-0471](./0471-one-var-length-traversal-engine.md) made the GPM quantified traversal the one engine for every
 var-length spelling; its Consequences record the cost: "the exists probe
 loses its early-exit for var-length shapes — a follow-up candidate."
 Two further costs of the post-filter-only discipline remained beside it:
@@ -14,7 +25,7 @@ Two further costs of the post-filter-only discipline remained beside it:
 - Every plain MATCH-WHERE conjunct (the non-fold majority — `m.keep =
   true`, `t.q > 1`) is evaluated once per *complete* path, after the
   walk has already enumerated the whole failing prefix behind it. The
-  allReduce inliner (ADR-0469) prunes mid-path for its fold conjuncts
+ allReduce inliner ([ADR-0469](./0469-allreduce-inline-pruning.md)) prunes mid-path for its fold conjuncts
   only; a failing plain conjunct on a mid-pattern node still pays the
   full tail — the `early_tests.rs` mid-gate fixture walks the failing
   mid node's four-path tail in full only for the post-filter to drop
@@ -40,7 +51,7 @@ selector stand-down in this decision.
 binding points and aborts the failing branch; a MATCH cap or an EXISTS
 probe can ride the walk as a consumer that halts the enumeration. The
 post-filter stays in place in every form.** Four mechanisms, one
-discipline — ADR-0469's exactness rule generalized from allReduce folds
+discipline — [ADR-0469](./0469-allreduce-inline-pruning.md)'s exactness rule generalized from allReduce folds
 to plain conjuncts:
 
 1. **Early conjunct evaluation** (`exec/gpm/early.rs`). A top-level
@@ -56,17 +67,17 @@ to plain conjuncts:
    side; a false or null verdict drops the state there — the **branch
    abort**: the prefix behind it enumerates no further hops. Null
    bindings never decide: a null binding of a pattern variable may be a
-   non-local singleton pre-binding (ADR-0335) or a deleted
+ non-local singleton pre-binding ([ADR-0335](./0335-unbound-variable-fails-not-null.md)) or a deleted
    entity's tombstone, and either value differs from the post-filter's —
    such a conjunct stays a post-filter.
 2. **Errors defer, never prune — walk-wide.** A conjunct that raises is
    deferred for the rest of the walk: skipped at every later binding
    point, never re-evaluated early, never pruning. The untouched
    post-filter reproduces the error on whatever rows survive, so which
-   errors surface never changes (ADR-0469's poison rule, carried from
+ errors surface never changes ([ADR-0469](./0469-allreduce-inline-pruning.md)'s poison rule, carried from
    allReduce folds to plain conjuncts).
 3. **Selector stand-down.** Under any path selector (`ANY`, `SHORTEST
-   k`, `ALL SHORTEST`, …) no conjunct evaluates early and the ADR-0469
+ k`, `ALL SHORTEST`, …) no conjunct evaluates early and the [ADR-0469](./0469-allreduce-inline-pruning.md)
    allReduce inliner stands down too: a selector chooses among the
    pattern's FULL candidate set and a MATCH-WHERE predicate narrows the
    already-selected path (selective-path scenario 8) — mid-path pruning would
@@ -79,9 +90,9 @@ to plain conjuncts:
    deferred element predicates, reduce checks, cap count, projection),
    and the walk halts the moment the rider is answered:
    - the **EXISTS probe rider** — GPM patterns (every var-length
-     spelling since ADR-0471) probe through the GPM walk and the first
+ spelling since [ADR-0471](./0471-one-var-length-traversal-engine.md)) probe through the GPM walk and the first
      accepted row halts the enumeration, **restoring the early exit
-     ADR-0471's Consequences record losing**. The probe is a full
+ [ADR-0471](./0471-one-var-length-traversal-engine.md)'s Consequences record losing**. The probe is a full
      pattern walk (the clause-engine pass it replaces), so it ticks the
      nested-evaluation budget once per evaluation, keeping the security
      bound on compounding EXISTS chains. A selector pattern keeps the
@@ -110,7 +121,7 @@ ready only at the target's own event.
 - **Post-filter only (status quo).** Keep every plain conjunct a
   post-filter over completed paths. Rejected: it forfeits the branch
   abort — the mid-gate fixture's failing branch pays its whole tail —
-  and leaves ADR-0471's recorded EXISTS early-exit loss and the
+ and leaves [ADR-0471](./0471-one-var-length-traversal-engine.md)'s recorded EXISTS early-exit loss and the
   full-enumeration-before-LIMIT cost in place.
 - **Prune under selectors as well** (apply the early evaluation
   uniformly, selector or not). Rejected: the selective-path scenario pins the
@@ -118,7 +129,7 @@ ready only at the target's own event.
   and can return nothing where pruning would hand the selector a
   different path; the answers differ, not just the cost.
 - **A second probe engine beside the GPM walk for the EXISTS early
-  exit.** Rejected: ADR-0471's own lesson — two engines for one
+ exit.** Rejected: [ADR-0471](./0471-one-var-length-traversal-engine.md)'s own lesson — two engines for one
   language is the spelling-dependent trap the unification removed; the
   probe rides the one walk instead.
 - **Evaluate every ready conjunct at every binding point** (no
@@ -149,11 +160,11 @@ ready only at the target's own event.
   and the raising conjunct (deferred; errors surface exactly where the
   post-filter raises them, and a raising dead-end prefix surfaces
   nothing).
-- ADR-0471's recorded EXISTS early-exit loss is restored (Later
-  references note there); ADR-0469's exactness discipline now covers
+- [ADR-0471](./0471-one-var-length-traversal-engine.md)'s recorded EXISTS early-exit loss is restored (Later
+ references note there); [ADR-0469](./0469-allreduce-inline-pruning.md)'s exactness discipline now covers
   plain conjuncts and its inliner stands down under selectors (Later
   references note there).
-- The error-suppression limitation is unchanged from ADR-0469's: a row
+- The error-suppression limitation is unchanged from [ADR-0469](./0469-allreduce-inline-pruning.md)'s: a row
   pruned by one early conjunct skips the remaining conjuncts' possible
   errors — the engine's pre-existing pushdown semantics, tracked by the
   engine-wide error-suppression ticket.

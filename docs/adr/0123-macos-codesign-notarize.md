@@ -1,12 +1,26 @@
-# 0123. Codesign and notarize the macOS release binaries with a Developer ID
+---
+type: adr
+area: infra
+date: 2026-09-28
+deciders: CypherLite maintainers
+name: 0123-macos-codesign-notarize
+status: accepted
+tags:
+  - release
+  - security
+title: Codesign and notarize the macOS release binaries with a Developer ID
+REFERENCES:
+  - "[[adr/0067-release-versioning-and-process]]"
+  - "[[adr/0068-cli-install-script-via-github-pages]]"
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0115-sshsig-release-signing]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-28
-- **Deciders**: CypherLite maintainers (Linear LABS-128)
+# 0123. Codesign and notarize the macOS release binaries with a Developer ID
 
 ## Context
 
-The release pipeline (`.github/workflows/release.yml`, per ADR-0067) builds
+The release pipeline (`.github/workflows/release.yml`, per [ADR-0067](./0067-release-versioning-and-process.md)) builds
 the `cypherlite` CLI for two macOS targets and publishes the raw binaries
 `cypherlite-darwin-amd64` and `cypherlite-darwin-arm64`:
 
@@ -15,12 +29,12 @@ the `cypherlite` CLI for two macOS targets and publishes the raw binaries
   copies `target/<target>/release/cypherlite` to the artifact name before
   `actions/upload-artifact@v4`;
 - the `create-release` job downloads those artifacts, generates `SHA256SUMS`,
-  and authenticates it with the SSHSIG release signature fixed by **ADR-0115**
+ and authenticates it with the SSHSIG release signature fixed by **[ADR-0115](./0115-sshsig-release-signing.md)**
   before publishing.
 
 Both macOS binaries are currently unsigned. Users install the CLI with the
-`curl | bash` installer (`install.sh`, asset contract ADR-0068) and self-upgrade
-with the in-binary `upgrade` command (design ADR-0069). On modern macOS,
+`curl | bash` installer (`install.sh`, asset contract [ADR-0068](./0068-cli-install-script-via-github-pages.md)) and self-upgrade
+with the in-binary `upgrade` command (design [ADR-0069](./0069-cli-lifecycle-commands.md)). On modern macOS,
 Gatekeeper does not run the quarantine-time malware scan at download time; it
 assesses the binary when it is first executed. An unsigned, un-notarized Mach-O
 downloaded from the network is blocked with "Apple could not verify
@@ -28,7 +42,7 @@ downloaded from the network is blocked with "Apple could not verify
 System Settings bypass. That is the friction tracked as **LABS-128**.
 
 **SSHSIG signing and Developer ID notarization are complementary, not
-substitutes.** ADR-0115's SSHSIG signature over `SHA256SUMS` is a
+substitutes.** [ADR-0115](./0115-sshsig-release-signing.md)'s SSHSIG signature over `SHA256SUMS` is a
 release-integrity mechanism consumed by CypherLite's own tooling — `install.sh`
 and the `upgrade` command check the manifest against a public key pinned in the
 source, closing the same-channel substitution gap. macOS Gatekeeper knows
@@ -86,14 +100,14 @@ composite action in the two darwin legs of `release.yml`.**
   built-in macOS codesign and notarization support. Rejected: the release
   pipeline is a hand-rolled Rust workflow — `release.yml` — and GoReleaser
   would replace the whole version-bump/tag/SSHSIG flow for one feature,
-  discarding ADR-0067 and ADR-0115 behavior and rewriting the release
+ discarding [ADR-0067](./0067-release-versioning-and-process.md) and [ADR-0115](./0115-sshsig-release-signing.md) behavior and rewriting the release
   mechanism to gain a signing step.
 - **Ship a stapled `.pkg` for offline Gatekeeper.** A signed, stapled installer
   package would let Gatekeeper validate the ticket without a network round
   trip. Rejected: `stapler` supports only UDIF disk images, code-signed
   executable bundles such as `.app`, and signed flat `.pkg` — not bare
   binaries or zips — so the published raw binary and `SHA256SUMS` contract
-  (ADR-0068) could not carry a stapled ticket, and the installer shape would
+ ([ADR-0068](./0068-cli-install-script-via-github-pages.md)) could not carry a stapled ticket, and the installer shape would
   have to change for this one platform.
 - **Keep the binaries unsigned.** Ship as today and rely on SSHSIG + checksum
   integrity. Rejected: Gatekeeper blocks unsigned, un-notarized binaries
@@ -112,11 +126,11 @@ composite action in the two darwin legs of `release.yml`.**
 - Five signing/notary secrets become load-bearing release credentials in the
   repository, using the same names as the sibling `neo4j-cli` repository. Their
   custody and rotation belong with the release credentials documented in
-  `RELEASING.md` (ADR-0115).
+ `RELEASING.md` ([ADR-0115](./0115-sshsig-release-signing.md)).
 - The published macOS artifact is still the raw binary behind `SHA256SUMS`
-  signed per ADR-0115; signing and notarization add no new release asset and do
-  not change the installer asset contract (ADR-0068) or the upgrade design
-  (ADR-0069).
+ signed per [ADR-0115](./0115-sshsig-release-signing.md); signing and notarization add no new release asset and do
+ not change the installer asset contract ([ADR-0068](./0068-cli-install-script-via-github-pages.md)) or the upgrade design
+ ([ADR-0069](./0069-cli-lifecycle-commands.md)).
 - Because notarization is verified online with no stapled ticket, a user who
   is offline at first launch is not covered by this decision; offline
   verification would require the `.pkg` path rejected above and a new ADR.

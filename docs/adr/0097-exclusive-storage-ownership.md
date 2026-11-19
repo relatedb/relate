@@ -1,13 +1,25 @@
-# 0097. Exclusive ownership and private creation for persistent storage
+---
+type: adr
+area: engine
+date: 2026-09-23
+deciders: CypherLite maintainers
+name: 0097-exclusive-storage-ownership
+status: proposed
+tags:
+  - storage
+title: Exclusive ownership and private creation for persistent storage
+REFERENCES:
+  - "[[adr/0072-virtual-filesystem]]"
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0090-native-reset-role-and-durability]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-23
-- **Deciders**: CypherLite maintainers
+# 0097. Exclusive ownership and private creation for persistent storage
 
 ## Context
 
-ADR-0072 routes the WAL and snapshots through a synchronous VFS.
-ADR-0074 packs the same virtual tree into **one host file** for `.cl` paths.
+[ADR-0072](./0072-virtual-filesystem.md) routes the WAL and snapshots through a synchronous VFS.
+[ADR-0074](./0074-single-file-bundle-vfs.md) packs the same virtual tree into **one host file** for `.cl` paths.
 Today independent `Database::open` calls can initialize or recover the same
 persistent store concurrently. In particular, URI parsing initializes a
 bundle, creates Native directories, and resolves the snapshot codec before
@@ -54,7 +66,7 @@ to compare actual filesystem objects, including directories.
    second, before creating/replaying WAL segments or resolving the codec;
    release both on any later open failure. If root and WAL directory resolve
    to the same filesystem identity, reuse the root lease rather than
-   self-contending; one physical `.cypherlite.lock` remains a root identity (ADR-0090),
+ self-contending; one physical `.cypherlite.lock` remains a root identity ([ADR-0090](./0090-native-reset-role-and-durability.md)),
    not both a root and WAL role. This normal-open exception does not relax
    reset's equal-root/WAL rejection in (4). Two distinct roots pointing at one
    WAL directory thus
@@ -76,7 +88,7 @@ to compare actual filesystem objects, including directories.
    before handing it to bundle initialization/load. Retain the locked handle
    (or a clone sharing its lock ownership) inside the bundle/lease. Do not
    reopen by path for initialization. `OpenOptions.wal_dir` remains rejected
-   for `.cl` (ADR-0074). There is no bundle lock sidecar, OS WAL directory,
+ for `.cl` ([ADR-0074](./0074-single-file-bundle-vfs.md)). There is no bundle lock sidecar, OS WAL directory,
    or other additional host file.
 
 4. **Aliases and lifetime.** Resolve relative paths and supported existing
@@ -181,7 +193,7 @@ to compare actual filesystem objects, including directories.
     directory has a typed WAL role (even if reset specifies a different
     override), or was created by the current ordinary open.
     An untyped pre-existing direct WAL marker remains a nested identity even
-    with an evidenced parent (ADR-0090). In a disjoint WAL scan, exclude only
+ with an evidenced parent ([ADR-0090](./0090-native-reset-role-and-durability.md)). In a disjoint WAL scan, exclude only
     that WAL directory's own
     `.cypherlite.lock`, verified by physical file identity; a child `.cypherlite.lock` is never a
     WAL marker. An untyped direct `wal/.cypherlite.lock`, including one under a root
@@ -266,7 +278,7 @@ to compare actual filesystem objects, including directories.
   Rejected: a registry does not protect against other processes or aliases;
   waiting makes a second opener hang instead of receiving a distinct error.
 - **Use a `.cl.lock` sidecar or an OS lock on a Native directory.** Rejected:
-  the sidecar breaks ADR-0074's one-host-file rule, and Windows directories
+ the sidecar breaks [ADR-0074](./0074-single-file-bundle-vfs.md)'s one-host-file rule, and Windows directories
   do not provide the ordinary file locking handle required here.
 - **Lock only the Native root, ignoring `wal_dir` aliases.** Rejected: two
   different roots can otherwise write the same overridden WAL directory.
@@ -318,7 +330,7 @@ to compare actual filesystem objects, including directories.
 - Persistent databases are single-owner across cooperating processes and
   independent same-process opens. Root and WAL identity checks add two
   stable files for Native databases, including an overridden WAL directory;
-  the `.cl` layout remains one host file under ADR-0074. Native WAL I/O uses
+ the `.cl` layout remains one host file under [ADR-0074](./0074-single-file-bundle-vfs.md). Native WAL I/O uses
   its leased canonical directory even when the default WAL path is an alias;
   snapshots continue to use the root directory.
 - Opening a locked database fails promptly with the new typed core error;

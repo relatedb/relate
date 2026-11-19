@@ -1,14 +1,30 @@
-# 0228. Ontology list property types map to closed graph-type list types
+---
+type: adr
+area: engine
+date: 2026-10-12
+deciders: CypherLite maintainers
+name: 0228-ontology-list-property-types-closed
+status: accepted
+tags:
+  - ontology
+title: Ontology list property types map to closed graph-type list types
+REFERENCES:
+  - "[[adr/0121-ontology-procedures]]"
+  - "[[adr/0226-ontology-mappings]]"
+  - "[[adr/0227-ontology-document-format]]"
+  - "[[adr/0229-remove-system-ontologies-cypher-surface]]"
+  - "[[adr/0364-ontology-spec-main-gate]]"
+SUPERSEDES:
+  - "[[adr/0226-ontology-mappings]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-12
-- **Deciders**: CypherLite maintainers (Linear LABS-132)
+# 0228. Ontology list property types map to closed graph-type list types
 
 ## Context
 
-ADR-0226 §2 maps ontology property `type` tokens to graph-type value types:
+[ADR-0226](./0226-ontology-mappings.md) §2 maps ontology property `type` tokens to graph-type value types:
 "`LIST<X>` to the corresponding list type, `LIST<ANY>` to `LIST<ANY>`".
-Implementing `db.ontology.apply` (ADR-0121) exposed that the literal
+Implementing `db.ontology.apply` ([ADR-0121](./0121-ontology-procedures.md)) exposed that the literal
 reading produces graph-type bodies the engine's own validator rejects:
 Graph-type property types are closed, so a list's inner type is mandatory
 `NOT NULL` (`LIST<STRING>` fails validation with "Lists cannot have a
@@ -21,14 +37,14 @@ property fails `db.ontology.apply` at body validation.
 
 ## Decision
 
-In the ADR-0226 §2 mapping (`cypherlite_ontology::to_graph_type_body`):
+In the [ADR-0226](./0226-ontology-mappings.md) §2 mapping (`cypherlite_ontology::to_graph_type_body`):
 
 - `LIST<X>` maps to its closed graph-type form `LIST<X NOT NULL>` — the only
   spelling of the token a graph type accepts, matching the parser's own
   rule for property types.
 - `LIST<ANY>` declares nothing — like bare `ANY` and `BYTES`, it has no
   graph-type property-type counterpart, so the property is unconstrained. It
-  remains queryable in `system_ontologies` through the ADR-0226 §1
+ remains queryable in `system_ontologies` through the [ADR-0226](./0226-ontology-mappings.md) §1
   mapping.
 
 ## Alternatives considered
@@ -46,19 +62,19 @@ In the ADR-0226 §2 mapping (`cypherlite_ontology::to_graph_type_body`):
 
 - `db.ontology.apply` accepts ontologies with list properties; the
   enforced constraint is the closed list type.
-- ADR-0226 §2's "`LIST<ANY>` to `LIST<ANY>`" clause is superseded; the
+- [ADR-0226](./0226-ontology-mappings.md) §2's "`LIST<ANY>` to `LIST<ANY>`" clause is superseded; the
   rest of the token mapping stands.
 - A spec-side nullable-element list marker, should one ever exist, arrives
-  with a new vendored schema and its own ADR (ADR-0227 §7).
+ with a new vendored schema and its own ADR ([ADR-0227](./0227-ontology-document-format.md) §7).
 
 ## Later references
 
-- ADR-0229 voids the `LIST<ANY>` clause's last sentence ("It remains
-  queryable in `system_ontologies` through the ADR-0226 §1 mapping"):
-  nothing is queryable in `system_ontologies`, and the ADR-0226 §1
+- [ADR-0229](./0229-remove-system-ontologies-cypher-surface.md) voids the `LIST<ANY>` clause's last sentence ("It remains
+ queryable in `system_ontologies` through the [ADR-0226](./0226-ontology-mappings.md) §1 mapping"):
+ nothing is queryable in `system_ontologies`, and the [ADR-0226](./0226-ontology-mappings.md) §1
   mapping is not shipped. The closed `LIST<X NOT NULL>` mapping — the
   apply converter's rule — stands.
-- ADR-0364 re-bases the token vocabulary on main's 39-token
+- [ADR-0364](./0364-ontology-spec-main-gate.md) re-bases the token vocabulary on main's 39-token
   `Neo4jType` enum. This ADR's rules stand: `ANY`/`LIST<ANY>` declare
   nothing, and `LIST<X>` still maps to the closed `LIST<X NOT NULL>`.
   Main's `UUID` maps to the `UUID` predefined kind; `FLOAT32`, `INTEGER8`,

@@ -1,15 +1,26 @@
-# ADR-0356: Unit-granular dependency-dirty expansion
+---
+type: adr
+area: infra
+claim: e2d41fc37b4c5239cf3392e90e624e442953bec1
+name: 0356-unit-granular-dependency-expansion
+status: accepted
+tags:
+  - review
+title: Unit-granular dependency-dirty expansion
+REFERENCES:
+  - "[[adr/0271-stellar-review-deterministic-pipeline]]"
+  - "[[adr/0347-round1-scope-intersects-diff-hunks]]"
+---
 
-Status: Accepted
-Claim: e2d41fc37b4c5239cf3392e90e624e442953bec1
+# ADR-0356: Unit-granular dependency-dirty expansion
 
 ## Context
 
-ADR-0271's expansion contract dirties a whole file when any unit whose
+[ADR-0271](./0271-stellar-review-deterministic-pipeline.md)'s expansion contract dirties a whole file when any unit whose
 module it imports changed signature: a small change to a foundational
 unit (a `CypherValue` variant, a core error type, a trait method) pulls
 in every unit of every importing file — one local round this week scoped
-850 units for a few small changes. ADR-0347 shrank round-1 scope to
+850 units for a few small changes. [ADR-0347](./0347-round1-scope-intersects-diff-hunks.md) shrank round-1 scope to
 hunk-intersecting units but left the expansion inventory whole-file.
 
 ## Decision

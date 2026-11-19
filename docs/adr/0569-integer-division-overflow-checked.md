@@ -1,14 +1,27 @@
-# ADR-0569: Integer division overflow is a checked error
+---
+type: adr
+area: cypher
+claim: 79dee92b635bbb2602736138fb7785db865b57f5
+name: 0569-integer-division-overflow-checked
+status: proposed
+tags:
+  - conformance
+  - semantics
+title: Integer division overflow is a checked error
+REFERENCES:
+  - "[[adr/0175-list-and-string-form-conversions]]"
+SUPERSEDES:
+  - "[[adr/0175-list-and-string-form-conversions]]"
+---
 
-Status: Proposed
-Claim: 79dee92b635bbb2602736138fb7785db865b57f5
+# ADR-0569: Integer division overflow is a checked error
 
 ## Context
 
 Cypher integer arithmetic is checked: an operation whose result cannot be
 represented as a 64-bit integer is a runtime failure in live Neo4j
 2026.10.1 (GQLSTATUS 22003, "numeric value out of range"). The engine
-raises it for `+`, `-`, `*` and unary minus, but ADR-0175 recorded one
+raises it for `+`, `-`, `*` and unary minus, but [ADR-0175](./0175-list-and-string-form-conversions.md) recorded one
 exception: integer division let `i64::MIN / -1` wrap to `i64::MIN`,
 reasoning that Java's plain `/` and Rust's `wrapping_div` produce the same
 two's-complement result.
@@ -45,4 +58,4 @@ keeps its wrapping result.
 
 - Integer division reports its overflow through the same type-class error
   the other integer arithmetic operations use.
-- ADR-0175's division bullet is superseded; the rest of that ADR stands.
+- [ADR-0175](./0175-list-and-string-form-conversions.md)'s division bullet is superseded; the rest of that ADR stands.

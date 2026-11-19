@@ -1,12 +1,27 @@
-# 0084. Reinstate the WASM distribution
+---
+type: adr
+area: surface
+date: 2026-09-24
+deciders: CypherLite maintainers
+name: 0084-reinstate-wasm-distribution
+status: accepted
+tags:
+  - wasm
+title: Reinstate the WASM distribution
+REFERENCES:
+  - "[[adr/0051-wasm-memory-database]]"
+  - "[[adr/0065-withdraw-wasm-swift-surfaces]]"
+  - "[[adr/0085-wasm32-build-split]]"
+  - "[[adr/0100-wasm-size-optimized-build]]"
+  - "[[adr/0145-wasm-opfs-vfs]]"
+  - "[[adr/0530-playground-moves-to-relate-web]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-24
-- **Deciders**: CypherLite maintainers
+# 0084. Reinstate the WASM distribution
 
 ## Context
 
-ADR-0065 withdrew the WASM surface because it had no CI gate after merge
+[ADR-0065](./0065-withdraw-wasm-swift-surfaces.md) withdrew the WASM surface because it had no CI gate after merge
 commit 134667e. Its reinstatement clause is explicit: WASM can return
 "under a new ADR that commits to a CI gate from day one — a wasm32 build
 plus browser smoke". This ADR is that new ADR.
@@ -14,7 +29,7 @@ plus browser smoke". This ADR is that new ADR.
 The product goal is to distribute a browser-embeddable
 `cypherlite::Database` opened at `:memory:` as a `wasm-pack`-generated
 package (`--target web`), so a page can import CypherLite and run Cypher
-without a server. The memory-only contract from ADR-0051 still applies.
+without a server. The memory-only contract from [ADR-0051](./0051-wasm-memory-database.md) still applies.
 `examples/wasm-playground/` is one consumer of that package; it is not the product.
 
 ## Decision
@@ -37,13 +52,13 @@ gated in `.github/workflows/ci.yml`:
    producing a package it can `import`.
 5. **Docs.** The public surface has `docs/api/wasm/{spec.md,description.md,examples/}`
    per AGENTS.md §2. The wasm32 build split it depends on is recorded in
-   ADR-0085.
+ [ADR-0085](./0085-wasm32-build-split.md).
 
 ## Alternatives considered
 
 - **Leave the surface out of the tree** — rejected: distribution is the
   product goal and the branch already has a working package plus an
-  example consumer. ADR-0065's objection was the missing gate; this ADR
+ example consumer. [ADR-0065](./0065-withdraw-wasm-swift-surfaces.md)'s objection was the missing gate; this ADR
   adds it.
 - **Skip the shared build entry; call `wasm-pack` from the npm script
   only** — rejected: CI and repo-root builds would need to duplicate the
@@ -51,24 +66,24 @@ gated in `.github/workflows/ci.yml`:
 
 ## Consequences
 
-- The supported-surface invariant from ADR-0065 holds: the crate exists
+- The supported-surface invariant from [ADR-0065](./0065-withdraw-wasm-swift-surfaces.md) holds: the crate exists
   in-tree only because CI builds it. Deleting the `wasm` job supersedes
   this ADR.
-- ADR-0051's memory-only browser contract is restated in force. Any
+- [ADR-0051](./0051-wasm-memory-database.md)'s memory-only browser contract is restated in force. Any
   future file- or IndexedDB-backed browser surface needs its own ADR.
 - Publishing the package to npm, and any release-artifact packaging, are
   separate decisions for a follow-up ADR.
 
 ## Later references
 
-- ADR-0100 replaces the `wasm-pack build --release` command inside
+- [ADR-0100](./0100-wasm-size-optimized-build.md) replaces the `wasm-pack build --release` command inside
   `scripts/build-wasm.sh` with a `cargo build --profile release-wasm` +
   `wasm-bindgen` + `wasm-opt -Oz` pipeline. The build-entry, CI-gate,
   and shared-entry clauses of this ADR still hold.
-- ADR-0145 supersedes the memory-only clause for one worker path:
+- [ADR-0145](./0145-wasm-opfs-vfs.md) supersedes the memory-only clause for one worker path:
   `CypherliteDb.open("opfs://<name>")`. The default constructor is still
   `:memory:`.
-- ADR-0530 moves the playground to the relate-web repository:
+- [ADR-0530](./0530-playground-moves-to-relate-web.md) moves the playground to the relate-web repository:
   `examples/wasm-playground/` is removed, so the examples clause has no
   in-tree app and `scripts/build-wasm.sh` has no playground caller. The
   shared build entry is unchanged.

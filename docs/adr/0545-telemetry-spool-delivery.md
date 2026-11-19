@@ -1,13 +1,26 @@
-# 0545. Telemetry delivery off the exit path: local spool, next-run drain
+---
+type: adr
+area: cli
+claim: 6c5984093ab0d983ef961918dd5fc35a78024136
+date: 2026-11-08
+deciders: Relate maintainers
+name: 0545-telemetry-spool-delivery
+status: proposed
+tags:
+  - telemetry
+title: "Telemetry delivery off the exit path: local spool, next-run drain"
+REFERENCES:
+  - "[[adr/0079-anonymous-usage-metrics]]"
+  - "[[adr/0429-cli-extension-registry]]"
+  - "[[adr/0586-windows-powershell-installer]]"
+  - "[[adr/0615-telemetry-delivery-lifetime]]"
+---
 
-- **Status**: Proposed
-Claim: 6c5984093ab0d983ef961918dd5fc35a78024136
-- **Date**: 2026-11-08
-- **Deciders**: Relate maintainers
+# 0545. Telemetry delivery off the exit path: local spool, next-run drain
 
 ## Context
 
-ADR-0079 §5 promised a bounded exit flush "so the CLI is never
+[ADR-0079](./0079-anonymous-usage-metrics.md) §5 promised a bounded exit flush "so the CLI is never
 perceptibly slowed". The first implementation joined the worker thread,
 so every exit paid the worker's HTTP timeout window; a follow-up bound
 replaced the join with a 250 ms done-channel wait. Measured on a release
@@ -58,7 +71,7 @@ Exits write locally; the next enabled run delivers.
    like a corrupt line, so undeliverable content never starves a
    sweep. Delivery is
    at-least-once, effectively-once via the per-event `$insert_id`
-   (ADR-0079 §2) the sink already dedups on.
+ ([ADR-0079](./0079-anonymous-usage-metrics.md) §2) the sink already dedups on.
 3. **No in-run delivery.** The bounded channel and its worker thread
    disappear; a run's events sit in a bounded in-memory backlog and
    spool at exit. The 2 s HTTP timeout governs the drain POSTs. A
@@ -76,7 +89,7 @@ Exits write locally; the next enabled run delivers.
    then `%USERPROFILE%\.config\relate`, after the existing XDG/HOME
    order. Strictly additive — `None` becomes a path on Windows — giving
    Windows a persistent install ID, a working first-run notice, and
-   extension-registry discovery (ADR-0429 §6).
+ extension-registry discovery ([ADR-0429](./0429-cli-extension-registry.md) §6).
 7. **Portability rules.** Spool mechanics use std-only primitives:
    claims by exclusive create and atomic rename, short-lived opens only
    (Windows denies rename of files another process holds open), no
@@ -125,13 +138,13 @@ Exits write locally; the next enabled run delivers.
 
 ## Later references
 
-ADR-0586's change reads `$HOME` through the shared rule every base uses,
+[ADR-0586](./0586-windows-powershell-installer.md)'s change reads `$HOME` through the shared rule every base uses,
 which requires an absolute value: a relative `$HOME` (on Windows, also a
 driveless one such as `/c/Users/u`) names no base, like a relative
 `$XDG_CONFIG_HOME`, so the config directory falls through to the next tier
 instead of resolving against the working directory or the current drive.
 
-ADR-0615 revises the delivery shape: the drain thread now starts when the
+[ADR-0615](./0615-telemetry-delivery-lifetime.md) revises the delivery shape: the drain thread now starts when the
 pipeline arms it (not at the first recorded event), non-query exits join
 it with a small budget, and the first run of a new CLI version drains the
 whole accumulated backlog once — because next-run-only delivery never

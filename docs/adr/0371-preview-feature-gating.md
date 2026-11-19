@@ -1,15 +1,31 @@
+---
+type: adr
+area: cypher
+claim: 178ecb332c29ceada32771c6ae1cb9c991605dba
+name: 0371-preview-feature-gating
+status: proposed
+tags:
+  - dialect
+title: Preview Cypher feature gating via CYPHERLITE_PREVIEW
+REFERENCES:
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0188-remove-superseded-tck-scenario-from-pin]]"
+  - "[[adr/0209-batched-global-bulk-writes]]"
+  - "[[adr/0229-remove-system-ontologies-cypher-surface]]"
+  - "[[adr/0378-ontology-procedures-preview-gate]]"
+  - "[[adr/0497-catalogue-corpus-alignment]]"
+  - "[[adr/0593-system-ontologies-visibility-preview-gate]]"
+---
+
 # ADR-0371: Preview Cypher feature gating via CYPHERLITE_PREVIEW
-
-Status: Proposed
-
-Claim: 178ecb332c29ceada32771c6ae1cb9c991605dba
 
 ## Context
 
 Upcoming Cypher work — hybrid search `COMBINE`, local
 callables, and the graph-type optional properties / default values /
 implied labels — is accepted into the language but not part of our pinned dialect
-floor (the openCypher TCK 2024.3 pin, ADR-0188). Two bad options existed:
+floor (the openCypher TCK 2024.3 pin, [ADR-0188](./0188-remove-superseded-tck-scenario-from-pin.md)). Two bad options existed:
 shipping the syntax unconditionally (it would widen the dialect floor
 before the TCK pin moves, breaking the "TCK is the floor" contract in
 `docs/tck/compliance.md`), or shipping each feature behind its own ad-hoc
@@ -23,7 +39,7 @@ lands: one mechanism every later feature PR plugs into.
 
 One global opt-in, `CYPHERLITE_PREVIEW`: a comma-separated list of
 kebab-case feature names, read once at `Database::open` (the same
-config/open path as `CYPHERLITE_MEMORY_LIMIT` and the ADR-0209 bulk-batch
+config/open path as `CYPHERLITE_MEMORY_LIMIT` and the [ADR-0209](./0209-batched-global-bulk-writes.md) bulk-batch
 knobs, fail-closed on a bad value).
 
 - **Registry**: one canonical feature-name table in the engine,
@@ -44,7 +60,7 @@ knobs, fail-closed on a bad value).
   name in the list (including an empty segment) fails `Database::open`
   with a loud typed usage error naming the known names — never a silent
   ignore. A gated feature invoked while disabled fails with the authored
-  error, in the house style of the ADR-0229 §2 authored text:
+ error, in the house style of the [ADR-0229](./0229-remove-system-ontologies-cypher-surface.md) §2 authored text:
   `semantic error: SemanticError: preview feature '<name>' is not enabled:
   set CYPHERLITE_PREVIEW=<name>`.
 - **Scope policy**: only **syntax-extending** features gate. A purely
@@ -71,7 +87,7 @@ knobs, fail-closed on a bad value).
   (AGENTS.md CLI rules).
 - **A database-level stored setting (`ALTER DATABASE … SET PREVIEW`).**
   Rejected: the supported database-administration set is fixed by
-  ADR-0116, and a stored setting would make the dialect floor
+ [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md), and a stored setting would make the dialect floor
   store-dependent and persistent across versions — the preview window is
   a process-level decision, not a data one.
 
@@ -82,7 +98,7 @@ knobs, fail-closed on a bad value).
   change as the CIP evolves. The opt-in is explicit and loud either way.
 - The registry is engine-owned (`cypherlite-core`), so the parser, planner,
   and any surface can consult it without new dependency edges
-  (ADR-0103 R1).
+ ([ADR-0103](./0103-engine-surfaces-testing-layout.md) R1).
 - Each feature PR is now cheap and uniform: add the registry row, gate the
   syntax at its parse/dispatch point, extend the tests. When a feature
   reaches the pinned floor, its gate and registry row are removed in that
@@ -98,19 +114,19 @@ knobs, fail-closed on a bad value).
 
 ## Later references
 
-- ADR-0593 records a third gate class inside ADR-0378's exception family:
+- [ADR-0593](./0593-system-ontologies-visibility-preview-gate.md) records a third gate class inside [ADR-0378](./0378-ontology-procedures-preview-gate.md)'s exception family:
   a fixed namespace's visibility gates through a namespace-registry
   mapping (the namespace twin of the procedure mapping), and its disabled
   form is the name-gate rule in namespace form — the site's ordinary
   unknown-database rejection, never the authored error. The one row is
-  `system_ontologies` behind `ontology`; it is removed with ADR-0378's
+ `system_ontologies` behind `ontology`; it is removed with [ADR-0378](./0378-ontology-procedures-preview-gate.md)'s
   row once the spec is final.
-- ADR-0378 amends the scope policy: a built-in procedure family whose
+- [ADR-0378](./0378-ontology-procedures-preview-gate.md) amends the scope policy: a built-in procedure family whose
   contract tracks a non-final external spec may gate even though it does
   not extend syntax. The one row is `ontology` (the `db.ontology.*` family,
   Ontology Graph Spec 1.0.0 not final); it and its gate are
   removed once that spec is final. Syntax-only remains the default.
-- ADR-0497 (the Cypher-25 catalogue alignment) adds a further exception and
+- [ADR-0497](./0497-catalogue-corpus-alignment.md) (the Cypher-25 catalogue alignment) adds a further exception and
   the first **name** gate: a built-in function name an approved CIP adds but
   no release ships, or that the corpus records as unreachable, is admitted
   only while its `CYPHERLITE_PREVIEW` flag is on. Admission is the front's

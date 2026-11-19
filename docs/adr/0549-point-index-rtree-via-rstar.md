@@ -1,8 +1,18 @@
+---
+type: adr
+area: engine
+claim: a3f16e57a35e108edb9fea53142b1c787c35ca64
+name: 0549-point-index-rtree-via-rstar
+status: proposed
+tags:
+  - index
+title: POINT index backend — R\*-tree via rstar
+REFERENCES:
+  - "[[adr/0018-concurrent-snapshot-reads]]"
+  - "[[adr/0063-lazy-string-index-postings]]"
+---
+
 # ADR-0549: POINT index backend — R\*-tree via rstar
-
-Status: Proposed
-
-Claim: a3f16e57a35e108edb9fea53142b1c787c35ca64
 
 ## Context
 
@@ -26,7 +36,7 @@ unchanged `PointIndex` / `DrainState` contract:
   coordinates to unpost, and the residual predicate owns z/SRID/wrap
   semantics.
 - Full materialize (index create, reopen rebuild) bulk-loads the tree at a
-  `seal()` step — the lazy string postings' seal precedent (ADR-0063) —
+ `seal` step — the lazy string postings' seal precedent ([ADR-0063](./0063-lazy-string-index-postings.md)) —
   instead of growing it insert by insert. The dirty-drain's incremental
   maintenance inserts and removes single leaves.
 - The distance seek's envelope is the spherical disk's exact great-circle
@@ -40,7 +50,7 @@ unchanged `PointIndex` / `DrainState` contract:
   distance seeks, and the residual answers alone.
 - The residual `point.distance` / `point.withinBBox` re-check stays the
   correctness backstop; postings remain a superset the seek re-checks on
-  the snapshot (ADR-0018).
+ the snapshot ([ADR-0018](./0018-concurrent-snapshot-reads.md)).
 - `rstar` 0.12 joins `relate-executor`: pure Rust, no build script, three
   new transitive packages (`heapless`, `hash32`, `stable_deref_trait`;
   `num-traits`, `libm`, `byteorder` were already resolved), MSRV 1.63 under

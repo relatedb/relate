@@ -1,8 +1,20 @@
+---
+type: adr
+area: engine
+claim: a7f0aa02311c9b2500f45bfede6e9a09d4e03d08
+name: 0471-one-var-length-traversal-engine
+status: proposed
+tags:
+  - pattern-matching
+title: One traversal engine for every var-length spelling
+REFERENCES:
+  - "[[adr/0186-match-clause-shortest-path-bfs]]"
+  - "[[adr/0466-traversal-depth-admission-limit]]"
+  - "[[adr/0475-gpm-early-conjuncts-and-riders]]"
+  - "[[adr/0478-frontier-nfa-qpp-kernel]]"
+---
+
 # ADR-0471: One traversal engine for every var-length spelling
-
-Status: Proposed
-
-Claim: a7f0aa02311c9b2500f45bfede6e9a09d4e03d08
 
 ## Context
 
@@ -69,7 +81,7 @@ trap that no planner hint can excuse.
    `gpm_expand_relationship` and the classic walker use — so every
    spelling of an unbounded var-length explores to the same depth.
    REPEATABLE ELEMENTS never terminates by uniqueness and keeps its
-   satiety cap (ADR-0466's admission limit still governs explicit
+ satiety cap ([ADR-0466](./0466-traversal-depth-admission-limit.md)'s admission limit still governs explicit
    bounds).
 
 4. **Var-length rel variables keep the legacy reuse rules; group
@@ -86,7 +98,7 @@ trap that no planner hint can excuse.
    shows one plan text per pattern), and the origin rules.
 
 5. **The shortest route keeps its spelling-scoped admission.** The
-   route (ADR-0186) decodes the quantified shape for the legacy
+ route ([ADR-0186](./0186-match-clause-shortest-path-bfs.md)) decodes the quantified shape for the legacy
    bracket form; the postfix spelling keeps its conservative GPM path —
    its ANY-tie choice is pinned there by the selective-path tests, and
    the route's tie order differs.
@@ -163,7 +175,7 @@ is unchanged and documented in the spike note.
 
 ## Later references
 
-ADR-0475 restores the early exit this decision's Consequences record
+[ADR-0475](./0475-gpm-early-conjuncts-and-riders.md) restores the early exit this decision's Consequences record
 losing: GPM patterns (every var-length spelling) probe through the GPM
 walk with an EXISTS probe rider that halts at the first accepted row,
 the same walk now also evaluating qualifying MATCH-WHERE conjuncts at
@@ -171,7 +183,7 @@ its binding points and halting on a walk-riding LIMIT cap. The fast
 paths still decline var-length patterns into the generic route — the
 rider is inside the GPM engine, not a new fast path beside it.
 
-ADR-0478 gives unbounded cyclic recursions a kernel path beside this
+[ADR-0478](./0478-frontier-nfa-qpp-kernel.md) gives unbounded cyclic recursions a kernel path beside this
 engine: the frontier-NFA QPP kernel answers the frontier-sound shapes
 (reachability/EXISTS, distinct endpoints, un-ordered capped paths, bounded
 WALK) directly. The DFS remains the engine for every shape the frontier's

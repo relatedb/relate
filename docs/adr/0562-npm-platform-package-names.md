@@ -1,19 +1,34 @@
-# 0562. npm platform package names carry the relate- prefix
+---
+type: adr
+area: infra
+claim: 6fcd03d06e4e58b59dc3c39138e8b28c6aacc1e0
+date: 2026-11-10
+deciders: the maintainers
+name: 0562-npm-platform-package-names
+status: proposed
+tags:
+  - release
+title: npm platform package names carry the relate- prefix
+REFERENCES:
+  - "[[adr/0278-npm-distribution]]"
+  - "[[adr/0517-rename-to-relate]]"
+  - "[[adr/0560-crates-io-and-pypi-distribution]]"
+  - "[[adr/0616-npm-platform-file-links-repo-pins-at-pack]]"
+SUPERSEDES:
+  - "[[adr/0278-npm-distribution]]"
+---
 
-Status: Proposed
-Claim: 6fcd03d06e4e58b59dc3c39138e8b28c6aacc1e0
-Date: 2026-11-10
-Deciders: the maintainers
+# 0562. npm platform package names carry the relate- prefix
 
 ## Context
 
-ADR-0278 (renamed in scope by ADR-0517) shaped the npm distribution as a
+[ADR-0278](./0278-npm-distribution.md) (renamed in scope by [ADR-0517](./0517-rename-to-relate.md)) shaped the npm distribution as a
 pure-JS main package plus five platform packages carrying the prebuilt
 native library, wired as `optionalDependencies`. The platform packages
 were named `@relate/<os>-<arch>` — `@relate/darwin-arm64` and so on —
 while the code packages are `@relate/relate` and `@relate/relate-wasm`.
 
-Nothing has been published yet (ADR-0560's bootstrap is pending), so the
+Nothing has been published yet ([ADR-0560](./0560-crates-io-and-pypi-distribution.md)'s bootstrap is pending), so the
 names can still change for free. On the registry page the bare
 `@relate/darwin-arm64` form reads as a top-level product next to
 `@relate/relate`, and the scope accumulates one visually unrelated entry
@@ -42,7 +57,7 @@ workflow) follows the package manifests.
 
 - The scope reads as three products — `relate`, `relate-wasm`, and the
   `relate-*` platform set — instead of seven unrelated names.
-- No migration: decided before the first publish; ADR-0278's package
+- No migration: decided before the first publish; [ADR-0278](./0278-npm-distribution.md)'s package
   list is superseded in this one aspect (see its Later references).
 - Tarball names become `relate-relate-<os>-<arch>-<version>.tgz`; the
   smoke gate and the publish workflow's main-vs-platform selection key
@@ -50,6 +65,6 @@ workflow) follows the package manifests.
 
 ## Later references
 
-- ADR-0616 changes how the five names resolve: `file:` links in the
+- [ADR-0616](./0616-npm-platform-file-links-repo-pins-at-pack.md) changes how the five names resolve: `file:` links in the
   repository manifest, registry pins injected into the packed manifest
   at the release version. The names themselves are unchanged.

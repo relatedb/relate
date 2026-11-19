@@ -1,12 +1,23 @@
+---
+type: adr
+area: surface
+name: 0054-one-c-abi-env-python
+status: accepted
+tags:
+  - ffi
+  - python
+title: One C ABI, one env prefix, one Python package
+REFERENCES:
+  - "[[adr/0053-cypherlite-product-names]]"
+  - "[[adr/0066-retire-memorydb-naming]]"
+  - "[[adr/0502-typed-c-abi-v2]]"
+---
+
 # ADR 0054: One C ABI, one env prefix, one Python package
-
-## Status
-
-Accepted
 
 ## Context
 
-ADR-0053 left two C libraries (`cypherlite_*` vs `memorydb_*`), `MEMORYDB_*`
+[ADR-0053](./0053-cypherlite-product-names.md) left two C libraries (`cypherlite_*` vs `memorydb_*`), `MEMORYDB_*`
 env fallbacks, two TCK feature trees, and two Python stacks (PyO3 `cypherlite`
 vs ctypes `memorydb`). Those leftovers block a single product identity.
 
@@ -35,7 +46,7 @@ Clients implementing embedded Relate are outside this rename.
 - Keep `memorydb_*` as aliases forever — rejected; two names forever.
 - Retarget clients onto the Swift JSON handle only — rejected; clients need
   multiple connections per database.
-- Hard-cut env without an ADR — rejected; ADR-0053 promised a window.
+- Hard-cut env without an ADR — rejected; [ADR-0053](./0053-cypherlite-product-names.md) promised a window.
 
 ## Consequences
 
@@ -48,11 +59,11 @@ Clients implementing embedded Relate are outside this rename.
 - PyPI distribution name is `neo4j-cypherlite` because `cypherlite` is already
   published by another project. The import module remains `cypherlite`.
 - Clients implementing embedded Relate embed `cypherlite::Database`.
-- ADR-0066: the CIP ratchet env vars are now `CIP_EVAL_*` (was
+- [ADR-0066](./0066-retire-memorydb-naming.md): the CIP ratchet env vars are now `CIP_EVAL_*` (was
   `CIP_EVAL_MEMORYDB_*`) and the baseline is `baselines/cip-eval.json` (was
   `baselines/cip-eval-memorydb.json`). The MemoryDB name is retired from live
   surfaces; the `cypherlite_*` ABI commitment in this ADR is unaffected.
-- ADR-0502: the typed C ABI v2 removes the JSON handle API (`cypherlite_open`,
+- [ADR-0502](./0502-typed-c-abi-v2.md): the typed C ABI v2 removes the JSON handle API (`cypherlite_open`,
   `cypherlite_new`, `cypherlite_execute` and the rest of that family), the
   `cypherlite_connect` and `cypherlite_query` aliases, and the thread-local
   `cypherlite_last_error`. The one `cypherlite_*` library and its name prefix

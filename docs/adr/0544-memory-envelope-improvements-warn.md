@@ -1,11 +1,23 @@
-# ADR-0544: Memory envelope improvements warn
+---
+type: adr
+area: engine
+claim: d2b43b1fb1df1c9ae48c1696a34f045db6e63d3f
+name: 0544-memory-envelope-improvements-warn
+status: proposed
+tags:
+  - memory
+  - observability
+title: Memory envelope improvements warn
+REFERENCES:
+  - "[[adr/0526-memory-controls-gate]]"
+  - "[[adr/0539-memory-shape-gate]]"
+---
 
-Status: Proposed
-Claim: d2b43b1fb1df1c9ae48c1696a34f045db6e63d3f
+# ADR-0544: Memory envelope improvements warn
 
 ## Context
 
-ADR-0526 and ADR-0539 fail the memory-controls and memory-shape jobs
+[ADR-0526](./0526-memory-controls-gate.md) and [ADR-0539](./0539-memory-shape-gate.md) fail the memory-controls and memory-shape jobs
 when a lower-is-better metric falls below the frozen envelope. That
 was meant to catch a broken measurement and to force a re-freeze
 before a later regression could hide under a stale floor.
@@ -27,11 +39,11 @@ connection, idle residue, a wrong shape count, a missing report, or a
 schema the gate cannot read. A run whose regression is behavioural
 still fails, including when the same run also has an envelope miss.
 An incompatible environment class in CI still fails. Behaviour checks
-have no improvement verdict, as ADR-0526 set out.
+have no improvement verdict, as [ADR-0526](./0526-memory-controls-gate.md) set out.
 
 ## Alternatives considered
 
-- Keep failing on an improvement, as ADR-0526 and ADR-0539 decided.
+- Keep failing on an improvement, as [ADR-0526](./0526-memory-controls-gate.md) and [ADR-0539](./0539-memory-shape-gate.md) decided.
   Rejected: a real drop blocks unrelated work, and the warning
   already asks for the investigation and the re-freeze.
 - Drop the improvement verdict and only gate regressions. Rejected:

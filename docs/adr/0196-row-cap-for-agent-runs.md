@@ -1,8 +1,22 @@
-# 0196. A row cap for agent-driven runs: `--max-rows`
+---
+type: adr
+area: cli
+date: 2026-10-09
+deciders: CypherLite maintainers
+name: 0196-row-cap-for-agent-runs
+status: proposed
+tags:
+  - agents
+  - output
+title: "A row cap for agent-driven runs: `--max-rows`"
+REFERENCES:
+  - "[[adr/0195-result-envelope-mode]]"
+  - "[[adr/0403-in-band-truncation-records]]"
+  - "[[adr/0404-agent-facing-cli-surface]]"
+  - "[[adr/0407-agent-mode-override-ladder]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-10-09
-- **Deciders**: CypherLite maintainers (Linear [LABS-230](https://linear.app/neo4j/issue/LABS-230))
+# 0196. A row cap for agent-driven runs: `--max-rows`
 
 ## Context
 
@@ -36,7 +50,7 @@ and so do scripts.
    same way `CYPHERLITE_MEMORY_LIMIT` does; a bad value exits 2 like a bad
    flag. The flag overrides the variable.
 5. **A capped result announces itself.** The first `N` rows print, and
-   - the `envelope` mode (ADR-0195) sets `"truncated": true`;
+ - the `envelope` mode ([ADR-0195](./0195-result-envelope-mode.md)) sets `"truncated": true`;
    - a stderr line names the statement and the opt-out:
      `warning: result truncated to 100 rows (the statement returned 100000); pass --max-rows 0 for all rows`;
    - the exit code is unchanged (`0`): truncation is not a failure.
@@ -74,14 +88,14 @@ and so do scripts.
 
 ## Later references
 
-- ADR-0403 moves the record of the cut **in-band** (a `rowCap` record in
+- [ADR-0403](./0403-in-band-truncation-records.md) moves the record of the cut **in-band** (a `rowCap` record in
   every machine mode, so a capped result never reads as complete). This
   ADR's detection, defaults, opt-outs, and the stderr warning are
   unchanged — the warning remains the only channel for the `csv`,
   `cypher` and `table` modes.
-- ADR-0404 states the agent-facing CLI program this cap belongs to —
+- [ADR-0404](./0404-agent-facing-cli-surface.md) states the agent-facing CLI program this cap belongs to —
   its principles govern the remaining agent-surface gaps (LABS-481).
-- ADR-0407 extends the detection vocabulary (the generic `AI_AGENT`/`AGENT`
+- [ADR-0407](./0407-agent-mode-override-ladder.md) extends the detection vocabulary (the generic `AI_AGENT`/`AGENT`
   markers and the Copilot trio) and tops detection with an override ladder
   (`--agent`/`--no-agent` > `CYPHERLITE_AGENT_MODE=1/0` > detection); the
   cap now consumes the resolved mode as one decided fact.

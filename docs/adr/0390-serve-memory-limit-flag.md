@@ -1,14 +1,28 @@
+---
+type: adr
+area: surface
+claim: 8ba53240ef255b80b9fcf617a17af91f42d8d38e
+name: 0390-serve-memory-limit-flag
+status: accepted
+tags:
+  - memory
+  - serve
+title: "`cypherlite serve` carries the served store's `--memory-limit`"
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0232-network-surfaces-charter]]"
+  - "[[adr/0289-graph-shape-memory-pins]]"
+  - "[[adr/0368-one-product-binary-serve-absorbs-bins]]"
+---
+
 # ADR-0390: `cypherlite serve` carries the served store's `--memory-limit`
-
-Status: Accepted
-
-Claim: 8ba53240ef255b80b9fcf617a17af91f42d8d38e
 
 ## Context
 
-ADR-0368 retired the standalone `cypherlite-bolt` server — the one product
+[ADR-0368](./0368-one-product-binary-serve-absorbs-bins.md) retired the standalone `cypherlite-bolt` server — the one product
 binary is `cypherlite`, whose `serve` command hosts every network surface
-in-process on one open store. The memory-shape loadtest (ADR-0289) measures
+in-process on one open store. The memory-shape loadtest ([ADR-0289](./0289-graph-shape-memory-pins.md)) measures
 the serving process's RSS against logical graph bytes per shape: its bolt
 cases spawn the server child under `--memory-limit <bytes>` so the fill
 stops when the served store reports the cap. The retired server carried
@@ -41,7 +55,7 @@ or env) is a loud usage/startup error with the query path's message shape,
 and the memory-shape loadtest's bolt cases now spawn
 `cypherlite serve --bolt PORT --auth none --memory-limit <bytes>` on a
 picked free port — with the `cypherlite` binary shipped beside the loadtest
-binary in the ADR-0289 runtime image.
+binary in the [ADR-0289](./0289-graph-shape-memory-pins.md) runtime image.
 
 ## Alternatives considered
 
@@ -68,7 +82,7 @@ binary in the ADR-0289 runtime image.
 ## Consequences
 
 - The memory-shape loadtest's bolt cases run again against the one product
-  binary; `make memory-shape-loadtest` (ADR-0070 docker env) completes, so
+ binary; `make memory-shape-loadtest` ([ADR-0070](./0070-docker-baseline-loadtest-environment.md) docker env) completes, so
   `make baseline-loadtests` and the freeze workflow can include
   memory-shape again. The re-freeze itself (the `runner=linux-4-core-x86`
   envelope dispatch, which also resolves LABS-422's digest drift) runs
@@ -82,7 +96,7 @@ binary in the ADR-0289 runtime image.
 - A bad `CYPHERLITE_MEMORY_LIMIT` under a serve run now fails exactly as it
   does under a query run (exit 2 with the shared message) instead of being
   ignored — the flag's existence is what makes the env visible to serve.
-- ADR-0368 gains a Later references note: the follow-up this ADR is.
+- [ADR-0368](./0368-one-product-binary-serve-absorbs-bins.md) gains a Later references note: the follow-up this ADR is.
 
-References: LABS-424, LABS-422, ADR-0368, ADR-0289, ADR-0070, ADR-0232,
-ADR-0069.
+References, [ADR-0368](./0368-one-product-binary-serve-absorbs-bins.md), [ADR-0289](./0289-graph-shape-memory-pins.md), [ADR-0070](./0070-docker-baseline-loadtest-environment.md), [ADR-0232](./0232-network-surfaces-charter.md),
+[ADR-0069](./0069-cli-lifecycle-commands.md).

@@ -1,16 +1,30 @@
+---
+type: adr
+area: surface
+claim: e05853d70e9f81f02a7472b3c25c5beaa7c303a8
+name: 0353-bolt-plan-depth-truncation-marker
+status: accepted
+tags:
+  - bolt
+  - observability
+title: Bolt RUN SUCCESS depth-truncation marker for structured plans
+REFERENCES:
+  - "[[adr/0224-result-column-types]]"
+  - "[[adr/0344-query-plan-node-tree-and-per-operator-metrics]]"
+  - "[[adr/0345-plan-surface-alignment-cli-bolt-http]]"
+  - "[[adr/0357-plan-summary-placement-and-neo4j-plan-args]]"
+---
+
 # ADR-0353: Bolt RUN SUCCESS depth-truncation marker for structured plans
 
-Claim: e05853d70e9f81f02a7472b3c25c5beaa7c303a8
-Status: Accepted
-
-**Later references**: ADR-0357 moves the plan summary — and with it this
+**Later references**: [ADR-0357](./0357-plan-summary-placement-and-neo4j-plan-args.md) moves the plan summary — and with it this
 marker — from the RUN SUCCESS to the SUCCESS that ends the result (the
 PULL/DISCARD that consumes its last row), Neo4j's placement. The marker's
 meaning and the depth-limit policy are unchanged.
 
 ## Context
 
-ADR-0344/0345 carry an `EXPLAIN`/`PROFILE` statement's structured plan in
+[ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md)/[ADR-0345](./0345-plan-surface-alignment-cli-bolt-http.md) carry an `EXPLAIN`/`PROFILE` statement's structured plan in
 the Bolt RUN SUCCESS summary (`plan` / `profile`). A pathological
 statement — e.g. a hundred chained `WITH` clauses, each nesting one
 operator deeper — can nest the plan tree past packstream's container
@@ -37,7 +51,7 @@ beside the passthrough test.
   plain run (the failure LABS-346 filed); a client profiling a deep
   statement would believe the statement carried no plan.
 - Pack a depth-truncated plan tree (cut at the limit) under the key —
-  rejected: the shared `PlanNode::to_value` wire form (ADR-0345) would
+ rejected: the shared `PlanNode::to_value` wire form ([ADR-0345](./0345-plan-surface-alignment-cli-bolt-http.md)) would
   gain a depth-aware variant every surface reads, for a pathological
   case; a partial tree also reads as a complete plan unless every
   consumer learns the cut marker anyway.
@@ -53,7 +67,7 @@ beside the passthrough test.
 - Bolt clients can distinguish a depth-truncated `EXPLAIN`/`PROFILE` from
   a plain run; the marker is advisory, and Neo4j drivers ignore unknown
   summary keys (the same posture as the `columnTypes` extension,
-  ADR-0224).
+ [ADR-0224](./0224-result-column-types.md)).
 - `docs/api/bolt/spec.md` documents the key beside the structured-plan
   section.
 - The end-to-end driver-facing plan-summary shape (field names drivers
@@ -61,7 +75,7 @@ beside the passthrough test.
 
 ## Later references
 
-- ADR-0357 moves the plan pair — and with it this marker — to the final
+- [ADR-0357](./0357-plan-summary-placement-and-neo4j-plan-args.md) moves the plan pair — and with it this marker — to the final
   PULL/DISCARD SUCCESS (Neo4j's placement, so clients that read only the
   drained result's summary see it). The depth policy, the marker key and
   the "never half-pack" rule are unchanged; the pinning test is

@@ -1,9 +1,23 @@
+---
+type: adr
+area: infra
+date: 2026-09-28
+deciders: CypherLite maintainers
+name: 0268-proptest-property-testing
+status: proposed
+tags:
+  - testing
+title: proptest dev-dependencies for property testing
+REFERENCES:
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0360-rand-09-workspace-migration]]"
+  - "[[adr/0439-commit-time-uniqueness]]"
+  - "[[adr/0552-proptest-adjacency-model-in-executor]]"
+---
+
 # 0268. proptest dev-dependencies for property testing
 
-- **Status**: Proposed
 - **Renumbered**: from 0136 (shared-number cleanup)
-- **Date**: 2026-09-28
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
@@ -43,7 +57,7 @@ multiple semver-incompatible majors, so proptest links a second rand major
 alongside the workspace's 0.8 — it compiles, but the two rand families cannot
 share an RNG path.
 
-ADR-0103's R6 rule says adding a new **heavy** external dependency (large
+[ADR-0103](./0103-engine-surfaces-testing-layout.md)'s R6 rule says adding a new **heavy** external dependency (large
 transitive tree, native/C++ build, networking or async runtime) to any
 `cypherlite/*` crate needs its own ADR. R6 does not itself distinguish
 `[dependencies]` from `[dev-dependencies]`.
@@ -188,26 +202,26 @@ because open PRs reserve numbers ahead of merge.
   `recovery_proptest.rs`) are un-`#[ignore]`d. The 1-ULP f64 drift through
   WAL replay and checkpoint reload on both VFS backends (`MemoryVfs` and
   `NativeVfs`) is eliminated.
-- **Workspace rand pin superseded by ADR-0360.** ADR-0360 migrated the
+- **Workspace rand pin superseded by [ADR-0360](./0360-rand-09-workspace-migration.md).** [ADR-0360](./0360-rand-09-workspace-migration.md) migrated the
   workspace to `rand 0.9`; it supersedes this ADR's §2 workspace pin (the
   workspace no longer stays on `rand 0.8`, and the storage test build unifies
   with the workspace's rand 0.9 instead of linking a second major). The
   proptest adoption and the regression-file policy stand; this ADR's original
   Decision text is unchanged.
-- **Adoption extended to `cypherlite-executor` (ADR-0439).** The pin this ADR
+- **Adoption extended to `cypherlite-executor` ([ADR-0439](./0439-commit-time-uniqueness.md)).** The pin this ADR
   adopted is extended to a second engine crate: `cypherlite-executor` takes
   `proptest = "1.11"` as a dev-dependency for the commit-uniqueness admission
   property (`src/graph/constraint_keys/property_tests/`, a directory module —
   the regression file lands at
   `proptest-regressions/graph/constraint_keys/property_tests/mod.txt`,
-  derived from `file!()`, ADR-0439). The
+ derived from `file!`, [ADR-0439](./0439-commit-time-uniqueness.md)). The
   suite generates multi-slot flush groups and drives them through the real
   `ConstraintAdmission`, comparing every slot decision and the final committed
   map against an independent reference model. Same version pin, same
   dev-only/test-build-only scope, same committed-regression-file policy; the
   Decision's "storage only" scope sentence is extended by this note rather
   than replaced as a policy.
-- **Adoption extended to the executor's adjacency-model suite (ADR-0552).**
+- **Adoption extended to the executor's adjacency-model suite ([ADR-0552](./0552-proptest-adjacency-model-in-executor.md)).**
   The same pin backs the sealed+delta store's red-line guard: a generated
   create / ts-update / delete / re-add sequence compared against a plain
   `BTreeMap` reference model after every op

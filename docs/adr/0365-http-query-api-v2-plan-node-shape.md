@@ -1,11 +1,22 @@
-# ADR-0365: The HTTP Query API v2 plan node shape
+---
+type: adr
+area: surface
+claim: 3c58bc85e11d6188a86c46ae434985cb1e13a4fe
+name: 0365-http-query-api-v2-plan-node-shape
+status: proposed
+tags:
+  - http
+  - observability
+title: The HTTP Query API v2 plan node shape
+REFERENCES:
+  - "[[adr/0357-plan-summary-placement-and-neo4j-plan-args]]"
+---
 
-Claim: 3c58bc85e11d6188a86c46ae434985cb1e13a4fe
-Status: Proposed
+# ADR-0365: The HTTP Query API v2 plan node shape
 
 ## Context
 
-ADR-0357 put the structured plan on every surface in the Neo4j-facing shape
+[ADR-0357](./0357-plan-summary-placement-and-neo4j-plan-args.md) put the structured plan on every surface in the Neo4j-facing shape
 the Bolt driver reads: a node is `operatorType` + `args` (the metrics inside
 `args`) + `identifiers` + `children`. That shape is what the **driver**
 expects — the driver converts `args` to its own `arguments`.
@@ -89,7 +100,7 @@ shape there crashed Browser's plan view with
   `arguments` rename, the metric placement, the CORS allow-list) in the same
   change.
 - Browser-like HTTP tooling renders this engine's plans unmodified; the Bolt
-  wire shape stays as ADR-0357 defined it, so the drivers are untouched.
+ wire shape stays as [ADR-0357](./0357-plan-summary-placement-and-neo4j-plan-args.md) defined it, so the drivers are untouched.
 - Result metadata stays aligned: the divergence between the Bolt wire shape
   and the HTTP v2 shape is this ADR's subject, not an accident — both carry
   the same facts, each in the shape its consumer reads.

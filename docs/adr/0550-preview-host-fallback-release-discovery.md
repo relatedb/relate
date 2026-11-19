@@ -1,12 +1,24 @@
-# ADR-0550: Temporary preview-host fallback for release discovery
+---
+type: adr
+area: infra
+claim: f74871b5d6ec755e0b768164aa1c698d4e5bf226
+name: 0550-preview-host-fallback-release-discovery
+status: proposed
+tags:
+  - release
+title: Temporary preview-host fallback for release discovery
+REFERENCES:
+  - "[[adr/0115-sshsig-release-signing]]"
+  - "[[adr/0250-releases-json-update-discovery]]"
+  - "[[adr/0358-upgrade-download-route]]"
+---
 
-Status: Proposed
-Claim: f74871b5d6ec755e0b768164aa1c698d4e5bf226
+# ADR-0550: Temporary preview-host fallback for release discovery
 
 ## Context
 
 `relate upgrade` (and `upgrade --check`) discovers the latest release
-through one pinned URL, `https://relatedb.ai/releases.json` (ADR-0250 §1).
+through one pinned URL, `https://relatedb.ai/releases.json` ([ADR-0250](./0250-releases-json-update-discovery.md) §1).
 Until the website launch the canonical host serves a lander page, not the
 document, so the command cannot be exercised end to end before launch day.
 The relate-web preview host already serves a valid document.
@@ -20,7 +32,7 @@ Release discovery reads the canonical URL first; when that read does not
 yield a valid `releases.json` document — a transport failure, a read
 failure, or a malformed document such as the lander page — it reads the
 preview host's `releases.json` once, and only then fails. The failure
-message keeps the ADR-0250 §4 shape (one line, the reinstall one-liner)
+message keeps the [ADR-0250](./0250-releases-json-update-discovery.md) §4 shape (one line, the reinstall one-liner)
 and names both URLs with each one's failure detail.
 
 Both URLs have environment overrides (the existing
@@ -29,7 +41,7 @@ Both URLs have environment overrides (the existing
 fallback is never consulted when the primary yields a valid document.
 
 The fallback applies to discovery only. Asset downloads still go through
-the ADR-0358 routes, and the `SHA256SUMS` signature check (ADR-0115) is
+the [ADR-0358](./0358-upgrade-download-route.md) routes, and the `SHA256SUMS` signature check ([ADR-0115](./0115-sshsig-release-signing.md)) is
 unchanged: a hostile or broken preview host can influence which release is
 offered, never which bytes run.
 
@@ -52,7 +64,7 @@ offered, never which bytes run.
   preview host's shutdown; the fallback constants, the second seam, and
   the both-hosts error shape all go away together.
 - `releases.json` stays unsigned discovery metadata; the signed-manifest
-  boundary (ADR-0115) is the integrity boundary, unchanged.
+ boundary ([ADR-0115](./0115-sshsig-release-signing.md)) is the integrity boundary, unchanged.
 
 ## Later references
 
@@ -60,6 +72,6 @@ The removal this ADR scheduled has landed: the website serves the published
 document at the canonical URL, and the preview host is gone. The fallback
 constant, the `RELATE_RELEASES_JSON_FALLBACK_URL` seam, and the both-hosts
 error shape were removed together in the change that recorded this note;
-release discovery is single-URL again, exactly the ADR-0250 §4 shape. The
+release discovery is single-URL again, exactly the [ADR-0250](./0250-releases-json-update-discovery.md) §4 shape. The
 primary seam (`RELATE_RELEASES_JSON_URL`) and the reinstall one-liner are
 unchanged.

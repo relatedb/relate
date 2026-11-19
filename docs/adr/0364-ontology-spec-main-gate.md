@@ -1,18 +1,37 @@
-# ADR-0364: Bump the ontology document gate to the main graph-spec schema
+---
+type: adr
+area: engine
+claim: 0872cff15343509eed66966617919b69db51e2e8
+name: 0364-ontology-spec-main-gate
+status: accepted
+tags:
+  - ontology
+title: Bump the ontology document gate to the main graph-spec schema
+REFERENCES:
+  - "[[adr/0120-ontology-document-persistence]]"
+  - "[[adr/0121-ontology-procedures]]"
+  - "[[adr/0226-ontology-mappings]]"
+  - "[[adr/0227-ontology-document-format]]"
+  - "[[adr/0228-ontology-list-property-types-closed]]"
+  - "[[adr/0229-remove-system-ontologies-cypher-surface]]"
+  - "[[adr/0487-ontology-graph-spec-1-1-0-bump]]"
+SUPERSEDES:
+  - "[[adr/0227-ontology-document-format]]"
+  - "[[adr/0228-ontology-list-property-types-closed]]"
+---
 
-Status: Accepted
-Claim: 0872cff15343509eed66966617919b69db51e2e8
+# ADR-0364: Bump the ontology document gate to the main graph-spec schema
 
 ## Context
 
-ADR-0227 §6 pins the Ontology Graph Spec 1.0.0 draft (`neo4j/graph-spec`
+[ADR-0227](./0227-ontology-document-format.md) §6 pins the Ontology Graph Spec 1.0.0 draft (`neo4j/graph-spec`
 @ `2f8dcbdf2dab51ebf2d760e00904a8f2b0518f59`) as the vendored schema
 `cypherlite/cypherlite-ontology/schema/ontology-graph-spec.schema.json`,
 hand-rolls validation against exactly that schema, and §7 gates documents
 on the exact root `schema` URI
-`https://neo4j.com/ontology-graph-spec/1.0.0/schema.json`. ADR-0226 §2
-(with ADR-0228's list correction) compiles a validated document into the
-graph type that `db.ontology.apply` sets. ADR-0227 §2/§3 store
+`https://neo4j.com/ontology-graph-spec/1.0.0/schema.json`. [ADR-0226](./0226-ontology-mappings.md) §2
+(with [ADR-0228](./0228-ontology-list-property-types-closed.md)'s list correction) compiles a validated document into the
+graph type that `db.ontology.apply` sets. [ADR-0227](./0227-ontology-document-format.md) §2/§3 store
 the submitted bytes verbatim and return them unchanged in the stored
 format.
 
@@ -50,7 +69,7 @@ members, which `RelationshipTarget`'s closed shape rejects.
 CypherLite must now choose between accepting both dialects (a
 compatibility shim), migrating stored documents automatically, and a
 hard cutover. This decision chooses **hard cutover**. The stored
-document is the sole source of truth (ADR-0229 §3), so there is no
+document is the sole source of truth ([ADR-0229](./0229-remove-system-ontologies-cypher-surface.md) §3), so there is no
 derived graph to migrate, and the product is pre-1.0 (0.12.x). The
 decision still has to settle the gate, the accepted shapes, the places
 where CypherLite stays stricter than main, the example fixture, and the
@@ -62,7 +81,7 @@ converter's token and constraint mapping.
 
 - The only accepted value of the root `schema` field is
   `https://neo4j.com/docs/ontology-graph-spec/1.0.0/schema.json` — main's
-  `$id`. It is checked before structural validation, as ADR-0227 §7
+ `$id`. It is checked before structural validation, as [ADR-0227](./0227-ontology-document-format.md) §7
   prescribes, on the `set` entry point. The old
   `https://neo4j.com/ontology-graph-spec/1.0.0/schema.json` and any other
   URI string fail with
@@ -119,7 +138,7 @@ main's definitions — closed members, required fields, enum and scalar
 types — not merely as opaque envelope keys. `custom` objects are the one
 exception: main defines them as arbitrary JSON objects, so the validator
 requires an object and does not interpret its members. This supersedes
-ADR-0227 §6's "extension payloads are never validated", which described
+[ADR-0227](./0227-ontology-document-format.md) §6's "extension payloads are never validated", which described
 the pinned open envelope; main's typed members are schema constructs,
 and accepting a malformed `Table` or `NodeIndex` would accept a document
 main itself rejects.
@@ -135,7 +154,7 @@ typed model; the retained root value tree keeps the author's exact
 ### 3. Where CypherLite stays stricter, and why
 
 Validation answers one question — does the document match main's
-document schema — and `apply` answers a different one: can the ADR-0226
+document schema — and `apply` answers a different one: can the [ADR-0226](./0226-ontology-mappings.md)
 converter express this document as a graph type. A main-valid
 document is storable and readable even when it is not convertible; the
 conversion failure is loud, at `apply`, never a silent coercion. This
@@ -163,14 +182,14 @@ not a property of documents at rest:
 
 - `db.ontology.get` in the stored format returns the stored bytes
   verbatim; it does not parse them into the typed model or validate them.
-- A cross-format `get` parses the stored bytes into ADR-0227 §4's value
+- A cross-format `get` parses the stored bytes into [ADR-0227](./0227-ontology-document-format.md) §4's value
   model (syntax only) and serializes canonically; it runs no version gate
   and no schema validation. A pre-bump document therefore still converts
   between JSON and YAML.
 - The open path keeps only a syntax/value-model screen — UTF-8, one
   document, the JSON-equivalent value model, the depth cap — so a corrupt
   stored record still fails closed. It does not run the version gate or
-  the structural validator. ADR-0120 §1's "validated" means validated
+ the structural validator. [ADR-0120](./0120-ontology-document-persistence.md) §1's "validated" means validated
   when it was set, never re-validated at open.
 - `db.ontology.apply` is the one operation that must interpret the
   stored document into the typed model. A pre-bump document fails there
@@ -184,7 +203,7 @@ re-runs its own stored-document validation at open and refuses the
 store; the bytes are intact and the document becomes readable again
 after upgrading.
 
-### 5. ADR-0226 §2 converter on the new shapes
+### 5. [ADR-0226](./0226-ontology-mappings.md) §2 converter on the new shapes
 
 #### 5.1 Renamed fields and identity
 
@@ -194,14 +213,14 @@ after upgrading.
 | node / relationship / property id | The map key. It is the element identity used for aliases, endpoint resolution and property references. The nullable `name` is display only and is never compiled. |
 | `label` | Shorthand for `labels.identifier`; desugared at validation. The converter reads one identifying label, as today. |
 | property `must_exist` | Renamed from `mustExist`; maps to `NOT NULL` or a standalone `EXISTS` constraint per §5.3. |
-| constraint map key | The constraint's stable identity: carried in the typed model (arrays become ordered, id-keyed maps) and used in diagnostics; it is not compiled. The nullable `name` remains display, and, as in ADR-0226 §2, is carried as the graph-type constraint name when present. A duplicate graph-type constraint name is never silently renamed; it surfaces as a graph-type error. |
+| constraint map key | The constraint's stable identity: carried in the typed model (arrays become ordered, id-keyed maps) and used in diagnostics; it is not compiled. The nullable `name` remains display, and, as in [ADR-0226](./0226-ontology-mappings.md) §2, is carried as the graph-type constraint name when present. A duplicate graph-type constraint name is never silently renamed; it surfaces as a graph-type error. |
 | constraint `type` | Uppercase enum: `EXISTS`, `KEY`, `UNIQUE` map to the corresponding graph-type verb; `PROPERTY_TYPE` fails per §5.3. |
 | node constraint `label` | Null/absent → the owning node; a value matching one of the node's labels compiles against the owner; any other value fails per §5.4. |
 | `RelationshipTarget` | `node` → the edge type's source/target alias; `label`/counts are descriptive and never resolved. Label-only and empty targets fail per §5.4. |
 | `extensions` | Carried and deeply validated, never converted: node `indexes`/`display`, relationship `indexes`, document `tables`/`mappings` and every `custom` remain descriptive, exactly like the old extension envelopes. |
 
-Source order of maps is preserved in the typed model, as ADR-0226 §1's
-deterministic build and ADR-0227 §3's serialization require. Shorthand
+Source order of maps is preserved in the typed model, as [ADR-0226](./0226-ontology-mappings.md) §1's
+deterministic build and [ADR-0227](./0227-ontology-document-format.md) §3's serialization require. Shorthand
 flags and explicit constraint objects are compiled with the existing
 rules: `key` subsumes `unique` and `must_exist`; an explicit object that
 restates a flag of the same kind over the same single property replaces
@@ -211,9 +230,9 @@ the flag-derived constraint so the object (and its name) survives.
 
 | Token(s) | Declaration in the graph-type body |
 |---|---|
-| `ANY`, `LIST<ANY>`, absent `type` | Declares nothing (ADR-0228): no property declaration; `must_exist` becomes a standalone `EXISTS` constraint. This is semantically faithful, not lossy — the document says "unconstrained". |
+| `ANY`, `LIST<ANY>`, absent `type` | Declares nothing ([ADR-0228](./0228-ontology-list-property-types-closed.md)): no property declaration; `must_exist` becomes a standalone `EXISTS` constraint. This is semantically faithful, not lossy — the document says "unconstrained". |
 | `BOOLEAN`, `DATE`, `DURATION`, `FLOAT`, `INTEGER`, `LOCAL DATETIME`, `LOCAL TIME`, `POINT`, `STRING`, `ZONED DATETIME`, `ZONED TIME` | The graph-type predefined kind of the same name. |
-| `LIST<X>` for each mapped `X` above | `LIST<X NOT NULL>` — graph-type property types have no nullable inner type (ADR-0228). |
+| `LIST<X>` for each mapped `X` above | `LIST<X NOT NULL>` — graph-type property types have no nullable inner type ([ADR-0228](./0228-ontology-list-property-types-closed.md)). |
 | `UUID` | `PredefinedKind::Uuid`, the parser's existing token. |
 | `VECTOR<FLOAT>` / `VECTOR<FLOAT32>` / `VECTOR<INTEGER>` / `VECTOR<INTEGER32>` / `VECTOR<INTEGER16>` / `VECTOR<INTEGER8>` | `VectorCoordKind` `Float64` / `Float32` / `Int64` / `Int32` / `Int16` / `Int8`, with the property's `dimension` when present. |
 | `FLOAT32`, `LIST<FLOAT32>`, `INTEGER8`, `LIST<INTEGER8>`, `INTEGER16`, `LIST<INTEGER16>`, `INTEGER32`, `LIST<INTEGER32>` | **Fail loudly** with an `OntologyError::Mapping` naming the owner, property id and token. The parser's `PredefinedKind` has no plain 8/16/32-bit scalar and no plain `FLOAT32`; these exist only as vector coordinates. Widening them to `FLOAT`/`INTEGER` or declaring nothing would silently change the declared constraint, which the no-silent-fallbacks rule forbids. This is not the `ANY` case: `ANY` means unconstrained, while `FLOAT32` asserts a specific type the body cannot express. |
@@ -287,7 +306,7 @@ the authored example already provides.
 ## Alternatives considered
 
 - **Follow main and accept any `schema` string.** Rejected: it removes
-  the fail-loud version gate ADR-0121 §1 promises; a document from a
+ the fail-loud version gate [ADR-0121](./0121-ontology-procedures.md) §1 promises; a document from a
   later dialect would be misread as this one.
 - **Accept both the old and new URIs (dual dialect).** Rejected: the
   shapes are incompatible, so the old URI would still fail structural
@@ -296,7 +315,7 @@ the authored example already provides.
   surface.
 - **Accept any `…/1.0.0/…` URI or a prefix match.** Rejected: the draft
   and main both call themselves 1.0.0 but are different dialects; the
-  exact URI is the only discriminator. ADR-0227 §7 already rejected
+ exact URI is the only discriminator. [ADR-0227](./0227-ontology-document-format.md) §7 already rejected
   lenient matching.
 - **Migrate stored documents at open or `get`.** Rejected: it rewrites
   bytes the store promises to keep verbatim, needs a version marker the
@@ -332,7 +351,7 @@ the authored example already provides.
 - **Keep the pinned draft's `example.json`.** Rejected: it no longer
   validates against the new gate and would mislead as the canonical
   example.
-- **Adopt a full JSON Schema engine.** Already rejected in ADR-0227 §6:
+- **Adopt a full JSON Schema engine.** Already rejected in [ADR-0227](./0227-ontology-document-format.md) §6:
   a complete 2020-12 implementation and its transitive tree to validate
   one fixed, vendored schema. The bump does not change that trade-off.
 
@@ -364,10 +383,10 @@ the authored example already provides.
   absence of a root-level upstream example, the upstream Go testdata
   defect (the two extra endpoint `property` members), and the
   CypherLite-authored fixture's role.
-- ADR-0227's §7 gate text and §6 validation description are amended by
-  §1/§2 above; ADR-0226 §2's converter rules are re-based on the new
-  document shapes; ADR-0228's "declares nothing" rule survives and its
-  token vocabulary is superseded by §5.2. ADR-0120's "validated" is
+- [ADR-0227](./0227-ontology-document-format.md)'s §7 gate text and §6 validation description are amended by
+ §1/§2 above; [ADR-0226](./0226-ontology-mappings.md) §2's converter rules are re-based on the new
+ document shapes; [ADR-0228](./0228-ontology-list-property-types-closed.md)'s "declares nothing" rule survives and its
+ token vocabulary is superseded by §5.2. [ADR-0120](./0120-ontology-document-persistence.md)'s "validated" is
   clarified as set-time by §4. Each gains a Later references note.
 - The spec version string stays `1.0.0`: the URI, not the semantic
   version, identifies the dialect. The gate error names the new URI so
@@ -375,7 +394,7 @@ the authored example already provides.
 
 ## Later references
 
-- ADR-0487 raises §1's gate to the published
+- [ADR-0487](./0487-ontology-graph-spec-1-1-0-bump.md) raises §1's gate to the published
   `https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json`
   (`neo4j/graph-spec` tag `release-spec/v1.1.0` @
   `5ff2c20aa7e428e7c563b17f573157293959a009`) and re-bases §2's shapes

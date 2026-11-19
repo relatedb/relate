@@ -1,12 +1,27 @@
-# ADR-0349: speedscope export mode for PROFILE plan trees
+---
+type: adr
+area: cli
+claim: 714bdf09419b1f23b83941f221496affa22ff4e0
+name: 0349-speedscope-export-mode-for-profile-plan-trees
+status: accepted
+tags:
+  - observability
+  - output
+title: speedscope export mode for PROFILE plan trees
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0239-format-flag-spelling-and-toon-mode]]"
+  - "[[adr/0344-query-plan-node-tree-and-per-operator-metrics]]"
+  - "[[adr/0345-plan-surface-alignment-cli-bolt-http]]"
+  - "[[adr/0348-profile-metric-fields-db-hits-memory-bytes]]"
+---
 
-Claim: 714bdf09419b1f23b83941f221496affa22ff4e0
-Status: Accepted
+# ADR-0349: speedscope export mode for PROFILE plan trees
 
 ## Context
 
-ADR-0344/0345 landed the structured `PlanNode` tree with per-operator
-metrics, and ADR-0348 added `db_hits`/`memory_bytes` beside
+[ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md)/[ADR-0345](./0345-plan-surface-alignment-cli-bolt-http.md) landed the structured `PlanNode` tree with per-operator
+metrics, and [ADR-0348](./0348-profile-metric-fields-db-hits-memory-bytes.md) added `db_hits`/`memory_bytes` beside
 `rows`/`time_ns`. The rendered text table answers "what ran", but not
 "where did the time go, proportionally" — the question a flame graph
 answers. speedscope (<https://www.speedscope.app>) is a de-facto standard,
@@ -16,7 +31,7 @@ evented-profile form maps onto a plan tree naturally: one frame per
 operator, one open and one close event per operator, `at` values on one
 nanosecond timeline.
 
-The precedent is ADR-0239: a new public output mode in
+The precedent is [ADR-0239](./0239-format-flag-spelling-and-toon-mode.md): a new public output mode in
 `cypherlite_formatter::Mode` (`toon`) took its own ADR — the mode list is
 a public protocol surface shared by the CLI's `--mode`/`--format` values,
 `--help`, the spec flag tables, and telemetry's `OutputMode`.
@@ -62,7 +77,7 @@ a public protocol surface shared by the CLI's `--mode`/`--format` values,
   rendering of inclusive-only data.
 - **A speedscope file under a CLI command instead of an output mode** —
   rejected: it is a projection of the query run's result, like `toon` and
-  `envelope`, not a lifecycle action; ADR-0069 keeps lifecycle verbs as
+ `envelope`, not a lifecycle action; [ADR-0069](./0069-cli-lifecycle-commands.md) keeps lifecycle verbs as
   commands and projections as modes.
 - **Emit no document for non-PROFILE statements** — rejected: an empty
   stdout success would be a silent fallback; the typed error with exit 1

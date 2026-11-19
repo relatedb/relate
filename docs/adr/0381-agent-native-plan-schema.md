@@ -1,14 +1,28 @@
-# ADR-0381: The agent-native plan schema (`cypherlite.plan/v1`)
+---
+type: adr
+area: engine
+claim: 278bbb8371559fec84a5305564d4bac35b35f677
+name: 0381-agent-native-plan-schema
+status: proposed
+tags:
+  - agents
+  - observability
+title: The agent-native plan schema (`cypherlite.plan/v1`)
+REFERENCES:
+  - "[[adr/0357-plan-summary-placement-and-neo4j-plan-args]]"
+  - "[[adr/0359-single-plan-renderer-at-the-boundary]]"
+  - "[[adr/0363-query-notifications]]"
+  - "[[adr/0365-http-query-api-v2-plan-node-shape]]"
+---
 
-Status: Proposed
-Claim: 278bbb8371559fec84a5305564d4bac35b35f677
+# ADR-0381: The agent-native plan schema (`cypherlite.plan/v1`)
 
 ## Context
 
 The structured plan reaches Neo4j's own tooling: the Bolt and HTTP
 surfaces project the engine's plan tree onto Neo4j's node shape
-(ADR-0357, ADR-0365) so drivers, cypher-shell and Browser read it, and
-the CLI renders it through the formatter (ADR-0359). Our **own** bindings
+([ADR-0357](./0357-plan-summary-placement-and-neo4j-plan-args.md), [ADR-0365](./0365-http-query-api-v2-plan-node-shape.md)) so drivers, cypher-shell and Browser read it, and
+the CLI renders it through the formatter ([ADR-0359](./0359-single-plan-renderer-at-the-boundary.md)). Our **own** bindings
 — the C ABI and everything that wraps it (Python, JS, Java, Go, WASM) and
 the MCP server — expose no plan at all: an application or agent using
 them cannot see why a query is slow.
@@ -21,7 +35,7 @@ ours to version. Agents and applications need the opposite: a small,
 stable, versioned schema with real numbers and stable field names.
 
 A node's `warnings` carry the engine's remedy-bearing notifications
-(ADR-0363) for that operator — code, GQLSTATUS, severity, category, title,
+([ADR-0363](./0363-query-notifications.md)) for that operator — code, GQLSTATUS, severity, category, title,
 description and the actionable remedy — joined by the operator id the
 engine stamps, so an agent reads the diagnosis and the action beside it.
 
@@ -51,7 +65,7 @@ engine stamps, so an agent reads the diagnosis and the action beside it.
    hands out the same bytes.
 
 4. **The Neo4j-facing projection stays** for Bolt and HTTP
-   (ADR-0357, ADR-0365): Neo4j's shape is the *wire dialect* for Neo4j
+ ([ADR-0357](./0357-plan-summary-placement-and-neo4j-plan-args.md), [ADR-0365](./0365-http-query-api-v2-plan-node-shape.md)): Neo4j's shape is the *wire dialect* for Neo4j
    tooling, `cypherlite.plan/v1` is *our API dialect*. Both project the
    same typed view of the same tree; neither re-derives the other's
    facts.

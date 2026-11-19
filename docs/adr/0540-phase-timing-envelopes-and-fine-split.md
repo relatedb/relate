@@ -1,12 +1,27 @@
+---
+type: adr
+area: engine
+claim: ad0c53bce0086ab4bb78fec9b50f5f33d09eb195
+name: 0540-phase-timing-envelopes-and-fine-split
+status: proposed
+tags:
+  - observability
+  - planner
+title: Fine phase split, plan-cache outcome, and machine-envelope timing keys
+REFERENCES:
+  - "[[adr/0245-query-latency-baseline-environment-and-gate]]"
+  - "[[adr/0382-local-callables]]"
+  - "[[adr/0403-in-band-truncation-records]]"
+  - "[[adr/0491-phase-timing-wire-contract]]"
+  - "[[adr/0503-template-keyed-plan-cache]]"
+  - "[[adr/0581-jsonl-timings-opt-in]]"
+---
+
 # ADR-0540: Fine phase split, plan-cache outcome, and machine-envelope timing keys
-
-Status: Proposed
-
-Claim: ad0c53bce0086ab4bb78fec9b50f5f33d09eb195
 
 ## Context
 
-ADR-0491 shipped the always-on PARSE / PLAN / EXECUTE split on the Rust
+[ADR-0491](./0491-phase-timing-wire-contract.md) shipped the always-on PARSE / PLAN / EXECUTE split on the Rust
 API, the canonical wire envelope, Bolt and the CLI's human `Time:` line —
 and deliberately left the CLI's machine modes and the HTTP Query API v2
 envelope without any timing keys (the v2 envelope mirrors the reference
@@ -14,7 +29,7 @@ server's shape exactly for Browser compatibility). Three gaps followed:
 an API or agent consumer — the envelope modes' primary
 audience — cannot see any phase timing; the coarse split conflates stages
 the current performance questions ask about (lexing, the rewrite pass,
-validation, result generation); and the plan cache (ADR-0503) has no
+validation, result generation); and the plan cache ([ADR-0503](./0503-template-keyed-plan-cache.md)) has no
 hit/miss signal on any surface, so "is the plan cache active for this
 workload?" requires reading the source.
 
@@ -22,7 +37,7 @@ workload?" requires reading the source.
 
 1. **Fine split, extending the existing vocabulary** (not a second one):
    `PhaseTimings` gains `lex_parse` (lexing + AST build), `rewrite` (the
-   ADR-0382 `DEFINE`-block resolver pass), `lower` (validation + lowering) — sub-windows of
+ [ADR-0382](./0382-local-callables.md) `DEFINE`-block resolver pass), `lower` (validation + lowering) — sub-windows of
    PARSE — and `result_generation` — a sub-window of EXECUTE. Two requested
    boundaries stay fused, each for an architectural reason: the lexer and
    the parser share the parser's one tokenizing constructor (timing them
@@ -50,7 +65,7 @@ workload?" requires reading the source.
    later phase joins the object and never the top level; Bolt extends its
    Float-seconds family (`lex_parse_time`, …, `result_generation_time`)
    plus `plan_cache`.
-5. **HTTP v2 carries them** (reversing ADR-0491's exclusion): the keys sit
+5. **HTTP v2 carries them** (reversing [ADR-0491](./0491-phase-timing-wire-contract.md)'s exclusion): the keys sit
    after the Neo4j members, whose reference order is untouched; drivers
    ignore unknown members. The values are per-request, so byte-identity
    comparisons across requests must exclude the timing block.
@@ -90,14 +105,14 @@ shape); jsonl consumers see one extra keyed line per statement. The FFI
 per-field accessors and the Python / Swift / JS / Go client attributes
 gain the fine split and the outcome in a follow-up change (the wire
 envelope they can consume already carries it); the coarse trio they
-expose today is unchanged. CI's per-PR query-latency lane (ADR-0245
+expose today is unchanged. CI's per-PR query-latency lane ([ADR-0245](./0245-query-latency-baseline-environment-and-gate.md)
 bands) guards the real suite against any hidden cost the local fixture
 could not resolve.
 
 ## Later references
 
-- ADR-0581 narrows decision 6's jsonl clause: the terminal timing line is
+- [ADR-0581](./0581-jsonl-timings-opt-in.md) narrows decision 6's jsonl clause: the terminal timing line is
   now the `--timings` opt-in, default off — a jsonl stream is pure rows
-  (plus the plan and `rowCap` terminal lines, ADR-0403) unless the flag
+ (plus the plan and `rowCap` terminal lines, [ADR-0403](./0403-in-band-truncation-records.md)) unless the flag
   asks for the line back. The json and envelope riders, the toon entries,
   and decision 2's always-on measurement are unchanged.

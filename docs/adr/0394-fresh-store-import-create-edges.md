@@ -1,12 +1,23 @@
-# ADR-0394: Fresh-store imports CREATE their edges
+---
+type: adr
+area: cli
+claim: eb67ed1b12d2de3f5cb5550014003686b963f152
+name: 0394-fresh-store-import-create-edges
+status: proposed
+tags:
+  - load
+title: Fresh-store imports CREATE their edges
+REFERENCES:
+  - "[[adr/0376-git-to-graph-import]]"
+  - "[[adr/0392-git-import-per-batch-commit]]"
+---
 
-Status: Proposed
-Claim: eb67ed1b12d2de3f5cb5550014003686b963f152
+# ADR-0394: Fresh-store imports CREATE their edges
 
 ## Context
 
-ADR-0392 moved `lab git-to-graph` to per-batch transactions over lazily
-generated rows, and its Later-references note on ADR-0376 records that the
+[ADR-0392](./0392-git-import-per-batch-commit.md) moved `lab git-to-graph` to per-batch transactions over lazily
+generated rows, and its Later-references note on [ADR-0376](./0376-git-to-graph-import.md) records that the
 import's `MERGE`/`SET` semantics stand. A full import of a real
 large-checkout history (`~/Development/neo4j`: 91,532 commits, 169,381
 files, 1,171,478 `TOUCHED`, 2,498,086 `CO_CHANGED`) measured 604 s for the
@@ -40,7 +51,7 @@ are distinct by construction, so the edge `MERGE`'s existence walk is work
 the importer can prove unnecessary. The node phases keep `MERGE` (they are
 not the cost), and any populated store — a re-import, a re-run over a
 partially imported history, a store with unrelated data — keeps the
-`MERGE` path, so ADR-0392's re-run-completion semantics are unchanged. A
+`MERGE` path, so [ADR-0392](./0392-git-import-per-batch-commit.md)'s re-run-completion semantics are unchanged. A
 freshness check (one `count(n)` read) runs before the range-index DDL and
 the first batch, and the final graph is statement-path-independent: a test
 pins the `CREATE` import and the `MERGE` re-import to identical counts.
@@ -73,14 +84,14 @@ the distinct file count of the commit.
   graph it leaves is identical to the `MERGE` path's, pinned by tests that
   run both and compare counts, and by the re-import test (`CREATE` run,
   then `MERGE` re-import, same graph).
-- Re-imports and re-runs over partial imports are unchanged (ADR-0392),
+- Re-imports and re-runs over partial imports are unchanged ([ADR-0392](./0392-git-import-per-batch-commit.md)),
   and their speed is unchanged until the executor's bound-endpoint
   `MERGE` is fixed as a follow-up.
-- The import's transient-overhead budget (ADR-0392, 734,003,200 B) is
+- The import's transient-overhead budget ([ADR-0392](./0392-git-import-per-batch-commit.md), 734,003,200 B) is
   unchanged and now has more headroom: `CREATE` skips the walker's
   per-candidate allocations.
 - A commit that lists one path twice now contributes one `TOUCHED` row
   and a `files_changed` count of distinct files, on both statement paths.
 - `docs/api/cli/spec.md` and the lab help text state the fresh-store
-  `CREATE` and the `MERGE` re-import in the same change; ADR-0392 gains a
+ `CREATE` and the `MERGE` re-import in the same change; [ADR-0392](./0392-git-import-per-batch-commit.md) gains a
   Later-references note naming this ADR.

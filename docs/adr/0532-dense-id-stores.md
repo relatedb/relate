@@ -1,7 +1,22 @@
-# ADR-0532: Dense id stores for nodes, relationships, and adjacency
+---
+type: adr
+area: engine
+claim: 2e4334908f7748992b54e017c4f4b78688226f8c
+name: 0532-dense-id-stores
+status: proposed
+tags:
+  - perf
+  - storage
+title: Dense id stores for nodes, relationships, and adjacency
+REFERENCES:
+  - "[[adr/0038-lock-free-snapshot-pins]]"
+  - "[[adr/0137-wal-follow]]"
+  - "[[adr/0202-graph-floor-memory]]"
+  - "[[adr/0529-inline-single-version-rows]]"
+  - "[[adr/0617-dense-slot-reservation-ladder]]"
+---
 
-Status: Proposed
-Claim: 2e4334908f7748992b54e017c4f4b78688226f8c
+# ADR-0532: Dense id stores for nodes, relationships, and adjacency
 
 ## Context
 
@@ -9,11 +24,11 @@ Node and relationship ids are dense and monotonic. They are never reused.
 The four core stores — nodes, relationships, and both adjacency directions —
 still keep each id in a hash map. Every hop and property read pays for a
 hash and a probe, and the map's empty buckets grew when the inline row
-(ADR-0529) landed in the value: most of that row's resident-memory saving
+([ADR-0529](./0529-inline-single-version-rows.md)) landed in the value: most of that row's resident-memory saving
 was absorbed by the buckets.
 
 A snapshot pin holds a reference to the graph across a commit
-(ADR-0038, ADR-0137), so a reader and a writer do overlap. The hash map
+([ADR-0038](./0038-lock-free-snapshot-pins.md), [ADR-0137](./0137-wal-follow.md)), so a reader and a writer do overlap. The hash map
 was also the lock that made that overlap defined.
 
 ## Decision
@@ -31,7 +46,7 @@ The floor charges the vector's reserved capacity times the slot size,
 including empty slots. A spilled version chain adds its buffer on the
 heap. The per-id hash-map slot is no longer charged for these four
 stores. Payloads, tombstones, and `used_bytes == accounted_bytes` are
-unchanged (ADR-0202).
+unchanged ([ADR-0202](./0202-graph-floor-memory.md)).
 
 An id whose reserved slot array does not fit — the allocator's last
 id is the one the tests mint — is one side-map entry, charged as a
@@ -60,6 +75,6 @@ not one shard; guards stay short, as they were.
 
 ## Later references
 
-- ADR-0617 replaces the power-of-two reservation of the dense span arrays
+- [ADR-0617](./0617-dense-slot-reservation-ladder.md) replaces the power-of-two reservation of the dense span arrays
   with a 1.5 growth ladder; the side map, the dense-span byte cap, and
   everything else here stand.

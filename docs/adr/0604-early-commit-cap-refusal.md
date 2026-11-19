@@ -1,13 +1,27 @@
-# ADR-0604: An over-cap transaction is refused at the statement that crosses the cap
+---
+type: adr
+area: engine
+claim: aef7b02158add6c20a7db9f314690b6e288a68c3
+name: 0604-early-commit-cap-refusal
+status: proposed
+tags:
+  - memory
+  - transactions
+title: An over-cap transaction is refused at the statement that crosses the cap
+REFERENCES:
+  - "[[adr/0028-user-visible-transactions]]"
+  - "[[adr/0086-bounded-persistence-input]]"
+  - "[[adr/0210-call-in-transactions-batching]]"
+  - "[[adr/0494-wal-payload-cap-memory-limit-class]]"
+---
 
-Status: Proposed
-Claim: aef7b02158add6c20a7db9f314690b6e288a68c3
+# ADR-0604: An over-cap transaction is refused at the statement that crosses the cap
 
 ## Context
 
-ADR-0086 bounds one WAL frame's JSON payload at 64 MiB and refuses an
+[ADR-0086](./0086-bounded-persistence-input.md) bounds one WAL frame's JSON payload at 64 MiB and refuses an
 oversized commit before any frame byte is written. An explicit transaction
-(ADR-0028) accumulates its whole write set and commits as one frame, so its
+([ADR-0028](./0028-user-visible-transactions.md)) accumulates its whole write set and commits as one frame, so its
 redo is bounded by that cap — and the refusal can only be raised where the
 encoder runs, at COMMIT.
 
@@ -23,8 +37,8 @@ accumulates is exactly what the commit will encode.
 
 **A statement run inside an explicit transaction measures the
 transaction's prospective commit record as it goes, and the statement that
-takes it over the ADR-0086 cap is refused — with the same capacity refusal
-(ADR-0494) the commit would have produced.** The transaction is failed
+takes it over the [ADR-0086](./0086-bounded-persistence-input.md) cap is refused — with the same capacity refusal
+([ADR-0494](./0494-wal-payload-cap-memory-limit-class.md)) the commit would have produced.** The transaction is failed
 there, so the session rolls back rather than committing.
 
 1. The measurement is the record's own figure — header slack, array
@@ -40,7 +54,7 @@ there, so the session rolls back rather than committing.
    per surface.
 4. Auto-commit statements are unaffected: they commit at their own
    statement boundary — a `CALL … IN TRANSACTIONS` batch drains as it goes
-   (ADR-0210) — so their refusal already lands where the work is.
+ ([ADR-0210](./0210-call-in-transactions-batching.md)) — so their refusal already lands where the work is.
 
 ## Alternatives considered
 

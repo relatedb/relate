@@ -1105,8 +1105,9 @@ jobs:
       - name: Unit-test the ADR scripts
         run: make test-adr-scripts
 
-      # The claim proof reads the ledger: every added ADR's Claim header
-      # must name a claim commit on this branch (scripts/check_adr_numbers.py).
+      # The claim proof reads the ledger: every added ADR's frontmatter
+      # claim: key must name a claim commit on this branch
+      # (scripts/check_adr_numbers.py).
       # The explicit refspec writes the remote-tracking ref the checker
       # reads (origin/ADR-NUMBER-MINT-DO-NOT-DELETE) itself, so it does not
       # depend on checkout's refspec mapping.

@@ -1,7 +1,23 @@
-# ADR-0360: Workspace rand 0.9 migration
+---
+type: adr
+area: infra
+claim: d80cd0ea279b608006a8ca47137def0a71c68c5b
+name: 0360-rand-09-workspace-migration
+status: proposed
+tags:
+  - workspace
+title: Workspace rand 0.9 migration
+REFERENCES:
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+  - "[[adr/0085-wasm32-build-split]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0268-proptest-property-testing]]"
+SUPERSEDES:
+  - "[[adr/0268-proptest-property-testing]]"
+---
 
-Status: Proposed
-Claim: d80cd0ea279b608006a8ca47137def0a71c68c5b
+# ADR-0360: Workspace rand 0.9 migration
 
 ## Context
 
@@ -23,10 +39,10 @@ tracks that attempt. Two consequences blocked it at the time:
   envelope this change measures against.
 - `wasm32-unknown-unknown` broke: rand 0.9 pulls getrandom 0.3 through
   rand_core's `os_rng` path, while the wasm target had only wired getrandom
-  0.2's `js` backend (ADR-0085).
+ 0.2's `js` backend ([ADR-0085](./0085-wasm32-build-split.md)).
 
 Deferring no longer avoids a second RNG major: proptest 1.11, adopted as a
-dev-dependency by ADR-0268, already pulls rand 0.9.5 into `Cargo.lock`. The
+dev-dependency by [ADR-0268](./0268-proptest-property-testing.md), already pulls rand 0.9.5 into `Cargo.lock`. The
 workspace therefore carried both families, and the two test paths could not
 share an RNG. The migration is also an API modernization: rand 0.9 renames
 `thread_rng()` to `rng()`, `gen_range` to `random_range`, `gen` to
@@ -53,7 +69,7 @@ name-compatible with 0.9 and needs no call-site change.
    getrandom 0.3 dependency needs the `wasm_js` backend on
    `wasm32-unknown-unknown`, beside the existing getrandom 0.2 `js` entry.
    The storage crate's `[target.'cfg(target_arch = "wasm32")'.dependencies]`
-   carries both (the ADR-0085 pattern, so every wasm consumer of storage
+ carries both (the [ADR-0085](./0085-wasm32-build-split.md) pattern, so every wasm consumer of storage
    inherits the fix):
 
    The target-scoped entry resolves to getrandom 0.3.4 (the manifest's
@@ -74,7 +90,7 @@ name-compatible with 0.9 and needs no call-site change.
 4. **The frozen envelopes are re-frozen by CI, not hand-edited.** The RNG
    swap changes generated dataset content and therefore the logical-bytes
    figures recorded in the frozen fraud/identity baselines. Re-freeze is
-   CI-owned per ADR-0071: dispatch
+ CI-owned per [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md): dispatch
    `.github/workflows/create-loadtest-baselines.yml` from the PR branch; the
    workflow opens its envelope PR with `--base "$GITHUB_REF_NAME"`, so it
    bases back onto that branch. The `loadtest-baselines` job is skipped on
@@ -85,7 +101,7 @@ name-compatible with 0.9 and needs no call-site change.
    `make gate` and for whenever that compare step is re-enabled. The envelope
    diff is the expected content change, not a regression; no band is widened.
 
-   Measured on this branch with the ADR-0070 Docker baseline environment on
+ Measured on this branch with the [ADR-0070](./0070-docker-baseline-loadtest-environment.md) Docker baseline environment on
    aarch64 local hardware: `environment.class`
    `cypherlite-loadtest-baseline/v1`, 2 vCPU / 2 GB, `errors == 0`. Only
    logical bytes are compared. This is not a class-matched freeze run — its
@@ -132,7 +148,7 @@ name-compatible with 0.9 and needs no call-site change.
   `wasm_js` backend, and setting the cfg would override the feature-selected
   backend rather than duplicate it; the feature is the supported mechanism.
 - **Re-freeze the baselines from a host-native run, or hand-edit the
-  logical-bytes figures** — rejected: ADR-0071 makes committed envelopes
+ logical-bytes figures** — rejected: [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md) makes committed envelopes
   CI-owned, and `make gate` hard-fails on an environment-class mismatch;
   host numbers are not comparable and hand-editing would hide the real
   content change.
@@ -149,7 +165,7 @@ name-compatible with 0.9 and needs no call-site change.
   current-envelope deltas above (fraud `logical_used_start_bytes` +138,112 B,
   identity −1,165 B) are that content change. The prior baseline is PR #328's
   envelope; this change's own re-freeze is still pending — a CI-owned dispatch
-  in the PR phase (ADR-0071). Because the committed CI compare step is
+ in the PR phase ([ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md)). Because the committed CI compare step is
   commented out, CI does not fail on logical bytes today, but `make gate`
   and a re-enabled compare require the new envelopes.
 - rand 0.8.8 remains in the lockfile only via `neo4rs 0.8`, on both the
@@ -157,7 +173,7 @@ name-compatible with 0.9 and needs no call-site change.
   paths, for the native-only Aura reference; `cypherlite-storage` keeps
   getrandom 0.2 (native and wasm `js`) beside the aliased getrandom 0.3.4
   (`wasm_js`). Neither is a workspace rand major.
-- ADR-0268 §2's `rand 0.8` workspace pin is superseded for the workspace;
+- [ADR-0268](./0268-proptest-property-testing.md) §2's `rand 0.8` workspace pin is superseded for the workspace;
   its proptest adoption stands, and the test build now unifies with the
   workspace's rand 0.9 instead of linking a second major.
 - rand 0.9 removed `ThreadRng`'s automatic reseed-on-fork (rand 0.8 reseeded
@@ -165,8 +181,8 @@ name-compatible with 0.9 and needs no call-site change.
   `gunicorn --preload`, for example — must reseed in the child with
   `rand::rng().reseed()`. The shipped binaries here do not fork, so this is
   a consequence for embedders, not a product regression.
-- ADR-0103's R6 does not trigger: rand is an existing dependency and this is
+- [ADR-0103](./0103-engine-surfaces-testing-layout.md)'s R6 does not trigger: rand is an existing dependency and this is
   a major-version bump of an existing dependency, not a new heavy dependency.
 - A future rand 0.10 migration is a new decision and a new ADR.
-- References: ADR-0070, ADR-0071, ADR-0085, ADR-0268, LABS-136 (the reverted
+- References: [ADR-0070](./0070-docker-baseline-loadtest-environment.md), [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md), [ADR-0085](./0085-wasm32-build-split.md), [ADR-0268](./0268-proptest-property-testing.md) (the reverted
   2026-09 attempt).

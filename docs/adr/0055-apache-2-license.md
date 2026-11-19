@@ -1,8 +1,18 @@
-# 0055. MemoryDB is licensed under Apache License 2.0
+---
+type: adr
+area: ecosystem
+date: 2026-08-28
+deciders: MemoryDB maintainers
+name: 0055-apache-2-license
+status: accepted
+tags:
+  - licensing
+title: MemoryDB is licensed under Apache License 2.0
+REFERENCES:
+  - "[[adr/0001-cip-eval-ratcheted-gherkin-eval]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-08-28
-- **Deciders**: MemoryDB maintainers
+# 0055. MemoryDB is licensed under Apache License 2.0
 
 ## Context
 
@@ -36,7 +46,7 @@ this repository is covered by that license.
 
 ## Later references
 
-- Renumbered from ADR-0001 to ADR-0055: the CypherLite/MemoryDB merge
+- Renumbered from [ADR-0001](./0001-cip-eval-ratcheted-gherkin-eval.md) to [ADR-0055](./0055-apache-2-license.md): the CypherLite/MemoryDB merge
   imported the MemoryDB ADR series numbered from 0001 while this repo already
   had ADRs 0001–0003. The main-era three were the minority (50+ files use the
   imported numbering), so they moved to 0055/0056/0057 to keep every number

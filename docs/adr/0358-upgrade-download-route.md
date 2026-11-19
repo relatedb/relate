@@ -1,16 +1,32 @@
-# ADR-0358: Probe-then-fallback upgrade download route for the internal repository
+---
+type: adr
+area: cli
+claim: e3e101e00c62f812e33185f7052d3a629881913d
+name: 0358-upgrade-download-route
+status: accepted
+tags:
+  - release
+title: Probe-then-fallback upgrade download route for the internal repository
+REFERENCES:
+  - "[[adr/0068-cli-install-script-via-github-pages]]"
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0115-sshsig-release-signing]]"
+  - "[[adr/0250-releases-json-update-discovery]]"
+  - "[[adr/0585-installer-downloads-via-direct-route]]"
+SUPERSEDES:
+  - "[[adr/0250-releases-json-update-discovery]]"
+---
 
-Status: Accepted
-Claim: e3e101e00c62f812e33185f7052d3a629881913d
+# ADR-0358: Probe-then-fallback upgrade download route for the internal repository
 
 ## Context
 
-`cypherlite upgrade` / `cypherlite update` (ADR-0069) discovers the latest
-release from the website's static `releases.json` (ADR-0250) and downloads
+`cypherlite upgrade` / `cypherlite update` ([ADR-0069](./0069-cli-lifecycle-commands.md)) discovers the latest
+release from the website's static `releases.json` ([ADR-0250](./0250-releases-json-update-discovery.md)) and downloads
 three assets: the manifest `SHA256SUMS`, its signature `SHA256SUMS.sig`, and
 the platform binary `cypherlite-<os>-<arch>`.
 
-ADR-0250 §3 chose the non-API download route
+[ADR-0250](./0250-releases-json-update-discovery.md) §3 chose the non-API download route
 `https://github.com/neo4j-labs/cypherlite/releases/download/{tag}/{asset}`
 and §5 assumed that an optional `Authorization: Bearer $GITHUB_TOKEN` header
 makes that route work "while the repository is internal". That assumption is
@@ -45,13 +61,13 @@ this failure (the remedy is in Consequences).
 
 Integrity is transport-independent: the manifest is authenticated by the
 OpenSSH SSHSIG over the exact `SHA256SUMS` bytes against the key pinned in
-the binary (ADR-0115), and the binary is checksum-verified against the
+the binary ([ADR-0115](./0115-sshsig-release-signing.md)), and the binary is checksum-verified against the
 authenticated manifest. Where the bytes came from is not part of the trust
 chain, so adding a second transport does not weaken verification.
 
 Two existing properties make the fallback safe to add:
 
-- The CLI already reads `GITHUB_TOKEN` (parity with `install.sh`, ADR-0068)
+- The CLI already reads `GITHUB_TOKEN` (parity with `install.sh`, [ADR-0068](./0068-cli-install-script-via-github-pages.md))
   and sends it as a bearer header only on asset downloads; it is never
   printed and never sent to the website origin.
 - `ureq` 3.4's redirect policy never forwards the `Authorization` header
@@ -92,7 +108,7 @@ the direct route answers 404. The route policy:
 6. **The `Authorization` header is sent only on `api.github.com` requests**
    (and on the direct request when a token is set); it is never forwarded to
    the asset CDN on a redirect.
-7. **The ADR-0115 verification chain is unchanged** — SSHSIG over the exact
+7. **The [ADR-0115](./0115-sshsig-release-signing.md) verification chain is unchanged** — SSHSIG over the exact
    manifest bytes against the pinned key, then the checksum over the binary —
    and runs before the binary is trusted, whichever route delivered the
    bytes.
@@ -110,7 +126,7 @@ the direct route answers 404. The route policy:
 - **Always the API asset route** (what `install.sh` does) — rejected: on the
   future public repository every tokenless upgrade would spend about four
   anonymous `api.github.com` requests, re-exposing the shared-IP 60/hour
-  limit that ADR-0250 (LABS-316) removed.
+ limit that [ADR-0250](./0250-releases-json-update-discovery.md) removed.
 - **Token presence selects the route** (token → API, no token → direct) —
   rejected: a token holder on the public repository would be routed off the
   direct route for no benefit, and the two populations would exercise
@@ -122,7 +138,7 @@ the direct route answers 404. The route policy:
 - **Make the repository public** — rejected: not a code change, and the
   update path must work while the repository is internal.
 - **Shell out to `gh release download`** — rejected: an external binary
-  dependency the CLI does not otherwise need (the same reason ADR-0250
+ dependency the CLI does not otherwise need (the same reason [ADR-0250](./0250-releases-json-update-discovery.md)
   rejected `git ls-remote --tags`).
 - **Host the release assets on the website** — rejected: GitHub Pages is not
   a release-asset mirror, and the binaries must not become public while the
@@ -135,16 +151,16 @@ the direct route answers 404. The route policy:
   actionable — it names the variable and the reinstall command — rather than
   a bare 404.
 - The tokenless direct route keeps working unchanged once the repository is
-  public, with zero API requests; the steady state ADR-0250 chose is
+ public, with zero API requests; the steady state [ADR-0250](./0250-releases-json-update-discovery.md) chose is
   preserved.
 - While the repository is internal, each upgrade pays one extra request (the
   probe that 404s) before the API route; the manifest is small, so the cost
   is one round trip.
-- ADR-0250 §3 (the download URL template as the only route), §4 (no GitHub
+- [ADR-0250](./0250-releases-json-update-discovery.md) §3 (the download URL template as the only route), §4 (no GitHub
   API fallback, "not even when `GITHUB_TOKEN` is set") and §5 (the token's
   role as an optional direct-download header) are superseded for the
   download route; its metadata discovery, schema and publisher contract
-  stand unchanged. A **Later references** note is added to ADR-0250 per the
+ stand unchanged. A **Later references** note is added to [ADR-0250](./0250-releases-json-update-discovery.md) per the
   decision-log rule.
 - The CLI gains a small GitHub API response parse surface (asset names and
   ids only), which fails closed when a required asset name is missing.
@@ -154,7 +170,7 @@ the direct route answers 404. The route policy:
 
 ## Later references
 
-ADR-0585 takes this route policy to the installer: `install.sh` now
+[ADR-0585](./0585-installer-downloads-via-direct-route.md) takes this route policy to the installer: `install.sh` now
 downloads every asset from the direct route and consults no GitHub API
 endpoint at all, so the "always the API asset route (what `install.sh`
 does)" alternative above describes the pre-0585 installer. The

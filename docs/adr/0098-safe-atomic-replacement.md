@@ -1,18 +1,33 @@
-# 0098. Exclusive temporary files and durable atomic replacement
+---
+type: adr
+area: engine
+date: 2026-09-23
+deciders: CypherLite maintainers
+name: 0098-safe-atomic-replacement
+status: proposed
+tags:
+  - storage
+title: Exclusive temporary files and durable atomic replacement
+REFERENCES:
+  - "[[adr/0072-virtual-filesystem]]"
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0077-embedded-durability-boundary]]"
+  - "[[adr/0097-exclusive-storage-ownership]]"
+SUPERSEDES:
+  - "[[adr/0072-virtual-filesystem]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-23
-- **Deciders**: CypherLite maintainers
+# 0098. Exclusive temporary files and durable atomic replacement
 
 ## Context
 
-ADR-0072 introduced the synchronous VFS and retained a Native write through a
+[ADR-0072](./0072-virtual-filesystem.md) introduced the synchronous VFS and retained a Native write through a
 fixed `{path}.tmp`, followed by file `sync_all`, close, and rename. The current
 `atomic_write` uses `create_truncate` on that predictable name. A pre-existing
 symlink or file can therefore be opened and truncated before the replacement;
 even a successful file sync does not make the renamed directory entry durable
-after a crash. ADR-0074 makes the temporary name a virtual inode inside a
-single `.cl` host file. ADR-0097 specifies exclusive ownership of persistent
+after a crash. [ADR-0074](./0074-single-file-bundle-vfs.md) makes the temporary name a virtual inode inside a
+single `.cl` host file. [ADR-0097](./0097-exclusive-storage-ownership.md) specifies exclusive ownership of persistent
 stores and private creation of new Unix database files; ownership does not
 remove the need for safe temporary-file creation or namespace persistence.
 
@@ -33,7 +48,7 @@ guarantee. Replacement durability must distinguish the two platforms.
    counter as the sole source of uniqueness. Attempt exclusive create without
    truncation or following an existing final-component symlink. Native uses
    `OpenOptions::create_new(true)` (and mode `0600` for new files on Unix per
-   ADR-0097); Memory checks/inserts under its file-map lock; Bundle checks and
+ [ADR-0097](./0097-exclusive-storage-ownership.md)); Memory checks/inserts under its file-map lock; Bundle checks and
    allocates an inode under its bundle mutex. An already occupied name,
    including a symlink in Native, is a collision: generate a *different*
    random name and retry a bounded number of times, then report an error. Do
@@ -77,7 +92,7 @@ guarantee. Replacement durability must distinguish the two platforms.
    replacement behavior with exclusive temp names but has no host sync or
    crash-durability guarantee; its parent-sync operation is a no-op. Bundle
    keeps both the temp and destination as virtual inodes in its *single* host
-   file (ADR-0074). Its temp-file sync and rename use the existing host-file
+ file ([ADR-0074](./0074-single-file-bundle-vfs.md)). Its temp-file sync and rename use the existing host-file
    catalog/superblock durability barriers: the rename persists the catalog
    pointer swap, so no separate host directory entry is renamed or synced for
    each virtual replacement. Bundle's virtual parent-sync operation is a
@@ -110,7 +125,7 @@ guarantee. Replacement durability must distinguish the two platforms.
   flush guarantee follows from that standard-library operation; the promise
   would exceed the verified primitive.
 - **Create a host `.tmp` sidecar for Bundle, or use a host directory sync for
-  every virtual rename.** Rejected: the first breaks ADR-0074's single-file
+ every virtual rename.** Rejected: the first breaks [ADR-0074](./0074-single-file-bundle-vfs.md)'s single-file
   contract, and the second does not persist a virtual inode catalog swap.
 - **Restore the old destination or retry automatically after a post-rename
   sync error.** Rejected: publication may already have occurred; rollback
@@ -121,14 +136,14 @@ guarantee. Replacement durability must distinguish the two platforms.
 - Native replacement does not open or truncate an existing temp or follow
   its final-component symlink. Collision handling and cleanup are scoped to
   the file this write actually created; newly created Unix temp files inherit
-  ADR-0097's private `0600` creation mode.
+ [ADR-0097](./0097-exclusive-storage-ownership.md)'s private `0600` creation mode.
 - Successful Native replacement on Linux/macOS includes file sync, handle
   close, rename, and containing-directory sync (plus newly created ancestor
   persistence); directory-sync errors remain observable even after
   publication. Windows retains the close-before-rename rule and explicitly
   weaker power-loss namespace guarantee. These barriers complement the WAL
-  durability boundary in ADR-0077 rather than changing commit semantics.
+ durability boundary in [ADR-0077](./0077-embedded-durability-boundary.md) rather than changing commit semantics.
 - Memory remains non-durable and `.cl` keeps one host file with its existing
-  catalog/superblock sync contract (ADR-0074). VFS implementations need
+ catalog/superblock sync contract ([ADR-0074](./0074-single-file-bundle-vfs.md)). VFS implementations need
   exclusive-create and parent-sync behavior, with fault-injection tests for
   operation ordering and failures before implementation can ship.

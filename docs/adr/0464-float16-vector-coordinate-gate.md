@@ -1,8 +1,18 @@
+---
+type: adr
+area: engine
+claim: 3fd54950ae0d2c6b3fb7215bf0ffa4e0630e184d
+name: 0464-float16-vector-coordinate-gate
+status: proposed
+tags:
+  - search
+  - values
+title: FLOAT16/BFLOAT16 vector coordinate types gate behind a preview row
+REFERENCES:
+  - "[[adr/0371-preview-feature-gating]]"
+---
+
 # ADR-0464: FLOAT16/BFLOAT16 vector coordinate types gate behind a preview row
-
-Status: Proposed
-
-Claim: 3fd54950ae0d2c6b3fb7215bf0ffa4e0630e184d
 
 ## Context
 
@@ -18,13 +28,13 @@ round-tripped `{"type": "FLOAT16"}` value) carry no `@conf` tag at all.
 CypherLite's `function-registry` node of the syntax-gap round added both
 kinds ungated, so the two sides of that switch cannot be represented: one
 engine configuration accepts them everywhere, and the disabled rows fail
-with "expected an error but the query succeeded". ADR-0371 already owns
+with "expected an error but the query succeeded". [ADR-0371](./0371-preview-feature-gating.md) already owns
 exactly this shape — a language construct the floor does not pin, switched
 on per store through `CYPHERLITE_PREVIEW`.
 
 ## Decision
 
-- **New preview row `float16-coordinate-types`** in the ADR-0371 registry
+- **New preview row `float16-coordinate-types`** in the [ADR-0371](./0371-preview-feature-gating.md) registry
   (`cypherlite-core/src/preview.rs`), named after the Neo4j configuration's
   own subject. The row is the second *acceptance-widening* gate whose
   disabled form is the authored error rather than a floor rejection: the
@@ -44,7 +54,7 @@ on per store through `CYPHERLITE_PREVIEW`.
   coordinate kind cannot be gated or ungated by accident.
 - **Both directions are authored errors.** With the row enabled the
   construct parses, lowers and evaluates exactly as today; disabled it
-  fails closed with ADR-0371's
+ fails closed with [ADR-0371](./0371-preview-feature-gating.md)'s
   `preview feature 'float16-coordinate-types' is not enabled: set
   CYPHERLITE_PREVIEW=float16-coordinate-types`. `FLOAT32`, `FLOAT`,
   `INTEGER32` and the other coordinate kinds stay on the dialect floor —
@@ -55,7 +65,7 @@ on per store through `CYPHERLITE_PREVIEW`.
 - **Gate at parse, as `mixed-label-syntax` does (a third `ParseOptions`
   flag).** Rejected: the floor *accepts* these keywords, so the disabled
   behavior would have to be a parser-syntax error the floor never produced,
-  and the authored ADR-0371 text would have to be re-created in the parser
+ and the authored [ADR-0371](./0371-preview-feature-gating.md) text would have to be re-created in the parser
   crate, which does not know the store's resolved preview set. One policy
   through the front's existing gate loop is the smaller surface.
 - **Leave the kinds ungated and file the six rows as harness skips.**
@@ -83,6 +93,6 @@ on per store through `CYPHERLITE_PREVIEW`.
   `float16-coordinate-types` in `environment.py` (the positive rows carry
   no `@conf` tag, so they run gate-closed by default), and accepting the
   authored `SemanticError` class for the disabled rows, whose `42001` row
-  asks for `SyntaxError`. ADR-0371 makes the authored error a semantic
+ asks for `SyntaxError`. [ADR-0371](./0371-preview-feature-gating.md) makes the authored error a semantic
   error on purpose; the harness-side class expectation is the harness's to
   adjust, not the engine's to bend.

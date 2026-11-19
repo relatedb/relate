@@ -1,21 +1,40 @@
-# 0080. CLI `pull` command: Query API v2 into `Database`
+---
+type: adr
+area: cli
+date: 2026-09-22
+deciders: CypherLite maintainers
+name: 0080-cli-pull-command
+status: proposed
+tags:
+  - commands
+  - load
+title: "CLI `pull` command: Query API v2 into `Database`"
+REFERENCES:
+  - "[[adr/0052-graphstore-withdrawn]]"
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0079-anonymous-usage-metrics]]"
+  - "[[adr/0092-manifest-bound-pull-identity]]"
+  - "[[adr/0109-bolt-tls]]"
+  - "[[adr/0122-pull-auth-hardening]]"
+  - "[[adr/0158-streaming-single-process-pull]]"
+  - "[[adr/0181-typed-query-api-wire-for-pull]]"
+  - "[[adr/0200-query-command-and-database-flag]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-22
-- **Deciders**: CypherLite maintainers
+# 0080. CLI `pull` command: Query API v2 into `Database`
 
 ## Context
 
 GraphStore `--sync` pulled a Neo4j/Aura subgraph over HTTP Query API v2 from
 an Aura/`neo4j-cli` env file and hydrated a read-only `MemoryStore`
-(ADR-0052 withdrew that runtime). A client implementing embedded Relate
+([ADR-0052](./0052-graphstore-withdrawn.md) withdrew that runtime). A client implementing embedded Relate
 later seeded a live `cypherlite::Database` from a Cypher slice: extract
 graph elements, `CREATE` them, checkpoint. Operators want that pull on
 the laptop CLI without
 reviving GraphStore, putting passwords on argv, or taking `neo4rs` in a
 product crate.
 
-Lifecycle verbs are positional commands (ADR-0069). `--sync` as a flag is
+Lifecycle verbs are positional commands ([ADR-0069](./0069-cli-lifecycle-commands.md)). `--sync` as a flag is
 the same mistake as the removed `--skill` flag.
 
 The first `pull` implementation always `CREATE`d. Extract interned Neo4j
@@ -98,8 +117,8 @@ new remote elements.
 
 ## Alternatives considered
 
-- **Revive `--sync` and GraphStore JSON persist.** Rejected: ADR-0052
-  withdrew GraphStore; ADR-0069 forbids lifecycle flags.
+- **Revive `--sync` and GraphStore JSON persist.** Rejected: [ADR-0052](./0052-graphstore-withdrawn.md)
+ withdrew GraphStore; [ADR-0069](./0069-cli-lifecycle-commands.md) forbids lifecycle flags.
 - **Bolt / `neo4rs` in the CLI.** Rejected: `neo4rs` stays off
   product crates; Query API v2 covers Aura and default local HTTP.
 - **Password flag / inline URI userinfo.** Rejected: argv leaks; the env
@@ -129,7 +148,7 @@ new remote elements.
 - Directory stores and `.cl` bundles include `pull-identity.json` after
   a checkpoint that has mappings.
 - Telemetry emits `CYPHERLITE-CLI_COMMAND` with `command=pull` and no
-  query text, paths, or parameter values (ADR-0079).
+ query text, paths, or parameter values ([ADR-0079](./0079-anonymous-usage-metrics.md)).
 - Default CI uses a loopback Query API fixture; live Aura is not a merge
   gate.
 - Local property/label edits on a pulled entity are overwritten on the
@@ -141,22 +160,22 @@ new remote elements.
 
 ## Later references
 
-ADR-0092 proposes replacing the mutable `pull-identity.json`
+[ADR-0092](./0092-manifest-bound-pull-identity.md) proposes replacing the mutable `pull-identity.json`
 manifest-then-sidecar checkpoint rule with a manifest-selected immutable
 virtual map written before manifest publication. WAL identity ops and
 source-scoped upsert remain as decided here; v3 manifests without a selector
 retain the legacy `pull-identity.json` fallback.
 
-ADR-0122 adds credential hardening on top of the HTTP Query API transport
+[ADR-0122](./0122-pull-auth-hardening.md) adds credential hardening on top of the HTTP Query API transport
 decided here: `pull` refuses to send Basic auth over a plaintext `http://`
 origin to a non-loopback host unless `--allow-plaintext` is passed (matching
-`cypherlite-bolt`, ADR-0109), and warns when a `--from` env file is group- or
+`cypherlite-bolt`, [ADR-0109](./0109-bolt-tls.md)), and warns when a `--from` env file is group- or
 world-readable. The loopback `neo4j://`/`bolt://` → `http://host:7474` mapping
 is unchanged.
 
-- ADR-0158 (streaming single-process pull) supersedes the manual `SKIP`/`LIMIT` paging workaround for the response cap and the persisted re-pull identity: one process per pull, the identity map is load-scoped memory, and a non-empty destination is refused.
+- [ADR-0158](./0158-streaming-single-process-pull.md) (streaming single-process pull) supersedes the manual `SKIP`/`LIMIT` paging workaround for the response cap and the persisted re-pull identity: one process per pull, the identity map is load-scoped memory, and a non-empty destination is refused.
 
-- ADR-0200 moves the pull destination from a positional `DATABASE` to
+- [ADR-0200](./0200-query-command-and-database-flag.md) moves the pull destination from a positional `DATABASE` to
   required `--database PATH`. `:memory:` stays rejected.
 
-- ADR-0181 fixes the Query API wire format for pull: the pull path requests typed JSON (`application/vnd.neo4j.query…`) and decodes every `$type`-tagged value into an engine value, failing loudly on `Base64`, `Unsupported`, unknown tags, unparseable payloads, and untagged cells. `run_query`/`run_query_streaming` keep plain `application/json`, and request bodies stay `Content-Type: application/json`.
+- [ADR-0181](./0181-typed-query-api-wire-for-pull.md) fixes the Query API wire format for pull: the pull path requests typed JSON (`application/vnd.neo4j.query…`) and decodes every `$type`-tagged value into an engine value, failing loudly on `Base64`, `Unsupported`, unknown tags, unparseable payloads, and untagged cells. `run_query`/`run_query_streaming` keep plain `application/json`, and request bodies stay `Content-Type: application/json`.

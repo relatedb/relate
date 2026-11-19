@@ -1,12 +1,23 @@
-# 0109. Bolt TLS and plaintext policy
+---
+type: adr
+area: surface
+date: 2026-09-26
+deciders: CypherLite maintainers
+name: 0109-bolt-tls
+status: accepted
+tags:
+  - auth
+  - bolt
+title: Bolt TLS and plaintext policy
+REFERENCES:
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-26
-- **Deciders**: CypherLite maintainers
+# 0109. Bolt TLS and plaintext policy
 
 ## Context
 
-`cypherlite-bolt` is the optional remote transport (ADR-0057). Today it is
+`cypherlite-bolt` is the optional remote transport ([ADR-0057](./0057-embedded-c-abi-and-bolt.md)). Today it is
 plaintext-only: `serve` binds a raw `tokio::net::TcpListener` at
 `surfaces/cypherlite-bolt/src/main.rs:289` and hands every accepted socket to
 `handle_conn` with no transport security. The crate has no TLS dependency, and

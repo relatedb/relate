@@ -1,7 +1,22 @@
-# ADR-0342: Bolt request scalar fields fail malformed values with Request.Invalid
+---
+type: adr
+area: surface
+claim: f14e5ae971e01500393bf1d6179ce380b884ce6f
+name: 0342-bolt-request-fields-fail-malformed
+status: proposed
+tags:
+  - bolt
+  - errors
+title: Bolt request scalar fields fail malformed values with Request.Invalid
+REFERENCES:
+  - "[[adr/0110-bolt-connection-query-governance]]"
+  - "[[adr/0177-bolt-parameter-conversion]]"
+  - "[[adr/0307-bolt-failure-carries-neo4j-status-codes]]"
+  - "[[adr/0311-bolt-tx-open-results-by-qid]]"
+  - "[[adr/0313-bolt-hello-requires-user-agent]]"
+---
 
-Status: Proposed
-Claim: f14e5ae971e01500393bf1d6179ce380b884ce6f
+# ADR-0342: Bolt request scalar fields fail malformed values with Request.Invalid
 
 ## Context
 
@@ -13,19 +28,19 @@ of a request:
   the empty statement (`fields.first().and_then(Pack::as_str).unwrap_or("")`),
   so the client received a misleading engine syntax error instead of a
   failure naming the malformed message — while the params field a few
-  lines below fails loudly (ADR-0177).
+ lines below fails loudly ([ADR-0177](./0177-bolt-parameter-conversion.md)).
 - The PULL/DISCARD `n` and `qid` fields used `-1` as both the documented
   absent default and the fallback for a present-but-malformed value
   (`n: "2"`, `qid: 2.5`), so malformed wire input silently became
   "drain everything" or "the most recent result" instead of failing like
-  the unknown-`qid` path beside it (ADR-0311).
+ the unknown-`qid` path beside it ([ADR-0311](./0311-bolt-tx-open-results-by-qid.md)).
 - Four bespoke scalar extractors existed — `extra_db`, `extra_int`, the
   HELLO `get` closure and the ROUTE address lookup — each re-decoding the
   same map with its own empty/absent policy.
 
-ADR-0177 already fixes the malformed-parameter policy: a value the server
+[ADR-0177](./0177-bolt-parameter-conversion.md) already fixes the malformed-parameter policy: a value the server
 cannot convert fails the RUN with `Neo.ClientError.Request.Invalid`
-(ADR-0307) and enters the failed state (ADR-0110). ADR-0313 requires a
+([ADR-0307](./0307-bolt-failure-carries-neo4j-status-codes.md)) and enters the failed state ([ADR-0110](./0110-bolt-connection-query-governance.md)). [ADR-0313](./0313-bolt-hello-requires-user-agent.md) requires a
 string `user_agent` on HELLO. The request-field decode should follow the
 same policy through one accessor family.
 
@@ -43,14 +58,14 @@ same policy through one accessor family.
    the home database `neo4j` for `db`, the connection's local address for
    ROUTE's `address`. A present value of the wrong type fails the message
    with `Neo.ClientError.Request.Invalid` and the failed state, exactly
-   like the ADR-0177 parameter path: `unsupported extra value for
+ like the [ADR-0177](./0177-bolt-parameter-conversion.md) parameter path: `unsupported extra value for
    <key>: <kind> (must be an Int)`.
 3. **The RUN statement field is required.** An absent or non-string
    statement is the same malformed-request failure: `unsupported request
    value for statement: <kind> (RUN statement must be a string)`, or
    `missing RUN statement (RUN statement must be a string)` when the field
    is absent. Nothing executes and the session enters the failed state.
-4. **An empty `user_agent` is rejected like an absent one** (ADR-0313):
+4. **An empty `user_agent` is rejected like an absent one** ([ADR-0313](./0313-bolt-hello-requires-user-agent.md)):
    `extra_str` treats `""` as absent, and HELLO requires the field, so an
    empty string gets the same `Illegal value for field "user_agent"` text.
 5. **The `-1` sentinel is only a default, never a malformed-value

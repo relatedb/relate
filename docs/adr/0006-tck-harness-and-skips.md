@@ -1,12 +1,23 @@
-# 0006. TCK harness vendors feature files; expanded count is the denominator; skips only shrink
+---
+type: adr
+area: cypher
+date: 2026-08-28
+deciders: MemoryDB maintainers
+name: 0006-tck-harness-and-skips
+status: accepted
+tags:
+  - conformance
+title: TCK harness vendors feature files; expanded count is the denominator; skips only shrink
+REFERENCES:
+  - "[[adr/0054-one-c-abi-env-python]]"
+  - "[[adr/0056-opencypher-tck-language-contract]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-08-28
-- **Deciders**: MemoryDB maintainers
+# 0006. TCK harness vendors feature files; expanded count is the denominator; skips only shrink
 
 ## Context
 
-ADR-0056 pins openCypher TCK 2024.3 as the language contract. We need a
+[ADR-0056](./0056-opencypher-tck-language-contract.md) pins openCypher TCK 2024.3 as the language contract. We need a
 reproducible way to run it, report it, and grow coverage without silent
 regressions or inflating “pass rate” by skipping hard tests.
 
@@ -45,4 +56,4 @@ regressions or inflating “pass rate” by skipping hard tests.
 
 ## Later references
 
-- [ADR-0054](0054-one-c-abi-env-python.md): corpus path is `testdata/tck`.
+- [ADR-0054](./0054-one-c-abi-env-python.md): corpus path is `testdata/tck`.

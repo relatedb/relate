@@ -9,9 +9,16 @@ definitions live here so the two scripts cannot drift:
 
 - one git runner (`git`) and its checked variant (`checked_git`) with a
   single failure policy: a failed checked command dies exit 1 — a mid-run
-  infrastructure failure. Caller-side usage errors keep exit 2 through
+  infrastructure failure — through the one die-with-git-stderr rendering
+  (`die_with_git_stderr`). Caller-side usage errors keep exit 2 through
   argparse at the call site (a `type=` callable raising ArgumentTypeError,
   or parser.error), not through this module;
+- `benign_rc1`, the one return-code triage for probe calls whose
+  exit 1 is an expected negative answer, not a failure — an
+  unresolvable `rev-parse --verify --quiet`, a `merge-base
+  --is-ancestor` no: True for the benign rc 1, an infrastructure
+  die for any other nonzero rc, so no probe re-derives which exit
+  codes mean what;
 - `anchor_repo_root`, so docs/adr pathspecs ignore the invocation cwd;
 - the single ADR-filename acceptance (`adr_number`), matched against the
   basename: ``NNNN-<slug>.md`` with a non-empty slug;
@@ -65,6 +72,20 @@ def die(program: str, message: str) -> NoReturn:
     raise SystemExit(f"{program}: {message}")
 
 
+def die_with_git_stderr(
+    program: str,
+    message: str,
+    result: subprocess.CompletedProcess[str],
+) -> NoReturn:
+    """Die with the caller's message and git's stderr: the one rendering
+    of a failed git command's exit-1 die, shared by `checked_git` and
+    `benign_rc1` — the caller's message first, git's stripped stderr
+    appended after a ': ' when the command produced any.
+    """
+    detail = result.stderr.strip()
+    die(program, f"{message}: {detail}" if detail else message)
+
+
 def checked_git(
     program: str,
     message: str,
@@ -80,10 +101,31 @@ def checked_git(
     """
     result = git(*args, input_text=input_text)
     if result.returncode != 0:
-        detail = result.stderr.strip()
-        text = f"{message}: {detail}" if detail else message
-        die(program, text)
+        die_with_git_stderr(program, message, result)
     return result
+
+
+def benign_rc1(
+    program: str,
+    message: str,
+    result: subprocess.CompletedProcess[str],
+) -> bool:
+    """True when <result> is the benign rc-1 negative, False when rc 0.
+
+    The one return-code triage for git probes whose exit 1 is an
+    expected negative answer, not a failure: `rev-parse --verify
+    --quiet` on a name that does not resolve, `merge-base
+    --is-ancestor` on an unrelated pair. The caller answers its
+    user-facing question when True and proceeds when False; any other
+    nonzero rc is a mid-run infrastructure failure, checked_git's own
+    policy, and dies exit 1 with <message> and git's stderr — never a
+    misreported negative.
+    """
+    if result.returncode == 1:
+        return True
+    if result.returncode != 0:
+        die_with_git_stderr(program, message, result)
+    return False
 
 
 def anchor_repo_root(program: str) -> None:

@@ -1,8 +1,26 @@
+---
+type: adr
+area: engine
+claim: 5f812fa4c9ee09c4dc34c2148bf03ad6c7a6f091
+name: 0508-planner-stats-consult-memo
+status: accepted
+status_note: |-
+  user ruling 2026-11-05: "invalidation shouldn't be necessary as we have MVCC — as long as we hold a version the memo is also valid for all the transactions" (point 3 confirmed on the project's MVCC/publication-epoch grounds); points 1, 2 and 4 proceed as proposed under the 2026-11-04 "go with PR3" direction. The plan-cache analogue — when cached plans become invalid across versions — is a separate decision (PR 4, the [ADR-0503](./0503-template-keyed-plan-cache.md) cache), with strategies to be researched and tested.
+tags:
+  - perf
+  - planner
+title: Per-statement memo for the planner's value-keyed stats consults
+REFERENCES:
+  - "[[adr/0137-wal-follow]]"
+  - "[[adr/0218-stats-based-match-orientation]]"
+  - "[[adr/0350-bound-node-pivot-for-pattern-expansion]]"
+  - "[[adr/0351-cheapest-element-start-for-unbound-patterns]]"
+  - "[[adr/0474-compound-contains-seed-start-cost]]"
+  - "[[adr/0486-range-index-starts]]"
+  - "[[adr/0503-template-keyed-plan-cache]]"
+---
+
 # ADR-0508: Per-statement memo for the planner's value-keyed stats consults
-
-Status: Accepted — user ruling 2026-11-05: "invalidation shouldn't be necessary as we have MVCC — as long as we hold a version the memo is also valid for all the transactions" (point 3 confirmed on the project's MVCC/publication-epoch grounds); points 1, 2 and 4 proceed as proposed under the 2026-11-04 "go with PR3" direction. The plan-cache analogue — when cached plans become invalid across versions — is a separate decision (PR 4, the ADR-0503 cache), with strategies to be researched and tested.
-
-Claim: 5f812fa4c9ee09c4dc34c2148bf03ad6c7a6f091
 
 ## Context
 
@@ -11,8 +29,8 @@ The PLAN-phase profile (`research_notes/planner-profiling-2026-11-04.md`,
 `planner::plan::plan_with_env` at 30% of statement CPU. Inside it,
 `rewrite::rewrite_part` is 65% and the `order::order_patterns` closure
 39%, driven by `direction_cost`. That time goes almost entirely to stats
-consults through the ADR-0218 pattern-ordering ladder and the
-ADR-0350/ADR-0351 start-selection estimates: `PatternStats::contains_rows`
+consults through the [ADR-0218](./0218-stats-based-match-orientation.md) pattern-ordering ladder and the
+[ADR-0350](./0350-bound-node-pivot-for-pattern-expansion.md)/[ADR-0351](./0351-cheapest-element-start-for-unbound-patterns.md) start-selection estimates: `PatternStats::contains_rows`
 (192 samples) and `best_equality` → `equality_rows` (77). `bind` is
 invisible (2 samples), and the planner's own data structures show no
 hashing hotspot. The cost is consults, not bookkeeping.
@@ -48,7 +66,7 @@ A single consult is not cheap. Every planner consult goes through
   TEXT index it goes to the sampled estimate
   (`sampled_contains_rows`), which takes the `contains_memo` mutex and,
   on an epoch miss, scans up to `CONTAINS_SAMPLE_BOUND` (1024) nodes.
-- `range_rows` (ADR-0486) clones the bound and builds a `RangeSeek`
+- `range_rows` ([ADR-0486](./0486-range-index-starts.md)) clones the bound and builds a `RangeSeek`
   before reading the posting window.
 
 The store already has one memo here, and it shows the invalidation
@@ -66,7 +84,7 @@ statistics the ladder reads (`label_count`, the RANGE/TEXT postings,
 `pattern_rel_type_rows`, the degree histograms) are maintained live by
 every data commit. There is no separate "statistics refresh" event. The
 other way a graph's numbers change is a `--follow` reload replacing the
-graph behind `GraphCell` (ADR-0137). That replacement drops any memo the
+graph behind `GraphCell` ([ADR-0137](./0137-wal-follow.md)). That replacement drops any memo the
 old `Graph` owned.
 
 The sampled-CONTAINS selectivity fix is the warning case for any memo
@@ -74,13 +92,13 @@ here. Without a TEXT index,
 q19's `CONTAINS` selectivity was invisible, so the planner priced Tag at
 its 16k label rows and produced a ~29x plan gap. The fix made the
 estimate measurable and typed its provenance (`ContainsCount::TextIndex`
-vs `SampleScan { rows, scan }`, with the ADR-0474 compound scan floor).
+vs `SampleScan { rows, scan }`, with the [ADR-0474](./0474-compound-contains-seed-start-cost.md) compound scan floor).
 A memo that outlives the data or index state it measured would
 reintroduce that failure class: an estimate frozen while the store moved
 on, for example a TEXT index created after the memo entry and never
 consulted.
 
-The template-keyed plan cache (ADR-0503) skips parse, lower and
+The template-keyed plan cache ([ADR-0503](./0503-template-keyed-plan-cache.md)) skips parse, lower and
 plan entirely on a same-shape hit. A memo only helps statements that
 miss the cache. The research note therefore ranks planner-side speedups
 below the cache, and this design must compose with it, not compete.
@@ -116,7 +134,7 @@ below the cache, and this design must compose with it, not compete.
    `NoPatternStats`. The wrapper has interior mutability through a
    `RefCell`, because the trait takes `&self` and the planner is
    single-threaded per statement. The planner stays pure: no store type
-   enters the planner crate, and the dependency direction of ADR-0218 is
+ enters the planner crate, and the dependency direction of [ADR-0218](./0218-stats-based-match-orientation.md) is
    unchanged.
 
 3. **Invalidation trigger.** None needed, by construction. The memo
@@ -159,7 +177,7 @@ harness shows a reduction in plan-phase time.
 - **No memo.** Keep consulting the store on every repricing. This is the
   zero-risk baseline and stays correct. Rejected because the measured
   cost is real: about 39% of planner time sits in `order_patterns`
-  consults, and that is the cost plan-cache (ADR-0503) misses pay (first
+ consults, and that is the cost plan-cache ([ADR-0503](./0503-template-keyed-plan-cache.md)) misses pay (first
   sightings, non-parameterizable shapes, every statement while the
   cache is cold or disabled).
 
@@ -192,12 +210,12 @@ harness shows a reduction in plan-phase time.
   commit_ts)`.** This would be correct, and it is the `ContainsMemo`
   precedent. Rejected for now for three reasons. Any write moves the
   epoch, so the cache wins only on read-mostly workloads, and those are
-  exactly the workloads the ADR-0503 plan cache serves better by skipping
+ exactly the workloads the [ADR-0503](./0503-template-keyed-plan-cache.md) plan cache serves better by skipping
   planning entirely. Its keys must be *resolved* parameter values, not
   names, so it becomes a query-controlled map needing a byte or entry cap
   and shared-state locking on the plan path. It also adds an invalidation
   surface that the per-statement memo avoids by construction. It can be
-  revisited if measurements after the ADR-0503 cache lands show cache
+ revisited if measurements after the [ADR-0503](./0503-template-keyed-plan-cache.md) cache lands show cache
 misses on
   read-mostly stores still dominated by consults.
 
@@ -220,13 +238,13 @@ misses on
   `order_patterns` consults that repeat: up to ~39% of planner time,
   ~12% of statement CPU, and only on multi-pattern MATCH parts or parts
   that re-price an endpoint. Single-pattern point queries gain little.
-  The plan cache (ADR-0503) remains the larger lever, and the memo helps only
+ The plan cache ([ADR-0503](./0503-template-keyed-plan-cache.md)) remains the larger lever, and the memo helps only
 its misses.
 - No new invalidation machinery, no new shared state, and no
   store-version coupling in the planner. The planner crate gains one
   wrapper type. The `PatternStats` trait contract is unchanged.
 - No estimate can outlive the publication epoch it was read at, so
-  The sampled counts' provenance typing and the ADR-0474 scan floor still
+ The sampled counts' provenance typing and the [ADR-0474](./0474-compound-contains-seed-start-cost.md) scan floor still
 reach
   the ladder unchanged.
 - Out of scope, possible follow-ups: (a) sharing the admission's memo
@@ -235,9 +253,9 @@ reach
   epoch, so sharing needs an epoch check; (b) the cheaper-consult work
   listed under Alternatives; (c) the executor's per-row
   `GraphStats::estimate` consults.
-- Related: ADR-0218 (stats-based orientation, the ladder), ADR-0350 /
-  ADR-0351 (bound-node pivot and cheapest-element start, the estimate's
-  executor consumers), ADR-0474 (compound `CONTAINS` seed cost),
-  ADR-0486 (range windows), ADR-0137 (`GraphCell` replace under
+- Related: [ADR-0218](./0218-stats-based-match-orientation.md) (stats-based orientation, the ladder), [ADR-0350](./0350-bound-node-pivot-for-pattern-expansion.md) /
+ [ADR-0351](./0351-cheapest-element-start-for-unbound-patterns.md) (bound-node pivot and cheapest-element start, the estimate's
+ executor consumers), [ADR-0474](./0474-compound-contains-seed-start-cost.md) (compound `CONTAINS` seed cost),
+ [ADR-0486](./0486-range-index-starts.md) (range windows), [ADR-0137](./0137-wal-follow.md) (`GraphCell` replace under
   `--follow`), research note `research_notes/planner-profiling-2026-11-04.md`,
-  ADR-0503 (template-keyed plan cache).
+ [ADR-0503](./0503-template-keyed-plan-cache.md) (template-keyed plan cache).

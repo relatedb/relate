@@ -1,7 +1,21 @@
-# ADR-0559: Run-time argument rejections are their own error variant
+---
+type: adr
+area: engine
+claim: 0d13d0b324cc7c45f5c96f59945642fc0ca94678
+name: 0559-runtime-argument-value-error-variant
+status: proposed
+tags:
+  - errors
+title: Run-time argument rejections are their own error variant
+REFERENCES:
+  - "[[adr/0168-non-finite-and-out-of-range-conversions]]"
+  - "[[adr/0175-list-and-string-form-conversions]]"
+SUPERSEDES:
+  - "[[adr/0168-non-finite-and-out-of-range-conversions]]"
+  - "[[adr/0175-list-and-string-form-conversions]]"
+---
 
-Status: Proposed
-Claim: 0d13d0b324cc7c45f5c96f59945642fc0ca94678
+# ADR-0559: Run-time argument rejections are their own error variant
 
 ## Context
 
@@ -75,5 +89,5 @@ kind and the detail as data, not as a prefix inside a message string.
 - The `CALL … IN TRANSACTIONS … REPORT STATUS` message hands over the
   bare `<Kind>: <detail>` text, as it does for the other typed-detail
   variants.
-- ADR-0168 and ADR-0175 pin the old type-class rows for these sites; both
+- [ADR-0168](./0168-non-finite-and-out-of-range-conversions.md) and [ADR-0175](./0175-list-and-string-form-conversions.md) pin the old type-class rows for these sites; both
   gain Later references notes pointing here.

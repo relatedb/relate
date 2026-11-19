@@ -1,8 +1,22 @@
-# 0005. Labeled property graph stored as columnar node and relationship Parquet tables
+---
+type: adr
+area: engine
+date: 2026-08-28
+deciders: MemoryDB maintainers
+name: 0005-lpg-parquet-layout
+status: accepted
+tags:
+  - parquet
+  - storage
+title: Labeled property graph stored as columnar node and relationship Parquet tables
+REFERENCES:
+  - "[[adr/0004-memory-first-parquet-object-store]]"
+  - "[[adr/0012-wal-and-parquet-checkpoints]]"
+  - "[[adr/0022-id-window-checkpoint-shards]]"
+  - "[[adr/0033-compact-live-records-typed-csr]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-08-28
-- **Deciders**: MemoryDB maintainers
+# 0005. Labeled property graph stored as columnar node and relationship Parquet tables
 
 ## Context
 
@@ -39,7 +53,7 @@ Schema-optional: labels and types do not require `CREATE` DDL.
 - **Store properties as a separate wide table** — extra joins on every
   checkpoint. Rejected for v1 simplicity.
 - **JSON document store for the whole graph** — fails the Parquet storage
-  goal (ADR-0004). Rejected.
+ goal ([ADR-0004](./0004-memory-first-parquet-object-store.md)). Rejected.
 
 ## Consequences
 
@@ -50,7 +64,7 @@ Schema-optional: labels and types do not require `CREATE` DDL.
 
 ## Later references
 
-ADR-0012 extends the snapshot directory. `manifest.json` gains
+[ADR-0012](./0012-wal-and-parquet-checkpoints.md) extends the snapshot directory. `manifest.json` gains
 `checkpoint_lsn` and `commit_ts` (format_version bump as already
 required by this ADR when the snapshot schema changes). Checkpoints
 still write `nodes.parquet` and `relationships.parquet` as the **latest
@@ -59,12 +73,12 @@ segments live under `wal/` for filesystem URIs; they are not Parquet.
 On-disk checkpoint is tmp+rename locally; S3 still publishes Parquet
 first, manifest last.
 
-ADR-0022: format_version 3 lists byte-budgeted id-window parts
+[ADR-0022](./0022-id-window-checkpoint-shards.md): format_version 3 lists byte-budgeted id-window parts
 (`nodes/{lo}-{hi}.parquet`, `relationships/{lo}-{hi}.parquet`) instead
 of one file per entity kind. Row schema is unchanged. A checkpoint
 rewrites only dirty windows (copy-on-write). v1–v2 monolith files still
 load.
 
-ADR-0033: the live RAM store uses compact records and typed CSR
+[ADR-0033](./0033-compact-live-records-typed-csr.md): the live RAM store uses compact records and typed CSR
 chunks. Parquet row schema and “rebuild adjacency on load” are
 unchanged.

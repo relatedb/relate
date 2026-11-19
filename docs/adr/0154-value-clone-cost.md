@@ -1,12 +1,25 @@
-# 0154. Value cloning cost: container values are O(1) to clone (Rc-backed)
+---
+type: adr
+area: engine
+date: 2026-10-01
+deciders: CypherLite maintainers (agreed in conversation)
+name: 0154-value-clone-cost
+status: accepted
+tags:
+  - perf
+  - values
+title: "Value cloning cost: container values are O(1) to clone (Rc-backed)"
+REFERENCES:
+  - "[[adr/0144-graph-examples-differential-suite]]"
+  - "[[adr/0155-bulk-writes-batched-unwind]]"
+  - "[[adr/0170-shared-value-payloads]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-01
-- **Deciders**: CypherLite maintainers (agreed in conversation)
+# 0154. Value cloning cost: container values are O(1) to clone (Rc-backed)
 
 ## Context
 
-The graph-examples differential suite (ADR-0144) surfaced a class of
+The graph-examples differential suite ([ADR-0144](./0144-graph-examples-differential-suite.md)) surfaced a class of
 quadratic behaviour on real datasets. The sharpest case: the evaluator reads
 a variable with a deep clone of its bound value.
 
@@ -99,7 +112,7 @@ Narrower alternatives are explicitly rejected below.
 ## Consequences
 
 - Reads of large lists/maps become O(1) to bind; the quadratic class
-  disappears for the measured shapes. The pull/import path (ADR-0155)
+ disappears for the measured shapes. The pull/import path ([ADR-0155](./0155-bulk-writes-batched-unwind.md))
   benefits where it reads large property maps.
 - `Arc` keeps `Value: Send + Sync`, so the query-worker boundary
   (`run_on_query_worker<T: Send>`) and the Bolt path keep working; the cost
@@ -114,7 +127,7 @@ Narrower alternatives are explicitly rejected below.
 
 ## Later references
 
-- [ADR-0170](0170-shared-value-payloads.md) settles the open List choice
+- [ADR-0170](./0170-shared-value-payloads.md) settles the open List choice
   as `Arc<Vec<Value>>`. It extends the decision to
   `Value::Vector { coord, values: Arc<Vec<Value>> }` and records the
   migration rules for implementing it (LABS-156).

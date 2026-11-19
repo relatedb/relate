@@ -1,9 +1,23 @@
+---
+type: adr
+area: surface
+date: 2026-09-29
+deciders: CypherLite maintainers
+name: 0269-bolt-route-self-routing-table
+status: accepted
+tags:
+  - bolt
+title: Bolt ROUTE answers with a single-server self routing table
+REFERENCES:
+  - "[[adr/0126-bolt-basic-auth]]"
+  - "[[adr/0140-bolt-route-advertises-dialed-address]]"
+  - "[[adr/0266-bolt-websocket-transport]]"
+  - "[[adr/0318-bolt-route-home-db-and-role-order]]"
+---
+
 # 0269. Bolt ROUTE answers with a single-server self routing table
 
-- **Status**: Accepted
 - **Renumbered**: from 0137 (shared-number cleanup)
-- **Date**: 2026-09-29
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
@@ -13,7 +27,7 @@ after HELLO and before any session opens, to fetch a routing table. The
 server's message-tag match in `surfaces/cypherlite-bolt/src/protocol.rs` had
 no `0x66` arm, so the connection died on
 `FAILURE 'unknown message tag 0x66'` and no browser client could connect.
-ADR-0266 item 4 settles that this Bolt-layer gap is fixed in the WebSocket
+[ADR-0266](./0266-bolt-websocket-transport.md) item 4 settles that this Bolt-layer gap is fixed in the WebSocket
 feature branch under its own ADR — this is that record.
 
 CypherLite is a single embedded server: there is no cluster, no second
@@ -47,7 +61,7 @@ table**. The response is `SUCCESS` with metadata:
 - **db** echoes the requested `db` field, defaulting to `"system"`; the
   engine is single-database, so the value is informational only.
 - ROUTE is answered regardless of the connection's failed state (it is
-  session management, like RESET, not query work). The ADR-0126 auth gate is
+ session management, like RESET, not query work). The [ADR-0126](./0126-bolt-basic-auth.md) auth gate is
   unchanged: with auth configured, a validated HELLO still comes first —
   the browser driver's handshake → HELLO → ROUTE order already satisfies it.
 
@@ -55,7 +69,7 @@ table**. The response is `SUCCESS` with metadata:
 
 - **Keep rejecting ROUTE as an unknown tag.** Rejected: it is the status quo
   that kills the neo4j-browser connect sequence before any session opens;
-  the whole point of ADR-0266's browser work is unreachable without it.
+ the whole point of [ADR-0266](./0266-bolt-websocket-transport.md)'s browser work is unreachable without it.
 - **FAILURE with a "routing unsupported" hint so the driver falls back to
   direct mode.** Rejected: the official drivers treat a ROUTE FAILURE as a
   hard error on `neo4j://` and do not silently downgrade to `bolt://`;
@@ -84,12 +98,12 @@ table**. The response is `SUCCESS` with metadata:
 
 ## Later references
 
-- ADR-0140 supersedes the `<self>` address derivation: ROUTE advertises the
+- [ADR-0140](./0140-bolt-route-advertises-dialed-address.md) supersedes the `<self>` address derivation: ROUTE advertises the
   routing-context `address` the client dialed when present and non-empty,
   falling back to the connection's local socket address otherwise, because
   the bind/local-address rule breaks behind Docker port mapping and NAT. The
   roles, ttl, and `db` echo settled here are unchanged.
-- ADR-0318 reverses the `db` default and the role order: a ROUTE whose
+- [ADR-0318](./0318-bolt-route-home-db-and-role-order.md) reverses the `db` default and the role order: a ROUTE whose
   extra names no database answers the home database `neo4j` (not
   `system`), and the servers list the roles WRITE, READ, ROUTE, as latest
   Neo4j does.

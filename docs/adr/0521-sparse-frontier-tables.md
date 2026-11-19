@@ -1,12 +1,25 @@
+---
+type: adr
+area: engine
+claim: b86b39129d8ff2ca3e230774768ddcb9cde5fd07
+name: 0521-sparse-frontier-tables
+status: proposed
+tags:
+  - pattern-matching
+  - perf
+title: Sparse frontier tables — per-run working memory sized by the pairs a run touches
+REFERENCES:
+  - "[[adr/0478-frontier-nfa-qpp-kernel]]"
+  - "[[adr/0516-frontier-rearrival-budget-fallthrough]]"
+SUPERSEDES:
+  - "[[adr/0478-frontier-nfa-qpp-kernel]]"
+---
+
 # ADR-0521: Sparse frontier tables — per-run working memory sized by the pairs a run touches
-
-Status: Proposed
-
-Claim: b86b39129d8ff2ca3e230774768ddcb9cde5fd07
 
 ## Context
 
-ADR-0478 Decision 6's allocation half gave the frontier-NFA kernel dense
+[ADR-0478](./0478-frontier-nfa-qpp-kernel.md) Decision 6's allocation half gave the frontier-NFA kernel dense
 tables indexed by node id: the first-arrival parent table
 (`span × states` slots of `Option<Parent>`, 32 B each), the dedup
 bitmask, the endpoint and candidate marks (one entry per node of the
@@ -104,11 +117,11 @@ find a node's per-node facts without a span-indexed array.
    past the last indexable pair records nothing and folds into the same
    decline — the ceiling is a decline at every granularity, never a
    panic. A crossing is a run-time decline, `FrontierRunDecline::TableBudget`, with
-   the same fall-through as ADR-0516's re-arrival-budget decline: the
+ the same fall-through as [ADR-0516](./0516-frontier-rearrival-budget-fallthrough.md)'s re-arrival-budget decline: the
    run's buffered rows are discarded, and the DFS, with its own caps,
    answers the clause. The PROFILE record names this decline
    `table-budget` (the `FrontierDeclineReason` vocabulary, beside
-   ADR-0516's `rearrival-budget`); like that one it is a run-time
+ [ADR-0516](./0516-frontier-rearrival-budget-fallthrough.md)'s `rearrival-budget`); like that one it is a run-time
    decline, so the declined run's counters stay recorded. The proven
    witnesses' own chain vectors are not
    counted; each is at most the search depth long, and their number is
@@ -230,6 +243,6 @@ find a node's per-node facts without a span-indexed array.
   arrivals (its edge visits times the automaton's states), which is what
   keeps one level's overshoot past the ceiling well under the 2³⁰ index
   space.
-- ADR-0478 Decision 6's allocation half is superseded in its layout,
+- [ADR-0478](./0478-frontier-nfa-qpp-kernel.md) Decision 6's allocation half is superseded in its layout,
   reset and gate. Its composition with the work budget stands: the
   budget bounds edge visits, the ceiling the tables those visits grow.

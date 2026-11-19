@@ -1,8 +1,20 @@
+---
+type: adr
+area: cypher
+claim: df471f4458d124e77b9f8e49aa6493b7b90b9fa5
+name: 0453-aggregations-in-subclauses
+status: proposed
+tags:
+  - semantics
+title: Aggregations in subclauses — ORDER BY/WHERE re-aggregation and DISTINCT grouping
+REFERENCES:
+  - "[[adr/0188-remove-superseded-tck-scenario-from-pin]]"
+  - "[[adr/0363-query-notifications]]"
+  - "[[adr/0371-preview-feature-gating]]"
+  - "[[adr/0472-repin-order-by-scenarios]]"
+---
+
 # ADR-0453: Aggregations in subclauses — ORDER BY/WHERE re-aggregation and DISTINCT grouping
-
-Status: Proposed
-
-Claim: df471f4458d124e77b9f8e49aa6493b7b90b9fa5
 
 ## Context
 
@@ -55,12 +67,12 @@ through the aggregating WHERE).
 ## Alternatives considered
 
 - Gate behind `CYPHERLITE_PREVIEW` like the CIP syntax extensions —
-  rejected: ADR-0371 gates syntax-extending features only; this is a
+ rejected: [ADR-0371](./0371-preview-feature-gating.md) gates syntax-extending features only; this is a
   validation-policy change on existing syntax, and the TCK floor scenarios
   all keep their verdicts.
 - Implement the 01N01 deprecation notifications the Cypher 5 twins expect —
   deferred, not replaced: the notification channel is plan-tree-only
-  (ADR-0363) and the ambiguous-reference classification is its own
+ ([ADR-0363](./0363-query-notifications.md)) and the ambiguous-reference classification is its own
   feature; the Cypher 25 twins (no notification) pass without it.
 
 ## Consequences
@@ -78,14 +90,14 @@ through the aggregating WHERE).
   expression") — under the recomputation rule an ORDER BY aggregation over
   an in-scope pre-projection variable is valid, which is exactly what those
   scenarios forbid. They should be removed from the vendored pin the way
-  ADR-0188 removed its superseded outline (denominator 3892 → 3890); that
+ [ADR-0188](./0188-remove-superseded-tck-scenario-from-pin.md) removed its superseded outline (denominator 3892 → 3890); that
   corpus edit was NOT made here — it awaits explicit human approval, since
-  the TCK floor may not silently lose scenarios. (Resolved by ADR-0472: the
+ the TCK floor may not silently lose scenarios. (Resolved by [ADR-0472](./0472-repin-order-by-scenarios.md): the
   scenarios stay in the pin asserting the Cypher 25 behaviour, so the
   denominator stays 3892 and no scenario is lost.)
 - The 01N01 deprecation notifications the acceptance suite's `@fails:cypher-5`
   twins expect (7 scenarios) are NOT implemented — the notification channel
-  is plan-tree-only (ADR-0363) and the ambiguous-reference classification
+ is plan-tree-only ([ADR-0363](./0363-query-notifications.md)) and the ambiguous-reference classification
   is its own feature; the Cypher 25 twins (no notification) pass without it.
 - The acceptance suite's own `@fails:cypher-25` twins (19 scenarios) now
   fail their expected-error assertions — the deliberate consequence of
@@ -93,7 +105,7 @@ through the aggregating WHERE).
 
 ## Later references
 
-- **ADR-0472 (re-pin of the four ORDER BY scenarios).** The TCK consequence
+- **[ADR-0472](./0472-repin-order-by-scenarios.md) (re-pin of the four ORDER BY scenarios).** The TCK consequence
   above is resolved: `WithOrderBy4 [13]`/`[14]` stay in the pinned corpus
   asserting this ADR's recomputation behaviour (and `ReturnOrderBy6 [5]`,
   `WithOrderBy4 [20]` likewise assert the Cypher 25 forms), so

@@ -1,6 +1,18 @@
-# ADR-0216: Idiomatic Node.js/TypeScript client — driver-style result ergonomics
+---
+type: adr
+area: surface
+name: 0216-javascript-client-ergonomics
+status: accepted
+tags:
+  - clients
+title: Idiomatic Node.js/TypeScript client — driver-style result ergonomics
+REFERENCES:
+  - "[[adr/0213-python-driver-result-ergonomics]]"
+  - "[[adr/0214-python-result-graph]]"
+  - "[[adr/0215-python-result-summary]]"
+---
 
-Status: Accepted
+# ADR-0216: Idiomatic Node.js/TypeScript client — driver-style result ergonomics
 
 ## Context
 
@@ -9,7 +21,7 @@ wraps the C ABI via koffi. Today `conn.query()` returns
 `{ columns, rows, queryType, namespace }` where rows are **positional
 arrays** of JSON-parsed values: no record access by name, no mutation
 counters, no driver conveniences, no TypeScript types, no library skill.
-The Python effort (LABS-253, ADR-0213/0214/0215) established the
+The Python effort [ADR-0213](./0213-python-driver-result-ergonomics.md)/[ADR-0214](./0214-python-result-graph.md)/[ADR-0215](./0215-python-result-summary.md)) established the
 ergonomics set; the survey behind it (Kùzu — archived Oct 2025, its
 Node API being the closest precedent; FalkorDB; SurrealDB)
 shows the embedded-in-Node niche is open and Arrow/df-shaped bulk output
@@ -28,7 +40,7 @@ plus driver-style results are what that audience expects.
    reason): `single()` (throws `ResultNotSingleError` on zero or >1) and
    `consume()` → a `ResultSummary` with `counters`, `queryType`,
    `namespace`, and `elapsedMs` measured at the client edge with
-   `performance.now()` (ADR-0215's rationale verbatim: in-process, the
+ `performance.now` ([ADR-0215](./0215-python-result-summary.md)'s rationale verbatim: in-process, the
    client edge is the execution edge). `peek()`/`fetch(n)` are
    deliberately absent: unlike the Python cursor there is no fetch
    position — `rows` is already an array, so `rows[0]` and `rows.slice(0,
@@ -37,7 +49,7 @@ plus driver-style results are what that audience expects.
    id-ordered, de-duplicated by id) extracted from the wire JSON shapes —
    `{"id","labels","properties"}` nodes, `{"id","type","start_node",
    "end_node","properties"}` relationships, paths as alternating arrays —
-   walking nested arrays/objects, mirroring ADR-0214.
+ walking nested arrays/objects, mirroring [ADR-0214](./0214-python-result-graph.md).
 4. **FFI**: the tabular C ABI gains `cypherlite_result_stats(result) ->
    str` returning the canonical counters JSON (`stats_to_wire_json` via
    `query_stats_to_wire`), stamped into the result at pack time. The

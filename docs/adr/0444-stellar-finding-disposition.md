@@ -1,12 +1,23 @@
+---
+type: adr
+area: infra
+claim: fa8fc5619d3af83f4d56f9c93b38d428f6b57e9c
+name: 0444-stellar-finding-disposition
+status: accepted
+status_note: 2026-10-29
+tags:
+  - review
+title: Stellar finding disposition — resolved threads deposed, non-critical findings deferred to Linear
+REFERENCES:
+  - "[[adr/0271-stellar-review-deterministic-pipeline]]"
+  - "[[adr/0275-stellar-review-scoped-incremental-rounds]]"
+---
+
 # ADR-0444: Stellar finding disposition — resolved threads deposed, non-critical findings deferred to Linear
-
-Status: Accepted (2026-10-29)
-
-Claim: fa8fc5619d3af83f4d56f9c93b38d428f6b57e9c
 
 ## Context
 
-The stellar pipeline (ADR-0271, ADR-0275) gives findings a ledger
+The stellar pipeline ([ADR-0271](./0271-stellar-review-deterministic-pipeline.md), [ADR-0275](./0275-stellar-review-scoped-incremental-rounds.md)) gives findings a ledger
 lifecycle — open / resolved / waived, with a capped `resolved_tail` so
 later rounds do not re-report or contradict accepted remedies — but no
 GitHub-side disposition. Each round posts one review; the earlier

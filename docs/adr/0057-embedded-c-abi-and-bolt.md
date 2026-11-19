@@ -1,8 +1,22 @@
-# 0057. Embedded C ABI is the client boundary; Bolt is optional remote transport
+---
+type: adr
+area: surface
+date: 2026-08-28
+deciders: MemoryDB maintainers
+name: 0057-embedded-c-abi-and-bolt
+status: accepted
+tags:
+  - bolt
+  - ffi
+title: Embedded C ABI is the client boundary; Bolt is optional remote transport
+REFERENCES:
+  - "[[adr/0003-tck-named-error-kinds]]"
+  - "[[adr/0008-localhost-http-query-api]]"
+  - "[[adr/0029-withdraw-localhost-http]]"
+  - "[[adr/0056-opencypher-tck-language-contract]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-08-28
-- **Deciders**: MemoryDB maintainers
+# 0057. Embedded C ABI is the client boundary; Bolt is optional remote transport
 
 ## Context
 
@@ -19,7 +33,7 @@ surfaces: a stable embed ABI, and a network protocol.
    wrap that ABI and do not invent a second wire protocol.
 3. A **Bolt** server (`memorydb-bolt`) is optional remote transport so
    official Neo4j drivers can `RUN` OpenCypher. Bolt is not Neo4j Cypher
-   parity (ADR-0056). Supported Bolt versions are documented in
+ parity ([ADR-0056](./0056-opencypher-tck-language-contract.md)). Supported Bolt versions are documented in
    `docs/api/bolt/`.
 
 Do not add a client language until the C ABI for the used features is
@@ -47,11 +61,11 @@ documented.
 
 ## Later references
 
-ADR-0029 removes the localhost HTTP sidecar (ADR-0008). This repo does
+[ADR-0029](./0029-withdraw-localhost-http.md) removes the localhost HTTP sidecar ([ADR-0008](./0008-localhost-http-query-api.md)). This repo does
 not ship an HTTP query API. Hosted HTTP belongs to clients implementing
 embedded Relate, not a second engine protocol.
 
-Renumbered from ADR-0003 to ADR-0057: the CypherLite/MemoryDB merge
+Renumbered from [ADR-0003](./0003-tck-named-error-kinds.md) to [ADR-0057](./0057-embedded-c-abi-and-bolt.md): the CypherLite/MemoryDB merge
 imported the MemoryDB ADR series numbered from 0001 while this repo already
 had ADRs 0001–0003. The main-era three were the minority (50+ files use the
 imported numbering), so they moved to 0055/0056/0057 to keep every number

@@ -1,8 +1,18 @@
-# 0113. CLI HTTPS clients do not check certificate revocation
+---
+type: adr
+area: cli
+date: 2026-09-26
+deciders: CypherLite maintainers
+name: 0113-no-tls-revocation-checking
+status: accepted
+tags:
+  - security
+title: CLI HTTPS clients do not check certificate revocation
+REFERENCES:
+  - "[[adr/0080-cli-pull-command]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-26
-- **Deciders**: CypherLite maintainers (Linear LABS-120)
+# 0113. CLI HTTPS clients do not check certificate revocation
 
 ## Context
 
@@ -15,7 +25,7 @@ Three CypherLite code paths make outbound HTTPS requests with `ureq` 3.4:
   (`surfaces/cypherlite-cli/src/telemetry/handle.rs:245-255`), feature
   `telemetry`.
 - `pull` talks to the Neo4j/Aura Query API v2 endpoint given by
-  `NEO4J_URI` (`surfaces/cypherlite-load/src/http.rs:107`), per ADR-0080.
+ `NEO4J_URI` (`surfaces/cypherlite-load/src/http.rs:107`), per [ADR-0080](./0080-cli-pull-command.md).
 
 All three use `ureq`'s default TLS configuration: rustls with bundled
 `webpki-roots` as the trust anchors. That default correctly rejects expired,

@@ -1,8 +1,19 @@
-# 0135. Cookbook diagrams: mermaid source, pre-rendered SVG
+---
+type: adr
+area: ecosystem
+date: 2026-09-28
+deciders: CypherLite maintainers
+name: 0135-cookbook-diagrams
+status: proposed
+tags:
+  - cookbook
+title: "Cookbook diagrams: mermaid source, pre-rendered SVG"
+REFERENCES:
+  - "[[adr/0132-single-file-recipes]]"
+  - "[[adr/0528-cookbook-moves-to-relate-web]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-28
-- **Deciders**: CypherLite maintainers
+# 0135. Cookbook diagrams: mermaid source, pre-rendered SVG
 
 ## Context
 
@@ -10,7 +21,7 @@ Recipes explain their graph data model and, for the longer ones, a pipeline
 (retrieval, a migration rehearsal, a tracer) in prose and inline patterns
 such as `(:Place)-[:IN]->(:City)`. A picture of the model, and of the flow,
 reads faster. A recipe is read in two places: the cookbook website and
-GitHub (ADR-0132 keeps the file readable there). GitHub renders one diagram
+GitHub ([ADR-0132](./0132-single-file-recipes.md) keeps the file readable there). GitHub renders one diagram
 format natively, mermaid code blocks. The website does not.
 
 Rendering mermaid on the website needs the mermaid library: in the page it
@@ -36,7 +47,7 @@ redrawing.
    the site's palette and font. It is an authoring tool with its own
    `package.json` (`mermaid`, `puppeteer-core`), run like
    `COOKBOOK_UPDATE=1` when a diagram changes; CI never installs it. It
-   reads the recipes through `cookbook-export` (ADR-0132). Each file starts
+ reads the recipes through `cookbook-export` ([ADR-0132](./0132-single-file-recipes.md)). Each file starts
    with a comment holding the SHA-256 of its source block.
 3. A data model is a flowchart whose nodes are all circles, `((…))`. The
    renderer draws it as a graph, the way Neo4j Bloom and NVL draw one: each
@@ -93,7 +104,7 @@ redrawing.
 
 - Recipes gain rendered SVG files beside them in `docs/cookbook/diagrams/`;
   a recipe is no longer entirely one file for the website, though its
-  source still is (ADR-0132).
+ source still is ([ADR-0132](./0132-single-file-recipes.md)).
 - Changing a diagram needs Chrome and a network connection (for the site's
   font) on the author's machine; a stale or missing render fails the
   website build, not the native recipe gate.
@@ -111,5 +122,5 @@ redrawing.
 
 ## Later references
 
-- ADR-0528 moves the cookbook to the relate-web repository: the diagram
+- [ADR-0528](./0528-cookbook-moves-to-relate-web.md) moves the cookbook to the relate-web repository: the diagram
   renderer moves there and draws in the site's colours.

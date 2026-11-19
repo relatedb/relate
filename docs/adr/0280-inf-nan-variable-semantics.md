@@ -1,9 +1,19 @@
+---
+type: adr
+area: cypher
+date: 2026-10-02
+deciders: CypherLite maintainers
+name: 0280-inf-nan-variable-semantics
+status: accepted
+tags:
+  - semantics
+  - values
+title: inf/nan/infinity variable semantics and non-finite float JSON rendering
+---
+
 # 0280. inf/nan/infinity variable semantics and non-finite float JSON rendering
 
-- **Status**: Accepted
 - **Renumbered**: from 0158 (shared-number cleanup)
-- **Date**: 2026-10-02
-- **Deciders**: CypherLite maintainers
 
 ## Context
 

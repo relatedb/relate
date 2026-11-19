@@ -1,6 +1,22 @@
-# ADR-0251: Fast test architecture — memory-first tiers, OS-delta lanes, build-once, background cadences
+---
+type: adr
+area: infra
+name: 0251-test-architecture
+status: accepted
+tags:
+  - ci
+  - testing
+title: Fast test architecture — memory-first tiers, OS-delta lanes, build-once, background cadences
+REFERENCES:
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+  - "[[adr/0243-query-latency-suite]]"
+  - "[[adr/0244-in-process-query-sampling-profiler]]"
+  - "[[adr/0252-corpus-family-single-job]]"
+  - "[[adr/0254-cargo-nextest-test-execution]]"
+---
 
-Status: Accepted
+# ADR-0251: Fast test architecture — memory-first tiers, OS-delta lanes, build-once, background cadences
 
 ## Context
 
@@ -21,8 +37,8 @@ The test suite has grown with the engine. Today a typical CI run and a local
   rebuild in-container; local CLI e2e re-resolves the full dependency graph
   on every invocation.
 - Heavy gates — the full TCK corpus (3892/3892, `docs/tck/compliance.md`),
-  loadtest baselines (ADR-0070, ADR-0071), the wasm site build, LDBC query
-  latency (ADR-0243), multi-OS sweeps — all run on the same cadence as the
+ loadtest baselines ([ADR-0070](./0070-docker-baseline-loadtest-environment.md), [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md)), the wasm site build, LDBC query
+ latency ([ADR-0243](./0243-query-latency-suite.md)), multi-OS sweeps — all run on the same cadence as the
   unit suite, so every PR waits on work whose answers change on the scale of
   hours, not minutes.
 - Locally, the AGENTS.md parallel-gates rule ("run independent gates as
@@ -121,7 +137,7 @@ A single build per SHA feeds all consumers:
   rebuilding in-container. Full in-container builds (compiling the
   workspace inside the image, toolchain and all) move to a **nightly job**
   that verifies the from-scratch container build still works. This does not
-  change ADR-0070: baseline loadtest *runs* still compile in
+ change [ADR-0070](./0070-docker-baseline-loadtest-environment.md): baseline loadtest *runs* still compile in
   `rust:1.88-bookworm` and execute in `debian:bookworm-slim` with the
   pinned 2 vCPU / 2 GB environment; only the duplicated, non-baseline
   in-container rebuilds are removed from the continuous path.
@@ -138,19 +154,19 @@ full versions move to timed cadences:
   the 3892/3892 gate stands (`docs/tck/compliance.md`) — only its cadence
   changes. A nightly TCK failure files a ticket instead of blocking every
   PR; the continuous slice still blocks PRs on language regressions.
-- **Loadtest baselines:** nightly, in the pinned ADR-0070 environment,
-  compared per ADR-0071; failures file tickets.
+- **Loadtest baselines:** nightly, in the pinned [ADR-0070](./0070-docker-baseline-loadtest-environment.md) environment,
+ compared per [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md); failures file tickets.
 - **wasm site build + multi-OS sweeps:** 6-hourly, with a continuous
   representative subset (the wasm cookbook parity slice, one non-Linux
   delta lane per OS).
-- **LDBC query latency (ADR-0243/ADR-0244):** nightly full SF0.1 suite,
+- **LDBC query latency ([ADR-0243](./0243-query-latency-suite.md)/[ADR-0244](./0244-in-process-query-sampling-profiler.md)):** nightly full SF0.1 suite,
   continuous p50 spot-check of recently-touched query ids.
 
 ### 7. Non-goals
 
 This ADR does not delete any coverage, does not change the TCK allowlist or
-skip list, and does not modify the ADR-0070 baseline environment or the
-ADR-0071 CI-owned envelope workflow. Coverage moves between tiers and
+skip list, and does not modify the [ADR-0070](./0070-docker-baseline-loadtest-environment.md) baseline environment or the
+[ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md) CI-owned envelope workflow. Coverage moves between tiers and
 cadences; nothing is dropped.
 
 ## Alternatives considered
@@ -219,7 +235,7 @@ cadences; nothing is dropped.
 - **The stack order is binding:** PR #293 merges first; this ADR's
   implementation branches stack on it (`--base` of the #293 branch until
   it lands) per the AGENTS.md stacking rule.
-- **ADR-0070/ADR-0071 are untouched.** Baseline loadtests keep their pinned
+- **[ADR-0070](./0070-docker-baseline-loadtest-environment.md)/[ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md) are untouched.** Baseline loadtests keep their pinned
   environment, CI-owned envelopes, and compare rules; only their cadence
   (nightly) and the removal of unrelated in-container rebuilds change.
 
@@ -228,9 +244,9 @@ Later references: the §5 shared-build wiring (per-SHA prebuilt directory,
 and the CI rust-cache shared keys) is documented in
 `docs/testing/build-caches.md`. The §6 cadence wiring is documented in
 `docs/testing/cadences.md`, with two reconciliations against the sketch
-above: the full TCK corpus stays continuous (ADR-0252's merged `corpus`
+above: the full TCK corpus stays continuous ([ADR-0252](./0252-corpus-family-single-job.md)'s merged `corpus`
 job made it seconds-cheap, so the nightly demotion never pays), and the
-loadtest-baselines job stays continuous (it is the ADR-0070/ADR-0071
+loadtest-baselines job stays continuous (it is the [ADR-0070](./0070-docker-baseline-loadtest-environment.md)/[ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md)
 CI-owned freeze gate, which only works on the merge path); the §6
 allowlist/3892-gate guarantees and the "cadence failures file tickets"
 contract are unchanged. The §5 `dev` shared-key family later gained a
@@ -245,7 +261,7 @@ same build-caches.md section.
 
 Later references (post-merge learnings, first green run 38705035809):
 the merged state was measured and confirmed three follow-ups, which the
-ci-runtime-next round (ADR-0254 onward) applies: (a) the free-disk step
+ci-runtime-next round ([ADR-0254](./0254-cargo-nextest-test-execution.md) onward) applies: (a) the free-disk step
 must not run on the larger-runner lanes (150 GB SSD) — moving a job
 there changed only runs-on and left the cleanup paying >1 minute for
 zero benefit; (b) `cargo test -p A -p B …` executes test binaries
@@ -272,4 +288,3 @@ composite action (`.github/actions/setup-rust-ci`); the per-lane
 hand-copying is the drift class that produced the free-disk-on-larger-
 runner defect, and GitHub Actions has no cross-file include, so a
 composite action is the mechanism.
-

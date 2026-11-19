@@ -1,10 +1,25 @@
-# ADR-0237: Query API v2 managed-transaction routes on engine transactions
+---
+type: adr
+area: surface
+name: 0237-query-api-tx-routes
+status: accepted
+tags:
+  - http
+  - transactions
+title: Query API v2 managed-transaction routes on engine transactions
+REFERENCES:
+  - "[[adr/0028-user-visible-transactions]]"
+  - "[[adr/0232-network-surfaces-charter]]"
+  - "[[adr/0435-managed-tx-lifecycle]]"
+SUPERSEDES:
+  - "[[adr/0232-network-surfaces-charter]]"
+---
 
-Status: Accepted
+# ADR-0237: Query API v2 managed-transaction routes on engine transactions
 
 ## Context
 
-ADR-0232 §3 chartered the HTTP Query API surface with the auto-commit
+[ADR-0232](./0232-network-surfaces-charter.md) §3 chartered the HTTP Query API surface with the auto-commit
 statement route only; managed-transaction routes
 (`/db/{name}/query/v2/tx…`) were explicitly excluded. In practice the
 official clients open an explicit transaction for managed work: the
@@ -15,7 +30,7 @@ statements on `POST /tx/{id}`, and closes with `POST /tx/{id}/commit` or
 `dbms.components()` version check) runs through `executeRead`, so the
 missing route 404'd the whole connect flow.
 
-The engine has had real explicit transactions all along (ADR-0028:
+The engine has had real explicit transactions all along ([ADR-0028](./0028-user-visible-transactions.md):
 `Connection::begin`/`commit`/`rollback`, one consistent snapshot per tx),
 so an honest mapping exists — no need to fake one.
 
@@ -63,7 +78,7 @@ tx affinity (`tx_host` is omitted).
 
 ## Consequences
 
-- ADR-0232's charter exclusion of managed-transaction routes is superseded
+- [ADR-0232](./0232-network-surfaces-charter.md)'s charter exclusion of managed-transaction routes is superseded
   for this subset (a Later references note records it).
 - `HttpConfig` gains a `transactions: TxRegistry` shared by all
   connections of a server; `query_api::handle` takes it.
@@ -74,14 +89,14 @@ tx affinity (`tx_host` is omitted).
 
 ## Later references
 
-- ADR-0435's managed-transaction lifecycle supersedes this decision's two
+- [ADR-0435](./0435-managed-tx-lifecycle.md)'s managed-transaction lifecycle supersedes this decision's two
   semantics-honesty statements. The registry no longer serializes tx
   statements behind a mutex held across the statement: the run route leases
   its entry out of the registry, runs the statement unlocked, and returns
   the entry, so no engine statement runs under the registry mutex
-  (ADR-0435 §1). Open transactions now expire: an idle timeout (60 s
+ ([ADR-0435](./0435-managed-tx-lifecycle.md) §1). Open transactions now expire: an idle timeout (60 s
   default) is enforced lazily by every registry operation's sweep, and a
   cap (128 default) bounds open entries, answering `404`/`42N90` and
   `429`/`42N91` respectively; the "we do not expire open transactions"
   sentence and the deferred idle-timeout alternative above are superseded
-  (ADR-0435 §1 and §2).
+ ([ADR-0435](./0435-managed-tx-lifecycle.md) §1 and §2).

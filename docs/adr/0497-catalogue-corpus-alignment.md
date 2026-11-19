@@ -1,8 +1,27 @@
+---
+type: adr
+area: cypher
+claim: dd5de9932d79f78115ef59cc06fab3419abf1471
+name: 0497-catalogue-corpus-alignment
+status: proposed
+tags:
+  - conformance
+  - functions
+  - procedures
+title: Align the built-in function and procedure catalogues with the Cypher-25 corpus
+REFERENCES:
+  - "[[adr/0001-cip-eval-ratcheted-gherkin-eval]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0371-preview-feature-gating]]"
+  - "[[adr/0378-ontology-procedures-preview-gate]]"
+  - "[[adr/0454-obfuscated-literals-lexer-gate]]"
+  - "[[adr/0467-preview-gates-chronological-and-complex-search]]"
+  - "[[adr/0542-engine-only-callable-unlisted-functions]]"
+  - "[[adr/0557-drop-server-only-procedures]]"
+  - "[[adr/0609-analyzer-catalogue-executes-from-analyzer-table]]"
+---
+
 # ADR-0497: Align the built-in function and procedure catalogues with the Cypher-25 corpus
-
-Status: Proposed
-
-Claim: dd5de9932d79f78115ef59cc06fab3419abf1471
 
 ## Context
 
@@ -45,7 +64,7 @@ corpus (generated catalogue tables, cross-checked by live probes against Neo4j
 any release) and the LABS-874 issue list (an unchecked shorthand whose five
 disputed entries are exactly the five conflicts in §5). Without one written
 rule, every CIP wave re-litigates the same calls, the preview registry
-(ADR-0371) has no policy for names, and an engine keeps advertising functions
+([ADR-0371](./0371-preview-feature-gating.md)) has no policy for names, and an engine keeps advertising functions
 no reference server has — or deletes surface an approved CIP pins.
 
 ## Decision
@@ -74,7 +93,7 @@ lists a name is not one.
   implemented, advertised and callable in every build.
 - **(b) Preview-gated.** A name an approved CIP adds that no release ships, or
   that the corpus records as unreachable or `@doc`-derived against the live
-  server, goes behind ADR-0371's registry (§3) and its cip-eval directory joins
+ server, goes behind [ADR-0371](./0371-preview-feature-gating.md)'s registry (§3) and its cip-eval directory joins
   `GATED_CIPS`. Never deleted, never silently advertised.
 - **(c) Removed.** A name the corpus records as removed leaves both the
   callable and the advertised registry — an unknown function in every dialect
@@ -127,16 +146,16 @@ was re-pinned to 42N48 and `ENGINE_PASSING.json` gained that identity.
 
 ### 4. Gate locality: the function-name admission gate
 
-ADR-0371's scope policy admits only **syntax-extending** features; a purely
+[ADR-0371](./0371-preview-feature-gating.md)'s scope policy admits only **syntax-extending** features; a purely
 additive function name never enters the registry. Four gate-location
 exceptions sit off that parse/dispatch point: `obfuscated-literals` reads its
-flag in the lexer (ADR-0454), `complex-search-patterns` in front validation
-through `ValidateOptions` (ADR-0467), the `db.ontology.*` family at procedure
-dispatch because its contract tracks a non-final external spec (ADR-0378), and
+flag in the lexer ([ADR-0454](./0454-obfuscated-literals-lexer-gate.md)), `complex-search-patterns` in front validation
+through `ValidateOptions` ([ADR-0467](./0467-preview-gates-chronological-and-complex-search.md)), the `db.ontology.*` family at procedure
+dispatch because its contract tracks a non-final external spec ([ADR-0378](./0378-ontology-procedures-preview-gate.md)), and
 a gated function name in the pre-binder admission walk below — this ADR's
 addition and the narrowest of them. **A name gate hides a name; it never
 widens grammar.** The exception is recorded where the policy lives, in
-ADR-0371's Later references, in the same commit as this ADR.
+[ADR-0371](./0371-preview-feature-gating.md)'s Later references, in the same commit as this ADR.
 
 The gate is an *admission* gate, checked where the name is admitted:
 `validate_function_admission` walks the parsed statement tree before lowering
@@ -161,7 +180,7 @@ points:
    (`cypherlite/cypherlite-executor/src/show_catalog.rs:104`) filters through
    `function_passes_name_gate` (`validate/functions.rs:332`), exactly as
    `procedure_catalog_rows(preview)` (`show_catalog.rs:188`) already does for
-   ADR-0378's ontology family.
+ [ADR-0378](./0378-ontology-procedures-preview-gate.md)'s ontology family.
 5. **The front gate loop** — one `Ok(false)` arm in
    `parse_and_lower_statement_with_policy_and_params`'s exhaustive
    `PREVIEW_FEATURES` match (`cypherlite/cypherlite-front/src/lib.rs:218-220`),
@@ -187,7 +206,7 @@ lowering's internal spellings, consulted by the binder's `is_known_function`
 `trim_leading`/`trim_trailing` there drops their `SHOW` rows without rejecting
 the parser's own lowered form.
 
-**Deliberate deviation from ADR-0371's authored-error rule.** A gated name's
+**Deliberate deviation from [ADR-0371](./0371-preview-feature-gating.md)'s authored-error rule.** A gated name's
 disabled form is the registry's ordinary `UnknownFunction` rejection (42N48),
 not `preview feature '<name>' is not enabled: set CYPHERLITE_PREVIEW=<name>`.
 The authored error exists so a user who wrote new *syntax* learns the flag; a
@@ -211,7 +230,7 @@ Reason: the corpus is first-tier and lists only the `stdev_*` rows
 `gql-function-aliases` suite's stddev scenarios are `@doc`-derived — Neo4j
 2026.05 answers 42N48, and their expected values were computed from
 `stDevP`/`stDev` -- while `baselines/cip-eval.json` holds the suite at 78/78.
-Re-pinning it is out of scope and the ratchet only moves up (ADR-0001), so the
+Re-pinning it is out of scope and the ratchet only moves up ([ADR-0001](./0001-cip-eval-ratcheted-gherkin-eval.md)), so the
 gate keeps both: a corpus-faithful default dialect and the suite's 78/78, with
 its 76 frozen identities passing in the gated phase.
 
@@ -240,7 +259,7 @@ would claim surface the reference server does not have (rule (b) against
 rule (a)).
 
 Rejected: advertise and call it unconditionally, following
-`ShowFunctions.feature:90` — contradicts the only live probe and ADR-0371's
+`ShowFunctions.feature:90` — contradicts the only live probe and [ADR-0371](./0371-preview-feature-gating.md)'s
 accepted-but-unreleased split. Delete the implementation and the suite's testdata
 -- throws away a passing 13/13 ratchet for a name that is already implemented.
 
@@ -330,7 +349,7 @@ rejection (42N48), so an alias would be a documented divergence.
   `BUILTIN_PROCEDURE_SIGNATURES` (`signatures.rs:119,121`). Both appear in no
   corpus file, the Cypher-25 procedure inventory has no row for either, and the
   corpus reaches those surfaces through `SHOW INDEXES` / `SHOW CONSTRAINTS`
-  (ADR-0116's command set). After removal `CALL db.indexes()` and
+ ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)'s command set). After removal `CALL db.indexes` and
   `CALL db.constraints()` fail as unknown procedures and `SHOW PROCEDURES`
   stops listing them; no replacement procedure is added, because the `SHOW`
   commands are the surface.
@@ -363,7 +382,7 @@ rejection (42N48), so an alias would be a documented divergence.
 
 ### 7. What the alignment does not touch
 
-- `db.ontology.*` stays behind `CYPHERLITE_PREVIEW=ontology` (ADR-0378),
+- `db.ontology.*` stays behind `CYPHERLITE_PREVIEW=ontology` ([ADR-0378](./0378-ontology-procedures-preview-gate.md)),
   unchanged.
 - `vector.dimensions` survives as the DDL `indexConfig` option key
   (`cypherlite/cypherlite-executor/src/vector_similarity.rs:77`,
@@ -620,16 +639,16 @@ runs) or `absent` (no engine row — absence is the aligned state).
 | `db.labels` | language | keep | executable | yes | yes | keep; registry cypherlite/cypherlite-executor/src/procedure_registry/signatures.rs:109 |
 | `db.relationshipTypes` | language | keep | executable | yes | yes | keep; registry cypherlite/cypherlite-executor/src/procedure_registry/signatures.rs:113; description missing today — fill it from show_expectations |
 | `db.propertyKeys` | language | keep | executable | yes | yes | keep; registry cypherlite/cypherlite-executor/src/procedure_registry/signatures.rs:116; description missing today — fill it from show_expectations |
-| `db.indexes` | language | remove | absent | no | no | remove the registry row (cypherlite/cypherlite-executor/src/procedure_registry/signatures.rs:119): absent from the Cypher-25 procedure inventory and from the whole corpus; CALL db.indexes() then fails as an unknown procedure and SHOW PROCEDURES stops listing it. SHOW INDEXES is the surface (ADR-0116's command set) |
+| `db.indexes` | language | remove | absent | no | no | remove the registry row (cypherlite/cypherlite-executor/src/procedure_registry/signatures.rs:119): absent from the Cypher-25 procedure inventory and from the whole corpus; CALL db.indexes then fails as an unknown procedure and SHOW PROCEDURES stops listing it. SHOW INDEXES is the surface ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)'s command set) |
 | `db.constraints` | language | remove | absent | no | no | remove the registry row (cypherlite/cypherlite-executor/src/procedure_registry/signatures.rs:121): absent from the Cypher-25 procedure inventory and from the whole corpus; CALL db.constraints() then fails as an unknown procedure. SHOW CONSTRAINTS is the surface |
 | `db.schema.nodeTypeProperties` | language | keep | executable | yes | yes | keep; registry cypherlite/cypherlite-executor/src/procedure_registry/signatures.rs:123 |
 | `db.schema.relTypeProperties` | language | keep | executable | yes | yes | keep; registry cypherlite/cypherlite-executor/src/procedure_registry/signatures.rs:133 |
 | `db.schema.visualization` | language | keep | executable | yes | yes | keep; registry cypherlite/cypherlite-executor/src/procedure_registry/signatures.rs:152 |
 | `db.createLabel` | language | keep | executable | yes | yes | keep; registry cypherlite/cypherlite-executor/src/procedure_registry/signatures.rs:165; description missing today — fill it from show_expectations; align the drifted metadata (mode/worksOnSystem/listed, named in the research evidence) to the corpus |
-| `db.ontology.set` | language | keep | executable | yes | yes | keep; unchanged, still preview-gated behind CYPHERLITE_PREVIEW=ontology (ADR-0378) |
-| `db.ontology.get` | language | keep | executable | yes | yes | keep; unchanged, still preview-gated behind CYPHERLITE_PREVIEW=ontology (ADR-0378) |
-| `db.ontology.drop` | language | keep | executable | yes | yes | keep; unchanged, still preview-gated behind CYPHERLITE_PREVIEW=ontology (ADR-0378) |
-| `db.ontology.apply` | language | keep | executable | yes | yes | keep; unchanged, still preview-gated behind CYPHERLITE_PREVIEW=ontology (ADR-0378) |
+| `db.ontology.set` | language | keep | executable | yes | yes | keep; unchanged, still preview-gated behind CYPHERLITE_PREVIEW=ontology ([ADR-0378](./0378-ontology-procedures-preview-gate.md)) |
+| `db.ontology.get` | language | keep | executable | yes | yes | keep; unchanged, still preview-gated behind CYPHERLITE_PREVIEW=ontology ([ADR-0378](./0378-ontology-procedures-preview-gate.md)) |
+| `db.ontology.drop` | language | keep | executable | yes | yes | keep; unchanged, still preview-gated behind CYPHERLITE_PREVIEW=ontology ([ADR-0378](./0378-ontology-procedures-preview-gate.md)) |
+| `db.ontology.apply` | language | keep | executable | yes | yes | keep; unchanged, still preview-gated behind CYPHERLITE_PREVIEW=ontology ([ADR-0378](./0378-ontology-procedures-preview-gate.md)) |
 | `db.awaitIndex` | language | keep | catalog-only | yes | no | keep; registry cypherlite/cypherlite-executor/src/procedure_registry/signatures.rs:202; align the drifted metadata (mode/worksOnSystem/listed, named in the research evidence) to the corpus; the corpus pins its description and signature verbatim ('Wait for an index to come online (for example: CALL db.awaitIndex("MyIndex", 300)).', 'db.awaitIndex(indexName :: STRING, timeOutSeconds = 300 :: INTEGER)') at features/correctness/ShowProcedures.feature:213,224 |
 | `db.awaitIndexes` | language | keep | executable | yes | yes | keep; registry cypherlite/cypherlite-executor/src/procedure_registry/signatures.rs:209; align the drifted metadata (mode/worksOnSystem/listed, named in the research evidence) to the corpus |
 | `db.resampleIndex` | language | keep | catalog-only | yes | no | keep; registry cypherlite/cypherlite-executor/src/procedure_registry/signatures.rs:212; align the drifted metadata (mode/worksOnSystem/listed, named in the research evidence) to the corpus |
@@ -870,7 +889,7 @@ all five conflicts (§5).
 - **Re-pin `gql-function-aliases` and `cypher-versions-selection`** — drop the
   `@doc`-derived scenarios and lower
   `baselines/cip-eval.json`. Rejected: re-pinning is out of scope for this
-  feature and the cip-eval ratchet only moves up (ADR-0001); lowering a frozen
+ feature and the cip-eval ratchet only moves up ([ADR-0001](./0001-cip-eval-ratcheted-gherkin-eval.md)); lowering a frozen
   baseline trades a catalogue fix for an evaluation regression, while the
   preview gate keeps both.
 - **Delete the `coll-zip` and `coll-has` implementations and their testdata.**
@@ -889,14 +908,14 @@ all five conflicts (§5).
   unrelated CIPs together makes one opt-in silently enable surface the caller
   did not ask for, and breaks the registry's one-row-one-name contract.
 - **Add a second env var or a per-surface option for function names** instead
-  of extending ADR-0371. Rejected: ADR-0371 rejected that shape for syntax --
+ of extending [ADR-0371](./0371-preview-feature-gating.md). Rejected: [ADR-0371](./0371-preview-feature-gating.md) rejected that shape for syntax --
   N flags, no registry, silent typos, per-surface documentation — and the same
   reasons hold for names; the registry already owns the spelling, the list
   parse and the fail-closed error.
 - **Keep `db.indexes` / `db.constraints` as deprecated catalog-only rows.**
   Rejected: the corpus has no row and no call site, so a deprecated row invents
   a name and would claim a Neo4j deprecation that was never announced;
-  ADR-0116's `SHOW INDEXES` / `SHOW CONSTRAINTS` are the surface.
+ [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)'s `SHOW INDEXES` / `SHOW CONSTRAINTS` are the surface.
 - **Store the mixed-case spellings in `KNOWN_FUNCTIONS` itself and lowercase at
   every lookup.** Rejected: the registry is the *matching* fact, consulted by
   the binder and the preview-gated name table, keyed by the lowercase
@@ -940,7 +959,7 @@ all five conflicts (§5).
   conditions — and the live gated-feature list grew from twelve to sixteen
   (fifteen after the 2026-11-04 amendment below).
 - Amended 2026-11-04: `apoc-coll-sort` is deleted outright (§5.3), so
-  `PREVIEW_FEATURE_TABLE` carries three ADR-0497 rows (fifteen live gated
+ `PREVIEW_FEATURE_TABLE` carries three [ADR-0497](./0497-catalogue-corpus-alignment.md) rows (fifteen live gated
   features), the `cypher-versions-selection` suite leaves `GATED_CIPS` and
   runs in the ungated phase, and its re-pinned scenario joins
   `ENGINE_PASSING.json`; that suite's baseline count is unchanged at 28/28.
@@ -964,33 +983,33 @@ all five conflicts (§5).
   call still binds and executes — the internal names stop being catalogue
   surface, not callable surface. The docs that name them change in the
   cutover commits (§7).
-- ADR-0371 gains a Later references note recording the function-name admission
+- [ADR-0371](./0371-preview-feature-gating.md) gains a Later references note recording the function-name admission
   gate as a narrow exception to the syntax-only scope policy, and
   recording that a name gate's disabled form is the ordinary unknown-function
-  rejection rather than the authored preview error. ADR-0378's procedure-family
+ rejection rather than the authored preview error. [ADR-0378](./0378-ontology-procedures-preview-gate.md)'s procedure-family
   row is unchanged and is cited here as the structural precedent
   (`procedure_preview_feature` plus a preview-filtered `SHOW` catalogue is the
-  pattern the function gate copies); ADR-0116's `SHOW`-command surface is cited
+ pattern the function gate copies); [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)'s `SHOW`-command surface is cited
   for the `db.indexes` / `db.constraints` removal.
-- This commit is documentation only: the ADR and ADR-0371's Later references
+- This commit is documentation only: the ADR and [ADR-0371](./0371-preview-feature-gating.md)'s Later references
   note. No code, test or doc-reference change rides with it; the cutover nodes
   land the registry, gate, catalogue, procedure and documentation changes the
   sections above specify.
 
 ## Later references
 
-- ADR-0542 records a fifth admission class, engine-only, callable, unlisted:
+- [ADR-0542](./0542-engine-only-callable-unlisted-functions.md) records a fifth admission class, engine-only, callable, unlisted:
   a name outside the corpus that works in every build but has no `SHOW
   FUNCTIONS` row. It is a recorded exception to the four rules in §2, not an
   amendment of them.
 
-- **ADR-0557** — the server-only procedure families (cluster, routing, fleet
+- **[ADR-0557](./0557-drop-server-only-procedures.md)** — the server-only procedure families (cluster, routing, fleet
   management, change-data-capture, session/connection/lock administration,
   usage statistics, server configuration), the vector-property setters and the
   index-resampling pair left the registry, so the alignment table above has no
   rows for them any more. The corpus-alignment rule itself is unchanged.
 
-- **ADR-0609** — `db.index.fulltext.listAvailableAnalyzers` is executable:
+- **[ADR-0609](./0609-analyzer-catalogue-executes-from-analyzer-table.md)** — `db.index.fulltext.listAvailableAnalyzers` is executable:
   the corpus does call it, so this table's `catalog-only` classification of
   that row no longer holds. It answers from the engine's analyzer table; the
   alignment rule itself is unchanged.

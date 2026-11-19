@@ -1,10 +1,22 @@
-# ADR-0215: `Cursor.consume()` → `ResultSummary` with client-edge timing
+---
+type: adr
+area: surface
+name: 0215-python-result-summary
+status: accepted
+tags:
+  - python
+title: "`Cursor.consume` → `ResultSummary` with client-edge timing"
+REFERENCES:
+  - "[[adr/0213-python-driver-result-ergonomics]]"
+  - "[[adr/0221-engine-reported-statement-elapsed]]"
+  - "[[adr/0285-c-abi-result-metadata-accessors]]"
+---
 
-Status: Accepted
+# ADR-0215: `Cursor.consume()` → `ResultSummary` with client-edge timing
 
 ## Context
 
-ADR-0213 deferred `consume()`/`ResultSummary` because the engine's stats
+[ADR-0213](./0213-python-driver-result-ergonomics.md) deferred `consume`/`ResultSummary` because the engine's stats
 carry no statement timing and the driver's summary is server-side. But
 CypherLite's Python binding is in-process: there is no round trip, so a
 `time.perf_counter()` pair around the native `Database.execute()` call
@@ -18,7 +30,7 @@ as future work; the Python surface should not wait for it.
 Add `Cursor.consume()` returning a `cypherlite.ResultSummary`:
 
 - `counters` — the 11 mutation counters (same dict as `Cursor.stats`)
-- `namespace` — the statement's resolved namespace (ADR-0285)
+- `namespace` — the statement's resolved namespace ([ADR-0285](./0285-c-abi-result-metadata-accessors.md))
 - `query_type` — the plan-time classification (`"r"`/`"w"`/`"rw"`/`"s"`)
 - `elapsed_ms` — wall-clock milliseconds measured at the client edge
   (`perf_counter` around the native execute call), so an in-process
@@ -38,7 +50,7 @@ fields.
 
 ## Alternatives considered
 
-- **Wait for engine-side timing (ADR-0213's stance)** — rejected: in an
+- **Wait for engine-side timing ([ADR-0213](./0213-python-driver-result-ergonomics.md)'s stance)** — rejected: in an
   embedded engine the client edge *is* the server edge minus a thin FFI
   boundary; the measurement is available now and the field can be
   re-sourced later without API change.
@@ -59,7 +71,7 @@ fields.
 
 ## Later references
 
-- ADR-0221 lands the engine-reported `elapsed` on `QueryResult`;
+- [ADR-0221](./0221-engine-reported-statement-elapsed.md) lands the engine-reported `elapsed` on `QueryResult`;
   `ResultSummary.elapsed_ms` re-sources to it (the switch predicted
   above), deleting the `perf_counter` measurement outright — the native
   module ships in the same wheel, so the stamp is always present.

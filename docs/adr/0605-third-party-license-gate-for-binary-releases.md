@@ -1,7 +1,18 @@
-# ADR-0605: Binary releases carry their third-party notices and pass a license allow-list
+---
+type: adr
+area: infra
+claim: e5b737a4ed31936d17d70c1dedb94ef86d3eaa62
+name: 0605-third-party-license-gate-for-binary-releases
+status: proposed
+tags:
+  - licensing
+  - release
+title: Binary releases carry their third-party notices and pass a license allow-list
+REFERENCES:
+  - "[[adr/0055-apache-2-license]]"
+---
 
-Status: Proposed
-Claim: e5b737a4ed31936d17d70c1dedb94ef86d3eaa62
+# ADR-0605: Binary releases carry their third-party notices and pass a license allow-list
 
 ## Context
 
@@ -9,7 +20,7 @@ Every binary Relate ships — the CLI, the C ABI library under the
 JavaScript, Java, Go and Swift clients, the Python wheels and the WASM
 bundle — statically includes third-party Rust crates. Their licenses
 require attribution to travel with the binaries, and the project is
-Apache-2.0 (ADR-0055), so a dependency under a license that conflicts with
+Apache-2.0 ([ADR-0055](./0055-apache-2-license.md)), so a dependency under a license that conflicts with
 that must not slip into a release unnoticed. Nothing checked either: the
 closure was never inventoried, and no notices file existed.
 

@@ -1,7 +1,20 @@
-# ADR-0317: Bolt RESET answers IGNORED for work queued ahead of it
+---
+type: adr
+area: surface
+claim: e09311af2e90b7ad91f4ddf700db137018797337
+name: 0317-bolt-reset-ignores-queued-work
+status: proposed
+tags:
+  - bolt
+title: Bolt RESET answers IGNORED for work queued ahead of it
+REFERENCES:
+  - "[[adr/0110-bolt-connection-query-governance]]"
+  - "[[adr/0126-bolt-basic-auth]]"
+  - "[[adr/0315-bolt-unknown-message-signature-fatal]]"
+  - "[[adr/0316-bolt-client-noop-chunks]]"
+---
 
-Status: Proposed
-Claim: e09311af2e90b7ad91f4ddf700db137018797337
+# ADR-0317: Bolt RESET answers IGNORED for work queued ahead of it
 
 ## Context
 
@@ -30,13 +43,13 @@ cypherlite-bolt streamed all three records first.
    the messages after the last RESET run normally. For one write of
    `RUN, PULL, RESET, RUN, PULL` the replies are IGNORED, IGNORED,
    SUCCESS, then the second RUN's SUCCESS, RECORD and SUCCESS.
-3. HELLO and GOODBYE are never interrupted. The ADR-0126 pre-HELLO auth
-   gate and the ADR-0315 fatal decode keep precedence.
+3. HELLO and GOODBYE are never interrupted. The [ADR-0126](./0126-bolt-basic-auth.md) pre-HELLO auth
+ gate and the [ADR-0315](./0315-bolt-unknown-message-signature-fatal.md) fatal decode keep precedence.
 4. A request already executing when RESET arrives is not interrupted:
    the connection thread runs it and has no concurrent reader.
 5. The batched framing keeps the 16 MiB message cap (a chunk header that
    would cross it fails before its body is read), the per-chunk idle
-   deadline re-arm (ADR-0110), and NOOP skipping (ADR-0316).
+ deadline re-arm ([ADR-0110](./0110-bolt-connection-query-governance.md)), and NOOP skipping ([ADR-0316](./0316-bolt-client-noop-chunks.md)).
 
 ## Alternatives considered
 

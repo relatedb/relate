@@ -1,23 +1,35 @@
-# ADR-0348: PROFILE metric fields — db hits, memory bytes, never-executed and estimate skew
+---
+type: adr
+area: engine
+claim: 2e74ac3908cc689fd1b8d2915bd950f9122e716a
+name: 0348-profile-metric-fields-db-hits-memory-bytes
+status: accepted
+tags:
+  - observability
+title: PROFILE metric fields — db hits, memory bytes, never-executed and estimate skew
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0218-stats-based-match-orientation]]"
+  - "[[adr/0344-query-plan-node-tree-and-per-operator-metrics]]"
+---
 
-Claim: 2e74ac3908cc689fd1b8d2915bd950f9122e716a
-Status: Accepted
+# ADR-0348: PROFILE metric fields — db hits, memory bytes, never-executed and estimate skew
 
 ## Context
 
-ADR-0344 phase 2 landed the PROFILE per-operator metrics — rows produced
+[ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md) phase 2 landed the PROFILE per-operator metrics — rows produced
 and elapsed time — collected through the opt-in `PlanMetricsSink` in the
 dispatch loop and stamped onto the `PlanNode` tree. Its Decision anticipated
 the metric fields ("later phases: rows + time first, db-hits counters, then
 estimates-everywhere, then memory"); the estimates landed with the tree's
-`estimated_rows` (ADR-0218 `PatternStats`). What is still missing is what
+`estimated_rows` ([ADR-0218](./0218-stats-based-match-orientation.md) `PatternStats`). What is still missing is what
 makes a PROFILE tree actionable beside a Neo4j plan: the store-access count
 (`DB Hits`, the column Neo4j tuning starts from), a memory figure, a
 never-executed marker for operators that did no work, and a signal when the
 planner's estimate is badly wrong. The executor already carries the graph
 walk counters `HOP_EXPANDS` / `NEIGHBOR_WALKS` (thread-locals, incremented
 at the walk sites), and the engine already owns one canonical deep-size
-policy for values: `Value::logical_bytes` (ADR-0042).
+policy for values: `Value::logical_bytes` ([ADR-0042](./0042-graph-memory-limit.md)).
 
 ## Decision
 
@@ -36,7 +48,7 @@ policy for values: `Value::logical_bytes` (ADR-0042).
    honestly counted zero.
 3. `memory_bytes` is defined as **row-materialization bytes**: the summed
    logical size of the rows the operator produced — each binding's key
-   counted as an ADR-0042 string, each value at its
+ counted as an [ADR-0042](./0042-graph-memory-limit.md) string, each value at its
    `Value::logical_bytes` (`rows_logical_bytes`, the one canonical helper
    beside the `Row` type). Stateful operators' non-row state —
    aggregation tables, sort buffers, distinct-tracking sets — is **a
@@ -69,7 +81,7 @@ policy for values: `Value::logical_bytes` (ADR-0042).
   sites on the hot path for granularity no PROFILE consumer distinguishes.
 - Define `memory_bytes` as allocated heap (measured via an allocator hook
   or `size_of` walks over engine internals) — rejected: the engine already
-  owns one canonical logical-size policy (ADR-0042) and one helper;
+ owns one canonical logical-size policy ([ADR-0042](./0042-graph-memory-limit.md)) and one helper;
   allocator-level measurement is nondeterministic (allocator granularity,
   sharing) and cannot be pinned by tests.
 - Record a `never_executed` flag in the sink — rejected: the fact is

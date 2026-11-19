@@ -1,15 +1,26 @@
-# 0560. crates.io and PyPI distribution
+---
+type: adr
+area: infra
+claim: 03840dd02e6982f4d54e2acd95fd19565dede688
+date: 2026-11-10
+deciders: the maintainers
+name: 0560-crates-io-and-pypi-distribution
+status: proposed
+tags:
+  - release
+title: crates.io and PyPI distribution
+REFERENCES:
+  - "[[adr/0054-one-c-abi-env-python]]"
+  - "[[adr/0278-npm-distribution]]"
+---
 
-Status: Proposed
-Claim: 03840dd02e6982f4d54e2acd95fd19565dede688
-Date: 2026-11-10
-Deciders: the maintainers
+# 0560. crates.io and PyPI distribution
 
 ## Context
 
 The Rust facade (`relate::Database`) and the Python package (`relate-db`)
 are consumable only as GitHub release assets; `cargo add relate` and
-`pip install relate-db` do not work. npm distribution is ADR-0278; this
+`pip install relate-db` do not work. npm distribution is [ADR-0278](./0278-npm-distribution.md); this
 decision extends the same shape to the Rust and Python registries.
 
 Name situation, checked at decision time:
@@ -17,7 +28,7 @@ Name situation, checked at decision time:
 - crates.io `relate` is already owned by the maintainers (the predecessor
   CLI project), so the facade keeps its existing package name.
 - PyPI `relate` is taken by an unrelated project; the Python package has
-  been named `relate-db` from the start (ADR-0054's one-C-ABI packaging).
+ been named `relate-db` from the start ([ADR-0054](./0054-one-c-abi-env-python.md)'s one-C-ABI packaging).
 
 Cargo requires every dependency of a published crate to exist on
 crates.io, so the publishable set is not a choice: it is the facade's
@@ -31,7 +42,7 @@ Publish to both registries from a dedicated `publish-registries.yml`
 workflow — called by `release.yml` once the GitHub release exists, and
 dispatchable by hand with a tag and per-registry toggles so dry runs and
 partial-failure recovery never require re-cutting a release. npm's jobs
-(ADR-0278) move into the same workflow; artifacts always come from the
+([ADR-0278](./0278-npm-distribution.md)) move into the same workflow; artifacts always come from the
 release's assets, so the chained run and a manual re-publish share one
 code path. Everything is lockstep with the release tag and fail-closed
 until its runbook setup is done:
@@ -69,13 +80,13 @@ of pointing at a crate that never publishes.
   for both ecosystems; release assets are a fallback, not a substitute.
 - **Long-lived API tokens as CI secrets for the steady state.**
   Rejected: OIDC trusted publishing is available on both registries and
-  matches ADR-0278's npm decision; a revocable secret is the bootstrap
+ matches [ADR-0278](./0278-npm-distribution.md)'s npm decision; a revocable secret is the bootstrap
   tool only.
 
 ## Consequences
 
 - 17 crates and one PyPI project publish per release once the runbook
-  setup lands; until then the jobs fail closed like ADR-0278's npm jobs.
+ setup lands; until then the jobs fail closed like [ADR-0278](./0278-npm-distribution.md)'s npm jobs.
 - A new publishable crate means: description, `repository` inherited
   from the workspace, a version pin on its workspace dependency entry,
   and removal of its `publish = false` — the boundary check stays the

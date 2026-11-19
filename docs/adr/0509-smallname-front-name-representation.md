@@ -1,8 +1,23 @@
+---
+type: adr
+area: cypher
+claim: 06c2c0fae19f90f1c1dee156c5742b5d2ec20cf3
+name: 0509-smallname-front-name-representation
+status: proposed
+tags:
+  - parser
+  - perf
+title: SmallName — the query front-end's name representation (inline u64 / catalog id / spilled Arc<str>)
+REFERENCES:
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0182-unicode-identifiers]]"
+  - "[[adr/0243-query-latency-suite]]"
+  - "[[adr/0245-query-latency-baseline-environment-and-gate]]"
+  - "[[adr/0257-query-input-limits]]"
+  - "[[adr/0505-parse-pipeline-token-and-string-representation]]"
+---
+
 # ADR-0509: SmallName — the query front-end's name representation (inline u64 / catalog id / spilled Arc<str>)
-
-Status: Proposed
-
-Claim: 06c2c0fae19f90f1c1dee156c5742b5d2ec20cf3
 
 ## Context
 
@@ -12,8 +27,8 @@ The parse+lower pipeline is allocation-bound. The 2026-11-03 profiling
 queries) measured 295 allocations per statement end to end, of which
 front-end **lowering adds +119** on top of the parser's 176; roughly
 40–50 % of parse+lower CPU is libc heap traffic, and on the
-sub-millisecond half of the GBL SF0.1 latency suite (ADR-0243, ADR-0245)
-parse+plan is 30–100 % of wall time. ADR-0505 (the representation
+sub-millisecond half of the GBL SF0.1 latency suite ([ADR-0243](./0243-query-latency-suite.md), [ADR-0245](./0245-query-latency-baseline-environment-and-gate.md))
+parse+plan is 30–100 % of wall time. [ADR-0505](./0505-parse-pipeline-token-and-string-representation.md) (the representation
 predecessor: borrowed token text, owned AST strings, alloc-free keyword
 lookup, FxHash scope maps) removes the token and operator allocation
 churn, but leaves the per-statement scope-map keys and the AST/IR name
@@ -58,7 +73,7 @@ Facts that bound the choice:
   alloc+dealloc); strategies run one per process (a shared warm state
   biases order); timed figures are per-pass medians over fixed-duration
   loops.
-- **The AST outlives the input** (ADR-0505): `cypherlite-ir` embeds
+- **The AST outlives the input** ([ADR-0505](./0505-parse-pipeline-token-and-string-representation.md)): `cypherlite-ir` embeds
   parser clauses, the planner matches them, the executor and ontology
   crates keep parsed graph-type bodies — so a borrowed representation
   drags the input lifetime through IR and the planner.
@@ -70,13 +85,13 @@ Facts that bound the choice:
   ids for labels, relationship types and property keys at write/execute
   time (`intern`/`get_id`); the front-end lowering entry points
   (`parse_and_lower*`) today take no catalog.
-- **Dependency boundaries (ADR-0103).** `cypherlite-parser` depends only
+- **Dependency boundaries ([ADR-0103](./0103-engine-surfaces-testing-layout.md)).** `cypherlite-parser` depends only
   on `cypherlite-model`; `cypherlite-ir` on parser + core;
   `cypherlite-front` on error, model, parser, core, ir. A type carried
   by AST fields must live somewhere the parser can depend on (R1).
-- Unicode identifiers (ADR-0182) and backtick-quoted names never fit the
+- Unicode identifiers ([ADR-0182](./0182-unicode-identifiers.md)) and backtick-quoted names never fit the
   inline arm's ASCII identifier shape; the 4 MiB query-size cap
-  (ADR-0257) bounds adversarial input to the per-statement tables.
+ ([ADR-0257](./0257-query-input-limits.md)) bounds adversarial input to the per-statement tables.
 - The plan cache (LABS-790) removes the parse+plan tax only for repeated
   statement texts; this decision cuts it for every statement. The two
   compose.
@@ -109,7 +124,7 @@ arms).
 IR's name fields (`variable`, `labels`, `types`, `alias`, … in
 `cypherlite-ir/src/ast.rs`), and the front-end's per-statement scope
 maps and sets (`pattern_vars`, `output_vars`, `call_scope`, the
-`validate/*` scopes) as `SmallName` keys on the FxHash tables ADR-0505
+`validate/*` scopes) as `SmallName` keys on the FxHash tables [ADR-0505](./0505-parse-pipeline-token-and-string-representation.md)
 established.
 
 **Staying `String`:** error paths (`ParseError`/`EngineError` own their
@@ -204,14 +219,14 @@ the gate, and independently revertible.
 
 ## Alternatives considered
 
-- **Keep `String` (the status quo after ADR-0505).** Rejected — the
+- **Keep `String` (the status quo after [ADR-0505](./0505-parse-pipeline-token-and-string-representation.md)).** Rejected — the
   measured baseline: 17.16 allocations per statement and ~39 ns/lookup;
-  the FxHash swap alone (ADR-0505 part 4) halves lookup time but leaves
+ the FxHash swap alone ([ADR-0505](./0505-parse-pipeline-token-and-string-representation.md) part 4) halves lookup time but leaves
   every per-statement scope-map key an owned `String`. The wired
   SmallName shape is 6.1x fewer allocations and 1.7x faster lookups than
   that Fx control.
 - **Arena/bump allocation for AST names.** **Deferred** (user direction,
-  2026-11-04), not rejected on merits — ADR-0505 already recorded the
+ 2026-11-04), not rejected on merits — [ADR-0505](./0505-parse-pipeline-token-and-string-representation.md) already recorded the
   lifetime objection: the AST outlives the input (IR embeds parser
   clauses; the planner, executor and ontology crates hold lowered
   forms), so an arena must outlive every `Query` holder. Revisit if the
@@ -227,7 +242,7 @@ the gate, and independently revertible.
   versus ~13 for the Fx map — at p90 35 distinct names per statement the
   scan dominates. Its 128 B/stmt memory shape (11.7x fewer bytes than
   any hash-table variant) stays on record as a memory-shape option; not
-  adopted because the latency gate (ADR-0245) bands time and peak RSS,
+ adopted because the latency gate ([ADR-0245](./0245-query-latency-baseline-environment-and-gate.md)) bands time and peak RSS,
   and ~1.5 KB of transient per-statement map bytes is not a measured
   RSS cost.
 - **`cypherlite-model` as the home crate.** Rejected — model is the
@@ -262,8 +277,8 @@ the gate, and independently revertible.
   3892/3892, plan-render tests and error-message tests unchanged;
   `Display`/`Debug` for the text arms round-trip byte-identically (the
   spike's tests promote with the type).
-- The FxHash exposure note carries from ADR-0505: not
-  collision-resistant, bounded by the 4 MiB query-size cap (ADR-0257)
+- The FxHash exposure note carries from [ADR-0505](./0505-parse-pipeline-token-and-string-representation.md): not
+ collision-resistant, bounded by the 4 MiB query-size cap ([ADR-0257](./0257-query-input-limits.md))
   and the per-statement lifetime of the maps.
 - Stage 4 changes the `parse_and_lower_*` signatures (a read-only
   catalog view parameter) — an internal API change only. No public Rust

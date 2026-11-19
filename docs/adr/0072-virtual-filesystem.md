@@ -1,13 +1,31 @@
-# 0072. Synchronous virtual filesystem for WAL and snapshots
+---
+type: adr
+area: engine
+date: 2026-09-20
+deciders: CypherLite maintainers
+name: 0072-virtual-filesystem
+status: accepted
+tags:
+  - storage
+title: Synchronous virtual filesystem for WAL and snapshots
+REFERENCES:
+  - "[[adr/0012-wal-and-parquet-checkpoints]]"
+  - "[[adr/0014-single-wal-write-path]]"
+  - "[[adr/0019-group-commit-shared-fsync]]"
+  - "[[adr/0044-withdraw-engine-s3]]"
+  - "[[adr/0050-snapshot-codecs]]"
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0098-safe-atomic-replacement]]"
+  - "[[adr/0145-wasm-opfs-vfs]]"
+  - "[[adr/0574-withdraw-cdc-replication-slots]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-20
-- **Deciders**: CypherLite maintainers
+# 0072. Synchronous virtual filesystem for WAL and snapshots
 
 ## Context
 
 Durable CypherLite state is a fsync’d WAL plus codec-owned snapshot files
-(ADR-0012, ADR-0014, ADR-0050). Those bytes were written through
+([ADR-0012](./0012-wal-and-parquet-checkpoints.md), [ADR-0014](./0014-single-wal-write-path.md), [ADR-0050](./0050-snapshot-codecs.md)). Those bytes were written through
 `std::fs` in the WAL and Apache `object_store` (plus a local `fs_dir`
 bypass) for checkpoints.
 
@@ -17,8 +35,8 @@ selected by database URI: native OS directories (today’s default), OPFS
 stores. That requires one filesystem abstraction the engine already uses,
 before those backends exist.
 
-ADR-0044 withdrew engine `s3://` and kept `object_store` only for local and
-in-memory snapshots. ADR-0050 rejected a single-file *snapshot codec* URI
+[ADR-0044](./0044-withdraw-engine-s3.md) withdrew engine `s3://` and kept `object_store` only for local and
+in-memory snapshots. [ADR-0050](./0050-snapshot-codecs.md) rejected a single-file *snapshot codec* URI
 (`.db` as GraphData). Neither decision is a VFS.
 
 ## Decision
@@ -26,16 +44,16 @@ in-memory snapshots. ADR-0050 rejected a single-file *snapshot codec* URI
 1. **One synchronous `Vfs`.** WAL segments and snapshot objects go through
    `Vfs` / `VfsFile` in `cypherlite-storage`.
    Paths are virtual `/` strings. The commit path stays synchronous
-   (ADR-0014, ADR-0019). Future WASM OPFS uses
+ ([ADR-0014](./0014-single-wal-write-path.md), [ADR-0019](./0019-group-commit-shared-fsync.md)). Future WASM OPFS uses
    `FileSystemSyncAccessHandle`, not an async `Database::open`.
 
 2. **VFS owns how bytes are stored; codecs still own what is written.**
    `manifest.json`, Parquet shards, and `graph.json` keep their names and
-   formats (ADR-0050). A later single-file VFS still presents that tree
+ formats ([ADR-0050](./0050-snapshot-codecs.md)). A later single-file VFS still presents that tree
    (`wal/00000001.log`, `nodes/…`). That is not a single-file codec.
 
 3. **URI selects the backend.** Advertise only schemes `Database::open`
-   can open (ADR-0044).
+ can open ([ADR-0044](./0044-withdraw-engine-s3.md)).
    - `:memory:` / empty → `MemoryVfs` (not durable; no checkpoint timer).
      WAL uses the same `MDBWAL01` framing as disk; process exit still
      discards everything.
@@ -50,8 +68,8 @@ in-memory snapshots. ADR-0050 rejected a single-file *snapshot codec* URI
 5. **Follow-on backends (not this change):** `opfs://<name>`; an
    object-store VFS (likely feature-gated, or owned by a client
    implementing embedded Relate, so the default crate still does not
-   pull AWS). Naive object `put` is still not a WAL `fsync` (ADR-0012).
-   Single-file packing is ADR-0074.
+ pull AWS). Naive object `put` is still not a WAL `fsync` ([ADR-0012](./0012-wal-and-parquet-checkpoints.md)).
+ Single-file packing is [ADR-0074](./0074-single-file-bundle-vfs.md).
 
 ## Alternatives considered
 
@@ -62,8 +80,8 @@ in-memory snapshots. ADR-0050 rejected a single-file *snapshot codec* URI
   expose sync handles (native, OPFS sync access).
 - **Implement OPFS / single-file / S3 in the same change** — rejected:
   the first cut is the interface plus Native (default) and Memory. Landing
-  unimplemented advertised URIs violates ADR-0044.
-- **Treat a `.db` file as a JSON codec** — already rejected in ADR-0050;
+ unimplemented advertised URIs violates [ADR-0044](./0044-withdraw-engine-s3.md).
+- **Treat a `.db` file as a JSON codec** — already rejected in [ADR-0050](./0050-snapshot-codecs.md);
   a container VFS is a different layer.
 
 ## Consequences
@@ -72,24 +90,24 @@ in-memory snapshots. ADR-0050 rejected a single-file *snapshot codec* URI
   Tokio runtime for snapshot I/O.
 - Public URIs are unchanged: `:memory:`, path, `file://`; `s3://` still
   errors.
-- ADR-0044 still governs engine object storage until an object-store VFS
-  exists. ADR-0050 still governs snapshot codecs.
+- [ADR-0044](./0044-withdraw-engine-s3.md) still governs engine object storage until an object-store VFS
+ exists. [ADR-0050](./0050-snapshot-codecs.md) still governs snapshot codecs.
 - TCK, cip-eval, and in-tree loadtest gates must stay green; Native
   on-disk layout is unchanged.
 
 ## Later references
 
-ADR-0074 packs this virtual tree into one host file when the URI path
+[ADR-0074](./0074-single-file-bundle-vfs.md) packs this virtual tree into one host file when the URI path
 ends with `.cl`. Native directories remain the default for every other
 filesystem path.
 
-ADR-0574 withdraws CDC slots. The VFS no longer carries `cdc/slots.json`.
+[ADR-0574](./0574-withdraw-cdc-replication-slots.md) withdraws CDC slots. The VFS no longer carries `cdc/slots.json`.
 
-ADR-0098 proposes to supersede the fixed `{path}.tmp` spelling implied by the
+[ADR-0098](./0098-safe-atomic-replacement.md) proposes to supersede the fixed `{path}.tmp` spelling implied by the
 Native tmp+close+rename description: atomic replacement uses an unpredictable,
 exclusively created temporary name and syncs the containing Native directory
 after rename on Linux/macOS. The close-before-rename requirement remains.
 
-ADR-0145 implements the OPFS follow-on named above: `opfs://<name>` on wasm,
+[ADR-0145](./0145-wasm-opfs-vfs.md) implements the OPFS follow-on named above: `opfs://<name>` on wasm,
 `FileSystemSyncAccessHandle` in a dedicated worker, and a synchronous slot-pool
 `Vfs`. `Database::open` still rejects the scheme.

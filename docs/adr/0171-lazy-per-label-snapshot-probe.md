@@ -1,8 +1,20 @@
-# 0171. Lazy per-label probe replaces the snapshot label census
+---
+type: adr
+area: engine
+date: 2026-10-06
+deciders: Oskar Hane (agreed in conversation), CypherLite maintainers
+name: 0171-lazy-per-label-snapshot-probe
+status: accepted
+tags:
+  - catalog
+  - perf
+title: Lazy per-label probe replaces the snapshot label census
+REFERENCES:
+  - "[[adr/0075-label-only-snapshot-census]]"
+  - "[[adr/0155-bulk-writes-batched-unwind]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-06
-- **Deciders**: Oskar Hane (agreed in conversation), CypherLite maintainers
+# 0171. Lazy per-label probe replaces the snapshot label census
 
 ## Context
 
@@ -13,7 +25,7 @@ the snapshot carry it (`label_on_snapshot`). Both read
 (`cypherlite/cypherlite-executor/src/overlay/mod.rs`), which walks
 `Graph::all_node_ids_at(ts)` (every entry of the `nodes` map, a visibility
 filter, then a sort) and reads `node_labels_at` per node to count **every
-label in the graph**. ADR-0075 made that walk label-only; it is still
+label in the graph**. [ADR-0075](./0075-label-only-snapshot-census.md) made that walk label-only; it is still
 O(N) per scratch.
 
 It runs on the first label check of a scratch: `create_node` and
@@ -24,7 +36,7 @@ MERGE-create, `SET n:L`, `REMOVE n:L` and `DELETE`. Autocommit builds a fresh
 `WriteScratch` per statement (`commit_optimistic`), so every label-touching
 statement pays one full census. An explicit transaction builds one scratch in
 `Connection::begin` and pays once per transaction at its snapshot.
-ADR-0155 lists this per-statement label cost as an open engine-side fix.
+[ADR-0155](./0155-bulk-writes-batched-unwind.md) lists this per-statement label cost as an open engine-side fix.
 
 Measured 2026-10-06 (release, `pull_rca` in
 `testing/cypherlite-graph-examples`):
@@ -84,7 +96,7 @@ nodes until it has `k`, or until the set is exhausted. It returns
    answers it without new checks.
 5. **Stale ids.** A `label_index` id is counted only if its newest version
    visible at `snapshot_ts` exists and carries `L`'s label id. Check label
-   ids, not label strings (ADR-0075's facet rule). Ids that are not
+ ids, not label strings ([ADR-0075](./0075-label-only-snapshot-census.md)'s facet rule). Ids that are not
    visible at `snapshot_ts`, or whose visible version lacks `L`, are
    skipped and never counted. These include ids that gained `L` after the
    snapshot, ids that lost it, ids created after it, and ids waiting for
@@ -149,18 +161,18 @@ nodes until it has `k`, or until the set is exhausted. It returns
   measured scaling quoted in Context, and it makes per-element loads
   O(N²). Rejected: every labeled write pays for the whole graph.
 - **Maintain committed per-label counts in `Graph`** (the global
-  label -> count index ADR-0075 rejected). One committed count cannot answer
+ label -> count index [ADR-0075](./0075-label-only-snapshot-census.md) rejected). One committed count cannot answer
   "at `snapshot_ts`" for an explicit transaction whose snapshot predates
   later commits. Answering that needs counts versioned by commit ts, pruned
   at the GC horizon, updated on every apply and abort, and rebuilt on
   checkpoint restore. Rejected: it adds new global state to every commit
   path to answer what the existing `label_index` answers with no new state,
-  and ADR-0075's reason still holds.
+ and [ADR-0075](./0075-label-only-snapshot-census.md)'s reason still holds.
 - **Cache the census across statements** (keyed by `commit_ts`, invalidated
   on commit). Every commit invalidates it, and in the per-element load
   every statement is a commit, so the first statement after each commit
   still pays O(N). Rejected: it does not fix the measured case, and
-  invalidation must track every commit's label changes (ADR-0075's
+ invalidation must track every commit's label changes ([ADR-0075](./0075-label-only-snapshot-census.md)'s
   reason).
 - **Use `label_index` set sizes as counts.** This is O(1) per label, but the
   sets are supersets: they hold stale, post-snapshot and relabeled ids.
@@ -191,10 +203,10 @@ nodes until it has `k`, or until the set is exhausted. It returns
   worst case is the sum of the touched labels' set sizes, a small multiple
   of the old census only for statements that delete or relabel most of a
   multi-label graph.
-- ADR-0075's census, the subject of its Decision, is gone.
-  `Graph::node_labels_at` stays because other callers use it. ADR-0075's
+- [ADR-0075](./0075-label-only-snapshot-census.md)'s census, the subject of its Decision, is gone.
+ `Graph::node_labels_at` stays because other callers use it. [ADR-0075](./0075-label-only-snapshot-census.md)'s
   rejected alternatives stay rejected: there is no global count and no
-  cross-statement cache. ADR-0155's per-statement label cost item is
+ cross-statement cache. [ADR-0155](./0155-bulk-writes-batched-unwind.md)'s per-statement label cost item is
   resolved.
 - There is no change to public API, result metadata, WAL, checkpoint or
   stats semantics.

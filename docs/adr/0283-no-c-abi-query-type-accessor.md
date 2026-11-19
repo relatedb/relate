@@ -1,13 +1,27 @@
+---
+type: adr
+area: surface
+date: 2026-10-05
+deciders: CypherLite maintainers
+name: 0283-no-c-abi-query-type-accessor
+status: accepted
+tags:
+  - ffi
+  - result-metadata
+title: No C ABI accessor for QueryResult.query_type in this change
+REFERENCES:
+  - "[[adr/0117-namespace-selection-apis-and-bolt]]"
+  - "[[adr/0162-query-type-on-result-and-bolt]]"
+  - "[[adr/0285-c-abi-result-metadata-accessors]]"
+---
+
 # 0283. No C ABI accessor for QueryResult.query_type in this change
 
-- **Status**: Accepted
 - **Renumbered**: from 0163 (shared-number cleanup)
-- **Date**: 2026-10-05
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
-ADR-0162's Consequences promise that the implementing change ships "a C
+[ADR-0162](./0162-query-type-on-result-and-bolt.md)'s Consequences promise that the implementing change ships "a C
 ABI accessor with `docs/api/c/` updates (language clients wrap the C ABI
 only)" alongside the Rust and Bolt surfaces, all in the same change. The
 implementing branch ships `QueryType` and `QueryResult::query_type` on
@@ -21,7 +35,7 @@ C ABI accessor — and, on inspection, it should not:
   `cypherlite_destroy_result` (`surfaces/cypherlite-ffi/src/tabular.rs`);
   everything else is connection-, database- or transaction-level.
 - The in-tree precedent for result metadata, the `QueryResult.namespace`
-  field (ADR-0117 §7), likewise has no C accessor — namespace selection
+ field ([ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §7), likewise has no C accessor — namespace selection
   reached the C ABI as connection calls
   (`cypherlite_connect_namespace` / `cypherlite_conn_set_namespace`),
   never as a result-field read.
@@ -30,20 +44,20 @@ C ABI accessor — and, on inspection, it should not:
   caller reads `QueryResult::query_type`. No JS, Java or Go client has
   asked for the value.
 
-ADR-0162 is Accepted and therefore immutable: narrowing its Consequences
+[ADR-0162](./0162-query-type-on-result-and-bolt.md) is Accepted and therefore immutable: narrowing its Consequences
 is a new ADR (this one) plus a **Later references** note on the old one.
 
 ## Decision
 
 **Ship no C ABI accessor for `QueryResult.query_type` in this change.**
-ADR-0162's C-ABI-accessor consequence is narrowed: the query type ships
+[ADR-0162](./0162-query-type-on-result-and-bolt.md)'s C-ABI-accessor consequence is narrowed: the query type ships
 on the Rust API and the Bolt RUN SUCCESS summary only. The rationale is
 threefold:
 
 1. **No result-metadata accessor precedent in the C ABI.** The FFI reads
    result rows (column count/name, row count, value JSON) and nothing
    else; the one existing result-metadata field, `namespace`
-   (ADR-0117 §7), has no accessor. `query_type` follows that precedent.
+ ([ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §7), has no accessor. `query_type` follows that precedent.
 2. **The LABS-175 routing use case is covered without it.** The primary
    consumer — a Neo4j driver routing read-only vs read-write statements —
    reads the Bolt RUN SUCCESS `type` key; embedded callers use the Rust
@@ -62,7 +76,7 @@ threefold:
   precedent says result-metadata fields do not get C accessors
   (`namespace` has none); and it is scope creep against LABS-175, whose
   routing use case the Rust and Bolt surfaces already cover.
-- **Amend ADR-0162 in place** to drop the C-ABI sentence from its
+- **Amend [ADR-0162](./0162-query-type-on-result-and-bolt.md) in place** to drop the C-ABI sentence from its
   Consequences. Rejected: Accepted ADRs are immutable — a later change
   is a new ADR plus a **Later references** note on the old one, which is
   exactly the mechanism this ADR uses.
@@ -78,7 +92,7 @@ threefold:
   `cypherlite_value_json` and `cypherlite_destroy_result`; the JS, Java
   and Go clients gain no query-type API. `docs/api/c/` is untouched by
   the explain-query-type feature; the `docs/api/rust/` and
-  `docs/api/bolt/` updates ADR-0162 requires still ship.
+ `docs/api/bolt/` updates [ADR-0162](./0162-query-type-on-result-and-bolt.md) requires still ship.
 - `query_type` remains reachable on every planned statement — plain,
   EXPLAIN, PROFILE — through `QueryResult::query_type` (Rust) and the
   Bolt RUN SUCCESS `type` key, so LABS-175's routing decision is
@@ -87,14 +101,14 @@ threefold:
   code is an additive follow-up requiring no engine change; the change
   that adds it ships the `docs/api/c/` spec + description + example in
   the same change, per the public-API rules.
-- ADR-0162 gains a **Later references** note naming this ADR; its
+- [ADR-0162](./0162-query-type-on-result-and-bolt.md) gains a **Later references** note naming this ADR; its
   original text is otherwise unchanged.
 - This ADR changes no code, tests, or public surface beyond the decision
   log; TCK and cip-eval are unaffected.
 
 ## Later references
 
-- ADR-0285: ships the additive follow-up this ADR deferred —
+- [ADR-0285](./0285-c-abi-result-metadata-accessors.md): ships the additive follow-up this ADR deferred —
   `cypherlite_result_query_type` plus a `cypherlite_result_namespace`
-  accessor for the ADR-0117 §7 field, both result-owned
+ accessor for the [ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §7 field, both result-owned
   `const char *`.

@@ -1,12 +1,25 @@
-# 0181. Typed Query API JSON wire format for pull
+---
+type: adr
+area: surface
+date: 2026-10-07
+deciders: CypherLite maintainers
+name: 0181-typed-query-api-wire-for-pull
+status: proposed
+tags:
+  - http
+  - load
+title: Typed Query API JSON wire format for pull
+REFERENCES:
+  - "[[adr/0080-cli-pull-command]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0158-streaming-single-process-pull]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-10-07
-- **Deciders**: CypherLite maintainers (Linear LABS-186)
+# 0181. Typed Query API JSON wire format for pull
 
 ## Context
 
-`cypherlite pull` (ADR-0080, ADR-0158) POSTs shape queries to the Neo4j
+`cypherlite pull` ([ADR-0080](./0080-cli-pull-command.md), [ADR-0158](./0158-streaming-single-process-pull.md)) POSTs shape queries to the Neo4j
 Query API v2 with `Accept: application/json`. In that representation a
 spatial or temporal property arrives as a plain JSON string — a WGS84
 point as `"SRID=4326;POINT (-0.1278 51.5074)"`, a date as
@@ -223,7 +236,7 @@ engine cannot represent, and an unknown tag must be handled too.
    the only two keys beyond the 19 captured tags.
 
 9. **`cypherlite-load` gains a direct `cypherlite-core` dependency.**
-   ADR-0103 R3 permits surfaces to depend on engine crates, and
+ [ADR-0103](./0103-engine-surfaces-testing-layout.md) R3 permits surfaces to depend on engine crates, and
    `PointValue`, `VectorCoordKind`, and `parse_iso` are not re-exported
    by the `cypherlite` facade; growing the facade's public API for one
    surface's need is the larger change. One workspace and one
@@ -293,9 +306,9 @@ engine cannot represent, and an unknown tag must be handled too.
 - A source value the engine cannot represent (`Base64`, `Unsupported`,
   unknown tag, unparseable payload, untagged cell) aborts the pull with
   `LoadError::TypedWire`, naming the element id and property key.
-  Batches already flushed (ADR-0158) remain in the destination; the
+ Batches already flushed ([ADR-0158](./0158-streaming-single-process-pull.md)) remain in the destination; the
   destination is then non-empty, so a retry needs a fresh database
-  (ADR-0158's refusal).
+ ([ADR-0158](./0158-streaming-single-process-pull.md)'s refusal).
 - `cypherlite-load` gains `cypherlite-core` in `[dependencies]`;
   `cargo xtask check-boundaries` R3 permits it, and the `cypherlite`
   facade does not grow.

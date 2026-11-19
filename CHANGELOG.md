@@ -107,6 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 1.1.0 Swift entries were misfiled under [1.0.2] by their pull requests and moved to their release (ADR-0618).
 - The shortest-route fan, anchor, selector and class-walk work landed as consolidation campaigns — no user-facing change (#499, #497).
 - The PR cycle is now stated as one loop in the repository's agent contract, the ready flip the agent's own signal and the merge a separate authorization (#525).
+- The decision-record corpus is now a queryable markdown vault (ADR-0621), and the adr-numbers CI gate reads the frontmatter `claim:` mint proof from every added ADR.
 
 ## [1.1.0] — 2026-11-17
 

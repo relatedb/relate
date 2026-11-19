@@ -1,26 +1,41 @@
-# 0137. Follow a native WAL and reload across a checkpoint gap
+---
+type: adr
+area: engine
+date: 2026-09-29
+deciders: CypherLite maintainers
+name: 0137-wal-follow
+status: proposed
+tags:
+  - wal
+title: Follow a native WAL and reload across a checkpoint gap
+REFERENCES:
+  - "[[adr/0013-tuple-mvcc]]"
+  - "[[adr/0020-segmented-wal-concurrent-checkpoint]]"
+  - "[[adr/0045-cdc-replication-slots]]"
+  - "[[adr/0136-read-only-open]]"
+  - "[[adr/0441-follower-gap-yield]]"
+  - "[[adr/0574-withdraw-cdc-replication-slots]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-29
-- **Deciders**: CypherLite maintainers
+# 0137. Follow a native WAL and reload across a checkpoint gap
 
 ## Context
 
-ADR-0136 opens a frozen snapshot. A reader that should see later commits
+[ADR-0136](./0136-read-only-open.md) opens a frozen snapshot. A reader that should see later commits
 without taking a second copy of the files has to watch the WAL the writer
-appends. ADR-0045 rejected an uncoordinated tail that pins WAL recycle:
-a dead consumer would hold closed segments forever. ADR-0574 later
+appends. [ADR-0045](./0045-cdc-replication-slots.md) rejected an uncoordinated tail that pins WAL recycle:
+a dead consumer would hold closed segments forever. [ADR-0574](./0574-withdraw-cdc-replication-slots.md) later
 removes the slots; follow still does not pin recycle. Checkpoint deletes
 segments whose `max_lsn` is covered by the published manifest
-(ADR-0020). A follower that has not applied those records loses them.
+([ADR-0020](./0020-segmented-wal-concurrent-checkpoint.md)). A follower that has not applied those records loses them.
 
-The query engine already applies redo beside readers (ADR-0013). Files
+The query engine already applies redo beside readers ([ADR-0013](./0013-tuple-mvcc.md)). Files
 are a recovery log plus a checkpoint; the database is the in-memory
 graph. Catch-up is applying frames into that graph, and a gap is a new
 load of the manifest, not a page read.
 
 `:memory:` has no shared files. A `.cl` bundle is not safe to read while
-its writer rewrites pages (ADR-0136).
+its writer rewrites pages ([ADR-0136](./0136-read-only-open.md)).
 
 ## Decision
 
@@ -55,7 +70,7 @@ its writer rewrites pages (ADR-0136).
 
 - **Register a CDC slot from the follower.** Rejected: the slot write
   breaks read-only, and a dead follower would hold WAL recycle
-  (ADR-0045). ADR-0574 removes the slot API entirely.
+ ([ADR-0045](./0045-cdc-replication-slots.md)). [ADR-0574](./0574-withdraw-cdc-replication-slots.md) removes the slot API entirely.
 - **Reload on every checkpoint.** Rejected: a follower that already
   applied the recycled LSN has nothing to rebuild.
 - **Publish a durable LSN before a frame may be applied.** Rejected for
@@ -73,6 +88,6 @@ its writer rewrites pages (ADR-0136).
 
 ## Later references
 
-- ADR-0441: a host may select `FollowGapPolicy::Yield` so a gap latches
+- [ADR-0441](./0441-follower-gap-yield.md): a host may select `FollowGapPolicy::Yield` so a gap latches
   `follow-gap` instead of loading a second graph. The default remains the
   reload described here.

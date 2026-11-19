@@ -1,11 +1,23 @@
-# ADR-0570: CALL { … } IN TRANSACTIONS requires an implicit transaction
+---
+type: adr
+area: cypher
+claim: e2004f83392a8d037bfefb89e5e38e08d7a4b59c
+name: 0570-call-in-transactions-implicit-transaction
+status: proposed
+tags:
+  - transactions
+title: CALL { … } IN TRANSACTIONS requires an implicit transaction
+REFERENCES:
+  - "[[adr/0210-call-in-transactions-batching]]"
+SUPERSEDES:
+  - "[[adr/0210-call-in-transactions-batching]]"
+---
 
-Status: Proposed
-Claim: e2004f83392a8d037bfefb89e5e38e08d7a4b59c
+# ADR-0570: CALL { … } IN TRANSACTIONS requires an implicit transaction
 
 ## Context
 
-ADR-0210 gave the engine per-batch commits for `CALL { … } IN
+[ADR-0210](./0210-call-in-transactions-batching.md) gave the engine per-batch commits for `CALL { … } IN
 TRANSACTIONS` and recorded a consequence for explicit transactions: the
 batches do not commit independently but accumulate in the enclosing
 transaction's write overlay and become visible when it commits.
@@ -24,7 +36,7 @@ machinery assumes it owns the commits.
 A statement whose plan contains `CALL { … } IN TRANSACTIONS` is refused at
 admission while an explicit transaction is open, before any work runs. The
 refusal leaves the open transaction usable and rollback-able. Statements
-running in an implicit (auto-commit) transaction keep ADR-0210's per-batch
+running in an implicit (auto-commit) transaction keep [ADR-0210](./0210-call-in-transactions-batching.md)'s per-batch
 commit behavior unchanged.
 
 ## Alternatives considered
@@ -44,7 +56,7 @@ commit behavior unchanged.
 
 - The explicit-transaction batching contract and its tests are replaced by
   a refusal test; implicit-transaction batching is unchanged.
-- ADR-0210's consequence about explicit transactions is superseded; its
+- [ADR-0210](./0210-call-in-transactions-batching.md)'s consequence about explicit transactions is superseded; its
   implicit-transaction contract stands.
 - The refusal carries the engine's semantic class; the corpus enforces
   only that an error is raised for GQLSTATUS 25N17.

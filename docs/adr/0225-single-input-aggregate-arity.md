@@ -1,11 +1,22 @@
+---
+type: adr
+area: cypher
+name: 0225-single-input-aggregate-arity
+status: accepted
+tags:
+  - functions
+title: Single-input aggregates require exactly one argument
+REFERENCES:
+  - "[[adr/0216-javascript-client-ergonomics]]"
+  - "[[adr/0217-shared-single-input-aggregate-table]]"
+---
+
 # ADR-0225: Single-input aggregates require exactly one argument
 
-> Renamed from ADR-0216: the number collided with
+> Renamed from [ADR-0216](./0216-javascript-client-ergonomics.md): the number collided with
 > docs/adr/0216-javascript-client-ergonomics.md (both landed on main via
 > parallel PRs). The decision is unchanged; references were updated in the
 > same change.
-
-Status: Accepted
 
 ## Context
 
@@ -86,10 +97,9 @@ Two layers:
 
 ## Later references
 
-- ADR-0217 unifies the class this ADR pinned into one shared
+- [ADR-0217](./0217-shared-single-input-aggregate-table.md) unifies the class this ADR pinned into one shared
   `SINGLE_INPUT_AGGREGATES` table in `cypherlite-ir` (adding `stdev`/
   `stdevp`, which this ADR's itemized list omitted though its normative
   "every single-input aggregate" wording included them), makes the
   executor backstop exact-arity, and leaves the percentile call-site
   check as this ADR decided.
-

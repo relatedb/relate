@@ -1,9 +1,18 @@
-# 0198. collect() + list in WITH: `WITH *` grouping keys and aggregates in CASE arms
+---
+type: adr
+area: cypher
+date: 2026-10-09
+deciders: CypherLite maintainers (agreed with live Neo4j CE 2026.09.0 evidence)
+name: 0198-collect-list-concat
+status: accepted
+tags:
+  - semantics
+title: "collect + list in WITH: `WITH *` grouping keys and aggregates in CASE arms"
+REFERENCES:
+  - "[[adr/0188-remove-superseded-tck-scenario-from-pin]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-09
-- **Deciders**: CypherLite maintainers (verdict on Linear LABS-199, agreed with
-  live Neo4j CE 2026.09.0 evidence)
+# 0198. collect() + list in WITH: `WITH *` grouping keys and aggregates in CASE arms
 
 ## Context
 
@@ -117,7 +126,7 @@ durable behavior pins are `testdata/cypherlite-tck/CollectListConcat.feature`.
   acceptance change in the validator/executor only, so no client surface or
   `docs/api/<surface>/` update is required.
 - The TCK floor must not regress: 3892 of 3892 pinned scenarios passing with
-  zero skips (ADR-0188), and the CIP-eval baselines
+ zero skips ([ADR-0188](./0188-remove-superseded-tck-scenario-from-pin.md)), and the CIP-eval baselines
   (`baselines/cip-eval.json`) ratchet up only.
 
 ## Later references

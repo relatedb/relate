@@ -1,12 +1,21 @@
+---
+type: adr
+area: engine
+claim: ca7cf7f9bccae68a41363c381b6a2ad0bc078b33
+name: 0460-markdown-body-properties
+status: proposed
+tags:
+  - checkpoint
+title: Ordered body properties for the markdown vault — the primary bare, the rest as `##` sections
+REFERENCES:
+  - "[[adr/0406-markdown-vault-snapshot-codec]]"
+---
+
 # ADR-0460: Ordered body properties for the markdown vault — the primary bare, the rest as `##` sections
-
-Status: Proposed
-
-Claim: ca7cf7f9bccae68a41363c381b6a2ad0bc078b33
 
 ## Context
 
-ADR-0406 pinned the vault body to exactly one property: the file body is
+[ADR-0406](./0406-markdown-vault-snapshot-codec.md) pinned the vault body to exactly one property: the file body is
 `properties["body"]`, rendered bare, and headings inside it are markdown
 text, not structure. The lpgfs exploration it built on had a second form —
 `## <name>` body sections mapping to named properties — which 0406
@@ -46,7 +55,7 @@ and resolved one way at every site that reads or writes a node file.
   same class as `codec`: never pruned by label churn, replaced only by
   an explicit open-time config. Resolution: explicit config if given,
   else the sidecar's, else the one-entry default `["body"]` — which is
-  ADR-0406's rule exactly, so existing vaults are unchanged.
+ [ADR-0406](./0406-markdown-vault-snapshot-codec.md)'s rule exactly, so existing vaults are unchanged.
 - **Rendering** (checkpoint): the listed properties the node carries as
   representable strings, in list order, become the body. **Zero → empty
   body; the list's first entry, when present, is the bare body (1:1,

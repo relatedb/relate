@@ -1,13 +1,24 @@
+---
+type: adr
+area: infra
+date: 2026-09-30
+deciders: CypherLite maintainers
+name: 0275-stellar-review-scoped-incremental-rounds
+status: accepted
+tags:
+  - review
+title: "Stellar review: script-enforced scope and resolved-findings memory"
+REFERENCES:
+  - "[[adr/0271-stellar-review-deterministic-pipeline]]"
+---
+
 # 0275. Stellar review: script-enforced scope and resolved-findings memory
 
-- **Status**: Accepted
 - **Renumbered**: from 0145 (shared-number cleanup)
-- **Date**: 2026-09-30
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
-ADR-0271 made the stellar review a deterministic, incremental pipeline:
+[ADR-0271](./0271-stellar-review-deterministic-pipeline.md) made the stellar review a deterministic, incremental pipeline:
 round N+1 re-reviews only units that changed since round N, everything
 else is **sealed**, and "new findings on untouched code become impossible
 by construction". PR #154 (six review rounds) showed the construction has
@@ -94,7 +105,7 @@ depend on the model obeying them.
 ## Consequences
 
 - Sealed code is sealed by construction at the posting boundary: neither
-  a confused nor a compromised model can file on it (extends ADR-0271's
+ a confused nor a compromised model can file on it (extends [ADR-0271](./0271-stellar-review-deterministic-pipeline.md)'s
   untrusted-findings stance from resolutions to findings themselves).
 - Fix rounds converge: a push can only be judged on the lines it
   changed, so a PR that stops changing stops accruing findings; the
@@ -107,5 +118,5 @@ depend on the model obeying them.
 - The comment-embedded ledger grows by the capped resolved tail (12
   entries × ~0.5 KB before compression) — negligible against the 48 KB
   budget.
-- Later references: ADR-0271 (this ADR tightens its decisions 2 and 6;
-  ADR-0271's text is unchanged).
+- Later references: [ADR-0271](./0271-stellar-review-deterministic-pipeline.md) (this ADR tightens its decisions 2 and 6;
+ [ADR-0271](./0271-stellar-review-deterministic-pipeline.md)'s text is unchanged).

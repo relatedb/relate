@@ -1,14 +1,29 @@
-# 0060. Re-freeze the identity loadtest baseline for gate-host daytime conditions
+---
+type: adr
+area: infra
+date: 2026-09-18
+deciders: CypherLite / MemoryDB merge
+name: 0060-identity-loadtest-baseline-refreeze
+status: accepted
+tags:
+  - loadtest
+title: Re-freeze the identity loadtest baseline for gate-host daytime conditions
+REFERENCES:
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0048-identity-loadtest-memory-budget]]"
+  - "[[adr/0061-ci-host-loadtest-baselines]]"
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+SUPERSEDES:
+  - "[[adr/0048-identity-loadtest-memory-budget]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-18
-- **Deciders**: CypherLite / MemoryDB merge
+# 0060. Re-freeze the identity loadtest baseline for gate-host daytime conditions
 
 ## Context
 
-ADR-0046 froze loadtest summaries under `baselines/` as a merge gate (ops/s ≥
+[ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) froze loadtest summaries under `baselines/` as a merge gate (ops/s ≥
 90% of baseline, p99 ≤ 115% + 250,000 ns jitter allowance, logical bytes ≤
-110%, errors == 0). ADR-0048 re-froze the identity baseline at corrected knobs
+110%, errors == 0). [ADR-0048](./0048-identity-loadtest-memory-budget.md) re-froze the identity baseline at corrected knobs
 (8 workers, `:memory:`, 40 MiB) after documenting that host conditions swing
 identity throughput (unchanged 50-worker filesystem runs varied 1,496–1,779
 ops/s).
@@ -43,10 +58,10 @@ baseline during normal working hours regardless of the code under test.
 
 Re-freeze `baselines/identity-loadtest.json` from a zero-error HEAD run
 representative of daytime gate-host conditions (1,521.03 ops/s; A/B run `b1`,
-2026-09-18, HEAD `b6c984e`, ADR-0048 knobs: 8 workers, `:memory:`, 40 MiB —
+2026-09-18, HEAD `b6c984e`, [ADR-0048](./0048-identity-loadtest-memory-budget.md) knobs: 8 workers, `:memory:`, 40 MiB —
 summarized with `scripts/summarize-loadtest.py`, ops arrays omitted as
-before). All ADR-0046 bands (ops/s ≥ 90%, p99 ≤ 115% + 250,000 ns, logical
-bytes ≤ 110%, errors == 0) and all ADR-0048 knobs are unchanged. The fraud
+before). All [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) bands (ops/s ≥ 90%, p99 ≤ 115% + 250,000 ns, logical
+bytes ≤ 110%, errors == 0) and all [ADR-0048](./0048-identity-loadtest-memory-budget.md) knobs are unchanged. The fraud
 and checkpoint baselines are untouched: fraud's failures were
 load-correlated scattered p99 misses that passed on a quiet re-run, with no
 systematic component.
@@ -82,19 +97,19 @@ systematic component.
 - Baselines remain host- and condition-specific: moving the gate to a
   different host class repeats this measure-then-re-freeze pattern under a
   new ADR.
-- ADR-0048's regenerated identity baseline is superseded (see its *Later
+- [ADR-0048](./0048-identity-loadtest-memory-budget.md)'s regenerated identity baseline is superseded (see its *Later
   references*); its knobs, memory budget, and jitter allowance stand.
 - `make gate` on the merge branch re-verified green against this baseline
   (gbuild node `40-reopen-verify`).
 
 ## Later references
 
-- ADR-0061: the "moving the gate to a different host class" case this ADR's
+- [ADR-0061](./0061-ci-host-loadtest-baselines.md): the "moving the gate to a different host class" case this ADR's
   Consequences predicted arrived immediately — CI `ubuntu-latest` runners
   cannot reproduce the local-host baselines (PR #13: fraud at 58% of the
   throughput floor, zero errors). CI now compares against its own
   `baselines/ci/` set seeded from runner artifacts; the local gate and this
   re-frozen baseline are unchanged.
-- ADR-0070: host-class splits are replaced by a Docker baseline environment
+- [ADR-0070](./0070-docker-baseline-loadtest-environment.md): host-class splits are replaced by a Docker baseline environment
   (2 vCPU / 2 GB). Identity (and fraud/checkpoint) are re-frozen from that
   environment; `baselines/ci/` is withdrawn.

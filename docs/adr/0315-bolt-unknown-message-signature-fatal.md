@@ -1,14 +1,27 @@
-# ADR-0315: Bolt unknown message signatures are fatal: the connection closes without a FAILURE
+---
+type: adr
+area: surface
+claim: 0d39e833aafe934b50605a766343bc2644df36a8
+name: 0315-bolt-unknown-message-signature-fatal
+status: proposed
+tags:
+  - bolt
+title: |-
+  Bolt unknown message signatures are fatal: the connection closes without a FAILURE
+REFERENCES:
+  - "[[adr/0126-bolt-basic-auth]]"
+  - "[[adr/0260-trust-boundary-error-sanitization]]"
+  - "[[adr/0314-bolt-protocol-breaches-close]]"
+---
 
-Status: Proposed
-Claim: 0d39e833aafe934b50605a766343bc2644df36a8
+# ADR-0315: Bolt unknown message signatures are fatal: the connection closes without a FAILURE
 
 ## Context
 
 A Bolt 4.4 request is a PackStream structure whose signature is one of
 HELLO `0x01`, GOODBYE `0x02`, RESET `0x0F`, RUN `0x10`, BEGIN `0x11`,
 COMMIT `0x12`, ROLLBACK `0x13`, DISCARD `0x2F`, PULL `0x3F` or ROUTE
-`0x66`. ADR-0260 item 2 kept the session answering any other signature
+`0x66`. [ADR-0260](./0260-trust-boundary-error-sanitization.md) item 2 kept the session answering any other signature
 with FAILURE `CypherLite.Error` `unknown message tag 0x..` (and a
 non-structure with `expected struct`), and continuing.
 
@@ -24,15 +37,15 @@ different protocol version, so no reply it could parse exists.
    message that is not a structure at all, is a fatal decode error. The
    server sends no FAILURE, logs one stderr line naming the signature,
    and closes the connection at once.
-2. The ADR-0126 pre-HELLO auth gate keeps precedence: before a validated
+2. The [ADR-0126](./0126-bolt-basic-auth.md) pre-HELLO auth gate keeps precedence: before a validated
    HELLO with auth enabled, any message other than HELLO and GOODBYE
    (an unknown one included) answers the Unauthorized FAILURE and closes,
    as before.
 3. The request vocabulary is one typed enum in the session. The signature
-   table, Neo4j's message class names (ADR-0314) and the decode step are
+ table, Neo4j's message class names ([ADR-0314](./0314-bolt-protocol-breaches-close.md)) and the decode step are
    derived from it, so no second list of tags exists.
-4. This reverses ADR-0260 item 2's "the unknown-tag FAILURE is
-   unchanged". ADR-0260's Later references note is added with the
+4. This reverses [ADR-0260](./0260-trust-boundary-error-sanitization.md) item 2's "the unknown-tag FAILURE is
+ unchanged". [ADR-0260](./0260-trust-boundary-error-sanitization.md)'s Later references note is added with the
    failure-code work that also revises that ADR.
 
 ## Alternatives considered

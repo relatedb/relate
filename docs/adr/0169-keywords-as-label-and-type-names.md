@@ -1,8 +1,23 @@
-# 0169. Keywords as label and relationship-type names
+---
+type: adr
+area: cypher
+date: 2026-10-06
+deciders: Oskar Hane (agreed in conversation), CypherLite maintainers
+name: 0169-keywords-as-label-and-type-names
+status: accepted
+tags:
+  - dialect
+  - parser
+title: Keywords as label and relationship-type names
+REFERENCES:
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0144-graph-examples-differential-suite]]"
+  - "[[adr/0191-keywords-as-symbolic-names]]"
+  - "[[adr/0277-one-cypher-parser]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-06
-- **Deciders**: Oskar Hane (agreed in conversation), CypherLite maintainers (Linear LABS-154)
+# 0169. Keywords as label and relationship-type names
 
 ## Context
 
@@ -11,7 +26,7 @@ without backticks; CypherLite does not. The northwind graph-examples
 walkthrough (`northwind-old.adoc`, lines 158/168/192/208) uses `:Order`
 throughout, and `MATCH (o:Order) RETURN o` fails with
 `syntax error: parse error: expected a label name, got "Order"`. The
-graph-examples differential suite (ADR-0144) found it, and
+graph-examples differential suite ([ADR-0144](./0144-graph-examples-differential-suite.md)) found it, and
 `graph-examples-findings.md` logs it. `cypherlite pull` already works
 around it on the write side: `cypher_identifier` in
 `surfaces/cypherlite-formatter/src/lib.rs` backticks every word in its
@@ -22,7 +37,7 @@ still fail.
 
 Root cause: every label/type-name read in
 `cypherlite/cypherlite-parser/src/parser/` (the production front-end,
-ADR-0046) checks `TokenType::is_ident_like()` in
+[ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md)) checks `TokenType::is_ident_like` in
 `cypherlite/cypherlite-parser/src/token.rs`. That predicate accepts
 `Identifier` and most keyword tokens (`RETURN`, `NODE`, `COUNT`, `NOT`,
 `NULL`, …), so those already work as labels. It deliberately excludes
@@ -118,7 +133,7 @@ CypherLite gives a syntax error where Neo4j succeeds for:
      the IS-suffix branches also stays, so `IS NULL`, `IS TYPED`,
      `IS NORMALIZED` and `IS LABELED` keep their predicate meaning.
    - The diagnostic planner-IR parser (`CYPHERLITE_PARSER=planner-ir`).
-     ADR-0277 already removed it from `cypherlite-ir`, so
+ [ADR-0277](./0277-one-cypher-parser.md) already removed it from `cypherlite-ir`, so
      `cypherlite-parser` is the only grammar this decision changes.
    - Quoting in `cypherlite-formatter`: `cypher_identifier` keeps
      backticking reserved words.
@@ -181,13 +196,13 @@ CypherLite gives a syntax error where Neo4j succeeds for:
 
 ## Later references
 
-ADR-0191 makes keywords valid unquoted symbolic names (aliases after
+[ADR-0191](./0191-keywords-as-symbolic-names.md) makes keywords valid unquoted symbolic names (aliases after
 `AS`, variable references, binding variables and map keys); the
 variables/aliases/map-key gaps left open here are closed there.
 
 Later change (query-notifications identifier-policy): the formatter now
 delegates identifier quoting to
 `cypherlite_parser::token::{identifier_needs_quotes, quote_identifier}`
-(ADR-0103 R3 permits surfaces → engine crates), so the `RESERVED_WORDS`
+([ADR-0103](./0103-engine-surfaces-testing-layout.md) R3 permits surfaces → engine crates), so the `RESERVED_WORDS`
 mirror and its cross-check test are gone; the backticks-for-keywords
 policy above is unchanged.

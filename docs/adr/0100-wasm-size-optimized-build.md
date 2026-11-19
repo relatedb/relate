@@ -1,12 +1,23 @@
-# 0100. Size-optimized WASM build pipeline
+---
+type: adr
+area: surface
+date: 2026-09-25
+deciders: CypherLite maintainers
+name: 0100-wasm-size-optimized-build
+status: accepted
+tags:
+  - wasm
+title: Size-optimized WASM build pipeline
+REFERENCES:
+  - "[[adr/0084-reinstate-wasm-distribution]]"
+  - "[[adr/0530-playground-moves-to-relate-web]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-25
-- **Deciders**: CypherLite maintainers
+# 0100. Size-optimized WASM build pipeline
 
 ## Context
 
-ADR-0084 reinstated the WASM distribution via `wasm-pack build --release
+[ADR-0084](./0084-reinstate-wasm-distribution.md) reinstated the WASM distribution via `wasm-pack build --release
 --target web`, wired through `scripts/build-wasm.sh` and gated in CI. That
 pipeline used the default workspace `release` profile (no explicit size
 tuning) and wasm-pack's bundled `wasm-opt` pass, producing a 7.07 MB raw
@@ -47,7 +58,7 @@ explicit two-step pipeline that uses a wasm-only release profile:
   `wasm-opt -O2` instead of `-Oz`. Both the cargo step and the
   wasm-opt step are substantially faster (measured ~20 s end-to-end
   vs ~50 s for release on this machine). The output is roughly 1.5×
-  the release size — smaller than the pre-ADR-0100 baseline because
+ the release size — smaller than the pre-[ADR-0100](./0100-wasm-size-optimized-build.md) baseline because
   `-O2` still strips dead code. The playground's `build:wasm` script
   defaults to this mode for iterative work.
 
@@ -94,11 +105,11 @@ Measured impact on `cypherlite_bg.wasm` (this branch):
 - Full LTO + `codegen-units = 1` makes the wasm build slower (measured
   ~35 s on this machine vs ~15 s for the old default profile). CI wasm
   job time increases by roughly that amount.
-- ADR-0084's build-entry clause still holds — one shared entry point,
+- [ADR-0084](./0084-reinstate-wasm-distribution.md)'s build-entry clause still holds — one shared entry point,
   called by both `make build-wasm` and the playground.
 
 ## Later references
 
-- ADR-0530 moves the playground to the relate-web repository: its
+- [ADR-0530](./0530-playground-moves-to-relate-web.md) moves the playground to the relate-web repository: its
   `build:wasm` scripts and the Pages deploy's bundle build are removed.
   The two modes and the single entry point are unchanged.

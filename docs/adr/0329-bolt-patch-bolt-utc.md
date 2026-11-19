@@ -1,7 +1,23 @@
-# ADR-0329: Bolt 4.4 patch_bolt utc: UTC DateTime structures when the client negotiates them
+---
+type: adr
+area: surface
+claim: 209f3cce9bae795cb9e28c8fc72ea913f1b4219b
+name: 0329-bolt-patch-bolt-utc
+status: proposed
+tags:
+  - bolt
+  - conformance
+title: |-
+  Bolt 4.4 patch_bolt utc: UTC DateTime structures when the client negotiates them
+REFERENCES:
+  - "[[adr/0177-bolt-parameter-conversion]]"
+  - "[[adr/0178-engine-zone-resolver]]"
+  - "[[adr/0325-bolt-temporal-results-as-packstream-structs]]"
+SUPERSEDES:
+  - "[[adr/0177-bolt-parameter-conversion]]"
+---
 
-Status: Proposed
-Claim: 209f3cce9bae795cb9e28c8fc72ea913f1b4219b
+# ADR-0329: Bolt 4.4 patch_bolt utc: UTC DateTime structures when the client negotiates them
 
 ## Context
 
@@ -15,9 +31,9 @@ clock. Neo4j 2026.09.0 does this (F-10: SUCCESS carries
 `0x49(1704161045, 123456789, 3600)`).
 
 CypherLite ignores `patch_bolt`, so a patching client keeps getting legacy
-structures it did not ask for. ADR-0177 rejects `0x49`/`0x69` and rejected
+structures it did not ask for. [ADR-0177](./0177-bolt-parameter-conversion.md) rejects `0x49`/`0x69` and rejected
 the alternative of accepting them, because no negotiated client could send
-them. ADR-0325 now encodes datetime results as `0x46`/`0x66`.
+them. [ADR-0325](./0325-bolt-temporal-results-as-packstream-structs.md) now encodes datetime results as `0x46`/`0x66`.
 
 ## Decision
 
@@ -33,14 +49,14 @@ them. ADR-0325 now encodes datetime results as `0x46`/`0x66`.
    region datetime as `0x69` DateTimeZoneIdUTC `[UTC epoch seconds,
    nanoseconds, zone id]`. `datetime('2024-01-02T03:04:05.123456789+01:00')`
    is `0x49(1704161045, 123456789, 3600)`. Every other temporal structure
-   (ADR-0325) is unchanged.
+ ([ADR-0325](./0325-bolt-temporal-results-as-packstream-structs.md)) is unchanged.
 3. **Parameters under the patch.** `0x49` decodes with `utc = seconds +
    nanoseconds` and `zone: None`. `0x69` decodes the UTC instant and
    resolves the zone's offset at that instant, which is never ambiguous
-   (the new engine helper `zone_offset_at_utc`, beside ADR-0178's
-   wall-clock `zone_offset_at`). An unknown zone fails with ADR-0177's
+ (the new engine helper `zone_offset_at_utc`, beside [ADR-0178](./0178-engine-zone-resolver.md)'s
+ wall-clock `zone_offset_at`). An unknown zone fails with [ADR-0177](./0177-bolt-parameter-conversion.md)'s
    unknown-timezone message. The legacy `0x46`/`0x66` are rejected with
-   ADR-0177's unsupported-struct message.
+ [ADR-0177](./0177-bolt-parameter-conversion.md)'s unsupported-struct message.
 4. **Without the patch** nothing changes: `0x49`/`0x69` stay rejected and
    results use `0x46`/`0x66`.
 5. The session only stores the flag (set by the HELLO that validates),
@@ -68,15 +84,15 @@ them. ADR-0325 now encodes datetime results as `0x46`/`0x66`.
 ## Consequences
 
 - Drivers that send `patch_bolt: ["utc"]` (the official Python driver
-  does on Bolt 4.4, see ADR-0177's Context) get the UTC structures they
+ does on Bolt 4.4, see [ADR-0177](./0177-bolt-parameter-conversion.md)'s Context) get the UTC structures they
   expect, and zoned datetimes no longer pass through a wall-clock reading.
   The Python driver smoke and `temporal_params.py` therefore exercise the
   patched encoding. The Python driver's (6.3.1) patched encoder mishandles
   a `zoneinfo.ZoneInfo` datetime parameter (it crashes or computes a wrong
   offset nondeterministically, against Neo4j too), so the example sends
   its zoned parameter with a pytz zone.
-- ADR-0177's rejection of `0x49`/`0x69` (item 5) and its "accept the 5.0
-  UTC tags" alternative are superseded under the patch; ADR-0177 gets a
+- [ADR-0177](./0177-bolt-parameter-conversion.md)'s rejection of `0x49`/`0x69` (item 5) and its "accept the 5.0
+ UTC tags" alternative are superseded under the patch; [ADR-0177](./0177-bolt-parameter-conversion.md) gets a
   Later references note.
 - `docs/api/bolt/spec.md` documents the HELLO echo and both tables list the
   UTC structures.

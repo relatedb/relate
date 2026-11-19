@@ -1,22 +1,35 @@
-# 0173. Overlay-owned redo log and scratch equality index
+---
+type: adr
+area: engine
+date: 2026-10-06
+deciders: CypherLite maintainers (review of the [ADR-0171](./0171-lazy-per-label-snapshot-probe.md)/[ADR-0172](./0172-incremental-constraint-validation.md) branch)
+name: 0173-overlay-owned-redo-log-and-scratch-index
+status: proposed
+tags:
+  - index
+  - write-path
+title: Overlay-owned redo log and scratch equality index
+REFERENCES:
+  - "[[adr/0172-incremental-constraint-validation]]"
+SUPERSEDES:
+  - "[[adr/0172-incremental-constraint-validation]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-10-06
-- **Deciders**: CypherLite maintainers (review of the ADR-0171/ADR-0172 branch)
+# 0173. Overlay-owned redo log and scratch equality index
 
 ## Context
 
-ADR-0172 made constraint validation incremental. Its implementation left
+[ADR-0172](./0172-incremental-constraint-validation.md) made constraint validation incremental. Its implementation left
 four pieces of write-overlay state whose invariants are kept by convention
 across several functions:
 
 1. **The scratch equality index.** `WriteScratch.prop_ix` is the lazy
    `(label, key) → GroupKey → ids` overlay the uniqueness probe and
-   `ExecGraph::lookup_nodes` read (ADR-0172 §3). Three hooks keep it
+ `ExecGraph::lookup_nodes` read ([ADR-0172](./0172-incremental-constraint-validation.md) §3). Three hooks keep it
    current: one each in `create_node`, `set_property_node` and `add_labels`.
    The hooks differ on whether they post to the `""` any-label bucket, and
    they share a free function over a raw nested `HashMap` to get around the
-   borrow checker. ADR-0172 rejected hooks in every write primitive for the
+ borrow checker. [ADR-0172](./0172-incremental-constraint-validation.md) rejected hooks in every write primitive for the
    touched set, because a primitive that forgets its hook silently skips
    validation. The uniqueness probe trusts this index in the same way: a
    missing posting is a missed conflict.
@@ -25,13 +38,13 @@ across several functions:
    in `overlay/mod.rs` and mutated from `overlay/validation.rs`, and the
    cursor read clamps with `.min(len)`, hiding the invariant
    `validated_redo <= pending_redo.len()`.
-3. **Drain-on-entry.** ADR-0172 §1 advances the validation cursor *before*
+3. **Drain-on-entry.** [ADR-0172](./0172-incremental-constraint-validation.md) §1 advances the validation cursor *before*
    the slice is checked. Today's callers are safe: `execute` propagates the
    error and the transaction fails or is discarded, and `CALL { … } IN
    TRANSACTIONS` restores the scratch. A future caller that swallows the
    error would leave the violating ops marked validated, and the next
    validation would accept them.
-4. **`all_node_ids` / `all_rel_ids`.** ADR-0172 §8 merges the scratch ids
+4. **`all_node_ids` / `all_rel_ids`.** [ADR-0172](./0172-incremental-constraint-validation.md) §8 merges the scratch ids
    into the snapshot ids with a `binary_search` over the prefix of the
    snapshot ids. That relies on undocumented sortedness of the base
    iterators and re-checks every id's existence.
@@ -39,7 +52,7 @@ across several functions:
 `RedoOp::is_catalog` is also a third exhaustive listing of every `RedoOp`
 variant, although `RedoOp::write_target` already classifies catalog ops.
 
-ADR-0172 §2 ("Unknown tags") keeps a stored kind tag that
+[ADR-0172](./0172-incremental-constraint-validation.md) §2 ("Unknown tags") keeps a stored kind tag that
 `ConstraintType::from_str` rejects as a constraint that is never required
 and never unique, checked for its property type only. Such a constraint
 enforces less than its definition says, and nothing reports it: the
@@ -64,7 +77,7 @@ validation fails open for the kind, not closed.
      A label does not change which values the node carries, so its
      any-label pairings are unchanged.
    - Every other op posts nothing. The index stays additions-only, a
-     superset that every caller re-verifies (ADR-0172 §3).
+ superset that every caller re-verifies ([ADR-0172](./0172-incremental-constraint-validation.md) §3).
 
    A new `RedoOp` variant fails to compile in that match. The write
    primitives contain no index calls. A primitive that skipped
@@ -76,14 +89,14 @@ validation fails open for the kind, not closed.
    unvalidated slice and the position just past it) and
    `mark_validated(end)`. The cursor invariant is a `debug_assert`, not a
    clamp.
-4. **Validate, then mark.** This replaces ADR-0172 §1's drain-on-entry. A
+4. **Validate, then mark.** This replaces [ADR-0172](./0172-incremental-constraint-validation.md) §1's drain-on-entry. A
    validation reads the unvalidated slice and its end position, classifies
    and checks it, and calls `mark_validated(end)` only after the check
    returned `Ok`. A failed validation leaves its slice unvalidated, so
    validating the same scratch again fails again.
 5. **`all_node_ids` / `all_rel_ids`** are built as the snapshot ids, minus
    the scratch's deleted ids, plus `created_nodes` / `created_rels`, then
-   sorted and deduplicated. This replaces ADR-0172 §8's `binary_search`
+ sorted and deduplicated. This replaces [ADR-0172](./0172-incremental-constraint-validation.md) §8's `binary_search`
    merge. The invariant behind it holds in the code:
    - a copy-on-write entry is read from the snapshot first, so it is already
      a snapshot id;
@@ -100,27 +113,27 @@ validation fails open for the kind, not closed.
    constraint whose stored kind tag `ConstraintType::from_str` rejects
    fails with ``ConstraintValidationFailed: `{name}` `` followed by the
    parser's reason, an `Error::semantic`, the way an unparseable stored
-   property type already fails (ADR-0172 §6). The tag is parsed once per
+ property type already fails ([ADR-0172](./0172-incremental-constraint-validation.md) §6). The tag is parsed once per
    validation, before any entity is checked, so every write statement
-   fails while such a constraint exists. This replaces ADR-0172 §2's
+ fails while such a constraint exists. This replaces [ADR-0172](./0172-incremental-constraint-validation.md) §2's
    "Unknown tags" rule.
 
 ## Alternatives considered
 
 - **Keep the per-primitive hooks and make them agree on the any-label
-  bucket.** Rejected: it keeps the drift risk ADR-0172 rejected for the
+ bucket.** Rejected: it keeps the drift risk [ADR-0172](./0172-incremental-constraint-validation.md) rejected for the
   touched set. A future primitive, or a change to an existing one, that
   forgets its hook silently weakens the uniqueness probe.
 - **Rebuild a pair from the scratch nodes on every seek.** It needs no
   posting at all. Rejected: it costs O(scratch) per probe, the per-statement
-  quadratic term ADR-0172 removed.
+ quadratic term [ADR-0172](./0172-incremental-constraint-validation.md) removed.
 - **Keep drain-on-entry.** Rejected: it is correct only while every caller
   propagates the error or restores the scratch, and nothing enforces that.
 - **Keep the `binary_search` merge and document the sortedness.** Rejected:
   the created set already is the set of scratch-only ids, so the merge and
   its per-id existence checks are unnecessary.
 - **Skip a constraint with an unknown kind tag, or check only its property
-  type (ADR-0172 §2).** Rejected: either way a definition is silently
+ type ([ADR-0172](./0172-incremental-constraint-validation.md) §2).** Rejected: either way a definition is silently
   enforced less than it says. `CREATE CONSTRAINT` and graph-type
   derivation write only known tags, so the failure can only come from a
   damaged or foreign catalog, which should surface.
@@ -134,8 +147,8 @@ validation fails open for the kind, not closed.
   test pins it.
 - `CALL { … } IN TRANSACTIONS` still restores the scratch, cursor included,
   on a failed batch, and still hands unvalidated outer writes to the next
-  validation (ADR-0172 §1, §7).
-- ADR-0172 §1 ("Cursor"), the scratch side of §3, and the
+ validation ([ADR-0172](./0172-incremental-constraint-validation.md) §1, §7).
+- [ADR-0172](./0172-incremental-constraint-validation.md) §1 ("Cursor"), the scratch side of §3, and the
   `all_node_ids` bullet of §8 are superseded in those details. Their
   algorithms, costs and guarantees are unchanged.
 - Catalog views of the overlay (`show_schema`, `named_indexes`,
@@ -143,6 +156,6 @@ validation fails open for the kind, not closed.
   `overlay/catalog.rs`, next to the log they replay.
 - A catalog holding an unknown kind tag now fails every write statement
   with `ConstraintValidationFailed` until the constraint is dropped, where
-  ADR-0172 §2 accepted writes that broke the kind's rule. Every catalog
+ [ADR-0172](./0172-incremental-constraint-validation.md) §2 accepted writes that broke the kind's rule. Every catalog
   written by `CREATE CONSTRAINT` or `ALTER CURRENT GRAPH TYPE` is
   unaffected; a unit test pins the failure.

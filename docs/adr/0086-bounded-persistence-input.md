@@ -1,16 +1,41 @@
+---
+type: adr
+area: engine
+date: 2026-09-23
+deciders: CypherLite maintainers
+name: 0086-bounded-persistence-input
+status: proposed
+tags:
+  - security
+  - storage
+title: Bounded decoding of persisted WAL, bundles, and Parquet
+REFERENCES:
+  - "[[adr/0014-single-wal-write-path]]"
+  - "[[adr/0022-id-window-checkpoint-shards]]"
+  - "[[adr/0072-virtual-filesystem]]"
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0077-embedded-durability-boundary]]"
+  - "[[adr/0080-cli-pull-command]]"
+  - "[[adr/0089-immutable-checkpoint-shard-publication]]"
+  - "[[adr/0091-bundle-generation-page-quarantine]]"
+  - "[[adr/0092-manifest-bound-pull-identity]]"
+  - "[[adr/0097-exclusive-storage-ownership]]"
+  - "[[adr/0098-safe-atomic-replacement]]"
+  - "[[adr/0114-wal-recovery-rejects-undecodable-records]]"
+  - "[[adr/0120-ontology-document-persistence]]"
+  - "[[adr/0284-shard-statistics-off]]"
+---
+
 # 0086. Bounded decoding of persisted WAL, bundles, and Parquet
 
-- **Status**: Proposed
-- **Date**: 2026-09-23
 - **Amended**: 2026-09-24
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
-ADR-0014 makes opening a store a Parquet snapshot load followed by WAL replay;
-ADR-0072 applies the same VFS boundary to Native, Memory, and the single-host-file
-Bundle of ADR-0074. ADR-0097 proposes exclusive ownership during recovery and
-ADR-0098 proposes safe replacement of checkpoint objects. Neither ownership nor
+[ADR-0014](./0014-single-wal-write-path.md) makes opening a store a Parquet snapshot load followed by WAL replay;
+[ADR-0072](./0072-virtual-filesystem.md) applies the same VFS boundary to Native, Memory, and the single-host-file
+Bundle of [ADR-0074](./0074-single-file-bundle-vfs.md). [ADR-0097](./0097-exclusive-storage-ownership.md) proposes exclusive ownership during recovery and
+[ADR-0098](./0098-safe-atomic-replacement.md) proposes safe replacement of checkpoint objects. Neither ownership nor
 atomic publication makes the bytes being recovered trustworthy.
 
 Today a WAL frame's on-disk `u32` length directly sizes a `Vec`, and read errors
@@ -25,7 +50,7 @@ limits allocation **before** page decompression. The reviewed fallback is a
 bounded pre-scan of actual column-chunk page headers in the supplied bytes (or
 an equivalent reader hook that checks headers before decompression).
 
-ADR-0022's 256 MiB default shard **target** is not a file-size maximum:
+[ADR-0022](./0022-id-window-checkpoint-shards.md)'s 256 MiB default shard **target** is not a file-size maximum:
 `CYPHERLITE_SHARD_TARGET_BYTES` is currently unbounded, a single row may exceed
 the target, and older v1/v2 snapshots use monolithic Parquet files. A recovery
 limit must account for valid larger shards and must also constrain the writer;
@@ -50,7 +75,7 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
    segment may also fail its CRC or JSON decode (a relaxed append). Replay the
    intact, CRC-checked preceding records; never interpret a trailing
    incomplete or corrupt frame as a commit, and trim the tolerated suffix
-   before any later append. This relaxed tail tolerance aligns with ADR-0077's
+ before any later append. This relaxed tail tolerance aligns with [ADR-0077](./0077-embedded-durability-boundary.md)'s
    relaxed durability: a `snapshot` rotate does not barrier the closed
    segment, so a crash can leave the same torn suffix on a just-rotated closed
    segment. A missing, empty, or truncated magic on a previously existing
@@ -73,10 +98,10 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
    remove or bypass the tolerated partial suffix without deleting the intact
    prefix, so future valid frames cannot be hidden behind it. For a `.cl`
    bundle, this logical EOF policy does **not** assert that an in-place append
-   to a partially filled physical WAL page is crash-safe: ADR-0074's
+ to a partially filled physical WAL page is crash-safe: [ADR-0074](./0074-single-file-bundle-vfs.md)'s
    `BundleVfs::write_bytes` rewrites the full page, and a torn write can
    corrupt an earlier committed frame. A damaged committed frame fails CRC
-   and is not a tolerated tail (ADR-0091).
+ and is not a tolerated tail ([ADR-0091](./0091-bundle-generation-page-quarantine.md)).
 
 2. **Bundle catalog and physical page ownership.** Obtain the real host-file
    length before allocating from a superblock: two complete 4096-byte
@@ -159,7 +184,7 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
    to **1 GiB**; reject larger or unrepresentable overrides rather than
    silently wrapping or clamping them. Even below that target, split a
    multi-row shard when necessary to meet the 1 GiB file, 1,000,000-row,
-   128 MiB page, 384 MiB row, and 2 GiB decoded envelopes. ADR-0022's
+ 128 MiB page, 384 MiB row, and 2 GiB decoded envelopes. [ADR-0022](./0022-id-window-checkpoint-shards.md)'s
    single-row over-target exception still applies *within* those hard ceilings: a
    300 MiB single-row shard is not rejected merely for exceeding the
    default target, but an unsplittable row/page exceeding the envelope
@@ -177,7 +202,7 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
 
 5. **Manifest, pull map, paths and numeric sentinels.** Cap each
    `manifest.json` and pull-identity JSON object (legacy
-   `pull-identity.json` or a manifest-selected object under ADR-0092) at
+ `pull-identity.json` or a manifest-selected object under [ADR-0092](./0092-manifest-bound-pull-identity.md)) at
    **16 MiB (16,777,216 bytes)** independently. Check VFS metadata *and*
    the opened handle's length before a `Vec` allocation or `read_to_vec`,
    then check exact read/unchanged length; apply this at codec resolution,
@@ -192,7 +217,7 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
    Before opening, retiring or deleting any v3 part, validate its manifest
    path against its kind and half-open `id_lo`/`id_hi`: exactly
    `nodes/{lo}-{hi}.parquet` or `relationships/{lo}-{hi}.parquet` for legacy
-   parts, or the ADR-0089 version with `-{32 lowercase hex}` immediately
+ parts, or the [ADR-0089](./0089-immutable-checkpoint-shard-publication.md) version with `-{32 lowercase hex}` immediately
    before `.parquet`. Require canonical decimal nonnegative bounds with
    `lo < hi`, matching the declared range, one relative path separator, and
    no other components or separators. Refuse absolute paths, `..`, empty
@@ -202,7 +227,7 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
    candidate or recycle WAL on failure; a syntactically valid missing part
    is corruption, not an empty shard. Validate before *any* VFS open/read or
    deletion, including mixed legacy/new v3 manifests. Existing correctly
-   named v3 shards and v1/v2 monoliths remain readable (ADR-0089).
+ named v3 shards and v1/v2 monoliths remain readable ([ADR-0089](./0089-immutable-checkpoint-shard-publication.md)).
 
    Treat persisted `commit_ts == u64::MAX` (WAL or manifest) and node or
    relationship ID `== i64::MAX` (Parquet, including relationship endpoint
@@ -244,7 +269,7 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
    `Vec<WalRecord>`s. Apply records above the manifest's checkpoint LSN to
    the graph one at a time during `open_store`/`load_with_wal`; never retain
    the entire valid log in memory just because every frame is in bounds.
-   Preserve ordering and commit/identity operations from ADR-0080, CRC
+ Preserve ordering and commit/identity operations from [ADR-0080](./0080-cli-pull-command.md), CRC
    failures that are not a tolerated tail, `records_after`'s limit/hint
    semantics, and the any-segment torn-tail / active bad-EOF policy. Keep the
    `Wal::replay(from_lsn) -> Result<Vec<WalRecord>>` API for callers that
@@ -265,7 +290,7 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
   decompression allocates from page headers before batching; a tiny file can
   declare a huge uncompressed page and metadata may understate page sizes.
 - **Cap every shard at the 256 MiB default target, or keep an unlimited
-  override.** Rejected: ADR-0022 permits single-row over-target shards and
+ override.** Rejected: [ADR-0022](./0022-id-window-checkpoint-shards.md) permits single-row over-target shards and
   configurable targets, while an unlimited target makes recovery bounds
   ineffective. A larger hard ceiling with symmetric write checks retains
   larger supported shards without promising arbitrary-size recovery.
@@ -340,16 +365,16 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
 
 ## Later references
 
-ADR-0114 narrows §1: a complete final frame on the active segment is a
+[ADR-0114](./0114-wal-recovery-rejects-undecodable-records.md) narrows §1: a complete final frame on the active segment is a
 tolerated relaxed append only when its CRC fails. A frame whose CRC matches
-but whose payload does not decode is corruption in every position. ADR-0114
+but whose payload does not decode is corruption in every position. [ADR-0114](./0114-wal-recovery-rejects-undecodable-records.md)
 also validates the snapshot's format marker before WAL recovery starts.
 
-ADR-0120 adds the WAL segment magic `MDBWAL02` next to `MDBWAL01`. The rules
-in §1 apply to both, and the short-header repair writes `MDBWAL01`. ADR-0120
+[ADR-0120](./0120-ontology-document-persistence.md) adds the WAL segment magic `MDBWAL02` next to `MDBWAL01`. The rules
+in §1 apply to both, and the short-header repair writes `MDBWAL01`. [ADR-0120](./0120-ontology-document-persistence.md)
 also reuses this ADR's 16 MiB object envelope as the ontology document size
 cap, checked before the commit is written.
 
-ADR-0284 keeps a shard page header inside the 64 KiB limit in §3. The writer
+[ADR-0284](./0284-shard-statistics-off.md) keeps a shard page header inside the 64 KiB limit in §3. The writer
 stores no page statistics, so a large property value stays in the page payload
 instead of being copied into the header as a min/max.

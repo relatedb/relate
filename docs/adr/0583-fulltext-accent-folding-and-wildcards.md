@@ -1,11 +1,21 @@
-# ADR-0583: Fulltext accent folding and wildcard terms
+---
+type: adr
+area: engine
+claim: 336cb03fca1179883680c9cab73c1eb0ffc10382
+name: 0583-fulltext-accent-folding-and-wildcards
+status: proposed
+tags:
+  - search
+title: Fulltext accent folding and wildcard terms
+REFERENCES:
+  - "[[adr/0578-fulltext-fuzzy-and-boost]]"
+---
 
-Status: Proposed
-Claim: 336cb03fca1179883680c9cab73c1eb0ffc10382
+# ADR-0583: Fulltext accent folding and wildcard terms
 
 ## Context
 
-This ADR extends ADR-0578, which gave the fulltext scanner (shared by the `SEARCH` clause and the
+This ADR extends [ADR-0578](./0578-fulltext-fuzzy-and-boost.md), which gave the fulltext scanner (shared by the `SEARCH` clause and the
 `db.index.fulltext.query*` procedures) fuzzy terms and boosts. Two gaps
 remain against live Neo4j. A `standard-folding` index never folded
 anything: every analyzer name except `english` mapped to the plain
@@ -33,7 +43,7 @@ available), across the default, `standard-folding`, `english`, `cjk`,
 2. **Where folding applies.** To the index's stored tokens (the index's
    configured analyzer is now read) and to analyzed query terms. Without
    `WITH ANALYZER` a query uses the index's folding but not its stemming,
-   because stored tokens remain unstemmed (the ADR-0578 shortcut
+ because stored tokens remain unstemmed (the [ADR-0578](./0578-fulltext-fuzzy-and-boost.md) shortcut
    stands). `WITH ANALYZER` changes the query side only, as live does: a
    folded query term against an unfolded index still misses.
 3. **Fuzzy terms are not folded.** Live lowercases them only and measures
@@ -65,7 +75,7 @@ available), across the default, `standard-folding`, `english`, `cjk`,
    is a typed syntax error, checked once at parse so matching stays free of
    a per-document budget; Lucene bounds a wildcard by its automaton's
    determinization work and tantivy by the regex size limit, both at
-   compile time. Suffix errors keep ADR-0578's typed syntax errors; a
+ compile time. Suffix errors keep [ADR-0578](./0578-fulltext-fuzzy-and-boost.md)'s typed syntax errors; a
    wildcard-only word may carry a boost; a stored analyzer name the engine
    does not know is reported as index-definition drift.
 

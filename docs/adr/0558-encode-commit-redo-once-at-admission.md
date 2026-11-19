@@ -1,19 +1,32 @@
-# ADR-0558: Encode each commit's redo once, at admission
+---
+type: adr
+area: engine
+claim: 7cd7773e69e2402637a056bd4284754328dc6b98
+name: 0558-encode-commit-redo-once-at-admission
+status: accepted
+tags:
+  - wal
+  - write-path
+title: Encode each commit's redo once, at admission
+REFERENCES:
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0094-preflight-wal-acceptance]]"
+  - "[[adr/0564-charge-the-workspace-as-the-commit-redo-is-encoded]]"
+---
 
-Status: Accepted
-Claim: 7cd7773e69e2402637a056bd4284754328dc6b98
+# ADR-0558: Encode each commit's redo once, at admission
 
 ## Context
 
-ADR-0094 bounds WAL acceptance with a count pass over the exact record
+[ADR-0094](./0094-preflight-wal-acceptance.md) bounds WAL acceptance with a count pass over the exact record
 serialization followed by a capture pass, and a later amendment moved the
 capture to the preflight proof. In the commit path that still serializes a
 commit's redo ops three times: the admission reservation on the caller's
 thread (a count at maximum-width LSN and timestamp), then a second count and
 the capture, both inside the serialized group leader. The leader's passes
 sit on the path every writer waits behind, and the second count repeats work
-admission already did. ADR-0094 gates any change to preflight cost on the
-ADR-0070 baseline environment.
+admission already did. [ADR-0094](./0094-preflight-wal-acceptance.md) gates any change to preflight cost on the
+[ADR-0070](./0070-docker-baseline-loadtest-environment.md) baseline environment.
 
 ## Decision
 
@@ -51,7 +64,7 @@ ADR-0070 baseline environment.
    present, so the preflight takes no typed ops and a body cannot be paired
    with ops it was not made from. Invalid redo is now refused at admission.
 8. **Unchanged:** the ontology segment rotation rule, stale-proof checks,
-   read-only and poisoned behavior, and the ADR-0094 acceptance and
+ read-only and poisoned behavior, and the [ADR-0094](./0094-preflight-wal-acceptance.md) acceptance and
    uncertain-outcome rules.
 
 ## Alternatives considered
@@ -82,5 +95,5 @@ ADR-0070 baseline environment.
 
 ## Later references
 
-- ADR-0564 charges the workspace as the redo is encoded, replacing the
+- [ADR-0564](./0564-charge-the-workspace-as-the-commit-redo-is-encoded.md) charges the workspace as the redo is encoded, replacing the
   charge-after-encode and trim steps of decision 4.

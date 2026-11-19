@@ -1,9 +1,22 @@
+---
+type: adr
+area: cli
+date: 2026-09-25
+deciders: CypherLite maintainers (agreed in conversation)
+name: 0267-cli-fetch-params-flag
+status: accepted
+tags:
+  - commands
+title: CLI `--fetch-params NAME=SOURCE` binds fetched JSON as a query parameter
+REFERENCES:
+  - "[[adr/0081-opt-in-load-csv-file-capability]]"
+  - "[[adr/0104-cargo-feature-bundles]]"
+  - "[[adr/0270-cli-flag-parse-fetch-split]]"
+---
+
 # 0267. CLI `--fetch-params NAME=SOURCE` binds fetched JSON as a query parameter
 
-- **Status**: Accepted
 - **Renumbered**: from 0136 (shared-number cleanup)
-- **Date**: 2026-09-25
-- **Deciders**: CypherLite maintainers (agreed in conversation)
 
 ## Context
 
@@ -22,7 +35,7 @@ work is throwaway.
 
 `--fetch-params` is a **CLI-process** fetch, not an engine capability: the CLI reads
 the source, parses the JSON, and hands the engine an ordinary bound parameter.
-The engine's `LOAD CSV` capability model (ADR-0081) is untouched.
+The engine's `LOAD CSV` capability model ([ADR-0081](./0081-opt-in-load-csv-file-capability.md)) is untouched.
 
 ## Decision
 
@@ -43,7 +56,7 @@ Add a `--fetch-params NAME=SOURCE` flag (repeatable) to the `cypherlite` CLI:
   the invoker's own authority — the same trust as `curl | cypherlite
   --param`, and the same boundary the embedded model already relies on. The
   engine-level URL policy question belongs to the `LOAD JSON` clause ADR.
-- The flag ships behind a `fetch-params` cargo feature (ADR-0104 bundles: part of
+- The flag ships behind a `fetch-params` cargo feature ([ADR-0104](./0104-cargo-feature-bundles.md) bundles: part of
   `full` and `agent`); `--help` lists it only when compiled in.
 
 ## Alternatives considered
@@ -74,9 +87,8 @@ Add a `--fetch-params NAME=SOURCE` flag (repeatable) to the `cypherlite` CLI:
 
 ## Later references
 
-ADR-0270 amends this decision: `NAME=SOURCE` parsing and source classification
+[ADR-0270](./0270-cli-flag-parse-fetch-split.md) amends this decision: `NAME=SOURCE` parsing and source classification
 are ungated (`params.rs`), so the flag parses in every build instead of being an
 unknown flag in `minimal`; without the `fetch-params` feature resolution fails
 closed with a typed not-compiled message. Caps, trust model, and bundle
 membership are unchanged.
-

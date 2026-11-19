@@ -1,6 +1,19 @@
+---
+type: adr
+area: surface
+name: 0293-configurable-bolt-hello-identity
+status: accepted
+tags:
+  - bolt
+title: Bolt HELLO SUCCESS metadata — configurable server identity (honest default) and a connection_id
+REFERENCES:
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+  - "[[adr/0109-bolt-tls]]"
+  - "[[adr/0312-bolt-hello-recv-timeout-hint-and-noop-keepalive]]"
+---
+
 # ADR-0293: Bolt HELLO SUCCESS metadata — configurable server identity (honest default) and a connection_id
 
-Status: Accepted
 Renumbered: from 0250 (shared-number cleanup)
 
 ## Context
@@ -8,8 +21,8 @@ Renumbered: from 0250 (shared-number cleanup)
 The Bolt HELLO SUCCESS carries metadata strict Neo4j tooling
 hard-checks before any capability negotiation:
 
-- The `server` agent string. CypherLite's Bolt server (ADR-0057,
-  ADR-0109) has always answered `CypherLite/<crate version>`, compiled
+- The `server` agent string. CypherLite's Bolt server ([ADR-0057](./0057-embedded-c-abi-and-bolt.md),
+ [ADR-0109](./0109-bolt-tls.md)) has always answered `CypherLite/<crate version>`, compiled
   in. `cypher-shell` refuses to connect with `Server does not identify
   as a genuine Neo4j instance: 'CypherLite/…'` because the value is not
   a Neo4j-shaped version string.
@@ -80,7 +93,7 @@ The HELLO SUCCESS metadata becomes a small, explicit contract:
   driver features, browser sidebar behaviors that branch on the
   version): those fail later, at the feature boundary, not at HELLO.
   The flag is a compatibility shim for strict identity checks, not a
-  Neo4j feature-parity claim — Bolt stays a transport (ADR-0057).
+ Neo4j feature-parity claim — Bolt stays a transport ([ADR-0057](./0057-embedded-c-abi-and-bolt.md)).
 - `connection_id` is a session label, not a handle: the server never
   reads it back (no connection-management messages exist to address
   one). If Bolt 5.x connection-scoped messages ever land, the id is
@@ -98,7 +111,7 @@ The HELLO SUCCESS metadata becomes a small, explicit contract:
 
 ## Later references
 
-- ADR-0312 reverses the hints-omitted bullet: HELLO SUCCESS now carries
+- [ADR-0312](./0312-bolt-hello-recv-timeout-hint-and-noop-keepalive.md) reverses the hints-omitted bullet: HELLO SUCCESS now carries
   `hints: {"connection.recv_timeout_seconds": 120}`, and the server sends
   NOOP keep-alive chunks during long requests so that hint holds.
   `server` and `connection_id` are unchanged.

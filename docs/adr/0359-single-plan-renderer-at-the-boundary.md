@@ -1,7 +1,22 @@
-# ADR-0359: One plan renderer — text is rendered at the boundary, never in the engine
+---
+type: adr
+area: surface
+claim: 7d065054eb12921de5d41a812aa3f807289aba48
+name: 0359-single-plan-renderer-at-the-boundary
+status: proposed
+tags:
+  - observability
+title: One plan renderer — text is rendered at the boundary, never in the engine
+REFERENCES:
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0345-plan-surface-alignment-cli-bolt-http]]"
+  - "[[adr/0357-plan-summary-placement-and-neo4j-plan-args]]"
+SUPERSEDES:
+  - "[[adr/0345-plan-surface-alignment-cli-bolt-http]]"
+  - "[[adr/0357-plan-summary-placement-and-neo4j-plan-args]]"
+---
 
-Claim: 7d065054eb12921de5d41a812aa3f807289aba48
-Status: Proposed
+# ADR-0359: One plan renderer — text is rendered at the boundary, never in the engine
 
 ## Context
 
@@ -14,11 +29,11 @@ plan through it, from the plan's wire value.
 The engine nevertheless hosts a **second** plan text renderer,
 `cypherlite/cypherlite/src/plan_node/render.rs` (`render_lines`,
 `render_with`, `render_lines_for_statement`, `render_header_for_statement`).
-It exists because ADR-0345 §1 decided that `EXPLAIN` returns its plan as a
+It exists because [ADR-0345](./0345-plan-surface-alignment-cli-bolt-http.md) §1 decided that `EXPLAIN` returns its plan as a
 data column of rendered string lines ("the ASCII rendering is also carried
-as the node's `string-representation` argument"), and ADR-0357 §2 kept the
+as the node's `string-representation` argument"), and [ADR-0357](./0357-plan-summary-placement-and-neo4j-plan-args.md) §2 kept the
 `string-representation` composition engine-side. Both put the *rendering*
-into the engine, which cannot depend on the formatter (ADR-0103 R1/R3).
+into the engine, which cannot depend on the formatter ([ADR-0103](./0103-engine-surfaces-testing-layout.md) R1/R3).
 
 The result is two renderers for one thing, and they disagree: the engine's
 pipe-separated text (`Operator | Id | Details …`) is what Browser's Text
@@ -33,15 +48,15 @@ pass-through" — that every surface must forward.
    deleted; `PlanNode` exposes its structured value (`to_value`,
    `to_neo4j_value`) and its typed accessors, never rendered text.
 2. **`EXPLAIN` no longer returns a plan-as-string-lines data column**
-   (ADR-0345 §1 superseded). The plan rides `result.plan` as the tree; the
+ ([ADR-0345](./0345-plan-surface-alignment-cli-bolt-http.md) §1 superseded). The plan rides `result.plan` as the tree; the
    plan-column shape was a rendering smuggled into the result shape.
 3. **Every boundary renders the plan text on demand through
    `cypherlite-formatter`** — the CLI table, the Bolt
    `string-representation`, the HTTP plan text. Surfaces may depend on the
-   formatter (ADR-0103 R3: `surfaces/*` may target `surfaces/*`); the engine
+ formatter ([ADR-0103](./0103-engine-surfaces-testing-layout.md) R3: `surfaces/*` may target `surfaces/*`); the engine
    may not, which is why the renderer cannot live there.
 4. **`string-representation` is composed at the surface boundary** from
-   that one rendering (ADR-0357 §2's engine-side composition superseded);
+ that one rendering ([ADR-0357](./0357-plan-summary-placement-and-neo4j-plan-args.md) §2's engine-side composition superseded);
    the tree/args decoration itself stays in the engine, only the text moves.
 5. **One layout, one text**: the formatter's grid (`plan_table` + `layout`)
    is the only plan layout; the header (`Query:` echo + `Plan:` marker) is
@@ -50,7 +65,7 @@ pass-through" — that every surface must forward.
 ## Alternatives considered
 
 - **Keep the engine renderer and have the formatter call it** — rejected:
-  the engine cannot depend on a surface (ADR-0103), and the formatter would
+ the engine cannot depend on a surface ([ADR-0103](./0103-engine-surfaces-testing-layout.md)), and the formatter would
   then need the `PlanNode` type across the boundary, re-coupling what the
   wire value already decouples. (The *renderer* keeps the wire-value
   contract; only the presentation composition — which must call the
@@ -85,6 +100,6 @@ pass-through" — that every surface must forward.
 
 ## Later references
 
-- Supersedes ADR-0345 §1 (the engine-produced ASCII rendering and the
-  `string-representation` argument's origin) and ADR-0357 §2's engine-side
+- Supersedes [ADR-0345](./0345-plan-surface-alignment-cli-bolt-http.md) §1 (the engine-produced ASCII rendering and the
+ `string-representation` argument's origin) and [ADR-0357](./0357-plan-summary-placement-and-neo4j-plan-args.md) §2's engine-side
   composition of `string-representation`.

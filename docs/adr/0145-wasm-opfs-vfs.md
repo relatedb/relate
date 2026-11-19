@@ -1,14 +1,31 @@
-# 0145. WASM persistence is an OPFS sync-access VFS
+---
+type: adr
+area: surface
+date: 2026-09-30
+deciders: CypherLite maintainers
+name: 0145-wasm-opfs-vfs
+status: accepted
+tags:
+  - storage
+  - wasm
+title: WASM persistence is an OPFS sync-access VFS
+REFERENCES:
+  - "[[adr/0051-wasm-memory-database]]"
+  - "[[adr/0072-virtual-filesystem]]"
+  - "[[adr/0077-embedded-durability-boundary]]"
+  - "[[adr/0084-reinstate-wasm-distribution]]"
+  - "[[adr/0530-playground-moves-to-relate-web]]"
+SUPERSEDES:
+  - "[[adr/0084-reinstate-wasm-distribution]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-30
-- **Deciders**: CypherLite maintainers
+# 0145. WASM persistence is an OPFS sync-access VFS
 
 ## Context
 
-ADR-0072 defined one synchronous `Vfs` and named the browser follow-on:
+[ADR-0072](./0072-virtual-filesystem.md) defined one synchronous `Vfs` and named the browser follow-on:
 `opfs://<name>` with `FileSystemSyncAccessHandle`, not an async
-`Database::open`. ADR-0051 and ADR-0084 kept the shipped wasm package on
+`Database::open`. [ADR-0051](./0051-wasm-memory-database.md) and [ADR-0084](./0084-reinstate-wasm-distribution.md) kept the shipped wasm package on
 `:memory:` until that backend existed. Directory calls in the Origin
 Private File System are asynchronous, and sync access handles exist only
 inside a dedicated worker, so the page thread that
@@ -16,7 +33,7 @@ inside a dedicated worker, so the page thread that
 
 A reload or `Worker.terminate` does not run Rust `Drop`. The checkpoint in
 the database destructor is therefore not the crash boundary. `Full`
-durability already barriers each acknowledged commit (ADR-0077).
+durability already barriers each acknowledged commit ([ADR-0077](./0077-embedded-durability-boundary.md)).
 
 ## Decision
 
@@ -57,10 +74,10 @@ durability already barriers each acknowledged commit (ADR-0077).
 
 ## Alternatives considered
 
-- **Async `Vfs` or a main-thread OPFS proxy** — rejected. ADR-0072 kept the
+- **Async `Vfs` or a main-thread OPFS proxy** — rejected. [ADR-0072](./0072-virtual-filesystem.md) kept the
   commit path synchronous, and a SharedArrayBuffer proxy needs cross-origin
   isolation the playground does not have.
-- **IndexedDB as a snapshot codec** — already rejected by ADR-0051. The WAL
+- **IndexedDB as a snapshot codec** — already rejected by [ADR-0051](./0051-wasm-memory-database.md). The WAL
   still needs a durable device.
 - **One OPFS file per virtual path, created inside `Vfs::open`** —
   rejected. `getFileHandle` is async and cannot be awaited inside the
@@ -81,6 +98,6 @@ durability already barriers each acknowledged commit (ADR-0077).
 
 ## Later references
 
-- ADR-0530 moves the playground to the relate-web repository; the
+- [ADR-0530](./0530-playground-moves-to-relate-web.md) moves the playground to the relate-web repository; the
   playground clause now describes that app, which still opens the default
   in-memory database in a worker.

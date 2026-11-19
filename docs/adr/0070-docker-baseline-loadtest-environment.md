@@ -1,17 +1,42 @@
-# 0070. Docker baseline loadtest environment (2 vCPU / 2 GB)
+---
+type: adr
+area: infra
+date: 2026-09-20
+deciders: CypherLite maintainers
+name: 0070-docker-baseline-loadtest-environment
+status: accepted
+tags:
+  - loadtest
+title: Docker baseline loadtest environment (2 vCPU / 2 GB)
+REFERENCES:
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0048-identity-loadtest-memory-budget]]"
+  - "[[adr/0060-identity-loadtest-baseline-refreeze]]"
+  - "[[adr/0061-ci-host-loadtest-baselines]]"
+  - "[[adr/0062-ci-loadtest-band-calibration]]"
+  - "[[adr/0064-ci-p99-jitter-allowance]]"
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+  - "[[adr/0243-query-latency-suite]]"
+  - "[[adr/0245-query-latency-baseline-environment-and-gate]]"
+  - "[[adr/0289-graph-shape-memory-pins]]"
+  - "[[adr/0495-baseline-recipe-and-ceremony-flags]]"
+SUPERSEDES:
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0061-ci-host-loadtest-baselines]]"
+  - "[[adr/0062-ci-loadtest-band-calibration]]"
+  - "[[adr/0064-ci-p99-jitter-allowance]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-20
-- **Deciders**: CypherLite maintainers
+# 0070. Docker baseline loadtest environment (2 vCPU / 2 GB)
 
 ## Context
 
-ADR-0046 froze in-tree loadtest summaries under `baselines/` as a merge
+[ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) froze in-tree loadtest summaries under `baselines/` as a merge
 gate (ops/s ≥ 90% of baseline, p99 ≤ max(115% of baseline, baseline +
-250,000 ns), logical bytes ≤ 110%, `errors == 0`). ADR-0060 established
-that those numbers are host- and condition-specific. ADR-0061 then split
+250,000 ns), logical bytes ≤ 110%, `errors == 0`). [ADR-0060](./0060-identity-loadtest-baseline-refreeze.md) established
+that those numbers are host- and condition-specific. [ADR-0061](./0061-ci-host-loadtest-baselines.md) then split
 the gate into two host classes (`baselines/` for the local reference host,
-`baselines/ci/` for `ubuntu-latest`), and ADR-0062 / ADR-0064 loosened the
+`baselines/ci/` for `ubuntu-latest`), and [ADR-0062](./0062-ci-loadtest-band-calibration.md) / [ADR-0064](./0064-ci-p99-jitter-allowance.md) loosened the
 CI compare bands because unconstrained GitHub runners could not reproduce
 the local-host freeze.
 
@@ -50,26 +75,26 @@ environment:
 5. **One comparison set.** Repo-root `baselines/` is the only loadtest
    comparison set. Local `make gate` / `make compare-loadtests` and the CI
    `loadtest-baselines` job all compare dockerized reports against it with
-   the ADR-0046 bands (script defaults). `baselines/ci/` is withdrawn.
+ the [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) bands (script defaults). `baselines/ci/` is withdrawn.
 6. **The freeze is a worst-of-N envelope.** `make baseline-loadtests` runs
    each suite `BASELINE_RUNS` times (default 5) and
    `scripts/freeze-baseline-envelope.py` keeps the lowest throughput, the
    highest per-use-case p99, and the highest logical bytes. A single run
    does not pin the tail; the envelope does.
 7. **Worker counts are sized for two CPUs.** `WORKERS` 50 -> 8,
-   `WORKERS_IDENTITY` 8 -> 4. ADR-0048's counts saturate the container, and
+ `WORKERS_IDENTITY` 8 -> 4. [ADR-0048](./0048-identity-loadtest-memory-budget.md)'s counts saturate the container, and
    queueing delay alone then swings per-use-case p99 by 2-4x run to run
    (`recent_transfers` p99 2.35 / 5.43 / 3.63 / 4.09 ms against a 1.24 ms
    envelope). At 8 / 4 the suites still load both CPUs — fraud 6,122-6,647
    ops/s, identity 3,312-3,621 ops/s across six runs, both 1.09x spread —
    and an envelope built from five runs held a sixth, held-out run with no
-   throughput breach and no fraud p99 breach. ADR-0048's 40 MiB budget,
+ throughput breach and no fraud p99 breach. [ADR-0048](./0048-identity-loadtest-memory-budget.md)'s 40 MiB budget,
    `:memory:` URI, seeds, scale, and ops are unchanged.
 8. **Absolute p99 allowance of 5 ms.** The one held-out breach was a
    sub-millisecond read (`detect_sod`, 0.202 ms envelope, 2.962 ms on the
    held-out run): at that scale a single queueing delay dominates the
    measurement. `make compare-loadtests` therefore sets
-   `LOADTEST_P99_JITTER_NS=5000000`, the same value ADR-0064 calibrated
+ `LOADTEST_P99_JITTER_NS=5000000`, the same value [ADR-0064](./0064-ci-p99-jitter-allowance.md) calibrated
    for CI, here with ~1.7x headroom over the measured ~3 ms swing. The
    1.15x ratio still governs every use case above ~1.7 ms, and
    `errors == 0`, the 0.90 throughput floor, and the 1.10 logical-bytes
@@ -117,11 +142,11 @@ Knobs: `BASELINE_ENV`, `BASELINE_CPUS` (2), `BASELINE_CPU_PERIOD_US`
 than `BASELINE_CPUS` fails the run rather than producing incomparable
 numbers.
 
-This supersedes the two-host-class layout of ADR-0061 and the CI-only
-band overrides of ADR-0062 and ADR-0064 for these suites. Residual
+This supersedes the two-host-class layout of [ADR-0061](./0061-ci-host-loadtest-baselines.md) and the CI-only
+band overrides of [ADR-0062](./0062-ci-loadtest-band-calibration.md) and [ADR-0064](./0064-ci-p99-jitter-allowance.md) for these suites. Residual
 differences remain (host kernel, Docker Desktop vs GitHub-hosted Docker,
 noisy neighbors). If a dockerized CI run on healthy code still misses
-the ADR-0046 bands, calibrate under a new ADR — do not resurrect a
+the [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) bands, calibrate under a new ADR — do not resurrect a
 second baseline directory by default.
 
 ## Alternatives considered
@@ -142,7 +167,7 @@ second baseline directory by default.
 - **Pin with `--cpuset-cpus=0-1`** — rejected; see the section above. It
   removes throttling but makes the run hostage to whatever else uses
   those two cores.
-- **Keep ADR-0048's 50 / 8 workers in the container** — rejected: they
+- **Keep [ADR-0048](./0048-identity-loadtest-memory-budget.md)'s 50 / 8 workers in the container** — rejected: they
   saturate two CPUs, and the resulting queueing tail moves p99 by 2-4x
   between identical runs.
 - **Force `linux/amd64` on every host** — rejected: Apple Silicon would
@@ -164,25 +189,25 @@ second baseline directory by default.
 
 ## Later references
 
-- ADR-0071: freeze authority is the `create-loadtest-baselines`
+- [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md): freeze authority is the `create-loadtest-baselines`
   workflow on `ubuntu-24.04`, not a local Docker envelope. Reports carry
   an `environment` class; CI hard-fails wall-clock compare on mismatch
-  (`INCOMPATIBLE`) instead of loosening ADR-0046 bands or restoring
+ (`INCOMPATIBLE`) instead of loosening [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) bands or restoring
   `baselines/ci/`.
-- ADR-0289: `memory-shape-loadtest` joins this environment. It records
+- [ADR-0289](./0289-graph-shape-memory-pins.md): `memory-shape-loadtest` joins this environment. It records
   the Bolt server's RSS per graph shape. It is not an in-process fraud
   or identity run. Its run container is 2 GB, the same cap as the other
   suites. Dense-ring RSS at the 32 MB default is about 1.3 GB; a larger
   `LOGICAL_MB` needs a higher `MEMORY_SHAPE_MEMORY`. This target
   is built from `Dockerfile.memory-shape-loadtest` instead of streaming
   the repo into the named volume.
-- ADR-0245: the query-latency suite (ADR-0243) joins this recipe with
+- [ADR-0245](./0245-query-latency-baseline-environment-and-gate.md): the query-latency suite ([ADR-0243](./0243-query-latency-suite.md)) joins this recipe with
   its own memory cap: the same images and two-CPU CFS cap, run with
   `--memory=$QUERY_LATENCY_MEMORY` (default `6g`), because the SF0.1
   workload peaks near 3 GB. Its gate compares per-query p50 latency and
   peak RSS against a worst-of-N envelope in
   `baselines/query-latency-sf0.1.json`.
-- ADR-0495: every image-built baseline lane, `memory-shape-loadtest`
+- [ADR-0495](./0495-baseline-recipe-and-ceremony-flags.md): every image-built baseline lane, `memory-shape-loadtest`
   included, builds from the one `Dockerfile.baseline`, parameterised by its
   bin list, BuildKit cache-id suffix and entrypoint; the per-lane
   `Dockerfile.memory-shape-loadtest` named above no longer exists.

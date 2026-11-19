@@ -1,14 +1,27 @@
+---
+type: adr
+area: cypher
+date: 2026-10-11
+deciders: "CypherLite maintainers (PR #235 follow-up, apoc PR #105)"
+name: 0291-graph-examples-extras-and-schema-ddl
+status: proposed
+tags:
+  - conformance
+title: Graph-examples extras — apoc rewrites as extra queries — and schema DDL as runnable statements
+REFERENCES:
+  - "[[adr/0081-opt-in-load-csv-file-capability]]"
+  - "[[adr/0144-graph-examples-differential-suite]]"
+  - "[[adr/0176-graph-examples-report-only-nightly]]"
+---
+
 # 0291. Graph-examples extras — apoc rewrites as extra queries — and schema DDL as runnable statements
 
-- **Status**: Proposed
 - **Renumbered**: from 0200 (shared-number cleanup)
-- **Date**: 2026-10-11
-- **Deciders**: CypherLite maintainers (PR #235 follow-up, apoc PR #105)
-- **Related**: ADR-0144 (refined), ADR-0176, ADR-0081
+- **Related**: [ADR-0144](./0144-graph-examples-differential-suite.md) (refined), [ADR-0176](./0176-graph-examples-report-only-nightly.md), [ADR-0081](./0081-opt-in-load-csv-file-capability.md)
 
 ## Context
 
-ADR-0144's differential suite skips every `apoc.*` statement with the
+[ADR-0144](./0144-graph-examples-differential-suite.md)'s differential suite skips every `apoc.*` statement with the
 reason "blocked until the apoc PR lands" — today PR #105 (the optional
 apoc implementation) is still open, so 24 apoc call sites (13 distinct
 functions) across 8 of the 18 datasets never execute on either engine.
@@ -45,7 +58,7 @@ stores) splits them three ways:
 - **Not rewritable by design** — `apoc.algo.dijkstra` (weighted
   shortest path has no plain-Cypher equivalent; QPE `SHORTEST` is
   hop-based), `apoc.load.json` / `apoc.import.json` (remote fetch is
-  denied by the LOAD CSV policy, ADR-0081), `apoc.util.sleep` (a test
+ denied by the LOAD CSV policy, [ADR-0081](./0081-opt-in-load-csv-file-capability.md)), `apoc.util.sleep` (a test
   throttle with no differential meaning), and `apoc.coll.intersection`
   in entity-resolution (the rewrite `[x IN l WHERE x IN r]` works, but
   the surrounding statements call `gds.alpha.similarity.*`, so the
@@ -69,7 +82,7 @@ stores) splits them three ways:
 3. **Schema DDL runs**: `CREATE INDEX` / `CREATE CONSTRAINT` leave
    `DIALECT_PREFIXES` and classify as plain statements. A syntax the
    reference accepts but the engine rejects surfaces as a DIFF, not a
-   skip — the skip list only shrinks (ADR-0144's contract).
+ skip — the skip list only shrinks ([ADR-0144](./0144-graph-examples-differential-suite.md)'s contract).
 4. **Apoc statements stay skipped** until PR #105 merges; then, with
    `CYPHERLITE_GRAPH_EXAMPLES_APOC=1`, they run on both engines. The
    extras do not replace that — they are the apoc-free ground truth the
@@ -88,7 +101,7 @@ stores) splits them three ways:
    cache would desynchronize the suite from the documented product and
    break the sha pinning.
 - **Add extras for every skipped statement, including GDS** —
-   rejected: GDS algorithms are a different product (ADR-0144's original
+ rejected: GDS algorithms are a different product ([ADR-0144](./0144-graph-examples-differential-suite.md)'s original
    scope decision); only the apoc subset that plain Cypher replaces is
    in scope.
 - **Treat `CREATE INDEX`/`CREATE CONSTRAINT` as a new skip reason

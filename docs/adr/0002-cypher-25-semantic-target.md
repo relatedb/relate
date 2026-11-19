@@ -1,7 +1,14 @@
+---
+type: adr
+area: cypher
+name: 0002-cypher-25-semantic-target
+status: accepted
+tags:
+  - dialect
+title: Cypher 25 semantics are the target where sources disagree
+---
+
 # Cypher 25 semantics are the target where sources disagree
-
-Status: accepted
-
 The CIP documents, Neo4j's Cypher 5 behavior, and Neo4j's GQL-aligned
 Cypher 25 behavior occasionally disagree (the docs are proposals; shipped
 behavior sometimes deviates; the two Cypher versions differ deliberately).

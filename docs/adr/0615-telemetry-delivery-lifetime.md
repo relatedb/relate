@@ -1,11 +1,22 @@
-# 0615. Telemetry delivery survives short runs: arming start, joined exits, once-per-version drain
+---
+type: adr
+area: cli
+claim: 2d56e270df9ea9b53733760de69cb2c16e7fdd3d
+name: 0615-telemetry-delivery-lifetime
+status: proposed
+tags:
+  - telemetry
+title: |-
+  Telemetry delivery survives short runs: arming start, joined exits, once-per-version drain
+REFERENCES:
+  - "[[adr/0545-telemetry-spool-delivery]]"
+---
 
-Status: Proposed
-Claim: 2d56e270df9ea9b53733760de69cb2c16e7fdd3d
+# 0615. Telemetry delivery survives short runs: arming start, joined exits, once-per-version drain
 
 ## Context
 
-ADR-0545 moved telemetry delivery off the exit path: a run spools its
+[ADR-0545](./0545-telemetry-spool-delivery.md) moved telemetry delivery off the exit path: a run spools its
 events locally, and a detached drain thread — started at the run's first
 recorded event — claims earlier runs' spool files and POSTs them while
 the run works. Exit never waits on the network.
@@ -25,7 +36,7 @@ sink accepted the same envelopes on first contact.
 
 ## Decision
 
-Delivery keeps ADR-0545's durable layer — local spool, at-least-once,
+Delivery keeps [ADR-0545](./0545-telemetry-spool-delivery.md)'s durable layer — local spool, at-least-once,
 dedup by `$insert_id`, the `telemetry off` transition untouched — with
 four changes. The spool file grammar and envelope are unchanged, so a
 new binary claims an old binary's files and an upgrade needs no
@@ -37,11 +48,11 @@ migration.
    spool holds files to deliver: a clean machine spawns no thread, so a
    long-lived `serve` never holds the HTTP and TLS machinery of a
    delivery it has no backlog for. A command's own runtime becomes the
-   delivery window; the off transition never opens it (ADR-0545 §5).
+ delivery window; the off transition never opens it ([ADR-0545](./0545-telemetry-spool-delivery.md) §5).
 2. Non-query exits join the drain with a small budget (1 s): the thread
    had the whole run as a head start, so the join pays the POST tail,
    not the POST; what exceeds the budget rides the next run.
-   Query-session exits keep the pure local write of ADR-0545 §1 — a
+ Query-session exits keep the pure local write of [ADR-0545](./0545-telemetry-spool-delivery.md) §1 — a
    scripted one-shot never waits on the network, and its own events ride
    the next run like every run's do.
 3. The first run of a new CLI version joins with an elevated,
@@ -54,7 +65,7 @@ migration.
 4. A join that fails or runs out stamps a 15-minute backoff window in
    the state file; exits inside the window skip the wait — a machine
    with a pending backlog and an unreachable sink must not stall every
-   exit, the pre-ADR-0545 failure returning for the join.
+ exit, the pre-[ADR-0545](./0545-telemetry-spool-delivery.md) failure returning for the join.
 
 A batch the sink refuses outright (its 4xx contract: resending
 unchanged cannot help) drops its claim attempt-once, like the spool's
@@ -86,8 +97,8 @@ claims no longer sort ahead of spool files.
 - Keep next-run-only delivery and raise the sweep caps — rejected: the
   next run must itself outlive its POSTs, which sub-second runs never
   do; caps do not change that.
-- A synchronous network flush at exit (the pre-ADR-0545 shape) —
-  rejected in ADR-0545 §1 with measurements (~280 ms on every short
+- A synchronous network flush at exit (the pre-[ADR-0545](./0545-telemetry-spool-delivery.md) shape) —
+ rejected in [ADR-0545](./0545-telemetry-spool-delivery.md) §1 with measurements (~280 ms on every short
   run); the revision keeps query exits at that floor and bounds the
   join to the non-query paths.
 
@@ -102,6 +113,6 @@ claims no longer sort ahead of spool files.
 - `state.json` gains the last-run CLI version and the backoff window's
   end; schema-additive, older binaries ignore the keys.
 - The usage-metrics spec's delivery paragraph — the privacy disclosure —
-  changes with the code, as does ADR-0545's later-references note.
+ changes with the code, as does [ADR-0545](./0545-telemetry-spool-delivery.md)'s later-references note.
 - Past the file bound the spool now sheds its newest events, not a
   random selection.

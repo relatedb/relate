@@ -1,14 +1,30 @@
-# 0059. WAL redo payloads for catalog DDL are typed models
+---
+type: adr
+area: engine
+date: 2026-09-17
+deciders: CypherLite / MemoryDB merge
+name: 0059-wal-redo-typed-payloads
+status: proposed
+tags:
+  - catalog
+  - wal
+title: WAL redo payloads for catalog DDL are typed models
+REFERENCES:
+  - "[[adr/0012-wal-and-parquet-checkpoints]]"
+  - "[[adr/0014-single-wal-write-path]]"
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0114-wal-recovery-rejects-undecodable-records]]"
+  - "[[adr/0120-ontology-document-persistence]]"
+  - "[[adr/0127-store-version-compatibility]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-17
-- **Deciders**: CypherLite / MemoryDB merge
+# 0059. WAL redo payloads for catalog DDL are typed models
 
 ## Context
 
-ADR-0012 established that WAL redo is physical graph ops, not Cypher text;
-ADR-0014 made every commit a WAL append followed by `apply_redo`. The merge
-(ADR-0046) brought in three catalog-DDL redo ops that violated that
+[ADR-0012](./0012-wal-and-parquet-checkpoints.md) established that WAL redo is physical graph ops, not Cypher text;
+[ADR-0014](./0014-single-wal-write-path.md) made every commit a WAL append followed by `apply_redo`. The merge
+([ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md)) brought in three catalog-DDL redo ops that violated that
 discipline: `CatalogIndexDetail`, `PutGraphType`, and
 `SetCurrentGraphType` serialized a **Cypher-text payload** (a
 `specification` string) into the WAL record, and replay formatted /
@@ -16,7 +32,7 @@ re-parsed that text to rebuild index and graph-type state. That made
 durable state depend on the parser round-tripping its own output, and a
 replay-time parse failure could silently drop index or graph-type state.
 
-ADR-0012's format-version discipline covers checkpoint manifest metadata
+[ADR-0012](./0012-wal-and-parquet-checkpoints.md)'s format-version discipline covers checkpoint manifest metadata
 (`manifest.json`); no prior ADR commits to compatibility of WAL record
 payloads. The repository is `0.3.0-alpha` (pre-1.0), so no WAL payload
 compatibility guarantee exists to preserve.
@@ -42,7 +58,7 @@ compatibility guarantee exists to preserve.
 4. **Pre-1.0 rationale.** Breaking the old record shape without a
    migration path is accepted because the crate is pre-1.0
    (`0.3.0-alpha`) and no ADR has ever guaranteed WAL payload
-   compatibility — ADR-0012's format discipline covers checkpoint
+ compatibility — [ADR-0012](./0012-wal-and-parquet-checkpoints.md)'s format discipline covers checkpoint
    manifests only. The change is a correctness hardening: replay can no
    longer silently lose index or graph-type catalog state.
 
@@ -75,16 +91,16 @@ compatibility guarantee exists to preserve.
 
 ## Later references
 
-ADR-0114 extends Decision 3 to the final frame: a checksum-valid record that
+[ADR-0114](./0114-wal-recovery-rejects-undecodable-records.md) extends Decision 3 to the final frame: a checksum-valid record that
 does not decode fails loudly in every position, instead of being trimmed as a
 torn tail.
 
-ADR-0120 gives the WAL a compatibility story for new record types. Segments
+[ADR-0120](./0120-ontology-document-persistence.md) gives the WAL a compatibility story for new record types. Segments
 that may contain ontology ops start with `MDBWAL02` instead of `MDBWAL01`, so
 older binaries fail at the segment header instead of misreading or trimming
 the new records.
 
-ADR-0127 defines the post-1.0 store-version compatibility contract
+[ADR-0127](./0127-store-version-compatibility.md) defines the post-1.0 store-version compatibility contract
 (migrate-on-open, hands-off, forward-only) and supersedes Decision 4's
 pre-1.0 no-compatibility rationale: future WAL payload shape changes bump the
 segment magic and ship a legacy decoder instead of failing loudly with no

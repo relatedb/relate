@@ -1,7 +1,23 @@
-# ADR-0332: Query type w vs rw split by returned columns (Neo4j 2026.09)
+---
+type: adr
+area: engine
+claim: aa8443a0dfdb341b456a7ae680bf62a24643ac21
+name: 0332-query-type-w-rw-by-returned-columns
+status: proposed
+tags:
+  - conformance
+  - result-metadata
+title: Query type w vs rw split by returned columns (Neo4j 2026.09)
+REFERENCES:
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0162-query-type-on-result-and-bolt]]"
+  - "[[adr/0309-bolt-summary-metadata-neo4j-4-4]]"
+  - "[[adr/0319-bolt-execution-failures-at-pull]]"
+SUPERSEDES:
+  - "[[adr/0162-query-type-on-result-and-bolt]]"
+---
 
-Status: Proposed
-Claim: aa8443a0dfdb341b456a7ae680bf62a24643ac21
+# ADR-0332: Query type w vs rw split by returned columns (Neo4j 2026.09)
 
 ## Context
 
@@ -16,9 +32,9 @@ for the summary scenarios:
 - `UNWIND … RETURN …` → `Read` (`r`); `CREATE/DROP INDEX` →
   `SchemaOnly` (`s`)
 
-ADR-0309 landed where the `type` key rides (the SUCCESS that ends the
+[ADR-0309](./0309-bolt-summary-metadata-neo4j-4-4.md) landed where the `type` key rides (the SUCCESS that ends the
 result), so the placement matches. The classification values do not:
-ADR-0162 item 2 splits `w` from `rw` by clause presence — any read clause
+[ADR-0162](./0162-query-type-on-result-and-bolt.md) item 2 splits `w` from `rw` by clause presence — any read clause
 beside a data write is `rw`, and `MATCH` counts as a read clause — so
 `MATCH … SET`, `MATCH … DETACH DELETE` and `MATCH … REMOVE` without
 RETURN report `rw` where Neo4j 2026.09.0 reports `w`. D-53 and D-54 are
@@ -30,7 +46,7 @@ The read half of Neo4j's `rw` is not "the statement contains a MATCH" but
 nothing — is `w`.
 
 The engine already owns that column fact at plan time:
-`cypherlite_planner::plan_output_names` (ADR-0319), the final stage's
+`cypherlite_planner::plan_output_names` ([ADR-0319](./0319-bolt-execution-failures-at-pull.md)), the final stage's
 exported names — the same fact every surface announces as the result's
 columns. A planned statement passed the UNION column-agreement check at
 validation, so its output names always derive.
@@ -42,8 +58,8 @@ validation, so its output names always derive.
    statement returns columns"** — `plan_output_names(plan)` non-empty.
    No write and no schema clause → `r`; schema DDL with no data clause
    alongside → `s`; a write with no returned columns → `w`; a write with
-   returned columns → `rw`. This supersedes ADR-0162 item 2's "reads and
-   data writes → `rw`" criterion; the rest of ADR-0162 (the
+ returned columns → `rw`. This supersedes [ADR-0162](./0162-query-type-on-result-and-bolt.md) item 2's "reads and
+ data writes → `rw`" criterion; the rest of [ADR-0162](./0162-query-type-on-result-and-bolt.md) (the
    `QueryResult.query_type` stamp, the pinned four-value set) is
    unchanged.
 2. **One place, no per-surface re-derivation.** The classification stays
@@ -56,7 +72,7 @@ validation, so its output names always derive.
 3. **The shared access fold is unchanged.** The write/schema flags and
    the schema-vs-data-mix decision (a schema clause mixed with data
    clauses across NEXT stages still counts as a write) keep coming from
-   the one fold the ADR-0116 §4 namespace gate shares
+ the one fold the [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §4 namespace gate shares
    (`cypherlite_planner::access`); only its projection into the query
    type changes. A `CALL` of a writes-flagged procedure stays a write
    and — the built-in write procedures are all void, and a bare `CALL`'s
@@ -91,7 +107,7 @@ validation, so its output names always derive.
   so a bare write-procedure `CALL` returning "columns" would report
   `rw` where both the plan and the runtime result have none.
 - **Add a fifth value (e.g. read-feeds-write).** Rejected: the value set
-  is pinned to Neo4j's four (ADR-0162); a fifth value is a new ADR, not
+ is pinned to Neo4j's four ([ADR-0162](./0162-query-type-on-result-and-bolt.md)); a fifth value is a new ADR, not
   a fix for a divergence.
 
 ## Consequences
@@ -111,7 +127,7 @@ validation, so its output names always derive.
   and `rw` were already on the same side of each check.
 - D-53 and D-54 were the last failing driver scenarios of the one-time
   neo4rs 0.9.0-rc.10 probe; both now answer like Neo4j.
-- ADR-0162 gains a Later references note pointing here for item 2.
+- [ADR-0162](./0162-query-type-on-result-and-bolt.md) gains a Later references note pointing here for item 2.
 - Pinned by the planner unit tests, the engine tests, the Bolt protocol
   tests, and
   `surfaces/cypherlite-bolt/tests/compat/scripts/protocol/query-type.bolt`.

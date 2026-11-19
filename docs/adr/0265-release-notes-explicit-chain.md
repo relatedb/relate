@@ -1,13 +1,25 @@
+---
+type: adr
+area: infra
+date: 2026-09-28
+deciders: CypherLite maintainers
+name: 0265-release-notes-explicit-chain
+status: accepted
+tags:
+  - release
+title: Trigger release notes via an explicit workflow_call chain from release.yml
+REFERENCES:
+  - "[[adr/0124-release-notes-automation]]"
+  - "[[adr/0125-release-notes-amendments]]"
+---
+
 # 0265. Trigger release notes via an explicit workflow_call chain from release.yml
 
-- **Status**: Accepted
 - **Renumbered**: from 0127 (shared-number cleanup)
-- **Date**: 2026-09-28
-- **Deciders**: CypherLite maintainers (Linear LABS-133)
 
 ## Context
 
-**ADR-0124** decided that `.github/workflows/release-notes.yml` runs on
+**[ADR-0124](./0124-release-notes-automation.md)** decided that `.github/workflows/release-notes.yml` runs on
 `release: [published]` — the event `release.yml` fires when
 `softprops/action-gh-release` publishes the GitHub release. That trigger is
 dead: it has never fired and never will in this repository.
@@ -33,11 +45,11 @@ The evidence is conclusive:
   absence, is the cause. (v0.8.1 additionally predated the workflow file:
   published 08:55:44Z, workflow merged 11:33Z.)
 
-This also corrects the record in ADR-0124: its Context claims that
+This also corrects the record in [ADR-0124](./0124-release-notes-automation.md): its Context claims that
 `release: published` "is already an established trigger in this repository"
 via `update-website.yml`. That claim is factually wrong — the trigger exists
-in the file but has never fired. ADR-0124's trigger decision is therefore
-amended here; its other decisions and the ADR-0125 amendments are unaffected.
+in the file but has never fired. [ADR-0124](./0124-release-notes-automation.md)'s trigger decision is therefore
+amended here; its other decisions and the [ADR-0125](./0125-release-notes-amendments.md) amendments are unaffected.
 
 ## Decision
 
@@ -78,11 +90,11 @@ exists.**
 - `secrets: inherit` passes `FIREWORKS_API_KEY` and `SLACK_WEBHOOK_URL` to the
   called workflow within the same repository trust boundary; no new secret
   exposure is introduced.
-- The ADR-0125 amendments — input validation before the `$GITHUB_ENV` write,
+- The [ADR-0125](./0125-release-notes-amendments.md) amendments — input validation before the `$GITHUB_ENV` write,
   deny-by-default opencode permissions, and the graceful Slack skip — are
   unaffected and remain in force.
 - `update-website.yml` has the same dead `release: [published]` trigger; it is
   explicitly out of scope here.
-- ADR-0124 remains Accepted and immutable; this ADR is the
+- [ADR-0124](./0124-release-notes-automation.md) remains Accepted and immutable; this ADR is the
   amendment-of-record for its trigger decision, noted there under
   **Later references**.

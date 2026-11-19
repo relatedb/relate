@@ -1,13 +1,24 @@
+---
+type: adr
+area: cypher
+date: 2026-09-30
+deciders: CypherLite maintainers
+name: 0277-one-cypher-parser
+status: proposed
+tags:
+  - parser
+title: One Cypher parser
+REFERENCES:
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+---
+
 # 0277. One Cypher parser
 
-- **Status**: Proposed
 - **Renumbered**: from 0152 (shared-number cleanup)
-- **Date**: 2026-09-30
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
-ADR-0046 made `cypherlite-parser` the product front-end and kept a second
+[ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) made `cypherlite-parser` the product front-end and kept a second
 parser in `cypherlite-ir` behind `CYPHERLITE_PARSER=planner-ir` (later
 `=ir`) for diagnostics. The planner and executor still take
 `cypherlite_ir::Query`. The product path already lowers the parser AST into
@@ -31,7 +42,7 @@ for the size check bolted on in front of it.
 
 ## Consequences
 
-- ADR-0046 Decision item 1's diagnostic parser is withdrawn. The later note
+- [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) Decision item 1's diagnostic parser is withdrawn. The later note
   on that ADR records this.
 - A query the product parser rejects is rejected everywhere, including
   planner and executor tests.

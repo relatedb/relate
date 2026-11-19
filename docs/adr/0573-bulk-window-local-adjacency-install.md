@@ -1,7 +1,20 @@
-# ADR-0573: Bulk window-local adjacency install for checkpoint load
+---
+type: adr
+area: engine
+claim: c2df48b18a96c91468db765422b95fd312b73020
+name: 0573-bulk-window-local-adjacency-install
+status: proposed
+tags:
+  - perf
+  - storage
+title: Bulk window-local adjacency install for checkpoint load
+REFERENCES:
+  - "[[adr/0534-wide-column-parquet-shards]]"
+  - "[[adr/0553-wide-columns-are-the-parquet-checkpoint-format]]"
+  - "[[adr/0563-parquet-row-group-cap-1024]]"
+---
 
-Status: Proposed
-Claim: c2df48b18a96c91468db765422b95fd312b73020
+# ADR-0573: Bulk window-local adjacency install for checkpoint load
 
 ## Context
 
@@ -19,9 +32,9 @@ per-row interning. Install is not the whole wall: on the same measurement,
 decode and install are the same size, so a design that parallelizes only
 install leaves half the load untouched.
 
-Storage writes parts as contiguous id windows (ADR-0534, ADR-0553), a part's
+Storage writes parts as contiguous id windows ([ADR-0534](./0534-wide-column-parquet-shards.md), [ADR-0553](./0553-wide-columns-are-the-parquet-checkpoint-format.md)), a part's
 rows being a run of one window's ids in id order, batched at the row-group cap
-(ADR-0563). Id windows are therefore disjoint units of work that already exist
+([ADR-0563](./0563-parquet-row-group-cap-1024.md)). Id windows are therefore disjoint units of work that already exist
 in the store layout, and node windows need no new invariant to become parallel
 install units.
 

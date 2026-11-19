@@ -1,12 +1,25 @@
-# 0045. Optional CDC slots hold WAL recycle; apply-only replicas
+---
+type: adr
+area: engine
+date: 2026-09-09
+deciders: MemoryDB maintainers
+name: 0045-cdc-replication-slots
+status: superseded
+status_note: by [ADR-0574](./0574-withdraw-cdc-replication-slots.md)
+tags:
+  - wal
+title: Optional CDC slots hold WAL recycle; apply-only replicas
+REFERENCES:
+  - "[[adr/0019-group-commit-shared-fsync]]"
+  - "[[adr/0020-segmented-wal-concurrent-checkpoint]]"
+  - "[[adr/0574-withdraw-cdc-replication-slots]]"
+---
 
-- **Status**: Superseded by [ADR-0574](0574-withdraw-cdc-replication-slots.md)
-- **Date**: 2026-09-09
-- **Deciders**: MemoryDB maintainers
+# 0045. Optional CDC slots hold WAL recycle; apply-only replicas
 
 ## Context
 
-WAL is a crash-recovery buffer (ADR-0020). Checkpoint recycle deletes
+WAL is a crash-recovery buffer ([ADR-0020](./0020-segmented-wal-concurrent-checkpoint.md)). Checkpoint recycle deletes
 closed `wal/NNNNNNNN.log` files with `max_lsn <= checkpoint_lsn`. A
 client implementing embedded Relate that publishes those records to a
 stream loses history forever if it lags the checkpointer.
@@ -20,7 +33,7 @@ writes. The only mutation is applying physical redo.
 ## Decision
 
 - **Slots are optional.** Zero slots ⇒ `recycle(checkpoint_lsn)` is
-  unchanged (ADR-0020).
+ unchanged ([ADR-0020](./0020-segmented-wal-concurrent-checkpoint.md)).
 - A slot is `{name, registered_lsn, acked_lsn}`. Register at current
   `wal.lsn`. Recycle cut is `min(checkpoint_lsn, min(acked_lsn))`.
   Parquet still advances; only file deletion waits on acks.
@@ -43,7 +56,7 @@ writes. The only mutation is applying physical redo.
 - **Sidecar file tail without a slot** — recycle deletes unread
   segments. Rejected; the stream would have permanent holes.
 - **Publish to the stream on every commit** — couples write latency
-  and availability to the broker. Rejected (ADR-0019 already keeps
+ and availability to the broker. Rejected ([ADR-0019](./0019-group-commit-shared-fsync.md) already keeps
   fsync off the network).
 - **Fence writes only in the embedding client** — a missed check or a
   future Bolt path would accept writes. Rejected; the fence is
@@ -60,6 +73,6 @@ writes. The only mutation is applying physical redo.
 
 Clients implementing embedded Relate consume this API.
 
-ADR-0574 withdraws the slots, the poll, the apply-only flag, and
+[ADR-0574](./0574-withdraw-cdc-replication-slots.md) withdraws the slots, the poll, the apply-only flag, and
 `cdc/slots.json`. Recycle is `checkpoint_lsn` again. `apply_replicated`
 stays.

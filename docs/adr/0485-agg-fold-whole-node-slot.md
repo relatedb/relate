@@ -1,8 +1,18 @@
+---
+type: adr
+area: engine
+claim: 890ca8e424e2b28c1e3b4b3caa60114ac8f6452a
+name: 0485-agg-fold-whole-node-slot
+status: proposed
+tags:
+  - executor
+  - perf
+title: Stream count(var) through the path fold's whole-node slot source
+REFERENCES:
+  - "[[adr/0468-soa-batch-substrate]]"
+---
+
 # ADR-0485: Stream count(var) through the path fold's whole-node slot source
-
-Status: Proposed
-
-Claim: 890ca8e424e2b28c1e3b4b3caa60114ac8f6452a
 
 ## Context
 
@@ -62,7 +72,7 @@ re-spelling either.
    accumulator-wise — the walk, the seats, and the feed signature are
    unchanged. This decision only keeps the feed row-free and `StreamAgg`
    the single accumulator currency.
-4. **LABS-685 (radix-partitioned hash aggregation over ADR-0468 Chunks) is
+4. **(Radix-partitioned hash aggregation over [ADR-0468](./0468-soa-batch-substrate.md) Chunks) is
    not precluded as a downstream consumer.** The fold's grouping is already
    key → accumulators via `CachedKey`/`Vec<GroupKey>`, so a
    radix-partitioned hash table over chunk columns would replace only the
@@ -73,7 +83,7 @@ re-spelling either.
 
 ## Alternatives considered
 
-- **A general streaming aggregation operator on the ADR-0468 batch
+- **A general streaming aggregation operator on the [ADR-0468](./0468-soa-batch-substrate.md) batch
   substrate** — rejected: the batch chain is scan-only (compile gate
   `batch.rs:197`, one node, no traversal), so it cannot reach the 2-hop
   repro at all; growing traversal into the batch substrate first is far

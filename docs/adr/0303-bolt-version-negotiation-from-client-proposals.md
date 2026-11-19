@@ -1,12 +1,27 @@
-# ADR-0303: Bolt version negotiation answers from the client's proposals
+---
+type: adr
+area: surface
+claim: 87799a4f45cb7f2e3d4b227b57c491f4c7ff06d3
+name: 0303-bolt-version-negotiation-from-client-proposals
+status: proposed
+tags:
+  - bolt
+title: Bolt version negotiation answers from the client's proposals
+REFERENCES:
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+  - "[[adr/0110-bolt-connection-query-governance]]"
+  - "[[adr/0126-bolt-basic-auth]]"
+  - "[[adr/0141-bolt-single-handshake-deadline]]"
+  - "[[adr/0177-bolt-parameter-conversion]]"
+  - "[[adr/0272-bolt-path-struct]]"
+---
 
-Status: Proposed
-Claim: 87799a4f45cb7f2e3d4b227b57c491f4c7ff06d3
+# ADR-0303: Bolt version negotiation answers from the client's proposals
 
 ## Context
 
-The Bolt server (ADR-0057) speaks Bolt 4.4 only. ADR-0126, ADR-0272 and
-ADR-0177 all rest on that, and it stays.
+The Bolt server ([ADR-0057](./0057-embedded-c-abi-and-bolt.md)) speaks Bolt 4.4 only. [ADR-0126](./0126-bolt-basic-auth.md), [ADR-0272](./0272-bolt-path-struct.md) and
+[ADR-0177](./0177-bolt-parameter-conversion.md) all rest on that, and it stays.
 
 The Bolt handshake is the magic `60 60 B0 17` followed by four big-endian
 32-bit version proposals, in the client's order of preference. Each
@@ -27,7 +42,7 @@ goes on to speak a version the server does not speak. The handshake spec
 already defines the honest answer, `00 00 00 00`, and the server never
 sends it.
 
-The exchange runs under the ADR-0141 accept-time negotiation deadline. A
+The exchange runs under the [ADR-0141](./0141-bolt-single-handshake-deadline.md) accept-time negotiation deadline. A
 timeout aborts the connection without starting a session.
 
 ## Decision
@@ -52,9 +67,9 @@ version it speaks only when the client proposed it, and otherwise replies
    a range covering it) gets the plain 4.4 reply.
 5. The selection is a pure function of the 16 proposal bytes. The
    handshake's outcome is typed: serve, version unsupported (answered
-   `00 00 00 00`, close), or aborted (the ADR-0141 deadline). It is not
+ `00 00 00 00`, close), or aborted (the [ADR-0141](./0141-bolt-single-handshake-deadline.md) deadline). It is not
    encoded as an error string.
-6. The ADR-0141 deadline is unchanged. The `00 00 00 00` reply is
+6. The [ADR-0141](./0141-bolt-single-handshake-deadline.md) deadline is unchanged. The `00 00 00 00` reply is
    written inside the same negotiation phase as the 4.4 reply, under the
    same budget.
 
@@ -76,13 +91,13 @@ version it speaks only when the client proposed it, and otherwise replies
   the very bug this ADR fixes.
 - **Implement the manifest-v1 handshake (Bolt 5.7+).** Rejected for now.
   The manifest lists versions and capabilities, and only Bolt 5.x
-  versions use it, which the server does not speak (ADR-0126, ADR-0272).
+ versions use it, which the server does not speak ([ADR-0126](./0126-bolt-basic-auth.md), [ADR-0272](./0272-bolt-path-struct.md)).
   Supporting it is part of a Bolt 5.x decision, not part of correcting
   4.4 negotiation.
 - **Keep the connection open after `00 00 00 00` so the client can try a
   new handshake.** Rejected: the handshake spec says the server closes,
   and an open, unnegotiated connection would hold a `--max-connections`
-  permit (ADR-0110) with no ADR-0141 deadline left to end it.
+ permit ([ADR-0110](./0110-bolt-connection-query-governance.md)) with no [ADR-0141](./0141-bolt-single-handshake-deadline.md) deadline left to end it.
 
 ## Consequences
 

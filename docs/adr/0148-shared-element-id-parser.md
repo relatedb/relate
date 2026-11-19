@@ -1,12 +1,23 @@
-# 0148. One element-id shape parser
+---
+type: adr
+area: engine
+date: 2026-09-28
+deciders: CypherLite maintainers
+name: 0148-shared-element-id-parser
+status: proposed
+tags:
+  - values
+title: One element-id shape parser
+REFERENCES:
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0147-typed-namespace-values]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-28
-- **Deciders**: CypherLite maintainers
+# 0148. One element-id shape parser
 
 ## Context
 
-The element-id shape `<kind>:<segment>:<n|r><id>` (ADR-0116 §7) was parsed
+The element-id shape `<kind>:<segment>:<n|r><id>` ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §7) was parsed
 twice: `USE graph.byElementId(...)` resolution in
 `cypherlite-planner/src/use_target.rs` split the id and mapped the middle
 segment, and `db.nameFromElementId` in
@@ -48,5 +59,5 @@ text of `USE graph.byElementId` is byte-identical (fixture-pinned in
 
 ## Later references
 
-- ADR-0147: the typed `QueryResult.namespace`, split out of this file's
+- [ADR-0147](./0147-typed-namespace-values.md): the typed `QueryResult.namespace`, split out of this file's
   original draft (one decision per file).

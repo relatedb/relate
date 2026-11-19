@@ -1,10 +1,21 @@
-# ADR-0234: httparse for HTTP/1.1 request-head parsing
+---
+type: adr
+area: surface
+name: 0234-httparse-request-parsing
+status: accepted
+tags:
+  - http
+title: httparse for HTTP/1.1 request-head parsing
+REFERENCES:
+  - "[[adr/0232-network-surfaces-charter]]"
+  - "[[adr/0451-bound-unauthenticated-network-connections]]"
+---
 
-Status: Accepted
+# ADR-0234: httparse for HTTP/1.1 request-head parsing
 
 ## Context
 
-ADR-0232's charter for the network surfaces picked a deliberately small,
+[ADR-0232](./0232-network-surfaces-charter.md)'s charter for the network surfaces picked a deliberately small,
 hand-rolled HTTP/1.1 layer in `surfaces/cypherlite-http` (one request per
 connection, `Content-Length` bodies, no keep-alive, no TLS) over pulling a
 web framework into the CLI. The caps, connection policy, auth gates, and
@@ -59,7 +70,7 @@ version already resolved in `Cargo.lock`) and used as
   and connection handling too — the parts of our stack the caps, auth
   gates, and drain policy live in — and its own header/body limits are no
   better than ours; it is also less actively maintained than httparse.
-- **hyper / axum.** Rejected: ADR-0232's no-async-runtime rationale —
+- **hyper / axum.** Rejected: [ADR-0232](./0232-network-surfaces-charter.md)'s no-async-runtime rationale —
   both pull a tokio runtime into the CLI and the MCP binary.
 
 ## Consequences
@@ -80,7 +91,7 @@ Later references: adopted in `surfaces/cypherlite-http/src/http.rs` on the
 
 ## Later references
 
-ADR-0451 folds the admission readers and gate into one public
+[ADR-0451](./0451-bound-unauthenticated-network-connections.md) folds the admission readers and gate into one public
 `read_admitted_request` path in `surfaces/cypherlite-http/src/admission.rs`.
 The public shapes named above are now `read_admitted_request` /
 `AdmissionOutcome` / `AdmissionError`; `RequestHead`, `Request`, and

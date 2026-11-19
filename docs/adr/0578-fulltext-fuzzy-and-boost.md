@@ -1,7 +1,15 @@
-# ADR-0578: Fulltext fuzzy terms and clause boost
+---
+type: adr
+area: engine
+claim: 723bf0a96ab22e3bede3571861cb6f973ab137c8
+name: 0578-fulltext-fuzzy-and-boost
+status: proposed
+tags:
+  - search
+title: Fulltext fuzzy terms and clause boost
+---
 
-Status: Proposed
-Claim: 723bf0a96ab22e3bede3571861cb6f973ab137c8
+# ADR-0578: Fulltext fuzzy terms and clause boost
 
 ## Context
 

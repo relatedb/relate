@@ -1,14 +1,25 @@
+---
+type: adr
+area: engine
+claim: 7fc50840830bff8d0f272e1481181b2c4586d4ee
+name: 0536-frontier-nfa-regular-pattern-space
+status: proposed
+tags:
+  - pattern-matching
+title: The frontier NFA over the regular-pattern space
+REFERENCES:
+  - "[[adr/0471-one-var-length-traversal-engine]]"
+  - "[[adr/0478-frontier-nfa-qpp-kernel]]"
+  - "[[adr/0521-sparse-frontier-tables]]"
+---
+
 # ADR-0536: The frontier NFA over the regular-pattern space
-
-Status: Proposed
-
-Claim: 7fc50840830bff8d0f272e1481181b2c4586d4ee
 
 ## Context
 
-ADR-0478 scoped the frontier-NFA kernel to the var-length spellings: the
+[ADR-0478](./0478-frontier-nfa-qpp-kernel.md) scoped the frontier-NFA kernel to the var-length spellings: the
 NFA compiler accepts one pattern with exactly one top-level `Quantified`
-element — the element every var-length spelling lowers to (ADR-0471) —
+element — the element every var-length spelling lowers to ([ADR-0471](./0471-one-var-length-traversal-engine.md)) —
 and the ladder rung's cheap pre-gate shares that count fact. The
 restriction is an accident of that scoping, not a property of the
 mechanism: the compiler is a regular-expression compiler over a closed
@@ -50,7 +61,7 @@ the switch's cost-gate bypass.
    copies, linear states) instead of the cycle form. Per-level frontier
    sets are then the unrolled automaton's states — the (node, state)
    pair with state = depth — carried by the existing ever-visited pair
-   set and sparse tables (ADR-0521); no new data structure. In an
+ set and sparse tables ([ADR-0521](./0521-sparse-frontier-tables.md)); no new data structure. In an
    exact-only pattern every pair is reachable at exactly one level, so
    the below-min candidate class cannot arise (accepting states sit at
    depth k) and the dedup filter never blocks an in-bounds expansion.
@@ -68,7 +79,7 @@ the switch's cost-gate bypass.
 ## Alternatives considered
 
 - **Lower fixed chains into `k..k` quantified elements at the front
-  end**, the ADR-0471-style rewrite. Rejected: one engine already
+ end**, the [ADR-0471](./0471-one-var-length-traversal-engine.md)-style rewrite. Rejected: one engine already
   exists and the IR already carries the shape; the rewrite churns
   EXPLAIN plan text and adds a lowering seam while still needing
   Decision 2's unroll policy to avoid the candidate-search cost.
@@ -79,7 +90,7 @@ the switch's cost-gate bypass.
   graph the candidate set is the whole sub-k ball around the seed.
   Unroll trades the searches for k-times the states under the existing
   ceilings.
-- **Per-level bitsets as a second table.** Rejected: ADR-0478 already
+- **Per-level bitsets as a second table.** Rejected: [ADR-0478](./0478-frontier-nfa-qpp-kernel.md) already
   rejected per-level dedup for re-reach exactness; the unrolled-state
   construction delivers per-level precision through the one
   ever-visited pair set.

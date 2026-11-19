@@ -1,13 +1,30 @@
+---
+type: adr
+area: cli
+claim: cf4f9f39333ff83afc21fde6cd55856327fc36b0
+name: 0426-toon-piped-default-for-agent-runs
+status: proposed
+tags:
+  - agents
+  - output
+title: Agent-detected piped runs default to `toon`
+REFERENCES:
+  - "[[adr/0107-jsonl-default-for-piped-output]]"
+  - "[[adr/0196-row-cap-for-agent-runs]]"
+  - "[[adr/0239-format-flag-spelling-and-toon-mode]]"
+  - "[[adr/0403-in-band-truncation-records]]"
+  - "[[adr/0404-agent-facing-cli-surface]]"
+  - "[[adr/0407-agent-mode-override-ladder]]"
+SUPERSEDES:
+  - "[[adr/0107-jsonl-default-for-piped-output]]"
+---
+
 # ADR-0426: Agent-detected piped runs default to `toon`
-
-Status: Proposed
-
-Claim: cf4f9f39333ff83afc21fde6cd55856327fc36b0
 
 ## Context
 
 The piped output default — what a run prints when stdout is not a
-terminal and no `--mode` is given — is JSONL (ADR-0107). JSONL is
+terminal and no `--mode` is given — is JSONL ([ADR-0107](./0107-jsonl-default-for-piped-output.md)). JSONL is
 deterministic and machine-parseable, but it is token-heavy for the
 consumer that now dominates piped runs: a coding agent reading the
 CLI's output back through a Bash tool. Every line repeats the column
@@ -17,11 +34,11 @@ layout it does not need.
 DuckDB's Agent Mode experiment (the external baseline for this work)
 measured compact tabular output with typed headers as their winner:
 −59% tool-output tokens on export runs with zero correctness delta —
-and published the non-wins honestly. Our `toon` mode (ADR-0239) is
+and published the non-wins honestly. Our `toon` mode ([ADR-0239](./0239-format-flag-spelling-and-toon-mode.md)) is
 exactly that shape: one `rows[N]{col,…}:` header plus one
 comma-separated line per row. It is opt-in today.
 
-LABS-481 G-3 (ADR-0404 principle 5) required a measured decision before
+ G-3 ([ADR-0404](./0404-agent-facing-cli-surface.md) principle 5) required a measured decision before
 any flip: no default changes on taste. The instrument — the headless
 agent A/B harness (`testing/cypherlite-agentbench`, #485) — runs a
 fixed question set through headless Claude Code sessions, one arm per
@@ -30,32 +47,32 @@ measuring the bytes of tool output the agent reads back, plus turns,
 wall time, and answer correctness (word-level gate) as the honesty
 clause.
 
-The agent-mode ladder (ADR-0407) gives the flip a precise gate:
+The agent-mode ladder ([ADR-0407](./0407-agent-mode-override-ladder.md)) gives the flip a precise gate:
 agent ergonomics are "in effect" when the mode is on — an explicit
 `--agent-mode`/`CYPHERLITE_AGENT_MODE=1`, or a detected harness
-(ADR-0196's vocabulary, gated on non-tty stdout). Human pipelines —
+([ADR-0196](./0196-row-cap-for-agent-runs.md)'s vocabulary, gated on non-tty stdout). Human pipelines —
 CI scripts, `| jq` plumbing, anything without a harness present —
 resolve the mode off and keep JSONL.
 
 ## Decision
 
-When agent ergonomics are in effect (ADR-0407) and no explicit
+When agent ergonomics are in effect ([ADR-0407](./0407-agent-mode-override-ladder.md)) and no explicit
 `--mode` is given, a piped run's default output mode is `toon`
-(ADR-0239). The precedence, highest first:
+([ADR-0239](./0239-format-flag-spelling-and-toon-mode.md)). The precedence, highest first:
 
 1. an explicit `--mode`/`-mode` flag — always wins, both directions
    (`--mode jsonl` pins the old default for an agent that wants it)
-2. a terminal stdout — the human table (ADR-0196: a terminal is a
+2. a terminal stdout — the human table ([ADR-0196](./0196-row-cap-for-agent-runs.md): a terminal is a
    human's; the agent mode never rewrites it)
 3. piped + agent mode on — `toon`
-4. piped + agent mode off — JSONL (ADR-0107, unchanged)
+4. piped + agent mode off — JSONL ([ADR-0107](./0107-jsonl-default-for-piped-output.md), unchanged)
 
 An explicit `--agent-mode` asks for agent ergonomics even on a
 terminal — but the terminal still gets the table: the flag changes
 machine defaults (this ADR, the row cap's default), not the human
 view.
 
-The in-band truncation records (ADR-0403) ride the mode unchanged:
+The in-band truncation records ([ADR-0403](./0403-in-band-truncation-records.md)) ride the mode unchanged:
 `toon` carries the keyed terminal line, so a capped result still never
 reads as complete.
 
@@ -70,7 +87,7 @@ reads as complete.
   JSONL is the right shape for human pipelines — `| jq` plumbing and
   CI scripts parse lines as JSON objects; a human-authored script
   with no harness present must not wake up to tabular output. The
-  detection gate (ADR-0407) is what keeps the blast radius to runs
+ detection gate ([ADR-0407](./0407-agent-mode-override-ladder.md)) is what keeps the blast radius to runs
   that already opted into agent ergonomics.
 - **Wait for a longer campaign before deciding.** The 3-rep campaign
   below is the deciding measurement and it confirmed the single-rep
@@ -93,7 +110,7 @@ reads as complete.
   default; the harness is updated in the same change.
 - `docs/api/cli/spec.md` and the agent-mode help entry change with
   the default table.
-- ADR-0107's piped default statement is superseded for agent-mode
+- [ADR-0107](./0107-jsonl-default-for-piped-output.md)'s piped default statement is superseded for agent-mode
   runs only; its JSONL contract for human pipelines stands.
 
 ## Measured evidence
@@ -139,7 +156,7 @@ Read honestly, the distributions cut both ways:
   median), but the A/B does not control for model-load variance, so
   this is reported as observed, not claimed.
 
-The decision rule (ADR-0404 principle 5) — a material tool-output-bytes
+The decision rule ([ADR-0404](./0404-agent-facing-cli-surface.md) principle 5) — a material tool-output-bytes
 win **with correctness held** — is met on the wide tail and only there.
 Whether a tail-shaped win justifies a default flip for all agent runs
 (tiny results included) is the judgment this Proposed ADR puts to

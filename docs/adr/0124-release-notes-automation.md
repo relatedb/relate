@@ -1,14 +1,29 @@
+---
+type: adr
+area: infra
+date: 2026-09-28
+deciders: CypherLite maintainers
+name: 0124-release-notes-automation
+status: accepted
+tags:
+  - release
+title: Generate and publish release notes with OpenCode
+REFERENCES:
+  - "[[adr/0123-macos-codesign-notarize]]"
+  - "[[adr/0258-automated-pr-reviews]]"
+  - "[[adr/0265-release-notes-explicit-chain]]"
+  - "[[adr/0465-slack-announce-after-pipeline]]"
+  - "[[adr/0618-release-notes-corpus-and-area-groups]]"
+---
+
 # 0124. Generate and publish release notes with OpenCode
 
-- **Status**: Accepted
-- **Date**: 2026-09-28
-- **Deciders**: CypherLite maintainers (Linear LABS-133)
-- **Later references**: amended by ADR-0265 (trigger changed from
+- **Later references**: amended by [ADR-0265](./0265-release-notes-explicit-chain.md) (trigger changed from
   `release: [published]` to an explicit `workflow_call` chain from
   `release.yml`; the `release: published` event never fired because the
-  release is published with `GITHUB_TOKEN`); amended by ADR-0465 (the
+ release is published with `GITHUB_TOKEN`); amended by [ADR-0465](./0465-slack-announce-after-pipeline.md) (the
   Slack publish step moved from the release-notes run to the release
-  pipeline's final job); amended by ADR-0618 (the generator reads a
+  pipeline's final job); amended by [ADR-0618](./0618-release-notes-corpus-and-area-groups.md) (the generator reads a
   harvested pull-request corpus and organizes its output under fixed
   area groups, the model is a pinned strong tier with a
   `RELEASE_NOTES_MODEL` override, and CI guards CHANGELOG.md entry
@@ -36,9 +51,9 @@ requires a missing `SLACK_WEBHOOK_URL` to be a graceful skip rather than a
 failure.
 
 This ADR records the already-agreed decision before implementation, per the
-repository's decision-log rule. Two precedents frame it: **ADR-0258** runs
+repository's decision-log rule. Two precedents frame it: **[ADR-0258](./0258-automated-pr-reviews.md)** runs
 OpenCode headless in CI for PR reviews (the reusable workflow that pins the
-runner install and the model secret), and **ADR-0123** is the closest release
+runner install and the model secret), and **[ADR-0123](./0123-macos-codesign-notarize.md)** is the closest release
 infrastructure precedent, adding a release-time step behind the same
 `release.yml` pipeline. The decisions below are settled; this record states them
 rather than reopening them.
@@ -61,14 +76,14 @@ Slack.**
    `opencode-linux-x64.tar.gz` from `opencode.ai/files/bin`, and
    `sha256sum -c` against a pinned `OPENCODE_SHA256` before extraction, so a
    swapped or corrupted tarball aborts the install before anything runs.
-   Authentication is a `FIREWORKS_API_KEY` repository secret (ADR-0258).
+ Authentication is a `FIREWORKS_API_KEY` repository secret ([ADR-0258](./0258-automated-pr-reviews.md)).
 3. **Model: `fireworks-ai/accounts/fireworks/routers/kimi-latest`.** This full
    path is a real models.dev catalog key under the `fireworks-ai` provider.
-   ADR-0258's caveat — that the bare `kimi-latest` shorthand does not resolve on
+ [ADR-0258](./0258-automated-pr-reviews.md)'s caveat — that the bare `kimi-latest` shorthand does not resolve on
    a cold runner — applies to that shorthand, not to this fully-qualified
    `accounts/fireworks/routers/…` catalog path; release notes are not a
    merge-gating check, so tracking the router's current Kimi is acceptable here
-   where ADR-0258 pinned `kimi-k3` for the review gate.
+ where [ADR-0258](./0258-automated-pr-reviews.md) pinned `kimi-k3` for the review gate.
 4. **Prompt file: `.github/prompts/release-notes.md`.** The generation prompt is
    maintained in-repo and versioned with the workflow, alongside the other
    `.github/prompts/` files.
@@ -97,7 +112,7 @@ Slack.**
 - **claude-code with `ANTHROPIC_API_KEY`, as in the neo4j-cli inspiration** —
   rejected: LABS-133 mandates OpenCode as the runner and `FIREWORKS_API_KEY`
   for authentication, matching the OpenCode CI agents already established in
-  this repository by ADR-0258. The inspiration's runner and secret are exactly
+ this repository by [ADR-0258](./0258-automated-pr-reviews.md). The inspiration's runner and secret are exactly
   the two things the issue overrides.
 - **Fail fast when `SLACK_WEBHOOK_URL` is missing, as in the
   inspiration** — rejected: LABS-133 mandates a graceful skip, because the
@@ -121,7 +136,7 @@ Slack.**
   `SLACK_WEBHOOK_URL` is configured it also produces a Slack post; the release
   page becomes the narrative summary LABS-133 asks for.
 - A `FIREWORKS_API_KEY` repository secret must be provisioned (already required
-  by the ADR-0258 review workflows, so no new secret family); an optional
+ by the [ADR-0258](./0258-automated-pr-reviews.md) review workflows, so no new secret family); an optional
   `SLACK_WEBHOOK_URL` secret enables the Slack leg, and its absence is a logged
   skip rather than a failure.
 - The release body is edited after publication, so the GitHub release is no
@@ -132,9 +147,9 @@ Slack.**
   empty `0.8.0` section is the immediate case and is why the fallback exists;
   keeping changelog sections populated keeps the primary source useful.
 - The pinned-tarball-plus-sha256 OpenCode install and the pinned model path
-  become repository surface like ADR-0258's review workflow; bumping
+ become repository surface like [ADR-0258](./0258-automated-pr-reviews.md)'s review workflow; bumping
   `OPENCODE_VERSION`, `OPENCODE_SHA256`, or the model path changes release-time
   behavior and follows the normal review process.
 - Generation runs once per published release (and per manual dispatch), so the
   Fireworks token cost is bounded by release and dry-run frequency rather than
-  by push volume, unlike the per-push review workflows of ADR-0258.
+ by push volume, unlike the per-push review workflows of [ADR-0258](./0258-automated-pr-reviews.md).

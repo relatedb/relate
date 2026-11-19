@@ -1,8 +1,20 @@
+---
+type: adr
+area: engine
+claim: 08d7746898d6ab09032653b704cd4cc8b5b8d505
+name: 0507-tiered-distinct-set
+status: proposed
+tags:
+  - executor
+  - perf
+title: One tiered distinct set under the DISTINCT sites
+REFERENCES:
+  - "[[adr/0177-bolt-parameter-conversion]]"
+  - "[[adr/0485-agg-fold-whole-node-slot]]"
+  - "[[adr/0522-tiered-word-set-utility]]"
+---
+
 # ADR-0507: One tiered distinct set under the DISTINCT sites
-
-Status: Proposed
-
-Claim: 08d7746898d6ab09032653b704cd4cc8b5b8d505
 
 ## Context
 
@@ -220,7 +232,7 @@ WordTable = Id(HashSet<u64, FxBuildHasher>)       // tag Node | Rel
   couple the set to `ExecGraph`, while today it needs only values.
 - Of the five sites, only a projection of a bare entity (`RETURN DISTINCT n`)
   keys `Node`/`Rel` words. `count(DISTINCT m)` offers `Value::Int(id)`
-  (ADR-0485), and the motivating query keys a property `Int`, so T3 would
+ ([ADR-0485](./0485-agg-fold-whole-node-slot.md)), and the motivating query keys a property `Int`, so T3 would
   not touch LABS-852's numbers.
 - Its break-even, `k ≥ N/2^7` (782 on the measured N = 100,000, rounded up to
   the 2^10 boundary of k), pays where node-id dedup is the whole
@@ -236,7 +248,7 @@ WordTable = Id(HashSet<u64, FxBuildHasher>)       // tag Node | Rel
   alias is private, never re-spell it.
   - These ids are engine-allocated. No remote client surface can submit
     an entity with a chosen id: Bolt parameter decoding
-    (`surfaces/cypherlite-bolt/src/param_structs.rs`, ADR-0177) rejects
+ (`surfaces/cypherlite-bolt/src/param_structs.rs`, [ADR-0177](./0177-bolt-parameter-conversion.md)) rejects
     node and relationship structs, and HTTP/JSON cannot express them.
     The in-process Rust API is the one exception: an embedder can build a
     `Value::Node`/`Value::Relationship` parameter with any id and pass it
@@ -558,7 +570,7 @@ File budgets:
 
 ## Later references
 
-- ADR-0522 extracts §3's tier mechanics (the inline tier, the promoted
+- [ADR-0522](./0522-tiered-word-set-utility.md) extracts §3's tier mechanics (the inline tier, the promoted
   table with §4's `Id`/`Value` hasher split, the §5 charge-and-rollback
   protocol) into the crate-level `TieredWordSet` utility, so raw-key
   consumers outside DISTINCT can hold the tiering; `DistinctSet`

@@ -1,19 +1,30 @@
-# ADR-0341: logical_bytes_within is the one early-stopping logical-bytes walk
+---
+type: adr
+area: engine
+claim: d763114fcde5450741237c7c3a67b529829120dc
+name: 0341-logical-bytes-within-one-walk
+status: proposed
+tags:
+  - memory
+title: logical_bytes_within is the one early-stopping logical-bytes walk
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0311-bolt-tx-open-results-by-qid]]"
+---
 
-Status: Proposed
-Claim: d763114fcde5450741237c7c3a67b529829120dc
+# ADR-0341: logical_bytes_within is the one early-stopping logical-bytes walk
 
 ## Context
 
-ADR-0042 introduced the early-stopping logical-bytes walk as
+[ADR-0042](./0042-graph-memory-limit.md) introduced the early-stopping logical-bytes walk as
 `logical_bytes_exceed(values, limit) -> bool` for the Bolt result cap.
-ADR-0311 needed the summed total under a connection-wide cap and added
+[ADR-0311](./0311-bolt-tx-open-results-by-qid.md) needed the summed total under a connection-wide cap and added
 `logical_bytes_within(values, limit) -> Option<u64>`; `logical_bytes_exceed`
 was reduced to a one-line wrapper over it (`within(..).is_none()`) and the
 Bolt server migrated to `logical_bytes_within`. `logical_bytes_exceed`
 now has no production caller — only its own tests and the
 `cypherlite_core` re-export keep it alive — and its doc still names the
-Bolt cap as its caller, which ADR-0311 made false.
+Bolt cap as its caller, which [ADR-0311](./0311-bolt-tx-open-results-by-qid.md) made false.
 
 ## Decision
 
@@ -31,7 +42,7 @@ the early-stop case.
   AGENTS.md's "one canonical helper per policy" applies.
 - **Deprecate instead of delete.** Rejected: the crate has no external
   published consumers of this helper (the Bolt server was the last one and
-  moved in ADR-0311), so a deprecation window would keep dead API alive
+ moved in [ADR-0311](./0311-bolt-tx-open-results-by-qid.md)), so a deprecation window would keep dead API alive
   for nobody.
 
 ## Consequences

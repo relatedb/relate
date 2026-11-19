@@ -1,7 +1,15 @@
-# ADR-0587: Windows MSVC builds link the C runtime statically
+---
+type: adr
+area: infra
+claim: a7635b8322bff2b691509f3beb9d4a2afc5ab511
+name: 0587-windows-static-crt
+status: proposed
+tags:
+  - release
+title: Windows MSVC builds link the C runtime statically
+---
 
-Status: Proposed
-Claim: a7635b8322bff2b691509f3beb9d4a2afc5ab511
+# ADR-0587: Windows MSVC builds link the C runtime statically
 
 ## Context
 

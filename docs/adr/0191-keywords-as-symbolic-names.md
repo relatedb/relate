@@ -1,16 +1,30 @@
-# 0191. Keywords as symbolic names (aliases, references, binding variables, map keys)
+---
+type: adr
+area: cypher
+date: 2026-10-08
+deciders: Oskar Hane (agreed in conversation), CypherLite maintainers
+name: 0191-keywords-as-symbolic-names
+status: accepted
+tags:
+  - dialect
+  - parser
+title: Keywords as symbolic names (aliases, references, binding variables, map keys)
+REFERENCES:
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0144-graph-examples-differential-suite]]"
+  - "[[adr/0169-keywords-as-label-and-type-names]]"
+  - "[[adr/0188-remove-superseded-tck-scenario-from-pin]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-08
-- **Deciders**: Oskar Hane (agreed in conversation), CypherLite maintainers (Linear LABS-183)
+# 0191. Keywords as symbolic names (aliases, references, binding variables, map keys)
 
 ## Context
 
 LABS-183: Neo4j accepts reserved words as unquoted symbolic names;
-CypherLite rejects most. ADR-0169 fixed keyword *labels* and relationship
+CypherLite rejects most. [ADR-0169](./0169-keywords-as-label-and-type-names.md) fixed keyword *labels* and relationship
 types and deliberately left keywords as variables, aliases and map keys
 as follow-up work -- its "What stays unchanged" list is the work list
-here. The graph-examples differential suite (ADR-0144) found it.
+here. The graph-examples differential suite ([ADR-0144](./0144-graph-examples-differential-suite.md)) found it.
 
 Three recommendations walkthrough statements fail as written.
 `recommendations.adoc:218` aliases a count as `as` and reads it back in an
@@ -89,7 +103,7 @@ spellings. They stay unchanged and are listed in Consequences.
 
 1. **One predicate, no new helper.** `TokenType::is_schema_name()` in
    `token.rs` is `Identifier` or any keyword -- the openCypher
-   `SchemaName ::= SymbolicName | ReservedWord` class ADR-0169 introduced
+ `SchemaName ::= SymbolicName | ReservedWord` class [ADR-0169](./0169-keywords-as-label-and-type-names.md) introduced
    for label/type names. The alias, reference, binding and key groups all
    read through it; no new token predicate and no new name reader is
    introduced. (`helpers` is empty; the per-group disambiguation below is
@@ -212,7 +226,7 @@ spellings. They stay unchanged and are listed in Consequences.
 7. **What stays unchanged.** `cypher_identifier` in
    `surfaces/cypherlite-formatter/src/lib.rs` keeps backticking reserved
    words; the diagnostic planner-IR parser
-   (`CYPHERLITE_PARSER=planner-ir`) is untouched; ADR-0169's label and
+ (`CYPHERLITE_PARSER=planner-ir`) is untouched; [ADR-0169](./0169-keywords-as-label-and-type-names.md)'s label and
    relationship-type behavior is untouched; `parse_bare_name` keeps
    `is_ident_like()` for USING hints, DDL property lists and graph-type
    names. The operator spellings `RETURN NOT + 1` and `RETURN NOT[0]`
@@ -259,7 +273,7 @@ spellings. They stay unchanged and are listed in Consequences.
   explicitly.
 - **Add a shared `is_symbolic_name()` predicate or `parse_symbolic_name()`
   reader.** `is_schema_name()` already has exactly the intended truth
-  table and is documented as ADR-0169's superset of `is_ident_like()`.
+ table and is documented as [ADR-0169](./0169-keywords-as-label-and-type-names.md)'s superset of `is_ident_like`.
   Rejected: a second predicate with the same meaning would be a rename,
   and the disambiguations are per-site, not per-predicate.
 - **Lexer-level contextual keywords** (emit `Identifier` for keyword
@@ -267,7 +281,7 @@ spellings. They stay unchanged and are listed in Consequences.
   grammar context: the word after `|` is a label in `:A|SET` but a clause
   in `FOREACH (x IN l | SET ...)`, and the word after `{` is a map key in
   `{match: 1}` but a subquery clause in `EXISTS { MATCH ... }`. Rejected
-  for the same reasons as ADR-0169's lexer alternative: it either
+ for the same reasons as [ADR-0169](./0169-keywords-as-label-and-type-names.md)'s lexer alternative: it either
   misclassifies tokens or moves parser state into the lexer.
 - **Backtracking fallbacks for the carve-out rows** (try the modifier or
   prefix reading, retry the word as a variable when it fails). Rejected:
@@ -305,7 +319,7 @@ spellings. They stay unchanged and are listed in Consequences.
   and every `exception_rows` id keeps its recorded outcome.
 - The official openCypher TCK must not regress: 3892 of 3892 pinned
   scenarios passing with zero skips (the superseded
-  `TypeConversion4 [10]` outline is removed from the pin itself, ADR-0188).
+ `TypeConversion4 [10]` outline is removed from the pin itself, [ADR-0188](./0188-remove-superseded-tck-scenario-from-pin.md)).
   The CIP-eval baselines (`baselines/cip-eval.json`) must not regress
   either. If a pinned TCK or frozen CIP-eval scenario requires a keyword
   name to be rejected, a new ADR resolves the conflict. A new skip does
@@ -359,6 +373,6 @@ spellings. They stay unchanged and are listed in Consequences.
 Later change (query-notifications identifier-policy): the formatter now
 delegates identifier quoting to
 `cypherlite_parser::token::{identifier_needs_quotes, quote_identifier}`
-(ADR-0103 R3 permits surfaces → engine crates), so the `RESERVED_WORDS`
+([ADR-0103](./0103-engine-surfaces-testing-layout.md) R3 permits surfaces → engine crates), so the `RESERVED_WORDS`
 mirror and its cross-check test are gone; the backticks-for-keywords
 policy above is unchanged.

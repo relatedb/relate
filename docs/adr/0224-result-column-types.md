@@ -1,6 +1,20 @@
-# ADR-0224: Engine-reported per-result-column types
+---
+type: adr
+area: engine
+name: 0224-result-column-types
+status: accepted
+tags:
+  - result-metadata
+title: Engine-reported per-result-column types
+REFERENCES:
+  - "[[adr/0220-tabular-abi-single-entry-points]]"
+  - "[[adr/0221-engine-reported-statement-elapsed]]"
+  - "[[adr/0223-wire-entity-kind-tags]]"
+  - "[[adr/0327-engine-statement-scoped-bytes-value]]"
+  - "[[adr/0502-typed-c-abi-v2]]"
+---
 
-Status: Accepted
+# ADR-0224: Engine-reported per-result-column types
 
 ## Context
 
@@ -15,10 +29,10 @@ type at all, and an empty result cannot infer anything.
 
 The engine already carries the rest of the result metadata family:
 `cypherlite::QueryResult` carries `stats`, `namespace`, `query_type` and
-`elapsed` (ADR-0221), the canonical wire envelope
+`elapsed` ([ADR-0221](./0221-engine-reported-statement-elapsed.md)), the canonical wire envelope
 (`cypherlite_model::wire::response_envelope`) carries `columns`, `rows`,
 `stats` and `elapsed_ms` plus the entity `kind` discriminators on entity
-values (ADR-0223), and the C ABI exposes the metadata as
+values ([ADR-0223](./0223-wire-entity-kind-tags.md)), and the C ABI exposes the metadata as
 `cypherlite_result_query_type` / `cypherlite_result_namespace` /
 `cypherlite_result_stats` / `cypherlite_result_elapsed_ms`
 (`surfaces/cypherlite-ffi/src/tabular.rs`). Column *types* are the one
@@ -34,7 +48,7 @@ cross-surface in one change.
 18 type-name strings, aligned with the wire value taxonomy in
 `cypherlite/cypherlite-model/src/wire.rs` (the `CypherValue` variant table,
 and the lowercase `"kind"` values `"node"` / `"relationship"` from
-ADR-0223) but spelled in the uppercase form clients and specs already use:
+[ADR-0223](./0223-wire-entity-kind-tags.md)) but spelled in the uppercase form clients and specs already use:
 
 `STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `NODE`, `RELATIONSHIP`, `PATH`,
 `LIST`, `MAP`, `POINT`, `DATETIME`, `DATE`, `TIME`, `DURATION`, `VECTOR`,
@@ -89,7 +103,7 @@ claim is made about later rows.
 ## Alternatives considered
 
 - **Plan-time static typing (derive the column type from the logical
-  plan)** — rejected: Cypher is dynamically typed (ADR-0221 makes the same
+ plan)** — rejected: Cypher is dynamically typed ([ADR-0221](./0221-engine-reported-statement-elapsed.md) makes the same
   observation for timing; the type of `n.prop`, a `CASE`, or a `coalesce`
   cannot be known until values exist), so no plan-time column type exists
   to derive. The first row is the earliest moment an honest type exists,
@@ -98,7 +112,7 @@ claim is made about later rows.
   rejected: breaks the result-metadata parity rule; the C ABI is the
   contract every language client wraps, so metadata that exists only in
   the JSON envelope forces clients to invent a parallel parse (exactly
-  what ADR-0220's single entry points were meant to prevent).
+ what [ADR-0220](./0220-tabular-abi-single-entry-points.md)'s single entry points were meant to prevent).
 - **Client-side inference everywhere (the status quo, generalized)** —
   rejected: it is what exists today — three-plus implementations to keep
   in sync, one per surface, each with its own taxonomy; empty results
@@ -126,8 +140,8 @@ claim is made about later rows.
 
 ## Later references
 
-- ADR-0327: the engine's statement-scoped byte array `Value::Bytes` stamps
+- [ADR-0327](./0327-engine-statement-scoped-bytes-value.md): the engine's statement-scoped byte array `Value::Bytes` stamps
   the reserved `BINARY` name. The 18-name set is unchanged.
-- ADR-0502: the typed C ABI v2 removes `cypherlite_result_column_type` from
+- [ADR-0502](./0502-typed-c-abi-v2.md): the typed C ABI v2 removes `cypherlite_result_column_type` from
   the C ABI — per-value kinds from the native value walker replace the
   first-row stamp for C-ABI clients.

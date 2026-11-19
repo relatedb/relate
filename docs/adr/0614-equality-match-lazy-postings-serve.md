@@ -1,14 +1,28 @@
+---
+type: adr
+area: engine
+claim: 8b5f813f4016765af18965b0aafe1a2441c38790
+name: 0614-equality-match-lazy-postings-serve
+status: proposed
+tags:
+  - index
+title: Equality MATCH serves through the lazy postings without a declared index
+REFERENCES:
+  - "[[adr/0010-label-property-indexes]]"
+  - "[[adr/0040-create-drop-index]]"
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0063-lazy-string-index-postings]]"
+  - "[[adr/0172-incremental-constraint-validation]]"
+  - "[[adr/0486-range-index-starts]]"
+---
+
 # 0614. Equality MATCH serves through the lazy postings without a declared index
-
-Status: Proposed
-
-Claim: 8b5f813f4016765af18965b0aafe1a2441c38790
 
 ## Context
 
-ADR-0010 made label+property equality an always-on access method: the
+[ADR-0010](./0010-label-property-indexes.md) made label+property equality an always-on access method: the
 executor seeks a `(label, property, value)` posting map for every keyed
-node pattern, with no schema statement. ADR-0040 kept `CREATE INDEX` a
+node pattern, with no schema statement. [ADR-0040](./0040-create-drop-index.md) kept `CREATE INDEX` a
 catalog name that does not gate access methods and explicitly rejected
 opt-in indexes.
 
@@ -16,7 +30,7 @@ Since the declared TEXT/RANGE/POINT structures landed (2026-10), MATCH
 equality is served only by a declared RANGE index or an index-backed
 constraint. Every other keyed lookup falls to a per-row label-bucket
 scan with per-node materialization. The lazy equality postings
-(ADR-0063's contract) still exist but only constraint probes read them.
+([ADR-0063](./0063-lazy-string-index-postings.md)'s contract) still exist but only constraint probes read them.
 
 Measured consequence (reference host, release, in-memory store): a
 statement-based bulk load — `UNWIND … MATCH (a:El {idx: r.f})` endpoint
@@ -53,14 +67,14 @@ the gap is the pair nobody declared.
 4. The overlay keeps one relation per lookup: a lookup the base serves
    — declared or postings — seeks the scratch's identity-keyed index;
    a declined lookup scans both halves with `=`.
-5. The postings stay outside the ADR-0042 logical charge, as since
-   ADR-0172: a built pair holds at most one posting per live node
+5. The postings stay outside the [ADR-0042](./0042-graph-memory-limit.md) logical charge, as since
+ [ADR-0172](./0172-incremental-constraint-validation.md): a built pair holds at most one posting per live node
    carrying the label, and the first serve pays a one-time O(label)
-   build with O(dirty) catch-up after (ADR-0063). Re-adding the
+ build with O(dirty) catch-up after ([ADR-0063](./0063-lazy-string-index-postings.md)). Re-adding the
    equality term to the formula is a separate decision.
 6. The plan tree, the planner ladder, and the missing-index
    notification are unchanged: the serve is a runtime fact, like the
-   range seeks before ADR-0486, and the notification stays truthful
+ range seeks before [ADR-0486](./0486-range-index-starts.md), and the notification stays truthful
    (no RANGE index exists; declaring one still avoids the lazy build).
 
 ## Alternatives considered
@@ -68,13 +82,13 @@ the gap is the pair nobody declared.
 - **Declared-only, document `CREATE INDEX` for bulk loaders** — leaves
   the quadratic shape for every hand-written statement load while the
   postings sit built-or-idle beside it. Rejected.
-- **Restore eager always-on equality postings (the ADR-0010 shape)** —
-  repeats the measured write tax ADR-0063 removed (~86% of bulk-load
+- **Restore eager always-on equality postings (the [ADR-0010](./0010-label-property-indexes.md) shape)** —
+ repeats the measured write tax [ADR-0063](./0063-lazy-string-index-postings.md) removed (~86% of bulk-load
   wall time). Rejected.
 - **Serve every value, zoned datetimes included** — flips the
   un-indexed equality answer from `=` to identity, changing observable
   results for the overlap the scan matches today. Rejected.
-- **Re-add the equality term to the ADR-0042 charge now** — moves
+- **Re-add the equality term to the [ADR-0042](./0042-graph-memory-limit.md) charge now** — moves
   `used` for every store, forcing a loadtest-envelope re-freeze inside
   an unrelated performance change. Deferred to its own decision.
 
@@ -85,9 +99,9 @@ the gap is the pair nobody declared.
   pays O(label) once, later lookups O(dirty) catch-up.
 - Answers are unchanged for every value: served pairs answer exactly
   what the scan answered; identity-divergent values decline.
-- ADR-0040's "always available" intent holds again for equality;
-  ADR-0010 and ADR-0040 gain Later-references notes pointing here.
+- [ADR-0040](./0040-create-drop-index.md)'s "always available" intent holds again for equality;
+ [ADR-0010](./0010-label-property-indexes.md) and [ADR-0040](./0040-create-drop-index.md) gain Later-references notes pointing here.
 - The scratch half of a postings-served lookup seeks the scratch index
   instead of scanning, so explicit-transaction loads stay linear too.
-- ADR-0172's constraint-probe path is untouched: same postings, same
+- [ADR-0172](./0172-incremental-constraint-validation.md)'s constraint-probe path is untouched: same postings, same
   reads, one more reader.

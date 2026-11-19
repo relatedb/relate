@@ -1,20 +1,36 @@
-# 0227. Ontology document format: JSON or YAML, stored verbatim
+---
+type: adr
+area: engine
+date: 2026-10-12
+deciders: CypherLite maintainers
+name: 0227-ontology-document-format
+status: accepted
+tags:
+  - ontology
+title: "Ontology document format: JSON or YAML, stored verbatim"
+REFERENCES:
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0120-ontology-document-persistence]]"
+  - "[[adr/0121-ontology-procedures]]"
+  - "[[adr/0226-ontology-mappings]]"
+  - "[[adr/0229-remove-system-ontologies-cypher-surface]]"
+  - "[[adr/0364-ontology-spec-main-gate]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-12
-- **Deciders**: CypherLite maintainers (Linear LABS-132)
+# 0227. Ontology document format: JSON or YAML, stored verbatim
 
 ## Context
 
-ADR-0120 §1 stores "the validated ontology JSON for `neo4j`, kept
+[ADR-0120](./0120-ontology-document-persistence.md) §1 stores "the validated ontology JSON for `neo4j`, kept
 verbatim", and §5 carries it as one immutable
-`ontology/<128-bit-hex>.json` snapshot object. ADR-0121 §1 defines
+`ontology/<128-bit-hex>.json` snapshot object. [ADR-0121](./0121-ontology-procedures.md) §1 defines
 `db.ontology.set` as validating the document against a supported Ontology
 Spec version — a newer spec version failing while naming the highest
 supported version — and `db.ontology.get` as returning the stored document.
 Neither ADR pins the accepted syntaxes, the parser, the validation
-mechanism, or the version gate's exact rule. ADR-0121 §5's mapping deferral
-is resolved by ADR-0226, whose mappings need a validated, parsed document
+mechanism, or the version gate's exact rule. [ADR-0121](./0121-ontology-procedures.md) §5's mapping deferral
+is resolved by [ADR-0226](./0226-ontology-mappings.md), whose mappings need a validated, parsed document
 model to build on.
 
 Since those ADRs, Neo4j has published its ontology-privileges proposal
@@ -28,19 +44,19 @@ database, or the target of a `USE` clause) — and `get` returns the stored
 ontology *in the requested format*, defaulting to YAML because it is more
 compact in agent context. An optional database argument is a documented
 future extension ("can be added later without breaking anything"). Per
-ADR-0121 §1's own rule — "Where Neo4j's final signatures differ …
+[ADR-0121](./0121-ontology-procedures.md) §1's own rule — "Where Neo4j's final signatures differ …
 CypherLite follows Neo4j" — CypherLite follows the proposal. Its privilege
 machinery (`SHOW ONTOLOGY`, `SET ONTOLOGY`, `ONTOLOGY MANAGEMENT`,
-`EXECUTE BOOSTED`) stays out of scope per ADR-0121 §4.
+`EXECUTE BOOSTED`) stays out of scope per [ADR-0121](./0121-ontology-procedures.md) §4.
 
 The Ontology Graph Spec's proposal writes every example in YAML while its
 schema is JSON Schema (draft 2020-12); both syntaxes denote the same
 documents, and the pinned draft schema (`neo4j/graph-spec` @
 `2f8dcbdf2dab51ebf2d760e00904a8f2b0518f59`) validates a JSON-equivalent
 value model either way. The mapping code lives in
-`cypherlite/cypherlite-ontology` (ADR-0121 §6, an engine crate), and the
+`cypherlite/cypherlite-ontology` ([ADR-0121](./0121-ontology-procedures.md) §6, an engine crate), and the
 workspace today has no YAML dependency, so the crate choice is an R6
-heavy-dependency decision (ADR-0103) recorded here.
+heavy-dependency decision ([ADR-0103](./0103-engine-surfaces-testing-layout.md)) recorded here.
 
 ## Decision
 
@@ -48,18 +64,18 @@ heavy-dependency decision (ADR-0103) recorded here.
    `db.ontology.get(format = "yaml" :: STRING) :: (ontology :: STRING)`,
    `db.ontology.drop()` and `db.ontology.apply()`. There is no database
    argument: each procedure acts on the database it is executed against —
-   the session database or the `USE` target (ADR-0116 §3). Executed against
-   `system` or `system_ontologies`, the procedures fail with ADR-0121 §2's
+ the session database or the `USE` target ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §3). Executed against
+ `system` or `system_ontologies`, the procedures fail with [ADR-0121](./0121-ontology-procedures.md) §2's
    `Ontologies can only be stored for the user database 'neo4j'.`, now
    applied to the session/USE target rather than to a database argument; an
-   unknown `USE` target fails at routing with 42N00 (ADR-0116 §3) before
+ unknown `USE` target fails at routing with 42N00 ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §3) before
    this surface is reached. The optional database argument may return as a
    future extension, without breaking these signatures.
 2. **JSON or YAML in; the stored bytes stay verbatim.** `set` accepts a
    document in JSON or YAML 1.2. The submitted string is stored verbatim —
-   ADR-0120 §1's "the validated ontology JSON kept verbatim" is amended to
+ [ADR-0120](./0120-ontology-document-persistence.md) §1's "the validated ontology JSON kept verbatim" is amended to
    "the validated ontology document, JSON or YAML, kept verbatim" — and the
-   ADR-0120 §3 16 MiB envelope limit applies to the submitted string
+ [ADR-0120](./0120-ontology-document-persistence.md) §3 16 MiB envelope limit applies to the submitted string
    regardless of syntax. The store records no JSON-vs-YAML marker — only
    the bytes.
 3. **`get` returns the requested format.** `format` is `"yaml"` (the
@@ -79,7 +95,7 @@ heavy-dependency decision (ADR-0103) recorded here.
 4. **One parse path.** The string is parsed once as YAML 1.2 (a superset of
    JSON) into a JSON-equivalent value model: maps with string keys in
    source order, lists, strings, integers, floats, booleans, null. Source
-   key order is preserved — ADR-0226's deterministic id assignment and
+ key order is preserved — [ADR-0226](./0226-ontology-mappings.md)'s deterministic id assignment and
    (3)'s canonical serialization depend on it. Anything outside that model
    — non-string mapping keys, custom tags, non-finite floats — is rejected
    at parse time. Validation, version gating, graph derivation and
@@ -96,7 +112,7 @@ heavy-dependency decision (ADR-0103) recorded here.
 6. **Hand-rolled validation against the vendored schema.** The pinned draft
    schema is vendored as `ontology-graph-spec.schema.json` in
    `cypherlite/cypherlite-ontology` (source: `neo4j/graph-spec` @
-   `2f8dcbdf2dab51ebf2d760e00904a8f2b0518f59`, the same pin ADR-0226's
+ `2f8dcbdf2dab51ebf2d760e00904a8f2b0518f59`, the same pin [ADR-0226](./0226-ontology-mappings.md)'s
    mappings target). Validation is hand-rolled structural checking of
    exactly that schema, over the value model from (4): the required root
    fields (`schema`, `id`, `version`); `additionalProperties: false` at the
@@ -124,8 +140,8 @@ heavy-dependency decision (ADR-0103) recorded here.
 
 ## Alternatives considered
 
-- **Keep the database argument** (ADR-0121 §1 as written). Rejected:
-  The proposal's 8 Oct 2026 revision removed it, and ADR-0121 §1 binds
+- **Keep the database argument** ([ADR-0121](./0121-ontology-procedures.md) §1 as written). Rejected:
+ The proposal's 8 Oct 2026 revision removed it, and [ADR-0121](./0121-ontology-procedures.md) §1 binds
   CypherLite to Neo4j's signatures; the session/USE-target rule preserves
   §2's `neo4j`-only restriction without an argument.
 - **JSON only.** Rejected: the spec's human wire format reads as YAML — its
@@ -134,11 +150,11 @@ heavy-dependency decision (ADR-0103) recorded here.
   parse step, not the store.
 - **Normalize to canonical JSON on `set` and return that from `get`.**
   Rejected: it breaks round-trip fidelity (comments, key order cosmetics,
-  YAML syntax) and ADR-0120's verbatim principle, for a normalization no
-  consumer needs — the derived graph is already canonical (ADR-0226), and
+ YAML syntax) and [ADR-0120](./0120-ontology-document-persistence.md)'s verbatim principle, for a normalization no
+ consumer needs — the derived graph is already canonical ([ADR-0226](./0226-ontology-mappings.md)), and
   `get` converts on request.
 - **Record a format marker in the WAL or snapshot.** Rejected: it would
-  change ADR-0120's store formats for one bit that a strict-JSON sniff
+ change [ADR-0120](./0120-ontology-document-persistence.md)'s store formats for one bit that a strict-JSON sniff
   derives exactly — any stored document that parses as JSON is JSON.
 - **Convert on every `get`, even when the formats match.** Rejected: it
   breaks the verbatim round-trip for no benefit; the proposal asks for the
@@ -159,13 +175,13 @@ heavy-dependency decision (ADR-0103) recorded here.
   against one fixed, vendored schema. Hand-rolled checks of exactly that
   schema are smaller and audit-friendly; the correctness risk is bounded by
   fixture tests that pin validator behavior per schema clause.
-- **No validation** (store any well-formed document). Rejected: ADR-0120
-  stores the *validated* document, and ADR-0226's derived-graph build
+- **No validation** (store any well-formed document). Rejected: [ADR-0120](./0120-ontology-document-persistence.md)
+ stores the *validated* document, and [ADR-0226](./0226-ontology-mappings.md)'s derived-graph build
   assumes the schema shape.
 - **Lenient version handling** (accept any `1.x`, or ignore the URI).
   Rejected: silently misreading a newer document's semantics is worse than
   failing loudly; the error names the highest supported version
-  (ADR-0121 §1).
+ ([ADR-0121](./0121-ontology-procedures.md) §1).
 
 ## Consequences
 
@@ -181,9 +197,9 @@ heavy-dependency decision (ADR-0103) recorded here.
   ADR), never a dependency upgrade.
 - Because YAML 1.2 is a JSON superset, a JSON document and its YAML twin
   validate and derive identically; only the stored bytes differ.
-- Older binaries already refuse stores holding an ontology (ADR-0120 §8),
+- Older binaries already refuse stores holding an ontology ([ADR-0120](./0120-ontology-document-persistence.md) §8),
   so YAML documents need no extra format gate.
-- The procedures compose with ADR-0116 routing: `USE system_ontologies
+- The procedures compose with [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) routing: `USE system_ontologies
   CALL db.ontology.get()` fails with §2's ontology text, and `USE nope …`
   fails with 42N00 at routing.
 - Tests cover: JSON and YAML round trips through `set`/`get`, both
@@ -192,18 +208,18 @@ heavy-dependency decision (ADR-0103) recorded here.
   version gate's error text, rejection of non-string keys and custom tags,
   per-clause validator fixtures, and the `system`/`system_ontologies`
   failures.
-- ADR-0120 and ADR-0121 gain Later references notes.
+- [ADR-0120](./0120-ontology-document-persistence.md) and [ADR-0121](./0121-ontology-procedures.md) gain Later references notes.
 
 ## Later references
 
-- ADR-0229 tightens §1's `system_ontologies` composition rule: the
-  procedures routed there now fail ADR-0116 §4's namespace gate with
-  ADR-0229's 42N17 text (`This database is not queryable. …`) before
+- [ADR-0229](./0229-remove-system-ontologies-cypher-surface.md) tightens §1's `system_ontologies` composition rule: the
+ procedures routed there now fail [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §4's namespace gate with
+ [ADR-0229](./0229-remove-system-ontologies-cypher-surface.md)'s 42N17 text (`This database is not queryable. …`) before
   `Ontologies can only be stored for the user database 'neo4j'.` is
   reached — that text now fires only on `system`. The Consequences
   composition example `USE system_ontologies CALL db.ontology.get()`
   fails with the new text. The `system` half and the rest of §1 stand.
-- ADR-0364 raises §7's gate to main's
+- [ADR-0364](./0364-ontology-spec-main-gate.md) raises §7's gate to main's
   `https://neo4j.com/docs/ontology-graph-spec/1.0.0/schema.json` and
   replaces §6's vendored draft schema and hand-rolled validation with
   `neo4j/graph-spec` main @ `066515593ae59317d758bcf2cef54195e74bde39`.

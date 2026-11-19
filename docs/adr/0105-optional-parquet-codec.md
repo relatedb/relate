@@ -1,19 +1,42 @@
-# 0105. Parquet snapshot codec behind an additive `parquet` Cargo feature
+---
+type: adr
+area: engine
+date: 2026-09-25
+deciders: CypherLite maintainers
+name: 0105-optional-parquet-codec
+status: proposed
+tags:
+  - checkpoint
+  - parquet
+title: Parquet snapshot codec behind an additive `parquet` Cargo feature
+REFERENCES:
+  - "[[adr/0004-memory-first-parquet-object-store]]"
+  - "[[adr/0022-id-window-checkpoint-shards]]"
+  - "[[adr/0041-timed-checkpoint]]"
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0050-snapshot-codecs]]"
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+  - "[[adr/0080-cli-pull-command]]"
+  - "[[adr/0085-wasm32-build-split]]"
+  - "[[adr/0092-manifest-bound-pull-identity]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0104-cargo-feature-bundles]]"
+  - "[[adr/0106-json-snapshot-pull-identity]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-25
-- **Deciders**: CypherLite maintainers
+# 0105. Parquet snapshot codec behind an additive `parquet` Cargo feature
 
 ## Context
 
-LABS-103 asks for a small, lean engine core. ADR-0103 made the engine
+A small, lean engine core is asked for. [ADR-0103](./0103-engine-surfaces-testing-layout.md) made the engine
 boundary enforceable (`cypherlite/` depends only on `cypherlite/`), and
-ADR-0104 introduced additive feature bundles for the CLI and extends the
+[ADR-0104](./0104-cargo-feature-bundles.md) introduced additive feature bundles for the CLI and extends the
 same policy to engine-level features, each with its own ADR. This is the
 first one.
 
 The engine's dependency tree is dominated by one component: the Parquet
-snapshot codec in `cypherlite-storage` (ADR-0004, ADR-0022, ADR-0050).
+snapshot codec in `cypherlite-storage` ([ADR-0004](./0004-memory-first-parquet-object-store.md), [ADR-0022](./0022-id-window-checkpoint-shards.md), [ADR-0050](./0050-snapshot-codecs.md)).
 
 - `cargo tree -p cypherlite -e normal` lists about 112 unique crates.
   `arrow` + `parquet` account for up to 91 of them. About 50 crates, among
@@ -21,10 +44,10 @@ snapshot codec in `cypherlite-storage` (ADR-0004, ADR-0022, ADR-0050).
   reachable only through them.
 - No other engine crate uses Arrow or Parquet. `cypherlite-arrow` and
   `cypherlite-python` (both `surfaces/`) use Arrow for their own reasons.
-- Even the `minimal` CLI bundle (ADR-0104) links all of it, because every
+- Even the `minimal` CLI bundle ([ADR-0104](./0104-cargo-feature-bundles.md)) links all of it, because every
   consumer gets the engine's full dependency set.
 
-The code already sits behind a boundary. ADR-0085 cut Parquet out of the
+The code already sits behind a boundary. [ADR-0085](./0085-wasm32-build-split.md) cut Parquet out of the
 wasm32 build with `cfg(target_arch)`:
 
 - `arrow`/`parquet` are target-gated dependencies.
@@ -32,25 +55,25 @@ wasm32 build with `cfg(target_arch)`:
 - `SnapshotCodecKind::Parquet` stays an enum variant everywhere.
 - A stub returns a typed storage error when Parquet is unavailable.
 
-ADR-0085 rejected a `native` Cargo feature because it would just mirror the
+[ADR-0085](./0085-wasm32-build-split.md) rejected a `native` Cargo feature because it would just mirror the
 target check. This ADR is different: it lets a *native* build choose to leave
 Parquet out, which no target check can express.
 
 Four existing behaviours constrain the design:
 
-1. **The absent-codec default.** ADR-0050 §2 says an absent `codec` in
+1. **The absent-codec default.** [ADR-0050](./0050-snapshot-codecs.md) §2 says an absent `codec` in
    `manifest.json` means Parquet. Today that is implemented through
    `SnapshotCodecKind::default()`, which is also the default codec for new
    stores (Parquet on native, JSON on wasm32).
-2. **Pull identity.** Its persistence (ADR-0080, ADR-0092) used to exist
+2. **Pull identity.** Its persistence ([ADR-0080](./0080-cli-pull-command.md), [ADR-0092](./0092-manifest-bound-pull-identity.md)) used to exist
    only in the Parquet snapshot path, so a repeated `cypherlite pull` into
-   a JSON store duplicated nodes after a checkpoint. ADR-0106 closed that
+ a JSON store duplicated nodes after a checkpoint. [ADR-0106](./0106-json-snapshot-pull-identity.md) closed that
    gap: JSON snapshots persist the pull-identity map inline in
    `graph.json`. Pull identity no longer depends on the codec.
 3. **Native `:memory:` dumps.** A `:memory:` store keeps its WAL and
    snapshot files in a fresh, per-database `MemoryVfs`. Nothing ever reads
    that snapshot back: there is no restart, and the next open creates a new
-   `MemoryVfs`. Native `:memory:` has no timed checkpoint (ADR-0041), but
+ `MemoryVfs`. Native `:memory:` has no timed checkpoint ([ADR-0041](./0041-timed-checkpoint.md)), but
    it still writes a full snapshot into RAM in three places:
    - on every WAL rotation (`finish_applied_commit` → `schedule_checkpoint`
      → `dump_and_recycle`);
@@ -58,7 +81,7 @@ Four existing behaviours constrain the design:
    - on an explicit `Database::checkpoint()`.
 
    wasm32 skips the dump in `schedule_checkpoint` and only recycles the WAL
-   (up to the checkpoint LSN) and GCs versions (ADR-0085). Without Parquet,
+ (up to the checkpoint LSN) and GCs versions ([ADR-0085](./0085-wasm32-build-split.md)). Without Parquet,
    the native rotation dump would become a full `graph.json` rewrite in
    RAM: more CPU and memory spent on bytes nobody reads.
 4. **Workspace dependency plumbing.** A workspace member's
@@ -70,7 +93,7 @@ Four existing behaviours constrain the design:
 Put the Parquet snapshot codec behind an additive Cargo feature named
 `parquet`. It is on by default in the engine crates, so every existing build
 and consumer keeps today's behaviour. Builds that do not want it opt out
-explicitly. ADR-0104 rules 1, 2, 6 and 7 apply unchanged.
+explicitly. [ADR-0104](./0104-cargo-feature-bundles.md) rules 1, 2, 6 and 7 apply unchanged.
 
 ### Features
 
@@ -84,9 +107,9 @@ explicitly. ADR-0104 rules 1, 2, 6 and 7 apply unchanged.
   target is not wasm32. `cypherlite-storage`'s `build.rs` names that
   condition once as `cfg(parquet_codec)`, and the source gates on it. The
   feature expresses capability and the target check expresses platform.
-  Neither replaces the other, and the ADR-0085 gates that are about
+ Neither replaces the other, and the [ADR-0085](./0085-wasm32-build-split.md) gates that are about
   filesystems, locks and threads stay target-only.
-- `SnapshotCodecKind::Parquet` remains a variant in every build (ADR-0085
+- `SnapshotCodecKind::Parquet` remains a variant in every build ([ADR-0085](./0085-wasm32-build-split.md)
   §3). Format detection (`resolve_codec`, `has_parquet_store_files`) stays
   compiled in every build, so a build without Parquet can recognise a
   Parquet store and refuse it.
@@ -98,7 +121,7 @@ explicitly. ADR-0104 rules 1, 2, 6 and 7 apply unchanged.
    otherwise.
 2. **An absent `codec` field still means Parquet.** Serde decoding of
    `manifest.json` stops using `SnapshotCodecKind::default()` and gets an
-   explicit default function that always returns `Parquet`. A pre-ADR-0050
+ explicit default function that always returns `Parquet`. A pre-[ADR-0050](./0050-snapshot-codecs.md)
    Parquet store therefore never decodes as JSON, and an empty-graph
    Parquet store is never silently converted.
 3. **Fail closed at open.** A store whose resolved codec is Parquet
@@ -111,11 +134,11 @@ explicitly. ADR-0104 rules 1, 2, 6 and 7 apply unchanged.
    `OpenOptions.snapshot_codec`, `CYPHERLITE_SNAPSHOT_FORMAT=parquet`, or the
    CLI `--snapshot-format parquet` in a build without the codec returns the
    same error. The CLI `--help` lists only the codecs compiled into the
-   binary (ADR-0104).
+ binary ([ADR-0104](./0104-cargo-feature-bundles.md)).
 
 ### Pull does not require Parquet
 
-- Pull identity is codec-neutral since ADR-0106, so `cypherlite-load`'s
+- Pull identity is codec-neutral since [ADR-0106](./0106-json-snapshot-pull-identity.md), so `cypherlite-load`'s
   normal dependency does not enable `cypherlite/parquet` and the CLI `pull` feature is only
   `dep:cypherlite-load`. The `agent` bundle (`skill`, `pull`) builds without
   Arrow/Parquet.
@@ -187,14 +210,14 @@ This applies on every target and in every build, with or without
   that only use `:memory:` or JSON always pay for about 50 extra crates and
   their build time. Rejected: LABS-103 asks for a lean core on native too.
 - **Replace Parquet with JSON entirely.** Parquet gives dirty-window
-  incremental checkpoints (ADR-0022). Clients implementing embedded
-  Relate, and the frozen checkpoint baselines (ADR-0070, ADR-0071), are
+ incremental checkpoints ([ADR-0022](./0022-id-window-checkpoint-shards.md)). Clients implementing embedded
+ Relate, and the frozen checkpoint baselines ([ADR-0070](./0070-docker-baseline-loadtest-environment.md), [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md)), are
   built on it. Rejected: it
   would regress persistence performance and break existing stores to save
   dependencies.
 - **Parquet off by default (opt-in).** A plain `cargo build` or a new
   embedder would silently get JSON checkpoints, and existing Parquet stores
-  would fail to open after a routine dependency bump. Rejected: ADR-0104
+ would fail to open after a routine dependency bump. Rejected: [ADR-0104](./0104-cargo-feature-bundles.md)
   keeps defaults equal to today's behaviour.
 - **Move the codec into its own crate behind a runtime codec registry**
   (for example a `cypherlite-parquet` surface crate that registers itself).
@@ -219,11 +242,11 @@ This applies on every target and in every build, with or without
   example and existing tests rely on it). Rejected: explicit calls are
   rare and deliberate, so honouring them costs nothing on the hot path.
 - **Fix JSON pull identity in this ADR.** That changes the JSON checkpoint
-  format and interacts with ADR-0092, which is a separate decision.
-  Rejected here to keep one decision per ADR; ADR-0106 makes it.
+ format and interacts with [ADR-0092](./0092-manifest-bound-pull-identity.md), which is a separate decision.
+ Rejected here to keep one decision per ADR; [ADR-0106](./0106-json-snapshot-pull-identity.md) makes it.
 - **Keep `pull` coupled to `parquet`** (`cypherlite-load` enabling
   `cypherlite/parquet`). The coupling only existed because pull identity
-  was Parquet-only. Rejected: after ADR-0106 it would keep Arrow/Parquet in
+ was Parquet-only. Rejected: after [ADR-0106](./0106-json-snapshot-pull-identity.md) it would keep Arrow/Parquet in
   the `agent` bundle for no capability.
 
 ## Consequences
@@ -253,7 +276,7 @@ This applies on every target and in every build, with or without
 - **CI** adds `cargo test` and `cargo clippy` for
   `-p cypherlite-storage --no-default-features` and
   `-p cypherlite --no-default-features`. The existing `minimal` CLI job now
-  also covers the build without Parquet. The wasm32 checks from ADR-0085 are
+ also covers the build without Parquet. The wasm32 checks from [ADR-0085](./0085-wasm32-build-split.md) are
   unchanged.
 - **`:memory:` checkpoints (every build).** Automatic `:memory:`
   checkpoints get cheaper everywhere: no snapshot encode and no second
@@ -264,13 +287,13 @@ This applies on every target and in every build, with or without
     `checkpoint()` still produces a snapshot.
   - The TCK is re-run to confirm no regression.
   - The fraud and identity loadtests default to `--uri :memory:`, so their
-    frozen envelopes (ADR-0046, ADR-0070) will shift: ops/s and p99 should
+ frozen envelopes ([ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md), [ADR-0070](./0070-docker-baseline-loadtest-environment.md)) will shift: ops/s and p99 should
     improve because rotation no longer encodes the graph. Any
     logical-bytes field that counts snapshot bytes will change. If the
     `loadtest-baselines` gate flags the change, the envelopes are re-frozen
-    through the CI workflow (ADR-0071), never from a host run.
+ through the CI workflow ([ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md)), never from a host run.
   - The wasm32-only `schedule_checkpoint` branch is removed in favour of
     the shared path.
 - `pull` works in every build that has it, with either codec, because
-  ADR-0106 persists pull identity in JSON snapshots (LABS-104).
-- ADR-0050 and ADR-0085 get Later references notes pointing here.
+ [ADR-0106](./0106-json-snapshot-pull-identity.md) persists pull identity in JSON snapshots.
+- [ADR-0050](./0050-snapshot-codecs.md) and [ADR-0085](./0085-wasm32-build-split.md) get Later references notes pointing here.

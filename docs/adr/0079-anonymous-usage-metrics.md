@@ -1,13 +1,30 @@
-# 0079. Anonymous usage metrics in the CLI
+---
+type: adr
+area: cli
+date: 2026-09-21
+deciders: CypherLite maintainers
+name: 0079-anonymous-usage-metrics
+status: proposed
+tags:
+  - telemetry
+title: Anonymous usage metrics in the CLI
+REFERENCES:
+  - "[[adr/0055-apache-2-license]]"
+  - "[[adr/0067-release-versioning-and-process]]"
+  - "[[adr/0068-cli-install-script-via-github-pages]]"
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0263-telemetry-endpoint-https-only]]"
+  - "[[adr/0360-rand-09-workspace-migration]]"
+  - "[[adr/0545-telemetry-spool-delivery]]"
+  - "[[adr/0588-feedback-crate-owns-mixpanel-and-consent]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-21
-- **Deciders**: CypherLite maintainers (Linear LABS-12, LABS-55, LABS-42)
+# 0079. Anonymous usage metrics in the CLI
 
 ## Context
 
 CypherLite ships as a raw `cypherlite` CLI binary on GitHub Releases
-(ADR-0067, installed via the ADR-0068 installer or the ADR-0069 `upgrade`
+([ADR-0067](./0067-release-versioning-and-process.md), installed via the [ADR-0068](./0068-cli-install-script-via-github-pages.md) installer or the [ADR-0069](./0069-cli-lifecycle-commands.md) `upgrade`
 command), and we have no visibility into how that binary is used: which
 invocation modes are common, which output modes and storage knobs are
 exercised, whether queries succeed, or whether the lifecycle commands are
@@ -22,7 +39,7 @@ HTTP, background worker, machine ID), `common/clievents` (event taxonomy),
 and `common/clicfg` (telemetry config key). This decision adopts that shape
 for CypherLite, adapted to this repository’s constraints: a hand-rolled flag
 parser in `crates/cypherlite-cli`, a workspace `ureq = "3.4"` dependency
-already used by the `upgrade` command, and the ADR-0069 grammar rule that
+already used by the `upgrade` command, and the [ADR-0069](./0069-cli-lifecycle-commands.md) grammar rule that
 lifecycle verbs are positional commands, never flags.
 
 Privacy is the binding constraint. CypherLite is an embedded engine whose
@@ -52,9 +69,9 @@ path, and governed by a layered opt-out that defaults to on.
    `{"event": ..., "properties": {"token": ..., "time": ...,
    "distinct_id": ..., "$insert_id": ..., ...}}` objects. The HTTP client is
    hand-rolled over the existing workspace `ureq = "3.4"` dependency
-   (already used by `upgrade`, ADR-0069); install-ID and `$insert_id`
+ (already used by `upgrade`, [ADR-0069](./0069-cli-lifecycle-commands.md)); install-ID and `$insert_id`
    randomness come from the existing workspace `rand` dependency (version
-   pinned by ADR-0360). **Zero new dependencies.**
+ pinned by [ADR-0360](./0360-rand-09-workspace-migration.md)). **Zero new dependencies.**
 3. **Identity: random install ID, not a machine ID.** A random UUID is
    generated once and persisted as the install ID in state under the XDG
    config directory — `$XDG_CONFIG_HOME/cypherlite/` when
@@ -88,10 +105,10 @@ path, and governed by a layered opt-out that defaults to on.
    `CYPHERLITE_TELEMETRY` env var (`0`/`false`/`off` disables) → persisted
    `telemetry: false` in `<config>/cypherlite/config.json` → enabled.
    Persistent control is a new positional lifecycle command `cypherlite
-   telemetry on|off|status` following the ADR-0069 grammar (recognized only
+ telemetry on|off|status` following the [ADR-0069](./0069-cli-lifecycle-commands.md) grammar (recognized only
    as the first argument; `./telemetry` and `-- telemetry` remain reachable
    as database paths). There is deliberately **no `--no-telemetry` flag**:
-   per ADR-0069, flags configure query-engine runs and lifecycle actions are
+ per [ADR-0069](./0069-cli-lifecycle-commands.md), flags configure query-engine runs and lifecycle actions are
    commands. A one-time stderr notice on the first interactive run points at
    the opt-out; a `notice_shown` flag in state suppresses repeats.
 7. **Dev/test overrides.** `CYPHERLITE_MIXPANEL_ENDPOINT` and
@@ -129,7 +146,7 @@ path, and governed by a layered opt-out that defaults to on.
   attempt to add such a field is a visible API change requiring an ADR
   referencing this one.
 - A fourth positional lifecycle command, `telemetry on|off|status`, joins
-  the ADR-0069 grammar; database paths literally named `telemetry` stay
+ the [ADR-0069](./0069-cli-lifecycle-commands.md) grammar; database paths literally named `telemetry` stay
   reachable via `./` or `--`.
 - New documented environment variables of the CLI: `DO_NOT_TRACK`,
   `CYPHERLITE_TELEMETRY`, `CYPHERLITE_MIXPANEL_ENDPOINT`, and
@@ -145,7 +162,7 @@ path, and governed by a layered opt-out that defaults to on.
   `CYPHERLITE_TELEMETRY` layers, and the all-errors-swallowed rule means a
   blocked network is indistinguishable from success from the user’s point
   of view.
-- Distribution under the Apache-2.0 license (ADR-0055) is unaffected: the
+- Distribution under the Apache-2.0 license ([ADR-0055](./0055-apache-2-license.md)) is unaffected: the
   telemetry source and the full event/property listing ship in the repo, so
   what the binary sends is fully auditable.
 - The `MIXPANEL_TOKEN` constant ships with the shared Neo4j Labs CLI project
@@ -155,15 +172,15 @@ path, and governed by a layered opt-out that defaults to on.
 
 ## Later references
 
-- ADR-0263 restricts the §7 `CYPHERLITE_MIXPANEL_ENDPOINT` override: the value
+- [ADR-0263](./0263-telemetry-endpoint-https-only.md) restricts the §7 `CYPHERLITE_MIXPANEL_ENDPOINT` override: the value
   is no longer used verbatim "as-is". It must be `https://` for any host, or
   `http://` only for loopback (`localhost`, `127.0.0.1`, `::1`); a rejected
   override disables telemetry for the run and prints one stderr warning.
-- ADR-0588 moves §2's `/track` client, §6's layered opt-out resolution, and
+- [ADR-0588](./0588-feedback-crate-owns-mixpanel-and-consent.md) moves §2's `/track` client, §6's layered opt-out resolution, and
   §3's state files into `surfaces/relate-feedback`, shared with the feedback
   surface; the telemetry verbs, event taxonomy, envelope builder, and spool
   stay in the CLI.
-- ADR-0545 replaces §5's delivery shape: the exit flush no longer waits on
+- [ADR-0545](./0545-telemetry-spool-delivery.md) replaces §5's delivery shape: the exit flush no longer waits on
   the network — pending events spool locally and the next enabled run
   delivers them. It also extends §3's config-directory resolution to
   Windows, which never resolved there.

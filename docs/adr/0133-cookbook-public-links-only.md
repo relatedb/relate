@@ -1,17 +1,29 @@
-# 0133. Cookbook pages link only to public targets
+---
+type: adr
+area: ecosystem
+date: 2026-09-28
+deciders: CypherLite maintainers
+name: 0133-cookbook-public-links-only
+status: accepted
+tags:
+  - cookbook
+title: Cookbook pages link only to public targets
+REFERENCES:
+  - "[[adr/0130-cookbook-tested-recipes]]"
+  - "[[adr/0288-cookbook-nav-links-internal-repository]]"
+  - "[[adr/0528-cookbook-moves-to-relate-web]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-28
-- **Deciders**: CypherLite maintainers
+# 0133. Cookbook pages link only to public targets
 
 ## Context
 
-ADR-0130 publishes the cookbook as static pages built by
+[ADR-0130](./0130-cookbook-tested-recipes.md) publishes the cookbook as static pages built by
 `scripts/cookbook/build.mjs`. As built, every page linked to GitHub: the
 navigation and footer to the repository, a "Recipe source" link to the
 recipe's markdown, the footer's "built from <ref>" and "Write a recipe"
 links, prose links to ADRs (rewritten to `blob/<ref>/…`), and, through the
-`companion` front-matter field (ADR-0130 Decision item 1), a "Full program"
+`companion` front-matter field ([ADR-0130](./0130-cookbook-tested-recipes.md) Decision item 1), a "Full program"
 link into the companion examples repository.
 
 The repository is internal and the examples repository is private until
@@ -42,7 +54,7 @@ and it does not see the links the build adds.
 3. The build reads the list from the `lychee.toml` it is given
    (`--lychee`; the repository's by default), parsed with `smol-toml`, and
    fails when the file is not TOML or its top-level `exclude` is not an
-   array of strings, rather than treat every URL as public. The cookbook is built from the latest release tag (ADR-0130), but
+ array of strings, rather than treat every URL as public. The cookbook is built from the latest release tag ([ADR-0130](./0130-cookbook-tested-recipes.md)), but
    the Pages deploy passes `main`'s `lychee.toml`: whether a URL is public is
    a fact about the world, not about the release. Publication edits one list
    on `main` (a `docs/PUBLISHING.md` step) and takes effect at the next
@@ -86,16 +98,16 @@ and it does not see the links the build adds.
 - The deploy's cookbook build takes a flag the release's `build.mjs` must
   know: every release that ships the cookbook does, since `--lychee` lands
   with it.
-- ADR-0130 Decision item 1 ("each links its full program through the
+- [ADR-0130](./0130-cookbook-tested-recipes.md) Decision item 1 ("each links its full program through the
   `companion` front-matter field") and its Consequences ("The nav gains a
   Cookbook link before GitHub") hold once those URLs are public.
 
 ## Later references
 
-- ADR-0288 exempts the navigation's GitHub link from Decision item 1: the
+- [ADR-0288](./0288-cookbook-nav-links-internal-repository.md) exempts the navigation's GitHub link from Decision item 1: the
   cookbook navigation links the repository while it is internal, matching
   the landing page, and the link check (Decision item 2) accepts exactly the
   repository URL. Every other not-yet-public link is unchanged.
-- ADR-0528 moves the cookbook to the relate-web repository: the link policy
+- [ADR-0528](./0528-cookbook-moves-to-relate-web.md) moves the cookbook to the relate-web repository: the link policy
   now lives in relate-web, which keeps its own list of URLs that are not
   public yet.

@@ -1,8 +1,19 @@
-# 0167. `point()` accepts map-like entity arguments
+---
+type: adr
+area: cypher
+date: 2026-10-06
+deciders: CypherLite maintainers
+name: 0167-point-accepts-map-like-entities
+status: accepted
+tags:
+  - functions
+  - semantics
+title: "`point` accepts map-like entity arguments"
+REFERENCES:
+  - "[[adr/0445-point-crs-key-names-the-srid]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-06
-- **Deciders**: CypherLite maintainers (Linear LABS-169)
+# 0167. `point()` accepts map-like entity arguments
 
 ## Context
 
@@ -104,7 +115,7 @@ ignored like any other extra property.
 
 ## Later references
 
-ADR-0445 adds the deferred `crs`-key support: `crs` is the name spelling
+[ADR-0445](./0445-point-crs-key-names-the-srid.md) adds the deferred `crs`-key support: `crs` is the name spelling
 of the same four-code `srid` domain, read by the shared core in
 `spatial.rs` (not a parallel path). The construction rules above are
 unchanged; an unknown or non-string `crs` is an error, and a `crs`/`srid`

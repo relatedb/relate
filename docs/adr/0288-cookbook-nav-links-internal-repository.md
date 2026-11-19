@@ -1,13 +1,26 @@
+---
+type: adr
+area: ecosystem
+date: 2026-10-07
+deciders: CypherLite maintainers (decided in conversation)
+name: 0288-cookbook-nav-links-internal-repository
+status: accepted
+tags:
+  - cookbook
+title: The cookbook navigation links the repository while it is internal
+REFERENCES:
+  - "[[adr/0130-cookbook-tested-recipes]]"
+  - "[[adr/0133-cookbook-public-links-only]]"
+  - "[[adr/0528-cookbook-moves-to-relate-web]]"
+---
+
 # 0288. The cookbook navigation links the repository while it is internal
 
-- **Status**: Accepted
 - **Renumbered**: from 0177 (shared-number cleanup)
-- **Date**: 2026-10-07
-- **Deciders**: CypherLite maintainers (decided in conversation)
 
 ## Context
 
-ADR-0133 makes `lychee.toml`'s `exclude` list the one switch for links to
+[ADR-0133](./0133-cookbook-public-links-only.md) makes `lychee.toml`'s `exclude` list the one switch for links to
 URLs that are not public yet: the cookbook build writes no link to such a
 URL, and fails on any that slips through. The repository,
 `github.com/neo4j-labs/cypherlite`, is on the list, so the cookbook's
@@ -26,7 +39,7 @@ gets a 404.
 1. The cookbook navigation always links the repository (`--repo-url`) as
    `GitHub`, as the landing page does, whether or not `lychee.toml` excludes
    it. The navigation then matches across the site.
-2. This is the only exception to ADR-0133. The footer's GitHub link, the
+2. This is the only exception to [ADR-0133](./0133-cookbook-public-links-only.md). The footer's GitHub link, the
    "built from <ref>" and "Write a recipe" links, the index page's README
    and source links, prose links into the repository, and `companion` links
    still follow the list.
@@ -37,7 +50,7 @@ gets a 404.
 
 ## Alternatives considered
 
-- **Keep ADR-0133 as it is; the cookbook has no GitHub item until
+- **Keep [ADR-0133](./0133-cookbook-public-links-only.md) as it is; the cookbook has no GitHub item until
   publication.** The policy is consistent, but the navigation changes
   between pages of one site. Rejected: the maintainers prefer one
   navigation bar.
@@ -49,7 +62,7 @@ gets a 404.
   `docs/PUBLISHING.md` path, which turns every repository link on. Not
   available while the repository stays internal. Rejected for now.
 - **Exempt every repository link from the check.** Would bring back the
-  footer, source and ADR links, the 73 dead links ADR-0133 removed.
+ footer, source and ADR links, the 73 dead links [ADR-0133](./0133-cookbook-public-links-only.md) removed.
   Rejected: one navigation item is the inconsistency to fix.
 - **Mark the exempt anchor in the HTML (a class or `data-` attribute) for
   the check to skip.** Any template could then mark any link, and the check
@@ -60,19 +73,19 @@ gets a 404.
 
 - Every cookbook page's navigation shows GitHub. Readers outside the
   organization who follow it get GitHub's 404 until the repository is
-  public. This is the one dead link ADR-0133's Alternatives rejected keeping,
+ public. This is the one dead link [ADR-0133](./0133-cookbook-public-links-only.md)'s Alternatives rejected keeping,
   accepted here for the navigation only.
 - The Pages deploy builds the cookbook with the latest release's generator
-  (ADR-0130), so the item appears at the first deploy after a release that
+ ([ADR-0130](./0130-cookbook-tested-recipes.md)), so the item appears at the first deploy after a release that
   includes this change, not at the next deploy from `main`.
 - Publication (`docs/PUBLISHING.md`) is unchanged: deleting the `lychee.toml`
   entries turns the remaining repository links on. The exemption then has no
   effect and can stay.
-- ADR-0133 Decision item 1 ("no GitHub navigation or footer links") and
-  ADR-0130's "the nav's GitHub link render[s] once those URLs are public" no
+- [ADR-0133](./0133-cookbook-public-links-only.md) Decision item 1 ("no GitHub navigation or footer links") and
+ [ADR-0130](./0130-cookbook-tested-recipes.md)'s "the nav's GitHub link render[s] once those URLs are public" no
   longer hold for the navigation.
 
 ## Later references
 
-- ADR-0528 moves the cookbook to the relate-web repository: the navigation
+- [ADR-0528](./0528-cookbook-moves-to-relate-web.md) moves the cookbook to the relate-web repository: the navigation
   this ADR covered is now the site's own header.

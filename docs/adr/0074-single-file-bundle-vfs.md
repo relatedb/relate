@@ -1,22 +1,39 @@
-# 0074. Single-file bundle VFS selected by `.cl` path
+---
+type: adr
+area: engine
+date: 2026-09-21
+deciders: CypherLite maintainers
+name: 0074-single-file-bundle-vfs
+status: accepted
+tags:
+  - storage
+title: Single-file bundle VFS selected by `.cl` path
+REFERENCES:
+  - "[[adr/0044-withdraw-engine-s3]]"
+  - "[[adr/0050-snapshot-codecs]]"
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0072-virtual-filesystem]]"
+  - "[[adr/0077-embedded-durability-boundary]]"
+  - "[[adr/0091-bundle-generation-page-quarantine]]"
+  - "[[adr/0093-bundle-wal-page-ownership]]"
+  - "[[adr/0098-safe-atomic-replacement]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-21
-- **Deciders**: CypherLite maintainers
+# 0074. Single-file bundle VFS selected by `.cl` path
 
 ## Context
 
-ADR-0072 introduced a synchronous `Vfs` so WAL and snapshots share
+[ADR-0072](./0072-virtual-filesystem.md) introduced a synchronous `Vfs` so WAL and snapshots share
 one I/O boundary. Native directories and in-process `MemoryVfs` shipped
 first. The remaining product need is **one host file** that still presents
 the existing virtual tree (`wal/00000001.log`, `manifest.json`,
 `nodes/…`).
 
-ADR-0050 rejected a single-file *snapshot codec* (`.db` as GraphData).
-This decision is a container VFS, not a codec. ADR-0072 listed a
+[ADR-0050](./0050-snapshot-codecs.md) rejected a single-file *snapshot codec* (`.db` as GraphData).
+This decision is a container VFS, not a codec. [ADR-0072](./0072-virtual-filesystem.md) listed a
 dedicated URI scheme as a follow-on; a path suffix is enough to pick the
 backend without advertising a scheme `Database::open` would otherwise
-reject (ADR-0044).
+reject ([ADR-0044](./0044-withdraw-engine-s3.md)).
 
 ## Decision
 
@@ -38,7 +55,7 @@ reject (ADR-0044).
 4. **`OpenOptions.wal_dir` is rejected** on `.cl` URIs. A second host
    WAL would break “one file.”
 
-5. **Durability (ADR-0077).** The container fd uses the same platform
+5. **Durability ([ADR-0077](./0077-embedded-durability-boundary.md)).** The container fd uses the same platform
    barrier as Native (`fdatasync` / `F_BARRIERFSYNC` / `sync_all`).
    Group-commit `durability_barrier` writes WAL tail pages, then a
    superblock generation (WAL-tail shortcut: inode id + logical length +
@@ -53,7 +70,7 @@ reject (ADR-0044).
 ## Alternatives considered
 
 - **Dedicated `bundle://` scheme** — rejected: `.cl` on the existing
-  path/`file://` surface is enough, and ADR-0044 forbids advertising a
+ path/`file://` surface is enough, and [ADR-0044](./0044-withdraw-engine-s3.md) forbids advertising a
   scheme the engine does not open.
 - **Treat any existing regular file as a bundle** — rejected: a stray
   non-magic file would fail opaquely; the suffix is the contract.
@@ -66,24 +83,24 @@ reject (ADR-0044).
 
 - `Database::open("./graph.cl")` is a durable single-file database.
 - Native directory layout is unchanged for paths that do not end in `.cl`.
-- Codecs still own `manifest.json` / shards / `graph.json` (ADR-0050).
-- Loadtest baselines stay Native directories (ADR-0070).
+- Codecs still own `manifest.json` / shards / `graph.json` ([ADR-0050](./0050-snapshot-codecs.md)).
+- Loadtest baselines stay Native directories ([ADR-0070](./0070-docker-baseline-loadtest-environment.md)).
 
 ## Later references
 
-ADR-0098 proposes replacing the fixed virtual `{path}.tmp` name with an
+[ADR-0098](./0098-safe-atomic-replacement.md) proposes replacing the fixed virtual `{path}.tmp` name with an
 unpredictable, exclusively created virtual temp inode. The temporary file
 remains inside the single `.cl` host file; no sidecar is introduced.
 
-ADR-0091 proposes quarantining **retired** catalog/inode pages reachable from
+[ADR-0091](./0091-bundle-generation-page-quarantine.md) proposes quarantining **retired** catalog/inode pages reachable from
 the selected old superblock until its replacement has passed a durability
 barrier; the earlier statement that unreachable pages immediately join the
 freelist does not license reuse of pages still needed by the old generation.
 This does not protect a live partial WAL page from a torn in-place append;
-the ADR-0074/0077 WAL-tail path remains a separate unresolved durability
+the [ADR-0074](./0074-single-file-bundle-vfs.md)/[ADR-0077](./0077-embedded-durability-boundary.md) WAL-tail path remains a separate unresolved durability
 boundary. The bundle remains one host file with the same on-disk format.
 
-ADR-0093 proposes copying any selected partial WAL page before an append can
+[ADR-0093](./0093-bundle-wal-page-ownership.md) proposes copying any selected partial WAL page before an append can
 rewrite it, then publishing its v1 extent mapping with a new catalog and two
 host barriers. Once implemented, that remap supersedes this ADR's catalog-free
 WAL-tail shortcut; the one-host-file and format-v1 read contracts remain.

@@ -1,17 +1,29 @@
-# 0076. Interner id→string lookup is lock-free
+---
+type: adr
+area: engine
+date: 2026-09-19
+deciders: CypherLite maintainers
+name: 0076-lock-free-interner
+status: accepted
+tags:
+  - catalog
+  - perf
+title: Interner id→string lookup is lock-free
+REFERENCES:
+  - "[[adr/0033-compact-live-records-typed-csr]]"
+  - "[[adr/0075-label-only-snapshot-census]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-19
-- **Deciders**: CypherLite maintainers
+# 0076. Interner id→string lookup is lock-free
 
 ## Context
 
 The `Interner` maps labels, relationship types, and property keys to dense
-`u32` ids (ADR-0033). Reads are on the hot path: every materialized label,
+`u32` ids ([ADR-0033](./0033-compact-live-records-typed-csr.md)). Reads are on the hot path: every materialized label,
 property key, and node/rel type resolves through `Interner::get`.
 
 Before this change the id→string table was `RwLock<Vec<Arc<str>>>`. After
-ADR-0075 removed property-map materialization from the census, label
+[ADR-0075](./0075-label-only-snapshot-census.md) removed property-map materialization from the census, label
 interning was still the largest self-time cost (**25.7%** of samples,
 in-memory fraud loadtest), dominated by `to_str.read()` + `Arc::clone` per
 key and the associated `__psynch_cvwait` on lock contention.
@@ -47,7 +59,7 @@ id already handed out always finds the string.
 
 ## Consequences
 
-- In-memory fraud loadtest: ~21,300 -> **~28,200 ops/s** (with ADR-0075,
+- In-memory fraud loadtest: ~21,300 -> **~28,200 ops/s** (with [ADR-0075](./0075-label-only-snapshot-census.md),
   **16,043 -> ~28,200, +76% total**). `Interner::get` self-time 25.7% ->
   3.6%.
 - Both directions of the interner are now `DashMap`; the executor no longer

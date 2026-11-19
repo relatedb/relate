@@ -1,11 +1,22 @@
-# ADR-0450: `ConstraintDef` carries the enforced label — one schema identity for every constraint kind
+---
+type: adr
+area: engine
+claim: 5095ba8b3b8d9ee462f857cf613b61646a57e8ae
+name: 0450-constraint-def-enforced-label
+status: proposed
+tags:
+  - catalog
+title: |-
+  `ConstraintDef` carries the enforced label — one schema identity for every constraint kind
+REFERENCES:
+  - "[[adr/0172-incremental-constraint-validation]]"
+---
 
-Status: Proposed
-Claim: 5095ba8b3b8d9ee462f857cf613b61646a57e8ae
+# ADR-0450: `ConstraintDef` carries the enforced label — one schema identity for every constraint kind
 
 ## Context
 
-ADR-0172's constraint catalog rejected a second `CREATE CONSTRAINT` whose
+[ADR-0172](./0172-incremental-constraint-validation.md)'s constraint catalog rejected a second `CREATE CONSTRAINT` whose
 schema rule equalled an existing one (`EquivalentSchemaRuleAlreadyExists`).
 The rule was a hand-rolled four-field comparison (entity kind, label,
 property set, kind) in `Catalog::insert_constraint`, and it deliberately

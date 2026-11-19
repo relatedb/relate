@@ -1,14 +1,27 @@
-# 0126. Bolt basic auth with a generated token default
+---
+type: adr
+area: surface
+date: 2026-09-28
+deciders: CypherLite maintainers (agreed in conversation)
+name: 0126-bolt-basic-auth
+status: accepted
+tags:
+  - auth
+  - bolt
+title: Bolt basic auth with a generated token default
+REFERENCES:
+  - "[[adr/0109-bolt-tls]]"
+  - "[[adr/0110-bolt-connection-query-governance]]"
+  - "[[adr/0139-bolt-failed-hello-delay]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-28
-- **Deciders**: CypherLite maintainers (agreed in conversation)
+# 0126. Bolt basic auth with a generated token default
 
 ## Context
 
 The Bolt server accepted every HELLO without looking at the auth token
-(LABS-79: no auth, no TLS, no connection governance; TLS landed in ADR-0109,
-connection caps in ADR-0110). A server anyone reaches with `-p` or a
+no auth, no TLS, no connection governance; TLS landed in [ADR-0109](./0109-bolt-tls.md),
+connection caps in [ADR-0110](./0110-bolt-connection-query-governance.md)). A server anyone reaches with `-p` or a
 non-loopback bind takes credentials-free writes — and with silent acceptance,
 a client that *thinks* it authenticated is the worst of both worlds. The
 existing container UX (`make docker-run`) also puts the server on
@@ -59,7 +72,7 @@ Validation runs at HELLO (Bolt 4.4 carries the auth token in the HELLO map):
 
 ## Later references
 
-- ADR-0139 adds a fixed 1000 ms delay before the
+- [ADR-0139](./0139-bolt-failed-hello-delay.md) adds a fixed 1000 ms delay before the
   `Neo.ClientError.Security.Unauthorized` response on a failed HELLO,
   bounding browser-driven guessing of preset `--auth user:pw` credentials;
   the credential check itself is unchanged.

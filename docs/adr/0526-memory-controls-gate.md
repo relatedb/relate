@@ -1,8 +1,22 @@
+---
+type: adr
+area: infra
+claim: 29fa3907d6121880c5e1073f08b90c0f4cad32ac
+name: 0526-memory-controls-gate
+status: proposed
+tags:
+  - loadtest
+  - memory
+title: Memory controls gate
+REFERENCES:
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+  - "[[adr/0544-memory-envelope-improvements-warn]]"
+---
+
 # ADR-0526: Memory controls gate
 
-Status: Proposed
-Claim: 29fa3907d6121880c5e1073f08b90c0f4cad32ac
-Later references: ADR-0544 (an improvement warns and the job stays green)
+Later references: [ADR-0544](./0544-memory-envelope-improvements-warn.md) (an improvement warns and the job stays green)
 
 ## Context
 
@@ -12,8 +26,8 @@ It printed those results and then exited. Nothing compared them with a
 frozen range, so a quieter process and a leaked process looked the same
 on a pull request.
 
-The measurement only means something inside the ADR-0070 container, and
-only when the ADR-0071 environment class matches. A pull request cannot
+The measurement only means something inside the [ADR-0070](./0070-docker-baseline-loadtest-environment.md) container, and
+only when the [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md) environment class matches. A pull request cannot
 spend the full three-repeat calibration matrix on every push. The freeze
 and a nightly run can.
 

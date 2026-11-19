@@ -1,9 +1,21 @@
+---
+type: adr
+area: cli
+date: 2026-10-09
+deciders: CypherLite maintainers
+name: 0194-cli-error-envelope-and-exit-codes
+status: proposed
+tags:
+  - errors
+  - output
+title: CLI error envelope and exit-code map for query runs
+REFERENCES:
+  - "[[adr/0241-query-timeout-flag-and-exit-code-7]]"
+---
+
 # 0194. CLI error envelope and exit-code map for query runs
 
-- **Status**: Proposed
-- **Date**: 2026-10-09
-- **Deciders**: CypherLite maintainers (Linear [LABS-229](https://linear.app/neo4j/issue/LABS-229))
-- **Later references**: ADR-0241 fills reserved exit code 7 as `timeout` (`--timeout`), superseding the `rate_limited` placeholder
+- **Later references**: [ADR-0241](./0241-query-timeout-flag-and-exit-code-7.md) fills reserved exit code 7 as `timeout` (`--timeout`), superseding the `rate_limited` placeholder
 
 ## Context
 

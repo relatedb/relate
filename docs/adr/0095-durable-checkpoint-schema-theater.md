@@ -1,14 +1,28 @@
-# 0095. Persist admitted schema theater with checkpoint snapshots
+---
+type: adr
+area: engine
+date: 2026-09-24
+deciders: CypherLite maintainers
+name: 0095-durable-checkpoint-schema-theater
+status: proposed
+tags:
+  - catalog
+  - checkpoint
+title: Persist admitted schema theater with checkpoint snapshots
+REFERENCES:
+  - "[[adr/0022-id-window-checkpoint-shards]]"
+  - "[[adr/0050-snapshot-codecs]]"
+  - "[[adr/0094-preflight-wal-acceptance]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-24
-- **Deciders**: CypherLite maintainers
+# 0095. Persist admitted schema theater with checkpoint snapshots
 
 ## Context
 
-ADR-0094 admits a single snapshot of named schema and SHOW theater metadata.
-WAL replay restores both, but ADR-0022's Parquet v3 manifest records only
-base catalog definitions and ADR-0050's GraphData JSON writes no derived
+[ADR-0094](./0094-preflight-wal-acceptance.md) admits a single snapshot of named schema and SHOW theater metadata.
+WAL replay restores both, but [ADR-0022](./0022-id-window-checkpoint-shards.md)'s Parquet v3 manifest records only
+base catalog definitions and [ADR-0050](./0050-snapshot-codecs.md)'s GraphData JSON writes no derived
 constraint metadata. After a checkpoint recycles the WAL, a standalone
 enforced-label constraint remains named but loses its `enforcedLabel`; writes
 that violate the constraint then succeed. Named graph types, databases and
@@ -89,12 +103,12 @@ legacy provenance merely by being committed after a legacy import.
   validated markers while all known SHOW output and enforced-label validation
   survive WAL recycling; incomplete new candidates fail before checkpoint files
   are written.
-- ADR-0022's v3 manifest gains optional schema metadata; ADR-0050's GraphData
+- [ADR-0022](./0022-id-window-checkpoint-shards.md)'s v3 manifest gains optional schema metadata; [ADR-0050](./0050-snapshot-codecs.md)'s GraphData
   gains the equivalent optional typed field without changing the JSON envelope.
 
 ## Later references
 
-ADR-0116 keeps only the fixed namespaces' entries in the theater `databases`
+[ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) keeps only the fixed namespaces' entries in the theater `databases`
 map. Entries for other names, from earlier `CREATE DATABASE` calls, are
 ignored on load and replay and left out of the next checkpoint image. The
 theater field and its format are otherwise unchanged.

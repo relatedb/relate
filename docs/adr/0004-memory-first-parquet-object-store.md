@@ -1,8 +1,23 @@
-# 0004. Memory-first graph with Parquet snapshots via object_store
+---
+type: adr
+area: engine
+date: 2026-08-28
+deciders: MemoryDB maintainers
+name: 0004-memory-first-parquet-object-store
+status: superseded
+status_note: in part by [ADR-0012](./0012-wal-and-parquet-checkpoints.md)
+tags:
+  - parquet
+  - storage
+title: Memory-first graph with Parquet snapshots via object_store
+REFERENCES:
+  - "[[adr/0012-wal-and-parquet-checkpoints]]"
+  - "[[adr/0014-single-wal-write-path]]"
+  - "[[adr/0044-withdraw-engine-s3]]"
+  - "[[adr/0050-snapshot-codecs]]"
+---
 
-- **Status**: Superseded in part by ADR-0012
-- **Date**: 2026-08-28
-- **Deciders**: MemoryDB maintainers
+# 0004. Memory-first graph with Parquet snapshots via object_store
 
 ## Context
 
@@ -45,19 +60,19 @@ Out-of-core scans of Parquet without loading the graph are **not** v1.
 
 ## Later references
 
-ADR-0012 replaces snapshot-only durability. Execution is still an
+[ADR-0012](./0012-wal-and-parquet-checkpoints.md) replaces snapshot-only durability. Execution is still an
 in-memory LPG; `object_store` still addresses `file://` and `s3://`;
 out-of-core Parquet scans are still out of scope. Durability is now a
 fsync’d **local WAL** for every committed write, with Parquet as a
 **checkpoint** (load snapshot, then replay WAL). The rejected “custom
 WAL” alternative in this file no longer holds. `:memory:` remains
 process-ephemeral but uses the same in-process WAL + snapshot path
-(ADR-0014). S3 still has no multi-writer protocol; the WAL for `s3://`
+([ADR-0014](./0014-single-wal-write-path.md)). S3 still has no multi-writer protocol; the WAL for `s3://`
 is local (`MEMORYDB_WAL_DIR` / `--wal-dir`), not an object-store log.
-ADR-0050: Parquet remains the **default** snapshot codec. Other codecs
+[ADR-0050](./0050-snapshot-codecs.md): Parquet remains the **default** snapshot codec. Other codecs
 (CypherLite GraphData JSON) may write different store files. WAL is
 unchanged.
 
-ADR-0044 withdraws engine `s3://`. `object_store` still addresses
+[ADR-0044](./0044-withdraw-engine-s3.md) withdraws engine `s3://`. `object_store` still addresses
 `:memory:` and `file://` / filesystem paths; object storage belongs
 to clients implementing embedded Relate.

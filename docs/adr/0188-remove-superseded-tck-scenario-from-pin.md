@@ -1,12 +1,24 @@
-# 0188. Remove the superseded toString() TCK scenario from the pinned corpus
+---
+type: adr
+area: cypher
+date: 2026-10-08
+deciders: CypherLite maintainers
+name: 0188-remove-superseded-tck-scenario-from-pin
+status: accepted
+tags:
+  - conformance
+title: Remove the superseded toString TCK scenario from the pinned corpus
+REFERENCES:
+  - "[[adr/0002-cypher-25-semantic-target]]"
+  - "[[adr/0006-tck-harness-and-skips]]"
+  - "[[adr/0056-opencypher-tck-language-contract]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-08
-- **Deciders**: CypherLite maintainers
+# 0188. Remove the superseded toString() TCK scenario from the pinned corpus
 
 ## Context
 
-The pinned openCypher TCK corpus (2024.3, ADR-0056/ADR-0006, vendored under
+The pinned openCypher TCK corpus (2024.3, [ADR-0056](./0056-opencypher-tck-language-contract.md)/[ADR-0006](./0006-tck-harness-and-skips.md), vendored under
 (`testdata/tck/`) contains one scenario whose expectation the 2026.09
 display-form change deliberately reversed:
 
@@ -30,7 +42,7 @@ The outline expects `toString()` to raise a `TypeError` on
 LIST/MAP/NODE/RELATIONSHIP/PATH. The display-form change — implemented in
 Neo4j 2026.09, verified live under `CYPHER 25` — made `toString()` render
 those types in display form instead. CypherLite implements the display-form
-semantics (ADR-0002 records the authority ordering: a live-verified Neo4j
+semantics ([ADR-0002](./0002-cypher-25-semantic-target.md) records the authority ordering: a live-verified Neo4j
 behavior is authoritative over the 2024.3 TCK floor), and the cip-eval
 display-form suite carries the current contract, including the
 `LIST<ANY>`-only acceptance rule under which the homogeneous lists of these
@@ -39,7 +51,7 @@ examples still error.
 The scenario was therefore carried as the skip list's single entry
 (`runner::skip_reason`), collapsed into one counted skip record for its five
 Examples rows. The public claim read "3892 of 3893 pass, 1 documented skip",
-and the skip list "only shrinks" (ADR-0006) — but this entry could never
+and the skip list "only shrinks" ([ADR-0006](./0006-tck-harness-and-skips.md)) — but this entry could never
 shrink away: it does not encode an engine limitation that work can remove;
 it encodes *pre-display-form semantics* the dialect has deliberately
 outgrown.
@@ -89,7 +101,7 @@ rather than unmodified upstream 2024.3.
   the claim appears (`docs/tck/compliance.md`, `docs/limitations.md`,
   README, AGENTS.md). The claim remains against *our* pin, not blanket
   upstream-2024.3 parity.
-- Later references: ADR-0002 (display-form authority ordering), ADR-0006
+- Later references: [ADR-0002](./0002-cypher-25-semantic-target.md) (display-form authority ordering), [ADR-0006](./0006-tck-harness-and-skips.md)
   (skip-list policy — the list reached its natural empty end state, and the
-  shrink-only rule is upheld), ADR-0056 (the 2024.3 pin itself, now with a
+ shrink-only rule is upheld), [ADR-0056](./0056-opencypher-tck-language-contract.md) (the 2024.3 pin itself, now with a
   documented local deviation).

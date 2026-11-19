@@ -1,11 +1,21 @@
-# ADR-0606: The label-less scan warning carries no index suggestion
+---
+type: adr
+area: engine
+claim: b98af1a894c0a048ae30ec664545ad19c812f9c0
+name: 0606-label-less-scan-warning-carries-no-index
+status: proposed
+tags:
+  - observability
+title: The label-less scan warning carries no index suggestion
+REFERENCES:
+  - "[[adr/0363-query-notifications]]"
+---
 
-Status: Proposed
-Claim: b98af1a894c0a048ae30ec664545ad19c812f9c0
+# ADR-0606: The label-less scan warning carries no index suggestion
 
 ## Context
 
-ADR-0363 gave `AllNodesScan` an index payload: when a plan started with a
+[ADR-0363](./0363-query-notifications.md) gave `AllNodesScan` an index payload: when a plan started with a
 scan of every node and the store carried any property index, the warning
 named one of those indexes as the remedy. The chosen index was arbitrary.
 A pattern with no label cannot be served by a label-and-property index, so
@@ -44,4 +54,4 @@ optimized. The honest remedy is to add a label.
   the index key; consumers that required it must tolerate its absence.
 - The surface specs, the plan-table and notification texts, and the pinned
   tests move in the same change.
-- ADR-0363 gains a later-references note; its vocabulary otherwise stands.
+- [ADR-0363](./0363-query-notifications.md) gains a later-references note; its vocabulary otherwise stands.

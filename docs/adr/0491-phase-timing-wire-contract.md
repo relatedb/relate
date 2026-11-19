@@ -1,26 +1,37 @@
+---
+type: adr
+area: surface
+claim: e54e204222fee8508b47a0469dd69f4039d4d2d0
+name: 0491-phase-timing-wire-contract
+status: proposed
+tags:
+  - observability
+title: Per-surface phase-timing wire contract (parse / plan / execute)
+REFERENCES:
+  - "[[adr/0221-engine-reported-statement-elapsed]]"
+  - "[[adr/0309-bolt-summary-metadata-neo4j-4-4]]"
+  - "[[adr/0540-phase-timing-envelopes-and-fine-split]]"
+---
+
 # ADR-0491: Per-surface phase-timing wire contract (parse / plan / execute)
-
-Status: Proposed
-
-Claim: e54e204222fee8508b47a0469dd69f4039d4d2d0
 
 ## Context
 
 LABS-832 (neo4j-timing-alignment) aligns CypherLite's server-side timing
 reporting with what Neo4j-family tools display. Today one number exists:
-the ADR-0221 engine-reported `elapsed` — a single wall-clock `Duration`
+the [ADR-0221](./0221-engine-reported-statement-elapsed.md) engine-reported `elapsed` — a single wall-clock `Duration`
 per statement, converted once in `QueryResult::elapsed_ms()`
 (`cypherlite/cypherlite/src/result.rs`) and rendered by every surface.
 On the wire, Bolt carries only the streaming instants: `t_first` on RUN
 SUCCESS and `t_last` (integer milliseconds) on the ending PULL/DISCARD
-SUCCESS, per ADR-0309. No surface can answer the first question a slow
+SUCCESS, per [ADR-0309](./0309-bolt-summary-metadata-neo4j-4-4.md). No surface can answer the first question a slow
 statement raises — is the time in parsing, in planning, or in execution?
 
 The engine-phase-capture node (commit 1744bc81f, landed on the feature
 branch) changed that: `cypherlite::phase_timing::PhaseTimings`
 (`cypherlite/cypherlite/src/phase_timing.rs`) now measures the PARSE /
 PLAN / EXECUTE split always-on — no PROFILE opt-in, no feature flag.
-The three phases partition the same measured body the ADR-0221 total
+The three phases partition the same measured body the [ADR-0221](./0221-engine-reported-statement-elapsed.md) total
 spans (PARSE: front-end parse and lowering; PLAN: binding, logical
 planning, admission classification; EXECUTE: the dispatch, or the
 EXPLAIN plan render), so they are disjoint sub-windows whose sum never
@@ -51,7 +62,7 @@ snake_case) and timing units (`t_last` integer ms on Bolt vs
 1. **Bolt**: send `parsing_time`, `planning_time` and
    `plan_execution_time` as PackStream Float **seconds** in the ending
    PULL/DISCARD SUCCESS, beside `t_last` — not in RUN SUCCESS, whose
-   contract (ADR-0309) stays unchanged. The names, types and placement
+ contract ([ADR-0309](./0309-bolt-summary-metadata-neo4j-4-4.md)) stays unchanged. The names, types and placement
    match the keys established Bolt console tooling renders, chosen because
    keys no tool displays are dead weight on a wire: the probed consoles
    display these three as-is. The values must never be mixed with
@@ -94,7 +105,7 @@ snake_case) and timing units (`t_last` integer ms on Bolt vs
    conversions of the same engine `Duration`s — the unit convention
    stays at the existing conversion points, nowhere new.
 
-4. **The total stays the ADR-0221 `elapsed`**: `elapsed_ms` keeps its
+4. **The total stays the [ADR-0221](./0221-engine-reported-statement-elapsed.md) `elapsed`**: `elapsed_ms` keeps its
    meaning and its conversion; the three fields are additive context,
    never a replacement. Their sum may be less than `elapsed` (the
    inter-stage gaps — post-EXPLAIN gates, token reservation — stay in
@@ -108,7 +119,7 @@ snake_case) and timing units (`t_last` integer ms on Bolt vs
 ## Alternatives considered
 
 - **`t_parse` / `t_plan` / `t_execute`, integer milliseconds — the
-  Neo4j-family naming.** Consistent with `t_first`/`t_last` (ADR-0309)
+ Neo4j-family naming.** Consistent with `t_first`/`t_last` ([ADR-0309](./0309-bolt-summary-metadata-neo4j-4-4.md))
   and keeps one unit on the Bolt summary. Rejected: no tool displays
   these keys — they would be dead weight on the wire — and they squat
   Neo4j's reserved `t_*` summary namespace, so a future Bolt spec
@@ -127,7 +138,7 @@ snake_case) and timing units (`t_last` integer ms on Bolt vs
   and units for the split. Rejected: violates the result-metadata
   alignment rule (one surface gains a piece → every surface that can
   expose it gets it, same change) and forks one engine fact into
-  parallel spellings clients must reconcile — the exact drift ADR-0221
+ parallel spellings clients must reconcile — the exact drift [ADR-0221](./0221-engine-reported-statement-elapsed.md)
   removed for the total.
 
 - **HTTP Query API extension keys.** Add `elapsed_ms` and the three
@@ -153,7 +164,7 @@ snake_case) and timing units (`t_last` integer ms on Bolt vs
 - By not squatting the `t_*` namespace, a future Bolt specification
   that defines its own phase keys cannot collide with ours; the
   established-contract keys are the aligned surface instead.
-- The split is additive context beside the ADR-0221 total: clients that
+- The split is additive context beside the [ADR-0221](./0221-engine-reported-statement-elapsed.md) total: clients that
   only read `elapsed_ms` (or only `t_last`) see no change.
 - The always-on cost — a handful of `Instant` reads per statement — is
   already carried by the landed capture node and covered by the
@@ -173,7 +184,7 @@ snake_case) and timing units (`t_last` integer ms on Bolt vs
 
 ## Later references
 
-- ADR-0540 extends this split: the fine sub-split (lexing+AST / rewrite /
+- [ADR-0540](./0540-phase-timing-envelopes-and-fine-split.md) extends this split: the fine sub-split (lexing+AST / rewrite /
   validation+lowering / result generation), the plan-cache outcome, and —
   reversing this ADR's exclusion of them — timing keys on the CLI's
   machine modes and the HTTP Query API v2 envelope (namespaced after the

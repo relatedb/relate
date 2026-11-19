@@ -1,7 +1,22 @@
-# ADR-0451: Bound unauthenticated HTTP and MCP connections
+---
+type: adr
+area: surface
+claim: 2870d9f13f55e580f3160c1525c0674b6332ad2a
+name: 0451-bound-unauthenticated-network-connections
+status: proposed
+tags:
+  - security
+  - serve
+title: Bound unauthenticated HTTP and MCP connections
+REFERENCES:
+  - "[[adr/0234-httparse-request-parsing]]"
+  - "[[adr/0238-shared-accept-loop]]"
+  - "[[adr/0333-processing-memory-controls]]"
+  - "[[adr/0428-embeddable-http-query-api]]"
+  - "[[adr/0435-managed-tx-lifecycle]]"
+---
 
-Status: Proposed
-Claim: 2870d9f13f55e580f3160c1525c0674b6332ad2a
+# ADR-0451: Bound unauthenticated HTTP and MCP connections
 
 ## Context
 
@@ -11,7 +26,7 @@ separate gaps produce it.
 
 **No absolute header deadline.** `read_request_head`
 (`surfaces/cypherlite-http/src/http.rs`) parses the request line and
-headers out of a 64 KiB-bounded buffer (ADR-0234) under a single per-read
+headers out of a 64 KiB-bounded buffer ([ADR-0234](./0234-httparse-request-parsing.md)) under a single per-read
 socket timeout (`DEFAULT_READ_TIMEOUT`, 30 s). The timeout is armed once,
 before the head read, and every successful read restarts it. A peer that
 opens a connection and sends one byte per timeout window is therefore never
@@ -20,7 +35,7 @@ connection-cap slot, for as long as it keeps dribbling. The body read has
 the same shape but is bounded by `Content-Length` and the body cap; the
 header phase has no total bound at all.
 
-**The connection cap defaults to unlimited.** ADR-0333 removed the earlier
+**The connection cap defaults to unlimited.** [ADR-0333](./0333-processing-memory-controls.md) removed the earlier
 per-listener default of 128 and made the cap an operator opt-in: one
 `ConnectionCap` shared by every listener, `--max-connections`, `0`
 unlimited, with a startup warning on a non-loopback bind. That reasoning
@@ -39,8 +54,8 @@ connections add about 3.7 MiB RSS in a process that also holds the 128
 client sockets — about 29 KiB per connection including the client side.
 A 10 Hz trickle is dropped at 10.001 s with the default below.
 
-ADR-0238 put the accept policy in `cypherlite-serve` so the surfaces
-cannot drift on it; the same home holds the new defaults. ADR-0435 is the
+[ADR-0238](./0238-shared-accept-loop.md) put the accept policy in `cypherlite-serve` so the surfaces
+cannot drift on it; the same home holds the new defaults. [ADR-0435](./0435-managed-tx-lifecycle.md) is the
 shape precedent for the configuration surface: shared flag → environment →
 default resolution, a non-zero security default, `0` as the explicit
 off spelling, and a startup warning only for the genuinely unguarded
@@ -113,7 +128,7 @@ policy.
 `resolve_connection_cap`'s default becomes **128** instead of `0`, and
 `DEFAULT_MAX_CONNECTIONS` in `cypherlite-serve` carries the same value for
 embedders and the MCP transport, which import it directly. `cypherlite serve` still creates **one** cap for every listener
-(ADR-0333), so 128 is a process total, not a per-surface number.
+([ADR-0333](./0333-processing-memory-controls.md)), so 128 is a process total, not a per-surface number.
 
 128 is chosen from two measurements and one hard bound:
 
@@ -128,11 +143,11 @@ embedders and the MCP transport, which import it directly. `cypherlite serve` st
   connection including the client side, so the server share is smaller.
   Single-digit MiB, not a memory ceiling.
 - **Engine bound**: the executor has 256 process-wide snapshot-pin slots
-  (ADR-0435). Half of them is the same ratio ADR-0435 chose for managed
+ ([ADR-0435](./0435-managed-tx-lifecycle.md)). Half of them is the same ratio [ADR-0435](./0435-managed-tx-lifecycle.md) chose for managed
   transactions; a full connection table leaves the other half for
   auto-commit, Bolt sessions, and every other pin consumer.
 
-`0` remains the explicit unlimited spelling and keeps ADR-0333's
+`0` remains the explicit unlimited spelling and keeps [ADR-0333](./0333-processing-memory-controls.md)'s
 non-loopback warning. The standalone Bolt binary keeps its own flag
 default (`surfaces/cypherlite-bolt/src/cli_args.rs`); it is outside this
 finding's surface set. A `cypherlite serve` that binds Bolt does consume
@@ -163,7 +178,7 @@ library entry never ends its embedder's process.
 
 ### 3. The embedding path states its limit
 
-`serve_connection` accepts any blocking `Read + Write` (ADR-0428), so this
+`serve_connection` accepts any blocking `Read + Write` ([ADR-0428](./0428-embeddable-http-query-api.md)), so this
 crate cannot re-arm a timeout it does not own. It still checks both
 deadlines between reads. A host that wants a deadline to hold during a
 blocking read must set a read timeout no longer than that deadline; the
@@ -188,16 +203,16 @@ spec states this.
   a route-class exemption is a second policy to keep aligned.
 - **Enforce the deadline separately in the Query API and MCP.**
   Rejected: both already share `gated_head`/`read_request_head`
-  (ADR-0238's one-policy rule); a second copy is where the two would
+ ([ADR-0238](./0238-shared-accept-loop.md)'s one-policy rule); a second copy is where the two would
   drift.
-- **Keep the cap default at 0 and rely on the ADR-0333 warning.**
+- **Keep the cap default at 0 and rely on the [ADR-0333](./0333-processing-memory-controls.md) warning.**
   Rejected: the finding is that an unauthenticated connection is
   unbounded by default; a warning leaves the bound to an operator who
   does not know the load.
 - **Default the cap to 256.** Rejected: 256 is the measured capacity,
   not below it, so the default would sit at the measurement's edge; and
   if every session pins, it consumes the whole snapshot-pin table and
-  leaves nothing for auto-commit — the headroom ADR-0435 reserved.
+ leaves nothing for auto-commit — the headroom [ADR-0435](./0435-managed-tx-lifecycle.md) reserved.
 - **Default the cap to 1024.** Rejected: no measured need, and it
   approaches common file-descriptor limits (a stock macOS soft limit is
   256) without buying serviceability the pin table can use.

@@ -1,13 +1,24 @@
-# ADR-0334: Heartbeat invariants are enforced at the boundary (non-zero interval, tick-panic safety)
+---
+type: adr
+area: surface
+claim: cc753eebd904f943add9c45a2f85968a66f38f75
+name: 0334-heartbeat-boundary-invariants
+status: proposed
+tags:
+  - bolt
+title: Heartbeat invariants are enforced at the boundary (non-zero interval, tick-panic safety)
+REFERENCES:
+  - "[[adr/0259-query-execution-stack-provisioning]]"
+  - "[[adr/0312-bolt-hello-recv-timeout-hint-and-noop-keepalive]]"
+---
 
-Status: Proposed
-Claim: cc753eebd904f943add9c45a2f85968a66f38f75
+# ADR-0334: Heartbeat invariants are enforced at the boundary (non-zero interval, tick-panic safety)
 
 ## Context
 
-ADR-0312 added `cypherlite::Heartbeat` — a callback the waiting caller runs
+[ADR-0312](./0312-bolt-hello-recv-timeout-hint-and-noop-keepalive.md) added `cypherlite::Heartbeat` — a callback the waiting caller runs
 on its own thread once per elapsed interval while a statement or COMMIT
-executes on the connection's query worker (ADR-0259) — with public fields
+executes on the connection's query worker ([ADR-0259](./0259-query-execution-stack-provisioning.md)) — with public fields
 and a prose contract: "Time between ticks. Must be non-zero." Nothing
 enforced the contract. A zero interval makes `JobSlot::run_with_heartbeat`
 tick, relock and tick again without ever waiting: a hot loop that, through
@@ -16,7 +27,7 @@ the Bolt server, writes a NOOP chunk per spin for the whole statement.
 The same wait loop is the first place a caller's code runs *between* the
 publish and the completion signal of the erased job. The job is a
 non-`'static` closure published to the worker as a raw pointer into the
-waiting frame (`ErasedJob`, ADR-0259). Before ADR-0312, no unwinding point
+waiting frame (`ErasedJob`, [ADR-0259](./0259-query-execution-stack-provisioning.md)). Before [ADR-0312](./0312-bolt-hello-recv-timeout-hint-and-noop-keepalive.md), no unwinding point
 existed inside that window — the worker catches a panicking job itself —
 but the new tick call is one: a panicking tick unwinds the waiting frame
 before `finished` is set, dropping the frame's locals while the worker may
@@ -95,7 +106,7 @@ whose unwind safety this ADR exists to guarantee.
   Rejected: a new public type and conversion at every call site for one
   field; the checked constructor keeps `Duration` in the signature and is
   the smallest enforced boundary.
-- **Let the tick panic unwind immediately (ADR-0312's behavior).**
+- **Let the tick panic unwind immediately ([ADR-0312](./0312-bolt-hello-recv-timeout-hint-and-noop-keepalive.md)'s behavior).**
   Rejected: the worker can still be inside the erased job whose pointer
   targets the unwinding frame — undefined behavior, the reason this ADR
   exists.
@@ -140,7 +151,7 @@ whose unwind safety this ADR exists to guarantee.
 - `Heartbeat`'s fields are private; every construction goes through
   `Heartbeat::every` (the engine, the Bolt server, the docs examples and
   the tests).
-- `Connection::commit_with_heartbeat` takes a `Heartbeat`; ADR-0312
+- `Connection::commit_with_heartbeat` takes a `Heartbeat`; [ADR-0312](./0312-bolt-hello-recv-timeout-hint-and-noop-keepalive.md)
   item 4 is amended in place (still `Proposed`) to the constructor and
   the non-optional COMMIT signature.
 - Pinned by the `query_worker.rs` unit tests (panicking tick waits for

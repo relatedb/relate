@@ -1,10 +1,34 @@
+---
+type: adr
+area: surface
+claim: 71e4363e046303fb89ee1174f735c09a9b6509b1
+name: 0433-reinstate-swift-surface
+status: proposed
+tags:
+  - clients
+title: Reinstate the Swift surface for iOS and macOS
+REFERENCES:
+  - "[[adr/0065-withdraw-wasm-swift-surfaces]]"
+  - "[[adr/0077-embedded-durability-boundary]]"
+  - "[[adr/0084-reinstate-wasm-distribution]]"
+  - "[[adr/0117-namespace-selection-apis-and-bolt]]"
+  - "[[adr/0162-query-type-on-result-and-bolt]]"
+  - "[[adr/0216-javascript-client-ergonomics]]"
+  - "[[adr/0221-engine-reported-statement-elapsed]]"
+  - "[[adr/0223-wire-entity-kind-tags]]"
+  - "[[adr/0224-result-column-types]]"
+  - "[[adr/0363-query-notifications]]"
+  - "[[adr/0381-agent-native-plan-schema]]"
+  - "[[adr/0502-typed-c-abi-v2]]"
+  - "[[adr/0572-two-commit-release-bump-and-stamp]]"
+  - "[[adr/0596-swift-idiomatic-layer]]"
+---
+
 # ADR-0433: Reinstate the Swift surface for iOS and macOS
 
-Status: Proposed
-Claim: 71e4363e046303fb89ee1174f735c09a9b6509b1
-Later references: the §6 one-release-commit shape is split by ADR-0572 into
+Later references: the §6 one-release-commit shape is split by [ADR-0572](./0572-two-commit-release-bump-and-stamp.md) into
 a bump commit (the release cut) and a Swift stamp commit (the tag target);
-the checksum contract itself is unchanged. ADR-0596 adds managed
+the checksum contract itself is unchanged. [ADR-0596](./0596-swift-idiomatic-layer.md) adds managed
 asynchronous access, typed records and parameters, Foundation bridges and
 renames four public types; it supersedes this ADR's design record on two
 points ("synchronous core API; apps call it from their own actor", and the
@@ -13,24 +37,24 @@ stands.
 
 ## Context
 
-ADR-0065 withdrew the Swift surface (root `Package.swift`, `bindings/swift`,
+[ADR-0065](./0065-withdraw-wasm-swift-surfaces.md) withdrew the Swift surface (root `Package.swift`, `bindings/swift`,
 `examples/ios-snotel`, the XCFramework scripts) because no CI gate built it.
 Its reinstatement clause: Swift may return "under a new ADR that commits to a
 CI gate from day one — … a Swift package built against `cypherlite-ffi`".
-ADR-0084 reinstated WASM the same way. This ADR is that new ADR for Swift.
+[ADR-0084](./0084-reinstate-wasm-distribution.md) reinstated WASM the same way. This ADR is that new ADR for Swift.
 
 Three things changed since the withdrawal:
 
 - The withdrawn wrapper bound the v1 JSON handle API (`cypherlite_open` /
-  `cypherlite_execute`), which the typed C ABI v2 removed (ADR-0502). The
+ `cypherlite_execute`), which the typed C ABI v2 removed ([ADR-0502](./0502-typed-c-abi-v2.md)). The
   JS, Java and Go clients bind the v2 tabular API
   (`cypherlite_database_*`, `cypherlite_connect*`, `cypherlite_query_params`,
   `cypherlite_result_*`) and the v2 value walker, which carries the result metadata AGENTS.md §2
-  keeps aligned across surfaces: query type (ADR-0162), resolved namespace
-  (ADR-0117), stats (ADR-0216), notifications (ADR-0363), plan (ADR-0381),
-  column types (ADR-0224), elapsed time (ADR-0221).
+ keeps aligned across surfaces: query type ([ADR-0162](./0162-query-type-on-result-and-bolt.md)), resolved namespace
+ ([ADR-0117](./0117-namespace-selection-apis-and-bolt.md)), stats ([ADR-0216](./0216-javascript-client-ergonomics.md)), notifications ([ADR-0363](./0363-query-notifications.md)), plan ([ADR-0381](./0381-agent-native-plan-schema.md)),
+ column types ([ADR-0224](./0224-result-column-types.md)), elapsed time ([ADR-0221](./0221-engine-reported-statement-elapsed.md)).
 - Nodes and relationships carry a `kind` discriminator on the wire
-  (ADR-0223), so a typed Swift value can be decoded without shape-sniffing.
+ ([ADR-0223](./0223-wire-entity-kind-tags.md)), so a typed Swift value can be decoded without shape-sniffing.
 - `cypherlite-ffi`, Parquet included, cross-compiles unchanged for
   `aarch64-apple-ios`, `aarch64-apple-ios-sim` and `x86_64-apple-ios` on the
   pinned 1.88 toolchain.
@@ -60,7 +84,7 @@ Reinstate Swift as a supported client surface of the tabular C ABI.
    result is destroyed. A statement failure is read from the result
    (`cypherlite_result_is_error`, `cypherlite_result_error_json`); every
    other failure is read from the call's trailing `char **error_json`
-   out-param (ADR-0502 §3). Both are read in the same synchronous frame as
+ out-param ([ADR-0502](./0502-typed-c-abi-v2.md) §3). Both are read in the same synchronous frame as
    the failing call, and the wrapper copies the error into a Swift error
    before the C result is destroyed or the out-param is freed. No
    thread-local error slot is consulted.
@@ -118,12 +142,12 @@ Reinstate Swift as a supported client surface of the tabular C ABI.
   makes the stamped checksum true by construction.
 - **Move iOS onto the macOS `F_BARRIERFSYNC` commit barrier.** Rejected
   here: on iOS `sync_all` is `F_FULLFSYNC`, which is stronger, and whether
-  the commit barrier should be the weaker variant at all is ADR-0077's open
+ the commit barrier should be the weaker variant at all is [ADR-0077](./0077-embedded-durability-boundary.md)'s open
   question. iOS stays on `F_FULLFSYNC` until that question is decided.
 
 ## Consequences
 
-- The supported-surface invariant from ADR-0065 holds: the surface is in the
+- The supported-surface invariant from [ADR-0065](./0065-withdraw-wasm-swift-surfaces.md) holds: the surface is in the
   tree because CI builds it. Deleting the `swift` job supersedes this ADR.
 - CI pays for one macOS job on ready-for-review runs; drafts skip it, like
   the other heavy lanes.
@@ -139,4 +163,4 @@ Reinstate Swift as a supported client surface of the tabular C ABI.
 - The polygon geometry functions (`spatial.fromWKT`, `spatial.within`, …)
   are absent from the executor, so the iOS example materializes basin
   containment in Swift. That is an engine gap, not part of this decision.
-- ADR-0065 gets a *Later references* note pointing here.
+- [ADR-0065](./0065-withdraw-wasm-swift-surfaces.md) gets a *Later references* note pointing here.

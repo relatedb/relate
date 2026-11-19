@@ -1,7 +1,18 @@
-# ADR-0611: Index-backed grouped and extremum aggregates over a labeled property
+---
+type: adr
+area: engine
+claim: 720cbb0a79277e3dddd32a1e1c45a41ef9151c2f
+name: 0611-index-backed-aggregates
+status: accepted
+tags:
+  - executor
+  - index
+title: Index-backed grouped and extremum aggregates over a labeled property
+REFERENCES:
+  - "[[adr/0589-label-set-counts-for-grouped-label-aggregates]]"
+---
 
-Status: Accepted
-Claim: 720cbb0a79277e3dddd32a1e1c45a41ef9151c2f
+# ADR-0611: Index-backed grouped and extremum aggregates over a labeled property
 
 ## Context
 
@@ -17,13 +28,13 @@ of every candidate node, so an overwritten value stays in its old bucket until
 version collection, and a deleted node keeps its id there. A bucket size is an
 upper bound, and a range index's first key may belong only to a stale version.
 Intersecting with the label index removes deleted and unlabeled nodes, not
-overwritten values. ADR-0589 set the precedent: an answer from maintained
+overwritten values. [ADR-0589](./0589-label-set-counts-for-grouped-label-aggregates.md) set the precedent: an answer from maintained
 structures is allowed only for a view that sees exactly the latest committed
 state, and every other view declines to the scan.
 
 ## Decision
 
-Add a dispatch shortcut, modeled on ADR-0589's recognizer, that answers a
+Add a dispatch shortcut, modeled on [ADR-0589](./0589-label-set-counts-for-grouped-label-aggregates.md)'s recognizer, that answers a
 narrow family of aggregates from existing indexes.
 
 1. **Recognition.** The statement is exactly one plain pattern `MATCH (n:L)`
@@ -39,7 +50,7 @@ narrow family of aggregates from existing indexes.
    checked against the statement's snapshot: live, labeled L, and still holding
    that value. A stale candidate steps to the neighbor key, so the answer is
    the scan's answer, not the index's.
-4. **Exactness.** The shortcut runs only on ADR-0589's exactness window: no
+4. **Exactness.** The shortcut runs only on [ADR-0589](./0589-label-set-counts-for-grouped-label-aggregates.md)'s exactness window: no
    scratch overlay, no write in flight, the view equal to the latest committed
    state, and no older snapshot pinned; any other view declines to the scan.
    Within the window every posted id is still checked against the snapshot
@@ -47,7 +58,7 @@ narrow family of aggregates from existing indexes.
    bucket sizes include stale ids; the null group is the label's maintained
    live count less the counted ids. The index's dirty set is drained first.
 5. **Finishing.** The shortcut produces grouped rows and the ordinary
-   projection applies ordering, skip and limit, as in ADR-0589. PROFILE and
+ projection applies ordering, skip and limit, as in [ADR-0589](./0589-label-set-counts-for-grouped-label-aggregates.md). PROFILE and
    EXPLAIN keep the scan's plan.
 
 ## Alternatives considered
@@ -62,7 +73,7 @@ narrow family of aggregates from existing indexes.
 - **Build a pair on demand when an aggregate arrives.** Rejected: a read would
   pay an index build and memory charge the user never asked for.
 - **A planner rewrite instead of a dispatch shortcut.** Rejected for the reason
-  ADR-0589 gave: the planner has no cost basis to choose between the two.
+ [ADR-0589](./0589-label-set-counts-for-grouped-label-aggregates.md) gave: the planner has no cost basis to choose between the two.
 
 ## Consequences
 

@@ -1,12 +1,28 @@
-# 0063. Lazy prefix/trigram postings with incremental dirty catch-up
+---
+type: adr
+area: engine
+date: 2026-09-18
+deciders: CypherLite / MemoryDB merge
+name: 0063-lazy-string-index-postings
+status: accepted
+tags:
+  - index
+title: Lazy prefix/trigram postings with incremental dirty catch-up
+REFERENCES:
+  - "[[adr/0018-concurrent-snapshot-reads]]"
+  - "[[adr/0026-eager-residual-match-predicates]]"
+  - "[[adr/0030-string-prefix-trigram-indexes]]"
+  - "[[adr/0040-create-drop-index]]"
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0207-packed-text-trigrams]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-18
-- **Deciders**: CypherLite / MemoryDB merge
+# 0063. Lazy prefix/trigram postings with incremental dirty catch-up
 
 ## Context
 
-ADR-0030 maintains prefix (`STARTS WITH`) and trigram (`CONTAINS`) postings
+[ADR-0030](./0030-string-prefix-trigram-indexes.md) maintains prefix (`STARTS WITH`) and trigram (`CONTAINS`) postings
 **eagerly**: every node create / SET / label change gram-splits every string
 property (~36 heap-allocated grams × label variants per value) and inserts
 them into the always-on maps. Node 51 (`51-bulk-create-profile`, memdb-merge)
@@ -19,7 +35,7 @@ single-statement `UNWIND … CREATE (p:Person {name:"Tomas "+id, …})-[:KNOWS]-
 - a pre-string-machinery binary runs the same load in ~4.7 s, and the same
   shape without the string property in ~10.4 s.
 
-The eager design also forces ADR-0042's logical-size accounting to enumerate
+The eager design also forces [ADR-0042](./0042-graph-memory-limit.md)'s logical-size accounting to enumerate
 grams on every write (charge = f(distinct grams)), so even accounting-only
 paths paid the split.
 
@@ -27,7 +43,7 @@ The fraud `search_customer` use case
 (`MATCH (c:Customer) WHERE c.name CONTAINS $q`) depends on these postings:
 deleting them would regress it to an O(label) scan. The postings are
 **superset accelerators**: every seek re-verifies snapshot visibility and the
-actual predicate (`graph.rs` residual filter, ADR-0018 / ADR-0026), so stale
+actual predicate (`graph.rs` residual filter, [ADR-0018](./0018-concurrent-snapshot-reads.md) / [ADR-0026](./0026-eager-residual-match-predicates.md)), so stale
 or missing-soon entries are a performance question, never a correctness one —
 as long as the postings remain a superset of the true matches visible at any
 live snapshot.
@@ -60,13 +76,13 @@ Make prefix/trigram postings **lazy and incremental**:
   seek's snapshot or found in the dirty set.
 - `rebuild_indexes` (open / replay / abort) just drops the pairs; they
   rebuild on demand. GC prunes dead-version postings per pair as before.
-- ADR-0042 accounting stays a deterministic formula of the live node, but
+- [ADR-0042](./0042-graph-memory-limit.md) accounting stays a deterministic formula of the live node, but
   the trigram term no longer enumerates grams: it charges 1–3-gram **window
   positions** (an upper bound of distinct grams) per `(label, key)`. This
   keeps `used` identical between the incremental counter and the full live
   walk, keeps reads from moving `used`, and keeps the charge independent of
   which pairs happen to be materialized. `logical_used_bytes` stays within
-  the ADR-0046 gate band of the frozen loadtest baselines.
+ the [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) gate band of the frozen loadtest baselines.
 
 Secondary, from re-profiling after the primary fix (sampled `apply_redo`):
 
@@ -103,13 +119,13 @@ file-backed. Graph contents after the 100k load are pinned identical by
   per string property on every write; bulk loads that never run `CONTAINS`
   keep buying postings they never use (the 86% tax shrinks but stays).
 - **Delete the string indexes, scan the label** — rejected: fraud
-  `search_customer` regresses to O(label) per query (ADR-0030 exists
-  precisely because that dominated the mix); the ADR-0046 loadtest gate
+ `search_customer` regresses to O(label) per query ([ADR-0030](./0030-string-prefix-trigram-indexes.md) exists
+ precisely because that dominated the mix); the [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) loadtest gate
   would fail.
 - **Full rebuild of a pair on any dirty write** — rejected: with ~1 onboard
   per search in the fraud mix, every seek would pay an O(label) rebuild;
   measured-friendly incremental drain costs O(dirty) instead.
-- **Charge only materialized pairs in ADR-0042 `used`** — rejected: reads
+- **Charge only materialized pairs in [ADR-0042](./0042-graph-memory-limit.md) `used`** — rejected: reads
   would move the write budget (a first `CONTAINS` could push a full
   database over its limit), and the counter would depend on seek history.
   The logical budget charges the implied always-on formula either way.
@@ -126,9 +142,9 @@ file-backed. Graph contents after the 100k load are pinned identical by
 - First `CONTAINS` / `STARTS WITH` seek of a `(label, key)` pair pays a
   one-time O(label) build; later seeks pay O(|dirty since last seek|) plus
   the postings lookup. Writers briefly block on a pair that is mid-build.
-- ADR-0030 gains a *Later references* note: postings are lazy, the access
-  methods and superset semantics are unchanged. ADR-0040's "postings stay
-  always-on" now reads as "always available, built on demand". ADR-0042's
+- [ADR-0030](./0030-string-prefix-trigram-indexes.md) gains a *Later references* note: postings are lazy, the access
+ methods and superset semantics are unchanged. [ADR-0040](./0040-create-drop-index.md)'s "postings stay
+ always-on" now reads as "always available, built on demand". [ADR-0042](./0042-graph-memory-limit.md)'s
   budget charges the implied postings by formula, not by materialization.
 - The in-memory WAL retains one op copy (as before); the file WAL path
   encodes borrowed ops. Group-commit batching, fsync, and conflict
@@ -136,7 +152,7 @@ file-backed. Graph contents after the 100k load are pinned identical by
 
 ## Later references
 
-ADR-0207: a `TEXT` index stores only width-3 windows, packed as `u64`
+[ADR-0207](./0207-packed-text-trigrams.md): a `TEXT` index stores only width-3 windows, packed as `u64`
 keys with sorted posting lists. The budget term is one posting per
 window (`char_len - 2`), not the 1–3-gram window sum described above.
 Needles shorter than three characters scan.

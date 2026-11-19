@@ -1,8 +1,18 @@
-# 0049. Gate the merged product in-tree
+---
+type: adr
+area: infra
+date: 2026-09-16
+deciders: CypherLite / MemoryDB merge
+name: 0049-in-tree-merged-product-gate
+status: accepted
+tags:
+  - ci
+title: Gate the merged product in-tree
+REFERENCES:
+  - "[[adr/0047-memorydb-cip-parity]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-16
-- **Deciders**: CypherLite / MemoryDB merge
+# 0049. Gate the merged product in-tree
 
 ## Context
 
@@ -42,5 +52,5 @@ dependencies.
 
 - The gate can run from a standalone merged checkout.
 - Original behavior remains protected by the in-tree GraphStore reference and
-  the scenario-identity parity test established by ADR-0047.
+ the scenario-identity parity test established by [ADR-0047](./0047-memorydb-cip-parity.md).
 - Source baselines are re-recorded only through an explicit later decision.

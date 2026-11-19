@@ -1,8 +1,20 @@
-# 0193. `--version` honors the JSON output mode
+---
+type: adr
+area: cli
+date: 2026-10-09
+deciders: CypherLite maintainers
+name: 0193-version-json
+status: proposed
+tags:
+  - commands
+  - output
+title: "`--version` honors the JSON output mode"
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0432-version-license-statement]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-10-09
-- **Deciders**: CypherLite maintainers (Linear [LABS-238](https://linear.app/neo4j/issue/LABS-238))
+# 0193. `--version` honors the JSON output mode
 
 ## Context
 
@@ -34,7 +46,7 @@ optional JSON form.
 
 ## Alternatives considered
 
-- **A separate `cypherlite version` command.** Rejected: ADR-0069 reserves
+- **A separate `cypherlite version` command.** Rejected: [ADR-0069](./0069-cli-lifecycle-commands.md) reserves
   commands for lifecycle actions, and `--version` already exists.
 - **Always print JSON.** Rejected: breaks every script parsing the text.
 - **Include `commit` and `build_date` now.** Rejected: needs `build.rs` and
@@ -50,7 +62,7 @@ optional JSON form.
 
 ## Later references
 
-- ADR-0432 states the binary's license on `--version`: the text form gains
+- [ADR-0432](./0432-version-license-statement.md) states the binary's license on `--version`: the text form gains
   a `License: Apache 2.0 (binary)` line under the `CypherLite v<version>`
   line, and the JSON object gains a `license` member with the same value.
   The text form is no longer exactly one line: Decision point 2's

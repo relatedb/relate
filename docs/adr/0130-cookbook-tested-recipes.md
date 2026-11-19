@@ -1,8 +1,28 @@
-# 0130. Cookbook: tested markdown recipes with in-page WASM cells
+---
+type: adr
+area: ecosystem
+date: 2026-09-25
+deciders: CypherLite maintainers
+name: 0130-cookbook-tested-recipes
+status: accepted
+tags:
+  - cookbook
+title: "Cookbook: tested markdown recipes with in-page WASM cells"
+REFERENCES:
+  - "[[adr/0084-reinstate-wasm-distribution]]"
+  - "[[adr/0085-wasm32-build-split]]"
+  - "[[adr/0100-wasm-size-optimized-build]]"
+  - "[[adr/0131-wasm-script-execution]]"
+  - "[[adr/0132-single-file-recipes]]"
+  - "[[adr/0133-cookbook-public-links-only]]"
+  - "[[adr/0134-whole-recipe-playground-link]]"
+  - "[[adr/0135-cookbook-diagrams]]"
+  - "[[adr/0151-cookbook-graph-view-nvl]]"
+  - "[[adr/0288-cookbook-nav-links-internal-repository]]"
+  - "[[adr/0528-cookbook-moves-to-relate-web]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-25
-- **Deciders**: CypherLite maintainers
+# 0130. Cookbook: tested markdown recipes with in-page WASM cells
 
 ## Context
 
@@ -25,7 +45,7 @@ Constraints that shape the decision:
 
 - AGENTS.md §2/§4: examples are tests, and every public example runs in
   CI. A recipe that drifts from the engine must fail a build.
-- The browser surface (ADR-0084, ADR-0085, ADR-0100) is `:memory:` only,
+- The browser surface ([ADR-0084](./0084-reinstate-wasm-distribution.md), [ADR-0085](./0085-wasm32-build-split.md), [ADR-0100](./0100-wasm-size-optimized-build.md)) is `:memory:` only,
   runs one statement per `execute`, has no query timeout, runs on the
   calling thread, and traps on a Rust panic. Vector, full-text, and
   spatial queries work in it.
@@ -123,7 +143,7 @@ Constraints that shape the decision:
   is the recipe gate; `COOKBOOK_UPDATE=1` and `COOKBOOK_ONLY=<slug>` are
   documented in `docs/cookbook/README.md`.
 - New Node tooling under `scripts/cookbook/` (markdown-it, shiki, esbuild,
-  d3-force; ADR-0133 adds smol-toml and ADR-0135 parse5). It only runs at
+ d3-force; [ADR-0133](./0133-cookbook-public-links-only.md) adds smol-toml and [ADR-0135](./0135-cookbook-diagrams.md) parse5). It only runs at
   build and test time; the page ships a small vanilla bundle plus the WASM.
 - `deploy-pages.yml` builds the WASM bundle twice (release tag for the
   cookbook, `main` for the playground). Recipes added on `main` appear on
@@ -138,35 +158,35 @@ Constraints that shape the decision:
 - Fixture files are capped at 512 KB each and record source and license
   in front matter.
 - Multi-statement cells run through the WASM `executeScript` export, and
-  results render through `renderResult` (ADR-0131): the Rust code the
+ results render through `renderResult` ([ADR-0131](./0131-wasm-script-execution.md)): the Rust code the
   native harness calls.
 
 ## Later references
 
-- ADR-0132 replaces the recipe layout in Decision items 1 and 2: a recipe is
+- [ADR-0132](./0132-single-file-recipes.md) replaces the recipe layout in Decision items 1 and 2: a recipe is
   one `docs/cookbook/<slug>.md` file with embedded `json data=` blocks and
   `table` / `gram` result blocks; `data/` directories and `expected.json` are
   gone.
-- ADR-0133 keeps the website's links to GitHub off while the repository and
+- [ADR-0133](./0133-cookbook-public-links-only.md) keeps the website's links to GitHub off while the repository and
   the examples are private (while `lychee.toml` excludes them): the
   `companion` link of Decision item 1 and the nav's GitHub link render once
   those URLs are public, and the build fails on any link that does not
   resolve.
-- ADR-0134 adds a whole-recipe form of the Decision item 5 hand-off,
+- [ADR-0134](./0134-whole-recipe-playground-link.md) adds a whole-recipe form of the Decision item 5 hand-off,
   `#recipe=<slug>` without a cell: the playground runs every step and leaves
   the editor empty. `#recipe=<slug>&cell=<id>` is unchanged.
-- ADR-0151 replaces Decision item 6 and reverses the "Render the graph view
+- [ADR-0151](./0151-cookbook-graph-view-nvl.md) replaces Decision item 6 and reverses the "Render the graph view
   with NVL" alternative: the graph view is drawn with NVL, its layout
   workers off (NVL lays out on the page's thread), and it zooms, pans,
   drags, inspects, and expands a node from the page's database on
   double-click.
-- ADR-0288 turns the nav's GitHub link on while the repository is internal,
-  matching the landing page's navigation; the other links ADR-0133 holds back
+- [ADR-0288](./0288-cookbook-nav-links-internal-repository.md) turns the nav's GitHub link on while the repository is internal,
+ matching the landing page's navigation; the other links [ADR-0133](./0133-cookbook-public-links-only.md) holds back
   still wait for publication.
 - LABS-999 retires the product-truth gate and its
   `docs/product-capabilities.yaml` contract: the `docs_routes` consequence
   above has no contract to land in, and the cookbook pages' links are covered
   by the link check alone.
-- ADR-0528 moves the cookbook to the relate-web repository: the recipes,
+- [ADR-0528](./0528-cookbook-moves-to-relate-web.md) moves the cookbook to the relate-web repository: the recipes,
   their harness, the site build, and the deploy step this ADR set up no
   longer live here, and this repository's CI no longer runs them.

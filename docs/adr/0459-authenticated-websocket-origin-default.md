@@ -1,8 +1,22 @@
+---
+type: adr
+area: surface
+claim: a6a26180966760d49666b6a6b30fbc4097c7fbda
+name: 0459-authenticated-websocket-origin-default
+status: proposed
+tags:
+  - security
+title: The authenticated WebSocket Origin default is loopback plus the hosted Neo4j web apps
+REFERENCES:
+  - "[[adr/0110-bolt-connection-query-governance]]"
+  - "[[adr/0141-bolt-single-handshake-deadline]]"
+  - "[[adr/0266-bolt-websocket-transport]]"
+  - "[[adr/0333-processing-memory-controls]]"
+  - "[[adr/0368-one-product-binary-serve-absorbs-bins]]"
+  - "[[adr/0451-bound-unauthenticated-network-connections]]"
+---
+
 # ADR-0459: The authenticated WebSocket Origin default is loopback plus the hosted Neo4j web apps
-
-Status: Proposed
-
-Claim: a6a26180966760d49666b6a6b30fbc4097c7fbda
 
 ## Context
 
@@ -11,7 +25,7 @@ WebSocket upgrade admits any browser Origin whenever authentication is on,
 and that the WebSocket path has no dedicated concurrency bound.
 
 `surfaces/cypherlite-bolt/src/websocket.rs` resolves its Origin policy from
-the `--ws-allow-origin` list and the auth mode (ADR-0266). ADR-0266 chose:
+the `--ws-allow-origin` list and the auth mode ([ADR-0266](./0266-bolt-websocket-transport.md)). [ADR-0266](./0266-bolt-websocket-transport.md) chose:
 
 - with auth on, **any** Origin — "the token is the access control, and
   neo4j-browser may be served from any host";
@@ -34,8 +48,8 @@ rates the finding Low and why this ADR does not clamp the loopback arm
 further.
 
 The finding also asks to "restore bounded connections". The connection
-cap has moved twice since ADR-0266: ADR-0333 made it one process-wide
-opt-in (`0` unlimited), and ADR-0451 restored a non-zero default (128) for
+cap has moved twice since [ADR-0266](./0266-bolt-websocket-transport.md): [ADR-0333](./0333-processing-memory-controls.md) made it one process-wide
+opt-in (`0` unlimited), and [ADR-0451](./0451-bound-unauthenticated-network-connections.md) restored a non-zero default (128) for
 `cypherlite serve` and the HTTP/MCP listeners — which already bounds
 WebSocket connections under `cypherlite serve`, because WebSocket rides
 the same Bolt listener and the same accept-time permit. The Bolt crate's
@@ -47,8 +61,8 @@ connections, and a default WebSocket cap would refuse them.
 
 Time and memory on the WebSocket path are already bounded, so an absent
 concurrency cap does not enable a slowloris-style hold: the upgrade and
-Bolt negotiation run under the ADR-0141 accept-time handshake deadline;
-session reads run under the ADR-0110 idle deadline, which
+Bolt negotiation run under the [ADR-0141](./0141-bolt-single-handshake-deadline.md) accept-time handshake deadline;
+session reads run under the [ADR-0110](./0110-bolt-connection-query-governance.md) idle deadline, which
 `Framer::next_batch` re-arms as one absolute budget per message (a byte
 per read window cannot hold a message open); and
 `MAX_WS_FRAME_BYTES` (1 MiB), `MAX_WS_MESSAGE_BYTES` (16 MiB) and the
@@ -74,7 +88,7 @@ already allows, and the list now lives once in
 surfaces so they cannot drift. Matching is canonical-to-canonical, the
 same exact comparison `--ws-allow-origin` entries use. The loopback arm
 is unchanged: host-based, any port, the serialized-spelling
-classification ADR-0266 states. A missing `Origin` header remains a
+classification [ADR-0266](./0266-bolt-websocket-transport.md) states. A missing `Origin` header remains a
 non-browser client and is allowed.
 
 Any other Origin needs an explicit `--ws-allow-origin` entry; `*` remains
@@ -83,7 +97,7 @@ default unchanged (the CSWSH guard).
 
 Accepted tradeoff: a compromised *local* application on another localhost
 port still passes the loopback arm. Local compromise is game over by
-definition — the same reasoning ADR-0266's loopback arm already records.
+definition — the same reasoning [ADR-0266](./0266-bolt-websocket-transport.md)'s loopback arm already records.
 
 `https://browser.graphapp.io` is **not** in the default set. The repo's
 HTTP default does not include it, the Neo4j Browser manual documents
@@ -103,7 +117,7 @@ shared origin grammar (`cypherlite_serve::origin::OriginFlagValue`), is
 stored canonically, and an explicit list replaces the auth-dependent
 default's wider reach exactly as the library flag does.
 
-`--no-websocket` stays library-level only (ADR-0368 records that split);
+`--no-websocket` stays library-level only ([ADR-0368](./0368-one-product-binary-serve-absorbs-bins.md) records that split);
 this ADR does not widen that surface set further.
 
 ### 3. An opt-in WebSocket session cap, default off
@@ -129,7 +143,7 @@ behind the currently unbounded listener.
 
 ## Alternatives considered
 
-- **Keep ADR-0266's any-Origin default with auth on.** Rejected: the
+- **Keep [ADR-0266](./0266-bolt-websocket-transport.md)'s any-Origin default with auth on.** Rejected: the
   documented clients do not need it (their origins are fixed or
   loopback), and it turns a weak preset password into a
   browser-originated credential-guessing surface against the loopback
@@ -143,7 +157,7 @@ behind the currently unbounded listener.
   third-party graph-app host by default; the explicit flag covers it.
 - **Reuse the HTTP surface's `OriginAllowlist` type.** Rejected: it
   classifies the bare host, while the WebSocket guard deliberately uses
-  the serialized-spelling loopback arm ADR-0266 chose (a bracketed
+ the serialized-spelling loopback arm [ADR-0266](./0266-bolt-websocket-transport.md) chose (a bracketed
   non-IPv6 host does not pass). The shared pieces — the parse, the
   loopback set, the hosted list, the wildcard/exact matcher — are already
   factored into `cypherlite-serve`, and only the projections differ.

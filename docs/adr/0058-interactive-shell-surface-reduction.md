@@ -1,15 +1,27 @@
-# 0058. Interactive shell surface reduced to six dot-commands
+---
+type: adr
+area: cli
+date: 2026-09-17
+deciders: CypherLite maintainers
+name: 0058-interactive-shell-surface-reduction
+status: proposed
+tags:
+  - repl
+title: Interactive shell surface reduced to six dot-commands
+REFERENCES:
+  - "[[adr/0028-user-visible-transactions]]"
+  - "[[adr/0052-graphstore-withdrawn]]"
+  - "[[adr/0073-interactive-cli-line-editing]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-17
-- **Deciders**: CypherLite maintainers
+# 0058. Interactive shell surface reduced to six dot-commands
 
 ## Context
 
 The interactive shell predates the product unification. It grew a
 SQLite-style dot-command surface (~36 commands) against machinery that no
 longer exists: GraphStore backup/restore and the JSONL `--server`
-(ADR-0052), Lance versioning, multi-database attach/use, import/export
+([ADR-0052](./0052-graphstore-withdrawn.md)), Lance versioning, multi-database attach/use, import/export
 formats, schema catalogs, output redirection, and a rustyline line editor
 (tab completion, persistent history, Ctrl+R search).
 
@@ -34,7 +46,7 @@ commands:
 - `.help` — print the command summary.
 - `.quit` / `.exit` (bare `exit` / `EXIT` also work) — exit immediately.
 - `.begin` / `.commit` / `.rollback` — explicit transactions
-  (ADR-0028 semantics on `Connection`).
+ ([ADR-0028](./0028-user-visible-transactions.md) semantics on `Connection`).
 - `.checkpoint` — force an immediate checkpoint (snapshot + WAL recycle).
 
 Every other dot-command is withdrawn and errors `unknown command`. There is
@@ -75,13 +87,13 @@ current.
   one-shot/pipe flags (`--csv`, `--json`, `--mode`), keeping one way to do
   each thing across the REPL, scripts, and bindings.
 - Withdrawn commands are documented as withdrawn (with this ADR as the
-  reference), mirroring the treatment of the JSONL protocol (ADR-0052).
+ reference), mirroring the treatment of the JSONL protocol ([ADR-0052](./0052-graphstore-withdrawn.md)).
 - Reinstating any withdrawn command or line editing requires a new ADR
   referencing this one.
 
 ## Later references
 
-- [ADR-0073](0073-interactive-cli-line-editing.md) restores rustyline line
+- [ADR-0073](./0073-interactive-cli-line-editing.md) restores rustyline line
   editing and in-session history on TTY prompts. The withdrawn dot-command
   list in this ADR is unchanged. Tab completion and persistent history stay
   withdrawn.

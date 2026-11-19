@@ -1,11 +1,21 @@
-# ADR-0537: Experimental snapshot codec behind a default-off feature
+---
+type: adr
+area: engine
+claim: adcb1136ef022207ffd7bfd8cff8a3be3a3779fa
+name: 0537-experimental-snapshot-codecs
+status: proposed
+tags:
+  - checkpoint
+title: Experimental snapshot codec behind a default-off feature
+REFERENCES:
+  - "[[adr/0105-optional-parquet-codec]]"
+---
 
-Status: Proposed
-Claim: adcb1136ef022207ffd7bfd8cff8a3be3a3779fa
+# ADR-0537: Experimental snapshot codec behind a default-off feature
 
 ## Context
 
-The durable snapshot format is Parquet (ADR-0105) with JSON as the
+The durable snapshot format is Parquet ([ADR-0105](./0105-optional-parquet-codec.md)) with JSON as the
 always-built fallback. The `arrow`+`parquet` dependency tree costs 8.2 MB
 of a 25.6 MB FFI library — a third of the binary — and the format choice
 was never measured against alternatives (zero-copy archival, embedded

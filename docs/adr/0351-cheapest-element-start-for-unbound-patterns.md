@@ -1,11 +1,23 @@
-# ADR-0351: Cheapest-element start for unbound path patterns
+---
+type: adr
+area: engine
+claim: 64966ca3db10f527117149fea32e35e43752e95c
+name: 0351-cheapest-element-start-for-unbound-patterns
+status: accepted
+tags:
+  - pattern-matching
+  - planner
+title: Cheapest-element start for unbound path patterns
+REFERENCES:
+  - "[[adr/0218-stats-based-match-orientation]]"
+  - "[[adr/0350-bound-node-pivot-for-pattern-expansion]]"
+---
 
-Status: Accepted
-Claim: 64966ca3db10f527117149fea32e35e43752e95c
+# ADR-0351: Cheapest-element start for unbound path patterns
 
 ## Context
 
-ADR-0350 makes a pattern whose later element is row-bound start there
+[ADR-0350](./0350-bound-node-pivot-for-pattern-expansion.md) makes a pattern whose later element is row-bound start there
 instead of at element 0. But the most common multi-pattern query has
 nothing row-bound at all — the first pattern of `MATCH (c:Comment)-
 [:commentHasTag]->(t:Tag)` — and element 0 is chosen by text position,
@@ -15,7 +27,7 @@ Comment side, 151k nodes) and another element's is tiny (the Tag side,
 big label scan plus a hop per candidate when the reverse order would
 enumerate a fraction of the candidates for the same match set. The
 planner cannot make this choice: it reorders whole patterns by static
-cardinality hints (ADR-0218's `order.rs` ladder) but a comma-joined
+cardinality hints ([ADR-0218](./0218-stats-based-match-orientation.md)'s `order.rs` ladder) but a comma-joined
 pattern's *element* order is a single `PathPattern` the executor walks
 from index 0. The overlap with that planner ladder is acknowledged and
 tracked as its own unification decision (LABS-351) — this ADR records
@@ -31,7 +43,7 @@ labeled element beats it), leftmost on ties, and only elements that
 strictly beat element 0 displace it. An element whose variable is bound
 in the incoming row estimates as exactly one candidate and is therefore
 never displaced by a later scan. The chosen element then runs through
-the ADR-0350 machinery: the backward walker covers the single-hop
+the [ADR-0350](./0350-bound-node-pivot-for-pattern-expansion.md) machinery: the backward walker covers the single-hop
 prefix, the forward walk the suffix, and the same fallbacks apply — a
 shortest-path function, or a variable-length/quantified prefix, keeps
 today's index-0 start, as does any pattern whose elements' predicates

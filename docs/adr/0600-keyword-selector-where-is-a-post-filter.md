@@ -1,11 +1,22 @@
-# ADR-0600: A clause-level WHERE over the path post-filters keyword selectors
+---
+type: adr
+area: engine
+claim: c678952aee79c852adc7aefd365a6dd6a0a5c307
+name: 0600-keyword-selector-where-is-a-post-filter
+status: proposed
+tags:
+  - pattern-matching
+  - search
+title: A clause-level WHERE over the path post-filters keyword selectors
+REFERENCES:
+  - "[[adr/0186-match-clause-shortest-path-bfs]]"
+---
 
-Status: Proposed
-Claim: c678952aee79c852adc7aefd365a6dd6a0a5c307
+# ADR-0600: A clause-level WHERE over the path post-filters keyword selectors
 
 ## Context
 
-ADR-0186 routes `MATCH`-clause shortest paths onto a breadth-first search
+[ADR-0186](./0186-match-clause-shortest-path-bfs.md) routes `MATCH`-clause shortest paths onto a breadth-first search
 and records that the search does not apply `MATCH ... WHERE` conjuncts: the
 clause `WHERE` filters the selected rows afterwards. A later change made
 the route apply every conjunct that reads the path (the named path
@@ -73,4 +84,4 @@ exist; the lengths and the all-shortest sets agree.
 - Regression tests pin the triangle and tied-route witnesses for each
   selector against both the route and the enumeration, and the unchanged
   in-search spellings.
-- Later references note on ADR-0186 names this ADR.
+- Later references note on [ADR-0186](./0186-match-clause-shortest-path-bfs.md) names this ADR.

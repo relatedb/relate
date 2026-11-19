@@ -1,7 +1,17 @@
-# ADR-0548: Query engine seam
+---
+type: adr
+area: engine
+claim: 3acbc951751812abfc4343b7d554b56101958663
+name: 0548-query-engine-seam
+status: proposed
+tags:
+  - executor
+title: Query engine seam
+REFERENCES:
+  - "[[adr/0052-graphstore-withdrawn]]"
+---
 
-Status: Proposed
-Claim: 3acbc951751812abfc4343b7d554b56101958663
+# ADR-0548: Query engine seam
 
 ## Context
 
@@ -9,7 +19,7 @@ Execution, the live graph, and the indexes are one crate, and the
 storage crate depends on that crate to checkpoint and recover. The
 planner already costs plans through a statistics trait rather than the
 live layout. A second product runtime was withdrawn because two
-runtimes split language coverage (ADR-0052).
+runtimes split language coverage ([ADR-0052](./0052-graphstore-withdrawn.md)).
 
 A later columnar or paged layout needs its own execution and its own
 graph and index storage, without a second language implementation and
@@ -40,7 +50,7 @@ engine. It is not a second product runtime.
 ## Alternatives considered
 
 - **A second runtime beside the product** — rejected: two runtimes
-  split language coverage, which is why ADR-0052 withdrew the previous
+ split language coverage, which is why [ADR-0052](./0052-graphstore-withdrawn.md) withdrew the previous
   one.
 - **A trait per operator, called per row** — rejected: the hot path
   would pay for dynamic dispatch, and a transaction's scratch type

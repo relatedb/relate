@@ -1,11 +1,22 @@
-# ADR-0582: The frontier admits the boundary-pair comparison and names why it declined
+---
+type: adr
+area: engine
+claim: 1e1c9a613f79f35d07127c1d1bdea5b8a2dfc481
+name: 0582-frontier-boundary-pair-and-decline-reason
+status: proposed
+tags:
+  - pattern-matching
+title: The frontier admits the boundary-pair comparison and names why it declined
+REFERENCES:
+  - "[[adr/0478-frontier-nfa-qpp-kernel]]"
+  - "[[adr/0516-frontier-rearrival-budget-fallthrough]]"
+---
 
-Status: Proposed
-Claim: 1e1c9a613f79f35d07127c1d1bdea5b8a2dfc481
+# ADR-0582: The frontier admits the boundary-pair comparison and names why it declined
 
 ## Context
 
-The frontier rung (ADR-0478) decodes each `MATCH ... WHERE` conjunct into a
+The frontier rung ([ADR-0478](./0478-frontier-nfa-qpp-kernel.md)) decodes each `MATCH ... WHERE` conjunct into a
 closed vocabulary: a property of one boundary variable against a
 row-invariant bound. A comparison between the two boundary variables,
 `n <> p`, is outside it, so the common distinct-reach statements (`WHERE
@@ -14,7 +25,7 @@ and run on the per-row walker, whose cost is linear in the trails it
 enumerates rather than in the distinct (node, state) pairs.
 
 Separately, the plan-time gate that kept a clause off the rung is dropped
-where the rung is engaged. PROFILE (ADR-0516) names the run-time declines
+where the rung is engaged. PROFILE ([ADR-0516](./0516-frontier-rearrival-budget-fallthrough.md)) names the run-time declines
 only, so a clause on the walker could not say whether the frontier never
 applied, declined on shape, or declined on cost; the answer needed source
 reading and timing fits.

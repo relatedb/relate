@@ -1,17 +1,31 @@
-# ADR-0567: A shortest route's endpoint listing is capped and refuses with a typed capacity error
+---
+type: adr
+area: engine
+claim: c08553c9ad9073dba77619f4f306605c4e443c8d
+name: 0567-shortest-route-endpoint-listing-is-capped
+status: accepted
+tags:
+  - memory
+  - pattern-matching
+title: A shortest route's endpoint listing is capped and refuses with a typed capacity error
+REFERENCES:
+  - "[[adr/0395-nested-evaluation-budget]]"
+  - "[[adr/0494-wal-payload-cap-memory-limit-class]]"
+  - "[[adr/0555-operators-stream-rows-never-accumulate]]"
+  - "[[adr/0556-shortest-route-pair-search-for-seekable-endpoints]]"
+---
 
-Status: Accepted
-Claim: c08553c9ad9073dba77619f4f306605c4e443c8d
+# ADR-0567: A shortest route's endpoint listing is capped and refuses with a typed capacity error
 
 ## Context
 
-ADR-0556 resolves a shortest route's property-map endpoints through the
+[ADR-0556](./0556-shortest-route-pair-search-for-seekable-endpoints.md) resolves a shortest route's property-map endpoints through the
 node-candidates funnel. The pair bound probes each side with a capped
 funnel call, so a non-selective map stops scanning one match past the bound.
 When both sides exceed the bound, the route still needs both lists in full to
 fan from the shorter, and it listed them through the uncapped funnel: an
 unindexed map scanned its whole label bucket per input row and materialized
-every match before anything bounded the result. ADR-0555 forbids a result
+every match before anything bounded the result. [ADR-0555](./0555-operators-stream-rows-never-accumulate.md) forbids a result
 that grows with intermediate matches without a declared, charged bound.
 
 ## Decision
@@ -47,12 +61,12 @@ that grows with intermediate matches without a declared, charged bound.
    postings counts what it returned. PROFILE never reports the full set an
    unbounded scan would have read, nor only the matches of a long scan.
 6. **Surface mapping is unchanged.** The refusal is the memory-limit class on
-   every surface, like the other capacity kinds (ADR-0494).
+ every surface, like the other capacity kinds ([ADR-0494](./0494-wal-payload-cap-memory-limit-class.md)).
 
 ## Alternatives considered
 
 - **Leave the listing uncapped.** Rejected: memory grows with the match
-  count, against ADR-0555.
+ count, against [ADR-0555](./0555-operators-stream-rows-never-accumulate.md).
 - **Truncate to the limit and search on.** Rejected: silently wrong answers
   from a partial candidate set.
 - **Fall back to a bound-driven path on overflow.** Rejected: the fallback is
@@ -67,7 +81,7 @@ that grows with intermediate matches without a declared, charged bound.
   (bind or index the endpoint).
 - `CapacityKind` gains a variant; consumers matching it exhaustively add an
   arm. Class mapping on every surface is unchanged.
-- The listing limit is a fixed constant, as ADR-0395's family is; raising it
+- The listing limit is a fixed constant, as [ADR-0395](./0395-nested-evaluation-budget.md)'s family is; raising it
   is a new decision.
 - PROFILE Db Hits rise for scans that examine more nodes than they
   return; the engine is pre-release, so the pinned figures were updated.

@@ -1,19 +1,40 @@
+---
+type: adr
+area: cli
+date: 2026-10-04
+deciders: CypherLite maintainers
+name: 0282-clone-covers-dir-bundle-matrix
+status: accepted
+tags:
+  - commands
+  - load
+title: Clone covers the dir/`.cl` matrix; the `snapshot` command is removed
+REFERENCES:
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0136-read-only-open]]"
+  - "[[adr/0156-directory-clone]]"
+  - "[[adr/0159-snapshot-round-trip]]"
+  - "[[adr/0160-restore-without-options]]"
+  - "[[adr/0161-exclusive-destination-creation]]"
+  - "[[adr/0163-clone-to-snapshot-format]]"
+SUPERSEDES:
+  - "[[adr/0159-snapshot-round-trip]]"
+  - "[[adr/0160-restore-without-options]]"
+---
+
 # 0282. Clone covers the dir/`.cl` matrix; the `snapshot` command is removed
 
-- **Status**: Accepted
 - **Renumbered**: from 0162 (shared-number cleanup)
-- **Date**: 2026-10-04
-- **Deciders**: CypherLite maintainers (Linear LABS-168)
 
 ## Context
 
-ADR-0156 gave `cypherlite clone SOURCE DEST` directory → directory copies.
-ADR-0159 then added a separate lifecycle verb `cypherlite snapshot DATABASE
+[ADR-0156](./0156-directory-clone.md) gave `cypherlite clone SOURCE DEST` directory → directory copies.
+[ADR-0159](./0159-snapshot-round-trip.md) then added a separate lifecycle verb `cypherlite snapshot DATABASE
 (--to FILE.cl | --from FILE.cl)` plus engine APIs
 `Database::snapshot_to_bundle` / `Database::restore_from_bundle` /
 `SnapshotOptions` to cross the dir/`.cl` boundary (shipped in v0.11.2, PR
-#173, commit 0a1271c1). ADR-0160 narrowed `restore_from_bundle` to take no
-options because a `.cl` bundle embeds its WAL, and ADR-0161 made publish
+#173, commit 0a1271c1). [ADR-0160](./0160-restore-without-options.md) narrowed `restore_from_bundle` to take no
+options because a `.cl` bundle embeds its WAL, and [ADR-0161](./0161-exclusive-destination-creation.md) made publish
 destination creation exclusive and crash-safe for clone, snapshot, and
 restore alike.
 
@@ -24,13 +45,13 @@ already shared. The snapshot work has shipped in internal releases only, so
 there is no backwards-compatibility or deprecation burden: the surface can
 simply break. The fold is surgical, not a revert: the shared publish path
 (`cypherlite/cypherlite/src/publish.rs`), the storage `OpenMode`/`OpenAdmit`
-layer, and ADR-0161's exclusive destination creation all stay, because clone
+layer, and [ADR-0161](./0161-exclusive-destination-creation.md)'s exclusive destination creation all stay, because clone
 already depends on them.
 
 ## Decision
 
 1. **`cypherlite clone SOURCE DEST` covers the full dir/`.cl` matrix**:
-   dir → dir (unchanged, ADR-0156), dir → `.cl`, `.cl` → dir, and
+ dir → dir (unchanged, [ADR-0156](./0156-directory-clone.md)), dir → `.cl`, `.cl` → dir, and
    `.cl` → `.cl`. The format of each side is inferred from the `.cl`
    suffix on its path — the same classification `Database::open` applies
    everywhere — so there is no `--format` flag.
@@ -39,20 +60,20 @@ already depends on them.
    `restore_from_bundle`; `SnapshotOptions` goes away with them.
    `CloneOptions.wal_dir` names the source's external WAL and is rejected
    with `Error::Storage` when the source is a `.cl` bundle — a bundle
-   embeds its WAL, so ADR-0160's rationale carries into the fold.
+ embeds its WAL, so [ADR-0160](./0160-restore-without-options.md)'s rationale carries into the fold.
 3. **The `snapshot` command and its engine API are removed outright.** The
    command leaves `COMMAND_WORDS` in
    `surfaces/cypherlite-cli/src/flags.rs`, the `--to`/`--from` snapshot
    parsing and docs rows go with it, and there are no deprecation shims or
    migration hints: the verb shipped in internal releases only, so it
-   breaks cleanly. ADR-0159 and ADR-0160 are superseded at the command and
+ breaks cleanly. [ADR-0159](./0159-snapshot-round-trip.md) and [ADR-0160](./0160-restore-without-options.md) are superseded at the command and
    API level (see their **Later references**).
 4. **The shared machinery stays.** `publish.rs`, the storage
-   `OpenMode`/`OpenAdmit` layer, the ADR-0136 frozen read-only source
-   open, and ADR-0161's exclusive, crash-safe destination creation are
+ `OpenMode`/`OpenAdmit` layer, the [ADR-0136](./0136-read-only-open.md) frozen read-only source
+ open, and [ADR-0161](./0161-exclusive-destination-creation.md)'s exclusive, crash-safe destination creation are
    unchanged; clone keeps depending on them in all four directions. The
    destination keeps the source's snapshot codec in every direction
-   (ADR-0159 §4 carries over).
+ ([ADR-0159](./0159-snapshot-round-trip.md) §4 carries over).
 5. **The message verb is `clone` everywhere** — errors, usage text, and
    the `DESTINATION_EXISTS`-prefixed publish messages name `clone`, never
    `snapshot`.
@@ -72,7 +93,7 @@ already depends on them.
   no new syntax.
 - **A literal `git revert` of 0a1271c1.** Rejected: the revert would also
   remove the shared publish path, the storage `OpenMode`/`OpenAdmit`
-  layer, and ADR-0161's exclusive destination creation, all of which clone
+ layer, and [ADR-0161](./0161-exclusive-destination-creation.md)'s exclusive destination creation, all of which clone
   now depends on. The fold removes only the snapshot surface — command,
   engine API, docs rows — and keeps the machinery.
 
@@ -90,18 +111,18 @@ already depends on them.
   `restore_from_bundle`, and `SnapshotOptions` are removed from the public
   Rust API in one breaking change; internal-release consumers move to
   `Database::clone`.
-- `.cl` → `.cl` copy is now spelled `clone a.cl b.cl`; the ADR-0159 note
+- `.cl` → `.cl` copy is now spelled `clone a.cl b.cl`; the [ADR-0159](./0159-snapshot-round-trip.md) note
   that it stays "checkpoint, then copy the file" is superseded by the
   unified publish path.
-- ADR-0159 and ADR-0160 remain as history, superseded at the command/API
-  level; ADR-0161 stands unchanged.
+- [ADR-0159](./0159-snapshot-round-trip.md) and [ADR-0160](./0160-restore-without-options.md) remain as history, superseded at the command/API
+ level; [ADR-0161](./0161-exclusive-destination-creation.md) stands unchanged.
 
 ## Later references
 
-- [ADR-0163](0163-clone-to-snapshot-format.md) adds
+- [ADR-0163](./0163-clone-to-snapshot-format.md) adds
   `clone --to-snapshot-format json|parquet` and
   `CloneOptions.to_snapshot_format`, making §4's codec preservation the
   default rather than the only behavior, and moves §2's
   `wal_dir`-with-bundle-source rejection from a hand-rolled `clone.rs`
-  pre-check into the canonical storage-layer check (ADR-0074), keeping
+ pre-check into the canonical storage-layer check ([ADR-0074](./0074-single-file-bundle-vfs.md)), keeping
   the `Error::Storage` contract.

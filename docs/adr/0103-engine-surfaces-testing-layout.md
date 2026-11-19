@@ -1,9 +1,21 @@
+---
+type: adr
+area: infra
+date: 2026-09-25
+deciders: CypherLite maintainers
+name: 0103-engine-surfaces-testing-layout
+status: accepted
+tags:
+  - workspace
+title: Engine / surfaces / testing workspace layout and boundary rules
+REFERENCES:
+  - "[[adr/0100-wasm-size-optimized-build]]"
+  - "[[adr/0434-first-party-extension-crate-group]]"
+---
+
 # 0103. Engine / surfaces / testing workspace layout and boundary rules
 
-- **Status**: Accepted
-- **Date**: 2026-09-25
-- **Deciders**: CypherLite maintainers
-- Later references: ADR-0434 adds the fourth top-level group `extensions/`
+- Later references: [ADR-0434](./0434-first-party-extension-crate-group.md) adds the fourth top-level group `extensions/`
   for the first-party extension crates (the importer children and the wire
   kit) and with it amends R5 (members live directly under `cypherlite/`,
   `surfaces/`, `testing/` or `extensions/`), R3 (a surface's product-path
@@ -160,7 +172,7 @@ References: LABS-103 and the LABS-103 architecture proposal document.
   client builds), and that client's build must be verified against the
   new paths.
 - In-flight branches that touch files under `crates/` (for example
-  `oskar/query-resource-governor`, which also reserves ADR-0100–0102) must be
+ `oskar/query-resource-governor`, which also reserves [ADR-0100](./0100-wasm-size-optimized-build.md)–0102) must be
   rebased across the move. Git rename detection handles most content edits,
   but new files added under `crates/`, `Cargo.toml` member/path edits and
   hard-coded `crates/...` paths in CI, scripts and docs will conflict or land

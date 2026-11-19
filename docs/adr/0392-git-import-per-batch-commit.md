@@ -1,16 +1,40 @@
+---
+type: adr
+area: cli
+claim: e65df3fdb2494c37856798c44e5915fde785ff0f
+name: 0392-git-import-per-batch-commit
+status: accepted
+tags:
+  - load
+  - transactions
+title: The git import commits per batch over a streamed plan
+REFERENCES:
+  - "[[adr/0014-single-wal-write-path]]"
+  - "[[adr/0086-bounded-persistence-input]]"
+  - "[[adr/0157-fs-to-graph-import]]"
+  - "[[adr/0376-git-to-graph-import]]"
+  - "[[adr/0377-import-resource-bounds]]"
+  - "[[adr/0380-first-party-dependency-scope]]"
+  - "[[adr/0383-lab-database-flag]]"
+  - "[[adr/0394-fresh-store-import-create-edges]]"
+  - "[[adr/0602-fs-import-per-batch-commit]]"
+SUPERSEDES:
+  - "[[adr/0376-git-to-graph-import]]"
+  - "[[adr/0377-import-resource-bounds]]"
+  - "[[adr/0380-first-party-dependency-scope]]"
+---
+
 # ADR-0392: The git import commits per batch over a streamed plan
 
-Status: Accepted
-Claim: e65df3fdb2494c37856798c44e5915fde785ff0f
-Later references: ADR-0394 adds the fresh-store `CREATE` edge statements on top of this ADR's batch design — a store with no nodes writes `CREATE` (the rows are distinct by construction), every populated store keeps this ADR's `MERGE` path and its re-run completion. ADR-0602 moves fs-to-graph onto this ADR's per-batch framing, superseding this ADR's consequence that kept fs-to-graph on whole-import and its rollback.
+Later references: [ADR-0394](./0394-fresh-store-import-create-edges.md) adds the fresh-store `CREATE` edge statements on top of this ADR's batch design — a store with no nodes writes `CREATE` (the rows are distinct by construction), every populated store keeps this ADR's `MERGE` path and its re-run completion. [ADR-0602](./0602-fs-import-per-batch-commit.md) moves fs-to-graph onto this ADR's per-batch framing, superseding this ADR's consequence that kept fs-to-graph on whole-import and its rollback.
 
 ## Context
 
-ADR-0376 pins `cypherlite lab git-to-graph`'s schema, path rule, flags,
-index set and one explicit transaction around the whole import; ADR-0377
+[ADR-0376](./0376-git-to-graph-import.md) pins `cypherlite lab git-to-graph`'s schema, path rule, flags,
+index set and one explicit transaction around the whole import; [ADR-0377](./0377-import-resource-bounds.md)
 pins its resource caps (134,217,728 bytes of `git log` stdout, 500,000
 distinct `CO_CHANGED` pairs, `--max-changeset` at most 1,000) and that
-every refusal fires before the write; ADR-0380 §5 corrects the peak
+every refusal fires before the write; [ADR-0380](./0380-first-party-dependency-scope.md) §5 corrects the peak
 arithmetic to ~2.7 GiB of materialised rows at those caps.
 
 The feature's write-retention probe (feature `git-import-peak-cut`,
@@ -21,7 +45,7 @@ unworkable at the scale of a real checkout's whole history:
 1. **One explicit transaction cannot commit at that scale.** A
    transaction's whole redo serialises as a single WAL record, and the
    store caps a record's payload at 64 MiB
-   (`cypherlite-storage/src/wal.rs:21`, ADR-0086). `commit()` fails from
+ (`cypherlite-storage/src/wal.rs:21`, [ADR-0086](./0086-bounded-persistence-input.md)). `commit` fails from
    60,000 five-path commits (~460,000 relationships) in both the
    row-materialising and the row-streaming shape; 45,000 commits commit
    cleanly. The mechanism is not the row vectors: it is the transaction
@@ -31,9 +55,9 @@ unworkable at the scale of a real checkout's whole history:
    and drained only at `commit()`) retains every write until commit:
    measured 1,181.8 bytes per relationship of overlay + redo retention,
    9,880.1 bytes per commit pre-commit, which extrapolates to ~2.8 GiB
-   (2,978,004,992 B) at ADR-0377's 300,000-commit caps shape — against
-   the ~0.7 GiB transient heap ADR-0377's Consequences recorded and
-   ADR-0380 §5 corrected away. The row-materialising design's measured
+ (2,978,004,992 B) at [ADR-0377](./0377-import-resource-bounds.md)'s 300,000-commit caps shape — against
+ the ~0.7 GiB transient heap [ADR-0377](./0377-import-resource-bounds.md)'s Consequences recorded and
+ [ADR-0380](./0380-first-party-dependency-scope.md) §5 corrected away. The row-materialising design's measured
    peak slopes extrapolate to ~4.1 GiB (4,369,694,720 B) at the same
    shape.
 
@@ -43,21 +67,21 @@ commit, ~2.6M distinct `CO_CHANGED` pairs, ~3.9M relationships. That
 shape is refused by the 500,000-pair cap after the whole log is read, and
 would be uncommittable and unaffordable under the current write path even
 without the cap: its single WAL record is ~8x the record that already
-fails, and its materialised rows alone would be ~3.4 GiB at ADR-0380 §5's
+fails, and its materialised rows alone would be ~3.4 GiB at [ADR-0380](./0380-first-party-dependency-scope.md) §5's
 911 bytes per row.
 
-The constraints are unchanged: ADR-0376's schema, path rule and
-`MERGE`/`SET` semantics; ADR-0377's refusal texts and their
+The constraints are unchanged: [ADR-0376](./0376-git-to-graph-import.md)'s schema, path rule and
+`MERGE`/`SET` semantics; [ADR-0377](./0377-import-resource-bounds.md)'s refusal texts and their
 constant-derived numbers; no new flag; no new dependency; every refusal
 before the store is first written; and fs-to-graph's behaviour unchanged
-(ADR-0157).
+([ADR-0157](./0157-fs-to-graph-import.md)).
 
 ## Decision
 
 ### 1. `git-to-graph` commits each 1,000-row batch as its own explicit transaction
 
 The shared phase runner (`lab/write.rs::run_phases`) takes a
-`CommitPolicy`: `WholeImport` (ADR-0157's one transaction around every
+`CommitPolicy`: `WholeImport` ([ADR-0157](./0157-fs-to-graph-import.md)'s one transaction around every
 phase — what fs-to-graph keeps, its work bounded by the walked tree) or
 `PerBatch` (begin, write, commit per [`BATCH`]-row batch — what
 git-to-graph now uses). The runner stays one canonical helper for both
@@ -73,7 +97,7 @@ single record already fails at a quarter of the shape (the probe's
 ### 2. Index order, re-anchored to the batch order
 
 The three range indexes are created before the first batch and the
-`commit_subject` full-text index after the last batch commits — ADR-0376's
+`commit_subject` full-text index after the last batch commits — [ADR-0376](./0376-git-to-graph-import.md)'s
 order, unchanged, with "the write transaction" now meaning the batch
 sequence. `IF NOT EXISTS` keeps a re-import and a re-run safe.
 
@@ -82,16 +106,16 @@ sequence. `IF NOT EXISTS` keeps a re-import and a re-run safe.
 A mid-import failure under `PerBatch` leaves every batch before it
 committed and rolls back only the failing batch. Because every write is
 `MERGE`-keyed and `SET`-valued, and `CO_CHANGED` counts are set, never
-incremented (ADR-0376), re-running the same command over the partially
+incremented ([ADR-0376](./0376-git-to-graph-import.md)), re-running the same command over the partially
 imported store completes the history to exactly the node, edge and
 `CO_CHANGED` counts of a clean import — pinned by test. This supersedes
-ADR-0376's whole-import rollback for git-to-graph only, and ADR-0377 §2's
+[ADR-0376](./0376-git-to-graph-import.md)'s whole-import rollback for git-to-graph only, and [ADR-0377](./0377-import-resource-bounds.md) §2's
 "no partial import to resume" statement.
 
 ### 4. Rows are generated lazily from a bounded plan
 
 `build_rows` (six whole-phase row vectors) is replaced by `build_plan`:
-the bounded pre-write aggregates ADR-0377 already allowed — the people
+the bounded pre-write aggregates [ADR-0377](./0377-import-resource-bounds.md) already allowed — the people
 map, the distinct interned paths and the interner, the pair counts — plus
 one compact per-commit plan (interned handles, counts and one
 path-handle vector per commit; no parsed git record, no row). The parsed
@@ -107,13 +131,13 @@ is what makes the re-run of §3 work.
 The pair cap rises from 500,000 to 5,000,000 so the measured neo4j shape
 imports whole. It stays one constant; the error text, `--help`, the spec
 and every test read it from there, and the message wording is otherwise
-unchanged (ADR-0377 §4's contract). The raise is admissible only because
+unchanged ([ADR-0377](./0377-import-resource-bounds.md) §4's contract). The raise is admissible only because
 of §1 and §4: under the old write path 5,000,000 pairs are ~4.2 GiB of
 materialised rows and an uncommittable WAL record.
 
 ### 6. Every refusal still fires before the store is first written
 
-The ADR-0377 refusals — `LogTooLarge`, `TooManyPairs`, `UnsafePath`, and
+The [ADR-0377](./0377-import-resource-bounds.md) refusals — `LogTooLarge`, `TooManyPairs`, `UnsafePath`, and
 the `--max-changeset` parse error — all fire before the range-index DDL
 and the first batch transaction: the first three inside the plan build,
 the parse error before the command runs at all. A refused import creates
@@ -125,7 +149,7 @@ assertions.
 At the neo4j shape the import's transient overhead — its peak RSS above
 the resident graph it leaves behind (the store open on the imported
 history, the plan dropped) — stays below 734,003,200 bytes (700 MiB),
-ADR-0377's Consequences figure, restored. The pin is an ignored
+[ADR-0377](./0377-import-resource-bounds.md)'s Consequences figure, restored. The pin is an ignored
 release-build measurement test
 (`lab/git_to_graph/peak_run.rs`, `cargo test --release -p cypherlite-cli
 --bin cypherlite -- --ignored --nocapture neo4j_scale`) that generates
@@ -145,8 +169,8 @@ baseline.
 
 - **Chunk the WAL record instead of committing per batch.** Keep one
   transaction, teach the WAL to split a redo across records. Rejected: it
-  changes the storage layer's record-per-commit contract (ADR-0014,
-  ADR-0086) for one importer's benefit; the redo is still retained until
+ changes the storage layer's record-per-commit contract ([ADR-0014](./0014-single-wal-write-path.md),
+ [ADR-0086](./0086-bounded-persistence-input.md)) for one importer's benefit; the redo is still retained until
   commit, so the measured 1,181.8 bytes-per-relationship overlay
   retention (~2.7 GiB at the caps shape) stands; and it puts an engine
   change in service of a surface the layering rules keep apart.
@@ -160,7 +184,7 @@ baseline.
   measured neo4j shape is 2.6M distinct pairs under the 128 MiB log cap,
   and the import would read the entire log and then refuse.
 - **Raise the cap under the current write path.** Rejected twice over:
-  5,000,000 pairs are ~4.2 GiB of materialised rows at ADR-0380 §5's 911
+ 5,000,000 pairs are ~4.2 GiB of materialised rows at [ADR-0380](./0380-first-party-dependency-scope.md) §5's 911
   bytes per row, and the one-transaction WAL record rejects the shape
   outright — the raise and the write-path restructure land together or
   not at all.
@@ -168,7 +192,7 @@ baseline.
   touched phase alone is ~1.18M rows at the neo4j shape, one record over
   the cap again at modestly larger shapes and a phase-long overlay
   retention; the 1,000-row batch is the unit the write path already
-  bounds (`BATCH`, ADR-0376), so the batch is the commit unit.
+ bounds (`BATCH`, [ADR-0376](./0376-git-to-graph-import.md)), so the batch is the commit unit.
 - **A progress sidecar that auto-resumes from the last committed
   batch.** Rejected: `MERGE`/`SET` idempotence already makes a plain
   re-run correct and complete; a sidecar adds durable state to keep
@@ -178,7 +202,7 @@ baseline.
 ## Consequences
 
 - fs-to-graph's behaviour is unchanged — same phases, same whole-import
-  rollback (ADR-0157), pinned by its existing mid-import rollback test —
+ rollback ([ADR-0157](./0157-fs-to-graph-import.md)), pinned by its existing mid-import rollback test —
   and `run_phases` remains the one phase runner both importers share.
 - git-to-graph's failure contract weakens to per-batch: a killed import
   leaves a partial graph that the same command completes on re-run. This
@@ -190,10 +214,10 @@ baseline.
   every one of the ~4,000 batch commits succeeds. The cost is ~4,000
   small WAL records and their fsyncs where the old design wrote one —
   absorbed by the segmented WAL and its checkpoint thresholds.
-- ADR-0376, ADR-0377 and ADR-0380 gain `Later references` notes naming
-  this ADR; their decision texts are untouched. ADR-0377's error texts
+- [ADR-0376](./0376-git-to-graph-import.md), [ADR-0377](./0377-import-resource-bounds.md) and [ADR-0380](./0380-first-party-dependency-scope.md) gain `Later references` notes naming
+ this ADR; their decision texts are untouched. [ADR-0377](./0377-import-resource-bounds.md)'s error texts
   are unchanged except the pair number, which every surface reads from
-  the one `MAX_CO_CHANGED_PAIRS` constant; ADR-0380 §5's itemised
+ the one `MAX_CO_CHANGED_PAIRS` constant; [ADR-0380](./0380-first-party-dependency-scope.md) §5's itemised
   subtraction is superseded by §7's direct measurement.
 - The lazy-row and at-most-one-batch guarantees are pinned by
   `phases_materialise_at_most_one_batch_at_a_time`; the refusal order by
@@ -206,4 +230,4 @@ baseline.
   record; re-running it re-measures them.
 - No new flag, no new dependency, no engine change: AGENTS.md R6 and the
   R1–R5 boundaries are untouched, and the import surface (flags,
-  defaults, exits) is exactly ADR-0376/0377/0383's plus the cap number.
+ defaults, exits) is exactly [ADR-0376](./0376-git-to-graph-import.md)/[ADR-0377](./0377-import-resource-bounds.md)/[ADR-0383](./0383-lab-database-flag.md)'s plus the cap number.

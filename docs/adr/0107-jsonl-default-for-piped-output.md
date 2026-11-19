@@ -1,8 +1,23 @@
-# 0107. JSONL default output when stdout is not a terminal
+---
+type: adr
+area: cli
+date: 2026-09-26
+deciders: CypherLite maintainers
+name: 0107-jsonl-default-for-piped-output
+status: proposed
+tags:
+  - output
+title: JSONL default output when stdout is not a terminal
+REFERENCES:
+  - "[[adr/0058-interactive-shell-surface-reduction]]"
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0079-anonymous-usage-metrics]]"
+  - "[[adr/0104-cargo-feature-bundles]]"
+  - "[[adr/0407-agent-mode-override-ladder]]"
+  - "[[adr/0426-toon-piped-default-for-agent-runs]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-26
-- **Deciders**: CypherLite maintainers (Linear LABS-98)
+# 0107. JSONL default output when stdout is not a terminal
 
 ## Context
 
@@ -20,7 +35,7 @@ is given the code hardcodes a table. Two sites bake in that default:
 
 Only one terminal check exists today, and it is on the wrong stream for this
 decision: `is_terminal()` is `io::stdin().is_terminal()`, used to decide
-whether a no-query run is an interactive REPL (ADR-0058) or a batch read of
+whether a no-query run is an interactive REPL ([ADR-0058](./0058-interactive-shell-surface-reduction.md)) or a batch read of
 piped stdin. There is no detection of whether **stdout** is a terminal.
 
 `Mode::Jsonl` already exists in `cypherlite-formatter` (one JSON object per
@@ -30,17 +45,17 @@ gap is only the default.
 
 The surrounding decisions constrain the shape of the fix:
 
-- ADR-0058 reduced the interactive shell surface and deliberately kept the
+- [ADR-0058](./0058-interactive-shell-surface-reduction.md) reduced the interactive shell surface and deliberately kept the
   one-shot and pipe flags (`--json`, `--csv`, `--mode`) as the single way to
   select output in scripts; this ADR changes the default, not that flag
   surface.
-- ADR-0069 fixes the CLI grammar — flags configure a query-engine run and
+- [ADR-0069](./0069-cli-lifecycle-commands.md) fixes the CLI grammar — flags configure a query-engine run and
   never encode lifecycle actions. Choosing an output default is not a new
   flag and does not touch the command grammar.
-- ADR-0079 records anonymous usage metrics, including the `output_mode`
+- [ADR-0079](./0079-anonymous-usage-metrics.md) records anonymous usage metrics, including the `output_mode`
   dimension. Whatever the default becomes, that dimension must report the
   mode actually used, not the table default it used to assume.
-- ADR-0104 puts output modes in the core query-engine run that is present in
+- [ADR-0104](./0104-cargo-feature-bundles.md) puts output modes in the core query-engine run that is present in
   every feature bundle (`full`, `agent`, `minimal`), so the new default must
   work identically in all of them.
 
@@ -78,7 +93,7 @@ otherwise**; an explicit output-mode flag always wins.
   `cypherlite db -q '...' | jq` pipeline works out of the box.
 - Explicit output-mode flags (`--mode`/`-mode`, `--json`, `--jsonl`, `--csv`,
   `--markdown`) are unchanged and always override the terminal-based default.
-- The telemetry `output_mode` dimension (ADR-0079) will shift to `jsonl` for
+- The telemetry `output_mode` dimension ([ADR-0079](./0079-anonymous-usage-metrics.md)) will shift to `jsonl` for
   piped default runs, because it now reports the mode actually used; the
   emission site must compute the same resolved mode as the formatter.
 - The two hardcoded `Mode::Table` fallbacks in
@@ -93,4 +108,4 @@ otherwise**; an explicit output-mode flag always wins.
 
 ## Later references
 
-- [ADR-0426](0426-toon-piped-default-for-agent-runs.md) supersedes the piped default for agent-mode runs only (when ADR-0407's ladder is in effect): a piped agent run defaults to `toon`. Human pipelines — no harness present, agent mode off — keep this ADR's JSONL contract unchanged.
+- [ADR-0426](./0426-toon-piped-default-for-agent-runs.md) supersedes the piped default for agent-mode runs only (when [ADR-0407](./0407-agent-mode-override-ladder.md)'s ladder is in effect): a piped agent run defaults to `toon`. Human pipelines — no harness present, agent mode off — keep this ADR's JSONL contract unchanged.

@@ -1,7 +1,15 @@
-# ADR-0384: Human tables wrap to a width budget
+---
+type: adr
+area: surface
+claim: f0865ebfa1c96a1f401040e96a08493005a34bf2
+name: 0384-table-wrapping-to-a-width-budget
+status: proposed
+tags:
+  - output
+title: Human tables wrap to a width budget
+---
 
-Status: Proposed
-Claim: f0865ebfa1c96a1f401040e96a08493005a34bf2
+# ADR-0384: Human tables wrap to a width budget
 
 ## Context
 

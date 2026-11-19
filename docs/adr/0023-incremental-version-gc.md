@@ -1,18 +1,33 @@
-# 0023. Incremental version GC does not take the exclusive graph lock
+---
+type: adr
+area: engine
+date: 2026-08-30
+deciders: MemoryDB maintainers
+name: 0023-incremental-version-gc
+status: accepted
+tags:
+  - storage
+title: Incremental version GC does not take the exclusive graph lock
+REFERENCES:
+  - "[[adr/0018-concurrent-snapshot-reads]]"
+  - "[[adr/0020-segmented-wal-concurrent-checkpoint]]"
+  - "[[adr/0033-compact-live-records-typed-csr]]"
+  - "[[adr/0038-lock-free-snapshot-pins]]"
+SUPERSEDES:
+  - "[[adr/0018-concurrent-snapshot-reads]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-08-30
-- **Deciders**: MemoryDB maintainers
+# 0023. Incremental version GC does not take the exclusive graph lock
 
 ## Context
 
-ADR-0018 / ADR-0020 dump Parquet under a graph **read** lock so
+[ADR-0018](./0018-concurrent-snapshot-reads.md) / [ADR-0020](./0020-segmented-wal-concurrent-checkpoint.md) dump Parquet under a graph **read** lock so
 `apply_redo` continues. After the dump, `gc_versions` took the **write**
 lock, dropped dead `xmin`/`xmax` versions, and called `rebuild_indexes()`
 (full rescan). At fraud scale 0.30 that exclusive section stalled MATCH
 and apply for seconds (one op measured 5.9 s) and cut throughput ~70%.
 
-Indexes are already a **superset** (ADR-0018): lookups re-check
+Indexes are already a **superset** ([ADR-0018](./0018-concurrent-snapshot-reads.md)): lookups re-check
 `node_at`. A full rebuild is not required for correctness. A version is
 safe to free when no pin has `snapshot_ts ∈ [xmin, xmax)`.
 
@@ -42,8 +57,8 @@ safe to free when no pin has `snapshot_ts ∈ [xmin, xmax)`.
 
 ## Consequences
 
-- ADR-0018’s “checkpoint/GC take the write side and rebuild indexes” is
-  superseded for GC. Dump is still a read lock (ADR-0020).
+- [ADR-0018](./0018-concurrent-snapshot-reads.md)’s “checkpoint/GC take the write side and rebuild indexes” is
+ superseded for GC. Dump is still a read lock ([ADR-0020](./0020-segmented-wal-concurrent-checkpoint.md)).
 - A statement must `pin_now` before it reads versions so GC cannot
   drop a row in `[xmin, xmax)` for that pin.
 - Index entries may lag by one GC if a race leaves a stale id; lookups
@@ -51,10 +66,10 @@ safe to free when no pin has `snapshot_ts ∈ [xmin, xmax)`.
 
 ## Later references
 
-ADR-0033: live records and typed adj are compact in RAM. GC still
+[ADR-0033](./0033-compact-live-records-typed-csr.md): live records and typed adj are compact in RAM. GC still
 drops per-id version chains and incremental index keys; adjacency
 remains a superset.
 
-ADR-0038: the pin table is a lock-free atomic slot array (claim, then
+[ADR-0038](./0038-lock-free-snapshot-pins.md): the pin table is a lock-free atomic slot array (claim, then
 load `published_ts`). The horizon rule is unchanged. Epoch reclaim
 without a pin table stays rejected.

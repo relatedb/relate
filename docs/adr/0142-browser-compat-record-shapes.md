@@ -1,9 +1,24 @@
+---
+type: adr
+area: surface
+date: 2026-09-29
+deciders: CypherLite maintainers
+name: 0142-browser-compat-record-shapes
+status: accepted
+tags:
+  - bolt
+  - conformance
+title: Browser/Desktop-compat record shapes for dbms.components, SHOW DATABASES, and dbms.info
+REFERENCES:
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0152-neo4j-kernel-version-reporting-policy]]"
+  - "[[adr/0266-bolt-websocket-transport]]"
+---
+
 # 0142. Browser/Desktop-compat record shapes for dbms.components, SHOW DATABASES, and dbms.info
 
-- **Status**: Accepted
-- **Date**: 2026-09-29
-- **Deciders**: CypherLite maintainers (Linear LABS-139)
-- **Later references**: ADR-0152 supersedes row 1's `versions` value: the
+- **Later references**: [ADR-0152](./0152-neo4j-kernel-version-reporting-policy.md) supersedes row 1's `versions` value: the
   'Neo4j Kernel' row now reports a calver string with a `-cypherlite`
   product suffix (`2026.10-cypherlite`, following Aura's `5.27-aura`
   convention) so browser.neo4j.io's throwing `>= 4.4.0` sdk gate passes.
@@ -13,7 +28,7 @@
 
 ## Context
 
-A user tested the Bolt-over-WebSocket transport (PR #144, ADR-0266) from the
+A user tested the Bolt-over-WebSocket transport (PR #144, [ADR-0266](./0266-bolt-websocket-transport.md)) from the
 two Neo4j Browser hosts — the public web Browser and Neo4j Desktop 2.x's
 embedded Browser — and hit a series of engine-side failures that blocked the
 connection:
@@ -78,8 +93,8 @@ This ADR deliberately extends the AGENTS.md catalog-theater rule ("Neo4j-only
 catalog theater … is out of the merge gate unless a later ADR brings it
 back") for these surfaces: the shapes below exist for **Browser/Desktop
 compatibility**, not Neo4j feature parity. Bolt remains a transport
-(ADR-0057). The namespaces the rows describe are the fixed namespaces of
-ADR-0116.
+([ADR-0057](./0057-embedded-c-abi-and-bolt.md)). The namespaces the rows describe are the fixed namespaces of
+[ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md).
 
 **Source-cited vs. inferred.** Source-cited: the public Browser's version
 check and first-record read come from `neo4j-browser@neo4j-2026.08.0`
@@ -115,7 +130,7 @@ Desktop-only `>= 4.4.0` gate is likewise inferred to use the same parse.
    `Neo4j Kernel`. Row 2 keeps its existing name and versions and feeds
    Desktop's `cypherVersions` (found by name `Cypher`). Row 3 identifies
    CypherLite to consumers that iterate all rows. `edition` is `'community'`
-   on all rows: CypherLite has no enterprise tier (matching ADR-0116's
+ on all rows: CypherLite has no enterprise tier (matching [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)'s
    Community Edition semantics).
 
    **Deliberate consequence:** the workspace version (e.g. `0.9.1`) is below
@@ -124,7 +139,7 @@ Desktop-only `>= 4.4.0` gate is likewise inferred to use the same parse.
    output; claiming a `>= 4.4.0` version was rejected (see Alternatives).
 
 2. **SHOW DATABASES rows carry concrete values** in both the `neo4j` and
-   `system` namespaces (ADR-0116):
+ `system` namespaces ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)):
 
    | field | neo4j | system |
    |---|---|---|
@@ -197,7 +212,7 @@ For decision 3 (`dbms.info`):
 ## Consequences
 
 - Neo4j Desktop's embedded Browser and the public web Browser connect over
-  the ADR-0266 transport: the version checks see `edition` and find a
+ the [ADR-0266](./0266-bolt-websocket-transport.md) transport: the version checks see `edition` and find a
   `Neo4j Kernel` row, the record codec accepts the SHOW DATABASES rows, the
   instance id `neo4j@localhost:7687` validates, and `dbms.info()` answers.
 - Desktop shows a **non-fatal** "not officially supported" warning because

@@ -1,7 +1,17 @@
-# 0557 — List only the procedures an embedded engine can answer
+---
+type: adr
+area: engine
+claim: e7abcfac69d86bd9722ef4f59954d4828a970085
+name: 0557-drop-server-only-procedures
+status: proposed
+tags:
+  - procedures
+title: 0557 — List only the procedures an embedded engine can answer
+REFERENCES:
+  - "[[adr/0561-listcapabilities-lists-our-own-capabilities]]"
+---
 
-Status: Proposed
-Claim: e7abcfac69d86bd9722ef4f59954d4828a970085
+# 0557 — List only the procedures an embedded engine can answer
 
 ## Context
 
@@ -66,7 +76,7 @@ graph counts, and the embedded-relevant rows that become executable next:
 
 ## Later references
 
-- **ADR-0561** — `dbms.listCapabilities` returns, as an executable procedure
+- **[ADR-0561](./0561-listcapabilities-lists-our-own-capabilities.md)** — `dbms.listCapabilities` returns, as an executable procedure
   listing this engine's own capabilities. It is the one dropped name whose
   answer is a fact about the engine rather than about a server it is not; the
   removal stands for every other family.

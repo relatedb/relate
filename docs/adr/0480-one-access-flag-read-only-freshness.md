@@ -1,18 +1,33 @@
+---
+type: adr
+area: cli
+claim: 794feb4f7da4f0c1f3fe84c367327e02a1b876e8
+name: 0480-one-access-flag-read-only-freshness
+status: proposed
+tags:
+  - commands
+title: One access flag — `--read-only[=snapshot|live]`
+REFERENCES:
+  - "[[adr/0136-read-only-open]]"
+  - "[[adr/0137-wal-follow]]"
+  - "[[adr/0249-docker-unified-serve-image]]"
+  - "[[adr/0306-read-only-follow-servers]]"
+SUPERSEDES:
+  - "[[adr/0136-read-only-open]]"
+  - "[[adr/0306-read-only-follow-servers]]"
+---
+
 # ADR-0480: One access flag — `--read-only[=snapshot|live]`
-
-Status: Proposed
-
-Claim: 794feb4f7da4f0c1f3fe84c367327e02a1b876e8
 
 ## Context
 
-The CLI spells its open's access mode with two flags. `--read-only` (ADR-0136)
-loads the store once and refuses writes; `--follow` (ADR-0137 §1 — "follow is
+The CLI spells its open's access mode with two flags. `--read-only` ([ADR-0136](./0136-read-only-open.md))
+loads the store once and refuses writes; `--follow` ([ADR-0137](./0137-wal-follow.md) §1 — "follow is
 read-only plus a tail") does that and tails the WAL beside a writer. Two flags
 for one enum variant needed two extra rules to keep them coherent:
 
 - an implication — "follow implies read-only";
-- a precedence — "with both, follow wins" (ADR-0306 §1, the canonical fold in
+- a precedence — "with both, follow wins" ([ADR-0306](./0306-read-only-follow-servers.md) §1, the canonical fold in
   `parse_error.rs::fold_access`, shared by the query session's pre-verb
   grammar and `serve`'s post-verb one).
 
@@ -25,8 +40,8 @@ to fold the pair into one flag with a freshness value.
    grammars — the query session's pre-verb flags (`flags.rs`) and `serve`'s
    post-verb flags (`serve_args.rs`). Bare `--read-only` and
    `--read-only=snapshot` are today's read-only open (a frozen snapshot at
-   open, ADR-0136); `--read-only=live` is today's `--follow` (tail the WAL,
-   ADR-0137). "snapshot" is ADR-0136's own word; "live" is the user-facing
+ open, [ADR-0136](./0136-read-only-open.md)); `--read-only=live` is today's `--follow` (tail the WAL,
+ [ADR-0137](./0137-wal-follow.md)). "snapshot" is [ADR-0136](./0136-read-only-open.md)'s own word; "live" is the user-facing
    word for the freshness.
 2. **`--follow` is removed.** It answers with the generic unknown-flag error
    — no alias, no migration hint (AGENTS.md §3's rule for removed
@@ -36,10 +51,10 @@ to fold the pair into one flag with a freshness value.
    must never silently become the database path or the query. A value
    outside `{snapshot, live}` is a usage error listing the two.
 4. **Once-only in both grammars** — a repeat is a usage error naming the
-   flag, the same policy as every optional `serve` flag (ADR-0306 §1). The
+ flag, the same policy as every optional `serve` flag ([ADR-0306](./0306-read-only-follow-servers.md) §1). The
    implication and the precedence rules die with the second flag; the
    canonical fold is deleted.
-5. **Position rules stay** (ADR-0306 §6): a pre-verb access flag on a
+5. **Position rules stay** ([ADR-0306](./0306-read-only-follow-servers.md) §6): a pre-verb access flag on a
    `serve` line is a usage error naming the post-verb spelling, and a
    pre-verb access flag on a lifecycle command that runs no query engine is
    a usage error — a silently-writable server or a silently-dropped fence
@@ -58,7 +73,7 @@ to fold the pair into one flag with a freshness value.
    with an implication rule. The per-query read-only scope (LABS-692) must
    NOT reuse the `--read-only` spelling — it stays in the engine and API as
    `begin(read_only=True)`-shaped, per that ticket's design note.
-9. **The Docker entrypoint pass-through** (ADR-0249, restated by ADR-0306
+9. **The Docker entrypoint pass-through** ([ADR-0249](./0249-docker-unified-serve-image.md), restated by [ADR-0306](./0306-read-only-follow-servers.md)
    §7) keeps `--read-only` in its valueless set: the bare form must never
    consume the next token (`--read-only --auth x` stays two flags), and
    the entrypoint's `=`-arm already splits the attached
@@ -97,6 +112,6 @@ to fold the pair into one flag with a freshness value.
 - The CLI spec's flag tables, the serve synopsis, the bundled skill
   references that name the flags, and the e2e pins move to the new
   spelling; `--follow` pins become unknown-flag pins.
-- Supersedes the flag *spelling* in ADR-0136 (§ the read-only open) and
-  ADR-0306 (§1 the two serve flags, §7 the valueless pass-through) — both
+- Supersedes the flag *spelling* in [ADR-0136](./0136-read-only-open.md) (§ the read-only open) and
+ [ADR-0306](./0306-read-only-follow-servers.md) (§1 the two serve flags, §7 the valueless pass-through) — both
   carry a Later-references note; nothing else in either decision changes.

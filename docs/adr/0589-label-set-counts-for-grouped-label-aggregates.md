@@ -1,11 +1,22 @@
-# ADR-0589: Label-set counts for grouped label aggregates
+---
+type: adr
+area: engine
+claim: 84099850ced1ad00aa876defcfb5341c57c160c6
+name: 0589-label-set-counts-for-grouped-label-aggregates
+status: proposed
+tags:
+  - catalog
+  - executor
+title: Label-set counts for grouped label aggregates
+REFERENCES:
+  - "[[adr/0387-statistics-backed-counting-operator]]"
+---
 
-Status: Proposed
-Claim: 84099850ced1ad00aa876defcfb5341c57c160c6
+# ADR-0589: Label-set counts for grouped label aggregates
 
 ## Context
 
-ADR-0387 answers whole-population counts from maintained statistics: the exact
+[ADR-0387](./0387-statistics-backed-counting-operator.md) answers whole-population counts from maintained statistics: the exact
 per-label live count and the exact node total. Neither can answer a grouped
 aggregate over labels. `MATCH (n) RETURN labels(n)[0] AS kind, count(*)` (the
 "kinds of nodes" overview every schema browser and dashboard opens with) needs
@@ -22,7 +33,7 @@ gap needs an answer whose cost does not scale with the node count.
 ## Decision
 
 Maintain a **label-set count map** in the same count bundle as the label and
-node counts (ADR-0387): the exact number of live nodes per distinct label set,
+node counts ([ADR-0387](./0387-statistics-backed-counting-operator.md)): the exact number of live nodes per distinct label set,
 keyed by the node's label ids in label order, including the empty set.
 
 1. **Maintenance** rides the seams the other counts ride, under the bundle's one
@@ -96,4 +107,4 @@ keyed by the node's label ids in label order, including the empty set.
   answer's order is deterministic.
 - Transactions and pinned snapshots keep scan speed. Widening the map to
   snapshot-exact answers would be a later decision.
-- ADR-0387's count family gains a third map; its recognizer is untouched.
+- [ADR-0387](./0387-statistics-backed-counting-operator.md)'s count family gains a third map; its recognizer is untouched.

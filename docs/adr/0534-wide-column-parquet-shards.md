@@ -1,11 +1,29 @@
-# ADR-0534: Wide-column Parquet shards
+---
+type: adr
+area: engine
+claim: f54d24e89c83b16438c1adbb9ea24847f98762b9
+name: 0534-wide-column-parquet-shards
+status: proposed
+tags:
+  - checkpoint
+  - parquet
+title: Wide-column Parquet shards
+REFERENCES:
+  - "[[adr/0022-id-window-checkpoint-shards]]"
+  - "[[adr/0050-snapshot-codecs]]"
+  - "[[adr/0086-bounded-persistence-input]]"
+  - "[[adr/0183-coalesce-checkpoint-shards]]"
+  - "[[adr/0206-compressed-topology-storage]]"
+  - "[[adr/0460-markdown-body-properties]]"
+  - "[[adr/0553-wide-columns-are-the-parquet-checkpoint-format]]"
+  - "[[adr/0563-parquet-row-group-cap-1024]]"
+---
 
-Status: Proposed
-Claim: f54d24e89c83b16438c1adbb9ea24847f98762b9
+# ADR-0534: Wide-column Parquet shards
 
 ## Context
 
-Checkpoint shards (ADR-0022, ADR-0050) store entity properties as a single
+Checkpoint shards ([ADR-0022](./0022-id-window-checkpoint-shards.md), [ADR-0050](./0050-snapshot-codecs.md)) store entity properties as a single
 tagged-JSON string column. Every restore pays, per row: a JSON parse, an
 intermediate ordered map, a conversion to the compact property list, and a
 re-interning of key strings that were already interned when the graph was
@@ -20,7 +38,7 @@ scales super-linearly with store size.
 The live store has no static schema: property keys are open-ended runtime
 data and values are dynamically typed. But in practice each key carries
 one consistent type, and bulk loads allocate ids label-by-label, so a
-shard part (an id-range file, ADR-0183) is label-homogeneous for the
+shard part (an id-range file, [ADR-0183](./0183-coalesce-checkpoint-shards.md)) is label-homogeneous for the
 common load shape.
 
 ## Decision
@@ -31,7 +49,7 @@ legacy tagged-JSON column remaining the default. Every build reads both
 encodings. The manifest's format version records which one a store uses —
 3/4 legacy, 5/6 wide — and a manifest at the wide versions keeps the store
 wide whatever the open flags. The opt-in is an open-time codec
-configuration (the `CodecOpenConfig` slot, ADR-0460): set on a legacy
+configuration (the `CodecOpenConfig` slot, [ADR-0460](./0460-markdown-body-properties.md)): set on a legacy
 store, its first checkpoint re-encodes every part once, then resumes the
 normal dirty-id incremental rewrites; set on a store whose codec is not
 Parquet, the open fails instead of ignoring it.
@@ -58,7 +76,7 @@ statistics are off, so their presence counts are not recomputable. The
 threshold is one named constant in the codec. A carried column that meets
 new values of another type keeps its column: those values take the
 residual blob for their rows, never a coercion. The promoted columns of
-one part are capped (a named constant): the page envelope of ADR-0086
+one part are capped (a named constant): the page envelope of [ADR-0086](./0086-bounded-persistence-input.md)
 admits a bounded leaf count per file, so the cap keeps the row bound
 plannable; keys beyond it stay residual.
 
@@ -70,7 +88,7 @@ with a reserved column (`id`, `labels`, `type`, `start_id`, `end_id`,
 `properties`) — a key named `id` or `properties` is representable.
 
 **Layout and incrementality are unchanged.** Parts stay (kind, id-range)
-files; the dirty-id coalescing of ADR-0183 rewrites only units touching
+files; the dirty-id coalescing of [ADR-0183](./0183-coalesce-checkpoint-shards.md) rewrites only units touching
 dirty ids. A legacy checkpoint keeps the fixed schema and copies exactly
 as before — no wide machinery, no extra reads. A clean part is byte-stable across checkpoints and its schema
 is frozen with it; a re-encoded part re-derives its schema, so key sets
@@ -96,7 +114,7 @@ readers see named, typed, compressed columns.
   typed interop and row-group statistics; strictly dominated by columns.
 - **Partition parts by label (nodes) or (from-label, type, to-label)
   (rels) now** — rejected for this change: it breaks the id-range slot
-  machinery of ADR-0183 to serve pruning the engine does not do yet.
+ machinery of [ADR-0183](./0183-coalesce-checkpoint-shards.md) to serve pruning the engine does not do yet.
   Recorded as the refinement when larger-than-memory stores need
   label-keyed part pruning; rel parts would then also carry endpoint
   labels, since a rel type alone can be underspecified.
@@ -124,7 +142,7 @@ readers see named, typed, compressed columns.
   transactional write and WAL replay, keyed by id range so a part's
   derivation is its buckets' union with no row walk. Stale statistics can
   only misplace a value between column and residual, never lose one.
-- A part's leaf columns grow with its promoted keys, so the ADR-0086
+- A part's leaf columns grow with its promoted keys, so the [ADR-0086](./0086-bounded-persistence-input.md)
   page-envelope row bound shrinks: at the column cap a node file holds
   ~60k rows where the fixed schema held ~700k. Total entity count is
   unaffected — a store is many parts — but large stores carry more,
@@ -134,14 +152,14 @@ readers see named, typed, compressed columns.
 - Marker-label attributes on a minority of rows stay in the residual
   blob; their keys re-intern per row until promotion.
 - Future direction, not this change: with a tiered-arena memory store
-  (ADR-0206), checkpoints become stable files plus appended delta files
+ ([ADR-0206](./0206-compressed-topology-storage.md)), checkpoints become stable files plus appended delta files
   with periodic compaction; the arena's append-only shape is what makes
   that natural, and the format decided here (immutable per-part files,
   manifest-selected) is compatible with it.
 
 ## Later references
 
-ADR-0553 supersedes the opt-in: the wide-column encoding becomes the
+[ADR-0553](./0553-wide-columns-are-the-parquet-checkpoint-format.md) supersedes the opt-in: the wide-column encoding becomes the
 Parquet codec's only write encoding, the open-time opt-in (the
 `CodecOpenConfig` variant, the facade flag, the CLI value) is deleted, and
 a legacy-encoded store upgrades at its next checkpoint through the
@@ -149,7 +167,7 @@ one-time transition defined here. The encoding design this ADR records —
 promotion policy, column caps, residual tail, layout and incrementality —
 stands unchanged, as does the readable-both-encodings rule.
 
-ADR-0563 raises the row-group cap, so the page-envelope row bound at the
+[ADR-0563](./0563-parquet-row-group-cap-1024.md) raises the row-group cap, so the page-envelope row bound at the
 column cap is 958,464 node / 906,240 relationship rows, not ~60k;
 planning the row bound by a part's actual column count remains the
 refinement this ADR records.

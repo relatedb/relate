@@ -1,15 +1,27 @@
+---
+type: adr
+area: surface
+date: 2026-10-04
+deciders: CypherLite maintainers
+name: 0281-bolt-session-library
+status: accepted
+tags:
+  - bolt
+title: Bolt session and PackStream are callable as a library
+REFERENCES:
+  - "[[adr/0126-bolt-basic-auth]]"
+  - "[[adr/0266-bolt-websocket-transport]]"
+---
+
 # 0281. Bolt session and PackStream are callable as a library
 
-- **Status**: Accepted
 - **Renumbered**: from 0159 (shared-number cleanup)
-- **Date**: 2026-10-04
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
 `cypherlite-bolt` is the standalone Bolt server: one bind, a first-byte
 peek, WebSocket or raw Bolt, and a preset basic-auth password
-(ADR-0126, ADR-0266). `handle_conn` runs the session against an
+([ADR-0126](./0126-bolt-basic-auth.md), [ADR-0266](./0266-bolt-websocket-transport.md)). `handle_conn` runs the session against an
 embedded `Database`, but it is `pub(crate)` inside the binary.
 PackStream encode and decode live in the same binary.
 

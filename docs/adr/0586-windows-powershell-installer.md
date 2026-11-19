@@ -1,13 +1,29 @@
-# ADR-0586: Windows installs through a PowerShell installer
+---
+type: adr
+area: infra
+claim: f5a09629ddce507f33267ba12357939863928aec
+name: 0586-windows-powershell-installer
+status: proposed
+tags:
+  - release
+title: Windows installs through a PowerShell installer
+REFERENCES:
+  - "[[adr/0068-cli-install-script-via-github-pages]]"
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0115-sshsig-release-signing]]"
+  - "[[adr/0457-signed-manifest-carries-version]]"
+  - "[[adr/0546-release-discovery-via-relate-web]]"
+  - "[[adr/0571-installer-resolves-via-releases-json]]"
+  - "[[adr/0585-installer-downloads-via-direct-route]]"
+---
 
-Status: Proposed
-Claim: f5a09629ddce507f33267ba12357939863928aec
+# ADR-0586: Windows installs through a PowerShell installer
 
 ## Context
 
-ADR-0068 §3 limited the one-line installer to macOS and Linux and left
+[ADR-0068](./0068-cli-install-script-via-github-pages.md) §3 limited the one-line installer to macOS and Linux and left
 Windows with a manual `.exe` download. That path verifies neither the SSHSIG
-manifest signature (ADR-0115) nor the signed version header (ADR-0457). A
+manifest signature ([ADR-0115](./0115-sshsig-release-signing.md)) nor the signed version header ([ADR-0457](./0457-signed-manifest-carries-version.md)). A
 browser download raises SmartScreen for the unsigned binary, and the user
 puts it on `PATH` by hand. `install.sh` died with `unsupported OS` under Git
 Bash, MSYS2 and Cygwin, where coding agents on Windows run shell commands.
@@ -22,17 +38,17 @@ the inbox OpenSSH client (`-Y verify` needs OpenSSH 8.1 or later).
    `irm https://relatedb.ai/install.ps1 | iex`, or the
    `powershell -ExecutionPolicy ByPass -c "…"` form from `cmd` and Git Bash.
    It runs in Windows PowerShell 5.1 and PowerShell 7 and ships as a release
-   asset beside `install.sh`, reaching the website the same way (ADR-0546).
+ asset beside `install.sh`, reaching the website the same way ([ADR-0546](./0546-release-discovery-via-relate-web.md)).
    Run from a pipe, each installer says once that it ran before it could be
    read, and points at the README's inspect-then-run steps.
 2. **The `install.sh` contract, unchanged.** The release resolves through
-   `releases.json` (ADR-0571). Assets come over the direct route with no API
-   request and no token, through the same override seams (ADR-0585). Both
+ `releases.json` ([ADR-0571](./0571-installer-resolves-via-releases-json.md)). Assets come over the direct route with no API
+ request and no token, through the same override seams ([ADR-0585](./0585-installer-downloads-via-direct-route.md)). Both
    seams take the `https://` gate before any request, in both installers:
    `releases.json` only selects a release, but a plaintext fetch would let
    an on-path attacker steer which signed release installs. The manifest is verified against the pinned key with the
-   inbox `ssh-keygen` before the binary downloads (ADR-0115), its version
-   header is bound to the tag under the same legacy ceiling (ADR-0457), and
+ inbox `ssh-keygen` before the binary downloads ([ADR-0115](./0115-sshsig-release-signing.md)), its version
+ header is bound to the tag under the same legacy ceiling ([ADR-0457](./0457-signed-manifest-carries-version.md)), and
    the binary's SHA-256 is checked last. Every failure installs nothing; a
    missing `ssh-keygen` fails closed naming the `Add-WindowsCapability`
    command. The manifest reaches `ssh-keygen` as its exact bytes, never
@@ -52,7 +68,7 @@ the inbox OpenSSH client (`-Y verify` needs OpenSSH 8.1 or later).
    exit non-zero naming the PowerShell one-liner and download nothing, so
    every Windows shell gets one install location and one `PATH` update.
 6. **`relate upgrade` on Windows.** Self-replace stays out of scope
-   (ADR-0069 §6). The refusal and a Windows build's other reinstall pointers
+ ([ADR-0069](./0069-cli-lifecycle-commands.md) §6). The refusal and a Windows build's other reinstall pointers
    name the PowerShell one-liner. `--check` downloads and replaces nothing,
    so it runs on every platform; where the replace is unsupported, its
    advice line carries the refusal instead of advising `relate upgrade`.
@@ -77,7 +93,7 @@ the inbox OpenSSH client (`-Y verify` needs OpenSSH 8.1 or later).
   SmartScreen, not the integrity chain. `irm` downloads carry no mark of the
   web, so the installer raises no prompt; signing stays a follow-up.
 - **Windows self-upgrade now.** Deferred: renaming the running `.exe` and
-  writing the new one revisits ADR-0069 §6 and needs its own decision.
+ writing the new one revisits [ADR-0069](./0069-cli-lifecycle-commands.md) §6 and needs its own decision.
   Rerunning the installer is the upgrade until then.
 
 ## Consequences

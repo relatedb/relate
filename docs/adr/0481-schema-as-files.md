@@ -1,8 +1,20 @@
+---
+type: adr
+area: engine
+claim: d6200ff2158118235258609bb593dc08e2796735
+name: 0481-schema-as-files
+status: proposed
+tags:
+  - catalog
+title: Schema as files — the store's schema mirrored as canonical text
+REFERENCES:
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0229-remove-system-ontologies-cypher-surface]]"
+  - "[[adr/0406-markdown-vault-snapshot-codec]]"
+  - "[[adr/0623-engine-sidecar-dir-rename]]"
+---
+
 # ADR-0481: Schema as files — the store's schema mirrored as canonical text
-
-Status: Proposed
-
-Claim: d6200ff2158118235258609bb593dc08e2796735
 
 ## Context
 
@@ -20,7 +32,7 @@ The storage map on `main` (dbc944d2) fixes what exists to build on:
 
 - **Native stores** keep `manifest.json`, `nodes/`, `relationships/` and
   `ontology/<128-bit-hex>.json` at the store root. Native and JSON stores
-  have no `.cypherlite/` directory. Only the markdown vault (ADR-0406) has
+ have no `.cypherlite/` directory. Only the markdown vault ([ADR-0406](./0406-markdown-vault-snapshot-codec.md)) has
   one: the `.cypherlite/manifest.json` sidecar, whose `CatalogWire` already
   carries the graph type as text.
 - **Graph type.** `GraphTypeSpec` (serde) lives in the manifest, and a
@@ -123,7 +135,7 @@ is normative; implementation follows it verbatim.
   already holds it without running anything; an export command is the
   optional follow-up named in Decision §6, not a substitute.
 - **Snapshot the per-namespace system graphs as files.** Mirror the
-  `system` / `system_ontologies` namespace graphs (ADR-0116, ADR-0229) too.
+ `system` / `system_ontologies` namespace graphs ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md), [ADR-0229](./0229-remove-system-ontologies-cypher-surface.md)) too.
   Rejected: v1 covers the three schema facts an agent reads — graph type,
   ontology, indexes/constraints; the system namespaces carry no
   user-authored schema beyond the ontology document already mirrored.
@@ -162,6 +174,6 @@ is normative; implementation follows it verbatim.
 
 ## Later references
 
-- ADR-0623 renames the engine directory the mirror lives under to
+- [ADR-0623](./0623-engine-sidecar-dir-rename.md) renames the engine directory the mirror lives under to
   `.relate/`, adopting existing stores by one directory rename at their
   first writable open; the mirror's layout beneath it is unchanged.

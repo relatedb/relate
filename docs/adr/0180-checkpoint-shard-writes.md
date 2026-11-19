@@ -1,13 +1,28 @@
-# 0180. Checkpoint shards stream, split on compact bytes, and keep clean rows
+---
+type: adr
+area: engine
+date: 2026-10-06
+deciders: CypherLite maintainers
+name: 0180-checkpoint-shard-writes
+status: accepted
+tags:
+  - checkpoint
+  - parquet
+title: Checkpoint shards stream, split on compact bytes, and keep clean rows
+REFERENCES:
+  - "[[adr/0022-id-window-checkpoint-shards]]"
+  - "[[adr/0086-bounded-persistence-input]]"
+  - "[[adr/0183-coalesce-checkpoint-shards]]"
+  - "[[adr/0284-shard-statistics-off]]"
+  - "[[adr/0563-parquet-row-group-cap-1024]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-06
-- **Deciders**: CypherLite maintainers
+# 0180. Checkpoint shards stream, split on compact bytes, and keep clean rows
 
 ## Context
 
-ADR-0022 publishes a checkpoint as id-window Parquet shards aimed at 256 MiB.
-ADR-0086 caps a decoded shard at 2 GiB and a decoded row at 384 MiB. The
+[ADR-0022](./0022-id-window-checkpoint-shards.md) publishes a checkpoint as id-window Parquet shards aimed at 256 MiB.
+[ADR-0086](./0086-bounded-persistence-input.md) caps a decoded shard at 2 GiB and a decoded row at 384 MiB. The
 writer enforced the row-count side of that with a 65,536-row cut and a
 64-row prefix sample, then built one `RecordBatch` for the surviving window.
 
@@ -17,7 +32,7 @@ the Arrow columns together. A small property update on a neighbor of a large
 string re-encoded the string. The 64-row sample could approve that window
 when the large rows sat past the prefix.
 
-ADR-0284 still applies: page statistics stay off. ADR-0086's envelope still
+[ADR-0284](./0284-shard-statistics-off.md) still applies: page statistics stay off. [ADR-0086](./0086-bounded-persistence-input.md)'s envelope still
 applies. This decision changes how a window is chosen and written.
 
 ## Decision
@@ -25,7 +40,7 @@ applies. This decision changes how a window is chosen and written.
 1. **Stream row groups.** A shard file is still one id window. The writer
    feeds Arrow at most 64 rows at a time, and flushes that row group before
    the next. A group also flushes before its decoded bytes would pass the
-   ADR-0086 decoded envelope. Snappy and `EnabledStatistics::None` stay.
+ [ADR-0086](./0086-bounded-persistence-input.md) decoded envelope. Snappy and `EnabledStatistics::None` stay.
    Node and relationship shards use the same writer.
 
 2. **Split on compact bytes.** Before encoding, sum each live row's decoded
@@ -65,16 +80,16 @@ and split by the compact byte count.
 A checkpoint's live peak for one shard is one row group, plus the previous
 file's bytes while a clean run is copied. A property update encodes the
 dirty rows and leaves the other rows in the previous file's values. Shards
-already published stay readable. A row that exceeds the ADR-0086 row
+already published stay readable. A row that exceeds the [ADR-0086](./0086-bounded-persistence-input.md) row
 envelope still fails the checkpoint with the same decoded-row error.
 
 ## Later references
 
-ADR-0183 supersedes Decision 3's one part per clean run: a rewrite unit
+[ADR-0183](./0183-coalesce-checkpoint-shards.md) supersedes Decision 3's one part per clean run: a rewrite unit
 copies clean runs into its byte-budgeted files together with the encoded
 dirty rows, and absorbs undersized neighboring parts up to the target.
 Decisions 1 and 2 stand.
 
-ADR-0563 raises Decision 1's 64-row row-group cap to 1024 rows (the wide
+[ADR-0563](./0563-parquet-row-group-cap-1024.md) raises Decision 1's 64-row row-group cap to 1024 rows (the wide
 encoding's leaf count made the small group the dominant write tax); the
 streaming, byte-split and copy shape of all three decisions stands.

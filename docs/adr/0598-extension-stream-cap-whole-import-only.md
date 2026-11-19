@@ -1,13 +1,29 @@
-# ADR-0598: The extension stream cap guards whole-import framing only
+---
+type: adr
+area: ecosystem
+claim: bf165f653148e191305618821168437c506ebd8e
+name: 0598-extension-stream-cap-whole-import-only
+status: proposed
+tags:
+  - extensions
+  - security
+title: The extension stream cap guards whole-import framing only
+REFERENCES:
+  - "[[adr/0377-import-resource-bounds]]"
+  - "[[adr/0392-git-import-per-batch-commit]]"
+  - "[[adr/0430-cli-extension-wire-protocol]]"
+  - "[[adr/0434-first-party-extension-crate-group]]"
+  - "[[adr/0442-extension-mcp-stdio-wire]]"
+  - "[[adr/0447-extension-single-wire]]"
+---
 
-Status: Proposed
-Claim: bf165f653148e191305618821168437c506ebd8e
+# ADR-0598: The extension stream cap guards whole-import framing only
 
 ## Context
 
 The extension mount caps a child's whole MCP request stream at 128 MiB
-(ADR-0430 §4, carried by ADR-0442 and ADR-0447). The git importer commits
-per batch (ADR-0392): each writing call is its own transaction, and §3 of
+([ADR-0430](./0430-cli-extension-wire-protocol.md) §4, carried by [ADR-0442](./0442-extension-mcp-stdio-wire.md) and [ADR-0447](./0447-extension-single-wire.md)). The git importer commits
+per batch ([ADR-0392](./0392-git-import-per-batch-commit.md)): each writing call is its own transaction, and §3 of
 that ADR pins the contract that re-running the same command over a
 partially imported store completes the history.
 
@@ -44,7 +60,7 @@ the host kills it.
 
 The 128 MiB number, the fatal classification, and the published
 `maxStreamBytes` fact are unchanged. Both stream-cap refusals gain
-ADR-0377 §4's actionable shape: the limit as a number, the framing it
+[ADR-0377](./0377-import-resource-bounds.md) §4's actionable shape: the limit as a number, the framing it
 guards, and the two ways out — window the import, or move the package to
 `per-batch` framing. No mount flag changes the cap; the rejected
 alternatives record why none exists.
@@ -60,7 +76,7 @@ alternatives record why none exists.
 - **Raise the number.** Rejected: it moves the failure to a larger repo,
   keeps the deterministic re-run breach, and every candidate number is
   arbitrary against inputs the importer's own caps already bound.
-- **A `--max-stream-bytes` flag on `relate run`.** Rejected: ADR-0377's
+- **A `--max-stream-bytes` flag on `relate run`.** Rejected: [ADR-0377](./0377-import-resource-bounds.md)'s
   recorded stance — a safety rail every user must remember is not a
   tuning knob — plus the flag-table cost across help, spec and bundles;
   and a local opt-out leaves every other run with the broken contract.
@@ -76,7 +92,7 @@ alternatives record why none exists.
 
 - A per-batch import completes histories whose wire bytes exceed 128
   MiB, and a re-run over its partial store completes the history:
-  ADR-0392 §3's contract holds through the mount. Pinned host-side (a
+ [ADR-0392](./0392-git-import-per-batch-commit.md) §3's contract holds through the mount. Pinned host-side (a
   per-batch session whose cumulative request bytes cross a tight stream
   cap admits every call) and child-side (a per-batch child writes past a
   tight published cap; a whole-import child refuses with the new text).
@@ -87,7 +103,7 @@ alternatives record why none exists.
 - A per-batch child's runaway bounds are the per-call caps plus the
   store's live-graph limit, refused typed per call — the same bounds the
   product MCP server's writers run under.
-- ADR-0430 §4 and ADR-0434's importer-bounding consequence gain `Later
+- [ADR-0430](./0430-cli-extension-wire-protocol.md) §4 and [ADR-0434](./0434-first-party-extension-crate-group.md)'s importer-bounding consequence gain `Later
   references` notes naming this ADR.
 - No new flag, tool, schema change, or dependency; the published cap set
   is byte-identical.

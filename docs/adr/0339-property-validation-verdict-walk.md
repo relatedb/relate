@@ -1,11 +1,22 @@
-# ADR-0339: Property-write validation is one typed verdict walk in a shared exec module
+---
+type: adr
+area: engine
+claim: e79fca59d4f8ed4736cd67ef42ef0de033b054ff
+name: 0339-property-validation-verdict-walk
+status: proposed
+tags:
+  - errors
+  - write-path
+title: Property-write validation is one typed verdict walk in a shared exec module
+REFERENCES:
+  - "[[adr/0327-engine-statement-scoped-bytes-value]]"
+---
 
-Status: Proposed
-Claim: e79fca59d4f8ed4736cd67ef42ef0de033b054ff
+# ADR-0339: Property-write validation is one typed verdict walk in a shared exec module
 
 ## Context
 
-The property-write validation policy (ADR-0327) lived in
+The property-write validation policy ([ADR-0327](./0327-engine-statement-scoped-bytes-value.md)) lived in
 `cypherlite-executor/src/exec/create.rs` and was consumed sideways by
 `exec/write.rs` (`use super::create::{check_property_value, sanitize_props}`)
 — a helper used by siblings living in the first caller's module. The

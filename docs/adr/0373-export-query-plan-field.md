@@ -1,12 +1,22 @@
+---
+type: adr
+area: surface
+claim: 2928220f99c4c103845827d87a9df560f0e271bb
+name: 0373-export-query-plan-field
+status: accepted
+tags:
+  - http
+  - observability
+title: Export the plain-JSON Query API plan field
+REFERENCES:
+  - "[[adr/0365-http-query-api-v2-plan-node-shape]]"
+---
+
 # ADR-0373: Export the plain-JSON Query API plan field
-
-Status: Accepted
-
-Claim: 2928220f99c4c103845827d87a9df560f0e271bb
 
 ## Context
 
-ADR-0365 defines the HTTP Query API v2 plan node: `queryPlan` for
+[ADR-0365](./0365-http-query-api-v2-plan-node-shape.md) defines the HTTP Query API v2 plan node: `queryPlan` for
 `EXPLAIN`, `profiledQueryPlan` for `PROFILE`, with `arguments` (not the
 Bolt wire's `args`) and the metric fields Neo4j's own response carries.
 That projection lives in `cypherlite-http` as `plan_field`, and it is
@@ -15,7 +25,7 @@ That projection lives in `cypherlite-http` as `plan_field`, and it is
 An embedder that builds its own success envelope — a client
 implementing embedded Relate — receives a `QueryResult` whose
 `plan` is already set, then has to encode the tree. Copying the walk
-would be a second spelling of ADR-0365. The Bolt summary is the wrong
+would be a second spelling of [ADR-0365](./0365-http-query-api-v2-plan-node-shape.md). The Bolt summary is the wrong
 shape for an HTTP client.
 
 ## Decision
@@ -34,14 +44,14 @@ for a negotiation they do not perform.
 
 ## Alternatives considered
 
-- **Copy the node walk into each embedder** — rejected: ADR-0365 has one
+- **Copy the node walk into each embedder** — rejected: [ADR-0365](./0365-http-query-api-v2-plan-node-shape.md) has one
   spelling of the v2 node, and a second copy drifts from it.
 - **Also publish the typed variant** — rejected: the public entry is the
   plain-JSON contract. The server already selects typed encoding from
   Accept, and an embedder that needs that form is the HTTP server.
 - **Return the Bolt `args` shape** — rejected: HTTP clients read
-  `arguments` (ADR-0365). Serving `args` on this field is the defect
-  ADR-0365 closed.
+ `arguments` ([ADR-0365](./0365-http-query-api-v2-plan-node-shape.md)). Serving `args` on this field is the defect
+ [ADR-0365](./0365-http-query-api-v2-plan-node-shape.md) closed.
 
 ## Consequences
 

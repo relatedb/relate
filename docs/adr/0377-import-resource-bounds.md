@@ -1,12 +1,30 @@
+---
+type: adr
+area: cli
+claim: 3da31eeb8266d64db2f36842612d9fa923a641bd
+name: 0377-import-resource-bounds
+status: accepted
+tags:
+  - load
+  - security
+title: Import resource bounds for `lab git-to-graph`
+REFERENCES:
+  - "[[adr/0157-fs-to-graph-import]]"
+  - "[[adr/0286-fs-to-graph-explicit-db-exits]]"
+  - "[[adr/0352-drop-processing-byte-limits]]"
+  - "[[adr/0376-git-to-graph-import]]"
+  - "[[adr/0380-first-party-dependency-scope]]"
+  - "[[adr/0392-git-import-per-batch-commit]]"
+  - "[[adr/0597-git-to-graph-closed-import-window]]"
+---
+
 # ADR-0377: Import resource bounds for `lab git-to-graph`
 
-Status: Accepted
-Claim: 3da31eeb8266d64db2f36842612d9fa923a641bd
-Later references: ADR-0380 scopes the no-new-Cargo-dependency rule to external crates and corrects the CO_CHANGED pair-memory arithmetic recorded in §2 and Consequences. ADR-0392 raises §2's pair cap to 5,000,000 and supersedes §2's "no partial import to resume" with the idempotent re-run; every refusal keeps firing before the range-index DDL and the first write batch. ADR-0597 adds --until to §1's refusal hint — the LogTooLarge message names it among the flags that read a smaller window; the caps and every other refusal text stand.
+Later references: [ADR-0380](./0380-first-party-dependency-scope.md) scopes the no-new-Cargo-dependency rule to external crates and corrects the CO_CHANGED pair-memory arithmetic recorded in §2 and Consequences. [ADR-0392](./0392-git-import-per-batch-commit.md) raises §2's pair cap to 5,000,000 and supersedes §2's "no partial import to resume" with the idempotent re-run; every refusal keeps firing before the range-index DDL and the first write batch. [ADR-0597](./0597-git-to-graph-closed-import-window.md) adds --until to §1's refusal hint — the LogTooLarge message names it among the flags that read a smaller window; the caps and every other refusal text stand.
 
 ## Context
 
-ADR-0376 pinned the schema, path rule, flags, index set and transaction of
+[ADR-0376](./0376-git-to-graph-import.md) pinned the schema, path rule, flags, index set and transaction of
 `cypherlite lab git-to-graph`. It did not pin a resource envelope. The
 security review of the implementation found three paths where a large or
 hostile checkout exhausts the host or leaves DIR:
@@ -23,18 +41,18 @@ hostile checkout exhausts the host or leaves DIR:
    at ~0.5 KiB per pair, before the write transaction starts.
 3. `mapped_path` accepts `.`, `..` and root or prefix components; `push`
    then resolves them. A crafted tree can store a `File.path` outside DIR,
-   and that path is the key the fs-to-graph graph joins on (ADR-0157), so
+ and that path is the key the fs-to-graph graph joins on ([ADR-0157](./0157-fs-to-graph-import.md)), so
    the escape is visible to every query, not just to the importer.
 
 The design constraints are: no new flag, because `--max-commits`, `--since`
 and `--max-changeset` already shrink the work; no new dependency (AGENTS.md
-R6); ADR-0376's schema, accepted-path rendering, `MERGE`/`SET` semantics
+R6); [ADR-0376](./0376-git-to-graph-import.md)'s schema, accepted-path rendering, `MERGE`/`SET` semantics
 and index names unchanged; and every refusal before the write transaction,
 so a rejected import writes nothing.
 
-This ADR amends ADR-0376's resource consequences only. It does not change
+This ADR amends [ADR-0376](./0376-git-to-graph-import.md)'s resource consequences only. It does not change
 the graph schema, the path rendering for an accepted path, the flag
-meanings, or the exit-after behaviour of an explicit `--db` (ADR-0286).
+meanings, or the exit-after behaviour of an explicit `--db` ([ADR-0286](./0286-fs-to-graph-explicit-db-exits.md)).
 
 ## Decision
 
@@ -88,7 +106,7 @@ Error text (exit 1):
 import would write more than 500000 CO_CHANGED pairs; lower --max-changeset or pass --max-commits to read fewer commits
 ```
 
-The count is a pure function of the window: ADR-0376's import recomputes
+The count is a pure function of the window: [ADR-0376](./0376-git-to-graph-import.md)'s import recomputes
 counts and `SET`s them, it never increments stored state. Re-running the
 same command therefore fails at the same pair, and there is no partial
 import to resume. Only a smaller window (`--max-commits`, `--since`) or a
@@ -99,7 +117,7 @@ the window cannot recover.
 
 `--max-changeset` accepts `1..=1000`. A larger value is rejected at parse
 time as a usage error: exit 2, the `lab` usage line and a `--help` hint,
-exactly ADR-0376's usage-error shape. It is not clamped and not silently
+exactly [ADR-0376](./0376-git-to-graph-import.md)'s usage-error shape. It is not clamped and not silently
 lowered.
 
 Memory arithmetic: one commit at the maximum contributes
@@ -161,12 +179,12 @@ cannot remove an accepted component, every accepted component is one
 `File.path` is DIR plus ordinary components and cannot leave DIR. The check
 runs before the row exists, so no escaping path reaches `File.path` or the
 write transaction. The parser's own empty-path error (naming the record
-ordinal, ADR-0376) stays and fires first on raw output; `mapped_path` keeps
+ordinal, [ADR-0376](./0376-git-to-graph-import.md)) stays and fires first on raw output; `mapped_path` keeps
 its empty check because it is the component-level API.
 
 ### 6. Order of checks and inert refusal
 
-The phases stay in ADR-0376's order: read history (limit 1) -> build rows
+The phases stay in [ADR-0376](./0376-git-to-graph-import.md)'s order: read history (limit 1) -> build rows
 (limit 2 and the path rule) -> create the range indexes -> open the write
 transaction. Limits 1 and 2 therefore run before any store write: a refused
 import creates no index, writes no `MERGE` or `SET`, commits no
@@ -181,7 +199,7 @@ summary or the starter queries.
   deferred, not rejected as an idea: the import still materializes every
   `GitCommit`, every `TOUCHED` row and every pair before the transaction
   opens, so the stdout buffer is at most ~0.4 GiB of a peak that stays
-  linear-plus-pairs after streaming; and it replaces ADR-0376's pure
+ linear-plus-pairs after streaming; and it replaces [ADR-0376](./0376-git-to-graph-import.md)'s pure
   `parse_log(&[u8])` parser, its record-ordinal errors and its separator
   handling in a change whose subject is a bound. A later ADR can stream the
   same byte limit as a work bound and lower the peak without changing this
@@ -214,7 +232,7 @@ summary or the starter queries.
   length is the exact quantity that consumes memory.
 - **Adopt one import-wide byte budget instead of shape limits.**
   Rejected: a byte budget is an allocator- and platform-dependent estimate
-  rather than a checkable invariant, the same reasoning ADR-0352 records for
+ rather than a checkable invariant, the same reasoning [ADR-0352](./0352-drop-processing-byte-limits.md) records for
   processing-memory limits. The three bounds above are exact counts of the
   two superlinear structures and one parse value, testable at their
   thresholds; a budget estimated from rows and bytes is neither.
@@ -238,11 +256,11 @@ summary or the starter queries.
   134,217,728-byte log cap and the 500,000-pair cap), including the flags
   that change them. CLI tests assert the same wording, so help, spec and
   error text cannot drift.
-- ADR-0376 gets a `Later references` note pointing here. Its schema, path
+- [ADR-0376](./0376-git-to-graph-import.md) gets a `Later references` note pointing here. Its schema, path
   rendering for accepted paths, index names, `MERGE`/`SET` semantics,
-  usage-error shape and explicit-`--db` exit (ADR-0286) are unchanged.
-- The fs-to-graph join (ADR-0157) is unchanged for every path that imported
-  before: accepted components render exactly as ADR-0376 specifies. The
+ usage-error shape and explicit-`--db` exit ([ADR-0286](./0286-fs-to-graph-explicit-db-exits.md)) are unchanged.
+- The fs-to-graph join ([ADR-0157](./0157-fs-to-graph-import.md)) is unchanged for every path that imported
+ before: accepted components render exactly as [ADR-0376](./0376-git-to-graph-import.md) specifies. The
   price is that a Unix filename containing `\` or beginning with a drive
   designator (`X:`) is now an import error; that is what makes the rejection
   platform-independent rather than a Windows-only check.

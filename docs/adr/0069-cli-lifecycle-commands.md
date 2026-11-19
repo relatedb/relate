@@ -1,14 +1,32 @@
-# 0069. CLI lifecycle commands as positionals, plus self-upgrade design
+---
+type: adr
+area: cli
+date: 2026-09-20
+deciders: CypherLite maintainers
+name: 0069-cli-lifecycle-commands
+status: accepted
+tags:
+  - commands
+title: CLI lifecycle commands as positionals, plus self-upgrade design
+REFERENCES:
+  - "[[adr/0067-release-versioning-and-process]]"
+  - "[[adr/0068-cli-install-script-via-github-pages]]"
+  - "[[adr/0115-sshsig-release-signing]]"
+  - "[[adr/0190-scoped-cli-help]]"
+  - "[[adr/0200-query-command-and-database-flag]]"
+  - "[[adr/0231-bare-invocation-opens-shell-on-tty]]"
+  - "[[adr/0250-releases-json-update-discovery]]"
+  - "[[adr/0261-upgrade-skill-refresh-ownership]]"
+  - "[[adr/0586-windows-powershell-installer]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-20
-- **Deciders**: CypherLite maintainers (Linear LABS-26)
+# 0069. CLI lifecycle commands as positionals, plus self-upgrade design
 
 ## Context
 
-CypherLite’s CLI ships as raw release binaries on GitHub Releases (ADR-0067
+CypherLite’s CLI ships as raw release binaries on GitHub Releases ([ADR-0067](./0067-release-versioning-and-process.md)
 fixes the release and versioning policy: manual dispatch, tag-after-build, on
-`neo4j-labs/cypherlite`), and ADR-0068 added a `curl | bash` installer built on
+`neo4j-labs/cypherlite`), and [ADR-0068](./0068-cli-install-script-via-github-pages.md) added a `curl | bash` installer built on
 the release asset contract (`cypherlite-<os>-<arch>` binaries plus a
 `SHA256SUMS` manifest, `Authorization: Bearer $GITHUB_TOKEN` while the
 repository is internal, macOS/Linux-only scope). Linear issue **LABS-26**
@@ -63,7 +81,7 @@ one of them with the fetch/verify/replace design below.
    `GET https://api.github.com/repos/neo4j-labs/cypherlite/releases/latest`,
    attaching `Authorization: Bearer $GITHUB_TOKEN` only when the environment
    variable is set (the repository is currently internal; this is parity with
-   `docs/static/install.sh`, ADR-0068). The release’s `tag_name` (leading `v`
+ `docs/static/install.sh`, [ADR-0068](./0068-cli-install-script-via-github-pages.md)). The release’s `tag_name` (leading `v`
    stripped) is semver-compared against the binary’s own `CARGO_PKG_VERSION`;
    if the latest release is not newer, the command prints an up-to-date
    message and exits 0.
@@ -78,7 +96,7 @@ one of them with the fetch/verify/replace design below.
 6. **Atomic self-replace.** The verified binary is staged at a temporary path
    in `current_exe()`’s directory (guaranteeing the same filesystem), chmod
    755, then renamed over the running binary. This is macOS/Linux only, the
-   same platform scope as the ADR-0068 installer; on Windows the command
+ same platform scope as the [ADR-0068](./0068-cli-install-script-via-github-pages.md) installer; on Windows the command
    errors with a not-supported message pointing at the manual `.exe` download
    (a running `.exe` cannot be replaced).
 7. **Skill refresh after a successful replace.** Agents are detected first;
@@ -104,7 +122,7 @@ one of them with the fetch/verify/replace design below.
   category indefinitely.
 - **Windows side-by-side download (`cypherlite.new.exe` plus manual swap
   instructions)** — rejected: an untested surface with no reference
-  implementation; ADR-0068 already scoped the installer to macOS/Linux, and
+ implementation; [ADR-0068](./0068-cli-install-script-via-github-pages.md) already scoped the installer to macOS/Linux, and
   the README’s manual `.exe` download covers Windows.
 - **Printing migration hints for the removed flags** — rejected: the
   `--skill`/`--agent` flags never shipped in a release (this is unreleased
@@ -123,9 +141,9 @@ one of them with the fetch/verify/replace design below.
   `references/cli.md` must all describe the positional form.
 - The release asset contract (`cypherlite-<os>-<arch>` plus `SHA256SUMS`) is
   now load-bearing for a **third** consumer — the CLI itself, in addition to
-  the README’s manual download table and the ADR-0068 installer. Changing
+ the README’s manual download table and the [ADR-0068](./0068-cli-install-script-via-github-pages.md) installer. Changing
   asset names or the `SHA256SUMS` format now requires a new ADR referencing
-  this one, ADR-0067, and ADR-0068.
+ this one, [ADR-0067](./0067-release-versioning-and-process.md), and [ADR-0068](./0068-cli-install-script-via-github-pages.md).
 - `GITHUB_TOKEN` becomes a documented environment variable of the CLI (used
   by `upgrade` while the repository is internal), matching the installer’s
   auth model; it becomes unnecessary but harmless once the repository is
@@ -144,7 +162,7 @@ one of them with the fetch/verify/replace design below.
 
 ## Later references
 
-ADR-0261 refines the §7 skill-refresh step: `upgrade` pre-flight classifies
+[ADR-0261](./0261-upgrade-skill-refresh-ownership.md) refines the §7 skill-refresh step: `upgrade` pre-flight classifies
 each detected agent's `<skills dir>/cypherlite` as Missing, Owned, Legacy, or
 Foreign (installed = Owned or Legacy, where Legacy is recognized by its
 `SKILL.md` frontmatter declaring `name: cypherlite` **and** carrying a
@@ -155,29 +173,29 @@ all-Missing set prompts to install, with `run: cypherlite skill install` as the
 non-interactive hint. The rest of this decision, including the
 positional-command grammar, is unchanged.
 
-ADR-0115 strengthens the §5 verification step: the release publishes an
+[ADR-0115](./0115-sshsig-release-signing.md) strengthens the §5 verification step: the release publishes an
 OpenSSH SSHSIG signature `SHA256SUMS.sig` over `SHA256SUMS` (Ed25519,
 namespace `cypherlite-release`), and `upgrade` verifies it against a public key
 pinned in `upgrade_cmd.rs` using the RustCrypto `ssh-key` crate before
 checksumming the downloaded binary. Verification fails closed when the
 signature asset is missing or invalid.
 
-ADR-0190 adds `<command> --help` handling and scoped usage errors without
+[ADR-0190](./0190-scoped-cli-help.md) adds `<command> --help` handling and scoped usage errors without
 changing the positional-command grammar: `-h`/`--help` after a compiled-in
 command word prints that command's help to stdout and exits 0, and a usage
 error prints the error line, the command's synopsis, and a
 `Run 'cypherlite <command> --help' for more information.` hint instead of the
 full help text.
 
-ADR-0200 adds `query` as a first-positional statement-session verb with
+[ADR-0200](./0200-query-command-and-database-flag.md) adds `query` as a first-positional statement-session verb with
 `--database`. It is not an exit-after lifecycle command: after parse it runs
 the same oneshot / stdin / shell session as the path-first form.
 
-ADR-0231 lets the bare form (no command word, no statement) open the
+[ADR-0231](./0231-bare-invocation-opens-shell-on-tty.md) lets the bare form (no command word, no statement) open the
 interactive shell when stdin is a terminal; the positional-command grammar
 and the non-TTY help print are unchanged.
 
-ADR-0250 supersedes the §3 fetch step and the §4 asset resolution of this
+[ADR-0250](./0250-releases-json-update-discovery.md) supersedes the §3 fetch step and the §4 asset resolution of this
 decision: `upgrade`/`update` reads `releases.json` from
 `https://neo4j-labs.github.io/cypherlite/releases.json` and downloads assets
 through the non-API route
@@ -185,11 +203,11 @@ through the non-API route
 The GitHub REST API leaves the update path entirely (no fallback, not even
 when `GITHUB_TOKEN` is set), and `GITHUB_TOKEN` is reduced to an optional
 `Authorization: Bearer` header on the asset downloads only — it is never
-sent on the metadata request. The version comparison, the ADR-0115 SSHSIG
+sent on the metadata request. The version comparison, the [ADR-0115](./0115-sshsig-release-signing.md) SSHSIG
 verification, the atomic self-replace, and the §7 skill refresh are
 unchanged.
 
-ADR-0586 changes §6's Windows refusal: it now points at the PowerShell
+[ADR-0586](./0586-windows-powershell-installer.md) changes §6's Windows refusal: it now points at the PowerShell
 installer, `install.ps1`, instead of the manual `.exe` download, and is
 raised only for the replace. `upgrade --check` downloads and replaces
 nothing, so it runs on Windows too and carries the refusal as its advice

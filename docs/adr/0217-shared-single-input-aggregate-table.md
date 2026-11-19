@@ -1,10 +1,20 @@
-# ADR-0217: One shared single-input aggregate table, exact-arity backstop
+---
+type: adr
+area: cypher
+name: 0217-shared-single-input-aggregate-table
+status: proposed
+tags:
+  - functions
+title: One shared single-input aggregate table, exact-arity backstop
+REFERENCES:
+  - "[[adr/0225-single-input-aggregate-arity]]"
+---
 
-Status: Proposed
+# ADR-0217: One shared single-input aggregate table, exact-arity backstop
 
 ## Context
 
-ADR-0225 gave the single-input aggregates a two-layer arity contract: front
+[ADR-0225](./0225-single-input-aggregate-arity.md) gave the single-input aggregates a two-layer arity contract: front
 validation (`check_aggregate_arity`) plus an `agg_eval` backstop. The
 review pass on the LABS-276 branch found the contract encoded three times
 and drifting:
@@ -19,7 +29,7 @@ and drifting:
 - the backstop fired for every member of `AGGREGATES` with zero arguments
   and hardcoded "expected 1", so `percentileCont()` was rejected with a
   wrong expected count, preempting the existing two-argument call-site
-  check ADR-0225 explicitly preserved.
+ check [ADR-0225](./0225-single-input-aggregate-arity.md) explicitly preserved.
 - the backstop tested only `args.is_empty()` while the front tested
   `args.len() != 1`, so an IR construction reaching `agg_eval` without
   front validation could still evaluate `sum(x, y)` and silently drop the
@@ -31,7 +41,7 @@ One table, one contract, both layers:
 
 1. **The class lives once**, in `cypherlite-ir` next to `AGGREGATES`:
    `SINGLE_INPUT_AGGREGATES = ["sum", "avg", "min", "max", "collect",
-   "stdev", "stdevp"]`. `stdev`/`stdevp` join the class ADR-0225's
+ "stdev", "stdevp"]`. `stdev`/`stdevp` join the class [ADR-0225](./0225-single-input-aggregate-arity.md)'s
    normative "every single-input aggregate" wording already described —
    the reference behavior is the same `42I13` error. `count` stays out
    (the parser's keyword path already guarantees its arity) and the
@@ -76,7 +86,7 @@ One table, one contract, both layers:
   switch in `cypherlite-ir` instead — `aggregate_arity` next to
   `AGGREGATES` is the single home, and the executor keeps one guard.
 - **Drop the executor backstop (front validation is guaranteed).**
-  Rejected: ADR-0225 keeps the second layer exactly for IR constructions
+ Rejected: [ADR-0225](./0225-single-input-aggregate-arity.md) keeps the second layer exactly for IR constructions
   that bypass the front (the planner-ir diagnostic parser included), and
   the exact-arity form is strictly stronger than the zero-argument form
   it replaces.
@@ -91,7 +101,7 @@ One table, one contract, both layers:
   silently aggregating only the first argument.
 - `percentileCont()` / `percentileDisc()` with any arity other than two
   keep their historical "percentile needs two arguments" error, as
-  ADR-0225 promised; over-arity calls no longer silently drop `args[2..]`.
+ [ADR-0225](./0225-single-input-aggregate-arity.md) promised; over-arity calls no longer silently drop `args[2..]`.
 - A backtick-escaped `` `count`() `` is now the executor's
   `InvalidNumberOfArguments` error instead of a panic (non-empty group)
   or a silent `0` (empty group).

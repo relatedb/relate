@@ -1,18 +1,32 @@
-# 0140. Bolt ROUTE advertises the dialed address
+---
+type: adr
+area: surface
+date: 2026-09-29
+deciders: CypherLite maintainers
+name: 0140-bolt-route-advertises-dialed-address
+status: accepted
+tags:
+  - bolt
+title: Bolt ROUTE advertises the dialed address
+REFERENCES:
+  - "[[adr/0126-bolt-basic-auth]]"
+  - "[[adr/0128-docker-bolt-server-image]]"
+  - "[[adr/0269-bolt-route-self-routing-table]]"
+SUPERSEDES:
+  - "[[adr/0269-bolt-route-self-routing-table]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-29
-- **Deciders**: CypherLite maintainers
+# 0140. Bolt ROUTE advertises the dialed address
 
 ## Context
 
-ADR-0269 settled that ROUTE (`0x66`) answers with a single-server self
+[ADR-0269](./0269-bolt-route-self-routing-table.md) settled that ROUTE (`0x66`) answers with a single-server self
 routing table, and chose the `<self>` address as the listener's resolved bind
 address, falling back to the connection's local socket address only when the
 bind is unspecified (`0.0.0.0`/`::`).
 
 That rule breaks behind Docker port mapping and NAT. The shipped image
-(ADR-0128) binds `0.0.0.0:7687` inside the container, so the bind is
+([ADR-0128](./0128-docker-bolt-server-image.md)) binds `0.0.0.0:7687` inside the container, so the bind is
 unspecified and the fallback fires: the connection's local address is the
 **container-internal** IP (e.g. `172.17.0.2:7687`). A driver on the host
 dialed `localhost:7687` (published port), receives `172.17.0.2:7687` in the
@@ -24,7 +38,7 @@ The address the client dialed — the routing-context `address` the driver
 sends in ROUTE — is reachable from that client by construction: it is the
 address this very connection arrived on.
 
-This decision supersedes ADR-0269's `<self>` derivation; it was settled by
+This decision supersedes [ADR-0269](./0269-bolt-route-self-routing-table.md)'s `<self>` derivation; it was settled by
 the maintainer before this ADR was written.
 
 ## Decision
@@ -38,13 +52,13 @@ ROUTE (`0x66`) fills `rt.servers[*].addresses` with, in order:
    clients that send an empty or absent routing context (some non-browser
    drivers do).
 
-Everything else in ADR-0269 stands: the three roles (`ROUTE`/`READ`/`WRITE`),
+Everything else in [ADR-0269](./0269-bolt-route-self-routing-table.md) stands: the three roles (`ROUTE`/`READ`/`WRITE`),
 ttl 300, the `db` echo, and ROUTE being answered regardless of failed state
-behind the ADR-0126 auth gate.
+behind the [ADR-0126](./0126-bolt-basic-auth.md) auth gate.
 
 ## Alternatives considered
 
-- **Keep the ADR-0269 rule (resolved bind, else connection-local).**
+- **Keep the [ADR-0269](./0269-bolt-route-self-routing-table.md) rule (resolved bind, else connection-local).**
   Rejected: behind Docker port mapping or NAT it hands the client an
   unroutable container-internal address, breaking every routed session, and
   it leaks the internal address to clients.
@@ -59,7 +73,7 @@ behind the ADR-0126 auth gate.
 
 ## Consequences
 
-- The single-server scope is unchanged (ADR-0269): one server, three roles,
+- The single-server scope is unchanged ([ADR-0269](./0269-bolt-route-self-routing-table.md)): one server, three roles,
   every RUN routed back to the connection the driver already has.
 - Clients receive the address they dialed, which is reachable for them by
   construction; Docker and NAT deployments work without operator
@@ -69,7 +83,7 @@ behind the ADR-0126 auth gate.
 - `--advertised-address` is the named follow-up if a deployment needs an
   operator-set address; adding it will be a new ADR refining this one.
 - Tests must pin the dialed-address-first rule, the local-address fallback
-  for empty/absent routing contexts, and the ADR-0269 invariants (roles,
+ for empty/absent routing contexts, and the [ADR-0269](./0269-bolt-route-self-routing-table.md) invariants (roles,
   ttl, db echo).
-- Supersedes the `<self>` address derivation of ADR-0269; ADR-0269 gains a
+- Supersedes the `<self>` address derivation of [ADR-0269](./0269-bolt-route-self-routing-table.md); [ADR-0269](./0269-bolt-route-self-routing-table.md) gains a
   **Later references** note pointing here.

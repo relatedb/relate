@@ -1,8 +1,27 @@
+---
+type: adr
+area: engine
+claim: 50180de65cdaeec90c5c4613b6e3c057519b7ef8
+name: 0478-frontier-nfa-qpp-kernel
+status: proposed
+tags:
+  - pattern-matching
+title: The frontier-NFA QPP kernel
+REFERENCES:
+  - "[[adr/0395-nested-evaluation-budget]]"
+  - "[[adr/0469-allreduce-inline-pruning]]"
+  - "[[adr/0471-one-var-length-traversal-engine]]"
+  - "[[adr/0473-contracted-traversal-kernels]]"
+  - "[[adr/0475-gpm-early-conjuncts-and-riders]]"
+  - "[[adr/0476-quarantine-research-kernels]]"
+  - "[[adr/0516-frontier-rearrival-budget-fallthrough]]"
+  - "[[adr/0521-sparse-frontier-tables]]"
+  - "[[adr/0523-frontier-walk-count-consumer]]"
+  - "[[adr/0536-frontier-nfa-regular-pattern-space]]"
+  - "[[adr/0582-frontier-boundary-pair-and-decline-reason]]"
+---
+
 # ADR-0478: The frontier-NFA QPP kernel
-
-Status: Proposed
-
-Claim: 50180de65cdaeec90c5c4613b6e3c057519b7ef8
 
 ## Context
 
@@ -17,16 +36,16 @@ cyclic graph are exponential in the diameter while the answers are tiny:
 The per-branch clones of the DFS cursor (`state.row`, `groups`, `used`
 per iteration, `exec/gpm/qpp.rs`) are what the RSS numbers measure.
 
-ADR-0471 made the GPM quantified DFS the one engine for every var-length
+[ADR-0471](./0471-one-var-length-traversal-engine.md) made the GPM quantified DFS the one engine for every var-length
 spelling — one semantics, one plan — but it is a per-row *trail* DFS: it
-enumerates every path. ADR-0473 added the contracted-kernel layer
+enumerates every path. [ADR-0473](./0473-contracted-traversal-kernels.md) added the contracted-kernel layer
 (structural matcher + cost gate; everything it cannot prove declines to
 the unchanged walker, answers identical) and charted the frontier-NFA
-class as this follow-up. ADR-0475's riders gave that walk an early exit
+class as this follow-up. [ADR-0475](./0475-gpm-early-conjuncts-and-riders.md)'s riders gave that walk an early exit
 (EXISTS) and a walk-halting LIMIT cap — but only *after* the same
 exponential enumeration has run.
 
-The research prototype quarantined behind ADR-0476's non-default
+The research prototype quarantined behind [ADR-0476](./0476-quarantine-research-kernels.md)'s non-default
 `research` feature (`cypherlite-executor/src/graph/qpp.rs`) measured both
 the gap and the semantics: 45x–37,342x between the DFS and a
 level-synchronous BFS over deduplicated (node, automaton-state) pairs,
@@ -36,11 +55,11 @@ guessed. This decision productionizes it.
 
 ## Decision
 
-Add the **frontier family** to the contracted-kernel layer (ADR-0473):
+Add the **frontier family** to the contracted-kernel layer ([ADR-0473](./0473-contracted-traversal-kernels.md)):
 
 1. **The kernel.** A Thompson NFA compiled at plan time from the
    `QuantifiedPathPattern` IR element — the one element every var-length
-   spelling lowers to since ADR-0471, so every spelling gets the kernel —
+ spelling lowers to since [ADR-0471](./0471-one-var-length-traversal-engine.md), so every spelling gets the kernel —
    over interned rel-type ids with direction-tagged transitions and hop
    bounds `{min, max: Option<u32>}`. The run is a level-synchronous BFS
    over deduplicated (node, automaton-state) pairs on the `ExecGraph`
@@ -75,7 +94,7 @@ Add the **frontier family** to the contracted-kernel layer (ADR-0473):
    selectors (ANY/ALL SHORTEST — the GPM shortest machinery owns them;
    they already stand down early conjuncts and the inliner), path counts
    (`count(p)` counts paths, not endpoints), patterns whose quantification
-   accumulates a group any inlined allReduce (ADR-0469) reads — the
+ accumulates a group any inlined allReduce ([ADR-0469](./0469-allreduce-inline-pruning.md)) reads — the
    inliner's per-branch prefix semantics cannot survive dedup: one
    (node, state) pair stands for many prefixes with different
    accumulator values, so that shape keeps the DFS with its inliner —
@@ -132,7 +151,7 @@ Add the **frontier family** to the contracted-kernel layer (ADR-0473):
    against the engine's REPEATABLE ELEMENTS spelling).
 
 4. **Row order for capped paths.** LIMIT without ORDER BY has no order
-   contract. ADR-0475's cap rider promises "the rows the materializing
+ contract. [ADR-0475](./0475-gpm-early-conjuncts-and-riders.md)'s cap rider promises "the rows the materializing
    walk would emit, in the same order — only sooner" because it halts
    the engine's own enumeration; that promise does not extend to
    frontier-served capped emission: BFS-discovery order replaces DFS
@@ -143,7 +162,7 @@ Add the **frontier family** to the contracted-kernel layer (ADR-0473):
 
 5. **The unbounded-WALK rejection is unchanged in v1.** Unbounded
    REPEATABLE ELEMENTS keeps its authored `UnsafeRepeatableElements`
-   rejection (Neo4j-2026.05-aligned; ADR-0471 §3's satiety cap still
+ rejection (Neo4j-2026.05-aligned; [ADR-0471](./0471-one-var-length-traversal-engine.md) §3's satiety cap still
    governs explicit bounds). The frontier could answer unbounded WALK
    reachability and capped paths soundly in milliseconds — spec fidelity
    wins: the 42 timeouts are all default-pool shapes. Relaxing the
@@ -151,7 +170,7 @@ Add the **frontier family** to the contracted-kernel layer (ADR-0473):
    a possible future ADR, not taken.
 
 6. **The work budget, and the allocation bound that composes with
-   it.** A fixed-constant edge-visit budget in the ADR-0395 family — no
+ it.** A fixed-constant edge-visit budget in the [ADR-0395](./0395-nested-evaluation-budget.md) family — no
    ambient knob — with an authored typed error
    (`WalkBudgetExceeded`), checked per level: a frontier that would blow
    up (huge diameter × states) fails loud in milliseconds instead of by
@@ -174,7 +193,7 @@ Add the **frontier family** to the contracted-kernel layer (ADR-0473):
    compose: the budget bounds each run's edge visits, the ceiling the
    clause's one table set.
 
-7. **De-quarantine.** ADR-0476's research module is replaced by (unified
+7. **De-quarantine.** [ADR-0476](./0476-quarantine-research-kernels.md)'s research module is replaced by (unified
    with) the production kernel: the `research`-gated `graph/qpp.rs` and
    its harness are deleted outright (the constructor-derived expected
    shapes stay pinned as literals in `exec/kernels/nfa_tests.rs`, and
@@ -235,34 +254,34 @@ Add the **frontier family** to the contracted-kernel layer (ADR-0473):
   shapes.
 - Engine-internal (`cypherlite-executor`, the `exec/kernels/` and
   `exec/gpm/` families): no public API, protocol, client surface, or
-  dependency moves. ADR-0476's `research` feature loses its `qpp` half
+ dependency moves. [ADR-0476](./0476-quarantine-research-kernels.md)'s `research` feature loses its `qpp` half
   (module, re-exports, harness example — all deleted); the feature
   itself survives for the `sol` half, which stays quarantined until the
   LABS-455 SPI.
 
 ## Later references
 
-- ADR-0516 supersedes Decision 3's budget corner: a work-budget-cut
+- [ADR-0516](./0516-frontier-rearrival-budget-fallthrough.md) supersedes Decision 3's budget corner: a work-budget-cut
   re-arrival search is no longer a conservative rejection but a
   tri-state `Exhausted` verdict, and the run carrying one declines to
   the DFS (`FrontierDecline::RearrivalBudget`) instead of shipping an
   unproven endpoint set (LABS-952).
-- ADR-0523 extends Decision 2's answer-shape vocabulary with a walk-count
+- [ADR-0523](./0523-frontier-walk-count-consumer.md) extends Decision 2's answer-shape vocabulary with a walk-count
   consumer (a plain `count` under the bounded WALK pool with an unfiltered
   target, answered from per-level pair multiplicities), the one path count
   the family serves; the same change corrects Decision 1's cost-gate
   estimates (later hops priced over the path multiset, the
   distinct-endpoint estimate bounded by the store's node population).
-- ADR-0521 supersedes Decision 6's allocation half in its layout, reset
+- [ADR-0521](./0521-sparse-frontier-tables.md) supersedes Decision 6's allocation half in its layout, reset
   and gate: the frontier tables are sparse (sized by the pairs a run
   touches, never by the store's node-id span), reset per seed in O(1) by
   a generation stamp, and held to the table ceiling by exact accounting
   at every level boundary — a crossing is a run-time decline to the DFS
   — instead of a `span × states` estimate before allocation.
-- ADR-0582 extends Decision 2's boundary-predicate vocabulary with `<>`
+- [ADR-0582](./0582-frontier-boundary-pair-and-decline-reason.md) extends Decision 2's boundary-predicate vocabulary with `<>`
   between the two boundary variables for the distinct-endpoint consumer,
   and makes the plan-time gates' declines visible on the PROFILE record.
-- ADR-0536 generalizes Decision 1's input space beyond the var-length
+- [ADR-0536](./0536-frontier-nfa-regular-pattern-space.md) generalizes Decision 1's input space beyond the var-length
   spellings: one regular pattern over the closed atom vocabulary with
   at most one range-quantified region — fixed-length chains as the
   zero-region case, exact-count regions unrolled to per-level states.

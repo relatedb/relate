@@ -1,12 +1,25 @@
-# ADR-0565: Argument-value and procedure rejections carry the class live Neo4j reports
+---
+type: adr
+area: engine
+claim: 76d88fb41d8c4d8873e53cbc903eaaff80eb74de
+name: 0565-argument-and-procedure-error-classes
+status: proposed
+tags:
+  - conformance
+  - errors
+title: Argument-value and procedure rejections carry the class live Neo4j reports
+REFERENCES:
+  - "[[adr/0175-list-and-string-form-conversions]]"
+  - "[[adr/0482-spec-harness-coverage-lane]]"
+  - "[[adr/0559-runtime-argument-value-error-variant]]"
+---
 
-Status: Proposed
-Claim: 76d88fb41d8c4d8873e53cbc903eaaff80eb74de
+# ADR-0565: Argument-value and procedure rejections carry the class live Neo4j reports
 
 ## Context
 
 The spec harness enforces one slot of an expected error: the openCypher
-class the language bindings expose (`tck_class`, ADR-0482). A corpus
+class the language bindings expose (`tck_class`, [ADR-0482](./0482-spec-harness-coverage-lane.md)). A corpus
 triage found five clusters where the engine's class disagreed with both
 the corpus and live Neo4j 2026.10.1 (probed the same day):
 
@@ -24,12 +37,12 @@ the corpus and live Neo4j 2026.10.1 (probed the same day):
   (G1001).
 - `toInteger()`'s out-of-range numeric string reported `ArgumentError`;
   live raises its `CypherTypeException` under 22003, the `TypeError`
-  class. ADR-0175's 22N03 note generalized the integer-argument range
+ class. [ADR-0175](./0175-list-and-string-form-conversions.md)'s 22N03 note generalized the integer-argument range
   family onto this site; live splits them.
 - A call to an unregistered procedure reported `SyntaxError`; live
   reports `ProcedureError` (42001).
 
-ADR-0559 introduced the runtime argument-value variant for a first set
+[ADR-0559](./0559-runtime-argument-value-error-variant.md) introduced the runtime argument-value variant for a first set
 of sites. This ADR extends that migration and records the three
 non-argument rows.
 
@@ -61,7 +74,7 @@ Existing class vocabulary only; no new error variant, no new class.
   nested-class scan already classifies the payload, the bindings and the
   GQLSTATUS derivation both read it, and a variant gains no consumer.
 - **Keep `toInteger()` in the argument class.** Rejected: live raises
-  the type exception at 22003; ADR-0175's note is the over-generalization,
+ the type exception at 22003; [ADR-0175](./0175-list-and-string-form-conversions.md)'s note is the over-generalization,
   not the class.
 - **Change the procedure-not-found Bolt code to match the class.**
   Rejected: live sends the procedure code under 42001, and the code is
@@ -79,4 +92,4 @@ Existing class vocabulary only; no new error variant, no new class.
 - Rendered messages move with the class: the argument sites gain the
   `semantic error: <Kind>: ` prefix, the delete-connected error gains the
   class token, and `toInteger()` renders the type-class prefix.
-- ADR-0175 gains a Later references note for its 22N03 rows.
+- [ADR-0175](./0175-list-and-string-form-conversions.md) gains a Later references note for its 22N03 rows.

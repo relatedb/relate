@@ -1,6 +1,15 @@
-# ADR-0211: Graph-type elements with relaxed property declarations, and `SET GRAPH TYPE <name>`
+---
+type: adr
+area: cypher
+name: 0211-graph-type-elements-and-as-graph
+status: proposed
+tags:
+  - dialect
+  - ontology
+title: Graph-type elements with relaxed property declarations, and `SET GRAPH TYPE <name>`
+---
 
-Status: Proposed
+# ADR-0211: Graph-type elements with relaxed property declarations, and `SET GRAPH TYPE <name>`
 
 ## Context
 

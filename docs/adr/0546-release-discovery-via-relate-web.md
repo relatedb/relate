@@ -1,14 +1,32 @@
-# ADR-0546: Release discovery files ship as release assets; the website pulls
+---
+type: adr
+area: infra
+claim: 56a9b60b7880fcc173599dcc87a0ec4779a11e69
+name: 0546-release-discovery-via-relate-web
+status: proposed
+tags:
+  - release
+title: Release discovery files ship as release assets; the website pulls
+REFERENCES:
+  - "[[adr/0115-sshsig-release-signing]]"
+  - "[[adr/0129-website-release-chain]]"
+  - "[[adr/0250-releases-json-update-discovery]]"
+  - "[[adr/0330-release-chains-pages-deploy]]"
+  - "[[adr/0431-cli-extension-distribution]]"
+SUPERSEDES:
+  - "[[adr/0129-website-release-chain]]"
+  - "[[adr/0250-releases-json-update-discovery]]"
+  - "[[adr/0330-release-chains-pages-deploy]]"
+---
 
-Status: Proposed
-Claim: 56a9b60b7880fcc173599dcc87a0ec4779a11e69
+# ADR-0546: Release discovery files ship as release assets; the website pulls
 
 ## Context
 
 The website moves out of this repository into a dedicated `relate-web`
 repository. Until now the release pipeline committed three pipeline-owned
-files — `install.sh`, `releases.json` (ADR-0250), and the signed
-`extensions.json` pair (ADR-0431) — into a local `gh-pages` branch, and
+files — `install.sh`, `releases.json` ([ADR-0250](./0250-releases-json-update-discovery.md)), and the signed
+`extensions.json` pair ([ADR-0431](./0431-cli-extension-distribution.md)) — into a local `gh-pages` branch, and
 `deploy-pages.yml` published that branch. That branch never existed in this
 repository after the move, and the multi-writer rebase machinery
 (`push-gh-pages.sh`, per-writer concurrency groups, the `MAINTAINING.md`
@@ -27,7 +45,7 @@ pipelines attach the pipeline-owned files to the release they belong to —
 `relate-web`'s publish workflow pulls the files from the release assets and
 assembles its Pages artifact from build outputs; it commits nothing.
 
-Signing stays in this repository: the release signing key (ADR-0115) lives
+Signing stays in this repository: the release signing key ([ADR-0115](./0115-sshsig-release-signing.md)) lives
 only in this repository's secrets, so the signed extension index is
 generated here and rides the release as an asset. The extension-index
 publisher skips its own output when scanning a release's assets.
@@ -57,7 +75,7 @@ release jobs, `update-website.yml`, `deploy-pages.yml`, and
 - **Keep serving the discovery files from GitHub release asset URLs
   directly.** Rejected: the CLI pins the `relatedb.ai` URLs, release assets
   of a private repository require authentication, and escaping GitHub's API
-  rate limits for tokenless clients was ADR-0250's reason for a static
+ rate limits for tokenless clients was [ADR-0250](./0250-releases-json-update-discovery.md)'s reason for a static
   document in the first place.
 
 ## Consequences
@@ -69,6 +87,6 @@ release jobs, `update-website.yml`, `deploy-pages.yml`, and
 - `RELATE_WEB_DISPATCH_TOKEN` (a token with `contents:write` on
   `relate-web`) must exist before pokes stop skipping; until then the
   notice names the manual backfill path.
-- ADR-0250's schema and canonical URLs are unchanged; its gh-pages
-  publisher contract is superseded by this one. ADR-0330's Pages-deploy
-  chain and ADR-0129's website-update chain are superseded in full.
+- [ADR-0250](./0250-releases-json-update-discovery.md)'s schema and canonical URLs are unchanged; its gh-pages
+ publisher contract is superseded by this one. [ADR-0330](./0330-release-chains-pages-deploy.md)'s Pages-deploy
+ chain and [ADR-0129](./0129-website-release-chain.md)'s website-update chain are superseded in full.

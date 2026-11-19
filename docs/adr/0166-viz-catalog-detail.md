@@ -1,12 +1,27 @@
-# 0166. `db.schema.visualization()`: populate `indexes`/`constraints` from the catalog
+---
+type: adr
+area: engine
+date: 2026-10-05
+deciders: CypherLite maintainers
+name: 0166-viz-catalog-detail
+status: accepted
+tags:
+  - catalog
+  - procedures
+title: "`db.schema.visualization`: populate `indexes`/`constraints` from the catalog"
+REFERENCES:
+  - "[[adr/0144-graph-examples-differential-suite]]"
+  - "[[adr/0153-db-schema-visualization-semantics]]"
+  - "[[adr/0187-viz-relationship-name-property]]"
+SUPERSEDES:
+  - "[[adr/0153-db-schema-visualization-semantics]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-05
-- **Deciders**: CypherLite maintainers (Linear LABS-172)
+# 0166. `db.schema.visualization()`: populate `indexes`/`constraints` from the catalog
 
 ## Context
 
-ADR-0153 shipped `db.schema.visualization()` with Neo4j's `{name, indexes,
+[ADR-0153](./0153-db-schema-visualization-semantics.md) shipped `db.schema.visualization` with Neo4j's `{name, indexes,
 constraints}` virtual-node property shape, but with `indexes` and
 `constraints` as **empty documented placeholders**; "Populate
 `indexes`/`constraints` from the catalog" is listed under its Alternatives
@@ -14,13 +29,13 @@ considered as rejected, on the grounds that index and constraint
 introspection is a separate catalog surface and duplicating it would couple
 three renderings of the same facts.
 
-The graph-examples differential suite (ADR-0144) compares cypherlite's
+The graph-examples differential suite ([ADR-0144](./0144-graph-examples-differential-suite.md)) compares cypherlite's
 output against a Neo4j reference, and LABS-172 reports the mismatch this
 placeholder choice produces: Neo4j's `CALL db.schema.visualization()`
 returns each label's virtual node with the catalog detail populated, while
 cypherlite returns empty lists. The rejected alternative is the bug being
-fixed; this ADR reverses exactly that one ADR-0153 alternative and leaves
-everything else in ADR-0153 in force.
+fixed; this ADR reverses exactly that one [ADR-0153](./0153-db-schema-visualization-semantics.md) alternative and leaves
+everything else in [ADR-0153](./0153-db-schema-visualization-semantics.md) in force.
 
 The exact Neo4j rendering was verified by a Docker probe of
 `neo4j:2025-enterprise` (a `Client` label with a uniqueness constraint, a
@@ -82,7 +97,7 @@ CypherLite-side facts:
 `db.schema.visualization()` populates each virtual label node's `indexes`
 and `constraints` from the catalog **at call time**, on top of the
 procedure's existing scan of stored entities (same scan-time cost model as
-the rest of the procedure, ADR-0153). Everything is derived from the
+the rest of the procedure, [ADR-0153](./0153-db-schema-visualization-semantics.md)). Everything is derived from the
 overlay-aware `named_indexes()`/`named_constraints()` accessors, so the
 rendering tracks in-flight DDL exactly as `SHOW INDEXES`/`SHOW CONSTRAINTS`
 do.
@@ -132,13 +147,13 @@ do.
 4. **Relationship constraints appear on no virtual node.** Constraints
    with `relationship == true` are skipped entirely — Neo4j parity (the
    probe's `TRANSFER_TO` existence constraint appeared nowhere).
-5. **Virtual relationships keep carrying no properties.** ADR-0153 is
+5. **Virtual relationships keep carrying no properties.** [ADR-0153](./0153-db-schema-visualization-semantics.md) is
    unchanged on that point; Neo4j's `{name: "<TYPE>"}` on virtual
    relationships is a separate concern, out of scope here.
 
 ## Alternatives considered
 
-- **Keep the empty documented placeholders (ADR-0153's status quo).**
+- **Keep the empty documented placeholders ([ADR-0153](./0153-db-schema-visualization-semantics.md)'s status quo).**
   Rejected: the differential-suite mismatch against the Neo4j reference is
   the bug being fixed (LABS-172); the placeholders make every
   catalog-bearing graph diverge from the oracle.
@@ -154,14 +169,14 @@ do.
 
 ## Consequences
 
-- ADR-0153's "empty documented placeholders" bullet (Decision, node
+- [ADR-0153](./0153-db-schema-visualization-semantics.md)'s "empty documented placeholders" bullet (Decision, node
   property shape) is **superseded** by this ADR; a **Later references**
-  note on ADR-0153 records the reversal. Every other ADR-0153 decision —
+ note on [ADR-0153](./0153-db-schema-visualization-semantics.md) records the reversal. Every other [ADR-0153](./0153-db-schema-visualization-semantics.md) decision —
   scan-inferred schema, one virtual node per label sorted alphabetically,
   triple expansion over multi-label endpoints, negative virtual ids and the
   virtual-node side table, zero-rows empty behavior, property-less virtual
   relationships — stays in force.
-- The coupling concern ADR-0153 raised (three renderings of the same
+- The coupling concern [ADR-0153](./0153-db-schema-visualization-semantics.md) raised (three renderings of the same
   catalog facts) is now **accepted**, mitigated by deriving all three from
   the same overlay-aware catalog accessors (`named_indexes()` /
   `named_constraints()`) so `SHOW INDEXES`, `SHOW CONSTRAINTS`, and
@@ -173,12 +188,12 @@ do.
 - `docs/reference/cypher-syntax.md`'s `db.schema.visualization()`
   paragraph (which documents the empty placeholders) must change in the
   same feature.
-- The graph-examples differential suite (ADR-0144) gains coverage of the
+- The graph-examples differential suite ([ADR-0144](./0144-graph-examples-differential-suite.md)) gains coverage of the
   populated rendering; the empty-placeholder expectation is removed.
 
 ## Later references
 
-- **ADR-0187** supersedes Decision item 5 ("Virtual relationships keep
+- **[ADR-0187](./0187-viz-relationship-name-property.md)** supersedes Decision item 5 ("Virtual relationships keep
   carrying no properties"): `db.schema.visualization()` virtual
   relationships now carry a single `name` property equal to the
   relationship type (LABS-185). Every other decision here remains in

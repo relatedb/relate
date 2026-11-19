@@ -1,15 +1,30 @@
-# ADR-0206: Compressed topology storage — conditional adopt
+---
+type: adr
+area: engine
+name: 0206-compressed-topology-storage
+status: proposed
+tags:
+  - storage
+title: Compressed topology storage — conditional adopt
+REFERENCES:
+  - "[[adr/0035-ordered-expand-ts]]"
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0202-graph-floor-memory]]"
+  - "[[adr/0203-newest-first-expansion-order]]"
+  - "[[adr/0289-graph-shape-memory-pins]]"
+---
 
-Status: Proposed
+# ADR-0206: Compressed topology storage — conditional adopt
 
 ## Context
 
 CypherLite is an in-memory engine, so the adjacency store's footprint is
-the product's core cost driver (memory cap and floor accounting, ADR-0042
-as amended by ADR-0202). Today
+the product's core cost driver (memory cap and floor accounting, [ADR-0042](./0042-graph-memory-limit.md)
+as amended by [ADR-0202](./0202-graph-floor-memory.md)). Today
 each adjacency hop is an uncompressed 16-byte `AdjHop { ts: Option<i64>,
 id: RelId }` inside per-(node, rel type, direction) `TypedAdj` chunks kept
-in ts-DESC order (ADR-0035, newest-first expansion ADR-0203). The
+in ts-DESC order ([ADR-0035](./0035-ordered-expand-ts.md), newest-first expansion [ADR-0203](./0203-newest-first-expansion-order.md)). The
 topology-compression experiment measured, on Apple M4 Max (macOS/aarch64)
 across 16 datasets (13 pulled graph-examples stores + 3 synthetic memory
 shapes), what compressed adjacency would buy and cost: a baseline harness
@@ -42,7 +57,7 @@ Measured evidence (all numbers from the report above):
   beating the live baseline 21x–187x. Scalar decode is sufficient; SIMD
   is not needed.
 
-The prototype lives in `testing/cypherlite-datasets` (ADR-0103 group
+The prototype lives in `testing/cypherlite-datasets` ([ADR-0103](./0103-engine-surfaces-testing-layout.md) group
 `testing/`): `src/codec.rs`, `src/bin/codec-prototype.rs`,
 `src/bin/benchmark-harness.rs`, `src/bench.rs`. It never touches the live
 store; hop streams are reconstructed from query results in the store's
@@ -104,7 +119,7 @@ per-query visited-node bitset for var-length pruning.
 ### CSR vs alternatives for the primary adjacency store
 
 - **Batch-built CSR — REJECTED as primary store.** ts-DESC pushdown
-  (ADR-0035), snapshot visibility, and the per-type split are load-bearing,
+ ([ADR-0035](./0035-ordered-expand-ts.md)), snapshot visibility, and the per-type split are load-bearing,
   and a full rebuild fights the single-writer redo path. Worth revisiting
   only as a checkpoint-rebuilt read-only acceleration structure.
 - **Tiered CSR + mutable delta region (LLAMA/GraphChi-style, folded at
@@ -130,7 +145,7 @@ per-query visited-node bitset for var-length pruning.
 - **Early-termination BFS for `SHORTEST` — experiment later.** No measured
   workload yet justifying the added expansion state.
 - **Sorted-by-target runs for intersection/triangles — rejected for now.**
-  Conflicts with the ts-DESC invariant (ADR-0035) and no measured workload
+ Conflicts with the ts-DESC invariant ([ADR-0035](./0035-ordered-expand-ts.md)) and no measured workload
   demands it.
 
 ### Do nothing (keep uncompressed `AdjHop` forever)
@@ -159,7 +174,7 @@ roundtrip.
   trails, visited-node bitset) proceed as independent follow-ups, each
   with its own tests and measurements.
 - Chunk-order semantics are unchanged: compressed decode re-emits hops in
-  the original ts-DESC order (ADR-0035 / ADR-0203 newest-first expansion is
+ the original ts-DESC order ([ADR-0035](./0035-ordered-expand-ts.md) / [ADR-0203](./0203-newest-first-expansion-order.md) newest-first expansion is
   preserved byte-identically).
-- Any future re-measurement (e.g. in the ADR-0289 memory-shape baseline
+- Any future re-measurement (e.g. in the [ADR-0289](./0289-graph-shape-memory-pins.md) memory-shape baseline
   environment for gate-comparable numbers) lands beside this ADR.

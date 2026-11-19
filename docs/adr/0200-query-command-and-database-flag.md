@@ -1,8 +1,21 @@
-# ADR-0200: `query` command and `--database`
+---
+type: adr
+area: cli
+date: 2026-10-10
+deciders: CypherLite maintainers
+name: 0200-query-command-and-database-flag
+status: proposed
+tags:
+  - commands
+title: "`query` command and `--database`"
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0156-directory-clone]]"
+  - "[[adr/0231-bare-invocation-opens-shell-on-tty]]"
+  - "[[adr/0286-fs-to-graph-explicit-db-exits]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-10-10
-- **Deciders**: CypherLite maintainers (Linear [LABS-247](https://linear.app/neo4j/issue/LABS-247/define-the-default-statement-behavior-for-cypherlite))
+# ADR-0200: `query` command and `--database`
 
 ## Context
 
@@ -24,7 +37,7 @@ adding others.
 ## Decision
 
 1. **`query` is a first-positional command word in every bundle.** It is a
-   statement-session verb, not an exit-after lifecycle command (ADR-0069).
+ statement-session verb, not an exit-after lifecycle command ([ADR-0069](./0069-cli-lifecycle-commands.md)).
    A directory named `query` is `--database query` or `--database ./query`.
 2. **Grammar:** `cypherlite query [STATEMENT] [--database PATH] [session
    flags]`. `STATEMENT` is one Cypher statement or a `;`-separated list, the
@@ -40,8 +53,8 @@ adding others.
    path (`-d -dashed_db`).
 4. **The path-first form is** `cypherlite [OPTIONS] [--database PATH]
    [QUERY]`. The only positional is the statement. A second positional is a
-   usage error. `clone SOURCE DEST` stays two positionals (ADR-0156).
-   `lab fs-to-graph` keeps `--db` (ADR-0286).
+ usage error. `clone SOURCE DEST` stays two positionals ([ADR-0156](./0156-directory-clone.md)).
+ `lab fs-to-graph` keeps `--db` ([ADR-0286](./0286-fs-to-graph-explicit-db-exits.md)).
 5. **`query --help`** prints the command synopsis and the same query-run
    options as top-level help, including `--database`, from one shared
    options block.
@@ -65,12 +78,12 @@ adding others.
   bundle (`full`, `agent`, `minimal`).
 - Help, `docs/api/cli/spec.md`, the flag reference, the skill bundle, and
   the return-one example describe the same contract.
-- ADR-0069 still governs exit-after lifecycle verbs; this ADR adds the
+- [ADR-0069](./0069-cli-lifecycle-commands.md) still governs exit-after lifecycle verbs; this ADR adds the
   statement-session verb beside them.
 
 ## Later references
 
-ADR-0231 supersedes the second half of Decision 2 on an interactive
+[ADR-0231](./0231-bare-invocation-opens-shell-on-tty.md) supersedes the second half of Decision 2 on an interactive
 terminal: the bare path-first form with no `QUERY` opens the interactive
 shell there (the same session `query` runs). With piped or redirected
 stdin it still prints help and exits.

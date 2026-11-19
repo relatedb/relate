@@ -1,14 +1,32 @@
-# 0093. Copy-on-write the selected bundle WAL tail page
+---
+type: adr
+area: engine
+date: 2026-09-24
+deciders: CypherLite maintainers
+name: 0093-bundle-wal-page-ownership
+status: proposed
+tags:
+  - storage
+  - wal
+title: Copy-on-write the selected bundle WAL tail page
+REFERENCES:
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0077-embedded-durability-boundary]]"
+  - "[[adr/0086-bounded-persistence-input]]"
+  - "[[adr/0091-bundle-generation-page-quarantine]]"
+SUPERSEDES:
+  - "[[adr/0074-single-file-bundle-vfs]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-24
-- **Deciders**: CypherLite maintainers
+# 0093. Copy-on-write the selected bundle WAL tail page
 
 ## Context
 
-ADR-0074 uses a WAL-tail shortcut: an append can publish the WAL inode's new
+[ADR-0074](./0074-single-file-bundle-vfs.md) uses a WAL-tail shortcut: an append can publish the WAL inode's new
 logical length in an alternate superblock without rewriting the catalog.
-ADR-0091 quarantines *retired* pages until their replacement generation is
+[ADR-0091](./0091-bundle-generation-page-quarantine.md) quarantines *retired* pages until their replacement generation is
 published, but a still-live WAL page remains writable. `BundleVfs::write_bytes`
 reads and writes an entire 4096-byte physical page even for an append past the
 logical EOF. `Wal::append_record` separately writes CRC, length and payload.
@@ -16,13 +34,13 @@ For example, if the selected catalog maps `wal/00000001.log` bytes `[0,100)`
 to page 3, each append at byte 100 can rewrite page 3. A torn host write can
 damage the old committed prefix while the old superblock remains checksum-valid.
 Reopening that generation cannot repair an earlier committed WAL frame via the
-incomplete-active-tail rule of ADR-0086. Page quarantine alone does not help
+incomplete-active-tail rule of [ADR-0086](./0086-bounded-persistence-input.md). Page quarantine alone does not help
 while the selected page has not yet been retired.
 
 The v1 catalog already stores *ordered, discontiguous* inode extents and the
 v1 superblock selects a catalog root/length as well as a WAL inode/length.
 This permits page remapping without changing the on-disk format or adding a
-host-file sidecar. The host barriers follow ADR-0077; on macOS its current
+host-file sidecar. The host barriers follow [ADR-0077](./0077-embedded-durability-boundary.md); on macOS its current
 `F_BARRIERFSYNC` is an ordering barrier, **not** a guarantee of flush to
 stable media (`F_FULLFSYNC` would be stronger).
 
@@ -40,7 +58,7 @@ stable media (`F_FULLFSYNC` would be stronger).
    New pages at a page boundary may be allocated normally, but their mapping
    also requires catalog publication. A read/copy failure must not write the
    selected page or substitute zeros. The previously selected WAL page and
-   catalog stay protected by ADR-0091's selected/retired quarantine.
+ catalog stay protected by [ADR-0091](./0091-bundle-generation-page-quarantine.md)'s selected/retired quarantine.
 
 2. **Publish the mapping before reuse.** Write the replacement WAL pages and
    a fresh v1 catalog containing the ordered extents and new inode length;
@@ -54,7 +72,7 @@ stable media (`F_FULLFSYNC` would be stronger).
    write tears; a checksum-valid new superblock may select only content
    ordered by the first barrier. After successful publication, select the
    new generation and reclaim now-unreachable old pages and catalog pages;
-   on reopen, validate ownership and reclaim true orphans as in ADR-0091.
+ on reopen, validate ownership and reclaim true orphans as in [ADR-0091](./0091-bundle-generation-page-quarantine.md).
 
 3. **Fence uncertain writes.** An error after a potentially partial page
    write, catalog write, contents barrier, superblock write or publication
@@ -90,7 +108,7 @@ stable media (`F_FULLFSYNC` would be stronger).
    appends, page-boundary crossings, rotation, catalog updates and old v1
    reopening. Instrument page reads/writes and host barriers for small
    commits/groups, then compare the frozen loadtest envelopes at the final
-   gate (ADR-0070/0071).
+ gate ([ADR-0070](./0070-docker-baseline-loadtest-environment.md)/[ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md)).
 
 ## Alternatives considered
 
@@ -98,7 +116,7 @@ stable media (`F_FULLFSYNC` would be stronger).
   incomplete-tail tolerance.** Rejected: the checksum authenticates the
   superblock, not the page it already selects, and torn writes can corrupt
   a committed frame before logical EOF.
-- **Quarantine only pages freed by catalog replacements (ADR-0091).**
+- **Quarantine only pages freed by catalog replacements ([ADR-0091](./0091-bundle-generation-page-quarantine.md)).**
   Rejected as a complete WAL fix: a live selected partial page is still the
   target of a full-page rewrite and cannot be repaired by delaying reuse.
 - **Add a tail-page indirection/checksum in a new superblock format.**
@@ -107,7 +125,7 @@ stable media (`F_FULLFSYNC` would be stronger).
   rotation/boundaries add more complexity. It would still need two ordering
   barriers per small commit to publish the new data safely.
 - **Write a host-side WAL page or journal.** Rejected: a sidecar violates
-  ADR-0074's one-host-file container contract and adds another publication
+ [ADR-0074](./0074-single-file-bundle-vfs.md)'s one-host-file container contract and adds another publication
   protocol.
 
 ## Consequences
@@ -126,6 +144,6 @@ stable media (`F_FULLFSYNC` would be stronger).
   an over-cap catalog before publication. Successful barriers release retired
   pages instead of leaking one page per commit. New writes also require
   fencing on partial `write_bytes` failures, not only on `persist` failures.
-- This extends ADR-0091's old-generation protection from *retired* pages to
-  selected WAL pages touched by append, and supersedes ADR-0074's catalog-free
+- This extends [ADR-0091](./0091-bundle-generation-page-quarantine.md)'s old-generation protection from *retired* pages to
+ selected WAL pages touched by append, and supersedes [ADR-0074](./0074-single-file-bundle-vfs.md)'s catalog-free
   WAL-tail shortcut for those remaps. The one-file v1 read format remains.

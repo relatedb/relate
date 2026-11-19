@@ -1,24 +1,35 @@
-# 0041. Time-triggered checkpoint when the WAL has work
+---
+type: adr
+area: engine
+date: 2026-09-02
+deciders: MemoryDB maintainers
+name: 0041-timed-checkpoint
+status: accepted
+tags:
+  - checkpoint
+title: Time-triggered checkpoint when the WAL has work
+REFERENCES:
+  - "[[adr/0019-group-commit-shared-fsync]]"
+  - "[[adr/0020-segmented-wal-concurrent-checkpoint]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-02
-- **Deciders**: MemoryDB maintainers
+# 0041. Time-triggered checkpoint when the WAL has work
 
 ## Context
 
-ADR-0020 auto-checkpoints when the open WAL segment hits **64 MiB** or
+[ADR-0020](./0020-segmented-wal-concurrent-checkpoint.md) auto-checkpoints when the open WAL segment hits **64 MiB** or
 **10 000 commits**. A long-lived process that writes slowly (REPL, Bolt,
 an embedded handle) can keep a large uncheckpointed tail for hours.
 Crash recovery then replays that tail. Operators asked for a clock so
 a quiet-but-dirty WAL is still snapshotted.
 
-ADR-0019 already rejected **timed batching of group commit** (sleep to
+[ADR-0019](./0019-group-commit-shared-fsync.md) already rejected **timed batching of group commit** (sleep to
 grow an fsync group). That is a different decision: this ADR does not
 delay `sync_all`.
 
 ## Decision
 
-Keep rotate / dump / recycle (ADR-0020). Add a **time** trigger next to
+Keep rotate / dump / recycle ([ADR-0020](./0020-segmented-wal-concurrent-checkpoint.md)). Add a **time** trigger next to
 size and commit-count.
 
 - Default interval is **300 seconds** (5 minutes).
@@ -42,11 +53,11 @@ deadlock.
   minutes with a huge open segment. Rejected; those thresholds stay.
 - **Dump on a fixed clock even when idle** — empty Parquet rewrite and
   WAL rotate with nothing to recycle. Rejected.
-- **Sleep to grow a group commit** — already rejected in ADR-0019;
+- **Sleep to grow a group commit** — already rejected in [ADR-0019](./0019-group-commit-shared-fsync.md);
   this is not that.
 
 ## Consequences
 
 - Persistent `Database::open` may spawn `memorydb-checkpoint-timer`.
-- A later-references note on ADR-0020.
+- A later-references note on [ADR-0020](./0020-segmented-wal-concurrent-checkpoint.md).
 - Embedders that must not background-dump set interval `0`.

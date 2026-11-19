@@ -1,13 +1,27 @@
-# 0114. WAL recovery rejects undecodable records and checks the store version first
+---
+type: adr
+area: engine
+date: 2026-09-27
+deciders: CypherLite maintainers
+name: 0114-wal-recovery-rejects-undecodable-records
+status: accepted
+tags:
+  - wal
+title: WAL recovery rejects undecodable records and checks the store version first
+REFERENCES:
+  - "[[adr/0059-wal-redo-typed-payloads]]"
+  - "[[adr/0077-embedded-durability-boundary]]"
+  - "[[adr/0086-bounded-persistence-input]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0120-ontology-document-persistence]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-27
-- **Deciders**: CypherLite maintainers (Linear LABS-102, LABS-63)
+# 0114. WAL recovery rejects undecodable records and checks the store version first
 
 ## Context
 
-ADR-0086 §1 lets recovery trim a complete final frame on the active WAL
-segment that "fail[s] its CRC or JSON decode (a relaxed append)", and ADR-0077
+[ADR-0086](./0086-bounded-persistence-input.md) §1 lets recovery trim a complete final frame on the active WAL
+segment that "fail[s] its CRC or JSON decode (a relaxed append)", and [ADR-0077](./0077-embedded-durability-boundary.md)
 records the same tolerance. `scan_seg` implements both cases as `bad_eof_at`
 (`cypherlite/cypherlite-storage/src/wal.rs:831-843`), and `Wal::open` then
 replaces the segment with its intact prefix (`wal.rs:182-198`).
@@ -18,7 +32,7 @@ not. A frame whose CRC matches its payload was written completely. If that
 payload does not decode, the writer produced something this binary does not
 understand: in practice, a record from a newer CypherLite with a new `RedoOp`
 variant or field. Trimming it silently discards a committed transaction.
-ADR-0059 §3 already forbids that ("no silent skip or drop of an undecodable
+[ADR-0059](./0059-wal-redo-typed-payloads.md) §3 already forbids that ("no silent skip or drop of an undecodable
 record"), and it is exactly what a future WAL change must not trigger in older
 readers.
 
@@ -29,7 +43,7 @@ does `load` reject an unsupported `format_version` or `value_encoding`
 modify a store written by a newer binary before the reader notices that it
 cannot read it.
 
-LABS-102 (ADR-0116, ADR-0120) is the first change that needs newer stores to
+ ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md), [ADR-0120](./0120-ontology-document-persistence.md)) is the first change that needs newer stores to
 fail closed. LABS-63 tracks store versioning in general; this ADR takes only
 the two reader rules that every later format change depends on.
 
@@ -37,7 +51,7 @@ the two reader rules that every later format change depends on.
 
 1. **Only a failed checksum is a torn tail.** At the active segment's physical
    EOF, a complete final frame that fails its CRC stays a tolerated relaxed
-   append (ADR-0086 §1, ADR-0077). A complete frame whose CRC matches but whose
+ append ([ADR-0086](./0086-bounded-persistence-input.md) §1, [ADR-0077](./0077-embedded-durability-boundary.md)). A complete frame whose CRC matches but whose
    payload does not decode is corruption in every segment and position. Open
    fails with a storage error that names the segment and says the record may
    have been written by a newer CypherLite. Nothing is trimmed.
@@ -58,18 +72,18 @@ the two reader rules that every later format change depends on.
 ## Alternatives considered
 
 - **Keep trimming undecodable tails.** Rejected: it silently drops a committed
-  record written by a newer binary, contradicts ADR-0059 §3, and turns every
+ record written by a newer binary, contradicts [ADR-0059](./0059-wal-redo-typed-payloads.md) §3, and turns every
   future WAL change into a silent data-loss risk for tools that embed
   different CypherLite versions against the same store.
 - **Skip the undecodable record and keep replaying.** Rejected: the recovered
-  graph would miss a committed change while reporting success (ADR-0059 §3).
+ graph would miss a committed change while reporting success ([ADR-0059](./0059-wal-redo-typed-payloads.md) §3).
 - **Bump the WAL magic for every future change instead.** Rejected: a magic
   bump protects binaries released before it, but readers from this ADR onward
-  should fail closed on any undecodable record without one. ADR-0120 still
+ should fail closed on any undecodable record without one. [ADR-0120](./0120-ontology-document-persistence.md) still
   bumps the magic, for the binaries already shipped.
 - **Build the full LABS-63 migration framework first.** Rejected as a
   prerequisite: these two reader rules are small, testable on their own, and
-  needed by ADR-0120 however the broader migrate-on-open work lands.
+ needed by [ADR-0120](./0120-ontology-document-persistence.md) however the broader migrate-on-open work lands.
 
 ## Consequences
 
@@ -79,8 +93,8 @@ the two reader rules that every later format change depends on.
 - Opening a store written by a newer CypherLite fails before WAL repair, with
   an error that says so, instead of losing its newest record.
 - A development-build record that no longer decodes already failed loudly
-  when it was not the final frame (ADR-0059). Now the final frame fails the
+ when it was not the final frame ([ADR-0059](./0059-wal-redo-typed-payloads.md)). Now the final frame fails the
   same way.
-- The golden stores become the compatibility fixtures for ADR-0120 and
+- The golden stores become the compatibility fixtures for [ADR-0120](./0120-ontology-document-persistence.md) and
   LABS-63.
-- ADR-0077 and ADR-0086 gain Later references notes.
+- [ADR-0077](./0077-embedded-durability-boundary.md) and [ADR-0086](./0086-bounded-persistence-input.md) gain Later references notes.

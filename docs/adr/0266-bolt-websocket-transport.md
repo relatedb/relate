@@ -1,20 +1,38 @@
+---
+type: adr
+area: surface
+date: 2026-09-29
+deciders: CypherLite maintainers
+name: 0266-bolt-websocket-transport
+status: accepted
+tags:
+  - bolt
+title: Bolt over WebSocket on the same bind
+REFERENCES:
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0109-bolt-tls]]"
+  - "[[adr/0110-bolt-connection-query-governance]]"
+  - "[[adr/0126-bolt-basic-auth]]"
+  - "[[adr/0141-bolt-single-handshake-deadline]]"
+  - "[[adr/0142-browser-compat-record-shapes]]"
+  - "[[adr/0459-authenticated-websocket-origin-default]]"
+---
+
 # 0266. Bolt over WebSocket on the same bind
 
-- **Status**: Accepted
 - **Renumbered**: from 0136 (shared-number cleanup)
-- **Date**: 2026-09-29
-- **Deciders**: CypherLite maintainers
-- **Later references**: ADR-0142 resolves the `dbms.components` edition-column
+- **Later references**: [ADR-0142](./0142-browser-compat-record-shapes.md) resolves the `dbms.components` edition-column
   gap listed under "Browser-compat plan (settled)" (LABS-139) and gives SHOW
   DATABASES rows concrete values.
 
 ## Context
 
-`cypherlite-bolt` is the optional remote transport (ADR-0057), serving Bolt on
-a single port with a first-byte peek (ADR-0109): `0x16` routes to the TLS
+`cypherlite-bolt` is the optional remote transport ([ADR-0057](./0057-embedded-c-abi-and-bolt.md)), serving Bolt on
+a single port with a first-byte peek ([ADR-0109](./0109-bolt-tls.md)): `0x16` routes to the TLS
 handshake, `0x60` to plaintext Bolt, anything else is closed. The handshake is
-bounded by a timeout and connections are capped (ADR-0110); authentication
-runs in the Bolt HELLO message (ADR-0126).
+bounded by a timeout and connections are capped ([ADR-0110](./0110-bolt-connection-query-governance.md)); authentication
+runs in the Bolt HELLO message ([ADR-0126](./0126-bolt-basic-auth.md)).
 
 Linear LABS-138
 (<https://linear.app/neo4j/issue/LABS-138>) asks for browser access. Browsers
@@ -54,7 +72,7 @@ The first-byte peek in `serve_conn` gains a third arm:
 - `0x47` (`G` of `GET`) → WebSocket upgrade path (`ws://`).
 - anything else → close the connection, unchanged.
 
-`ws://` follows the ADR-0109 plaintext policy exactly as raw-TCP plaintext
+`ws://` follows the [ADR-0109](./0109-bolt-tls.md) plaintext policy exactly as raw-TCP plaintext
 Bolt: allowed silently on loopback binds, refused on non-loopback binds
 without `--allow-plaintext`.
 
@@ -62,7 +80,7 @@ without `--allow-plaintext`.
 
 Use **`tokio-tungstenite`** as a workspace dependency with default features
 off — server-side accept only; it needs no TLS feature because rustls
-(ADR-0109) already terminates TLS before the second sniff. A thin adapter in
+([ADR-0109](./0109-bolt-tls.md)) already terminates TLS before the second sniff. A thin adapter in
 `surfaces/cypherlite-bolt/src/websocket.rs` implements `AsyncRead` +
 `AsyncWrite` over the accepted WebSocket, so `protocol::handle_conn` is reused
 unchanged. No WebSocket subprotocol is requested or required; the JS driver
@@ -110,7 +128,7 @@ Origin header means a non-browser client and is allowed**. The policy applies
 only to present Origins:
 
 - `--ws-allow-origin <ORIGIN>` is repeatable; the value `*` allows any Origin.
-- Default with auth on (ADR-0126's default is a generated token): **any**
+- Default with auth on ([ADR-0126](./0126-bolt-basic-auth.md)'s default is a generated token): **any**
   Origin is allowed — the token is the access control, and neo4j-browser may
   be served from any host.
 - Default with `--auth none`: only loopback Origins are allowed —
@@ -137,11 +155,11 @@ only to present Origins:
 
 ### Governance
 
-- The ADR-0110 handshake timeout bounds the HTTP upgrade read: an upgrade that
+- The [ADR-0110](./0110-bolt-connection-query-governance.md) handshake timeout bounds the HTTP upgrade read: an upgrade that
   stalls mid-headers is dropped like a stalled Bolt handshake.
-- The `--max-connections` cap (ADR-0110) applies to WebSocket connections
+- The `--max-connections` cap ([ADR-0110](./0110-bolt-connection-query-governance.md)) applies to WebSocket connections
   exactly as to raw-TCP ones.
-- Authentication (ADR-0126) is unchanged: HELLO auth runs identically over the
+- Authentication ([ADR-0126](./0126-bolt-basic-auth.md)) is unchanged: HELLO auth runs identically over the
   WebSocket transport.
 
 ### Browser-compat plan (settled)
@@ -162,7 +180,7 @@ follow-up Linear issues and are not part of this branch.
   tree.
 - **A separate WebSocket port.** Rejected: neo4j-browser users would need a
   second port and a deployment shape Neo4j does not have; the first-byte peek
-  architecture (ADR-0109) already multiplexes several protocols on one bind.
+ architecture ([ADR-0109](./0109-bolt-tls.md)) already multiplexes several protocols on one bind.
 - **Accept any Origin unconditionally.** Rejected: with `--auth none` any
   website could drive a victim's browser to read and write a loopback graph —
   classic cross-site WebSocket hijacking; the loopback-Origin default closes
@@ -179,7 +197,7 @@ follow-up Linear issues and are not part of this branch.
 
 - `cypherlite-bolt` gains `tokio-tungstenite` as a workspace dependency
   (default features off); transitively `tungstenite` brings `sha1` and
-  `data-encoding`. `cypherlite-bolt` is a surface crate, so the ADR-0103 R6
+ `data-encoding`. `cypherlite-bolt` is a surface crate, so the [ADR-0103](./0103-engine-surfaces-testing-layout.md) R6
   engine-crate dependency ADR gate does not apply.
 - HTTPS-hosted browsers (e.g. `https://browser.graphapp.io`) dial `wss://`:
   the driver browser channel (`determineWebSocketScheme` in
@@ -190,9 +208,9 @@ follow-up Linear issues and are not part of this branch.
   override. Serving those pages therefore needs a **browser-trusted
   certificate** on `cypherlite-bolt`. HTTP-hosted or self-hosted
   neo4j-browser and Neo4j Desktop dial `ws://` and work with the default
-  plaintext loopback posture (ADR-0109).
+ plaintext loopback posture ([ADR-0109](./0109-bolt-tls.md)).
 - WebSocket connections count against `--max-connections` and are bounded by
-  the ADR-0110 handshake timeout like every other connection.
+ the [ADR-0110](./0110-bolt-connection-query-governance.md) handshake timeout like every other connection.
 - With `--auth none`, cross-site WebSocket access from non-loopback Origins is
   refused by default; operators who need it must pass `--ws-allow-origin`
   explicitly.
@@ -203,11 +221,11 @@ follow-up Linear issues and are not part of this branch.
 
 ## Later references
 
-- ADR-0141 refines the handshake-timeout governance inherited here: one
+- [ADR-0141](./0141-bolt-single-handshake-deadline.md) refines the handshake-timeout governance inherited here: one
   accept-time deadline of `--handshake-timeout-secs` spans every negotiation
   phase, including the WebSocket upgrade read, instead of a fresh budget per
   phase.
-- ADR-0459 replaces the authenticated WebSocket Origin default (any Origin)
+- [ADR-0459](./0459-authenticated-websocket-origin-default.md) replaces the authenticated WebSocket Origin default (any Origin)
   with loopback plus the hosted Neo4j Browser and Console, makes
   `--ws-allow-origin` a `cypherlite serve` flag, and adds the opt-in
   `--ws-max-connections` session cap (LABS-607, the 27 October security

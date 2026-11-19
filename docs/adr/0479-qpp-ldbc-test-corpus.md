@@ -1,14 +1,30 @@
+---
+type: adr
+area: infra
+claim: 40f21a6d20282427e4f9fa243e8915e51ef17ac8
+name: 0479-qpp-ldbc-test-corpus
+status: proposed
+tags:
+  - latency-suite
+title: The QPP/LDBC test corpus as query-latency workloads
+REFERENCES:
+  - "[[adr/0243-query-latency-suite]]"
+  - "[[adr/0244-in-process-query-sampling-profiler]]"
+  - "[[adr/0245-query-latency-baseline-environment-and-gate]]"
+  - "[[adr/0247-query-latency-sf0-1-literals]]"
+  - "[[adr/0289-graph-shape-memory-pins]]"
+  - "[[adr/0468-soa-batch-substrate]]"
+  - "[[adr/0471-one-var-length-traversal-engine]]"
+  - "[[adr/0475-gpm-early-conjuncts-and-riders]]"
+---
+
 # ADR-0479: The QPP/LDBC test corpus as query-latency workloads
-
-Status: Proposed
-
-Claim: 40f21a6d20282427e4f9fa243e8915e51ef17ac8
 
 ## Context
 
 The openCypher TCK 2024.3 pin (3892/3892) carries **zero quantified path
 pattern (QPP) scenarios** — verified 2026-10-31 — so the engine's QPP
-support (path modes, quantified groups, the ADR-0468/0471/0475
+support (path modes, quantified groups, the [ADR-0468](./0468-soa-batch-substrate.md)/[ADR-0471](./0471-one-var-length-traversal-engine.md)/[ADR-0475](./0475-gpm-early-conjuncts-and-riders.md)
 traversal work) has no contract net beyond hand-written unit pins. The
 2026-11-01 PathDB spike (LABS-646 pre-work) translated the 142 regular
 path queries of dbgutalca/pathdb-eval1 (Apache-2.0, `e62e33c2`) into
@@ -16,7 +32,7 @@ Cypher QPP and ran them against the GBL SF0.1 store: 100 of 142 executed
 (0.03-350 ms), 42 cyclic-recursion classes timed out under the watchdog,
 and the run surfaced engine findings (the mode-prefix cliff, LIMIT
 early-exit, walk budget, memory blow-up — since split into LABS-660/661,
-closed where ADR-0471/0475 covered them) plus two correctness surprises
+closed where [ADR-0471](./0471-one-var-length-traversal-engine.md)/[ADR-0475](./0475-gpm-early-conjuncts-and-riders.md) covered them) plus two correctness surprises
 pinned separately in the engine tests.
 
 Michael's scope directive for turning the spike into an asset: take ONLY
@@ -36,7 +52,7 @@ lane.
 The corpus is workload directories inside
 `testing/cypherlite-query-latency/workloads/` plus a first-class
 `query-latency corpus` subcommand — extending the crate that already owns
-the GBL lane (ADR-0243/0244/0245), with its data fetch, store reuse,
+the GBL lane ([ADR-0243](./0243-query-latency-suite.md)/[ADR-0244](./0244-in-process-query-sampling-profiler.md)/[ADR-0245](./0245-query-latency-baseline-environment-and-gate.md)), with its data fetch, store reuse,
 watchdog and report machinery reused, and no new framework:
 
 - **`workloads/pathdb/`** — 142 translated queries + 65 path-mode
@@ -65,7 +81,7 @@ watchdog and report machinery reused, and no new framework:
   parameters are literal values (dates, tags, windows), recorded per
   scale factor as one Cypher expression per parameter, which the lane
   evaluates once and binds natively (empty-answer params substituted
-  same-kind and recorded, ADR-0247 precedent). The seven dialect forms
+ same-kind and recorded, [ADR-0247](./0247-query-latency-sf0-1-literals.md) precedent). The seven dialect forms
   the translation leans on were verified by execution before any file
   was marked `ok` — all supported; the workload README records the
   verdicts and the initial 11 `ok` / 5 `kept` split (the `kept` five are
@@ -87,7 +103,7 @@ watchdog and report machinery reused, and no new framework:
   never the scale-factor-scaled default.
 
 The **file format** contract: one statement per file, `$seed` parameters
-(the engine's native parameter binding — ADR-0247's literal substitution
+(the engine's native parameter binding — [ADR-0247](./0247-query-latency-sf0-1-literals.md)'s literal substitution
 stays GBL-only), and exactly one machine-read `// status:` marker line —
 `ok` (execute, must succeed: the ok-set ratchet, which only shrinks with
 a tracked reason like the TCK allowlist), `kept` (parse + EXPLAIN only,
@@ -96,7 +112,7 @@ never execute: the frontier-NFA acceptance cases, LABS-644), or
 IS the ok-set — one fact, read by the runner, edited only with a reason.
 Headers otherwise carry provenance (upstream repo + pin, Apache-2.0).
 
-**Execution policy**: run-and-report only (ADR-0289 memory-shape
+**Execution policy**: run-and-report only ([ADR-0289](./0289-graph-shape-memory-pins.md) memory-shape
 precedent) — no corpus number enters a frozen gate compare set and no
 latency gates a PR; what gates is the ratchet, the error pins and the
 oracle checks where an oracle is engine-independent. Timeout 10 s per

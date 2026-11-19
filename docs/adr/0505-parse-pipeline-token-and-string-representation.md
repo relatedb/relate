@@ -1,8 +1,20 @@
+---
+type: adr
+area: cypher
+claim: 7150b96d8c5c5eb958bf5ebf364a07c38b6034a4
+name: 0505-parse-pipeline-token-and-string-representation
+status: proposed
+tags:
+  - parser
+  - perf
+title: Parse-pipeline token and string representation — borrowed token text, owned AST strings, alloc-free keyword lookup, process-wide-seeded scope-map hasher
+REFERENCES:
+  - "[[adr/0182-unicode-identifiers]]"
+  - "[[adr/0243-query-latency-suite]]"
+  - "[[adr/0257-query-input-limits]]"
+---
+
 # ADR-0505: Parse-pipeline token and string representation — borrowed token text, owned AST strings, alloc-free keyword lookup, process-wide-seeded scope-map hasher
-
-Status: Proposed
-
-Claim: 7150b96d8c5c5eb958bf5ebf364a07c38b6034a4
 
 ## Context
 
@@ -11,7 +23,7 @@ TCK statements plus 284 workload queries, ~204 B per statement) shows it is
 allocation-bound: tokenize 1.9 µs / 87 allocations per statement, parser +
 AST 4.0 µs / 176, parse + front-end lowering 9.4 µs / 295. Roughly 40–50 %
 of all parse+lower CPU is libc heap traffic. On the sub-millisecond half of
-the GBL SF0.1 latency suite (ADR-0243) parse + plan is 30–100 % of wall
+the GBL SF0.1 latency suite ([ADR-0243](./0243-query-latency-suite.md)) parse + plan is 30–100 % of wall
 time. The plan cache (LABS-790) removes that tax only for repeated
 statement texts; this decision cuts it for every statement, first sight
 and parameterized variants included. The two compose.
@@ -137,7 +149,7 @@ but matches on bytes without a heap copy:
   and `match &buf[..len]` against byte-string literals (`b"MATCH"`, …).
 
 Non-ASCII bytes pass through untouched, so a Unicode identifier
-(ADR-0182) never matches a keyword — today's behavior. The compiler lowers
+([ADR-0182](./0182-unicode-identifiers.md)) never matches a keyword — today's behavior. The compiler lowers
 the byte-slice match to a length-then-compare decision tree, so the
 cascade stays the fastest form once the allocation is gone. The signature
 `lookup_keyword(&str) -> TokenType` is unchanged (its external callers —
@@ -256,7 +268,7 @@ tests with several simultaneous offenders pin the first two.
   first form; rejected after the PR #721 security review — FxHash is
   deterministic and public, so one crafted statement can pre-collide its
   identifiers and force quadratic probing. The 4 MiB query-size cap
-  (ADR-0257) bounds the input bytes, not that CPU work, and the
+ ([ADR-0257](./0257-query-input-limits.md)) bounds the input bytes, not that CPU work, and the
   per-statement map lifetime does not help when the statement itself is
   the attack.
 - **Seeded FxHash (`rustc_hash::FxSeededState` with one process-random

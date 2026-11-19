@@ -1,7 +1,18 @@
-# ADR-0340: Zone resolution at a UTC instant returns the typed ZoneError vocabulary
+---
+type: adr
+area: engine
+claim: 00fd540ef29803463d12e81e60307e8c5a57d40e
+name: 0340-zone-resolution-typed-error
+status: proposed
+tags:
+  - errors
+  - values
+title: Zone resolution at a UTC instant returns the typed ZoneError vocabulary
+REFERENCES:
+  - "[[adr/0329-bolt-patch-bolt-utc]]"
+---
 
-Status: Proposed
-Claim: 00fd540ef29803463d12e81e60307e8c5a57d40e
+# ADR-0340: Zone resolution at a UTC instant returns the typed ZoneError vocabulary
 
 ## Context
 
@@ -13,7 +24,7 @@ An instant is never ambiguous, so the UTC resolver's only failure is an
 unknown zone — but it encodes that failure as `None`, a second failure
 vocabulary for the same fact. The shared caller `iana_offset_at`
 hand-writes the identical unknown-timezone message for both arms, and the
-Bolt DateTimeZoneIdUTC decoder (ADR-0329) maps the `None` to its own
+Bolt DateTimeZoneIdUTC decoder ([ADR-0329](./0329-bolt-patch-bolt-utc.md)) maps the `None` to its own
 error.
 
 ## Decision

@@ -1,7 +1,22 @@
-# ADR-0319: Bolt reports execution-phase failures at the first PULL or DISCARD
+---
+type: adr
+area: surface
+claim: c84df8aabff60d841ee7bc8a7e5f485e820857b0
+name: 0319-bolt-execution-failures-at-pull
+status: proposed
+tags:
+  - bolt
+  - errors
+title: Bolt reports execution-phase failures at the first PULL or DISCARD
+REFERENCES:
+  - "[[adr/0028-user-visible-transactions]]"
+  - "[[adr/0082-bound-bolt-decoded-value-count]]"
+  - "[[adr/0110-bolt-connection-query-governance]]"
+  - "[[adr/0177-bolt-parameter-conversion]]"
+  - "[[adr/0224-result-column-types]]"
+---
 
-Status: Proposed
-Claim: c84df8aabff60d841ee7bc8a7e5f485e820857b0
+# ADR-0319: Bolt reports execution-phase failures at the first PULL or DISCARD
 
 ## Context
 
@@ -15,7 +30,7 @@ answers FAILURE. Drivers follow that split: neo4rs's `execute()` succeeds
 and `next()` returns the error (LABS-323 finding D-49).
 
 cypherlite-bolt executes eagerly at RUN and buffers the result
-(ADR-0110), so every failure fails the RUN. Inside the engine,
+([ADR-0110](./0110-bolt-connection-query-governance.md)), so every failure fails the RUN. Inside the engine,
 `Connection::run_query` already has the split: parse, lower, plan and the
 compile-time gates come first, then dispatch executes the plan.
 
@@ -25,13 +40,13 @@ compile-time gates come first, then dispatch executes the plan.
    statement (the engine's dispatch phase) is reported at the first PULL
    or DISCARD of that result. RUN answers `SUCCESS {fields: <planned
    columns>, columnTypes, t_first}` (plus `qid` in a transaction), with
-   `columnTypes` `"ANY"` per column (ADR-0224's no-rows stamp: a failed
+ `columnTypes` `"ANY"` per column ([ADR-0224](./0224-result-column-types.md)'s no-rows stamp: a failed
    execution yields no rows). The PULL or DISCARD then answers FAILURE
    with the error's code and message and no RECORDs, the result closes,
    and the session enters the failed state.
 2. **What still fails the RUN.** Failures before execution: parse,
    semantic validation, planning, missing parameters, an unknown database,
-   the ADR-0177 parameter conversion, and the ADR-0110 max-result-bytes
+ the [ADR-0177](./0177-bolt-parameter-conversion.md) parameter conversion, and the [ADR-0110](./0110-bolt-connection-query-governance.md) max-result-bytes
    cap.
 3. **The phase comes from the engine.** Engine change (public Rust API):
    `Connection::query_staged(cypher, params, token, heartbeat)` returns
@@ -51,17 +66,17 @@ compile-time gates come first, then dispatch executes the plan.
    with no wildcard arm, so a new engine variant fails to compile until it
    is classified. No message text is inspected.
 5. **Transactions.** The engine already marks an explicit transaction
-   failed when a statement fails (ADR-0028 item 6), so a RUN or COMMIT
+ failed when a statement fails ([ADR-0028](./0028-user-visible-transactions.md) item 6), so a RUN or COMMIT
    sent before that PULL fails with the engine's `transaction failed;
    rollback required`.
-6. **ADR-0110 stays.** RUN still executes eagerly and buffers; only the
+6. **[ADR-0110](./0110-bolt-connection-query-governance.md) stays.** RUN still executes eagerly and buffers; only the
    report point moves, so nothing is superseded.
 
 ## Alternatives considered
 
 - **True streaming execution.** It would report failures where they
   happen, including after some rows. Rejected: executor streaming stays
-  deferred (ADR-0082), and moving the report point gives drivers the
+ deferred ([ADR-0082](./0082-bound-bolt-decoded-value-count.md)), and moving the report point gives drivers the
   Neo4j behaviour now.
 - **Classify by error variant only, without the engine phase.** Rejected:
   `Semantic` is raised both by validation (compile-class) and by

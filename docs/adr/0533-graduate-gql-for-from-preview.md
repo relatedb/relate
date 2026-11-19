@@ -1,14 +1,24 @@
+---
+type: adr
+area: cypher
+claim: 3641dd2a2616ce457b4ed733bf68e0fc0ad9a66b
+name: 0533-graduate-gql-for-from-preview
+status: accepted
+tags:
+  - dialect
+title: graduate the `FOR` clause from the `gql-for` preview gate
+REFERENCES:
+  - "[[adr/0371-preview-feature-gating]]"
+  - "[[adr/0391-gql-for-clause]]"
+---
+
 # ADR-0533: graduate the `FOR` clause from the `gql-for` preview gate
-
-Status: Accepted
-
-Claim: 3641dd2a2616ce457b4ed733bf68e0fc0ad9a66b
 
 ## Context
 
-ADR-0391 shipped the GQL-compliant `FOR <variable> IN <expression>`
+[ADR-0391](./0391-gql-for-clause.md) shipped the GQL-compliant `FOR <variable> IN <expression>`
 clause (the UNWIND-successor spelling) behind a `gql-for` row of the
-preview registry (ADR-0371), because the construct was approved into the
+preview registry ([ADR-0371](./0371-preview-feature-gating.md)), because the construct was approved into the
 dialect but no pinned reference release shipped it ungated. The preview
 registry's stated lifecycle is that a row and its gate are removed once
 the feature is part of the reference dialect.
@@ -28,7 +38,7 @@ detector arm, and the gate's fail-closed behavior. The `FOR` spelling is
 default dialect, valid wherever `UNWIND` is valid, with no
 `RELATE_PREVIEW` opt-in.
 
-Everything ADR-0391 built stays: the parse-time normalization into
+Everything [ADR-0391](./0391-gql-for-clause.md) built stays: the parse-time normalization into
 `Clause::Unwind` and the `for_syntax` spelling flag remain — the flag's
 one remaining consumer is the FOREACH-body error renderer (the 42I01
 text names `FOR`, not `UNWIND`). The two gate tests

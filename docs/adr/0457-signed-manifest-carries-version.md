@@ -1,11 +1,25 @@
-# ADR-0457: The signed release manifest carries the release version
+---
+type: adr
+area: infra
+claim: 1ff95683ad9e72da75bbb0e9ffd5f9c4e19e89db
+name: 0457-signed-manifest-carries-version
+status: proposed
+tags:
+  - release
+  - security
+title: The signed release manifest carries the release version
+REFERENCES:
+  - "[[adr/0115-sshsig-release-signing]]"
+  - "[[adr/0250-releases-json-update-discovery]]"
+  - "[[adr/0431-cli-extension-distribution]]"
+  - "[[adr/0571-installer-resolves-via-releases-json]]"
+---
 
-Status: Proposed
-Claim: 1ff95683ad9e72da75bbb0e9ffd5f9c4e19e89db
+# ADR-0457: The signed release manifest carries the release version
 
 ## Context
 
-ADR-0115 authenticates the release manifest `SHA256SUMS` with an OpenSSH
+[ADR-0115](./0115-sshsig-release-signing.md) authenticates the release manifest `SHA256SUMS` with an OpenSSH
 SSHSIG signature verified against a public key pinned in both `install.sh`
 and the `cypherlite` binary. The signature covers the manifest bytes, and the
 manifest pins each CLI binary by SHA-256. What it does not cover is the
@@ -14,7 +28,7 @@ digests, while the version a consumer believes it is installing comes from
 outside the signed bytes.
 
 - `cypherlite upgrade` reads `latest.tag` from `releases.json` on the project
-  website (ADR-0250), then downloads `SHA256SUMS` from the release matching
+ website ([ADR-0250](./0250-releases-json-update-discovery.md)), then downloads `SHA256SUMS` from the release matching
   that tag. `releases.json` is not signed, and the tag is not part of the
   signed manifest.
 - `install.sh` reads `tag_name` from the GitHub API's `releases/latest`
@@ -126,12 +140,12 @@ publishes. The signing step signs the resulting bytes unchanged.
   the signed bytes; the signature covers file contents, not names.
 - **Bind via the SSHSIG namespace or signer identity.** Rejected: the
   namespace is a fixed constant shared with the extension channel
-  (ADR-0431), and both are part of the verification configuration, not the
+ ([ADR-0431](./0431-cli-extension-distribution.md)), and both are part of the verification configuration, not the
   message; neither can carry a per-release value without rotating the pinned
   key or duplicating the verification root.
 - **Make `releases.json` the signed document.** Rejected: it is a website
   file regenerated on every release and redeploy, not a release asset, and
-  ADR-0250 explicitly treats it as selection metadata, never integrity. The
+ [ADR-0250](./0250-releases-json-update-discovery.md) explicitly treats it as selection metadata, never integrity. The
   binding belongs with the artifact it describes.
 - **Accept any headerless manifest with a warning forever.** Rejected: a
   warning does not stop the downgrade, and an attacker simply serves the old
@@ -168,14 +182,14 @@ publishes. The signing step signs the resulting bytes unchanged.
 
 ## Later references
 
-ADR-0571 changes the tag provenance behind both places this decision names
+[ADR-0571](./0571-installer-resolves-via-releases-json.md) changes the tag provenance behind both places this decision names
 the GitHub API for `install.sh`: the Context sentence that has the script
 read `tag_name` from the `releases/latest` response, and §2's enforcement
 point that makes that `tag_name` the tag the script was asked to install.
 The requested tag now comes from the file host's `releases.json`
-`latest.tag` (ADR-0250) — the same source `upgrade` reads — because the
+`latest.tag` ([ADR-0250](./0250-releases-json-update-discovery.md)) — the same source `upgrade` reads — because the
 extension channel publishes full releases into the same repository
-(ADR-0431) and the latest-release endpoint names whichever release was
+([ADR-0431](./0431-cli-extension-distribution.md)) and the latest-release endpoint names whichever release was
 published last. The API's `tag_name` remains, now as the equality check on
 the per-tag GitHub API fetch for the asset ids: the response's `tag_name`
 must equal the requested tag, so the API describes exactly the release the

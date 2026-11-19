@@ -1,19 +1,33 @@
-# 0119. CIP-eval drops frozen scenarios that need Enterprise databases
+---
+type: adr
+area: cypher
+date: 2026-09-27
+deciders: CypherLite maintainers
+name: 0119-cip-eval-drops-enterprise-database-scenarios
+status: accepted
+tags:
+  - conformance
+title: CIP-eval drops frozen scenarios that need Enterprise databases
+REFERENCES:
+  - "[[adr/0047-memorydb-cip-parity]]"
+  - "[[adr/0052-graphstore-withdrawn]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+SUPERSEDES:
+  - "[[adr/0047-memorydb-cip-parity]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-27
-- **Deciders**: CypherLite maintainers (Linear LABS-102)
+# 0119. CIP-eval drops frozen scenarios that need Enterprise databases
 
 ## Context
 
-ADR-0047 §1 requires the product to pass every CIP-eval scenario that the
+[ADR-0047](./0047-memorydb-cip-parity.md) §1 requires the product to pass every CIP-eval scenario that the
 original engine passed. The frozen scenario identities live in
-`testdata/cip-eval/ENGINE_PASSING.json` (ADR-0052). CI fails when a frozen
+`testdata/cip-eval/ENGINE_PASSING.json` ([ADR-0052](./0052-graphstore-withdrawn.md)). CI fails when a frozen
 identity stops passing, and when a CIP's pass count drops below
 `baselines/cip-eval.json` (`testing/cypherlite-cip-eval/tests/cip_eval.rs`).
 
 Some frozen scenarios pass only because database administration was metadata
-and `USE` was ignored. ADR-0116 adopts Neo4j Community Edition's database
+and `USE` was ignored. [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) adopts Neo4j Community Edition's database
 semantics, under which Neo4j itself rejects these scenarios:
 
 - The `cypher-versions-default-language` files `01` to `03` create, replace,
@@ -28,7 +42,7 @@ semantics, under which Neo4j itself rejects these scenarios:
   a live server.
 
 The other frozen database scenarios — the ones that filter by name or target
-`neo4j` and `system` — keep passing under ADR-0116.
+`neo4j` and `system` — keep passing under [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md).
 
 ## Decision
 
@@ -57,7 +71,7 @@ The other frozen database scenarios — the ones that filter by name or target
    database-catalog and graph-reference suites). Record
    `cypher-versions-default-language` as supported only for
    `SET DEFAULT LANGUAGE` on the fixed namespaces.
-5. This supersedes ADR-0047 §1 for these 24 identities only. Every other
+5. This supersedes [ADR-0047](./0047-memorydb-cip-parity.md) §1 for these 24 identities only. Every other
    frozen identity remains a hard gate.
 
 ## Alternatives considered
@@ -66,7 +80,7 @@ The other frozen database scenarios — the ones that filter by name or target
   `DROP DATABASE … IF EXISTS`.** Rejected: both diverge from CE, and 21
   scenarios would still fail because their setup creates or alters databases.
 - **Add setup steps that create the fixture databases.** Rejected: under
-  ADR-0116, `CREATE DATABASE` itself fails.
+ [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md), `CREATE DATABASE` itself fails.
 - **Edit the scenarios to expect CE errors.** Rejected: it would change what a
   Neo4j-verified fixture claims about Neo4j.
 - **Keep the database theater for CIP-eval only.** Rejected: a test-only
@@ -79,4 +93,4 @@ The other frozen database scenarios — the ones that filter by name or target
 - The `cypher-versions-default-language` and `call-variable-scope-clause`
   scores drop. Release notes explain that multi-database administration is
   not part of CypherLite.
-- ADR-0047 gains a Later references note pointing here.
+- [ADR-0047](./0047-memorydb-cip-parity.md) gains a Later references note pointing here.

@@ -1,7 +1,21 @@
-# ADR-0428: The HTTP Query API is embeddable over any byte stream
+---
+type: adr
+area: surface
+claim: 27bb915fd20b20f0cf302c9197d7b3327c667af0
+name: 0428-embeddable-http-query-api
+status: accepted
+tags:
+  - http
+title: The HTTP Query API is embeddable over any byte stream
+REFERENCES:
+  - "[[adr/0368-one-product-binary-serve-absorbs-bins]]"
+  - "[[adr/0435-managed-tx-lifecycle]]"
+  - "[[adr/0440-follower-writer-toggle]]"
+  - "[[adr/0452-workspace-limit-enables-admission]]"
+  - "[[adr/0501-drop-token-schedule]]"
+---
 
-Status: Accepted
-Claim: 27bb915fd20b20f0cf302c9197d7b3327c667af0
+# ADR-0428: The HTTP Query API is embeddable over any byte stream
 
 ## Context
 
@@ -30,7 +44,7 @@ peak tokens needs 507 for `Capacity` and 429 for the admission refusal,
 with `peakTokens` when the error carries a receipt.
 
 This crate does not terminate TLS. Product `serve` stays plaintext
-(ADR-0368).
+([ADR-0368](./0368-one-product-binary-serve-absorbs-bins.md)).
 
 ## Decision
 
@@ -71,7 +85,7 @@ This crate does not terminate TLS. Product `serve` stays plaintext
 ## Alternatives considered
 
 - **TLS inside `cypherlite-http`.** Rejected. The host already terminates
-  TLS, and ADR-0368 left TLS off product `serve`.
+ TLS, and [ADR-0368](./0368-one-product-binary-serve-absorbs-bins.md) left TLS off product `serve`.
 - **A pure request-to-response function and a host HTTP framework.**
   Rejected. The framing, compression, and connection policy would fork
   again. The host hands over the decrypted stream.
@@ -93,7 +107,7 @@ This crate does not terminate TLS. Product `serve` stays plaintext
 
 ## Later references
 
-- ADR-0435's managed-transaction lifecycle work retired the crate-private
+- [ADR-0435](./0435-managed-tx-lifecycle.md)'s managed-transaction lifecycle work retired the crate-private
   hand-off pair named in item 2: `TxRegistry::with` and `TxRegistry::take`
   are gone. Every route's lookup is now the lease: the run route leases
   the entry out with `lease` and returns it with `Lease::release`; commit
@@ -102,6 +116,6 @@ This crate does not terminate TLS. Product `serve` stays plaintext
   The public surface item 2 lists is unchanged — `TxRegistry::with` and
   `TxRegistry::take` were crate-private then and their successors are
   crate-private now — and item 3's owner scoping is untouched.
-- ADR-0501 removes `metrics.tokenSchedule`. A receipt still carries
-  `metrics.peakLogicalBytes` (the name ADR-0452 gave the former
-  `metrics.peakTokens`) and, since ADR-0440, `metrics.retryable`.
+- [ADR-0501](./0501-drop-token-schedule.md) removes `metrics.tokenSchedule`. A receipt still carries
+ `metrics.peakLogicalBytes` (the name [ADR-0452](./0452-workspace-limit-enables-admission.md) gave the former
+ `metrics.peakTokens`) and, since [ADR-0440](./0440-follower-writer-toggle.md), `metrics.retryable`.

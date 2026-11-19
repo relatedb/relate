@@ -1,8 +1,17 @@
-# 0067. Release and versioning policy: manual dispatch, tag-after-build, lockstep Rust/Python versions
+---
+type: adr
+area: infra
+date: 2026-09-19
+deciders: CypherLite maintainers
+name: 0067-release-versioning-and-process
+status: accepted
+tags:
+  - release
+title: |-
+  Release and versioning policy: manual dispatch, tag-after-build, lockstep Rust/Python versions
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-19
-- **Deciders**: CypherLite maintainers (Linear LABS-52)
+# 0067. Release and versioning policy: manual dispatch, tag-after-build, lockstep Rust/Python versions
 
 ## Context
 

@@ -1,12 +1,27 @@
+---
+type: adr
+area: infra
+claim: f1f6fefcf9946d7780656c560ba65105cf814ba9
+name: 0476-quarantine-research-kernels
+status: proposed
+tags:
+  - workspace
+title: Quarantine the research kernels behind a non-default `research` cargo feature
+REFERENCES:
+  - "[[adr/0468-soa-batch-substrate]]"
+  - "[[adr/0469-allreduce-inline-pruning]]"
+  - "[[adr/0471-one-var-length-traversal-engine]]"
+  - "[[adr/0473-contracted-traversal-kernels]]"
+  - "[[adr/0474-compound-contains-seed-start-cost]]"
+  - "[[adr/0475-gpm-early-conjuncts-and-riders]]"
+  - "[[adr/0478-frontier-nfa-qpp-kernel]]"
+---
+
 # ADR-0476: Quarantine the research kernels behind a non-default `research` cargo feature
-
-Status: Proposed
-
-Claim: f1f6fefcf9946d7780656c560ba65105cf814ba9
 
 ## Context
 
-The execution-architecture feature (ADR-0468/0469/0471/0473/0474/0475,
+The execution-architecture feature ([ADR-0468](./0468-soa-batch-substrate.md)/[ADR-0469](./0469-allreduce-inline-pruning.md)/[ADR-0471](./0471-one-var-length-traversal-engine.md)/[ADR-0473](./0473-contracted-traversal-kernels.md)/[ADR-0474](./0474-compound-contains-seed-start-cost.md)/[ADR-0475](./0475-gpm-early-conjuncts-and-riders.md),
 LABS-642/643/644/645/660/661) shipped two research-only kernel modules in
 the product executor crate: `cypherlite-executor/src/graph/sol.rs`
 (speed-of-light kernels for gbl q8/q19/q30) and
@@ -114,7 +129,7 @@ SPI's own dogfooding.
 
 ## Later references
 
-ADR-0478 resolves the `qpp` half of this quarantine: the prototype is
+[ADR-0478](./0478-frontier-nfa-qpp-kernel.md) resolves the `qpp` half of this quarantine: the prototype is
 replaced by the production frontier kernel (compiled from the
 `QuantifiedPathPattern` IR, running over the `ExecGraph` overlay), and
 the research module is deleted outright — not reduced to parity tests.
@@ -122,7 +137,7 @@ Its oracle value is preserved two ways: the constructor-derived expected
 shapes stay pinned as literals in the production kernel's suite
 (`exec/kernels/nfa_tests.rs`, which never executed the prototype — its
 `Pattern` fields were module-private, so the literals were hand-read),
-and behavior is cross-checked by ADR-0478's statement-level differential
+and behavior is cross-checked by [ADR-0478](./0478-frontier-nfa-qpp-kernel.md)'s statement-level differential
 suite plus the PathDB/LDBC QPP corpus (LABS-646). The `qpp` re-exports
 (`graph/mod.rs`, both lib.rs files) and the `qpp` harness example in
 `cypherlite-query-latency` are removed with it; the `research` feature

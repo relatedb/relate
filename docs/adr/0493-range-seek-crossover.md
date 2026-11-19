@@ -1,12 +1,22 @@
+---
+type: adr
+area: engine
+claim: 1a585ccaaa918dd2e523745fdfae83914a386417
+name: 0493-range-seek-crossover
+status: proposed
+tags:
+  - index
+  - planner
+title: Range-seek crossover — low-selectivity windows serve from the label scan
+REFERENCES:
+  - "[[adr/0486-range-index-starts]]"
+---
+
 # 0493: Range-seek crossover — low-selectivity windows serve from the label scan
-
-Status: Proposed
-
-Claim: 1a585ccaaa918dd2e523745fdfae83914a386417
 
 ## Context
 
-ADR-0486 priced range-index starts as exact `Estimate::Measured` counts
+[ADR-0486](./0486-range-index-starts.md) priced range-index starts as exact `Estimate::Measured` counts
 paying no scan floor, ranked above CONTAINS — the seekable side must win
 the anchor. Measured on a 1.8M-relationship social-network graph (LABS-854, 2026-11-03): the range
 seek's per-candidate cost is **~1.36 µs** (each candidate materializes a
@@ -70,7 +80,7 @@ range_seek_wins(window, label_rows) =
 - **Gate only the planner ladder, leave the funnel's opportunistic
   seek** — rejected: the funnel serves the first servable seek
   regardless of the ladder, so execution and the narrated plan would
-  disagree again — exactly the invisibility ADR-0486 removed.
+ disagree again — exactly the invisibility [ADR-0486](./0486-range-index-starts.md) removed.
 - **No gate; fix the seek's cost instead** (LABS-853 lazy entities) —
   rejected as the whole answer: even an id-only seek at 57% selectivity
   walks more candidates than the scan visits nodes; LABS-853 moves the
@@ -86,5 +96,5 @@ range_seek_wins(window, label_rows) =
   that runs, for the same reason it names the seek that runs.
 - The crossover constants are measured facts with a named revisit
   condition: LABS-853's id-only seek is expected to raise the fraction.
-- ADR-0486's ladder ranking stands unchanged for windows below the
-  crossover; a **Later references** note on ADR-0486 records this gate.
+- [ADR-0486](./0486-range-index-starts.md)'s ladder ranking stands unchanged for windows below the
+ crossover; a **Later references** note on [ADR-0486](./0486-range-index-starts.md) records this gate.

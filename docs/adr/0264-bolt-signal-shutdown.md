@@ -1,9 +1,21 @@
+---
+type: adr
+area: surface
+date: 2026-09-28
+deciders: CypherLite maintainers (agreed in conversation)
+name: 0264-bolt-signal-shutdown
+status: accepted
+tags:
+  - bolt
+  - serve
+title: cypherlite-bolt exits on SIGINT/SIGTERM
+REFERENCES:
+  - "[[adr/0111-engine-bounded-execution]]"
+---
+
 # 0264. cypherlite-bolt exits on SIGINT/SIGTERM
 
-- **Status**: Accepted
 - **Renumbered**: from 0125 (shared-number cleanup)
-- **Date**: 2026-09-28
-- **Deciders**: CypherLite maintainers (agreed in conversation)
 
 ## Context
 
@@ -18,7 +30,7 @@ container kept running and holding its ports until SIGKILL.
 `signal`; the workspace tokio gains the `signal` feature). `main` wraps
 `serve` in `tokio::select!` with the two signal arms: on the first signal
 the server prints a shutdown line and exits — no drain, no in-flight
-query cancellation beyond what ADR-0111 already provides. The SIGTERM
+query cancellation beyond what [ADR-0111](./0111-engine-bounded-execution.md) already provides. The SIGTERM
 arm is unix-only (cfg-gated; on Windows it is a never-completing future),
 so the binary still builds where `tokio::signal::unix` does not exist.
 

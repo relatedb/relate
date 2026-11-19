@@ -1,19 +1,34 @@
+---
+type: adr
+area: infra
+date: 2026-09-26
+deciders: CypherLite maintainers (agreed in conversation)
+name: 0128-docker-bolt-server-image
+status: accepted
+tags:
+  - release
+title: Docker image for the cypherlite-bolt server
+REFERENCES:
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+  - "[[adr/0080-cli-pull-command]]"
+  - "[[adr/0109-bolt-tls]]"
+  - "[[adr/0126-bolt-basic-auth]]"
+  - "[[adr/0248-serve-host-flag]]"
+  - "[[adr/0249-docker-unified-serve-image]]"
+---
+
 # 0128. Docker image for the cypherlite-bolt server
 
-- **Status**: Accepted
-- **Date**: 2026-09-26
-- **Deciders**: CypherLite maintainers (agreed in conversation)
-
-**Later references**: ADR-0249 retargets the image's runtime from the
+**Later references**: [ADR-0249](./0249-docker-unified-serve-image.md) retargets the image's runtime from the
 bolt-only `cypherlite-bolt` to the unified `cypherlite serve` (Bolt +
 HTTP + MCP, ports 7687/7474/7475, one credential); the scratch/chef/
 UID 1000/`/data` volume/PID-1-signal decisions here stand unchanged.
-ADR-0248 adds the `serve --host` flag the container binds with.
+[ADR-0248](./0248-serve-host-flag.md) adds the `serve --host` flag the container binds with.
 
 ## Context
 
 CypherLite is a single binary; the remote surface is `cypherlite-bolt`
-(ADR-0057: Bolt as transport). Containers are the natural unit for running
+([ADR-0057](./0057-embedded-c-abi-and-bolt.md): Bolt as transport). Containers are the natural unit for running
 the server next to agent sandboxes and CI, and the agentic cookbook work
 kept re-deriving "run a server with some seeded data" by hand. The
 `.dockerignore` already exists (an external project builds this repo as a
@@ -58,7 +73,7 @@ Ship a multi-stage `Dockerfile` + a Rust `entrypoint` binary + a
   because `serde_json` is in-tree and `serde_yaml` is archived; (3) env
   fallback for one-liners (`CYPHERLITE_QUERY`, `CYPHERLITE_LOAD` +
   `CYPHERLITE_LOAD_QUERY` (the `--load` flag, still on its own unmerged
-  PR), `CYPHERLITE_PULL_FROM` + `CYPHERLITE_PULL_QUERY` (ADR-0080),
+ PR), `CYPHERLITE_PULL_FROM` + `CYPHERLITE_PULL_QUERY` ([ADR-0080](./0080-cli-pull-command.md)),
   `CYPHERLITE_FORCE_SEED`). The
   engine's native env vars (`CYPHERLITE_MEMORY_LIMIT`,
   `CYPHERLITE_DURABILITY_MODE`, `CYPHERLITE_CHECKPOINT_INTERVAL_SECS`,
@@ -111,8 +126,8 @@ Ship a multi-stage `Dockerfile` + a Rust `entrypoint` binary + a
 - The `--load` flag merge and this image are independent; both keep
   working alone.
 - The default `CMD` carries `--allow-plaintext`: a container must bind
-  `0.0.0.0` to be reachable at all, and the plaintext policy (ADR-0109)
+ `0.0.0.0` to be reachable at all, and the plaintext policy ([ADR-0109](./0109-bolt-tls.md))
   refuses a non-loopback plaintext bind otherwise. This is a dev/test
-  image posture — auth (ADR-0126) is still on by default — and TLS is
+ image posture — auth ([ADR-0126](./0126-bolt-basic-auth.md)) is still on by default — and TLS is
   available by mounting cert/key and passing `--tls-cert`/`--tls-key`
   (scratch carries no openssl to generate them).

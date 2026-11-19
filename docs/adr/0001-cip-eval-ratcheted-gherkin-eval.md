@@ -1,6 +1,14 @@
-# cip-eval: a ratcheted Gherkin eval derived from the CIP documents
+---
+type: adr
+area: cypher
+name: 0001-cip-eval-ratcheted-gherkin-eval
+status: accepted
+tags:
+  - conformance
+title: "cip-eval: a ratcheted Gherkin eval derived from the CIP documents"
+---
 
-Status: accepted
+# cip-eval: a ratcheted Gherkin eval derived from the CIP documents
 
 To extend CypherLite's Cypher surface beyond the openCypher TCK, we derive an
 evaluation suite ("cip-eval") from the 164 Neo4j CIP documents in

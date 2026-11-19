@@ -1,12 +1,23 @@
-# 0164. CLI exit contract for an open transaction
+---
+type: adr
+area: cli
+date: 2026-10-05
+deciders: CypherLite maintainers
+name: 0164-exit-open-transaction
+status: accepted
+tags:
+  - commands
+  - transactions
+title: CLI exit contract for an open transaction
+REFERENCES:
+  - "[[adr/0028-user-visible-transactions]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-05
-- **Deciders**: CypherLite maintainers
+# 0164. CLI exit contract for an open transaction
 
 ## Context
 
-ADR-0028 gave the CLI user-visible transactions via `.begin` / `.commit` /
+[ADR-0028](./0028-user-visible-transactions.md) gave the CLI user-visible transactions via `.begin` / `.commit` /
 `.rollback`. An open `.begin` transaction is never checkpointed, so its
 writes are discarded when the process exits — `exit_closed` /
 `final_checkpoint` in `surfaces/cypherlite-cli/src/main.rs` document this
@@ -53,7 +64,7 @@ each statement execute and a non-zero exit would punish normal
    callers get a machine-checkable failure, not just a log line.
 3. **Interactive REPL exit stays 0.** `.quit` / EOF with an open
    transaction prints the same warning but exits 0; discarding on
-   interactive exit is the documented ADR-0028 behavior (connection drop
+ interactive exit is the documented [ADR-0028](./0028-user-visible-transactions.md) behavior (connection drop
    is implicit rollback), not an error.
 4. **The discard itself is unchanged.** The open transaction is still
    never checkpointed; only the reporting changes. `.commit` before
@@ -62,11 +73,11 @@ each statement execute and a non-zero exit would punish normal
 ## Alternatives considered
 
 - **Keep the silent discard (status quo).** Rejected: silent data loss
-  on a path ADR-0028 makes easy to reach, and it regressed a stderr
+ on a path [ADR-0028](./0028-user-visible-transactions.md) makes easy to reach, and it regressed a stderr
   contract external scripts already depend on.
 - **Exit 1 on every exit path, including the REPL.** Rejected: an
   interactive user who explored with `.begin` and quit without
-  committing made no mistake — implicit rollback on drop is the ADR-0028
+ committing made no mistake — implicit rollback on drop is the [ADR-0028](./0028-user-visible-transactions.md)
   contract — and a non-zero REPL exit would break wrappers that treat
   any non-zero code as a shell crash.
 - **Reword or modernize the warning.** Rejected: wrapper scripts grep
@@ -74,7 +85,7 @@ each statement execute and a non-zero exit would punish normal
   behavioral gain. The pre-579592c9 text is restored verbatim.
 - **Checkpoint the open transaction on exit instead of discarding.**
   Rejected: it would make uncommitted writes durable without `.commit`,
-  reversing the ADR-0028 rule that only an explicit `commit` appends the
+ reversing the [ADR-0028](./0028-user-visible-transactions.md) rule that only an explicit `commit` appends the
   transaction's redo.
 
 ## Consequences
@@ -89,5 +100,5 @@ each statement execute and a non-zero exit would punish normal
   (`docs/api/cli/spec.md`) and the `exit_closed` / `final_checkpoint`
   doc comments must describe this contract; tests cover all three exit
   paths.
-- ADR-0028 is unchanged; this ADR records the CLI surface contract for
+- [ADR-0028](./0028-user-visible-transactions.md) is unchanged; this ADR records the CLI surface contract for
   the discard it specifies.

@@ -1,12 +1,27 @@
-# 0187. `db.schema.visualization()`: virtual relationships carry a `name` property
+---
+type: adr
+area: engine
+date: 2026-10-08
+deciders: CypherLite maintainers
+name: 0187-viz-relationship-name-property
+status: accepted
+tags:
+  - procedures
+title: "`db.schema.visualization`: virtual relationships carry a `name` property"
+REFERENCES:
+  - "[[adr/0144-graph-examples-differential-suite]]"
+  - "[[adr/0153-db-schema-visualization-semantics]]"
+  - "[[adr/0166-viz-catalog-detail]]"
+SUPERSEDES:
+  - "[[adr/0153-db-schema-visualization-semantics]]"
+  - "[[adr/0166-viz-catalog-detail]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-08
-- **Deciders**: CypherLite maintainers (Linear [LABS-185](https://linear.app/neo4j/issue/LABS-185))
+# 0187. `db.schema.visualization()`: virtual relationships carry a `name` property
 
 ## Context
 
-LABS-185: the graph-examples differential suite (ADR-0144) compares
+The graph-examples differential suite ([ADR-0144](./0144-graph-examples-differential-suite.md)) compares
 cypherlite's output against a Neo4j reference on the public graph-examples
 walkthroughs. The nightly run
 (https://github.com/neo4j-labs/cypherlite/actions/runs/37567417871, commit
@@ -27,16 +42,16 @@ each virtual relationship with a `name` property —
 (`":TYPE"` is the suite's normalization marker for the relationship type,
 not a stored property.)
 
-The target rendering was already recorded in ADR-0166's Docker probe of
+The target rendering was already recorded in [ADR-0166](./0166-viz-catalog-detail.md)'s Docker probe of
 `neo4j:2025-enterprise`:
 
 ```
 relationships: [[:TRANSFER_TO {name: "TRANSFER_TO"}]]
 ```
 
-ADR-0153 gave virtual nodes Neo4j's `{name, indexes, constraints}`
+[ADR-0153](./0153-db-schema-visualization-semantics.md) gave virtual nodes Neo4j's `{name, indexes, constraints}`
 property shape but chose "Virtual relationships carry no properties"
-deliberately; ADR-0166 reaffirmed that split in its Decision item 5
+deliberately; [ADR-0166](./0166-viz-catalog-detail.md) reaffirmed that split in its Decision item 5
 ("Virtual relationships keep carrying no properties"). That leaves the
 relationship half out of step with Neo4j and with clients that label edges
 by `name` (Browser/Bloom-style schema views), so LABS-185 asks for the
@@ -54,11 +69,11 @@ a property map with **exactly one entry**:
 Reading `r.name` off the returned value yields the type, so `type(r)` and
 `r.name` agree on the same virtual relationship.
 
-Everything else in ADR-0153, as amended by ADR-0166, is unchanged:
+Everything else in [ADR-0153](./0153-db-schema-visualization-semantics.md), as amended by [ADR-0166](./0166-viz-catalog-detail.md), is unchanged:
 
 - **Virtual node shape** stays Neo4j's `{name, indexes, constraints}`, with
   `indexes`/`constraints` populated from the catalog at call time
-  (ADR-0166).
+ ([ADR-0166](./0166-viz-catalog-detail.md)).
 - **Negative virtual ids** stay allocated from `-1` down (nodes first,
   then relationships), and virtual nodes stay registered in the
   virtual-node side table so `startNode()`/`endNode()` resolve endpoints.
@@ -77,7 +92,7 @@ pinned by that surface's own scenarios.
 
 ## Alternatives considered
 
-- **Keep property-less virtual relationships (the ADR-0153/ADR-0166
+- **Keep property-less virtual relationships (the [ADR-0153](./0153-db-schema-visualization-semantics.md)/[ADR-0166](./0166-viz-catalog-detail.md)
   status quo).** Rejected: the differential-suite mismatch against the
   Neo4j reference is the bug being fixed (LABS-185); every schema view of
   a graph containing relationships diverges from the oracle, and clients
@@ -111,12 +126,12 @@ pinned by that surface's own scenarios.
   property. That is a **pre-existing gap** (the builtins resolve by id
   rather than reading the inline value) and is **out of scope** here;
   closing it needs its own decision.
-- ADR-0153's "Virtual relationships carry no properties" sentence and
-  ADR-0166's Decision item 5 are **superseded** by this ADR; **Later
+- [ADR-0153](./0153-db-schema-visualization-semantics.md)'s "Virtual relationships carry no properties" sentence and
+ [ADR-0166](./0166-viz-catalog-detail.md)'s Decision item 5 are **superseded** by this ADR; **Later
   references** notes on both record it. Every other decision in both ADRs
   stays in force.
 - `docs/reference/cypher-syntax.md`'s `db.schema.visualization()`
   paragraph (which documents property-less virtual relationships) must
   change in the same feature.
-- The graph-examples differential suite (ADR-0144) baseline gains the
+- The graph-examples differential suite ([ADR-0144](./0144-graph-examples-differential-suite.md)) baseline gains the
   `stackoverflow.adoc:40` expectation; the reported mismatch is removed.

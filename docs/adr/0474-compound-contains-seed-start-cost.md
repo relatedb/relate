@@ -1,12 +1,23 @@
+---
+type: adr
+area: engine
+claim: 6dd691a7575b1766d4ff71da8496f332cdb67b10
+name: 0474-compound-contains-seed-start-cost
+status: proposed
+tags:
+  - index
+  - planner
+title: Compound start cost for unindexed CONTAINS seeds
+REFERENCES:
+  - "[[adr/0218-stats-based-match-orientation]]"
+  - "[[adr/0245-query-latency-baseline-environment-and-gate]]"
+---
+
 # ADR-0474: Compound start cost for unindexed CONTAINS seeds
-
-Status: Proposed
-
-Claim: 6dd691a7575b1766d4ff71da8496f332cdb67b10
 
 ## Context
 
-The pattern-order ladder (ADR-0218, `cypherlite-planner/src/order.rs`)
+The pattern-order ladder ([ADR-0218](./0218-stats-based-match-orientation.md), `cypherlite-planner/src/order.rs`)
 prices a MATCH endpoint by its best measurable signal — a bound variable,
 RANGE-equality hits, `CONTAINS` candidates, label rows, then rank
 sentinels — and the start's walk cost is that estimate scaled by the
@@ -76,7 +87,7 @@ already settled under the candidate's own read) takes the walk to
 floor still beats Place's ~342k degree-scaled walk); q2/q16's
 RANGE-equality seeds keep their starts (the compound only raises the
 unindexed CONTAINS side); the full 30-query suite stays within its
-ADR-0245 bands.
+[ADR-0245](./0245-query-latency-baseline-environment-and-gate.md) bands.
 
 ## Alternatives considered
 
@@ -114,4 +125,4 @@ ADR-0245 bands.
   `order.rs` stub tests (the flip, the keep, and the TEXT-indexed
   no-floor), `graph_stats_tests.rs` toy graphs (the q8 tie-break and the
   q19 keep on live sampled counts), and the GBL suite itself (the
-  acceptance bands, ADR-0245).
+ acceptance bands, [ADR-0245](./0245-query-latency-baseline-environment-and-gate.md)).

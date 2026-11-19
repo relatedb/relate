@@ -1,12 +1,29 @@
-# 0183. Checkpoint rewrites coalesce neighboring shards up to the byte target
+---
+type: adr
+area: engine
+date: 2026-10-07
+deciders: CypherLite maintainers
+name: 0183-coalesce-checkpoint-shards
+status: proposed
+tags:
+  - checkpoint
+title: Checkpoint rewrites coalesce neighboring shards up to the byte target
+REFERENCES:
+  - "[[adr/0022-id-window-checkpoint-shards]]"
+  - "[[adr/0086-bounded-persistence-input]]"
+  - "[[adr/0089-immutable-checkpoint-shard-publication]]"
+  - "[[adr/0158-streaming-single-process-pull]]"
+  - "[[adr/0180-checkpoint-shard-writes]]"
+  - "[[adr/0563-parquet-row-group-cap-1024]]"
+SUPERSEDES:
+  - "[[adr/0180-checkpoint-shard-writes]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-10-07
-- **Deciders**: CypherLite maintainers
+# 0183. Checkpoint rewrites coalesce neighboring shards up to the byte target
 
 ## Context
 
-ADR-0022 checkpoints copy-on-write id-window shards: only parts that
+[ADR-0022](./0022-id-window-checkpoint-shards.md) checkpoints copy-on-write id-window shards: only parts that
 overlap dirty ids are rewritten, and a part splits when it outgrows the
 byte target. Its Decision 4 left "merge of undersized neighbors" as
 follow-on, so nothing ever puts small shards back together.
@@ -19,7 +36,7 @@ ids into alternating dirty and clean runs and writes **one shard per
 run**: `write_leaf` per clean run (via `copy_id_runs`), `write_split` per
 dirty run. A part with k dirty runs becomes up to 2k + 1 parts, and every
 later checkpoint that scatters dirty ids over them fragments them further.
-ADR-0180 records #195 ("Checkpoint shards stream, split on compact bytes,
+[ADR-0180](./0180-checkpoint-shard-writes.md) records #195 ("Checkpoint shards stream, split on compact bytes,
 and keep clean rows"); its Decision 3 is this one-part-per-clean-run rule.
 
 LABS-194: `cypherlite pull` of the graph-examples recommendations database
@@ -72,7 +89,7 @@ part, and writes each unit as byte-budgeted files.
 2. **Absorption.** A unit absorbs its immediately adjacent slots on either
    side in id order, clean kept slots included, while three bounds hold.
    The merged id range `[lo, hi)` spans `hi - lo <= 1,000,000` ids
-   (`MAX_WINDOW`, ADR-0022's widest window). The unit's kept slots'
+ (`MAX_WINDOW`, [ADR-0022](./0022-id-window-checkpoint-shards.md)'s widest window). The unit's kept slots'
    manifest `rows` sum to at most `Kind::page_envelope_rows()` (see Page
    envelope) and their published `bytes` to at most the cap a file is
    written into, `min(target_bytes, 1 GiB)` (Decision 3); both are read
@@ -87,7 +104,7 @@ part, and writes each unit as byte-budgeted files.
    checkpoint. Decoded bytes are `Kind::checkpoint_bytes` of each live id
    at the snapshot timestamp, read from the in-memory graph without
    touching a file. One codec accumulator (`DecodedBudget`) adds them up,
-   with checked arithmetic and the ADR-0086 row and decoded envelope
+ with checked arithmetic and the [ADR-0086](./0086-bounded-persistence-input.md) row and decoded envelope
    checks. A seed's rows are measured once, in the walk that also cuts it
    (Decision 3). A seed row the row envelope rejects fails the checkpoint;
    a neighbour row it rejects only does not fit, and that neighbour stays
@@ -95,7 +112,7 @@ part, and writes each unit as byte-budgeted files.
    together; a seed already over the target absorbs nothing. The merged
    slots take their union id range. Planning's walk keeps no row budget:
    a unit holds no more live rows than ids, so `MAX_WINDOW`, the per-part
-   row bound on load, holds by construction as it did for ADR-0022
+ row bound on load, holds by construction as it did for [ADR-0022](./0022-id-window-checkpoint-shards.md)
    windows, except in a healed window wider than that (Decision 3).
 3. **Write.** Planning cuts each unit into files in the walk that measures
    it, and the writer writes those **planned cuts** in order without
@@ -123,7 +140,7 @@ part, and writes each unit as byte-budgeted files.
    `with_shard_writer` takes, so an encoded file over the target
    overflows it. That is an **envelope miss**, as are overflowing the
    1 GiB file ceiling and the reader's preflight rejecting the written
-   file on another ADR-0086 bound, and every envelope miss keeps the
+ file on another [ADR-0086](./0086-bounded-persistence-input.md) bound, and every envelope miss keeps the
    existing halving fallback (`split_ids`, at the middle id). A single row
    is capped by the file ceiling alone. Each failure is classified where
    it arises. Everything else is fatal, since a file of fewer rows fails
@@ -135,11 +152,11 @@ part, and writes each unit as byte-budgeted files.
    rows is a storage error, raised before any halving, and is never
    published or silently dropped.
 4. **Untouched parts.** Every kept slot outside every unit is kept
-   unchanged: its manifest entry is reused verbatim (ADR-0089
+ unchanged: its manifest entry is reused verbatim ([ADR-0089](./0089-immutable-checkpoint-shard-publication.md)
    Decision 1), zero I/O.
 5. **No manifest format change.** `format_version`, `Manifest` and
    `ShardPart` keep their fields. A merged range spans at most
-   `MAX_WINDOW` ids, like an ADR-0022 window. A healed window (Decision 1)
+ `MAX_WINDOW` ids, like an [ADR-0022](./0022-id-window-checkpoint-shards.md) window. A healed window (Decision 1)
    can span more, but each of its files holds at most
    `Kind::page_envelope_rows()` rows (Decision 3). Either way a part's
    rows stay within the `read_manifest` bounds (`<= MAX_WINDOW` and `<=`
@@ -197,7 +214,7 @@ part, and writes each unit as byte-budgeted files.
   metric, the made-up path can reach the retired list, and the manifest
   record carries a state it never holds when published. A slot type
   makes "no previous file" a variant planning and writing match on.
-- **Defer WAL-rotation checkpoints during a pull** (ADR-0158's "one
+- **Defer WAL-rotation checkpoints during a pull** ([ADR-0158](./0158-streaming-single-process-pull.md)'s "one
   checkpoint at the end"). Rejected for this change: unbounded WAL growth
   on long pulls plus a new storage/open knob, and every other write load
   still fragments. Revisit only if a pull still stalls once shards are
@@ -206,7 +223,7 @@ part, and writes each unit as byte-budgeted files.
   the same pull. Rejected here: a loader semantics change that removes one
   source of scattered dirty ids, not the unbounded layout; separate
   follow-up.
-- **Batch directory syncs once per shard directory** (allowed by ADR-0089
+- **Batch directory syncs once per shard directory** (allowed by [ADR-0089](./0089-immutable-checkpoint-shard-publication.md)
   Decision 2). Rejected as the fix: the file count stays unbounded, each
   file still costs its own fsync, and open still reads every fragment. It
   is compatible with this ADR and can follow independently.
@@ -250,7 +267,7 @@ part, and writes each unit as byte-budgeted files.
   bytes come to about what missed the cap plus a second footer. Decision
   2 does not merge them again: a later write to either half rewrites that
   half alone, measuring, reading and encoding no more than it, and only
-  the first write pays the halving. A file halved on another ADR-0086
+ the first write pays the halving. A file halved on another [ADR-0086](./0086-bounded-persistence-input.md)
   bound the manifest does not record, such as a large value spilling into
   more pages, can still be merged and halved again.
 - **One-time re-encode after upgrading.** The first checkpoint of a kind
@@ -312,7 +329,7 @@ part, and writes each unit as byte-budgeted files.
   recycled, and the halving fallback does not retry it. Absorption widens
   the reach of a bad part: a write to a neighbour now reads it and fails
   the checkpoint too, and does not heal it.
-- **Page envelope.** One file of tiny rows reaches ADR-0086's
+- **Page envelope.** One file of tiny rows reaches [ADR-0086](./0086-bounded-persistence-input.md)'s
   `MAX_PAGES` (65,536) before `MAX_WINDOW` rows: each `ROW_GROUP_CAP`
   (64-row) group writes a dictionary page and a data page per leaf
   column, 3 for nodes (`id`, the `labels` item, `properties`) and 5 for
@@ -356,16 +373,16 @@ part, and writes each unit as byte-budgeted files.
   hold. A file halved for incompressible rows near the target is
   checkpointed twice more, and each write keeps the halves apart: it
   measures and reads one half and encodes only its dirty row.
-- ADR-0022 is immutable; it gains a **Later references** note pointing
+- [ADR-0022](./0022-id-window-checkpoint-shards.md) is immutable; it gains a **Later references** note pointing
   here, and this ADR is the merge its Decision 4 left as follow-on.
-- This ADR supersedes ADR-0180 Decision 3: clean runs are still copied,
+- This ADR supersedes [ADR-0180](./0180-checkpoint-shard-writes.md) Decision 3: clean runs are still copied,
   not re-encoded, but into the unit's byte-budgeted files instead of one
-  part per run. ADR-0180's stream-and-split-on-compact-bytes rules
-  (Decisions 1-2) stand. ADR-0180 is immutable; it gains a **Later
+ part per run. [ADR-0180](./0180-checkpoint-shard-writes.md)'s stream-and-split-on-compact-bytes rules
+ (Decisions 1-2) stand. [ADR-0180](./0180-checkpoint-shard-writes.md) is immutable; it gains a **Later
   references** note pointing here.
 
 ## Later references
 
-ADR-0563 raises the `ROW_GROUP_CAP` this ADR's page-envelope arithmetic
+[ADR-0563](./0563-parquet-row-group-cap-1024.md) raises the `ROW_GROUP_CAP` this ADR's page-envelope arithmetic
 carries (64-row groups → 1024-row groups), so a part's row bound rises
 with it; the window, byte-budget and coalescing rules here are unchanged.

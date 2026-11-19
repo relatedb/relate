@@ -1,13 +1,25 @@
+---
+type: adr
+area: infra
+date: 2026-09-29
+deciders: CypherLite maintainers
+name: 0271-stellar-review-deterministic-pipeline
+status: proposed
+tags:
+  - review
+title: Stellar review as a deterministic, incremental pipeline
+REFERENCES:
+  - "[[adr/0258-automated-pr-reviews]]"
+  - "[[adr/0275-stellar-review-scoped-incremental-rounds]]"
+---
+
 # 0271. Stellar review as a deterministic, incremental pipeline
 
-- **Status**: Proposed
 - **Renumbered**: from 0142 (shared-number cleanup)
-- **Date**: 2026-09-29
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
-ADR-0258 introduced automated PR reviews with OpenCode; commit 8be9e40b
+[ADR-0258](./0258-automated-pr-reviews.md) introduced automated PR reviews with OpenCode; commit 8be9e40b
 ("stellar-review as deterministic fan-out pipeline", PR #135) restructured
 the stellar-review skill from one monolithic pass into a fan-out of four
 focused passes plus a verify pass, to stop findings from trickling out over
@@ -111,7 +123,7 @@ structured output into GitHub comments and the verdict.
    `.opencode-verdict.txt` itself, and updates the summary comment
    (discover-then-edit) including the ledger block. The model never calls
    `gh` for posting and never writes the verdict; the existing fail-closed
-   enforcement chain (ADR-0258) is unchanged.
+ enforcement chain ([ADR-0258](./0258-automated-pr-reviews.md)) is unchanged.
 7. **Shared core for CI and local use.** The same tools and agent
    definitions drive the GitHub workflow and local invocations of the
    `stellar-review` skill; CI only adds the ledger-in-comment round-trip
@@ -152,7 +164,7 @@ structured output into GitHub comments and the verdict.
 
 ## Later references
 
-- ADR-0275 tightens decisions 2 and 6: the poster enforces scope
+- [ADR-0275](./0275-stellar-review-scoped-incremental-rounds.md) tightens decisions 2 and 6: the poster enforces scope
   membership and incremental-diff anchoring on findings (not just
   resolutions), and the ledger keeps a capped tail of resolved findings
   so later rounds cannot contradict earlier remedies.
@@ -180,7 +192,7 @@ structured output into GitHub comments and the verdict.
   state (open findings, current unit hashes, waivers) and compresses past
   a budget, so comment size stays under GitHub's 65536-char limit (a
   6000-unit PR's ledger compresses to ~20 KB).
-- ADR-0258's verdict chain (verdict file → HTML comment → marker line →
+- [ADR-0258](./0258-automated-pr-reviews.md)'s verdict chain (verdict file → HTML comment → marker line →
   fail-closed gate) is preserved verbatim; this ADR changes only *who*
   writes the verdict (a script, not the model).
 - The findings document is model output and is treated as untrusted at

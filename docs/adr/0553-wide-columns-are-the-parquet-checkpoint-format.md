@@ -1,11 +1,26 @@
-# ADR-0553: Wide-column parts are the Parquet checkpoint format
+---
+type: adr
+area: engine
+claim: 52b212458dcb568b3e98ee89b377fa4a5292a1b4
+name: 0553-wide-columns-are-the-parquet-checkpoint-format
+status: proposed
+tags:
+  - checkpoint
+  - parquet
+title: Wide-column parts are the Parquet checkpoint format
+REFERENCES:
+  - "[[adr/0127-store-version-compatibility]]"
+  - "[[adr/0534-wide-column-parquet-shards]]"
+  - "[[adr/0537-experimental-snapshot-codecs]]"
+SUPERSEDES:
+  - "[[adr/0534-wide-column-parquet-shards]]"
+---
 
-Status: Proposed
-Claim: 52b212458dcb568b3e98ee89b377fa4a5292a1b4
+# ADR-0553: Wide-column parts are the Parquet checkpoint format
 
 ## Context
 
-ADR-0534 added the wide-column part encoding as a per-store opt-in and kept
+[ADR-0534](./0534-wide-column-parquet-shards.md) added the wide-column part encoding as a per-store opt-in and kept
 the tagged-JSON property column as the default, so both encodings shipped
 behind a flag and either could be exercised in the field.
 
@@ -26,7 +41,7 @@ tagged-JSON part encoding is no longer written.
 Reading it stays: manifests at format versions 1–4, the monolithic v1/v2
 fallback and the tagged-JSON property column remain readable. The first
 checkpoint of a legacy-encoded store re-encodes every part wide — the
-one-time transition ADR-0534 defined — so a legacy store upgrades at its
+one-time transition [ADR-0534](./0534-wide-column-parquet-shards.md) defined — so a legacy store upgrades at its
 next checkpoint, not on open: the upgrade rewrites every part, and tying
 that to open would make each legacy store's first open a full re-encode at
 an unpredictable moment, when the next checkpoint does the same work at a
@@ -39,7 +54,7 @@ A store's encoding is a fact of its manifest, never of an open.
 
 The version registry is unchanged in shape: both the legacy (3/4) and wide
 (5/6) pairs stay writable-classified, because the experimental codecs
-(ADR-0537) still write the legacy pair; the wide pair is simply what the
+([ADR-0537](./0537-experimental-snapshot-codecs.md)) still write the legacy pair; the wide pair is simply what the
 Parquet codec writes now.
 
 ## Alternatives considered
@@ -51,7 +66,7 @@ Parquet codec writes now.
   decode and the upgrade path are then exercised by nothing; keeping the
   reader costs one code path and preserves the migration test surface that
   protects future format changes.
-- **Migrate legacy-encoded stores on open** (the ADR-0127 mechanism) —
+- **Migrate legacy-encoded stores on open** (the [ADR-0127](./0127-store-version-compatibility.md) mechanism) —
   rejected: it fronts the full re-encode on every legacy store's first
   open; the next checkpoint performs the identical rewrite without
   changing when the work happens.
@@ -64,8 +79,8 @@ Parquet codec writes now.
   id dirty — bounded, once per store, at its next checkpoint.
 - The wide flag disappears from the public Rust API and the CLI; the CLI's
   `parquet` snapshot-format value now denotes the wide encoding.
-- ADR-0534's recorded follow-ups (continuous per-key statistics,
-  reader-side decode) carry over unchanged; ADR-0534 gains a
+- [ADR-0534](./0534-wide-column-parquet-shards.md)'s recorded follow-ups (continuous per-key statistics,
+ reader-side decode) carry over unchanged; [ADR-0534](./0534-wide-column-parquet-shards.md) gains a
   later-references note pointing here.
 - Before the repository or its binaries are public, revisit nothing: the
   readable legacy range is the only compatibility surface left, and it

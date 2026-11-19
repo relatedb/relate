@@ -1,14 +1,26 @@
-# ADR-0510: The C ABI v2 commit call reports through its status
+---
+type: adr
+area: surface
+claim: ed05d0e11e359a0b1094074dc71ee7cccc0bd206
+name: 0510-ffi-commit-status-convention
+status: accepted
+tags:
+  - ffi
+title: The C ABI v2 commit call reports through its status
+REFERENCES:
+  - "[[adr/0310-bolt-bookmarks]]"
+  - "[[adr/0502-typed-c-abi-v2]]"
+  - "[[adr/0506-ffi-numeric-entity-ids]]"
+---
 
-Status: Accepted
-Claim: ed05d0e11e359a0b1094074dc71ee7cccc0bd206
+# ADR-0510: The C ABI v2 commit call reports through its status
 
 ## Context
 
-ADR-0502 gave the typed C ABI v2 one error channel (§2): every fallible
+[ADR-0502](./0502-typed-c-abi-v2.md) gave the typed C ABI v2 one error channel (§2): every fallible
 status call returns `cypherlite_status` and fills a trailing
 `char **error_json` out-param, while statement failures ride the result.
-`cypherlite_conn_commit` is the one call ADR-0502 §7 left off that
+`cypherlite_conn_commit` is the one call [ADR-0502](./0502-typed-c-abi-v2.md) §7 left off that
 convention: it returns `char *` — the transaction's bookmark — where
 NULL means either "the commit failed" (the shape rides `*error_json`)
 or "the transaction committed nothing" (no bookmark is fabricated for a
@@ -17,7 +29,7 @@ discriminator between the two NULLs, and a NULL `error_json` is a
 documented opt-out — so a caller that opted out of the detail cannot
 tell a failed commit from an empty one at all. The end-of-feature audit
 of the typed-ABI-v2 stream flagged this as blocker #2. The ABI is
-pre-public (ADR-0502 §8's additive-only freeze starts at the first
+pre-public ([ADR-0502](./0502-typed-c-abi-v2.md) §8's additive-only freeze starts at the first
 public release) and no external users exist, so the fix is a clean
 break, not an additive symbol.
 
@@ -32,13 +44,13 @@ cypherlite_status cypherlite_conn_commit(cypherlite_connection conn,
 ```
 
 - `CYPHERLITE_OK` with `*bookmark_out` non-NULL: committed — the
-  bookmark is the engine's ADR-0310 `cypherlite:<n>` string,
-  caller-owned and freed with `cypherlite_free_string` (ADR-0502 §7,
+ bookmark is the engine's [ADR-0310](./0310-bolt-bookmarks.md) `cypherlite:<n>` string,
+ caller-owned and freed with `cypherlite_free_string` ([ADR-0502](./0502-typed-c-abi-v2.md) §7,
   unchanged).
 - `CYPHERLITE_OK` with `*bookmark_out` NULL: committed nothing — no
   bookmark is fabricated for a commit that crossed no WAL boundary.
 - `CYPHERLITE_ERROR`: the commit failed — `*bookmark_out` is NULL and
-  `*error_json` carries the ADR-0502 §2 shape; passing NULL for
+ `*error_json` carries the [ADR-0502](./0502-typed-c-abi-v2.md) §2 shape; passing NULL for
   `error_json` still opts out of the detail, and the status alone now
   carries the failure/empty discrimination.
 
@@ -53,13 +65,13 @@ codebase rules out, on the one call whose payload is the durability
 position.
 
 `cypherlite_abi_version()` stays `2`: the signature change lands inside
-ADR-0502 §8's pre-public window, the same window ADR-0506 relied on
+[ADR-0502](./0502-typed-c-abi-v2.md) §8's pre-public window, the same window [ADR-0506](./0506-ffi-numeric-entity-ids.md) relied on
 (theirs added symbols, this one moves a signature — allowed only
 because no external users exist).
 
 ## Alternatives considered
 
-- **Keep the `char *` return (ADR-0502 §7 as written).** Rejected: an
+- **Keep the `char *` return ([ADR-0502](./0502-typed-c-abi-v2.md) §7 as written).** Rejected: an
   opted-out caller cannot distinguish a failed commit from an empty one,
   and the convention break is the audit blocker; the pre-public window
   is the one chance to fix it without a version bump.
@@ -84,5 +96,5 @@ because no external users exist).
   downstream nodes — expected, not an accident.
 - `cypherlite_free_string`'s domain is unchanged: the bookmark stays
   caller-owned, only the delivery path moved.
-- ADR-0502 §2's convention and §7's bookmark semantics stand; only the
+- [ADR-0502](./0502-typed-c-abi-v2.md) §2's convention and §7's bookmark semantics stand; only the
   commit call's signature moved (Later references note added there).

@@ -1,15 +1,29 @@
-# 0122. Pull credential hardening: plaintext refusal and env-file warnings
+---
+type: adr
+area: surface
+date: 2026-09-27
+deciders: CypherLite maintainers
+name: 0122-pull-auth-hardening
+status: proposed
+tags:
+  - load
+  - security
+title: "Pull credential hardening: plaintext refusal and env-file warnings"
+REFERENCES:
+  - "[[adr/0080-cli-pull-command]]"
+  - "[[adr/0109-bolt-tls]]"
+SUPERSEDES:
+  - "[[adr/0260-trust-boundary-error-sanitization]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-27
-- **Deciders**: CypherLite maintainers (Linear LABS-119)
+# 0122. Pull credential hardening: plaintext refusal and env-file warnings
 
 ## Context
 
 `cypherlite pull` materializes a remote Neo4j/Aura subgraph into a local
-`Database` (ADR-0080). Credentials come from a `KEY=VALUE` env file passed with
+`Database` ([ADR-0080](./0080-cli-pull-command.md)). Credentials come from a `KEY=VALUE` env file passed with
 `--from FILE` (or from the process environment when `--from` is omitted) and are
-sent to the Query API as HTTP Basic auth. ADR-0080 sets the transport to HTTP
+sent to the Query API as HTTP Basic auth. [ADR-0080](./0080-cli-pull-command.md) sets the transport to HTTP
 Query API v2 and maps `neo4j://host:7687` / `bolt://host:7687` to
 `http://host:7474`.
 
@@ -24,7 +38,7 @@ Two credential-exposure paths follow from that shape:
   `umask` (`0644`).
 
 `cypherlite-bolt` already has an explicit plaintext opt-in, `--allow-plaintext`
-(ADR-0109): loopback is allowed silently, and a non-loopback plaintext use
+([ADR-0109](./0109-bolt-tls.md)): loopback is allowed silently, and a non-loopback plaintext use
 requires the flag and prints a prominent warning. Pull should follow the same
 policy and the same flag spelling rather than invent a second vocabulary.
 
@@ -41,7 +55,7 @@ was written; this record states them rather than reopening them.
 origin to a **non-loopback** host unless `--allow-plaintext` is passed.
 
 - The flag spelling is **`--allow-plaintext`**, identical to
-  `cypherlite-bolt` (ADR-0109).
+ `cypherlite-bolt` ([ADR-0109](./0109-bolt-tls.md)).
 - The refusal happens before any network call, prints an error to stderr that
   names `--allow-plaintext`, and exits non-zero.
 - Loopback origins are allowed silently. `localhost`, `127.0.0.0/8`, and
@@ -59,7 +73,7 @@ a no-op on non-Unix hosts, where the mode is unavailable.
 ### Keep the loopback Query API mapping
 
 The `neo4j://` / `bolt://` → `http://host:7474` mapping for loopback hosts is
-kept as decided in ADR-0080. It is **not** changed to `https`.
+kept as decided in [ADR-0080](./0080-cli-pull-command.md). It is **not** changed to `https`.
 
 ### Refuse userinfo in `NEO4J_URI` outright
 
@@ -117,7 +131,7 @@ stripping code was removed.
   off-loopback refusal already closes the credential-exposure hole.
 - **A distinct flag spelling such as `--allow-cleartext-auth`.** Rejected: it
   splits the vocabulary for the same opt-in; consistency with the shipped
-  `cypherlite-bolt` flag (ADR-0109) matters more than wording preference.
+ `cypherlite-bolt` flag ([ADR-0109](./0109-bolt-tls.md)) matters more than wording preference.
 - **Silently allow plaintext everywhere (status quo).** Rejected: it exposes
   credentials whenever a user points pull at a non-loopback `http` endpoint.
 - **Refuse plaintext even on loopback.** Rejected: loopback never leaves the
@@ -132,7 +146,7 @@ stripping code was removed.
 
 ## Consequences
 
-- `--help`, `docs/api/cli/spec.md`, and the ADR-0080 decision text gain the
+- `--help`, `docs/api/cli/spec.md`, and the [ADR-0080](./0080-cli-pull-command.md) decision text gain the
   `--allow-plaintext` flag and the plaintext policy in the same change.
 - Off-loopback plaintext pulls that previously worked now fail non-zero until
   the user passes `--allow-plaintext`; the error names the flag.

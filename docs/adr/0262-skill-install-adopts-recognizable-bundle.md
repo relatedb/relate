@@ -1,13 +1,24 @@
+---
+type: adr
+area: cli
+date: 2026-09-26
+deciders: CypherLite maintainers
+name: 0262-skill-install-adopts-recognizable-bundle
+status: accepted
+tags:
+  - skill
+title: Skill install adopts a recognizable cypherlite bundle
+REFERENCES:
+  - "[[adr/0261-upgrade-skill-refresh-ownership]]"
+---
+
 # 0262. Skill install adopts a recognizable cypherlite bundle
 
-- **Status**: Accepted
 - **Renumbered**: from 0111 (shared-number cleanup)
-- **Date**: 2026-09-26
-- **Deciders**: CypherLite maintainers (Linear LABS-124)
 
 ## Context
 
-ADR-0261 taught the post-upgrade skill refresh to recognize an **unmarked**
+[ADR-0261](./0261-upgrade-skill-refresh-ownership.md) taught the post-upgrade skill refresh to recognize an **unmarked**
 cypherlite bundle by the `name: cypherlite` **and** `version:` lines in its
 `SKILL.md` frontmatter, and calls such a directory **Legacy**. That decision
 kept the standalone `cypherlite skill install|remove` command strict: its
@@ -42,7 +53,7 @@ destination is replaceable without `--force` when it is any of:
 1. **missing** — the destination does not exist (`NotFound`), so it is safe to
    create fresh. An unreadable or otherwise-uninspectable destination is
    **not** missing: any metadata error other than `NotFound` is refused without
-   `--force` (fail closed, matching ADR-0261's `Foreign` classification);
+ `--force` (fail closed, matching [ADR-0261](./0261-upgrade-skill-refresh-ownership.md)'s `Foreign` classification);
 2. **marker-owned** — it carries `.cypherlite-installed` as a real regular
    file (symlinks not followed), the existing ownership proof; or
 3. **a recognizable cypherlite bundle** — no marker, but `<dir>/SKILL.md`
@@ -71,7 +82,7 @@ now happen in the same process, at the same instant.
 predicate (`name: cypherlite` plus a `version:` line, read from `SKILL.md`
 frontmatter) moves to `surfaces/cypherlite-cli/src/skill/` as a single shared
 function. Both `skill_cmd`'s install-side replace check and `upgrade_cmd`'s
-classifier call it, so the two call sites cannot drift. ADR-0261 already made
+classifier call it, so the two call sites cannot drift. [ADR-0261](./0261-upgrade-skill-refresh-ownership.md) already made
 the marker rules shared, load-bearing policy; this decision extends the same
 rule to the bundle recognizer.
 
@@ -98,7 +109,7 @@ self-replace, and in both cases the incoming bundle is the one that should win.
   performs the replacement.
 - **Waive the finding as accepted risk.** Rejected: the fix is small and keeps
   the semantics coherent — the recognizable-bundle recognizer already had to
-  exist for ADR-0261, so moving it into the replacing process adds no new
+ exist for [ADR-0261](./0261-upgrade-skill-refresh-ownership.md), so moving it into the replacing process adds no new
   concept, and accepting a known TOCTOU in an ownership check would leave the
   guard weaker than its own documentation claims.
 
@@ -109,16 +120,16 @@ self-replace, and in both cases the incoming bundle is the one that should win.
   the child's write is no longer force-replaced; the TOCTOU window
   (`OPLANE_REQ-00263246`) is closed for the install path.
 - The upgrade refresh passes no `--force`: the child adopts a recognized Legacy
-  bundle on its own. The user-visible outcome of ADR-0261's legacy adoption is
+ bundle on its own. The user-visible outcome of [ADR-0261](./0261-upgrade-skill-refresh-ownership.md)'s legacy adoption is
   unchanged, but the mechanism is now install-side rather than parent-side.
 - `skill remove` behavior is unchanged: an unmarked directory is still refused
   without `--force`.
 - The recognizable-bundle predicate becomes a single shared function in
   `crate::skill`, called by both `skill_cmd` and `upgrade_cmd`; changing the
   `name: cypherlite` + `version:` convention now requires updating that one
-  function, its callers, the CLI tests, and this ADR plus ADR-0261.
+ function, its callers, the CLI tests, and this ADR plus [ADR-0261](./0261-upgrade-skill-refresh-ownership.md).
 - `--force` remains the explicit user-requested clobber, and is now the only
   way to replace a directory that is neither marker-owned nor recognizable.
 - `skill install` replaces a recognized bundle without a prompt, consistent
-  with ADR-0261's "recognized is ours to update" rule; foreign content is still
+ with [ADR-0261](./0261-upgrade-skill-refresh-ownership.md)'s "recognized is ours to update" rule; foreign content is still
   reported and left untouched.

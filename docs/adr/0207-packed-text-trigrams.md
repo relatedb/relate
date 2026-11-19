@@ -1,15 +1,29 @@
+---
+type: adr
+area: engine
+date: 2026-10-11
+deciders: CypherLite maintainers
+name: 0207-packed-text-trigrams
+status: accepted
+tags:
+  - index
+title: Packed width-3 TEXT postings
+REFERENCES:
+  - "[[adr/0018-concurrent-snapshot-reads]]"
+  - "[[adr/0030-string-prefix-trigram-indexes]]"
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0063-lazy-string-index-postings]]"
+---
+
 # 0207. Packed width-3 TEXT postings
 
-- **Status**: Accepted
-- **Date**: 2026-10-11
-- **Deciders**: CypherLite maintainers
-- **Amends**: ADR-0030, ADR-0063 (trigram posting shape and the text term of the ADR-0042 formula)
+- **Amends**: [ADR-0030](./0030-string-prefix-trigram-indexes.md), [ADR-0063](./0063-lazy-string-index-postings.md) (trigram posting shape and the text term of the [ADR-0042](./0042-graph-memory-limit.md) formula)
 
 ## Context
 
 `CREATE TEXT INDEX` posted every overlapping 1-gram, 2-gram, and 3-gram of each indexed string. Each gram was an owned `String` key in `HashMap<String, HashSet<NodeId>>`, and every node kept a second `HashSet<String>` of those grams so an update could find them after the property changed. A string of `C` characters therefore stored about `3C` windows, twice, and the 1-grams pointed at almost every node.
 
-`CONTAINS` only needs a superset of the true matches. The seek rechecks `contains` at the snapshot (ADR-0018).
+`CONTAINS` only needs a superset of the true matches. The seek rechecks `contains` at the snapshot ([ADR-0018](./0018-concurrent-snapshot-reads.md)).
 
 ## Decision
 

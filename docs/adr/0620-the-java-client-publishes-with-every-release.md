@@ -1,11 +1,21 @@
-# 0620. The Java client publishes with every release
+---
+type: adr
+area: infra
+claim: f4ff7f7522b2c6dfc00cf2ae9174d1bba7d67aec
+name: 0620-the-java-client-publishes-with-every-release
+status: proposed
+tags:
+  - release
+title: The Java client publishes with every release
+REFERENCES:
+  - "[[adr/0591-java-client-maven-central-coordinates]]"
+---
 
-Status: Proposed
-Claim: f4ff7f7522b2c6dfc00cf2ae9174d1bba7d67aec
+# 0620. The Java client publishes with every release
 
 ## Context
 
-ADR-0591 fixed the Java client's coordinates and recorded publication as a
+[ADR-0591](./0591-java-client-maven-central-coordinates.md) fixed the Java client's coordinates and recorded publication as a
 manual dispatch of the registries workflow: Maven Central is the one
 registry without trusted publishing, so it authenticates with a project
 key and a Portal token held as environment secrets rather than with the
@@ -34,7 +44,7 @@ so its rules were first parsed at publish time.
 
 ## Alternatives considered
 
-- **Keep publication a manual dispatch, as ADR-0591 records.** Rejected:
+- **Keep publication a manual dispatch, as [ADR-0591](./0591-java-client-maven-central-coordinates.md) records.** Rejected:
   the jars are a shipped artifact like the wheels and the tarballs, and a
   release that silently omits one is not a state worth preserving.
 - **Publish Maven on the existing opt-in registries call.** Rejected: that

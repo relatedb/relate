@@ -1,11 +1,23 @@
-# ADR-0596: An idiomatic layer over the Swift surface
+---
+type: adr
+area: surface
+claim: f2fd14e96aa08df0c82a900c4fd81723f93f934a
+name: 0596-swift-idiomatic-layer
+status: proposed
+tags:
+  - clients
+title: An idiomatic layer over the Swift surface
+REFERENCES:
+  - "[[adr/0433-reinstate-swift-surface]]"
+SUPERSEDES:
+  - "[[adr/0433-reinstate-swift-surface]]"
+---
 
-Status: Proposed
-Claim: f2fd14e96aa08df0c82a900c4fd81723f93f934a
+# ADR-0596: An idiomatic layer over the Swift surface
 
 ## Context
 
-ADR-0433 reinstated Swift as a faithful wrapper of the tabular C ABI. Its
+[ADR-0433](./0433-reinstate-swift-surface.md) reinstated Swift as a faithful wrapper of the tabular C ABI. Its
 design record chose "synchronous core API; apps call it from their own
 actor" and deferred `Codable` rows. Two consumers written since, the
 in-repository iOS example and an external iOS app, each hand-built the same
@@ -23,7 +35,7 @@ engine; nothing here adds a protocol or needs an ABI change.
 1. **Managed asynchronous access.** `Database` gains asynchronous read and
    write entries. Each runs a *synchronous* body on a serial queue owned by a
    pooled connection (one writer, a bounded set of readers). This supersedes
-   "synchronous core API" in ADR-0433's design record. The caller's task
+ "synchronous core API" in [ADR-0433](./0433-reinstate-swift-surface.md)'s design record. The caller's task
    suspends while that queue blocks in the engine; a running statement
    still cannot be cancelled. The synchronous API remains.
 2. **Reads and writes are transactions.** A read always rolls back: the ABI

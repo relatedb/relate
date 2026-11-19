@@ -1,16 +1,28 @@
+---
+type: adr
+area: infra
+date: 2026-10-13
+name: 0244-in-process-query-sampling-profiler
+status: accepted
+tags:
+  - latency-suite
+title: In-process sampling profiler for the query-latency suite
+REFERENCES:
+  - "[[adr/0212-tck-release-in-ci]]"
+  - "[[adr/0227-ontology-document-format]]"
+  - "[[adr/0243-query-latency-suite]]"
+  - "[[adr/0245-query-latency-baseline-environment-and-gate]]"
+---
+
 # ADR-0244: In-process sampling profiler for the query-latency suite
 
-> Renamed from ADR-0227: the number collided with
+> Renamed from [ADR-0227](./0227-ontology-document-format.md): the number collided with
 > docs/adr/0227-* on main (both were taken by parallel PRs). The
 > decision is unchanged; references were updated in the same change.
 
-Status: Accepted
-
-Date: 2026-10-13
-
 ## Context
 
-ADR-0243 gives the repo a per-query latency number. To act on a slow or
+[ADR-0243](./0243-query-latency-suite.md) gives the repo a per-query latency number. To act on a slow or
 regressed query, an engineer or agent then needs to know **where** the
 time goes. Today:
 
@@ -21,7 +33,7 @@ time goes. Today:
   `perf` only: it needs `perf_event_paranoid` access, does not run on
   macOS, where most development happens, and does not cover single
   queries.
-- The `release` and `corpus` (ADR-0212) profiles carry no debug info, so
+- The `release` and `corpus` ([ADR-0212](./0212-tck-release-in-ci.md)) profiles carry no debug info, so
   any sampler shows unsymbolized or inlined-away frames.
 
 Agents read text. A profile they can use is a ranked list of frames and
@@ -30,7 +42,7 @@ platform-specific tooling.
 
 ## Decision
 
-1. **A `profile` subcommand of `query-latency`** (ADR-0243):
+1. **A `profile` subcommand of `query-latency`** ([ADR-0243](./0243-query-latency-suite.md)):
    `query-latency profile --sf 0.1 --qid 19 [--seconds 10]
    [--frequency 997] [--indexes upstream|text] [--sampler pprof|none]`.
    It loads the workload, runs the query once untimed, then loops it for
@@ -60,7 +72,7 @@ platform-specific tooling.
 4. **A `profiling` cargo profile** in the workspace `Cargo.toml`:
    inherits `release`, `debug = "line-tables-only"`, `strip = "none"`.
    `make query-latency-profile QID=19 [SF=0.1] [SECONDS=10]` builds with
-   it and runs the subcommand on the host (not in the ADR-0245 Docker
+ it and runs the subcommand on the host (not in the [ADR-0245](./0245-query-latency-baseline-environment-and-gate.md) Docker
    environment: a profile is a diagnosis, not a frozen measurement).
 
 5. **No engine instrumentation.** Nothing in `cypherlite/*` changes; the

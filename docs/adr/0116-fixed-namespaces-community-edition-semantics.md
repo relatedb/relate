@@ -1,20 +1,53 @@
+---
+type: adr
+area: engine
+date: 2026-09-27
+deciders: CypherLite maintainers
+name: 0116-fixed-namespaces-community-edition-semantics
+status: accepted
+tags:
+  - conformance
+  - namespaces
+title: Fixed namespaces with Neo4j Community Edition database semantics
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0080-cli-pull-command]]"
+  - "[[adr/0081-opt-in-load-csv-file-capability]]"
+  - "[[adr/0094-preflight-wal-acceptance]]"
+  - "[[adr/0095-durable-checkpoint-schema-theater]]"
+  - "[[adr/0097-exclusive-storage-ownership]]"
+  - "[[adr/0117-namespace-selection-apis-and-bolt]]"
+  - "[[adr/0118-cli-namespace-flag]]"
+  - "[[adr/0119-cip-eval-drops-enterprise-database-scenarios]]"
+  - "[[adr/0120-ontology-document-persistence]]"
+  - "[[adr/0121-ontology-procedures]]"
+  - "[[adr/0142-browser-compat-record-shapes]]"
+  - "[[adr/0229-remove-system-ontologies-cypher-surface]]"
+  - "[[adr/0260-trust-boundary-error-sanitization]]"
+  - "[[adr/0276-store-level-databases-catalog]]"
+  - "[[adr/0307-bolt-failure-carries-neo4j-status-codes]]"
+  - "[[adr/0554-dash-bearing-element-id-segment]]"
+  - "[[adr/0590-administration-command-composition-boundary]]"
+  - "[[adr/0593-system-ontologies-visibility-preview-gate]]"
+SUPERSEDES:
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+---
+
 # 0116. Fixed namespaces with Neo4j Community Edition database semantics
 
-- **Status**: Accepted
-- **Date**: 2026-09-27
-- **Deciders**: CypherLite maintainers (Linear LABS-102)
-- **Later references**: ADR-0142 fills in the SHOW DATABASES fields this ADR
+- **Later references**: [ADR-0142](./0142-browser-compat-record-shapes.md) fills in the SHOW DATABASES fields this ADR
   left unspecified (`address`, `role`, `statusMessage`, `writer`) with fixed
   constants for Neo4j Desktop Browser compatibility, and confirms the
   `access`/status/`default`/`home` values decided here.
-  ADR-0229 makes `system_ontologies` listed but not queryable: §1's
+ [ADR-0229](./0229-remove-system-ontologies-cypher-surface.md) makes `system_ontologies` listed but not queryable: §1's
   "Readable with ordinary Cypher" and §4's 42N18 write gate are superseded —
   every statement routed there except §2's administration commands now
-  fails with 42N17 (ADR-0229 §2's text), reads included; §5's capture
+ fails with 42N17 ([ADR-0229](./0229-remove-system-ontologies-cypher-surface.md) §2's text), reads included; §5's capture
   captures a permanently empty graph; §7's `cypherlite.system_ontologies`
   segment is decode-only (no id is minted there); §10's slot is never built
   or replaced. The §6 SHOW row and its values stand.
-  ADR-0590 implements the off-system half of §2's 51N28 boundary recorded
+ [ADR-0590](./0590-administration-command-composition-boundary.md) implements the off-system half of §2's 51N28 boundary recorded
   below: the "deliberately not implemented" divergence is superseded for
   statements not routed to `system`, where live rejects every composed
   administration command — a `UNION` arm included — and the engine now does
@@ -29,7 +62,7 @@ and system information) without mixing them in one graph.
 
 Today a store holds exactly one graph (`Shared.graph`,
 `cypherlite/cypherlite/src/lib.rs:69-70`). Neo4j's multi-database surface
-exists only as metadata, the "theater" of ADR-0094 and ADR-0095:
+exists only as metadata, the "theater" of [ADR-0094](./0094-preflight-wal-acceptance.md) and [ADR-0095](./0095-durable-checkpoint-schema-theater.md):
 
 - `CREATE/ALTER/DROP DATABASE` add or remove a row in `TheaterData.databases`
   (`cypherlite/cypherlite-executor/src/exec/catalog_schema.rs:397-487`). No
@@ -65,7 +98,7 @@ Cypher. CypherLite has one user database, so it holds at most one ontology.
    |---|---|---|
    | `neo4j` | standard / read-write; `default` and `home` | The user data graph. Existing stores are this namespace. |
    | `system` | system / read-write | CE rules: SHOW commands, supported administration commands and procedure calls only. It holds no graph data. |
-   | `system_ontologies` | standard / **read-only** | Readable with ordinary Cypher. Cypher cannot write it; only the `db.ontology.*` procedures change it (ADR-0121). It holds at most one ontology, the one for `neo4j`. |
+ | `system_ontologies` | standard / **read-only** | Readable with ordinary Cypher. Cypher cannot write it; only the `db.ontology.*` procedures change it ([ADR-0121](./0121-ontology-procedures.md)). It holds at most one ontology, the one for `neo4j`. |
 
 2. **Administration commands follow CE.** These are supported:
    `SHOW DATABASE[S] [name]`, `SHOW DEFAULT DATABASE`, `SHOW HOME DATABASE`,
@@ -97,7 +130,7 @@ Cypher. CypherLite has one user database, so it holds at most one ontology.
    the system database: SHOW DATABASES"). That boundary is DBMS
    session-model semantics — session routing and privilege enforcement —
    and is deliberately not implemented: a single-user embedded engine with
-   no privileges and a store-level catalog (ADR-0276) has no wrong
+ no privileges and a store-level catalog ([ADR-0276](./0276-store-level-databases-catalog.md)) has no wrong
    database a composed administration command could run against, so the
    no-`USE` composed forms keep running from any namespace (user decision
    2026-11-04; the spec harness tags those scenarios
@@ -123,8 +156,8 @@ Cypher. CypherLite has one user database, so it holds at most one ontology.
    running.
 
 3. **`USE` routes a statement.** A statement targets the namespace named by
-   its `USE` clause, or else the connection's session namespace (ADR-0117,
-   ADR-0118). Graph references resolve before execution:
+ its `USE` clause, or else the connection's session namespace ([ADR-0117](./0117-namespace-selection-apis-and-bolt.md),
+ [ADR-0118](./0118-cli-namespace-flag.md)). Graph references resolve before execution:
    - A static name must be one of the fixed namespaces.
      `graph.byElementId(<string>)` resolves through the element id scheme in
      (7); an id that names no namespace fails as in Neo4j (42NA7).
@@ -151,7 +184,7 @@ Cypher. CypherLite has one user database, so it holds at most one ontology.
      `No write operations are allowed on this database. The database is in
      read-only mode.` (GQLSTATUS 42N18). Writes include data clauses; index,
      constraint and graph-type DDL; and write procedures other than those of
-     ADR-0121.
+ [ADR-0121](./0121-ontology-procedures.md).
 
 5. **Transactions read any namespace and write only `neo4j`.** This is Neo4j's
    query-router rule (read many, write one); `neo4j` is the only namespace
@@ -190,26 +223,26 @@ Cypher. CypherLite has one user database, so it holds at most one ontology.
    and replay and left out of the next checkpoint image. A fixed namespace
    without an entry defaults to `CYPHER 25`. As today, the default language is
    stored and shown but does not select the parser version.
-   **Later references**: ADR-0276 moves the table out of
+ **Later references**: [ADR-0276](./0276-store-level-databases-catalog.md) moves the table out of
    `TheaterData.databases` into the store-level `DatabasesCatalog` shared
    through `StoreServices`; the format and invariant statements here stand.
 
 9. **Errors.** Messages match CE's text. The engine gains the error kinds
    `UnsupportedAdministrationCommand` and `WriteOnReadOnlyAccessDatabase`;
-   `DatabaseNotFound` already exists. Bolt keeps ADR-0260's codes, so these
+ `DatabaseNotFound` already exists. Bolt keeps [ADR-0260](./0260-trust-boundary-error-sanitization.md)'s codes, so these
    errors reach drivers as `CypherLite.Error` with CE's message.
-   **Later references**: ADR-0307 replaces those codes with Neo4j status
+ **Later references**: [ADR-0307](./0307-bolt-failure-carries-neo4j-status-codes.md) replaces those codes with Neo4j status
    codes: `DatabaseNotFound` is `Neo.ClientError.Database.DatabaseNotFound`
    (a typed engine variant now), the other CE errors
    `Neo.ClientError.Statement.SemanticError`; CE's messages are unchanged.
 
 10. **Engine shape.** `Shared` holds one slot per namespace: `neo4j` is today's
     live graph, `system` an empty graph, and `system_ontologies` an immutable
-    graph that is replaced as a whole (ADR-0120). The planner lifts the static
+ graph that is replaced as a whole ([ADR-0120](./0120-ontology-document-persistence.md)). The planner lifts the static
     `USE` target into the plan, and the connection resolves it and enforces
     the rules above. Executor operators do not change. Registered procedures
-    and the LOAD CSV policy (ADR-0081) move from the graph to the store, and
-    the memory limit (ADR-0042) covers every namespace. `pull` (ADR-0080)
+ and the LOAD CSV policy ([ADR-0081](./0081-opt-in-load-csv-file-capability.md)) move from the graph to the store, and
+ the memory limit ([ADR-0042](./0042-graph-memory-limit.md)) covers every namespace. `pull` ([ADR-0080](./0080-cli-pull-command.md))
     keeps writing `neo4j`.
 
 ## Alternatives considered
@@ -219,7 +252,7 @@ Cypher. CypherLite has one user database, so it holds at most one ontology.
   and lifecycle. The requested domains are a fixed set, and CE, the closest
   Neo4j product, has one user database.
 - **A separate store per namespace.** Rejected: a `.cl` bundle carries one WAL
-  stream (ADR-0074), ADR-0097 refuses stores nested in stores, and creating or
+ stream ([ADR-0074](./0074-single-file-bundle-vfs.md)), [ADR-0097](./0097-exclusive-storage-ownership.md) refuses stores nested in stores, and creating or
   dropping a namespace would span two durability domains.
 - **Label or property partitions inside one graph.** Rejected: every operator,
   index, constraint and procedure would have to filter, a missed filter leaks
@@ -228,7 +261,7 @@ Cypher. CypherLite has one user database, so it holds at most one ontology.
   and `CREATE DATABASE` reports success for a database that does not exist.
 - **Resolve `USE` lazily, failing only when the statement touches graph
   data.** Rejected: `USE nosuch RETURN 1` would succeed where CE fails. It
-  would only keep scenarios green that Neo4j itself rejects (ADR-0119).
+ would only keep scenarios green that Neo4j itself rejects ([ADR-0119](./0119-cip-eval-drops-enterprise-database-scenarios.md)).
 - **Make `system` a readable data graph now.** Rejected: CE rejects data
   clauses there. Relaxing an error later is backward compatible; tightening
   one is not.
@@ -237,7 +270,7 @@ Cypher. CypherLite has one user database, so it holds at most one ontology.
 - **One namespace per transaction.** Rejected: it would forbid reading the
   ontology and writing data that follows it in one transaction. Since only
   `neo4j` is writable, Neo4j's read-many/write-one rule costs no more.
-- **Neo4j status codes over Bolt.** Rejected: ADR-0260 keeps CypherLite's
+- **Neo4j status codes over Bolt.** Rejected: [ADR-0260](./0260-trust-boundary-error-sanitization.md) keeps CypherLite's
   codes, and changing that is a global decision, not a per-feature one.
 
 ## Consequences
@@ -250,24 +283,24 @@ Cypher. CypherLite has one user database, so it holds at most one ontology.
 - Neither the WAL nor the snapshot format changes. Stores stay readable by
   older binaries, which keep their old theater behaviour.
 - 24 frozen CIP-eval scenarios exercise Enterprise or composite behaviour that
-  CE rejects; ADR-0119 removes them from the frozen set. Crate tests that use
+ CE rejects; [ADR-0119](./0119-cip-eval-drops-enterprise-database-scenarios.md) removes them from the frozen set. Crate tests that use
   `CREATE DATABASE analytics` or `USE graph.byName` are rewritten.
 - `docs/limitations.md`, the "Cypher dialect" section of `AGENTS.md`, the API
   specs and the agent skill bundle change with the implementation. The error
   texts are checked against a live CE container and pinned as test fixtures.
-- ADR-0094 and ADR-0095 gain Later references notes: their database theater
+- [ADR-0094](./0094-preflight-wal-acceptance.md) and [ADR-0095](./0095-durable-checkpoint-schema-theater.md) gain Later references notes: their database theater
   rows now mirror the fixed namespaces.
 
 ## Later references
 
-ADR-0554 makes the element-id namespace segment of (7) dash-bearing and
+[ADR-0554](./0554-dash-bearing-element-id-segment.md) makes the element-id namespace segment of (7) dash-bearing and
 short: the writable namespace's segment is now `rl-id` and the ontology
 namespace's is `rl-onto` (this ADR's `cypherlite` spelling predates the
 product rename; the segment was `relate`, then the dash-bearing
 `relate-neo4j`, at the time of those changes). The three-part shape and the
 segment-to-namespace mapping of (7) are unchanged.
 
-ADR-0593 narrows §1/§6's "listed" default for `system_ontologies`: the
+[ADR-0593](./0593-system-ontologies-visibility-preview-gate.md) narrows §1/§6's "listed" default for `system_ontologies`: the
 namespace is visible only under the `ontology` preview opt-in
 (`RELATE_PREVIEW`), so `SHOW DATABASES` lists the two CE rows while the
 opt-in is off, and the name resolves as unknown (42N00) at every routing

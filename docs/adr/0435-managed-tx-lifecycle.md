@@ -1,16 +1,34 @@
-# ADR-0435: The managed-transaction lifecycle contract
+---
+type: adr
+area: surface
+claim: f2485a766ad5ffda0e42170cbed3d52b3ca2e34d
+name: 0435-managed-tx-lifecycle
+status: proposed
+tags:
+  - http
+  - transactions
+title: The managed-transaction lifecycle contract
+REFERENCES:
+  - "[[adr/0028-user-visible-transactions]]"
+  - "[[adr/0038-lock-free-snapshot-pins]]"
+  - "[[adr/0111-engine-bounded-execution]]"
+  - "[[adr/0237-query-api-tx-routes]]"
+  - "[[adr/0333-processing-memory-controls]]"
+  - "[[adr/0428-embeddable-http-query-api]]"
+SUPERSEDES:
+  - "[[adr/0237-query-api-tx-routes]]"
+---
 
-Status: Proposed
-Claim: f2485a766ad5ffda0e42170cbed3d52b3ca2e34d
+# ADR-0435: The managed-transaction lifecycle contract
 
 ## Context
 
-ADR-0237 mounted the Query API v2 managed-transaction routes on the
-engine's real explicit transactions (ADR-0028). Every tx reply carries a
+[ADR-0237](./0237-query-api-tx-routes.md) mounted the Query API v2 managed-transaction routes on the
+engine's real explicit transactions ([ADR-0028](./0028-user-visible-transactions.md)). Every tx reply carries a
 `transaction.expires` value computed as "now + 60 s"
 (`surfaces/cypherlite-http/src/tx.rs`, `tx_block`). That value is
 fabricated per reply: the registry (`TxRegistry`) records no
-last-activity, enforces no deadline, and has no size bound. ADR-0237
+last-activity, enforces no deadline, and has no size bound. [ADR-0237](./0237-query-api-tx-routes.md)
 recorded exactly this: an open tx lives until commit, rollback, or server
 shutdown, and a client-side bookkeeping hint is all `expires` is.
 
@@ -22,24 +40,24 @@ The engine is single-writer: the commit loop is the sole write
 serialization point, and dropping a `Connection` releases its pin
 deterministically. A full pin table fails with the typed
 `Error::Execution("snapshot pin: all 256 slots are held")` after a bounded
-retry (ADR-0038, ADR-0111).
+retry ([ADR-0038](./0038-lock-free-snapshot-pins.md), [ADR-0111](./0111-engine-bounded-execution.md)).
 
 The HTTP Query API is one request per connection (`Connection: close`,
 `surfaces/cypherlite-http/src/http.rs`). The connection that began a
 transaction is already gone before its next statement, so the TCP
-connection cap (`--max-connections`, ADR-0333, default `0` = unlimited)
+connection cap (`--max-connections`, [ADR-0333](./0333-processing-memory-controls.md), default `0` = unlimited)
 cannot bound open transactions: even `--max-connections 1` admits an
 unbounded number of sequential begin requests, each leaving a registry
 entry that holds a pin. An abandoned transaction is therefore permanent
 state today: it outlives its connection, is unreachable except by the
-client that holds the id (or its owner, ADR-0428), and holds a pin until
+client that holds the id (or its owner, [ADR-0428](./0428-embeddable-http-query-api.md)), and holds a pin until
 restart. Once the table is exhausted, every statement on every surface
 fails, and the HTTP surface reports it as a 400 with the general code
 (`run_error`'s catch-all) — a refusal that names neither the transaction
 registry nor the client that caused it.
 
-ADR-0237 deferred idle-timeout enforcement ("needs a reaper"). ADR-0428
-made the registry embeddable and owner-scoped. ADR-0333 established the
+[ADR-0237](./0237-query-api-tx-routes.md) deferred idle-timeout enforcement ("needs a reaper"). [ADR-0428](./0428-embeddable-http-query-api.md)
+made the registry embeddable and owner-scoped. [ADR-0333](./0333-processing-memory-controls.md) established the
 knob discipline this ADR follows: flag → environment → default, `0` turns
 a control off, a malformed environment value is a loud startup error, and
 an unlimited control warns on a non-loopback bind.
@@ -115,12 +133,12 @@ an unlimited control warns on a non-loopback bind.
   full registry starve every other consumer and reproduce the failure this
   ADR removes; 64 refuses legitimate concurrent managed workloads the
   engine can serve.
-- Unlike the ADR-0333 connection cap, whose default is `0` (unlimited),
+- Unlike the [ADR-0333](./0333-processing-memory-controls.md) connection cap, whose default is `0` (unlimited),
   the registry default is non-zero. An abandoned transaction outlives its
   connection — which is already closed — and holds a pin until idle
   expiry, so a connection-cap default cannot protect it and an unbounded
   default would preserve the permanent-leak failure. `0` remains the
-  explicit unlimited spelling, following the ADR-0333 convention.
+ explicit unlimited spelling, following the [ADR-0333](./0333-processing-memory-controls.md) convention.
 - The cap is checked after the sweep and **before** `connect_namespace`
   and `Connection::begin`, so an over-cap begin never takes a pin. The
   cap counts open transactions, not statements: an entry leased out of
@@ -152,7 +170,7 @@ an unlimited control warns on a non-loopback bind.
   (`transaction tx-7 expired after 60s idle`). The HTTP status stays 404
   because the client's recovery is identical to a closed transaction
   (abandon the block and retry); the code is what distinguishes expiry
-  for logs and telemetry. Owner scoping (ADR-0428) is preserved: a caller
+ for logs and telemetry. Owner scoping ([ADR-0428](./0428-embeddable-http-query-api.md)) is preserved: a caller
   that does not own the transaction receives the unchanged generic
   404/`42000` not-found, so expiry never discloses that the id existed.
   Unknown and already-closed ids keep today's 404/`42000`.
@@ -179,7 +197,7 @@ an unlimited control warns on a non-loopback bind.
 - The limits are `TxRegistry` state, set by a configured constructor;
   `TxRegistry::new()` keeps both defaults. Product `serve` constructs the
   registry from the resolved values and hands it to `HttpConfig` as
-  today (ADR-0428). `HttpConfig` does not grow a second copy of the
+ today ([ADR-0428](./0428-embeddable-http-query-api.md)). `HttpConfig` does not grow a second copy of the
   limits. The in-process model is typed: an idle timeout of `None`
   disables expiry and a cap of `None` is unlimited. The `0` spelling
   above is the **wire/flag** spelling; `TxLimits::new` converts it at
@@ -187,7 +205,7 @@ an unlimited control warns on a non-loopback bind.
 - A startup warning fires only when the registry is wholly unguarded —
   `--max-open-transactions 0` and `--tx-idle-timeout-secs 0` together —
   on a non-loopback bind, naming both flags. Either protection alone is
-  silent, following the ADR-0333 warning posture.
+ silent, following the [ADR-0333](./0333-processing-memory-controls.md) warning posture.
 - The implementing change updates `docs/api/http/spec.md` (managed
   transactions and the error table), the hand-written `serve --help`
   text, and the flag table in the same change (AGENTS.md §3).
@@ -218,7 +236,7 @@ an unlimited control warns on a non-loopback bind.
   every reply, so no client can distinguish a live transaction from an
   abandoned one; an abandoned transaction is unreachable except by its
   owner and holds a pin until restart; the advertised contract is false.
-- **Follow the ADR-0333 default and ship the cap unlimited (`0`).**
+- **Follow the [ADR-0333](./0333-processing-memory-controls.md) default and ship the cap unlimited (`0`).**
   Rejected: the connection-cap precedent protects a resource that the
   connection itself owns and releases on close; a transaction outlives
   its connection, so the same default would preserve the leak. `0` stays
@@ -246,11 +264,11 @@ an unlimited control warns on a non-loopback bind.
   `--tx-idle-timeout-secs` (or disable expiry).
 - `expires` becomes truthful. With expiry disabled it is omitted; the
   default keeps it present, so a client that reads it (Browser's
-  bookkeeping only, per ADR-0237) sees the same member.
-- ADR-0237's "we do not expire open transactions" sentence and its
+ bookkeeping only, per [ADR-0237](./0237-query-api-tx-routes.md)) sees the same member.
+- [ADR-0237](./0237-query-api-tx-routes.md)'s "we do not expire open transactions" sentence and its
   deferred "idle-timeout enforcement matching `expires`" alternative are
   superseded. Per the immutable-ADR rule, the implementing change adds a
-  Later references note to ADR-0237 (accepted ADRs are not edited by this
+ Later references note to [ADR-0237](./0237-query-api-tx-routes.md) (accepted ADRs are not edited by this
   decision).
 - At the defaults, one HTTP registry can hold at most 128 of the 256 pin
   slots. Engine pin exhaustion from non-transaction traffic remains

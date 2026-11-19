@@ -1,7 +1,15 @@
-# ADR-0355: FxHash core maps and interned-domain reads on the traversal hot path
+---
+type: adr
+area: engine
+claim: 97a46d752ea5d02f10822749d17c689c286df0ec
+name: 0355-fxhash-core-maps-and-interned-domain-reads
+status: accepted
+tags:
+  - perf
+title: FxHash core maps and interned-domain reads on the traversal hot path
+---
 
-Status: Accepted
-Claim: 97a46d752ea5d02f10822749d17c689c286df0ec
+# ADR-0355: FxHash core maps and interned-domain reads on the traversal hot path
 
 ## Context
 

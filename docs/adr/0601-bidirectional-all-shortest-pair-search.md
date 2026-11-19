@@ -1,16 +1,29 @@
+---
+type: adr
+area: engine
+claim: 1bbbe0855655bf448eb7de32f18f5694ee15a203
+name: 0601-bidirectional-all-shortest-pair-search
+status: proposed
+tags:
+  - pattern-matching
+title: All-shortest pair partitions search from both ends
+REFERENCES:
+  - "[[adr/0034-bidirectional-shortestpath]]"
+  - "[[adr/0037-shallow-bound-shortestpath]]"
+  - "[[adr/0186-match-clause-shortest-path-bfs]]"
+  - "[[adr/0189-shared-shortest-path-search]]"
+  - "[[adr/0555-operators-stream-rows-never-accumulate]]"
+---
+
 # ADR-0601: All-shortest pair partitions search from both ends
-
-Status: Proposed
-
-Claim: 1bbbe0855655bf448eb7de32f18f5694ee15a203
 
 ## Context
 
 A shortest-path pattern with both ends fixed is a pair partition. The
-single-path forms already meet in the middle (ADR-0034, ADR-0037), so their
+single-path forms already meet in the middle ([ADR-0034](./0034-bidirectional-shortestpath.md), [ADR-0037](./0037-shallow-bound-shortestpath.md)), so their
 cost follows two balls of about half the distance. The all-path forms
 (`allShortestPaths`, `ALL SHORTEST`) did not: they ran the one-sided layered
-search of ADR-0186/ADR-0189 from the start, stopped after the layer holding
+search of [ADR-0186](./0186-match-clause-shortest-path-bfs.md)/[ADR-0189](./0189-shared-shortest-path-search.md) from the start, stopped after the layer holding
 the end. On a hub-heavy social graph a distance-4 pair expands almost the
 whole depth-3 ball from one side, which took tens of seconds where a
 reference engine answers in milliseconds, while the single-path form for the
@@ -63,10 +76,10 @@ the reachability prefilter, and the path-reading filter route.
   which the all-path form needs. Rejected.
 - Choose the side by summed degree instead of frontier size: cheaper
   per-layer estimate for hubs, but needs degree reads on every frontier node
-  before expanding; frontier size matches ADR-0034 and can be refined later.
+ before expanding; frontier size matches [ADR-0034](./0034-bidirectional-shortestpath.md) and can be refined later.
   Rejected for now.
 - Stream the trails through a visitor instead of returning a vector: right
-  in the long run (ADR-0555) but changes the partition interface that other
+ in the long run ([ADR-0555](./0555-operators-stream-rows-never-accumulate.md)) but changes the partition interface that other
   routes share; the existing one-sided result was already a vector.
   Deferred.
 

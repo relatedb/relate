@@ -1,12 +1,24 @@
-# ADR-0584: One Cypher version — CYPHER 25 only, the preamble a no-op
+---
+type: adr
+area: cypher
+claim: fe268ee9f3a090fc75922f6bdad84bb1ff5eb4b7
+name: 0584-one-cypher-version-cypher25-noop
+status: proposed
+tags:
+  - dialect
+title: One Cypher version — CYPHER 25 only, the preamble a no-op
+REFERENCES:
+  - "[[adr/0056-opencypher-tck-language-contract]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0513-cypher25-create-entity-reference-admission]]"
+---
 
-Status: Proposed
-Claim: fe268ee9f3a090fc75922f6bdad84bb1ff5eb4b7
+# ADR-0584: One Cypher version — CYPHER 25 only, the preamble a no-op
 
 ## Context
 
 The engine speaks one dialect: Cypher 25 — an unprefixed statement is
-Cypher 25, the openCypher TCK is the floor (ADR-0056), the stretch corpus
+Cypher 25, the openCypher TCK is the floor ([ADR-0056](./0056-opencypher-tck-language-contract.md)), the stretch corpus
 is Cypher-25 material. Yet the `CYPHER <version>` statement preamble
 admits two integers, 5 and 25; every other integer already fails at parse.
 `CYPHER 5` selects a second dialect that exists only to be subtracted
@@ -16,17 +28,17 @@ string interpolation, two-argument temporal constructors, withheld SHOW
 columns) — incomplete by construction, since every new Cypher-25 feature
 must remember its subtraction arm, and one arm (string interpolation)
 landed only in a review round; the create-self-reference rule stands
-itself down under it (ADR-0513 Decision 1); the evaluation context
+itself down under it ([ADR-0513](./0513-cypher25-create-entity-reference-admission.md) Decision 1); the evaluation context
 branches on the version for SHOW-family null semantics; and the version
 threads from the statement AST through lowering, the IR and the plan into
 the query context — machinery whose only job is telling 5 from 25.
 
-`ALTER DATABASE … SET DEFAULT LANGUAGE` admits `CYPHER 5|25` (ADR-0116
+`ALTER DATABASE … SET DEFAULT LANGUAGE` admits `CYPHER 5|25` ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)
 §2); the stored value is display-only (§8). Nothing the engine answers to
 — the TCK floor, the live-verified Neo4j behaviours the ADRs record
 (probed under `CYPHER 25`) — asks for a `CYPHER 5` answer; the few
 Cypher-5 scenarios in the reporting-only harness corpus were already
-slated for a re-pin (ADR-0513).
+slated for a re-pin ([ADR-0513](./0513-cypher25-create-entity-reference-admission.md)).
 
 ## Decision
 
@@ -40,11 +52,11 @@ slated for a re-pin (ADR-0513).
    The preamble fails it at parse, the language value at command
    execution — where each is checked today.
 3. **`ALTER DATABASE … SET DEFAULT LANGUAGE` admits only `CYPHER 25`**
-   (ADR-0116 §2, narrowed). The stored value stays display-only catalog
+ ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §2, narrowed). The stored value stays display-only catalog
    state (§8 unchanged); no store format changes and a value an older
    binary wrote is not rewritten.
 4. **The version machinery is removed as unreachable.** The dialect fact,
-   the gate allowlist, the create-self-reference stand-down (ADR-0513
+ the gate allowlist, the create-self-reference stand-down ([ADR-0513](./0513-cypher25-create-entity-reference-admission.md)
    Decision 1's arm), the SHOW-family version branches and the version
    threading through the AST, lowering, IR, plan and query context exist
    to tell 5 from 25; with 25 the only admitted version none can fire.
@@ -75,6 +87,6 @@ slated for a re-pin (ADR-0513).
 - The front end loses the gate module and the stand-down; the executor's
   SHOW-family branches collapse to their Cypher-25 behaviour; the
   four-layer threading goes.
-- The harness corpus's remaining Cypher-5 scenarios (ADR-0513) fail
-  under the one version; their planned re-pin becomes a deletion. ADR-0513's
+- The harness corpus's remaining Cypher-5 scenarios ([ADR-0513](./0513-cypher25-create-entity-reference-admission.md)) fail
+ under the one version; their planned re-pin becomes a deletion. [ADR-0513](./0513-cypher25-create-entity-reference-admission.md)'s
   Decision 1 arm is removed; its Later references note records this ADR.

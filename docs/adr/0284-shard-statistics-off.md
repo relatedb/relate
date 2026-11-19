@@ -1,13 +1,25 @@
+---
+type: adr
+area: engine
+date: 2026-10-05
+deciders: CypherLite maintainers
+name: 0284-shard-statistics-off
+status: accepted
+tags:
+  - checkpoint
+  - parquet
+title: Shard writer stores no page statistics
+REFERENCES:
+  - "[[adr/0086-bounded-persistence-input]]"
+---
+
 # 0284. Shard writer stores no page statistics
 
-- **Status**: Accepted
 - **Renumbered**: from 0164 (shared-number cleanup)
-- **Date**: 2026-10-05
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
-ADR-0086 §3 parses each Parquet page header before decompression and limits
+[ADR-0086](./0086-bounded-persistence-input.md) §3 parses each Parquet page header before decompression and limits
 that parse to 64 KiB. The shard writer uses Arrow's default statistics,
 which is page level with no truncation. For a string column, the page header
 then contains the full minimum and maximum values on that page.
@@ -41,6 +53,6 @@ to skip pages on disk.
 ## Consequences
 
 A checkpoint of a graph whose properties are larger than 64 KiB passes the
-ADR-0086 page-header preflight. Shards already published are unchanged. The
+[ADR-0086](./0086-bounded-persistence-input.md) page-header preflight. Shards already published are unchanged. The
 preflight still runs before a shard is renamed into place, so a header that
 fails it is not published.

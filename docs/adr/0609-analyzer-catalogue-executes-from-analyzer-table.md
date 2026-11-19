@@ -1,8 +1,15 @@
+---
+type: adr
+area: engine
+claim: 743b149fea8a3335874cf3b6fb46ff3b4fd43f78
+name: 0609-analyzer-catalogue-executes-from-analyzer-table
+status: proposed
+tags:
+  - search
+title: Execute the full-text analyzer catalogue from the one analyzer table
+---
+
 # ADR-0609: Execute the full-text analyzer catalogue from the one analyzer table
-
-Status: Proposed
-
-Claim: 743b149fea8a3335874cf3b6fb46ff3b4fd43f78
 
 ## Context
 

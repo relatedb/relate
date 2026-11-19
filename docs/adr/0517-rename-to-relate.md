@@ -1,8 +1,30 @@
+---
+type: adr
+area: ecosystem
+claim: 1ff4a5f8adcec8953782a216fa1faa90e0a4d542
+name: 0517-rename-to-relate
+status: proposed
+tags:
+  - product
+title: Rename the product from CypherLite to Relate
+REFERENCES:
+  - "[[adr/0053-cypherlite-product-names]]"
+  - "[[adr/0054-one-c-abi-env-python]]"
+  - "[[adr/0067-release-versioning-and-process]]"
+  - "[[adr/0068-cli-install-script-via-github-pages]]"
+  - "[[adr/0097-exclusive-storage-ownership]]"
+  - "[[adr/0115-sshsig-release-signing]]"
+  - "[[adr/0127-store-version-compatibility]]"
+  - "[[adr/0250-releases-json-update-discovery]]"
+  - "[[adr/0371-preview-feature-gating]]"
+  - "[[adr/0406-markdown-vault-snapshot-codec]]"
+  - "[[adr/0431-cli-extension-distribution]]"
+  - "[[adr/0457-signed-manifest-carries-version]]"
+  - "[[adr/0481-schema-as-files]]"
+  - "[[adr/0623-engine-sidecar-dir-rename]]"
+---
+
 # ADR-0517: Rename the product from CypherLite to Relate
-
-Status: Proposed
-
-Claim: 1ff4a5f8adcec8953782a216fa1faa90e0a4d542
 
 ## Context
 
@@ -19,30 +41,30 @@ The surfaces the rename must decide, from that inventory:
 
 - 40 workspace crates named `cypherlite-*` across the four top-level
   groups, the product binary `cypherlite`, the env prefix `CYPHERLITE_`
-  (including `CYPHERLITE_PREVIEW`, ADR-0371), and the C ABI prefix
-  `cypherlite_*` (ADR-0054's one ABI) wrapped by the Go/JS/Java/Swift
+ (including `CYPHERLITE_PREVIEW`, [ADR-0371](./0371-preview-feature-gating.md)), and the C ABI prefix
+ `cypherlite_*` ([ADR-0054](./0054-one-c-abi-env-python.md)'s one ABI) wrapped by the Go/JS/Java/Swift
   clients.
 - Python: PyPI package `neo4j-cypherlite`, import `cypherlite`. npm:
   `@neo4j-labs/cypherlite` plus five platform packages.
 - The GitHub repository `neo4j-labs/cypherlite`; the Pages site at
-  `https://neo4j-labs.github.io/cypherlite/` (ADR-0068), which also
+ `https://neo4j-labs.github.io/cypherlite/` ([ADR-0068](./0068-cli-install-script-via-github-pages.md)), which also
   hosts `install.sh`.
 - The release channel: assets `cypherlite-<os>-<arch>`, the SSHSIG
-  signer identity and namespace `cypherlite-release` (ADR-0115), and
+ signer identity and namespace `cypherlite-release` ([ADR-0115](./0115-sshsig-release-signing.md)), and
   the signed manifest's version header `# cypherlite-release-version: `
-  (ADR-0457), pinned byte-identical in `release.yml`, `install.sh`, and
+ ([ADR-0457](./0457-signed-manifest-carries-version.md)), pinned byte-identical in `release.yml`, `install.sh`, and
   `upgrade_cmd/manifest.rs`.
 - The `.cl` single-file bundle extension and the `MDBCLB01` superblock
-  magic (ADR-0127), and the on-disk store artifacts: `.cypherlite.lock`,
+ magic ([ADR-0127](./0127-store-version-compatibility.md)), and the on-disk store artifacts: `.cypherlite.lock`,
   `.cypherlite.writer`, the `CYPHERLITE-LOCK-v1` role bytes, the
-  `.cypherlite` markdown sidecar family (ADR-0406), the
-  `.cypherlite/schema/` mirror (ADR-0481), the `MDBWAL01`/`MDBWAL02`
+ `.cypherlite` markdown sidecar family ([ADR-0406](./0406-markdown-vault-snapshot-codec.md)), the
+ `.cypherlite/schema/` mirror ([ADR-0481](./0481-schema-as-files.md)), the `MDBWAL01`/`MDBWAL02`
   WAL magics, and the `format_version`/`value_encoding` markers.
 
-ADR-0053 is the precedent: the MemoryDB→CypherLite rename changed
+[ADR-0053](./0053-cypherlite-product-names.md) is the precedent: the MemoryDB→CypherLite rename changed
 crate, binary, and env names while leaving the on-disk WAL magic
 untouched. This ADR makes the same split for Relate and settles the
-questions ADR-0053 left open (the update channel, the signing identity,
+questions [ADR-0053](./0053-cypherlite-product-names.md) left open (the update channel, the signing identity,
 external names).
 
 ## Decision
@@ -69,14 +91,14 @@ every load-bearing on-disk artifact byte-identical. The canonical map:
 
 1. **Clean break.** The new binary carries no `cypherlite` aliases: no
    second command name, no `cypherlite_*` ABI shim, and — departing
-   from ADR-0053's `MEMORYDB_*` bridge — no fallback reads of
+ from [ADR-0053](./0053-cypherlite-product-names.md)'s `MEMORYDB_*` bridge — no fallback reads of
    `CYPHERLITE_*` env vars. One rename, one release.
 
 2. **Swan-song release.** The old channel ends with **cypherlite
    0.16.1**, published before cutover under the old name, old signer
    identity, and old SUMS header so every existing binary can verify
    and install it. Its release notes and its `releases.json` entry
-   (ADR-0250) carry the rename notice and the Relate install one-liner
+ ([ADR-0250](./0250-releases-json-update-discovery.md)) carry the rename notice and the Relate install one-liner
    (`curl -sSfL https://relatedb.ai/install.sh | bash`); publishing the
    installer there before the swan-song ships is part of the
    external-home bring-up (3).
@@ -86,8 +108,8 @@ every load-bearing on-disk artifact byte-identical. The canonical map:
 3. **External names are separate coordination.** The external home is
    **relatedb**: the public repository is `github.com/relatedb/relate`,
    and `https://relatedb.ai/` is the canonical base the pipeline-owned
-   files are served from — `install.sh`, `releases.json` (ADR-0250),
-   and `extensions.json` (ADR-0431). npm publishes under the `@relate`
+ files are served from — `install.sh`, `releases.json` ([ADR-0250](./0250-releases-json-update-discovery.md)),
+ and `extensions.json` ([ADR-0431](./0431-cli-extension-distribution.md)). npm publishes under the `@relate`
    scope: `@relate/relate` (the pure-JS client), the five platform
    packages `@relate/<platform>-<arch>`, and `@relate/relate-wasm`. The
    PyPI wheel is `relate-db` (the bare `relate` name is taken); the
@@ -109,14 +131,14 @@ every load-bearing on-disk artifact byte-identical. The canonical map:
 
 4. **Store compatibility (from the inventory's store-format
    findings).** Every on-disk artifact flagged load-bearing keeps its
-   exact name and bytes: `.cypherlite.lock` (ADR-0097),
+ exact name and bytes: `.cypherlite.lock` ([ADR-0097](./0097-exclusive-storage-ownership.md)),
    `.cypherlite.writer`, the `CYPHERLITE-LOCK-v1` root/wal role bytes,
-   the `.cypherlite` markdown sidecar family (ADR-0406 §3), the
-   `.cypherlite/schema/` mirror (ADR-0481), the `MDBWAL01`/`MDBWAL02`
+ the `.cypherlite` markdown sidecar family ([ADR-0406](./0406-markdown-vault-snapshot-codec.md) §3), the
+ `.cypherlite/schema/` mirror ([ADR-0481](./0481-schema-as-files.md)), the `MDBWAL01`/`MDBWAL02`
    WAL magics, the `format_version` and `value_encoding` markers
-   (ADR-0127), and the `MDBCLB01` bundle superblock magic. Stores from
+ ([ADR-0127](./0127-store-version-compatibility.md)), and the `MDBCLB01` bundle superblock magic. Stores from
    v0.8.0 through v0.16.x open unchanged under Relate. These are frozen
-   compatibility markers, not brand surfaces — ADR-0053 kept
+ compatibility markers, not brand surfaces — [ADR-0053](./0053-cypherlite-product-names.md) kept
    `MDBWAL01` through the MemoryDB→CypherLite rename for the same
    reason — and the on-disk names carry the old product name
    permanently as the accepted cost. Everything the findings marked
@@ -136,8 +158,8 @@ every load-bearing on-disk artifact byte-identical. The canonical map:
    version header becomes `# relate-release-version: `, changing in
    lock step in `release.yml`, `install.sh`, and
    `upgrade_cmd/manifest.rs` (byte-identical pins). This is the change
-   the asset-contract gates in ADR-0068 and ADR-0115 require a new ADR
-   for; this ADR is it, and ADR-0067's release policy is otherwise
+ the asset-contract gates in [ADR-0068](./0068-cli-install-script-via-github-pages.md) and [ADR-0115](./0115-sshsig-release-signing.md) require a new ADR
+ for; this ADR is it, and [ADR-0067](./0067-release-versioning-and-process.md)'s release policy is otherwise
    unchanged. The Ed25519 keypair itself is kept: the key material
    embeds no name — only the identity, the namespace, and the public
    key file's comment do, and those rename. Old-binary verification is
@@ -157,20 +179,20 @@ every load-bearing on-disk artifact byte-identical. The canonical map:
   direction; this ADR records how the rename lands, not whether it
   does.
 - **A bridge period** (dual binary names, a `cypherlite_*` ABI shim,
-  `CYPHERLITE_*` fallback env reads — the ADR-0053 pattern). Rejected:
-  ADR-0053's `MEMORYDB_*` bridge kept two names alive in code and docs
-  until ADR-0054 hard-cut them; a bridge here doubles the sweep surface
+ `CYPHERLITE_*` fallback env reads — the [ADR-0053](./0053-cypherlite-product-names.md) pattern). Rejected:
+ [ADR-0053](./0053-cypherlite-product-names.md)'s `MEMORYDB_*` bridge kept two names alive in code and docs
+ until [ADR-0054](./0054-one-c-abi-env-python.md) hard-cut them; a bridge here doubles the sweep surface
   and guarantees a second breaking change later.
 - **Rename the on-disk artifacts too** (a successor `.relate.lock`, new
   WAL or bundle magics). Rejected: it orphans every existing store,
-  vault, and golden fixture — ownership identity (ADR-0097) and the
-  readable-set gates (ADR-0127) key on those exact bytes.
+ vault, and golden fixture — ownership identity ([ADR-0097](./0097-exclusive-storage-ownership.md)) and the
+ readable-set gates ([ADR-0127](./0127-store-version-compatibility.md)) key on those exact bytes.
 - **Replace `.cl` with `.rl` outright**, dropping the legacy extension.
   Rejected: every existing single-file bundle ends `.cl` and the
   extension is what selects the bundle VFS; dropping it orphans them.
 - **Keep `cypherlite-release` and the old SUMS header.** Rejected: both
   are user-visible brand surfaces verified on every install and
-  upgrade; the asset-contract gates in ADR-0068 and ADR-0115 anticipated
+ upgrade; the asset-contract gates in [ADR-0068](./0068-cli-install-script-via-github-pages.md) and [ADR-0115](./0115-sshsig-release-signing.md) anticipated
   exactly this change and require this ADR, not silence.
 - **Rotate the signing keypair along with the identity.** Rejected: the
   Ed25519 key material embeds no name, so rotation buys nothing for the
@@ -211,7 +233,7 @@ every load-bearing on-disk artifact byte-identical. The canonical map:
   contract's `version`, and the checker's file-scoped keep for the
   pre-cutover `neo4j-labs.github.io/cypherlite` URL (§3) goes with the
   file. The repository's own pre-cutover name is unaffected.
-- ADR-0623 renames the `.cypherlite` engine sidecar family (§4's
+- [ADR-0623](./0623-engine-sidecar-dir-rename.md) renames the `.cypherlite` engine sidecar family (§4's
   on-disk keep of it) to `.relate/`, adopting existing stores by one
   directory rename at their first writable open. The lock and writer
   markers and the lock role bytes stay as this ADR kept them.

@@ -1,8 +1,21 @@
+---
+type: adr
+area: cypher
+claim: af42c9bd863190b06795b80903c498a854c6d873
+name: 0458-misc-tail-cypher25-forms
+status: proposed
+tags:
+  - dialect
+  - semantics
+title: |-
+  Misc-tail Cypher 25 forms: list predicates, DISJOINT BY, name-matched UNIONs, ORDER BY projection scope, and procedure argument options
+REFERENCES:
+  - "[[adr/0002-cypher-25-semantic-target]]"
+  - "[[adr/0188-remove-superseded-tck-scenario-from-pin]]"
+  - "[[adr/0472-repin-order-by-scenarios]]"
+---
+
 # ADR-0458: Misc-tail Cypher 25 forms: list predicates, DISJOINT BY, name-matched UNIONs, ORDER BY projection scope, and procedure argument options
-
-Status: Proposed
-
-Claim: af42c9bd863190b06795b80903c498a854c6d873
 
 ## Context
 
@@ -11,7 +24,7 @@ The `fix-parser-syntax-gaps` feature's last node clears the remaining
 acceptance suites plus small TCK clauses). Those rows mix genuinely missing
 syntax with semantically rejected Cypher 25 forms, and two of them consume
 the *same* query the pinned openCypher 2024.3 TCK expects to fail. The
-authority ordering is ADR-0002's: a CIP-verified / current-Neo4j behaviour
+authority ordering is [ADR-0002](./0002-cypher-25-semantic-target.md)'s: a CIP-verified / current-Neo4j behaviour
 outranks the 2024.3 TCK floor. This ADR records that batch's dialect,
 procedure and conformance-pin decisions.
 
@@ -104,7 +117,7 @@ procedure and conformance-pin decisions.
 
 12. **TCK pin.** Four scenarios whose expectations Neo4j's current Cypher 25
     behaviour reverses are removed from the vendored 2024.3 pin (inline
-    commented, ADR-0188's mechanism): ReturnOrderBy6 [5] and WithOrderBy4
+ commented, [ADR-0188](./0188-remove-superseded-tck-scenario-from-pin.md)'s mechanism): ReturnOrderBy6 [5] and WithOrderBy4
     [13], [14], [20]. The denominator and passing count drop 3892 → 3888.
 
 ## Alternatives considered
@@ -131,7 +144,7 @@ procedure and conformance-pin decisions.
 
 ## Consequences
 
-- The four superseded TCK scenarios leave the pin (later reversed: ADR-0472
+- The four superseded TCK scenarios leave the pin (later reversed: [ADR-0472](./0472-repin-order-by-scenarios.md)
   keeps them in the pin asserting the Cypher 25 behaviour, restoring the
   claim to "3892 of 3892 pinned scenarios pass, 0 skipped";
   `docs/tck/compliance.md` states the current pin).
@@ -145,7 +158,7 @@ procedure and conformance-pin decisions.
 
 ## Later references
 
-- **ADR-0472 (re-pin of the four ORDER BY scenarios).** Decision 12 is
+- **[ADR-0472](./0472-repin-order-by-scenarios.md) (re-pin of the four ORDER BY scenarios).** Decision 12 is
   superseded: `ReturnOrderBy6 [5]` and `WithOrderBy4 [13]`, `[14]`, `[20]`
   are back in the pinned corpus, allowlisted and asserting Neo4j's current
   Cypher 25 behaviour, so the denominator and passing count are 3892 rather

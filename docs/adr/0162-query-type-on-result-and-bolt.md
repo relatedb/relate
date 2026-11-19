@@ -1,8 +1,25 @@
-# 0162. Query type on QueryResult and the Bolt RUN summary
+---
+type: adr
+area: engine
+date: 2026-10-05
+deciders: CypherLite maintainers
+name: 0162-query-type-on-result-and-bolt
+status: accepted
+tags:
+  - result-metadata
+title: Query type on QueryResult and the Bolt RUN summary
+REFERENCES:
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0117-namespace-selection-apis-and-bolt]]"
+  - "[[adr/0283-no-c-abi-query-type-accessor]]"
+  - "[[adr/0285-c-abi-result-metadata-accessors]]"
+  - "[[adr/0309-bolt-summary-metadata-neo4j-4-4]]"
+  - "[[adr/0319-bolt-execution-failures-at-pull]]"
+  - "[[adr/0332-query-type-w-rw-by-returned-columns]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-05
-- **Deciders**: CypherLite maintainers
+# 0162. Query type on QueryResult and the Bolt RUN summary
 
 ## Context
 
@@ -27,7 +44,7 @@ executing it:
   field; `QueryStats` counts mutations after execution — too late for a
   routing decision.
 - The Bolt server answers RUN with `fields` and PULL/DISCARD with
-  `t_last` / `db` / `has_more` (ADR-0117 §7). Neo4j drivers read the
+ `t_last` / `db` / `has_more` ([ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §7). Neo4j drivers read the
   `type` key of the RUN SUCCESS summary to route read-only vs read-write
   statements; CypherLite does not send it.
 
@@ -35,7 +52,7 @@ The engine already has everything needed at plan time: the EXPLAIN
 early-return in `Connection::run_query` holds the logical plan, and
 `cypherlite_planner::clause_kind::is_write_clause` is the shared write
 classifier, with the `call_is_write` hook covering write procedures. The
-`QueryResult.namespace` field (ADR-0117 §7) is the in-tree precedent for
+`QueryResult.namespace` field ([ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §7) is the in-tree precedent for
 stamping result metadata at construction: "construction is the stamp".
 
 ## Decision
@@ -43,7 +60,7 @@ stamping result metadata at construction: "construction is the stamp".
 1. **`QueryResult` gains a public `query_type` field of a new public enum
    `QueryType`**, set for every statement — plain runs, EXPLAIN, and
    PROFILE alike — at result construction, exactly like `namespace`
-   (ADR-0117 §7). The enum is re-exported by the `cypherlite` facade like
+ ([ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §7). The enum is re-exported by the `cypherlite` facade like
    `Namespace`. The value set is pinned to Neo4j's (LABS-175):
    `Read` / `Write` / `ReadWrite` / `Schema`, with wire codes `"r"`,
    `"w"`, `"rw"`, `"s"`.
@@ -59,8 +76,8 @@ stamping result metadata at construction: "construction is the stamp".
    without executing anything.
 3. **The Bolt RUN SUCCESS summary gains a `type` key** carrying the same
    `"r"` / `"w"` / `"rw"` / `"s"` code — the key Neo4j drivers read for
-   routing. Bolt stays a transport (ADR-0057), not Neo4j feature parity;
-   this is one cheap summary key beside the ADR-0117 §7 `db` echo, not a
+ routing. Bolt stays a transport ([ADR-0057](./0057-embedded-c-abi-and-bolt.md)), not Neo4j feature parity;
+ this is one cheap summary key beside the [ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §7 `db` echo, not a
    `queryPlan` tree.
 4. **EXPLAIN's `plan` column shape is unchanged.** The query type is
    result metadata, never a result row, so the TCK/cip-eval Gherkin
@@ -86,13 +103,13 @@ stamping result metadata at construction: "construction is the stamp".
   dependency direction — the transport would derive what the engine
   already knows — and every non-Bolt surface (Rust API, FFI, Python,
   WASM, CLI) would have no access. The `namespace` precedent
-  (ADR-0117 §7) puts result metadata on `QueryResult` and lets surfaces
+ ([ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §7) puts result metadata on `QueryResult` and lets surfaces
   echo it.
 - **Engine field only, no Bolt key.** Rejected: the primary consumer of
   `queryType` is a Neo4j driver making a routing decision from the RUN
   SUCCESS summary; without the `type` key such drivers must treat every
   CypherLite statement as a write. One map entry beside the existing
-  `db` echo is cheap and keeps Bolt a transport (ADR-0057).
+ `db` echo is cheap and keeps Bolt a transport ([ADR-0057](./0057-embedded-c-abi-and-bolt.md)).
 - **Adopt Neo4j's `queryPlan` / `profiledQueryPlan` tree and `counters`
   object wholesale.** Rejected: CypherLite deliberately keeps its own
   clause-pipeline plan rendering (`explain.rs`); LABS-175 scopes this
@@ -117,7 +134,7 @@ stamping result metadata at construction: "construction is the stamp".
 - `is_write_clause` gains a schema-DDL distinction for classification;
   its existing consumers (`validate.rs`, `namespaces.rs`) keep their
   current semantics — schema DDL still counts as a write for the
-  read-only-namespace gate (ADR-0116 §4).
+ read-only-namespace gate ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §4).
 - `QueryStats` keeps counting mutations after execution; `query_type` is
   a pre-execution classification, not a counter summary. PROFILE's
   `_profile_mutations` column is unchanged.
@@ -126,21 +143,21 @@ stamping result metadata at construction: "construction is the stamp".
 
 ## Later references
 
-- ADR-0283: narrows the third Consequences bullet — the implementing
+- [ADR-0283](./0283-no-c-abi-query-type-accessor.md): narrows the third Consequences bullet — the implementing
   change ships no C ABI accessor for `query_type` (the C ABI has no
   result-metadata accessor precedent; `namespace` has none either). The
   Rust and Bolt surfaces ship as decided; a
   `cypherlite_result_query_type` accessor is an additive follow-up if a
   C-ABI client ever needs it.
-- ADR-0285: lands that follow-up — adds `cypherlite_result_query_type`
+- [ADR-0285](./0285-c-abi-result-metadata-accessors.md): lands that follow-up — adds `cypherlite_result_query_type`
   and `cypherlite_result_namespace` to the C ABI as result-owned
   `const char *` accessors, with Python/JS/Java/Go client exposure.
-- ADR-0309: reverses Decision item 3 — the Bolt RUN SUCCESS no longer
+- [ADR-0309](./0309-bolt-summary-metadata-neo4j-4-4.md): reverses Decision item 3 — the Bolt RUN SUCCESS no longer
   carries `type`; it moves to the SUCCESS that ends the result (the last
   PULL or the DISCARD), where latest Neo4j and neo4rs read it. The
   `QueryResult.query_type` stamp and its vocabulary are unchanged.
-- ADR-0332: supersedes Decision item 2's `w`/`rw` criterion — a write
-  splits on returned columns (`plan_output_names`, ADR-0319): a write
+- [ADR-0332](./0332-query-type-w-rw-by-returned-columns.md): supersedes Decision item 2's `w`/`rw` criterion — a write
+ splits on returned columns (`plan_output_names`, [ADR-0319](./0319-bolt-execution-failures-at-pull.md)): a write
   with no returned columns is `w`, a write with returned columns is `rw`
   (latest Neo4j 2026.09.0; the LABS-323 driver findings D-53/D-54). The
   clause-presence split ("reads and data writes → `rw`") is no longer the

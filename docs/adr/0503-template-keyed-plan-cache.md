@@ -1,8 +1,21 @@
+---
+type: adr
+area: engine
+claim: f3796c220bc3a44b36bebfc94dd9942309399261
+name: 0503-template-keyed-plan-cache
+status: proposed
+tags:
+  - perf
+  - planner
+title: Template-keyed plan cache with stats-generation replanning
+REFERENCES:
+  - "[[adr/0162-query-type-on-result-and-bolt]]"
+  - "[[adr/0169-keywords-as-label-and-type-names]]"
+  - "[[adr/0218-stats-based-match-orientation]]"
+  - "[[adr/0308-absent-parameter-fails-before-execution]]"
+---
+
 # ADR-0503: Template-keyed plan cache with stats-generation replanning
-
-Status: Proposed
-
-Claim: f3796c220bc3a44b36bebfc94dd9942309399261
 
 ## Context
 
@@ -29,7 +42,7 @@ them rather than from a blank page:
   anchoring). A raw-string key only hits exact retries — the rare case;
   agents emit literals, not parameters.
 - **Plans are stats-coupled.** `plan_with_stats` reads live cardinalities
-  under the publication read guard at plan time (ADR-0218), so a cached
+ under the publication read guard at plan time ([ADR-0218](./0218-stats-based-match-orientation.md)), so a cached
   plan is a plan for the graph *as it was* when it was planned.
 - **Last-N ≤ 16, not single-element** — agents interleave a couple of
   shapes (introspection + data reads).
@@ -38,7 +51,7 @@ them rather than from a blank page:
   `$__AUTO_INT_3__` positional-typed-key precedent); no variable renaming,
   no size threshold. Token-level is grammar-aware where a regexp is not.
 - **Read-only classified statements only** — the query-type classification
-  that already exists for result metadata (ADR-0162) is the gate; writes
+ that already exists for result metadata ([ADR-0162](./0162-query-type-on-result-and-bolt.md)) is the gate; writes
   are excluded because they self-invalidate (every commit bumps the
   generation) and import streams would poison the cache.
 - The result metadata (namespace, query type) is derived per statement —
@@ -65,7 +78,7 @@ statement, lexed with the same `ParseOptions` the real parse would use):
   keyword-only case-folding constraint is **narrowed to nothing at token
   level**, for correctness: the dialect keeps keyword spellings as
   case-sensitive *names* — `(o:Order)` parses with the name as written
-  (ADR-0169), `n.match` and `{match: 1}` bind by spelling, and the token
+ ([ADR-0169](./0169-keywords-as-label-and-type-names.md)), `n.match` and `{match: 1}` bind by spelling, and the token
   stream cannot prove a keyword sits in a clause position rather than a
   name position. Folding `:order` onto `:Order` would serve one label's
   plan for the other (found in review: a critical wrong-rows collision),
@@ -157,7 +170,7 @@ reader through the advance.
 result metadata still derive per statement, from the cached plan under the
 read guard: call-name collection, the preview gate, compile-time `CALL`
 validation, the namespace and ontology gates, the query-type and
-write-route classification, the ADR-0308 parameter-completeness check, the
+write-route classification, the [ADR-0308](./0308-absent-parameter-fails-before-execution.md) parameter-completeness check, the
 statement-scoped notifications. The statement's extracted literal values
 are merged into its parameter map before any of them run, so every
 consumer downstream of admission (validation, dispatch, the PROFILE

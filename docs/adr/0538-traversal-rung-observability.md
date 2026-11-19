@@ -1,7 +1,16 @@
-# ADR-0538: Traversal-rung observability in PROFILE and plan args
+---
+type: adr
+area: engine
+claim: 84c55d6c5b438793bd88770b7ecf1591b0a7ac5c
+name: 0538-traversal-rung-observability
+status: proposed
+tags:
+  - observability
+  - pattern-matching
+title: Traversal-rung observability in PROFILE and plan args
+---
 
-Status: Proposed
-Claim: 84c55d6c5b438793bd88770b7ecf1591b0a7ac5c
+# ADR-0538: Traversal-rung observability in PROFILE and plan args
 
 ## Context
 

@@ -1,12 +1,23 @@
-# ADR-0527: Write engine seam
+---
+type: adr
+area: engine
+claim: 5025a4cf9637dd08d17b136df08c846fbdc7ac75
+name: 0527-write-engine-seam
+status: proposed
+tags:
+  - write-path
+title: Write engine seam
+REFERENCES:
+  - "[[adr/0015-optimistic-wal-commits]]"
+  - "[[adr/0548-query-engine-seam]]"
+---
 
-Status: Proposed
-Claim: 5025a4cf9637dd08d17b136df08c846fbdc7ac75
+# ADR-0527: Write engine seam
 
 ## Context
 
 Durability is a logical redo log. The commit timestamp is assigned when
-the log appends (ADR-0015). Group commit, checkpoint, follow, and change
+the log appends ([ADR-0015](./0015-optimistic-wal-commits.md)). Group commit, checkpoint, follow, and change
 capture are wired to the concrete log inside the facade. A clustered
 log would assign order differently and would still have to feed the
 same redo into the same query engine.
@@ -32,7 +43,7 @@ codecs, and the log record format stay a toolkit a write engine may
 use. No alternate write engine is added.
 
 The store manifest records the write engine identity beside the query
-engine identity (ADR-0548). A store written before this change opens as
+engine identity ([ADR-0548](./0548-query-engine-seam.md)). A store written before this change opens as
 the local engine. Opening a store whose recorded identity is not the
 engine being opened fails. The identities are optional manifest fields;
 redo records and snapshot payloads keep their encoding.

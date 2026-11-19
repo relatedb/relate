@@ -1,12 +1,24 @@
-# 0083. Borrow Bolt input from one bounded payload buffer
+---
+type: adr
+area: surface
+date: 2026-09-23
+deciders: CypherLite maintainers
+name: 0083-borrowed-bolt-input-buffer
+status: proposed
+tags:
+  - bolt
+  - security
+title: Borrow Bolt input from one bounded payload buffer
+REFERENCES:
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+  - "[[adr/0082-bound-bolt-decoded-value-count]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-23
-- **Deciders**: CypherLite maintainers
+# 0083. Borrow Bolt input from one bounded payload buffer
 
 ## Context
 
-ADR-0057 makes Bolt an optional remote transport. Incoming messages can be
+[ADR-0057](./0057-embedded-c-abi-and-bolt.md) makes Bolt an optional remote transport. Incoming messages can be
 decoded before authentication, so avoidable copies consume resources on an
 untrusted path. `protocol::read_message` currently allocates a temporary
 `Vec<u8>` for each chunk and copies it into a payload `Vec<u8>`.
@@ -16,7 +28,7 @@ again through an intermediate `Bytes` before constructing the owned `Pack`
 value.
 
 The 16,777,216-byte chunked-message payload limit, 128-container depth limit,
-and ADR-0082's 262,144-decoded-value budget already bound distinct aspects of
+and [ADR-0082](./0082-bound-bolt-decoded-value-count.md)'s 262,144-decoded-value budget already bound distinct aspects of
 incoming messages. They do not remove these copies. The Bolt crate uses
 `bytes::Buf` and `bytes::Bytes` for decoding; storage separately uses
 `bytes::Bytes` for Parquet and depends on the workspace `bytes` entry.
@@ -40,7 +52,7 @@ decoding returns.
 
 Keep the same Bolt wire format, marker and truncated-input/invalid-UTF-8 error
 behavior, connection-local failure, exact payload boundary, 128-container
-depth, 262,144-value budget (ADR-0082), count-versus-remaining-byte checks,
+depth, 262,144-value budget ([ADR-0082](./0082-bound-bolt-decoded-value-count.md)), count-versus-remaining-byte checks,
 incremental collection growth, and map32/struct-width behavior. This changes
 buffer ownership and the number of copies, not the protocol or its resource
 limits.
@@ -76,5 +88,5 @@ usage; this decision does not remove `bytes` from the workspace.
   message limit across multiple chunks, value/depth limits, and the existing
   connection-local error behavior.
 - Bolt no longer needs `bytes` directly. Workspace and storage dependencies
-  on `bytes` remain in place. ADR-0057's transport role and ADR-0082's decoded
+ on `bytes` remain in place. [ADR-0057](./0057-embedded-c-abi-and-bolt.md)'s transport role and [ADR-0082](./0082-bound-bolt-decoded-value-count.md)'s decoded
   value budget remain unchanged.

@@ -1,12 +1,22 @@
-# ADR-0572: Two-commit release — bump push is the cut, stamp commit is the tag target
+---
+type: adr
+area: infra
+claim: 2aedc776933c8e837113fa067b0fd77b18e9356f
+name: 0572-two-commit-release-bump-and-stamp
+status: proposed
+tags:
+  - release
+title: Two-commit release — bump push is the cut, stamp commit is the tag target
+REFERENCES:
+  - "[[adr/0433-reinstate-swift-surface]]"
+---
 
-Status: Proposed
-Claim: 2aedc776933c8e837113fa067b0fd77b18e9356f
+# ADR-0572: Two-commit release — bump push is the cut, stamp commit is the tag target
 
 ## Context
 
 The release workflow's one release commit carries both the version bump
-and the Swift package stamp (ADR-0433 §6): the job that pushes it first
+and the Swift package stamp ([ADR-0433](./0433-reinstate-swift-surface.md) §6): the job that pushes it first
 builds the five-target XCFramework and computes its checksum, so every
 other release artifact — CLI binaries, FFI libraries, wheels, the wasm
 bundle — waits on that build before it can start. The XCFramework build
@@ -16,7 +26,7 @@ Two invariants bound any reshaping. First, the consistency guarantee: a
 commit is in the release exactly when it is an ancestor of the tag and
 in the tree the artifacts were built from — the successful push of the
 release commit is the cut, and nothing may be built before the cut is
-known. Second, ADR-0433 §6: the tagged `Package.swift` must pin the
+known. Second, [ADR-0433](./0433-reinstate-swift-surface.md) §6: the tagged `Package.swift` must pin the
 exact zip bytes a SwiftPM consumer downloads at that tag.
 
 ## Decision
@@ -45,7 +55,7 @@ Split the one release commit into two.
 
 ## Alternatives considered
 
-- **Keep the single commit** (ADR-0433 §6 as written). Rejected: the
+- **Keep the single commit** ([ADR-0433](./0433-reinstate-swift-surface.md) §6 as written). Rejected: the
   head gate serializes the XCFramework build ahead of every artifact
   build, and the stamp no longer needs to ride the same commit as the
   bump — it only needs to be an ancestor of the tag.
@@ -56,7 +66,7 @@ Split the one release commit into two.
   prevent; the validation would turn it into a failed release and a
   re-dispatch, a worse rare case than a slower common case.
 - **Rebuild the XCFramework deterministically after the version
-  commit** (the approach ADR-0433 rejected). Still rejected: it needs
+ commit** (the approach [ADR-0433](./0433-reinstate-swift-surface.md) rejected). Still rejected: it needs
   byte-reproducible artifacts across runners. This ADR builds once and
   checksums the assembled bytes; no reproduction is assumed anywhere.
 - **Tag a commit that is not on main** (the stamp as a tag-only
@@ -75,5 +85,5 @@ Split the one release commit into two.
   occasionally noisy.
 - The XCFramework build legs and the artifact build wave no longer
   contend for macOS runners: the legs finish before the wave starts.
-- ADR-0433 §6's checksum contract is unchanged; its one-commit shape is
+- [ADR-0433](./0433-reinstate-swift-surface.md) §6's checksum contract is unchanged; its one-commit shape is
   superseded by this ADR (Later references note added there).

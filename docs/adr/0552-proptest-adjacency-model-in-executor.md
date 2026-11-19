@@ -1,18 +1,34 @@
-# ADR-0552: Proptest adjacency reference model in relate-executor
+---
+type: adr
+area: engine
+claim: f78d5d1ddf58b3cc63ccab422598f554c2db3378
+name: 0552-proptest-adjacency-model-in-executor
+status: proposed
+tags:
+  - storage
+  - testing
+title: Proptest adjacency reference model in relate-executor
+REFERENCES:
+  - "[[adr/0031-typed-adjacency]]"
+  - "[[adr/0033-compact-live-records-typed-csr]]"
+  - "[[adr/0035-ordered-expand-ts]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0203-newest-first-expansion-order]]"
+  - "[[adr/0551-sealed-delta-adjacency-store]]"
+---
 
-Status: Proposed
-Claim: f78d5d1ddf58b3cc63ccab422598f554c2db3378
+# ADR-0552: Proptest adjacency reference model in relate-executor
 
 ## Context
 
 An earlier decision adopted `proptest` as a dev-dependency of the storage
 crate only, with the clause that a later need in a different crate gets
-its own ADR. That need is here: the sealed+delta store (ADR-0551) changes
-the physical layout of per-node adjacency (typed adjacency, ADR-0031 and
-ADR-0033), and the rework needs a red-line guard that proves behavioural
+its own ADR. That need is here: the sealed+delta store ([ADR-0551](./0551-sealed-delta-adjacency-store.md)) changes
+the physical layout of per-node adjacency (typed adjacency, [ADR-0031](./0031-typed-adjacency.md) and
+[ADR-0033](./0033-compact-live-records-typed-csr.md)), and the rework needs a red-line guard that proves behavioural
 equivalence — a property suite pinning the observable adjacency (per
 (node, type, direction) iteration order and contents: missing-`ts` first,
-`ts` DESC, newest-relationship-first ties per ADR-0035 and ADR-0203)
+`ts` DESC, newest-relationship-first ties per [ADR-0035](./0035-ordered-expand-ts.md) and [ADR-0203](./0203-newest-first-expansion-order.md))
 against a plain `BTreeMap` reference model under random create / ts-update
 / delete / re-add sequences.
 
@@ -27,7 +43,7 @@ home and is ported here for the record.
 1. **Adopt `proptest` 1.11 as a dev-dependency of `relate-executor`**, at
    the storage crate's pin. No `proptest-state-machine`: the suite drives a
    plain generated vector of operations, like the other storage suites.
-2. **Boundary ruling.** The workspace dependency rules of ADR-0103
+2. **Boundary ruling.** The workspace dependency rules of [ADR-0103](./0103-engine-surfaces-testing-layout.md)
    (R1–R5, enforced by the boundary check) govern workspace-internal
    edges by kind; external dev-dependencies are not edges the checker
    evaluates, and proptest's tree has no native/C++ build, async runtime,
@@ -77,4 +93,4 @@ home and is ported here for the record.
   relate-executor` merge gate and scales through `PROPTEST_CASES`.
 - Snapshot-freeze and compaction-confluence properties are out of scope
   here: the current store has no compaction to write them against. They
-  are stubbed as documented ignored tests and land with ADR-0551.
+ are stubbed as documented ignored tests and land with [ADR-0551](./0551-sealed-delta-adjacency-store.md).

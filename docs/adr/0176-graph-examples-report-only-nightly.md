@@ -1,12 +1,26 @@
-# 0176. Graph-examples nightly is report-only — diffs never fail the run
+---
+type: adr
+area: infra
+date: 2026-10-07
+deciders: Oskar Hane (decided in conversation), CypherLite maintainers
+name: 0176-graph-examples-report-only-nightly
+status: accepted
+tags:
+  - ci
+  - conformance
+title: Graph-examples nightly is report-only — diffs never fail the run
+REFERENCES:
+  - "[[adr/0144-graph-examples-differential-suite]]"
+  - "[[adr/0204-nightly-pull-retry-and-diagnostics]]"
+SUPERSEDES:
+  - "[[adr/0144-graph-examples-differential-suite]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-07
-- **Deciders**: Oskar Hane (decided in conversation), CypherLite maintainers
+# 0176. Graph-examples nightly is report-only — diffs never fail the run
 
 ## Context
 
-ADR-0144 gave the graph-examples differential suite a "cip-eval-style
+[ADR-0144](./0144-graph-examples-differential-suite.md) gave the graph-examples differential suite a "cip-eval-style
 ratchet" Reporting decision: a committed baseline of known diffs
 (`testing/cypherlite-graph-examples/baselines/graph-examples.txt`), where
 any diff not in the baseline fails the run and new passes must update the
@@ -34,7 +48,7 @@ every outcome and fails only on infrastructure failures.
   LABS-182..187), not gated on.
 - **Order-only notes** — rows that match as a bag but differ in order.
 - **Skips** — `gds`, gated `apoc`, and `dialect-skip` classifications
-  (ADR-0144), and clean self-skips when the cache is cold and
+ ([ADR-0144](./0144-graph-examples-differential-suite.md)), and clean self-skips when the cache is cold and
   network/docker are absent.
 - **Inconclusive reference-timebox outcomes** — a statement whose Neo4j
   reference run exceeds its timebox has no trustworthy expected result,
@@ -93,12 +107,12 @@ new or resolved diff is visible by comparing report artifacts.
   `CYPHERLITE_GRAPH_EXAMPLES_UPDATE_BASELINE` mode, and the
   baseline-comparison panic; report generation and the stable
   per-statement ids stay.
-- ADR-0144 is immutable; it gains a **Later references** note pointing
+- [ADR-0144](./0144-graph-examples-differential-suite.md) is immutable; it gains a **Later references** note pointing
   here, and its Reporting decision bullet is superseded by this ADR.
 
 ## Later references
 
-ADR-0204 hardens the nightly harness this ADR defines: a pull that fails
+[ADR-0204](./0204-nightly-pull-retry-and-diagnostics.md) hardens the nightly harness this ADR defines: a pull that fails
 with a transient mid-statement stream disconnect is retried once from
 scratch instead of immediately becoming an infrastructure failure (kinds
 1/3/4), and the harness captures the reference container's logs into the

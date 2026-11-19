@@ -1,12 +1,22 @@
+---
+type: adr
+area: engine
+claim: 72446f317b6b9ed6cd3e44178bd767a48310f31c
+name: 0523-frontier-walk-count-consumer
+status: proposed
+tags:
+  - pattern-matching
+title: The frontier family's walk-count consumer
+REFERENCES:
+  - "[[adr/0478-frontier-nfa-qpp-kernel]]"
+  - "[[adr/0519-diagnostic-pattern-engine-switch]]"
+---
+
 # ADR-0523: The frontier family's walk-count consumer
-
-Status: Proposed
-
-Claim: 72446f317b6b9ed6cd3e44178bd767a48310f31c
 
 ## Context
 
-ADR-0478 Decision 2 names the answer shapes the frontier family serves —
+[ADR-0478](./0478-frontier-nfa-qpp-kernel.md) Decision 2 names the answer shapes the frontier family serves —
 the functions of the (node, state) *pair*, not of the *path* — and sends
 every path count back to the per-row DFS: path counts are exponential by
 nature, and the pair-deduplicated BFS cannot recover the multiplicity it
@@ -15,7 +25,7 @@ RELATIONSHIPS a walk's admissible continuations depend on the
 relationships its own prefix already used, so no per-pair summary
 determines the count.
 
-The bounded WALK pool (`MATCH REPEATABLE ELEMENTS`, ADR-0478 §3) has no
+The bounded WALK pool (`MATCH REPEATABLE ELEMENTS`, [ADR-0478](./0478-frontier-nfa-qpp-kernel.md) §3) has no
 such dependency. Every in-bounds accepting walk is a match, so the walk
 count is a sum over levels of walk multiplicities, and the multiplicity
 of a (node, state) pair at level `k + 1` is the sum of its predecessors'
@@ -72,7 +82,7 @@ later hops priced over the path multiset); they change no decision.
    cost gate (the pass allocates no span tables and its work never
    exceeds the DFS's), records the family's PROFILE counters, and stands
    down with the family (the diagnostic switch's `walk` value,
-   ADR-0519).
+ [ADR-0519](./0519-diagnostic-pattern-engine-switch.md)).
 
 ## Alternatives considered
 
@@ -84,7 +94,7 @@ later hops priced over the path multiset); they change no decision.
 - **Serve the default pool on acyclic graphs.** Trails equal walks on a
   DAG, but acyclicity is a store-wide property no plan-time gate can
   prove cheaply, and a cyclic store would answer wrongly. Rejected:
-  every gate is a proof (ADR-0478 §2).
+ every gate is a proof ([ADR-0478](./0478-frontier-nfa-qpp-kernel.md) §2).
 - **Emit weighted rows from the row rung.** Rows carrying a multiplicity
   would let a downstream aggregate fold them, but no operator in the
   pipeline understands row weights, and teaching every aggregate one is
@@ -101,7 +111,7 @@ later hops priced over the path multiset); they change no decision.
   walk; the default-pool spelling's `count(d)` is unchanged (still a
   path count on the DFS), and `count(DISTINCT d)` answers from the
   endpoint set now that the cost gate prices the recursion.
-- The answer-shape vocabulary of ADR-0478 Decision 2 gains a path count
+- The answer-shape vocabulary of [ADR-0478](./0478-frontier-nfa-qpp-kernel.md) Decision 2 gains a path count
   for exactly one pool; the "path count declines" rule stands for every
   other pool and every other aggregate.
 - Differential tests (generated multigraphs with parallel rels,

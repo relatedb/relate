@@ -1,17 +1,30 @@
-# 0112. Inferred schema via `db.schema.*` procedures
+---
+type: adr
+area: engine
+date: 2026-09-26
+deciders: CypherLite maintainers
+name: 0112-inferred-schema-procedures
+status: accepted
+tags:
+  - catalog
+  - procedures
+title: Inferred schema via `db.schema.*` procedures
+REFERENCES:
+  - "[[adr/0058-interactive-shell-surface-reduction]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0153-db-schema-visualization-semantics]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-26
-- **Deciders**: CypherLite maintainers
+# 0112. Inferred schema via `db.schema.*` procedures
 
 ## Context
 
 LABS-48 originally asked for a richer `.schema` dot-command in the interactive
-shell. That request predates the current shell contract: ADR-0058 reduced the
+shell. That request predates the current shell contract: [ADR-0058](./0058-interactive-shell-surface-reduction.md) reduced the
 shell to exactly six dot-commands and **withdrew** `.schema` (along with the
 other introspection commands), ruling that introspection goes through Cypher
-itself. ADR-0058 also states that reinstating any withdrawn command requires a
-new ADR referencing it. The workspace was later restructured (ADR-0103), which
+itself. [ADR-0058](./0058-interactive-shell-surface-reduction.md) also states that reinstating any withdrawn command requires a
+new ADR referencing it. The workspace was later restructured ([ADR-0103](./0103-engine-surfaces-testing-layout.md)), which
 moved the relevant crates under `cypherlite/`, `surfaces/`, and `testing/` but
 did not change the shell contract.
 
@@ -83,13 +96,13 @@ Phase 1 is exactly the two procedures above. Per-label counts and any other
 introspection aggregates remain reachable through plain Cypher (`count(...)`,
 `labels(n)`, `type(r)`). Reintroducing a `.schema` shell dot-command, or any
 other CLI sugar over these procedures, is deferred to a separate phase-2 ADR
-that must reference ADR-0058.
+that must reference [ADR-0058](./0058-interactive-shell-surface-reduction.md).
 
 ## Alternatives considered
 
 - **Reinstate the `.schema` dot-command (the literal LABS-48 ask).** Rejected:
-  `.schema` was withdrawn by ADR-0058, introspection belongs to Cypher, and
-  ADR-0058 requires a new ADR referencing it before any withdrawn command
+ `.schema` was withdrawn by [ADR-0058](./0058-interactive-shell-surface-reduction.md), introspection belongs to Cypher, and
+ [ADR-0058](./0058-interactive-shell-surface-reduction.md) requires a new ADR referencing it before any withdrawn command
   returns. A shell-only schema surface would also split one capability across
   two contracts (shell and Cypher) and add a public CLI API to test and
   document forever. Shell sugar, if wanted, is a phase-2 decision over the
@@ -110,7 +123,7 @@ that must reference ADR-0058.
 
 ## Later references
 
-- ADR-0153 adds `db.schema.visualization()` as the third `db.schema.*`
+- [ADR-0153](./0153-db-schema-visualization-semantics.md) adds `db.schema.visualization` as the third `db.schema.*`
   procedure, satisfying this ADR's follow-up-ADR requirement for additional
   schema procedures, and pins its virtual-entity semantics (negative ids,
   virtual-node side-table registration, `{name, indexes, constraints}` node
@@ -130,4 +143,4 @@ that must reference ADR-0058.
   cached or declared-schema fast path.
 - Any `.schema` CLI sugar, or any additional schema procedure or column, needs
   a follow-up ADR; shell sugar additionally needs a new ADR referencing
-  ADR-0058.
+ [ADR-0058](./0058-interactive-shell-surface-reduction.md).

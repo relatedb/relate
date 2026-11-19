@@ -1,13 +1,31 @@
-# 0577. An over-budget Bolt message fails its request instead of closing the connection
+---
+type: adr
+area: surface
+claim: 0b42995f4b1002d64c698e21154d08d2ce8a2b01
+date: 2026-11-11
+deciders: the maintainers
+name: 0577-over-budget-bolt-message-fails-the-request
+status: proposed
+tags:
+  - bolt
+  - security
+title: An over-budget Bolt message fails its request instead of closing the connection
+REFERENCES:
+  - "[[adr/0082-bound-bolt-decoded-value-count]]"
+  - "[[adr/0110-bolt-connection-query-governance]]"
+  - "[[adr/0126-bolt-basic-auth]]"
+  - "[[adr/0313-bolt-hello-requires-user-agent]]"
+  - "[[adr/0315-bolt-unknown-message-signature-fatal]]"
+  - "[[adr/0317-bolt-reset-ignores-queued-work]]"
+  - "[[adr/0484-bolt-5-4]]"
+  - "[[adr/0579-bolt-decode-budget-counts-bytes]]"
+---
 
-- **Status**: Proposed
-Claim: 0b42995f4b1002d64c698e21154d08d2ce8a2b01
-- **Date**: 2026-11-11
-- **Deciders**: the maintainers
+# 0577. An over-budget Bolt message fails its request instead of closing the connection
 
 ## Context
 
-ADR-0082 bounds a decoded Bolt message to a fixed number of PackStream values
+[ADR-0082](./0082-bound-bolt-decoded-value-count.md) bounds a decoded Bolt message to a fixed number of PackStream values
 and says an over-budget message "ends only its Bolt connection", like any
 other malformed message. That is right for a message that is not valid
 PackStream: the stream may be out of sync and nothing can be answered.
@@ -28,16 +46,16 @@ rejected request, not a protocol breach:
   and an authored message that states what was measured (message bytes and a
   lower bound on decoded values), the per-message limit, how values are
   counted, and the remedy: send fewer rows per request.
-- The session enters the failed state (ADR-0110). Messages pipelined behind it
+- The session enters the failed state ([ADR-0110](./0110-bolt-connection-query-governance.md)). Messages pipelined behind it
   answer IGNORED until RESET, exactly as after any failed request, and the same
   connection then serves the next request.
 - Before the session is open there is no state to fail, so each gate answers in
   its own policy: the pre-HELLO gate sends the unauthorized FAILURE and closes
-  (ADR-0126), the rejected-HELLO state answers IGNORED (ADR-0313), and the 5.x
-  AUTHENTICATION gate sends the limit FAILURE and closes (ADR-0484).
+ ([ADR-0126](./0126-bolt-basic-auth.md)), the rejected-HELLO state answers IGNORED ([ADR-0313](./0313-bolt-hello-requires-user-agent.md)), and the 5.x
+ AUTHENTICATION gate sends the limit FAILURE and closes ([ADR-0484](./0484-bolt-5-4.md)).
 - A message queued ahead of a RESET in the same batch answers IGNORED, as every
-  interruptible message does (ADR-0317).
-- Every other decode error stays fatal (ADR-0315): the decoder reports the
+ interruptible message does ([ADR-0317](./0317-bolt-reset-ignores-queued-work.md)).
+- Every other decode error stays fatal ([ADR-0315](./0315-bolt-unknown-message-signature-fatal.md)): the decoder reports the
   budget as its own typed error, distinct from malformed input, so the session
   never discriminates by message text.
 
@@ -62,10 +80,10 @@ rather than scanning the rest of the message.
   and the remedy, and its connection survives.
 - The Bolt specification's statement that the limit terminates the connection
   changes to this behavior.
-- ADR-0082's "ends only its Bolt connection" no longer applies to the value
+- [ADR-0082](./0082-bound-bolt-decoded-value-count.md)'s "ends only its Bolt connection" no longer applies to the value
   budget; its counting rule and limit stand.
 
 ## Later references
 
-- ADR-0579: the budget the failure reports is a decoded-byte size, so the
+- [ADR-0579](./0579-bolt-decode-budget-counts-bytes.md): the budget the failure reports is a decoded-byte size, so the
   message states MiB instead of a value count.

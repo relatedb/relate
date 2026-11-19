@@ -1,7 +1,18 @@
-# ADR-0337: CREATE CONSTRAINT OPTIONS lowering and eval errors propagate
+---
+type: adr
+area: engine
+claim: e9fa7c0d09c8d2ea73586864e1b74293836f8c31
+name: 0337-constraint-options-errors-propagate
+status: proposed
+tags:
+  - catalog
+title: CREATE CONSTRAINT OPTIONS lowering and eval errors propagate
+REFERENCES:
+  - "[[adr/0307-bolt-failure-carries-neo4j-status-codes]]"
+  - "[[adr/0308-absent-parameter-fails-before-execution]]"
+---
 
-Status: Proposed
-Claim: e9fa7c0d09c8d2ea73586864e1b74293836f8c31
+# ADR-0337: CREATE CONSTRAINT OPTIONS lowering and eval errors propagate
 
 ## Context
 
@@ -20,7 +31,7 @@ if key != "indexConfig" || !matches!(value, Some(Value::Map(ref map)) if map.is_
 
 The `.ok()`/`.ok()` chain is a silent fallback: a missing parameter in
 `OPTIONS {indexConfig: $p}` is swallowed and re-reported as the generic
-`InvalidOptionsMap`, even though ADR-0308 split the sibling
+`InvalidOptionsMap`, even though [ADR-0308](./0308-absent-parameter-fails-before-execution.md) split the sibling
 `CREATE INDEX … OPTIONS $p` path out to the typed
 `ParameterMissing`. A lowering failure or an eval failure (e.g. an
 arithmetic error) is likewise eaten and re-labelled as a shape error.
@@ -31,7 +42,7 @@ arithmetic error) is likewise eaten and re-labelled as a shape error.
 `?` and validates only the resulting shape: a key other than
 `indexConfig`, a non-map value, or a non-empty map is the existing
 `InvalidOptionsMap` semantic error; an absent parameter surfaces the typed
-`ParameterMissing` (ADR-0308), and an eval failure surfaces its own error.
+`ParameterMissing` ([ADR-0308](./0308-absent-parameter-fails-before-execution.md)), and an eval failure surfaces its own error.
 The constraint is not created on any failure.
 
 ## Alternatives considered
@@ -51,7 +62,7 @@ The constraint is not created on any failure.
 ## Consequences
 
 - `CREATE CONSTRAINT … OPTIONS {indexConfig: $p}` with `p` absent now
-  fails with `ParameterMissing` (ADR-0307's wire class), matching the
+ fails with `ParameterMissing` ([ADR-0307](./0307-bolt-failure-carries-neo4j-status-codes.md)'s wire class), matching the
   `CREATE INDEX` path; the shape error is unchanged for supplied values.
 - Tests: `catalog_schema.rs` unit tests pin both outcomes;
   `cypherlite/tests/parameter_missing.rs` adds the constraint-OPTIONS

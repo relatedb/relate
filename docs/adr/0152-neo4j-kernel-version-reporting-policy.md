@@ -1,8 +1,22 @@
-# 0152. Neo4j Kernel version string reported by dbms.components
+---
+type: adr
+area: surface
+date: 2026-09-30
+deciders: CypherLite maintainers
+name: 0152-neo4j-kernel-version-reporting-policy
+status: accepted
+tags:
+  - bolt
+  - conformance
+title: Neo4j Kernel version string reported by dbms.components
+REFERENCES:
+  - "[[adr/0142-browser-compat-record-shapes]]"
+  - "[[adr/0143-browser-dbms-procedures]]"
+SUPERSEDES:
+  - "[[adr/0142-browser-compat-record-shapes]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-30
-- **Deciders**: CypherLite maintainers (Linear LABS-150)
+# 0152. Neo4j Kernel version string reported by dbms.components
 
 ## Context
 
@@ -29,7 +43,7 @@ bundle (`https://browser.neo4j.io/assets/src.CrPyDXpB.js`):
   `5.27-aura`, edition enterprise — a two-part version plus hyphenated
   product suffix, and Browser special-cases `version.endsWith('-aura')`.
 
-ADR-0142 rejected claiming a real Neo4j kernel version (`>= 4.4.0`) as
+[ADR-0142](./0142-browser-compat-record-shapes.md) rejected claiming a real Neo4j kernel version (`>= 4.4.0`) as
 dishonest, accepting Desktop's non-fatal "not officially supported" warning
 as honest output. The browser.neo4j.io gate is harsher: it **throws** and
 blocks the sidebar outright, so the honest `0.9.1` workspace version is no
@@ -38,21 +52,21 @@ differently here: the reported string carries a hyphenated `-cypherlite`
 product suffix, keeping it distinguishable from any real Neo4j version and
 matching Aura's own `-aura` convention (Aura, a Neo4j-operated service,
 itself reports a suffixed kernel version that is not a stock Neo4j release).
-The 'CypherLite' row in `dbms.components` (ADR-0142, row 3) keeps reporting
+The 'CypherLite' row in `dbms.components` ([ADR-0142](./0142-browser-compat-record-shapes.md), row 3) keeps reporting
 the honest workspace version, so no information is hidden.
 
 Risk weighed: a coerced version `>= 5.x` trips other feature gates in the
 same bundle (`Mx(e,'5.11.0')`, `Mx(e,'5.26.0')` gte checks in
 `types.DVd7vXNM.js`) that may enable query paths CypherLite doesn't support.
 Against that: CypherLite passes 3891/3893 openCypher TCK scenarios and
-already implements the Browser/Desktop metadata surface (ADR-0142,
-ADR-0143), any path a `2026.x` version enables can be fixed forward, and
+already implements the Browser/Desktop metadata surface ([ADR-0142](./0142-browser-compat-record-shapes.md),
+[ADR-0143](./0143-browser-dbms-procedures.md)), any path a `2026.x` version enables can be fixed forward, and
 staying at `4.4.x` forever lags Neo4j's own calver world (Neo4j itself now
 reports versions like `2026.08.0`).
 
 ## Decision
 
-`dbms.components` reports the 'Neo4j Kernel' row (ADR-0142 row 1) with
+`dbms.components` reports the 'Neo4j Kernel' row ([ADR-0142](./0142-browser-compat-record-shapes.md) row 1) with
 `versions[0]` = **`2026.10-cypherlite`** — the current Neo4j calver
 month plus the `-cypherlite` product suffix, the same two-part-plus-suffix
 shape as Aura's `5.27-aura`.
@@ -84,7 +98,7 @@ shape as Aura's `5.27-aura`.
   information sidebar outright (LABS-150); unlike Desktop's non-fatal
   warning, there is no continue path.
 - **Claim a real, unsuffixed Neo4j version (e.g. `2026.10`).** Rejected:
-  dishonest per ADR-0142's reasoning — indistinguishable from a genuine
+ dishonest per [ADR-0142](./0142-browser-compat-record-shapes.md)'s reasoning — indistinguishable from a genuine
   Neo4j kernel and invites parity expectations the engine does not meet.
   The `-cypherlite` suffix is what makes the calver form acceptable.
 - **Bare calver month without suffix (`2026.10-cypherlite` vs.
@@ -103,7 +117,7 @@ shape as Aura's `5.27-aura`.
 - The reported constant must be re-verified against the deployed Browser
   bundle when bumped; the bundle hash in Context is the evidence snapshot
   for this decision.
-- ADR-0142's `dbms.components` row table is superseded for row 1's
+- [ADR-0142](./0142-browser-compat-record-shapes.md)'s `dbms.components` row table is superseded for row 1's
   `versions` value only; rows 2–3 and the SHOW DATABASES / `dbms.info`
   shapes are unchanged. Tests pinning row 1's version must be updated by the
   implementing node.

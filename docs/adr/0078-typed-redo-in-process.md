@@ -1,12 +1,25 @@
-# 0078. Redo ops carry typed values; JSON only at the WAL boundary
+---
+type: adr
+area: engine
+date: 2026-09-19
+deciders: CypherLite maintainers
+name: 0078-typed-redo-in-process
+status: accepted
+tags:
+  - values
+  - wal
+title: Redo ops carry typed values; JSON only at the WAL boundary
+REFERENCES:
+  - "[[adr/0059-wal-redo-typed-payloads]]"
+SUPERSEDES:
+  - "[[adr/0059-wal-redo-typed-payloads]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-19
-- **Deciders**: CypherLite maintainers
+# 0078. Redo ops carry typed values; JSON only at the WAL boundary
 
 ## Context
 
-ADR-0059 made WAL redo payloads typed models and forbade re-parsing Cypher
+[ADR-0059](./0059-wal-redo-typed-payloads.md) made WAL redo payloads typed models and forbade re-parsing Cypher
 text on replay, but left one text-shaped payload in place: the property maps
 on `CreateNode`/`CreateRel` and the value on `SetNodeProp`/`SetRelProp` were
 `serde_json::Value`. The write path encoded typed `Value`s into that JSON
@@ -80,5 +93,5 @@ WAL format version bump and no migration.
   legacy-mirror tests pass unmodified); the ~890 ms tree build+drop in the
   bulk WAL encode is gone (`to_vec` 9.32% → 3.8%, `to_json_tagged` 4.4% →
   0.1%). See [`docs/performance-notes.md`](../performance-notes.md) §13.
-- Supersedes the property/value half of ADR-0059's "typed payloads" goal for
+- Supersedes the property/value half of [ADR-0059](./0059-wal-redo-typed-payloads.md)'s "typed payloads" goal for
   the in-process path; the WAL replay path keeps the JSON contract.

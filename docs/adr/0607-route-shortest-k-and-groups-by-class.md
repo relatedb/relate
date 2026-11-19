@@ -1,18 +1,34 @@
+---
+type: adr
+area: engine
+claim: 99c395b6300146ea0778e4ef33d18ec708ace5b7
+name: 0607-route-shortest-k-and-groups-by-class
+status: proposed
+tags:
+  - pattern-matching
+title: SHORTEST k and SHORTEST k GROUPS take the shortest-path route by length class
+REFERENCES:
+  - "[[adr/0111-engine-bounded-execution]]"
+  - "[[adr/0186-match-clause-shortest-path-bfs]]"
+  - "[[adr/0203-newest-first-expansion-order]]"
+  - "[[adr/0463-expression-allocation-budget]]"
+  - "[[adr/0555-operators-stream-rows-never-accumulate]]"
+  - "[[adr/0567-shortest-route-endpoint-listing-is-capped]]"
+  - "[[adr/0600-keyword-selector-where-is-a-post-filter]]"
+  - "[[adr/0601-bidirectional-all-shortest-pair-search]]"
+---
+
 # ADR-0607: SHORTEST k and SHORTEST k GROUPS take the shortest-path route by length class
-
-Status: Proposed
-
-Claim: 99c395b6300146ea0778e4ef33d18ec708ace5b7
 
 ## Context
 
-ADR-0186 routes the `MATCH`-clause shortest selectors onto a breadth-first
+[ADR-0186](./0186-match-clause-shortest-path-bfs.md) routes the `MATCH`-clause shortest selectors onto a breadth-first
 search, but only the single-answer and all-shortest forms. `SHORTEST k` with
-k above 1 and `SHORTEST k GROUPS` are not routed (ADR-0600 records that they
+k above 1 and `SHORTEST k GROUPS` are not routed ([ADR-0600](./0600-keyword-selector-where-is-a-post-filter.md) records that they
 post-filter like the other keyword selectors). They fall to enumeration: the
 pattern walk collects every trail of every admissible length into one list,
 and the selector sorts and cuts it afterwards. That is exponential in the hop
-bound and breaks ADR-0555, which forbids an unbounded list of intermediate
+bound and breaks [ADR-0555](./0555-operators-stream-rows-never-accumulate.md), which forbids an unbounded list of intermediate
 rows. On the soc-pokec graph, `SHORTEST 3` and `SHORTEST 2 GROUPS` between
 one fixed pair of users within six hops do not finish in over four minutes,
 where the reference engine answers in tens of milliseconds. The memory hazard
@@ -62,19 +78,19 @@ intended semantic change.
    exists, and the partition ends at once.
 4. **Selection keeps the pinned tie-break.** Within a class the boundary
    choice follows the existing order (length, relationship-type sequence,
-   node-id sequence, ADR-0203), so results equal enumeration. Classes that
+ node-id sequence, [ADR-0203](./0203-newest-first-expansion-order.md)), so results equal enumeration. Classes that
    fit whole are emitted as they complete. The boundary class feeds a heap
    bounded by the trails still wanted; only that many trails are retained.
    `GROUPS` retains nothing: each class streams into the consumer.
 5. **Bounds.** Retained state is the two balls and the heap, both charged to
-   the workspace ledger (ADR-0463) as the reach cache is, so an over-large
+ the workspace ledger ([ADR-0463](./0463-expression-allocation-budget.md)) as the reach cache is, so an over-large
    ball fails with the existing capacity error rather than a new one. The
-   cancellation window ticks per frame (ADR-0111). The seek-listing cap
-   (ADR-0567) is unchanged. No new knob and no new error kind.
+ cancellation window ticks per frame ([ADR-0111](./0111-engine-bounded-execution.md)). The seek-listing cap
+ ([ADR-0567](./0567-shortest-route-endpoint-listing-is-capped.md)) is unchanged. No new knob and no new error kind.
 6. **Order.** Rows within a partition emerge in ascending length and, within
    a length, in tie-break order; across partitions order is unspecified, as
-   for any match without an ordering clause (ADR-0601).
-7. **Post-filters** are applied to the selected rows as ADR-0600 states.
+ for any match without an ordering clause ([ADR-0601](./0601-bidirectional-all-shortest-pair-search.md)).
+7. **Post-filters** are applied to the selected rows as [ADR-0600](./0600-keyword-selector-where-is-a-post-filter.md) states.
 
 ## Alternatives considered
 
@@ -107,4 +123,4 @@ intended semantic change.
 - Tests compare the route with enumeration on small graphs across selectors,
   directions, parallel relationships, ties, caps and post-filters, and the
   pokec pair queries are timed in CI against a single engine revision.
-- Later references note on ADR-0186 names this ADR.
+- Later references note on [ADR-0186](./0186-match-clause-shortest-path-bfs.md) names this ADR.

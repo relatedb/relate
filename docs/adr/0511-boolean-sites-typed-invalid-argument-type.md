@@ -1,11 +1,26 @@
-# ADR-0511: The boolean-requiring sites raise the typed `InvalidArgumentType` — Neo4j's TypeError class
+---
+type: adr
+area: cypher
+claim: 19376b050f5397470fb8d0a25f81c513b5680284
+name: 0511-boolean-sites-typed-invalid-argument-type
+status: proposed
+tags:
+  - conformance
+  - errors
+title: The boolean-requiring sites raise the typed `InvalidArgumentType` — Neo4j's TypeError class
+REFERENCES:
+  - "[[adr/0003-tck-named-error-kinds]]"
+  - "[[adr/0175-list-and-string-form-conversions]]"
+  - "[[adr/0458-misc-tail-cypher25-forms]]"
+  - "[[adr/0502-typed-c-abi-v2]]"
+  - "[[adr/0566-compile-time-static-rejections-are-syntax-errors]]"
+---
 
-Status: Proposed
-Claim: 19376b050f5397470fb8d0a25f81c513b5680284
+# ADR-0511: The boolean-requiring sites raise the typed `InvalidArgumentType` — Neo4j's TypeError class
 
 ## Context
 
-LABS-400 (with LABS-913 item 2). ADR-0003 pinned the engine's error
+[ADR-0003](./0003-tck-named-error-kinds.md) pinned the engine's error
 vocabulary to openCypher TCK names and stated the contract: changing a
 message is not a breaking change; changing a kind is. Four
 boolean-requiring rejection sites in the engine still raise
@@ -20,7 +35,7 @@ spells `InvalidArgumentType`:
   context `quantifier WHERE`) and the `WHEN` predicate
   (`exec/call/conditional.rs`, context `WHEN predicate`). The four boolean
   operators layer the deprecated list/path conversion above it through
-  `bool_operand` (ADR-0458 §7), so their residual non-boolean arm is the
+ `bool_operand` ([ADR-0458](./0458-misc-tail-cypher25-forms.md) §7), so their residual non-boolean arm is the
   same site.
 - `cypherlite/cypherlite-planner/src/expr_check.rs` — `check_pred`'s
   statically non-boolean predicate (`WHERE 1`, context-free: "predicate
@@ -58,9 +73,9 @@ The typed constructor already exists and is already classified: the user
 decision on LABS-400 is "go with the neo4j type error".
 `Error::invalid_argument_type(detail)` (`cypherlite-core/src/error.rs`)
 renders `type error: InvalidArgumentType: <detail>` and classifies
-through the one ABI v2 table (ADR-0502 §2,
+through the one ABI v2 table ([ADR-0502](./0502-typed-c-abi-v2.md) §2,
 `cypherlite-error/src/classification.rs`) as
-`Neo.ClientError.Statement.TypeError` / GQLSTATUS `22G03`. ADR-0175
+`Neo.ClientError.Statement.TypeError` / GQLSTATUS `22G03`. [ADR-0175](./0175-list-and-string-form-conversions.md)
 already uses it at plan time for the float-literal rejections and records
 the same phase deviation this ADR accepts below.
 
@@ -82,7 +97,7 @@ runtime value (executor) and another for a literal the planner sees:
 
 The detail text keeps its `… requires a boolean` / `… is not a boolean
 predicate` wording. Only the class prefix of the rendered message changes
-(`type error:` in place of `syntax error:`); per ADR-0003 the *kind* is
+(`type error:` in place of `syntax error:`); per [ADR-0003](./0003-tck-named-error-kinds.md) the *kind* is
 the contract and the message text stays informal.
 
 Site 3 (the entity/path predicate) converges with the rest: its own
@@ -103,7 +118,7 @@ the SyntaxError class at the ABI. Converging it means changing that
 `EngineError` → `Error` boundary, and it is blocked by a TCK phase pin:
 `Boolean1-4` scenarios `[8]`/`[4]` assert the error `at compile time`,
 while `Error::InvalidArgumentType` classifies at the **Runtime** stage
-(ADR-0502 §2) and the TCK bridge maps the variant to a runtime engine
+([ADR-0502](./0502-typed-c-abi-v2.md) §2) and the TCK bridge maps the variant to a runtime engine
 error, so the pins would fail. A compile-time TypeError shape needs its
 own stage-carrying representation — a follow-up decision, not a silent
 re-pin. The observable effect today is that `RETURN 1 AND true` still
@@ -129,7 +144,7 @@ checks. Their convergence, if any, is a separate decision.
    stage + TypeError class).** Rejected: the class is already expressed
    by the typed `InvalidArgumentType` variant and the one ABI v2 table is
    the classification seam; a second variant that differs only in stage
-   would fork that table, and ADR-0175 already established the accepted
+ would fork that table, and [ADR-0175](./0175-list-and-string-form-conversions.md) already established the accepted
    shape for a plan-time typed rejection.
 3. **Re-pin the TCK scenarios that could conflict.** Rejected: no pinned
    TCK scenario reaches any of the four converted sites (the compile-time
@@ -151,10 +166,10 @@ checks. Their convergence, if any, is a separate decision.
   queries, matching Neo4j. The Bolt spec's variant table
   (`docs/api/bolt/spec.md`) already maps `InvalidArgumentType` to that
   code; no documentation surface changes.
-- The typed variant's `stage` is **Runtime** (ADR-0502 §2), so the
+- The typed variant's `stage` is **Runtime** ([ADR-0502](./0502-typed-c-abi-v2.md) §2), so the
   planner's compile-time rejections report the Runtime stage even though
   they fail before any row is produced. This is the same deviation
-  ADR-0175 recorded for its plan-time float-literal rejections: the code
+ [ADR-0175](./0175-list-and-string-form-conversions.md) recorded for its plan-time float-literal rejections: the code
   and class drivers act on are right, the stage is coarser than Neo4j's.
   A per-site stage refinement would need a stage-carrying variant and is
   out of scope.
@@ -182,7 +197,7 @@ checks. Their convergence, if any, is a separate decision.
 
 ## Later references
 
-ADR-0566 supersedes this ADR's conclusion for the *static* sites: a
+[ADR-0566](./0566-compile-time-static-rejections-are-syntax-errors.md) supersedes this ADR's conclusion for the *static* sites: a
 statically non-boolean predicate or operator operand is Neo4j's
 compile-time SyntaxError class (probed on the exception class, where this
 ADR's table read the GQLSTATUS cause code). The runtime `bool_or_null`

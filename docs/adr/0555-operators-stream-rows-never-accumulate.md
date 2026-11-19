@@ -1,13 +1,24 @@
+---
+type: adr
+area: engine
+claim: 1c6340d02484f9d785398efc754c6234bcdd6506
+name: 0555-operators-stream-rows-never-accumulate
+status: proposed
+tags:
+  - executor
+title: Operators stream rows; unbounded results are never accumulated
+REFERENCES:
+  - "[[adr/0463-expression-allocation-budget]]"
+  - "[[adr/0468-soa-batch-substrate]]"
+  - "[[adr/0499-o1-per-row-agg-fold-charge]]"
+---
+
 # ADR-0555: Operators stream rows; unbounded results are never accumulated
-
-Status: Proposed
-
-Claim: 1c6340d02484f9d785398efc754c6234bcdd6506
 
 ## Context
 
 The executor runs a statement clause by clause, and the value passed from
-one clause to the next is a whole vector of rows. ADR-0468 states the
+one clause to the next is a whole vector of rows. [ADR-0468](./0468-soa-batch-substrate.md) states the
 starting point: clause interiors are row-at-a-time, with the row as the
 boundary representation. That is a CPU-cost decision; it said nothing about
 how many rows may be alive at once, so the vector became the interface by
@@ -18,10 +29,10 @@ The cost showed up wherever a result is large but its answer is small. A
 bounded variable-length path match from a high-degree node yields millions
 of path rows and a few hundred thousand distinct endpoints; the vector of
 path rows, charged at about a kilobyte each as one retaining container
-(ADR-0463), crossed the per-value cap although the aggregation consuming it
+([ADR-0463](./0463-expression-allocation-budget.md)), crossed the per-value cap although the aggregation consuming it
 held a few dozen bytes. A list generator feeding an aggregate had the same
 shape until it was fused with its consumer. The streaming accumulators for
-aggregates (ADR-0499 and its successors) removed the aggregate's own state
+aggregates ([ADR-0499](./0499-o1-per-row-agg-fold-charge.md) and its successors) removed the aggregate's own state
 but not the input it was fed from.
 
 A per-statement memory cap treats retained rows as the engine's own state,
@@ -45,7 +56,7 @@ number of distinct answers or groups, is a defect, not a tuning problem.
    retaining aggregate (collect, percentiles), a distinct set, and a hash
    join build side may hold state proportional to their input. Each does
    so deliberately, charges that state to the retaining-container budget
-   (ADR-0463), and prefers a bounded form where one exists (a top-k heap
+ ([ADR-0463](./0463-expression-allocation-budget.md)), and prefers a bounded form where one exists (a top-k heap
    for ordered limits, a seen-set of keys for distinct instead of retained
    operands).
 4. **Small, closed results may stay vectors.** Catalog listings, procedure
@@ -73,7 +84,7 @@ number of distinct answers or groups, is a defect, not a tuning problem.
   uniformly but is a rewrite of the executor. Rejected as a prerequisite;
   the stream boundary is introduced operator by operator.
 - **Row-at-a-time only, with no batches.** Simplest contract, but gives up
-  the batch substrate's per-column speedups (ADR-0468). Rejected: batches
+ the batch substrate's per-column speedups ([ADR-0468](./0468-soa-batch-substrate.md)). Rejected: batches
   of bounded size keep both.
 
 ## Consequences

@@ -1,7 +1,15 @@
-# ADR-0354: Nits never open inline threads; they ride a collapsed Low appendix
+---
+type: adr
+area: infra
+claim: 3e13599ec43762e743d8975d2efdb24bc7b798e0
+name: 0354-nits-collapsed-appendix-not-threads
+status: accepted
+tags:
+  - review
+title: Nits never open inline threads; they ride a collapsed Low appendix
+---
 
-Status: Accepted
-Claim: 3e13599ec43762e743d8975d2efdb24bc7b798e0
+# ADR-0354: Nits never open inline threads; they ride a collapsed Low appendix
 
 ## Context
 

@@ -1,12 +1,22 @@
+---
+type: adr
+area: engine
+claim: ba82fe59dfef039f9787e5236e1b65a185980ffa
+name: 0522-tiered-word-set-utility
+status: proposed
+tags:
+  - executor
+  - perf
+title: A tiered word-set utility beside the distinct set
+REFERENCES:
+  - "[[adr/0507-tiered-distinct-set]]"
+---
+
 # ADR-0522: A tiered word-set utility beside the distinct set
-
-Status: Proposed
-
-Claim: ba82fe59dfef039f9787e5236e1b65a185980ffa
 
 ## Context
 
-ADR-0507's `DistinctSet` bundles two concerns in one module:
+[ADR-0507](./0507-tiered-distinct-set.md)'s `DistinctSet` bundles two concerns in one module:
 
 1. the **DISTINCT-site API** — value and row keys through
    `GroupKey::class`, the null flag, the general single-key and row-key
@@ -21,7 +31,7 @@ planner work needs to merge candidate sets over raw node ids with the
 same shape — the zero-allocation inline tier for the common
 handful-of-keys case, one table past the boundary — and future raw-key
 consumers (frontier dedup, per-branch used-rel sets) want the same.
-But ADR-0507 §1 rightly keeps `DistinctSet` itself out of the pattern
+But [ADR-0507](./0507-tiered-distinct-set.md) §1 rightly keeps `DistinctSet` itself out of the pattern
 walker: the set carries DISTINCT semantics, and its boundary rule
 (`distinct_set` imports only `group_key`, `workspace`'s charge helpers,
 the hasher seam and the core crate — never `exec/` or `pattern_walk`)
@@ -41,7 +51,7 @@ tiered storage of exactly one key class's words, and nothing else:
 - **T2** — one hash table per set, presized to `2^5 = 32`, the hasher a
   construction-time policy (`WordHash::Id`, keyless Fx, for
   engine-allocated ids; `WordHash::Value`, the process-wide seeded
-  state, for client-derivable words — ADR-0507 §4's split, moved down
+ state, for client-derivable words — [ADR-0507](./0507-tiered-distinct-set.md) §4's split, moved down
   one level with the table it governs);
 - the API is `insert(word) -> Result<bool>`, `len`, `bytes`,
   `promoted`, plus `promote_inline` (the caller-forced promotion) and
@@ -54,10 +64,10 @@ instance, and what a switch between instances means, is the caller's
 model. It owns its workspace charge: each insert is one probe charging
 the delta of the representation that took the word — before the write
 in the inline tier (a refused charge leaves the tier `Empty` or
-untouched, ADR-0507 §5's rollback property, preserved exactly), the
+untouched, [ADR-0507](./0507-tiered-distinct-set.md) §5's rollback property, preserved exactly), the
 word removed again in the table tier.
 
-The utility carries ADR-0507 §1's import discipline unchanged: only
+The utility carries [ADR-0507](./0507-tiered-distinct-set.md) §1's import discipline unchanged: only
 `workspace`'s charge and bytes helpers, the hasher seam and the core
 crate — never the exec tree, never the pattern walker. The boundary
 unit test moved with the mechanics: the module's own test greps its
@@ -74,12 +84,12 @@ compile guard. Its word storage becomes `TieredWordSet`:
 - on a tag switch, the active tier is promoted and **parked** in its
   tag's spill slot (moved wholesale), and the incoming tag's parked
   tier — or a fresh one — takes the active seat. At most one inline
-  tier exists at any moment, exactly ADR-0507 §6's tag-homogeneous
+ tier exists at any moment, exactly [ADR-0507](./0507-tiered-distinct-set.md) §6's tag-homogeneous
   inline phase.
 
 The active tier sits in the set rather than one tier per tag because
 five inline tiers would grow `DistinctSet` roughly fivefold (about
-780 B), tripling the per-group aggregate footprint ADR-0507 §3
+780 B), tripling the per-group aggregate footprint [ADR-0507](./0507-tiered-distinct-set.md) §3
 explicitly bounded when it rejected the 2^5 inline tier, and tipping
 the large-variant lint in the aggregate, cap and union enums that hold
 a set. One active seat plus parked spill tiers keeps the footprint at
@@ -95,7 +105,7 @@ delegation.
 
 `pattern_walk` (and any other raw-key consumer) may import
 `crate::tiered_set` — the utility carries no DISTINCT semantics, so
-the reason ADR-0507 §1 barred the import is gone. `DistinctSet`
+the reason [ADR-0507](./0507-tiered-distinct-set.md) §1 barred the import is gone. `DistinctSet`
 remains barred: the path engine still never touches the distinct set,
 its key classes, or its general tables.
 
@@ -105,7 +115,7 @@ its key classes, or its general tables.
   second copy of one storage policy — the boundary constant, the
   promotion move, the rollback and the stride-8 accounting would drift
   apart on the next fix to either site.
-- **Relax ADR-0507 §1 and let `pattern_walk` import `DistinctSet`.**
+- **Relax [ADR-0507](./0507-tiered-distinct-set.md) §1 and let `pattern_walk` import `DistinctSet`.**
   Rejected: it couples DISTINCT semantics (`GroupKey` classification,
   the null flag, the general tables) into the path engine, and drags
   the walker into the distinct set's boundary obligations — the exact
@@ -116,7 +126,7 @@ its key classes, or its general tables.
   still leaves the tiering stranded inside the distinct set.
 - **Five `TieredWordSet`s inlined in `DistinctSet`, one per tag, each
   with its own inline tier.** Rejected: it grows `DistinctSet` about
-  fivefold, multiplying the per-group aggregate footprint ADR-0507 §3
+ fivefold, multiplying the per-group aggregate footprint [ADR-0507](./0507-tiered-distinct-set.md) §3
   bounded and failing the large-variant lint in the aggregate, cap and
   union enums; the active-seat-plus-parked-spill shape delivers the
   same per-tag storage at one tier's footprint.
@@ -139,6 +149,6 @@ its key classes, or its general tables.
   set's test tier gate today; the raw-key consumers arrive with their
   own call sites, carried until then under the repo's established
   test-only exemption idiom.
-- The seam ADR-0507 §3 left for a dense id bitset (the `Id` table)
+- The seam [ADR-0507](./0507-tiered-distinct-set.md) §3 left for a dense id bitset (the `Id` table)
   now lives one level down, in the utility's `WordTable` — a future
   bitset tier is a change to the utility, shared by every consumer.

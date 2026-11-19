@@ -1,8 +1,26 @@
+---
+type: adr
+area: engine
+claim: 0bcfafbf52360ba687499fa22de021d8c6cb3ab2
+name: 0463-expression-allocation-budget
+status: proposed
+tags:
+  - memory
+  - security
+title: A per-allocation expression build cap
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0257-query-input-limits]]"
+  - "[[adr/0307-bolt-failure-carries-neo4j-status-codes]]"
+  - "[[adr/0352-drop-processing-byte-limits]]"
+  - "[[adr/0395-nested-evaluation-budget]]"
+  - "[[adr/0499-o1-per-row-agg-fold-charge]]"
+  - "[[adr/0555-operators-stream-rows-never-accumulate]]"
+---
+
 # ADR-0463: A per-allocation expression build cap
 
-Status: Proposed
-Claim: 0bcfafbf52360ba687499fa22de021d8c6cb3ab2
-Later references: ADR-0499 keeps the vals container's per-row charge exact for every fold (a transient fold's vals hold the payloads until the fold completes; a fixed-width estimate was tried and rejected — constructed payloads nested one level escape it) and removes the measured per-row overhead by inlining the walk chain instead. The collect/comprehension/UNWIND/projection totals above are unchanged. ADR-0555 makes the retaining-container charge the price of a declared breaker only: an operator output that grows with intermediate rows is not a container to charge but a shape to stream.
+Later references: [ADR-0499](./0499-o1-per-row-agg-fold-charge.md) keeps the vals container's per-row charge exact for every fold (a transient fold's vals hold the payloads until the fold completes; a fixed-width estimate was tried and rejected — constructed payloads nested one level escape it) and removes the measured per-row overhead by inlining the walk chain instead. The collect/comprehension/UNWIND/projection totals above are unchanged. [ADR-0555](./0555-operators-stream-rows-never-accumulate.md) makes the retaining-container charge the price of a declared breaker only: an operator output that grows with intermediate rows is not a container to charge but a shape to stream.
 
 ## Context
 
@@ -20,12 +38,12 @@ Each of these allocates a container or string whose size is a function of
 inputs the client supplies — `range`'s element count is exact before the
 first push, a list/string concatenation's result is the operands' combined
 length, a comprehension's output is bounded by its source, and a
-`reduce`/`allReduce` accumulator can double every iteration. The ADR-0257
+`reduce`/`allReduce` accumulator can double every iteration. The [ADR-0257](./0257-query-input-limits.md)
 input limits bound static shape (4 MiB of text, parse depth 500), not a
 dynamic result size: a tiny `range(1, 1000000000)` passes every static
-check. ADR-0395 bounds *nested statement passes*, not the bytes one pass
-allocates. ADR-0042's capacity engages only for stored-graph writes at
-commit, and ADR-0352 deliberately has no per-query byte meter.
+check. [ADR-0395](./0395-nested-evaluation-budget.md) bounds *nested statement passes*, not the bytes one pass
+allocates. [ADR-0042](./0042-graph-memory-limit.md)'s capacity engages only for stored-graph writes at
+commit, and [ADR-0352](./0352-drop-processing-byte-limits.md) deliberately has no per-query byte meter.
 
 The result is an available denial of service on every surface: an embedded
 Rust/C-ABI host, Bolt, the HTTP Query API, the CLI in `--read-only`, and
@@ -174,8 +192,8 @@ line:
 What happened (the value, in MB/GB), that it is a protection rather than a
 native limit, and the one action — the three facts every memory refusal in
 the docs table now carries. The graph-cap kind keeps the historical
-`capacity exceeded: used=… limit=…` contract byte-for-byte (ADR-0042,
-ADR-0307). Status mapping is untouched: HTTP 507, Bolt
+`capacity exceeded: used=… limit=…` contract byte-for-byte ([ADR-0042](./0042-graph-memory-limit.md),
+[ADR-0307](./0307-bolt-failure-carries-neo4j-status-codes.md)). Status mapping is untouched: HTTP 507, Bolt
 `TransactionOutOfMemoryError`, CLI `ErrorFamily::Capacity`, Neo4j-wire
 `MemoryLimitExceeded`.
 
@@ -205,9 +223,9 @@ for enforcement.
 - **An `OpenOptions`-only knob.** Rejected: the CLI, `serve`, and embedded
   hosts must all reach the same open path, so the knob rides the existing
   memory-limit ladder (flag → env → `OpenOptions` → default).
-- **Reuse ADR-0042's graph cap.** Rejected: it engages at WAL append for
+- **Reuse [ADR-0042](./0042-graph-memory-limit.md)'s graph cap.** Rejected: it engages at WAL append for
   stored writes and never sees a read-only `range(1, 1_000_000_000)`.
-- **Reuse ADR-0395's nested-pass budget.** Rejected: a flat statement
+- **Reuse [ADR-0395](./0395-nested-evaluation-budget.md)'s nested-pass budget.** Rejected: a flat statement
   allocates its result in one pass; passes do not measure bytes. The two
   budgets are orthogonal.
 - **Measure allocated heap with an allocator hook.** Rejected: RSS and

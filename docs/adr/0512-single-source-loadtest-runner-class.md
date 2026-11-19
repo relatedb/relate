@@ -1,12 +1,24 @@
+---
+type: adr
+area: infra
+claim: 5ebf5c5ae57e030046c7a172402071b7d6701580
+name: 0512-single-source-loadtest-runner-class
+status: proposed
+tags:
+  - ci
+  - loadtest
+title: Single-source loadtest runner class (`vars.LOADTEST_RUNNER`)
+REFERENCES:
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+SUPERSEDES:
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+---
+
 # ADR-0512: Single-source loadtest runner class (`vars.LOADTEST_RUNNER`)
-
-Status: Proposed
-
-Claim: 5ebf5c5ae57e030046c7a172402071b7d6701580
 
 ## Context
 
-ADR-0071 made wall-clock loadtest comparison valid only when the frozen
+[ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md) made wall-clock loadtest comparison valid only when the frozen
 envelope's `environment` matches the per-PR report's, and named the runner
 class as one of the class fields. The class was then pinned **by hand in
 six places**: `runs-on` and the `BASELINE_RUNNER` stamp in `ci.yml`'s
@@ -74,7 +86,7 @@ fraud/identity lane, INCOMPATIBLE on every PR (LABS-946 item 1).
   expression in every lane.
 - A future class change (say 8-core) touches one repo variable plus one
   freeze dispatch; no workflow edits.
-- ADR-0071 §4's "both use `ubuntu-24.04`" is superseded by this ADR: the
-  shared class is whatever the variable says — the invariant ADR-0071
+- [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md) §4's "both use `ubuntu-24.04`" is superseded by this ADR: the
+ shared class is whatever the variable says — the invariant [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md)
   wanted (PR job and freeze share a class) finally holds **structurally**
   instead of by hand-copying a label into six sites.

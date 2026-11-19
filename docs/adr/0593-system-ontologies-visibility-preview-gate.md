@@ -1,14 +1,27 @@
+---
+type: adr
+area: engine
+claim: 1a477fc2a38fd2b9a1f1dbf41b2e066877a51ef2
+name: 0593-system-ontologies-visibility-preview-gate
+status: proposed
+tags:
+  - namespaces
+  - ontology
+title: Hide the `system_ontologies` namespace behind the ontology preview opt-in
+REFERENCES:
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0229-remove-system-ontologies-cypher-surface]]"
+  - "[[adr/0371-preview-feature-gating]]"
+  - "[[adr/0378-ontology-procedures-preview-gate]]"
+---
+
 # ADR-0593: Hide the `system_ontologies` namespace behind the ontology preview opt-in
-
-Status: Proposed
-
-Claim: 1a477fc2a38fd2b9a1f1dbf41b2e066877a51ef2
 
 ## Context
 
-ADR-0116 gave every store three fixed namespaces; ADR-0229 kept
+[ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) gave every store three fixed namespaces; [ADR-0229](./0229-remove-system-ontologies-cypher-surface.md) kept
 `system_ontologies` listed but not queryable, its 42N17 text pointing at
-the `db.ontology.*` procedures; ADR-0378 gated those procedures behind
+the `db.ontology.*` procedures; [ADR-0378](./0378-ontology-procedures-preview-gate.md) gated those procedures behind
 the `ontology` row of `RELATE_PREVIEW` because their contract tracks a
 non-final external spec (the Ontology Graph Spec and the
 ontology-privileges proposal).
@@ -17,7 +30,7 @@ The namespace itself still advertises that feature unconditionally.
 `SHOW DATABASES` lists the row in the flag-off default, the 42N17 text
 names the procedures, and `USE`, session connect and `ALTER DATABASE`
 all accept the name — a caller can discover and target a surface whose
-shape upstream may re-cut, exactly the condition ADR-0378 gated the
+shape upstream may re-cut, exactly the condition [ADR-0378](./0378-ontology-procedures-preview-gate.md) gated the
 procedures for. The default listing also matches nothing a live Neo4j
 edition reports: no edition ships a `system_ontologies` database, while
 the flag-off two-row shape (the user database and `system`) is exactly
@@ -35,38 +48,38 @@ invisible everywhere the dialect can name, list or select a database.
   segment route included) with 42N00 `Graph not found`; session connect,
   typed and by name, and `set_namespace` the same; `ALTER DATABASE
   system_ontologies` as an unknown target, its `IF EXISTS` form a no-op.
-  Never the authored preview error — ADR-0371's name-gate rule: an error
+ Never the authored preview error — [ADR-0371](./0371-preview-feature-gating.md)'s name-gate rule: an error
   must not advertise a name the catalog does not list.
 - **The mechanism is a mapping, not inline checks.** A
   fixed-namespace → preview-feature table in the namespace registry —
   the namespace twin of the executor's procedure-to-feature mapping
-  (ADR-0378) — with the visibility predicate derived from it. Every
+ ([ADR-0378](./0378-ontology-procedures-preview-gate.md)) — with the visibility predicate derived from it. Every
   resolution site consults the one table; a future gated namespace adds
-  one row and no new machinery. ADR-0378's exception class widens from
+ one row and no new machinery. [ADR-0378](./0378-ontology-procedures-preview-gate.md)'s exception class widens from
   a procedure family to the feature's whole dialect surface: the
   procedures and the namespace hosting the stored document are one
   surface, one registry row, one opt-in.
 - **Gate placement.** The visibility arm runs after the procedures
-  preview gate — ADR-0378's pinned first position stands — and before
+ preview gate — [ADR-0378](./0378-ontology-procedures-preview-gate.md)'s pinned first position stands — and before
   `CALL` validation and the later gates, so a hidden namespace is
   indistinguishable from a name that never resolved.
 - **Store format unchanged.** The databases catalog keeps its durable
   `system_ontologies` entry — the opt-in is per-open, not durable — so
   an existing store lists two rows while off and three while on; the
   42N17 text is unchanged and reachable only with the opt-in set.
-- **Removal rides with ADR-0378's**: when the spec and the proposal are
+- **Removal rides with [ADR-0378](./0378-ontology-procedures-preview-gate.md)'s**: when the spec and the proposal are
   final, the mapping row and the gates are deleted with the registry
   row.
 
 ## Alternatives considered
 
 - **Keep the namespace unconditionally listed.** Rejected: the listing
-  and the 42N17 text advertise the same non-final surface ADR-0378 hid;
+ and the 42N17 text advertise the same non-final surface [ADR-0378](./0378-ontology-procedures-preview-gate.md) hid;
   discovery must agree with callability.
 - **Fail hidden routes with the authored preview error.** Rejected: it
-  advertises the name, the exact form ADR-0371's name-gate rule forbids;
+ advertises the name, the exact form [ADR-0371](./0371-preview-feature-gating.md)'s name-gate rule forbids;
   the ordinary rejection is the honest disabled form.
-- **Remove the namespace until the spec is final.** Rejected: ADR-0229
+- **Remove the namespace until the spec is final.** Rejected: [ADR-0229](./0229-remove-system-ontologies-cypher-surface.md)
   chose listed-not-queryable over removal; the durable catalog row, the
   ontology WAL format and the procedures' target semantics depend on
   the namespace existing, and removal breaks stored databases.

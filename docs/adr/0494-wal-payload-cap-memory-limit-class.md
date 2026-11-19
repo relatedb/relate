@@ -1,11 +1,29 @@
-# ADR-0494: The WAL payload cap refusal is the memory-limit class on every surface
+---
+type: adr
+area: engine
+claim: 987686a6720f960a4cf7a08d37b5a45b03fede3e
+name: 0494-wal-payload-cap-memory-limit-class
+status: proposed
+tags:
+  - memory
+  - wal
+title: The WAL payload cap refusal is the memory-limit class on every surface
+REFERENCES:
+  - "[[adr/0003-tck-named-error-kinds]]"
+  - "[[adr/0086-bounded-persistence-input]]"
+  - "[[adr/0463-expression-allocation-budget]]"
+  - "[[adr/0482-spec-harness-coverage-lane]]"
+  - "[[adr/0492-wal-payload-cap-typed-variant]]"
+  - "[[adr/0604-early-commit-cap-refusal]]"
+SUPERSEDES:
+  - "[[adr/0492-wal-payload-cap-typed-variant]]"
+---
 
-Status: Proposed
-Claim: 987686a6720f960a4cf7a08d37b5a45b03fede3e
+# ADR-0494: The WAL payload cap refusal is the memory-limit class on every surface
 
 ## Context
 
-ADR-0492 typed the 64 MiB per-record WAL payload cap (ADR-0086) refusal
+[ADR-0492](./0492-wal-payload-cap-typed-variant.md) typed the 64 MiB per-record WAL payload cap ([ADR-0086](./0086-bounded-persistence-input.md)) refusal
 as the fieldless `Error::WalPayloadCap` and — deliberately, as its
 scope — kept the storage classification every surface gave the `Storage`
 prose predecessor: CLI family `Storage` (exit 1), Bolt `ErrorClass::
@@ -14,14 +32,14 @@ the fixed message `internal error` at the trust boundary), HTTP 400 (the
 reply fall-through), and binding metadata `("StorageError",
 "SemanticError")` for the C ABI and Python adapter.
 
-ADR-0492's first rejected alternative recorded why that classification
+[ADR-0492](./0492-wal-payload-cap-typed-variant.md)'s first rejected alternative recorded why that classification
 is wrong: the refusal is semantically a capacity condition — the record
 cannot be journaled because building it would exhaust memory — and the
 storage class misinforms every caller that branches on the class: a
 client counting memory-limit refusals, an HTTP gateway mapping 507, a
 driver surfacing memory conditions, an operator reading `internal
 error` for a statement the user simply made too large. It was rejected
-only because reclassifying changes the error's *kind*, which ADR-0003
+only because reclassifying changes the error's *kind*, which [ADR-0003](./0003-tck-named-error-kinds.md)
 defines as contract and therefore breaking.
 
 The human decision (Michael, 2026-11-03, LABS-862) removes that barrier:
@@ -36,9 +54,9 @@ gives `Error::Capacity`.
 **The refusal is a `CapacityKind::WalPayload` refusal on the existing
 `Error::Capacity` variant — one memory/capacity-limit family across the
 whole public API — and every surface classifies it with its
-memory-limit class.** The per-surface mapping, moving ADR-0492's table:
+memory-limit class.** The per-surface mapping, moving [ADR-0492](./0492-wal-payload-cap-typed-variant.md)'s table:
 
-| Surface | Was (ADR-0492) | Now |
+| Surface | Was ([ADR-0492](./0492-wal-payload-cap-typed-variant.md)) | Now |
 | --- | --- | --- |
 | Rust public API | `Error::WalPayloadCap`, storage class | `Error::Capacity { used, limit, kind: CapacityKind::WalPayload }` |
 | C ABI + Python (`binding_error_metadata`) | `("StorageError", "SemanticError")` | `("MemoryLimitExceeded", "ArgumentError")` — the same pair every other capacity refusal carries |
@@ -52,7 +70,7 @@ memory-limit class.** The per-surface mapping, moving ADR-0492's table:
    consulted (`Error::WAL_PAYLOAD_CAP_BYTES` at both refusal sites) and
    `used` the counted byte total at which the bounded serializer was
    stopped — a lower bound of the record the statement tried to commit,
-   never its final size. This supersedes ADR-0492 alternative 3's
+ never its final size. This supersedes [ADR-0492](./0492-wal-payload-cap-typed-variant.md) alternative 3's
    "the site knows only that the bound was crossed": the bounded sink
    now records the crossing count, so the fields carry real values.
    `Error::WAL_PAYLOAD_CAP_BYTES` stays the one public spelling of the
@@ -68,7 +86,7 @@ memory-limit class.** The per-surface mapping, moving ADR-0492's table:
    io abort the in-flight serializer sees renders the same error
    `BoundedSink::finish` returns; the serializer's own abort is
    discarded as before.
-3. Display: ADR-0492's byte-identical-to-`Storage` requirement is
+3. Display: [ADR-0492](./0492-wal-payload-cap-typed-variant.md)'s byte-identical-to-`Storage` requirement is
    lifted. The refusal renders through the one capacity renderer
    (`capacity_detail`) as the communicative line the house style
    requires — what hit the limit (a single WAL commit record), how far
@@ -76,16 +94,16 @@ memory-limit class.** The per-surface mapping, moving ADR-0492's table:
    and the action (commit the data in smaller transactions) — both byte
    figures rendered through the one `human_bytes` policy from the
    `limit` the check consulted, never a second inline conversion.
-   Unlike the ADR-0463 expression cap, the cap is a fixed engine bound,
+ Unlike the [ADR-0463](./0463-expression-allocation-budget.md) expression cap, the cap is a fixed engine bound,
    so the line offers no raise-it knob.
 
 The WAL scanner's over-cap length diagnostic stays `Error::Storage`
 (`invalid WAL payload length …`): a corrupt or newer-written segment is
-not a refused commit (ADR-0492, unchanged).
+not a refused commit ([ADR-0492](./0492-wal-payload-cap-typed-variant.md), unchanged).
 
 ## Alternatives considered
 
-- **Keep the storage class, as ADR-0492 landed it.** Rejected: the class
+- **Keep the storage class, as [ADR-0492](./0492-wal-payload-cap-typed-variant.md) landed it.** Rejected: the class
   misinforms every class-branching caller, and Bolt's genericization
   hides a user-fixable condition (a too-large single commit) behind
   `internal error` — the exact communicative-error failure the house
@@ -98,7 +116,7 @@ not a refused commit (ADR-0492, unchanged).
   both, and the two can drift. Folding into the one `Capacity` variant
   means a consumer matching `Error::Capacity { .. }` already catches the
   refusal, and no surface grows a new arm (the storage arms shrink).
-- **A payload-carrying `WalPayloadCap { used, limit }` variant (ADR-0492
+- **A payload-carrying `WalPayloadCap { used, limit }` variant ([ADR-0492](./0492-wal-payload-cap-typed-variant.md)
   alternative 3).** Rejected for the same parallel-state reason, and
   because a refusal variant beside `Capacity` re-derives the capacity
   rendering instead of sharing `capacity_detail`'s one policy.
@@ -128,16 +146,16 @@ not a refused commit (ADR-0492, unchanged).
   (3892 scenarios) and the CIP-eval frozen set contain no scenario that
   trips a 64 MiB per-record cap, and the graph- and expression-capacity
   Displays are byte-identical to before, so the pinned TCK/CIP numbers
-  and the spec-harness coverage lane (ADR-0482) are unaffected; the
+ and the spec-harness coverage lane ([ADR-0482](./0482-spec-harness-coverage-lane.md)) are unaffected; the
   full TCK run in this change's gate confirms 3892 of 3892.
-- ADR-0492's Decision paragraphs 1 and 3 (the fieldless variant, the
+- [ADR-0492](./0492-wal-payload-cap-typed-variant.md)'s Decision paragraphs 1 and 3 (the fieldless variant, the
   storage classification) are superseded by this ADR; its
   single-sourced `WAL_PAYLOAD_CAP_BYTES` constant and its scanner
   diagnostic distinction stand unchanged.
 
 ## Later references
 
-ADR-0604 refuses a statement run inside an explicit transaction as soon
+[ADR-0604](./0604-early-commit-cap-refusal.md) refuses a statement run inside an explicit transaction as soon
 as its redo takes the transaction's commit record over the cap, so the
 refusal this ADR classifies arrives at that statement rather than only at
 COMMIT. The variant, the class and the rendering decided here stand

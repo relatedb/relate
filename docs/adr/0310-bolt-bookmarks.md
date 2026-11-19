@@ -1,7 +1,21 @@
-# ADR-0310: Bolt bookmarks: the auto-commit ending SUCCESS and COMMIT SUCCESS carry the engine's commit bookmark; received bookmarks are accepted
+---
+type: adr
+area: surface
+claim: ee906a85ae3a0bcb0b0a4cae6451b0bbaf18a17d
+name: 0310-bolt-bookmarks
+status: proposed
+tags:
+  - bolt
+  - transactions
+title: |-
+  Bolt bookmarks: the auto-commit ending SUCCESS and COMMIT SUCCESS carry the engine's commit bookmark; received bookmarks are accepted
+REFERENCES:
+  - "[[adr/0232-network-surfaces-charter]]"
+  - "[[adr/0309-bolt-summary-metadata-neo4j-4-4]]"
+  - "[[adr/0502-typed-c-abi-v2]]"
+---
 
-Status: Proposed
-Claim: ee906a85ae3a0bcb0b0a4cae6451b0bbaf18a17d
+# ADR-0310: Bolt bookmarks: the auto-commit ending SUCCESS and COMMIT SUCCESS carry the engine's commit bookmark; received bookmarks are accepted
 
 ## Context
 
@@ -21,13 +35,13 @@ already satisfied.
 ## Decision
 
 1. **Issued bookmarks.** The SUCCESS that ends an auto-commit result (last
-   PULL or DISCARD, ADR-0309) carries `bookmark` when the statement
+ PULL or DISCARD, [ADR-0309](./0309-bolt-summary-metadata-neo4j-4-4.md)) carries `bookmark` when the statement
    committed a write. COMMIT SUCCESS is `{bookmark}` (before, `{}`) when
    the transaction wrote, `{}` when it committed nothing. ROLLBACK SUCCESS
    stays `{}`. Inside an explicit transaction no PULL or DISCARD SUCCESS
    carries `bookmark`.
 2. **Value.** `"cypherlite:<n>"`, where `n` is the engine's commit
-   sequence (ADR-0502 §7): the value `QueryResult::bookmark` carries for
+ sequence ([ADR-0502](./0502-typed-c-abi-v2.md) §7): the value `QueryResult::bookmark` carries for
    an auto-commit write and `Connection::commit` returns for a
    transaction — the same value the C ABI's `cypherlite_result_bookmark`
    and `cypherlite_conn_commit` report. Bolt mints nothing: a statement or
@@ -38,7 +52,7 @@ already satisfied.
    accepted and ignored: there is no wait and no `InvalidBookmark`
    failure, because every bookmark is already satisfied.
 4. Bookmarks are Bolt protocol data, not `QueryResult` metadata. The HTTP
-   surface keeps ADR-0232's empty bookmarks array.
+ surface keeps [ADR-0232](./0232-network-surfaces-charter.md)'s empty bookmarks array.
 
 ## Alternatives considered
 
@@ -49,7 +63,7 @@ already satisfied.
   order the moment any other writer commits (a second listener, the
   embedded API, the C ABI), and a bookmark handed back for session
   restore can name a sequence that is not the transaction's. Once
-  ADR-0502 §7 threaded the engine's commit sequence out, the counter was
+ [ADR-0502](./0502-typed-c-abi-v2.md) §7 threaded the engine's commit sequence out, the counter was
   a second, disagreeing source of the same fact.
 - **A read carries the last committed sequence.** Rejected: the engine
   reports no bookmark for a statement that committed nothing, and Bolt
@@ -79,5 +93,5 @@ already satisfied.
 ## Later references
 
 - Revised while Proposed (typed-abi-v2): Decision §1–2 replace the
-  per-listener counter with the engine's commit sequence of ADR-0502 §7,
+ per-listener counter with the engine's commit sequence of [ADR-0502](./0502-typed-c-abi-v2.md) §7,
   which that ADR had left out of scope for Bolt.

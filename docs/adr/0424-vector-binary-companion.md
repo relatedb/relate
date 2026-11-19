@@ -1,11 +1,23 @@
-# ADR-0424: Vector values carry a derived binary companion for exact pruning
+---
+type: adr
+area: engine
+claim: 51ef0840692a8347043affd20595e8f6392c5bd9
+name: 0424-vector-binary-companion
+status: proposed
+tags:
+  - search
+  - values
+title: Vector values carry a derived binary companion for exact pruning
+REFERENCES:
+  - "[[adr/0063-lazy-string-index-postings]]"
+  - "[[adr/0256-vector-search-flat-scan-rewrite]]"
+---
 
-Status: Proposed
-Claim: 51ef0840692a8347043affd20595e8f6392c5bd9
+# ADR-0424: Vector values carry a derived binary companion for exact pruning
 
 ## Context
 
-ADR-0256 landed the exact flat vector search (SIMD scan, bounded k-heap)
+[ADR-0256](./0256-vector-search-flat-scan-rewrite.md) landed the exact flat vector search (SIMD scan, bounded k-heap)
 and explicitly deferred the packed matrix cache as its own decision.
 LABS-442 collected the PRISM/pg_vectorsearch technique set and asked
 which parts improve the flat scan without a physical or durable index.
@@ -51,7 +63,7 @@ value-type changes land without migration of stored databases.
    distance over the `u64` words gives each candidate a provable
    distance bound; a candidate whose bound cannot beat the current
    k-th best is skipped; survivors are rescored by the existing exact
-   SIMD path (ADR-0256, unchanged). The result is **exact top-k with
+ SIMD path ([ADR-0256](./0256-vector-search-flat-scan-rewrite.md), unchanged). The result is **exact top-k with
    identical semantics to today** — pruning only removes candidates
    that provably cannot place. The code order is plain per-vector signs
    first; a per-scope anchor (RaBitQ residual anchoring, LABS-442
@@ -80,7 +92,7 @@ value-type changes land without migration of stored databases.
 
 ## Alternatives considered
 
-- **The lazy packed matrix cache (LABS-442's original item 1, ADR-0063
+- **The lazy packed matrix cache (original item 1, [ADR-0063](./0063-lazy-string-index-postings.md)
   postings-style memoization)** — rejected by decision: even with
   dirty-bit invalidation it is a scan-side structure to keep up to
   date; the value-embedded companion delivers the same packing with

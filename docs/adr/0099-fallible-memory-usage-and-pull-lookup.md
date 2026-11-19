@@ -1,12 +1,23 @@
-# 0099. Fallible `memory_usage` and `pull_lookup` public APIs
+---
+type: adr
+area: surface
+date: 2026-09-24
+deciders: CypherLite maintainers
+name: 0099-fallible-memory-usage-and-pull-lookup
+status: proposed
+tags:
+  - memory
+  - wal
+title: Fallible `memory_usage` and `pull_lookup` public APIs
+REFERENCES:
+  - "[[adr/0094-preflight-wal-acceptance]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-24
-- **Deciders**: CypherLite maintainers
+# 0099. Fallible `memory_usage` and `pull_lookup` public APIs
 
 ## Context
 
-ADR-0094 makes a fenced/poisoned handle observable: once a physical WAL
+[ADR-0094](./0094-preflight-wal-acceptance.md) makes a fenced/poisoned handle observable: once a physical WAL
 outcome is uncertain, subsequent reads and writes must fail admission with a
 typed `Error::Storage("uncertain WAL outcome…")` until the database is closed
 and reopened. Every admission path routes through `Shared::read_guard`, which
@@ -71,6 +82,6 @@ signatures and error contract.
   the doc and caller updates.
 - Healthy behavior is unchanged: the same bytes/limit and the same mapping
   result. Only the poisoned/fenced path differs, now surfacing the same typed
-  error as the rest of the read-admission surface (ADR-0094).
+ error as the rest of the read-admission surface ([ADR-0094](./0094-preflight-wal-acceptance.md)).
 - Tests gain a direct way to assert that a fenced handle fails these reads
   rather than silently reporting an empty graph.

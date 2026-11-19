@@ -1,8 +1,20 @@
+---
+type: adr
+area: cypher
+claim: b30c4fa0ccd22217f480d21f65a4ef48e96c5639
+name: 0391-gql-for-clause
+status: accepted
+tags:
+  - dialect
+title: The GQL `FOR <variable> IN <expression>` clause behind the `gql-for` gate
+REFERENCES:
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0191-keywords-as-symbolic-names]]"
+  - "[[adr/0371-preview-feature-gating]]"
+  - "[[adr/0533-graduate-gql-for-from-preview]]"
+---
+
 # ADR-0391: The GQL `FOR <variable> IN <expression>` clause behind the `gql-for` gate
-
-Status: Accepted
-
-Claim: b30c4fa0ccd22217f480d21f65a4ef48e96c5639
 
 ## Context
 
@@ -18,14 +30,14 @@ plan operators"), UNWIND is explicitly not deprecated, and a non-list
 source value is coerced to a singleton list exactly as UNWIND coerces it.
 
 The feature is accepted into the language but not part of the pinned
-openCypher TCK floor, so per ADR-0371 it ships behind a new `gql-for` row
+openCypher TCK floor, so per [ADR-0371](./0371-preview-feature-gating.md) it ships behind a new `gql-for` row
 of the `CYPHERLITE_PREVIEW` registry. `WITH ORDINALITY`, `WITH OFFSET`
 and binding table references are out of scope, reserved for future
 extensions.
 
 The parse-side choices matter because the `FOR` token already exists (the
 `SEARCH … FOR` index-specification slot, `FOREACH`'s own token) and the
-front's preview admission (ADR-0046, ADR-0371) detects gated constructs in
+front's preview admission ([ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md), [ADR-0371](./0371-preview-feature-gating.md)) detects gated constructs in
 the parsed AST before anything lowers — the `hybrid-search`
 boolean-walk detector is the precedent.
 
@@ -43,7 +55,7 @@ gate, in three pieces:
   new `UnwindClause::for_syntax` spelling flag, so validation, lowering,
   planning and execution are shared wholesale (the proposal's own "no new
   logical plan operators" rule). The binding variable reads through the
-  single symbolic-name read (`parse_schema_name`, ADR-0191), so keyword
+ single symbolic-name read (`parse_schema_name`, [ADR-0191](./0191-keywords-as-symbolic-names.md)), so keyword
   spellings work unquoted exactly like the UNWIND alias and the FOREACH
   loop variable. `FOR` joins the clause-starter list
   `group_by_ends_clause` consults, so a grouping-key expression list ends
@@ -55,7 +67,7 @@ gate, in three pieces:
   back as `FOR x IN e`, never `UNWIND e AS x`). It is the parse-spelling
   record, not parallel state: every consumer except the gate treats the
   clause as a plain UNWIND.
-- **Gate**: the ADR-0371 registry gains the `gql-for` row; the front's
+- **Gate**: the [ADR-0371](./0371-preview-feature-gating.md) registry gains the `gql-for` row; the front's
   statement admission (`parse_and_lower_statement_with_preview`) gains
   the detector arm — one boolean whole-tree walk
   (`statement_uses_gql_for`, the `statement_uses_hybrid_search`
@@ -77,12 +89,12 @@ gate, in three pieces:
   touches one construction site and zero match sites.
 - **Gate at the parser** (thread a preview flag into `cypherlite-parser`
   so the FOR clause itself fails closed there). Rejected: the parser is
-  gate-free by design (ADR-0371); the hybrid-search/local-callables
+ gate-free by design ([ADR-0371](./0371-preview-feature-gating.md)); the hybrid-search/local-callables
   pattern — detect the construct in the AST at the front's preview entry
   — keeps one admission path and one fail-closed authored error, and
   leaves the parser usable by gateless callers.
 - **Reuse the reserved `hybrid-search`-style pre-existing row or no gate
-  at all.** Rejected: ADR-0371 requires every syntax-extending
+ at all.** Rejected: [ADR-0371](./0371-preview-feature-gating.md) requires every syntax-extending
   not-yet-floor feature to carry its own row; ungated shipping would put
   a non-TCK-floor spelling in the default dialect.
 - **Parse `FOR` as a non-reserved contextual word.** Rejected: `FOR` is
@@ -119,7 +131,7 @@ gate, in three pieces:
 
 ## Later references
 
-ADR-0533 graduates the clause out of the preview registry: the reference
+[ADR-0533](./0533-graduate-gql-for-from-preview.md) graduates the clause out of the preview registry: the reference
 dialect shipped it default-on, so the `gql-for` row, its detector arm
 and the gate are deleted, and the `FOR` spelling became default dialect.
 The parse-time normalization and the `for_syntax` spelling record this

@@ -1,17 +1,31 @@
-# ADR-0487: Bump the ontology document gate to Ontology Graph Spec 1.1.0
+---
+type: adr
+area: engine
+claim: 247bd141ff7cf03e5a7cf75eda2665ee4e52a8a3
+name: 0487-ontology-graph-spec-1-1-0-bump
+status: accepted
+tags:
+  - ontology
+title: Bump the ontology document gate to Ontology Graph Spec 1.1.0
+REFERENCES:
+  - "[[adr/0226-ontology-mappings]]"
+  - "[[adr/0227-ontology-document-format]]"
+  - "[[adr/0364-ontology-spec-main-gate]]"
+SUPERSEDES:
+  - "[[adr/0364-ontology-spec-main-gate]]"
+---
 
-Status: Accepted
-Claim: 247bd141ff7cf03e5a7cf75eda2665ee4e52a8a3
+# ADR-0487: Bump the ontology document gate to Ontology Graph Spec 1.1.0
 
 ## Context
 
-ADR-0364 pinned the Ontology Graph Spec document to `neo4j/graph-spec`
+[ADR-0364](./0364-ontology-spec-main-gate.md) pinned the Ontology Graph Spec document to `neo4j/graph-spec`
 main @ `066515593ae59317d758bcf2cef54195e74bde39` (2026-10-19), whose
 `$id` is `https://neo4j.com/docs/ontology-graph-spec/1.0.0/schema.json`.
 Its §1 gates `db.ontology.set` on that exact URI (CypherLite policy:
 main's `schema` is an unconstrained string), its §2 vendors that schema
 and hand-rolls validation against exactly it, and its §5 re-bases the
-ADR-0226 §2 converter on the main shapes.
+[ADR-0226](./0226-ontology-mappings.md) §2 converter on the main shapes.
 
 Neo4j has now published **Ontology Graph Spec 1.1.0** as the tag
 `release-spec/v1.1.0` (`neo4j/graph-spec` @
@@ -28,7 +42,7 @@ closure — is unchanged:
 1. Node entries lost the nullable display `name` member.
 2. Relationship entries lost the nullable display `name` member.
 3. Property entries regained `aliases` (an array of strings) — the member
-   main 1.0.0 removed and ADR-0364 §2 rejects as unknown.
+ main 1.0.0 removed and [ADR-0364](./0364-ontology-spec-main-gate.md) §2 rejects as unknown.
 4. Node constraints lost `label`, so `NodeConstraint` and
    `RelationshipConstraint` are now the same closed shape.
 5. Document extensions renamed `tables` → `data_source_tables` and
@@ -61,12 +75,12 @@ converter and the fixtures.
   `UnsupportedSpecVersion` message interpolates both, so it cannot drift.
   The retired 1.0.0 main URI, the older draft URI, and any other string
   fail at the gate.
-- Hard cutover, for the same reasons as ADR-0364 §1: no dual gate, no URI
+- Hard cutover, for the same reasons as [ADR-0364](./0364-ontology-spec-main-gate.md) §1: no dual gate, no URI
   alias, no rewrite, no automatic migration. A 1.0.0-main document fails
   `set` at the gate; a 1.1.0-URI document carrying a 1.0.0-only member
   fails structural validation on that member. Resubmitting a 1.1.0-shape
   document is the migration.
-- Stored documents are never re-validated (ADR-0364 §4, unchanged): `get`
+- Stored documents are never re-validated ([ADR-0364](./0364-ontology-spec-main-gate.md) §4, unchanged): `get`
   keeps returning a stored 1.0.0 document's bytes verbatim, format
   conversion still runs no gate, and `apply` refuses it with the gate's
   error until it is replaced.
@@ -87,9 +101,9 @@ land as:
 | Table columns | gained `nullable` (a plain optional boolean, read with the shared boolean reader); every other `TableColumn` member is unchanged. |
 | Root, labels, endpoints, indexes, display, mappings | unchanged. |
 
-### 3. Converter on the new shapes (ADR-0226 §2 re-based)
+### 3. Converter on the new shapes ([ADR-0226](./0226-ontology-mappings.md) §2 re-based)
 
-ADR-0364 §5 survives except where it reads the removed members:
+[ADR-0364](./0364-ontology-spec-main-gate.md) §5 survives except where it reads the removed members:
 
 - The §5.1/§5.4 node-constraint `label` rules die: a constraint always
   compiles against its owning element, and the label check is deleted
@@ -107,7 +121,7 @@ ADR-0364 §5 survives except where it reads the removed members:
 ### 4. Example fixture and provenance
 
 `schema/example.json` is reworked to the 1.1.0 shape — same coverage
-contract as ADR-0364 §6 (every `Neo4jType` token, all four constraint
+contract as [ADR-0364](./0364-ontology-spec-main-gate.md) §6 (every `Neo4jType` token, all four constraint
 types, the nullable/empty forms, every typed extension member) — with the
 node/relationship `name`s and constraint `label`s removed, property
 `aliases` added, and the document extension keys renamed.
@@ -123,19 +137,19 @@ node/relationship `name`s and constraint `label`s removed, property
   shapes are mutually incompatible on closed members, so a dual gate
   either maintains two validators or accepts a union no dialect defines,
   and it obscures which dialect was accepted. Same reasoning as
-  ADR-0364's rejection; the product is still pre-1.0.
+ [ADR-0364](./0364-ontology-spec-main-gate.md)'s rejection; the product is still pre-1.0.
 - **Version-prefix matching (`…/1.x/…`).** Rejected: the exact URI is the
   only discriminator — the draft and main both called themselves 1.0.0
-  and were different dialects. ADR-0227 §7 and ADR-0364 §1 already
+ and were different dialects. [ADR-0227](./0227-ontology-document-format.md) §7 and [ADR-0364](./0364-ontology-spec-main-gate.md) §1 already
   rejected lenient matching.
 - **Validate the 1.0.0 shapes behind the 1.1.0 gate (accept the union).**
   Rejected: the validator mirrors the vendored schema exactly
-  (ADR-0364 §2); a union would pass documents the published schema
+ ([ADR-0364](./0364-ontology-spec-main-gate.md) §2); a union would pass documents the published schema
   rejects and reject documents it accepts.
 - **Migrate stored 1.0.0 documents at open or `get`.** Rejected: the
-  store keeps bytes verbatim (ADR-0227 §2); migration rewrites them, and
+ store keeps bytes verbatim ([ADR-0227](./0227-ontology-document-format.md) §2); migration rewrites them, and
   an old binary's read path must not become the migration engine
-  (ADR-0364 §4).
+ ([ADR-0364](./0364-ontology-spec-main-gate.md) §4).
 - **Keep the constraint `label` and display-`name` rules in the converter
   as dead code.** Rejected: rules reading members that can no longer
   parse are drift, and the no-parallel-state rule forbids carrying a
@@ -150,7 +164,7 @@ node/relationship `name`s and constraint `label`s removed, property
   `get`, convertible across formats, and refused at `apply` until
   resubmitted.
 - The stored-document format is unchanged (no WAL/snapshot change); a
-  pre-bump binary's fail-closed open behavior repeats ADR-0364 §4's story
+ pre-bump binary's fail-closed open behavior repeats [ADR-0364](./0364-ontology-spec-main-gate.md) §4's story
   verbatim.
 - The typed model loses `NodeType::name`, `RelationshipType::name` and
   `Constraint::label`, and `Property` gains `aliases`; the validator's
@@ -165,10 +179,10 @@ node/relationship `name`s and constraint `label`s removed, property
   fixture suite pins the vendored 1.1.0 shapes. Docs surfaces that quote
   the gate (rust spec, ontology-procedures reference, cypher-syntax
   reference, CLI skill operations reference) are updated in this change.
-- ADR-0364's §1 gate URI, §2 accepted shapes, §5.1/§5.4 constraint-label
+- [ADR-0364](./0364-ontology-spec-main-gate.md)'s §1 gate URI, §2 accepted shapes, §5.1/§5.4 constraint-label
   rules and §6 example are superseded by this ADR (noted there);
-  ADR-0226 §2's converter rules are re-based on the 1.1.0 shapes (noted
-  there). ADR-0364's §3/§4 rulings (main-valid-but-not-convertible, and
+ [ADR-0226](./0226-ontology-mappings.md) §2's converter rules are re-based on the 1.1.0 shapes (noted
+ there). [ADR-0364](./0364-ontology-spec-main-gate.md)'s §3/§4 rulings (main-valid-but-not-convertible, and
   set-time-only policy) stand.
-- Supporting a later spec version remains a new ADR, as ADR-0364 §1
+- Supporting a later spec version remains a new ADR, as [ADR-0364](./0364-ontology-spec-main-gate.md) §1
   already prescribes.

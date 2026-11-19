@@ -1,7 +1,20 @@
-# ADR-0440: In-process follower/writer toggle
+---
+type: adr
+area: engine
+claim: 59ea09d54dce44274d6404e2b94327e4db5e09e2
+name: 0440-follower-writer-toggle
+status: proposed
+tags:
+  - wal
+title: In-process follower/writer toggle
+REFERENCES:
+  - "[[adr/0136-read-only-open]]"
+  - "[[adr/0137-wal-follow]]"
+  - "[[adr/0441-follower-gap-yield]]"
+  - "[[adr/0501-drop-token-schedule]]"
+---
 
-Status: Proposed
-Claim: 59ea09d54dce44274d6404e2b94327e4db5e09e2
+# ADR-0440: In-process follower/writer toggle
 
 ## Context
 
@@ -9,7 +22,7 @@ A client implementing embedded Relate wants to raise a database's
 `--memory-limit` and `--concurrent-peak-token-limit` without
 customer-visible query loss, including writes. Each increase needs more
 process memory, which needs a new process at the new size. The client
-creates that process as a WAL follower (ADR-0137), then swaps which
+creates that process as a WAL follower ([ADR-0137](./0137-wal-follow.md)), then swaps which
 process is the writer. The client needs each process to change role in
 place: CypherLite today only decides writable-or-not once, at open.
 
@@ -26,7 +39,7 @@ is admitted. `Shared::group` is a
 admissions.
 
 The writer lease is the exclusive `.cypherlite.writer` flock
-(ADR-0136 §1), separate from the shared `.cypherlite.lock` identity marker
+([ADR-0136](./0136-read-only-open.md) §1), separate from the shared `.cypherlite.lock` identity marker
 every opener holds for its process life. A `Writable` open's lease lives
 inside the opaque `NativeLease` the storage layer's `lease()` returns and
 is released only by closing the store. A `Follow` open never takes it
@@ -62,7 +75,7 @@ reload, and has not been rescanned since.
    cannot race another promoter. With the lease held, `promote` applies
    any surviving WAL tail onto the loaded graph (`follow::catch_up`
    until the poll is idle). A checkpoint gap or a torn apply uses the
-   follower's `FollowGapPolicy` (ADR-0441): `Yield` latches retryable
+ follower's `FollowGapPolicy` ([ADR-0441](./0441-follower-gap-yield.md)): `Yield` latches retryable
    `follow-gap` and does not load a snapshot; `Reload` keeps the
    in-place reload for embedded callers. On a clean tip, `Wal::open`
    rescans `bytes` and `commits` (migrate-on-open, orphan sweep, and
@@ -75,7 +88,7 @@ reload, and has not been rescanned since.
 
 2. **`Database::demote`** hands the writer role back to a follower. No-op
    if already a follower. Refused for a `Writable` open that was never
-   promoted — it has no lease this call could release, and ADR-0440
+ promoted — it has no lease this call could release, and [ADR-0440](./0440-follower-writer-toggle.md)
    deliberately never touches that path, to keep the bootstrap `Writable`
    open exactly as tested today.
 
@@ -191,5 +204,5 @@ reload, and has not been rescanned since.
 
 ## Later references
 
-ADR-0501 removes `metrics.tokenSchedule`. `metrics.retryable` stays. The
+[ADR-0501](./0501-drop-token-schedule.md) removes `metrics.tokenSchedule`. `metrics.retryable` stays. The
 peak this consequence called `metrics.peakTokens` is `metrics.peakLogicalBytes`.

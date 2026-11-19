@@ -1,18 +1,30 @@
-# 0595: Reclaim label-index postings at the apply point
+---
+type: adr
+area: engine
+claim: 14365c0899b53ae1572f48d196d3bce7ebe58b61
+name: 0595-label-index-reclamation-at-apply
+status: proposed
+tags:
+  - index
+  - write-path
+title: Reclaim label-index postings at the apply point
+REFERENCES:
+  - "[[adr/0038-lock-free-snapshot-pins]]"
+  - "[[adr/0171-lazy-per-label-snapshot-probe]]"
+---
 
-Status: Proposed
-Claim: 14365c0899b53ae1572f48d196d3bce7ebe58b61
+# 0595: Reclaim label-index postings at the apply point
 
 ## Context
 
 The label index maps each interned label to the ids of every node that
 ever carried it; entries are added when a write applies and removed only
 by the checkpoint's GC pass, which respects the snapshot horizon
-(`ADR-0171` rule 8). A store that does not checkpoint — an in-memory
+([ADR-0171](./0171-lazy-per-label-snapshot-probe.md) rule 8). A store that does not checkpoint — an in-memory
 store, or a durable one between checkpoints — therefore accumulates the
 ids of deleted or relabeled nodes indefinitely.
 
-The label probe (`ADR-0171`) walks this set per label-accounted write to
+The label probe ([ADR-0171](./0171-lazy-per-label-snapshot-probe.md)) walks this set per label-accounted write to
 decide label liveness. When the live carrier count is below the
 threshold, the probe must check **every** id in the set to prove it — an
 absence proof with no early exit. Tombstoned ids interleave with live
@@ -40,7 +52,7 @@ the same apply that kills them:
   are added — drains the candidates at its tail, by posting fate: an id
   whose **live** version carries the label is current and drops from
   the candidates; an id whose carrying version's visibility interval
-  `[xmin, xmax)` ends past the snapshot horizon (`ADR-0038` pins, else
+ `[xmin, xmax)` ends past the snapshot horizon ([ADR-0038](./0038-lock-free-snapshot-pins.md) pins, else
   the commit timestamp) is still visible to a pinned snapshot and is
   requeued for a later drain; an id no snapshot at or after the horizon
   can see is removed from its label's set. The interval rule, decided

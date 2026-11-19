@@ -1,8 +1,18 @@
+---
+type: adr
+area: engine
+claim: cae854af18c14b1a5d0b57fc69cd643e82c3d67d
+name: 0399-per-phase-profile-times
+status: accepted
+tags:
+  - observability
+title: The per-phase PROFILE times — seek and walk inside the fused operators
+REFERENCES:
+  - "[[adr/0375-profile-walk-start-and-store-read-kinds]]"
+  - "[[adr/0397-reads-cell-legibility]]"
+---
+
 # ADR-0399: The per-phase PROFILE times — seek and walk inside the fused operators
-
-Status: Accepted
-
-Claim: cae854af18c14b1a5d0b57fc69cd643e82c3d67d
 
 ## Context
 
@@ -19,7 +29,7 @@ and the traversal; optimizations like the degree-tail work target exactly
 the fused form), and splitting them would regress the queries the fusion
 made fast.
 
-The facts were already half-measured: the read-kind mix (ADR-0375)
+The facts were already half-measured: the read-kind mix ([ADR-0375](./0375-profile-walk-start-and-store-read-kinds.md))
 decomposes `Db Hits` into `NodeReads` (the seek's store work) and
 `Hops`/`NeighborWalks` (the walk's) — the phase *counts*. What was missing
 was the phase *times*.
@@ -70,7 +80,7 @@ of it.
   need per-phase row counters on the hot path for a fact the read kinds
   already carry in spirit.
 - **A dedicated phase-plan column family in the table** — rejected: the
-  table's kind columns (`Nodes`/`Rels`/`Degree`, ADR-0397) already show
+ table's kind columns (`Nodes`/`Rels`/`Degree`, [ADR-0397](./0397-reads-cell-legibility.md)) already show
   the counts; two more time columns would push the widest shape past
   readability. The times live in the machine modes, where the phases'
   composition with the kinds is stated.

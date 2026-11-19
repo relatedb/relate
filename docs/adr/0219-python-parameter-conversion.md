@@ -1,6 +1,17 @@
-# ADR-0219: Python parameter conversion — UUID, bytes, tuple, explicit Point, ordered maps
+---
+type: adr
+area: surface
+name: 0219-python-parameter-conversion
+status: accepted
+tags:
+  - python
+  - values
+title: Python parameter conversion — UUID, bytes, tuple, explicit Point, ordered maps
+REFERENCES:
+  - "[[adr/0327-engine-statement-scoped-bytes-value]]"
+---
 
-Status: Accepted
+# ADR-0219: Python parameter conversion — UUID, bytes, tuple, explicit Point, ordered maps
 
 ## Context
 
@@ -109,7 +120,7 @@ pyo3's internal conversion wording.
 
 ## Later references
 
-- ADR-0327: the engine gains a statement-scoped byte array. This surface
+- [ADR-0327](./0327-engine-statement-scoped-bytes-value.md): the engine gains a statement-scoped byte array. This surface
   keeps sending `bytes`/`bytearray` as `LIST<INTEGER>`, which is also how
   `value_to_cypher` renders an engine byte array; only Bolt carries real
   bytes.

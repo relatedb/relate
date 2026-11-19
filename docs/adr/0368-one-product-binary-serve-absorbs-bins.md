@@ -1,20 +1,37 @@
+---
+type: adr
+area: surface
+claim: decb658cbaabb0f999c0aebe15419492464c072d
+name: 0368-one-product-binary-serve-absorbs-bins
+status: accepted
+tags:
+  - serve
+title: "One product binary: serve absorbs the bolt and mcp bins"
+REFERENCES:
+  - "[[adr/0128-docker-bolt-server-image]]"
+  - "[[adr/0232-network-surfaces-charter]]"
+  - "[[adr/0249-docker-unified-serve-image]]"
+  - "[[adr/0251-test-architecture]]"
+  - "[[adr/0293-configurable-bolt-hello-identity]]"
+  - "[[adr/0306-read-only-follow-servers]]"
+  - "[[adr/0390-serve-memory-limit-flag]]"
+  - "[[adr/0429-cli-extension-registry]]"
+  - "[[adr/0431-cli-extension-distribution]]"
+---
+
 # ADR-0368: One product binary: serve absorbs the bolt and mcp bins
-
-Status: Accepted
-
-Claim: decb658cbaabb0f999c0aebe15419492464c072d
 
 ## Context
 
-Since ADR-0232, `cypherlite serve` hosts the HTTP Query API v2, the MCP
+Since [ADR-0232](./0232-network-surfaces-charter.md), `cypherlite serve` hosts the HTTP Query API v2, the MCP
 streamable-HTTP transport, and the Bolt server in-process on one open store,
 one bind posture, and one shared credential. Two standalone binaries still
 shipped beside it:
 
-- `cypherlite-bolt` (ADR-0128): the full Bolt listener with its own flag
+- `cypherlite-bolt` ([ADR-0128](./0128-docker-bolt-server-image.md)): the full Bolt listener with its own flag
   vocabulary (`--bind`, `--uri`, TLS, the connection timeouts, the storage
   knobs), also the source of the scratch-image `entrypoint` bin;
-- `cypherlite-mcp` (ADR-0232 §4): the MCP server over stdio or streamable
+- `cypherlite-mcp` ([ADR-0232](./0232-network-surfaces-charter.md) §4): the MCP server over stdio or streamable
   HTTP with its own clap surface.
 
 Three product binaries for one database is a maintenance and a trust-story
@@ -40,15 +57,15 @@ LABS-381 asks for one product binary. `cypherlite serve` is it.
    `surfaces/cypherlite-mcp` owns the MCP server and both its transports —
    and all their tests stay. `cargo build -p cypherlite-bolt` /
    `-p cypherlite-mcp` builds the libraries. The Docker `entrypoint` bin
-   (ADR-0128) stays: the scratch image still needs its seed-then-exec
-   PID-1 supervisor, and it execs `cypherlite serve` (ADR-0249).
+ ([ADR-0128](./0128-docker-bolt-server-image.md)) stays: the scratch image still needs its seed-then-exec
+ PID-1 supervisor, and it execs `cypherlite serve` ([ADR-0249](./0249-docker-unified-serve-image.md)).
 2. **`serve --mcp` takes the stdio transport too**: `--mcp stdio` or
    `--mcp PORT`, a typed union (`McpMode::Stdio | McpMode::Http(u16)`),
    not a port-shaped string. `stdio` runs the MCP stdio transport in the
    foreground — newline-delimited JSON-RPC on the process's stdin/stdout
    until the host closes stdin, then the final checkpoint and a clean
    exit 0 — after every listener surface is spawned. Stdio skips the auth
-   story entirely (ADR-0232 §1); an explicit `--auth` on a stdio-only run
+ story entirely ([ADR-0232](./0232-network-surfaces-charter.md) §1); an explicit `--auth` on a stdio-only run
    is a loud usage error, not an ignored flag, and no token file is
    persisted. The once-only policy rejects combining the two transports.
    `--mcp PORT` (streamable HTTP) is unchanged.
@@ -108,7 +125,7 @@ future ADR, not a silent flag here.
 - The standalone-binary flag spellings (`--uri`, `--bind HOST:PORT`,
   `--identity` → serve's `--database`, `--host`/`--bolt PORT`,
   `--bolt-identity`) are documented as retired in the bolt spec's flag
-  mapping; the ADR-0128 alias behavior survives only through the container
+ mapping; the [ADR-0128](./0128-docker-bolt-server-image.md) alias behavior survives only through the container
   `entrypoint`, which keeps translating them.
 - Bolt TLS and server-side LOAD CSV are no longer reachable from any
   product binary (see the gap list above); documented as such in the bolt
@@ -127,22 +144,22 @@ future ADR, not a silent flag here.
 - The Docker image name (`cypherlite-bolt:<version>`) is unchanged — a
   rename is a release/announcement concern, not part of this ADR.
 
-References: LABS-381, ADR-0128, ADR-0232, ADR-0249, ADR-0293, ADR-0251,
-ADR-0306.
+References [ADR-0128](./0128-docker-bolt-server-image.md), [ADR-0232](./0232-network-surfaces-charter.md), [ADR-0249](./0249-docker-unified-serve-image.md), [ADR-0293](./0293-configurable-bolt-hello-identity.md), [ADR-0251](./0251-test-architecture.md),
+[ADR-0306](./0306-read-only-follow-servers.md).
 
 ## Later references
 
-- ADR-0390 gives `cypherlite serve` the served store's `--memory-limit`
+- [ADR-0390](./0390-serve-memory-limit-flag.md) gives `cypherlite serve` the served store's `--memory-limit`
   (the query session's flag with its shared resolution) — the storage
   flag consequence item below anticipated it. The memory-shape
   loadtest's bolt cases spawn serve under it (LABS-424); the
   `--checkpoint-interval-secs` half for the processing-memory loadtest's
   bolt cases remains open.
-- ADR-0431 adds a multi-artifact dimension to this one-binary posture:
+- [ADR-0431](./0431-cli-extension-distribution.md) adds a multi-artifact dimension to this one-binary posture:
   the release channel publishes per-platform extension tarballs and
   their signed channel index beside the one product binary, and
   capabilities install on demand into the XDG config dir instead of
   shipping as more binaries or image contents. The product grammar
-  stays closed — the only new words are `run` (ADR-0429) and
+ stays closed — the only new words are `run` ([ADR-0429](./0429-cli-extension-registry.md)) and
   `extension` — and the Docker image still carries `cypherlite` and
   `entrypoint` only (LABS-469, LABS-552).

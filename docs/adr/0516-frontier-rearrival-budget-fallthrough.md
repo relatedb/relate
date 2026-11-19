@@ -1,12 +1,23 @@
+---
+type: adr
+area: engine
+claim: dc2d98e2e4490fc4d53384cc7eb1f383dcc10314
+name: 0516-frontier-rearrival-budget-fallthrough
+status: proposed
+tags:
+  - pattern-matching
+title: The re-arrival budget's tri-state verdict and the frontier's run-time fall-through
+REFERENCES:
+  - "[[adr/0478-frontier-nfa-qpp-kernel]]"
+SUPERSEDES:
+  - "[[adr/0478-frontier-nfa-qpp-kernel]]"
+---
+
 # ADR-0516: The re-arrival budget's tri-state verdict and the frontier's run-time fall-through
-
-Status: Proposed
-
-Claim: dc2d98e2e4490fc4d53384cc7eb1f383dcc10314
 
 ## Context
 
-ADR-0478 Decision 3 gave the frontier BFS its pool-exactness seam: the
+[ADR-0478](./0478-frontier-nfa-qpp-kernel.md) Decision 3 gave the frontier BFS its pool-exactness seam: the
 re-arrival rule's bounded trail-existence search, capped by a shared
 work budget (`REARRIVAL_WORK_BUDGET`) across all searches of one run.
 Decision 3 documented the budget corner as a *conservative rejection*:
@@ -60,7 +71,7 @@ The search verdict becomes **tri-state end to end** — `Proven(witness)`
    `FrontierDecline::RearrivalBudget`, so the ladder serves the clause
    from the next rung unchanged. No partial rows ever escape.
 
-This supersedes ADR-0478 Decision 3's budget corner: the conservative
+This supersedes [ADR-0478](./0478-frontier-nfa-qpp-kernel.md) Decision 3's budget corner: the conservative
 rejection is gone. The depth ceiling (`REARRIVAL_DEPTH_CEILING`) is
 unchanged — a miss at the depth cap is a disproof *within the bounds*,
 exact for every bounded quantifier; only the work budget's cut is
@@ -72,7 +83,7 @@ own authored budget error), never a silent wrong answer.
 ## Alternatives considered
 
 - **Fail loud with an authored budget error** (the
-  `WalkBudgetExceeded` shape of ADR-0478 Decision 6). Rejected: the
+ `WalkBudgetExceeded` shape of [ADR-0478](./0478-frontier-nfa-qpp-kernel.md) Decision 6). Rejected: the
   walker answers these shapes exactly — a decline costs a re-walk, an
   error costs the query. The family's direction is fail-through
   (Decision 6's allocation half chose decline over an authored error
@@ -85,7 +96,7 @@ own authored budget error), never a silent wrong answer.
 - **Per-candidate (or per-search) budgets instead of one shared pool.**
   Rejected: the run's total rule work becomes candidates × budget —
   unbounded in the pair set — which is precisely the bound the shared
-  pool exists to give (ADR-0478 Decision 3: a run never spends more on
+ pool exists to give ([ADR-0478](./0478-frontier-nfa-qpp-kernel.md) Decision 3: a run never spends more on
   the rule than the one budget).
 - **Keep the conservative rejection and document the divergence.**
   Rejected: a documented wrong answer is still a wrong answer — the

@@ -1,12 +1,27 @@
-# 0117. Namespace selection in the embedding APIs and over Bolt
+---
+type: adr
+area: surface
+date: 2026-09-27
+deciders: CypherLite maintainers
+name: 0117-namespace-selection-apis-and-bolt
+status: accepted
+tags:
+  - bolt
+  - namespaces
+title: Namespace selection in the embedding APIs and over Bolt
+REFERENCES:
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0146-unknown-namespace-selection-is-graph-not-found]]"
+  - "[[adr/0260-trust-boundary-error-sanitization]]"
+  - "[[adr/0307-bolt-failure-carries-neo4j-status-codes]]"
+  - "[[adr/0502-typed-c-abi-v2]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-27
-- **Deciders**: CypherLite maintainers (Linear LABS-102)
+# 0117. Namespace selection in the embedding APIs and over Bolt
 
 ## Context
 
-ADR-0116 gives every store the fixed namespaces `neo4j`, `system` and
+[ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) gives every store the fixed namespaces `neo4j`, `system` and
 `system_ontologies`, and routes each statement to its `USE` target or to the
 connection's session namespace. Every surface today opens one `Database` and
 connects without naming a namespace:
@@ -63,7 +78,7 @@ server speaks Bolt 4.4.
    - A `RUN` inside an explicit transaction carries no `db`, per the Bolt
      specification, and uses the namespace chosen at `BEGIN`.
    - An unknown `db` produces a `FAILURE` with the text from (6) and the code
-     `CypherLite.Error` (ADR-0260).
+ `CypherLite.Error` ([ADR-0260](./0260-trust-boundary-error-sanitization.md)).
    - The final `SUCCESS` of `PULL` or `DISCARD` includes `db`, the namespace
      the query ran in.
    - `HELLO` is unchanged. `ROUTE` stays unsupported, so drivers connect with
@@ -97,13 +112,13 @@ server speaks Bolt 4.4.
 
 ## Later references
 
-- ADR-0146: supersedes §6. Live CE 2026.09 answers an unknown session
+- [ADR-0146](./0146-unknown-namespace-selection-is-graph-not-found.md): supersedes §6. Live CE 2026.09 answers an unknown session
   database with `Graph not found: <name>` (wire 42001, cause 42N00), not
   the `Database does not exist. Database name: '<name>'.` text quoted here.
-- ADR-0307: supersedes §7's FAILURE code for an unknown `db`. It is
+- [ADR-0307](./0307-bolt-failure-carries-neo4j-status-codes.md): supersedes §7's FAILURE code for an unknown `db`. It is
   `Neo.ClientError.Database.DatabaseNotFound`, not `CypherLite.Error`; the
   message is unchanged.
-- ADR-0502: the typed C ABI v2 removes the `cypherlite_connect` alias and the
+- [ADR-0502](./0502-typed-c-abi-v2.md): the typed C ABI v2 removes the `cypherlite_connect` alias and the
   `cypherlite_open` JSON handle API named above. The namespace-selection
   calls (`cypherlite_connect_namespace`, `cypherlite_conn_set_namespace`) keep
   their names and gain a trailing `char **error_json` out-param, and a

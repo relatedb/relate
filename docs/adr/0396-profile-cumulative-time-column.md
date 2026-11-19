@@ -1,13 +1,26 @@
+---
+type: adr
+area: engine
+claim: 95c6d2f03fa9be5106c7b4c34a604d98ed85a487
+name: 0396-profile-cumulative-time-column
+status: accepted
+tags:
+  - observability
+title: PROFILE cumulative time — the `Total (ms)` column and the `total_time_ms` document field
+REFERENCES:
+  - "[[adr/0344-query-plan-node-tree-and-per-operator-metrics]]"
+  - "[[adr/0357-plan-summary-placement-and-neo4j-plan-args]]"
+  - "[[adr/0365-http-query-api-v2-plan-node-shape]]"
+  - "[[adr/0375-profile-walk-start-and-store-read-kinds]]"
+  - "[[adr/0381-agent-native-plan-schema]]"
+---
+
 # ADR-0396: PROFILE cumulative time — the `Total (ms)` column and the `total_time_ms` document field
-
-Status: Accepted
-
-Claim: 95c6d2f03fa9be5106c7b4c34a604d98ed85a487
 
 ## Context
 
 The PROFILE operator table reports each operator's **self** time (`Time
-(ms)`, ADR-0344 phase 2). Every reference engine we researched also
+(ms)`, [ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md) phase 2). Every reference engine we researched also
 reports a **cumulative** form — Postgres' `EXPLAIN ANALYZE` prints a
 node's subtree actual-time, DuckDB a self-time percentage — because
 self time alone cannot answer "what does this sub-pipeline cost?": the
@@ -15,13 +28,13 @@ root's own cell is a fraction of the query's wall time, and ranking
 operators by subtree cost is how a reader finds the expensive *stage*
 rather than the expensive *operator*. LABS-343's review of the plan
 presentation named this the largest measurement gap left after
-ADR-0344/0375.
+[ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md)/[ADR-0375](./0375-profile-walk-start-and-store-read-kinds.md).
 
 The plan tree nests bottom-up (each earlier clause sits under the one
 it feeds), so a node's subtree is exactly the sub-pipeline it heads:
 its own elapsed time plus every descendant's is the cumulative form.
 
-The `cypherlite.plan/v1` agent document (ADR-0381) carries the same
+The `cypherlite.plan/v1` agent document ([ADR-0381](./0381-agent-native-plan-schema.md)) carries the same
 per-node `actual` object without a cumulative field, so an agent cannot
 rank sub-pipelines either.
 
@@ -71,11 +84,11 @@ addition rides this ADR.
   spec's sample table carry it. The column rides the metric group, so
   an EXPLAIN tree gains nothing.
 - The `cypherlite.plan/v1` document gains an additive field
-  (`total_time_ms`) — schema-stable per ADR-0381's add-only rule; no
+ (`total_time_ms`) — schema-stable per [ADR-0381](./0381-agent-native-plan-schema.md)'s add-only rule; no
   version bump.
 - The Bolt/HTTP Neo4j-shaped projections are unchanged (Neo4j has no
   such column; those surfaces mirror Neo4j's shape by design,
-  ADR-0357/0365).
+ [ADR-0357](./0357-plan-summary-placement-and-neo4j-plan-args.md)/[ADR-0365](./0365-http-query-api-v2-plan-node-shape.md)).
 - The table layout computes the fold per node (a pre-order walk re-walks
   its subtree): O(n²) on a tree of n operators, each step a typed
   accessor validate — negligible at real plan sizes (tens of nodes).

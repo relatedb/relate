@@ -1,8 +1,22 @@
-# 0011. Snapshot isolation via read snapshots; writers serialize
+---
+type: adr
+area: engine
+date: 2026-08-28
+deciders: MemoryDB maintainers
+name: 0011-snapshot-isolation
+status: superseded
+status_note: by [ADR-0013](./0013-tuple-mvcc.md)
+tags:
+  - transactions
+title: Snapshot isolation via read snapshots; writers serialize
+REFERENCES:
+  - "[[adr/0004-memory-first-parquet-object-store]]"
+  - "[[adr/0012-wal-and-parquet-checkpoints]]"
+  - "[[adr/0013-tuple-mvcc]]"
+  - "[[adr/0028-user-visible-transactions]]"
+---
 
-- **Status**: Superseded by ADR-0013
-- **Date**: 2026-08-28
-- **Deciders**: MemoryDB maintainers
+# 0011. Snapshot isolation via read snapshots; writers serialize
 
 ## Context
 
@@ -34,20 +48,20 @@ This is snapshot isolation for readers, not tuple-level MVCC.
 ## Consequences
 
 - Large graphs make read clones expensive; acceptable while the working
-  set is RAM-sized (ADR-0004).
+ set is RAM-sized ([ADR-0004](./0004-memory-first-parquet-object-store.md)).
 - Bolt BEGIN/COMMIT remain auto-commit no-ops until a transaction ADR.
 - Writers still serialize with each other.
 
 ## Later references
 
-ADR-0013 replaces graph `clone()` snapshots with tuple **xmin/xmax**
+[ADR-0013](./0013-tuple-mvcc.md) replaces graph `clone` snapshots with tuple **xmin/xmax**
 MVCC. Readers pin `snapshot_ts = last_committed` and filter visibility;
 they do not copy the whole graph. Writers still serialize. Bolt
 BEGIN/COMMIT remain auto-commit no-ops. Optimistic rollback is still
-out of scope; durability is ADR-0012’s WAL, not per-reader undo. The
+out of scope; durability is [ADR-0012](./0012-wal-and-parquet-checkpoints.md)’s WAL, not per-reader undo. The
 “full MVCC rejected for v1” alternative in this file is reversed by
-ADR-0013.
+[ADR-0013](./0013-tuple-mvcc.md).
 
-ADR-0028: Bolt/embedded `BEGIN` / `COMMIT` / `ROLLBACK` are real
+[ADR-0028](./0028-user-visible-transactions.md): Bolt/embedded `BEGIN` / `COMMIT` / `ROLLBACK` are real
 connection-scoped transactions. Auto-commit remains the default. The
 no-op consequence above no longer holds.

@@ -1,8 +1,28 @@
-# 0165. Cold store-metadata read: `store_info` in cypherlite-storage, surfaced as `cypherlite info` and `.info`
+---
+type: adr
+area: cli
+date: 2026-10-05
+deciders: CypherLite maintainers
+name: 0165-info-command
+status: accepted
+tags:
+  - commands
+  - storage
+title: |-
+  Cold store-metadata read: `store_info` in cypherlite-storage, surfaced as `cypherlite info` and `.info`
+REFERENCES:
+  - "[[adr/0050-snapshot-codecs]]"
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0104-cargo-feature-bundles]]"
+  - "[[adr/0127-store-version-compatibility]]"
+  - "[[adr/0136-read-only-open]]"
+  - "[[adr/0156-directory-clone]]"
+  - "[[adr/0200-query-command-and-database-flag]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-05
-- **Deciders**: CypherLite maintainers
+# 0165. Cold store-metadata read: `store_info` in cypherlite-storage, surfaced as `cypherlite info` and `.info`
 
 ## Context
 
@@ -35,11 +55,11 @@ cypherlite-storage has **no public manifest read**: `read_manifest` is
 The only way at the metadata today is a full open — `Wal::open`, shard
 load, WAL replay — which materializes the whole graph and takes the
 store's locks. That is exactly what a pre-open diagnostic must not do;
-even the ADR-0136 read-only open is a loaded-graph affair.
+even the [ADR-0136](./0136-read-only-open.md) read-only open is a loaded-graph affair.
 
 The CLI already depends on `cypherlite-storage` directly
 (`surfaces/cypherlite-cli/Cargo.toml`), which workspace rule R3
-(ADR-0103) allows, so surfacing this needs no engine (`cypherlite` crate)
+([ADR-0103](./0103-engine-surfaces-testing-layout.md)) allows, so surfacing this needs no engine (`cypherlite` crate)
 API change.
 
 ## Decision
@@ -60,7 +80,7 @@ API change.
        /// Parquet-codec store: the full selected manifest.
        Parquet(Manifest),
        /// JSON-codec store: `manifest.json` holds only the codec
-       /// envelope (ADR-0050); counts and the catalog live in
+ /// envelope ([ADR-0050](./0050-snapshot-codecs.md)); counts and the catalog live in
        /// `graph.json`, which a cold info read never parses.
        Json { checkpoint_lsn: u64, commit_ts: u64 },
        /// No snapshot yet: a fresh store before its first checkpoint
@@ -89,17 +109,17 @@ API change.
    ```
 
    `store_info` works for native directories and `.cl` bundles
-   (ADR-0074) through the Vfs layer: `is_bundle_path` selects the
+ ([ADR-0074](./0074-single-file-bundle-vfs.md)) through the Vfs layer: `is_bundle_path` selects the
    layout, and a bundle's superblock `VERSION` is read and classified
-   through the ADR-0127 bundle registry. It never calls `Wal::open`, never loads a shard, and
+ through the [ADR-0127](./0127-store-version-compatibility.md) bundle registry. It never calls `Wal::open`, never loads a shard, and
    never replays the WAL. Failures are typed `cypherlite_core::Error`
    values, never panics: missing database, corrupt `manifest.json`, and
    an unreadable `format_version` rejected by the
-   ADR-0127 manifest gate — the same gate `read_manifest` already applies
+ [ADR-0127](./0127-store-version-compatibility.md) manifest gate — the same gate `read_manifest` already applies
    on open. A missing `manifest.json` is not a failure: a fresh store
    before its first checkpoint reports `StoreSnapshot::None`.
 2. **New CLI lifecycle command `cypherlite info DATABASE [--json]`.**
-   Following ADR-0069 it is an exit-after positional command recognized
+ Following [ADR-0069](./0069-cli-lifecycle-commands.md) it is an exit-after positional command recognized
    only as the first argument; a database path colliding with the verb
    stays reachable via `./info` or after `--`. It runs on a cold store
    via `store_info` and prints a human key/value table by default or one
@@ -109,7 +129,7 @@ API change.
    size on disk, checkpoint-time node/rel counts, indexes (name, label,
    property) and constraints (name, kind, label/type, properties) from
    the manifest. Usage errors exit 2; runtime errors exit 1, mirroring
-   `clone` and `pull` (ADR-0156).
+ `clone` and `pull` ([ADR-0156](./0156-directory-clone.md)).
 3. **Counts are checkpoint-time, labeled, and never exact on the cold
    path.** Node/rel counts are the sum of `ShardPart.rows` over
    `Manifest.node_parts`/`rel_parts`, printed together with
@@ -133,20 +153,20 @@ API change.
    size) and defeats the cheap-info purpose. The envelope cannot even
    deserialize into `Manifest` (`format_version` is a required field
    with no serde default), and the JSON codec's version dimension is
-   `value_encoding` inside `graph.json` (ADR-0127 Decision 1), so the
+ `value_encoding` inside `graph.json` ([ADR-0127](./0127-store-version-compatibility.md) Decision 1), so the
    manifest format version has no JSON-side meaning. The
    `StoreSnapshot::Json` arm encodes this in the type: for JSON-codec
    stores `info` shows layout, codec, size, and the envelope's
    checkpoint LSN, and prints format version, counts, indexes, and
    constraints as unavailable. Full JSON-codec support is possible later
    work.
-6. **Feature gating follows ADR-0104.** The `info` command gets its own
+6. **Feature gating follows [ADR-0104](./0104-cargo-feature-bundles.md).** The `info` command gets its own
    Cargo feature `info`, wired into the `full` and `agent` bundles — it
    is a read-only diagnostic useful to agents; `minimal` stays the query
    engine only. The word `info` joins `COMMAND_WORDS` in **every** build
-   (ADR-0104: the set is the same in every build), so
+ ([ADR-0104](./0104-cargo-feature-bundles.md): the set is the same in every build), so
    `cypherlite info ...` can never silently open a database of that
-   name; a build without the feature fails with the ADR-0104
+ name; a build without the feature fails with the [ADR-0104](./0104-cargo-feature-bundles.md)
    not-included error (exit 2). The `.info` dot-command is ungated —
    compiled into every bundle, `minimal` included. The session shell
    itself ships in every build (the `repl` feature only adds rustyline
@@ -158,7 +178,7 @@ API change.
 
 ## Alternatives considered
 
-- **Open the store read-only (ADR-0136) and scan for exact counts.**
+- **Open the store read-only ([ADR-0136](./0136-read-only-open.md)) and scan for exact counts.**
   Rejected: full graph materialization dominates the cost — snapshot
   load plus WAL replay is precisely the expense a pre-open diagnostic
   exists to avoid. The cold path must stay a bounded manifest read.
@@ -172,7 +192,7 @@ API change.
   cold store at all.
 - **`Database::info()` on the engine's public Rust API.** Rejected: the
   CLI may depend on `cypherlite-storage` directly (workspace rule R3,
-  ADR-0103), so no engine API change is needed for a CLI diagnostic; a
+ [ADR-0103](./0103-engine-surfaces-testing-layout.md)), so no engine API change is needed for a CLI diagnostic; a
   `Database` method would also imply an open handle, which the cold path
   deliberately avoids.
 - **Parse `graph.json` for JSON-codec stores in v1.** Rejected: an
@@ -203,7 +223,7 @@ API change.
   JSON-codec support can land later without changing the command shape
   or the accessor's cold-read contract.
 - Documentation lands in the same change (AGENTS.md §3): the
-  hand-written `--help` text, the flag table and ADR-0104 bundle table
+ hand-written `--help` text, the flag table and [ADR-0104](./0104-cargo-feature-bundles.md) bundle table
   in `docs/api/cli/spec.md`, and `docs/reference/dot-commands.md`
   (seven dot-commands become eight).
 - Tests accompany the change: accessor unit tests (native directory,
@@ -213,6 +233,6 @@ API change.
 
 ## Later references
 
-ADR-0200 moves the store from a positional `DATABASE` to required
+[ADR-0200](./0200-query-command-and-database-flag.md) moves the store from a positional `DATABASE` to required
 `--database PATH`. `:memory:` stays rejected. The cold-read contract is
 unchanged.

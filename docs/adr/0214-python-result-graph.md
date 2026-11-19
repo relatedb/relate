@@ -1,11 +1,23 @@
-# ADR-0214: `Cursor.graph()` — de-duplicated result-graph extraction
+---
+type: adr
+area: surface
+name: 0214-python-result-graph
+status: accepted
+tags:
+  - python
+title: "`Cursor.graph` — de-duplicated result-graph extraction"
+REFERENCES:
+  - "[[adr/0213-python-driver-result-ergonomics]]"
+SUPERSEDES:
+  - "[[adr/0213-python-driver-result-ergonomics]]"
+---
 
-Status: Accepted
+# ADR-0214: `Cursor.graph()` — de-duplicated result-graph extraction
 
 ## Context
 
 LABS-253 lists `result.graph()` (the Neo4j driver's `Result.graph()`) as a
-gap. ADR-0213 deferred it because `cypherlite.viz.to_visualization_graph`
+gap. [ADR-0213](./0213-python-driver-result-ergonomics.md) deferred it because `cypherlite.viz.to_visualization_graph`
 already walks result rows and collects graph entities — but that path
 converts straight to a `neo4j_viz.VisualizationGraph`, needs the optional
 neo4j-viz dependency, and cannot be used by callers who want the extracted
@@ -56,7 +68,7 @@ edge-list-style consumers.
 
 ## Alternatives considered
 
-- **Keep viz as the only extraction path** (ADR-0213's stance) — rejected:
+- **Keep viz as the only extraction path** ([ADR-0213](./0213-python-driver-result-ergonomics.md)'s stance) — rejected:
   it makes the optional neo4j-viz dependency a prerequisite for reading
   back graph entities, and every consumer (the notebook) re-implements the
   walk anyway.
@@ -77,6 +89,6 @@ edge-list-style consumers.
   the skill-bundle/website references update in the same change (this ADR).
 - `viz` loses its private walk (moved to `cypherlite.result_graph`); its
   behavior is unchanged.
-- ADR-0213's "not in scope" note on `graph()` is superseded by this ADR.
+- [ADR-0213](./0213-python-driver-result-ergonomics.md)'s "not in scope" note on `graph` is superseded by this ADR.
 - If the native `QueryResult` later yields rich objects, `graph()` can move
   down to shared code — a follow-up, not a promise.

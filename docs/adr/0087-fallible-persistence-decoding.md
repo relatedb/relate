@@ -1,12 +1,26 @@
-# 0087. Fallible persistence values and an escaped map form
+---
+type: adr
+area: engine
+date: 2026-09-23
+deciders: CypherLite maintainers
+name: 0087-fallible-persistence-decoding
+status: proposed
+tags:
+  - storage
+  - values
+title: Fallible persistence values and an escaped map form
+REFERENCES:
+  - "[[adr/0014-single-wal-write-path]]"
+  - "[[adr/0050-snapshot-codecs]]"
+  - "[[adr/0086-bounded-persistence-input]]"
+  - "[[adr/0088-explicit-arrow-value-provenance]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-23
-- **Deciders**: CypherLite maintainers
+# 0087. Fallible persistence values and an escaped map form
 
 ## Context
 
-ADR-0014 establishes WAL recovery, and ADR-0050 makes JSON snapshots part of
+[ADR-0014](./0014-single-wal-write-path.md) establishes WAL recovery, and [ADR-0050](./0050-snapshot-codecs.md) makes JSON snapshots part of
 checkpoint recovery. The
 `cypherlite-model::serde_value` format stores temporal, spatial, duration, and
 vector values as `{"__type":"point",...}`-style objects, while ordinary maps
@@ -16,7 +30,7 @@ geometry members, narrows vector dimensions, and falls back to a map when many
 recognized tags fail to parse. `parse_offset` can panic on untrusted UTF-8 or
 overflow. `CypherValue::Deserialize` and JSON snapshot recovery use this
 infallible path; a user map with `__type` can also be reinterpreted as a typed
-value. ADR-0086 bounds persisted input sizes but does not validate these values.
+value. [ADR-0086](./0086-bounded-persistence-input.md) bounds persisted input sizes but does not validate these values.
 
 The persistence format is distinct from the untagged public JSON wire format
 (`cypherlite-model::wire`). CLI and C-ABI query parameters are user JSON, not
@@ -30,7 +44,7 @@ non-finite Point/Geometry coordinates. Public Vector fields permit invalid
 dimensions, element kinds, ranges, and non-finite or inexact Float32 values;
 the writer can emit bytes its strict decoder cannot accept. The JSON snapshot
 writer currently publishes those bytes instead of failing the checkpoint.
-ADR-0088 embeds the Point/Geometry/Vector persistence objects in Arrow typed
+[ADR-0088](./0088-explicit-arrow-value-provenance.md) embeds the Point/Geometry/Vector persistence objects in Arrow typed
 JSON, so independent Arrow payload builders or Float32 checks can diverge from
 this format.
 
@@ -107,7 +121,7 @@ range. Return `None`, without panicking, for a missing or invalid sign,
 non-ASCII/multibyte characters, non-digits, a different width, invalid
 minutes, or an out-of-range offset. In particular `+02:30` and `-05:45`
 return `Some`, while `+00:60`, `+99:00`, a huge hour value, and `Z` return
-`None`. Model persistence `Time` decoding calls this parser; ADR-0088's Arrow
+`None`. Model persistence `Time` decoding calls this parser; [ADR-0088](./0088-explicit-arrow-value-provenance.md)'s Arrow
 timestamp reader calls the same parser for signed timezone metadata. Arrow
 separately dispatches `Z`/`UTC` and unsigned named zones, and reports an
 invalid signed candidate as `ArrowError` rather than treating it as a zone.
@@ -207,7 +221,7 @@ Define one public model predicate
 `pub fn float32_exact(f: f64) -> bool` in `cypherlite_model::serde_value`: it
 returns true only for finite `f` where
 `((f as f32) as f64).to_bits() == f.to_bits()`.
-Use it for model Float32 persistence decode and encode; ADR-0088 uses the
+Use it for model Float32 persistence decode and encode; [ADR-0088](./0088-explicit-arrow-value-provenance.md) uses the
 same predicate for Arrow's direct and composite vector writes. In particular,
 both signed zeros retain their own bits, while `0.1`, overflow, and NaN or
 infinity fail the check.
@@ -332,7 +346,7 @@ subsequent checkpoint leaves the previous bytes and dirty state intact.
   `+00:60`, `+99:00`, and huge hour input without panic. Rust API `spec.md` and
   `description.md` must state the signature, `Some`/`None` contract, and Arrow
   reuse; a CI-run doctest or example must exercise a valid offset and invalid
-  minute/multibyte inputs. ADR-0088 specifies the Arrow error boundary.
+ minute/multibyte inputs. [ADR-0088](./0088-explicit-arrow-value-provenance.md) specifies the Arrow error boundary.
 - Even syntactically valid Geometry in a JSON snapshot property now fails
   recovery because core `Value` cannot represent it. This includes historical
   v1 snapshots and v2 snapshots, direct and nested map/list occurrences; they
@@ -346,7 +360,7 @@ subsequent checkpoint leaves the previous bytes and dirty state intact.
   roundtrips on Native and Memory VFS.
 - The public fallible decoder and parameter migration need Rust/CLI/C API
   specs, descriptions, and runnable examples when the implementation ships.
-  ADR-0088 separately specifies Arrow value provenance; it does not make the
+ [ADR-0088](./0088-explicit-arrow-value-provenance.md) separately specifies Arrow value provenance; it does not make the
   untagged public wire JSON into a persistence format.
 - The public writer and property-map helper now return `Result`; direct
   `serde::Serialize` returns a serialization error for invalid values. Rust
@@ -375,7 +389,7 @@ subsequent checkpoint leaves the previous bytes and dirty state intact.
 - Snapshot-write tests on Native and Memory VFS must show valid typed-value
   roundtrips and failed invalid writes with no published partial checkpoint.
   Model tests must cover nested non-finite numbers and coordinates, vector
-  shape/ranges, and bit-preserving Float32 exactness. ADR-0088 consumes the
+ shape/ranges, and bit-preserving Float32 exactness. [ADR-0088](./0088-explicit-arrow-value-provenance.md) consumes the
   model-owned payloads and predicate instead of redefining them.
 - Core-to-model temporal checks make JSON checkpoint writes fail with the node
   or relationship ID and full nested property path for unsupported CivilDate,

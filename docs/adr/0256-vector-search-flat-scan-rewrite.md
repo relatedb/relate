@@ -1,12 +1,24 @@
-# ADR-0256: Vector SEARCH flat-scan rewrite — bounded top-k heap, no per-row Value clones
+---
+type: adr
+area: engine
+name: 0256-vector-search-flat-scan-rewrite
+status: accepted
+tags:
+  - perf
+  - search
+title: Vector SEARCH flat-scan rewrite — bounded top-k heap, no per-row Value clones
+REFERENCES:
+  - "[[adr/0040-create-drop-index]]"
+  - "[[adr/0063-lazy-string-index-postings]]"
+---
 
-Status: Accepted
+# ADR-0256: Vector SEARCH flat-scan rewrite — bounded top-k heap, no per-row Value clones
 
 ## Context
 
 `vector_index_candidates` (`cypherlite-executor/src/exec/vector.rs`) is a
 brute-force scan by design: the vector index is schema metadata (name, labels,
-property, dimensions, similarity function — ADR-0040 left vector indexes out
+property, dimensions, similarity function — [ADR-0040](./0040-create-drop-index.md) left vector indexes out
 of the postings machinery), and the embedded scale target does not warrant an
 ANN structure. The scan's *shape*, however, is off by 8-15x from what the same
 brute-force scan costs when written well (#311):
@@ -67,7 +79,7 @@ lookup, which the packed-matrix follow-up below removes:
    the scan (query-side parsing keeps it). The float32-rounding contract of
    vector-search suite scores (Neo4j parity) is preserved: an equivalence
    test asserts the kernels round to the same `f32` value as the sequential
-   pre-ADR-0256 reference over random, tail-carrying, and scale-varied
+ pre-[ADR-0256](./0256-vector-search-flat-scan-rewrite.md) reference over random, tail-carrying, and scale-varied
    inputs, and a second test pins the candidate-skip contracts (non-number
    or non-finite coordinate, non-list property, all-zero cosine candidate).
 4. **No index structure** (no IVF, no bit quantization, no MRL tricks) ships
@@ -118,6 +130,6 @@ lookup, which the packed-matrix follow-up below removes:
   (prefilter → heap → exact rescore of the kth-best neighborhood), and will
   need its own ADR.
 
-Linked: #311 (findings and benchmark tables), ADR-0040 (vector indexes out
-of postings scope), ADR-0063 (lazy-materialization contract if a cached
+Linked: #311 (findings and benchmark tables), [ADR-0040](./0040-create-drop-index.md) (vector indexes out
+of postings scope), [ADR-0063](./0063-lazy-string-index-postings.md) (lazy-materialization contract if a cached
 structure ever ships).

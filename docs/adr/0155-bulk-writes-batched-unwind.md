@@ -1,15 +1,30 @@
-# 0155. Bulk writes and imports: batched UNWIND, bounded failure, idempotent MERGE mode
+---
+type: adr
+area: engine
+date: 2026-10-01
+deciders: CypherLite maintainers (agreed in conversation)
+name: 0155-bulk-writes-batched-unwind
+status: accepted
+tags:
+  - load
+  - write-path
+title: "Bulk writes and imports: batched UNWIND, bounded failure, idempotent MERGE mode"
+REFERENCES:
+  - "[[adr/0080-cli-pull-command]]"
+  - "[[adr/0144-graph-examples-differential-suite]]"
+  - "[[adr/0154-value-clone-cost]]"
+  - "[[adr/0158-streaming-single-process-pull]]"
+  - "[[adr/0171-lazy-per-label-snapshot-probe]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-01
-- **Deciders**: CypherLite maintainers (agreed in conversation)
+# 0155. Bulk writes and imports: batched UNWIND, bounded failure, idempotent MERGE mode
 
 ## Context
 
-`cypherlite pull` (ADR-0080) materializes a fetched subgraph with **one
+`cypherlite pull` ([ADR-0080](./0080-cli-pull-command.md)) materializes a fetched subgraph with **one
 engine statement per element**: `CREATE (n:Label) SET n = $props RETURN n`
 per node, `MATCH (a), (b) WHERE id(a) = $s AND id(b) = $e CREATE (a)-[r:T]->(b)`
-per relationship. The graph-examples differential suite (ADR-0144) showed
+per relationship. The graph-examples differential suite ([ADR-0144](./0144-graph-examples-differential-suite.md)) showed
 this cannot ingest real datasets: recommendations (28,863 nodes) ran 2 h at
 100 % CPU without finishing; pole (61,521) timed out at 10 min;
 fraud-detection (332,973) could not even fetch its single-response payload.
@@ -32,7 +47,7 @@ Measured causes (release/debug, `examples/pull_rca.rs` in
    statements the worst case. Tracked as its own engine fix (id-lookup
    pushdown); this ADR defines the loader-side shape that works with or
    without it.
-4. **Variable reads deep-clone their value** (ADR-0154), which multiplies
+4. **Variable reads deep-clone their value** ([ADR-0154](./0154-value-clone-cost.md)), which multiplies
    through any loader that re-reads large property maps.
 
 ## Decision
@@ -129,5 +144,5 @@ Bulk writes and imports use **batched `UNWIND $rows` statements** with
 
 ## Later references
 
-- ADR-0158 keeps the batched UNWIND shapes but scopes reuse anchoring (`elementId(r) = row.rid`) to within a single pull's statement list; with the in-memory identity map there is no cross-process reuse anymore.
-- ADR-0171 resolves the per-statement label cost (cause 1): a lazy per-label probe of `Graph::label_index` replaces the O(N) snapshot label census.
+- [ADR-0158](./0158-streaming-single-process-pull.md) keeps the batched UNWIND shapes but scopes reuse anchoring (`elementId(r) = row.rid`) to within a single pull's statement list; with the in-memory identity map there is no cross-process reuse anymore.
+- [ADR-0171](./0171-lazy-per-label-snapshot-probe.md) resolves the per-statement label cost (cause 1): a lazy per-label probe of `Graph::label_index` replaces the O(N) snapshot label census.

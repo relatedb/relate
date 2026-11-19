@@ -1,11 +1,25 @@
+---
+type: adr
+area: engine
+date: 2026-10-13
+deciders: CypherLite maintainers
+name: 0218-stats-based-match-orientation
+status: proposed
+tags:
+  - planner
+title: Statistics-based orientation of unbound comma-MATCH parts
+REFERENCES:
+  - "[[adr/0024-match-rewrite-planner]]"
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0171-lazy-per-label-snapshot-probe]]"
+---
+
 # 0218. Statistics-based orientation of unbound comma-MATCH parts
 
-- **Status**: Proposed
-- **Date**: 2026-10-13
-- **Deciders**: CypherLite maintainers (Linear [LABS-273](https://linear.app/neo4j/issue/LABS-273))
-- **Related**: ADR-0024 (MATCH rewrites after bind), ADR-0046 (planner
+- **Related**: [ADR-0024](./0024-match-rewrite-planner.md) (MATCH rewrites after bind), [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) (planner
   pipeline), LABS-157 / PR #221 (intra-clause orientation toward bound
-  variables), ADR-0171 (label probe; a different consumer of label facts)
+ variables), [ADR-0171](./0171-lazy-per-label-snapshot-probe.md) (label probe; a different consumer of label facts)
 
 Note: drafted as 0213, renumbered past the in-flight sibling ADRs
 0216/0217 (LABS-276) on rebase; 0216/0217 land with that branch.
@@ -102,7 +116,7 @@ TCK (3892 scenarios) gates this change.
   intermediate row counts, dynamic programming over part order).
   Rejected: far larger scope; the constrained cheap-end-first float
   captures the practical win without estimating intermediate rows.
-- **Whole-graph census at plan time.** Rejected by ADR-0171's laziness
+- **Whole-graph census at plan time.** Rejected by [ADR-0171](./0171-lazy-per-label-snapshot-probe.md)'s laziness
   precedent; the label index already maintains the counts incrementally.
 
 ## Consequences
@@ -117,7 +131,7 @@ TCK (3892 scenarios) gates this change.
 - Estimates are read once per statement under the plan read guard; a
   concurrent write can make them stale within the statement, which only
   affects performance, never correctness.
-- The multi-database routing (`USE`, ADR-0116) reads statistics from the
+- The multi-database routing (`USE`, [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)) reads statistics from the
   session's home graph even when the statement targets another
   namespace's store; cardinalities are heuristics, so the misestimate is
   accepted until per-namespace stats are needed.

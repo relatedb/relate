@@ -1,12 +1,25 @@
-# 0147. Public namespace values are typed
+---
+type: adr
+area: engine
+date: 2026-09-28
+deciders: CypherLite maintainers
+name: 0147-typed-namespace-values
+status: proposed
+tags:
+  - namespaces
+  - values
+title: Public namespace values are typed
+REFERENCES:
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0117-namespace-selection-apis-and-bolt]]"
+  - "[[adr/0148-shared-element-id-parser]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-28
-- **Deciders**: CypherLite maintainers
+# 0147. Public namespace values are typed
 
 ## Context
 
-`cypherlite::QueryResult.namespace` (ADR-0117 §7) was a stringly `String`
+`cypherlite::QueryResult.namespace` ([ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §7) was a stringly `String`
 whose real value was stamped later by convention (`Connection::
 stamp_namespace` overwrote a `""` sentinel written by
 `From<ExecResult>`), while the crate exports a typed `Namespace`. An
@@ -14,7 +27,7 @@ unstamped result was representable and indistinguishable from a stamped
 one. The same review flagged `Connection::namespace()` returning a stringly
 `&str` while every other public namespace value (the field on `Connection`,
 the plan's `use_target`, `Graph::namespace()`) is the typed enum. Both were
-flagged in review of the fixed-namespaces work (ADR-0116/ADR-0117).
+flagged in review of the fixed-namespaces work ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)/[ADR-0117](./0117-namespace-selection-apis-and-bolt.md)).
 
 ## Decision
 
@@ -61,5 +74,5 @@ Readers that need the wire string (Bolt's `db` echo, the Python binding's
 
 ## Later references
 
-- ADR-0148: the shared element-id shape parser, split out of this file's
+- [ADR-0148](./0148-shared-element-id-parser.md): the shared element-id shape parser, split out of this file's
   original draft (one decision per file).

@@ -1,11 +1,27 @@
-# ADR-0462: A fixed value-nesting depth cap of 500
+---
+type: adr
+area: engine
+claim: 702254a7b49653d31b822a6f64d7a6cb00113c80
+name: 0462-value-nesting-depth
+status: proposed
+tags:
+  - security
+  - values
+title: A fixed value-nesting depth cap of 500
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0170-shared-value-payloads]]"
+  - "[[adr/0257-query-input-limits]]"
+  - "[[adr/0259-query-execution-stack-provisioning]]"
+  - "[[adr/0341-logical-bytes-within-one-walk]]"
+  - "[[adr/0395-nested-evaluation-budget]]"
+---
 
-Status: Proposed
-Claim: 702254a7b49653d31b822a6f64d7a6cb00113c80
+# ADR-0462: A fixed value-nesting depth cap of 500
 
 ## Context
 
-ADR-0257 bounds the **static** shape of a query: 4 MiB of text and 500
+[ADR-0257](./0257-query-input-limits.md) bounds the **static** shape of a query: 4 MiB of text and 500
 levels of expression/primary nesting. The **runtime** values a query builds
 are not bounded by that limit. Every dynamically constructed container — a
 list literal, a map literal, a list/map comprehension, a map projection, a
@@ -32,7 +48,7 @@ consumer of a value walks it **recursively**:
   and the HTTP Query API v2 encoder
   (`surfaces/cypherlite-http/src/v2_json.rs`);
 - the logical-bytes walk (`Value::logical_bytes`/`logical_bytes_within`,
-  ADR-0042/ADR-0341), equality and ordering (`eq_non_null`, `compare`,
+ [ADR-0042](./0042-graph-memory-limit.md)/[ADR-0341](./0341-logical-bytes-within-one-walk.md)), equality and ordering (`eq_non_null`, `compare`,
   `order_by_cmp`), and the property write check's byte-array scan
   (`exec/props.rs`);
 - `coll.flatten`, whose recursion follows the **data's** depth;
@@ -40,9 +56,9 @@ consumer of a value walks it **recursively**:
 
 A deep enough value therefore overflows a recursive walker's stack. In a
 process abort that is fatal, and for an embedded engine reached through the
-C ABI it kills the host process: exactly the failure class ADR-0257 closed
-for *input* shape, left open for *built* values (security finding 5,
-LABS-606). ADR-0395 bounds nested **statement evaluation**, an orthogonal
+C ABI it kills the host process: exactly the failure class [ADR-0257](./0257-query-input-limits.md) closed
+for *input* shape, left open for *built* values (security finding 5
+). [ADR-0395](./0395-nested-evaluation-budget.md) bounds nested **statement evaluation**, an orthogonal
 axis; it does not bound a single expression's value.
 
 ## Decision
@@ -54,13 +70,13 @@ One fixed constant, beside `Value`:
 (`cypherlite/cypherlite-core/src/value/depth.rs`, together with the one
 iterative depth walk and the checked constructors).
 
-500 equals the parser's static nesting limit (ADR-0257), so every
+500 equals the parser's static nesting limit ([ADR-0257](./0257-query-input-limits.md)), so every
 parse-legal literal is accepted unchanged, and it is low enough that 500
 levels of the derived recursive drop, clone, and render walks stay deep
-inside every surface's stack (the 64 MiB query worker, ADR-0259, and a 2 MiB
+inside every surface's stack (the 64 MiB query worker, [ADR-0259](./0259-query-execution-stack-provisioning.md), and a 2 MiB
 tokio caller alike). It is a compile-time constant with no env var and no
-`OpenOptions` field — the same house rule as ADR-0257's fixed limits and
-ADR-0395's fixed pass budget. A knob re-opens the axis untrusted input
+`OpenOptions` field — the same house rule as [ADR-0257](./0257-query-input-limits.md)'s fixed limits and
+[ADR-0395](./0395-nested-evaluation-budget.md)'s fixed pass budget. A knob re-opens the axis untrusted input
 drives.
 
 ### The checker is iterative, memoized and bounded
@@ -74,7 +90,7 @@ scalar is depth 0; a container's own level is one more than its parent's
 inside their entity. `Value::check_depth() -> Result<()>` is the typed half:
 it raises `Error::execution("ValueDepthExceeded: …")` naming the limit.
 
-Values share container payloads through `Arc` (ADR-0170), so the value graph
+Values share container payloads through `Arc` ([ADR-0170](./0170-shared-value-payloads.md)), so the value graph
 is a **DAG**, not a tree: a fan-out like `reduce(acc = …, x IN range(1, 60)
 | [acc, acc])` has 60 distinct payloads but ~2^60 expanded nodes. The walk
 therefore **memoizes each container payload by identity** — its `Arc`
@@ -150,7 +166,7 @@ missed seam cannot turn into a stack overflow:
 ### Drop
 
 No change. The derived recursive `Drop` over at most 500 levels is safe
-(measured on the release stack with the ADR-0259 worker margin). Lifting
+(measured on the release stack with the [ADR-0259](./0259-query-execution-stack-provisioning.md) worker margin). Lifting
 the cap later would require giving the payload a newtype with its own
 iterative `Drop` — never `impl Drop for Value`, which breaks the
 move-out matches in the evaluator with E0509.
@@ -204,12 +220,12 @@ maps it to 400, and the CLI files it `Fatal`.
   therefore a typed Bolt refusal, never an abort.
 - `docs/limitations.md`, `docs/api/rust/spec.md` and
   `docs/api/bolt/spec.md` gain the value-depth contract in this change.
-- ADR-0257 (static input limits), ADR-0259 (the query worker stack that
-  this cap's margin is calibrated against), and ADR-0395 (the orthogonal
+- [ADR-0257](./0257-query-input-limits.md) (static input limits), [ADR-0259](./0259-query-execution-stack-provisioning.md) (the query worker stack that
+ this cap's margin is calibrated against), and [ADR-0395](./0395-nested-evaluation-budget.md) (the orthogonal
   nested-evaluation budget) are the governing precedents.
 
 ## Later references
 
-- ADR-0257: query input limits (4 MiB, static nesting 500).
-- ADR-0259: the per-connection 64 MiB query worker.
-- ADR-0395: the per-statement nested evaluation budget.
+- [ADR-0257](./0257-query-input-limits.md): query input limits (4 MiB, static nesting 500).
+- [ADR-0259](./0259-query-execution-stack-provisioning.md): the per-connection 64 MiB query worker.
+- [ADR-0395](./0395-nested-evaluation-budget.md): the per-statement nested evaluation budget.

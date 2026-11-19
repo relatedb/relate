@@ -1,6 +1,18 @@
-# Typed engine errors carry openCypher TCK error kinds
+---
+type: adr
+area: engine
+name: 0003-tck-named-error-kinds
+status: accepted
+tags:
+  - conformance
+  - errors
+title: Typed engine errors carry openCypher TCK error kinds
+REFERENCES:
+  - "[[adr/0502-typed-c-abi-v2]]"
+  - "[[adr/0511-boolean-sites-typed-invalid-argument-type]]"
+---
 
-Status: accepted
+# Typed engine errors carry openCypher TCK error kinds
 
 To replace the stringly-typed `Result<_, String>` error channel, engine errors
 become a typed `EngineError { Syntax, Semantic, Runtime, Storage }` whose
@@ -30,7 +42,7 @@ unaffected.
 
 ## Later references
 
-ADR-0511 changes the kind of one family this ADR pinned as SyntaxError: the
+[ADR-0511](./0511-boolean-sites-typed-invalid-argument-type.md) changes the kind of one family this ADR pinned as SyntaxError: the
 boolean-requiring sites (`bool_or_null` in the executor; the predicate and
 `AND`/`OR`/`XOR` checks in the planner) now raise the typed
 `InvalidArgumentType` variant, so they classify as Neo4j's TypeError class
@@ -39,4 +51,4 @@ boolean-requiring sites (`bool_or_null` in the executor; the predicate and
 message text stays informal, and a kind change is the breaking change this
 ADR says it is — which is why the convergence got its own ADR. The
 encouraged `gql_status()` accessor landed as the ABI v2 classification table
-(ADR-0502 §2).
+([ADR-0502](./0502-typed-c-abi-v2.md) §2).

@@ -1,7 +1,21 @@
-# ADR-0314: Bolt protocol breaches answer Neo.ClientError.Request.Invalid and close the connection
+---
+type: adr
+area: surface
+claim: b344a9cd29a319441807ff8987446ee88985cc4a
+name: 0314-bolt-protocol-breaches-close
+status: proposed
+tags:
+  - bolt
+  - errors
+title: Bolt protocol breaches answer Neo.ClientError.Request.Invalid and close the connection
+REFERENCES:
+  - "[[adr/0028-user-visible-transactions]]"
+  - "[[adr/0110-bolt-connection-query-governance]]"
+  - "[[adr/0311-bolt-tx-open-results-by-qid]]"
+  - "[[adr/0313-bolt-hello-requires-user-agent]]"
+---
 
-Status: Proposed
-Claim: b344a9cd29a319441807ff8987446ee88985cc4a
+# ADR-0314: Bolt protocol breaches answer Neo.ClientError.Request.Invalid and close the connection
 
 ## Context
 
@@ -19,7 +33,7 @@ answers `CypherLite.Error` `semantic error: no transaction` / `already in
 a transaction`, and the session continues. PULL with no result answers
 SUCCESS.
 
-The ADR-0110 failed state answers IGNORED to RUN, PULL, BEGIN, COMMIT and
+The [ADR-0110](./0110-bolt-connection-query-governance.md) failed state answers IGNORED to RUN, PULL, BEGIN, COMMIT and
 ROLLBACK, but not to DISCARD.
 
 ## Decision
@@ -28,7 +42,7 @@ ROLLBACK, but not to DISCARD.
    any engine call:
    - COMMIT or ROLLBACK with no open transaction;
    - BEGIN inside an open transaction;
-   - PULL or DISCARD with no open result at all (ADR-0311 covers a qid
+ - PULL or DISCARD with no open result at all ([ADR-0311](./0311-bolt-tx-open-results-by-qid.md) covers a qid
      that misses while other results are open).
 2. A breach answers exactly one FAILURE `{code:
    "Neo.ClientError.Request.Invalid", message: "Message of type <Name>
@@ -38,12 +52,12 @@ ROLLBACK, but not to DISCARD.
    `READY` (no transaction, no open result), `STREAMING` (no transaction,
    an auto-commit result open), `IN_TRANSACTION` (a transaction, no open
    result) or `TX_STREAMING` (a transaction with open results).
-3. The ADR-0110 failed-state gate runs first, so in the failed state these
+3. The [ADR-0110](./0110-bolt-connection-query-governance.md) failed-state gate runs first, so in the failed state these
    messages answer IGNORED, not a breach. DISCARD joins the gate: in the
    failed state it answers IGNORED like PULL, as in Neo4j's FAILED state.
 4. The code constant is `REQUEST_INVALID_CODE` in `failures.rs` (shared
-   with ADR-0313). The engine's `Connection::begin`/`commit`/`rollback`
-   contract (ADR-0028) is unchanged; the session no longer reaches its
+ with [ADR-0313](./0313-bolt-hello-requires-user-agent.md)). The engine's `Connection::begin`/`commit`/`rollback`
+ contract ([ADR-0028](./0028-user-visible-transactions.md)) is unchanged; the session no longer reaches its
    "no transaction" and "already in a transaction" errors.
 
 ## Alternatives considered

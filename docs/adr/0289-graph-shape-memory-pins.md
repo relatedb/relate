@@ -1,18 +1,33 @@
+---
+type: adr
+area: infra
+date: 2026-10-08
+deciders: CypherLite maintainers
+name: 0289-graph-shape-memory-pins
+status: accepted
+tags:
+  - loadtest
+  - memory
+title: Graph-shape logical memory pins and Bolt RSS baseline
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+  - "[[adr/0495-baseline-recipe-and-ceremony-flags]]"
+---
+
 # 0289. Graph-shape logical memory pins and Bolt RSS baseline
 
-- **Status**: Accepted
 - **Renumbered**: from 0188 (shared-number cleanup)
-- **Date**: 2026-10-08
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
-ADR-0042 caps a logical size of the live graph plus the indexes that
+[ADR-0042](./0042-graph-memory-limit.md) caps a logical size of the live graph plus the indexes that
 enter `IndexCharge`. That counter is a closed formula. The same nodes,
 relationships, property bytes, and index charge produce the same integer
 on every OS and allocator. Process RSS is a different meter: it includes
 the server runtime, query scratch, and allocator slack, and it depends
-on graph shape. ADR-0042 rejected RSS as the cap for that reason.
+on graph shape. [ADR-0042](./0042-graph-memory-limit.md) rejected RSS as the cap for that reason.
 
 The cloud sizing job already showed the split. Property-heavy graphs and
 relationship-dense meshes with the same logical size do not have the
@@ -40,10 +55,10 @@ integer properties and must not exceed `ATTRIBUTES`. The unindexed
 small pins stay exact. One flat graph with one of each index is pinned
 to its own integer: text and point move `memory_usage`, and range does
 not. One file-backed `ring` graph is reopened and must report the same
-`used` (replay always applies, ADR-0042).
+`used` (replay always applies, [ADR-0042](./0042-graph-memory-limit.md)).
 Asserts are exact. They do not use the loadtest 10% band.
 
-**RSS** is `memory-shape-loadtest`, a new ADR-0070 baseline target.
+**RSS** is `memory-shape-loadtest`, a new [ADR-0070](./0070-docker-baseline-loadtest-environment.md) baseline target.
 `make memory-shape-loadtest` and `make baseline-loadtests` build
 `Dockerfile.memory-shape-loadtest`: one filtered context, BuildKit caches
 for the Cargo registry and `target/`, compile in `rust:1.88-bookworm`,
@@ -88,7 +103,7 @@ dense-ring RSS is about 1.3 GB, and the 15% band stays inside the 2 GB
 cap. A 128 MB logical target is about 5.3 GB RSS and needs a higher
 `MEMORY_SHAPE_MEMORY`.
 
-The envelope is CI-owned (ADR-0071). Compare runs when
+The envelope is CI-owned ([ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md)). Compare runs when
 `baselines/memory-shape-loadtest.json` is present. Until the first
 `create-loadtest-baselines` freeze, `make compare-loadtests` skips
 this file. Do not commit a host-native report.
@@ -99,7 +114,7 @@ not replace them.
 ## Alternatives considered
 
 - **Pin both meters in `cargo test`.** Rejected. RSS is not stable
-  across laptops, debug builds, and architectures. ADR-0070 already
+ across laptops, debug builds, and architectures. [ADR-0070](./0070-docker-baseline-loadtest-environment.md) already
   refuses to freeze host-native loadtest reports.
 - **Sample RSS inside `fraud-loadtest`.** Rejected. That process
   includes the harness, and its envelope is throughput and latency.
@@ -120,11 +135,11 @@ not replace them.
   `node_modules`, and `.venv` stay on the host. Both binaries are
   copied to `/usr/local/bin` in the runtime image.
 - Agents freeze this suite only via `make memory-shape-loadtest` or
-  `make baseline-loadtests` in the ADR-0070 environment.
+ `make baseline-loadtests` in the [ADR-0070](./0070-docker-baseline-loadtest-environment.md) environment.
 
 ## Later references
 
-- [ADR-0495](0495-baseline-recipe-and-ceremony-flags.md): the memory-shape
+- [ADR-0495](./0495-baseline-recipe-and-ceremony-flags.md): the memory-shape
   lane's image is built by the shared `Dockerfile.baseline` (bin list,
   cache-id suffix and entrypoint as build args), not by
   `Dockerfile.memory-shape-loadtest`.

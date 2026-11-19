@@ -1,12 +1,22 @@
+---
+type: adr
+area: engine
+claim: c8d7838c03d1672496ab8097a4c0562a189b64ed
+name: 0499-o1-per-row-agg-fold-charge
+status: proposed
+tags:
+  - executor
+  - perf
+title: Flatten the aggregate fold's per-row charge chain, keep the walk exact
+REFERENCES:
+  - "[[adr/0463-expression-allocation-budget]]"
+---
+
 # ADR-0499: Flatten the aggregate fold's per-row charge chain, keep the walk exact
-
-Status: Proposed
-
-Claim: c8d7838c03d1672496ab8097a4c0562a189b64ed
 
 ## Context
 
-ADR-0463 charges every aggregate call's per-group `vals` vector through one
+[ADR-0463](./0463-expression-allocation-budget.md) charges every aggregate call's per-group `vals` vector through one
 retaining guard: the slot buffer up front (`retain_slots`), then each row's
 operand value through `RetainedTotal::add_owned` — an `owned_heap` walk of
 the value's heap — for **every** aggregate kind. LABS-789's perf-lab round
@@ -43,7 +53,7 @@ loses.
    result retains the vals; every other fold's vals hold the payloads until
    the fold consumes them — both need the same cumulative bound, and the
    exact walk is the only sound one (the nested-constructed shape above
-   refuses at the second row through it). ADR-0463's refusal semantics are
+ refuses at the second row through it). [ADR-0463](./0463-expression-allocation-budget.md)'s refusal semantics are
    unchanged everywhere.
 2. **The per-row overhead is removed by flattening the chain, not by
    weakening the charge.** `owned_heap` and its helpers (`unique_list`,
@@ -81,7 +91,7 @@ loses.
   current-container slot in the charge seam). Rejected — it counts values
   the loop built and dropped (`count(size(n.friends))` would charge the
   list the fold never kept), reintroducing the cumulative-meter false
-  positive ADR-0463 was revised to remove.
+ positive [ADR-0463](./0463-expression-allocation-budget.md) was revised to remove.
 
 ## Consequences
 
@@ -91,7 +101,7 @@ loses.
   the sampler's profile entirely), and every shape with shared operands —
   the plain `count(n)` / `count(p)` family — keeps its one-read zero
   charge.
-- Every ADR-0463 refusal stands exactly as before, and the charge-test
+- Every [ADR-0463](./0463-expression-allocation-budget.md) refusal stands exactly as before, and the charge-test
   family pins the two directions the first form put at risk: a shared
   operand charges nothing (the O(1) common case), and a constructed
   payload — flat or nested one level — refuses through the exact running

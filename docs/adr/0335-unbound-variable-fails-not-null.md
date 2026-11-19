@@ -1,7 +1,19 @@
-# ADR-0335: Unbound variables fail with UndefinedVariable instead of evaluating to null
+---
+type: adr
+area: cypher
+claim: 5a3dca3f02a7be3b40e3f047cc98ccf4e536b5ef
+name: 0335-unbound-variable-fails-not-null
+status: proposed
+tags:
+  - errors
+  - semantics
+title: Unbound variables fail with UndefinedVariable instead of evaluating to null
+REFERENCES:
+  - "[[adr/0170-shared-value-payloads]]"
+  - "[[adr/0308-absent-parameter-fails-before-execution]]"
+---
 
-Status: Proposed
-Claim: 5a3dca3f02a7be3b40e3f047cc98ccf4e536b5ef
+# ADR-0335: Unbound variables fail with UndefinedVariable instead of evaluating to null
 
 ## Context
 
@@ -14,7 +26,7 @@ Expr::Variable(n) => Ok(row.get(n).cloned().unwrap_or(Value::Null)),
 
 and the map-projection variable item repeats it
 (`MapProjectionItem::Variable { name }`). AGENTS.md bans exactly this
-`unwrap_or(Value::Null)` shape, and ADR-0308 removed the identical silent
+`unwrap_or(Value::Null)` shape, and [ADR-0308](./0308-absent-parameter-fails-before-execution.md) removed the identical silent
 `null` from the `Expr::Parameter` arm two arms above.
 
 The plan-time binding walks (`cypherlite-front`'s scope validation and the
@@ -50,7 +62,7 @@ undefined-variable error, never a `null` value.
    names no yielded column now fails the statement with the typed error.
 4. **A bound name is unchanged.** The arm only changes a row miss; a
    variable bound to `null` still evaluates to `null`, and the row-sharing
-   fast path (`eval_operand`, ADR-0170) is untouched.
+ fast path (`eval_operand`, [ADR-0170](./0170-shared-value-payloads.md)) is untouched.
 5. **The two sites with deliberately incomplete rows bind their names
    explicitly.** Two executor paths evaluate expressions against rows
    that are legitimately missing names, and Neo4j reads those names as

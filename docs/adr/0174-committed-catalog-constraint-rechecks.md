@@ -1,15 +1,31 @@
-# 0174. Re-check constraints committed mid-transaction; cancellable validation loops
+---
+type: adr
+area: engine
+date: 2026-10-06
+deciders: Oskar Hane (agreed in conversation), CypherLite maintainers
+name: 0174-committed-catalog-constraint-rechecks
+status: accepted
+tags:
+  - catalog
+  - transactions
+title: Re-check constraints committed mid-transaction; cancellable validation loops
+REFERENCES:
+  - "[[adr/0015-optimistic-wal-commits]]"
+  - "[[adr/0111-engine-bounded-execution]]"
+  - "[[adr/0172-incremental-constraint-validation]]"
+  - "[[adr/0173-overlay-owned-redo-log-and-scratch-index]]"
+  - "[[adr/0307-bolt-failure-carries-neo4j-status-codes]]"
+  - "[[adr/0439-commit-time-uniqueness]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-06
-- **Deciders**: Oskar Hane (agreed in conversation), CypherLite maintainers
+# 0174. Re-check constraints committed mid-transaction; cancellable validation loops
 
 ## Context
 
-ADR-0172 made constraint validation incremental: a validation re-checks
+[ADR-0172](./0172-incremental-constraint-validation.md) made constraint validation incremental: a validation re-checks
 only what the redo ops appended since the previous validation could have
 broken, plus a full re-check of every constraint whose DDL is in that
-slice. ADR-0173 made the cursor validate-then-mark.
+slice. [ADR-0173](./0173-overlay-owned-redo-log-and-scratch-index.md) made the cursor validate-then-mark.
 
 A review of the branch found three gaps:
 
@@ -30,21 +46,21 @@ A review of the branch found three gaps:
    ``ConstraintValidationFailed: `p_id` uniqueness`` — a behavior
    regression against main.
 2. **Validation loops never check cancellation.** The full re-validation
-   loop (ADR-0172 §5), the node uniqueness probe (§3) and the
+ loop ([ADR-0172](./0172-incremental-constraint-validation.md) §5), the node uniqueness probe (§3) and the
    relationship uniqueness fallback walk (§4) iterate unbounded entity
    sets without a `cancel_tick`, so a long validation — for example a
    `CREATE CONSTRAINT` over a large label — cannot be interrupted
-   (ADR-0111).
+ ([ADR-0111](./0111-engine-bounded-execution.md)).
 3. **Test gaps in `constraint_numeric_equivalence.rs`**: no end-to-end
    uniqueness cases for datetime with offset, time with offset, `-0.0`
    vs `0.0`, or points with `-0.0` coordinates, all of which follow the
-   equality rules ADR-0172 §3 pins (`Value::eq_non_null` for the verdict,
+ equality rules [ADR-0172](./0172-incremental-constraint-validation.md) §3 pins (`Value::eq_non_null` for the verdict,
    `GroupKey::for_property_index` for the bucket).
 
 ## Decision
 
 1. **The scratch remembers the catalog it last validated against.**
-   `RedoLog` (the owner of the validation cursor, ADR-0173) gains a
+ `RedoLog` (the owner of the validation cursor, [ADR-0173](./0173-overlay-owned-redo-log-and-scratch-index.md)) gains a
    *constraint fingerprint*: every constraint's definition and derived
    enforced label, in name order, as `named_constraints()` and
    `show_schema()` reported them. The fingerprint updates after each
@@ -55,16 +71,16 @@ A review of the branch found three gaps:
 2. **Catalog drift joins the recheck set.** Each validation diffs the
    current catalog against the remembered fingerprint — O(number of
    constraints). A constraint that is new, or whose definition or
-   enforced label changed, is fully re-checked (ADR-0172 §5) at this
+ enforced label changed, is fully re-checked ([ADR-0172](./0172-incremental-constraint-validation.md) §5) at this
    validation, exactly as if its DDL were in the slice. A dropped
    constraint needs nothing: it cannot be violated. An unchanged catalog
    and an empty slice still cost no entity inspections; the per-validation
-   fixed cost becomes O(catalog size) instead of O(1) (ADR-0172 §8),
+ fixed cost becomes O(catalog size) instead of O(1) ([ADR-0172](./0172-incremental-constraint-validation.md) §8),
    which is what the pre-incremental full scan paid per statement many
    times over.
 3. **Validation loops are cancellable.** The recheck loop and both
    partner searches call `ExecGraph::cancel_tick` per entity, the same
-   sampled, statement-wide window every other hot loop uses (ADR-0111).
+ sampled, statement-wide window every other hot loop uses ([ADR-0111](./0111-engine-bounded-execution.md)).
    A cancelled validation surfaces `Error::Execution("query cancelled")`
    and, like any failed validation, leaves the slice unvalidated.
 4. **The equality pins are extended, not changed.** The new uniqueness
@@ -93,7 +109,7 @@ A review of the branch found three gaps:
   violation; skipping the diff would keep that regression for read-only
   statements.
 - **Check cancellation only at constraint granularity.** Rejected: one
-  constraint over a large label is precisely the long loop ADR-0111
+ constraint over a large label is precisely the long loop [ADR-0111](./0111-engine-bounded-execution.md)
   requires to be interruptible.
 
 ## Consequences
@@ -102,11 +118,11 @@ A review of the branch found three gaps:
   constraint another session commits is enforced on an open transaction
   at its next statement, read-only statements included. The pre-existing
   concurrent duplicate-commit gap (both transactions commit without a
-  later statement; ADR-0015 does no write-skew detection) is unchanged
+ later statement; [ADR-0015](./0015-optimistic-wal-commits.md) does no write-skew detection) is unchanged
   and out of scope.
 - A validation's fixed cost is O(catalog size) even for an empty slice;
   entity inspections stay zero when neither the slice nor the catalog
-  changed. ADR-0172 §8's "empty slice costs O(1)" becomes "O(catalog)".
+ changed. [ADR-0172](./0172-incremental-constraint-validation.md) §8's "empty slice costs O(1)" becomes "O(catalog)".
 - Long validations are interruptible within one cancellation sampling
   window (1024 entity ticks).
 - `docs/limitations.md` states the restored mid-transaction enforcement
@@ -114,10 +130,10 @@ A review of the branch found three gaps:
 
 ## Later references
 
-- ADR-0307: a cancelled validation (item 3) surfaces the typed
+- [ADR-0307](./0307-bolt-failure-carries-neo4j-status-codes.md): a cancelled validation (item 3) surfaces the typed
   `Error::Cancelled` instead of `Error::Execution("query cancelled")`; the
   rendered text `query cancelled` is unchanged.
-- ADR-0439: the pre-existing concurrent duplicate-commit gap recorded in
+- [ADR-0439](./0439-commit-time-uniqueness.md): the pre-existing concurrent duplicate-commit gap recorded in
   Consequences is closed at the commit admission loop, not by item 1's
   mid-transaction recheck: a maintained per-constraint committed-state tuple
   map rejects the later writer with `Error::Conflict` before the WAL append,

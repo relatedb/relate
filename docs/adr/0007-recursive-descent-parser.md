@@ -1,12 +1,22 @@
-# 0007. Cypher is parsed with a hand-written recursive-descent parser
+---
+type: adr
+area: cypher
+date: 2026-08-28
+deciders: MemoryDB maintainers
+name: 0007-recursive-descent-parser
+status: accepted
+tags:
+  - parser
+title: Cypher is parsed with a hand-written recursive-descent parser
+REFERENCES:
+  - "[[adr/0056-opencypher-tck-language-contract]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-08-28
-- **Deciders**: MemoryDB maintainers
+# 0007. Cypher is parsed with a hand-written recursive-descent parser
 
 ## Context
 
-ADR-0056 requires OpenCypher. We need a parser that can grow with TCK
+[ADR-0056](./0056-opencypher-tck-language-contract.md) requires OpenCypher. We need a parser that can grow with TCK
 scenarios, emit useful errors, and stay a small dependency. Official
 openCypher publishes ANTLR, EBNF, and ISO BNF grammars.
 
@@ -28,7 +38,7 @@ grammar in v1.
 - **ANTLR runtime / generated parser** — Java-centric official grammar,
   extra runtime. Rejected for a lightweight Rust engine.
 - **An existing Cypher crate as a black box** — unknown TCK alignment and
-  license/maintenance risk. Rejected; we own the AST (ADR-0056).
+ license/maintenance risk. Rejected; we own the AST ([ADR-0056](./0056-opencypher-tck-language-contract.md)).
 
 ## Consequences
 

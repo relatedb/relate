@@ -1,14 +1,25 @@
+---
+type: adr
+area: cypher
+claim: f5b3fd04abff664a96988c1ac9bce25e90d23284
+name: 0467-preview-gates-chronological-and-complex-search
+status: proposed
+tags:
+  - dialect
+title: |-
+  Two corpus-visible preview gates: chronological comparisons and complex SEARCH patterns
+REFERENCES:
+  - "[[adr/0371-preview-feature-gating]]"
+  - "[[adr/0464-float16-vector-coordinate-gate]]"
+---
+
 # ADR-0467: Two corpus-visible preview gates: chronological comparisons and complex SEARCH patterns
-
-Status: Proposed
-
-Claim: f5b3fd04abff664a96988c1ac9bce25e90d23284
 
 ## Context
 
 Two Neo4j acceptance-corpus switches are modelled as deployable
 configurations the engine does not yet represent. Both are ungated today,
-so one side of each pair cannot be expressed. ADR-0464's
+so one side of each pair cannot be expressed. [ADR-0464](./0464-float16-vector-coordinate-gate.md)'s
 `float16-coordinate-types` row is the same shape, recorded by the same
 round.
 
@@ -36,7 +47,7 @@ round.
 
 ## Decision
 
-Register two rows in the ADR-0371 registry and gate each at the point its
+Register two rows in the [ADR-0371](./0371-preview-feature-gating.md) registry and gate each at the point its
 off form is decided.
 
 1. **`chronological-comparisons`** — mirroring
@@ -45,7 +56,7 @@ off form is decided.
    them contextually after `IS`, so the floor grammar is untouched) and the
    front's AST-detector loop fails the statement closed with the authored
    `preview feature 'chronological-comparisons' is not enabled` error unless
-   the row is enabled. Detector and gate are the ADR-0464 shape.
+ the row is enabled. Detector and gate are the [ADR-0464](./0464-float16-vector-coordinate-gate.md) shape.
 
 2. **`complex-search-patterns`** — mirroring
    Neo4j's own mode.
@@ -73,7 +84,7 @@ off form is decided.
 
 - **Gate `chronological-comparisons` at parse (a third `ParseOptions`
   flag that stops recognizing the operators).** Rejected: the off side's
-  error class is not enforced by the corpus's two-row table, so ADR-0371's
+ error class is not enforced by the corpus's two-row table, so [ADR-0371](./0371-preview-feature-gating.md)'s
   authored error satisfies it, and a parse gate would re-create the store's
   resolved preview knowledge inside the parser crate for no corpus gain.
 - **Gate `complex-search-patterns` with an authored-error AST detector.**

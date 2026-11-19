@@ -1,8 +1,22 @@
+---
+type: adr
+area: cli
+claim: d8430ab36fabfde21b3f0bd2891f31371a2fdd25
+name: 0500-store-target-and-load-source
+status: proposed
+tags:
+  - commands
+  - load
+title: Store targets and sources — `--database` + `--load`, and ephemeral opens
+REFERENCES:
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0156-directory-clone]]"
+  - "[[adr/0306-read-only-follow-servers]]"
+  - "[[adr/0480-one-access-flag-read-only-freshness]]"
+  - "[[adr/0496-run-database-from-url]]"
+---
+
 # ADR-0500: Store targets and sources — `--database` + `--load`, and ephemeral opens
-
-Status: Proposed
-
-Claim: d8430ab36fabfde21b3f0bd2891f31371a2fdd25
 
 ## Context
 
@@ -12,7 +26,7 @@ The engine is memory-first: opening any store — a native directory or a
 *writable* lifecycle: the writer lease, checkpoints, demote. A read-only
 open touches none of that, yet it keeps the source open and locked for the
 store's whole life: the `.cl` host file (and its exclusive lock,
-ADR-0074) and the WAL's open segment handle hold it.
+[ADR-0074](./0074-single-file-bundle-vfs.md)) and the WAL's open segment handle hold it.
 
 LABS-903 (user direction, 2026-11-03) asked for the other shape, with the
 wording that settled the design: **"not copy — turn into"**. A read-only
@@ -22,7 +36,7 @@ The motivating cases: a remote store whose download should not live on
 disk at all, and environments that cannot write any file.
 
 The same review of the CLI shape (user direction, same day) found the
-flag axis at fault: ADR-0496 had made `--database` accept an `http(s)`
+flag axis at fault: [ADR-0496](./0496-run-database-from-url.md) had made `--database` accept an `http(s)`
 URL, so one flag carried two facts — *which store am I opening* and
 *where does its content come from* — and a third flag (`--ephemeral`, the
 first cut of this ADR's CLI half) existed only to undo one consequence of
@@ -36,9 +50,9 @@ target, `--load` is the source**.
 1. **`--database PATH` (`-d`) names the store target only** — a store
    directory, a `.cl` bundle, or `:memory:` (the default, unchanged). An
    `http(s)` URL in `--database` is a usage error (exit 2) that names the
-   working form (`--load <url>`). This withdraws ADR-0496's §1 (the
+ working form (`--load <url>`). This withdraws [ADR-0496](./0496-run-database-from-url.md)'s §1 (the
    URL-in-`--database` spelling) and its §5 kept-copy disposition — the
-   feature never shipped in a release. Everything else ADR-0496 decided
+ feature never shipped in a release. Everything else [ADR-0496](./0496-run-database-from-url.md) decided
    about the fetch itself (§2–§4, §6–§9: the GitHub rewrite, the redirect
    and scheme policy, the `.cl` requirement, the capped streaming stage,
    the safe-mode refusal, the feature gate, the CLI-process posture)
@@ -56,7 +70,7 @@ target, `--load` is the source**.
    - **Durable target (`-d PATH --load SOURCE`): store creation.** The
      target path must not exist (fail-closed; exit 2 if it does); the
      source is cloned into it through the `clone` verb's own machinery
-     (the full dir/`.cl` matrix, ADR-0156), and the run then opens the
+ (the full dir/`.cl` matrix, [ADR-0156](./0156-directory-clone.md)), and the run then opens the
      created store with the flags' normal mode — writable by default.
      This is the one capability the old shape could not express: a URL
      materialized into a durable store **at a path the user chose**.
@@ -78,7 +92,7 @@ target, `--load` is the source**.
    As a mode variant the illegal combinations are unrepresentable.
 5. **CLI resolution.** `Flags::open_mode` stays the one open-mode
    resolution: it answers `OpenMode::Ephemeral` exactly when `--load` is
-   given with the `:memory:` target, else the access slot's ADR-0480
+ given with the `:memory:` target, else the access slot's [ADR-0480](./0480-one-access-flag-read-only-freshness.md)
    resolution. `--read-only=live` with any `--load` is a **parse-time**
    usage error (nothing is ever followed — the source is loaded once and
    released); `--read-only` with a creating load (durable target) is
@@ -91,14 +105,14 @@ target, `--load` is the source**.
    removed right after the load (the source was released); a
    durable-target load's copy is removed the moment the clone finishes; a
    failed fetch removes its own partial file. The kept-copy disposition
-   (ADR-0496 §5's writable download kept at an announced temp path) is
+ ([ADR-0496](./0496-run-database-from-url.md) §5's writable download kept at an announced temp path) is
    gone — a durable copy is the durable-target leg, at a path the user
    chose, not a temp path the run picked.
 7. **`serve` takes the same grammar** — `serve --load SOURCE` with the
    `:memory:` target serves the ephemeral open (read-only by construction,
    no bundle lock held while serving); with a durable target it creates
    the store and serves it. The banner's access-mode line reports the
-   ephemeral mode like the other non-writable modes (ADR-0306 §5).
+ ephemeral mode like the other non-writable modes ([ADR-0306](./0306-read-only-follow-servers.md) §5).
 8. **Scope.** The no-writable-disk remote case (a `Cursor` host for the
    bundle loader, so the download never touches a file) and HTTP `Range`
    lazy page fetching remain LABS-903's open tail.
@@ -114,7 +128,7 @@ target, `--load` is the source**.
   undo `--database`'s conflation, and `--load` with the default `:memory:`
   target states the same behavior structurally.
 - **A `--read-only=ephemeral` freshness value** — rejected twice over:
-  ADR-0480's values are freshnesses and ephemeral's freshness *is*
+ [ADR-0480](./0480-one-access-flag-read-only-freshness.md)'s values are freshnesses and ephemeral's freshness *is*
   snapshot's (an ephemeral open reads exactly what a snapshot read-only
   open reads, at every moment — the difference is the source's fate, not
   the read's), so the value would be a synonym with a side effect bolted
@@ -142,7 +156,7 @@ target, `--load` is the source**.
 - A remote load leaves nothing behind: no kept copy, no scratch at exit.
 - Telemetry classifies a memory-target load as `memory` storage, whatever
   path or URL it came from; a durable-target load as the target's kind.
-- ADR-0496's URL-in-`--database` spelling and kept-copy disposition are
+- [ADR-0496](./0496-run-database-from-url.md)'s URL-in-`--database` spelling and kept-copy disposition are
   withdrawn (unreleased); its fetch mechanics carry over to `--load`.
 - No `OpenOptions` construction site changes — the turn-into is a value
   of the existing `mode` field.

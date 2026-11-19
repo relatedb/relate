@@ -1,11 +1,25 @@
-# ADR-0386: chunked response streaming on the HTTP Query API
+---
+type: adr
+area: surface
+claim: 3b0a29a7389ff920fb6afbbb6bd8428339f77a4c
+name: 0386-http-chunked-streaming
+status: proposed
+tags:
+  - http
+title: chunked response streaming on the HTTP Query API
+REFERENCES:
+  - "[[adr/0158-streaming-single-process-pull]]"
+  - "[[adr/0232-network-surfaces-charter]]"
+  - "[[adr/0234-httparse-request-parsing]]"
+  - "[[adr/0385-http-gzip-response-compression]]"
+  - "[[adr/0451-bound-unauthenticated-network-connections]]"
+---
 
-Status: Proposed
-Claim: 3b0a29a7389ff920fb6afbbb6bd8428339f77a4c
+# ADR-0386: chunked response streaming on the HTTP Query API
 
 ## Context
 
-ADR-0232 charters CypherLite's HTTP Query API v2 reply seam and ADR-0385
+[ADR-0232](./0232-network-surfaces-charter.md) charters CypherLite's HTTP Query API v2 reply seam and [ADR-0385](./0385-http-gzip-response-compression.md)
 added opt-in gzip on it, but every Query API reply is still built as one
 in-memory body. `write_reply` (surfaces/cypherlite-http/src/server.rs:100-116)
 destructures the `Reply` and serializes the whole JSON envelope with
@@ -27,10 +41,10 @@ serialization copy, and that is the decision here.
 Facts that bound the change:
 
 - One reply seam, two writers: every Query API reply goes through `write_reply` (server.rs:100), while the MCP streamable-HTTP transport calls `http::write_response` directly (surfaces/cypherlite-mcp/src/http.rs:192). MCP has no `Accept-Encoding` negotiation and is a buffered identity responder, so the shared writer's wire behavior is the seam not to move.
-- The wire is HTTP/1.1 with one request per connection and `Connection: close` (ADR-0234; `docs/api/http/spec.md:5-6`). `surfaces/cypherlite-http/src/http.rs:5` documents the module as "no chunked bodies" today, and the implementation change must correct that sentence and the matching wire-layer wording in `docs/api/http/spec.md`.
+- The wire is HTTP/1.1 with one request per connection and `Connection: close` ([ADR-0234](./0234-httparse-request-parsing.md); `docs/api/http/spec.md:5-6`). `surfaces/cypherlite-http/src/http.rs:5` documents the module as "no chunked bodies" today, and the implementation change must correct that sentence and the matching wire-layer wording in `docs/api/http/spec.md`.
 - Chunked is the only length-less HTTP/1.1 framing that still signals a clean end of body: RFC 9112 section 7.1 delimits it with a zero-size last chunk (lowercase-hex `chunk-size` CRLF, chunk bytes CRLF, and an optional trailer section this server omits entirely), which a close-delimited body cannot do — closing the socket cannot distinguish a complete body from a truncated one.
-- ADR-0385 already fixed the gzip policy — 1024-byte threshold, `Accept-Encoding` `q` parsing with `Vary: Accept-Encoding`, one-shot `Content-Length` bodies, `flate2::Compression::fast` (level 1) — and its Decision item 1 selects gzip only when the gzip output is smaller than the input, which requires the compressed body before the head goes out. This ADR does not re-open that policy; it decides framing above a second, larger threshold and how gzip composes with it.
-- In-repo clients already read chunked: ureq 3.4 unchunks a `Transfer-Encoding: chunked` body in its reader (`ureq-3.4.2/src/body/mod.rs:745`, "the returned reader will unchunk it"), and Cargo.toml:124 pins the workspace on `ureq = "3.4"`; the ADR-0158 pull path hands that reader to the incremental row scanner (surfaces/cypherlite-load/src/http.rs:252, surfaces/cypherlite-load/src/response.rs:71). The raw loopback helper reads to EOF (testing/cypherlite-test-support/src/loopback.rs:38-52), so tests see chunk framing verbatim.
+- [ADR-0385](./0385-http-gzip-response-compression.md) already fixed the gzip policy — 1024-byte threshold, `Accept-Encoding` `q` parsing with `Vary: Accept-Encoding`, one-shot `Content-Length` bodies, `flate2::Compression::fast` (level 1) — and its Decision item 1 selects gzip only when the gzip output is smaller than the input, which requires the compressed body before the head goes out. This ADR does not re-open that policy; it decides framing above a second, larger threshold and how gzip composes with it.
+- In-repo clients already read chunked: ureq 3.4 unchunks a `Transfer-Encoding: chunked` body in its reader (`ureq-3.4.2/src/body/mod.rs:745`, "the returned reader will unchunk it"), and Cargo.toml:124 pins the workspace on `ureq = "3.4"`; the [ADR-0158](./0158-streaming-single-process-pull.md) pull path hands that reader to the incremental row scanner (surfaces/cypherlite-load/src/http.rs:252, surfaces/cypherlite-load/src/response.rs:71). The raw loopback helper reads to EOF (testing/cypherlite-test-support/src/loopback.rs:38-52), so tests see chunk framing verbatim.
 - Neo4j Query API v2 documents `Transfer-Encoding: chunked` for its JSONL streaming form (https://neo4j.com/docs/query-api/current/streaming/), but this server's JSONL encoding is not implemented (`docs/api/http/spec.md:194-195`): the chunked framing here applies to the typed JSON envelope, so it is a CypherLite transport property, not a JSONL or Neo4j-parity claim.
 
 ## Decision
@@ -40,7 +54,7 @@ policy's one-shot body stands untouched. Each item reproduces the pinned
 policy verbatim where it is quoted.
 
 1. **Threshold (`stream_threshold_bytes = 65536`).** Chunked streaming starts
-   at 65536 uncompressed serialized bytes, inclusive — 64x ADR-0385's
+ at 65536 uncompressed serialized bytes, inclusive — 64x [ADR-0385](./0385-http-gzip-response-compression.md)'s
    1024-byte gzip threshold, so small and page-sized answers keep a known
    length while the buffered path's extra copy stays at most 64 KiB per
    connection. Declare it once as `STREAM_THRESHOLD_BYTES: usize = 65536` in
@@ -48,12 +62,12 @@ policy verbatim where it is quoted.
    and derive both the `write_reply` framing decision and its boundary tests
    from that constant; do not re-derive `64 * 1024` at call sites.
 
-2. **Framing.** Bodies at or above 65536 uncompressed serialized bytes use Transfer-Encoding: chunked (RFC 9112 §7.1: lowercase-hex chunk-size CRLF, chunk bytes CRLF, one terminating 0 chunk with no trailer section and no Trailer header), carry no Content-Length and keep Connection: close; bodies below 65536 keep the single-write Content-Length path (the compressed length when gzip is selected there), and framing is chosen from the uncompressed serialized size before the head is written. This bounds serialization memory only — cypherlite::Connection::query returns a materialized QueryResult (connection/mod.rs:144, rows at result.rs:90) — so engine cursors are out of scope. ADR-0385 Decision item 1's one-shot-body clause and its output-smaller check apply only below 65536: above it gzip is selected by q and size alone, because the final compressed size cannot be known before the head goes out, and the chunked ADR amends ADR-0385 in place (it is still Proposed). The shared http::write_response the MCP surface calls directly stays a buffered identity + Content-Length writer (its wire bytes untouched).
+2. **Framing.** Bodies at or above 65536 uncompressed serialized bytes use Transfer-Encoding: chunked (RFC 9112 §7.1: lowercase-hex chunk-size CRLF, chunk bytes CRLF, one terminating 0 chunk with no trailer section and no Trailer header), carry no Content-Length and keep Connection: close; bodies below 65536 keep the single-write Content-Length path (the compressed length when gzip is selected there), and framing is chosen from the uncompressed serialized size before the head is written. This bounds serialization memory only — cypherlite::Connection::query returns a materialized QueryResult (connection/mod.rs:144, rows at result.rs:90) — so engine cursors are out of scope. [ADR-0385](./0385-http-gzip-response-compression.md) Decision item 1's one-shot-body clause and its output-smaller check apply only below 65536: above it gzip is selected by q and size alone, because the final compressed size cannot be known before the head goes out, and the chunked ADR amends [ADR-0385](./0385-http-gzip-response-compression.md) in place (it is still Proposed). The shared http::write_response the MCP surface calls directly stays a buffered identity + Content-Length writer (its wire bytes untouched).
 
-3. **Composition with ADR-0385.** gzip wraps chunked above the stream threshold: when the gzip policy (threshold_bytes = 1024, Accept-Encoding negotiation) selects gzip, the serialized envelope feeds the gzip encoder and the encoder's output feeds the one fixed 8 KiB frame buffer whose flushes become the RFC 9112 chunk frames, so the compressor sits above the frame writer and a chunk boundary is a frame-buffer flush — a transport detail, never a row boundary; identity above the threshold feeds the same frame writer, while below it gzip keeps that policy's one-shot Content-Length body. The 8 KiB bound is enforced, not just the buffer's capacity: `ChunkWriter::write` slices every producer write larger than `FRAME_BUFFER_BYTES` (a large JSON string scalar, flate2's 32 KiB output buffer) into frames of at most that size, so no frame payload of either representation ever exceeds 8 KiB — `surfaces/cypherlite-http/src/stream.rs` enforces it on every frame.
+3. **Composition with [ADR-0385](./0385-http-gzip-response-compression.md).** gzip wraps chunked above the stream threshold: when the gzip policy (threshold_bytes = 1024, Accept-Encoding negotiation) selects gzip, the serialized envelope feeds the gzip encoder and the encoder's output feeds the one fixed 8 KiB frame buffer whose flushes become the RFC 9112 chunk frames, so the compressor sits above the frame writer and a chunk boundary is a frame-buffer flush — a transport detail, never a row boundary; identity above the threshold feeds the same frame writer, while below it gzip keeps that policy's one-shot Content-Length body. The 8 KiB bound is enforced, not just the buffer's capacity: `ChunkWriter::write` slices every producer write larger than `FRAME_BUFFER_BYTES` (a large JSON string scalar, flate2's 32 KiB output buffer) into frames of at most that size, so no frame payload of either representation ever exceeds 8 KiB — `surfaces/cypherlite-http/src/stream.rs` enforces it on every frame.
 
 4. **Composition scope.** Below `stream_threshold_bytes`, gzip keeps
-   ADR-0385 Decision item 1 exactly as written: the serialized envelope is
+ [ADR-0385](./0385-http-gzip-response-compression.md) Decision item 1 exactly as written: the serialized envelope is
    compressed in one shot, `Content-Length` carries the compressed length,
    there is no `Transfer-Encoding`, and `Connection: close` is unchanged.
 
@@ -66,9 +80,9 @@ policy verbatim where it is quoted.
    than the input" selection check are therefore scoped to the
    below-threshold path; above it gzip is selected by effective `q` and body
    size alone. That reconciles the two policies instead of leaving them
-   contradictory, and it extends — does not contradict — ADR-0385, which is
+ contradictory, and it extends — does not contradict — [ADR-0385](./0385-http-gzip-response-compression.md), which is
    amended in place with this scoping and a Later references note (it is
-   still Proposed). Every other ADR-0385 pin — the 1024-byte gzip threshold,
+ still Proposed). Every other [ADR-0385](./0385-http-gzip-response-compression.md) pin — the 1024-byte gzip threshold,
    `Vary: Accept-Encoding`, the `q=0` and wildcard rules,
    `flate2::Compression::fast`, and the Query-API-only scope — is unchanged.
 
@@ -107,7 +121,7 @@ policy verbatim where it is quoted.
    (surfaces/cypherlite-mcp/src/http.rs:192) calls `write_response` directly,
    has no `Accept-Encoding` negotiation, and stays a buffered identity
    responder that never sends `Transfer-Encoding`. The `GET /` discovery
-   document and the body-less 204 preflight stay one-shot as ADR-0385 scopes
+ document and the body-less 204 preflight stay one-shot as [ADR-0385](./0385-http-gzip-response-compression.md) scopes
    them.
 
 8. **Version floor.** The surface answers HTTP/1.1 only. `RequestHead` records
@@ -118,7 +132,7 @@ policy verbatim where it is quoted.
    that need not understand it. The refusal is modelled as a parsed rejection
    — `AdmissionOutcome::Rejected { head, status: 400, message, extra_headers, .. }`
    carrying the real `RequestHead`; a head that never parsed is the same
-   seam's `AdmissionError::Malformed` (ADR-0451). Because the head is real, the caller's drain
+ seam's `AdmissionError::Malformed` ([ADR-0451](./0451-bound-unauthenticated-network-connections.md)). Because the head is real, the caller's drain
    uses its declared `Content-Length`, the Query API's Origin echo reads the
    real header, and that surface's reply-encoding policy reads the real
    `Accept-Encoding` — so the Query API's 400 is one-shot identity with a
@@ -159,7 +173,7 @@ policy verbatim where it is quoted.
    serialize through the one `Serialize` impl; it is not a JSON map's
    iteration order, so a whole-object reply carries the insertion-order delta
    described above and a below-threshold reply is not byte-identical to the
-   pre-ADR-0386 sorted-key serialization of one value.
+ pre-[ADR-0386](./0386-http-chunked-streaming.md) sorted-key serialization of one value.
    `ReplyBody::insert_member` is the one mutation path with JSON-object
    semantics — a present key is replaced where it stands, a missing one
    appended after the last member — so inserting a top-level member needs no
@@ -197,22 +211,22 @@ policy verbatim where it is quoted.
   unchanged. Clients that read to EOF or decode chunked (ureq, Neo4j
   drivers, `curl`) are unaffected; a raw test that parses a large body as
   JSON must de-chunk the frames first.
-- Gzip above the threshold drops ADR-0385's "output smaller than input"
+- Gzip above the threshold drops [ADR-0385](./0385-http-gzip-response-compression.md)'s "output smaller than input"
   check: the compressed size is unknown before the head, so an
   incompressible body of 64 KiB or more is sent gzip-framed and may be
   marginally larger than identity. Below the threshold that check is
   unchanged.
 - The counting pass serializes the envelope twice for bodies above the
   threshold (once to measure, once to write). That is CPU traded for memory,
-  the same trade ADR-0385 makes for gzip; the alternative is the unbounded
+ the same trade [ADR-0385](./0385-http-gzip-response-compression.md) makes for gzip; the alternative is the unbounded
   copy this decision removes.
 - `http.rs:5`'s "no chunked bodies" module doc and the wire-layer wording in
   `docs/api/http/spec.md` must change in the same implementation change, and
-  the ADR-0385 Later references note records the scoping. The shared writer
+ the [ADR-0385](./0385-http-gzip-response-compression.md) Later references note records the scoping. The shared writer
   and the MCP surface do not change.
 - No dependency, runtime or lifecycle change: the frame writer runs
   synchronously on the existing connection thread, one request per
-  connection (ADR-0234), with no keep-alive, no trailers and no new crate.
+ connection ([ADR-0234](./0234-httparse-request-parsing.md)), with no keep-alive, no trailers and no new crate.
 - Framing is fixed before the head goes out, so a serialization failure in
   the counting pass never reaches the wire as a partial body: it surfaces as
   an `io::Error` from `frame_body` before any head byte is written, the

@@ -1,8 +1,17 @@
+---
+type: adr
+area: infra
+claim: 0d559584cc2ced79393270b398b689fcefeed560
+name: 0346-context-findings-backlog-not-verdict
+status: accepted
+tags:
+  - review
+title: Context-unit findings are night-shift backlog, not PR verdict blockers
+REFERENCES:
+  - "[[adr/0275-stellar-review-scoped-incremental-rounds]]"
+---
+
 # ADR-0346: Context-unit findings are night-shift backlog, not PR verdict blockers
-
-Claim: 0d559584cc2ced79393270b398b689fcefeed560
-
-Status: Accepted
 
 ## Context
 
@@ -22,7 +31,7 @@ counting those findings as the PR's own:
 The design already separates the two kinds: `anchorable(finding, hunks)`
 tests whether a finding's lines intersect the PR's diff hunks, and
 unanchorable findings ride the summary instead of inline comments
-(ADR-0275 anchoring). The verdict, however, ignored that split.
+([ADR-0275](./0275-stellar-review-scoped-incremental-rounds.md) anchoring). The verdict, however, ignored that split.
 
 ## Decision
 

@@ -1,17 +1,32 @@
-# ADR-0248: `cypherlite serve --host HOST` — explicit bind host, loopback default, loud plaintext posture
+---
+type: adr
+area: surface
+name: 0248-serve-host-flag
+status: accepted
+tags:
+  - security
+  - serve
+title: |-
+  `cypherlite serve --host HOST` — explicit bind host, loopback default, loud plaintext posture
+REFERENCES:
+  - "[[adr/0109-bolt-tls]]"
+  - "[[adr/0128-docker-bolt-server-image]]"
+  - "[[adr/0232-network-surfaces-charter]]"
+  - "[[adr/0249-docker-unified-serve-image]]"
+---
 
-Status: Accepted
+# ADR-0248: `cypherlite serve --host HOST` — explicit bind host, loopback default, loud plaintext posture
 
 ## Context
 
-`cypherlite serve` (ADR-0232) binds every served surface to
+`cypherlite serve` ([ADR-0232](./0232-network-surfaces-charter.md)) binds every served surface to
 `127.0.0.1` only — the DNS-rebinding-safe default for a developer
 workstation, shared with the Browser-request guards of the HTTP surface.
 That default is unreachable from outside a container: a Docker container
-(ADR-0128, now ADR-0249) must bind `0.0.0.0` to be reachable from the
+([ADR-0128](./0128-docker-bolt-server-image.md), now [ADR-0249](./0249-docker-unified-serve-image.md)) must bind `0.0.0.0` to be reachable from the
 host at all, and a pod/VM deployment needs the same. The standalone
 servers already expose the choice: `cypherlite-bolt` has `--bind
-HOST:PORT` gated by `--allow-plaintext` (ADR-0109), and `cypherlite-mcp`
+HOST:PORT` gated by `--allow-plaintext` ([ADR-0109](./0109-bolt-tls.md)), and `cypherlite-mcp`
 has `--host HOST`.
 
 `serve` needed the same escape hatch, shaped to its own flag model: its
@@ -32,7 +47,7 @@ CLI conventions):
 - Any non-loopback value is a **deliberate plaintext exposure**: at
   startup the server prints a loud `WARNING` on stderr naming the host
   and stating that the surfaces are plaintext (serve has no TLS) and
-  reachable from the network. The warning is the mirror of ADR-0109's
+ reachable from the network. The warning is the mirror of [ADR-0109](./0109-bolt-tls.md)'s
   posture for Bolt: binding beyond loopback without transport
   encryption is risk-taking the operator must do on purpose.
 - The HTTP discovery document's `bolt_direct` and the listening banner
@@ -59,7 +74,7 @@ with them shape-wise.
 
 ## Consequences
 
-- The Docker image (ADR-0249) runs `cypherlite serve --host 0.0.0.0 …`
+- The Docker image ([ADR-0249](./0249-docker-unified-serve-image.md)) runs `cypherlite serve --host 0.0.0.0 …`
   as its `CMD`, and the warning line in `docker logs` is the expected,
   documented posture there.
 - `serve`'s `--help`, the flag table in `docs/api/cli/spec.md`, and the

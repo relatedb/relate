@@ -1,41 +1,63 @@
+---
+type: adr
+area: cli
+claim: 5d4c39232aa32a00de4adc354258b68e247b58bc
+name: 0376-git-to-graph-import
+status: accepted
+tags:
+  - load
+title: The git-to-graph import contract
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0079-anonymous-usage-metrics]]"
+  - "[[adr/0104-cargo-feature-bundles]]"
+  - "[[adr/0157-fs-to-graph-import]]"
+  - "[[adr/0200-query-command-and-database-flag]]"
+  - "[[adr/0279-lab-command-namespace]]"
+  - "[[adr/0286-fs-to-graph-explicit-db-exits]]"
+  - "[[adr/0377-import-resource-bounds]]"
+  - "[[adr/0380-first-party-dependency-scope]]"
+  - "[[adr/0383-lab-database-flag]]"
+  - "[[adr/0392-git-import-per-batch-commit]]"
+  - "[[adr/0597-git-to-graph-closed-import-window]]"
+---
+
 # ADR-0376: The git-to-graph import contract
 
-Status: Accepted
-Claim: 5d4c39232aa32a00de4adc354258b68e247b58bc
-Later references: ADR-0377 bounds the import's git-log bytes, CO_CHANGED pairs, --max-changeset maximum and path components. ADR-0380 scopes the no-new-Cargo-dependency rule to external crates and corrects the pair-memory arithmetic. ADR-0383 renames the importer's --db flag to -d / --database on both lab actions; the supersession is the flag spelling only. ADR-0392 moves the write to one explicit transaction per 1,000-row batch over lazily generated rows: the range-index-before, full-text-after order, schema, path rule and MERGE/SET semantics stand, and the idempotent re-run replaces the whole-import rollback at the scales the store's WAL payload cap makes uncommittable. ADR-0597 adds the --until window flag to the command shape and the git argv — the flag table and the invocation each gain one optional element; everything else pinned here stands.
+Later references: [ADR-0377](./0377-import-resource-bounds.md) bounds the import's git-log bytes, CO_CHANGED pairs, --max-changeset maximum and path components. [ADR-0380](./0380-first-party-dependency-scope.md) scopes the no-new-Cargo-dependency rule to external crates and corrects the pair-memory arithmetic. [ADR-0383](./0383-lab-database-flag.md) renames the importer's --db flag to -d / --database on both lab actions; the supersession is the flag spelling only. [ADR-0392](./0392-git-import-per-batch-commit.md) moves the write to one explicit transaction per 1,000-row batch over lazily generated rows: the range-index-before, full-text-after order, schema, path rule and MERGE/SET semantics stand, and the idempotent re-run replaces the whole-import rollback at the scales the store's WAL payload cap makes uncommittable. [ADR-0597](./0597-git-to-graph-closed-import-window.md) adds the --until window flag to the command shape and the git argv — the flag table and the invocation each gain one optional element; everything else pinned here stands.
 
 ## Context
 
-`cypherlite lab fs-to-graph` (ADR-0157) imports the working tree; it cannot say
+`cypherlite lab fs-to-graph` ([ADR-0157](./0157-fs-to-graph-import.md)) imports the working tree; it cannot say
 who wrote a file, when a change landed, or what changes together. Those facts
 live in git's history, so `cypherlite lab git-to-graph` — the second visible
-`lab` action (ADR-0279) — reads the checkout's history into a graph over the
+`lab` action ([ADR-0279](./0279-lab-command-namespace.md)) — reads the checkout's history into a graph over the
 same `:File.path` keys, joining "what is here" to "how it got here".
 
-The command is positional in the ADR-0069 grammar and ships under the existing
-`lab` feature (full bundle only, ADR-0104). It takes `--db` as fs-to-graph does
-(ADR-0157), including ADR-0286's explicit-`--db` exit — not the statement
-session's `--database` (ADR-0200). The contract below is pinned before
-implementation, as ADR-0157's was.
+The command is positional in the [ADR-0069](./0069-cli-lifecycle-commands.md) grammar and ships under the existing
+`lab` feature (full bundle only, [ADR-0104](./0104-cargo-feature-bundles.md)). It takes `--db` as fs-to-graph does
+([ADR-0157](./0157-fs-to-graph-import.md)), including [ADR-0286](./0286-fs-to-graph-explicit-db-exits.md)'s explicit-`--db` exit — not the statement
+session's `--database` ([ADR-0200](./0200-query-command-and-database-flag.md)). The contract below is pinned before
+implementation, as [ADR-0157](./0157-fs-to-graph-import.md)'s was.
 
 Constraints: no new Cargo dependency (AGENTS.md R6; git is a runtime
-requirement), a path that joins fs-to-graph (ADR-0157), a safe re-import, and
+requirement), a path that joins fs-to-graph ([ADR-0157](./0157-fs-to-graph-import.md)), a safe re-import, and
 a bound plus indexes for co-change (see the alternatives).
 
 ## Decision
 
 `cypherlite lab git-to-graph [DIR] [--db PATH] [--max-commits N]
-[--max-changeset N] [--since DATE]` is a **visible** `lab` action (ADR-0279):
+[--max-changeset N] [--since DATE]` is a **visible** `lab` action ([ADR-0279](./0279-lab-command-namespace.md)):
 listed in the hand-written `--help` and `docs/api/cli/spec.md`, covered by
-tests, under the existing `lab` feature (full bundle only, ADR-0104), with no
+tests, under the existing `lab` feature (full bundle only, [ADR-0104](./0104-cargo-feature-bundles.md)), with no
 feature of its own.
 
 ### Command shape
 
 | Argument / flag | Default | Meaning |
 | --- | --- | --- |
-| `DIR` | current directory | Work tree; `std::env::current_dir()` when omitted, exactly as fs-to-graph resolves it (ADR-0157). At most one positional. |
-| `--db PATH` | `:memory:` | Target. An explicit `--db` prints the summary and exits after the import (ADR-0286); omitting it imports into `:memory:`. |
+| `DIR` | current directory | Work tree; `std::env::current_dir` when omitted, exactly as fs-to-graph resolves it ([ADR-0157](./0157-fs-to-graph-import.md)). At most one positional. |
+| `--db PATH` | `:memory:` | Target. An explicit `--db` prints the summary and exits after the import ([ADR-0286](./0286-fs-to-graph-explicit-db-exits.md)); omitting it imports into `:memory:`. |
 | `--max-commits N` | all history | Positive integer passed to git as `--max-count=N`. |
 | `--max-changeset N` | `50` | Positive integer; a larger commit still gets `Commit`/`TOUCHED` but no `CO_CHANGED` pairs. |
 | `--since DATE` | none | Non-empty string passed to git as `--since=DATE`; git filters by **committer** date. |
@@ -43,7 +65,7 @@ feature of its own.
 `--max-commits` and `--max-changeset` reject `0`, negative and non-numeric
 values; `--since` rejects a missing or empty value. Any usage error — a bare
 `lab`, unknown action or flag, extra positional, missing or bad value — prints
-the `lab` usage line and a `--help` hint and exits **2** (ADR-0279/ADR-0157);
+the `lab` usage line and a `--help` hint and exits **2** ([ADR-0279](./0279-lab-command-namespace.md)/[ADR-0157](./0157-fs-to-graph-import.md));
 runtime failures exit **1**.
 
 ### Graph schema
@@ -62,7 +84,7 @@ runtime failures exit **1**.
   of paths git listed for the commit in this import.
 - **`(:File {path})`** — `MERGE`d on `path`; `name` is the final path
   component, set **`ON CREATE` only**; `extension`, `size_bytes` and
-  `content` are **never** written (fs-to-graph's facts, ADR-0157).
+ `content` are **never** written (fs-to-graph's facts, [ADR-0157](./0157-fs-to-graph-import.md)).
 - **`AUTHORED` and `TOUCHED`** — `MERGE`d on their endpoints, no properties;
   a commit's `files_changed` equals its `TOUCHED` edge count in a graph built
   by this import.
@@ -145,7 +167,7 @@ first row; `IF NOT EXISTS` keeps a re-import and a retry safe.
 All node and edge writes then run in **one explicit write transaction** that
 rolls back as a whole on failure: a mid-import error leaves the graph exactly
 as it was, never a half-applied history. Paths, subjects and dates are bound
-as parameters, never interpolated into Cypher text (ADR-0157).
+as parameters, never interpolated into Cypher text ([ADR-0157](./0157-fs-to-graph-import.md)).
 
 After the transaction commits, it creates the full-text index
 `commit_subject` over `:Commit(subject)`; no import statement consults it, and
@@ -186,9 +208,9 @@ plain-language questions the graph answers — who owns a file, what changes
 together, what landed recently — each with a paste-ready query; it ships with
 the implementation, listed in SKILL.md and the BUNDLE_FILES drift guard.
 
-The telemetry action dimension is `git-to-graph` (ADR-0079 §4). The
+The telemetry action dimension is `git-to-graph` ([ADR-0079](./0079-anonymous-usage-metrics.md) §4). The
 interactive shell opens only when `--db` is **omitted**, stdin is a TTY, and
-`repl` is compiled in — exactly the fs-to-graph rule (ADR-0157, ADR-0286).
+`repl` is compiled in — exactly the fs-to-graph rule ([ADR-0157](./0157-fs-to-graph-import.md), [ADR-0286](./0286-fs-to-graph-explicit-db-exits.md)).
 An explicit `--db`, including `--db :memory:`, prints the summary and starter
 queries and exits 0, checkpointing a persistent target; no TTY or no `repl`
 does the same.
@@ -206,7 +228,7 @@ does the same.
   `git rev-parse --show-toplevel`, prefix the root). `File.path` would read
   `src/x.rs` while fs-to-graph stores `DIR/src/x.rs`; the join would fail for
   every DIR that is not the root, and making it join would mean changing
-  ADR-0157 and invalidating every graph already built. Rejected: a second git
+ [ADR-0157](./0157-fs-to-graph-import.md) and invalidating every graph already built. Rejected: a second git
   invocation for a path shape the working-tree graph cannot consume.
 - **Compute co-change at query time from `TOUCHED`.** Every query would
   self-join each commit's file set; that is the same quadratic pair product,
@@ -240,7 +262,7 @@ does the same.
   queries and every earlier import depend on them.
 - AGENTS.md R6 is **not** triggered: no Cargo dependency is added. `git` is a
   runtime requirement of this action only; the workspace builds without it,
-  `lab` is full-bundle only (ADR-0104), and a missing git fails with exit 1.
+ `lab` is full-bundle only ([ADR-0104](./0104-cargo-feature-bundles.md)), and a missing git fails with exit 1.
 - The import reads `HEAD` only, with `--no-merges`: merged changes appear
   through the commits that carry them, and branches, tags and the DAG are not
   modeled. `--since` filters by committer date while `authored_at` is the

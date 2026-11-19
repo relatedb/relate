@@ -1,7 +1,19 @@
-# ADR-0483: Python temporal results keep nanoseconds and named zones
+---
+type: adr
+area: surface
+claim: c2141235992a9be9c94c6ea4d851a977f69d4770
+name: 0483-python-temporal-result-fidelity
+status: proposed
+tags:
+  - python
+  - values
+title: Python temporal results keep nanoseconds and named zones
+REFERENCES:
+  - "[[adr/0224-result-column-types]]"
+  - "[[adr/0448-tostring-temporal-full-precision]]"
+---
 
-Status: Proposed
-Claim: c2141235992a9be9c94c6ea4d851a977f69d4770
+# ADR-0483: Python temporal results keep nanoseconds and named zones
 
 ## Context
 
@@ -18,7 +30,7 @@ any comparison happened:
 
 The engine's temporal value already carries both (`Value::Temporal`, the IANA
 zone name beside the offset), and its canonical text has one renderer,
-`Temporal::iso_string` (ADR-0448). Measured on the scenario harness, this loss
+`Temporal::iso_string` ([ADR-0448](./0448-tostring-temporal-full-precision.md)). Measured on the scenario harness, this loss
 was the single largest coverage blocker: of 532 failing temporal scenarios, 141
 were nanosecond truncation and 105 named-zone loss.
 
@@ -80,7 +92,7 @@ already documents for month-bearing and out-of-range durations.
   ISO text to read a nanosecond or a zone name, although the engine holds both
   as typed fields.
 - **Format the canonical text in the binding.** Rejected: a second copy of the
-  zone/seconds/nanosecond rules drifts from `Temporal::iso_string` (ADR-0448) —
+ zone/seconds/nanosecond rules drifts from `Temporal::iso_string` ([ADR-0448](./0448-tostring-temporal-full-precision.md)) —
   `CypherValue`'s own `Display` already had, writing seconds unconditionally.
 - **Accept `Temporal` as a query parameter (round trip).** Rejected for now: no
   public temporal-text parser is exposed on this surface, and the stdlib types
@@ -91,7 +103,7 @@ already documents for month-bearing and out-of-range durations.
 - DB-API compatibility holds for every lossless value: the change is additive
   there and a type change only where information was previously dropped.
 - `Cursor.description` type codes are unaffected — they come from the engine's
-  column types (ADR-0224).
+ column types ([ADR-0224](./0224-result-column-types.md)).
 - Callers that pattern-match on `datetime` must also handle `Temporal` for
   values with nanoseconds or a named zone; `Temporal.to_native()` is the escape
   hatch.

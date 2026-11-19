@@ -1,7 +1,17 @@
-# ADR-0425: Query API request media types select typed or plain parameters
+---
+type: adr
+area: surface
+claim: 4df4360904944100c47c59e38c426ffa11288f3c
+name: 0425-typed-request-wire-alignment
+status: proposed
+tags:
+  - http
+title: Query API request media types select typed or plain parameters
+REFERENCES:
+  - "[[adr/0236-query-api-v2-value-encoding]]"
+---
 
-Status: Proposed
-Claim: 4df4360904944100c47c59e38c426ffa11288f3c
+# ADR-0425: Query API request media types select typed or plain parameters
 
 ## Context
 
@@ -44,7 +54,7 @@ probe from running even though the typed payload is supported.
    argument stays a map, exactly as over `application/json`.
 
 4. **The response side is unchanged** — the typed Accept negotiation
-   (the versioned ladder, ADR-0236) is the real, verified response
+ (the versioned ladder, [ADR-0236](./0236-query-api-v2-value-encoding.md)) is the real, verified response
    wire and stays as is.
 
 5. **Regression coverage** checks typed request aliases, plain map

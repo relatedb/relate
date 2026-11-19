@@ -1,33 +1,48 @@
+---
+type: adr
+area: surface
+date: 2026-09-30
+deciders: CypherLite maintainers (explicit maintainer request revisiting [ADR-0143](./0143-browser-dbms-procedures.md))
+name: 0273-adr-session-plumbing
+status: accepted
+tags:
+  - bolt
+  - conformance
+title: Plumb the Bolt principal to the engine for dbms.showCurrentUser (revisits [ADR-0143](./0143-browser-dbms-procedures.md))
+REFERENCES:
+  - "[[adr/0126-bolt-basic-auth]]"
+  - "[[adr/0142-browser-compat-record-shapes]]"
+  - "[[adr/0143-browser-dbms-procedures]]"
+SUPERSEDES:
+  - "[[adr/0143-browser-dbms-procedures]]"
+---
+
 # 0273. Plumb the Bolt principal to the engine for dbms.showCurrentUser (revisits ADR-0143)
 
-- **Status**: Accepted
 - **Renumbered**: from 0144 (shared-number cleanup)
-- **Date**: 2026-09-30
-- **Deciders**: CypherLite maintainers (explicit maintainer request
-  revisiting ADR-0143; Linear LABS-148)
 
 ## Context
 
-ADR-0143 pinned the record shapes for the Browser/Desktop-compat `dbms.*`
+[ADR-0143](./0143-browser-dbms-procedures.md) pinned the record shapes for the Browser/Desktop-compat `dbms.*`
 procedures and decided **session context is not plumbed**:
 `dbms.showCurrentUser` returns the documented-placeholder row
 `{username: 'cypherlite', roles: ['admin'], flags: []}` because auth in
-CypherLite is Bolt-layer only (ADR-0126 —
+CypherLite is Bolt-layer only ([ADR-0126](./0126-bolt-basic-auth.md) —
 `surfaces/cypherlite-bolt/src/auth.rs`, `AuthConfig::{None, Basic}`) and
 the engine carries no user identity — the procedure arm sees only the
 graph (`cypherlite/cypherlite-executor/src/exec/procedures.rs`,
-`builtin_procedure(graph, name)`). ADR-0143 rejected the plumbing
+`builtin_procedure(graph, name)`). [ADR-0143](./0143-browser-dbms-procedures.md) rejected the plumbing
 alternative as disproportionate: a new public engine API with the
-AGENTS.md §2 docs burden to serve a sidebar display field. ADR-0142
+AGENTS.md §2 docs burden to serve a sidebar display field. [ADR-0142](./0142-browser-compat-record-shapes.md)
 established both the documented-placeholder precedent and the rejection of
 Bolt-layer record rewriting (the shape is an engine-level contract; the
 CLI and the Rust API must see the same rows as Bolt clients).
 
 The maintainer has now **explicitly requested the plumbing**: the
-ADR-0126 Bolt principal is carried engine-ward so `dbms.showCurrentUser`
+[ADR-0126](./0126-bolt-basic-auth.md) Bolt principal is carried engine-ward so `dbms.showCurrentUser`
 reports the `--auth user:pw` user instead of the placeholder. The WHETHER
 is settled by that request; this ADR decides the HOW and revisits exactly
-the ADR-0143 session-context decision (LABS-148). ADR-0143 gains a
+the [ADR-0143](./0143-browser-dbms-procedures.md) session-context decision. [ADR-0143](./0143-browser-dbms-procedures.md) gains a
 **Later references** note naming this ADR; its other three procedures are
 unaffected.
 
@@ -46,9 +61,9 @@ after `AuthConfig::check` passes.
 
 ## Decision
 
-**The ADR-0126 Bolt principal is plumbed engine-ward as an optional
+**The [ADR-0126](./0126-bolt-basic-auth.md) Bolt principal is plumbed engine-ward as an optional
 per-connection identity, and `dbms.showCurrentUser` reads it.** The
-ADR-0143 placeholders-only decision is superseded for
+[ADR-0143](./0143-browser-dbms-procedures.md) placeholders-only decision is superseded for
 `dbms.showCurrentUser` only.
 
 1. **Public engine API shape.** `cypherlite::Connection` gains:
@@ -86,20 +101,20 @@ ADR-0143 placeholders-only decision is superseded for
    | mode | principal set on the `Connection` | `username` reported |
    |---|---|---|
    | `--auth user:pw` (flag or `CYPHERLITE_AUTH`) | `Some(user)` — the validated HELLO principal, which `AuthConfig::Basic::check` has just proven equal to the preset user | `user` |
-   | generated-token default (ADR-0126 stage 3) | `Some("cypherlite")` — the same code path; the generated user is `cypherlite` | `'cypherlite'` |
-   | `--auth none` | never set — the HELLO principal is **unverified** under `AuthConfig::None` and is **not** forwarded | `'cypherlite'` (documented placeholder, unchanged from ADR-0143) |
+ | generated-token default ([ADR-0126](./0126-bolt-basic-auth.md) stage 3) | `Some("cypherlite")` — the same code path; the generated user is `cypherlite` | `'cypherlite'` |
+ | `--auth none` | never set — the HELLO principal is **unverified** under `AuthConfig::None` and is **not** forwarded | `'cypherlite'` (documented placeholder, unchanged from [ADR-0143](./0143-browser-dbms-procedures.md)) |
 
    Under `--auth none` the HELLO principal is an unauthenticated claim:
    reporting it as `username` would present an unverified string as an
    identity — dishonest in exactly the way this ADR exists to fix. The
    constant `'cypherlite'` is a documented placeholder, not a claim, and
    it keeps the zero-config default's behavior byte-identical to
-   ADR-0143. Non-Bolt surfaces (CLI, Python, WASM, FFI, and the embedded
+ [ADR-0143](./0143-browser-dbms-procedures.md). Non-Bolt surfaces (CLI, Python, WASM, FFI, and the embedded
    Rust API itself) have no principal and never call `set_principal`;
    they see the same documented-placeholder row.
 
    `dbms.showCurrentUser` still returns **exactly one row** with the
-   ADR-0143 columns: `username` is the connection principal when set,
+ [ADR-0143](./0143-browser-dbms-procedures.md) columns: `username` is the connection principal when set,
    else `'cypherlite'`; `roles: ['admin']` and `flags: []` are unchanged.
    `roles: ['admin']` stays because it honestly conveys the engine's
    actual authorization model — there is none, so every connected
@@ -109,10 +124,10 @@ ADR-0143 placeholders-only decision is superseded for
 
 3. **Scope.** Only `dbms.showCurrentUser` becomes honest. The
    `dbms.clientConfig`/`dbms.listConfig` row
-   `dbms.security.auth_enabled: 'true'` **stays the ADR-0143 documented
+ `dbms.security.auth_enabled: 'true'` **stays the [ADR-0143](./0143-browser-dbms-procedures.md) documented
    placeholder**: the channel decided here carries an identity, not an
    auth-mode fact, and plumbing `AuthConfig::None` vs `Basic` engine-ward
-   would be a second transport fact crossing the ADR-0142 layering line
+ would be a second transport fact crossing the [ADR-0142](./0142-browser-compat-record-shapes.md) layering line
    to fix a row that is accurate for both the default and
    `--auth user:pw` deployments and wrong only under the explicit opt-out
    `--auth none` — where the inaccuracy is cosmetic and documented in
@@ -130,14 +145,14 @@ ADR-0143 placeholders-only decision is superseded for
 
 ## Alternatives considered
 
-- **Keep the ADR-0143 placeholder** (session context stays unplumbed;
+- **Keep the [ADR-0143](./0143-browser-dbms-procedures.md) placeholder** (session context stays unplumbed;
   `username: 'cypherlite'` under every auth mode). Rejected: explicit
   maintainer requirement — the maintainer has asked for the plumbing, so
-  the proportionality call ADR-0143 made is revisited by the authority
+ the proportionality call [ADR-0143](./0143-browser-dbms-procedures.md) made is revisited by the authority
   that made it.
 - **Bolt-layer record rewriting** (intercept the `dbms.showCurrentUser`
   result in the transport and patch in the principal). Rejected per the
-  ADR-0142 precedent: the shape is an engine-level contract, the CLI and
+ [ADR-0142](./0142-browser-compat-record-shapes.md) precedent: the shape is an engine-level contract, the CLI and
   the Rust API must see the same rows as Bolt clients, and intercepting
   and patching result records in the transport is too fragile for a
   display field.
@@ -164,9 +179,9 @@ ADR-0143 placeholders-only decision is superseded for
   honesty gain — there *is* no authenticated user to name, and the
   Browser renders missing/`'-'` usernames worse than a clearly
   documented constant; the placeholder constant is already established
-  by ADR-0143.
+ by [ADR-0143](./0143-browser-dbms-procedures.md).
 - **Plumb the auth mode too and make `dbms.security.auth_enabled`
-  honest.** Rejected: a second transport fact crossing the ADR-0142
+ honest.** Rejected: a second transport fact crossing the [ADR-0142](./0142-browser-compat-record-shapes.md)
   layering line for a config row that is accurate in every deployment
   except the explicit `--auth none` opt-out, where the placeholder is
   documented; scope stays at the one procedure the maintainer asked for.
@@ -181,7 +196,7 @@ ADR-0143 placeholders-only decision is superseded for
   It is **display-only**: it confers no authorization, and
   `docs/api/rust/` must say so. A future authorization ADR can build on
   the channel; nothing here commits to one.
-- The ADR-0143 placeholder row is superseded for `dbms.showCurrentUser`
+- The [ADR-0143](./0143-browser-dbms-procedures.md) placeholder row is superseded for `dbms.showCurrentUser`
   only; `dbms.clientConfig`, `dbms.listConfig` and
   `dbms.licenseAgreementDetails` are unchanged, and
   `dbms.security.auth_enabled: 'true'` remains a documented placeholder.

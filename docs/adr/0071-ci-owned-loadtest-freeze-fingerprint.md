@@ -1,17 +1,32 @@
-# 0071. CI-owned loadtest freeze with environment fingerprint
+---
+type: adr
+area: infra
+date: 2026-09-21
+deciders: CypherLite maintainers
+name: 0071-ci-owned-loadtest-freeze-fingerprint
+status: accepted
+tags:
+  - ci
+  - loadtest
+title: CI-owned loadtest freeze with environment fingerprint
+REFERENCES:
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0062-ci-loadtest-band-calibration]]"
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0245-query-latency-baseline-environment-and-gate]]"
+  - "[[adr/0512-single-source-loadtest-runner-class]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-21
-- **Deciders**: CypherLite maintainers
+# 0071. CI-owned loadtest freeze with environment fingerprint
 
 ## Context
 
-ADR-0070 made fraud, identity, and checkpoint merge-gate loadtests run in
+[ADR-0070](./0070-docker-baseline-loadtest-environment.md) made fraud, identity, and checkpoint merge-gate loadtests run in
 a Docker recipe (compile in `rust:1.88-bookworm`, run in
 `debian:bookworm-slim` with two CPUs of CFS bandwidth on a 10 ms period
 and 2 GB). Local `make gate` and the CI `loadtest-baselines` job then
 compared those reports against the same repo-root `baselines/` with the
-ADR-0046 bands.
+[ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) bands.
 
 That equalized the **recipe**, not **delivered wall-clock performance**.
 A freeze taken on a quiet nested VM (Codespace, Docker Desktop/linuxkit)
@@ -20,8 +35,8 @@ not remove steal time, ISA differences, or image drift. Comparing those
 runs as if they were one host produced a stream of `loadtest-baselines`
 failures on healthy code.
 
-ADR-0070's escape hatch was: if a dockerized CI run on healthy code still
-misses the ADR-0046 bands, calibrate under a new ADR — and do not
+[ADR-0070](./0070-docker-baseline-loadtest-environment.md)'s escape hatch was: if a dockerized CI run on healthy code still
+misses the [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) bands, calibrate under a new ADR — and do not
 resurrect `baselines/ci/`. This ADR spends that hatch on **freeze
 authority and an environment class**, not on looser ratios.
 
@@ -57,7 +72,7 @@ authority and an environment class**, not on looser ratios.
 3. **Compare is regression vs incompatible.**
    `scripts/compare-loadtest.py` always checks `errors == 0`, logical
    bytes, schema, and workload kind. Wall-clock ops/s and p99 use the
-   ADR-0046 bands (and `LOADTEST_P99_JITTER_NS=5000000` from
+ [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) bands (and `LOADTEST_P99_JITTER_NS=5000000` from
    `make compare-loadtests`) **only when** baseline and current
    `environment` objects match. Missing or differing class fields are
    **incompatible**:
@@ -82,12 +97,12 @@ authority and an environment class**, not on looser ratios.
 
 ## Alternatives considered
 
-- **Calibrate CI to 0.65× throughput / 4× p99 (ADR-0062 / 0064)** —
+- **Calibrate CI to 0.65× throughput / 4× p99 ([ADR-0062](./0062-ci-loadtest-band-calibration.md) / 0064)** —
   rejected as the strategy: that made shared-runner noise in-band
   instead of naming the freeze host. Catastrophe detection on a noisy
-  SKU is a different job; this gate keeps ADR-0046 bands on a matched
+ SKU is a different job; this gate keeps [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) bands on a matched
   class.
-- **Resurrect `baselines/ci/`** — rejected in ADR-0070; a second
+- **Resurrect `baselines/ci/`** — rejected in [ADR-0070](./0070-docker-baseline-loadtest-environment.md); a second
   directory duplicates freeze authority instead of recording it.
 - **Fingerprint CPU model / hostname** — rejected: GitHub rotates
   hardware under one label; the class would mismatch every week.
@@ -110,13 +125,13 @@ authority and an environment class**, not on looser ratios.
 
 ## Later references
 
-- ADR-0245: `create-loadtest-baselines` also freezes
+- [ADR-0245](./0245-query-latency-baseline-environment-and-gate.md): `create-loadtest-baselines` also freezes
   `baselines/query-latency-sf0.1.json`, and query-latency reports carry
   an `environment` class naming their recipe and memory cap. The
   compare follows item 3 of this ADR: `INCOMPATIBLE` hard-fails in CI,
   and locally latency and RSS are skipped while answers, plans, errors
   and timeouts are still enforced.
-- ADR-0512 supersedes this ADR's §4 spelling ("both use `ubuntu-24.04`"):
+- [ADR-0512](./0512-single-source-loadtest-runner-class.md) supersedes this ADR's §4 spelling ("both use `ubuntu-24.04`"):
   the shared class is now the repo Actions variable `LOADTEST_RUNNER`
   (`linux-4-core-x86`), read by every stamping lane's `runs-on` and
   `BASELINE_RUNNER` and by the freeze's default — the invariant §4

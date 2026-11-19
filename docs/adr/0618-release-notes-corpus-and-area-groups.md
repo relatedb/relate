@@ -1,14 +1,26 @@
+---
+type: adr
+area: infra
+claim: 28c5791dcaa86db8e03bf5558a7862e4d4508761
+date: 2026-11-17
+deciders: the maintainers
+name: 0618-release-notes-corpus-and-area-groups
+status: accepted
+tags:
+  - ci
+  - release
+title: Release notes read a harvested PR corpus and fixed area groups
+REFERENCES:
+  - "[[adr/0124-release-notes-automation]]"
+---
+
 # 0618. Release notes read a harvested PR corpus and fixed area groups
 
-- **Status**: Accepted
-Claim: 28c5791dcaa86db8e03bf5558a7862e4d4508761
-- **Date**: 2026-11-17
-- **Deciders**: the maintainers
-- **Amends**: ADR-0124
+- **Amends**: [ADR-0124](./0124-release-notes-automation.md)
 
 ## Context
 
-ADR-0124 generates release notes with a sandboxed OpenCode run: the agent
+[ADR-0124](./0124-release-notes-automation.md) generates release notes with a sandboxed OpenCode run: the agent
 reads the released CHANGELOG.md section, corroborates with the git log,
 and its section is prepended to GitHub's own auto-generated pull-request
 list. A recent minor release exposed three weaknesses: the changelog
@@ -97,7 +109,7 @@ pull-request time.**
   changelog is a curated user-facing document, not an audit log; most
   merged work belongs in no section.
 - **A human reading the notes before publish** — rejected: the pipeline's
-  contract (ADR-0124) is automatic publish; the output checks bound the
+  contract ([ADR-0124](./0124-release-notes-automation.md)) is automatic publish; the output checks bound the
   dangerous payload classes, and the prose-level residual equals the
   trust the changelog always carried — contributor-written summaries.
 

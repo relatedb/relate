@@ -1,16 +1,35 @@
-# 0020. Checkpoint at a frozen LSN; writers append a new WAL segment
+---
+type: adr
+area: engine
+date: 2026-08-28
+deciders: MemoryDB maintainers
+name: 0020-segmented-wal-concurrent-checkpoint
+status: accepted
+tags:
+  - checkpoint
+  - wal
+title: Checkpoint at a frozen LSN; writers append a new WAL segment
+REFERENCES:
+  - "[[adr/0012-wal-and-parquet-checkpoints]]"
+  - "[[adr/0013-tuple-mvcc]]"
+  - "[[adr/0018-concurrent-snapshot-reads]]"
+  - "[[adr/0019-group-commit-shared-fsync]]"
+  - "[[adr/0022-id-window-checkpoint-shards]]"
+  - "[[adr/0023-incremental-version-gc]]"
+  - "[[adr/0041-timed-checkpoint]]"
+  - "[[adr/0045-cdc-replication-slots]]"
+  - "[[adr/0574-withdraw-cdc-replication-slots]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-08-28
-- **Deciders**: MemoryDB maintainers
+# 0020. Checkpoint at a frozen LSN; writers append a new WAL segment
 
 ## Context
 
-ADR-0012 checkpoints by holding the WAL mutex and the exclusive graph
+[ADR-0012](./0012-wal-and-parquet-checkpoints.md) checkpoints by holding the WAL mutex and the exclusive graph
 lock, writing Parquet, then `truncate(true)` on the single
-`wal/00000001.log`. Group commit (ADR-0019) therefore stalls on Parquet
+`wal/00000001.log`. Group commit ([ADR-0019](./0019-group-commit-shared-fsync.md)) therefore stalls on Parquet
 IO. POSIX cannot cut a prefix out of a file that is still being
-appended. Readers already pin `snapshot_ts` (ADR-0013, ADR-0018); a
+appended. Readers already pin `snapshot_ts` ([ADR-0013](./0013-tuple-mvcc.md), [ADR-0018](./0018-concurrent-snapshot-reads.md)); a
 checkpoint can use the same visibility without freezing writers.
 
 ## Decision
@@ -31,7 +50,7 @@ Checkpoint is **rotate, dump, recycle** — not stop-the-world truncate.
 4. **Recycle.** After the manifest is durable, delete closed segments
    with `max_lsn <= checkpoint_lsn`. The live file is never rewritten.
 5. **GC.** Version GC stays under the exclusive graph lock **after**
-   the dump, so in-flight readers drain first (ADR-0018).
+ the dump, so in-flight readers drain first ([ADR-0018](./0018-concurrent-snapshot-reads.md)).
 
 `Database::checkpoint()` and last-handle drop wait for an in-flight
 dump, rotate if the open segment has records, dump, recycle, then GC.
@@ -41,7 +60,7 @@ Replay is unchanged: load Parquet, apply WAL records with
 
 ## Alternatives considered
 
-- **Keep wipe-under-lock (ADR-0012)** — simple. Rejected; Parquet IO
+- **Keep wipe-under-lock ([ADR-0012](./0012-wal-and-parquet-checkpoints.md))** — simple. Rejected; Parquet IO
   blocks every commit.
 - **Truncate the middle of one file while appending** — undefined with
   concurrent `write`. Rejected.
@@ -52,7 +71,7 @@ Replay is unchanged: load Parquet, apply WAL records with
 
 ## Consequences
 
-- ADR-0012’s “truncate the WAL” after Parquet is replaced by deleting
+- [ADR-0012](./0012-wal-and-parquet-checkpoints.md)’s “truncate the WAL” after Parquet is replaced by deleting
   whole closed segments. Layout may contain several `*.log` files.
 - Auto-checkpoint no longer holds the WAL mutex for the Parquet write.
 - Explicit checkpoint still waits until the snapshot is on disk.
@@ -61,16 +80,16 @@ Replay is unchanged: load Parquet, apply WAL records with
 
 ## Later references
 
-ADR-0022: the dump step writes only dirty id-window Parquet parts
+[ADR-0022](./0022-id-window-checkpoint-shards.md): the dump step writes only dirty id-window Parquet parts
 (plus a new manifest). Rotate / pin / recycle are unchanged.
 
-ADR-0023: the GC step after recycle does not take the exclusive graph
+[ADR-0023](./0023-incremental-version-gc.md): the GC step after recycle does not take the exclusive graph
 lock or rebuild indexes. Version drop is incremental under per-id maps.
 
-ADR-0041: a background timer (default 300 s, `0` disables) also
+[ADR-0041](./0041-timed-checkpoint.md): a background timer (default 300 s, `0` disables) also
 rotates and dumps when the WAL has uncheckpointed work. Size and
 commit-count triggers are unchanged. `:memory:` has no timer.
 
-ADR-0045 let optional CDC slots raise the recycle cut. ADR-0574
+[ADR-0045](./0045-cdc-replication-slots.md) let optional CDC slots raise the recycle cut. [ADR-0574](./0574-withdraw-cdc-replication-slots.md)
 withdraws those slots. Recycle stays `checkpoint_lsn`, as this ADR
 decided.

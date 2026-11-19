@@ -1,12 +1,24 @@
-# 0141. Bolt one handshake deadline per connection
+---
+type: adr
+area: surface
+date: 2026-09-29
+deciders: CypherLite maintainers
+name: 0141-bolt-single-handshake-deadline
+status: accepted
+tags:
+  - bolt
+  - security
+title: Bolt one handshake deadline per connection
+REFERENCES:
+  - "[[adr/0110-bolt-connection-query-governance]]"
+  - "[[adr/0266-bolt-websocket-transport]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-29
-- **Deciders**: CypherLite maintainers
+# 0141. Bolt one handshake deadline per connection
 
 ## Context
 
-ADR-0110 gave the Bolt handshake a timeout (default 5 s), and ADR-0266's
+[ADR-0110](./0110-bolt-connection-query-governance.md) gave the Bolt handshake a timeout (default 5 s), and [ADR-0266](./0266-bolt-websocket-transport.md)'s
 Governance section extended it to the WebSocket upgrade read. Both were
 implemented as **per-phase budgets**: each negotiation phase — the first-byte
 peek, the TLS handshake, the post-TLS first-byte re-sniff, the WebSocket
@@ -15,18 +27,18 @@ timeout when it starts.
 
 A slow client can therefore consume one full budget per phase: up to **5× the
 timeout (25 s at the default)** holding a `--max-connections` permit
-(ADR-0110) before serving a single byte of Bolt. With the cap at 128
+([ADR-0110](./0110-bolt-connection-query-governance.md)) before serving a single byte of Bolt. With the cap at 128
 permits, 128 slow-dripping clients can occupy the entire server for 25
 seconds per rotation — exactly the connection-governance failure mode
-ADR-0110 exists to prevent, amplified by the phase count ADR-0266 added.
+[ADR-0110](./0110-bolt-connection-query-governance.md) exists to prevent, amplified by the phase count [ADR-0266](./0266-bolt-websocket-transport.md) added.
 
-This decision refines ADR-0110's handshake timeout and ADR-0266's inheritance
+This decision refines [ADR-0110](./0110-bolt-connection-query-governance.md)'s handshake timeout and [ADR-0266](./0266-bolt-websocket-transport.md)'s inheritance
 of it; it was settled by the maintainer before this ADR was written.
 
 ## Decision
 
 **One deadline** is computed when a connection is accepted — `now +
---handshake-timeout-secs` (default **5 s**, ADR-0110) — and it covers every
+--handshake-timeout-secs` (default **5 s**, [ADR-0110](./0110-bolt-connection-query-governance.md)) — and it covers every
 negotiation phase:
 
 1. the first-byte read (transport peek),
@@ -38,7 +50,7 @@ negotiation phase:
 Each phase is wrapped in `tokio::time::timeout_at` (or equivalent) against
 the **same** accept-time deadline; a phase that starts with no budget left
 fails immediately. When the magic/version exchange completes, the deadline
-is discharged and the ADR-0110 idle per-read timeout (default 300 s) governs
+is discharged and the [ADR-0110](./0110-bolt-connection-query-governance.md) idle per-read timeout (default 300 s) governs
 the session from then on, unchanged.
 
 ## Alternatives considered
@@ -63,6 +75,6 @@ the session from then on, unchanged.
 - Tests must pin that the deadline is computed once at accept time, spans
   all five phases across the raw/TLS/`ws://`/`wss://` paths, and discharges
   into the idle timeout after the version exchange.
-- Refines ADR-0110 (per-phase budgets → one deadline) and ADR-0266 (which
+- Refines [ADR-0110](./0110-bolt-connection-query-governance.md) (per-phase budgets → one deadline) and [ADR-0266](./0266-bolt-websocket-transport.md) (which
   inherited the per-phase rule for the upgrade read); both gain **Later
   references** notes pointing here.

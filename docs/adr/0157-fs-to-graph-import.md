@@ -1,14 +1,30 @@
+---
+type: adr
+area: cli
+date: 2026-10-01
+deciders: CypherLite maintainers
+name: 0157-fs-to-graph-import
+status: accepted
+tags:
+  - load
+title: "`fs-to-graph` import contract"
+REFERENCES:
+  - "[[adr/0279-lab-command-namespace]]"
+  - "[[adr/0286-fs-to-graph-explicit-db-exits]]"
+  - "[[adr/0383-lab-database-flag]]"
+  - "[[adr/0392-git-import-per-batch-commit]]"
+  - "[[adr/0430-cli-extension-wire-protocol]]"
+  - "[[adr/0602-fs-import-per-batch-commit]]"
+---
+
 # 0157. `fs-to-graph` import contract
 
-- **Status**: Accepted
-- **Date**: 2026-10-01
-- **Deciders**: CypherLite maintainers
-- **Later references**: ADR-0286 supersedes the unconditional TTY-shell
+- **Later references**: [ADR-0286](./0286-fs-to-graph-explicit-db-exits.md) supersedes the unconditional TTY-shell
   rule below. An explicit `--db` never opens the interactive shell; the
   shell still opens only when `--db` is omitted, on a TTY with `repl`.
-  ADR-0383 renames the importer's `--db` flag to `-d` / `--database`; the
-  supersession is the flag spelling only. ADR-0602 supersedes the
-  whole-import rollback later ADRs (ADR-0392, ADR-0430) attribute to
+ [ADR-0383](./0383-lab-database-flag.md) renames the importer's `--db` flag to `-d` / `--database`; the
+ supersession is the flag spelling only. [ADR-0602](./0602-fs-import-per-batch-commit.md) supersedes the
+ whole-import rollback later ADRs ([ADR-0392](./0392-git-import-per-batch-commit.md), [ADR-0430](./0430-cli-extension-wire-protocol.md)) attribute to
   this contract: the extension-mounted importer commits each writing
   call as its own transaction, so a failed import keeps the batches
   that committed and a re-run completes the graph. The schema, walk
@@ -17,7 +33,7 @@
 
 ## Context
 
-`cypherlite lab fs-to-graph` (the visible `lab` action ADR-0279 introduces)
+`cypherlite lab fs-to-graph` (the visible `lab` action [ADR-0279](./0279-lab-command-namespace.md) introduces)
 turns a directory tree into a property graph that users then query with
 Cypher. The value of the command is entirely in the graph it produces: the
 node labels, the property names, the relationship type, and the import
@@ -186,15 +202,15 @@ The design constraints are:
 
 ## Later references
 
-ADR-0286: an explicit `--db` does not open the interactive shell. The TTY
+[ADR-0286](./0286-fs-to-graph-explicit-db-exits.md): an explicit `--db` does not open the interactive shell. The TTY
 shell in the UX section applies only when `--db` is omitted.
 
-ADR-0383: `-d` / `--database` replaces `--db` on both `lab` importers. The
+[ADR-0383](./0383-lab-database-flag.md): `-d` / `--database` replaces `--db` on both `lab` importers. The
 supersession is the flag spelling only — the schema, walk, content, index and
-default above stand, and ADR-0286's explicit-flag rule now applies to `-d` /
+default above stand, and [ADR-0286](./0286-fs-to-graph-explicit-db-exits.md)'s explicit-flag rule now applies to `-d` /
 `--database`.
 
-ADR-0602: the extension-mounted importer commits each writing call as its own
-transaction (`per-batch`, ADR-0392's framing). A failed import keeps the
+[ADR-0602](./0602-fs-import-per-batch-commit.md): the extension-mounted importer commits each writing call as its own
+transaction (`per-batch`, [ADR-0392](./0392-git-import-per-batch-commit.md)'s framing). A failed import keeps the
 batches that committed, and a re-run completes the graph; the schema, walk
 semantics, content capture, index and MERGE-by-path idempotence above stand.

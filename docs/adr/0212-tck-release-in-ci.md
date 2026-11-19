@@ -1,7 +1,19 @@
+---
+type: adr
+area: infra
+name: 0212-tck-release-in-ci
+status: proposed
+tags:
+  - ci
+  - conformance
+title: Conformance corpora (TCK, CIP-eval, cookbook) run optimized; unit suites stay debug
+REFERENCES:
+  - "[[adr/0252-corpus-family-single-job]]"
+---
+
 # 0212. Conformance corpora (TCK, CIP-eval, cookbook) run optimized; unit suites stay debug
 
-- **Status**: Proposed
-- **Later references**: ADR-0252 supersedes the "one pre-compile job"
+- **Later references**: [ADR-0252](./0252-corpus-family-single-job.md) supersedes the "one pre-compile job"
   mechanism below — the four corpus jobs merged into a single `corpus` job
   because the cross-job rust-cache handoff never restored warm within a
   run. The corpus/debug profile split this ADR decided is unchanged.

@@ -1,8 +1,20 @@
+---
+type: adr
+area: cli
+claim: a2b64ece187fd4adf978028417edeed77f3a967d
+name: 0427-per-project-state-file
+status: proposed
+tags:
+  - agents
+  - commands
+title: Per-project state file (`.cypherlite/`)
+REFERENCES:
+  - "[[adr/0403-in-band-truncation-records]]"
+  - "[[adr/0404-agent-facing-cli-surface]]"
+  - "[[adr/0407-agent-mode-override-ladder]]"
+---
+
 # ADR-0427: Per-project state file (`.cypherlite/`)
-
-Status: Proposed
-
-Claim: a2b64ece187fd4adf978028417edeed77f3a967d
 
 ## Context
 
@@ -24,7 +36,7 @@ a project uses** — but the shape of the value (a small, per-project,
 machine-written fact that makes one-shot runs continuous) is the same.
 
 The blast radius of the current behavior is agent-shaped: agents run
-one-shot invocations from a working directory (ADR-0404's whole
+one-shot invocations from a working directory ([ADR-0404](./0404-agent-facing-cli-surface.md)'s whole
 premise), so they hit the forgot-the-flag case more often than humans
 do — and `--database` is the one fact every run repeats.
 
@@ -98,7 +110,7 @@ project-scoped, not user-global).
 
 **Not state** (explicitly out of scope for v1): parameters, output
 mode, row caps — those are per-run ergonomics with their own ladders
-(ADR-0407, ADR-0403); engine state, WAL or checkpoint location (the
+([ADR-0407](./0407-agent-mode-override-ladder.md), [ADR-0403](./0403-in-band-truncation-records.md)); engine state, WAL or checkpoint location (the
 store's own files own those); anything user-global (no `~/.config`
 tier).
 
@@ -147,7 +159,7 @@ make a committed file wrong on every other checkout).
   shared resolution helper (the one policy, one place rule); the
   lifecycle verbs that never execute statements never write state.
 - Corrupt-state handling is a usage error (exit 2), matching
-  `CYPHERLITE_MAX_ROWS`'s contract (ADR-0407's round), not a runtime
+ `CYPHERLITE_MAX_ROWS`'s contract ([ADR-0407](./0407-agent-mode-override-ladder.md)'s round), not a runtime
   error.
 - Implementation is its own PR once this ADR is Accepted; the
   implementation carries the unit tests (resolution order, atomic

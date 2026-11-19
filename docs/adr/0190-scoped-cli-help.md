@@ -1,18 +1,32 @@
-# 0190. Scoped CLI help: a command index, per-command help, and synopsis-scoped usage errors
+---
+type: adr
+area: cli
+date: 2026-10-08
+deciders: CypherLite maintainers
+name: 0190-scoped-cli-help
+status: accepted
+tags:
+  - help
+title: |-
+  Scoped CLI help: a command index, per-command help, and synopsis-scoped usage errors
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0104-cargo-feature-bundles]]"
+  - "[[adr/0192-cli-unknown-flag-suggestions]]"
+  - "[[adr/0200-query-command-and-database-flag]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-08
-- **Deciders**: CypherLite maintainers (Linear [LABS-202](https://linear.app/neo4j/issue/LABS-202))
+# 0190. Scoped CLI help: a command index, per-command help, and synopsis-scoped usage errors
 
 ## Context
 
 LABS-202: every `cypherlite` usage error printed the full help — roughly 82
 lines — which drowned the error message, and `cypherlite clone --help` itself
 failed with that same dump instead of printing clone help. The CLI’s help is
-hand-written (`surfaces/cypherlite-cli/src/flags.rs::usage_text`, ADR-0069),
+hand-written (`surfaces/cypherlite-cli/src/flags.rs::usage_text`, [ADR-0069](./0069-cli-lifecycle-commands.md)),
 and two earlier decisions made one-size-fits-all text the path of least
-resistance: ADR-0069 recognizes lifecycle verbs as positional commands, and
-ADR-0104 compiles commands in and out per feature bundle (`full`, `agent`,
+resistance: [ADR-0069](./0069-cli-lifecycle-commands.md) recognizes lifecycle verbs as positional commands, and
+[ADR-0104](./0104-cargo-feature-bundles.md) compiles commands in and out per feature bundle (`full`, `agent`,
 `minimal`), so the correct help depends on both the command and the build.
 The decision below is already agreed; this ADR records it before it is
 implemented, per the repository’s decision-log rule.
@@ -81,7 +95,7 @@ implemented, per the repository’s decision-log rule.
 ## Alternatives considered
 
 - **A `cypherlite help [COMMAND]` command word** — rejected: it reserves a
-  new first-positional word, and under ADR-0069 any such word becomes
+ new first-positional word, and under [ADR-0069](./0069-cli-lifecycle-commands.md) any such word becomes
   unreachable as a database path without a `./` prefix or `--`; `--help`
   already covers the need.
 - **Per-command flag blocks for `pull`, `clone`, and `skill` in the
@@ -111,13 +125,13 @@ implemented, per the repository’s decision-log rule.
   cannot drift.
 - The `--help` pre-scan trade-off above is accepted: a flag value spelled
   `--help` or `-h` is read as a help request.
-- The positional-command grammar of ADR-0069 is unchanged: commands are
+- The positional-command grammar of [ADR-0069](./0069-cli-lifecycle-commands.md) is unchanged: commands are
   still recognized only as the first argument, and a compiled-out command
   word still fails with exit 2.
 
 ## Later references
 
-- ADR-0192 adds a "did you mean" line to unknown query-run flag errors.
-- ADR-0200 changes the top-level synopsis to
+- [ADR-0192](./0192-cli-unknown-flag-suggestions.md) adds a "did you mean" line to unknown query-run flag errors.
+- [ADR-0200](./0200-query-command-and-database-flag.md) changes the top-level synopsis to
   `cypherlite [OPTIONS] [--database PATH] [QUERY]`, and the `pull` and `info`
   synopses to take `--database PATH` instead of a positional database.

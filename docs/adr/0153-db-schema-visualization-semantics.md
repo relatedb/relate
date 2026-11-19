@@ -1,20 +1,33 @@
-# 0153. `db.schema.visualization()` semantics
+---
+type: adr
+area: engine
+date: 2026-09-30
+deciders: CypherLite maintainers
+name: 0153-db-schema-visualization-semantics
+status: accepted
+tags:
+  - conformance
+  - procedures
+title: "`db.schema.visualization` semantics"
+REFERENCES:
+  - "[[adr/0112-inferred-schema-procedures]]"
+  - "[[adr/0166-viz-catalog-detail]]"
+  - "[[adr/0187-viz-relationship-name-property]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-30
-- **Deciders**: CypherLite maintainers (Linear LABS-150)
+# 0153. `db.schema.visualization()` semantics
 
 ## Context
 
 browser.neo4j.io's Database information sidebar (LABS-150) calls
 `CALL db.schema.visualization()` to draw the schema graph, so the procedure
 shipped on the browser-sidebar branch (commit `42043f1c`) as the third
-member of the `db.schema.*` family ADR-0112 opened. ADR-0112's Consequences
+member of the `db.schema.*` family [ADR-0112](./0112-inferred-schema-procedures.md) opened. [ADR-0112](./0112-inferred-schema-procedures.md)'s Consequences
 state that "any additional schema procedure or column needs a follow-up
 ADR"; this is that follow-up, pinning the semantics the implementation
 already has rather than proposing new ones.
 
-ADR-0112 established the shared rule for the family: the schema is
+[ADR-0112](./0112-inferred-schema-procedures.md) established the shared rule for the family: the schema is
 **inferred by scanning stored entities**, not sourced from the declared
 graph type spec, and procedures carry Neo4j-compatible signatures and
 return columns with no CypherLite-specific additions.
@@ -43,7 +56,7 @@ db.schema.visualization() ::
 
 ### Semantics
 
-- **Inferred by scanning stored entities** (ADR-0112's rule). The schema
+- **Inferred by scanning stored entities** ([ADR-0112](./0112-inferred-schema-procedures.md)'s rule). The schema
   graph is derived from the entities actually stored; a declared graph type
   element that no stored entity exercises contributes nothing.
 - **One virtual node per stored label.** The set of labels is the union of
@@ -80,7 +93,7 @@ db.schema.visualization() ::
   visualize. Rejected: zero rows is the more truthful Cypher answer for
   "there is no schema graph", it composes better with client code that
   treats the row count as the emptiness signal, and it matches how the
-  sibling `db.schema.*` procedures behave on an empty store (ADR-0112
+ sibling `db.schema.*` procedures behave on an empty store ([ADR-0112](./0112-inferred-schema-procedures.md)
   emits rows only for categories that exist). Clients consuming the result
   iterate the row's two lists, so both spellings drive the same rendering
   path; the difference is observable only to callers counting rows.
@@ -96,16 +109,16 @@ db.schema.visualization() ::
   facts in sync. Empty placeholder lists keep the Neo4j property shape
   without that coupling.
 - **Source the schema graph from the declared graph type spec.**
-  Rejected for the same reason ADR-0112 rejected it for the property
+ Rejected for the same reason [ADR-0112](./0112-inferred-schema-procedures.md) rejected it for the property
   procedures: the spec describes what is permitted, not what exists, so it
   would report labels and triples absent from the data and miss inferred
   shapes the declaration does not cover.
 
 ## Consequences
 
-- ADR-0112's "follow-up ADR for any additional schema procedure"
+- [ADR-0112](./0112-inferred-schema-procedures.md)'s "follow-up ADR for any additional schema procedure"
   requirement is satisfied for `db.schema.visualization()`; the procedure
-  is no longer an undocumented extension of the ADR-0112 surface.
+ is no longer an undocumented extension of the [ADR-0112](./0112-inferred-schema-procedures.md) surface.
 - The virtual-entity contract (negative ids from `-1` down, side-table
   registration, virtual-entity write behavior) is pinned: changing it, or the
   zero-rows empty behavior, requires a new ADR.
@@ -114,11 +127,11 @@ db.schema.visualization() ::
   node resolution is valid within the query execution that produced them.
 - Schema inference costs a scan of stored nodes and relationships at call
   time; there is no cached or declared-schema fast path (same cost model
-  as ADR-0112's procedures).
+ as [ADR-0112](./0112-inferred-schema-procedures.md)'s procedures).
 
 ## Later references
 
-- **ADR-0166** reverses this ADR's rejected "Populate
+- **[ADR-0166](./0166-viz-catalog-detail.md)** reverses this ADR's rejected "Populate
   `indexes`/`constraints` from the catalog" alternative: the virtual
   nodes' `indexes`/`constraints` lists are now populated from the catalog
   (the "empty documented placeholders" bullet under Decision is
@@ -127,7 +140,7 @@ db.schema.visualization() ::
   Every other decision here — inferred schema, one virtual node per
   label, triple expansion, negative virtual ids, zero-rows empty
   behavior, property-less virtual relationships — remains in force.
-- **ADR-0187** supersedes this ADR's "Virtual relationships carry no
+- **[ADR-0187](./0187-viz-relationship-name-property.md)** supersedes this ADR's "Virtual relationships carry no
   properties" sentence: `db.schema.visualization()` virtual relationships
   now carry a single `name` property equal to the relationship type,
   matching Neo4j (LABS-185). Every other decision here — inferred schema,

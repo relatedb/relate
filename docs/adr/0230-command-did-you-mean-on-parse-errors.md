@@ -1,13 +1,30 @@
-# ADR-0230: Did-you-mean command suggestions on query parse errors
+---
+type: adr
+area: cli
+name: 0230-command-did-you-mean-on-parse-errors
+status: accepted
+tags:
+  - did-you-mean
+title: Did-you-mean command suggestions on query parse errors
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0192-cli-unknown-flag-suggestions]]"
+  - "[[adr/0194-cli-error-envelope-and-exit-codes]]"
+  - "[[adr/0199-statement-progress-on-failure]]"
+  - "[[adr/0200-query-command-and-database-flag]]"
+  - "[[adr/0229-remove-system-ontologies-cypher-surface]]"
+  - "[[adr/0290-syntax-error-position]]"
+  - "[[adr/0518-command-did-you-mean-on-usage-errors]]"
+---
 
-Status: Accepted
+# ADR-0230: Did-you-mean command suggestions on query parse errors
 
 ## Context
 
 LABS-303. The `cypherlite` CLI recognizes its lifecycle verbs (`clone`,
 `info`, `pull`, `skill`, `upgrade`/`update`, `telemetry`, `lab`) and the
 statement-session verb `query` only as the first positional argument
-(ADR-0069, ADR-0200). Any other first positional is a Cypher statement,
+([ADR-0069](./0069-cli-lifecycle-commands.md), [ADR-0200](./0200-query-command-and-database-flag.md)). Any other first positional is a Cypher statement,
 so a mistyped command word reaches the engine and dies as an opaque parse
 error:
 
@@ -16,7 +33,7 @@ $ cypherlite qu
 syntax error: parse error: unexpected token "qu"
 ```
 
-The CLI already has did-you-mean for **flags** (ADR-0192): an alias-folded
+The CLI already has did-you-mean for **flags** ([ADR-0192](./0192-cli-unknown-flag-suggestions.md)): an alias-folded
 edit-distance matcher in `suggest.rs`, driven from the candidate lists in
 `help.rs`, rendered by the usage-error path in `flags.rs`. Nothing
 equivalent exists for command words, even though the mistyped-command
@@ -25,7 +42,7 @@ binary knows, and the error names neither the verb nor the fix.
 
 The command set is already single-sourced: `help::COMMANDS` is the one
 enumeration every help page, usage error, and feature gate reads
-(ADR-0229 pattern — render every consumer from one descriptor table so
+([ADR-0229](./0229-remove-system-ontologies-cypher-surface.md) pattern — render every consumer from one descriptor table so
 the list cannot drift). The `update` → `upgrade` alias lives in
 `flags/lifecycle.rs`'s `COMMAND_WORDS`.
 
@@ -53,8 +70,8 @@ a pre-check:
    resolve while `qux` does not). The nearest candidate wins; an alias
    match reports the canonical word.
 3. **Rendering.** The parse error stays the headline, byte-for-byte
-   unchanged (ADR-0290 caret layout included). After the human error
-   lines — and after the multi-statement progress line (ADR-0199) when
+ unchanged ([ADR-0290](./0290-syntax-error-position.md) caret layout included). After the human error
+ lines — and after the multi-statement progress line ([ADR-0199](./0199-statement-progress-on-failure.md)) when
    there is one — stderr gains one line, preceded by a blank line:
 
    ```
@@ -66,7 +83,7 @@ a pre-check:
    `Commands:` section of `--help`. The line is sanitized through
    `print_error` like every other stderr line.
 4. **Scope.** Only the human stderr rendering gains the line. The JSON
-   error envelope (ADR-0194) is unchanged: it is a machine contract, and
+ error envelope ([ADR-0194](./0194-cli-error-envelope-and-exit-codes.md)) is unchanged: it is a machine contract, and
    the suggestion text is derivable from the statement a client already
    has. Exit codes are unchanged (still 6 for a syntax error). The
    suggestion applies wherever `report_query_error` reports a statement
@@ -85,16 +102,16 @@ a pre-check:
   per command.** Rejected: it would be a second enumeration of the
   command set, free to drift from `help::COMMANDS`. The descriptor table
   already carries word, synopsis, and blurb; deriving candidates from it
-  is the ADR-0229 pattern.
+ is the [ADR-0229](./0229-remove-system-ontologies-cypher-surface.md) pattern.
 - **Suggest inside the JSON envelope too.** Rejected: the envelope is a
-  stable machine contract (ADR-0194); adding a field every consumer must
+ stable machine contract ([ADR-0194](./0194-cli-error-envelope-and-exit-codes.md)); adding a field every consumer must
   tolerate is a protocol change with no consumer asking for it. The
   human line serves the human who mistyped.
 - **Match against every keyword of the command grammar (subcommands like
   `fs-to-graph`, actions like `install`).** Rejected: the failure mode
   the ticket addresses is a mistyped first positional; second-position
   typos already fail inside the command's own parser, which has its own
-  usage-error path (ADR-0192).
+ usage-error path ([ADR-0192](./0192-cli-unknown-flag-suggestions.md)).
 
 ## Consequences
 
@@ -106,14 +123,14 @@ a pre-check:
   small addition site (`update` → `upgrade`).
 - `suggest.rs` stays a pure string helper: no new dependencies, no new
   CLI surface, no `--help` or flag-table change.
-- Related: ADR-0069 (positional lifecycle verbs), ADR-0192 (flag
-  did-you-mean), ADR-0194 (error envelope), ADR-0290 (syntax-error
-  positions), ADR-0199 (multi-statement progress), ADR-0200 (`query`
-  verb), ADR-0229 (descriptor-table rendering pattern).
+- Related: [ADR-0069](./0069-cli-lifecycle-commands.md) (positional lifecycle verbs), [ADR-0192](./0192-cli-unknown-flag-suggestions.md) (flag
+ did-you-mean), [ADR-0194](./0194-cli-error-envelope-and-exit-codes.md) (error envelope), [ADR-0290](./0290-syntax-error-position.md) (syntax-error
+ positions), [ADR-0199](./0199-statement-progress-on-failure.md) (multi-statement progress), [ADR-0200](./0200-query-command-and-database-flag.md) (`query`
+ verb), [ADR-0229](./0229-remove-system-ontologies-cypher-surface.md) (descriptor-table rendering pattern).
 
 ## Later references
 
-ADR-0518 extends §1's applicability: the query-run usage-error exits
+[ADR-0518](./0518-command-did-you-mean-on-usage-errors.md) extends §1's applicability: the query-run usage-error exits
 (unknown flag, unexpected argument) also carry the suggestion for the
 pending statement, because their exit(2) fires before the engine — and
 therefore before this ADR's fallback — ever sees the statement. Same

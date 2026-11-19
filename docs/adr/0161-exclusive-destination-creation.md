@@ -1,12 +1,24 @@
-# 0161. Exclusive, crash-safe publish destination creation
+---
+type: adr
+area: engine
+date: 2026-10-03
+deciders: CypherLite maintainers
+name: 0161-exclusive-destination-creation
+status: accepted
+tags:
+  - storage
+title: Exclusive, crash-safe publish destination creation
+REFERENCES:
+  - "[[adr/0136-read-only-open]]"
+  - "[[adr/0156-directory-clone]]"
+  - "[[adr/0159-snapshot-round-trip]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-03
-- **Deciders**: CypherLite maintainers
+# 0161. Exclusive, crash-safe publish destination creation
 
 ## Context
 
-Clone (ADR-0156) and snapshot/restore (ADR-0159) publish into a destination
+Clone ([ADR-0156](./0156-directory-clone.md)) and snapshot/restore ([ADR-0159](./0159-snapshot-round-trip.md)) publish into a destination
 that "must not exist". The enforcement was check-then-create:
 `publish::reject_destination` stats the destination, and the create side
 afterwards *adopts* whatever is there:
@@ -78,7 +90,7 @@ fails there.
   close completely. Crash residue is a smaller, documented contract: a
   crashed publish leaves a partial destination that the next run refuses
   as "already exists" and the user deletes explicitly — unchanged from
-  ADR-0156/ADR-0159. Staging would add temp-name allocation,
+ [ADR-0156](./0156-directory-clone.md)/[ADR-0159](./0159-snapshot-round-trip.md). Staging would add temp-name allocation,
   same-filesystem constraints, and temp cleanup on crash for both
   formats without changing that contract.
 - **Keep check-then-create and re-verify file identity after the open.**
@@ -93,7 +105,7 @@ fails there.
 - **Delete on `Error::Locked` too.** Rejected: a lock failure after a
   successful exclusive create means another opener touched the file in
   the microsecond window; unlinking a lock inode another owner holds can
-  admit two concurrent owners (the ADR-0136 warning). Today's
+ admit two concurrent owners (the [ADR-0136](./0136-read-only-open.md) warning). Today's
   `remove_created` behavior on that pathological path is retained, but
   the already-exists loser — the realistic race — never reaches it.
 

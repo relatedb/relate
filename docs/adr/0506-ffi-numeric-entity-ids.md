@@ -1,11 +1,21 @@
-# ADR-0506: The C ABI v2 gains the legacy numeric entity ids
+---
+type: adr
+area: surface
+claim: 7fa7affeb959113166e990fd145b78415909b1bc
+name: 0506-ffi-numeric-entity-ids
+status: accepted
+tags:
+  - ffi
+title: The C ABI v2 gains the legacy numeric entity ids
+REFERENCES:
+  - "[[adr/0502-typed-c-abi-v2]]"
+---
 
-Status: Accepted
-Claim: 7fa7affeb959113166e990fd145b78415909b1bc
+# ADR-0506: The C ABI v2 gains the legacy numeric entity ids
 
 ## Context
 
-ADR-0502 typed the C ABI's value path: the v2 walker exposes every entity
+[ADR-0502](./0502-typed-c-abi-v2.md) typed the C ABI's value path: the v2 walker exposes every entity
 identity as the element-id string (`cypherlite_value_element_id`,
 `_start_element_id`, `_end_element_id`, §6), and the numeric ids the engine
 carries in `CypherValue::Node { id }` / `CypherValue::Relationship { id,
@@ -18,7 +28,7 @@ deprecated numeric `id` — `Node.equals` compares the id — so a provider
 that cannot read it cannot hydrate two handles to the same node as the
 same object, and the analysis doc's measured hacks included synthesising
 or re-spelling ids out of the element-id string (`"4:cypherlite:n0"` →
-`0`), which ADR-0502 exists to remove. Cypher `id()` returns exactly the
+`0`), which [ADR-0502](./0502-typed-c-abi-v2.md) exists to remove. Cypher `id` returns exactly the
 engine's number (`bi_id` returns `Value::Int(x.id)`), and
 `CypherValue`'s id fields are plain `i64` — no range question, no
 `Option`.
@@ -43,7 +53,7 @@ An entity value always carries an id, so there is no in-kind refusal.
 The endpoint accessors take a NODE as the wrong kind, the same way
 `_start_element_id` does.
 
-Pre-public, the ABI is additive-only after the freeze ADR-0502 §8 sets —
+Pre-public, the ABI is additive-only after the freeze [ADR-0502](./0502-typed-c-abi-v2.md) §8 sets —
 three new symbols without a semantic change to any existing one are
 exactly that case; `cypherlite_abi_version()` stays `2`.
 
@@ -52,7 +62,7 @@ exactly that case; `cypherlite_abi_version()` stays `2`.
 - **Parse the number out of the element-id string in the client (the
   spikes' measured hack).** Rejected: it re-spells an identity the engine
   already computed, couples every client to the `"4:cypherlite:n0"`
-  format ADR-0502 §6 deliberately did not specify as a client contract,
+ format [ADR-0502](./0502-typed-c-abi-v2.md) §6 deliberately did not specify as a client contract,
   and breaks the day the spelling changes.
 - **Expose the ids as entity map entries or a kind component alongside
   properties.** Rejected: a map key is user-collidable surface and
@@ -62,8 +72,8 @@ exactly that case; `cypherlite_abi_version()` stays `2`.
   Rejected: the drivers decide equality by numeric id today, and the
   provider spikes are the ABI's near-term consumer; deferring re-exports
   the synthesis hack into every provider.
-- **Fold the accessors into ADR-0502's §6 and bump nothing.** Rejected:
-  ADR-0502 is Accepted and immutable; a later addition needs its own ADR
+- **Fold the accessors into [ADR-0502](./0502-typed-c-abi-v2.md)'s §6 and bump nothing.** Rejected:
+ [ADR-0502](./0502-typed-c-abi-v2.md) is Accepted and immutable; a later addition needs its own ADR
   plus a Later references note, which is this file.
 
 ## Consequences

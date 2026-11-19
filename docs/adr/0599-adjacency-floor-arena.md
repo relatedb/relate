@@ -1,12 +1,25 @@
-# 0599: Adjacency floor layout — node-major arena with exact-size sealed pricing
+---
+type: adr
+area: engine
+claim: 6392630dfbad9d25e269684305fd67cb1e89c73c
+name: 0599-adjacency-floor-arena
+status: proposed
+tags:
+  - perf
+  - storage
+title: Adjacency floor layout — node-major arena with exact-size sealed pricing
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0551-sealed-delta-adjacency-store]]"
+  - "[[adr/0608-seal-restored-adjacency]]"
+---
 
-Status: Proposed
-Claim: 6392630dfbad9d25e269684305fd67cb1e89c73c
+# 0599: Adjacency floor layout — node-major arena with exact-size sealed pricing
 
 ## Context
 
 At SF0.1 no adjacency chunk reaches the fold floor (mean 1.7 out-hops per
-chunk), so the sealed tier (ADR-0551) never engages and the whole out+in
+chunk), so the sealed tier ([ADR-0551](./0551-sealed-delta-adjacency-store.md)) never engages and the whole out+in
 cost is the container and slot floor: 147.4 MiB, of which the payload is
 24 B/hop and the rest is per-chunk scaffolding — a 32-byte
 `(u32, Vec<AdjHop>)` entry per chunk, its `Vec` header and pointer chase,
@@ -45,7 +58,7 @@ charge it at exact size.
 - **Build-side emission.** The wholesale adjacency build — a restore's and
   an aborted write's alike — seals in its one pass: each (node, type) run
   whose hops reach a 4-hop break-even goes straight into its folded chunk,
-  through the same fold the checkpoint's GC pass runs (ADR-0608). No
+ through the same fold the checkpoint's GC pass runs ([ADR-0608](./0608-seal-restored-adjacency.md)). No
   second pass walks the rebuilt graph. The floor differs from the write
   path's 32-hop `COMPACTION_DELTA_FLOOR`: the write path folds a chunk it
   expects to keep growing, so a high floor avoids re-folding, while a
@@ -79,7 +92,7 @@ charge it at exact size.
   structures (span table, entries, tombstones), and the dead ranges
   awaiting compaction; the codec becomes a lever only on churned stores.
 - The tier's field widths are structural limits, refused at admission
-  before the redo is logged (ADR-0042's channel) — the tier's own mutation
+ before the redo is logged ([ADR-0042](./0042-graph-memory-limit.md)'s channel) — the tier's own mutation
   paths are infallible, so the walls they must never hit are enforced
   upstream: a node holds at most `u16::MAX` distinct rel types per
   direction (the span length, counted per group commit so concurrent slots

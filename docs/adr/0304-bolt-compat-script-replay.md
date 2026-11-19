@@ -1,11 +1,22 @@
-# ADR-0304: Bolt compatibility corpus as boltkit `.bolt` scripts, replayed against the real server
+---
+type: adr
+area: surface
+claim: 6be6231e21d460a6e1364167cda6fed3d8829fca
+name: 0304-bolt-compat-script-replay
+status: proposed
+tags:
+  - bolt
+  - conformance
+title: Bolt compatibility corpus as boltkit `.bolt` scripts, replayed against the real server
+REFERENCES:
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+---
 
-Status: Proposed
-Claim: 6be6231e21d460a6e1364167cda6fed3d8829fca
+# ADR-0304: Bolt compatibility corpus as boltkit `.bolt` scripts, replayed against the real server
 
 ## Context
 
-`cypherlite-bolt` is CypherLite's remote transport (ADR-0057). It is a
+`cypherlite-bolt` is CypherLite's remote transport ([ADR-0057](./0057-embedded-c-abi-and-bolt.md)). It is a
 transport, not a Neo4j feature-parity promise, but official Neo4j drivers
 and tools must be able to talk to it. Its tests today come in three kinds:
 

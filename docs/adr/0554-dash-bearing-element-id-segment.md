@@ -1,7 +1,18 @@
+---
+type: adr
+area: engine
+claim: dc9769cbeeecd1b90570f963ba0c48125e6a0b46
+name: 0554-dash-bearing-element-id-segment
+status: proposed
+tags:
+  - values
+title: The element-id namespace segment is dash-bearing
+REFERENCES:
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+---
+
 # ADR-0554: The element-id namespace segment is dash-bearing
 
-Status: Proposed
-Claim: dc9769cbeeecd1b90570f963ba0c48125e6a0b46
 Revision: the first landing proposed `relate-neo4j` / `relate-system-ontologies`; the maintainers shortened the tokens to `rl-id` / `rl-onto` for wire economy before this ADR was accepted
 
 ## Context
@@ -13,7 +24,7 @@ property: Neo4j Browser's neighbour-expansion chooses between the
 `elementId()` and legacy `id()` query forms by whether the id string
 contains a dash, and parses it as an integer otherwise.
 
-Relate's segment was the bare word `relate` (the pre-rename ADR-0116
+Relate's segment was the bare word `relate` (the pre-rename [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)
 spelling was `cypherlite`), so ids looked like `4:relate:n4` — no dash.
 Against such a client every expansion collapses to the wrong node: the
 legacy path parses the leading kind digit as the node id, expands node 4
@@ -61,5 +72,5 @@ node actually clicked. Clients that matched an earlier segment spelling
 (`relate`, or the first proposed `relate-neo4j`) must move to `rl-id`;
 `db.nameFromElementId` and
 `graph.byElementId` follow the shared table and keep their failures for
-anything else. ADR-0116's pre-rename `cypherlite` spelling remains as
+anything else. [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)'s pre-rename `cypherlite` spelling remains as
 written; this ADR is the current record.

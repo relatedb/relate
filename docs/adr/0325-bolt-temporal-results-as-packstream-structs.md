@@ -1,13 +1,33 @@
-# ADR-0325: Bolt temporal results encode as PackStream temporal structures
+---
+type: adr
+area: surface
+claim: b5196294892eeedc1608edede9e25e358929bc54
+name: 0325-bolt-temporal-results-as-packstream-structs
+status: proposed
+tags:
+  - bolt
+  - values
+title: Bolt temporal results encode as PackStream temporal structures
+REFERENCES:
+  - "[[adr/0021-opencypher-temporal-values]]"
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+  - "[[adr/0177-bolt-parameter-conversion]]"
+  - "[[adr/0272-bolt-path-struct]]"
+  - "[[adr/0303-bolt-version-negotiation-from-client-proposals]]"
+  - "[[adr/0326-bolt-point-results-as-packstream-structs]]"
+  - "[[adr/0329-bolt-patch-bolt-utc]]"
+SUPERSEDES:
+  - "[[adr/0177-bolt-parameter-conversion]]"
+  - "[[adr/0272-bolt-path-struct]]"
+---
 
-Status: Proposed
-Claim: b5196294892eeedc1608edede9e25e358929bc54
+# ADR-0325: Bolt temporal results encode as PackStream temporal structures
 
 ## Context
 
-The Bolt server speaks Bolt 4.4 only (ADR-0057, ADR-0303). ADR-0272 made
+The Bolt server speaks Bolt 4.4 only ([ADR-0057](./0057-embedded-c-abi-and-bolt.md), [ADR-0303](./0303-bolt-version-negotiation-from-client-proposals.md)). [ADR-0272](./0272-bolt-path-struct.md) made
 Path a PackStream structure but kept "Temporal arms remain string
-encodings", and ADR-0177 item 7 kept that for results while it taught the
+encodings", and [ADR-0177](./0177-bolt-parameter-conversion.md) item 7 kept that for results while it taught the
 parameter direction to decode the seven temporal structures. So a driver
 that sends `date('2024-01-02')` as a parameter gets the string
 `"2024-01-02"` back.
@@ -24,15 +44,15 @@ duration fails with `DeserializationError InvalidType`. The parameter
 echoes D-26..D-32 decode correctly and come back as strings for the
 same reason.
 
-The engine's `Temporal` (ADR-0021) has `Date`, `CivilDate` (out-of-range
+The engine's `Temporal` ([ADR-0021](./0021-opencypher-temporal-values.md)) has `Date`, `CivilDate` (out-of-range
 proleptic dates), `LocalTime`, `Time`, `LocalDateTime`, `CivilDateTime`,
 `DateTime { utc, offset, zone }` and `Duration { months, days, nanos }`.
-ADR-0177's decoders already define the wire layout of every structure, so
+[ADR-0177](./0177-bolt-parameter-conversion.md)'s decoders already define the wire layout of every structure, so
 the encoding is their inverse.
 
 ## Decision
 
-Without the `utc` patch (ADR-0329), `Value::Temporal` results encode as the
+Without the `utc` patch ([ADR-0329](./0329-bolt-patch-bolt-utc.md)), `Value::Temporal` results encode as the
 Bolt 4.4 PackStream structures, at any nesting depth, never as strings:
 
 | Engine value | Tag | Fields |
@@ -52,7 +72,7 @@ Bolt 4.4 PackStream structures, at any nesting depth, never as strings:
    `cypherlite_core::temporal::zone_region` makes the call on the same
    `zone_kind` classification the ISO formatter uses, so the Bolt surface
    compares no strings.
-2. **Exact inverses.** The fields are exactly what ADR-0177's decoders
+2. **Exact inverses.** The fields are exactly what [ADR-0177](./0177-bolt-parameter-conversion.md)'s decoders
    read, so a temporal parameter echoes back as the same structure.
    Examples: `date('2024-01-02')` is `0x44(19724)`,
    `time('03:04:05.123456789+01:00')` is `0x54(11045123456789, 3600)`,
@@ -68,12 +88,12 @@ Bolt 4.4 PackStream structures, at any nesting depth, never as strings:
    example a duration whose seconds exceed i64, fails the encode with an
    error naming the structure. It never falls back to a string or a
    clamped value.
-5. Vector and UUID results are unchanged: they stay strings (ADR-0272).
-   Point results are ADR-0326.
+5. Vector and UUID results are unchanged: they stay strings ([ADR-0272](./0272-bolt-path-struct.md)).
+ Point results are [ADR-0326](./0326-bolt-point-results-as-packstream-structs.md).
 
 ## Alternatives considered
 
-- **Keep strings (ADR-0272, ADR-0177 item 7).** No change for clients that
+- **Keep strings ([ADR-0272](./0272-bolt-path-struct.md), [ADR-0177](./0177-bolt-parameter-conversion.md) item 7).** No change for clients that
   parse strings. Rejected: every driver that hydrates temporal types gets
   a string. neo4rs then fails typed reads, and a parameter does not round
   trip as its own type. This is the divergence the probes found.
@@ -95,7 +115,7 @@ Bolt 4.4 PackStream structures, at any nesting depth, never as strings:
 - `docs/api/bolt/spec.md`'s result structure table lists the seven
   temporal structures, and the parameter section's "results stay strings"
   sentence is gone.
-- ADR-0272's "Temporal arms remain string encodings" and ADR-0177 item 7
+- [ADR-0272](./0272-bolt-path-struct.md)'s "Temporal arms remain string encodings" and [ADR-0177](./0177-bolt-parameter-conversion.md) item 7
   are superseded for temporals; both get a Later references note.
 - The compat script `tests/compat/scripts/values/temporal-structs.bolt`
   and unit tests in `value_structs_tests.rs` pin every row above.

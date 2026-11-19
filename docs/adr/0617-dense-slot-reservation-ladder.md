@@ -1,12 +1,24 @@
+---
+type: adr
+area: engine
+claim: 3dd0cd80a1fafe80c07768e651fad00edfd01f8a
+name: 0617-dense-slot-reservation-ladder
+status: proposed
+tags:
+  - memory
+  - storage
+title: Dense id-slot reservation — the smaller of a 1.5 ladder and the doubling
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0202-graph-floor-memory]]"
+  - "[[adr/0532-dense-id-stores]]"
+---
+
 # ADR-0617: Dense id-slot reservation — the smaller of a 1.5 ladder and the doubling
-
-Status: Proposed
-
-Claim: 3dd0cd80a1fafe80c07768e651fad00edfd01f8a
 
 ## Context
 
-The dense id stores (ADR-0532) hold node, relationship and adjacency rows in
+The dense id stores ([ADR-0532](./0532-dense-id-stores.md)) hold node, relationship and adjacency rows in
 id-indexed slot arrays: a `Vec` whose reserved capacity rounds up to the next
 power of two. A heap census of an LDBC SF0.1 restore (327,588 nodes,
 1,477,965 relationships) puts the relationship slot array at 288 MiB —
@@ -14,7 +26,7 @@ power of two. A heap census of an LDBC SF0.1 restore (327,588 nodes,
 the node array at 40 MiB. The power-of-two slack (~86 MiB on relationships
 alone at this scale) is the single largest bookkeeping term in the resident
 store, and it grows with scale: the reservation model is also what the memory
-floor charges (ADR-0042, ADR-0202), so the slack is billed to every admission
+floor charges ([ADR-0042](./0042-graph-memory-limit.md), [ADR-0202](./0202-graph-floor-memory.md)), so the slack is billed to every admission
 check.
 
 The slack is worst exactly where ids arrive monotonically: a restore (or any
@@ -26,7 +38,7 @@ snapshot-plus-tail reopen.
 
 ## Decision
 
-The dense span arrays — the four id-indexed stores of ADR-0532 and the
+The dense span arrays — the four id-indexed stores of [ADR-0532](./0532-dense-id-stores.md) and the
 sealed tier's per-node span tables — reserve the smaller of two ceilings
 taken at or above the needed length: the 1.5 growth ladder (1, 2, 4, 7,
 11, …) and the old doubling. A pure ladder regresses a span sitting just
@@ -50,7 +62,7 @@ next rung and never freed mid-crossing.
 
 Ordinary push-grown vectors — label and property vectors, workspace rows,
 adjacency delta and entry columns — keep the power-of-two reservation of
-ADR-0042/0202. Their slack is bounded and small; the measured problem is
+[ADR-0042](./0042-graph-memory-limit.md)/[ADR-0202](./0202-graph-floor-memory.md). Their slack is bounded and small; the measured problem is
 the span arrays.
 
 ## Alternatives considered
@@ -61,7 +73,7 @@ the span arrays.
   manifest carries the next ids) — rejected: one write past the restore
   span re-reserves the next rung, so the saving vanishes on the common
   snapshot-plus-tail reopen.
-- **A sparse tail for the last partial block** (the side map ADR-0532
+- **A sparse tail for the last partial block** (the side map [ADR-0532](./0532-dense-id-stores.md)
   defines, on the array's own tail) — rejected: per-id placement
   complexity for the last few percent.
 - **Moving every reserved vector off the doubling** — rejected: the
@@ -77,5 +89,5 @@ the floor account 739.7 → 660.3 MB; no span grows past the doubling. The
 synthetic memory-shape pins move with the account (down, or unchanged
 where the doubling stays the smaller) and the two fill-to-cap counts fit
 more nodes. The baseline logical-byte envelopes move inside their compare
-band. ADR-0532's reservation paragraph is superseded for the span arrays;
+band. [ADR-0532](./0532-dense-id-stores.md)'s reservation paragraph is superseded for the span arrays;
 its side map and dense-cap gate stand.

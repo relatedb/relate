@@ -1,8 +1,23 @@
-# 0168. Non-finite and out-of-range numeric conversions follow Neo4j
+---
+type: adr
+area: cypher
+date: 2026-10-06
+deciders: CypherLite maintainers
+name: 0168-non-finite-and-out-of-range-conversions
+status: accepted
+tags:
+  - conformance
+  - functions
+title: Non-finite and out-of-range numeric conversions follow Neo4j
+REFERENCES:
+  - "[[adr/0003-tck-named-error-kinds]]"
+  - "[[adr/0167-point-accepts-map-like-entities]]"
+  - "[[adr/0175-list-and-string-form-conversions]]"
+  - "[[adr/0280-inf-nan-variable-semantics]]"
+  - "[[adr/0559-runtime-argument-value-error-variant]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-06
-- **Deciders**: CypherLite maintainers (Linear LABS-177)
+# 0168. Non-finite and out-of-range numeric conversions follow Neo4j
 
 ## Context
 
@@ -14,7 +29,7 @@ and ±Infinity → the `i64` limits) while its string path guards
 as finding F-1-7/F-2-7 (comparison pass: "policy divergence inside one
 function") and deliberately deferred it until a Neo4j reference probe
 settled which side is right; the issue's working guess was "non-finite →
-null". ADR-0167 is the nearest precedent: `point()` rejects non-finite
+null". [ADR-0167](./0167-point-accepts-map-like-entities.md) is the nearest precedent: `point` rejects non-finite
 coordinates because Neo4j does (22N24) — a probe, not intuition, picked
 the rule.
 
@@ -176,7 +191,7 @@ Neo4j's legacy `Neo.ClientError.Statement.TypeError`.
 Where cypher-shell and CypherLite's JSONL render a result differently, it
 is the same value: Neo4j `NULL` is `null`; Neo4j `NaN` / `Infinity` /
 `-Infinity` are CypherLite's JSON strings `"NaN"` / `"Inf"` / `"-Inf"`
-(ADR-0280 — a formatter concern this ADR does not change); list spacing is
+([ADR-0280](./0280-inf-nan-variable-semantics.md) — a formatter concern this ADR does not change); list spacing is
 insignificant. Every Neo4j error in this table is 22N03
 (`Neo.ClientError.Statement.TypeError`, cause 22003). CypherLite cells are
 what `cypherlite --mode jsonl` prints after `"v":`; an error cell gives
@@ -317,7 +332,7 @@ errors.
   two engines. Neo4j's spellings are also the ones CypherLite's
   `toString()` emits (`'NaN'`, `'Infinity'`, `'-Infinity'`), so round
   trips keep working.
-- **Map 22N03 to `InvalidArgumentValue`** (ADR-0167's kind for non-finite
+- **Map 22N03 to `InvalidArgumentValue`** ([ADR-0167](./0167-point-accepts-map-like-entities.md)'s kind for non-finite
   coordinates, 22N24). Rejected: `InvalidArgumentValue` is what
   `toInteger({})` raises for a wrong *type*; an out-of-range value is a
   different condition, and CypherLite already names Neo4j's 22N03
@@ -327,7 +342,7 @@ errors.
   arithmetic-overflow error — a different Neo4j error (22N28 / 22003,
   `Neo.ClientError.Statement.ArithmeticError`; supplementary probe).
 - **Add a new error kind mirroring Neo4j's `integerOutOfBounds`.**
-  Rejected: a new kind extends the typed error surface ADR-0003 governs for
+ Rejected: a new kind extends the typed error surface [ADR-0003](./0003-tck-named-error-kinds.md) governs for
   no gain; `NumberOutOfRange` already names the condition, and its TCK
   class (`ArgumentError`) constrains nothing here because no TCK scenario
   covers this conversion.
@@ -372,7 +387,7 @@ errors.
 
 ## Later references
 
-- ADR-0175 decides the deferred follow-ups above: the string elements of
+- [ADR-0175](./0175-list-and-string-form-conversions.md) decides the deferred follow-ups above: the string elements of
   `toIntegerList()` / `toFloatList()`, the Java-parser string forms
   (whitespace, `f`/`F`/`d`/`D` suffixes, hex floats, hex/octal/underscore
   integer literals, exponent-overflow fallback) and the other
@@ -381,10 +396,10 @@ errors.
   This ADR's two `in_scope: false` probe rows are the last two expressions
   of its probe command — `toIntegerList(['1', 'NaN'])` and
   `toFloatList(['1.5', 'NaN'])`, the string list elements — probed but
-  absent from its table; ADR-0175's table carries them. ADR-0175 also
+ absent from its table; [ADR-0175](./0175-list-and-string-form-conversions.md)'s table carries them. [ADR-0175](./0175-list-and-string-form-conversions.md) also
   re-evaluates this ADR's deliberate `'1e3000000000'` deviation: with the
   literal fallback in scope, CypherLite aligns with Neo4j and saturates.
-- ADR-0559 supersedes this ADR's error mapping for `range()`'s zero step:
+- [ADR-0559](./0559-runtime-argument-value-error-variant.md) supersedes this ADR's error mapping for `range`'s zero step:
   the 22N03 rejections discovered while producing rows now carry a
   run-time argument variant, classified as the `ArgumentError` class under
   `Neo.ClientError.Statement.ArgumentError` at the runtime stage rather

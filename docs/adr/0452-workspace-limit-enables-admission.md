@@ -1,8 +1,15 @@
+---
+type: adr
+area: engine
+claim: 1ffe592eaff0aef9e69b4ef0656159357c6a4caf
+name: 0452-workspace-limit-enables-admission
+status: proposed
+tags:
+  - memory
+title: The concurrent logical-workspace limit is the admission switch
+---
+
 # ADR-0452: The concurrent logical-workspace limit is the admission switch
-
-Status: Proposed
-
-Claim: 1ffe592eaff0aef9e69b4ef0656159357c6a4caf
 
 ## Context
 

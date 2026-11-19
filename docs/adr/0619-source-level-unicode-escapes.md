@@ -1,8 +1,18 @@
+---
+type: adr
+area: cypher
+claim: 3129bc81b73641df5c37079fd0d9fa4ba9815577
+name: 0619-source-level-unicode-escapes
+status: proposed
+tags:
+  - dialect
+  - parser
+title: Source-level unicode escapes in Cypher text
+REFERENCES:
+  - "[[adr/0505-parse-pipeline-token-and-string-representation]]"
+---
+
 # 0619. Source-level unicode escapes in Cypher text
-
-Status: Proposed
-
-Claim: 3129bc81b73641df5c37079fd0d9fa4ba9815577
 
 ## Context
 
@@ -50,7 +60,7 @@ not escapes and keep the same rejection.
   does. Rejected: it re-decodes string literals that already carry
   their own escape semantics (surrogate pairs would become lone
   surrogates), and it forces an owned copy of every query to outlive
-  the borrowed tokens (ADR-0505) for a spelling almost no query uses.
+  the borrowed tokens ([ADR-0505](./0505-parse-pipeline-token-and-string-representation.md)) for a spelling almost no query uses.
 - **Gate behind `RELATE_PREVIEW`.** Rejected: this completes the
   already-ungated Unicode-whitespace acceptance rather than opening a
   new syntax family — the escape spelling is that same work's own

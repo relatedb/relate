@@ -1,13 +1,26 @@
-# 0401. `push` into Neo4j/Aura: constraint-keyed MERGE, batched UNWIND, additive by default
+---
+type: adr
+area: cli
+claim: 157fe4a42bfc87d45893bc5c9639c9490968cb19
+date: 2026-10-24
+deciders: CypherLite maintainers
+name: 0401-push-into-neo4j-aura
+status: proposed
+tags:
+  - commands
+  - load
+title: |-
+  `push` into Neo4j/Aura: constraint-keyed MERGE, batched UNWIND, additive by default
+REFERENCES:
+  - "[[adr/0080-cli-pull-command]]"
+  - "[[adr/0158-streaming-single-process-pull]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-10-24
-- **Deciders**: CypherLite maintainers (Linear LABS-9, LABS-36)
-Claim: 157fe4a42bfc87d45893bc5c9639c9490968cb19
+# 0401. `push` into Neo4j/Aura: constraint-keyed MERGE, batched UNWIND, additive by default
 
 ## Context
 
-`cypherlite pull` (ADR-0080, ADR-0158) loads a Neo4j/Aura subgraph into a
+`cypherlite pull` ([ADR-0080](./0080-cli-pull-command.md), [ADR-0158](./0158-streaming-single-process-pull.md)) loads a Neo4j/Aura subgraph into a
 local `.cl` store over the HTTP Query API v2, upserting source-scoped data.
 The reverse direction — pushing local CypherLite data into Aura — does not
 exist. Linear **LABS-9** ("Aura migration — one connection string") asks

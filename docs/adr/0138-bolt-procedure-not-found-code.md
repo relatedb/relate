@@ -1,19 +1,32 @@
-# 0138. ProcedureNotFound carries the Neo4j FAILURE code at the Bolt boundary
+---
+type: adr
+area: surface
+date: 2026-09-29
+deciders: CypherLite maintainers
+name: 0138-bolt-procedure-not-found-code
+status: accepted
+tags:
+  - bolt
+  - errors
+title: ProcedureNotFound carries the Neo4j FAILURE code at the Bolt boundary
+REFERENCES:
+  - "[[adr/0260-trust-boundary-error-sanitization]]"
+  - "[[adr/0266-bolt-websocket-transport]]"
+  - "[[adr/0307-bolt-failure-carries-neo4j-status-codes]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-29
-- **Deciders**: CypherLite maintainers
+# 0138. ProcedureNotFound carries the Neo4j FAILURE code at the Bolt boundary
 
 ## Context
 
-ADR-0260 pins the Bolt FAILURE codes: internal-class errors genericize to
+[ADR-0260](./0260-trust-boundary-error-sanitization.md) pins the Bolt FAILURE codes: internal-class errors genericize to
 `CypherLite.InternalError`, and every caller-facing error passes through
 verbatim under `CypherLite.Error`, deliberately **not** claiming Neo4j's
 `Neo.*` status-code taxonomy. neo4j-browser, however, branches on exact
 Neo4j codes: at minimum `Neo.ClientError.Procedure.ProcedureNotFound` gates
 its `dbms.clientConfig` → `dbms.listConfig` fallback during the connect
 sequence. With every engine error shipped as `CypherLite.Error`, that branch
-never fires and the browser connect dies. ADR-0266 item 4 settles that this
+never fires and the browser connect dies. [ADR-0266](./0266-bolt-websocket-transport.md) item 4 settles that this
 Bolt-layer gap is fixed in the WebSocket feature branch under its own ADR —
 this is that record.
 
@@ -33,7 +46,7 @@ with `ProcedureNotFound: ` is sent verbatim under the code
 `CypherLite.Error`. The Bolt layer detects it by the pinned message prefix;
 the message text is unchanged.
 
-ADR-0260's partitioning is otherwise intact:
+[ADR-0260](./0260-trust-boundary-error-sanitization.md)'s partitioning is otherwise intact:
 
 - internal-class errors (`Internal`, `Storage`, `Io`, `Locked`) still
   genericize to `CypherLite.InternalError` with the fixed message
@@ -49,7 +62,7 @@ ADR-0260's partitioning is otherwise intact:
   string-matching; the engine's message is already pinned by test, so the
   Bolt layer can detect the condition without widening the public engine
   error enum.
-- **Map the full Neo4j status-code taxonomy.** Rejected: ADR-0260 already
+- **Map the full Neo4j status-code taxonomy.** Rejected: [ADR-0260](./0260-trust-boundary-error-sanitization.md) already
   decided CypherLite does not claim Neo4j parity, and one precise code fixes
   the observed browser break; a broad mapping would imply a compatibility
   surface CypherLite does not implement.
@@ -62,7 +75,7 @@ ADR-0260's partitioning is otherwise intact:
 
 - `docs/api/bolt/spec.md`'s error-partitioning paragraph names the single
   `Neo.*` exception and its scope.
-- ADR-0260 gains a **Later references** note pointing here; its other
+- [ADR-0260](./0260-trust-boundary-error-sanitization.md) gains a **Later references** note pointing here; its other
   decisions are unchanged.
 - Drivers keying on `CypherLite.Error` for syntax errors see one fewer
   syntax-error shape; drivers keying on the Neo4j code (neo4j-browser) now
@@ -74,7 +87,7 @@ ADR-0260's partitioning is otherwise intact:
 
 ## Later references
 
-- ADR-0307 keeps this ADR's code for the typed `ProcedureNotFound` variant
+- [ADR-0307](./0307-bolt-failure-carries-neo4j-status-codes.md) keeps this ADR's code for the typed `ProcedureNotFound` variant
   but reverses "no other `Neo.*` code is emitted": every Bolt FAILURE now
   carries a Neo4j status code, and an ordinary syntax error is
   `Neo.ClientError.Statement.SyntaxError` instead of `CypherLite.Error`.

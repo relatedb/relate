@@ -1,11 +1,25 @@
+---
+type: adr
+area: infra
+name: 0294-tck-gate-under-nextest
+status: accepted
+tags:
+  - ci
+  - conformance
+title: the TCK corpus gate runs under cargo-nextest after all
+REFERENCES:
+  - "[[adr/0254-cargo-nextest-test-execution]]"
+SUPERSEDES:
+  - "[[adr/0254-cargo-nextest-test-execution]]"
+---
+
 # ADR-0294: the TCK corpus gate runs under cargo-nextest after all
 
-Status: Accepted
 Renumbered: from 0256 (shared-number cleanup)
 
 ## Context
 
-ADR-0254 moved the unit lanes to `cargo nextest run` but kept the TCK
+[ADR-0254](./0254-cargo-nextest-test-execution.md) moved the unit lanes to `cargo nextest run` but kept the TCK
 corpus gate (`cargo test --profile corpus -p cypherlite-tck`) on stock
 cargo test, reasoning that nextest's per-test process model "does not map
 onto one process that must see the whole corpus."
@@ -32,14 +46,14 @@ pass/skip counts as the stock run (3892 pass, 1 documented skip of 3893).
 
 The corpus job's TCK step runs `cargo nextest run --cargo-profile corpus
 -p cypherlite-tck`. The nextest default profile (`retries = 1`,
-ADR-0254) applies to the TCK package without an override: the gate
+[ADR-0254](./0254-cargo-nextest-test-execution.md)) applies to the TCK package without an override: the gate
 asserts are deterministic, so a retry only re-fails an already-red lane —
 it cannot mask nondeterminism the way the bolt concurrency suite's
 real-time asserts could. The other corpus steps (`cypherlite-cip-eval`,
 `cypherlite-cookbook`, `cypherlite-query-latency`) stay on stock cargo
 test: single-binary suites with no inter-binary serialization to remove.
 Doctests keep their stock `cargo test --doc` steps everywhere (nextest
-cannot see them), unchanged from ADR-0254.
+cannot see them), unchanged from [ADR-0254](./0254-cargo-nextest-test-execution.md).
 
 ## Alternatives considered
 
@@ -60,7 +74,7 @@ cannot see them), unchanged from ADR-0254.
 ## Consequences
 
 - The corpus job gains a `taiki-e/install-action` nextest install (~2 s).
-- ADR-0254's "the TCK gate stays on stock cargo test" clause is superseded
+- [ADR-0254](./0254-cargo-nextest-test-execution.md)'s "the TCK gate stays on stock cargo test" clause is superseded
   (Later-references note added there); its other scope decisions stand.
 - The 3892/3893 gate semantics are unchanged: same harness, same asserts,
   same allowlist — only the process scheduler around the gate tests

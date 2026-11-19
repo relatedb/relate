@@ -1,8 +1,19 @@
-# 0036. Fold one-hop MATCH aggregates while walking adjacency
+---
+type: adr
+area: engine
+date: 2026-09-01
+deciders: MemoryDB maintainers
+name: 0036-fold-one-hop-aggregates
+status: accepted
+tags:
+  - executor
+title: Fold one-hop MATCH aggregates while walking adjacency
+REFERENCES:
+  - "[[adr/0023-incremental-version-gc]]"
+  - "[[adr/0033-compact-live-records-typed-csr]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-01
-- **Deciders**: MemoryDB maintainers
+# 0036. Fold one-hop MATCH aggregates while walking adjacency
 
 ## Context
 
@@ -21,8 +32,8 @@ RETURN CASE WHEN t.amount >= 1000.0 THEN 'large' ELSE 'small' END AS band,
 
 Today MATCH allocates one row per hop, then `aggregate` walks that
 vector. Degree ~67 (tail ~300). A running-sum sidecar would be wrong
-under MVCC: typed lists are a visibility **superset** (ADR-0023 /
-ADR-0033). A result cache was rejected in ADR-0033.
+under MVCC: typed lists are a visibility **superset** ([ADR-0023](./0023-incremental-version-gc.md) /
+[ADR-0033](./0033-compact-live-records-typed-csr.md)). A result cache was rejected in [ADR-0033](./0033-compact-live-records-typed-csr.md).
 
 ## Decision
 
@@ -54,7 +65,7 @@ fold gate stays conservative).
   helps a range predicate, not `sum`/`count(*)` of all edges. Rejected
   for this ADR.
 - **Cache last aggregate per account** — invalidates on every write.
-  Rejected in ADR-0033.
+ Rejected in [ADR-0033](./0033-compact-live-records-typed-csr.md).
 - **Keep one row per hop** — correct, still O(degree) allocate+hash.
   Rejected; that is the 25%.
 

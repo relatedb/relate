@@ -1,7 +1,16 @@
-# 0625. Adopt the .NET client over the typed C ABI
+---
+type: adr
+area: surface
+claim: e95f0668632af1a876d5057a604366e35c6800f0
+name: 0625-adopt-the-dotnet-client
+status: proposed
+tags:
+  - clients
+  - ffi
+title: Adopt the .NET client over the typed C ABI
+---
 
-Status: Proposed
-Claim: e95f0668632af1a876d5057a604366e35c6800f0
+# 0625. Adopt the .NET client over the typed C ABI
 
 ## Context
 

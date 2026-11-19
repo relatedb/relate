@@ -1,12 +1,23 @@
-# 0008. Localhost-only HTTP/JSON query API for tools and the explorer
+---
+type: adr
+area: surface
+date: 2026-08-28
+deciders: MemoryDB maintainers
+name: 0008-localhost-http-query-api
+status: accepted
+tags:
+  - http
+title: Localhost-only HTTP/JSON query API for tools and the explorer
+REFERENCES:
+  - "[[adr/0029-withdraw-localhost-http]]"
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-08-28
-- **Deciders**: MemoryDB maintainers
+# 0008. Localhost-only HTTP/JSON query API for tools and the explorer
 
 ## Context
 
-ADR-0057 rejected HTTP as the *remote* protocol: Bolt is how official Neo4j
+[ADR-0057](./0057-embedded-c-abi-and-bolt.md) rejected HTTP as the *remote* protocol: Bolt is how official Neo4j
 drivers talk to MemoryDB, and the C ABI is the embed boundary. The Bloom-style
 explorer and other local tools still need a simple JSON query surface that a
 browser can call without a Bolt stack.
@@ -30,7 +41,7 @@ Documented in [`docs/api/http/`](../api/http/).
 
 - **Reuse Bolt from the browser** — browsers do not speak Bolt; a JS Bolt
   client would be a large new surface. Rejected for the explorer.
-- **Promote HTTP to the public remote protocol** — duplicates ADR-0057 and
+- **Promote HTTP to the public remote protocol** — duplicates [ADR-0057](./0057-embedded-c-abi-and-bolt.md) and
   splits driver support. Rejected.
 - **Unix socket + JSON** — awkward for a web UI. Rejected.
 - **Embed the explorer in the Bolt server** — mixes protocol stacks. Rejected;
@@ -44,7 +55,7 @@ Documented in [`docs/api/http/`](../api/http/).
 
 ## Later references
 
-ADR-0029 withdraws this sidecar. `memorydb-http` and `docs/api/http/`
+[ADR-0029](./0029-withdraw-localhost-http.md) withdraws this sidecar. `memorydb-http` and `docs/api/http/`
 are removed. Hosted HTTP belongs to clients implementing embedded
 Relate, not to this engine. The “localhost HTTP for the explorer”
 decision no longer holds.

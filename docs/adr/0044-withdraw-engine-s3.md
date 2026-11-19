@@ -1,16 +1,31 @@
-# 0044. Withdraw engine-level S3
+---
+type: adr
+area: engine
+date: 2026-09-07
+deciders: MemoryDB maintainers
+name: 0044-withdraw-engine-s3
+status: accepted
+tags:
+  - storage
+title: Withdraw engine-level S3
+REFERENCES:
+  - "[[adr/0004-memory-first-parquet-object-store]]"
+  - "[[adr/0012-wal-and-parquet-checkpoints]]"
+  - "[[adr/0014-single-wal-write-path]]"
+  - "[[adr/0022-id-window-checkpoint-shards]]"
+  - "[[adr/0029-withdraw-localhost-http]]"
+  - "[[adr/0072-virtual-filesystem]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-07
-- **Deciders**: MemoryDB maintainers
+# 0044. Withdraw engine-level S3
 
 ## Context
 
-ADR-0004 and ADR-0012 made `s3://` a first-class engine URI:
+[ADR-0004](./0004-memory-first-parquet-object-store.md) and [ADR-0012](./0012-wal-and-parquet-checkpoints.md) made `s3://` a first-class engine URI:
 `AmazonS3Builder` for Parquet checkpoints, a local WAL sidecar
 (`--wal-dir` / `MEMORYDB_WAL_DIR` / a temp hash), and a MinIO CI job.
 Clients implementing embedded Relate already own hosted concerns
-(ADR-0029). Keeping S3 in the engine couples every embed, CLI, and
+([ADR-0029](./0029-withdraw-localhost-http.md)). Keeping S3 in the engine couples every embed, CLI, and
 default CI build to AWS `object_store` features the laptop/product
 surfaces do not need.
 
@@ -35,14 +50,14 @@ Remove engine `s3://`.
 - **Keep documenting `s3://` as provided by an embedding client** — the
   engine would advertise a URI `Database::open` rejects. Rejected.
 - **WAL as S3 objects** — `put` has no `fsync`. Already rejected in
-  ADR-0012; still rejected.
+ [ADR-0012](./0012-wal-and-parquet-checkpoints.md); still rejected.
 
 ## Consequences
 
 - MinIO CI and `s3_minio_roundtrip` go away.
 - Durable form in this repo is a fsync’d local WAL plus local Parquet
-  checkpoints. `:memory:` stays process-ephemeral (ADR-0014).
-- ADR-0004 / ADR-0012 / ADR-0022 remain the history of the S3-era
+ checkpoints. `:memory:` stays process-ephemeral ([ADR-0014](./0014-single-wal-write-path.md)).
+- [ADR-0004](./0004-memory-first-parquet-object-store.md) / [ADR-0012](./0012-wal-and-parquet-checkpoints.md) / [ADR-0022](./0022-id-window-checkpoint-shards.md) remain the history of the S3-era
   design; this ADR withdraws the engine URI, not those files.
 
 ## Later references
@@ -62,7 +77,7 @@ filesystem paths. Recorded here instead of a new ADR because the change
 is a strictness refinement of this ADR’s “supported URIs” decision, not
 a new direction.
 
-ADR-0072 replaces in-process `object_store` (local + memory) with a
+[ADR-0072](./0072-virtual-filesystem.md) replaces in-process `object_store` (local + memory) with a
 synchronous `Vfs`. Engine `s3://` stays rejected; an object-store VFS is
 follow-on work and must not advertise a URI until `Database::open` can
 open it.

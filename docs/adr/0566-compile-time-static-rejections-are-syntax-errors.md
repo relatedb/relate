@@ -1,7 +1,20 @@
-# ADR-0566: Compile-time static rejections carry the SyntaxError class
+---
+type: adr
+area: cypher
+claim: f072c3d86b9e55f8e11919c17a946e945675b159
+name: 0566-compile-time-static-rejections-are-syntax-errors
+status: proposed
+tags:
+  - conformance
+  - errors
+title: Compile-time static rejections carry the SyntaxError class
+REFERENCES:
+  - "[[adr/0511-boolean-sites-typed-invalid-argument-type]]"
+SUPERSEDES:
+  - "[[adr/0511-boolean-sites-typed-invalid-argument-type]]"
+---
 
-Status: Proposed
-Claim: f072c3d86b9e55f8e11919c17a946e945675b159
+# ADR-0566: Compile-time static rejections carry the SyntaxError class
 
 ## Context
 
@@ -26,10 +39,10 @@ SemanticError instead. The protocol-visible class is what drivers and the
 compatibility harness read, so the split is recorded here rather than
 left to each construction site.
 
-ADR-0511 read the static half's class from the GQLSTATUS *cause* code
+[ADR-0511](./0511-boolean-sites-typed-invalid-argument-type.md) read the static half's class from the GQLSTATUS *cause* code
 (e.g. 22NB1) instead of the driver's exception class, and concluded
 TypeError. The class comparison the harness enforces is the driver class;
-this ADR supersedes ADR-0511's static-site conclusion and leaves its
+this ADR supersedes [ADR-0511](./0511-boolean-sites-typed-invalid-argument-type.md)'s static-site conclusion and leaves its
 runtime half intact.
 
 ## Decision
@@ -59,8 +72,8 @@ runtime half intact.
 - **Reclassify the executor's rejections only.** Rejected: the executor
   cannot see a literal's type through the plan-cache placeholder, and a
   runtime-decided value and a literal reach the same site.
-- **Keep ADR-0511 and leave the corpus mismatch.** Rejected: the class is
-  part of the Bolt/HTTP/DB-API surface; the ADR-0511 probe read cause
+- **Keep [ADR-0511](./0511-boolean-sites-typed-invalid-argument-type.md) and leave the corpus mismatch.** Rejected: the class is
+ part of the Bolt/HTTP/DB-API surface; the [ADR-0511](./0511-boolean-sites-typed-invalid-argument-type.md) probe read cause
   codes, not the exception class.
 
 ## Consequences

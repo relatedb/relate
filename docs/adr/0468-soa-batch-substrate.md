@@ -1,10 +1,22 @@
+---
+type: adr
+area: engine
+claim: 67925094d026b75e63fe6cd64445de611154ec76
+name: 0468-soa-batch-substrate
+status: proposed
+tags:
+  - executor
+  - perf
+title: Structure-of-arrays batch substrate for clause interiors
+REFERENCES:
+  - "[[adr/0218-stats-based-match-orientation]]"
+  - "[[adr/0351-cheapest-element-start-for-unbound-patterns]]"
+  - "[[adr/0555-operators-stream-rows-never-accumulate]]"
+---
+
 # ADR-0468: Structure-of-arrays batch substrate for clause interiors
 
-Status: Proposed
-
-Claim: 67925094d026b75e63fe6cd64445de611154ec76
-
-Later references: ADR-0555 bounds how many rows may be alive between operators: the row-at-a-time boundary this ADR takes as given becomes a stream of rows or bounded batches, and unbounded results are never accumulated.
+Later references: [ADR-0555](./0555-operators-stream-rows-never-accumulate.md) bounds how many rows may be alive between operators: the row-at-a-time boundary this ADR takes as given becomes a stream of rows or bounded batches, and unbounded results are never accumulated.
 
 ## Context
 
@@ -18,12 +30,12 @@ choice and store access: **q8 runs ~2.5 ms in the engine against 0.040 ms
 for a hand-written loop with the same plan and the same 1.7k store reads —
 a 61x gap that lives entirely in per-row machinery** (tree-walking `eval`
 with per-row `date()` parse, per-walk `HashSet<RelId>`, `Row` clones).
-q19 decomposes the same way (~29x plan choice, addressed by ADR-0351 /
-ADR-0218 lineage and LABS-643; ~3.8x fold machinery), and q30's residual
+q19 decomposes the same way (~29x plan choice, addressed by [ADR-0351](./0351-cheapest-element-start-for-unbound-patterns.md) /
+[ADR-0218](./0218-stats-based-match-orientation.md) lineage; ~3.8x fold machinery), and q30's residual
 ~4x is per-hop bookkeeping. The substrate ticket is **LABS-359**; this
 ADR is the decision that ticket implements, layer 1 of the execution
-architecture (see also ADR-0351 cheapest-element start selection and
-ADR-0218 stats-based match orientation — planner-side decisions that feed
+architecture (see also [ADR-0351](./0351-cheapest-element-start-for-unbound-patterns.md) cheapest-element start selection and
+[ADR-0218](./0218-stats-based-match-orientation.md) stats-based match orientation — planner-side decisions that feed
 a plan into whichever executor interior runs it).
 
 Two proven per-row substrates already exist and stay: the aggregate fold
@@ -73,7 +85,7 @@ interiors, with these fixed properties:
   the q8 family. Per-row traversal walks (expand) are explicitly out of
   scope here: they arrive later as **contracted traversal kernels over
   the substrate, specified by a separate ADR**. Planner behavior
-  (ADR-0218, ADR-0351) is untouched — the substrate changes how a chosen
+ ([ADR-0218](./0218-stats-based-match-orientation.md), [ADR-0351](./0351-cheapest-element-start-for-unbound-patterns.md)) is untouched — the substrate changes how a chosen
   plan executes, not which plan is chosen.
 
 ## Alternatives considered

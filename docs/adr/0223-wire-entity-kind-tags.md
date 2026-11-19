@@ -1,6 +1,18 @@
-# ADR-0223: Wire JSON entity values carry an explicit `kind` tag
+---
+type: adr
+area: surface
+name: 0223-wire-entity-kind-tags
+status: accepted
+tags:
+  - http
+  - values
+title: Wire JSON entity values carry an explicit `kind` tag
+REFERENCES:
+  - "[[adr/0088-explicit-arrow-value-provenance]]"
+  - "[[adr/0280-inf-nan-variable-semantics]]"
+---
 
-Status: Accepted
+# ADR-0223: Wire JSON entity values carry an explicit `kind` tag
 
 ## Context
 
@@ -52,13 +64,13 @@ literals.
 
 This is a **breaking wire change**: it supersedes the "never emits type
 tags" promise in the wire module docs. Acceptable pre-1.0/alpha under the
-same precedent as ADR-0280 (non-finite floats) and the stats-counters
+same precedent as [ADR-0280](./0280-inf-nan-variable-semantics.md) (non-finite floats) and the stats-counters
 unification; recorded in the CHANGELOG. Clients should dispatch on `kind`
 when present; key-presence sniffing is deprecated and no longer
 documented.
 
 The persistence encoding (`serde_value`, `__type`-tagged) and the Arrow
-typed-JSON provenance format (ADR-0088) are separate formats with their
+typed-JSON provenance format ([ADR-0088](./0088-explicit-arrow-value-provenance.md)) are separate formats with their
 own tags and are unaffected.
 
 ## Alternatives considered

@@ -1,28 +1,43 @@
-# ADR-0514: Fixed caps for the C ABI v2 params builder; the engine memory cap is the result-side bound
+---
+type: adr
+area: surface
+claim: 473040cc041f5735550baec5c9402730b7f55efc
+name: 0514-ffi-param-caps-and-result-bound
+status: proposed
+tags:
+  - ffi
+  - memory
+title: Fixed caps for the C ABI v2 params builder; the engine memory cap is the result-side bound
+REFERENCES:
+  - "[[adr/0257-query-input-limits]]"
+  - "[[adr/0395-nested-evaluation-budget]]"
+  - "[[adr/0440-follower-writer-toggle]]"
+  - "[[adr/0462-value-nesting-depth]]"
+  - "[[adr/0502-typed-c-abi-v2]]"
+---
 
-Status: Proposed
-Claim: 473040cc041f5735550baec5c9402730b7f55efc
+# ADR-0514: Fixed caps for the C ABI v2 params builder; the engine memory cap is the result-side bound
 
 ## Context
 
-OPLANE's security review of the typed C ABI v2 (PR #722, ADR-0502;
+OPLANE's security review of the typed C ABI v2 (PR #722, [ADR-0502](./0502-typed-c-abi-v2.md);
 requirements 00340363 and 00340357, CWE-400/CWE-20) asked for resource
 limits on parameter construction and asked for a decision on the result
 side.
 
-The params builder (ADR-0502 §4) caps nesting at the engine's
-`MAX_VALUE_DEPTH` (ADR-0462) but had no other bound: a runaway loop over
+The params builder ([ADR-0502](./0502-typed-c-abi-v2.md) §4) caps nesting at the engine's
+`MAX_VALUE_DEPTH` ([ADR-0462](./0462-value-nesting-depth.md)) but had no other bound: a runaway loop over
 a putter accumulates entries without limit, and a single `put_string`
 accepts any length. Bolt has a natural bound — its 16 MiB chunked
 message cap (`framing::MAX_MESSAGE_BYTES`) bounds every parameter set
 the wire can carry; HTTP has the request-body limit. The C ABI has no
 framing, so nothing bounds construction before the engine sees it.
 
-The result side (the value walker, ADR-0502 §1) mints child handles
+The result side (the value walker, [ADR-0502](./0502-typed-c-abi-v2.md) §1) mints child handles
 lazily one level at a time, but the result itself is already in memory:
 its size is the query's doing, not the caller's, and the engine already
 enforces its own bound there — the retryable processing memory cap (the
-logical-workspace door, ADR-0440), whose refusal is a typed
+logical-workspace door, [ADR-0440](./0440-follower-writer-toggle.md)), whose refusal is a typed
 `ResourceLimit` error.
 
 Threat model: the ABI caller is an in-process embedder that can already
@@ -50,8 +65,8 @@ instead of an OOM.
      nested container, so the aggregate is bounded, not just each
      container; `put_string` refuses an over-budget length before
      copying its bytes.
-   Fixed constants, no knob — the house rule of ADR-0257's 4 MiB/500,
-   ADR-0395's fixed budget and ADR-0462's depth cap.
+ Fixed constants, no knob — the house rule of [ADR-0257](./0257-query-input-limits.md)'s 4 MiB/500,
+ [ADR-0395](./0395-nested-evaluation-budget.md)'s fixed budget and [ADR-0462](./0462-value-nesting-depth.md)'s depth cap.
    Documented in `cypherlite.h` and `docs/api/c/spec.md`, alongside the
    trusted-length contract: a `len`/`dim` argument and its buffer are
    trusted (Rust cannot detect a short or unterminated buffer); name
@@ -79,7 +94,7 @@ instead of an OOM.
   rejected: see Decision 2; it restates the engine cap and would have to
   pick a number the engine's own cap already makes moot.
 - **Configurable caps (a knob per cap)** — rejected: the fixed-constant
-  house rule (ADR-0257, ADR-0462); a knob on a defense-in-depth bound
+ house rule ([ADR-0257](./0257-query-input-limits.md), [ADR-0462](./0462-value-nesting-depth.md)); a knob on a defense-in-depth bound
   buys nothing the caller cannot already do by not looping.
 
 ## Consequences

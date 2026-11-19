@@ -1,12 +1,30 @@
-# 0014. Single write path: WAL then snapshot; graph is a materialization
+---
+type: adr
+area: engine
+date: 2026-08-28
+deciders: MemoryDB maintainers
+name: 0014-single-wal-write-path
+status: accepted
+tags:
+  - checkpoint
+  - wal
+  - write-path
+title: "Single write path: WAL then snapshot; graph is a materialization"
+REFERENCES:
+  - "[[adr/0005-lpg-parquet-layout]]"
+  - "[[adr/0012-wal-and-parquet-checkpoints]]"
+  - "[[adr/0015-optimistic-wal-commits]]"
+  - "[[adr/0020-segmented-wal-concurrent-checkpoint]]"
+  - "[[adr/0022-id-window-checkpoint-shards]]"
+SUPERSEDES:
+  - "[[adr/0012-wal-and-parquet-checkpoints]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-08-28
-- **Deciders**: MemoryDB maintainers
+# 0014. Single write path: WAL then snapshot; graph is a materialization
 
 ## Context
 
-ADR-0012 added a WAL for persistent URIs but left several write paths:
+[ADR-0012](./0012-wal-and-parquet-checkpoints.md) added a WAL for persistent URIs but left several write paths:
 `:memory:` skipped the WAL; Cypher mutated the live graph then optionally
 fsynced; Parquet could be written from that graph without a log record;
 `StoreTarget::Memory` loaded an empty graph with no replay. Dataset load
@@ -19,7 +37,7 @@ There is **one** write path and **one** way to obtain a live graph:
 1. **Commit** = append physical redo to the WAL (fsync on a filesystem
    WAL; in-process buffer for `:memory:`) then **`apply_redo`** onto the
    in-memory graph. The live graph is never the source of a commit.
-2. **Materialize** = load ADR-0005 / ADR-0022 Parquet (manifest parts or
+2. **Materialize** = load [ADR-0005](./0005-lpg-parquet-layout.md) / [ADR-0022](./0022-id-window-checkpoint-shards.md) Parquet (manifest parts or
    legacy `nodes.parquet` / `relationships.parquet`) then replay WAL records
    with `lsn > checkpoint_lsn`. Open always does this. No empty-graph
    shortcut that skips the store.
@@ -51,17 +69,17 @@ but there is no second code path.
 
 - Crash recovery and “open an existing URI” are the same function.
 - Loadtests with `--uri :memory:` still hit the WAL (volatile).
-- ADR-0012’s “`:memory:` has no WAL” bullet is superseded.
+- [ADR-0012](./0012-wal-and-parquet-checkpoints.md)’s “`:memory:` has no WAL” bullet is superseded.
 
 ## Later references
 
-ADR-0015: execute still computes redo on unpublished versions, but on a
+[ADR-0015](./0015-optimistic-wal-commits.md): execute still computes redo on unpublished versions, but on a
 private snapshot. The shared graph is updated only by WAL + `apply_redo`.
 `commit_ts` is assigned at WAL append, not at `begin_write`.
 
-ADR-0020: Parquet checkpoint dumps a pinned `snapshot_ts`; closed WAL
+[ADR-0020](./0020-segmented-wal-concurrent-checkpoint.md): Parquet checkpoint dumps a pinned `snapshot_ts`; closed WAL
 segments are deleted after the manifest is durable. Truncating the live
 segment under the commit lock is superseded.
 
-ADR-0022: the snapshot is a list of id-window parts in `manifest.json`,
+[ADR-0022](./0022-id-window-checkpoint-shards.md): the snapshot is a list of id-window parts in `manifest.json`,
 not always two monolith Parquet files. Replay is unchanged.

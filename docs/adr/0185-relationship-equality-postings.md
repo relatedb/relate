@@ -1,12 +1,30 @@
-# 0185. Lazy relationship equality postings for relationship uniqueness probes
+---
+type: adr
+area: engine
+date: 2026-10-08
+deciders: Oskar Hane, CypherLite maintainers
+name: 0185-relationship-equality-postings
+status: accepted
+tags:
+  - catalog
+  - index
+title: Lazy relationship equality postings for relationship uniqueness probes
+REFERENCES:
+  - "[[adr/0030-string-prefix-trigram-indexes]]"
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0063-lazy-string-index-postings]]"
+  - "[[adr/0171-lazy-per-label-snapshot-probe]]"
+  - "[[adr/0172-incremental-constraint-validation]]"
+  - "[[adr/0173-overlay-owned-redo-log-and-scratch-index]]"
+  - "[[adr/0174-committed-catalog-constraint-rechecks]]"
+  - "[[adr/0184-composite-key-smallest-bucket-probe]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-08
-- **Deciders**: Oskar Hane, CypherLite maintainers (Linear LABS-180)
+# 0185. Lazy relationship equality postings for relationship uniqueness probes
 
 ## Context
 
-ADR-0172 §4 gives relationship `unique` and `key` constraints a fallback
+[ADR-0172](./0172-incremental-constraint-validation.md) §4 gives relationship `unique` and `key` constraints a fallback
 walk: no structure indexes relationship property values, so each
 validation that touched a relationship of the type buckets the touched
 tuples and makes one pass over every live relationship of the type
@@ -19,7 +37,7 @@ is O(R) ids plus O(R_T·|P|) property reads per constraint per statement,
 with one fast path: touching no relationship of the type with a complete,
 NaN-free tuple.
 
-This is the last LABS-180 residual after LABS-155 (ADR-0171..ADR-0174)
+This is the last residual after ([ADR-0171](./0171-lazy-per-label-snapshot-probe.md)..[ADR-0174](./0174-committed-catalog-constraint-rechecks.md))
 removed the node-side scans. Measured on main `87bd55e5` (CypherLite
 v0.11.5, macOS arm64), `:STEP` relationships preloaded, relationship
 `UNIQUE` on `r.id`, one `MATCH (s:S) CREATE (s)-[:STEP {id:-1}]->(s)`:
@@ -36,7 +54,7 @@ not with the touched tuple: the walk reads every `:STEP` relationship to
 find the candidate equal to `id = -1`.
 
 Node probes already use lazy committed equality postings plus a scratch
-twin (ADR-0172 §3, ADR-0063 contract). ADR-0172's alternatives reserved
+twin ([ADR-0172](./0172-incremental-constraint-validation.md) §3, [ADR-0063](./0063-lazy-string-index-postings.md) contract). [ADR-0172](./0172-incremental-constraint-validation.md)'s alternatives reserved
 this change: "A later ADR can still add relationship equality postings if
 a workload needs them."
 
@@ -51,7 +69,7 @@ Relationships get the same lazy equality postings nodes have.
   `postings: GroupKey → HashSet<RelId>` and `dirty`. A pair is built on
   its first probe by one pass over all relationships, holding **every
   version** of every relationship of the type that carries the key — the
-  ADR-0063 superset contract: stale versions stay posted and the probe's
+ [ADR-0063](./0063-lazy-string-index-postings.md) superset contract: stale versions stay posted and the probe's
   residual re-verification filters them. `Graph::rel_equality_postings`
   and `ExecGraph::rel_equality_candidates` mirror `equality_postings`
   (`graph/index.rs:102-110`) and `equality_candidates`
@@ -86,23 +104,23 @@ Relationships get the same lazy equality postings nodes have.
   Additions only; every seek re-verifies. `CALL { … } IN TRANSACTIONS`
   clones and restores it with the scratch.
 - **Validation.** Relationship `unique`/`key` probes each touched tuple
-  the way nodes are probed (ADR-0172 §3): for a touched relationship `x`
-  with values `V`, choose the property per ADR-0184 (smallest
+ the way nodes are probed ([ADR-0172](./0172-incremental-constraint-validation.md) §3): for a touched relationship `x`
+ with values `V`, choose the property per [ADR-0184](./0184-composite-key-smallest-bucket-probe.md) (smallest
   committed-plus-scratch bucket, ties to the lowest index), take
   candidates from that same property on both sides — the committed
   relationship postings and the scratch seek — and verify each `y ≠ x`
   live, of type T, with `eq_non_null` on every component. This replaces
-  the ADR-0172 §4 walk (`rel_partners`). Error selection (ADR-0172 §6)
+ the [ADR-0172](./0172-incremental-constraint-validation.md) §4 walk (`rel_partners`). Error selection ([ADR-0172](./0172-incremental-constraint-validation.md) §6)
   is unchanged: the same `FirstFailure`/`conflict_position` logic
   consumes the partners.
-- **Full re-validation is unchanged.** ADR-0172 §5's `recheck` still
+- **Full re-validation is unchanged.** [ADR-0172](./0172-incremental-constraint-validation.md) §5's `recheck` still
   makes one pass over the live relationships of the type, bucketing
   tuples by key. It runs for `CREATE CONSTRAINT` and catalog drift
-  (ADR-0174), not per statement, and stays O(R_T) there.
+ ([ADR-0174](./0174-committed-catalog-constraint-rechecks.md)), not per statement, and stays O(R_T) there.
 
 ## Alternatives considered
 
-- **Keep the ADR-0172 §4 walk.** It is the smallest change and needs no
+- **Keep the [ADR-0172](./0172-incremental-constraint-validation.md) §4 walk.** It is the smallest change and needs no
   new state. Rejected: measured 86.4 ms (86 ms) per CREATE at 200k
   relationships (3.5/23.5/86.4 ms at 10k/50k/200k), and 200 autocommit
   creates at 50k take 3.6 s against 0.27 s as one UNWIND; the cost grows
@@ -114,15 +132,15 @@ Relationships get the same lazy equality postings nodes have.
   measured cost is the per-relationship property reads, not the type
   filter.
 - **Eager relationship property postings.** Maintain them on every
-  `install_rel` / `set_property_rel`, ADR-0030 style. Rejected: the write
-  path would pay for pairs no probe ever reads — the exact tax ADR-0063
+ `install_rel` / `set_property_rel`, [ADR-0030](./0030-string-prefix-trigram-indexes.md) style. Rejected: the write
+ path would pay for pairs no probe ever reads — the exact tax [ADR-0063](./0063-lazy-string-index-postings.md)
   removed for nodes — while most stores have no relationship `unique` or
   `key` constraint at all.
 - **A committed, versioned unique-value index per constraint.**
-  ADR-0172's alternatives already considered it and deferred it: it needs
+ [ADR-0172](./0172-incremental-constraint-validation.md)'s alternatives already considered it and deferred it: it needs
   MVCC versioning by commit ts for transaction snapshots, maintenance in
-  apply, GC and checkpoint restore, and ADR-0042 accounting. Rejected:
-  same reasons; the lazy pair is the narrower fix ADR-0172 anticipated.
+ apply, GC and checkpoint restore, and [ADR-0042](./0042-graph-memory-limit.md) accounting. Rejected:
+ same reasons; the lazy pair is the narrower fix [ADR-0172](./0172-incremental-constraint-validation.md) anticipated.
 
 ## Consequences
 
@@ -139,17 +157,17 @@ Relationships get the same lazy equality postings nodes have.
   built pairs are dirty-marked, unbuilt pairs are not.
 - **Memory.** A built pair holds every version of every relationship of
   the type that carries the key. Like the node pairs, it sits outside
-  ADR-0042's logical charge (`IndexCharge::from_details`); charging it
+ [ADR-0042](./0042-graph-memory-limit.md)'s logical charge (`IndexCharge::from_details`); charging it
   needs a later ADR.
-- **Correctness.** The postings are a superset (ADR-0063); the probe
+- **Correctness.** The postings are a superset ([ADR-0063](./0063-lazy-string-index-postings.md)); the probe
   re-verifies each candidate on the snapshot+scratch view, so
   accept/reject decisions, error texts and error selection are unchanged,
   and the differential oracle keeps passing. `gc_rel_chain` prunes
   collected versions so the superset does not grow forever.
 - **Scratch.** The scratch-side index rides the same redo funnel
-  (ADR-0173) as `prop_ix`, is additions-only, and is cloned and restored
+ ([ADR-0173](./0173-overlay-owned-redo-log-and-scratch-index.md)) as `prop_ix`, is additions-only, and is cloned and restored
   with the scratch by `CALL { … } IN TRANSACTIONS`.
 - **Concurrency.** The pair guard is held across the build and the drain,
   and the dirty-mark happens after the version is installed — the
-  ordering ADR-0063 established for nodes and `prop_postings`' lock
+ ordering [ADR-0063](./0063-lazy-string-index-postings.md) established for nodes and `prop_postings`' lock
   argument pins for the committed side.

@@ -1,12 +1,22 @@
+---
+type: adr
+area: cli
+claim: 511fb4ed63a18e3a43cf7749b78e0acb55dfc972
+name: 0407-agent-mode-override-ladder
+status: accepted
+tags:
+  - agents
+title: Agent-mode override ladder and the shared detection vocabulary
+REFERENCES:
+  - "[[adr/0196-row-cap-for-agent-runs]]"
+  - "[[adr/0404-agent-facing-cli-surface]]"
+---
+
 # ADR-0407: Agent-mode override ladder and the shared detection vocabulary
-
-Status: Accepted
-
-Claim: 511fb4ed63a18e3a43cf7749b78e0acb55dfc972
 
 ## Context
 
-ADR-0196 detects agent harnesses through a hand-maintained presence list
+[ADR-0196](./0196-row-cap-for-agent-runs.md) detects agent harnesses through a hand-maintained presence list
 and applies the row cap when detection fires with stdout not a terminal.
 There is no way to force the agent ergonomics on or off, and the list
 pre-dates the ecosystem's convergence: the cross-harness `AI_AGENT`
@@ -14,17 +24,17 @@ proposal (the `is-ai-agent` crate, adopted by `clickhousectl`) added
 generic markers (`AI_AGENT`, `AGENT`) and the GitHub Copilot trio to the
 vocabulary every other harness already spelled.
 
-DuckDB Agent Mode's override lesson (the ADR-0404 research baseline):
+DuckDB Agent Mode's override lesson (the [ADR-0404](./0404-agent-facing-cli-surface.md) research baseline):
 explicit user choice must always beat detection, both directions, with
 documented precedence — flag, then env var, then detection.
 
-This is LABS-481's G-2 (ADR-0404's roadmap).
+This is G-2 of [ADR-0404](./0404-agent-facing-cli-surface.md)'s roadmap.
 
 ## Decision
 
 1. **The detection vocabulary extends** to the generic markers `AI_AGENT`
    and `AGENT` and the Copilot trio (`COPILOT_AGENT`, `COPILOT_CLI`,
-   `COPILOT_AGENT_SESSION_ID`), joining ADR-0196's list and its substring
+ `COPILOT_AGENT_SESSION_ID`), joining [ADR-0196](./0196-row-cap-for-agent-runs.md)'s list and its substring
    rules (`devin`/`kiro`/`.pi/agent`). The list stays one hand-maintened
    table in `agent_vars.rs` — the e2e harness mounts the same file, so
    there is exactly one copy.
@@ -32,7 +42,7 @@ This is LABS-481's G-2 (ADR-0404's roadmap).
    consumed as a single decided fact by the row cap and the
    announcement): the explicit `--agent-mode`/`--no-agent-mode` flag, then
    `CYPHERLITE_AGENT_MODE=1/0`, then detection gated on stdout not
-   being a terminal (ADR-0196's gate). An explicit act is
+ being a terminal ([ADR-0196](./0196-row-cap-for-agent-runs.md)'s gate). An explicit act is
    **unconditional** — `--agent` applies the cap even on a terminal —
    because the user asked for agent ergonomics; detection never
    overrides a terminal, because a terminal is a human's.
@@ -62,7 +72,7 @@ This is LABS-481's G-2 (ADR-0404's roadmap).
   per-command reason above; see the decision.
 - **Make `--agent-mode` also change the output mode** (e.g. the compact
   `toon` default) — rejected here: that is G-3, gated on the headless
-  A/B measurement ADR-0404 prescribes; landing it unmeasured would
+ A/B measurement [ADR-0404](./0404-agent-facing-cli-surface.md) prescribes; landing it unmeasured would
   trade a measured win for a taste.
 - **A dedicated `--agent-status` introspection flag** — rejected: the
   announcement plus `--help`'s ladder description cover the need; a
@@ -84,8 +94,8 @@ This is LABS-481's G-2 (ADR-0404's roadmap).
 
 ## Later references
 
-- ADR-0196: the detection gate this ladder tops; its vocabulary is
+- [ADR-0196](./0196-row-cap-for-agent-runs.md): the detection gate this ladder tops; its vocabulary is
   extended here (the one list, more names).
-- ADR-0404: the program's principles (machine-native by default,
+- [ADR-0404](./0404-agent-facing-cli-surface.md): the program's principles (machine-native by default,
   deliberate choice beats detection, honest measurement) — this is its
   G-2 landing.

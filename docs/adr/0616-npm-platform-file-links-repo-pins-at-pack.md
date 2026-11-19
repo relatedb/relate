@@ -1,16 +1,28 @@
+---
+type: adr
+area: infra
+claim: d8d1efa08e27f89965fed1ede42388ba40950b9b
+name: 0616-npm-platform-file-links-repo-pins-at-pack
+status: proposed
+tags:
+  - release
+title: |-
+  npm platform packages resolve as file: links in the repository, registry pins injected at pack time
+REFERENCES:
+  - "[[adr/0278-npm-distribution]]"
+  - "[[adr/0562-npm-platform-package-names]]"
+  - "[[adr/0580-post-release-workspace-versioning]]"
+---
+
 # 0616: npm platform packages resolve as file: links in the repository, registry pins injected at pack time
-
-Status: Proposed
-
-Claim: d8d1efa08e27f89965fed1ede42388ba40950b9b
 
 ## Context
 
 The JavaScript client delivers its native library through five
-`@relate/relate-<platform>-<arch>` optionalDependencies (ADR-0562), each
+`@relate/relate-<platform>-<arch>` optionalDependencies ([ADR-0562](./0562-npm-platform-package-names.md)), each
 pinned at the release version. The registry only holds that version
 after the release publishes — while every commit on `main` names the
-next, unpublished one (ADR-0580's advance). The release sweep
+next, unpublished one ([ADR-0580](./0580-post-release-workspace-versioning.md)'s advance). The release sweep
 regenerated the lockfile with `npm install --package-lock-only` and
 relied on optional-dependency install tolerance to carry the
 unpublishable pins — but `npm ci` has no such tolerance: it hard-fails
@@ -71,5 +83,5 @@ libraries and the loader's existing fallback order (RELATE_LIB, then
 the platform package, then the repository build) serves local
 development exactly as before. The published consumer contract is
 byte-identical to the previous design: exact registry pins at the
-release version. ADR-0278 and ADR-0562 stand; this ADR narrows their
+release version. [ADR-0278](./0278-npm-distribution.md) and [ADR-0562](./0562-npm-platform-package-names.md) stand; this ADR narrows their
 optionalDependencies wiring to the two-shape rule above.

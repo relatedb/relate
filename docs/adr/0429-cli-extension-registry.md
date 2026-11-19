@@ -1,13 +1,36 @@
-# ADR-0429: The CLI extension registry — manifest, discovery, and the `run` mount (LABS-470)
+---
+type: adr
+area: cli
+claim: 73fb7641739a82cdfd8a6c2b8979872d23ad8e9b
+name: 0429-cli-extension-registry
+status: proposed
+tags:
+  - extensions
+title: The CLI extension registry — manifest, discovery, and the `run` mount
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0079-anonymous-usage-metrics]]"
+  - "[[adr/0104-cargo-feature-bundles]]"
+  - "[[adr/0157-fs-to-graph-import]]"
+  - "[[adr/0230-command-did-you-mean-on-parse-errors]]"
+  - "[[adr/0279-lab-command-namespace]]"
+  - "[[adr/0286-fs-to-graph-explicit-db-exits]]"
+  - "[[adr/0368-one-product-binary-serve-absorbs-bins]]"
+  - "[[adr/0383-lab-database-flag]]"
+  - "[[adr/0392-git-import-per-batch-commit]]"
+  - "[[adr/0394-fresh-store-import-create-edges]]"
+  - "[[adr/0430-cli-extension-wire-protocol]]"
+  - "[[adr/0431-cli-extension-distribution]]"
+  - "[[adr/0434-first-party-extension-crate-group]]"
+---
 
-Status: Proposed
-Claim: 73fb7641739a82cdfd8a6c2b8979872d23ad8e9b
+# ADR-0429: The CLI extension registry — manifest, discovery, and the `run` mount
 
 ## Context
 
 Graph-builder commands — importers, converters, scrapers: anything that
 walks an external source and writes parameterized batches into a store —
-had one home, the `lab` namespace (ADR-0279), and every new action was a
+had one home, the `lab` namespace ([ADR-0279](./0279-lab-command-namespace.md)), and every new action was a
 compiled-in CLI change. The extension program (LABS-466, "one spine,
 three strata") replaces that: userland commands install as packages and
 mount through one extension system whose spine — manifest, registry,
@@ -16,7 +39,7 @@ stratum. This ADR is the spine's registry half for the first stratum
 that needs it, command-kind extensions (LABS-470, P1): the manifest
 schema, discovery, the namespace and collision refusals, the trust rule,
 the bundle placement, and the mount. The wire the hosted child speaks is
-ADR-0430, minted beside this one.
+[ADR-0430](./0430-cli-extension-wire-protocol.md), minted beside this one.
 
 The seam this builds on is merged: P0 (#502, LABS-467) put the three
 built-in `lab` actions behind one static descriptor registry in
@@ -41,8 +64,8 @@ top-level `--help` stays byte-stable. The deciding tickets are LABS-470
 
 `cypherlite run <name> [flags]` is the command-kind mount point. `run` is
 a new first-positional command word in the hand-rolled parser, in the
-ADR-0069 shape (recognized only as the first argument), reserved in every
-build (ADR-0104): a build without the `extensions` feature prints the
+[ADR-0069](./0069-cli-lifecycle-commands.md) shape (recognized only as the first argument), reserved in every
+build ([ADR-0104](./0104-cargo-feature-bundles.md)): a build without the `extensions` feature prints the
 shared not-included error (exit 2) instead of falling through to a
 database named `run`, and the `./run` / `-- run` escapes keep that path
 reachable in every build. The dynamic installed-actions section lives on
@@ -51,17 +74,17 @@ stays byte-stable across installs. Installed names never enter
 `COMMAND_WORDS` or any built-in listing, so no bidirectional collision
 policy exists at the top level. The `extension` lifecycle verb
 (`install | list | remove`) is the program's other reserved word and has
-landed with the distribution work (ADR-0431, LABS-469), recorded there.
+landed with the distribution work ([ADR-0431](./0431-cli-extension-distribution.md)), recorded there.
 
 ### 2. The manifest: JSON under the XDG config dir
 
 One extension is one package directory:
 `$XDG_CONFIG_HOME/cypherlite/extensions/<name>/` (falling back to
 `~/.config/cypherlite/extensions/` — the `config_dir` precedent the
-telemetry config already uses, ADR-0079 §3), holding `extension.json`
+telemetry config already uses, [ADR-0079](./0079-anonymous-usage-metrics.md) §3), holding `extension.json`
 and the executable. The manifest is JSON because `serde`/`serde_json`
 are already workspace dependencies of the CLI and the same parser
-decodes the wire (ADR-0430); TOML would add an external dependency for
+decodes the wire ([ADR-0430](./0430-cli-extension-wire-protocol.md)); TOML would add an external dependency for
 zero schema benefit (AGENTS.md R6).
 
 Manifest fields (v1):
@@ -69,15 +92,15 @@ Manifest fields (v1):
 - `name` — the mount name, the `<name>` of `run <name>`;
 - `version` — the package's own version;
 - `kind` — the stratum, see §3;
-- `protocol` — the per-mount-point wire version (§4 and ADR-0430);
+- `protocol` — the per-mount-point wire version (§4 and [ADR-0430](./0430-cli-extension-wire-protocol.md));
 - `flags` — the flag table: one entry per flag with name, kind
   (`string` | `integer` | `boolean` | `repeatable`) and default; the
   host parses argv from this table;
 - an optional positional (like the importers' DIR);
-- `requires-fresh-store` — the ADR-0394 fresh-store check;
-- commit policy: `whole-import` (ADR-0157) or `per-batch` (ADR-0392) —
+- `requires-fresh-store` — the [ADR-0394](./0394-fresh-store-import-create-edges.md) fresh-store check;
+- commit policy: `whole-import` ([ADR-0157](./0157-fs-to-graph-import.md)) or `per-batch` ([ADR-0392](./0392-git-import-per-batch-commit.md)) —
   the `CommitPolicy` the host's phase runner takes;
-- `hidden` — ADR-0279's visible/hidden policy ported to the `run`
+- `hidden` — [ADR-0279](./0279-lab-command-namespace.md)'s visible/hidden policy ported to the `run`
   listing: a hidden extension still parses and runs, appears in no
   listing, and its flags never reach did-you-mean;
 - the executable — a path relative to the package directory; a path
@@ -99,15 +122,15 @@ today is a refusal, not a future-proofed install.
 version: each kind's protocol evolves at its own mount point (`command`
 usage rides `run`; callables ride `CALL`; engine plugins ride open
 time), so a bump at one mount point cannot break another. The registry
-pins the field; ADR-0430 pins the records and the mismatch rule.
+pins the field; [ADR-0430](./0430-cli-extension-wire-protocol.md) pins the records and the mismatch rule.
 
 ### 5. The host parses argv from the flag table
 
-The child never parses raw argv (ADR-0430 §6). Because the grammar is
+The child never parses raw argv ([ADR-0430](./0430-cli-extension-wire-protocol.md) §6). Because the grammar is
 host-side, every CLI convention applies to extensions for free: help
 text rendered from the table, did-you-mean over the same flag list
-(ADR-0230), the usage-error exit-2 shape, and `--database` handling —
-the host resolves `-d`/`--database` itself (ADR-0383) and `--db` stays
+([ADR-0230](./0230-command-did-you-mean-on-parse-errors.md)), the usage-error exit-2 shape, and `--database` handling —
+the host resolves `-d`/`--database` itself ([ADR-0383](./0383-lab-database-flag.md)) and `--db` stays
 rejected with the removed-spelling wording. A flag whose value does not
 parse as its kind is a usage error (exit 2) naming the flag and the
 value.
@@ -121,7 +144,7 @@ is a property of the user's machine, never of the directory the command
 happens to run in, so cloning a checkout can never add executables to
 the grammar. Load-time refusals: a name colliding with a reserved word
 (`COMMAND_WORDS`) or another installed extension — the built-in `lab`
-action words went with the `lab` surface (ADR-0431 §12) — refuses the
+action words went with the `lab` surface ([ADR-0431](./0431-cli-extension-distribution.md) §12) — refuses the
 load with a pinned error naming both sides of the
 collision; the refusal is reported, never first-wins, never silent.
 
@@ -138,26 +161,26 @@ discovery text (LABS-552 §4):
 no installed action '<name>' — first-party extension available: cypherlite extension install <name>
 ```
 
-The install verbs have landed (ADR-0431 §3) and the error text is the
+The install verbs have landed ([ADR-0431](./0431-cli-extension-distribution.md) §3) and the error text is the
 contract still: the host ships with zero installed extensions and every
 unknown name fails closed; the channel lists a package only after its
-first release dispatch (ADR-0431 §1).
+first release dispatch ([ADR-0431](./0431-cli-extension-distribution.md) §1).
 
 ### 8. Bundle placement: `extensions` at full + agent
 
-The host code is a new `extensions` Cargo feature (ADR-0104), placed in
+The host code is a new `extensions` Cargo feature ([ADR-0104](./0104-cargo-feature-bundles.md)), placed in
 the `full` (default) and `agent` bundles, not `minimal` (placement per
 LABS-552): agent-facing builds see the mount; the minimal build keeps
 the smallest query-engine surface. The argv grammar stays identical in
-every build (§1). The importer extraction (ADR-0431 §11) replaces
+every build (§1). The importer extraction ([ADR-0431](./0431-cli-extension-distribution.md) §11) replaces
 `lab` in those bundles — `extensions` takes the place the `lab`
 feature held — and the `lab` word retires with the surface as a clean
-break, no stub (the 2026-10-28 user direction, ADR-0431 §12).
+break, no stub (the 2026-10-28 user direction, [ADR-0431](./0431-cli-extension-distribution.md) §12).
 
 ### 9. Telemetry: command `run`, action "extension"
 
 The report says command `run`, action `extension` — never a user-chosen
-name (ADR-0079 anonymity), which also sidesteps `Event::Command`'s
+name ([ADR-0079](./0079-anonymous-usage-metrics.md) anonymity), which also sidesteps `Event::Command`'s
 `&'static str` requirement: the installed name is data, not a static.
 
 ## Alternatives considered
@@ -175,8 +198,8 @@ name (ADR-0079 anonymity), which also sidesteps `Event::Command`'s
   re-open the sandbox hole WASM was meant to close.
 - **exec-full-command, git-style (`cypherlite-x-foo` on PATH).**
   Rejected: the child would own the store, losing the `--database`
-  convention (ADR-0383), the `:memory:` default with REPL handoff
-  (ADR-0286), and the summary/telemetry/checkpoint uniformity; git's
+ convention ([ADR-0383](./0383-lab-database-flag.md)), the `:memory:` default with REPL handoff
+ ([ADR-0286](./0286-fs-to-graph-explicit-db-exits.md)), and the summary/telemetry/checkpoint uniformity; git's
   helper model solves discovery for a tool with no single host lifecycle
   to preserve, which is not our case.
 - **Direct top-level mounting of installed actions
@@ -201,12 +224,12 @@ name (ADR-0079 anonymity), which also sidesteps `Event::Command`'s
   gated to unix lanes), with collision and malformed-manifest tests
   pinning every refusal text.
 - The manifest-loaded action rows join the P0 seam's descriptor shape;
-  the extraction (ADR-0431 §11) then retires the built-in half with the
+ the extraction ([ADR-0431](./0431-cli-extension-distribution.md) §11) then retires the built-in half with the
   surface itself — `fs-to-graph` and `git-to-graph` move into
-  first-party extension crates (ADR-0434), the hidden `neo` is deleted
+ first-party extension crates ([ADR-0434](./0434-first-party-extension-crate-group.md)), the hidden `neo` is deleted
   entirely (never extracted), and the registry's one source is the XDG
-  walk. ADR-0279's Later references note (its namespace superseded by
-  `run`) and ADR-0368's multi-artifact dimension note land with the
+ walk. [ADR-0279](./0279-lab-command-namespace.md)'s Later references note (its namespace superseded by
+ `run`) and [ADR-0368](./0368-one-product-binary-serve-absorbs-bins.md)'s multi-artifact dimension note land with the
   extraction.
 - Every manifest value (a new kind, a new flag kind, a new commit
   policy) is a schema bump: the host fails closed on the unknown value

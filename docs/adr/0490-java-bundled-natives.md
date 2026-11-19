@@ -1,7 +1,19 @@
-# ADR-0490: Java client packaging — bundled natives in a fat jar and per-platform classifier jars, the library skill in the jar, JNA kept over FFM
+---
+type: adr
+area: surface
+claim: 011cb1e6ac6a1bd5836c792fad404d9b170fa94b
+name: 0490-java-bundled-natives
+status: proposed
+tags:
+  - clients
+  - release
+title: Java client packaging — bundled natives in a fat jar and per-platform classifier jars, the library skill in the jar, JNA kept over FFM
+REFERENCES:
+  - "[[adr/0278-npm-distribution]]"
+  - "[[adr/0502-typed-c-abi-v2]]"
+---
 
-Status: Proposed
-Claim: 011cb1e6ac6a1bd5836c792fad404d9b170fa94b
+# ADR-0490: Java client packaging — bundled natives in a fat jar and per-platform classifier jars, the library skill in the jar, JNA kept over FFM
 
 ## Context
 
@@ -14,7 +26,7 @@ working route was a repo checkout with a hand-set environment variable: a
 plain Maven dependency could not load the engine (LABS-830).
 
 The other clients already solved distribution: the npm client ships one
-optional platform package per release target (ADR-0278); the Python wheel
+optional platform package per release target ([ADR-0278](./0278-npm-distribution.md)); the Python wheel
 embeds the library per platform tag. `release.yml`'s `ffi` job builds the
 five targets those use — `x86_64`/`aarch64` Linux (glibc), `x86_64`/
 `aarch64` macOS and `x86_64` Windows — and uploads each as
@@ -149,7 +161,7 @@ follow-up, as is lockstep versioning of `clients/java/pom.xml` in
     place. The client's call pattern is one call per statement, then,
     per cell, `cypherlite_value_at` plus the walker calls that read it: the
     kind, then one accessor per component (a list or map adds a call per
-    element or key). Under the v2 ABI (ADR-0502) a cell is many small calls,
+ element or key). Under the v2 ABI ([ADR-0502](./0502-typed-c-abi-v2.md)) a cell is many small calls,
     not one JSON string, so the per-call cost no longer amortises over a
     JSON decode. The argument shifts: JNA's reflective marshalling is paid
     per walker call, and FFM's in-place reads matter more for wide results.

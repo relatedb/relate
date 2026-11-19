@@ -1,12 +1,23 @@
-# ADR-0221: Engine-reported per-statement elapsed time
+---
+type: adr
+area: engine
+name: 0221-engine-reported-statement-elapsed
+status: accepted
+tags:
+  - result-metadata
+title: Engine-reported per-statement elapsed time
+REFERENCES:
+  - "[[adr/0215-python-result-summary]]"
+  - "[[adr/0491-phase-timing-wire-contract]]"
+---
 
-Status: Accepted
+# ADR-0221: Engine-reported per-statement elapsed time
 
 ## Context
 
 Every surface that reports a statement's wall-clock time measures it at
 its own client edge: Python's `ResultSummary.elapsed_ms` wraps the native
-`Database.execute()` call in `time.perf_counter()` (ADR-0215, explicitly a
+`Database.execute` call in `time.perf_counter` ([ADR-0215](./0215-python-result-summary.md), explicitly a
 placeholder for LABS-286), the CLI's `.timer` wraps
 `exec_cypherlite_query` (including row conversion and output
 serialization), and the wire envelope carries no timing at all. Client
@@ -15,7 +26,7 @@ formatter output — so the same statement reports different "elapsed"
 numbers per surface, and none of them is the engine's own plan-plus-run
 duration.
 
-ADR-0215 reserved the semantic switch: when the engine reports elapsed
+[ADR-0215](./0215-python-result-summary.md) reserved the semantic switch: when the engine reports elapsed
 itself, `elapsed_ms` re-sources to that value inside the same property.
 
 ## Decision
@@ -42,7 +53,7 @@ rule):
   regenerated in the same change.
 - **Python**: the native pyo3 `QueryResult` gains `elapsed_ms`, and
   `Connection._raw_execute` feeds `ResultSummary.elapsed_ms` from it
-  (the ADR-0215 switch). The `perf_counter` client-edge measurement is
+ (the [ADR-0215](./0215-python-result-summary.md) switch). The `perf_counter` client-edge measurement is
   deleted, not kept as a fallback: the native module is co-packaged in
   the same wheel, so the stamp is always present.
 - **JavaScript**: `conn.query()` returns `elapsedMs`, read through the
@@ -66,7 +77,7 @@ rule):
   contract that already exists (Python `elapsed_ms`, CLI `Time: {:.3}ms`,
   Bolt `t_last`) speaks floating or integral milliseconds; `f64`
   milliseconds keeps one unit across the wire envelope, the C ABI and the
-  clients, matching the ADR-0215 placeholder type.
+ clients, matching the [ADR-0215](./0215-python-result-summary.md) placeholder type.
 - **Optional `elapsed` (`Option<Duration>`)** — rejected: the stamp is
   unconditional (one tail in `run_query`), so the field is total;
   `Duration::ZERO` seeds are overwritten before the result escapes.
@@ -84,12 +95,12 @@ rule):
 - The Python `elapsed_ms` docs' "client edge" wording (spec, description,
   examples, website reference, CLI skill bundle, bundled library skill)
   flips to engine-reported in the same change.
-- ADR-0215's predicted semantic refinement lands: same property, new
+- [ADR-0215](./0215-python-result-summary.md)'s predicted semantic refinement lands: same property, new
   source.
 
 ## Later references
 
-ADR-0491 splits the same measured window per phase: `QueryResult` gains
+[ADR-0491](./0491-phase-timing-wire-contract.md) splits the same measured window per phase: `QueryResult` gains
 `parse_ms()` / `plan_ms()` / `execute_ms()` beside `elapsed_ms()`, the
 wire envelope family gains `parse_ms` / `plan_ms` / `execute_ms` beside
 `elapsed_ms`, and the CLI's `Time: {:.3}ms` rendering (the alternatives

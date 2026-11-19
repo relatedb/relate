@@ -1,10 +1,26 @@
+---
+type: adr
+area: ecosystem
+claim: 3c12dcdd1759b4111ac2900406d282a9a4c3b389
+name: 0442-extension-mcp-stdio-wire
+status: proposed
+tags:
+  - extensions
+  - mcp
+title: The extension mount speaks MCP stdio
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0429-cli-extension-registry]]"
+  - "[[adr/0430-cli-extension-wire-protocol]]"
+  - "[[adr/0431-cli-extension-distribution]]"
+  - "[[adr/0447-extension-single-wire]]"
+---
+
 # ADR-0442: The extension mount speaks MCP stdio
 
-Status: Proposed
-Claim: 3c12dcdd1759b4111ac2900406d282a9a4c3b389
-Amended: 2026-10-29 (see ADR-0447)
+Amended: 2026-10-29 (see [ADR-0447](./0447-extension-single-wire.md))
 
-Later references: [ADR-0447](0447-extension-single-wire.md) (2026-10-29)
+Later references: [ADR-0447](./0447-extension-single-wire.md) (2026-10-29)
 amends §1 (the manifest `wire` field is retired — the mount speaks MCP
 stdio only), §2's tool table (one table in `cypherlite_wire::mcp::tools`,
 `update_schema` instead of `schema_write`, the bodies in
@@ -14,12 +30,12 @@ caps, the capacity facts and the host lifecycle below stand as written.
 
 ## Context
 
-ADR-0430 fixed wire v1 for command-kind extensions: the host spawns the
+[ADR-0430](./0430-cli-extension-wire-protocol.md) fixed wire v1 for command-kind extensions: the host spawns the
 child over std pipes, hands it one parsed JSON envelope on stdin, and
 reads NDJSON records (`hello`, `batch`, `rows`, `index`, `summary`,
 `error`) from its stdout. The child walks a source; the host alone owns
 the store. That wire made the first-party importers (`fs-to-graph`,
-`git-to-graph`) ordinary installed packages (ADR-0431 §11) and proved the
+`git-to-graph`) ordinary installed packages ([ADR-0431](./0431-cli-extension-distribution.md) §11) and proved the
 process boundary, the caps, and the exit-code mapping.
 
 Wire v1 has two limits the extension programme now runs into:
@@ -35,9 +51,9 @@ Wire v1 has two limits the extension programme now runs into:
 The design discussion on PR #511 (the extension-system PR) proposed
 letting the same mount speak MCP instead: the child becomes a minimal MCP
 client over the same two pipes, the host a minimal MCP server. Oskar's
-constraint is unchanged from ADR-0429/ADR-0430: an extension must stay
+constraint is unchanged from [ADR-0429](./0429-cli-extension-registry.md)/[ADR-0430](./0430-cli-extension-wire-protocol.md): an extension must stay
 installable through `cypherlite extension install` and the signed
-distribution channel (ADR-0431). Distribution is orthogonal — an MCP
+distribution channel ([ADR-0431](./0431-cli-extension-distribution.md)). Distribution is orthogonal — an MCP
 child is packaged, signed, discovered and installed exactly like a v1
 child, because the mount, not the wire, owns installation.
 
@@ -141,7 +157,7 @@ read and continue) and is the one policy that holds for reads of unknown
 size.
 
 The handshake and the writing results also carry the host-owned store's
-**capacity** — ADR-0042's live-graph accounting, read through
+**capacity** — [ADR-0042](./0042-graph-memory-limit.md)'s live-graph accounting, read through
 `Database::memory_usage`, never estimated on the wire:
 
 | Field | Published in | Meaning |
@@ -238,7 +254,7 @@ lines in any language.
   host and every child. Hand-rolling keeps the wire printable and the
   child dependency-free.
 - **Child as MCP server, host as client.** Rejected: the host must own
-  the `Database` (ADR-0430's core decision). A child server would either
+ the `Database` ([ADR-0430](./0430-cli-extension-wire-protocol.md)'s core decision). A child server would either
   own the store or proxy every call, and the host could not enforce caps,
   commit policy, the checkout, or the fresh-store check around calls it
   does not drive.

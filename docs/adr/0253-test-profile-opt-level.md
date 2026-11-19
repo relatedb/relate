@@ -1,10 +1,23 @@
-# ADR-0253: Unit and integration tests compile at `[profile.test] opt-level = 1`
+---
+type: adr
+area: infra
+name: 0253-test-profile-opt-level
+status: accepted
+tags:
+  - ci
+  - testing
+title: Unit and integration tests compile at `[profile.test] opt-level = 1`
+REFERENCES:
+  - "[[adr/0212-tck-release-in-ci]]"
+  - "[[adr/0251-test-architecture]]"
+  - "[[adr/0252-corpus-family-single-job]]"
+---
 
-Status: Accepted
+# ADR-0253: Unit and integration tests compile at `[profile.test] opt-level = 1`
 
 ## Context
 
-ADR-0251 set the ≤ 60 s ambition for continuous suites and made compile-vs-
+[ADR-0251](./0251-test-architecture.md) set the ≤ 60 s ambition for continuous suites and made compile-vs-
 execution balance an explicit design term. The profile-selection measurement
 matrix (recorded in `docs/testing/runtime.md`) shows the default test
 profile spends its wall time very unevenly: the exec-heavy suites
@@ -17,7 +30,7 @@ single-digit-to-tens-of-seconds of extra compile per suite, and that
 opt-level 2 buys nothing further while compiling noticeably slower.
 
 The corpus family (TCK, CIP-eval, cookbook, query latency) already runs in
-the optimized `corpus` profile (ADR-0212, ADR-0252). The unit/integration
+the optimized `corpus` profile ([ADR-0212](./0212-tck-release-in-ci.md), [ADR-0252](./0252-corpus-family-single-job.md)). The unit/integration
 suites were deliberately kept in the dev family because that is where
 `debug_assert!` contracts and overflow checks are evaluated (ci.yml `test`
 job comment); moving them into the corpus profile would silently drop that
@@ -36,7 +49,7 @@ fast to prove cancellation and fail.
   `overflow-checks` keep their dev-inherited defaults (**on**), so the
   assertion coverage that motivated keeping unit suites in the dev family is
   unchanged.
-- The corpus family keeps the `corpus` profile (ADR-0212, ADR-0252);
+- The corpus family keeps the `corpus` profile ([ADR-0212](./0212-tck-release-in-ci.md), [ADR-0252](./0252-corpus-family-single-job.md));
   `release` is not used for tests (the matrix shows it dominated by
   `corpus`).
 - Profile-sensitive timing tests must not assume the dev profile: the three
@@ -73,7 +86,7 @@ fast to prove cancellation and fail.
   225 s → 55 s).
 - Cold compiles of the test profile cost more (opt-level 1 codegen);
   locally the extra per-suite compile is 0-20 s warm. CI `test`-family jobs
-  share the `dev` rust-cache (ADR-0251 §5), so the increase is paid on
+ share the `dev` rust-cache ([ADR-0251](./0251-test-architecture.md) §5), so the increase is paid on
   Cargo.lock changes, not per PR.
 - Test-code behavior is unchanged: same assertions, same checks, plus the
   cancellation tests now pass at any opt-level instead of encoding the dev

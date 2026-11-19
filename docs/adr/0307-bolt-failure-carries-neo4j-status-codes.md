@@ -1,19 +1,55 @@
-# ADR-0307: Bolt FAILURE carries Neo4j status codes
+---
+type: adr
+area: surface
+claim: 5a69b465ba0d39ac96184ef5ca3e56e51c19a864
+name: 0307-bolt-failure-carries-neo4j-status-codes
+status: proposed
+tags:
+  - bolt
+  - conformance
+  - errors
+title: Bolt FAILURE carries Neo4j status codes
+REFERENCES:
+  - "[[adr/0017-client-conflict]]"
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+  - "[[adr/0110-bolt-connection-query-governance]]"
+  - "[[adr/0111-engine-bounded-execution]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0117-namespace-selection-apis-and-bolt]]"
+  - "[[adr/0126-bolt-basic-auth]]"
+  - "[[adr/0138-bolt-procedure-not-found-code]]"
+  - "[[adr/0146-unknown-namespace-selection-is-graph-not-found]]"
+  - "[[adr/0174-committed-catalog-constraint-rechecks]]"
+  - "[[adr/0177-bolt-parameter-conversion]]"
+  - "[[adr/0194-cli-error-envelope-and-exit-codes]]"
+  - "[[adr/0260-trust-boundary-error-sanitization]]"
+  - "[[adr/0311-bolt-tx-open-results-by-qid]]"
+  - "[[adr/0313-bolt-hello-requires-user-agent]]"
+  - "[[adr/0314-bolt-protocol-breaches-close]]"
+  - "[[adr/0315-bolt-unknown-message-signature-fatal]]"
+  - "[[adr/0319-bolt-execution-failures-at-pull]]"
+SUPERSEDES:
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0117-namespace-selection-apis-and-bolt]]"
+  - "[[adr/0138-bolt-procedure-not-found-code]]"
+  - "[[adr/0146-unknown-namespace-selection-is-graph-not-found]]"
+  - "[[adr/0177-bolt-parameter-conversion]]"
+  - "[[adr/0260-trust-boundary-error-sanitization]]"
+---
 
-Status: Proposed
-Claim: 5a69b465ba0d39ac96184ef5ca3e56e51c19a864
+# ADR-0307: Bolt FAILURE carries Neo4j status codes
 
 ## Context
 
-The Bolt server (ADR-0057) is meant to work with the official Neo4j
+The Bolt server ([ADR-0057](./0057-embedded-c-abi-and-bolt.md)) is meant to work with the official Neo4j
 drivers and with neo4rs as if it were Neo4j 2026.09 speaking Bolt 4.4
-(Linear LABS-323). ADR-0260 pinned two CypherLite-only FAILURE codes:
+[ADR-0260](./0260-trust-boundary-error-sanitization.md) pinned two CypherLite-only FAILURE codes:
 every caller-facing engine error goes out as `CypherLite.Error`, and the
 internal-class errors (`Internal`, `Storage`, `Io`, `Locked`) go out as
 `CypherLite.InternalError` with the fixed message `internal error`.
-ADR-0138 made one exception (`Neo.ClientError.Procedure.ProcedureNotFound`),
-and ADR-0126 sends `Neo.ClientError.Security.Unauthorized` on a failed
-HELLO. ADR-0116 §9, ADR-0117 §7, ADR-0146 and ADR-0177 item 6 each restate
+[ADR-0138](./0138-bolt-procedure-not-found-code.md) made one exception (`Neo.ClientError.Procedure.ProcedureNotFound`),
+and [ADR-0126](./0126-bolt-basic-auth.md) sends `Neo.ClientError.Security.Unauthorized` on a failed
+HELLO. [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §9, [ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §7, [ADR-0146](./0146-unknown-namespace-selection-is-graph-not-found.md) and [ADR-0177](./0177-bolt-parameter-conversion.md) item 6 each restate
 `CypherLite.Error` for their own failures.
 
 Drivers do not read the message. They classify a failure by its code:
@@ -42,8 +78,8 @@ need: `Syntax`, `ProcedureNotFound`, `ParameterMissing`, `Type`,
   and `round(…, 'UNNECESSARY')` that needs rounding
   (`Execution("ArithmeticError: rounding necessary")`);
 - an unknown database or `USE` target
-  (`Semantic("DatabaseNotFound: Graph not found: <name>")`, ADR-0146);
-- query cancellation (`Execution("query cancelled")`, ADR-0111), which is
+ (`Semantic("DatabaseNotFound: Graph not found: <name>")`, [ADR-0146](./0146-unknown-namespace-selection-is-graph-not-found.md));
+- query cancellation (`Execution("query cancelled")`, [ADR-0111](./0111-engine-bounded-execution.md)), which is
   how the Bolt `--query-timeout-secs` bound ends a query.
 
 AGENTS.md forbids classifying these by matching the message.
@@ -63,7 +99,7 @@ own wording.
    | Engine variant | Code |
    | --- | --- |
    | `Syntax` | `Neo.ClientError.Statement.SyntaxError` |
-   | `ProcedureNotFound` | `Neo.ClientError.Procedure.ProcedureNotFound` (unchanged, ADR-0138) |
+ | `ProcedureNotFound` | `Neo.ClientError.Procedure.ProcedureNotFound` (unchanged, [ADR-0138](./0138-bolt-procedure-not-found-code.md)) |
    | `ParameterMissing` | `Neo.ClientError.Statement.ParameterMissing` |
    | `Type`, `TypeError`, `InvalidArgumentType` | `Neo.ClientError.Statement.TypeError` |
    | `Arithmetic` (new) | `Neo.ClientError.Statement.ArithmeticError` |
@@ -75,25 +111,25 @@ own wording.
    | every other `Semantic` and `Execution` | `Neo.ClientError.Statement.SemanticError` |
    | `Internal`, `Storage`, `Io`, `Locked` | `Neo.DatabaseError.General.UnknownError`, message `internal error` |
 
-2. **The ADR-0260 trust boundary stays.** The four internal-class
+2. **The [ADR-0260](./0260-trust-boundary-error-sanitization.md) trust boundary stays.** The four internal-class
    variants still reach the client only as the fixed message
    `internal error`, and the server still writes the full error to its
    stderr. Only their code changes.
 
 3. **Server-side conditions get codes too.**
-   - An ADR-0177 parameter conversion failure is
+ - An [ADR-0177](./0177-bolt-parameter-conversion.md) parameter conversion failure is
      `Neo.ClientError.Request.Invalid`, with the same path-qualified
      message.
-   - The ADR-0110 `--max-result-bytes` cap
+ - The [ADR-0110](./0110-bolt-connection-query-governance.md) `--max-result-bytes` cap
      (`query result exceeds max-result-bytes limit of <N> bytes`) is
      `Neo.ClientError.General.TransactionOutOfMemoryError`.
    - A failed HELLO stays `Neo.ClientError.Security.Unauthorized`
-     (ADR-0126).
+ ([ADR-0126](./0126-bolt-basic-auth.md)).
    - The protocol-level FAILUREs decided for the same feature use
      `Neo.ClientError.Request.Invalid` too: a HELLO without `user_agent`
-     (ADR-0313), a protocol breach (ADR-0314) and a PULL or DISCARD whose
-     `qid` names no open result (ADR-0311). A message that is not a Bolt
-     4.4 request gets no FAILURE; the connection closes (ADR-0315).
+ ([ADR-0313](./0313-bolt-hello-requires-user-agent.md)), a protocol breach ([ADR-0314](./0314-bolt-protocol-breaches-close.md)) and a PULL or DISCARD whose
+ `qid` names no open result ([ADR-0311](./0311-bolt-tx-open-results-by-qid.md)). A message that is not a Bolt
+ 4.4 request gets no FAILURE; the connection closes ([ADR-0315](./0315-bolt-unknown-message-signature-fatal.md)).
 
 4. **Memory errors are non-retryable.** Both memory conditions use
    `Neo.ClientError.General.TransactionOutOfMemoryError`, the only Neo4j
@@ -109,7 +145,7 @@ own wording.
 5. **A write-write conflict is retryable.** `Conflict` maps to the
    `TransientError` `Neo.TransientError.Transaction.Outdated`, so drivers'
    managed transactions retry it. The engine still never retries
-   (ADR-0017).
+ ([ADR-0017](./0017-client-conflict.md)).
 
 6. **Three typed engine variants replace message matching.** Each keeps
    the `Display` text of the error it replaces byte for byte, and each is
@@ -125,24 +161,24 @@ own wording.
      `semantic error: DatabaseNotFound: Graph not found: <name>`. It is
      returned by `ce_messages::graph_not_found` (an unknown static `USE`
      target) and so by `ce_messages::database_does_not_exist`, which
-     delegates to it (ADR-0146). Live Neo4j sends
+ delegates to it ([ADR-0146](./0146-unknown-namespace-selection-is-graph-not-found.md)). Live Neo4j sends
      `Neo.ClientError.Database.DatabaseNotFound` for both paths.
      `Error::typed_detail` carries it like the other typed detail
-     variants. The `ALTER DATABASE <unknown>` text (ADR-0116 §2) has a
+ variants. The `ALTER DATABASE <unknown>` text ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §2) has a
      different message and stays `Semantic`.
    - `Error::Cancelled`, displayed `query cancelled`. `Error::cancelled()`
      returns it. Before, it was `Error::Execution("query cancelled")`.
 
    The bindings' metadata (`binding_error_metadata`), the CLI error
-   envelope (ADR-0194) and the TCK runtime classify the new variants
+ envelope ([ADR-0194](./0194-cli-error-envelope-and-exit-codes.md)) and the TCK runtime classify the new variants
    exactly as they classified the old ones. So Python, the C ABI, HTTP,
    MCP, the CLI and the TCK do not see a change.
 
 7. **The constants live in `failures.rs`.** Each code is one
    `pub(crate) const` beside the mapping. `REQUEST_INVALID_CODE` sits
    directly after `UNAUTHORIZED_CODE`; the protocol-semantics decisions of
-   this feature (ADR-0311, ADR-0313, ADR-0314) use the same constant.
-8. **Where the new variants are reported.** ADR-0319 reports execution
+ this feature ([ADR-0311](./0311-bolt-tx-open-results-by-qid.md), [ADR-0313](./0313-bolt-hello-requires-user-agent.md), [ADR-0314](./0314-bolt-protocol-breaches-close.md)) use the same constant.
+8. **Where the new variants are reported.** [ADR-0319](./0319-bolt-execution-failures-at-pull.md) reports execution
    failures at the first PULL or DISCARD, classified by `fails_run` in
    `surfaces/cypherlite-bolt/src/results.rs`. `DatabaseNotFound` is
    compile-class there, like `ParameterMissing`, and fails the RUN;
@@ -157,11 +193,11 @@ and `UnknownError` a `DatabaseError`.
 
 ## Alternatives considered
 
-- **Keep `CypherLite.Error` (ADR-0260 item 3).** Rejected: drivers
+- **Keep `CypherLite.Error` ([ADR-0260](./0260-trust-boundary-error-sanitization.md) item 3).** Rejected: drivers
   classify by code. neo4rs reports every CypherLite failure as a database
   fault, the Python driver raises no syntax error, and managed
   transactions never retry a conflict. Matching Neo4j at Bolt 4.4 is the
-  goal of LABS-323, and ADR-0057's "transport, not parity" does not
+ goal, and [ADR-0057](./0057-embedded-c-abi-and-bolt.md)'s "transport, not parity" does not
   require inventing codes no driver understands.
 - **Map the message text (`"/ by zero"`, `"query cancelled"`,
   `"DatabaseNotFound:"`) at the Bolt layer.** Rejected: AGENTS.md forbids
@@ -183,11 +219,11 @@ and `UnknownError` a `DatabaseError`.
   when a transaction saw state another commit invalidated. That is what
   `Conflict` means. A `ClientError` would stop drivers retrying.
 - **Send the engine's internal-class detail now that the code is a Neo4j
-  code.** Rejected: ADR-0260's reason (host paths, panic payloads on an
+ code.** Rejected: [ADR-0260](./0260-trust-boundary-error-sanitization.md)'s reason (host paths, panic payloads on an
   untrusted transport) is independent of the code.
 - **Rewrite messages to Neo4j's wording.** Rejected: drivers branch on the
   code, not the text. CypherLite's messages are pinned by its own tests,
-  docs and the CE-text fixture (ADR-0146).
+ docs and the CE-text fixture ([ADR-0146](./0146-unknown-namespace-selection-is-graph-not-found.md)).
 
 ## Consequences
 
@@ -205,10 +241,10 @@ and `UnknownError` a `DatabaseError`.
 - `docs/api/bolt/spec.md` lists the code table above. The
   `docs/api/bolt/examples` scripts that assert a code assert the new
   code.
-- ADR-0260 items 1–3 are superseded for the code (item 1's
-  genericization stays). ADR-0116 §9, ADR-0117 §7, ADR-0138's "no other
-  `Neo.*` code", ADR-0146's Bolt code and ADR-0177 item 6's code are
-  superseded the same way. ADR-0174 item 3 names the old cancellation
+- [ADR-0260](./0260-trust-boundary-error-sanitization.md) items 1–3 are superseded for the code (item 1's
+ genericization stays). [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §9, [ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §7, [ADR-0138](./0138-bolt-procedure-not-found-code.md)'s "no other
+ `Neo.*` code", [ADR-0146](./0146-unknown-namespace-selection-is-graph-not-found.md)'s Bolt code and [ADR-0177](./0177-bolt-parameter-conversion.md) item 6's code are
+ superseded the same way. [ADR-0174](./0174-committed-catalog-constraint-rechecks.md) item 3 names the old cancellation
   variant. Each gains a **Later references** note.
 - Tests pin every row of the table (`failures_tests.rs`), the wire codes
   through `handle_conn`, and the `.bolt` script

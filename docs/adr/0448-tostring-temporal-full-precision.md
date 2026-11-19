@@ -1,8 +1,17 @@
+---
+type: adr
+area: cypher
+claim: 40a1857f9d056df922fc98af095752f9a2d23037
+name: 0448-tostring-temporal-full-precision
+status: accepted
+status_note: 2026-10-29
+tags:
+  - functions
+title: |-
+  `toString` renders temporal values at full precision — the value layer owns the policy
+---
+
 # ADR-0448: `toString()` renders temporal values at full precision — the value layer owns the policy
-
-Status: Accepted (2026-10-29)
-
-Claim: 40a1857f9d056df922fc98af095752f9a2d23037
 
 ## Context
 

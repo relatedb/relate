@@ -1,12 +1,22 @@
+---
+type: adr
+area: cli
+claim: cf7a4317a9e04f149b5a2e37542682f00cbc86b2
+name: 0547-terminal-games-raw-mode-and-the-games-feature
+status: proposed
+tags:
+  - repl
+title: |-
+  Terminal games for the eggs: raw mode, a restoring guard, and the `games` feature
+REFERENCES:
+  - "[[adr/0543-hidden-repl-dot-commands-and-the-eggs-feature]]"
+---
+
 # ADR-0547: Terminal games for the eggs: raw mode, a restoring guard, and the `games` feature
-
-Status: Proposed
-
-Claim: cf7a4317a9e04f149b5a2e37542682f00cbc86b2
 
 ## Context
 
-The hidden dot commands (ADR-0543) include playable toys: Conway's Life,
+The hidden dot commands ([ADR-0543](./0543-hidden-repl-dot-commands-and-the-eggs-feature.md)) include playable toys: Conway's Life,
 Snake and Tetris. They need what a line-oriented REPL does not give: single
 key presses without echo or line buffering, a full-screen canvas that leaves
 the shell's scrollback untouched, and a clock tick that is not blocked on
@@ -36,7 +46,7 @@ the shell unusable. The workspace already names a terminal library
    not a terminal or the window is smaller than the game's fixed layout.
    While running, a window shrunk below the layout shows a one-line notice
    and the game pauses. Colour is used only under the capability rules of
-   ADR-0543; otherwise cells fall back to ASCII. Life needs a UTF-8 locale
+ [ADR-0543](./0543-hidden-repl-dot-commands-and-the-eggs-feature.md); otherwise cells fall back to ASCII. Life needs a UTF-8 locale
    for braille and refuses without one.
 4. **A `games` feature of the eggs crate** is the only thing that links
    `crossterm`. The CLI's `eggs` feature enables it, so the dependency

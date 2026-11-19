@@ -1,7 +1,19 @@
-# ADR-0498: A null-bound pattern endpoint matches nothing in every engine
+---
+type: adr
+area: cypher
+claim: fd60483b5813441e8143649a31797f510de8b593
+name: 0498-null-bound-endpoint-matches-nothing
+status: proposed
+tags:
+  - pattern-matching
+  - semantics
+title: A null-bound pattern endpoint matches nothing in every engine
+REFERENCES:
+  - "[[adr/0335-unbound-variable-fails-not-null]]"
+  - "[[adr/0471-one-var-length-traversal-engine]]"
+---
 
-Status: Proposed
-Claim: fd60483b5813441e8143649a31797f510de8b593
+# ADR-0498: A null-bound pattern endpoint matches nothing in every engine
 
 ## Context
 
@@ -17,7 +29,7 @@ aligned the shortest-expression fast path to it
 `exec/shortest_expression_tests.rs`); the candidate funnel short-circuits
 a `Mismatch` to zero candidates (`pattern_walk/candidates/mod.rs`,
 `binding_arm`). But the rule has never been *ruled* for the endpoint of a
-var-length pattern, and since ADR-0471 lowered every var-length spelling
+var-length pattern, and since [ADR-0471](./0471-one-var-length-traversal-engine.md) lowered every var-length spelling
 onto the one quantified IR — `needs_gpm` is true for every spelling, the
 GPM engine is the one var-length engine; only the eval walk (pattern
 comprehensions, pattern predicates, `shortestPath()`/`allShortestPaths()`
@@ -36,7 +48,7 @@ answer on every row:
 | `[(a)-[*]->(b) \| 1]` comprehension | eval walk | `[]` | `[]` | `[]` |
 | `shortestPath((a)-[*]->(b))` | eval shortest | `null`, no search | `NULL` | `NULL` |
 | single-hop `MATCH (a)-[r:R]->(b)` | classic walker / GPM single-hop | 0 rows | 0 rows | 0 rows |
-| `MATCH p = (a)-[*]->(b)` (var-length) | the one var-length engine (GPM, ADR-0471) | **2 rows** (len 1, 2) | **0 rows** | **0 rows** |
+| `MATCH p = (a)-[*]->(b)` (var-length) | the one var-length engine (GPM, [ADR-0471](./0471-one-var-length-traversal-engine.md)) | **2 rows** (len 1, 2) | **0 rows** | **0 rows** |
 | `MATCH (a)-[:R]->+(b)` (quantified) | GPM | **2 rows** (m, b) | n/a | **0 rows** |
 | `MATCH ANY SHORTEST (p = (a)-[*]->(b))` | route guard declines the null end, GPM walker answers | **2 rows** (len 1, 2) | n/a | **0 rows** |
 | `MATCH (x)-[t*1..2]->(c)`, `t` a pre-bound trail, `c` null | GPM exact-trail pin | **1 row** (`b`) | — | — |
@@ -55,14 +67,14 @@ accepts. The start side never diverges because start resolution flows
 through the candidate funnel (`gpm_start_nodes` → `node_candidates`),
 whose `binding_arm` answers a `Mismatch` with zero candidates; the
 engine is asymmetric on the null today — start matches nothing, end
-rebinds. The policy's doc cites ADR-0335 for null-is-fresh, but
-ADR-0335's Decision names only two null-binding sites, both
+rebinds. The policy's doc cites [ADR-0335](./0335-unbound-variable-fails-not-null.md) for null-is-fresh, but
+[ADR-0335](./0335-unbound-variable-fails-not-null.md)'s Decision names only two null-binding sites, both
 machinery-seeded: the non-local singleton (a predicate-referenced
 name that neither the entering row nor the quantification binds reads as
 null — `gpm/qpp.rs` seeds it on the walk's base row) and the void
 `OPTIONAL CALL` unit row. `prebound()` generalized null ⇒ fresh to every
 rebinding site, including nulls the *entering row* carries — a failed
-`OPTIONAL MATCH`'s variables, a `WITH null AS b` — which ADR-0335 never
+`OPTIONAL MATCH`'s variables, a `WITH null AS b` — which [ADR-0335](./0335-unbound-variable-fails-not-null.md) never
 ruled. The rel side of that generalization is pinned as a visible
 divergence (the gpm_tests pin's GPM arm) and explicitly left for an ADR;
 the end side was never pinned at all — no test asserts the divergent
@@ -104,12 +116,12 @@ end side. The recommendation's grounding, in order of weight:
    the eval walk — the frozen-TCK reference surface — already answers
    `[]`/`null` on the same graph.
 3. **The divergence has no origin of its own.** It is `prebound()`'s
-   generalization of ADR-0335's null arm beyond the two machinery-seeded
-   sites that arm names; nothing in ADR-0335's text or in Neo4j's
+ generalization of [ADR-0335](./0335-unbound-variable-fails-not-null.md)'s null arm beyond the two machinery-seeded
+ sites that arm names; nothing in [ADR-0335](./0335-unbound-variable-fails-not-null.md)'s text or in Neo4j's
    behavior ever asked an entering-row null to rebind.
 
 The carve-out, stated so the implementation cannot break it:
-**ADR-0335's two null sites keep fresh semantics** — the
+**[ADR-0335](./0335-unbound-variable-fails-not-null.md)'s two null sites keep fresh semantics** — the
 non-local singleton's machinery-seeded null and the void `OPTIONAL CALL`
 unit row. The ruling splits on the null's *source*: machinery-seeded
 nulls rebind (they are the pattern's own forward references,
@@ -178,8 +190,8 @@ follow-up work below from conditional to immediate.
   SHORTEST`, pre-bound-trail) mirroring #644's
   `null_bound_end_matches_nothing_on_both_engines`, plus one for the
   route anchor's classification read.
-- **ADR-0335 overlap — the end-side ruling constrains the rel side by
-  the same reasoning but does not decide it.** ADR-0335's own text is
+- **[ADR-0335](./0335-unbound-variable-fails-not-null.md) overlap — the end-side ruling constrains the rel side by
+ the same reasoning but does not decide it.** [ADR-0335](./0335-unbound-variable-fails-not-null.md)'s own text is
   untouched: its two sites keep fresh semantics, and the walker's
   generalization was never ADR text. But the ruling's split —
   machinery-seeded fresh, entering-row mismatch — is exactly the split

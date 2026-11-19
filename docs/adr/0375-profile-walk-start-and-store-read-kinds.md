@@ -1,12 +1,26 @@
+---
+type: adr
+area: engine
+claim: 8d2bd89e103f79165c527a1920b3a108031c9747
+name: 0375-profile-walk-start-and-store-read-kinds
+status: proposed
+tags:
+  - observability
+title: PROFILE names the walk's start and the store-read kinds
+REFERENCES:
+  - "[[adr/0344-query-plan-node-tree-and-per-operator-metrics]]"
+  - "[[adr/0345-plan-surface-alignment-cli-bolt-http]]"
+  - "[[adr/0350-bound-node-pivot-for-pattern-expansion]]"
+  - "[[adr/0351-cheapest-element-start-for-unbound-patterns]]"
+  - "[[adr/0355-fxhash-core-maps-and-interned-domain-reads]]"
+  - "[[adr/0397-reads-cell-legibility]]"
+---
+
 # ADR-0375: PROFILE names the walk's start and the store-read kinds
-
-Status: Proposed
-
-Claim: 8d2bd89e103f79165c527a1920b3a108031c9747
 
 ## Context
 
-The rich plan tree (ADR-0344/0345) reports one `Db Hits` number per
+The rich plan tree ([ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md)/[ADR-0345](./0345-plan-surface-alignment-cli-bolt-http.md)) reports one `Db Hits` number per
 operator and one `Details` string. Two diagnoses it cannot make, both
 measured on the LDBC workload:
 
@@ -14,7 +28,7 @@ measured on the LDBC workload:
   displaced and the walk traversed ~135k relationships backward. PROFILE
   showed only `Expand: Rows=0, DbHits=135701, TimeNs=112ms` — the walk's
   start element, its direction and *why* it was chosen were invisible, and
-  the walk can now start at any element (ADR-0350's bound pivot, ADR-0351's
+ the walk can now start at any element ([ADR-0350](./0350-bound-node-pivot-for-pattern-expansion.md)'s bound pivot, [ADR-0351](./0351-cheapest-element-start-for-unbound-patterns.md)'s
   cheapest start), so a displacement is a first-class outcome.
 - **The `Db Hits` total hides its mix.** 135,701 hits from adjacency hops
   versus from node-store reads are different problems; "Rows=103 but 300k
@@ -52,7 +66,7 @@ site (`match_resolved_path`'s selection).
 
 ## Alternatives considered
 
-- **A warning per displaced start** (the ADR-0355 notification channel) —
+- **A warning per displaced start** (the [ADR-0355](./0355-fxhash-core-maps-and-interned-domain-reads.md) notification channel) —
   rejected: a displaced start is not a defect; the cheap-start heuristic
   makes it correct behaviour, and a warning would fire on healthy plans.
 - **A column per read kind** (`Hops`, `Walks`, `Node reads`) — rejected:
@@ -81,7 +95,7 @@ site (`match_resolved_path`'s selection).
 
 ## Later references
 
-- ADR-0397 supersedes this ADR's cell format for the table presentation
+- [ADR-0397](./0397-reads-cell-legibility.md) supersedes this ADR's cell format for the table presentation
   only: the column header names the kinds in full words and the cell
   renders the nonzero kinds. The wire fields (`Hops`/`NeighborWalks`/
   `NodeReads`) and the `cypherlite.plan/v1` document fields are unchanged.

@@ -6,10 +6,10 @@ bare `remote.git` as `origin`, one work repo whose `main` carries the
 seeded ADR, and a `feature` branch forked from it. The remote carries the
 ledger branch (adr_fixtures.COUNTER_BRANCH) once a test claims a number
 with AdrFixture.claim — a claim commit pushed exactly as
-scripts/adr_mint.py pushes one — and the checker proves each added ADR's
-`Claim: <sha>` header against that branch. No network; commits use the
-shared deterministic GIT_AUTHOR_*/GIT_COMMITTER_* environment
-(adr_fixtures.GIT_ENV), and the ledger machinery
+scripts/adr_mint.py pushes one — and the checker proves each added
+ADR's frontmatter `claim: <sha>` key against that branch. No network;
+commits use the shared deterministic GIT_AUTHOR_*/GIT_COMMITTER_*
+environment (adr_fixtures.GIT_ENV), and the ledger machinery
 (adr_fixtures.COUNTER_BRANCH/REF, push_counter_commit, ref_tip), the
 asserting git runner, and the run-script-under-test helper all come from
 adr_fixtures.py.
@@ -17,6 +17,8 @@ adr_fixtures.py.
 
 import os
 import re
+import shlex
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,11 +35,26 @@ from script_loader import load
 
 
 def adr_body(number: str, claim: str | None, context: str = "fixture") -> str:
-    """An ADR file body: title, Status, optional Claim header, one section."""
-    lines = [f"# ADR-{number}: fixture decision", "", "Status: Proposed", ""]
+    """An ADR file in the migrated vault form: the frontmatter fence
+    with the codec's canonical key order (type, claim when present,
+    name, status, title), the closing fence, a blank line, then the
+    body — the H1 title heading and one section."""
+    lines = ["---", "type: adr"]
     if claim is not None:
-        lines += [f"Claim: {claim}", ""]
-    lines += ["## Context", "", context, ""]
+        lines.append(f"claim: {claim}")
+    lines += [
+        f"name: {number}-fixture-decision",
+        "status: proposed",
+        "title: fixture decision",
+        "---",
+        "",
+        f"# ADR-{number}: fixture decision",
+        "",
+        "## Context",
+        "",
+        context,
+        "",
+    ]
     return "\n".join(lines)
 
 
@@ -91,8 +108,8 @@ class CheckAdrNumbersTests(FixtureTestBase):
     def test_a_similarity_detected_rename_decomposes_into_add_and_delete(self) -> None:
         # git would report a pure `git mv` as one R record; the checker's
         # --no-renames decomposes it into the A+D pair the re-slot rule and
-        # the claim proof read. The moved file carries no Claim header, so
-        # the proof — not the conflict check — is what fails it.
+        # the claim proof read. The moved file carries no frontmatter at
+        # all, so the proof — not the conflict check — is what fails it.
         self.fx.claim("0300")  # the ledger branch must exist for the proof
         run_git(self.fx.work, "checkout", "-q", "feature", env=GIT_ENV)
         run_git(
@@ -108,7 +125,7 @@ class CheckAdrNumbersTests(FixtureTestBase):
         result = self.fx.run("--base", "main")
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("docs/adr/0001-moved-slug.md", result.stderr)
-        self.assertIn("Claim:", result.stderr)
+        self.assertIn("claim:", result.stderr)
 
     def test_rename_without_a_claim_still_fails_the_claim_proof(self) -> None:
         self.fx.claim("0001")
@@ -116,7 +133,7 @@ class CheckAdrNumbersTests(FixtureTestBase):
         result = self.fx.run("--base", "main")
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("docs/adr/0001-renamed-slug.md", result.stderr)
-        self.assertIn("Claim:", result.stderr)
+        self.assertIn("claim:", result.stderr)
 
     def test_clean_addition_passes(self) -> None:
         second = self.fx.claim("0002")
@@ -179,7 +196,9 @@ class ClaimProofTests(FixtureTestBase):
         result = self.fx.run("--base", "main")
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_missing_claim_header_fails(self) -> None:
+    def test_missing_frontmatter_claim_key_fails(self) -> None:
+        # The new-form ADR whose frontmatter carries no claim key: the
+        # proof names the frontmatter as the place the key belongs.
         self.fx.claim("0300")
         self.fx.commit(
             "feature", {"docs/adr/0300-no-claim.md": adr_body("0300", None)}
@@ -188,28 +207,28 @@ class ClaimProofTests(FixtureTestBase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("docs/adr/0300-no-claim.md", result.stderr)
         self.assertIn("0300", result.stderr)
-        self.assertIn("Claim:", result.stderr)
+        self.assertIn("claim:", result.stderr)
+        self.assertIn("frontmatter", result.stderr)
         self.assertIn("scripts/adr_mint.py", result.stderr)
 
-    def test_claim_outside_the_header_block_fails(self) -> None:
+    def test_claim_outside_the_frontmatter_fails(self) -> None:
+        # Only the frontmatter key proves a mint: a `claim:` line in the
+        # body — the location the removed header-block regex once read —
+        # names a real claim commit and still proves nothing.
         sha = self.fx.claim("0300")
-        late = "\n".join(
-            [
-                "# ADR-0300: fixture decision",
-                "",
-                "Status: Proposed",
-                "",
-                "## Context",
-                "",
-                f"Claim: {sha}",
-                "",
-            ]
+        self.fx.commit(
+            "feature",
+            {
+                "docs/adr/0300-late-claim.md": adr_body(
+                    "0300", None, context=f"claim: {sha}"
+                )
+            },
         )
-        self.fx.commit("feature", {"docs/adr/0300-late-claim.md": late})
         result = self.fx.run("--base", "main")
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("docs/adr/0300-late-claim.md", result.stderr)
-        self.assertIn("Claim:", result.stderr)
+        self.assertIn("claim:", result.stderr)
+        self.assertIn("frontmatter", result.stderr)
 
     def test_claim_sha_off_the_ledger_fails(self) -> None:
         self.fx.claim("0300")
@@ -236,6 +255,56 @@ class ClaimProofTests(FixtureTestBase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("docs/adr/0300-fake-claim.md", result.stderr)
         self.assertIn(fake, result.stderr)
+
+    def rev_parse_git_stub(self, sha: str) -> dict[str, str]:
+        """A PATH override whose `git` answers any invocation whose
+        arguments carry the poisoned sha token as infrastructure
+        (exit 128, fatal on stderr) and forwards every other
+        invocation to the real git, by absolute path so the stub never
+        calls itself. The guard is the poisoned token alone — the
+        fixture's own value, absent from every other invocation — never
+        a re-encoded copy of the production call's subcommand or flags,
+        so the stub keeps serving the probe whatever argv shape carries
+        it. A real repository cannot produce the shape — there
+        rev-parse answers rc 1 for every unresolvable name — so the
+        non-1 leg needs the stub to serve it.
+        """
+        stubbin = Path(self._tmp.name) / "stubbin"
+        stubbin.mkdir()
+        shim = stubbin / "git"
+        shim.write_text(
+            "#!/bin/sh\n"
+            'for arg in "$@"; do\n'
+            f'    if [ "$arg" = "{sha}^{{commit}}" ]; then\n'
+            "        echo 'fatal: stub: broken object store' >&2\n"
+            "        exit 128\n"
+            "    fi\n"
+            "done\n"
+            f'exec {shlex.quote(shutil.which("git"))} "$@"\n'
+        )
+        shim.chmod(0o755)
+        return {"PATH": f"{stubbin}{os.pathsep}{os.environ['PATH']}"}
+
+    def test_claim_sha_rev_parse_infrastructure_failure_dies(self) -> None:
+        # rc 1 from the known-commit rev-parse is the does-not-name-a-
+        # commit answer (the case above); any other nonzero rc is a
+        # broken repository, and the checker dies as infrastructure —
+        # stderr carrying git's fatal — instead of misreporting the ADR
+        # as an unproven mint with the mint hint.
+        self.fx.claim("0300")
+        poisoned = "d" * 40
+        self.fx.commit(
+            "feature",
+            {"docs/adr/0300-broken-repo-claim.md": adr_body("0300", poisoned)},
+        )
+        result = self.fx.run(
+            "--base", "main", extra_env=self.rev_parse_git_stub(poisoned)
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("cannot resolve the frontmatter claim", result.stderr)
+        self.assertIn(poisoned, result.stderr)
+        self.assertIn("fatal: stub: broken object store", result.stderr)
+        self.assertNotIn("scripts/adr_mint.py", result.stderr)
 
     def test_claim_subject_for_another_number_fails(self) -> None:
         sha = self.fx.claim("0300")
@@ -688,7 +757,7 @@ class InternalMarkerTests(FixtureTestBase):
         run_git(self.fx.work, "branch", "-f", "feature", "main", env=GIT_ENV)
         result = self.fx.run("--base", "main")
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn("docs/adr/0002-legacy-decision.md:7", result.stderr)
+        self.assertIn("docs/adr/0002-legacy-decision.md:12", result.stderr)
         self.assertIn("attribution-phrase", result.stderr)
         self.assertNotIn("on an added line", result.stderr)
 

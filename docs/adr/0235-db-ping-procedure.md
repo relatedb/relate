@@ -1,11 +1,22 @@
-# ADR-0235: Built-in `db.ping()` procedure
+---
+type: adr
+area: engine
+name: 0235-db-ping-procedure
+status: accepted
+tags:
+  - procedures
+title: Built-in `db.ping` procedure
+REFERENCES:
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0232-network-surfaces-charter]]"
+---
 
-Status: Accepted
+# ADR-0235: Built-in `db.ping()` procedure
 
 ## Context
 
 Neo4j Browser probes connectivity with `CALL db.ping()` — against
-CypherLite's HTTP Query API surface (ADR-0232 §3) this failed with an
+CypherLite's HTTP Query API surface ([ADR-0232](./0232-network-surfaces-charter.md) §3) this failed with an
 unknown-procedure error, breaking Browser's connection check. `db.ping` is
 a standard built-in in Neo4j (community included), so the dialect floor
 arguably already implies it; the openCypher TCK does not cover it.
@@ -15,7 +26,7 @@ arguably already implies it; the openCypher TCK does not cover it.
 Add `db.ping` as a built-in read procedure: `CALL db.ping()` yields one
 column, `success` (BOOLEAN), and returns exactly one row, `success: true`
 — reaching the procedure means the database answered. It is listed in
-`SHOW PROCEDURES`, works on every fixed namespace (ADR-0116), and is
+`SHOW PROCEDURES`, works on every fixed namespace ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)), and is
 executable by every surface. The result shape is the connectivity contract
 Browser relies on; no timing or load detail is fabricated.
 

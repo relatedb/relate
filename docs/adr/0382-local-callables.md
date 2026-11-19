@@ -1,8 +1,18 @@
+---
+type: adr
+area: cypher
+claim: 9aeddde647d1092b1dfdb998cd197fbea79bfaa6
+name: 0382-local-callables
+status: accepted
+tags:
+  - dialect
+title: Local callables behind the `local-callables` gate
+REFERENCES:
+  - "[[adr/0257-query-input-limits]]"
+  - "[[adr/0371-preview-feature-gating]]"
+---
+
 # ADR-0382: Local callables behind the `local-callables` gate
-
-Status: Accepted
-
-Claim: 9aeddde647d1092b1dfdb998cd197fbea79bfaa6
 
 ## Context
 
@@ -15,7 +25,7 @@ call them later in the same compilation unit: a `<definition block>` of
 `<statement block>` (the top level or any braced nested body), parameters
 are `<name> [ :: <type> ] [ = <default> ]`, and call sites are the
 existing `<named procedure call>` (`Call name(args) YIELD ...`) and
-`<function invocation>` (`name(args)`). Per ADR-0371 the construct ships
+`<function invocation>` (`name(args)`). Per [ADR-0371](./0371-preview-feature-gating.md) the construct ships
 behind the already-reserved `local-callables` row of the `CYPHERLITE_PREVIEW`
 registry.
 
@@ -39,7 +49,7 @@ Implement local callables as a parse-plus-rewrite, gated, in three layers:
   plain identifier tokens (`DEFINE` only when immediately followed by
   `PROCEDURE`/`FUNCTION`, so `define` stays a usable variable name).
   The definition block parses at the head of
-  `parse_statement_block_at_current_depth` — the one ADR-0257 choke point
+ `parse_statement_block_at_current_depth` — the one [ADR-0257](./0257-query-input-limits.md) choke point
   every top-level and braced statement-block parse funnels through, so
   definitions land in exactly the grammar's positions and definition
   nesting is `block_depth`-guarded like every other nested-body family
@@ -71,7 +81,7 @@ Implement local callables as a parse-plus-rewrite, gated, in three layers:
   nothing else). After the resolver, no `DEFINE` block and no local
   invocation remains: the planner and executor never see a local
   callable.
-- **Gate**: the engine's statement admission (the ADR-0371 preview entry)
+- **Gate**: the engine's statement admission (the [ADR-0371](./0371-preview-feature-gating.md) preview entry)
   fails closed with the authored error on any `DEFINE` unless
   `CYPHERLITE_PREVIEW` enables `local-callables` — the same admission
   path as the `hybrid-search` gate. Visibility is structural: a
@@ -111,7 +121,7 @@ unknown-callable errors.
   (`NEXT`/`USE`/`Let`/`FILTER`/`FINISH`).
 - **Gate at the parser** (reject `DEFINE` unless a flag is threaded into
   `cypherlite-parser`). Rejected: the parser is gate-free by design
-  (ADR-0371); the hybrid-search `COMBINE` gate pattern — detect the
+ ([ADR-0371](./0371-preview-feature-gating.md)); the hybrid-search `COMBINE` gate pattern — detect the
   construct in the AST at the front's preview entry — keeps one
   admission path and one fail-closed authored error.
 

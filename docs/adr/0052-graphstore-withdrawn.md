@@ -1,8 +1,18 @@
+---
+type: adr
+area: engine
+name: 0052-graphstore-withdrawn
+status: accepted
+tags:
+  - storage
+title: GraphStore withdrawn
+REFERENCES:
+  - "[[adr/0053-cypherlite-product-names]]"
+  - "[[adr/0080-cli-pull-command]]"
+  - "[[adr/0548-query-engine-seam]]"
+---
+
 # ADR 0052: GraphStore withdrawn
-
-## Status
-
-Accepted
 
 ## Context
 
@@ -41,7 +51,7 @@ with the three documented skips.
 
 ## Later references
 
-- [ADR-0053](0053-cypherlite-product-names.md) names the remaining runtime crates
+- [ADR-0053](./0053-cypherlite-product-names.md) names the remaining runtime crates
   and CLI as CypherLite.
 - Correction to the Decision crate bullet: `cypherlite-storage` still exists.
   Its GraphStore-era implementation was deleted and replaced by the current
@@ -50,7 +60,7 @@ with the three documented skips.
   `cypherlite-lance`, and `cypherlite-sync` are deleted; `cypherlite-storage`
   is deleted and replaced by the new WAL/checkpoint implementation under the
   same crate name."
-- [ADR-0080](0080-cli-pull-command.md) returns Neo4j/Aura subgraph pull on
+- [ADR-0080](./0080-cli-pull-command.md) returns Neo4j/Aura subgraph pull on
   `cypherlite::Database` as the positional `cypherlite pull` command (HTTP
   Query API v2, CREATE + checkpoint). It is not GraphStore revival.
 - This ADR was accepted without an "Alternatives considered" section. Recorded
@@ -65,5 +75,5 @@ with the three documented skips.
   - **Delete the `cypherlite-storage` crate outright** — rejected: the new
     WAL + Parquet-checkpoint storage stack needs a home; only the old
     implementation was gutted, and the crate name was kept.
-- [ADR-0548](0548-query-engine-seam.md) is not a second product runtime.
+- [ADR-0548](./0548-query-engine-seam.md) is not a second product runtime.
   The language front end stays shared and one engine implements it.

@@ -1,11 +1,21 @@
-# ADR-0222: JavaScript tagged-template queries
+---
+type: adr
+area: surface
+name: 0222-javascript-tagged-template-queries
+status: accepted
+tags:
+  - clients
+title: JavaScript tagged-template queries
+REFERENCES:
+  - "[[adr/0216-javascript-client-ergonomics]]"
+---
 
-Status: Accepted
+# ADR-0222: JavaScript tagged-template queries
 
 ## Context
 
 LABS-291 (item 11). The Node client (`clients/javascript`,
-ADR-0216) takes Cypher as a string plus a separate params object. The
+[ADR-0216](./0216-javascript-client-ergonomics.md)) takes Cypher as a string plus a separate params object. The
 idiomatic JavaScript convenience for this shape is a tagged template:
 
 ```js

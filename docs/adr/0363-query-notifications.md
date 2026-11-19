@@ -1,11 +1,26 @@
-# ADR-0363: Query notifications: vocabulary and transport
+---
+type: adr
+area: engine
+claim: 43ca09bd9b545e0b54a88119f2e03eaa69b93fe6
+name: 0363-query-notifications
+status: proposed
+tags:
+  - observability
+title: "Query notifications: vocabulary and transport"
+REFERENCES:
+  - "[[adr/0344-query-plan-node-tree-and-per-operator-metrics]]"
+  - "[[adr/0345-plan-surface-alignment-cli-bolt-http]]"
+  - "[[adr/0348-profile-metric-fields-db-hits-memory-bytes]]"
+  - "[[adr/0374-plan-artifacts-on-query-result]]"
+  - "[[adr/0535-hint-notification-category]]"
+  - "[[adr/0606-label-less-scan-warning-carries-no-index]]"
+---
 
-Status: Proposed
-Claim: 43ca09bd9b545e0b54a88119f2e03eaa69b93fe6
+# ADR-0363: Query notifications: vocabulary and transport
 
 ## Context
 
-ADR-0344/0348 gave `EXPLAIN` and `PROFILE` a structured `PlanNode` tree with
+[ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md)/[ADR-0348](./0348-profile-metric-fields-db-hits-memory-bytes.md) gave `EXPLAIN` and `PROFILE` a structured `PlanNode` tree with
 per-operator estimates, metrics and typed warnings (`EstimationMiss`,
 `CartesianProduct`, `AllNodesScan{index}`). Those warnings render in the plan
 table's `Warnings` column and footer and ride the plan wire form, but they are
@@ -33,7 +48,7 @@ The facts the design starts from:
   keys `code`, `description`, `severity`, `title`, `position`, `category`,
   `position` null when absent, and omits the key when empty.
 - The engine builds a plan tree only for `EXPLAIN`/`PROFILE`
-  (`explain.rs`; ADR-0344 decision 3). The plain path — including
+ (`explain.rs`; [ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md) decision 3). The plain path — including
   `Connection::plan_gate_classify`, which plans every statement but builds no
   tree — does no plan-tree work. Bolt negotiates 4.4 only (`protocol.rs`);
   HTTP's success body is `success_envelope` in `query_api.rs`.
@@ -99,7 +114,7 @@ The facts the design starts from:
    property-key walk, no allocation; `QueryResult.notifications` is empty
    there. `plan_gate_classify` continues to plan every statement for
    admission and query-type classification but builds no tree, so it derives
-   no list. ADR-0344's opt-in budget stays intact: a plain run pays nothing
+ no list. [ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md)'s opt-in budget stays intact: a plain run pays nothing
    for a feature only `EXPLAIN`/`PROFILE` consumers read.
 
 4. **Operator-scoped kinds.** `CartesianProduct`,
@@ -108,7 +123,7 @@ The facts the design starts from:
    pattern, operator and estimate facts at tree construction, each carrying
    its operator's `PlanNode.id` as `operator_id`. `EstimationMiss` is
    `PROFILE`-only (it needs actual rows) and is stamped where the metrics
-   are, from the same 10x policy the ratio cell's `!` reads (ADR-0348). The
+ are, from the same 10x policy the ratio cell's `!` reads ([ADR-0348](./0348-profile-metric-fields-db-hits-memory-bytes.md)). The
    three existing warnings keep their per-node `warnings` placement; the
    newer operator-scoped kinds do not join the plan table's `Warnings`
    column (decision 8).
@@ -254,7 +269,7 @@ The facts the design starts from:
 
 - Notifications on every run — rejected: deriving the list on the plain
   execution path forces the catalog/property-key walks and the list
-  allocation into the hot path for every statement, contradicting ADR-0344's
+ allocation into the hot path for every statement, contradicting [ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md)'s
   opt-in budget and the decision that plain runs do no notification work.
 - An extra `remedy` key on Bolt and HTTP — rejected: drivers and Browser
   render the reference key set; `remedy` is neither Neo4j's nor part of the
@@ -278,7 +293,7 @@ The facts the design starts from:
   re-derive the same vocabulary and text; one flat list beside the tree is
   the transport unit.
 - Replacing the plan table's warnings with the notification list — rejected:
-  it breaks the accepted ADR-0344/0345 plan presentation and its pinned
+ it breaks the accepted [ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md)/[ADR-0345](./0345-plan-surface-alignment-cli-bolt-http.md) plan presentation and its pinned
   tests, and loses the per-operator association in the table; the by-kind
   partition keeps both.
 - Treating every pattern and every property access as unknown-name evidence
@@ -325,16 +340,16 @@ The facts the design starts from:
 
 ## Later references
 
-- ADR-0374: decision 7's two sibling fields (`plan` plus
+- [ADR-0374](./0374-plan-artifacts-on-query-result.md): decision 7's two sibling fields (`plan` plus
   `notifications: Vec<Notification>`) become one `QueryResult.plan:
   Option<Box<PlanArtifacts>>` artifact carrying `root` and `notifications`,
   read through `plan_root()`/`notifications()`; the derivation, ordering,
   dedup and transport decisions above are unchanged.
-- ADR-0535: the vocabulary gains the `HINT` category (ranked after
+- [ADR-0535](./0535-hint-notification-category.md): the vocabulary gains the `HINT` category (ranked after
   `SCHEMA` in the decision 6 order) with the two planner-hint kinds
   `HintedIndexNotFound` (`01N31`) and `JoinHintUnfulfillable` (`01N30`),
   per this ADR's own "a new namespace or category is a new ADR"
   consequence.
-- ADR-0606: `AllNodesScan` becomes a bare warning with no index payload; the
+- [ADR-0606](./0606-label-less-scan-warning-carries-no-index.md): `AllNodesScan` becomes a bare warning with no index payload; the
   suggestion it named could never serve a label-less pattern, so the text
   advises adding a label instead.

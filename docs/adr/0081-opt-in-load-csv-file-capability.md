@@ -1,8 +1,21 @@
-# 0081. Opt-in, rooted local-file capability for LOAD CSV
+---
+type: adr
+area: engine
+date: 2026-09-23
+deciders: CypherLite maintainers
+name: 0081-opt-in-load-csv-file-capability
+status: proposed
+tags:
+  - load
+  - security
+title: Opt-in, rooted local-file capability for LOAD CSV
+REFERENCES:
+  - "[[adr/0108-load-csv-open-then-verify]]"
+  - "[[adr/0257-query-input-limits]]"
+  - "[[adr/0259-query-execution-stack-provisioning]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-23
-- **Deciders**: CypherLite maintainers
+# 0081. Opt-in, rooted local-file capability for LOAD CSV
 
 ## Context
 
@@ -11,7 +24,7 @@ and reads them with `std::fs::read_to_string`. A query can read arbitrary
 files, block on `/dev/zero` or a FIFO, amplify reads by repeating the same
 source across input rows, and receive OS error text containing filesystem
 paths (LABS-78; security-review handoff stream 2). This applies to queries
-from every client, including Bolt. ADR-0257 bounds query *text* and ADR-0259
+from every client, including Bolt. [ADR-0257](./0257-query-input-limits.md) bounds query *text* and [ADR-0259](./0259-query-execution-stack-provisioning.md)
 provisions its execution stack; neither limits the filesystem access or bytes
 read by an executing query.
 
@@ -123,13 +136,13 @@ network request and does not enable other URLs or local filesystem access.
 
 ## Later references
 
-ADR-0108 closes the gap documented in the second Consequences bullet above,
+[ADR-0108](./0108-load-csv-open-then-verify.md) closes the gap documented in the second Consequences bullet above,
 which stated that canonicalization "does not make inspection and opening
 atomic" and that "atomic directory-relative opening would require a separate
-design." ADR-0108
+design." [ADR-0108](./0108-load-csv-open-then-verify.md)
 records the canonical target's physical file identity at validation, opens it
 with `O_NOFOLLOW` on Unix, and requires the opened handle's identity to equal
 the recorded one before the bounded read, denying with the generic `LOAD CSV
-file unavailable` on mismatch. The remaining ADR-0081 rules (root
+file unavailable` on mismatch. The remaining [ADR-0081](./0081-opt-in-load-csv-file-capability.md) rules (root
 confinement, regular-file requirement, byte cap, statement memoization and
 generic errors) are unchanged.

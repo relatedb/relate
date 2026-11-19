@@ -1,8 +1,20 @@
+---
+type: adr
+area: cli
+claim: c47ec0e106a329d76d49be8245f51cdc92602ffe
+name: 0501-drop-token-schedule
+status: proposed
+tags:
+  - memory
+  - output
+title: Receipts report workspace memory and carry no token schedule
+REFERENCES:
+  - "[[adr/0428-embeddable-http-query-api]]"
+  - "[[adr/0440-follower-writer-toggle]]"
+  - "[[adr/0452-workspace-limit-enables-admission]]"
+---
+
 # ADR-0501: Receipts report workspace memory and carry no token schedule
-
-Status: Proposed
-
-Claim: c47ec0e106a329d76d49be8245f51cdc92602ffe
 
 ## Context
 
@@ -10,7 +22,7 @@ Admission and charging are logical workspace bytes. `--concurrent-logical-worksp
 caps the shared pool, and a statement's receipt is the high-water mark of
 the workspace it held (`peak_logical_bytes`). One quantum is 4096 bytes
 (`CHARGE_QUANTUM_BYTES`). That replaced the old token unit, where one
-token was one quantum (the 0.14 rename, ADR-0452).
+token was one quantum (the 0.14 rename, [ADR-0452](./0452-workspace-limit-enables-admission.md)).
 
 The receipt still published a schedule name beside that peak:
 `ExecutionReceipt.token_schedule` and `TokenEstimate.token_schedule` were
@@ -53,5 +65,5 @@ off still attaches no receipt.
 - `docs/design/token-budgets.md`, `docs/api/http/spec.md`,
   `docs/api/bolt/spec.md`, and `docs/api/rust/spec.md` describe the peak
   and not a schedule.
-- ADR-0428's `metrics.tokenSchedule` and ADR-0440's consequence that names
+- [ADR-0428](./0428-embeddable-http-query-api.md)'s `metrics.tokenSchedule` and [ADR-0440](./0440-follower-writer-toggle.md)'s consequence that names
   it describe the wire those ADRs shipped. This ADR removes that key.

@@ -1,7 +1,19 @@
-# ADR-0575: Shortest-path expressions require bound endpoint nodes
+---
+type: adr
+area: cypher
+claim: 46b4e1084ba8e7b8051484567b9f8014f12a9d0e
+name: 0575-shortest-expressions-require-bound-endpoints
+status: proposed
+tags:
+  - pattern-matching
+  - semantics
+title: Shortest-path expressions require bound endpoint nodes
+REFERENCES:
+  - "[[adr/0189-shared-shortest-path-search]]"
+  - "[[adr/0568-shortest-selectors-as-physical-operators]]"
+---
 
-Status: Proposed
-Claim: 46b4e1084ba8e7b8051484567b9f8014f12a9d0e
+# ADR-0575: Shortest-path expressions require bound endpoint nodes
 
 ## Context
 
@@ -9,8 +21,8 @@ Claim: 46b4e1084ba8e7b8051484567b9f8014f12a9d0e
 pattern and as an expression inside `RETURN`, `WITH` or a predicate. The
 expression form historically accepted anonymous or unbound endpoints and
 ran a layered search from the start pattern until it reached a node
-matching the end pattern (ADR-0189). The expression form now lowers onto
-the same selector pattern as the clause form (ADR-0568), whose partitions
+matching the end pattern ([ADR-0189](./0189-shared-shortest-path-search.md)). The expression form now lowers onto
+the same selector pattern as the clause form ([ADR-0568](./0568-shortest-selectors-as-physical-operators.md)), whose partitions
 are the row's bound start and end nodes; an unbound endpoint has no
 partition to answer.
 
@@ -35,7 +47,7 @@ remain available.
 
 - **Keep the open-endpoint expression shapes.** Rejected: live rejects
   the syntax, the lowering has no partition for an unbound end, and a
-  second search driver would have to answer it — the divergence ADR-0568
+ second search driver would have to answer it — the divergence [ADR-0568](./0568-shortest-selectors-as-physical-operators.md)
   removes.
 - **Gate the narrowing behind a preview feature.** Rejected: a preview
   gate widens the floor's accepted syntax, while this is a compile-time
@@ -47,12 +59,12 @@ remain available.
 
 ## Consequences
 
-- ADR-0189's expression-form caller list is narrowed: the unbound-end and
+- [ADR-0189](./0189-shared-shortest-path-search.md)'s expression-form caller list is narrowed: the unbound-end and
   open-start shapes it specifies are rejected at compile time. The clause
   route and the shared search module are unchanged.
-- ADR-0568's lowering contract is unchanged for bound endpoint pairs.
+- [ADR-0568](./0568-shortest-selectors-as-physical-operators.md)'s lowering contract is unchanged for bound endpoint pairs.
 - The expression form's open-end search was already removed by the
-  ADR-0568 lowering; this decision records the validation rule that keeps
+ [ADR-0568](./0568-shortest-selectors-as-physical-operators.md) lowering; this decision records the validation rule that keeps
   the shape out.
 - Queries that relied on the old open-endpoint expression form must bind
   both endpoints.

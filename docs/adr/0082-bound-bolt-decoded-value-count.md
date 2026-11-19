@@ -1,8 +1,20 @@
-# 0082. Bound the number of decoded Bolt values per message
+---
+type: adr
+area: surface
+date: 2026-09-23
+deciders: CypherLite maintainers
+name: 0082-bound-bolt-decoded-value-count
+status: proposed
+tags:
+  - bolt
+  - security
+title: Bound the number of decoded Bolt values per message
+REFERENCES:
+  - "[[adr/0577-over-budget-bolt-message-fails-the-request]]"
+  - "[[adr/0579-bolt-decode-budget-counts-bytes]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-23
-- **Deciders**: CypherLite maintainers
+# 0082. Bound the number of decoded Bolt values per message
 
 ## Context
 
@@ -51,7 +63,7 @@ stream (LABS-71/80/88); Bolt PULL governance belongs to the server stream
 
 ## Later references
 
-- ADR-0577: an over-budget message fails its request with a FAILURE and keeps
+- [ADR-0577](./0577-over-budget-bolt-message-fails-the-request.md): an over-budget message fails its request with a FAILURE and keeps
   the connection open instead of closing it.
-- ADR-0579: the budget counts decoded bytes instead of values, superseding the
+- [ADR-0579](./0579-bolt-decode-budget-counts-bytes.md): the budget counts decoded bytes instead of values, superseding the
   counting rule here.

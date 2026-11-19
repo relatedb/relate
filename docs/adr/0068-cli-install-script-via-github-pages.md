@@ -1,13 +1,29 @@
-# 0068. CLI install script distributed as a GitHub Pages static asset
+---
+type: adr
+area: infra
+date: 2026-09-19
+deciders: CypherLite maintainers
+name: 0068-cli-install-script-via-github-pages
+status: accepted
+tags:
+  - release
+title: CLI install script distributed as a GitHub Pages static asset
+REFERENCES:
+  - "[[adr/0067-release-versioning-and-process]]"
+  - "[[adr/0115-sshsig-release-signing]]"
+  - "[[adr/0250-releases-json-update-discovery]]"
+  - "[[adr/0431-cli-extension-distribution]]"
+  - "[[adr/0571-installer-resolves-via-releases-json]]"
+  - "[[adr/0585-installer-downloads-via-direct-route]]"
+  - "[[adr/0586-windows-powershell-installer]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-19
-- **Deciders**: CypherLite maintainers (Linear LABS-25)
+# 0068. CLI install script distributed as a GitHub Pages static asset
 
 ## Context
 
 CypherLite’s CLI ships as raw release binaries on GitHub Releases (see
-ADR-0067 for the release and versioning policy). Today a user must find the
+[ADR-0067](./0067-release-versioning-and-process.md) for the release and versioning policy). Today a user must find the
 right asset on the releases page, download it by hand, `chmod +x` it, and place
 it on `PATH`. Linear issue **LABS-25** ("CLI install script",
 <https://linear.app/neo4j/issue/LABS-25/cli-install-script>) asks for a
@@ -24,7 +40,7 @@ binaries, not tarballs).
 
 Some facts about the public surface constrain the design:
 
-- The canonical home is `neo4j-labs/cypherlite` (ADR-0067, and the
+- The canonical home is `neo4j-labs/cypherlite` ([ADR-0067](./0067-release-versioning-and-process.md), and the
   fail-closed `release-owner` job in `.github/workflows/release.yml`). Project
   Pages sites are served from `<org>.github.io/<repo>`, so the site lives at
   `https://neo4j-labs.github.io/cypherlite/`. There is **no** `cypherlite`
@@ -47,7 +63,7 @@ implemented, per the repository’s decision-log rule.
 ## Decision
 
 Distribute the CLI install script as a static file on the existing GitHub Pages
-docs site, using the release binaries ADR-0067 already defines.
+docs site, using the release binaries [ADR-0067](./0067-release-versioning-and-process.md) already defines.
 
 1. **URL.** The canonical installer URL is
    `https://neo4j-labs.github.io/cypherlite/install.sh`. It is **not**
@@ -101,7 +117,7 @@ distribution decision.
 - **Shipping tarball assets to match the reference tool** — rejected: it would
   require changing `release.yml`’s asset shapes (currently raw binaries plus
   `SHA256SUMS`) with no installer benefit. The raw binary plus checksum
-  manifest is simpler, is already the release contract ADR-0067 fixes, and the
+ manifest is simpler, is already the release contract [ADR-0067](./0067-release-versioning-and-process.md) fixes, and the
   installer can download the binary directly.
 - **A PowerShell installer for Windows** — rejected: there is no reference
   implementation to model it on and it adds an untested surface. The README’s
@@ -130,34 +146,34 @@ distribution decision.
 - The release asset contract is now load-bearing for two consumers — the
   README’s manual download table and this installer. Changing binary names,
   the `SHA256SUMS` format, or the release workflow’s asset shapes requires a
-  new ADR referencing this one and ADR-0067.
+ new ADR referencing this one and [ADR-0067](./0067-release-versioning-and-process.md).
 - Choosing a different hosting mechanism, URL, install directory, platform
   scope, asset shape, or auth model requires a new ADR referencing this one.
 
 ## Later references
 
-ADR-0115 adds a release-signing step to this asset contract: the release
+[ADR-0115](./0115-sshsig-release-signing.md) adds a release-signing step to this asset contract: the release
 publishes an OpenSSH SSHSIG signature `SHA256SUMS.sig` over `SHA256SUMS`
 (Ed25519, namespace `cypherlite-release`), and `install.sh` verifies it with
 stock `ssh-keygen` against a pinned public key **before** the checksum step,
 failing closed when the signature is missing or invalid. The installer's
 hosting, URL, install directory, and platform scope are unchanged.
 
-ADR-0571 changes the resolution mechanism behind the consequence that the
+[ADR-0571](./0571-installer-resolves-via-releases-json.md) changes the resolution mechanism behind the consequence that the
 script must read the latest release at runtime: the release tag now comes
-from the website's `releases.json` (ADR-0250) instead of the GitHub API's
+from the website's `releases.json` ([ADR-0250](./0250-releases-json-update-discovery.md)) instead of the GitHub API's
 latest-release endpoint, because the extension channel publishes full
-releases into the same repository (ADR-0431) and that endpoint names
+releases into the same repository ([ADR-0431](./0431-cli-extension-distribution.md)) and that endpoint names
 whichever release was published last. The hosting, URL, install directory,
 platform scope, and the asset-request auth model of this decision are
 unchanged.
 
-ADR-0585 supersedes §6's authentication model for the installer: the
+[ADR-0585](./0585-installer-downloads-via-direct-route.md) supersedes §6's authentication model for the installer: the
 repository is public, `install.sh` downloads every asset from the direct
 release route unauthenticated, reads no `GITHUB_TOKEN`, and consults no
 GitHub API endpoint; §7's token-prefixed invocation is historical.
 
-ADR-0586 lifts §3's macOS/Linux-only platform scope for Windows: a
+[ADR-0586](./0586-windows-powershell-installer.md) lifts §3's macOS/Linux-only platform scope for Windows: a
 PowerShell installer, `install.ps1`, ships beside `install.sh` with the same
 resolution, transport, and fail-closed verification chain, and installs to
 `%LOCALAPPDATA%\Programs\relate`. `install.sh` itself still installs only on

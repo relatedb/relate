@@ -1,8 +1,16 @@
+---
+type: adr
+area: infra
+claim: e6fe1fb5f36c42014715ddbcc50a44b0dfad5b3c
+name: 0482-spec-harness-coverage-lane
+status: accepted
+tags:
+  - ci
+  - conformance
+title: The spec-harness coverage lane
+---
+
 # ADR-0482: The spec-harness coverage lane
-
-Status: Accepted
-
-Claim: e6fe1fb5f36c42014715ddbcc50a44b0dfad5b3c
 
 ## Context
 

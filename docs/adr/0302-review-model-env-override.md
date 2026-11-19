@@ -1,13 +1,23 @@
-# ADR-0302: Review-agent models are overridable via environment variables
+---
+type: adr
+area: infra
+claim: ef2714799e6705c36e2e68c44443744911ab4e60
+date: 2026-10-15
+deciders: CypherLite maintainers
+name: 0302-review-model-env-override
+status: accepted
+tags:
+  - review
+title: Review-agent models are overridable via environment variables
+REFERENCES:
+  - "[[adr/0258-automated-pr-reviews]]"
+---
 
-Status: Accepted
-Claim: ef2714799e6705c36e2e68c44443744911ab4e60
-Date: 2026-10-15
-Deciders: CypherLite maintainers (Linear LABS-320)
+# ADR-0302: Review-agent models are overridable via environment variables
 
 ## Context
 
-ADR-0258 pinned `fireworks-ai/accounts/fireworks/models/kimi-k3` as a
+[ADR-0258](./0258-automated-pr-reviews.md) pinned `fireworks-ai/accounts/fireworks/models/kimi-k3` as a
 literal in the review automation: the shared reusable workflow
 (`.github/workflows/opencode-review-reusable.yml`, which backs all three PR
 review kinds — stellar, rust, security) and the stellar night-shift fixer
@@ -51,9 +61,9 @@ picks the tier; in CI the pass inherits the run-level model (below).
 The two run-level variables default to the Fireworks router
 `fireworks-ai/accounts/fireworks/routers/glm-fast-latest`.
 
-That default switches away from ADR-0258's
+That default switches away from [ADR-0258](./0258-automated-pr-reviews.md)'s
 `fireworks-ai/accounts/fireworks/models/kimi-k3` pin at the maintainers'
-request. ADR-0258 rejected a Fireworks router
+request. [ADR-0258](./0258-automated-pr-reviews.md) rejected a Fireworks router
 (`accounts/fireworks/routers/kimi-latest`) because a router tracks future
 releases, so the review gate's model drifts and the gate stops being
 reproducible. That drift is accepted here: the default follows GLM fast
@@ -82,7 +92,7 @@ dispatchers that can set a per-dispatch model read the variables per the
 skill's dispatch guidance and pass the value in their own model syntax
 (an OpenCode `provider/model`, a Claude Code alias such as `haiku`).
 
-This is a deliberate amendment to ADR-0258's pinned-model decision, not a
+This is a deliberate amendment to [ADR-0258](./0258-automated-pr-reviews.md)'s pinned-model decision, not a
 revocation of its runner, skill, or gate decisions: the model becomes a
 default value rather than a hard constant, and that default is the router
 above. The implementation — workflow steps, the pass-model config
@@ -118,7 +128,7 @@ precedence in the resolution order.
   a strong model while boundaries and comparison are deliberately cheap —
   and it would couple unrelated surfaces (the PR reviews and the
   night-shift fixer) to a single knob.
-- **Keep ADR-0258's kimi-k3 pin as the default and run GLM through the
+- **Keep [ADR-0258](./0258-automated-pr-reviews.md)'s kimi-k3 pin as the default and run GLM through the
   override** — rejected: the maintainers want GLM fast as the standing
   default, and a permanently set override would move the effective default
   into repository settings, outside review.
@@ -133,7 +143,7 @@ precedence in the resolution order.
 - Swapping a review model becomes a repository-setting change: set a
   secret or variable and re-run; no code edit, no review diff.
 - With nothing set, the PR reviews and the night-shift fixer run on the
-  `glm-fast-latest` router instead of ADR-0258's kimi-k3 pin, so review
+ `glm-fast-latest` router instead of [ADR-0258](./0258-automated-pr-reviews.md)'s kimi-k3 pin, so review
   output can differ from earlier rounds.
 - The router tracks GLM fast releases, so the unset gate's model can
   change between runs with no tracked change; a reproducible gate needs a

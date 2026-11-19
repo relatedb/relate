@@ -1,13 +1,30 @@
-# 0094. Preflight deterministic WAL acceptance before append
+---
+type: adr
+area: engine
+date: 2026-09-24
+deciders: CypherLite maintainers
+name: 0094-preflight-wal-acceptance
+status: proposed
+tags:
+  - wal
+title: Preflight deterministic WAL acceptance before append
+REFERENCES:
+  - "[[adr/0019-group-commit-shared-fsync]]"
+  - "[[adr/0020-segmented-wal-concurrent-checkpoint]]"
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0086-bounded-persistence-input]]"
+  - "[[adr/0090-native-reset-role-and-durability]]"
+  - "[[adr/0095-durable-checkpoint-schema-theater]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0558-encode-commit-redo-once-at-admission]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-24
-- **Deciders**: CypherLite maintainers
+# 0094. Preflight deterministic WAL acceptance before append
 
 ## Context
 
-ADR-0019 batches independent WAL records under one durability barrier, then
-applies their redo in order. ADR-0086 limits each encoded WAL JSON payload to
+[ADR-0019](./0019-group-commit-shared-fsync.md) batches independent WAL records under one durability barrier, then
+applies their redo in order. [ADR-0086](./0086-bounded-persistence-input.md) limits each encoded WAL JSON payload to
 64 MiB and refuses an oversized *individual* record before writing it.
 `flush_group` currently appends each eligible slot as it walks the batch; an
 oversized second slot can make the leader return an error to every waiter even
@@ -17,29 +34,29 @@ though the first slot's bytes were appended (and may survive reopen). Similarly,
 can fail only after the record is durable. An endpoint deleted earlier in the
 same redo has the same problem. ID validation alone cannot establish that redo
 is applicable. A post-sync apply failure may also follow malformed index detail
-options or invalid catalog operations. ADR-0086 and the ID guard do not make
+options or invalid catalog operations. [ADR-0086](./0086-bounded-persistence-input.md) and the ID guard do not make
 the whole group or replicated record deterministically safe to accept.
 
 The group contains independent *records*, not an atomic WAL transaction.
 Partial writes, failed barriers, and failures after a barrier have different
 outcomes from a known invalid record: an I/O error does not prove that the
-record is absent or that its bytes are not durable. ADR-0020 permits snapshot
+record is absent or that its bytes are not durable. [ADR-0020](./0020-segmented-wal-concurrent-checkpoint.md) permits snapshot
 dumping while writers proceed, so fencing only future checkpoint starts does
 not stop a previously pinned worker from publishing. The storage-hardening
 review also found a separate destructive-reset alias issue; the reset policy
-is amended in Proposed ADR-0090, not decided by this WAL ADR.
+is amended in Proposed [ADR-0090](./0090-native-reset-role-and-durability.md), not decided by this WAL ADR.
 
 ## Decision
 
 1. **One pre-append acceptance boundary.** While holding the serialization
    boundary covering WAL order and the graph state being checked, select the
-   group's candidate slots in queue order with ADR-0019's existing conflict
+ group's candidate slots in queue order with [ADR-0019](./0019-group-commit-shared-fsync.md)'s existing conflict
    checks against the graph and earlier eligible slots and the existing
    per-slot memory-capacity reservation policy. Conflict and capacity errors
    stay per waiter; those slots do not enter the WAL preflight. Assign the
    would-be commit timestamps and LSNs in that same order, rejecting invalid
    timestamps, LSN overflow, unsupported IDs, serialization errors and an
-   encoded JSON payload outside ADR-0086's 1..=64 MiB range **for every
+ encoded JSON payload outside [ADR-0086](./0086-bounded-persistence-input.md)'s 1..=64 MiB range **for every
    candidate before the first append**. Include the exact prospective LSN,
    timestamp and ops in each size calculation. Preflight ordered redo
    applicability against the stable graph plus earlier candidate operations
@@ -72,7 +89,7 @@ is amended in Proposed ADR-0090, not decided by this WAL ADR.
    timestamp and all persisted IDs (not only CreateNode/CreateRel); future
    fallible redo variants must extend this validator before they can be
    persisted. Exhaustive `RedoOp` ID preflight remains a single RedoOp-owned
-   rule shared by WAL and graph (the follow-up to ADR-0086); the Graph
+ rule shared by WAL and graph (the follow-up to [ADR-0086](./0086-bounded-persistence-input.md)); the Graph
    validator calls it, rather than reimplementing it. Keep validation free of
    graph mutations and WAL writes. Direct `Graph::apply_redo` calls the same
    validator **before** setting write state or installing any prefix; group
@@ -85,7 +102,7 @@ is amended in Proposed ADR-0090, not decided by this WAL ADR.
     companion is a typed deterministic rejection **before append**; group and
     replicated writes follow the same rule. Preserve the ability to replay
     historical WAL records created before this admission rule: recovery tracks
-    their exact unenforced legacy definitions for ADR-0095 checkpoint omission,
+ their exact unenforced legacy definitions for [ADR-0095](./0095-durable-checkpoint-schema-theater.md) checkpoint omission,
     without granting new direct or replicated writes that exception.
 
    If any candidate fails deterministic preflight, append **none** of the
@@ -95,7 +112,7 @@ is amended in Proposed ADR-0090, not decided by this WAL ADR.
    waiters not yet drained follow the existing leader failure handling. This
    changes only deterministic *batch* failure, not first-committer-wins,
    capacity admission, or the per-record success/one-fsync contract of
-   ADR-0019. A passing batch appends in the planned order, performs its one
+ [ADR-0019](./0019-group-commit-shared-fsync.md). A passing batch appends in the planned order, performs its one
    durability barrier, applies in order and reports success only after that
    barrier and application. Hold the WAL/write serialization boundary across
    preflight, append, sync and graph application for both group and replica;
@@ -157,7 +174,7 @@ is amended in Proposed ADR-0090, not decided by this WAL ADR.
     handle until reopen; deterministic preflight rejection leaves it usable.
     Rotation commits its in-memory segment transition only after the new header
     is written and the append handle opens. A failed new-header write may leave
-    a short highest-segment magic: ADR-0086 permits the tightly scoped recovery
+ a short highest-segment magic: [ADR-0086](./0086-bounded-persistence-input.md) permits the tightly scoped recovery
     after validating the predecessor, but never an in-process retry.
     Set a sticky poisoned state on `Shared` before releasing the serialization
    boundary; return/report a distinguishable uncertain-outcome storage error
@@ -232,7 +249,7 @@ is amended in Proposed ADR-0090, not decided by this WAL ADR.
 ## Alternatives considered
 
 - **Serialize every candidate once into a group-sized `Vec` of JSON bytes.**
-  Rejected: ADR-0086 caps an individual frame, not a group or segment; a large
+ Rejected: [ADR-0086](./0086-bounded-persistence-input.md) caps an individual frame, not a group or segment; a large
   group could retain arbitrarily many 64 MiB payloads on top of the redo and
   invalidate the bounded-memory recovery/write envelope.
 - **Count with an independent hand-written size estimate.** Rejected: JSON
@@ -282,7 +299,7 @@ is amended in Proposed ADR-0090, not decided by this WAL ADR.
 - A deterministic invalid candidate rejects the eligible drained group before
   any WAL byte/LSN changes; conflicts and capacity retain their per-slot
   policy. A passing group still pays one data-segment durability barrier and
-  retains separate record LSNs and ordered commits (ADR-0019).
+ retains separate record LSNs and ordered commits ([ADR-0019](./0019-group-commit-shared-fsync.md)).
 - The counting pass adds serialization CPU, including on serial commits, and
   lengthens WAL-serialization occupancy. Peak *additional* encoded-payload
   memory stays at one <=64 MiB payload rather than scaling with group size;
@@ -290,7 +307,7 @@ is amended in Proposed ADR-0090, not decided by this WAL ADR.
   A commit may wait for a previously running checkpoint before attempting its
   first append; read execution must coordinate with apply/fence publication.
   Measure fraud/identity group-commit throughput, WAL mutex wait, p99 and
-   memory against the ADR-0070 baseline environment before accepting the
+ memory against the [ADR-0070](./0070-docker-baseline-loadtest-environment.md) baseline environment before accepting the
    implementation; do not claim a performance regression is free or freeze a
    host-native envelope.
 - Read admission copies the named schema and full graph-backed SHOW theater state once per statement,
@@ -323,7 +340,7 @@ is amended in Proposed ADR-0090, not decided by this WAL ADR.
   before any frame write, or the write must wait; after poisoning, manifest and
   recycle cut must not advance. Verify reopen/replay recovers the surviving
   prefix without an in-process retry or checkpoint of partial state.
-- ADR-0086's per-record payload bound still applies to direct WAL callers;
+- [ADR-0086](./0086-bounded-persistence-input.md)'s per-record payload bound still applies to direct WAL callers;
   replay and direct graph apply continue validating malformed inputs. Previously
   accepted zero or non-increasing WAL timestamps now fail open/replay rather
   than being applied with inconsistent MVCC visibility. Public
@@ -332,7 +349,7 @@ is amended in Proposed ADR-0090, not decided by this WAL ADR.
 
 ## Later references
 
-ADR-0116 replaces the SHOW DATABASES theater rows with three fixed namespaces:
+[ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) replaces the SHOW DATABASES theater rows with three fixed namespaces:
 `neo4j`, `system` and `system_ontologies`. Read admission still snapshots
 their stored settings with the rest of the schema theater under the
 publication guard.
@@ -343,6 +360,6 @@ publication guard.
   re-checking their size. A group retains each candidate's encoded payload
   until its append consumes it, so pre-append encoded-payload memory scales
   with the eligible group; each payload keeps the 64 MiB bound.
-- ADR-0558 moves the single encoding of a commit's redo to
+- [ADR-0558](./0558-encode-commit-redo-once-at-admission.md) moves the single encoding of a commit's redo to
   admission, so the group leader no longer serializes the ops: it stamps the
   record header into the buffer the committing thread already produced.

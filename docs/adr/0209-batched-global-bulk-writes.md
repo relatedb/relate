@@ -1,18 +1,33 @@
+---
+type: adr
+area: engine
+date: 2026-10-11
+deciders: CypherLite maintainers
+name: 0209-batched-global-bulk-writes
+status: proposed
+tags:
+  - write-path
+title: Batched execution of global bulk writes
+REFERENCES:
+  - "[[adr/0017-client-conflict]]"
+  - "[[adr/0019-group-commit-shared-fsync]]"
+  - "[[adr/0111-engine-bounded-execution]]"
+  - "[[adr/0172-incremental-constraint-validation]]"
+  - "[[adr/0173-overlay-owned-redo-log-and-scratch-index]]"
+---
+
 # 0209. Batched execution of global bulk writes
 
-- **Status**: Proposed
-- **Date**: 2026-10-11
-- **Deciders**: CypherLite maintainers (Linear [LABS-263](https://linear.app/neo4j/issue/LABS-263))
-- **Related**: ADR-0017 (optimistic write conflicts), ADR-0019 (group
-  commit), ADR-0111 (bounded execution: cancellation and snapshot pins),
-  ADR-0172 (incremental constraint validation), ADR-0173 (redo slices)
+- **Related**: [ADR-0017](./0017-client-conflict.md) (optimistic write conflicts), [ADR-0019](./0019-group-commit-shared-fsync.md) (group
+ commit), [ADR-0111](./0111-engine-bounded-execution.md) (bounded execution: cancellation and snapshot pins),
+ [ADR-0172](./0172-incremental-constraint-validation.md) (incremental constraint validation), [ADR-0173](./0173-overlay-owned-redo-log-and-scratch-index.md) (redo slices)
 
 ## Context
 
 A global bulk write — one whose `MATCH` has no selective anchor and whose
 write clause touches every matched entity — runs today as a single giant
 transaction: the whole statement executes against one `WriteScratch`, and
-its entire redo becomes one WAL record (ADR-0019). That breaks down on
+its entire redo becomes one WAL record ([ADR-0019](./0019-group-commit-shared-fsync.md)). That breaks down on
 real workloads:
 
 - `MATCH (n) DETACH DELETE n` on a 417-node store carrying the ~174k
@@ -73,7 +88,7 @@ issued).
        the same writes regardless of batch boundaries, because the
        matched entity set is snapshotted before the first batch and
        `CREATE` output never feeds back into the match).
-   - the catalog holds **no constraints** (ADR-0172): constraint
+ - the catalog holds **no constraints** ([ADR-0172](./0172-incremental-constraint-validation.md)): constraint
      validation is per-transaction, and a mid-statement violation in a
      batched run would leave earlier batches committed. With no
      constraints there is nothing to violate. Statements on a
@@ -90,9 +105,9 @@ issued).
    Phase 2 replays the combinations in chunks of bounded *work* (target
    entities plus, for `DETACH DELETE`, their incident relationships —
    estimated from adjacency degrees), each chunk on a fresh scratch
-   committed through the normal group-commit path (ADR-0019) with the
-   normal conflict check (ADR-0017) and the statement's cancellation
-   token checked per chunk (ADR-0111). Per-chunk writes go through the
+ committed through the normal group-commit path ([ADR-0019](./0019-group-commit-shared-fsync.md)) with the
+ normal conflict check ([ADR-0017](./0017-client-conflict.md)) and the statement's cancellation
+ token checked per chunk ([ADR-0111](./0111-engine-bounded-execution.md)). Per-chunk writes go through the
    same executor clause logic (`create_patterns`, `apply_sets`,
    `resolve_removes`/`apply_resolved_removes`, `delete_value`) the
    unbatched dispatch uses, on rows re-bound to fresh entity values at

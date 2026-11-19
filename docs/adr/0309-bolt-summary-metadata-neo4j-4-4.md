@@ -1,7 +1,26 @@
-# ADR-0309: Bolt result summary metadata matches Neo4j 4.4: t_first on RUN SUCCESS; type, stats, t_last and db on the ending SUCCESS only
+---
+type: adr
+area: surface
+claim: 0a744fbcdf95f3c281d45b97e4ae1fd3d1c87029
+name: 0309-bolt-summary-metadata-neo4j-4-4
+status: proposed
+tags:
+  - bolt
+  - conformance
+title: |-
+  Bolt result summary metadata matches Neo4j 4.4: t_first on RUN SUCCESS; type, stats, t_last and db on the ending SUCCESS only
+REFERENCES:
+  - "[[adr/0117-namespace-selection-apis-and-bolt]]"
+  - "[[adr/0162-query-type-on-result-and-bolt]]"
+  - "[[adr/0224-result-column-types]]"
+  - "[[adr/0310-bolt-bookmarks]]"
+  - "[[adr/0311-bolt-tx-open-results-by-qid]]"
+  - "[[adr/0344-query-plan-node-tree-and-per-operator-metrics]]"
+  - "[[adr/0345-plan-surface-alignment-cli-bolt-http]]"
+  - "[[adr/0357-plan-summary-placement-and-neo4j-plan-args]]"
+---
 
-Status: Proposed
-Claim: 0a744fbcdf95f3c281d45b97e4ae1fd3d1c87029
+# ADR-0309: Bolt result summary metadata matches Neo4j 4.4: t_first on RUN SUCCESS; type, stats, t_last and db on the ending SUCCESS only
 
 ## Context
 
@@ -10,7 +29,7 @@ The LABS-323 probes compared cypherlite-bolt with the latest Neo4j
 F-18, F-19, F-20, F-40) and through the neo4rs driver (D-52 to D-56).
 The summary metadata differs in five ways:
 
-- RUN SUCCESS carries `type` (ADR-0162 item 3) and no `t_first`. Neo4j
+- RUN SUCCESS carries `type` ([ADR-0162](./0162-query-type-on-result-and-bolt.md) item 3) and no `t_first`. Neo4j
   sends `t_first` on RUN SUCCESS and `type` on the SUCCESS that ends the
   result.
 - A PULL SUCCESS that leaves records unread carries `t_last` and `db`
@@ -26,25 +45,25 @@ The summary metadata differs in five ways:
   property counters follow the openCypher TCK's graph diff, not Neo4j's
   update counters.
 
-`columnTypes` on RUN SUCCESS is the ADR-0224 CypherLite extension key. The
+`columnTypes` on RUN SUCCESS is the [ADR-0224](./0224-result-column-types.md) CypherLite extension key. The
 maintainers keep it (F-12 is an accepted divergence).
 
 ## Decision
 
 1. **RUN SUCCESS** is `{fields, columnTypes, t_first}`, plus `qid` inside
-   an explicit transaction (ADR-0311). `t_first` is the engine's
+ an explicit transaction ([ADR-0311](./0311-bolt-tx-open-results-by-qid.md)). `t_first` is the engine's
    `QueryResult.elapsed` in whole milliseconds: the time until the buffered
    result was available. RUN SUCCESS no longer carries `type`. This
-   reverses ADR-0162 item 3.
+ reverses [ADR-0162](./0162-query-type-on-result-and-bolt.md) item 3.
 2. **A page that leaves records unread** (a PULL or DISCARD with `n`
    smaller than the remaining rows) answers exactly `{has_more: true}`.
 3. **The SUCCESS that ends a result** (the PULL or DISCARD that consumes
    its last row) carries `type` (`"r"`, `"w"`, `"rw"` or `"s"`, the
-   ADR-0162 vocabulary, from `QueryResult.query_type`), `t_last` (whole
+ [ADR-0162](./0162-query-type-on-result-and-bolt.md) vocabulary, from `QueryResult.query_type`), `t_last` (whole
    milliseconds spent streaming or discarding the result, summed over its
    PULL and DISCARD messages) and `db` (the namespace the statement ran in,
-   ADR-0117 §7). It adds `stats` when any counter is non-zero, and
-   `bookmark` after an auto-commit statement (ADR-0310). A DISCARD that
+ [ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §7). It adds `stats` when any counter is non-zero, and
+ `bookmark` after an auto-commit statement ([ADR-0310](./0310-bolt-bookmarks.md)). A DISCARD that
    ends a read answers `{type: "r", t_last: 0, db: "neo4j"}` plus the
    bookmark.
 4. **`stats`** holds Neo4j's kebab-case counters, only the non-zero ones:
@@ -127,14 +146,14 @@ maintainers keep it (F-12 is an accepted divergence).
 - HTTP, FFI, Python, MCP and WASM callers now see non-zero schema counters
   and Neo4j's label and property counts. Their docs say so. The TCK side
   effects and PROFILE's `_profile_mutations` keep the graph-diff counters.
-- ADR-0162 gains a Later references note pointing here for item 3.
+- [ADR-0162](./0162-query-type-on-result-and-bolt.md) gains a Later references note pointing here for item 3.
 - Pinned by `tests/compat/scripts/protocol/summary-metadata.bolt` and the
   `protocol_summary_tests.rs` unit tests.
 
 ## Later references
 
-- ADR-0357 adds `t_first` and the `EXPLAIN`/`PROFILE` plan pair
-  (`plan`/`profile`, ADR-0344/0345) to the ending SUCCESS item 3 pins:
+- [ADR-0357](./0357-plan-summary-placement-and-neo4j-plan-args.md) adds `t_first` and the `EXPLAIN`/`PROFILE` plan pair
+ (`plan`/`profile`, [ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md)/[ADR-0345](./0345-plan-surface-alignment-cli-bolt-http.md)) to the ending SUCCESS item 3 pins:
   Neo4j sends `t_first` on both summaries and carries the plan on the
   drained result, so a client that reads only the ending summary
   (cypher-shell) renders its `Time` and the plan from it. Everything else

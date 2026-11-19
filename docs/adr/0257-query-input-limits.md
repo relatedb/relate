@@ -1,9 +1,21 @@
+---
+type: adr
+area: engine
+date: 2026-09-22
+deciders: CypherLite maintainers
+name: 0257-query-input-limits
+status: proposed
+tags:
+  - security
+title: "Query input limits: max query-text size and max nesting depth"
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+---
+
 # 0257. Query input limits: max query-text size and max nesting depth
 
-- **Status**: Proposed
 - **Renumbered**: from 0079 (shared-number cleanup)
-- **Date**: 2026-09-22
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
@@ -23,11 +35,11 @@ query text. Two failure modes were verified in a security review
   stack-overflow abort kills the host process; it cannot be surfaced
   as a recoverable error.
 
-ADR-0042 caps stored-graph growth at commit time. It does not bound
+[ADR-0042](./0042-graph-memory-limit.md) caps stored-graph growth at commit time. It does not bound
 query input: the amplification and recursion above happen before any
-graph data is written, so ADR-0042 never engages.
+graph data is written, so [ADR-0042](./0042-graph-memory-limit.md) never engages.
 
-All query paths — `cypherlite-front` (ADR-0046), the TCK harness, the
+All query paths — `cypherlite-front` ([ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md)), the TCK harness, the
 engine, and Bolt — funnel through a single choke point,
 `cypherlite_parser::parse` (`crates/cypherlite-parser/src/parser.rs`).
 A size cap there covers every entry point with one check.
@@ -66,7 +78,7 @@ surfaces so that generators of Cypher know the contract.
 
 ## Alternatives considered
 
-- **No limits; rely on the ADR-0042 memory limit.** Rejected. ADR-0042
+- **No limits; rely on the [ADR-0042](./0042-graph-memory-limit.md) memory limit.** Rejected. [ADR-0042](./0042-graph-memory-limit.md)
   caps stored-graph growth at commit; it never engages for parse-time
   token amplification or recursion, both of which happen before any
   commit.

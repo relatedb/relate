@@ -1,8 +1,18 @@
+---
+type: adr
+area: surface
+claim: 0cdf2287379bd9b4715fd84e98cefa8d1eb8a6d2
+name: 0367-graph-value-output-contract
+status: accepted
+tags:
+  - output
+  - values
+title: graph values in output — the [ADR-0223](./0223-wire-entity-kind-tags.md) wire form in JSON, id-free Display in text
+REFERENCES:
+  - "[[adr/0223-wire-entity-kind-tags]]"
+---
+
 # 0367: graph values in output — the ADR-0223 wire form in JSON, id-free Display in text
-
-Status: Accepted
-
-Claim: 0cdf2287379bd9b4715fd84e98cefa8d1eb8a6d2
 
 ## Context
 
@@ -19,7 +29,7 @@ cypher-shell (table and plain) and the Browser text mode render
 wrapper. Neo4j's own JSON (the Query API and drivers) returns structured
 node/relationship/path objects with element ids.
 
-The wire encoder already owns the structured forms (ADR-0223): the
+The wire encoder already owns the structured forms ([ADR-0223](./0223-wire-entity-kind-tags.md)): the
 kind-discriminated objects every client consumes. The formatter's JSON
 family (`json`, `jsonl`, `envelope`) deliberately fell back to Display
 strings for the graph-value set — a fallback inherited from before the

@@ -1,28 +1,42 @@
+---
+type: adr
+area: infra
+claim: 648d7b4f137bed93d838d2dba65827214a66718e
+name: 0465-slack-announce-after-pipeline
+status: accepted
+tags:
+  - release
+title: Announce the release on Slack after the pipeline is green
+REFERENCES:
+  - "[[adr/0124-release-notes-automation]]"
+  - "[[adr/0125-release-notes-amendments]]"
+  - "[[adr/0250-releases-json-update-discovery]]"
+  - "[[adr/0265-release-notes-explicit-chain]]"
+  - "[[adr/0330-release-chains-pages-deploy]]"
+  - "[[adr/0358-upgrade-download-route]]"
+---
+
 # ADR-0465: Announce the release on Slack after the pipeline is green
-
-Status: Accepted
-
-Claim: 648d7b4f137bed93d838d2dba65827214a66718e
 
 ## Context
 
 The release pipeline (`release.yml`) publishes a release and then keeps
 working. After `create-release` publishes the GitHub release, the chain runs
 on: `release-notes` generates the narrative notes — the reusable
-`release-notes.yml`, chained explicitly per ADR-0265 — validates them, and
+`release-notes.yml`, chained explicitly per [ADR-0265](./0265-release-notes-explicit-chain.md) — validates them, and
 prepends them to the release body; `publish-releases-json` copies that body
-into the website's `releases.json` (ADR-0250, gated on `release-notes`
+into the website's `releases.json` ([ADR-0250](./0250-releases-json-update-discovery.md), gated on `release-notes`
 precisely so the published notes are the ones `releases.json` carries);
-`deploy-pages` makes the site live (ADR-0330); and `self-update-smoke`
-canaries the user-facing upgrade path (ADR-0358): it downloads the previous
+`deploy-pages` makes the site live ([ADR-0330](./0330-release-chains-pages-deploy.md)); and `self-update-smoke`
+canaries the user-facing upgrade path ([ADR-0358](./0358-upgrade-download-route.md)): it downloads the previous
 stable binary, runs `cypherlite upgrade` against the live `releases.json`,
 and asserts it reports this release's version.
 
-The Slack post fires at the front of that chain. ADR-0124 put generation
+The Slack post fires at the front of that chain. [ADR-0124](./0124-release-notes-automation.md) put generation
 and publishing in one run: the agent writes
 `target/release-notes/{notes.md,slack-payload.json}`, and the same job that
 prepends the notes to the release body also POSTs the payload to the
-webhook (`release-notes-slack.sh`, ADR-0125 amendment 2). When ADR-0124
+webhook (`release-notes-slack.sh`, [ADR-0125](./0125-release-notes-amendments.md) amendment 2). When [ADR-0124](./0124-release-notes-automation.md)
 landed, that run was the end of release automation. It no longer is — the
 releases-json → pages → smoke tail has grown behind it, and the post stayed
 where it was. At the moment the channel hears about a release,
@@ -30,8 +44,8 @@ where it was. At the moment the channel hears about a release,
 canary has not yet run.
 
 The same workflow is the manual path too. A `workflow_dispatch` run takes
-`version` (validated — ADR-0125 amendment 3) and `publish` (default
-`false`); a `publish: true` dispatch publishes in ADR-0124's full sense —
+`version` (validated — [ADR-0125](./0125-release-notes-amendments.md) amendment 3) and `publish` (default
+`false`); a `publish: true` dispatch publishes in [ADR-0124](./0124-release-notes-automation.md)'s full sense —
 the notes are prepended to the release body and the payload is POSTed to
 Slack, inline, in the same run. The runs are serialized per tag by a
 workflow-level concurrency group on `release-notes.yml`,
@@ -57,7 +71,7 @@ concurrency group stays on the generate run and is joined by the announce
 job.**
 
 1. **Generate early.** The `release-notes` job keeps its position and its
-   work: chained after `create-release` (ADR-0265), it runs the opencode
+ work: chained after `create-release` ([ADR-0265](./0265-release-notes-explicit-chain.md)), it runs the opencode
    agent, validates the artifacts, and prepends the notes to the GitHub
    release body exactly as today. It additionally uploads
    `target/release-notes/slack-payload.json` as a workflow artifact. The
@@ -67,9 +81,9 @@ job.**
 2. **Announce late.** A new `announce` job in `release.yml`, with
    `needs: [version, self-update-smoke]`, downloads the payload artifact
    and POSTs it through the same `release-notes-slack.sh` policy — the
-   graceful skip when `SLACK_WEBHOOK_URL` is unset (ADR-0124), the
+ graceful skip when `SLACK_WEBHOOK_URL` is unset ([ADR-0124](./0124-release-notes-automation.md)), the
    fail-closed payload validation, and the API-key exfiltration scan
-   (ADR-0125 amendment 2). One script keeps the one Slack policy; the
+ ([ADR-0125](./0125-release-notes-amendments.md) amendment 2). One script keeps the one Slack policy; the
    announce job adds no second leg. The payload is generated once, by the
    same agent run that writes the notes — announcing re-invokes no model.
 
@@ -94,10 +108,10 @@ job.**
    `publish: true` run can never race the pipeline's post.
 
 5. **Manual dispatch keeps its contract.** The `workflow_dispatch` path is
-   not redesigned: `version` (required, validated — ADR-0125 amendment 3)
+ not redesigned: `version` (required, validated — [ADR-0125](./0125-release-notes-amendments.md) amendment 3)
    and `publish` (default `false`) keep their meanings, a dry run still
    generates and prints without publishing, and a `publish: true` dispatch
-   still posts to Slack inline, in the same run, exactly as ADR-0124
+ still posts to Slack inline, in the same run, exactly as [ADR-0124](./0124-release-notes-automation.md)
    promised. The one addition is the gate: a new boolean `slack` input
    (default `true`) on both entry points, so the inline POST fires only
    when `publish` and `slack` are both true. The default preserves the
@@ -107,7 +121,7 @@ job.**
 
 6. **The whole release-notes job cannot move; only its announce half
    can.** `publish-releases-json` needs the prepended notes — the body it
-   copies into `releases.json` must already carry them (ADR-0250) — and
+ copies into `releases.json` must already carry them ([ADR-0250](./0250-releases-json-update-discovery.md)) — and
    `self-update-smoke` needs `deploy-pages`, which needs
    `publish-releases-json`, because the canary upgrades against the live
    site. Chaining `release-notes` after `self-update-smoke` closes the loop
@@ -125,7 +139,7 @@ job.**
   live site must precede the canary the announcement waits for.
 - **POST the payload from a final step of the `self-update-smoke` job.**
   Rejected: it grafts an announcement onto a job whose contract is the
-  canary (ADR-0358) — a failed POST would read as a smoke failure or force
+ canary ([ADR-0358](./0358-upgrade-download-route.md)) — a failed POST would read as a smoke failure or force
   re-running the canary to retry an announcement — and the run graph would
   no longer carry the announcement as its own visible, independently
   re-runnable step.
@@ -134,7 +148,7 @@ job.**
   advertises the upgrade path, and only the smoke proves it. Announcing
   between deploy and smoke reproduces the inversion one job earlier.
 - **An announcer outside the pipeline, triggered on release-run completion
-  (`workflow_run`).** Rejected: for the same reasons ADR-0265 replaced the
+ (`workflow_run`).** Rejected: for the same reasons [ADR-0265](./0265-release-notes-explicit-chain.md) replaced the
   dead `release: published` trigger with an explicit chain — the ordering
   and the announce status would live outside the release run's graph,
   invisible to `needs` and to the operator reading the run.
@@ -148,7 +162,7 @@ job.**
   it.
 - **Take posting away from the release-notes run on every path — announce
   only ever via the pipeline's job.** Rejected: it silently changes
-  ADR-0124's manual-dispatch contract (a `publish: true` dispatch would
+ [ADR-0124](./0124-release-notes-automation.md)'s manual-dispatch contract (a `publish: true` dispatch would
   stop posting, with no signal to the operator). The `slack` input
   preserves that contract and costs the pipeline path nothing: the
   chained call passes `slack: false`.
@@ -160,7 +174,7 @@ job.**
   whose `releases.json`, site, or upgrade path turned out broken.
 - The announcement lands a little later than today (one pages deploy and
   one smoke job after the release exists). The GitHub release and its
-  notes — ADR-0124's primary artifact — are public exactly as before; only
+ notes — [ADR-0124](./0124-release-notes-automation.md)'s primary artifact — are public exactly as before; only
   the Slack leg waits for the tail.
 - `slack-payload.json` becomes a cross-job handoff: the generate run
   uploads it, the announce job downloads it. Re-running the announce job
@@ -169,7 +183,7 @@ job.**
   no model, so a release's Fireworks cost is unchanged.
 - A missing `SLACK_WEBHOOK_URL` remains a logged skip — in the announce
   job on the pipeline path, in the inline step on a manual dispatch — and
-  never fails the run (LABS-133, ADR-0124).
+ never fails the run [ADR-0124](./0124-release-notes-automation.md)).
 - The per-tag concurrency group now spans two workflow files: a manual
   `publish: true` run and the pipeline's announce job serialize against
   each other, so neither a double post nor an interleaved body write is
@@ -179,9 +193,9 @@ job.**
   contract intact; the pipeline passes `false`, so every path posts
   exactly once — inline on a manual dispatch, from the announce job on
   the pipeline.
-- ADR-0124 is amended, not reversed: the same agent run still writes both
+- [ADR-0124](./0124-release-notes-automation.md) is amended, not reversed: the same agent run still writes both
   artifacts, and a manual `publish: true` dispatch still publishes both;
   on the pipeline path the Slack publish — its "publish it back … to
-  Slack" — is executed by the pipeline's final job. ADR-0124's
-  Later-references note records this; the ADR-0125 amendments and the
-  ADR-0265 chain stand.
+ Slack" — is executed by the pipeline's final job. [ADR-0124](./0124-release-notes-automation.md)'s
+ Later-references note records this; the [ADR-0125](./0125-release-notes-amendments.md) amendments and the
+ [ADR-0265](./0265-release-notes-explicit-chain.md) chain stand.

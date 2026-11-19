@@ -1,18 +1,32 @@
-# 0149. CE kind tokens come from the typed error model
+---
+type: adr
+area: engine
+date: 2026-09-28
+deciders: CypherLite maintainers
+name: 0149-ce-kind-tokens-from-typed-error-model
+status: accepted
+tags:
+  - conformance
+  - errors
+title: CE kind tokens come from the typed error model
+REFERENCES:
+  - "[[adr/0003-tck-named-error-kinds]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0117-namespace-selection-apis-and-bolt]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-28
-- **Deciders**: CypherLite maintainers
+# 0149. CE kind tokens come from the typed error model
 
 ## Context
 
 The CE error-text formatters in `cypherlite-core/src/ce_messages.rs`
-(ADR-0116 §9, ADR-0117 §6) embed a `"<Kind>:"` token in every message, and
+([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §9, [ADR-0117](./0117-namespace-selection-apis-and-bolt.md) §6) embed a `"<Kind>:"` token in every message, and
 that token is a load-bearing wire contract: the bindings' name scan
 (`cypherlite::binding_error_metadata`) recovers the kind from it. The
 tokens were restated as string literals in each formatter while the typed
 model — `cypherlite_error::ErrorKind` / `TckErrorClass`, whose `as_str()`
-is the canonical string form of the same names (ADR-0003) — already
+is the canonical string form of the same names ([ADR-0003](./0003-tck-named-error-kinds.md)) — already
 existed. Two hand-written copies of one token list drift. Flagged in
 review of the fixed-namespaces work.
 
@@ -27,7 +41,7 @@ each kind token from the typed model:
 class-level `SemanticError` token, which has no `ErrorKind` variant. The
 rendered messages are byte-identical (pinned by the existing `ce_messages`
 tests and `testdata/ce-errors/neo4j-ce.json`). The new edge is legal under
-the ADR-0103 layering rules (R1: `cypherlite/*` may depend on
+the [ADR-0103](./0103-engine-surfaces-testing-layout.md) layering rules (R1: `cypherlite/*` may depend on
 `cypherlite/*`) and creates no cycle: `cypherlite-error` depends on
 `cypherlite-parser`, which depends on `cypherlite-model` only.
 
@@ -51,6 +65,6 @@ the ADR-0103 layering rules (R1: `cypherlite/*` may depend on
   its transitive closure gains `cypherlite-parser` (already pulled in by
   every planner/executor build).
 - Renaming an `ErrorKind` variant now renames the CE wire token with it.
-  Per ADR-0003 a kind rename is already a breaking change, so the coupling
+ Per [ADR-0003](./0003-tck-named-error-kinds.md) a kind rename is already a breaking change, so the coupling
   makes an existing invariant explicit rather than adding a new one.
 - `cargo xtask check-boundaries` covers the new edge (R1).

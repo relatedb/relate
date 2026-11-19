@@ -1,8 +1,29 @@
-# 0172. Incremental constraint validation
+---
+type: adr
+area: engine
+date: 2026-10-06
+deciders: Oskar Hane (agreed in conversation), CypherLite maintainers
+name: 0172-incremental-constraint-validation
+status: accepted
+tags:
+  - catalog
+title: Incremental constraint validation
+REFERENCES:
+  - "[[adr/0015-optimistic-wal-commits]]"
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0063-lazy-string-index-postings]]"
+  - "[[adr/0075-label-only-snapshot-census]]"
+  - "[[adr/0155-bulk-writes-batched-unwind]]"
+  - "[[adr/0158-streaming-single-process-pull]]"
+  - "[[adr/0171-lazy-per-label-snapshot-probe]]"
+  - "[[adr/0173-overlay-owned-redo-log-and-scratch-index]]"
+  - "[[adr/0174-committed-catalog-constraint-rechecks]]"
+  - "[[adr/0184-composite-key-smallest-bucket-probe]]"
+  - "[[adr/0185-relationship-equality-postings]]"
+  - "[[adr/0439-commit-time-uniqueness]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-06
-- **Deciders**: Oskar Hane (agreed in conversation), CypherLite maintainers
+# 0172. Incremental constraint validation
 
 ## Context
 
@@ -107,7 +128,7 @@ Relationships have no property or type postings at all: `covered_pairs`
 returns nothing for a relationship index (`redo/mod.rs:149-152`).
 
 `Graph::prop_postings` (`graph/index.rs:68-87`) builds equality postings
-lazily for any `(label, key)` pair. They follow the ADR-0063 superset
+lazily for any `(label, key)` pair. They follow the [ADR-0063](./0063-lazy-string-index-postings.md) superset
 contract and are keyed by `GroupKey::for_property_index`. Commit-time dirty
 marks keep them current (`graph/index.rs:25-37`, `graph/mod.rs:1263-1269`).
 
@@ -135,15 +156,15 @@ A throwaway probe on 2026-10-06 confirmed the current behaviour:
 
 **Concurrency.** Validation sees only the statement's snapshot plus its
 scratch. Commit conflicts look at ids only (`graph/conflict.rs:89-164`), and
-ADR-0015 rejected write-skew detection. The probe showed the effect: two
+[ADR-0015](./0015-optimistic-wal-commits.md) rejected write-skew detection. The probe showed the effect: two
 explicit transactions that each create `(:P {id: 77})` both commit. After
 that, **every** later write statement fails with `p_id` uniqueness,
 `CREATE (:Other)` included, because the full scan finds the committed
 duplicate again.
 
-**Why this matters now.** Batched ingest (ADR-0155, ADR-0158) issues many
+**Why this matters now.** Batched ingest ([ADR-0155](./0155-bulk-writes-batched-unwind.md), [ADR-0158](./0158-streaming-single-process-pull.md)) issues many
 write statements against a growing graph. At O(C·N + L²) per statement, a
-load is quadratic or worse. ADR-0171 removes the other per-statement O(N)
+load is quadratic or worse. [ADR-0171](./0171-lazy-per-label-snapshot-probe.md) removes the other per-statement O(N)
 term, the label census. This ADR removes the constraint term.
 
 ## Decision
@@ -197,7 +218,7 @@ scratch's change log.
 - An id that is no longer live is skipped, just as `graph.node(id)` returning
   `None` is skipped today.
 - Entities are read with facet accessors, never with `node()` or `rel()`
-  (ADR-0075's rule): `node_labels`, `node_prop`, `rel_type`, `rel_prop`,
+ ([ADR-0075](./0075-label-only-snapshot-census.md)'s rule): `node_labels`, `node_prop`, `rel_type`, `rel_prop`,
   `rel_ends`.
 
 **Lifetime of the slice.**
@@ -279,7 +300,7 @@ all non-null is probed as follows:
    - **Committed side.** Equality postings for `(L, p0)` at `g`, from a new
      `pub(crate) Graph::equality_postings(label, key, value) -> Vec<NodeId>`.
      It wraps `prop_postings` (`graph/index.rs:68-87`), which builds the pair
-     lazily (ADR-0063) and drains its dirty ids. It returns an empty `Vec`
+ lazily ([ADR-0063](./0063-lazy-string-index-postings.md)) and drains its dirty ids. It returns an empty `Vec`
      when L or p0 was never interned. It deliberately bypasses the
      `range_serves_equality` gate of `lookup_nodes_at`
      (`graph/index.rs:209-211`), because the constraint's backing `IndexDef`
@@ -479,7 +500,7 @@ byte-identical:
   and could later support commit-time write-skew checks. A later ADR can
   still add relationship equality postings if a workload needs them.
   Rejected for now: it needs MVCC versioning by commit ts for transaction
-  snapshots, maintenance in apply, GC and checkpoint restore, and ADR-0042
+ snapshots, maintenance in apply, GC and checkpoint restore, and [ADR-0042](./0042-graph-memory-limit.md)
   accounting. That is new global state, while lazy equality postings for
   nodes already exist and relationship uniqueness constraints are rare.
 - **Probe through `lookup_nodes_at` / `ExecGraph::lookup_nodes`.** Rejected:
@@ -502,7 +523,7 @@ O(C·N + L²) whenever constraints exist.
 
 **Lazy postings.** The first probe of a `(L, p0)` pair after the database
 opens builds its equality postings from the label index, O(|L|) once. The
-existing dirty marks then keep them current. They sit outside ADR-0042's
+existing dirty marks then keep them current. They sit outside [ADR-0042](./0042-graph-memory-limit.md)'s
 logical charge (`IndexCharge::from_details`, `memory.rs:31-50`), as the
 constraint's backing `IndexDef` already does. Charging them needs a later
 ADR.
@@ -522,7 +543,7 @@ every stored property type parses. `CREATE CONSTRAINT` guarantees the parse
 introduce are reported only when a statement touches an involved entity.
 Such violations come from:
 
-- concurrent write skew. ADR-0015 does no write-skew detection, and the
+- concurrent write skew. [ADR-0015](./0015-optimistic-wal-commits.md) does no write-skew detection, and the
   probe in Context reproduces it;
 - WAL or checkpoint images written by versions that did not enforce a kind;
 - legacy-unenforced constraints.
@@ -541,7 +562,7 @@ miss.
 
 **Related ADRs.**
 
-- ADR-0171 removes the per-statement label census. With this ADR, a batched
+- [ADR-0171](./0171-lazy-per-label-snapshot-probe.md) removes the per-statement label census. With this ADR, a batched
   write's validation and label accounting no longer scale with graph size.
 - MATCH and MERGE equality seeks on a property covered only by a `unique` or
   `key` constraint still go through `lookup_nodes_at`'s range-only path. That
@@ -595,7 +616,7 @@ miss.
 
 ## Later references
 
-- ADR-0439 closes this ADR's Concurrency gap: the group-commit admission
+- [ADR-0439](./0439-commit-time-uniqueness.md) closes this ADR's Concurrency gap: the group-commit admission
   loop now rejects a slot introducing a constrained value that exists in
   committed state or in an earlier accepted slot of the same flush group
   (a maintained per-constraint tuple map), so the "two explicit
@@ -605,7 +626,7 @@ miss.
   statement-time validation raises the precise violation. The
   ids-only commit-conflict limitation now covers non-constrained
   write-skew only.
-- ADR-0173 replaces three implementation details without changing the
+- [ADR-0173](./0173-overlay-owned-redo-log-and-scratch-index.md) replaces three implementation details without changing the
   algorithm. Drain-on-entry becomes validate-then-mark: the cursor advances
   only after the slice validated. A redo-funnel posting in
   `WriteScratch::push_redo` replaces the per-primitive `prop_ix` hooks.
@@ -613,16 +634,16 @@ miss.
   created, replacing the `binary_search` merge. It also replaces §2's
   "Unknown tags" rule: a stored kind tag `ConstraintType::from_str`
   rejects fails validation.
-- ADR-0174 adds the committed-catalog fingerprint: a constraint another
+- [ADR-0174](./0174-committed-catalog-constraint-rechecks.md) adds the committed-catalog fingerprint: a constraint another
   session commits or changes after this scratch last validated joins the
   recheck set at the next validation, and the recheck and partner-search
   loops become cancellable.
-- ADR-0184 refines §3's node probe: a constraint with two or more
+- [ADR-0184](./0184-composite-key-smallest-bucket-probe.md) refines §3's node probe: a constraint with two or more
   properties probes the property whose committed-plus-scratch bucket is
   smallest (ties to the lowest index) and takes candidates from that same
   property on both sides. Verification and error selection are unchanged.
-- ADR-0185 replaces §4's walk over the relationships of the type with
+- [ADR-0185](./0185-relationship-equality-postings.md) replaces §4's walk over the relationships of the type with
   lazy committed relationship equality postings keyed `(type id, key
   id)`, plus a scratch-side twin, and probes each touched relationship
-  tuple the way §3 probes a node, choosing the property per ADR-0184. §5
+ tuple the way §3 probes a node, choosing the property per [ADR-0184](./0184-composite-key-smallest-bucket-probe.md). §5
   is unchanged.

@@ -1,13 +1,24 @@
-# 0608 — Sealing restored adjacency
+---
+type: adr
+area: engine
+claim: 4f32f55b8c6bb6add2fad3379fa0e257ab8e90d2
+name: 0608-seal-restored-adjacency
+status: proposed
+tags:
+  - storage
+title: 0608 — Sealing restored adjacency
+REFERENCES:
+  - "[[adr/0551-sealed-delta-adjacency-store]]"
+  - "[[adr/0599-adjacency-floor-arena]]"
+---
 
-Status: Proposed
-Claim: 4f32f55b8c6bb6add2fad3379fa0e257ab8e90d2
+# 0608 — Sealing restored adjacency
 
 ## Context
 
 The sealed-delta adjacency store keeps each `(node, rel type)` chunk in one
 of two representations: a delta list of hops, or a folded, bit-packed
-stream (ADR-0551). Folding a chunk is an `O(chunk)` re-encode, so it runs
+stream ([ADR-0551](./0551-sealed-delta-adjacency-store.md)). Folding a chunk is an `O(chunk)` re-encode, so it runs
 at the checkpoint's GC pass — the one moment the store is already paying a
 whole-graph pass, and the moment a chunk's versions are known to be
 durable.
@@ -99,7 +110,7 @@ answers are the same with or without the emission.
 
 ## Later references
 
-- ADR-0599's node-major floor arena carries this decision: the build seals
+- [ADR-0599](./0599-adjacency-floor-arena.md)'s node-major floor arena carries this decision: the build seals
   through the arena's fold in its one pass, and the gate it keeps is that
   tier's 4-hop restore break-even, not the write path's 32-hop floor. A
   reopened store therefore lands at or below the checkpointed charge, and

@@ -1,8 +1,24 @@
-# 0046. CypherLite parser in front of the MemoryDB runtime
+---
+type: adr
+area: cypher
+date: 2026-09-16
+deciders: CypherLite / MemoryDB merge
+name: 0046-cypherlite-parser-memorydb-runtime
+status: accepted
+tags:
+  - parser
+title: CypherLite parser in front of the MemoryDB runtime
+REFERENCES:
+  - "[[adr/0061-ci-host-loadtest-baselines]]"
+  - "[[adr/0066-retire-memorydb-naming]]"
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0119-cip-eval-drops-enterprise-database-scenarios]]"
+  - "[[adr/0277-one-cypher-parser]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-16
-- **Deciders**: CypherLite / MemoryDB merge
+# 0046. CypherLite parser in front of the MemoryDB runtime
 
 ## Context
 
@@ -44,31 +60,31 @@ The merge target (`cypherlite/`) keeps CypherLite’s dialect and UX and MemoryD
   known-function registry (`KNOWN_FUNCTIONS`/`is_known_function`), and the
   aggregate alias/display table (`agg`, which re-exports the ir set); the
   executor owns the procedure signature registry (`procedure_registry`).
-- ADR-0061: the loadtest gate (Decision item 4) now runs against two host
+- [ADR-0061](./0061-ci-host-loadtest-baselines.md): the loadtest gate (Decision item 4) now runs against two host
   classes. Repo-root `baselines/` remains the local reference-host
   comparison set; CI compares against `baselines/ci/`, seeded from CI runner
   artifacts. The bands (errors == 0, ops/s ≥ 90%, p99 ≤ 115% + 250,000 ns,
   logical bytes ≤ 110%) are unchanged on both host classes.
-- ADR-0070: the two-host-class split is superseded. The loadtest gate
+- [ADR-0070](./0070-docker-baseline-loadtest-environment.md): the two-host-class split is superseded. The loadtest gate
   (Decision item 4) freezes and compares fraud/identity/checkpoint in a
   Docker baseline environment (2 vCPU / 2 GB). One comparison set:
-  repo-root `baselines/`. The ADR-0046 bands themselves are unchanged.
-- ADR-0071: committed loadtest envelopes are produced by CI on
+ repo-root `baselines/`. The [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md) bands themselves are unchanged.
+- [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md): committed loadtest envelopes are produced by CI on
   `ubuntu-24.04` and carry an `environment` class. Wall-clock bands apply
   only when that class matches.
-- ADR-0066: the diagnostic parser value in Decision item 1's env var was
+- [ADR-0066](./0066-retire-memorydb-naming.md): the diagnostic parser value in Decision item 1's env var was
   `CYPHERLITE_PARSER=planner-ir` (was `=memorydb`), and the CIP scoreboard is
   `baselines/cip-eval.json` (was `baselines/cip-eval-memorydb.json`). The
   MemoryDB name is retired from live surfaces; the runtime work imported here
-  is unaffected. ADR-0277 withdraws that diagnostic parser.
-- ADR-0277: `CYPHERLITE_PARSER` is not read. `cypherlite-ir` keeps the planner
+ is unaffected. [ADR-0277](./0277-one-cypher-parser.md) withdraws that diagnostic parser.
+- [ADR-0277](./0277-one-cypher-parser.md): `CYPHERLITE_PARSER` is not read. `cypherlite-ir` keeps the planner
   IR AST and no longer parses; `parse_and_lower_statement` is
   `cypherlite-parser` plus `lower_statement`.
-- ADR-0116: the Tier-2 theater deviations of Decision item 5 are superseded.
+- [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md): the Tier-2 theater deviations of Decision item 5 are superseded.
   Every store has the three fixed namespaces `neo4j`, `system` and
   `system_ontologies`; `USE` routes a statement and unknown names fail
   (42N00); `CREATE DATABASE`, composite `USE` and every other unsupported
   database administration command fail with 51N27 instead of recording
-  metadata rows; `SHOW DATABASES` lists the three fixed rows. ADR-0119
+ metadata rows; `SHOW DATABASES` lists the three fixed rows. [ADR-0119](./0119-cip-eval-drops-enterprise-database-scenarios.md)
   removes the 24 Enterprise-only CIP-eval scenarios this invalidates from
   the frozen set.

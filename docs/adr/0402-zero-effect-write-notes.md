@@ -1,13 +1,32 @@
-# ADR-0402: Zero-effect write notes in batch sessions
+---
+type: adr
+area: cli
+claim: 6feb207321bcc9a8ada401ea8b2db8d3e9aad2ea
+name: 0402-zero-effect-write-notes
+status: accepted
+tags:
+  - output
+  - transactions
+title: Zero-effect write notes in batch sessions
+REFERENCES:
+  - "[[adr/0079-anonymous-usage-metrics]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0164-exit-open-transaction]]"
+  - "[[adr/0194-cli-error-envelope-and-exit-codes]]"
+  - "[[adr/0196-row-cap-for-agent-runs]]"
+  - "[[adr/0199-statement-progress-on-failure]]"
+  - "[[adr/0200-query-command-and-database-flag]]"
+  - "[[adr/0309-bolt-summary-metadata-neo4j-4-4]]"
+  - "[[adr/0332-query-type-w-rw-by-returned-columns]]"
+---
 
-Status: Accepted
-Claim: 6feb207321bcc9a8ada401ea8b2db8d3e9aad2ea
+# ADR-0402: Zero-effect write notes in batch sessions
 
 ## Context
 
 [LABS-313](https://linear.app/neo4j/issue/LABS-313/cli-silent-zero-effect-transactions-begincommit-blocks-with-an-empty)
 was filed while scripting a gbuild store through the statement-session verb
-`cypherlite query` (ADR-0200). A `.begin` / `.commit` block whose statement is
+`cypherlite query` ([ADR-0200](./0200-query-command-and-database-flag.md)). A `.begin` / `.commit` block whose statement is
 
 ```cypher
 MATCH (m:NoSuchLabel) DELETE m CREATE (n:Label {id: 1})
@@ -33,8 +52,8 @@ Verified 2026-10-24 on HEAD `605e6334` (release build; a fresh store with the
 
 The engine already carries the fact that separates "wrote nothing" from "read
 nothing": the plan-derived query type (`w` / `rw` for writes, `r` for reads,
-ADR-0332) and the per-statement mutation counters (`QueryResult::stats`,
-ADR-0309), both on every result. The CLI reads neither for reporting, so the
+[ADR-0332](./0332-query-type-w-rw-by-returned-columns.md)) and the per-statement mutation counters (`QueryResult::stats`,
+[ADR-0309](./0309-bolt-summary-metadata-neo4j-4-4.md)), both on every result. The CLI reads neither for reporting, so the
 silence is a missing report, not missing information.
 
 The first criterion drafted from those two facts — query type is `w`/`rw` and
@@ -48,7 +67,7 @@ It reported two kinds of statement that are not zero-effect writes:
   => {name :: STRING}) }` and `CALL db.ontology.set(…)` / `CALL
   db.ontology.drop()` (with their preview opt-ins);
 - a **read-only statement the planner conservatively classifies as a write**
-  (ADR-0332's deliberate over-approximation, shared with the namespace write
+ ([ADR-0332](./0332-query-type-w-rw-by-returned-columns.md)'s deliberate over-approximation, shared with the namespace write
   gate): `CALL { MATCH (n) RETURN n } RETURN n` and a bare `LOAD CSV … RETURN`
   printed the note while mutating nothing — and a transaction holding only such
   statements printed the commit summary too.
@@ -62,9 +81,9 @@ recorded where it is known, in the executor, and published on every result as
 `QueryResult::effect` (a `StatementEffect`), named once at the statement
 boundary (`finish_statement`) so no other site restates it.
 
-Two CLI precedents bound what the new report may do. ADR-0199's batch progress
+Two CLI precedents bound what the new report may do. [ADR-0199](./0199-statement-progress-on-failure.md)'s batch progress
 line is batch-only, prints nothing for a single statement or a successful run,
-and counts dot-commands in its numbering; ADR-0164 established that a stderr
+and counts dot-commands in its numbering; [ADR-0164](./0164-exit-open-transaction.md) established that a stderr
 line can be an observable contract that wrapper scripts grep, so its wording is
 byte-for-byte stable. The policy forks below were agreed with the maintainer on
 2026-10-24.
@@ -73,7 +92,7 @@ byte-for-byte stable. The policy forks below were agreed with the maintainer on
 
 1. **Default-on, batch sessions only, stderr only.** A batch session — the
    one-shot `QUERY` and piped-stdin halves of the invocation-mode trichotomy
-   (ADR-0079 §4), the `is_batch` split ADR-0199 and ADR-0164 already read —
+ ([ADR-0079](./0079-anonymous-usage-metrics.md) §4), the `is_batch` split [ADR-0199](./0199-statement-progress-on-failure.md) and [ADR-0164](./0164-exit-open-transaction.md) already read —
    reports a zero-effect write without being asked. There is no flag to enable
    or disable it: an opt-in misses the author who does not suspect the no-op,
    which is the whole audience, and a suppression flag is a separate decision.
@@ -83,7 +102,7 @@ byte-for-byte stable. The policy forks below were agreed with the maintainer on
    criterion is the engine's effect record (`QueryResult::effect`, a
    `StatementEffect`): a mutation operator reached execution **and** the
    engine applied no change. Both facts come from execution, never from the
-   plan's conservative query type (ADR-0332), the statement's spelling, or
+ plan's conservative query type ([ADR-0332](./0332-query-type-w-rw-by-returned-columns.md)), the statement's spelling, or
    matching clause or procedure names in the CLI:
 
    - *A mutation operator reached execution* means the executor dispatched a
@@ -98,7 +117,7 @@ byte-for-byte stable. The policy forks below were agreed with the maintainer on
    - *Applied a change* means the statement pushed at least one change into
      the write redo, the one funnel every entity, schema and **catalog** change
      goes through. A catalog change therefore counts as applied even though
-     every ADR-0309 mutation counter stays zero (`ALTER DATABASE`, `CREATE
+ every [ADR-0309](./0309-bolt-summary-metadata-neo4j-4-4.md) mutation counter stays zero (`ALTER DATABASE`, `CREATE
      GRAPH TYPE`, `db.ontology.set`/`drop`), and a read-only statement counts
      as no attempt at all however the planner classified it — a top-level
      `CALL { … }` with a read-only body and a bare `LOAD CSV … RETURN` are
@@ -156,7 +175,7 @@ byte-for-byte stable. The policy forks below were agreed with the maintainer on
    ```
 
    A batch holding more than one statement names the statement's position,
-   with ADR-0199's numbering exactly (a dot-command counts as typed; empty
+ with [ADR-0199](./0199-statement-progress-on-failure.md)'s numbering exactly (a dot-command counts as typed; empty
    fragments and a trailing `;` do not):
 
    ```text
@@ -199,21 +218,21 @@ byte-for-byte stable. The policy forks below were agreed with the maintainer on
    summary.
 5. **Exit codes and streams are unchanged.** A note is a report, never a
    failure: the run keeps the code it earned — 0 for a successful zero-effect
-   write — unlike ADR-0164's exit 1, which reports a real discard of writes. The
-   note is not an error and never joins the ADR-0194 / ADR-0199 error envelope;
+ write — unlike [ADR-0164](./0164-exit-open-transaction.md)'s exit 1, which reports a real discard of writes. The
+ note is not an error and never joins the [ADR-0194](./0194-cli-error-envelope-and-exit-codes.md) / [ADR-0199](./0199-statement-progress-on-failure.md) error envelope;
    stdout bytes are unchanged in every mode. Decision 2's engine effect is
    execution metadata on `QueryResult` (beside the token receipt), not
    announced result metadata: no protocol message, wire envelope or client-ABI
    field changes, and Bolt, HTTP, MCP and the client ABIs do not report it.
-6. **The wording is a byte-pinned observable contract**, on the ADR-0164
+6. **The wording is a byte-pinned observable contract**, on the [ADR-0164](./0164-exit-open-transaction.md)
    precedent: the three lines above are exactly the bytes the CLI writes and
    stay stable across releases, and tests pin them verbatim. A wrapper script
    greps stderr for the **anchored note prefix**, not the shared tail: the
    per-statement note starts `note: write statement` (then the optional
-   ADR-0199 position) and the summary starts `note: .commit`, while `changed
+ [ADR-0199](./0199-statement-progress-on-failure.md) position) and the summary starts `note: .commit`, while `changed
    nothing` is common to both. The lowercase `note:` prefix (no trailing
    period) matches the CLI's other non-failure diagnostics such as the row-cap
-   `warning:` line (ADR-0196); ADR-0164's `Warning:` remains its own text.
+ `warning:` line ([ADR-0196](./0196-row-cap-for-agent-runs.md)); [ADR-0164](./0164-exit-open-transaction.md)'s `Warning:` remains its own text.
 
 ## Alternatives considered
 
@@ -230,13 +249,13 @@ byte-for-byte stable. The policy forks below were agreed with the maintainer on
   what points at the Cypher to fix.
 - **Include the interactive shell.** Rejected: at a prompt a `MATCH` that finds
   nothing and writes nothing is routine, and the user already sees each
-  statement's result; ADR-0199 keeps the shell out of batch reporting for the
+ statement's result; [ADR-0199](./0199-statement-progress-on-failure.md) keeps the shell out of batch reporting for the
   same reason, and the chatter would be pure noise in exploration.
 - **Change the exit code of a zero-effect write or transaction.** Rejected: the
   semantics are correct Cypher — a conditional `MERGE` or `DELETE` that matched
   nothing is a legitimate outcome, not an error — and a non-zero exit would
   break scripts that rely on it and every wrapper that treats non-zero as a
-  crash. ADR-0164's exit 1 reports discarded writes (data loss); this ADR
+ crash. [ADR-0164](./0164-exit-open-transaction.md)'s exit 1 reports discarded writes (data loss); this ADR
   reports a correct no-op and leaves the code alone.
 - **Use the returned row count as the effect signal instead of the counters.**
   Rejected: rows are empty for every write without `RETURN` (`CREATE (:A)`,
@@ -252,7 +271,7 @@ byte-for-byte stable. The policy forks below were agreed with the maintainer on
   planner grows a write form.
 - **Make the planner's query type precise instead of adding an engine effect.**
   Rejected: the conservative classification is deliberate and shared with the
-  namespace write gate (ADR-0332, ADR-0116 §4), so a top-level `CALL { … }` and
+ namespace write gate ([ADR-0332](./0332-query-type-w-rw-by-returned-columns.md), [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §4), so a top-level `CALL { … }` and
   `LOAD CSV` must keep classifying `w`/`rw`; and a precise type still says
   nothing about whether the execution applied a change, which is the fact the
   note needs.
@@ -265,8 +284,8 @@ byte-for-byte stable. The policy forks below were agreed with the maintainer on
 
 ## Consequences
 
-- `docs/api/cli/spec.md` documents the three pinned lines beside the ADR-0199
-  progress line and the ADR-0164 exit warning, and the CLI description and skill
+- `docs/api/cli/spec.md` documents the three pinned lines beside the [ADR-0199](./0199-statement-progress-on-failure.md)
+ progress line and the [ADR-0164](./0164-exit-open-transaction.md) exit warning, and the CLI description and skill
   bundle tell an agent that a silently-empty script is visible on stderr (grep
   the anchored `note: write statement` prefix) without changing what stdout
   carries.

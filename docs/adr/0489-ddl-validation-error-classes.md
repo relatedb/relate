@@ -1,7 +1,19 @@
-# ADR-0489: DDL validation errors carry Neo4j's error classes
+---
+type: adr
+area: engine
+claim: 1eb6fd3a0b7b909a709e6816af5b6cee03e57671
+name: 0489-ddl-validation-error-classes
+status: proposed
+tags:
+  - catalog
+  - conformance
+  - errors
+title: DDL validation errors carry Neo4j's error classes
+REFERENCES:
+  - "[[adr/0307-bolt-failure-carries-neo4j-status-codes]]"
+---
 
-Status: Proposed
-Claim: 1eb6fd3a0b7b909a709e6816af5b6cee03e57671
+# ADR-0489: DDL validation errors carry Neo4j's error classes
 
 ## Context
 
@@ -90,7 +102,7 @@ classified once at its construction site.**
 - **A `"ArgumentError: "` message prefix scanned by the bindings.** Rejected:
   stringly-typed discrimination; AGENTS.md's code-shape rule forbids matching
   error classes by scanning rendered text, and the repo's typed-variant
-  migration (ADR-0307) exists to remove exactly that.
+ migration ([ADR-0307](./0307-bolt-failure-carries-neo4j-status-codes.md)) exists to remove exactly that.
 - **Reclassify in the Python binding only.** Rejected: Bolt, HTTP and the CLI
   would keep sending `SemanticError`, and the next client would re-derive the
   mapping.
@@ -104,7 +116,7 @@ classified once at its construction site.**
 ## Consequences
 
 - **Public error contract:** `cypherlite::Error` gains a variant (every
-  exhaustive match is compiler-checked, as with ADR-0307); the Python
+ exhaustive match is compiler-checked, as with [ADR-0307](./0307-bolt-failure-carries-neo4j-status-codes.md)); the Python
   `tck_class`, the Bolt failure code and the CLI JSON `kind` gain
   `ArgumentError` / `InvalidArguments` / `"argument"` values.
 - The affected DDL errors' Display text keeps its detail; graph-type

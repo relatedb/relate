@@ -1,7 +1,21 @@
+---
+type: adr
+area: surface
+claim: 47fe8c879275aa42286f25d3d322ab7215b4d08e
+name: 0588-feedback-crate-owns-mixpanel-and-consent
+status: proposed
+tags:
+  - telemetry
+title: One feedback crate owns the Mixpanel client and consent
+REFERENCES:
+  - "[[adr/0079-anonymous-usage-metrics]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0263-telemetry-endpoint-https-only]]"
+  - "[[adr/0545-telemetry-spool-delivery]]"
+---
+
 # ADR-0588: One feedback crate owns the Mixpanel client and consent
 
-Status: Proposed
-Claim: 47fe8c879275aa42286f25d3d322ab7215b4d08e
 Revision (2026-11-16, still Proposed): the maintainers decided — feedback
 reports into the **one** shared Labs Mixpanel project (the event name, not a
 second project, separates the stream; `RELATE_FEEDBACK_TOKEN` remains the
@@ -15,7 +29,7 @@ the redaction policy.
 The CLI already reports anonymous usage events to Mixpanel from
 `surfaces/relate-cli/src/telemetry` (~2.4k lines): the event taxonomy, the
 layered opt-out, a spool with a drain thread, and a hand-rolled `/track`
-POST (ADR-0079, ADR-0263, ADR-0545). A second channel is joining it: feedback,
+POST ([ADR-0079](./0079-anonymous-usage-metrics.md), [ADR-0263](./0263-telemetry-endpoint-https-only.md), [ADR-0545](./0545-telemetry-spool-delivery.md)). A second channel is joining it: feedback,
 in two mode-gated forms — a person's prefilled public GitHub issue and an
 agent's consented report (`enable`/`disable` grant the agent's) — with its
 own report model, local validation and redaction, a consent record, local
@@ -24,9 +38,9 @@ receipts, and one POST per report.
 Both send JSON to a Mixpanel `/track` endpoint under the same rules: an
 endpoint allow-list, a short deadline, no retries, redirects never followed,
 `ip=0`, and dedup by insert id. Two copies would drift apart and grow the
-CLI binary crate instead of giving the feature a home. ADR-0079 rejected a
+CLI binary crate instead of giving the feature a home. [ADR-0079](./0079-anonymous-usage-metrics.md) rejected a
 separate telemetry crate only because the CLI was its only consumer; it is
-here, and ADR-0103's layout lets a `surfaces/*` crate depend on `relate/*`
+here, and [ADR-0103](./0103-engine-surfaces-testing-layout.md)'s layout lets a `surfaces/*` crate depend on `relate/*`
 while the CLI depends on it, never the reverse.
 
 ## Decision
@@ -36,7 +50,7 @@ while the CLI depends on it, never the reverse.
      deadline, no retries, redirects never followed, `$insert_id` dedup),
      response classification, and the one endpoint-allow-list
      implementation — `https` for the hosts a caller's policy names, and
-     `http` only for loopback (ADR-0263's rule as the floor);
+ `http` only for loopback ([ADR-0263](./0263-telemetry-endpoint-https-only.md)'s rule as the floor);
    - the consent and opt-out model: the layered on/off resolution
      (`DO_NOT_TRACK`, environment, config key), the one-time notice claim,
      the telemetry state file, and the feedback consent record (endpoint,
@@ -88,7 +102,7 @@ while the CLI depends on it, never the reverse.
    `RELATE_FEEDBACK_TOKEN` and `RELATE_FEEDBACK_ENDPOINT` overrides as the
    migration path to a dedicated project later.
    Ingestion tokens are client-side and public in every shipped binary by
-   design (ADR-0079 §7); nothing injects a token at build time, and an
+ design ([ADR-0079](./0079-anonymous-usage-metrics.md) §7); nothing injects a token at build time, and an
    explicitly empty `RELATE_FEEDBACK_TOKEN` override means no default
    destination, so only a loopback endpoint can send. The endpoint is
    resolved when the person authorizes
@@ -124,7 +138,7 @@ while the CLI depends on it, never the reverse.
 - **A `relate-feedback-client` crate under `relate/`** — rejected: it is not
   engine code and no engine crate needs it; the layout gives `surfaces/` to
   CLI adapters, and R3 lets the CLI depend on a surface.
-- **An off-the-shelf Mixpanel SDK** — rejected as ADR-0079 rejected one:
+- **An off-the-shelf Mixpanel SDK** — rejected as [ADR-0079](./0079-anonymous-usage-metrics.md) rejected one:
   `/track` is a single JSON POST over the workspace's existing HTTP client.
 - **A dedicated MCP tool as the agent's send** — rejected: it is reachable
   only through the agent-harness registration the port does not carry, so
@@ -142,7 +156,7 @@ while the CLI depends on it, never the reverse.
   do** — rejected: nothing in the Rust release path injects a token, so a
   release build would depend on the build host.
 - **One endpoint policy for both surfaces** — rejected: tightening
-  telemetry breaks its accepted override rule (ADR-0263), and loosening
+ telemetry breaks its accepted override rule ([ADR-0263](./0263-telemetry-endpoint-https-only.md)), and loosening
   feedback would let an agent-adjacent path redirect free-text reports to
   any `https` host.
 

@@ -1,7 +1,19 @@
+---
+type: adr
+area: infra
+claim: 99dd31ca0c021ce92c53718346112dc52d66e8f7
+name: 0331-sccache-over-mtime-normalization
+status: accepted
+tags:
+  - ci
+title: sccache (content-addressed) replaces mtime normalization for CI compile caching
+REFERENCES:
+  - "[[adr/0251-test-architecture]]"
+  - "[[adr/0252-corpus-family-single-job]]"
+---
+
 # ADR-0331: sccache (content-addressed) replaces mtime normalization for CI compile caching
 
-Status: Accepted
-Claim: 99dd31ca0c021ce92c53718346112dc52d66e8f7
 Later references: the preamble installs the pinned release with scripts/install-sccache.sh (GitHub API asset download). The GHA backend and the probe are unchanged.
 
 ## Context
@@ -62,10 +74,10 @@ with a `::warning::` in the log) instead of failing every Rust job.
 - CI compile caching is content-addressed and cannot serve stale artifacts;
   the merge-gate integrity risk is gone.
 - sccache's GHA cache pool (10 GB, shared) is added alongside `rust-cache`;
-  the corpus family's single-job merge (ADR-0252) still avoids the
+ the corpus family's single-job merge ([ADR-0252](./0252-corpus-family-single-job.md)) still avoids the
   duplicated compile.
 - `scripts/normalize-mtimes.sh` and `docs/testing/mtime-normalization.md` are
-  deleted. ADR-0251 §5's "shared build caches" consequences are unaffected in
+ deleted. [ADR-0251](./0251-test-architecture.md) §5's "shared build caches" consequences are unaffected in
   intent (one compile per lockfile) — the mechanism changed from mtime-stamp
   reuse to content-addressed reuse; this ADR is the later reference for it.
 - Cold-cache runs (new `Cargo.lock`) still pay one full compile; warm runs are

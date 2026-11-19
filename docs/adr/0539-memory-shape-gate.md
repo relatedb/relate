@@ -1,8 +1,22 @@
+---
+type: adr
+area: infra
+claim: 0bad150d5f87bf2b90805b12a876a82824c53ff4
+name: 0539-memory-shape-gate
+status: proposed
+tags:
+  - loadtest
+  - memory
+title: Memory-shape gate
+REFERENCES:
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+  - "[[adr/0544-memory-envelope-improvements-warn]]"
+---
+
 # ADR-0539: Memory-shape gate
 
-Status: Proposed
-Claim: 0bad150d5f87bf2b90805b12a876a82824c53ff4
-Later references: ADR-0544 (an improvement warns and the job stays green)
+Later references: [ADR-0544](./0544-memory-envelope-improvements-warn.md) (an improvement warns and the job stays green)
 
 ## Context
 
@@ -12,8 +26,8 @@ graph. The old worst-of-N file keeps one snapshot. A later run had no
 min and max to sit inside, so a quieter graph and a leaked graph looked
 the same on a pull request.
 
-The measurement only means something inside the ADR-0070 container, and
-only when the ADR-0071 environment class matches.
+The measurement only means something inside the [ADR-0070](./0070-docker-baseline-loadtest-environment.md) container, and
+only when the [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md) environment class matches.
 
 ## Decision
 

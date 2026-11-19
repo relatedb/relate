@@ -1,8 +1,33 @@
-# 0177. Bolt parameters decode temporal, duration, and point values — or fail the RUN
+---
+type: adr
+area: surface
+date: 2026-10-07
+deciders: CypherLite maintainers
+name: 0177-bolt-parameter-conversion
+status: accepted
+tags:
+  - bolt
+  - values
+title: Bolt parameters decode temporal, duration, and point values — or fail the RUN
+REFERENCES:
+  - "[[adr/0021-opencypher-temporal-values]]"
+  - "[[adr/0057-embedded-c-abi-and-bolt]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0168-non-finite-and-out-of-range-conversions]]"
+  - "[[adr/0178-engine-zone-resolver]]"
+  - "[[adr/0179-bolt-parameter-conversion-crate-internal]]"
+  - "[[adr/0260-trust-boundary-error-sanitization]]"
+  - "[[adr/0272-bolt-path-struct]]"
+  - "[[adr/0281-bolt-session-library]]"
+  - "[[adr/0307-bolt-failure-carries-neo4j-status-codes]]"
+  - "[[adr/0325-bolt-temporal-results-as-packstream-structs]]"
+  - "[[adr/0326-bolt-point-results-as-packstream-structs]]"
+  - "[[adr/0327-engine-statement-scoped-bytes-value]]"
+  - "[[adr/0328-bolt-bytes-parameters-round-trip]]"
+  - "[[adr/0329-bolt-patch-bolt-utc]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-07
-- **Deciders**: CypherLite maintainers (Linear LABS-189)
+# 0177. Bolt parameters decode temporal, duration, and point values — or fail the RUN
 
 ## Context
 
@@ -27,17 +52,17 @@ Today those parameters are converted by `Pack::to_mdb`
   (`p.as_map()` returning `None`), silently dropping every parameter.
 
 The engine already represents every value the nine supported tags carry:
-`Temporal` (ADR-0021) has `Date`, `LocalTime`, `Time`, `LocalDateTime`,
+`Temporal` ([ADR-0021](./0021-opencypher-temporal-values.md)) has `Date`, `LocalTime`, `Time`, `LocalDateTime`,
 `DateTime`, and `Duration` variants, and `PointValue` carries
 `srid/x/y/z`. LABS-189 tracks the faithful-parameter work; this ADR is its
 contract.
 
-Constraints from earlier decisions: Bolt is a transport (ADR-0057) and
+Constraints from earlier decisions: Bolt is a transport ([ADR-0057](./0057-embedded-c-abi-and-bolt.md)) and
 does not claim Neo4j's status-code taxonomy; FAILURE text crosses a trust
-boundary and is server-authored (ADR-0260); RESULT-side encoding is
-unchanged (ADR-0272 — Temporal, Point, and Vector results stay strings);
+boundary and is server-authored ([ADR-0260](./0260-trust-boundary-error-sanitization.md)); RESULT-side encoding is
+unchanged ([ADR-0272](./0272-bolt-path-struct.md) — Temporal, Point, and Vector results stay strings);
 and `Pack` is part of the library API clients implementing embedded
-Relate link (ADR-0281).
+Relate link ([ADR-0281](./0281-bolt-session-library.md)).
 
 ## Decision
 
@@ -54,7 +79,7 @@ entry.**
    matching `Pack::from_mdb`'s `Result<Pack, String>`. The recursion
    threads the `Result` through List and Map, and the `String` error is
    the message template in item 6. This is a **breaking change to the
-   ADR-0281 library API** (the exported `Pack` type): every caller,
+ [ADR-0281](./0281-bolt-session-library.md) library API** (the exported `Pack` type): every caller,
    including a client implementing embedded Relate, must handle the
    `Err(String)` case.
    `Pack::from_mdb`, `decode`, `encode`, `try_struct_msg`, and
@@ -85,7 +110,7 @@ entry.**
 
    `Null`, `Bool`, `Int`, `Float`, `String` decode to themselves; `List`
    and `Map` decode recursively. `Float` keeps non-finite values
-   (NaN / ±Infinity) as `Value::Float` (ADR-0168). Every map — at any
+ (NaN / ±Infinity) as `Value::Float` ([ADR-0168](./0168-non-finite-and-out-of-range-conversions.md)). Every map — at any
    depth — must have string keys (item 5).
 
 3. **Legacy 0x46.** `seconds` is UTC epoch seconds **plus**
@@ -166,11 +191,11 @@ entry.**
 6. **Failure contract.** The RUN arm converts parameters before namespace
    selection and before the engine call. On `Err(message)` the server
    sends a FAILURE with the pinned code **`CypherLite.Error`** (no new
-   `Neo.*` code, ADR-0260), sets the connection's failed state so
+ `Neo.*` code, [ADR-0260](./0260-trust-boundary-error-sanitization.md)), sets the connection's failed state so
    subsequent messages are IGNORED until RESET, and does not execute the
    query. The message is server-authored from the parameter path and the
    offending kind only — it never contains engine internals — so it is
-   safe to echo to the untrusted peer; ADR-0260's genericization does not
+ safe to echo to the untrusted peer; [ADR-0260](./0260-trust-boundary-error-sanitization.md)'s genericization does not
    apply to this protocol-level failure.
 
    Paths are `$` for the params field itself, `$name` for a top-level
@@ -199,7 +224,7 @@ entry.**
    case `{path}` is `$`, the field itself — no parameter exists to name.
 
 7. **RESULT encoding is unchanged.** `Pack::from_mdb` and the encoder
-   keep ADR-0272's shapes: Temporal, Point, and Vector results remain
+ keep [ADR-0272](./0272-bolt-path-struct.md)'s shapes: Temporal, Point, and Vector results remain
    strings. This ADR changes only the parameter (client → server)
    direction.
 
@@ -224,11 +249,11 @@ entry.**
   client cannot distinguish "the value was null" from "the server
   ignored it".
 - **A new `Neo.ClientError.*` code for parameter conversion failures.**
-  Rejected: Bolt is a transport (ADR-0057) and CypherLite does not claim
+ Rejected: Bolt is a transport ([ADR-0057](./0057-embedded-c-abi-and-bolt.md)) and CypherLite does not claim
   Neo4j's status-code taxonomy; the pinned `CypherLite.Error` already
-  covers caller-facing failures (ADR-0260).
+ covers caller-facing failures ([ADR-0260](./0260-trust-boundary-error-sanitization.md)).
 - **Genericize parameter failures like internal-class errors
-  (`internal error`, ADR-0260).** Rejected: the message is server-authored
+ (`internal error`, [ADR-0260](./0260-trust-boundary-error-sanitization.md)).** Rejected: the message is server-authored
   and describes the caller's own parameter path, so it is safe to echo;
   genericizing it would hide the one piece of information the client
   needs to fix the request.
@@ -257,10 +282,10 @@ entry.**
 ## Consequences
 
 - `Pack::to_mdb` returns `Result<cypherlite::Value, String>`. This is a
-  breaking change to the ADR-0281 library API: the in-tree caller
+ breaking change to the [ADR-0281](./0281-bolt-session-library.md) library API: the in-tree caller
   (`pack_params`) is updated in the same change, and a client
   implementing embedded Relate must handle `Err`. `Pack::from_mdb` and the
-  encoder are unchanged (ADR-0272).
+ encoder are unchanged ([ADR-0272](./0272-bolt-path-struct.md)).
 - Parameters of every engine temporal type — `date`, `time`, `localtime`,
   `datetime` (offset and zone forms), `localdatetime`, `duration` — and
   `point` round-trip from Bolt 4.4 drivers into the engine; unsupported
@@ -278,7 +303,7 @@ entry.**
   example above are pinned by tests.
 - No new engine dependency and no engine change: the conversion lives in
   the Bolt surface and uses the workspace `chrono`/`chrono-tz`
-  dependencies the engine already ships (ADR-0103 R6 is not triggered).
+ dependencies the engine already ships ([ADR-0103](./0103-engine-surfaces-testing-layout.md) R6 is not triggered).
 - Tests: `packstream_tests.rs` pins each tag's decode, each worked
   example (via its `cypher_constructor`), and each rejection message;
   `protocol_tests.rs` pins the RUN FAILURE code, the failed state, the
@@ -286,27 +311,27 @@ entry.**
 
 ## Later references
 
-- ADR-0178: supersedes item 4's in-surface restatement of the IANA
+- [ADR-0178](./0178-engine-zone-resolver.md): supersedes item 4's in-surface restatement of the IANA
   wall-clock rule and the "no engine change" consequence. The engine
   exports `zone_offset_at`/`ZoneError`, and the 0x66 decoder calls it; the
   outcomes pinned here (earliest on overlap, gap rejected, unknown zone
   rejected) are unchanged.
-- ADR-0179: supersedes item 1's `pub fn to_mdb` signature and its
+- [ADR-0179](./0179-bolt-parameter-conversion-crate-internal.md): supersedes item 1's `pub fn to_mdb` signature and its
   breaking-change consequence. The conversion is crate-internal
   (test-only `pub(crate)`); the decode contract of items 2–6, the failure
   messages, and every worked example pinned here are unchanged.
-- ADR-0307: supersedes item 6's pinned code. A parameter conversion
+- [ADR-0307](./0307-bolt-failure-carries-neo4j-status-codes.md): supersedes item 6's pinned code. A parameter conversion
   failure is a FAILURE with `Neo.ClientError.Request.Invalid`, not
   `CypherLite.Error`; the messages, the failed state and the no-execution
   contract are unchanged.
-- ADR-0325: supersedes item 7 ("RESULT encoding is unchanged") for
+- [ADR-0325](./0325-bolt-temporal-results-as-packstream-structs.md): supersedes item 7 ("RESULT encoding is unchanged") for
   temporals: temporal results encode as the structures this ADR decodes,
-  so a temporal parameter echoes back as the same structure. ADR-0326 does
+ so a temporal parameter echoes back as the same structure. [ADR-0326](./0326-bolt-point-results-as-packstream-structs.md) does
   the same for points (`0x58`/`0x59`).
-- ADR-0328: supersedes item 5's `Bytes` rejection and its message row. A
+- [ADR-0328](./0328-bolt-bytes-parameters-round-trip.md): supersedes item 5's `Bytes` rejection and its message row. A
   PackStream Bytes parameter decodes to the engine's statement-scoped byte
-  array (ADR-0327) and round-trips as Bytes.
-- ADR-0329: supersedes item 5's rejection of `0x49`/`0x69` and the "Accept
+ array ([ADR-0327](./0327-engine-statement-scoped-bytes-value.md)) and round-trips as Bytes.
+- [ADR-0329](./0329-bolt-patch-bolt-utc.md): supersedes item 5's rejection of `0x49`/`0x69` and the "Accept
   the 5.0 UTC tags" alternative for connections that negotiate the Bolt
   4.4 `patch_bolt` `utc` patch: there `0x49`/`0x69` decode and the legacy
   `0x46`/`0x66` are rejected. Without the patch this ADR is unchanged.

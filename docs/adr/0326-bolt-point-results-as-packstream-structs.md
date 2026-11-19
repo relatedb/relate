@@ -1,13 +1,27 @@
-# ADR-0326: Bolt point results encode as PackStream Point2D/Point3D structures
+---
+type: adr
+area: surface
+claim: 9c3b77d7a9c93831cf399fb906d320c5b3454fd1
+name: 0326-bolt-point-results-as-packstream-structs
+status: proposed
+tags:
+  - bolt
+  - values
+title: Bolt point results encode as PackStream Point2D/Point3D structures
+REFERENCES:
+  - "[[adr/0177-bolt-parameter-conversion]]"
+  - "[[adr/0272-bolt-path-struct]]"
+SUPERSEDES:
+  - "[[adr/0272-bolt-path-struct]]"
+---
 
-Status: Proposed
-Claim: 9c3b77d7a9c93831cf399fb906d320c5b3454fd1
+# ADR-0326: Bolt point results encode as PackStream Point2D/Point3D structures
 
 ## Context
 
-ADR-0272 kept "Point arms remain string encodings": a point result is sent
+[ADR-0272](./0272-bolt-path-struct.md) kept "Point arms remain string encodings": a point result is sent
 as its Cypher literal, for example `"point({srid: 4326, x: 13, y: 55.6})"`.
-ADR-0177 decodes the `0x58` Point2D and `0x59` Point3D parameter
+[ADR-0177](./0177-bolt-parameter-conversion.md) decodes the `0x58` Point2D and `0x59` Point3D parameter
 structures, so a point parameter goes in as a structure and comes back as
 a string.
 
@@ -33,12 +47,12 @@ depth, never as strings:
 
 Coordinates are always PackStream Floats, bit for bit, including whole
 numbers and non-finite values. The SRID is the stored one (4326, 4979,
-7203 or 9157). These are the exact inverses of ADR-0177's decoders, so a
+7203 or 9157). These are the exact inverses of [ADR-0177](./0177-bolt-parameter-conversion.md)'s decoders, so a
 point parameter echoes back as the same structure.
 
 ## Alternatives considered
 
-- **Keep the Cypher literal string (ADR-0272).** No change for clients
+- **Keep the Cypher literal string ([ADR-0272](./0272-bolt-path-struct.md)).** No change for clients
   that parse it. Rejected: drivers cannot hydrate a spatial type from a
   string, neo4rs typed reads fail, and point parameters do not round trip.
 - **Send whole-number coordinates as Int.** Slightly shorter on the wire.
@@ -53,7 +67,7 @@ point parameter echoes back as the same structure.
 - Drivers hydrate point results as their spatial types
   (`neo4j.spatial.CartesianPoint`/`WGS84Point` in Python,
   `Point2D`/`Point3D` in neo4rs).
-- ADR-0272's "Point arms remain string encodings" is superseded and gets
+- [ADR-0272](./0272-bolt-path-struct.md)'s "Point arms remain string encodings" is superseded and gets
   a Later references note. Vector results stay strings.
 - `docs/api/bolt/spec.md`'s result structure table gains the two rows.
 - `tests/compat/scripts/values/point-structs.bolt` and unit tests in

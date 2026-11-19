@@ -1,13 +1,27 @@
+---
+type: adr
+area: engine
+claim: 9e072ad4a56b1918616b8915300e11c1a13ed0c9
+name: 0406-markdown-vault-snapshot-codec
+status: proposed
+tags:
+  - checkpoint
+title: Markdown vault snapshot codec — the database runs on a folder of markdown files
+REFERENCES:
+  - "[[adr/0050-snapshot-codecs]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0120-ontology-document-persistence]]"
+  - "[[adr/0226-ontology-mappings]]"
+  - "[[adr/0227-ontology-document-format]]"
+  - "[[adr/0623-engine-sidecar-dir-rename]]"
+---
+
 # ADR-0406: Markdown vault snapshot codec — the database runs on a folder of markdown files
-
-Status: Proposed
-
-Claim: 9e072ad4a56b1918616b8915300e11c1a13ed0c9
 
 ## Context
 
 CypherLite's durable form is a fsync'd WAL plus a snapshot written by a
-snapshot codec. Two codecs exist (ADR-0050): Parquet (sharded) and JSON
+snapshot codec. Two codecs exist ([ADR-0050](./0050-snapshot-codecs.md)): Parquet (sharded) and JSON
 (`graph.json` full rewrite), selected by `SnapshotCodecKind` and dispatched
 at exactly two sites (`checkpoint_at` in `cypherlite-storage/src/lib.rs`,
 `load_with_checkpoint_lsn` in `src/open.rs`). The VFS below them is a
@@ -44,18 +58,18 @@ Constraints found in the codebase that shape the decision:
   that has a home in a markdown file.
 - The canonical property-value encoding already exists:
   `props_to_cypher_json` / `props_from_cypher_json` (tagged values,
-  ADR-0120-era `value_encoding`) — shared by the JSON codec and
+ [ADR-0120](./0120-ontology-document-persistence.md)-era `value_encoding`) — shared by the JSON codec and
   validated fail-closed for non-persistable values. A third encoding for
   YAML frontmatter would be parallel state.
 - The graph-type machinery (element types, property types, key
-  constraints; ADR-0226/0227) already enforces non-null/unique per
+ constraints; [ADR-0226](./0226-ontology-mappings.md)/[ADR-0227](./0227-ontology-document-format.md)) already enforces non-null/unique per
   property — the vault can lean on it instead of inventing filename
   fallbacks.
 - The catalog (labels, relationship types, property keys) is
   serialized store state — it can classify frontmatter keys by type,
   not by shape.
 - `saphyr` / `saphyr-parser` (YAML 1.2, pure Rust) are already workspace
-  dependencies (ADR-0227); no markdown parser is, and none is needed:
+ dependencies ([ADR-0227](./0227-ontology-document-format.md)); no markdown parser is, and none is needed:
   the body is opaque text between the frontmatter fence and EOF.
 - Public Obsidian vaults exist for validation at real scale, e.g.
   `obsidianmd/obsidian-help` (official docs vault), `community-archive/
@@ -80,7 +94,7 @@ sanitization, wikilink parse/render, the node-file render and parse
 rules, and the YAML↔tagged-JSON value bridge. It depends only on
 `cypherlite-core` and `cypherlite-model` (R1-clean) and on the existing
 `saphyr-parser` workspace dependency — no new external dependency
-(ADR-0227's parser, reused). `cypherlite-storage` depends on it and adds
+([ADR-0227](./0227-ontology-document-format.md)'s parser, reused). `cypherlite-storage` depends on it and adds
 the codec arms; the engine and surfaces see only `SnapshotCodecKind`.
 
 ### 2. Vault layout (OKF v0.2)
@@ -230,7 +244,7 @@ the codec arms; the engine and surfaces see only `SnapshotCodecKind`.
   but hidden clutter appears at vault root.
 - **Namespaces: one vault is one database** — the vault files are the
   user database (`neo4j`); the `system` and `system_ontologies`
-  namespaces (ADR-0116) are engine state and live entirely in the
+ namespaces ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)) are engine state and live entirely in the
   sidecar, never as markdown files. A process opens one vault per
   `Database`; serving several vaults as differently-named databases is
   a future surface, not part of this codec.
@@ -551,6 +565,6 @@ those numbers.
 
 ## Later references
 
-- ADR-0623 renames the sidecar directory this ADR placed at
+- [ADR-0623](./0623-engine-sidecar-dir-rename.md) renames the sidecar directory this ADR placed at
   `.cypherlite/` to `.relate/`, adopting existing stores by one
   directory rename at their first writable open.

@@ -1,7 +1,15 @@
-# ADR-0336: round() bounds its precision argument
+---
+type: adr
+area: cypher
+claim: 99390f3dada2429e3377caafe2b0591085e5ba1c
+name: 0336-round-precision-bound
+status: proposed
+tags:
+  - functions
+title: round bounds its precision argument
+---
 
-Status: Proposed
-Claim: 99390f3dada2429e3377caafe2b0591085e5ba1c
+# ADR-0336: round() bounds its precision argument
 
 ## Context
 

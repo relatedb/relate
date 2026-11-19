@@ -1,12 +1,22 @@
+---
+type: adr
+area: engine
+claim: be6e913fdc3a9fe75ba072f2f8f136692eedfb63
+name: 0535-hint-notification-category
+status: proposed
+tags:
+  - observability
+  - planner
+title: The HINT notification category and the planner-hint kinds
+REFERENCES:
+  - "[[adr/0363-query-notifications]]"
+---
+
 # ADR-0535: The HINT notification category and the planner-hint kinds
-
-Status: Proposed
-
-Claim: be6e913fdc3a9fe75ba072f2f8f136692eedfb63
 
 ## Context
 
-ADR-0363 built the notification vocabulary around three categories —
+[ADR-0363](./0363-query-notifications.md) built the notification vocabulary around three categories —
 `PERFORMANCE`, `UNRECOGNIZED` and `DEPRECATION` — plus the `SCHEMA`
 category its later DDL work added, and its Consequences state that a new
 category is a new ADR. The engine accepts the CIP-era planner hints
@@ -21,7 +31,7 @@ category the vocabulary does not carry: `HINT`, with the Neo4j codes
 
 ## Decision
 
-The notification vocabulary (ADR-0363) adopts the `HINT` category — wire
+The notification vocabulary ([ADR-0363](./0363-query-notifications.md)) adopts the `HINT` category — wire
 spelling `HINT`, ranked after `SCHEMA` in the statement-scoped merge
 order — with two Neo4j-analog kinds:
 
@@ -32,7 +42,7 @@ order — with two Neo4j-analog kinds:
 
 Both kinds are occurrence-scoped (one row per hint, never collapsed) and
 statement-scoped (no operator association). The kinds fire where a plan
-tree is built, like every ADR-0363 derivation; the hints reach the
+tree is built, like every [ADR-0363](./0363-query-notifications.md) derivation; the hints reach the
 derivation through the IR's `MATCH` clause, which carries them from the
 parser. The GQL-status description text reproduces the live server's
 word-for-word.
@@ -58,6 +68,6 @@ word-for-word.
 - When a later ADR makes the planner honor hints (join planning, forced
   seeks or scans), the triggers change with it and this ADR gains a
   Later references note; the kinds and their codes stay.
-- ADR-0363's table predates several vocabulary additions; this ADR's
+- [ADR-0363](./0363-query-notifications.md)'s table predates several vocabulary additions; this ADR's
   table is the record for these rows, and retrofitting the older rows
-  into ADR-0363's immutable text is out of scope here.
+ into [ADR-0363](./0363-query-notifications.md)'s immutable text is out of scope here.

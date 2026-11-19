@@ -1,13 +1,25 @@
+---
+type: adr
+area: cli
+date: 2026-09-26
+deciders: CypherLite maintainers
+name: 0261-upgrade-skill-refresh-ownership
+status: accepted
+tags:
+  - skill
+title: Upgrade skill-refresh ownership and legacy adoption
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0262-skill-install-adopts-recognizable-bundle]]"
+---
+
 # 0261. Upgrade skill-refresh ownership and legacy adoption
 
-- **Status**: Accepted
 - **Renumbered**: from 0110 (shared-number cleanup)
-- **Date**: 2026-09-26
-- **Deciders**: CypherLite maintainers (Linear LABS-121)
 
 ## Context
 
-ADR-0069 §7 made `cypherlite upgrade` refresh the installed agent-skill bundle
+[ADR-0069](./0069-cli-lifecycle-commands.md) §7 made `cypherlite upgrade` refresh the installed agent-skill bundle
 after a successful self-replace. The pure decision (`skill_refresh_decision`)
 asks `Update installed cypherlite skill? [Y/n]` on an interactive TTY,
 auto-accepts with `--yes`, and prints `run: cypherlite skill install`
@@ -198,10 +210,10 @@ otherwise verbatim, including the trailing space on `install_prompt`:
 
 ## Later references
 
-- ADR-0262: the parent-side classification this ADR relies on left a
+- [ADR-0262](./0262-skill-install-adopts-recognizable-bundle.md): the parent-side classification this ADR relies on left a
   cross-process TOCTOU window — the refresh classified a directory then spawned
   `skill install --force`, and the child trusted `--force` without re-deriving
-  ownership. ADR-0262 moves the recognizable-bundle decision into the replacing
+ ownership. [ADR-0262](./0262-skill-install-adopts-recognizable-bundle.md) moves the recognizable-bundle decision into the replacing
   process: `skill install` adopts a recognized bundle itself, the refresh stops
   passing `--force`, and one shared recognizer lives in `crate::skill` so
   `skill_cmd` and `upgrade_cmd` cannot drift. `skill remove` stays strict.

@@ -1,19 +1,38 @@
+---
+type: adr
+area: infra
+date: 2026-10-13
+name: 0243-query-latency-suite
+status: accepted
+tags:
+  - latency-suite
+title: Query-latency suite from the graph-benchmark-ldbc workload
+REFERENCES:
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+  - "[[adr/0130-cookbook-tested-recipes]]"
+  - "[[adr/0144-graph-examples-differential-suite]]"
+  - "[[adr/0221-engine-reported-statement-elapsed]]"
+  - "[[adr/0226-ontology-mappings]]"
+  - "[[adr/0244-in-process-query-sampling-profiler]]"
+  - "[[adr/0245-query-latency-baseline-environment-and-gate]]"
+  - "[[adr/0246-defer-query-latency-plan-goldens]]"
+  - "[[adr/0247-query-latency-sf0-1-literals]]"
+---
+
 # ADR-0243: Query-latency suite from the graph-benchmark-ldbc workload
 
-> Renamed from ADR-0226: the number collided with
+> Renamed from [ADR-0226](./0226-ontology-mappings.md): the number collided with
 > docs/adr/0226-* on main (both were taken by parallel PRs). The
 > decision is unchanged; references were updated in the same change.
-
-Status: Accepted
-
-Date: 2026-10-13
 
 ## Context
 
 The repo has no read-latency regression signal on a realistic graph. The
-frozen loadtests (ADR-0046, ADR-0070) are synthetic mixed read/write
+frozen loadtests ([ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md), [ADR-0070](./0070-docker-baseline-loadtest-environment.md)) are synthetic mixed read/write
 workloads measured as throughput and per-use-case p99; the TCK, CIP-eval,
-cookbook and graph-examples suites (ADR-0144) check answers, not time.
+cookbook and graph-examples suites ([ADR-0144](./0144-graph-examples-differential-suite.md)) check answers, not time.
 
 The `benchmarks/graph-benchmark-ldbc` harness in the
 companion examples repository runs the 30 Cypher queries of
@@ -41,8 +60,8 @@ The measured size of the workload on 0.12.x (Apple M4 Max):
 | upstream expected answers | none | all 30 |
 
 Agents working on the engine need a reproducible, in-tree target to find
-where a query's time goes (ADR-0244) and a gate that stops the next
-regression (ADR-0245). This ADR decides the suite itself: what is
+where a query's time goes ([ADR-0244](./0244-in-process-query-sampling-profiler.md)) and a gate that stops the next
+regression ([ADR-0245](./0245-query-latency-baseline-environment-and-gate.md)). This ADR decides the suite itself: what is
 imported, how data arrives and is loaded, how queries are run and judged,
 and at which levels it runs.
 
@@ -103,7 +122,7 @@ and at which levels it runs.
      with a per-query timeout (default 60 s at SF0.1, 300 s at SF1); a
      timeout is a recorded failure, not a hang;
    - each round records wall time and the engine's own
-     `QueryResult::elapsed` (ADR-0221); the report keeps min, p50, mean,
+ `QueryResult::elapsed` ([ADR-0221](./0221-engine-reported-statement-elapsed.md)); the report keeps min, p50, mean,
      p99, max and the round count for both;
    - the last round's rows are checked against the expected answers by
      upstream's rules (list equality where order-sensitive, else multiset
@@ -114,23 +133,23 @@ and at which levels it runs.
 5. **Plan goldens.** `EXPLAIN` of each query at SF0.1 is pinned in
    `workloads/gbl/plans/sf0.1/qNN.plan`. A changed plan fails the test;
    `QUERY_LATENCY_UPDATE=1` rewrites the goldens for review, as
-   `COOKBOOK_UPDATE=1` does for the cookbook (ADR-0130). This is the
+ `COOKBOOK_UPDATE=1` does for the cookbook ([ADR-0130](./0130-cookbook-tested-recipes.md)). This is the
    noise-free check for planner cliffs of the K98 kind.
 
 6. **Levels.**
    - **Per PR (CI):** SF0.1. Answers, plan goldens, and the latency and
-     memory compare of ADR-0245.
+ memory compare of [ADR-0245](./0245-query-latency-baseline-environment-and-gate.md).
    - **SF1:** local only (`query-latency run --sf 1`, on a machine with
      at least 32 GB RAM). Answers are checked against upstream's;
      latency is reported, not gated. No CI workflow runs SF1.
 
 7. **Entry points.** One binary, `query-latency`, with `fetch`, `run`
-   and `compare` (and `profile`, ADR-0244); a test target gated on
+ and `compare` (and `profile`, [ADR-0244](./0244-in-process-query-sampling-profiler.md)); a test target gated on
    `CYPHERLITE_QUERY_LATENCY=1` (as `CYPHERLITE_GRAPH_EXAMPLES=1` gates
-   ADR-0144's) runs fetch, load, answers and plans; `make query-latency`
+ [ADR-0144](./0144-graph-examples-differential-suite.md)'s) runs fetch, load, answers and plans; `make query-latency`
    wraps the run. The report is
    `target/query-latency/report-<workload>-sf<sf>.json`, stamped with the
-   ADR-0071 `environment` class. The usage and flag table live in
+ [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md) `environment` class. The usage and flag table live in
    `docs/datasets.md` (AGENTS.md §3).
 
 ## Alternatives considered
@@ -142,7 +161,7 @@ and at which levels it runs.
 - **Extend `cypherlite-datasets`** — rejected: different provenance (MIT
   queries, CC BY data, its own NOTICE) and dependencies (fetch, zstd,
   tar); a separate crate keeps the attribution scoped to what it covers.
-- **Fold it into the graph-examples differential suite (ADR-0144)** —
+- **Fold it into the graph-examples differential suite ([ADR-0144](./0144-graph-examples-differential-suite.md))** —
   rejected: that suite diffs answers against a live Neo4j oracle in
   Docker; this one measures latency against frozen answers and must run
   without Docker-in-Docker or a server.
@@ -189,17 +208,17 @@ and at which levels it runs.
 - Cross-engine comparisons (Neo4j, Kuzu, upstream's table) and the
   `tuned/` rewrites stay outside this repository; this suite reports
   CypherLite only.
-- ADR-0244 builds the sampling profiler on this runner; ADR-0245 decides
+- [ADR-0244](./0244-in-process-query-sampling-profiler.md) builds the sampling profiler on this runner; [ADR-0245](./0245-query-latency-baseline-environment-and-gate.md) decides
   the latency and memory gate and its environment.
 
 ## Later references
 
-- ADR-0246: item 5 (plan goldens) is withdrawn. `EXPLAIN` renders the
+- [ADR-0246](./0246-defer-query-latency-plan-goldens.md): item 5 (plan goldens) is withdrawn. `EXPLAIN` renders the
   logical plan clause by clause, without the part order, start node or
   index choice that K98 cliffs come from, so a golden of it cannot catch
-  them; the ADR-0245 latency compare carries that job. The plan goldens
+ them; the [ADR-0245](./0245-query-latency-baseline-environment-and-gate.md) latency compare carries that job. The plan goldens
   named under item 6 and item 7, and in Consequences, do not exist.
-- ADR-0247: SF0.1 runs 14 queries with recorded literal substitutions
+- [ADR-0247](./0247-query-latency-sf0-1-literals.md): SF0.1 runs 14 queries with recorded literal substitutions
   (`workloads/gbl/literals-sf0.1.json`), so the 19 "nothing found" SF0.1
   answers in Consequences are now 5, upstream's negative checks (q7, q24,
   q25, q26, q29), which answer "nothing" at SF1 too. SF1 stays verbatim.

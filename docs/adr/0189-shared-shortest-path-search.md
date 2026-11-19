@@ -1,14 +1,30 @@
-# 0189. One shared shortest-path search for the expression and clause forms
+---
+type: adr
+area: engine
+date: 2026-10-08
+deciders: CypherLite maintainers (end-of-feature review)
+name: 0189-shared-shortest-path-search
+status: accepted
+tags:
+  - pattern-matching
+  - perf
+title: One shared shortest-path search for the expression and clause forms
+REFERENCES:
+  - "[[adr/0025-shortestpath-bfs]]"
+  - "[[adr/0034-bidirectional-shortestpath]]"
+  - "[[adr/0037-shallow-bound-shortestpath]]"
+  - "[[adr/0111-engine-bounded-execution]]"
+  - "[[adr/0186-match-clause-shortest-path-bfs]]"
+  - "[[adr/0575-shortest-expressions-require-bound-endpoints]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-08
-- **Deciders**: CypherLite maintainers (end-of-feature review of Linear LABS-192 and LABS-196)
+# 0189. One shared shortest-path search for the expression and clause forms
 
 ## Context
 
-ADR-0186 moved the `MATCH`-clause shortest paths and the simple GQL
+[ADR-0186](./0186-match-clause-shortest-path-bfs.md) moved the `MATCH`-clause shortest paths and the simple GQL
 shortest selectors onto BFS. The expression form (`eval_shortest`,
-ADR-0025, ADR-0034, ADR-0037) kept its own searches. An end-of-feature
+[ADR-0025](./0025-shortestpath-bfs.md), [ADR-0034](./0034-bidirectional-shortestpath.md), [ADR-0037](./0037-shallow-bound-shortestpath.md)) kept its own searches. An end-of-feature
 review found two search engines for one problem:
 
 - **Expression form** (`cypherlite-executor/src/eval/shortest.rs`):
@@ -16,7 +32,7 @@ review found two search engines for one problem:
     node, for an unbound end.
   - `bfs_shortest_all`: a queue that carries whole trails, for
     `allShortestPaths`.
-  - The ADR-0037 shallow intersection and the ADR-0034 bidirectional
+ - The [ADR-0037](./0037-shallow-bound-shortestpath.md) shallow intersection and the [ADR-0034](./0034-bidirectional-shortestpath.md) bidirectional
     BFS, for a bound end.
 - **Clause route** (`exec/shortest_route/search.rs`):
   - `Bfs::dag`: a layered BFS that keeps shortest-path predecessors.
@@ -53,10 +69,10 @@ The review found these problems:
 - **Cancellation is coarse in the bidirectional search.**
   `expand_bidir_layer` checks cancellation once per BFS layer. Per edge,
   `trail_uses_rel` walks the parent chain. One layer of a dense graph is
-  unbounded work between two checks (ADR-0111).
-- **ADR-0186 contradicted the code.** It named `bfs_shortest_all` for
-  all-path pairs and called the ADR-0034 / ADR-0037 searches unchanged.
-  ADR-0186 is unmerged and is corrected in place with this ADR.
+ unbounded work between two checks ([ADR-0111](./0111-engine-bounded-execution.md)).
+- **[ADR-0186](./0186-match-clause-shortest-path-bfs.md) contradicted the code.** It named `bfs_shortest_all` for
+ all-path pairs and called the [ADR-0034](./0034-bidirectional-shortestpath.md) / [ADR-0037](./0037-shallow-bound-shortestpath.md) searches unchanged.
+ [ADR-0186](./0186-match-clause-shortest-path-bfs.md) is unmerged and is corrected in place with this ADR.
 
 Neo4j rejects `shortestPath` with a minimum length other than 0 or 1.
 CypherLite accepts it.
@@ -75,9 +91,9 @@ CypherLite accepts it.
 - **Pair search.** One shortest trail between two distinct nodes, as a
   relationship-id trail (`Vec<RelId>`), or none. One dispatch rule
   picks the search:
-  - the ADR-0037 shallow intersection when the pattern is directed,
+ - the [ADR-0037](./0037-shallow-bound-shortestpath.md) shallow intersection when the pattern is directed,
     `min_hops` ≥ 1 and `max_hops` ≤ 3;
-  - the ADR-0034 bidirectional BFS otherwise, with the LABS-196 stop
+ - the [ADR-0034](./0034-bidirectional-shortestpath.md) bidirectional BFS otherwise, with the stop
     rule.
 - **Layered predecessor-DAG search.** A single-source BFS that expands
   each node once, at its first depth, and keeps every same-depth
@@ -98,7 +114,7 @@ The searches take the graph, the direction, the relationship types and
 the hop bounds, plus an end predicate where they need one. They take no
 row, parameters, `cypher_version` or `ShortestWant`. They return
 relationship-id trails. Callers build `Path` values, or read the length
-without one (ADR-0034's `length(shortestPath(...))` shortcut).
+without one ([ADR-0034](./0034-bidirectional-shortestpath.md)'s `length(shortestPath(...))` shortcut).
 
 Every search checks cancellation per neighbour (`try_for_each_neighbor`
 with `cancel_tick()?`), not once per layer. The bidirectional search
@@ -109,14 +125,14 @@ walking the parent chain.
 
 ### Callers
 
-- **Clause route** (ADR-0186). It moves under the GPM engine to
+- **Clause route** ([ADR-0186](./0186-match-clause-shortest-path-bfs.md)). It moves under the GPM engine to
   `exec/gpm/shortest_route/` and is tried at the top of
   `match_gpm_path`. Its guard and row binding stay. Its searches come
   from `shortest/`.
 - **Expression form** (`eval/shortest.rs`), for a single-relationship
   pattern with static types and labels and no relationship property map,
   the shared module's one followable-pattern check. Other shapes keep
-  enumerate-then-min (ADR-0025).
+ enumerate-then-min ([ADR-0025](./0025-shortestpath-bfs.md)).
   - `min_hops` = 0 and the start matches the end: the zero-length path,
     as today.
   - `min_hops` ≤ 1, bound end:
@@ -132,7 +148,7 @@ walking the parent chain.
     closed trails through the start. The shorter length wins; all-path
     ties merge.
   - `min_hops` > 1: exact enumeration (`eval_shortest_enumerate`), the
-    walk ADR-0025 already uses for multi-relationship patterns.
+ walk [ADR-0025](./0025-shortestpath-bfs.md) already uses for multi-relationship patterns.
 
 ### Removed and unchanged
 
@@ -158,7 +174,7 @@ walking the parent chain.
   trail of at least `min_hops` relationships can pass a node deeper
   than its first depth, or revisit it (around a cycle), so it is not in
   the DAG. Searching (node, depth) states instead still does not track
-  relationship uniqueness, so it is not exact either. ADR-0186 keeps
+ relationship uniqueness, so it is not exact either. [ADR-0186](./0186-match-clause-shortest-path-bfs.md) keeps
   `min_hops` > 1 off the clause route for the same reason.
 - **Keep the pruned BFS for `min_hops` > 1.** Rejected: it returns
   wrong lengths or `null`. The reviewer's counterexample
@@ -185,7 +201,7 @@ walking the parent chain.
     candidates together.
   - `min_hops` > 1 now costs enumeration: the number of trails within
     the hop bound, exponential in that bound (32 for an unbounded
-    `[*]`). Cancellation still bounds it (ADR-0111). Neo4j rejects
+ `[*]`). Cancellation still bounds it ([ADR-0111](./0111-engine-bounded-execution.md)). Neo4j rejects
     `min_hops` > 1 for `shortestPath`, so only non-portable queries pay.
   - Start = end with `min_hops` 1 runs the closed-trail search:
     O(deg(s) × (V + E)) per start node, capped at the best length found.
@@ -193,7 +209,7 @@ walking the parent chain.
     `shortestPath`, and `bfs_shortest_all`, which misses the triangle,
     for `allShortestPaths`.
   - Which trail `shortestPath` returns among equal-length trails may
-    change. It is unspecified, as in ADR-0186.
+ change. It is unspecified, as in [ADR-0186](./0186-match-clause-shortest-path-bfs.md).
   - `allShortestPaths` no longer returns a non-shortest trail from a
     later start candidate. Such a candidate can reach an end node in
     fewer relationships than the length the first candidate set, and
@@ -213,13 +229,13 @@ walking the parent chain.
 - Tests pin the triangle result and the `min_hops` > 1 counterexample on
   the expression form. The bounded-expansion regression tests keep
   reading the shared counter.
-- No public API change. ADR-0186 is corrected in place to name the
-  shared module. ADR-0025 gains a Later references note.
+- No public API change. [ADR-0186](./0186-match-clause-shortest-path-bfs.md) is corrected in place to name the
+ shared module. [ADR-0025](./0025-shortestpath-bfs.md) gains a Later references note.
   `docs/engine-architecture.md` names `shortest/`.
 
 ## Later references
 
-- ADR-0575 narrows the expression form's endpoint contract: a
+- [ADR-0575](./0575-shortest-expressions-require-bound-endpoints.md) narrows the expression form's endpoint contract: a
   shortest-path expression requires both endpoint node patterns to name a
   bound variable, so the unbound-end and open-start shapes in the Callers
   section are rejected at compile time. The clause route and the shared

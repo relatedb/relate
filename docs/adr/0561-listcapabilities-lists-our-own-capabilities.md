@@ -1,11 +1,22 @@
-# 0561 — `dbms.listCapabilities` lists this engine's own capabilities
+---
+type: adr
+area: engine
+claim: f5402057a999eeda3af71768915d6a703ee36621
+name: 0561-listcapabilities-lists-our-own-capabilities
+status: proposed
+tags:
+  - conformance
+  - procedures
+title: 0561 — `dbms.listCapabilities` lists this engine's own capabilities
+REFERENCES:
+  - "[[adr/0557-drop-server-only-procedures]]"
+---
 
-Status: Proposed
-Claim: f5402057a999eeda3af71768915d6a703ee36621
+# 0561 — `dbms.listCapabilities` lists this engine's own capabilities
 
 ## Context
 
-ADR-0557 dropped the procedure families that described a server Relate is
+[ADR-0557](./0557-drop-server-only-procedures.md) dropped the procedure families that described a server Relate is
 not. One of them, `dbms.listCapabilities`, was client-facing in a way the
 others were not: a client asks it what the DBMS can do, and the answer is a
 statement about *this* engine rather than about cluster membership, routing,
@@ -42,7 +53,7 @@ actually running.
   otherwise has no surface at all.
 - **Mirror Neo4j's four `virtual_graph.*` rows.** Rejected: they describe a
   Graph Engine and JDBC drivers Relate does not have; the rows would be
-  false, which is the failure mode ADR-0557 exists to remove.
+ false, which is the failure mode [ADR-0557](./0557-drop-server-only-procedures.md) exists to remove.
 - **Report every listed procedure as a capability.** Rejected: `SHOW
   PROCEDURES` already answers that. The value here is a small, stable set a
   client can read without filtering.
@@ -53,7 +64,7 @@ actually running.
 ## Consequences
 
 - `SHOW PROCEDURES` lists 35 rows rather than 34.
-- ADR-0557's removal stands for every other family; this is the new decision
+- [ADR-0557](./0557-drop-server-only-procedures.md)'s removal stands for every other family; this is the new decision
   its own Consequences section called for, not a reversal of it.
 - The capability vocabulary is ours to extend: a new capability is a row
   added here, not a compat mirror to maintain.

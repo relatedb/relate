@@ -1,14 +1,25 @@
-# ADR-0580: Post-release workspace versioning
+---
+type: adr
+area: infra
+claim: c6cf979a3cfc899cbb774b8ce0059a62cf936eb7
+name: 0580-post-release-workspace-versioning
+status: proposed
+tags:
+  - release
+title: Post-release workspace versioning
+REFERENCES:
+  - "[[adr/0067-release-versioning-and-process]]"
+  - "[[adr/0560-crates-io-and-pypi-distribution]]"
+---
 
-Status: Proposed
-Claim: c6cf979a3cfc899cbb774b8ce0059a62cf936eb7
+# ADR-0580: Post-release workspace versioning
 
 ## Context
 
 Releases are cut by the release pipeline's manual dispatch
-(ADR-0067): its version job sweeps every version surface to the next
+([ADR-0067](./0067-release-versioning-and-process.md)): its version job sweeps every version surface to the next
 tag (`scripts/release-bump.sh`), pushes the bump commit to main, and
-the tag job tags that commit. ADR-0560's registry distribution then
+the tag job tags that commit. [ADR-0560](./0560-crates-io-and-pypi-distribution.md)'s registry distribution then
 publishes the 17-crate closure to crates.io in topological dependency
 order, lockstep with the tag — a separate dispatch, so the registries
 can lag the release. The next tag is computed from git tags
@@ -74,5 +85,5 @@ itself as drift.
   prediction of the next tag.
 - Publishes from a main checkout can no longer collide with the
   registry: every workspace version is unpublished by construction.
-- ADR-0067's release policy is extended, not changed — trigger shape,
+- [ADR-0067](./0067-release-versioning-and-process.md)'s release policy is extended, not changed — trigger shape,
   tag-after-build ordering, and lockstep versioning are untouched.

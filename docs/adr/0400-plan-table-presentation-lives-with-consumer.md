@@ -1,19 +1,34 @@
+---
+type: adr
+area: surface
+claim: 32510e65ef0d13a8c589f6ce52ed2c29592e2795
+name: 0400-plan-table-presentation-lives-with-consumer
+status: accepted
+tags:
+  - observability
+  - output
+title: The plan table's presentation lives with its one consumer
+REFERENCES:
+  - "[[adr/0344-query-plan-node-tree-and-per-operator-metrics]]"
+  - "[[adr/0345-plan-surface-alignment-cli-bolt-http]]"
+  - "[[adr/0359-single-plan-renderer-at-the-boundary]]"
+SUPERSEDES:
+  - "[[adr/0344-query-plan-node-tree-and-per-operator-metrics]]"
+  - "[[adr/0345-plan-surface-alignment-cli-bolt-http]]"
+---
+
 # ADR-0400: The plan table's presentation lives with its one consumer
-
-Status: Accepted
-
-Claim: 32510e65ef0d13a8c589f6ce52ed2c29592e2795
 
 ## Context
 
-ADR-0344/0345 placed the plan table's presentation model (the column
+[ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md)/[ADR-0345](./0345-plan-surface-alignment-cli-bolt-http.md) placed the plan table's presentation model (the column
 vocabulary, the flags, the cell assembly) in `cypherlite-model`'s
 `wire::plan_table`, "shared by the engine renderer and every surface's
 table layout, so a renamed or added column is a compile error in the
 other renderer." Two renderers justified the shared module.
 
 That premise expired: the engine's own text renderer was deleted
-(ADR-0359's composition — every surface renders through
+([ADR-0359](./0359-single-plan-renderer-at-the-boundary.md)'s composition — every surface renders through
 `cypherlite-formatter`), leaving the shared module with exactly one
 consumer. LABS-449's descriptor refactor made the one-consumer state
 visible: the model carried presentation items no production code outside
@@ -64,6 +79,6 @@ returns.
   from `wire` directly, and the engine's warning construction follows.
 - The formatter's module gains the presentation as private items; its
   tests pin the marks by `crate::plan_table` paths.
-- ADR-0344/0345's "shared by both renderers" rationale is superseded for
+- [ADR-0344](./0344-query-plan-node-tree-and-per-operator-metrics.md)/[ADR-0345](./0345-plan-surface-alignment-cli-bolt-http.md)'s "shared by both renderers" rationale is superseded for
   the module placement (their metric and column contracts are
   unchanged).

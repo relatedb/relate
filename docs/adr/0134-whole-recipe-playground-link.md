@@ -1,19 +1,31 @@
-# 0134. Whole-recipe playground link
+---
+type: adr
+area: ecosystem
+date: 2026-09-28
+deciders: CypherLite maintainers
+name: 0134-whole-recipe-playground-link
+status: proposed
+tags:
+  - cookbook
+title: Whole-recipe playground link
+REFERENCES:
+  - "[[adr/0130-cookbook-tested-recipes]]"
+  - "[[adr/0133-cookbook-public-links-only]]"
+  - "[[adr/0528-cookbook-moves-to-relate-web]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-28
-- **Deciders**: CypherLite maintainers
+# 0134. Whole-recipe playground link
 
 ## Context
 
-ADR-0130 (Decision item 5) defines one hand-off from the cookbook to the
+[ADR-0130](./0130-cookbook-tested-recipes.md) (Decision item 5) defines one hand-off from the cookbook to the
 playground: `/cypherlite/playground/#recipe=<slug>&cell=<id>`. The
 playground replays the cells before `<id>` and puts `<id>` in the editor
 unrun. That fits a link on a step: "try this step, with everything it
 needs already run".
 
 The recipe page also has one "Open in playground" link in its engine bar
-(added with ADR-0133's review changes), meant to open the recipe's graph
+(added with [ADR-0133](./0133-cookbook-public-links-only.md)'s review changes), meant to open the recipe's graph
 for exploration. It pointed at the first step not marked `setup`. The
 setup flag says how a step renders, not whether it loads data, so in four
 of eleven recipes that step came before the data (agent trajectory
@@ -76,6 +88,6 @@ with an empty or schema-only database.
 
 ## Later references
 
-- ADR-0528 moves the cookbook to the relate-web repository: the playground's
+- [ADR-0528](./0528-cookbook-moves-to-relate-web.md) moves the cookbook to the relate-web repository: the playground's
   `#recipe=` hand-off this ADR extended is removed, and no page here links
   to it.

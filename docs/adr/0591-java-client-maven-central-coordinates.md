@@ -1,11 +1,23 @@
-# ADR-0591: The Java client publishes to Maven Central as `ai.relatedb:relate`
+---
+type: adr
+area: surface
+claim: 40c7ea664d85aa99bf3d56db5919417b62e5d6f8
+name: 0591-java-client-maven-central-coordinates
+status: proposed
+tags:
+  - clients
+  - release
+title: The Java client publishes to Maven Central as `ai.relatedb:relate`
+REFERENCES:
+  - "[[adr/0490-java-bundled-natives]]"
+  - "[[adr/0620-the-java-client-publishes-with-every-release]]"
+---
 
-Status: Proposed
-Claim: 40c7ea664d85aa99bf3d56db5919417b62e5d6f8
+# ADR-0591: The Java client publishes to Maven Central as `ai.relatedb:relate`
 
 ## Context
 
-ADR-0490 bundles the native library in the Java client's jars and left
+[ADR-0490](./0490-java-bundled-natives.md) bundles the native library in the Java client's jars and left
 Maven Central publication out of scope. The publish workflow now carries a
 dormant Maven job, so the artifact's public coordinates must be fixed
 before the first upload: Central treats published coordinates as
@@ -19,7 +31,7 @@ not own, so that namespace cannot be verified.
 
 - The group is `ai.relatedb` — the reversed project domain, verifiable by a
   DNS record — and the artifact stays `relate`: `ai.relatedb:relate` is
-  the fat jar, with one classifier jar per platform as in ADR-0490.
+ the fat jar, with one classifier jar per platform as in [ADR-0490](./0490-java-bundled-natives.md).
 - The Java package moves with the group, from `com.relate` to
   `ai.relatedb`, so the group, the package and the project domain agree
   and the artifact's imports stay predictable. The move is breaking for
@@ -58,7 +70,7 @@ not own, so that namespace cannot be verified.
 
 ## Later references
 
-ADR-0620 publishes the client with every release rather than by manual
+[ADR-0620](./0620-the-java-client-publishes-with-every-release.md) publishes the client with every release rather than by manual
 dispatch alone, and adds the publish profile's dry run. The coordinates,
 the static-credential split and the hand-released first uploads above are
 unchanged.

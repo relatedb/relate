@@ -1,15 +1,28 @@
-# 0031. Adjacency is partitioned by relationship type
+---
+type: adr
+area: engine
+date: 2026-09-01
+deciders: MemoryDB maintainers
+name: 0031-typed-adjacency
+status: accepted
+tags:
+  - storage
+title: Adjacency is partitioned by relationship type
+REFERENCES:
+  - "[[adr/0010-label-property-indexes]]"
+  - "[[adr/0026-eager-residual-match-predicates]]"
+  - "[[adr/0033-compact-live-records-typed-csr]]"
+  - "[[adr/0035-ordered-expand-ts]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-01
-- **Deciders**: MemoryDB maintainers
+# 0031. Adjacency is partitioned by relationship type
 
 ## Context
 
 Expand walks `out_adj` / `in_adj` as a flat `Vec<RelId>` per node, then
 `rel_at` + a type check (`[:TRANSFER]`, `[:E]`, …). On mixed-type graphs
-that inspects every incident relationship. ADR-0010 deferred
-relationship-type indexes. ADR-0026 said not to add them yet.
+that inspects every incident relationship. [ADR-0010](./0010-label-property-indexes.md) deferred
+relationship-type indexes. [ADR-0026](./0026-eager-residual-match-predicates.md) said not to add them yet.
 
 The fraud mix is almost all `TRANSFER`, so the win there is small. Identity
 `REPORTS_TO` paths and any later multi-type graph pay the full scan.
@@ -50,8 +63,8 @@ No Cypher `CREATE INDEX ON :TYPE`. This is an engine layout detail.
 
 ## Later references
 
-ADR-0033: live adjacency is interned typed chunks (compact CSR in RAM),
+[ADR-0033](./0033-compact-live-records-typed-csr.md): live adjacency is interned typed chunks (compact CSR in RAM),
 still a visibility-filtered superset. Overlay scratch may stay flat.
 
-ADR-0035: each typed chunk is ordered by integer `ts` (DESC, nulls first)
+[ADR-0035](./0035-ordered-expand-ts.md): each typed chunk is ordered by integer `ts` (DESC, nulls first)
 so `ORDER BY t.ts DESC LIMIT` can stop after `SKIP+LIMIT` visible hops.

@@ -1,8 +1,20 @@
-# 0025. `shortestPath` is BFS, not full variable-length expand
+---
+type: adr
+area: engine
+date: 2026-08-31
+deciders: MemoryDB maintainers
+name: 0025-shortestpath-bfs
+status: accepted
+tags:
+  - pattern-matching
+title: "`shortestPath` is BFS, not full variable-length expand"
+REFERENCES:
+  - "[[adr/0034-bidirectional-shortestpath]]"
+  - "[[adr/0186-match-clause-shortest-path-bfs]]"
+  - "[[adr/0189-shared-shortest-path-search]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-08-31
-- **Deciders**: MemoryDB maintainers
+# 0025. `shortestPath` is BFS, not full variable-length expand
 
 ## Context
 
@@ -64,18 +76,18 @@ MATCH variable-length expand is unchanged (it must produce every trail).
 
 ## Later references
 
-ADR-0034: when both endpoints are bound, `shortestPath` (not
+[ADR-0034](./0034-bidirectional-shortestpath.md): when both endpoints are bound, `shortestPath` (not
 `allShortestPaths`) uses bidirectional BFS. Same contract; hop cap
 unchanged. Unbound end stays unidirectional.
 
-ADR-0186: the `MATCH` clause forms (`MATCH p = shortestPath(...)`,
+[ADR-0186](./0186-match-clause-shortest-path-bfs.md): the `MATCH` clause forms (`MATCH p = shortestPath(...)`,
 `allShortestPaths(...)`) and the simple GQL shortest selectors also run
 on BFS, per (start, end) partition, instead of enumerate-then-select.
 That route has no hop cap for an unbounded `[*]`. This ADR's expression
 form, including its 32-hop default, is unchanged.
 
-ADR-0189: the expression form runs on the shared shortest-path search
-module (`cypherlite-executor/src/shortest/`), which the ADR-0186 route
+[ADR-0189](./0189-shared-shortest-path-search.md): the expression form runs on the shared shortest-path search
+module (`cypherlite-executor/src/shortest/`), which the [ADR-0186](./0186-match-clause-shortest-path-bfs.md) route
 also uses. `bfs_shortest`'s inline BFS and `bfs_shortest_all` are
 removed. A pattern with `min_hops` > 1 uses exact enumeration instead
 of BFS. The 32-hop default and one value per row are unchanged.

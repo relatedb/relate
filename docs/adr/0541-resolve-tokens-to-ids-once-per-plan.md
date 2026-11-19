@@ -1,16 +1,29 @@
-# ADR-0541: Resolve label, relationship-type and property-key names to token ids once per plan
+---
+type: adr
+area: engine
+claim: 8591f1611b539fc1d47ee18bf6d77bfdd68fb45a
+name: 0541-resolve-tokens-to-ids-once-per-plan
+status: accepted
+tags:
+  - catalog
+  - perf
+title: Resolve label, relationship-type and property-key names to token ids once per plan
+REFERENCES:
+  - "[[adr/0355-fxhash-core-maps-and-interned-domain-reads]]"
+  - "[[adr/0473-contracted-traversal-kernels]]"
+  - "[[adr/0503-template-keyed-plan-cache]]"
+---
 
-Status: Accepted
-Claim: 8591f1611b539fc1d47ee18bf6d77bfdd68fb45a
+# ADR-0541: Resolve label, relationship-type and property-key names to token ids once per plan
 
 ## Context
 
 Plans name labels, relationship types and property keys as strings. The
 store interns all three into one append-only string-to-id table, and the
 executor looks names up in it at execution time — once per stage on the
-contracted kernels (ADR-0473), once per step for relationship types, but
+contracted kernels ([ADR-0473](./0473-contracted-traversal-kernels.md)), once per step for relationship types, but
 once per candidate and name on the walkers' node admission and property
-reads (ADR-0355 kept that cost deliberately). Profiles of expansion-heavy
+reads ([ADR-0355](./0355-fxhash-core-maps-and-interned-domain-reads.md) kept that cost deliberately). Profiles of expansion-heavy
 queries still show string hashing and interner probes inside the
 per-element loop.
 
@@ -22,7 +35,7 @@ Two facts make an earlier resolution point sound. The interner is
 append-only: an id, once handed out, never changes or disappears for the
 life of the store. And the plan cache is per store and re-plans from the
 cached statement whenever any commit has landed since the plan was
-compiled (ADR-0503). A plan therefore never outlives the store state it
+compiled ([ADR-0503](./0503-template-keyed-plan-cache.md)). A plan therefore never outlives the store state it
 was resolved against, and a name that was absent at planning time cannot
 become present without a commit that forces a re-plan.
 
@@ -55,7 +68,7 @@ only as strings.
 
 ## Alternatives considered
 
-- **Keep resolving per stage in the executor** (ADR-0473 and the
+- **Keep resolving per stage in the executor** ([ADR-0473](./0473-contracted-traversal-kernels.md) and the
   per-hop hoist). Cheaper than per candidate, but each executor
   re-implements the hoist, the planner still probes by string, and the
   design cannot reach walker paths that have no stage. Rejected: it fixes
@@ -69,7 +82,7 @@ only as strings.
   pass, but resolution moves into execution, needs interior mutability in
   shared cached plans, and gives the planner nothing. Rejected.
 - **Make the interner hash cheaper** (a keyless fast hash). Barred by
-  ADR-0355's rule against it for keys a client can choose, and it would
+ [ADR-0355](./0355-fxhash-core-maps-and-interned-domain-reads.md)'s rule against it for keys a client can choose, and it would
   still pay a hash per candidate. Rejected.
 
 ## Consequences

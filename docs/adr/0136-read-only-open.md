@@ -1,15 +1,29 @@
-# 0136. Frozen read-only open beside a native writer
+---
+type: adr
+area: engine
+date: 2026-09-29
+deciders: CypherLite maintainers
+name: 0136-read-only-open
+status: proposed
+tags:
+  - storage
+title: Frozen read-only open beside a native writer
+REFERENCES:
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0089-immutable-checkpoint-shard-publication]]"
+  - "[[adr/0097-exclusive-storage-ownership]]"
+  - "[[adr/0127-store-version-compatibility]]"
+  - "[[adr/0480-one-access-flag-read-only-freshness]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-29
-- **Deciders**: CypherLite maintainers
+# 0136. Frozen read-only open beside a native writer
 
 ## Context
 
-ADR-0097 takes a process-lifetime exclusive `flock` on each `.cypherlite.lock`.
+[ADR-0097](./0097-exclusive-storage-ownership.md) takes a process-lifetime exclusive `flock` on each `.cypherlite.lock`.
 A second opener, including one that only wants to read, fails with
 `Error::Locked`. There is no read-only open: a handle checkpoints on close,
-migrates older stores on open (ADR-0127), and trims a torn WAL tail
+migrates older stores on open ([ADR-0127](./0127-store-version-compatibility.md)), and trims a torn WAL tail
 (`Wal::open`). Those are writes.
 
 Callers that must not mutate a database (backups, agents, a local reader
@@ -18,8 +32,8 @@ then leaves the files alone. The same native directory has to stay open
 for the writer. `fs4` 0.8.4 only offers whole-file locks, so the identity
 marker cannot be exclusive for the writer and shared for readers at once.
 
-`.cl` bundles rewrite pages inside one host file (ADR-0074). Immutable
-shard publication (ADR-0089) makes a native directory readable while a
+`.cl` bundles rewrite pages inside one host file ([ADR-0074](./0074-single-file-bundle-vfs.md)). Immutable
+shard publication ([ADR-0089](./0089-immutable-checkpoint-shard-publication.md)) makes a native directory readable while a
 checkpoint publishes the next generation. The bundle does not.
 
 ## Decision
@@ -60,7 +74,7 @@ checkpoint publishes the next generation. The bundle does not.
    After a stable load the process does not read the files again.
    Migrate-on-open, orphan sweep, checkpoint timers, the durability
    timer, and persist-on-drop do not run. Legacy snapshots are served
-   through the legacy reader and are not rewritten (ADR-0127).
+ through the legacy reader and are not rewritten ([ADR-0127](./0127-store-version-compatibility.md)).
 4. **Mutations fail.** `try_wal_commit`, `checkpoint`, and
    `apply_replicated` return `Error::Semantic` (`database is read-only`).
    Reads stay available.
@@ -96,7 +110,7 @@ checkpoint publishes the next generation. The bundle does not.
 
 ## Later references
 
-ADR-0480 supersedes the flag *spelling* only: the CLI's read-only open is
+[ADR-0480](./0480-one-access-flag-read-only-freshness.md) supersedes the flag *spelling* only: the CLI's read-only open is
 reached as `--read-only` / `--read-only=snapshot` (bare form unchanged,
 the frozen-snapshot behavior this ADR defines is exactly the default).
 Nothing else in this decision changes; the internal `OpenMode::ReadOnly`

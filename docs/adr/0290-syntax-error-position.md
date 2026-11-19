@@ -1,9 +1,22 @@
+---
+type: adr
+area: cli
+date: 2026-10-09
+deciders: CypherLite maintainers
+name: 0290-syntax-error-position
+status: proposed
+tags:
+  - errors
+  - output
+title: "Syntax-error position: caret on stderr, `column` and `source` in the envelope"
+REFERENCES:
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0194-cli-error-envelope-and-exit-codes]]"
+---
+
 # 0290. Syntax-error position: caret on stderr, `column` and `source` in the envelope
 
-- **Status**: Proposed
 - **Renumbered**: from 0198 (shared-number cleanup)
-- **Date**: 2026-10-09
-- **Deciders**: CypherLite maintainers (Linear [LABS-239](https://linear.app/neo4j/issue/LABS-239))
 
 ## Context
 
@@ -19,7 +32,7 @@ parse error: unexpected token "RETRN"
 but `print_error` flattens every newline to a space (it exists so engine text
 cannot inject terminal control sequences, and so a multi-line message stays on
 one line), leaving `unexpected token "RETRN"   RETRN 1   ^`, where the caret no
-longer lines up under the offending token. The ADR-0194 error envelope carries
+longer lines up under the offending token. The [ADR-0194](./0194-cli-error-envelope-and-exit-codes.md) error envelope carries
 the same flattened message and no position.
 
 The position does not reach the CLI as data. The engine's public
@@ -70,7 +83,7 @@ shape carries no line number.
 4. **Recovery is by shape, and falls back.** Recognition is a single function
    over the engine text. Anything that does not match either shape is reported
    exactly as today: flattened message, no position, no extra stderr lines.
-5. **Scope.** Syntax errors from the query run only, as in ADR-0194. Other
+5. **Scope.** Syntax errors from the query run only, as in [ADR-0194](./0194-cli-error-envelope-and-exit-codes.md). Other
    error kinds, the lifecycle commands and the interactive shell are unchanged.
 
 ## Alternatives considered
@@ -80,7 +93,7 @@ shape carries no line number.
   a presentational fix. It remains the right long-term home for the position and
   would let this recovery be deleted.
 - **Depend on `cypherlite-parser` and re-parse the failing statement.**
-  Permitted for a surface (ADR-0103, R3), and it would yield a typed
+ Permitted for a surface ([ADR-0103](./0103-engine-surfaces-testing-layout.md), R3), and it would yield a typed
   `ParseError`. Rejected: the CLI would parse every failing statement a second
   time and must reproduce exactly what the front end did to it first (a
   `CYPHER n` prefix, administration commands, detail tags), so a mismatch would

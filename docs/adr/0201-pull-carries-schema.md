@@ -1,10 +1,24 @@
+---
+type: adr
+area: surface
+date: 2026-10-11
+deciders: CypherLite maintainers
+name: 0201-pull-carries-schema
+status: proposed
+tags:
+  - load
+title: Pull carries the source's constraints and indexes
+REFERENCES:
+  - "[[adr/0080-cli-pull-command]]"
+  - "[[adr/0156-directory-clone]]"
+  - "[[adr/0158-streaming-single-process-pull]]"
+  - "[[adr/0291-graph-examples-extras-and-schema-ddl]]"
+---
+
 # 0201. Pull carries the source's constraints and indexes
 
-- **Status**: Proposed
-- **Date**: 2026-10-11
-- **Deciders**: CypherLite maintainers
-- **Related**: ADR-0080 (original sync), ADR-0156 / ADR-0158 (streaming
-  pull), ADR-0291 (schema DDL is runnable)
+- **Related**: [ADR-0080](./0080-cli-pull-command.md) (original sync), [ADR-0156](./0156-directory-clone.md) / [ADR-0158](./0158-streaming-single-process-pull.md) (streaming
+ pull), [ADR-0291](./0291-graph-examples-extras-and-schema-ddl.md) (schema DDL is runnable)
 
 ## Context
 

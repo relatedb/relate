@@ -1,23 +1,46 @@
-# 0229. Remove the `system_ontologies` Cypher surface
+---
+type: adr
+area: engine
+date: 2026-10-13
+deciders: CypherLite maintainers
+name: 0229-remove-system-ontologies-cypher-surface
+status: accepted
+tags:
+  - namespaces
+  - ontology
+title: Remove the `system_ontologies` Cypher surface
+REFERENCES:
+  - "[[adr/0100-wasm-size-optimized-build]]"
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0117-namespace-selection-apis-and-bolt]]"
+  - "[[adr/0118-cli-namespace-flag]]"
+  - "[[adr/0120-ontology-document-persistence]]"
+  - "[[adr/0121-ontology-procedures]]"
+  - "[[adr/0226-ontology-mappings]]"
+  - "[[adr/0227-ontology-document-format]]"
+  - "[[adr/0228-ontology-list-property-types-closed]]"
+  - "[[adr/0593-system-ontologies-visibility-preview-gate]]"
+SUPERSEDES:
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0120-ontology-document-persistence]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-13
-- **Deciders**: CypherLite maintainers (Linear LABS-132)
+# 0229. Remove the `system_ontologies` Cypher surface
 
 ## Context
 
-ADR-0116 makes `system_ontologies` a fixed namespace: listed by `SHOW
+[ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) makes `system_ontologies` a fixed namespace: listed by `SHOW
 DATABASES` (§6), its name accepted everywhere a namespace name is parsed
 (§3), readable with ordinary Cypher, writes failing 42N18 (§1, §4).
-ADR-0120 §2 derives its graph from the stored document at open and after
-every committed set or drop; ADR-0226 §1 pins the mapping that builds it —
+[ADR-0120](./0120-ontology-document-persistence.md) §2 derives its graph from the stored document at open and after
+every committed set or drop; [ADR-0226](./0226-ontology-mappings.md) §1 pins the mapping that builds it —
 six labels, seven relationship types, document-order element ids, the
 fixed graph type — implemented in
 `cypherlite/cypherlite-ontology/src/mapping.rs` and the facade build
 (`build_system_ontologies_graph`) in `cypherlite/cypherlite/src/ontology.rs`.
 
 Neo4j's own document→graph mapping is still unpublished: the persistence
-proposal's JSON-to-graph section remains TODO, and ADR-0226 §1 is
+proposal's JSON-to-graph section remains TODO, and [ADR-0226](./0226-ontology-mappings.md) §1 is
 CypherLite's design, meant as input to Neo4j's WS2 work, not a copy of its
 output. Neo4j's ontology-privileges proposal (revised 8 Oct 2026)
 meanwhile steers away from a visible namespace: the `system_ontologies` database is
@@ -30,7 +53,7 @@ queryable namespace is therefore live-CE parity — and shipping it would
 expose, as a public Cypher surface, a graph whose shape is CypherLite's
 guess at an unpublished mapping. When Neo4j publishes its mapping, every
 query written against ours breaks, and removing reads then is a
-backward-incompatible tightening. ADR-0116's own rule applies: relaxing an
+backward-incompatible tightening. [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md)'s own rule applies: relaxing an
 error later is backward compatible, tightening one is not — so the
 tightening is taken now, before the surface ships.
 
@@ -43,17 +66,17 @@ replaces the surface.
 ## Decision
 
 1. **Listed, not queryable.** `system_ontologies` stays a fixed, listed
-   namespace. `SHOW DATABASES` keeps its row with ADR-0116 §6's values
+ namespace. `SHOW DATABASES` keeps its row with [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §6's values
    verbatim (`type` standard, `access` read-only, `currentStatus` and
    `requestedStatus` `online`, `default` and `home` false, empty `aliases`
    and `constituents`, the stored `defaultLanguage`), and the name stays
    accepted everywhere a namespace name is parsed: session-namespace
-   selection over the embedding APIs and Bolt (ADR-0117), a static `USE`
-   target (ADR-0116 §3), and the CLI `--namespace` flag (ADR-0118). But
+ selection over the embedding APIs and Bolt ([ADR-0117](./0117-namespace-selection-apis-and-bolt.md)), a static `USE`
+ target ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §3), and the CLI `--namespace` flag ([ADR-0118](./0118-cli-namespace-flag.md)). But
    every statement routed to it fails — reads included.
 
    What still runs while routed to `system_ontologies` is exactly
-   ADR-0116 §2's database-administration commands — `SHOW DATABASE[S]
+ [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §2's database-administration commands — `SHOW DATABASE[S]
    [name]`, `SHOW DEFAULT DATABASE`, `SHOW HOME DATABASE`, `ALTER
    DATABASE … SET DEFAULT LANGUAGE` — which act on the store catalog,
    never on a namespace's graph, and keep §2's any-namespace rule. Every
@@ -63,15 +86,15 @@ replaces the surface.
 
    The `db.ontology.*` procedures are unaffected: they act on the stored
    document and on `neo4j`'s graph type, never on the namespace's graph.
-   Run against `neo4j` they behave exactly as ADR-0227 §1 pins; routed to
-   `system_ontologies` they now fail in (2)'s gate, before ADR-0227 §1's
+ Run against `neo4j` they behave exactly as [ADR-0227](./0227-ontology-document-format.md) §1 pins; routed to
+ `system_ontologies` they now fail in (2)'s gate, before [ADR-0227](./0227-ontology-document-format.md) §1's
    `Ontologies can only be stored for the user database 'neo4j'.` (that
    text now fires only on `system`).
 
 2. **The error.** Every statement routed to `system_ontologies` — read or
    write, `USE`-routed or session-routed, wrapped in `EXPLAIN` or
    `PROFILE` included — fails at the plan-based semantic gate (the layer
-   of ADR-0116 §4's gates, above the EXPLAIN early-return) with:
+ of [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §4's gates, above the EXPLAIN early-return) with:
 
    - GQLSTATUS **42N17**, the family of `unsupported_system_clauses`
      (`Neo.ClientError.Statement.SemanticError`; the class-level
@@ -89,59 +112,59 @@ replaces the surface.
    `ontology_neo4j_only`'s "the user database 'neo4j'",
    `element_id_no_namespace`'s imperative pointer) and is CypherLite's
    own: live CE has no counterpart error, because live CE allows reads.
-   The ADR-0116 §4 42N18 arm for `system_ontologies` is removed with it;
+ The [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §4 42N18 arm for `system_ontologies` is removed with it;
    `WriteOnReadOnlyAccessDatabase` stays the recorded CE text for
-   read-only databases (ADR-0116 §9).
+ read-only databases ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §9).
 
-3. **No derived graph.** ADR-0120 §2 is superseded: no
+3. **No derived graph.** [ADR-0120](./0120-ontology-document-persistence.md) §2 is superseded: no
    `system_ontologies` graph is built at open or after a committed set or
-   drop. The document stays the sole stored source of truth (ADR-0120 §1,
-   as amended by ADR-0227: the validated ontology document, JSON or YAML,
-   kept verbatim). The store formats do not change: ADR-0120 §3's redo ops
+ drop. The document stays the sole stored source of truth ([ADR-0120](./0120-ontology-document-persistence.md) §1,
+ as amended by [ADR-0227](./0227-ontology-document-format.md): the validated ontology document, JSON or YAML,
+ kept verbatim). The store formats do not change: [ADR-0120](./0120-ontology-document-persistence.md) §3's redo ops
    and 16 MiB envelope, §4's `MDBWAL02` segment magic, §5's snapshot
    object, §6's inline `ontology` field, §7's bundles and §8's
    format-follows-content all stand, and a store holding an ontology is
-   persisted exactly as today. ADR-0116 §10's `system_ontologies` slot
+ persisted exactly as today. [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §10's `system_ontologies` slot
    holds an empty graph, permanently — never built, never replaced — and
    §5's transaction capture of it captures that empty graph; keeping or
    dropping the capture is an unobservable implementation choice.
-   `set`/`drop` validation keeps ADR-0227 §4–§7's parse, structural
+ `set`/`drop` validation keeps [ADR-0227](./0227-ontology-document-format.md) §4–§7's parse, structural
    validation and version gate; only the derived-graph build check goes.
 
-4. **The mapping code is deleted; ADR-0226 §1 is not shipped.** The
+4. **The mapping code is deleted; [ADR-0226](./0226-ontology-mappings.md) §1 is not shipped.** The
    document→graph mapping code is deleted from the shipped crate:
    `build_ontology_graph` and its plan types
    (`cypherlite/cypherlite-ontology/src/mapping.rs`, `mapping/`), the
    fixed graph type `system_ontologies_graph_type()` (`graph_type.rs`),
    and the facade build and commit pre-build (`build_system_ontologies_graph`
    and the graph half of `CommittedOntology`,
-   `cypherlite/cypherlite/src/ontology.rs`). ADR-0226 remains Accepted as
+ `cypherlite/cypherlite/src/ontology.rs`). [ADR-0226](./0226-ontology-mappings.md) remains Accepted as
    the record of the mapping design, marked **not shipped** until Neo4j
    publishes its mapping: then it is revived from git history, with a new
-   ADR and a Later-references note there, per ADR-0226's own Consequences
-   rule. What stays shipped of ADR-0226 is §2's ontology→graph-type
-   converter `to_graph_type_body` (with ADR-0228's correction) and §3's
+ ADR and a Later-references note there, per [ADR-0226](./0226-ontology-mappings.md)'s own Consequences
+ rule. What stays shipped of [ADR-0226](./0226-ontology-mappings.md) is §2's ontology→graph-type
+ converter `to_graph_type_body` (with [ADR-0228](./0228-ontology-list-property-types-closed.md)'s correction) and §3's
    validate-then-commit data-violation check — both serve `apply` (6).
 
 5. **Element ids: decode-only.** The `cypherlite.system_ontologies`
-   segment of ADR-0116 §7 stays decode-only. No id in that namespace is
+ segment of [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §7 stays decode-only. No id in that namespace is
    ever produced now — no graph, no elements. `db.nameFromElementId` keeps
    decoding the segment to `system_ontologies`, with today's errors for
    anything else; `graph.byElementId` with such an id resolves to the
    namespace and fails in (2)'s gate. An id whose middle segment names no
-   namespace keeps failing 42NA7 (ADR-0116 §3).
+ namespace keeps failing 42NA7 ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §3).
 
 6. **`apply` is unchanged.** `db.ontology.apply` converts the stored
-   document to a graph type through ADR-0226 §2's converter (ADR-0228's
+ document to a graph type through [ADR-0226](./0226-ontology-mappings.md) §2's converter ([ADR-0228](./0228-ontology-list-property-types-closed.md)'s
    correction included), validates the calling transaction's captured
-   `neo4j` snapshot against every derived constraint first (ADR-0226 §3),
+ `neo4j` snapshot against every derived constraint first ([ADR-0226](./0226-ontology-mappings.md) §3),
    and applies it to `neo4j` with `ALTER CURRENT GRAPH TYPE SET`
    semantics. No namespace graph is involved — there never was one.
 
 ## Alternatives considered
 
 - **Full invisibility — remove the `SHOW DATABASES` row too, the
-  proposal's direction.** Rejected: the row keeps CE parity with the ADR-0116 model —
+ proposal's direction.** Rejected: the row keeps CE parity with the [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) model —
   three fixed namespaces, one catalog, one element-id decode — and hiding
   it is the larger surface churn: `SHOW DATABASES` consumers, §6's values
   and the routing surfaces would all need their own rules for a name that
@@ -157,7 +180,7 @@ replaces the surface.
   dead API in a shipped engine crate — unexercised on the product path,
   pinned only by its own unit tests, one refactor away from being
   re-enabled by accident. Git history is the cheaper archive.
-- **Follow live CE exactly — allow reads, keep ADR-0116 §4 as
+- **Follow live CE exactly — allow reads, keep [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §4 as
   implemented.** Rejected: it ships a public Cypher surface over a
   guessed shape; queries written against it break when Neo4j publishes
   its mapping, and removing reads then would be the backward-incompatible
@@ -165,7 +188,7 @@ replaces the surface.
 - **Reject the name at routing with 42N00 instead.** Rejected: the
   database is listed, so `Graph not found: system_ontologies` is a lie; it
   breaks the session-selection surfaces that legitimately accept the name
-  (ADR-0117, ADR-0118); and it gives no pointer to the procedures.
+ ([ADR-0117](./0117-namespace-selection-apis-and-bolt.md), [ADR-0118](./0118-cli-namespace-flag.md)); and it gives no pointer to the procedures.
 - **Reuse `read_only_write` (42N18) for reads.** Rejected: 42N18 means a
   write on a read-only database — neither its text nor its code fits a
   read, and the namespace rejects every clause, which is 42N17's class.
@@ -176,7 +199,7 @@ replaces the surface.
   that live Neo4j CE 2026.09 allows reads on `system_ontologies`.
   CypherLite now rejects reads too, moving toward the proposal's "not
   initially visible through any SHOW command or Cypher clause" while
-  keeping the `SHOW` listing for CE parity with the ADR-0116 model. The
+ keeping the `SHOW` listing for CE parity with the [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) model. The
   fixture (`testdata/ce-errors/neo4j-ce.json`) gains no case for this
   error — there is no live-CE text to pin — so the authored 42N17-family
   text in (2) is the source of truth, and the divergence is recorded
@@ -185,14 +208,14 @@ replaces the surface.
   DATABASES`, accepted as a name, and every non-administration statement
   routed to it failing with (2)'s text — `EXPLAIN`-wrapped included, and
   `USE system_ontologies CALL db.ontology.get()` included, which
-  previously failed with ADR-0227 §1's `Ontologies can only be stored for
+ previously failed with [ADR-0227](./0227-ontology-document-format.md) §1's `Ontologies can only be stored for
   the user database 'neo4j'.` and now fails in the namespace gate.
 - Open, set and drop get cheaper: no graph build, no commit pre-build, no
   fixed graph type installed. Store formats, WAL ops and snapshot layouts
-  are untouched, and ADR-0120 §8's older-binary rules stand. The WASM
-  artifact that ADR-0100 optimizes for size shrinks with the deleted
+ are untouched, and [ADR-0120](./0120-ontology-document-persistence.md) §8's older-binary rules stand. The WASM
+ artifact that [ADR-0100](./0100-wasm-size-optimized-build.md) optimizes for size shrinks with the deleted
   mapping; the delta is measured when the removal lands.
-- ADR-0226 §1's mapping, its fixed graph type and its deterministic ids
+- [ADR-0226](./0226-ontology-mappings.md) §1's mapping, its fixed graph type and its deterministic ids
   are not shipped. When Neo4j publishes its mapping, reviving the derived
   namespace is a new ADR that restores the code from git history.
 - Tests pin (2)'s exact code and text: reads and writes, `USE`-routed and
@@ -205,13 +228,13 @@ replaces the surface.
   specs that describe reading the namespace, and the
   `docs/api/rust/examples/ontology.md` example (which reads the derived
   graph) change with the implementation.
-- ADR-0116, ADR-0120, ADR-0121 and ADR-0226 gain Later-references notes;
-  so do ADR-0227 and ADR-0228, whose `system_ontologies` composition and
+- [ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md), [ADR-0120](./0120-ontology-document-persistence.md), [ADR-0121](./0121-ontology-procedures.md) and [ADR-0226](./0226-ontology-mappings.md) gain Later-references notes;
+ so do [ADR-0227](./0227-ontology-document-format.md) and [ADR-0228](./0228-ontology-list-property-types-closed.md), whose `system_ontologies` composition and
   queryability statements this supersedes.
 
 ## Later references
 
-ADR-0593 narrows this ADR's "listed" premise: `system_ontologies` is
+[ADR-0593](./0593-system-ontologies-visibility-preview-gate.md) narrows this ADR's "listed" premise: `system_ontologies` is
 visible only under the `ontology` preview opt-in (`RELATE_PREVIEW`), so
 while the opt-in is off the namespace is unlisted and every route to the
 name fails as an unknown database (42N00). This ADR's not-queryable gate

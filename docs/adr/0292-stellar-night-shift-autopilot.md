@@ -1,13 +1,25 @@
+---
+type: adr
+area: infra
+date: 2026-10-14
+deciders: CypherLite maintainers
+name: 0292-stellar-night-shift-autopilot
+status: proposed
+tags:
+  - review
+title: Stellar night-shift autopilot and stale-ledger-proof scoping
+REFERENCES:
+  - "[[adr/0271-stellar-review-deterministic-pipeline]]"
+  - "[[adr/0275-stellar-review-scoped-incremental-rounds]]"
+---
+
 # 0292. Stellar night-shift autopilot and stale-ledger-proof scoping
 
-- **Status**: Proposed
 - **Renumbered**: from 0243 (shared-number cleanup)
-- **Date**: 2026-10-14
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
-LABS-311. ADR-0271/0275 made stellar rounds incremental, but two leaks
+[ADR-0271](./0271-stellar-review-deterministic-pipeline.md)/[ADR-0275](./0275-stellar-review-scoped-incremental-rounds.md) made stellar rounds incremental, but two leaks
 remain. (1) After a force-push or rebase the ledger's `last_head` is
 unreachable or diverged; `git diff last_head head` then either fails or
 pulls main's unrelated commits into the round, and unit hashes moved by

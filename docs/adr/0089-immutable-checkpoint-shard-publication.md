@@ -1,26 +1,42 @@
-# 0089. Publish checkpoint shards under immutable generation-unique paths
+---
+type: adr
+area: engine
+date: 2026-09-23
+deciders: CypherLite maintainers
+name: 0089-immutable-checkpoint-shard-publication
+status: proposed
+tags:
+  - checkpoint
+  - storage
+title: Publish checkpoint shards under immutable generation-unique paths
+REFERENCES:
+  - "[[adr/0014-single-wal-write-path]]"
+  - "[[adr/0022-id-window-checkpoint-shards]]"
+  - "[[adr/0072-virtual-filesystem]]"
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0086-bounded-persistence-input]]"
+  - "[[adr/0098-safe-atomic-replacement]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-23
-- **Deciders**: CypherLite maintainers
+# 0089. Publish checkpoint shards under immutable generation-unique paths
 
 ## Context
 
-ADR-0022 specifies copy-on-write dirty id windows and a manifest published
+[ADR-0022](./0022-id-window-checkpoint-shards.md) specifies copy-on-write dirty id windows and a manifest published
 last, but also fixes each part's path at `nodes/{lo}-{hi}.parquet` or
 `relationships/{lo}-{hi}.parquet`. Rewriting a dirty window replaces that
 path before the new manifest is written. If a later part fails, the old
 manifest can now point to new bytes while its old checkpoint LSN is retained;
 recovery may apply the same committed WAL changes again or lose a previously
 committed view. Splitting a window does not prevent collisions with an old
-part. ADR-0086 bounds both writer and reader; a late out-of-envelope part is
+part. [ADR-0086](./0086-bounded-persistence-input.md) bounds both writer and reader; a late out-of-envelope part is
 one ordinary cause of this partial-checkpoint failure.
 
-The VFS of ADR-0072 serves Native directories, ephemeral Memory, and the
-single-host-file Bundle of ADR-0074. ADR-0098 proposes exclusive temporary
+The VFS of [ADR-0072](./0072-virtual-filesystem.md) serves Native directories, ephemeral Memory, and the
+single-host-file Bundle of [ADR-0074](./0074-single-file-bundle-vfs.md). [ADR-0098](./0098-safe-atomic-replacement.md) proposes exclusive temporary
 creation and file/namespace durability for atomic replacement. Those
 guarantees protect *one* path, not a multi-part checkpoint whose existing
-parts have already been overwritten. ADR-0014 requires the previously
+parts have already been overwritten. [ADR-0014](./0014-single-wal-write-path.md) requires the previously
 published snapshot plus committed WAL to remain recoverable after a failed
 checkpoint.
 
@@ -42,12 +58,12 @@ checkpoint.
    still-referenced shard is modified or deleted before publication.
 
 2. **Publish only complete, reopenable parts.** Encode/check each leaf against
-   ADR-0086's file, page, row, and decoded-byte envelope before including it
+ [ADR-0086](./0086-bounded-persistence-input.md)'s file, page, row, and decoded-byte envelope before including it
    in the new manifest. Do not publish oversized intermediate windows while
    splitting or recursively re-encode every ancestor without a bound; produce
    final leaves with bounded work and report an unsplittable part as a failed
    checkpoint. Write every new part, sync its contents and close its handle,
-   then persist its namespace entry as required by ADR-0098 *before*
+ then persist its namespace entry as required by [ADR-0098](./0098-safe-atomic-replacement.md) *before*
    publishing a manifest that references it. Native Unix can batch directory
    syncs once per touched shard directory after all new files have been
    individually synced (and sync newly created ancestors). Bundle can batch
@@ -59,14 +75,14 @@ checkpoint.
 3. **Manifest is the publication point.** After *both* kinds are ready, build
    the full manifest by reusing unchanged entries and adding only complete
    new parts. Atomically replace and durably publish `manifest.json` last via
-   ADR-0098. Until that publication succeeds, the old manifest and every
+ [ADR-0098](./0098-safe-atomic-replacement.md). Until that publication succeeds, the old manifest and every
    part it names stay untouched; preserve the entire committed WAL needed by
    the old manifest. A failed checkpoint must not clear dirty state or
    advance the recyclable WAL cut, even when a rename or directory-sync
    error leaves the new manifest visibly installed. The caller recycles WAL
    only after the checkpoint reports durable success. On Linux/macOS this
    means the manifest's containing directory sync has succeeded; on Windows
-   ADR-0098 does not claim power-loss durability of a renamed directory
+ [ADR-0098](./0098-safe-atomic-replacement.md) does not claim power-loss durability of a renamed directory
    entry, so neither does this decision.
 
 4. **Cleanup without guessing publication.** Track the newly created part
@@ -108,7 +124,7 @@ checkpoint.
    fixed `nodes/{lo}-{hi}.parquet` / `relationships/{lo}-{hi}.parquet` paths.
    New v3 manifests may mix fixed and generation-unique paths while unchanged
    parts are reused. No eager rewrite on open and no new manifest version are
-   required. New and legacy parts alike obey ADR-0086's persisted-input
+ required. New and legacy parts alike obey [ADR-0086](./0086-bounded-persistence-input.md)'s persisted-input
    limits; missing referenced objects are storage errors.
 
 ## Alternatives considered
@@ -146,5 +162,5 @@ checkpoint.
   and post-rename sync uncertainty, and crash-orphan cleanup on Native,
   Memory, and Bundle. Recovery must prove that referenced old and mixed v3
   paths, legacy v1/v2 monoliths, and the required WAL remain usable. Public
-  checkpoint/durability documentation must reflect ADR-0098 and ADR-0086's
+ checkpoint/durability documentation must reflect [ADR-0098](./0098-safe-atomic-replacement.md) and [ADR-0086](./0086-bounded-persistence-input.md)'s
   platform and input limits.

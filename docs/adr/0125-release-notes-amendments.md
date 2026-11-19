@@ -1,18 +1,28 @@
-# 0125. Post-review amendments to release-notes automation
+---
+type: adr
+area: infra
+date: 2026-09-28
+deciders: CypherLite maintainers
+name: 0125-release-notes-amendments
+status: accepted
+tags:
+  - release
+title: Post-review amendments to release-notes automation
+REFERENCES:
+  - "[[adr/0124-release-notes-automation]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-28
-- **Deciders**: CypherLite maintainers (Linear LABS-133)
+# 0125. Post-review amendments to release-notes automation
 
 ## Context
 
-**ADR-0124** decided to generate release notes headless with `opencode run`
+**[ADR-0124](./0124-release-notes-automation.md)** decided to generate release notes headless with `opencode run`
 and publish them to the GitHub release and to Slack. The implementation on the
 feature branch then went through the stellar code-quality review and the
 security review, and both returned blocking findings. This ADR records the
 three amendments agreed in that review loop to resolve the findings.
 
-None of the amendments contradicts ADR-0124. ADR-0124 pinned the *behavior* of
+None of the amendments contradicts [ADR-0124](./0124-release-notes-automation.md). [ADR-0124](./0124-release-notes-automation.md) pinned the *behavior* of
 the idempotent GitHub release update — replace the generated section in place
 on re-run — but never pinned the delimiter mechanism that implements it, so
 replacing the delimiter refines the decision rather than reversing it. Its
@@ -50,7 +60,7 @@ input.**
    is the primary artifact. `slack-payload.json` missing or invalid hard-fails
    only when publishing AND `SLACK_WEBHOOK_URL` is set; otherwise the workflow
    warns and continues. A no-webhook or dry-run run must never be blocked by
-   the Slack artifact, which is the graceful-skip principle of ADR-0124
+ the Slack artifact, which is the graceful-skip principle of [ADR-0124](./0124-release-notes-automation.md)
    applied to the artifact itself.
 3. **Runner hardening.** Three changes:
    - **No persisted credentials on checkout.** `actions/checkout` runs with
@@ -77,7 +87,7 @@ input.**
 - **Keep unconditional `slack-payload.json` validation and document the
   behavior instead** — rejected: a no-webhook or dry-run run must never be
   blocked by the Slack artifact; documentation cannot reconcile a hard-fail
-  with ADR-0124's graceful-skip mandate.
+ with [ADR-0124](./0124-release-notes-automation.md)'s graceful-skip mandate.
 - **Rely on the pinned tarball-plus-sha256 install alone for runner
   safety** — rejected: it secures the tool supply chain but not the runtime:
   the agent still ran with persisted write credentials, an unconstrained Bash
@@ -99,6 +109,6 @@ input.**
 - The `version` dispatch input is validated before any environment write, so
   `PUBLISH` and `OPENCODE_SHA256` can no longer be flipped through
   GITHUB_ENV injection.
-- ADR-0124 remains Accepted and immutable; this ADR is the
-  refinement-of-record, and ADR-0124's delimiter-neutral wording keeps both
+- [ADR-0124](./0124-release-notes-automation.md) remains Accepted and immutable; this ADR is the
+ refinement-of-record, and [ADR-0124](./0124-release-notes-automation.md)'s delimiter-neutral wording keeps both
   consistent.

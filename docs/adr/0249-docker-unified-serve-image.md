@@ -1,16 +1,30 @@
-# ADR-0249: Docker image serves Bolt + HTTP + MCP from one `cypherlite serve` process
+---
+type: adr
+area: surface
+name: 0249-docker-unified-serve-image
+status: accepted
+tags:
+  - serve
+title: Docker image serves Bolt + HTTP + MCP from one `cypherlite serve` process
+REFERENCES:
+  - "[[adr/0128-docker-bolt-server-image]]"
+  - "[[adr/0232-network-surfaces-charter]]"
+  - "[[adr/0248-serve-host-flag]]"
+SUPERSEDES:
+  - "[[adr/0128-docker-bolt-server-image]]"
+---
 
-Status: Accepted
+# ADR-0249: Docker image serves Bolt + HTTP + MCP from one `cypherlite serve` process
 
 ## Context
 
-ADR-0128 built the container image around the bolt-only
+[ADR-0128](./0128-docker-bolt-server-image.md) built the container image around the bolt-only
 `cypherlite-bolt` binary: `CMD --bind 0.0.0.0:7687 --uri /data/graph
 --allow-plaintext`, `EXPOSE 7687 7474` with 7474 declared "reserved for
 the future HTTP surface". That future arrived: `cypherlite serve`
-(ADR-0232) hosts the HTTP Query API v2, MCP, and Bolt surfaces
-in-process on one open store with one shared credential (ADR-0232 §1),
-and ADR-0248 gives it the `--host` flag a container needs. Keeping the
+([ADR-0232](./0232-network-surfaces-charter.md)) hosts the HTTP Query API v2, MCP, and Bolt surfaces
+in-process on one open store with one shared credential ([ADR-0232](./0232-network-surfaces-charter.md) §1),
+and [ADR-0248](./0248-serve-host-flag.md) gives it the `--host` flag a container needs. Keeping the
 image bolt-only would force anyone wanting the HTTP or MCP surface in
 Docker to hand-roll a container, and running three single-protocol
 processes against one store would triple the seeded-store coordination
@@ -29,12 +43,12 @@ process, all three surfaces, one credential:
   non-overlapping bases under `INSTANCES=N`, which an explicit CMD pin
   would defeat.
 - The `entrypoint` binary stays the PID-1 seed-then-serve supervisor
-  (ADR-0128) but now execs/supervises `/bin/cypherlite serve`. Its arg
+ ([ADR-0128](./0128-docker-bolt-server-image.md)) but now execs/supervises `/bin/cypherlite serve`. Its arg
   mapping retargets: `--uri` is a legacy alias of `--database`; `--bind
   HOST:PORT` is a legacy spelling of `--host HOST --bolt PORT` (the
   fleet port base); `--allow-plaintext` is accepted and dropped with a
   note — `serve` is plaintext-only and `--host 0.0.0.0` is itself the
-  deliberate, loudly-warned exposure (ADR-0248). When argv omits them,
+ deliberate, loudly-warned exposure ([ADR-0248](./0248-serve-host-flag.md)). When argv omits them,
   the entrypoint appends the image defaults (host `0.0.0.0`, ports
   7687/7474/7475, database `/data/graph`) so the seeded store is the one
   served.
@@ -47,7 +61,7 @@ process, all three surfaces, one credential:
   instance 2's HTTP onto instance 1's MCP port). Explicitly-set bases
   must be pairwise N apart, a loud startup error otherwise. Per-instance
   suffixed URIs are unchanged.
-- Auth is the shared ADR-0232 story: `CYPHERLITE_AUTH` (or `--auth`, or
+- Auth is the shared [ADR-0232](./0232-network-surfaces-charter.md) story: `CYPHERLITE_AUTH` (or `--auth`, or
   the generated token in `docker logs`) is one credential that unlocks
   all three surfaces.
 - The `cypherlite-bolt` binary **stays in the image** as the
@@ -79,10 +93,10 @@ process, all three surfaces, one credential:
 
 ## Consequences
 
-- ADR-0128's bolt-specific decisions (CMD, EXPOSE set, the bolt-binary
+- [ADR-0128](./0128-docker-bolt-server-image.md)'s bolt-specific decisions (CMD, EXPOSE set, the bolt-binary
   arg pass-through) are superseded by this ADR; its scratch/chef/UID
   1000/`/data` volume/PID-1-signal decisions stand unchanged. A **Later
-  references** note records this on ADR-0128.
+ references** note records this on [ADR-0128](./0128-docker-bolt-server-image.md).
 - `docs/api/bolt/spec.md`'s Docker section, the README Docker section,
   and `docs/api/http/spec.md` / `docs/api/mcp/spec.md` (which gain a
   Docker note) describe the three-port, one-credential story.
@@ -90,6 +104,6 @@ process, all three surfaces, one credential:
   (`surfaces/cypherlite-bolt/tests/docker_smoke.py`) exercises all three
   ports and keeps pinning the legacy `--bind`/`--uri`/`--allow-plaintext`
   spellings as accepted aliases.
-- `docker run` with no args now warns (loudly, by design per ADR-0248)
+- `docker run` with no args now warns (loudly, by design per [ADR-0248](./0248-serve-host-flag.md))
   that `0.0.0.0` exposes plaintext surfaces; the warning names the
   posture the image documents.

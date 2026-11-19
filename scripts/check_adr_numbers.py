@@ -4,7 +4,7 @@ number, or an internal reference — into ``docs/adr/``, or as
 proposal-detail markers anywhere in the tree.
 
 ADR files are ``docs/adr/NNNN-*.md`` with a four-digit, never-reused
-prefix (AGENTS.md §1). A change conflicts when it adds a file whose
+prefix (docs/adr-vault.md). A change conflicts when it adds a file whose
 prefix is already present on the base ref, or when it adds two files
 sharing one prefix — both ways two PRs end up claiming the same number.
 One carve-out: a prefix the change itself deletes is a rename slot, so
@@ -13,14 +13,15 @@ one decision instead of conflicting (the claim proof still binds the
 added file to the number's mint).
 
 A change must also prove every number it adds was minted: each added
-file's header block — every line before the first ``## `` section —
-carries ``Claim: <sha>`` naming the commit on the ledger branch
-(``adr_lib.COUNTER_BRANCH``) that claimed this file's number — the
-commit ``scripts/adr_mint.py`` pushes, whose subject
-``adr_lib.claim_subject`` formats. The checker does not care where in
-the block the line sits; the ADR template places it after ``Status``.
-The claim is checked twice: the commit must be an ancestor of the
-ledger tip, and its subject must name this file's own number.
+file's frontmatter — the YAML block between the ``---`` fence that
+opens the file and its close, the vault form every ADR carries
+(ADR-0406) — holds a ``claim:`` key whose value is the 40-hex sha of
+the commit on the ledger branch (``adr_lib.COUNTER_BRANCH``) that
+claimed this file's number — the commit ``scripts/adr_mint.py``
+pushes, whose subject ``adr_lib.claim_subject`` formats. A claim line
+anywhere in the body proves nothing: only the frontmatter key is
+read. The claim is checked twice: the commit must be an ancestor of
+the ledger tip, and its subject must name this file's own number.
 
 The change must also keep ``docs/adr/`` public-record clean (AGENTS.md
 §1): any line it adds under ``docs/adr/`` carrying an internal
@@ -107,6 +108,7 @@ from adr_lib import (
     COUNTER_REF,
     adr_entries,
     anchor_repo_root,
+    benign_rc1,
     checked_git,
     claim_subject,
     die,
@@ -117,8 +119,12 @@ from adr_lib import (
 
 PROGRAM = "check_adr_numbers"
 MINT_HINT = "mint a fresh number with scripts/adr_mint.py"
-# The proof line the ADR template carries after Status, before Context.
-CLAIM_LINE = re.compile(r"^Claim: ([0-9a-fA-F]{40})[ \t]*$", re.MULTILINE)
+# The mint-proof key in an ADR's frontmatter (ADR-0406): `claim:` with
+# the 40-hex sha of the claim commit on the ledger branch. The codec's
+# emitter writes the sha as a plain scalar, double-quoted only when a
+# plain one would re-resolve (an all-digit sha reads as a number), so
+# both spellings are admitted.
+CLAIM_KEY = re.compile(r"^claim:[ \t]*\"?([0-9a-fA-F]{40})\"?[ \t]*$")
 # AGENTS.md §1: ADRs are public records, so no internal references. The
 # three mechanically-precise internal-reference forms in this repository:
 # the Linear ticket id (LABS-N, including inside linear.app links), the
@@ -290,47 +296,58 @@ def base_numbers(base: str) -> set[str]:
 def counter_tip() -> str | None:
     """The fetched ledger tip as a commit, or None when the ref is absent.
 
-    rev-parse --verify --quiet reports an unresolvable ref by exiting 1
-    with empty output; any other failure (broken repo, missing git) is an
-    infrastructure failure, never "no ledger".
+    rev-parse --verify --quiet answers an absent ref with the benign
+    rc-1 negative (benign_rc1, the shared triage); any other failure
+    (broken repo, missing git) is an infrastructure die, never
+    "no ledger".
     """
     result = git("rev-parse", "--verify", "--quiet", f"{COUNTER_REF}^{{commit}}")
-    if result.returncode == 0:
-        return result.stdout.strip()
-    if result.returncode == 1 and not result.stdout and not result.stderr:
+    if benign_rc1(PROGRAM, f"cannot resolve {COUNTER_REF}", result):
         return None
-    die(PROGRAM, f"cannot resolve {COUNTER_REF}: {result.stderr.strip()}")
+    return result.stdout.strip()
 
 
-def header_block(text: str) -> str:
-    """The lines before the first ``## `` section heading (the ADR header)."""
-    lines: list[str] = []
-    for line in text.splitlines():
-        if line.startswith("## "):
-            break
-        lines.append(line)
-    return "\n".join(lines)
+def frontmatter_lines(text: str) -> list[str]:
+    """The lines between the file's opening ``---`` fence and its close.
+
+    The vault frontmatter form (ADR-0406) every ADR carries: the fence
+    opens the file, the keys follow, the closing fence ends the block —
+    so a body line can never open it. A file with no opening fence, or
+    one whose fence never closes, has no frontmatter to read; the
+    caller reports the missing claim, never a crash.
+    """
+    lines = text.split("\n")
+    if not lines or lines[0] != "---":
+        return []
+    for index in range(1, len(lines)):
+        if lines[index] == "---":
+            return lines[1:index]
+    return []
 
 
 def claim_sha(path: str) -> str | None:
-    """The ``Claim: <40-hex>`` value from the added file, or None.
+    """The ``claim:`` sha from the added file's frontmatter, or None.
 
     The file is read from the working tree — the copy under review. A
-    missing or malformed Claim line is None (the caller reports it); an
-    unreadable file is an infrastructure failure.
+    file with no frontmatter, an unclosed fence, or no claim key is
+    None (the caller reports it); an unreadable file is an
+    infrastructure failure.
     """
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as exc:
         die(PROGRAM, f"cannot read added ADR {path}: {exc}")
-    match = CLAIM_LINE.search(header_block(text))
-    return match.group(1) if match else None
+    for line in frontmatter_lines(text):
+        match = CLAIM_KEY.match(line)
+        if match is not None:
+            return match.group(1)
+    return None
 
 
 def missing_claim_failure(number: str, path: str) -> str:
-    """The failure for an added ADR whose header carries no claim."""
+    """The failure for an added ADR whose frontmatter carries no claim."""
     return (
-        f"{path}: no 'Claim: <40-hex>' header (after Status, before Context) "
+        f"{path}: no 'claim: <40-hex>' key in the frontmatter "
         f"proving {number} was minted; {MINT_HINT}"
     )
 
@@ -350,24 +367,21 @@ def verify_claim(number: str, path: str, sha: str, ledger: str) -> str | None:
     Both legs are required: the claim commit must sit on the ledger branch
     (an ancestor of its tip), and its subject must name exactly this
     file's number — a claim commit for another number proves nothing
-    about this one.
+    about this one. Each leg answers its probe's benign rc 1 (benign_rc1,
+    the triage counter_tip shares) with the user-facing failure; any
+    other nonzero rc is an infrastructure die — never a misreported mint.
     """
     known = git("rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
-    if known.returncode != 0:
+    if benign_rc1(PROGRAM, f"cannot resolve the frontmatter claim {sha}", known):
         return (
-            f"{path}: Claim: {sha} does not name a commit in this repository; "
-            f"{MINT_HINT}"
+            f"{path}: frontmatter claim: {sha} does not name a commit in "
+            f"this repository; {MINT_HINT}"
         )
     ancestor = git("merge-base", "--is-ancestor", sha, ledger)
-    if ancestor.returncode == 1:
+    if benign_rc1(PROGRAM, f"cannot test {sha} against {COUNTER_REF}", ancestor):
         return (
-            f"{path}: Claim: {sha} is not on the ledger branch {COUNTER_REF} "
-            f"(the commit that minted {number}); {MINT_HINT}"
-        )
-    if ancestor.returncode != 0:
-        die(
-            PROGRAM,
-            f"cannot test {sha} against {COUNTER_REF}: {ancestor.stderr.strip()}",
+            f"{path}: frontmatter claim: {sha} is not on the ledger branch "
+            f"{COUNTER_REF} (the commit that minted {number}); {MINT_HINT}"
         )
     subject = checked_git(
         PROGRAM,
@@ -380,8 +394,8 @@ def verify_claim(number: str, path: str, sha: str, ledger: str) -> str | None:
     expected = claim_subject(int(number))
     if subject != expected:
         return (
-            f"{path}: Claim: {sha} records {subject!r}, not {expected!r} "
-            f"for ADR number {number}; {MINT_HINT}"
+            f"{path}: frontmatter claim: {sha} records {subject!r}, not "
+            f"{expected!r} for ADR number {number}; {MINT_HINT}"
         )
     return None
 

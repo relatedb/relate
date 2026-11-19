@@ -1,16 +1,28 @@
-# 0066. Retire the MemoryDB name in favor of cypherlite
+---
+type: adr
+area: ecosystem
+date: 2026-09-19
+deciders: CypherLite / MemoryDB merge (post-merge cleanup)
+name: 0066-retire-memorydb-naming
+status: accepted
+tags:
+  - product
+title: Retire the MemoryDB name in favor of cypherlite
+REFERENCES:
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0052-graphstore-withdrawn]]"
+  - "[[adr/0065-withdraw-wasm-swift-surfaces]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-19
-- **Deciders**: CypherLite / MemoryDB merge (post-merge cleanup)
+# 0066. Retire the MemoryDB name in favor of cypherlite
 
 ## Context
 
-The CypherLite/MemoryDB merge (ADR-0046) grafted CypherLite's dialect and UX
+The CypherLite/MemoryDB merge ([ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md)) grafted CypherLite's dialect and UX
 onto MemoryDB's WAL + CSR + planner/executor, and imported MemoryDB's name
-along with its runtime. ADR-0052 then established the withdrawal pattern, and
-ADR-0065 withdrew the last two unsupported surfaces from that merge. The
-branding question was left open by both: ADR-0065 removed the WASM and Swift
+along with its runtime. [ADR-0052](./0052-graphstore-withdrawn.md) then established the withdrawal pattern, and
+[ADR-0065](./0065-withdraw-wasm-swift-surfaces.md) withdrew the last two unsupported surfaces from that merge. The
+branding question was left open by both: [ADR-0065](./0065-withdraw-wasm-swift-surfaces.md) removed the WASM and Swift
 surfaces without touching the names still embedded in client manifests,
 baselines, environment variables, and diagnostics.
 
@@ -30,7 +42,7 @@ name. Yet live surfaces still carry the old one:
 
 Every one of these misinforms a new reader: the archived project appears to
 still be a live product surface. Retiring the name is the same discipline as
-ADR-0052/ADR-0065 — the tree should advertise only what is actually supported
+[ADR-0052](./0052-graphstore-withdrawn.md)/[ADR-0065](./0065-withdraw-wasm-swift-surfaces.md) — the tree should advertise only what is actually supported
 and shipped.
 
 ## Decision
@@ -89,9 +101,9 @@ coordinate to the values above is carried out by the accompanying cleanup.
 - `CIP_EVAL_*` replaces `CIP_EVAL_MEMORYDB_*` for tests and tooling;
   `CYPHERLITE_PARSER=planner-ir` replaces `=memorydb` for diagnostics. Old
   values are no longer honored.
-- ADR-0046's imported runtime is unaffected: this retires the name, not the
-  WAL/CSR/planner work the merge brought in. ADR-0065's surface withdrawals are
-  also unaffected; this ADR closes the branding question that ADR-0065 left
+- [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md)'s imported runtime is unaffected: this retires the name, not the
+ WAL/CSR/planner work the merge brought in. [ADR-0065](./0065-withdraw-wasm-swift-surfaces.md)'s surface withdrawals are
+ also unaffected; this ADR closes the branding question that [ADR-0065](./0065-withdraw-wasm-swift-surfaces.md) left
   open.
 - Reinstating the MemoryDB name would require a new ADR; this one is the
   recorded decision that it is retired.

@@ -1,12 +1,30 @@
+---
+type: adr
+area: cli
+claim: 0b48269065bae51d75ccb7269b7e1901e66764dc
+name: 0496-run-database-from-url
+status: proposed
+tags:
+  - commands
+  - load
+title: Run from URL — `--database` accepts a remote `.cl` bundle
+REFERENCES:
+  - "[[adr/0044-withdraw-engine-s3]]"
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0104-cargo-feature-bundles]]"
+  - "[[adr/0122-pull-auth-hardening]]"
+  - "[[adr/0267-cli-fetch-params-flag]]"
+  - "[[adr/0270-cli-flag-parse-fetch-split]]"
+  - "[[adr/0477-safe-mode]]"
+  - "[[adr/0480-one-access-flag-read-only-freshness]]"
+  - "[[adr/0500-store-target-and-load-source]]"
+---
+
 # ADR-0496: Run from URL — `--database` accepts a remote `.cl` bundle
-
-Status: Proposed
-
-Claim: 0b48269065bae51d75ccb7269b7e1901e66764dc
 
 ## Context
 
-A CypherLite database that lives in one `.cl` file (ADR-0074) is a
+A CypherLite database that lives in one `.cl` file ([ADR-0074](./0074-single-file-bundle-vfs.md)) is a
 publishable artifact: a demo dataset, a test fixture, a bug report's store.
 Sharing one today means "download this file, then point `--database` at it"
 — an out-of-band step the CLI cannot express, and the step most likely to
@@ -14,16 +32,16 @@ be skipped or mis-spelled when a URL is what the user actually has (a
 GitHub blob link is the usual shape).
 
 The engine deliberately refuses remote URIs: `reject_remote_scheme`
-(ADR-0044) answers any `scheme://` other than `file://` with "`s3://` is not
-an engine URI (ADR-0044); object storage belongs to clients implementing
+([ADR-0044](./0044-withdraw-engine-s3.md)) answers any `scheme://` other than `file://` with "`s3://` is not
+an engine URI ([ADR-0044](./0044-withdraw-engine-s3.md)); object storage belongs to clients implementing
 embedded Relate", and the
-`.cl` bundle route opens a **host file** it locks (ADR-0074). So a URL store
+`.cl` bundle route opens a **host file** it locks ([ADR-0074](./0074-single-file-bundle-vfs.md)). So a URL store
 cannot be an engine URI without dragging network access, credentials, and a
 retry policy into the storage layer — and it would still need a local file
 for the bundle's own host-file locking.
 
 The CLI already has the precedent for the other direction of this trade:
-`--fetch-params` (ADR-0267) fetches a URL in the CLI process and hands the
+`--fetch-params` ([ADR-0267](./0267-cli-fetch-params-flag.md)) fetches a URL in the CLI process and hands the
 engine a value, explicitly *not* an engine capability. LABS-872 (2026-11-03)
 asked for the same shape for a database, with the user's direction: the
 `--database` flag takes the URL, auto-detected; a remote `.cl` file first;
@@ -32,7 +50,7 @@ and no network fetch under safe mode.
 ## Decision
 
 1. **`--database` accepts an `http(s)` URL** naming a `.cl` single-file
-   bundle. Detection is the scheme prefix, ungated (ADR-0104, ADR-0270), so
+ bundle. Detection is the scheme prefix, ungated ([ADR-0104](./0104-cargo-feature-bundles.md), [ADR-0270](./0270-cli-flag-parse-fetch-split.md)), so
    every build parses a URL `--database` and every policy refusal below
    applies in every build; only the fetch is feature-gated. Every value that
    is not an `http(s)` URL keeps today's plain local-path behavior exactly.
@@ -54,7 +72,7 @@ and no network fetch under safe mode.
    plain `http://` is accepted only for a loopback host** (`localhost`,
    `127.0.0.0/8`, `::1`) — the e2e fixtures and a local dev server — and
    refused otherwise with the `https://` form named. There is no
-   `--allow-plaintext`-style opt-in here (unlike `pull`, ADR-0122): a
+ `--allow-plaintext`-style opt-in here (unlike `pull`, [ADR-0122](./0122-pull-auth-hardening.md)): a
    database fetched over plaintext arrives unverified on a transport anyone
    on the path can rewrite, and this fetch has no signature story either.
    The policy is enforced across **redirects** too: every `https://` fetch
@@ -94,7 +112,7 @@ and no network fetch under safe mode.
    tailing a WAL beside a writer, and there is no writer beside a
    downloaded file.
 6. **Safe mode refuses a remote `--database` URL** (exit 2, before any
-   network I/O; ADR-0477): a downloaded store is untrusted input, so safe
+ network I/O; [ADR-0477](./0477-safe-mode.md)): a downloaded store is untrusted input, so safe
    mode introduces none. The refusal precedes the capability gate, so it
    reads the same in every build, and it is scoped to the store — a
    `--fetch-params` URL source binds a parameter, not a store, and is not
@@ -109,22 +127,22 @@ and no network fetch under safe mode.
    runtime error (exit 1); a write on an explicitly `--read-only` copy
    keeps the engine's semantic class (exit 6).
 9. **CLI-only, not an engine capability.** The engine's URI surface keeps
-   refusing remote schemes (ADR-0044); there is no `https://` store URI, no
+ refusing remote schemes ([ADR-0044](./0044-withdraw-engine-s3.md)); there is no `https://` store URI, no
    engine-side credential handling, and no change to `parse_uri`. A remote
    database is fetched with the same trust as a caller-typed path: no
-   signature check and no host allowlist (the ADR-0267 posture for
+ signature check and no host allowlist (the [ADR-0267](./0267-cli-fetch-params-flag.md) posture for
    `--fetch-params`).
 10. **Scope: the statement session.** `serve`, `info`, and `clone` keep
     local paths; giving them URL support is a separate decision per verb.
     `--wal-dir` with a remote URL stays refused by the engine (a `.cl`
-    bundle embeds its WAL, ADR-0074).
+ bundle embeds its WAL, [ADR-0074](./0074-single-file-bundle-vfs.md)).
 
 ## Alternatives considered
 
 - **An engine URI scheme (`https://…` in `parse_uri`)** — rejected: it puts
   network access, credentials, and retry semantics inside storage, and the
   `.cl` bundle route needs a host file to lock, so a remote URI would still
-  have to materialize a local file first. ADR-0044's boundary stands.
+ have to materialize a local file first. [ADR-0044](./0044-withdraw-engine-s3.md)'s boundary stands.
 - **A download cache under the config directory, keyed by URL** — rejected
   for this change: no invalidation story (a URL is not a version), and a
   stale database is a worse failure than a re-fetch. A cache with an
@@ -135,7 +153,7 @@ and no network fetch under safe mode.
   for a case a `.cl` bundle already covers, and the WAL protocol is defined
   against a local directory.
 - **Polling the URL to fake live freshness for `--read-only=live`** —
-  rejected: "live" is defined as tailing a WAL beside a writer (ADR-0480);
+ rejected: "live" is defined as tailing a WAL beside a writer ([ADR-0480](./0480-one-access-flag-read-only-freshness.md));
   a poll of an immutable download is a different feature (a refresh), and
   naming it `live` would make the flag mean two things.
 - **Fetching inside the engine's open path behind a flag** — rejected: the
@@ -165,7 +183,7 @@ and no network fetch under safe mode.
 
 ## Later references
 
-ADR-0500 withdraws this ADR's §1 and §5: `--database` is the store
+[ADR-0500](./0500-store-target-and-load-source.md) withdraws this ADR's §1 and §5: `--database` is the store
 **target** only (an `http(s)` URL in it is a usage error naming
 `--load`), and the kept-copy disposition is gone — every fetched copy is
 scratch. The withdrawal predates any release, so no shipped spelling

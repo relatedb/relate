@@ -1,12 +1,30 @@
-# 0175. String list elements, Java string forms, and remaining float-to-integer sites follow Neo4j
+---
+type: adr
+area: cypher
+date: 2026-10-06
+deciders: CypherLite maintainers
+name: 0175-list-and-string-form-conversions
+status: accepted
+tags:
+  - conformance
+  - functions
+title: String list elements, Java string forms, and remaining float-to-integer sites follow Neo4j
+REFERENCES:
+  - "[[adr/0003-tck-named-error-kinds]]"
+  - "[[adr/0168-non-finite-and-out-of-range-conversions]]"
+  - "[[adr/0280-inf-nan-variable-semantics]]"
+  - "[[adr/0559-runtime-argument-value-error-variant]]"
+  - "[[adr/0565-argument-and-procedure-error-classes]]"
+  - "[[adr/0569-integer-division-overflow-checked]]"
+SUPERSEDES:
+  - "[[adr/0168-non-finite-and-out-of-range-conversions]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-06
-- **Deciders**: CypherLite maintainers (Linear LABS-178)
+# 0175. String list elements, Java string forms, and remaining float-to-integer sites follow Neo4j
 
 ## Context
 
-ADR-0168 settled non-finite and out-of-range numeric conversions for the
+[ADR-0168](./0168-non-finite-and-out-of-range-conversions.md) settled non-finite and out-of-range numeric conversions for the
 scalar `toInteger()` / `toFloat()` paths and deferred three follow-ups
 (its Consequences): the string elements of `toIntegerList()` /
 `toFloatList()` (its two `in_scope: false` probe rows — the last two
@@ -397,7 +415,7 @@ CypherLite cannot express. One rule each:
 - **String elements of the list conversions.** `toIntegerList()` and
   `toFloatList()` convert each element independently with the scalar
   `OrNull` rules: string elements parse per the string rules below,
-  float elements per ADR-0168 (NaN → 0, saturate, truncate toward zero),
+ float elements per [ADR-0168](./0168-non-finite-and-out-of-range-conversions.md) (NaN → 0, saturate, truncate toward zero),
   boolean elements convert to 1/0 in `toIntegerList()` and to null in
   `toFloatList()`, null elements stay null. A string element that fails
   to parse — including an out-of-range numeric string such as `'1e300'`,
@@ -439,17 +457,17 @@ CypherLite cannot express. One rule each:
   down the same fallback: `toInteger()` converts the resulting double
   with float semantics (`'1e3000000000'` → 9223372036854775807,
   `'-1e3000000000'` → -9223372036854775808, `'1e-3000000000'` → 0) and
-  `toFloat()` yields ±Infinity or 0.0. This **supersedes ADR-0168's
+ `toFloat` yields ±Infinity or 0.0. This **supersedes [ADR-0168](./0168-non-finite-and-out-of-range-conversions.md)'s
   deliberate `'1e3000000000'` deviation**: that deviation stood because
   the literal fallback was out of scope; with the fallback decided here,
   aligning is strictly simpler and matches the reference. Every other
-  out-of-range exact decimal keeps ADR-0168's rule (`'1e300'`, `'1e400'`
+ out-of-range exact decimal keeps [ADR-0168](./0168-non-finite-and-out-of-range-conversions.md)'s rule (`'1e300'`, `'1e400'`
   → `NumberOutOfRange` / null).
 - **`range()`.** Float arguments convert with Java `(long)`-cast
   semantics — truncate toward zero, NaN → 0, ±Infinity and out-of-range
   saturate (CypherFunctions.java L529/L3485). A zero step, including a
   NaN step, raises `NumberOutOfRange` (`range() step cannot be 0`,
-  ADR-0168's 22N03 mapping); a size computation that overflows i64
+ [ADR-0168](./0168-non-finite-and-out-of-range-conversions.md)'s 22N03 mapping); a size computation that overflows i64
   raises the arithmetic-overflow error (`integer out of range`,
   22N28-analog) — so `range(1, -Infinity)` errors while
   `range(5, 1, -Infinity)` is `[5]`.
@@ -497,12 +515,12 @@ CypherLite cannot express. One rule each:
   with `InvalidArgumentType` — same outcome (the query errors), different
   phase.
 
-**Error mapping.** No new kinds (ADR-0003 unchanged). Neo4j's
+**Error mapping.** No new kinds ([ADR-0003](./0003-tck-named-error-kinds.md) unchanged). Neo4j's
 compile-time 22N27 / 22NB1 / 42N31, the runtime 22N01 list-index
 TypeError and the 22N03 `SKIP` / `LIMIT` ArgumentError map to
 CypherLite's existing `InvalidArgumentType` (a type error, which the
 bindings already classify); the 22N03 `substring()` / slice / `range()`
-step-zero ArgumentErrors map to `NumberOutOfRange` (ADR-0168's mapping);
+step-zero ArgumentErrors map to `NumberOutOfRange` ([ADR-0168](./0168-non-finite-and-out-of-range-conversions.md)'s mapping);
 22N28 ArithmeticError maps to the existing `integer out of range`
 message. The `SKIP` / `LIMIT` float rejection keeps `InvalidArgumentType`
 rather than `NumberOutOfRange` because CypherLite already raises it there
@@ -514,7 +532,7 @@ value.
 Where cypher-shell and CypherLite's JSONL render a result differently, it
 is the same value: Neo4j `NULL` is `null`; Neo4j `NaN` / `Infinity` /
 `-Infinity` are CypherLite's JSON strings `"NaN"` / `"Inf"` / `"-Inf"`
-(ADR-0280 — a formatter concern this ADR does not change); Neo4j's
+([ADR-0280](./0280-inf-nan-variable-semantics.md) — a formatter concern this ADR does not change); Neo4j's
 `9.223372036854776E18` is CypherLite's `9.223372036854776e+18`; list
 spacing is insignificant. Statement rows (`UNWIND … SKIP/LIMIT`) list
 the returned column values for Neo4j (cypher-shell prints a header row
@@ -524,7 +542,7 @@ stderr prefix. **Bold** marks a changed result. `†` marks a cell raised
 at plan time (before execution) for a float literal — Neo4j's 22N27 /
 22NB1 fire at the same phase. `‡` marks the six compile-vs-runtime
 deviation cells named in the Decision. `§` marks the cells that
-supersede ADR-0168's deliberate `'1e3000000000'` deviation.
+supersede [ADR-0168](./0168-non-finite-and-out-of-range-conversions.md)'s deliberate `'1e3000000000'` deviation.
 
 | Expression | Neo4j 2026.09 | CypherLite before | CypherLite after |
 | --- | --- | --- | --- |
@@ -749,7 +767,7 @@ supersede ADR-0168's deliberate `'1e3000000000'` deviation.
   element through the `OrNull` paths and never raises (CypherFunctions.java
   L3933/L2841) — an erroring list conversion would diverge from the
   reference and destroy data Neo4j keeps (`[1, NULL]`, not an error).
-- **Keep ADR-0168's `'1e3000000000'` error.** Rejected: that deviation
+- **Keep [ADR-0168](./0168-non-finite-and-out-of-range-conversions.md)'s `'1e3000000000'` error.** Rejected: that deviation
   existed only because the literal fallback was out of scope there; with
   the fallback decided for hex/octal/underscore forms, keeping a special
   case for giant exponents is extra code whose sole effect is staying
@@ -793,26 +811,26 @@ supersede ADR-0168's deliberate `'1e3000000000'` deviation.
   (`wrapping_div` / `wrapping_rem`), and Neo4j parity is the project's
   language floor; the quirk is recorded in Consequences instead.
 - **New error kinds for 22N01 / 22N27 / 22NB1.** Rejected: a new kind
-  extends the typed error surface ADR-0003 governs for no gain;
+ extends the typed error surface [ADR-0003](./0003-tck-named-error-kinds.md) governs for no gain;
   `InvalidArgumentType` already names these sites' type failures and the
   bindings already classify it as a type error.
 
 ## Consequences
 
 - `convert.rs` string parsing is restructured to mirror Neo4j's
-  pipeline: ≤ U+0020 trim; a `parseLong`-equivalent; the ADR-0168
+ pipeline: ≤ U+0020 trim; a `parseLong`-equivalent; the [ADR-0168](./0168-non-finite-and-out-of-range-conversions.md)
   exact-decimal parse, now with the int32-exponent gate that diverts
   giant exponents to a float-literal parse; then the shared Cypher25
   literal fallback (lowercase hex/octal, underscores, suffixed decimal
   doubles, Unicode trim). `toFloat()` gains a `parseDouble` emulation
   (hex floats, `f`/`F`/`d`/`D` suffixes, `.5` / `5.` forms, overflow to
-  ±Infinity) ahead of the same fallback; ADR-0168's non-finite-spelling
+ ±Infinity) ahead of the same fallback; [ADR-0168](./0168-non-finite-and-out-of-range-conversions.md)'s non-finite-spelling
   guard applies to the `parseDouble` path only.
 - `toIntegerList()` / `toFloatList()` map elements through the scalar
   `OrNull` paths; boolean elements convert to 1/0 for
   `toIntegerList()` and to null for `toFloatList()`.
 - `range()`, `substring()`, `left()`, `right()` and list-slice bounds
-  convert float arguments through ADR-0168's shared float→i64 helper
+ convert float arguments through [ADR-0168](./0168-non-finite-and-out-of-range-conversions.md)'s shared float→i64 helper
   (truncate toward zero, NaN → 0, saturate); `substring()` /
   `left()` / `right()` add the [0, 2147483647] check and slices the
   int32 check, both raising `NumberOutOfRange`; `range()`'s size
@@ -843,14 +861,14 @@ supersede ADR-0168's deliberate `'1e3000000000'` deviation.
   list index reject `1.0`; `MIN / -1` wraps. These were wrong answers
   (or, for `MIN / -1`, a deliberate divergence); pre-1.0 this lands as a
   fix, recorded in `CHANGELOG.md` under [Unreleased].
-- ADR-0168 is immutable; it gains a **Later references** note pointing
+- [ADR-0168](./0168-non-finite-and-out-of-range-conversions.md) is immutable; it gains a **Later references** note pointing
   here, and its `'1e3000000000'` deviation is superseded by this ADR.
 - TCK: no pinned scenario covers these conversions; the code change
   verifies the allowlist is unchanged.
 
 ## Later references
 
-- ADR-0559 supersedes this ADR's error-mapping note and the probe-table
+- [ADR-0559](./0559-runtime-argument-value-error-variant.md) supersedes this ADR's error-mapping note and the probe-table
   cells for the 22N03 rejections discovered while producing rows:
   `range()`'s zero step, the `substring()` / `left()` / `right()` range
   checks and the list-slice bounds now carry a run-time argument variant,
@@ -860,10 +878,10 @@ supersede ADR-0168's deliberate `'1e3000000000'` deviation.
   `type error: ` prefix to `semantic error: `. The `toInteger()` rows above
   move with them for the same reason. The `InvalidArgumentType` rows are
   unchanged.
-- ADR-0565 corrects the `toInteger()` part of that note: live Neo4j raises
+- [ADR-0565](./0565-argument-and-procedure-error-classes.md) corrects the `toInteger` part of that note: live Neo4j raises
   its type exception for an out-of-range numeric string (22003, the
   `TypeError` class), so the site keeps the type-class prefix while the
   integer-argument range sites keep the run-time argument class.
-- ADR-0569 supersedes the `MIN / -1` half of the consequence above: live
+- [ADR-0569](./0569-integer-division-overflow-checked.md) supersedes the `MIN / -1` half of the consequence above: live
   Neo4j 2026.10.1 raises 22003 for `i64::MIN / -1`, so integer division is
   checked like the other integer arithmetic. `MIN % -1` still answers 0.

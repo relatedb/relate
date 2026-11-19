@@ -1,7 +1,19 @@
-# ADR-0308: Statements that reference an absent parameter fail with ParameterMissing before execution
+---
+type: adr
+area: cypher
+claim: db7790e1780b44e27c13ebd8416efe7c3573861a
+name: 0308-absent-parameter-fails-before-execution
+status: proposed
+tags:
+  - conformance
+  - errors
+title: Statements that reference an absent parameter fail with ParameterMissing before execution
+REFERENCES:
+  - "[[adr/0028-user-visible-transactions]]"
+  - "[[adr/0307-bolt-failure-carries-neo4j-status-codes]]"
+---
 
-Status: Proposed
-Claim: db7790e1780b44e27c13ebd8416efe7c3573861a
+# ADR-0308: Statements that reference an absent parameter fail with ParameterMissing before execution
 
 ## Context
 
@@ -47,7 +59,7 @@ parameters fails before execution with `Error::ParameterMissing`.
    is the one spelling of the message.
 3. **Nothing executes.** No row, no write and no procedure call happens.
    In an explicit transaction the failure fails the transaction like any
-   other statement error (ADR-0028), so it needs a rollback.
+ other statement error ([ADR-0028](./0028-user-visible-transactions.md)), so it needs a rollback.
 4. **The executor fails too.** The `Expr::Parameter` arm returns the same
    `parameters_missing` error instead of `null`. The plan walk covers
    every `Expr::Parameter` the plan holds, so the run-time arm only fires
@@ -66,7 +78,7 @@ parameters fails before execution with `Error::ParameterMissing`.
 6. **Every surface.** The engine is the one policy, so the CLI, Python
    (`ProgrammingError`, class `ParameterMissing`), the C ABI and its
    clients, WASM, HTTP (`42N02`), MCP and Bolt
-   (`Neo.ClientError.Statement.ParameterMissing`, ADR-0307) all report it
+ (`Neo.ClientError.Statement.ParameterMissing`, [ADR-0307](./0307-bolt-failure-carries-neo4j-status-codes.md)) all report it
    with no surface change.
 
 ## Alternatives considered

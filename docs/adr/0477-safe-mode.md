@@ -1,8 +1,22 @@
+---
+type: adr
+area: cli
+claim: ee39c36ba0ca5b0e6d7355115310d92e9b6da65e
+name: 0477-safe-mode
+status: proposed
+tags:
+  - agents
+  - security
+title: Safe mode refuses agent-typical dangerous statement shapes
+REFERENCES:
+  - "[[adr/0136-read-only-open]]"
+  - "[[adr/0452-workspace-limit-enables-admission]]"
+  - "[[adr/0462-value-nesting-depth]]"
+  - "[[adr/0463-expression-allocation-budget]]"
+  - "[[adr/0466-traversal-depth-admission-limit]]"
+---
+
 # ADR-0477: Safe mode refuses agent-typical dangerous statement shapes
-
-Status: Proposed
-
-Claim: ee39c36ba0ca5b0e6d7355115310d92e9b6da65e
 
 ## Context
 
@@ -13,9 +27,9 @@ bug in the engine; each is a shape a human would rarely write and an agent
 writes confidently.
 
 CypherLite already has the individual hardening knobs: the read-only open
-(ADR-0136), the traversal-depth admission limit (ADR-0466), the concurrent
-logical-workspace pool (ADR-0452), the value-nesting cap (ADR-0462), and the
-per-allocation expression budget (ADR-0463). What was missing is a single
+([ADR-0136](./0136-read-only-open.md)), the traversal-depth admission limit ([ADR-0466](./0466-traversal-depth-admission-limit.md)), the concurrent
+logical-workspace pool ([ADR-0452](./0452-workspace-limit-enables-admission.md)), the value-nesting cap ([ADR-0462](./0462-value-nesting-depth.md)), and the
+per-allocation expression budget ([ADR-0463](./0463-expression-allocation-budget.md)). What was missing is a single
 switch that turns the *policy* on, so an operator can hand an agent a store
 without auditing the agent's Cypher first.
 
@@ -37,9 +51,9 @@ Two facts shape the decision.
   therefore stated in its narrow form and carries an explicit exemption
   list; the TCK continues to run with safe mode off and stays green.
 
-Precedent: ADR-0136 (the read-only open), ADR-0452 (workspace admission is
-off unless asked), ADR-0462 (a fixed runtime cap with no knob), ADR-0463
-(the per-allocation expression budget), ADR-0466 (a typed admission
+Precedent: [ADR-0136](./0136-read-only-open.md) (the read-only open), [ADR-0452](./0452-workspace-limit-enables-admission.md) (workspace admission is
+off unless asked), [ADR-0462](./0462-value-nesting-depth.md) (a fixed runtime cap with no knob), [ADR-0463](./0463-expression-allocation-budget.md)
+(the per-allocation expression budget), [ADR-0466](./0466-traversal-depth-admission-limit.md) (a typed admission
 refusal that every surface maps without a new mapping).
 
 ## Decision
@@ -59,7 +73,7 @@ refusal that every surface maps without a new mapping).
 ### 2. The two guardrails
 
 The front-end runs one new validator, `validate_statement_shape`, in the
-same per-statement battery as the traversal bound (ADR-0466), so it sees
+same per-statement battery as the traversal bound ([ADR-0466](./0466-traversal-depth-admission-limit.md)), so it sees
 every nested body at every depth before anything lowers. The guardrails are
 a `SafetyFeature` enum and a `(feature, check-fn)` table; `safe_mode: true`
 resolves to the default feature set, so a later declarative
@@ -129,7 +143,7 @@ The original design bundled more enforcement; it is split out to keep this
 change small:
 
 - **Tightened defaults when the knob is unset:** traversal depth 100, the
-  ADR-0463 expression allocation cap at 32 MiB (once that knob lands),
+ [ADR-0463](./0463-expression-allocation-budget.md) expression allocation cap at 32 MiB (once that knob lands),
   workspace admission on at a documented 64 MiB pool, and a lowered bulk-
   batch threshold. Every explicit flag or environment value would still
   win.

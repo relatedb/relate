@@ -1,8 +1,19 @@
+---
+type: adr
+area: cli
+claim: 11e36494171d3981afd3840f075f4b459c3392cd
+name: 0543-hidden-repl-dot-commands-and-the-eggs-feature
+status: proposed
+tags:
+  - repl
+title: Hidden REPL dot commands, the `eggs` feature, and the Archie banner and prompt
+REFERENCES:
+  - "[[adr/0104-cargo-feature-bundles]]"
+  - "[[adr/0407-agent-mode-override-ladder]]"
+  - "[[adr/0429-cli-extension-registry]]"
+---
+
 # ADR-0543: Hidden REPL dot commands, the `eggs` feature, and the Archie banner and prompt
-
-Status: Proposed
-
-Claim: 11e36494171d3981afd3840f075f4b459c3392cd
 
 ## Context
 
@@ -10,8 +21,8 @@ The maintainers want light client-side delight in the interactive shell:
 the mascot, Archie, on first start and as an opt-in prompt glyph, plus a
 family of small terminal toys behind dot commands. These are neither engine
 behaviour nor extensions: they own the terminal and need nothing from the
-query path. The CLI's feature bundles (ADR-0104) already
-say which build carries which capability, and agent mode (ADR-0407) says a
+query path. The CLI's feature bundles ([ADR-0104](./0104-cargo-feature-bundles.md)) already
+say which build carries which capability, and agent mode ([ADR-0407](./0407-agent-mode-override-ladder.md)) says a
 machine consumer must see no per-run decoration.
 
 ## Decision
@@ -40,7 +51,7 @@ machine consumer must see no per-run decoration.
    the gate open, an egg degrades: plain output without colour, or a typed
    refusal on stderr (exit 1) where it cannot draw at all, such as a
    non-UTF-8 locale. Never garbled escape sequences. One-shot and piped runs
-   never print banners (ADR-0407).
+ never print banners ([ADR-0407](./0407-agent-mode-override-ladder.md)).
 5. **Documentation stance.** Hidden means hidden: eggs are not listed in
    `.help` or `--help` and the CLI spec does not enumerate them. The spec
    states that hidden commands exist in `eggs` builds and are unlisted,
@@ -73,12 +84,12 @@ machine consumer must see no per-run decoration.
 
 ## Alternatives considered
 
-- **Extensions** (ADR-0429). Rejected: an extension child has no terminal
+- **Extensions** ([ADR-0429](./0429-cli-extension-registry.md)). Rejected: an extension child has no terminal
   and no session, and the egg family needs the REPL's own.
 - **A visible `.eggs` or help listing.** Rejected: discovery defeats the
   point, and listing in `--help` would force the spec to enumerate them.
 - **Always compiled in, runtime-gated.** Rejected: it ships dead weight to
-  the `agent` and `minimal` bundles that ADR-0104 keeps lean.
+ the `agent` and `minimal` bundles that [ADR-0104](./0104-cargo-feature-bundles.md) keeps lean.
 - **Eggs as a module inside the CLI.** Rejected: the family is expected to
   grow, and a separate crate keeps it out of the CLI's file budget and lets
   it be built and tested alone.

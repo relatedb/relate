@@ -1,16 +1,30 @@
+---
+type: adr
+area: ecosystem
+claim: da94d034a1878fd69d1c5d9f58ea6ad28ef71925
+name: 0447-extension-single-wire
+status: accepted
+status_note: 2026-10-29
+tags:
+  - extensions
+  - mcp
+title: The extension mount speaks MCP stdio only
+REFERENCES:
+  - "[[adr/0430-cli-extension-wire-protocol]]"
+  - "[[adr/0442-extension-mcp-stdio-wire]]"
+SUPERSEDES:
+  - "[[adr/0430-cli-extension-wire-protocol]]"
+---
+
 # ADR-0447: The extension mount speaks MCP stdio only
-
-Status: Accepted (2026-10-29)
-
-Claim: da94d034a1878fd69d1c5d9f58ea6ad28ef71925
 
 ## Context
 
-[ADR-0430](0430-cli-extension-wire-protocol.md) fixed wire v1 for
+[ADR-0430](./0430-cli-extension-wire-protocol.md) fixed wire v1 for
 command-kind extensions: the host spawned the child over std pipes, handed
 it one parsed JSON envelope on stdin, and read NDJSON records (`hello`,
 `batch`, `rows`, `index`, `summary`, `error`) from its stdout.
-[ADR-0442](0442-extension-mcp-stdio-wire.md) added an MCP stdio mount
+[ADR-0442](./0442-extension-mcp-stdio-wire.md) added an MCP stdio mount
 beside it, chosen by a manifest `wire` field, and the first-party
 importers stayed on v1.
 
@@ -108,7 +122,7 @@ and starters are unchanged; only the wire under them is.
 
 ## Alternatives considered
 
-- **Keep both wires (ADR-0442's dual mount).** Rejected: nothing but the
+- **Keep both wires ([ADR-0442](./0442-extension-mcp-stdio-wire.md)'s dual mount).** Rejected: nothing but the
   first-party importers spoke v1 and all of them can speak MCP, so the
   dual mount bought no user anything while costing a second reader, a
   second refusal vocabulary, a second set of test lanes, and the
@@ -118,11 +132,11 @@ and starters are unchanged; only the wire under them is.
   review round already caught — two gatings, two refusal vocabularies,
   and two places to fix a tool bug.
 - **Put the shared bodies in the wire kit behind a feature.** Rejected:
-  the kit is what a *child* links and must stay engine-free (ADR-0430 §6);
+ the kit is what a *child* links and must stay engine-free ([ADR-0430](./0430-cli-extension-wire-protocol.md) §6);
   an engine-side tool implementation belongs to the surface that serves
   agents, which the CLI may depend on (R3).
 - **Detect the wire from the first line.** Rejected, unchanged from
-  ADR-0442 §1: unimplementable while a v1 child reads stdin to
+ [ADR-0442](./0442-extension-mcp-stdio-wire.md) §1: unimplementable while a v1 child reads stdin to
   end-of-input before its first record — and moot once one wire exists.
 - **Keep the product server's hyphenated tool names as aliases.** Rejected:
   two spellings for one tool is the parallel vocabulary this ADR removes,
@@ -162,7 +176,7 @@ and starters are unchanged; only the wire under them is.
   the mount is the CLI's fixture suites (`e2e_extension_fixtures.rs`,
   `e2e_extension_mcp.rs`, `e2e_fs_to_graph.rs`, `e2e_git_to_graph.rs`), and
   the network-dependent example e2e lane is gone.
-- ADR-0430's records, caps and commit vocabulary survive in substance:
+- [ADR-0430](./0430-cli-extension-wire-protocol.md)'s records, caps and commit vocabulary survive in substance:
   the numbers, the `whole-import` / `per-batch` framing and the
   no-argv, no-store envelope are unchanged — only the record stream and
   the tool surface under them moved.

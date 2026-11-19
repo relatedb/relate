@@ -1,18 +1,37 @@
-# 0226. Pin the ontology mappings: document to graph, ontology to graph type
+---
+type: adr
+area: engine
+date: 2026-10-12
+deciders: CypherLite maintainers
+name: 0226-ontology-mappings
+status: accepted
+tags:
+  - ontology
+title: "Pin the ontology mappings: document to graph, ontology to graph type"
+REFERENCES:
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+  - "[[adr/0120-ontology-document-persistence]]"
+  - "[[adr/0121-ontology-procedures]]"
+  - "[[adr/0227-ontology-document-format]]"
+  - "[[adr/0228-ontology-list-property-types-closed]]"
+  - "[[adr/0229-remove-system-ontologies-cypher-surface]]"
+  - "[[adr/0364-ontology-spec-main-gate]]"
+  - "[[adr/0487-ontology-graph-spec-1-1-0-bump]]"
+SUPERSEDES:
+  - "[[adr/0121-ontology-procedures]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-12
-- **Deciders**: CypherLite maintainers (Linear LABS-132)
+# 0226. Pin the ontology mappings: document to graph, ontology to graph type
 
 ## Context
 
-ADR-0120 §1 makes the validated ontology document the source of truth and
+[ADR-0120](./0120-ontology-document-persistence.md) §1 makes the validated ontology document the source of truth and
 derives the `system_ontologies` graph from it; §5 carries the document as
 one immutable snapshot object, so the store formats never see the mapping.
-What the mapping *is* was deferred: ADR-0121 §5 decided that the
+What the mapping *is* was deferred: [ADR-0121](./0121-ontology-procedures.md) §5 decided that the
 document-to-graph mapping and the ontology graph type would implement
 Neo4j's published mapping, that CypherLite ships no mapping of its own, and
-that implementing the procedures waits until Neo4j publishes it; ADR-0121 §1
+that implementing the procedures waits until Neo4j publishes it; [ADR-0121](./0121-ontology-procedures.md) §1
 defined `db.ontology.apply` (graph-type conversion with `ALTER CURRENT
 GRAPH TYPE SET` semantics, failing when the data violates the resulting
 graph type) without saying how that failure is produced.
@@ -26,9 +45,9 @@ nodes/relationships keyed by local ids, `label`/`labels.identifier`,
 property type tokens, constraint objects plus shorthand flags, endpoint
 cardinality, the extensions envelope — and an explicit
 enforceable-vs-descriptive table ("Enforcement mapping"). CypherLite's
-implementation of ADR-0120/ADR-0121 (LABS-132) is designed to feed back
+implementation of [ADR-0120](./0120-ontology-document-persistence.md)/[ADR-0121](./0121-ontology-procedures.md) is designed to feed back
 into Neo4j's WS2 storage work, and because the graph is derived, adopting a
-different Neo4j mapping later costs no data migration (ADR-0120
+different Neo4j mapping later costs no data migration ([ADR-0120](./0120-ontology-document-persistence.md)
 Consequences). Waiting buys nothing.
 
 One more gap: today's SET path never validates existing data.
@@ -39,7 +58,7 @@ schema-equivalence skip in front of `create_constraint_core`
 looking at data, and `alter_current_graph_type`
 (`cypherlite/cypherlite-executor/src/exec/catalog_schema.rs:449`) adds
 nothing else. `db.ontology.apply` must fail when existing `neo4j` data
-violates the resulting graph type (ADR-0121 §1), so the mechanism needs
+violates the resulting graph type ([ADR-0121](./0121-ontology-procedures.md) §1), so the mechanism needs
 deciding.
 
 ## Decision
@@ -47,7 +66,7 @@ deciding.
 ### 1. Document → `system_ontologies` graph
 
 Every node and relationship in the derived graph carries the property
-`ontology :: STRING` with the value `'neo4j'` (ADR-0121 §5), naming the
+`ontology :: STRING` with the value `'neo4j'` ([ADR-0121](./0121-ontology-procedures.md) §5), naming the
 database the stored ontology belongs to.
 
 The graph mirrors the document as written, one graph element per document
@@ -95,8 +114,8 @@ child node, and a relationship entry's `FROM`/`TO` edges when its node is
 created (node entries always exist by then, `nodes` being traversed first).
 The build is a pure function of the parsed document with source key order
 preserved, so an unchanged document yields the same graph with the same
-element ids (ADR-0116 §7) across restarts, and ids change only when the
-ontology is replaced (ADR-0120 §2).
+element ids ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §7) across restarts, and ids change only when the
+ontology is replaced ([ADR-0120](./0120-ontology-document-persistence.md) §2).
 
 **Fixed graph type.** The derived graph carries a fixed graph type
 — an engine constant in `cypherlite/cypherlite-ontology` — describing the
@@ -104,9 +123,9 @@ shapes above: the six labels with their mandatory properties `NOT NULL`
 (`key`, `label`, `type`, `name`, `constraint_type` where the table lists
 them, and `ontology` everywhere), and the seven relationship types with
 their endpoints. It is installed as the namespace's current graph type
-whenever the derived graph is built (ADR-0120 §2), so `SHOW CURRENT GRAPH
+whenever the derived graph is built ([ADR-0120](./0120-ontology-document-persistence.md) §2), so `SHOW CURRENT GRAPH
 TYPE` on `system_ontologies` describes the ontology model. Because the
-namespace is read-only to Cypher (ADR-0116 §1/§4), the type never gates
+namespace is read-only to Cypher ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §1/§4), the type never gates
 writes; it is descriptive and introspectable.
 
 ### 2. Ontology → graph type (`db.ontology.apply`)
@@ -145,11 +164,11 @@ queryable in `system_ontologies` through the mapping in (1).
 
 ### 3. How apply fails on violating data
 
-Like all four procedures (ADR-0227, following the
+Like all four procedures ([ADR-0227](./0227-ontology-document-format.md), following the
 ontology-privileges proposal),
 `db.ontology.apply` takes no database argument: it reads the stored
 ontology of, and sets the graph type on, the database it is executed
-against — the session database or the `USE` target — which ADR-0121 §2's
+against — the session database or the `USE` target — which [ADR-0121](./0121-ontology-procedures.md) §2's
 rule restricts to `neo4j` (`system` and `system_ontologies` reject the
 procedures before this point). It validates first, then commits:
 
@@ -157,7 +176,7 @@ procedures before this point). It validates first, then commits:
    derives its constraint set with the same functions the `ALTER CURRENT
    GRAPH TYPE SET` path uses (`apply_verb`, `derive_constraints_typed`).
 2. Before any catalog redo is pushed, it scans the calling transaction's
-   captured `neo4j` snapshot (ADR-0116 §5) against every derived
+ captured `neo4j` snapshot ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §5) against every derived
    constraint: key constraints check presence and uniqueness; unique
    constraints check uniqueness (absent properties exempt, as in Cypher);
    existence (`NOT NULL` / `mustExist`) checks presence; property-type
@@ -167,7 +186,7 @@ procedures before this point). It validates first, then commits:
 3. The first violation fails the statement with a data-violation error
    naming the constraint and the offending element's element id. No
    `SetCurrentGraphType` redo is written and no catalog change commits; in
-   an explicit transaction (ADR-0121 §3) the failure is a statement error
+ an explicit transaction ([ADR-0121](./0121-ontology-procedures.md) §3) the failure is a statement error
    and the transaction's other work is untouched.
 4. Only on success does the existing SET path run: the SET purge,
    `sync_derived_constraints`, and the `RedoOp::SetCurrentGraphType` push
@@ -176,18 +195,18 @@ procedures before this point). It validates first, then commits:
    atomically under the store's normal commit protocol.
 
 The mapping itself (document model → graph-type body) lives in
-`cypherlite/cypherlite-ontology` (ADR-0121 §6); the snapshot scan lives in
+`cypherlite/cypherlite-ontology` ([ADR-0121](./0121-ontology-procedures.md) §6); the snapshot scan lives in
 `cypherlite-executor` next to `alter_current_graph_type`, the only layer
 that can see the data.
 
 ## Alternatives considered
 
-- **Wait for Neo4j's published mapping** (the ADR-0121 §5 stance).
+- **Wait for Neo4j's published mapping** (the [ADR-0121](./0121-ontology-procedures.md) §5 stance).
   Rejected: the mapping is still TODO in Neo4j's persistence proposal, and
   CypherLite's mapping is designed as input to Neo4j's WS2 work rather than
   a copy of its output. Derivation makes a later alignment migration-free,
   so waiting only delays LABS-132.
-- **Persist the derived graph instead of deriving it.** Rejected: ADR-0120
+- **Persist the derived graph instead of deriving it.** Rejected: [ADR-0120](./0120-ontology-document-persistence.md)
   already weighed this — per-namespace shards, namespace-tagged WAL
   records, and rebuilding the document on `get` — and the graph stays a
   pure function of the document.
@@ -199,7 +218,7 @@ that can see the data.
   endpoint pairs distinct; merging would lose the structure `SHOW CURRENT
   GRAPH TYPE` should reflect.
 - **Apply via `CREATE CONSTRAINT` redo ops instead of the graph-type
-  path.** Rejected: apply is defined with SET semantics (ADR-0121 §1), and
+ path.** Rejected: apply is defined with SET semantics ([ADR-0121](./0121-ontology-procedures.md) §1), and
   derived constraints must stay distinguishable from named ones in the
   theater (`TheaterData.derived_constraints`).
 - **Make SET itself validate existing data instead of adding an apply-only
@@ -211,10 +230,10 @@ that can see the data.
 
 - Queries against `system_ontologies` get a stable, documented shape, and
   element ids for an unchanged document are stable across restarts
-  (ADR-0116 §7).
+ ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §7).
 - The mappings are CypherLite's own. If Neo4j publishes a different
   mapping, aligning is a new ADR plus a Later-references note here, and —
-  per ADR-0120 — needs no data migration: only the derived graph changes.
+ per [ADR-0120](./0120-ontology-document-persistence.md) — needs no data migration: only the derived graph changes.
   Queries written against this shape may then need updating.
 - `apply` becomes the one graph-type path that validates existing data; SET
   stays non-validating. The scan is covered by tests over violating
@@ -223,24 +242,24 @@ that can see the data.
   reference page: descriptive fields are queryable but never enforced.
 - The mapping covers exactly the pinned schema's grammar; a future spec
   construct it cannot express arrives with a new vendored schema and its
-  own ADR (ADR-0227 §5).
-- ADR-0120 and ADR-0121 gain Later references notes.
+ own ADR ([ADR-0227](./0227-ontology-document-format.md) §5).
+- [ADR-0120](./0120-ontology-document-persistence.md) and [ADR-0121](./0121-ontology-procedures.md) gain Later references notes.
 
 ## Later references
 
-- ADR-0228 corrects §2's list-token mapping: `LIST<X>` maps to the closed
+- [ADR-0228](./0228-ontology-list-property-types-closed.md) corrects §2's list-token mapping: `LIST<X>` maps to the closed
   `LIST<X NOT NULL>` (graph-type property types have no nullable inner
   type) and `LIST<ANY>` declares nothing, having no graph-type property-type
   counterpart. The rest of §2 stands.
-- ADR-0229 removes §1 from the shipped crate: the
+- [ADR-0229](./0229-remove-system-ontologies-cypher-surface.md) removes §1 from the shipped crate: the
   document→`system_ontologies` mapping, its deterministic build and its
   fixed graph type are deleted — the namespace is listed but not
-  queryable, and no graph is derived (superseding ADR-0120 §2). §1 stands
+ queryable, and no graph is derived (superseding [ADR-0120](./0120-ontology-document-persistence.md) §2). §1 stands
   as the design record, **not shipped** until Neo4j publishes its
   mapping; revive it from git history then, with a new ADR and a note
-  here. §2 (with ADR-0228's correction) and §3 — the `db.ontology.apply`
+ here. §2 (with [ADR-0228](./0228-ontology-list-property-types-closed.md)'s correction) and §3 — the `db.ontology.apply`
   converter and its data-violation check — remain shipped.
-- ADR-0364 re-bases §2's converter on main's document shapes: id-keyed
+- [ADR-0364](./0364-ontology-spec-main-gate.md) re-bases §2's converter on main's document shapes: id-keyed
   constraint maps with an uppercase `type`, `must_exist`, display
   `name` fields, `RelationshipTarget` endpoints and the 39-token
   `Neo4jType` enum. The enforceable/descriptive split, the
@@ -249,9 +268,9 @@ that can see the data.
   label-only or empty endpoints, empty property names that would be
   declared and empty constraint property lists fail loudly at `apply`;
   `UUID` and the vector coordinate types map to their graph-type forms.
-- ADR-0487 re-bases §2 again on the published 1.1.0 shapes: constraints
+- [ADR-0487](./0487-ontology-graph-spec-1-1-0-bump.md) re-bases §2 again on the published 1.1.0 shapes: constraints
   of both owners are one closed shape with no `label`, so a constraint
   always compiles against its owning element; node and relationship
   display `name`s no longer exist; property `aliases` returns as a
-  descriptive member. Everything the ADR-0364 note above records
+ descriptive member. Everything the [ADR-0364](./0364-ontology-spec-main-gate.md) note above records
   otherwise stands.

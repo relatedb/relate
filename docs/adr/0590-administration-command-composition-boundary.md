@@ -1,7 +1,19 @@
-# ADR-0590: The administration-command composition boundary off the system database
+---
+type: adr
+area: engine
+claim: 501378d2792f998ff71de31125ba9e04fd41dd53
+name: 0590-administration-command-composition-boundary
+status: proposed
+tags:
+  - namespaces
+title: The administration-command composition boundary off the system database
+REFERENCES:
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+SUPERSEDES:
+  - "[[adr/0116-fixed-namespaces-community-edition-semantics]]"
+---
 
-Status: Proposed
-Claim: 501378d2792f998ff71de31125ba9e04fd41dd53
+# ADR-0590: The administration-command composition boundary off the system database
 
 ## Context
 
@@ -11,9 +23,9 @@ and with a `RETURN` over the yielded columns; any other combination —
 `WITH`, `MATCH`, `UNWIND`, another catalog command ahead of it, a `UNION`
 arm — is the `51N28` `NotSystemDatabaseError`, naming the command it
 refused. The same holds with an explicit `USE neo4j` prefix, where only the
-*headed* spelling is answered `42N79` first (ADR-0116 §2).
+*headed* spelling is answered `42N79` first ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §2).
 
-ADR-0116 §2's later references recorded that boundary as deliberately not
+[ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §2's later references recorded that boundary as deliberately not
 implemented. Its rationale was an embedded-engine property: one user, no
 privileges, a store-level catalog, so there is no wrong database a composed
 administration command could run against. The engine therefore kept running
@@ -49,7 +61,7 @@ or `51N27`) and the server's grammar does not parse those forms either.
 
 Statements routed to `system` are unchanged: the command is where it
 belongs, composition is allowed, and what limits the clauses there remains
-the system-namespace whitelist (ADR-0116 §4). The `USE system` divergence
+the system-namespace whitelist ([ADR-0116](./0116-fixed-namespaces-community-edition-semantics.md) §4). The `USE system` divergence
 also stands: `USE system` plus an administration command stays accepted.
 
 Every `SHOW DATABASE[S]` spelling is covered, not only the plural — the

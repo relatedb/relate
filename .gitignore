@@ -83,3 +83,15 @@ aura-test.env
 .swiftpm/
 # Xcode per-user state (window layout, scheme ordering)
 xcuserdata/
+
+# The markdown vault engine state and derived views for docs/ as a vault
+# (ADR-0406): the engine sidecar and its lock files at open and
+# checkpoint, both directory spellings tolerated as transition state —
+# .relate/ is what the codec writes today (ADR-0623), .cypherlite/ the
+# pre-rename spelling a legacy store may still carry. Plus the
+# regenerated index/log view files — never content.
+docs/.cypherlite*
+docs/.relate/
+docs/index.md
+docs/*/index.md
+docs/log.md

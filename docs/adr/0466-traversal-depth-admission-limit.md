@@ -1,8 +1,18 @@
+---
+type: adr
+area: engine
+claim: 78c41c205cd2fe12b2df727bdc1f839acec4e012
+name: 0466-traversal-depth-admission-limit
+status: proposed
+tags:
+  - memory
+  - pattern-matching
+title: Traversal depth is admission-limited, not left to the stack
+REFERENCES:
+  - "[[adr/0186-match-clause-shortest-path-bfs]]"
+---
+
 # ADR-0466: Traversal depth is admission-limited, not left to the stack
-
-Status: Proposed
-
-Claim: 78c41c205cd2fe12b2df727bdc1f839acec4e012
 
 ## Context
 
@@ -43,7 +53,7 @@ There is an existing, undocumented cap on the *unbounded* classic walk:
 `cypherlite-executor`'s `DEFAULT_MAX_HOPS` (32, `ctx.rs::hop_bounds`).
 `docs/reference/cypher-syntax.md` said an unbounded `[*]` "has no hop
 limit in `MATCH`", which is false for classic `MATCH`: it stops at 32.
-Only the `MATCH p = shortestPath(...)` route (ADR-0186) explores without
+Only the `MATCH p = shortestPath(...)` route ([ADR-0186](./0186-match-clause-shortest-path-bfs.md)) explores without
 a hop cap, bounded instead by the relationship count. The reference is
 corrected here.
 
@@ -139,5 +149,5 @@ stack, and cannot rely on a server-sized thread stack.
   the parser's inaccurate "iteration cap" comment is corrected.
 - The unbounded classic-walk cap (32 hops) becomes documented; it was
   always the behavior. The `shortestPath` MATCH route remains uncapped
-  (ADR-0186), still bounded by the relationship count, not by this
+ ([ADR-0186](./0186-match-clause-shortest-path-bfs.md)), still bounded by the relationship count, not by this
   limit.

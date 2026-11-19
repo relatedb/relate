@@ -1,8 +1,20 @@
+---
+type: adr
+area: engine
+claim: f995b8a7db80625638623139a7e412bd9e873277
+name: 0469-allreduce-inline-pruning
+status: proposed
+tags:
+  - pattern-matching
+  - perf
+title: Mid-path allReduce inline pruning in quantified path patterns
+REFERENCES:
+  - "[[adr/0335-unbound-variable-fails-not-null]]"
+  - "[[adr/0462-value-nesting-depth]]"
+  - "[[adr/0475-gpm-early-conjuncts-and-riders]]"
+---
+
 # ADR-0469: Mid-path allReduce inline pruning in quantified path patterns
-
-Status: Proposed
-
-Claim: f995b8a7db80625638623139a7e412bd9e873277
 
 ## Context
 
@@ -25,7 +37,7 @@ predicate is false** (the deciding element ends the scan — a `1 / 0`
 after it is never evaluated), while a **null prefix verdict is not
 deciding** — the scan continues (`saw_null`), and a later element can
 still raise, erroring the row. The per-element policy (update-then-
-predicate step, the ADR-0462 wrap fast path with incremental depth
+predicate step, the [ADR-0462](./0462-value-nesting-depth.md) wrap fast path with incremental depth
 tracking, the int→float accumulator invariant, the finiteness check)
 exists as `AllReduceFold`/`AllReduceStep`, carried by the list
 evaluator.
@@ -87,7 +99,7 @@ Four fixed properties:
     before the quantification. The `initial` is evaluated on the
     entering walk row — *before* the fold binds those names — so a
     reference to one of them can read a non-local-singleton null
-    pre-binding mid-path (ADR-0335) where the post-filter's completed
+ pre-binding mid-path ([ADR-0335](./0335-unbound-variable-fails-not-null.md)) where the post-filter's completed
     row holds the pattern's final binding; the two `initial` values
     then disagree and the mid-path fold tracks a different accumulator
     than the post-filter's (review round 1: the `total = size(b.id)`
@@ -162,7 +174,7 @@ Four fixed properties:
 
 ## Later references
 
-ADR-0475 generalizes this decision's exactness discipline (prune on
+[ADR-0475](./0475-gpm-early-conjuncts-and-riders.md) generalizes this decision's exactness discipline (prune on
 `Failed`, poison/defer on `Null` and errors, post-filter stays) from
 allReduce folds to plain MATCH-WHERE conjuncts evaluated at the walk's
 binding points, and adds a selector stand-down **inside this inliner**:

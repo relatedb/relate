@@ -19,54 +19,27 @@ Rules apply to every change. History never weakens them.
 
 Architecture, storage, protocol, dialect, public-API, or dependency decision
 → ADR in [`docs/adr/`](docs/adr/) **before** implementation. Not ADR-worthy:
-stylistic or trivially reversible edits.
+stylistic or trivially reversible edits. The authoring reference — vault
+form, areas and tags, the CLI workflow, minting and claim proof,
+public-record rules, writing guidance — lives in
+[`docs/adr-vault.md`](docs/adr-vault.md).
 
-- Filename `NNNN-short-kebab-slug.md` (four-digit sequence, never reused);
-  one decision per file; cite others as `ADR-NNNN`
-- Template order: **Context**, **Decision**, **Alternatives considered**
-  (each ends with rejection reason), **Consequences**
-- **ADRs are public records.** No internal references — no ticket, issue,
-  or CIP proposal IDs; no internal tracker/chat/wiki links; no internal
-  host or tool names. No person names — roles, not people ("the
-  maintainers"). No sensitive information of any kind: credentials,
-  tokens, internal URLs, unreleased plans, customer or personal data.
-  The `adr-numbers` CI check fails any line a change adds under
-  `docs/adr/` carrying `LABS-###`, `CIP-###`, or a `linear.app` link —
-  and, repo-wide, any tracked line that ties a `CIP-###` id to
-  proposal-internal detail: quoted grammar, rule, section or deviation
-  labels, `NOTES.md` pointers, attribution phrases, approval facts,
-  quoted titles, or eval-corpus names. The repo-wide scan is not
-  diff-aware (existing lines fail too) and reads each line with its
-  successor, so a citation a line wrap splits mid-way fails as one
-  marker; a bare `CIP-###` id outside `docs/adr/`
-  does not fail, and the check's own fixtures
-  `scripts/tests/test_check_adr_numbers.py` and
-  `scripts/tests/test_adr_mint.py` are exempt
-- Status starts `Proposed`; set `Accepted` only when agreed. Accepted ADRs
-  immutable — later change = new ADR + **Later references** note on old one
-- Mint number via `python3 scripts/adr_mint.py` (atomic claim; never list
-  directory). Minted numbers never below 0300
-- **Mint late, mint once.** Mint only when the ADR text is written and the
-  file lands in the same change — never during planning, never to reserve;
-  an abandoned claim burns the number permanently
-- Every added ADR carries mint proof: `Claim: <sha>` header line after
-  `Status:`, before `## Context`, naming mint's claim commit. CI check
-  `adr-numbers` requires it (ADR-0301); unminted conflicting numbers fail
+The corpus is a markdown vault
+([ADR-0621](docs/adr/0621-adr-markdown-vault.md)): every ADR carries its
+metadata as canonical YAML frontmatter and loads as an `:adr` node. Read
+and query ADRs through the relate CLI — by area, tag, status or edge —
+rather than mining prose for metadata; plain text tools are the fallback
+when the CLI is not on PATH.
 
-#### Writing guidance
-
-An ADR records architecture and principles — the why and the shape of the
-decision — not the implementation. Keep out:
-
-- Code snippets, pseudo-code, and config dumps — name the surface or
-  mechanism instead of quoting it
-- File:line inventories of what changed — the diff is the record of that
-- Step-by-step history of how the change was built or reviewed
-
-Line budget, checkable with `wc -l docs/adr/NNNN-*.md`: target **≤ 80
-lines**, hard ceiling **150 lines**. Over the ceiling, cut detail —
-long alternative analyses, restated context, implementation asides —
-never split one decision into two ADRs to fit the budget.
+- **ADRs are public records**: no internal ticket or tracker references,
+  no person names, no credentials or unreleased plans
+- Status lives in the frontmatter `status:` key; accepted ADRs are
+  immutable — a later change is a new ADR plus a **Later references**
+  note on the old one
+- Mint a number via `python3 scripts/adr_mint.py` only once the ADR text
+  is written and the file lands in the same change; every added ADR
+  carries the frontmatter `claim:` mint proof the `adr-numbers` CI check
+  requires
 
 ### 2. Client-facing documentation
 

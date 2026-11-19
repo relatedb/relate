@@ -1,12 +1,21 @@
+---
+type: adr
+area: ecosystem
+name: 0053-cypherlite-product-names
+status: accepted
+tags:
+  - product
+title: CypherLite product names
+REFERENCES:
+  - "[[adr/0052-graphstore-withdrawn]]"
+  - "[[adr/0054-one-c-abi-env-python]]"
+---
+
 # ADR 0053: CypherLite product names
-
-## Status
-
-Accepted
 
 ## Context
 
-After GraphStore withdrawal (ADR-0052) the product runtime already lives in
+After GraphStore withdrawal ([ADR-0052](./0052-graphstore-withdrawn.md)) the product runtime already lives in
 `cypherlite/`, but crate names, binaries, C libraries, TCK packages, CLI
 flags, and env vars still say MemoryDB. Two CLIs, two C ABIs, and two TCK
 crates cannot all be renamed to `cypherlite-*` without colliding with existing
@@ -61,6 +70,6 @@ In the `cypherlite/` workspace only:
 
 ## Later references
 
-- [ADR-0054](0054-one-c-abi-env-python.md) merges the C ABI, hard-cuts
+- [ADR-0054](./0054-one-c-abi-env-python.md) merges the C ABI, hard-cuts
   `MEMORYDB_*` env reads, vendors TCK only under `testdata/tck`, and makes
   PyO3 `cypherlite` the only Python package.

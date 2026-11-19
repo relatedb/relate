@@ -1,7 +1,19 @@
-# ADR-0387: Statistics-backed counting operator
+---
+type: adr
+area: engine
+claim: 204418c19ccef4830179f93a5cec094ecf9b88a1
+name: 0387-statistics-backed-counting-operator
+status: proposed
+tags:
+  - catalog
+  - executor
+title: Statistics-backed counting operator
+REFERENCES:
+  - "[[adr/0218-stats-based-match-orientation]]"
+  - "[[adr/0589-label-set-counts-for-grouped-label-aggregates]]"
+---
 
-Status: Proposed
-Claim: 204418c19ccef4830179f93a5cec094ecf9b88a1
+# ADR-0387: Statistics-backed counting operator
 
 ## Context
 
@@ -9,7 +21,7 @@ Counting whole populations is a common query shape (`MATCH (n:Label) RETURN coun
 `MATCH (a:A)-[:R]->(b:B) RETURN count(*)`, `MATCH ()-[r:T]->() RETURN count(r)`),
 and today every one scans its pattern: the executor enumerates candidates and the
 aggregation counts rows. The graph already maintains two count families for the
-planner's estimates (ADR-0218): per-label node counts (`label_index` sizes via
+planner's estimates ([ADR-0218](./0218-stats-based-match-orientation.md)): per-label node counts (`label_index` sizes via
 `pattern_label_rows`) and per-rel-type counts (`rel_type_counts` via
 `pattern_rel_type_rows`). LABS-351 added per-(label, rel-type) degree histograms on
 the same write-path seams, with the memory-accounting discipline the security review
@@ -34,7 +46,7 @@ Add a statistics-backed counting operator (LABS-370):
    no DISTINCT, and no LIMIT/SKIP on the counted pattern, is planned as the count
    operator: it reads the maintained counts and emits one row. The operator is
    self-describing in PROFILE (0 db hits).
-3. **One count family**: the counts serve the operator, the ADR-0218 ladder's
+3. **One count family**: the counts serve the operator, the [ADR-0218](./0218-stats-based-match-orientation.md) ladder's
    estimates, and the LABS-348 hub-join gate — one maintained truth.
 
 ## Alternatives considered
@@ -60,5 +72,5 @@ Add a statistics-backed counting operator (LABS-370):
 
 ## Later references
 
-- ADR-0589 adds a label-set count map to this count family and answers
+- [ADR-0589](./0589-label-set-counts-for-grouped-label-aggregates.md) adds a label-set count map to this count family and answers
   grouped label aggregates from it.

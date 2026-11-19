@@ -1,18 +1,30 @@
-# ADR-0239: `--format` output-flag spelling and the `toon` output mode
+---
+type: adr
+area: cli
+name: 0239-format-flag-spelling-and-toon-mode
+status: accepted
+tags:
+  - output
+title: "`--format` output-flag spelling and the `toon` output mode"
+REFERENCES:
+  - "[[adr/0192-cli-unknown-flag-suggestions]]"
+  - "[[adr/0226-ontology-mappings]]"
+  - "[[adr/0280-inf-nan-variable-semantics]]"
+---
 
-Status: Accepted
+# ADR-0239: `--format` output-flag spelling and the `toon` output mode
 
 ## Context
 
-(Numbered ADR-0226 when written; renumbered to avoid a collision
-with the ontology ADR ADR-0226 that landed on main first.)
+(Numbered [ADR-0226](./0226-ontology-mappings.md) when written; renumbered to avoid a collision
+with the ontology ADR [ADR-0226](./0226-ontology-mappings.md) that landed on main first.)
 
 LABS-232 (agent-CLI audit, `docs/agent-cli-audit.md` finding 5). Other CLIs
 an agent composes with — neo4j-cli, and the agent checklist itself — spell
 the output selector `--format json|table|toon`. The cypherlite CLI only
 accepted `--mode` (plus the `--json`/`--csv`/`--jsonl`/`--markdown`
 shortcuts), so `--format` and `-o` hit the unknown-flag error, and the
-edit-distance did-you-mean matcher (ADR-0192) could not bridge
+edit-distance did-you-mean matcher ([ADR-0192](./0192-cli-unknown-flag-suggestions.md)) could not bridge
 `--output`/`--format` to `--mode` — the spellings are too far apart.
 
 Separately, agents piping results into a model context want a compact
@@ -31,7 +43,7 @@ uniform row set, so it maps onto TOON's tabular-array form directly.
    `rows[N]{col1,col2,…}:` followed by N two-space-indented lines of
    comma-separated values. Scalars follow TOON: integers, floats, booleans
    and `null` print bare (non-finite floats print as their JSON strings
-   `"NaN"`/`"Inf"`/`"-Inf"`, matching the other machine modes, ADR-0280);
+ `"NaN"`/`"Inf"`/`"-Inf"`, matching the other machine modes, [ADR-0280](./0280-inf-nan-variable-semantics.md));
    strings print bare unless they are empty, contain a comma, quote,
    backslash, or control character, have leading/trailing whitespace, or
    would re-read as a number/boolean/null — those print JSON-quoted.
@@ -41,7 +53,7 @@ uniform row set, so it maps onto TOON's tabular-array form directly.
    shortcut flag joins the other output shortcuts.
 3. **`--output` and `-o` get a hard-coded did-you-mean** pointing at
    `--format`, as a small alias table consulted before the edit-distance
-   matcher (ADR-0192). They remain errors — accepting them silently would
+ matcher ([ADR-0192](./0192-cli-unknown-flag-suggestions.md)). They remain errors — accepting them silently would
    grow a second spelling family — but the suggestion names the real flag.
 4. **Docs, help text, and tests land in the same change** (AGENTS.md §2/§3):
    the hand-written `--help` text, `docs/api/cli/spec.md` flag tables,

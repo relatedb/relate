@@ -1,7 +1,25 @@
-# ADR-0502: The typed C ABI v2 — a native value walker, one error shape carried with the call, the JSON paths removed
+---
+type: adr
+area: surface
+claim: c4b4fc2e9a81072e0a244df9199688d72b5830d0
+name: 0502-typed-c-abi-v2
+status: accepted
+tags:
+  - ffi
+title: The typed C ABI v2 — a native value walker, one error shape carried with the call, the JSON paths removed
+REFERENCES:
+  - "[[adr/0219-python-parameter-conversion]]"
+  - "[[adr/0220-tabular-abi-single-entry-points]]"
+  - "[[adr/0223-wire-entity-kind-tags]]"
+  - "[[adr/0224-result-column-types]]"
+  - "[[adr/0310-bolt-bookmarks]]"
+  - "[[adr/0319-bolt-execution-failures-at-pull]]"
+  - "[[adr/0363-query-notifications]]"
+  - "[[adr/0506-ffi-numeric-entity-ids]]"
+  - "[[adr/0510-ffi-commit-status-convention]]"
+---
 
-Status: Accepted
-Claim: c4b4fc2e9a81072e0a244df9199688d72b5830d0
+# ADR-0502: The typed C ABI v2 — a native value walker, one error shape carried with the call, the JSON paths removed
 
 ## Context
 
@@ -16,7 +34,7 @@ against the engine — measured what that costs
 `docs/design/embedded-driver-provider-findings.md`):
 
 - **Values are ambiguous, and the ambiguity is not fixable inside JSON.**
-  A user map carrying the entity tag's `kind` key (ADR-0223) is
+ A user map carrying the entity tag's `kind` key ([ADR-0223](./0223-wire-entity-kind-tags.md)) is
   indistinguishable from an entity and mis-hydrates as a NODE — the tag
   is user-collidable; a nested PATH
   arrives as a LIST; a temporal nested in a list, map or entity property
@@ -26,7 +44,7 @@ against the engine — measured what that costs
   and JS legs (both on the JSON ABI) share the same gaps row for row; the
   Python leg, on the typed pyo3 binding, is correct at every depth for all
   of these except the binding-level duration/vector/element-id gaps.
-- **Every client repairs it with hacks.** The ADR-0224 first-row column
+- **Every client repairs it with hacks.** The [ADR-0224](./0224-result-column-types.md) first-row column
   stamp is used to re-type values; `kind`/`srid` keys are sniffed;
   element ids are synthesised or re-spelled to match Cypher's
   `elementId()`; bookmarks are minted by the provider. All three spikes
@@ -49,14 +67,14 @@ against the engine — measured what that costs
   message stayed on the libuv worker thread.
 - **Bookmarks are invented.** `try_wal_commit` already returns the commit
   timestamp each committed transaction was assigned; `Connection::commit`
-  drops it, so providers mint ADR-0310-shaped bookmarks from a local
+ drops it, so providers mint [ADR-0310](./0310-bolt-bookmarks.md)-shaped bookmarks from a local
   counter.
 
 The ABI also carries a second, older API — the JSON handle set
 (`cypherlite_new/open/execute/execute_with_params/reset*/flush*/
 begin_transaction/commit_transaction/rollback_transaction/
-supports_transactions`) — that duplicates the tabular one (ADR-0220), plus
-the `cypherlite_query` / `cypherlite_connect` aliases ADR-0220 kept "for ABI
+supports_transactions`) — that duplicates the tabular one ([ADR-0220](./0220-tabular-abi-single-entry-points.md)), plus
+the `cypherlite_query` / `cypherlite_connect` aliases [ADR-0220](./0220-tabular-abi-single-entry-points.md) kept "for ABI
 compat". Their consumer set is the `docs/api/c` examples alone (verified).
 
 Breaking is affordable exactly now. Every C-ABI consumer is first-party and
@@ -116,7 +134,7 @@ in-repo consumer migrates in the same change.
 - **The shape.** One JSON object, no C structs across the ABI:
   `{"code", "gql_status", "stage", "retryable", "message"}` — the Neo4j
   status code, the GQLSTATUS, the compile/runtime/internal stage
-  (ADR-0319's split), the drivers' transient test as a boolean, and the
+ ([ADR-0319](./0319-bolt-execution-failures-at-pull.md)'s split), the drivers' transient test as a boolean, and the
   engine message.
 - **Single-sourced in the engine.** `cypherlite-error` gains `ErrorInfo
   { neo4j_code, gql_status, stage, retryable }` and `error_info(&Error)`,
@@ -125,7 +143,7 @@ in-repo consumer migrates in the same change.
   ABI derive from it; the three existing tables become thin derivations.
   The move lands first, as its own change, with Bolt's failure tests
   passing byte-identically — a move, not a redesign. The move is decided
-  here: it rides ADR-0502 and needs no ADR of its own.
+ here: it rides [ADR-0502](./0502-typed-c-abi-v2.md) and needs no ADR of its own.
 - **Statement failures ride the result.** `cypherlite_query_params`
   returns `CYPHERLITE_OK` with an error result for a statement failure;
   `cypherlite_result_is_error(r)` tests it and
@@ -140,19 +158,19 @@ in-repo consumer migrates in the same change.
 - **`cypherlite_last_error` is removed.** The thread-local slot goes
   entirely — one channel, one shape.
 
-### 3. The JSON handle API, the ADR-0224 column stamp and the ADR-0220 aliases are removed
+### 3. The JSON handle API, the [ADR-0224](./0224-result-column-types.md) column stamp and the [ADR-0220](./0220-tabular-abi-single-entry-points.md) aliases are removed
 
 - The JSON handle API (`cypherlite_new`, `_open`, `_execute`,
   `_execute_with_params`, `_reset*`, `_flush*`, `_begin_transaction`,
   `_commit_transaction`, `_rollback_transaction`,
   `_supports_transactions`) is removed. The tabular API is the one client
   API; the `docs/api/c` examples are rewritten onto it.
-- `cypherlite_result_column_type` (the ADR-0224 first-row stamp) is
+- `cypherlite_result_column_type` (the [ADR-0224](./0224-result-column-types.md) first-row stamp) is
   removed from the C ABI. Per-value kinds make it redundant for
   correctness, and every client use of it was a re-typing hack deleted
-  with the hacks. ADR-0224's engine field, wire `columnTypes` and Python
+ with the hacks. [ADR-0224](./0224-result-column-types.md)'s engine field, wire `columnTypes` and Python
   `description` type codes are not decided here.
-- The `cypherlite_query` / `cypherlite_connect` aliases ADR-0220 kept for
+- The `cypherlite_query` / `cypherlite_connect` aliases [ADR-0220](./0220-tabular-abi-single-entry-points.md) kept for
   ABI compatibility are removed; the compat audience does not exist.
 
 Kept unchanged: the tabular handle set (`database_open[_read_only]/close`,
@@ -161,7 +179,7 @@ Kept unchanged: the tabular handle set (`database_open[_read_only]/close`,
 out-param, the ownership rules, the threading contract, panic poisoning,
 `column_count/row_count/column_name`, and the result metadata accessors
 (`query_type`, `namespace`, `stats`, `notifications` — already code +
-gql_status + severity + remedy, ADR-0363 — `plan_json`, and the timing
+gql_status + severity + remedy, [ADR-0363](./0363-query-notifications.md) — `plan_json`, and the timing
 accessors).
 
 ### 4. A typed params builder mirrors the walker
@@ -182,7 +200,7 @@ temporals become bindable from every client at once.
 
 No `GEOMETRY`, `UUID` or `BINARY` values are reserved. The engine has no
 such `CypherValue` kinds on this surface today (bytes cross as
-`LIST<INTEGER>`, ADR-0219; UUIDs as `STRING`). Adding an enum
+`LIST<INTEGER>`, [ADR-0219](./0219-python-parameter-conversion.md); UUIDs as `STRING`). Adding an enum
 value after the public freeze is additive and safe — a client meeting an
 unknown kind treats it as a defined, reportable case — so reserving names
 now buys nothing.
@@ -200,7 +218,7 @@ engine format is the one already observable to users.
 
 The commit timestamp `try_wal_commit` already assigns is threaded out of
 `cypherlite::Connection` instead of dropped, spelled `cypherlite:<n>`
-(ADR-0310's form). Two accessors:
+([ADR-0310](./0310-bolt-bookmarks.md)'s form). Two accessors:
 `cypherlite_result_bookmark(r)` (result-owned; NULL when the statement
 committed nothing) for auto-commit writes, and the explicit commit
 returning the bookmark as a caller-owned string
@@ -246,7 +264,7 @@ ABI is additive-only.
   would need its own JSON value and error encodings that this ADR
   removes. The tabular open/connect/query sequence is short enough to be
   the minimal example.
-- **Keep the ADR-0224 column stamp on the C ABI.** Rejected: it describes
+- **Keep the [ADR-0224](./0224-result-column-types.md) column stamp on the C ABI.** Rejected: it describes
   the first row only, and with per-value kinds its only client uses were
   re-typing hacks — keeping it invites them back.
 - **Reserve `GEOMETRY`/`UUID`/`BINARY` enum values now.** Rejected:
@@ -257,7 +275,7 @@ ABI is additive-only.
   client would need a translation for `WHERE elementId(n) = $id` — the
   exact re-spelling hack the spikes want removed. The engine format is
   already the observable one.
-- **Provider-minted bookmarks (the ADR-0310 Bolt-listener counter).**
+- **Provider-minted bookmarks (the [ADR-0310](./0310-bolt-bookmarks.md) Bolt-listener counter).**
   Rejected for the ABI: a counter local to one provider is not ordered
   with commits made through another connection or surface; the engine's
   commit sequence is, and it is already computed.
@@ -307,25 +325,25 @@ ABI is additive-only.
   accepted); `t_last` / consumed-after timing; the JS number codec beyond
   handing over a lossless `int64_t` (string vs BigInt is the client's
   representation choice, LABS-901); bytes and UUID scalars; Bolt adopting
-  the engine commit sequence for its own bookmarks (ADR-0310's listener
+ the engine commit sequence for its own bookmarks ([ADR-0310](./0310-bolt-bookmarks.md)'s listener
   counter is unchanged here).
-- **ADR-0224** keeps its engine-side decision; its C ABI accessor is
-  removed by this ADR (Later references note added there). **ADR-0220**'s
+- **[ADR-0224](./0224-result-column-types.md)** keeps its engine-side decision; its C ABI accessor is
+ removed by this ADR (Later references note added there). **[ADR-0220](./0220-tabular-abi-single-entry-points.md)**'s
   compat aliases are removed and `cypherlite_abi_version()` = 2 is the
   major-version bump its Consequences require (Later references note
   added there); its single tabular entry points stand.
 
 ## Later references
 
-- ADR-0506: the walker gains the legacy numeric entity ids —
+- [ADR-0506](./0506-ffi-numeric-entity-ids.md): the walker gains the legacy numeric entity ids —
   `cypherlite_value_id` / `_start_id` / `_end_id`, additive scalars for
   the driver providers (§1's entity accessors and §6's element-id
   spellings are unchanged).
-- ADR-0510: `cypherlite_conn_commit` returns `cypherlite_status` and
+- [ADR-0510](./0510-ffi-commit-status-convention.md): `cypherlite_conn_commit` returns `cypherlite_status` and
   hands the bookmark over through a `char **bookmark_out` out-param —
   §2's status convention now covers the commit call too, and a NULL
   bookmark out-param is a refused, non-committing call; §7's
   caller-owned bookmark and no-fabricated-NULL rule stand.
-- ADR-0310 (revised while Proposed): Bolt adopts §7's engine commit
+- [ADR-0310](./0310-bolt-bookmarks.md) (revised while Proposed): Bolt adopts §7's engine commit
   sequence for its own bookmarks, retiring the listener counter this
   ADR's Consequences left out of scope.

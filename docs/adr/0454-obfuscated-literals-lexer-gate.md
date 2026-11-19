@@ -1,8 +1,19 @@
+---
+type: adr
+area: cypher
+claim: 5495436b8757cc3f6b8ed26a5021244869471ee7
+name: 0454-obfuscated-literals-lexer-gate
+status: proposed
+tags:
+  - parser
+  - security
+title: The obfuscated literal gates at the lexer
+REFERENCES:
+  - "[[adr/0371-preview-feature-gating]]"
+  - "[[adr/0378-ontology-procedures-preview-gate]]"
+---
+
 # ADR-0454: The obfuscated literal gates at the lexer
-
-Status: Proposed
-
-Claim: 5495436b8757cc3f6b8ed26a5021244869471ee7
 
 ## Context
 
@@ -15,17 +26,17 @@ the setting the query fails with an ordinary syntax error
 pinned by the corpus — two scenarios assert the enabled parse, two assert
 the disabled syntax error.
 
-ADR-0371's preview-gate shape cannot express that pair: it always parses
+[ADR-0371](./0371-preview-feature-gating.md)'s preview-gate shape cannot express that pair: it always parses
 the gated construct and fails closed in the front's detector loop with the
 authored `preview feature '<name>' is not enabled` error — a
 `SemanticError`, not the `SyntaxError` the disabled scenarios assert. The
-one prior gate-location exception (ADR-0378, `ontology`) moved the gate to
+one prior gate-location exception ([ADR-0378](./0378-ontology-procedures-preview-gate.md), `ontology`) moved the gate to
 procedure dispatch; this one needs it before the token stream exists,
 because the enabled and disabled forms differ in what the text lexes to.
 
 ## Decision
 
-Register `obfuscated-literals` in the ADR-0371 preview registry
+Register `obfuscated-literals` in the [ADR-0371](./0371-preview-feature-gating.md) preview registry
 (`CYPHERLITE_PREVIEW=obfuscated-literals`), but gate it at the lexer: with
 the feature enabled, a run of exactly six `*` lexes as one
 `ObfuscatedLiteral` token that parses to a dummy `false` literal; with it
@@ -39,7 +50,7 @@ resolved preview set, so no second configuration surface exists.
 ## Alternatives considered
 
 - Always parse and fail closed with the authored preview error
-  (ADR-0371's uniform shape) — rejected: the error class is
+ ([ADR-0371](./0371-preview-feature-gating.md)'s uniform shape) — rejected: the error class is
   `SemanticError`, so the corpus's disabled-form scenarios (42I06,
   `SyntaxError`) fail; the gate must reproduce Neo4j's own syntax error.
 - A dedicated engine setting (a new
@@ -54,8 +65,8 @@ resolved preview set, so no second configuration surface exists.
 ## Consequences
 
 - The registry gains one feature whose gate lives in the lexer, a second
-  recorded exception to ADR-0371's detector-loop location (after
-  ADR-0378's dispatch-gate exception); the registry row's doc comment and
+ recorded exception to [ADR-0371](./0371-preview-feature-gating.md)'s detector-loop location (after
+ [ADR-0378](./0378-ontology-procedures-preview-gate.md)'s dispatch-gate exception); the registry row's doc comment and
   AGENTS.md name it.
 - `cypherlite-parser` gains `ParseOptions` / `parse_with_options` — the
   threading path for lexer-affecting gates — with `parse` as the

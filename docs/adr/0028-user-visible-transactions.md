@@ -1,16 +1,34 @@
-# 0028. User-visible multi-statement transactions
+---
+type: adr
+area: engine
+date: 2026-08-31
+deciders: MemoryDB maintainers
+name: 0028-user-visible-transactions
+status: accepted
+tags:
+  - transactions
+title: User-visible multi-statement transactions
+REFERENCES:
+  - "[[adr/0011-snapshot-isolation]]"
+  - "[[adr/0012-wal-and-parquet-checkpoints]]"
+  - "[[adr/0013-tuple-mvcc]]"
+  - "[[adr/0015-optimistic-wal-commits]]"
+  - "[[adr/0016-write-overlay]]"
+  - "[[adr/0017-client-conflict]]"
+  - "[[adr/0019-group-commit-shared-fsync]]"
+  - "[[adr/0029-withdraw-localhost-http]]"
+  - "[[adr/0164-exit-open-transaction]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-08-31
-- **Deciders**: MemoryDB maintainers
+# 0028. User-visible multi-statement transactions
 
 ## Context
 
-ADR-0011, ADR-0012, and ADR-0015 left Bolt `BEGIN` / `COMMIT` /
+[ADR-0011](./0011-snapshot-isolation.md), [ADR-0012](./0012-wal-and-parquet-checkpoints.md), and [ADR-0015](./0015-optimistic-wal-commits.md) left Bolt `BEGIN` / `COMMIT` /
 `ROLLBACK` as auto-commit no-ops. Each Cypher statement is its own WAL
 commit. Clients cannot group statements, roll back uncommitted writes, or
 pin one snapshot across a `CREATE` then `MATCH`. Engine concurrency
-(ADR-0013 through ADR-0019) already gives snapshot reads and optimistic
+([ADR-0013](./0013-tuple-mvcc.md) through [ADR-0019](./0019-group-commit-shared-fsync.md)) already gives snapshot reads and optimistic
 write-write at WAL append. What is missing is a connection-scoped
 transaction the client can start and finish.
 
@@ -22,7 +40,7 @@ must not change that default.
 A `Connection` is auto-commit until the client starts an explicit
 transaction. Isolation is the existing snapshot + write-write protocol,
 stretched across statements. SSI / write-skew detection is out of scope
-(same rejection as ADR-0015).
+(same rejection as [ADR-0015](./0015-optimistic-wal-commits.md)).
 
 1. **Auto-commit (default).** Unchanged: a write statement appends redo
    and `apply_redo`s before `query` returns. A read pins `commit_ts` at
@@ -32,11 +50,11 @@ stretched across statements. SSI / write-skew detection is out of scope
    transaction`).
 3. **Statements in the transaction.** Every subsequent `query` on that
    connection — read or write — runs on the shared graph plus the same
-   private `WriteScratch` (ADR-0016). The connection sees the pinned
+ private `WriteScratch` ([ADR-0016](./0016-write-overlay.md)). The connection sees the pinned
    snapshot and its own writes. Other connections do not see uncommitted
    writes. Stats on `QueryResult` stay per statement.
 4. **`commit`.** The accumulated redo is one WAL record and one
-   `commit_ts` (ADR-0015, ADR-0017, ADR-0019). Empty redo is a no-op (no
+ `commit_ts` ([ADR-0015](./0015-optimistic-wal-commits.md), [ADR-0017](./0017-client-conflict.md), [ADR-0019](./0019-group-commit-shared-fsync.md)). Empty redo is a no-op (no
    WAL append). Write-write conflict discards the overlay and returns
    `Error::Conflict`. After `commit` (success or conflict) the connection
    is auto-commit again. `commit` without `begin` is `no transaction`.
@@ -61,7 +79,7 @@ stretched across statements. SSI / write-skew detection is out of scope
 - **Keep auto-commit only** — simplest, matches TCK. Rejected; clients
   cannot group writes or undo a multi-statement attempt.
 - **Serializable snapshot isolation** — predicate locks / write-skew
-  detection. Rejected; same as ADR-0015. Write-write on the transaction
+ detection. Rejected; same as [ADR-0015](./0015-optimistic-wal-commits.md). Write-write on the transaction
   write set at `commit` is enough.
 - **Cypher `BEGIN` / `COMMIT` statements** — convenient in the shell.
   Rejected; not in the pinned TCK, and would invent dialect. API, Bolt,
@@ -69,13 +87,13 @@ stretched across statements. SSI / write-skew detection is out of scope
 - **HTTP session transactions** — would need connection affinity or
   cookies. Rejected; the localhost sidecar is request-scoped.
 - **Conflict check after every write statement** — fails faster.
-  Rejected; the WAL append is the serialize point (ADR-0015). Checking
+ Rejected; the WAL append is the serialize point ([ADR-0015](./0015-optimistic-wal-commits.md)). Checking
   earlier would reject transactions that could still commit if the
   conflicting writer rolled back.
 
 ## Consequences
 
-- ADR-0011 / ADR-0012 / ADR-0015 “BEGIN/COMMIT remain no-ops” is
+- [ADR-0011](./0011-snapshot-isolation.md) / [ADR-0012](./0012-wal-and-parquet-checkpoints.md) / [ADR-0015](./0015-optimistic-wal-commits.md) “BEGIN/COMMIT remain no-ops” is
   reversed here, not edited in those files.
 - TCK and existing auto-commit callers are unchanged.
 - A long-lived explicit transaction raises the chance of
@@ -86,10 +104,10 @@ stretched across statements. SSI / write-skew detection is out of scope
 
 ## Later references
 
-ADR-0029 removes engine HTTP. Auto-commit per HTTP request belongs
+[ADR-0029](./0029-withdraw-localhost-http.md) removes engine HTTP. Auto-commit per HTTP request belongs
 to clients implementing embedded Relate, not to `memorydb-http`.
 
-ADR-0164 records the cypherlite CLI exit contract for an open `.begin`
+[ADR-0164](./0164-exit-open-transaction.md) records the cypherlite CLI exit contract for an open `.begin`
 transaction: the historical stderr warning is restored verbatim on every
 exit path, one-shot and piped-stdin runs exit 1 when a transaction is
 open at exit, and interactive exit (`.quit` / EOF) warns but stays 0.

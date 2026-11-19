@@ -1,18 +1,33 @@
-# ADR-0574: Withdraw CDC replication slots
+---
+type: adr
+area: engine
+claim: eec14baaca3517b15863fde7a2de1ddfd0d4e7ea
+name: 0574-withdraw-cdc-replication-slots
+status: accepted
+tags:
+  - wal
+title: Withdraw CDC replication slots
+REFERENCES:
+  - "[[adr/0020-segmented-wal-concurrent-checkpoint]]"
+  - "[[adr/0045-cdc-replication-slots]]"
+  - "[[adr/0137-wal-follow]]"
+  - "[[adr/0557-drop-server-only-procedures]]"
+SUPERSEDES:
+  - "[[adr/0045-cdc-replication-slots]]"
+---
 
-Status: Accepted
-Claim: eec14baaca3517b15863fde7a2de1ddfd0d4e7ea
+# ADR-0574: Withdraw CDC replication slots
 
 ## Context
 
-ADR-0045 added optional CDC slots so an embedding client could hold WAL
+[ADR-0045](./0045-cdc-replication-slots.md) added optional CDC slots so an embedding client could hold WAL
 recycle until a consumer acked an LSN, poll records with
 `cdc_records_after`, and fence a replica with `set_apply_only`. The slot
 file was `cdc/slots.json`.
 
 The first release does not ship change-data-capture. Slots, the poll, and
 the apply-only fence are product surface this release will not include.
-WAL follow (ADR-0137) already tails a native directory without pinning
+WAL follow ([ADR-0137](./0137-wal-follow.md)) already tails a native directory without pinning
 recycle, and `apply_replicated` is the physical replica apply path used
 outside slots.
 
@@ -24,25 +39,25 @@ Remove CDC slots from the engine.
   `cdc_records_after`, `set_apply_only`, `apply_only`, and `CdcSlot`.
 - Stop reading and writing `cdc/slots.json`. An existing file is ignored.
   Open does not migrate it.
-- Checkpoint recycle is `checkpoint_lsn` (ADR-0020). A consumer cannot hold
+- Checkpoint recycle is `checkpoint_lsn` ([ADR-0020](./0020-segmented-wal-concurrent-checkpoint.md)). A consumer cannot hold
   closed WAL segments past the checkpoint.
 - Keep `apply_replicated`. It appends one physical redo record and applies
   it. It is not a slot.
-- Keep WAL follow (ADR-0137). It does not register a slot and does not pin
+- Keep WAL follow ([ADR-0137](./0137-wal-follow.md)). It does not register a slot and does not pin
   recycle.
 - `Wal::records_after` stays a storage-level bounded read. It is not a
   `Database` method, and nothing in the engine waits on its cursor before
   recycle.
 
 Cypher catalogue names that happen to contain `cdc` are a separate
-concern (ADR-0557). This decision does not add them back.
+concern ([ADR-0557](./0557-drop-server-only-procedures.md)). This decision does not add them back.
 
 ## Alternatives considered
 
 - **Cargo-feature the API and leave the code in tree.** Rejected: the
   first release should not carry a feature it will not support.
 - **Keep `cdc_records_after` without slots.** Rejected: recycle would
-  delete unread segments, which is the hole ADR-0045 refused to ship
+ delete unread segments, which is the hole [ADR-0045](./0045-cdc-replication-slots.md) refused to ship
   without a slot.
 - **Keep the apply-only flag without slots.** Rejected: the flag existed
   to fence a CDC replica, and it was persisted in the slot file. Follow

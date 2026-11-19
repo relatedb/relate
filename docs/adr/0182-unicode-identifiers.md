@@ -1,8 +1,22 @@
-# 0182. Unicode identifiers: the CYPHER 25 rule with a checked-in Unicode 13.0.0 table
+---
+type: adr
+area: cypher
+date: 2026-10-07
+deciders: Oskar Hane, CypherLite maintainers
+name: 0182-unicode-identifiers
+status: proposed
+tags:
+  - dialect
+  - parser
+title: "Unicode identifiers: the CYPHER 25 rule with a checked-in Unicode 13.0.0 table"
+REFERENCES:
+  - "[[adr/0002-cypher-25-semantic-target]]"
+  - "[[adr/0103-engine-surfaces-testing-layout]]"
+  - "[[adr/0169-keywords-as-label-and-type-names]]"
+  - "[[adr/0268-proptest-property-testing]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-10-07
-- **Deciders**: Oskar Hane, CypherLite maintainers (Linear [LABS-188](https://linear.app/neo4j/issue/LABS-188))
+# 0182. Unicode identifiers: the CYPHER 25 rule with a checked-in Unicode 13.0.0 table
 
 ## Context
 
@@ -74,9 +88,9 @@ remaining usable inside string literals and backtick-quoted identifiers.
 The identifier token is also what keyword recognition consumes: `ſKIP`
 (U+017F) lexes as one identifier and is not case-folded to `SKIP`, so
 keyword matching stays exact-spelling on the token (the label/type-name
-predicate work of [ADR-0169](0169-keywords-as-label-and-type-names.md)
+predicate work of [ADR-0169](./0169-keywords-as-label-and-type-names.md)
 operates on tokens and is unaffected). Per
-[ADR-0002](0002-cypher-25-semantic-target.md), live Neo4j behavior under
+[ADR-0002](./0002-cypher-25-semantic-target.md), live Neo4j behavior under
 `CYPHER 25` is authoritative where sources disagree, so the `CYPHER 5`
 behavior seen in the same probe (U+2E2F at start, `$` and the extra part
 characters, U+0085 as an identifier part) is not a second rule to support.
@@ -142,7 +156,7 @@ predicates, and the fallback keeps emitting `InvalidUnicodeCharacter`.
 Per AGENTS.md R6 this is not a heavy dependency: the shipped engine adds
 **no dependency at all**. The artifact is two small static arrays in an
 engine crate, and the generator is out-of-tree tooling — not built, not
-linked, not in the resolved workspace graph — so ADR-0103 R1 (engine crates
+linked, not in the resolved workspace graph — so [ADR-0103](./0103-engine-surfaces-testing-layout.md) R1 (engine crates
 depend only on engine crates) is unaffected. The crate's *test build* gains
 one external dev-dependency: `sha2 = { workspace = true }` under
 `cypherlite/cypherlite-parser`'s `[dev-dependencies]`, the workspace-pinned
@@ -150,7 +164,7 @@ canonical SHA-256 (0.10) that the drift guard uses to pin the generated
 file. It is dev-only — never compiled into the shipped engine or a release
 artifact — and light (no native/C++ build, no async runtime, no networking),
 the same posture as `cypherlite-storage`'s `tempfile` / `proptest`
-([ADR-0268](0268-proptest-property-testing.md)). Regeneration is a manual,
+([ADR-0268](./0268-proptest-property-testing.md)). Regeneration is a manual,
 reviewed step (CI does not fetch the UCD); a unit test pins `UNICODE_VERSION`
 and the probe's boundary code points.
 

@@ -1,27 +1,41 @@
-# 0156. Clone a native directory without writing it
+---
+type: adr
+area: engine
+date: 2026-10-02
+deciders: CypherLite maintainers
+name: 0156-directory-clone
+status: proposed
+tags:
+  - load
+  - storage
+title: Clone a native directory without writing it
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0136-read-only-open]]"
+  - "[[adr/0137-wal-follow]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-10-02
-- **Deciders**: CypherLite maintainers
+# 0156. Clone a native directory without writing it
 
 ## Context
 
 A copy of a database has to be safe to take while the writable process is
 committing. `Database::checkpoint` dumps the caller's own store and then
 recycles that store's WAL, so it is the wrong tool: it writes the database
-being copied. ADR-0136 already loads a native directory beside the writer.
+being copied. [ADR-0136](./0136-read-only-open.md) already loads a native directory beside the writer.
 The loaded graph is one consistent cut: the snapshot plus complete WAL
-frames, with a torn tail left untrimmed. ADR-0137's follower keeps moving
+frames, with a torn tail left untrimmed. [ADR-0137](./0137-wal-follow.md)'s follower keeps moving
 past that cut, which is not a copy.
 
 A `.cl` bundle rewrites pages in the one host file the writer locks
-exclusively (ADR-0074, ADR-0136). There is no generation a second process
+exclusively ([ADR-0074](./0074-single-file-bundle-vfs.md), [ADR-0136](./0136-read-only-open.md)). There is no generation a second process
 can read.
 
 ## Decision
 
 1. **`Database::clone_directory` copies a native directory.** The CLI
-   command is `cypherlite clone [--wal-dir DIR] SOURCE DEST` (ADR-0069:
+ command is `cypherlite clone [--wal-dir DIR] SOURCE DEST` ([ADR-0069](./0069-cli-lifecycle-commands.md):
    an exit-after verb is a positional command, not a flag). `:memory:`
    and `.cl` are refused before any lock is taken, for both the source
    and the destination. The source is always a frozen read-only open,
@@ -49,7 +63,7 @@ can read.
 - **`--follow` until a checkpoint, then copy.** Rejected: follow has no
   single cut, and it can apply a frame the writer has not synced.
 - **Clone a `.cl` bundle beside its writer.** Rejected: the bundle has no
-  immutable generation to read (ADR-0136).
+ immutable generation to read ([ADR-0136](./0136-read-only-open.md)).
 
 ## Consequences
 
@@ -58,5 +72,5 @@ can read.
 - The clone diverges from the source at that cut. A commit that lands
   after the load is absent. Under relaxed durability, the cut can include
   a complete frame a later power loss would drop on the source, because
-  no durable-LSN file is published (ADR-0137).
+ no durable-LSN file is published ([ADR-0137](./0137-wal-follow.md)).
 - `.cl` backups stay "checkpoint, then copy the file."

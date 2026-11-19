@@ -1,13 +1,25 @@
+---
+type: adr
+area: cli
+date: 2026-09-26
+deciders: CypherLite maintainers
+name: 0263-telemetry-endpoint-https-only
+status: accepted
+tags:
+  - security
+  - telemetry
+title: Restrict the telemetry endpoint override to HTTPS
+REFERENCES:
+  - "[[adr/0079-anonymous-usage-metrics]]"
+---
+
 # 0263. Restrict the telemetry endpoint override to HTTPS
 
-- **Status**: Accepted
 - **Renumbered**: from 0112 (shared-number cleanup)
-- **Date**: 2026-09-26
-- **Deciders**: CypherLite maintainers
 
 ## Context
 
-ADR-0079 §7 introduced `CYPHERLITE_MIXPANEL_ENDPOINT` as a dev/test override
+[ADR-0079](./0079-anonymous-usage-metrics.md) §7 introduced `CYPHERLITE_MIXPANEL_ENDPOINT` as a dev/test override
 that is used verbatim as the full POST URL "as-is", so development and CI can
 point the CLI at a mock sink. The implementation keeps that promise literally:
 `surfaces/cypherlite-cli/src/telemetry/handle.rs:80-81` assigns the environment
@@ -29,7 +41,7 @@ precedent for refusing cleartext is `warn_cleartext_basic` in
 `http://` and the host is not loopback.
 
 The decision follows the repository rule that an accepted ADR is immutable:
-ADR-0079 §7's "as-is" behavior is changed by this new ADR, and ADR-0079 carries
+[ADR-0079](./0079-anonymous-usage-metrics.md) §7's "as-is" behavior is changed by this new ADR, and [ADR-0079](./0079-anonymous-usage-metrics.md) carries
 a **Later references** note pointing here rather than being edited.
 
 ## Decision
@@ -50,7 +62,7 @@ warning: ignoring CYPHERLITE_MIXPANEL_ENDPOINT=<url>: http:// is allowed only fo
 
 `<url>` is the rejected value, reproduced verbatim. The warning is the only
 output; the CLI otherwise behaves as if telemetry were opted out for that run
-(exit codes and stdout are unaffected, per ADR-0079 §5).
+(exit codes and stdout are unaffected, per [ADR-0079](./0079-anonymous-usage-metrics.md) §5).
 
 This narrows only the override path. `CYPHERLITE_MIXPANEL_TOKEN` is unchanged,
 and the default endpoint remains `https://api.mixpanel.com/track`.
@@ -70,7 +82,7 @@ and the default endpoint remains `https://api.mixpanel.com/track`.
   events, not merely to annotate them; a warning accompanied by an actual send
   would still leak.
 - **Reject non-`https://` regardless of host.** Rejected: local mock sinks over
-  `http://` loopback are exactly the dev/test workflow ADR-0079 §7 exists to
+ `http://` loopback are exactly the dev/test workflow [ADR-0079](./0079-anonymous-usage-metrics.md) §7 exists to
   serve; loopback HTTP never crosses the network.
 
 ## Consequences
@@ -83,8 +95,8 @@ and the default endpoint remains `https://api.mixpanel.com/track`.
   IPv6-bracket trimming) and the exact warning string are a contract that the
   implementation and its tests must match; the warning text is pinned by this
   ADR.
-- ADR-0079 §7's "used as the full POST URL as-is" behavior no longer holds for
-  non-loopback `http://` values; ADR-0079 gains a **Later references** note
+- [ADR-0079](./0079-anonymous-usage-metrics.md) §7's "used as the full POST URL as-is" behavior no longer holds for
+ non-loopback `http://` values; [ADR-0079](./0079-anonymous-usage-metrics.md) gains a **Later references** note
   pointing to this ADR.
 - `docs/api/cli/spec.md` must describe the accepted/rejected endpoint forms if
   it documents the override's semantics.

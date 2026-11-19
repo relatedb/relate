@@ -1,17 +1,28 @@
-# 0096. One canonical persisted-ID predicate
+---
+type: adr
+area: engine
+date: 2026-09-24
+deciders: CypherLite maintainers
+name: 0096-canonical-persisted-id-predicate
+status: proposed
+tags:
+  - storage
+title: One canonical persisted-ID predicate
+REFERENCES:
+  - "[[adr/0086-bounded-persistence-input]]"
+  - "[[adr/0094-preflight-wal-acceptance]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-24
-- **Deciders**: CypherLite maintainers
+# 0096. One canonical persisted-ID predicate
 
 ## Context
 
-ADR-0086 (5) makes persisted node and relationship IDs (including relationship
+[ADR-0086](./0086-bounded-persistence-input.md) (5) makes persisted node and relationship IDs (including relationship
 endpoints) an unsupported-sentinel boundary: an ID `== i64::MAX` is rejected
 with a typed `Error::Storage`, and a negative ID is rejected before it can
-seed a next-write counter or be installed into the graph. ADR-0094 (1) requires
+seed a next-write counter or be installed into the graph. [ADR-0094](./0094-preflight-wal-acceptance.md) (1) requires
 that "exhaustive `RedoOp` ID preflight remains a single RedoOp-owned rule
-shared by WAL and graph (the follow-up to ADR-0086)". That follow-up is this
+shared by WAL and graph (the follow-up to [ADR-0086](./0086-bounded-persistence-input.md))". That follow-up is this
 decision.
 
 The bound `0..i64::MAX` (reject `id < 0`, reject `id == i64::MAX`) is

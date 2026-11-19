@@ -1,8 +1,19 @@
-# 0088. Explicit provenance and versioned composite values in Arrow batches
+---
+type: adr
+area: surface
+date: 2026-09-23
+deciders: CypherLite maintainers
+name: 0088-explicit-arrow-value-provenance
+status: proposed
+tags:
+  - parquet
+  - values
+title: Explicit provenance and versioned composite values in Arrow batches
+REFERENCES:
+  - "[[adr/0087-fallible-persistence-decoding]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-23
-- **Deciders**: CypherLite maintainers
+# 0088. Explicit provenance and versioned composite values in Arrow batches
 
 ## Context
 
@@ -20,12 +31,12 @@ validation, and big-endian/nested headers are not interpreted correctly.
 
 Arrow is a typed interchange format, not a license to infer Cypher graph
 identity from a coincidentally similar user struct. The persistence encoding
-of ADR-0087 is distinct from the untagged JSON wire format used by old Arrow
+of [ADR-0087](./0087-fallible-persistence-decoding.md) is distinct from the untagged JSON wire format used by old Arrow
 composite columns.
 
 The `typed-json-v1` Arrow writer currently repeats the model's Point,
 Geometry, and Vector persistence payload builders even though the reader
-already delegates their decoding to ADR-0087. Its Float32 predicate uses
+already delegates their decoding to [ADR-0087](./0087-fallible-persistence-decoding.md). Its Float32 predicate uses
 bitwise round-trip equality while model decoding uses numerical equality,
 which disagrees on signed zero. Arrow timestamp timezone metadata also treats
 an invalid numeric offset such as `+00:60` as a named timezone when its
@@ -41,7 +52,7 @@ The native Arrow `Time64(Nanosecond)` field carries only a time of day: the
 current writer discards the offset in `CypherValue::Time(_, Some(offset))`.
 For native `DateTime` timestamps, `format_offset` emits only `[+-]HH:MM`,
 truncating the seconds of a constructible non-minute `FixedOffset` before
-writing timezone metadata. The fallible ADR-0087 model writer can protect
+writing timezone metadata. The fallible [ADR-0087](./0087-fallible-persistence-decoding.md) model writer can protect
 typed JSON payloads, but neither native path invokes it today.
 
 Even with minute-aligned offsets, the column-wide timezone is currently taken
@@ -114,7 +125,7 @@ Classify `CypherValue::Time(_, Some(_))` as `ColType::TypedJson` rather than
 native `Time`, even when all non-null rows are offset-bearing Times. The
 absorbing merge makes a column mixing offset-bearing and unzoned Times (or
 other kinds) `TypedJson` for every row, preserving the optional offset in
-each `TIME` typed envelope through ADR-0087's tagged Time payload. Reject a
+each `TIME` typed envelope through [ADR-0087](./0087-fallible-persistence-decoding.md)'s tagged Time payload. Reject a
 non-minute offset through the fallible model payload writer, with Arrow
 column/row and nested value path context; minute-aligned offsets round-trip.
 `CypherValue::Time(_, None)` still uses native `Time64(Nanosecond)` when the
@@ -134,10 +145,10 @@ merge to that fallback. `plan_columns` must use this same full-result decision
 before building either a single batch or any chunks: only a native DateTime
 plan writes one `[+-]HH:MM` timestamp timezone from the common offset.
 Fallback cells use the existing `cypherlite.encoding=typed-json-v1` Utf8
-field and per-cell `DATE_TIME` payload from ADR-0087, preserving each row's
+field and per-cell `DATE_TIME` payload from [ADR-0087](./0087-fallible-persistence-decoding.md), preserving each row's
 fixed offset, local time, UTC instant, and optional timezone name without
 adding a new metadata key. This also keeps one schema across chunk boundaries.
-Any non-minute-aligned DateTime offset must still fail through ADR-0087's
+Any non-minute-aligned DateTime offset must still fail through [ADR-0087](./0087-fallible-persistence-decoding.md)'s
 fallible model payload writer, including when another row or a named-zone
 hint already caused a typed-JSON fallback; it is never accepted just because
 the column falls back.
@@ -221,7 +232,7 @@ remains a map. `NODE` carries
 `PATH` carries `{"nodes":[NODE-envelope,...],"relationships":[RELATIONSHIP-envelope,...]}`
 with `nodes.len() == relationships.len() + 1`. Require all fields with exact
 types; never synthesize IDs or filter invalid members. Temporal, duration,
-point, geometry, and vector envelopes use their **validated ADR-0087
+point, geometry, and vector envelopes use their **validated [ADR-0087](./0087-fallible-persistence-decoding.md)
 persistence JSON object** as `value` (including its `__type`), and the decoded
 variant must match `T`; `GEOMETRY` includes every supported geometry subtype.
 All nested entries use the same envelope contract. This composite payload is
@@ -233,13 +244,13 @@ The same no-loss rule applies to Float32 Vector coordinates in typed JSON:
 reject a finite `f64` value unless conversion to `f32` and back to `f64`
 preserves it exactly (including the sign of zero); reject non-finite values.
 For `POINT`, `GEOMETRY`, and `VECTOR`, obtain the entire tagged `value` object
-from ADR-0087's fallible `cypher_value_to_json` instead of rebuilding its
+from [ADR-0087](./0087-fallible-persistence-decoding.md)'s fallible `cypher_value_to_json` instead of rebuilding its
 payload shape in Arrow. Propagate its path-qualified `EncodeError` as an
 `ArrowError` with column/row context, including nested graph properties and
 composite cells; keep the Arrow-owned `{"type":T,"value":V}` envelope,
 NODE/RELATIONSHIP/PATH validation and typed-member recursion. Do not change
 valid `typed-json-v1` bytes, graph provenance markers, or legacy-batch policy.
-Use ADR-0087's model-owned `float32_exact(f64) -> bool` for both direct Arrow
+Use [ADR-0087](./0087-fallible-persistence-decoding.md)'s model-owned `float32_exact(f64) -> bool` for both direct Arrow
 FixedSizeList vector construction and typed-JSON vector encoding. The shared
 predicate requires finite, bit-identical `f64 -> f32 -> f64` conversion;
 Arrow-specific i32 dimension and child-element budget checks still apply.
@@ -296,7 +307,7 @@ child placeholders. Preserve valid six-kind vectors, nulls, and chunked schemas.
 For timestamp timezone metadata, accept `Z`, `UTC` (case-insensitive), and
 valid fixed offsets of the exact ASCII form `[+-]HH:MM` with minutes in
 `00..59`, hours within `chrono::FixedOffset`'s representable range, and
-checked seconds arithmetic. Delegate signed offset validation to ADR-0087's
+checked seconds arithmetic. Delegate signed offset validation to [ADR-0087](./0087-fallible-persistence-decoding.md)'s
 public `cypherlite_model::serde_value::parse_numeric_offset`; keep `Z`/`UTC`
 and named-zone dispatch in Arrow without a second numeric parser. A
 timezone beginning with `+` or `-` is a numeric-offset candidate: reject
@@ -313,7 +324,7 @@ metadata, reject any `DateTime<FixedOffset>` whose
 `offset().local_minus_utc() % 60 != 0` with `ArrowError`; native planning must
 already have ruled this out across the full result. Never choose a native
 timezone string from just the first DateTime when later rows differ. A
-DateTime routed to `TypedJson` uses ADR-0087's fallible model payload writer
+DateTime routed to `TypedJson` uses [ADR-0087](./0087-fallible-persistence-decoding.md)'s fallible model payload writer
 for the same offset rule, including a named-zone or heterogeneous column with
 an invalid offset. Single and chunked batch writers fail the whole call
 instead of publishing minute-truncated data. Only homogeneous, minute-aligned,
@@ -391,7 +402,7 @@ integer (no default zero); invalid metadata errors before row decoding.
 - **Treat any unparseable numeric timezone offset as a named zone.** Rejected:
   malformed offset metadata would silently acquire a different meaning, while
   valid named zones have no leading offset sign.
-- **Retain an Arrow-private numeric parser alongside ADR-0087's model
+- **Retain an Arrow-private numeric parser alongside [ADR-0087](./0087-fallible-persistence-decoding.md)'s model
   parser.** Rejected: independent sign, ASCII, width, minute, and range checks
   can drift; Arrow only needs to dispatch nonnumeric timezone forms and map a
   failed signed parse to `ArrowError`.
@@ -461,7 +472,7 @@ integer (no default zero); invalid metadata errors before row decoding.
   Tests also cover inexact Float32 values and non-finite Point/Geometry
   coordinates nested in typed JSON: all return errors instead of changed data.
 - Rust API specs, descriptions, and runnable examples for the new errors and
-  migration ship with implementation. ADR-0087 governs persisted JSON, not
+ migration ship with implementation. [ADR-0087](./0087-fallible-persistence-decoding.md) governs persisted JSON, not
   Arrow provenance or the canonical CLI/C-ABI wire format.
 - Arrow typed JSON inherits the model's fallible payload shapes and finite,
   bit-preserving Float32 rule; invalid nested values fail the whole writer

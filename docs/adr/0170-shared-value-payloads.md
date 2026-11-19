@@ -1,13 +1,27 @@
-# 0170. Shared `Value` payloads: `Arc` for String, List, Map and Vector
+---
+type: adr
+area: engine
+date: 2026-10-06
+deciders: CypherLite maintainers
+name: 0170-shared-value-payloads
+status: accepted
+tags:
+  - perf
+  - values
+title: "Shared `Value` payloads: `Arc` for String, List, Map and Vector"
+REFERENCES:
+  - "[[adr/0042-graph-memory-limit]]"
+  - "[[adr/0127-store-version-compatibility]]"
+  - "[[adr/0144-graph-examples-differential-suite]]"
+  - "[[adr/0154-value-clone-cost]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-06
-- **Deciders**: CypherLite maintainers (Linear LABS-156)
+# 0170. Shared `Value` payloads: `Arc` for String, List, Map and Vector
 
 ## Context
 
-ADR-0154 (Accepted) found, through the graph-examples differential suite
-(ADR-0144), that the executor deep-clones a bound value on every variable
+[ADR-0154](./0154-value-clone-cost.md) (Accepted) found, through the graph-examples differential suite
+([ADR-0144](./0144-graph-examples-differential-suite.md)), that the executor deep-clones a bound value on every variable
 read, and decided to back `Value::List`, `Value::Map` and `Value::String`
 with `Arc`. It left `Arc<Vec<Value>>` versus `Arc<[Value]>` open and did
 not cover `Value::Vector`.
@@ -35,7 +49,7 @@ It takes 8.6 s user + 17.5 s system; creating and collecting alone takes
 Embeddings are hundreds to thousands of elements and are read once per row
 in similarity queries, so they pay the same clone per read.
 
-Implementing ADR-0154 touches every crate that constructs or destructures
+Implementing [ADR-0154](./0154-value-clone-cost.md) touches every crate that constructs or destructures
 these variants. It needs the open representation choice settled, the
 Vector scope decided, and one set of migration rules so the call sites stay
 O(1) after the change.
@@ -43,7 +57,7 @@ O(1) after the change.
 ## Decision
 
 1. The four payloads are shared behind `std::sync::Arc` (`Value` stays
-   `Send + Sync`, as ADR-0154 requires):
+ `Send + Sync`, as [ADR-0154](./0154-value-clone-cost.md) requires):
 
    - `Value::String(Arc<str>)`
    - `Value::List(Arc<Vec<Value>>)`
@@ -51,8 +65,8 @@ O(1) after the change.
    - `Value::Vector { coord: VectorCoordKind, values: Arc<Vec<Value>> }`
 
 2. List and Vector use `Arc<Vec<Value>>`, not `Arc<[Value]>`. This settles
-   the choice ADR-0154 left open.
-3. Vector extends ADR-0154. The rationale is the same: embeddings that are
+ the choice [ADR-0154](./0154-value-clone-cost.md) left open.
+3. Vector extends [ADR-0154](./0154-value-clone-cost.md). The rationale is the same: embeddings that are
    read once per row hit the same clone-per-read cost as lists.
 4. No new public constructor or accessor functions are added to `Value`.
    Callers construct with `Arc::new(..)` or `.into()`
@@ -65,7 +79,7 @@ O(1) after the change.
    `## Value` documents the new payloads in the implementing change. The
    C ABI, Bolt, WAL/JSON/Parquet bytes (their serializers take `&Value`) and
    `cypherlite_model::CypherValue` are unchanged. So are
-   `Value::logical_bytes()` results (ADR-0042) and `Debug` output (`Arc`
+ `Value::logical_bytes` results ([ADR-0042](./0042-graph-memory-limit.md)) and `Debug` output (`Arc`
    delegates to its contents).
 6. Every implementing change follows these migration rules:
    - **Construct**: build an owned `Vec`/`BTreeMap`/`String`, then wrap
@@ -110,10 +124,10 @@ O(1) after the change.
   displayed far more often than they are taken apart. No engine path grows
   a string in place, because concatenation builds a new value. Converting
   `String` to `Arc<str>` copies the bytes once, with no per-element clones.
-  Rejected because `Arc<str>` (ADR-0154's choice) saves an indirection on
+ Rejected because `Arc<str>` ([ADR-0154](./0154-value-clone-cost.md)'s choice) saves an indirection on
   every string read.
 - **Keep Vector owned (`Vec<Value>`)**: smaller diff that stays within the
-  scope of ADR-0154. Embeddings are the largest values that are routinely
+ scope of [ADR-0154](./0154-value-clone-cost.md). Embeddings are the largest values that are routinely
   read per row, and keeping Vector owned would leave a different
   representation from List for the same element type. Rejected because it
   keeps exactly the clone-per-read cost this ADR removes, for the values
@@ -121,7 +135,7 @@ O(1) after the change.
 - **`Rc` instead of `Arc`**: a non-atomic refcount is cheaper. `Value`
   must be `Send`, though: query results cross
   `run_on_query_worker<T: Send>` (`cypherlite/cypherlite/src/connection.rs`).
-  Rejected, as in ADR-0154, because `Rc` makes `Value` `!Send`.
+ Rejected, as in [ADR-0154](./0154-value-clone-cost.md), because `Rc` makes `Value` `!Send`.
 - **Constructor and accessor helpers** (`Value::list(Vec<Value>)`,
   `Value::string(..)`, `into_list() -> Option<Vec<Value>>`): would hide
   `Arc` from Rust callers and soften the break. Each helper is permanent
@@ -140,8 +154,8 @@ O(1) after the change.
 ## Consequences
 
 - Variable reads and row carries of String, List, Map and Vector values
-  become refcount increments, which removes the quadratic class in
-  LABS-156. The regression bar from ADR-0154 still applies (2,000 accesses
+  become refcount increments, which removes the quadratic class
+ The regression bar from [ADR-0154](./0154-value-clone-cost.md) still applies (2,000 accesses
   at 20k elements must be sub-second). The implementing change adds the
   LABS-156 query as a regression test.
 - Rust callers that construct or destructure these variants must migrate
@@ -150,8 +164,8 @@ O(1) after the change.
   Users of the Python, JavaScript, Java, Go, WASM and Bolt surfaces see no
   change, because those surfaces expose `CypherValue` or serialized forms.
 - Persisted bytes are identical, so no snapshot or WAL format version
-  changes and no store migration (ADR-0127) runs.
-- `logical_bytes()` is unchanged. Memory-limit accounting (ADR-0042) and
+ changes and no store migration ([ADR-0127](./0127-store-version-compatibility.md)) runs.
+- `logical_bytes` is unchanged. Memory-limit accounting ([ADR-0042](./0042-graph-memory-limit.md)) and
   baseline logical bytes do not move. Accounting stays logical: a payload
   shared by several rows is counted once per reference.
 - No payload grows, so `size_of::<Value>()` does not grow. Each clone of

@@ -1,11 +1,21 @@
-# ADR-0592: The Go client is a nested module that carries its header and links a consumer-supplied native library
+---
+type: adr
+area: surface
+claim: 1419e60e0f50ea9b89a870905ad0eba20e3e7132
+name: 0592-go-client-nested-module-distribution
+status: proposed
+tags:
+  - clients
+title: The Go client is a nested module that carries its header and links a consumer-supplied native library
+REFERENCES:
+  - "[[adr/0502-typed-c-abi-v2]]"
+---
 
-Status: Proposed
-Claim: 1419e60e0f50ea9b89a870905ad0eba20e3e7132
+# ADR-0592: The Go client is a nested module that carries its header and links a consumer-supplied native library
 
 ## Context
 
-The Go client wraps the C ABI through cgo (ADR-0502). Go has no registry to
+The Go client wraps the C ABI through cgo ([ADR-0502](./0502-typed-c-abi-v2.md)). Go has no registry to
 publish to: the module proxy serves a module zip built from a repository
 tag. The client lives in a subdirectory of the repository, so two things
 broke consumption from outside the repository:

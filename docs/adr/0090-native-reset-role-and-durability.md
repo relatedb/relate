@@ -1,19 +1,32 @@
-# 0090. Role-mark Native identities and durably stage reset
+---
+type: adr
+area: engine
+date: 2026-09-23
+deciders: CypherLite maintainers
+name: 0090-native-reset-role-and-durability
+status: proposed
+tags:
+  - storage
+title: Role-mark Native identities and durably stage reset
+REFERENCES:
+  - "[[adr/0074-single-file-bundle-vfs]]"
+  - "[[adr/0097-exclusive-storage-ownership]]"
+  - "[[adr/0098-safe-atomic-replacement]]"
+  - "[[adr/0120-ontology-document-persistence]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-09-23
-- **Deciders**: CypherLite maintainers
+# 0090. Role-mark Native identities and durably stage reset
 
 ## Context
 
-ADR-0097 locks stable `.cypherlite.lock` files in the Native root and WAL directory and
+[ADR-0097](./0097-exclusive-storage-ownership.md) locks stable `.cypherlite.lock` files in the Native root and WAL directory and
 stages an external WAL before the root on reset. Those files have identical,
 empty contents. An unlocked, *closed* database root can therefore be mistaken
 for an external WAL directory and recursively deleted. A two-move reset also
 syncs its `.reset-incomplete` marker but not the directory entries for its
 tombstones and renames. After a power failure, a root move can survive while
 the earlier WAL move does not, allowing a fresh root to attach the old WAL.
-ADR-0098's atomic-file replacement barrier does not persist these reset moves.
+[ADR-0098](./0098-safe-atomic-replacement.md)'s atomic-file replacement barrier does not persist these reset moves.
 
 ## Decision
 
@@ -27,7 +40,7 @@ Report `Error::Storage` and leave both the alias and its target unchanged,
 even if the target is a valid closed store or an unrelated regular file. A
 direct non-aliased reset still follows the role and WAL-first rules below.
 This extra restriction is **reset-only**: ordinary open still resolves
-supported aliases and locks their physical identity under ADR-0097. A default
+supported aliases and locks their physical identity under [ADR-0097](./0097-exclusive-storage-ownership.md). A default
 `<root>/wal` link found *inside* a directly named Native root still follows
 the two-tree WAL rule below; it is not an alias for the requested database URI.
 
@@ -44,19 +57,19 @@ the two-tree WAL rule below; it is not an alias for the requested database URI.
    reserve `Error::Locked` for real contention. A disjoint WAL path marked
    `root`, including a closed root, is never attachable as WAL or eligible for
    WAL reset. When root and WAL resolve to the **same physical directory**,
-   ADR-0097 reuses one lock inode and lease: it has the `root` role only, even
+ [ADR-0097](./0097-exclusive-storage-ownership.md) reuses one lock inode and lease: it has the `root` role only, even
    when `wal_dir` was explicitly set to the root. Do not write a second WAL
    role into it or reject a valid root marker as wrong-role; a `wal`-role
-   marker at that root is invalid. ADR-0097 still rejects **reset** with
+ marker at that root is invalid. [ADR-0097](./0097-exclusive-storage-ownership.md) still rejects **reset** with
    root == WAL as unsafe overlap, *before* creating a lock/role/tombstone;
    sharing one lease on normal open does not permit deleting that directory.
    Perform role validation before creating/resetting either identity and under
-   both leases (one for the same-directory case); retain ADR-0097's alias,
+ both leases (one for the same-directory case); retain [ADR-0097](./0097-exclusive-storage-ownership.md)'s alias,
    nested-owner and subtree checks.
 
 2. **Preflight legacy and markerless directories.** A missing or empty
    `.cypherlite.lock` is not proof of either role. Before reset creates any missing lock
-   file (including in an existing pre-ADR-0097 data directory), marker or
+ file (including in an existing pre-[ADR-0097](./0097-exclusive-storage-ownership.md) data directory), marker or
    tombstone, inspect each existing physical root and WAL directory without
    following child symlinks/reparse points. Root evidence is a directly
    contained regular `manifest.json` or `graph.json`, or a directly contained
@@ -73,12 +86,12 @@ the two-tree WAL rule below; it is not an alias for the requested database URI.
    independently owned closed root at `wal` that used root == WAL. Never
    exempt its `.cypherlite.lock` in the nested-owner scan or upgrade it on open/reset.
    A typed direct `wal` marker remains recognizable after the outer root
-   switches to a disjoint WAL; a markerless pre-ADR-0097 root with a typed
+ switches to a disjoint WAL; a markerless pre-[ADR-0097](./0097-exclusive-storage-ownership.md) root with a typed
    default WAL and valid segments remains recognizable too. Only a directory
    created by the current ordinary open (not merely observed absent before
    a raced-in directory appears) can receive a fresh `wal` role before data
    initialization; under its new lease, a failed nested scan leaves its
-   stable marker rather than deleting it (ADR-0097).
+ stable marker rather than deleting it ([ADR-0097](./0097-exclusive-storage-ownership.md)).
    These bounded magic/name checks establish *role only*, not frame or
    snapshot validity; an unreadable object is an error and a present but
    corrupt `manifest.json`/`graph.json` is still root evidence against
@@ -98,10 +111,10 @@ the two-tree WAL rule below; it is not an alias for the requested database URI.
    unrecognizable directories without creating `.cypherlite.lock` or moving anything.
    A missing `.cypherlite.lock` in a *pre-existing empty directory* does not establish
    ownership for reset either. Preserve such data for explicit operator
-   recovery. Continue ADR-0097's path, nested-owner and both-tree preflights
+ recovery. Continue [ADR-0097](./0097-exclusive-storage-ownership.md)'s path, nested-owner and both-tree preflights
     before identity creation.
 
-    **Offline adoption of a direct default WAL.** A pre-ADR-0097 Native root
+ **Offline adoption of a direct default WAL.** A pre-[ADR-0097](./0097-exclusive-storage-ownership.md) Native root
     with a regular, directly contained `manifest.json` or `graph.json` and an
     untyped physical `<root>/wal` containing a correctly named WAL segment
     with `MDBWAL01` magic has a practical migration path. With **both database
@@ -127,7 +140,7 @@ the two-tree WAL rule below; it is not an alias for the requested database URI.
     ordinary open/reset use the typed WAL marker without an exemption for
     other untyped children. This is an operator assertion, not automatic
     discovery or proof of ownership against a closed ambiguous independent
-    database. Document it with a runnable offline example. ADR-0097's
+ database. Document it with a runnable offline example. [ADR-0097](./0097-exclusive-storage-ownership.md)'s
     exclusion of only typed direct WAL markers remains the rule for ordinary
     open/reset; the temporary untyped exemption exists only within this
     explicit offline adoption operation.
@@ -151,15 +164,15 @@ the two-tree WAL rule below; it is not an alias for the requested database URI.
    reset markers or tombstones. If another opener created a marker, validate
    its role under the acquired lease rather than replacing it; a failed
    recheck leaves a new stable marker in place instead of unlinking it and
-   splitting ownership (ADR-0097). Write/upgrade the verified role **in place
+ splitting ownership ([ADR-0097](./0097-exclusive-storage-ownership.md)). Write/upgrade the verified role **in place
    while locked**, then sync its inode and, for a newly created entry, its
    parent directory on Unix *before* reset stages a tree. If creation or
    either sync fails, report the error and make no reset move; do not assume
    the role was durable. On Windows this step does not claim directory-entry
-   power-loss durability (ADR-0098). No forced upgrade on a read-only or
+ power-loss durability ([ADR-0098](./0098-safe-atomic-replacement.md)). No forced upgrade on a read-only or
    failed ordinary open; legacy recognizable roots and typed direct WALs
    must still open after validation. A directory created by the current
-   ordinary open can receive its role under ADR-0097 before database
+ ordinary open can receive its role under [ADR-0097](./0097-exclusive-storage-ownership.md) before database
    initialization; reset of an absent directory remains a no-op, not a
    reason to create one.
 
@@ -183,13 +196,13 @@ the two-tree WAL rule below; it is not an alias for the requested database URI.
 4. **Failure and rollback.** A failed sync is an error, not evidence that a
    rename did not publish. Keep old data in its tombstone and the
    reset-incomplete marker until a durable state can be proved. If restoring
-   names, use ADR-0097's no-replace root-first, WAL-second rollback; sync the
+ names, use [ADR-0097](./0097-exclusive-storage-ownership.md)'s no-replace root-first, WAL-second rollback; sync the
    source and destination directories for *each* restoration and remove/sync
    the marker only after both original names and their contents are durably
    restored. Never restore WAL to a new or unverified root. Do not recursively
    delete until both required moves and their barriers succeed; then close
    handles as needed for Windows and delete only the owned tombstones. Report
-   stranded paths on failure. On Windows, ADR-0098 establishes no directory
+ stranded paths on failure. On Windows, [ADR-0098](./0098-safe-atomic-replacement.md) establishes no directory
    rename durability primitive: **fail closed before any marker, lease-created
    identity, tombstone, or rename for a disjoint external-WAL reset** until a
    tested equivalent namespace barrier is adopted. A contained/default-WAL
@@ -229,12 +242,12 @@ the two-tree WAL rule below; it is not an alias for the requested database URI.
   database before discovering conflicting evidence; reset must preflight both
   trees before creating either identity.
 - **Give a same-directory root/WAL two roles or infer root from segment magic
-  alone.** Rejected: ADR-0097 uses one lock identity for that directory, and
+ alone.** Rejected: [ADR-0097](./0097-exclusive-storage-ownership.md) uses one lock identity for that directory, and
   bare segments also identify a standalone WAL directory.
 - **Rename WAL then root without syncing their parent entries.** Rejected:
   file sync and rename visibility do not guarantee WAL-first crash ordering.
 - **Attempt external-WAL reset on Windows using a no-op directory sync.**
-  Rejected: it claims a barrier ADR-0098 explicitly cannot provide and can
+ Rejected: it claims a barrier [ADR-0098](./0098-safe-atomic-replacement.md) explicitly cannot provide and can
   reconnect an old WAL to a new root after power loss.
 
 ## Consequences
@@ -253,7 +266,7 @@ the two-tree WAL rule below; it is not an alias for the requested database URI.
   destructive reset. A same-directory root/WAL has one
   root marker on normal open and is
   rejected by reset's overlap check. `.cl` ownership remains on its single
-  host file (ADR-0074).
+ host file ([ADR-0074](./0074-single-file-bundle-vfs.md)).
 - Pre-ADR default-WAL stores with no `.cypherlite.lock` files can be explicitly adopted
   offline after verifying the child belongs to the parent. A wrongly asserted
   closed independent segment-only root cannot be distinguished by format; the
@@ -271,6 +284,6 @@ the two-tree WAL rule below; it is not an alias for the requested database URI.
 
 ## Later references
 
-ADR-0120 adds the WAL segment magic `MDBWAL02` for segments that may contain
+[ADR-0120](./0120-ontology-document-persistence.md) adds the WAL segment magic `MDBWAL02` for segments that may contain
 ontology ops. The role checks in this ADR that look for a segment starting
 with `MDBWAL01` accept either magic.

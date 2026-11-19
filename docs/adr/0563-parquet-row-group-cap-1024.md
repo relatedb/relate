@@ -1,15 +1,30 @@
-# ADR-0563: The Parquet row-group cap is 1024 rows
+---
+type: adr
+area: engine
+claim: 74979dd119bb422695147797b06ef165f2cdcbc8
+name: 0563-parquet-row-group-cap-1024
+status: proposed
+tags:
+  - checkpoint
+  - parquet
+title: The Parquet row-group cap is 1024 rows
+REFERENCES:
+  - "[[adr/0086-bounded-persistence-input]]"
+  - "[[adr/0180-checkpoint-shard-writes]]"
+  - "[[adr/0183-coalesce-checkpoint-shards]]"
+  - "[[adr/0534-wide-column-parquet-shards]]"
+  - "[[adr/0553-wide-columns-are-the-parquet-checkpoint-format]]"
+---
 
-Status: Proposed
-Claim: 74979dd119bb422695147797b06ef165f2cdcbc8
+# ADR-0563: The Parquet row-group cap is 1024 rows
 
 ## Context
 
-ADR-0553 made the wide-column part encoding the Parquet codec's only
-write encoding, and ADR-0534's leaf count grew with it: every promoted
-column is a leaf, and ADR-0180's 64-row row group made every leaf write a
+[ADR-0553](./0553-wide-columns-are-the-parquet-checkpoint-format.md) made the wide-column part encoding the Parquet codec's only
+write encoding, and [ADR-0534](./0534-wide-column-parquet-shards.md)'s leaf count grew with it: every promoted
+column is a leaf, and [ADR-0180](./0180-checkpoint-shard-writes.md)'s 64-row row group made every leaf write a
 dictionary page and a data page per 64 rows. At the wide worst case the
-page envelope (ADR-0086, ADR-0534) held only 59,904 node / 56,640
+page envelope ([ADR-0086](./0086-bounded-persistence-input.md), [ADR-0534](./0534-wide-column-parquet-shards.md)) held only 59,904 node / 56,640
 relationship rows per file, so a checkpoint published 8–10× more part
 files than the fixed-schema era — each paying create, two fsyncs, footer
 preflight and stat. Measured with the codec lab (best of 3, fresh
@@ -21,10 +36,10 @@ held 36.
 
 Raise `ROW_GROUP_CAP` from 64 to 1024. The page envelope scales by the
 cap, so a file's row bound rises to 958,464 node / 906,240 relationship
-rows — still under the 1,000,000-row file cap (ADR-0086) and the
-1,000,000-id `MAX_WINDOW` (ADR-0183). Row groups close on the row cap
+rows — still under the 1,000,000-row file cap ([ADR-0086](./0086-bounded-persistence-input.md)) and the
+1,000,000-id `MAX_WINDOW` ([ADR-0183](./0183-coalesce-checkpoint-shards.md)). Row groups close on the row cap
 alone, as before; the byte split and decoded-envelope discipline of
-ADR-0180 Decisions 1–2 are unchanged. The reader takes row groups from
+[ADR-0180](./0180-checkpoint-shard-writes.md) Decisions 1–2 are unchanged. The reader takes row groups from
 each file's footer, so stores written at 64-row groups stay readable and
 copyable, and the copy path's batch size — the cap — stays within the
 public decode bound of 1024-row batches.
@@ -38,7 +53,7 @@ public decode bound of 1024-row batches.
   1,978.6 ms) but stays behind 1024 on load, directory size and part
   count on both shapes (14/18 parts vs 4/4).
 - **A width-aware cap, or planning the row bound by a part's actual
-  column count (ADR-0534's recorded refinement).** Rejected for this
+ column count ([ADR-0534](./0534-wide-column-parquet-shards.md)'s recorded refinement).** Rejected for this
   change: strictly better shape, but it is a derivation redesign with
   its own verification; the flat raise is measured now and does not
   preclude it.
@@ -53,7 +68,7 @@ Measured (same lab, same box, cap 64 → 1024): pokec:medium checkpoint
 parity-or-better with json and rkyv (1,590.7 vs 1,691.0 / 1,745.9 ms);
 on the property-light pokec shape it remains above them (559.3 vs
 ~390 ms) — the residual is per-part schema derivation and per-column
-page work, ADR-0534's open refinement.
+page work, [ADR-0534](./0534-wide-column-parquet-shards.md)'s open refinement.
 
 One row group's write-side peak grows with the cap: the group's Arrow
 buffers are live together, bounded by the part's byte target exactly as

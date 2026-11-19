@@ -126,7 +126,10 @@ def run_git(
 
 
 def run_script(
-    script: Path, *args: str, cwd: Path
+    script: Path,
+    *args: str,
+    cwd: Path,
+    extra_env: dict[str, str | None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run one scripts/ file under test as a subprocess in cwd.
 
@@ -134,7 +137,11 @@ def run_script(
     minus the per-invocation git variables a surrounding git hook would
     leak (GIT_SCRUB), so the script sees the environment a caller's shell
     would give it. The scrub policy is child_env's, the one home shared
-    with the reporting-env suites.
+    with the reporting-env suites. extra_env — the update-pr-comment
+    suite's convention, so the two runners cannot drift — lands on top
+    of the scrubbed environment through child_env's overrides (values
+    nullable, applied last): the one way a case puts a stub binary
+    first on the subject's PATH.
     """
     return subprocess.run(
         [sys.executable, str(script), *args],
@@ -142,7 +149,7 @@ def run_script(
         text=True,
         capture_output=True,
         check=False,
-        env=child_env(GIT_SCRUB),
+        env=child_env(GIT_SCRUB, extra_env),
     )
 
 
@@ -248,10 +255,15 @@ class AdrFixture:
         return run_script(MINT_SCRIPT, *args, cwd=cwd or self.work)
 
     def run(
-        self, *args: str, cwd: Path | None = None
+        self,
+        *args: str,
+        cwd: Path | None = None,
+        extra_env: dict[str, str | None] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run scripts/check_adr_numbers.py in the work repo, as a caller would."""
-        return run_script(CHECK_SCRIPT, *args, cwd=cwd or self.work)
+        return run_script(
+            CHECK_SCRIPT, *args, cwd=cwd or self.work, extra_env=extra_env
+        )
 
     def commit(
         self, branch: str, writes: dict[str, str], deletes: tuple[str, ...] = ()

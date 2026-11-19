@@ -1,7 +1,18 @@
-# ADR-0300: ADR number mint via a counter branch
+---
+type: adr
+area: ecosystem
+claim: d2ff6c2053376cc9a02d291b708b8f2a1ee62fa5
+name: 0300-adr-number-mint-counter-branch
+status: accepted
+tags:
+  - adr-process
+title: ADR number mint via a counter branch
+REFERENCES:
+  - "[[adr/0242-agent-context-command-and-skill-drift-check]]"
+  - "[[adr/0301-adr-claim-proof]]"
+---
 
-Status: Accepted
-Claim: d2ff6c2053376cc9a02d291b708b8f2a1ee62fa5
+# ADR-0300: ADR number mint via a counter branch
 
 ## Context
 
@@ -13,7 +24,7 @@ sequentially on `main`. With many agents working in parallel on separate
 branches, two agents compute the same next number from the same base
 checkout and collide at merge time: two PRs arrive with
 `docs/adr/NNNN-<different-slug>.md`, and one must be renumbered after
-review, after links and text already reference it. ADR-0242 carries such a
+review, after links and text already reference it. [ADR-0242](./0242-agent-context-command-and-skill-drift-check.md) carries such a
 renumbering note. Linear issue LABS-318.
 
 The fix must give each author the real, final number at authoring time,
@@ -101,7 +112,7 @@ do not exist on `main` yet), so the mint needs a floor above them.
 
 ## Later references
 
-- ADR-0301 adds proof-of-mint on top of this ADR's counter-branch
+- [ADR-0301](./0301-adr-claim-proof.md) adds proof-of-mint on top of this ADR's counter-branch
   ledger: every ADR added by a PR carries a `Claim:` header naming its
   claim commit, `scripts/adr_mint.py` prints that commit's SHA, and
   `scripts/check_adr_numbers.py` verifies the header against the ledger

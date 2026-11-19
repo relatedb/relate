@@ -1,12 +1,25 @@
-# ADR-0231: bare `cypherlite` opens the interactive shell on a TTY
+---
+type: adr
+area: cli
+date: 2026-10-14
+deciders: CypherLite maintainers
+name: 0231-bare-invocation-opens-shell-on-tty
+status: accepted
+tags:
+  - repl
+title: bare `cypherlite` opens the interactive shell on a TTY
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0200-query-command-and-database-flag]]"
+SUPERSEDES:
+  - "[[adr/0200-query-command-and-database-flag]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-10-14
-- **Deciders**: CypherLite maintainers (Linear [LABS-304](https://linear.app/neo4j/issue/LABS-304/bare-cypherlite-opens-the-interactive-shell-on-a-tty))
+# ADR-0231: bare `cypherlite` opens the interactive shell on a TTY
 
 ## Context
 
-ADR-0069 and ADR-0200 reserved the bare invocation form for usage: today
+[ADR-0069](./0069-cli-lifecycle-commands.md) and [ADR-0200](./0200-query-command-and-database-flag.md) reserved the bare invocation form for usage: today
 `cypherlite` with no statement and no command word prints the top-level
 help and exits 0, and only the explicit `query` verb reaches the session
 trichotomy (oneshot / stdin script / interactive shell). The peer embedded
@@ -41,7 +54,7 @@ the non-TTY behavior byte-for-byte.
 
 ## Alternatives considered
 
-- **Keep the reserved-for-usage bare form (ADR-0200).** Rejected: it is
+- **Keep the reserved-for-usage bare form ([ADR-0200](./0200-query-command-and-database-flag.md)).** Rejected: it is
   the only invocation peers disagree on, and the `query` word is dead
   weight in the most common interactive case.
 - **Open the shell whenever no statement is given, TTY or not.** Rejected:
@@ -53,7 +66,7 @@ the non-TTY behavior byte-for-byte.
 
 ## Consequences
 
-- ADR-0200 Decision 2 ("On the path-first form, no `QUERY` prints help and
+- [ADR-0200](./0200-query-command-and-database-flag.md) Decision 2 ("On the path-first form, no `QUERY` prints help and
   exits; it does not open the shell or read stdin") is superseded on an
   interactive TTY; the non-TTY half stands.
 - The shell and its store selection are shared with `query` by

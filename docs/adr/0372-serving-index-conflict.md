@@ -1,7 +1,18 @@
-# ADR-0372: The schema-rule conflict is narrowed to serving index kinds
+---
+type: adr
+area: engine
+claim: 504326c8e9b8b7e05dc3b9eafebecd21fdd6db5b
+name: 0372-serving-index-conflict
+status: accepted
+tags:
+  - catalog
+  - index
+title: The schema-rule conflict is narrowed to serving index kinds
+REFERENCES:
+  - "[[adr/0339-property-validation-verdict-walk]]"
+---
 
-Status: Accepted
-Claim: 504326c8e9b8b7e05dc3b9eafebecd21fdd6db5b
+# ADR-0372: The schema-rule conflict is narrowed to serving index kinds
 
 ## Context
 
@@ -20,7 +31,7 @@ notebook documents the workaround; LABS-275).
 Neo4j 2026.09 was probed directly (LABS-275): it rejects in both orders
 (`22N70 equivalent index already exists` / `22N65 equivalent constraint
 already exists`) — its equivalence check treats *any* index on the property
-as satisfying the existence constraint. Since ADR-0339, a uniqueness/key
+as satisfying the existence constraint. Since [ADR-0339](./0339-property-validation-verdict-walk.md), a uniqueness/key
 constraint's backing index is always RANGE — the only index kind that can
 serve a constraint.
 

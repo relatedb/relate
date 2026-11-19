@@ -1,8 +1,29 @@
+---
+type: adr
+area: infra
+name: 0250-releases-json-update-discovery
+status: accepted
+tags:
+  - release
+title: Release discovery from a static releases.json on the website
+REFERENCES:
+  - "[[adr/0067-release-versioning-and-process]]"
+  - "[[adr/0068-cli-install-script-via-github-pages]]"
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0115-sshsig-release-signing]]"
+  - "[[adr/0124-release-notes-automation]]"
+  - "[[adr/0129-website-release-chain]]"
+  - "[[adr/0265-release-notes-explicit-chain]]"
+  - "[[adr/0330-release-chains-pages-deploy]]"
+  - "[[adr/0358-upgrade-download-route]]"
+  - "[[adr/0546-release-discovery-via-relate-web]]"
+SUPERSEDES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+---
+
 # ADR-0250: Release discovery from a static releases.json on the website
 
-Status: Accepted
-
-Later references: ADR-0546 supersedes this ADR's publisher contract
+Later references: [ADR-0546](./0546-release-discovery-via-relate-web.md) supersedes this ADR's publisher contract
 (commits to a local `gh-pages` branch) — releases.json now rides the
 release's assets and relate-web pulls it. The schema, the canonical URLs,
 and the window rule are unchanged.
@@ -11,13 +32,13 @@ and the window rule are unchanged.
 
 `cypherlite upgrade` (and its `update` alias) discovers the latest release
 through `GET https://api.github.com/repos/neo4j-labs/cypherlite/releases/latest`
-and downloads assets through the API asset endpoint (ADR-0069 §3-4).
+and downloads assets through the API asset endpoint ([ADR-0069](./0069-cli-lifecycle-commands.md) §3-4).
 Anonymous REST API requests are limited to 60 per hour per source IP. Users
 behind shared NATs, corporate proxies, and CI runners share that IP, so a few
 runs exhaust the budget and `upgrade` fails with HTTP 403 until the window
 rolls over — a failure unrelated to the user's own usage and unfixable by
 retrying (Linear LABS-316). The status-quo workaround, documented since
-ADR-0068/0069, is a `GITHUB_TOKEN` hint: it does not help tokenless
+[ADR-0068](./0068-cli-install-script-via-github-pages.md)/[ADR-0069](./0069-cli-lifecycle-commands.md), is a `GITHUB_TOKEN` hint: it does not help tokenless
 environments and puts a secret into a path that only reads public data.
 
 The same problem was solved in `neo4j-cli` (Linear CLI-244) with its option 4:
@@ -33,8 +54,8 @@ Three properties of this repository make the option cheap:
   comparable to the API's 60/hour.
 - The release pipeline already owns release-facing files on `gh-pages`: the
   `docs` job copies `distribution/install.sh` there on every release
-  (ADR-0068), and `update-website.yml` keeps the page itself in sync
-  (ADR-0129). A `releases.json` publisher follows the same pattern.
+ ([ADR-0068](./0068-cli-install-script-via-github-pages.md)), and `update-website.yml` keeps the page itself in sync
+ ([ADR-0129](./0129-website-release-chain.md)). A `releases.json` publisher follows the same pattern.
 - The CLI consumes only `tag_name` and asset names/ids today; it never reads
   release notes and never fetches prereleases. The file can therefore carry
   more than the CLI needs — notes and a recent-releases window — for
@@ -42,12 +63,12 @@ Three properties of this repository make the option cheap:
 
 Ordering matters for the notes: `release.yml`'s `release-notes` job runs a
 reusable workflow that prepends agent-written narrative notes to the GitHub
-release body (ADR-0124, chained explicitly per ADR-0265). A publisher that
+release body ([ADR-0124](./0124-release-notes-automation.md), chained explicitly per [ADR-0265](./0265-release-notes-explicit-chain.md)). A publisher that
 reads the release body must run after it.
 
 The integrity posture does not change with the metadata source: the binary is
 authenticated by the OpenSSH SSHSIG signature over `SHA256SUMS` against a key
-pinned in the binary (ADR-0115), not by where the release list came from.
+pinned in the binary ([ADR-0115](./0115-sshsig-release-signing.md)), not by where the release list came from.
 `releases.json` only selects what to download; it is never trusted for
 integrity.
 
@@ -112,7 +133,7 @@ bounded while covering any changelog-shaped use.
 - Every `tag` is non-empty and matches the git tag exactly. For stable
   entries it is `v` followed by an `X.Y.Z` numeric triple; the CLI requires
   that shape for `latest.tag` and treats anything else as a malformed file
-  (the existing comparison rules of ADR-0069 §3 are unchanged).
+ (the existing comparison rules of [ADR-0069](./0069-cli-lifecycle-commands.md) §3 are unchanged).
 - Consumers ignore every unknown key at every level (forward compatibility).
   Additive changes (new keys, new members) do not bump `schema_version`.
   Removing, renaming, or retyping a key, or changing its nullability, bumps
@@ -120,7 +141,7 @@ bounded while covering any changelog-shaped use.
   implements fails closed with an unsupported-schema error.
 - The CLI requires the platform binary, `SHA256SUMS`, and `SHA256SUMS.sig`
   to be listed in `latest.assets` and fails closed when one is missing
-  (ADR-0115 unchanged). Extra asset names are ignored.
+ ([ADR-0115](./0115-sshsig-release-signing.md) unchanged). Extra asset names are ignored.
 
 Illustrative document:
 
@@ -189,9 +210,9 @@ returns the raw asset bytes directly.
 The CLI must confirm the needed names are present in `assets` before
 downloading (fail closed), fetch `SHA256SUMS` and `SHA256SUMS.sig` first,
 verify the SSHSIG over the exact manifest bytes against the pinned key, and
-only then fetch the binary — the ADR-0115 flow, unchanged, including the
+only then fetch the binary — the [ADR-0115](./0115-sshsig-release-signing.md) flow, unchanged, including the
 `MAX_ASSET_BYTES` cap and the atomic self-replace and skill-refresh steps
-of ADR-0069.
+of [ADR-0069](./0069-cli-lifecycle-commands.md).
 
 ### 4. Failure behavior
 
@@ -226,7 +247,7 @@ public, so attaching a credential would leak it for no benefit.
 
 The token remains read by `upgrade` for one purpose only: an optional
 `Authorization: Bearer $GITHUB_TOKEN` header on the direct asset downloads,
-parity with `install.sh` while the repository is internal (ADR-0068 §6; the
+parity with `install.sh` while the repository is internal ([ADR-0068](./0068-cli-install-script-via-github-pages.md) §6; the
 README already documents it as a download credential). It is never required,
 it never gates a fallback, and it becomes unnecessary (but harmless) once
 the repository is public. The implementation change updates the environment
@@ -287,7 +308,7 @@ to "release-asset downloads".
   the notes and the asset list only exist after the release is published,
   so a main-side file is stale between releases and gains a second writer;
   the release pipeline already owns the release-facing `gh-pages` files
-  (install.sh, ADR-0068/0129), and the notes ordering requirement ties the
+ (install.sh, [ADR-0068](./0068-cli-install-script-via-github-pages.md)/[ADR-0129](./0129-website-release-chain.md)), and the notes ordering requirement ties the
   publisher to the release run.
 
 ## Consequences
@@ -300,7 +321,7 @@ to "release-asset downloads".
   `releases.json` until the next pipeline release or a manual publisher run.
 - The CLI gains a hard dependency on the website's availability: a Pages
   outage makes `upgrade` fail closed with the missing-file error. The
-  installer already shares that hosting coupling (ADR-0068), so the website
+ installer already shares that hosting coupling ([ADR-0068](./0068-cli-install-script-via-github-pages.md)), so the website
   becomes load-bearing for both the first install and the update path.
 - `gh-pages` gains a third pipeline-owned file (`install.sh`, `wasm/`,
   `releases.json`); hand-editing it is out of contract, and a manual edit
@@ -309,19 +330,19 @@ to "release-asset downloads".
   `schema_version`, while a removal/rename/retype or a nullability change
   does and requires a new ADR; old CLIs fail closed on a version they do not
   know rather than misreading the file.
-- The release asset contract (ADR-0067, ADR-0068, ADR-0069) gains a fourth
+- The release asset contract ([ADR-0067](./0067-release-versioning-and-process.md), [ADR-0068](./0068-cli-install-script-via-github-pages.md), [ADR-0069](./0069-cli-lifecycle-commands.md)) gains a fourth
   consumer, the website file; changing asset names or the `SHA256SUMS`
   format now requires updating the publisher in the same change.
-- ADR-0069's fetch step (API `releases/latest`, asset ids, the
+- [ADR-0069](./0069-cli-lifecycle-commands.md)'s fetch step (API `releases/latest`, asset ids, the
   octet-stream asset endpoint) and its `GITHUB_TOKEN` consequence are
   superseded for the fetch/download mechanism; its version comparison,
-  ADR-0115 verification, atomic replace, and skill-refresh steps are
-  unchanged. A **Later references** note is added to ADR-0069 per the
+ [ADR-0115](./0115-sshsig-release-signing.md) verification, atomic replace, and skill-refresh steps are
+ unchanged. A **Later references** note is added to [ADR-0069](./0069-cli-lifecycle-commands.md) per the
   decision-log rule.
 
 ## Later references
 
-ADR-0330 corrects the §1 assumption that `deploy-pages.yml` needs no change.
+[ADR-0330](./0330-release-chains-pages-deploy.md) corrects the §1 assumption that `deploy-pages.yml` needs no change.
 Nothing deployed Pages after a release, so the committed `releases.json`
 went live only with the next push to `main`. At v0.12.4 the URL returned 404
 and `upgrade` failed. The release run now calls `deploy-pages.yml` after
@@ -329,7 +350,7 @@ and `upgrade` failed. The release run now calls `deploy-pages.yml` after
 pushes through `.github/scripts/push-gh-pages.sh`, which rebases onto a
 concurrent `gh-pages` writer instead of failing on a rejected push.
 
-ADR-0358 supersedes §3 (the download URL template as the only route), §4's
+[ADR-0358](./0358-upgrade-download-route.md) supersedes §3 (the download URL template as the only route), §4's
 no-API-fallback rule ("not even when `GITHUB_TOKEN` is set") and §5's token
 claim (that the optional bearer header makes the direct route work while the
 repository is internal). The browser download route 404s for internal
@@ -341,5 +362,5 @@ schema and the publisher contract stand unchanged.
 §5's recorded transition is complete: the reinstall one-liner, the README's
 install and self-update commands, and the installer's own header no longer
 carry the `GITHUB_TOKEN=$(gh auth token)` prefix — no documented invocation
-does. The token is still accepted and harmless, and still selects ADR-0358's
+does. The token is still accepted and harmless, and still selects [ADR-0358](./0358-upgrade-download-route.md)'s
 API asset route on a direct-route 404.

@@ -1,12 +1,28 @@
+---
+type: adr
+area: infra
+claim: 3c602f8c6c08414a14ac7df518dcff23c86bd8ba
+name: 0495-baseline-recipe-and-ceremony-flags
+status: proposed
+tags:
+  - ci
+  - loadtest
+title: One baseline image recipe, ceremony-owned flags
+REFERENCES:
+  - "[[adr/0046-cypherlite-parser-memorydb-runtime]]"
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0071-ci-owned-loadtest-freeze-fingerprint]]"
+  - "[[adr/0289-graph-shape-memory-pins]]"
+  - "[[adr/0333-processing-memory-controls]]"
+  - "[[adr/0390-serve-memory-limit-flag]]"
+  - "[[adr/0484-bolt-5-4]]"
+---
+
 # ADR-0495: One baseline image recipe, ceremony-owned flags
-
-Status: Proposed
-
-Claim: 3c602f8c6c08414a14ac7df518dcff23c86bd8ba
 
 ## Context
 
-ADR-0070's Docker recipe existed once per image-built lane, and the copies
+[ADR-0070](./0070-docker-baseline-loadtest-environment.md)'s Docker recipe existed once per image-built lane, and the copies
 (`Dockerfile.memory-shape-loadtest`, `Dockerfile.processing-memory-loadtest`)
 are the same file except for three facts: the cargo binaries the lane
 measures, the suffix of its BuildKit target-cache id and the container's
@@ -71,5 +87,5 @@ several spellings of one rule is several places to get the next flag wrong.
 - A first Docker build of a lane with a new cache id is a cold cargo build;
   the per-lane ids stay, so the lane caches do not evict each other.
 
-References: ADR-0046, ADR-0070, ADR-0071, ADR-0289, ADR-0333, ADR-0390,
-ADR-0484.
+References: [ADR-0046](./0046-cypherlite-parser-memorydb-runtime.md), [ADR-0070](./0070-docker-baseline-loadtest-environment.md), [ADR-0071](./0071-ci-owned-loadtest-freeze-fingerprint.md), [ADR-0289](./0289-graph-shape-memory-pins.md), [ADR-0333](./0333-processing-memory-controls.md), [ADR-0390](./0390-serve-memory-limit-flag.md),
+[ADR-0484](./0484-bolt-5-4.md).

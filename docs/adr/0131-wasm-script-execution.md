@@ -1,22 +1,34 @@
-# 0131. WASM script execution and result rendering
+---
+type: adr
+area: surface
+date: 2026-09-25
+deciders: CypherLite maintainers
+name: 0131-wasm-script-execution
+status: accepted
+tags:
+  - wasm
+title: WASM script execution and result rendering
+REFERENCES:
+  - "[[adr/0084-reinstate-wasm-distribution]]"
+  - "[[adr/0130-cookbook-tested-recipes]]"
+  - "[[adr/0132-single-file-recipes]]"
+---
 
-- **Status**: Accepted
-- **Date**: 2026-09-25
-- **Deciders**: CypherLite maintainers
+# 0131. WASM script execution and result rendering
 
 ## Context
 
-`CypherliteDb.execute` in the browser surface (ADR-0084) runs exactly one
+`CypherliteDb.execute` in the browser surface ([ADR-0084](./0084-reinstate-wasm-distribution.md)) runs exactly one
 Cypher statement; `CREATE (:A); CREATE (:B)` is a parse error. Browser
 hosts still receive scripts: cookbook cells that create an index and then
-query it (ADR-0130), and playground users who paste several statements.
+query it ([ADR-0130](./0130-cookbook-tested-recipes.md)), and playground users who paste several statements.
 
 The cookbook checks every recipe twice: natively, where the harness records
 each cell's result, and through the browser build, where the page runs the
 same cells for readers. Both checks, the page, and the playground need the
 same two things: how a script runs (split into statements, the same
 parameters for each, stop at the first error), and how its result reads (the
-`table` / `gram` recording, ADR-0132). If each host implements them, the
+`table` / `gram` recording, [ADR-0132](./0132-single-file-recipes.md)). If each host implements them, the
 copies drift; a review found three script runners and two renderers (Rust
 and JavaScript) that already disagreed on empty input and on what counts as
 a failure.
@@ -39,7 +51,7 @@ Each is implemented once, in Rust, and every host calls it.
    first error. A blank or comment-only script returns none. Each statement
    commits on its own, so a failure leaves earlier statements applied.
 2. **Rendering a result.** `cypherlite_formatter::recording::render(envelopes)`
-   is the recording renderer (ADR-0132): the text the cookbook keeps, plus
+ is the recording renderer ([ADR-0132](./0132-single-file-recipes.md)): the text the cookbook keeps, plus
    what a page lays out (a table's cells, or a gram result's nodes and
    relationships for the graph view) and the counters summed over the
    script, so no host decodes the wire values or sums counters itself.

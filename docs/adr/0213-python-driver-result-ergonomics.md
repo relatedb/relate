@@ -1,6 +1,17 @@
-# ADR-0213: Python driver-like result ergonomics — Record rows, single/peek/data, to_df()
+---
+type: adr
+area: surface
+name: 0213-python-driver-result-ergonomics
+status: proposed
+tags:
+  - python
+title: Python driver-like result ergonomics — Record rows, single/peek/data, to_df
+REFERENCES:
+  - "[[adr/0210-call-in-transactions-batching]]"
+  - "[[adr/0214-python-result-graph]]"
+---
 
-Status: Proposed
+# ADR-0213: Python driver-like result ergonomics — Record rows, single/peek/data, to_df()
 
 ## Context
 
@@ -61,7 +72,7 @@ Constraints from the ticket:
   pandas is what the driver and the audience use; the `to_df` seam is small
   and a polars variant can land later without changing the pandas contract.
 - **A `consume()` summary object with fake timings.** Rejected: no engine-side
-  statement timing exists today (ADR-0210 batching reports per-batch; a
+ statement timing exists today ([ADR-0210](./0210-call-in-transactions-batching.md) batching reports per-batch; a
   statement-level summary needs an engine decision first).
 
 ## Consequences
@@ -77,7 +88,7 @@ Constraints from the ticket:
 
 ## Later references
 
-- ADR-0214 supersedes this ADR's "not in scope" note on `graph()`:
+- [ADR-0214](./0214-python-result-graph.md) supersedes this ADR's "not in scope" note on `graph`:
   `Cursor.graph()` returns a de-duplicated `ResultGraph`, with
   driver-parity `element_id` / `items()` on `Node` and `Relationship` for
   neo4j-viz interop.

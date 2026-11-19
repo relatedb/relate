@@ -1,8 +1,20 @@
+---
+type: adr
+area: cypher
+claim: 7e73d8091a6bc10dcab0fd9c28c5f4873df1e226
+name: 0456-gpm-syntax-mixing-allowed
+status: proposed
+tags:
+  - dialect
+  - pattern-matching
+title: GPM syntax mixing — the allowed combinations
+REFERENCES:
+  - "[[adr/0119-cip-eval-drops-enterprise-database-scenarios]]"
+  - "[[adr/0371-preview-feature-gating]]"
+  - "[[adr/0471-one-var-length-traversal-engine]]"
+---
+
 # ADR-0456: GPM syntax mixing — the allowed combinations
-
-Status: Proposed
-
-Claim: 7e73d8091a6bc10dcab0fd9c28c5f4873df1e226
 
 ## Context
 
@@ -36,9 +48,9 @@ diagnosis, 51 scenarios):
    relationship-type-expression and quantifier-mixing deviation scenarios —
    because the queries now succeed where the scenarios
    expect a `SyntaxError` (cip-eval's lenient error matching counts only "an
-   error occurred"). ADR-0119 set the precedent: retiring a frozen identity
+ error occurred"). [ADR-0119](./0119-cip-eval-drops-enterprise-database-scenarios.md) set the precedent: retiring a frozen identity
    for a dialect decision is an ADR-level change, not a silent baseline edit.
-   The quantifier-mixing identity follows from ADR-0471: one traversal
+ The quantifier-mixing identity follows from [ADR-0471](./0471-one-var-length-traversal-engine.md): one traversal
    engine for every
    var-length spelling evaluates the legacy bracket inline-`WHERE` form
    exactly like its GPM twin, so it now yields `count(*)` 0 instead of the
@@ -46,7 +58,7 @@ diagnosis, 51 scenarios):
 
 ## Decision
 
-- **`mixed-label-syntax` preview row (ADR-0371 registry).** Neo4j's
+- **`mixed-label-syntax` preview row ([ADR-0371](./0371-preview-feature-gating.md) registry).** Neo4j's
   mixed-label-syntax allowance is modeled as the
   `CYPHERLITE_PREVIEW=mixed-label-syntax` opt-in. The gate widens what the
   parser accepts, so it threads into the parse itself as
@@ -81,7 +93,7 @@ an error).
   ungated.** The `RelationshipPatternPredicateInVariableLength` and
   `VariableLengthRelationshipWithTypeExpression` parser rejections are
   removed: both spellings normalize to the AST the GPM postfix form already
-  produces and the executor already runs. ADR-0471's one traversal engine
+ produces and the executor already runs. [ADR-0471](./0471-one-var-length-traversal-engine.md)'s one traversal engine
   makes the inline-WHERE form evaluate too (per-element post-filter, so
   `MATCH ()-[r*1..5 WHERE r.p > 30]->()` yields 0 rows like its GPM twin),
   which both satisfies the CIP text and retires the last lenient pass.
@@ -93,7 +105,7 @@ an error).
 ## Alternatives considered
 
 - **Model the switch as a new runtime configuration knob instead of a
-  preview row.** Rejected: ADR-0371 already owns "syntax the floor rejects
+ preview row.** Rejected: [ADR-0371](./0371-preview-feature-gating.md) already owns "syntax the floor rejects
   becomes acceptable behind an opt-in", the harness already maps the Neo4j
   `@conf` tag onto a `CYPHERLITE_PREVIEW` name, and a second opt-in channel
   would be a parallel table for one fact.

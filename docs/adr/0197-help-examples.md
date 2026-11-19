@@ -1,8 +1,19 @@
-# 0197. Examples in `--help`, with an opt-out
+---
+type: adr
+area: cli
+date: 2026-10-09
+deciders: CypherLite maintainers
+name: 0197-help-examples
+status: proposed
+tags:
+  - help
+title: Examples in `--help`, with an opt-out
+REFERENCES:
+  - "[[adr/0069-cli-lifecycle-commands]]"
+  - "[[adr/0194-cli-error-envelope-and-exit-codes]]"
+---
 
-- **Status**: Proposed
-- **Date**: 2026-10-09
-- **Deciders**: CypherLite maintainers (Linear [LABS-237](https://linear.app/neo4j/issue/LABS-237))
+# 0197. Examples in `--help`, with an opt-out
 
 ## Context
 
@@ -35,7 +46,7 @@ help read costs context, so they must be few and skippable.
    flags, stdout versus stderr and the exit code are identical. The variable is
    read once, when the page is rendered, and is not a flag.
 5. **No exit-code section in `--help`.** The audit also asked for exit codes in
-   help. They are documented in the spec and README (ADR-0194) and the usage line
+ help. They are documented in the spec and README ([ADR-0194](./0194-cli-error-envelope-and-exit-codes.md)) and the usage line
    already points at `--help`; repeating the table on every page would grow the
    pages this ADR is trying to keep short.
 
@@ -43,7 +54,7 @@ help read costs context, so they must be few and skippable.
 
 - **Many examples per command, as `neo4j-cli` does.** Rejected: each help read
   costs context for an agent, and most pages need one invocation.
-- **A `--no-examples` flag.** Rejected: flags configure a query run (ADR-0069),
+- **A `--no-examples` flag.** Rejected: flags configure a query run ([ADR-0069](./0069-cli-lifecycle-commands.md)),
   and the reader of `--help` is usually not choosing flags yet; an environment
   variable can be set once for a session or a harness.
 - **Opt-in (`CYPHERLITE_HELP_EXAMPLES=1`).** Rejected: the default should teach;

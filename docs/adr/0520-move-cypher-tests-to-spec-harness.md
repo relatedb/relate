@@ -1,12 +1,27 @@
+---
+type: adr
+area: infra
+claim: c1cd635a933fe5179538651e44871b47ce9850a3
+name: 0520-move-cypher-tests-to-spec-harness
+status: proposed
+tags:
+  - conformance
+title: The spec harness owns the Cypher language corpora; the in-repo TCK gate retires
+REFERENCES:
+  - "[[adr/0006-tck-harness-and-skips]]"
+  - "[[adr/0056-opencypher-tck-language-contract]]"
+  - "[[adr/0188-remove-superseded-tck-scenario-from-pin]]"
+  - "[[adr/0458-misc-tail-cypher25-forms]]"
+  - "[[adr/0472-repin-order-by-scenarios]]"
+  - "[[adr/0482-spec-harness-coverage-lane]]"
+  - "[[adr/0513-cypher25-create-entity-reference-admission]]"
+---
+
 # ADR-0520: The spec harness owns the Cypher language corpora; the in-repo TCK gate retires
-
-Status: Proposed
-
-Claim: c1cd635a933fe5179538651e44871b47ce9850a3
 
 ## Context
 
-ADR-0056 made the openCypher TCK the Cypher language contract and ADR-0006
+[ADR-0056](./0056-opencypher-tck-language-contract.md) made the openCypher TCK the Cypher language contract and [ADR-0006](./0006-tck-harness-and-skips.md)
 vendored the pin: the TCK 2024.3 feature files lived in `testdata/tck`, the
 cucumber-expanded scenario count was the compliance denominator, and a
 regressed scenario failed CI. A Rust harness grew around that gate —
@@ -18,15 +33,15 @@ expected-pass allowlist and a skip list that only shrank — beside
 `baselines/cip-eval.json`, and the engine's own TCK extension corpus.
 
 Keeping the pin honest was a recurring cost, not a one-off: the four 2024.3
-ORDER BY expectations Neo4j's Cypher 25 reverses were re-pinned (ADR-0458,
-ADR-0472), the superseded `toString()` outline was removed from the
-pin itself (ADR-0188), three fixture setups were re-pinned when Cypher 25
-made a same-clause created-entity reference illegal (ADR-0513), and the
+ORDER BY expectations Neo4j's Cypher 25 reverses were re-pinned ([ADR-0458](./0458-misc-tail-cypher25-forms.md),
+[ADR-0472](./0472-repin-order-by-scenarios.md)), the superseded `toString` outline was removed from the
+pin itself ([ADR-0188](./0188-remove-superseded-tck-scenario-from-pin.md)), three fixture setups were re-pinned when Cypher 25
+made a same-clause created-entity reference illegal ([ADR-0513](./0513-cypher25-create-entity-reference-admission.md)), and the
 allowlist was regenerated with every change. The pin is a snapshot of
 Neo4j's suite, so it falls further behind the dialect the engine targets
 with each Cypher release.
 
-ADR-0482 then added the spec harness:
+[ADR-0482](./0482-spec-harness-coverage-lane.md) then added the spec harness:
 `neo4j-labs/cypherlite-cypher-test-harness` runs Neo4j's own Cypher spec
 suites — TCK, acceptance, cypher25, the converted correctness corpus —
 against the engine through the **Python binding**, with the wheel built
@@ -62,14 +77,14 @@ the harness already applies to its synced suites.
 
 3. **The 3892-of-3892 pinned-2024.3 claim is retired.** No engine document
    publishes a current TCK pass count or a "TCK compliant" claim any more. The
-   language floor is still the openCypher TCK (ADR-0056), measured by the
+ language floor is still the openCypher TCK ([ADR-0056](./0056-opencypher-tck-language-contract.md)), measured by the
    harness's `tck` suite — the upstream suite synced from Neo4j's
    compatibility-spec-suite — so the measured corpus is the current
    upstream TCK, not a vendored 2024.3 snapshot. An engine/TCK divergence
    is a harness report line, never an in-repo allowlist or re-pin edit.
 
 4. **Reporting-only, and no relocated ratchet.** The two suites join the
-   ADR-0482 §4 posture unchanged: the lane reports coverage with the fixed
+ [ADR-0482](./0482-spec-harness-coverage-lane.md) §4 posture unchanged: the lane reports coverage with the fixed
    traffic-light bands and exits 0 in every band. No `baselines/*.json`,
    re-freeze workflow, skip list or threshold gate moves to the harness
    with them (user decision, 2026-11-05).
@@ -107,7 +122,7 @@ the harness already applies to its synced suites.
 6. **Documentation records the retirement.** `docs/tck/compliance.md`
    becomes a pointer at the harness with the retired pin kept as clearly
    marked history; `AGENTS.md` names the spec harness as the
-   language-contract home and loses the allowlist-editing recipe; ADR-0056
+ language-contract home and loses the allowlist-editing recipe; [ADR-0056](./0056-opencypher-tck-language-contract.md)
    gains a Later-references note.
 
 ## Alternatives considered
@@ -115,14 +130,14 @@ the harness already applies to its synced suites.
 - **Keep the in-repo gate and the harness as independent signals.**
   Rejected: two homes for one corpus, and the pin lags the dialect — every
   Neo4j semantic change re-pays a re-pin ADR plus an allowlist
-  regeneration (ADR-0188, ADR-0458, ADR-0472 and ADR-0513 are that cost
+ regeneration ([ADR-0188](./0188-remove-superseded-tck-scenario-from-pin.md), [ADR-0458](./0458-misc-tail-cypher25-forms.md), [ADR-0472](./0472-repin-order-by-scenarios.md) and [ADR-0513](./0513-cypher25-create-entity-reference-admission.md) are that cost
   already paid), while the two runners disagree on the same scenarios by
   construction (strict in-process Rust versus the Python surface).
 
 - **Move the corpora, then re-establish a per-PR ratchet on them in the
   harness** (frozen baselines plus a re-freeze dispatch, the cip-eval and
   loadtest-envelope precedent). Rejected on the user decision of
-  2026-11-05: ADR-0482 §4's reporting-only posture stands — a ratchet
+ 2026-11-05: [ADR-0482](./0482-spec-harness-coverage-lane.md) §4's reporting-only posture stands — a ratchet
   against the current upstream corpus would go red on Neo4j's own suite
   churn, and freezing it re-creates the pin problem one repository over.
 
@@ -141,14 +156,14 @@ the harness already applies to its synced suites.
 
 - **Measure the floor against the retired pin inside the harness.**
   Rejected: the harness exists to measure the dialect Neo4j ships, from
-  Neo4j's own suites (ADR-0482); vendoring 2024.3 there would move the same
+ Neo4j's own suites ([ADR-0482](./0482-spec-harness-coverage-lane.md)); vendoring 2024.3 there would move the same
   drift into the harness instead of retiring it.
 
 ## Consequences
 
 - The engine loses its language merge gate: no in-repo run fails a PR for
   a TCK or CIP regression. The `spec-harness` lane reports it (job summary
-  and PR comment) and exits 0 in every band — the deliberate ADR-0482 §4
+ and PR comment) and exits 0 in every band — the deliberate [ADR-0482](./0482-spec-harness-coverage-lane.md) §4
   trade, now the only language measurement.
 - `docs/tck/compliance.md` no longer publishes a pass count; it points at
   the harness and keeps the retired pin's history.

@@ -1,14 +1,29 @@
-# ADR-0252: The corpus family builds once in a single merged CI job
+---
+type: adr
+area: infra
+name: 0252-corpus-family-single-job
+status: accepted
+tags:
+  - ci
+title: The corpus family builds once in a single merged CI job
+REFERENCES:
+  - "[[adr/0070-docker-baseline-loadtest-environment]]"
+  - "[[adr/0130-cookbook-tested-recipes]]"
+  - "[[adr/0212-tck-release-in-ci]]"
+  - "[[adr/0251-test-architecture]]"
+SUPERSEDES:
+  - "[[adr/0212-tck-release-in-ci]]"
+---
 
-Status: Accepted
+# ADR-0252: The corpus family builds once in a single merged CI job
 
 ## Context
 
-ADR-0212 introduced a `corpus-build` job that compiles the corpus-profile
+[ADR-0212](./0212-tck-release-in-ci.md) introduced a `corpus-build` job that compiles the corpus-profile
 test binaries once (`cargo test --profile corpus --no-run`) and populates a
 shared rust-cache key (`corpus`) so the three corpus consumers — TCK,
 CIP-eval, cookbook-native — "restore warm instead of each paying the full
-release compile". ADR-0251 §5 keeps the goal: one build per SHA, shared
+release compile". [ADR-0251](./0251-test-architecture.md) §5 keeps the goal: one build per SHA, shared
 everywhere.
 
 The audited reality: the ~327 s corpus-profile compile is still paid four
@@ -34,7 +49,7 @@ runner. The gates' strength is unchanged — same commands, same corpus,
 The merged job keeps `shared-key: corpus` so repeat runs over an unchanged
 `Cargo.lock` restore warm; the key now has exactly one writer per run. It
 needs only `changes`, plus a new `cookbook` output on `changes` so a
-`docs/cookbook/*`-only edit still runs the native recipe gate (ADR-0130) —
+`docs/cookbook/*`-only edit still runs the native recipe gate ([ADR-0130](./0130-cookbook-tested-recipes.md)) —
 previously it silently skipped, because its `corpus-build` need was
 skipped on docs-only changes. The TCK and CIP steps stay gated on
 `code == true`; the recipe step runs whenever the job runs.
@@ -65,7 +80,7 @@ skipped on docs-only changes. The TCK and CIP steps stay gated on
   identifies the gate.
 - Required-check names change to the single `Corpus (TCK, CIP eval,
   cookbook native)`; branch protection is updated on landing.
-- ADR-0212's "one pre-compile job" mechanism is superseded; its profile
+- [ADR-0212](./0212-tck-release-in-ci.md)'s "one pre-compile job" mechanism is superseded; its profile
   split (corpora in `corpus`, unit suites in debug) is unchanged. The
-  ADR-0070 loadtest baseline environment and the `loadtest-baselines` job
+ [ADR-0070](./0070-docker-baseline-loadtest-environment.md) loadtest baseline environment and the `loadtest-baselines` job
   are untouched.

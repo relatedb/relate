@@ -1,7 +1,16 @@
-# ADR-0350: Bound-node pivot for multi-pattern path expansion
+---
+type: adr
+area: engine
+claim: 8762c0120daf1131301b380b08c129cde38bb336
+name: 0350-bound-node-pivot-for-pattern-expansion
+status: proposed
+tags:
+  - pattern-matching
+  - planner
+title: Bound-node pivot for multi-pattern path expansion
+---
 
-Status: Proposed
-Claim: 8762c0120daf1131301b380b08c129cde38bb336
+# ADR-0350: Bound-node pivot for multi-pattern path expansion
 
 ## Context
 
