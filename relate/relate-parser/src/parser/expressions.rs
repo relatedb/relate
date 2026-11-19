@@ -389,7 +389,7 @@ impl<'a> Parser<'a> {
                 // `{item IN list [WHERE p] | k' : v'}` are map comprehensions;
                 // anything else (including `{k: v IN m}`, whose value is a
                 // genuine IN expression) stays a map literal.
-                if let Some(mc) = self.try_parse_map_comprehension()? {
+                if let Some(mc) = self.try_parse_map_comprehension() {
                     return Ok(mc);
                 }
                 let pairs = self.parse_map_literal()?;

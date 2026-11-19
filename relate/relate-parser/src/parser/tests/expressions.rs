@@ -37,6 +37,89 @@ fn test_pipe_less_nesting_is_not_speculatively_parsed() {
     });
 }
 
+// A speculative map comprehension that fails mid-tail rewinds to the
+// map-literal reading of the same tokens: `{k : v IN m, y: x:A|B}` has
+// the `{ident : ident IN` head and a brace-top-level `|` (in the second
+// pair's label-predicate value), so the speculation runs (the counter
+// ticks once), but its source parse stops at the `,` — no token run
+// inside a comprehension may contain one — leaving no `|` where the
+// projection needs it, so the tail reports the structural mismatch and
+// the literal reading takes over: two pairs, the first value the `IN`
+// expression, the second the label predicate. Pins
+// `map_comprehension_tail`'s single rewind at its caller: the position
+// returns to the start and the literal re-parses the same tokens.
+#[test]
+fn test_a_failed_map_comprehension_speculation_falls_back_to_the_literal() {
+    let count = || super::SPECULATIVE_COMPREHENSION_PARSES.with(std::cell::Cell::get);
+    let before = count();
+    let expr = parse_expression_str("{k : v IN m, y: x:A|B}").unwrap();
+    assert_eq!(
+        count() - before,
+        1,
+        "the speculative comprehension parse ran exactly once"
+    );
+    let Expr::Map(pairs) = &expr else {
+        panic!("expected the map-literal fallback, got {expr:?}")
+    };
+    assert_eq!(pairs.len(), 2);
+    assert_eq!(pairs[0].key, SmallName::from_name("k"));
+    // The first pair's value is the `IN` expression the comprehension's
+    // source parse would have read — the literal reading of the same
+    // tokens the speculation rewound from.
+    assert!(matches!(pairs[0].value, Expr::In(_)));
+    // The second pair carries the pipe that pulled the shape into the
+    // speculative path, as its label-predicate value.
+    assert_eq!(pairs[1].key, SmallName::from_name("y"));
+    assert!(matches!(pairs[1].value, Expr::HasLabel(_)));
+}
+
+// The map form's inner-bracket premise: its closer is `}`, so every `]`
+// inside it belongs to an inner bracket (a list literal in the source or
+// in the WHERE) and must never prove a `|` was the comprehension's
+// separator — the form passes the map-optional kind for exactly that
+// reason, not because its `| key : value` projection is optional. Both
+// shapes regressed when the form passed the map-required kind: the
+// inner list's `]` rolled the disjunction's pipe back and stranded it
+// inside the bracket.
+#[test]
+fn test_a_map_comprehension_inner_bracket_pipe_is_not_the_separator() {
+    // Source side: the source's inner list ends in `]`, and the `|` it
+    // contains is the label disjunction's, not the separator.
+    let expr = parse_expression_str("{k: v IN [n:A|B] | k : v}").unwrap();
+    let Expr::MapComprehension(mc) = &expr else {
+        panic!("expected a map comprehension, got {expr:?}")
+    };
+    let Expr::List(items) = &mc.source_expr else {
+        panic!("expected the list-literal source, got {:?}", mc.source_expr)
+    };
+    assert_eq!(items.len(), 1);
+    assert!(
+        matches!(&items[0], Expr::HasLabel(h)
+            if matches!(&h.label_expr, LabelExpr::Or(parts) if parts.len() == 2)),
+        "the label disjunction survived the inner `]`: {:?}",
+        items[0]
+    );
+
+    // WHERE side: the same premise inside the filtered form's WHERE.
+    let expr = parse_expression_str("{k: v IN [{a:1}] WHERE [n:A|B] = [] | k : v}").unwrap();
+    let Expr::MapComprehension(mc) = &expr else {
+        panic!("expected a map comprehension, got {expr:?}")
+    };
+    let Some(where_expr) = &mc.where_expr else {
+        panic!("expected the WHERE predicate")
+    };
+    let Expr::Comparison(cmp) = where_expr else {
+        panic!("expected the comparison predicate, got {where_expr:?}")
+    };
+    assert!(
+        matches!(&cmp.left, Expr::List(items)
+            if matches!(&items[0], Expr::HasLabel(h)
+                if matches!(&h.label_expr, LabelExpr::Or(parts) if parts.len() == 2))),
+        "the label disjunction survived the inner `]`: {:?}",
+        cmp.left
+    );
+}
+
 // `[true IN [true], false]` is a two-element list literal whose first
 // element is a boolean `IN` expression, not a malformed comprehension:
 // a comma can never appear inside a comprehension, so the parser restores

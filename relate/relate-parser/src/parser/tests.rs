@@ -2,6 +2,7 @@ use super::*;
 
 mod admin;
 mod braces;
+mod comprehension_where;
 mod conditionals;
 mod cypher_prefix;
 mod expressions;

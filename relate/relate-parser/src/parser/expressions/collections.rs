@@ -44,14 +44,11 @@ impl<'a> Parser<'a> {
                 if self.peek_type() == TokenType::Comma {
                     self.restore_pos(first_pos);
                 } else {
-                    let where_expr = if self.peek_type() == TokenType::WHERE {
-                        self.next_token();
-                        // A list comprehension may omit its map expression, so
-                        // a trailing `]` does not disambiguate a `|`.
-                        Some(self.parse_comprehension_where_expr(false)?)
-                    } else {
-                        None
-                    };
+                    // A list comprehension may omit its map expression, so
+                    // a trailing `]` does not disambiguate a `|`.
+                    let where_expr = self.parse_optional_comprehension_where(
+                        BracketProof::RightBracketClosesWithTheMapOmitted,
+                    )?;
 
                     let map_expr = if self.peek_type() == TokenType::Pipe {
                         self.next_token();
@@ -168,7 +165,7 @@ impl<'a> Parser<'a> {
     /// the LABS-1603 discrepancy), and each reader-accepted form it
     /// missed (`$param` whole-map shorthand, `IS`-introduced label
     /// specs) re-opened the MATCH-vs-predicate dialect split.
-    pub(super) fn node_pattern_precedes_relationship(&mut self) -> bool {
+    pub(in crate::parser) fn node_pattern_precedes_relationship(&mut self) -> bool {
         debug_assert_eq!(self.peek_type(), TokenType::LeftParen);
         self.probe_verdict(ProbeGate::LeftParenNodePattern, |parser| {
             parser
@@ -206,14 +203,10 @@ impl<'a> Parser<'a> {
         self.side_effects.comprehension_quantifiers.absorb(inner);
         let pattern = pattern?;
 
-        let where_expr = if self.peek_type() == TokenType::WHERE {
-            self.next_token();
-            // A pattern comprehension always needs `| <map>`, so a `]` right
-            // after the scanned label chain proves `|` was the separator.
-            Some(self.parse_comprehension_where_expr(true)?)
-        } else {
-            None
-        };
+        // A pattern comprehension always needs `| <map>`, so a `]` right
+        // after the scanned label chain proves `|` was the separator.
+        let where_expr = self
+            .parse_optional_comprehension_where(BracketProof::RightBracketClosesTheComprehension)?;
 
         self.expect(TokenType::Pipe)?;
         let map_expr = self.parse_expression()?;
@@ -229,32 +222,49 @@ impl<'a> Parser<'a> {
         )))
     }
 
-    /// Parses the `WHERE`-part expression of a list/pattern comprehension
-    /// with `comprehension_where_ambiguous_pipe` set, so a trailing `|` that
-    /// can't validly continue a label-expression disjunction is left for the
-    /// comprehension's own map-separator grammar instead of being consumed
-    /// as part of the expression. See `label_or_pipe_is_ambiguous`.
+    /// Parses an expression that sits inside a comprehension whose
+    /// trailing `|` may be that comprehension's own separator rather than
+    /// an expression continuation — entered through
+    /// [`Parser::with_comprehension_where`] with the comprehension form's
+    /// [`BracketProof`], so a `|` that can't validly continue a
+    /// label-expression disjunction or a `<value type>` union is left for
+    /// the comprehension's own map-separator grammar instead of being
+    /// consumed as part of the expression. The direct site is the CIP-272
+    /// map form's `IN` source expression, which must stop at the same
+    /// `|`; the `WHERE`-part expression of all three comprehension forms
+    /// arrives through the optional-WHERE entry below.
     pub(in crate::parser) fn parse_comprehension_where_expr(
         &mut self,
-        map_required: bool,
+        proof: BracketProof,
     ) -> ParseResult<Expr> {
-        let saved_flag = self.comprehension_where_ambiguous_pipe;
-        let saved_map = self.comprehension_where_map_required;
-        self.comprehension_where_ambiguous_pipe = true;
-        self.comprehension_where_map_required = map_required;
-        let result = self.parse_expression();
-        self.comprehension_where_ambiguous_pipe = saved_flag;
-        self.comprehension_where_map_required = saved_map;
-        result
+        self.with_comprehension_where(Some(proof), Self::parse_expression)
+    }
+
+    /// The optional `WHERE` entry of a comprehension body: consumes the
+    /// `WHERE` when present and parses its expression inside the
+    /// comprehension-WHERE context through
+    /// [`Parser::parse_comprehension_where_expr`] — the one spelling the
+    /// list, pattern and CIP-272 map forms' optional WHERE share.
+    pub(in crate::parser) fn parse_optional_comprehension_where(
+        &mut self,
+        proof: BracketProof,
+    ) -> ParseResult<Option<Expr>> {
+        if self.peek_type() != TokenType::WHERE {
+            return Ok(None);
+        }
+        self.next_token();
+        self.parse_comprehension_where_expr(proof).map(Some)
     }
 
     /// CIP-272 map comprehension, attempted from the `{` of a primary
-    /// expression. Returns `Ok(None)` (position restored) when the tokens do
-    /// not form one, so the caller falls back to the map-literal parse.
+    /// expression. Returns `None` (position restored) when the tokens do
+    /// not form one, so the caller falls back to the map-literal parse —
+    /// the signature states the whole contract: either a comprehension or
+    /// the caller re-parses the tokens as a map literal, never an error.
     /// Shapes: `{ident IN <src> [WHERE p] | <key> : <value>}` (list source)
     /// and `{ident : ident IN <src> [WHERE p] | <key> : <value>}` (map
     /// source, distinguished by the second ident before `IN`).
-    pub(in crate::parser) fn try_parse_map_comprehension(&mut self) -> ParseResult<Option<Expr>> {
+    pub(in crate::parser) fn try_parse_map_comprehension(&mut self) -> Option<Expr> {
         let start = self.save_pos();
         self.next_token(); // consume '{'
 
@@ -263,7 +273,7 @@ impl<'a> Parser<'a> {
         // spelling works unquoted too (ADR-0191).
         if !first.ty.is_schema_name() {
             self.restore_pos(start);
-            return Ok(None);
+            return None;
         }
         self.next_token(); // consume the binding identifier
 
@@ -295,7 +305,7 @@ impl<'a> Parser<'a> {
         }
 
         self.restore_pos(start);
-        Ok(None)
+        None
     }
 
     /// True when a `|` at the current brace nesting depth appears before the
@@ -310,16 +320,22 @@ impl<'a> Parser<'a> {
     }
 
     /// Shared tail of both CIP-272 shapes: the binding variable(s) and `IN`
-    /// are consumed; parse source, optional WHERE, the `| key : value`
-    /// projection, and the closing brace. Any structural mismatch restores
-    /// the start position and yields `None` (the map-literal parse then
-    /// reports its own error for genuinely malformed input).
+    /// are consumed; fail fast on the separator scan, then run the whole
+    /// speculative body (source, WHERE, `| key : value` projection,
+    /// closing brace) through [`Parser::map_comprehension_tail`]. Every
+    /// failure — the scan's or the tail's — falls through to the single
+    /// rewind at the end: the position returns to `start` and the
+    /// map-literal fallback re-parses the same tokens (reporting its own
+    /// error for genuinely malformed input), so this function, like its
+    /// caller, never errors. Only the position rewinds: the side-effect
+    /// flags a failed speculation noted survive, today's semantics,
+    /// preserved by the one rewind this owns.
     pub(in crate::parser) fn finish_map_comprehension(
         &mut self,
         start: usize,
         key_var: Option<SmallName>,
         value_var: SmallName,
-    ) -> ParseResult<Option<Expr>> {
+    ) -> Option<Expr> {
         // Fail fast before the speculative parse below. The whole shape hinges on
         // a top-level `|` separating the source from the projection; when no such
         // token exists the speculative parse can only rewind and let the
@@ -330,84 +346,61 @@ impl<'a> Parser<'a> {
         // scans once and then parses once, exactly as before. A brace that does
         // carry a top-level `|` still takes the speculative path: the scan cannot
         // tell a well-formed projection from one with a malformed tail.
-        if !self.has_pipe_before_matching_brace() {
-            self.restore_pos(start);
-            return Ok(None);
+        if self.has_pipe_before_matching_brace() {
+            #[cfg(test)]
+            SPECULATIVE_COMPREHENSION_PARSES.with(|c| c.set(c.get() + 1));
+            if let Ok(comprehension) = self.map_comprehension_tail(key_var, value_var) {
+                return Some(Expr::MapComprehension(Box::new(comprehension)));
+            }
         }
-        #[cfg(test)]
-        SPECULATIVE_COMPREHENSION_PARSES.with(|c| c.set(c.get() + 1));
+        // The one rewind: every failure above falls through to here.
+        self.restore_pos(start);
+        None
+    }
 
+    /// The speculative body of a CIP-272 map comprehension, entered with
+    /// the binding variable(s) and `IN` consumed and a top-level `|`
+    /// known to exist before the closing brace: the source expression,
+    /// the optional WHERE, the `| key : value` projection and the
+    /// closing brace, spelled through the parser's canonical helpers.
+    /// Every failure — a sub-parse error or an `expect` mismatch —
+    /// propagates as `Err`; the caller's single rewind folds all of
+    /// them, so this tail owns no rewind of its own.
+    fn map_comprehension_tail(
+        &mut self,
+        key_var: Option<SmallName>,
+        value_var: SmallName,
+    ) -> ParseResult<MapComprehensionExpr> {
         // The source expression must stop at the comprehension's `|`: the
-        // flag-guarded parse (same as a comprehension WHERE) refuses an
-        // ambiguous trailing pipe, so `{k : v IN m | k : v}` does not try
-        // to read `m | k` as a label disjunction.
-        let source_expr = match self.parse_comprehension_where_expr(false) {
-            Ok(e) => e,
-            Err(_) => {
-                self.restore_pos(start);
-                return Ok(None);
-            }
-        };
+        // comprehension-WHERE context parse refuses an ambiguous trailing
+        // pipe, so `{k : v IN m | k : v}` does not try to read `m | k` as
+        // a label disjunction. Both the source and the WHERE pass the
+        // inner-bracket-only proof: the map form's closer is `}`, so
+        // every `]` inside it belongs to an inner bracket.
+        let source_expr = self.parse_comprehension_where_expr(BracketProof::InnerBracketOnly)?;
 
-        let where_expr = if self.peek_type() == TokenType::WHERE {
-            self.next_token();
-            match self.parse_comprehension_where_expr(false) {
-                Ok(e) => Some(e),
-                Err(_) => {
-                    self.restore_pos(start);
-                    return Ok(None);
-                }
-            }
-        } else {
-            None
-        };
+        let where_expr = self.parse_optional_comprehension_where(BracketProof::InnerBracketOnly)?;
 
-        if self.peek_type() != TokenType::Pipe {
-            self.restore_pos(start);
-            return Ok(None);
-        }
-        self.next_token();
+        self.expect(TokenType::Pipe)?;
 
         // The key expression is parsed at the arithmetic level
         // (`<arithmetic value expression>` in the CIP-272 grammar): a full
         // expression would swallow the `:` as the CIP-14 label predicate
         // (`'k': i` = HasLabel), which is exactly the ambiguity the CIP
         // resolves by restricting the key grammar.
-        let key_expr = match self.parse_add_sub() {
-            Ok(e) => e,
-            Err(_) => {
-                self.restore_pos(start);
-                return Ok(None);
-            }
-        };
-        if self.peek_type() != TokenType::Colon {
-            self.restore_pos(start);
-            return Ok(None);
-        }
-        self.next_token();
-        let value_expr = match self.parse_expression() {
-            Ok(e) => e,
-            Err(_) => {
-                self.restore_pos(start);
-                return Ok(None);
-            }
-        };
-        if self.peek_type() != TokenType::RightBrace {
-            self.restore_pos(start);
-            return Ok(None);
-        }
-        self.next_token();
+        let key_expr = self.parse_add_sub()?;
+        self.expect(TokenType::Colon)?;
+        let value_expr = self.parse_expression()?;
+        self.expect(TokenType::RightBrace)?;
 
-        Ok(Some(Expr::MapComprehension(Box::new(
-            MapComprehensionExpr {
-                key_var,
-                value_var,
-                source_expr,
-                where_expr,
-                key_expr,
-                value_expr,
-            },
-        ))))
+        Ok(MapComprehensionExpr {
+            key_var,
+            value_var,
+            source_expr,
+            where_expr,
+            key_expr,
+            value_expr,
+        })
     }
 
     pub(in crate::parser) fn parse_map_literal(&mut self) -> ParseResult<Vec<MapPair>> {

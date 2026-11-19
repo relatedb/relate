@@ -3,9 +3,11 @@ use crate::error::{ParseError, ParseResult, SUPPORTED_CYPHER_VERSION};
 use crate::lexer::tokenize_with_options;
 use crate::token::{is_clause_boundary, is_contextual_clause_keyword, Token, TokenType};
 use relate_names::SmallName;
+mod comprehension_where;
 mod side_effects;
 mod speculation;
 
+use comprehension_where::BracketProof;
 use side_effects::{LabelMixFlags, LabelMixTarget, PatternSideEffectFlags, QuantifierForms};
 use speculation::{ProbeGate, Speculation};
 
@@ -267,22 +269,22 @@ struct Parser<'a> {
     /// the `statement_depth` cap never engages on that cycle (LABS-69).
     /// Capped at [`MAX_NESTING_DEPTH`].
     clause_depth: u32,
-    /// True while parsing the `WHERE`-part expression of a list/pattern
-    /// comprehension. There, a bare `|` is genuinely ambiguous: it could
-    /// continue a label-expression disjunction (`x:A|B`) or be the
-    /// comprehension's own map-expression separator (`WHERE x:A | expr]`).
-    /// `parse_label_or` consults this flag to check, before committing to
-    /// the disjunction reading, whether doing so would strand a
-    /// well-formed label chain in front of tokens that can't follow one
-    /// (e.g. `.` for property access) -- see `label_or_pipe_is_ambiguous`,
-    /// which answers the question with a pure token-level scan.
-    comprehension_where_ambiguous_pipe: bool,
-    /// Whether the comprehension being parsed *requires* a map expression
-    /// after its `|` separator (a pattern comprehension always does, a list
-    /// comprehension need not). A `]` right after the scanned label chain
-    /// then proves that `|` was the separator, not a label disjunction --
-    /// see `label_or_pipe_is_ambiguous`.
-    comprehension_where_map_required: bool,
+    /// The comprehension-WHERE context currently active, if any: which
+    /// comprehension's `WHERE`-part expression (or `IN` source
+    /// expression) is being parsed — carrying the bracket proof that
+    /// decides the `]` arm of the label side's tail classification (see
+    /// [`BracketProof`]) — one state with one lifecycle
+    /// owner, [`Parser::with_comprehension_where`].
+    /// While a context is active a bare `|` is genuinely ambiguous: it
+    /// could continue a label-expression disjunction (`x:A|B`), continue
+    /// a `<value type>` union (`IS :: STRING | INTEGER`) or be the
+    /// comprehension's own map-expression separator (`WHERE x:A |
+    /// expr]`). `parse_label_or` and the type-union loop
+    /// (`parse_value_type_at_current_depth`) resolve that through the one
+    /// shared mechanism, [`Parser::ambiguous_pipe_continuation`], which
+    /// consults this state before committing to the disjunction/union
+    /// reading.
+    comprehension_where: Option<BracketProof>,
     /// Depth of `EXISTS { … }` bodies currently being parsed. An unbounded
     /// quantified path pattern under REPEATABLE ELEMENTS is safe inside an
     /// existence probe (the probe stops at the first row) and is accepted
@@ -297,8 +299,9 @@ struct Parser<'a> {
     /// `depth_guard_family!` registration below. Inside an element's own
     /// chain a `{` is the element's inline property map, not a map
     /// projection, so the comprehension pipe-ambiguity rule's `{` dead
-    /// end must not fire there — `token_ends_label_expr_dead_end` reads
-    /// this; the element parsers scope their `parse_label_spec` calls
+    /// end must not fire there — `chain_tail_ends_where` gates its
+    /// `{` and `]` arms through this; the element parsers scope their
+    /// `parse_label_spec` calls
     /// through [`Parser::with_pattern_element_depth`].
     pattern_element_depth: u32,
     /// The parse-affecting preview opt-ins for this parse (see
@@ -438,8 +441,7 @@ impl<'a> Parser<'a> {
             block_depth: 0,
             expr_depth: 0,
             clause_depth: 0,
-            comprehension_where_ambiguous_pipe: false,
-            comprehension_where_map_required: false,
+            comprehension_where: None,
             exists_subquery_depth: 0,
             speculation: Speculation::default(),
             pattern_element_depth: 0,
@@ -699,7 +701,7 @@ impl<'a> Parser<'a> {
             types). Scoped by the element parsers around their \
             `parse_label_spec` calls so the comprehension pipe-ambiguity \
             rule's `{` dead end stays suppressed for exactly that chain \
-            (see `token_ends_label_expr_dead_end`).",
+            (see `chain_tail_ends_where`).",
         exit_doc = "Pairs with [`Parser::enter_pattern_element_depth`]; \
             balanced by construction through \
             [`Parser::with_pattern_element_depth`].",

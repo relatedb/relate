@@ -670,8 +670,8 @@ impl<'a> Parser<'a> {
             // An element's own label chain: a `{` after it is the
             // element's inline property map, never a map projection, so
             // the comprehension pipe-ambiguity rule must not treat it as
-            // a dead end here (see `token_ends_label_expr_dead_end`).
-            // The scoped guard keeps the depth balanced across the `?`.
+            // a dead end here (see `chain_tail_ends_where`). The scoped
+            // guard keeps the depth balanced across the `?`.
             let spec = self.with_pattern_element_depth(|p| p.parse_label_spec(false))?;
             node.label_expr = Some(spec.expr);
         }

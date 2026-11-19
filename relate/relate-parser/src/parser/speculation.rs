@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 
+use super::comprehension_where::BracketProof;
 use super::side_effects::PatternSideEffectFlags;
 use super::Parser;
 use crate::ast::NodePattern;
@@ -30,6 +31,23 @@ pub(super) enum ProbeGate {
     /// The `(`-form node-pattern gate
     /// (`node_pattern_precedes_relationship`).
     LeftParenNodePattern,
+}
+
+/// The verdict-memo key's three dimensions: the probe-start position, the
+/// gate, and the comprehension context the gate's parse ran under. The
+/// parse is deterministic and a probe restores the position and every
+/// side-effect flag before returning, so a verdict depends on exactly
+/// this triple — the context is a dimension because the gates' parses
+/// read it through their grammar-specific tail classifications, and the
+/// same position can legitimately be probed under different contexts: a
+/// failed map-comprehension speculation's tokens are re-parsed by the
+/// map-literal fallback outside the context, so a narrower key would
+/// cross-feed verdicts between the two parses.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct VerdictKey {
+    pos: usize,
+    gate: ProbeGate,
+    comprehension_where: Option<BracketProof>,
 }
 
 /// One parked node-pattern parse: the token position a re-parse of the
@@ -50,7 +68,7 @@ pub(super) struct CachedNodePattern {
 }
 
 /// The speculative-probe state, one owner: how many probes are on the
-/// stack, the per-(position, gate) verdict memo, and the node-pattern
+/// stack, the [`VerdictKey`]-keyed verdict memo, and the node-pattern
 /// tree cache keyed by the `(`'s absolute token index.
 ///
 /// Tree-cache policy, stated once: a tree is **inserted** only while a
@@ -68,34 +86,27 @@ pub(super) struct CachedNodePattern {
 pub(super) struct Speculation {
     /// Nesting depth of currently-active speculative probes.
     pub(super) depth: u32,
-    /// Memoized verdicts, keyed by (probe-start position, gate). The
-    /// parse is deterministic and a probe restores the position and
-    /// every side-effect flag before returning, so a verdict depends
-    /// only on that pair — plus any parser mode field the gate's parse
-    /// reads, each of which is constant for a given position (a
-    /// position sits in exactly one enclosing comprehension context, so
-    /// the `comprehension_where_*` modes cannot differ between two
-    /// parses of the same `(`) — and a `true` verdict's tokens are
-    /// re-entered by the caller's committing parse (which re-applies
-    /// every side effect for real), so the memo cannot skip them.
-    /// LABS-183's shape: a node pattern's inline WHERE or property map
-    /// can itself hold a pattern predicate, so an unmemoized probe
+    /// Memoized verdicts, keyed by [`VerdictKey`]. A `true` verdict's
+    /// tokens are re-entered by the caller's committing parse (which
+    /// re-applies every side effect for real), so the memo cannot skip
+    /// them. LABS-183's shape: a node pattern's inline WHERE or property
+    /// map can itself hold a pattern predicate, so an unmemoized probe
     /// re-descends the whole nested term at every level; with the memo
-    /// each position's verdict is computed once.
-    verdicts: HashMap<(usize, ProbeGate), bool>,
+    /// each position's verdict is computed once per context.
+    verdicts: HashMap<VerdictKey, bool>,
     /// Parked node-pattern parse verdicts, keyed by the `(`'s absolute
     /// token index — see the cache policy on [`Self`].
     node_patterns: HashMap<usize, CachedNodePattern>,
 }
 
 impl Speculation {
-    /// The memoized verdict for a (position, gate), if probed before.
-    pub(super) fn verdict(&self, key: (usize, ProbeGate)) -> Option<bool> {
+    /// The memoized verdict for a key, if probed before.
+    pub(super) fn verdict(&self, key: VerdictKey) -> Option<bool> {
         self.verdicts.get(&key).copied()
     }
 
-    /// Record a verdict for a (position, gate).
-    pub(super) fn record_verdict(&mut self, key: (usize, ProbeGate), verdict: bool) {
+    /// Record a verdict for a key.
+    pub(super) fn record_verdict(&mut self, key: VerdictKey, verdict: bool) {
         self.verdicts.insert(key, verdict);
     }
 
@@ -141,18 +152,23 @@ impl<'a> Parser<'a> {
     }
 
     /// The one memoized-verdict policy for always-restore lookaheads:
-    /// look the (position, gate) verdict up, run the probe under
-    /// [`Self::probe`] on a miss, insert the verdict. Both lookahead
-    /// gates ride this — the `=`-form pattern-comprehension gate and
-    /// the `(`-form node-pattern gate — so the memo discipline exists
-    /// once (LABS-183: without it each nesting level re-probes the
-    /// whole nested term, 2^k parse cost on a sub-KB query).
+    /// look the [`VerdictKey`] (position, gate, comprehension context)
+    /// verdict up, run the probe under [`Self::probe`] on a miss, insert
+    /// the verdict. Both lookahead gates ride this — the `=`-form
+    /// pattern-comprehension gate and the `(`-form node-pattern gate —
+    /// so the memo discipline exists once (LABS-183: without it each
+    /// nesting level re-probes the whole nested term, 2^k parse cost on
+    /// a sub-KB query).
     pub(super) fn probe_verdict(
         &mut self,
         gate: ProbeGate,
         probe: impl FnOnce(&mut Self) -> bool,
     ) -> bool {
-        let key = (self.pos, gate);
+        let key = VerdictKey {
+            pos: self.pos,
+            gate,
+            comprehension_where: self.comprehension_where,
+        };
         if let Some(verdict) = self.speculation.verdict(key) {
             return verdict;
         }

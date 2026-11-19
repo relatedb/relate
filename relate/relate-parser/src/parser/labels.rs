@@ -249,42 +249,58 @@ impl<'a> Parser<'a> {
         // never sets it.
         let mut saw_legacy_pipe_colon = false;
         while self.peek_type() == TokenType::Pipe {
+            // The delimiter's own symbol bookkeeping: the note marks the
+            // `|` at its consumption site, deliberately BEFORE the
+            // mechanism's snapshot — it records that a pipe was seen in
+            // this label expression (the plain disjunction grammar, where
+            // every seen `|` is a real GQL symbol, always notes it) into
+            // both trackers (the within-expression flag and the
+            // clause/read accumulators), not that a continuation
+            // committed, so it survives a rollback together with the
+            // post-note state the snapshot was taken over. Pinned by
+            // `a_rolled_back_pipe_keeps_its_gql_symbol_note`: the
+            // surviving note can 42I10 a rolled-back pipe beside a legal
+            // legacy colon-chain in the same clause — a pre-existing
+            // (origin/main) edge kept here as a decision and deferred
+            // for its own compat round.
             if !pipe_is_legacy {
                 self.note_gql_label_symbol();
             }
-            // The comprehension-WHERE `|` ambiguity, resolved inline
-            // (commit-on-success — ADR-0626's reader-driven shape without
-            // a probe): consume the `|`, parse the label-`and` chain that
-            // would continue the disjunction, and keep it when it is a
-            // real continuation; restore and leave the `|` for the
-            // comprehension's map separator when it is not (the chain
-            // cannot parse, or the token after it ends the chain's
-            // usefulness as a continuation). The chain parses once and is
-            // kept on success — nothing downstream re-parses it, so no
-            // cache or verdict memo is involved.
-            let pipe_saved_pos = self.save_pos();
-            let pipe_saved_flags = self.side_effects;
-            self.next_token(); // consume the `|`
-            if pipe_is_legacy && self.peek_type() == TokenType::Colon {
-                // Legacy relationship type list allows an optional repeated
-                // colon after `|`, e.g. `[:T|:T]` / `[:A|:B]`. The form is
-                // only legal without a variable, inline properties or a
-                // variable length; `parse_rel_pattern` enforces that once it
-                // has seen the whole element.
-                saw_legacy_pipe_colon = true;
-                self.next_token();
-            }
-            let chain = self.parse_label_and();
-            let not_a_continuation = match &chain {
-                Ok(_) => self.chain_tail_ends_where(self.peek_type()),
-                Err(_) => true,
+            // The comprehension-WHERE `|` ambiguity runs through the one
+            // shared commit-on-success mechanism: the would-be
+            // continuation is the label-`and` chain with the legacy
+            // repeated-colon tail riding inside it, and the tail
+            // classification is the label side's own
+            // `chain_tail_ends_where` below — see
+            // [`Parser::ambiguous_pipe_continuation`] for the contract.
+            // The closure's only output is the committed value (the chain
+            // plus its own `|:` fact): a rollback discards both with the
+            // tokens, so the revertible region owns nothing outside the
+            // mechanism's snapshot — the fact folds in below, only once
+            // the continuation has committed.
+            let chain = self.ambiguous_pipe_continuation(
+                |parser| {
+                    let mut legacy_pipe_colon = false;
+                    if pipe_is_legacy && parser.peek_type() == TokenType::Colon {
+                        // Legacy relationship type list allows an optional repeated
+                        // colon after `|`, e.g. `[:T|:T]` / `[:A|:B]`. The form is
+                        // only legal without a variable, inline properties or a
+                        // variable length; `parse_rel_pattern` enforces that once it
+                        // has seen the whole element.
+                        legacy_pipe_colon = true;
+                        parser.next_token();
+                    }
+                    parser
+                        .parse_label_and()
+                        .map(|expr| (expr, legacy_pipe_colon))
+                },
+                Self::chain_tail_ends_where,
+            )?;
+            let Some((chain, legacy_pipe_colon)) = chain else {
+                break; // the `|` is the comprehension's map separator
             };
-            if self.comprehension_where_ambiguous_pipe && not_a_continuation {
-                self.restore_pos(pipe_saved_pos);
-                self.side_effects = pipe_saved_flags;
-                break;
-            }
-            parts.push(chain?);
+            saw_legacy_pipe_colon |= legacy_pipe_colon;
+            parts.push(chain);
         }
         let expr = if parts.len() == 1 {
             parts.pop().unwrap()
@@ -297,39 +313,30 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Whether the token after a label chain ends the chain's usefulness
-    /// as a disjunction continuation, so the `|` in front of the chain is
-    /// the comprehension's map separator instead: the dead-end set (see
-    /// [`Parser::token_ends_label_expr_dead_end`]), plus — where the
-    /// comprehension must still produce its map — the `]` that ends the
-    /// whole bracket. The one tail classification
-    /// [`Parser::label_or_pipe_is_ambiguous`] reads.
+    /// The label side's tail classification for the shared pipe
+    /// mechanism: whether the token after a would-be label chain ends
+    /// its usefulness as a disjunction continuation — the narrow
+    /// dead-end set, deliberately not the value-type side's continuation
+    /// whitelist: label disjunctions commit on operators (`x:A | B AND y`
+    /// reads as `(x:A|B) AND y`), a pre-existing behavior that stays.
+    /// Property access (`.`) and a map projection (`{`) postfix the map
+    /// expression's base variable and can never continue a label chain;
+    /// a `]` proves the separator only where the context's bracket proof
+    /// says the `]` would close the comprehension with its map stranded
+    /// ([`BracketProof::RightBracketClosesTheComprehension`]). The `{`
+    /// and `]` arms are gated on the pattern-element depth: inside a
+    /// pattern element's own label/type chain, `{` is the element's
+    /// inline property map (`(x:A|B {p: 1})`, `-[r:S|T {w: 1}]->`) and
+    /// `]` closes the element's type brackets, never the comprehension's
+    /// closer, so a `|` in a type disjunction there (`[:S|T]` in a
+    /// comprehension's WHERE) stays a disjunction.
     fn chain_tail_ends_where(&self, ty: TokenType) -> bool {
-        self.token_ends_label_expr_dead_end(ty)
-            || (self.comprehension_where_map_required
-                && ty == TokenType::RightBracket
-                // Inside a pattern element's own label/type chain, a `]`
-                // closes the element's type brackets — never the
-                // comprehension the map-required rule serves — so a `|`
-                // in a type disjunction there (`[:S|T]` in a
-                // comprehension's WHERE) stays a disjunction.
-                && self.pattern_element_depth == 0)
-    }
-
-    /// A token that can never continue the expression a label-expression
-    /// chain sits inside: property access (`.`) and a map projection (`{`)
-    /// both postfix a *variable*, and the chain's trailing term is a label
-    /// name the surrounding expression consumed as a label — so a `|` in
-    /// front of such a chain is the comprehension's map separator, not a
-    /// disjunction continuation. The one dead-end set
-    /// [`Parser::chain_tail_ends_where`] reads. The `{` arm is suppressed
-    /// inside a pattern element's own label/type chain
-    /// ([`Parser::pattern_element_depth`]): there the `{` is the element's
-    /// inline property map (`(x:A|B {p: 1})`, `-[r:S|T {w: 1}]->`), never a
-    /// projection.
-    fn token_ends_label_expr_dead_end(&self, ty: TokenType) -> bool {
         matches!(ty, TokenType::Dot)
-            || (self.pattern_element_depth == 0 && matches!(ty, TokenType::LeftBrace))
+            || (self.pattern_element_depth == 0
+                && (matches!(ty, TokenType::LeftBrace)
+                    || (self.comprehension_where
+                        == Some(BracketProof::RightBracketClosesTheComprehension)
+                        && ty == TokenType::RightBracket)))
     }
 
     /// Type of the token at absolute index `pos` (`EOF` past the end) --

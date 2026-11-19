@@ -25,17 +25,104 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_value_type_at_current_depth(&mut self) -> ParseResult<TypeExpr> {
-        let first = self.parse_type_term()?;
-        if self.peek_type() != TokenType::Pipe {
-            return Ok(first);
-        }
-        let mut components = vec![first];
+        let mut components = vec![self.parse_type_term()?];
         while self.peek_type() == TokenType::Pipe {
-            self.next_token();
-            components.push(self.parse_type_term()?);
+            // The comprehension-WHERE `|` ambiguity runs through the one
+            // shared commit-on-success mechanism, the would-be continuation
+            // the type term and the tail classification the type grammar's
+            // continuation whitelist below — see
+            // [`Parser::ambiguous_pipe_continuation`] for the contract.
+            let Some(term) = self.ambiguous_pipe_continuation(
+                Self::parse_type_term,
+                Self::type_pipe_tail_ends_where,
+            )?
+            else {
+                break; // the `|` is the comprehension's map separator
+            };
+            components.push(term);
         }
         self.validate_union_nullability(&components)?;
-        Ok(TypeExpr::Union(components))
+        // A single term — whether no pipe followed it or the
+        // disambiguation broke out leaving only it — is returned as-is,
+        // the promise on `parse_value_type`, never wrapped in a
+        // one-element `Union`. This one exit owns both cases.
+        Ok(if components.len() == 1 {
+            components
+                .pop()
+                .expect("one term: the loop always seeds one component")
+        } else {
+            TypeExpr::Union(components)
+        })
+    }
+
+    /// The value-type side's tail classification for the shared pipe
+    /// mechanism: whether the token after a would-be union component
+    /// ends its usefulness as one — spelled as the positive whitelist of
+    /// the tokens that continue, in three classes. The type grammar's
+    /// own continuations: `|` (another union arm), `NOT`/`NULL` (the NOT
+    /// NULL suffix) and the `LIST`/`ARRAY` postfix keywords. The bracket
+    /// tokens: `,` and `)` continuing an enclosing call or parenthesized
+    /// group, and `}` closing a nested map literal — each can only
+    /// appear inside a bracket opened before the pipe, exactly where the
+    /// union reading is legitimate and the comprehension's separator
+    /// cannot appear (a `}` directly closing a map comprehension's WHERE
+    /// is malformed either way, so committing only changes which error) —
+    /// and `]`, gated on the context's bracket proof exactly as the
+    /// label side gates it: a nested list's `]` continues unless the
+    /// proof says the `]` would close the comprehension itself with its
+    /// map stranded ([`BracketProof::RightBracketClosesTheComprehension`]
+    /// — the pattern form's own closer still yields the pipe). The
+    /// expression continuations: the boolean connectives and the
+    /// comparison operators (including `=~`), which legally continue the
+    /// expression whose operand is the finished union — the comparison
+    /// chain of `parse_comparison` and the AND/OR/XOR levels above it —
+    /// so the union commits greedily exactly as the label side's
+    /// disjunctions do. Every other token can only continue the
+    /// comprehension's map expression — in particular the CIP-87
+    /// no-chaining set (`IS`, `IN`, `STARTS`/`ENDS`/`CONTAINS`:
+    /// `parse_string_null_check` allows at most one predicate suffix, so
+    /// those tails can never legally follow a type predicate) — so a map
+    /// beginning with a type-named base (`date(n[k])`, `string[0]`,
+    /// `string IS NOT NULL`) still wins and the `|` restores as the
+    /// separator. Inside `LIST<...>`/`ANY<...>` brackets the context is
+    /// suspended, so the closing `>` never reaches this classification.
+    fn type_pipe_tail_ends_where(&self, ty: TokenType) -> bool {
+        !(matches!(
+            ty,
+            TokenType::Pipe
+                | TokenType::NOT
+                | TokenType::NULL
+                | TokenType::Comma
+                | TokenType::RightParen
+                | TokenType::RightBrace
+                | TokenType::AND
+                | TokenType::OR
+                | TokenType::XOR
+                | TokenType::Equals
+                | TokenType::NotEquals
+                | TokenType::LessThan
+                | TokenType::GreaterThan
+                | TokenType::LessEqual
+                | TokenType::GreaterEqual
+                | TokenType::RegexMatch
+        ) || (ty == TokenType::Identifier && self.peek_is_list_or_array_keyword())
+            || (ty == TokenType::RightBracket
+                && self.comprehension_where
+                    != Some(BracketProof::RightBracketClosesTheComprehension)))
+    }
+
+    /// A `<value type>` inside the `LIST<...>`/`ANY<...>` brackets: the
+    /// comprehension-WHERE context is suspended for the whole bracketed
+    /// parse (the suspended `None` spelling of
+    /// [`Parser::with_comprehension_where`]), because the comprehension's
+    /// map separator can never appear before the brackets close — a `|`
+    /// there is always a union separator and keeps demanding another type
+    /// term (the strict "expected a type name" error, e.g.
+    /// `LIST<STRING | k>`). The two bracket arms (`parse_type_leaf`'s
+    /// `LIST<`/`ARRAY<` and `parse_any_type`'s `ANY<`) recurse through
+    /// this one helper instead of `parse_value_type` directly.
+    fn parse_bracketed_value_type(&mut self) -> ParseResult<TypeExpr> {
+        self.with_comprehension_where(None, Self::parse_value_type)
     }
 
     /// Per CIP-86's "Not Null Uses" section: within a closed dynamic
@@ -153,7 +240,7 @@ impl<'a> Parser<'a> {
                     "LIST" | "ARRAY" => {
                         self.next_token();
                         self.expect(TokenType::LessThan)?;
-                        let element = self.parse_value_type()?;
+                        let element = self.parse_bracketed_value_type()?;
                         self.expect(TokenType::GreaterThan)?;
                         let not_null = self.maybe_consume_not_null();
                         Ok(TypeExpr::List {
@@ -448,15 +535,15 @@ impl<'a> Parser<'a> {
 
         if self.peek_type() == TokenType::LessThan {
             self.next_token();
-            let inner = self.parse_value_type()?;
+            let inner = self.parse_bracketed_value_type()?;
             self.expect(TokenType::GreaterThan)?;
             // No [NOT NULL] production exists for a closed union: a
             // trailing NOT NULL is left unconsumed here and becomes a
             // syntax error further up (CIP-86 "Not Null Uses" > invalid).
-            return Ok(match inner {
-                TypeExpr::Union(components) => TypeExpr::Union(components),
-                single => TypeExpr::Union(vec![single]),
-            });
+            return Ok(TypeExpr::Union(match inner {
+                TypeExpr::Union(components) => components,
+                single => vec![single],
+            }));
         }
 
         let not_null = self.maybe_consume_not_null();
