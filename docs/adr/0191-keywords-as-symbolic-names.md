@@ -370,6 +370,13 @@ spellings. They stay unchanged and are listed in Consequences.
 
 ## Later references
 
+Later change (the reader-driven pattern-position probe, ADR-0626): the
+`node_pattern_precedes_relationship` lookahead now runs the real
+`parse_node_pattern` reader speculatively, so the no-`p` comprehension
+form and pattern predicates admit label-expression node bodies —
+`[(n:A|B)-->() | n]` and `WHERE (n:A|B)-->()` parse. The consequence
+above, that those bodies stay syntax errors, is reversed there.
+
 Later change (query-notifications identifier-policy): the formatter now
 delegates identifier quoting to
 `cypherlite_parser::token::{identifier_needs_quotes, quote_identifier}`

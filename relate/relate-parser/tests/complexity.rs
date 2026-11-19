@@ -281,3 +281,128 @@ fn test_parse_long_namespace_call_chain_is_not_quadratic() {
         other => panic!("expected FunctionCall, got {other:?}"),
     }
 }
+
+#[test]
+fn test_node_pattern_probe_nested_is_not_exponential() {
+    // Complexity regression guard (LABS-183's shape, for the
+    // `node_pattern_precedes_relationship` probe): a node pattern's
+    // inline WHERE can itself hold a pattern predicate, so nesting
+    // `(a{i} WHERE <predicate>)-[:R]->()` k levels deep makes the probe
+    // parse every deeper level and the committing parse re-parse it --
+    // 2^k parse cost on a sub-KB query without the per-position verdict
+    // memo (the same fix shape the `pattern_comprehension_probe_memo`
+    // above pins). With the memo each `(` position is probed once and
+    // the parse completes in milliseconds at any k.
+    const K: usize = 26;
+    let mut expr = String::from("(a)-[:R]->()");
+    for level in 1..K {
+        expr = format!("(a{level} WHERE {expr})-[:R]->()");
+    }
+    let query = format!("MATCH (n) WHERE {expr} RETURN n");
+    assert!(query.len() <= MAX_QUERY_BYTES);
+    let start = std::time::Instant::now();
+    let stmt = parse(&query).unwrap();
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "nested pattern-predicate parse took {elapsed:?} (exponential probing?)"
+    );
+    // AST spot-check: the top-level WHERE is the outermost pattern
+    // predicate, whose node pattern is `a1`.
+    let Clause::Match(m) = &stmt.clauses[0] else {
+        panic!("expected match");
+    };
+    assert!(matches!(
+        m.where_expr.as_ref(),
+        Some(Expr::PatternPredicate(_))
+    ));
+}
+
+#[test]
+fn test_nested_pattern_predicate_fanout_is_not_size_times_depth() {
+    // Complexity regression guard (the CI security round's shape): each
+    // nesting level of an inline-WHERE pattern predicate adds a 100-way OR
+    // fan-out, so the query carries ~K*F predicates while every gate's
+    // probe would descend its whole nested subtree -- O(size x depth)
+    // parse work (measured before the node-pattern tree cache: a 2.74 MB
+    // depth-450 query at ~51 s release, 30x the pre-probe mirror). The
+    // probe's tree cache makes the descent single-pass: the probe builds
+    // each position's tree once, every enclosing/committing parse moves
+    // it up. K=300, F=100 puts the uncached shape far past the budget
+    // below even in debug; the cached shape parses in well under a
+    // second.
+    const K: usize = 300;
+    const F: usize = 100;
+    run_with_big_stack(|| {
+        let (stmt, elapsed) = build_and_parse_fanout(K, F);
+        check_fanout(stmt, elapsed);
+    });
+}
+
+fn build_and_parse_fanout(k: usize, f: usize) -> (relate_parser::Statement, std::time::Duration) {
+    // The innermost chain link: `(aK)-[:R]->()`.
+    let mut expr = format!("(a{k})-[:R]->()");
+    for level in (0..k).rev() {
+        // The chain link plus F-1 simple siblings, all OR operands of
+        // this level's inline WHERE.
+        let mut level_expr = format!("(a{level} WHERE {expr}");
+        for sibling in 0..f {
+            level_expr.push_str(&format!(" OR (b{level}_{sibling})-[:R]->()"));
+        }
+        level_expr.push_str(")-[:R]->()");
+        expr = level_expr;
+    }
+    let query = format!("MATCH (r:L) WHERE {expr} RETURN r");
+    assert!(query.len() <= MAX_QUERY_BYTES, "{}", query.len());
+    let start = std::time::Instant::now();
+    let stmt = parse(&query).unwrap();
+    (stmt, start.elapsed())
+}
+
+fn check_fanout(stmt: relate_parser::Statement, elapsed: std::time::Duration) {
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "nested fan-out pattern-predicate parse took {elapsed:?} (O(size x depth) probing?)"
+    );
+    let Clause::Match(m) = &stmt.clauses[0] else {
+        panic!("expected match");
+    };
+    assert!(matches!(
+        m.where_expr.as_ref(),
+        Some(Expr::PatternPredicate(_))
+    ));
+}
+
+/// Stack-safety pin (ADR-0257): a flat, wide OR spine inside a node
+/// pattern's inline WHERE parses within the default 2 MiB test-worker
+/// stack — deliberately NOT under `run_with_big_stack`. The parse itself
+/// is iterative, and the speculation cache parks only O(1) verdicts (a
+/// parked node pattern is never cloned), so nothing on this path
+/// recurses per spine term. A parked-tree deep clone would recurse once
+/// per AST spine node (~1 KiB of stack per OR term) and abort at a few
+/// thousand terms on this stack; the 989 KB / 100k-term form exceeded
+/// even 96 MiB.
+#[test]
+fn wide_inline_where_spine_parses_within_the_default_stack() {
+    const TERMS: usize = 8_000;
+    let mut predicate = String::from("x0");
+    for i in 1..TERMS {
+        predicate.push_str(&format!(" OR x{i}"));
+    }
+    let query = format!("MATCH (n) WHERE (a WHERE {predicate})-[:R]->(c) RETURN n");
+    assert!(query.len() <= MAX_QUERY_BYTES, "{}", query.len());
+    let start = std::time::Instant::now();
+    let stmt = parse(&query).unwrap();
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "wide inline-WHERE spine took {elapsed:?}"
+    );
+    let Clause::Match(m) = &stmt.clauses[0] else {
+        panic!("expected match");
+    };
+    assert!(matches!(
+        m.where_expr.as_ref(),
+        Some(Expr::PatternPredicate(_))
+    ));
+}

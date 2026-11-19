@@ -369,6 +369,27 @@ fn test_pattern_comprehension_quantifiers_isolated_from_clause_forms() {
 }
 
 #[test]
+fn test_tree_cache_replay_keeps_a_comprehensions_quantifier_scope() {
+    // The tree cache's take must not replay the parking context's
+    // quantifier state into a comprehension body: `quantifiers` is
+    // `mem::take`n at the body's entry (the isolation the test above
+    // pins), so the body's own form-mixing rejection — a legacy bracket
+    // quantifier beside a GPM postfix form inside the comprehension —
+    // fires whatever quantifier the enclosing clause carries. Both
+    // paths reject with the quantifier-mixing rejection itself, never
+    // another error the ambiguity could route to.
+    let inner = "(m WHERE [(x WHERE (x)-[:B*1..2]->(z))-[:C]->+(w) | x] <> [])";
+    for outer in ["[:A]", "[:A*1..2]"] {
+        let err = parse(&format!("MATCH (n)-{outer}->{inner} RETURN n"))
+            .expect_err("the comprehension-local mixed forms reject");
+        assert!(
+            err.to_string().contains("MixedQuantifiers"),
+            "the typed rejection, not another error: {err}"
+        );
+    }
+}
+
+#[test]
 fn test_call_subquery_body_is_one_label_scope() {
     // A CALL subquery's body is one label-mixing scope *per side*: mixing
     // colon-conjunction in one read clause with the IS introducer or a GQL

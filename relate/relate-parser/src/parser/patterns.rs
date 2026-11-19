@@ -629,6 +629,20 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn parse_node_pattern(&mut self) -> ParseResult<NodePattern> {
+        // The probe's tree cache: a tree parked at this `(` position by
+        // a speculative probe is taken instead of re-parsed — the kit's
+        // take replays the position-after and the side-effect delta (see
+        // `parser/speculation.rs` for the insert/take policy; this is
+        // what keeps the reader-driven gate linear on adversarial
+        // nested shapes: the probe's descent builds each nested tree
+        // once and every enclosing parse moves it up, instead of each
+        // gate re-descending its whole subtree).
+        if let Some(node) = self.take_cached_node_pattern() {
+            return Ok(node);
+        }
+        let cache_pos = self.pos;
+        let flags_before = self.side_effects;
+
         self.expect(TokenType::LeftParen)?;
         let mut node = NodePattern {
             variable: None,
@@ -665,6 +679,7 @@ impl<'a> Parser<'a> {
         node.where_expr = tail.where_expr;
 
         self.expect(TokenType::RightParen)?;
+        self.park_node_pattern(cache_pos, flags_before);
         Ok(node)
     }
 

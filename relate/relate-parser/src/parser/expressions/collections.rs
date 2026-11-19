@@ -127,131 +127,54 @@ impl<'a> Parser<'a> {
     ///
     /// The probe is invisible when it does not commit: the token position
     /// and every clause-level side-effect flag the parse can set (the
-    /// `label_saw_*`/`quantifier_saw_*` mixing flags) are restored before
+    /// label-mixing and quantifier-form accumulators) are restored before
     /// returning, so a negative verdict leaves the list-literal reading to
-    /// run exactly as if the probe never happened. A positive verdict is
-    /// re-parsed for real by the caller (`parse_pattern_comprehension_body`),
-    /// which re-applies those side effects.
+    /// run exactly as if the probe never happened. A positive verdict's
+    /// tokens are re-entered by the caller's committing parse
+    /// (`parse_pattern_comprehension_body`), which re-applies those side
+    /// effects — directly, or through the tree cache's take where the
+    /// probe's node-pattern trees serve the commit.
     ///
-    /// The verdict is memoized per `=` token position
-    /// (`Parser::pattern_comprehension_probe_memo`): it depends only on
-    /// that position, and without the memo a nested
+    /// The verdict is memoized per `=` token position through
+    /// [`Parser::probe_verdict`] (the `(position, gate)` memo the
+    /// speculation kit owns): it depends only on that position, and
+    /// without the memo a nested
     /// `[v = (n {p: ...}) | ...]` shape re-probes the whole nested term at
     /// every level -- 2^k parse cost on a sub-KB query (LABS-183).
     pub(super) fn pattern_comprehension_follows_equals(&mut self) -> bool {
         debug_assert_eq!(self.peek_type(), TokenType::Equals);
-        let key = self.pos;
-        if let Some(&verdict) = self.pattern_comprehension_probe_memo.get(&key) {
-            return verdict;
-        }
-        let saved_pos = self.save_pos();
-        let saved_flags = self.side_effects;
-        self.next_token(); // consume =
-        let probe = self.parse_pattern_path();
-        let is_comprehension =
-            probe.is_ok() && matches!(self.peek_type(), TokenType::Pipe | TokenType::WHERE);
-        self.restore_pos(saved_pos);
-        self.side_effects = saved_flags;
-        self.pattern_comprehension_probe_memo
-            .insert(key, is_comprehension);
-        is_comprehension
+        self.probe_verdict(ProbeGate::EqualsComprehension, |parser| {
+            parser.next_token(); // consume =
+            parser.parse_pattern_path().is_ok()
+                && matches!(parser.peek_type(), TokenType::Pipe | TokenType::WHERE)
+        })
     }
 
     /// Lookahead from a `(` without consuming tokens: true when the tokens at
-    /// the current position form a node pattern `( var? (:label)* {…}? )`
-    /// followed by `-` or `<-`. That relationship start is what tells a
-    /// pattern (a pattern comprehension after `[`, a pattern predicate such
-    /// as `WHERE (n)-->()`) apart from a bracketed or parenthesized
-    /// expression.
-    pub(in crate::parser) fn node_pattern_precedes_relationship(&self) -> bool {
-        self.node_pattern_precedes_relationship_at(0)
-    }
-
-    /// [`node_pattern_precedes_relationship`] starting `offset` tokens ahead
-    /// of the current position (0 == the current token).
-    pub(super) fn node_pattern_precedes_relationship_at(&self, offset: usize) -> bool {
-        let mut pos = self.pos + offset;
-
-        // Must start with (
-        if pos >= self.tokens.len() || self.tokens[pos].ty != TokenType::LeftParen {
-            return false;
-        }
-        pos += 1;
-
-        // Skip optional variable. ADR-0191: a keyword spelling is a node
-        // variable too, so this mirrors the reader (`parse_node_pattern`),
-        // including the `WHERE`/`IS` one-token lookahead that keeps their
-        // inline-predicate / label-introducer meanings.
-        // (`peek_pattern_name_is_variable` folds in the symbolic-name check.)
-        if self.peek_pattern_name_is_variable(pos - self.pos) {
-            pos += 1;
-        }
-
-        // Skip labels (a keyword is a label name too, ADR-0169)
-        while pos < self.tokens.len() && self.tokens[pos].ty == TokenType::Colon {
-            pos += 1;
-            if pos < self.tokens.len() && self.tokens[pos].ty.is_schema_name() {
-                pos += 1;
-            } else {
-                return false;
-            }
-        }
-
-        // Skip optional properties { ... }
-        if pos < self.tokens.len() && self.tokens[pos].ty == TokenType::LeftBrace {
-            let mut depth = 1;
-            pos += 1;
-            while depth > 0 && pos < self.tokens.len() {
-                match self.tokens[pos].ty {
-                    TokenType::LeftBrace => depth += 1,
-                    TokenType::RightBrace => depth -= 1,
-                    TokenType::EOF => return false,
-                    _ => {}
-                }
-                pos += 1;
-            }
-        }
-
-        // Skip an optional inline WHERE predicate (CIP-17/CIP-18), e.g.
-        // `(a:A WHERE a.prop > x)`. The predicate runs to the node
-        // pattern's own closing `)`, so scan there while balancing every
-        // nested bracket kind; a `)` at depth zero ends the node pattern.
-        if pos < self.tokens.len() && self.tokens[pos].ty == TokenType::WHERE {
-            pos += 1;
-            let mut depth = 0usize;
-            loop {
-                match self.tokens.get(pos).map(|t| t.ty) {
-                    Some(TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace) => {
-                        depth += 1
-                    }
-                    Some(TokenType::RightParen) if depth == 0 => break,
-                    Some(
-                        TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace,
-                    ) => {
-                        if depth == 0 {
-                            return false;
-                        }
-                        depth -= 1;
-                    }
-                    Some(TokenType::EOF) | None => return false,
-                    Some(_) => {}
-                }
-                pos += 1;
-            }
-        }
-
-        // Must see )
-        if pos >= self.tokens.len() || self.tokens[pos].ty != TokenType::RightParen {
-            return false;
-        }
-        pos += 1;
-
-        // After ), must see - or <- (indicating a relationship/pattern)
-        if pos < self.tokens.len() {
-            matches!(self.tokens[pos].ty, TokenType::Dash | TokenType::ArrowLeft)
-        } else {
-            false
-        }
+    /// the current position form a node pattern followed by `-` or `<-`. That
+    /// relationship start is what tells a pattern (a pattern comprehension
+    /// after `[`, a pattern predicate such as `WHERE (n)-->()`) apart from a
+    /// bracketed or parenthesized expression.
+    ///
+    /// The probe runs the real reader — `parse_node_pattern` under the
+    /// one [`Parser::probe`] save/restore policy, its verdict memoized
+    /// through [`Parser::probe_verdict`] (LABS-183's shape: a node
+    /// pattern's inline WHERE or property map can itself hold a pattern
+    /// predicate, so probe-plus-commit doubles the work per nesting
+    /// level without the memo) — and checks the relationship start after it, so the
+    /// node-pattern forms recognized here are the reader's by
+    /// construction. A hand-rolled token mirror of the same extent
+    /// drifted twice (the inline-WHERE scan, then the label grammar —
+    /// the LABS-1603 discrepancy), and each reader-accepted form it
+    /// missed (`$param` whole-map shorthand, `IS`-introduced label
+    /// specs) re-opened the MATCH-vs-predicate dialect split.
+    pub(super) fn node_pattern_precedes_relationship(&mut self) -> bool {
+        debug_assert_eq!(self.peek_type(), TokenType::LeftParen);
+        self.probe_verdict(ProbeGate::LeftParenNodePattern, |parser| {
+            parser
+                .parse_node_pattern()
+                .is_ok_and(|_| parser.peek_type().is_relationship_start())
+        })
     }
 
     /// Lookahead from the argument-start position without consuming tokens:

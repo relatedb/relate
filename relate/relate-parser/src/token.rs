@@ -132,6 +132,17 @@ pub enum TokenType {
 }
 
 impl TokenType {
+    /// A relationship pattern's start after a node pattern's `)`: the `-`
+    /// of `-[…]`/`--` or the `<-` of an incoming edge — the token pair
+    /// that tells a pattern (a predicate, a comprehension) from a
+    /// parenthesized expression. Consulted by the node-pattern lookahead
+    /// gate and the schema reader's FOR-target discrimination; the
+    /// pattern-body element loops spell the pair inside their wider
+    /// element-alternations, where a standalone predicate does not fit.
+    pub(crate) fn is_relationship_start(self) -> bool {
+        matches!(self, Self::Dash | Self::ArrowLeft)
+    }
+
     /// Returns true if this token type is a keyword (MATCH..PROFILE range).
     pub fn is_keyword(self) -> bool {
         matches!(

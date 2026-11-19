@@ -331,6 +331,79 @@ fn test_is_labeled_not_allowed_in_pattern_or_set() {
     assert!(parse("MATCH (n) SET n IS NOT LABELED Person RETURN n").is_err());
 }
 
+/// A pattern predicate's node pattern admits the full label-expression
+/// grammar — the same extent a MATCH node pattern reads — so
+/// `WHERE (a:A|B)<-[:R]-(c)` parses as a pattern predicate, not as a
+/// parenthesized `HasLabel` the following relationship then breaks (the
+/// `node_pattern_precedes_relationship` lookahead skips the label part
+/// through the reader's own extent scanner).
+#[test]
+fn pattern_predicates_admit_label_expressions() {
+    for query in [
+        "MATCH (a:L1), (b:L2) WHERE (a:L1|L2)<-[:R]-(b) RETURN a",
+        "MATCH (a:L1), (b:L2) WHERE (a:L1&L2)-[:R]->(b) RETURN a",
+        "MATCH (a:L1), (b) WHERE (a:!L1)-[:R]->(b) RETURN a",
+        "MATCH (a), (b) WHERE (a:%)-[:R]->(b) RETURN a",
+        "MATCH (a), (b) WHERE (a:(L1|L2)&L3)-[:R]->(b) RETURN a",
+        // The IS introducer's two spellings (the reader's second
+        // introducer, keyword_variables' pinned forms).
+        "MATCH (a:L1), (b) WHERE (a IS L1&L2)-[:R]->(b) RETURN a",
+        "MATCH (a), (b) WHERE (IS L1|L2)-[:R]->(b) RETURN a",
+        // The bare $param whole-map property shorthand.
+        "MATCH (a:L1), (b) WHERE (a:L1 $props)-[:R]->(b) RETURN a",
+        // The legacy colon-chain form the lookahead always accepted.
+        "MATCH (a:L1), (b) WHERE (a:L1:L2)-[:R]->(b) RETURN a",
+        // Keyword label names (ADR-0169) inside the predicate's pattern.
+        "MATCH (a:Order), (b) WHERE (a:Order|Match)-[:R]->(b) RETURN a",
+    ] {
+        let stmt = parse_ok(query);
+        let Some(where_expr) = match_clause(&stmt).where_expr.as_ref() else {
+            panic!("{query}: expected a WHERE clause");
+        };
+        assert!(
+            matches!(where_expr, Expr::PatternPredicate(_)),
+            "{query}: expected a pattern predicate, got {where_expr:?}"
+        );
+    }
+}
+
+/// A pattern comprehension's leading node pattern admits the same
+/// label-expression grammar: `[(x:A&B)-[r:R]->(y) | y]` is a pattern
+/// comprehension, not a list literal whose first element is a
+/// parenthesized `HasLabel`.
+#[test]
+fn pattern_comprehensions_admit_label_expressions() {
+    let stmt = parse_ok("MATCH (a) RETURN [(x:L1&L2)-[r:R]->(b) | b] AS l");
+    let Expr::PatternComprehension(pc) = return_expr(&stmt) else {
+        panic!(
+            "expected PatternComprehension, got {:?}",
+            return_expr(&stmt)
+        );
+    };
+    // The leading node's label expression is the conjunction.
+    let Some(PatternElement::Node(node)) = pc.pattern.elements.first() else {
+        panic!("expected a leading node");
+    };
+    assert!(
+        matches!(&node.label_expr, Some(LabelExpr::And(parts)) if parts.len() == 2),
+        "expected And of two labels, got {:?}",
+        node.label_expr
+    );
+    // The disjunction form, and the keyword-label form.
+    assert!(
+        parse_ok("MATCH (a) RETURN [(x:L1|L2)-[r:R]->(b) | b] AS l")
+            .clauses
+            .len()
+            == 2
+    );
+    assert!(
+        parse_ok("MATCH (a) RETURN [(x:Order|Match)-[r:R]->(b) | b] AS l")
+            .clauses
+            .len()
+            == 2
+    );
+}
+
 #[test]
 fn test_is_not_labeled_negates_whole_expression() {
     // IS NOT LABELED negates the whole label expression, unlike inline `!`.
@@ -547,4 +620,22 @@ fn test_is_label_strictness_by_grammar_position() {
 fn test_is_without_predicate_reports_missing_null() {
     let err = parse("RETURN n IS )").unwrap_err();
     assert!(err.message.contains("expected NULL"), "{}", err.message);
+}
+
+/// The tree cache must not swallow the clause-end mixing rejection: the
+/// nested predicate's label forms are noted during a probe's parse and
+/// replayed on the commit's cache take — a `:P:Q` colon-chain two levels
+/// deep inside a `!L` GQL symbol predicate still mixes within the clause
+/// (42I10), even though every parse below the outermost gate came from
+/// the cache.
+#[test]
+fn label_mixing_survives_the_probe_tree_cache() {
+    let error = parse(
+        "MATCH (r) WHERE (a0:!L WHERE (a1 WHERE (a2:P:Q)-[:R]->())-[:R]->())-[:R]->() RETURN r",
+    )
+    .expect_err("the colon-chain deep inside still mixes with the outer GQL symbol");
+    assert!(
+        error.message.contains("mixing label expression symbols"),
+        "the mixing rejection fired through the cache: {error}"
+    );
 }

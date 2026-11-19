@@ -98,3 +98,50 @@ fn distinct_star_order_by_named_path() {
         .unwrap();
     assert_eq!(result.rows.len(), 2);
 }
+
+/// A pattern predicate's node pattern carries a label expression — the
+/// same grammar a MATCH node pattern reads — so `WHERE (a:L1|L2)<-[:R]-(b)`
+/// is a pattern predicate, not a parenthesized `HasLabel` the following
+/// relationship breaks. The pattern-comprehension position admits the same
+/// forms through the one lookahead.
+#[test]
+fn pattern_predicate_and_comprehension_admit_label_expressions() {
+    let mut conn = connection();
+    conn.query(
+        "CREATE (:L1 {prop: 1})-[:R]->(:L2 {prop: 10}), \
+         (:L3 {prop: 2})-[:R]->(:L2 {prop: 20}), \
+         (:L2 {prop: 30})-[:R]->(:L1 {prop: 40})",
+    )
+    .unwrap();
+    // The disjunction matches every L1-or-L2 target of an incoming R;
+    // the :L3-target row stays out.
+    let result = conn
+        .query("MATCH (a), (b) WHERE (a:L1|L2)<-[:R]-(b) RETURN a.prop ORDER BY a.prop")
+        .unwrap();
+    assert_eq!(
+        result.rows,
+        vec![vec![int(10)], vec![int(20)], vec![int(40)]]
+    );
+    // The simple-label contrast: only the :L1 target reaches.
+    let result = conn
+        .query("MATCH (a), (b) WHERE (a:L1)<-[:R]-(b) RETURN a.prop ORDER BY a.prop")
+        .unwrap();
+    assert_eq!(result.rows, vec![vec![int(40)]]);
+    // The conjunction matches no node (nothing carries both labels).
+    let result = conn
+        .query("MATCH (a), (b) WHERE (a:L1&L2)-[:R]-(b) RETURN a.prop")
+        .unwrap();
+    assert_eq!(result.rows, Vec::<Vec<Value>>::new());
+    // The repro's original EXPLAIN shape plans.
+    conn.query("EXPLAIN MATCH (a:L1), (b:L2) WHERE (a:L1|L2)<-[:R]-(b) RETURN a")
+        .unwrap();
+    // A pattern comprehension's leading node pattern: both L1-or-L2
+    // sources reach, in pattern order.
+    let result = conn
+        .query("RETURN [(x:L1|L2)-[:R]->(b) | b.prop] AS l")
+        .unwrap();
+    assert_eq!(
+        result.rows,
+        vec![vec![Value::List(vec![int(10), int(40)].into())]]
+    );
+}

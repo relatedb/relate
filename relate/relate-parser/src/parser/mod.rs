@@ -3,6 +3,12 @@ use crate::error::{ParseError, ParseResult, SUPPORTED_CYPHER_VERSION};
 use crate::lexer::tokenize_with_options;
 use crate::token::{is_clause_boundary, is_contextual_clause_keyword, Token, TokenType};
 use relate_names::SmallName;
+mod side_effects;
+mod speculation;
+
+use side_effects::{LabelMixFlags, LabelMixTarget, PatternSideEffectFlags, QuantifierForms};
+use speculation::{ProbeGate, Speculation};
+
 // `pub(crate)` beyond the parser module for the statement normalizer
 // (ADR-0503), which extracts the same values the parser would bind.
 use interp::parse_interp_body;
@@ -282,17 +288,10 @@ struct Parser<'a> {
     /// existence probe (the probe stops at the first row) and is accepted
     /// there, while a top-level match still rejects it (42N53).
     exists_subquery_depth: u32,
-    /// Memo of `pattern_comprehension_follows_equals` verdicts, keyed by
-    /// the token position of the `=` the probe starts at. The parse is
-    /// deterministic and the probe restores the token position and every
-    /// side-effect flag before returning, so the verdict depends only on
-    /// that position -- and a `true` verdict is always re-parsed for real
-    /// by the caller, which re-enforces the nesting-depth caps. Without
-    /// the memo, each level of a nested `[v = (n {p: ...}) | ...]` shape
-    /// probes *and* re-parses the whole nested term, giving 2^k parse
-    /// cost (LABS-183: ~0.7 s release at k=20, doubling per level); with
-    /// it each position is probed once and the shape is O(k^2) overall.
-    pattern_comprehension_probe_memo: std::collections::HashMap<usize, bool>,
+    /// The speculative-probe state — probe depth, the per-(position,
+    /// gate) verdict memo, and the node-pattern tree cache — one owner
+    /// with the policies documented on it (`parser/speculation.rs`).
+    speculation: Speculation,
     /// Memo of `scan_label_primary_extent`'s group-case extents, keyed by
     /// the opener's absolute token index and the scan's nesting depth. The
     /// scan is a pure function of `self.tokens` (fixed for the parse) and
@@ -313,138 +312,6 @@ struct Parser<'a> {
     /// [`LabelMixTarget`]). Saved and restored around each clause so a
     /// nested subquery body's clauses choose their own side.
     label_mix_target: LabelMixTarget,
-}
-
-/// The clause-level side-effect flags a pattern parse can set. Kept as one
-/// `Copy` field on `Parser` (`Parser::side_effects`) so a speculative
-/// `parse_pattern_path` probe snapshots and restores them by plain
-/// assignment (see `pattern_comprehension_follows_equals`), and the
-/// clause-start reset is a single `Default::default()` (plus the two
-/// quantifier flags' per-clause reset for nested clauses).
-#[derive(Default, Clone, Copy)]
-struct PatternSideEffectFlags {
-    /// The label-mixing forms seen in the clause currently being parsed.
-    /// `parse_insert` reads this for its own clause-local rejection (a
-    /// `:A:B` chain is never allowed in INSERT); it is reset at the start of
-    /// every clause, nested or not.
-    clause_labels: LabelMixFlags,
-    /// The label-mixing forms seen by the read clauses accumulated in the
-    /// current scope. Neo4j keeps the read side (MATCH/WITH/RETURN label
-    /// predicates) and the write side (CREATE/INSERT; MERGE counts as both)
-    /// apart: inside one `CALL { … }` body `MATCH (n:A:B)` followed by
-    /// `CREATE (m IS B)` is legal, while two MATCHes (or a MERGE and a
-    /// CREATE) mixing the forms are not. See `PatternSideEffectFlags::read_labels`.
-    read_labels: LabelMixFlags,
-    /// The write side of the split described on [`Self::read_labels`].
-    write_labels: LabelMixFlags,
-    /// The forms the ONE label/type expression currently being parsed has
-    /// seen (`legacy_conjunction` and `gql_symbol` only). Reset at the
-    /// entry of `parse_label_expr_body`; `mixed-label-syntax` admits
-    /// mixing across separate label expressions of one clause, but Neo4j
-    /// keeps it illegal *within* one expression
-    /// (GpmSyntaxMixingAllowedAcceptance "Mixing : conjunction with
-    /// GPM-only label/type expression operators": `(n:A|B:C)`).
-    expression_labels: LabelMixFlags,
-    /// True if a parenthesized label-expression group (`(A:B)`, `(A&B)`,
-    /// ...) was parsed anywhere in the clause currently being parsed.
-    /// CIP-114: CREATE/MERGE/MATCH allow this grouping, but INSERT does
-    /// not -- `parse_insert` checks this flag after parsing its pattern,
-    /// same reset/scoping as [`Self::clause_labels`].
-    label_saw_paren_group: bool,
-    /// The quantifier forms seen anywhere in the clause currently being
-    /// parsed. Neo4j rejects mixing the pre-GPM bracket quantifier
-    /// (`[*min..max]`, including a bare `[*]`) with a GPM postfix/QPP
-    /// quantifier (`->+`, `->*`, `->{m,n}`, `((...)...){m,n}`) *within the
-    /// same clause* -- but not across separate clauses/statements (CIP-40
-    /// quantifier-mixing.feature scenario 9 vs scenario 10), checked in
-    /// `check_quantifier_mixing`.
-    quantifiers: QuantifierForms,
-    /// Quantifier forms seen inside pattern comprehensions of the clause
-    /// currently being parsed (accumulated across all of its
-    /// comprehensions). A comprehension's inner pattern is its own pattern
-    /// context: its quantifier forms never combine with the clause's own
-    /// (a legacy `[:R*1..2]` inside a comprehension nested in a quantified
-    /// path pattern's WHERE is legal, Neo4j
-    /// QuantifiedPathPatternAcceptance "Pattern comprehension containing a
-    /// variable-length relationship inside a QPP is allowed"), but two
-    /// comprehensions in the same clause still combine with each other
-    /// (CIP-40 label-expression-mixing.feature scenario 13,
-    /// quantifier-mixing.feature scenario 10) -- so these are a separate
-    /// accumulator, checked separately from [`Self::quantifiers`].
-    comprehension_quantifiers: QuantifierForms,
-}
-
-/// The two quantifier syntaxes whose mixing Neo4j rejects within one clause.
-#[derive(Default, Clone, Copy)]
-struct QuantifierForms {
-    /// A legacy bracket-syntax variable-length quantifier (`[*min..max]`).
-    legacy_bracket: bool,
-    /// A GPM postfix or QPP quantifier.
-    gpm_form: bool,
-}
-
-impl QuantifierForms {
-    fn mixed(self) -> bool {
-        self.legacy_bracket && self.gpm_form
-    }
-
-    /// Folds another accumulator's forms into this one.
-    fn absorb(&mut self, other: Self) {
-        self.legacy_bracket |= other.legacy_bracket;
-        self.gpm_form |= other.gpm_form;
-    }
-}
-
-/// The three label-expression forms whose mixing Neo4j rejects within one
-/// clause (CIP-14/CIP-40).
-#[derive(Default, Clone, Copy)]
-struct LabelMixFlags {
-    /// A legacy multi-label colon-conjunction (`:A:B`).
-    legacy_conjunction: bool,
-    /// A GQL label-expression symbol (`&`, `!`, `%`, a grouping paren, or
-    /// `|` on a node).
-    gql_symbol: bool,
-    /// A pattern-position `IS` label/type introducer (`(n IS A)`,
-    /// `-[IS R]->`), even without any GQL symbol beside it.
-    is_introducer: bool,
-}
-
-impl LabelMixFlags {
-    /// The within-one-expression rule (used on the `expression_labels`
-    /// accumulator): colon-conjunction beside a GQL symbol.
-    fn within_expression_mixing(&self) -> bool {
-        self.legacy_conjunction && self.gql_symbol
-    }
-
-    /// The rejection this set of forms triggers, if any. The GQL-symbol rule
-    /// is reported before the `IS` rule, matching the reference engine's
-    /// 42I10-before-42I29 precedence.
-    fn mixing(&self) -> Option<&'static str> {
-        if self.legacy_conjunction && self.gql_symbol {
-            return Some(
-                "InvalidLabelExpression: mixing label expression symbols (|, &, !, and %) with colon (:) between labels is not allowed",
-            );
-        }
-        if self.legacy_conjunction && self.is_introducer {
-            return Some(
-                "MixedIsAndColonConjunction: cannot mix the IS introducer with colon-conjunction within the same clause",
-            );
-        }
-        None
-    }
-}
-
-/// Which accumulator(s) the label forms of the clause being parsed feed.
-/// Neo4j keeps read clauses and write clauses apart when combining the forms
-/// across the clauses of one subquery scope; MERGE is both, and a label
-/// specification written by SET/REMOVE never joins either side.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-enum LabelMixTarget {
-    #[default]
-    None,
-    Read,
-    Write,
-    Both,
 }
 
 /// A single postfix accessor (`.prop` or CIP-131's `[<expr>]`) parsed after
@@ -576,7 +443,7 @@ impl<'a> Parser<'a> {
             comprehension_where_ambiguous_pipe: false,
             comprehension_where_map_required: false,
             exists_subquery_depth: 0,
-            pattern_comprehension_probe_memo: std::collections::HashMap::new(),
+            speculation: Speculation::default(),
             label_group_extent_memo: std::collections::HashMap::new(),
             options,
         })

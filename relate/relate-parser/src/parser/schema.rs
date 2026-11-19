@@ -40,8 +40,7 @@ impl<'a> Parser<'a> {
         // strict: `CREATE INDEX`/`CREATE VECTOR INDEX` reject a
         // labelled or aliased endpoint on either side (CIP-116 create-
         // index-errors[18]/[19]).
-        if self.peek_at(1).ty == TokenType::RightParen
-            && matches!(self.peek_at(2).ty, TokenType::Dash | TokenType::ArrowLeft)
+        if self.peek_at(1).ty == TokenType::RightParen && self.peek_at(2).ty.is_relationship_start()
         {
             self.parse_node_pattern()?; // consume the empty left `()`
             let rel = self.parse_rel_pattern()?;
@@ -94,7 +93,7 @@ impl<'a> Parser<'a> {
         // followed by a dash/left-arrow.
         let saved = self.save_pos();
         let source = self.parse_node_pattern()?;
-        if matches!(self.peek_type(), TokenType::Dash | TokenType::ArrowLeft) {
+        if self.peek_type().is_relationship_start() {
             let rel = self.parse_rel_pattern()?;
             let target = self.parse_node_pattern()?;
             let labels = match &rel.type_expr {
