@@ -13,6 +13,7 @@ use relate_planner::{plan, plan_with_tokens, NoPatternStats};
 use crate::graph::Graph;
 use crate::metrics::{ClauseMetricsRecord, PlanMetricsSink};
 use crate::overlay::ExecGraph;
+use crate::pattern_engine::PatternEngine;
 use crate::test_support::PeakPoolDouble;
 
 use super::super::{execute, execute_read_at, ExecRequest, QueryResult, ReadAdmission};
@@ -217,6 +218,54 @@ pub(crate) fn same_rows(a: &QueryResult, b: &QueryResult) -> bool {
     sort_rows(&mut a);
     sort_rows(&mut b);
     a == b
+}
+
+/// The single-statement assembler: the statement as written (`matched`
+/// plus what follows it) — the one base spelling the pair below and any
+/// caller needing one statement alone read.
+pub(crate) fn written(matched: &str, rest: &str) -> String {
+    format!("{matched} {rest}")
+}
+
+/// The statement differential's pair: the statement as written (matched
+/// plus what follows it) and its held twin — a `WITH *` barrier between
+/// the match and the aggregation defeating the fold, so the general path
+/// answers. Derived from [`written`]; a barrier elsewhere (between two
+/// `MATCH` clauses) is a different shape and stays with its suite.
+pub(crate) fn written_and_held(matched: &str, rest: &str) -> (String, String) {
+    (written(matched, rest), format!("{matched} WITH * {rest}"))
+}
+
+/// A graph with the pattern engine forced to the per-row walker
+/// (`RELATE_PATTERN_ENGINE=walk`'s in-process spelling): the differential
+/// tests' walker-only side.
+pub(crate) fn walk_only(mut graph: Graph) -> Graph {
+    graph.configure_pattern_engine(PatternEngine::Walk);
+    graph
+}
+
+/// The three-way differential the streaming-fold tests share: `written`
+/// (the statement as the planner sees it) must answer like `expected`
+/// (the oracle statement — typically the same statement with a barrier
+/// clause defeating the stream, but any statement answering the same
+/// rows serves) on a graph from `fixture`, and on the walker-only twin
+/// of it. `side` names what `written` exercised in the failure message.
+/// The answer set may be empty — [`same_rows`] compares unconditionally;
+/// a caller that needs the fixture-matches guard asserts it at its own
+/// call site.
+pub(crate) fn assert_written_agrees_with_held(
+    fixture: impl Fn() -> Graph,
+    side: &str,
+    written: &str,
+    expected: &str,
+) {
+    let auto = fixture();
+    let walk = walk_only(fixture());
+    let oracle = exec_cypher(&auto, expected);
+    let got = exec_cypher(&auto, written);
+    assert!(same_rows(&got, &oracle), "{written}: {side} vs expected");
+    let walked = exec_cypher(&walk, written);
+    assert!(same_rows(&walked, &oracle), "{written}: walk vs expected");
 }
 
 /// Run `cypher` under a workspace ledger; the result's rows and the peak

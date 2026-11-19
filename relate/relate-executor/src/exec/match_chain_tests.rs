@@ -55,10 +55,16 @@ fn chained_and_held(first: &str, second: &str, rest: &str) -> (String, String) {
 }
 
 /// `first` and `second` are the two `MATCH` clauses, `rest` what follows.
-/// Chained as written, held with a barrier between them, and walked.
+/// Chained as written, held with a barrier between them, and walked. The
+/// fixture matches (the shared differential admits an empty answer set,
+/// so the guard is the caller's).
 fn assert_agrees(first: &str, second: &str, rest: &str) {
     let (chained, held) = chained_and_held(first, second, rest);
-    assert_written_agrees_with_held(|| ring(40), "chained", &chained, &held);
+    assert!(
+        !exec_cypher(&ring(40).graph, &held).rows.is_empty(),
+        "{chained}: the fixture matches"
+    );
+    assert_written_agrees_with_held(|| ring(40).graph, "chained", &chained, &held);
 }
 
 /// The same three-way agreement for a result whose row order is part of

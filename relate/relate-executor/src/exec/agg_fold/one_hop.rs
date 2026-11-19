@@ -427,16 +427,19 @@ impl<'a> OneHopFold<'a> {
         // re-resolution): the closure borrows it while `accept` borrows
         // self mutably.
         let rel_types = self.rel_filter.types.clone();
+        let rp = &self.path.rels[0];
+        // The bind names are run-local facts (`self.path` never changes
+        // across the row loop): rendered once beside the filter, never
+        // re-rendered per row.
+        let node_var = self.path.nodes[0]
+            .variable
+            .as_ref()
+            .map(|name| name.to_string());
+        let rel_var = self.path.rels[0]
+            .variable
+            .as_ref()
+            .map(|name| name.to_string());
         for row in rows {
-            // Text render: the rung build reads bind names as &str.
-            let node_var = self.path.nodes[0]
-                .variable
-                .as_ref()
-                .map(|name| name.to_string());
-            let rel_var = self.path.rels[0]
-                .variable
-                .as_ref()
-                .map(|name| name.to_string());
             let rung = RowRung::past(row, [node_var.as_deref(), rel_var.as_deref()]);
             // LABS-161: an elementId()/id() equality on the rel variable (or
             // a row-bound rel) seeks the rel directly instead of scanning
@@ -467,13 +470,20 @@ impl<'a> OneHopFold<'a> {
             // LABS-448: the seek (the fold's pattern starts) is stamped inside
             // the one counted funnel; the walk (the neighbor traversal each
             // start feeds) is one span per arm — inclusive of the nested
-            // phases inside.
+            // phases inside. The WHERE's conjuncts ride along (LABS-1838):
+            // the funnel acts only on its seeks over the start variable —
+            // a served one narrows the start set (a serve can over-answer:
+            // `ServedIds::Superset`), and every conjunct (the rel's, the
+            // far node's, a null-bound operand, an over-answered
+            // remainder) stays for the offer's row re-evaluation — so a
+            // selective start predicate narrows this scan the way the rel
+            // seek above narrows its walk: the search, never the result.
             let starts = node_candidates(
                 self.graph,
                 &self.path.nodes[0],
                 row,
                 self.output.params,
-                &[],
+                &conjuncts,
             )?;
             for sid in starts {
                 self.graph.cancel_tick()?;
@@ -481,7 +491,6 @@ impl<'a> OneHopFold<'a> {
                     continue;
                 };
                 let graph = self.graph;
-                let rp = &self.path.rels[0];
                 crate::ctx::phase_walk(|| {
                     graph.try_for_each_neighbor_resolved(sid, rp.direction, &rel_types, |rid| {
                         self.accept(&base, sid, rid, &rung)

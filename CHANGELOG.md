@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Aggregations grouped by a relationship's property with a selective
+  predicate on the start node — for example `MATCH (e:Entity)<-[r:RESOLVED_TO]-(m:Mention)
+  WHERE e.id IN $seeds RETURN e.id AS ent, r.method AS method, count(m) AS n` — no
+  longer scan every node of the start label and walk every one of its
+  edges: the predicate's seeks now answer the fold's start scan, walking
+  only the sought nodes' adjacencies. Results are unchanged — every
+  predicate still applies on the fully bound row.
 - The engine's sidecar directory inside a store is `.relate/`, not
   `.cypherlite/` (the schema-files mirror moves with it): a writable
   open adopts an existing store in place with one directory rename,

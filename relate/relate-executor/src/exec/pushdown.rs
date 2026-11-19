@@ -27,9 +27,7 @@ pub(crate) struct Residual<'a> {
 }
 
 /// The degenerate residual — no conjuncts, empty scope: the one spelling
-/// of "read with no residual pushdown", used by every caller that reads
-/// candidates without a MATCH predicate of its own (the eval walk engine,
-/// the agg folds, the exists probe, the shortest-route start).
+/// of "read with no residual pushdown".
 impl Residual<'_> {
     /// The degenerate case of [`Self::with_conjuncts`]: no conjuncts
     /// either.

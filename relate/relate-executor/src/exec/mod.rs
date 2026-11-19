@@ -857,6 +857,8 @@ mod match_memory_tests;
 #[cfg(test)]
 mod nested_eval_tests;
 #[cfg(test)]
+mod one_hop_fold_tests;
+#[cfg(test)]
 mod path_fold_tests;
 #[cfg(test)]
 mod pivot_tests;
