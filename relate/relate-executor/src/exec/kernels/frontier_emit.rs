@@ -206,26 +206,22 @@ pub(crate) fn capped_rows(
     // unproven, there is nothing left to re-ask through the rule.
     Ok(match outcome {
         RunOutcome::Served(mut walked) => {
-            match emission.finish(&walked, bufs)? {
-                PassBudget::Held(deferred) => {
-                    // The deferred pass's own tally rides the served run:
-                    // its asks are work the record pass must count, and
-                    // the walk fields it never touches are zero.
-                    walked.rule += deferred;
-                    CappedRun::Served {
-                        matched: emission.accepted,
-                        run: walked,
-                    }
-                }
-                PassBudget::Cut(deferred) => {
-                    // The rule that cut is the deferred pass's own — its
-                    // tally, not the runner's, rides the decline.
-                    walked.rule += deferred;
-                    CappedRun::Declined {
-                        facts: walked.facts(),
-                        reason: FrontierRunDecline::RearrivalBudget,
-                    }
-                }
+            // The deferred pass's own tally rides the run either way: its
+            // asks are work the record pass must count, and the walk
+            // fields it never touches are zero.
+            let (budget, deferred) = emission.finish(&walked, bufs)?;
+            walked.rule += deferred;
+            match budget {
+                PassBudget::Held => CappedRun::Served {
+                    matched: emission.accepted,
+                    run: walked,
+                },
+                // The rule that cut is the deferred pass's own — its
+                // tally, not the runner's, rode the decline above.
+                PassBudget::Cut => CappedRun::Declined {
+                    facts: walked.facts(),
+                    reason: FrontierRunDecline::RearrivalBudget,
+                },
             }
         }
         RunOutcome::Declined { facts, reason } => CappedRun::Declined { facts, reason },
@@ -267,18 +263,19 @@ struct Emission<'a> {
 /// The deferred pass's budget answer (ADR-0516): whether the pass's own
 /// rule finished every ask it made or cut on the shared work budget —
 /// the run outcome's second decline source beside the runner's own
-/// rule, never a silently dropped row. Either arm carries the pass
-/// rule's own tally ([`RearivalRule::counters`]): the runner's instance
-/// proved the admissions, this one answered the deferrals, and the
-/// record pass counts both — the caller merges it into the run's
-/// counters, where a bare flag would leave the pass's work invisible.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// rule, never a silently dropped row. The pass returns its verdict
+/// beside the pass rule's own tally ([`RearivalRule::counters`]): the
+/// runner's instance proved the admissions, this one answered the
+/// deferrals, and the record pass counts both — the caller merges the
+/// tally into the run's counters, where a bare flag would leave the
+/// pass's work invisible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PassBudget {
     /// Every deferred ask the pass made ran to its verdict.
-    Held(FrontierCounters),
+    Held,
     /// A deferred ask cut on the shared work budget: no verdict — the
     /// run declines, the caller builds the declined outcome from this.
-    Cut(FrontierCounters),
+    Cut,
 }
 
 /// The admission tail's verdict for one witness: the bound row, or
@@ -354,14 +351,18 @@ impl<'a> Emission<'a> {
     /// answer rides the return (ADR-0516): a cut declines the run (the
     /// caller builds the declined outcome from it), never a silently
     /// dropped row.
-    fn finish(&mut self, walked: &FrontierRun, bufs: &mut RuleBuffers) -> Result<PassBudget> {
+    fn finish(
+        &mut self,
+        walked: &FrontierRun,
+        bufs: &mut RuleBuffers,
+    ) -> Result<(PassBudget, FrontierCounters)> {
         // The level pass's own verdict: whether the cap is full — the
         // fact the deferred asks below are gated on, never re-derived.
         let cap_full = self.on_level(&walked.parents(), &walked.endpoints)?;
         if cap_full || self.deferred.is_empty() {
             // No deferred ask ran — a zero tally, the pass rule's own
             // fields at their defaults.
-            return Ok(PassBudget::Held(FrontierCounters::default()));
+            return Ok((PassBudget::Held, FrontierCounters::default()));
         }
         self.deferred_pass(&walked.arms, bufs)
     }
@@ -377,7 +378,11 @@ impl<'a> Emission<'a> {
     /// the one name resolution per run, never rebuilt here. The pass's
     /// own budget answer rides the return (ADR-0516): a cut declines the
     /// run, never a silently dropped row.
-    fn deferred_pass(&mut self, arms: &[Vec<Arm>], bufs: &mut RuleBuffers) -> Result<PassBudget> {
+    fn deferred_pass(
+        &mut self,
+        arms: &[Vec<Arm>],
+        bufs: &mut RuleBuffers,
+    ) -> Result<(PassBudget, FrontierCounters)> {
         let view = self.ctx.graph;
         let budget = deferred_budget();
         let mut rule = RearivalRule::with_budget(
@@ -405,17 +410,18 @@ impl<'a> Emission<'a> {
                 Admitted::Bound(row, used) => self.accepted.push((row, used)),
                 Admitted::Unproven => {
                     return Err(Error::internal(format!(
-                    "shortest-path route: the proven witness for node {} fails the admission tail",
+                    "capped emission: the deferred witness for node {} fails the admission tail",
                     endpoint.node
                 )))
                 }
             }
         }
-        Ok(if rule.budget_exhausted() {
-            PassBudget::Cut(rule.counters())
+        let budget = if rule.budget_exhausted() {
+            PassBudget::Cut
         } else {
-            PassBudget::Held(rule.counters())
-        })
+            PassBudget::Held
+        };
+        Ok((budget, rule.counters()))
     }
 
     /// A deferred endpoint's witness — the rule's own search for the

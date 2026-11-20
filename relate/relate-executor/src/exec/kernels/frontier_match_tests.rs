@@ -56,6 +56,16 @@ fn engages(cypher: &str, graph: &Graph) -> bool {
     })
 }
 
+/// The pool the statement's contract engages with — panics when the
+/// frontier declines it.
+fn pool_of(cypher: &str, graph: &Graph) -> Pool {
+    decide(cypher, graph, false, &Row::new(), |decision| {
+        decision
+            .unwrap_or_else(|e| panic!("{cypher} engages: {e:?}"))
+            .pool
+    })
+}
+
 // The engage companions — the 42 timeout classes' shapes per the
 // coverage report, every one an unbounded quantifier (the cost gate's
 // rule (a): the DFS cannot halt below its rel-count cap).
@@ -248,67 +258,38 @@ fn the_cost_gate_engages_a_branching_recursion_onto_an_unlabeled_target() {
 #[test]
 fn bounded_walk_mode_engages_with_walk_semantics() {
     let graph = complete_graph();
-    decide(
-        "MATCH REPEATABLE ELEMENTS p = (x:Person)-[:KNOWS*1..3]-(y:Person) \
-         RETURN p LIMIT 5",
-        &graph,
-        false,
-        &Row::new(),
-        |decision| {
-            let contract = decision.unwrap_or_else(|e| panic!("bounded WALK engages: {e:?}"));
-            assert_eq!(
-                contract.pool,
-                Pool::Walk,
-                "the REPEATABLE pool is walk semantics"
-            );
-            assert_eq!(contract.consumer, Consumer::Capped { want: 5 });
-        },
+    let walk = "MATCH REPEATABLE ELEMENTS p = (x:Person)-[:KNOWS*1..3]-(y:Person) RETURN p LIMIT 5";
+    decide(walk, &graph, false, &Row::new(), |decision| {
+        let contract = decision.unwrap_or_else(|e| panic!("bounded WALK engages: {e:?}"));
+        assert_eq!(contract.consumer, Consumer::Capped { want: 5 });
+    });
+    assert_eq!(
+        pool_of(walk, &graph),
+        Pool::Walk,
+        "the REPEATABLE pool is walk semantics"
     );
     // The default pool under the same bounded shape stays trail
     // semantics — the re-arrival rule's territory.
-    decide(
-        "MATCH p = (x:Person)-[:KNOWS*1..3]-(y:Person) RETURN p LIMIT 5",
-        &graph,
-        false,
-        &Row::new(),
-        |decision| {
-            let contract = decision.unwrap_or_else(|e| panic!("the default pool: {e:?}"));
-            assert_eq!(contract.pool, Pool::Default);
-        },
+    assert_eq!(
+        pool_of(
+            "MATCH p = (x:Person)-[:KNOWS*1..3]-(y:Person) RETURN p LIMIT 5",
+            &graph
+        ),
+        Pool::Default
     );
     // The capped consumer carries the per-witness mode checks
     // (`frontier_emit`): an explicit TRAIL rides the default pool
     // exactly like the unwritten mode, and ACYCLIC/SIMPLE reach the
     // frontier through their per-witness cycle checks — declining them
     // is not an available answer for the capped shape.
-    decide(
-        "MATCH p = TRAIL (x:Person)-[:KNOWS*1..3]-(y:Person) RETURN p LIMIT 5",
-        &graph,
-        false,
-        &Row::new(),
-        |decision| {
-            let contract = decision.unwrap_or_else(|e| panic!("capped TRAIL engages: {e:?}"));
-            assert_eq!(
-                contract.pool,
-                Pool::Default,
-                "the default pool checks trails"
-            );
-        },
-    );
-    for mode in ["ACYCLIC", "SIMPLE"] {
-        decide(
-            &format!("MATCH p = {mode} (x:Person)-[:KNOWS*1..3]-(y:Person) RETURN p LIMIT 5"),
-            &graph,
-            false,
-            &Row::new(),
-            |decision| {
-                let contract = decision.unwrap_or_else(|e| panic!("capped {mode} engages: {e:?}"));
-                assert_eq!(
-                    contract.pool,
-                    Pool::Default,
-                    "{mode} answers in the default pool"
-                );
-            },
+    for mode in ["TRAIL", "ACYCLIC", "SIMPLE"] {
+        assert_eq!(
+            pool_of(
+                &format!("MATCH p = {mode} (x:Person)-[:KNOWS*1..3]-(y:Person) RETURN p LIMIT 5"),
+                &graph
+            ),
+            Pool::Default,
+            "{mode} answers in the default pool"
         );
     }
     // The same modes outside the capped consumer stay per-path: a

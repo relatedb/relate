@@ -164,18 +164,6 @@ pub(crate) fn match_resolved_path(
     // The used-set enters in its set form (the caller's pattern-chain
     // carrier) and walks in its arena form from here down.
     let used = UsedRels::from_set(&used);
-    // The per-walk scan-predicate specialization (predicate_spec.rs),
-    // compiled once per row per path and carried by the `PathMatch` every
-    // walk loop reads. The entry row's bindings are the compile's one
-    // row-dependent input: a variable the row already owns never takes a
-    // gate, so none of its conjuncts settle. The bound-name predicate is
-    // the row tier's one spelling ([`crate::row::row_bound`]); its borrow
-    // of the entry row ends with the compile, before the row moves into
-    // the walk.
-    let spec = {
-        let entry_bound = crate::row::row_bound(&row);
-        predicate_spec::WalkSpec::compile(graph, path, params, residual, &entry_bound)
-    };
     // LABS-801: the path's rel-type filters arrive resolved — the caller
     // (the clause's pattern loop) builds them once per pattern, not per
     // row; every hop below filters the adjacency by interned id.
@@ -194,18 +182,26 @@ pub(crate) fn match_resolved_path(
         RelSeek::Gone => return Ok(()),
         RelSeek::Decline => (None, None),
     };
+    // The per-walk scan-predicate specialization (predicate_spec.rs),
+    // compiled once per row per path and carried by the `PathMatch` every
+    // walk loop reads. The entry row's bindings are the compile's one
+    // row-dependent input: a variable the row already owns never takes a
+    // gate, so none of its conjuncts settle. The bound-name predicate is
+    // the row tier's one spelling ([`crate::row::row_bound`]); its borrow
+    // of the entry row ends with the compile, before the row moves into
+    // the walk.
+    let spec = {
+        let entry_bound = crate::row::row_bound(&row);
+        predicate_spec::WalkSpec::compile(graph, path, params, residual, &entry_bound)
+    };
     // The start selection — eligibility, the bound pivot, its estimate
     // gate, and the cheapest-start fallback — in one place
     // (exec/pivot.rs, beside the two selections it orchestrates):
     // `None` is the index-0 forward walk.
     let selection = choose_start(graph, path, &row, params, residual.conjuncts, &seek);
-    // LABS-369: name the start this clause's walk chose — the fact an
-    // opaque `Expand` hid. Recorded per walk (the clause's FIRST walk
-    // wins, so a per-row-varying pivot reports its representative start)
-    // and read once at the clause's metric tick. The mapping lives
-    // beside the vocabulary it interprets, so this site records one
-    // value and the match below only picks the expansion.
-    super::record_walk_start(pivot::walk_start(selection.as_ref(), forced.is_some()));
+    // LABS-369: record the start this walk chose (the clause's first walk
+    // wins; `pivot::walk_start` owns the metric-vocabulary mapping).
+    super::record_walk_start(pivot::walk_start(selection.as_ref(), &seek));
     // The walk's binding-schema ladder — the schema the row holds after
     // each bind, precomputed once per walk: after the start selection
     // picked the arm (the arm decides the backward prefix's rungs),

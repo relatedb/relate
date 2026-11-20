@@ -60,7 +60,7 @@ pub(super) fn with_pivot_disabled<R>(f: impl FnOnce() -> R) -> R {
 /// site records one value.
 pub(super) fn walk_start(
     selection: Option<&Selection>,
-    seek_anchored: bool,
+    seek: &RelSeek,
 ) -> crate::metrics::WalkStart {
     match selection {
         Some(Selection::Pivot((k, _))) => crate::metrics::WalkStart {
@@ -77,7 +77,7 @@ pub(super) fn walk_start(
             // The index-0 start, forward — `seed_side_forward`'s one
             // spelling — with the seek-anchored reason when the walk
             // rides a relationship seek.
-            reason: if seek_anchored {
+            reason: if matches!(seek, RelSeek::Anchored(..)) {
                 crate::metrics::StartReason::SeekAnchored
             } else {
                 crate::metrics::StartReason::IndexZero

@@ -250,8 +250,9 @@ pub(crate) fn compile(
     let mut builder = Builder::new(graph, engine == PatternEngine::Nfa);
     // State 0 is the pattern's first node — the walk's seed side.
     let mut current = builder.alloc()?;
-    let mut leading = 0u32;
-    let mut trailing = 0u32;
+    // The plain context hops either side of the spine: only their count
+    // widens the hop window.
+    let mut context = 0u32;
     let mut spine_len = None;
     for (i, element) in elements.iter().enumerate() {
         match element {
@@ -281,11 +282,7 @@ pub(crate) fn compile(
                 let to = builder.alloc()?;
                 let types = builder.interned(rel)?;
                 builder.push_transition(current, to, types, rel.direction);
-                if i < spine {
-                    leading += 1;
-                } else {
-                    trailing += 1;
-                }
+                context += 1;
                 current = to;
             }
             PatternElement::Quantified(quantified) if i % 2 == 1 => {
@@ -311,8 +308,8 @@ pub(crate) fn compile(
             _ => return None,
         }
     }
-    let spine_len = spine_len?;
-    let context = leading.checked_add(trailing)?;
+    let spine_len = spine_len
+        .expect("the quantified element at the odd index found above reaches the spine arm");
     // An overflowing bound declines (the `?`), never silently turns into
     // the unbounded `None` — that would relax the pattern's semantics.
     let min_hops = spine_len.min.checked_add(context)?;

@@ -8,7 +8,7 @@ use relate_core::tokens::{workspace_meter, LedgerGuard, TokenLedger};
 use relate_core::{Result, Value};
 use relate_front::parse_and_lower;
 use relate_ir::Query;
-use relate_planner::{plan, plan_with_tokens, NoPatternStats};
+use relate_planner::{plan, plan_with_tokens, LogicalPlan, NoPatternStats};
 
 use crate::graph::Graph;
 use crate::metrics::{ClauseMetricsRecord, PlanMetricsSink};
@@ -43,29 +43,24 @@ fn try_exec_lowered(
     cypher: &str,
     params: &BTreeMap<String, Value>,
 ) -> Result<QueryResult> {
-    try_exec_lowered_with_metrics(g, q, cypher, params, None, false)
+    run_planned(g, &plan(q, &mut |_| false)?, cypher, params, None)
 }
 
-/// The canonical run scaffold with a plan-metrics sink attached — the
-/// one spelling [`try_exec_lowered`] reads with `None` and [`profiled`]
-/// with its recorder, so the scaffold (plan, pin, schema, admission) is
-/// never re-spelled beside it.
-fn try_exec_lowered_with_metrics(
+/// The canonical run scaffold over an already-planned query, with a
+/// plan-metrics sink attached — the one spelling [`try_exec_lowered`]
+/// reads with `None` and [`profiled`] with its recorder, so the scaffold
+/// (pin, schema, admission) is never re-spelled beside it. The caller
+/// plans: plain ([`plan`]) or token-resolved ([`plan_with_tokens`]).
+fn run_planned(
     g: &Graph,
-    q: Query,
+    p: &LogicalPlan,
     cypher: &str,
     params: &BTreeMap<String, Value>,
     plan_metrics: Option<&dyn PlanMetricsSink>,
-    resolve_tokens: bool,
 ) -> Result<QueryResult> {
-    let p = if resolve_tokens {
-        plan_with_tokens(q, &mut |_| false, &NoPatternStats, g)?
-    } else {
-        plan(q, &mut |_| false)?
-    };
     let pin = g.pin_now()?;
     let schema = g.schema_snapshot();
-    let mut request = ExecRequest::new(&p, params, cypher);
+    let mut request = ExecRequest::new(p, params, cypher);
     request.plan_metrics = plan_metrics;
     execute_read_at(&ReadAdmission {
         graph: g,
@@ -85,15 +80,14 @@ pub(crate) fn exec_cypher(g: &Graph, cypher: &str) -> QueryResult {
 /// (ADR-0541), the way the facade plans — the run the id-consuming reads
 /// are tested under.
 pub(crate) fn exec_cypher_resolved(g: &Graph, cypher: &str) -> QueryResult {
-    try_exec_lowered_with_metrics(
-        g,
+    let planned = plan_with_tokens(
         parse_and_lower(cypher).unwrap(),
-        cypher,
-        &BTreeMap::new(),
-        None,
-        true,
+        &mut |_| false,
+        &NoPatternStats,
+        g,
     )
-    .unwrap()
+    .unwrap();
+    run_planned(g, &planned, cypher, &BTreeMap::new(), None).unwrap()
 }
 
 /// The fallible form of [`exec_cypher`] (ADR-0175's integer-argument-site
@@ -155,15 +149,8 @@ pub(crate) fn with_flag_disabled<R>(
 /// rider's engagement pins, the store-read arm's save/restore pin).
 pub(crate) fn profiled(g: &Graph, cypher: &str) -> Vec<ClauseMetricsRecord> {
     let recorder = super::ClauseRecords(RefCell::new(Vec::new()));
-    try_exec_lowered_with_metrics(
-        g,
-        parse_and_lower(cypher).unwrap(),
-        cypher,
-        &BTreeMap::new(),
-        Some(&recorder),
-        false,
-    )
-    .unwrap();
+    let planned = plan(parse_and_lower(cypher).unwrap(), &mut |_| false).unwrap();
+    run_planned(g, &planned, cypher, &BTreeMap::new(), Some(&recorder)).unwrap();
     recorder.0.take()
 }
 

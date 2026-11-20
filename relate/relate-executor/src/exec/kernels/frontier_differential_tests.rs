@@ -47,9 +47,9 @@ enum Kind {
     Capped { uncapped: &'static str },
     /// An EXISTS verdict: answer-set equality (one boolean row).
     Exists,
-    /// An answer-shape decline (full enumeration, ordered cap, path
-    /// count): identical rows, zero engagements — the fall-through's
-    /// own proof.
+    /// An answer-shape decline (the [`STATEMENTS`] entries tagged with
+    /// it are the representative list): identical rows, zero
+    /// engagements — the fall-through's own proof.
     Decline,
 }
 

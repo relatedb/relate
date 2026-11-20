@@ -244,12 +244,12 @@ fn plain_pattern(path: &PathPattern) -> Option<()> {
 /// `*k` spelling reaches only this fold; the caller holds the returned
 /// value for the compile's lifetime.
 pub(super) fn chain_spelling(patterns: &[PathPattern]) -> Cow<'_, [PathPattern]> {
-    match patterns {
-        [only] => unroll_fixed(only).map_or(Cow::Borrowed(patterns), |unrolled| {
-            Cow::Owned(vec![unrolled])
-        }),
-        _ => Cow::Borrowed(patterns),
-    }
+    let [only] = patterns else {
+        return Cow::Borrowed(patterns);
+    };
+    unroll_fixed(only).map_or(Cow::Borrowed(patterns), |unrolled| {
+        Cow::Owned(vec![unrolled])
+    })
 }
 
 /// The pattern with every exact `*k` relationship spelled out as `k`
