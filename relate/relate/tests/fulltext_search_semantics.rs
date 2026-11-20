@@ -5,26 +5,24 @@
 //! (the calibrated score values are asserted directly), `SKIP`/`OFFSET`
 //! page that ranked list, `WITH ANALYZER` is a per-row expression, and the
 //! procedures run the same scanner (multi-term OR over every indexed
-//! property).
+//! property). The docs family pins the analyzer-side semantics of
+//! ADR-0636 — an index's configured analyzer analyzes its stored tokens
+//! and its no-override queries (the reported repro: `refunds` finds
+//! `refund` on an `english` index) — rather than live probes.
 
 mod common;
 
-use common::assert_syntax_error;
 use common::connection;
 use common::first_column_strings as titles;
+use common::fulltext::assert_syntax_error_on_both_paths;
+use common::fulltext::fulltext_agree;
+use common::fulltext::fulltext_procedure;
+use common::fulltext::fulltext_search;
+use common::fulltext::scored;
+use common::fulltext::scored_names;
+use common::fulltext::sorted_names;
 use common::run;
 use relate::Value;
-
-fn scored(result: &relate::QueryResult) -> Vec<(String, f64)> {
-    result
-        .rows
-        .iter()
-        .map(|row| match (&row[0], &row[1]) {
-            (Value::String(title), Value::Float(score)) => (title.to_string(), *score),
-            other => panic!("expected (STRING, FLOAT), got {other:?}"),
-        })
-        .collect()
-}
 
 /// The FulltextSearchAcceptance background: the three fulltext indexes and
 /// the six movie plots, with the index columns the scenarios search.
@@ -199,6 +197,170 @@ fn per_row_analyzer_stems_english() {
     );
 }
 
+/// The docs store: the same two texts under an `english`-analyzer index
+/// (`Doc`) and the default one (`Plain`) — the reported repro's corpus.
+fn docs_store() -> relate::Connection {
+    let mut c = connection();
+    run(
+        &mut c,
+        "CREATE FULLTEXT INDEX enDocs IF NOT EXISTS FOR (d:Doc) ON EACH [d.text] \
+         OPTIONS {indexConfig: {`fulltext.analyzer`: 'english'}}",
+    );
+    run(
+        &mut c,
+        "CREATE FULLTEXT INDEX plainDocs IF NOT EXISTS FOR (d:Plain) ON EACH [d.text]",
+    );
+    run(&mut c, "CALL db.awaitIndexes()");
+    run(
+        &mut c,
+        "CREATE (:Doc {text: 'a refund was issued'}), \
+         (:Doc {text: 'the card was charged twice'}), \
+         (:Plain {text: 'a refund was issued'}), \
+         (:Plain {text: 'the card was charged twice'})",
+    );
+    c
+}
+
+/// The docs store's two sides: the `english`-analyzer index and the
+/// default one. Each side's correlated label and index is held once, so a
+/// crossed pair cannot be spelled.
+#[derive(Clone, Copy)]
+enum DocsSide {
+    /// `(Doc)` under `enDocs` — the `english` analyzer.
+    English,
+    /// `(Plain)` under `plainDocs` — the default analyzer.
+    Plain,
+}
+
+impl DocsSide {
+    /// The side's correlated label and fulltext index.
+    fn label_and_index(self) -> (&'static str, &'static str) {
+        match self {
+            Self::English => ("Doc", "enDocs"),
+            Self::Plain => ("Plain", "plainDocs"),
+        }
+    }
+}
+
+/// Both entry points over one side of the docs store — the shared
+/// agreement helper through the side's correlated pair: the ranked hits.
+fn docs_hits(c: &mut relate::Connection, side: DocsSide, query: &str) -> Vec<(String, f64)> {
+    let (label, index) = side.label_and_index();
+    fulltext_agree(c, label, index, "text", 5, query)
+}
+
+/// The ranked names of the docs store's agreement hits.
+fn docs_names(c: &mut relate::Connection, side: DocsSide, query: &str) -> Vec<String> {
+    scored_names(&docs_hits(c, side, query))
+}
+
+/// An `english` index analyzes its stored tokens and the no-override query
+/// (ADR-0636): an inflected query term crosses to the stem through both
+/// entry points, and the analyzer's stop words match nothing on either
+/// side.
+#[test]
+fn an_english_index_matches_inflections_on_both_entry_points() {
+    let mut c = docs_store();
+    for (query, expected) in [
+        ("refunds", vec!["a refund was issued"]),
+        ("refund", vec!["a refund was issued"]),
+        ("charge", vec!["the card was charged twice"]),
+        ("issued", vec!["a refund was issued"]),
+        ("refun*", vec!["a refund was issued"]),
+        ("the", vec![]),
+        (
+            "refund OR charged",
+            vec!["a refund was issued", "the card was charged twice"],
+        ),
+        (
+            "refund charged",
+            vec!["a refund was issued", "the card was charged twice"],
+        ),
+    ] {
+        assert_eq!(
+            docs_names(&mut c, DocsSide::English, query),
+            expected,
+            "{query}"
+        );
+    }
+}
+
+/// The hits of an implicit-OR query rank by the calibrated BM25, not a
+/// constant.
+#[test]
+fn an_english_index_ranks_hits_by_bm25() {
+    let mut c = docs_store();
+    let hits = docs_hits(&mut c, DocsSide::English, "refund charged");
+    assert_eq!(
+        scored_names(&hits),
+        ["a refund was issued", "the card was charged twice"]
+    );
+    assert!(hits[0].1 > hits[1].1, "{hits:?}");
+    assert!(hits.iter().all(|(_, score)| *score != 1.0), "{hits:?}");
+}
+
+/// The default analyzer (`standard-no-stop-words`) keeps both sides
+/// unstemmed and keeps stop words.
+#[test]
+fn the_default_index_keeps_both_sides_unstemmed() {
+    let mut c = docs_store();
+    for (query, expected) in [
+        ("refunds", vec![]),
+        ("refund", vec!["a refund was issued"]),
+        ("the", vec!["the card was charged twice"]),
+    ] {
+        assert_eq!(
+            docs_names(&mut c, DocsSide::Plain, query),
+            expected,
+            "{query}"
+        );
+    }
+}
+
+/// `WITH ANALYZER` overrides the query side only (ADR-0636): the standard
+/// analyzer leaves `refunds` unstemmed against the english index's stems,
+/// and the english analyzer stems a query against the default index's
+/// unstemmed base forms.
+#[test]
+fn with_analyzer_overrides_the_query_side_only() {
+    let mut c = docs_store();
+    for (side, query, analyzer, expected) in [
+        (
+            DocsSide::English,
+            "refunds",
+            Some("standard"),
+            &[] as &[&str],
+        ),
+        (
+            DocsSide::English,
+            "refund",
+            Some("standard"),
+            &["a refund was issued"],
+        ),
+        (
+            DocsSide::Plain,
+            "refunds",
+            Some("english"),
+            &["a refund was issued"],
+        ),
+    ] {
+        let (label, index) = side.label_and_index();
+        let hits = fulltext_search(&mut c, label, index, "text", 5, query, analyzer);
+        assert_eq!(scored_names(&hits), expected, "{label} {query}");
+    }
+    // A NULL `WITH ANALYZER` is no override, so the query follows the
+    // index's analyzer and the inflection still crosses. The null literal
+    // is its own expression form, which the quoted-name template cannot
+    // render.
+    let result = run(
+        &mut c,
+        "MATCH (d:Doc) \
+         SEARCH d IN (FULLTEXT INDEX enDocs FOR 'refunds' WITH ANALYZER null LIMIT 5) \
+         RETURN d.text",
+    );
+    assert_eq!(titles(&result), ["a refund was issued"]);
+}
+
 /// FulltextProcedureDeprecationAcceptance [5]/[6]/[7]: the procedures run
 /// the same query parser and scanner as SEARCH — multi-term queries are
 /// OR'd over every indexed property (title and plot), and a multi-label /
@@ -276,33 +438,10 @@ fn people_store() -> relate::Connection {
     c
 }
 
-fn sorted_names(hits: &[(String, f64)]) -> Vec<String> {
-    let mut names: Vec<String> = hits.iter().map(|(name, _)| name.clone()).collect();
-    names.sort();
-    names
-}
-
-fn search_names(c: &mut relate::Connection, query: &str) -> Vec<(String, f64)> {
-    let result = run(
-        c,
-        &format!(
-            "MATCH (p:Person) \
-             SEARCH p IN (FULLTEXT INDEX personText FOR '{query}' LIMIT 10) \
-             SCORE AS score RETURN p.name AS name, score ORDER BY score DESC, name ASC"
-        ),
-    );
-    scored(&result)
-}
-
-fn procedure_names(c: &mut relate::Connection, query: &str) -> Vec<String> {
-    let result = run(
-        c,
-        &format!(
-            "CALL db.index.fulltext.queryNodes('personText', '{query}') \
-             YIELD node, score RETURN node.name AS name ORDER BY score DESC, name ASC"
-        ),
-    );
-    titles(&result)
+/// Both entry points over the people store's `personText` index — the
+/// shared agreement helper through this store's shape: the ranked hits.
+fn people_hits(c: &mut relate::Connection, query: &str) -> Vec<(String, f64)> {
+    fulltext_agree(c, "Person", "personText", "name", 10, query)
 }
 
 /// `term~N` matches near terms (a transposition or one insertion away),
@@ -311,31 +450,21 @@ fn procedure_names(c: &mut relate::Connection, query: &str) -> Vec<String> {
 #[test]
 fn fuzzy_term_matches_near_spellings() {
     let mut c = people_store();
-    let hits = search_names(&mut c, "kolleger~1");
-    assert_eq!(
-        hits.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
-        ["Kolleger", "Kollegger"]
-    );
+    let hits = people_hits(&mut c, "kolleger~1");
+    assert_eq!(scored_names(&hits), ["Kolleger", "Kollegger"]);
     assert!(hits[0].1 > hits[1].1, "{hits:?}");
-    assert_eq!(
-        procedure_names(&mut c, "kolleger~1"),
-        ["Kolleger", "Kollegger"]
-    );
 
     for exact in ["kolleger~0", "kolleger"] {
         assert_eq!(
-            search_names(&mut c, exact)
-                .into_iter()
-                .map(|(n, _)| n)
-                .collect::<Vec<_>>(),
+            scored_names(&people_hits(&mut c, exact)),
             ["Kolleger"],
             "{exact}"
         );
     }
     // A bare `~` is Lucene's default distance 2.
-    assert_eq!(search_names(&mut c, "kollger~").len(), 2);
+    assert_eq!(people_hits(&mut c, "kollger~").len(), 2);
     // The suffix digit is never a term: `~1` must not require a token `1`.
-    assert_eq!(search_names(&mut c, "kolleger~1 OR zzz").len(), 2);
+    assert_eq!(people_hits(&mut c, "kolleger~1 OR zzz").len(), 2);
 }
 
 /// The reported case: `kolleger~1 AND <other term>` composes — the fuzzy
@@ -353,16 +482,11 @@ fn fuzzy_clause_composes_with_boolean_operators() {
             vec!["Kolleger", "Kollegger"],
         ),
     ] {
-        let found: Vec<String> = search_names(&mut c, query)
-            .into_iter()
-            .map(|(n, _)| n)
-            .collect();
-        assert_eq!(found, expected, "SEARCH {query}");
-        let mut via_procedure = procedure_names(&mut c, query);
-        via_procedure.sort();
-        let mut expected_sorted = expected.clone();
-        expected_sorted.sort();
-        assert_eq!(via_procedure, expected_sorted, "procedure {query}");
+        assert_eq!(
+            scored_names(&people_hits(&mut c, query)),
+            expected,
+            "{query}"
+        );
     }
 }
 
@@ -370,20 +494,20 @@ fn fuzzy_clause_composes_with_boolean_operators() {
 #[test]
 fn boost_reorders_without_changing_the_match_set() {
     let mut c = people_store();
-    let plain = search_names(&mut c, "consultant lamp");
-    let boosted = search_names(&mut c, "consultant^10 lamp");
+    let plain = people_hits(&mut c, "consultant lamp");
+    let boosted = people_hits(&mut c, "consultant^10 lamp");
     assert_eq!(sorted_names(&plain), sorted_names(&boosted));
     // `lamp` is rarer than `consultant`, so Anna leads until `consultant`
     // is boosted past it.
     assert_eq!(plain[0].0, "Anna", "{plain:?}");
     assert_ne!(boosted[0].0, "Anna", "{boosted:?}");
     // Zero boost keeps the match, scoring 0.
-    let zero = search_names(&mut c, "lamp^0");
+    let zero = people_hits(&mut c, "lamp^0");
     assert_eq!(zero.len(), 1);
     assert_eq!(zero[0].1, 0.0);
     // Boost composes with fuzzy.
-    let both = search_names(&mut c, "kolleger~1^2");
-    let single = search_names(&mut c, "kolleger~1");
+    let both = people_hits(&mut c, "kolleger~1^2");
+    let single = people_hits(&mut c, "kolleger~1");
     assert!((both[0].1 - 2.0 * single[0].1).abs() < 1e-9, "{both:?}");
 }
 
@@ -397,31 +521,6 @@ fn malformed_fuzzy_and_boost_suffixes_are_syntax_errors() {
         ("Person", "personText"),
         &["lamp^x", "lamp~1.5", "lamp^-1", "~1"],
     );
-}
-
-/// Each query is a syntax error through the SEARCH clause and through
-/// `queryNodes` on `(label, index)`.
-fn assert_syntax_error_on_both_paths(
-    c: &mut relate::Connection,
-    (label, index): (&str, &str),
-    queries: &[&str],
-) {
-    for query in queries {
-        let error = c
-            .query(&format!(
-                "MATCH (p:{label}) \
-                 SEARCH p IN (FULLTEXT INDEX {index} FOR '{query}' LIMIT 5) RETURN p.name"
-            ))
-            .expect_err(query);
-        assert_syntax_error(&error);
-        let error = c
-            .query(&format!(
-                "CALL db.index.fulltext.queryNodes('{index}', '{query}') YIELD node \
-                 RETURN node.name"
-            ))
-            .expect_err(query);
-        assert_syntax_error(&error);
-    }
 }
 
 /// Pins the live Neo4j 2026.09-enterprise probe values: the closeness
@@ -443,17 +542,10 @@ fn fuzzy_matches_the_live_probe_values() {
          (:Person {name: 'Colleger'}), (:Person {name: 'Kolegger'}), \
          (:Person {name: 'Kolleggar'}), (:Person {name: 'Anna'})",
     );
-    let hits = |c: &mut relate::Connection, query: &str| -> Vec<(String, f64)> {
-        let result = run(
-            c,
-            &format!(
-                "CALL db.index.fulltext.queryNodes('nameText', '{query}') \
-                 YIELD node, score RETURN node.name AS name, score \
-                 ORDER BY score DESC, name ASC"
-            ),
-        );
-        scored(&result)
-    };
+    // The probe values are the procedure's ranked pairs — the canonical
+    // helper through this store's binding.
+    let hits =
+        |c: &mut relate::Connection, query: &str| fulltext_procedure(c, "nameText", "name", query);
     let score_of = |hits: &[(String, f64)], name: &str| -> f64 {
         hits.iter().find(|(n, _)| n == name).expect(name).1
     };
@@ -495,278 +587,4 @@ fn fuzzy_matches_the_live_probe_values() {
     let plain = hits(&mut c, "anna");
     let scaled = hits(&mut c, "anna^1.5");
     assert!((scaled[0].1 - 1.5 * plain[0].1).abs() < 1e-9);
-}
-
-/// The speaker-template store: the same accented names under a
-/// `standard-folding` index (`Folded`) and the default one (`Plain`),
-/// mirroring the live Neo4j 2026.09-enterprise probe corpus.
-fn speaker_store() -> relate::Connection {
-    let mut c = connection();
-    for (label, options) in [
-        (
-            "Folded",
-            " OPTIONS {indexConfig: {`fulltext.analyzer`: 'standard-folding'}}",
-        ),
-        ("Plain", ""),
-    ] {
-        run(
-            &mut c,
-            &format!(
-                "CREATE FULLTEXT INDEX idx{label} IF NOT EXISTS \
-                 FOR (p:{label}) ON EACH [p.name]{options}"
-            ),
-        );
-    }
-    run(&mut c, "CALL db.awaitIndexes()");
-    for label in ["Folded", "Plain"] {
-        run(
-            &mut c,
-            &format!(
-                "UNWIND ['Eifrém', 'Kollegger', 'Kolleggers', 'Kollegen', 'Kollegium', \
-                 'Andreas Satéras', 'Müller', 'Zoë', 'naïve', 'Æther', 'Straße', 'Łódź', \
-                 'Eifrem plain', 'Crème brûlée'] AS n CREATE (:{label} {{name: n}})"
-            ),
-        );
-    }
-    c
-}
-
-fn speaker_search(c: &mut relate::Connection, label: &str, query: &str) -> Vec<(String, f64)> {
-    let result = run(
-        c,
-        &format!(
-            "MATCH (p:{label}) \
-             SEARCH p IN (FULLTEXT INDEX idx{label} FOR '{query}' LIMIT 50) \
-             SCORE AS score RETURN p.name AS name, score ORDER BY score DESC, name ASC"
-        ),
-    );
-    scored(&result)
-}
-
-fn speaker_procedure(c: &mut relate::Connection, label: &str, query: &str) -> Vec<(String, f64)> {
-    let result = run(
-        c,
-        &format!(
-            "CALL db.index.fulltext.queryNodes('idx{label}', '{query}') \
-             YIELD node, score RETURN node.name AS name, score ORDER BY score DESC, name ASC"
-        ),
-    );
-    scored(&result)
-}
-
-/// Both entry points, which must agree; returns the sorted names.
-fn speakers(c: &mut relate::Connection, label: &str, query: &str) -> Vec<String> {
-    let clause = speaker_search(c, label, query);
-    assert_eq!(
-        sorted_names(&clause),
-        sorted_names(&speaker_procedure(c, label, query)),
-        "{label} {query}"
-    );
-    sorted_names(&clause)
-}
-
-/// The reported cases: a `standard-folding` index folds diacritics at index
-/// and query time (`eifrem` finds `Eifrém`, `andreas sateras` finds
-/// `Andreas Satéras`), where the default index keeps them distinct.
-#[test]
-fn a_folding_index_folds_stored_tokens_and_query_terms() {
-    let mut c = speaker_store();
-    for (query, expected) in [
-        ("eifrem", vec!["Eifrem plain", "Eifrém"]),
-        ("EIFRÉM", vec!["Eifrem plain", "Eifrém"]),
-        ("andreas sateras", vec!["Andreas Satéras"]),
-        ("andreas satéras", vec!["Andreas Satéras"]),
-        ("muller", vec!["Müller"]),
-        ("zoe naive", vec!["Zoë", "naïve"]),
-        ("aether", vec!["Æther"]),
-        ("strasse", vec!["Straße"]),
-        ("lodz", vec!["Łódź"]),
-        ("creme brulee", vec!["Crème brûlée"]),
-    ] {
-        assert_eq!(speakers(&mut c, "Folded", query), expected, "{query}");
-    }
-    // The default analyzer does not fold either side.
-    assert_eq!(speakers(&mut c, "Plain", "eifrem"), ["Eifrem plain"]);
-    assert_eq!(speakers(&mut c, "Plain", "eifrém"), ["Eifrém"]);
-    assert!(speakers(&mut c, "Plain", "andreas sateras").contains(&"Andreas Satéras".to_string()));
-    assert!(speakers(&mut c, "Plain", "muller").is_empty());
-    // `WITH ANALYZER` folds the query side only: stored tokens stay as
-    // indexed, so a folded query term misses an unfolded index.
-    let result = run(
-        &mut c,
-        "MATCH (p:Plain) SEARCH p IN (FULLTEXT INDEX idxPlain FOR 'muller' \
-         WITH ANALYZER 'standard-folding' LIMIT 5) RETURN p.name",
-    );
-    assert!(result.rows.is_empty());
-}
-
-/// Fuzzy terms are lowercased but never folded (live probes): `eifrém~0`
-/// misses the folded `eifrem` while `eifrém~1` is one edit away. Wildcard
-/// terms are folded under a folding index — a deliberate deviation from live
-/// (ADR-0583), so `Müll*`, `mull*`, `MÜLL*` and `EIFRÉ*` all find the folded
-/// tokens — and keep their accents on an index that does not fold.
-#[test]
-fn fuzzy_terms_are_not_folded_but_wildcards_are() {
-    let mut c = speaker_store();
-    assert!(speakers(&mut c, "Folded", "eifrém~0").is_empty());
-    assert_eq!(
-        speakers(&mut c, "Folded", "eifrém~1"),
-        ["Eifrem plain", "Eifrém"]
-    );
-    assert_eq!(speakers(&mut c, "Folded", "muller~0"), ["Müller"]);
-    for query in ["mull*", "Müll*", "MÜLL*", "m?ller", "*üller"] {
-        assert_eq!(speakers(&mut c, "Folded", query), ["Müller"], "{query}");
-    }
-    assert_eq!(
-        speakers(&mut c, "Folded", "EIFRÉ*"),
-        ["Eifrem plain", "Eifrém"]
-    );
-    assert_eq!(speakers(&mut c, "Folded", "sater*"), ["Andreas Satéras"]);
-    assert_eq!(speakers(&mut c, "Folded", "Satér*"), ["Andreas Satéras"]);
-    // `ß` folds to `ss`: the literal folds, and `?` counts folded characters.
-    assert_eq!(speakers(&mut c, "Folded", "straß*"), ["Straße"]);
-    assert_eq!(speakers(&mut c, "Folded", "stra??e"), ["Straße"]);
-    assert!(speakers(&mut c, "Folded", "stra?e").is_empty());
-    // Control: the default index stores accented tokens and does not fold
-    // wildcards, so the accent is what matches.
-    assert_eq!(speakers(&mut c, "Plain", "Müll*"), ["Müller"]);
-    assert_eq!(speakers(&mut c, "Plain", "MÜLL*"), ["Müller"]);
-    assert_eq!(speakers(&mut c, "Plain", "EIFRÉ*"), ["Eifrém"]);
-    assert!(speakers(&mut c, "Plain", "mull*").is_empty());
-    assert!(speakers(&mut c, "Plain", "sater*").is_empty());
-    assert!(speakers(&mut c, "Plain", "straß*").contains(&"Straße".to_string()));
-    assert!(speakers(&mut c, "Plain", "strass*").is_empty());
-}
-
-/// The reported prefix case and the wildcard forms: `*` runs, `?` single
-/// characters, leading wildcards, field filters, case-insensitivity.
-#[test]
-fn wildcard_terms_match_prefixes_infixes_and_single_characters() {
-    let mut c = speaker_store();
-    let kolleg = ["Kollegen", "Kollegger", "Kolleggers", "Kollegium"];
-    for (query, expected) in [
-        ("Kollegg*", vec!["Kollegger", "Kolleggers"]),
-        ("KOLLEGG*", vec!["Kollegger", "Kolleggers"]),
-        ("kolleg*", kolleg.to_vec()),
-        ("kolleg**", kolleg.to_vec()),
-        ("*olleg*", kolleg.to_vec()),
-        ("*gger", vec!["Kollegger"]),
-        ("k?llegger", vec!["Kollegger"]),
-        ("?ollegger", vec!["Kollegger"]),
-        ("kolleg?er", vec!["Kollegger"]),
-        ("koll*gger", vec!["Kollegger"]),
-        ("name:kolleg*", kolleg.to_vec()),
-        ("nosuch:kolleg*", vec![]),
-        ("zzz*", vec![]),
-    ] {
-        for label in ["Plain", "Folded"] {
-            assert_eq!(speakers(&mut c, label, query), expected, "{label} {query}");
-        }
-    }
-    // `*` and `*:*` match every entity with a token; `?` only one-character
-    // tokens (none here).
-    for query in ["*", "**", "name:*", "*:*"] {
-        assert_eq!(speakers(&mut c, "Plain", query).len(), 14, "{query}");
-    }
-    assert!(speakers(&mut c, "Plain", "?").is_empty());
-}
-
-/// Wildcard terms score a constant 1.0 (times the boost) however long the
-/// entity or how many terms match, and sum with the other clauses.
-#[test]
-fn wildcard_scoring_is_constant_and_composes_with_other_clauses() {
-    let mut c = speaker_store();
-    for (query, expected) in [("kolleg*", 1.0), ("kolleg*^3", 3.0), ("kolleg*^0", 0.0)] {
-        for hits in [
-            speaker_search(&mut c, "Plain", query),
-            speaker_procedure(&mut c, "Plain", query),
-        ] {
-            assert_eq!(hits.len(), 4, "{query}");
-            assert!(hits.iter().all(|(_, score)| *score == expected), "{query}");
-        }
-    }
-    // An exact term adds its BM25 on top of the constant.
-    let hits = speaker_search(&mut c, "Plain", "kolleg* eifrem");
-    assert_eq!(hits.len(), 5);
-    let (name, score) = hits.last().expect("a hit");
-    assert_eq!(name, "Eifrem plain");
-    assert!(*score > 0.0 && *score < 1.0, "{score}");
-    // A fuzzy suffix on a wildcard is ignored, as live.
-    assert_eq!(
-        speaker_search(&mut c, "Plain", "kolleg*~1"),
-        speaker_search(&mut c, "Plain", "kolleg*")
-    );
-    assert_eq!(
-        speakers(&mut c, "Plain", "kolleger~1 kolleg*"),
-        ["Kollegen", "Kollegger", "Kolleggers", "Kollegium"]
-    );
-}
-
-#[test]
-fn wildcards_obey_and_not_and_clause_groups() {
-    let mut c = speaker_store();
-    for (query, expected) in [
-        (
-            "kolleg* AND NOT kollegger",
-            vec!["Kollegen", "Kolleggers", "Kollegium"],
-        ),
-        ("kolleg* AND eifrem", vec![]),
-        ("NOT kolleg*", vec![]),
-        ("kollegg* AND NOT kolleggers", vec!["Kollegger"]),
-        ("(kollegg*) OR zoë", vec!["Kollegger", "Kolleggers", "Zoë"]),
-    ] {
-        assert_eq!(speakers(&mut c, "Plain", query), expected, "{query}");
-    }
-}
-
-/// An escaped wildcard character is plain text the analyzer drops
-/// (`kollegger\*` is the term `kollegger`, `kolleg\*` the term `kolleg`), and
-/// a quoted word is analyzed as text rather than expanded.
-#[test]
-fn escaped_and_quoted_wildcards_are_ordinary_text() {
-    let mut c = speaker_store();
-    assert_eq!(speakers(&mut c, "Plain", r"kollegger\\*"), ["Kollegger"]);
-    assert!(speakers(&mut c, "Plain", r"kolleg\\*").is_empty());
-    assert!(speakers(&mut c, "Plain", r#"\"kolleg*\""#).is_empty());
-    assert_eq!(
-        speakers(&mut c, "Plain", r#"\"kollegger*\""#),
-        ["Kollegger"]
-    );
-}
-
-/// A wildcard expands over the whole vocabulary: Lucene's 1024-clause limit
-/// does not apply (live: 3000 distinct terms, 3000 hits).
-#[test]
-fn wildcard_expansion_is_not_capped() {
-    let mut c = connection();
-    run(
-        &mut c,
-        "CREATE FULLTEXT INDEX idxBig FOR (n:Big) ON EACH [n.name]",
-    );
-    run(&mut c, "CALL db.awaitIndexes()");
-    run(
-        &mut c,
-        "UNWIND range(0, 1999) AS i CREATE (:Big {name: 'tok' + toString(i) + ' common'})",
-    );
-    let hits = run(
-        &mut c,
-        "CALL db.index.fulltext.queryNodes('idxBig', 'tok*') YIELD score RETURN score",
-    );
-    assert_eq!(hits.rows.len(), 2000);
-    let hits = run(
-        &mut c,
-        "MATCH (n:Big) SEARCH n IN (FULLTEXT INDEX idxBig FOR 't*k1?9' LIMIT 100) \
-         RETURN n.name",
-    );
-    assert_eq!(hits.rows.len(), 10);
-}
-
-#[test]
-fn wildcard_suffix_errors_are_syntax_errors() {
-    let mut c = speaker_store();
-    assert_syntax_error_on_both_paths(
-        &mut c,
-        ("Plain", "idxPlain"),
-        &["kolleg*^x", "kolleg*^", "kolleg*^-1", "~1", "kolleg*^2~1"],
-    );
 }

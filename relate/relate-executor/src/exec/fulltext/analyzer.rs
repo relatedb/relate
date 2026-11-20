@@ -162,14 +162,15 @@ const ANALYZERS: [(&str, Analyzer, &str); 45] = [
 
 impl Analyzer {
     /// Resolve one evaluated `WITH ANALYZER` value against the canonical
-    /// analyzer-name table. A NULL value is CIP-225's "no override" (live
-    /// 2026.10.1 returns the standard-analyzer hits, no error), a STRING
-    /// must name a live-admitted analyzer (live 22N27), and every other
-    /// type is live's 22NB1 string type mismatch.
-    pub(crate) fn from_value(value: &Value) -> Result<Self> {
+    /// analyzer-name table. A NULL value is no override — live 2026.10.1
+    /// probed a NULL analyzer on a default index, where the hits are the
+    /// same either way — so the query follows the index's own analyzer
+    /// (ADR-0636). A STRING must name a live-admitted analyzer (live
+    /// 22N27), and every other type is live's 22NB1 string type mismatch.
+    pub(crate) fn from_value(value: &Value) -> Result<Option<Self>> {
         match value {
-            Value::Null => Ok(Self::Standard),
-            Value::String(name) => Self::from_name(name).ok_or_else(|| {
+            Value::Null => Ok(None),
+            Value::String(name) => Self::from_name(name).map(Some).ok_or_else(|| {
                 Error::argument_error(format!(
                     "Invalid input '{name}' for analyzer name. Expected to be {}.",
                     analyzer_names()
@@ -195,7 +196,11 @@ impl Analyzer {
 
     /// The analyzer's tokens: `standard` is the tokenizer alone (the
     /// default `standard-no-stop-words` index analyzer), `english` drops
-    /// English stop words and Porter-stems what remains.
+    /// English stop words and Porter-stems what remains, `standard-folding`
+    /// folds. Both sides of one scan run this one analysis (ADR-0636): the
+    /// index's stored tokens at corpus build, and the query's terms when no
+    /// `WITH ANALYZER` overrides — the stored/query distinction lives in
+    /// the [`Analyzers`] pair alone.
     pub(super) fn analyze(self, text: &str) -> Vec<String> {
         let tokens = tokenize(text);
         match self {
@@ -215,24 +220,6 @@ impl Analyzer {
     /// and, by ruling, wildcard terms).
     pub(crate) fn folds(self) -> bool {
         matches!(self, Self::StandardFolding)
-    }
-
-    /// The tokens a stored value contributes under the index's own analyzer:
-    /// folded for a folding index, the plain tokenizer otherwise (stop words
-    /// and stems stay a query-side shortcut).
-    pub(super) fn stored_tokens(self, text: &str) -> Vec<String> {
-        self.query_default().analyze(text)
-    }
-
-    /// The analyzer a query without `WITH ANALYZER` uses against an index
-    /// configured with `self`: the index's folding carries over, its stemming
-    /// does not (stored tokens are unstemmed).
-    pub(crate) fn query_default(self) -> Self {
-        if self.folds() {
-            self
-        } else {
-            Self::Standard
-        }
     }
 
     /// The stop-word set this analyzer filters: `english`'s Lucene default
@@ -257,11 +244,12 @@ pub(crate) struct Analyzers {
 
 impl Analyzers {
     /// `query_override` is the evaluated `WITH ANALYZER`; absent, the query
-    /// follows the index ([`Analyzer::query_default`]).
+    /// is analyzed by the index's own analyzer, exactly as its stored
+    /// tokens were (ADR-0636).
     pub(crate) fn new(index: Analyzer, query_override: Option<Analyzer>) -> Self {
         Self {
             index,
-            query: query_override.unwrap_or_else(|| index.query_default()),
+            query: query_override.unwrap_or(index),
         }
     }
 }
@@ -293,4 +281,36 @@ pub(crate) fn analyzer_catalog() -> impl Iterator<Item = AnalyzerCatalogEntry> {
             description,
             stopwords: behavior.stop_words(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_folding_analyzer_folds_diacritics_and_ligatures() {
+        assert_eq!(
+            Analyzer::StandardFolding.analyze("Eifr\u{e9}m Stra\u{df}e"),
+            ["eifrem", "strasse"]
+        );
+    }
+
+    /// ADR-0636: without `WITH ANALYZER` the query runs the index's own
+    /// analyzer; an override replaces the query side alone.
+    #[test]
+    fn the_query_without_an_override_follows_the_index_analyzer() {
+        assert_eq!(
+            Analyzers::new(Analyzer::StandardFolding, None).query,
+            Analyzer::StandardFolding
+        );
+        assert_eq!(
+            Analyzers::new(Analyzer::English, None).query,
+            Analyzer::English
+        );
+        let overridden = Analyzers::new(Analyzer::StandardFolding, Some(Analyzer::English));
+        assert_eq!(
+            (overridden.index, overridden.query),
+            (Analyzer::StandardFolding, Analyzer::English)
+        );
+    }
 }

@@ -217,8 +217,10 @@ Rules, matching Neo4j:
   index's `WITH [...]`-declared properties, with simple comparisons joined by
   `AND`. A full-text search with `WHERE` is rejected
 - `SKIP`/`OFFSET` is **full-text only**; on a vector search it is rejected
-- `WITH ANALYZER <expr>` is accepted on full-text searches (analyzers are not
-  differentiated: Relate tokenizes lowercase alphanumeric terms)
+- `WITH ANALYZER <expr>` is accepted on full-text searches: a STRING names
+  one of the admitted analyzers (`db.index.fulltext.listAvailableAnalyzers`
+  lists them) and overrides the query side only; null is no override, so
+  the index's own analyzer runs
 - the searched `MATCH` pattern is a single node or single-hop
   relationship, binding one variable, with predicates only on it. The
   `RELATE_PREVIEW=complex-search-patterns` preview gate (ADR-0371 /
@@ -653,14 +655,19 @@ procedures):
 | `term^B` | multiply the clause's score by B (a non-negative number); matching is unchanged |
 | `field:term~N^B` | the forms combine |
 
-A FULLTEXT index created with `fulltext.analyzer: 'standard-folding'` folds Latin
-diacritics and ligatures (`é` to `e`, `ß` to `ss`, `æ` to `ae`) in its stored
-tokens and in analyzed query terms, so `eifrem` finds `Eifrém`; Greek and
-Cyrillic are not folded. Wildcard terms are folded too on a folding index, so `Müll*`,
+A FULLTEXT index's configured `fulltext.analyzer` analyzes its stored tokens
+and — without `WITH ANALYZER` — its query terms: `standard-folding` folds Latin
+diacritics and ligatures (`é` to `e`, `ß` to `ss`, `æ` to `ae`) in both, so
+`eifrem` finds `Eifrém` (Greek and Cyrillic are not folded), and `english`
+drops English stop words and Porter-stems both, so `refunds` finds `refund`
+and `charge` finds `charged` while `the` matches nothing; every other
+admitted name keeps the plain tokenizer (no stemming, no stop-word filtering —
+the default analyzer is `standard-no-stop-words`). Wildcard terms are folded too on a folding index, so `Müll*`,
 `mull*` and `MÜLL*` all find `Müller` (a deliberate deviation from Neo4j, which
-leaves wildcards unfolded; ADR-0583). Fuzzy terms are lowercased only, as in
-Neo4j: `eifrém~0` misses on a folding index. Without `WITH ANALYZER`, a query uses the index's folding (not its
-stemming); `WITH ANALYZER` changes the query side only.
+leaves wildcards unfolded; ADR-0583); wildcard and fuzzy terms are never
+stemmed. Fuzzy terms are lowercased only, as in
+Neo4j: `eifrém~0` misses on a folding index. `WITH ANALYZER` changes the query
+side only; `WITH ANALYZER null` is no override.
 
 A malformed suffix (`term^x`, `term^`, `term^-1`, `term~1.5`, a suffix with no term) is a
 syntax error rather than a stray term. Phrase quotes add no adjacency

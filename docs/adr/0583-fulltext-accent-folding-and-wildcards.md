@@ -112,3 +112,14 @@ available), across the default, `standard-folding`, `english`, `cjk`,
   stop-filtered while stored tokens are unstemmed, so `runn*` matches here
   and not live; `german` normalisation is not modelled; the procedures
   still ignore their `analyzer` option.
+
+## Later references
+
+[ADR-0636](./0636-fulltext-index-analyzer-both-sides.md) supersedes this
+ADR's decision 2 in part: the index's configured analyzer now analyzes its
+stored tokens — stop words and stems for `english`, folding for
+`standard-folding` — and the query without `WITH ANALYZER` follows the
+same analyzer, so the folding-but-not-stemming asymmetry and the
+`runn*` divergence it named are gone. Decision 2's `WITH ANALYZER`
+query-side-only rule, and the fuzzy and wildcard decisions, stand.
+

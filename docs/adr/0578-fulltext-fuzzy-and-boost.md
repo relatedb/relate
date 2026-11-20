@@ -94,3 +94,13 @@ The behaviours below were calibrated with live probes against Neo4j
   suffix instead of an empty or surprising result.
 - Exact, unboosted queries are unchanged.
 - Phrase adjacency and `+`/`-` modifiers remain unsupported.
+
+## Later references
+
+[ADR-0636](./0636-fulltext-index-analyzer-both-sides.md) supersedes this
+ADR's stored-token shortcut for the analyzer-configured index: an index's
+`fulltext.analyzer` now analyzes its stored tokens (stop words and stems
+for `english`, folding for `standard-folding`) and the query without
+`WITH ANALYZER`, so both sides of a scan agree. The suffix grammar,
+expansion, and scoring decisions here stand.
+

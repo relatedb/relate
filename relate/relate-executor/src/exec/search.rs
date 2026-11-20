@@ -114,14 +114,16 @@ fn fulltext_index_candidates(
         crate::redo::IndexKindSpec::Fulltext,
     )?;
     // The per-row `WITH ANALYZER` expression
-    // (FulltextSearchAcceptance); an absent slot means the standard
-    // analyzer, and the value's own NULL/unknown-name/type rejections are
+    // (FulltextSearchAcceptance); an absent slot — or a NULL value — is
+    // no override, so the query follows the index's analyzer
+    // (ADR-0636), and the value's own unknown-name/type rejections are
     // `Analyzer::from_value`'s.
     let query_override = index
         .analyzer
         .as_ref()
         .map(|expr| fulltext::Analyzer::from_value(&eval(graph, input, expr, params)?))
-        .transpose()?;
+        .transpose()?
+        .flatten();
     let analyzers = fulltext::Analyzers::new(
         crate::exec::ddl_options::index_analyzer(&options, &index.index_name)?,
         query_override,

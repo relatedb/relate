@@ -10,12 +10,17 @@
 //! test-store open policy (`opts`), and the ADR-0120 checkpoint
 //! format-marker assertion (`assert_checkpoint_format` plus its
 //! `ExpectedOntology`), the `ontology` preview opt-in (`preview_ontology`,
-//! ADR-0378), and the shared closed-side preview assertion
-//! (`assert_preview_closed`).
+//! ADR-0378), the shared closed-side preview assertion
+//! (`assert_preview_closed`), and the fulltext test family's scaffolding
+//! (`fulltext.rs`: the entry-point wrappers, the entry-point agreement
+//! helper, the ranked-hit extractors, and the shared query-syntax
+//! rejection check).
 //!
 //! Each including test crate uses a different subset of these helpers, so
 //! the ones it does not use would warn as dead code — allow it module-wide.
 #![allow(dead_code)]
+
+pub mod fulltext;
 
 use std::collections::BTreeMap;
 

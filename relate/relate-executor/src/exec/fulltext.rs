@@ -19,13 +19,16 @@
 //!
 //! Shortcuts, all live-documented and outside the merged corpora's shapes:
 //! a quoted phrase adds no adjacency constraint (its words stay separate
-//! terms), `+`/`-` clause modifiers are not read, and the index's own
-//! `fulltext.analyzer` config reaches stored tokens only as accent folding
-//! (never stop words or stemming) — the query-side analyzer is otherwise
-//! the one differentiated. Every live-admitted analyzer
+//! terms) and `+`/`-` clause modifiers are not read. The index's own
+//! `fulltext.analyzer` config runs its full analysis on the stored tokens —
+//! accent folding for `standard-folding`, stop-word filtering and Porter
+//! stemming for `english` — and a query without `WITH ANALYZER` is analyzed
+//! by that same index analyzer; `WITH ANALYZER` overrides the query side
+//! only (ADR-0636). Every live-admitted analyzer
 //! name is accepted (the one [`analyzer::ANALYZERS`] table below — the same table
 //! `exec::ddl_options`' config validation reads); the names other than
-//! `english` and `standard-folding` share the standard tokenizer.
+//! `english` and `standard-folding` share the standard tokenizer, so their
+//! stored tokens and queries are unstemmed.
 //! `standard-folding` ASCII-folds Latin diacritics and ligatures (see
 //! [`fold`]) in the index's stored tokens and in analyzed query terms.
 //!
@@ -101,15 +104,16 @@ struct FieldStats {
     df: HashMap<String, usize>,
 }
 
-/// The tokens a value contributes to a fulltext field: a string as itself,
-/// a list element-wise, recursively (Neo4j fulltext indexes string arrays),
-/// anything else nothing. The recursion is unreachable for stored data — a
-/// nested list cannot be a property value at all (live 2026.10.1 rejects it
-/// with 22N39, "cannot be stored in properties") — but it keeps the walker
-/// total over the value model instead of silently dropping an inner list.
+/// The tokens a value contributes to a fulltext field: a string through
+/// the index's analyzer, a list element-wise, recursively (Neo4j fulltext
+/// indexes string arrays), anything else nothing. The recursion is
+/// unreachable for stored data — a nested list cannot be a property value
+/// at all (live 2026.10.1 rejects it with 22N39, "cannot be stored in
+/// properties") — but it keeps the walker total over the value model
+/// instead of silently dropping an inner list.
 fn value_tokens(value: &Value, index: Analyzer) -> Vec<String> {
     match value {
-        Value::String(text) => index.stored_tokens(text),
+        Value::String(text) => index.analyze(text),
         Value::List(values) => values
             .iter()
             .flat_map(|value| value_tokens(value, index))
@@ -565,47 +569,6 @@ mod tests {
     }
 
     #[test]
-    fn a_folding_analyzer_folds_stored_tokens_and_query_terms() {
-        assert_eq!(
-            Analyzer::from_name("standard-folding"),
-            Some(Analyzer::StandardFolding)
-        );
-        assert_eq!(
-            Analyzer::StandardFolding.analyze("Eifr\u{e9}m Stra\u{df}e"),
-            ["eifrem", "strasse"]
-        );
-        assert_eq!(
-            Analyzer::StandardFolding.stored_tokens("Eifr\u{e9}m"),
-            ["eifrem"]
-        );
-        // Stop words and stems stay a query-side shortcut; only folding
-        // reaches the stored side.
-        assert_eq!(
-            Analyzer::English.stored_tokens("The Eifr\u{e9}m"),
-            ["the", "eifr\u{e9}m"]
-        );
-        assert_eq!(
-            Analyzer::Standard.stored_tokens("Eifr\u{e9}m"),
-            ["eifr\u{e9}m"]
-        );
-    }
-
-    #[test]
-    fn the_query_follows_the_index_folding_but_not_its_stemming() {
-        let folding = Analyzers::new(Analyzer::StandardFolding, None);
-        assert_eq!(folding.query, Analyzer::StandardFolding);
-        assert_eq!(
-            Analyzers::new(Analyzer::English, None).query,
-            Analyzer::Standard
-        );
-        let overridden = Analyzers::new(Analyzer::StandardFolding, Some(Analyzer::English));
-        assert_eq!(
-            (overridden.index, overridden.query),
-            (Analyzer::StandardFolding, Analyzer::English)
-        );
-    }
-
-    #[test]
     fn the_index_analyzer_reads_its_stored_config() {
         use std::collections::BTreeMap;
         let config = |analyzer: Value| {
@@ -694,15 +657,14 @@ mod tests {
 
     #[test]
     fn analyzer_values_are_validated_like_live() {
-        // Live 2026.10.1: a NULL analyzer is no override (standard hits),
-        // an unknown name is 22N27, a non-STRING value is 22NB1.
-        assert_eq!(
-            Analyzer::from_value(&Value::Null).unwrap(),
-            Analyzer::Standard
-        );
+        // Live 2026.10.1: a NULL analyzer is no override — probed on a
+        // default index, where the hits are the same either way; the query
+        // follows the index's analyzer (ADR-0636). An unknown name is
+        // 22N27, a non-STRING value is 22NB1.
+        assert_eq!(Analyzer::from_value(&Value::Null).unwrap(), None);
         assert_eq!(
             Analyzer::from_value(&Value::String("ENGLISH".into())).unwrap(),
-            Analyzer::English
+            Some(Analyzer::English)
         );
         assert_eq!(
             Analyzer::from_value(&Value::String("not-a-real-analyzer".into())).unwrap_err(),
