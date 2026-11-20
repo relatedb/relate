@@ -76,8 +76,8 @@ fn test_pattern_comprehension_probe_nested_is_not_exponential() {
 #[test]
 fn test_list_comprehension_nested_label_disjunction_probe_is_not_exponential() {
     // Adversarial nesting: k parenthesized `(a|...)` disjunction levels
-    // inside a comprehension WHERE. Before `label_or_pipe_is_ambiguous`
-    // was memoized per `|` position, each level's speculative probe
+    // inside a comprehension WHERE. Before the comprehension
+    // pipe probe was memoized per `|` position, each level's speculative probe
     // re-parsed (and re-probed) the whole nested term, giving 2^k
     // speculative parses (measured ~13 s at k=26 in release). At k=128
     // that path never terminates; with the memo the probe+re-parse work

@@ -275,7 +275,7 @@ fn test_keyword_label_names_in_label_predicates() {
 
 #[test]
 fn test_keyword_labels_keep_the_comprehension_pipe_probe() {
-    // `label_or_pipe_is_ambiguous` still splits a comprehension's WHERE
+    // `ambiguous_pipe_continuation` still splits a comprehension's WHERE
     // from its map expression when the label is a keyword, and still reads
     // a keyword after `|` as a disjunct when no map expression follows.
     for k in keyword_spellings() {

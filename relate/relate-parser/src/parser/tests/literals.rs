@@ -102,13 +102,7 @@ fn test_digit_leading_token_in_expression_position_stays_invalid_number_literal(
     // expression) must keep its `InvalidNumberLiteral` detail — the fix is
     // strictly local to the map-key parse path.
     for q in ["RETURN 1B2c3e67", "RETURN 1B2c3e67 AS l"] {
-        let err = parse(q).unwrap_err();
-        assert_eq!(
-            err.detail,
-            Some("InvalidNumberLiteral"),
-            "expected InvalidNumberLiteral detail for {q:?}, got {:?}",
-            err.detail
-        );
+        assert_invalid_number_literal(q);
     }
 }
 
@@ -137,12 +131,7 @@ fn test_uppercase_radix_and_leading_zero_integers_are_rejected() {
         "RETURN abs(-0X1fff)",
         "RETURN -0X1",
     ] {
-        let err = parse(q).unwrap_err();
-        assert_eq!(
-            err.detail,
-            Some("InvalidNumberLiteral"),
-            "expected InvalidNumberLiteral for {q:?}, got {err:?}"
-        );
+        assert_invalid_number_literal(q);
     }
     // The Cypher 25 forms stay valid.
     for q in ["RETURN 0x1F", "RETURN 0o17", "RETURN 0", "RETURN -0x1"] {
@@ -522,14 +511,7 @@ fn test_misplaced_underscore_separators_stay_invalid() {
         "RETURN 1E_1 AS l",
         "RETURN 1.00__01 AS l",
     ] {
-        let err = parse(q).unwrap_err();
-        assert_eq!(
-            err.detail,
-            Some("InvalidNumberLiteral"),
-            "expected InvalidNumberLiteral detail for {q:?}, got {:?} ({})",
-            err.detail,
-            err.message
-        );
+        assert_invalid_number_literal(q);
     }
 }
 

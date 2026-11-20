@@ -1,6 +1,6 @@
 use super::expr::*;
 use super::*;
-use relate_names::{SmallName, Token};
+use relate_names::SmallName;
 
 pub(super) fn lower_paths(paths: &[cl::PatternPath]) -> Result<Vec<mdb::PathPattern>> {
     paths.iter().map(lower_path).collect()
@@ -234,15 +234,10 @@ fn lower_element_properties(
     Ok(Some(mdb::Expr::Map(pairs)))
 }
 
-/// Names as lowered: planning resolves their tokens later (ADR-0541).
-fn unresolved(names: Vec<SmallName>) -> Vec<(SmallName, Token)> {
-    names.into_iter().map(relate_names::unresolved).collect()
-}
-
 pub(super) fn lower_node(n: &cl::NodePattern) -> Result<mdb::NodePattern> {
     let labels = match &n.label_expr {
         None => Vec::new(),
-        Some(le) => unresolved(le.as_label_list().unwrap_or_default()),
+        Some(le) => relate_names::unresolved_all(le.as_label_list().unwrap_or_default()),
     };
     let properties =
         lower_element_properties(n.properties_param.as_ref(), n.has_properties, &n.properties)?;
@@ -258,7 +253,7 @@ pub(super) fn lower_node(n: &cl::NodePattern) -> Result<mdb::NodePattern> {
 }
 
 pub(super) fn lower_rel(r: &cl::RelPattern) -> Result<mdb::RelPattern> {
-    let types = unresolved(
+    let types = relate_names::unresolved_all(
         r.type_expr
             .as_ref()
             .and_then(cl::LabelExpr::as_ddl_list)

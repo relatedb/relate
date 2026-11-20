@@ -1,6 +1,11 @@
 use super::*;
 use relate_test_support::run_with_big_stack;
 
+/// The running count of speculative comprehension parses on this thread.
+fn speculative_parses() -> usize {
+    super::SPECULATIVE_COMPREHENSION_PARSES.with(std::cell::Cell::get)
+}
+
 // CIP-272 round-3 review: a `{` literal with no top-level `|` is a map
 // literal, and the comprehension speculation must not full-parse it first.
 // Before the lookahead in front of `finish_map_comprehension`, nesting like
@@ -21,7 +26,7 @@ fn test_pipe_less_nesting_is_not_speculatively_parsed() {
         for _ in 0..depth {
             source = format!("{{a: b IN {source}}}");
         }
-        let count = || super::SPECULATIVE_COMPREHENSION_PARSES.with(std::cell::Cell::get);
+        let count = speculative_parses;
         let before = count();
         let expr =
             parse_expression_str(&source).expect("pipe-less nesting has to parse as a map literal");
@@ -50,7 +55,7 @@ fn test_pipe_less_nesting_is_not_speculatively_parsed() {
 // returns to the start and the literal re-parses the same tokens.
 #[test]
 fn test_a_failed_map_comprehension_speculation_falls_back_to_the_literal() {
-    let count = || super::SPECULATIVE_COMPREHENSION_PARSES.with(std::cell::Cell::get);
+    let count = speculative_parses;
     let before = count();
     let expr = parse_expression_str("{k : v IN m, y: x:A|B}").unwrap();
     assert_eq!(

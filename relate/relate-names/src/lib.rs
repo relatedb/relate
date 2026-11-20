@@ -72,6 +72,11 @@ pub fn unresolved(name: SmallName) -> NamedToken {
     (name, Token::Unresolved)
 }
 
+/// [`unresolved`] over a list of names, in order.
+pub fn unresolved_all(names: impl IntoIterator<Item = SmallName>) -> Vec<NamedToken> {
+    names.into_iter().map(unresolved).collect()
+}
+
 impl Token {
     /// The store id when planning resolved one: `Absent` and `Unresolved`
     /// answer `None` without any lookup. One dispatch with

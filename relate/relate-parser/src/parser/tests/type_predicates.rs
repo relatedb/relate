@@ -280,6 +280,24 @@ fn comprehension_of(query: &str) -> ListComprehensionExpr {
     }
 }
 
+/// The pattern comprehension of a single-`RETURN` statement's first item —
+/// the pattern sibling of [`comprehension_of`].
+fn pattern_comprehension_of(query: &str) -> PatternComprehensionExpr {
+    match return_expr(&parse_ok(query)) {
+        Expr::PatternComprehension(pc) => (**pc).clone(),
+        other => panic!("{query}: expected a pattern comprehension, got {other:?}"),
+    }
+}
+
+/// The map comprehension of a single-`RETURN` statement's first item —
+/// the map sibling of [`comprehension_of`].
+fn map_comprehension_of(query: &str) -> MapComprehensionExpr {
+    match return_expr(&parse_ok(query)) {
+        Expr::MapComprehension(mc) => (**mc).clone(),
+        other => panic!("{query}: expected a map comprehension, got {other:?}"),
+    }
+}
+
 /// The type predicate of a comprehension's WHERE — the extraction the
 /// comprehension type-predicate tests assert through, naming the query
 /// when the WHERE is something else.
@@ -453,14 +471,10 @@ fn dead_end_tails_yield_the_pipe_to_the_map_expression() {
     assert!(matches!(&lc.where_expr, Some(Expr::IsType(_))));
     assert!(matches!(&lc.map_expr, Some(Expr::MapProjection(_))));
 
-    let stmt = parse_ok("RETURN [(a)-[:R]->(b) WHERE a.p IS :: STRING | string] AS x");
-    match return_expr(&stmt) {
-        Expr::PatternComprehension(pc) => {
-            assert!(matches!(&pc.where_expr, Some(Expr::IsType(_))));
-            assert!(matches!(&pc.map_expr, Expr::Variable(_)));
-        }
-        other => panic!("expected a pattern comprehension, got {other:?}"),
-    }
+    let pc =
+        pattern_comprehension_of("RETURN [(a)-[:R]->(b) WHERE a.p IS :: STRING | string] AS x");
+    assert!(matches!(&pc.where_expr, Some(Expr::IsType(_))));
+    assert!(matches!(&pc.map_expr, Expr::Variable(_)));
 }
 
 /// A CIP-272 map comprehension's WHERE shares the same flag machinery
@@ -469,15 +483,10 @@ fn dead_end_tails_yield_the_pipe_to_the_map_expression() {
 /// pattern forms do.
 #[test]
 fn a_map_comprehension_where_type_predicate_yields_the_pipe_to_the_projection() {
-    let stmt = parse_ok("RETURN {k : v IN {a: 'x'} WHERE v IS :: STRING | k : v} AS x");
-    match return_expr(&stmt) {
-        Expr::MapComprehension(mc) => {
-            assert!(matches!(&mc.where_expr, Some(Expr::IsType(_))));
-            assert_eq!(mc.key_expr, Expr::Variable(SmallName::from_name("k")));
-            assert_eq!(mc.value_expr, Expr::Variable(SmallName::from_name("v")));
-        }
-        other => panic!("expected a map comprehension, got {other:?}"),
-    }
+    let mc = map_comprehension_of("RETURN {k : v IN {a: 'x'} WHERE v IS :: STRING | k : v} AS x");
+    assert!(matches!(&mc.where_expr, Some(Expr::IsType(_))));
+    assert_eq!(mc.key_expr, Expr::Variable(SmallName::from_name("k")));
+    assert_eq!(mc.value_expr, Expr::Variable(SmallName::from_name("v")));
 }
 
 /// The two pipe rules compose inside one comprehension WHERE: the label

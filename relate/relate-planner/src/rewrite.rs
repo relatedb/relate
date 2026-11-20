@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use relate_ir::{BinaryOp, Clause, Expr, LabelExpr, NodePattern, PathPattern};
-use relate_names::{NamedToken, SmallName, Token};
+use relate_names::{NamedToken, SmallName};
 
 use crate::order::order_patterns;
 use crate::stats::PatternStats;
@@ -543,11 +543,8 @@ fn add_labels(patterns: &mut [PathPattern], var: &SmallName, labels: &[SmallName
                 Some(labels) => labels
                     .into_iter()
                     .map(|label| {
-                        let token = n
-                            .labels
-                            .iter()
-                            .find(|(x, _)| *x == label)
-                            .map_or(Token::Unresolved, |(_, token)| *token);
+                        let (_, token) =
+                            label.with_str(|name| relate_ir::named_token(&n.labels, name));
                         (label, token)
                     })
                     .collect(),

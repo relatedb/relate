@@ -11,13 +11,20 @@ use relate_names::{NamedToken, SmallName};
 
 use super::Expr;
 
-/// The token of the pattern-map key `name` from a pattern's `prop_keys`;
-/// a key the plan did not spell reads by name (`Token::Unresolved`).
-pub fn pattern_prop_key(keys: &[NamedToken], name: &str) -> NamedToken {
-    keys.iter()
+/// The entry of `name` in a [`NamedToken`] list (a pattern's labels, types
+/// or `prop_keys`); a name the list does not spell reads by name
+/// (`Token::Unresolved`).
+pub fn named_token(list: &[NamedToken], name: &str) -> NamedToken {
+    list.iter()
         .find(|(known, _)| *known == name)
         .cloned()
         .unwrap_or_else(|| relate_names::unresolved(SmallName::from_name(name)))
+}
+
+/// The token of the pattern-map key `name` from a pattern's `prop_keys`
+/// ([`named_token`] over that list).
+pub fn pattern_prop_key(keys: &[NamedToken], name: &str) -> NamedToken {
+    named_token(keys, name)
 }
 
 #[derive(Debug, Clone, PartialEq)]

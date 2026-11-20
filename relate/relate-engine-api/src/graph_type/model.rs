@@ -605,7 +605,8 @@ impl GraphTypeConstraintModel {
                 .collect(),
             OptionsForm::Parameter(name) => {
                 return Err(syn(format!(
-                    "unresolved OPTIONS ${name}: graph-type constraint options must be resolved before capture"
+                    "unresolved OPTIONS {}: graph-type constraint options must be resolved before capture",
+                    relate_model::identifier::parameter_reference(name)
                 )))
             }
         };

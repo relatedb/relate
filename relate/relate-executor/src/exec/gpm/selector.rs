@@ -27,7 +27,8 @@ pub(crate) fn resolve_gpm_count(
                 "path selector count must be an integer",
             )),
             None => Err(Error::parameter_missing(format!(
-                "path selector parameter ${name} was not supplied"
+                "path selector parameter {} was not supplied",
+                relate_model::identifier::parameter_reference(name)
             ))),
         },
     }
