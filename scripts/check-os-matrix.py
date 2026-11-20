@@ -4,8 +4,9 @@
 Reads a GitHub Actions workflow. The default path is `.github/workflows/ci.yml`;
 the first argument overrides it.
 
-Exits 0 when every job whose `runs-on` or strategy matrix includes
-`macos-latest` or `windows-16-core` satisfies all of the following:
+Exits 0 when every job whose `runs-on` or strategy matrix includes a
+non-Linux runner label (the `FAMILIES` table below) satisfies all of the
+following:
 
 - cargo `-p` / `--package` arguments, tokenized, do not select `relate`,
   `relate-planner`, or `relate-executor`
@@ -23,7 +24,7 @@ Exits 0 when every job whose `runs-on` or strategy matrix includes
 - no script line uses a `test -f` prefix
 - no step assigns `librelate_ffi.so`
 
-Exits non-zero otherwise, including when a windows-16-core step's run is
+Exits non-zero otherwise, including when a Windows step's run is
 `cargo test -p relate` or contains `-p relate-planner`.
 """
 
@@ -38,7 +39,17 @@ from typing import NamedTuple
 
 import yaml
 
-NON_LINUX = ("macos-latest", "windows-16-core")
+# Runner labels per OS. A job may schedule on any label of its OS — the
+# macOS lanes moved to the org's arm64 runner, older workflows still use
+# the GitHub-hosted label — and the required-command coverage below is per
+# OS, not per label.
+FAMILIES = {
+    "macos": ("macos-latest", "macos-5-core-arm64"),
+    "windows": ("windows-16-core",),
+}
+LABEL_FAMILY = {
+    label: family for family, labels in FAMILIES.items() for label in labels
+}
 
 # Exact package names. Match tokens, not substrings: `relate-storage`
 # contains the letters of `relate` and must still be allowed.
@@ -72,12 +83,12 @@ SURFACE = (
 # covered by the macOS lane and the ubuntu `python` job, and the JS/Java
 # clients by the ubuntu `relate-clients` lane.
 SURFACE_EXTRA = {
-    "macos-latest": (
+    "macos": (
         "python -m pytest surfaces/relate-python/python/tests/test_native.py::test_execute_returns_query_result",
         "(cd clients/javascript && npm install && node test.js)",
         "mvn -q -f clients/java/pom.xml -Drelate.ffi.dir=\"$RELATE_LIB_DIR\" '-Dtest=DatabaseTest#returnOne,Native*Test' verify",
     ),
-    "windows-16-core": (),
+    "windows": (),
 }
 
 
@@ -94,27 +105,24 @@ def iter_strings(value: object) -> Iterator[str]:
             yield from iter_strings(item)
 
 
-def labels_in(text: str) -> set[str]:
-    """macOS and Windows runner labels named in one runs-on or matrix string."""
-    return {name for name in NON_LINUX if name in text}
+def families_in(text: str) -> set[str]:
+    """OS families whose runner labels are named in one runs-on or matrix string."""
+    return {LABEL_FAMILY[name] for name in LABEL_FAMILY if name in text}
 
 
 def non_linux_targets(job: dict) -> set[str]:
-    """OS labels this job actually schedules on macOS or Windows runners."""
+    """OS families this job actually schedules on macOS or Windows runners."""
     runs_on = job.get("runs-on")
-    pieces: list[str] = []
+    texts: list[str] = []
     if isinstance(runs_on, str):
-        pieces.append(runs_on)
+        texts.append(runs_on)
     elif isinstance(runs_on, list):
-        pieces.extend(item for item in runs_on if isinstance(item, str))
-    blob = "\n".join(pieces)
-    found = labels_in(blob)
-    if "${{" in blob:
+        texts.extend(item for item in runs_on if isinstance(item, str))
+    if "${{" in "\n".join(texts):
         strategy = job.get("strategy")
         matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
-        for text in iter_strings(matrix):
-            found.update(labels_in(text))
-    return found
+        texts.extend(iter_strings(matrix))
+    return families_in("\n".join(texts))
 
 
 class RunLines(NamedTuple):
@@ -184,7 +192,7 @@ def check_job(name: str, run: RunLines) -> list[str]:
 
 @dataclass
 class Coverage:
-    """What one non-Linux label covers: job names and their script lines."""
+    """What one non-Linux OS family covers: job names and their script lines."""
 
     jobs: list[str] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)
@@ -194,6 +202,23 @@ REQUIRED = (
     ("filesystem command", FILESYSTEM),
     ("surface smoke", SURFACE),
 )
+
+
+def check_coverage(coverage: dict[str, Coverage]) -> list[str]:
+    """Per-family required-command coverage: every family schedules at
+    least one job, and that family's jobs carry every required command —
+    the shared set plus the family's own client smokes."""
+    errors: list[str] = []
+    for family, cov in coverage.items():
+        if not cov.jobs:
+            errors.append(f"no job runs on a {family} runner")
+            continue
+        present = set(cov.lines)
+        for noun, required in (*REQUIRED, ("surface smoke", SURFACE_EXTRA[family])):
+            for command in required:
+                if command not in present:
+                    errors.append(f"{family}: missing {noun}: {command}")
+    return errors
 
 
 def main(argv: list[str]) -> int:
@@ -212,7 +237,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     errors: list[str] = []
-    coverage = {label: Coverage() for label in NON_LINUX}
+    coverage = {family: Coverage() for family in FAMILIES}
     for name, job in jobs.items():
         if not isinstance(job, dict):
             continue
@@ -221,22 +246,11 @@ def main(argv: list[str]) -> int:
             continue
         run = run_lines(job)
         errors.extend(check_job(name, run))
-        for label in targets:
-            coverage[label].jobs.append(name)
-            coverage[label].lines.extend(run.lines)
+        for family in targets:
+            coverage[family].jobs.append(name)
+            coverage[family].lines.extend(run.lines)
 
-    for label, cov in coverage.items():
-        if not cov.jobs:
-            errors.append(f"no job runs on {label}")
-            continue
-        present = set(cov.lines)
-        for noun, required in REQUIRED:
-            for command in required:
-                if command not in present:
-                    errors.append(f"{label}: missing {noun}: {command}")
-        for command in SURFACE_EXTRA[label]:
-            if command not in present:
-                errors.append(f"{label}: missing surface smoke: {command}")
+    errors.extend(check_coverage(coverage))
 
     if errors:
         for error in errors:

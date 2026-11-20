@@ -555,7 +555,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest]
+        os: [macos-5-core-arm64]
     steps:
       # pull_request otherwise checks out the merge with main. Pin the head
       # so this job builds the branch.
@@ -676,7 +676,7 @@ jobs:
     name: Swift (iOS / macOS)
     needs: changes
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
-    runs-on: macos-latest
+    runs-on: macos-5-core-arm64
     steps:
       # Pin the head like os-smoke: pull_request otherwise checks out the
       # merge with main.

@@ -84,7 +84,7 @@ surfaces/relate-cli/src/skill/bundle/references/client-swift.md (+ SKILL.md row)
    build-xcframework` / `make test-swift`.
 3. **Docs + skill** — `docs/api/swift/*`, runnable examples compiled in CI,
    `client-swift.md` + SKILL.md selection row (BUNDLE_FILES drift guard).
-4. **CI gate** — a `swift` job on `macos-latest`: build the macOS slice,
+4. **CI gate** — a `swift` job on `macos-5-core-arm64`: build the macOS slice,
    `swift test`, `swift test` the example core, `xcodebuild build` the
    example for `generic/platform=iOS Simulator`. Full three-slice build on
    ready-for-review only.

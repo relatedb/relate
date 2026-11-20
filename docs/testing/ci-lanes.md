@@ -26,8 +26,8 @@ same until that pair exists.
 | `stack-release` | linux-4-core-x86 | Stack-depth engine tests, release profile (ADR-0259); on the 4-core runner group with the other release-profile lanes (runner pilot, [runtime.md](runtime.md)) |
 | `corpus` | linux-4-core-x86 | Corpus-profile build once, then TCK + CIP-eval + cookbook-native + the LDBC SF0.1 answer gate as steps of the same job (ADR-0252; profile split per ADR-0212; LDBC slice per ADR-0251 §6, [cadences.md](cadences.md)) |
 | `python` | linux-4-core-x86 | Rust-side binding tests, wheel build, full pytest |
-| `os-smoke` | macos | Storage filesystem depth + full surface smoke set (incl. Python wheel link, npm, Maven) |
-| `swift` | macos | `make test-swift`, after `make build-xcframework` in a step of its own ([build-caches.md](build-caches.md), "The Swift lane"): three-slice static XCFramework, `swift test`, the `docs/api/swift` examples, the release-stamp harness, the iOS example's core tests and simulator build (ADR-0433) |
+| `os-smoke` | macos-5-core-arm64 | Storage filesystem depth + full surface smoke set (incl. Python wheel link, npm, Maven) |
+| `swift` | macos-5-core-arm64 | `make test-swift`, after `make build-xcframework` in a step of its own ([build-caches.md](build-caches.md), "The Swift lane"): three-slice static XCFramework, `swift test`, the `docs/api/swift` examples, the release-stamp harness, the iOS example's core tests and simulator build (ADR-0433) |
 | `os-filesystem` | windows | Storage filesystem depth, both feature sets, on an ImDisk ramdisk |
 | `os-surface` | windows | Trimmed surface lane (below), on an ImDisk ramdisk |
 | `relate-bolt` | ubuntu | Bolt suite sharded by test binary (`concurrency`/`e2e`/`smoke` legs) with the 151-test lib suite further partitioned at test level across 4 runners (`nextest --partition count:N/4`) — the concurrency battery stays a single isolated leg (timing-sensitive), plus the official-driver smoke + documented examples (the docker image smoke is the nightly `docker-smoke` lane, [cadences.md](cadences.md)) |
@@ -103,6 +103,13 @@ without paying the cleanup time. Before/after walls, the disk-headroom
 check, and the 2x success bar are recorded in
 [runtime.md](runtime.md). The loadtest/baseline lanes stay pinned to their
 ADR-0070 environment class and are untouched; the Windows lanes keep ImDisk.
+
+The macOS lanes are the second exception: `os-smoke` and `swift` moved off
+the free-tier `macos-latest` to the org's `macos-5-core-arm64` runner (arm64,
+same image). The `os-sweep` cadence lane stays on `macos-latest` — it is
+non-gating, so a bigger runner buys nothing ([cadences.md](cadences.md)).
+`scripts/check-os-matrix.py` keys its per-OS coverage on the runner-label
+families, so both labels resolve to the macOS family.
 
 ## Windows ramdisk (ImDisk)
 
