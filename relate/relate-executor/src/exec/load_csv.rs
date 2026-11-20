@@ -15,7 +15,6 @@
 //! fold as rows arrive, charging each source's output to the running total
 //! before its first row is built (ADR-0463).
 
-use std::rc::Rc;
 use std::sync::Arc;
 
 use relate_core::{Error, Result, Value};
@@ -28,7 +27,6 @@ use crate::eval::eval;
 use crate::row::Row;
 
 use super::feed::{FeedSource, StreamedFeed};
-use super::profile_tick::StreamedStats;
 
 /// The read opened on one input row: the row being read for (the template
 /// the bound record column joins), its source's remaining records, and —
@@ -178,7 +176,7 @@ pub(crate) fn exec_load_csv(
         url,
         variable,
         field_terminator,
-        Rc::new(StreamedStats::new(false)),
+        false,
     )?
     .materialize()
 }
@@ -193,7 +191,7 @@ pub(crate) fn load_csv_feed<'a>(
     url: &'a Expr,
     variable: &'a SmallName,
     field_terminator: Option<&'a str>,
-    stats: Rc<StreamedStats>,
+    profiled: bool,
 ) -> Result<StreamedFeed<'a>> {
     Ok(StreamedFeed::new(
         ctx,
@@ -204,7 +202,7 @@ pub(crate) fn load_csv_feed<'a>(
             variable,
             field_terminator,
         )?),
-        stats,
+        profiled,
     ))
 }
 

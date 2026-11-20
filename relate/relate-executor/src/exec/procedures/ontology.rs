@@ -41,7 +41,8 @@ use crate::overlay::ExecGraph;
 use crate::redo::RedoOp;
 use crate::row::Row;
 
-use super::procedures::CallSpec;
+use super::super::compose::{ComposeSource, Produced};
+use super::CallSpec;
 use relate_ir::CallArgs;
 
 /// `db.ontology.get`'s one output column, used both as the default-yield
@@ -66,7 +67,28 @@ pub(crate) enum OntologyProc {
     Apply,
 }
 
+/// The ontology write vocabulary — the three ops [`exec_ontology_call`]
+/// partitions from `get`, so the write path's own type cannot carry the
+/// read variant it never runs.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum OntologyWrite {
+    Set,
+    Drop,
+    Apply,
+}
+
 impl OntologyProc {
+    /// The write op this procedure is — `None` for `get`, the one
+    /// partition between the read and the write path.
+    pub(crate) fn write(self) -> Option<OntologyWrite> {
+        match self {
+            OntologyProc::Get => None,
+            OntologyProc::Set => Some(OntologyWrite::Set),
+            OntologyProc::Drop => Some(OntologyWrite::Drop),
+            OntologyProc::Apply => Some(OntologyWrite::Apply),
+        }
+    }
+
     /// Every dispatch arm, in this enum's order (`get`, `set`, `drop`,
     /// `apply`) — deliberately not the registry table's `set`, `get`,
     /// `drop`, `apply` order — the one name list `try_from` matches (each
@@ -108,52 +130,43 @@ impl TryFrom<&str> for OntologyProc {
     }
 }
 
-/// Execute one `db.ontology.*` call over the input rows, keeping the
-/// `exec_call` row contract: `get` produces its `ontology` column per row
-/// (with YIELD aliasing, WHERE and OPTIONAL handled as the generic path
-/// does); the void procedures (`set`/`drop`/`apply`) run their op once per
-/// input row and pass the rows through unchanged. The divert site
-/// (`exec_call`) classified the name once; this consumer enforces the
-/// runtime contract it shares with the generic `CALL` path from the one
-/// registry signature.
-pub(crate) fn exec_ontology_call(
+/// Execute one `db.ontology.*` write call over the input rows: the void
+/// write op runs once per input row and passes the rows through
+/// unchanged; the void-optional pad's own row is answered as data — the
+/// clause arm completes it. The write vocabulary is narrowed here (the
+/// read variant answers its composition source through the resolution).
+/// The resolution site (`resolve_call`) classified the name once and ran
+/// the runtime contract over the classification's own signature; nothing
+/// is re-checked here.
+pub(crate) fn exec_ontology_write_call(
     ctx: ExecCtx<'_>,
     rows: Vec<Row>,
     call: CallSpec<'_>,
-    proc: OntologyProc,
-) -> Result<Vec<Row>> {
-    // The runtime contract (passing mode, arity) ran at the divert site in
-    // `exec_call` (`CallSpec::check_registry_contract`) — the same checks, from
-    // the same registry signature, the generic path applies; nothing is
-    // re-checked here.
-    match proc {
-        OntologyProc::Get => exec_ontology_get(ctx, rows, call),
-        OntologyProc::Set | OntologyProc::Drop | OntologyProc::Apply => {
-            let CallSpec {
-                name,
-                source,
-                optional,
-                ..
-            } = call;
-            // The generic void-procedure contract: an OPTIONAL call
-            // over no input yields one unit row.
-            if super::procedures::void_optional_unit_row(rows.is_empty(), optional) {
-                return Ok(vec![Row::new()]);
-            }
-            for row in &rows {
-                exec_ontology_write(ctx, row, proc, name, source)?;
-            }
-            Ok(rows)
-        }
-    }
+    write: OntologyWrite,
+) -> Result<(Vec<Row>, Option<Row>)> {
+    let CallSpec {
+        name,
+        source,
+        optional,
+        ..
+    } = call;
+    // The void-procedure policy's one spelling (the shared helper): the
+    // void write op runs once per input row, the pad is the unit row's
+    // own.
+    let pad = super::pad_or_each(&rows, optional, |row| {
+        exec_ontology_write(ctx, row, write, name, source)
+    })?;
+    Ok((rows, pad))
 }
 
-/// One void write op (`set`/`drop`/`apply`) for one input row.
+/// One void write op for one input row, over the narrowed write
+/// vocabulary — the read variant is not representable here. The name
+/// renders to text only on the error branches, never per row.
 fn exec_ontology_write(
     ctx: ExecCtx<'_>,
     row: &Row,
-    proc: OntologyProc,
-    name: &str,
+    write: OntologyWrite,
+    name: &relate_names::SmallName,
     source: &CallArgs,
 ) -> Result<()> {
     let graph = ctx.graph;
@@ -162,13 +175,15 @@ fn exec_ontology_write(
         // statements to the write path and rejects set/drop in explicit
         // transactions. Fail closed rather than panic on the read-only
         // view.
-        return Err(Error::internal(format!(
-            "{name} executed on a read-only graph view"
-        )));
+        return name.with_str(|name| {
+            Err(Error::internal(format!(
+                "{name} executed on a read-only graph view"
+            )))
+        });
     }
-    match proc {
-        OntologyProc::Set => {
-            let document = string_arg(ctx, row, source, 0, "ontology", name)?;
+    match write {
+        OntologyWrite::Set => {
+            let document = super::contract::string_arg(ctx, row, source, 0, "ontology", name)?;
             // ADR-0227 §4/§6/§7: validate the document against the pinned
             // schema — before anything is committed. (ADR-0229 §3: only the
             // derived-graph build check is gone with the derived graph; the
@@ -181,16 +196,13 @@ fn exec_ontology_write(
             });
             Ok(())
         }
-        OntologyProc::Drop => {
+        OntologyWrite::Drop => {
             graph.push_catalog_redo(RedoOp::OntologyDrop {
                 database: ONTOLOGY_DATABASE.to_string(),
             });
             Ok(())
         }
-        OntologyProc::Apply => exec_ontology_apply(graph, graph.ontology_document()),
-        OntologyProc::Get => Err(Error::internal(format!(
-            "{name} is a read procedure routed to the write path"
-        ))),
+        OntologyWrite::Apply => exec_ontology_apply(graph, graph.ontology_document()),
     }
 }
 
@@ -212,7 +224,7 @@ fn exec_ontology_apply(graph: &ExecGraph<'_>, ontology_document: Option<&str>) -
         .map_err(|err| Error::semantic(err.to_string()))?;
     let body = relate_ontology::to_graph_type_body(&doc)
         .map_err(|err| Error::semantic(err.to_string()))?;
-    super::graph_type_schema::set_current_graph_type_validate_first(
+    super::super::graph_type_schema::set_current_graph_type_validate_first(
         graph,
         relate_parser::AlterGraphTypeVerb::Set,
         &body,
@@ -222,57 +234,60 @@ fn exec_ontology_apply(graph: &ExecGraph<'_>, ontology_document: Option<&str>) -
 /// `db.ontology.get(format = "yaml") :: (ontology :: STRING)` (ADR-0227
 /// §3): the stored document unchanged when the requested format matches
 /// the stored one (strict-JSON sniff), else parsed and canonically
-/// re-serialized; `null` when no ontology is set. Row composition (YIELD
-/// defaulting with the typed star/default modes, aliasing, WHERE, OPTIONAL padding) is
-/// the shared [`super::procedures::compose_rows`] scaffold.
-fn exec_ontology_get(ctx: ExecCtx<'_>, rows: Vec<Row>, call: CallSpec<'_>) -> Result<Vec<Row>> {
+/// re-serialized; `null` when no ontology is set. Answers its composition
+/// source — the one-per-row producer under the shared compose policy
+/// (YIELD defaulting with the typed star/default modes, aliasing, WHERE,
+/// OPTIONAL padding) — so the resolution carries it like every other
+/// row-producing call: a folding consumer parks it (ADR-0555), a plain
+/// projection materializes it with the ADR-0463 charge.
+pub(crate) fn ontology_get_source<'a>(
+    ctx: ExecCtx<'a>,
+    call: CallSpec<'a>,
+) -> Result<ComposeSource<'a>> {
     let CallSpec {
         source,
+        name,
         yield_items,
         optional,
         where_clause,
-        ..
     } = call;
-    super::procedures::compose_rows(
-        ctx,
-        rows,
+    Ok(ComposeSource::new(
         &[ONTOLOGY_COLUMN],
         yield_items,
         optional,
         where_clause,
-        |input| {
-            let format = optional_format_arg(&ctx, input, source)?;
+        move |input| {
+            let format = optional_format_arg(ctx, input, source, name)?;
             let value = match ctx.graph.ontology_document() {
                 None => Value::Null,
                 Some(document) => Value::String(render_document(document, format)?.into()),
             };
-            Ok(vec![Cow::Owned(BTreeMap::from([(
+            Ok(Produced::Rows(vec![BTreeMap::from([(
                 ONTOLOGY_COLUMN.to_string(),
                 value,
-            )]))])
+            )])]))
         },
-    )
+    ))
 }
 
-/// The `format` argument of `db.ontology.get`: `"yaml"` (the default) or
-/// `"json"`; anything else is a typed argument error naming the two
-/// (ADR-0227 §3). `null` falls back to the default.
-fn optional_format_arg(ctx: &ExecCtx<'_>, row: &Row, source: &CallArgs) -> Result<DocumentFormat> {
-    let Some(value) = crate::exec::procedures::call_arg_value(ctx, row, source, 0, "format")?
-    else {
-        return Ok(DocumentFormat::Yaml);
-    };
-    match value {
-        Value::Null => Ok(DocumentFormat::Yaml),
-        Value::String(format) => DocumentFormat::from_name(format.as_ref()).ok_or_else(|| {
-            Error::ty(format!(
-                "InvalidArgumentValue: unknown db.ontology.get format '{format}'; \
-                 expected 'yaml' or 'json'"
-            ))
+fn optional_format_arg(
+    ctx: ExecCtx<'_>,
+    row: &Row,
+    source: &CallArgs,
+    name: &relate_names::SmallName,
+) -> Result<DocumentFormat> {
+    // The one optional-STRING reader the CALL paths share (absent/null →
+    // None, the name rendered on the error branch alone); the ontology's
+    // own policy is only the format decode on top of it.
+    match super::contract::optional_string_arg(ctx, row, source, 0, "format", name)? {
+        None => Ok(DocumentFormat::Yaml),
+        Some(format) => DocumentFormat::from_name(format.as_ref()).ok_or_else(|| {
+            name.with_str(|name| {
+                Error::invalid_argument_value(format!(
+                    "unknown {name} format '{format}'; expected 'yaml' or 'json'"
+                ))
+            })
         }),
-        _ => Err(Error::invalid_argument_type(
-            "db.ontology.get argument `format` expects STRING",
-        )),
     }
 }
 
@@ -314,27 +329,6 @@ fn validate_document(document: &str) -> Result<()> {
     relate_ontology::parse_ontology_document(document.as_bytes())
         .map_err(|err| Error::semantic(err.to_string()))?;
     Ok(())
-}
-
-/// Evaluate a required STRING argument (explicit position `index` or the
-/// implicit parameter/row column `arg_name`) for procedure `name`.
-fn string_arg(
-    ctx: ExecCtx<'_>,
-    row: &Row,
-    source: &CallArgs,
-    index: usize,
-    arg_name: &str,
-    name: &str,
-) -> Result<String> {
-    match crate::exec::procedures::call_arg_value(&ctx, row, source, index, arg_name)? {
-        Some(Value::String(document)) => Ok(document.to_string()),
-        Some(_) => Err(Error::invalid_argument_type(format!(
-            "{name} argument `{arg_name}` expects STRING"
-        ))),
-        None => Err(Error::syntax(format!(
-            "InvalidNumberOfArguments: {name} argument `{arg_name}` is required"
-        ))),
-    }
 }
 
 #[cfg(test)]
@@ -388,9 +382,24 @@ mod tests {
         for (proc, name) in dispatch_names {
             assert_eq!(proc.name(), name);
             assert_eq!(OntologyProc::try_from(name), Ok(proc), "{name}");
-            assert!(
-                crate::procedure_registry::builtin_procedure_signature(name).is_some(),
-                "{name} must be registered"
+            let signature = crate::procedure_registry::builtin_procedure_signature(name)
+                .unwrap_or_else(|| panic!("{name} must be registered"));
+            // The enum's read/write partition and the registry's `writes`
+            // flag are one fact — pinned both ways here so neither home
+            // can drift from the other.
+            assert_eq!(
+                proc.write().is_some(),
+                signature.writes,
+                "{name}: the executor's read/write partition must match the registry's writes flag"
+            );
+            // And the write arm's void-by-construction fact: every write
+            // signature declares no return columns, so the resolution's
+            // `yields_unit` for the write variant is the registry's own
+            // void fact, never a hardcoded constant unmoored from it.
+            assert_eq!(
+                proc.write().is_some(),
+                signature.is_void(),
+                "{name}: the write vocabulary must be exactly the void signatures"
             );
         }
         assert!(OntologyProc::try_from("db.ontology.nope").is_err());
@@ -441,7 +450,7 @@ mod tests {
         // Through the divert: `exec_call` classifies once, the ontology
         // executor's registry-signature contract raises the error.
         let call = CallSpec {
-            name: "db.ontology.get",
+            name: &SmallName::from_name("db.ontology.get"),
             source: &CallArgs::Implicit,
             yield_items: &relate_ir::YieldItems::Named(vec![(
                 SmallName::from_name("ontology"),
@@ -454,9 +463,25 @@ mod tests {
         // parameter carries a default (format = yaml), so the implicit
         // in-query call with a YIELD is allowed -- required args key the
         // guard, not declared ones. The call succeeds with the default.
-        let (rows, _yields_unit) =
-            super::super::procedures::exec_call(ctx, vec![Row::new()], call).unwrap();
-        assert!(!rows.is_empty());
+        let ran = match super::super::exec_call_clause(
+            ctx,
+            vec![Row::new()],
+            call,
+            super::super::CallPipeline {
+                profiled: false,
+                folds: false,
+                terminal: false,
+            },
+            Vec::new,
+        )
+        .unwrap()
+        {
+            super::super::CallClauseOut::Ran { rows, .. } => rows,
+            super::super::CallClauseOut::Parked(_) => {
+                panic!("an ontology get is never a streamable producer")
+            }
+        };
+        assert!(!ran.is_empty());
         // The mirror on the generic path: a user-registered procedure with
         // an argument, called implicitly in-query with a YIELD, hits the
         // same backstop there.
@@ -468,15 +493,18 @@ mod tests {
             rows: Vec::new(),
         });
         let call = CallSpec {
-            name: "custom.one",
+            name: &SmallName::from_name("custom.one"),
             source: &CallArgs::Implicit,
             yield_items: &relate_ir::YieldItems::Named(vec![(SmallName::from_name("out"), None)]),
             optional: false,
             where_clause: None,
         };
         // The mirror (a REQUIRED argument): the implicit in-query call
-        // with a YIELD stays rejected -- required args key the guard.
-        let err = super::super::procedures::exec_call(ctx, vec![Row::new()], call).unwrap_err();
+        // with a YIELD stays rejected -- required args key the guard, and
+        // the contract runs at the resolution itself.
+        let Err(err) = super::super::resolve_call(ctx, call) else {
+            panic!("a required implicit argument with a YIELD must be the passing-mode rejection")
+        };
         let text = err.to_string();
         assert!(
             text.contains("InvalidArgumentPassingMode")
@@ -493,9 +521,10 @@ mod tests {
         let ctx = ExecCtx::new(&view, &params);
         let row = Row::new();
         let err = optional_format_arg(
-            &ctx,
+            ctx,
             &row,
             &CallArgs::Explicit(vec![relate_ir::Expr::String("xml".to_string())]),
+            &SmallName::from_name("db.ontology.get"),
         )
         .unwrap_err();
         let text = err.to_string();
@@ -505,20 +534,32 @@ mod tests {
         );
         // A non-string argument is a type error.
         let err = optional_format_arg(
-            &ctx,
+            ctx,
             &row,
             &CallArgs::Explicit(vec![relate_ir::Expr::Int(1)]),
+            &SmallName::from_name("db.ontology.get"),
         )
         .unwrap_err();
         assert!(err.to_string().contains("InvalidArgumentType"), "{err}");
         // Absent and null both default to yaml.
         assert_eq!(
-            optional_format_arg(&ctx, &row, &CallArgs::Explicit(Vec::new())).unwrap(),
+            optional_format_arg(
+                ctx,
+                &row,
+                &CallArgs::Explicit(Vec::new()),
+                &SmallName::from_name("db.ontology.get")
+            )
+            .unwrap(),
             DocumentFormat::Yaml
         );
         assert_eq!(
-            optional_format_arg(&ctx, &row, &CallArgs::Explicit(vec![relate_ir::Expr::Null]))
-                .unwrap(),
+            optional_format_arg(
+                ctx,
+                &row,
+                &CallArgs::Explicit(vec![relate_ir::Expr::Null]),
+                &SmallName::from_name("db.ontology.get"),
+            )
+            .unwrap(),
             DocumentFormat::Yaml
         );
     }

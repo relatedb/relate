@@ -65,18 +65,27 @@ pub(crate) struct StreamedFeed<'a> {
 }
 
 impl<'a> StreamedFeed<'a> {
+    /// The feed owns its own stats handle — built here from whether a
+    /// PROFILE sink is attached, never carried beside the feed by every
+    /// producer that parks one.
     pub(crate) fn new(
         ctx: ExecCtx<'a>,
         rows: Vec<Row>,
         source: Box<dyn FeedSource + 'a>,
-        stats: Rc<StreamedStats>,
+        profiled: bool,
     ) -> Self {
         Self {
             ctx,
             inputs: rows.into_iter(),
             source,
-            stats,
+            stats: Rc::new(StreamedStats::new(profiled)),
         }
+    }
+
+    /// The feed's own stats handle — the parked form's PROFILE facts,
+    /// read by the parking helper beside the feed that owns them.
+    pub(super) fn stats(&self) -> Rc<StreamedStats> {
+        Rc::clone(&self.stats)
     }
 
     /// The next generated row: the open source's next row, or — once it is
@@ -105,23 +114,44 @@ impl<'a> StreamedFeed<'a> {
     /// materializing form, for a consumer that cannot fold as rows arrive
     /// (ADR-0463 — the output vector is one retaining container; its
     /// running total is the guard's).
-    pub(crate) fn materialize(mut self) -> Result<Vec<Row>> {
-        let mut retained = self.ctx.graph.retain_bytes(0)?;
-        let mut rows = Vec::new();
-        for row in self.inputs.by_ref() {
-            // A row that contributes nothing is skipped, never billed.
-            if !self.source.open(self.ctx, row)? {
-                continue;
-            }
-            let (count, width) = self.source.charge_facts()?;
-            let added = crate::workspace::retained_rows_bytes(count, width);
-            retained.add_allocation(self.ctx.graph, added)?;
-            while let Some(row) = self.source.pull(self.ctx) {
-                rows.push(row?);
-            }
-        }
-        Ok(rows)
+    pub(crate) fn materialize(self) -> Result<Vec<Row>> {
+        held_rows(self.ctx, self.inputs, self.source)
     }
+
+    /// The materializing form over a source alone — no stats: the streamed
+    /// form's PROFILE facts exist only while a consumer pulls rows, so
+    /// nothing is fabricated here for the rows a consumer holds.
+    pub(crate) fn held(
+        ctx: ExecCtx<'_>,
+        rows: Vec<Row>,
+        source: Box<dyn FeedSource + '_>,
+    ) -> Result<Vec<Row>> {
+        held_rows(ctx, rows.into_iter(), source)
+    }
+}
+
+/// The materializing drain both entries share: open each input row's
+/// source, charge its output before its first row is built, pull the rows.
+fn held_rows(
+    ctx: ExecCtx<'_>,
+    inputs: std::vec::IntoIter<Row>,
+    mut source: Box<dyn FeedSource + '_>,
+) -> Result<Vec<Row>> {
+    let mut retained = ctx.graph.retain_bytes(0)?;
+    let mut rows = Vec::new();
+    for row in inputs {
+        // A row that contributes nothing is skipped, never billed.
+        if !source.open(ctx, row)? {
+            continue;
+        }
+        let (count, width) = source.charge_facts()?;
+        let added = crate::workspace::retained_rows_bytes(count, width);
+        retained.add_allocation(ctx.graph, added)?;
+        while let Some(row) = source.pull(ctx) {
+            rows.push(row?);
+        }
+    }
+    Ok(rows)
 }
 
 impl Iterator for StreamedFeed<'_> {
@@ -186,10 +216,12 @@ pub(super) fn take_feed<'a>(
 /// parks with one call and its clause match stays a clause match.
 pub(super) fn park_generator<'a>(
     feed: StreamedFeed<'a>,
-    stats: Rc<StreamedStats>,
     record: Option<(PlanMetricsSite<'a>, usize)>,
     pending: &mut Option<PendingFeed<'a>>,
 ) {
+    // The stats handle is derived from the feed that owns it, never
+    // carried beside it.
+    let stats = feed.stats();
     *pending = Some(PendingFeed::Generator(ParkedFeed {
         feed,
         facts: ParkedFacts { stats, record },

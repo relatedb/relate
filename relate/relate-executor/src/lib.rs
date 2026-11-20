@@ -101,7 +101,7 @@ pub use exec::graph_stats::GraphStats;
 pub use exec::procedures::{check_explicit_arity, check_implicit_passing_mode};
 pub use exec::{
     catalog_create_statements, ddl_notifications::ddl_notifications, execute, execute_read_at,
-    value_matches_proc_type, ExecRequest, QueryResult, ReadAdmission,
+    ExecRequest, QueryResult, ReadAdmission,
 };
 pub use frontier_decline::{FrontierDecline, FrontierDeclineReason, FrontierRunDecline};
 pub use function_registry::builtin_function_deprecation;
@@ -169,7 +169,7 @@ pub use procedure_gate::procedure_preview_feature;
 pub use procedure_registry::{
     builtin_procedure_deprecation, builtin_procedure_signature, call_is_write,
     is_ontology_procedure, is_ontology_store_op, is_ontology_write_procedure, is_void_procedure,
-    ProcSignature,
+    value_matches_proc_type, ProcSignature,
 };
 pub use redo::{
     legacy_property_encoding, props_from_json, split_legacy_property_encoding, IndexDetailSpec,

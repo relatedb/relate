@@ -18,6 +18,9 @@ exec/catalog.rs::imported_catalog # projection/filter stage materializes its row
 exec/catalog.rs::project_catalog # projection/filter stage materializes its rows; to be replaced by streaming
 exec/catalog.rs::project_catalog_by_row # projection/filter stage materializes its rows; to be replaced by streaming
 exec/catalog.rs::visible_catalog # projection/filter stage materializes its rows; to be replaced by streaming
+exec/procedures/mod.rs::exec_call_clause # the dispatcher's CALL arm: the parked form streams (ADR-0555); the Ran rows are the resolution's charged materializing run
+exec/procedures/ontology.rs::exec_ontology_write_call # the ontology writes' materializing run: the driving rows passed through, the one pad row (the read variant composes its source and streams)
+exec/compose.rs::compose_into # the CALL composition's materializing form over the feed spine: the consumer that cannot fold holds these rows, and ADR-0463 charges them
 exec/catalog_schema.rs::catalog_alter_database # bounded catalog/admin/procedure result, not graph-sized
 exec/catalog_schema.rs::catalog_create_constraint # bounded catalog/admin/procedure result, not graph-sized
 exec/catalog_schema.rs::catalog_create_index # bounded catalog/admin/procedure result, not graph-sized
@@ -62,16 +65,8 @@ exec/match_clause.rs::match_paths # clause arm materializes its output rows; to 
 exec/match_clause.rs::run_match_operator_ladder # rung result handed back to the clause driver, bounded by the rung's own breaker; returns LadderRun, a ROW_VEC_CARRIERS wrapper; ADR-0555 follow-up
 exec/mod.rs::next_seeds # row-chunk or seed conversion at an operator boundary
 exec/mod.rs::result_seed_rows # row-chunk or seed conversion at an operator boundary
-exec/ontology.rs::exec_ontology_call # bounded catalog/admin/procedure result, not graph-sized
-exec/ontology.rs::exec_ontology_get # bounded catalog/admin/procedure result, not graph-sized
 exec/order.rs::page # ORDER BY / SKIP / LIMIT buffer bounded by the sort or limit
 exec/order.rs::take_parked_top_k # ORDER BY / SKIP / LIMIT buffer bounded by the sort or limit
-exec/procedures.rs::compose_rows # bounded catalog/admin/procedure result, not graph-sized
-exec/procedures.rs::exec_call # bounded catalog/admin/procedure result, not graph-sized
-exec/procedures.rs::exec_call_clause # bounded catalog/admin/procedure result, not graph-sized; the CALL arm's body carved out of the dispatcher around the allowlisted exec_call
-exec/procedures.rs::exec_fulltext_query_call # bounded catalog/admin/procedure result, not graph-sized
-exec/procedures.rs::exec_registry_call # bounded catalog/admin/procedure result, not graph-sized
-exec/procedures.rs::exec_vector_query_call # bounded catalog/admin/procedure result, not graph-sized
 exec/project.rs::aggregate_rows # projection/filter stage materializes its rows; to be replaced by streaming
 eval/predicates.rs::filter_rows_where # projection/filter stage materializes its rows; to be replaced by streaming
 exec/post_merge.rs::output_rows # the tail's output stage: the star shape's unparked rows, or the declared-column rebuild, to be replaced by streaming
@@ -81,6 +76,8 @@ exec/post_merge.rs::retain_distinct # projection/filter stage materializes its r
 exec/search.rs::search_match_clause # clause arm materializes its output rows; to be replaced by streaming
 exec/search/deferred.rs::deferred_search_rows # clause arm materializes its output rows; to be replaced by streaming
 exec/search/direct.rs::direct_search_rows # clause arm materializes its output rows; to be replaced by streaming
+exec/feed.rs::held # the materializing form over a source alone; the ADR-0463 charge guards it (held_rows)
+exec/feed.rs::held_rows # the materializing drain both feed entries share; the ADR-0463 charge guards it
 exec/feed.rs::materialize # the feed spine's materializing form: the consumer that cannot fold holds these rows, and ADR-0463 charges them
 show_catalog.rs::function_catalog_rows # bounded catalog/admin/procedure result, not graph-sized
 show_catalog.rs::procedure_catalog_rows # bounded catalog/admin/procedure result, not graph-sized

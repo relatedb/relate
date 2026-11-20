@@ -3,7 +3,6 @@
 
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
-use std::rc::Rc;
 
 use relate_core::{Error, Result, Value};
 use relate_ir::Clause;
@@ -22,15 +21,15 @@ use super::clause_arms::{
     exec_create, exec_delete, exec_merge, exec_remove, exec_set, exec_unwind,
 };
 use super::ddl::{exec_create_index, exec_drop_index};
-use super::feed::{park_generator, take_feed, PendingFeed};
+use super::feed::{park_generator, take_feed, PendingFeed, StreamedFeed};
 use super::foreach::exec_foreach;
 use super::load_csv::{exec_load_csv, load_csv_feed};
 use super::match_arm::exec_match_arm;
 use super::match_clause::LadderFacts;
-use super::procedures::exec_call_clause;
-use super::profile_tick::{finish_parked_feed, profile_tick, ProfileTick, StreamedStats};
+use super::procedures::{exec_call_clause, CallClauseOut, CallPipeline, CallSpec};
+use super::profile_tick::{finish_parked_feed, profile_tick, ProfileTick};
 use super::project::{project_rows, return_result, unwind_streams_into, RowSource};
-use super::scope::{carry_scope_bindings, ProjectionFields};
+use super::scope::{carry_scope_bindings, star_scope_names, ProjectionFields};
 use super::stats_short_circuit::stats_short_circuit;
 use super::unwind::unwind_feed;
 use super::QueryResult;
@@ -276,8 +275,7 @@ fn run_clauses_mode(
                 variable,
                 field_terminator,
             } if unwind_streams_into(clauses.get(i + 1)) => {
-                let stats = Rc::new(StreamedStats::new(profile.is_some()));
-                park_generator(
+                park_and_defer(
                     load_csv_feed(
                         ctx,
                         std::mem::take(&mut rows),
@@ -285,16 +283,13 @@ fn run_clauses_mode(
                         url,
                         variable,
                         field_terminator.as_deref(),
-                        Rc::clone(&stats),
+                        profile.is_some(),
                     )?,
-                    stats,
-                    profile.map(|site| (site, i)),
+                    profile,
+                    i,
                     &mut pending,
+                    &mut metrics_tick,
                 );
-                // No arm ran: the consumer's own tick covers the work, and
-                // this clause reports its facts when that tick closes.
-                drop(metrics_tick.take());
-                profile_recorded = true;
             }
             Clause::LoadCsv {
                 with_headers,
@@ -391,24 +386,20 @@ fn run_clauses_mode(
                 rows = exec_remove(graph, rows, items, params)?;
             }
             Clause::Unwind { expression, alias } if unwind_streams_into(clauses.get(i + 1)) => {
-                let stats = Rc::new(StreamedStats::new(profile.is_some()));
-                park_generator(
+                park_and_defer(
                     unwind_feed(
                         ctx,
                         &clauses[i + 1..],
                         std::mem::take(&mut rows),
                         expression,
                         alias,
-                        Rc::clone(&stats),
+                        profile.is_some(),
                     ),
-                    stats,
-                    profile.map(|site| (site, i)),
+                    profile,
+                    i,
                     &mut pending,
+                    &mut metrics_tick,
                 );
-                // No arm ran: the consumer's own tick covers the work, and
-                // this clause reports its facts when that tick closes.
-                drop(metrics_tick.take());
-                profile_recorded = true;
             }
             Clause::Unwind { expression, alias } => {
                 rows = exec_unwind(ctx, &clauses[i + 1..], rows, expression, alias)?;
@@ -420,23 +411,44 @@ fn run_clauses_mode(
                 optional,
                 where_clause,
             } => {
-                // The CALL arm's body — the call, the void optional
-                // unit-row binding, the terminal unit result — lives in
-                // `procedures.rs`, beside `exec_call` the executor it
-                // delegates to (stellar round 2, F-2-2).
-                let (call_rows, call_result) = exec_call_clause(
+                // The CALL arm's body — the call's one resolution, the
+                // parking, the materializing run and the pad's completion —
+                // lives in the `procedures` directory module
+                // (`procedures::exec_call_clause`, beside `resolve_call`
+                // and the classification it reads; stellar round 2,
+                // F-2-2). A follower that folds rows as they arrive — the
+                // same `unwind_streams_into` admission `UNWIND` and `LOAD
+                // CSV` park by — keeps the call's generator instead of its
+                // rows: the composed input-rows × procedure-rows product
+                // is never held (ADR-0555).
+                match exec_call_clause(
                     ctx,
-                    clauses,
-                    i,
-                    rows,
-                    name,
-                    args,
-                    yield_items,
-                    *optional,
-                    where_clause.as_ref(),
-                )?;
-                rows = call_rows;
-                last_result = call_result.or(last_result);
+                    std::mem::take(&mut rows),
+                    CallSpec {
+                        name,
+                        source: args,
+                        yield_items,
+                        optional: *optional,
+                        where_clause: where_clause.as_ref(),
+                    },
+                    CallPipeline {
+                        profiled: profile.is_some(),
+                        folds: unwind_streams_into(clauses.get(i + 1)),
+                        terminal: i + 1 == clauses.len(),
+                    },
+                    || star_scope_names(&clauses[..i]),
+                )? {
+                    CallClauseOut::Ran {
+                        rows: call_rows,
+                        result: call_result,
+                    } => {
+                        rows = call_rows;
+                        last_result = call_result.or(last_result);
+                    }
+                    CallClauseOut::Parked(feed) => {
+                        park_and_defer(feed, profile, i, &mut pending, &mut metrics_tick);
+                    }
+                }
             }
             Clause::With { .. } => {
                 let spec = ProjectionFields::of_projection(clause);
@@ -521,6 +533,23 @@ fn project_clause(
     *feeds.rows = project_rows(ctx, feed, spec, inflate, rows_from, scope)?;
     finish_parked_feed(parked, tick.as_mut());
     Ok(())
+}
+
+/// Park a clause's generator for the folding consumer that follows and
+/// close its tick — the one epilogue every parking arm (LOAD CSV, UNWIND,
+/// CALL) runs: no arm ran, the consumer's own tick covers the work, and
+/// the parked clause reports its facts when that tick closes (the taken
+/// tick makes the tail's `profile_recorded` read unreachable on these
+/// paths, so the flag is not touched here).
+fn park_and_defer<'a>(
+    feed: StreamedFeed<'a>,
+    profile: Option<PlanMetricsSite<'a>>,
+    index: usize,
+    pending: &mut Option<PendingFeed<'a>>,
+    metrics_tick: &mut Option<ProfileTick<'a>>,
+) {
+    park_generator(feed, profile.map(|site| (site, index)), pending);
+    drop(metrics_tick.take());
 }
 
 pub(crate) fn execute_part_read_seeded(

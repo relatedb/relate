@@ -4,7 +4,6 @@
 //! their executors (`match_clause.rs`, `procedures.rs`).
 
 use std::collections::BTreeMap;
-use std::rc::Rc;
 
 use relate_core::{Result, Value};
 use relate_ir::{Clause, Expr, MatchMode};
@@ -21,7 +20,6 @@ use super::create::{
 };
 use super::match_clause::match_paths;
 use super::one_path::ResolvedPatterns;
-use super::profile_tick::StreamedStats;
 use super::pushdown::Residual;
 use super::scope::refresh_rows;
 use super::unwind::unwind_feed;
@@ -210,15 +208,7 @@ pub(super) fn exec_unwind(
     expression: &Expr,
     alias: &SmallName,
 ) -> Result<Vec<Row>> {
-    unwind_feed(
-        ctx,
-        tail,
-        rows,
-        expression,
-        alias,
-        Rc::new(StreamedStats::new(false)),
-    )
-    .materialize()
+    unwind_feed(ctx, tail, rows, expression, alias, false).materialize()
 }
 
 #[cfg(test)]

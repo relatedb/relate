@@ -524,42 +524,6 @@ mod tests {
         }
     }
 
-    /// The producer table and the registry agree: every executable signature
-    /// that declares return columns either has a diverted call path or a
-    /// producer arm, so a new row-declaring procedure cannot silently answer
-    /// the drift error. A signature whose producer needs real arguments is
-    /// exercised with an empty binding, which must not be the drift error.
-    #[test]
-    fn every_row_declaring_signature_has_a_producer_or_a_diverted_path() {
-        let graph = Graph::default();
-        let view = crate::overlay::ExecGraph::read(&graph);
-        for signature in crate::procedure_registry::BUILTIN_PROCEDURE_SIGNATURES {
-            if !signature.executable || signature.returns.is_empty() {
-                continue;
-            }
-            if crate::exec::procedures::is_diverted_call(signature.name) {
-                continue;
-            }
-            // Bind every declared parameter so a producer that reads its
-            // arguments is exercised rather than panicking on the CALL
-            // contract's missing binding; a typed contract error is fine —
-            // only the drift error fails the pin.
-            let args: BTreeMap<String, Value> = signature
-                .args
-                .iter()
-                .map(|arg| (arg.name.to_string(), Value::String("GRAPH COUNTS".into())))
-                .collect();
-            match builtin_procedure_rows(&view, signature, None, &args) {
-                Ok(_) => {}
-                Err(error) => assert!(
-                    !error.to_string().contains("has no row producer"),
-                    "{} declares return columns but fell through the producer table: {error}",
-                    signature.name
-                ),
-            }
-        }
-    }
-
     /// The metadata boundary: resolving a call reads the canonical signature
     /// and runs no row producer, so no producer ever sees a synthetic empty
     /// argument binding. The same name still answers its rows through

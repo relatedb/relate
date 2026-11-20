@@ -46,6 +46,7 @@ pub(crate) mod catalog_show;
 pub(crate) mod chunk;
 pub(crate) mod classification;
 mod clause_arms;
+pub(crate) mod compose;
 pub(crate) mod constraint_validation;
 pub(crate) mod create;
 pub(crate) mod ddl;
@@ -80,7 +81,6 @@ pub(crate) mod named_path;
 // plain-side enumeration, and the exists probe's dispatch — hoisted
 // beside `expand` so every consumer imports it downward.
 pub(crate) mod one_path;
-pub(crate) mod ontology;
 pub(crate) mod order;
 pub(crate) mod pattern_policies;
 pub(crate) mod pivot;
@@ -107,7 +107,6 @@ pub(crate) mod vector_filters;
 pub(crate) mod write;
 
 pub use catalog_show::catalog_create_statements;
-pub use procedures::value_matches_proc_type;
 
 /// The read path's one rejection policy: the message a `ClauseMode::Read`
 /// clause loop refuses `c` with, or `None` to dispatch it. The dispatcher
@@ -273,6 +272,12 @@ impl QueryResult {
         stats: QueryStats,
     ) -> Self {
         Self::finished(columns, rows, stats, StatementEffect::None)
+    }
+
+    /// CIP-159's empty unit result — no columns, no rows, default stats —
+    /// the one spelling of the terminal-void answer.
+    pub(crate) fn unit() -> Self {
+        Self::intermediate(Vec::new(), Vec::new(), QueryStats::default())
     }
 }
 
@@ -870,6 +875,8 @@ mod path_fold_tests;
 mod pivot_tests;
 #[cfg(test)]
 mod predicate_spec_tests;
+#[cfg(test)]
+mod procedures_tests;
 #[cfg(test)]
 mod profiling_tests;
 #[cfg(test)]

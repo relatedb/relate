@@ -9,7 +9,6 @@
 //! unchanged.
 
 use std::collections::BTreeMap;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use relate_core::{Result, Value};
@@ -22,7 +21,6 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::feed::StreamedFeed;
-use super::profile_tick::StreamedStats;
 use super::scope::call_scope_reads;
 
 pub(super) enum Source {
@@ -333,13 +331,13 @@ pub(super) fn unwind_feed<'a>(
     inputs: Vec<Row>,
     expression: &'a Expr,
     alias: &'a SmallName,
-    stats: Rc<StreamedStats>,
+    profiled: bool,
 ) -> StreamedFeed<'a> {
     StreamedFeed::new(
         ctx,
         inputs,
         Box::new(UnwindSource::new(tail, expression, alias)),
-        stats,
+        profiled,
     )
 }
 

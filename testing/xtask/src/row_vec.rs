@@ -146,9 +146,10 @@ fn before_where_clause(ty: &str) -> &str {
 /// Types that carry an unbounded `Vec<Row>` in a field or variant, so a fn
 /// returning one materializes rows exactly as one returning `Vec<Row>` does.
 /// A drift test checks each still names `Vec<Row>` in its definition.
-pub const ROW_VEC_CARRIERS: [(&str, &str); 2] = [
+pub const ROW_VEC_CARRIERS: [(&str, &str); 3] = [
     ("FrontierRows", "exec/kernels/frontier_run.rs"),
     ("LadderRun", "exec/match_clause.rs"),
+    ("CallClauseOut", "exec/procedures/mod.rs"),
 ];
 
 /// Whether `word` occurs in `ty` as a whole identifier.

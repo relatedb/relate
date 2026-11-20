@@ -16,6 +16,8 @@
 //! - `procedure_gate::procedure_preview_feature` — the preview-feature
 //!   mapping of the `db.ontology.*` family (ADR-0378).
 
+use relate_core::Value;
+
 use crate::catalog_meta::{DeprecatedBy, ProcArgMeta};
 
 /// Which row producer a row-declaring executable signature carries: the
@@ -259,6 +261,69 @@ pub fn is_void_procedure(registered: Option<&crate::graph::Procedure>, name: &st
         return procedure.yield_names.is_empty();
     }
     builtin_procedure_signature(name).is_some_and(ProcSignature::is_void)
+}
+
+/// Whether a value satisfies a procedure argument type string (`STRING`,
+/// `INTEGER`, `LIST<FLOAT>`, …). `ANY`, an empty type, a nullable `?`
+/// suffix, and a null value match everything; the accepted type vocabulary
+/// is explicit and fails closed, so an unknown (typo'd or unmodelled) type
+/// name matches nothing. The precise element-type check of a list happens
+/// in the procedure body itself. The canonical home is here, beside the
+/// type strings this registry declares — the facade's compile-time
+/// `validate_calls` and the executor's per-row binder read the one
+/// spelling, so the two cannot drift.
+pub fn value_matches_proc_type(v: &Value, ty: &str) -> bool {
+    matches_normalized_type(v, &normalize_proc_type(ty))
+}
+
+/// One signature's declared type string in the vocabulary's own form —
+/// trimmed, `?`-stripped, uppercased. The binder normalizes its binding's
+/// declared types once at construction, so the per-row check never pays
+/// this again.
+pub(crate) fn normalize_proc_type(ty: &str) -> String {
+    ty.trim().trim_end_matches('?').trim().to_ascii_uppercase()
+}
+
+/// The vocabulary match over an already-normalized type string (a
+/// signature may declare several admissible types — `BOOLEAN|MAP`, the
+/// Cypher 25 and legacy forms of one argument — each alternative already
+/// normalized with the whole).
+pub(crate) fn matches_normalized_type(v: &Value, ty: &str) -> bool {
+    if v.is_null() || ty.is_empty() || ty == "ANY" {
+        return true;
+    }
+    if ty.contains('|') {
+        // Each alternative trims on its own: a union spelled with spaces
+        // (`STRING | INTEGER`) normalizes as a whole, so the split arms
+        // can carry leading or trailing blanks.
+        return ty
+            .split('|')
+            .any(|alternative| matches_normalized_type(v, alternative.trim()));
+    }
+    // The accepted type vocabulary is explicit and fails closed: an unknown
+    // (typo'd or unmodelled) name does not silently disable checking.
+    // Generic lists (`LIST<FLOAT>`, `LIST<NODE>`, …) share the list check.
+    if ty == "LIST" || ty.starts_with("LIST<") {
+        return matches!(v, Value::List(_));
+    }
+    match ty {
+        "STRING" => matches!(v, Value::String(_)),
+        "INTEGER" | "INT" => matches!(v, Value::Int(_)),
+        "FLOAT" => matches!(v, Value::Float(_) | Value::Int(_)),
+        "NUMBER" => matches!(v, Value::Int(_) | Value::Float(_)),
+        "BOOLEAN" | "BOOL" => matches!(v, Value::Bool(_)),
+        "MAP" => matches!(v, Value::Map(_)),
+        "NODE" => matches!(v, Value::Node(_)),
+        "RELATIONSHIP" | "REL" => matches!(v, Value::Relationship(_)),
+        "PATH" => matches!(v, Value::Path(_)),
+        "BYTES" => matches!(v, Value::Bytes(_)),
+        "DATE" | "DATETIME" | "LOCAL DATETIME" | "LOCALDATETIME" | "TIME" | "LOCAL TIME"
+        | "LOCALTIME" | "DURATION" => matches!(v, Value::Temporal(_)),
+        "POINT" => matches!(v, Value::Point(_)),
+        "UUID" => matches!(v, Value::Uuid(_)),
+        "VECTOR" => matches!(v, Value::Vector { .. }),
+        _ => false,
+    }
 }
 
 /// Whether `name` names one of the `db.ontology.*` procedures (ADR-0121 as
