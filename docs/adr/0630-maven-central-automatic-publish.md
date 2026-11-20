@@ -35,12 +35,14 @@ ship with every release. Its first live run failed twice over, in two
 unrelated places:
 
 1. **The chained job imported an empty signing key** (run 44705331863).
-   The four credentials were `release` environment secrets. A workflow
-   job that calls a reusable workflow cannot declare an `environment`
-   at all, a called workflow's `secrets` context carries only what the
-   caller forwards, and the called job's own `environment: release`
-   binding does not inject environment secrets into a called run — the
-   chain could structurally never carry them.
+   The call forwarded no secrets at all: a called workflow's `secrets`
+   context carries only what its caller explicitly passes — ambient
+   repository secrets included (the rule the release-notes API key
+   already follows, [ADR-0125](./0125-release-notes-amendments.md)
+   amendment 3). A `uses` job cannot bind an `environment` either, so
+   environment-scoped forwarding is unavailable too. The four
+   credentials have been repository-level secrets since owner setup;
+   the v1.2.0 call simply handed the called workflow nothing.
 2. **The recovery dispatch uploaded and then went red** (run 44711696712).
    The Central Portal API began returning a `warnings` field in the
    deployment-status response; the pinned
@@ -57,19 +59,20 @@ publishes that no longer earns its ceremony.
 **The Java client publishes automatically, green, from a release
 dispatched with `registries=true` — and from nothing else.**
 
-1. **The four credentials move to repository secrets.**
+1. **The chained call forwards the four credentials explicitly.**
    `MAVEN_GPG_KEY`, `MAVEN_GPG_PASSPHRASE`, `MAVEN_CENTRAL_USERNAME` and
-   `MAVEN_CENTRAL_TOKEN` live at repository level. `release.yml`'s
-   `publish-maven-central` job forwards them explicitly to the called
-   workflow; `publish-registries.yml` declares the four in its
+   `MAVEN_CENTRAL_TOKEN` are repository-level secrets — they have been
+   since owner setup; this ADR moves nothing. `release.yml`'s
+   `publish-maven-central` job forwards them to the called workflow;
+   `publish-registries.yml` declares the four in its
    `workflow_call.secrets` — the declare-and-pass pattern
    [ADR-0125](./0125-release-notes-amendments.md) amendment 3 set for the
    release-notes API key. A direct dispatch reads them ambiently. The
    `maven-central` job keeps its `environment: release` binding for the
-   main-only branch policy; it no longer gates any secret. The job
-   refuses empty credentials with a named error before the GPG import —
-   a `registries=true` release dispatched before the secrets are stored
-   fails loud in the publish leg, never cryptically.
+   main-only branch policy. The job refuses empty credentials with a
+   named error before the GPG import — a `registries=true` release
+   dispatched without them fails loud in the publish leg, never
+   cryptically.
 2. **One opt-in for every registry.** The chained job gates on
    `!offline && inputs.registries`, exactly like the OIDC chain call: an
    unchecked dispatch publishes nothing anywhere, the Java client
@@ -99,19 +102,16 @@ dispatched with `registries=true` — and from nothing else.**
 
 ## Consequences
 
-- Repository secrets are readable by any workflow in this repository on
-  any branch — including `pull_request` runs from in-repo branches; only
-  fork pull requests never see secrets. The previous placement confined
-  the credentials to main-branch runs through the environment's
-  deployment branch policy. This is accepted:
-  the alternatives are a long-lived PAT dispatching the publish workflow
-  from the release run (a stronger credential than the four it replaces,
-  plus polling machinery — GITHUB_TOKEN-triggered workflow dispatches
-  are suppressed,
-  [ADR-0265](./0265-release-notes-explicit-chain.md)-class),
-  or keeping the environment placement and confining Maven to a manual
-  dispatch after every release. The signing key keeps its offline
-  backup; a GPG key cannot be replaced for artifacts already published.
+- The repository-level placement **predates this ADR** — it was the
+  standing configuration at owner setup, not a widening this ADR
+  accepts. The exposure it carries is therefore unchanged by this
+  decision: repository secrets are readable by any workflow in this
+  repository on any branch, including `pull_request` runs from
+  in-repo branches; only fork pull requests never see them. The
+  compensations are the rotation runbook (docs/PUBLISHING.md, Maven
+  Central) and the `maven-central` job's main-only branch policy on
+  its dispatch path. The signing key keeps its offline backup; a GPG
+  key cannot be replaced for artifacts already published.
 - `maven-dry-run` stops before the `deploy` goal, so it validates the
   profile (enforcer, packaging, sources, javadoc, signatures) but not
   the publish goal itself — the first `registries=true` release is the

@@ -1459,10 +1459,10 @@ jobs:
   # (publish-maven-central): no registry-side registration to do first —
   # Central authenticates a static token, not the run's identity — and
   # its four credentials are repository secrets (ADR-0630) the call
-  # forwards explicitly. An environment's secrets cannot cross a
-  # workflow-call boundary — the v1.2.0 cut's call forwarded nothing
-  # and the job died importing an empty signing key (run 44705331863) —
-  # which is why the credentials live at repository level.
+  # forwards explicitly: a called workflow's `secrets` context carries
+  # only what its caller passes, repository secrets included — the
+  # v1.2.0 cut's call forwarded nothing and the job died importing an
+  # empty signing key (run 44705331863).
   publish-registries:
     name: Publish to registries
     needs: [version, create-release, npm-smoke-gate]
@@ -1488,13 +1488,13 @@ jobs:
   # three off, so a release with `registries` on deploys the jars
   # exactly once. The four Central credentials are repository secrets
   # (ADR-0630) and are passed explicitly: a called workflow's `secrets`
-  # context carries only what its caller forwards, and the v1.2.0 cut's
-  # call forwarded nothing — the job died importing an empty signing key
-  # (run 44705331863). No `environment` key here: GitHub forbids it on a
-  # `uses` job, the boundary that moved the credentials to repository
-  # level in the first place. The deployment publishes itself once
-  # Central validates it (autoPublish=true, ADR-0630) — a failed
-  # validation fails this job.
+  # context carries only what its caller forwards, repository secrets
+  # included, and the v1.2.0 cut's call forwarded nothing — the job
+  # died importing an empty signing key (run 44705331863). No
+  # `environment` key here: GitHub forbids it on a `uses` job — and
+  # none is needed, the credentials are repository-level secrets. The
+  # deployment publishes itself once Central validates it
+  # (autoPublish=true, ADR-0630) — a failed validation fails this job.
   publish-maven-central:
     name: Publish the Java client to Maven Central
     needs: [version, create-release]

@@ -243,10 +243,10 @@ and uploads with a Central Portal token, both stored as secrets in the
    an offline backup of the private key and revocation certificate; the
    key cannot be replaced for artifacts already published.
 5. **Store the four secrets as repository secrets** (Settings → Secrets
-   and variables → Actions → New repository secret — repository level,
-   not the `release` environment: the release's chained call forwards
-   them into the publish workflow, and an environment's secrets cannot
-   cross a workflow-call boundary, ADR-0630):
+   and variables → Actions → New repository secret): the release's
+   chained call forwards them into the publish workflow, and a called
+   workflow sees only caller-passed secrets — repository level is where
+   both paths read them (ADR-0630):
    `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_TOKEN`, `MAVEN_GPG_KEY`,
    `MAVEN_GPG_PASSPHRASE`. The publish job still runs in the `release`
    environment for its main-only branch policy.
@@ -294,9 +294,9 @@ and uploads with a Central Portal token, both stored as secrets in the
    `keyserver.ubuntu.com` and stored over `MAVEN_GPG_KEY` with its
    passphrase; artifacts already published keep their old signatures —
    a rotated key limits forgery to future releases. The four are
-   repository secrets, readable by every workflow in this repository
-   on any branch (never by fork pull requests) — that is ADR-0630's
-   recorded tradeoff, and the exposure to weigh first.
+   repository secrets — readable by every workflow in this repository
+   on any branch, never by fork pull requests — a standing exposure
+   that predates ADR-0630, not one it introduced.
 
 ## Between releases
 

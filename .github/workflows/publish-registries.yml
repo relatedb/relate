@@ -57,12 +57,12 @@ on:
         default: false
     # The Maven Central credentials are repository secrets (ADR-0630):
     # a called workflow's `secrets` context carries only what its caller
-    # forwards, so the release's maven call passes all four — an
-    # environment's secrets cannot cross this boundary at all (the
-    # v1.2.0 lesson, run 44705331863), which is why they live at
-    # repository level. Optional: the OIDC-only chain call runs no maven
-    # job and passes none. A direct dispatch ignores this block — its
-    # jobs read the repository secrets ambiently.
+    # forwards — repository secrets included; the v1.2.0 cut's call
+    # forwarded nothing and the job imported an empty signing key (run
+    # 44705331863). The release's maven call therefore passes all four.
+    # Optional: the OIDC-only chain call runs no maven job and passes
+    # none. A direct dispatch ignores this block — its jobs read the
+    # repository secrets ambiently.
     secrets:
       MAVEN_GPG_KEY:
         description: "base64-encoded GPG secret key that signs the jars"
@@ -510,11 +510,11 @@ jobs:
   # registries, Central never checks the run's identity: the static
   # token does, so no registry-side registration precedes the chain. The
   # four credentials are repository secrets (ADR-0630) — ambient on a
-  # dispatch, forwarded by the release's call on the chained path; an
-  # environment's secrets cannot cross a workflow-call boundary (the
-  # v1.2.0 lesson, run 44705331863), which is what moved them to
-  # repository level. This job's own `environment: release` binding
-  # stays for its main-only branch policy. The pom's `central-publish`
+  # dispatch, forwarded by the release's call on the chained path: a
+  # called workflow sees only caller-passed secrets, repository ones
+  # included — the v1.2.0 lesson (run 44705331863). This job's own
+  # `environment: release` binding stays for its main-only branch
+  # policy. The pom's `central-publish`
   # profile does the real work (sources, javadoc, GPG, upload) and
   # publishes the deployment once Central validates it (autoPublish=true,
   # ADR-0630) — a failed validation fails this job; see
