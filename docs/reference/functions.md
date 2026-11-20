@@ -264,16 +264,18 @@ rejected before execution (`range(1.5, 5)` → error
 `InvalidArgumentType: range() start`).
 
 List index and slice bounds follow Neo4j
-([ADR-0175](../adr/0175-list-and-string-form-conversions.md)): a FLOAT
-index — `1.0` and NaN included — raises
+([ADR-0175](../adr/0175-list-and-string-form-conversions.md),
+[ADR-0631](../adr/0631-dynamic-slice-bounds-saturate-into-int32.md)): a
+FLOAT index — `1.0` and NaN included — raises
 `InvalidArgumentType: list index must be an integer`
 (`[1,2,3][head([1.0, 'x'])]` → error), while slice bounds truncate toward
-zero, convert NaN to `0`, and saturate, and must then fit the 32-bit
-range (`[1,2,3][head([1.5, 'x'])..head([2.9, 'x'])]` → `[2]`,
-`[1,2,3][head([1.0/0.0, 'x'])..2]` → error
-`NumberOutOfRange: slice start`); negative bounds keep the usual
-negative-index semantics. A float *literal* in an index or slice bound is
-rejected before execution (`[1,2,3][1.0]` → error
+zero, convert NaN to `0`, and saturate into the 32-bit range — an
+oversized dynamic bound reads as past-the-end or before-the-start, never
+a range fault (`[1,2,3][head([1.5, 'x'])..head([2.9, 'x'])]` → `[2]`,
+`[1,2,3][head([1.0/0.0, 'x'])..2]` → `[]`,
+`[1,2,3][head([2147483648.0, 'x'])..]` → `[]`); negative bounds keep the
+usual negative-index semantics. A float *literal* in an index or slice
+bound is rejected before execution (`[1,2,3][1.0]` → error
 `InvalidArgumentType: list index must be an integer`).
 
 ### UUID functions

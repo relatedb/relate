@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use relate_core::{integer_args, temporal, Error, ErrorKind, Result, Value};
+use relate_core::{integer_args, temporal, Error, Result, Value};
 use relate_ir::{BinaryOp, Expr, UnaryOp};
 use relate_names::{NamedToken, SmallName};
 
@@ -358,10 +358,15 @@ pub(crate) fn slice(v: &Value, start: Option<Value>, end: Option<Value>) -> Resu
 /// ADR-0175: an INTEGER bound is a long — it clamps to the sequence across
 /// the whole i64 range (the harness pins 2147483648, Long.MAX and Long.MIN;
 /// only a literal that does not fit an i64 is rejected, at parse time).
-/// A FLOAT bound converts like Neo4j's `asIntExact`: truncate toward zero
-/// (NaN → 0) and then require the int32 range — beyond it (±Infinity
-/// included) raises NumberOutOfRange. A non-numeric bound keeps the
-/// historical bare `what` type error.
+/// A FLOAT bound converts like Neo4j dev's dynamic slice bounds
+/// (ADR-0631, superseding ADR-0175's `asIntExact` image): the shared
+/// `(long)` cast, then saturation into the int32 range — a bound beyond
+/// it (±Infinity, `2147483648.0`, `9.3e18`) reads as past-the-end or
+/// before-the-start, never a range fault, so a dynamic slice bound no
+/// longer raises NumberOutOfRange (the float *literal* still fails at
+/// plan time, and `substring()` / `left()` / `right()` and list indexing
+/// keep the rejection). A non-numeric bound keeps the historical bare
+/// `what` type error.
 fn slice_bounds(
     len: usize,
     start: Option<&Value>,
@@ -374,23 +379,16 @@ fn slice_bounds(
     let bound = |b: Option<&Value>, missing: i64, what: &str| -> Result<usize> {
         let i = match b {
             None => missing,
-            Some(v) => {
-                let i = super::numeric::int_arg(v).ok_or_else(|| Error::ty(what))?;
-                // Only the FLOAT coercion is int32-exact; an INTEGER bound
-                // is a long that clamps.
-                if matches!(v, Value::Float(_))
-                    && !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&i)
-                {
-                    // ADR-0175's 22N03 mapping: NumberOutOfRange is the
-                    // ArgumentError class (live 2026.10.1:
-                    // Neo.ClientError.Statement.ArgumentError).
-                    return Err(Error::argument_value_kind(
-                        ErrorKind::NumberOutOfRange,
-                        what,
-                    ));
-                }
-                i
+            // A FLOAT bound saturates into the int32 range (ADR-0631):
+            // the shared Java `(long)` cast, then the clamp — never a
+            // range fault. An INTEGER bound is a long that clamps at the
+            // end. The variants are matched, never re-derived from a
+            // coerced value.
+            Some(Value::Float(f)) => {
+                super::numeric::float_to_i64(*f).clamp(i64::from(i32::MIN), i64::from(i32::MAX))
             }
+            Some(Value::Int(i)) => *i,
+            Some(_) => return Err(Error::ty(what)),
         };
         Ok((if i < 0 { i + n } else { i }).clamp(0, n) as usize)
     };

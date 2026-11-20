@@ -142,8 +142,8 @@ fn is_float_literal(expr: &Expr) -> bool {
 /// not literals and are handled at runtime, and the two sites differ
 /// there: a list index rejects every float at runtime with the same text
 /// this gate raises, while a slice bound's wording is plan-time-only — its
-/// runtime coercion truncates floats (NaN → 0, saturating) and raises
-/// `NumberOutOfRange` outside the int32 range instead.
+/// runtime coercion truncates floats (NaN → 0) and saturates into the
+/// int32 range, never a range fault (ADR-0631).
 pub(crate) fn float_integer_site(expr: &Expr) -> Option<&'static IntegerArgSite> {
     match expr {
         Expr::Subscript { index, .. } if is_float_literal(index) => Some(&integer_args::LIST_INDEX),

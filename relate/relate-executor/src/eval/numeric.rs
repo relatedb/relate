@@ -301,10 +301,11 @@ pub(crate) fn float_unary(vals: &[Value], f: impl Fn(f64) -> f64) -> Result<Valu
     })
 }
 
-/// The shared FLOAT → INTEGER conversion (ADR-0168, ADR-0175), used by the
-/// integer-argument sites (`range()`, `substring()` / `left()` /
-/// `right()`, list-slice bounds) and the `toInteger()` /
-/// `toIntegerOrNull()` / `toIntegerList()` family. It is Java's
+/// The shared FLOAT → INTEGER conversion (ADR-0168, ADR-0175), used by
+/// the integer-argument sites (`range()`, `substring()` / `left()` /
+/// `right()`, and the `toInteger()` / `toIntegerOrNull()` /
+/// `toIntegerList()` family) and by list-slice bounds' FLOAT arm
+/// (ADR-0631). It is Java's
 /// `(long) d`, which Neo4j applies through `NumberValue.longValue()`, and
 /// Rust's saturating `as` cast has exactly those semantics: NaN converts
 /// to 0, values at or beyond the `i64` limits (±Infinity included)
@@ -315,7 +316,7 @@ pub(crate) fn float_to_i64(f: f64) -> i64 {
 }
 
 /// ADR-0175's shared integer-argument coercion (`range()`,
-/// `substring()` / `left()` / `right()`, list-slice bounds): an INTEGER
+/// `substring()` / `left()` / `right()`): an INTEGER
 /// passes through, a FLOAT converts via [`float_to_i64`], and anything
 /// else — null or non-numeric — is `None` so the call site applies its
 /// own policy (type error, range gate, or default fallback). An absent

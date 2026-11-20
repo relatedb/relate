@@ -18,6 +18,12 @@ fn ty_err(msg: &str) -> String {
     Error::ty(msg).to_string()
 }
 
+/// The integer-list value every list-slice test slices over — the one
+/// builder, where a per-test closure used to restate it.
+fn int_list(xs: &[i64]) -> Value {
+    Value::List(xs.iter().map(|&x| int(x)).collect::<Vec<_>>().into())
+}
+
 /// Live Neo4j 2026.10.1 raises 22003 for `i64::MIN / -1`; modulo keeps
 /// answering 0 (the exact result, ADR-0569).
 #[test]
@@ -92,16 +98,15 @@ fn string_slice_null_and_non_integer_bounds() {
 
 #[test]
 fn list_slice_follows_the_same_bounds_rules() {
-    let list = |xs: &[i64]| Value::List(xs.iter().map(|&x| int(x)).collect::<Vec<_>>().into());
-    let xs = list(&[0, 1, 2, 3]);
+    let xs = int_list(&[0, 1, 2, 3]);
     let sl = |start, end| slice(&xs, start, end);
-    assert_eq!(sl(Some(int(1)), Some(int(3))).unwrap(), list(&[1, 2]));
-    assert_eq!(sl(Some(int(-3)), Some(int(-1))).unwrap(), list(&[1, 2]));
+    assert_eq!(sl(Some(int(1)), Some(int(3))).unwrap(), int_list(&[1, 2]));
+    assert_eq!(sl(Some(int(-3)), Some(int(-1))).unwrap(), int_list(&[1, 2]));
     assert_eq!(
         sl(Some(int(-9)), Some(int(9))).unwrap(),
-        list(&[0, 1, 2, 3])
+        int_list(&[0, 1, 2, 3])
     );
-    assert_eq!(sl(Some(int(3)), Some(int(1))).unwrap(), list(&[]));
+    assert_eq!(sl(Some(int(3)), Some(int(1))).unwrap(), int_list(&[]));
     assert_eq!(sl(None, Some(Value::Null)).unwrap(), Value::Null);
     assert_eq!(
         sl(Some(Value::Bool(true)), None).unwrap_err().to_string(),
@@ -118,25 +123,64 @@ fn list_slice_follows_the_same_bounds_rules() {
 /// (only a literal that does not fit an i64 is a parse-time error).
 #[test]
 fn list_slice_bounds_clamp_at_and_beyond_the_int32_range() {
-    let list = |xs: &[i64]| Value::List(xs.iter().map(|&x| int(x)).collect::<Vec<_>>().into());
-    let xs = list(&[1, 2, 3, 4, 5]);
+    let xs = int_list(&[1, 2, 3, 4, 5]);
     let sl = |start, end| slice(&xs, start, end).unwrap();
     let i32_max_plus_1 = i64::from(i32::MAX) + 1;
     assert_eq!(sl(None, Some(int(i32_max_plus_1))), xs);
     assert_eq!(
         sl(Some(int(0)), Some(int(i32_max_plus_1))),
-        list(&[1, 2, 3, 4, 5])
+        int_list(&[1, 2, 3, 4, 5])
     );
     assert_eq!(
         sl(Some(int(i32_max_plus_1)), Some(int(i32_max_plus_1 + 1))),
-        list(&[])
+        int_list(&[])
     );
-    assert_eq!(sl(None, Some(int(i64::from(i32::MIN) - 1))), list(&[]));
+    assert_eq!(sl(None, Some(int(i64::from(i32::MIN) - 1))), int_list(&[]));
     assert_eq!(sl(Some(int(i64::from(i32::MIN) - 1)), None), xs);
     assert_eq!(sl(None, Some(int(i64::MAX))), xs);
-    assert_eq!(sl(Some(int(i64::MAX)), None), list(&[]));
-    assert_eq!(sl(None, Some(int(i64::MIN))), list(&[]));
+    assert_eq!(sl(Some(int(i64::MAX)), None), int_list(&[]));
+    assert_eq!(sl(None, Some(int(i64::MIN))), int_list(&[]));
     assert_eq!(sl(Some(int(i64::MIN)), None), xs);
+}
+
+/// ADR-0631: a dynamic FLOAT slice bound saturates into the int32 range
+/// instead of raising NumberOutOfRange — the report's three probes plus
+/// the negative direction, for the list and the string share of the one
+/// helper. The observable contract is "saturates, never errors": after
+/// the negative-index and `[0, len]` clamping a slice result cannot
+/// distinguish the int32 saturation from a plain i64 clamp (both land on
+/// the same sequence window), so the pins assert the answers, with the
+/// int32 conversion carried by the ADR and the code's one arm.
+#[test]
+fn float_slice_bounds_saturate_into_the_int32_range() {
+    let xs = int_list(&[1, 2, 3]);
+    let sl = |start, end| slice(&xs, start, end).unwrap();
+    // The report's probes: an oversized start selects nothing, an
+    // oversized end keeps the whole sequence.
+    assert_eq!(
+        sl(Some(Value::Float(f64::INFINITY)), Some(int(2))),
+        int_list(&[])
+    );
+    assert_eq!(sl(Some(Value::Float(2147483648.0)), None), int_list(&[]));
+    assert_eq!(sl(Some(Value::Float(9.3e18)), None), int_list(&[]));
+    assert_eq!(sl(None, Some(Value::Float(f64::INFINITY))), xs);
+    assert_eq!(sl(None, Some(Value::Float(9.3e18))), xs);
+    // The negative spellings saturate to before-the-start: the whole
+    // sequence from a -Infinity start, nothing before a -Infinity end.
+    assert_eq!(sl(Some(Value::Float(f64::NEG_INFINITY)), None), xs);
+    assert_eq!(
+        sl(None, Some(Value::Float(f64::NEG_INFINITY))),
+        int_list(&[])
+    );
+    assert_eq!(
+        sl(Some(Value::Float(-9.3e18)), Some(int(2))),
+        int_list(&[1, 2])
+    );
+    // The string share of the helper saturates identically (mb_slice is
+    // the module's canonical string-slice helper).
+    assert_eq!(mb_slice(Some(Value::Float(f64::INFINITY)), None), s(""));
+    assert_eq!(mb_slice(None, Some(Value::Float(f64::NEG_INFINITY))), s(""));
+    assert_eq!(mb_slice(Some(Value::Float(f64::NEG_INFINITY)), None), s(MB));
 }
 
 #[test]

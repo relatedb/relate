@@ -885,3 +885,11 @@ supersede [ADR-0168](./0168-non-finite-and-out-of-range-conversions.md)'s delibe
 - [ADR-0569](./0569-integer-division-overflow-checked.md) supersedes the `MIN / -1` half of the consequence above: live
   Neo4j 2026.10.1 raises 22003 for `i64::MIN / -1`, so integer division is
   checked like the other integer arithmetic. `MIN % -1` still answers 0.
+- [ADR-0631](./0631-dynamic-slice-bounds-saturate-into-int32.md) supersedes the List slice decision's dynamic-bound half:
+  live Neo4j dev (a 2026-11 parity probe) answers `[]` for
+  list slices whose dynamically-evaluated FLOAT bounds exceed the int32
+  range (±Infinity, `2147483648.0`, `9.3e18`), so a dynamic bound
+  saturates into `[i32::MIN, i32::MAX]` instead of raising
+  `NumberOutOfRange`. The static float-literal rejection, the
+  `substring()` / `left()` / `right()` and list-index rejections, and the
+  INTEGER long-clamp keep this ADR's rule.

@@ -6,9 +6,10 @@
 //! reports `Neo.ClientError.Statement.ArgumentError` for a `range()` zero
 //! step, for a `substring()` / `left()` / `right()` position beyond
 //! [0, 2147483647] and for a percentile outside [0, 1]. The FLOAT
-//! slice-bound int32 check is ADR-0175's 2026.09-probed rule; 2026.10.1
-//! returns `[]` there instead (recorded drift, see the ADR's probe table),
-//! so it is pinned to the ADR, not to live.
+//! slice-bound site left this family: live dev answers a slice whose
+//! dynamic FLOAT bound exceeds the int32 range with a saturated bound
+//! (ADR-0631, superseding ADR-0175's 2026.09-probed `asIntExact` image),
+//! so its pins moved to `slice_bound_saturation.rs`.
 //!
 //! The runtime (ANY-typed) spelling is probed here because the engine has
 //! no static float typing: a float *literal* at these sites is rejected at
@@ -46,10 +47,6 @@ const SITES: &[(&str, &str)] = &[
         "NumberOutOfRange: right() length",
     ),
     (
-        "RETURN [1,2,3][head([1.0/0.0, 'x'])..2] AS v",
-        "NumberOutOfRange: slice start",
-    ),
-    (
         "RETURN percentileCont(1, 2.0) AS v",
         "NumberOutOfRange: percentile",
     ),
@@ -71,14 +68,5 @@ fn number_out_of_range_sites_are_argument_errors() {
             ("ArgumentError", "ArgumentError"),
             "{statement}: {error}"
         );
-    }
-}
-
-#[test]
-fn number_out_of_range_sites_keep_their_message_tokens() {
-    let mut conn = connection();
-    for (statement, detail) in SITES {
-        let error = conn.query(statement).unwrap_err();
-        assert!(error.to_string().contains(detail), "{statement}: {error}");
     }
 }

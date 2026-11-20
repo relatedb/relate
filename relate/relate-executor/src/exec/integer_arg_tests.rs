@@ -8,8 +8,10 @@
 //! - `range()` / `substring()` / `left()` / `right()` / slice bounds coerce
 //!   runtime floats with Java `(long)`-cast semantics (truncate toward
 //!   zero, NaN → 0, ±Infinity and out-of-range saturate); `substring()` /
-//!   `left()` / `right()` then require [0, 2147483647] and a FLOAT slice
-//!   bound the int32 range, both raising NumberOutOfRange. An INTEGER slice
+//!   `left()` / `right()` then require [0, 2147483647], raising
+//!   NumberOutOfRange, while a FLOAT slice bound saturates into the int32
+//!   range (ADR-0631, superseding ADR-0175's int32-fit rejection — an
+//!   oversized bound reads as past-the-end). An INTEGER slice
 //!   bound is a long instead: it clamps across the whole i64 range (the
 //!   harness's ListSlicing pins Integer.MAX_VALUE+1 through Long.MAX/MIN).
 //!   A `range()` zero step raises NumberOutOfRange and a size overflow
@@ -376,10 +378,11 @@ fn adr0175_other_sites_probe_rows() {
             "RETURN [1,2,3][head([1.5, 'x'])..] AS v",
             Expect::V(ints(&[2, 3])),
         ),
-        // A FLOAT bound is int32-exact: beyond it raises NumberOutOfRange.
+        // A FLOAT bound saturates into the int32 range (ADR-0631): an
+        // oversized bound reads as past-the-end, never a range fault.
         (
             "RETURN [1,2,3][head([1.0/0.0, 'x'])..2] AS v",
-            Expect::Err("semantic error: NumberOutOfRange: slice start"),
+            Expect::V(ints(&[])),
         ),
         // Negative bounds keep the negative-index semantics.
         (
@@ -388,7 +391,7 @@ fn adr0175_other_sites_probe_rows() {
         ),
         (
             "RETURN [1,2,3][head([2147483648.0, 'x'])..] AS v",
-            Expect::Err("semantic error: NumberOutOfRange: slice start"),
+            Expect::V(ints(&[])),
         ),
         // An INTEGER bound is a long: it clamps across the whole i64 range
         // (the harness pins 2147483648, Long.MAX and Long.MIN).
