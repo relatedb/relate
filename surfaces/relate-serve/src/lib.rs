@@ -37,10 +37,12 @@
 //!   for surfaces whose heavy work (query execution) already rides the
 //!   engine's own 64 MiB worker thread; a surface that parses deeply on
 //!   the connection thread (Bolt's protocol work) passes its own size.
-//! - [`signal::wait_shutdown_signal`] — the one shutdown-signal wait
-//!   (SIGINT/SIGTERM on unix, Ctrl-C elsewhere), so no surface hand-rolls
-//!   its own. The accept loop itself stays std-only; this is the crate's
-//!   only dependency beyond std.
+//! - [`signal::install`] / [`signal::ShutdownSignals::wait`] — the one
+//!   shutdown-signal policy (SIGINT/SIGTERM on unix, Ctrl-C elsewhere),
+//!   split so a surface can arm before it binds and block when its work
+//!   is dispatched; no surface hand-rolls its own. The accept loop
+//!   itself stays std-only; this is the crate's only dependency beyond
+//!   std.
 
 pub mod origin;
 pub mod signal;

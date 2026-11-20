@@ -17,7 +17,9 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use relate_test_support::loopback::{exchange, post};
-use support::serve::{auth_header, free_port, spawn_serve, spawn_serve_with, wait_for_ports, AUTH};
+use support::serve::{
+    auth_header, free_port, graph_db, spawn_serve, spawn_serve_with, wait_for_ports, AUTH,
+};
 use support::{run_cli, tempdir, CliRunOptions};
 
 #[test]
@@ -362,195 +364,53 @@ fn test_sigint_shuts_both_surfaces_down_cleanly() {
     assert!(status.success(), "reopen failed: {stderr}");
 }
 
-/// `--bolt PORT`: a real Bolt session over TCP against `serve` — the shared
-/// credential authenticates the HELLO, RUN+PULL returns the row, and the
-/// HTTP discovery document advertises the endpoint.
-#[cfg(feature = "bolt")]
+/// REL8-1884: the shutdown watcher is armed before setup binds anything,
+/// so a SIGINT at the earliest a client can observe the server — the
+/// moment its ports accept, before any request has been answered — is
+/// already handled: the run shuts down cleanly (exit 0, the shutdown
+/// notice, the final checkpoint) instead of dying by default disposition
+/// mid-startup. Before the fix this exact sequence died by signal 2.
+#[cfg(unix)]
 #[test]
-fn test_bolt_surface_serves_a_session_and_is_advertised() {
-    use support::bolt::{
-        assert_run_pull_returns_one_row, connect_and_hello, read_msg, success_map,
-    };
-
+fn test_sigint_immediately_after_the_binds_is_handled() {
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     let http_port = free_port();
     let mcp_port = free_port();
-    let bolt_port = free_port();
-    let bolt_arg = bolt_port.to_string();
-    let child = spawn_serve_with(&db, http_port, mcp_port, Some(AUTH), &["--bolt", &bolt_arg]);
-    wait_for_ports(&[http_port, mcp_port, bolt_port]);
-
-    // Discovery advertises the bolt endpoint.
-    let (status, body) = exchange(http_port, b"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n");
-    assert_eq!(status, 200, "{body}");
-    let doc: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(
-        doc["bolt_direct"],
-        serde_json::json!(format!("bolt://127.0.0.1:{bolt_port}"))
-    );
-
-    // A Bolt session: magic + versions, HELLO with the shared credential,
-    // then RUN+PULL answers one row.
-    let mut client = connect_and_hello(bolt_port, AUTH);
-    success_map(read_msg(&mut client));
-    assert_run_pull_returns_one_row(&mut client);
-
-    child.stop();
-}
-
-/// `--bolt 0` (LABS-308): the discovery document's `bolt_direct` carries
-/// the **bound** port — the OS-assigned ephemeral one, never the
-/// requested `0` — and the advertised endpoint carries a real Bolt
-/// session (HELLO → RUN → PULL → RECORD), so the advertisement and the
-/// listener cannot drift: the advertised port is one a driver connects
-/// to.
-#[cfg(feature = "bolt")]
-#[test]
-fn test_bolt_port_zero_advertises_the_bound_port() {
-    use support::bolt::{
-        assert_run_pull_returns_one_row, connect_and_hello, failure_map, field, read_msg,
-        success_map,
-    };
-
-    let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
-    let http_port = free_port();
-    let mcp_port = free_port();
-    let child = spawn_serve_with(&db, http_port, mcp_port, Some(AUTH), &["--bolt", "0"]);
+    let mut child = spawn_serve(&db, http_port, mcp_port, Some(AUTH));
     wait_for_ports(&[http_port, mcp_port]);
 
-    // Discovery advertises the bound port — never the requested 0.
-    let (status, body) = exchange(http_port, b"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n");
-    assert_eq!(status, 200, "{body}");
-    let doc: serde_json::Value = serde_json::from_str(&body).unwrap();
-    let advertised = doc["bolt_direct"]
-        .as_str()
-        .expect("the bolt endpoint is advertised");
-    let port = advertised
-        .strip_prefix("bolt://127.0.0.1:")
-        .unwrap_or_else(|| panic!("unexpected bolt_direct shape: {advertised}"))
-        .parse::<u16>()
-        .expect("the advertised port parses");
-    assert_ne!(
-        port, 0,
-        "the advertised port is the bound one: {advertised}"
-    );
-
-    // The advertised endpoint is the real listener: a full Bolt session —
-    // HELLO with the shared credential, RUN, PULL — answers there, one row.
-    let mut client = connect_and_hello(port, AUTH);
-    success_map(read_msg(&mut client));
-    assert_run_pull_returns_one_row(&mut client);
-
-    // A wrong credential against the same advertised port is the
-    // Unauthorized FAILURE (the ADR-0139 delay applies), never a session.
-    let mut client = connect_and_hello(port, "neo4j:not-the-password");
-    let failure = failure_map(read_msg(&mut client));
-    let message = field(&failure, "message");
-    assert!(message.contains("authentication failed"), "{message}");
-
-    child.stop();
+    let (status, stderr) = child.sigint_and_drain_stderr();
+    assert!(status.success(), "serve exit on early SIGINT: {status}");
+    assert!(stderr.contains("serve: shutting down"), "{stderr}");
 }
 
-/// `--bolt-identity` (ADR-0293): the HELLO SUCCESS `server` metadata
-/// carries the configured agent string verbatim — the opt-in shape for
-/// tooling (cypher-shell) that hard-checks the identity.
-#[cfg(feature = "bolt")]
+/// The round-4 blocker pin: the mixed run (`--mcp stdio` beside a
+/// listener) returns into the foreground stdio transport before the
+/// shutdown wait, so it must keep the DEFAULT SIGINT disposition — an
+/// armed watcher there would swallow SIGINT/SIGTERM for the process's
+/// whole lifetime (signal-hook never restores the default disposition
+/// once an action is registered): a Ctrl-C-immune, `docker stop`-immune
+/// server. The child's stdin is held open, so the run is alive when the
+/// signal lands — and dies by it.
+#[cfg(unix)]
 #[test]
-fn test_bolt_identity_flag_is_the_hello_server_metadata() {
-    use relate_bolt::packstream::Pack;
-    use support::bolt::{connect_and_hello, read_msg, success_map};
+fn test_mixed_stdio_serve_still_dies_on_sigint() {
+    use std::os::unix::process::ExitStatusExt;
+
+    use support::serve::spawn_mixed_stdio_serve;
 
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     let http_port = free_port();
-    let mcp_port = free_port();
-    let bolt_port = free_port();
-    let bolt_arg = bolt_port.to_string();
-    let child = spawn_serve_with(
-        &db,
-        http_port,
-        mcp_port,
-        Some(AUTH),
-        &["--bolt", &bolt_arg, "--bolt-identity", "Neo4j/5.26.0"],
-    );
-    wait_for_ports(&[bolt_port]);
+    let mut child = spawn_mixed_stdio_serve(&db, http_port);
+    wait_for_ports(&[http_port]);
 
-    let mut client = connect_and_hello(bolt_port, AUTH);
-    // Metadata reads go through the canonical Pack::get accessor.
-    let metadata = Pack::Map(success_map(read_msg(&mut client)));
+    let (status, stderr) = child.sigint_and_drain_stderr();
     assert_eq!(
-        metadata.get("server").and_then(Pack::as_str),
-        Some("Neo4j/5.26.0")
-    );
-    // `connection_id` rides beside it (ADR-0293) — the Java driver
-    // requires the key.
-    let connection_id = metadata.get("connection_id").and_then(Pack::as_str);
-    assert!(
-        matches!(connection_id, Some(id) if id.starts_with("conn-")),
-        "connection_id: {metadata:?}"
-    );
-
-    child.stop();
-}
-
-/// The setup-ordering invariant (F-3-1/F-3-2): the Bolt identity read runs
-/// before auth resolves, so `relate_auth::resolve` — whose
-/// generated-token path persists the token file — is genuinely the last
-/// fallible setup step. A malformed `RELATE_IDENTITY` (non-UTF-8)
-/// fails startup with exit 1 and, because auth must not have run, leaves
-/// no token file behind. The malformed value is set on the child's
-/// environment only (never the test process), so the pin is race-free
-/// under the parallel harness.
-#[cfg(all(unix, feature = "bolt"))]
-#[test]
-fn test_malformed_identity_fails_before_auth_persists_the_token() {
-    let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
-    let mut child = support::serve::spawn_serve_with_malformed_identity(&db);
-    let (status, stderr) = child.wait_and_drain_stderr();
-    assert_eq!(status.code(), Some(1), "serve must exit 1: {stderr}");
-    assert!(
-        stderr.contains("RELATE_IDENTITY is not valid UTF-8"),
-        "the malformed identity must be the reported failure: {stderr}"
-    );
-    let token = relate_auth::token_path(&db)
-        .expect("the temp store path is a local URI")
-        .expect("a persistent store has a token path");
-    assert!(
-        !token.exists(),
-        "a malformed identity must fail before auth persists {}",
-        token.display()
-    );
-}
-
-/// The setup-ordering invariant, the malformed-identity shape mirrored for
-/// the connection cap (ADR-0333): the `RELATE_MAX_CONNECTIONS` read —
-/// now inside setup, before auth — fails startup with the same
-/// `Error: ...` text and exit 1 and, because auth must not have run,
-/// leaves no token file behind. The malformed value is set on the child's
-/// environment only (never the test process), so the pin is race-free
-/// under the parallel harness.
-#[cfg(all(unix, feature = "bolt"))]
-#[test]
-fn test_malformed_max_connections_fails_before_auth_persists_the_token() {
-    let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
-    let mut child = support::serve::spawn_serve_with_malformed_max_connections(&db);
-    let (status, stderr) = child.wait_and_drain_stderr();
-    assert_eq!(status.code(), Some(1), "serve must exit 1: {stderr}");
-    assert!(
-        stderr.contains("Error: invalid RELATE_MAX_CONNECTIONS"),
-        "the malformed max-connections must be the reported failure: {stderr}"
-    );
-    let token = relate_auth::token_path(&db)
-        .expect("the temp store path is a local URI")
-        .expect("a persistent store has a token path");
-    assert!(
-        !token.exists(),
-        "a malformed max-connections must fail before auth persists {}",
-        token.display()
+        status.signal(),
+        Some(2),
+        "the mixed run must die by SIGINT, not swallow it: {stderr}"
     );
 }
 
@@ -587,21 +447,11 @@ fn test_stdio_only_serve_still_validates_the_admission_knob_envs() {
 #[test]
 fn test_malformed_tx_idle_timeout_fails_before_auth_persists_the_token() {
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
-    let mut child = support::serve::spawn_serve_with_malformed_tx_idle_timeout(&db);
-    let (status, stderr) = child.wait_and_drain_stderr();
-    assert_eq!(status.code(), Some(1), "serve must exit 1: {stderr}");
-    assert!(
-        stderr.contains("Error: invalid RELATE_TX_IDLE_TIMEOUT_SECS"),
-        "the malformed tx idle timeout must be the reported failure: {stderr}"
-    );
-    let token = relate_auth::token_path(&db)
-        .expect("the temp store path is a local URI")
-        .expect("a persistent store has a token path");
-    assert!(
-        !token.exists(),
-        "a malformed tx idle timeout must fail before auth persists {}",
-        token.display()
+    support::serve::malformed_env_fails_before_auth(
+        &support::serve::graph_db(&dir),
+        support::serve::spawn_serve_with_malformed_tx_idle_timeout,
+        "Error: invalid RELATE_TX_IDLE_TIMEOUT_SECS",
+        "tx idle timeout",
     );
 }
 

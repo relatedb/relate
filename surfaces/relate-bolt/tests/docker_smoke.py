@@ -234,7 +234,7 @@ def boot_seed_restart():
         "-e", "RELATE_QUERY=UNWIND range(1,100) AS i CREATE (:Person {id: i})",
         IMAGE,
     ) as c:
-        c.wait_for_log("serve: Bolt listening")
+        c.wait_for_log("Bolt enabled on")
         token = token_from(c.logs())
         assert bolt_count(c, token, "Person") == 100
 
@@ -258,7 +258,7 @@ def boot_seed_restart():
         assert status == 401, status
 
         docker("restart", c.name)
-        c.wait_for_log("serve: Bolt listening", occurrences=2)
+        c.wait_for_log("Bolt enabled on", occurrences=2)
         logs = c.logs()
         assert "exists, skipping seed" in logs, logs
         assert "token reused from /data/graph.auth-token" in logs, logs
@@ -267,8 +267,6 @@ def boot_seed_restart():
 
 
 def preset_auth_and_negatives():
-    from neo4j import GraphDatabase
-
     with volume() as data, Container(
         "cl-smoke-auth",
         "-p", "0:7687",
@@ -276,22 +274,22 @@ def preset_auth_and_negatives():
         "-e", "RELATE_AUTH=relate:ci-token",
         IMAGE,
     ) as c:
-        c.wait_for_log("serve: Bolt listening")
+        c.wait_for_log("Bolt enabled on")
         assert "auth: basic (from RELATE_AUTH)" in c.logs(), c.logs()
-        port = c.port(7687)
-        wait_port(port)
-        driver = GraphDatabase.driver(f"bolt://127.0.0.1:{port}", auth=("relate", "ci-token"))
-        records, _, _ = driver.execute_query("RETURN 1 AS n")
-        assert records[0]["n"] == 1
-        driver.close()
-        driver = GraphDatabase.driver(f"bolt://127.0.0.1:{port}", auth=("relate", "wrong"))
-        try:
-            driver.execute_query("RETURN 1 AS n")
-            raise AssertionError("wrong credentials must not connect")
-        except Exception as exc:
-            assert "Unauthorized" in str(exc), f"expected Unauthorized, got {exc!r}"
-        finally:
-            driver.close()
+        with bolt_driver(c, ("relate", "ci-token")) as driver:
+            records, _, _ = driver.execute_query("RETURN 1 AS n")
+            assert records[0]["n"] == 1
+        # The negative probe asserts on the failure itself — the success
+        # sentinel rides the `else` arm, never inside the `except` whose
+        # `except Exception` would catch the AssertionError and mask the
+        # authored message.
+        with bolt_driver(c, ("relate", "wrong")) as driver:
+            try:
+                driver.execute_query("RETURN 1 AS n")
+            except Exception as exc:
+                assert "Unauthorized" in str(exc), f"expected Unauthorized, got {exc!r}"
+            else:
+                raise AssertionError("wrong credentials must not connect")
         print("preset auth: env credential accepted, wrong credentials rejected")
 
 
@@ -308,7 +306,7 @@ def auth_args_are_redacted_in_logs():
         # --host/--database/port defaults (all interfaces).
         IMAGE, "--auth", "relate:should-not-appear", "--allow-plaintext",
     ) as c:
-        c.wait_for_log("serve: Bolt listening")
+        c.wait_for_log("Bolt enabled on")
         logs = c.logs()
         assert "should-not-appear" not in logs, logs
         # Rust's {:?} on the argv Vec renders ["--auth", "<redacted>"]
@@ -323,8 +321,6 @@ def missing_uri_arg_stays_consistent():
     explicitly or `serve` would serve a different store than the one
     seeded. Also pins the legacy `--bind`/`--allow-plaintext` aliases
     (ADR-0249)."""
-    from neo4j import GraphDatabase
-
     with volume() as data, Container(
         "cl-smoke-nouri",
         "-p", "0:7687",
@@ -333,13 +329,10 @@ def missing_uri_arg_stays_consistent():
         "-e", "RELATE_QUERY=UNWIND range(1,7) AS i CREATE (:N {id: i})",
         IMAGE, "--bind", "0.0.0.0:7687", "--allow-plaintext",
     ) as c:
-        c.wait_for_log("serve: Bolt listening")
+        c.wait_for_log("Bolt enabled on")
         assert "uri=/data/graph" in c.logs(), c.logs()
-        port = c.port(7687)
-        wait_port(port)
-        driver = GraphDatabase.driver(f"bolt://127.0.0.1:{port}", auth=None)
-        assert count(driver, "N") == 7
-        driver.close()
+        with bolt_driver(c) as driver:
+            assert count(driver, "N") == 7
         print("no --uri in args: server serves the seeded /data/graph")
 
 
@@ -349,8 +342,6 @@ def image_defaults_resolve_without_cmd_flags():
     7687/7474/7475) explicitly — serve's own loopback/no-defaults posture
     would be an unreachable server over an unseeded volume. The loud
     ADR-0248 plaintext WARNING is the documented container posture."""
-    from neo4j import GraphDatabase
-
     with volume() as data, Container(
         "cl-smoke-defaults",
         "-p", "0:7687",
@@ -358,18 +349,15 @@ def image_defaults_resolve_without_cmd_flags():
         "-e", "RELATE_QUERY=UNWIND range(1,3) AS i CREATE (:N {id: i})",
         IMAGE, "--auth", "none",
     ) as c:
-        c.wait_for_log("serve: Bolt listening")
+        c.wait_for_log("Bolt enabled on")
         logs = c.logs()
         assert "uri=/data/graph" in logs, logs
-        assert "bolt://0.0.0.0:7687" in logs, logs
-        assert "http://0.0.0.0:7474" in logs, logs
+        assert "Bolt enabled on 0.0.0.0:7687." in logs, logs
+        assert "HTTP enabled on 0.0.0.0:7474." in logs, logs
         assert "http://0.0.0.0:7475" in logs, logs
         assert "WARNING" in logs and "PLAINTEXT" in logs, logs
-        port = c.port(7687)
-        wait_port(port)
-        driver = GraphDatabase.driver(f"bolt://127.0.0.1:{port}", auth=None)
-        assert count(driver, "N") == 3
-        driver.close()
+        with bolt_driver(c) as driver:
+            assert count(driver, "N") == 3
         print("image defaults: all three surfaces on all interfaces, seeded volume served")
 
 
@@ -377,8 +365,6 @@ def boolean_flag_order_is_safe():
     """A valueless bool flag before --uri/--auth must not swallow the next
     token: the entrypoint seeds the URI the server serves, and --auth
     stays redacted in logs (the default CMD ordering masked this)."""
-    from neo4j import GraphDatabase
-
     with volume() as data, Container(
         "cl-smoke-boolorder",
         "-p", "0:7687",
@@ -387,16 +373,13 @@ def boolean_flag_order_is_safe():
         IMAGE, "--bind", "0.0.0.0:7687", "--allow-plaintext",
         "--uri", "/data/custom.rl", "--auth", "relate:order-secret",
     ) as c:
-        c.wait_for_log("serve: Bolt listening")
+        c.wait_for_log("Bolt enabled on")
         logs = c.logs()
         assert "uri=/data/custom.rl" in logs, logs
         assert "order-secret" not in logs, logs
         assert '"<redacted>"' in logs, logs
-        port = c.port(7687)
-        wait_port(port)
-        driver = GraphDatabase.driver(f"bolt://127.0.0.1:{port}", auth=("relate", "order-secret"))
-        assert count(driver, "N") == 5
-        driver.close()
+        with bolt_driver(c, ("relate", "order-secret")) as driver:
+            assert count(driver, "N") == 5
         print("bool flag order: seeded the served URI, credential redacted")
 
 
@@ -404,8 +387,6 @@ def file_uri_seeds_once():
     """A documented file:// URI must seed the on-disk database exactly
     once — checking existence on the raw URI string never matches and
     would re-seed on every restart."""
-    from neo4j import GraphDatabase
-
     with volume() as data, Container(
         "cl-smoke-fileuri",
         "-p", "0:7687",
@@ -414,14 +395,11 @@ def file_uri_seeds_once():
         "-e", "RELATE_QUERY=UNWIND range(1,4) AS i CREATE (:N {id: i})",
         IMAGE, "--bind", "0.0.0.0:7687", "--allow-plaintext", "--uri", "file:///data/graph.rl",
     ) as c:
-        c.wait_for_log("serve: Bolt listening")
-        port = c.port(7687)
-        wait_port(port)
-        driver = GraphDatabase.driver(f"bolt://127.0.0.1:{port}", auth=None)
-        assert count(driver, "N") == 4
-        driver.close()
+        c.wait_for_log("Bolt enabled on")
+        with bolt_driver(c) as driver:
+            assert count(driver, "N") == 4
         docker("restart", c.name)
-        c.wait_for_log("serve: Bolt listening", occurrences=2)
+        c.wait_for_log("Bolt enabled on", occurrences=2)
         assert "exists, skipping seed" in c.logs(), c.logs()
         print("file:// uri: seeded once, skipped on restart")
 
@@ -457,7 +435,7 @@ def loopback_bind_warns():
         "-e", "RELATE_AUTH=none",
         IMAGE, "--host", "127.0.0.1",
     ) as c:
-        c.wait_for_log("serve: Bolt listening")
+        c.wait_for_log("Bolt enabled on")
         assert "reachable only inside the container" in c.logs(), c.logs()
     # The fleet path warns too — here via the legacy --bind alias.
     with volume() as data, Container(
@@ -477,8 +455,6 @@ def bolt_identity_passes_through_serve():
     to `serve`'s Bolt surface: the HELLO SUCCESS `server` metadata is the
     verbatim value (ADR-0293 via the ADR-0249 arg pass-through) — the
     cypher-shell admission shape."""
-    from neo4j import GraphDatabase
-
     with volume() as data, Container(
         "cl-smoke-identity",
         "-p", "0:7687",
@@ -486,13 +462,10 @@ def bolt_identity_passes_through_serve():
         "-e", "RELATE_AUTH=none",
         IMAGE, "--bolt-identity", "Neo4j/5.26.0",
     ) as c:
-        c.wait_for_log("serve: Bolt listening")
-        port = c.port(7687)
-        wait_port(port)
-        driver = GraphDatabase.driver(f"bolt://127.0.0.1:{port}", auth=None)
-        agent = driver.get_server_info().agent
-        assert agent == "Neo4j/5.26.0", agent
-        driver.close()
+        c.wait_for_log("Bolt enabled on")
+        with bolt_driver(c) as driver:
+            agent = driver.get_server_info().agent
+            assert agent == "Neo4j/5.26.0", agent
         print("bolt identity: --bolt-identity verbatim in the container HELLO metadata")
 
 

@@ -18,10 +18,11 @@ pub use telemetry::{
 };
 
 /// The `serve` e2e harness (spawn/wait/SIGINT on one spawned server, plus
-/// the pinned credential pair): shared by `e2e_serve.rs` and
-/// `e2e_serve_read_only.rs`, so the spawn/port/SIGINT policy has one copy.
-/// Compiled only when both served surfaces are in the build — the same
-/// gate as the suites that use it.
+/// the pinned credential pair): shared by `e2e_serve.rs`,
+/// `e2e_serve_bolt.rs`, `e2e_serve_read_only.rs`,
+/// `e2e_serve_durability.rs`, and `e2e_commit_cap.rs`, so the
+/// spawn/port/SIGINT policy has one copy. Compiled only when both served
+/// surfaces are in the build — the same gate as the suites that use it.
 #[cfg(all(feature = "http", feature = "mcp"))]
 #[allow(dead_code)] // Each test binary compiles this module and uses a subset.
 pub mod serve;
@@ -36,9 +37,10 @@ pub mod releases;
 
 /// The client-side Bolt exchange helpers (handshake, struct send/read, the
 /// SUCCESS/FAILURE metadata unpack, connect-and-HELLO): shared by
-/// `e2e_serve.rs` and `e2e_serve_read_only.rs`, so the client-side Bolt
-/// test policy has one copy. Compiled only when the Bolt surface is in the
-/// build — the same gate as the tests that use it.
+/// `e2e_serve_bolt.rs`, `e2e_serve_read_only.rs`, and
+/// `e2e_commit_cap.rs`, so the client-side Bolt test policy has one copy.
+/// Compiled only when the Bolt surface is in the build — the same gate as
+/// the tests that use it.
 #[cfg(feature = "bolt")]
 #[allow(dead_code)] // Each test binary compiles this module and uses a subset.
 pub mod bolt;

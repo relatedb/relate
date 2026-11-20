@@ -5,7 +5,8 @@
 //! ports, and stop the child on SIGINT — or wait for a child that exits by
 //! itself (a startup failure) and drain its stderr — one copy of the
 //! spawn/port/SIGINT/wait policy, shared by `e2e_serve.rs`,
-//! `e2e_serve_read_only.rs`, and `e2e_serve_durability.rs`.
+//! `e2e_serve_bolt.rs`, `e2e_serve_read_only.rs`, and
+//! `e2e_serve_durability.rs`.
 //!
 //! Compiled only when both served surfaces are in the build — the same
 //! gate as the suites that use it (a lean bundle's `serve` has no
@@ -48,6 +49,20 @@ pub fn free_port() -> u16 {
         .port()
 }
 
+/// The serve store path under a tempdir (`<dir>/graph`) — one
+/// `.expect` for the store path's UTF-8 (the `binary_path_str` policy
+/// in `support/mod.rs`, for the store path instead of the binary
+/// path). The bolt suite routes every store path through it; the older
+/// serve suites still spell the conversion inline, migrating here
+/// under REL8-1882.
+pub fn graph_db(dir: &TempDir) -> String {
+    dir.path()
+        .join("graph")
+        .to_str()
+        .expect("the store path is UTF-8")
+        .to_string()
+}
+
 /// Wait until both ports accept connections (or fail the test).
 pub fn wait_for_ports(ports: &[u16]) {
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -74,14 +89,16 @@ pub struct ServeChild {
 }
 
 /// The one spawn-policy core both spawners call: create the tempdir that
-/// is the child's `HOME`, apply it plus the Stdio triple (null stdin,
-/// null stdout, piped stderr), spawn, and wrap the child in the
-/// [`ServeChild`] guard. Callers prepare args and any extra env on `cmd`
-/// first.
-fn spawn_with_home(cmd: &mut Command) -> ServeChild {
+/// is the child's `HOME`, apply it plus the Stdio triple (the caller's
+/// `stdin` — null for every serve that exits on signals or its own
+/// lifecycle, held-open piped for the mixed stdio run the disposition
+/// pin keeps alive — null stdout, piped stderr), spawn, and wrap the
+/// child in the [`ServeChild`] guard. Callers prepare args and any
+/// extra env on `cmd` first.
+fn spawn_with_home(cmd: &mut Command, stdin: Stdio) -> ServeChild {
     let home = tempdir();
     cmd.env("HOME", home.path())
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     ServeChild {
@@ -158,7 +175,29 @@ pub fn spawn_serve_with_env(
         cmd.env(key, value);
     }
     apply_auth(&mut cmd, auth);
-    spawn_with_home(&mut cmd)
+    spawn_with_home(&mut cmd, Stdio::null())
+}
+
+/// Spawn the mixed run — the HTTP listener beside the foreground stdio
+/// transport (`--mcp stdio`) — with its stdin held OPEN: the stdio
+/// transport blocks reading it, so the run stays alive until a signal
+/// lands, which is exactly what the mixed-run disposition pin asserts
+/// (SIGINT must still terminate it by default disposition; the guard's
+/// child owns the open pipe, so the run lives as long as the guard).
+#[cfg(all(unix, feature = "mcp"))]
+pub fn spawn_mixed_stdio_serve(db: &str, http_port: u16) -> ServeChild {
+    let mut cmd = cli_command();
+    cmd.args([
+        "serve",
+        "--database",
+        db,
+        "--http",
+        &http_port.to_string(),
+        "--mcp",
+        "stdio",
+    ]);
+    apply_auth(&mut cmd, None);
+    spawn_with_home(&mut cmd, Stdio::piped())
 }
 
 /// Spawn `serve` with one surface invocation (`surface`, e.g.
@@ -182,7 +221,7 @@ fn spawn_malformed_env(
         .args(surface)
         .env(key, value.as_ref())
         .env_remove("RELATE_AUTH");
-    spawn_with_home(&mut cmd)
+    spawn_with_home(&mut cmd, Stdio::null())
 }
 
 /// Spawn `serve --bolt 0` with a deliberately malformed
@@ -242,6 +281,38 @@ pub fn spawn_serve_with_malformed_tx_idle_timeout(db: &str) -> ServeChild {
 #[cfg(unix)]
 pub fn spawn_stdio_with_malformed_env(key: &str) -> ServeChild {
     spawn_malformed_env(":memory:", &["--mcp", "stdio"], key, "soon")
+}
+
+/// The assert half of the malformed-env setup-ordering pins: the child
+/// `spawn` starts fails startup with exit 1, the `needle` names the
+/// malformed variable as the reported failure, and — because auth must
+/// not have run yet — no token file is left behind. One copy of the
+/// wait/exit/needle/token policy beside [`spawn_malformed_env`]'s spawn
+/// half, so the per-variable tests (identity, max-connections, tx idle
+/// timeout — across the serve suites) state only their spawn helper,
+/// needle, and label.
+#[cfg(unix)]
+pub fn malformed_env_fails_before_auth(
+    db: &str,
+    spawn: fn(&str) -> ServeChild,
+    needle: &str,
+    label: &str,
+) {
+    let mut child = spawn(db);
+    let (status, stderr) = child.wait_and_drain_stderr();
+    assert_eq!(status.code(), Some(1), "serve must exit 1: {stderr}");
+    assert!(
+        stderr.contains(needle),
+        "the malformed {label} must be the reported failure: {stderr}"
+    );
+    let token = relate_auth::token_path(db)
+        .expect("the temp store path is a local URI")
+        .expect("a persistent store has a token path");
+    assert!(
+        !token.exists(),
+        "a malformed {label} must fail before auth persists {}",
+        token.display()
+    );
 }
 
 impl ServeChild {

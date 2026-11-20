@@ -1357,7 +1357,16 @@ wrong credential answered `401` with a `WWW-Authenticate: Basic` challenge.
 The startup banner (stderr) tells the token story once for the server: the
 preset source (`--auth` / `RELATE_AUTH`), or the generated token plus
 its persisted `<dir>.auth-token` sibling (mode 0600, fresh per start for
-`:memory:`) — the same story as the Bolt surface (ADR-0126). Exit codes:
+`:memory:`) — the same story as the Bolt surface (ADR-0126).
+
+The per-surface startup lines match the Neo4j server's log format
+(REL8-1762): `Bolt enabled on 0.0.0.0:7687.` and `HTTP enabled on
+0.0.0.0:7474.` for a `--host 0.0.0.0` run — bare, no `serve:` prefix, no
+auth label, trailing period, the **bound** port — so log-waiting tooling
+built for the Neo4j image (testcontainers and friends) works against the
+Relate image as a drop-in replacement; the auth story stays on the banner
+line above, and the MCP surface keeps the `serve: MCP (streamable HTTP)
+listening on …` notice (no Neo4j counterpart to match). Exit codes:
 0 on a clean signal shutdown, 1 on startup failures (auth, open, bind),
 2 for usage errors (no surface flag, missing `--database`, an unknown
 flag, a bad port, a repeated or pre-verb `--read-only` — the

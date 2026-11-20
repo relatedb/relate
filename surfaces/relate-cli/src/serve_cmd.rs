@@ -133,13 +133,16 @@ fn non_loopback_warning(host: &str) -> Option<String> {
     ))
 }
 
-/// Render `--host` inside a URL — the three surface banner lines and the
-/// discovery document's `bolt_direct` endpoint: an IPv6 literal must be
-/// bracketed (`http://::1:7474` is not a URL; `http://[::1]:7474` is),
-/// while a hostname or IPv4 renders as-is. The bind itself takes the bare
-/// literal (`TcpListener::bind`), so only the rendering brackets. The
-/// `:` test is the URL rule, not a shape sniff: a registered name never
-/// contains a colon, and a scoped literal (`fe80::1%en0`) brackets too.
+/// Render `--host` beside a port — the surface startup lines (the
+/// Neo4j-format `Bolt enabled on host:port.` / `HTTP enabled on
+/// host:port.` of REL8-1762, and the MCP line's URL) and the discovery
+/// document's `bolt_direct` endpoint: an IPv6 literal must be bracketed
+/// (`http://::1:7474` is not a URL; `::1:7687` beside a port is
+/// ambiguous; `[::1]:7687` reads), while a hostname or IPv4 renders
+/// as-is. The bind itself takes the bare literal (`TcpListener::bind`),
+/// so only the rendering brackets. The `:` test is the render rule, not
+/// a shape sniff: a registered name never contains a colon, and a scoped
+/// literal (`fe80::1%en0`) brackets too.
 // Live only through a surface feature (the banner/discovery rendering is
 // surface code); a serve-only build compiles no caller (LABS-638).
 #[cfg(feature = "surface")]
@@ -684,6 +687,45 @@ fn setup(cmd: &ServeCmd) -> Result<Ready, i32> {
 /// once, spawn the surfaces, then block until SIGINT/SIGTERM and shut down
 /// with the shared final-checkpoint policy. Returns the process exit code.
 pub(crate) fn run(cmd: ServeCmd) -> i32 {
+    // REL8-1884: arm the shutdown watcher BEFORE setup binds anything —
+    // every port a client can observe accepting is then already covered
+    // by a live handler, and a Ctrl-C during startup (open, binds, auth)
+    // is captured and delivered at the wait after the spawners instead
+    // of killing the process by default disposition with no clean
+    // shutdown and no final checkpoint.
+    //
+    // The arming predicate is the WAITING fact, not the network fact
+    // (round-4 blocker): a run whose continuation is the foreground
+    // stdio transport — stdio-only OR mixed (a listener beside
+    // `--mcp stdio`) — returns into stdio before the wait and never
+    // consumes the watcher, and signal-hook never restores the default
+    // disposition once an action is registered: an armed mixed run would
+    // swallow SIGINT/SIGTERM for its whole lifetime — immune to Ctrl-C
+    // and `docker stop`, worse than the default kill. Both stdio shapes
+    // keep the default disposition their stdin-EOF lifecycle already
+    // claims (ADR-0368); the guarantee covers exactly the runs that
+    // reach the wait.
+    #[cfg(feature = "mcp")]
+    let foreground_stdio = cmd.is_mcp_stdio();
+    #[cfg(not(feature = "mcp"))]
+    let foreground_stdio = false;
+    let mut shutdown = if foreground_stdio {
+        None
+    } else {
+        match relate_serve::signal::install() {
+            Ok(signals) => Some(signals),
+            Err(e) => {
+                // The ADR-0238 policy: a server that cannot watch for its
+                // shutdown signal must not run unwatched — a startup
+                // failure (exit 1) through run's own return, so the
+                // telemetry flush still runs.
+                crate::print_error(format_args!(
+                    "Error: serve: could not install the signal handlers: {e}"
+                ));
+                return 1;
+            }
+        }
+    };
     let ready = match setup(&cmd) {
         Ok(ready) => ready,
         Err(code) => return code,
@@ -762,14 +804,16 @@ pub(crate) fn run(cmd: ServeCmd) -> i32 {
                 McpRole::StdioForeground => return run_mcp_stdio(&db, &cmd),
             }
 
-            // The workspace's one shutdown-signal wait (ADR-0233, ADR-0238):
-            // signal-hook's blocking iterator on unix, a handler-notified
-            // condvar elsewhere. The main thread owns the shutdown, so the
-            // final checkpoint runs off the signal context.
-            // The shared wait-or-exit policy (ADR-0238): a
-            // handler-installation failure logs and exits 1 rather than
-            // serving unwatched.
-            relate_serve::signal::wait_or_exit("Error: serve");
+            // The workspace's one shutdown-signal wait (ADR-0233,
+            // ADR-0238), on the watcher [`run`] armed before setup
+            // (REL8-1884): the main thread owns the shutdown, so the
+            // final checkpoint runs off the signal context, and a signal
+            // captured mid-startup is delivered here — never by default
+            // disposition.
+            shutdown
+                .take()
+                .expect("a run that reaches the wait armed the watcher before setup")
+                .wait();
             crate::print_error("serve: shutting down");
             let storage = crate::telemetry::StorageKind::for_uri(&cmd.database);
             crate::session::final_checkpoint(&db, storage, 0)

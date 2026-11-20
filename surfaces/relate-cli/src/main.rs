@@ -615,9 +615,10 @@ fn exit_help(telemetry: &mut telemetry::Telemetry, page: &str) -> ! {
 ///
 /// `print_error` is a *diagnostic* sink — it also emits the once-per-run
 /// agent-feedback pointer (LABS-1736). A success or notice announcement
-/// (`--load …: loaded into …`, `serve: … listening on …`) is not a
-/// diagnostic and must not spend that pointer's once-per-run latch: print it
-/// through [`print_notice`] instead.
+/// (`--load …: loaded into …`, `serve: … listening on …`, the bare
+/// Neo4j-format `Bolt enabled on …` / `HTTP enabled on …` startup lines of
+/// REL8-1762) is not a diagnostic and must not spend that pointer's
+/// once-per-run latch: print it through [`print_notice`] instead.
 pub(crate) fn print_error(msg: impl std::fmt::Display) {
     write_error(&mut io::stderr(), msg);
     // LABS-1736: the pointer is the agent channel's own concern — the hint

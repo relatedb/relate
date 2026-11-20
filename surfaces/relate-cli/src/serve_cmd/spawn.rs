@@ -76,10 +76,15 @@ pub(super) struct BoltSurface {
     pub(super) identity: String,
 }
 
-/// Spawn the HTTP Query API v2 surface on its own thread: the listening
+/// Spawn the HTTP Query API v2 surface on its own thread: the startup
 /// line, then the config and the diverging serve loop (accept errors are
 /// retried, session errors logged per connection; the thread runs until
-/// the process exits). `surface` is the bound surface setup composed
+/// the process exits). The startup line is Neo4j's `HTTP enabled on
+/// host:port.` shape (REL8-1762): bare — no `serve:` prefix, no auth
+/// label, trailing period — so the Docker image's logs match what
+/// tooling built for the Neo4j image (testcontainers and friends waiting
+/// on `HTTP enabled on`) reads; the auth story stays on the banner's own
+/// lines. `surface` is the bound surface setup composed
 /// (round 6, F-6-2): the **bound** `(port, listener)` pair (for a port
 /// flag of 0 the OS-assigned ephemeral port, the same one the banner
 /// announces) plus the discovery document's `bolt_direct` endpoint —
@@ -105,12 +110,7 @@ pub(super) fn spawn_http(
         listener,
         bolt_direct,
     } = surface;
-    crate::print_notice(format_args!(
-        "serve: HTTP Query API v2 listening on http://{}:{} (auth: {})",
-        url_host(host),
-        port,
-        auth.banner_label()
-    ));
+    crate::print_notice(format_args!("HTTP enabled on {}:{}.", url_host(host), port));
     let config = relate_http::HttpConfig {
         allowed_origins: relate_http::http::OriginAllowlist::from_flag_values(origins),
         bolt_direct,
@@ -180,7 +180,11 @@ pub(super) fn spawn_mcp(
 /// time. `surface` is the bound surface setup composed — the **bound**
 /// `(port, listener)` pair plus the resolved HELLO identity (ADR-0293),
 /// one bound-surface value like the sibling spawners (round 6, F-6-8).
-/// The transport policy is bolt's own embedded-loopback default with the
+/// The startup line is Neo4j's `Bolt enabled on host:port.` shape
+/// (REL8-1762) — bare, no `serve:` prefix and no auth label, for the same
+/// docker drop-in reason as the HTTP spawner's line; the auth story stays
+/// on the banner's own lines. The transport policy is bolt's own
+/// embedded-loopback default with the
 /// WebSocket policy resolved here through the one funnel,
 /// [`relate_bolt::websocket::WsConfig::resolve`] — the origin list,
 /// auth mode, and admission cap — mirroring how the HTTP spawner builds its
@@ -201,12 +205,7 @@ pub(super) fn spawn_bolt(
         listener,
         identity,
     } = surface;
-    crate::print_notice(format_args!(
-        "serve: Bolt listening on bolt://{}:{} (auth: {})",
-        url_host(host),
-        port,
-        auth.banner_label()
-    ));
+    crate::print_notice(format_args!("Bolt enabled on {}:{}.", url_host(host), port));
     let transport = relate_bolt::transport::Transport::loopback_embedded(
         relate_bolt::websocket::WsConfig::resolve(
             ws_allow_origins,

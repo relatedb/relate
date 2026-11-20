@@ -755,6 +755,15 @@ in a container, `docker logs` is where to read it; it is also persisted
 as a `<uri>.auth-token` sibling (on the `/data` volume for the default
 URI) and reused across restarts.
 
+The per-surface startup lines in `docker logs` match the Neo4j image's
+format (REL8-1762): `Bolt enabled on 0.0.0.0:7687.` and `HTTP enabled on
+0.0.0.0:7474.` (timestamps excepted), so tooling that waits on the Neo4j
+image's logs — testcontainers' Neo4j support and friends — treats the
+image as a drop-in replacement. The MCP surface's line keeps the Relate
+notice shape (`serve: MCP (streamable HTTP) listening on …`; Neo4j has
+no MCP surface to match), and the auth story rides the banner's own
+lines, never the startup lines.
+
 `INSTANCES=N` runs a test fleet — N serve processes, every surface's
 port stepping from its base (instance *i*: base+*i*−1). Unset
 `--http`/`--mcp` bases derive from the bolt base so the three stepped

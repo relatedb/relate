@@ -48,7 +48,7 @@ pub fn read_msg<S: Read>(client: &mut S) -> Pack {
 
 /// Unpack a response struct whose tag is `tag` into its metadata map — the
 /// one unpack policy both [`success_map`] and [`failure_map`] are.
-fn tagged_map(msg: Pack, tag: u8, label: &str) -> Vec<(Pack, Pack)> {
+fn tagged_map(msg: Pack, tag: u8, label: &str) -> Pack {
     let Pack::Struct { tag: got, fields } = msg else {
         panic!("expected {label}, got {msg:?}");
     };
@@ -56,17 +56,19 @@ fn tagged_map(msg: Pack, tag: u8, label: &str) -> Vec<(Pack, Pack)> {
     let Some(Pack::Map(map)) = fields.into_iter().next() else {
         panic!("expected {label} map");
     };
-    map
+    Pack::Map(map)
 }
 
-pub fn success_map(msg: Pack) -> Vec<(Pack, Pack)> {
+/// The SUCCESS metadata as a [`Pack::Map`], so a test reads fields through
+/// [`field`] (or the canonical `Pack::get`) without re-wrapping the pairs.
+pub fn success_map(msg: Pack) -> Pack {
     tagged_map(msg, 0x70, "SUCCESS")
 }
 
 /// The FAILURE metadata as a [`Pack::Map`], so a test reads fields through
 /// [`field`] (or the canonical `Pack::get`) without re-wrapping the pairs.
 pub fn failure_map(msg: Pack) -> Pack {
-    Pack::Map(tagged_map(msg, 0x7F, "FAILURE"))
+    tagged_map(msg, 0x7F, "FAILURE")
 }
 
 /// A string field of a metadata [`Pack::Map`]; panics when absent or not a
