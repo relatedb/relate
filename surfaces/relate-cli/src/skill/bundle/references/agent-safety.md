@@ -31,7 +31,8 @@ transaction. `--read-only` is the fence for that.
   `hybrid-search` (CIP-278 `COMBINE`), `local-callables` (CIP-231
   `DEFINE PROCEDURE`/`DEFINE FUNCTION`), the CIP graph-type trio
   (`graph-type-opt-props`, `graph-type-default-values`,
-  `graph-type-implied-labels`), `obfuscated-literals` (the `******` dummy literal, lexer-gated —
+  `graph-type-implied-labels`), `graph-type-show-variants` (`SHOW CURRENT
+  GRAPH TYPE AS CONSOLIDATED` / `AS FLATTENED` — ADR-0638), `obfuscated-literals` (the `******` dummy literal, lexer-gated —
   ADR-0454), `mixed-label-syntax` (colon-conjunction, GQL label symbols and
   `IS` may mix within a clause's label expressions — ADR-0456),
   `float16-coordinate-types` (FLOAT16/BFLOAT16 vector coordinates —

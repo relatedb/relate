@@ -43,8 +43,7 @@ use relate_parser::{
 
 use crate::catalog_meta::string_list;
 use crate::graph_type::{
-    alias_tables, edge_id_label_set, endpoint_identity, node_id_label_set, storage_constraint_rank,
-    EndpointIdentity,
+    alias_tables, edge_id_label_set, endpoint_identity, node_id_label_set, EndpointIdentity,
 };
 use crate::overlay::register_virtual_node;
 
@@ -211,7 +210,7 @@ fn any_node_id(
 
 /// `extra_constraints` of one entity kind, in live Neo4j's graph-view
 /// order: by the constraint's property list, then its kind (KEY, UNIQUE,
-/// EXISTS, property type -- [`storage_constraint_rank`]), then name. A fresh
+/// EXISTS, property type -- [`storage_constraint_order`](crate::graph_type::storage_constraint_order)), then name. A fresh
 /// 2026.10.1 store renders a label's store-only constraints this way
 /// whatever their creation order. The body's own constraints keep their
 /// declared order -- they are the graph type, not catalog rows.
@@ -220,18 +219,7 @@ fn ordered_extras(extra_constraints: &[Constraint], kind: EntityKind) -> Vec<&Co
         .iter()
         .filter(|c| c.entity_kind() == Ok(kind))
         .collect();
-    extras.sort_by(|a, b| {
-        (
-            &a.properties,
-            storage_constraint_rank(a.constraint_type),
-            &a.name,
-        )
-            .cmp(&(
-                &b.properties,
-                storage_constraint_rank(b.constraint_type),
-                &b.name,
-            ))
-    });
+    extras.sort_by(|a, b| crate::graph_type::storage_constraint_order(a, b));
     extras
 }
 

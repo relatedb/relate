@@ -264,6 +264,90 @@ fn test_show_current_graph_type_offset_is_a_skip_stage() {
     assert_eq!(stmt.clauses.len(), 1);
 }
 
+/// The display variant and `AS GRAPH` mode of one `SHOW CURRENT GRAPH TYPE`.
+fn show_variant(src: &str) -> (Option<GraphTypeShowVariant>, Option<AnyNodeMode>) {
+    let stmt = parse(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+    let Clause::ShowCurrentGraphType(c) = &stmt.clauses[0] else {
+        panic!("expected ShowCurrentGraphType for {src}");
+    };
+    (c.variant, c.as_graph)
+}
+
+#[test]
+fn test_show_current_graph_type_variants() {
+    use GraphTypeShowVariant::{Consolidated, Flattened};
+    assert_eq!(show_variant("SHOW CURRENT GRAPH TYPE"), (None, None));
+    assert_eq!(
+        show_variant("SHOW CURRENT GRAPH TYPE AS CONSOLIDATED"),
+        (Some(Consolidated), None)
+    );
+    assert_eq!(
+        show_variant("SHOW CURRENT GRAPH TYPE AS FLATTENED"),
+        (Some(Flattened), None)
+    );
+    // Contextual words: any case, and the `AS GRAPH` modes follow.
+    assert_eq!(
+        show_variant("show current graph type as flattened as graph"),
+        (Some(Flattened), Some(AnyNodeMode::Separate))
+    );
+    assert_eq!(
+        show_variant("SHOW CURRENT GRAPH TYPE AS CONSOLIDATED AS GRAPH SINGLE"),
+        (Some(Consolidated), Some(AnyNodeMode::Single))
+    );
+    assert_eq!(
+        show_variant("SHOW CURRENT GRAPH TYPE AS FLATTENED AS GRAPH SEPARATE"),
+        (Some(Flattened), Some(AnyNodeMode::Separate))
+    );
+    // The existing plain `AS GRAPH` is unchanged.
+    assert_eq!(
+        show_variant("SHOW CURRENT GRAPH TYPE AS GRAPH SINGLE"),
+        (None, Some(AnyNodeMode::Single))
+    );
+}
+
+#[test]
+fn test_show_current_graph_type_variants_take_yield_and_where() {
+    let stmt = parse(
+        "SHOW CURRENT GRAPH TYPE AS FLATTENED YIELD specification \
+         WHERE specification IS NOT NULL",
+    )
+    .unwrap();
+    let Clause::ShowCurrentGraphType(c) = &stmt.clauses[0] else {
+        panic!("expected ShowCurrentGraphType");
+    };
+    assert_eq!(c.variant, Some(GraphTypeShowVariant::Flattened));
+    assert_eq!(c.yields.names().collect::<Vec<_>>(), vec!["specification"]);
+    assert!(c.where_expr.is_some());
+    let stmt =
+        parse("SHOW CURRENT GRAPH TYPE AS CONSOLIDATED AS GRAPH YIELD nodes WHERE size(nodes) > 0")
+            .unwrap();
+    let Clause::ShowCurrentGraphType(c) = &stmt.clauses[0] else {
+        panic!("expected ShowCurrentGraphType");
+    };
+    assert_eq!(c.variant, Some(GraphTypeShowVariant::Consolidated));
+    assert_eq!(c.as_graph, Some(AnyNodeMode::Separate));
+    assert!(c.where_expr.is_some());
+}
+
+#[test]
+fn test_show_current_graph_type_variants_are_mutually_exclusive() {
+    for src in [
+        "SHOW CURRENT GRAPH TYPE AS CONSOLIDATED AS FLATTENED",
+        "SHOW CURRENT GRAPH TYPE AS FLATTENED AS CONSOLIDATED",
+        "SHOW CURRENT GRAPH TYPE AS CONSOLIDATED AS CONSOLIDATED",
+        "SHOW CURRENT GRAPH TYPE AS FLATTENED AS FLATTENED",
+        "SHOW CURRENT GRAPH TYPE AS CONSOLIDATED AS FLATTENED AS GRAPH",
+        // The variant is written before `AS GRAPH`, never after it.
+        "SHOW CURRENT GRAPH TYPE AS GRAPH AS FLATTENED",
+        "SHOW CURRENT GRAPH TYPE AS GRAPH AS CONSOLIDATED",
+        // `AS` alone, or with another word, is not a variant.
+        "SHOW CURRENT GRAPH TYPE AS",
+        "SHOW CURRENT GRAPH TYPE AS EFFECTIVE",
+    ] {
+        assert!(parse(src).is_err(), "must not parse: {src}");
+    }
+}
+
 // ---- ADR-0211: GQL `IS` property declarations + SET GRAPH TYPE <name> ----
 
 #[test]

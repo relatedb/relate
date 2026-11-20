@@ -150,6 +150,7 @@ fn show_current_graph_type_of_a_poisoned_persisted_default_fails_typed_not_panic
         stages: Vec::new(),
         where_expr: None,
         as_graph: None,
+        variant: None,
     };
     assert_poisoned_storage_error(crate::exec::catalog_show::show_current_graph_type_rows(
         &view, &clause,

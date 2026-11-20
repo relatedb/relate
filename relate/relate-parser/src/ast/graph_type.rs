@@ -35,6 +35,22 @@ pub struct ShowCurrentGraphTypeClause {
     /// `specification` string column. `None` when `AS GRAPH` wasn't
     /// written at all.
     pub as_graph: Option<AnyNodeMode>,
+    /// ADR-0638: the `AS CONSOLIDATED` / `AS FLATTENED` display variant,
+    /// written before any `AS GRAPH`. `None` is the plain graph type --
+    /// the two variants are mutually exclusive, so one optional typed
+    /// field, never two flags.
+    pub variant: Option<GraphTypeShowVariant>,
+}
+
+/// The display variants of `SHOW CURRENT GRAPH TYPE` (ADR-0638). Both are
+/// display-only transforms of the stored graph type (nothing is altered):
+/// `Consolidated` shows independent constraints as the element types
+/// they would be, `Flattened` inlines every inherited definition into
+/// each node element type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphTypeShowVariant {
+    Consolidated,
+    Flattened,
 }
 
 /// CIP-257's "Future improvements" any-node keyword, controlling how many

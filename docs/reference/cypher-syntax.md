@@ -1219,6 +1219,35 @@ authored `preview feature '<name>' is not enabled` error):
   be dropped while a child implies it). Derived constraints enforce it: a
   child's nodes must carry the parent's labels and satisfy its rules.
 
+`SHOW CURRENT GRAPH TYPE` also has two display variants (CIP-275,
+ADR-0638) behind the `graph-type-show-variants` preview gate. Both only
+change what is shown — nothing is altered or persisted — and they are
+mutually exclusive, written before `AS GRAPH`:
+
+- `AS CONSOLIDATED` — independent property-existence and property-type
+  constraints (on labels and relationship types that identify no element
+  type) shown as the element types they would be: a type constraint is
+  `p :: T`, an existence constraint `p :: ANY NOT NULL`, both `p :: T NOT
+  NULL`. Key and unique constraints stay constraints. The result is what
+  to `ALTER CURRENT GRAPH TYPE SET` to switch from constraints to element
+  types (it may be rejected when the pieces conflict).
+- `AS FLATTENED` — every node element type with everything it inherits
+  through its implied labels, transitively: all implied labels, the
+  effective properties (defaults included) and the undesignated
+  constraints of every ancestor; independent constraints on implied labels
+  count as if dependent. Not a graph type to `SET`: it is the overview of
+  which rules actually apply to a node element type.
+
+```cypher
+ALTER CURRENT GRAPH TYPE SET {
+  (:A => :B {p1 :: STRING}),
+  (:C => :A&D {p2 :: FLOAT NOT NULL}),
+  CONSTRAINT FOR (n:D) REQUIRE n.p IS :: INTEGER
+};
+SHOW CURRENT GRAPH TYPE AS CONSOLIDATED;   -- adds (:D => {p :: INTEGER})
+SHOW CURRENT GRAPH TYPE AS FLATTENED AS GRAPH;
+```
+
 ### Cypher version selection
 
 One Cypher version is supported: 25. The `CYPHER 25` statement preamble is

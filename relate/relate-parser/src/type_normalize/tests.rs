@@ -301,3 +301,36 @@ fn parse_canon_type_str_round_trips_vector() {
         assert_eq!(render_canon(&type_expr_to_canon(&parsed)), rendered);
     }
 }
+
+#[test]
+fn from_canon_inverts_type_expr_to_canon() {
+    for canon in [
+        p(PredefinedKind::Integer, false),
+        p(PredefinedKind::String, true),
+        CanonType::list(p(PredefinedKind::String, true), true),
+        normalize_union(vec![
+            p(PredefinedKind::Boolean, true),
+            p(PredefinedKind::String, true),
+        ]),
+    ] {
+        assert_eq!(type_expr_to_canon(&TypeExpr::from_canon(&canon)), canon);
+    }
+}
+
+#[test]
+fn with_not_null_marks_every_member_of_a_union() {
+    let union = TypeExpr::Union(vec![
+        TypeExpr::Predefined {
+            kind: PredefinedKind::Integer,
+            not_null: false,
+        },
+        TypeExpr::Predefined {
+            kind: PredefinedKind::Float,
+            not_null: false,
+        },
+    ]);
+    assert_eq!(
+        render_canon(&type_expr_to_canon(&union.with_not_null())),
+        "INTEGER NOT NULL | FLOAT NOT NULL"
+    );
+}

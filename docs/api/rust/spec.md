@@ -67,6 +67,31 @@ Standalone Cypher. Engine label / equality / prefix / trigram indexes stay alway
 
 Must be the only clause in the query part. Durable via WAL + `manifest.json` `indexes`.
 
+### `SHOW CURRENT GRAPH TYPE` display variants (ADR-0638)
+
+`SHOW CURRENT GRAPH TYPE [AS CONSOLIDATED | AS FLATTENED] [AS GRAPH [SINGLE | SEPARATE]] [YIELD … [WHERE …]]`
+(CIP-275). Both variants sit behind the `graph-type-show-variants` preview
+feature (ADR-0371); the result columns are the plain ones (`specification`,
+or `nodes` and `relationships` with `AS GRAPH`). The variants are written
+before `AS GRAPH`, are mutually exclusive, and `CONSOLIDATED` / `FLATTENED`
+are contextual words (identifiers everywhere else); both words, or a
+repeated variant, is a parse error.
+
+| Form | Contract |
+| --- | --- |
+| `AS CONSOLIDATED` | Each independent property-existence / property-type constraint (a single-property one on a label or relationship type that identifies no element type) becomes a property of an element type for its label, created when the label has none: a type constraint is `p :: T`, an existence constraint `p :: ANY NOT NULL`, both `p :: T NOT NULL`. With `AS GRAPH`, such a `NodeLabel` / `RELATIONSHIP_TYPE` becomes a `NodeElementType` / `RELATIONSHIP_ELEMENT_TYPE` carrying the properties. The consolidated constraints' names are dropped. Key and unique constraints (undesignated) stay constraints, now with `=>` when their label became an element type. A second, different type for one property cannot be said as one definition and stays a constraint. |
+| `AS FLATTENED` | Node element types only. Each shows its own rules plus everything inherited through its implied labels, transitively: the full implied-label set; the effective properties (a child's own declaration wins, a diamond intersects, a default the child does not state is inherited); independent constraints on non-identifying implied labels as if dependent; and the undesignated constraints of every ancestor, unnamed so they render with their generated names. Edge element types, relationship endpoints and the constraints a label already has stay as they are. |
+| neither | The stored graph type, unchanged. |
+
+Both are display transforms of the stored body and the constraints created
+outside it: nothing is altered, created or persisted, and the plain `SHOW`
+is identical before and after. The result may be a graph type `ALTER CURRENT
+GRAPH TYPE SET` would reject (conflicting inlined rules). Ungated, either
+variant fails with `Error::Semantic` ending `SemanticError: preview feature
+'graph-type-show-variants' is not enabled: set
+RELATE_PREVIEW=graph-type-show-variants`. See the [runnable
+example](examples/graph_type_show_variants.md).
+
 ## Types
 
 | Type | Contract |
@@ -1799,6 +1824,7 @@ so cargo compiles and runs them in CI (`cargo run -p relate --example <name>`):
 | `storage_lock.rs` | exclusive persistent open, typed contention error and reopen after drop; run `cargo run -p relate --example storage_lock` |
 | `adopt_legacy_wal.rs` | offline operator-verified default-WAL adoption, reopen and reset; run `cargo run -p relate --example adopt_legacy_wal` |
 | `decoder_snapshot.rs` | checkpoint and reopen Point/Vector and valid temporals, verify a failed temporal checkpoint preserves the previous JSON checkpoint, decode a v2 escaped map, reject direct/nested Geometry on v1/v2 snapshot open with contextual `Error::Storage`, and reject a malformed point |
+| `graph_type_show_variants.rs` | `SHOW CURRENT GRAPH TYPE AS CONSOLIDATED` / `AS FLATTENED` under the `graph-type-show-variants` opt-in (ADR-0638); run `cargo run -p relate --example graph_type_show_variants` |
 | `value_sharing.rs` | clones of String/List/Map/Vector results share their `Arc` payload; `.into()` / `Arc::new` parameters, `Arc::unwrap_or_clone` (ADR-0170); run `cargo run -p relate --example value_sharing` ([walkthrough](examples/value_sharing.md)) |
 
 The [persistence writer and decoder examples](examples/decoder_formats.md) are

@@ -240,6 +240,57 @@ impl TypeExpr {
             TypeExpr::Union(_) => false,
         }
     }
+
+    /// The same type with `NOT NULL` applied. A closed union has no
+    /// `NOT NULL` of its own (nullability is per member), so each member
+    /// takes it.
+    pub fn with_not_null(self) -> TypeExpr {
+        match self {
+            TypeExpr::Predefined { kind, .. } => TypeExpr::Predefined {
+                kind,
+                not_null: true,
+            },
+            TypeExpr::List { element, .. } => TypeExpr::List {
+                element,
+                not_null: true,
+            },
+            TypeExpr::PropertyValue { .. } => TypeExpr::PropertyValue { not_null: true },
+            TypeExpr::Union(members) => {
+                TypeExpr::Union(members.into_iter().map(TypeExpr::with_not_null).collect())
+            }
+            TypeExpr::Vector {
+                coord, dimension, ..
+            } => TypeExpr::Vector {
+                coord,
+                dimension,
+                not_null: true,
+            },
+        }
+    }
+
+    /// The declaration form of a normalized type: the inverse of
+    /// [`type_expr_to_canon`](crate::type_normalize::type_expr_to_canon).
+    pub fn from_canon(canon: &crate::type_normalize::CanonType) -> TypeExpr {
+        use crate::type_normalize::CanonKind;
+        match &canon.kind {
+            CanonKind::Predefined(kind) => TypeExpr::Predefined {
+                kind: *kind,
+                not_null: canon.not_null,
+            },
+            CanonKind::List(element) => TypeExpr::List {
+                element: Box::new(TypeExpr::from_canon(element)),
+                not_null: canon.not_null,
+            },
+            CanonKind::Vector { coord, dimension } => TypeExpr::Vector {
+                coord: *coord,
+                dimension: *dimension,
+                not_null: canon.not_null,
+            },
+            CanonKind::Union(members) => {
+                TypeExpr::Union(members.iter().map(TypeExpr::from_canon).collect())
+            }
+        }
+    }
 }
 
 /// A vector coordinate type (CIP-216): the six numeric types valid inside

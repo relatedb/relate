@@ -153,3 +153,21 @@ pub(crate) fn storage_constraint_rank(kind: ConstraintType) -> u8 {
         | ConstraintType::TargetLabelExistence => 5,
     }
 }
+
+/// The graph view's order of store-only constraints: by property list,
+/// then kind ([`storage_constraint_rank`]), then name -- a fresh store
+/// renders a label's store-only constraints this way whatever their
+/// creation order. The one comparator both the graph view and the
+/// `SHOW CURRENT GRAPH TYPE` display variants sort by.
+pub(crate) fn storage_constraint_order(a: &Constraint, b: &Constraint) -> std::cmp::Ordering {
+    (
+        &a.properties,
+        storage_constraint_rank(a.constraint_type),
+        &a.name,
+    )
+        .cmp(&(
+            &b.properties,
+            storage_constraint_rank(b.constraint_type),
+            &b.name,
+        ))
+}

@@ -59,6 +59,7 @@ mod default_eval;
 mod derive;
 mod inherit;
 mod name;
+mod show_variants;
 mod storage_constraint;
 mod validate;
 mod validate_rules;
@@ -73,8 +74,10 @@ pub use relate_engine_api::graph_type::{
     canon_allows, canon_intersection, canonical_default_clause, DefaultValue, GraphTypeSpec,
     DEFAULT_ON_COMMIT_SEPARATOR,
 };
+pub(crate) use show_variants::apply_show_variant;
 pub(crate) use storage_constraint::{
-    render_storage_constraint, standalone_verb, storage_constraint_rank, StorageConstraintStyle,
+    render_storage_constraint, standalone_verb, storage_constraint_order, storage_constraint_rank,
+    StorageConstraintStyle,
 };
 pub(crate) use validate::*;
 

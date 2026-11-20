@@ -247,7 +247,7 @@ pub fn parse_and_lower_statement_with_policy_and_params(
     let lex_parse = parse_started.elapsed();
     // The one gate loop, derived from the registry itself: every row's
     // detector is consulted here, so a detector-less registry row is a
-    // compile error. The graph-type trio's AST walk runs once, before the
+    // compile error. The graph-type family's AST walk runs once, before the
     // loop, and its arms report membership instead of a second loop.
     let graph_type_gates = validate::statement_graph_type_gates(&stmt)
         .map_err(|error| Error::syntax(error.to_string()))?;
@@ -284,7 +284,8 @@ pub fn parse_and_lower_statement_with_policy_and_params(
             // error a detector would raise.
             relate_core::PreviewFeature::GraphTypeOptProps
             | relate_core::PreviewFeature::GraphTypeDefaultValues
-            | relate_core::PreviewFeature::GraphTypeImpliedLabels => {
+            | relate_core::PreviewFeature::GraphTypeImpliedLabels
+            | relate_core::PreviewFeature::GraphTypeShowVariants => {
                 Ok(graph_type_gates.contains(&feature))
             }
             relate_core::PreviewFeature::MixedLabelSyntax

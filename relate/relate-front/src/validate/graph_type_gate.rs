@@ -1,6 +1,7 @@
-//! ADR-0371 preview-gate predicates for the CIP graph-type trio
+//! ADR-0371 preview-gate predicates for the CIP graph-type family
 //! (ADR-0388: CIP-283 optional properties, CIP-262 property default values, CIP-266
-//! implied labels identifying node element types): the AST-level checks
+//! implied labels identifying node element types; CIP-275 `SHOW CURRENT
+//! GRAPH TYPE` display variants): the AST-level checks
 //! `parse_and_lower_statement_with_preview` runs before anything of a
 //! statement lowers or plans. Each predicate answers "does this statement's
 //! own text use the gated construct" from the parsed AST alone;
@@ -43,6 +44,13 @@ pub(crate) fn statement_graph_type_gates(stmt: &Statement) -> Result<GraphTypeGa
     let mut visit_clause = |clause: &Clause| -> Result<(), EngineError> {
         if let Some(body) = clause_graph_type_body(clause) {
             inspect_body(body, &mut gates);
+        }
+        // CIP-275: the display variants are a property of the SHOW
+        // clause itself, not of a body.
+        if let Clause::ShowCurrentGraphType(show) = clause {
+            if show.variant.is_some() {
+                note(&mut gates, PreviewFeature::GraphTypeShowVariants);
+            }
         }
         Ok(())
     };
@@ -161,6 +169,70 @@ mod tests {
              CONSTRAINT FOR (n:L) REQUIRE n.p IS :: STRING }",
         );
         assert!(gates.is_empty());
+    }
+
+    #[test]
+    fn the_collector_finds_the_show_variants() {
+        // CIP-275: either variant, with or without `AS GRAPH`, records the
+        // feature once; the plain forms gate nothing.
+        for query in [
+            "SHOW CURRENT GRAPH TYPE AS CONSOLIDATED",
+            "SHOW CURRENT GRAPH TYPE AS FLATTENED",
+            "SHOW CURRENT GRAPH TYPE AS CONSOLIDATED AS GRAPH",
+            "SHOW CURRENT GRAPH TYPE AS FLATTENED AS GRAPH SINGLE YIELD nodes",
+        ] {
+            assert_eq!(
+                gates_of(query),
+                vec![PreviewFeature::GraphTypeShowVariants],
+                "{query}"
+            );
+        }
+        for query in [
+            "SHOW CURRENT GRAPH TYPE",
+            "SHOW CURRENT GRAPH TYPE AS GRAPH",
+            "SHOW CURRENT GRAPH TYPE YIELD specification",
+        ] {
+            assert!(gates_of(query).is_empty(), "{query}");
+        }
+    }
+
+    #[test]
+    fn admission_fails_closed_for_the_show_variants_ungated() {
+        // The authored error, never a parse error leaking the syntax; the
+        // plain forms are unaffected, and each variant runs behind its gate.
+        let name = "graph-type-show-variants";
+        for query in [
+            "SHOW CURRENT GRAPH TYPE AS CONSOLIDATED",
+            "SHOW CURRENT GRAPH TYPE AS FLATTENED",
+            "SHOW CURRENT GRAPH TYPE AS CONSOLIDATED AS GRAPH",
+            "SHOW CURRENT GRAPH TYPE AS FLATTENED AS GRAPH SEPARATE",
+            "SHOW CURRENT GRAPH TYPE AS FLATTENED YIELD specification WHERE true",
+        ] {
+            let error =
+                match crate::parse_and_lower_statement_with_preview(query, PreviewFeatures::none())
+                {
+                    Ok(_) => panic!("{query}: the variant must fail closed ungated"),
+                    Err(error) => error,
+                };
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains(&format!(
+                    "preview feature '{name}' is not enabled: set RELATE_PREVIEW={name}"
+                )),
+                "{query}: {rendered}"
+            );
+            assert!(matches!(error, Error::Semantic(_)), "{rendered}");
+            let enabled = PreviewFeatures::parse(name).expect("a registered feature name");
+            crate::parse_and_lower_statement_with_preview(query, enabled)
+                .unwrap_or_else(|e| panic!("{query}: {e}"));
+        }
+        for query in [
+            "SHOW CURRENT GRAPH TYPE",
+            "SHOW CURRENT GRAPH TYPE AS GRAPH",
+        ] {
+            crate::parse_and_lower_statement_with_preview(query, PreviewFeatures::none())
+                .unwrap_or_else(|e| panic!("{query}: {e}"));
+        }
     }
 
     #[test]

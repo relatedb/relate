@@ -177,12 +177,16 @@ pub(crate) fn show_current_graph_type_rows(
             Ok(constraint.to_model(kind))
         })
         .collect::<Result<Vec<_>>>()?;
+    // CIP-275: a display variant transforms the stored body and extras
+    // before either renderer runs; nothing is written back.
+    let stored_body = state.data.current_graph_type.to_body();
+    let (body, extras) = match c.variant {
+        Some(variant) => crate::graph_type::apply_show_variant(variant, &stored_body, &extras)?,
+        None => (stored_body, extras),
+    };
     Ok(if let Some(as_graph) = c.as_graph {
-        let (nodes, rels) = crate::graph_type_visualize::render_graph_type_as_graph(
-            &state.data.current_graph_type.to_body(),
-            &extras,
-            as_graph,
-        )?;
+        let (nodes, rels) =
+            crate::graph_type_visualize::render_graph_type_as_graph(&body, &extras, as_graph)?;
         vec![catalog_row([
             (
                 "nodes",
@@ -208,12 +212,9 @@ pub(crate) fn show_current_graph_type_rows(
         vec![catalog_row([(
             "specification",
             Value::String(
-                crate::graph_type::current_graph_type_specification(
-                    &state.data.current_graph_type.to_body(),
-                    &extras,
-                )
-                .map_err(crate::graph_type::persisted_derive_error)?
-                .into(),
+                crate::graph_type::current_graph_type_specification(&body, &extras)
+                    .map_err(crate::graph_type::persisted_derive_error)?
+                    .into(),
             ),
         )])]
     })

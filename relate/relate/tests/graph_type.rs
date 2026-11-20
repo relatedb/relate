@@ -288,6 +288,30 @@ fn the_graph_type_trio_fails_closed_ungated() {
     );
 }
 
+#[test]
+fn the_show_variants_fail_closed_ungated() {
+    // CIP-275: both variants, plain and `AS GRAPH`, fail with the authored
+    // gate error -- never a parse error naming the syntax -- while the
+    // plain forms keep working.
+    let mut c = connection();
+    for query in [
+        "SHOW CURRENT GRAPH TYPE AS CONSOLIDATED",
+        "SHOW CURRENT GRAPH TYPE AS FLATTENED",
+        "SHOW CURRENT GRAPH TYPE AS CONSOLIDATED AS GRAPH",
+        "SHOW CURRENT GRAPH TYPE AS FLATTENED AS GRAPH SINGLE",
+        "SHOW CURRENT GRAPH TYPE AS FLATTENED YIELD specification RETURN specification",
+    ] {
+        let err = err_text(c.query(query));
+        assert!(
+            err.contains(&gated_off_error("graph-type-show-variants")),
+            "{query}: {err}"
+        );
+        assert!(!err.contains("parse error"), "{query}: {err}");
+    }
+    assert_eq!(scalar_one(&mut c, "SHOW CURRENT GRAPH TYPE"), string("{}"));
+    rows(&mut c, "SHOW CURRENT GRAPH TYPE AS GRAPH");
+}
+
 // ---------------------------------------------------------------------
 // Graph-type DDL fidelity: constraint OPTIONS, element-type property
 // types, ALTER ADD/DROP algebra, and SHOW of the resulting schema.

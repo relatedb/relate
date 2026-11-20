@@ -421,14 +421,22 @@ impl<'a> Parser<'a> {
         Ok(Clause::ShowGraphType(ShowGraphTypeClause { name, yields }))
     }
 
-    /// `SHOW CURRENT GRAPH TYPE [AS GRAPH [SINGLE | SEPARATE]] [YIELD ...]
-    /// [WHERE ...]` (CIP-176 overview / CIP-184 / the `AS GRAPH`
-    /// visualization extension).
+    /// `SHOW CURRENT GRAPH TYPE [AS CONSOLIDATED | AS FLATTENED] [AS GRAPH
+    /// [SINGLE | SEPARATE]] [YIELD ...] [WHERE ...]` (CIP-176 overview /
+    /// CIP-184 / the `AS GRAPH` visualization extension / the two display
+    /// variants, ADR-0638).
     pub(super) fn parse_show_current_graph_type(&mut self) -> ParseResult<Clause> {
         self.next_token(); // consume SHOW
         self.expect_keyword_ident("CURRENT")?;
         self.expect_keyword_ident("GRAPH")?;
         self.expect_keyword_ident("TYPE")?;
+        // The variant is contextual, like `GRAPH` below: `AS` is a
+        // real keyword token, but `CONSOLIDATED` / `FLATTENED` are plain
+        // identifiers (non-reserved words), so this only commits once `AS`
+        // and one of the two spellings are both seen. Written once and
+        // before `AS GRAPH`: a repeat, or both words, is left for the
+        // statement tail to reject.
+        let variant = self.parse_show_graph_type_variant();
         // `AS GRAPH` is a contextual, non-reserved extension --
         // `AS` is a real keyword token, but the following `GRAPH` (and the
         // optional `SINGLE`/`SEPARATE` any-node keyword after it) are plain
@@ -461,7 +469,27 @@ impl<'a> Parser<'a> {
             stages,
             where_expr,
             as_graph,
+            variant,
         }))
+    }
+
+    /// The optional `AS CONSOLIDATED` / `AS FLATTENED` of `SHOW CURRENT
+    /// GRAPH TYPE`: consumes `AS` and the word only when the word after
+    /// `AS` names a variant, so `AS GRAPH` and anything else stay for the
+    /// caller.
+    fn parse_show_graph_type_variant(&mut self) -> Option<GraphTypeShowVariant> {
+        if self.peek_type() != TokenType::AS {
+            return None;
+        }
+        let variant = [
+            ("consolidated", GraphTypeShowVariant::Consolidated),
+            ("flattened", GraphTypeShowVariant::Flattened),
+        ]
+        .into_iter()
+        .find_map(|(word, variant)| self.peek_at_is_ident(1, word).then_some(variant))?;
+        self.next_token(); // AS
+        self.next_token(); // the variant word
+        Some(variant)
     }
 
     /// `SHOW DATABASE[S] [<name>] [YIELD ...] [WHERE ...]` / `SHOW DEFAULT

@@ -182,6 +182,11 @@ preview_feature_registry! {
          registers the spellings (or the scenarios are re-pinned).",
         "gql-stddev-aliases"
     ),
+    (
+        GraphTypeShowVariants,
+        "CIP-275 graph-type display variants of SHOW CURRENT GRAPH TYPE: consolidated and flattened.",
+        "graph-type-show-variants"
+    ),
 }
 
 /// The registered feature names, comma-separated, for the fail-closed
