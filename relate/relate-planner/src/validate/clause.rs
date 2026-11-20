@@ -1,14 +1,13 @@
 //! Per-clause semantic checks. `validate_part_with_env` dispatches one of these.
 
 use relate_core::{Error, Result};
-use relate_ir::{is_agg_expr, Clause, Expr, Projection, SingleQuery, YieldItems};
+use relate_ir::{is_agg_expr, Clause, Expr, SingleQuery, YieldItems};
 
 use crate::agg::{
-    check_agg_projections, check_post_projection_leaves, check_subclause_agg_leaves,
-    is_projected_item, order_key_within_projection, projection_aggregates, reject_agg_in_pred,
-    reject_order_by_agg,
+    check_agg_projections, check_aggregating_subclause, check_where_subclause, reject_agg_in_pred,
+    reject_order_by_agg, SubclauseScope,
 };
-use crate::binding::{bind_create_path, bind_path, Binding, Env, EnvBridge};
+use crate::binding::{bind_create_path, bind_path, projected_bindings, Binding, Env, EnvBridge};
 use crate::expr_check::{check_expr, check_nonneg_int_arg, check_pred, is_delete_target};
 use crate::names::{catalog_output_names, query_output_names};
 use crate::pattern::{
@@ -344,53 +343,41 @@ pub(super) fn check_with_clause(
     // back to the ordinary grouping-key discipline
     // (CollectListConcat "unprojected outer variable in a CALL subquery").
     let has_star = items.iter().any(|item| matches!(item.expr, Expr::Star));
+    // The projection's one scope derivation: the subclause environment is
+    // the incoming scope extended with the items' re-bindings, and the
+    // post-clause scope is that same item map — under `*` the star carries
+    // the incoming scope through, so the subclause environment already is
+    // the continuation ([`projected_bindings`], the shared per-item rule).
+    // Derived once, above the import filter: the effective imports, the
+    // subclause environment and the continuation all read this map.
+    let projected = projected_bindings(env, items);
     let effective_imports: crate::agg::Imports = imports
         .iter()
-        .filter(|n| {
-            (has_star && env.contains_key(*n))
-                || items
-                    .iter()
-                    .enumerate()
-                    .any(|(i, item)| item.output_name(i) == **n)
-        })
+        .filter(|n| (has_star && env.contains_key(*n)) || projected.contains_key(*n))
         .cloned()
         .collect();
     check_agg_projections(items, group_by.as_deref(), &effective_imports, env)?;
-    let mut next = if has_star { env.clone() } else { Env::new() };
-    for (i, item) in items.iter().enumerate() {
-        if matches!(item.expr, Expr::Star) {
-            continue;
-        }
-        let name = item.output_name(i);
-        let b = match &item.expr {
-            Expr::Variable(v) => env.get_name(v).copied().unwrap_or(Binding::Value),
-            other => Binding::of_static_expr(other).unwrap_or(Binding::Value),
-        };
-        next.insert(name, b);
-    }
     let mut order_env = env.clone();
-    order_env.extend(next.clone());
-    reject_order_by_agg(
-        items,
-        group_by.as_deref(),
-        *distinct,
-        &effective_imports,
-        order,
-    )?;
+    order_env.extend(projected.clone());
+    let next = if has_star {
+        order_env.clone()
+    } else {
+        projected
+    };
+    // The clause's one subclause context, built once at the boundary over
+    // the clause's own import set (an enclosing scope's import stays a
+    // per-row constant for the non-aggregating subclauses even when this
+    // projection drops the name — the imported name is not a row of this
+    // clause's input at all, AggregationAcceptance "Should find constants
+    // in subclause expression in an aggregating projection clause"); the
+    // aggregating keys' demoted set (an import stays a per-row constant
+    // only while this projection still carries it, CollectListConcat
+    // "unprojected outer variable in a CALL subquery") is the explicit
+    // import parameter those two checks take.
+    let subclauses = SubclauseScope::new(items, group_by.as_deref(), *distinct, imports, env);
+    reject_order_by_agg(&subclauses, order, &effective_imports)?;
     for o in order {
-        // An enclosing scope's import stays a per-row constant for the
-        // subclauses even when this projection drops the name: the
-        // imported name is not a row of this clause's input at all
-        // (AggregationAcceptance "Should find constants in subclause
-        // expression in an aggregating projection clause").
-        check_aggregating_subclause(
-            items,
-            group_by.as_deref(),
-            imports,
-            env,
-            &o.expr,
-            "ORDER BY",
-        )?;
+        check_aggregating_subclause(&subclauses, &o.expr, "ORDER BY")?;
         check_expr(&order_env, is_write_procedure, &o.expr)?;
     }
     if let Some(s) = skip {
@@ -402,23 +389,11 @@ pub(super) fn check_with_clause(
         check_nonneg_int_arg(l)?;
     }
     if let Some(w) = where_clause {
-        // ADR-0453: after an aggregating (or DISTINCT) WITH, a WHERE
-        // predicate may aggregate — HAVING semantics, recomputed per group.
-        // Any other WHERE keeps the InvalidAggregation rejection.
-        if is_agg_expr(w) {
-            if !projection_aggregates(items, group_by.as_deref(), *distinct) {
-                reject_agg_in_pred(w)?;
-            }
-            check_subclause_agg_leaves(
-                items,
-                group_by.as_deref(),
-                &effective_imports,
-                w,
-                "WHERE aggregation",
-            )?;
-        } else {
-            check_aggregating_subclause(items, group_by.as_deref(), imports, env, w, "WHERE")?;
-        }
+        // ADR-0453's WHERE twin of the ORDER BY gate: HAVING semantics
+        // after an aggregating (or DISTINCT) WITH, the InvalidAggregation
+        // rejection otherwise, the demoted import set for the aggregating
+        // keys.
+        check_where_subclause(&subclauses, &effective_imports, w)?;
         check_pred(&order_env, is_write_procedure, w)?;
     }
     *env = next;
@@ -467,40 +442,24 @@ pub(super) fn check_return_clause(
         check_expr(env, is_write_procedure, &item.expr)?;
     }
     check_agg_projections(items, group_by.as_deref(), imports, env)?;
-    reject_order_by_agg(items, group_by.as_deref(), *distinct, imports, order)?;
-    // A `*` item expands the whole incoming scope, so under DISTINCT the
-    // pre-projection names remain orderable (`RETURN DISTINCT * ORDER BY p`).
-    // The order-key environment is derived only when something reads it —
-    // an ORDER BY key, SKIP or LIMIT — so a plain terminal RETURN pays
-    // neither the scope clone nor the per-item output-name inserts.
+    // The clause's one subclause context, built once: the aggregating
+    // gate, the grouping keys and the output names are derived here and
+    // every subclause check below reads them.
+    let subclauses = SubclauseScope::new(items, group_by.as_deref(), *distinct, imports, env);
+    reject_order_by_agg(&subclauses, order, imports)?;
+    // The order-key environment: the incoming scope extended with the
+    // projection's re-bindings — the same derivation the WITH twin builds.
+    // DISTINCT (and aggregation) restrict which keys the subclause may
+    // name through the one leaf discipline ([`check_aggregating_subclause`],
+    // REL8-1868); the environment resolves everything it admits.
+    // The environment is derived only when something reads it — an ORDER
+    // BY key, SKIP or LIMIT — so a plain terminal RETURN pays neither
+    // the scope clone nor the per-item output-name inserts.
     if !order.is_empty() || skip.is_some() || limit.is_some() {
-        let star_expands = items.iter().any(|item| matches!(item.expr, Expr::Star));
-        let mut order_env = if *distinct && !star_expands {
-            Env::new()
-        } else {
-            env.clone()
-        };
-        for (i, item) in items.iter().enumerate() {
-            order_env.insert(item.output_name(i), Binding::Value);
-        }
+        let mut order_env = env.clone();
+        order_env.extend(projected_bindings(env, items));
         for o in order {
-            check_aggregating_subclause(
-                items,
-                group_by.as_deref(),
-                imports,
-                env,
-                &o.expr,
-                "ORDER BY",
-            )?;
-            // Under DISTINCT the key resolves against the clause's projected
-            // expressions (see `order_key_within_projection`); a key outside
-            // them still gets the ordinary projected-name check.
-            if *distinct
-                && (is_projected_item(items, &o.expr)
-                    || order_key_within_projection(&o.expr, items))
-            {
-                continue;
-            }
+            check_aggregating_subclause(&subclauses, &o.expr, "ORDER BY")?;
             check_expr(&order_env, is_write_procedure, &o.expr)?;
         }
         if let Some(s) = skip {
@@ -668,26 +627,4 @@ pub(super) fn check_use_clause(
     }
 
     Ok(())
-}
-
-/// The aggregating-projection subclause rule (GroupByAcceptance [20], [68],
-/// [70], [91], [92]): once a projection aggregates (an aggregate item or an
-/// explicit `GROUP BY`), a non-aggregating ORDER BY / WHERE expression may
-/// only read grouping keys and projected names. An aggregating subclause
-/// expression keeps its own discipline (`reject_order_by_agg` /
-/// `check_subclause_agg_leaves`), and a restated projection item is that
-/// column, so both are left to their owners.
-fn check_aggregating_subclause(
-    items: &[Projection],
-    group_by: Option<&[Expr]>,
-    imports: &crate::agg::Imports,
-    outer_names: &crate::binding::Env,
-    expr: &Expr,
-    context: &str,
-) -> Result<()> {
-    let aggregating = items.iter().any(|item| is_agg_expr(&item.expr)) || group_by.is_some();
-    if !aggregating || is_agg_expr(expr) || is_projected_item(items, expr) {
-        return Ok(());
-    }
-    check_post_projection_leaves(items, group_by, imports, outer_names, expr, context)
 }

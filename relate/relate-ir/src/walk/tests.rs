@@ -1,6 +1,8 @@
 //! The walk module's tests (split out of `walk.rs`, LABS-311 size gate).
+use std::collections::HashSet;
+
 use super::*;
-use crate::{NodePattern, PatternElement, RelPattern};
+use crate::{Clause, NodePattern, PathPattern, PatternElement, RelPattern};
 
 fn var(name: &str) -> Expr {
     Expr::Variable(name.into())
@@ -597,4 +599,44 @@ fn walk_scope_children_classifies_every_binding_variant() {
         right: Box::new(var("y")),
     };
     assert_eq!(seen(&sum), vec![pair(call, &[]), pair(var("y"), &[])]);
+}
+
+/// A deeply nested subquery body is contained in one pass: the earlier
+/// recursive form re-expanded each body once per ancestor node, so
+/// nesting of this depth (a subquery-DoS shape) could not finish. Only
+/// completion is asserted — an exponential walk would hang.
+#[test]
+fn deeply_nested_subquery_bodies_contain_in_one_pass() {
+    // The containment walk re-expands each subquery body once; the
+    // recursive form re-expanded a nested body once per ancestor node —
+    // exponential in nesting depth, reachable during validation where no
+    // cancel token is polled. 40 levels deep, driven through
+    // `Expr::contains_deep` itself: the recursive form would still be
+    // expanding long after these asserts.
+    let count_subquery = |body: Expr| Expr::CountSubquery {
+        query: crate::Query {
+            parts: vec![crate::SingleQuery {
+                clauses: vec![crate::Clause::Return {
+                    distinct: false,
+                    group_by: None,
+                    items: vec![crate::Projection {
+                        expr: body,
+                        alias: Some("xs".into()),
+                        source_text: None,
+                    }],
+                    order: vec![],
+                    skip: None,
+                    limit: None,
+                }],
+            }],
+            union_all: vec![],
+            next: None,
+        },
+    };
+    let mut body = var("x");
+    for _ in 0..40 {
+        body = count_subquery(body);
+    }
+    assert!(body.contains_deep(&var("x")));
+    assert!(!body.contains_deep(&var("y")));
 }

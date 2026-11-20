@@ -5,8 +5,11 @@ mod function_args;
 mod semantic_error_corpus;
 
 use relate_front::parse_and_lower;
-use relate_ir::{Clause, Expr};
-use relate_names::SmallName;
+use relate_ir::{Clause, Expr, OrderItem};
+use relate_names::{SmallName, Token};
+
+use crate::binding::Env;
+use crate::validate::{validate_part_with_env, Scope};
 
 use super::*;
 
@@ -393,6 +396,78 @@ fn distinct_order_by_unprojected_is_undefined() {
     assert!(
         err.contains("UndefinedVariable"),
         "expected UndefinedVariable, got {err}"
+    );
+}
+
+/// REL8-1868: under DISTINCT, an ORDER BY key resolves the base variable
+/// of a bare-variable item (`RETURN DISTINCT m AS node ORDER BY m.p1`) —
+/// the value every row of a distinct group shares, so the read is
+/// well-defined. The access is wholesale (a property the store never
+/// interned included), and the output-name and restated-item paths plan
+/// beside it.
+#[test]
+fn distinct_order_by_resolves_a_bare_variable_item_base() {
+    plan_of("MATCH (b:L1)-[:R]->(m:L2) RETURN DISTINCT m AS node ORDER BY m.p1 DESC LIMIT 10");
+    plan_of("MATCH (b:L1)-[:R]->(m:L2) RETURN DISTINCT m AS node ORDER BY m.p2 DESC");
+    plan_of("MATCH (b:L1)-[:R]->(m:L2) RETURN DISTINCT m ORDER BY m.p1 DESC");
+    plan_of("MATCH (b:L1)-[:R]->(m:L2) RETURN DISTINCT m AS node ORDER BY node.p1 DESC");
+    plan_of("MATCH (b:L1)-[:R]->(m:L2) RETURN DISTINCT m.p1 AS p ORDER BY m.p1 DESC");
+    plan_of("MATCH (b:L1)-[:R]->(m:L2) WITH DISTINCT m AS node ORDER BY m.p1 DESC RETURN node");
+}
+
+/// The carried binding is the variable's real kind, and the kind — not
+/// the environment's insert order — decides the verdict: a path-valued
+/// base variable rejects a property-access key identically through the
+/// base, through the alias, and through the unaliased item's own name
+/// (the front end admits all three, so these reach the planner's own
+/// check).
+#[test]
+fn distinct_order_by_path_base_rejects_property_access_in_every_spelling() {
+    for src in [
+        "MATCH p = (a)-[:R]->(b) RETURN DISTINCT p ORDER BY p.x",
+        "MATCH p = (a)-[:R]->(b) RETURN DISTINCT p AS node ORDER BY p.x",
+        "MATCH p = (a)-[:R]->(b) RETURN DISTINCT p AS node ORDER BY node.x",
+    ] {
+        let err = rejection(src);
+        assert!(
+            err.contains("property access on a non-map value"),
+            "{src}: {err}"
+        );
+    }
+}
+
+/// The narrowed DISTINCT order-key environment is the planner's own
+/// backstop, not a duplicate of the front end's rule: the front refuses
+/// a key over a variable the projection never names during lowering, so
+/// this arm is pinned by hand — a lowered statement the front admitted,
+/// with such a key pushed into its ORDER BY list, must fail the
+/// planner's own check (the end-to-end refusals are pinned in
+/// `relate/tests/distinct_order_by_base_variable.rs`).
+#[test]
+fn distinct_order_by_key_outside_the_projection_is_the_planners_rejection() {
+    let mut query =
+        parse_and_lower("MATCH (b:L1)-[:R]->(m:L2) RETURN DISTINCT m AS node ORDER BY m.p1 DESC")
+            .expect("the front admits the base-variable key");
+    let [part] = query.parts.as_mut_slice() else {
+        panic!("expected one part");
+    };
+    let Some(Clause::Return { order, .. }) = part.clauses.last_mut() else {
+        panic!("expected a terminal RETURN");
+    };
+    order.push(OrderItem {
+        expr: Expr::Property {
+            expr: Box::new(Expr::Variable(SmallName::from_name("b"))),
+            key: SmallName::from_name("p1"),
+            key_id: Token::Unresolved,
+        },
+        ascending: false,
+    });
+    let error = validate_part_with_env(part, Scope::stage(Env::new()), &mut |_| false)
+        .expect_err("the narrowed env rejects the unmentioned variable")
+        .to_string();
+    assert!(
+        error.contains("UndefinedVariable"),
+        "unexpected error: {error}"
     );
 }
 

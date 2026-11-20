@@ -1,4 +1,5 @@
 //! The agg module's tests (split out of `agg.rs`, LABS-311 size gate).
+use super::subclause::{check_post_projection_leaves, is_projected_item, SubclauseScope};
 use super::*;
 /// Every scope-name test entry: the aggregation checks read only the
 /// environment's keys, so any binding kind serves.
@@ -101,42 +102,6 @@ fn non_aggregating_items_must_be_grouping_keys() {
     assert!(err.to_string().contains("`a`"), "got: {err}");
 }
 
-/// A deeply nested subquery body is validated in one pass: the earlier
-/// recursive containment re-expanded each body once per ancestor node, so
-/// nesting of this depth (the security review's DoS shape) could not
-/// finish. Only completion is asserted — an exponential walk would hang.
-#[test]
-fn deeply_nested_subquery_bodies_contain_in_one_pass() {
-    // The containment walk re-expands each subquery body once; the
-    // recursive form re-expanded a nested body once per ancestor node —
-    // exponential in nesting depth, reachable during validation where no
-    // cancel token is polled. 40 levels deep, driven through
-    // `expr_contains_deep` itself: the recursive form would still be
-    // expanding long after these asserts.
-    let count_subquery = |body: Expr| Expr::CountSubquery {
-        query: relate_ir::Query {
-            parts: vec![relate_ir::SingleQuery {
-                clauses: vec![relate_ir::Clause::Return {
-                    distinct: false,
-                    group_by: None,
-                    items: vec![item(body)],
-                    order: vec![],
-                    skip: None,
-                    limit: None,
-                }],
-            }],
-            union_all: vec![],
-            next: None,
-        },
-    };
-    let mut body = var("x");
-    for _ in 0..40 {
-        body = count_subquery(body);
-    }
-    assert!(expr_contains_deep(&body, &var("x")));
-    assert!(!expr_contains_deep(&body, &var("y")));
-}
-
 /// A rejected leaf whose shape names no variable must still raise: the
 /// rejection is decided by the leaf, the *name* in the message is
 /// best-effort. Chained properties (`a.p.q`), parameter properties
@@ -220,32 +185,26 @@ fn keys_are_recognized_verbatim_or_through_a_bare_variable() {
 fn post_projection_leaves_follow_the_grouping_keys() {
     let items = vec![item(prop("a", "p")), item(collect(var("c")))];
     let key = prop("a", "p");
-    let scope: crate::binding::Env = ["a", "c"].into_iter().map(scope_binding).collect();
-    let check = |expr: &Expr, keys: Option<&[Expr]>| {
-        check_post_projection_leaves(&items, keys, &Imports::new(), &scope, expr, "ORDER BY")
+    let outer: crate::binding::Env = ["a", "c"].into_iter().map(scope_binding).collect();
+    let check = |items: &[Projection], expr: &Expr, keys: Option<&[Expr]>| {
+        let imports = Imports::new();
+        let scope = SubclauseScope::new(items, keys, false, &imports, &outer);
+        check_post_projection_leaves(&scope, expr, "ORDER BY")
     };
     // Exact key and alias-free accepted; another property rejected.
-    check(&prop("a", "p"), Some(std::slice::from_ref(&key))).unwrap();
-    let err = check(&prop("a", "q"), Some(std::slice::from_ref(&key))).unwrap_err();
+    check(&items, &prop("a", "p"), Some(std::slice::from_ref(&key))).unwrap();
+    let err = check(&items, &prop("a", "q"), Some(std::slice::from_ref(&key))).unwrap_err();
     assert!(err.to_string().contains("ORDER BY"), "got: {err}");
     // A comprehension over the key is still the key's own value ([86]).
     let comp = list_comp(key.clone(), None);
-    check(&comp, Some(std::slice::from_ref(&key))).unwrap();
+    check(&items, &comp, Some(std::slice::from_ref(&key))).unwrap();
     // Under implicit grouping the complex key is recognized as a
     // sub-expression ([67]/[69]); with an explicit key list it is not.
     let complex = plus(prop("a", "p"), Expr::Int(0));
     let order = plus(complex.clone(), Expr::Int(1));
     let implicit_items = vec![item(complex.clone()), item(collect(var("c")))];
-    check_post_projection_leaves(
-        &implicit_items,
-        None,
-        &Imports::new(),
-        &scope,
-        &order,
-        "ORDER BY",
-    )
-    .unwrap();
-    let err = check(&order, Some(std::slice::from_ref(&complex))).unwrap_err();
+    check(&implicit_items, &order, None).unwrap();
+    let err = check(&items, &order, Some(std::slice::from_ref(&complex))).unwrap_err();
     assert!(err.to_string().contains("ORDER BY"), "got: {err}");
 }
 
@@ -554,16 +513,12 @@ fn a_row_varying_dynamic_key_in_a_nested_scope_is_its_own_read() {
     // `GROUP BY a` (a per-row `k`) is rejected naming `k`, instead of
     // being swallowed by the base-variable allowance on `a`.
     let items = vec![item(var("a")), item(collect(var("c")))];
-    let scope: crate::binding::Env = ["a", "c", "k"].into_iter().map(scope_binding).collect();
+    let outer: crate::binding::Env = ["a", "c", "k"].into_iter().map(scope_binding).collect();
     let check = |expr: &Expr| {
-        check_post_projection_leaves(
-            &items,
-            Some(&[var("a")]),
-            &Imports::new(),
-            &scope,
-            expr,
-            "ORDER BY",
-        )
+        let imports = Imports::new();
+        let keys = [var("a")];
+        let scope = SubclauseScope::new(&items, Some(&keys), false, &imports, &outer);
+        check_post_projection_leaves(&scope, expr, "ORDER BY")
     };
     let varying = list_comp(
         collect(var("c")),

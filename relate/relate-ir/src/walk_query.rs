@@ -485,7 +485,7 @@ pub fn path_pattern_mentions(path: &PathPattern, out: &mut HashSet<String>) {
         path,
         ExprRole::Read,
         &mut |_, _| {},
-        &mut |expr, _role| crate::walk::expr_vars(expr, out),
+        &mut |expr, _role| crate::expr_vars(expr, out),
         &mut |name| {
             bindings.insert(name.to_string());
         },

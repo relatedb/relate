@@ -14,12 +14,20 @@
 //! and the pattern/subquery variants `children()` skips) with exhaustive
 //! matches, so a new clause or expression variant fails compilation there
 //! instead of silently skipping a subtree.
-
-use std::collections::HashSet;
+//!
+//! The name-collection folds live in [`vars`](self::vars); this module
+//! keeps the `Expr` traversal core and the scope model.
 
 use relate_names::SmallName;
 
-use crate::{Clause, Expr, LabelExpr, MapProjectionItem, PathPattern, Query};
+use crate::{Expr, LabelExpr, MapProjectionItem};
+
+mod vars;
+
+// The name-collection family's one path out of the private `vars`
+// module: the crate re-export in `lib.rs` reads these names from here,
+// so the public spelling (`relate_ir::expr_vars` &c.) never changed.
+pub use vars::{expr_vars, label_expr_vars, path_pattern_vars, references_any};
 
 impl Expr {
     /// Direct child expressions, one canonical callback traversal.
@@ -474,6 +482,24 @@ impl Expr {
         });
         hit
     }
+
+    /// Whether `self` contains `needle` as itself or as a subexpression —
+    /// an equality test over the crate's one deep pre-order descent
+    /// (`walk_query`'s `walk_expr`), which reaches the pattern- and
+    /// subquery-bearing variants [`each_child`](Expr::each_child) skips
+    /// because they carry their own structure (`COUNT { RETURN a.p + 1 }`
+    /// holds the read of `a`). No private second descent: the reach and
+    /// its scope model live in the walker every deep reader rides.
+    pub fn contains_deep(&self, needle: &Expr) -> bool {
+        let mut hit = false;
+        crate::walk_query::walk_expr(
+            self,
+            crate::walk_query::ExprRole::Read,
+            &mut |_, _| {},
+            &mut |expr, _| hit |= expr == needle,
+        );
+        hit
+    }
 }
 
 /// Rebuild a child-expression list with `f`.
@@ -530,6 +556,15 @@ pub enum ChildScope {
     /// identifiers ride the IR's own name representation (ADR-0509 §1) —
     /// copies, never re-classified text.
     Element(Vec<SmallName>),
+}
+
+/// Whether `name` is an unbound read — the one test the free-variable
+/// walkers' bare-variable and map-projection shorthand arms share (the
+/// `bound` set is [`ChildScope::Element`]'s bound names, the identifiers
+/// the traversal is inside), so the two arms cannot answer the same
+/// question differently.
+fn reads(name: &SmallName, bound: &[SmallName]) -> bool {
+    !bound.iter().any(|b| b == name)
 }
 
 /// Visit `expr`'s children with their scope class.
@@ -628,145 +663,6 @@ pub fn walk_scope_children<'a>(expr: &'a Expr, f: &mut impl FnMut(&'a Expr, Chil
     }
 }
 
-/// The names a map projection's shorthand items read (`{n, .name, k: v}` reads
-/// `n`; `k: v` reads only what `v` reads). One policy both free-variable
-/// walkers consult — the shorthand item is a name, not an expression, so it is
-/// invisible to [`Expr::children`].
-fn map_projection_shorthand_names(items: &[MapProjectionItem]) -> impl Iterator<Item = &SmallName> {
-    items.iter().filter_map(|item| match item {
-        MapProjectionItem::Variable { name } => Some(name),
-        MapProjectionItem::KeyValue { .. }
-        | MapProjectionItem::Property { .. }
-        | MapProjectionItem::AllProperties => None,
-    })
-}
-
-/// Whether `expr` references any of `names` from *its own* scope.
-///
-/// One fold over the scope model ([`walk_scope_children`]): a scope-bearing
-/// variant ([`Expr::is_scope_bearing`]) is opaque (its body opens its own
-/// scope), and an identifier a comprehension/quantifier/`reduce` binds
-/// ([`Expr::binds_identifiers`]) is not a reference to an outer name — only
-/// the variant's *source* expression is evaluated outside that binding.
-/// The one predicate the CALL-subquery importing-WITH rule uses to decide
-/// whether a projection reads the enclosing scope.
-pub fn references_any(expr: &Expr, names: &HashSet<String>) -> bool {
-    fn go(expr: &Expr, names: &HashSet<String>, bound: &mut Vec<SmallName>) -> bool {
-        match expr {
-            // The String-keyed read set is probed through the allocation-
-            // free text bridge (with_str), never a per-lookup to_string.
-            Expr::Variable(name) => {
-                name.with_str(|text| names.contains(text)) && !bound.iter().any(|b| b == name)
-            }
-            other if other.is_scope_bearing() => false,
-            // A map projection's shorthand items are reads the children walk
-            // cannot see (`MapProjectionItem::Variable` is a name, not an
-            // expression): test them through the one shared policy, then
-            // descend the value expressions as usual.
-            Expr::MapProjection { items, .. }
-                if map_projection_shorthand_names(items).any(|name| {
-                    name.with_str(|text| names.contains(text)) && !bound.iter().any(|b| b == name)
-                }) =>
-            {
-                true
-            }
-            other => {
-                let mut hit = false;
-                walk_scope_children(other, &mut |child, scope| {
-                    if hit {
-                        return;
-                    }
-                    match scope {
-                        ChildScope::Enclosing => hit = go(child, names, bound),
-                        ChildScope::Element(bound_names) => {
-                            let mark = bound.len();
-                            bound.extend(bound_names);
-                            hit = go(child, names, bound);
-                            bound.truncate(mark);
-                        }
-                    }
-                });
-                hit
-            }
-        }
-    }
-    go(expr, names, &mut Vec::new())
-}
-
-/// Collect the variable names an expression references, comprehension- and
-/// reduce-bound identifiers excluded.
-///
-/// For pattern variants the pattern's own variable names are included: the
-/// executor's column analysis treats them as values the expression needs
-/// from the surrounding row. Subquery variants contribute every variable
-/// name mentioned in the subquery (an over-approximation of the outer
-/// references, matching the historical executor behaviour).
-///
-/// This is [`references_any`]'s scope model over a collecting leaf policy
-/// (the two documented differences: scope-bearing variants are descended
-/// here rather than treated as opaque, and a map projection's shorthand
-/// items count as reads).
-pub fn expr_vars(expr: &Expr, out: &mut HashSet<String>) {
-    fn go(expr: &Expr, bound: &mut Vec<SmallName>, out: &mut HashSet<String>) {
-        // A subquery body contributes every name it mentions (the
-        // documented over-approximation) instead of the generic child
-        // descent — the one accessor decides which expressions open one.
-        if let Some(query) = expr.subquery_body() {
-            exists_outer_vars(query, out);
-            return;
-        }
-        match expr {
-            Expr::Variable(v) => {
-                if !bound.iter().any(|b| b == v) {
-                    // Map-bridge: the String-keyed variable sink stays until
-                    // the typed expr_vars sink (LABS-936) lands; the text
-                    // render happens once per collected name, at this feed.
-                    out.insert(v.to_string());
-                }
-            }
-            Expr::PatternPred { path } | Expr::ShortestPath { path, .. } => {
-                path_var_names(path, out);
-            }
-            Expr::PatternComp {
-                path,
-                predicate,
-                projection,
-            } => {
-                path_var_names(path, out);
-                if let Some(predicate) = predicate {
-                    go(predicate, bound, out);
-                }
-                go(projection, bound, out);
-            }
-            Expr::MapProjection { items, .. } => {
-                for name in map_projection_shorthand_names(items) {
-                    out.insert(name.to_string());
-                }
-                expr.each_child(&mut |child| go(child, bound, out));
-            }
-            other => walk_scope_children(other, &mut |child, scope| match scope {
-                ChildScope::Enclosing => go(child, bound, out),
-                ChildScope::Element(names) => {
-                    let mark = bound.len();
-                    bound.extend(names);
-                    go(child, bound, out);
-                    bound.truncate(mark);
-                }
-            }),
-        }
-    }
-    go(expr, &mut Vec::new(), out);
-}
-
-/// Variables referenced by the dynamic (`$(…)`) parts of a label
-/// expression: a fold over `each_label_expr_child`, the one enumeration
-/// of the `LabelExpr` structure. The variant vocabulary is matched in
-/// that helper alone, so a new `LabelExpr` variant fails compilation
-/// there and is picked up here without a second match to keep aligned.
-pub fn label_expr_vars(expr: &LabelExpr, out: &mut HashSet<String>) {
-    each_label_expr_child(expr, &mut |child| expr_vars(child, out));
-}
-
 /// The one enumeration of a label expression's dynamic (`$(…)`) child
 /// expressions — the `LabelExpr` counterpart of
 /// [`Expr::each_child`](Expr::each_child)'s canonical callback traversal.
@@ -784,141 +680,6 @@ pub(crate) fn each_label_expr_child<'a>(
         }
         LabelExpr::Label(_) | LabelExpr::Wildcard => {}
     }
-}
-
-/// Node variables, then rel variables, of a path pattern's compact view
-/// (`nodes`/`rels`) — the path variable excluded. Compact-view only:
-/// lowering clears `nodes`/`rels` when an element is non-alternating or
-/// quantified (see `walk_query`'s rule), so such a pattern yields nothing.
-pub fn path_pattern_vars(path: &PathPattern) -> impl Iterator<Item = &SmallName> {
-    path.nodes
-        .iter()
-        .filter_map(|n| n.variable.as_ref())
-        .chain(path.rels.iter().filter_map(|r| r.variable.as_ref()))
-}
-
-fn path_var_names(path: &PathPattern, out: &mut HashSet<String>) {
-    // Map-bridge: the String-keyed variable sink stays until the typed
-    // expr_vars sink (LABS-936) lands; one text render per bound name.
-    for name in path.path_names() {
-        out.insert(name.to_string());
-    }
-    // Node and rel variables both come from the shared compact-view
-    // iterator above; the payload loops below carry only the property
-    // maps and the label/type expressions.
-    out.extend(path_pattern_vars(path).map(SmallName::to_string));
-    for n in &path.nodes {
-        if let Some(p) = &n.properties {
-            expr_vars(p, out);
-        }
-        if let Some(e) = &n.label_expr {
-            label_expr_vars(e, out);
-        }
-    }
-    for r in &path.rels {
-        if let Some(p) = &r.properties {
-            expr_vars(p, out);
-        }
-        if let Some(e) = &r.type_expr {
-            label_expr_vars(e, out);
-        }
-    }
-}
-
-fn exists_outer_vars(query: &Query, out: &mut HashSet<String>) {
-    let mut inner = HashSet::new();
-    for part in &query.parts {
-        for clause in &part.clauses {
-            match clause {
-                Clause::Match {
-                    patterns,
-                    where_clause,
-                    ..
-                } => {
-                    for p in patterns {
-                        path_var_names(p, &mut inner);
-                    }
-                    if let Some(w) = where_clause {
-                        expr_vars(w, &mut inner);
-                    }
-                }
-                Clause::Unwind { expression, .. } => {
-                    expr_vars(expression, &mut inner);
-                }
-                Clause::With {
-                    items,
-                    order,
-                    skip,
-                    limit,
-                    where_clause,
-                    ..
-                } => {
-                    for i in items {
-                        expr_vars(&i.expr, &mut inner);
-                    }
-                    for o in order {
-                        expr_vars(&o.expr, &mut inner);
-                    }
-                    if let Some(s) = skip {
-                        expr_vars(s, &mut inner);
-                    }
-                    if let Some(l) = limit {
-                        expr_vars(l, &mut inner);
-                    }
-                    if let Some(w) = where_clause {
-                        expr_vars(w, &mut inner);
-                    }
-                }
-                Clause::Return {
-                    items,
-                    order,
-                    skip,
-                    limit,
-                    ..
-                } => {
-                    for i in items {
-                        expr_vars(&i.expr, &mut inner);
-                    }
-                    for o in order {
-                        expr_vars(&o.expr, &mut inner);
-                    }
-                    if let Some(s) = skip {
-                        expr_vars(s, &mut inner);
-                    }
-                    if let Some(l) = limit {
-                        expr_vars(l, &mut inner);
-                    }
-                }
-                Clause::Call { args, .. } => {
-                    for a in args.args() {
-                        expr_vars(a, &mut inner);
-                    }
-                }
-                // Clause kinds whose expressions are not part of the
-                // outer-reference scan (the historical over-approximation
-                // documented on `expr_vars`). Enumerated explicitly rather
-                // than through a `_` catch-all so a new `Clause` variant
-                // fails compilation here instead of silently skipping its
-                // variables.
-                Clause::Catalog(_)
-                | Clause::Create { .. }
-                | Clause::Merge { .. }
-                | Clause::Delete { .. }
-                | Clause::Set { .. }
-                | Clause::Remove { .. }
-                | Clause::CreateIndex { .. }
-                | Clause::DropIndex { .. }
-                | Clause::ShowIndexes
-                | Clause::Finish
-                | Clause::LoadCsv { .. }
-                | Clause::CallSubquery { .. }
-                | Clause::Conditional { .. }
-                | Clause::Foreach { .. }
-                | Clause::Use { .. } => {}
-            }
-        }
-    }
-    out.extend(inner);
 }
 
 #[cfg(test)]

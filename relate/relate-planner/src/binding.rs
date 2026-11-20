@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use relate_core::{Error, Result};
-use relate_ir::{Expr, PathPattern, PatternElement};
+use relate_ir::{Expr, PathPattern, PatternElement, Projection};
 use relate_names::SmallName;
 
 use crate::expr_check::literal::{static_literal, LiteralKind};
@@ -154,6 +154,36 @@ pub(crate) fn next_stage_scope(
         }
     }
     (env, names)
+}
+
+/// The bindings a projection's non-`*` items re-bind, as one scope map —
+/// the projection's own scope-continuation rule, read by both projection
+/// checkers: a `WITH`'s post-clause scope and the `WITH`/`RETURN`
+/// order-key environment (the incoming scope extended with this map). A
+/// bare-variable item (aliased or not) keeps the variable's real
+/// incoming binding — the alias names that variable's value, so a key
+/// reading through either spelling sees the same kind — and every other
+/// item carries its static shape when it has one ([`Binding::of_static_expr`])
+/// and the unconstrained `Value` otherwise.
+pub(crate) fn projected_bindings(env: &Env, items: &[Projection]) -> Env {
+    let mut out = Env::new();
+    for (i, item) in items.iter().enumerate() {
+        if matches!(item.expr, Expr::Star) {
+            continue;
+        }
+        let binding = match &item.expr {
+            // Both projection checkers run `check_expr` over their items
+            // against `env` before deriving this map, so a bare-variable
+            // item is bound there.
+            Expr::Variable(v) => env
+                .get_name(v)
+                .copied()
+                .expect("projection items were validated in scope"),
+            other => Binding::of_static_expr(other).unwrap_or(Binding::Value),
+        };
+        out.insert(item.output_name(i), binding);
+    }
+    out
 }
 
 /// Bind one name. `shadowable` names the bindings a MATCH pattern may

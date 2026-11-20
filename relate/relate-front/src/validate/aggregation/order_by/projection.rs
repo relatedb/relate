@@ -387,6 +387,13 @@ mod tests {
             "MATCH (b) RETURN DISTINCT [b.name] AS w ORDER BY [b.name] DESC",
             "MATCH (b) RETURN DISTINCT b.name AS w, b.id ORDER BY b.id",
             "MATCH (b) WITH DISTINCT b.name AS w ORDER BY b.name RETURN w",
+            // REL8-1868 (verified live Neo4j 2026.10.1): a bare-variable
+            // item keeps its base variable resolvable — the item is that
+            // variable, so every row a distinct group collapses shares
+            // its value and any read through it is well-defined.
+            "MATCH (b) RETURN DISTINCT b AS w ORDER BY b.id DESC",
+            "MATCH (b) RETURN DISTINCT b AS w ORDER BY b",
+            "MATCH (b) WITH DISTINCT b AS w ORDER BY b.id RETURN w",
         ] {
             assert_accepted(query);
         }
@@ -399,6 +406,10 @@ mod tests {
             "MATCH (b)-[r]->(d) RETURN DISTINCT b.name AS w ORDER BY r.x DESC",
             "MATCH (b) RETURN DISTINCT coalesce(b.name,'x') AS w ORDER BY b.name DESC",
             "MATCH (b) RETURN DISTINCT toString(b.id) AS w ORDER BY b.id",
+            // REL8-1868 (verified live Neo4j 2026.10.1): the map
+            // projection only derives from `b`, so the base stays
+            // inaccessible.
+            "MATCH (b) RETURN DISTINCT b{.id} AS w ORDER BY b.id DESC",
             "MATCH (b) WITH DISTINCT b.name AS w ORDER BY b.age RETURN w",
         ] {
             assert_undefined(query);
