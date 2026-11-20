@@ -15,8 +15,8 @@ use relate_core::{
 };
 use relate_ir::Expr;
 
-use super::literal::{reject_non_integer_literal, static_arg_value};
 use crate::binding::{Binding, Env, EnvBridge};
+use crate::literal::{reject_non_integer_literal, static_arg_value};
 
 /// Env-free per-name call rules: a rule judges the call's argument list and
 /// returns the authored rejection. Rows live in [`FUNCTION_META`].

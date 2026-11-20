@@ -1,9 +1,9 @@
 //! The statically-known literal vocabulary: what an expression spells when
 //! its value is known at plan time (a literal, a resolved plan-cache
 //! placeholder, a folded eager value), and the ADR-0175 rejections the
-//! integer-argument sites raise from it. Split from the expression checker
-//! (`shadowing` sets the split precedent) so the checker file is the
-//! traversal/predicate policy and this file is the literal classification.
+//! integer-argument sites raise from it. A crate-level module, below both
+//! the expression checker and the binding classifier that read it, so
+//! neither imports back up into the other.
 
 use relate_core::integer_args::{self, IntegerArgSite};
 use relate_core::{Error, Result, Value};
@@ -32,7 +32,7 @@ pub(crate) enum LiteralKind {
 /// values. A caller's own parameter and every non-literal expression are
 /// `None`. The one `Expr → Option<Value>` walk of this vocabulary;
 /// [`static_literal`] classifies its result.
-pub(super) fn static_arg_value(expr: &Expr) -> Option<Value> {
+pub(crate) fn static_arg_value(expr: &Expr) -> Option<Value> {
     match expr {
         Expr::Null => Some(Value::Null),
         Expr::Bool(value) => Some(Value::Bool(*value)),
@@ -113,7 +113,7 @@ fn literal_kind(value: &Value) -> LiteralKind {
     }
 }
 
-pub(super) fn is_static_non_bool(expr: &Expr) -> bool {
+pub(crate) fn is_static_non_bool(expr: &Expr) -> bool {
     // Bool and null stay legal boolean operands.
     matches!(expr, Expr::CountStar)
         || matches!(
@@ -160,7 +160,7 @@ pub(crate) fn float_integer_site(expr: &Expr) -> Option<&'static IntegerArgSite>
 /// ADR-0175: reject a float literal at the integer site `expr` carries,
 /// naming that site's authored detail ([`float_integer_site`] owns the
 /// list).
-pub(super) fn reject_float_integer_site(expr: &Expr) -> Result<()> {
+pub(crate) fn reject_float_integer_site(expr: &Expr) -> Result<()> {
     match float_integer_site(expr) {
         Some(site) => Err(Error::invalid_argument_type(site.type_error)),
         None => Ok(()),
@@ -177,7 +177,7 @@ pub(super) fn reject_float_integer_site(expr: &Expr) -> Result<()> {
 /// integer literal stays, and a constant expression whose type is only
 /// known at runtime (`head(['x','1'])`) is handled by the executor's own
 /// rejection.
-pub(super) fn is_non_integer_literal(expr: &Expr) -> bool {
+pub(crate) fn is_non_integer_literal(expr: &Expr) -> bool {
     matches!(
         static_literal(expr),
         Some(kind) if !matches!(kind, LiteralKind::Int | LiteralKind::Null)
@@ -188,7 +188,7 @@ pub(super) fn is_non_integer_literal(expr: &Expr) -> bool {
 /// with the site's authored `InvalidArgumentType` detail — the plan-time
 /// half of the type rejection whose runtime half is the executor's own
 /// argument coercion.
-pub(super) fn reject_non_integer_literal(expr: &Expr, detail: &str) -> Result<()> {
+pub(crate) fn reject_non_integer_literal(expr: &Expr, detail: &str) -> Result<()> {
     if is_non_integer_literal(expr) {
         return Err(Error::invalid_argument_type(detail));
     }

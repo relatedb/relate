@@ -21,12 +21,10 @@ use crate::pattern::{check_path_exprs, check_pattern_pred_vars};
 use crate::validate::{clause_is_write, validate_part_with_env};
 
 mod function_meta;
-pub(crate) mod literal;
 pub(crate) mod shadowing;
 
+use crate::literal::{is_non_integer_literal, is_static_non_bool};
 use function_meta::apply_function_meta;
-pub(crate) use literal::float_integer_site;
-use literal::{is_non_integer_literal, is_static_non_bool};
 use shadowing::{reject_binding_shadowing, reject_projection_shadowing};
 
 /// Where an expression sits, which decides the two policies a position
@@ -482,12 +480,12 @@ fn check_expr_ctx(
         // runtime (Neo4j's 22N27/22NB1 static gate fires at the same phase);
         // non-literal floats are handled at runtime.
         Expr::Subscript { expr: inner, index } => {
-            literal::reject_float_integer_site(expr)?;
+            crate::literal::reject_float_integer_site(expr)?;
             check_expr(env, is_write_procedure, inner)?;
             check_expr(env, is_write_procedure, index)?;
         }
         Expr::Slice { .. } => {
-            literal::reject_float_integer_site(expr)?;
+            crate::literal::reject_float_integer_site(expr)?;
             expr.try_each_child(&mut |child| check_expr(env, &mut *is_write_procedure, child))?;
         }
         // Every other variant (literals, parameters, label predicates,

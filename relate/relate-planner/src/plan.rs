@@ -126,7 +126,7 @@ pub fn plan_has_bound_float_integer_site(
 ) -> bool {
     let _auto = relate_core::AutoLiteralGuard::install(params);
     plan_any_expr(plan, &mut |expr| {
-        crate::expr_check::float_integer_site(expr).is_some()
+        crate::literal::float_integer_site(expr).is_some()
     })
 }
 

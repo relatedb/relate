@@ -7,7 +7,7 @@ use relate_core::{Error, Result};
 use relate_ir::{Expr, PathPattern, PatternElement, Projection};
 use relate_names::SmallName;
 
-use crate::expr_check::literal::{static_literal, LiteralKind};
+use crate::literal::{static_literal, LiteralKind};
 
 /// What kind of value a name in scope is bound to. The binder tracks only
 /// what later checks need: entity-ness and literal-ness for type-conflict

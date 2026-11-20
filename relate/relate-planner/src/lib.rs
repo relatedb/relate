@@ -39,6 +39,7 @@ mod clause_kind;
 mod expr_check;
 mod expr_text;
 mod inline;
+mod literal;
 mod names;
 mod namespaces;
 mod order;
