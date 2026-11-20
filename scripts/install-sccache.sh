@@ -52,15 +52,13 @@ sh "$here/github-download.sh" --repo mozilla/sccache --tag "$VERSION" --asset "$
 sh "$here/github-download.sh" --repo mozilla/sccache --tag "$VERSION" --asset "${asset}.sha256" -o "$work/sccache.sha256"
 
 expected="$(awk '{print $1; exit}' "$work/sccache.sha256")"
-if command -v sha256sum >/dev/null 2>&1; then
-  actual="$(sha256sum "$work/$asset" | awk '{print $1}')"
-elif command -v shasum >/dev/null 2>&1; then
-  actual="$(shasum -a 256 "$work/$asset" | awk '{print $1}')"
-else
-  py=python3
-  command -v python3 >/dev/null 2>&1 || py=python
-  actual="$("$py" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$work/$asset")"
-fi
+# The digest policy is the repo's one canonical helper (scripts/lib/
+# common.sh, sha256_of): it hashes through stdin, and it carries the
+# python fallback for a host with neither coreutils, so this installer
+# does not fork the policy.
+# shellcheck source=lib/common.sh
+. "$here/lib/common.sh"
+actual="$(sha256_of "$work/$asset")"
 if [[ -z "$expected" || "$expected" != "$actual" ]]; then
   echo "install-sccache: checksum mismatch for ${asset}" >&2
   exit 1

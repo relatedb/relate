@@ -2,7 +2,13 @@ import subprocess
 import unittest
 
 from comparator_runner import render, run_pair
-from loadtest_fixtures import ENV, checkpoint_report, memory_report, report
+from loadtest_fixtures import (
+    ENV,
+    LOCAL_ENV,
+    checkpoint_report,
+    memory_report,
+    report,
+)
 
 
 class CompareLoadtestTests(unittest.TestCase):
@@ -49,7 +55,7 @@ class CompareLoadtestTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_ci_hard_fails_environment_mismatch(self) -> None:
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         result = self.compare(
             report(p99=1_000_000),
             report(p99=1_000_000, env=other, ops_per_sec=1.0),
@@ -60,7 +66,7 @@ class CompareLoadtestTests(unittest.TestCase):
         self.assertNotIn("ops_per_sec", result.stderr)
 
     def test_local_skips_perf_on_mismatch_but_keeps_errors(self) -> None:
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         ok = self.compare(
             report(p99=1_000_000),
             report(p99=50_000_000, env=other, ops_per_sec=1.0),
@@ -106,7 +112,7 @@ class CompareLoadtestTests(unittest.TestCase):
         self.assertIn("rss ratio", ratio_breach.stderr)
 
     def test_memory_shape_skips_ratio_on_environment_mismatch(self) -> None:
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         result = self.compare(
             memory_report(logical=1000, ratio=2.0),
             memory_report(logical=1000, ratio=9.0, env=other),
@@ -175,7 +181,7 @@ class RenderMarkdownTests(unittest.TestCase):
         self.assertIn("ops_per_sec", gate.stderr)
 
     def test_render_only_skips_ops_and_p99_on_environment_mismatch(self) -> None:
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         base = report(p99=1_000_000)
         cur = report(p99=1_000_000, env=other, ops_per_sec=1.0, logical_used_bytes=1001)
         # render-only exits 0 even inside GitHub Actions
@@ -198,7 +204,7 @@ class RenderMarkdownTests(unittest.TestCase):
         self.assertIn("| query | 100 | 1.00 ms | 1.00 ms | — | skipped |", table)
 
     def test_mismatch_renders_explainer_line_render_mode_only(self) -> None:
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         base = report(p99=1_000_000)
         cur = report(p99=1_000_000, env=other, ops_per_sec=1.0)
         result, table = render(base, cur)
@@ -227,7 +233,7 @@ class RenderMarkdownTests(unittest.TestCase):
         self.assertNotIn("Wall-clock metrics", ci.stdout + ci.stderr)
 
     def test_mismatch_explainer_names_the_pair_kind_s_devalued_rows(self) -> None:
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         result, table = render(
             memory_report(logical=1000, ratio=2.0),
             memory_report(logical=1000, ratio=9.0, env=other),
@@ -280,7 +286,7 @@ class RenderMarkdownTests(unittest.TestCase):
             table,
         )
         # environment mismatch: logical bytes stay exact, rss ratios skip
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         result, table = render(base, memory_report(logical=1000, ratio=9.0, env=other))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
