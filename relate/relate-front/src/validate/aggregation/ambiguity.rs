@@ -1,9 +1,9 @@
 //! RETURN/WITH grouping-key ambiguity: in an expression that mixes
 //! aggregation with non-aggregation, every non-aggregation variable must be
 //! a grouping-key variable, and the non-aggregation parts must be simple
-//! (variables, property accesses, literals, lists/maps of grouped vars, or
-//! an expression that *is* one of the grouping keys) — anything more
-//! complex is ambiguous.
+//! (variables, property accesses, literals, lists of grouped vars, scalar
+//! function calls over those, or an expression that *is* one of the
+//! grouping keys) — anything more complex is ambiguous.
 
 use crate::ident_hash::IdentHashSet;
 use relate_names::SmallName;
@@ -11,8 +11,9 @@ use relate_names::SmallName;
 use relate_parser::Expr;
 
 use super::collect_non_agg_variables;
-use crate::agg::contains_aggregation;
+use crate::agg::{contains_aggregation, contains_aggregation_anywhere};
 use crate::ast::collect::{collect_expr_variables, interp_embeds};
+use crate::ast::tree::{unparen, var_property};
 
 /// The grouping keys of a projection clause, bundled with the derived
 /// facts the ambiguity checks need about them: the variables the key
@@ -67,12 +68,14 @@ impl<'a> GroupingKeys<'a> {
         self.vars.contains(v)
     }
 
-    /// The expression is structurally identical to one of the clause's
-    /// grouping keys — a projected key and a key the projection never
-    /// restates (an explicit `GROUP BY <expr>`) alike. Being a projected
-    /// item alone is not enough — only a *key* is a key.
+    /// The expression is paren-transparently identical to one of the
+    /// clause's grouping keys — a projected key and a key the projection
+    /// never restates (an explicit `GROUP BY <expr>`) alike; redundant
+    /// parens on either side name the same key ([`unparen`], LABS-1615 —
+    /// the spelling `Restatable::restates_whole` already uses). Being a
+    /// projected item alone is not enough — only a *key* is a key.
     fn matches_key(&self, expr: &Expr) -> bool {
-        self.keys.iter().any(|key| **key == *expr)
+        self.keys.iter().any(|key| unparen(key) == unparen(expr))
     }
 }
 
@@ -92,13 +95,15 @@ fn grouping_key_vars(grouping_key_exprs: &[&Expr]) -> IdentHashSet<SmallName> {
 /// The rule: in a mixed expression, the non-aggregation variables must all be
 /// grouping key variables (i.e., variables that appear in non-aggregation projection items).
 /// However, the non-agg sub-expression itself must not be a "complex" expression
-/// (i.e., more than a simple variable, property access, literal, or list/map of grouped vars).
+/// (i.e., more than a simple variable, property access, literal, or list of grouped vars).
 ///
 /// Special cases that are always valid:
 /// - Constants/literals mixed with aggregation (e.g., count(*) + 10)
 /// - Parameters mixed with aggregation
 /// - Simple variables that are grouping keys (e.g., n + count(*) when n is grouped)
 /// - Property accesses on grouping key variables (e.g., n.age + count(*) when n.age is grouped)
+/// - Scalar function calls over grouping key variables (e.g.,
+///   toFloat(c) / count(m) when c is grouped, REL8-1869)
 ///
 /// The caller constructs the [`GroupingKeys`] model once per clause
 /// (base keys for the projection-item check, alias-extended for the
@@ -176,43 +181,57 @@ fn check_mixed_sides(left: &Expr, right: &Expr, keys: &GroupingKeys) -> bool {
 /// Check if a non-aggregation sub-expression is valid (matches a grouping key
 /// or is a simple/constant expression).
 fn is_valid_non_agg_part(expr: &Expr, keys: &GroupingKeys) -> bool {
-    // Constants and literals are always valid
+    // The caller reaches here on a side the historical aggregation reach
+    // ([`contains_aggregation`]) classified as non-aggregating — a reach
+    // blind to list literals, CASE arms, comprehensions and dynamic keys.
+    // The one full-reach predicate closes those holes up front: a part
+    // hiding an aggregate anywhere is that aggregation's own input, never
+    // a grouping-key reference, so no arm below re-decides aggregate-ness.
+    !contains_aggregation_anywhere(expr) && is_valid_non_agg_shape(expr, keys)
+}
+
+/// The shape walk under [`is_valid_non_agg_part`]'s one-shot aggregate
+/// gate: the entry's full-reach scan has cleared the whole subtree, so
+/// the `List` and `FunctionCall` recursions come straight here and the
+/// scan never re-fires on a child.
+fn is_valid_non_agg_shape(expr: &Expr, keys: &GroupingKeys) -> bool {
     match expr {
-        Expr::Literal(_) => return true,
-        Expr::Parameter(_) => return true,
-        Expr::List(items) => {
-            // List of grouped items is fine
-            return items.iter().all(|i| is_valid_non_agg_part(i, keys));
-        }
-        // Map expressions are always valid (they don't reference ungrouped variables)
-        _ => {}
+        // Constants and literals are always valid
+        Expr::Literal(_) | Expr::Parameter(_) => true,
+        // List of grouped items is fine
+        Expr::List(items) => items.iter().all(|i| is_valid_non_agg_shape(i, keys)),
+        // A non-aggregate part that is *verbatim* a grouping key expression is
+        // that key, however complex: `RETURN me.age + you.age, count(*) AS cnt
+        // ORDER BY me.age + you.age + count(*)` (ReturnOrderBy6 [5]) decomposes
+        // the projected expression. Any other complex shape stays ambiguous.
+        _ if keys.matches_key(expr) => true,
+        // Simple variables covered by the grouping keys are valid.
+        Expr::Variable(v) => keys.covers_variable(v),
+        // Property access on a grouping key variable (`*` coverage does not
+        // extend to property expressions — see `key_variable`); a property
+        // of anything else is not valid. The base resolves through the one
+        // paren-transparent property recognizer ([`var_property`],
+        // LABS-1615): `(n).p1` reads the key variable `n` like every other
+        // spelling.
+        Expr::Property(_) => var_property(expr).is_some_and(|(v, _)| keys.key_variable(v)),
+        // Redundant parens are transparent, the paren arm the sibling walk
+        // (`check_non_agg_parts_match_keys`) has always had: `(n.p1) +
+        // count(*)` beside a projected `n.p1` validates exactly like the
+        // bare spelling.
+        Expr::Paren(inner) => is_valid_non_agg_shape(inner, keys),
+        // A scalar function call whose arguments are all valid
+        // non-aggregation parts: a grouping key is referenceable through a
+        // function exactly as the Property arm covers a property of one —
+        // `WITH count(n) AS c MATCH (m) RETURN toFloat(c) / count(m) AS
+        // coverage, c` (REL8-1869) reads the projected key `c` through
+        // `toFloat`. Non-deterministic calls ride the same arm — live Neo4j
+        // 2026.10.1 admits `coalesce(rand(), c) / count(m)`, grouping by
+        // the per-row remainder — while the group key here stays the
+        // projected items, so such a call takes one value per group.
+        Expr::FunctionCall(fc) => fc.args.iter().all(|arg| is_valid_non_agg_shape(arg, keys)),
+        // Every other shape — a map, a CASE, a comprehension — is not a
+        // grouping-key reference: valid only as a verbatim key (the guard
+        // arm above), rejected here.
+        _ => false,
     }
-
-    // Simple variables covered by the grouping keys are valid.
-    if let Expr::Variable(v) = expr {
-        return keys.covers_variable(v);
-    }
-
-    // Property access: valid when it exactly matches a grouping key
-    // expression, or when it targets a grouping key variable (`*` coverage
-    // does not extend to property expressions — see `key_variable`).
-    if let Expr::Property(p) = expr {
-        if keys.matches_key(expr) {
-            return true;
-        }
-        // Also allow property access on a grouping key variable
-        if let Expr::Variable(v) = &p.expr {
-            return keys.key_variable(v);
-        }
-        return false;
-    }
-
-    // A non-aggregate part that is *verbatim* a grouping key expression is
-    // that key, however complex: `RETURN me.age + you.age, count(*) AS cnt
-    // ORDER BY me.age + you.age + count(*)` (ReturnOrderBy6 [5]) decomposes
-    // the projected expression. Any other complex shape stays ambiguous.
-    if keys.matches_key(expr) {
-        return true;
-    }
-    false
 }

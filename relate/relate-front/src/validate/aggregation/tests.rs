@@ -271,3 +271,84 @@ fn gbn15_shadow_resolves_through_parens() {
         assert!(ok.is_ok(), "{query}: {ok:?}");
     }
 }
+
+// REL8-1869: a scalar function call over a grouping-key variable is a
+// valid non-aggregation part of a mixed expression. The issue's shape —
+// an aggregating WITH's alias, read through `toFloat` in a later
+// aggregating RETURN — and the plain-variable twin both pin that the
+// boundary is the call, not the key's provenance: `RETURN p, count(m)`
+// beside the same `p` already validated, so `toFloat(p)` must too.
+#[test]
+fn scalar_call_over_a_grouping_key_variable_is_a_valid_mixed_part() {
+    for query in [
+        // The issue's shape: `c` comes from an earlier aggregating WITH
+        // and is the later RETURN's grouping key.
+        "MATCH (n) WHERE n.p1 IS NOT NULL WITH count(n) AS c MATCH (m) \
+         RETURN toFloat(c) / count(m) AS coverage, c",
+        // The plain-variable twin: no aggregation provenance at all.
+        "MATCH (n) WITH n.p1 AS p MATCH (m) RETURN toFloat(p) / count(m) AS coverage, p",
+        // A scalar call over a key property, nested scalar calls, and a
+        // literal argument riding the literal arm.
+        "MATCH (n) RETURN abs(n.p1) + count(*) AS x, n.p1",
+        "MATCH (n) WITH n.p1 AS p RETURN toUpper(toString(p)) + count(*) AS x, p",
+        "MATCH (n) RETURN coalesce(n.p1, 0) + count(*) AS x, n.p1",
+        // A non-deterministic call over the key rides the same arm (live
+        // Neo4j 2026.10.1 admits the shape; the group key stays the
+        // projected items).
+        "MATCH (n) WITH count(n) AS c MATCH (m) \
+         RETURN coalesce(rand(), c) / count(m) AS coverage, c",
+    ] {
+        let ok = validate_semantics(query);
+        assert!(ok.is_ok(), "{query}: {ok:?}");
+    }
+}
+
+// LABS-1615's paren transparency reaches the mixed-expression parts: a
+// parenthesized part validates like its bare spelling — the paren arm
+// the sibling walk (`check_non_agg_parts_match_keys`) has always had —
+// and a property's parenthesized base resolves through the base
+// variable like every other spelling (live Neo4j 2026.10.1 admits all
+// of these).
+#[test]
+fn parenthesized_parts_validate_like_their_bare_spellings() {
+    for query in [
+        // A bare paren property beside the projected key.
+        "MATCH (n) RETURN (n.p1) + count(*) AS x, n.p1",
+        // A parenthesized base: `(n).p1` reads the key variable's property.
+        "MATCH (n) RETURN (n).p1 + count(*) AS x, n.p1",
+        // A paren-wrapped call argument.
+        "MATCH (n) WITH count(n) AS c MATCH (m) RETURN toFloat((c)) / count(m) AS coverage, c",
+        // A paren-wrapped verbatim key: the guard matches it directly.
+        "MATCH (n) RETURN count(*) + (n.p1) AS y, (n.p1)",
+        // A bare side beside a paren-wrapped key: the guard matches the
+        // paren-transparent forms directly.
+        "MATCH (n) RETURN count(*) + n.p1 AS y, (n.p1)",
+    ] {
+        let ok = validate_semantics(query);
+        assert!(ok.is_ok(), "{query}: {ok:?}");
+    }
+}
+
+// The arm extends exactly the existing coverage, no further: a call over
+// a non-key variable stays ambiguous, and a property of a `*`-carried
+// variable read through a call stays ambiguous (ADR-0198 ruling 1 — `*`
+// projects the variables, not their property expressions).
+#[test]
+fn scalar_call_mixed_parts_keep_the_grouping_coverage_boundary() {
+    for query in [
+        // `q` is in scope but not a key of the RETURN.
+        "MATCH (n) WITH n.p1 AS p, n.p2 AS q MATCH (m) RETURN toFloat(q) / count(m) AS x, p",
+        // A property leaf of a star-carried variable, through the call.
+        "MATCH (m) RETURN *, toFloat(m.p1) + count(*) AS x",
+        // An aggregate hidden in a list literal (invisible to
+        // `contains_aggregation`) must not be let in by the recursion.
+        "MATCH (n) RETURN n, n.p1, count(*) + coalesce(n, [collect(n.p1)]) AS y",
+    ] {
+        let err = validate_semantics(query).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            ErrorKind::AmbiguousAggregationExpression,
+            "{query}: {err:?}"
+        );
+    }
+}
