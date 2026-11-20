@@ -393,28 +393,29 @@ fn duration_map_bound_matches_the_iso_spelling() {
     assert_eq!(map, parse_iso("duration", "PT9223372036854775809S"));
 }
 
-/// LABS-711: the integral map path sums the same lanes the float path and
-/// the ISO parser do — `quarters` rides the months lane, so the integral and
-/// float spellings construct identically (the integral path once dropped it).
+/// REL8-1063: the duration map rejects `quarters` — Neo4j's 22G0I
+/// `Unknown field: quarters` — for the integral, float and mixed
+/// spellings alike (LABS-711's months-lane sum, which this test once
+/// pinned, is gone with the field's map-key spelling; the pattern
+/// spelling `q` keeps constructing with quarters).
 #[test]
-fn duration_map_quarters_sum_into_the_months_lane() {
-    assert_eq!(
-        duration_map(&[("quarters", Value::Int(2))]),
-        parse_iso("duration", "P6M")
-    );
-    assert_eq!(
-        duration_map(&[("quarters", Value::Float(2.0))]),
-        parse_iso("duration", "P6M")
-    );
-    // Mixed with the months lane's other fields.
-    assert_eq!(
-        duration_map(&[
-            ("years", Value::Int(1)),
-            ("quarters", Value::Int(1)),
-            ("months", Value::Int(2))
-        ]),
-        parse_iso("duration", "P1Y5M")
-    );
+fn duration_map_rejects_the_quarters_field() {
+    let reject = |entries: &[(&str, Value)]| {
+        assert_eq!(
+            duration_map(entries),
+            Err(Error::ty("Unknown field: quarters")),
+            "{entries:?}"
+        )
+    };
+    // The unknown key wins over any contribution the map's other entries
+    // would make (the mixed years/months case).
+    reject(&[("quarters", Value::Int(2))]);
+    reject(&[("quarters", Value::Float(2.0))]);
+    reject(&[
+        ("years", Value::Int(1)),
+        ("quarters", Value::Int(1)),
+        ("months", Value::Int(2)),
+    ]);
 }
 
 /// LABS-711: a pattern run is a contiguous stretch of one *token type*, not

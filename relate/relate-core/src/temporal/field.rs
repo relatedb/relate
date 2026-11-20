@@ -143,8 +143,10 @@ impl DurationField {
     ];
 
     /// The duration-map spelling of this field — the inverse of
-    /// [`Self::from_map_key`], so a checked-lane overflow can name its field
-    /// without a per-call-site string.
+    /// [`Self::from_map_key`] over the map-admitted vocabulary (every
+    /// field but `Quarters`, which the map rejects and the pattern and
+    /// accessor keep, REL8-1063) — so a checked-lane overflow can name
+    /// its field without a per-call-site string.
     pub(super) fn name(self) -> &'static str {
         match self {
             Self::Years => "years",
@@ -230,9 +232,17 @@ impl DurationField {
     /// The duration-map field spelling of this field — the map-key sibling
     /// of [`Self::pattern_symbol`]. `None` for a key that does not name
     /// a duration field, so the map constructor reads one spelling table.
-    /// Derived from [`Self::name`], its inverse.
+    /// Derived from [`Self::name`], its inverse, minus `Quarters`: Neo4j's
+    /// duration map rejects `quarters` with `Unknown field: quarters`
+    /// (22G0I, REL8-1063) while the `q`/`Q` pattern spelling, the
+    /// `d.quarters` accessor and the CIP-223 formatter keep the field —
+    /// so the map-key vocabulary is the cascade filtered, never a second
+    /// name table.
     pub(super) fn from_map_key(key: &str) -> Option<Self> {
-        Self::CASCADE.into_iter().find(|field| field.name() == key)
+        Self::CASCADE
+            .into_iter()
+            .filter(|field| !matches!(field, Self::Quarters))
+            .find(|field| field.name() == key)
     }
 }
 
@@ -248,54 +258,27 @@ mod tests {
         assert_eq!(AVG_NANOS_PER_MONTH, 2.629_746e15);
     }
 
-    /// The map-key spelling is a bijection over the vocabulary in declaration
-    /// order: every field resolves from its own key, and a non-field key
-    /// resolves to nothing.
+    /// The map-key spelling derives from the cascade: every field but
+    /// `Quarters` resolves from its own name, `quarters` resolves to
+    /// nothing with the other non-field keys (REL8-1063) while its
+    /// `q`/`Q` pattern spelling still resolves, and the cascade order
+    /// keeps each tier contiguous — one test, one derivation, no
+    /// hand-maintained key list.
     #[test]
-    fn map_keys_name_every_field_once() {
-        let keys = [
-            "years",
-            "quarters",
-            "months",
-            "weeks",
-            "days",
-            "hours",
-            "minutes",
-            "seconds",
-            "milliseconds",
-            "microseconds",
-            "nanoseconds",
-        ];
-        let resolved: Vec<DurationField> = keys
-            .iter()
-            .map(|key| DurationField::from_map_key(key).expect("a duration map key"))
-            .collect();
-        assert_eq!(
-            resolved,
-            vec![
-                DurationField::Years,
-                DurationField::Quarters,
-                DurationField::Months,
-                DurationField::Weeks,
-                DurationField::Days,
-                DurationField::Hours,
-                DurationField::Minutes,
-                DurationField::Seconds,
-                DurationField::Millis,
-                DurationField::Micros,
-                DurationField::Nanos,
-            ]
-        );
-        assert_eq!(DurationField::from_map_key("fortnights"), None);
-    }
-
-    /// `name` and `from_map_key` are inverses over the vocabulary, and the
-    /// cascade order keeps each tier contiguous.
-    #[test]
-    fn cascade_orders_every_tier_and_names_round_trip() {
+    fn map_admits_every_cascade_field_but_quarters() {
         for field in DurationField::CASCADE {
-            assert_eq!(DurationField::from_map_key(field.name()), Some(field));
+            assert_eq!(
+                DurationField::from_map_key(field.name()),
+                (field != DurationField::Quarters).then_some(field),
+                "the map admits every cascade field but quarters"
+            );
         }
+        assert_eq!(DurationField::from_map_key("quarters"), None);
+        assert_eq!(DurationField::from_map_key("fortnights"), None);
+        assert!(matches!(
+            DurationField::pattern_symbol('q'),
+            Some(PatternSymbol::Field(DurationField::Quarters))
+        ));
         let mut tiers: Vec<DurationTier> = DurationField::CASCADE
             .iter()
             .map(|field| field.tier_and_scale().0)
