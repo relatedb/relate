@@ -19,15 +19,16 @@ pub const LENGTH_REQUIRES_A_PATH: &str = "length() needs a path";
 /// front-end static-argument check and the executor's implementation both
 /// state it from here, so the compile-time and runtime halves cannot drift
 /// (the [`FUNCTION_REQUIRES_ONE_ARGUMENT`] precedent).
-pub const NULLIF_REQUIRES_TWO_ARGUMENTS: &str = "nullif() requires two arguments";
+pub(crate) const NULLIF_REQUIRES_TWO_ARGUMENTS: &str = "nullif() requires two arguments";
 
 /// The one spelling of `format()`'s one-or-two-argument arity requirement,
 /// shared by the front-end check and the executor's implementation.
-pub const FORMAT_REQUIRES_ONE_OR_TWO_ARGUMENTS: &str = "format() requires one or two arguments";
+pub(crate) const FORMAT_REQUIRES_ONE_OR_TWO_ARGUMENTS: &str =
+    "format() requires one or two arguments";
 
 /// The one spelling of `vector()`'s three-argument arity requirement, shared
 /// by the front-end check and the executor's implementation.
-pub const VECTOR_REQUIRES_THREE_ARGUMENTS: &str = "vector() requires three arguments";
+pub(crate) const VECTOR_REQUIRES_THREE_ARGUMENTS: &str = "vector() requires three arguments";
 
 /// One builtin's compile-phase arity contract: the accepted argument-count
 /// range together with the authored rejection *detail* (bare, without the

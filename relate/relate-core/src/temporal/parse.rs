@@ -404,7 +404,8 @@ fn parse_zoned_dt(s: &str) -> Result<Temporal> {
         // Every arm answers the same three facts — the (possibly
         // gap-shifted) wall clock, its offset, and the zone spelling to
         // keep — and the value is built once.
-        let (local, offset, zone) = match zone_kind(z) {
+        let spec = zone_kind(z);
+        let (local, offset, zone) = match spec {
             ZoneSpec::Iana(_) | ZoneSpec::Other(_) => {
                 // A supplied offset must name the zone's own occurrence of
                 // the wall clock (never silently replaced), an overlap needs
@@ -420,15 +421,11 @@ fn parse_zoned_dt(s: &str) -> Result<Temporal> {
             // The classifier already split the two spellings: a numeric
             // offset stays offset-only, a `GMT`/`UTC` prefixed one keeps its
             // spelling as the value's zone.
-            ZoneSpec::Fixed(_) => {
+            ZoneSpec::Fixed(_) | ZoneSpec::Prefixed(_) => {
                 let offset = parse_offset(z)?;
                 check_matching_offset(z, want, offset)?;
-                (local, offset, None)
-            }
-            ZoneSpec::Prefixed(_) => {
-                let offset = parse_offset(z)?;
-                check_matching_offset(z, want, offset)?;
-                (local, offset, Some(z.to_string()))
+                let zone = matches!(spec, ZoneSpec::Prefixed(_)).then(|| z.to_string());
+                (local, offset, zone)
             }
         };
         return Ok(Temporal::DateTime {

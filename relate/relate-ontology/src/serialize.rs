@@ -22,6 +22,21 @@ use crate::value::Value;
 /// builder and saphyr's emitter past the stack with no typed failure.
 pub(crate) const MAX_SERIALIZE_DEPTH: usize = 128;
 
+/// The one depth guard for both container kinds: every level adds one.
+fn push_children<'v>(
+    stack: &mut Vec<(&'v Value, usize)>,
+    children: impl Iterator<Item = &'v Value>,
+    depth: usize,
+) -> Result<(), OntologyError> {
+    if depth + 1 > MAX_SERIALIZE_DEPTH {
+        return Err(OntologyError::NestingTooDeep {
+            limit: MAX_SERIALIZE_DEPTH,
+        });
+    }
+    stack.extend(children.map(|item| (item, depth + 1)));
+    Ok(())
+}
+
 /// Iteratively check a value is serializable: no more than
 /// [`MAX_SERIALIZE_DEPTH`] levels of nesting, and no non-finite floats (a
 /// hand-built `Value::Float(NAN)` would panic the `expect`-guarded writers;
@@ -33,22 +48,8 @@ fn check_serializable_depth(value: &Value) -> Result<(), OntologyError> {
     let mut stack: Vec<(&Value, usize)> = vec![(value, 0)];
     while let Some((current, depth)) = stack.pop() {
         match current {
-            Value::Array(items) => {
-                if depth + 1 > MAX_SERIALIZE_DEPTH {
-                    return Err(OntologyError::NestingTooDeep {
-                        limit: MAX_SERIALIZE_DEPTH,
-                    });
-                }
-                stack.extend(items.iter().map(|item| (item, depth + 1)));
-            }
-            Value::Object(map) => {
-                if depth + 1 > MAX_SERIALIZE_DEPTH {
-                    return Err(OntologyError::NestingTooDeep {
-                        limit: MAX_SERIALIZE_DEPTH,
-                    });
-                }
-                stack.extend(map.values().map(|item| (item, depth + 1)));
-            }
+            Value::Array(items) => push_children(&mut stack, items.iter(), depth)?,
+            Value::Object(map) => push_children(&mut stack, map.values(), depth)?,
             Value::Float(f) if !f.is_finite() => {
                 return Err(OntologyError::UnsupportedConstruct(
                     Construct::NonFiniteFloat,

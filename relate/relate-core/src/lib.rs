@@ -33,9 +33,8 @@ mod typename;
 mod value;
 
 pub use arity::{
-    builtin_arity, ArityContract, CHAR_LENGTH_ARITY, FORMAT_ARITY,
-    FORMAT_REQUIRES_ONE_OR_TWO_ARGUMENTS, FUNCTION_REQUIRES_ONE_ARGUMENT, LENGTH_REQUIRES_A_PATH,
-    NULLIF_ARITY, NULLIF_REQUIRES_TWO_ARGUMENTS, VECTOR_ARITY, VECTOR_REQUIRES_THREE_ARGUMENTS,
+    builtin_arity, ArityContract, CHAR_LENGTH_ARITY, FORMAT_ARITY, FUNCTION_REQUIRES_ONE_ARGUMENT,
+    LENGTH_REQUIRES_A_PATH, NULLIF_ARITY, VECTOR_ARITY,
 };
 pub use auto_literal::{auto_literal, AutoLiteralGuard};
 pub use cancel::CancelToken;
