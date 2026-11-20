@@ -344,12 +344,12 @@ fn materialize_feed<'a>(
         // per-row fold, every row is evaluated to compare it, so the
         // producer is never materialized on those shapes. The collecting
         // shapes still land below.
-        unwind @ RowFeed::Unwind(_) if class.folds_feed(bounds) => return Ok(unwind),
+        generated @ RowFeed::Generated(_) if class.folds_feed(bounds) => return Ok(generated),
         folded @ RowFeed::Folded(_) => return Ok(folded),
         // The generator's own materializing form — the one place a feed
         // that cannot fold becomes rows, so its charge cannot drift from
         // the one `exec_unwind` pays.
-        RowFeed::Unwind(unwind) => unwind.materialize()?,
+        RowFeed::Generated(generated) => generated.materialize()?,
     };
     // The eager shape pages here, on the clause's one resolved bounds; every
     // other shape leaves the page to the finish tail.

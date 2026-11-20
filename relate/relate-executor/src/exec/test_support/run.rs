@@ -154,13 +154,7 @@ pub(crate) fn with_flag_disabled<R>(
 /// emits — the one PROFILE harness the exec tests read (the frontier
 /// rider's engagement pins, the store-read arm's save/restore pin).
 pub(crate) fn profiled(g: &Graph, cypher: &str) -> Vec<ClauseMetricsRecord> {
-    struct Recorder(RefCell<Vec<ClauseMetricsRecord>>);
-    impl PlanMetricsSink for Recorder {
-        fn record_clause(&self, record: ClauseMetricsRecord) {
-            self.0.borrow_mut().push(record);
-        }
-    }
-    let recorder = Recorder(RefCell::new(Vec::new()));
+    let recorder = super::ClauseRecords(RefCell::new(Vec::new()));
     try_exec_lowered_with_metrics(
         g,
         parse_and_lower(cypher).unwrap(),

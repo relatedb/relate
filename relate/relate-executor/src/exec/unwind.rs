@@ -8,7 +8,6 @@
 //! A later read of the list keeps the copy, so `RETURN file.symbols` is
 //! unchanged.
 
-use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -16,15 +15,14 @@ use std::sync::Arc;
 use relate_core::{Result, Value};
 use relate_ir::{var_prop_owned, walk_clauses, Clause, Expr, MapProjectionItem};
 use relate_names::SmallName;
-// `web_time` on wasm32: `std::time::Instant::now()` traps there (see
-// `dispatch.rs`).
-use web_time::Instant;
 
 use crate::ctx::ExecCtx;
-use crate::eval::{eval, into_items, lazy_range, rows_logical_bytes, Items, RangeValues};
+use crate::eval::{eval, into_items, lazy_range, Items, RangeValues};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
+use super::feed::StreamedFeed;
+use super::profile_tick::StreamedStats;
 use super::scope::call_scope_reads;
 
 pub(super) enum Source {
@@ -254,117 +252,65 @@ pub(super) fn open_source(
     })
 }
 
-/// What a streamed `UNWIND` reports to PROFILE once its consumer drained it.
-/// The feed yields one row at a time, so the memory it holds is one row: the
-/// row's size is recorded (batch of one × row size), not a retained total.
-/// The generation time is measured only when PROFILE asked for it, so the
-/// plain path never reads a clock per row.
-#[derive(Default)]
-pub(crate) struct UnwindStats {
-    rows: Cell<u64>,
-    /// Logical bytes of one generated row: the in-flight working set.
-    row_bytes: Cell<u64>,
-    time_ns: Cell<u128>,
-    timed: bool,
-}
-
-impl UnwindStats {
-    pub(super) fn new(timed: bool) -> Self {
-        Self {
-            timed,
-            ..Self::default()
-        }
-    }
-
-    pub(super) fn rows(&self) -> u64 {
-        self.rows.get()
-    }
-
-    pub(super) fn row_bytes(&self) -> u64 {
-        self.row_bytes.get()
-    }
-
-    /// Nanoseconds spent generating rows (zero unless timed).
-    pub(super) fn time_ns(&self) -> u128 {
-        self.time_ns.get()
-    }
-}
-
-/// The rows of an `UNWIND`, produced one at a time and never retained: the
-/// generator form of the clause. A consumer that folds rows as they arrive
-/// (an aggregation) holds constant state however long the source is, and a
-/// consumer that stops early never generates the rest.
-pub(crate) struct UnwindFeed<'a> {
-    ctx: ExecCtx<'a>,
-    inputs: std::vec::IntoIter<Row>,
+/// The `UNWIND` producer: the [`FeedSource`](super::feed::FeedSource) the
+/// shared spine drives — the generator form of the clause, its rows
+/// produced one at a time and never retained, so a consumer that folds
+/// rows as they arrive (an aggregation) holds constant state however long
+/// the source is, and a consumer that stops early never generates the
+/// rest. Owns the expanded expression, the alias, the strip decision (the
+/// row carry this module's head documents), and the input row being
+/// expanded with its remaining elements.
+pub(crate) struct UnwindSource<'a> {
     expression: &'a Expr,
     alias: &'a SmallName,
     strip: Option<Source>,
     /// The input row being expanded, with its remaining elements.
     current: Option<(Row, Elements)>,
-    /// Shared with the dispatcher so the PROFILE record of this clause can
-    /// report after a consumer drained the feed.
-    stats: Rc<UnwindStats>,
 }
 
-impl<'a> UnwindFeed<'a> {
-    pub(super) fn new(
-        ctx: ExecCtx<'a>,
-        tail: &[Clause],
-        inputs: Vec<Row>,
-        expression: &'a Expr,
-        alias: &'a SmallName,
-        stats: Rc<UnwindStats>,
-    ) -> Self {
+impl<'a> UnwindSource<'a> {
+    pub(super) fn new(tail: &[Clause], expression: &'a Expr, alias: &'a SmallName) -> Self {
         Self {
-            ctx,
-            inputs: inputs.into_iter(),
             expression,
             alias,
             strip: Source::plan(expression, tail),
             current: None,
-            stats,
         }
     }
+}
 
-    /// Open the next input row's source as the current expansion, and
-    /// return the charge facts of the rows this source will add — its
-    /// element count and the carried width — from this seam, so the
-    /// materializing form bills without re-reading the opener's state.
-    /// `Ok(None)` when the inputs are exhausted. A list source sheds the
-    /// source column from the carried row; a scalar keeps its row whole.
-    fn open_next_input(&mut self) -> Result<Option<(usize, usize)>> {
-        let Some(row) = self.inputs.next() else {
-            return Ok(None);
-        };
-        let elements = open_source(self.ctx.graph, &row, self.expression, self.ctx.params)?;
+impl super::feed::FeedSource for UnwindSource<'_> {
+    fn open(&mut self, ctx: ExecCtx<'_>, row: Row) -> Result<bool> {
+        let elements = open_source(ctx.graph, &row, self.expression, ctx.params)?;
         let mut template = row;
+        // A list source sheds the source column from the carried row; a
+        // scalar keeps its row whole.
         if !matches!(elements, Elements::One(_)) {
             if let Some(source) = &self.strip {
                 source.strip(&mut template);
             }
         }
-        let charge = (elements.remaining()?, template.len().saturating_add(1));
         self.current = Some((template, elements));
-        Ok(Some(charge))
+        Ok(true)
     }
 
-    /// The next row of the source being expanded, `None` once it is spent.
-    fn pull_current(&mut self) -> Option<Result<Row>> {
+    fn charge_facts(&self) -> Result<(usize, usize)> {
+        let (template, elements) = self
+            .current
+            .as_ref()
+            .expect("charge_facts is read on an open source");
+        Ok((elements.remaining()?, template.len().saturating_add(1)))
+    }
+
+    fn pull(&mut self, ctx: ExecCtx<'_>) -> Option<Result<Row>> {
         let (template, elements) = self.current.as_mut()?;
         match elements.next() {
             Some(Ok(value)) => {
-                if let Err(error) = self.ctx.graph.cancel_tick() {
+                if let Err(error) = ctx.graph.cancel_tick() {
                     return Some(Err(error));
                 }
                 let mut row = template.clone();
                 row.insert(self.alias.to_string(), value);
-                self.stats.rows.set(self.stats.rows.get() + 1);
-                if self.stats.timed && self.stats.rows.get() == 1 {
-                    self.stats
-                        .row_bytes
-                        .set(rows_logical_bytes(std::slice::from_ref(&row)));
-                }
                 Some(Ok(row))
             }
             Some(Err(error)) => {
@@ -377,68 +323,24 @@ impl<'a> UnwindFeed<'a> {
             }
         }
     }
-
-    /// Drain the feed into a held vector, charging each source's output to
-    /// the running total before its first row is built: the clause's
-    /// materializing form, for a consumer that cannot fold as rows arrive.
-    /// The charge facts come from the opener itself, so no landing is
-    /// billed from a re-read of the opener's state.
-    pub(super) fn materialize(mut self) -> Result<Vec<Row>> {
-        // ADR-0463: the output vector is one retaining container; its
-        // running total is the guard's.
-        let mut retained = self.ctx.graph.retain_bytes(0)?;
-        let mut rows = Vec::new();
-        while let Some((count, width)) = self.open_next_input()? {
-            let added = crate::workspace::retained_rows_bytes(count, width);
-            retained.add_allocation(self.ctx.graph, added)?;
-            while let Some(row) = self.pull_current() {
-                rows.push(row?);
-            }
-        }
-        Ok(rows)
-    }
 }
 
-impl Iterator for UnwindFeed<'_> {
-    type Item = Result<Row>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let generated = if !self.stats.timed {
-            self.generate()
-        } else {
-            let started = Instant::now();
-            let generated = self.generate();
-            self.stats
-                .time_ns
-                .set(self.stats.time_ns.get() + started.elapsed().as_nanos());
-            generated
-        };
-        // The Iterator protocol's one reshape of the generator's answer:
-        // `Ok(None)` is exhaustion, every error an item.
-        match generated {
-            Ok(Some(row)) => Some(Ok(row)),
-            Ok(None) => None,
-            Err(error) => Some(Err(error)),
-        }
-    }
-}
-
-impl UnwindFeed<'_> {
-    /// The next generated row: the current expansion's next element, or —
-    /// once it is spent — the next input row's expansion. `Ok(None)` once
-    /// the inputs are exhausted. The opener's charge facts are discarded
-    /// here: a generated row is never retained, so they serve the
-    /// materializing form alone.
-    fn generate(&mut self) -> Result<Option<Row>> {
-        loop {
-            if let Some(row) = self.pull_current() {
-                return Ok(Some(row?));
-            }
-            if self.open_next_input()?.is_none() {
-                return Ok(None);
-            }
-        }
-    }
+/// The clause's feed over its source: the constructor both the parked
+/// (fused) and the materializing form build (`load_csv_feed`'s shape).
+pub(super) fn unwind_feed<'a>(
+    ctx: ExecCtx<'a>,
+    tail: &'a [Clause],
+    inputs: Vec<Row>,
+    expression: &'a Expr,
+    alias: &'a SmallName,
+    stats: Rc<StreamedStats>,
+) -> StreamedFeed<'a> {
+    StreamedFeed::new(
+        ctx,
+        inputs,
+        Box::new(UnwindSource::new(tail, expression, alias)),
+        stats,
+    )
 }
 
 #[cfg(test)]

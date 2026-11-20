@@ -55,6 +55,7 @@ pub(crate) mod dispatch;
 pub(crate) mod exists_probe;
 pub(crate) mod expand;
 pub(crate) mod far_probe;
+pub(crate) mod feed;
 pub(crate) mod fulltext;
 pub(crate) mod gpm;
 pub(crate) mod graph_type_schema;
@@ -591,18 +592,23 @@ pub(crate) fn materialize_rows_strict(
 }
 
 /// The rows a projection consumes: held in a vector, or generated one at a
-/// time by an `UNWIND` the projection is fused with. The aggregation's
-/// offer walk (`aggregate_ex`) consumes either row-bearing form, so a
-/// fused `UNWIND` never materializes the rows it feeds; a `Folded` feed
-/// holds rows its producer already folded, so its consumer finishes it
-/// (`aggregate_rows`) instead of walking it. The projection pipeline's
-/// input shape lives here — the seam the dispatcher (which builds a
-/// feed), the `UNWIND` producer (which generates one) and the projection
-/// and aggregation consumers (which read one) all already reach, so no
-/// producer module carries the consumer-shared type.
+/// time by a generator clause the projection is fused with — an `UNWIND`
+/// or a `LOAD CSV` (ADR-0555). The aggregation's offer walk
+/// (`aggregate_ex`) consumes either row-bearing form, so a fused generator
+/// never materializes the rows it feeds; a `Folded` feed holds rows its
+/// producer already folded, so its consumer finishes it (`aggregate_rows`)
+/// instead of walking it. The projection pipeline's input shape lives
+/// here — the seam the dispatcher (which builds a feed), the generator
+/// producers (which generate one) and the projection and aggregation
+/// consumers (which read one) all already reach, so no producer module
+/// carries the consumer-shared type; the feed machinery itself lives in
+/// [`feed`], beside this seam.
 pub(crate) enum RowFeed<'a> {
     Held(Vec<Row>),
-    Unwind(unwind::UnwindFeed<'a>),
+    /// A generator clause the projection is fused with — an `UNWIND` or a
+    /// `LOAD CSV` (ADR-0555): rows pulled one at a time over the
+    /// producer's [`FeedSource`](feed::FeedSource), never collected.
+    Generated(feed::StreamedFeed<'a>),
     /// Rows already folded into an [`aggregate::Aggregation`] by the
     /// producer: the projection only finishes it. Built by the streaming
     /// match sink.
@@ -615,12 +621,12 @@ impl RowFeed<'_> {
     pub(crate) fn probe(&self) -> &[Row] {
         match self {
             RowFeed::Held(rows) => rows,
-            RowFeed::Unwind(_) | RowFeed::Folded(_) => &[],
+            RowFeed::Generated(_) | RowFeed::Folded(_) => &[],
         }
     }
 
-    /// The feed's row walk: every row of the two row-bearing forms, one at
-    /// a time and fallibly, folded through `offer`. A `Folded` feed offers
+    /// The feed's row walk: every row of the row-bearing forms, one at a
+    /// time and fallibly, folded through `offer`. A `Folded` feed offers
     /// no rows (its producer already folded them): its consumer finishes
     /// that variant without ever reaching this walk, so a folded feed
     /// arriving here is an engine wiring error, reported loudly rather
@@ -628,7 +634,7 @@ impl RowFeed<'_> {
     pub(crate) fn try_for_each(self, mut offer: impl FnMut(Row) -> Result<()>) -> Result<()> {
         match self {
             RowFeed::Held(rows) => rows.into_iter().try_for_each(offer),
-            RowFeed::Unwind(mut feed) => feed.try_for_each(|row| offer(row?)),
+            RowFeed::Generated(mut feed) => feed.try_for_each(|row| offer(row?)),
             RowFeed::Folded(_) => Err(Error::internal(
                 "a folded feed is finished by its consumer, never re-offered",
             )),

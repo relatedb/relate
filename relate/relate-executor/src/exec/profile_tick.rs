@@ -1,7 +1,7 @@
-//! The per-clause PROFILE tick and the streamed-`UNWIND` facts the clause
-//! dispatcher (`dispatch.rs`) reports through it.
+//! The per-clause PROFILE tick and the streamed-generator facts (`UNWIND`,
+//! `LOAD CSV`) the clause dispatcher (`dispatch.rs`) reports through it.
 
-use std::rc::Rc;
+use std::cell::Cell;
 // `web_time` on wasm32: `std::time::Instant::now()` traps on
 // `wasm32-unknown-unknown`, and PROFILE is a user-reachable path in the
 // browser build — the clock must read, not panic (the facade uses the
@@ -13,10 +13,8 @@ use crate::metrics::{ClauseMetricsRecord, PlanMetricsSite};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::aggregate::Aggregation;
+use super::feed::ParkedFacts;
 use super::match_clause::{LadderFacts, MatchOperator};
-use super::unwind::{UnwindFeed, UnwindStats};
-use super::RowFeed;
 
 /// The expression-built meter's typed per-clause snapshot (ADR-0463): a
 /// snapshot taken at the arm's start and its delta at the record. Unlike
@@ -195,60 +193,89 @@ impl ProfileTick<'_> {
     }
 }
 
-/// Report a streamed `UNWIND`'s PROFILE facts after its consumer drained
-/// it: the rows it generated, one row's size as its in-flight memory (it
-/// yields one row at a time, so its working set is one row, not the
-/// retained total), no expression bytes (no list was built), and the time
-/// its generator ran, which the consumer's own record excludes.
-/// What a streamed `UNWIND` reports once its consumer drained it: the
-/// statistics its generator filled and the PROFILE position its facts are
-/// reported at.
-pub(super) struct UnwindFacts<'a> {
-    pub(super) stats: Rc<UnwindStats>,
-    pub(super) record: Option<(PlanMetricsSite<'a>, usize)>,
+/// What a streamed generator clause (`UNWIND`, `LOAD CSV`) reports to
+/// PROFILE once its consumer drained it. The feed yields one row at a
+/// time, so the memory it holds is one row: the row's size is recorded
+/// (batch of one × row size), not a retained total. The generation time is
+/// measured only when PROFILE asked for it, so the plain path never reads
+/// a clock per row.
+#[derive(Default)]
+pub(crate) struct StreamedStats {
+    rows: Cell<u64>,
+    /// Logical bytes of one generated row: the in-flight working set.
+    row_bytes: Cell<u64>,
+    time_ns: Cell<u128>,
+    timed: bool,
 }
 
-/// A streamed `UNWIND` waiting for its consumer: the generator and its own
-/// facts. One value per streamed clause, so two of them in a statement never
-/// share counters.
-pub(super) struct ParkedUnwind<'a> {
-    pub(super) feed: UnwindFeed<'a>,
-    pub(super) facts: UnwindFacts<'a>,
-}
-
-/// The feed a `WITH`/`RETURN` consumes: the aggregation a `MATCH` folded its
-/// rows into, the parked generator when an `UNWIND` was fused into it (with
-/// the facts to report once it is drained), otherwise the held rows.
-pub(super) fn take_feed<'a>(
-    pending: &mut Option<ParkedUnwind<'a>>,
-    folded: &mut Option<Aggregation<'a>>,
-    rows: &mut Vec<Row>,
-) -> (RowFeed<'a>, Option<UnwindFacts<'a>>) {
-    if let Some(aggregation) = folded.take() {
-        return (RowFeed::Folded(Box::new(aggregation)), None);
+impl StreamedStats {
+    pub(crate) fn new(timed: bool) -> Self {
+        Self {
+            timed,
+            ..Self::default()
+        }
     }
-    match pending.take() {
-        Some(ParkedUnwind { feed, facts }) => (RowFeed::Unwind(feed), Some(facts)),
-        None => (RowFeed::Held(std::mem::take(rows)), None),
+
+    pub(super) fn rows(&self) -> u64 {
+        self.rows.get()
+    }
+
+    pub(super) fn row_bytes(&self) -> u64 {
+        self.row_bytes.get()
+    }
+
+    /// Nanoseconds spent generating rows (zero unless timed).
+    pub(super) fn time_ns(&self) -> u128 {
+        self.time_ns.get()
+    }
+
+    /// Record one generated row: the count, and the first row's size as
+    /// the feed's in-flight working set.
+    pub(super) fn note_row(&self, row: &Row) {
+        self.rows.set(self.rows.get() + 1);
+        if self.timed && self.rows.get() == 1 {
+            self.row_bytes
+                .set(rows_logical_bytes(std::slice::from_ref(row)));
+        }
+    }
+
+    /// Run one generator step under the PROFILE clock — the one timing
+    /// wrap every streamed producer shares. An untimed feed runs bare: the
+    /// clock is read per step only when PROFILE asked for the clause's
+    /// time.
+    pub(super) fn timed_step<T>(&self, step: impl FnOnce() -> T) -> T {
+        if !self.timed {
+            return step();
+        }
+        let started = Instant::now();
+        let out = step();
+        self.time_ns
+            .set(self.time_ns.get() + started.elapsed().as_nanos());
+        out
     }
 }
 
-/// Close a fused `UNWIND` after its consumer drained it: the consumer's
+/// Close a fused generator after its consumer drained it: the consumer's
 /// clock excludes the generator's time, and the clause reports its own.
-pub(super) fn finish_parked_unwind(
-    parked: Option<UnwindFacts<'_>>,
+pub(super) fn finish_parked_feed(
+    parked: Option<ParkedFacts<'_>>,
     tick: Option<&mut ProfileTick<'_>>,
 ) {
-    let Some(UnwindFacts { stats, record }) = parked else {
+    let Some(ParkedFacts { stats, record }) = parked else {
         return;
     };
     if let Some(tick) = tick {
         tick.excluded_ns = stats.time_ns();
     }
-    record_streamed_unwind(record, &stats);
+    record_streamed_clause(record, &stats);
 }
 
-fn record_streamed_unwind(record: Option<(PlanMetricsSite<'_>, usize)>, unwound: &UnwindStats) {
+/// Report a streamed generator's PROFILE facts after its consumer drained
+/// it: the rows it generated, one row's size as its in-flight memory (it
+/// yields one row at a time, so its working set is one row, not the
+/// retained total), no expression bytes (no list was built), and the time
+/// its generator ran, which the consumer's own record excludes.
+fn record_streamed_clause(record: Option<(PlanMetricsSite<'_>, usize)>, stats: &StreamedStats) {
     let Some((site, clause)) = record else {
         return;
     };
@@ -256,10 +283,10 @@ fn record_streamed_unwind(record: Option<(PlanMetricsSite<'_>, usize)>, unwound:
         stage: site.stage,
         part: site.part,
         clause,
-        rows: unwound.rows(),
-        memory_bytes: unwound.row_bytes(),
+        rows: stats.rows(),
+        memory_bytes: stats.row_bytes(),
         expression_built_bytes: 0,
-        time_ns: unwound.time_ns(),
+        time_ns: stats.time_ns(),
         reads: Default::default(),
         phases: Default::default(),
         start: None,

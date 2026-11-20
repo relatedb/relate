@@ -21,9 +21,10 @@ use super::create::{
 };
 use super::match_clause::match_paths;
 use super::one_path::ResolvedPatterns;
+use super::profile_tick::StreamedStats;
 use super::pushdown::Residual;
 use super::scope::refresh_rows;
-use super::unwind::{UnwindFeed, UnwindStats};
+use super::unwind::unwind_feed;
 use super::write::{apply_resolved_removes, apply_sets, delete_values, resolve_removes};
 
 /// The CREATE clause arm: charge the driving rows, resolve graph-sensitive
@@ -209,13 +210,13 @@ pub(super) fn exec_unwind(
     expression: &Expr,
     alias: &SmallName,
 ) -> Result<Vec<Row>> {
-    UnwindFeed::new(
+    unwind_feed(
         ctx,
         tail,
         rows,
         expression,
         alias,
-        Rc::new(UnwindStats::new(false)),
+        Rc::new(StreamedStats::new(false)),
     )
     .materialize()
 }

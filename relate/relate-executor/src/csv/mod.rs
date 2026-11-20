@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use relate_core::Result;
 
-pub(crate) use parse::{field_terminator_char, record_value, split_csv_line, split_csv_records};
+pub(crate) use parse::{field_terminator_char, record_value, split_csv_line, RecordCursor};
 pub use policy::CsvPolicy;
 #[cfg(test)]
 pub(crate) use policy::DEFAULT_MAX_BYTES;
@@ -97,7 +97,7 @@ impl<'a> CsvReader<'a> {
     }
 
     /// The physical reads this reader performed — asserted by the
-    /// engine-level `LOAD CSV` tests in `exec::call::tests`.
+    /// engine-level `LOAD CSV` tests in `exec::load_csv::tests`.
     #[cfg(test)]
     pub(crate) fn read_count(&self) -> usize {
         self.reads.get()
@@ -107,7 +107,7 @@ impl<'a> CsvReader<'a> {
 /// A fresh temporary directory per test; cleanup is drop-based
 /// (`TempDir`), so no test needs a remove_dir_all tail. Shared by the
 /// reader/policy tests here and the engine-level `LOAD CSV` tests in
-/// `exec::call::tests`.
+/// `exec::load_csv::tests`.
 #[cfg(test)]
 pub(crate) fn test_root() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()

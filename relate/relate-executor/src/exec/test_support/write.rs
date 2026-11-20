@@ -87,6 +87,25 @@ pub(crate) fn exec_write_uncommitted(g: &Graph, cypher: &str) -> QueryResult {
     exec_write(g, &write_scratch(g), cypher).unwrap()
 }
 
+/// [`super::profiled`] through the write-capable entry: the path a
+/// write-*routed* statement (LOAD CSV, ADR-0332) PROFILEs on — the same
+/// clause records, the statement's own routing, and a scratch dropped
+/// uncommitted (nothing this runs writes).
+pub(crate) fn profiled_write_routed(
+    g: &Graph,
+    cypher: &str,
+) -> Vec<crate::metrics::ClauseMetricsRecord> {
+    let recorder = super::ClauseRecords(RefCell::new(Vec::new()));
+    let scratch = write_scratch(g);
+    let p = plan(parse_and_lower(cypher).unwrap(), &mut |_| false).unwrap();
+    let binding = BTreeMap::new();
+    let mut request = ExecRequest::new(&p, &binding, cypher);
+    request.plan_metrics = Some(&recorder);
+    execute(&ExecGraph::write(g, &scratch), &request).unwrap();
+    drop(scratch);
+    recorder.0.take()
+}
+
 fn run_write(
     g: &Graph,
     scratch: &RefCell<WriteScratch>,

@@ -14,7 +14,6 @@ use crate::metrics::PlanMetricsSite;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::aggregate::Aggregation;
 use super::call::{concluding_part_result, exec_call_subquery, exec_conditional, SubquerySpec};
 use super::catalog::{catalog_result, execute_catalog};
 use super::catalog_show::show_indexes_result;
@@ -23,18 +22,17 @@ use super::clause_arms::{
     exec_create, exec_delete, exec_merge, exec_remove, exec_set, exec_unwind,
 };
 use super::ddl::{exec_create_index, exec_drop_index};
+use super::feed::{park_generator, take_feed, PendingFeed};
 use super::foreach::exec_foreach;
-use super::load_csv::exec_load_csv;
+use super::load_csv::{exec_load_csv, load_csv_feed};
 use super::match_arm::exec_match_arm;
 use super::match_clause::LadderFacts;
 use super::procedures::exec_call_clause;
-use super::profile_tick::{
-    finish_parked_unwind, profile_tick, take_feed, ParkedUnwind, ProfileTick, UnwindFacts,
-};
+use super::profile_tick::{finish_parked_feed, profile_tick, ProfileTick, StreamedStats};
 use super::project::{project_rows, return_result, unwind_streams_into, RowSource};
 use super::scope::{carry_scope_bindings, ProjectionFields};
 use super::stats_short_circuit::stats_short_circuit;
-use super::unwind::{UnwindFeed, UnwindStats};
+use super::unwind::unwind_feed;
 use super::QueryResult;
 
 /// Read/write mode for the unified clause dispatcher. Both clause loops —
@@ -178,16 +176,17 @@ fn run_clauses_mode(
     // that may take the ordered window; a consumer that cannot fold says so
     // by not being parked. The parked value carries the generator with its
     // own statistics
-    // and PROFILE position, so each streamed `UNWIND` reports its own facts
-    // once the consumer has drained it.
-    let mut pending_unwind: Option<ParkedUnwind<'_>> = None;
-    // A `MATCH` whose consumer folds an aggregation streams its rows into it
-    // as they are emitted; the aggregation waits here for that consumer. Its
-    // `ORDER BY` plan is borrowed for as long as it lives, so it sits in a
-    // cell declared first (dropped last): one streamed `MATCH` per part, any
-    // later one takes the held path.
+    // and PROFILE position, so each streamed generator (`UNWIND`, `LOAD
+    // CSV`) reports its own facts once the consumer has drained it.
+    // The one feed slot the next projection consumes — a parked generator
+    // (an `UNWIND` or a `LOAD CSV` fused into it) or the aggregation a
+    // streamed `MATCH` folded its rows into, never both: the slot is one
+    // value, so "one feed per projection" is the type's own fact. The
+    // `MATCH` consumer's `ORDER BY` plan is borrowed for as long as the
+    // fold lives, so the slot sits after the cell that holds it (dropped
+    // last): one streamed feed per part, any later one takes the held path.
     let fold_class: OnceCell<ProjectionClass<'_>> = OnceCell::new();
-    let mut pending_fold: Option<Aggregation<'_>> = None;
+    let mut pending: Option<PendingFeed<'_>> = None;
     while clause_i < clauses.len() {
         let i = clause_i;
         let clause = &clauses[i];
@@ -265,6 +264,38 @@ fn run_clauses_mode(
                     QueryStats::default(),
                 ));
             }
+            // The same parking as a streamed `UNWIND`: a `LOAD CSV` whose
+            // follower folds rows as they arrive (the aggregation, or a
+            // clause that may take the ordered window — `unwind_streams_into`
+            // admits exactly those) has its generator parked and the consumer
+            // pulls one row per record, so neither the records nor the rows
+            // are ever held (ADR-0555).
+            Clause::LoadCsv {
+                with_headers,
+                url,
+                variable,
+                field_terminator,
+            } if unwind_streams_into(clauses.get(i + 1)) => {
+                let stats = Rc::new(StreamedStats::new(profile.is_some()));
+                park_generator(
+                    load_csv_feed(
+                        ctx,
+                        std::mem::take(&mut rows),
+                        *with_headers,
+                        url,
+                        variable,
+                        field_terminator.as_deref(),
+                        Rc::clone(&stats),
+                    )?,
+                    stats,
+                    profile.map(|site| (site, i)),
+                    &mut pending,
+                );
+                // No arm ran: the consumer's own tick covers the work, and
+                // this clause reports its facts when that tick closes.
+                drop(metrics_tick.take());
+                profile_recorded = true;
+            }
             Clause::LoadCsv {
                 with_headers,
                 url,
@@ -317,7 +348,7 @@ fn run_clauses_mode(
             }
             Clause::Use { .. } => {}
             Clause::Match { .. } => {
-                let arm = exec_match_arm(
+                let mut arm = exec_match_arm(
                     ctx,
                     std::mem::take(&mut rows),
                     clauses,
@@ -330,7 +361,11 @@ fn run_clauses_mode(
                 last_result = arm.last_result.or(last_result);
                 skip = arm.skip;
                 clause_ladder = arm.ladder;
-                pending_fold = arm.pending_fold.or(pending_fold);
+                pending = arm
+                    .pending_fold
+                    .take()
+                    .map(|a| PendingFeed::Folded(Box::new(a)))
+                    .or(pending);
                 rows_source = arm.rows_source;
                 if let (Some(tick), Some(streamed)) = (metrics_tick.as_mut(), arm.streamed_rows) {
                     tick.streamed_rows = Some(streamed);
@@ -356,9 +391,9 @@ fn run_clauses_mode(
                 rows = exec_remove(graph, rows, items, params)?;
             }
             Clause::Unwind { expression, alias } if unwind_streams_into(clauses.get(i + 1)) => {
-                let stats = Rc::new(UnwindStats::new(profile.is_some()));
-                pending_unwind = Some(ParkedUnwind {
-                    feed: UnwindFeed::new(
+                let stats = Rc::new(StreamedStats::new(profile.is_some()));
+                park_generator(
+                    unwind_feed(
                         ctx,
                         &clauses[i + 1..],
                         std::mem::take(&mut rows),
@@ -366,11 +401,10 @@ fn run_clauses_mode(
                         alias,
                         Rc::clone(&stats),
                     ),
-                    facts: UnwindFacts {
-                        stats,
-                        record: profile.map(|site| (site, i)),
-                    },
-                });
+                    stats,
+                    profile.map(|site| (site, i)),
+                    &mut pending,
+                );
                 // No arm ran: the consumer's own tick covers the work, and
                 // this clause reports its facts when that tick closes.
                 drop(metrics_tick.take());
@@ -407,8 +441,7 @@ fn run_clauses_mode(
             Clause::With { .. } => {
                 let spec = ProjectionFields::of_projection(clause);
                 let mut feeds = ProjectionFeeds {
-                    unwind: &mut pending_unwind,
-                    fold: &mut pending_fold,
+                    pending: &mut pending,
                     rows: &mut rows,
                 };
                 project_clause(
@@ -430,8 +463,7 @@ fn run_clauses_mode(
             Clause::Return { items, .. } => {
                 let spec = ProjectionFields::of_projection(clause);
                 let mut feeds = ProjectionFeeds {
-                    unwind: &mut pending_unwind,
-                    fold: &mut pending_fold,
+                    pending: &mut pending,
                     rows: &mut rows,
                 };
                 project_clause(
@@ -470,8 +502,7 @@ fn run_clauses_mode(
 /// streamed `UNWIND`, the aggregation a streamed `MATCH` fed, or the held
 /// rows.
 struct ProjectionFeeds<'f, 'a> {
-    unwind: &'f mut Option<ParkedUnwind<'a>>,
-    fold: &'f mut Option<Aggregation<'a>>,
+    pending: &'f mut Option<PendingFeed<'a>>,
     rows: &'f mut Vec<Row>,
 }
 
@@ -486,9 +517,9 @@ fn project_clause(
     scope: Option<&Row>,
     tick: &mut Option<ProfileTick<'_>>,
 ) -> Result<()> {
-    let (feed, parked) = take_feed(feeds.unwind, feeds.fold, feeds.rows);
+    let (feed, parked) = take_feed(feeds.pending, feeds.rows);
     *feeds.rows = project_rows(ctx, feed, spec, inflate, rows_from, scope)?;
-    finish_parked_unwind(parked, tick.as_mut());
+    finish_parked_feed(parked, tick.as_mut());
     Ok(())
 }
 
