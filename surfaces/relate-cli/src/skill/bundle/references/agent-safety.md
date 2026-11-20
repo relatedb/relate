@@ -39,7 +39,9 @@ transaction. `--read-only` is the fence for that.
   ADR-0464), `chronological-comparisons` (the four chronological operators —
   `IS [NOT] BEFORE`, `AFTER`, `SAME INSTANT`, `SAME REPRESENTATION` —
   ADR-0467),
-  `complex-search-patterns` (wider SEARCH MATCH patterns — ADR-0467), and
+  `complex-search-patterns` (wider SEARCH MATCH patterns — ADR-0467),
+  `cypher-annotations` (CIP-281 clause-level `@name(params)` annotations, parsed
+  and discarded; lexer-gated, so the disabled form is a syntax error), and
   `ontology` — the four `db.ontology.*` procedures (ADR-0378); while it is
   disabled they fail with
   `preview feature 'ontology' is not enabled` and `SHOW PROCEDURES` omits

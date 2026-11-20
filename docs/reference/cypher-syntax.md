@@ -1083,6 +1083,26 @@ CALL { MATCH (n:Row) RETURN n } IN TRANSACTIONS;
 
 `ON ERROR RETRY`, `IN n CONCURRENT TRANSACTIONS` (adapted to sequential batching in the embedded engine), and per-batch rollback are supported. Each batch commits independently (ADR-0210): a committed batch stays committed and durable even when a later batch fails under `ON ERROR FAIL`, and live memory during the statement is bounded by the batch size rather than the total write volume. This independent-commit behavior applies to auto-commit statements; inside an explicit transaction the batches accumulate in the statement's overlay and commit with the enclosing transaction (ADR-0210 Consequences).
 
+### Clause annotations (`@name(params)`, preview)
+
+A clause may be preceded by one or more annotations (Neo4j's CIP-281, behind
+the `RELATE_PREVIEW=cypher-annotations` preview gate, ADR-0371 / ADR-0454).
+An annotation is parsed and checked, then discarded: it has no runtime effect
+and the query answers exactly as it does without it.
+
+```cypher
+@profile() MATCH (n) RETURN n
+@owner(name: "search", tier: 2) MATCH (n:Person) RETURN n.name
+```
+
+Parameters are literals only: a boolean, string, integer or float (a numeric
+literal may carry a sign), or a list of those, or a map of those and lists of
+those — no nested maps, `null`, expressions, variables or query parameters.
+One parameter may be positional or named; two or more must all be named, and
+names are unique within one annotation. Annotations go before a clause, never
+inside a clause or a pattern. Without the opt-in `@` is the ordinary
+`unexpected character: @` syntax error.
+
 ### Local callables (DEFINE, preview)
 
 `DEFINE PROCEDURE` / `DEFINE FUNCTION` name a query-local callable and

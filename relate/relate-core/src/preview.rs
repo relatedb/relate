@@ -174,6 +174,16 @@ preview_feature_registry! {
         "coll-has"
     ),
     (
+        CypherAnnotations,
+        "CIP-281 Cypher annotations: clause-level `@name(params)` markers before a \
+         clause, parsed and semantically checked, then discarded (no runtime effect). \
+         Gates at the lexer, the one point the two behaviors differ: enabled, `@` lexes \
+         as the annotation introducer; disabled, it is the ordinary `unexpected \
+         character: @` syntax error. Row and gate are deleted when the CIP ships in a \
+         release.",
+        "cypher-annotations"
+    ),
+    (
         GqlStddevAliases,
         "CIP-245's `stddev_samp`/`stddev_pop` spellings (ADR-0497): the corpus catalogue lists \
          only the canonical `stdev_samp`/`stdev_pop`, and Neo4j 2026.05 answers 42N48 for the \

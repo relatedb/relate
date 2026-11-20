@@ -1,6 +1,7 @@
 use super::*;
 
 mod admin;
+mod annotations;
 mod braces;
 mod comprehension_where;
 mod conditionals;

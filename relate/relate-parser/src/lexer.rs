@@ -32,6 +32,10 @@ pub struct ParseOptions {
     /// operator. Off (the floor), every CIP-40/CIP-14 mixing rejection
     /// keeps firing.
     pub mixed_label_syntax: bool,
+    /// The `cypher-annotations` gate (CIP-281): `@` lexes as
+    /// [`TokenType::At`], the clause-level annotation introducer, instead of
+    /// the `unexpected character: @` error token.
+    pub cypher_annotations: bool,
 }
 
 /// Tokenizes a Cypher query string into a list of tokens.
@@ -189,6 +193,10 @@ impl<'a> Lexer<'a> {
                 b';' => {
                     self.advance();
                     self.emit(TokenType::Semicolon, ";", line, col);
+                }
+                b'@' if self.options.cypher_annotations => {
+                    self.advance();
+                    self.emit(TokenType::At, "@", line, col);
                 }
                 b'|' => {
                     if self.peek_at(1) == Some(b'|') {
