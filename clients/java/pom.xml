@@ -443,19 +443,16 @@
       </properties>
     </profile>
     <!--
-      Maven Central publication (dormant). Activated only by
+      Maven Central publication. Activated only by
       `-Pcentral-publish`; no other build touches it. Central requires
       sources and javadoc jars beside the binaries, a GPG signature on
       every artifact, and the verified `ai.relatedb` namespace on the
       Central Portal. The profile enforces the staged five-platform
       natives (ADR-0490): -Pcentral-publish alone fails loudly rather
-      than signing and uploading a host-native-only bundle. The
-      publish-registries workflow's `maven-central` job runs
-      `mvn deploy -Pcentral-publish` when dispatched with maven=true and
-      the `release` environment's secrets exist (see
-      clients/java/README.md, "Publishing to Maven Central").
-      autoPublish stays false: the first deployments are validated and
-      released by hand from the Central Portal.
+      than signing and uploading a host-native-only bundle. The publish
+      flow and its release gate are ADR-0630's (docs/PUBLISHING.md,
+      "Maven Central"); the plugin configuration below carries the
+      details.
     -->
     <profile>
       <id>central-publish</id>
@@ -532,11 +529,17 @@
           <plugin>
             <groupId>org.sonatype.central</groupId>
             <artifactId>central-publishing-maven-plugin</artifactId>
-            <version>0.7.0</version>
+            <!-- 0.12.0: the deployment model knows the `warnings` field
+                 the Portal API returns — 0.7.0's strict deserializer
+                 failed the build polling a validation the upload had
+                 already landed (ADR-0630). -->
+            <version>0.12.0</version>
             <extensions>true</extensions>
             <configuration>
               <publishingServerId>central</publishingServerId>
-              <autoPublish>false</autoPublish>
+              <!-- Central's validation is the release gate; a failed
+                   validation fails the build (ADR-0630). -->
+              <autoPublish>true</autoPublish>
             </configuration>
           </plugin>
         </plugins>

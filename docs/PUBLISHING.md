@@ -242,9 +242,14 @@ and uploads with a Central Portal token, both stored as secrets in the
    `MAVEN_GPG_KEY`. The key's passphrase is `MAVEN_GPG_PASSPHRASE`. Keep
    an offline backup of the private key and revocation certificate; the
    key cannot be replaced for artifacts already published.
-5. **Store the four secrets** (Settings → Environments → `release` →
-   Environment secrets): `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_TOKEN`,
-   `MAVEN_GPG_KEY`, `MAVEN_GPG_PASSPHRASE`.
+5. **Store the four secrets as repository secrets** (Settings → Secrets
+   and variables → Actions → New repository secret — repository level,
+   not the `release` environment: the release's chained call forwards
+   them into the publish workflow, and an environment's secrets cannot
+   cross a workflow-call boundary, ADR-0630):
+   `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_TOKEN`, `MAVEN_GPG_KEY`,
+   `MAVEN_GPG_PASSPHRASE`. The publish job still runs in the `release`
+   environment for its main-only branch policy.
 6. **Rehearse against `main`** before the first release that carries
    this — the profile is otherwise only exercised at publish time, and a
    config the pinned plugin rejects surfaces there:
@@ -267,16 +272,31 @@ and uploads with a Central Portal token, both stored as secrets in the
    ```
 
    `maven` is on by default on the dispatch form, so turning the other
-   registries off publishes Maven alone. Every release also chains this
-   job (`publish-maven-central` in `release.yml`), which passes the
-   signing credentials from the `release` environment.
+   registries off publishes Maven alone — this dispatch is the recovery
+   arm and the partial-failure re-run, not the primary path. A release
+   dispatched with `registries=true` chains the Maven publish
+   (`publish-maven-central` in `release.yml`), forwarding the four
+   repository secrets; with `registries` off (the default) a release
+   publishes nothing anywhere, the Java client included. Maven needs no
+   registry-side registration — Central authenticates the static token,
+   not the run's identity (ADR-0630).
 
    The job verifies the five FFI archives' build attestations, stages the
    natives, signs and uploads the fat jar plus the five classifier jars.
-   The pom sets `autoPublish=false`: nothing goes live until you open
-   Portal → Deployments, check the validation result and press Publish.
-   Do that by hand for the first releases. Published versions are
-   immutable.
+   The deployment publishes itself once Central validates it
+   (`autoPublish=true`, ADR-0630) — no Portal button; a failed
+   validation fails the job. Published versions are immutable.
+
+   **If the signing key or the Portal token is ever suspected leaked:
+   rotate both, publish after.** A new Portal token is a one-liner
+   (Portal → Account → Generate User Token, stored over
+   `MAVEN_CENTRAL_TOKEN`). A new signing key is generated, sent to
+   `keyserver.ubuntu.com` and stored over `MAVEN_GPG_KEY` with its
+   passphrase; artifacts already published keep their old signatures —
+   a rotated key limits forgery to future releases. The four are
+   repository secrets, readable by every workflow in this repository
+   on any branch (never by fork pull requests) — that is ADR-0630's
+   recorded tradeoff, and the exposure to weigh first.
 
 ## Between releases
 

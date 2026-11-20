@@ -282,8 +282,9 @@ JVMs with `RELATE_LIB`, `java.library.path`, `DYLD_LIBRARY_PATH` and
 end-to-end example
 [`examples/RelateE2E.java`](examples/RelateE2E.java). The jars reach
 Maven Central through the `maven-central` job of `publish-registries.yml`
-(on by default for manual dispatches); the pom sets `autoPublish=false`,
-so each deployment is released by hand on the Central Portal.
+(on by default for manual dispatches, and chained from a release
+dispatched with `registries=true`, ADR-0630); each deployment publishes
+itself once Central validates it.
 
 **Measured jar sizes** (0.1.0, release natives): one native is ~24 MB
 uncompressed and DEFLATE brings a jar to ~8.4 MB (darwin-arm64) / ~9.2 MB

@@ -89,17 +89,19 @@ Everything needed ships in the repo:
 
 - the pom's `central-publish` profile (activated only by
   `-Pcentral-publish`): sources jar, javadoc jar, GPG signature, and the
-  central-publishing-maven-plugin upload with `autoPublish=false` — the
-  first deployments are validated and released by hand from the Central
-  Portal;
+  central-publishing-maven-plugin upload — the deployment publishes
+  itself once Central validates it (ADR-0630);
 - the `maven-central` job in `publish-registries.yml`: it downloads the
   release's five FFI archives, verifies their build attestations, stages
-  the natives and runs `mvn deploy -Pcentral-publish`. Every release
-  chains it (`publish-maven-central` in `release.yml`), so the jars
-  cannot ship without the client; a manual dispatch of that workflow
-  publishes Maven alone — `maven` is on by default there — without
-  touching npm, PyPI or crates.io, and `maven-dry-run=true` rehearses
-  the profile against `main` without uploading.
+  the natives and runs `mvn deploy -Pcentral-publish`. A release
+  dispatched with `registries=true` chains it
+  (`publish-maven-central` in `release.yml`), forwarding the four
+  repository-level credentials (ADR-0630), and the deployment publishes
+  itself once Central validates it — no Portal step. A manual dispatch
+  of that workflow is the recovery arm: `maven` is on by default there,
+  it publishes Maven alone without touching npm, PyPI or crates.io, and
+  `maven-dry-run=true` rehearses the profile against `main` without
+  uploading.
 
 The coordinates are `ai.relatedb:relate` (the fat jar) plus one
 classifier jar per platform. Completing the owner setup — Central

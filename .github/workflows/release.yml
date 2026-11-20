@@ -20,7 +20,7 @@ on:
         default: false
         type: boolean
       registries:
-        description: "Chain the registry publish (npm/PyPI/crates.io via publish-registries.yml) after the GitHub release — off by default: the chained run's OIDC identity is release.yml's, which the registries' trusted publishers do not accept, so publishes run by direct dispatch of publish-registries.yml against the tag (docs/PUBLISHING.md)"
+        description: "Chain the registry publish (npm/PyPI/crates.io, plus the Maven Central jars, via publish-registries.yml) after the GitHub release — off by default: the chained run's OIDC identity is release.yml's, which the OIDC registries' trusted publishers do not accept until release.yml is registered on each (docs/PUBLISHING.md); the Maven jars need no registration — their credentials ride the call (ADR-0630)"
         required: false
         default: false
         type: boolean
@@ -1454,6 +1454,15 @@ jobs:
   # after registering release.yml on every registry (docs/PUBLISHING.md).
   # An offline release also skips the call; the website, Slack, and
   # canary jobs are unaffected by this input.
+  #
+  # Maven Central rides the same opt-in through its own call below
+  # (publish-maven-central): no registry-side registration to do first —
+  # Central authenticates a static token, not the run's identity — and
+  # its four credentials are repository secrets (ADR-0630) the call
+  # forwards explicitly. An environment's secrets cannot cross a
+  # workflow-call boundary — the v1.2.0 cut's call forwarded nothing
+  # and the job died importing an empty signing key (run 44705331863) —
+  # which is why the credentials live at repository level.
   publish-registries:
     name: Publish to registries
     needs: [version, create-release, npm-smoke-gate]
@@ -1474,19 +1483,22 @@ jobs:
     with:
       tag: ${{ needs.version.outputs.tag }}
 
-  # Maven Central rides every release, outside the `registries` opt-in
-  # above: it publishes with static environment credentials, so the
-  # registry never inspects the run's identity — the mismatch that keeps
-  # the OIDC registries on a direct dispatch does not apply, and a
-  # release must not be able to ship without its Java client. The OIDC
-  # call leaves `maven` at its false default, so a release with
-  # `registries` on deploys the jars exactly once. The job still stops in
-  # Central Portal → Deployments: the pom sets autoPublish=false, so the
-  # release step stays a deliberate human act.
+  # The Maven leg of the `registries` opt-in: same gate as the OIDC call
+  # above, its own call because its inputs differ — maven on, the OIDC
+  # three off, so a release with `registries` on deploys the jars
+  # exactly once. The four Central credentials are repository secrets
+  # (ADR-0630) and are passed explicitly: a called workflow's `secrets`
+  # context carries only what its caller forwards, and the v1.2.0 cut's
+  # call forwarded nothing — the job died importing an empty signing key
+  # (run 44705331863). No `environment` key here: GitHub forbids it on a
+  # `uses` job, the boundary that moved the credentials to repository
+  # level in the first place. The deployment publishes itself once
+  # Central validates it (autoPublish=true, ADR-0630) — a failed
+  # validation fails this job.
   publish-maven-central:
     name: Publish the Java client to Maven Central
     needs: [version, create-release]
-    if: ${{ !inputs.offline }}
+    if: ${{ !inputs.offline && inputs.registries }}
     # Same grant as the OIDC call: a nested job's scope the caller does
     # not grant invalidates the whole workflow file at dispatch, whether
     # or not that job runs.
@@ -1501,6 +1513,11 @@ jobs:
       npm: false
       pypi: false
       crates-io: false
+    secrets:
+      MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_KEY }}
+      MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+      MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+      MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
 
   # Chained explicitly because the `release: published` event fired by
   # action-gh-release (GITHUB_TOKEN) never triggers downstream workflows

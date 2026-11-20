@@ -36,17 +36,6 @@ on:
         required: false
         type: boolean
         default: true
-      # Off by default on this path so release.yml's OIDC call never
-      # deploys the jars a second time: the release publishes Maven from
-      # its own call, which sets the flag.
-      maven:
-        required: false
-        type: boolean
-        default: false
-      maven-dry-run:
-        required: false
-        type: boolean
-        default: false
       pypi-target:
         required: false
         type: string
@@ -59,6 +48,34 @@ on:
         required: false
         type: boolean
         default: false
+      # Off by default on this path so the OIDC chain call above never
+      # deploys the jars a second time: the release publishes Maven from
+      # its own call (publish-maven-central), which sets the flag.
+      maven:
+        required: false
+        type: boolean
+        default: false
+    # The Maven Central credentials are repository secrets (ADR-0630):
+    # a called workflow's `secrets` context carries only what its caller
+    # forwards, so the release's maven call passes all four — an
+    # environment's secrets cannot cross this boundary at all (the
+    # v1.2.0 lesson, run 44705331863), which is why they live at
+    # repository level. Optional: the OIDC-only chain call runs no maven
+    # job and passes none. A direct dispatch ignores this block — its
+    # jobs read the repository secrets ambiently.
+    secrets:
+      MAVEN_GPG_KEY:
+        description: "base64-encoded GPG secret key that signs the jars"
+        required: false
+      MAVEN_GPG_PASSPHRASE:
+        description: "Passphrase of the signing key"
+        required: false
+      MAVEN_CENTRAL_USERNAME:
+        description: "Central Portal user-token username"
+        required: false
+      MAVEN_CENTRAL_TOKEN:
+        description: "Central Portal user-token password"
+        required: false
   workflow_dispatch:
     inputs:
       tag:
@@ -486,14 +503,21 @@ jobs:
             sleep 30
           done
 
-  # Maven Central. On for manual dispatches (maven=true, the input's
-  # default on the dispatch path) and for the release's own chained call,
-  # which sets the flag; off on release.yml's OIDC call, so a release
-  # with `registries` on still deploys the jars exactly once. Unlike the
-  # OIDC registries above, Maven Central publishes with static
-  # credentials, so the release's identity is not what the registry
-  # checks. The pom's `central-publish` profile does the real work
-  # (sources, javadoc, GPG, upload with autoPublish=false); see
+  # Maven Central. On for direct dispatches (maven=true, the dispatch
+  # input's default) and for the release's `registries` call (which sets
+  # the flag), off on release.yml's OIDC chain call — so a release with
+  # `registries` on deploys the jars exactly once. Unlike the OIDC
+  # registries, Central never checks the run's identity: the static
+  # token does, so no registry-side registration precedes the chain. The
+  # four credentials are repository secrets (ADR-0630) — ambient on a
+  # dispatch, forwarded by the release's call on the chained path; an
+  # environment's secrets cannot cross a workflow-call boundary (the
+  # v1.2.0 lesson, run 44705331863), which is what moved them to
+  # repository level. This job's own `environment: release` binding
+  # stays for its main-only branch policy. The pom's `central-publish`
+  # profile does the real work (sources, javadoc, GPG, upload) and
+  # publishes the deployment once Central validates it (autoPublish=true,
+  # ADR-0630) — a failed validation fails this job; see
   # clients/java/README.md, "Publishing to Maven Central".
   #
   # maven-dry-run rehearses the profile without uploading: the checkout
@@ -594,6 +618,18 @@ jobs:
             </servers>
           </settings>
           SETTINGS
+          # Fail loud before the GPG import when the credentials never
+          # arrived: on a chained call the release must forward the four
+          # repository secrets (publish-maven-central in release.yml,
+          # ADR-0630); on a dispatch they are repository secrets read
+          # ambiently. The v1.2.0 chained run died at the cryptic
+          # `gpg: no valid OpenPGP data found` instead (run 44705331863).
+          if [ -z "${MAVEN_GPG_KEY}" ] || [ -z "${MAVEN_CENTRAL_TOKEN}" ] \
+            || [ -z "${MAVEN_CENTRAL_USERNAME}" ] \
+            || [ -z "${MAVEN_GPG_PASSPHRASE}" ]; then
+            echo "::error::the Maven Central credentials are empty — store the four MAVEN_* repository secrets (docs/PUBLISHING.md, Maven Central; ADR-0630)" >&2
+            exit 1
+          fi
           echo "$MAVEN_GPG_KEY" | base64 --decode | gpg --batch --import
           # The Central upload binds to `deploy`; `verify` stops after the
           # GPG signature, so a dry run exercises the profile end to end
