@@ -15,7 +15,8 @@ pub(super) fn upgrade_help() -> String {
 upgrade checks the latest release listed by the website's releases.json
 and replaces the running binary (macOS and Linux only);
 `update` is an alias.
-  --yes    Auto-accept the post-upgrade skill refresh
+  --yes    Install the skill when none is installed, without asking
+           (installed skills update regardless)
   --check  Report current-vs-latest only; download and modify nothing
 "
     )
@@ -40,6 +41,14 @@ mod tests {
             ),
             "{help}"
         );
+        // ADR-0632: the --yes line states the first-install meaning —
+        // install when nothing is installed — not "refresh"; pin it so
+        // the drift back fails here.
+        assert!(
+            help.contains("Install the skill when none is installed, without asking"),
+            "{help}"
+        );
+        assert!(!help.contains("Auto-accept"), "{help}");
         assert!(!help.contains("GitHub release"), "{help}");
         assert_eq!(
             HelpScope::Command(HelpTopic::Upgrade).hint(),

@@ -80,7 +80,10 @@ const WINDOWS_INSTALL_ONE_LINER: &str =
 /// Options for `relate upgrade`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UpgradeOpts {
-    /// Auto-accept the post-upgrade skill refresh (`--yes`).
+    /// First-install consent (`--yes`, ADR-0632): install the skill when
+    /// no detected agent has it, without asking — installed skills
+    /// update regardless, and a mixed set's missing agents are never
+    /// touched by it.
     pub yes: bool,
     /// Report current-vs-latest only; download and modify nothing (`--check`).
     pub check: bool,

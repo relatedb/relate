@@ -455,6 +455,13 @@ dir inside the skills dir and then atomically renames it into place, so a
 concurrent reader never sees a half-written bundle. Stale `.relate-stage-*`
 dirs left by a crashed install are swept at the start of the next install.
 
+`upgrade` (and its `update` alias) takes two flags:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--yes` | off | First-install consent: with no detected agent carrying the skill, install it without asking; installed bundles update regardless, and a mixed set's missing agents are never touched by it (ADR-0261, ADR-0632) |
+| `--check` | off | Report current-vs-latest only; download and modify nothing — the skill step never runs |
+
 `upgrade` reads the latest release from the static `releases.json` published
 on the project website
 (`https://relatedb.ai/releases.json`, ADR-0250 §1) — the
@@ -526,7 +533,9 @@ The four success sites are the `--check` upgrade-available report
 (`relate <current> is up to date (latest release: <latest>)`), and the
 completed replace. No success site prints anything after its status line,
 and no failure path prints a status line.
-bundle (ADR-0261). It pre-flights each detected agent's
+
+After a successful replace, `upgrade` refreshes the installed skill
+bundle (ADR-0261, scoped by ADR-0632). It pre-flights each detected agent's
 `<skills dir>/relate` and classifies it:
 
 - **Missing** — the directory is absent (`NotFound`). An unreadable directory
@@ -543,24 +552,34 @@ bundle (ADR-0261). It pre-flights each detected agent's
   marker, and a `SKILL.md` that declares `name: relate` with no `version:`
   line.
 
-**Installed = Owned ∪ Legacy.** The refresh then behaves as follows:
+**Installed = Owned ∪ Legacy.** The refresh then behaves as follows
+(ADR-0632: the installed set is the user's curation — `upgrade` maintains
+it, never expands it):
 
-- **Installed (Owned or Legacy)** — auto-updates with **no prompt**: one plain
-  `skill install` spawn (no `--force`); the child adopts a recognized Legacy
-  bundle on its own, re-validating ownership in the process that replaces the
-  directory.
-- **Nothing installed (all targets Missing)** — an interactive run asks
+- **Installed (Owned or Legacy)** — auto-updates with **no prompt**: one
+  plain `skill install` spawn (no `--force`) when **every** non-foreign
+  target is installed; the child adopts a recognized Legacy bundle on its
+  own, re-validating ownership in the process that replaces the directory.
+- **Missing targets in a mixed set are left untouched** — when at least
+  one detected target is installed, the refresh spawns
+  `relate skill install --agent <name>` per installed target and prints
+  nothing about the missing ones: no prompt, no install, no hint, `--yes`
+  included.
+- **Nothing installed anywhere (all targets Missing)** — the first-install
+  consent matrix: an interactive run asks
   `Install the relate skill? [Y/n] ` (empty input means yes) before
-  installing; `--yes` installs without asking; a non-interactive run without
-  `--yes` prints `run: relate skill install` and installs nothing.
+  installing; `--yes` installs without asking; a non-interactive run
+  without `--yes` prints `run: relate skill install` and installs
+  nothing.
 - **Foreign is never overwritten** — each Foreign target is reported with
   `note: {path} is not a recognizable relate skill (no .relate-installed marker, and SKILL.md does not declare name: relate with a version line); leaving it untouched`
   followed by
   `to replace it with the relate skill bundle, run: relate skill install --force`.
-- **Per-agent fallback on a foreign conflict** — when a Foreign target
-  coexists with installed or missing agents, the refresh falls back to one
-  `relate skill install --agent <name>` per non-foreign agent (no
-  `--force`), so a forced clobber never reaches the Foreign dir.
+- **Per-agent spawns whenever scoping requires it** — a Foreign target
+  coexisting, or a mixed installed/missing set, falls back to one
+  `relate skill install --agent <name>` spawn per target of its partition
+  (no `--force`), so an install never reaches a Foreign dir or a missing
+  agent the plan did not decide.
 
 The upgrade exit code stays **0** on every post-replace path: a failed or
 skipped skill install warns but never undoes the binary upgrade.

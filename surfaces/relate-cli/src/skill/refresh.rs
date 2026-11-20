@@ -1,6 +1,10 @@
-//! Post-upgrade skill-refresh subsystem (ADR-0261 / ADR-0262): classify every
-//! detected agent's `<skills dir>/relate`, decide a refresh plan, and
-//! spawn `relate skill install` from the freshly replaced binary.
+//! Post-upgrade skill-refresh subsystem (ADR-0261 / ADR-0262 / ADR-0632):
+//! classify every detected agent's `<skills dir>/relate`, decide a refresh
+//! plan — an unconditional auto-update of the installed targets, nothing
+//! at all for the missing ones in a mixed set (ADR-0632: the installed
+//! set is the user's curation; `upgrade` maintains it, never expands it),
+//! the first-install consent matrix when nothing is installed anywhere —
+//! and spawn `relate skill install` from the freshly replaced binary.
 //!
 //! Compiled only under the `upgrade` feature; the sole caller is
 //! `crate::upgrade_cmd`.
@@ -42,50 +46,71 @@ struct SkillSpawn {
     agent: Option<&'static str>,
 }
 
-/// The spawns a plan wants for a set of non-foreign targets (ADR-0261): one
-/// unfiltered install when nothing foreign coexists, otherwise one
-/// `--agent <name>` spawn per target so a replacement stays scoped to our own
-/// dirs. The refresh never passes `--force` (ADR-0262).
-fn spawns_for(non_foreign: &[&SkillTarget], has_foreign: bool) -> Vec<SkillSpawn> {
-    if has_foreign {
-        non_foreign
-            .iter()
-            .map(|t| SkillSpawn {
-                agent: Some(t.name),
-            })
-            .collect()
+/// The consent mode for the first-install flow (ADR-0261 §3), derived
+/// once in [`skill_refresh`] from `--yes` and stdin's tty-ness: the
+/// decision takes one typed value instead of two booleans whose four
+/// combinations model three outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Consent {
+    /// `--yes`: install the missing set without asking.
+    Granted,
+    /// Interactive without `--yes`: ask with [`INSTALL_PROMPT`] first.
+    Prompt,
+    /// Non-interactive without `--yes`: print [`HINT_INSTALL`] and
+    /// install nothing.
+    Hint,
+}
+
+/// The three-outcome consent matrix (ADR-0261 §3): `--yes` grants, an
+/// interactive run prompts, anything else hints. Pure, so the matrix is
+/// unit-pinned; [`skill_refresh`] feeds it the `--yes` flag and stdin's
+/// tty-ness.
+fn consent_mode(yes: bool, interactive: bool) -> Consent {
+    if yes {
+        Consent::Granted
+    } else if interactive {
+        Consent::Prompt
     } else {
-        vec![SkillSpawn { agent: None }]
+        Consent::Hint
     }
 }
 
-/// What the refresh does with its non-foreign targets (ADR-0261). The
-/// consent mode is one enum, so the invalid "prompt and hint at once"
-/// combination is unrepresentable.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-enum RefreshAction {
-    /// Run the spawns immediately: an auto-update of an installed bundle
-    /// (no consent needed — the bundle is already ours), or an all-missing
-    /// set with `--yes`.
-    Run(Vec<SkillSpawn>),
-    /// Interactive all-missing set without `--yes`: ask with
-    /// [`INSTALL_PROMPT`] first, then run the spawns on consent.
-    AskFirst(Vec<SkillSpawn>),
-    /// Non-interactive all-missing set without `--yes`: print
-    /// [`HINT_INSTALL`] and install nothing.
-    Hint,
-    /// Nothing to do: no detected agents, or only foreign destinations.
-    #[default]
-    Skip,
-}
-
-/// The pure refresh plan (ADR-0261).
+/// The pure refresh plan (ADR-0261, scoped by ADR-0632). The `auto`
+/// spawns run unconditionally; the `missing` spawns are the first-install
+/// set — present only when nothing is installed anywhere, gated at
+/// execution by the consent mode; the foreign destinations are reported
+/// and never touched.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct SkillRefreshPlan {
-    /// What to do with the non-foreign targets.
-    action: RefreshAction,
+    /// Unconditional spawns: the auto-update of every installed target,
+    /// never reaching a Missing one.
+    auto: Vec<SkillSpawn>,
+    /// The first-install spawns: empty unless nothing is installed
+    /// anywhere (ADR-0261 §3's flow; ADR-0632's mixed sets never fill
+    /// it).
+    missing: Vec<SkillSpawn>,
     /// Foreign destinations to report (never touched).
     foreign: Vec<PathBuf>,
+}
+
+/// The one per-agent spawn list (ADR-0632's scoped form): every spawn
+/// names its agent, so the child cannot reach a target the plan did not
+/// decide. An empty partition yields no spawns.
+fn per_agent(partition: &[&SkillTarget]) -> Vec<SkillSpawn> {
+    partition
+        .iter()
+        .map(|t| SkillSpawn {
+            agent: Some(t.name),
+        })
+        .collect()
+}
+
+/// The one unfiltered spawn (ADR-0261 §2's update-only form, or §3's
+/// first install): legitimate only for the partition that is the sole
+/// non-empty one — a property the decision's match guarantees by
+/// construction, never a pairing a caller could get wrong.
+fn whole_set() -> Vec<SkillSpawn> {
+    vec![SkillSpawn { agent: None }]
 }
 
 /// Resolve every detected agent's `<skills dir>/relate` and classify it.
@@ -104,90 +129,107 @@ fn detected_skill_targets() -> Vec<SkillTarget> {
         .collect()
 }
 
-/// The pure decision (ADR-0261), given each target's classification plus the
-/// interactivity and `--yes` inputs. Foreign targets are never spawned
-/// against; they are only collected for reporting.
-fn skill_refresh_decision(targets: &[SkillTarget], is_tty: bool, yes: bool) -> SkillRefreshPlan {
-    if targets.is_empty() {
-        // ADR-0069 §7: no supported agents detected -> skip silently.
-        return SkillRefreshPlan::default();
+/// The pure decision (ADR-0261, scoped by ADR-0632) over the classified
+/// targets: one exhaustive pass sorts them into Foreign (reported, never
+/// spawned against), installed (auto-update) and Missing, then one
+/// exhaustive match over the partition triple builds the plan. ADR-0632's
+/// safety condition — the unfiltered spawn only for the partition that
+/// is the sole non-empty one — and its curation rule — a mixed set
+/// updates the installed targets and leaves the missing ones strictly
+/// alone — are properties of the match's arms, not of re-tested flags.
+/// An empty detected set lands in the catch-all with every list empty:
+/// ADR-0069 §7's silent skip.
+fn skill_refresh_decision(targets: &[SkillTarget]) -> SkillRefreshPlan {
+    // The one partition over the four-state classification vocabulary:
+    // Foreign is collected for reporting (ADR-0261), Owned ∪ Legacy —
+    // the installed states — auto-update (ADR-0261 §2), Missing consults
+    // consent (§3). Exhaustive, so a future classification variant is a
+    // compile error here, never a silently dropped target.
+    let mut foreign: Vec<PathBuf> = Vec::new();
+    let mut installed: Vec<&SkillTarget> = Vec::new();
+    let mut missing: Vec<&SkillTarget> = Vec::new();
+    for t in targets {
+        match t.state {
+            SkillDirState::Foreign => foreign.push(t.dest.clone()),
+            SkillDirState::Missing => missing.push(t),
+            SkillDirState::Owned | SkillDirState::Legacy => installed.push(t),
+        }
     }
 
-    let foreign: Vec<PathBuf> = targets
-        .iter()
-        .filter(|t| t.state == SkillDirState::Foreign)
-        .map(|t| t.dest.clone())
-        .collect();
-    let non_foreign: Vec<&SkillTarget> = targets
-        .iter()
-        .filter(|t| t.state != SkillDirState::Foreign)
-        .collect();
-
-    // Every detected target is foreign: report only, never spawn.
-    if non_foreign.is_empty() {
-        return SkillRefreshPlan {
+    match (installed.is_empty(), missing.is_empty(), foreign.is_empty()) {
+        // Nothing installed anywhere, no Foreign target: the first-install
+        // flow (ADR-0261 §3) over the whole detected set — the consent
+        // mode gates these spawns at execution.
+        (true, false, true) => SkillRefreshPlan {
+            auto: Vec::new(),
+            missing: whole_set(),
             foreign,
-            ..SkillRefreshPlan::default()
-        };
-    }
-
-    // The spawn set is identical for every consent branch; build it once.
-    let spawns = spawns_for(&non_foreign, !foreign.is_empty());
-
-    // Any installed (Owned/Legacy) non-foreign target -> auto-update, no prompt.
-    // The install child adopts a recognized unmarked bundle on its own, so the
-    // refresh passes no `--force`; per-agent spawns (used only when a Foreign
-    // dir coexists) keep the replacement scoped to our dirs.
-    if non_foreign.iter().any(|t| t.state.is_installed()) {
-        return SkillRefreshPlan {
-            action: RefreshAction::Run(spawns),
+        },
+        // Nothing installed anywhere, a Foreign target coexisting: the
+        // first-install spawns stay per agent, scoped away from it.
+        (true, false, false) => SkillRefreshPlan {
+            auto: Vec::new(),
+            missing: per_agent(&missing),
             foreign,
-        };
-    }
-
-    // All non-foreign targets are Missing: install only with consent.
-    if yes {
-        SkillRefreshPlan {
-            action: RefreshAction::Run(spawns),
+        },
+        // Every detected target installed: the auto-update is the one
+        // unfiltered spawn (ADR-0261 §2).
+        (false, true, true) => SkillRefreshPlan {
+            auto: whole_set(),
+            missing: Vec::new(),
             foreign,
-        }
-    } else if is_tty {
-        SkillRefreshPlan {
-            action: RefreshAction::AskFirst(spawns),
+        },
+        // Every other shape — a mixed set (ADR-0632's curation rule:
+        // update the installed, leave the missing strictly alone),
+        // installed targets with a Foreign one, only Foreign targets, or
+        // nothing detected: the auto-update stays per agent (empty when
+        // nothing is installed) and the missing targets are never
+        // reached.
+        _ => SkillRefreshPlan {
+            auto: per_agent(&installed),
+            missing: Vec::new(),
             foreign,
-        }
-    } else {
-        SkillRefreshPlan {
-            action: RefreshAction::Hint,
-            foreign,
-        }
+        },
     }
 }
 
 /// After a successful replace, refresh the installed skill bundle per
-/// ADR-0261. Any failure to install never undoes the upgrade: warn and report
+/// ADR-0261 as scoped by ADR-0632: the installed targets auto-update; the
+/// missing ones are reached only through the first-install consent flow.
+/// Any failure to install never undoes the upgrade: warn and report
 /// success (the exit code stays 0).
 pub fn skill_refresh(yes: bool, exe: &Path) {
     let targets = detected_skill_targets();
-    let plan = skill_refresh_decision(&targets, io::stdin().is_terminal(), yes);
+    // The one consent derivation (ADR-0261 §3), via the pure matrix.
+    let consent = consent_mode(yes, io::stdin().is_terminal());
+    let plan = skill_refresh_decision(&targets);
 
     for path in &plan.foreign {
         println!("{}", foreign_note(path));
         println!("{FOREIGN_REMEDIATION}");
     }
 
-    let spawns = match plan.action {
-        RefreshAction::Skip => return,
-        RefreshAction::Hint => return println!("{HINT_INSTALL}"),
-        RefreshAction::Run(spawns) => spawns,
-        RefreshAction::AskFirst(spawns) => {
-            if !prompt_skill_refresh() {
-                return;
+    run_spawns(exe, &plan.auto);
+    // The first-install spawns exist only when nothing is installed
+    // anywhere; the derived consent mode gates them here (ADR-0261 §3).
+    if !plan.missing.is_empty() {
+        match consent {
+            Consent::Granted => run_spawns(exe, &plan.missing),
+            Consent::Prompt => {
+                if prompt_skill_refresh() {
+                    run_spawns(exe, &plan.missing);
+                }
             }
-            spawns
+            Consent::Hint => println!("{HINT_INSTALL}"),
         }
-    };
-    for spawn in &spawns {
+    }
+}
+
+/// Run one spawn list through the new binary: the auto-update, the
+/// `--yes` install, and the consented prompt install all pass through
+/// here, so how the refresh spawns changes in one place.
+fn run_spawns(exe: &Path, spawns: &[SkillSpawn]) {
+    for spawn in spawns {
         spawn_skill_install(exe, spawn.agent);
     }
 }
@@ -258,22 +300,38 @@ mod tests {
         SkillSpawn { agent }
     }
 
+    /// ADR-0261's decision matrix, pinned as the plan's shapes: the
+    /// whole decision is one exhaustive match, so every set shape's plan
+    /// is asserted directly — the consent mode gates only the
+    /// first-install spawns, at execution.
     #[test]
     fn skill_refresh_decision_skips_without_agents() {
-        // No agents -> silent skip, regardless of tty/yes.
-        for (is_tty, yes) in [(true, true), (true, false), (false, true), (false, false)] {
+        // No agents -> the silent skip (ADR-0069 §7): every list empty.
+        assert_eq!(skill_refresh_decision(&[]), SkillRefreshPlan::default());
+    }
+
+    /// ADR-0261 §3's three-outcome matrix, pinned: `--yes` grants
+    /// regardless of interactivity, an interactive run prompts, anything
+    /// else hints.
+    #[test]
+    fn consent_mode_pins_the_adr_0261_matrix() {
+        for interactive in [true, false] {
             assert_eq!(
-                skill_refresh_decision(&[], is_tty, yes),
-                SkillRefreshPlan::default(),
-                "tty={is_tty} yes={yes}"
+                consent_mode(true, interactive),
+                Consent::Granted,
+                "interactive={interactive}"
             );
         }
+        assert_eq!(consent_mode(false, true), Consent::Prompt);
+        assert_eq!(consent_mode(false, false), Consent::Hint);
     }
 
     #[test]
     fn skill_refresh_decision_installed_single_spawn() {
-        // ADR-0262: the refresh never forces; the child adopts a recognized
-        // unmarked bundle. Owned, Legacy, and both together are one spawn.
+        // ADR-0262: the refresh never forces; the child adopts a
+        // recognized unmarked bundle. Owned, Legacy, and both together:
+        // the installed partition is the whole set, so the auto-update
+        // is the one unfiltered spawn.
         let owned = [target("a", SkillDirState::Owned)];
         let legacy = [target("a", SkillDirState::Legacy)];
         let both = [
@@ -281,8 +339,9 @@ mod tests {
             target("b", SkillDirState::Legacy),
         ];
         for targets in [&owned[..], &legacy[..], &both[..]] {
-            let plan = skill_refresh_decision(targets, false, false);
-            assert_eq!(plan.action, RefreshAction::Run(vec![spawn(None)]));
+            let plan = skill_refresh_decision(targets);
+            assert_eq!(plan.auto, vec![spawn(None)]);
+            assert_eq!(plan.missing, Vec::new());
             assert!(plan.foreign.is_empty());
         }
     }
@@ -294,33 +353,57 @@ mod tests {
             target("b", SkillDirState::Legacy),
             target("c", SkillDirState::Foreign),
         ];
-        let plan = skill_refresh_decision(&targets, false, false);
-        // One spawn per non-foreign agent, never forced.
-        assert_eq!(
-            plan.action,
-            RefreshAction::Run(vec![spawn(Some("a")), spawn(Some("b"))])
-        );
+        let plan = skill_refresh_decision(&targets);
+        // One spawn per installed agent, never forced; the foreign dir is
+        // reported and never spawned against.
+        assert_eq!(plan.auto, vec![spawn(Some("a")), spawn(Some("b"))]);
+        assert_eq!(plan.missing, Vec::new());
         assert_eq!(plan.foreign, vec![PathBuf::from("/skills/c")]);
     }
 
+    /// ADR-0632: a mixed set (installed + missing) updates only the
+    /// installed targets and leaves the missing ones untouched — the
+    /// plan carries no first-install spawns, so no consent mode is ever
+    /// consulted for them.
     #[test]
-    fn skill_refresh_decision_all_missing_consent_matrix() {
-        let targets = [target("a", SkillDirState::Missing)];
-        // --yes installs regardless of interactivity.
-        for is_tty in [true, false] {
-            let plan = skill_refresh_decision(&targets, is_tty, true);
-            assert_eq!(plan.action, RefreshAction::Run(vec![spawn(None)]));
-        }
-        // Interactive without --yes asks first.
-        let plan = skill_refresh_decision(&targets, true, false);
-        assert_eq!(plan.action, RefreshAction::AskFirst(vec![spawn(None)]));
+    fn skill_refresh_decision_mixed_scopes_auto_update_to_installed() {
+        let targets = [
+            target("a", SkillDirState::Owned),
+            target("b", SkillDirState::Missing),
+        ];
+        let plan = skill_refresh_decision(&targets);
+        assert_eq!(plan.auto, vec![spawn(Some("a"))]);
+        assert_eq!(plan.missing, Vec::new());
+        assert!(plan.foreign.is_empty());
     }
 
+    /// ADR-0632: a mixed set with a Foreign target keeps the auto-update
+    /// per-agent (scoped away from the foreign dir) and still leaves the
+    /// missing target untouched.
     #[test]
-    fn skill_refresh_decision_all_missing_noninteractive_hints() {
+    fn skill_refresh_decision_mixed_plus_foreign_updates_installed_only() {
+        let targets = [
+            target("a", SkillDirState::Owned),
+            target("b", SkillDirState::Missing),
+            target("c", SkillDirState::Foreign),
+        ];
+        let plan = skill_refresh_decision(&targets);
+        assert_eq!(plan.auto, vec![spawn(Some("a"))]);
+        assert_eq!(plan.missing, Vec::new());
+        assert_eq!(plan.foreign, vec![PathBuf::from("/skills/c")]);
+    }
+
+    /// The first-install flow (ADR-0261 §3): with nothing installed
+    /// anywhere, the plan carries the whole detected set as the
+    /// consent-gated spawns — one unfiltered spawn with no Foreign
+    /// target, per-agent spawns with one.
+    #[test]
+    fn skill_refresh_decision_all_missing_is_the_first_install_set() {
         let targets = [target("a", SkillDirState::Missing)];
-        let plan = skill_refresh_decision(&targets, false, false);
-        assert_eq!(plan.action, RefreshAction::Hint);
+        let plan = skill_refresh_decision(&targets);
+        assert_eq!(plan.auto, Vec::new());
+        assert_eq!(plan.missing, vec![spawn(None)]);
+        assert!(plan.foreign.is_empty());
     }
 
     #[test]
@@ -329,8 +412,9 @@ mod tests {
             target("a", SkillDirState::Missing),
             target("b", SkillDirState::Foreign),
         ];
-        let plan = skill_refresh_decision(&targets, false, true);
-        assert_eq!(plan.action, RefreshAction::Run(vec![spawn(Some("a"))]));
+        let plan = skill_refresh_decision(&targets);
+        assert_eq!(plan.auto, Vec::new());
+        assert_eq!(plan.missing, vec![spawn(Some("a"))]);
         assert_eq!(plan.foreign, vec![PathBuf::from("/skills/b")]);
     }
 
@@ -340,8 +424,9 @@ mod tests {
             target("a", SkillDirState::Foreign),
             target("b", SkillDirState::Foreign),
         ];
-        let plan = skill_refresh_decision(&targets, true, true);
-        assert_eq!(plan.action, RefreshAction::Skip);
+        let plan = skill_refresh_decision(&targets);
+        assert_eq!(plan.auto, Vec::new());
+        assert_eq!(plan.missing, Vec::new());
         assert_eq!(
             plan.foreign,
             vec![PathBuf::from("/skills/a"), PathBuf::from("/skills/b")]

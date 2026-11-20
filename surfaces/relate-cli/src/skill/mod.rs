@@ -92,18 +92,6 @@ impl SkillDirState {
             SkillDirState::Foreign => "foreign (not managed by relate)",
         }
     }
-
-    /// Whether a relate bundle is present at all: `Owned` (marked) or
-    /// `Legacy` (recognizable but unmarked). `Missing` and `Foreign` are not
-    /// installs.
-    ///
-    /// Used only by `upgrade_cmd` (the `upgrade` feature); the `agent`
-    /// bundle compiles this module without `upgrade`, so the method is
-    /// gated to avoid dead code there.
-    #[cfg(feature = "upgrade")]
-    pub fn is_installed(self) -> bool {
-        matches!(self, SkillDirState::Owned | SkillDirState::Legacy)
-    }
 }
 
 /// Classify `dest` (the `<skills dir>/relate` directory) per ADR-0261 /
@@ -316,24 +304,20 @@ mod tests {
     }
 
     #[test]
-    fn state_policy_is_the_adr_0111_matrix() {
+    fn state_policy_is_the_adr_0262_matrix() {
         // The whole state-to-permission mapping, in one place: install
-        // adopts (Missing|Owned|Legacy), remove stays strict (Missing|Owned),
-        // installed means a bundle is present (Owned|Legacy).
-        for (state, install, remove, installed) in [
-            (SkillDirState::Missing, true, true, false),
-            (SkillDirState::Owned, true, true, true),
-            (SkillDirState::Legacy, true, false, true),
-            (SkillDirState::Foreign, false, false, false),
+        // adopts (Missing|Owned|Legacy), remove stays strict (Missing|Owned).
+        // The refresh's role mapping (installed = Owned|Legacy auto-update,
+        // Missing consent, Foreign report-only) is pinned by
+        // `skill_refresh_decision`'s tests in refresh.rs.
+        for (state, install, remove) in [
+            (SkillDirState::Missing, true, true),
+            (SkillDirState::Owned, true, true),
+            (SkillDirState::Legacy, true, false),
+            (SkillDirState::Foreign, false, false),
         ] {
             assert_eq!(state.permits_install(), install, "install: {state:?}");
             assert_eq!(state.permits_remove(), remove, "remove: {state:?}");
-            // `is_installed` exists only under `upgrade` (its sole caller);
-            // check the matrix value there and keep it in scope elsewhere.
-            #[cfg(feature = "upgrade")]
-            assert_eq!(state.is_installed(), installed, "installed: {state:?}");
-            #[cfg(not(feature = "upgrade"))]
-            let _ = installed;
         }
     }
 

@@ -217,3 +217,4 @@ otherwise verbatim, including the trailing space on `install_prompt`:
   process: `skill install` adopts a recognized bundle itself, the refresh stops
   passing `--force`, and one shared recognizer lives in `crate::skill` so
   `skill_cmd` and `upgrade_cmd` cannot drift. `skill remove` stays strict.
+- [ADR-0632](./0632-skill-refresh-scoped-to-installed-agents.md): the §2 auto-update spawn is scoped — the one unfiltered `skill install` spawn now runs only when every non-foreign target is installed; a mixed set (installed and missing together) spawns `skill install --agent <name>` per installed agent and leaves the missing targets strictly untouched — their install path is §3's all-missing first-install flow or the explicit command, never the unfiltered child. The `--yes` help wording is aligned with its pinned first-install meaning.
