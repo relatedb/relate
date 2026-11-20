@@ -4,7 +4,7 @@
 //! one concern.
 
 use relate_core::{Error, Result};
-use relate_ir::{Expr, InTransactions, SingleQuery, UnaryOp};
+use relate_ir::{Clause, Expr, InTransactions, UnaryOp};
 
 use crate::binding::Env;
 use crate::expr_check::{check_expr, check_positive_int_arg, expr_non_static};
@@ -18,7 +18,7 @@ pub(super) fn check_in_transactions_modifiers(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
     clause_index: usize,
-    part: &SingleQuery,
+    clauses: &[Clause],
 ) -> Result<()> {
     // One expression walk over the modifier slots: the enumeration is
     // `InTransactions::exprs`, shared with the IR walker, so no slot is
@@ -75,7 +75,7 @@ pub(super) fn check_in_transactions_modifiers(
                  BREAK, or RETRY with THEN CONTINUE or THEN BREAK",
             ));
         }
-        if clause_index + 1 == part.clauses.len() {
+        if clause_index + 1 == clauses.len() {
             return Err(Error::syntax(
                 "InvalidClauseComposition: REPORT STATUS cannot terminate a query",
             ));

@@ -1,7 +1,10 @@
 //! Per-clause semantic checks. `validate_part_with_env` dispatches one of these.
 
 use relate_core::{Error, Result};
-use relate_ir::{is_agg_expr, Clause, Expr, SingleQuery, YieldItems};
+use relate_ir::{
+    is_agg_expr, CallArgs, Clause, Expr, PathPattern, RemoveItem, SetItem, YieldItems,
+};
+use relate_names::SmallName;
 
 use crate::agg::{
     check_agg_projections, check_aggregating_subclause, check_where_subclause, reject_agg_in_pred,
@@ -16,17 +19,11 @@ use crate::pattern::{
 };
 
 use super::{
-    check_remove_item, check_set_item, validate_conditional_returns, validate_part_with_env,
+    check_remove_item, check_set_item, validate_clauses_with_env, validate_conditional_returns,
+    validate_part_with_env,
 };
 
-pub(super) fn check_catalog_clause(
-    env: &mut Env,
-    _is_write_procedure: &mut impl FnMut(&str) -> bool,
-    clause: &Clause,
-) -> Result<()> {
-    let Clause::Catalog(command) = clause else {
-        unreachable!("clause arm");
-    };
+pub(super) fn check_catalog_clause(env: &mut Env, command: &relate_parser::Clause) -> Result<()> {
     for name in catalog_output_names(command) {
         env.insert(name, Binding::Value);
     }
@@ -105,11 +102,8 @@ pub(super) fn check_create_clause(
     env: &mut Env,
     shadowable: &std::collections::HashSet<String>,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
-    clause: &Clause,
+    patterns: &[PathPattern],
 ) -> Result<()> {
-    let Clause::Create { patterns } = clause else {
-        unreachable!("clause arm");
-    };
     // Expressions in one updating clause observe only the scope
     // entering that clause, never entities created alongside
     // them (CIP-156).
@@ -155,18 +149,11 @@ pub(super) fn check_merge_clause(
 pub(super) fn check_call_clause(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
-    part: &SingleQuery,
-    clause: &Clause,
+    clauses: &[Clause],
+    args: &CallArgs,
+    yield_items: &YieldItems,
+    where_clause: Option<&Expr>,
 ) -> Result<()> {
-    let Clause::Call {
-        args,
-        yield_items,
-        where_clause,
-        ..
-    } = clause
-    else {
-        unreachable!("clause arm");
-    };
     for a in args.args() {
         check_expr(env, is_write_procedure, a)?;
         if is_agg_expr(a) {
@@ -176,7 +163,7 @@ pub(super) fn check_call_clause(
         }
     }
     let star = matches!(yield_items, YieldItems::Star);
-    if star && part.clauses.len() > 1 {
+    if star && clauses.len() > 1 {
         return Err(Error::syntax(
             "UnexpectedSyntax: YIELD * is not allowed in in-query CALL",
         ));
@@ -221,11 +208,8 @@ fn is_label_predicate(e: &Expr) -> bool {
 pub(super) fn check_delete_clause(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
-    clause: &Clause,
+    expressions: &[Expr],
 ) -> Result<()> {
-    let Clause::Delete { expressions, .. } = clause else {
-        unreachable!("clause arm");
-    };
     for e in expressions {
         check_expr(env, is_write_procedure, e)?;
         if is_label_predicate(e) {
@@ -251,11 +235,8 @@ pub(super) fn check_delete_clause(
 pub(super) fn check_set_clause(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
-    clause: &Clause,
+    items: &[SetItem],
 ) -> Result<()> {
-    let Clause::Set { items } = clause else {
-        unreachable!("clause arm");
-    };
     for item in items {
         check_set_item(env, is_write_procedure, item)?;
     }
@@ -266,11 +247,8 @@ pub(super) fn check_set_clause(
 pub(super) fn check_remove_clause(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
-    clause: &Clause,
+    items: &[RemoveItem],
 ) -> Result<()> {
-    let Clause::Remove { items } = clause else {
-        unreachable!("clause arm");
-    };
     for item in items {
         check_remove_item(env, is_write_procedure, item)?;
     }
@@ -478,11 +456,9 @@ pub(super) fn check_return_clause(
 pub(super) fn check_unwind_clause(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
-    clause: &Clause,
+    expression: &Expr,
+    alias: &SmallName,
 ) -> Result<()> {
-    let Clause::Unwind { expression, alias } = clause else {
-        unreachable!("clause arm");
-    };
     check_expr(env, is_write_procedure, expression)?;
     env.insert_name(alias.clone(), Binding::Value);
 
@@ -492,11 +468,9 @@ pub(super) fn check_unwind_clause(
 pub(super) fn check_load_csv_clause(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
-    clause: &Clause,
+    url: &Expr,
+    variable: &SmallName,
 ) -> Result<()> {
-    let Clause::LoadCsv { url, variable, .. } = clause else {
-        unreachable!("clause arm");
-    };
     check_expr(env, is_write_procedure, url)?;
     env.insert_name(variable.clone(), Binding::Map);
 
@@ -555,21 +529,13 @@ pub(super) fn check_conditional_clause(
 pub(super) fn check_foreach_clause(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
-    clause: &Clause,
+    variable: &SmallName,
+    list: &Expr,
+    clauses: &[Clause],
 ) -> Result<()> {
-    let Clause::Foreach {
-        variable,
-        list,
-        clauses,
-    } = clause
-    else {
-        unreachable!("clause arm");
-    };
     check_expr(env, is_write_procedure, list)?;
-    validate_part_with_env(
-        &SingleQuery {
-            clauses: clauses.clone(),
-        },
+    validate_clauses_with_env(
+        clauses,
         super::Scope::foreach_body(env, variable),
         is_write_procedure,
     )?;
@@ -581,23 +547,20 @@ pub(super) fn check_use_clause(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
     clause_index: usize,
-    part: &SingleQuery,
-    clause: &Clause,
+    clauses: &[Clause],
+    graph: &Expr,
 ) -> Result<()> {
-    let Clause::Use { graph } = clause else {
-        unreachable!("clause arm");
-    };
     // Position, not write history: `USE` is valid at the very front (a run
     // of leading USE clauses is itself valid — CIP-146's nested-USE-brace
     // collapse stacks more than one at the front), or immediately after a
     // leading importing WITH. The front's `validate_use_placement` owns the
     // same rule; reading `seen_write` here let a transactions-exempt CALL
     // body slip a later `USE` past this check.
-    let all_use_before = part.clauses[..clause_index]
+    let all_use_before = clauses[..clause_index]
         .iter()
         .all(crate::clause_kind::clause_is_routing);
     let after_importing_with =
-        clause_index == 1 && matches!(part.clauses.first(), Some(Clause::With { .. }));
+        clause_index == 1 && matches!(clauses.first(), Some(Clause::With { .. }));
     if !all_use_before && !after_importing_with {
         return Err(Error::syntax(
             "InvalidPlacementOfUseClause: USE must be the first clause",

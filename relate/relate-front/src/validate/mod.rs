@@ -461,8 +461,6 @@ pub(crate) fn validate_statement_tree_with_options_and_policy(
     // zero-row MATCH. The walk owns the operand positions and fires the
     // visit during the clause descent — after the statement battery above,
     // so the historical first-error precedence is unchanged.
-    let mut validate_operand =
-        |expr: &Expr, token: relate_core::DynamicNameToken| dynamic::validate_operand(expr, token);
     walk_statement_tree_with_operands(
         stmt,
         &mut |node| validate_statement_node(node, options, policy),
@@ -511,7 +509,7 @@ pub(crate) fn validate_statement_tree_with_options_and_policy(
                 _ => Ok(()),
             }
         },
-        &mut validate_operand,
+        &mut dynamic::validate_operand,
     )
 }
 
@@ -615,12 +613,14 @@ fn validate_call_composition(clauses: &[Clause]) -> Result<(), EngineError> {
         }
     }
     if clauses.len() > 1 {
-        if let Some(Clause::CallProcedure(cp)) = clauses.last() {
+        if let Some(last @ Clause::CallProcedure(cp)) = clauses.last() {
             if cp.yields.present() {
                 return Err(EngineError::semantic(
                     ErrorKind::IncompleteQuery,
-                    "incomplete query: a query cannot conclude with CALL together with YIELD"
-                        .to_string(),
+                    format!(
+                        "incomplete query: a query cannot conclude with {} together with YIELD",
+                        last.keyword()
+                    ),
                 ));
             }
         }
@@ -636,15 +636,19 @@ fn validate_call_composition(clauses: &[Clause]) -> Result<(), EngineError> {
 /// EXISTS/COUNT/COLLECT- and CALL-subquery bodies all arrive here as their
 /// own statement node, so one check covers every surface.
 fn reject_use_only_statement(clauses: &[Clause]) -> Result<(), EngineError> {
-    if !clauses.is_empty()
-        && clauses
+    if let Some(last) = clauses.last() {
+        if clauses
             .iter()
             .all(|clause| matches!(clause, Clause::Use(_)))
-    {
-        return Err(EngineError::semantic(
-            ErrorKind::IncompleteQuery,
-            "incomplete query: a query must conclude with a RETURN clause, a FINISH clause, an update clause, a unit subquery call, or a procedure call".to_string(),
-        ));
+        {
+            return Err(EngineError::semantic(
+                ErrorKind::IncompleteQuery,
+                format!(
+                    "incomplete query: a query cannot conclude with {}; it must conclude with a RETURN clause, a FINISH clause, an update clause, a unit subquery call, or a procedure call",
+                    last.keyword()
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -674,6 +678,24 @@ pub(crate) fn parse_and_validate_expression_constraints(query: &str) -> Result<(
 mod tests {
     use super::*;
     use relate_test_support::run_with_big_stack;
+
+    #[test]
+    fn incomplete_query_rejections_name_the_concluding_clause() {
+        // Both 42N71 rejections derive the offending clause's keyword from
+        // the one parser table instead of hand-writing it.
+        let stmt = relate_parser::parse("USE neo4j").unwrap();
+        let err = reject_use_only_statement(&stmt.clauses).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot conclude with USE"),
+            "{err}"
+        );
+        let stmt = relate_parser::parse("MATCH (n) CALL db.labels() YIELD label").unwrap();
+        let err = validate_call_composition(&stmt.clauses).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot conclude with CALL"),
+            "{err}"
+        );
+    }
 
     #[test]
     fn expression_chain_depth_is_counted_by_the_depth_guard() {

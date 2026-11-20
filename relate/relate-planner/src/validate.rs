@@ -91,12 +91,23 @@ pub(crate) fn validate_part_with_env(
     scope: Scope,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
 ) -> Result<()> {
+    validate_clauses_with_env(&part.clauses, scope, is_write_procedure)
+}
+
+/// The clause-slice core of [`validate_part_with_env`]: a FOREACH body
+/// validates its borrowed clauses through it without cloning them into an
+/// owned `SingleQuery`.
+pub(crate) fn validate_clauses_with_env(
+    clauses: &[Clause],
+    scope: Scope,
+    is_write_procedure: &mut impl FnMut(&str) -> bool,
+) -> Result<()> {
     let Scope {
         mut env,
         imports,
         shadowable,
     } = scope;
-    if part.clauses.is_empty() {
+    if clauses.is_empty() {
         // Live Neo4j reports an empty/whitespace-only statement as a
         // compile-time SyntaxError (42N45, unexpected end of input).
         return Err(Error::syntax("empty query part"));
@@ -108,13 +119,11 @@ pub(crate) fn validate_part_with_env(
     // 2026-11-08). `USE` is routing, not a continuation (ADR-0116: an
     // administration command runs from any namespace), so it never
     // counts against the command's standaloneness.
-    let substantive = part
-        .clauses
+    let substantive = clauses
         .iter()
         .filter(|c| !crate::clause_kind::clause_is_routing(c))
         .count();
-    if part
-        .clauses
+    if clauses
         .iter()
         .any(crate::clause_kind::clause_is_ddl_command)
         && substantive != 1
@@ -123,7 +132,7 @@ pub(crate) fn validate_part_with_env(
             "InvalidClauseComposition: schema and database-alteration commands must be standalone clauses",
         ));
     }
-    for (clause_index, c) in part.clauses.iter().enumerate() {
+    for (clause_index, c) in clauses.iter().enumerate() {
         // The terminal clauses are part-level composition facts, not
         // per-clause checks: a `RETURN` or `FINISH` must be its part's
         // last *substantive* clause — trailing routing `USE`s do not
@@ -131,7 +140,7 @@ pub(crate) fn validate_part_with_env(
         // and anything else following is rejected here, once, for both
         // spellings.
         if matches!(c, Clause::Return { .. } | Clause::Finish)
-            && part.clauses[clause_index + 1..]
+            && clauses[clause_index + 1..]
                 .iter()
                 .any(|c| !crate::clause_kind::clause_is_routing(c))
         {
@@ -141,40 +150,73 @@ pub(crate) fn validate_part_with_env(
             )));
         }
         match c {
-            Clause::Catalog(_) => check_catalog_clause(&mut env, is_write_procedure, c)?,
+            Clause::Catalog(command) => check_catalog_clause(&mut env, command)?,
             Clause::Match { .. } => {
                 check_match_clause(&mut env, &shadowable, is_write_procedure, c)?
             }
-            Clause::Create { .. } => {
-                check_create_clause(&mut env, &shadowable, is_write_procedure, c)?
+            Clause::Create { patterns } => {
+                check_create_clause(&mut env, &shadowable, is_write_procedure, patterns)?
             }
             Clause::Merge { .. } => {
                 check_merge_clause(&mut env, &shadowable, is_write_procedure, c)?
             }
-            Clause::Call { .. } => check_call_clause(&mut env, is_write_procedure, part, c)?,
-            Clause::Delete { .. } => check_delete_clause(&mut env, is_write_procedure, c)?,
-            Clause::Set { .. } => check_set_clause(&mut env, is_write_procedure, c)?,
-            Clause::Remove { .. } => check_remove_clause(&mut env, is_write_procedure, c)?,
+            Clause::Call {
+                args,
+                yield_items,
+                where_clause,
+                ..
+            } => check_call_clause(
+                &mut env,
+                is_write_procedure,
+                clauses,
+                args,
+                yield_items,
+                where_clause.as_ref(),
+            )?,
+            Clause::Delete { expressions, .. } => {
+                check_delete_clause(&mut env, is_write_procedure, expressions)?
+            }
+            Clause::Set { items } => check_set_clause(&mut env, is_write_procedure, items)?,
+            Clause::Remove { items } => check_remove_clause(&mut env, is_write_procedure, items)?,
             Clause::With { .. } => check_with_clause(&mut env, is_write_procedure, &imports, c)?,
             Clause::Return { .. } => {
                 check_return_clause(&mut env, is_write_procedure, &imports, c)?
             }
-            Clause::Unwind { .. } => check_unwind_clause(&mut env, is_write_procedure, c)?,
+            Clause::Unwind { expression, alias } => {
+                check_unwind_clause(&mut env, is_write_procedure, expression, alias)?
+            }
             Clause::CreateIndex { .. } | Clause::DropIndex { .. } | Clause::ShowIndexes => {}
             // `FINISH` owns no per-clause rule: its terminality is the
             // part-level check above, and what may precede it is the
             // DDL-standalone rule's answer.
             Clause::Finish => {}
-            Clause::LoadCsv { .. } => check_load_csv_clause(&mut env, is_write_procedure, c)?,
-            Clause::CallSubquery { .. } => {
-                check_call_subquery_clause(&mut env, is_write_procedure, clause_index, part, c)?
+            Clause::LoadCsv { url, variable, .. } => {
+                check_load_csv_clause(&mut env, is_write_procedure, url, variable)?
             }
+            Clause::CallSubquery {
+                query,
+                scope,
+                in_transactions,
+                ..
+            } => check_call_subquery_clause(
+                &mut env,
+                is_write_procedure,
+                clause_index,
+                clauses,
+                query,
+                scope,
+                in_transactions.as_ref(),
+            )?,
             Clause::Conditional { .. } => {
                 check_conditional_clause(&mut env, is_write_procedure, c)?
             }
-            Clause::Foreach { .. } => check_foreach_clause(&mut env, is_write_procedure, c)?,
-            Clause::Use { .. } => {
-                check_use_clause(&mut env, is_write_procedure, clause_index, part, c)?
+            Clause::Foreach {
+                variable,
+                list,
+                clauses: body,
+            } => check_foreach_clause(&mut env, is_write_procedure, variable, list, body)?,
+            Clause::Use { graph } => {
+                check_use_clause(&mut env, is_write_procedure, clause_index, clauses, graph)?
             }
         }
     }

@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use relate_core::{Error, Result};
-use relate_ir::{Clause, Expr, Projection, SingleQuery};
+use relate_ir::{CallScope, Clause, Expr, InTransactions, Projection, Query, SingleQuery};
 use relate_names::SmallName;
 
 use crate::binding::{Binding, Env, EnvBridge};
@@ -21,24 +21,17 @@ pub(super) fn check_call_subquery_clause(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
     clause_index: usize,
-    part: &SingleQuery,
-    clause: &Clause,
+    clauses: &[Clause],
+    query: &Query,
+    scope: &CallScope,
+    in_transactions: Option<&InTransactions>,
 ) -> Result<()> {
-    let Clause::CallSubquery {
-        query,
-        scope,
-        in_transactions,
-        ..
-    } = clause
-    else {
-        unreachable!("clause arm");
-    };
     if query_contains_in_transactions(query) {
         return Err(Error::syntax(
             "NestedCallInTransactions: CALL IN TRANSACTIONS cannot be nested",
         ));
     }
-    if in_transactions.is_some() && write_before(part, clause_index, is_write_procedure) {
+    if in_transactions.is_some() && write_before(clauses, clause_index, is_write_procedure) {
         return Err(Error::syntax(
             "WriteBeforeCallInTransactions: a write cannot precede CALL IN TRANSACTIONS",
         ));
@@ -109,7 +102,7 @@ pub(super) fn check_call_subquery_clause(
         is_write_procedure,
     )?;
     if let Some(tx) = in_transactions {
-        check_in_transactions_modifiers(tx, env, is_write_procedure, clause_index, part)?;
+        check_in_transactions_modifiers(tx, env, is_write_procedure, clause_index, clauses)?;
     }
     // The post-CALL name space, computed once: the body's exports in both
     // spellings (the explicit RETURN names and the computed export set the
@@ -142,11 +135,11 @@ pub(super) fn check_call_subquery_clause(
 /// `IN TRANSACTIONS` subquery's own writes run in their own transactions,
 /// so they do not make the part a writing one.
 fn write_before(
-    part: &SingleQuery,
+    clauses: &[Clause],
     clause_index: usize,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
 ) -> bool {
-    part.clauses[..clause_index].iter().any(|clause| {
+    clauses[..clause_index].iter().any(|clause| {
         crate::validate::clause_is_write(clause, is_write_procedure)
             && !matches!(
                 clause,
