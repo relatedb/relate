@@ -269,10 +269,12 @@ pub fn parse_and_lower_statement_with_policy_and_params(
             relate_core::PreviewFeature::ChronologicalComparisons => {
                 validate::statement_uses_chronological_comparisons(&stmt)
             }
-            // `obfuscated-literals` gates at the lexer (the disabled form
-            // is Neo4j's own syntax error, not the authored preview error),
-            // so a parsed statement never carries a gate to detect here.
-            relate_core::PreviewFeature::ObfuscatedLiterals => Ok(false),
+            // `obfuscated-literals` and `cypher-annotations` gate at the
+            // lexer (the disabled form is a syntax error, not the authored
+            // preview error), so a parsed statement never carries a gate to
+            // detect here.
+            relate_core::PreviewFeature::ObfuscatedLiterals
+            | relate_core::PreviewFeature::CypherAnnotations => Ok(false),
             // `mixed-label-syntax` gates at parse (the `ParseOptions`
             // threading above) and `complex-search-patterns` at validation
             // (the `ValidateOptions` threading below), never post-parse, so
@@ -334,6 +336,7 @@ fn parse_options(preview: relate_core::PreviewFeatures) -> relate_parser::lexer:
     relate_parser::lexer::ParseOptions {
         obfuscated_literals: preview.enabled(relate_core::PreviewFeature::ObfuscatedLiterals),
         mixed_label_syntax: preview.enabled(relate_core::PreviewFeature::MixedLabelSyntax),
+        cypher_annotations: preview.enabled(relate_core::PreviewFeature::CypherAnnotations),
     }
 }
 

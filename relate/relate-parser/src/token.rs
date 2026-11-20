@@ -22,6 +22,10 @@ pub enum TokenType {
     /// gate the run lexes as ordinary `*` tokens and the query fails with
     /// the parser's own syntax error, Neo4j's disabled-form behavior.
     ObfuscatedLiteral,
+    /// The CIP-281 annotation introducer `@`, lexed only under the
+    /// `cypher-annotations` preview gate. Without the gate `@` is the
+    /// ordinary `unexpected character: @` error token.
+    At,
     Parameter, // $param
 
     // Punctuation

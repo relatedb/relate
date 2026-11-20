@@ -730,6 +730,7 @@ impl<'a> Parser<'a> {
     }
 }
 
+mod annotations;
 mod case;
 mod clauses;
 mod definitions;
