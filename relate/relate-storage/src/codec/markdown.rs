@@ -402,7 +402,11 @@ fn rel_identity(
     target_key: &str,
     properties: &BTreeMap<String, Json>,
 ) -> String {
-    let props = serde_json::to_string(properties).expect("serializing a JSON value is infallible");
+    // The properties' canonical JSON through the one policy spelling
+    // (`canonical_props_json`): stable whatever produced the value — a
+    // parsed file's spelling dies at the parse boundary, and a value
+    // built in code sorts there (ADR-0406 §2, ADR-0634).
+    let props = md::canonical_props_json(properties);
     format!("{source_key}\u{1}{rel_type}\u{1}{target_key}\u{1}{props}")
 }
 

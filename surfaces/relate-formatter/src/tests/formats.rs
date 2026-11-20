@@ -197,8 +197,8 @@ fn envelope_has_columns_rows_and_truncated_on_one_line() {
     assert_eq!(
         out,
         concat!(
-            "{\"columnTypes\":[\"INTEGER\",\"LIST\"],\"columns\":[\"a\",\"l\"],",
-            "\"notifications\":[],\"rows\":[{\"a\":1,\"l\":[1,2]}],\"truncated\":false}\n"
+            "{\"columns\":[\"a\",\"l\"],\"columnTypes\":[\"INTEGER\",\"LIST\"],",
+            "\"rows\":[{\"a\":1,\"l\":[1,2]}],\"truncated\":false,\"notifications\":[]}\n"
         )
     );
 }
@@ -209,8 +209,8 @@ fn envelope_of_an_empty_result_still_lists_its_columns() {
     let out = render(Mode::Envelope, &cols, &[]);
     assert_eq!(
         out,
-        "{\"columnTypes\":[\"ANY\",\"ANY\"],\"columns\":[\"n\",\"p\"],\"notifications\":[],\
-         \"rows\":[],\"truncated\":false}\n"
+        "{\"columns\":[\"n\",\"p\"],\"columnTypes\":[\"ANY\",\"ANY\"],\
+         \"rows\":[],\"truncated\":false,\"notifications\":[]}\n"
     );
 }
 
@@ -219,7 +219,7 @@ fn envelope_of_a_columnless_result_is_empty_arrays() {
     let out = render(Mode::Envelope, &[], &[]);
     assert_eq!(
         out,
-        "{\"columnTypes\":[],\"columns\":[],\"notifications\":[],\"rows\":[],\"truncated\":false}\n"
+        "{\"columns\":[],\"columnTypes\":[],\"rows\":[],\"truncated\":false,\"notifications\":[]}\n"
     );
 }
 
@@ -690,9 +690,9 @@ fn row_cap_records_ride_in_band_per_mode() {
     assert_eq!(
         render_cap(Mode::Envelope, &cols, &kept, cap),
         concat!(
-            "{\"columnTypes\":[\"INTEGER\"],\"columns\":[\"i\"],\"notifications\":[],",
-            "\"rowCap\":{\"kept\":2,\"total\":5},\"rows\":[{\"i\":1},{\"i\":2}],",
-            "\"truncated\":true}\n"
+            "{\"columns\":[\"i\"],\"columnTypes\":[\"INTEGER\"],",
+            "\"rows\":[{\"i\":1},{\"i\":2}],\"truncated\":true,",
+            "\"rowCap\":{\"kept\":2,\"total\":5},\"notifications\":[]}\n"
         )
     );
 

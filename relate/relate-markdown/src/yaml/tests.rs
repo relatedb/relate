@@ -31,6 +31,31 @@ fn parses_nested_lists_and_maps() {
     );
 }
 
+/// ADR-0634 consequence: the parse boundary canonicalizes object key
+/// order, so a value's file spelling never survives the parse — the
+/// link sort/dedup key and the renderer see one order. Two spellings of
+/// the same nested object converge on one serialized sequence (the
+/// `Value` comparison alone cannot show this: object equality is
+/// order-insensitive); a sequence's order is data and stays.
+#[test]
+fn object_key_order_is_canonicalized_at_the_parse_boundary() {
+    let spelled_one =
+        parse_yaml_value("props:\n  z: 1\n  a: {y: 2, x: 3}\nseq:\n  - [late, early]\n").unwrap();
+    let spelled_two =
+        parse_yaml_value("seq:\n  - [late, early]\nprops:\n  a: {x: 3, y: 2}\n  z: 1\n").unwrap();
+    // The canonical order is the sorted one, at every nesting depth, and
+    // both spellings serialize to it byte-identically.
+    assert_eq!(
+        serde_json::to_string(&spelled_one).unwrap(),
+        r#"{"props":{"a":{"x":3,"y":2},"z":1},"seq":[["late","early"]]}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&spelled_two).unwrap(),
+        serde_json::to_string(&spelled_one).unwrap(),
+        "both spellings converge on the canonical sequence"
+    );
+}
+
 #[test]
 fn empty_input_is_an_empty_mapping() {
     assert_eq!(parse_yaml_value("").unwrap(), json!({}));
@@ -106,8 +131,31 @@ fn emit_entries_preserves_caller_order() {
         ("zeta".to_string(), json!(1)),
         ("alpha".to_string(), json!(2)),
     ];
-    let text = emit_yaml_entries(&entries);
+    let text = emit_yaml_entries(entries);
     assert_eq!(text, "type: Person\nzeta: 1\nalpha: 2\n");
+}
+
+/// The emit boundary canonicalizes nested objects (ADR-0406 §2,
+/// ADR-0634): a code-built value in construction order and the same
+/// value re-read from a file render byte-identically — the fixed point
+/// a reloaded vault needs, so a checkpoint never rewrites a file over
+/// spelling. The top-level key order stays the caller's.
+#[test]
+fn emit_boundary_canonicalizes_nested_objects() {
+    let built = vec![
+        ("type".to_string(), json!("Person")),
+        ("meta".to_string(), json!({"b": 1, "a": {"z": 2, "x": 3}})),
+    ];
+    let reloaded = vec![
+        ("type".to_string(), json!("Person")),
+        ("meta".to_string(), json!({"a": {"x": 3, "z": 2}, "b": 1})),
+    ];
+    let built_text = emit_yaml_entries(built);
+    assert_eq!(built_text, emit_yaml_entries(reloaded));
+    assert_eq!(
+        built_text,
+        "type: Person\nmeta:\n  a:\n    x: 3\n    z: 2\n  b: 1\n"
+    );
 }
 
 #[test]

@@ -51,7 +51,12 @@ pub(crate) struct RunCmd {
 #[derive(Debug, PartialEq)]
 pub(crate) enum ParsedRun {
     /// `run <name> [flags]`: the resolved action and its parsed argv.
-    Run(RunCmd),
+    /// Boxed: the command's structs (the registry entry, the manifest's
+    /// parsed argv) carry `serde_json::Value`s, and under
+    /// `preserve_order` (ADR-0634) the map's index-table layout grows
+    /// them past the `large_enum_variant` threshold against the two
+    /// help arms.
+    Run(Box<RunCmd>),
     /// `run <name> --help` where the name resolved: the action's own
     /// page, rendered at parse from the same registry load that
     /// resolved the name (a page of manifest data, which no static
@@ -124,7 +129,7 @@ pub(crate) fn parse_run_args(rest: &[String]) -> Result<ParsedRun, RunUsageError
         return Ok(ParsedRun::VerbHelp);
     }
     let registry = load_registry_or_exit();
-    parse_run_word(rest, &registry).map(ParsedRun::Run)
+    parse_run_word(rest, &registry).map(|cmd| ParsedRun::Run(Box::new(cmd)))
 }
 
 /// The dispatch core of [`parse_run_args`] (the `parse_lab_word`

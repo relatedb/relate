@@ -98,8 +98,9 @@ pub(crate) fn is_c0_del(ch: char) -> bool {
 pub use body::fold_case;
 pub use body::{parse_body, BODY_KEY};
 pub use doc::{
-    is_reserved_view_file_name, parse_node_doc, parse_node_doc_root, render_node_doc,
-    validate_body_properties, LinkEntry, NodeDoc, INDEX_VIEW, KEY_TARGET, LOG_VIEW,
+    canonical_props_json, is_reserved_view_file_name, parse_node_doc, parse_node_doc_root,
+    render_node_doc, validate_body_properties, LinkEntry, NodeDoc, INDEX_VIEW, KEY_TARGET,
+    LOG_VIEW,
 };
 pub use link::{parse_link, LinkTarget};
 pub use name::{sanitize_label, sanitize_name_path};

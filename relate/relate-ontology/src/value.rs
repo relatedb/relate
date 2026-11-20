@@ -90,8 +90,7 @@ impl Value {
 
 /// Serde deserialization used by the strict-JSON parse path
 /// ([`crate::parse`]). Hand-written (no derive, no `serde_json::Value`
-/// round-trip) so that object key order is preserved without serde_json's
-/// `preserve_order` feature.
+/// round-trip), preserving object key order.
 impl<'de> serde::Deserialize<'de> for Value {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

@@ -135,10 +135,18 @@ pub(super) struct Path<'a> {
     pub(super) steps: Vec<(Rel<'a>, Node<'a>, bool)>,
 }
 
+/// The map's entries for rendering, **sorted by key** — the recording's
+/// canonical text form (ADR-0634): the wire now serializes object keys in
+/// construction order, and the recorded corpus stays stable by sorting
+/// here, at the one decode boundary every rendered map crosses (map
+/// values, entity properties, point axes).
 pub(super) fn entries(m: &Map<String, Value>) -> Vec<(&str, Wire<'_>)> {
-    m.iter()
+    let mut entries: Vec<(&str, Wire<'_>)> = m
+        .iter()
         .map(|(k, v)| (k.as_str(), Wire::decode(v)))
-        .collect()
+        .collect();
+    entries.sort_by_key(|(k, _)| *k);
+    entries
 }
 
 impl<'a> Node<'a> {

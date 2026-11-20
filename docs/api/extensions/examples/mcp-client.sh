@@ -38,41 +38,69 @@ mcp_fail() {
 # `false`, `["rust","cypher"]`). Fails when the manifest and the child
 # disagree about the flag table.
 _mcp_flag_value() {
-    local rest
+    local rest decoded
     case $MCP_ENVELOPE in
         *"\"$1\":"*) rest=${MCP_ENVELOPE#*\"$1\":} ;;
         *) mcp_fail "the request envelope carries no '$1' flag" ;;
     esac
     case $rest in
         \[*)
+            # The array runs to its closing bracket — the first `]`, the
+            # pre-existing boundary (an entry holding a bare `]` inside
+            # quotes truncates here; the manifest's flag tables carry
+            # identifiers, not brackets). Re-emit a well-formed
+            # `[entries]` token: the opening bracket the strip removed
+            # and the closing one, so the list walker starts from a
+            # complete array.
             rest=${rest#\[}
-            printf '[%s' "${rest%%\]*}"
+            printf '[%s]' "${rest%%\]*}"
+            ;;
+        \"*)
+            # A string runs to its closing quote — the decoder finds it.
+            # The `,`/`}` cuts below would truncate a string that
+            # contains either, so the token is decoded here and
+            # re-encoded by the kit's own writer: a clean, terminated
+            # literal whatever it contained.
+            _mcp_decode_string "$rest" decoded ||
+                mcp_fail "the '$1' flag's value is not a terminated JSON string: $rest"
+            json_string "$decoded"
             ;;
         *)
             # A scalar ends at the next `,` — or at the envelope's closing
             # `}` when the flag is the last one. The two cuts stay separate
             # because `}` inside a bracket expression ends the expansion.
+            # Numbers and booleans only: a string token took the arm above.
             rest=${rest%%,*}
             printf '%s' "${rest%%\}*}"
             ;;
     esac
 }
 
-# _mcp_decode_string TOKEN — the value of a JSON string literal, its quotes
-# included, with `json_string`'s escapes undone: the one decoder both the
-# envelope's flag readers and the tool results use. Fails on a token that is
-# not a string.
+# _mcp_decode_string TOKEN OUT [TAIL] — the value of the JSON string
+# literal TOKEN (its opening quote included), escapes undone, into the
+# variable OUT; the text after the closing quote, into TAIL when given
+# (the list walker needs it). Returns 1 — no message, no exit, so it
+# works wherever it is called, command substitutions included — when
+# TOKEN is not a string, its closing quote never comes (an unterminated
+# value is a failure, never a silent truncation), or a `\u` escape's
+# four hex digits are missing. The message and the exit belong to the
+# caller, which knows the flag or tool the value belongs to.
 _mcp_decode_string() {
-    local rest=$1 value= char
+    # The out-parameter names are held in dedicated locals (`out_name`,
+    # `tail_name`): a local sharing a caller's variable name would make
+    # `printf -v` write the local, not the caller's variable.
+    local rest=$1 out_name=$2 tail_name=${3-} value= char hexchar
     case $rest in
         \"*) rest=${rest#\"} ;;
-        *) mcp_fail "not a JSON string: $rest" ;;
+        *) return 1 ;;
     esac
     while [ -n "$rest" ]; do
         char=${rest:0:1}
         rest=${rest:1}
-        # A backslash escapes the next character: the four JSON shortcuts,
-        # and the quote/backslash themselves.
+        # A backslash escapes the next character: the JSON shortcuts,
+        # the quote/backslash themselves, and \uHHHH for the rest of the
+        # control characters — decoded by the one predicate, so a short
+        # or non-hex escape fails like every other malformed token.
         if [ "$char" = '\' ]; then
             char=${rest:0:1}
             rest=${rest:1}
@@ -80,24 +108,42 @@ _mcp_decode_string() {
                 n) value+=$'\n' ;;
                 t) value+=$'\t' ;;
                 r) value+=$'\r' ;;
+                b) value+=$'\b' ;;
+                f) value+=$'\f' ;;
+                u)
+                    case $rest in
+                        [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]*) ;;
+                        *) return 1 ;;
+                    esac
+                    printf -v hexchar '%b' "\\u${rest:0:4}"
+                    value+=$hexchar
+                    rest=${rest:4}
+                    ;;
                 *) value+=$char ;;
             esac
             continue
         fi
-        [ "$char" = '"' ] && break
+        if [ "$char" = '"' ]; then
+            printf -v "$out_name" '%s' "$value"
+            [ -z "$tail_name" ] || printf -v "$tail_name" '%s' "$rest"
+            return 0
+        fi
         value+=$char
     done
-    printf '%s' "$value"
+    return 1
 }
 
 # mcp_flag_string NAME — a string flag's value, unquoted and unescaped.
 mcp_flag_string() {
-    local value
+    local value decoded
     value=$(_mcp_flag_value "$1")
     case $value in
-        \"*) _mcp_decode_string "$value" ;;
+        \"*) ;;
         *) mcp_fail "flag '$1' is not a string: $value" ;;
     esac
+    _mcp_decode_string "$value" decoded ||
+        mcp_fail "flag '$1' is not a terminated JSON string: $value"
+    printf '%s' "$decoded"
 }
 
 # mcp_flag_int NAME — an integer flag's value.
@@ -121,24 +167,30 @@ mcp_flag_bool() {
 }
 
 # mcp_flag_list NAME — a repeatable flag's values, one per line (nothing
-# when the list is empty).
+# when the list is empty). Each entry is a string the one decoder reads
+# (an entry may contain a comma or a quote), and the walker skips the
+# decoder's reported tail to the next entry.
 mcp_flag_list() {
-    local value
+    local value rest entry tail
     value=$(_mcp_flag_value "$1")
     case $value in
-        \[*) ;;
+        \[*\]) ;;
         *) mcp_fail "flag '$1' is not a list: $value" ;;
     esac
     value=${value#\[}
-    case $value in
-        \"*\")
-            value=${value#\"}
-            value=${value%\"}
-            ;;
-    esac
+    value=${value%\]}
     [ -z "$value" ] && return 0
-    value=${value//\"/}
-    printf '%s\n' "${value//,/$'\n'}"
+    rest=$value
+    while :; do
+        _mcp_decode_string "$rest" entry tail ||
+            mcp_fail "flag '$1' holds an unterminated entry: $rest"
+        printf '%s\n' "$entry"
+        case $tail in
+            '') return 0 ;;
+            ,*) rest=${tail#,} ;;
+            *) mcp_fail "flag '$1' holds a non-string entry: $tail" ;;
+        esac
+    done
 }
 
 # mcp_init [NAME] [VERSION] — read the host's envelope, complete the
@@ -179,7 +231,7 @@ mcp_init() {
 # content, unescaped); a JSON-RPC error or an unreadable response exits
 # the child through `mcp_fail`.
 mcp_call() {
-    local tool=$1 arguments=${2:-'{}'} response text
+    local tool=$1 arguments=${2:-'{}'} response
     case $arguments in
         \{*) ;;
         *) mcp_fail "mcp_call '$tool': the arguments must be a JSON object" ;;
@@ -199,16 +251,13 @@ mcp_call() {
         *'"text":"'*) ;;
         *) mcp_fail "'$tool' answered no text content: $response" ;;
     esac
-    text=${response#*\"text\":\"}
-    case $text in
-        *'","type":"'*) ;;
-        *) mcp_fail "'$tool' answered an unterminated text content: $response" ;;
-    esac
-    text=${text%%\",\"type\":*}
-    # The tool result is JSON carried as a JSON string: `\"` is the string
-    # encoding's quote, and `%b` undoes the rest (`\n`, `\\`, ...).
-    text=${text//\\\"/\"}
-    printf '%b' "$text"
+    # The tool's result is the `text` member, read by the kit's one
+    # string reader (`mcp_string`): the member is found by name — key
+    # order never matters, so the kit does not couple to the host's
+    # member order (ADR-0634) — and the value ends at the first quote no
+    # backslash escapes, with an unterminated value failing inside the
+    # decoder, the one home of that predicate.
+    mcp_string "$response" text
 }
 
 # mcp_number JSON NAME — the number the JSON object JSON carries under
@@ -224,27 +273,56 @@ mcp_number() {
 }
 
 # mcp_string JSON NAME — the string the JSON object JSON carries under NAME,
-# with the escapes `json_string` writes undone. Empty when absent. The value
-# ends at the first quote no backslash escapes, so a quote inside it decodes
-# rather than truncating the read.
+# with the escapes `json_string` writes undone. Empty when absent. The
+# value ends at the first quote no backslash escapes, so a quote inside
+# it decodes rather than truncating the read; a present-but-unterminated
+# value fails through the one decoder, with the member named here.
 mcp_string() {
-    local rest=$1
-    case $rest in
-        *"\"$2\":\""*) rest=${rest#*\"$2\":\"} ;;
+    local rest decoded
+    case $1 in
+        *"\"$2\":\""*) rest=${1#*\"$2\":\"} ;;
         *) return 0 ;;
     esac
-    _mcp_decode_string "\"$rest\""
+    # Only the opening quote is reconstituted: the member strip consumed
+    # it, and the decoder reads to the value's own closing quote — a
+    # synthetic one would mask an unterminated response as terminated.
+    _mcp_decode_string "\"$rest" decoded ||
+        mcp_fail "the '$2' member is not a terminated JSON string"
+    printf '%s' "$decoded"
 }
 
 # json_string VALUE — VALUE as a JSON string literal, quotes included: the
 # argument objects this kit sends are JSON text, so a value from the
-# envelope (a flag) is encoded, never spliced in raw.
+# envelope (a flag) is encoded, never spliced in raw. The one writer the
+# one decoder mirrors: the same named escapes, and every other control
+# character as \u00XX, so a decoded value round-trips byte-exactly and a
+# control character never reaches the wire raw.
 json_string() {
-    local value=$1
-    value=${value//\\/\\\\}
-    value=${value//\"/\\\"}
-    value=${value//$'\n'/\\n}
-    value=${value//$'\r'/\\r}
-    value=${value//$'\t'/\\t}
-    printf '"%s"' "$value"
+    local value=$1 out= char code
+    while [ -n "$value" ]; do
+        char=${value:0:1}
+        value=${value:1}
+        case $char in
+            $'\\') out+='\\' ;;
+            '"') out+='\"' ;;
+            $'\n') out+='\n' ;;
+            $'\r') out+='\r' ;;
+            $'\t') out+='\t' ;;
+            $'\b') out+='\b' ;;
+            $'\f') out+='\f' ;;
+            *)
+                # A control character the shortcuts have no name for:
+                # its \u00XX escape, from the code point printf reads
+                # off the quoted char.
+                case $char in
+                    [[:cntrl:]])
+                        printf -v code '%04x' "'$char"
+                        out+="\\u$code"
+                        ;;
+                    *) out+=$char ;;
+                esac
+                ;;
+        esac
+    done
+    printf '"%s"' "$out"
 }

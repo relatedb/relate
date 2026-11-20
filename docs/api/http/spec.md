@@ -623,7 +623,8 @@ de-chunk the frames first, and inflate when gzip was negotiated.
 - `notifications` — the query notifications of an `EXPLAIN`/`PROFILE`
   statement (ADR-0363), absent entirely when the list is empty (a plain run
   carries none). Each entry is the Neo4j-shaped record with keys `code`,
-  `description`, `severity`, `title`, `category`, built through the engine's
+  `title`, `description`, `severity`, `category` (the emission order,
+  ADR-0634), built through the engine's
   one Neo4j serializer (`relate_model::wire::notification_to_neo4j_json`).
   Neo4j's key order also has a `position` slot: no position value exists, so
   the slot is **omitted**, never emitted as null. `description` is the
@@ -636,9 +637,9 @@ de-chunk the frames first, and inflate when gzip was negotiated.
   ```json
   {
     "code": "Neo.ClientNotification.Statement.CartesianProduct",
+    "title": "Cartesian product",
     "description": "the MATCH patterns share no join anchor (remedy: Give the patterns a join anchor: …)",
     "severity": "INFORMATION",
-    "title": "Cartesian product",
     "category": "PERFORMANCE"
   }
   ```

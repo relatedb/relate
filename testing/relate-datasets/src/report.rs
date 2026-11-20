@@ -206,7 +206,7 @@ mod tests {
         let written = fs::read_to_string(&path).unwrap();
         assert_eq!(
             written,
-            "{\n  \"name\": \"x\",\n  \"schema_version\": 1\n}\n"
+            "{\n  \"schema_version\": 1,\n  \"name\": \"x\"\n}\n"
         );
     }
 

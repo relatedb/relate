@@ -103,28 +103,47 @@ pub struct LinkEntry {
     pub properties: BTreeMap<String, Value>,
 }
 
+/// The properties' canonical JSON: object keys sorted through the one
+/// primitive (`sort_all_objects`), so the string is stable whatever
+/// produced the value — a hand-edited file's spelling dies at the parse
+/// boundary, and a value built in code sorts here (ADR-0406 §2,
+/// ADR-0634). The one spelling of the policy every value-identity
+/// consumer consults: the link entry identity below and the storage
+/// codec's relationship identity.
+pub fn canonical_props_json(properties: &BTreeMap<String, Value>) -> String {
+    let mut props = serde_json::to_value(properties).expect("a JSON value is infallible");
+    props.sort_all_objects();
+    serde_json::to_string(&props).expect("serializing a JSON value is infallible")
+}
+
 impl LinkEntry {
-    /// The deterministic sort key: target, then the properties'
-    /// canonical JSON (`serde_json::Map` is key-sorted, so the string
-    /// ordering is stable) — the one spelling of entry identity that
-    /// the sort and the duplicate removal below both consult.
-    fn sort_key(entry: &LinkEntry) -> (&LinkTarget, String) {
+    /// The entry's identity: target, then the properties' canonical
+    /// JSON ([`canonical_props_json`]). Computed once per entry by
+    /// [`sorted_dedup`]'s decorate-sort, never per comparison.
+    fn identity(entry: &LinkEntry) -> (LinkTarget, String) {
         (
-            &entry.target,
-            serde_json::to_string(&entry.properties)
-                .expect("serializing a JSON value is infallible"),
+            entry.target.clone(),
+            canonical_props_json(&entry.properties),
         )
     }
 
-    /// The canonical link-list form: sorted by the `sort_key` entry
-    /// identity above, with exact duplicates removed (set semantics,
-    /// ADR-0406 §2) — the
+    /// The canonical link-list form: sorted by the entries' identity
+    /// above, with exact duplicates removed (set semantics, ADR-0406
+    /// §2) — the
     /// one ordering every writer of a link list consults: the parser,
     /// the renderer, and the storage codec's checkpoint planner.
-    pub fn sorted_dedup(mut entries: Vec<LinkEntry>) -> Vec<LinkEntry> {
-        entries.sort_by(|a, b| LinkEntry::sort_key(a).cmp(&LinkEntry::sort_key(b)));
-        entries.dedup_by(|a, b| LinkEntry::sort_key(a) == LinkEntry::sort_key(b));
-        entries
+    /// Decorate-sort-undecorate: each entry's identity is built once,
+    /// and the sort and the duplicate removal read the same decorated
+    /// value — the canonical serialization is not recomputed per
+    /// comparison.
+    pub fn sorted_dedup(entries: Vec<LinkEntry>) -> Vec<LinkEntry> {
+        let mut decorated: Vec<((LinkTarget, String), LinkEntry)> = entries
+            .into_iter()
+            .map(|entry| (LinkEntry::identity(&entry), entry))
+            .collect();
+        decorated.sort_by(|a, b| a.0.cmp(&b.0));
+        decorated.dedup_by(|a, b| a.0 == b.0);
+        decorated.into_iter().map(|(_, entry)| entry).collect()
     }
 }
 
@@ -566,7 +585,7 @@ pub fn render_node_doc(
         entries.push((rel_type.clone(), Value::Array(items)));
     }
 
-    let yaml = emit_yaml_entries(&entries);
+    let yaml = emit_yaml_entries(entries);
     let body_text = render_body_properties(body_props, &body)?;
     Ok(join_frontmatter(&yaml, &body_text))
 }

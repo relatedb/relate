@@ -23,8 +23,10 @@
 //! Table: `| col |` header, a dashed rule, one line per row (every row, no
 //! clipping), then `N rows` plus the counters. Values are Cypher literals:
 //! strings double-quoted and escaped, numbers exactly as the wire spells them
-//! (`1.0` stays `1.0`), lists `[a, b]`, maps `{k: v}` with keys in wire
-//! order, points `point({…})`, vectors `vector([…], dim, TYPE)`.
+//! (`1.0` stays `1.0`), lists `[a, b]`, maps `{k: v}` with keys in code
+//! point order (the recording's canonical form, sorted at the decode
+//! boundary whatever the wire's construction order — ADR-0634), points
+//! `point({…})`, vectors `vector([…], dim, TYPE)`.
 //!
 //! Gram: a `// N rows` comment (plus counters), then one line per row. A row
 //! that is a single graph value is that pattern; any other row is

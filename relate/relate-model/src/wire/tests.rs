@@ -7,6 +7,78 @@ fn every_value_fixture_matches_canonical_encoding() {
 }
 
 #[test]
+fn serialized_key_orders_match_the_documented_construction() {
+    // ADR-0634: the byte stream keeps the encoder's construction order —
+    // rows keyed in column order, entities `kind`-first, envelope
+    // `columns`-first. String-level pins (Value equality ignores order),
+    // kept here beside their only caller rather than in the cross-surface
+    // `golden` substrate, which serves surface-consumed fixtures.
+    //
+    // A mixed-order RETURN: keys serialize in the statement's column
+    // order, not sorted — and not the row map's own order: the entries
+    // are inserted a-, m-, z-first, so only an encoder that walks
+    // `columns` (not the map) produces the expected sequence.
+    let columns: Vec<String> = ["z", "a", "m"].iter().map(|c| c.to_string()).collect();
+    let row: IndexMap<String, CypherValue> = IndexMap::from([
+        ("a".to_string(), CypherValue::Int(1)),
+        ("m".to_string(), CypherValue::Int(2)),
+        ("z".to_string(), CypherValue::Int(3)),
+    ]);
+    let wire_row = row_to_wire_json(&columns, &row);
+    assert_eq!(
+        wire_row.to_string(),
+        r#"{"z":3,"a":1,"m":2}"#,
+        "a row object's keys must serialize in the columns order (ADR-0634)"
+    );
+    // An entity object opens with its discriminator (ADR-0223).
+    let node = golden::value_fixtures()
+        .into_iter()
+        .find(|fixture| fixture.name == "node")
+        .expect("the node fixture exists")
+        .value;
+    assert!(
+        value_to_wire_json(&node)
+            .to_string()
+            .starts_with(r#"{"kind":"node""#),
+        "a wire node must serialize with its `kind` discriminator first (ADR-0634)"
+    );
+    // The envelope's full member sequence, read off the object's iteration
+    // order (insertion order under ADR-0634; without it a `BTreeMap`
+    // sorts and this fails). The fixture is built through
+    // `response_envelope` itself, so the pin covers the production
+    // builder's order — the one home of the member-order fact.
+    let (_columns, _row, envelope) = golden::golden_row();
+    let members: Vec<&str> = envelope
+        .as_object()
+        .expect("the golden envelope is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        members,
+        [
+            "columns",
+            "columnTypes",
+            "rows",
+            "stats",
+            "notifications",
+            "elapsed_ms",
+            "parse_ms",
+            "plan_ms",
+            "execute_ms",
+            "lex_parse_ms",
+            "rewrite_ms",
+            "lower_ms",
+            "result_generation_ms",
+            "plan_cache",
+            "error",
+            "plan",
+        ],
+        "the envelope serializes in its documented member order (ADR-0634)"
+    );
+}
+
+#[test]
 fn no_structured_variant_is_a_display_string() {
     // Guards the historical bug: Node/Rel/Path/Point/Geometry/Vector must
     // be JSON objects/arrays, never stringified. (Temporals are ISO
@@ -328,22 +400,38 @@ fn rows_for_result_drops_empty_columns_rows() {
 }
 
 #[test]
-fn write_only_envelope_matches_golden() {
-    // The shared write-only fixture assembled through the shared helpers is
-    // the exact envelope every surface must emit (rows: [], not [{}]).
-    let (columns, rows, stats, expected) = golden::envelope_write_only();
-    let wire_rows = rows_for_result(&columns, &rows);
-    let env = response_envelope(
-        &columns,
-        &[],
-        wire_rows,
-        stats_to_wire_json(&stats),
-        &[],
-        golden::FIXTURE_TIMING_STAMP,
-        None,
+fn write_only_envelope_content_is_pinned() {
+    // The shared write-only fixture is built through the same helpers
+    // the surfaces call (its own comment), so the pin here is the
+    // write-only content itself, asserted against a hand-authored
+    // literal: no columns and no column types, empty rows — never
+    // `[{}]` — and the counters with zeros included.
+    let expected = golden::envelope_write_only().3;
+    assert_eq!(expected["columns"], serde_json::json!([]));
+    assert_eq!(expected["columnTypes"], serde_json::json!([]));
+    assert_eq!(expected["rows"], serde_json::json!([]));
+    assert_eq!(
+        expected["stats"],
+        serde_json::json!({
+            "nodes_created": 1,
+            "nodes_deleted": 0,
+            "relationships_created": 0,
+            "relationships_deleted": 0,
+            "properties_set": 0,
+            "labels_added": 1,
+            "labels_removed": 0,
+            "indexes_added": 0,
+            "indexes_removed": 0,
+            "constraints_added": 0,
+            "constraints_removed": 0
+        })
     );
-    assert_eq!(env, expected);
-    assert_eq!(env["rows"], serde_json::json!([]));
+    // Both keys are documented as always present (ADR-0363 decision 9,
+    // LABS-418): indexing a `Value` yields `Null` for a missing member,
+    // so presence is asserted explicitly, not just the null value.
+    let members = expected.as_object().expect("the envelope is an object");
+    assert!(members.get("error").is_some_and(serde_json::Value::is_null));
+    assert!(members.get("plan").is_some_and(serde_json::Value::is_null));
 }
 
 #[test]

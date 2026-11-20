@@ -808,10 +808,9 @@ pub fn notification_to_neo4j_entries(notification: &Notification) -> Vec<(&'stat
 /// remedy folded into `description` as ` (remedy: <remedy>)` and no `remedy`
 /// or `position` key. Built from [`notification_to_neo4j_entries`].
 ///
-/// `serde_json::Map` is a sorted map in this workspace (it does not enable
-/// `preserve_order`), so the object's key order is sorted, not Bolt's.
-/// Callers that emit ordered entries — Bolt — read
-/// [`notification_to_neo4j_entries`] instead.
+/// The object's key order is the entries' order (ADR-0634) — the Neo4j
+/// five-key order above. Bolt packs the entries through its own packer
+/// and reads [`notification_to_neo4j_entries`] directly.
 pub fn notification_to_neo4j_json(notification: &Notification) -> Value {
     let obj: Map<String, Value> = notification_to_neo4j_entries(notification)
         .into_iter()

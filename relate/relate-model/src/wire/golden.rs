@@ -335,69 +335,30 @@ pub fn golden_row() -> (Vec<String>, IndexMap<String, CypherValue>, Value) {
     }
     let (_snap, stats_expected) = stats_fixture();
 
-    let mut envelope = Map::new();
-    envelope.insert(
-        "columns".into(),
-        Value::Array(columns.iter().map(|c| Value::String(c.clone())).collect()),
+    // The envelope is built through the production builder — the same
+    // object the surfaces emit — so the fixture is byte-exact against it,
+    // member order included (ADR-0634: a hand-assembled twin could drift
+    // on order where `Value` equality, which the surface round-trips
+    // compare, is order-insensitive).
+    let envelope = response_envelope(
+        &columns,
+        // ADR-0224: the engine stamps each column from the first row; the
+        // golden row IS the first row, so callers reproduce the fixture
+        // by passing `column_types(&row)` to `response_envelope`.
+        &column_types(&row),
+        vec![Value::Object(row_json)],
+        stats_expected,
+        // ADR-0363 decision 9: the success envelope always carries the list;
+        // this fixture is a plain run, so it is empty.
+        &[],
+        // ADR-0221 + ADR-0491: the fixed stamp's total and split, together.
+        FIXTURE_TIMING_STAMP,
+        // LABS-418: the structured plan document is always present, `null`
+        // on a plain run.
+        None,
     );
-    // ADR-0224: the engine stamps each column from the first row; the golden
-    // row IS the first row, so callers reproduce the fixture by passing
-    // `column_types(&row)` to `response_envelope`.
-    let column_type_names: Vec<Value> = column_types(&row).into_iter().map(Value::String).collect();
-    envelope.insert("columnTypes".into(), Value::Array(column_type_names));
-    envelope.insert("rows".into(), Value::Array(vec![Value::Object(row_json)]));
-    envelope.insert("stats".into(), stats_expected);
-    // ADR-0363 decision 9: the success envelope always carries the list;
-    // this fixture is a plain run, so it is empty.
-    envelope.insert(
-        notification_keys::NOTIFICATIONS.into(),
-        Value::Array(Vec::new()),
-    );
-    // ADR-0221 + ADR-0491: the engine-reported elapsed together with its
-    // PARSE / PLAN / EXECUTE split; the fixture pins the shape with the
-    // fixed stamp, so callers reproduce the fixture by passing
-    // `FIXTURE_TIMING_STAMP` to `response_envelope`.
-    envelope.insert(
-        "elapsed_ms".into(),
-        Value::from(FIXTURE_TIMING_STAMP.elapsed_ms),
-    );
-    envelope.insert(
-        "parse_ms".into(),
-        Value::from(FIXTURE_TIMING_STAMP.parse_ms),
-    );
-    envelope.insert("plan_ms".into(), Value::from(FIXTURE_TIMING_STAMP.plan_ms));
-    envelope.insert(
-        "execute_ms".into(),
-        Value::from(FIXTURE_TIMING_STAMP.execute_ms),
-    );
-    // LABS-1120: the fine sub-split and the plan-cache outcome, from the
-    // same fixed stamp.
-    envelope.insert(
-        "lex_parse_ms".into(),
-        Value::from(FIXTURE_TIMING_STAMP.lex_parse_ms),
-    );
-    envelope.insert(
-        "rewrite_ms".into(),
-        Value::from(FIXTURE_TIMING_STAMP.rewrite_ms),
-    );
-    envelope.insert(
-        "lower_ms".into(),
-        Value::from(FIXTURE_TIMING_STAMP.lower_ms),
-    );
-    envelope.insert(
-        "result_generation_ms".into(),
-        Value::from(FIXTURE_TIMING_STAMP.result_generation_ms),
-    );
-    envelope.insert(
-        "plan_cache".into(),
-        Value::from(FIXTURE_TIMING_STAMP.plan_cache),
-    );
-    // LABS-418: the structured plan document is always present, `null` on a
-    // plain run.
-    envelope.insert("plan".into(), Value::Null);
-    envelope.insert("error".into(), Value::Null);
 
-    (columns, row, Value::Object(envelope))
+    (columns, row, envelope)
 }
 
 /// The canonical wire envelope for a **write-only** statement (a
@@ -425,40 +386,27 @@ pub fn envelope_write_only() -> (
         labels_added: 1,
         ..Default::default()
     };
-    let expected = serde_json::json!({
-        "columns": [],
+    // Built through the production helpers — the same assembly the
+    // surfaces run — so the fixture is byte-exact against them, member
+    // order included (ADR-0634): a hand-assembled twin could drift on
+    // order where `Value` equality, which the surface round-trips
+    // compare, is order-insensitive. The write-only content itself
+    // (`rows: []`, never `[{}]`; zeros-inclusive counters) stays pinned
+    // by the `rows_for_result` and `stats` tests against their own
+    // inputs.
+    let expected = response_envelope(
+        &columns,
         // ADR-0224: no columns, so no column types.
-        "columnTypes": [],
-        "rows": [],
-        "stats": {
-            "nodes_created": 1,
-            "nodes_deleted": 0,
-            "relationships_created": 0,
-            "relationships_deleted": 0,
-            "properties_set": 0,
-            "labels_added": 1,
-            "labels_removed": 0,
-            "indexes_added": 0,
-            "indexes_removed": 0,
-            "constraints_added": 0,
-            "constraints_removed": 0
-        },
+        &[],
+        rows_for_result(&columns, &rows),
+        stats_to_wire_json(&stats),
         // ADR-0363 decision 9: always present, empty on a plain run.
-        (notification_keys::NOTIFICATIONS): [],
+        &[],
         // ADR-0221 + ADR-0491: the fixed stamp's total and split, together.
-        "elapsed_ms": FIXTURE_TIMING_STAMP.elapsed_ms,
-        "parse_ms": FIXTURE_TIMING_STAMP.parse_ms,
-        "plan_ms": FIXTURE_TIMING_STAMP.plan_ms,
-        "execute_ms": FIXTURE_TIMING_STAMP.execute_ms,
-        "lex_parse_ms": FIXTURE_TIMING_STAMP.lex_parse_ms,
-        "rewrite_ms": FIXTURE_TIMING_STAMP.rewrite_ms,
-        "lower_ms": FIXTURE_TIMING_STAMP.lower_ms,
-        "result_generation_ms": FIXTURE_TIMING_STAMP.result_generation_ms,
-        "plan_cache": FIXTURE_TIMING_STAMP.plan_cache,
+        FIXTURE_TIMING_STAMP,
         // LABS-418: always present, null on a plain run.
-        "plan": null,
-        "error": null
-    });
+        None,
+    );
     (columns, rows, stats, expected)
 }
 

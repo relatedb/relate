@@ -1495,32 +1495,37 @@ has empty `columns`/`rows`. The `notifications` list is the complete
 engine-native notification shape (ADR-0363 decision 9; see
 [Query notifications](#query-notifications-adr-0363)), unfiltered — the
 text modes' plan-warning exclusion is a rendering rule, not a transport
-rule. Key order is not significant: the binary serializes through
-`serde_json`, which emits object keys in sorted order (`"notifications"`
-before `"plan"`), so consumers match by key name, never by position:
+rule. Key order is not significant, but it is deliberate: the binary
+serializes through `serde_json` with member order preserved (ADR-0634),
+so objects appear in the encoder's construction order (`"plan"` before
+`"notifications"`), and consumers match by key name, never by position:
 
 ```
 $ relate --database demo.cypherl -mode json "EXPLAIN MATCH (p:Person)-[k:KNOWS]->(f:Person) RETURN p.name AS who"
-{"notifications":[],"plan":{"args":{"Details":"1 item(s)","Id":0,"planner":"relate","planner-impl":"relate","planner-version":"0.12.6","runtime":"relate","runtime-impl":"relate","runtime-version":"0.12.6","string-representation":"Cypher 5\n\nPlanner relate\n\nRuntime relate\n\nRuntime version 0.12.6\n\nQuery: MATCH (p:Person)-[k:KNOWS]->(f:Person) RETURN p.name AS who\nPlan:\n+------------------+----+----------------------------------+\n| Operator         | Id | Details                          |\n+------------------+----+----------------------------------+\n| + ProduceResults | 0  | 1 item(s)                        |\n+------------------+----+----------------------------------+\n| | + Expand       | 1  | (p:Person)-[k:KNOWS]->(f:Person) |\n+------------------+----+----------------------------------+","version":"5"},"children":[{"args":{"Details":"(p:Person)-[k:KNOWS]->(f:Person)","Id":1},"identifiers":[],"operatorType":"Expand"}],"identifiers":[],"operatorType":"ProduceResults"}}
+{"plan":{"args":{"Details":"1 item(s)","Id":0,"planner":"relate","planner-impl":"relate","planner-version":"1.2.1","runtime":"relate","runtime-impl":"relate","runtime-version":"1.2.1","string-representation":"Cypher 5\n\nPlanner relate\n\nRuntime relate\n\nRuntime version 1.2.1\n\nQuery: MATCH (p:Person)-[k:KNOWS]->(f:Person) RETURN p.name AS who\nPlan:\n+------------------+----+----------------------------------+\n| Operator         | Id | Details                          |\n+------------------+----+----------------------------------+\n| + ProduceResults | 0  | 1 item(s)                        |\n+------------------+----+----------------------------------+\n| | + Expand       | 1  | (p:Person)-[k:KNOWS]->(f:Person) |\n+------------------+----+----------------------------------+","version":"5"},"children":[{"args":{"Details":"(p:Person)-[k:KNOWS]->(f:Person)","Id":1,"PatternEngine":"auto"},"identifiers":[],"operatorType":"Expand"}],"identifiers":[],"operatorType":"ProduceResults"},"notifications":[],"timings":{"elapsed_ms":1.313,"parse_ms":0.971,"plan_ms":0.0095,"execute_ms":0.331333,"lex_parse_ms":0.010125,"rewrite_ms":0.001291,"lower_ms":0.01275,"result_generation_ms":0.0},"planCache":"miss"}
 ```
 
 ```
 $ relate --database demo.cypherl -mode envelope "EXPLAIN MATCH (p:Person)-[k:KNOWS]->(f:Person) RETURN p.name AS who"
-{"columnTypes":[],"columns":[],"notifications":[],"plan":{"args":{"Details":"1 item(s)","Id":0,"planner":"relate","planner-impl":"relate","planner-version":"0.12.6","runtime":"relate","runtime-impl":"relate","runtime-version":"0.12.6","string-representation":"Cypher 5\n\nPlanner relate\n\nRuntime relate\n\nRuntime version 0.12.6\n\nQuery: MATCH (p:Person)-[k:KNOWS]->(f:Person) RETURN p.name AS who\nPlan:\n+------------------+----+----------------------------------+\n| Operator         | Id | Details                          |\n+------------------+----+----------------------------------+\n| + ProduceResults | 0  | 1 item(s)                        |\n+------------------+----+----------------------------------+\n| | + Expand       | 1  | (p:Person)-[k:KNOWS]->(f:Person) |\n+------------------+----+----------------------------------+","version":"5"},"children":[{"args":{"Details":"(p:Person)-[k:KNOWS]->(f:Person)","Id":1},"identifiers":[],"operatorType":"Expand"}],"identifiers":[],"operatorType":"ProduceResults"},"rows":[],"truncated":false}
+{"columns":[],"columnTypes":[],"rows":[],"truncated":false,"plan":{"args":{"Details":"1 item(s)","Id":0,"planner":"relate","planner-impl":"relate","planner-version":"1.2.1","runtime":"relate","runtime-impl":"relate","runtime-version":"1.2.1","string-representation":"Cypher 5\n\nPlanner relate\n\nRuntime relate\n\nRuntime version 1.2.1\n\nQuery: MATCH (p:Person)-[k:KNOWS]->(f:Person) RETURN p.name AS who\nPlan:\n+------------------+----+----------------------------------+\n| Operator         | Id | Details                          |\n+------------------+----+----------------------------------+\n| + ProduceResults | 0  | 1 item(s)                        |\n+------------------+----+----------------------------------+\n| | + Expand       | 1  | (p:Person)-[k:KNOWS]->(f:Person) |\n+------------------+----+----------------------------------+","version":"5"},"children":[{"args":{"Details":"(p:Person)-[k:KNOWS]->(f:Person)","Id":1,"PatternEngine":"auto"},"identifiers":[],"operatorType":"Expand"}],"identifiers":[],"operatorType":"ProduceResults"},"notifications":[],"timings":{"elapsed_ms":0.341,"parse_ms":0.272,"plan_ms":0.0087,"execute_ms":0.059,"lex_parse_ms":0.0078,"rewrite_ms":0.0006,"lower_ms":0.0093,"result_generation_ms":0.0},"planCache":"miss"}
 ```
 
 `-mode toon` emits the terse structural form — one `plan:` entry with the
 tree beneath it, then one `notifications:` entry with the complete
-notification list, both rendered by toon's nested-value rule (inline
-compact JSON); a `PROFILE` statement emits its `rows[...]` block first,
-then the `plan:` and `notifications:` blocks:
+notification list, then the `timings:` and `planCache:` entries, all
+rendered by toon's nested-value rule (inline compact JSON); a `PROFILE`
+statement emits its `rows[...]` block first, then those blocks:
 
 ```
 $ relate --database demo.cypherl -mode toon "EXPLAIN MATCH (p:Person)-[k:KNOWS]->(f:Person) RETURN p.name AS who"
 plan:
-  {"args":{"Details":"1 item(s)","Id":0,"planner":"relate","planner-impl":"relate","planner-version":"0.12.6","runtime":"relate","runtime-impl":"relate","runtime-version":"0.12.6","string-representation":"Cypher 5\n\nPlanner relate\n\nRuntime relate\n\nRuntime version 0.12.6\n\nQuery: MATCH (p:Person)-[k:KNOWS]->(f:Person) RETURN p.name AS who\nPlan:\n+------------------+----+----------------------------------+\n| Operator         | Id | Details                          |\n+------------------+----+----------------------------------+\n| + ProduceResults | 0  | 1 item(s)                        |\n+------------------+----+----------------------------------+\n| | + Expand       | 1  | (p:Person)-[k:KNOWS]->(f:Person) |\n+------------------+----+----------------------------------+","version":"5"},"children":[{"args":{"Details":"(p:Person)-[k:KNOWS]->(f:Person)","Id":1},"identifiers":[],"operatorType":"Expand"}],"identifiers":[],"operatorType":"ProduceResults"}
+  {"args":{"Details":"1 item(s)","Id":0,"planner":"relate","planner-impl":"relate","planner-version":"1.2.1","runtime":"relate","runtime-impl":"relate","runtime-version":"1.2.1","string-representation":"Cypher 5\n\nPlanner relate\n\nRuntime relate\n\nRuntime version 1.2.1\n\nQuery: MATCH (p:Person)-[k:KNOWS]->(f:Person) RETURN p.name AS who\nPlan:\n+------------------+----+----------------------------------+\n| Operator         | Id | Details                          |\n+------------------+----+----------------------------------+\n| + ProduceResults | 0  | 1 item(s)                        |\n+------------------+----+----------------------------------+\n| | + Expand       | 1  | (p:Person)-[k:KNOWS]->(f:Person) |\n+------------------+----+----------------------------------+","version":"5"},"children":[{"args":{"Details":"(p:Person)-[k:KNOWS]->(f:Person)","Id":1,"PatternEngine":"auto"},"identifiers":[],"operatorType":"Expand"}],"identifiers":[],"operatorType":"ProduceResults"}
 notifications:
   []
+timings:
+  {"elapsed_ms":0.544,"parse_ms":0.437,"plan_ms":0.016,"execute_ms":0.09,"lex_parse_ms":0.016,"rewrite_ms":0.0015,"lower_ms":0.024,"result_generation_ms":0.0}
+planCache:
+  miss
 ```
 
 In `-mode table`, the human-readable presentation, the data table (a
@@ -2041,14 +2046,14 @@ can configure about them is the environment variables `RELATE_BANNER` and
 one line, so a multi-statement run is JSON Lines of envelopes:
 
 ```json
-{"columnTypes":["INTEGER","LIST"],"columns":["a","l"],"notifications":[],"rows":[{"a":1,"l":[1,2]}],"timings":{"elapsed_ms":0.5,"parse_ms":0.25,"plan_ms":0.19,"execute_ms":0.06,"lex_parse_ms":0.13,"rewrite_ms":0.06,"lower_ms":0.06,"result_generation_ms":0.03},"planCache":"miss","truncated":false}
+{"columns":["a","l"],"columnTypes":["INTEGER","LIST"],"rows":[{"a":1,"l":[1,2]}],"truncated":false,"notifications":[],"timings":{"elapsed_ms":0.5,"parse_ms":0.25,"plan_ms":0.19,"execute_ms":0.06,"lex_parse_ms":0.13,"rewrite_ms":0.06,"lower_ms":0.06,"result_generation_ms":0.03},"planCache":"miss"}
 ```
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `columns` | array of strings | the result columns in order, present even when there are no rows |
 | `columnTypes` | array of strings | the engine-stamped per-column type names (ADR-0224), one per `columns` entry in column order, from the 18-name set (`STRING`, `INTEGER`, `FLOAT`, `BOOLEAN`, `NODE`, `RELATIONSHIP`, `PATH`, `LIST`, `MAP`, `POINT`, `DATETIME`, `DATE`, `TIME`, `DURATION`, `VECTOR`, `UUID`, `BINARY`, `ANY`); a column whose first-row value is `Null`, or a result with no rows, stamps `ANY` — the type describes the first row only. `BINARY` marks the engine's statement-scoped byte array (ADR-0327), which the CLI cannot receive through `--param` (JSON) and renders, everywhere, as a list of integers 0–255 |
-| `rows` | array of objects | one object per row, rendered exactly as `--json` renders it: values as in `--json`, and keys sorted alphabetically, so read `columns` for the query's column order |
+| `rows` | array of objects | one object per row, rendered exactly as `--json` renders it: values as in `--json`, keys in the query's column order (ADR-0634) — `columns` remains the authoritative column order to read |
 | `truncated` | boolean | `true` when the [row cap](#row-cap) cut the rows, else `false` |
 | `rowCap` | object | present only when the [row cap](#row-cap) cut the rows (ADR-0403): `{"kept": N, "total": M}` — the rows printed and the rows the statement returned |
 | `notifications` | array of objects | the complete query notification list (ADR-0363 decision 9), always present and `[]` on a plain run; entries carry `code`, `gql_status`, `severity`, `category`, `title`, `description`, `remedy` and `operator_id` on operator-scoped kinds. See [Query notifications](#query-notifications-adr-0363) |
@@ -2056,7 +2061,7 @@ one line, so a multi-statement run is JSON Lines of envelopes:
 | `timings` | object | the statement's timing block (LABS-1120), always present: `elapsed_ms` (the ADR-0221 wall-clock total) with its always-on `parse_ms` / `plan_ms` / `execute_ms` split (ADR-0491) and the fine sub-split — `lex_parse_ms` (lexing + AST build), `rewrite_ms` (the CIP-231 resolver pass), `lower_ms` (validation + lowering, fused), all sub-windows of `parse_ms`, and `result_generation_ms` (the result build), a sub-window of `execute_ms`. All non-negative milliseconds; every fine window never exceeds its coarse phase. On a plan-cache hit the fine parse windows are `0` — nothing was parsed — which `planCache` explains |
 | `planCache` | string | the plan-cache outcome (LABS-1120): `miss` (no cached plan served — the first run of a template, or a hit whose cached plan was rejected for literal-shape safety), `hit-raw-fastpath` (stage 1: the raw statement text matched), `hit-template` (stage 2: the auto-parameterized template matched), `replan-generation-mismatch` (a hit whose entry re-planned under a fresh stats generation), `bypassed` (the cache was not consulted — a caller parameter map carrying the reserved `__AUTO_*__` prefix, or a statement the normalizer refuses) |
 
-An empty result is `{"columnTypes":["ANY"],"columns":["n"],...,"rows":[],"timings":{...},"planCache":"miss","truncated":false}`,
+An empty result is `{"columns":["n"],"columnTypes":["ANY"],"rows":[],...,"truncated":false,"timings":{...},"planCache":"miss"}`,
 so "no rows" is distinguishable from "no output". `--json` and `--jsonl`
 carry the same timing block for every plain result (LABS-1120): `--json`
 wraps the rows as `{"data": [...], "timings": {...}, "planCache": "..."}`

@@ -493,7 +493,7 @@ fn parse_clone_command(rest: &[String]) -> LifecycleCommand {
 fn parse_run_command(rest: &[String]) -> LifecycleCommand {
     use crate::extensions::run::ParsedRun;
     match crate::extensions::run::parse_run_args(rest) {
-        Ok(ParsedRun::Run(cmd)) => LifecycleCommand::Run { cmd },
+        Ok(ParsedRun::Run(cmd)) => LifecycleCommand::Run { cmd: *cmd },
         Ok(ParsedRun::ActionHelp(page)) => LifecycleCommand::RunHelp { page },
         Ok(ParsedRun::VerbHelp) => LifecycleCommand::Help {
             topic: HelpTopic::Run,

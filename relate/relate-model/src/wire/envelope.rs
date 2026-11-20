@@ -101,7 +101,7 @@ fn insert_duration_keys(object: &mut Map<String, Value>, stamp: &TimingStampMs) 
 /// "notifications": [...], "elapsed_ms": <f64>, "parse_ms": <f64>,
 /// "plan_ms": <f64>, "execute_ms": <f64>, "lex_parse_ms": <f64>,
 /// "rewrite_ms": <f64>, "lower_ms": <f64>, "result_generation_ms": <f64>,
-/// "plan_cache": "<outcome>", "plan": {...} | null, "error": null }`.
+/// "plan_cache": "<outcome>", "error": null, "plan": {...} | null }`.
 /// The `plan` key (LABS-418, ADR-0381) is always present too: the
 /// `relate.plan/v1` document, `null` on a plain run.
 /// `elapsed_ms` is the engine-reported statement elapsed in wall-clock

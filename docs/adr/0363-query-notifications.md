@@ -353,3 +353,8 @@ The facts the design starts from:
 - [ADR-0606](./0606-label-less-scan-warning-carries-no-index.md): `AllNodesScan` becomes a bare warning with no index payload; the
   suggestion it named could never serve a label-less pattern, so the text
   advises adding a label instead.
+- [ADR-0634](./0634-wire-object-key-order.md): decision 12's recorded alphabetical serialization is
+  history — the workspace enables `preserve_order`, so the HTTP entry
+  object now serializes in the entries' order, which is decision 11's
+  Bolt order (`code`, `title`, `description`, `severity`, `category`).
+  The five-key set and the no-`position` rule are unchanged.

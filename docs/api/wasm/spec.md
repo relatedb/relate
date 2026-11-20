@@ -90,7 +90,7 @@ const wireJson = db.execute("RETURN 1 AS n", null);
 const result = JSON.parse(wireJson);
 // result.columns: string[]
 // result.columnTypes: string[]             // engine-stamped per-column type names (ADR-0224)
-// result.rows: Array<Record<string, unknown>>   // e.g. [{ n: 1 }]
+// result.rows: Array<Record<string, unknown>>   // e.g. [{ n: 1 }] — objects keyed by column, in the columns order (ADR-0634); read `columns` for the authoritative order
 // result.stats: { nodes_created, ... }
 // result.plan: Record<string, unknown> | null // ADR-0381; null on a plain run
 // result.notifications: Array<Record<string, unknown>> // ADR-0363; [] on a plain run

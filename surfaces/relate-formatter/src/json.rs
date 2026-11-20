@@ -1,7 +1,6 @@
 //! The JSON family: `json` (pretty or compact, ADR-0240), `jsonl`, and the
 //! `envelope` mode (ADR-0195/ADR-0224), all over the one canonical row
-//! projection ([`wire::rows_for_result`])
-//! projection.
+//! projection ([`wire::rows_for_result`]).
 
 use std::io::{self, Write};
 
@@ -63,8 +62,14 @@ impl Formatter {
             Some(view) if !view.profiled => serde_json::Value::Object(riders),
             _ if riders.is_empty() => data,
             _ => {
-                riders.insert("data".to_string(), data);
-                serde_json::Value::Object(riders)
+                // ADR-0634: the wrapped object opens with `data`, the
+                // documented shape — the serialized order is the
+                // construction order now, so `data` is inserted first
+                // rather than floated first by key sorting.
+                let mut wrapped = serde_json::Map::with_capacity(riders.len() + 1);
+                wrapped.insert("data".to_string(), data);
+                wrapped.extend(riders);
+                serde_json::Value::Object(wrapped)
             }
         };
         let json = if self.pretty {

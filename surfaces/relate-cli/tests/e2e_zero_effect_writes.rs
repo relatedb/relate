@@ -137,7 +137,7 @@ fn test_a_zero_row_read_and_an_effective_write_say_nothing() {
     assert_eq!(status.code(), Some(0), "{stderr}");
     assert_eq!(
         data_rows(&stdout),
-        ["{\"n\":{\"id\":1,\"kind\":\"node\",\"labels\":[\"Made\"],\"properties\":{}}}"],
+        ["{\"n\":{\"kind\":\"node\",\"id\":1,\"labels\":[\"Made\"],\"properties\":{}}}"],
         "the effective writes' stdout is unchanged"
     );
     assert_eq!(
@@ -397,7 +397,7 @@ fn test_alter_database_is_not_reported_as_changed_nothing() {
     assert_eq!(status.code(), Some(0), "{stderr}");
     assert_eq!(
         data_rows(&stdout),
-        ["{\"defaultLanguage\":\"CYPHER 25\",\"name\":\"neo4j\"}"],
+        ["{\"name\":\"neo4j\",\"defaultLanguage\":\"CYPHER 25\"}"],
         "ALTER DATABASE persisted the language"
     );
 

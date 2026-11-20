@@ -102,8 +102,15 @@
 //! # Response envelope ([`response_envelope`] / [`error_envelope`])
 //!
 //! ```json
-//! { "columns": [ … ], "columnTypes": [ … ], "rows": [ { … }, … ], "stats": { … }, "notifications": [ … ], "elapsed_ms": 1.25, "parse_ms": 0.4, "plan_ms": 1.1, "execute_ms": 10.8, "plan": { … } | null, "error": null }
+//! { "columns": [ … ], "columnTypes": [ … ], "rows": [ { … }, … ], "stats": { … }, "notifications": [ … ], "elapsed_ms": 1.25, "parse_ms": 0.4, "plan_ms": 1.1, "execute_ms": 10.8, "plan_cache": "<outcome>", "error": null, "plan": { … } | null }
 //! ```
+//!
+//! Object members serialize in the construction order shown here
+//! (ADR-0634): a row object's keys follow the statement's column order,
+//! and every wire object follows its documented order. JSON objects are
+//! formally unordered — consumers match by key name, and `columns`
+//! stays the authoritative column order — but the byte stream no longer
+//! contradicts the documented shapes.
 //!
 //! `notifications` is always present and empty on a plain run (ADR-0363
 //! decision 9); its entries are the engine-native notification objects

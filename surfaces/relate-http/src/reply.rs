@@ -43,9 +43,10 @@ impl Reply {
         Self::json_as(status, body, ResponseMediaType::Json)
     }
 
-    /// A whole JSON object as a reply. `serde_json::Map` iterates in sorted
-    /// key order: the workspace builds serde_json without `preserve_order`.
-    /// Used by an embedding host's extension routes (ADR-0428).
+    /// A whole JSON object as a reply. `serde_json::Map` iterates in
+    /// construction order (ADR-0634), so the body's member order is the
+    /// caller's insertion order. Used by an embedding host's extension
+    /// routes (ADR-0428).
     pub fn from_json(status: u16, value: Json) -> Self {
         let body = match value {
             Json::Object(map) => ReplyBody::new(map),
@@ -398,13 +399,12 @@ fn success_envelope(
         .collect();
     // The `data` member opens every success envelope with `fields` then the
     // materialized `values` rows. That order is an invariant, not a
-    // coincidence: serde_json's `Map` is a `BTreeMap` here (the
-    // `preserve_order` feature is off workspace-wide — the workspace
-    // Cargo.toml enables no features on serde_json), so object members
-    // serialize in key order and "fields" sorts before "values" on every
-    // build; the stream tests pin the exact `{"data":{"fields"` prefix at
-    // both thresholds, so a third key ever joining `data` is caught. The
-    // top-level order below is the body's member list, not a map's.
+    // coincidence: the workspace enables serde_json's `preserve_order`
+    // (ADR-0634), so object members serialize in construction order and
+    // `fields` is inserted before `values` on every build; the stream
+    // tests pin the exact `{"data":{"fields"` prefix at both thresholds,
+    // so a third key ever joining `data` is caught. The top-level order
+    // below is the body's member list, not a map's.
     let mut data = Map::new();
     data.insert("fields".to_string(), fields);
     data.insert("values".to_string(), Json::Array(rows));

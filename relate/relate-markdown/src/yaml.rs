@@ -147,16 +147,36 @@ pub fn parse_yaml_value(text: &str) -> Result<serde_json::Value> {
         return Err(yaml_error("unexpected end of YAML input"));
     }
     match done {
-        Some(value) => Ok(value),
+        Some(mut value) => {
+            // The one parse boundary every vault value crosses: object
+            // key order is canonicalized here, so every downstream
+            // consumer — the renderer, the checkpoint planner — sees one
+            // order whatever the file spelled. serde_json keeps
+            // insertion order under `preserve_order` (ADR-0634), so the
+            // sort is explicit — the primitive is serde_json's own
+            // `sort_all_objects` (a no-op without the feature); it
+            // restores the sorted order all consumers had before that
+            // feature made the file's spelling survive the parse.
+            value.sort_all_objects();
+            Ok(value)
+        }
         None if text.trim().is_empty() => Ok(serde_json::Value::Object(Default::default())),
         None => Err(yaml_error("no YAML value in document")),
     }
 }
 
 /// Deterministically render ordered mapping entries as YAML block-style
-/// text, preserving the caller's key order (frontmatter order is part of
-/// the format contract; `serde_json::Map` would re-sort it).
-pub(crate) fn emit_yaml_entries(entries: &[(String, serde_json::Value)]) -> String {
+/// text, preserving the caller's top-level key order — frontmatter order
+/// is part of the format contract. Every nested object is canonicalized
+/// here (keys sorted, the one primitive): this is the boundary all
+/// emitted values cross, so a value built in code (the checkpoint
+/// planner's engine-order properties) and the same value re-read from a
+/// file render byte-identically — parse-then-render is a fixed point
+/// (ADR-0406 §2, ADR-0634).
+pub(crate) fn emit_yaml_entries(mut entries: Vec<(String, serde_json::Value)>) -> String {
+    for (_, value) in &mut entries {
+        value.sort_all_objects();
+    }
     let mut out = String::new();
     emit_mapping(entries.iter().map(|(k, v)| (k, v)), 0, &mut out);
     out

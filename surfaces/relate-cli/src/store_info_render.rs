@@ -584,10 +584,12 @@ mod tests {
 
     #[cfg(feature = "info")]
     #[test]
-    fn json_object_has_a_fixed_key_set_with_nulls_for_unavailable() {
-        // serde_json's default map orders keys alphabetically; the contract
-        // is the fixed key SET, not the order.
-        let mut keys = [
+    fn json_object_has_a_fixed_key_sequence_with_nulls_for_unavailable() {
+        // ADR-0634: the JSON serializes in `to_json`'s construction order —
+        // the declaration order below — so the fixed key set is pinned as
+        // a sequence: a reordered or inserted key fails here, not only a
+        // missing one.
+        let keys = [
             "layout",
             "superblock_version",
             "codec",
@@ -601,7 +603,6 @@ mod tests {
             "indexes",
             "constraints",
         ];
-        keys.sort_unstable();
         for snapshot in [
             StoreSnapshot::Parquet(manifest()),
             StoreSnapshot::Envelope {
@@ -617,7 +618,7 @@ mod tests {
             assert_eq!(
                 object.keys().cloned().collect::<Vec<_>>(),
                 keys.iter().map(|k| k.to_string()).collect::<Vec<_>>(),
-                "every snapshot shape emits the same fixed key set"
+                "every snapshot shape emits the same fixed key sequence"
             );
         }
         let json_codec = InfoReport::from_store_info(&info(StoreSnapshot::Envelope {
