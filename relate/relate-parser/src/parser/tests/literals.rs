@@ -440,6 +440,19 @@ fn first_return_expr(stmt: &Statement) -> &Expr {
     }
 }
 
+/// The one malformed-number assertion: the query fails to parse with the
+/// `InvalidNumberLiteral` TCK detail (the whole glued run is one error
+/// token), with the query in the failure message.
+fn assert_invalid_number_literal(q: &str) {
+    let err = parse(q).unwrap_err();
+    assert_eq!(
+        err.detail,
+        Some("InvalidNumberLiteral"),
+        "{q:?} must be one malformed literal, got {}",
+        err.message
+    );
+}
+
 #[test]
 fn test_underscore_digit_separators_parse_to_plain_values() {
     // Cypher 25 digit separators (LiteralAcceptance): a single `_` between
@@ -638,18 +651,52 @@ fn test_case_when_chronographical_prefix_form() {
 }
 
 #[test]
-fn test_float32_suffix_lexes_as_a_float_literal() {
+fn test_float_suffix_spellings_lex_as_float() {
     // `1.0f` is the FLOAT32 literal spelling (VectorValueAcceptance /
-    // NaNAcceptance); the engine's only scalar floating value is FLOAT, so
-    // the suffix lexes the same FLOAT literal.
-    match first_return_expr(&parse("RETURN 1.0f AS x").unwrap()) {
-        Expr::Literal(LiteralValue::Float(f)) => assert_eq!(*f, 1.0),
-        other => panic!("expected float literal, got {other:?}"),
+    // NaNAcceptance) and `.4d` / `1e4D` the explicit-double spellings; the
+    // engine's only scalar floating value is FLOAT, so the suffixes lex
+    // the same FLOAT literal — asserted down to the value. `FLOAT32` as a
+    // plain identifier — the vector type expression
+    // `vector([1.0], 1, FLOAT32)` — is untouched by the number scanner.
+    for (q, want) in [
+        ("RETURN 1.0f AS x", 1.0),
+        ("RETURN .4d AS x", 0.4),
+        ("RETURN 1e4D AS x", 1e4),
+    ] {
+        match first_return_expr(&parse_ok(q)) {
+            Expr::Literal(LiteralValue::Float(f)) => assert_eq!(*f, want, "{q}"),
+            other => panic!("expected float literal from {q:?}, got {other:?}"),
+        }
     }
-    // The suffix belongs to the number: an identifier glued to it still
-    // makes the whole run one malformed literal.
-    let err = parse("RETURN 1.0fx AS x").unwrap_err();
-    assert_eq!(err.detail, Some("InvalidNumberLiteral"), "{}", err.message);
+    parse_ok("RETURN vector([1.0], 1, FLOAT32) AS v");
+}
+
+/// The suffix byte belongs to the number: identifier characters glued
+/// after the run — `1.0fx` (a start character, the pre-existing
+/// trailing-identifier case `9223372h54775808`, Literals2 [11], in the
+/// same run shape), `1.0f32` / `1.0F32` / `1.0e0F32` (digits continuing a
+/// consumed suffix, REL8-1064 — Neo4j dev's 42I07 InvalidLiteralNumber)
+/// and a combining mark glued to a suffixed or plain number (the
+/// identifier-*part* class, ASCII or not) — make the whole run one
+/// malformed literal, never a FLOAT token followed by a stray token.
+/// `1F32` rides the start character: `is_float` is false, so no suffix
+/// is consumed and the `F` is the trailing identifier.
+#[test]
+fn test_float_suffix_glued_runs_are_one_malformed_literal() {
+    for q in [
+        "RETURN 1.0fx AS x",
+        "RETURN 1.0f32 AS x",
+        "RETURN 1.0F32 AS x",
+        "RETURN 1.0e0F32 AS x",
+        "RETURN .4d32 AS x",
+        "RETURN 1F32 AS x",
+        // The part class is Unicode: a combining acute (U+0301)
+        // continues an identifier run, so it cannot continue a number.
+        "RETURN 1.0f\u{0301} AS x",
+        "RETURN 1\u{0301} AS x",
+    ] {
+        assert_invalid_number_literal(q);
+    }
 }
 
 #[test]

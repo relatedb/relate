@@ -1,7 +1,8 @@
 //! The numeric-literal scanner: `read_number` (hex/octal prefixes, the
-//! Cypher 25 `_` separators, the float forms and the FLOAT32 suffix) and the
-//! malformed-number classification it shares with them. Split out of
-//! `lexer.rs` by the file-size gate; the methods stay on [`Lexer`].
+//! Cypher 25 `_` separators, the float forms, the FLOAT32 suffix and its
+//! glued-run rejection) and the malformed-number classification they
+//! share. Split out of `lexer.rs` by the file-size gate; the methods
+//! stay on [`Lexer`].
 
 use std::borrow::Cow;
 
@@ -93,26 +94,22 @@ impl<'a> Lexer<'a> {
         // double, `.4d` / `1e4D`). The engine's only scalar floating value
         // is FLOAT, so both lex the same FLOAT token and only have to be
         // accepted — and kept out of the literal text the parser parses as
-        // `f64`.
-        let mut float_suffix = false;
+        // `f64`. The value text ends where the suffix begins, so the
+        // boundary is carried instead of recomputed.
+        let value_end = self.pos;
         if is_float && matches!(self.peek(), b'f' | b'F' | b'd' | b'D') {
-            float_suffix = true;
             self.advance();
         }
 
-        // A numeric literal immediately followed by identifier characters
-        // (`9223372h54775808`, Literals2 [11]) is a malformed number literal —
-        // Cypher requires whitespace before any following identifier/keyword.
+        // The one glue policy and its class rule live on
+        // `number_has_trailing_ident`; a positive check here reports the
+        // whole run as one `InvalidNumberLiteral` token.
         if self.number_has_trailing_ident() {
             self.emit_malformed_number(start, line, col);
             return;
         }
 
-        // The suffix byte (if any) is excluded from the value text: the
-        // engine's only scalar float is FLOAT, so `f`/`F`/`d`/`D` only have
-        // to be accepted, never kept.
-        let end = if float_suffix { self.pos - 1 } else { self.pos };
-        let literal = self.number_literal(start, end);
+        let literal = self.number_literal(start, value_end);
         // Cypher 25 removed the legacy leading-zero decimal spelling
         // (`01277`, `00` — live-verified: a lone `0` is still ordinary).
         // The lexer owns the whole removed-spelling policy, so
@@ -201,13 +198,16 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// True when the character immediately after a just-scanned number is an
-    /// identifier-start character (letter or `_`) — i.e. the numeric run is
-    /// glued to an identifier with no separating whitespace, which is never a
-    /// valid Cypher number literal. The character is decoded so a non-ASCII
-    /// identifier start (e.g. `é` in `RETURN 1é`) counts too (ADR-0182).
+    /// True when the character immediately after a just-scanned number
+    /// continues an identifier — the identifier-*part* class, so no byte
+    /// that could continue an identifier run may continue a numeric one,
+    /// whether it starts one (`9223372h54775808`, Literals2 [11]) or only
+    /// continues it (`1.0f32`, REL8-1064; a combining mark glued to a
+    /// plain number). Cypher requires whitespace before any following
+    /// identifier/keyword. The character is decoded so a non-ASCII
+    /// identifier part counts too (ADR-0182).
     fn number_has_trailing_ident(&self) -> bool {
-        self.at_ident_start()
+        self.at_ident_part()
     }
 
     /// Consume any trailing identifier characters that are glued to a malformed

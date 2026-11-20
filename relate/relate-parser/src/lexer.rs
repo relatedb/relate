@@ -577,17 +577,43 @@ impl<'a> Lexer<'a> {
         n
     }
 
+    /// The one cursor classification both identifier predicates share: an
+    /// ASCII byte decided from the class table with no decoding, or (only
+    /// for a byte >= 0x80) a decoded `char` asked of the hand-written
+    /// Unicode predicate (ADR-0182) — one decode-or-classify step, so the
+    /// two classes below can never diverge on how a character is read.
+    fn at_ident_class(&self, ascii: fn(u8) -> bool, unicode: fn(char) -> bool) -> bool {
+        let b = self.peek();
+        if b < 0x80 {
+            return ascii(b);
+        }
+        self.peek_char().is_some_and(|(c, _)| unicode(c))
+    }
+
     /// True when the character at the cursor is an identifier start: an
     /// ASCII `[A-Za-z_]` byte, decided from the class table with no
     /// decoding, or a non-ASCII `char` accepted by the hand-written
-    /// Unicode predicate (ADR-0182) — only a byte >= 0x80 is decoded.
+    /// Unicode predicate (ADR-0182).
     fn at_ident_start(&self) -> bool {
-        let b = self.peek();
-        if b < 0x80 {
-            return ascii::ascii_ident_start(b);
-        }
-        self.peek_char()
-            .is_some_and(|(c, _)| unicode_identifier::is_identifier_start(c))
+        self.at_ident_class(
+            ascii::ascii_ident_start,
+            unicode_identifier::is_identifier_start,
+        )
+    }
+
+    /// True when the character at the cursor continues an identifier: an
+    /// ASCII `[A-Za-z0-9_]` byte from the class table, or a non-ASCII
+    /// `char` accepted by the hand-written Unicode predicate's *part*
+    /// class (ADR-0182) — the ident-part image of
+    /// [`Lexer::at_ident_start`], a sibling predicate rather than a
+    /// widening of it. The one consumer is
+    /// [`Self::number_has_trailing_ident`], the number scanner's glue
+    /// policy.
+    fn at_ident_part(&self) -> bool {
+        self.at_ident_class(
+            ascii::ascii_ident_part,
+            unicode_identifier::is_identifier_part,
+        )
     }
 
     /// True when the cursor opens an identifier: a plain identifier-start

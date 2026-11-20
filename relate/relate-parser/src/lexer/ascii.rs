@@ -27,7 +27,10 @@ pub(super) const fn ascii_ident_start(b: u8) -> bool {
 
 /// True when `b` is an ASCII identifier-part byte (`[A-Za-z0-9_]`) — the
 /// ASCII branch of `unicode_identifier::is_identifier_part`.
-const fn ascii_ident_part(b: u8) -> bool {
+/// `pub(super)` because the lexer module's `at_ident_part` (the number
+/// scanner's glue policy) reads the class through its wrapper, exactly
+/// as `ascii_ident_start` is read.
+pub(super) const fn ascii_ident_part(b: u8) -> bool {
     b == b'_' || b.is_ascii_alphanumeric()
 }
 
