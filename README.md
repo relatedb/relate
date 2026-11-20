@@ -79,7 +79,9 @@ public key is pinned in the script, and the installer **fails closed** on a
 missing or invalid signature
 ([ADR-0115](docs/adr/0115-sshsig-release-signing.md)). macOS binaries are
 additionally signed and notarized, so Gatekeeper raises no warning
-([ADR-0123](docs/adr/0123-macos-codesign-notarize.md)). Prebuilt binaries for
+([ADR-0123](docs/adr/0123-macos-codesign-notarize.md)), and Windows binaries
+are additionally Authenticode-signed with an RFC 3161 timestamp
+([ADR-0594](docs/adr/0594-windows-authenticode-signing.md)). Prebuilt binaries for
 Linux, macOS, and Windows are on the
 [releases page](https://github.com/relatedb/relate/releases/latest), and an
 installed binary self-updates:
@@ -92,6 +94,24 @@ relate upgrade --check  # report current vs latest; changes nothing
 On Windows a running `.exe` cannot replace itself, so `relate upgrade`
 points you at the PowerShell installer: rerun it to upgrade.
 `relate upgrade --check` works on every platform.
+
+**CLI (Windows):** download `relate-windows-amd64.exe` from the
+[releases page](https://github.com/relatedb/relate/releases/latest), then
+check its Authenticode signature before the first run:
+
+```powershell
+Get-AuthenticodeSignature .\relate-windows-amd64.exe |
+  Format-List Status, TimeStamperCertificate,
+    @{ Label = 'SignerSubject'; Expression = { $_.SignerCertificate.Subject } }
+```
+
+`Status` must be `Valid` with a `TimeStamperCertificate` present — the
+RFC 3161 timestamp keeps the signature valid after the certificate
+expires — and the `SignerSubject` (the `SignerCertificate` subject) must
+name the expected publisher: the code-signing certificate held in DigiCert
+Software Trust Manager, set up in
+[RELEASING.md](RELEASING.md#windows-signing)
+([ADR-0594](docs/adr/0594-windows-authenticode-signing.md)).
 
 **Python:**
 
