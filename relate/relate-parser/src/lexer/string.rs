@@ -11,7 +11,9 @@ use crate::token::TokenType;
 use super::Lexer;
 
 /// The byte span every `\uXXXX` escape takes: backslash, `u`, four hex
-/// digits.
+/// digits. Both window readers read through
+/// `split_first_chunk::<UNICODE_ESCAPE_SPAN>()`, so the constant is the
+/// arity they accept.
 pub(crate) const UNICODE_ESCAPE_SPAN: usize = 6;
 
 /// The code point four hex characters name — the digit read both window
@@ -31,11 +33,11 @@ fn unicode_escape_hex4(window: [char; 4]) -> Option<u32> {
 /// the interpolation pattern's escapes see the same one window — prefix,
 /// length, and span included — the lexer's do.
 pub(crate) fn unicode_escape_window(chars: &[char]) -> Option<(u32, usize)> {
-    if chars.len() < UNICODE_ESCAPE_SPAN || chars[0] != '\\' || chars[1] != 'u' {
+    let Some((&['\\', 'u', a, b, c, d], _)) = chars.split_first_chunk::<UNICODE_ESCAPE_SPAN>()
+    else {
         return None;
-    }
-    let window: [char; 4] = chars[2..UNICODE_ESCAPE_SPAN].try_into().ok()?;
-    unicode_escape_hex4(window).map(|value| (value, UNICODE_ESCAPE_SPAN))
+    };
+    unicode_escape_hex4([a, b, c, d]).map(|value| (value, UNICODE_ESCAPE_SPAN))
 }
 
 /// The supplementary code point a UTF-16 surrogate pair names — both
@@ -60,11 +62,11 @@ pub(crate) fn unicode_surrogate_pair(hi: u32, lo: u32) -> Option<char> {
 /// `&[char]` segments (through [`unicode_escape_window`]). Classification
 /// stays the caller's; this only reads the window.
 pub(crate) fn unicode_escape_value(bytes: &[u8]) -> Option<u32> {
-    if bytes.len() < UNICODE_ESCAPE_SPAN || bytes[0] != b'\\' || bytes[1] != b'u' {
+    let Some((&[b'\\', b'u', a, b, c, d], _)) = bytes.split_first_chunk::<UNICODE_ESCAPE_SPAN>()
+    else {
         return None;
-    }
-    let window: [u8; 4] = bytes[2..UNICODE_ESCAPE_SPAN].try_into().ok()?;
-    unicode_escape_hex4(window.map(|byte| byte as char))
+    };
+    unicode_escape_hex4([a, b, c, d].map(char::from))
 }
 
 impl<'a> Lexer<'a> {
