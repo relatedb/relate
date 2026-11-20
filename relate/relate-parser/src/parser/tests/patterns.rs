@@ -119,6 +119,122 @@ fn test_parse_undirected() {
 }
 
 #[test]
+fn test_spaced_arrowhead_is_the_right_arrow() {
+    // A `>` spaced from the tail dash is the right arrowhead, exactly like
+    // the glued `->` (live Neo4j plans the spaced spelling): with the
+    // bracket body, without it, and with an inline element WHERE inside
+    // the brackets whose own comparison `>` is read before the tail runs.
+    // The clause-level comparison after the pattern is untouched too.
+    for q in [
+        "MATCH (a)-[:R*2]- >(b) RETURN b",
+        "MATCH (a) - [:R*2] - > (b) RETURN b",
+        "MATCH (a)-- >(b) RETURN b",
+        "MATCH (a)-[r WHERE r.p > 1]- >(b) RETURN b",
+        "MATCH (a)-[:R]- >(b) WHERE a.x > 1 RETURN b",
+    ] {
+        let stmt = parse_ok(q);
+        match &match_clause(&stmt).pattern[0].elements[1] {
+            PatternElement::Relationship(r) => {
+                assert_eq!(r.direction, Direction::Right, "{q}");
+            }
+            _ => panic!("{q}: expected relationship"),
+        }
+    }
+}
+
+#[test]
+fn test_spaced_arrowhead_keeps_the_direction_matrix() {
+    // The spaced head/tail spellings land on the same matrix cells as
+    // their glued twins: a left head with a right head (spaced or glued,
+    // mixed freely) is BOTH, a left head without one is LEFT, and a bare
+    // pair of dashes stays BOTH. The glued spellings are the controls.
+    for (q, want) in [
+        ("MATCH (a)-[:R]- >(b) RETURN b", Direction::Right),
+        ("MATCH (a)-- >(b) RETURN b", Direction::Right),
+        ("MATCH (a)<-[:R]- >(b) RETURN b", Direction::Both),
+        ("MATCH (a)<- - >(b) RETURN b", Direction::Both),
+        ("MATCH (a)< -[:R]-> (b) RETURN b", Direction::Both),
+        ("MATCH (a)< -[:R]- > (b) RETURN b", Direction::Both),
+        ("MATCH (a)< -- (b) RETURN b", Direction::Left),
+        ("MATCH (a)< -[:R]- (b) RETURN b", Direction::Left),
+        ("MATCH (a)-[:R]-(b) RETURN b", Direction::Both),
+        ("MATCH (a)--(b) RETURN b", Direction::Both),
+        ("MATCH (a)<-[:R]-(b) RETURN b", Direction::Left),
+        ("MATCH (a)<--(b) RETURN b", Direction::Left),
+        ("MATCH (a)-[:R]->(b) RETURN b", Direction::Right),
+        ("MATCH (a)<-[:R]->(b) RETURN b", Direction::Both),
+    ] {
+        let stmt = parse_ok(q);
+        match &match_clause(&stmt).pattern[0].elements[1] {
+            PatternElement::Relationship(r) => {
+                assert_eq!(r.direction, want, "{q}");
+            }
+            _ => panic!("{q}: expected relationship"),
+        }
+    }
+}
+
+#[test]
+fn test_single_dash_arrowhead_spaced_or_glued_stays_rejected() {
+    // A lone head dash (no bracket body, no closing dash) cannot carry an
+    // arrowhead: the glued `->` and the spaced `- >` both stay rejections,
+    // each reported from the relationship pattern itself -- the head names
+    // what a head may be, the tail what a tail may be. A `<` that is not
+    // followed by the head dash rejects the same way.
+    let tail =
+        parse("MATCH (a) - > (b) RETURN b").expect_err("the spaced single-dash form must reject");
+    assert!(
+        tail.message.contains("expected -> or -, got"),
+        "wrong error: {}",
+        tail.message
+    );
+    let head =
+        parse("MATCH (a)->(b) RETURN b").expect_err("the glued single-dash form must reject");
+    assert!(
+        head.message.contains("expected - or <-, got"),
+        "wrong error: {}",
+        head.message
+    );
+    let left =
+        parse("MATCH (a) < (b) RETURN b").expect_err("a `<` without its head dash must reject");
+    assert!(
+        left.message.contains("expected - after <, got"),
+        "wrong error: {}",
+        left.message
+    );
+}
+
+#[test]
+fn test_expression_comparisons_survive_the_spaced_head_acceptance() {
+    // The spaced left head is a pattern-body form: in an expression a `<`
+    // after a `)` keeps its comparison meaning, so `(a) < (b)` and the
+    // unary-minus shape `(a) < -1` stay comparisons (never pattern
+    // predicates), each lowering to the same comparison tree as its
+    // unparenthesized twin.
+    for (q, twin) in [
+        ("RETURN (a) < (b)", "RETURN a < b"),
+        ("RETURN (a) < -1", "RETURN a < -1"),
+        ("RETURN (1) < (2)", "RETURN 1 < 2"),
+    ] {
+        let (stmt, twin_stmt) = (parse_ok(q), parse_ok(twin));
+        let (Clause::Return(r), Clause::Return(tr)) = (&stmt.clauses[0], &twin_stmt.clauses[0])
+        else {
+            panic!("{q}: expected a RETURN");
+        };
+        assert!(
+            matches!(r.items[0].expr, Expr::Comparison(_)),
+            "{q}: expected a comparison, got {:?}",
+            r.items[0].expr
+        );
+        assert!(
+            matches!(tr.items[0].expr, Expr::Comparison(_)),
+            "{twin}: expected a comparison, got {:?}",
+            tr.items[0].expr
+        );
+    }
+}
+
+#[test]
 fn test_parse_where() {
     let stmt = parse("MATCH (n) WHERE n.age > 30 RETURN n").unwrap();
     match &stmt.clauses[0] {
@@ -703,4 +819,26 @@ fn nested_named_groups_keep_their_sub_path_variable() {
         match_clause(&stmt).pattern[0].subpath_variable.as_ref(),
         Some(&SmallName::from_name("q"))
     );
+}
+
+/// A named unquantified group is 42N42 outside a named path or a
+/// selective search — including a name adopted from a nested group,
+/// which the gate reads through the same `carried_name()` accessor the
+/// adoption uses (live Neo4j 2026.10 rejects both spellings with 42N42).
+#[test]
+fn named_unquantified_groups_reject_outside_a_named_or_selective_path() {
+    for q in [
+        "MATCH ((q = (:A)-->(:B))) RETURN q",
+        "MATCH (( (x = (:A)) )) RETURN 1",
+    ] {
+        let err = parse(q).expect_err("expected the sub-path-binding rejection");
+        assert!(
+            err.message.starts_with("UnsupportedSubPathBinding"),
+            "{q}: wrong error: {}",
+            err.message
+        );
+    }
+    // The enclosing name keeps the CIP-28 sub-path form (the extension
+    // the gate's comment records).
+    assert!(parse("MATCH p = ((q = (:A)-->(:B))) RETURN p").is_ok());
 }

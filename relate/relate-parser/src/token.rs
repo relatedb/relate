@@ -139,8 +139,56 @@ impl TokenType {
     /// gate and the schema reader's FOR-target discrimination; the
     /// pattern-body element loops spell the pair inside their wider
     /// element-alternations, where a standalone predicate does not fit.
+    ///
+    /// Three consumer classes, one deliberate split:
+    ///
+    /// - the expression-context gates (the pattern-predicate and
+    ///   comprehension lookaheads) consult this fused pair only: there a
+    ///   `<` after a `)` keeps its comparison meaning (`RETURN (a) < -1`
+    ///   is a comparison against a negated operand), so the spaced left
+    ///   head is never claimed in an expression;
+    /// - the schema DDL FOR-target lookaheads are deliberately fused-only
+    ///   too — a deferred acceptance, not an expression context: no
+    ///   verified behavior exists yet for a spaced `< -` head in
+    ///   `CREATE INDEX/CONSTRAINT … FOR () < - [r:R] - ()`, so they keep
+    ///   rejecting it until one does;
+    /// - the pattern-body element loops admit the full set through
+    ///   [`Self::is_pattern_body_relationship_start`], the documented
+    ///   superset.
     pub(crate) fn is_relationship_start(self) -> bool {
         matches!(self, Self::Dash | Self::ArrowLeft)
+    }
+
+    /// The pattern-body superset of [`Self::is_relationship_start`]:
+    /// every token that opens a relationship element arm inside a
+    /// pattern body -- the fused pair (derived, so the superset holds by
+    /// construction), the spaced left head `< -` (a LessThan whose head
+    /// dash follows), and the stranded `->` of the single-dash form,
+    /// which the loop routes into the relationship head error instead of
+    /// a generic clause error. Consulted by the pattern-body element
+    /// loops and the unquantified-group juxtaposition rejection; never
+    /// by an expression-context gate or a DDL lookahead (see
+    /// [`Self::is_relationship_start`] for the split).
+    pub(crate) fn is_pattern_body_relationship_start(self) -> bool {
+        matches!(self, Self::LessThan | Self::ArrowRight) || self.is_relationship_start()
+    }
+
+    /// The tokens that continue a pattern body after an element: a new
+    /// node or group's `(`, or any relationship head (derived). Consulted
+    /// by the pattern-body element loop's continuation guard and the
+    /// unquantified-group juxtaposition rejection, so "an element
+    /// follows" has one home instead of two token lists.
+    pub(crate) fn starts_pattern_element(self) -> bool {
+        self == Self::LeftParen || self.is_pattern_body_relationship_start()
+    }
+
+    /// The tokens that can begin a CIP-28 quantifier (`*`, `+`, `{m,n}`):
+    /// consulted by the two pattern-body guards that look ahead for one
+    /// (the parenthesized-subpath group and the relationship pattern's
+    /// postfix quantifier), and named by the quantifier reader's
+    /// contract (`Parser::parse_quantifier`).
+    pub(crate) fn is_quantifier_start(self) -> bool {
+        matches!(self, Self::Star | Self::Plus | Self::LeftBrace)
     }
 
     /// Returns true if this token type is a keyword (MATCH..PROFILE range).

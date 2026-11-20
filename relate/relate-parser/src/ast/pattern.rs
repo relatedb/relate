@@ -49,6 +49,19 @@ impl PatternPath {
             .into_iter()
             .flatten()
     }
+
+    /// The name this path carries to an enclosing reader: its own
+    /// [`Self::variable`], or -- for a doubly-parenthesized named group,
+    /// whose name lands in [`Self::subpath_variable`] -- that inner group
+    /// name. Reading both fields is load-bearing: taking only `variable`
+    /// dropped the name for `((p = (:A)-->(:B)))`, so both the
+    /// quantified-group and the whole-path adoption sites must consult
+    /// this accessor, never a re-derived `or`. The precedence is
+    /// [`Self::path_names`]'s declaration order, read through its first
+    /// item.
+    pub(crate) fn carried_name(&self) -> Option<&SmallName> {
+        self.path_names().next()
+    }
 }
 
 /// A pattern element is either a node pattern, a relationship pattern, or a

@@ -816,3 +816,19 @@ fn test_keyword_path_variable_after_mode_prefix_still_rejected() {
     assert!(parse("MATCH WALK p = ()-->() RETURN p").is_err());
     assert!(parse("MATCH WALK WHERE = ()-->() RETURN `WHERE`").is_err());
 }
+
+/// The spaced left head composes with a `WHERE`-named variable: the
+/// variable reading is decided inside the element (`(WHERE)` closes
+/// before the head), so `MATCH (WHERE) < - [:R] - (b)` binds `WHERE` as
+/// the node variable and reads the relationship as incoming — the same
+/// reading live Neo4j 2026.10 gives it. The spaced head never reaches the
+/// WHERE lookahead itself (see `peek_pattern_name_is_variable`).
+#[test]
+fn spaced_left_head_composes_with_a_where_named_variable() {
+    let stmt = parse_ok("MATCH (WHERE) < - [:R] - (b) RETURN b");
+    assert_eq!(
+        first_node(&stmt).variable.as_ref(),
+        Some(&SmallName::from_name("WHERE"))
+    );
+    assert_eq!(second_rel(&stmt).direction, Direction::Left);
+}

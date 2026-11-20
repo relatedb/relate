@@ -109,8 +109,13 @@ impl<'a> Parser<'a> {
                         group: false,
                     }
                 };
-                let mut path =
-                    self.parse_pattern_path_body(Some(&selector), outer_var.is_some())?;
+                // The 42N42 rule, resolved the same way as the general
+                // path (the function form's selector is always
+                // selective, so a named group stays allowed here).
+                let mut path = self.parse_pattern_path_body(subpath_binding_allowed(
+                    outer_var.is_some(),
+                    Some(&selector),
+                ))?;
                 self.expect(TokenType::RightParen)?;
                 if contains_gpm_quantification(&path.elements) {
                     return Err(self.error(
@@ -155,7 +160,11 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        let mut path = self.parse_pattern_path_body(selector.as_ref(), outer_var.is_some())?;
+        // The 42N42 sub-path-binding rule, resolved once
+        // (`subpath_binding_allowed`) and threaded through the body
+        // reader unchanged.
+        let allowed = subpath_binding_allowed(outer_var.is_some(), selector.as_ref());
+        let mut path = self.parse_pattern_path_body(allowed)?;
         if let Some(var) = outer_var {
             // A named parenthesized group that is the whole body
             // (`p = ANY SHORTEST (q = (:A)-->+(:B))`) keeps both names: the
@@ -215,10 +224,14 @@ impl<'a> Parser<'a> {
     /// e.g. `(x)((a)-->(b))*` or `((a)-->(b))*((c)-->(d))*`); a relationship
     /// factor must always be preceded by an already-parsed element and
     /// followed by a node or quantified factor.
+    ///
+    /// `subpath_binding_allowed` is the 42N42 sub-path-binding rule
+    /// resolved by the enclosing reader (the path is named, or the search
+    /// is selective); the body reader forwards it unchanged to the group
+    /// arm's reader, which consumes it.
     pub(super) fn parse_pattern_path_body(
         &mut self,
-        selector: Option<&PathSelector>,
-        outer_named: bool,
+        subpath_binding_allowed: bool,
     ) -> ParseResult<PatternPath> {
         let mut path = PatternPath {
             variable: None,
@@ -240,108 +253,16 @@ impl<'a> Parser<'a> {
         }
 
         loop {
-            match self.peek_type() {
+            let ty = self.peek_type();
+            if !ty.starts_pattern_element() {
+                break;
+            }
+            match ty {
                 TokenType::LeftParen if self.peek_is_parenthesized_subpath_start() => {
-                    // Parenthesized subpath group: `((...) [WHERE ...])`
-                    // (CIP-14). Either quantified into a `Quantified`
-                    // element (CIP-28), or -- if unquantified -- legal only
-                    // as the sole factor of the whole pattern.
-                    self.next_token(); // consume outer (
-                                       // ADR-0257: nested parenthesized subpaths recurse here
-                                       // directly, bypassing `parse_expression`, so each level
-                                       // must count separately (LABS-69).
-                    let inner =
-                        self.with_expr_depth(|p| p.parse_pattern_path_body(selector, outer_named))?;
-                    let where_expr = if self.peek_type() == TokenType::WHERE {
-                        self.next_token();
-                        Some(self.parse_expression()?)
-                    } else {
-                        None
-                    };
-                    self.expect(TokenType::RightParen)?;
-
-                    if matches!(
-                        self.peek_type(),
-                        TokenType::Star | TokenType::Plus | TokenType::LeftBrace
-                    ) {
-                        self.side_effects.quantifiers.gpm_form = true;
-                        let quantifier = self.parse_quantifier()?;
-                        // The operand's minimum path length must be
-                        // > 0 -- a single node pattern cannot be quantified.
-                        let has_relationship = inner
-                            .elements
-                            .iter()
-                            .any(|e| matches!(e, PatternElement::Relationship(_)));
-                        if !has_relationship {
-                            return Err(self.error(
-                                "MinimumPathLengthZero: the operand of a quantified path pattern must have a minimum path length greater than zero",
-                            ));
-                        }
-                        // Quantified path patterns cannot be nested,
-                        // directly or through concatenation.
-                        if contains_quantification(&inner.elements) {
-                            return Err(self.error(
-                                "NestedQuantification: quantified path patterns cannot be nested",
-                            ));
-                        }
-                        path.elements
-                            .push(PatternElement::Quantified(QuantifiedPathPattern {
-                                subpath_variable: inner.variable.or(inner.subpath_variable),
-                                elements: inner.elements,
-                                where_expr,
-                                quantifier,
-                            }));
-                    } else {
-                        // Unquantified parenthesized pattern: only legal as
-                        // the entire pattern path (CIP-14 pre-existing
-                        // feature) -- nothing may precede or follow it.
-                        if !path.elements.is_empty()
-                            || matches!(
-                                self.peek_type(),
-                                TokenType::LeftParen | TokenType::Dash | TokenType::ArrowLeft
-                            )
-                        {
-                            return Err(self.error(
-                                "UnquantifiedParenthesizedPattern: an unquantified parenthesized path pattern cannot be juxtaposed with other pattern elements",
-                            ));
-                        }
-                        // Neo4j 2026 (Cypher 25) supports naming a
-                        // parenthesized group only under a selective path
-                        // search (ANY / SHORTEST...). Under ALL, or with no
-                        // selector (the implicit ALL), `(p = ...)` as the
-                        // whole path body is 42N42 "sub-path assignment is
-                        // not supported". The unnamed group stays legal in
-                        // every selector, and so does an outer path name
-                        // (`p = ((:A)-->+(:B))`). Relate keeps the
-                        // CIP-28 sub-path form when the enclosing pattern
-                        // carries its own path name (`p = (q = …)`), an
-                        // extension the compatibility corpus does not pin.
-                        if inner.variable.is_some()
-                            && !outer_named
-                            && !selector_is_selective(selector)
-                        {
-                            return Err(self.error(
-                                "UnsupportedSubPathBinding: sub-path assignment is not supported",
-                            ));
-                        }
-                        path.elements = inner.elements;
-                        path.where_expr = where_expr;
-                        // A doubly-parenthesized named group files its name on the inner
-                        // path's `subpath_variable`, so read both fields: taking only
-                        // `inner.variable` dropped the name for `((p = (:A)-->(:B)))`.
-                        if let Some(v) = inner.variable.or(inner.subpath_variable) {
-                            // The group's own sub-path name stays in
-                            // `subpath_variable` (not `variable`, which is
-                            // the enclosing `p = …` name). Keeping the two
-                            // apart lets the validator tell a group reading
-                            // its *own* name inside its `WHERE`
-                            // (Neo4j-legal, `ANY SHORTEST (q = (…) WHERE
-                            // length(q) …)`) from an enclosing path
-                            // variable read there (42I21,
-                            // `p = ((…) WHERE length(p) …)`): both bind the
-                            // path value, so `path_names()` is unchanged.
-                            path.subpath_variable = Some(v);
-                        }
+                    // Parenthesized subpath group (CIP-14): quantified, it
+                    // is one more element; unquantified, it is the whole
+                    // path.
+                    if self.parse_parenthesized_subpath(subpath_binding_allowed, &mut path)? {
                         return Ok(path);
                     }
                 }
@@ -349,7 +270,9 @@ impl<'a> Parser<'a> {
                     let node = self.parse_node_pattern()?;
                     path.elements.push(PatternElement::Node(node));
                 }
-                TokenType::Dash | TokenType::ArrowLeft => {
+                // The continuation guard above leaves only relationship
+                // heads here.
+                _ => {
                     if path.elements.is_empty() {
                         return Err(self.error("a pattern must start with a node pattern"));
                     }
@@ -359,7 +282,6 @@ impl<'a> Parser<'a> {
                         return Err(self.error("expected node pattern after relationship"));
                     }
                 }
-                _ => break,
             }
         }
 
@@ -506,11 +428,17 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a CIP-28 quantifier: `*`, `+`, `{m,n}`, `{m,}`, `{,n}`, `{,}`,
-    /// or `{n}`. The current token must be `Star`, `Plus`, or `LeftBrace`.
-    /// Applies the `{,}` -> `{0,}` normalization (an absent lower bound
-    /// defaults to 0) and the bounds validation (upper bound > 0 if
-    /// present, lower bound <= upper bound).
+    /// or `{n}`. The current token must satisfy
+    /// [`TokenType::is_quantifier_start`]. Marks the GPM quantifier form
+    /// on the clause's mixing flags at entry -- both call sites (the
+    /// parenthesized-subpath group and the relationship pattern's
+    /// postfix quantifier) are the GPM/QPP syntax, mirroring
+    /// `parse_legacy_hop_bounds`'s own flag. Applies the `{,}` -> `{0,}`
+    /// normalization (an absent lower bound defaults to 0) and the bounds
+    /// validation (upper bound > 0 if present, lower bound <= upper
+    /// bound).
     pub(super) fn parse_quantifier(&mut self) -> ParseResult<PathQuantifier> {
+        self.side_effects.quantifiers.gpm_form = true;
         match self.peek_type() {
             TokenType::Star => {
                 self.next_token();
@@ -573,7 +501,15 @@ impl<'a> Parser<'a> {
     ///   start the inline element predicate (`)`, `]`, `:`, `IS`, `$`, `-`,
     ///   `<-`, `WHERE`); otherwise the inline-predicate meaning wins, so
     ///   `(WHERE 1 = 1)` stays an anonymous element with a predicate while
-    ///   `(WHERE)` and `(where WHERE true)` read `WHERE` as the variable;
+    ///   `(WHERE)` and `(where WHERE true)` read `WHERE` as the variable.
+    ///   The `-`/`<-` entries are the fused relationship spellings of
+    ///   ADR-0191's recorded set; a spaced left head never reaches this
+    ///   lookahead — it can only continue a path *after* the element
+    ///   closes, so `MATCH (WHERE) < - [:R] - (b)` reads `WHERE` as the
+    ///   variable through the `)` entry (the same reading live Neo4j
+    ///   2026.10 gives it), and the expression-context claim of a spaced
+    ///   head stays the deferred split recorded on
+    ///   `TokenType::is_relationship_start`;
     /// - a leading `IS` is the variable only when the next token cannot
     ///   start a label spec; otherwise the variable-less GPM
     ///   label-introducer meaning wins, so `(IS)`/`[IS]` read `IS` as the
@@ -720,6 +656,76 @@ impl<'a> Parser<'a> {
         Ok((lower.unwrap_or(1), upper))
     }
 
+    /// Reads a relationship pattern's two arrowheads -- the left before
+    /// the optional bracket body (filled into `rel` through
+    /// [`Parser::parse_rel_bracket_body`]), the right after it -- and
+    /// returns `(left_arrow, right_head)` for the direction matrix. All
+    /// the head spellings live here, and only here:
+    ///
+    /// - the left head is a plain dash, the fused `<-`, or the spaced
+    ///   `< -` (LessThan then the head dash). The spaced spelling is a
+    ///   pattern-body form only -- in an expression context a `<` after a
+    ///   `)` keeps its comparison meaning (`RETURN (a) < -1`), so the
+    ///   pattern-predicate/comprehension gates
+    ///   (`is_relationship_start`) stay on the fused pair;
+    /// - the right head is written either glued to the tail dash (`->`,
+    ///   one token) or spaced from it (`- >`, Dash then GreaterThan): the
+    ///   spaced head is consumed where it can only be the arrowhead --
+    ///   after a relationship tail a path requires a node pattern, so a
+    ///   comparison `>` never reaches this position (those are read
+    ///   inside the bracket WHERE, or in the clause after the pattern
+    ///   ends).
+    fn read_relationship_heads(&mut self, rel: &mut RelPattern) -> ParseResult<(bool, bool)> {
+        let tok = self.next_token();
+        let left_arrow = match tok.ty {
+            TokenType::ArrowLeft => true,
+            TokenType::Dash => false,
+            TokenType::LessThan => {
+                let dash = self.next_token();
+                if dash.ty != TokenType::Dash {
+                    return Err(self.error_at_token(
+                        &dash,
+                        format!("expected - after <, got {:?}", dash.literal),
+                    ));
+                }
+                true
+            }
+            _ => {
+                return Err(
+                    self.error_at_token(&tok, format!("expected - or <-, got {:?}", tok.literal))
+                );
+            }
+        };
+
+        if self.peek_type() == TokenType::LeftBracket {
+            self.parse_rel_bracket_body(rel)?;
+        }
+
+        let right_tok = self.next_token();
+        let right_head = match right_tok.ty {
+            TokenType::ArrowRight => true,
+            TokenType::Dash => {
+                if self.peek_type() == TokenType::GreaterThan {
+                    self.next_token();
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => {
+                return Err(self.error_at_token(
+                    &right_tok,
+                    format!("expected -> or -, got {:?}", right_tok.literal),
+                ));
+            }
+        };
+        Ok((left_arrow, right_head))
+    }
+
+    /// Parses one relationship pattern end to end, as its phase sequence:
+    /// the two arrowheads with the optional bracket body between them
+    /// ([`Parser::read_relationship_heads`]), the direction they pick,
+    /// and the optional GPM postfix quantifier.
     pub(super) fn parse_rel_pattern(&mut self) -> ParseResult<RelPattern> {
         let mut rel = RelPattern {
             variable: None,
@@ -734,120 +740,17 @@ impl<'a> Parser<'a> {
             quantified: false,
         };
 
-        let tok = self.next_token();
-        let left_arrow = tok.ty == TokenType::ArrowLeft;
-        if !left_arrow && tok.ty != TokenType::Dash {
-            return Err(
-                self.error_at_token(&tok, format!("expected - or <-, got {:?}", tok.literal))
-            );
-        }
-
-        if self.peek_type() == TokenType::LeftBracket {
-            self.next_token(); // consume [
-
-            // Variable. As with node patterns, a keyword spelling is a
-            // relationship variable too (ADR-0191); a bare `IS` here is the
-            // variable-less GPM label introducer (`-[IS R]->`) only when
-            // the lookahead does not prove it is the variable.
-            let peek = self.peek().clone();
-            if self.peek_pattern_name_is_variable(0) {
-                rel.variable = Some(SmallName::from_name(&peek.literal));
-                self.next_token();
-            }
-
-            // Types (relationship `|` disjunction predates CIP-14, so a
-            // bare top-level `|` here doesn't itself count as a GQL symbol
-            // for the clause-level mixing check).
-            // The legacy `:A|:B` separator is only legal for a bare type
-            // list; with a variable binding, an inline property map or a
-            // variable length Neo4j rejects it outright (HelpfulErrorMessages
-            // "should provide sensible error message when using colon in the
-            // separation of alternative relationship types in failing cases").
-            // The fact comes back from the type-spec parse itself, so a
-            // `HasLabel` or node-pattern parse of the same spelling cannot
-            // leave it set behind this element.
-            let mut legacy_pipe_colon = false;
-            if matches!(self.peek_type(), TokenType::Colon | TokenType::IS) {
-                // Same element-chain scope as the node arm above: the
-                // `{` of an inline rel property map is not a projection.
-                // The scoped guard keeps the depth balanced across the `?`.
-                let spec = self.with_pattern_element_depth(|p| p.parse_label_spec(true))?;
-                rel.type_expr = Some(spec.expr);
-                legacy_pipe_colon = spec.saw_legacy_pipe_colon;
-            }
-            // The element's variable, properties and hop bounds are read
-            // after the type spec, so the verdict waits until they are all
-            // known (below).
-
-            // Variable length *min..max
-            if self.peek_type() == TokenType::Star {
-                let (min, max) = self.parse_legacy_hop_bounds()?;
-                rel.min_hops = Some(min);
-                rel.max_hops = max;
-                // A negation/wildcard type expression on the legacy
-                // bracket-syntax variable-length form is accepted: it is
-                // the same AST the GPM postfix form `()-[:!A&!B]->*()`
-                // normalizes to (CIP-28 Form 5), so rejecting the bracket
-                // spelling alone is a syntax-gap, not a semantic rule
-                // (Neo4j GpmSyntaxMixingAcceptance "Var-length relationship
-                // with GPM relationship type expression - OK"; the CIP-40
-                // quantifier-mixing [12] DEVIATION row captured the older
-                // rejection and is retired with it).
-            }
-
-            // Property spec, then the element-pattern WHERE (CIP-18); the WHERE is
-            // accepted on the legacy bracket-syntax variable-length form
-            // (`[r*1..5 WHERE ...]`) too: that is the same AST the GPM postfix
-            // form `-[r WHERE ...]->{1,5}` normalizes to, so the old
-            // bracket-only rejection was a syntax-gap (Neo4j
-            // GpmSyntaxMixingAcceptance "Var-length relationship with inline
-            // predicate - OK"; the quantifier-mixing DEVIATION row
-            // captured the older rejection and is retired with it).
-            let tail = self.parse_element_property_and_where()?;
-            rel.has_properties = tail.has_properties;
-            rel.properties = tail.properties;
-            rel.properties_param = tail.properties_param;
-            rel.where_expr = tail.where_expr;
-
-            if legacy_pipe_colon
-                && (rel.variable.is_some() || rel.has_properties || rel.is_variable_length())
-            {
-                return Err(self.error(
-                    "InvalidRelationshipPattern: the semantics of using colon in the separation of alternative relationship types in conjunction with the use of variable binding, inlined property predicates, or variable length is no longer supported. Please separate the relationship types with a single bar between them instead",
-                ));
-            }
-
-            // A malformed relationship bracket (a stray `..`/`-`/token where the
-            // closing `]` is expected — Match4 [9] `[:LIKES..]`, [10]
-            // `[:LIKES*-2]`) is `SyntaxError: InvalidRelationshipPattern`,
-            // not the generic `UnexpectedSyntax`.
-            self.expect_detail(TokenType::RightBracket, "InvalidRelationshipPattern")?;
-        }
-
-        // Right arrow or dash
-        let right_tok = self.next_token();
-        match right_tok.ty {
-            TokenType::ArrowRight => {
-                rel.direction = if left_arrow {
-                    Direction::Both
-                } else {
-                    Direction::Right
-                };
-            }
-            TokenType::Dash => {
-                rel.direction = if left_arrow {
-                    Direction::Left
-                } else {
-                    Direction::Both
-                };
-            }
-            _ => {
-                return Err(self.error_at_token(
-                    &right_tok,
-                    format!("expected -> or -, got {:?}", right_tok.literal),
-                ));
-            }
-        }
+        let (left_arrow, right_head) = self.read_relationship_heads(&mut rel)?;
+        rel.direction = match (left_arrow, right_head) {
+            // `<- ... ->`
+            (true, true) => Direction::Both,
+            // `<- ... -`
+            (true, false) => Direction::Left,
+            // `- ... ->` (glued or spaced head)
+            (false, true) => Direction::Right,
+            // `- ... -`
+            (false, false) => Direction::Both,
+        };
 
         // A quantifier directly
         // following the relationship pattern (`-[r]->*`, `-->+`,
@@ -859,10 +762,7 @@ impl<'a> Parser<'a> {
         // this origin so the engine knows to honor an inline element-pattern
         // WHERE per traversed edge (CIP-28 semantics), unlike the legacy
         // `[r*min..max]` form which this grammar position never touches.
-        if matches!(
-            self.peek_type(),
-            TokenType::Star | TokenType::Plus | TokenType::LeftBrace
-        ) {
+        if self.peek_type().is_quantifier_start() {
             if rel.is_variable_length() {
                 return Err(self.error(
                     "NestedQuantification: a relationship pattern cannot be quantified twice",
@@ -872,11 +772,19 @@ impl<'a> Parser<'a> {
             rel.min_hops = Some(quantifier.min);
             rel.max_hops = quantifier.max;
             rel.quantified = true;
-            self.side_effects.quantifiers.gpm_form = true;
         }
 
         Ok(rel)
     }
+}
+
+/// The 42N42 sub-path-binding rule, resolved once: a named unquantified
+/// group is supported only when the enclosing path is named or the search
+/// is selective. Consulted by both `parse_pattern_path` body call sites
+/// (the general path and the `shortestPath()`/`allShortestPaths()`
+/// function form); the gate itself lives in `parse_parenthesized_subpath`.
+fn subpath_binding_allowed(outer_named: bool, selector: Option<&PathSelector>) -> bool {
+    outer_named || selector_is_selective(selector)
 }
 
 /// Whether a CIP-73 path selector is *selective* in Neo4j's sense: an
@@ -895,3 +803,6 @@ pub fn selector_is_selective(selector: Option<&PathSelector>) -> bool {
         )
     )
 }
+
+mod rel_bracket;
+mod subpath;
