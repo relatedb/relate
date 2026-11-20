@@ -153,26 +153,43 @@ fn validate_database(database: Option<String>, source: &str) -> Result<String, L
     let Some(d) = database else {
         return Ok("neo4j".to_string());
     };
-    if d.is_empty() {
+    if let Some(err) = database_name_error(&d) {
         return Err(LoadError::Env(format!(
-            "NEO4J_DATABASE from {source} must not be empty"
-        )));
-    }
-    if d.chars().count() > 63 {
-        return Err(LoadError::Env(format!(
-            "NEO4J_DATABASE from {source} must be at most 63 characters (got {})",
-            d.chars().count()
-        )));
-    }
-    if let Some(c) = d
-        .chars()
-        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
-    {
-        return Err(LoadError::Env(format!(
-            "NEO4J_DATABASE from {source} contains invalid character {c:?} (allowed: A-Z a-z 0-9 . _ -)"
+            "NEO4J_DATABASE from {source} {err}"
         )));
     }
     Ok(d)
+}
+
+/// The database-name rule violation — the typed form of the shared rule
+/// every Query API URL enforces (ADR-0080); each boundary frames its own
+/// `NEO4J_DATABASE …` prefix, the rule owns its wording.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum DatabaseNameError {
+    #[error("must not be empty")]
+    Empty,
+    #[error("must be at most 63 characters (got {0})")]
+    TooLong(usize),
+    #[error("contains invalid character {0:?} (allowed: A-Z a-z 0-9 . _ -)")]
+    InvalidChar(char),
+}
+
+/// The database-name rule every Query API URL shares: non-empty, at most 63
+/// characters, `[A-Za-z0-9._-]` (ADR-0080). `validate_database` frames the
+/// violation with the value's source, and `query_api_url` enforces the same
+/// rule at its pub boundary, whose callers may bypass `Credentials`.
+pub(crate) fn database_name_error(database: &str) -> Option<DatabaseNameError> {
+    if database.is_empty() {
+        return Some(DatabaseNameError::Empty);
+    }
+    let len = database.chars().count();
+    if len > 63 {
+        return Some(DatabaseNameError::TooLong(len));
+    }
+    database
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+        .map(DatabaseNameError::InvalidChar)
 }
 
 fn require(v: Option<String>, key: &str, source: &str) -> Result<String, LoadError> {
@@ -231,17 +248,56 @@ fn split_authority(uri: &str) -> (Option<&str>, &str) {
     (scheme, &rest[..auth_end])
 }
 
-/// Scheme (if present), host, and optional port — path and query stripped.
+/// Scheme (if present), host, and port slot — path and query stripped.
 ///
 /// Userinfo is NOT stripped here: `query_api_url` refuses any userinfo URI
 /// before this runs (`reject_uri_userinfo`, ADR-0122), so an `@` in the
 /// authority is malformed input, not credentials to carve away. The other
-/// callers (`ensure_cleartext_basic_allowed`, `host_from_uri` via
-/// `complete_aura_uri`) only ever see userinfo-free URLs.
+/// callers (`ensure_cleartext_basic_allowed`) only ever see
+/// userinfo-free URLs.
 pub(crate) struct UriAuthority {
     pub scheme: Option<String>,
     pub host: String,
-    pub port: Option<u16>,
+    /// The port slot, kept distinct from "absent" (ADR-0122, refuse at the
+    /// boundary): port text that is present but not a `u16` parses as
+    /// `Malformed`, which the consumer refuses — folding it into `Absent`
+    /// would let the Query API policy silently remap `neo4j://host:abc`
+    /// to a default port.
+    pub port: UriPort,
+}
+
+/// The port slot of a [`UriAuthority`]: absent, a parsed port, or text that
+/// is present but not a `u16`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UriPort {
+    Absent,
+    Port(u16),
+    Malformed,
+}
+
+/// Map bare port text to its [`UriPort`] slot — the one port-text→slot
+/// policy, shared by the bracketed and unbracketed arms of
+/// [`uri_authority`]. A `u16` is `Port`; anything else (present but not a
+/// number) is `Malformed`, never `Absent` (ADR-0122, refuse at the
+/// boundary).
+fn port_slot(text: &str) -> UriPort {
+    match text.parse::<u16>() {
+        Ok(port) => UriPort::Port(port),
+        Err(_) => UriPort::Malformed,
+    }
+}
+
+/// The port slot of a bracketed host's suffix after `]` (ADR-0122,
+/// refuse at the boundary): empty is `Absent`, `:port` is the shared
+/// [`port_slot`] mapping, anything else is `Malformed` — never silently
+/// truncated and never funneled into the same `None` as an empty
+/// authority.
+fn port_suffix(suffix: &str) -> UriPort {
+    match suffix.strip_prefix(':') {
+        Some(p) => port_slot(p),
+        None if suffix.is_empty() => UriPort::Absent,
+        None => UriPort::Malformed,
+    }
 }
 
 pub(crate) fn uri_authority(uri: &str) -> Option<UriAuthority> {
@@ -252,24 +308,14 @@ pub(crate) fn uri_authority(uri: &str) -> Option<UriAuthority> {
         return None;
     }
     let (host, port) = if rest.starts_with('[') {
-        // Bracketed IPv6 literal: the host runs to `]`; a port follows as
-        // `]:port`. Splitting on the first `:` would carve up the address.
+        // Bracketed IPv6 literal: the host runs to `]`; the suffix after
+        // it is the one port-slot rule. Splitting on the first `:` would
+        // carve up the address.
         match rest.find(']') {
-            Some(end) => match &rest[end + 1..] {
-                "" => (rest[..=end].to_string(), None),
-                suffix => {
-                    // A non-empty suffix that is not `:port` is malformed:
-                    // refuse rather than silently truncate `http://[::1]evil`
-                    // to host `[::1]` (ADR-0122, refuse at the boundary).
-                    let port = suffix
-                        .strip_prefix(':')
-                        .and_then(|p| p.parse::<u16>().ok())?;
-                    (rest[..=end].to_string(), Some(port))
-                }
-            },
+            Some(end) => (rest[..=end].to_string(), port_suffix(&rest[end + 1..])),
             // No closing bracket: keep the whole segment as the "host"; the
             // caller's host-charset validation rejects it.
-            None => (rest.to_string(), None),
+            None => (rest.to_string(), UriPort::Absent),
         }
     } else {
         match rest.split_once(':') {
@@ -278,9 +324,9 @@ pub(crate) fn uri_authority(uri: &str) -> Option<UriAuthority> {
                 if h.is_empty() {
                     return None;
                 }
-                (h.to_string(), p.parse::<u16>().ok())
+                (h.to_string(), port_slot(p))
             }
-            None => (rest.to_string(), None),
+            None => (rest.to_string(), UriPort::Absent),
         }
     };
     Some(UriAuthority {
@@ -288,21 +334,6 @@ pub(crate) fn uri_authority(uri: &str) -> Option<UriAuthority> {
         host,
         port,
     })
-}
-
-/// Complete a truncated Aura host (`*.databases.neo4j` → `*.databases.neo4j.io`).
-pub fn complete_aura_uri(uri: &str) -> String {
-    let Some(host) = host_from_uri(uri) else {
-        return uri.to_string();
-    };
-    if host.ends_with(".databases.neo4j") && !host.ends_with(".databases.neo4j.io") {
-        return uri.replacen(&host, &format!("{host}.io"), 1);
-    }
-    uri.to_string()
-}
-
-pub fn host_from_uri(uri: &str) -> Option<String> {
-    Some(uri_authority(uri)?.host)
 }
 
 #[cfg(test)]
@@ -481,27 +512,11 @@ mod tests {
     }
 
     #[test]
-    fn complete_aura_uri_appends_io() {
-        assert_eq!(
-            complete_aura_uri("neo4j+s://42f122c0.databases.neo4j"),
-            "neo4j+s://42f122c0.databases.neo4j.io"
-        );
-        assert_eq!(
-            complete_aura_uri("neo4j+s://42f122c0.databases.neo4j.io"),
-            "neo4j+s://42f122c0.databases.neo4j.io"
-        );
-    }
-
-    #[test]
     fn uri_authority_strips_path_and_port() {
         let a = uri_authority("neo4j://localhost:7687/db?x=1").unwrap();
         assert_eq!(a.scheme.as_deref(), Some("neo4j"));
         assert_eq!(a.host, "localhost");
-        assert_eq!(a.port, Some(7687));
-        assert_eq!(
-            host_from_uri("neo4j://localhost:7687"),
-            Some("localhost".into())
-        );
+        assert_eq!(a.port, UriPort::Port(7687));
     }
 
     #[test]
@@ -512,7 +527,21 @@ mod tests {
         // port. One boundary rule, not strip-plus-parse.
         let a = uri_authority("neo4j://user:pw@localhost:7687").unwrap();
         assert_eq!(a.host, "user");
-        assert_eq!(a.port, None);
+        assert_eq!(a.port, UriPort::Malformed);
+    }
+
+    #[test]
+    fn uri_authority_keeps_malformed_ports_distinct_from_absent() {
+        // Port text that is present but not a `u16` is `Malformed`, never
+        // folded into `Absent` — the consumer refuses it (ADR-0122) instead
+        // of silently remapping to a default port.
+        for uri in ["neo4j://host:abc", "neo4j://host:99999", "http://host:abc"] {
+            assert_eq!(
+                uri_authority(uri).unwrap().port,
+                UriPort::Malformed,
+                "uri {uri:?}"
+            );
+        }
     }
 
     #[test]
@@ -520,29 +549,33 @@ mod tests {
         let a = uri_authority("http://[::1]:7474/db/neo4j/query/v2").unwrap();
         assert_eq!(a.scheme.as_deref(), Some("http"));
         assert_eq!(a.host, "[::1]");
-        assert_eq!(a.port, Some(7474));
+        assert_eq!(a.port, UriPort::Port(7474));
         let a = uri_authority("neo4j://[fe80::1]").unwrap();
         assert_eq!(a.host, "[fe80::1]");
-        assert_eq!(a.port, None);
+        assert_eq!(a.port, UriPort::Absent);
     }
 
     #[test]
-    fn uri_authority_rejects_junk_after_bracketed_ipv6() {
-        // A suffix after `]` that is not `:port` must not be silently
-        // dropped: `query_api_url` refuses these with the fixed
-        // invalid-host text instead of accepting host `[::1]`.
-        for uri in [
-            "http://[::1]evil.com",
-            "http://[::1]:evil.com",
-            "neo4j://[fe80::1]x",
-            "http://[::1]:7474x",
+    fn uri_authority_carries_bracket_junk_as_a_malformed_port() {
+        // A suffix after `]` that is not `:port` is never silently
+        // dropped and never funneled into the same None as an empty
+        // authority: the bracketed host survives with a malformed port
+        // slot, so the caller's fixed invalid-port text names the real
+        // violation (ADR-0122, refuse at the boundary).
+        for (uri, host) in [
+            ("http://[::1]evil.com", "[::1]"),
+            ("neo4j://[fe80::1]x", "[fe80::1]"),
+            ("http://[::1]:evil.com", "[::1]"),
+            ("http://[::1]:7474x", "[::1]"),
         ] {
-            assert!(uri_authority(uri).is_none(), "uri {uri:?}");
+            let a = uri_authority(uri).unwrap();
+            assert_eq!(a.host, host, "uri {uri:?}");
+            assert_eq!(a.port, UriPort::Malformed, "uri {uri:?}");
         }
         // The valid shapes keep working.
         assert_eq!(uri_authority("http://[::1]:7474").unwrap().host, "[::1]");
         assert_eq!(uri_authority("http://[::1]").unwrap().host, "[::1]");
-        assert!(uri_authority("http://[::1]").unwrap().port.is_none());
+        assert_eq!(uri_authority("http://[::1]").unwrap().port, UriPort::Absent);
     }
 
     #[cfg(unix)]

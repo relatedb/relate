@@ -862,12 +862,29 @@ env file (`NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`, optional
 (`NEO4J_USER` is an alias of `NEO4J_USERNAME`). `--param` binds source-query
 parameters. `NEO4J_URI` must name a Query API origin, never a Bolt endpoint:
 `http://` / `https://` URIs are used as-is
-(`http://host:7474`, `https://host:7473`), a Bolt `neo4j://host:7687` /
-`bolt://host:7687` URI is reinterpreted as `http://host:7474`, and an Aura
-`neo4j+s://<id>.databases.neo4j.io` URI as
-`https://<id>.databases.neo4j.io`. A transactional Bolt URI for an instance
-whose Query API listens on another port — for example the hosted demo's
-`:7473` — does not map, so pass the `http(s)` Query API origin instead.
+(`http://host:7474`, `https://host:7473`). A Bolt URI resolves through
+ordered candidate origins (ADR-0633) — the request layer tries each
+until one answers: a Bolt `neo4j://host:7687` / `bolt://host:7687` URI
+tries `http://host:7474` then `http://host` (port 80), and a TLS Bolt
+`neo4j+s://host:7687` URI (also `neo4j+ssc`, `bolt+s`, `bolt+ssc`; the
+7687 port may be omitted) tries `https://host:7473` then `https://host`
+(port 443) — the server's own port first, the generic web port as the
+proxied fallback. Any HTTP answer selects an origin (a `401` proves it
+is the Query API); a failure that proves the request never left the
+client (a refused or unreachable connection, an unresolved host, a
+connect timeout) advances; every other failure — a timeout, a reset
+connection, a TLS or protocol error — may mean the server applied the
+request, so it fails the pull instead of being retried, never
+duplicating a non-idempotent write; every candidate failing undelivered
+is one error naming each origin tried. An Aura
+`neo4j+s://<id>.databases.neo4j.io` URI resolves as
+`https://<id>.databases.neo4j.io` (any bolt port stripped). A Bolt URI
+naming an explicit non-default port does not map on any other host (an
+Aura host strips it), and neither does a
+plaintext Bolt URI for an HTTPS-only Query API such as the hosted
+demo's `https://demo.neo4jlabs.com:7473` — its TLS Bolt form
+`neo4j+s://demo.neo4jlabs.com:7687` does map — so pass the `http(s)`
+Query API origin instead.
 
 Plaintext Basic auth is refused off-loopback: when the resolved Query API URL
 is `http://` to a non-loopback host, `pull` fails before any network call with
@@ -912,11 +929,14 @@ via NEO4J_USERNAME/NEO4J_PASSWORD` (pull credentials come from
 missing-scheme, missing-host, and unsupported-scheme
 errors are fixed text (the scheme token is never echoed either — everything
 before the first `://` parses as the scheme, so a `user:pw@host://x` URI
-would carry credentials there), and a parsed host outside the
+would carry credentials there), a parsed host outside the
 DNS/IP-literal charset (a real hostname never
 contains `%` or `@`, so percent-encoded userinfo such as
 `http://user%3Asecretpw%40host` lands in the host slot) is rejected with
-`NEO4J_URI has an invalid host` (ADR-0122, validate-don't-sanitize):
+`NEO4J_URI has an invalid host`, and a port that is present but not a
+number (`neo4j://host:abc`) with `NEO4J_URI has an invalid port` — never
+silently remapped to a default port (ADR-0122,
+validate-don't-sanitize):
 
 ```bash
 relate pull --from neo4j.env --query "MATCH (n) RETURN n" --database ./mirror

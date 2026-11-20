@@ -179,3 +179,5 @@ is unchanged.
   required `--database PATH`. `:memory:` stays rejected.
 
 - [ADR-0181](./0181-typed-query-api-wire-for-pull.md) fixes the Query API wire format for pull: the pull path requests typed JSON (`application/vnd.neo4j.query…`) and decodes every `$type`-tagged value into an engine value, failing loudly on `Base64`, `Unsupported`, unknown tags, unparseable payloads, and untagged cells. `run_query`/`run_query_streaming` keep plain `application/json`, and request bodies stay `Content-Type: application/json`.
+
+- [ADR-0633](./0633-pull-bolt-uri-query-api-candidates.md) refines §2's `NEO4J_URI` mapping: a Bolt-family URI now resolves through ordered Query API origin candidates — a TLS Bolt URI tries `https :7473` then `https :443`, a plaintext Bolt URI `http :7474` then `http :80` — the first origin answering at the HTTP layer winning. The mappings recorded here stay the canonical (first) candidate and the pull identity.

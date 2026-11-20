@@ -14,9 +14,12 @@ relate pull [--from FILE] --query Q [--param N=V] --database PATH
 - `--database PATH` — destination directory or `.rl` bundle. `:memory:` is rejected.
 
 `NEO4J_URI` is an http(s) Query API origin (e.g. `https://host:7473`); a
-Bolt `neo4j://host:7687` maps to `http://host:7474`, an Aura `neo4j+s://` URI
-to `https://<host>/`. The hosted demo's Query API is
-`https://demo.neo4jlabs.com:7473` (database `companies`).
+Bolt `neo4j://host:7687` tries `http://host:7474` then `http://host`, a
+TLS Bolt `neo4j+s://host:7687` tries `https://host:7473` then
+`https://host` (ADR-0633 — each candidate until one answers), an Aura
+`neo4j+s://` URI resolves to `https://<host>/`. The hosted demo's Query
+API is `https://demo.neo4jlabs.com:7473` (database `companies`), reached
+from its TLS Bolt connection URI `neo4j+s://demo.neo4jlabs.com:7687`.
 
 The command talks HTTP Query API v2, upserts the subgraph (source-scoped
 union on remote `elementId`; overlapping pulls reuse existing local
