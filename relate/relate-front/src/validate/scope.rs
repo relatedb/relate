@@ -31,10 +31,8 @@ use super::writes::{
     declare_new_name, validate_create_bindings, validate_dynamic_label_no_any,
     validate_dynamic_label_scope, validate_merge_bindings,
 };
-use crate::ast::collect::{
-    bind_pattern_vars, clause_introduced_names, effective_expr, effective_name, item_variable,
-    projected_names,
-};
+use crate::ast::collect::{bind_pattern_vars, clause_introduced_names, projected_names};
+use crate::ast::naming::{effective_expr, effective_name, item_variable};
 use crate::call_scope::duplicate_outer_variable;
 use crate::output_vars::{compute_subquery_output_vars, compute_subquery_output_vars_seeded};
 use crate::show_columns::{catalog_output_names, is_catalog_clause};

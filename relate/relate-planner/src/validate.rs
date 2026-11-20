@@ -389,11 +389,14 @@ fn check_bare_import_redeclaration(
 }
 
 /// The one spelling of the projection alias rule the `NEXT` tail, a
-/// conditional branch and a `WITH` share: an item with no `AS` must be a bare
-/// variable or `*`; any other expression needs its alias. Each site keeps its
+/// conditional branch and a `WITH` share: an item with no `AS` must be
+/// canonically named ([`relate_ir::canonical_name`]: a bare variable,
+/// `*`, or a map projection over a variable — the shapes that name
+/// their own column, so an unaliased `WITH n {.*}` passes exactly like
+/// `WITH n`); any other expression needs its alias. Each site keeps its
 /// own text.
 fn is_unaliased_expression(item: &relate_ir::Projection) -> bool {
-    item.alias.is_none() && !matches!(item.expr, Expr::Variable(_) | Expr::Star)
+    item.alias.is_none() && relate_ir::canonical_name(&item.expr).is_none()
 }
 
 /// Whether the part's terminal `RETURN` carries an unaliased expression.

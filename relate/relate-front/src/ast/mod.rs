@@ -2,11 +2,15 @@
 //! `validate`, `call_scope`, `local_callables` and `lower`, which all
 //! consume it downward — none of them owns it.
 //!
-//! - [`collect`]: the pure collectors (variables, patterns, names, string
+//! - [`collect`]: the pure collectors (variables, patterns, string
 //!   interpolation) plus the shared expression-scope check pair
 //!   (`check_expr_vars_defined`/`check_name_defined`) and the UNION-chain
 //!   enumeration (`union_arms`/`union_chain`) — neutral plumbing, not
 //!   validator policy.
+//! - [`naming`]: the projection-item naming rule — the output name a
+//!   WITH/RETURN item projects, the implicit-name vocabulary its alias
+//!   gates read, and the paren-transparency policy they classify
+//!   through.
 //! - [`search_spec`]: the one walk over a SEARCH source specification.
 //! - [`stmt_ref`]: the statement-position type (real statement, UNION arm,
 //!   NEXT stage, or FOREACH body) the whole-tree walkers visit.
@@ -14,6 +18,7 @@
 //!   ADR-0257 nesting-depth cap they enforce.
 
 pub(crate) mod collect;
+pub(crate) mod naming;
 pub(crate) mod search_spec;
 pub(crate) mod stmt_ref;
 pub(crate) mod tree;

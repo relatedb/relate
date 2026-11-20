@@ -15,7 +15,7 @@ use relate_parser::{
 use relate_names::SmallName;
 
 use super::walker_error;
-use crate::ast::collect::item_variable;
+use crate::ast::naming::item_variable;
 use crate::ast::tree::{walk_expr, walk_statement_tree};
 
 /// The body of a definition, validated: the CIP-231 authored define-time
@@ -182,19 +182,24 @@ pub(super) fn chain_links(body: &Statement) -> Vec<&Statement> {
 /// would leave the per-arm selection with nothing to find.
 fn check_union_arms_export_head_names(body: &Statement) -> Result<()> {
     let links = chain_links(body);
-    // Fallible name derivation: a link without a terminal RETURN (the
-    // FINISH shape) or with an unnameable item is skipped, not panicked
-    // on -- the aliasing check owns the unnameable rejection.
-    // chain_links always pushes the head first, so the head's names are
-    // the body's own -- no identity Option layer.
-    let Some(head_names) = terminal_names(body) else {
-        // The emitting-RETURN shape is check_emitting_returns_aliased's
-        // and the call site's own gate (a FINISH body ends without one).
-        return Ok(());
+    // The head's terminal names carry the two facts separately: no
+    // terminal RETURN (the FINISH shape) leaves the arm check nothing
+    // to compare -- the emitting-RETURN gate and the call site's own
+    // rules own that shape; an unnameable item is the 42N21 gate's
+    // rejection (it runs first, so the propagated `Err` is the
+    // defensive arm). chain_links always pushes the head first, so the
+    // head's names are the body's own -- no identity Option layer.
+    let head_names = match terminal_names(body)? {
+        Some(names) => names,
+        None => return Ok(()),
     };
     for arm in &links[1..] {
-        let Some(arm_names) = terminal_names(arm) else {
-            continue;
+        let arm_names = match terminal_names(arm) {
+            Ok(Some(names)) => names,
+            // No terminal RETURN, or an unnameable item (the 42N21
+            // gate's rejection, spelled per fact): nothing to compare
+            // either way.
+            Ok(None) | Err(_) => continue,
         };
         if arm_names != head_names {
             // The engine-level twin's contract: the same semantic error
@@ -219,16 +224,27 @@ pub(super) fn terminal_return(stmt: &Statement) -> Option<&ReturnClause> {
     }
 }
 
-/// The terminal RETURN's items' effective names, in order -- `None` when
-/// the link has no terminal RETURN or any item is unnameable: the one
-/// derivation both the UNION-arm check and `body_export_names` consult.
-pub(super) fn terminal_names(stmt: &Statement) -> Option<Vec<SmallName>> {
-    terminal_return(stmt).and_then(|ret| {
-        ret.items
-            .iter()
-            .map(crate::ast::collect::effective_name)
-            .collect::<Option<Vec<SmallName>>>()
-    })
+/// The terminal RETURN's items' effective names, in order -- the two
+/// facts the derivation's old single `Option` conflated, returned
+/// separately: `Ok(None)` is the link's lack of a terminal RETURN (the
+/// FINISH shape); `Err` is a terminal-RETURN item the naming rule
+/// cannot name, carrying the authored rejection (the 42N21 aliasing
+/// gate owns it and runs first, so `Err` is the defensive arm at every
+/// caller -- each spells what it does with it, never merging the two
+/// facts back). The one derivation both the UNION-arm check,
+/// `body_export_names` and the rewrite's yield mapping consult.
+pub(super) fn terminal_names(stmt: &Statement) -> Result<Option<Vec<SmallName>>> {
+    let Some(ret) = terminal_return(stmt) else {
+        return Ok(None);
+    };
+    ret.items
+        .iter()
+        .map(crate::ast::naming::effective_name)
+        .collect::<Option<Vec<SmallName>>>()
+        .map(Some)
+        .ok_or_else(|| {
+            Error::syntax("a procedure body's terminal RETURN must name every item".to_string())
+        })
 }
 
 /// Every emitting RETURN of a procedure body shall be aliased (42N21):
@@ -377,15 +393,23 @@ pub(super) fn conditional_arms_return(body: &Statement) -> bool {
 }
 
 /// The columns a procedure body exports, in projection order: `None`
-/// when the body does not export (a FINISH/void body or an unnamed item).
+/// when the body does not export (a FINISH/void body).
 pub(super) fn body_export_names(body: &Statement) -> Option<Vec<SmallName>> {
     let set = crate::output_vars::compute_subquery_output_vars(body)?;
     for link in chain_links(body) {
-        if let Some(names) = terminal_names(link) {
-            if names.iter().all(|name| set.contains(name)) {
-                return Some(names);
+        match terminal_names(link) {
+            Ok(Some(names)) => {
+                if names.iter().all(|name| set.contains(name)) {
+                    return Some(names);
+                }
+                return None;
             }
-            return None;
+            // No terminal RETURN on this link: a later one may still
+            // export.
+            Ok(None) => continue,
+            // An unnameable item is the 42N21 gate's rejection (it runs
+            // first); this link contributes no names.
+            Err(_) => continue,
         }
     }
     None

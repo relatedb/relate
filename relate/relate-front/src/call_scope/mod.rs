@@ -36,10 +36,10 @@ use relate_parser::{
 };
 
 use crate::ast::collect::{
-    check_expr_vars_defined, check_names_allowed, clause_introduced_names, effective_name,
-    item_variable, pattern_vars, projected_names, search_score_var, union_chain,
+    check_expr_vars_defined, check_names_allowed, clause_introduced_names, pattern_vars,
+    projected_names, search_score_var, union_chain,
 };
-use crate::ast::tree::map_projection_var;
+use crate::ast::naming::{effective_name, item_needs_alias, item_variable};
 // The lenient naked-CALL fallback consults the output-vars family at
 // the crate root (its other consumer is `validate::scope`, importing
 // downward) — no upward edge into `validate` remains.
@@ -658,31 +658,22 @@ fn check_brace_return_items_aliased(stmt: &Statement) -> Result<(), EngineError>
 }
 
 /// The one item rule behind both 42N21 wordings: every RETURN item must
-/// carry a name — an alias, a bare variable, or a map projection over one.
-/// The item shapes read [`item_variable`] and [`map_projection_var`] — paren-transparent
-/// (LABS-1615/1616): `RETURN (n)` and `RETURN (n {.p})` carry their names
-/// exactly like the unparenthesized spellings, matching the top-level
-/// alias rule instead of diverging from it.
+/// carry a name — one that needs no `AS` ([`item_needs_alias`]: an
+/// alias, or an implicit name — a bare variable or a map projection
+/// over one — paren-transparent, LABS-1615/1616, so `RETURN (n)` and
+/// `RETURN (n {.p})` carry their names exactly like the unparenthesized
+/// spellings, matching the top-level alias rule instead of diverging
+/// from it). A `v.key` property access is deliberately not a member of
+/// that vocabulary: it names a column top-level yet stays an expression
+/// here — `CALL { MATCH (n) RETURN (n.p1) }` is the rejection its
+/// unparenthesized twin gets.
 fn check_return_items_aliased(stmt: &Statement, message: &str) -> Result<(), EngineError> {
     fn check_return(rc: &ReturnClause, message: &str) -> Result<(), EngineError> {
         for item in &rc.items {
             if item.all {
                 continue;
             }
-            // The 42N21 exemption vocabulary is a deliberately narrower
-            // subset of the canonical-name shapes — recorded here, not an
-            // accident of synchronization: Neo4j exempts a bare variable
-            // and a map projection over one (both carry their own name in
-            // a CALL body's projected row), but NOT a `v.key` property
-            // access, which names a column top-level yet stays an
-            // expression here — `CALL { MATCH (n) RETURN (n.p1) }` is
-            // the rejection its unparenthesized twin gets. Both shape
-            // tests read the one shared homes, paren-transparent
-            // (LABS-1615/1616).
-            let named = item.alias.is_some()
-                || item_variable(item).is_some()
-                || map_projection_var(&item.expr).is_some();
-            if !named {
+            if item_needs_alias(item) {
                 return Err(EngineError::semantic(
                     ErrorKind::NoExpressionAlias,
                     message.to_string(),

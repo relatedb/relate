@@ -55,7 +55,8 @@ use relate_parser::{
 };
 
 use super::static_literal::{constant_value, static_literal_type, FoldedConstant, StaticLitType};
-use crate::ast::collect::{bind_pattern_vars, effective_name};
+use crate::ast::collect::bind_pattern_vars;
+use crate::ast::naming::effective_name;
 use crate::ast::tree::walk_label_expr;
 
 /// A dynamic operand's statically known value or type. The value form is

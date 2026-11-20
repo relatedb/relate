@@ -719,6 +719,20 @@ mod tests {
         .unwrap();
     }
 
+    /// The two terminal-name facts stay split at the call site: a FINISH
+    /// (void) body called with `YIELD *` reports its own missing-RETURN
+    /// rejection, not the unnameable-item message it used to share with
+    /// that fact.
+    #[test]
+    fn yield_star_on_a_finish_body_names_its_own_rejection() {
+        let error = err("DEFINE PROCEDURE foo() { CREATE (n:Void {id: 1}) FINISH } \
+             CALL foo() YIELD * RETURN 1 AS one");
+        assert!(
+            error.contains("a procedure body with no terminal RETURN cannot be yielded with `*`"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn yielding_unknown_columns_is_rejected() {
         let error =

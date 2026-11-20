@@ -592,7 +592,19 @@ impl Projection {
 /// backtick and `(n.name)` each by its verbatim source text, so every
 /// property spelling beyond the plain one is its own column name, and
 /// the verbatim `source_text` fallback owns it.
-fn canonical_name(expr: &Expr) -> Option<String> {
+///
+/// Doubles as the alias-gate vocabulary: an unaliased projection item
+/// whose expression is named here carries its own column name, so the
+/// planner's `WITH` and conditional-`RETURN` alias rules test it instead
+/// of re-spelling the shape list — an unaliased `WITH n {.*}` passes
+/// exactly like `WITH n` (Neo4j 2026.10 live-confirmed, REL8-1866). The
+/// parser-AST twin of this vocabulary is relate-front's
+/// `implicit_name` (the front's alias gates read that one); the drift
+/// test beside it in relate-front lowers the canonical shapes and pins
+/// the two spellings' agreement, so a shape admitted in one but not
+/// the other fails a test instead of silently splitting WITH acceptance
+/// from planner naming.
+pub fn canonical_name(expr: &Expr) -> Option<String> {
     // Rendering (a user-visible column name): the text arms resolve
     // through Display (ADR-0509 §2), once per name, not per lookup.
     match expr {

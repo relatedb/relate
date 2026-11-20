@@ -52,6 +52,7 @@ use relate_parser::{
 
 use relate_names::SmallName;
 
+use super::validate::terminal_names;
 use super::{walker_error, Resolver};
 
 /// The weight of a cloned local-callable body: one per visited
@@ -649,7 +650,7 @@ fn map_final_return_items(body: &mut Statement, map: &FinalItemMap<'_>) -> Resul
                         .items
                         .iter()
                         .find(|item| {
-                            crate::ast::collect::effective_name(item)
+                            crate::ast::naming::effective_name(item)
                                 .is_some_and(|export| *name == export)
                         })
                         .ok_or_else(|| {
@@ -723,11 +724,16 @@ fn yield_mapping(
     match (call.yields.mode(), exports) {
         (YieldMode::Star, _) => {
             // The terminal export names through the one derivation
-            // (terminal_names): a body whose terminal projection has an
-            // unnameable item is the same failure the UNION-arm check
-            // reports, never a panic beside a handled form.
-            let names = super::validate::terminal_names(body_stmt).ok_or_else(|| {
-                Error::syntax("a procedure body's terminal RETURN must name every item".to_string())
+            // (terminal_names), whose two facts split: `Err` propagates
+            // the authored unnameable-item rejection, and `Ok(None)` --
+            // a body with no terminal RETURN to yield -- is its own
+            // missing-projection rejection, never one message for both
+            // facts.
+            let names = terminal_names(body_stmt)?.ok_or_else(|| {
+                Error::syntax(
+                    "a procedure body with no terminal RETURN cannot be yielded with `*`"
+                        .to_string(),
+                )
             })?;
             // YIELD *: every body export, in projection order, unrenamed
             // (the same selection-pair shape the named form builds).

@@ -3,7 +3,7 @@
 //! projected-item predicate, and the paren batteries.
 
 use super::*;
-use crate::ast::collect::tests::{paren_item, paren_prop, paren_var, paren_wrap};
+use crate::ast::naming::tests::{paren_item, paren_prop, paren_var, paren_wrap};
 // LABS-260: an ORDER BY aggregate over the projection's input scope is
 // valid when the DISTINCT projection itself aggregates.
 #[test]

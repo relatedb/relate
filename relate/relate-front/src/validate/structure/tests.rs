@@ -1,6 +1,7 @@
 //! The structure battery's tests, offloaded by the file-size gate
 //! (the ast/tree.rs shape): UNION columns, FOREACH bodies, traversal
-//! bounds, and the paren-projection batteries.
+//! bounds, and the paren-projection batteries (the WITH alias rule's
+//! variable, paren and map-projection shapes).
 
 use super::*;
 use relate_parser::Expr;
@@ -316,6 +317,58 @@ fn with_parenthesized_non_variable_still_requires_alias() {
             "{query}: parens must not make a non-variable item aliasable"
         );
     }
+}
+/// REL8-1866: an unaliased map projection over a variable is named
+/// after its base variable (`WITH m {.*}` projects the column `m` — the
+/// map is a view of that variable, Neo4j 2026.10 live-confirmed), so
+/// WITH's alias rule admits it exactly like the bare variable: every
+/// selector spelling, DISTINCT, redundant parens, and the aliased form
+/// beside them.
+#[test]
+fn with_map_projection_over_a_variable_needs_no_alias() {
+    for query in [
+        "MATCH (m:L1) WITH m{.*} RETURN m",
+        "MATCH (m:L1) WITH m{.p1} RETURN m",
+        "MATCH (m:L1) WITH m{ .p1, .p2 } RETURN m",
+        "MATCH (m:L1) WITH DISTINCT m{.*} RETURN m",
+        "MATCH (m:L1) WITH (m{.*}) RETURN m",
+        "MATCH (m:L1) WITH m{.*} AS x RETURN x",
+    ] {
+        crate::validate::validate_statement_tree(&relate_parser::parse(query).unwrap())
+            .unwrap_or_else(|e| {
+                panic!("{query}: a map projection over a variable needs no alias: {e}")
+            });
+    }
+}
+/// Only the *lone* projection over a variable carries the name: embedded
+/// in any other expression it is an expression item that still requires
+/// `AS`, and a second item under the base variable's name is the
+/// duplicate rejection — the projection contributes `m` to the duplicate
+/// rule (Neo4j 42N38 live-confirmed, REL8-1866).
+#[test]
+fn with_map_projection_embedded_or_duplicated_still_rejects() {
+    for query in [
+        "MATCH (m:L1) WITH m{.*} + 1 RETURN m",
+        "MATCH (m:L1) WITH size(m{.*}) RETURN m",
+        "MATCH (m:L1) WITH m.p1 RETURN m",
+    ] {
+        let error = crate::validate::validate_statement_tree(&relate_parser::parse(query).unwrap())
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            ErrorKind::NoExpressionAlias,
+            "{query}: only the lone projection over a variable carries its name"
+        );
+    }
+    let conflict = crate::validate::validate_statement_tree(
+        &relate_parser::parse("MATCH (m:L1) WITH m{.*}, m RETURN m").unwrap(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        conflict.kind(),
+        ErrorKind::ColumnNameConflict,
+        "the projection contributes the base variable's name to the duplicate rule"
+    );
 }
 /// UNION compares columns by their resulting names as strings —
 /// Neo4j (probed live 2026.10): a bare variable and a map projection

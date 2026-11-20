@@ -12,7 +12,8 @@ use relate_error::{EngineError, ErrorKind, COUNT_UNION_MIX_MESSAGE, COUNT_UNION_
 use relate_model::name_list::same_name_multiset;
 use relate_parser::{Clause, PatternElement, ReturnItem, Statement};
 
-use crate::ast::collect::{effective_name, item_variable, union_arms};
+use crate::ast::collect::union_arms;
+use crate::ast::naming::{effective_name, item_needs_alias};
 
 mod traversal;
 
@@ -396,7 +397,8 @@ pub fn validate_count_subquery_union_shapes(body: &Statement) -> Result<(), Engi
 pub fn validate_column_name_conflicts(clauses: &[Clause]) -> Result<(), EngineError> {
     for clause in clauses {
         match clause {
-            // WITH's items must be aliased unless they are bare variables;
+            // WITH's items must be aliased unless they carry an implicit
+            // name (a bare variable, or a map projection over one);
             // RETURN projects any expression under its output name.
             Clause::With(wc) => check_projected_names(&wc.items, true)?,
             Clause::Return(rc) => check_projected_names(&rc.items, false)?,
@@ -412,19 +414,21 @@ pub fn validate_column_name_conflicts(clauses: &[Clause]) -> Result<(), EngineEr
 /// the same rule `get_return_columns` renders), and a second item
 /// contributing a name already taken is the `ColumnNameConflict`
 /// rejection — spelled once for both clauses instead of once per arm.
-/// `require_alias` is WITH's own rule (a non-variable projection item
-/// must be aliased with `AS`); RETURN has no such requirement. Redundant
-/// parens are transparent to the variable test — through the one
-/// paren-transparency home, [`effective_expr`] (LABS-1616) — so
-/// `WITH (n)` is the bare variable `n` and needs no alias, while
-/// `WITH (n.p1)` stays a non-variable item and still requires `AS`.
+/// `require_alias` is WITH's own rule (an item that needs an alias —
+/// [`item_needs_alias`]: no `AS`, and no implicit name — must carry one);
+/// RETURN has no such requirement. Redundant parens are transparent to
+/// the shape tests — through the one paren-transparency home,
+/// [`effective_expr`] (LABS-1616) — so `WITH (n)` is the bare variable
+/// `n` and `WITH (n {.*})` the projection over it, and neither needs an
+/// alias, while `WITH (n.p1)` stays an expression item and still
+/// requires `AS`.
 fn check_projected_names(items: &[ReturnItem], require_alias: bool) -> Result<(), EngineError> {
     let mut names: IdentHashSet<SmallName> = IdentHashSet::default();
     for item in items {
         if item.all {
             continue;
         }
-        if require_alias && item.alias.is_none() && item_variable(item).is_none() {
+        if require_alias && item_needs_alias(item) {
             return Err(EngineError::semantic(
                 ErrorKind::NoExpressionAlias,
                 "expressions in WITH must be aliased with AS".to_string(),

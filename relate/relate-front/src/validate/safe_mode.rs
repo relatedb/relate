@@ -12,8 +12,8 @@ use relate_parser::{CallSubqueryClause, Clause, Expr, PatternElement, PatternPat
 use crate::agg::{
     contains_non_collect_aggregation, contains_pattern_comprehension, contains_unbounded_aggregate,
 };
-use crate::ast::collect::effective_expr;
 use crate::ast::collect::{clause_node_names, projected_node_scope};
+use crate::ast::naming::effective_expr;
 
 /// The opt-in safe-mode shape rules (LABS-680, ADR-0477).
 ///

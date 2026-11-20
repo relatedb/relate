@@ -1,13 +1,14 @@
 //! The generic AST collectors every pass builds on: the variable and
-//! pattern collectors, the output-column naming rule, the SEARCH
-//! score-variable and distance-metric lookups, the shared expression-scope
-//! check pair (`check_expr_vars_defined`/`check_name_defined`), the
-//! scope-aware expression walker (`walk_expr_scoped`) and the UNION-chain
+//! pattern collectors, the SEARCH score-variable and distance-metric
+//! lookups, the shared expression-scope check pair
+//! (`check_expr_vars_defined`/`check_name_defined`), the scope-aware
+//! expression walker (`walk_expr_scoped`) and the UNION-chain
 //! enumeration. They live below `validate`, `call_scope`,
 //! `local_callables` and `lower` (all of which consume them downward) so
-//! none of them owns another's helper. Aggregation-specific vocabulary
-//! (`contains_aggregation`, the alias table) lives in [`crate::agg`]
-//! instead, beside the names it tests.
+//! none of them owns another's helper. The projection-item naming rule
+//! the collectors feed lives in [`super::naming`]; aggregation-specific
+//! vocabulary (`contains_aggregation`, the alias table) lives in
+//! [`crate::agg`] instead, beside the names it tests.
 
 use relate_names::SmallName;
 
@@ -19,7 +20,8 @@ use relate_parser::{
     Statement, UnionPart,
 };
 
-use super::tree::{map_projection_var, nesting_depth_error, unparen, walk_expr_with};
+use super::naming::{effective_name, item_variable};
+use super::tree::{nesting_depth_error, walk_expr_with};
 use super::MAX_NESTING_DEPTH;
 use crate::show_columns::{catalog_output_names, is_catalog_clause};
 
@@ -66,70 +68,6 @@ pub(crate) fn is_updating_clause(clause: &Clause) -> bool {
             | Clause::Remove(_)
             | Clause::Foreach(_)
     )
-}
-
-/// The paren-transparent form of a projection item's expression — the one
-/// home of the paren-transparency policy (LABS-1615/1616): redundant
-/// `Expr::Paren` layers change nothing about an item, because the lowering
-/// unwraps them and the IR's `Projection::output_name` therefore always
-/// judges the unparenthesized form. Every consumer that *classifies* an
-/// item's expression — names, alias requirements, node-safety, restatement
-/// matching, import classification — reads it through here, never
-/// `item.expr` directly; a consumer that walks or lowers the whole
-/// expression keeps the raw form (parens are transparent to walkers by
-/// descent, and the lowering owns the unwrap).
-pub(crate) fn effective_expr(item: &ReturnItem) -> &Expr {
-    unparen(&item.expr)
-}
-
-/// The item's bare variable, when its (paren-transparent) expression is
-/// one — the "this item is the variable `n`" model every alias gate,
-/// import classifier and node-safety fold reads, spelled once beside
-/// [`effective_expr`] instead of re-matched at each site (LABS-1615/1616).
-pub(crate) fn item_variable(item: &ReturnItem) -> Option<&SmallName> {
-    match effective_expr(item) {
-        Expr::Variable(v) => Some(v),
-        _ => None,
-    }
-}
-
-pub(crate) fn effective_name(item: &ReturnItem) -> Option<SmallName> {
-    // The name arms hand the AST's already-classified `SmallName` straight
-    // to the scope sets (ADR-0509 §1's wired shape). The `source_text` arm
-    // is the one classification point here: an unaliased expression's
-    // column name is its verbatim source text, which the parser carries as
-    // text, not as a name — classified once, where it becomes a column.
-    // The classification runs on [`effective_expr`] — the
-    // paren-transparent form, LABS-1615/1616 — and mirrors the IR
-    // `Projection::output_name`'s canonical vocabulary by construction:
-    // an alias, a bare variable (parenthesized included — `(n)` names the
-    // column `n`), and a map projection on one are the shapes Neo4j names
-    // canonically regardless of source formatting (probed live 2026.10);
-    // every other shape — property accesses included: `n.name`, `n . name`,
-    // `n.` + backtick + `name` + backtick and `(n.name)` each name their
-    // column by verbatim source text — keeps the text as written, so two
-    // spellings of one property are two distinct columns and only an
-    // exact-text duplicate conflicts.
-    if let Some(alias) = &item.alias {
-        Some(alias.clone())
-    } else if let Some(v) = item_variable(item) {
-        Some(v.clone())
-    } else if let Some(v) = map_projection_var(&item.expr) {
-        // A map projection on a variable is a view of that variable and
-        // carries the variable's name (matching the executor's
-        // `Projection::output_name`), which is what a CALL subquery
-        // exports for the `RETURN n {.prop}` shape — the one shared
-        // recognizer reads the (paren-transparent) projected variable.
-        Some(v.clone())
-    } else {
-        source_text_name(item)
-    }
-}
-
-/// An unaliased non-variable item's column name: its verbatim source text,
-/// classified (see [`effective_name`]).
-fn source_text_name(item: &ReturnItem) -> Option<SmallName> {
-    item.source_text.as_deref().map(SmallName::from_name)
 }
 
 /// The `SCORE AS <var>` variable a `<search clause>` optionally

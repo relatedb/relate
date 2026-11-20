@@ -32,9 +32,8 @@ use relate_parser::{
 };
 
 use crate::agg::contains_aggregation;
-use crate::ast::collect::{
-    clause_introduced_names, collect_expr_variables, effective_expr, projected_names,
-};
+use crate::ast::collect::{clause_introduced_names, collect_expr_variables, projected_names};
+use crate::ast::naming::effective_expr;
 use crate::ast::tree::{unparen, var_property, walk_expr_with};
 
 use crate::agg::SINGLE_INPUT_AGGREGATES;
