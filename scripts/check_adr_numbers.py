@@ -25,9 +25,9 @@ the ledger tip, and its subject must name this file's own number.
 
 The change must also keep ``docs/adr/`` public-record clean (AGENTS.md
 §1): any line it adds under ``docs/adr/`` carrying an internal
-reference — a Linear ticket id (``LABS-N``, including inside
-linear.app links), a CIP proposal id (``CIP-N``), or a linear.app
-tracker link — fails with its file and line. The scan counts only
+reference — a Linear ticket id (``LABS-N``/``REL8-N``, including
+inside linear.app links), a CIP proposal id (``CIP-N``), or a
+linear.app tracker link — fails with its file and line. The scan counts only
 added lines, so ADRs that already carry internal references stay
 editable (removing one is a fix, never a failure), and a same-number
 re-slot is diffed against its deleted pre-image — the number rule's
@@ -127,11 +127,12 @@ MINT_HINT = "mint a fresh number with scripts/adr_mint.py"
 CLAIM_KEY = re.compile(r"^claim:[ \t]*\"?([0-9a-fA-F]{40})\"?[ \t]*$")
 # AGENTS.md §1: ADRs are public records, so no internal references. The
 # three mechanically-precise internal-reference forms in this repository:
-# the Linear ticket id (LABS-N, including inside linear.app links), the
-# CIP proposal id (CIP-N), and the tracker link itself. Person names and
+# the Linear ticket id (LABS-N/REL8-N — the renamed workspace's spelling
+# and its former one — including inside linear.app links), the CIP
+# proposal id (CIP-N), and the tracker link itself. Person names and
 # sensitive information are review rules there, not patterns a checker
 # can pin down.
-INTERNAL_REFERENCE = re.compile(r"\b(?:LABS-\d+|CIP-\d+|linear\.app)\b")
+INTERNAL_REFERENCE = re.compile(r"\b(?:LABS-\d+|REL8-\d+|CIP-\d+|linear\.app)\b")
 
 # A rule, section or deviation label as proposal documents cite them: a
 # numbered rule, a deviation pointer (``#N`` or ``DN``, the quoted

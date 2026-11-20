@@ -142,7 +142,8 @@ host or tool names. No person names — roles, not people ("the
 maintainers"). No sensitive information of any kind: credentials,
 tokens, internal URLs, unreleased plans, customer or personal data.
 The `adr-numbers` CI check fails any line a change adds under
-`docs/adr/` carrying `LABS-###`, `CIP-###`, or a `linear.app` link —
+`docs/adr/` carrying a Linear ticket id (`LABS-###`/`REL8-###`),
+`CIP-###`, or a `linear.app` link —
 and, repo-wide, any tracked line that ties a `CIP-###` id to
 proposal-internal detail: quoted grammar, rule, section or deviation
 labels, `NOTES.md` pointers, attribution phrases, approval facts,

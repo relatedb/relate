@@ -382,6 +382,13 @@ class PublicRecordTests(FixtureTestBase):
             "0300-tracked-decision.md", "tracked as LABS-123", "LABS-123"
         )
 
+    def test_added_adr_with_a_rel8_reference_fails(self) -> None:
+        # REL8-N is the renamed workspace's ticket-id spelling: the same
+        # internal-reference rejection as the LABS-N leg of the pattern.
+        self.assert_added_adr_reference_fails(
+            "0300-rel8-tracked-decision.md", "tracked as REL8-123", "REL8-123"
+        )
+
     def test_added_adr_with_a_linear_app_link_fails(self) -> None:
         # No LABS-N id in the link: this isolates the bare linear.app
         # leg of the pattern from the ticket-id leg.

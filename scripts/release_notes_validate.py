@@ -171,7 +171,9 @@ PROTO_RELATIVE = re.compile(
     re.MULTILINE,
 )
 
-INTERNAL_REF = re.compile(r"\b(LABS|CIP|ADR)-[0-9]+\b")
+# Tracker, proposal and decision-record ids — LABS is the workspace's
+# former name, REL8 its renamed one; both spellings are internal.
+INTERNAL_REF = re.compile(r"\b(LABS|REL8|CIP|ADR)-[0-9]+\b")
 
 # A code fence opens only with at most three spaces of indentation — a
 # four-space-indented ``` is an indented code block, whose marker is

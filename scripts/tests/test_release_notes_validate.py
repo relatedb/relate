@@ -252,11 +252,13 @@ class CheckNotes(unittest.TestCase):
 
     def test_internal_references_anywhere(self) -> None:
         findings = self.notes_findings(
-            "- The corpus (LABS-1802).\n\n"
+            "- The corpus (LABS-1802).\n"
+            "- The rename (REL8-1802).\n\n"
             "```\nrelate upgrade --check  # tracked as ADR-0618\n```\n"
         )
         joined = "\n".join(findings)
         self.assertIn("LABS-1802", joined)
+        self.assertIn("REL8-1802", joined)
         self.assertIn("ADR-0618", joined)
 
 

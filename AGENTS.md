@@ -6,6 +6,9 @@
 > **If a push or pull request is rejected for permissions,** you're helping an
 > outside contributor: follow "Have a fix? Put it in an issue" in CONTRIBUTING.md.
 
+**Workspace rename:** the Linear workspace `LABS` is now `REL8` — any old
+reference to `LABS-NNNN` means `REL8-NNNN`.
+
 Relate: embedded, in-memory property graph engine. Durable form: fsync'd
 local WAL + local Parquet (or JSON) checkpoints. Query contract: openCypher
 TCK. Remote access: Bolt. Clients wrap C ABI. Public Rust crate: `relate`
