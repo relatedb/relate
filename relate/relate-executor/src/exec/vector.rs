@@ -20,7 +20,7 @@ use crate::exec::ddl_options::index_config;
 use crate::exec::vector_filters::{prepare_vector_filters, vector_filter_passes};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
-use crate::vector_config::{parse_config, StorableMetric, StoredVectorConfig};
+use crate::vector_config::{StorableMetric, StoredVectorConfig};
 use crate::vector_similarity::{similarity_values, value_coord, value_coords, PreparedQuery};
 
 pub(crate) fn vector_operand(value: &Value) -> Result<Option<Vec<f64>>> {
@@ -59,21 +59,23 @@ fn invalid_index_option(index_name: &str) -> Error {
 
 /// The stored read of a vector index's options: navigate the outer
 /// `indexConfig` (the one [`index_config`] boundary, shared with the
-/// create side) and reuse the root schema's one parse
-/// ([`crate::vector_config::parse_config`]), mapping any failure onto
-/// the drift contract — a stored entry a CREATE would have rejected is
-/// catalog drift.
+/// create side) and reuse the root schema's stored read
+/// ([`crate::vector_config::parse_stored_config`], the one parse plus
+/// its legacy fold), mapping any failure onto the drift contract — a
+/// stored entry a CREATE would have rejected is catalog drift.
 fn stored_config(
     options: &BTreeMap<String, Value>,
     index_name: &str,
 ) -> Result<StoredVectorConfig> {
     // Absent is the parse over the empty config (the documented
-    // defaults), and every failure folds onto the drift contract.
+    // defaults), and every failure folds onto the drift contract —
+    // through the stored read's parse, whose one legacy fold keeps
+    // indexes older builds created queryable.
     let empty = BTreeMap::new();
     let config = index_config(options)
         .map_err(|_| invalid_index_option(index_name))?
         .unwrap_or(&empty);
-    parse_config(config).map_err(|_| invalid_index_option(index_name))
+    crate::vector_config::parse_stored_config(config).map_err(|_| invalid_index_option(index_name))
 }
 
 /// The catalog-descriptor phase: fetch the index detail and options,

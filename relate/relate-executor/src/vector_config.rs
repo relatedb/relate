@@ -76,25 +76,78 @@ const KEY_HNSW_M: &str = "vector.hnsw.m";
 const KEY_HNSW_EF: &str = "vector.hnsw.ef_construction";
 const KEY_SEARCH_EXPANSION: &str = "vector.default_search_expansion_factor";
 
-/// The two quantization-type spellings the DDL defaults branch on. The
-/// domain stays open (a stored config may carry any string), so these are
-/// named constants, not an enum: only `NONE` changes the expansion-factor
-/// default, and `BINARY` is what an absent key defaults to.
-const QUANTIZATION_NONE: &str = "NONE";
-const QUANTIZATION_BINARY: &str = "BINARY";
+/// The quantization type a vector index carries — the closed vocabulary
+/// the one parse admits (Neo4j dev: `SCALAR`, `BINARY` and `NONE`,
+/// case-insensitive; `INT8` and every other spelling is the typed
+/// supported-values rejection, REL8-1062). The sibling of
+/// [`StorableMetric`]: narrowed at the same parse boundary, carried typed,
+/// so no consumer can hold a value the vocabulary does not contain, and
+/// the canonical stored spelling comes back through [`Self::name`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuantizationType {
+    Scalar,
+    Binary,
+    None,
+}
+
+impl QuantizationType {
+    /// Every member with its spelling — the one vocabulary table
+    /// [`from_spelling`](Self::from_spelling) parses, [`name`](Self::name)
+    /// renders and [`supported_values`](Self::supported_values) lists, so
+    /// a new variant cannot parse without also rendering and advertising
+    /// (the [`VectorMetric::ALL`] precedent).
+    const ALL: [(&'static str, Self); 3] = [
+        ("SCALAR", Self::Scalar),
+        ("BINARY", Self::Binary),
+        ("NONE", Self::None),
+    ];
+
+    /// The canonical (uppercase) stored spelling, from the table's own
+    /// row.
+    fn name(self) -> &'static str {
+        Self::ALL
+            .into_iter()
+            .find(|(_, member)| *member == self)
+            .map(|(spelling, _)| spelling)
+            .expect("every QuantizationType is listed in ALL")
+    }
+
+    /// The parse of one `vector.quantization.type` value: the
+    /// case-insensitive spelling of a member, or `None` for every other
+    /// string (INT8 included — the older scalar-quantization name, which
+    /// Relate once normalized instead of rejecting).
+    fn from_spelling(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|(spelling, _)| spelling.eq_ignore_ascii_case(name))
+            .map(|(_, member)| member)
+    }
+
+    /// The supported-values list the out-of-vocabulary rejection renders,
+    /// derived from [`Self::ALL`] — the vocabulary's one spelling.
+    fn supported_values() -> String {
+        Self::ALL
+            .iter()
+            .map(|(spelling, _)| format!("'{spelling}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
 
 /// The leaf shape an admission-only option key's value must carry,
 /// mirroring the ontology validator's `validate_vector_option` contract
-/// (relate-ontology/src/validate/ext.rs):
-/// `vector.quantization.enabled` is `opt_bool` and `vector.hnsw.m` /
-/// `vector.hnsw.ef_construction` are `opt_int`. Every other value-carrying
-/// key's domain (the dimension range, the metric name set, the quantization
-/// spelling) is beyond a shape, so its row carries a [`KeyRule`] domain parse
-/// instead; there is deliberately no shape-less [`KeyShape`] sentinel variant
-/// that `admits` everything.
+/// (relate-ontology/src/validate/ext.rs): `vector.hnsw.m` /
+/// `vector.hnsw.ef_construction` are `opt_int` and
+/// `vector.default_search_expansion_factor` accepts a number. Every other
+/// value-carrying key's domain (the dimension range, the metric name set,
+/// the quantization vocabulary) is beyond a shape, so its row carries a
+/// [`KeyRule`] domain parse instead; there is deliberately no shape-less
+/// [`KeyShape`] sentinel variant that `admits` everything. The legacy
+/// `vector.quantization.enabled` Bool is not a shape row: its value is
+/// kept, not merely admitted, so it carries its own
+/// [`KeyRule::LegacyQuantization`] identity.
 #[derive(Clone, Copy, PartialEq)]
 enum KeyShape {
-    Bool,
     Int,
     /// A number: an `INTEGER` or a `FLOAT` (the DDL spells the expansion
     /// factor as a float, the ontology validator accepts either).
@@ -108,29 +161,33 @@ impl KeyShape {
     fn admits(self, value: &Value) -> bool {
         matches!(
             (self, value),
-            (Self::Bool, Value::Bool(_))
-                | (Self::Int, Value::Int(_))
-                | (Self::Number, Value::Int(_) | Value::Float(_))
+            (Self::Int, Value::Int(_)) | (Self::Number, Value::Int(_) | Value::Float(_))
         )
     }
 }
 
 /// What one row of [`CONFIG_KEYS`] owns: a value-carrying key's domain
 /// parse — the dimension range ([`KeyRule::Dimension`]), the metric name
-/// set ([`KeyRule::Metric`]) or the quantization spelling
-/// ([`KeyRule::Quantization`]) — or an admission-only key's leaf shape
-/// ([`KeyRule::Shape`]). Every row is a validator.
+/// set ([`KeyRule::Metric`]), the quantization vocabulary
+/// ([`KeyRule::Quantization`]) or the legacy quantization Bool
+/// ([`KeyRule::LegacyQuantization`]) — or an admission-only key's leaf
+/// shape ([`KeyRule::Shape`]). Every row is a validator.
 #[derive(Clone, Copy)]
 enum KeyRule {
     Dimension,
     Metric,
     Quantization,
+    /// The legacy `vector.quantization.enabled` spelling: a Bool admitted
+    /// under its own identity — not a shape-sniffed Bool row — because its
+    /// value is kept, to map onto the type when the `.type` row is absent
+    /// (true → SCALAR, false → NONE, REL8-1062).
+    LegacyQuantization,
     Shape(KeyShape),
 }
 
 /// The seven-key allowlist of a stored vector index's `indexConfig`, one
-/// table — each row owns its whole policy: the three value-carrying keys'
-/// domain parses and the four admission-only keys' leaf shapes. The
+/// table — each row owns its whole policy: the four value-carrying keys'
+/// domain parses and the three admission-only keys' leaf shapes. The
 /// admission-only rows' stored values have no behavioural effect (the
 /// scan ignores them — LABS-708 is admission only), and an absent key
 /// stays absent (the pre-LABS-708 stored shape, so defaulting is
@@ -140,7 +197,7 @@ enum KeyRule {
 const CONFIG_KEYS: [(&str, KeyRule); 7] = [
     (KEY_DIMENSIONS, KeyRule::Dimension),
     (KEY_SIMILARITY, KeyRule::Metric),
-    (KEY_QUANTIZATION, KeyRule::Shape(KeyShape::Bool)),
+    (KEY_QUANTIZATION, KeyRule::LegacyQuantization),
     (KEY_QUANTIZATION_TYPE, KeyRule::Quantization),
     (KEY_HNSW_M, KeyRule::Shape(KeyShape::Int)),
     (KEY_HNSW_EF, KeyRule::Shape(KeyShape::Int)),
@@ -190,7 +247,11 @@ pub(crate) fn parse_config(config: &BTreeMap<String, Value>) -> Result<StoredVec
     // metric to Cosine.
     let mut dimension = None;
     let mut metric = StorableMetric::Cosine;
-    let mut quantization = QUANTIZATION_BINARY.to_string();
+    let mut quantization: Option<QuantizationType> = None;
+    // The legacy `vector.quantization.enabled` spelling's parsed value —
+    // the newer `.type` spelling wins when both are present (the
+    // admission of both keys together is unchanged).
+    let mut legacy: Option<QuantizationType> = None;
     for (name, rule) in CONFIG_KEYS {
         let Some(value) = config.get(name) else {
             continue;
@@ -215,10 +276,34 @@ pub(crate) fn parse_config(config: &BTreeMap<String, Value>) -> Result<StoredVec
                 _ => return Err(Error::argument_error("InvalidInputValue")),
             },
             // A wrong-shaped value is rejected here, so no later stage ever
-            // fabricates a default over a malformed key; the canonical
-            // uppercase spelling is fixed once, at the parse boundary.
+            // fabricates a default over a malformed key; the vocabulary is
+            // the closed SCALAR/BINARY/NONE set, case-insensitively
+            // (REL8-1062) — INT8 and every other spelling is the typed
+            // rejection in the config families' message shape.
             KeyRule::Quantization => match value {
-                Value::String(name) => quantization = name.to_ascii_uppercase(),
+                Value::String(name) => {
+                    quantization =
+                        Some(QuantizationType::from_spelling(name).ok_or_else(|| {
+                            Error::argument_error(format!(
+                                "Invalid input for '{KEY_QUANTIZATION_TYPE}': '{name}'. \
+                                 Expected one of {}.",
+                                QuantizationType::supported_values()
+                            ))
+                        })?);
+                }
+                _ => return Err(Error::argument_error("InvalidInputValue")),
+            },
+            // The legacy Bool is kept, already mapped onto the type it
+            // stands for (true → SCALAR, false → NONE) — the vocabulary
+            // is never re-encoded as a Bool.
+            KeyRule::LegacyQuantization => match value {
+                Value::Bool(enabled) => {
+                    legacy = Some(if *enabled {
+                        QuantizationType::Scalar
+                    } else {
+                        QuantizationType::None
+                    })
+                }
                 _ => return Err(Error::argument_error("InvalidInputValue")),
             },
             KeyRule::Shape(shape) => {
@@ -228,6 +313,10 @@ pub(crate) fn parse_config(config: &BTreeMap<String, Value>) -> Result<StoredVec
             }
         }
     }
+    // The type resolves from the `.type` row, else from the legacy
+    // `enabled` spelling, else the DDL default (BINARY) — the precedence
+    // is explicit and independent of the table's row order.
+    let quantization = quantization.or(legacy).unwrap_or(QuantizationType::Binary);
     Ok(StoredVectorConfig {
         dimension,
         metric,
@@ -236,52 +325,87 @@ pub(crate) fn parse_config(config: &BTreeMap<String, Value>) -> Result<StoredVec
 }
 
 /// The stored vector index's parsed options.
+#[derive(Debug)]
 pub(crate) struct StoredVectorConfig {
     pub dimension: Option<usize>,
     /// The stored metric — the parse's [`TryFrom`] narrowing is the
     /// type, so no consumer can hold a metric the scan kernels would
     /// reject.
     pub metric: StorableMetric,
-    /// The quantization type in its canonical (uppercase) spelling, parsed
-    /// from the same key table as every other value-carrying option (an
-    /// absent key parses to [`QUANTIZATION_BINARY`]). Carried typed so the
-    /// DDL defaults never fabricate a value for a missing or malformed key.
-    pub quantization: String,
+    /// The quantization type, one of the closed SCALAR/BINARY/NONE
+    /// vocabulary the parse admits (an absent key and the legacy
+    /// `enabled` spelling resolve into the same vocabulary, REL8-1062) —
+    /// carried typed, the [`StorableMetric`] sibling, so no consumer can
+    /// hold a value the vocabulary does not contain.
+    pub quantization: QuantizationType,
 }
 
-/// The DDL defaults — Neo4j 2026.09's own (`SHOW INDEXES` on a freshly
-/// created vector index): the HNSW tuning pair, the search expansion
-/// factor, the parsed quantization type, and the parsed metric's canonical
-/// spelling. The parse established the shapes, so this only inserts; a
-/// user-supplied value wins. `vector.quantization.enabled` is still
-/// admitted (the older spelling) but is no longer defaulted — Neo4j
-/// reports `vector.quantization.type` instead.
-pub(crate) fn apply_defaults(
-    config: &mut BTreeMap<String, Value>,
-    metric: StorableMetric,
-    quantization: &str,
-) {
+/// The stored read's parse — the one vocabulary parse
+/// ([`parse_config`]), preceded by the one legacy fold: a build before
+/// the closed vocabulary accepted and uppercased any spelling, so a
+/// stored `INT8` (the older scalar-quantization name) is already on
+/// disk. The CREATE side rejects that spelling; the stored read maps it
+/// onto `SCALAR`, its successor, so an index an older build created
+/// stays queryable (the rust-review back-compat remedy, REL8-1062).
+/// Every other out-of-vocabulary stored value stays the drift the read's
+/// contract describes.
+pub(crate) fn parse_stored_config(config: &BTreeMap<String, Value>) -> Result<StoredVectorConfig> {
+    if matches!(
+        config.get(KEY_QUANTIZATION_TYPE),
+        Some(Value::String(stored)) if stored.eq_ignore_ascii_case("INT8")
+    ) {
+        let mut folded = config.clone();
+        folded.insert(
+            KEY_QUANTIZATION_TYPE.into(),
+            Value::String(QuantizationType::Scalar.name().into()),
+        );
+        return parse_config(&folded);
+    }
+    parse_config(config)
+}
+
+/// The DDL defaults — live Neo4j dev's own (`SHOW INDEXES` on a freshly
+/// created vector index, REL8-1062): the HNSW tuning pair, the search
+/// expansion factor, the parsed quantization type, and the parsed
+/// metric's canonical spelling. The parse established the shapes, so
+/// this only inserts; a user-supplied value wins.
+/// `vector.quantization.enabled` is still admitted (the older spelling)
+/// but is no longer defaulted — the parse maps it onto the type
+/// (true → SCALAR, false → NONE) when the `.type` spelling is absent,
+/// and Neo4j reports `vector.quantization.type` instead. The parse's
+/// result is taken whole, so a future defaulted field is a
+/// compiler-guided edit inside this module, not a new positional
+/// parameter threaded by each caller.
+pub(crate) fn apply_defaults(config: &mut BTreeMap<String, Value>, parsed: &StoredVectorConfig) {
     config.entry(KEY_HNSW_M.into()).or_insert(Value::Int(16));
     config.entry(KEY_HNSW_EF.into()).or_insert(Value::Int(100));
     // The stored spelling is canonical (uppercase) — Neo4j reports `NONE`
     // even when the statement wrote `'none'`.
     config.insert(
         KEY_QUANTIZATION_TYPE.into(),
-        Value::String(quantization.into()),
+        Value::String(parsed.quantization.name().into()),
     );
     // The expansion factor's default follows the quantization type: a
-    // non-quantized index defaults to 1.0, a quantized one to 3.0 (live
-    // Neo4j 2026.09).
-    let expansion_default = match quantization {
-        QUANTIZATION_NONE => 1.0,
-        _ => 3.0,
+    // non-quantized index defaults to 1.0, a scalar-quantized one to
+    // 1.5, a binary-quantized one to 3.0 (live Neo4j dev, REL8-1062;
+    // 2026.09 reported 2.0 for BINARY — dev's 3.0 is retained as the
+    // newer observation). The match is exhaustive over the typed
+    // vocabulary — a member added to the enum is a compiler-guided edit
+    // here, never a silent default.
+    let expansion_default = match parsed.quantization {
+        QuantizationType::None => 1.0,
+        QuantizationType::Scalar => 1.5,
+        QuantizationType::Binary => 3.0,
     };
     config
         .entry(KEY_SEARCH_EXPANSION.into())
         .or_insert(Value::Float(expansion_default));
     // Canonical spelling, present or defaulted: the parse established
     // the String-ness, so the uppercase normalization folds here.
-    config.insert(KEY_SIMILARITY.into(), Value::String(metric.name().into()));
+    config.insert(
+        KEY_SIMILARITY.into(),
+        Value::String(parsed.metric.name().into()),
+    );
 }
 
 #[cfg(test)]
@@ -292,7 +416,10 @@ mod tests {
     /// The option allowlist admits both `vector.quantization` keys — the
     /// SEARCH acceptance suites' Background sets `type: 'none'`
     /// (LABS-708) — together and separately, validates `type` as a
-    /// string, and still rejects everything outside the table.
+    /// string, and still rejects everything outside the table. The
+    /// `.type` vocabulary is closed (SCALAR/BINARY/NONE
+    /// case-insensitively, REL8-1062): INT8 and every other spelling is
+    /// the typed supported-values rejection.
     #[test]
     fn config_admits_both_quantization_keys() {
         for admitted in [
@@ -305,6 +432,42 @@ mod tests {
         ] {
             let parsed = parse_config(&admitted).expect("quantization keys are admitted");
             assert!(matches!(parsed.metric, StorableMetric::Cosine));
+        }
+
+        // The vocabulary is closed and case-insensitive: every member of
+        // the one table parses from its own spelling and its lowercase
+        // form, and INT8 — the old scalar-quantization name Relate once
+        // normalized — is rejected with the supported-values list,
+        // exactly like any other out-of-vocabulary spelling. Iterating
+        // the table (the `VectorMetric::ALL` round-trip precedent) keeps
+        // a member added to the enum covered by construction, and the
+        // uniqueness check keeps the spellings a bijection.
+        let mut spellings: Vec<&str> = QuantizationType::ALL.iter().map(|(s, _)| *s).collect();
+        spellings.sort_unstable();
+        spellings.dedup();
+        assert_eq!(
+            spellings.len(),
+            QuantizationType::ALL.len(),
+            "spellings are unique"
+        );
+        for (spelling, member) in QuantizationType::ALL {
+            for form in [spelling, spelling.to_ascii_lowercase().as_str()] {
+                let parsed =
+                    parse_config(&map(&[(KEY_QUANTIZATION_TYPE, Value::String(form.into()))]))
+                        .expect("an in-vocabulary spelling parses");
+                assert_eq!(parsed.quantization, member, "{form:?}");
+            }
+        }
+        for rejected in ["int8", "INT8", "Bogus", ""] {
+            let error = parse_config(&map(&[(
+                KEY_QUANTIZATION_TYPE,
+                Value::String(rejected.into()),
+            )]))
+            .expect_err("an out-of-vocabulary spelling is rejected");
+            assert!(
+                format!("{error}").contains(&QuantizationType::supported_values()),
+                "{rejected:?} rejection lists the supported values: {error}"
+            );
         }
 
         // Every value-carrying key rejects a wrong-shaped value, not just
@@ -370,36 +533,96 @@ mod tests {
 #[cfg(test)]
 mod default_tests {
     use super::*;
+    use crate::test_support::map;
 
-    /// Neo4j 2026.09's DDL defaults: the HNSW pair, a 3.0 expansion factor
-    /// and the BINARY quantization type; `vector.quantization.type: NONE`
-    /// moves the expansion factor to 1.0, and the stored spelling is
-    /// canonical (uppercase).
+    /// The stored read's legacy fold: a stored `INT8` (a spelling an
+    /// older build accepted and uppercased) maps onto SCALAR, so an
+    /// index an older build created stays queryable, while the CREATE
+    /// side's rejection of the same spelling is unchanged (REL8-1062).
+    #[test]
+    fn stored_int8_folds_onto_scalar() {
+        for stored in ["INT8", "int8"] {
+            let parsed = parse_stored_config(&map(&[(
+                KEY_QUANTIZATION_TYPE,
+                Value::String(stored.into()),
+            )]))
+            .expect("the stored legacy spelling folds onto SCALAR");
+            assert_eq!(parsed.quantization, QuantizationType::Scalar);
+        }
+        // Every other out-of-vocabulary stored spelling stays the drift
+        // the read's contract describes.
+        assert!(parse_stored_config(&map(&[(
+            KEY_QUANTIZATION_TYPE,
+            Value::String("Bogus".into()),
+        )]))
+        .is_err());
+    }
+
+    /// Neo4j dev's DDL defaults: the HNSW pair, a 3.0 expansion factor and
+    /// the BINARY quantization type; NONE moves the expansion factor to
+    /// 1.0, SCALAR to 1.5 (REL8-1062), and the stored spelling is
+    /// canonical (uppercase). The legacy `enabled` spelling maps onto the
+    /// type when `.type` is absent, and both keys present keep today's
+    /// precedence: the `.type` spelling wins.
     #[test]
     fn defaults_match_live_neo4j_and_follow_the_quantization_type() {
-        let mut config = BTreeMap::new();
+        let mut config = map(&[]);
         let parsed = parse_config(&config).expect("an empty config parses");
-        assert_eq!(parsed.quantization, QUANTIZATION_BINARY);
-        apply_defaults(&mut config, parsed.metric, &parsed.quantization);
+        assert_eq!(parsed.quantization, QuantizationType::Binary);
+        apply_defaults(&mut config, &parsed);
         assert_eq!(config.get(KEY_SEARCH_EXPANSION), Some(&Value::Float(3.0)));
         assert_eq!(
             config.get(KEY_QUANTIZATION_TYPE),
-            Some(&Value::String(QUANTIZATION_BINARY.into()))
+            Some(&Value::String(QuantizationType::Binary.name().into()))
         );
         assert_eq!(config.get(KEY_HNSW_M), Some(&Value::Int(16)));
         assert_eq!(config.get(KEY_HNSW_EF), Some(&Value::Int(100)));
 
         // The parse canonicalizes the spelling, and the defaults branch on
         // that typed value — never on the raw string a statement wrote.
-        let mut none = BTreeMap::new();
-        none.insert(KEY_QUANTIZATION_TYPE.into(), Value::String("none".into()));
+        let mut none = map(&[(KEY_QUANTIZATION_TYPE, Value::String("none".into()))]);
         let parsed = parse_config(&none).expect("a string quantization type parses");
-        assert_eq!(parsed.quantization, QUANTIZATION_NONE);
-        apply_defaults(&mut none, parsed.metric, &parsed.quantization);
+        assert_eq!(parsed.quantization, QuantizationType::None);
+        apply_defaults(&mut none, &parsed);
         assert_eq!(
             none.get(KEY_QUANTIZATION_TYPE),
-            Some(&Value::String(QUANTIZATION_NONE.into()))
+            Some(&Value::String(QuantizationType::None.name().into()))
         );
         assert_eq!(none.get(KEY_SEARCH_EXPANSION), Some(&Value::Float(1.0)));
+
+        // A scalar-quantized index defaults to the 1.5 expansion factor.
+        let mut scalar = map(&[(KEY_QUANTIZATION_TYPE, Value::String("Scalar".into()))]);
+        let parsed = parse_config(&scalar).expect("an in-vocabulary type parses");
+        assert_eq!(parsed.quantization, QuantizationType::Scalar);
+        apply_defaults(&mut scalar, &parsed);
+        assert_eq!(scalar.get(KEY_SEARCH_EXPANSION), Some(&Value::Float(1.5)));
+
+        // The legacy `enabled` spelling maps onto the type when `.type` is
+        // absent: true → SCALAR, false → NONE (REL8-1062).
+        for (enabled, canonical, expansion) in [
+            (true, QuantizationType::Scalar, 1.5),
+            (false, QuantizationType::None, 1.0),
+        ] {
+            let mut legacy = map(&[(KEY_QUANTIZATION, Value::Bool(enabled))]);
+            let parsed = parse_config(&legacy).expect("the legacy spelling is admitted");
+            assert_eq!(parsed.quantization, canonical);
+            apply_defaults(&mut legacy, &parsed);
+            assert_eq!(
+                legacy.get(KEY_QUANTIZATION_TYPE),
+                Some(&Value::String(canonical.name().into()))
+            );
+            assert_eq!(
+                legacy.get(KEY_SEARCH_EXPANSION),
+                Some(&Value::Float(expansion))
+            );
+        }
+
+        // Both keys present: the `.type` spelling wins, unchanged.
+        let both = map(&[
+            (KEY_QUANTIZATION, Value::Bool(false)),
+            (KEY_QUANTIZATION_TYPE, Value::String("binary".into())),
+        ]);
+        let parsed = parse_config(&both).expect("both keys are admitted together");
+        assert_eq!(parsed.quantization, QuantizationType::Binary);
     }
 }

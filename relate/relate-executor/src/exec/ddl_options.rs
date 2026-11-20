@@ -466,7 +466,7 @@ const FULLTEXT_FAMILY: ConfigFamily = ConfigFamily {
 fn create_config(options: &BTreeMap<String, Value>) -> Result<Value> {
     let mut config = index_config(options)?.cloned().unwrap_or_default();
     let parsed = crate::vector_config::parse_config(&config)?;
-    crate::vector_config::apply_defaults(&mut config, parsed.metric, &parsed.quantization);
+    crate::vector_config::apply_defaults(&mut config, &parsed);
     Ok(Value::Map(config.into()))
 }
 
