@@ -309,11 +309,13 @@ fn string_indexof_counts_characters_not_bytes() {
     assert_eq!(index_of("", ""), Value::Int(0));
 }
 
-/// Neo4j evaluates `string.regexReplace` with Java `Matcher.replaceAll`, so
-/// the replacement's escapes are Java's: `\$` is a literal dollar while
-/// `$n`/`${name}` stay group references. The regex crate's own replacement
-/// syntax treats `\$` as a backslash plus an empty group reference and
-/// produced `\$b` for the `'a$b'` scenario.
+/// Neo4j evaluates `string.regexReplace` with Java `Matcher.replaceAll`
+/// syntax, so the replacement's escapes are Java's: `\$` is a literal
+/// dollar while `$n`/`${name}` stay group references (the regex crate's
+/// own syntax treats `\$` as a backslash plus an empty group reference
+/// and produced `\$b` for the `'a$b'` scenario). The REL8-1061 deviation:
+/// a reference — numbered or named — to an existing group that did not
+/// participate expands to the empty string, not Java's literal `null`.
 #[test]
 fn regex_replace_expands_java_style_replacements() {
     let g = Graph::default();
@@ -338,14 +340,48 @@ fn regex_replace_expands_java_style_replacements() {
     // An escaped backslash is one literal backslash (`\` has no other
     // meaning outside a group reference).
     assert_eq!(replace("a", "a", "\\\\").unwrap(), s("\\"));
-    // Java rejects a `$` that starts no group reference, and a group number
-    // past the pattern's group count.
-    assert!(replace("abc", "b", "$").is_err());
-    assert!(replace("abc", "b", "$x").is_err());
-    assert!(replace("abc", "b", "$9").is_err());
-    // A group that exists but did not participate in this match is Java's
-    // literal text `null` — not an error.
-    assert_eq!(replace("abc", "(a)|(x)", "$2").unwrap(), s("nullbc"));
+    // A group that exists — by number or by name — but did not
+    // participate in this match expands to an empty string.
+    assert_eq!(replace("abc", "(a)|(x)", "$2").unwrap(), s("bc"));
+    assert_eq!(replace("abc", "(?<a>a)|(?<x>x)", "${x}").unwrap(), s("bc"));
+}
+
+/// The rejection taxonomy: every malformed reference is its own branch,
+/// asserted by its reason text so the branches cannot swap without
+/// failing.
+#[test]
+fn regex_replace_rejects_bad_group_references() {
+    let g = Graph::default();
+    let graph = ExecGraph::read(&g);
+    let s = |v: &str| Value::String(v.into());
+    let replace = |pattern: &str, replacement: &str| {
+        bi_string_regexreplace(
+            &graph,
+            "string.regexReplace",
+            vec![s("abc"), s(pattern), s(replacement)],
+        )
+    };
+    for (pattern, replacement, reason) in [
+        ("b", "$x", "illegal group reference"),
+        ("b", "$", "illegal group reference"),
+        ("b", "a\\", "character to be escaped is missing"),
+        ("b", "${name", "named capturing group is missing"),
+        ("(?<a>a)", "${b}", "no group with name b"),
+        ("(a)|(x)", "$3", "no group 3"),
+        ("b", "$99999999999999999999", "capturing group too large"),
+    ] {
+        let error = replace(pattern, replacement).unwrap_err();
+        // The shape, then the reason: a rejection that changes channel
+        // fails even if its text happens to match.
+        assert!(
+            matches!(error, Error::Type(_)),
+            "{replacement:?} must reject with the type class: {error}"
+        );
+        assert!(
+            error.to_string().contains(reason),
+            "{replacement:?} must reject with {reason:?}: {error}"
+        );
+    }
 }
 
 /// Neo4j's list-of-delimiters `split` (`StringValue.split(List<String>)`):

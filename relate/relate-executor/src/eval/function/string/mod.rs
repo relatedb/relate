@@ -18,6 +18,10 @@ use super::super::string::{
 };
 use super::render_scalar;
 
+mod regex_replace;
+
+use regex_replace::replace_all_java;
+
 pub(super) fn bi_string_interp(graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
     // A lone STRING part (`f"{s}"`) is the result itself, shared.
     if let [Value::String(s)] = vals.as_slice() {
@@ -485,98 +489,6 @@ pub(super) fn bi_string_regexreplace(
         _ => return Err(Error::invalid_argument_type("string.regexReplace")),
     })
 }
-/// Applies `replacement` to every match of `pattern` in `input` with Java
-/// `Matcher.replaceAll` semantics, which Neo4j's `string.regexReplace` uses.
-/// The regex crate's own replacement syntax differs — there `\$` has no
-/// meaning and only `$$` is a literal dollar — so expansion is done here.
-fn replace_all_java(pattern: &regex::Regex, input: &str, replacement: &str) -> Result<String> {
-    let mut out = String::with_capacity(input.len());
-    let mut last = 0;
-    for captures in pattern.captures_iter(input) {
-        let whole = captures.get(0).expect("a match always has capture group 0");
-        out.push_str(&input[last..whole.start()]);
-        expand_java_replacement(replacement, &captures, &mut out)?;
-        last = whole.end();
-    }
-    out.push_str(&input[last..]);
-    Ok(out)
-}
-
-/// Java `Matcher.appendReplacement`'s replacement syntax: a backslash
-/// escapes the next character (so `\$` is a literal dollar), and an
-/// unescaped `$` starts a group reference — `$1` or `${name}`. Anything
-/// else after `$` is an illegal group reference. A group number past the
-/// pattern's group count is an error; a group that exists but did not
-/// participate in this match appends Java's literal text `null`.
-fn expand_java_replacement(
-    replacement: &str,
-    captures: &regex::Captures<'_>,
-    out: &mut String,
-) -> Result<()> {
-    let invalid = |reason: String| Error::execution(format!("InvalidArgumentValue: {reason}"));
-    let mut chars = replacement.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\\' => match chars.next() {
-                Some(escaped) => out.push(escaped),
-                None => return Err(invalid("character to be escaped is missing".into())),
-            },
-            '$' => {
-                let group = match chars.peek().copied() {
-                    Some('{') => {
-                        chars.next();
-                        let mut name = String::new();
-                        let mut closed = false;
-                        for ch in chars.by_ref() {
-                            if ch == '}' {
-                                closed = true;
-                                break;
-                            }
-                            name.push(ch);
-                        }
-                        if !closed {
-                            return Err(invalid(
-                                "named capturing group is missing trailing '}'".into(),
-                            ));
-                        }
-                        captures
-                            .name(&name)
-                            .map(|matched| matched.as_str())
-                            .ok_or_else(|| invalid(format!("no group with name {name}")))?
-                    }
-                    Some(next) if next.is_ascii_digit() => {
-                        let mut digits = String::new();
-                        while let Some(next) = chars.peek() {
-                            if !next.is_ascii_digit() {
-                                break;
-                            }
-                            digits.push(*next);
-                            chars.next();
-                        }
-                        let index: usize = digits
-                            .parse()
-                            .map_err(|_| invalid(format!("capturing group too large: {digits}")))?;
-                        // `Captures::get` is `None` both for a group number
-                        // past the pattern and for a group that merely did
-                        // not participate in this match; only the first is
-                        // Java's error — the second appends `null`.
-                        if index >= captures.len() {
-                            return Err(invalid(format!("no group {index}")));
-                        }
-                        captures
-                            .get(index)
-                            .map_or("null", |matched| matched.as_str())
-                    }
-                    _ => return Err(invalid("illegal group reference".into())),
-                };
-                out.push_str(group);
-            }
-            literal => out.push(literal),
-        }
-    }
-    Ok(())
-}
-
 /// ADR-0175: a `substring()` / `left()` / `right()` start/length argument
 /// (Neo4j's `asIntExact(allowFloats=true)`, CypherFunctions.java L1748):
 /// an integer passes through; a float converts with Java `(long)`-cast
