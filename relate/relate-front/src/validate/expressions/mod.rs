@@ -1,9 +1,10 @@
 //! Expression-position rules: pattern predicates in WHERE, patterns in
-//! RETURN/WITH projections and SET values, property access and `labels()`/
-//! `type()` on statically-known path/node variables, and
-//! undefined-variable checks for the expression positions they appear in.
-//! The DELETE-target admission policy lives in its own concern module,
-//! [`delete`].
+//! RETURN/WITH projections and SET values, `labels()`/`type()` and
+//! property access on statically-known path/node variables (one
+//! static-kind rule family, run at every expression position this walk
+//! validates), and undefined-variable checks for the expression
+//! positions they appear in. The DELETE-target admission policy lives in
+//! its own concern module, [`delete`].
 
 use crate::ident_hash::IdentHashSet;
 use relate_names::SmallName;
@@ -12,14 +13,14 @@ use relate_error::{EngineError, ErrorKind};
 use relate_parser::{Clause, Expr, PatternElement, Statement};
 
 use super::delete::check_delete_expr;
+use super::scope::{leading_import_form, ExprScope, VarType};
 use super::writes::{walk_write_elements, WriteClause};
 use crate::agg::contains_aggregation;
 use crate::ast::collect::{
-    bind_node_name_refs, check_expr_vars_defined, check_name_defined, clause_introduced_names,
-    collect_expr_variables, collect_pattern_element_vars, interp_embeds, projected_names,
-    projected_node_scope, search_score_var, union_chain, walk_expr_scoped, ScopedExprVisitor,
+    check_expr_vars_defined, check_name_defined, clause_introduced_names, interp_embeds,
+    union_chain, walk_expr_scoped, ScopedExprVisitor,
 };
-use crate::ast::tree::{walk_clause_expr_roots, walk_expr};
+use crate::ast::tree::{unparen, var_property, walk_clause_expr_roots, walk_expr};
 
 /// Validate expression-position constraints:
 /// - Pattern predicates in WHERE must not introduce new (unbound) variables for relationships
@@ -32,107 +33,85 @@ use crate::ast::tree::{walk_clause_expr_roots, walk_expr};
 ///   lives in [`super::pattern`]).
 /// - size() on a pattern predicate is invalid (UnexpectedSyntax, owned by
 ///   [`super::pattern`]).
-/// - Property access and labels() on named path variables are invalid (InvalidArgumentType).
-/// - `type()` on a statically-known node variable (a MATCH/CREATE/MERGE
-///   pattern node, carried through the clause walk) is invalid
-///   (InvalidArgumentType).
+/// - The static-kind rule family ([`check_static_kind_rules`]: property
+///   access and `labels()` on a statically-known path variable,
+///   `type()` on a statically-known node variable) runs at every
+///   expression position this walk validates — the WITH/RETURN item
+///   lists, the MATCH's element-pattern, path-pattern and own WHEREs, and
+///   the WITH's WHERE against its projection view — never a per-position
+///   subset.
 /// - DELETE targets are admitted by [`super::delete::check_delete_expr`]'s
 ///   one stated rule, and MERGE/CREATE patterns reject element-pattern
 ///   predicates.
 pub fn validate_expression_constraints(stmt: &Statement) -> Result<(), EngineError> {
-    let mut scope: IdentHashSet<SmallName> = IdentHashSet::default();
-    let mut path_vars: IdentHashSet<SmallName> = IdentHashSet::default();
-    // The names statically known to be nodes, carried clause by clause
-    // through the canonical node-scope facts (`clause_node_names` for the
-    // pattern-binding clauses, `projected_node_scope` for a WITH
-    // projection) — the set the `type()`-on-node rule reads, checked in
-    // this same walk so the WITH projection actually scopes it.
-    let mut node_vars: IdentHashSet<SmallName> = IdentHashSet::default();
-    validate_expression_constraints_in_clauses(
-        &stmt.clauses,
-        &mut scope,
-        &mut path_vars,
-        &mut node_vars,
-        None,
-    )
+    let mut scope = ExprScope::default();
+    validate_expression_constraints_in_clauses(&stmt.clauses, &mut scope)
 }
 
 /// The clause-list walk behind [`validate_expression_constraints`], factored
 /// out so a CALL-subquery body and an expression subquery (`COUNT`/`EXISTS`/
 /// `COLLECT`) are checked against their own enclosing scope with the same
 /// rules — a reference to an outer variable the body does not import is the
-/// front end's `UndefinedVariable`, not a silently bound null.
+/// front end's `UndefinedVariable`, not a silently bound null (the CALL
+/// boundary rides the carrier's outer names).
 fn validate_expression_constraints_in_clauses(
     clauses: &[Clause],
-    scope: &mut IdentHashSet<SmallName>,
-    path_vars: &mut IdentHashSet<SmallName>,
-    node_vars: &mut IdentHashSet<SmallName>,
-    outer_visibility: Option<&IdentHashSet<SmallName>>,
+    scope: &mut ExprScope,
 ) -> Result<(), EngineError> {
     for clause in clauses {
-        // Expression subqueries and expression-form `shortestPath()` read the
-        // clause's *input* scope (a WITH/RETURN projects after its items are
-        // evaluated); a MATCH's own pattern names are visible to its WHERE,
-        // so they join the snapshot for that clause.
-        let mut expr_scope = scope.clone();
-        if matches!(clause, Clause::Match(_)) {
-            expr_scope.extend(clause_introduced_names(clause));
-        }
-        validate_subquery_expressions(clause, &expr_scope)?;
+        // A clause's pattern variables bind here — names and kinds
+        // together, the one pattern walk, plus a MATCH's SEARCH score
+        // variable — before the arm below runs, so a MATCH's own WHERE
+        // check, every later clause's, and the nested bodies inside the
+        // clause's expressions all see the classification. A clause with
+        // no pattern binds nothing.
+        scope.bind_clause(clause)?;
+        validate_subquery_expressions(clause, scope)?;
         match clause {
             Clause::Match(mc) => {
-                // This clause's own pattern nodes are in the set for its
-                // WHERE check, which runs inside the arm below.
-                bind_node_name_refs(clause, node_vars);
-                validate_match_clause(mc, scope, path_vars, node_vars)?;
+                validate_match_clause(mc, scope)?;
             }
             Clause::With(wc) => {
-                validate_with_clause(wc, scope, path_vars, node_vars, outer_visibility)?;
+                validate_with_clause(wc, scope)?;
             }
             Clause::Return(rc) => {
-                validate_return_clause(rc, scope, path_vars, node_vars, outer_visibility)?;
+                validate_return_clause(rc, scope)?;
             }
             Clause::Unwind(uw) => {
-                validate_unwind_clause(uw, scope)?;
+                validate_unwind_clause(uw, scope.names_mut())?;
             }
             Clause::LoadCSV(lc) => {
-                validate_loadcsv_clause(lc, scope)?;
+                validate_loadcsv_clause(lc, scope.names_mut())?;
             }
             Clause::Create(cc) => {
-                validate_create_clause(cc, scope)?;
-                // The created node variables are nodes for every later
-                // clause's `type()` check.
-                bind_node_name_refs(clause, node_vars);
+                validate_create_clause(cc, scope.names_mut())?;
             }
             Clause::Set(sc) => {
-                validate_set_clause(sc, scope)?;
+                validate_set_clause(sc, scope.names_mut())?;
             }
             Clause::Remove(rc) => {
-                validate_remove_clause(rc, scope)?;
+                validate_remove_clause(rc, scope.names())?;
             }
             Clause::Delete(dc) => {
-                validate_delete_clause(dc, scope)?;
+                validate_delete_clause(dc, scope.names_mut())?;
             }
             Clause::CallProcedure(cp) => {
-                validate_callprocedure_clause(cp, scope)?;
+                validate_callprocedure_clause(cp, scope.names_mut())?;
             }
             // The row-producing catalog commands, through the one catalog
             // classification (the same guard the scope walkers use): each
             // introduces its effective output columns into scope.
             c if crate::show_columns::is_catalog_clause(c) => {
-                scope.extend(clause_introduced_names(c));
+                scope.names_mut().extend(clause_introduced_names(c));
             }
             Clause::CallSubquery(csq) => {
                 // The body is checked against the scope *before* the CALL's
                 // own exports join it.
                 validate_call_body(csq, scope)?;
-                validate_callsubquery_clause(csq, scope)?;
+                validate_callsubquery_clause(csq, scope.names_mut())?;
             }
             Clause::Merge(mc) => {
-                validate_merge_clause(mc, scope)?;
-                // The merged node variables are nodes for every later
-                // clause's `type()` check.
-                bind_node_name_refs(clause, node_vars);
+                validate_merge_clause(mc, scope.names_mut())?;
             }
             _ => {}
         }
@@ -170,27 +149,56 @@ impl ScopedExprVisitor for SubqueryExprVisitor {
     }
 }
 
-/// Walk one clause's expression roots with the scope-aware visitor: every
-/// subquery body recursed into with the scope at that clause.
-fn validate_subquery_expressions(
-    clause: &Clause,
-    scope: &IdentHashSet<SmallName>,
-) -> Result<(), EngineError> {
-    let mut visitor = SubqueryExprVisitor { bodies: Vec::new() };
-    let mut roots =
-        |expr: &Expr| -> Result<(), EngineError> { walk_expr_scoped(expr, &mut visitor) };
-    walk_clause_expr_roots(clause, &mut roots)?;
-    for body in visitor.bodies {
-        let mut inner_scope = scope.clone();
-        let mut path_vars = IdentHashSet::default();
-        let mut node_vars = IdentHashSet::default();
-        validate_expression_constraints_in_clauses(
-            &body.clauses,
-            &mut inner_scope,
-            &mut path_vars,
-            &mut node_vars,
-            None,
-        )?;
+/// Walk one clause's expression roots with the scope-aware visitor and
+/// recurse into every subquery body, seeded from the scope its
+/// expression position actually sees: the clause's expression view (the
+/// input plus the clause's own bindings, plus a WITH's projection for
+/// its WHERE and ORDER BY) — except the one input-sensitive position, a
+/// WITH's projection items, whose bodies seed from the clause's input
+/// (the items evaluate against it, never against the projection their
+/// sibling items define). The CALL boundary is cleared either way: an
+/// expression subquery sees the enclosing row, no boundary to enforce.
+fn validate_subquery_expressions(clause: &Clause, scope: &ExprScope) -> Result<(), EngineError> {
+    let recurse = |visitor: SubqueryExprVisitor, seed: &ExprScope| -> Result<(), EngineError> {
+        for body in visitor.bodies {
+            let mut inner = seed.clone();
+            validate_expression_constraints_in_clauses(&body.clauses, &mut inner)?;
+        }
+        Ok(())
+    };
+    match clause {
+        // The position-sensitive clause: the projection items under the
+        // input, the WHERE/ORDER BY/SKIP/LIMIT expressions under the
+        // projection view.
+        Clause::With(wc) => {
+            let mut items = SubqueryExprVisitor { bodies: Vec::new() };
+            for item in &wc.items {
+                if !item.all {
+                    walk_expr_scoped(&item.expr, &mut items)?;
+                }
+            }
+            recurse(items, &scope.subquery_item_seed())?;
+            let mut rest = SubqueryExprVisitor { bodies: Vec::new() };
+            if let Some(where_expr) = &wc.where_expr {
+                walk_expr_scoped(where_expr, &mut rest)?;
+            }
+            for order in &wc.order_by {
+                walk_expr_scoped(&order.expr, &mut rest)?;
+            }
+            for bound in [wc.skip.as_ref(), wc.limit.as_ref()].into_iter().flatten() {
+                walk_expr_scoped(bound, &mut rest)?;
+            }
+            recurse(rest, &scope.subquery_body_seed(clause))?;
+        }
+        // Every other clause's expressions all read one scope: the
+        // post-bind carrier (its expression view).
+        _ => {
+            let mut visitor = SubqueryExprVisitor { bodies: Vec::new() };
+            let mut roots =
+                |expr: &Expr| -> Result<(), EngineError> { walk_expr_scoped(expr, &mut visitor) };
+            walk_clause_expr_roots(clause, &mut roots)?;
+            recurse(visitor, &scope.subquery_body_seed(clause))?;
+        }
     }
     Ok(())
 }
@@ -203,48 +211,47 @@ fn validate_subquery_expressions(
 /// live Neo4j rejects (`Variable `x` not defined`) ran silently.
 fn validate_call_body(
     csq: &relate_parser::CallSubqueryClause,
-    outer_scope: &IdentHashSet<SmallName>,
+    caller: &ExprScope,
 ) -> Result<(), EngineError> {
     use relate_parser::CallScope;
     for arm in union_chain(&csq.statement) {
-        let (mut scope, leak_scope): (IdentHashSet<SmallName>, Option<&IdentHashSet<SmallName>>) =
-            match &csq.scope {
-                // A scope clause's imports stay visible for the whole body,
-                // so a later WITH dropping one is not a
-                // leak; the planner's binder owns unimported names there.
-                CallScope::Vars(vars) => (vars.iter().cloned().collect(), None),
-                CallScope::Wildcard => (outer_scope.clone(), None),
-                // The importing WITH is evaluated against the outer row and
-                // then replaces the scope; an arm without one imports
-                // nothing, and an outer name read past either boundary is
-                // the leak this pass must reject.
-                CallScope::None => {
-                    // A leading run of `USE` clauses routes the body; the
-                    // importing WITH after it is the one that names the
-                    // imports.
-                    let imports = arm
-                        .clauses
-                        .iter()
-                        .find(|clause| !matches!(clause, Clause::Use(_)));
-                    let seed = if matches!(imports, Some(Clause::With(_))) {
-                        outer_scope.clone()
-                    } else {
-                        IdentHashSet::default()
-                    };
-                    (seed, Some(outer_scope))
+        let seed_names: IdentHashSet<SmallName> = match &csq.scope {
+            // A scope clause's imports stay visible for the whole body,
+            // so a later WITH dropping one is not a leak; the planner's
+            // binder owns unimported names there.
+            CallScope::Vars(vars) => vars.iter().cloned().collect(),
+            CallScope::Wildcard => caller.names().clone(),
+            // The importing WITH is evaluated against the outer row and
+            // then replaces the scope; an arm without one imports
+            // nothing, and an outer name read past either boundary is
+            // the leak the carrier's boundary rule rejects. The leading
+            // import is the one USE-skipping probe
+            // ([`leading_import_form`]), the same value the CIP-218
+            // collision check reads.
+            CallScope::None => {
+                if leading_import_form(&arm.clauses).is_some() {
+                    caller.names().clone()
+                } else {
+                    IdentHashSet::default()
                 }
-            };
+            }
+        };
+        // One carrier for the whole arm: the stage chain (`NEXT` stages)
+        // threads it exactly as the name scope threads, so a name an
+        // earlier stage classified — a WITH's carried alias — keeps its
+        // classification in every later stage's checks. The seed derives
+        // from one source: the arm's visible names, with the caller's
+        // kinds for exactly those names. Only a naked body's arms arm
+        // the import boundary (a scope clause's imports stay visible for
+        // the whole body; the planner's binder owns unimported names
+        // there).
+        let mut scope = ExprScope::seeded(seed_names, caller);
+        if matches!(&csq.scope, CallScope::None) {
+            scope.carry_outer_boundary(caller.names().clone());
+        }
         let mut stage = arm;
         loop {
-            let mut path_vars = IdentHashSet::default();
-            let mut node_vars = IdentHashSet::default();
-            validate_expression_constraints_in_clauses(
-                &stage.clauses,
-                &mut scope,
-                &mut path_vars,
-                &mut node_vars,
-                leak_scope,
-            )?;
+            validate_expression_constraints_in_clauses(&stage.clauses, &mut scope)?;
             match &stage.next {
                 Some(next) => stage = next,
                 None => break,
@@ -255,12 +262,12 @@ fn validate_call_body(
 }
 
 /// The Match clause's expression constraints: the body of the clause
-/// dispatch above, over the shared scope and path-variable sets.
+/// dispatch above, over the shared scope carrier. The pattern's names and
+/// kinds (and the SEARCH score variable) are already bound — the
+/// dispatch's pre-arm step — so the arm only checks.
 fn validate_match_clause(
     mc: &relate_parser::MatchClause,
-    scope: &mut IdentHashSet<SmallName>,
-    path_vars: &mut IdentHashSet<SmallName>,
-    node_vars: &IdentHashSet<SmallName>,
+    scope: &mut ExprScope,
 ) -> Result<(), EngineError> {
     // Collect bound variables from match pattern
     //
@@ -275,19 +282,7 @@ fn validate_match_clause(
             if !path_vars_this_match.insert(name.clone()) {
                 return Err(name.with_str(EngineError::duplicate_variable));
             }
-            scope.insert(name.clone());
-            path_vars.insert(name.clone());
         }
-        for elem in &path.elements {
-            collect_pattern_element_vars(elem, &mut *scope);
-        }
-    }
-    // A WHERE on either side of SEARCH may reference the
-    // score variable -- add it to scope before any WHERE below
-    // (element-pattern, path-pattern, or this MATCH's own) is
-    // checked.
-    if let Some(sv) = search_score_var(mc) {
-        scope.insert(sv.clone());
     }
     // Validate element-pattern WHERE clauses, e.g. `(n WHERE
     // n.age > 30)` / `[r WHERE r.p > 0]` (CIP-17/CIP-18). Scope
@@ -312,8 +307,8 @@ fn validate_match_clause(
                 PatternElement::Quantified(_) => None,
             };
             if let Some(where_expr) = where_expr {
-                check_expr_vars_defined(where_expr, scope)?;
-                check_property_on_paths(where_expr, path_vars)?;
+                check_expr_vars_defined(where_expr, scope.names())?;
+                check_static_kind_rules(where_expr, scope)?;
             }
         }
         // Validate the parenthesized path pattern's own WHERE,
@@ -323,85 +318,86 @@ fn validate_match_clause(
         // singleton variables of the same MATCH -- all already
         // present in `scope` -- but not an undeclared variable.
         if let Some(where_expr) = &path.where_expr {
-            check_expr_vars_defined(where_expr, scope)?;
-            check_property_on_paths(where_expr, path_vars)?;
+            check_expr_vars_defined(where_expr, scope.names())?;
+            check_static_kind_rules(where_expr, scope)?;
         }
     }
-    // Validate WHERE expression
+    // Validate WHERE expression. The carrier arrives with this clause's
+    // own pattern entities already classified (the dispatch's pre-arm
+    // bind step), so the gate and the kind rules read the full
+    // classification.
     if let Some(where_expr) = &mc.where_expr {
         super::pattern::validate_expr_in_where(where_expr, scope)?;
         // Check for undefined variables in WHERE
-        check_expr_vars_defined(where_expr, scope)?;
-        // Check for property access on path variables
-        check_property_on_paths(where_expr, path_vars)?;
-        // `type()` on a statically-known node variable — the nodes bound
-        // by this clause's pattern and every earlier clause.
-        check_type_on_nodes(where_expr, node_vars)?;
+        check_expr_vars_defined(where_expr, scope.names())?;
+        check_static_kind_rules(where_expr, scope)?;
+    }
+    Ok(())
+}
+
+/// The projection-item policy a WITH and a RETURN share, spelled once:
+/// no pattern predicate in a value position, no unimported outer
+/// reference inside a CALL-subquery body (the carrier's boundary rule),
+/// and the static-kind rule family — the same three kind rules as every
+/// other expression position. `position` names the value position in the
+/// pattern rejection text (`WITH projection`, `RETURN projection`) and
+/// is the only per-clause input.
+fn check_projection_items(
+    items: &[relate_parser::ReturnItem],
+    position: &str,
+    scope: &ExprScope,
+) -> Result<(), EngineError> {
+    for item in items {
+        if !item.all {
+            super::pattern::check_no_pattern_in_value_position(&item.expr, position)?;
+            // Inside a CALL-subquery body, an outer name the body never
+            // imported must not fall through to the enclosing row.
+            scope.reject_unimported_outer_refs(&item.expr)?;
+            check_static_kind_rules(&item.expr, scope)?;
+        }
     }
     Ok(())
 }
 
 /// The With clause's expression constraints: the body of the clause
-/// dispatch above, over the shared scope and path-variable sets.
+/// dispatch above, over the shared scope carrier.
 fn validate_with_clause(
     wc: &relate_parser::WithClause,
-    scope: &mut IdentHashSet<SmallName>,
-    path_vars: &mut IdentHashSet<SmallName>,
-    node_vars: &mut IdentHashSet<SmallName>,
-    outer_visibility: Option<&IdentHashSet<SmallName>>,
+    scope: &mut ExprScope,
 ) -> Result<(), EngineError> {
-    // Check for patterns in WITH projection items
-    for item in &wc.items {
-        if !item.all {
-            super::pattern::check_no_pattern_in_value_position(&item.expr, "WITH projection")?;
-            // Inside a CALL-subquery body, an outer name the body never
-            // imported must not fall through to the enclosing row.
-            reject_unimported_outer_refs(&item.expr, scope, outer_visibility)?;
-            // labels() on a named-path variable (Graph3 [8]).
-            check_labels_on_paths(&item.expr, path_vars)?;
-            // `type()` on a statically-known node variable — the node set
-            // this clause received, before the projection replaces it.
-            check_type_on_nodes(&item.expr, node_vars)?;
-        }
-    }
-    // WITH WHERE can have pattern predicates
+    // The projection items, against the input's kinds — the
+    // classification the items themselves are read under.
+    check_projection_items(&wc.items, "WITH projection", scope)?;
+    // The projection's committed carrier, derived once before the WHERE
+    // reads it — the WHERE's same-clause-alias view and the tail's commit
+    // below share one derivation, so the two can never disagree.
+    let projected = scope.projected(&wc.items);
+    // WITH WHERE can have pattern predicates, checked against the WHERE's
+    // view: the clause's input plus this projection's own output — a
+    // same-clause alias is referenceable exactly as it is to every clause
+    // after this one (the projection resets the scope only from the next
+    // clause on). The kind rules read the same view, and the nested
+    // bodies inside the WHERE seed from it
+    // ([`ExprScope::expression_view`], the same policy).
     if let Some(where_expr) = &wc.where_expr {
-        super::pattern::validate_expr_in_where(where_expr, scope)?;
+        let where_scope = scope.with_projection(&projected);
+        super::pattern::validate_expr_in_where(where_expr, &where_scope)?;
+        check_static_kind_rules(where_expr, &where_scope)?;
     }
-    // Reset scope to the projected names through the one WITH/RETURN
-    // projection rule (`projected_names` also keeps names projected before
-    // a `*` item, unlike an ad-hoc reset-on-star loop).
-    *scope = projected_names(&wc.items, scope);
-    // The node set projects through the same rule's node-safe twin: a
-    // bare node variable keeps node-ness under its alias, a `*` passes
-    // the set through, anything else stops being a node.
-    *node_vars = projected_node_scope(&wc.items, node_vars);
+    // Commit the projection: the scope the following clauses see, names
+    // and kinds together.
+    *scope = projected;
     Ok(())
 }
 
 /// The Return clause's expression constraints: the body of the clause
-/// dispatch above, over the shared scope and path-variable sets.
+/// dispatch above, reading the committed scope carrier (RETURN binds
+/// nothing).
 fn validate_return_clause(
     rc: &relate_parser::ReturnClause,
-    scope: &mut IdentHashSet<SmallName>,
-    path_vars: &mut IdentHashSet<SmallName>,
-    node_vars: &IdentHashSet<SmallName>,
-    outer_visibility: Option<&IdentHashSet<SmallName>>,
+    scope: &ExprScope,
 ) -> Result<(), EngineError> {
-    // Check for patterns in RETURN projection items
-    for item in &rc.items {
-        if !item.all {
-            super::pattern::check_no_pattern_in_value_position(&item.expr, "RETURN projection")?;
-            // Inside a CALL-subquery body, an outer name the body never
-            // imported must not fall through to the enclosing row.
-            reject_unimported_outer_refs(&item.expr, scope, outer_visibility)?;
-            // labels() on a named-path variable (Graph3 [8]).
-            check_labels_on_paths(&item.expr, path_vars)?;
-            // `type()` on a statically-known node variable.
-            check_type_on_nodes(&item.expr, node_vars)?;
-        }
-    }
-    Ok(())
+    check_projection_items(&rc.items, "RETURN projection", scope)
 }
 
 /// The Unwind clause's expression constraints: the body of the clause
@@ -620,32 +616,6 @@ fn check_set_items(
     Ok(())
 }
 
-/// The CALL-subquery import boundary: a name the enclosing statement bound
-/// but the body never imported is `UndefinedVariable`, not a silent read of
-/// the enclosing row (live 2026.10: a naked `CALL { … }` body sees only what
-/// its leading importing `WITH` names). A name bound *nowhere* is left to
-/// the planner's binder, which owns its own diagnostic.
-fn reject_unimported_outer_refs(
-    expr: &Expr,
-    scope: &IdentHashSet<SmallName>,
-    outer_visibility: Option<&IdentHashSet<SmallName>>,
-) -> Result<(), EngineError> {
-    let Some(outer) = outer_visibility else {
-        return Ok(());
-    };
-    let mut vars = IdentHashSet::default();
-    collect_expr_variables(expr, &mut vars);
-    let mut leaked: Vec<&SmallName> = vars
-        .iter()
-        .filter(|name| !scope.contains(*name) && outer.contains(*name))
-        .collect();
-    leaked.sort();
-    match leaked.first() {
-        Some(name) => Err(name.with_str(EngineError::undefined_variable)),
-        None => Ok(()),
-    }
-}
-
 /// A REMOVE item's own rules: its dynamic label/type expressions and its
 /// property root must be bound (the SET policy's mirror for `REMOVE n:$(x)`).
 fn validate_remove_clause(
@@ -680,48 +650,54 @@ fn check_dynamic_label_expressions(
     Ok(())
 }
 
-/// Check for property access on path variables.
-fn check_property_on_paths(
-    expr: &Expr,
-    path_vars: &IdentHashSet<SmallName>,
-) -> Result<(), EngineError> {
+/// The walk's one static-kind rule family, one pass over an expression:
+/// property access on a statically-known path variable (a path is not a
+/// map), `labels()` on one (Graph3 [8]), and `type()` on a
+/// statically-known node variable — the three statically-certain kind
+/// misuses, one rule ([`reject_operand_kind`]) behind both shapes. Every
+/// expression position this walk validates runs the same family: the
+/// WITH/RETURN item lists, the MATCH's element-pattern, path-pattern and
+/// own WHEREs, and the WITH's WHERE against the projection view built
+/// there — no position applies a subset. The property operand reads
+/// through the canonical property-on-a-variable recognizer
+/// ([`var_property`]) and the builtin argument through the paren
+/// transparency helper ([`unparen`]), so `(p).foo` and `labels((p))`
+/// resolve through the same paren policy as the classification itself.
+/// Relate has no general type inferencer, so each rule stays scoped to
+/// the shape it can decide (a variable the walk classified); anything
+/// else (a variable that might be fine, a property access on an
+/// unconstrained name, `labels()` on a relationship — the executor's
+/// own coercion rejects it) is left to the runtime type check.
+fn check_static_kind_rules(expr: &Expr, scope: &ExprScope) -> Result<(), EngineError> {
     walk_expr(expr, &mut |e| {
-        if let Expr::Property(p) = e {
-            if let Expr::Variable(v) = &p.expr {
-                if path_vars.contains(v) {
-                    return Err(EngineError::semantic(
-                        ErrorKind::InvalidArgumentType,
-                        "property access is not allowed on paths".to_string(),
-                    ));
-                }
-            }
+        // Property access on a path variable, through the one
+        // property-on-a-variable recognizer.
+        if let Some((v, _)) = var_property(e) {
+            return reject_operand_kind(
+                v,
+                VarType::Path,
+                "property access is not allowed on paths",
+                scope,
+            );
         }
-        Ok(())
-    })
-}
-
-/// Reject a single-argument builtin `name` whose sole argument is directly a
-/// variable drawn from `vars` — the one shape both statically-certain
-/// builtin/type mismatches share ([`check_labels_on_paths`]'s `labels()` on a
-/// path, [`check_type_on_nodes`]'s `type()` on a node). Relate has no
-/// general type inferencer, so the check is deliberately scoped to this
-/// case; anything else (a variable that might be fine, a property access, …)
-/// is left to the runtime type check.
-fn reject_builtin_on_var_set(
-    expr: &Expr,
-    name: &str,
-    in_set: &impl Fn(&SmallName) -> bool,
-    message: &str,
-) -> Result<(), EngineError> {
-    walk_expr(expr, &mut |e| {
+        // The one-argument builtins a statically-known variable kind
+        // disproves: `labels()` on a path, `type()` on a node.
         if let Expr::FunctionCall(fc) = e {
-            if fc.name.with_str(|n| n.eq_ignore_ascii_case(name)) && fc.args.len() == 1 {
-                if let Expr::Variable(v) = &fc.args[0] {
-                    if in_set(v) {
-                        return Err(EngineError::semantic(
-                            ErrorKind::InvalidArgumentType,
-                            message.to_string(),
-                        ));
+            if fc.args.len() == 1 {
+                if let Some((kind, message)) =
+                    fc.name.with_str(|n| match n.to_lowercase().as_str() {
+                        "labels" => Some((VarType::Path, "labels() requires a node, got PATH")),
+                        "type" => Some((
+                            VarType::Node,
+                            "type() can only be applied to relationships, not nodes",
+                        )),
+                        _ => None,
+                    })
+                {
+                    // The argument through the paren-transparency helper,
+                    // so `labels((p))` resolves like `labels(p)`.
+                    if let Expr::Variable(v) = unparen(&fc.args[0]) {
+                        return reject_operand_kind(v, kind, message, scope);
                     }
                 }
             }
@@ -730,20 +706,24 @@ fn reject_builtin_on_var_set(
     })
 }
 
-/// `labels()` applied to a named-path variable is a compile-time
-/// `InvalidArgumentType` (TCK expressions/graph/Graph3 [8]: `MATCH p = (a)
-/// RETURN labels(p)` — `p` is statically a PATH, and `labels()` requires a
-/// node).
-fn check_labels_on_paths(
-    expr: &Expr,
-    path_vars: &IdentHashSet<SmallName>,
+/// The family's one rule: a variable the walk classified to `kind` is
+/// rejected with `message` — the kind equality test and the rejection
+/// exist once, behind both of the family's shapes (the property access's
+/// base, resolved through [`var_property`], and the builtin's argument,
+/// resolved through [`unparen`]).
+fn reject_operand_kind(
+    name: &SmallName,
+    kind: VarType,
+    message: &str,
+    scope: &ExprScope,
 ) -> Result<(), EngineError> {
-    reject_builtin_on_var_set(
-        expr,
-        "labels",
-        &|v: &SmallName| path_vars.contains(v),
-        "labels() requires a node, got PATH",
-    )
+    if scope.kind_of(name) == Some(kind) {
+        return Err(EngineError::semantic(
+            ErrorKind::InvalidArgumentType,
+            message.to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Find the root variable name from an expression (traversing property access and subscripts).
@@ -758,56 +738,5 @@ fn find_root_variable(expr: &Expr) -> Option<SmallName> {
     }
 }
 
-/// `type()` on a statically-known node variable is a compile-time
-/// `InvalidArgumentType`. The node set is carried clause by clause through
-/// the canonical node-scope facts in [`validate_expression_constraints`]'s
-/// walk (`clause_node_names`/`projected_node_scope`), so the check runs in
-/// the same pass as the expression-scope checks around it and a WITH
-/// projection actually scopes it.
-fn check_type_on_nodes(
-    expr: &Expr,
-    node_vars: &IdentHashSet<SmallName>,
-) -> Result<(), EngineError> {
-    // `type(<node variable>)` is illegal anywhere (type() is for
-    // relationships).
-    reject_builtin_on_var_set(
-        expr,
-        "type",
-        &|v: &SmallName| node_vars.contains(v),
-        "type() can only be applied to relationships, not nodes",
-    )
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::validate::parse_and_validate_expression_constraints;
-
-    /// `type()` on a statically-known node variable is rejected in the
-    /// clause walk, with node-ness carried through the canonical
-    /// node-scope facts: a WITH projection keeps a bare node variable's
-    /// node-ness under its alias, CREATE/MERGE pattern nodes are nodes for
-    /// later clauses, and a relationship variable never enters the node
-    /// set — so `type()` on it stays legal.
-    #[test]
-    fn type_on_nodes_is_scoped_through_the_clause_walk() {
-        // Node-ness projects through the alias: `m` is `n`, a node.
-        let error =
-            parse_and_validate_expression_constraints("MATCH (n) WITH n AS m RETURN type(m)")
-                .expect_err("type() on a node projected through a WITH alias is rejected");
-        assert_eq!(error.kind(), ErrorKind::InvalidArgumentType);
-        // A relationship keeps type() legal — it never joins the node set.
-        parse_and_validate_expression_constraints("MATCH (n)-[r]->() WITH r RETURN type(r)")
-            .expect("type() on a relationship stays legal after a WITH");
-        // A created node variable is a node for the RETURN's check.
-        let error = parse_and_validate_expression_constraints("CREATE (n) RETURN type(n)")
-            .expect_err("type() on a CREATE-bound node variable is rejected");
-        assert_eq!(error.kind(), ErrorKind::InvalidArgumentType);
-        // A node dropped by the projection is out of node scope, so this
-        // pass raises no type() rejection for it (the undefined-name
-        // report is the scope battery's, not this walk's) — the node set
-        // is a projection, not a history of every name seen.
-        parse_and_validate_expression_constraints("MATCH (n) WITH 1 AS x RETURN type(n)")
-            .expect("a node dropped by a WITH projection is out of node scope");
-    }
-}
+mod tests;

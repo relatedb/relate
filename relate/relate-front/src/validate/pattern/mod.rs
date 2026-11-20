@@ -16,30 +16,41 @@ use relate_names::SmallName;
 use relate_error::{EngineError, ErrorKind};
 use relate_parser::{Expr, PatternPath};
 
+use super::scope::{ExprScope, VarType};
 use crate::ast::collect::{check_name_defined, check_pattern_vars_allowed, has_relationship};
 use crate::ast::tree::{is_boolean_operator, unparen, walk_expr, walk_expr_with};
 
 /// Check that an expression used in WHERE doesn't violate pattern
 /// predicate rules: `size(<pattern>)` is illegal anywhere in it, and the
 /// pattern predicates in its predicate positions must be validated.
-pub(super) fn validate_expr_in_where(
-    expr: &Expr,
-    scope: &IdentHashSet<SmallName>,
-) -> Result<(), EngineError> {
+///
+/// `scope` is the caller's scope carrier — the names and the per-clause
+/// [`VarType`] classification. A lone parenthesized **entity** variable
+/// in a predicate position (a name the carrier classifies as `Node`,
+/// `Relationship` or `Path`) is the single-node pattern reading (the
+/// rejection below); a value variable's parentheses are grouping — the
+/// predicate is the variable's own boolean value (live 2026.10: `WITH
+/// u.p1 <> null AS b … WHERE NOT(b)` plans and executes — `b` is the
+/// boolean `b`, not a node pattern).
+pub(super) fn validate_expr_in_where(expr: &Expr, scope: &ExprScope) -> Result<(), EngineError> {
     check_size_over_pattern(expr)?;
     // Visit exactly the homes [`pattern_home`] names (plus a
     // parenthesized group, which it makes transparent): a pattern
     // predicate is legal there and must be validated (relationship-bearing,
     // bound variables) — including one under a `CASE WHEN` condition, which
     // the former hand-rolled recursion skipped — and a parenthesized single
-    // variable used as a predicate is the single-node rejection.
+    // entity variable used as a predicate is the single-node rejection.
     walk_expr_with(
         expr,
         &mut |e| match e {
-            Expr::PatternPredicate(pp) => validate_pattern_predicate(&pp.pattern, scope),
+            Expr::PatternPredicate(pp) => validate_pattern_predicate(&pp.pattern, scope.names()),
             Expr::Paren(inner) => match inner.as_ref() {
-                Expr::Variable(v) => {
-                    check_name_defined(v, scope)?;
+                // A name the carrier classifies as an entity
+                // ([`VarType::is_entity`]) reads as a single-node
+                // pattern; every other name is a value whose parens are
+                // grouping.
+                Expr::Variable(v) if scope.kind_of(v).is_some_and(VarType::is_entity) => {
+                    check_name_defined(v, scope.names())?;
                     Err(single_node_predicate_error())
                 }
                 _ => Ok(()),
@@ -48,8 +59,8 @@ pub(super) fn validate_expr_in_where(
         },
         // The WHERE walk descends every predicate position — for ANY child
         // shape, not only pattern-shaped ones, so its visitor keeps the
-        // single-node rejection for a parenthesized variable used as a
-        // predicate (`WHERE (n) AND (m)--()`) — plus the legacy
+        // single-node rejection for a parenthesized entity variable used
+        // as a predicate (`WHERE (n) AND (m)--()`) — plus the legacy
         // `exists(<pattern>)` argument (its variables are enclosing-scope)
         // and parenthesized groups (a group is transparent: its body is a
         // predicate exactly when the group is). A comprehension's WHERE

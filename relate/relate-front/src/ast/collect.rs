@@ -12,7 +12,7 @@
 
 use relate_names::SmallName;
 
-use crate::ident_hash::{IdentBuildHasher, IdentHashSet};
+use crate::ident_hash::{IdentBuildHasher, IdentHashMap, IdentHashSet};
 
 use relate_error::EngineError;
 use relate_parser::{
@@ -441,30 +441,53 @@ pub(crate) fn projected_names(
     items: &[ReturnItem],
     bound: &IdentHashSet<SmallName>,
 ) -> IdentHashSet<SmallName> {
-    project_names_with(items, bound, effective_name)
+    project_names(items, bound, effective_name)
 }
 
-/// The one projection fold every name projection shares: a `*` item
-/// passes the incoming scope through, every other item contributes the
-/// name its `contribute` derives. Pre-sized (ADR-0505 §4): a `*` passes
-/// at most `bound.len()` names through and each other item at most one.
-/// [`projected_names`] contributes [`effective_name`];
-/// [`projected_node_scope`] the bound-gated variable carry — one
-/// star/pacing policy, two contributions.
-fn project_names_with(
+/// The name-presence wrapper over the one projection skeleton: renders
+/// the bound set into [`project_with`]'s `(name, payload)` domain, folds,
+/// and collapses the result's keys back — so a name fold's caller spells
+/// only its contribution, never the container adapter.
+fn project_names(
     items: &[ReturnItem],
     bound: &IdentHashSet<SmallName>,
     contribute: impl Fn(&ReturnItem) -> Option<SmallName>,
 ) -> IdentHashSet<SmallName> {
+    let bound: IdentHashMap<SmallName, ()> = bound.iter().map(|name| (name.clone(), ())).collect();
+    project_with(items, &bound, |item| {
+        contribute(item).map(|name| (name, ()))
+    })
+    .into_keys()
+    .collect()
+}
+
+/// The one projection fold every payload projection shares: a `*` item
+/// passes the incoming `(name, payload)` pairs through, every other item
+/// contributes the pair its `contribute` derives. Pre-sized (ADR-0505
+/// §4): a `*` passes at most `bound.len()` names through and each other
+/// item at most one pair, so this is an upper bound. The payload is the
+/// projection's per-name fact: `()` for the name-presence folds
+/// ([`projected_names`], [`projected_node_scope`]), a variable kind for
+/// the kind fold (`validate::scope::projected_var_types`) — one
+/// star/pacing policy for every projection.
+pub(crate) fn project_with<V: Clone>(
+    items: &[ReturnItem],
+    bound: &IdentHashMap<SmallName, V>,
+    contribute: impl Fn(&ReturnItem) -> Option<(SmallName, V)>,
+) -> IdentHashMap<SmallName, V> {
     let mut out =
-        IdentHashSet::with_capacity_and_hasher(bound.len() + items.len(), IdentBuildHasher);
+        IdentHashMap::with_capacity_and_hasher(bound.len() + items.len(), IdentBuildHasher);
     for item in items {
         if item.all {
-            out.extend(bound.iter().cloned());
+            out.extend(
+                bound
+                    .iter()
+                    .map(|(name, payload)| (name.clone(), payload.clone())),
+            );
             continue;
         }
-        if let Some(name) = contribute(item) {
-            out.insert(name);
+        if let Some((name, payload)) = contribute(item) {
+            out.insert(name, payload);
         }
     }
     out
@@ -476,8 +499,8 @@ fn project_names_with(
 /// expression yields a value the executor will not reuse as an existing node
 /// (`create_or_bind_node` reuses only `Value::Node` bindings), so a
 /// `WITH o` over a may-be-null `OPTIONAL MATCH` binding does not make `o`
-/// node-safe. Safe mode's label-less-write guardrail and the default
-/// validation walk both thread it instead of [`projected_names`].
+/// node-safe. Safe mode's label-less-write guardrail threads it instead of
+/// [`projected_names`].
 /// Redundant parens around the variable are transparent — the lowered item
 /// is the bare variable, so `WITH (n)` carries node-ness exactly like
 /// `WITH n` (LABS-1615/1616's paren-transparency family).
@@ -485,7 +508,10 @@ pub(crate) fn projected_node_scope(
     items: &[ReturnItem],
     bound: &IdentHashSet<SmallName>,
 ) -> IdentHashSet<SmallName> {
-    project_names_with(items, bound, |item| {
+    // The name-presence wrapper over the one skeleton, with the
+    // node-safe contribution: only a bare variable already in `bound`
+    // keeps its alias.
+    project_names(items, bound, |item| {
         item_variable(item).and_then(|name| {
             bound
                 .contains(name)
@@ -510,11 +536,10 @@ pub(crate) fn clause_node_names(clause: &Clause) -> IdentHashSet<SmallName> {
 /// a scope-carrying validation walk rides this form directly, so no
 /// per-clause table lands in the lowering path.
 pub(crate) fn bind_node_name_refs(clause: &Clause, out: &mut IdentHashSet<SmallName>) {
-    let patterns: &[PatternPath] = match clause {
-        Clause::Match(mc) => &mc.pattern,
-        Clause::Create(cc) => &cc.pattern,
-        Clause::Merge(mc) => std::slice::from_ref(&mc.pattern),
-        _ => return,
+    // The one clause→pattern-list mapping ([`clause_patterns`]) decides
+    // which clauses bind node names; the fold below only walks them.
+    let Some(patterns) = clause_patterns(clause) else {
+        return;
     };
     bind_pattern_node_name_refs(patterns, &mut |name| {
         out.insert(name.clone());

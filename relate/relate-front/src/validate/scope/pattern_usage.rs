@@ -2,14 +2,51 @@
 //! usages one MATCH introduces, collected before any type is committed, then
 //! checked against earlier clauses and earlier usages of the same pattern
 //! list. The type vocabulary ([`VarType`], [`reuse_error_kind`]) is the
-//! parent's; this module owns only the pattern walk and its conflict rules.
+//! parent's; this module owns the pattern walk and its conflict rules —
+//! and, as the one home of that walk, the shared surface every other
+//! consumer reads it through: [`bind_clause_var_kinds`], the per-clause
+//! kind fold the constraints walk's kind-tagged scope binds with (the
+//! walk without the conflict rules, which stay this module's own).
 
-use crate::ident_hash::IdentHashMap;
+use crate::ident_hash::{IdentHashMap, IdentHashSet};
 use relate_error::{EngineError, ErrorKind};
 use relate_names::SmallName;
-use relate_parser::{PatternElement, PatternPath};
+use relate_parser::{Clause, PatternElement, PatternPath};
 
 use super::{reuse_error_kind, VarType};
+use crate::ast::collect::{clause_patterns, pattern_vars};
+
+/// The clause-level hook into the canonical kind classification: every
+/// variable a pattern-bearing clause binds — through
+/// [`clause_patterns`]'s one clause→pattern-list mapping — with the kind
+/// its pattern position gives it (a node element's a Node, a
+/// relationship element's a Relationship — var-length and
+/// quantified-group alike — a path's own name a Path), folded into a
+/// name set and a kind map *together*: kinds ⊆ names by construction,
+/// the names through the canonical pattern-name enumeration
+/// ([`pattern_vars`], which also visits a quantified group's subpath
+/// variable — a name with no kind: it binds a list of the sub-paths
+/// its group matched, a value the planner binds as `Binding::List`,
+/// the SEARCH score variable's shape). [`validate_match_patterns`]'s
+/// conflict rules stay this module's own; the fold is the same walk,
+/// pure, for the passes that consume the classification per clause. A
+/// clause with no pattern binds nothing.
+pub(crate) fn bind_clause_var_kinds(
+    clause: &Clause,
+    names: &mut IdentHashSet<SmallName>,
+    kinds: &mut IdentHashMap<SmallName, VarType>,
+) -> Result<(), EngineError> {
+    let Some(patterns) = clause_patterns(clause) else {
+        return Ok(());
+    };
+    for name in pattern_vars(patterns) {
+        names.insert(name.clone());
+    }
+    for usage in collect_pattern_usages(patterns)? {
+        kinds.insert(usage.name, usage.var_type);
+    }
+    Ok(())
+}
 
 /// Validate match patterns for variable type conflicts.
 ///

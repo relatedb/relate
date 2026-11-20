@@ -124,12 +124,12 @@ fn exists_exemption_covers_only_a_direct_pattern_argument() {
     );
 }
 
-/// Regression: a parenthesized variable in a predicate position of a
-/// WHERE is the single-node predicate rejection — the descent into
+/// Regression: a parenthesized entity variable in a predicate position
+/// of a WHERE is the single-node predicate rejection — the descent into
 /// predicate positions is shape-agnostic, so the visitor reaches the
 /// group even though it is not a pattern home.
 #[test]
-fn a_parenthesized_variable_in_a_where_predicate_position_is_rejected() {
+fn a_parenthesized_entity_variable_in_a_where_predicate_position_is_rejected() {
     let error =
         parse_and_validate_expression_constraints("MATCH (n) WHERE (n) AND (n)--() RETURN n")
             .expect_err("a lone parenthesized variable is not a predicate");
@@ -138,6 +138,94 @@ fn a_parenthesized_variable_in_a_where_predicate_position_is_rejected() {
         error.to_string(),
         "InvalidArgumentType: a single node is not a valid pattern predicate"
     );
+}
+
+/// A parenthesized **value** variable in a WHERE predicate position is
+/// grouping, not a node pattern: the alias the same WITH introduces is
+/// referenceable through the parens — under `NOT` (`WHERE NOT(b)`, which
+/// live 2026.10 plans and executes), bare (`WHERE (b)`), as an `AND`
+/// operand — and so is an alias an earlier WITH introduced into a
+/// MATCH's WHERE, or a scalar an `UNWIND` binds. An undefined name under
+/// the parens keeps its `UndefinedVariable` rejection.
+#[test]
+fn a_parenthesized_value_variable_in_a_where_predicate_position_is_grouping() {
+    for query in [
+        "MATCH (u:L1) WITH u, u.p1 <> null AS b WHERE NOT(b) RETURN u",
+        "MATCH (u:L1) WITH u, u.p1 <> null AS b WHERE NOT (b) RETURN u",
+        "MATCH (u:L1) WITH u, u.p1 <> null AS b WHERE (b) RETURN u",
+        "MATCH (u:L1) WITH u, u.p1 <> null AS b WHERE NOT(b) AND true RETURN u",
+        "WITH true AS b WHERE NOT(b) RETURN b",
+        "MATCH (u:L1) WITH u, u.p1 <> null AS b MATCH (u) WHERE NOT(b) RETURN u",
+        "UNWIND [true] AS b MATCH (n) WHERE NOT(b) RETURN n",
+    ] {
+        parse_and_validate_expression_constraints(query).unwrap_or_else(|e| panic!("{query}: {e}"));
+    }
+    let error = parse_and_validate_expression_constraints("MATCH (n) WHERE (nosuch) RETURN n")
+        .expect_err("an undefined name under parens is still rejected");
+    assert_eq!(error.kind(), ErrorKind::UndefinedVariable);
+}
+
+/// A parenthesized entity variable keeps the single-node rejection
+/// through a WITH's projection: the input name (`WITH u AS x … WHERE
+/// (u)`), the node alias the same WITH carries (`… WHERE (x)`), a path
+/// variable and the path alias a WITH carries, and a relationship
+/// variable everywhere — this clause's pattern, under `NOT`, var-length,
+/// and the rel alias the same WITH carries — so the value-variable
+/// grouping above cannot silently widen to entities. Path-ness projects
+/// through the same WITH commit as node-ness and rel-ness, so an
+/// entity's alias takes the entity reading.
+#[test]
+fn a_parenthesized_entity_variable_stays_rejected_through_a_with() {
+    for query in [
+        "MATCH (u:L1) WITH u AS x WHERE (x) RETURN x",
+        "MATCH (u:L1) WITH u AS x WHERE (u) RETURN x",
+        "MATCH p=(a)-[r]->(b) WHERE (p) RETURN p",
+        "MATCH p=(a)-[r]->(b) WITH p AS q WHERE (q) RETURN q",
+        "MATCH (a)-[r]->(b) WHERE (r) RETURN a",
+        "MATCH (a)-[r]->(b) WHERE NOT(r) RETURN a",
+        "MATCH (a)-[r*]->(b) WHERE (r) RETURN a",
+        "MATCH (a)-[r]->(b) WITH r AS q WHERE (q) RETURN q",
+    ] {
+        let error = parse_and_validate_expression_constraints(query).expect_err(&format!(
+            "{query}: an entity in parens is the single-node rejection"
+        ));
+        assert_eq!(error.kind(), ErrorKind::InvalidArgumentType);
+        assert_eq!(
+            error.to_string(),
+            "InvalidArgumentType: a single node is not a valid pattern predicate",
+            "{query}"
+        );
+    }
+}
+
+/// The WITH commit projects path-ness with the name scope: a path
+/// variable's alias is statically a path for the following clauses (so
+/// `labels()` on it is the compile-time rejection), and a path the
+/// projection drops carries no kind at all — the walk leaves its
+/// `labels()` to the undefined-name report the binder owns.
+#[test]
+fn a_with_projects_path_ness_with_the_scope() {
+    let error = parse_and_validate_expression_constraints(
+        "MATCH p=(a)-[r]->(b) WITH p AS q RETURN labels(q)",
+    )
+    .expect_err("a carried path alias is statically a path for labels()");
+    assert_eq!(error.kind(), ErrorKind::InvalidArgumentType);
+    assert_eq!(
+        error.to_string(),
+        "InvalidArgumentType: labels() requires a node, got PATH"
+    );
+    parse_and_validate_expression_constraints("MATCH p=(a)-[r]->(b) WITH 1 AS x RETURN labels(p)")
+        .expect("a dropped path carries no kind; the undefined-name report is the binder's");
+}
+
+/// A pattern predicate in a WITH's WHERE references the names the WHERE
+/// sees: the clause's input plus the same projection's own aliases
+/// (`WITH n AS a … WHERE (a)-[:R]->(n)`), exactly as a parenthesized
+/// alias does.
+#[test]
+fn a_pattern_predicate_in_a_with_where_reads_the_same_clauses_aliases() {
+    parse_and_validate_expression_constraints("MATCH (n) WITH n AS a WHERE (a)-[:R]->(n) RETURN a")
+        .expect("a same-WITH alias is in the WHERE's reference scope");
 }
 
 /// A pattern predicate inside a comprehension's WHERE filter binds

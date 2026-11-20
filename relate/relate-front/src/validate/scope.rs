@@ -1,4 +1,5 @@
-//! Cross-clause variable scope and usage-type tracking.
+//! Cross-clause variable scope: usage-type tracking and the constraints
+//! walk's scope carrier, two charters over one kind vocabulary.
 //!
 //! [`validate_variable_types`] detects variable-reuse type conflicts at
 //! compile time by tracking variable usage types (Node, Relationship, Path)
@@ -10,11 +11,16 @@
 //! node, and a scalar value cannot be used as a node or relationship in a
 //! MATCH pattern.
 //!
+//! [`ExprScope`] — the constraints walk's name-and-kind carrier, re-exported
+//! below from its own module beside the pattern→kind walk it binds through —
+//! is the second charter: the scope every expression rule in this tree
+//! reads, per clause.
+//!
 //! The subquery output-variable analysis this builds on lives in
 //! [`super::output_vars`]; `call_scope` builds its CALL-subquery
 //! scope-clause checks on it.
 
-use crate::ident_hash::{IdentBuildHasher, IdentHashMap, IdentHashSet};
+use crate::ident_hash::{IdentHashMap, IdentHashSet};
 use relate_names::SmallName;
 
 use relate_error::{EngineError, ErrorKind};
@@ -23,15 +29,27 @@ use relate_parser::{
     LiteralValue, MatchClause, MergeClause, ReturnItem, Statement, WithClause, YieldMode,
 };
 
-mod pattern_usage;
+// `pattern_usage` is the canonical pattern→kind walk's home — its own
+// module, beside the walk it owns. Exposed to this subtree (not just
+// `scope`) so `validate::expressions` — the constraints walk whose
+// kind-tagged scope consumes the classification — binds through the same
+// fold instead of a re-spelling.
+pub(super) mod pattern_usage;
 
+// `expr_scope` is the constraints walk's carrier; the re-export keeps the
+// one public path its consumers already use (`super::scope::ExprScope`).
+mod expr_scope;
+
+pub(super) use self::expr_scope::ExprScope;
 use self::pattern_usage::validate_match_patterns;
 use super::self_reference::validate_create_self_reference;
 use super::writes::{
     declare_new_name, validate_create_bindings, validate_dynamic_label_no_any,
     validate_dynamic_label_scope, validate_merge_bindings,
 };
-use crate::ast::collect::{bind_pattern_vars, clause_introduced_names, projected_names};
+use crate::ast::collect::{
+    bind_pattern_vars, clause_introduced_names, project_with, projected_names,
+};
 use crate::ast::naming::{effective_expr, effective_name, item_variable};
 use crate::call_scope::duplicate_outer_variable;
 use crate::output_vars::{compute_subquery_output_vars, compute_subquery_output_vars_seeded};
@@ -51,9 +69,13 @@ fn reuse_error_kind(new_type: VarType) -> ErrorKind {
     }
 }
 
-/// The type of a variable as determined by its usage context.
+/// The type of a variable as determined by its usage context. The one
+/// kind vocabulary: besides this module's type-conflict pass, the
+/// constraints walk's kind-tagged scope (the paren-entity gate's carrier)
+/// reads it per clause — a name absent from that carrier is a value, a
+/// name holding one of the three entity kinds is an entity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VarType {
+pub(crate) enum VarType {
     Node,
     Relationship,
     Path,
@@ -71,7 +93,17 @@ impl VarType {
             VarType::Scalar => "scalar value",
         }
     }
+
+    /// Whether this kind is one of the three entity kinds — the one
+    /// entity test every consumer of the classification reads: a name
+    /// the kind map holds as an entity reads as a single-node pattern
+    /// when its lone parenthesized form is used as a predicate, while a
+    /// `Scalar` (or an unconstrained absence) is a value.
+    pub(crate) fn is_entity(self) -> bool {
+        matches!(self, VarType::Node | VarType::Relationship | VarType::Path)
+    }
 }
+
 /// Validate a statement for variable type conflicts and VariableAlreadyBound errors.
 ///
 /// Returns `Ok(())` if valid, or `Err(..)` with a `VariableTypeConflict` /
@@ -164,74 +196,63 @@ fn apply_match(
     Ok(())
 }
 
-/// The WITH policy: the projection resets the scope. Variables projected
-/// through WITH get their types from the expression. If the expression is
-/// a literal (not a variable reference), the resulting variable is
-/// Scalar; a variable reference passes its type through; anything else
-/// constrains nothing.
+/// The variable-kind fold a WITH/RETURN item list projects: a `*` item
+/// passes every incoming kind through, a bare (paren-transparent)
+/// variable passes its own kind under its alias, and a scalar-shaped
+/// expression (a non-null literal, list literal, map literal, or a
+/// non-null plan-cache parameter) projects `Scalar` — everything else
+/// leaves its name unconstrained (absent; its value is decided per row).
+/// One fold, two consumers: the type-conflict pass's WITH arm
+/// ([`apply_with`]) and the constraints walk's kind-tagged scope commit,
+/// so the two passes' projections cannot drift — and the kind payload's
+/// instantiation of [`project_with`], the one star/pacing projection
+/// skeleton every payload fold shares.
+pub(crate) fn projected_var_types(
+    items: &[ReturnItem],
+    bound: &IdentHashMap<SmallName, VarType>,
+) -> IdentHashMap<SmallName, VarType> {
+    project_with(items, bound, |item| {
+        let alias = effective_name(item)?;
+        // The kind of the projected expression — through the
+        // paren-transparent form (LABS-1615/1616), so `WITH (n)` passes
+        // the variable's kind through exactly like `WITH n`. A null
+        // literal constrains nothing (null is compatible with any type);
+        // an expression whose kind is decided per row (a function call,
+        // `coalesce(b, c)`, …) leaves the name unconstrained — absent,
+        // not `Scalar`.
+        let kind = match effective_expr(item) {
+            Expr::Variable(v) => bound.get(v).copied()?,
+            Expr::Literal(LiteralValue::Null) => return None,
+            // Known scalar types: literals, list literals, map literals.
+            // These definitely can't be nodes or relationships.
+            Expr::Literal(_) | Expr::List(_) | Expr::Map(_) => VarType::Scalar,
+            // The literal a plan-cache placeholder replaced. Null still
+            // constrains nothing.
+            Expr::Parameter(name) => match relate_core::auto_literal(name) {
+                Some(value) if !value.is_null() => VarType::Scalar,
+                _ => return None,
+            },
+            // For function calls and other complex expressions we can't
+            // determine the type at compile time (e.g., coalesce(b, c)
+            // could return a node)
+            _ => return None,
+        };
+        Some((alias, kind))
+    })
+}
+
+/// The WITH policy: the projection replaces the kind map through
+/// [`projected_var_types`] and the bound-name set through the canonical
+/// WITH/RETURN projection rule — the same skeleton every other scope
+/// walk uses (a `*` passes the incoming names through, an item
+/// contributes its effective name) — so the name set and the kind map
+/// can never disagree on what the clause projected.
 fn apply_with(
     wc: &WithClause,
     var_types: &mut IdentHashMap<SmallName, VarType>,
     bound_vars: &mut IdentHashSet<SmallName>,
 ) {
-    // Pre-sized (ADR-0505 §4): a `*` passes every existing
-    // typed variable through and each other item contributes
-    // at most one alias, so this is an upper bound.
-    let mut new_types: IdentHashMap<SmallName, VarType> =
-        IdentHashMap::with_capacity_and_hasher(var_types.len() + wc.items.len(), IdentBuildHasher);
-    for item in &wc.items {
-        if item.all {
-            // WITH * passes through all existing variables with their types
-            for (k, v) in var_types.iter() {
-                new_types.insert(k.clone(), *v);
-            }
-            continue;
-        }
-        let Some(alias) = effective_name(item) else {
-            continue;
-        };
-
-        // Determine the type of the projected expression — through the
-        // paren-transparent form (LABS-1615/1616), so `WITH (n)` passes
-        // the variable's type through exactly like `WITH n`.
-        match effective_expr(item) {
-            Expr::Variable(v) => {
-                // Pass through the existing type
-                if let Some(t) = var_types.get(v) {
-                    new_types.insert(alias, *t);
-                }
-                // If unknown, don't constrain it
-            }
-            // Null literal doesn't constrain the variable type (null is compatible with any type)
-            Expr::Literal(LiteralValue::Null) => {}
-            // Known scalar types: literals, list literals, map literals
-            // These definitely can't be nodes or relationships
-            Expr::Literal(_) | Expr::List(_) | Expr::Map(_) => {
-                new_types.insert(alias, VarType::Scalar);
-            }
-            // The literal a plan-cache placeholder replaced.
-            // Null still constrains nothing.
-            Expr::Parameter(name) => {
-                if matches!(
-                    relate_core::auto_literal(name),
-                    Some(value) if !value.is_null()
-                ) {
-                    new_types.insert(alias, VarType::Scalar);
-                }
-            }
-            // For function calls and other complex expressions,
-            // we can't determine the type at compile time
-            // (e.g., coalesce(b, c) could return a node)
-            _ => {}
-        }
-    }
-    *var_types = new_types;
-    // The bound-name set comes from the canonical WITH/RETURN
-    // projection rule — the same skeleton every other scope
-    // walk uses (a `*` passes the incoming names through, an
-    // item contributes its effective name) — so the name set
-    // and the type map built above can never disagree on what
-    // the clause projected.
+    *var_types = projected_var_types(&wc.items, var_types);
     *bound_vars = projected_names(&wc.items, bound_vars);
 }
 
@@ -432,7 +453,7 @@ fn check_yield_names_not_bound(
 /// legacy form. Classified once, so the imported set and the seeded vs.
 /// unseeded output computation below follow one match — not a bool plus an
 /// `Option` that silently degrades into "not the legacy form".
-enum LegacyImportForm {
+pub(super) enum LegacyImportForm {
     Star,
     Named(IdentHashSet<SmallName>),
 }
@@ -461,14 +482,45 @@ fn legacy_import_form(items: &[ReturnItem]) -> Option<LegacyImportForm> {
     (!named.is_empty()).then_some(LegacyImportForm::Named(named))
 }
 
+/// The import form a subquery body's leading clause takes, USE-skipping:
+/// the one home of "does this body start with an importing WITH" — the
+/// boundary both the constraints walk's CALL seed and the CIP-218
+/// collision check below read. `None` — the body's first non-`USE`
+/// clause is not a WITH, so a naked body imports nothing. A WITH's own
+/// shape classifies through the legacy-importing vocabulary
+/// ([`LegacyImportForm`]): a lone `*` or a list of plain unaliased
+/// variables is the legacy importing form (both import outer names, and
+/// a terminal re-exposure of one is the CIP-218 collision); any other
+/// WITH is an ordinary leading projection, still evaluated against the
+/// outer row, so the walk seeds the outer scope beneath it.
+pub(super) enum LeadingImportForm {
+    Legacy(LegacyImportForm),
+    Other,
+}
+
+/// Classify a subquery body's leading import, USE-skipping, through the
+/// one [`LeadingImportForm`] vocabulary above — the shared probe of the
+/// constraints walk's CALL seed and the CIP-218 collision check.
+pub(super) fn leading_import_form(clauses: &[Clause]) -> Option<LeadingImportForm> {
+    let first = clauses
+        .iter()
+        .find(|clause| !matches!(clause, Clause::Use(_)))?;
+    let Clause::With(first) = first else {
+        return None;
+    };
+    Some(match legacy_import_form(&first.items) {
+        Some(form) => LeadingImportForm::Legacy(form),
+        None => LeadingImportForm::Other,
+    })
+}
+
 fn validate_legacy_import_collision(
     csq: &CallSubqueryClause,
     bound_vars: &IdentHashSet<SmallName>,
 ) -> Result<(), EngineError> {
-    let Some(Clause::With(first)) = csq.statement.clauses.first() else {
-        return Ok(());
-    };
-    let Some(form) = legacy_import_form(&first.items) else {
+    // The one USE-skipping import-boundary probe, the same value the
+    // constraints walk's CALL seed reads.
+    let Some(LeadingImportForm::Legacy(form)) = leading_import_form(&csq.statement.clauses) else {
         return Ok(());
     };
     let (imported, exported) = match form {
