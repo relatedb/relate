@@ -168,8 +168,7 @@ jobs:
             fi
             echo "apt attempt $attempt failed; retrying"
             if [ "$attempt" -eq 3 ]; then
-              echo "::error::ca-certificates upgrade failed after 3 attempts"
-              exit 1
+              echo "::warning::ca-certificates upgrade failed after 3 attempts -- the post-condition below stays the hard gate (a fixed runner image needs no upgrade)"
             fi
             sleep $((attempt * 10))
           done

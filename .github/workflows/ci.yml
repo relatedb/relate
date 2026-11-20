@@ -66,9 +66,12 @@ jobs:
           if [ -f /etc/apt/apt-mirrors.txt ] && ! grep -q mirror.init7.net /etc/apt/apt-mirrors.txt; then
             printf 'http://mirror.init7.net/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
           fi
-          sudo apt-get update
-          sudo apt-get install --only-upgrade -y ca-certificates
-          sudo update-ca-certificates --fresh
+          # Best-effort: a fixed runner image needs no upgrade, and an apt
+          # outage must not red the lane when the trust store is already
+          # clean -- the post-condition below stays the hard gate.
+          sudo apt-get update || echo "::warning::apt-get update failed (CVE-2026-111943 patch)"
+          sudo apt-get install --only-upgrade -y ca-certificates || echo "::warning::ca-certificates upgrade failed (CVE-2026-111943 patch)"
+          sudo update-ca-certificates --fresh || echo "::warning::CA rebuild failed (CVE-2026-111943 patch)"
           # Post-condition (remediation assurance): the compromised root
           # must be absent from the rebuilt store -- an on-path attacker
           # replaying validly-signed metadata could otherwise make the
@@ -114,9 +117,12 @@ jobs:
           if [ -f /etc/apt/apt-mirrors.txt ] && ! grep -q mirror.init7.net /etc/apt/apt-mirrors.txt; then
             printf 'http://mirror.init7.net/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
           fi
-          sudo apt-get update
-          sudo apt-get install --only-upgrade -y ca-certificates
-          sudo update-ca-certificates --fresh
+          # Best-effort: a fixed runner image needs no upgrade, and an apt
+          # outage must not red the lane when the trust store is already
+          # clean -- the post-condition below stays the hard gate.
+          sudo apt-get update || echo "::warning::apt-get update failed (CVE-2026-111943 patch)"
+          sudo apt-get install --only-upgrade -y ca-certificates || echo "::warning::ca-certificates upgrade failed (CVE-2026-111943 patch)"
+          sudo update-ca-certificates --fresh || echo "::warning::CA rebuild failed (CVE-2026-111943 patch)"
           # Post-condition (remediation assurance): the compromised root
           # must be absent from the rebuilt store -- an on-path attacker
           # replaying validly-signed metadata could otherwise make the
@@ -223,9 +229,12 @@ jobs:
           if [ -f /etc/apt/apt-mirrors.txt ] && ! grep -q mirror.init7.net /etc/apt/apt-mirrors.txt; then
             printf 'http://mirror.init7.net/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
           fi
-          sudo apt-get update
-          sudo apt-get install --only-upgrade -y ca-certificates
-          sudo update-ca-certificates --fresh
+          # Best-effort: a fixed runner image needs no upgrade, and an apt
+          # outage must not red the lane when the trust store is already
+          # clean -- the post-condition below stays the hard gate.
+          sudo apt-get update || echo "::warning::apt-get update failed (CVE-2026-111943 patch)"
+          sudo apt-get install --only-upgrade -y ca-certificates || echo "::warning::ca-certificates upgrade failed (CVE-2026-111943 patch)"
+          sudo update-ca-certificates --fresh || echo "::warning::CA rebuild failed (CVE-2026-111943 patch)"
           # Post-condition (remediation assurance): the compromised root
           # must be absent from the rebuilt store -- an on-path attacker
           # replaying validly-signed metadata could otherwise make the
@@ -302,9 +311,12 @@ jobs:
           if [ -f /etc/apt/apt-mirrors.txt ] && ! grep -q mirror.init7.net /etc/apt/apt-mirrors.txt; then
             printf 'http://mirror.init7.net/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
           fi
-          sudo apt-get update
-          sudo apt-get install --only-upgrade -y ca-certificates
-          sudo update-ca-certificates --fresh
+          # Best-effort: a fixed runner image needs no upgrade, and an apt
+          # outage must not red the lane when the trust store is already
+          # clean -- the post-condition below stays the hard gate.
+          sudo apt-get update || echo "::warning::apt-get update failed (CVE-2026-111943 patch)"
+          sudo apt-get install --only-upgrade -y ca-certificates || echo "::warning::ca-certificates upgrade failed (CVE-2026-111943 patch)"
+          sudo update-ca-certificates --fresh || echo "::warning::CA rebuild failed (CVE-2026-111943 patch)"
           # Post-condition (remediation assurance): the compromised root
           # must be absent from the rebuilt store -- an on-path attacker
           # replaying validly-signed metadata could otherwise make the
@@ -1090,9 +1102,12 @@ jobs:
           if [ -f /etc/apt/apt-mirrors.txt ] && ! grep -q mirror.init7.net /etc/apt/apt-mirrors.txt; then
             printf 'http://mirror.init7.net/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
           fi
-          sudo apt-get update
-          sudo apt-get install --only-upgrade -y ca-certificates
-          sudo update-ca-certificates --fresh
+          # Best-effort: a fixed runner image needs no upgrade, and an apt
+          # outage must not red the lane when the trust store is already
+          # clean -- the post-condition below stays the hard gate.
+          sudo apt-get update || echo "::warning::apt-get update failed (CVE-2026-111943 patch)"
+          sudo apt-get install --only-upgrade -y ca-certificates || echo "::warning::ca-certificates upgrade failed (CVE-2026-111943 patch)"
+          sudo update-ca-certificates --fresh || echo "::warning::CA rebuild failed (CVE-2026-111943 patch)"
           # Post-condition (remediation assurance): the compromised root
           # must be absent from the rebuilt store -- an on-path attacker
           # replaying validly-signed metadata could otherwise make the
@@ -1644,9 +1659,12 @@ jobs:
           if [ -f /etc/apt/apt-mirrors.txt ] && ! grep -q mirror.init7.net /etc/apt/apt-mirrors.txt; then
             printf 'http://mirror.init7.net/ubuntu/\tpriority:0\n' | sudo tee -a /etc/apt/apt-mirrors.txt >/dev/null
           fi
-          sudo apt-get update
-          sudo apt-get install --only-upgrade -y ca-certificates
-          sudo update-ca-certificates --fresh
+          # Best-effort: a fixed runner image needs no upgrade, and an apt
+          # outage must not red the lane when the trust store is already
+          # clean -- the post-condition below stays the hard gate.
+          sudo apt-get update || echo "::warning::apt-get update failed (CVE-2026-111943 patch)"
+          sudo apt-get install --only-upgrade -y ca-certificates || echo "::warning::ca-certificates upgrade failed (CVE-2026-111943 patch)"
+          sudo update-ca-certificates --fresh || echo "::warning::CA rebuild failed (CVE-2026-111943 patch)"
           # Post-condition (remediation assurance): the compromised root
           # must be absent from the rebuilt store -- an on-path attacker
           # replaying validly-signed metadata could otherwise make the
