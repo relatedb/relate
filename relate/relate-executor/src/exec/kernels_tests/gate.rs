@@ -4,7 +4,7 @@
 use relate_core::Value;
 
 use super::super::test_support::{exec_autocommit, exec_write, write_scratch, Builder};
-use super::{differential, differential_with, families, Engagement};
+use super::{differential, differential_with, families, ExpectedEngagement};
 
 /// The engagement gate's declines: every shape the kernels cannot prove,
 /// or that routes elsewhere before the `MATCH` arm, keeps the per-row
@@ -47,7 +47,7 @@ fn the_gate_declines_every_unsupported_shape() {
         "MATCH (h:Hub) WHERE EXISTS { MATCH (h)-[:A]->(t:Tag), (h)-[:B]->(u:Tag) } \
          RETURN count(h.k) AS n",
     ] {
-        differential(&g, cypher, Engagement::Declined);
+        differential(&g, cypher, ExpectedEngagement::Declined);
     }
 }
 
@@ -79,7 +79,7 @@ fn the_cost_gate_refuses_a_dear_hub_plan() {
         &g,
         "MATCH (h:Hub)-[:A]->(t:Tag), (h)-[:B]->(u:Tag) \
          WHERE t.name = 'hay1' AND u.name = 'needle' RETURN h.k AS hk LIMIT 99",
-        Engagement::Declined,
+        ExpectedEngagement::Declined,
     );
 }
 
@@ -98,7 +98,7 @@ fn scratch_labels_admit_through_the_kernel() {
     // statement's first clause, so the kernel path engages over the
     // scratch-mounted view. Each side runs the two-statement transaction on
     // its own scratch (nothing is committed between them).
-    let kernaled = differential_with(read, Engagement::Engaged, || {
+    let kernaled = differential_with(read, ExpectedEngagement::Engaged, || {
         let scratch = write_scratch(&g);
         exec_write(&g, &scratch, create)?;
         exec_write(&g, &scratch, read)
@@ -118,21 +118,21 @@ fn the_matcher_declines_one_node_sides_and_anonymous_pairs() {
     differential(
         &g,
         "MATCH (h:Hub), (h)-[:A]->(t:Tag) RETURN h.k AS hk, t.name AS tn LIMIT 99",
-        Engagement::Declined,
+        ExpectedEngagement::Declined,
     );
     differential(
         &g,
         "MATCH (h:Hub)-[:A]->(t:Tag), (h) RETURN h.k AS hk, t.name AS tn LIMIT 99",
-        Engagement::Declined,
+        ExpectedEngagement::Declined,
     );
     differential(
         &g,
         "MATCH (h:Hub {k: 5}), (h) RETURN h.k AS hk LIMIT 99",
-        Engagement::Declined,
+        ExpectedEngagement::Declined,
     );
     differential(
         &g,
         "MATCH ()-[:A]->(), ()-[:B]->() RETURN 1 AS one LIMIT 99",
-        Engagement::Declined,
+        ExpectedEngagement::Declined,
     );
 }

@@ -3,6 +3,7 @@
 
 use relate_splitter::split_executable_statements;
 
+use crate::diff::StatementOrder;
 use crate::record::SkipReason;
 
 /// One extracted Cypher block from the adoc.
@@ -182,14 +183,19 @@ fn classified_kind(trimmed: &str, normalized: &str, apoc_enabled: bool) -> Class
     ClassifiedKind::Plain
 }
 
-/// Does the statement carry an `ORDER BY` (positional comparison)?
+/// Does the statement carry an `ORDER BY`: [`StatementOrder::Ordered`]
+/// (positional comparison) or [`StatementOrder::Unordered`] (bag)?
 /// Shares the classifier's word-boundary matcher on the same
 /// literal-stripped, whitespace-normalized form `classify` uses, so row
 /// comparison and statement classification can never disagree:
 /// `ORDER\nBY` and `ORDER  BY` detect, a word-boundary miss like
 /// `reorder by` does not, and a quoted `'order by'` misleads neither.
-pub fn is_ordered(statement: &str) -> bool {
-    order_by_present(&classification_form(statement))
+pub fn is_ordered(statement: &str) -> StatementOrder {
+    if order_by_present(&classification_form(statement)) {
+        StatementOrder::Ordered
+    } else {
+        StatementOrder::Unordered
+    }
 }
 
 /// `db.schema.visualization()` presence on a whitespace-normalized
@@ -689,7 +695,10 @@ RETURN value;
         assert_plain("RETURN 'return limit 5' AS s");
         // `is_ordered` shares the literal-stripped form, so a quoted
         // 'order by' misleads neither classification nor row comparison.
-        assert!(!is_ordered("RETURN 'order by' AS s"));
+        assert_eq!(
+            is_ordered("RETURN 'order by' AS s"),
+            StatementOrder::Unordered
+        );
     }
 
     /// F-8-5: `is_runnable` is the single enumeration of the runnable
@@ -713,13 +722,25 @@ RETURN value;
 
     #[test]
     fn order_by_detection() {
-        assert!(is_ordered("MATCH (n) RETURN n ORDER BY n.name"));
-        assert!(!is_ordered("MATCH (n) RETURN n"));
+        assert_eq!(
+            is_ordered("MATCH (n) RETURN n ORDER BY n.name"),
+            StatementOrder::Ordered
+        );
+        assert_eq!(is_ordered("MATCH (n) RETURN n"), StatementOrder::Unordered);
         // Multi-whitespace/newline spellings detect (formatted suite files).
-        assert!(is_ordered("MATCH (n)\nRETURN n\nORDER\nBY n.name"));
-        assert!(is_ordered("MATCH (n) RETURN n ORDER  BY n.name"));
+        assert_eq!(
+            is_ordered("MATCH (n)\nRETURN n\nORDER\nBY n.name"),
+            StatementOrder::Ordered
+        );
+        assert_eq!(
+            is_ordered("MATCH (n) RETURN n ORDER  BY n.name"),
+            StatementOrder::Ordered
+        );
         // A word-boundary miss does not detect.
-        assert!(!is_ordered("MATCH (n) RETURN n reorder by n.name"));
+        assert_eq!(
+            is_ordered("MATCH (n) RETURN n reorder by n.name"),
+            StatementOrder::Unordered
+        );
     }
 
     #[test]

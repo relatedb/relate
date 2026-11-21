@@ -459,6 +459,42 @@ fn shape_target(shape: GraphShape) -> ShapeTarget {
     }
 }
 
+/// How one fill statement ended.
+enum StatementOutcome {
+    /// The statement committed and the cursor advanced.
+    Acked,
+    /// The database answered `capacity exceeded`; the cursor was rolled back
+    /// and the active-statement marker cleared.
+    CapacityRejected,
+}
+
+/// Run one fill statement through the shared protocol: announce it, execute
+/// it, then ack or nack the cursor. Any other failure is returned as is.
+fn run_statement(
+    cursor: &mut FillCursor,
+    live: &Mutex<Live>,
+    phase: &'static str,
+    n: usize,
+    statement: &str,
+    run_one: &mut impl FnMut(&str) -> Result<(), String>,
+) -> Result<StatementOutcome, String> {
+    let label = abbreviate(statement);
+    begin_statement(live, phase, n, &label)?;
+    match run_one(statement) {
+        Ok(()) => {
+            cursor.ack()?;
+            end_statement(live, phase, n, &label)?;
+            Ok(StatementOutcome::Acked)
+        }
+        Err(err) if is_capacity(&err) => {
+            cursor.nack()?;
+            clear_active(live);
+            Ok(StatementOutcome::CapacityRejected)
+        }
+        Err(err) => Err(err),
+    }
+}
+
 /// Write batches until the shape reaches [`shape_target`].
 ///
 /// The logical limit is a ceiling. A `capacity exceeded` error before the
@@ -519,16 +555,9 @@ fn fill_to_target(
             statement
         };
         n += 1;
-        let label = abbreviate(&statement);
-        begin_statement(live, phase, n, &label)?;
-        match run_one(&statement) {
-            Ok(()) => {
-                cursor.ack()?;
-                end_statement(live, phase, n, &label)?;
-            }
-            Err(err) if is_capacity(&err) => {
-                cursor.nack()?;
-                clear_active(live);
+        match run_statement(&mut cursor, live, phase, n, &statement, &mut run_one)? {
+            StatementOutcome::Acked => {}
+            StatementOutcome::CapacityRejected => {
                 return Err(format!(
                     "{} reached the {limit} byte memory limit at {} nodes and {} relationships, before {} nodes and {} relationships",
                     shape.as_str(),
@@ -538,7 +567,6 @@ fn fill_to_target(
                     target.rels
                 ));
             }
-            Err(err) => return Err(err),
         }
     }
 }
@@ -581,12 +609,8 @@ fn fill_until_capacity(
             break;
         };
         n += 1;
-        let label = abbreviate(&statement);
-        begin_statement(live, phase, n, &label)?;
-        match run_one(&statement) {
-            Ok(()) => {
-                cursor.ack()?;
-                end_statement(live, phase, n, &label)?;
+        match run_statement(&mut cursor, live, phase, n, &statement, &mut run_one)? {
+            StatementOutcome::Acked => {
                 if max_nodes.is_some_and(|max| cursor.nodes > max) {
                     return Err(format!(
                         "{} reached {} nodes without the {limit} byte memory limit",
@@ -595,9 +619,7 @@ fn fill_until_capacity(
                     ));
                 }
             }
-            Err(err) if is_capacity(&err) => {
-                cursor.nack()?;
-                clear_active(live);
+            StatementOutcome::CapacityRejected => {
                 progress(&format!(
                     "      {phase:<5} stopped at the memory limit after {n} statements"
                 ));
@@ -613,7 +635,6 @@ fn fill_until_capacity(
                     rels: cursor.rels,
                 });
             }
-            Err(err) => return Err(err),
         }
     }
     clear_active(live);
