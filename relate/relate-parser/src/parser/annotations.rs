@@ -27,7 +27,7 @@ impl<'a> Parser<'a> {
             self.parse_annotation()?;
             seen = true;
         }
-        if seen && self.at_paging_tail() {
+        if seen && (self.peek_starts_page_stage() || self.peek_type() == TokenType::UNION) {
             // An annotation here would end the WITH/RETURN before it and
             // re-read its ORDER BY / SKIP / LIMIT as a standalone paging
             // clause, silently changing what the query means.
@@ -36,16 +36,6 @@ impl<'a> Parser<'a> {
             ));
         }
         Ok(())
-    }
-
-    /// The next token is a clause tail (paging or `UNION`), never the start
-    /// of an annotatable clause.
-    fn at_paging_tail(&self) -> bool {
-        match self.peek_type() {
-            TokenType::ORDER | TokenType::SKIP | TokenType::LIMIT | TokenType::UNION => true,
-            TokenType::Identifier => Self::token_is_ident(self.peek(), "offset"),
-            _ => false,
-        }
     }
 
     fn parse_annotation(&mut self) -> ParseResult<()> {

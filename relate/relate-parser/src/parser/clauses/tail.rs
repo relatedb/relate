@@ -124,6 +124,14 @@ impl<'a> Parser<'a> {
         Ok(stages)
     }
 
+    /// The next token introduces a page stage (`ORDER BY`, `SKIP`/`OFFSET`,
+    /// `LIMIT`) -- the vocabulary `parse_page_stages` consumes.
+    pub(in crate::parser) fn peek_starts_page_stage(&self) -> bool {
+        self.peek_type() == TokenType::ORDER
+            || self.peek_is_skip_or_offset()
+            || self.peek_type() == TokenType::LIMIT
+    }
+
     /// CIP-168: a standalone `<order by and page statement>` at clause
     /// start -- `ORDER BY ...`, `SKIP|OFFSET ...`, or `LIMIT ...`; the
     /// stages themselves are `parse_page_stages`.
