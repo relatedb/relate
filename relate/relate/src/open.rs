@@ -25,8 +25,8 @@ use super::open_config::{
 use super::shared::{OpenResolved, SharedOpenState};
 use super::token_budget;
 use super::{
-    check_loaded_graph, report_trimmed_tail, Database, DurabilityMode, OpenMode, OpenOptions,
-    Shared,
+    check_loaded_graph, report_degraded_payload, report_trimmed_tail, Database, DurabilityMode,
+    OpenMode, OpenOptions, Shared,
 };
 
 /// [`open_store_readonly_with_ontology`] plus the screen every consumer of a
@@ -37,7 +37,8 @@ use super::{
 pub(crate) fn open_store_readonly_screened(
     target: &StoreTarget,
 ) -> Result<(Graph, Wal, Option<String>)> {
-    let (graph, wal, ontology) = open_store_readonly_with_ontology(target)?;
+    let (graph, wal, ontology) =
+        open_store_readonly_with_ontology(target, &mut report_degraded_payload)?;
     ontology::validate_stored_document(ontology.as_deref())?;
     Ok((graph, wal, ontology))
 }
@@ -68,7 +69,11 @@ fn open_store_screened(
 /// swallow the durability event — the same reporting the promote path
 /// uses), then screen the ontology document where it is produced.
 fn open_store_writable_screened(target: &StoreTarget) -> Result<(Graph, Wal, Option<String>)> {
-    let (graph, wal, ontology, _) = open_store_notifying(target, &mut report_trimmed_tail)?;
+    let (graph, wal, ontology, _) = open_store_notifying(
+        target,
+        &mut report_trimmed_tail,
+        &mut report_degraded_payload,
+    )?;
     ontology::validate_stored_document(ontology.as_deref())?;
     Ok((graph, wal, ontology))
 }

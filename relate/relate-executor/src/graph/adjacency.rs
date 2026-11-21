@@ -4,6 +4,8 @@
 //! Not to be confused with [`crate::adjacency`], the store tier these
 //! accessors read and write: the typed hop chunks, the sealed stream, and
 //! the fold between them.
+use relate_engine_api::AdjacencyChunk;
+
 use super::id_vec::IdVec;
 use super::rebuild::RelRow;
 use super::shard;
@@ -190,6 +192,62 @@ impl<'a> AdjSide<'a> {
         })
         .unwrap_or(0)
     }
+}
+
+/// The graph's adjacency chunks in ascending node-id order, out side before
+/// in side per node — [`GraphExport::for_each_adjacency_chunk`]'s one walk.
+/// A folded chunk keeps its (empty-hop) delta entry, so the delta tables
+/// name every node that holds a chunk on either tier.
+pub(super) fn for_each_adjacency_chunk(
+    graph: &Graph,
+    ts: u64,
+    f: &mut dyn FnMut(AdjacencyChunk) -> Result<()>,
+) -> Result<()> {
+    let mut nodes = graph.out_side().delta().keys();
+    nodes.extend(graph.in_side().delta().keys());
+    nodes.sort_unstable();
+    nodes.dedup();
+    for node in nodes {
+        for (incoming, side) in [(false, graph.out_side()), (true, graph.in_side())] {
+            let Some(chunks) = side.with_adj(node, |adj, region| {
+                adj.chunks
+                    .iter()
+                    .map(|chunk| {
+                        // The hop count and the stream come from one lock
+                        // acquisition, so a count can never outrun its bytes.
+                        let (sealed_hops, sealed) =
+                            match region.and_then(|r| r.stream_with_len(chunk.type_id)) {
+                                Some((hops, stream)) => (hops as u64, stream),
+                                None => (0, Vec::new()),
+                            };
+                        AdjacencyChunk {
+                            node_id: node,
+                            type_id: chunk.type_id,
+                            incoming,
+                            sealed_hops,
+                            sealed,
+                            delta: chunk.hops.iter().map(|hop| hop.id).collect(),
+                            // Only the tombstones a read at `ts` filters:
+                            // a later delete belongs to the WAL tail.
+                            tombstones: region.map_or_else(Vec::new, |r| {
+                                r.tombstones(chunk.type_id)
+                                    .into_iter()
+                                    .filter(|tombstone| tombstone.xmax <= ts)
+                                    .map(|tombstone| tombstone.id)
+                                    .collect()
+                            }),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            }) else {
+                continue;
+            };
+            for chunk in chunks {
+                f(chunk)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Graph {
@@ -409,6 +467,21 @@ impl Graph {
             Side::End => &self.sealed_in,
         };
         sealed.region(node).map_or(0, |region| region.chunk_count())
+    }
+
+    /// The hop ids `node`'s adjacency shows on `side` at `ts` — the
+    /// tombstone-filtered walk, read by the storage checkpoint tests across
+    /// the crate boundary. Test seam behind the off-by-default `test-hooks`
+    /// feature, never in a shipped build.
+    #[cfg(feature = "test-hooks")]
+    pub fn visible_adjacency(&self, node: NodeId, side: Side, ts: u64) -> Vec<RelId> {
+        side.adj(self)
+            .with_adj(node, |adj, region| {
+                let mut ids = Vec::new();
+                adj.for_each_hop(region, ts, |hop| ids.push(hop.id));
+                ids
+            })
+            .unwrap_or_default()
     }
 
     pub fn degree_out(&self, id: NodeId) -> Vec<RelId> {

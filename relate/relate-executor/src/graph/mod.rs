@@ -90,6 +90,11 @@ pub mod sol;
 // qpp half retired with its prototype, ADR-0478).
 #[cfg(feature = "research")]
 mod research;
+// The whole-graph adjacency observation: the restore/rebuild test modules
+// and, behind `test-hooks`, the storage payload tests (re-exported at the
+// crate root).
+#[cfg(any(test, feature = "test-hooks"))]
+pub(crate) mod observation;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod theater;

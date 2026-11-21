@@ -212,8 +212,10 @@ fn ensure_constraint_rows_match_theater(
 }
 
 /// Restore a loaded catalog into a freshly loaded graph — the tail of
-/// every codec's load path (install constraints and indexes, then the
-/// theater or the legacy pre-theater markers).
+/// the catalog half of every codec's load tail (install constraints and
+/// indexes, then the theater or the legacy pre-theater markers). The load
+/// tail that owns it ends the restore phase with `finish_restore`, not this
+/// function: the lifecycle step stays visible at each codec's own tail.
 pub(crate) fn restore(
     graph: &dyn relate_engine_api::GraphImport,
     wire: CatalogWire,
@@ -241,7 +243,6 @@ pub(crate) fn restore(
         graph.restore_legacy_enforced_constraints(legacy_enforced)?;
         graph.mark_legacy_unenforced();
     }
-    graph.finish_restore();
     Ok(())
 }
 

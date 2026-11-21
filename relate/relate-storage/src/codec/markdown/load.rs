@@ -626,6 +626,9 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
     crate::snapshot::ensure_commit_ts(&graph, loaded);
 
     catalog::restore(&graph, manifest.catalog.clone(), manifest.theater.clone())?;
+    // The load tail ends the restore phase here: the markdown vault has no
+    // adjacency payload, so the rows just restored are the source.
+    graph.finish_restore(relate_engine_api::AdjacencySource::RelRows);
 
     let deferred = record_expectation(
         target,
@@ -642,6 +645,9 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
         ontology: manifest.ontology.clone(),
         marker,
         deferred,
+        // The markdown codec does not time its adjacency tail.
+        adjacency: None,
+        warnings: Vec::new(),
     })
 }
 

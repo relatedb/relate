@@ -198,6 +198,18 @@ fn section_len(
     consumed
 }
 
+/// Whether `bytes` can hold an `n`-hop stream: the structural minimum
+/// [`decode_stream`] reads — the presence bitmap, the id stream's raw head
+/// and one width byte per id block. The open-time payload install checks
+/// bytes it never encoded with this, so a short stream degrades instead of
+/// panicking the first read.
+pub(crate) fn stream_fits(bytes: &[u8], n: usize) -> bool {
+    let bitmap_len = n.div_ceil(8);
+    let id_blocks = n.saturating_sub(1).div_ceil(ID_BLOCK);
+    let head = if n > 0 { 8 + id_blocks } else { 0 };
+    bytes.len() >= bitmap_len + head
+}
+
 /// Decode one chunk encoded by [`encode_chunk`], whose hop count `n` rides
 /// the arena entry; the hop stream comes back in the original chunk order.
 pub(crate) fn decode_chunk(bytes: &[u8], n: usize) -> Vec<Hop> {

@@ -8,6 +8,7 @@ mod load_range;
 mod manifest;
 mod ontology;
 mod paths;
+mod payload;
 mod plan;
 mod recovery;
 mod theater;

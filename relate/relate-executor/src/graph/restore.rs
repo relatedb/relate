@@ -3,7 +3,9 @@
 
 use super::id_vec::IdVec;
 use super::*;
+use crate::adjacency::{AdjHop, DeltaChunk, Tombstone};
 use crate::store::NameCache;
+use relate_engine_api::{AdjacencyChunkRef, AdjacencySource};
 
 /// Every checkpoint row is restored as a version born at ts 1.
 const RESTORED_XMIN: u64 = 1;
@@ -171,19 +173,153 @@ impl Graph {
     /// End a checkpoint load, after its last row: close the restore phase
     /// first — "the load is over" is true from the first step of
     /// finalization, so no slice is admitted while the tail runs — then
-    /// build adjacency (the build itself emits the durable shape, the
-    /// chunks at or above the seal floor straight into their folded form,
-    /// ADR-0608) and clear the dirty ids, which the checkpoint already
-    /// holds. Called once per load. The index rebuild is deliberately NOT
-    /// here: the open flow's single post-replay site runs it exactly once
-    /// per open, after the graph is final (snapshot plus replayed tail) — a
-    /// snapshot+tail reopen must not pay the whole-graph rebuild twice
-    /// (LABS-1112).
+    /// build adjacency unless the load installed the adjacency payload
+    /// (the build itself emits the durable shape, the chunks at or above
+    /// the seal floor straight into their folded form, ADR-0608) and clear
+    /// the dirty ids, which the checkpoint already holds. Called once per
+    /// load. The index rebuild is deliberately NOT here: the open flow's
+    /// single post-replay site runs it exactly once per open, after the
+    /// graph is final (snapshot plus replayed tail) — a snapshot+tail
+    /// reopen must not pay the whole-graph rebuild twice (LABS-1112).
     #[doc(hidden)]
-    pub fn finish_restore(&self) {
+    pub fn finish_restore(&self, adjacency: AdjacencySource) {
         self.close_restoring();
-        self.rebuild_adj();
+        self.rebuild_adj_from(adjacency);
         self.clear_checkpoint_dirty();
+    }
+
+    /// Install one decoded window of the checkpoint's adjacency payload —
+    /// the inverse of the export walk, and the load's alternative to
+    /// deriving adjacency from the rel rows. Each chunk lands where the
+    /// wholesale build would have put it: the sealed stream is copied
+    /// verbatim into the arena from the borrowed payload row (never
+    /// re-encoded), beside the tombstones that hide its superseded
+    /// positions, and the delta hop ids are borrowed from the window's
+    /// scratch buffer — the chunk's own hop vector is the one allocation
+    /// per chunk. The payload carries no per-hop ts, so each hop's ts is
+    /// read back from its restored rel row: the rel rows stay the floor the
+    /// hop list is written against. An installed tombstone hides at every
+    /// readable ts: the payload is a snapshot, and a re-fold from the same
+    /// rows carries no superseded hop at any ts either. A chunk the graph
+    /// cannot take — an inconsistent hop count, a live hop whose ts follows
+    /// a missing one, an arena the walls refuse — is an error, and the load
+    /// re-folds adjacency from the rel rows instead.
+    pub fn install_adjacency_chunks(&self, chunks: &[AdjacencyChunkRef<'_>]) -> Result<()> {
+        const INSTALLED_XMAX: u64 = 1;
+        self.begin_restoring()?;
+        for chunk in chunks {
+            if (chunk.sealed_hops == 0) != chunk.sealed.is_empty() {
+                return Err(relate_core::Error::storage(format!(
+                    "adjacency chunk (node {}, type {}) carries {} sealed hops and {} stream bytes",
+                    chunk.node_id,
+                    chunk.type_id,
+                    chunk.sealed_hops,
+                    chunk.sealed.len()
+                )));
+            }
+            let sealed_hops = usize::try_from(chunk.sealed_hops).map_err(|_| {
+                relate_core::Error::storage(format!(
+                    "adjacency chunk (node {}, type {}) seals {} hops, more than usize holds",
+                    chunk.node_id, chunk.type_id, chunk.sealed_hops
+                ))
+            })?;
+            if !crate::adjacency::stream_fits(chunk.sealed, sealed_hops) {
+                return Err(relate_core::Error::storage(format!(
+                    "adjacency chunk (node {}, type {}) carries {} stream bytes, too few for {} sealed hops",
+                    chunk.node_id,
+                    chunk.type_id,
+                    chunk.sealed.len(),
+                    sealed_hops
+                )));
+            }
+            let side = if chunk.incoming {
+                self.in_side()
+            } else {
+                self.out_side()
+            };
+            let tombstones = chunk
+                .tombstones
+                .iter()
+                .map(|id| Tombstone {
+                    id: *id,
+                    xmax: INSTALLED_XMAX,
+                    // An id the chunk still carries as a delta hop was
+                    // repositioned; one it does not was deleted.
+                    deleted: (!chunk.delta.contains(id)).then_some(INSTALLED_XMAX),
+                })
+                .collect();
+            if chunk.sealed_hops > 0 || !chunk.tombstones.is_empty() {
+                let installed = side.sealed().install_stream(
+                    chunk.node_id,
+                    chunk.type_id,
+                    sealed_hops,
+                    chunk.sealed,
+                    tombstones,
+                );
+                if !installed {
+                    return Err(relate_core::Error::storage(format!(
+                        "adjacency chunk (node {}, type {}) exceeds the sealed arena",
+                        chunk.node_id, chunk.type_id
+                    )));
+                }
+            }
+            // The chunk's own hop vector is the one allocation per chunk:
+            // the ids are borrowed from the window's scratch buffer, only
+            // their ts is read back from the rel rows.
+            let mut hops = Vec::with_capacity(chunk.delta.len());
+            let mut absent = 0u32;
+            let mut seen_present = false;
+            for &id in chunk.delta {
+                match self.restored_hop_ts(id)? {
+                    Some(ts) => {
+                        seen_present = true;
+                        hops.push(AdjHop { ts, id });
+                    }
+                    // Missing-ts hops lead the chunk (`cmp_ts_desc`), so one
+                    // after a present hop is not the payload's own order.
+                    None if !seen_present => {
+                        absent += 1;
+                        hops.push(AdjHop { ts: 0, id });
+                    }
+                    None => {
+                        return Err(relate_core::Error::storage(format!(
+                            "adjacency chunk (node {}, type {}) lists hop {id} without a ts after one with",
+                            chunk.node_id, chunk.type_id
+                        )))
+                    }
+                }
+            }
+            // The read paths key on the delta entry, so a sealed-only chunk
+            // installs its (empty) delta chunk too — the same entry a fold
+            // leaves behind. The chunk moves in as built: no second hop
+            // vector, unlike `push_chunk`'s re-pack.
+            side.delta()
+                .entry(chunk.node_id)
+                .or_default()
+                .install_chunk(DeltaChunk {
+                    type_id: chunk.type_id,
+                    absent,
+                    hops,
+                    ..DeltaChunk::default()
+                });
+        }
+        Ok(())
+    }
+
+    /// One restored relationship's hop ts — the payload install's read of
+    /// the tier the relationship rows stay the floor for.
+    fn restored_hop_ts(&self, id: RelId) -> Result<Option<i64>> {
+        let Some(vers) = self.rels.get(&id) else {
+            return Err(relate_core::Error::storage(format!(
+                "adjacency chunk names relationship {id}, which the checkpoint does not hold"
+            )));
+        };
+        let Some(version) = live_version(&vers) else {
+            return Err(relate_core::Error::storage(format!(
+                "adjacency chunk names relationship {id}, which has no live row"
+            )));
+        };
+        Ok(version.live.payload.ts(&self.interner))
     }
 
     /// A checkpoint load's entry: take the graph's restore phase for a

@@ -29,21 +29,25 @@ pub use codec::open_config::CodecOpenConfig;
 pub use codec::SnapshotCodecKind;
 #[cfg(not(target_arch = "wasm32"))]
 pub use info::{store_info, store_info_uri, StoreInfo, StoreLayout, StoreSnapshot};
-pub use manifest::Manifest;
+pub use manifest::{AdjacencyPayload, Manifest};
 pub use open::{
     load, load_with_wal, open_follower_wal, open_store, open_store_readonly, open_writer_wal,
 };
 #[doc(hidden)]
 pub use open::{
-    open_store_notifying, open_store_readonly_with_ontology, open_store_with_report,
-    open_writer_wal_notifying, OpenReport,
+    load_timed, open_store_notifying, open_store_readonly_with_ontology, open_store_with_report,
+    open_writer_wal_notifying, OpenReport, TimedLoad,
 };
 pub use relate_core::{
     cypher_to_value, plan_value_to_cypher, value_to_cypher, MAX_PLAN_WIRE_DEPTH,
 };
 #[cfg(parquet_codec)]
+#[doc(hidden)]
+pub use snapshot::native::{adjacency_payload_path, drop_adjacency_payload_selection};
+#[cfg(parquet_codec)]
 pub use snapshot::native::{window_width, DEFAULT_SHARD_TARGET_BYTES};
 pub use snapshot::ShardPart;
+pub use snapshot::{ADJACENCY_PAYLOAD_ENV, ADJACENCY_PAYLOAD_MIN_RELS_ENV};
 pub use vfs::{
     atomic_write, is_bundle_path, read_to_vec, MemoryVfs, Vfs, VfsEntryKind, VfsFile, VfsMeta,
     VfsOpen, BUNDLE_EXTENSION, LEGACY_BUNDLE_EXTENSION,

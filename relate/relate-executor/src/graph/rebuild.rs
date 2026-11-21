@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 
 use relate_core::{NodeId, RelId};
+use relate_engine_api::AdjacencySource;
 
 use super::adjacency::adj_build;
 #[cfg(test)]
@@ -79,11 +80,12 @@ impl LabelCache {
 
 #[cfg(test)]
 thread_local! {
-    /// Whole-graph adjacency builds (`rebuild_adj`) on this thread.
+    /// Rel-row adjacency builds (`rebuild_adj_from`'s `RelRows` arm) on
+    /// this thread — an installed payload's load records none.
     static ADJ_BUILDS: BuildCounter = const { BuildCounter::new() };
 }
 
-/// Take this thread's whole-graph adjacency-build count, resetting it.
+/// Take this thread's rel-row adjacency-build count, resetting it.
 #[cfg(test)]
 pub(super) fn take_adj_builds() -> u64 {
     ADJ_BUILDS.with(BuildCounter::take)
@@ -100,8 +102,15 @@ impl Graph {
     /// [`Graph::rebuild_degree_stats`], the count bundle's rel-side and
     /// node fields in [`Graph::rebuild_count_stats`].
     pub(super) fn rebuild_adj(&self) {
-        #[cfg(test)]
-        ADJ_BUILDS.with(BuildCounter::bump);
+        self.rebuild_adj_from(AdjacencySource::RelRows);
+    }
+
+    /// [`Self::rebuild_adj`] with the adjacency source named: `adjacency`
+    /// is [`AdjacencySource::Payload`] when the load installed the
+    /// adjacency payload, so the adjacency build is already done and only
+    /// the folds and the accounting run — they still read the rel rows,
+    /// which stay the floor every other derived structure is built from.
+    pub(super) fn rebuild_adj_from(&self, adjacency: AdjacencySource) {
         let rows = self.materialize_rel_rows();
         let labels = self.endpoint_labels(&rows);
         // The one start-keyed partition: every row of a node lands in one
@@ -110,7 +119,11 @@ impl Graph {
         // one materialization in materialize order — no fold's result
         // depends on row order.
         let start_shards = shard_rows(&rows, |row| row.start);
-        adj_build(self, &rows, &start_shards);
+        if adjacency == AdjacencySource::RelRows {
+            #[cfg(test)]
+            ADJ_BUILDS.with(BuildCounter::bump);
+            adj_build(self, &rows, &start_shards);
+        }
         self.rebuild_degree_stats(&rows, &labels, &start_shards);
         self.rebuild_count_stats(&rows, &labels, &start_shards);
         // The wholesale rebuild replaces the histogram map: recompute the

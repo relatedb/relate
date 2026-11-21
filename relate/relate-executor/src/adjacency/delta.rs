@@ -284,16 +284,26 @@ impl TypedAdj {
     }
 
     /// Append a whole chunk for `type_id`, fitting its hop vector and the
-    /// chunk vector to their reserved capacities. The one place a chunk is
-    /// installed as a unit: [`Self::insert`]'s create arm and
-    /// [`Self::from_runs`] both land here, so the chunk shape — appended in
-    /// first-seen order, hops reserved — has one owner.
-    fn push_chunk(&mut self, type_id: u32, hops: Vec<Hop>) {
+    /// chunk vector to their reserved capacities — the one place a chunk
+    /// built from hop ids is installed as a unit ([`Self::insert`]'s create
+    /// arm and [`Self::from_runs`] land here), so the chunk shape —
+    /// appended in first-seen order, hops reserved — has one owner. The
+    /// checkpoint payload's install already holds its hop vector in shape
+    /// and calls [`Self::install_chunk`] directly.
+    pub(crate) fn push_chunk(&mut self, type_id: u32, hops: Vec<Hop>) {
         let mut chunk = DeltaChunk {
             type_id,
             ..DeltaChunk::default()
         };
         chunk.set_hops(hops);
+        self.install_chunk(chunk);
+    }
+
+    /// Append one chunk as the open-time payload carries it (ADR-0551): its
+    /// hops already sit in `cmp_ts_desc` order with the presence boundary
+    /// resolved, so the chunk's own storage moves in as-is — no second hop
+    /// vector, unlike [`Self::set_hops`]'s re-pack.
+    pub(crate) fn install_chunk(&mut self, mut chunk: DeltaChunk) {
         crate::memory::fit_reserved(&mut chunk.hops);
         self.chunks.push(chunk);
         crate::memory::fit_reserved(&mut self.chunks);

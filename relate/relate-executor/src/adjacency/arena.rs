@@ -294,8 +294,44 @@ impl ArenaStore {
         hops: &[Hop],
         tombstones: Vec<Tombstone>,
     ) -> bool {
+        let stream = codec::encode_chunk(hops);
+        self.write_entry(node, type_id, hop_count(hops.len()), &stream, tombstones)
+    }
+
+    /// Install one chunk's stream verbatim — the open-time payload install
+    /// (ADR-0551): the bytes are the chunk's own codec encoding and land in
+    /// the arena as they sit in the payload row, never re-encoded, with the
+    /// chunk's tombstones. The walls are [`ArenaStore::write_entry`]'s two
+    /// checks; `false` leaves the tier as it was, and the install degrades.
+    fn put_stream(
+        &mut self,
+        node: NodeId,
+        type_id: u32,
+        hops: usize,
+        stream: &[u8],
+        tombstones: Vec<Tombstone>,
+    ) -> bool {
+        self.write_entry(node, type_id, hop_count(hops), stream, tombstones)
+    }
+
+    /// Store one type's stream and tombstones, or drop the type's entry when
+    /// both are empty — the one write policy [`ArenaStore::put_chunk`] and
+    /// [`ArenaStore::put_stream`] share, under the store's one write lock.
+    /// The walls are checked here: a founding needs a span slot and the
+    /// stream must keep the arena under the `u32` offset — so concurrent
+    /// shard folds cannot pass a check and then cross the wall behind each
+    /// other's backs. `false` leaves the tier exactly as it was; the caller
+    /// keeps the chunk in the delta tier (ADR-0599).
+    fn write_entry(
+        &mut self,
+        node: NodeId,
+        type_id: u32,
+        hops: u32,
+        stream: &[u8],
+        tombstones: Vec<Tombstone>,
+    ) -> bool {
         let existing = self.entry_index(node, type_id);
-        if hops.is_empty() && tombstones.is_empty() {
+        if stream.is_empty() && tombstones.is_empty() {
             if let Some(i) = existing {
                 // The stream's bytes die with the entry — remove_entry
                 // takes the tally, so nothing vanishes from the arena
@@ -304,11 +340,9 @@ impl ArenaStore {
             }
             return true;
         }
-        let stream = codec::encode_chunk(hops);
         // The walls under this lock, in the same spelling the fold's
         // pre-check uses: a founding needs a span slot, and the stream —
         // at the codec's own bound — must keep the arena under the offset.
-        let existing = self.entry_index(node, type_id);
         if existing.is_none() && !self.spans.has_room_for_type(node) {
             return false;
         }
@@ -318,17 +352,13 @@ impl ArenaStore {
         // The stream offset at the u32 field's structural boundary; a
         // tombstone-only chunk holds no stream, so its entry's offset is
         // the zero it is defined to hold rather than a fabricated length.
-        let off = if hops.is_empty() {
+        let off = if stream.is_empty() {
             0
         } else {
             arena_offset(self.bytes.len())
         };
-        self.bytes.extend_from_slice(&stream);
-        let entry = Entry {
-            type_id,
-            off,
-            hops: hop_count(hops.len()),
-        };
+        self.bytes.extend_from_slice(stream);
+        let entry = Entry { type_id, off, hops };
         let i = existing.unwrap_or_else(|| self.insert_entry(node, type_id));
         self.replace_entry(i, entry);
         self.tombstones[i] = tombstones;
@@ -491,6 +521,21 @@ impl SealedArena {
     /// access, so a no-entry node reads empty until a write lands.
     pub(crate) fn region_or_default(&self, node: NodeId) -> SealedRegion<'_> {
         SealedRegion { arena: self, node }
+    }
+
+    /// Install one chunk's stream from a checkpoint payload (ADR-0551) —
+    /// the one verbatim entry writer, [`ArenaStore::put_chunk`]'s install
+    /// twin. `false` when the arena walls refuse the entry.
+    pub(crate) fn install_stream(
+        &self,
+        node: NodeId,
+        type_id: u32,
+        hops: usize,
+        stream: &[u8],
+        tombstones: Vec<Tombstone>,
+    ) -> bool {
+        self.write()
+            .put_stream(node, type_id, hops, stream, tombstones)
     }
 
     /// Record a versioned tombstone for a hop the write superseded (ADR-0551),
@@ -690,6 +735,17 @@ impl SealedRegion<'_> {
             .entry_index(self.node, type_id)
             .map_or(0, |i| s.tombstones[i].len());
         vec_growth(len, fresh, tombstone_stride())
+    }
+
+    /// The chunk's physical hop count and its sealed stream, verbatim (the
+    /// ADR-0551 codec bytes the arena stores), both read under one lock —
+    /// the checkpoint payload's export, so a count can never outrun the
+    /// bytes it names. `None` when the type holds no sealed chunk; a
+    /// zero-hop entry's stream is empty.
+    pub(crate) fn stream_with_len(&self, type_id: u32) -> Option<(usize, Vec<u8>)> {
+        let s = self.arena.read();
+        let i = s.entry_index(self.node, type_id)?;
+        Some((s.entries[i].hops as usize, s.stream_of(i).to_vec()))
     }
 
     /// The hop stream `type_id` holds, decoded, tombstones unfiltered.
