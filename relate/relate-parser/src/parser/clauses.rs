@@ -40,6 +40,9 @@ impl<'a> Parser<'a> {
     /// regardless of nesting (quantifier-mixing.feature scenario 17's
     /// COUNT-subquery exception), so it always resets here.
     pub(super) fn parse_clause(&mut self) -> ParseResult<Clause> {
+        // CIP-281: annotations precede the clause they annotate and are
+        // discarded (`annotations.rs`); a no-op with the gate closed.
+        self.skip_clause_annotations()?;
         // ADR-0257: nested FOREACH bodies recurse `parse_clause` ->
         // `parse_clause_inner` -> `parse_foreach` -> `parse_clause`,
         // bypassing `parse_statement`, so the `statement_depth` cap never
