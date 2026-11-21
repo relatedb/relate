@@ -2,6 +2,13 @@
 
 use std::collections::BTreeMap;
 
+/// The reference instant the epoch-map constructor tests and the epoch
+/// accessor tests round-trip through each other: 469020674645 ms =
+/// 1984-11-11T11:31:14.645Z.
+pub(super) const EPOCH_REF_MILLIS: i64 = 469_020_674_645;
+/// The same reference instant in whole seconds.
+pub(super) const EPOCH_REF_SECONDS: i64 = 469_020_674;
+
 use chrono::{NaiveDate, NaiveDateTime};
 
 use crate::Value;

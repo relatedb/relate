@@ -388,6 +388,18 @@ fn procedure_not_found_display_matches_the_legacy_syntax_rendering() {
 }
 
 #[test]
+fn procedure_call_display_carries_the_class_token() {
+    // The Display text names the class in its prefix — the historical
+    // stringly rendering's shape — while the class itself resolves from
+    // the variant through `error_info`, never by scanning this text.
+    let detail = "Invalid call signature: datetime()";
+    assert_eq!(
+        Error::procedure_call(detail).to_string(),
+        format!("ProcedureError: {detail}")
+    );
+}
+
+#[test]
 fn typed_detail_single_sources_the_class_tokens() {
     fn detail_text(error: &Error) -> Option<(String, String)> {
         error

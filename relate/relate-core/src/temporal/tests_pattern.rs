@@ -831,3 +831,20 @@ fn duplicate_fields_share_one_error_across_both_grammars() {
     let duration = parse_pattern("duration", "1 2", "H H").unwrap_err();
     assert_eq!(format!("{instant:?}"), format!("{duration:?}"));
 }
+
+/// LABS-711 review: the fraction-of-second width policy is shared — a run of
+/// more than nine digits is a pattern error for a date/time `S` arm as well as
+/// for a duration's `n`/`S` spellings, never a silent truncation.
+#[test]
+fn temporal_format_fraction_width_above_nine_is_an_error() {
+    let date = parse_iso("datetime", "2020-09-15T12:34:56.123456789Z").unwrap();
+    assert!(format_pattern(&date, "SSSSSSSSSS").is_err());
+    assert!(format_pattern(&date, "SSSSSSSSS").is_ok());
+    let duration = Temporal::Duration {
+        months: 0,
+        days: 0,
+        nanos: 123_456_789,
+    };
+    assert!(format_pattern(&duration, "nnnnnnnnnn").is_err());
+    assert!(format_pattern(&duration, "nnnnnnnnn").is_ok());
+}

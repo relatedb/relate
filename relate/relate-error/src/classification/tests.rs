@@ -32,6 +32,11 @@ fn every_engine_variant_carries_its_adr_0307_code_and_stage() {
             Compile,
         ),
         (
+            Error::procedure_call("Invalid call signature"),
+            PROCEDURE_CALL_FAILED_CODE,
+            Runtime,
+        ),
+        (
             Error::parameters_missing(["p"]),
             PARAMETER_MISSING_CODE,
             Compile,
@@ -131,6 +136,7 @@ fn only_the_transient_classes_are_retryable() {
         Error::semantic("x"),
         Error::argument_error("x"),
         Error::parameter_missing("x"),
+        Error::procedure_call("x"),
         Error::database_not_found("x"),
         Error::ty("x"),
         Error::arithmetic(ArithmeticFailure::RoundingNecessary),
@@ -169,6 +175,13 @@ fn gql_status_is_the_code_the_surfaces_emit_today() {
         // token keeps the syntax code (ADR-0307).
         (Error::syntax("ProcedureNotFound: dbms.x"), GQLSTATUS_SYNTAX),
         (Error::procedure_not_found("dbms.x"), GQLSTATUS_SYNTAX),
+        // A registered call failing its own signature is the one
+        // procedure-family site carrying live's 42001 (probed 2026-11-20
+        // on 2026.10.1).
+        (
+            Error::procedure_call("Invalid call signature"),
+            GQLSTATUS_PROCEDURE_CALL,
+        ),
         (Error::parameter_missing("p"), GQLSTATUS_PARAMETER_MISSING),
         (
             Error::database_not_found("movies"),

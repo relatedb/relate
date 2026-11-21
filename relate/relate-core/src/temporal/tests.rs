@@ -3,7 +3,7 @@ use std::panic::catch_unwind;
 
 use super::clock::now_dt;
 use super::construct::date_from_week;
-use super::test_support::component_map;
+use super::test_support::{component_map, EPOCH_REF_MILLIS, EPOCH_REF_SECONDS};
 use super::*;
 
 #[test]
@@ -19,21 +19,6 @@ fn week_year_and_weekday_accessors() {
     assert_eq!(d.component("week"), Ok(Value::Int(52)));
     assert_eq!(d.component("weekDay"), Ok(Value::Int(7)));
     assert_eq!(d.component("dayOfWeek"), Ok(Value::Int(7)));
-}
-
-/// The direct constructor rejects `null` like its siblings; the executor's
-/// `temporal_construct` short-circuits a null argument to `null` before any
-/// constructor runs, so `date(null)` stays null at the Cypher level.
-#[test]
-fn date_null_rejects_like_its_siblings() {
-    assert_eq!(
-        construct_date(Some(&Value::Null)),
-        Err(Error::syntax("Invalid call signature: date()"))
-    );
-    assert_eq!(
-        construct_datetime(Some(&Value::Null)),
-        Err(Error::syntax("Invalid call signature: datetime()"))
-    );
 }
 
 /// chrono represents a leap second as second 59 with a fraction >= 1e9; the
@@ -115,95 +100,27 @@ fn duration_component_table() {
 
 #[test]
 fn datetime_timezone_and_epoch_accessors() {
-    let d = construct_datetime(Some(&Value::Map(
-        [
-            ("year".into(), Value::Int(1984)),
-            ("month".into(), Value::Int(11)),
-            ("day".into(), Value::Int(11)),
-            ("hour".into(), Value::Int(12)),
-            ("minute".into(), Value::Int(31)),
-            ("second".into(), Value::Int(14)),
-            ("nanosecond".into(), Value::Int(645876123)),
-            ("timezone".into(), Value::String("Europe/Stockholm".into())),
-        ]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
-        .into(),
-    )))
+    let d = construct_datetime(Some(&component_map(&[
+        ("year", Value::Int(1984)),
+        ("month", Value::Int(11)),
+        ("day", Value::Int(11)),
+        ("hour", Value::Int(12)),
+        ("minute", Value::Int(31)),
+        ("second", Value::Int(14)),
+        ("nanosecond", Value::Int(645876123)),
+        ("timezone", Value::String("Europe/Stockholm".into())),
+    ])))
     .unwrap();
     assert_eq!(
         d.component("timezone"),
         Ok(Value::String("Europe/Stockholm".into()))
     );
     assert_eq!(d.component("offset"), Ok(Value::String("+01:00".into())));
-    assert_eq!(d.component("epochSeconds"), Ok(Value::Int(469020674)));
-    assert_eq!(d.component("epochMillis"), Ok(Value::Int(469020674645)));
-}
-
-/// LABS-785: `datetime({datetime: x})` keeps `x`'s instant and offset even
-/// when its wall clock is the ambiguous half of a fall-back overlap; an
-/// explicit `timezone` converts that same instant, and changing a date field
-/// re-resolves the new wall clock in the zone.
-#[test]
-fn datetime_from_a_datetime_source_keeps_its_offset() {
-    let x = parse_iso("datetime", "2025-10-26T02:30:00+01:00[Europe/Stockholm]").unwrap();
-    let source = || Value::Temporal(x.clone());
     assert_eq!(
-        construct_datetime(Some(&component_map(&[("datetime", source())])))
-            .unwrap()
-            .iso_string(),
-        "2025-10-26T02:30+01:00[Europe/Stockholm]"
+        d.component("epochSeconds"),
+        Ok(Value::Int(EPOCH_REF_SECONDS))
     );
-    assert_eq!(
-        construct_datetime(Some(&component_map(&[
-            ("datetime", source()),
-            ("timezone", Value::String("UTC".into())),
-        ])))
-        .unwrap()
-        .iso_string(),
-        "2025-10-26T01:30Z"
-    );
-    // An override that moves the wall clock off the overlap resolves the
-    // zone's own offset for that date.
-    assert_eq!(
-        construct_datetime(Some(&component_map(&[
-            ("datetime", source()),
-            ("year", Value::Int(2024)),
-        ])))
-        .unwrap()
-        .iso_string(),
-        "2024-10-26T02:30+02:00[Europe/Stockholm]"
-    );
-}
-
-/// F-1-27: a `timezone` map field that is not a string is a typed error, not
-/// a silent UTC default; the field's absence stays the documented UTC
-/// default.
-#[test]
-fn datetime_map_timezone_must_be_a_string() {
-    let fields = |timezone: Option<Value>| {
-        let mut m: BTreeMap<String, Value> = [
-            ("year".into(), Value::Int(1984)),
-            ("month".into(), Value::Int(11)),
-            ("day".into(), Value::Int(11)),
-            ("hour".into(), Value::Int(12)),
-        ]
-        .into_iter()
-        .collect();
-        if let Some(timezone) = timezone {
-            m.insert("timezone".into(), timezone);
-        }
-        Value::Map(m.into())
-    };
-    assert_eq!(
-        construct_datetime(Some(&fields(Some(Value::Int(42))))),
-        Err(Error::argument_error("timezone must be STRING"))
-    );
-    let d = construct_datetime(Some(&fields(None))).unwrap();
-    // One zero-offset rule: both accessors spell a zero offset `Z`, like the
-    // ISO suffix (verified against Neo4j 2026.09).
-    assert_eq!(d.component("timezone"), Ok(Value::String("Z".into())));
-    assert_eq!(d.component("offset"), Ok(Value::String("Z".into())));
+    assert_eq!(d.component("epochMillis"), Ok(Value::Int(EPOCH_REF_MILLIS)));
 }
 
 #[test]
@@ -252,6 +169,70 @@ fn parse_iso_year_month_and_compact_time_offset() {
             .iso_string(),
         "+10000-01-01T00:00Z"
     );
+}
+
+/// The padded-ISO fast value is the general construction's value, and
+/// only ever answers for the exact padded form of a real calendar date:
+/// for every case — real calendar dates, impossible padded dates (the
+/// general policy's typed error), the other accepted forms (compact,
+/// month-only, week and ordinal dates), signed and trimmed variants, and
+/// garbage — a `Some` answer must equal what `construct_named` builds,
+/// and anything else must be `None`. The scan fast path's correctness is
+/// this mirror.
+#[test]
+fn padded_iso_date_value_mirrors_the_general_construction() {
+    let cases = [
+        "1990-01-01",
+        "1985-06-15",
+        "0000-01-01",
+        "9999-12-31",
+        "2000-02-29",
+        // A padded form that is not a calendar date: neither the fast path
+        // nor the general policy builds a value (the year is inside chrono's
+        // range, so the calendar is checked).
+        "1990-02-30",
+        "2000-13-01",
+        "1990-00-10",
+        // Other accepted forms — never the padded fast path.
+        "19900101",
+        "1990-01",
+        "1990",
+        "1816-W01-1",
+        "2016-366",
+        "+1990-01-01",
+        " 1990-01-01",
+        "1990-01-01 ",
+        "990-01-01",
+        "19900-01-01",
+        "1990-1-01",
+        "1990-01-1",
+        "not a date",
+        "",
+    ];
+    for case in cases {
+        let fast = padded_iso_date_value(case);
+        let general = construct_named("date", &[Value::String(case.into())]);
+        let general_ok = general.is_ok();
+        match (&fast, general) {
+            // The fast path answered: the general policy must agree on
+            // the value, and must not have errored.
+            (Some(value), Ok(general_value)) => assert_eq!(value, &general_value, "{case:?}"),
+            (Some(_), Err(err)) => panic!("fast value for {case:?} but general errors: {err}"),
+            // The fast path declined: nothing to check — the general
+            // policy keeps whatever behavior it has for the shape.
+            (None, _) => {}
+        }
+        // The exact-form check itself: a `Some` answer only for the
+        // ten-byte padded shape that the general policy also builds — the
+        // calendar validity comes from that policy, never a hand-listed
+        // set of impossible dates.
+        let is_form = case.len() == 10 && case.as_bytes()[4] == b'-' && case.as_bytes()[7] == b'-';
+        assert_eq!(
+            fast.is_some(),
+            is_form && general_ok,
+            "form classification {case:?}"
+        );
+    }
 }
 
 /// The value layer's two renderings: `full_seconds_string` (the
@@ -386,100 +367,6 @@ fn now_epoch_millis_matches_pinned_datetime_and_stays_fixed() {
     // Long enough for any wall-clock read to have crossed a millisecond.
     std::thread::sleep(std::time::Duration::from_millis(10));
     assert_eq!(now_epoch_millis(), expected);
-}
-
-/// LABS-261: `epochMillis`/`epochSeconds` map fields construct the temporal
-/// value from the instant they name. Reference instant: 469020674645 ms =
-/// 1984-11-11T11:31:14.645Z (the same one the accessor test pins, so
-/// constructor and accessor round-trip each other).
-#[test]
-fn datetime_from_epoch_millis_and_epoch_seconds_map_fields() {
-    let by_millis = construct_datetime(Some(&Value::Map(
-        [("epochMillis".into(), Value::Int(469020674645))]
-            .into_iter()
-            .collect::<BTreeMap<_, _>>()
-            .into(),
-    )))
-    .unwrap();
-    // Compare on the ISO rendering: the constructor records the UTC zone
-    // spelling explicitly, `parse_iso` leaves it unset, but both render "Z".
-    assert_eq!(by_millis.iso_string(), "1984-11-11T11:31:14.645Z");
-    assert_eq!(
-        by_millis.component("epochMillis").unwrap(),
-        Value::Int(469020674645)
-    );
-
-    let by_seconds = construct_datetime(Some(&Value::Map(
-        [("epochSeconds".into(), Value::Int(469020674))]
-            .into_iter()
-            .collect::<BTreeMap<_, _>>()
-            .into(),
-    )))
-    .unwrap();
-    assert_eq!(by_seconds.iso_string(), "1984-11-11T11:31:14Z");
-}
-
-/// An explicit `timezone` converts the named instant into that zone.
-#[test]
-fn datetime_from_epoch_millis_with_timezone() {
-    let dt = construct_datetime(Some(&Value::Map(
-        [
-            ("epochMillis".into(), Value::Int(469020674645)),
-            ("timezone".into(), Value::String("Europe/Stockholm".into())),
-        ]
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
-        .into(),
-    )))
-    .unwrap();
-    assert_eq!(dt.component("offset"), Ok(Value::String("+01:00".into())));
-    assert_eq!(dt.component("epochMillis"), Ok(Value::Int(469020674645)));
-}
-
-/// Only `datetime` has the epoch-map form: every other constructor rejects
-/// an epoch field the way the reference engine does (`Not supported:
-/// epochMillis`), instead of reading the same instant at a coarser kind.
-#[test]
-fn non_datetime_kinds_reject_epoch_millis() {
-    let ms = Value::Map(
-        [("epochMillis".into(), Value::Int(469020674645))]
-            .into_iter()
-            .collect::<BTreeMap<_, _>>()
-            .into(),
-    );
-    for rejected in [
-        construct_date(Some(&ms)),
-        construct_localdatetime(Some(&ms)),
-        construct_time(Some(&ms)),
-        construct_localtime(Some(&ms)),
-    ] {
-        assert!(rejected.is_err(), "an epoch map is datetime-only");
-    }
-}
-
-/// Epoch values outside chrono's timestamp range fail, not panic.
-#[test]
-fn epoch_fields_out_of_range_error() {
-    let ms = Value::Map(
-        [("epochMillis".into(), Value::Int(i64::MAX))]
-            .into_iter()
-            .collect::<BTreeMap<_, _>>()
-            .into(),
-    );
-    assert!(construct_datetime(Some(&ms)).is_err());
-    assert!(construct_date(Some(&ms)).is_err());
-}
-
-/// Non-integer epoch values are a typed error, not a silent default.
-#[test]
-fn epoch_fields_must_be_integers() {
-    let ms = Value::Map(
-        [("epochMillis".into(), Value::Float(469020674.645))]
-            .into_iter()
-            .collect::<BTreeMap<_, _>>()
-            .into(),
-    );
-    assert!(construct_datetime(Some(&ms)).is_err());
 }
 
 // ADR-0325/0329: the typed helpers the Bolt structures rest on. The
@@ -632,70 +519,6 @@ fn chronological_instant_ordering_for_zoned_kinds() {
     );
 }
 
-/// The padded-ISO fast value is the general construction's value, and
-/// only ever answers for the exact padded form of a real calendar date:
-/// for every case — real calendar dates, impossible padded dates (the
-/// general policy's typed error), the other accepted forms (compact,
-/// month-only, week and ordinal dates), signed and trimmed variants, and
-/// garbage — a `Some` answer must equal what `construct_named` builds,
-/// and anything else must be `None`. The scan fast path's correctness is
-/// this mirror.
-#[test]
-fn padded_iso_date_value_mirrors_the_general_construction() {
-    let cases = [
-        "1990-01-01",
-        "1985-06-15",
-        "0000-01-01",
-        "9999-12-31",
-        "2000-02-29",
-        // A padded form that is not a calendar date: neither the fast path
-        // nor the general policy builds a value (the year is inside chrono's
-        // range, so the calendar is checked).
-        "1990-02-30",
-        "2000-13-01",
-        "1990-00-10",
-        // Other accepted forms — never the padded fast path.
-        "19900101",
-        "1990-01",
-        "1990",
-        "1816-W01-1",
-        "2016-366",
-        "+1990-01-01",
-        " 1990-01-01",
-        "1990-01-01 ",
-        "990-01-01",
-        "19900-01-01",
-        "1990-1-01",
-        "1990-01-1",
-        "not a date",
-        "",
-    ];
-    for case in cases {
-        let fast = padded_iso_date_value(case);
-        let general = construct_named("date", &[Value::String(case.into())]);
-        let general_ok = general.is_ok();
-        match (&fast, general) {
-            // The fast path answered: the general policy must agree on
-            // the value, and must not have errored.
-            (Some(value), Ok(general_value)) => assert_eq!(value, &general_value, "{case:?}"),
-            (Some(_), Err(err)) => panic!("fast value for {case:?} but general errors: {err}"),
-            // The fast path declined: nothing to check — the general
-            // policy keeps whatever behavior it has for the shape.
-            (None, _) => {}
-        }
-        // The exact-form check itself: a `Some` answer only for the
-        // ten-byte padded shape that the general policy also builds — the
-        // calendar validity comes from that policy, never a hand-listed
-        // set of impossible dates.
-        let is_form = case.len() == 10 && case.as_bytes()[4] == b'-' && case.as_bytes()[7] == b'-';
-        assert_eq!(
-            fast.is_some(),
-            is_form && general_ok,
-            "form classification {case:?}"
-        );
-    }
-}
-
 /// The CIP-228 pattern-form predicate and the construction policy read the
 /// same vocabulary — the six base constructors and their six GQL alias
 /// spellings, case-insensitively — and agree on all of it: every name the
@@ -739,207 +562,4 @@ fn accepts_pattern_covers_the_constructors_and_their_aliases() {
             "{name} is not a constructor"
         );
     }
-}
-
-/// A constructor call with more than the two grammar arguments is a typed
-/// arity error instead of a construction over the first argument; the
-/// zero-, one- and two-argument forms keep constructing.
-#[test]
-fn construct_named_rejects_more_than_two_arguments() {
-    let value = Value::String("2024-06-27".into());
-    let pattern = Value::String("yyyy-MM-dd".into());
-    let extra = Value::String("extra".into());
-    for name in ["date", "LOCAL_TIME", "zoned_datetime", "duration"] {
-        let err = construct_named(name, &[value.clone(), pattern.clone(), extra.clone()])
-            .expect_err("three arguments must be rejected");
-        assert!(
-            err.to_string().contains("InvalidNumberOfArguments"),
-            "{name}: {err}"
-        );
-    }
-    assert!(construct_named("date", &[]).is_ok(), "the clock form");
-    assert!(construct_named("date", &[value.clone()]).is_ok());
-    assert!(construct_named("date", &[value, pattern]).is_ok());
-}
-
-/// LABS-711: a temporal component map's fields are integer-typed. A present
-/// non-integer (string/bool/list/integral float) is Neo4j's non-assignable
-/// component error, never a silently absent field (`date({year: 2000,
-/// month: 'x'})` used to answer 2000-01-01).
-#[test]
-fn temporal_map_non_integer_components_are_typed_errors() {
-    let string = || Value::String("x".into());
-    let list = || Value::List(vec![Value::Int(1), Value::Int(2)].into());
-    assert!(construct_date(Some(&component_map(&[
-        ("year", Value::Int(2000)),
-        ("month", string()),
-    ])))
-    .is_err());
-    assert!(construct_date(Some(&component_map(&[
-        ("year", Value::Int(2000)),
-        ("week", string()),
-    ])))
-    .is_err());
-    assert!(construct_date(Some(&component_map(&[("year", Value::Float(2000.0))]))).is_err());
-    assert!(construct_localtime(Some(&component_map(&[
-        ("hour", Value::Int(12)),
-        ("minute", list()),
-    ])))
-    .is_err());
-    assert!(construct_datetime(Some(&component_map(&[
-        ("year", Value::Int(2000)),
-        ("month", Value::Int(1)),
-        ("day", Value::Int(1)),
-        ("hour", Value::Bool(true)),
-    ])))
-    .is_err());
-    assert!(construct_localdatetime(Some(&component_map(&[
-        ("year", Value::Int(2000)),
-        ("month", Value::Int(1)),
-        ("day", Value::Int(1)),
-        ("nanosecond", Value::Bool(true)),
-    ])))
-    .is_err());
-}
-
-/// LABS-711: sub-second fields are range-checked per field, and the finer
-/// fields' bounds narrow when a coarser sibling is present (`validNano`):
-/// millisecond 0..999; microsecond 0..999 beside milliseconds else
-/// 0..999_999; nanosecond 0..999 beside microseconds, 0..999_999 beside
-/// milliseconds, else 0..999_999_999.
-#[test]
-fn temporal_map_subsecond_fields_are_range_checked() {
-    let time = |entries: &[(&str, Value)]| {
-        let mut all = vec![
-            ("hour", Value::Int(1)),
-            ("minute", Value::Int(1)),
-            ("second", Value::Int(1)),
-        ];
-        all.extend_from_slice(entries);
-        construct_time(Some(&component_map(&all)))
-    };
-    for entries in [
-        vec![("millisecond", Value::Int(-1))],
-        vec![("millisecond", Value::Int(1000))],
-        vec![
-            ("millisecond", Value::Int(0)),
-            ("microsecond", Value::Int(1000)),
-        ],
-        vec![
-            ("millisecond", Value::Int(0)),
-            ("nanosecond", Value::Int(1_000_000)),
-        ],
-        vec![
-            ("microsecond", Value::Int(0)),
-            ("nanosecond", Value::Int(1000)),
-        ],
-        vec![("microsecond", Value::Int(1_000_000))],
-        vec![("nanosecond", Value::Int(1_000_000_000))],
-    ] {
-        assert!(time(&entries).is_err(), "{entries:?}");
-    }
-    assert!(time(&[
-        ("millisecond", Value::Int(999)),
-        ("microsecond", Value::Int(999)),
-        ("nanosecond", Value::Int(999)),
-    ])
-    .is_ok());
-}
-
-/// LABS-711 review: a quarter outside 1..=4 (including `quarter: 0`) reaches
-/// the typed `invalid date` error instead of being clamped to January, and a
-/// negative `dayOfQuarter` is rejected before the `u64` conversion can lose
-/// its sign.
-#[test]
-fn temporal_map_quarter_components_are_validated() {
-    assert!(construct_date(Some(&component_map(&[
-        ("year", Value::Int(2020)),
-        ("quarter", Value::Int(0)),
-    ])))
-    .is_err());
-    assert!(construct_date(Some(&component_map(&[
-        ("year", Value::Int(2020)),
-        ("quarter", Value::Int(1)),
-        ("dayOfQuarter", Value::Int(-1)),
-    ])))
-    .is_err());
-}
-
-/// LABS-711 review: the quarter probe and the day-of-quarter read are the
-/// same validated fact, so a null-valued `dayOfQuarter` behaves exactly like
-/// an absent one (the old `contains_key` probe forced the quarter's first
-/// month while the read contributed nothing).
-#[test]
-fn temporal_map_null_day_of_quarter_does_not_shift_the_quarter() {
-    let date = Value::Temporal(parse_iso("date", "2020-09-15").unwrap());
-    let with_null = construct_date(Some(&component_map(&[
-        ("date", date.clone()),
-        ("quarter", Value::Int(3)),
-        ("dayOfQuarter", Value::Null),
-    ])))
-    .unwrap();
-    let absent = construct_date(Some(&component_map(&[
-        ("date", date),
-        ("quarter", Value::Int(3)),
-    ])))
-    .unwrap();
-    assert_eq!(with_null, absent);
-    assert_eq!(with_null.iso_string(), "2020-09-15");
-}
-
-/// LABS-711 review: the fraction-of-second width policy is shared — a run of
-/// more than nine digits is a pattern error for a date/time `S` arm as well as
-/// for a duration's `n`/`S` spellings, never a silent truncation.
-#[test]
-fn temporal_format_fraction_width_above_nine_is_an_error() {
-    let date = parse_iso("datetime", "2020-09-15T12:34:56.123456789Z").unwrap();
-    assert!(format_pattern(&date, "SSSSSSSSSS").is_err());
-    assert!(format_pattern(&date, "SSSSSSSSS").is_ok());
-    let duration = Temporal::Duration {
-        months: 0,
-        days: 0,
-        nanos: 123_456_789,
-    };
-    assert!(format_pattern(&duration, "nnnnnnnnnn").is_err());
-    assert!(format_pattern(&duration, "nnnnnnnnn").is_ok());
-}
-
-/// A `GMT`/`UTC` prefixed offset keeps its spelling as the value's time zone
-/// while the arithmetic uses the numeric tail.
-#[test]
-fn gmt_prefixed_offsets_keep_their_spelling() {
-    let dt = construct_datetime(Some(&component_map(&[
-        ("year", Value::Int(2025)),
-        ("timezone", Value::String("GMT+03:00".into())),
-    ])))
-    .unwrap();
-    assert_eq!(
-        dt.component("timezone").unwrap(),
-        Value::String("GMT+03:00".into())
-    );
-    assert_eq!(
-        dt.component("offset").unwrap(),
-        Value::String("+03:00".into())
-    );
-    assert_eq!(dt.component("offsetMinutes").unwrap(), Value::Int(180));
-    assert_eq!(dt.iso_string(), "2025-01-01T00:00+03:00");
-}
-
-/// A `datetime`/`localdatetime` needs a time-bearing source; a date (or a
-/// bare time) cannot be widened into one.
-#[test]
-fn datetime_kinds_need_a_time_bearing_source() {
-    let date = Value::Temporal(Temporal::Date(
-        NaiveDate::from_ymd_opt(1984, 2, 11).unwrap(),
-    ));
-    let time = Value::Temporal(Temporal::LocalTime(
-        NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
-    ));
-    assert!(construct_datetime(Some(&date)).is_err());
-    assert!(construct_localdatetime(Some(&date)).is_err());
-    assert!(construct_datetime(Some(&time)).is_err());
-    assert!(construct_localdatetime(Some(&time)).is_err());
-    assert!(construct_date(Some(&time)).is_err());
-    let local = Value::Temporal(parse_iso("localdatetime", "1984-02-11T12:00").unwrap());
-    assert!(construct_datetime(Some(&local)).is_ok());
 }

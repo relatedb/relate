@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use super::test_support::naive_utc;
+use super::test_support::{component_map, naive_utc};
 use super::*;
 
 /// The exported resolver's three outcomes (ADR-0178). A unique wall time
@@ -181,4 +181,25 @@ fn offsets_are_bounded_and_time_literals_reject_named_zones() {
     assert!(parse_iso("datetime", "2018-04-01T12:45:45+18:01").is_err());
     assert!(parse_iso("time", "07:54:02.129790999+00:00[UTC]").is_err());
     assert!(parse_iso("time", "12:34:56[Europe/Stockholm]").is_err());
+}
+
+/// A `GMT`/`UTC` prefixed offset keeps its spelling as the value's time zone
+/// while the arithmetic uses the numeric tail.
+#[test]
+fn gmt_prefixed_offsets_keep_their_spelling() {
+    let dt = construct_datetime(Some(&component_map(&[
+        ("year", Value::Int(2025)),
+        ("timezone", Value::String("GMT+03:00".into())),
+    ])))
+    .unwrap();
+    assert_eq!(
+        dt.component("timezone").unwrap(),
+        Value::String("GMT+03:00".into())
+    );
+    assert_eq!(
+        dt.component("offset").unwrap(),
+        Value::String("+03:00".into())
+    );
+    assert_eq!(dt.component("offsetMinutes").unwrap(), Value::Int(180));
+    assert_eq!(dt.iso_string(), "2025-01-01T00:00+03:00");
 }

@@ -264,20 +264,24 @@ fn field_map(
 /// The one constructor entry: the clock reading (`None`), the value
 /// construction (`Some`), or the map policy — the five kinds differ only in
 /// the vocabulary the kind supplies.
-fn construct(kind: ClockKind, arg: Option<&Value>) -> Result<Temporal> {
+pub(super) fn construct(kind: ClockKind, arg: Option<&Value>) -> Result<Temporal> {
     match arg {
         None => Ok(now_value(kind)),
         Some(Value::String(value)) => parse_iso(kind.name(), value),
         // A duration is not a temporal source any clock constructor accepts:
-        // Neo4j reports it as an invalid call signature (42001), not as a
+        // Neo4j reports it as the call's own failure — ProcedureCallFailed
+        // under 42001 (probed 2026-11-20 on 2026.10.1), not as a
         // value-conversion failure.
-        Some(Value::Temporal(Temporal::Duration { .. })) => Err(Error::syntax(format!(
+        Some(Value::Temporal(Temporal::Duration { .. })) => Err(Error::procedure_call(format!(
             "Invalid call signature: {}() does not accept a duration",
             kind.name()
         ))),
         Some(Value::Temporal(value)) => temporal_of(kind, value),
         Some(Value::Map(m)) => construct_map(kind, m),
-        Some(_) => Err(Error::syntax(format!(
+        // Live reports every non-temporal, non-map single argument the same
+        // way (probed 2026-11-20 on 2026.10.1: date(123) and
+        // localdatetime(123) are both 42001).
+        Some(_) => Err(Error::procedure_call(format!(
             "Invalid call signature: {}()",
             kind.name()
         ))),
@@ -352,7 +356,14 @@ pub fn construct_named(name: &str, vals: &[Value]) -> Result<Value> {
                 Ok(Value::Temporal(parse_pattern(&canon, value, pattern)?))
             }
             (Value::String(_), _) => Err(Error::invalid_argument_type("temporal pattern")),
-            _ => Err(Error::invalid_argument_type("temporal value")),
+            // Live splits the operand faults by side: a non-string value is
+            // the call's own failure (ProcedureCallFailed under 42001,
+            // probed 2026-11-20 on 2026.10.1), while a non-string pattern
+            // stays the runtime Type mismatch (`InvalidArgumentType`, 22G03)
+            // the row above reports.
+            _ => Err(Error::procedure_call(format!(
+                "Invalid call signature for {name}: the value must be a STRING when a pattern is given"
+            ))),
         },
         // Every other arity is the typed arity rejection, never a silent
         // construction from the first argument.
@@ -631,7 +642,9 @@ pub fn construct_duration(arg: Option<&Value>) -> Result<Temporal> {
         Some(Value::String(s)) => parse_iso("duration", s),
         Some(Value::Temporal(t @ Temporal::Duration { .. })) => Ok(t.clone()),
         Some(Value::Map(m)) => duration_from_map(m),
-        _ => Err(Error::syntax("Invalid call signature: duration()")),
+        // Live reports the unconstructible argument as the call's own
+        // failure (duration(123) is 42001, probed 2026-11-20 on 2026.10.1).
+        _ => Err(Error::procedure_call("Invalid call signature: duration()")),
     }
 }
 

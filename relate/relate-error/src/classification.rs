@@ -18,7 +18,7 @@
 use crate::nested_class::{
     nested_error_class, stringly_gql_status, GQLSTATUS_CONSTRAINT_CREATION_FAILED,
     GQLSTATUS_DATABASE_NOT_FOUND, GQLSTATUS_GENERAL, GQLSTATUS_INTERNAL,
-    GQLSTATUS_PARAMETER_MISSING, GQLSTATUS_SYNTAX, GQLSTATUS_TYPE,
+    GQLSTATUS_PARAMETER_MISSING, GQLSTATUS_PROCEDURE_CALL, GQLSTATUS_SYNTAX, GQLSTATUS_TYPE,
 };
 use relate_core::{ArithmeticFailure, Error};
 
@@ -29,6 +29,10 @@ pub const SYNTAX_ERROR_CODE: &str = "Neo.ClientError.Statement.SyntaxError";
 /// register (ADR-0138): neo4j-browser branches on the exact Neo4j code for
 /// its `dbms.clientConfig` → `dbms.listConfig` fallback.
 pub const PROCEDURE_NOT_FOUND_CODE: &str = "Neo.ClientError.Procedure.ProcedureNotFound";
+
+/// A registered call failing its own signature (live's
+/// `Neo.ClientError.Procedure.ProcedureCallFailed`, probed on 2026.10.1).
+pub const PROCEDURE_CALL_FAILED_CODE: &str = "Neo.ClientError.Procedure.ProcedureCallFailed";
 
 /// The `code` of a statement that references an absent parameter
 /// (ADR-0308).
@@ -275,6 +279,18 @@ pub fn error_info(e: &Error) -> ErrorInfo {
         Error::ArgumentValue { .. } => ErrorInfo {
             neo4j_code: ARGUMENT_VALUE_ERROR_CODE,
             gql_status: GQLSTATUS_GENERAL,
+            stage: Runtime,
+            retryable: false,
+        },
+        // A registered call failing its own signature: live fails the PULL
+        // with ProcedureCallFailed and its 42001 (probed 2026-11-20 on
+        // 2026.10.1 for both the temporal constructors' value rejections
+        // and `duration.between`'s non-temporal operands) — the one
+        // procedure-family site where the recorded GQLSTATUS is live's,
+        // not ADR-0565's compile-time syntax mapping.
+        Error::ProcedureCall(_) => ErrorInfo {
+            neo4j_code: PROCEDURE_CALL_FAILED_CODE,
+            gql_status: GQLSTATUS_PROCEDURE_CALL,
             stage: Runtime,
             retryable: false,
         },

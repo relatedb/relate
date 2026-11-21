@@ -164,7 +164,8 @@ fn realtime_reads_the_wall_clock_not_the_pin() {
 }
 
 /// The accessor argument contract: null constructs null; a numeric timezone
-/// is the invalid call signature (syntax class); an unknown zone is the
+/// is the call's own failure (the ProcedureCallFailed class, live-probed
+/// 2026-11-20 on 2026.10.1); an unknown zone is the
 /// typed zone error. Arity is the dispatcher's contract, not this entry
 /// point's.
 #[test]
@@ -181,7 +182,7 @@ fn clock_access_argument_contract() {
             ClockMode::Transaction,
             Some(&Value::Int(42))
         ),
-        Err(Error::Syntax(_))
+        Err(Error::ProcedureCall(_))
     ));
     assert!(construct_clock(
         ClockKind::Date,

@@ -32,6 +32,8 @@ mod tests_between;
 #[cfg(test)]
 mod tests_clock;
 #[cfg(test)]
+mod tests_construct;
+#[cfg(test)]
 mod tests_duration;
 #[cfg(test)]
 mod tests_fields;

@@ -11,6 +11,11 @@ pub const GQLSTATUS_GENERAL: &str = "42000";
 /// The GQLSTATUS of a rejected statement (the `SyntaxError` class).
 pub const GQLSTATUS_SYNTAX: &str = "42N06";
 
+/// The GQLSTATUS of a registered procedure or function call that failed
+/// its own signature — live's `Neo.ClientError.Procedure.ProcedureCallFailed`
+/// reports 42001 (probed 2026-11-20 on Neo4j 2026.10.1).
+pub(crate) const GQLSTATUS_PROCEDURE_CALL: &str = "42001";
+
 /// The GQLSTATUS of an absent query parameter (ADR-0308).
 pub(crate) const GQLSTATUS_PARAMETER_MISSING: &str = "42N02";
 

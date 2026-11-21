@@ -87,6 +87,14 @@ impl ClockKind {
     pub(super) fn has_date_and_time(self) -> bool {
         self.has_date() && self.has_time()
     }
+
+    /// Every clock kind, in table order — the enumeration the tests iterate
+    /// over the kind vocabulary; a kind's spelling always comes from
+    /// [`ClockKind::name`], never a second copy.
+    #[cfg(test)]
+    pub(super) fn all() -> impl Iterator<Item = ClockKind> {
+        Self::TABLE.iter().map(|(_, kind)| *kind)
+    }
 }
 
 /// The clock a temporal accessor reads.
@@ -294,8 +302,8 @@ pub(super) fn clock_from_map(kind: ClockKind, m: &BTreeMap<String, Value>) -> Re
 /// The clock-access form (`date.transaction('Europe/Paris')`, …): its one
 /// argument is a timezone, never a value, so it resolves through the zone
 /// table at the accessor's own instant. Arity is the dispatcher's contract;
-/// the one argument here is either a null, a timezone, or the invalid call
-/// signature (syntax class).
+/// the one argument here is either a null, a timezone, or the call's own
+/// failure — the ProcedureCallFailed class, 42001.
 pub fn construct_clock(kind: ClockKind, mode: ClockMode, arg: Option<&Value>) -> Result<Value> {
     let reading = clock_reading(mode);
     match arg {
@@ -313,7 +321,10 @@ pub fn construct_clock(kind: ClockKind, mode: ClockMode, arg: Option<&Value>) ->
                 resolved,
             )?))
         }
-        Some(_) => Err(Error::syntax(format!(
+        // Live reports the non-string timezone argument as the call's own
+        // failure — ProcedureCallFailed under 42001 (probed 2026-11-20 on
+        // 2026.10.1: date.realtime(123)).
+        Some(_) => Err(Error::procedure_call(format!(
             "Invalid call signature: {}() takes a timezone STRING",
             clock_spelling(kind, mode)
         ))),

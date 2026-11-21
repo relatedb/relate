@@ -192,6 +192,17 @@ pub enum Error {
     /// not move.
     #[error("syntax error: ProcedureNotFound: {name}")]
     ProcedureNotFound { name: String },
+    /// A registered function or procedure call whose argument values fail
+    /// the call's signature at runtime — Neo4j's `ProcedureCallFailed`
+    /// (42001): every runtime `Invalid call signature` rejection the
+    /// temporal family raises (the constructors' non-temporal and duration
+    /// operands, the `(value, pattern)` value side, `duration.between`/
+    /// `duration.in*`'s non-temporal operands, and the timezone STRING
+    /// reading — each live-probed on 2026.10.1). Live fails these at PULL
+    /// with the procedure class, unlike the `InvalidArgumentType`
+    /// rejections that stay the TypeError class.
+    #[error("ProcedureError: {0}")]
+    ProcedureCall(String),
     /// An argument of the wrong static or runtime type, carrying the detail
     /// text typed, so consumers match the class without scanning the
     /// rendered message. The Display text is byte-identical to the
@@ -354,6 +365,13 @@ impl Error {
     /// (ADR-0138).
     pub fn procedure_not_found(name: impl Into<String>) -> Self {
         Self::ProcedureNotFound { name: name.into() }
+    }
+
+    /// A registered call failing its own signature at runtime — the typed
+    /// counterpart of the temporal family's `Invalid call signature`
+    /// rejections, carrying live's `ProcedureCallFailed` class.
+    pub fn procedure_call(detail: impl Into<String>) -> Self {
+        Self::ProcedureCall(detail.into())
     }
 
     /// A call to a function the engine does not register, naming it — the

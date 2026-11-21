@@ -93,3 +93,11 @@ Existing class vocabulary only; no new error variant, no new class.
   `semantic error: <Kind>: ` prefix, the delete-connected error gains the
   class token, and `toInteger()` renders the type-class prefix.
 - [ADR-0175](./0175-list-and-string-form-conversions.md) gains a Later references note for its 22N03 rows.
+
+## Later references
+
+- [ADR-0639](./0639-procedure-call-failed-class.md): the registered-call
+  signature faults this ADR left as-is gained their own typed variant —
+  live's `ProcedureCallFailed` class under GQLSTATUS 42001 — where this
+  ADR's decision text covers only the unregistered-procedure row. The
+  ProcedureNotFound GQLSTATUS freeze recorded here stands.

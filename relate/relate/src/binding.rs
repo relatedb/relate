@@ -387,6 +387,10 @@ pub fn binding_error_metadata(error: &Error) -> (&'static str, &'static str) {
         // the `ProcedureError` TCK class live Neo4j reports for an
         // unregistered procedure (ADR-0565); its Bolt code is unchanged.
         Error::ProcedureNotFound { .. } => ("ProcedureNotFound", "ProcedureError"),
+        // A registered call failing its own signature at runtime carries
+        // live's `ProcedureCallFailed` kind and the `ProcedureError` TCK
+        // class live reports for it (probed 2026-11-20 on 2026.10.1).
+        Error::ProcedureCall(_) => ("ProcedureCallFailed", "ProcedureError"),
         // The typed creation condition (ADR-0116 §9) keeps the legacy
         // constraint-verification class every creation over violating data
         // has always reported; only its GQLSTATUS moves.
@@ -505,6 +509,15 @@ mod tests {
         assert_eq!(
             binding_error_metadata(&Error::procedure_not_found("dbms.noSuchProc")),
             ("ProcedureNotFound", "ProcedureError")
+        );
+        // A registered call failing its own signature at runtime carries
+        // live's `ProcedureCallFailed` kind under the same class (probed
+        // 2026-11-20 on 2026.10.1).
+        assert_eq!(
+            binding_error_metadata(&Error::procedure_call(
+                "Invalid call signature: duration.between needs temporal values"
+            )),
+            ("ProcedureCallFailed", "ProcedureError")
         );
         assert_eq!(
             binding_error_metadata(&Error::execution("ConstraintVerificationFailed: duplicate")),

@@ -459,6 +459,7 @@ engine's own text, verbatim. An engine error maps by its typed
 | --- | --- |
 | `Syntax` (parse error, ADR-0257 input limit; an undefined variable, ADR-0335; the traversal-depth admission limit, LABS-610/ADR-0466; every rejection the statement text decides — a literal argument of the wrong type or outside its domain, a literal that cannot parse, call arity, a statically non-boolean predicate, ADR-0566) | `Neo.ClientError.Statement.SyntaxError` |
 | `ProcedureNotFound` (a call to an unregistered procedure, ADR-0138) | `Neo.ClientError.Procedure.ProcedureNotFound` |
+| `ProcedureCall` (a registered call failing its own signature at runtime — the temporal family's `Invalid call signature` rejections, ADR-0639) | `Neo.ClientError.Procedure.ProcedureCallFailed` |
 | `ParameterMissing` (ADR-0308) | `Neo.ClientError.Statement.ParameterMissing` |
 | `Type`, `TypeError`, `InvalidArgumentType` (a type fault only a per-row value reveals, ADR-0566) | `Neo.ClientError.Statement.TypeError` |
 | `ArgumentError` (a DDL `OPTIONS`/`indexConfig` value rejection, ADR-0489) | `Neo.ClientError.General.InvalidArguments` |

@@ -76,17 +76,18 @@ pub(super) fn between_call(
     n: &str,
     [a, b]: [Value; 2],
 ) -> Result<Value> {
-    Ok(match (a, b) {
-        (Value::Null, _) | (_, Value::Null) => Value::Null,
-        (Value::Temporal(a), Value::Temporal(b)) => {
-            Value::Temporal(temporal::duration_between_unit(&a, &b, unit)?)
-        }
-        _ => {
-            return Err(Error::syntax(format!(
-                "Invalid call signature: {n} needs temporal values"
-            )))
-        }
-    })
+    match (a, b) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+        (Value::Temporal(a), Value::Temporal(b)) => Ok(Value::Temporal(
+            temporal::duration_between_unit(&a, &b, unit)?,
+        )),
+        // Live rejects the non-temporal operands as the call's own
+        // failure — ProcedureCallFailed under 42001 (probed 2026-11-20
+        // on 2026.10.1), not a syntax rejection.
+        _ => Err(Error::procedure_call(format!(
+            "Invalid call signature: {n} needs temporal values"
+        ))),
+    }
 }
 
 /// `<kind>.truncate(...)`: a unit, an optional value, and an optional fields
@@ -111,7 +112,10 @@ pub(super) fn truncate_call(kind: temporal::ClockKind, vals: Vec<Value>) -> Resu
     match value {
         Value::Temporal(value) => Ok(Value::Temporal(temporal::truncate(kind, unit, value, map)?)),
         Value::Null => Ok(Value::Null),
-        _ => Err(Error::syntax(format!(
+        // Live rejects the non-temporal value as the call's own failure —
+        // ProcedureCallFailed under 42001 (probed 2026-11-20 on 2026.10.1
+        // for both truncate spellings), not a syntax rejection.
+        _ => Err(Error::procedure_call(format!(
             "Invalid call signature: {}.truncate needs a temporal value",
             kind.name()
         ))),
@@ -226,5 +230,19 @@ mod tests {
             panic!("timestamp() must return an INTEGER, got {result:?}");
         };
         assert_eq!(ms, temporal::now_epoch_millis());
+    }
+
+    /// A non-temporal operand is the call's own failure — live's
+    /// `ProcedureCallFailed` class (probed 2026-11-20 on 2026.10.1), not a
+    /// syntax rejection.
+    #[test]
+    fn between_call_non_temporal_operands_fail_the_call() {
+        let err = between_call(
+            temporal::BetweenUnit::Months,
+            "duration.between",
+            [Value::String("abc".into()), Value::String("def".into())],
+        )
+        .expect_err("non-temporal operands must fail the call");
+        assert!(matches!(err, Error::ProcedureCall(_)), "{err}");
     }
 }
