@@ -138,17 +138,22 @@ fn an_unrecordable_state_file_takes_the_disabled_shape() {
 
 #[test]
 fn emit_after_flush_is_a_safe_noop() {
-    let mut t = refused();
+    // A live pipeline (a config dir resolves), so the flush really
+    // takes a backlog and the later emit meets the post-flush shape.
+    let dir = tempfile::tempdir().unwrap();
+    let mut t = spooling_in(dir.path());
     t.emit(Event::Startup {
         kind: StartupKind::Oneshot,
     });
     t.flush();
+    assert_eq!(spool::spool_contents(dir.path()).lines().count(), 1);
     // No panic, no output, no blocking; a second flush has nothing
-    // left to take.
+    // left to take, and the late event reaches no spool.
     t.emit(Event::Help);
     let start = Instant::now();
     t.flush();
     assert!(start.elapsed() < Duration::from_millis(100));
+    assert_eq!(spool::spool_contents(dir.path()).lines().count(), 1);
 }
 
 #[test]
@@ -171,10 +176,7 @@ fn rejected_endpoint_writes_no_state_file() {
     // before any state-file I/O, so no `state.json` is created.
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
-    let env = |k: &str| {
-        (k == "RELATE_MIXPANEL_ENDPOINT").then(|| "http://evil.example/track".to_string())
-    };
-    let t = Telemetry::enable(enabled(), &env, Some(dir.to_path_buf()));
+    let t = crate::telemetry::handle_in(dir, "http://evil.example/track");
     // The opt-out state is reported unchanged, but nothing runs.
     assert!(t.live.is_none());
     assert!(!state::state_path(dir).exists());
@@ -182,14 +184,16 @@ fn rejected_endpoint_writes_no_state_file() {
 
 #[test]
 fn rejected_override_disables_the_pipeline() {
-    // The rejection path reuses `Self::disabled`: no backlog or spool,
-    // and the opt-out state is reported unchanged. `emit`/`flush`
-    // no-op.
-    let mut t = Telemetry::disabled(enabled());
+    // A real rejection (a non-loopback `http://` override beside a
+    // resolved config dir): no pipeline, the opt-out state reported
+    // unchanged, and `emit`/`flush` no-op without writing a spool.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut t = crate::telemetry::handle_in(tmp.path(), "http://evil.example/track");
     assert_eq!(t.effective_state(), enabled());
     assert!(t.live.is_none());
     t.emit(Event::Help);
     t.flush();
+    assert_eq!(spool::spool_paths(tmp.path()).count(), 0);
 }
 
 #[test]

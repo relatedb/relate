@@ -570,9 +570,7 @@ fn pin_status(package_dir: &Path, name: &str, trust_file: Option<&Path>) -> PinS
         );
     };
     let Some(trust_file) = trust_file else {
-        return PinStatus::Unknown(
-            "no config directory to read the extension trust store from".to_string(),
-        );
+        return PinStatus::Unknown(crate::config_dir::no_config_dir_text());
     };
     let store = match TrustStore::load(trust_file) {
         Ok(store) => store,

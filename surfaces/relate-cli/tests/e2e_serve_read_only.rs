@@ -22,7 +22,7 @@
 mod support;
 
 use relate_test_support::loopback::{exchange, post};
-use support::serve::{auth_header, free_port, spawn_serve_with, wait_for_ports, AUTH};
+use support::serve::{auth_header, free_port, graph_db, spawn_serve_with, wait_for_ports, AUTH};
 use support::{person_bundle, run_cli, tempdir, CliRunOptions};
 
 /// Run one one-shot CLI statement against `db` (the path-first form) in an
@@ -70,7 +70,7 @@ fn served_count(http_port: u16) -> i64 {
 #[test]
 fn test_read_only_serve_refuses_writes_and_hides_write_cypher() {
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     seed("CREATE (:Marker {v: 1})", &db);
     let http_port = free_port();
     let mcp_port = free_port();
@@ -115,7 +115,7 @@ fn test_read_only_serve_refuses_writes_and_hides_write_cypher() {
 #[test]
 fn test_read_only_serve_serves_beside_a_writer() {
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     seed("CREATE (:Marker {v: 1})", &db);
     let http_port = free_port();
     let mcp_port = free_port();
@@ -145,7 +145,7 @@ fn test_read_only_serve_serves_beside_a_writer() {
 #[test]
 fn test_read_only_serve_sigint_is_clean_and_writes_nothing() {
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     seed("CREATE (:Marker {v: 1})", &db);
     let manifest = dir.path().join("graph").join("manifest.json");
     assert!(manifest.is_file(), "the seeded store carries a manifest");
@@ -185,7 +185,7 @@ fn test_bolt_write_on_a_read_only_serve_fails() {
     };
 
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     seed("CREATE (:Marker {v: 1})", &db);
     let http_port = free_port();
     let mcp_port = free_port();
@@ -238,7 +238,7 @@ fn test_follow_serve_shows_the_writers_commits() {
     use std::time::{Duration, Instant};
 
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     seed("CREATE (:T {v: 1})", &db);
     let http_port = free_port();
     let mcp_port = free_port();

@@ -87,15 +87,14 @@ const BACKLOG_CAP: usize = 64;
 /// the scan; `Armed` — a drain spawn was attempted, carrying everything
 /// the exit tail needs: the completion signal, the join budget this
 /// run's exit waits with (`None` for a query-session run, whose exit
-/// never joins), and whether this is the once-per-version drain (the
-/// stamp's condition).
+/// never joins). Whether this is the once-per-version drain is
+/// `Live::version_drain_run`'s one answer, read at the exit tail.
 enum DrainState {
     Idle,
     NothingPending,
     Armed {
         rx: mpsc::Receiver<drain::Delivery>,
         join_budget: Option<Duration>,
-        version_drain: bool,
     },
 }
 
@@ -383,7 +382,6 @@ impl Live {
         self.drain = DrainState::Armed {
             rx: drain::spawn_drain(self.endpoint.clone(), self.dir.clone(), deadline),
             join_budget,
-            version_drain: self.version_drain_run,
         };
     }
 
@@ -396,12 +394,7 @@ impl Live {
         // state is consumed here, never reset to a value it cannot hold
         // at this point.
         let armed = self.drain;
-        if let DrainState::Armed {
-            rx,
-            join_budget,
-            version_drain,
-        } = armed
-        {
+        if let DrainState::Armed { rx, join_budget } = armed {
             // The join decision: only for a run that armed a budget — the
             // once-per-version drain or a non-query exit — and never inside
             // the failed-attempt backoff window, so a pending backlog with
@@ -419,27 +412,29 @@ impl Live {
                 .record
                 .delivery_backoff_until
                 .is_some_and(|until| until > chrono::Utc::now());
-            if version_drain && !in_backoff {
-                let _ = self.record.stamp_cli_version(&self.dir, envelope::VERSION);
-            }
-            if let (true, Some(budget)) = (!in_backoff, join_budget) {
-                match rx.recv_timeout(budget) {
-                    // Every claim the last pass took was confirmed: nothing
-                    // to record.
-                    Ok(drain::Delivery::Confirmed) => {}
-                    // A claim survived the pass, or the wait ran out: stamp
-                    // the backoff window so the next exits skip the wait.
-                    // The undelivered claims stay for the next run either
-                    // way (at-least-once, deduped by `$insert_id`).
-                    Ok(drain::Delivery::Failed) | Err(mpsc::RecvTimeoutError::Timeout) => {
-                        let _ = self.record.stamp_delivery_backoff(
-                            &self.dir,
-                            chrono::Utc::now() + drain::DRAIN_BACKOFF,
-                        );
+            if !in_backoff {
+                if self.version_drain_run {
+                    let _ = self.record.stamp_cli_version(&self.dir, envelope::VERSION);
+                }
+                if let Some(budget) = join_budget {
+                    match rx.recv_timeout(budget) {
+                        // Every claim the last pass took was confirmed: nothing
+                        // to record.
+                        Ok(drain::Delivery::Confirmed) => {}
+                        // A claim survived the pass, or the wait ran out: stamp
+                        // the backoff window so the next exits skip the wait.
+                        // The undelivered claims stay for the next run either
+                        // way (at-least-once, deduped by `$insert_id`).
+                        Ok(drain::Delivery::Failed) | Err(mpsc::RecvTimeoutError::Timeout) => {
+                            let _ = self.record.stamp_delivery_backoff(
+                                &self.dir,
+                                chrono::Utc::now() + drain::DRAIN_BACKOFF,
+                            );
+                        }
+                        // The thread ended without its signal (a spawn-time
+                        // refusal): nothing to wait on, nothing to record.
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {}
                     }
-                    // The thread ended without its signal (a spawn-time
-                    // refusal): nothing to wait on, nothing to record.
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {}
                 }
             }
         }

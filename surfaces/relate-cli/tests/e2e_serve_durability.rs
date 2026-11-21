@@ -17,7 +17,9 @@ mod support;
 
 use relate_test_support::durability::DURABILITY_MODES;
 use relate_test_support::loopback::{exchange, post};
-use support::serve::{auth_header, free_port, spawn_serve_with_env, wait_for_ports, AUTH};
+use support::serve::{
+    auth_header, free_port, graph_db, spawn_serve_with_env, wait_for_ports, AUTH,
+};
 use support::{run_cli, tempdir, CliRunOptions};
 
 /// One `serve` run's mode selection, driven through one spawn + one
@@ -132,7 +134,7 @@ fn test_bad_serve_durability_mode_flag_is_a_usage_error() {
 #[test]
 fn test_bad_durability_mode_env_fails_serve_startup() {
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     let http_port = free_port();
     let mcp_port = free_port();
     let mut child = spawn_serve_with_env(

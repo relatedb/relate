@@ -78,10 +78,7 @@ fn run_inner(
             println!("{}", telemetry.effective_state().status_line());
             0
         }
-        TelemetryAction::On => match persist(dir, true) {
-            Ok(_) => 0,
-            Err(code) => code,
-        },
+        TelemetryAction::On => persist(dir, Setting::Enabled).map_or_else(|code| code, |_| 0),
         TelemetryAction::Off => {
             // One ordered transition (ADR-0545 §5): disarm the run's
             // pipeline first — the drain starts at the first recorded
@@ -91,7 +88,7 @@ fn run_inner(
             // pending spool. `persist` owns the unresolved-dir error and
             // hands back the resolved dir on success.
             telemetry.disarm();
-            match persist(dir, false) {
+            match persist(dir, Setting::Disabled) {
                 Ok(dir) => {
                     crate::telemetry::spool::clear(dir);
                     0
@@ -102,14 +99,36 @@ fn run_inner(
     }
 }
 
+/// The value `on`/`off` persist under the `telemetry` key — the two
+/// writing actions' one typed mode, so the key's value and its
+/// confirmation word come from one place.
+#[derive(Clone, Copy)]
+enum Setting {
+    Enabled,
+    Disabled,
+}
+
+impl Setting {
+    fn is_enabled(self) -> bool {
+        matches!(self, Setting::Enabled)
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            Setting::Enabled => "enabled",
+            Setting::Disabled => "disabled",
+        }
+    }
+}
+
 /// Persist the `telemetry` key and print a short confirmation. `Ok` is the
 /// resolved config dir the key was written under; `Err` is the exit code
 /// of the failure already reported.
-fn persist(dir: Option<&Path>, enabled: bool) -> Result<&Path, i32> {
+fn persist(dir: Option<&Path>, setting: Setting) -> Result<&Path, i32> {
     let Some(dir) = dir else {
         return Err(crate::config_dir::no_base("telemetry"));
     };
-    if let Err(e) = state::save_config_telemetry(dir, enabled) {
+    if let Err(e) = state::save_config_telemetry(dir, setting.is_enabled()) {
         crate::print_error(format!(
             "Error: telemetry: writing {}: {e}",
             state::config_path(dir).display()
@@ -118,7 +137,7 @@ fn persist(dir: Option<&Path>, enabled: bool) -> Result<&Path, i32> {
     }
     println!(
         "telemetry {} ({})",
-        if enabled { "enabled" } else { "disabled" },
+        setting.word(),
         state::config_path(dir).display()
     );
     Ok(dir)

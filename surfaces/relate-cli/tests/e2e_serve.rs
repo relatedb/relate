@@ -51,7 +51,7 @@ fn test_serve_requires_database() {
 #[test]
 fn test_both_surfaces_share_one_credential() {
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     let http_port = free_port();
     let mcp_port = free_port();
     let child = spawn_serve(&db, http_port, mcp_port, Some(AUTH));
@@ -128,7 +128,7 @@ origin: https://browser.neo4j.io
 #[test]
 fn test_browser_style_discovery_then_ping_flow() {
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     let http_port = free_port();
     let mcp_port = free_port();
     let child = spawn_serve(&db, http_port, mcp_port, Some(AUTH));
@@ -175,7 +175,7 @@ host: localhost
 #[test]
 fn test_tx_begin_run_commit_flow() {
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     let http_port = free_port();
     let mcp_port = free_port();
     let child = spawn_serve(&db, http_port, mcp_port, Some(AUTH));
@@ -232,7 +232,7 @@ fn test_tx_begin_run_commit_flow() {
 #[test]
 fn test_max_open_transactions_flag_bounds_the_registry() {
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     let http_port = free_port();
     let mcp_port = free_port();
     let child = spawn_serve_with(
@@ -288,7 +288,7 @@ fn test_max_open_transactions_flag_bounds_the_registry() {
 #[test]
 fn test_generated_token_unlocks_both_surfaces() {
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     let http_port = free_port();
     let mcp_port = free_port();
     let child = spawn_serve(&db, http_port, mcp_port, None);
@@ -334,7 +334,7 @@ fn test_generated_token_unlocks_both_surfaces() {
 #[test]
 fn test_sigint_shuts_both_surfaces_down_cleanly() {
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     let http_port = free_port();
     let mcp_port = free_port();
     let mut child = spawn_serve(&db, http_port, mcp_port, Some(AUTH));
@@ -451,7 +451,6 @@ fn test_malformed_tx_idle_timeout_fails_before_auth_persists_the_token() {
         &support::serve::graph_db(&dir),
         support::serve::spawn_serve_with_malformed_tx_idle_timeout,
         "Error: invalid RELATE_TX_IDLE_TIMEOUT_SECS",
-        "tx idle timeout",
     );
 }
 
@@ -463,7 +462,7 @@ fn test_malformed_tx_idle_timeout_fails_before_auth_persists_the_token() {
 fn test_host_flag_binds_and_warns_loudly() {
     // Default: loopback, no warning.
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     let http_port = free_port();
     let mcp_port = free_port();
     let mut child = spawn_serve(&db, http_port, mcp_port, Some(AUTH));
@@ -474,7 +473,7 @@ fn test_host_flag_binds_and_warns_loudly() {
     // Explicit 0.0.0.0: the loud plaintext posture warning, and the
     // surfaces still answer (via loopback here).
     let dir = tempdir();
-    let db = dir.path().join("graph").to_str().unwrap().to_string();
+    let db = graph_db(&dir);
     let http_port = free_port();
     let mcp_port = free_port();
     let mut child = spawn_serve_with(&db, http_port, mcp_port, Some(AUTH), &["--host", "0.0.0.0"]);

@@ -712,16 +712,14 @@ pub(crate) fn run(cmd: ServeCmd) -> i32 {
     let mut shutdown = if foreground_stdio {
         None
     } else {
-        match relate_serve::signal::install() {
+        match relate_serve::signal::install_or_report("Error: serve") {
             Ok(signals) => Some(signals),
-            Err(e) => {
+            Err(line) => {
                 // The ADR-0238 policy: a server that cannot watch for its
                 // shutdown signal must not run unwatched — a startup
                 // failure (exit 1) through run's own return, so the
                 // telemetry flush still runs.
-                crate::print_error(format_args!(
-                    "Error: serve: could not install the signal handlers: {e}"
-                ));
+                crate::print_error(line);
                 return 1;
             }
         }

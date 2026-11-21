@@ -82,6 +82,7 @@ skill = []
 # stated once here, so the two features cannot drift apart.
 release-verify = ["dep:ureq", "dep:sha2", "dep:ssh-key"]
 upgrade = ["release-verify", "staging"]
+# `dep:relate-wire` carries `read_capped`, the spool's bounded read.
 telemetry = ["staging", "dep:relate-wire"]
 # The staged-file marker (LABS-872): the `atomic_file` kit — the shared
 # non-predictable staging-name recipe, the exclusive create step, and the

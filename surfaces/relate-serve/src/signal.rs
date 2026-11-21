@@ -8,7 +8,7 @@
 //!
 //! Install and wait are separate steps (REL8-1884): a server that must
 //! be watchable from its first bound port arms the watcher with
-//! [`install`] before it binds anything, then blocks in
+//! [`install_or_report`] before it binds anything, then blocks in
 //! [`ShutdownSignals::wait`] once its surfaces are dispatched — a
 //! signal landing in between is captured and delivered at the wait,
 //! never handled by the default disposition mid-startup.
@@ -25,7 +25,7 @@ pub struct ShutdownSignals {
 /// Arm the shutdown watcher — SIGINT and SIGTERM are captured from here
 /// on. The error is the handler-installation failure.
 #[cfg(unix)]
-pub fn install() -> std::io::Result<ShutdownSignals> {
+fn install() -> std::io::Result<ShutdownSignals> {
     use signal_hook::consts::{SIGINT, SIGTERM};
     Ok(ShutdownSignals {
         signals: signal_hook::iterator::Signals::new([SIGINT, SIGTERM])?,
@@ -44,7 +44,7 @@ pub struct ShutdownSignals {
 /// Arm the shutdown watcher — the Windows console's Ctrl-C (SIGINT). The
 /// error is the handler-installation failure.
 #[cfg(not(unix))]
-pub fn install() -> std::io::Result<ShutdownSignals> {
+fn install() -> std::io::Result<ShutdownSignals> {
     use std::sync::{Arc, Condvar, Mutex};
 
     let hit = Arc::new((Mutex::new(false), Condvar::new()));
@@ -98,13 +98,22 @@ impl ShutdownSignals {
 /// its shutdown signal must not run unwatched. One home, so the fleet
 /// entrypoint cannot drift in wording or policy. A caller that must be
 /// watchable from before its first bound port arms earlier with
-/// [`install`] instead (the CLI's `serve`, REL8-1884).
+/// [`install_or_report`] instead (the CLI's `serve`, REL8-1884).
 pub fn wait_or_exit(prefix: &str) -> i32 {
-    match install() {
+    match install_or_report(prefix) {
         Ok(mut signals) => signals.wait(),
-        Err(e) => {
-            eprintln!("{prefix}: could not install the signal handlers: {e}");
+        Err(line) => {
+            eprintln!("{line}");
             std::process::exit(1);
         }
     }
+}
+
+/// `install` with the one-home failure wording: the armed watcher, or
+/// the formatted `"{prefix}: could not install the signal handlers: {e}"`
+/// line for the caller to print. Only the exit mechanism legitimately
+/// differs per caller — [`wait_or_exit`] exits the process, the CLI's
+/// `serve` returns 1 so its telemetry flush still runs.
+pub fn install_or_report(prefix: &str) -> Result<ShutdownSignals, String> {
+    install().map_err(|e| format!("{prefix}: could not install the signal handlers: {e}"))
 }

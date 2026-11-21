@@ -204,12 +204,12 @@ fn test_bolt_identity_flag_is_the_hello_server_metadata() {
 #[cfg(unix)]
 #[test]
 fn test_malformed_identity_fails_before_auth_persists_the_token() {
+    use support::serve::{malformed_env_fails_before_auth, spawn_serve_with_malformed_identity};
     let dir = tempdir();
-    support::serve::malformed_env_fails_before_auth(
-        &support::serve::graph_db(&dir),
-        support::serve::spawn_serve_with_malformed_identity,
+    malformed_env_fails_before_auth(
+        &graph_db(&dir),
+        spawn_serve_with_malformed_identity,
         "RELATE_IDENTITY is not valid UTF-8",
-        "identity",
     );
 }
 
@@ -223,11 +223,13 @@ fn test_malformed_identity_fails_before_auth_persists_the_token() {
 #[cfg(unix)]
 #[test]
 fn test_malformed_max_connections_fails_before_auth_persists_the_token() {
+    use support::serve::{
+        malformed_env_fails_before_auth, spawn_serve_with_malformed_max_connections,
+    };
     let dir = tempdir();
-    support::serve::malformed_env_fails_before_auth(
-        &support::serve::graph_db(&dir),
-        support::serve::spawn_serve_with_malformed_max_connections,
+    malformed_env_fails_before_auth(
+        &graph_db(&dir),
+        spawn_serve_with_malformed_max_connections,
         "Error: invalid RELATE_MAX_CONNECTIONS",
-        "max-connections",
     );
 }

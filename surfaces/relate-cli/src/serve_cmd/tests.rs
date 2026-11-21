@@ -58,17 +58,10 @@ fn url_host_brackets_ipv6_literals_for_url_rendering() {
         format!("bolt://{}:7687", url_host("::1")),
         "bolt://[::1]:7687"
     );
-    // The Neo4j-format startup lines (REL8-1762) render the bare
-    // host:port — a literal beside a port needs the brackets just the
-    // same, or the line names no readable address.
-    assert_eq!(
-        format!("Bolt enabled on {}:7687.", url_host("::1")),
-        "Bolt enabled on [::1]:7687."
-    );
-    assert_eq!(
-        format!("HTTP enabled on {}:7474.", url_host("::1")),
-        "HTTP enabled on [::1]:7474."
-    );
+    // A literal beside a bare port needs the brackets just the same, or
+    // the Neo4j-format startup lines name no readable address (the
+    // startup-line text itself is the e2e pin's job).
+    assert_eq!(format!("{}:7687", url_host("::1")), "[::1]:7687");
 }
 
 #[cfg(feature = "http")]

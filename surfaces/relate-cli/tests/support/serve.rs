@@ -52,9 +52,7 @@ pub fn free_port() -> u16 {
 /// The serve store path under a tempdir (`<dir>/graph`) — one
 /// `.expect` for the store path's UTF-8 (the `binary_path_str` policy
 /// in `support/mod.rs`, for the store path instead of the binary
-/// path). The bolt suite routes every store path through it; the older
-/// serve suites still spell the conversion inline, migrating here
-/// under REL8-1882.
+/// path). Every serve suite routes its `<dir>/graph` store path through it.
 pub fn graph_db(dir: &TempDir) -> String {
     dir.path()
         .join("graph")
@@ -114,21 +112,28 @@ pub fn spawn_serve(db: &str, http_port: u16, mcp_port: u16, auth: Option<&str>) 
     spawn_serve_with(db, http_port, mcp_port, auth, &[])
 }
 
-/// The both-surface serve command every spawner starts from — the one
-/// copy of the argument assembly, so a second spawner cannot drift on the
-/// base shape.
-fn serve_command(db: &str, http_port: u16, mcp_port: u16, extra: &[&str]) -> Command {
+/// The serve command every spawner starts from — the one copy of the
+/// `serve --database DB` base plus the surface arguments the spawner
+/// names, so no spawner re-assembles the base shape.
+fn serve_args(db: &str, surfaces: &[&str]) -> Command {
     let mut cmd = cli_command();
-    cmd.args([
-        "serve",
-        "--database",
+    cmd.args(["serve", "--database", db]).args(surfaces);
+    cmd
+}
+
+/// [`serve_args`] for the both-surface run (`--http`, `--mcp` listeners)
+/// plus the caller's trailing `extra` arguments.
+fn serve_command(db: &str, http_port: u16, mcp_port: u16, extra: &[&str]) -> Command {
+    let mut cmd = serve_args(
         db,
-        "--http",
-        &http_port.to_string(),
-        "--mcp",
-        &mcp_port.to_string(),
-    ])
-    .args(extra);
+        &[
+            "--http",
+            &http_port.to_string(),
+            "--mcp",
+            &mcp_port.to_string(),
+        ],
+    );
+    cmd.args(extra);
     cmd
 }
 
@@ -186,16 +191,7 @@ pub fn spawn_serve_with_env(
 /// child owns the open pipe, so the run lives as long as the guard).
 #[cfg(all(unix, feature = "mcp"))]
 pub fn spawn_mixed_stdio_serve(db: &str, http_port: u16) -> ServeChild {
-    let mut cmd = cli_command();
-    cmd.args([
-        "serve",
-        "--database",
-        db,
-        "--http",
-        &http_port.to_string(),
-        "--mcp",
-        "stdio",
-    ]);
+    let mut cmd = serve_args(db, &["--http", &http_port.to_string(), "--mcp", "stdio"]);
     apply_auth(&mut cmd, None);
     spawn_with_home(&mut cmd, Stdio::piped())
 }
@@ -216,11 +212,8 @@ fn spawn_malformed_env(
     key: &str,
     value: impl AsRef<OsStr>,
 ) -> ServeChild {
-    let mut cmd = cli_command();
-    cmd.args(["serve", "--database", db])
-        .args(surface)
-        .env(key, value.as_ref())
-        .env_remove("RELATE_AUTH");
+    let mut cmd = serve_args(db, surface);
+    cmd.env(key, value.as_ref()).env_remove("RELATE_AUTH");
     spawn_with_home(&mut cmd, Stdio::null())
 }
 
@@ -289,28 +282,23 @@ pub fn spawn_stdio_with_malformed_env(key: &str) -> ServeChild {
 /// not have run yet — no token file is left behind. One copy of the
 /// wait/exit/needle/token policy beside [`spawn_malformed_env`]'s spawn
 /// half, so the per-variable tests (identity, max-connections, tx idle
-/// timeout — across the serve suites) state only their spawn helper,
-/// needle, and label.
+/// timeout — across the serve suites) state only their spawn helper and
+/// needle.
 #[cfg(unix)]
-pub fn malformed_env_fails_before_auth(
-    db: &str,
-    spawn: fn(&str) -> ServeChild,
-    needle: &str,
-    label: &str,
-) {
+pub fn malformed_env_fails_before_auth(db: &str, spawn: fn(&str) -> ServeChild, needle: &str) {
     let mut child = spawn(db);
     let (status, stderr) = child.wait_and_drain_stderr();
     assert_eq!(status.code(), Some(1), "serve must exit 1: {stderr}");
     assert!(
         stderr.contains(needle),
-        "the malformed {label} must be the reported failure: {stderr}"
+        "the reported failure must be {needle}: {stderr}"
     );
     let token = relate_auth::token_path(db)
         .expect("the temp store path is a local URI")
         .expect("a persistent store has a token path");
     assert!(
         !token.exists(),
-        "a malformed {label} must fail before auth persists {}",
+        "a malformed env var ({needle}) must fail before auth persists {}",
         token.display()
     );
 }
