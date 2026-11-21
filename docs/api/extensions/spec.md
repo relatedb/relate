@@ -157,8 +157,12 @@ From then on the traffic is MCP's: the child writes JSON-RPC 2.0 requests
 on stdout and reads the host's responses from stdin. The child is the MCP
 client (it drives the import); the host is the MCP server (it alone owns
 the `Database`) — `initialize`, `notifications/initialized`, `tools/list`
-and `tools/call`, the subset the five tools need, so a child written
-against an MCP SDK mounts unchanged. Stderr is the child's own; the host
+and `tools/call`, the subset the five tools need. A child written against
+an MCP SDK keeps the SDK's protocol layer, which completes the handshake
+and the JSON-RPC traffic unchanged; the one extension-specific step is the
+envelope line read first, over a transport the child builds on the two
+pipes it was handed (the SDKs' stock stdio transport spawns a server,
+where here the host spawned *us*). Stderr is the child's own; the host
 drains it capped (64 KiB retained, past that truncated with a marker) and
 rides it into the exit-failure errors, sanitized.
 

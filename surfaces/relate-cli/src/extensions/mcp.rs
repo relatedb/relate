@@ -87,10 +87,10 @@ use process::{EndHook, SessionEnd};
 pub(crate) mod process;
 mod tools_impl;
 
-/// The pinned refusals a single `tools/call` can answer with — the typed,
-/// text-stable vocabulary the child sees as a JSON-RPC error message. A
-/// per-call refusal is answered and the session continues (the child may
-/// correct itself); the fatal failures are [`McpError`]'s.
+/// The pinned refusals this mount answers with — the typed, text-stable
+/// vocabulary the child sees as a JSON-RPC error message. A per-call
+/// refusal is answered and the session continues (the child may correct
+/// itself); the fatal failures are [`McpError`]'s.
 ///
 /// The tool-level refusals are the shared layer's
 /// ([`relate_mcp::tools::ToolError`]): one vocabulary for both MCP
@@ -107,6 +107,8 @@ pub(crate) enum McpRefusal {
         /// The method name the child sent.
         method: String,
     },
+    /// A second `initialize` after the handshake was already answered.
+    AlreadyInitialized,
     /// The tool's result would not fit one response line the child can
     /// read.
     ResultTooLarge {
@@ -140,9 +142,17 @@ impl McpRefusal {
         match self {
             Self::Request(error) => error.code(),
             Self::UnknownMethod { .. } => METHOD_NOT_FOUND,
+            Self::AlreadyInitialized => INVALID_PARAMS,
             Self::ResultTooLarge { .. } => INVALID_PARAMS,
             Self::Tool(error) => error.code(),
         }
+    }
+
+    /// This refusal as its one rendered wire line, answering `id`: the
+    /// code/message pairing every answer site shares, so no arm spells the
+    /// serialization out.
+    pub(crate) fn into_line(self, id: Value) -> String {
+        Response::error(id, self.code(), self.to_string()).to_line()
     }
 }
 
@@ -151,6 +161,7 @@ impl std::fmt::Display for McpRefusal {
         match self {
             Self::Request(error) => write!(f, "{error}"),
             Self::UnknownMethod { method } => write!(f, "unknown method '{method}'"),
+            Self::AlreadyInitialized => write!(f, "initialize was already answered"),
             Self::ResultTooLarge { limit } => write!(
                 f,
                 "the tools/call result would exceed the {limit}-byte response cap"
@@ -525,11 +536,7 @@ impl<O: Write> Session<O> {
             Ok(request) => request,
             Err(error) => {
                 let refusal = McpRefusal::from(error);
-                return self.respond(Response::error(
-                    Value::Null,
-                    refusal.code(),
-                    refusal.to_string(),
-                ));
+                return self.respond(refusal.into_line(Value::Null));
             }
         };
         // A partial move: the id is needed by every answer below, the
@@ -548,10 +555,12 @@ impl<O: Write> Session<O> {
             }
             .into());
         };
-        let response = match request.method.as_str() {
+        // Every arm renders its one response line here, so the write below
+        // never re-serializes what was already measured against the cap.
+        let response_line = match request.method.as_str() {
             mcp::METHOD_INITIALIZE => {
                 if self.initialized {
-                    Response::error(id, INVALID_PARAMS, "initialize was already answered")
+                    McpRefusal::AlreadyInitialized.into_line(id)
                 } else {
                     match require_protocol_version(request.params.as_ref()) {
                         // The mount answers its one revision whatever the
@@ -560,9 +569,9 @@ impl<O: Write> Session<O> {
                         Ok(_) => {
                             let facts = self.initialize_result(store)?;
                             self.initialized = true;
-                            Response::success(id, facts)
+                            Response::success(id, facts).to_line()
                         }
-                        Err(refusal) => Response::error(id, refusal.code(), refusal.to_string()),
+                        Err(refusal) => refusal.into_line(id),
                     }
                 }
             }
@@ -576,16 +585,14 @@ impl<O: Write> Session<O> {
             }
             // The mount's catalog is the wire kit's extension-mount rows —
             // the one tool table, no per-surface copy.
-            mcp::METHOD_TOOLS_LIST => Response::success(id, mcp::extension_tools_list()),
+            mcp::METHOD_TOOLS_LIST => Response::success(id, mcp::extension_tools_list()).to_line(),
             mcp::METHOD_TOOLS_CALL => self.call_tool(store, conn, id, request.params)?,
-            other => {
-                let refusal = McpRefusal::UnknownMethod {
-                    method: other.to_string(),
-                };
-                Response::error(id, refusal.code(), refusal.to_string())
+            other => McpRefusal::UnknownMethod {
+                method: other.to_string(),
             }
+            .into_line(id),
         };
-        self.respond(response)
+        self.respond(response_line)
     }
 
     /// The `initialize` result: the kit's typed [`ServerFacts`], so the
@@ -607,38 +614,40 @@ impl<O: Write> Session<O> {
     }
 
     /// One `tools/call`: the tool's result as MCP text content, or the
-    /// typed refusal as a JSON-RPC error. A fatal tool failure ends the
-    /// session without an answer — the run's own error text is the
-    /// contract.
+    /// typed refusal as a JSON-RPC error — the answer already rendered as
+    /// its one wire line. Every per-call refusal, the response cap's
+    /// included, is a typed [`McpRefusal`] here and renders through the one
+    /// [`McpRefusal::into_line`]; a fatal tool failure ends the session
+    /// without an answer — the run's own error text is the contract.
     fn call_tool(
         &mut self,
         store: &Database,
         conn: &mut Connection,
         id: Value,
         params: Option<Value>,
-    ) -> Result<Response, HostError> {
-        match self.dispatch_tool(store, conn, params) {
-            Ok(result) => Ok(self.tool_response(id, &result)),
-            Err(ToolFailure::Refusal(refusal)) => {
-                Ok(Response::error(id, refusal.code(), refusal.to_string()))
-            }
-            Err(ToolFailure::Fatal(error)) => Err(error.into()),
-        }
+    ) -> Result<String, HostError> {
+        let outcome = match self.dispatch_tool(store, conn, params) {
+            Ok(result) => self.tool_response(&id, &result),
+            Err(ToolFailure::Refusal(refusal)) => Err(refusal),
+            Err(ToolFailure::Fatal(error)) => return Err(error.into()),
+        };
+        Ok(outcome.unwrap_or_else(|refusal| refusal.into_line(id)))
     }
 
-    /// The success response for one tool result, bounded by the response
-    /// record cap before it is written: a line the child's capped read
-    /// would refuse is answered as the typed result-cap refusal instead, so
-    /// an oversized read never surfaces as a malformed response.
-    fn tool_response(&self, id: Value, result: &Value) -> Response {
+    /// The success response for one tool result as its rendered line,
+    /// bounded by the response record cap before it is written: a line the
+    /// child's capped read would refuse is the typed
+    /// [`McpRefusal::ResultTooLarge`], so an oversized read never surfaces
+    /// as a malformed response. The line is serialized once — measured
+    /// against the cap and written as the same `String`.
+    fn tool_response(&self, id: &Value, result: &Value) -> Result<String, McpRefusal> {
         let text = result.to_string();
-        let response = Response::success(id.clone(), mcp::tool_result(&text));
+        let line = Response::success(id.clone(), mcp::tool_result(&text)).to_line();
         let limit = self.caps.mcp_response_bytes();
-        if response.to_line().len() as u64 > limit {
-            let refusal = McpRefusal::ResultTooLarge { limit };
-            return Response::error(id, refusal.code(), refusal.to_string());
+        if line.len() as u64 > limit {
+            return Err(McpRefusal::ResultTooLarge { limit });
         }
-        response
+        Ok(line)
     }
 
     /// Dispatch one tool call: `report_output` is this mount's own
@@ -685,9 +694,10 @@ impl<O: Write> Session<O> {
         }
     }
 
-    /// Write one response line to the child.
-    fn respond(&mut self, response: Response) -> Result<(), HostError> {
-        let line = response.to_line();
+    /// Write one already-rendered response line to the child. The caller
+    /// owns the serialization (so a line measured against the response cap
+    /// is the same bytes written), this only frames and flushes it.
+    fn respond(&mut self, line: String) -> Result<(), HostError> {
         let out = self
             .out
             .as_mut()
