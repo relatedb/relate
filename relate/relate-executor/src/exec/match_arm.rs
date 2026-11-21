@@ -9,15 +9,17 @@ use relate_core::Result;
 use relate_ir::Clause;
 
 use crate::ctx::ExecCtx;
+use crate::metrics::PlanMetricsSite;
 use crate::row::Row;
 
 use super::aggregate::Aggregation;
 use super::classification::ProjectionClass;
-use super::match_chain::{open_match_consumer, Landing, MatchConsumer};
+use super::match_chain::{open_match_consumer, Landing, LandingKind, MatchConsumer};
 use super::match_clause::{
     charge_finished_container, run_match_operator_ladder, LadderFacts, LadderRun, MatchClauseInputs,
 };
 use super::match_folds::try_match_folds;
+use super::profile_tick::StreamedClause;
 use super::project::RowSource;
 use super::pushdown::{live_from, match_limit_cap, trim_rows};
 use super::search::search_match_clause;
@@ -40,13 +42,20 @@ pub(super) struct MatchArm<'a> {
     pub(super) pending_fold: Option<Aggregation<'a>>,
     /// Whether the rows already carry the next projection's columns.
     pub(super) rows_source: RowSource,
-    /// Rows a directly fed fold took (the clause's PROFILE row count).
-    pub(super) streamed_rows: Option<u64>,
+    /// The whole fact a streamed consumer took as rows were emitted — the
+    /// rows that flowed through and the bytes this clause is accountable
+    /// for holding — the fact the dispatcher's tick reads when its own
+    /// output rows hold only what the run left behind.
+    pub(super) streamed: Option<StreamedClause>,
 }
 
-/// Run the `MATCH` at `clauses[i]`. `profiled` says a PROFILE sink is
-/// attached, which keeps the stage-streaming consumers off (PROFILE
-/// attributes facts to clauses run one after the other).
+/// Run the `MATCH` at `clauses[i]`. A consumer that can take the rows as
+/// they are emitted (the following aggregation, or the run of stages
+/// `match_chain.rs`) streams them — PROFILE included: `profile`, the
+/// statement's PROFILE site when one is attached, rides the run so every
+/// consumed stage records its own facts, and the tick observes the head
+/// clause through [`MatchArm::streamed`] instead of the clause holding
+/// its output for attribution.
 pub(super) fn exec_match_arm<'a>(
     ctx: ExecCtx<'a>,
     mut rows: Vec<Row>,
@@ -54,7 +63,7 @@ pub(super) fn exec_match_arm<'a>(
     i: usize,
     fold_class: &'a OnceCell<ProjectionClass<'a>>,
     scope: Option<&'a Row>,
-    profiled: bool,
+    profile: Option<PlanMetricsSite<'a>>,
 ) -> Result<MatchArm<'a>> {
     let ExecCtx { graph, params, .. } = ctx;
     let Clause::Match {
@@ -77,7 +86,7 @@ pub(super) fn exec_match_arm<'a>(
         ladder: None,
         pending_fold: None,
         rows_source: RowSource::Bindings,
-        streamed_rows: None,
+        streamed: None,
     };
     if let Some(search) = search {
         rows = search_match_clause(
@@ -140,7 +149,13 @@ pub(super) fn exec_match_arm<'a>(
                 // or the stages after this MATCH that map rows
                 // to rows (ADR-0555, `match_chain.rs`).
                 let consumer = if cap.is_none() && !optional {
-                    open_match_consumer(ctx, &clauses[i..], fold_class, scope, !profiled)?
+                    open_match_consumer(
+                        ctx,
+                        &clauses[i..],
+                        fold_class,
+                        scope,
+                        profile.map(|site| (site, i)),
+                    )?
                 } else {
                     None
                 };
@@ -179,25 +194,36 @@ pub(super) fn exec_match_arm<'a>(
                 if let Some(consumer) = consumer {
                     // The consumer trimmed its own inputs and
                     // output; its last stage's rows (or the
-                    // aggregation it fed) are what is left.
-                    match consumer.finish(graph)? {
-                        Landing::Folded {
-                            aggregation,
+                    // aggregation it fed) are what is left. The two
+                    // facts every landing shares — the clauses it
+                    // covered and the rows the head's walk offered —
+                    // are set once, here; each arm then does only its
+                    // own work.
+                    let (
+                        observed,
+                        Landing {
                             offered,
                             consumed,
-                        } => {
+                            kind,
+                        },
+                    ) = consumer.finish(graph)?;
+                    out.skip = consumed;
+                    out.streamed = Some(StreamedClause {
+                        rows: offered,
+                        // No chain evidence — a directly fed fold — is the
+                        // default delta: nothing to subtract.
+                        downstream: observed.unwrap_or_default(),
+                    });
+                    match kind {
+                        LandingKind::Folded(aggregation) => {
                             out.pending_fold = Some(*aggregation);
-                            out.skip = consumed;
-                            out.streamed_rows = offered;
                         }
-                        Landing::Rows {
+                        LandingKind::Rows {
                             rows: landed,
                             source,
-                            consumed,
                         } => {
                             rows = landed;
                             out.rows_source = source;
-                            out.skip = consumed;
                         }
                     }
                 } else if projection.is_some() {

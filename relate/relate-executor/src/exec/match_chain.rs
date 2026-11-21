@@ -44,10 +44,13 @@
 //! The pipeline stays off a stage the held path serves better or carries
 //! behaviour a per-batch run would lose: a `MATCH` an aggregate fold
 //! answers in one pass over the whole entering row set, a `MATCH` with a
-//! limit cap (its early exit lives in the walker), a lone trailing `WITH`
-//! that would only hand a collector the rows the sink projection already
-//! builds, and a PROFILE run (per-clause facts are attributed to clauses
-//! run one after the other).
+//! limit cap (its early exit lives in the walker), and a lone trailing
+//! `WITH` that would only hand a collector the rows the sink projection
+//! already builds. PROFILE runs the pipeline too: a held path under
+//! PROFILE would materialize the clause's whole output, changing the
+//! memory shape of the very statement PROFILE reports. Each consumed
+//! stage records its own facts instead — the sidecar in
+//! `profile_chain.rs` ([`StageStats`]).
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashSet;
@@ -56,6 +59,8 @@ use relate_core::Result;
 use relate_ir::{Clause, Expr, MatchMode, PathPattern};
 
 use crate::ctx::ExecCtx;
+use crate::eval::rows_logical_bytes;
+use crate::metrics::PlanMetricsSite;
 use crate::overlay::{ExecGraph, RetainedTotal};
 use crate::row::Row;
 
@@ -66,6 +71,7 @@ use super::match_clause::{
 };
 use super::match_folds::fold_would_take;
 use super::pattern_policies::{MatchFold, RowFold};
+use super::profile_chain::{CountingFold, StageStats};
 use super::project::{
     maps_each_row, open_match_fold, project_rows, streams_into_projection, RowSource,
 };
@@ -73,6 +79,7 @@ use super::pushdown::{live_from, match_limit_cap, trim_rows};
 use super::scope::{carry_scope_bindings, ProjectionFields};
 use super::sink::{sinkable_projection, SinkProjection};
 use super::RowFeed;
+use super::StageDelta;
 
 /// The most rows a stage buffers before it runs its transform over them
 /// (ADR-0555: bounded batches, low hundreds by default).
@@ -177,6 +184,15 @@ struct Stage<'a> {
     /// Whether the transform has run at least once.
     ran: Cell<bool>,
     next: Next<'a>,
+    /// Rows offered into the stage across its batches — the head stage's
+    /// figure is the head clause's offered-row fact (what its walk fed
+    /// the run), the count the landing reports. A production fact, not an
+    /// instrumentation one: one `Cell` add per batch, the
+    /// `MatchFold::offer` and `StreamedStats::note_row` precedent.
+    rows_in: Cell<u64>,
+    /// The stage's PROFILE facts (`profile_chain.rs`), present only when
+    /// the run observes itself, reported once it drains.
+    stats: Option<StageStats>,
 }
 
 /// A run of streamed clauses after a `MATCH`: the push consumer of the
@@ -185,15 +201,12 @@ pub(crate) struct MatchChain<'a> {
     head: Stage<'a>,
     /// How many clauses after the head the run covers.
     stages: usize,
-}
-
-/// What the run leaves for the clause after it.
-enum ChainOutput<'a> {
-    /// The last stage streamed into the aggregation of the barrier after
-    /// the run; no rows are held.
-    Folded(Box<Aggregation<'a>>),
-    /// The last stage's retained output.
-    Rows { rows: Vec<Row>, source: RowSource },
+    /// The PROFILE site with the head clause's index: present when the
+    /// statement is PROFILEd — the run then observes itself through the
+    /// stage sidecars and reports each consumed stage's own facts when it
+    /// drains. Its absence is the untimed form: the stages' windows and
+    /// notes run bare.
+    record: Option<(PlanMetricsSite<'a>, usize)>,
 }
 
 /// The stage `clauses[0]` is, or `None` when it is a barrier.
@@ -282,7 +295,10 @@ fn stage_run<'a>(
 }
 
 /// Open the pipeline for the `MATCH` at `clauses[0]`: the stages that
-/// follow it, ending at the first barrier. `None` when no clause after the
+/// follow it, ending at the first barrier. `record` is the statement's
+/// PROFILE site paired with the head clause's index (the consumed stages
+/// report at `head clause + 1 + position`), `None` for an untimed run.
+/// `None` when no clause after the
 /// head streams. The caller has already decided the head streams to no
 /// other consumer (no cap or fold) and is neither `OPTIONAL` nor a
 /// `SEARCH`. `class_slot` is the part's one aggregation classification slot; it is
@@ -292,6 +308,7 @@ pub(crate) fn open_match_chain<'a>(
     clauses: &'a [Clause],
     class_slot: &'a OnceCell<ProjectionClass<'a>>,
     scope: Option<&'a Row>,
+    record: Option<(PlanMetricsSite<'a>, usize)>,
 ) -> Result<Option<MatchChain<'a>>> {
     let mut transforms = stage_run(ctx, &clauses[1..], scope)?;
     let stages = transforms.len();
@@ -327,25 +344,65 @@ pub(crate) fn open_match_chain<'a>(
     // Built back to front: each stage owns the stage after it.
     let mut run = transforms.into_iter().rev();
     let last = run.next().expect("a non-empty run");
+    let observing = record.is_some();
     let stage = |transform, next| Stage {
         ctx,
         transform,
         buffer: RefCell::new(Vec::new()),
         ran: Cell::new(false),
         next,
+        rows_in: Cell::new(0),
+        stats: observing.then(StageStats::new),
     };
     let head = run.fold(stage(last, terminal), |after, transform| {
         stage(transform, Next::Stage(Box::new(after)))
     });
-    Ok(Some(MatchChain { head, stages }))
+    Ok(Some(MatchChain {
+        head,
+        stages,
+        record,
+    }))
 }
 
 impl<'a> Stage<'a> {
     /// Run the transform over the buffered rows and pass what it emits on.
     fn flush(&self, graph: &ExecGraph<'_>) -> Result<()> {
+        self.observed(graph, || self.run_batch(graph))
+    }
+
+    /// Run `work` inside the stage's PROFILE window when the run observes
+    /// itself, bare otherwise — the one place the sidecar's presence
+    /// decides, so `flush` and `finish` state only what they wrap.
+    fn observed<T>(&self, graph: &ExecGraph<'_>, work: impl FnOnce() -> Result<T>) -> Result<T> {
+        match &self.stats {
+            Some(stats) => stats.window(graph, work),
+            None => work(),
+        }
+    }
+
+    /// One transform run: the buffered batch through the transform, its
+    /// output offered to the consumer. The PROFILE window — the batch
+    /// flush, or the drain inside [`Stage::finish`] — is the caller's, so
+    /// the stats' windows nest exactly once per run; the walk-start swap
+    /// lives in the window (`profile_chain.rs`), and a `MATCH` transform
+    /// captures its own first walk start while its ladder holds the slot.
+    fn run_batch(&self, graph: &ExecGraph<'_>) -> Result<()> {
         let mut batch = std::mem::take(&mut *self.buffer.borrow_mut());
         graph.check_cancelled()?;
         self.ran.set(true);
+        self.rows_in.set(self.rows_in.get() + batch.len() as u64);
+        // The stage's consumer, wrapped to count at the emission boundary
+        // when the run observes itself: a fold consumer takes rows as they
+        // are offered, so the transform's returned vector holds none of
+        // them and cannot be the count.
+        let next_consumer = self.next.consumer();
+        let counting;
+        let consumer: &dyn RowFold = if let Some(stats) = &self.stats {
+            counting = CountingFold::new(next_consumer, stats);
+            &counting
+        } else {
+            next_consumer
+        };
         let rows = match &self.transform {
             Transform::Match {
                 patterns,
@@ -360,8 +417,8 @@ impl<'a> Stage<'a> {
                 // A stage hands its walk the stage after it as the fold, so
                 // the walk pushes row by row; the last stage's rows come
                 // back (a sink projection) for the collector.
-                let fold = (!matches!(self.next, Next::Rows(_))).then(|| self.next.consumer());
-                let LadderRun { rows, .. } = run_match_operator_ladder(
+                let fold = (!matches!(self.next, Next::Rows(_))).then_some(consumer);
+                let LadderRun { rows, facts } = run_match_operator_ladder(
                     self.ctx,
                     batch,
                     MatchClauseInputs {
@@ -375,6 +432,10 @@ impl<'a> Stage<'a> {
                     tail,
                     fold,
                 )?;
+                if let Some(stats) = &self.stats {
+                    stats.note_facts(facts);
+                    stats.note_start(super::take_walk_start());
+                }
                 rows
             }
             Transform::With { spec, scope } => {
@@ -393,17 +454,24 @@ impl<'a> Stage<'a> {
                 rows
             }
         };
-        let consumer = self.next.consumer();
         rows.into_iter()
             .try_for_each(|row| consumer.offer(graph, row))
     }
 
     /// Run the remaining buffered rows, then close the stages after this
     /// one. A stage that never ran still runs its transform once over no
-    /// rows, as the held clause does.
+    /// rows, as the held clause does. One PROFILE window covers the whole
+    /// drain — this stage's last batch and every downstream stage's — so
+    /// the stage's totals keep covering everything downstream did.
     fn finish(&self, graph: &ExecGraph<'_>) -> Result<()> {
+        self.observed(graph, || self.drain(graph))
+    }
+
+    /// The drain itself: this stage's last batch, then the stages after
+    /// it closing in turn.
+    fn drain(&self, graph: &ExecGraph<'_>) -> Result<()> {
         if !self.buffer.borrow().is_empty() || !self.ran.get() {
-            self.flush(graph)?;
+            self.run_batch(graph)?;
         }
         match &self.next {
             Next::Stage(stage) => stage.finish(graph),
@@ -434,26 +502,97 @@ impl RowFold for Stage<'_> {
 }
 
 impl<'a> MatchChain<'a> {
-    /// Run what is still buffered through every stage and hand over what
-    /// the last one left.
-    fn finish(self, graph: &ExecGraph<'_>) -> Result<ChainOutput<'a>> {
+    /// Run what is still buffered through every stage and hand the run's
+    /// [`Landing`] back with its PROFILE evidence beside it: the head
+    /// clause's offered-row count (the head stage's input count, complete
+    /// only once the drain has flushed its last batch, so it is read here
+    /// and never before), the covered-clause count, what the terminal
+    /// left, and — only when the run observes itself — the run's window
+    /// totals for the arm's delta to subtract. The consumed stages'
+    /// PROFILE records are written here too, before the terminal's rows
+    /// leave the run — the terminal stage's record carries the bytes its
+    /// collector retains.
+    fn finish(self, graph: &ExecGraph<'_>) -> Result<(Option<StageDelta>, Landing<'a>)> {
         self.head.finish(graph)?;
+        let offered = self.head.rows_in.get();
+        // The run's window totals — the head stage's, which contain every
+        // stage below it — for the arm's own delta to subtract, so the
+        // head clause's record states its own clause's work and never the
+        // run's. PROFILE's own evidence, produced only when the run
+        // observes itself; the landing stays production-only.
+        let observed = self.head.stats.as_ref().map(StageStats::totals);
+        // The consumed stages' records are written before the terminal's
+        // rows leave the run — the terminal stage's carries the bytes its
+        // collector holds. The whole traversal is PROFILE's: an untimed
+        // run reports nothing and walks once, straight to the terminal.
+        self.report_profiled();
         let mut stage = self.head;
-        loop {
+        let kind = loop {
             match stage.next {
                 Next::Stage(next) => stage = *next,
-                Next::Fold(fold) => {
-                    return Ok(ChainOutput::Folded(Box::new((*fold).into_parts().0)))
-                }
+                Next::Fold(fold) => break LandingKind::Folded(Box::new((*fold).into_parts().0)),
                 Next::Rows(collector) => {
                     let mut rows = collector.rows.into_inner();
                     Row::share_schemas(&mut rows);
-                    return Ok(ChainOutput::Rows {
+                    break LandingKind::Rows {
                         rows,
                         source: collector.shape.source(),
-                    });
+                    };
                 }
             }
+        };
+        Ok((
+            observed,
+            Landing {
+                offered,
+                consumed: self.stages,
+                kind,
+            },
+        ))
+    }
+
+    /// Report each consumed stage's own PROFILE facts once the run has
+    /// drained: one borrowed walk over the stage list, the terminal
+    /// stage's retained bytes captured where the walk meets the collector,
+    /// then one record per stage, tail-first, with the immediate
+    /// downstream stage's totals subtracted out. Nothing at all runs
+    /// without a site — an untimed run performs neither the traversal nor
+    /// the byte sum.
+    fn report_profiled(&self) {
+        let Some((site, head_clause)) = self.record.as_ref() else {
+            return;
+        };
+        let mut stages: Vec<&Stage> = Vec::with_capacity(self.stages);
+        let mut stage = &self.head;
+        let mut retained = 0;
+        loop {
+            stages.push(stage);
+            match &stage.next {
+                Next::Stage(next) => stage = next,
+                Next::Rows(collector) => {
+                    retained = rows_logical_bytes(&collector.rows.borrow());
+                    break;
+                }
+                Next::Fold(_) => break,
+            }
+        }
+        // Tail-first: each stage's own facts are its totals minus the
+        // immediate downstream stage's totals — which contain every stage
+        // below it, so summing the tail would count each deeper stage
+        // twice — and each report hands its totals upstream as exactly
+        // that subtrahend. The terminal stage's record carries the
+        // retention its collector holds until the barrier consumes it;
+        // every other stage's in-flight batch is bounded and reports
+        // zero.
+        let last = stages.len().saturating_sub(1);
+        let mut downstream = StageDelta::default();
+        for (idx, stage) in stages.iter().enumerate().rev() {
+            let memory_bytes = if idx == last { retained } else { 0 };
+            let stats = stage
+                .stats
+                .as_ref()
+                .expect("an observing run carries every stage's sidecar");
+            downstream = stats.report(site, head_clause + 1 + idx, downstream, memory_bytes);
         }
     }
 }
@@ -476,45 +615,46 @@ pub(crate) enum MatchConsumer<'a> {
     Chain(MatchChain<'a>),
 }
 
-/// What a consumer leaves for the clause after the clauses it covered.
-pub(crate) enum Landing<'a> {
-    /// The rows went into an aggregation. `offered` counts the rows a
-    /// directly fed fold took (the clause's PROFILE row count); a run's
-    /// fold does not report it.
-    Folded {
-        aggregation: Box<Aggregation<'a>>,
-        offered: Option<u64>,
-        /// The clauses after the head the consumer covered.
-        consumed: usize,
-    },
-    /// The last stage's retained output.
-    Rows {
-        rows: Vec<Row>,
-        source: RowSource,
-        consumed: usize,
-    },
+/// What a consumer leaves for the clause after the clauses it covered:
+/// the two facts every landing shares — the rows the head clause's walk
+/// offered the consumer (its PROFILE row count, the same fact for a
+/// directly fed fold and for a run of stages) and the clauses the run
+/// covered — plus what the terminal left.
+pub(crate) struct Landing<'a> {
+    pub(crate) offered: u64,
+    pub(crate) consumed: usize,
+    pub(crate) kind: LandingKind<'a>,
+}
+
+/// The terminal's own leaving: the rows went into an aggregation, or the
+/// last stage's retained output (the terminal stage's PROFILE record
+/// reports the retention its collector held until the barrier consumed
+/// it).
+pub(crate) enum LandingKind<'a> {
+    Folded(Box<Aggregation<'a>>),
+    Rows { rows: Vec<Row>, source: RowSource },
 }
 
 /// The consumer for the uncapped, non-`OPTIONAL` `MATCH` at `clauses[0]`,
 /// or `None` when its rows are collected. An aggregating clause right after
-/// takes them directly; otherwise the stages after it do, unless
-/// `streaming_stages` is off (PROFILE attributes per-clause facts to
-/// clauses run one after the other, so it keeps the held path).
+/// takes them directly; otherwise the stages after it do — under PROFILE
+/// too. PROFILE observes the streamed run instead of holding the path —
+/// through the head clause's offered-row count and each consumed stage's
+/// own facts (`StageStats`) — because a held path under PROFILE would
+/// materialize the clause's whole output, changing the memory shape of the
+/// very statement PROFILE reports.
 pub(crate) fn open_match_consumer<'a>(
     ctx: ExecCtx<'a>,
     clauses: &'a [Clause],
     class_slot: &'a OnceCell<ProjectionClass<'a>>,
     scope: Option<&'a Row>,
-    streaming_stages: bool,
+    record: Option<(PlanMetricsSite<'a>, usize)>,
 ) -> Result<Option<MatchConsumer<'a>>> {
     let ExecCtx { graph, params, .. } = ctx;
     if let Some(fold) = open_match_fold(graph, clauses.get(1), class_slot, params, scope)? {
         return Ok(Some(MatchConsumer::Fold(fold)));
     }
-    if !streaming_stages {
-        return Ok(None);
-    }
-    Ok(open_match_chain(ctx, clauses, class_slot, scope)?.map(MatchConsumer::Chain))
+    Ok(open_match_chain(ctx, clauses, class_slot, scope, record)?.map(MatchConsumer::Chain))
 }
 
 impl<'a> MatchConsumer<'a> {
@@ -526,32 +666,25 @@ impl<'a> MatchConsumer<'a> {
         }
     }
 
-    /// Close the consumer once the head clause has emitted everything.
-    pub(crate) fn finish(self, graph: &ExecGraph<'_>) -> Result<Landing<'a>> {
+    /// Close the consumer once the head clause has emitted everything:
+    /// the landing, and — only when a run of stages observed itself — its
+    /// window totals (a directly fed fold's offer-time grouping is the
+    /// head clause's own work, the established fold semantics, so a fold
+    /// lands no evidence).
+    pub(crate) fn finish(self, graph: &ExecGraph<'_>) -> Result<(Option<StageDelta>, Landing<'a>)> {
         match self {
             MatchConsumer::Fold(fold) => {
                 let (aggregation, offered) = fold.into_parts();
-                Ok(Landing::Folded {
-                    aggregation: Box::new(aggregation),
-                    offered: Some(offered),
-                    consumed: 0,
-                })
-            }
-            MatchConsumer::Chain(chain) => {
-                let consumed = chain.stages;
-                Ok(match chain.finish(graph)? {
-                    ChainOutput::Folded(aggregation) => Landing::Folded {
-                        aggregation,
-                        offered: None,
-                        consumed,
+                Ok((
+                    None,
+                    Landing {
+                        offered,
+                        consumed: 0,
+                        kind: LandingKind::Folded(Box::new(aggregation)),
                     },
-                    ChainOutput::Rows { rows, source } => Landing::Rows {
-                        rows,
-                        source,
-                        consumed,
-                    },
-                })
+                ))
             }
+            MatchConsumer::Chain(chain) => chain.finish(graph),
         }
     }
 }

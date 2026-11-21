@@ -10,6 +10,8 @@
 
 use std::cell::Cell;
 
+use web_time::Instant;
+
 thread_local! {
     pub(crate) static HOP_EXPANDS: Cell<u64> = const { Cell::new(0) };
     pub(crate) static NEIGHBOR_WALKS: Cell<u64> = const { Cell::new(0) };
@@ -240,6 +242,31 @@ pub(crate) fn take_walk_start() -> Option<crate::metrics::WalkStart> {
     WALK_START.with(|slot| slot.take())
 }
 
+/// Put a walk start back unconditionally — the swap guard's restore half.
+fn put_walk_start(start: Option<crate::metrics::WalkStart>) {
+    WALK_START.with(|slot| slot.set(start));
+}
+
+/// Take the producer's walk start out for the duration of one streamed
+/// stage's transform (`profile_chain.rs`): the first-wins slot is one per
+/// clause, so a stage's own first walk records into the empty slot, and
+/// the guard hands the producer's start back — on success and on every
+/// error path alike (`Drop`, the `WalkTallies` idiom). First-wins
+/// semantics stay per clause inside one streamed arm.
+pub(crate) struct WalkStartSwap(Option<crate::metrics::WalkStart>);
+
+impl WalkStartSwap {
+    pub(crate) fn take() -> Self {
+        Self(take_walk_start())
+    }
+}
+
+impl Drop for WalkStartSwap {
+    fn drop(&mut self) {
+        put_walk_start(self.0.take());
+    }
+}
+
 /// The node-read counter's test snapshot: it homes in `crate::ctx` beside
 /// the counter itself (the shared funnel bumps it), re-exported here so
 /// every store-read pin keeps its `super::` path.
@@ -264,4 +291,164 @@ pub(crate) fn take_zone_skips() -> u64 {
 #[cfg(test)]
 pub(crate) fn take_frontier_counters() -> crate::metrics::FrontierCounters {
     FRONTIER.with(|c| c.replace(crate::metrics::FrontierCounters::default()))
+}
+
+// The PROFILE metric family's two typed meters beside the counter kinds:
+// the raw `u64` counters whose delta is not the checked subtraction the
+// `delta_counters!` family states. Each carries its own `since` — the
+// zone-skip counter's checked like its counter siblings, the expression
+// meter's saturating because the live figure falls when an arm releases
+// memory — and the merge the stage windows accumulate.
+
+/// The zone-skip counter's typed figure (LABS-645): checked delta, the
+/// monotone counters' shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ZoneSkips(u64);
+
+impl ZoneSkips {
+    pub(crate) fn now() -> Self {
+        Self(zone_skips())
+    }
+
+    pub(crate) fn since(self, start: Self) -> Self {
+        Self(
+            self.0
+                .checked_sub(start.0)
+                .expect("the counters only ever increase"),
+        )
+    }
+
+    /// The counter's figure, for the record.
+    pub(crate) fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::ops::AddAssign for ZoneSkips {
+    fn add_assign(&mut self, window: Self) {
+        self.0 = self
+            .0
+            .checked_add(window.0)
+            .expect("the counters only ever accumulate");
+    }
+}
+
+/// The expression-built meter's typed figure (ADR-0463): a live
+/// allocation total, not a counter — it falls when an arm releases
+/// expression memory, so the delta saturates and yields a bare byte
+/// count, never a counter type.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ExpressionBytes(u64);
+
+impl ExpressionBytes {
+    pub(crate) fn now(graph: &crate::overlay::ExecGraph<'_>) -> Self {
+        Self(graph.expression_built_bytes())
+    }
+
+    pub(crate) fn since(self, start: Self) -> Self {
+        Self(self.0.saturating_sub(start.0))
+    }
+
+    /// The meter's byte figure, for the record.
+    pub(crate) fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::ops::AddAssign for ExpressionBytes {
+    fn add_assign(&mut self, window: Self) {
+        self.0 = self.0.saturating_add(window.0);
+    }
+}
+
+/// The PROFILE metric family, one field list in two forms: the snapshot
+/// (each counter's base plus the clock) a clause arm or a stage window
+/// takes, and the delta (the elapsed time plus each counter's delta) a
+/// record reports. Every field's type states its own delta (`since`) and
+/// its own accumulation (`+=`), so the list is the only thing the two
+/// forms share — a new metric lands in it once and both forms carry it.
+/// `time_ns` is the delta's own derived field: the clock the snapshot
+/// holds becomes the elapsed figure the delta reports.
+macro_rules! profile_family {
+    (
+        $(#[$doc:meta])*
+        $snapshot:ident / $delta:ident { $($field:ident : $ty:ty,)+ }
+    ) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy)]
+        pub(crate) struct $snapshot {
+            t0: Instant,
+            $($field: $ty,)+
+        }
+
+        impl $snapshot {
+            /// The delta since `start`: the wall time elapsed from the
+            /// start snapshot's clock plus each field's own subtraction.
+            pub(crate) fn since(self, start: Self) -> $delta {
+                $delta {
+                    time_ns: start.t0.elapsed().as_nanos(),
+                    $($field: self.$field.since(start.$field),)+
+                }
+            }
+        }
+
+        /// The delta form: what one window or one clause arm moved its
+        /// metrics — the record's own figures, with the elapsed time the
+        /// snapshot's clock becomes.
+        #[derive(Clone, Copy, Default)]
+        pub(crate) struct $delta {
+            pub(super) time_ns: u128,
+            $(pub(super) $field: $ty,)+
+        }
+
+        impl $delta {
+            /// This unit's own facts: its totals minus the **immediate**
+            /// downstream unit's totals. The windows nest — each unit's
+            /// totals already contain everything the units after it did —
+            /// so the immediate downstream total is the whole subtrahend;
+            /// summing the tail would count every deeper unit twice.
+            pub(crate) fn minus(self, downstream: Self) -> Self {
+                Self {
+                    time_ns: self.time_ns.saturating_sub(downstream.time_ns),
+                    $($field: self.$field.since(downstream.$field),)+
+                }
+            }
+
+            /// Add one window's delta into the totals — the accumulation
+            /// half of the same field list.
+            pub(crate) fn accumulate(&mut self, window: Self) {
+                self.time_ns += window.time_ns;
+                $(self.$field += window.$field;)+
+            }
+        }
+    };
+}
+
+profile_family! {
+    /// The six-metric PROFILE snapshot — LABS-369's read kinds,
+    /// LABS-448's phase times, LABS-645's zone skips, ADR-0478's frontier
+    /// counters, ADR-0463's expression meter, and the clock — the one
+    /// snapshot family the clause tick (`profile_tick.rs`) and the
+    /// streamed stage windows (`profile_chain.rs`) both take.
+    DeltaSnapshot / StageDelta {
+        reads: crate::metrics::StoreReads,
+        phases: crate::metrics::PhaseTimes,
+        zone_skips: ZoneSkips,
+        frontier: crate::metrics::FrontierCounters,
+        expression_built: ExpressionBytes,
+    }
+}
+
+impl DeltaSnapshot {
+    /// Take the family's snapshot: the clock plus each counter's base.
+    pub(crate) fn now(graph: &crate::overlay::ExecGraph<'_>) -> Self {
+        Self {
+            t0: Instant::now(),
+            reads: store_reads(),
+            phases: crate::ctx::phase_times(),
+            zone_skips: ZoneSkips::now(),
+            frontier: frontier_counters(),
+            expression_built: ExpressionBytes::now(graph),
+        }
+    }
 }

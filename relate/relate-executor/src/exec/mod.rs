@@ -22,8 +22,8 @@ use crate::overlay::ExecGraph;
 use crate::procedure_registry::call_writes_store;
 use crate::StatementEffect;
 pub(crate) use profiling::{
-    arm_store_profiling, count_frontier, count_neighbor_walks, count_zone_skip, frontier_counters,
-    record_walk_start, restore_store_profiling, store_reads, take_walk_start, zone_skips,
+    arm_store_profiling, count_frontier, count_neighbor_walks, count_zone_skip, record_walk_start,
+    restore_store_profiling, take_walk_start, DeltaSnapshot, StageDelta, WalkStartSwap,
     WalkTallies,
 };
 #[cfg(test)]
@@ -62,6 +62,7 @@ pub(crate) mod gpm;
 pub(crate) mod graph_type_schema;
 mod load_csv;
 mod match_arm;
+mod profile_chain;
 mod profile_tick;
 // The LABS-348 hub join — the whole family (gate, join, row-shape
 // helpers, test hooks), invoked by the driver at its pattern-0→

@@ -9,44 +9,14 @@ use std::cell::Cell;
 use web_time::Instant;
 
 use crate::eval::rows_logical_bytes;
-use crate::metrics::{ClauseMetricsRecord, PlanMetricsSite};
+use crate::metrics::PlanMetricsSite;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::feed::ParkedFacts;
-use super::match_clause::{LadderFacts, MatchOperator};
-
-/// The expression-built meter's typed per-clause snapshot (ADR-0463): a
-/// snapshot taken at the arm's start and its delta at the record. Unlike
-/// `StoreReads`, `PhaseTimes` and `FrontierCounters` — monotone counters
-/// with a checked delta — this meter is a live allocation figure that
-/// falls when an arm releases expression memory, so its delta saturates
-/// and yields a bare byte count, never a counter type.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct ExpressionBytes(u64);
-
-impl ExpressionBytes {
-    fn now(graph: &ExecGraph<'_>) -> Self {
-        Self(graph.expression_built_bytes())
-    }
-
-    fn since(self, start: Self) -> u64 {
-        self.0.saturating_sub(start.0)
-    }
-}
-
-/// The two PROFILE facts a clause's `MATCH` operator projects to
-/// (LABS-1117): the ADR-0468 `batched` flag and the traversal rung. Both
-/// derive from the ladder's one returned value — the dispatcher's only
-/// projection, so the two cannot disagree, and the `None` operator (no
-/// ladder ran) is stated once.
-fn match_facts(operator: Option<MatchOperator>) -> (bool, Option<crate::metrics::KernelRung>) {
-    match operator {
-        None => (false, None),
-        Some(MatchOperator::BatchChain) => (true, None),
-        Some(MatchOperator::Rung(rung)) => (false, Some(rung)),
-    }
-}
+use super::match_clause::LadderFacts;
+use super::profile_chain::clause_record;
+use super::{DeltaSnapshot, StageDelta};
 
 /// The PROFILE path's per-clause snapshot: the site's sink and its
 /// `(stage, part)` position, plus the arm-start facts the tick owns — the
@@ -61,44 +31,44 @@ pub(super) struct ProfileTick<'a> {
     /// pairing stays the site type's invariant, never re-spelled as
     /// parallel flat fields here.
     site: PlanMetricsSite<'a>,
-    t0: Instant,
+    /// The six-metric snapshot at the arm's start (LABS-369's read kinds,
+    /// LABS-448's phase times, LABS-645's zone skips, ADR-0478's frontier
+    /// counters, ADR-0463's expression meter, the clock) — the one
+    /// snapshot family the streamed stage windows share
+    /// (`profile_chain.rs`'s `DeltaSnapshot`); `record` reads its delta.
+    start: DeltaSnapshot,
     /// The store-read arm flag's prior value (LABS-805), captured at the
     /// arm and restored by the drop — a pre-armed thread (the test
     /// builds' default) is never disarmed by a profiled clause.
     store_profiling_was_armed: bool,
-    /// The read-kind snapshot at the arm's start (LABS-369): the tick's
-    /// `reads` is the delta against it, three thread-local reads per
-    /// clause, never a per-row cost — and the one snapshot, since the
-    /// store-access total is the kinds' sum.
-    reads: crate::metrics::StoreReads,
-    /// The phase-time snapshot at the arm's start (LABS-448): the tick's
-    /// `phases` is the delta against it — and arming the phase stamps is
-    /// this tick's first act, disarming its last, so the stamps never run
-    /// outside a profiled statement's arm.
-    phases: crate::metrics::PhaseTimes,
-    /// The zone-skip counter snapshot at the arm's start (LABS-645): the
-    /// tick's `zone_skips` is the delta against it — one thread-local
-    /// read per clause, the store-access snapshot's pattern.
-    zone_skips: u64,
-    /// The frontier family's counter snapshot at the arm's start
-    /// (ADR-0478): the tick's `frontier` is the delta against it — one
-    /// thread-local read per clause, the zone-skip snapshot's pattern.
-    frontier: crate::metrics::FrontierCounters,
-    /// The view whose expression-built meter the tick samples at the arm's
-    /// start and reads again in `record` (ADR-0463) — the third counter
-    /// family it owns, beside `reads` and `phases`.
+    /// The view whose expression-built meter the snapshot samples — kept
+    /// beside it for `record`'s end-of-arm reading.
     graph: &'a ExecGraph<'a>,
-    /// The meter's typed snapshot when the arm started; `record` reports
-    /// `ExpressionBytes::now(..).since(start)`, the same delta protocol as
-    /// `StoreReads` and `PhaseTimes`.
-    expression_built_bytes_start: ExpressionBytes,
     /// Time a fused producer spent inside this arm and reports itself (a
     /// streamed `UNWIND`'s generator), excluded from this clause's time.
     excluded_ns: u128,
-    /// Rows a fused consumer took as they were emitted (a streamed `MATCH`
-    /// folds them into its aggregation): the clause's row count when its own
-    /// output holds none.
-    pub(super) streamed_rows: Option<u64>,
+    /// The whole fact a fused consumer took as rows were emitted (a
+    /// streamed `MATCH` folds them into its aggregation, or feeds the run
+    /// of stages after it): the rows that flowed through, and the run's
+    /// window totals — the work the arm's own delta must subtract, so the
+    /// head clause's record states its own clause's work and never the
+    /// run's (the immediate-downstream rule the stages apply to each
+    /// other, applied once more at the arm boundary). The streamed clause
+    /// itself holds nothing: its record's memory bytes are zero, stated
+    /// at the record — not carried here as data.
+    pub(super) streamed: Option<StreamedClause>,
+}
+
+/// One streamed clause's PROFILE facts: the rows its consumer took as
+/// they were emitted, and the run's window totals the arm's delta
+/// subtracts. The absence — a directly fed fold, whose offer-time
+/// grouping is the head clause's own work, the established fold
+/// semantics — is interpreted once, at the arm's construction site, as
+/// the default delta: nothing to subtract.
+#[derive(Clone, Copy, Default)]
+pub(super) struct StreamedClause {
+    pub(super) rows: u64,
+    pub(super) downstream: StageDelta,
 }
 
 impl Drop for ProfileTick<'_> {
@@ -133,16 +103,11 @@ pub(super) fn profile_tick<'a>(
     let store_profiling_was_armed = super::arm_store_profiling();
     ProfileTick {
         site,
-        t0: Instant::now(),
+        start: DeltaSnapshot::now(graph),
         store_profiling_was_armed,
-        reads: super::store_reads(),
-        phases: crate::ctx::phase_times(),
-        zone_skips: super::zone_skips(),
-        frontier: super::frontier_counters(),
         graph,
-        expression_built_bytes_start: ExpressionBytes::now(graph),
         excluded_ns: 0,
-        streamed_rows: None,
+        streamed: None,
     }
 }
 
@@ -164,32 +129,31 @@ impl ProfileTick<'_> {
     /// here — the one projection, so the two facts cannot disagree and a
     /// non-`MATCH` clause's `None` carries both — and the frontier decline
     /// (LABS-1437) from the same value.
-    pub(super) fn record(&self, clause: usize, rows: &[Row], ladder: Option<LadderFacts>) {
-        let (batched, kernel) = match_facts(ladder.map(|facts| facts.operator));
-        let frontier_decline = ladder.and_then(|facts| facts.frontier_decline);
-        let reads = super::store_reads().since(self.reads);
-        self.site.sink.record_clause(ClauseMetricsRecord {
-            stage: self.site.stage,
-            part: self.site.part,
+    pub(super) fn record(&self, clause: usize, held_rows: &[Row], ladder: Option<LadderFacts>) {
+        // The arm's own facts: the one snapshot family's delta (the same
+        // `DeltaSnapshot` the streamed stage windows accumulate) — minus a
+        // streamed run's window totals, so the head clause's record states
+        // its own clause's work and never the run's — minus the time a
+        // fused producer reported for itself. A streamed clause holds
+        // nothing: zero memory bytes, stated here.
+        let mut own = DeltaSnapshot::now(self.graph).since(self.start);
+        let (rows, memory_bytes) = match self.streamed {
+            Some(StreamedClause { rows, downstream }) => {
+                own = own.minus(downstream);
+                (rows, 0)
+            }
+            None => (held_rows.len() as u64, rows_logical_bytes(held_rows)),
+        };
+        own.time_ns = own.time_ns.saturating_sub(self.excluded_ns);
+        self.site.sink.record_clause(clause_record(
+            &self.site,
             clause,
-            rows: self.streamed_rows.unwrap_or(rows.len() as u64),
-            memory_bytes: rows_logical_bytes(rows),
-            expression_built_bytes: ExpressionBytes::now(self.graph)
-                .since(self.expression_built_bytes_start),
-            time_ns: self
-                .t0
-                .elapsed()
-                .as_nanos()
-                .saturating_sub(self.excluded_ns),
-            reads,
-            phases: crate::ctx::phase_times().since(self.phases),
-            start: super::take_walk_start(),
-            kernel,
-            batched,
-            zone_skips: super::zone_skips() - self.zone_skips,
-            frontier: super::frontier_counters().since(self.frontier),
-            frontier_decline,
-        });
+            own,
+            rows,
+            memory_bytes,
+            super::take_walk_start(),
+            ladder,
+        ));
     }
 }
 
@@ -279,21 +243,18 @@ fn record_streamed_clause(record: Option<(PlanMetricsSite<'_>, usize)>, stats: &
     let Some((site, clause)) = record else {
         return;
     };
-    site.sink.record_clause(ClauseMetricsRecord {
-        stage: site.stage,
-        part: site.part,
+    site.sink.record_clause(clause_record(
+        &site,
         clause,
-        rows: stats.rows(),
-        memory_bytes: stats.row_bytes(),
-        expression_built_bytes: 0,
-        time_ns: stats.time_ns(),
-        reads: Default::default(),
-        phases: Default::default(),
-        start: None,
-        kernel: None,
-        batched: false,
-        zone_skips: 0,
-        frontier: Default::default(),
-        frontier_decline: None,
-    });
+        // The generator's own facts are its time alone: it reads no store,
+        // builds no expression bytes, walks nothing.
+        StageDelta {
+            time_ns: stats.time_ns(),
+            ..StageDelta::default()
+        },
+        stats.rows(),
+        stats.row_bytes(),
+        None,
+        None,
+    ));
 }

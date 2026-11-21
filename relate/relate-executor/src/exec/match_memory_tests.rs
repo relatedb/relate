@@ -5,7 +5,7 @@
 
 use relate_core::Value;
 
-use super::test_support::{build, exec_cypher, run_metered, Built};
+use super::test_support::{build, exec_cypher, profiled_metered, run_metered, Built};
 use crate::graph::Graph;
 
 const PATHS: usize = 4_000;
@@ -23,6 +23,17 @@ fn hub(fan: usize) -> Built {
     build(&labels, &rels)
 }
 
+/// The byte-peak comparison the plain and PROFILEd variants share — their
+/// 1.25x bound and print live here. The per-key ratio and the deliberately
+/// slackened unwind bound keep their own, with their stated reasons.
+fn assert_peak_flat(cypher: &str, label: &str, at_n: u64, at_4n: u64) {
+    eprintln!("{label}: peak at N = {at_n}, at 4N = {at_4n}");
+    assert!(
+        at_4n as f64 <= at_n as f64 * 1.25,
+        "{cypher}: peak {at_4n} at 4N vs {at_n} at N"
+    );
+}
+
 fn assert_flat(aggregation: &str) {
     let cypher = format!("MATCH (h:N {{id: 0}})-[:E*1..2]->(e) RETURN {aggregation}");
     let small = hub(PATHS / 2);
@@ -30,11 +41,7 @@ fn assert_flat(aggregation: &str) {
     let (small_rows, at_n) = run_metered(&small.graph, &cypher);
     let (large_rows, at_4n) = run_metered(&large.graph, &cypher);
     assert!(!small_rows.is_empty() && !large_rows.is_empty(), "{cypher}");
-    eprintln!("{aggregation}: peak at N = {at_n}, at 4N = {at_4n}");
-    assert!(
-        at_4n as f64 <= at_n as f64 * 1.25,
-        "{cypher}: peak {at_4n} at 4N vs {at_n} at N"
-    );
+    assert_peak_flat(&cypher, aggregation, at_n, at_4n);
 }
 
 #[test]
@@ -107,4 +114,22 @@ fn count_distinct_retained_charge_is_the_seen_set_keys_only() {
     let (at_n, at_4n) = (per_key(5_000), per_key(20_000));
     eprintln!("count(DISTINCT): per key at N = {at_n}, at 4N = {at_4n}");
     assert!(at_4n <= at_n * 1.25, "per-key {at_4n} at 4N vs {at_n} at N");
+}
+
+/// PROFILE streams the stage run after a `MATCH` too: the peak workspace
+/// charge under PROFILE stays independent of path count, as it is without
+/// it, and the profiled answers are the plain answers. The held path
+/// PROFILE used to run instead retained the clause's whole output — the
+/// shape behind the observed 256 MB single-value refusal on a
+/// 1.66M-row cross product (the stage run is the same stream, observed).
+#[test]
+fn profiled_stage_run_peak_is_independent_of_path_count() {
+    let cypher = "MATCH (h:N {id: 0})-[:E*1..2]->(e) WITH * RETURN count(*) AS c";
+    let small = hub(PATHS / 2);
+    let large = hub(PATHS * 2);
+    let (_, at_n) = profiled_metered(&small.graph, cypher);
+    let (profiled_rows, at_4n) = profiled_metered(&large.graph, cypher);
+    let plain_rows = exec_cypher(&large.graph, cypher).rows;
+    assert_eq!(profiled_rows, plain_rows, "PROFILE changes no answers");
+    assert_peak_flat(cypher, "profiled stage run", at_n, at_4n);
 }

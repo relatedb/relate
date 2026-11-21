@@ -101,11 +101,14 @@ impl<'a> PlanMetricsSite<'a> {
 }
 
 delta_counters! {
+    merge
     /// The store-read mix a clause's arm performed (LABS-369): the kinds the
     /// single `Db Hits` total blends. A `Rows=103` operator that spent 300k
     /// relationship hops and 0 node reads is a different animal from one that
     /// read 103 nodes — the one-glance diagnosis for the scan-turned-traversal
-    /// family.
+    /// family. Merged across one streamed stage's PROFILE windows
+    /// (`profile_chain.rs`): the stage's record is the checked sum over
+    /// its batches, minus the immediate downstream stage's sum.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct StoreReads: u64 {
         /// Relationship hops taken.
@@ -119,13 +122,16 @@ delta_counters! {
 }
 
 delta_counters! {
+    merge
     /// The clause's inclusive phase times (LABS-448): the elapsed time spent
     /// resolving node candidates (the seek — the store work behind the
     /// `Nodes` kind) and following relationships (the walk — the store work
     /// behind the `Rels`/`Degree` kinds); the per-candidate admission checks
     /// and the arm's binding/cloning stay unattributed. Inclusive of the nesting
     /// a compound operator performs: a walk that triggers nested seeks counts
-    /// both, like the table's `Total` column.
+    /// both, like the table's `Total` column. Merged across one streamed
+    /// stage's PROFILE windows (`profile_chain.rs`), the store-read mix's
+    /// shape.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct PhaseTimes: u128 {
         /// The seek phase's elapsed nanoseconds.

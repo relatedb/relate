@@ -22,8 +22,8 @@ use super::match_clause::{
 };
 use super::pattern_policies::RowFold;
 use super::test_support::{
-    assert_written_agrees_with_held, build, error_of, exec_cypher, run_metered, same_rows,
-    try_exec_cypher, Built,
+    assert_written_agrees_with_held, build, error_of, exec_cypher, profiled, record_for,
+    run_metered, same_rows, try_exec_cypher, Built,
 };
 use crate::ctx::ExecCtx;
 use crate::overlay::ExecGraph;
@@ -173,6 +173,71 @@ fn stages_alternate_between_matches_and_withs() {
         CROSS,
         "WITH p, n WHERE p.id < n.id MATCH (p)-[:E*1..2]->(m) WITH p AS p, n AS n, m AS m",
         "MATCH (m)-[:E*1..2]->(z) RETURN count(*) AS c, sum(z.id) AS s",
+    );
+}
+
+/// PROFILE observes a long run of stages — alternating `MATCH` and `WITH`
+/// transforms, and three `MATCH` stages in a row — without the counter
+/// arithmetic breaking: every clause of the statement carries a record,
+/// the head `MATCH`'s from the dispatcher's tick and each consumed
+/// stage's its own, and the immediate-downstream subtraction stays inside
+/// the checked deltas. (A summed tail over-subtracts and panics in the
+/// release build; a three-plus-stage PROFILEd run is its only witness.)
+#[test]
+fn profiled_long_runs_record_every_clause() {
+    for (label, statement, expected_clauses) in [
+        (
+            "alternating",
+            format!(
+                "{CROSS} MATCH (p)-[:E*1..2]->(m) \
+                 WITH p AS p, n AS n, m AS m MATCH (m)-[:E*1..2]->(z) \
+                 RETURN count(*) AS c, sum(z.id) AS s"
+            ),
+            5,
+        ),
+        (
+            "three matches",
+            "MATCH (a:P) MATCH (a)-[:E*1..2]->(b) MATCH (b)-[:E*1..2]->(c) \
+             RETURN count(*) AS c, count(DISTINCT c) AS d"
+                .to_string(),
+            4,
+        ),
+    ] {
+        let records = profiled(&ring(40).graph, &statement);
+        let mut covered: Vec<usize> = records.iter().map(|record| record.clause).collect();
+        covered.sort_unstable();
+        assert_eq!(
+            covered,
+            (0..expected_clauses).collect::<Vec<_>>(),
+            "{label} ({statement}): every clause carries a record, {n} records",
+            n = records.len()
+        );
+    }
+}
+
+/// A run ending in a collector reports the terminal stage's retention:
+/// the rows it emitted and the bytes its collector holds until the
+/// barrier consumes them — the one stage whose output is retained, so
+/// the one consumed record with `memory_bytes > 0`. Every other stage
+/// and the head clause report zero: their in-flight state is a bounded
+/// batch.
+#[test]
+fn profiled_rows_terminal_reports_its_retained_bytes() {
+    let records = profiled(
+        &ring(40).graph,
+        "MATCH (a:P) MATCH (a)-[:E*1..2]->(b) RETURN b.id AS id",
+    );
+    let terminal = record_for(&records, 1);
+    assert!(
+        terminal.rows > 0 && terminal.memory_bytes > 0,
+        "the terminal stage emits and retains: rows {}, bytes {}",
+        terminal.rows,
+        terminal.memory_bytes
+    );
+    assert_eq!(
+        record_for(&records, 0).memory_bytes,
+        0,
+        "the head clause holds nothing"
     );
 }
 
@@ -514,7 +579,7 @@ fn a_cancelled_statement_stops_at_the_next_batch() {
     let view = ExecGraph::read(&built.graph).with_cancel(Some(&token));
     let params = BTreeMap::new();
     let slot = OnceCell::new();
-    let chain = open_match_chain(ExecCtx::new(&view, &params), clauses, &slot, None)
+    let chain = open_match_chain(ExecCtx::new(&view, &params), clauses, &slot, None, None)
         .unwrap()
         .expect("the second MATCH streams");
     for _ in 0..CHAIN_BATCH - 1 {

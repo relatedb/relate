@@ -144,14 +144,48 @@ pub(crate) fn with_flag_disabled<R>(
     f()
 }
 
+/// Run `cypher` — PROFILEd when a sink is given — through the one
+/// plan-and-run spelling the metered and PROFILEd harnesses share.
+fn run_cypher_with(g: &Graph, cypher: &str, sink: Option<&dyn PlanMetricsSink>) -> QueryResult {
+    let planned = plan(parse_and_lower(cypher).unwrap(), &mut |_| false).unwrap();
+    run_planned(g, &planned, cypher, &BTreeMap::new(), sink).unwrap()
+}
+
 /// Run `cypher` PROFILEd, collecting the clause records the dispatch
 /// emits — the one PROFILE harness the exec tests read (the frontier
 /// rider's engagement pins, the store-read arm's save/restore pin).
 pub(crate) fn profiled(g: &Graph, cypher: &str) -> Vec<ClauseMetricsRecord> {
     let recorder = super::ClauseRecords(RefCell::new(Vec::new()));
-    let planned = plan(parse_and_lower(cypher).unwrap(), &mut |_| false).unwrap();
-    run_planned(g, &planned, cypher, &BTreeMap::new(), Some(&recorder)).unwrap();
+    run_cypher_with(g, cypher, Some(&recorder));
     recorder.0.take()
+}
+
+/// Run `cypher` under a workspace ledger — PROFILEd when a sink is given —
+/// returning the statement's result and the peak workspace bytes charged
+/// while it ran: the memory-independence tests' one meter, with and
+/// without the PROFILE sink the PROFILE-shape variants read. PROFILE must
+/// stream what the plain path streams, so its peak is bounded by the same
+/// tests.
+fn run_metered_with(
+    g: &Graph,
+    cypher: &str,
+    sink: Option<&dyn PlanMetricsSink>,
+) -> (QueryResult, u64) {
+    let pool = Arc::new(PeakPoolDouble::new(u64::MAX / 4));
+    assert!(relate_core::tokens::PeakPool::try_grow(pool.as_ref(), 1));
+    let mut ledger = TokenLedger::new(u64::MAX / 4, 1, pool);
+    let _guard = LedgerGuard::install(&mut ledger);
+    let result = run_cypher_with(g, cypher, sink);
+    let (_, peak, _) = workspace_meter().expect("ledger installed");
+    (result, peak)
+}
+
+/// Run `cypher` PROFILEd under the same workspace ledger: the result
+/// rows and the peak — the PROFILE memory-shape tests' meter.
+pub(crate) fn profiled_metered(g: &Graph, cypher: &str) -> (Vec<Vec<Value>>, u64) {
+    let recorder = super::ClauseRecords(RefCell::new(Vec::new()));
+    let (result, peak) = run_metered_with(g, cypher, Some(&recorder));
+    (result.rows, peak)
 }
 
 /// Run `cypher` on an existing view through `execute`, so the test can
@@ -253,13 +287,19 @@ pub(crate) fn assert_written_agrees_with_held(
 /// workspace bytes charged while it ran (the memory-independence tests'
 /// one meter).
 pub(crate) fn run_metered(g: &Graph, cypher: &str) -> (Vec<Vec<Value>>, u64) {
-    let pool = Arc::new(PeakPoolDouble::new(u64::MAX / 4));
-    assert!(relate_core::tokens::PeakPool::try_grow(pool.as_ref(), 1));
-    let mut ledger = TokenLedger::new(u64::MAX / 4, 1, pool);
-    let _guard = LedgerGuard::install(&mut ledger);
-    let rows = exec_cypher(g, cypher).rows;
-    let (_, peak, _) = workspace_meter().expect("ledger installed");
-    (rows, peak)
+    let (result, peak) = run_metered_with(g, cypher, None);
+    (result.rows, peak)
+}
+
+/// The record for one clause position, found by the field rather than by
+/// list order — a streamed run emits its stage records before the
+/// dispatcher writes the head clause, so position in the list is not the
+/// clause.
+pub(crate) fn record_for(records: &[ClauseMetricsRecord], clause: usize) -> &ClauseMetricsRecord {
+    records
+        .iter()
+        .find(|record| record.clause == clause)
+        .unwrap_or_else(|| panic!("a record for clause {clause} of {}", records.len()))
 }
 
 /// The one record whose `MATCH` clause a rung served — the ladder's own

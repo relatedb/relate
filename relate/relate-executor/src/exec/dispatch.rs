@@ -350,7 +350,7 @@ fn run_clauses_mode(
                     i,
                     &fold_class,
                     scope,
-                    profile.is_some(),
+                    profile,
                 )?;
                 rows = arm.rows;
                 last_result = arm.last_result.or(last_result);
@@ -362,8 +362,8 @@ fn run_clauses_mode(
                     .map(|a| PendingFeed::Folded(Box::new(a)))
                     .or(pending);
                 rows_source = arm.rows_source;
-                if let (Some(tick), Some(streamed)) = (metrics_tick.as_mut(), arm.streamed_rows) {
-                    tick.streamed_rows = Some(streamed);
+                if let Some(tick) = metrics_tick.as_mut() {
+                    tick.streamed = arm.streamed;
                 }
             }
             Clause::Merge {

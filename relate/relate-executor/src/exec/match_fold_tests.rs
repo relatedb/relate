@@ -10,8 +10,8 @@ use relate_core::Value;
 use crate::pattern_engine::PatternEngine;
 
 use super::test_support::{
-    assert_written_agrees_with_held, build, exec_cypher, profiled, same_rows, sort_rows,
-    written_and_held, Built,
+    assert_written_agrees_with_held, build, exec_cypher, profiled, record_for, same_rows,
+    sort_rows, written_and_held, Built,
 };
 
 /// A hub (node 0) over `fan` children, each with two grandchildren, plus a
@@ -107,20 +107,52 @@ fn an_empty_match_still_yields_the_keyless_group() {
     assert_eq!(r.rows, vec![vec![Value::Int(0)]]);
 }
 
-/// PROFILE reports the folded clause's row count as the rows it emitted —
-/// the count the held clause reports — while holding none of them.
+/// PROFILE reports a streamed clause's row count as the rows its walk
+/// emitted — folded into the aggregation directly or fed through the run
+/// of stages after it — while holding none of them. A genuinely held
+/// clause (a limit cap stops the stream) still reports its retained rows
+/// and bytes: the record says which of the two shapes ran. Records are
+/// selected by their clause position, never by list order — the run's
+/// stage records are emitted before the dispatcher writes the head.
 #[test]
-fn profile_counts_the_rows_the_fold_took() {
+fn profile_counts_the_rows_the_stream_took() {
     let built = hub(6);
     let matched = "MATCH (h:N {id: 0})-[:E*1..2]->(e)";
     let folded = profiled(&built.graph, &format!("{matched} RETURN count(*) AS c"));
-    let held = profiled(
+    let staged = profiled(
         &built.graph,
         &format!("{matched} WITH * RETURN count(*) AS c"),
     );
-    assert!(held[0].rows > 0 && held[0].memory_bytes > 0);
-    assert_eq!(folded[0].rows, held[0].rows, "the clause's emitted rows");
-    assert_eq!(folded[0].memory_bytes, 0, "the fold holds no rows");
+    let held = profiled(
+        &built.graph,
+        &format!("{matched} WITH h, e LIMIT 999999 RETURN count(*) AS c"),
+    );
+    let held_head = record_for(&held, 0);
+    assert!(
+        held_head.rows > 0 && held_head.memory_bytes > 0,
+        "the capped control holds its rows"
+    );
+    let folded_head = record_for(&folded, 0);
+    assert_eq!(
+        folded_head.rows, held_head.rows,
+        "the walk emits the same rows"
+    );
+    assert_eq!(folded_head.memory_bytes, 0, "the fold holds no rows");
+    let staged_head = record_for(&staged, 0);
+    let staged_with = record_for(&staged, 1);
+    assert_eq!(
+        staged_head.rows, folded_head.rows,
+        "the head clause's walk emits the same rows"
+    );
+    assert_eq!(
+        staged_head.memory_bytes, 0,
+        "the run leaves the head clause holding nothing"
+    );
+    assert_eq!(
+        staged_with.rows, staged_head.rows,
+        "the `WITH *` stage passes every row through"
+    );
+    assert_eq!(staged_with.memory_bytes, 0, "the stage holds no rows");
 }
 
 /// An `OPTIONAL MATCH` is never folded: its null-bound row for an input
