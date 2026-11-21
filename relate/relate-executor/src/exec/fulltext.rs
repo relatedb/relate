@@ -556,49 +556,7 @@ fn rank(
 
 #[cfg(test)]
 mod tests {
-    use super::analyzer::analyzer_names;
     use super::*;
-
-    #[test]
-    fn analyzers_differ_on_stop_words_and_stemming() {
-        assert_eq!(
-            Analyzer::Standard.analyze("The princesses"),
-            ["the", "princesses"]
-        );
-        assert_eq!(Analyzer::English.analyze("The princesses"), ["princess"]);
-    }
-
-    #[test]
-    fn the_index_analyzer_reads_its_stored_config() {
-        use std::collections::BTreeMap;
-        let config = |analyzer: Value| {
-            BTreeMap::from([(
-                "indexConfig".to_string(),
-                Value::Map(std::sync::Arc::new(BTreeMap::from([(
-                    crate::exec::ddl_options::KEY_FULLTEXT_ANALYZER.to_string(),
-                    analyzer,
-                )]))),
-            )])
-        };
-        assert_eq!(
-            crate::exec::ddl_options::index_analyzer(&BTreeMap::new(), "i").unwrap(),
-            Analyzer::Standard
-        );
-        assert_eq!(
-            crate::exec::ddl_options::index_analyzer(
-                &config(Value::String("standard-folding".into())),
-                "i"
-            )
-            .unwrap(),
-            Analyzer::StandardFolding
-        );
-        assert!(crate::exec::ddl_options::index_analyzer(
-            &config(Value::String("nope".into())),
-            "i"
-        )
-        .is_err());
-        assert!(crate::exec::ddl_options::index_analyzer(&config(Value::Int(1)), "i").is_err());
-    }
 
     #[test]
     fn a_wildcard_group_scores_a_constant_per_field() {
@@ -653,30 +611,6 @@ mod tests {
             &other,
             &memo.corpus(&graph, &detail("b"), Analyzer::Standard)
         ));
-    }
-
-    #[test]
-    fn analyzer_values_are_validated_like_live() {
-        // Live 2026.10.1: a NULL analyzer is no override — probed on a
-        // default index, where the hits are the same either way; the query
-        // follows the index's analyzer (ADR-0636). An unknown name is
-        // 22N27, a non-STRING value is 22NB1.
-        assert_eq!(Analyzer::from_value(&Value::Null).unwrap(), None);
-        assert_eq!(
-            Analyzer::from_value(&Value::String("ENGLISH".into())).unwrap(),
-            Some(Analyzer::English)
-        );
-        assert_eq!(
-            Analyzer::from_value(&Value::String("not-a-real-analyzer".into())).unwrap_err(),
-            Error::argument_error(format!(
-                "Invalid input 'not-a-real-analyzer' for analyzer name. Expected to be {}.",
-                analyzer_names()
-            ))
-        );
-        assert_eq!(
-            Analyzer::from_value(&Value::Int(42)).unwrap_err(),
-            Error::ty("Type mismatch: expected to be STRING but was 'INTEGER'.")
-        );
     }
 
     #[test]

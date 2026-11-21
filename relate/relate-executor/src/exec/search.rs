@@ -118,12 +118,10 @@ fn fulltext_index_candidates(
     // no override, so the query follows the index's analyzer
     // (ADR-0636), and the value's own unknown-name/type rejections are
     // `Analyzer::from_value`'s.
-    let query_override = index
-        .analyzer
-        .as_ref()
-        .map(|expr| fulltext::Analyzer::from_value(&eval(graph, input, expr, params)?))
-        .transpose()?
-        .flatten();
+    let query_override = match &index.analyzer {
+        None => None,
+        Some(expr) => fulltext::Analyzer::from_value(&eval(graph, input, expr, params)?)?,
+    };
     let analyzers = fulltext::Analyzers::new(
         crate::exec::ddl_options::index_analyzer(&options, &index.index_name)?,
         query_override,

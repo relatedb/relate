@@ -36,20 +36,42 @@ pub fn sorted_names(hits: &[(String, f64)]) -> Vec<String> {
     names
 }
 
+/// The `WITH ANALYZER` slot of a SEARCH clause in its three forms. A
+/// NULL value is no override — the query follows the index's own
+/// analyzer (ADR-0636) — but it is its own expression form, so it is a
+/// variant beside the absent clause, not a spelling of it.
+#[derive(Clone, Copy)]
+pub enum AnalyzerOverride<'a> {
+    /// No `WITH ANALYZER` clause.
+    Absent,
+    /// `WITH ANALYZER null`.
+    Null,
+    /// `WITH ANALYZER '<name>'`.
+    Named(&'a str),
+}
+
+impl AnalyzerOverride<'_> {
+    fn clause(self) -> String {
+        match self {
+            Self::Absent => String::new(),
+            Self::Null => " WITH ANALYZER null".to_string(),
+            Self::Named(name) => format!(" WITH ANALYZER '{name}'"),
+        }
+    }
+}
+
 /// The SEARCH-clause statement prefix for one fulltext query — the one
 /// spelling of the clause the family issues; the caller appends its own
-/// projection. `analyzer` names a `WITH ANALYZER` override; `None` omits
-/// the clause, so the query follows the index's own analyzer (ADR-0636).
+/// projection. `analyzer` is the `WITH ANALYZER` slot; `Absent` omits the
+/// clause, so the query follows the index's own analyzer (ADR-0636).
 pub fn search_statement(
     label: &str,
     index: &str,
     query: &str,
-    analyzer: Option<&str>,
+    analyzer: AnalyzerOverride<'_>,
     limit: u32,
 ) -> String {
-    let analyzer = analyzer
-        .map(|name| format!(" WITH ANALYZER '{name}'"))
-        .unwrap_or_default();
+    let analyzer = analyzer.clause();
     format!(
         "MATCH (n:{label}) \
          SEARCH n IN (FULLTEXT INDEX {index} FOR '{query}'{analyzer} LIMIT {limit})"
@@ -75,7 +97,7 @@ pub fn fulltext_search(
     property: &str,
     limit: u32,
     query: &str,
-    analyzer: Option<&str>,
+    analyzer: AnalyzerOverride<'_>,
 ) -> Vec<(String, f64)> {
     let result = run(
         c,
@@ -124,7 +146,15 @@ pub fn fulltext_agree(
     limit: u32,
     query: &str,
 ) -> Vec<(String, f64)> {
-    let clause = fulltext_search(c, label, index, property, limit, query, None);
+    let clause = fulltext_search(
+        c,
+        label,
+        index,
+        property,
+        limit,
+        query,
+        AnalyzerOverride::Absent,
+    );
     let procedure = fulltext_procedure(c, index, property, query);
     assert!(
         procedure.len() <= limit as usize,
@@ -147,7 +177,7 @@ pub fn assert_syntax_error_on_both_paths(
         let error = c
             .query(&format!(
                 "{} RETURN n.name",
-                search_statement(label, index, query, None, 5)
+                search_statement(label, index, query, AnalyzerOverride::Absent, 5)
             ))
             .expect_err(query);
         assert_syntax_error(&error);

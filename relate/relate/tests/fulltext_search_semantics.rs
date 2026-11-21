@@ -21,6 +21,7 @@ use common::fulltext::fulltext_search;
 use common::fulltext::scored;
 use common::fulltext::scored_names;
 use common::fulltext::sorted_names;
+use common::fulltext::AnalyzerOverride;
 use common::run;
 use relate::Value;
 
@@ -328,19 +329,19 @@ fn with_analyzer_overrides_the_query_side_only() {
         (
             DocsSide::English,
             "refunds",
-            Some("standard"),
+            AnalyzerOverride::Named("standard"),
             &[] as &[&str],
         ),
         (
             DocsSide::English,
             "refund",
-            Some("standard"),
+            AnalyzerOverride::Named("standard"),
             &["a refund was issued"],
         ),
         (
             DocsSide::Plain,
             "refunds",
-            Some("english"),
+            AnalyzerOverride::Named("english"),
             &["a refund was issued"],
         ),
     ] {
@@ -349,16 +350,17 @@ fn with_analyzer_overrides_the_query_side_only() {
         assert_eq!(scored_names(&hits), expected, "{label} {query}");
     }
     // A NULL `WITH ANALYZER` is no override, so the query follows the
-    // index's analyzer and the inflection still crosses. The null literal
-    // is its own expression form, which the quoted-name template cannot
-    // render.
-    let result = run(
+    // index's analyzer and the inflection still crosses.
+    let hits = fulltext_search(
         &mut c,
-        "MATCH (d:Doc) \
-         SEARCH d IN (FULLTEXT INDEX enDocs FOR 'refunds' WITH ANALYZER null LIMIT 5) \
-         RETURN d.text",
+        "Doc",
+        "enDocs",
+        "text",
+        5,
+        "refunds",
+        AnalyzerOverride::Null,
     );
-    assert_eq!(titles(&result), ["a refund was issued"]);
+    assert_eq!(scored_names(&hits), ["a refund was issued"]);
 }
 
 /// FulltextProcedureDeprecationAcceptance [5]/[6]/[7]: the procedures run
