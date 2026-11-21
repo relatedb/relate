@@ -1231,7 +1231,12 @@ The expression-memo A/B groups (`memo_prop_read`, `memo_date_call`,
 `memo_datetime_call`, `memo_date_row`, `memo_datetime_row`, `memo_labels`, `memo_in_list`, `memo_regex`,
 `memo_hub_star`, `memo_site_where`, `memo_site_project`, `memo_site_order`)
 each push one expression class through a full `:User` scan (the hub-star group
-through a hub expansion). A timed line also prints `alloc_bytes`, the bytes
+through a hub expansion). The bound-list groups `in_param_ints`
+(`n.age IN $ids`, 2000 distinct ints, ages 1-25 plus decoys: the young half of
+the users) and `in_param_strings` (`n.gender IN $names`, 2000 distinct
+strings, `man` mid-list plus decoys: the men) bind one client list per run and
+measure the `IN` membership index; their answer is a count over the `:User`
+scan (about half of the fixture's users per round). A timed line also prints `alloc_bytes`, the bytes
 the counting allocator saw requested during the measured rounds. The
 branch-only `.github/workflows/memo-ab.yml` (inputs `base_ref`, `head_ref`,
 `groups`, `rounds`) builds the binary at two refs, runs each group in a fresh
@@ -1242,6 +1247,34 @@ checksum equality, peak RSS and `alloc_bytes`:
 gh workflow run memo-ab.yml --ref perf/expression-memo-tiers \
   -f base_ref=main -f head_ref=perf/expression-memo-tiers
 ```
+
+The memory groups (`memmemo_*`) stress what the memo tiers
+([ADR-0640](adr/0640-executor-expression-memo-tiers.md)) retain, not how fast
+they answer. A timed line ends with four extra columns, appended after
+`alloc_bytes`: `live_peak` (the counting allocator's high-water live heap
+bytes during the measured rounds, minus the live bytes before them),
+`live_end` (the same delta after the rounds; about 0, since memo tables die
+with the statement), and `rss_base` / `rss_peak` (the process's peak RSS in
+bytes before and after the rounds; the peak is process-wide and monotonic, so
+run one group per process with `--group`). The memo's own retained bytes are
+not exported (its stats are test-only); read them as `live_peak` against the
+`_control` twin or the group's input floor. All run on `small`.
+
+| Group | What it stresses | Intended regime |
+| --- | --- | --- |
+| `memmemo_datetime_distinct` | 300,000 distinct `datetime(text)` inputs in a `WHERE` | the hashed memo fills its 8 MiB table ceiling, then keeps missing |
+| `memmemo_datetime_control` | the same statement through `localdatetime` (no memo) | the floor `memmemo_datetime_distinct` is read against |
+| `memmemo_regex_distinct` | a distinct regex per row (10,000 patterns) | the 8-pattern regex cache evicts and recompiles every probe |
+| `memmemo_in_ints_64k` | `n.age IN $ids`, 65,536 ints | the IN index at its member cap |
+| `memmemo_in_strings_64k` | `n.gender IN $names`, 65,536 short strings | the IN index at its member cap, under the 1 MiB string-byte cap |
+| `memmemo_in_strings_overcap` | `IN $names`, 40,000 38-byte strings (1.5 MiB) | over the string-byte cap: no index, the scan answers |
+| `memmemo_sites_combined` | regex, 64k IN list and per-edge distinct `datetime` in one hub-star statement | several memo sites sharing the 16 MiB per-query budget |
+| `memmemo_with_chain` | three `WITH ... WHERE` stages, each a distinct `datetime` memo (100,000 texts) | several tables under one budget (one connection: no concurrent statements) |
+| `memmemo_invariant_heavy` | `toUpper($p) + toString(1 + 2)` in `WHERE` and `RETURN` over every row | the row-invariant baseline a future hoist is compared against |
+| `memmemo_invariant_heavy_x4` | the same sub-expression four times | the baseline at higher repetition |
+
+The `UNWIND range(...)` groups hold the range itself live (tens of MB), so
+their `live_peak` has a large floor; subtract the control.
 
 `scan_agg_global` is `MATCH (n:User) RETURN n.age, count(*) ORDER BY n.age`,
 the grouped shape the index-backed aggregate shortcut recognizes

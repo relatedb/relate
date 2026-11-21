@@ -23,7 +23,11 @@
 //!   `shortest_fan`, `shortest_all_pairs`), and the expression-memo A/B
 //!   groups `memo_prop_read`, `memo_date_call`, `memo_datetime_call`,
 //!   `memo_date_row`, `memo_datetime_row`, `memo_labels`, `memo_in_list`, `memo_regex`, `memo_hub_star`,
-//!   `memo_site_where`, `memo_site_project`, `memo_site_order`.
+//!   `memo_site_where`, `memo_site_project`, `memo_site_order`, and the
+//!   bound-list membership groups `in_param_ints` and `in_param_strings`,
+//!   and the memory groups `memmemo_*` (datetime memo fill, distinct regexes,
+//!   64k bound lists, combined sites, a WITH chain, row-invariant baselines);
+//!   a timed line ends with `live_peak`, `live_end`, `rss_base`, `rss_peak`.
 //! * `--sample DIR` runs the selected groups under the in-process profiler
 //!   and writes `DIR/<group>/top.txt`, `folded.txt` and `flame.svg`; no
 //!   samply needed.
@@ -40,7 +44,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
@@ -52,6 +56,29 @@ use relate_test_support::profiler::{sample, DEFAULT_FREQUENCY};
 /// the figure the A/B workflow compares between revisions (requested, not
 /// live, so it is stable across allocator behavior).
 static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+/// Bytes currently live on the heap, and the high-water mark since the last
+/// [`reset_peak`]: the `memmemo_*` groups' view of what a memo table costs
+/// while the statement runs (the table is freed with the statement, so the
+/// end-of-statement delta alone reads about zero).
+static LIVE_BYTES: AtomicI64 = AtomicI64::new(0);
+static PEAK_LIVE_BYTES: AtomicI64 = AtomicI64::new(0);
+
+fn live_grew(by: i64) {
+    let now = LIVE_BYTES.fetch_add(by, Ordering::Relaxed) + by;
+    PEAK_LIVE_BYTES.fetch_max(now, Ordering::Relaxed);
+}
+
+/// Restart the high-water mark at the current live size.
+fn reset_peak() {
+    PEAK_LIVE_BYTES.store(LIVE_BYTES.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
+/// The process's peak resident set size so far, in bytes. Monotonic, so a
+/// group's own peak is only readable in a fresh process (`--group NAME`).
+fn peak_rss_bytes() -> u64 {
+    relate_test_support::sampling::process_peak_rss_bytes()
+        .expect("peak RSS is readable on this platform")
+}
 
 struct CountingAlloc;
 
@@ -60,15 +87,18 @@ struct CountingAlloc;
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
         ALLOC_BYTES.fetch_add(l.size() as u64, Ordering::Relaxed);
+        live_grew(l.size() as i64);
         System.alloc(l)
     }
 
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        LIVE_BYTES.fetch_sub(l.size() as i64, Ordering::Relaxed);
         System.dealloc(p, l)
     }
 
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
         ALLOC_BYTES.fetch_add(n as u64, Ordering::Relaxed);
+        live_grew(n as i64 - l.size() as i64);
         System.realloc(p, l, n)
     }
 }
@@ -87,7 +117,24 @@ enum Binds {
     /// `$id` over the start ids `1..=N` and `$to`, the start id plus
     /// [`PAIR_OFFSET`]: the two endpoints of a shortest-path pair group.
     Pair(u64),
+    /// `$ids`: `len` distinct ints, one unparametrized-schedule run per round.
+    /// [`BOUND_HIT_AGES`] of them are fixture ages, the rest decoys past
+    /// every age, so the answer is the users in that age band.
+    IntListOf(i64),
+    /// `$names`: `len` distinct strings (one the real `man`, so the answer is
+    /// the men), each decoy zero-padded to at least `width` digits. `width`
+    /// sizes the list's total string bytes.
+    StringListOf { len: i64, width: usize },
+    /// `$p`: the text `abc`, the row-invariant input of the hoist baseline.
+    Text,
 }
+
+/// Members of a bound-list group's list: well past the membership index's
+/// build gate, the size of a client's `WHERE n.x IN $ids` batch.
+const BOUND_LIST_LEN: i64 = 2000;
+/// The fixture ages (`1..=BOUND_HIT_AGES`) the `$ids` list holds; ages run
+/// `1..=100`, young-heavy, so this keeps roughly the young half.
+const BOUND_HIT_AGES: i64 = 25;
 
 /// One measured group: its query, what it binds, and how many rounds each
 /// start id runs.
@@ -96,6 +143,26 @@ struct Group {
     query: &'static str,
     rounds: u64,
     binds: Binds,
+}
+
+/// `len` distinct ints: the fixture ages `1..=BOUND_HIT_AGES`, then decoys.
+fn int_list(len: i64) -> Value {
+    let ids = (1..=len).map(|i| Value::Int(if i <= BOUND_HIT_AGES { i } else { 1000 + i }));
+    Value::List(ids.collect::<Vec<_>>().into())
+}
+
+/// `len` distinct strings, the real gender `man` mid-list, each decoy
+/// zero-padded to `width` digits.
+fn string_list(len: i64, width: usize) -> Value {
+    let names = (0..len).map(|i| {
+        let name = if i == len / 2 {
+            "man".to_owned()
+        } else {
+            format!("decoy-{i:0>width$}")
+        };
+        Value::String(name.into())
+    });
+    Value::List(names.collect::<Vec<_>>().into())
 }
 
 /// The distance, in ids, from a pair group's start to its `$to` end: a
@@ -111,6 +178,7 @@ impl Group {
         let (last, parameterised) = match self.binds {
             Binds::None => (1, false),
             Binds::Start(n) | Binds::Pair(n) => (n, true),
+            Binds::IntListOf(_) | Binds::StringListOf { .. } | Binds::Text => (1, false),
         };
         (1..=last).map(move |s| parameterised.then_some(s))
     }
@@ -126,19 +194,60 @@ impl Group {
     fn params(&self, start: Option<u64>) -> BTreeMap<String, Value> {
         let int = |n: u64| Value::Int(i64::try_from(n).expect("start ids are small"));
         let mut params = BTreeMap::new();
-        if let Some(s) = start {
-            params.insert("id".to_owned(), int(s));
-            if matches!(self.binds, Binds::Pair(_)) {
+        match self.binds {
+            Binds::None => {}
+            Binds::Start(_) => {
+                params.insert(
+                    "id".to_owned(),
+                    int(start.expect("a Start group has a start id")),
+                );
+            }
+            Binds::Pair(_) => {
+                let s = start.expect("a Pair group has a start id");
+                params.insert("id".to_owned(), int(s));
                 params.insert("to".to_owned(), int(s + PAIR_OFFSET));
+            }
+            // Ages past 100 never occur, so the decoys start at 1000.
+            Binds::IntListOf(len) => {
+                params.insert("ids".to_owned(), int_list(len));
+            }
+            Binds::StringListOf { len, width } => {
+                params.insert("names".to_owned(), string_list(len, width));
+            }
+            Binds::Text => {
+                params.insert("p".to_owned(), Value::String("abc".into()));
             }
         }
         params
     }
 }
 
+/// A datetime-shaped text expression of the integer expression `$x`, built by
+/// the constructor `$f`: `$base + $x / 3600` is the year, `$x / 60 % 60` the
+/// minute and `$x % 60` the second, so every `$x` in a run of 3600 * 9000
+/// values spells a distinct text. The `memmemo_*` groups feed it to
+/// `datetime` (the hashed memo's one consumer) and, as the control with the
+/// same parse cost and no memo, to `localdatetime`.
+macro_rules! ts {
+    ($f:literal, $base:literal, $x:literal) => {
+        concat!(
+            $f,
+            "(toString(",
+            $base,
+            " + ",
+            $x,
+            " / 3600) + '-01-01T00:' + substring(toString(100 + (",
+            $x,
+            " / 60) % 60), 1) + ':' + substring(toString(100 + ",
+            $x,
+            " % 60), 1) + 'Z')"
+        )
+    };
+}
+
 /// Start ids 1.. are the fixture's hub-heavy head (i^-0.4 weights), the
 /// shape multi-hop expansion cost hangs on.
-const GROUPS: [Group; 24] = [
+const GROUPS: [Group; 36] = [
     Group {
         name: "count",
         query: "MATCH (n:User) RETURN count(*)",
@@ -307,6 +416,130 @@ const GROUPS: [Group; 24] = [
         rounds: 10,
         binds: Binds::None,
     },
+    // The bound-list membership groups (the IN index): `x IN $list` over a
+    // 2000-member client list, ints over the indexed `age` and strings over
+    // the stored `gender`.
+    Group {
+        name: "in_param_ints",
+        query: "MATCH (n:User) WHERE n.age IN $ids RETURN count(n)",
+        rounds: 10,
+        binds: Binds::IntListOf(BOUND_LIST_LEN),
+    },
+    Group {
+        name: "in_param_strings",
+        query: "MATCH (n:User) WHERE n.gender IN $names RETURN count(n)",
+        rounds: 10,
+        binds: Binds::StringListOf { len: BOUND_LIST_LEN, width: 0 },
+    },
+    // The memory groups (`memmemo_*`): they stress what a memo tier retains,
+    // not how fast it answers. Read the `live_peak` column (the counting
+    // allocator's high-water live bytes over the statement, minus the live
+    // bytes before it) and `rss_peak` (run one group per process); the
+    // `_control` twin of a group runs the same statement shape on an
+    // expression no memo wraps, so the difference is the memo's cost.
+    //
+    // Group 1: 300,000 distinct datetime texts, far past what the 8 MiB
+    // per-table ceiling holds, so the table fills, stops inserting and keeps
+    // missing.
+    Group {
+        name: "memmemo_datetime_distinct",
+        query: concat!(
+            "UNWIND range(1, 300000) AS i WITH i WHERE ",
+            ts!("datetime", "1000", "i"),
+            ".year >= 1000 RETURN count(i)"
+        ),
+        rounds: 3,
+        binds: Binds::None,
+    },
+    Group {
+        name: "memmemo_datetime_control",
+        query: concat!(
+            "UNWIND range(1, 300000) AS i WITH i WHERE ",
+            ts!("localdatetime", "1000", "i"),
+            ".year >= 1000 RETURN count(i)"
+        ),
+        rounds: 3,
+        binds: Binds::None,
+    },
+    // Group 2: a distinct regex per row (10,000 patterns against the
+    // 8-pattern cache): every probe evicts and recompiles.
+    Group {
+        name: "memmemo_regex_distinct",
+        query: "MATCH (n:User) WHERE n.gender =~ ('man|u' + toString(n.id)) RETURN count(n)",
+        rounds: 3,
+        binds: Binds::None,
+    },
+    // Group 3: large bound lists. Ints and strings at the index's 65,536
+    // member cap; then 40,000 38-byte strings (1.5 MiB), just over the
+    // index's 1 MiB string-byte cap, which must decline to the scan.
+    Group {
+        name: "memmemo_in_ints_64k",
+        query: "MATCH (n:User) WHERE n.age IN $ids RETURN count(n)",
+        rounds: 3,
+        binds: Binds::IntListOf(65_536),
+    },
+    Group {
+        name: "memmemo_in_strings_64k",
+        query: "MATCH (n:User) WHERE n.gender IN $names RETURN count(n)",
+        rounds: 3,
+        binds: Binds::StringListOf { len: 65_536, width: 0 },
+    },
+    Group {
+        name: "memmemo_in_strings_overcap",
+        query: "MATCH (n:User) WHERE n.gender IN $names RETURN count(n)",
+        rounds: 3,
+        binds: Binds::StringListOf { len: 40_000, width: 32 },
+    },
+    // Group 4: several memo sites in one statement over a hub expansion: the
+    // regex cache, the 64k IN index and a per-edge distinct datetime, so the
+    // sites share the 16 MiB per-query budget.
+    Group {
+        name: "memmemo_sites_combined",
+        query: concat!(
+            "MATCH (a:User)-[:Friend]->(b:User), (a)<-[:Friend]-(b) ",
+            "WHERE b.gender =~ 'm.*' AND b.age IN $ids AND ",
+            ts!("datetime", "1000", "(a.id * 7 + b.id)"),
+            ".year >= 1000 RETURN count(b)"
+        ),
+        rounds: 2,
+        binds: Binds::IntListOf(65_536),
+    },
+    // Group 5: three WITH stages, each with its own datetime memo over its
+    // own distinct texts (100,000 per stage), the same budget under three
+    // tables. The harness holds one connection, so concurrent statements are
+    // not measured.
+    Group {
+        name: "memmemo_with_chain",
+        query: concat!(
+            "UNWIND range(1, 100000) AS i WITH i WHERE ",
+            ts!("datetime", "1000", "i"),
+            ".year >= 1000 WITH i WHERE ",
+            ts!("datetime", "2000", "i"),
+            ".year >= 1000 WITH i WHERE ",
+            ts!("datetime", "3000", "i"),
+            ".year >= 1000 RETURN count(i)"
+        ),
+        rounds: 3,
+        binds: Binds::None,
+    },
+    // Group 6: the row-invariant baseline a future hoist compares against:
+    // the same constant sub-expression in WHERE and RETURN over every row.
+    Group {
+        name: "memmemo_invariant_heavy",
+        query: "MATCH (n:User) WHERE toUpper($p) + toString(1 + 2) = 'ABC3' AND n.age > 0 \
+                RETURN sum(size(toUpper($p) + toString(1 + 2)))",
+        rounds: 10,
+        binds: Binds::Text,
+    },
+    Group {
+        name: "memmemo_invariant_heavy_x4",
+        query: "MATCH (n:User) WHERE toUpper($p) + toString(1 + 2) = 'ABC3' \
+                AND size(toUpper($p) + toString(1 + 2)) = 4 AND n.age > 0 \
+                RETURN sum(size(toUpper($p) + toString(1 + 2)) \
+                + size(toLower(toUpper($p)) + toString(1 + 2)))",
+        rounds: 10,
+        binds: Binds::Text,
+    },
 ];
 
 /// The fixture shape to open.
@@ -340,7 +573,8 @@ struct Args {
     /// `expansion_3_unrolled`, `scan_expand_2hop_filter`, `shortest_pair`,
     /// `shortest_path_fn`, `shortest_expr`, `all_shortest_paths`,
     /// `shortest_postfix`, `shortest_fan`, `shortest_all_pairs`, and the
-    /// `memo_*` expression groups); every group when omitted.
+    /// `memo_*` expression groups, the bound-list groups and the
+    /// `memmemo_*` memory groups); every group when omitted.
     #[arg(long, value_parser = group_by_name)]
     group: Option<&'static Group>,
     /// Run the selected groups under the in-process sampler and write
@@ -485,12 +719,17 @@ fn run_timed(conn: &mut Connection, g: &Group, sample_dir: Option<&Path>) -> Res
         None => measure(conn, g)?,
     };
     println!(
-        "{}: {} ms rows={} checksum={} alloc_bytes={}",
+        "{}: {} ms rows={} checksum={} alloc_bytes={} live_peak={} live_end={} \
+         rss_base={} rss_peak={}",
         g.name,
         m.elapsed.as_millis(),
         m.rows,
         m.checksum,
-        m.alloc_bytes
+        m.alloc_bytes,
+        m.live_peak,
+        m.live_end,
+        m.rss_base,
+        m.rss_peak
     );
     Ok(())
 }
@@ -526,10 +765,21 @@ struct Measured {
     checksum: i64,
     elapsed: Duration,
     alloc_bytes: u64,
+    /// High-water live heap bytes over the rounds, minus the live bytes
+    /// before them.
+    live_peak: i64,
+    /// Live heap bytes after the rounds, minus the live bytes before them.
+    live_end: i64,
+    /// The process's peak RSS before the rounds and after them.
+    rss_base: u64,
+    rss_peak: u64,
 }
 
 /// Run `g`'s measured rounds.
 fn measure(conn: &mut Connection, g: &Group) -> Result<Measured> {
+    let live_before = LIVE_BYTES.load(Ordering::Relaxed);
+    reset_peak();
+    let rss_base = peak_rss_bytes();
     let t = Instant::now();
     let bytes_before = ALLOC_BYTES.load(Ordering::Relaxed);
     let mut rows = 0i64;
@@ -552,6 +802,10 @@ fn measure(conn: &mut Connection, g: &Group) -> Result<Measured> {
         checksum,
         elapsed: t.elapsed(),
         alloc_bytes: ALLOC_BYTES.load(Ordering::Relaxed) - bytes_before,
+        live_peak: PEAK_LIVE_BYTES.load(Ordering::Relaxed) - live_before,
+        live_end: LIVE_BYTES.load(Ordering::Relaxed) - live_before,
+        rss_base,
+        rss_peak: peak_rss_bytes(),
     })
 }
 
@@ -597,7 +851,7 @@ mod tests {
             );
             assert_eq!(
                 params.contains_key("id"),
-                g.binds != Binds::None,
+                matches!(g.binds, Binds::Start(_) | Binds::Pair(_)),
                 "{}",
                 g.name
             );
