@@ -12,10 +12,9 @@ use std::net::TcpStream;
 use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
-    connected_client_with, drain_all, field, read_msg, send_run, send_run_at, success_map,
+    connected_client_with, drain_all, field, read_msg, send_run, send_run_with, success_map,
     two_label_db, TWO_LABEL_CARTESIAN,
 };
-use crate::version::BoltVersion;
 
 /// Send `cypher` as a RUN and return its SUCCESS map.
 fn run_success(client: &mut TcpStream, cypher: &str) -> Pack {
@@ -520,7 +519,7 @@ fn run_success_carries_the_engine_column_types() {
         let expected: Vec<String> = conn.query(cypher).unwrap().header.column_types.clone();
         drop(conn);
 
-        send_run_at(&mut client, BoltVersion::V4_4, cypher, None);
+        send_run_with(&mut client, cypher, None);
         let run = Pack::Map(success_map(read_msg(&mut client)));
         let column_types = column_types_strings(&run);
         assert_eq!(column_types, expected, "{cypher}");

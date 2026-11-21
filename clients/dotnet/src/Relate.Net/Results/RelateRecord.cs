@@ -101,16 +101,18 @@ internal sealed class RecordSchema
     internal RecordSchema(string[] columns)
     {
         Columns = Array.AsReadOnly(columns);
-        IndexByName = new Dictionary<string, int>(columns.Length, StringComparer.Ordinal);
+        var index = new Dictionary<string, int>(columns.Length, StringComparer.Ordinal);
         for (int i = 0; i < columns.Length; i++)
         {
             // The front-end rejects duplicate output names, so a duplicate column is contract
             // drift: throw at the boundary rather than silently keeping the first index.
-            IndexByName.Add(columns[i], i);
+            index.Add(columns[i], i);
         }
+
+        IndexByName = index;
     }
 
     internal IReadOnlyList<string> Columns { get; }
 
-    internal Dictionary<string, int> IndexByName { get; }
+    internal IReadOnlyDictionary<string, int> IndexByName { get; }
 }

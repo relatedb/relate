@@ -8,9 +8,9 @@
 use super::*;
 use crate::dialect::Dialect;
 use crate::param_structs::{struct_to_value, ParamPath};
-use crate::testutil::wrapped_in_lists;
 use crate::value_codec::{MdbPackError, ValueCodec};
 use relate::Value;
+use relate_test_support::values::wrapped_in_lists;
 
 /// Evaluate `expr` in the engine and return the single value.
 fn eval(expr: &str) -> Value {

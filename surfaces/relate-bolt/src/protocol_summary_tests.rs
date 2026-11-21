@@ -11,11 +11,10 @@ use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
     bookmark_sequence, connected_client, connected_client_with, field, keys, map, read_msg,
-    read_records, send_begin, send_commit, send_pull, send_rollback, send_run, send_run_at,
+    read_records, send_begin, send_commit, send_pull, send_rollback, send_run, send_run_with,
     success_map,
 };
 use crate::value_codec::ValueCodec;
-use crate::version::BoltVersion;
 
 /// The ADR-0491 phase keys, in their wire order beside `t_last`.
 const PHASE_KEYS: [&str; 3] = ["parsing_time", "planning_time", "plan_execution_time"];
@@ -421,7 +420,7 @@ fn bookmarks_are_the_engine_commit_sequence() {
     send_begin(
         &mut client,
         vec![(
-            Pack::String("bookmarks".into()),
+            "bookmarks",
             Pack::List(vec![Pack::String(format!("relate:{third}"))]),
         )],
     );
@@ -479,7 +478,7 @@ fn the_ending_success_carries_the_query_type() {
         ("PROFILE MATCH (n) RETURN n", "r"),
         ("PROFILE MATCH (n) SET n.x = 1 RETURN n", "rw"),
     ] {
-        send_run_at(&mut client, BoltVersion::V4_4, cypher, None);
+        send_run_with(&mut client, cypher, None);
         let run = Pack::Map(success_map(read_msg(&mut client)));
         assert!(
             run.get("type").is_none(),

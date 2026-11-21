@@ -94,7 +94,7 @@ pub(crate) fn test_bolt_agent() -> Pack {
 /// A HELLO extra map: the required `user_agent` (ADR-0313) plus `entries`
 /// — [`hello_extra_at`] at 4.4, where the fixtures keep their historical
 /// shape.
-pub fn hello_extra(entries: Vec<(Pack, Pack)>) -> Pack {
+pub fn hello_extra(entries: Vec<(&str, Pack)>) -> Pack {
     hello_extra_at(BoltVersion::V4_4, entries)
 }
 
@@ -118,9 +118,9 @@ fn required_hello_entries(version: BoltVersion) -> Vec<(Pack, Pack)> {
 /// required-key prepend policy. An extra key a 4.4 HELLO does not know
 /// is ignored, so the 5.x map is valid there too; the 4.4 fixtures keep
 /// their historical shape through [`hello_extra`], its 4.4 delegation.
-pub(crate) fn hello_extra_at(version: BoltVersion, entries: Vec<(Pack, Pack)>) -> Pack {
+pub(crate) fn hello_extra_at(version: BoltVersion, entries: Vec<(&str, Pack)>) -> Pack {
     let mut map = required_hello_entries(version);
-    map.extend(entries);
+    map.extend(pack_entries(entries));
     Pack::Map(map)
 }
 
@@ -210,7 +210,7 @@ pub fn connected_client_with_hello(
 fn send_hello_at<S: Read + Write>(
     client: &mut S,
     version: BoltVersion,
-    entries: Vec<(Pack, Pack)>,
+    entries: Vec<(&str, Pack)>,
 ) {
     send_struct(
         client,
@@ -225,7 +225,7 @@ fn send_hello_at<S: Read + Write>(
 /// LOGON that opens the session, `{"scheme": "none"}`, which
 /// authenticates under the fixtures' auth-none config — the tail
 /// [`open_client_db_at`] wraps behind the preamble.
-fn open_session_at(client: &mut TcpStream, version: BoltVersion, entries: Vec<(Pack, Pack)>) {
+fn open_session_at(client: &mut TcpStream, version: BoltVersion, entries: Vec<(&str, Pack)>) {
     send_hello_at(client, version, entries);
     if version.speaks_5x() {
         send_logon(client, vec![("scheme", Pack::String("none".into()))]);
@@ -256,7 +256,7 @@ fn open_client_db_at(
     db: std::sync::Arc<relate::Database>,
     config: crate::protocol::ConnConfig,
     version: BoltVersion,
-    entries: Vec<(Pack, Pack)>,
+    entries: Vec<(&str, Pack)>,
 ) -> TcpStream {
     let mut client = handshaken_db_at(db, config, version);
     open_session_at(&mut client, version, entries);
@@ -281,7 +281,7 @@ pub(crate) fn connected_client_at(version: BoltVersion) -> TcpStream {
 pub(crate) fn connected_client_at_with(
     db: std::sync::Arc<relate::Database>,
     version: BoltVersion,
-    entries: Vec<(Pack, Pack)>,
+    entries: Vec<(&str, Pack)>,
 ) -> TcpStream {
     open_client_db_at(db, Default::default(), version, entries)
 }
@@ -366,4 +366,4 @@ pub fn engine_error(cypher: &str) -> String {
 }
 
 mod wire;
-pub use wire::*;
+pub(crate) use wire::*;

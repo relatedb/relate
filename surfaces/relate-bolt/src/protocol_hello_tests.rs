@@ -10,8 +10,9 @@ use crate::failures::{FAILED_HELLO_DELAY_MS, REQUEST_INVALID_CODE};
 use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
-    assert_closes, assert_ignored, failure_map, field, handshaken, hello_extra_at_overriding, map,
-    read_msg, send_pull, send_reset, send_run, send_struct, success_map,
+    assert_breach, assert_closes, assert_ignored, failure_map, field, handshaken,
+    hello_extra_at_overriding, map, read_msg, send_pull, send_reset, send_run, send_struct,
+    success_map,
 };
 use crate::version::BoltVersion;
 
@@ -131,18 +132,12 @@ fn hello_without_user_agent_is_rejected() {
         assert_ignored(&mut client, "RESET after a rejected HELLO");
         send_run(&mut client, "RETURN 1 AS x");
         assert_ignored(&mut client, "RUN after a rejected HELLO");
-        send_struct(
+        assert_breach(
             &mut client,
-            Message::Hello.signature(),
+            Message::Hello,
             crate::testutil::hello_fields(),
+            "AUTHENTICATION",
         );
-        let failure = failure_map(read_msg(&mut client));
-        assert_eq!(field(&failure, "code"), REQUEST_INVALID_CODE);
-        assert_eq!(
-            field(&failure, "message"),
-            "Message of type HelloMessage cannot be handled by a session in the AUTHENTICATION state."
-        );
-        assert_closes(&mut client, "a second HELLO after a rejected one closes");
     }
 }
 

@@ -1,7 +1,7 @@
 use super::*;
 use crate::packstream::{decode, encode, MAX_DEPTH};
-use crate::testutil::wrapped_in_lists;
 use relate::Value;
+use relate_test_support::values::wrapped_in_lists;
 
 /// ADR-0328: a byte array result is PackStream Bytes, with the shortest
 /// length marker, at any depth.

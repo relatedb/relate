@@ -8,10 +8,9 @@ use crate::failures::REQUEST_INVALID_CODE;
 use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
-    assert_closes, failure_map, field, read_msg, read_records, send_begin, send_commit, send_pull,
-    send_reset, send_rollback, send_run_at, send_struct, success_map,
+    assert_closes, failure_map, field, read_msg, read_records, read_route_rt, send_begin,
+    send_commit, send_pull, send_reset, send_rollback, send_run_with, send_struct, success_map,
 };
-use crate::version::BoltVersion;
 use std::net::TcpStream;
 
 /// Send HELLO and return its SUCCESS metadata map.
@@ -29,15 +28,15 @@ fn hello(client: &mut TcpStream) -> Vec<(Pack, Pack)> {
 type RunAndPull = (Vec<(Pack, Pack)>, Vec<Pack>, Vec<(Pack, Pack)>);
 
 /// Send RUN `cypher` at 4.4 — `extra` as its extra map through testutil's
-/// [`send_run_at`], no extra map at all when `None` — then PULL -1;
+/// [`send_run_with`], no extra map at all when `None` — then PULL -1;
 /// return the RUN SUCCESS map, the RECORD first columns, and the final
 /// PULL SUCCESS map.
 fn run_and_pull(
     client: &mut TcpStream,
     cypher: &str,
-    extra: Option<Vec<(Pack, Pack)>>,
+    extra: Option<Vec<(&str, Pack)>>,
 ) -> RunAndPull {
-    send_run_at(client, BoltVersion::V4_4, cypher, extra);
+    send_run_with(client, cypher, extra);
     let run_success = success_map(read_msg(client));
     send_pull(client, Message::Pull, vec![("n", Pack::Int(-1))]);
     let (records, summary) = read_records(client);
@@ -56,8 +55,8 @@ fn success_db(m: &[(Pack, Pack)]) -> &str {
         .unwrap_or_else(|| panic!("SUCCESS must carry db: {m:?}"))
 }
 
-fn db_extra(db: Pack) -> Vec<(Pack, Pack)> {
-    vec![(Pack::String("db".into()), db)]
+fn db_extra(db: Pack) -> Vec<(&'static str, Pack)> {
+    vec![("db", db)]
 }
 
 /// One fresh server plus one handshook client — the fixture every namespace
@@ -134,9 +133,8 @@ fn unknown_db_on_run_or_begin_fails_with_the_ce_text() {
     let expected_suffix = "Graph not found: nosuch";
 
     // Unknown db on an auto-commit RUN.
-    send_run_at(
+    send_run_with(
         &mut client,
-        BoltVersion::V4_4,
         "RETURN 1 AS n",
         Some(db_extra(Pack::String("nosuch".into()))),
     );
@@ -178,9 +176,8 @@ fn non_canonical_db_casing_echoes_the_canonical_namespace() {
     let mut client = crate::testutil::connected_client();
 
     // The driver sends non-canonical casing; the engine canonicalizes.
-    send_run_at(
+    send_run_with(
         &mut client,
-        BoltVersion::V4_4,
         "SHOW DATABASES",
         Some(db_extra(Pack::String("SYSTEM".into()))),
     );
@@ -224,9 +221,8 @@ fn use_target_query_echoes_the_namespace_the_query_ran_in() {
 
     // DISCARD with a pending result also echoes the USE target, not the
     // session namespace.
-    send_run_at(
+    send_run_with(
         &mut client,
-        BoltVersion::V4_4,
         "USE system CALL db.info() YIELD name RETURN name",
         None,
     );
@@ -236,7 +232,7 @@ fn use_target_query_echoes_the_namespace_the_query_ran_in() {
     assert_eq!(success_db(&discard), "system");
 
     // A statement without USE echoes the session namespace on DISCARD.
-    send_run_at(&mut client, BoltVersion::V4_4, "RETURN 1 AS n", None);
+    send_run_with(&mut client, "RETURN 1 AS n", None);
     success_map(read_msg(&mut client));
     send_pull(&mut client, Message::Discard, vec![]);
     let discard = success_map(read_msg(&mut client));
@@ -262,9 +258,8 @@ fn discard_success_carries_db_and_hello_is_unchanged() {
         "HELLO must not carry db: {hello:?}"
     );
 
-    send_run_at(
+    send_run_with(
         &mut client,
-        BoltVersion::V4_4,
         "SHOW DATABASES",
         Some(db_extra(Pack::String("system_ontologies".into()))),
     );
@@ -282,12 +277,8 @@ fn discard_success_carries_db_and_hello_is_unchanged() {
         Message::Route.signature(),
         vec![Pack::Map(vec![])],
     );
-    let route = Pack::Map(success_map(read_msg(&mut client)));
-    let rt = route
-        .get("rt")
-        .and_then(Pack::as_map)
-        .expect("ROUTE answers a routing table");
-    assert_eq!(success_db(rt), "neo4j");
+    let rt = read_route_rt(&mut client);
+    assert_eq!(field(&rt, "db"), "neo4j");
 }
 
 #[test]

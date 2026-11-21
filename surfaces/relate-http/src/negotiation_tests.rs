@@ -273,6 +273,30 @@ fn the_exact_browser_connectivity_probe_decodes() {
     assert_eq!(body["bookmarks"], json!([]));
 }
 
+/// Walk every plan node and state each structural field's shape: `arguments`
+/// is an object, `identifiers` and `children` are arrays, `warnings` is
+/// absent or an array — none carrying a `$type` tag under the typed encoding.
+fn assert_plain_structural_fields(node: &serde_json::Value) {
+    let plain = |field: &str| {
+        let value = &node[field];
+        assert!(
+            value.get("$type").is_none(),
+            "{field} is a plain container under the typed encoding: {value:?}"
+        );
+        value
+    };
+    assert!(plain("arguments").is_object(), "arguments: {node:?}");
+    assert!(plain("identifiers").is_array(), "identifiers: {node:?}");
+    let warnings = plain("warnings");
+    assert!(
+        warnings.is_null() || warnings.is_array(),
+        "warnings: {node:?}"
+    );
+    for child in plain("children").as_array().expect("children: an array") {
+        assert_plain_structural_fields(child);
+    }
+}
+
 #[test]
 fn the_typed_plan_keeps_every_structural_field_plain() {
     // The typed media type (what Browser negotiates) decodes with its
@@ -301,23 +325,11 @@ fn the_typed_plan_keeps_every_structural_field_plain() {
     assert_eq!(reply.content_type, "application/vnd.neo4j.query");
     let body = body_json(&reply);
     let plan = &body["queryPlan"];
-    for field in ["arguments", "identifiers", "children", "warnings"] {
-        let value = &plan[field];
-        if value.is_null() {
-            continue;
-        }
-        assert!(
-            value.get("$type").is_none(),
-            "{field} is a plain container under the typed encoding: {value:?}"
-        );
-    }
-    assert!(plan["arguments"].is_object());
-    assert!(plan["identifiers"].is_array());
+    assert_plain_structural_fields(plan);
     assert!(plan["dbHits"].is_number());
     assert!(plan["time"].is_number());
     // The AllNodesScan warning rides the scan node (the root's child),
     // plain like every other structural field.
     let warnings = &plan["children"][0]["warnings"];
     assert!(warnings.is_array(), "the scan warns: {plan:?}");
-    assert!(warnings[0].get("$type").is_none(), "{warnings:?}");
 }

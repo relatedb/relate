@@ -96,20 +96,19 @@ internal static class ValueConverter
         }
 
         // One fill loop; an array target copies the filled list into its final shape.
-        if (!type.IsSZArray)
-        {
-            result = typed;
-            return true;
-        }
+        result = type.IsSZArray ? ToArray(typed, element) : typed;
+        return true;
+    }
 
+    private static Array ToArray(IList typed, Type element)
+    {
         Array array = Array.CreateInstance(element, typed.Count);
         for (int i = 0; i < typed.Count; i++)
         {
             array.SetValue(typed[i], i);
         }
 
-        result = array;
-        return true;
+        return array;
     }
 
     /// <summary>
@@ -161,19 +160,4 @@ internal static class ValueConverter
         result = typed;
         return true;
     }
-}
-
-/// <summary>Formats values Cypher-style for <c>ToString()</c> diagnostics.</summary>
-internal static class ValueFormatter
-{
-    internal static string Format(object? value) => value switch
-    {
-        null => "null",
-        string s => $"'{s.Replace("'", "\\'", StringComparison.Ordinal)}'",
-        bool b => b ? "true" : "false",
-        IReadOnlyDictionary<string, object?> map => "{" + string.Join(", ", map.Select(e => $"{e.Key}: {Format(e.Value)}")) + "}",
-        IEnumerable list and not string => "[" + string.Join(", ", list.Cast<object?>().Select(Format)) + "]",
-        IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
-        _ => value.ToString() ?? string.Empty,
-    };
 }

@@ -8,9 +8,9 @@ use std::net::TcpStream;
 /// The module's HELLO extra: the canonical `user_agent` map (ADR-0313)
 /// plus `scheme` and the optional `patch_bolt` entry.
 fn hello_extra(patch_bolt: Option<Pack>) -> Pack {
-    let mut entries = vec![(Pack::String("scheme".into()), Pack::String("none".into()))];
+    let mut entries = vec![("scheme", Pack::String("none".into()))];
     if let Some(patch_bolt) = patch_bolt {
-        entries.push((Pack::String("patch_bolt".into()), patch_bolt));
+        entries.push(("patch_bolt", patch_bolt));
     }
     crate::testutil::hello_extra(entries)
 }
