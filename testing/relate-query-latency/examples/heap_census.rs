@@ -224,42 +224,26 @@ fn print_census(c: &HeapCensus) {
         c.rel_record_bytes,
         format!("{} props, {} string bytes", c.rel_props, c.rel_string_bytes),
     );
-    line(
-        "out adjacency (delta)",
-        c.out.delta_bytes,
-        format!(
-            "{} nodes, {} hops, {} chunks ({} sealed)",
-            c.out.nodes, c.out.hops, c.out.chunks, c.out.sealed_chunks
-        ),
-    );
-    line(
-        "out adjacency (sealed)",
-        c.out.sealed_bytes(),
-        format!(
-            "arena {:.1} MB, index {:.1} MB, dead {:.1} MB",
-            mb(c.out.arena_bytes),
-            mb(c.out.index_bytes),
-            mb(c.out.dead_bytes)
-        ),
-    );
-    line(
-        "in adjacency (delta)",
-        c.r#in.delta_bytes,
-        format!(
-            "{} nodes, {} hops, {} chunks ({} sealed)",
-            c.r#in.nodes, c.r#in.hops, c.r#in.chunks, c.r#in.sealed_chunks
-        ),
-    );
-    line(
-        "in adjacency (sealed)",
-        c.r#in.sealed_bytes(),
-        format!(
-            "arena {:.1} MB, index {:.1} MB, dead {:.1} MB",
-            mb(c.r#in.arena_bytes),
-            mb(c.r#in.index_bytes),
-            mb(c.r#in.dead_bytes)
-        ),
-    );
+    for (name, side) in [("out", &c.out), ("in", &c.r#in)] {
+        line(
+            &format!("{name} adjacency (delta)"),
+            side.delta_bytes,
+            format!(
+                "{} nodes, {} hops ({} sealed), {} chunks ({} sealed)",
+                side.nodes, side.hops, side.sealed_hops, side.chunks, side.sealed_chunks
+            ),
+        );
+        line(
+            &format!("{name} adjacency (sealed)"),
+            side.sealed_bytes(),
+            format!(
+                "arena {:.1} MB, index {:.1} MB, dead {:.1} MB",
+                mb(side.arena_bytes),
+                mb(side.index_bytes),
+                mb(side.dead_bytes)
+            ),
+        );
+    }
     line(
         "label index (est.)",
         c.label_index_bytes,

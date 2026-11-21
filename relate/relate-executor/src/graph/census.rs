@@ -75,7 +75,9 @@ pub struct HeapCensus {
 /// One direction's adjacency: node count, chunk/hop counts, and the floor
 /// split (ADR-0599). Both directions go through [`Self::of`]. Hops count the
 /// live delta and the sealed stream (`TypedAdj::chunk_lens`), so a folded
-/// chunk keeps its degree; `sealed_chunks` names how many are folded. The
+/// chunk keeps its degree; `sealed_chunks` names how many are folded and
+/// `sealed_hops` the sealed share of `hops` (the hop-weighted sealed
+/// coverage numerator, `sealed_hops / hops` over a side). The
 /// byte terms partition the tier's whole floor: `delta_bytes` is the delta
 /// map's slot array plus every chunk's reserved heap; the sealed tier is
 /// `arena_bytes` charged at the exact encoded length plus `index_bytes` the
@@ -88,6 +90,8 @@ pub struct AdjacencyCensus {
     pub chunks: u64,
     pub sealed_chunks: u64,
     pub hops: u64,
+    /// The sealed share of `hops` — one sum of `chunk_lens`' sealed halves.
+    pub sealed_hops: u64,
     pub delta_bytes: u64,
     pub arena_bytes: u64,
     pub index_bytes: u64,
@@ -114,10 +118,10 @@ impl AdjacencyCensus {
             c.nodes += 1;
             c.chunks += adj.chunks.len() as u64;
             c.sealed_chunks += region.map_or(0, |s| s.chunk_count()) as u64;
-            c.hops += adj
-                .chunk_lens(region)
-                .map(|(_, delta, sealed)| (delta + sealed) as u64)
-                .sum::<u64>();
+            for (_, delta, sealed) in adj.chunk_lens(region) {
+                c.hops += (delta + sealed) as u64;
+                c.sealed_hops += sealed as u64;
+            }
             c.delta_bytes += adj.floor_bytes();
         });
         c.delta_bytes += side.delta().array_bytes();
@@ -276,8 +280,10 @@ mod tests {
         let c = g.heap_census();
         let floor = crate::adjacency::COMPACTION_DELTA_FLOOR as u64;
         assert_eq!(c.out.hops, floor, "sealed hops still count");
+        assert_eq!(c.out.sealed_hops, floor, "the whole side is sealed");
         assert_eq!(c.out.sealed_chunks, 1);
         assert_eq!(c.r#in.hops, floor);
+        assert_eq!(c.r#in.sealed_hops, floor);
         assert_eq!(c.r#in.sealed_chunks, 1);
     }
 
@@ -304,9 +310,17 @@ mod tests {
         g.commit_write();
 
         let c = g.heap_census();
+        let floor = crate::adjacency::COMPACTION_DELTA_FLOOR as u64;
         for side in [&c.out, &c.r#in] {
             assert!(side.chunks > 0, "a delta chunk exists");
             assert!(side.hops > 0, "sealed plus delta hops exist");
+            // The sealed floor chunk plus one delta hop: coverage is the
+            // sealed share of the side's hops.
+            assert_eq!(
+                side.sealed_hops, floor,
+                "the folded chunk's hops are the sealed share"
+            );
+            assert_eq!(side.hops, floor + 1, "one delta hop sits beside it");
             assert!(side.delta_bytes > 0, "the delta tier holds the fresh hop");
             assert!(side.arena_bytes > 0, "the arena holds the folded stream");
             assert!(side.index_bytes > 0, "the fold created an entry and span");

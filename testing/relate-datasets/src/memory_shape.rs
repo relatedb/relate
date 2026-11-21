@@ -26,7 +26,7 @@ use relate_test_support::relate_bin_or_default;
 mod progress;
 use crate::shapes::{
     census, mid_degree_hops, rss_matrix, FillCursor, GraphShape, IndexCounts, ShapeScale,
-    DEFAULT_LOGICAL_TARGET_BYTES, DEFAULT_NODE_ATTRIBUTES,
+    DEFAULT_LOGICAL_TARGET_BYTES, DEFAULT_NODE_ATTRIBUTES, MID_DEGREE_LARGE_NODES,
 };
 use progress::{
     abbreviate, begin_phase, begin_statement, clear_active, end_statement, format_elapsed, mark,
@@ -449,16 +449,13 @@ fn shape_target(shape: GraphShape) -> ShapeTarget {
             nodes: 5_000,
             rels: 100_000,
         },
-        // 74 whole ladder groups: 1,184 nodes and exactly 96 × 1,184 hops —
-        // the census solver's own answer at the 32 MiB default, rounded to
-        // groups so the average-degree charge stays exact.
-        GraphShape::MidDegree => {
-            let nodes = 1_184u32;
-            ShapeTarget {
-                nodes: u64::from(nodes),
-                rels: mid_degree_hops(nodes),
-            }
-        }
+        // 77 whole ladder groups: the census solver's own answer at the
+        // 32 MiB default, rounded to groups so the average-degree charge
+        // stays exact.
+        GraphShape::MidDegree => ShapeTarget {
+            nodes: u64::from(MID_DEGREE_LARGE_NODES),
+            rels: mid_degree_hops(MID_DEGREE_LARGE_NODES),
+        },
     }
 }
 

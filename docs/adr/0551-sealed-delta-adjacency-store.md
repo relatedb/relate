@@ -165,3 +165,7 @@ shared home in `relate-core` is rejected for now.
   consequence no longer holds. The floor, the horizon, the fold predicate
   and the sealed representation are unchanged, and the WAL tail replayed
   after a checkpoint still keeps its delta.
+- [ADR-0635](./0635-adaptive-stability-seal-floor.md) adapts the never-sealed
+  floor this ADR fixed at 32: a chunk whose length held across a checkpoint
+  interval seals at 8. The knee still governs growing chunks; the ratio
+  rule, horizon and sealed representation are unchanged.

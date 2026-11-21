@@ -51,6 +51,15 @@ use crate::memory::{vec_growth, vec_heap};
 /// (ADR-0551: the measured knee of the cutoff sweep).
 pub(crate) const COMPACTION_DELTA_FLOOR: usize = 32;
 
+/// A never-sealed chunk whose delta length held since the previous fold
+/// pass seals at this hop count instead of [`COMPACTION_DELTA_FLOOR`]: a
+/// chunk that stopped growing is at its steady state, so the knee's reason
+/// for waiting — a still-growing chunk would only re-fold later — is gone.
+/// The floor of 8 keeps the seal clear of the sub-8-hop band where the
+/// entry header outweighs the stream it buys (ADR-0551's sweep); the
+/// wholesale build keeps its own [`RESTORE_SEAL_HOPS`] gate.
+pub(crate) const STABILITY_SEAL_FLOOR: usize = 8;
+
 /// A rebuilt chunk whose delta reaches this hop count is sealed by the
 /// wholesale adjacency build's own pass (ADR-0599 / ADR-0608). The measured
 /// break-even from the seal-policy record: sealing swaps a chunk's 24 B/hop

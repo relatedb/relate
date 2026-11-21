@@ -99,8 +99,8 @@ type ModelChunks = Vec<(u32, Vec<ModelHop>)>;
 /// The chunks mirror the physical `TypedAdj` policy exactly: a delete only
 /// tombstones (the hop keeps its slot), while a reposition removes-then-
 /// reinserts and so drops an emptied chunk before pushing the type afresh
-/// at the end. Emptied chunks are dropped at comparison time, on both
-/// sides — that is the observable shape `for_each_typed_ends` exposes.
+/// at the end. Emptied chunks are dropped at comparison time, on both sides — that is
+/// the observable shape `for_each_typed_ends` exposes.
 #[derive(Debug, Default)]
 struct ModelAdj {
     /// `(node, is_outgoing)` → chunks.
@@ -273,12 +273,29 @@ fn observable(g: &Graph, node: NodeId, out: bool) -> ModelChunks {
 }
 
 /// The full-adjacency assertion after every op: every node's chunks, both
-/// directions, byte-identical between the real store and the model.
-fn assert_adjacency_eq(g: &Graph, model: &ModelAdj, nodes: &[NodeId]) {
+/// directions, byte-identical between the real store and the model, with
+/// `normalise` applied to both sides' chunk lists first.
+///
+/// The unfolded tests pass the identity — the store's chunk order is
+/// first-seen order and is pinned there. The confluence test passes a
+/// type-id sort: a fold moves a chunk's hops into the sealed stream, so the
+/// delta chunk that held them can be empty, and an emptied delta chunk is
+/// dropped only when no sealed stream covers the type (`TypedAdj::remove`)
+/// while a reposition of an already-sealed hop finds nothing in the delta
+/// at all. The reference model has no sealed tier and cannot reproduce that
+/// slot bookkeeping, and a node's chunk *order* is not part of the store's
+/// contract. Everything else stays exact: the chunk set, each chunk's hops
+/// and their order, both directions, dead hops filtered.
+fn assert_observed_eq(
+    g: &Graph,
+    model: &ModelAdj,
+    nodes: &[NodeId],
+    normalise: impl Fn(ModelChunks) -> ModelChunks,
+) {
     for &node in nodes {
         for out in [true, false] {
-            let real = observable(g, node, out);
-            let expected = model.observable(node, out);
+            let real = normalise(observable(g, node, out));
+            let expected = normalise(model.observable(node, out));
             assert_eq!(
                 real, expected,
                 "adjacency divergence for node {node} (out={out})"
@@ -377,7 +394,7 @@ proptest! {
         let mut live: Vec<RelId> = Vec::new();
         for op in &ops {
             apply_op(&g, &mut model, &nodes, &mut live, &type_ids, op);
-            assert_adjacency_eq(&g, &model, &nodes);
+            assert_observed_eq(&g, &model, &nodes, |chunks| chunks);
         }
     }
 
@@ -386,6 +403,8 @@ proptest! {
     /// reclaimable — and never moves observable adjacency. The never-folded
     /// model is the reference. Folding twice at the same watermark is the
     /// same as folding once (idempotence): the second pass finds nothing due.
+    /// Chunk *order* is compared canonically here — see
+    /// [`assert_observed_eq`].
     #[test]
     fn adjacency_model_proptest_compaction_confluence(
         steps in prop::collection::vec((adj_op_strategy(), any::<bool>()), 0..=200)
@@ -407,7 +426,10 @@ proptest! {
                 g.compact_adjacency_at_watermark(u64::MAX);
                 g.compact_adjacency_at_watermark(u64::MAX);
             }
-            assert_adjacency_eq(&g, &model, &nodes);
+            assert_observed_eq(&g, &model, &nodes, |mut chunks| {
+                chunks.sort_by_key(|(type_id, _)| *type_id);
+                chunks
+            });
         }
     }
 }

@@ -598,3 +598,48 @@ fn the_floor_charges_the_sealed_slot_arrays() {
         "the span tables are charged beside the arenas' floors"
     );
 }
+
+/// The adaptive seal floor (REL8-280): a mid-degree chunk — steady degree
+/// below the knee — survives the first checkpoint fold (which only notes
+/// its length) and seals at the next, no write in between. The knee's
+/// floor would leave it delta forever; a growing chunk never takes this
+/// path (the delta-tier test pins that half).
+#[test]
+fn the_stability_floor_seals_a_settled_mid_degree_chunk() {
+    let g = Graph::default();
+    let (a, b) = crate::graph::test_support::endpoints(&g);
+    // The settled length is the floor's, not a literal: the band's lower
+    // bound is the fact under test.
+    let settled = crate::adjacency::STABILITY_SEAL_FLOOR + 12;
+    g.begin_write().unwrap();
+    for i in 0..settled {
+        g.create_rel(
+            a,
+            b,
+            "T".into(),
+            BTreeMap::from([("ts".into(), Value::Int(i as i64))]),
+        )
+        .unwrap();
+    }
+    g.commit_write();
+    let type_id = g.interner.get_id("T").unwrap();
+    // First checkpoint: below the knee and unnoted — stays delta, takes
+    // its baseline.
+    g.gc_versions();
+    assert!(
+        g.out_side().sealed().region(a).is_none(),
+        "one pass only notes the baseline"
+    );
+    // No writes: the next checkpoint's fold sees the held length.
+    g.gc_versions();
+    assert_eq!(
+        crate::graph::test_support::sealed_chunk_len(&g.out_side(), a, type_id),
+        settled,
+        "its whole stream is sealed"
+    );
+    assert_eq!(
+        crate::graph::test_support::sealed_chunk_len(&g.in_side(), b, type_id),
+        settled,
+        "the end side settles the same way"
+    );
+}

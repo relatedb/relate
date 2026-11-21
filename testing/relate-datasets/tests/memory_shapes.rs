@@ -40,15 +40,19 @@ use relate_datasets::shapes::{
 // relationship span (8,008) passes the ladder's 8,090 rung below the
 // doubling's 8,192, so it drops 14,688.
 const BASE: u64 = 258;
-const RING: u64 = 559_784;
-const FANOUT: u64 = 503_886;
+// REL8-280: every delta chunk's header carries the 8-byte stability
+// baseline, so each unsealed (node, type, direction) chunk charges 40 B —
+// ring and dense ring +16,000 (2,000 out+in chunks), fanout +8,000.
+const RING: u64 = 575_784;
+const FANOUT: u64 = 511_886;
 const FLAT: u64 = 222_688;
-const DENSE_RING: u64 = 2_114_298;
+const DENSE_RING: u64 = 2_130_298;
 /// One label set like ring and dense ring (ADR-0589's +148), one node
 /// label count entry, and the same per-relationship terms as dense ring
-/// at 96,512 relationships — 12× dense ring's volume. The adjacency is
-/// the dominant term: 96 average hops on both endpoints of every node.
-const MID_DEGREE: u64 = 27_054_426;
+/// at 91,552 relationships — the straddling ladder's smaller group
+/// (1,456 hops over 16 nodes, average 91, REL8-280). The adjacency is
+/// the dominant term: 91 average hops on both endpoints of every node.
+const MID_DEGREE: u64 = 21_170_650;
 /// Flat, one attribute, one range index on `id`. `1,000 × 62` on top of [`FLAT`].
 const FLAT_RANGE: u64 = 284_688;
 /// Flat, one attribute, plus one text, one point, and one range index.

@@ -152,28 +152,24 @@ impl<'a> AdjSide<'a> {
         );
     }
 
-    /// One fold pass of this side under `gate` (ADR-0551 / ADR-0599). Two
-    /// passes: the map's one write guard must not span other nodes' folds.
-    fn fold(&self, horizon: u64, gate: FoldGate) {
-        // The collection pass computes each due node's chunks once, carrying
-        // the pair into the write pass — the fold's one due computation.
-        let mut due_nodes: Vec<(NodeId, Vec<u32>)> = Vec::new();
+    /// One fold pass of this side (ADR-0551 / ADR-0599) — the checkpoint's
+    /// watermark gate, which also notes stability baselines. Two phases:
+    /// the map's one write guard must not span other nodes' folds. The
+    /// collection walk asks each node whether it has work and keeps the
+    /// nodes that answer; the write phase hands each of them to the tier,
+    /// which selects, folds and notes under that node's guard.
+    fn fold(&self, horizon: u64) {
+        let mut nodes = Vec::new();
         self.delta.for_each(|node, adj| {
-            let due = gate.due(adj, self.sealed.region(node), horizon);
-            if !due.is_empty() {
-                due_nodes.push((node, due));
+            if adj.has_fold_work(self.sealed.region(node), horizon) {
+                nodes.push(node);
             }
         });
-        for (node, due) in due_nodes {
+        for node in nodes {
             let Some(mut adj) = self.delta.get_mut(&node) else {
                 continue;
             };
-            adj.fold_due(
-                self.sealed.region_or_default(node),
-                &due,
-                horizon,
-                gate.floor(),
-            );
+            adj.fold_at(self.sealed.region_or_default(node), horizon);
         }
     }
 
@@ -238,43 +234,6 @@ impl Graph {
 pub enum Side {
     Start,
     End,
-}
-
-/// Which chunks a fold pass takes, and the never-sealed floor it folds
-/// them at — the typed gate the checkpoint pass and the wholesale build
-/// select their candidates and their floor from, so the two folds are one
-/// pass that differs only here.
-#[derive(Clone, Copy)]
-enum FoldGate {
-    /// The checkpoint's watermark gate (ADR-0551): chunks due at `horizon`
-    /// — a never-sealed chunk at
-    /// [`COMPACTION_DELTA_FLOOR`](crate::adjacency::COMPACTION_DELTA_FLOOR),
-    /// a delta past 25% of the sealed hops, or a reclaimable tombstone.
-    Watermark,
-    /// The wholesale build's gate (ADR-0599 / ADR-0608): every chunk whose
-    /// delta reaches
-    /// [`RESTORE_SEAL_HOPS`](crate::adjacency::RESTORE_SEAL_HOPS) — a
-    /// fresh build is all-delta, so the threshold alone decides, no
-    /// sealed-length ratio or tombstone horizon.
-    BuildSeal,
-}
-
-impl FoldGate {
-    /// The gate's candidate selection: the type ids it folds for `adj`.
-    fn due(&self, adj: &TypedAdj, sealed: Option<SealedRegion<'_>>, horizon: u64) -> Vec<u32> {
-        match self {
-            FoldGate::Watermark => adj.due_chunks(sealed, horizon),
-            FoldGate::BuildSeal => adj.sealable_chunks(),
-        }
-    }
-
-    /// The never-sealed fold floor the gate folds at.
-    fn floor(&self) -> usize {
-        match self {
-            FoldGate::Watermark => crate::adjacency::COMPACTION_DELTA_FLOOR,
-            FoldGate::BuildSeal => crate::adjacency::RESTORE_SEAL_HOPS,
-        }
-    }
 }
 
 impl Side {
@@ -355,16 +314,16 @@ fn build_shard(
 /// the per-type runs in one [`TypedAdj`], then the durable shape
 /// (ADR-0608).
 ///
-/// The durable shape: the build seals through the fold predicate's own
-/// gate-and-fold sequence, the same one the checkpoint's GC pass calls —
-/// one gate, one sort, one chunk order, one code path — so a rebuilt graph
-/// and a checkpoint-folded one cannot land on different layouts. Nothing is
-/// sealed yet and no tombstones exist, so the never-sealed floor arm is the
-/// whole predicate and the horizon is inert. Both wholesale rebuilds (a
-/// restore and an aborted write's) emit it here, in the one pass that
-/// derives adjacency, instead of a second serial walk folding afterwards.
-/// The node is one shard's alone, so the arena's one write lock serializes
-/// the emission's appends but never two folds of the same node.
+/// The durable shape: the build seals through its own gate
+/// ([`TypedAdj::seal_whole`] — every chunk at [`RESTORE_SEAL_HOPS`],
+/// horizon 0) over the fold the checkpoint's GC pass also runs, so a
+/// rebuilt graph and a checkpoint-folded one share one fold, one sort and
+/// one chunk order and cannot land on different layouts. Both wholesale
+/// rebuilds (a restore and an aborted write's) emit it here, in the one
+/// pass that derives adjacency, instead of a second serial walk folding
+/// afterwards. The node is one shard's alone, so the arena's one write
+/// lock serializes the emission's appends but never two folds of the same
+/// node.
 fn build_node(
     rows: &[RelRow],
     node_run: &[usize],
@@ -390,9 +349,7 @@ fn build_node(
             (rows[run[0]].type_id, hops)
         });
     let mut adj = TypedAdj::from_runs(runs);
-    let gate = FoldGate::BuildSeal;
-    let due = gate.due(&adj, None, 0);
-    adj.fold_due(sealed.region_or_default(node), &due, 0, gate.floor());
+    adj.seal_whole(sealed.region_or_default(node));
     (node, adj)
 }
 
@@ -436,8 +393,8 @@ impl Graph {
     /// the seam the reclaim test reads the dead ranges through before
     /// compaction reclaims them.
     pub(super) fn fold_adjacency_at_watermark(&self, horizon: u64) {
-        self.out_side().fold(horizon, FoldGate::Watermark);
-        self.in_side().fold(horizon, FoldGate::Watermark);
+        self.out_side().fold(horizon);
+        self.in_side().fold(horizon);
     }
 
     /// How many sealed chunks `node`'s adjacency holds on `side` — the out

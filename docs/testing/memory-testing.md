@@ -27,20 +27,23 @@ empty-server floor. Its logical floor is the two namespace graphs'
 interned `*` and `""`, 258 bytes (ADR-0229 dropped the empty
 `system_ontologies` graph every store used to allocate).
 
-`mid degree` is the degree-32–512 ladder (LABS-277): every node's
-out-degree sits at or above the adjacency seal floor (32 hops,
-[ADR-0551](../adr/0551-sealed-delta-adjacency-store.md)), so it is the
-shape whose adjacency chunks actually seal at a checkpoint (and a reopen
-re-seals what that checkpoint folded,
+`mid degree` is the degree-8–512 ladder (LABS-277, REL8-280): every
+node's out-degree straddles both adjacency seal floors — the knee (32
+hops, [ADR-0551](../adr/0551-sealed-delta-adjacency-store.md)) and the
+adaptive stability floor (8 hops,
+[ADR-0635](../adr/0635-adaptive-stability-seal-floor.md)) — so it is the
+shape whose adjacency chunks seal both at a checkpoint and on a held
+length (and a reopen re-seals what that checkpoint folded,
 [ADR-0608](../adr/0608-seal-restored-adjacency.md)) — the other shapes'
-degrees (0–20) never reach the floor, which is why a sealed-tier win is
+degrees (0–20) never reach either floor, which is why a sealed-tier win is
 invisible to them. The ladder repeats per 16 nodes (one 512,
-one 256, two 128, four 64, eight 32 — average degree exactly 96, every
-rung a power of two so the out-adjacency charge carries no capacity
+one 256, two 128, four 64, four 32, two 16, two 8 — average degree 91,
+every rung a power of two so the out-adjacency charge carries no capacity
 padding),
-so every degree band is represented at any fill depth. A mid-degree
+so every degree band — at the knee, below it, and under the stability
+floor — is represented at any fill depth. A mid-degree
 statement in the pin file creates one 2,000-node window and then links
-one 16-node group per statement (1,536 relationship rows at most); the
+one 16-node group per statement (1,456 relationship rows at most); the
 loadtest creates and links a group in one statement, linking against the
 nodes committed so far.
 
@@ -160,7 +163,7 @@ bands.
 | fanout | none | 1,000 | 996 | 640,059 |
 | ring | none | 1,000 | 1,000 | 720,460 |
 | dense ring | none | 1,000 | 8,000 | 2,713,465 |
-| mid degree | none | 1,000 | 96,512 | 28,850,522 |
+| mid degree | none | 1,000 | 91,552 | 21,170,650 |
 | flat | range 1 | 1,000 | 0 | 338,392 |
 | flat | text 1, point 1, range 1 | 1,000 | 0 | 742,526 |
 
@@ -255,11 +258,11 @@ The matrix, in report order, is `base`, `flat`, `fanout`, `ring`,
 | fanout | 52,016 | 52,000 |
 | ring | 46,000 | 46,000 |
 | dense ring | 5,000 | 100,000 |
-| mid degree | 1,184 | 113,664 |
+| mid degree | 1,232 | 112,112 |
 
-`mid degree`'s 1,184 nodes are 74 whole ladder groups (the census
-solver's own answer at the 32 MiB default), so its average degree of 96
-is exact: 96 × 1,184 = 113,664 relationships.
+`mid degree`'s 1,232 nodes are 77 whole ladder groups (the census
+solver's own answer at the 32 MiB default), so its average degree of 91
+is exact: 91 × 1,232 = 112,112 relationships.
 
 `base` stays empty. Its RSS is the empty server and is subtracted from
 the others. The ratio is attributed RSS divided by logical bytes. The
@@ -393,27 +396,27 @@ relationships, 6,697 bytes per node.
 
 ## Mid degree
 
-![Ladder of one 16-node group: degrees 512, 256, 128, 128, 64, 64, 64, 64, then 32 for the remaining eight nodes.](diagrams/mid-degree.svg)
+![Ladder of one 16-node group: degrees 512, 256, 128, 128, 64, 64, 64, 64, then 32 four times, 16 twice and 8 twice.](diagrams/mid-degree.svg)
 
 The degree ladder every other shape lacks. Node `i` is
 `(:MidDegree {id: i})` and has outgoing `:LINK` relationships to the
 next `MID_DEGREE_LADDER[i % 16]` ids, wrapping with modulo — the same
 link shape as dense ring, at per-node degrees from the ladder: one 512,
-one 256, two 128, four 64, eight 32 per 16-node group, an average of
-exactly 96. Every rung is at or above the 32-hop adjacency seal floor
-(ADR-0551), so a mid-degree out-chunk always seals at a checkpoint and a
-reopen re-seals it (ADR-0608) —
-no other shape's degree (0–20) ever reaches the floor, which is why the
-sealed-delta tier's memory win is invisible to them.
+one 256, two 128, four 64, four 32, two 16, two 8 per 16-node group, an
+average of 91. The rungs at and above the 32-hop knee (ADR-0551) seal at
+a checkpoint, the sub-knee rungs down to 8 seal through the adaptive
+floor's held-length rule (ADR-0635), and a reopen re-seals what a
+checkpoint folded (ADR-0608) — no other shape's degree (0–20) ever
+reaches either floor, which is why the sealed-delta tier's memory win is
+invisible to them.
 
 The loader creates the nodes in batches of 2,000, then links one
-16-node group per statement (at most 1,536 relationship rows, under the
+16-node group per statement (at most 1,456 relationship rows, under the
 2,000-row cap), the link count drawn from the ladder through a `CASE`
-on `i % 16`. The small pin is 1,000 nodes and 96,512 relationships
+on `i % 16`. The small pin is 1,000 nodes and 91,552 relationships
 (62 whole groups plus the 8-node half-group carrying the ladder head),
-28,850,522 logical bytes. The loadtest sizes to the logical target in
-whole groups: at 32 MiB, 1,184 nodes and 113,664 relationships,
-28,473 bytes per node.
+21,170,650 logical bytes. The loadtest sizes to the logical target in
+whole groups: at 32 MiB, 1,232 nodes and 112,112 relationships.
 
 The two endpoint charges differ, and the sizing model charges each on
 its own terms. The out side is exact: every rung is a power of two, so

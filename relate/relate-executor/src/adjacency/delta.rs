@@ -11,7 +11,7 @@ use crate::UsedSet;
 
 use super::{
     merge_chunk, reclaim, SealedRegion, Supersede, Tombstone, COMPACTION_DELTA_FLOOR,
-    PHYSICAL_READ_TS, RESTORE_SEAL_HOPS,
+    PHYSICAL_READ_TS, RESTORE_SEAL_HOPS, STABILITY_SEAL_FLOOR,
 };
 
 /// One hop in a typed chunk, as the chunk stores it: the rel id and its
@@ -56,16 +56,59 @@ pub(crate) fn resolve(hops: &[AdjHop], absent: u32, i: usize) -> Hop {
 /// is the chunk's whole presence state — `0` is all-present,
 /// `hops.len()` is all-absent, and between them the mixed chunk (a
 /// per-hop bitmap would spill a `Vec<u64>` — one word even for a
-/// ≤64-hop chunk — to say strictly less). The stride stays 32 B, the
-/// entry size the floor arithmetic charts.
+/// ≤64-hop chunk — to say strictly less).
+///
+/// `stable_len` is the chunk's hop count as the previous fold pass noted
+/// it — the stability baseline the adaptive seal floor reads; a chunk at
+/// the same length two passes running has stopped growing, so the
+/// [`STABILITY_SEAL_FLOOR`] arm seals it below the knee. The stride is
+/// 40 B, the entry size the floor arithmetic charts.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DeltaChunk {
     pub type_id: u32,
     pub absent: u32,
+    /// Hop count at the previous fold pass — 0 until first noted, which
+    /// no non-empty chunk equals, so an unnoted chunk is never
+    /// stability-sealed.
+    pub stable_len: usize,
     pub hops: Vec<AdjHop>,
 }
 
 impl DeltaChunk {
+    /// Whether the chunk is stability-eligible: at or above the stability
+    /// floor and at the length the previous pass noted. The due rule's
+    /// below-knee arm and the fold's below-floor guard read this one fact,
+    /// so a chunk the pass marked due for its held length is never turned
+    /// back at the guard.
+    fn stability_due(&self) -> bool {
+        self.hops.len() >= STABILITY_SEAL_FLOOR && self.stable_len == self.hops.len()
+    }
+
+    /// Whether this chunk is in the adaptive floor's band: the floor gates
+    /// it (no sealed hop stream to ratio against), and it sits at or above
+    /// the stability floor — a shorter chunk's baseline could never be
+    /// read, so it takes none — and below the knee.
+    /// [`TypedAdj::has_fold_work`] selects a node by this predicate and
+    /// [`TypedAdj::note_stable`] notes by it — one spelling, so the pass's
+    /// selector and the set it notes cannot drift apart.
+    fn in_stability_band(&self, sealed_len: usize) -> bool {
+        sealed_len == 0
+            && self.hops.len() >= STABILITY_SEAL_FLOOR
+            && self.hops.len() < COMPACTION_DELTA_FLOOR
+    }
+
+    /// Whether the floor gate admits this chunk's fold — the chunk has no
+    /// sealed hop stream to ratio against, and it folds rather than waits:
+    /// at the knee's [`COMPACTION_DELTA_FLOOR`], or at the adaptive
+    /// [`STABILITY_SEAL_FLOOR`] because its length held since the previous
+    /// pass. The one spelling of the floor's admission: the due predicate's
+    /// floor arm reads it as the reason a chunk is due, and the fold's
+    /// action as the reason the fold merges instead of reclaiming
+    /// tombstones.
+    fn floor_admits_fold(&self) -> bool {
+        self.hops.len() >= COMPACTION_DELTA_FLOOR || self.stability_due()
+    }
+
     /// The chunk's hops with ts presence resolved, in chunk order.
     fn to_hops(&self) -> Vec<Hop> {
         (0..self.hops.len())
@@ -74,7 +117,9 @@ impl DeltaChunk {
     }
 
     /// Take the chunk's hops as presence-resolved values, resetting it to
-    /// empty — the fold's move of the delta out of the chunk.
+    /// empty — the fold's move of the delta out of the chunk. The
+    /// stability baseline stays: a fold the walls refuse hands the hops
+    /// back and the next pass compares the same one.
     fn take_hops(&mut self) -> Vec<Hop> {
         let hops = self.to_hops();
         self.absent = 0;
@@ -100,6 +145,90 @@ impl DeltaChunk {
             })
             .collect();
     }
+}
+
+/// What a fold pass does with one selected chunk — the decision the
+/// selection makes, handed to the fold so the two never re-derive it.
+#[derive(Clone, Copy, Debug)]
+enum FoldAction {
+    /// Merge the chunk's delta into its sealed stream, reclaiming what the
+    /// horizon frees.
+    Fold,
+    /// The below-floor zero-hop region: reclaim only the tombstones that
+    /// name no position any more, the delta hops stay.
+    Reclaim,
+}
+
+/// One chunk a fold pass takes: its type, and the action the fold takes on
+/// it — the pair [`TypedAdj::due_chunks`] and [`TypedAdj::seal_whole`]
+/// hand to [`TypedAdj::fold_due`]. The fields are private: a candidate is a
+/// decision token, read only by the selection that builds it and the fold
+/// that consumes it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FoldCandidate {
+    type_id: u32,
+    action: FoldAction,
+}
+
+/// The action the fold takes on `chunk` at `horizon`, or `None` when the
+/// chunk is not due (ADR-0551): a never-sealed chunk at the floor — the
+/// knee's 32, or the adaptive [`STABILITY_SEAL_FLOOR`] for a chunk whose
+/// length held since the previous pass — a delta past 25% of the sealed
+/// hops, or a tombstone reclaimable at the GC horizon. One walk over the
+/// chunk's sealed facts decides both, so due-ness and the action cannot
+/// drift apart. A free function because it reads the chunk and the sealed
+/// region together: the chunk's own policies stay self-only
+/// ([`DeltaChunk::floor_admits_fold`]), the region-aware ones live with
+/// [`TypedAdj`]'s.
+fn due_action(
+    chunk: &DeltaChunk,
+    sealed: Option<SealedRegion<'_>>,
+    horizon: u64,
+) -> Option<FoldAction> {
+    let type_id = chunk.type_id;
+    let delta = chunk.hops.len();
+    if let Some(region) = sealed {
+        if region.has_chunk(type_id) {
+            // A tombstone reclaimable at the horizon folds, a zero-hop
+            // chunk's too: nothing else would ever reclaim it. A zero-hop
+            // region the floor does not admit has no stream to merge, so
+            // its reclaim is the fold's only work — the one Reclaim.
+            if region.reclaimable(type_id, horizon) {
+                let sealed_len = region.chunk_len(type_id);
+                return Some(if sealed_len == 0 && !chunk.floor_admits_fold() {
+                    FoldAction::Reclaim
+                } else {
+                    FoldAction::Fold
+                });
+            }
+            let len = region.chunk_len(type_id);
+            if len > 0 {
+                return (delta * 4 > len).then_some(FoldAction::Fold);
+            }
+        }
+    }
+    // No chunk, or a zero-hop one (a never-sealed type that only recorded
+    // a tombstone): the floor still gates the first seal (the ratio
+    // against 0 sealed hops would seal every later hop on its own).
+    chunk.floor_admits_fold().then_some(FoldAction::Fold)
+}
+
+/// The tombstones that still name a position, as the fold's two arms read
+/// them: one whose id is in the sealed stream, or a delete's whose live
+/// delta hop it will hide once that hop folds in. The reclaim arm passes an
+/// empty sealed set — nothing is sealed for a type it reclaims — which
+/// leaves exactly its own rule.
+fn live_tombstones(
+    tombstones: Vec<Tombstone>,
+    sealed_ids: &UsedSet,
+    delta_ids: &UsedSet,
+) -> Vec<Tombstone> {
+    tombstones
+        .into_iter()
+        .filter(|t| {
+            sealed_ids.contains(&t.id) || (t.deleted.is_some() && delta_ids.contains(&t.id))
+        })
+        .collect()
 }
 
 /// Heap of one node's adjacency chunks and hop buffers — beside the two
@@ -326,145 +455,134 @@ impl TypedAdj {
         }
     }
 
-    /// Whether a chunk is due for its fold at `horizon` (ADR-0551): a
-    /// never-sealed chunk at the floor, a delta past 25% of the sealed hops,
-    /// or a tombstone reclaimable at the GC horizon.
-    pub(crate) fn chunk_due(
+    /// The chunks the pass folds at `horizon`, each with the action the
+    /// fold takes on it. The caller takes the node's sealed region only
+    /// when this is non-empty, so a node that never folds has no entry.
+    pub(crate) fn due_chunks(
         &self,
         sealed: Option<SealedRegion<'_>>,
-        type_id: u32,
         horizon: u64,
-    ) -> bool {
-        let delta = self.chunk_ref(type_id).map_or(0, |c| c.hops.len());
-        if let Some(region) = sealed {
-            if region.has_chunk(type_id) {
-                // A tombstone reclaimable at the horizon folds, a zero-hop
-                // chunk's too: nothing else would ever reclaim it.
-                if region.reclaimable(type_id, horizon) {
-                    return true;
-                }
-                let len = region.chunk_len(type_id);
-                if len > 0 {
-                    return delta * 4 > len;
-                }
+    ) -> Vec<FoldCandidate> {
+        self.chunks
+            .iter()
+            .filter_map(|c| {
+                due_action(c, sealed, horizon).map(|action| FoldCandidate {
+                    type_id: c.type_id,
+                    action,
+                })
+            })
+            .collect()
+    }
+
+    /// Note every banded chunk's current length as its stability baseline —
+    /// the value the next pass's [`due_action`] compares against. A chunk
+    /// outside the band (ratio-gated, empty, or at the knee) needs no
+    /// baseline.
+    pub(crate) fn note_stable(&mut self, sealed: Option<SealedRegion<'_>>) {
+        for chunk in &mut self.chunks {
+            let sealed_len = sealed.map_or(0, |s| s.chunk_len(chunk.type_id));
+            if chunk.in_stability_band(sealed_len) {
+                chunk.stable_len = chunk.hops.len();
             }
         }
-        // No chunk, or a zero-hop one (a never-sealed type that only
-        // recorded a tombstone): the floor still gates the first seal
-        // (the ratio against 0 sealed hops would seal every later hop
-        // on its own).
-        delta >= COMPACTION_DELTA_FLOOR
     }
 
-    /// The type ids whose chunks are due at `horizon`. The caller takes the
-    /// node's sealed region only when this is non-empty, so a node that
-    /// never folds has no entry.
-    pub(crate) fn due_chunks(&self, sealed: Option<SealedRegion<'_>>, horizon: u64) -> Vec<u32> {
-        self.chunks
-            .iter()
-            .map(|c| c.type_id)
-            .filter(|type_id| self.chunk_due(sealed, *type_id, horizon))
-            .collect()
-    }
-
-    /// The type ids a wholesale build seals in its one pass: every chunk
-    /// whose delta reaches [`RESTORE_SEAL_HOPS`] (ADR-0599 / ADR-0608). A
-    /// fresh build is all-delta, so the threshold alone decides — no
-    /// sealed-length ratio or tombstone horizon, the write path's other
-    /// gates.
-    pub(crate) fn sealable_chunks(&self) -> Vec<u32> {
-        self.chunks
+    /// Seal a wholesale build's node in its one pass (ADR-0599 / ADR-0608)
+    /// — the build's own gate, whose horizon is 0: a rebuild reclaims no
+    /// tombstone the write path's horizon would have freed. The selection
+    /// is the build's own: every chunk whose delta reaches
+    /// [`RESTORE_SEAL_HOPS`], and all of them fold — a fresh build is
+    /// all-delta, so the threshold alone decides, with no sealed-length
+    /// ratio, tombstone horizon, or stability baseline, the write path's
+    /// other gates.
+    pub(crate) fn seal_whole(&mut self, sealed: SealedRegion<'_>) {
+        let candidates: Vec<FoldCandidate> = self
+            .chunks
             .iter()
             .filter(|c| c.hops.len() >= RESTORE_SEAL_HOPS)
-            .map(|c| c.type_id)
-            .collect()
+            .map(|c| FoldCandidate {
+                type_id: c.type_id,
+                action: FoldAction::Fold,
+            })
+            .collect();
+        self.fold_due(sealed, &candidates, 0);
     }
 
-    /// Fold `due`'s chunks. Returns whether anything was folded. `floor` is
-    /// the never-sealed fold floor the caller's gate selected — the write
-    /// path's [`COMPACTION_DELTA_FLOOR`], the build's
-    /// [`RESTORE_SEAL_HOPS`] — and only reaches [`Self::fold_chunk`]'s
-    /// below-floor guard.
-    pub(crate) fn fold_due(
+    /// Whether this node has anything to do at `horizon`: chunks the fold
+    /// would take, or stability baselines to note — the one spelling of the
+    /// pass's visit rule, so the graph side only asks and walks. One
+    /// non-allocating walk: the candidates themselves are produced once,
+    /// under the write guard, by [`Self::fold_at`].
+    pub(crate) fn has_fold_work(&self, sealed: Option<SealedRegion<'_>>, horizon: u64) -> bool {
+        self.chunks.iter().any(|c| {
+            due_action(c, sealed, horizon).is_some()
+                || c.in_stability_band(sealed.map_or(0, |s| s.chunk_len(c.type_id)))
+        })
+    }
+
+    /// The node's whole fold pass at `horizon`, under the caller's write
+    /// guard: select, fold, then note the survivors' lengths — the value
+    /// the next pass's adaptive floor reads.
+    pub(crate) fn fold_at(&mut self, sealed: SealedRegion<'_>, horizon: u64) {
+        let candidates = self.due_chunks(Some(sealed), horizon);
+        self.fold_due(sealed, &candidates, horizon);
+        self.note_stable(Some(sealed));
+    }
+
+    /// Fold the selected chunks. Returns whether anything was folded.
+    fn fold_due(
         &mut self,
         sealed: SealedRegion<'_>,
-        due: &[u32],
+        candidates: &[FoldCandidate],
         horizon: u64,
-        floor: usize,
     ) -> bool {
         let mut changed = false;
-        for type_id in due {
-            // A due type id's chunk is still there when its turn comes:
-            // `fold_chunk` removes only the chunk it just folded, and `due`
-            // holds each type id once.
+        for candidate in candidates {
+            // A selected chunk is still there when its turn comes:
+            // `fold_chunk` removes only the chunk it just folded, and the
+            // selection holds each type id once.
             let ci = self
                 .chunks
                 .iter()
-                .position(|c| c.type_id == *type_id)
-                .expect("a due chunk is still present");
-            changed |= self.fold_chunk(sealed, ci, *type_id, horizon, floor);
+                .position(|c| c.type_id == candidate.type_id)
+                .expect("a selected chunk is still present");
+            changed |= self.fold_chunk(sealed, ci, horizon, candidate.action);
         }
         changed
     }
 
-    /// Fold `type_id`'s delta and reclaimed tombstones into its sealed
-    /// stream. An empty delta with no reclaimable tombstone is a true no-op
-    /// (no re-encode, ADR-0551). `floor` gates the below-floor branch: a
-    /// never-sealed chunk whose delta is under it keeps its hops.
+    /// Fold the chunk at `ci` by `action`. An empty delta with no
+    /// reclaimable tombstone is a true no-op (no re-encode, ADR-0551).
     fn fold_chunk(
         &mut self,
         sealed: SealedRegion<'_>,
         ci: usize,
-        type_id: u32,
         horizon: u64,
-        floor: usize,
+        action: FoldAction,
     ) -> bool {
+        // The chunk's own header, read once: the delta writes go through
+        // `ci` and the sealed ones through this type id, so the two can
+        // never name different types.
+        let type_id = self.chunks[ci].type_id;
+        match action {
+            // The reclaim changes nothing in the delta — its hops name the
+            // tombstones to keep — so the arm runs before any take.
+            FoldAction::Reclaim => return self.reclaim_orphans(sealed, ci),
+            FoldAction::Fold => {}
+        }
         let mut delta = self.chunks[ci].take_hops();
-        let (mut hops, tombstones) = if sealed.has_chunk(type_id) {
-            (sealed.decoded(type_id), sealed.tombstones(type_id))
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        // `decoded` and `tombstones` answer empty for a type with no sealed
+        // entry, so the absence contract needs no branch here.
+        let (mut hops, tombstones) = (sealed.decoded(type_id), sealed.tombstones(type_id));
 
         if hops.is_empty() && delta.is_empty() && tombstones.is_empty() {
             return false;
         }
         let (sealed_hops, sealed_tombstones) = (hops.len(), tombstones.len());
-        // A zero-hop region is a never-sealed type that only recorded
-        // tombstones: there is no sealed stream to fold into, so below the
-        // floor the fold is the reclaim of the tombstones that name no
-        // position any more — a hop the chain GC already pruned — and the
-        // region goes with the last one. The delta hops stay as they are.
-        if hops.is_empty() && delta.len() < floor {
-            let delta_ids: UsedSet = delta.iter().map(|h| h.id).collect();
-            let kept: Vec<Tombstone> = tombstones
-                .into_iter()
-                .filter(|t| t.deleted.is_some() && delta_ids.contains(&t.id))
-                .collect();
-            let reclaimed = kept.len() != sealed_tombstones;
-            if reclaimed && !sealed.put_chunk(type_id, &[], kept) {
-                // The tier's walls refused the write (ADR-0599): the chunk
-                // keeps its delta hops and the sealed region stays exactly
-                // as it was, so nothing is lost and the next fold retries.
-                self.chunks[ci].set_hops(delta);
-                return false;
-            }
-            self.chunks[ci].set_hops(delta);
-            return reclaimed;
-        }
         let kept = reclaim(&mut hops, &mut delta, tombstones, horizon);
-        // A tombstone that names no position any more is dropped: a
-        // reposition's whose id never sealed (it would hide the live delta
-        // hop once that folds in), and a delete's whose sealed position and
-        // delta hop are both gone.
         let sealed_ids: UsedSet = hops.iter().map(|h| h.id).collect();
         let delta_ids: UsedSet = delta.iter().map(|h| h.id).collect();
-        let kept: Vec<Tombstone> = kept
-            .into_iter()
-            .filter(|t| {
-                sealed_ids.contains(&t.id) || (t.deleted.is_some() && delta_ids.contains(&t.id))
-            })
-            .collect();
+        let kept = live_tombstones(kept, &sealed_ids, &delta_ids);
         // A tombstone whose sealed stamp is below its delete stamp cannot
         // fold with the id's live delta hop: it would hide the hop from
         // every reader at or after the sealed stamp, and a reader between
@@ -479,13 +597,14 @@ impl TypedAdj {
                 .any(|t| t.id == h.id && t.deleted != Some(t.xmax))
         }) {
             // The reclaim still applies to the sealed stream; only the delta
-            // hop waits for its own delete stamp.
-            if reclaimed && !sealed.put_chunk(type_id, &hops, kept) {
+            // hop waits for its own delete stamp, so its hops stay delta.
+            if !reclaimed {
                 self.chunks[ci].set_hops(delta);
                 return false;
             }
+            let written = sealed.put_chunk(type_id, &hops, kept);
             self.chunks[ci].set_hops(delta);
-            return reclaimed;
+            return written;
         }
         hops.extend_from_slice(&delta);
         hops.sort_unstable_by(cmp_ts_desc);
@@ -501,8 +620,35 @@ impl TypedAdj {
             // Fully reclaimed: the layout does not depend on when the fold
             // fired, and the type's iteration slot goes with it.
             self.chunks.remove(ci);
+        } else {
+            // The fold consumed the chunk's hops into the sealed stream, so
+            // its stability baseline goes with them: a chunk that grows
+            // again starts unnoted and must hold its new length before it
+            // seals on stability.
+            self.chunks[ci].stable_len = 0;
         }
         true
+    }
+
+    /// The reclaim arm's work ([`FoldAction::Reclaim`]): a zero-hop region
+    /// is a never-sealed type that only recorded tombstones, so below the
+    /// floor the fold is the reclaim of the tombstones that name no
+    /// position any more — a hop the chain GC already pruned — and the
+    /// region goes with the last one. The delta hops stay in the chunk,
+    /// read in place: this arm never takes them.
+    fn reclaim_orphans(&mut self, sealed: SealedRegion<'_>, ci: usize) -> bool {
+        let type_id = self.chunks[ci].type_id;
+        let tombstones = sealed.tombstones(type_id);
+        let sealed_tombstones = tombstones.len();
+        let delta_ids: UsedSet = self.chunks[ci].hops.iter().map(|h| h.id).collect();
+        // Nothing is sealed for this type, so only a delete's tombstone can
+        // still name a position.
+        let kept = live_tombstones(tombstones, &UsedSet::default(), &delta_ids);
+        if kept.len() == sealed_tombstones {
+            // Nothing to reclaim: the region stays exactly as it was.
+            return false;
+        }
+        sealed.put_chunk(type_id, &[], kept)
     }
 
     /// The mut twin of [`Self::chunk_ref`] — the one find-chunk spelling the

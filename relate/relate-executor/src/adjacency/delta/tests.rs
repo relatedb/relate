@@ -1,11 +1,19 @@
 use super::*;
 use crate::adjacency::SealedArena;
 
+/// The due predicate for one type id, as the tests read it: the selection
+/// the production pass makes ([`TypedAdj::due_chunks`]), narrowed to a type.
+fn due(a: &TypedAdj, sealed: Option<SealedRegion<'_>>, type_id: u32, horizon: u64) -> bool {
+    a.due_chunks(sealed, horizon)
+        .iter()
+        .any(|candidate| candidate.type_id == type_id)
+}
+
 /// The production fold's two steps: due-ness against the node's sealed
 /// region, then the fold into it. Returns whether anything was folded.
 fn fold(a: &mut TypedAdj, sealed: SealedRegion<'_>, horizon: u64) -> bool {
     let due = a.due_chunks(Some(sealed), horizon);
-    a.fold_due(sealed, &due, horizon, COMPACTION_DELTA_FLOOR)
+    a.fold_due(sealed, &due, horizon)
 }
 
 #[test]
@@ -170,7 +178,7 @@ fn sealed_and_delta_hops_merge_ts_desc_delta_first() {
     for i in 0..COMPACTION_DELTA_FLOOR as i64 {
         a.insert(type_id, i, Some(i));
     }
-    assert!(a.chunk_due(Some(sealed), type_id, u64::MAX));
+    assert!(due(&a, Some(sealed), type_id, u64::MAX));
     assert!(fold(&mut a, sealed, u64::MAX));
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR);
     assert!(a.chunk_hops(type_id).is_empty(), "the delta folded");
@@ -245,11 +253,11 @@ fn compaction_folds_on_floor_ratio_and_reclaimable_tombstone() {
         a.insert(type_id, i, Some(i));
     }
     assert!(
-        !a.chunk_due(Some(sealed), type_id, 0),
+        !due(&a, Some(sealed), type_id, 0),
         "one hop below the floor"
     );
     a.insert(type_id, 1000, Some(1000));
-    assert!(a.chunk_due(Some(sealed), type_id, 0), "the floor");
+    assert!(due(&a, Some(sealed), type_id, 0), "the floor");
     assert!(fold(&mut a, sealed, 0));
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR);
 
@@ -258,12 +266,12 @@ fn compaction_folds_on_floor_ratio_and_reclaimable_tombstone() {
         a.insert(type_id, 2000 + i, Some(2000 + i));
     }
     assert!(
-        !a.chunk_due(Some(sealed), type_id, 0),
+        !due(&a, Some(sealed), type_id, 0),
         "exactly 25% of the sealed hops is not past it"
     );
     a.insert(type_id, 3000, Some(3000));
     assert!(
-        a.chunk_due(Some(sealed), type_id, 0),
+        due(&a, Some(sealed), type_id, 0),
         "past 25% of the sealed hops"
     );
     assert!(fold(&mut a, sealed, 0));
@@ -273,18 +281,18 @@ fn compaction_folds_on_floor_ratio_and_reclaimable_tombstone() {
     // even with an empty delta.
     sealed.tombstone_deleted(type_id, 5, 40, Supersede::Deleted);
     assert!(
-        !a.chunk_due(Some(sealed), type_id, 39),
+        !due(&a, Some(sealed), type_id, 39),
         "the tombstone is not yet at the horizon"
     );
     assert!(
-        a.chunk_due(Some(sealed), type_id, 40),
+        due(&a, Some(sealed), type_id, 40),
         "the tombstone is reclaimable"
     );
     assert!(fold(&mut a, sealed, 40));
     assert!(sealed.tombstones(type_id).is_empty());
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR + 8);
     assert!(
-        !a.chunk_due(Some(sealed), type_id, 41),
+        !due(&a, Some(sealed), type_id, 41),
         "a clean sealed chunk is not due"
     );
 }
@@ -302,14 +310,14 @@ fn compaction_reclaims_at_the_horizon_and_is_idempotent() {
     assert!(fold(&mut a, sealed, 0));
     sealed.tombstone_deleted(type_id, 5, 40, Supersede::Deleted);
     // Below the horizon nothing is due again.
-    assert!(!a.chunk_due(Some(sealed), type_id, 39));
+    assert!(!due(&a, Some(sealed), type_id, 39));
     assert!(!fold(&mut a, sealed, 39));
     // At the horizon the tombstone is reclaimable and the fold drops it.
     assert!(fold(&mut a, sealed, 40));
     assert!(sealed.tombstones(type_id).is_empty());
     assert_eq!(sealed.chunk_len(type_id), COMPACTION_DELTA_FLOOR - 1);
     assert!(
-        !a.chunk_due(Some(sealed), type_id, 41),
+        !due(&a, Some(sealed), type_id, 41),
         "a clean sealed chunk is not due"
     );
 }
@@ -363,7 +371,7 @@ fn a_never_sealed_chunk_records_its_tombstone_and_folds_the_dead_hop_away() {
     }
     small_sealed.tombstone_deleted(11, 1, 40, Supersede::Deleted);
     assert!(
-        !small.chunk_due(Some(small_sealed), 11, 39),
+        !due(&small, Some(small_sealed), 11, 39),
         "the floor gates the first seal while the tombstone is live"
     );
     // At the horizon the fold is the reclaim alone: the tombstone still
@@ -395,7 +403,7 @@ fn a_never_sealed_chunk_records_its_tombstone_and_folds_the_dead_hop_away() {
         }]
     );
     assert!(
-        a.chunk_due(Some(sealed), type_id, 39),
+        due(&a, Some(sealed), type_id, 39),
         "the delta reaches the floor"
     );
 
@@ -408,7 +416,7 @@ fn a_never_sealed_chunk_records_its_tombstone_and_folds_the_dead_hop_away() {
     assert!(before.contains(&5));
 
     assert!(
-        a.chunk_due(Some(sealed), type_id, 40),
+        due(&a, Some(sealed), type_id, 40),
         "the tombstone is reclaimable"
     );
     assert!(fold(&mut a, sealed, 40));
@@ -611,6 +619,7 @@ fn floor_prices_sealed_at_stream_length_and_delta_at_live_hop_bytes() {
         chunks: vec![DeltaChunk {
             type_id: 9,
             absent: 0,
+            stable_len: 0,
             hops: vec![AdjHop {
                 ts: 20_000,
                 id: 999,
@@ -623,27 +632,33 @@ fn floor_prices_sealed_at_stream_length_and_delta_at_live_hop_bytes() {
     );
 }
 
-/// The 16-byte hop and the 32-byte chunk entry that carries presence in
-/// the old `(u32, Vec)` tuple's padding — the two strides the adjacency
-/// floor arithmetic charts, so neither can drift silently.
+/// The 16-byte hop and the 40-byte chunk entry — presence in the old
+/// `(u32, Vec)` tuple's padding, the stability baseline in the word the
+/// adaptive seal floor adds — the two strides the adjacency floor
+/// arithmetic charts, so neither can drift silently.
 #[test]
 fn adj_hop_is_sixteen_bytes() {
     use std::mem::size_of;
     assert_eq!(size_of::<AdjHop>(), 16);
-    assert_eq!(size_of::<DeltaChunk>(), 32, "presence rides the padding");
+    assert_eq!(
+        size_of::<DeltaChunk>(),
+        40,
+        "presence and the stability baseline"
+    );
     assert_eq!(size_of::<Option<i64>>(), 16, "the Option this layout drops");
 }
 
 /// The adjacency floor's two strides: the 16-byte hop (presence lives in
-/// the chunk header's padding, not the hop) and the 32-byte chunk entry
-/// the padding keeps free of charge.
+/// the chunk header's padding, not the hop) and the 40-byte chunk entry —
+/// the padding keeps presence free of charge, the stability baseline pays
+/// for its own word.
 #[test]
 fn adjacency_bytes_prices_the_hop_at_sixteen_bytes() {
     // One 3-hop chunk: the entry plus three hops, both at exact fit.
     assert_eq!(
         adjacency_bytes(std::iter::once(3)),
-        crate::memory::vec_heap(1, 32) + crate::memory::vec_heap(3, 16),
-        "the chunk entry at 32 B and the hop at 16 B"
+        crate::memory::vec_heap(1, 40) + crate::memory::vec_heap(3, 16),
+        "the chunk entry at 40 B and the hop at 16 B"
     );
 }
 
@@ -730,7 +745,7 @@ fn header_presence_flags_roundtrip_the_option_semantics() {
         a.insert(1, 100 + i, if i % 3 == 0 { None } else { Some(50 - i) });
     }
     let before: Vec<Hop> = a.chunk_hops(1);
-    assert!(a.chunk_due(Some(sealed), 1, u64::MAX));
+    assert!(due(&a, Some(sealed), 1, u64::MAX));
     assert!(fold(&mut a, sealed, u64::MAX));
     let mut after = Vec::new();
     a.for_each_hop_of(Some(sealed), 1, u64::MAX, |hop| after.push(hop));
@@ -754,4 +769,47 @@ fn header_presence_flags_roundtrip_the_option_semantics() {
         .expect("present hops");
     assert!(merged[..first_present].iter().all(|h| h.ts.is_none()));
     assert!(merged[first_present..].iter().all(|h| h.ts.is_some()));
+}
+
+/// The adaptive floor's three facts (REL8-280): a never-sealed chunk
+/// below the knee is due once its length holds across a pass; growth
+/// resets the baseline (a still-growing chunk keeps the knee's floor);
+/// the sub-[`STABILITY_SEAL_FLOOR`] band stays delta — the header
+/// outweighs the stream it would buy.
+#[test]
+fn the_stability_floor_reads_the_noted_baseline() {
+    let mut a = TypedAdj::default();
+    // The eligible length is the floor's, not a literal: the band's lower
+    // bound is the fact under test.
+    for i in 0..(STABILITY_SEAL_FLOOR + 4) as i64 {
+        a.insert(1, i, Some(100 - i));
+    }
+    assert!(
+        !due(&a, None, 1, 0),
+        "an unnoted chunk is never stability-sealed"
+    );
+    assert!(
+        a.has_fold_work(None, 0),
+        "a sub-knee chunk carries a baseline"
+    );
+    a.note_stable(None);
+    assert!(due(&a, None, 1, 0), "the held length seals below the knee");
+
+    // Growth invalidates the baseline; the new length needs its own
+    // stable pass before it can seal.
+    a.insert(1, 99, Some(1));
+    assert!(!due(&a, None, 1, 0), "growth resets the stability baseline");
+    a.note_stable(None);
+    assert!(due(&a, None, 1, 0), "the new length holds");
+
+    // The header-overhead band: noted and stable, still delta.
+    let mut small = TypedAdj::default();
+    for i in 0..(STABILITY_SEAL_FLOOR - 1) as i64 {
+        small.insert(1, i, Some(50 - i));
+    }
+    small.note_stable(None);
+    assert!(
+        !due(&small, None, 1, 0),
+        "the sub-stability band stays delta"
+    );
 }

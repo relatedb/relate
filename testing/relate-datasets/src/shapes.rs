@@ -29,10 +29,11 @@ use crate::shape_size::{
 /// One synthetic graph. `Base` is empty. `Ring` is a directed cycle.
 /// `Fanout` is hubs and leaves. `Flat` is nodes with no relationships.
 /// `DenseRing` is a directed cycle where each node also skips ahead.
-/// `MidDegree` is the degree-32–512 ladder: every node's out-degree sits
-/// above the adjacency seal floor (`COMPACTION_DELTA_FLOOR` = 32 hops,
-/// ADR-0551), so it is the one shape whose adjacency chunks actually seal
-/// in the RSS rig — the degrees the sealed-delta tier was built for.
+/// `MidDegree` is the degree-8–512 ladder straddling both seal floors: the
+/// rungs at or above the knee (`COMPACTION_DELTA_FLOOR` = 32 hops,
+/// ADR-0551) seal at a checkpoint, the sub-knee rungs (16, 8) seal through
+/// the adaptive stability floor (REL8-280) — the degrees the sealed-delta
+/// tier was built for, and the band it used to leave delta forever.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GraphShape {
     Base,
@@ -421,14 +422,17 @@ fn dense_statements(nodes: u32, degree: u32, attributes: u32, indexes: IndexCoun
 /// The mid-degree ladder: the out-degree of mid-degree node `i` is
 /// [`MID_DEGREE_LADDER`]`[i % MID_DEGREE_GROUP]`. Every rung is a power of
 /// two, so the logical model's `reserved()` capacity charge is exact — no
-/// padding term — and every rung is at least the adjacency seal floor
-/// ([`MID_DEGREE_FLOOR`], 32 hops, ADR-0551), so a mid-degree out-chunk
-/// always seals at a checkpoint. The pattern repeats per group instead of
-/// concentrating the hubs in one global head: the loadtest fills to a
-/// memory limit, not a known node count, and a head-only ladder would make
-/// the measured degree mix depend on how far the fill got.
+/// padding term. The ladder straddles both seal floors (REL8-280): the
+/// rungs at and above the knee (`COMPACTION_DELTA_FLOOR`, 32 hops,
+/// ADR-0551) seal at a checkpoint, the sub-knee rungs (16, 8 — at or above
+/// [`MID_DEGREE_FLOOR`], the stability floor) seal through the adaptive
+/// floor's held-length rule, the population the shape exists to measure.
+/// The pattern repeats per group instead of concentrating the hubs in one
+/// global head: the loadtest fills to a memory limit, not a known node
+/// count, and a head-only ladder would make the measured degree mix depend
+/// on how far the fill got.
 const MID_DEGREE_LADDER: [u32; 16] = [
-    512, 256, 128, 128, 64, 64, 64, 64, 32, 32, 32, 32, 32, 32, 32, 32,
+    512, 256, 128, 128, 64, 64, 64, 64, 32, 32, 32, 32, 16, 16, 8, 8,
 ];
 
 /// Every fact derived from the ladder is computed from the table here —
@@ -464,8 +468,17 @@ const MID_DEGREE_GROUP_HOPS: u32 = ladder_sum(&MID_DEGREE_LADDER);
 /// The exact average out-degree: whole groups carry
 /// [`MID_DEGREE_GROUP_HOPS`] over [`MID_DEGREE_GROUP`] nodes.
 pub(crate) const MID_DEGREE_AVG: u64 = MID_DEGREE_GROUP_HOPS as u64 / MID_DEGREE_GROUP as u64;
-/// The ladder's floor rung — the seal floor the shape exists to cross.
+/// The ladder's floor rung — the stability seal floor's minimum, the rung
+/// the shape's sub-knee population sits at or above so the adaptive floor
+/// (not the knee) is what seals it.
 const MID_DEGREE_FLOOR: u32 = ladder_min(&MID_DEGREE_LADDER);
+
+/// The mid-degree shape's node count at [`ShapeScale::Large`] with
+/// [`DEFAULT_LOGICAL_TARGET_BYTES`] — the census solver's own answer at
+/// that target, rounded down to whole ladder groups so the average-degree
+/// charge stays exact. The one home of the number: the loadtest's fill
+/// target and the census pin both read it.
+pub(crate) const MID_DEGREE_LARGE_NODES: u32 = 1_232;
 
 /// The mid-degree relationships over `nodes` nodes: whole groups at
 /// [`MID_DEGREE_GROUP_HOPS`] plus the head slice of a trailing partial

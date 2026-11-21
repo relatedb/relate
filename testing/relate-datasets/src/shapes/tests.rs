@@ -98,11 +98,16 @@ fn statements_are_stable_and_indexes_apply_to_every_filled_shape() {
 
 #[test]
 fn mid_degree_ladder_rungs_bound_and_average_the_seal_floor() {
-    // The shape's contract with the sealed-delta tier (ADR-0551): every
-    // rung is at or above the seal floor, inside the mid-degree band,
-    // and a power of two so the logical charge is exact.
+    // The shape's contract with the sealed-delta tier (REL8-280): the
+    // rungs straddle both seal floors — at or above the stability floor
+    // (8), at least one at the knee (32) and one below it, all inside the
+    // mid-degree band and powers of two so the logical charge is exact.
+    let sub_knee = MID_DEGREE_LADDER.iter().any(|d| *d < 32);
+    assert!(sub_knee, "the ladder no longer straddles the knee");
+    let at_knee = MID_DEGREE_LADDER.contains(&32);
+    assert!(at_knee, "the ladder lost its at-the-knee rung");
     for degree in MID_DEGREE_LADDER {
-        assert!(degree >= 32, "rung {degree} dips under the seal floor");
+        assert!(degree >= 8, "rung {degree} dips under the stability floor");
         assert!(degree <= 512, "rung {degree} leaves the mid-degree band");
         assert!(
             degree.is_power_of_two(),
@@ -121,7 +126,14 @@ fn mid_degree_ladder_rungs_bound_and_average_the_seal_floor() {
     // The ladder is periodic, not a head: the same rungs repeat.
     assert_eq!(MID_DEGREE_LADDER[0], 512);
     assert_eq!(MID_DEGREE_LADDER[1], 256);
-    assert_eq!(MID_DEGREE_LADDER[15], 32);
+    assert_eq!(
+        MID_DEGREE_LADDER[13], 16,
+        "the sub-knee band is represented"
+    );
+    assert_eq!(
+        MID_DEGREE_LADDER[15], 8,
+        "the floor rung is the stability minimum"
+    );
 }
 
 #[test]
@@ -150,10 +162,11 @@ fn mid_degree_statements_are_one_per_group_and_generated_from_the_ladder() {
     // floor are named, the floor is the ELSE.
     assert!(once.iter().skip(1).all(|s| s.contains("CASE i % 16")));
     assert!(once[1].contains("WHEN 0 THEN 512 WHEN 1 THEN 256"));
-    assert!(once[1].contains("ELSE 32 END"));
+    assert!(once[1].contains("WHEN 12 THEN 16 WHEN 13 THEN 16"));
+    assert!(once[1].contains("ELSE 8 END"));
     assert!(
-        !once[1].contains("WHEN 8"),
-        "the 32-floor rungs are the ELSE"
+        !once[1].contains("WHEN 14"),
+        "the 8-floor rungs are the ELSE"
     );
     // A link statement links against the full pin count.
     assert!(once[1].contains("% 1000"));
@@ -164,18 +177,19 @@ fn mid_degree_statements_are_one_per_group_and_generated_from_the_ladder() {
 fn mid_degree_census_pins() {
     // The pin's 1,000 nodes are not a whole group count: the trailing
     // 8-node half-group carries the ladder's head (1,280 hops), so the
-    // pin census is 96,512 relationships — summed from the ladder,
-    // never a hand-typed constant.
+    // pin census is 91,552 relationships — 62 whole straddling groups
+    // (90,272 hops) plus that head — summed from the ladder, never a
+    // hand-typed constant.
     assert_eq!(
         none_small(GraphShape::MidDegree),
         ShapeCensus {
             nodes: 1_000,
-            relationships: 96_512,
+            relationships: 91_552,
         }
     );
-    // Large lands on whole 16-node groups so the average degree of 96
+    // Large lands on whole 16-node groups so the average degree of 91
     // is exact: the census solver's own answer at the default target,
-    // mirrored by the loadtest's fill target.
+    // the same number the loadtest's fill target reads.
     let target = ShapeScale::Large {
         logical_bytes: DEFAULT_LOGICAL_TARGET_BYTES,
     };
@@ -189,8 +203,8 @@ fn mid_degree_census_pins() {
     assert_eq!(
         got,
         ShapeCensus {
-            nodes: 1_184,
-            relationships: 113_664,
+            nodes: u64::from(MID_DEGREE_LARGE_NODES),
+            relationships: u64::from(MID_DEGREE_LARGE_NODES) * MID_DEGREE_AVG,
         }
     );
     assert_eq!(
