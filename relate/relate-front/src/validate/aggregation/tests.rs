@@ -147,19 +147,25 @@ fn percentile_aggregates_keep_their_own_call_site_arity_check() {
     assert!(validate_semantics("MATCH (n) RETURN percentileCont()").is_ok());
     assert!(validate_semantics("MATCH (n) RETURN percentileDisc(n.age)").is_ok());
 }
-// Only a projected *key* is a grouping key: a non-aggregating item the
-// GROUP BY list does not name stays ambiguous, while a `GROUP BY`
-// expression the projection never restates is a key of its own (both
-// sides of the pre-helper behaviour the shared predicate must keep).
+// The front-end ambiguity gate is variable-coverage only; the leaf-shape
+// discipline over the covered variables is the planner's
+// (`check_item_grouping`), which sees the clause's grouping keys. Live Neo4j
+// 2026.10.1 (probed 2026-11-21) accepts the mixed arithmetic over a key
+// variable on both sides of the key list, and rejects a mixed expression
+// whose variable no key covers.
 #[test]
-fn grouping_keys_are_the_key_list_not_every_projected_item() {
-    let err = validate_semantics("MATCH (n) RETURN n.age * 2 + count(*), n.age * 2 GROUP BY n.age")
-        .unwrap_err();
+fn the_front_end_ambiguity_gate_covers_variables_only() {
+    for query in [
+        // The key list names `n.age`, the mixed item reads `n.age * 2`.
+        "MATCH (n) RETURN n.age * 2 + count(*), n.age * 2 GROUP BY n.age",
+        // A key expression the projection never restates.
+        "MATCH (n) RETURN n.age * 2 + count(*) GROUP BY n.age * 2",
+    ] {
+        assert!(validate_semantics(query).is_ok(), "{query}");
+    }
+    // No key covers `n`: the gate rejects before the planner sees it.
+    let err = validate_semantics("MATCH (n) RETURN n.x + count(*)").unwrap_err();
     assert_eq!(err.kind(), ErrorKind::AmbiguousAggregationExpression);
-    assert!(
-        validate_semantics("MATCH (n) RETURN n.age * 2 + count(*) GROUP BY n.age * 2").is_ok(),
-        "a GROUP BY expression the projection does not restate is a key"
-    );
 }
 // The projected-item predicate owns the RETURN `*`/`ALL` decision: a
 // star item projects the incoming scope, not an expression, so it never
@@ -329,26 +335,40 @@ fn parenthesized_parts_validate_like_their_bare_spellings() {
     }
 }
 
-// The arm extends exactly the existing coverage, no further: a call over
-// a non-key variable stays ambiguous, and a property of a `*`-carried
-// variable read through a call stays ambiguous (ADR-0198 ruling 1 — `*`
-// projects the variables, not their property expressions).
+// The gate's coverage boundary is the *variable* set: a call over a
+// non-key variable stays ambiguous, while a call over a covered one is
+// admitted here and left to the planner's leaf discipline. The list below
+// pins this front-end gate only — the end-to-end verdict of a shape can be
+// stricter, and for the star-carried property leaf it is:
+// `relate/relate/tests/aggregate_grouping_key_through_scalar_call.rs::
+// scalar_call_over_a_non_grouped_variable_stays_ambiguous` pins the same
+// statement as an end-to-end `AmbiguousAggregationExpression` rejection
+// (the planner's variables-only `*`, ADR-0198 ruling 1), while live Neo4j
+// 2026.10.1 runs it and returns a row per group (probed 2026-11-21 against
+// a scratch database: `MATCH (m) RETURN *, toFloat(m.p1) + count(*) AS x`
+// over `(:N {p1: 1}), (:N {p1: 2}), (:M)` gives x = 2.0, 3.0, null).
 #[test]
 fn scalar_call_mixed_parts_keep_the_grouping_coverage_boundary() {
-    for query in [
-        // `q` is in scope but not a key of the RETURN.
+    // `q` is in scope but not a key of the RETURN.
+    let err = validate_semantics(
         "MATCH (n) WITH n.p1 AS p, n.p2 AS q MATCH (m) RETURN toFloat(q) / count(m) AS x, p",
-        // A property leaf of a star-carried variable, through the call.
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.kind(),
+        ErrorKind::AmbiguousAggregationExpression,
+        "{err:?}"
+    );
+    for query in [
+        // A property leaf of a star-carried variable, through the call: the
+        // gate admits it because the star covers the variable; the planner
+        // still refuses it (the sibling integration test above pins that,
+        // and live disagrees with the planner — REL8-1939).
         "MATCH (m) RETURN *, toFloat(m.p1) + count(*) AS x",
         // An aggregate hidden in a list literal (invisible to
-        // `contains_aggregation`) must not be let in by the recursion.
+        // `contains_aggregation`) is that aggregation's own input.
         "MATCH (n) RETURN n, n.p1, count(*) + coalesce(n, [collect(n.p1)]) AS y",
     ] {
-        let err = validate_semantics(query).unwrap_err();
-        assert_eq!(
-            err.kind(),
-            ErrorKind::AmbiguousAggregationExpression,
-            "{query}: {err:?}"
-        );
+        assert!(validate_semantics(query).is_ok(), "{query}");
     }
 }

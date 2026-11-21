@@ -17,7 +17,7 @@ mod common;
 
 use relate::Value;
 
-use common::{connection, err_text, list, run};
+use common::{connection, err_text, list, refused_literal, run};
 
 fn int(value: i64) -> Value {
     Value::Int(value)
@@ -27,6 +27,23 @@ fn seed() -> relate::Connection {
     let mut c = connection();
     run(&mut c, "CREATE (a {x: 1, y: 10}), (b {x: 2, y: 10})");
     c
+}
+
+/// The one negative assertion the rejection pins share (stellar std-6):
+/// the query is refused with the `AmbiguousAggregationExpression` token.
+/// The error comes from the canonical refusal runner, so a shape that gets
+/// *admitted* fails with the statement named instead of `err_text`'s bare
+/// "expected an error". The token is matched in the rendered text because
+/// the public `relate::Error` carries no kind — the rejection lowers to
+/// `Error::Syntax(String)` at this boundary; the typed
+/// `ErrorKind::AmbiguousAggregationExpression` is pinned one layer down, by
+/// the front-end validation tests.
+fn assert_ambiguous_aggregation(c: &mut relate::Connection, query: &str) {
+    let err = refused_literal(c, query).to_string();
+    assert!(
+        err.contains("AmbiguousAggregationExpression"),
+        "{query} must stay rejected, got: {err}"
+    );
 }
 
 // s20: `WITH *` expands to all in-scope variables; they become the grouping
@@ -123,11 +140,9 @@ fn labs_199_aggregate_in_case_arm() {
 fn labs_199_with_star_still_rejects_property_leaf() {
     let mut c = seed();
 
-    let err =
-        err_text(c.query("WITH 99 AS z MATCH (n) WITH *, collect(n.x) + [n.y] AS xs RETURN xs"));
-    assert!(
-        err.contains("AmbiguousAggregationExpression"),
-        "property leaf must stay rejected, got: {err}"
+    assert_ambiguous_aggregation(
+        &mut c,
+        "WITH 99 AS z MATCH (n) WITH *, collect(n.x) + [n.y] AS xs RETURN xs",
     );
 }
 
@@ -138,12 +153,13 @@ fn labs_199_with_star_still_rejects_property_leaf() {
 fn labs_199_agreed_rejections_unchanged() {
     let mut c = seed();
 
-    let err = err_text(c.query("WITH 10 AS y MATCH (n) WITH collect(n.x) + [y] AS xs RETURN xs"));
-    assert!(
-        err.contains("AmbiguousAggregationExpression"),
-        "i01 must stay rejected, got: {err}"
+    assert_ambiguous_aggregation(
+        &mut c,
+        "WITH 10 AS y MATCH (n) WITH collect(n.x) + [y] AS xs RETURN xs",
     );
 
+    // i02 keeps its own tolerance: the same-clause alias reference may
+    // surface as either message, so it does not ride the strict helper.
     let err = err_text(c.query("MATCH (n) WITH n.y AS y, collect(n.x) + [y] AS xs RETURN xs"));
     assert!(
         err.contains("AmbiguousAggregationExpression") || err.contains("Variable"),
@@ -151,60 +167,72 @@ fn labs_199_agreed_rejections_unchanged() {
     );
 
     let mut c = seed();
-    let err = err_text(c.query("MATCH (n) WITH collect(n.x) + [n.y] AS xs RETURN xs"));
-    assert!(
-        err.contains("AmbiguousAggregationExpression"),
-        "i03 must stay rejected, got: {err}"
+    assert_ambiguous_aggregation(
+        &mut c,
+        "MATCH (n) WITH collect(n.x) + [n.y] AS xs RETURN xs",
     );
 }
 
-// Stellar F-1-11: the Comparison arm of the grouping-key ambiguity check
-// applies the same both-sides-aggregate recursion as the Binary arm. The
-// missing recursion was a copy-paste divergence inherited from the original
-// import, not a ruling — the planner's IR lowers comparisons to the same
-// `Expr::Binary` node and checks them identically. A complex non-aggregate
-// part hiding in a mixed comparison side is ambiguous; simple key parts
-// stay valid.
+// LABS-199's Comparison arm keeps Binary parity (stellar F-1-11): both arms
+// judge a mixed side by the same policy — the planner's grouping-key leaf
+// discipline, which admits a non-aggregate part built from a grouping key
+// and refuses one reading a non-key leaf. Live Neo4j 2026.10.1 (probed
+// 2026-11-21) returns the rows below for both arms and refuses both `n.q`
+// spellings.
+//
+// One table row per case and one assertion site: both arms are generated
+// from the row's own tail, so the parity the test claims is a row
+// invariant, not two lists kept in step by index.
 #[test]
 fn labs_199_comparison_mixed_sides_follow_binary_rules() {
+    /// What one row's mixed side is: the ambiguous shape both arms refuse,
+    /// or the key-based shape both arms run — with each arm's rows.
+    enum Expect {
+        Ambiguous,
+        Rows(Vec<Vec<Value>>, Vec<Vec<Value>>),
+    }
+
     let mut c = seed();
-
-    // `n.x + 1` is a complex non-aggregate part: rejected under a
-    // both-aggregating comparison, exactly as the Binary arm has always
-    // rejected the same shape under `+`.
-    let err = err_text(
-        c.query("MATCH (n) WITH n.x AS x, count(*) > (sum(n.y) + (n.x + 1)) AS c RETURN c"),
-    );
-    assert!(
-        err.contains("AmbiguousAggregationExpression"),
-        "complex non-key part in a mixed comparison side must be ambiguous, got: {err}"
-    );
-    let err = err_text(
-        c.query("MATCH (n) WITH n.x AS x, count(*) + (sum(n.y) + (n.x + 1)) AS c RETURN c"),
-    );
-    assert!(
-        err.contains("AmbiguousAggregationExpression"),
-        "Binary arm parity, got: {err}"
-    );
-
-    // A simple grouping-key part in a mixed comparison side stays valid
-    // (one group per `n.x`; every count is 1, every sum + key exceeds it).
-    let r = run(
-        &mut c,
-        "MATCH (n) WITH n.x AS x, count(*) > (sum(n.y) + n.x) AS c RETURN c",
-    );
-    assert_eq!(
-        r.rows,
-        vec![vec![Value::Bool(false)], vec![Value::Bool(false)]]
-    );
-
-    // A pure comparison of two aggregates was and stays valid.
-    let r = run(
-        &mut c,
-        "MATCH (n) WITH n.x AS x, count(*) > sum(n.y) AS c RETURN c",
-    );
-    assert_eq!(
-        r.rows,
-        vec![vec![Value::Bool(false)], vec![Value::Bool(false)]]
-    );
+    let false_rows = vec![vec![Value::Bool(false)], vec![Value::Bool(false)]];
+    for (tail, expect) in [
+        // Key-based arithmetic over the projected key: admitted by both
+        // arms (the comparison is false for every group; the sum + key
+        // value is the group's own).
+        (
+            "sum(n.y) + (n.x + 1)",
+            Expect::Rows(
+                false_rows.clone(),
+                vec![vec![Value::Int(13)], vec![Value::Int(14)]],
+            ),
+        ),
+        (
+            "sum(n.y) + n.x",
+            Expect::Rows(
+                false_rows.clone(),
+                vec![vec![Value::Int(12)], vec![Value::Int(13)]],
+            ),
+        ),
+        // A pure aggregate beside the comparison, no non-aggregate part.
+        (
+            "sum(n.y)",
+            Expect::Rows(
+                false_rows.clone(),
+                vec![vec![Value::Int(11)], vec![Value::Int(11)]],
+            ),
+        ),
+        // `n.q` is no grouping reference: the key is the property `n.x`.
+        ("sum(n.y) + n.q", Expect::Ambiguous),
+    ] {
+        let (comparison, binary) = match expect {
+            Expect::Ambiguous => (None, None),
+            Expect::Rows(comparison, binary) => (Some(comparison), Some(binary)),
+        };
+        for (arm, expected) in [("count(*) > ", comparison), ("count(*) + ", binary)] {
+            let q = format!("MATCH (n) WITH n.x AS x, {arm}({tail}) AS c RETURN c");
+            match expected {
+                None => assert_ambiguous_aggregation(&mut c, &q),
+                Some(rows) => assert_eq!(run(&mut c, &q).rows, rows, "{q}"),
+            }
+        }
+    }
 }

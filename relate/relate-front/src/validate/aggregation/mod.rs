@@ -332,8 +332,9 @@ fn check_projection_items(
         check_nested_aggregation(&item.expr)?;
         check_non_constant_in_aggregation(&item.expr)?;
 
-        // Ambiguous aggregation: is_ambiguous_aggregation owns both
-        // preconditions.
+        // Ambiguous aggregation: the variable-coverage gate
+        // (`is_ambiguous_aggregation`); the leaf-shape discipline over the
+        // covered variables is the planner's (`check_item_grouping`).
         if is_ambiguous_aggregation(&item.expr, &keys) {
             return Err(ambiguous_aggregation_error());
         }

@@ -441,7 +441,15 @@ fn binding_class_of(error: &relate::Error) -> &'static str {
 /// spellings) — the no-params half of [`error_class`], so the class-table
 /// files share one default instead of each wrapping it again.
 pub fn error_class_literal(conn: &mut relate::Connection, statement: &str) -> &'static str {
-    error_class(conn, statement, BTreeMap::new())
+    binding_class_of(&refused_literal(conn, statement))
+}
+
+/// The refusal [`refused`] raises for a statement with no parameters: the
+/// no-params half of the pair, so a caller that only needs the error (a
+/// message assertion) names the statement on the unexpected-success path
+/// exactly like the class tables do.
+pub fn refused_literal(conn: &mut relate::Connection, statement: &str) -> relate::Error {
+    refused(conn, statement, BTreeMap::new())
 }
 
 /// The one assertion for a statement a CE rule must refuse: the error text
