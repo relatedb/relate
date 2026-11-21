@@ -47,7 +47,13 @@ primary is consumed, so no variable name is compared after parsing.
 
 Assumptions for the maintainers to rule on:
 
-1. **Single node.** `PATH [n]` is not constructible: it reads as `path[n]`.
+1. **Single node.** `PATH [n]` is a zero-length path when `path` is bound
+   nowhere in the statement: every identifier spelled `path` (any case)
+   is directly followed by `[`, found by one token scan (an interpolated
+   embed never reads the constructor this way, its tokens being separate), so the subscript
+   reading could only have been an undefined variable. If the name is used
+   in any other position the statement keeps the subscript reading, so no
+   statement that ran before changes meaning.
 2. **Relationship direction.** `PATH [a, r, b]` accepts `r` in either
    stored direction and keeps it; adjacency is checked on endpoints.
 3. **Non-alternating list.** Anything but node, relationship, node, ...

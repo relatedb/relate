@@ -193,8 +193,7 @@ impl<'a> Parser<'a> {
     pub(in crate::parser) fn parse_postfix(&mut self) -> ParseResult<Expr> {
         // `PATH [` read at the token level, before the primary is consumed:
         // only the first postfix operator can be the constructor's bracket.
-        let mut path_open =
-            self.peek_is_ident("PATH") && self.peek_at(1).ty == TokenType::LeftBracket;
+        let mut path_open = self.is_path_opener_at(self.pos);
         let primary = self.parse_primary()?;
         let ns = Self::extract_namespace(&primary);
         let mut base = PostfixBase::Built(primary, ns);
@@ -347,6 +346,19 @@ impl<'a> Parser<'a> {
                         }
                         self.expect(TokenType::RightBracket)?;
                         base = PostfixBase::Built(Expr::PathConstruct(elements), None);
+                        continue;
+                    }
+                    // A one-element `PATH [x]` under `path-construction`: the
+                    // constructor when `path` is bound nowhere in the
+                    // statement, so the subscript reading could only have
+                    // been an undefined variable.
+                    if is_path_open
+                        && self.options.path_construction
+                        && self.peek_type() == TokenType::RightBracket
+                        && self.path_ident_never_bound()
+                    {
+                        self.next_token(); // consume ]
+                        base = PostfixBase::Built(Expr::PathConstruct(vec![first]), None);
                         continue;
                     }
                     if self.peek_type() == TokenType::DotDot {

@@ -36,6 +36,11 @@ pub struct ParseOptions {
     /// [`TokenType::At`], the clause-level annotation introducer, instead of
     /// the `unexpected character: @` error token.
     pub cypher_annotations: bool,
+    /// The `path-construction` gate: a one-element `PATH [x]` reads as the
+    /// path constructor when no identifier spelled `path` appears in the
+    /// statement outside such a `PATH [` opener (ADR-0637). Off, it stays
+    /// the subscript it has always been.
+    pub path_construction: bool,
 }
 
 /// Tokenizes a Cypher query string into a list of tokens.

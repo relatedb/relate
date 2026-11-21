@@ -190,3 +190,56 @@ fn a_concatenated_path_shares_the_boundary_node_once() {
         ["node", "relationship", "node", "relationship", "node"]
     );
 }
+
+#[test]
+fn a_one_element_constructor_is_a_zero_length_path_when_path_is_unbound() {
+    let mut conn = both();
+    let p = path_value(&mut conn, "MATCH (a:A) RETURN PATH [a] AS p");
+    let (nodes, rels) = path_ids(&p);
+    assert_eq!((nodes.len(), rels.len()), (1, 0));
+}
+
+#[test]
+fn a_one_element_subscript_keeps_its_meaning_when_path_is_used_elsewhere() {
+    let mut conn = both();
+    // `path` is a bound list here: the subscript reading stands.
+    assert_eq!(
+        path_value(&mut conn, "WITH [10, 20] AS path RETURN path [1] AS x"),
+        Value::Int(20)
+    );
+    // An interpolated-string embed cannot see the enclosing statement's
+    // tokens, so it never reads the one-element constructor.
+    assert_eq!(
+        path_value(
+            &mut conn,
+            "WITH [10, 20] AS path RETURN s\"{path [1]}\" AS x"
+        ),
+        Value::String("20".into())
+    );
+    // `path` bound as a path variable elsewhere in the statement: subscript.
+    let text = err_text(conn.query("MATCH path = (:A)-[]->(:B) RETURN PATH [1] AS x"));
+    assert!(
+        text.contains("UndefinedVariable: variable 'PATH' not defined"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_one_element_constructor_over_a_non_node_is_a_typed_error() {
+    let mut conn = both();
+    let text = err_text(conn.query("RETURN PATH [1] AS p"));
+    assert!(
+        text.contains("InvalidArgumentType: PATH [ ... ] requires an alternating node"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_one_element_form_without_the_flag_is_the_old_undefined_variable() {
+    let mut conn = open_with(None);
+    let text = err_text(conn.query("MATCH (a:A) RETURN PATH [a] AS p"));
+    assert!(
+        text.contains("UndefinedVariable: variable 'PATH' not defined"),
+        "{text}"
+    );
+}

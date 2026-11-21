@@ -1315,9 +1315,10 @@ RETURN p1 || p2 AS joined;
 
 The list alternates node, relationship, node, ... and starts and ends with a
 node; anything else, or a relationship that does not connect its neighbours,
-is an error. A one-element `PATH [n]` is not constructible in this preview (it is
-indistinguishable from subscripting a variable named `path`; an open question
-for the maintainers). A relationship matches in
+is an error. A one-element `PATH [n]` builds a zero-length path, provided the
+statement uses the word `path` (any case) nowhere else, not even as a label
+or property name, and the constructor is not inside an interpolated-string
+embed; otherwise it stays a subscript. A relationship matches in
 either stored direction and keeps it. A null element or list gives `null`.
 `p1 || p2` requires the last node of `p1` to be the first node of `p2` (same
 node id), shared once in the result; otherwise it is an error. A null operand

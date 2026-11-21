@@ -88,7 +88,14 @@ pub(super) fn parse_interp_body(
             return Err("unterminated { expression } in interpolated string".into());
         }
         let expr_src: String = chars[i + 1..j].iter().collect();
-        let expr = parse_expression_str_with_options(&expr_src, options)
+        // The embed's own token stream cannot see the enclosing statement's
+        // variables, so the one-element `PATH [x]` constructor reading
+        // (which needs the whole statement's tokens) stays off inside it.
+        let embed_options = crate::lexer::ParseOptions {
+            path_construction: false,
+            ..options
+        };
+        let expr = parse_expression_str_with_options(&expr_src, embed_options)
             .map_err(|e| format!("invalid expression in interpolated string: {e}"))?;
         if !text.is_empty() {
             parts.push(InterpPart::Text(std::mem::take(&mut text)));

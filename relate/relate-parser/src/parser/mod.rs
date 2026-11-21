@@ -234,6 +234,9 @@ struct Parser<'a> {
     /// [`MAX_NESTING_DEPTH`] (ADR-0257) so deeply nested subquery bodies
     /// cannot overflow the stack via pure statement recursion.
     statement_depth: u32,
+    /// Memo for [`Parser::path_ident_never_bound`]: the token scan runs at
+    /// most once per parse.
+    path_ident_never_bound_memo: std::cell::OnceCell<bool>,
     /// Current statement-block nesting depth (ADR-0257): incremented on
     /// entering `parse_statement_block`, decremented on exit. Every
     /// statement-nesting cycle funnels through `parse_statement_block` --
@@ -438,6 +441,7 @@ impl<'a> Parser<'a> {
             label_mix_target: LabelMixTarget::None,
             in_when_branch_body: 0,
             statement_depth: 0,
+            path_ident_never_bound_memo: std::cell::OnceCell::new(),
             block_depth: 0,
             expr_depth: 0,
             clause_depth: 0,
@@ -498,6 +502,35 @@ impl<'a> Parser<'a> {
     /// already hold the token.
     pub(super) fn token_is_ident(tok: &Token, word: &str) -> bool {
         tok.ty == TokenType::Identifier && tok.literal.eq_ignore_ascii_case(word)
+    }
+
+    /// Whether the token at absolute index `i` is the identifier `PATH`
+    /// directly followed by `[` -- the one spelling of the constructor's
+    /// opener, shared by the parse-time peek and the whole-statement scan.
+    pub(super) fn is_path_opener_at(&self, i: usize) -> bool {
+        self.tokens
+            .get(i)
+            .is_some_and(|tok| Self::token_is_ident(tok, "PATH"))
+            && self
+                .tokens
+                .get(i + 1)
+                .is_some_and(|next| next.ty == TokenType::LeftBracket)
+    }
+
+    /// Whether every identifier spelled `path` (any case) in the whole
+    /// statement is directly followed by `[`. A variable is introduced and
+    /// used by tokens that are never followed by `[` (`path = ...`, `AS
+    /// path`, `RETURN path`), so when this holds `path` is bound nowhere and
+    /// a `PATH [x]` cannot be a subscript of it: the one-element path
+    /// constructor (ADR-0637). Conservative by construction -- any other use
+    /// of the name keeps the subscript reading.
+    pub(super) fn path_ident_never_bound(&self) -> bool {
+        *self.path_ident_never_bound_memo.get_or_init(|| {
+            self.tokens
+                .iter()
+                .enumerate()
+                .all(|(i, tok)| !Self::token_is_ident(tok, "PATH") || self.is_path_opener_at(i))
+        })
     }
 
     /// True when the cursor is on the `ALL` set-quantifier spelling
