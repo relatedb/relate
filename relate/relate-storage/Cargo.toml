@@ -37,8 +37,8 @@ web-time = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # No arrow features: the former `json` feature was dead config (nothing uses
 # arrow-json; the dylib is byte-identical without it).
-arrow = { workspace = true, optional = true }
-parquet = { workspace = true, optional = true }
+arrow = { version = "54", default-features = false, optional = true }
+parquet = { version = "54", default-features = false, features = ["arrow", "snap"], optional = true }
 # Experimental codec (default off). rkyv 0.8 is the archive library.
 # `bytecheck` validates the archive on load and `unaligned` lets it sit
 # in a plain byte buffer — both are what let the codec avoid unchecked

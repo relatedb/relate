@@ -160,17 +160,7 @@ fn shard_props() -> WriterProperties {
     WriterProperties::builder()
         .set_compression(Compression::SNAPPY)
         .set_statistics_enabled(EnabledStatistics::None)
-        // parquet 60 split the old set_max_row_group_size (rows) into
-        // row_count and bytes knobs; the cap is a ROW count — 1024, the
-        // page envelope's unit (ADR-0183), asserted against
-        // DECODE_BATCH_ROWS — so the row-count form is the successor.
-        // The bytes knob is pinned OFF explicitly rather than left at
-        // its default: the default today is None (unlimited), but the
-        // envelope's math assumes row groups are cut by the row cap
-        // ALONE — a future parquet default change must not silently
-        // reshape row groups under the assert.
-        .set_max_row_group_row_count(Some(ROW_GROUP_CAP))
-        .set_max_row_group_bytes(None)
+        .set_max_row_group_size(ROW_GROUP_CAP)
         .build()
 }
 

@@ -18,7 +18,7 @@ fn a_one_byte_edit_flips_only_its_row_group_digest() {
     let mut bytes = Vec::new();
     {
         let properties = WriterProperties::builder()
-            .set_max_row_group_row_count(Some(16))
+            .set_max_row_group_size(16)
             .build();
         let mut writer = ArrowWriter::try_new(&mut bytes, file, Some(properties)).unwrap();
         for group in 0..2 {

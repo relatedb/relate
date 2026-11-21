@@ -480,8 +480,7 @@ pub(crate) fn payload_writer_properties(metadata: Vec<KeyValue>) -> WriterProper
     WriterProperties::builder()
         .set_compression(Compression::SNAPPY)
         .set_statistics_enabled(EnabledStatistics::None)
-        .set_max_row_group_row_count(Some(ROW_GROUP_CAP))
-        .set_max_row_group_bytes(None)
+        .set_max_row_group_size(ROW_GROUP_CAP)
         .set_key_value_metadata(Some(metadata))
         .build()
 }
