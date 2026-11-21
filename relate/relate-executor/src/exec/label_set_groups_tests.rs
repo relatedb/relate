@@ -11,7 +11,7 @@ use std::sync::Arc;
 use super::label_set_groups::label_set_groups_result;
 use super::test_support::{
     clauses_of, commit_scratch, exec_autocommit, exec_cypher, exec_cypher_on, exec_write,
-    try_exec_cypher_on, write_scratch,
+    sort_rows, try_exec_cypher_on, write_scratch,
 };
 use crate::ctx::ExecCtx;
 use crate::graph::test_support::labelled_node as node;
@@ -41,7 +41,7 @@ fn scan_answer(view: &ExecGraph<'_>, cypher: &str) -> Vec<Vec<Value>> {
 }
 
 fn sorted(mut rows: Vec<Vec<Value>>) -> Vec<Vec<Value>> {
-    rows.sort_by_key(|r| format!("{r:?}"));
+    sort_rows(&mut rows);
     rows
 }
 
