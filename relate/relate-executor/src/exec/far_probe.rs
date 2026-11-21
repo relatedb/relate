@@ -13,7 +13,7 @@ use crate::pattern_walk::PatternMapRole;
 use crate::row::Row;
 
 use super::pushdown::Residual;
-use crate::pattern_walk::{label_index_seekable, leaf_seek, pattern_props, Seek, ServedIds};
+use crate::pattern_walk::{leaf_seek, pattern_props, Seek, ServedIds};
 
 /// One far node's probe, from the cardinality decision through the built set.
 enum Probe {
@@ -239,7 +239,7 @@ fn far_node_seeks(
     params: &BTreeMap<String, Value>,
     residual: &Residual<'_>,
 ) -> Vec<Seek> {
-    let label_seekable = label_index_seekable(node);
+    let label_seekable = node.has_static_labels();
     let mut seeks = Vec::new();
     if label_seekable {
         // The probe is lenient by design: a malformed property map just

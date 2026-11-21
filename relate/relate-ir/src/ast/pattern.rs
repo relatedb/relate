@@ -244,6 +244,17 @@ pub struct NodePattern {
 }
 
 impl NodePattern {
+    /// Whether the label requirement is static: no label expression, or a
+    /// plain conjunction (so `labels` holds its operands, except that a
+    /// nested conjunction keeps its shape only in `label_expr`). The one
+    /// canonical predicate the executor's seek, fold and shortest-path
+    /// guards read; an anonymous node (no requirement) answers `true`.
+    pub fn has_static_labels(&self) -> bool {
+        self.label_expr
+            .as_ref()
+            .is_none_or(LabelExpr::is_static_conjunction)
+    }
+
     /// The implicit anonymous boundary node of a synthesized quantified
     /// group — anonymous and unconstrained, exactly what `(()-[r:T]-()){m,n}`
     /// lowers for its `()`. The one spelling of the shape, at the type's
@@ -391,7 +402,7 @@ impl LabelExpr {
             // is constructible: the parser never builds one, but
             // exec/create.rs's post-resolution synthesis can when a
             // dynamic label list resolves empty. Callers (node_ok's
-            // label arm, label_index_seekable) must not trust a
+            // label arm, has_static_labels) must not trust a
             // construction invariant, so `And([])` declines here and
             // routes to the dynamic/scan arms instead (PR #359
             // F-2-6/F-3-2).
@@ -777,5 +788,33 @@ mod tests {
         );
         assert!(!rel(&["A"], Some(label("B"))).types_are_complete_filter());
         assert!(!rel(&[], Some(LabelExpr::Wildcard)).types_are_complete_filter());
+    }
+
+    /// The static/dynamic label criterion: no expression, a plain
+    /// conjunction (nested ones included) are static; an empty `And`, a
+    /// disjunction, a negation and the wildcard are dynamic.
+    #[test]
+    fn has_static_labels_splits_static_from_dynamic() {
+        use super::NodePattern;
+        let mut np = NodePattern::anonymous();
+        assert!(np.has_static_labels());
+        np.label_expr = Some(label("A"));
+        assert!(np.has_static_labels());
+        np.label_expr = Some(LabelExpr::And(vec![label("A"), label("B")]));
+        assert!(np.has_static_labels());
+        np.label_expr = Some(LabelExpr::And(vec![
+            LabelExpr::And(vec![label("A"), label("B")]),
+            label("C"),
+        ]));
+        assert!(np.has_static_labels());
+        for dynamic in [
+            LabelExpr::And(Vec::new()),
+            LabelExpr::Or(vec![label("A"), label("B")]),
+            LabelExpr::Not(Box::new(label("A"))),
+            LabelExpr::Wildcard,
+        ] {
+            np.label_expr = Some(dynamic);
+            assert!(!np.has_static_labels());
+        }
     }
 }

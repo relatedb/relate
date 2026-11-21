@@ -35,15 +35,6 @@ mod tests;
 
 pub(crate) use seek::{id_fn_conversion, leaf_seek, IdConversion, Seek, ServedIds};
 
-/// The label criterion is static (then `np.labels` is its exact operand
-/// list) or dynamic: one spelling, consulted by the seek funnel and the
-/// fallback scan alike.
-pub(crate) fn label_index_seekable(node: &NodePattern) -> bool {
-    node.label_expr
-        .as_ref()
-        .is_none_or(|expr| expr.is_static_conjunction())
-}
-
 /// Whether the funnel's scan answers `node` with its exact matches: a
 /// static label conjunction or a disjunction fold both key the label
 /// scan on the property map. Any other label expression (a negation, a
@@ -51,7 +42,7 @@ pub(crate) fn label_index_seekable(node: &NodePattern) -> bool {
 /// check filters later — its length says nothing about how many nodes
 /// match, so a capped caller must not read it as a match count.
 fn scan_answers_exactly(node: &NodePattern) -> bool {
-    label_index_seekable(node) || node.static_disjunction_arms().is_some()
+    node.has_static_labels() || node.static_disjunction_arms().is_some()
 }
 
 /// The disjunction fold's union serve (LABS-1083): every arm's label set
@@ -297,7 +288,7 @@ fn prepared<'a>(
     Some(Prepared {
         seeks: ranked_seeks(v, conjuncts, graph, row, params),
         labels: pattern_labels(np),
-        label_seekable: label_index_seekable(np),
+        label_seekable: np.has_static_labels(),
         arms: np.static_disjunction_arms(),
     })
 }
@@ -727,7 +718,7 @@ fn scan_ids(
     // carries the `Or` the disjunction arms read, and a disjunction is
     // not a static conjunction — so the `FnOnce` map evaluates at most
     // once, on the path its pattern's shape takes.
-    if label_index_seekable(np) {
+    if np.has_static_labels() {
         // Same render-once bridge as the seek loop above.
         let labels = pattern_labels(np);
         if let Some(ids) = graph.lookup_nodes_upto(&labels, &props()?, cap) {

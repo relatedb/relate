@@ -70,7 +70,7 @@
 //! ([`bind_path_names`]/[`binds::path_name_rung`]/[`memoized_path_rung`]),
 //! the path-value reconstruction's chunk walk
 //! ([`binds::walk_rel_chunks`]), the counted node-candidate funnel
-//! ([`node_candidates`] and its [`label_index_seekable`] criterion,
+//! ([`node_candidates`] and its `has_static_labels` criterion,
 //! [`leaf_seek`] recognizers, and the [`ServedIds`] exactness
 //! compositions every served fold reads), and
 //! the one binding-schema ladder ([`WalkLadder`], parameterized on the
@@ -123,9 +123,8 @@ pub(crate) use binds::{
     node_bind_name,
 };
 pub(crate) use candidates::{
-    admitted, id_fn_conversion, label_index_seekable, leaf_seek, node_candidates,
-    node_candidates_capped, point_candidates_capped, Admitted, Capped, IdConversion, Seek,
-    ServedIds,
+    admitted, id_fn_conversion, leaf_seek, node_candidates, node_candidates_capped,
+    point_candidates_capped, Admitted, Capped, IdConversion, Seek, ServedIds,
 };
 pub(crate) use ladder::{Selection, WalkLadder};
 pub(crate) use probe::resolved_endpoints_exist;

@@ -401,7 +401,7 @@ pub(crate) fn node_ok(
         // construction site (the planner's `add_labels` rebuilds
         // `label_expr` as `And(...)` over exactly `n.labels`; nothing
         // builds `And([])`), so the guard needs no labels cross-check —
-        // the same single criterion `label_index_seekable` uses.
+        // the same single criterion `NodePattern::has_static_labels` uses.
         Some(expr) if expr.is_static_conjunction() => {
             if !np
                 .labels

@@ -213,11 +213,7 @@ pub(crate) fn try_fold_one_hop_aggs(ctx: &FoldCtx<'_>) -> Result<Option<FoldedRe
             .type_expr
             .as_ref()
             .is_some_and(|_| !rp.type_expr_is_static_types())
-        || path.nodes.iter().any(|n| {
-            n.label_expr
-                .as_ref()
-                .is_some_and(|e| !e.is_static_conjunction())
-        })
+        || path.nodes.iter().any(|n| !n.has_static_labels())
     {
         return Ok(None);
     }

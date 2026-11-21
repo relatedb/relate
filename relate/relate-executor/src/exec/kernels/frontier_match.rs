@@ -63,7 +63,6 @@ use crate::frontier_decline::FrontierDecline;
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use crate::pattern_engine::PatternEngine;
-use crate::pattern_walk::label_index_seekable;
 use crate::row::Row;
 
 use super::super::match_cap::return_with_suffix;
@@ -604,7 +603,7 @@ fn boundary_target<'a>(
     node: &'a NodePattern,
     progs: &BTreeMap<String, Prog>,
 ) -> Option<NodeTarget<'a>> {
-    if node.where_clause.is_some() || !label_index_seekable(node) {
+    if node.where_clause.is_some() || !node.has_static_labels() {
         return None;
     }
     compile_node(

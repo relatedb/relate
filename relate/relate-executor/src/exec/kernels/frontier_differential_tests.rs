@@ -604,7 +604,7 @@ fn boundary_inline_predicates_decline_through_the_walker() {
     );
     assert_eq!(seed_side.rows, vec![vec![Value::Int(6)]]);
     // A dynamic label expression on the target (`Geo|Other` — not a
-    // static conjunction, so `label_index_seekable` declines it): three
+    // static conjunction, so `has_static_labels` declines it): three
     // of the four trail endpoints — the dropped-predicate answer is 4.
     let mixed = mixed_label_ring();
     let labeled = differential_declined(

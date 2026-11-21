@@ -72,7 +72,7 @@ use crate::ctx::ExecCtx;
 use crate::eval::{binary_pure, eval};
 use crate::metrics::WalkStart;
 use crate::overlay::ExecGraph;
-use crate::pattern_walk::{label_index_seekable, node_candidates};
+use crate::pattern_walk::node_candidates;
 use crate::row::Row;
 
 use super::agg_fold::is_pred_op;
@@ -258,7 +258,7 @@ fn compile<'a>(
     }
     let node = &path.nodes[0];
     let var = node.variable.as_ref()?;
-    if node.properties.is_some() || node.where_clause.is_some() || !label_index_seekable(node) {
+    if node.properties.is_some() || node.where_clause.is_some() || !node.has_static_labels() {
         return None;
     }
     let mut plan = BatchPlan {

@@ -193,15 +193,10 @@ impl Search<'_, '_> {
 /// relationship property map (the searches check types only), and endpoint
 /// labels absent or a static conjunction.
 pub(crate) fn followable(start: &NodePattern, rel: &RelPattern, end: &NodePattern) -> bool {
-    let static_labels = |np: &NodePattern| {
-        np.label_expr
-            .as_ref()
-            .is_none_or(|e| e.is_static_conjunction())
-    };
     rel.types_are_complete_filter()
         && rel.properties.is_none()
-        && static_labels(start)
-        && static_labels(end)
+        && start.has_static_labels()
+        && end.has_static_labels()
 }
 
 /// Whether no relationship occurs twice in `trail`.

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use proptest::prelude::*;
 use relate_core::Value;
 
-use super::predicate_spec::{take_spec_gates, with_spec_disabled};
+use super::predicate_spec::{take_spec_gates, with_spec_disabled, WalkSpec};
 use super::test_support::{
     column, error_of, exec_cypher, exec_write_batched, exec_write_uncommitted, int_cell,
     try_exec_cypher, try_exec_cypher_params, write_scratch, ApplySink,
@@ -588,4 +588,67 @@ fn the_gate_reads_a_key_interned_by_the_statement_own_batches() {
     };
     let generic = with_spec_disabled(|| exec_write_batched(&g2, &scratch2, query, &sink2).unwrap());
     assert_eq!(specialized.rows, generic.rows);
+}
+
+/// All-or-nothing leaves no claim behind: `a.n > 5` compiles (and would
+/// settle conjunct 0), then `a.id > a.n + 0` declines, so `a` returns to
+/// the generic path wholesale — and the walk's settled set must stay
+/// empty, or the residual pass would skip a conjunct no gate evaluated.
+#[test]
+fn a_declined_variable_leaves_no_settled_conjunct_behind() {
+    let query = "MATCH (a:P) WHERE a.n > 5 AND a.id > a.n + 0 RETURN a";
+    let lowered: relate_ir::Query = relate_front::parse_and_lower(query).unwrap();
+    let relate_ir::Clause::Match {
+        patterns,
+        where_clause: Some(where_clause),
+        ..
+    } = &lowered.parts[0].clauses[0]
+    else {
+        panic!("a MATCH with a WHERE");
+    };
+    let conjuncts = super::pushdown::flatten_and_owned(where_clause);
+    assert_eq!(conjuncts.len(), 2);
+    let scope = std::collections::HashSet::new();
+    let residual = super::pushdown::Residual {
+        conjuncts: &conjuncts,
+        scope: &scope,
+    };
+    let g = Graph::default();
+    let view = crate::overlay::ExecGraph::read(&g);
+    let spec = WalkSpec::compile(
+        &view,
+        &patterns[0],
+        &BTreeMap::new(),
+        &residual,
+        &|_: &str| false,
+    );
+    assert!(
+        spec.settled_conjuncts().is_empty(),
+        "a declined variable must not claim conjunct 0, got {:?}",
+        spec.settled_conjuncts()
+    );
+    // The control: the compiling-only shape does settle its conjunct.
+    let lowered: relate_ir::Query =
+        relate_front::parse_and_lower("MATCH (a:P) WHERE a.n > 5 RETURN a").unwrap();
+    let relate_ir::Clause::Match {
+        patterns,
+        where_clause: Some(where_clause),
+        ..
+    } = &lowered.parts[0].clauses[0]
+    else {
+        panic!("a MATCH with a WHERE");
+    };
+    let conjuncts = super::pushdown::flatten_and_owned(where_clause);
+    let residual = super::pushdown::Residual {
+        conjuncts: &conjuncts,
+        scope: &scope,
+    };
+    let spec = WalkSpec::compile(
+        &view,
+        &patterns[0],
+        &BTreeMap::new(),
+        &residual,
+        &|_: &str| false,
+    );
+    assert_eq!(spec.settled_conjuncts(), &[0]);
 }

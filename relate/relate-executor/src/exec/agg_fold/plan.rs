@@ -151,9 +151,7 @@ fn pattern_streams(path: &PathPattern, names: &HashSet<String>) -> bool {
                     .is_none_or(|expr| !mentions_any(expr, names))
         })
         && path.nodes.iter().all(|node| {
-            node.label_expr
-                .as_ref()
-                .is_none_or(|expr| expr.is_static_conjunction())
+            node.has_static_labels()
                 && node
                     .properties
                     .as_ref()

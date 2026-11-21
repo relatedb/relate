@@ -44,7 +44,6 @@ use relate_ir::{
 use relate_names::SmallName;
 use relate_planner::seed_on_rel_start;
 
-use crate::pattern_walk::label_index_seekable;
 use crate::row::Row;
 
 use super::program::{bound_is_row_invariant, decode_conjunct, NodeTarget, Prog};
@@ -210,7 +209,7 @@ fn plain_pattern(path: &PathPattern) -> Option<()> {
             return None;
         }
         // A dynamic label expression keeps the walker's label evaluation.
-        if !label_index_seekable(node) {
+        if !node.has_static_labels() {
             return None;
         }
     }

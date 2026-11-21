@@ -429,15 +429,15 @@ impl WalkSpec {
         if np.properties.is_some() {
             return None;
         }
-        if np
-            .label_expr
-            .as_ref()
-            .is_some_and(|expr| !expr.is_static_conjunction())
-        {
+        if !np.has_static_labels() {
             return None;
         }
         let mut named = HashSet::new();
         let mut preds = Vec::new();
+        // This variable's gated conjunct indices, published to `settled`
+        // only once the all-or-nothing decision completes: a declined
+        // variable must leave no settled claim behind.
+        let mut mine = Vec::new();
         // Set once a conjunct the gate cannot evaluate — and that is
         // evaluable at this node's bind — precedes this variable's
         // compiled conjuncts: the evaluation order the gate would flip.
@@ -477,11 +477,12 @@ impl WalkSpec {
             // The gate evaluates this conjunct for every candidate it
             // accepts: the residual's re-run is redundant, and the walk's
             // residual pass skips it by this index.
-            settled.push(index);
+            mine.push(index);
         }
         if preds.is_empty() {
             return None;
         }
+        settled.extend(mine);
         let labels = np
             .labels
             .iter()
