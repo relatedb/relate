@@ -224,23 +224,27 @@ fn print_census(c: &HeapCensus) {
         c.rel_record_bytes,
         format!("{} props, {} string bytes", c.rel_props, c.rel_string_bytes),
     );
-    for (name, side) in [("out", &c.out), ("in", &c.r#in)] {
+    for (direction, adjacency) in [("out", &c.out), ("in", &c.r#in)] {
         line(
-            &format!("{name} adjacency (delta)"),
-            side.delta_bytes,
+            &format!("{direction} adjacency (delta)"),
+            adjacency.delta_bytes,
             format!(
                 "{} nodes, {} hops ({} sealed), {} chunks ({} sealed)",
-                side.nodes, side.hops, side.sealed_hops, side.chunks, side.sealed_chunks
+                adjacency.nodes,
+                adjacency.hops,
+                adjacency.sealed_hops,
+                adjacency.chunks,
+                adjacency.sealed_chunks
             ),
         );
         line(
-            &format!("{name} adjacency (sealed)"),
-            side.sealed_bytes(),
+            &format!("{direction} adjacency (sealed)"),
+            adjacency.sealed_bytes(),
             format!(
                 "arena {:.1} MB, index {:.1} MB, dead {:.1} MB",
-                mb(side.arena_bytes),
-                mb(side.index_bytes),
-                mb(side.dead_bytes)
+                mb(adjacency.arena_bytes),
+                mb(adjacency.index_bytes),
+                mb(adjacency.dead_bytes)
             ),
         );
     }

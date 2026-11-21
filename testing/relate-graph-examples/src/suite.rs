@@ -366,7 +366,7 @@ fn run_both(
             Ok(rows) => rows,
             Err(timed) => return timed,
         };
-    let ordered = is_ordered(statement);
+    let order = is_ordered(statement);
     // db.schema.visualization() gets its own comparison (LABS-257): the
     // caller knows the procedure, so the extra normalization (constraint
     // repr fold, entry/cell sorting) applies exactly here and never
@@ -374,11 +374,6 @@ fn run_both(
     let relation = if crate::adoc::is_schema_visualization(statement) {
         crate::diff::compare_rows_schema_viz(&reference_rows, &engine_rows)
     } else {
-        let order = if ordered {
-            StatementOrder::Ordered
-        } else {
-            StatementOrder::Unordered
-        };
         compare_rows(&reference_rows, &engine_rows, order)
     };
     let outcome = match relation {

@@ -15,7 +15,7 @@ use relate_core::Value;
 use crate::graph::Graph;
 
 use super::super::kernels::matcher::MAX_CHAIN_HOPS;
-use super::{differential, Engagement};
+use super::{differential, ExpectedEngagement};
 
 /// The hand-built adversarial multigraph — the shared differential corpus
 /// ([`crate::graph::test_support::adversarial_multigraph`]) at its native
@@ -34,7 +34,7 @@ fn adversarial_graph() -> Graph {
 struct Step {
     hop: &'static str,
     star: &'static str,
-    star_engages: Engagement,
+    star_engages: ExpectedEngagement,
     spelled_engages_from: Option<usize>,
 }
 
@@ -47,25 +47,25 @@ const DIRECTED: [Step; 4] = [
     Step {
         hop: "-[:F]->",
         star: "-[:F*{k}]->",
-        star_engages: Engagement::Engaged,
+        star_engages: ExpectedEngagement::Engaged,
         spelled_engages_from: Some(3),
     },
     Step {
         hop: "<-[:F]-",
         star: "<-[:F*{k}]-",
-        star_engages: Engagement::Engaged,
+        star_engages: ExpectedEngagement::Engaged,
         spelled_engages_from: Some(3),
     },
     Step {
         hop: "-[:G]->",
         star: "-[:G*{k}]->",
-        star_engages: Engagement::Engaged,
+        star_engages: ExpectedEngagement::Engaged,
         spelled_engages_from: Some(3),
     },
     Step {
         hop: "-->",
         star: "-[*{k}]->",
-        star_engages: Engagement::Engaged,
+        star_engages: ExpectedEngagement::Engaged,
         spelled_engages_from: Some(3),
     },
 ];
@@ -77,7 +77,7 @@ const DIRECTED: [Step; 4] = [
 const UNDIRECTED: Step = Step {
     hop: "-[:F]-",
     star: "-[:F*{k}]-",
-    star_engages: Engagement::Engaged,
+    star_engages: ExpectedEngagement::Engaged,
     spelled_engages_from: Some(3),
 };
 
@@ -86,7 +86,7 @@ const UNDIRECTED: Step = Step {
 const DISJUNCTIVE: Step = Step {
     hop: "-[:F|G]->",
     star: "-[:F|G*{k}]->",
-    star_engages: Engagement::Declined,
+    star_engages: ExpectedEngagement::Declined,
     spelled_engages_from: None,
 };
 
@@ -117,10 +117,10 @@ fn starred(head: &str, tail: &str, step: &Step, k: usize) -> String {
 impl Step {
     /// Whether the spelled-out form at `k` hops engages a kernel — the
     /// one spelling of the step's policy, consulted by every sweep.
-    fn spelled_engages(&self, k: usize) -> Engagement {
+    fn spelled_engages(&self, k: usize) -> ExpectedEngagement {
         match self.spelled_engages_from {
-            Some(from) if k >= from => Engagement::Engaged,
-            _ => Engagement::Declined,
+            Some(from) if k >= from => ExpectedEngagement::Engaged,
+            _ => ExpectedEngagement::Declined,
         }
     }
 }
@@ -141,7 +141,7 @@ fn chain_count_matches_the_walker_on_adversarial_shapes() {
                     let starred_rows =
                         differential(&g, &starred(head, tail, step, k), step.star_engages).rows;
                     nonzero_answers += usize::from(
-                        step.star_engages == Engagement::Engaged
+                        step.star_engages == ExpectedEngagement::Engaged
                             && starred_rows != vec![vec![Value::Int(0)]],
                     );
                     let spelled_query = spelled(head, tail, step, k);
@@ -173,12 +173,12 @@ fn chain_count_matches_the_walker_on_adversarial_shapes() {
             differential(
                 &g,
                 &starred(BARE_HEAD, BARE_TAIL, step, k),
-                Engagement::Declined,
+                ExpectedEngagement::Declined,
             );
             differential(
                 &g,
                 &spelled(BARE_HEAD, BARE_TAIL, step, k),
-                Engagement::Declined,
+                ExpectedEngagement::Declined,
             );
         }
     }
@@ -192,7 +192,7 @@ fn chain_count_engages_on_count_star() {
     // vocabulary.
     let g = adversarial_graph();
     let q = "MATCH (a:U {id:'a'})-[:F*2]->(b) RETURN count(*)";
-    let result = differential(&g, q, Engagement::Engaged);
+    let result = differential(&g, q, ExpectedEngagement::Engaged);
     assert_ne!(result.rows, vec![vec![Value::Int(0)]], "vacuous: {q}");
 }
 
@@ -212,6 +212,6 @@ fn chain_count_declines_what_it_cannot_prove() {
         // bound a lone `*k` does not
         "MATCH (a:U {id:'a'})-[:F]->(b)-[:G*4]->(c) RETURN count(c)",
     ] {
-        differential(&g, q, Engagement::Declined);
+        differential(&g, q, ExpectedEngagement::Declined);
     }
 }

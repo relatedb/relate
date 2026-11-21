@@ -69,27 +69,31 @@ pub(super) fn families() -> Graph {
 
 /// Whether a differential expects a kernel to take the statement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Engagement {
+pub(super) enum ExpectedEngagement {
     /// A kernel takes the statement exactly once.
     Engaged,
     /// No kernel takes it (a gate decline).
     Declined,
 }
 
-impl Engagement {
+impl ExpectedEngagement {
     /// The kernel-engagement count this expectation asserts.
     fn count(self) -> u32 {
         match self {
-            Engagement::Engaged => 1,
-            Engagement::Declined => 0,
+            ExpectedEngagement::Engaged => 1,
+            ExpectedEngagement::Declined => 0,
         }
     }
 }
 
 /// The differential: `cypher` must answer identically with the kernels on
-/// and forced off, and (when [`Engagement::Engaged`]) a kernel must have taken it exactly
+/// and forced off, and (when [`ExpectedEngagement::Engaged`]) a kernel must have taken it exactly
 /// once. Returns the kernel-path result.
-pub(super) fn differential(g: &Graph, cypher: &str, engages: Engagement) -> super::QueryResult {
+pub(super) fn differential(
+    g: &Graph,
+    cypher: &str,
+    engages: ExpectedEngagement,
+) -> super::QueryResult {
     differential_with(cypher, engages, || try_exec_cypher(g, cypher))
 }
 
@@ -102,7 +106,7 @@ pub(super) fn differential(g: &Graph, cypher: &str, engages: Engagement) -> supe
 /// [`error_differential`]).
 pub(super) fn differential_with(
     label: &str,
-    engages: Engagement,
+    engages: ExpectedEngagement,
     run: impl Fn() -> Result<super::QueryResult>,
 ) -> super::QueryResult {
     // The run first, the counter taken on both outcomes: an errored
