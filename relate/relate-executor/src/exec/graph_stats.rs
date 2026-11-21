@@ -78,6 +78,26 @@ impl GraphStats<'_> {
         token.id_or_else(|| name.with_str(|text| self.graph.resolve(text).id()))
     }
 
+    /// The one by-name read of a (label, property) pair: the pair as text
+    /// for the name-keyed store path, or `None` for an `Absent` label (a
+    /// plan-time fact: the store never interned it) before any store read.
+    /// The caller picks what an absent label means for its figure.
+    fn with_label_property<R>(
+        &self,
+        (label, label_token): &NamedToken,
+        property: &NamedToken,
+        read: impl FnOnce(&str, &str) -> R,
+    ) -> Option<R> {
+        if *label_token == Token::Absent {
+            return None;
+        }
+        Some(label.with_str(|label_text| {
+            property
+                .0
+                .with_str(|property_text| read(label_text, property_text))
+        }))
+    }
+
     /// The interned ids of `rel_types`; a name the store never interned
     /// selects nothing, so it drops out (the moments' "selects nothing"
     /// contract, not a fabricated id).
@@ -147,7 +167,7 @@ impl relate_planner::PatternStats for GraphStats<'_> {
     /// plan-time estimate's).
     fn range_rows(
         &self,
-        (label, label_token): &NamedToken,
+        label: &NamedToken,
         property: &NamedToken,
         op: BinaryOp,
         bound: &Expr,
@@ -156,15 +176,11 @@ impl relate_planner::PatternStats for GraphStats<'_> {
         // The one by-name fallback: the range seek's owned forms are
         // names, so a resolved label still reads through the name-keyed
         // store path; an `Absent` label declines before any store read.
-        if *label_token == Token::Absent {
-            return None;
-        }
-        label.with_str(|label_text| {
-            property.0.with_str(|property_text| {
-                self.graph
-                    .pattern_range_rows(label_text, property_text, op, &bound)
-            })
+        self.with_label_property(label, property, |label_text, property_text| {
+            self.graph
+                .pattern_range_rows(label_text, property_text, op, &bound)
         })
+        .flatten()
     }
 
     /// LABS-643: the count is always measurable — the TEXT index's exact
@@ -178,7 +194,7 @@ impl relate_planner::PatternStats for GraphStats<'_> {
     /// never interned.
     fn contains_rows(
         &self,
-        (label, label_token): &NamedToken,
+        label: &NamedToken,
         property: &NamedToken,
         needle: &Expr,
     ) -> Option<ContainsCount> {
@@ -186,17 +202,13 @@ impl relate_planner::PatternStats for GraphStats<'_> {
         let Value::String(needle) = needle else {
             return None;
         };
-        if *label_token == Token::Absent {
-            return Some(ContainsCount::SampleScan { rows: 0, scan: 0 });
-        }
-        label.with_str(|label_text| {
-            property.0.with_str(|property_text| {
-                Some(
-                    self.graph
-                        .pattern_contains_rows(label_text, property_text, &needle),
-                )
+        Some(
+            self.with_label_property(label, property, |label_text, property_text| {
+                self.graph
+                    .pattern_contains_rows(label_text, property_text, &needle)
             })
-        })
+            .unwrap_or(ContainsCount::SampleScan { rows: 0, scan: 0 }),
+        )
     }
 
     fn rel_type_rows(&self, (name, token): &NamedToken) -> Option<u64> {

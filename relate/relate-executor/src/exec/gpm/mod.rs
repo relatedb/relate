@@ -752,10 +752,6 @@ fn gpm_start_nodes(
     Ok(out)
 }
 
-fn gpm_expr_ready(expr: &Expr, row: &Row) -> bool {
-    super::pushdown::expr_ready(expr, row)
-}
-
 /// Whether `predicate` holds on `row`. A row that does not yet bind every
 /// variable the predicate names leaves the predicate to the post-filter
 /// (through `crate::eval::candidate_passes`) instead of rejecting the row.
@@ -765,7 +761,8 @@ fn inline_predicate_holds(
     predicate: &Expr,
     params: &BTreeMap<String, Value>,
 ) -> Result<bool> {
-    Ok(!gpm_expr_ready(predicate, row) || predicate_holds(graph, row, predicate, params)?)
+    Ok(!super::pushdown::expr_ready(predicate, row)
+        || predicate_holds(graph, row, predicate, params)?)
 }
 
 /// PROFILE's hop counter (the `hops` read kind behind `Db Hits`), as the

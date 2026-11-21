@@ -86,12 +86,13 @@ impl FarProbe {
             if var.with_str(|text| row.contains_key(text)) {
                 continue;
             }
-            let seeks = far_node_seeks(graph, node, var, row, params, residual);
+            // Text render, once: the prefilter's tables and the servability
+            // check are String-keyed.
+            let labels: Vec<String> = node.label_names().map(|label| label.to_string()).collect();
+            let seeks = far_node_seeks(graph, node, &labels, var, row, params, residual);
             if seeks.is_empty() {
                 continue;
             }
-            // Text render: the prefilter's tables are String-keyed.
-            let labels: Vec<String> = node.label_names().map(|label| label.to_string()).collect();
             let state = initial_probe(graph, &labels, &seeks, overlay_dirty);
             nodes.insert(
                 var.to_string(),
@@ -232,6 +233,7 @@ fn initial_probe(
 fn far_node_seeks(
     graph: &ExecGraph<'_>,
     node: &NodePattern,
+    labels: &[String],
     var: &SmallName,
     row: &Row,
     params: &BTreeMap<String, Value>,
@@ -261,13 +263,11 @@ fn far_node_seeks(
             }
         }
     }
-    // Text render: the servability check reads the label list as text.
-    let labels: Vec<String> = node.label_names().map(|label| label.to_string()).collect();
     for conjunct in residual.conjuncts {
         let Some(seek) = leaf_seek(var, conjunct, graph, row, params) else {
             continue;
         };
-        if !seek.servable(graph, &labels, label_seekable) {
+        if !seek.servable(graph, labels, label_seekable) {
             continue;
         }
         seeks.push(seek);
