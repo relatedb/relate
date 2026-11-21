@@ -4,6 +4,9 @@ use std::path::Path;
 
 use relate::{Database, Error, OpenOptions, Value};
 
+mod common;
+use common::local_file_url;
+
 fn options(root: &Path, limit: Option<u64>) -> OpenOptions {
     OpenOptions {
         load_csv_dir: Some(root.to_path_buf()),
@@ -11,13 +14,6 @@ fn options(root: &Path, limit: Option<u64>) -> OpenOptions {
         mode: relate::OpenMode::Writable,
         ..OpenOptions::default()
     }
-}
-
-fn local_file_url(path: &Path) -> String {
-    // tempfile gives an absolute path: /tmp/... or C:\... . The URL is
-    // file:///tmp/... or file:///C:/..., with no authority or backslashes.
-    let path = path.to_str().unwrap().replace('\\', "/");
-    format!("file:///{}", path.trim_start_matches('/'))
 }
 
 fn csv(db: &Database, source: &str) -> Result<Vec<Vec<Value>>, Error> {

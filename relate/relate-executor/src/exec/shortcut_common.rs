@@ -59,15 +59,12 @@ pub(super) fn node_population(np: &relate_ir::NodePattern) -> Pop<'_> {
     }
 }
 
-/// The one pattern of a plain whole-population `MATCH` — the recognizer
-/// ladder's first rung, shared by every short-circuit shape: non-optional,
-/// the default match mode, exactly one pattern, no clause WHERE, no
-/// search, and no path-level predicate (a path WHERE, a mode
-/// (WALK/TRAIL/ACYCLIC/SIMPLE) or a selector (ANY/SHORTEST/...) changes
-/// which rows the scan emits; round 3, F-1-3: every predicate-bearing
-/// field on the IR's pattern types is enumerated, none silently
-/// accepted).
-pub(super) fn plain_match_pattern(clause: &Clause) -> Option<&PathPattern> {
+/// The clause-level plain-`MATCH` gate: a non-optional `MATCH` in the
+/// default relationship mode, no `WHERE`, no `SEARCH`. The clause-level
+/// vocabulary the whole-population recognizers and the batch-tail
+/// classifier share — the pattern-level gates (single pattern, no GPM, no
+/// inline predicate) stay with each caller.
+pub(super) fn plain_match_patterns(clause: &Clause) -> Option<&[PathPattern]> {
     let Clause::Match {
         optional: false,
         match_mode: MatchMode::DifferentRelationships,
@@ -80,10 +77,21 @@ pub(super) fn plain_match_pattern(clause: &Clause) -> Option<&PathPattern> {
     else {
         return None;
     };
-    let [pattern] = &patterns[..] else {
+    Some(patterns)
+}
+
+/// The one pattern of a plain whole-population `MATCH` — the recognizer
+/// ladder's first rung, shared by every short-circuit shape: the clause gate
+/// ([`plain_match_patterns`]) plus exactly one pattern the IR's one
+/// predicate-bearing-shape test admits (`needs_gpm`: no GPM-only element
+/// sequence, no path WHERE, no path mode, no selector; round 3, F-1-3 — the
+/// IR predicate is the one enumeration, so a new predicate-bearing field
+/// lands there and both this rung and the batch-tail classifier follow).
+pub(super) fn plain_match_pattern(clause: &Clause) -> Option<&PathPattern> {
+    let [pattern] = plain_match_patterns(clause)? else {
         return None;
     };
-    if pattern.where_clause.is_some() || pattern.mode.is_some() || pattern.selector.is_some() {
+    if pattern.needs_gpm() {
         return None;
     }
     Some(pattern)

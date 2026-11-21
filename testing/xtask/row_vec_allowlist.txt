@@ -50,6 +50,7 @@ exec/shortcut_common.rs::finish_grouped_rows # the grouped finish both shortcuts
 exec/shortcut_common.rs::into_rows # the charged CountedGroups table's emission: one row per distinct group (the label-set and index-aggregate folds)
 exec/dispatch.rs::run_clauses # clause driver hands its driving table to the next clause; to be replaced by streaming
 exec/dispatch.rs::run_clauses_mode # clause driver hands its driving table to the next clause; to be replaced by streaming
+exec/dispatch.rs::run_generator_batches # batch-major generator driver (ADR-0641): its rows are the empty terminal result of a write statement, never input-proportional
 exec/dispatch.rs::run_nested_clauses # clause driver hands its driving table to the next clause; to be replaced by streaming
 exec/dispatch.rs::run_nested_clauses_scoped # clause driver hands its driving table to the next clause; to be replaced by streaming
 exec/graph_type_schema.rs::alter_current_graph_type # bounded catalog/admin/procedure result, not graph-sized

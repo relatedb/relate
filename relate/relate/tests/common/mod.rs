@@ -374,6 +374,15 @@ pub fn params(entries: &[(&str, relate::Value)]) -> BTreeMap<String, relate::Val
         .collect()
 }
 
+/// The `file://` URL of a local path, as the `LOAD CSV` local-file policy
+/// expects it. `tempfile` gives an absolute path (`/tmp/...` or `C:\...`):
+/// the URL is `file:///tmp/...` or `file:///C:/...`, with no authority and
+/// no backslashes — the policy rejects a drive path that keeps one.
+pub fn local_file_url(path: &std::path::Path) -> String {
+    let path = path.to_str().unwrap().replace('\\', "/");
+    format!("file:///{}", path.trim_start_matches('/'))
+}
+
 /// A Cypher MAP `Value` from `(key, value)` pairs — the value-side twin of
 /// [`params`], shared by the DDL and value-operator tests that assert on
 /// map results or pass maps as parameters.

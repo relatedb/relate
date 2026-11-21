@@ -39,6 +39,7 @@ use relate_names::SmallName;
 use crate::graph::Graph;
 use relate_planner::LogicalPlan;
 
+use super::create_admission::{create_patterns_eligible, refs_within};
 use super::label_expr_ok;
 
 mod run;
@@ -178,18 +179,6 @@ fn target_root_var(expr: &Expr) -> Option<&SmallName> {
     }
 }
 
-/// The variables `expr` references, via the IR walker.
-fn referenced_vars(expr: &Expr) -> HashSet<String> {
-    let mut out = HashSet::new();
-    relate_ir::expr_vars(expr, &mut out);
-    out
-}
-
-/// `expr` references no variable outside `allowed`.
-fn refs_within(expr: &Expr, allowed: &HashSet<String>) -> bool {
-    referenced_vars(expr).is_subset(allowed)
-}
-
 /// Shared per-item eligibility rule for `SET`/`REMOVE`: every target
 /// roots at a matched variable, and every value/dynamic-key expression
 /// references at most that same variable (per-row effects then cannot
@@ -251,50 +240,6 @@ fn remove_items_eligible(items: &[RemoveItem], scope: &HashSet<String>) -> bool 
             }),
             scope,
         )
-}
-
-/// Whether the `CREATE` patterns are batch-safe: no graph-sensitive
-/// expressions, compact (non-GPM) patterns, matched variables appear
-/// only as bare node endpoints, and property expressions reference only
-/// matched variables.
-fn create_patterns_eligible(patterns: &[PathPattern], scope: &HashSet<String>) -> bool {
-    !patterns.is_empty()
-        && !super::create::patterns_have_graph_sensitive_expr(patterns)
-        && patterns.iter().all(|pattern| {
-            if pattern.has_path_name() || pattern.needs_gpm() {
-                return false;
-            }
-            pattern.nodes.iter().all(|node| {
-                let endpoint_ok = match &node.variable {
-                    // A matched variable is a bare endpoint: no labels,
-                    // properties, or predicates of its own.
-                    Some(var) if var.with_str(|text| scope.contains(text)) => {
-                        node.labels.is_empty()
-                            && node.label_expr.is_none()
-                            && node.properties.is_none()
-                            && node.where_clause.is_none()
-                    }
-                    // A fresh (or anonymous) variable: created here.
-                    _ => {
-                        node.properties
-                            .as_ref()
-                            .is_none_or(|p| refs_within(p, scope))
-                            && label_expr_ok(&node.label_expr, &node.labels)
-                            && node.where_clause.is_none()
-                    }
-                };
-                endpoint_ok
-            }) && pattern.rels.iter().all(|rel| {
-                !rel.var_length
-                    && !rel.quantified
-                    && label_expr_ok(&rel.type_expr, &rel.types)
-                    && rel.where_clause.is_none()
-                    && rel
-                        .properties
-                        .as_ref()
-                        .is_none_or(|p| refs_within(p, scope))
-            })
-        })
 }
 
 /// Whether the `DELETE` clause is batch-safe, and its kind when it is:

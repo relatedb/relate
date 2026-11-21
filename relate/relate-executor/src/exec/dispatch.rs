@@ -13,6 +13,7 @@ use crate::metrics::PlanMetricsSite;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
+use super::batch_tail::{generator_seeded_tail, BatchTail, BATCH_ROWS};
 use super::call::{concluding_part_result, exec_call_subquery, exec_conditional, SubquerySpec};
 use super::catalog::{catalog_result, execute_catalog};
 use super::catalog_show::show_indexes_result;
@@ -158,6 +159,19 @@ fn run_clauses_mode(
         // — tried in order behind one eligibility gate.
         if let Some((rows, result)) = stats_short_circuit(ctx, clauses, &rows, scope)? {
             return Ok((rows, Some(result)));
+        }
+        // ADR-0641: a record generator seeding a per-row-independent tail
+        // runs batch-major inside this one transaction — the generator's
+        // records are pulled in bounded batches and the tail clauses run
+        // once per batch over that batch's rows, so the driving rows never
+        // exceed one batch (the pokec load's 656 k rows × CSV-record width
+        // is the 13.1 GiB boundary ADR-0463 charges). The tail's own
+        // containers (a MATCH fan-out) stay charged by ADR-0463, not
+        // bounded by the batch. One pre-loop gate, one PROFILE policy: a
+        // PROFILE run stays on the ordinary path so its facts describe the
+        // plan that ran.
+        if let Some(head) = generator_seeded_tail(clauses) {
+            return run_generator_batches(graph, mode, head, params, rows, qctx, scope);
         }
     }
     let mut clause_i = 0;
@@ -508,6 +522,52 @@ fn run_clauses_mode(
         clause_i = i + 1 + skip;
     }
     Ok((rows, last_result))
+}
+
+/// The ADR-0641 batch-major driver: pull the generator's records in bounded
+/// batches and run the tail once per batch over that batch's rows, all on
+/// this statement's one scratch — no implicit per-batch commit, the redo is
+/// the transaction's own state. Each batch's rows are dropped once the tail
+/// consumed them, so the inter-clause container never exceeds one batch.
+///
+/// The admitted tail's terminal clause is a `CREATE`, which projects
+/// nothing, so the statement carries no result and the returned rows are
+/// empty: a write statement's answer is its statistics, never its rows.
+fn run_generator_batches(
+    graph: &ExecGraph<'_>,
+    mode: ClauseMode,
+    head: BatchTail<'_>,
+    params: &BTreeMap<String, Value>,
+    rows: Vec<Row>,
+    qctx: QueryCtx<'_>,
+    scope: Option<&Row>,
+) -> Result<(Vec<Row>, Option<QueryResult>)> {
+    let ctx = ExecCtx::new(graph, params).with_principal(qctx.principal);
+    let mut feed = load_csv_feed(
+        ctx,
+        rows,
+        head.with_headers,
+        head.url,
+        head.variable,
+        head.field_terminator,
+        false,
+    )?;
+    loop {
+        graph.check_cancelled()?;
+        let batch: Vec<Row> = feed.by_ref().take(BATCH_ROWS).collect::<Result<_>>()?;
+        if batch.is_empty() {
+            break;
+        }
+        // The tail's terminal rows are the batch's own working set (a
+        // `MATCH* CREATE` passes through 1:1); the statement has no
+        // projection, so they are dropped with the batch, never held. The
+        // admitted tail projects nothing, so its result is always `None` —
+        // asserted where the empty return relies on it.
+        let (_, result) =
+            run_clauses_mode(graph, mode, head.tail, params, batch, qctx, None, scope)?;
+        debug_assert!(result.is_none(), "the admitted tail projects nothing");
+    }
+    Ok((Vec::new(), None))
 }
 
 /// The three places a `WITH`/`RETURN` can find its input: the generator of a

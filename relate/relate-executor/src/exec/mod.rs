@@ -35,12 +35,14 @@ pub(crate) use profiling::{
 pub(crate) mod agg_fold;
 pub(crate) mod aggregate;
 pub(crate) mod batch;
+pub(crate) mod batch_tail;
 pub(crate) mod bulk;
 pub(crate) mod call;
 pub(crate) mod candidates;
 pub(crate) mod catalog;
 pub(crate) mod catalog_schema;
 pub(crate) mod catalog_show;
+pub(crate) mod create_admission;
 // ADR-0468's SoA chunk type layer: the types, the conversion, and the
 // operator-serving constructions the batch chain (exec/batch.rs) reads.
 pub(crate) mod chunk;
