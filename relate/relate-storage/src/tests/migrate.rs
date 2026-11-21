@@ -64,11 +64,12 @@ fn open_migrates_v1_and_v2_manifest_stores_then_takes_zero_hops() {
             let target = parse_uri(uri.to_str().unwrap()).unwrap();
             legacy_monolith_store(&target, version);
 
-            let (graph, wal, _, report) = open_store_with_report::<relate_executor::Graph>(
+            let opened = open_store_with_report::<relate_executor::Graph>(
                 &target,
                 relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
             )
             .unwrap();
+            let (graph, wal, report) = (opened.store.graph, opened.store.wal, opened.report);
             assert_eq!(
                 report.migrations.migration(),
                 Some((
@@ -101,11 +102,12 @@ fn open_migrates_v1_and_v2_manifest_stores_then_takes_zero_hops() {
 
             // Second open: current format detected, zero hops.
             let target = parse_uri(uri.to_str().unwrap()).unwrap();
-            let (graph, _wal, _, report) = open_store_with_report::<relate_executor::Graph>(
+            let opened = open_store_with_report::<relate_executor::Graph>(
                 &target,
                 relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
             )
             .unwrap();
+            let (graph, report) = (opened.store.graph, opened.report);
             assert!(
                 report.migrations.migration().is_none(),
                 "second open must not migrate: {}",
@@ -128,11 +130,12 @@ fn memory_open_performs_no_migration_writes() {
         legacy_monolith_store(&store, version);
         let before = snapshot::get_object(&store, "manifest.json").unwrap();
 
-        let (graph, _wal, _, report) = open_store_with_report::<relate_executor::Graph>(
+        let opened = open_store_with_report::<relate_executor::Graph>(
             &store,
             relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
         )
         .unwrap();
+        let (graph, report) = (opened.store.graph, opened.report);
         // The legacy reader still serves the old store...
         assert_eq!(graph.live_node_count(), 2, "v{version}");
         // ...but :memory: never migrates (ADR-0127 Decision 7): no hops,
@@ -195,11 +198,12 @@ fn open_migrates_legacy_json_value_encoding_then_takes_zero_hops() {
                 .unwrap();
         snapshot::put_object(&target, "graph.json", LEGACY_JSON_GRAPH.as_bytes()).unwrap();
 
-        let (graph, wal, _, report) = open_store_with_report::<relate_executor::Graph>(
+        let opened = open_store_with_report::<relate_executor::Graph>(
             &target,
             relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
         )
         .unwrap();
+        let (graph, wal, report) = (opened.store.graph, opened.store.wal, opened.report);
         assert_eq!(
             report.migrations.migration(),
             Some((
@@ -225,11 +229,12 @@ fn open_migrates_legacy_json_value_encoding_then_takes_zero_hops() {
         let target =
             parse_uri_with_options(uri.to_str().unwrap(), None, Some(SnapshotCodecKind::Json))
                 .unwrap();
-        let (graph, _wal, _, report) = open_store_with_report::<relate_executor::Graph>(
+        let opened = open_store_with_report::<relate_executor::Graph>(
             &target,
             relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
         )
         .unwrap();
+        let (graph, report) = (opened.store.graph, opened.report);
         assert!(
             report.migrations.migration().is_none(),
             "second open must not migrate: {}",
@@ -247,11 +252,12 @@ fn memory_json_open_performs_no_migration_writes() {
     snapshot::put_object(&store, "graph.json", LEGACY_JSON_GRAPH.as_bytes()).unwrap();
     let before = snapshot::get_object(&store, "graph.json").unwrap();
 
-    let (graph, _wal, _, report) = open_store_with_report::<relate_executor::Graph>(
+    let opened = open_store_with_report::<relate_executor::Graph>(
         &store,
         relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
     )
     .unwrap();
+    let (graph, report) = (opened.store.graph, opened.report);
     assert_eq!(graph.live_node_count(), 1);
     assert!(
         report.migrations.migration().is_none(),
@@ -306,11 +312,12 @@ fn crash_between_payload_write_and_manifest_publish_remigrates_identically() {
         // the crashed attempt's orphan payloads are swept and the contents
         // are identical to a clean migration.
         let target = parse_uri(uri.to_str().unwrap()).unwrap();
-        let (graph, wal, _, report) = open_store_with_report::<relate_executor::Graph>(
+        let opened = open_store_with_report::<relate_executor::Graph>(
             &target,
             relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
         )
         .unwrap();
+        let (graph, wal, report) = (opened.store.graph, opened.store.wal, opened.report);
         assert_eq!(
             report.migrations.migration(),
             Some((
@@ -335,11 +342,12 @@ fn crash_between_payload_write_and_manifest_publish_remigrates_identically() {
 
         // The re-migrated store is current: a further open takes zero hops.
         let target = parse_uri(uri.to_str().unwrap()).unwrap();
-        let (graph, _wal, _, report) = open_store_with_report::<relate_executor::Graph>(
+        let opened = open_store_with_report::<relate_executor::Graph>(
             &target,
             relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
         )
         .unwrap();
+        let (graph, report) = (opened.store.graph, opened.report);
         assert!(
             report.migrations.migration().is_none(),
             "post-crash re-open must not migrate: {}",
@@ -461,11 +469,12 @@ fn current_json_open_reads_graph_json_exactly_once() {
     let counting = Arc::new(ReadCountingVfs::new(store.vfs()));
     let mut counted = store.clone();
     counted.vfs = counting.clone();
-    let (graph, _wal, _, report) = open_store_with_report::<relate_executor::Graph>(
+    let opened = open_store_with_report::<relate_executor::Graph>(
         &counted,
         relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
     )
     .unwrap();
+    let (graph, report) = (opened.store.graph, opened.report);
     assert_eq!(graph.live_node_count(), 1);
     assert!(
         report.migrations.migration().is_none(),

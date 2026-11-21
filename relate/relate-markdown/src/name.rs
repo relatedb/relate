@@ -1,4 +1,5 @@
-//! Vault file-name sanitization (ADR-0406 §2).
+//! Vault file-name sanitization (ADR-0406 §2, composed per the
+//! normalization ADR).
 //!
 //! One canonical replacement rule shared by labels (directory names)
 //! and name paths (file names): the characters illegal in Obsidian
@@ -6,20 +7,51 @@
 //! on common filesystems (`/ \ : * ? " < >`) and control bytes become
 //! `_`, leading dots are prefixed away (a vault must not grow hidden
 //! files), trailing dots and spaces are trimmed, and Windows device
-//! names are defused. Sanitization is lossy: a name that needed it no
-//! longer equals its property value, and the reverse mapping is not
-//! attempted (the lpgfs import tool's documented stance).
+//! names are defused. The output composes to NFC — the engine's one
+//! canonical on-disk spelling. Sanitization is lossy: a name that
+//! needed it no longer equals its property value, and the reverse
+//! mapping is not attempted (the lpgfs import tool's documented
+//! stance).
 
 use relate_core::Result;
 
 use crate::{is_c0_del, vault_error};
+
+/// Compose to NFC — the engine's one canonical spelling of a name.
+/// The identity fold composes too ([`fold_case`]), so a name a copy
+/// tool left decomposed still resolves; this spelling is what the
+/// codec derives and the checkpoint writes, healing such a vault to
+/// the composed form.
+pub fn compose(raw: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    raw.nfc().collect()
+}
+
+/// The vault's one identity relation spelled as a function: the
+/// Unicode case fold, composed to NFC — never an ASCII-only shortcut,
+/// which would silently re-attribute non-ASCII names' sections. The
+/// composition is load-bearing, not polish: two spellings that differ
+/// only in Unicode normalization (composed `ö` against `o` + combining
+/// diaeresis) are the same name — a copy through a normalizing tool
+/// (macOS `tar` writes decomposed filenames; the engine writes
+/// composed) must not turn a vault unopenable — and canonical
+/// equivalence is name equality everywhere the fold decides identity:
+/// key matching, case-only duplicate detection, label and short-form
+/// link resolution.
+pub fn fold_case(value: &str) -> String {
+    compose(&value.to_lowercase())
+}
 
 /// The one replacement character (a constant, not a policy knob).
 const REPLACEMENT: char = '_';
 
 /// Sanitize a single path segment (a label directory name or one
 /// `/`-separated piece of a name path). Fails closed on an input that
-/// sanitizes to nothing.
+/// sanitizes to nothing. The output is composed to NFC — the engine's
+/// one canonical on-disk spelling — so a value that arrives decomposed
+/// (a normalizing copy tool, a decomposing editor) plans its file
+/// under the composed name and heals the vault at the next checkpoint,
+/// the same delete-before-write rename a case-only spelling takes.
 pub fn sanitize_label(raw: &str) -> Result<String> {
     let mut out = String::with_capacity(raw.len());
     for ch in raw.chars() {
@@ -42,7 +74,7 @@ pub fn sanitize_label(raw: &str) -> Result<String> {
     if name.starts_with('.') || is_windows_device_name(&name) {
         name.insert(0, REPLACEMENT);
     }
-    Ok(name)
+    Ok(compose(&name))
 }
 
 /// Sanitize a whole name path (`a/b` stays two segments); every segment
@@ -106,8 +138,8 @@ mod tests {
 
     #[test]
     fn del_is_replaced_like_the_c0_controls() {
-        // DEL is part of the one control set (`is_c0_del`), even though
-        // `char::is_ascii_control` alone stops at U+001F.
+        // DEL is part of the one control set (`is_c0_del`) — std's
+        // `is_ascii_control` spans U+0000–U+001F and U+007F.
         assert_eq!(sanitize_label("a\u{7f}b").unwrap(), "a_b");
         assert_eq!(sanitize_label("a\u{1}b").unwrap(), "a_b");
     }
@@ -139,5 +171,21 @@ mod tests {
         assert_eq!(sanitize_name_path("a b/c:d").unwrap(), "a b/c_d");
         assert!(sanitize_name_path("a//b").is_err());
         assert!(sanitize_name_path("/lead").is_err());
+    }
+
+    #[test]
+    fn sanitized_names_compose_to_the_canonical_spelling() {
+        // A decomposed input (the copy-tool spelling) sanitizes to the
+        // composed output — the engine's one on-disk form, so the
+        // checkpoint's plan renames a decomposed file to it through
+        // the same delete-before-write order a case-only spelling
+        // takes.
+        assert_eq!(sanitize_label("Ado\u{0308}e").unwrap(), "Ad\u{00F6}e");
+        assert_eq!(
+            sanitize_name_path("Pla\u{0308}tze/Ado\u{0308}e").unwrap(),
+            "Pl\u{00E4}tze/Ad\u{00F6}e"
+        );
+        // Already-composed input is unchanged.
+        assert_eq!(sanitize_label("Ad\u{00F6}e").unwrap(), "Ad\u{00F6}e");
     }
 }

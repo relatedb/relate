@@ -8,7 +8,11 @@ with in-process store and WAL. `Database::open_vfs` runs that path on a caller-s
 (ADR-0074). Persistent URIs use the configured `OpenOptions.durability_mode`
 and checkpoint with
 the snapshot codec (Parquet by default when the `parquet` Cargo feature is
-compiled in, JSON GraphData otherwise; ADR-0050, ADR-0105). Concurrent connections share one database: reads are MVCC snapshots
+compiled in, JSON GraphData otherwise; ADR-0050, ADR-0105). Close paths —
+persist-on-drop and the surfaces' exit checkpoints — run
+`Database::checkpoint_if_pending()`, which writes nothing when the session
+has nothing pending over the published snapshot (ADR-0646); an explicit
+`Database::checkpoint()` always writes. Concurrent connections share one database: reads are MVCC snapshots
 (ADR-0013, ADR-0018); writes are optimistic and serialize at WAL append
 (ADR-0015, ADR-0016 overlay). `begin` / `commit` / `rollback` group statements
 into one WAL commit (ADR-0028); other connections do not see uncommitted

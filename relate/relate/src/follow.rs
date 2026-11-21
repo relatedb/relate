@@ -257,8 +257,14 @@ pub(crate) fn reload(shared: &Shared) -> Result<()> {
     }
     // The replacement is private until the swap. Queries keep reading the
     // installed graph for the whole disk load.
-    let (graph, wal, ontology) = crate::open::open_store_readonly_screened(
+    let crate::open::ScreenedOpen {
+        graph,
+        wal,
+        ontology,
+        committed,
+    } = crate::open::open_store_screened(
         &shared.store,
+        crate::OpenMode::ReadOnly,
         shared.resolved.wal_payload_limit,
     )?;
     crate::check_loaded_graph(&graph)?;
@@ -269,7 +275,30 @@ pub(crate) fn reload(shared: &Shared) -> Result<()> {
         wait_for_unpinned_publication(shared, "follow reload is waiting for a snapshot pin")?;
     // `install_reloaded` carries the services bundle, catalog, and the
     // checkpoint's ontology document; see its doc.
+    // The reload re-applies the committed schema (ADR-0649): the file
+    // may have changed while following, and the reloaded graph carries
+    // only the checkpointed state. The facts run against the
+    // replacement graph BEFORE the swap — a failing application
+    // refuses the reload with the old graph still serving, never a
+    // half-applied state. The swap itself is the one both arms share;
+    // the committed state follows it — installed when the file is
+    // present, cleared when the reload read none — so the flag always
+    // mirrors the store the handle serves.
+    if let Some(relate_storage::CommittedSchema {
+        graph_type,
+        indexes,
+        ..
+    }) = &committed
+    {
+        crate::committed::apply_facts(&graph, graph_type, indexes)?;
+    }
     shared.install_reloaded(&publication, graph, wal, ontology)?;
+    match committed {
+        Some(relate_storage::CommittedSchema { document, .. }) => {
+            crate::ontology::install_state(shared, document);
+        }
+        None => crate::ontology::clear_state(shared),
+    }
     // Count before the write unlock. A query that then observes the new
     // graph happens-after this increment.
     #[cfg(test)]

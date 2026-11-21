@@ -1,0 +1,92 @@
+# The ADR vault's committed schema (ADR-0649).
+#
+# This file travels with the vault through version control and is the
+# store's schema whenever docs/ is opened as a markdown store: the
+# `name` key declarations bind (every node's key property mirrors its
+# filename — the OKF Concept ID), the REFERENCES/SUPERSEDES
+# relationship types are declared (map-form entries under them would be
+# legal even without a bare wikilink anywhere), the indexes install at
+# open with their kinds, and the document's graph type becomes the
+# store's current one. Edit this file to change the vault's schema —
+# `db.ontology.set` refuses while it is present; a schema change is a
+# PR, not a per-machine ritual.
+#
+# The engine reads this file and never writes it. Validated against the
+# pinned Ontology Graph Spec 1.1.0; a document that does not validate,
+# or whose graph type the converter cannot express, fails the open
+# naming this file.
+schema: https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json
+id: adr-vault-schema
+version: "1"
+
+nodes:
+  adr:
+    label: adr
+    properties:
+      name:   { type: STRING, key: true }
+      title:  { type: STRING }
+      status: { type: STRING }
+      area:   { type: STRING }
+      date:   { type: STRING }
+      tags:   { type: LIST<STRING> }
+      body:   { type: STRING }
+    extensions:
+      indexes:
+        adr_status:
+          type: RANGE
+          labels: [adr]
+          properties: [status]
+        adr_area:
+          type: RANGE
+          labels: [adr]
+          properties: [area]
+        adr_date:
+          type: RANGE
+          labels: [adr]
+          properties: [date]
+        adr_title:
+          type: FULLTEXT
+          labels: [adr]
+          properties: [title]
+        adr_body:
+          type: FULLTEXT
+          labels: [adr]
+          properties: [body]
+  api:
+    label: api
+    properties:
+      name: { type: STRING, key: true }
+  design:
+    label: design
+    properties:
+      name: { type: STRING, key: true }
+  guides:
+    label: guides
+    properties:
+      name: { type: STRING, key: true }
+  reference:
+    label: reference
+    properties:
+      name: { type: STRING, key: true }
+  research:
+    label: research
+    properties:
+      name: { type: STRING, key: true }
+  tck:
+    label: tck
+    properties:
+      name: { type: STRING, key: true }
+  testing:
+    label: testing
+    properties:
+      name: { type: STRING, key: true }
+
+relationships:
+  references:
+    type: REFERENCES
+    from: { node: adr }
+    to: { node: adr }
+  supersedes:
+    type: SUPERSEDES
+    from: { node: adr }
+    to: { node: adr }

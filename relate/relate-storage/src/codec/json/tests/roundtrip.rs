@@ -230,11 +230,12 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
         ONTOLOGY_DOC.as_bytes(),
     )
     .unwrap();
-    let (_, _, _, report) = crate::open_store_with_report::<relate_executor::Graph>(
-        &target,
-        relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
-    )
-    .unwrap();
+    let crate::OpenedStore { report, .. } =
+        crate::open_store_with_report::<relate_executor::Graph>(
+            &target,
+            relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
+        )
+        .unwrap();
     assert_eq!(
         report.migrations.migration(),
         Some((
@@ -267,11 +268,12 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
         .vfs()
         .remove_file(crate::schema_files::ONTOLOGY_JSON_FILE)
         .unwrap();
-    let (_, _, _, report) = crate::open_store_with_report::<relate_executor::Graph>(
-        &target,
-        relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
-    )
-    .unwrap();
+    let crate::OpenedStore { report, .. } =
+        crate::open_store_with_report::<relate_executor::Graph>(
+            &target,
+            relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
+        )
+        .unwrap();
     assert_eq!(
         report.migrations.migration(),
         Some((

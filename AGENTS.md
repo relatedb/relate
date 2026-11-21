@@ -29,10 +29,15 @@ public-record rules, writing guidance — lives in
 
 The corpus is a markdown vault
 ([ADR-0621](docs/adr/0621-adr-markdown-vault.md)): every ADR carries its
-metadata as canonical YAML frontmatter and loads as an `:adr` node. Read
-and query ADRs through the relate CLI — by area, tag, status or edge —
-rather than mining prose for metadata; plain text tools are the fallback
-when the CLI is not on PATH.
+metadata as canonical YAML frontmatter and loads as an `:adr` node, and
+the vault is the interface to the decision log — ask it as queries (by
+area, tag, status, edge, or fulltext over titles and bodies; the recipes
+are in [`docs/adr-vault.md`](docs/adr-vault.md)), never mine prose or
+list directories for metadata. The vault carries its own committed
+schema (`docs/ontology.yaml`, ADR-0649): a copy of `docs/` opens with
+the declared keys, vocabulary, indexes and graph type installed. Plain
+text tools are the fallback only when the relate CLI is not on PATH,
+and for reading one file's full prose once a query has named it.
 
 - **ADRs are public records**: no internal ticket or tracker references,
   no person names, no credentials or unreleased plans

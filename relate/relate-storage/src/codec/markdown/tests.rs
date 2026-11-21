@@ -144,6 +144,24 @@ pub(super) fn signature(graph: &Graph) -> GraphSignature {
     (nodes, rels)
 }
 
+/// Open the markdown store at `dir` — the shared harness of the
+/// codec's vault test files: the target (the caller needs it for
+/// checkpoints) beside the graph, the open's own error carried for the
+/// refusal suites. The WAL handle drops here; the writer lease rides
+/// the target the caller drops when it reopens.
+pub(super) fn open_markdown(
+    dir: &std::path::Path,
+) -> relate_core::Result<(crate::StoreTarget, relate_executor::Graph)> {
+    let store = crate::parse_uri_with_options(
+        dir.to_str().unwrap(),
+        None,
+        Some(crate::codec::SnapshotCodecKind::Markdown),
+    )
+    .unwrap();
+    let (graph, _wal) = crate::open_store::<relate_executor::Graph>(&store)?;
+    Ok((store, graph))
+}
+
 /// The suite's one find-node-by-name scan.
 pub(super) fn node_by_name(graph: &Graph, name: &str) -> Node {
     graph
@@ -615,3 +633,96 @@ fn node_and_relationship_ids_are_stable_across_checkpoints() {
 mod bodies;
 
 mod legacy_adoption;
+mod normalization;
+mod ontology_file;
+mod sidecar_bound;
+mod vault_read;
+
+#[cfg(unix)]
+#[test]
+fn the_concurrent_walk_reports_the_serial_passs_first_failure() {
+    // The rust-review corner: sorted-children DFS visits `a/`'s whole
+    // subtree before the sibling `a-b`, even though `a-b` sorts first
+    // bytewise ('-' is 0x2D, below '/' 0x2F). A failure in the
+    // SUBDIRECTORY `a/z` is therefore the serial pass's first failure,
+    // while a plain bytewise minimum over the failing directory paths
+    // would pick the sibling `a-b` — the concurrent walk must report
+    // the serial one. The failures are FIFOs (refused by the walk's
+    // own is_other check, so both platform arms refuse them).
+    let dir = tempfile::tempdir().unwrap();
+    let az = dir.path().join("a/z");
+    let sibling = dir.path().join("a-b");
+    std::fs::create_dir_all(&az).unwrap();
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(
+        dir.path().join("a/ok.md"),
+        "---\ntype: Person\ntitle: ok\n---\n",
+    )
+    .unwrap();
+    let mkfifo = |path: &std::path::Path| {
+        let mut cmd = std::process::Command::new("mkfifo");
+        cmd.arg(path);
+        let mut child = cmd.spawn().expect("mkfifo spawns the fixture FIFO");
+        child.wait().expect("mkfifo completes");
+    };
+    mkfifo(&az.join("bad.md"));
+    mkfifo(&sibling.join("bad.md"));
+    let refused = open_markdown(dir.path()).unwrap_err().to_string();
+    assert!(
+        refused.contains("a/z/bad.md") && !refused.contains("a-b/bad.md"),
+        "the DFS-visit order wins over the bytewise one, got {refused}"
+    );
+}
+
+// The fixture needs a filesystem that permits control bytes in
+// names: Windows refuses them at creation (InvalidFilename), the OS
+// itself enforcing the rule the walk implements on unix.
+#[cfg(unix)]
+#[test]
+fn a_control_byte_in_a_non_node_entry_is_skipped_not_fatal() {
+    // The rust round-7 pin: the control-byte refusal scopes to the
+    // entries the walk would load — a foreign non-`.md` name carrying
+    // a control byte (macOS custom-icon `Icon\r` files, extraction
+    // residue) is skipped like any other non-node entry, never fatal
+    // to the open.
+    let dir = tempfile::tempdir().unwrap();
+    let person = dir.path().join("Person");
+    std::fs::create_dir_all(&person).unwrap();
+    std::fs::write(
+        person.join("Ada.md"),
+        "---\ntype: Person\ntitle: Ada\n---\nbody\n",
+    )
+    .unwrap();
+    std::fs::write(person.join("Icon\r"), b"mac custom icon payload\n").unwrap();
+    let refused = open_markdown(dir.path());
+    assert!(
+        refused.is_ok(),
+        "a non-node control-byte sibling is skipped, not fatal: {:?}",
+        refused.err()
+    );
+    let (_, graph) = refused.unwrap();
+    assert_eq!(graph.all_node_ids().len(), 1, "the node file still loads");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_control_byte_in_a_node_file_name_still_refuses() {
+    // The refusal's own half: a NODE file whose name carries a control
+    // byte can never round-trip — the walk refuses it closed.
+    let dir = tempfile::tempdir().unwrap();
+    let person = dir.path().join("Person");
+    std::fs::create_dir_all(&person).unwrap();
+    std::fs::write(
+        person.join("Ad\u{1}a.md"),
+        "---\ntype: Person\ntitle: Ada\n---\nbody\n",
+    )
+    .unwrap();
+    let refused = open_markdown(dir.path())
+        .map(|(_, graph)| graph)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("carries a control byte in its name"),
+        "the control-byte node file refuses: {refused}"
+    );
+}

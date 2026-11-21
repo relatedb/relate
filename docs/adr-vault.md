@@ -95,8 +95,12 @@ testing, transactions, values, wal, wasm, workspace, write-path.
 
 ## Working with ADRs — open, query, add, link
 
-Through the relate CLI whenever it is on PATH; plain text tools only as
-the fallback:
+The vault is the interface to the corpus: questions about the decision
+log — which ADRs exist, what state they are in, what supersedes what,
+which decisions a topic touches — are asked as queries, not answered
+by grepping prose or listing directories. The relate CLI is the tool;
+plain-text tools are the fallback only when it is not on PATH, and for
+reading one file's full prose once a query has named it.
 
 ```bash
 # OPEN (once): bootstrap a throwaway copy of docs/ — the vault root is
@@ -110,6 +114,51 @@ rm -rf /tmp/relate-adr-vault && cp -R docs /tmp/relate-adr-vault && \
 # REFERENCES/SUPERSEDES are edges:
 relate query --read-only --database /tmp/relate-adr-vault --mode jsonl "MATCH (a:adr) WHERE a.status = 'accepted' RETURN a.name LIMIT 5"
 relate query --read-only --database /tmp/relate-adr-vault --mode jsonl "MATCH (a:adr)-[:SUPERSEDES]->(b:adr) RETURN a.name, b.name LIMIT 5"
+```
+
+The vault carries its schema with it: `docs/ontology.yaml` (ADR-0649)
+is the committed ontology — the copy's open installs its key
+declarations, the REFERENCES/SUPERSEDES vocabulary, its indexes
+(RANGE on `status`/`area`/`date`, FULLTEXT on `title` and `body`) and
+its current graph type. Fulltext search works out of the box:
+
+```bash
+relate query --read-only --database /tmp/relate-adr-vault --mode jsonl \
+  "CALL db.index.fulltext.queryNodes('adr_title', 'checkpoint') YIELD node RETURN node.name LIMIT 5"
+```
+
+A schema change is an edit to that file — `db.ontology.set` refuses
+while it is present. **That edit path is the trust boundary:** anyone
+who can commit to the repository changes the store's enforced schema
+for every machine that opens the vault — binding key declarations (a
+declared key that disagrees with a filename refuses the open), the
+current graph type, and the installed indexes. A pulled
+`ontology.yaml` change is DDL for your store: review it like one.
+
+The everyday questions, as queries (all read-only, all against the
+copy):
+
+```bash
+# By area and status — the review surface:
+relate query --read-only --database /tmp/relate-adr-vault --mode jsonl \
+  "MATCH (a:adr) WHERE a.area = 'engine' AND a.status = 'proposed' RETURN a.name, a.title ORDER BY a.name"
+# By tag:
+relate query --read-only --database /tmp/relate-adr-vault --mode jsonl \
+  "MATCH (a:adr) WHERE 'checkpoint' IN a.tags RETURN a.name ORDER BY a.name"
+# Fulltext over titles AND bodies — what the prose is for:
+relate query --read-only --database /tmp/relate-adr-vault --mode jsonl \
+  "CALL db.index.fulltext.queryNodes('adr_body', 'sidecar manifest') YIELD node, score RETURN node.name, score ORDER BY score DESC LIMIT 10"
+# The edges around one decision — what it builds on, what cites it:
+relate query --read-only --database /tmp/relate-adr-vault --mode jsonl \
+  "MATCH (a:adr {name: '0649-vault-committed-ontology-file'})-[:REFERENCES]->(b) RETURN b.name"
+relate query --read-only --database /tmp/relate-adr-vault --mode jsonl \
+  "MATCH (b)-[:REFERENCES]->(a:adr {name: '0406-markdown-vault-snapshot-codec'}) RETURN b.name"
+# Superseded chains — the current decision for a replaced one:
+relate query --read-only --database /tmp/relate-adr-vault --mode jsonl \
+  "MATCH (a:adr)-[:SUPERSEDES*]->(old) WHERE old.status = 'superseded' RETURN a.name, old.name"
+# Before minting: does a decision on this topic already exist?
+relate query --read-only --database /tmp/relate-adr-vault --mode jsonl \
+  "CALL db.index.fulltext.queryNodes('adr_title', 'wal segment') YIELD node RETURN node.name, node.status"
 ```
 
 - **ADD**: `python3 scripts/adr_mint.py` claims the number (it never

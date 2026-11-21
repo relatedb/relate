@@ -98,16 +98,28 @@ impl Drop for Shared {
 }
 
 /// Who asked for a checkpoint. Only an explicit `Database::checkpoint()`
-/// dumps a non-durable store (ADR-0105).
+/// dumps a non-durable store (ADR-0105) and only it never takes the
+/// no-op skip (ADR-0646) — an explicit checkpoint is the user's
+/// force-dump, and the codec validations it runs (e.g. the Parquet
+/// manifest's part-metrics refusal) are part of its contract. The
+/// automatic family — timers, WAL rotation, persist-on-drop, and the
+/// exposed close shape `Database::checkpoint_if_pending()` — dumps a
+/// durable store, recycles-only a `:memory:` store, and skips over a
+/// clean WAL and a published snapshot.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Trigger {
+/// What scheduled a checkpoint: the automatic close/rotation/timer
+/// shapes (ADR-0646's no-op skip is theirs), or an explicit
+/// `Database::checkpoint()` — the one typed spelling of the two-way
+/// mode every close-shaped entry passes.
+pub(crate) enum Trigger {
     Explicit,
     Automatic,
 }
 
 /// Run one checkpoint to completion, retrying admission if a concurrent
 /// checkpoint or a blocked writer currently holds it. Shared by the timed
-/// walker, `Database::checkpoint()`, and persist-on-drop.
+/// walker, `Database::checkpoint()`, `Database::checkpoint_if_pending()`
+/// and persist-on-drop.
 fn run_checkpoint(shared: &Shared, trigger: Trigger) -> Result<()> {
     loop {
         wait_checkpoint_idle(shared)?;
@@ -156,24 +168,29 @@ fn end_checkpoint(shared: &Shared, result: &Result<()>) {
     }
 }
 
-pub(crate) fn checkpoint_now(shared: &Shared) -> Result<()> {
-    // A failed background durability barrier fences explicit checkpoints on
-    // the current handle until reopen (ADR-0077, ADR-0094).
+/// One checkpoint entry, the caller's mode as the typed
+/// [`Trigger`] — never two twin functions behind an erased fn
+/// pointer. A failed background durability barrier fences explicit
+/// checkpoints on the current handle until reopen (ADR-0077,
+/// ADR-0094).
+pub(crate) fn checkpoint_with(shared: &Shared, trigger: Trigger) -> Result<()> {
     check_durability_error(shared)?;
-    run_checkpoint(shared, Trigger::Explicit)
+    run_checkpoint(shared, trigger)
 }
 
-/// Rotate the open segment, pin LSN/`commit_ts` from WAL metadata, dump
-/// (if [`dumps`]) and recycle. Must not take the WAL mutex across dump
-/// (ADR-0020 / ADR-0038).
+/// Rotate the open segment, pin the WAL — LSN, `commit_ts` and the
+/// uncheckpointed verdict, all read under the pin's own WAL guard —
+/// then dump (if [`dumps`]) and recycle. Must not take the WAL mutex
+/// across dump (ADR-0020 / ADR-0038); the pin carries the facts in so
+/// the dump path never locks the WAL before it publishes.
 fn pin_rotate_and_checkpoint(shared: &Shared, trigger: Trigger) -> Result<()> {
     shared.check_healthy()?;
-    let (lsn, pin_ts) = {
+    let pin = {
         let mut wal = shared.wal.lock()?;
         rotate_for_mode(&mut wal, shared.resolved.durability_mode)?;
-        wal.checkpoint_pin()
+        CheckpointPin::of(&wal)
     };
-    checkpoint_pinned(shared, trigger, lsn, pin_ts)
+    checkpoint_pinned(shared, trigger, pin)
 }
 
 /// Automatic checkpoints of a store whose snapshot VFS is not durable
@@ -182,7 +199,36 @@ fn dumps(shared: &Shared, trigger: Trigger) -> bool {
     trigger == Trigger::Explicit || shared.store.vfs().durable()
 }
 
-/// Dump (if [`dumps`]) and recycle at a pinned `lsn`/`pin_ts`.
+/// One checkpoint's WAL pin — the fact `checkpoint_pinned` consumes:
+/// the cut's LSN, the commit ts the dump horizon floors to, and the
+/// uncheckpointed verdict (ADR-0646's skip input). Built at the single
+/// place each capture site holds the WAL guard, and never re-read:
+/// the dump path must proceed while another thread holds that lock
+/// (ADR-0020).
+#[derive(Clone, Copy)]
+pub(crate) struct CheckpointPin {
+    lsn: u64,
+    pin_ts: u64,
+    pending: bool,
+}
+
+impl CheckpointPin {
+    /// The pin's one capture: both halves read under the caller's own
+    /// WAL guard — the LSN/`commit_ts` pair `Wal::checkpoint_pin`
+    /// reports, and the uncheckpointed verdict (ADR-0646's skip
+    /// input). Never re-read later: the dump path must proceed while
+    /// another thread holds the WAL lock (ADR-0020).
+    pub(crate) fn of(wal: &Wal) -> Self {
+        let (lsn, pin_ts) = wal.checkpoint_pin();
+        CheckpointPin {
+            lsn,
+            pin_ts,
+            pending: wal.has_uncheckpointed(),
+        }
+    }
+}
+
+/// Dump (if [`dumps`]) and recycle at a pin.
 ///
 /// This is the one graph-reading path that derefs `shared.graph` without the
 /// publication read guard or a snapshot pin (ADR-0137), and it must stay
@@ -192,7 +238,7 @@ fn dumps(shared: &Shared, trigger: Trigger) -> bool {
 /// exclusion is the busy flag instead — a caller owns it through
 /// `try_begin_checkpoint`, and every publication holder (commit group,
 /// follow reload swap) waits it out before it can `replace` the cell.
-fn checkpoint_pinned(shared: &Shared, trigger: Trigger, lsn: u64, pin_ts: u64) -> Result<()> {
+fn checkpoint_pinned(shared: &Shared, trigger: Trigger, pin: CheckpointPin) -> Result<()> {
     // Clamp the dump horizon to the graph's commit ts — the one seam, so
     // every pin producer inherits the floor. The WAL pin is 0 when no
     // commit was appended since the last recycle (e.g. a read-only session
@@ -201,8 +247,27 @@ fn checkpoint_pinned(shared: &Shared, trigger: Trigger, lsn: u64, pin_ts: u64) -
     // every committed record is in a closed segment, so `graph.commit_ts()`
     // can only exceed the pin by a snapshot-synthesized ts that has no WAL
     // records the cut at `lsn` could lose.
-    let snapshot_ts = pin_ts.max(shared.graph.commit_ts());
+    let snapshot_ts = pin.pin_ts.max(shared.graph.commit_ts());
     if dumps(shared, trigger) {
+        if trigger != Trigger::Explicit && nothing_to_publish(shared, pin.pending)? {
+            // A WAL with nothing uncheckpointed over a published snapshot
+            // (ADR-0646): no commit this session appended, no pending
+            // tail replayed — either leaves `pending` true and dumps as
+            // before — and the published image already describes this
+            // graph. The dump — for a markdown vault a full re-walk and
+            // re-render of every file — would rewrite the bytes it just
+            // read, so the checkpoint ends here: nothing to write,
+            // nothing to recycle (no closed segment waits), no versions
+            // to GC (the loaded rows are live at xmin 1 and no write
+            // ran). The stores the skip must still serve keep their
+            // dump: `:memory:` and a never-checkpointed bootstrap have
+            // no published image to keep, so `nothing_to_publish`
+            // answers false for them and the first dump still pins the
+            // codec. An explicit `checkpoint()` never takes this
+            // branch: it is the user's force-dump and keeps its codec
+            // validations.
+            return Ok(());
+        }
         shared.check_healthy()?;
         // ADR-0120 §5/§6: the checkpoint publishes the store's current
         // ontology document (v4 manifest + object, or the JSON inline
@@ -213,12 +278,25 @@ fn checkpoint_pinned(shared: &Shared, trigger: Trigger, lsn: u64, pin_ts: u64) -
         checkpoint_at(
             &shared.store,
             &**shared.graph,
-            lsn,
+            pin.lsn,
             snapshot_ts,
             shared.ontology.get().as_deref(),
         )?;
     }
-    recycle_and_gc(shared, lsn)
+    recycle_and_gc(shared, pin.lsn)
+}
+
+/// The no-op checkpoint verdict (the skip's one home): the WAL holds
+/// nothing a dump could publish — `pending`, read under the pin's WAL
+/// guard, the same predicate the timed checkpoint gates on — and the
+/// store has already published a checkpoint image. Both halves are
+/// load-bearing: a clean WAL alone would skip the first checkpoint of
+/// a bootstrap (leaving the codec unpinned and no files materialized),
+/// and a published image alone would skip publishing a replayed tail.
+/// Never locks the WAL itself: the dump path must proceed while
+/// another thread holds that lock (ADR-0020).
+fn nothing_to_publish(shared: &Shared, pending: bool) -> Result<bool> {
+    Ok(!pending && relate_storage::has_published_snapshot(&shared.store)?)
 }
 
 fn recycle_and_gc(shared: &Shared, lsn: u64) -> Result<()> {
@@ -321,23 +399,31 @@ pub(crate) fn timed_checkpoint(shared: &Shared) {
 /// WAL-rotation checkpoint. A dump runs on a background thread where threads
 /// exist. [`Database`]'s drop joins that thread before the writer lease can
 /// be taken again. A recycle-only checkpoint, or a failed spawn, runs inline.
-pub(crate) fn schedule_checkpoint(shared: &Arc<Shared>, lsn: u64, snapshot_ts: u64) {
+/// `pin` — captured under the caller's own WAL guard — is the fact the dump
+/// decision and ADR-0646's skip read; the callers schedule only over
+/// uncheckpointed work, so its `pending` is true today, but it travels as
+/// derived state rather than a hidden assumption.
+pub(crate) fn schedule_checkpoint(shared: &Arc<Shared>, pin: CheckpointPin) {
+    // The checkpoint-and-release tail the spawned worker and the
+    // inline fallback share — one spelling, so a step added here
+    // cannot be missed in one of the two paths. The pin is `Copy`, so
+    // both holders run on their own copy.
+    let run = move |shared: &Arc<Shared>| {
+        let result = checkpoint_pinned(shared, Trigger::Automatic, pin);
+        end_checkpoint(shared, &result);
+    };
     #[cfg(not(target_arch = "wasm32"))]
     if dumps(shared, Trigger::Automatic) {
         let shared_t = Arc::clone(shared);
         if let Ok(handle) = std::thread::Builder::new()
             .name("relate-checkpoint".into())
-            .spawn(move || {
-                let result = checkpoint_pinned(&shared_t, Trigger::Automatic, lsn, snapshot_ts);
-                end_checkpoint(&shared_t, &result);
-            })
+            .spawn(move || run(&shared_t))
         {
             shared.track_background(Some(handle));
             return;
         }
     }
-    let result = checkpoint_pinned(shared, Trigger::Automatic, lsn, snapshot_ts);
-    end_checkpoint(shared, &result);
+    run(shared);
 }
 
 #[cfg(test)]

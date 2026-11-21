@@ -21,9 +21,7 @@ pub(crate) use unavailable::{
     checkpoint_at, load_with_checkpoint_lsn, snapshot_data_bytes, sweep_orphans,
 };
 
-// ADR-0086, per metadata object. The one home of the bound: the markdown
-// codec's sidecar manifest (`.relate/manifest.json`) is a metadata
-// object too and spells its ceiling through this constant.
+// ADR-0086, per metadata object. The one home of the bound.
 pub(crate) const MAX_JSON_OBJECT: u64 = 16 * 1024 * 1024;
 
 /// The manifest object name: the one size-bounded JSON metadata object the
@@ -69,6 +67,12 @@ pub(crate) struct LoadedSnapshot<G: SnapshotGraph> {
     /// may run it; a read-only open never does. `None` for every codec
     /// that defers nothing and every unchanged store.
     pub(crate) deferred: Option<DeferredOpenAction>,
+    /// The store's committed schema (ADR-0649), extracted by the load
+    /// and applied by the facade's open tail — `None` for every store
+    /// whose format defines no committed schema files (all classic
+    /// codecs) and every markdown vault without a reserved ontology
+    /// file.
+    pub(crate) committed: Option<CommittedSchema>,
 }
 
 impl<G: SnapshotGraph> LoadedSnapshot<G> {
@@ -84,8 +88,53 @@ impl<G: SnapshotGraph> LoadedSnapshot<G> {
             ontology: None,
             marker: crate::version::SnapshotMarker::Current,
             deferred: None,
+            committed: None,
         }
     }
+}
+
+/// A file-based store's committed schema (ADR-0649): the
+/// engine-read, user-owned, version-controlled schema files the
+/// store's format defines, extracted and validated by the codec's
+/// load and carried to the facade's open tail. The carrier is the
+/// reusable half of the mechanism: the markdown codec produces one
+/// from the vault's reserved ontology file, and any future
+/// file-based store that defines committed schema files produces one
+/// through the same type — the extraction is the codec's own, the
+/// application is one shared path in the facade. The codec's load
+/// never applies it: the schema text mirror's open-time verification
+/// (ADR-0481 §4) compares the checkpointed state, so a committed
+/// change must land after it, applied the way WAL-replayed catalog
+/// DDL is applied.
+#[doc(hidden)]
+pub struct CommittedSchema {
+    /// The ontology document, canonical JSON: the store's document
+    /// state at runtime — `db.ontology.get` serves it, and set/drop
+    /// refuse while it is present.
+    pub document: String,
+    /// The document's graph type (ADR-0226's conversion), installed as
+    /// the store's current graph type — trusted the way a
+    /// checkpointed current graph type is, its validate-first scan
+    /// remaining `db.ontology.apply`'s on-demand check.
+    pub graph_type: relate_engine_api::graph_type::GraphTypeSpec,
+    /// The document's extension-envelope indexes (ADR-0649 §5).
+    pub indexes: Vec<CommittedIndex>,
+}
+
+/// One committed index: the catalog row's identity plus the typed
+/// detail and options the theater carries. **Producer contract**:
+/// `detail.labels` holds exactly one label and `detail.properties`
+/// exactly one property (the catalog row's invariant); the markdown
+/// extraction refuses every other shape at the open, and the
+/// facade's application re-checks the boundary with a typed refusal —
+/// a future producer that misses it fails the open, never panics it.
+#[doc(hidden)]
+pub struct CommittedIndex {
+    pub name: String,
+    pub detail: relate_engine_api::redo::IndexDetailSpec,
+    /// The evaluated options map, in the engine's value model —
+    /// encoded through the one `props_json` home at application.
+    pub options: std::collections::BTreeMap<String, relate_core::Value>,
 }
 
 /// One codec-owned open-time step over the opened store — the payload
@@ -246,7 +295,7 @@ impl BoundedRead {
     }
 }
 
-const JSON_META: BoundedRead = BoundedRead {
+pub(crate) const JSON_META: BoundedRead = BoundedRead {
     max_len: MAX_JSON_OBJECT,
     too_large: |name| {
         Error::storage(format!(
@@ -258,7 +307,7 @@ const JSON_META: BoundedRead = BoundedRead {
 
 /// Ontology documents share the ADR-0086 object envelope (ADR-0120 §3:
 /// 16 MiB, checked before the commit is written).
-const ONTOLOGY_DOC: BoundedRead = BoundedRead {
+pub(crate) const ONTOLOGY_DOC: BoundedRead = BoundedRead {
     max_len: MAX_JSON_OBJECT,
     too_large: |name| {
         Error::storage(format!(
@@ -327,7 +376,7 @@ pub(crate) fn sum_object_bytes(target: &StoreTarget, names: &[&str]) -> Result<u
             continue;
         }
         let len = match bounded_read_for(name) {
-            Some(kind) => checked_object_len(target, name, kind)?.0,
+            Some(kind) => checked_object_len(&*target.vfs, name, kind)?.0,
             None => target.vfs.metadata(name)?.len,
         };
         sum = sum
@@ -382,21 +431,18 @@ fn manifest_too_large() -> Error {
 /// without the read: returns the proven length and the open handle. The VFS
 /// is untrusted, so a lying metadata or handle fails before allocation.
 pub(crate) fn checked_object_len(
-    target: &StoreTarget,
+    vfs: &dyn crate::vfs::Vfs,
     name: &str,
     kind: &BoundedRead,
 ) -> Result<(u64, Box<dyn crate::vfs::VfsFile>)> {
     check_bounded_len_with(
         name,
-        target
-            .vfs
-            .metadata(name)
+        vfs.metadata(name)
             .map_err(|e| Error::storage(e.to_string()))?
             .len,
         kind,
     )?;
-    let file = target
-        .vfs
+    let file = vfs
         .open(name, VfsOpen::read_only())
         .map_err(|e| Error::storage(e.to_string()))?;
     let len = file.len().map_err(|e| Error::storage(e.to_string()))?;
@@ -409,6 +455,35 @@ fn check_bounded_len_with(name: &str, len: u64, kind: &BoundedRead) -> Result<()
         return Err(kind.too_large_error(name));
     }
     Ok(())
+}
+
+/// The bounded-read class's VFS-level form: the same chain
+/// [`read_bounded_object`] runs over a store object — the metadata
+/// proof, the opened-handle proof, the exact read, the after-read
+/// re-proof — over a bare VFS path, for untrusted input that lives
+/// beside the store rather than inside its object space (the vault's
+/// committed ontology file, ADR-0649 §4). The one home of the class's
+/// defense chain; a caller never re-derives its proof sequence.
+pub(crate) fn read_bounded_vfs_path(
+    vfs: &dyn crate::vfs::Vfs,
+    path: &str,
+    kind: &BoundedRead,
+) -> Result<Vec<u8>> {
+    let (len, mut file) = checked_object_len(vfs, path, kind)?;
+    let mut bytes = vec![0; len as usize];
+    if !bytes.is_empty() {
+        file.read_exact(&mut bytes)
+            .map_err(|e| Error::storage(e.to_string()))?;
+    }
+    // Re-prove after the read: a length grown past the cap is the
+    // too-large error, any other change is the changed-length error —
+    // the same two refusals the object form gives.
+    let after = file.len().map_err(|e| Error::storage(e.to_string()))?;
+    check_bounded_len_with(path, after, kind)?;
+    if after != len {
+        return Err(kind.changed_error(path));
+    }
+    Ok(bytes)
 }
 
 /// Bounded read shared by Parquet shards and metadata objects: prove the
@@ -428,20 +503,11 @@ fn read_bounded_object(
     {
         return Ok(None);
     }
-    let (len, mut file) = checked_object_len(target, name, kind)?;
-    let mut bytes = vec![0; len as usize];
-    if !bytes.is_empty() {
-        file.read_exact(&mut bytes)
-            .map_err(|e| Error::storage(e.to_string()))?;
-    }
-    // Re-prove after the read: a length grown past the cap is the too-large
-    // error, any other change is the changed-length error.
-    let after = file.len().map_err(|e| Error::storage(e.to_string()))?;
-    check_bounded_len_with(name, after, kind)?;
-    if after != len {
-        return Err(kind.changed_error(name));
-    }
-    Ok(Some(bytes))
+    // The chain itself is the one home's ([`read_bounded_vfs_path`]):
+    // this object form adds only the existence probe that turns the
+    // refusal into an `Option` — never a second spelling of the
+    // proof sequence the class's defenses exist to keep single.
+    read_bounded_vfs_path(&*target.vfs, name, kind).map(Some)
 }
 
 /// The one Option-returning object read, shared by [`get_object`] and the

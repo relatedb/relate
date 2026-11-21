@@ -83,6 +83,8 @@ pub(crate) fn plain_entry(meta: &fs::Metadata) -> bool {
 /// one regular-file check over an open handle, expressed through the
 /// [`native_entry_kind`] classifier (symlink, directory, reparse point,
 /// and any other shape all refuse identically).
+/// Validate an opened handle is a regular file (symlinks refused —
+/// the kind is the handle's own stat, never the path's).
 pub(crate) fn regular_handle(file: &File, path: &Path) -> Result<()> {
     let meta = file.metadata()?;
     if native_entry_kind(&meta) != NativeEntryKind::File {
@@ -510,6 +512,11 @@ impl VfsFile for NativeFile {
         Ok(())
     }
 
+    // Live on purpose: the changed-length re-prove defenses
+    // (`read_bounded_object`'s after-read comparison, the Parquet
+    // chunk reader's verify) exist to catch a file that moves under a
+    // retained handle — a cached open-time length would make them
+    // tautological on this VFS.
     fn len(&self) -> Result<u64> {
         Ok(self.file.metadata()?.len())
     }

@@ -253,9 +253,12 @@ impl Drop for Database {
         // The deferred cleanup for a foreign-thread release (GH #352): the one
         // engine touch that runs without the affinity check, from whatever
         // thread drops the last reference — so a failure is reported, never
-        // swallowed.
+        // swallowed. The close shape, not the force-dump: a session with
+        // nothing pending over the published snapshot writes nothing
+        // (ADR-0646) — the `flush`/`reset`/`close` methods stay the
+        // explicit always-write spellings.
         if let Some(engine) = self.engine.as_ref() {
-            if let Err(e) = engine.db.checkpoint_if_writable() {
+            if let Err(e) = engine.db.checkpoint_if_pending() {
                 eprintln!("relate: final checkpoint on drop failed: {e}");
             }
         }

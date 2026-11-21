@@ -200,5 +200,6 @@ pub(crate) fn assemble_loaded<G: relate_engine_api::SnapshotGraph>(
         ontology,
         marker,
         deferred: None,
+        committed: None,
     })
 }

@@ -5,6 +5,7 @@ mod checkpoint;
 mod clone;
 mod commit;
 mod commit_timing;
+mod committed;
 mod connection;
 mod engines;
 mod explain;
@@ -157,7 +158,7 @@ pub(crate) use shared::ReadPause;
 pub(crate) use shared::{check_loaded_graph, ensure_writable, report_trimmed_tail, Shared};
 pub use token_budget::TokenPoolSnapshot;
 
-use checkpoint::checkpoint_now;
+use checkpoint::Trigger;
 use commit::{format_commit_timing, CommitTimingBuf};
 /// Open handle to a Relate database.
 pub struct Database {
@@ -491,7 +492,30 @@ impl Database {
 
     pub fn checkpoint(&self) -> Result<()> {
         ensure_writable(&self.inner)?;
-        checkpoint_now(&self.inner)
+        checkpoint::checkpoint_with(&self.inner, Trigger::Explicit)
+    }
+
+    /// The close path's checkpoint shape (ADR-0646): the automatic
+    /// trigger — durable stores dump, `:memory:` recycles only
+    /// (ADR-0105) — with the no-op skip. A session whose WAL holds
+    /// nothing uncheckpointed over an already-published snapshot
+    /// writes nothing at all; a session that committed, or replayed a
+    /// pending tail, publishes exactly like [`Self::checkpoint`].
+    /// Surfaces that checkpoint on exit call this instead of
+    /// [`Self::checkpoint`], whose explicit contract is to always
+    /// write. A read-only handle succeeds without writing (the
+    /// [`Self::checkpoint_if_writable`] shape).
+    ///
+    /// ```
+    /// let dir = tempfile::tempdir().unwrap();
+    /// let path = dir.path().join("db");
+    /// let db = relate::Database::open(path.to_str().unwrap()).unwrap();
+    /// db.connect().unwrap().query("CREATE (:N)").unwrap();
+    /// db.checkpoint_if_pending().unwrap(); // publishes the commit
+    /// db.checkpoint_if_pending().unwrap(); // nothing pending over the published snapshot: writes nothing
+    /// ```
+    pub fn checkpoint_if_pending(&self) -> Result<()> {
+        self.close_checkpoint_when_writable(Trigger::Automatic)
     }
 
     /// Research-only (speed-of-light kernels), quarantined behind the
@@ -510,10 +534,19 @@ impl Database {
     /// succeeds without writing (ADR-0136). [`Self::checkpoint`] still
     /// returns the read-only error.
     pub fn checkpoint_if_writable(&self) -> Result<()> {
+        self.close_checkpoint_when_writable(Trigger::Explicit)
+    }
+
+    /// The read-only-succeeds-without-writing gate's one home (ADR-0136):
+    /// both close-shaped checkpoints delegate through here, so the
+    /// no-op policy for a read-only handle cannot drift between them.
+    /// The mode is the typed [`Trigger`], never an erased fn pointer.
+    fn close_checkpoint_when_writable(&self, trigger: Trigger) -> Result<()> {
         if self.is_read_only() {
             Ok(())
         } else {
-            self.checkpoint()
+            ensure_writable(&self.inner)?;
+            checkpoint::checkpoint_with(&self.inner, trigger)
         }
     }
 

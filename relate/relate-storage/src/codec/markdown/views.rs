@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{checkpoint::NodePlan, VAULT_LABEL};
+use super::checkpoint::NodePlan;
 use relate_core::temporal::civil_from_days;
 use relate_markdown::{INDEX_VIEW, LOG_VIEW};
 
@@ -39,8 +39,9 @@ pub(super) fn render(
     let mut keys: BTreeSet<&str> = BTreeSet::new();
     for plan in plans.values() {
         keys.insert(plan.vault_key.as_str());
-        // Root files render no label index (the vault root has none).
-        if plan.label_dir != VAULT_LABEL {
+        // Root files render no label index (the vault root has none) —
+        // the plan's own verdict, read as data.
+        if !plan.root {
             labels
                 .entry(plan.label_dir.clone())
                 .or_default()

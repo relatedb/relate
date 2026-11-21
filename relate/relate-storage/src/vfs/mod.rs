@@ -83,6 +83,7 @@ pub enum VfsEntryKind {
 /// assert_eq!(fifo.kind, VfsEntryKind::Other);
 /// assert!(fifo.is_other());
 /// ```
+#[derive(Clone, Copy)]
 pub struct VfsMeta {
     pub kind: VfsEntryKind,
     pub len: u64,

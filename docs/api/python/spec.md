@@ -405,7 +405,8 @@ The refusal is not fatal: the owning thread keeps the connection usable.
 
 Dropping the last reference on a foreign thread is safe. `close()` refuses on a
 foreign thread with the same typed error, and the deferred cleanup — the native
-`Drop`-time checkpoint — then runs from that thread; no unraisable exception is
+`Drop`-time checkpoint, the ADR-0646 close shape (`checkpoint_if_pending`) —
+then runs from that thread; no unraisable exception is
 emitted.
 
 The GIL is released around the engine call (`execute` / `execute_arrow`), so

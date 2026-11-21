@@ -317,6 +317,116 @@ fn validate_index_target(c: &relate_parser::CreateIndexClause) -> Result<()> {
     Ok(())
 }
 
+/// The committed-schema path's per-kind index options resolution
+/// (ADR-0649 §6): the same per-kind `ConfigPolicy` a `CREATE INDEX`
+/// runs, over the flat option payload a committed ontology envelope
+/// carries. Nests the payload under `indexConfig` (the one key the
+/// engine's stored readers navigate), validates the kind's vocabulary
+/// and values — refusing what a CREATE would reject — and completes
+/// the kind's defaults, returning the resolved options map the
+/// catalog detail records. Public for the facade's open-tail
+/// application (`relate::committed`), the one external consumer: the
+/// committed file is untrusted input, and its option payloads get the
+/// DDL path's own validation rather than a parallel one.
+pub fn resolve_committed_index_options(
+    kind: crate::redo::IndexKindSpec,
+    flat: BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, Value>> {
+    let mut options = BTreeMap::new();
+    options.insert(KEY_INDEX_CONFIG.to_string(), Value::Map(flat.into()));
+    ConfigPolicy::for_kind(kind.into()).validate(&mut options)?;
+    Ok(options)
+}
+
+/// One committed index as the facade's open tail hands it to the DDL
+/// home (ADR-0649 §6): the catalog row's identity, its typed detail,
+/// and its evaluated options — borrowed from the codec's carrier, so
+/// no second owned spelling of the carrier exists.
+pub struct CommittedIndexFact<'a> {
+    pub name: &'a str,
+    pub detail: &'a crate::redo::IndexDetailSpec,
+    pub options: &'a BTreeMap<String, Value>,
+}
+
+/// The committed schema's catalog redo group (ADR-0649 §6) — the DDL
+/// home's own construction, so the catalog policy (the op order, the
+/// detail shape, the option resolution, the held-row retirement) has
+/// one compiler-linked home with `CREATE INDEX`: a new index kind,
+/// WITH-property rule, or op order added to DDL reaches the store's
+/// open path through this function, never through a parallel
+/// assembly. Each committed index first retires every catalog row held
+/// under its name or its indexed pair (the committed file is the
+/// source and wins, ADR-0649 decision 2 — a file edit that retargets
+/// or renames an index overrides the machine's stale row the way any
+/// later commit would, instead of failing the open on the catalog's
+/// duplicate rules), then records the row and its typed detail in the
+/// DDL path's own order; the group ends at the current graph type.
+pub fn committed_catalog_ops(
+    held: &[relate_catalog::IndexDef],
+    indexes: &[CommittedIndexFact<'_>],
+    graph_type: &relate_engine_api::graph_type::GraphTypeSpec,
+) -> Result<Vec<crate::redo::RedoOp>> {
+    use crate::redo::RedoOp;
+    let mut ops = Vec::with_capacity(indexes.len() * 3 + 1);
+    for index in indexes {
+        // The carrier's stated contract (relate-storage's
+        // `CommittedIndex`): every producer refuses label-less and
+        // non-single-property entries — the typed refusal here is the
+        // boundary's own check, so a future producer that misses it
+        // fails the open, never panics it.
+        let [label] = index.detail.labels.as_slice() else {
+            return Err(Error::storage(format!(
+                "the committed schema's index '{}' declares no or multiple labels",
+                index.name
+            )));
+        };
+        let [property] = index.detail.properties.as_slice() else {
+            return Err(Error::storage(format!(
+                "the committed schema's index '{}' declares no or multiple properties",
+                index.name
+            )));
+        };
+        // The pair half is the one pair predicate
+        // (`holds_index_pair`: the legacy encoding's own decoder), so
+        // a row any producer wrote retires — a raw string equality
+        // would only ever match this function's own previous rows.
+        for stale in held.iter().filter(|held| {
+            held.name == index.name || crate::redo::holds_index_pair(held, label, property)
+        }) {
+            ops.push(RedoOp::DropIndex {
+                name: stale.name.clone(),
+            });
+        }
+        // The row records the same legacy-encoded property the DDL
+        // create side records (`legacy_property_encoding`), so a
+        // committed index and the equivalent `CREATE INDEX` install
+        // byte-identical catalog rows and the catalog's own
+        // pair-keyed comparisons see them as the same pair.
+        ops.push(RedoOp::CreateIndex {
+            name: index.name.to_string(),
+            label: label.clone(),
+            property: crate::redo::legacy_property_encoding(
+                property,
+                index.detail.kind,
+                index.name,
+            ),
+        });
+        // The option payloads get the per-kind resolution a CREATE
+        // INDEX runs — the committed file is untrusted input, and an
+        // option a CREATE would reject refuses here.
+        let options = resolve_committed_index_options(index.detail.kind, index.options.clone())?;
+        ops.push(crate::exec::ddl::index_detail_op(
+            index.name,
+            index.detail.clone(),
+            &options,
+        ));
+    }
+    ops.push(RedoOp::SetCurrentGraphType {
+        body: graph_type.clone(),
+    });
+    Ok(ops)
+}
+
 /// The `CREATE INDEX` options shape (ADR-0489), the `CREATE CONSTRAINT`
 /// twin's counterpart: the target shape, the shared `OPTIONS` resolution
 /// (whose allowlist excludes `indexProvider` in both spellings), and the

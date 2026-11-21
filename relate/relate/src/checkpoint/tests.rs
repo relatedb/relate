@@ -166,12 +166,12 @@ fn publication_drains_admitted_checkpoint_before_any_wal_frame() {
     let shared = db.shared();
     let mut wal = shared.wal.lock().unwrap();
     wal.rotate().unwrap();
-    let (pin_lsn, pin_ts) = wal.checkpoint_pin();
-    assert_eq!(pin_lsn, 1);
+    let pin = CheckpointPin::of(&wal);
+    assert_eq!(pin.lsn, 1);
     assert!(try_begin_checkpoint(&shared));
     // Hold the WAL lock so the real worker can publish its manifest but
     // cannot complete recycle. Publication must drain that in-flight work.
-    schedule_checkpoint(&shared, pin_lsn, pin_ts);
+    schedule_checkpoint(&shared, pin);
     assert_eq!(
         wait_checkpoint_lsn(dir.path(), Duration::from_secs(5)),
         Some(1)
@@ -560,3 +560,7 @@ fn vector_index_metadata_survives_wal_reopen() {
         Value::List(vec![Value::String("Doc".into()), Value::String("Article".into())].into())
     );
 }
+
+/// The exit-publication suite (ADR-0646), split from this file (the
+/// no-1k-line rule).
+mod exit_publication;

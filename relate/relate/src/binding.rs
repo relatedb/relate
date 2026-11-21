@@ -701,6 +701,9 @@ mod tests {
             (ce::use_clause_with_administration_command(), "SyntaxError"),
             (ce::system_ontologies_not_queryable(), "SemanticError"),
             (ce::read_only_write(), "WriteOnReadOnlyAccessDatabase"),
+            // ADR-0649's committed-source write policy: a statement-level
+            // semantic rejection, the read-only twin's class.
+            (ce::committed_ontology_immutable(), "SemanticError"),
             (ce::alter_unknown_database("movies"), "DatabaseNotFound"),
             (ce::database_does_not_exist("movies"), "DatabaseNotFound"),
             (ce::namespace_change_in_transaction(), "TransactionError"),

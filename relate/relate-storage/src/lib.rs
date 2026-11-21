@@ -36,14 +36,14 @@ pub use open::{
 #[doc(hidden)]
 pub use open::{
     open_store_notifying, open_store_readonly_with_ontology, open_store_with_report,
-    open_writer_wal_notifying, OpenReport,
+    open_writer_wal_notifying, OpenReport, OpenedStore, ReadonlyStore,
 };
 pub use relate_core::{
     cypher_to_value, plan_value_to_cypher, value_to_cypher, MAX_PLAN_WIRE_DEPTH,
 };
 #[cfg(parquet_codec)]
 pub use snapshot::native::{window_width, DEFAULT_SHARD_TARGET_BYTES};
-pub use snapshot::ShardPart;
+pub use snapshot::{CommittedIndex, CommittedSchema, ShardPart};
 pub use vfs::{
     atomic_write, is_bundle_path, read_to_vec, MemoryVfs, Vfs, VfsEntryKind, VfsFile, VfsMeta,
     VfsOpen, BUNDLE_EXTENSION, LEGACY_BUNDLE_EXTENSION,
@@ -761,6 +761,18 @@ pub fn snapshot_data_bytes(target: &StoreTarget) -> Result<u64> {
     // The codec vocabulary's one behavioral surface (see `open::codec_ops`):
     // a codec's sizer is one table entry, not an arm here.
     (crate::open::codec_ops(target.codec).snapshot_data_bytes)(target)
+}
+
+/// Whether the store has already published a checkpoint image — the
+/// codec's own presence probe, one table entry per codec (the classic
+/// codecs' root `manifest.json`, the markdown codec's `.relate/`
+/// sidecar). The no-op checkpoint skip consults it (ADR-0646): a
+/// checkpoint whose WAL holds nothing uncheckpointed over a published
+/// snapshot has nothing to write.
+pub fn has_published_snapshot(target: &StoreTarget) -> Result<bool> {
+    // The codec vocabulary's one behavioral surface (see `open::codec_ops`):
+    // the published-image probe is one table entry, not an arm here.
+    (crate::open::codec_ops(target.codec).has_published_snapshot)(target)
 }
 
 /// Published checkpoint LSN, or 0 when the store has no manifest yet.

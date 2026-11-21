@@ -80,6 +80,10 @@ pub use parse::{detect_format, parse_document_value};
 pub use serialize::{to_json_sorted_string, to_json_string, to_yaml_string};
 pub use value::Value;
 
+// The map behind `Value::Object` — the enum already publishes the
+// type; the re-export makes it nameable (relate-model's precedent).
+pub use indexmap::IndexMap;
+
 /// Parse and validate an ontology document from JSON or YAML bytes.
 ///
 /// The syntax is detected by a strict JSON parse (ADR-0227 §3); the

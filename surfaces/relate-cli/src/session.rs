@@ -27,15 +27,24 @@ use crate::VERSION;
 use crate::{errors, exit_flushed, print_error, repl, telemetry, zero_effect};
 
 /// The final-checkpoint policy shared by [`exit_closed`] and the extension
-/// persist path: a persistent, writable database checkpoints before exit; a
+/// persist path: a persistent database checkpoints before exit; a
 /// checkpoint failure is reported and forces a non-zero exit code.
+///
+/// The close shape is [`Database::checkpoint_if_pending`] (ADR-0646), not
+/// the explicit `checkpoint()`: a session whose WAL holds nothing
+/// uncheckpointed over the published snapshot writes nothing — for a
+/// markdown vault the difference between exiting and re-rendering every
+/// file — while a session that committed, or replayed a pending tail,
+/// publishes exactly like an explicit ask. The read-only verdict is the
+/// callee's: `checkpoint_if_pending` succeeds without writing on a
+/// read-only handle, so the gate here is the CLI's own persistence fact.
 pub(crate) fn final_checkpoint(
     db: &relate::Database,
     storage: telemetry::StorageKind,
     code: i32,
 ) -> i32 {
-    if storage.is_persistent() && !db.is_read_only() {
-        if let Err(e) = db.checkpoint() {
+    if storage.is_persistent() {
+        if let Err(e) = db.checkpoint_if_pending() {
             print_error(format_args!("Error: final checkpoint failed: {e}"));
             return code.max(1);
         }

@@ -20,9 +20,7 @@ use relate_core::Error;
 #[cfg(not(target_arch = "wasm32"))]
 use relate_storage::take_writer_lease;
 
-use crate::checkpoint::{
-    begin_publication, checkpoint_now, spawn_checkpoint_timer, spawn_durability_timer,
-};
+use crate::checkpoint::{begin_publication, spawn_checkpoint_timer, spawn_durability_timer};
 use crate::follow;
 use crate::shared::stop_and_join;
 use crate::{Database, DurabilityMode, Result, Shared, ThreadStop};
@@ -238,7 +236,7 @@ fn demote_inner(shared: &Arc<Shared>) -> Result<()> {
             "demote timed out waiting for in-flight commits to finish",
         ));
     }
-    checkpoint_now(shared)?;
+    crate::checkpoint::checkpoint_with(shared, crate::checkpoint::Trigger::Explicit)?;
     stop_and_join(&shared.timer);
     stop_and_join(&shared.durability_timer);
     // Hold the publication write lock across the WAL swap and the lease

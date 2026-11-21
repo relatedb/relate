@@ -100,8 +100,11 @@ pub(crate) struct SnapshotRows {
     pub(crate) next_rel_id: i64,
 }
 
-/// Rows per install slice: one batch-sized run.
-const INSTALL_SLICE_ROWS: usize = 1024;
+/// Rows per install slice: one batch-sized run — the ceiling every
+/// graph-install loop in the codec consults (ADR-0555's bounded
+/// batches), so the load paths and the decoded-row tail share one
+/// install policy.
+pub(crate) const INSTALL_SLICE_ROWS: usize = 1024;
 
 impl SnapshotRows {
     /// Rebuild the in-memory graph from these rows — the load tail every

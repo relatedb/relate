@@ -14,6 +14,9 @@ pub(crate) use envelope::{preflight, VfsChunkReader};
 use rules::{IdWindow, ShardRules};
 pub(crate) use span::SpanReaders;
 
+#[cfg(test)]
+use crate::codec::with_test_override;
+
 pub(crate) use budget::DecodedBudget;
 #[cfg(test)]
 pub(crate) use budget::{decoded_preflight, take_measured_rows};
@@ -163,31 +166,6 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn with_test_page_envelope_rows<T>(rows: usize, f: impl FnOnce() -> T) -> T {
     with_test_override(&TEST_PAGE_ENVELOPE_ROWS, rows, f)
-}
-
-/// Run `f` with the thread-local test override `cell` set to `value`, and
-/// restore the override it replaced once `f` returns or panics, so
-/// overrides of one cell nest.
-#[cfg(test)]
-fn with_test_override<V: 'static, T>(
-    cell: &'static std::thread::LocalKey<std::cell::Cell<Option<V>>>,
-    value: V,
-    f: impl FnOnce() -> T,
-) -> T {
-    struct Restore<V: 'static> {
-        cell: &'static std::thread::LocalKey<std::cell::Cell<Option<V>>>,
-        previous: Option<V>,
-    }
-    impl<V: 'static> Drop for Restore<V> {
-        fn drop(&mut self) {
-            self.cell.set(self.previous.take());
-        }
-    }
-    let _restore = Restore {
-        cell,
-        previous: cell.replace(Some(value)),
-    };
-    f()
 }
 
 #[derive(Clone, Copy)]

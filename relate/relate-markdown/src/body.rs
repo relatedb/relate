@@ -4,6 +4,7 @@
 //! is the bare body 1:1, and headings inside a section are markdown
 //! text, not structure.
 
+use super::name::fold_case;
 use relate_core::{Error, Result};
 
 /// The one property that renders as the file body when no list is
@@ -123,15 +124,6 @@ fn opens_bare_slot(index: usize, segments: &[Option<String>]) -> bool {
         || segments[0]
             .as_deref()
             .is_none_or(|preamble| preamble.trim().is_empty())
-}
-
-/// The vault's one identity relation spelled as a function (the storage
-/// codec's `fold_case` twin): the Unicode case fold that marker
-/// recognition and duplicate validation both consult — never an
-/// ASCII-only shortcut, which would silently re-attribute non-ASCII
-/// names' sections.
-pub fn fold_case(value: &str) -> String {
-    value.to_lowercase()
 }
 
 /// The section grammar's one ATX literal: the prefix every marker
@@ -299,6 +291,18 @@ pub(crate) fn render_body_properties(props: &[String], values: &[(&str, &str)]) 
 mod tests {
     use super::*;
     use crate::body_props;
+
+    #[test]
+    fn the_identity_fold_composes_normalization() {
+        // Composed `ö` (U+00F6) against `o` + combining diaeresis — the
+        // two spellings a normalizing copy tool writes apart. One
+        // identity, one fold: the decomposed filename macOS tar leaves
+        // and the composed value the engine wrote must be the same
+        // name, or the copy turns the vault unopenable.
+        assert_eq!(fold_case("Ad\u{00F6}e"), fold_case("Ado\u{0308}e"));
+        // And the fold of either spelling is itself composed NFC.
+        assert_eq!(fold_case("Ado\u{0308}e"), "ad\u{00F6}e");
+    }
 
     #[test]
     fn bare_body_round_trips() {

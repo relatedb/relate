@@ -18,9 +18,7 @@ use super::super::model::SnapshotContents;
 use super::super::SnapshotCodecKind;
 use super::journal;
 use super::manifest::{read_manifest, write_manifest, FileStat, LearnedSchema, VaultManifest};
-use super::vault::{
-    file_name, prune_empty_dirs, vault_matches, vault_stats, walk_vault, walk_view_paths,
-};
+use super::vault::{prune_empty_dirs, vault_matches, vault_stats, walk_vault, walk_view_paths};
 use super::views;
 use super::{
     infer_key_for_checkpoint, raw_node_doc, rel_identity, vault_key, MarkdownBodyProperties,
@@ -131,9 +129,15 @@ pub(super) struct NodePlan {
     /// `primary_label` and the vector-property filter key.
     primary: String,
     /// The sanitized label directory; the reserved `Vault` for a root
-    /// file's round-trip. The view render reads it (a root file renders
-    /// no label index).
+    /// file's round-trip.
     pub(super) label_dir: String,
+    /// The plan loop's own root-vs-directory verdict, made exactly
+    /// once (the primary label's fold, ADR-0406 §2) — the view render
+    /// reads it as data and never re-derives it from the sanitized
+    /// directory (a label like `` `Vault ` `` sanitizes into the
+    /// reserved root directory while not being a root label; the plan
+    /// refuses that case, so the two spellings cannot disagree).
+    pub(super) root: bool,
     /// The sanitized key value — the filename stem.
     name: String,
     /// The vault key `label_dir/name` — the codec's identity
@@ -147,13 +151,6 @@ pub(super) struct NodePlan {
     path: String,
 }
 
-/// Whether a path's file name is a reserved generated view — the
-/// grammar crate's one predicate over the vault walk's own
-/// [`file_name`] extractor (the guarded-stats filter's class rule).
-fn path_is_view(path: &str) -> bool {
-    md::is_reserved_view_file_name(file_name(path))
-}
-
 /// Plan every node's file: the learned key property → filename, the
 /// reserved-view refusal, the :Vault root round-trip, the raw
 /// passthrough tolerance, and the collision check. Returns the
@@ -164,7 +161,7 @@ fn path_is_view(path: &str) -> bool {
 fn plan_node_files(
     nodes: &[Node],
     learned: &LearnedSchema,
-    existing_by_path: &BTreeMap<String, Vec<u8>>,
+    existing_by_fold: &BTreeMap<String, &Vec<u8>>,
     bodies: &MarkdownBodyProperties,
 ) -> Result<(BTreeMap<i64, NodePlan>, BTreeSet<String>)> {
     let mut plans: BTreeMap<i64, NodePlan> = BTreeMap::new();
@@ -176,11 +173,20 @@ fn plan_node_files(
     // case-insensitive filesystems).
     let mut planned_paths_folded: BTreeSet<String> = BTreeSet::new();
     let mut raw_live: BTreeSet<String> = BTreeSet::new();
+    // The raw-frontmatter paths under the same identity fold the
+    // existing-path view uses — the plan's composed spelling must
+    // find a raw file the walk recorded under a decomposed one.
+    let raw_files_folded: BTreeSet<String> = learned
+        .raw_files
+        .iter()
+        .map(|path| md::fold_case(path))
+        .collect();
     for node in nodes {
         let (plan, raw_path) = plan_node(
             node,
             learned,
-            existing_by_path,
+            &raw_files_folded,
+            existing_by_fold,
             &mut planned_paths_folded,
             bodies,
         )?;
@@ -204,7 +210,8 @@ fn plan_node_files(
 fn plan_node(
     node: &Node,
     learned: &LearnedSchema,
-    existing_by_path: &BTreeMap<String, Vec<u8>>,
+    raw_files_folded: &BTreeSet<String>,
+    existing_by_fold: &BTreeMap<String, &Vec<u8>>,
     planned_paths_folded: &mut BTreeSet<String>,
     bodies: &MarkdownBodyProperties,
 ) -> Result<(NodePlan, Option<String>)> {
@@ -241,13 +248,22 @@ fn plan_node(
     // :Vault node round-trips only into the exact root path it
     // loaded from — decided by provenance (the walked root file),
     // never by the ambient directory shape.
-    let root_roundtrip = primary == VAULT_LABEL;
+    // The root round-trip asks the codec's one root-label home — the
+    // same fold the load's collision refusal asks — so a
+    // user-created `:vault`/`:VAULT` node round-trips through the
+    // root like any `:Vault` node, never into a `vault/` directory
+    // the next open would refuse.
+    let root_roundtrip = super::is_root_label(primary);
     // The label's directory segment is sanitized like the name
     // segment: a backticked label can carry characters that are
     // illegal in a path segment (`/`, `:`, …). Plain identifier
-    // labels sanitize to themselves.
+    // labels sanitize to themselves. A root round-trip speaks the
+    // load's identity — the canonical reserved label the load always
+    // derives for a root file — never the node's observed case: the
+    // vault key, the sidecar's id/rel maps and the embedding keys all
+    // agree with what the next open derives.
     let label_dir = if root_roundtrip {
-        primary.to_string()
+        VAULT_LABEL.to_string()
     } else {
         md::sanitize_label(primary).map_err(|e| Error::storage(format!("node {}: {e}", node.id)))?
     };
@@ -256,6 +272,18 @@ fn plan_node(
     } else {
         format!("{label_dir}/{name}.md")
     };
+    // A non-root label whose *sanitized* directory folds to the
+    // reserved root label is refused here: its files would render into
+    // a `Vault/` directory the next open refuses (the load's root-label
+    // collision), a checkpoint-to-unopenable loop — the label has to be
+    // renamed before it can round-trip.
+    if !root_roundtrip && super::is_root_label(&label_dir) {
+        return Err(md::vault_error(format!(
+            "node {} of label {primary} sanitizes to the reserved root directory \
+             '{VAULT_LABEL}'; rename the label",
+            node.id
+        )));
+    }
     // A node whose file would land on a reserved view name is
     // refused here — judged on the planned path's final segment,
     // through the same case fold the walk applies, so a nested key
@@ -264,7 +292,7 @@ fn plan_node(
     // regenerated view would overwrite them at the same path and the
     // node would silently disappear at the next open (ADR-0406 §4 —
     // the walk skips the reserved names at every level).
-    if path_is_view(&path) {
+    if super::vault::path_is_view(&path) {
         return Err(md::vault_error(format!(
             "node {} of label {primary} would render to the reserved view file \
              '{path}'; rename its '{key_name}' value",
@@ -282,7 +310,7 @@ fn plan_node(
              filename would collide"
         )));
     }
-    if root_roundtrip && !existing_by_path.contains_key(&path) {
+    if root_roundtrip && !existing_by_fold.contains_key(&md::fold_case(&path)) {
         return Err(md::vault_error(format!(
             "node {} has the reserved root label :{VAULT_LABEL} but no existing root file; \
              the engine never writes to the vault root — give it a real label directory",
@@ -295,8 +323,8 @@ fn plan_node(
     // whose raw file is gone) fails closed instead of having the
     // modification silently discarded by the passthrough.
     let mut raw_path: Option<String> = None;
-    if learned.raw_files.contains(&path) {
-        let unmodified = match existing_by_path.get(&path) {
+    if raw_files_folded.contains(&md::fold_case(&path)) {
+        let unmodified = match existing_by_fold.get(&md::fold_case(&path)) {
             Some(bytes) => raw_file_unmodified(
                 node,
                 primary,
@@ -323,6 +351,7 @@ fn plan_node(
     let plan = NodePlan {
         primary: primary.to_string(),
         label_dir,
+        root: root_roundtrip,
         name,
         vault_key,
         extra_labels: labels[1..].to_vec(),
@@ -485,9 +514,26 @@ pub(crate) fn checkpoint_at(
     let vfs = target.vfs();
     let existing = walk_vault(&*vfs)?;
     let existing_stats = vault_stats(&existing);
+    // The raw on-disk census: the publish phase's own view — the
+    // deletion diff and the byte-identical skip — which must see the
+    // raw spellings (a decomposed name is deleted by its own bytes,
+    // the heal's delete-before-write rename).
     let existing_by_path: BTreeMap<String, Vec<u8>> = existing
         .into_iter()
         .map(|f| (f.walked.path, f.bytes))
+        .collect();
+    // The plan phase's lookup view, keyed by the vault's one identity
+    // relation (`fold_case` — the case fold composed to NFC,
+    // ADR-0647): the plan's paths are the composed canonical spelling
+    // while the walk's are the raw on-disk spelling, so an exact-byte
+    // lookup would miss every decomposed name — a vault-root file
+    // left decomposed by a normalizing copy would trip the root-file
+    // existence refusal instead of healing, and a decomposed
+    // raw-frontmatter file would miss its passthrough and be
+    // re-rendered, discarding the user's raw text.
+    let existing_by_fold: BTreeMap<String, &Vec<u8>> = existing_by_path
+        .iter()
+        .map(|(path, bytes)| (md::fold_case(path), bytes))
         .collect();
     // The external-write guard (ADR-0406 §5): with a manifest, the vault
     // must byte-match the last checkpoint; without one, everything the
@@ -521,7 +567,7 @@ pub(crate) fn checkpoint_at(
     // unchanged configuration is carried forward byte-equal.
     let recorded = super::recorded_bodies(target, &previous_bodies);
 
-    let (plans, raw_live) = plan_node_files(&contents.nodes, &learned, &existing_by_path, &bodies)?;
+    let (plans, raw_live) = plan_node_files(&contents.nodes, &learned, &existing_by_fold, &bodies)?;
     let (links_by_start, rel_ids) = build_links(&contents.relationships, &plans)?;
     let (mut planned, embeddings) = render_node_files(
         &contents.nodes,
@@ -537,8 +583,8 @@ pub(crate) fn checkpoint_at(
     // only while their node is still live: an in-session delete stays
     // deleted.
     for path in &raw_live {
-        if let Some(bytes) = existing_by_path.get(path) {
-            planned.insert(path.clone(), bytes.clone());
+        if let Some(bytes) = existing_by_fold.get(&md::fold_case(path)) {
+            planned.insert(path.clone(), (*bytes).clone());
         }
     }
 
@@ -549,7 +595,7 @@ pub(crate) fn checkpoint_at(
     // provably see the same file set.
     let guarded_stats: BTreeMap<String, FileStat> = planned
         .iter()
-        .filter(|(path, _)| !path_is_view(path))
+        .filter(|(path, _)| !super::vault::path_is_view(path))
         .map(|(path, bytes)| (path.clone(), FileStat::of(bytes)))
         .collect();
     let changes = changes_since(previous.as_ref(), &guarded_stats);

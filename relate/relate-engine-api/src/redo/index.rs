@@ -266,6 +266,15 @@ pub fn legacy_property_names(property: &str) -> Vec<String> {
         .collect()
 }
 
+/// The (label, property) pair a catalog row holds, judged through the
+/// legacy encoding's one decoder — the one spelling of "this row
+/// indexes that pair", consulted by the by-schema probe, the DDL
+/// conflict gate's legacy-duplicate arm, and the committed schema's
+/// held-row retirement.
+pub fn holds_index_pair(row: &IndexDef, label: &str, property: &str) -> bool {
+    row.label == label && split_legacy_property_encoding(&row.property).0 == property
+}
+
 /// One index's typed facts as every reader resolves them, through the fixed
 /// precedence the `SHOW INDEXES` row and the `00NA0` note share: the index's
 /// [`IndexDetailSpec`], then the owning constraint (a constraint-backed

@@ -21,7 +21,7 @@ use super::layout::{
 use super::vault::crc;
 use super::MarkdownBodyProperties;
 use crate::codec::SnapshotCodecKind;
-use crate::snapshot::MAX_JSON_OBJECT;
+
 use crate::vfs::{atomic_write, read_to_vec, Vfs};
 use crate::StoreTarget;
 
@@ -40,10 +40,29 @@ pub(super) const JOURNAL_INTENT: &str = concat!(journal_dir!(), "/intent.json");
 /// deleted (ADR-0406 §5).
 pub(super) const JOURNAL_PREIMAGE: &str = concat!(journal_dir!(), "/preimage.json");
 
-// The sidecar's metadata bound is the ADR-0086 per-metadata-object
-// ceiling, spelled through the one crate-visible home
-// (`snapshot::MAX_JSON_OBJECT`) at every check site below — never a
+// The sidecar's metadata bound is its own ceiling (ADR-0648): the
+// sidecar is engine-authored state whose size scales with the vault
+// (per-file stats and ids), so it rides `MAX_MARKDOWN_SIDECAR` below —
+// not the untrusted-input class's ADR-0086 ceiling — at every check
+// site, spelled through this one home beside the checks, never a
 // mirrored second constant.
+
+/// The markdown sidecar's own bound (ADR-0648). The sidecar is the
+/// one metadata object whose size legitimately scales with user data
+/// — per-file stats, node ids and relationship identities for every
+/// guarded file — so the untrusted-input class ceiling
+/// (`snapshot::MAX_JSON_OBJECT`, ADR-0086's 16 MiB) would cap the
+/// vault itself at roughly 45k files. The sidecar is engine-authored
+/// state: the engine wrote it, and refusing to read what it wrote is
+/// a scale bug, not a safety win. Untrusted-input reads (classic
+/// manifests, ontology documents, schema mirrors) keep ADR-0086's
+/// ceiling untouched.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const MAX_MARKDOWN_SIDECAR: u64 = 256 * 1024 * 1024;
+// A browser tab cannot afford a quarter-gigabyte sidecar parse; wasm
+// keeps the ADR-0086 ceiling.
+#[cfg(target_arch = "wasm32")]
+pub(crate) const MAX_MARKDOWN_SIDECAR: u64 = crate::snapshot::MAX_JSON_OBJECT;
 /// The generated/learned schema (ADR-0406 §2): descriptive, never
 /// prescriptive — the vault stays authoritative and drift regenerates
 /// it at the next checkpoint.
@@ -208,7 +227,7 @@ pub(super) fn probe_sidecar(vfs: &dyn Vfs, spelling: SidecarSpelling) -> Result<
         return Ok(ManifestProbe::Absent);
     }
     let len = vfs.metadata(name).map_err(fail)?.len;
-    if len > MAX_JSON_OBJECT {
+    if sidecar_past_bound(len) {
         return Ok(ManifestProbe::Unparseable);
     }
     let bytes = read_to_vec(vfs, name).map_err(fail)?;
@@ -222,7 +241,9 @@ pub(super) fn probe_sidecar(vfs: &dyn Vfs, spelling: SidecarSpelling) -> Result<
 /// no parse, no classification, no refusal — the classification stays
 /// the manifest reader's, and the evidence table only counts the
 /// store's presence (ADR-0623: an un-adopted legacy store is still
-/// markdown evidence).
+/// markdown evidence). The same probe answers the codec ops table's
+/// `has_published_snapshot` row (ADR-0646's no-op checkpoint skip):
+/// a sidecar present at either spelling is a published image.
 pub(crate) fn has_store_files(target: &StoreTarget) -> Result<bool> {
     Ok(crate::snapshot::object_exists(target, MANIFEST)?
         || crate::snapshot::object_exists(target, LEGACY_MANIFEST)?)
@@ -263,7 +284,7 @@ pub(crate) fn probe_manifest_at(
     match std::fs::metadata(&sidecar) {
         Err(err) if benign_absence(&err) => return Ok(ManifestProbe::Absent),
         Err(err) => return Err(err.into()),
-        Ok(meta) if meta.len() > MAX_JSON_OBJECT => return Ok(ManifestProbe::Unparseable),
+        Ok(meta) if sidecar_past_bound(meta.len()) => return Ok(ManifestProbe::Unparseable),
         Ok(_) => {}
     }
     match std::fs::read(&sidecar) {
@@ -304,11 +325,25 @@ pub(crate) fn refuse_reset(dir: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// The sidecar's pre-read metadata bound (ADR-0648): a past-bound
+/// sidecar classifies as unparseable before any byte is fetched — the
+/// one home of the read direction's bound, consulted by both probes
+/// (the VFS probe and the pre-lease path probe).
+fn sidecar_past_bound(len: u64) -> bool {
+    len > MAX_MARKDOWN_SIDECAR
+}
+
 /// The bytes-level classification shared by the VFS probe and the
 /// pre-lease path probe, so the policy has exactly one home. `Absent`
 /// is never returned: only the probes' existence checks produce it.
 fn classify_manifest_bytes(bytes: &[u8]) -> ManifestProbe {
-    if bytes.len() as u64 > MAX_JSON_OBJECT {
+    // The handed buffer's own bound — not a second spelling of the
+    // probes' metadata bound (which already refused a past-bound
+    // sidecar before any byte was fetched), but the growth race's
+    // defense: a sidecar that grew past the bound between the
+    // metadata pre-check and the read classifies unparseable rather
+    // than parsing a buffer past ADR-0648's recorded posture.
+    if bytes.len() as u64 > MAX_MARKDOWN_SIDECAR {
         return ManifestProbe::Unparseable;
     }
     match serde_json::from_slice::<VaultManifest>(bytes) {
@@ -400,9 +435,9 @@ pub(crate) fn read_manifest_cold(target: &StoreTarget) -> Result<Option<VaultMan
 pub(super) fn write_manifest(vfs: &dyn Vfs, manifest: &VaultManifest) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(manifest)
         .map_err(|e| md::vault_error(format!("serializing sidecar manifest: {e}")))?;
-    if bytes.len() as u64 > MAX_JSON_OBJECT {
+    if bytes.len() as u64 > MAX_MARKDOWN_SIDECAR {
         return Err(md::vault_error(format!(
-            "{MANIFEST} exceeds {MAX_JSON_OBJECT}-byte metadata limit"
+            "{MANIFEST} exceeds {MAX_MARKDOWN_SIDECAR}-byte sidecar limit"
         )));
     }
     atomic_write(vfs, MANIFEST, &bytes)

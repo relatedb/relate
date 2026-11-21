@@ -565,6 +565,23 @@ those numbers.
 
 ## Later references
 
+- [ADR-0647](./0647-vault-identity-fold-composes-to-nfc.md) composes the
+  identity fold this ADR defined to NFC: a spelling that differs only
+  in Unicode normalization is the same name (the same fold a case-only
+  difference takes), the codec derives the composed canonical spelling,
+  and sanitization emits it — so a vault copied through a normalizing
+  tool (macOS `tar` writes decomposed filenames) opens and heals to the
+  composed form at its next publishing checkpoint.
+- [ADR-0648](./0648-markdown-sidecar-own-bound.md) gives this ADR's
+  sidecar its own metadata bound — 256 MiB on native targets, the
+  ADR-0086 ceiling on wasm — because the sidecar is the one metadata
+  object whose size scales with the vault (per-file stats and ids),
+  which the shared 16 MiB class ceiling capped at roughly 45k files.
+- [ADR-0649](./0649-vault-committed-ontology-file.md) adds a reserved,
+  committed ontology document at the vault root whose declarations —
+  the relationship-type vocabulary, the per-label key properties —
+  seed the load and travel with version control, closing this ADR's
+  bootstrap-ambiguity edge for vaults shared between machines.
 - [ADR-0623](./0623-engine-sidecar-dir-rename.md) renames the sidecar directory this ADR placed at
   `.cypherlite/` to `.relate/`, adopting existing stores by one
   directory rename at their first writable open.

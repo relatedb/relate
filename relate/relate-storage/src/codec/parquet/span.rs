@@ -166,10 +166,7 @@ pub(super) fn load(
             .collect();
         handles
             .into_iter()
-            .map(|handle| match handle.join() {
-                Ok(result) => result,
-                Err(panic) => std::panic::resume_unwind(panic),
-            })
+            .map(crate::codec::join_or_resume)
             .collect::<Result<Vec<_>>>()
     })?;
     // The spans tile the file's row groups in file order, so folding their
@@ -218,7 +215,7 @@ fn forced_workers() -> Option<usize> {
 #[cfg(test)]
 fn with_workers<R>(workers: usize, f: impl FnOnce() -> R) -> R {
     assert!(workers > 0, "a worker count is non-zero");
-    super::with_test_override(&FORCED_WORKERS, workers, f)
+    crate::codec::with_test_override(&FORCED_WORKERS, workers, f)
 }
 
 /// Take this thread's accumulated spawned-worker count, resetting it.

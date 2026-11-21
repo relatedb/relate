@@ -215,6 +215,7 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
         ontology,
         marker,
         deferred: None,
+        committed: None,
     })
 }
 

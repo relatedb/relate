@@ -84,18 +84,18 @@ pub fn vault_error(message: impl Into<String>) -> Error {
 }
 
 /// The C0 control characters (U+0000–U+001F) plus DEL (U+007F): the one
-/// spelling of the control set, shared by the name sanitizer and the
-/// YAML string emitters. `char::is_ascii_control` alone stops at U+001F
-/// — std documents that DEL is not an ASCII control character — so the
-/// DEL arm is spelled here, once.
-pub(crate) fn is_c0_del(ch: char) -> bool {
-    ch.is_ascii_control() || ch == '\u{7f}'
+/// spelling of the control set, shared by the name sanitizer, the YAML
+/// string emitters, and the vault walk's entry-name rule. That set is
+/// exactly `char::is_ascii_control` — std's control class spans
+/// U+0000–U+001F and U+007F — named once so the consumers share one
+/// spelling of "the name grammar refuses this byte".
+pub fn is_c0_del(ch: char) -> bool {
+    ch.is_ascii_control()
 }
 
 // The public surface is exactly what the single consumer
 // (relate-storage's markdown codec) imports, plus the doctest's
 // entry points; nothing is exported speculatively.
-pub use body::fold_case;
 pub use body::{parse_body, BODY_KEY};
 pub use doc::{
     canonical_props_json, is_reserved_view_file_name, parse_node_doc, parse_node_doc_root,
@@ -103,7 +103,8 @@ pub use doc::{
     LOG_VIEW,
 };
 pub use link::{parse_link, LinkTarget};
-pub use name::{sanitize_label, sanitize_name_path};
+pub use name::fold_case;
+pub use name::{compose, sanitize_label, sanitize_name_path};
 pub use yaml::{parse_yaml_value, split_frontmatter};
 
 /// The one body-property-list constructor the crate's test modules

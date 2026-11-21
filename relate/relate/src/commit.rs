@@ -785,6 +785,13 @@ pub(crate) fn commit_preflighted(
     // time, before the redo was pushed, so this cannot fail; the 16 MiB
     // envelope below is the WAL preflight's own `RedoOp` validation.
     let ontology = crate::ontology::prepare_committed(accepted.iter().map(|a| a.ops.as_slice()));
+    // ADR-0649's one set/drop gate: a store whose ontology document
+    // comes from the committed schema file accepts no procedure- or
+    // API-sourced swap — the file is the document's source. Checked
+    // where every ontology op funnels, before any append.
+    if ontology.is_some() {
+        crate::ontology::refuse_ontology_swap(shared)?;
+    }
 
     // Checkpoint admission was closed and any old worker fully drained before
     // the first frame. Keep the publication lock until every redo is applied.

@@ -304,6 +304,17 @@ pub(super) fn resolve_bodies(
 /// (ADR-0406 §2). The engine never writes a node to the vault root.
 const VAULT_LABEL: &str = "Vault";
 
+/// The reserved implicit root label under the vault's one identity
+/// relation (ADR-0406 §2, ADR-0647) — the one home of the question
+/// every codec consumer asks: the load's collision refusal, the
+/// checkpoint's root round-trip decision, and the view render's
+/// label-directory check. Never a second, exact-`==` spelling beside
+/// it: a user-created `:vault`/`:VAULT` node would slip past an exact
+/// comparison into `vault/<key>.md` and the next open's refusal.
+fn is_root_label(label: &str) -> bool {
+    md::fold_case(label) == md::fold_case(VAULT_LABEL)
+}
+
 /// The fallback key property when nothing else identifies a node
 /// (ADR-0406 §2): the checkpoint-side inference's floor. The load-side
 /// inference and the stub materializer consult the same fact.
@@ -471,6 +482,7 @@ mod checkpoint;
 mod journal;
 mod load;
 mod manifest;
+mod ontology;
 mod vault;
 mod views;
 

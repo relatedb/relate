@@ -17,6 +17,7 @@ pub(crate) use experimental::{
 };
 pub mod json;
 mod kind;
+
 pub(crate) mod markdown;
 mod model;
 pub(crate) mod open_config;
@@ -360,3 +361,40 @@ pub(crate) fn check_available(codec: SnapshotCodecKind) -> Result<()> {
 mod experimental_tests;
 #[cfg(test)]
 mod tests;
+
+/// Join a scoped worker, resuming its panic in the caller — the one
+/// spelling of "a worker's panic is the parent's" the codec tree's
+/// parallel passes share (the Parquet shard load, the markdown vault
+/// walk, and the striped read).
+pub(crate) fn join_or_resume<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    match handle.join() {
+        Ok(outcome) => outcome,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+/// Run `f` with the thread-local test override `cell` set to `value`,
+/// and restore the override it replaced once `f` returns or panics, so
+/// overrides of one cell nest — the one override mechanics every codec
+/// test seam (a forced worker count) wraps.
+#[cfg(test)]
+pub(in crate::codec) fn with_test_override<V: 'static, T>(
+    cell: &'static std::thread::LocalKey<std::cell::Cell<Option<V>>>,
+    value: V,
+    f: impl FnOnce() -> T,
+) -> T {
+    struct Restore<V: 'static> {
+        cell: &'static std::thread::LocalKey<std::cell::Cell<Option<V>>>,
+        previous: Option<V>,
+    }
+    impl<V: 'static> Drop for Restore<V> {
+        fn drop(&mut self) {
+            self.cell.set(self.previous.take());
+        }
+    }
+    let _restore = Restore {
+        cell,
+        previous: cell.replace(Some(value)),
+    };
+    f()
+}

@@ -288,6 +288,9 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
             ontology,
             marker,
             deferred: None,
+            // The Parquet codec has no committed schema files (ADR-0649:
+            // `None` for every classic codec).
+            committed: None,
         }),
         // A legacy-store failure names the version where the loader knows
         // it (ADR-0127 Decision 4); a current store keeps its error verbatim.

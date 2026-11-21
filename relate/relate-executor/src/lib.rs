@@ -97,6 +97,9 @@ pub use exec::bulk::{
     analyze_bulk_write, BulkCursor, BulkTargets, BulkWrite, DEFAULT_BATCH_BUDGET,
     DEFAULT_BATCH_THRESHOLD,
 };
+pub use exec::ddl_options::{
+    committed_catalog_ops, resolve_committed_index_options, CommittedIndexFact,
+};
 pub use exec::graph_stats::GraphStats;
 pub use exec::procedures::{check_explicit_arity, check_implicit_passing_mode};
 pub use exec::{

@@ -30,54 +30,46 @@ use super::{
     Shared,
 };
 
-/// [`open_store_readonly_with_ontology`] plus the screen every consumer of a
-/// loaded ontology document owes it: a stored document must parse before it
-/// is trusted (a corrupt or hand-crafted record surfaces here rather than at
-/// the first procedure that touches it). The open path and the Follow-mode
-/// reload both load through this, so the invariant has one home.
-pub(crate) fn open_store_readonly_screened(
-    target: &StoreTarget,
-    wal_payload_limit: u64,
-) -> Result<(Graph, Wal, Option<String>)> {
-    let (graph, wal, ontology) = open_store_readonly_with_ontology(target, wal_payload_limit)?;
-    ontology::validate_stored_document(ontology.as_deref())?;
-    Ok((graph, wal, ontology))
-}
+/// What the loader selection hands the open: the storage family's
+/// read-only carrier — graph, WAL, checkpointed ontology document,
+/// and committed schema (ADR-0649 — `None` for every store whose
+/// format defines no committed schema files) — under its facade name,
+/// marking that it passed the screen below. One shape across the
+/// boundary, never a second re-declaration of the same fields.
+pub(crate) type ScreenedOpen = relate_storage::ReadonlyStore<Graph>;
 
-/// The one loader selection for a store open: every read-only-mode open
-/// (`ReadOnly`, `Follow`, or `Ephemeral`) of a **durable** store loads
-/// through the non-trimming read-only loader (ADR-0136 — it opens no WAL
-/// for append and repairs nothing); a writable open, and any open of a
-/// `:memory:`-shaped store (which has no existing WAL for the read-only
-/// loader to open), loads through the writable loader, which reports the
-/// tails it trimmed. The predicate is named here so the two loaders'
-/// doc'd policies and the choice between them cannot drift apart.
-fn open_store_screened(
+/// The one loader selection and screen for a store open — the open
+/// path and the Follow-mode reload both load through this, so both
+/// policies have one home. Every read-only-mode open (`ReadOnly`,
+/// `Follow`, or `Ephemeral`) of a **durable** store loads through the
+/// non-trimming read-only loader (ADR-0136 — it opens no WAL for
+/// append and repairs nothing); a writable open, and any open of a
+/// `:memory:`-shaped store (which has no existing WAL for the
+/// read-only loader to open), loads through the notifying writable
+/// loader, which reports each trimmed torn tail the moment it is
+/// trimmed (a trim is durable, so a failure anywhere later in the open
+/// must not swallow the durability event — the same reporting the
+/// promote path uses). The typed [`OpenMode`] — the same one the
+/// `StoreTarget` was constructed from — decides, so the loader choice
+/// cannot disagree with the construction. The screen every consumer of
+/// a loaded ontology document owes it runs once on the returned
+/// carrier, whichever loader ran: a stored document must parse before
+/// it is trusted (a corrupt or hand-crafted record surfaces here
+/// rather than at the first procedure that touches it).
+pub(crate) fn open_store_screened(
     target: &StoreTarget,
-    read_only: bool,
+    mode: OpenMode,
     wal_payload_limit: u64,
-) -> Result<(Graph, Wal, Option<String>)> {
-    if read_only && target.vfs().durable() {
-        open_store_readonly_screened(target, wal_payload_limit)
+) -> Result<ScreenedOpen> {
+    let opened = if mode.is_read_only() && target.vfs().durable() {
+        open_store_readonly_with_ontology(target, wal_payload_limit)?
     } else {
-        open_store_writable_screened(target, wal_payload_limit)
-    }
-}
-
-/// The writable twin of [`open_store_readonly_screened`]: the whole
-/// writable post-load policy in one place — load through the notifying
-/// open, which reports each trimmed torn tail the moment it is trimmed
-/// (a trim is durable, so a failure anywhere later in the open must not
-/// swallow the durability event — the same reporting the promote path
-/// uses), then screen the ontology document where it is produced.
-fn open_store_writable_screened(
-    target: &StoreTarget,
-    wal_payload_limit: u64,
-) -> Result<(Graph, Wal, Option<String>)> {
-    let (graph, wal, ontology, _) =
-        open_store_notifying(target, wal_payload_limit, &mut report_trimmed_tail)?;
-    ontology::validate_stored_document(ontology.as_deref())?;
-    Ok((graph, wal, ontology))
+        // The notify sink already reported the open's trims, so the
+        // report is not carried past the screen.
+        open_store_notifying(target, wal_payload_limit, &mut report_trimmed_tail)?.store
+    };
+    ontology::validate_stored_document(opened.ontology.as_deref())?;
+    Ok(opened)
 }
 
 /// The preflight-resolved open knobs, in one named carrier: the validated
@@ -300,8 +292,12 @@ impl Database {
             wal_payload_limit,
             token_limits,
         } = knobs;
-        let (mut graph, mut wal, ontology) =
-            open_store_screened(&store, read_only, wal_payload_limit)?;
+        let ScreenedOpen {
+            mut graph,
+            mut wal,
+            ontology,
+            committed,
+        } = open_store_screened(&store, opts.mode, wal_payload_limit)?;
         check_loaded_graph(&graph)?;
         graph.configure_load_csv(csv_policy);
         // ADR-0463: the per-allocation expression cap rides the same
@@ -323,7 +319,7 @@ impl Database {
         // it (ADR-0229 §3) — but it still must parse: open surfaces a
         // corrupt or hand-crafted record here instead of deferring the
         // failure to the first procedure that touches it.
-        wal.set_ontology_held(ontology.is_some());
+        wal.set_ontology_held(ontology.is_some() || committed.is_some());
         let budget = token_budget::TokenBudget::new(token_limits);
         // The knob cluster, stated once: the open path resolves every knob
         // and hands `Shared::new` the whole `OpenResolved` value.
@@ -365,6 +361,17 @@ impl Database {
                 },
             )?),
         };
+        // The committed schema's open tail (ADR-0649): applied after
+        // the schema mirror verification (inside the load above) and
+        // after the WAL replay, through the replay path's own redo
+        // machinery — never inside the load, where the mirror's
+        // checkpointed-state comparison would read a file edit as
+        // drift. Idempotent: every open re-applies the committed
+        // facts, so a machine whose sidecar predates a file edit
+        // converges without a checkpoint.
+        if let Some(committed) = committed {
+            crate::committed::apply(&db.inner, committed)?;
+        }
         // Each start_* helper is the same gate `Database::promote` /
         // `demote` later reuse (ADR-0440): a writable open starts the
         // timers, a follow open starts the follow thread, and a `ReadOnly`

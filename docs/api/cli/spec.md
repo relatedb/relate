@@ -2386,11 +2386,19 @@ persistent `DATABASE` cleanly: the CLI discards any open explicit
 transaction (`.begin` without `.commit`) and runs a final checkpoint. That
 checkpoint pins the `--snapshot-format` codec into `manifest.json`, so a
 store created with `--snapshot-format json` reopens as JSON without the flag.
-`:memory:` skips it. If the final checkpoint fails, the CLI prints
-`Error: final checkpoint failed: <reason>` to stderr and exits 1 when the
-exit code would otherwise be 0; a non-zero statement exit code is kept.
-Every persistent run, including a read-only one, rewrites the snapshot on
-exit: this costs time on large stores, and a full disk now yields exit 1.
+`:memory:` skips it. The final checkpoint is the close shape
+(`Database::checkpoint_if_pending`, ADR-0646): a session that committed —
+or replayed a pending WAL tail — publishes on exit exactly as before, but
+a session whose WAL is clean over the store's published snapshot writes
+nothing at all. On a markdown vault that is the difference between exiting
+and re-walking and re-rendering every file; on every codec a clean exit
+leaves the durable bytes untouched. A store with no published snapshot yet
+(a fresh directory whose session wrote nothing) still takes its first dump,
+so the codec pinning above holds. If the final checkpoint fails, the CLI
+prints `Error: final checkpoint failed: <reason>` to stderr and exits 1
+when the exit code would otherwise be 0; a non-zero statement exit code is
+kept. A session that does publish rewrites the snapshot on exit: this
+costs time on large stores, and a full disk then yields exit 1.
 
 The discard of an open transaction is never silent (ADR-0164). When a
 transaction is still open at exit, every exit path prints

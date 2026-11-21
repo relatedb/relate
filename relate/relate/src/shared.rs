@@ -253,6 +253,11 @@ pub(crate) struct Shared {
     pub(crate) writer_lease: Mutex<Option<WriterLease>>,
     pub(crate) store: StoreTarget,
     pub(crate) persist_on_drop: AtomicBool,
+    /// The store's ontology document comes from a committed schema
+    /// file (ADR-0649): `db.ontology.set`/`drop` refuse while it is
+    /// present — the file is the document's source. Set once, at the
+    /// open tail that applied the committed schema.
+    pub(crate) committed_ontology: AtomicBool,
     pub(crate) wal: LiveWrite,
     /// Serializes commit/replica application and poison publication with reads.
     pub(crate) publication: RwLock<()>,
@@ -421,6 +426,7 @@ impl Shared {
             writer_lease: Mutex::new(None),
             store,
             persist_on_drop: AtomicBool::new(writable),
+            committed_ontology: AtomicBool::new(false),
             wal,
             publication: RwLock::new(()),
             poisoned: AtomicBool::new(false),
@@ -481,15 +487,21 @@ impl Shared {
             }
         }
         self.publish_data_state(wal.lsn, commit_ts);
-        let pin =
-            (wal.has_closed_segments() || wal.should_checkpoint()).then(|| wal.checkpoint_pin());
+        // The rotate arm above is the only producer of a closed
+        // segment in this function — it also just reset both counters
+        // a second `should_checkpoint` would read, so that operand is
+        // dead here; a prior commit's unrecycled segment is covered by
+        // the same read.
+        let pin = wal
+            .has_closed_segments()
+            .then(|| checkpoint::CheckpointPin::of(&wal));
         drop(wal);
         drop(publication);
         // The admission attempt is a side effect, so it runs in the body
         // rather than inside `Option::filter`, whose predicates read pure.
-        if let Some((lsn, snapshot_ts)) = pin {
+        if let Some(pin) = pin {
             if try_begin_checkpoint(self) {
-                schedule_checkpoint(self, lsn, snapshot_ts);
+                schedule_checkpoint(self, pin);
             }
         }
         Ok(())

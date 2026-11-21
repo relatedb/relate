@@ -296,6 +296,12 @@ error_kinds! {
     // ADR-0116 §9: a write against the read-only `system_ontologies`
     // namespace (GQLSTATUS 42N18).
     WriteOnReadOnlyAccessDatabase => SemanticError,
+    // ADR-0649 §7: a `db.ontology.set`/`drop` (procedure or API) on a
+    // store whose ontology document is sourced from the vault's
+    // committed ontology file — the file is the document's source, so
+    // the swap is a statement-level semantic rejection (the write-
+    // policy twin of read-only's 42N18), never a storage failure.
+    CommittedOntologyImmutable => SemanticError,
 }
 
 impl ErrorKind {

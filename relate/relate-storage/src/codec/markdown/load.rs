@@ -16,9 +16,11 @@ use serde_json::Value as Json;
 
 use super::super::catalog;
 use super::super::convert::props_from_cypher_json;
+use super::super::model::INSTALL_SLICE_ROWS;
 use super::journal;
 use super::manifest::{read_manifest, write_manifest, LearnedSchema, VaultManifest};
-use super::vault::{vault_stats, walk_vault, VaultFile};
+use super::ontology;
+use super::vault::{vault_stats, walk_vault, VaultFile, WalkedPath};
 use super::MarkdownBodyProperties;
 use super::VAULT_LABEL;
 use crate::codec::SnapshotCodecKind;
@@ -200,22 +202,76 @@ fn infer_keys(parsed: &[ParsedFile]) -> BTreeMap<String, String> {
     keys
 }
 
+/// The one identity derivation (ADR-0406 §2, ADR-0647): split the
+/// disk-derived stem into the (label, name) pair — a root file keys
+/// under the implicit label, its disk path stays the bare
+/// root-relative path — compose both segments to the canonical NFC
+/// spelling (a filename a normalizing copy tool left decomposed still
+/// resolves; the key property, vault key and checkpoint plan all carry
+/// the one canonical form, so the next checkpoint renames the file to
+/// it), refuse the reserved-label collision on the codec's one
+/// identity relation, and join the composite vault key, never
+/// re-split.
+fn vault_identity(walked: &WalkedPath) -> Result<(String, String, String)> {
+    let (label, name) = if walked.root_file() {
+        (VAULT_LABEL.to_string(), md::compose(walked.stem()))
+    } else {
+        let (label, name) = walked.stem().split_once('/').ok_or_else(|| {
+            md::vault_error(format!(
+                "node file outside a label directory: {}",
+                walked.path
+            ))
+        })?;
+        (md::compose(label), md::compose(name))
+    };
+    // The reserved-label collision at the one site where
+    // `(label, root_file())` is derived, asked of the codec's one
+    // root-label home ([`super::is_root_label`] — the same fold every
+    // other consumer asks): a label directory whose name folds to the
+    // implicit root label (`vault/`, `VAULT/`) collides
+    // case-insensitively with the root files' `:Vault` namespace and
+    // fails closed here.
+    if !walked.root_file() && super::is_root_label(&label) {
+        return Err(md::vault_error(format!(
+            "{}: label directory '{label}' collides with the reserved implicit root \
+             label '{}'; rename the label or the file location",
+            walked.path, VAULT_LABEL
+        )));
+    }
+    let key = super::vault_key(&label, &name);
+    Ok((label, name, key))
+}
+
 /// Load phase 1 (ADR-0406 §2/§6): parse every file once — the
 /// frontmatter's tri-state deciding the node parse vs the raw-file
 /// tolerance — infer the per-label key properties, and canonicalize
 /// case-folded identities (the loser of a case-only duplicate drops,
 /// its fold recorded as the load's warning). `bodies` is the resolved
 /// body-property configuration (ADR-0460): each file's label picks its
-/// ordered list. Returns the canonical files and the per-label key
-/// property map; `learned` accumulates the raw-file and fold records.
+/// ordered list. The vault-committed ontology (ADR-0649), when the
+/// vault carries one, seeds its relationship vocabulary into the
+/// classification before the parse runs and binds its key declarations
+/// against the fold-canonical walked labels after it — the whole
+/// committed feature lives inside this phase, never as branches
+/// flanking it in the orchestrator. Returns the canonical files and
+/// the per-label key property map; `learned` accumulates the raw-file
+/// and fold records.
 fn parse_and_canonicalize_files(
     files: &[VaultFile],
     frontmatter: &[Frontmatter<'_>],
     learned: &mut LearnedSchema,
     bodies: &MarkdownBodyProperties,
+    committed: Option<&ontology::VaultOntology>,
 ) -> Result<(Vec<ParsedFile>, BTreeMap<String, String>)> {
     // The classification vocabulary: the learned schema's set extended
-    // by this open's bare-link evidence (drift regenerates the schema).
+    // by this open's bare-link evidence (drift regenerates the schema)
+    // — and seeded first by the committed ontology's declared
+    // relationship types (map-form entries under a declared type are
+    // declared, ADR-0649 §2), so the file's declarations feed the same
+    // fact every other source feeds.
+    if let Some(ontology) = committed {
+        ontology.seed_vocabulary(learned);
+    }
     let evidence = link_evidence(frontmatter);
     let mut vocabulary = learned.rel_types.clone();
     vocabulary.extend(evidence.bare.iter().cloned());
@@ -223,36 +279,7 @@ fn parse_and_canonicalize_files(
 
     let mut parsed = Vec::with_capacity(files.len());
     for (file, fm) in files.iter().zip(frontmatter) {
-        // The (label, name) pair splits once, from the disk-derived
-        // stem — a root file keys under the implicit label, its disk
-        // path stays the bare root-relative path — and the composite
-        // vault key is then joined, never re-split.
-        let (label, name) = if file.walked.root_file {
-            (VAULT_LABEL.to_string(), file.walked.stem().to_string())
-        } else {
-            let (label, name) = file.walked.stem().split_once('/').ok_or_else(|| {
-                md::vault_error(format!(
-                    "node file outside a label directory: {}",
-                    file.walked.path
-                ))
-            })?;
-            (label.to_string(), name.to_string())
-        };
-        // The reserved-label collision, judged on the codec's one
-        // identity relation — the case fold — at the one site where
-        // `(label, root_file)` is derived: a label directory whose
-        // name folds to the implicit root label (`vault/`, `VAULT/`)
-        // would collide case-insensitively with the root files'
-        // `:Vault` namespace, so it fails closed here and is never
-        // re-judged downstream with a second, exact-`==` spelling.
-        if !file.walked.root_file && md::fold_case(&label) == md::fold_case(VAULT_LABEL) {
-            return Err(md::vault_error(format!(
-                "{}: label directory '{label}' collides with the reserved implicit root \
-                 label '{}'; rename the label or the file location",
-                file.walked.path, VAULT_LABEL
-            )));
-        }
-        let vault_key = super::vault_key(&label, &name);
+        let (label, name, vault_key) = vault_identity(&file.walked)?;
         // The frontmatter's tri-state, matched once (ADR-0406 §6):
         // parsed or absent feeds the node parse; present-but-unparseable
         // is the raw-file tolerance — a body-only load and the file
@@ -299,6 +326,18 @@ fn parse_and_canonicalize_files(
 
     let parsed = canonicalize_by_fold(parsed, learned);
 
+    // The committed key declarations bind after the parse, against the
+    // fold-canonical walked labels, through the vault's one identity
+    // relation (ADR-0649 §2): a declaration whose label differs only
+    // in case or normalization from a label directory binds to the
+    // walked canonical spelling, overriding both the sidecar's stale
+    // record and the inference; a forward declaration — a label the
+    // vault does not carry yet — stays inert.
+    if let Some(ontology) = committed {
+        let walked_labels: BTreeSet<String> =
+            parsed.iter().map(|file| file.label.clone()).collect();
+        ontology.bind_keys(&walked_labels, &mut keys, learned);
+    }
     Ok((parsed, keys))
 }
 
@@ -339,8 +378,71 @@ fn canonicalize_by_fold(parsed: Vec<ParsedFile>, learned: &mut LearnedSchema) ->
     canonical
 }
 
+/// One parsed file's node row (load phase 3's row policy, named): the
+/// key property mirroring the filename, the property decode, and the
+/// label merge/sort/dedup — everything a row is, separate from the
+/// slice/install orchestration that carries rows in bounded batches.
+fn node_row(
+    file: &ParsedFile,
+    keys: &BTreeMap<String, String>,
+    ids_by_key: &BTreeMap<String, i64>,
+    value_encoding: u64,
+) -> Result<Node> {
+    let key_name = keys
+        .get(&file.label)
+        .expect("the inference keyed every parsed label");
+    let name_path = file.name.clone();
+    let mut properties = file.doc.properties.clone();
+    // The key property mirrors its filename: the file is the
+    // identity (OKF Concept ID). A present value must be a string
+    // that sanitizes to its own filename (case-insensitively); a
+    // missing one takes the filename. Either way the inserted
+    // value is the filename's canonical spelling — one insert
+    // below, spelled once.
+    match properties.get(key_name) {
+        None => {}
+        Some(Json::String(value)) => {
+            let sanitized = md::sanitize_name_path(value)
+                .map_err(|e| Error::storage(format!("{path}: {e}", path = file.path)))?;
+            // The same case-insensitivity the identity model uses
+            // everywhere (Unicode-aware `fold_case`, never ASCII).
+            if md::fold_case(&sanitized) != md::fold_case(&name_path) {
+                return Err(md::vault_error(format!(
+                    "{}: key property '{key_name}' value '{value}' does not match \
+                 its filename '{name_path}'",
+                    file.path
+                )));
+            }
+        }
+        Some(other) => {
+            return Err(md::vault_error(format!(
+                "{}: key property '{key_name}' must be a string, found {other}",
+                file.path
+            )))
+        }
+    }
+    properties.insert(key_name.clone(), Json::String(name_path));
+    let decoded = props_from_cypher_json(&properties.into_iter().collect(), value_encoding)
+        .map_err(|e| Error::storage(format!("{path}: {e}", path = file.path)))?;
+    let mut labels = vec![file.label.clone()];
+    labels.extend(file.doc.extra_labels.iter().cloned());
+    labels.sort();
+    labels.dedup();
+    Ok(Node {
+        id: *ids_by_key
+            .get(&file.key)
+            .expect("the id pass keyed every parsed file"),
+        labels: Arc::new(labels),
+        properties: relate_core::PropertyMap::share(decoded),
+    })
+}
+
 /// Load phase 3: the nodes themselves — the key property mirroring the
 /// filename, properties decoded through the store's value encoding.
+/// Rows install in bounded slices through the graph's batch entry (the
+/// codec's one `INSTALL_SLICE_ROWS` ceiling: one store lock, one catalog
+/// update and one name cache per slice, the shape the slice API
+/// documents for concurrent load workers) instead of one per-row call.
 /// Returns how many nodes loaded (the commit-timestamp floor's input).
 fn load_nodes(
     graph: &dyn relate_engine_api::GraphImport,
@@ -349,60 +451,32 @@ fn load_nodes(
     ids_by_key: &BTreeMap<String, i64>,
     value_encoding: u64,
 ) -> Result<usize> {
-    let mut loaded = 0usize;
-    for file in parsed {
-        let key_name = keys
-            .get(&file.label)
-            .expect("the inference keyed every parsed label");
-        let name_path = file.name.clone();
-        let mut properties = file.doc.properties.clone();
-        // The key property mirrors its filename: the file is the
-        // identity (OKF Concept ID). A present value must be a string
-        // that sanitizes to its own filename (case-insensitively); a
-        // missing one takes the filename. Either way the inserted
-        // value is the filename's canonical spelling — one insert
-        // below, spelled once.
-        match properties.get(key_name) {
-            None => {}
-            Some(Json::String(value)) => {
-                let sanitized = md::sanitize_name_path(value)
-                    .map_err(|e| Error::storage(format!("{path}: {e}", path = file.path)))?;
-                // The same case-insensitivity the identity model uses
-                // everywhere (Unicode-aware `fold_case`, never ASCII).
-                if md::fold_case(&sanitized) != md::fold_case(&name_path) {
-                    return Err(md::vault_error(format!(
-                        "{}: key property '{key_name}' value '{value}' does not match \
-                         its filename '{name_path}'",
-                        file.path
-                    )));
-                }
-            }
-            Some(other) => {
-                return Err(md::vault_error(format!(
-                    "{}: key property '{key_name}' must be a string, found {other}",
-                    file.path
-                )))
-            }
+    for files in parsed.chunks(INSTALL_SLICE_ROWS) {
+        // The slice's rows are built before any install: a file that
+        // fails validation or decode fails the slice before a single
+        // row of it lands, exactly as the per-row install did.
+        let mut batch = Vec::with_capacity(files.len());
+        for file in files {
+            batch.push(node_row(file, keys, ids_by_key, value_encoding)?);
         }
-        properties.insert(key_name.clone(), Json::String(name_path));
-        let decoded = props_from_cypher_json(&properties.into_iter().collect(), value_encoding)
-            .map_err(|e| Error::storage(format!("{path}: {e}", path = file.path)))?;
-        let mut labels = vec![file.label.clone()];
-        labels.extend(file.doc.extra_labels.iter().cloned());
-        labels.sort();
-        labels.dedup();
+        // An install failure is a graph-side validation over the slice
+        // (row ids, not any one file's content), so it names the
+        // slice's path range — never a single member file.
+        let first = files
+            .first()
+            .expect("chunks over parsed files are never empty")
+            .path
+            .as_str();
+        let last = files
+            .last()
+            .expect("chunks over parsed files are never empty")
+            .path
+            .as_str();
         graph
-            .load_checkpoint_node(Node {
-                id: *ids_by_key
-                    .get(&file.key)
-                    .expect("the id pass keyed every parsed file"),
-                labels: Arc::new(labels),
-                properties: relate_core::PropertyMap::share(decoded),
-            })
-            .map_err(|e| Error::storage(format!("{path}: {e}", path = file.path)))?;
-        loaded += 1;
+            .load_checkpoint_nodes(&batch)
+            .map_err(|e| Error::storage(format!("restoring the nodes of {first}..{last}: {e}")))?;
     }
-    Ok(loaded)
+    Ok(parsed.len())
 }
 
 /// Load phase 5 (ADR-0406 §3): embeddings back onto their nodes —
@@ -418,7 +492,13 @@ fn restore_embeddings(
     // One pass per embedding key, not grouped per node: the sidecar's
     // map is the engine-authored index (`<vault path>#<property>`), so
     // a node with several indexed properties is restored by several
-    // cheap lookups rather than an inversion of the whole map.
+    // cheap lookups rather than an inversion of the whole map. This
+    // pass deliberately stays per-row where the rest of the load
+    // batches: a node can carry several embedding keys, and each
+    // restore reads the node's current properties and re-installs them
+    // with the embedding added — batching would read stale properties
+    // for every key after the first. The map is bounded by the
+    // vector-indexed properties the store declares, not by the vault.
     for (embedding_key, value) in &manifest.embeddings {
         let Some((vault_key, property)) = embedding_key.split_once('#') else {
             return Err(md::vault_error(format!(
@@ -510,8 +590,12 @@ fn record_expectation(
     let stats = vault_stats(files);
     let mut expectation = manifest.clone();
     expectation.files = stats;
-    expectation.node_ids = ids.ids_by_key;
-    expectation.rel_ids = rels.ids;
+    // The allocator's final next-free id, read before the id map's
+    // by-value handoff consumes the assignment below.
+    let next_fresh_id = ids.next_fresh_id();
+    let next_fresh_rel_id = rels.next_rel_id();
+    expectation.node_ids = ids.into_ids_by_key();
+    expectation.rel_ids = rels.into_ids();
     expectation.learned = schema.learned;
     // The body-property configuration the sidecar records (ADR-0460) is
     // the pre-materialization form: an explicit open-time config lands
@@ -519,8 +603,8 @@ fn record_expectation(
     // sidecar-carried one is carried forward unchanged, byte-equal, so
     // the gate below never republishes an untouched vault.
     expectation.bodies = schema.recorded;
-    expectation.next_node_id = ids.next_fresh_id;
-    expectation.next_rel_id = rels.next_rel_id;
+    expectation.next_node_id = next_fresh_id;
+    expectation.next_rel_id = next_fresh_rel_id;
     Ok(match had_sidecar {
         false => {
             write_manifest(&*target.vfs(), &expectation)?;
@@ -571,6 +655,15 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
         .map(parse_frontmatter)
         .collect::<Result<Vec<_>>>()?;
 
+    // The vault-committed ontology (ADR-0649): a reserved non-`.md`
+    // document at the vault root whose declarations — the relationship
+    // vocabulary, the per-label key properties — travel with the vault
+    // through version control. Read before the learned schema forms,
+    // so its declarations seed the same fact the sidecar and the bare
+    // link evidence feed; absent or unexpressible documents refused
+    // above never reach the load.
+    let vault_ontology = ontology::read_vault_ontology(&*target.vfs())?;
+
     let has_ontology = manifest.ontology.is_some();
     // A store without a sidecar was never written by an older engine, so
     // its absent marker classifies as the current encoding, not legacy 1
@@ -586,17 +679,26 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
         crate::version::value_encoding::gate(marker_value, has_ontology)?;
 
     // The learned schema regenerates with this open's evidence; the
-    // phases below read and extend it. The body-property configuration
-    // resolves exactly once, beside it, through the one resolution both
-    // sides of the codec consult (ADR-0460).
+    // phases below read and extend it. The vault-committed ontology's
+    // declarations seed and bind inside the parse phase (ADR-0649),
+    // against the same facts every other source feeds. The
+    // body-property configuration resolves exactly once, beside it,
+    // through the one resolution both sides of the codec consult
+    // (ADR-0460).
     let mut learned = manifest.learned.clone();
     let bodies = super::resolve_bodies(target, &manifest.bodies)?;
     let recorded = super::recorded_bodies(target, &manifest.bodies);
-    let (parsed, keys) = parse_and_canonicalize_files(&files, &frontmatter, &mut learned, &bodies)?;
+    let (parsed, keys) = parse_and_canonicalize_files(
+        &files,
+        &frontmatter,
+        &mut learned,
+        &bodies,
+        vault_ontology.as_ref(),
+    )?;
 
     let mut ids = restore_ids(&parsed, manifest)?;
     let graph = G::default();
-    let loaded = load_nodes(&graph, &parsed, &keys, &ids.ids_by_key, value_encoding)?;
+    let loaded = load_nodes(&graph, &parsed, &keys, ids.ids(), value_encoding)?;
     let rel_ids = manifest.rel_ids.clone();
     let next_rel_id = manifest.next_rel_id.max(1);
     let rels = resolve_links_and_stubs(
@@ -611,10 +713,10 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
     // The allocator's final values: the node side threaded through
     // `restore_ids` and the stub materializer's assignments, the rel
     // side through the link plan above.
-    graph.set_next_node_id(ids.next_fresh_id);
-    graph.set_next_rel_id(rels.next_rel_id);
+    graph.set_next_node_id(ids.next_fresh_id());
+    graph.set_next_rel_id(rels.next_rel_id());
 
-    restore_embeddings(&graph, manifest, &ids.ids_by_key, value_encoding)?;
+    restore_embeddings(&graph, manifest, ids.ids(), value_encoding)?;
 
     // The load-tail commit-timestamp policy has the one home the
     // adjacent call owns: the recorded value is set unconditionally (0
@@ -639,9 +741,16 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
     Ok(LoadedSnapshot {
         graph,
         checkpoint_lsn: manifest.checkpoint_lsn,
+        // The CHECKPOINTED document, not the vault file's: the schema
+        // text mirror's open-time verification compares the
+        // checkpointed state (ADR-0481 §4), so the committed
+        // document rides the `committed` carrier and the facade's
+        // open tail swaps it in after the verification — never
+        // through this field, where a file edit would read as drift.
         ontology: manifest.ontology.clone(),
         marker,
         deferred,
+        committed: vault_ontology.map(|ontology| ontology.into_committed()),
     })
 }
 

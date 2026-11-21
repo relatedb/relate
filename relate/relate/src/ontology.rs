@@ -49,6 +49,39 @@ impl OntologySlot {
     }
 }
 
+/// The `Shared`-slot half of the committed schema (ADR-0649): the
+/// committed document becomes the store's ontology state
+/// (`db.ontology.get` serves it) and the set/drop refusal follows the
+/// committed source's presence.
+pub(crate) fn install_state(shared: &Shared, document: String) {
+    shared.ontology.set(Some(document));
+    shared.committed_ontology.store(true, Ordering::Release);
+}
+
+/// The reload twin of [`install_state`]: the handle's store no longer
+/// carries a committed schema (the file was removed, and the reload
+/// read `committed == None`), so the document state stays whatever
+/// the reload installed and the set/drop refusal lifts. Both flag
+/// writes live here, in the module that owns the slot and the flag —
+/// never as raw atomic stores at call sites.
+pub(crate) fn clear_state(shared: &Shared) {
+    shared.committed_ontology.store(false, Ordering::Release);
+}
+
+/// The set/drop refusal the commit preflight consults: a store whose
+/// ontology document comes from a committed file does not accept
+/// procedure- or API-sourced document swaps. The flag's whole
+/// protocol lives in this module — the Acquire load here pairs the
+/// Release stores in [`install_state`]/[`clear_state`].
+pub(crate) fn refuse_ontology_swap(shared: &Shared) -> Result<()> {
+    if shared.committed_ontology.load(Ordering::Acquire) {
+        // A statement-level semantic rejection (the authored class, the
+        // write-policy twin of read-only's) — never a storage failure.
+        return Err(relate_core::ce_messages::committed_ontology_immutable());
+    }
+    Ok(())
+}
+
 impl Database {
     /// The store's current ontology document, verbatim as it was committed
     /// (ADR-0120 §1, ADR-0227). `None` when the store holds no ontology.

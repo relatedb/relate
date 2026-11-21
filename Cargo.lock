@@ -2450,6 +2450,7 @@ dependencies = [
  "relate-core",
  "saphyr-parser",
  "serde_json",
+ "unicode-normalization",
 ]
 
 [[package]]

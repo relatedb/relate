@@ -203,6 +203,20 @@ pub fn read_only_write() -> Error {
     ))
 }
 
+/// ADR-0649: `db.ontology.set`/`drop` (procedure or API) on a store
+/// whose ontology document comes from the vault's committed ontology
+/// file — the file is the document's source, so the swap is refused;
+/// edit the file and reopen. The write-policy twin of
+/// [`read_only_write`]: a statement-level semantic rejection, never a
+/// storage failure.
+pub fn committed_ontology_immutable() -> Error {
+    Error::semantic(format!(
+        "{}: the store's ontology document comes from the committed ontology file \
+         (ADR-0649); edit the file and reopen",
+        ErrorKind::CommittedOntologyImmutable.as_str()
+    ))
+}
+
 /// ADR-0116 §2: `ALTER DATABASE` of a name that is not a fixed namespace
 /// (without `IF EXISTS`).
 pub fn alter_unknown_database(name: &str) -> Error {

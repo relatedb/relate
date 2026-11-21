@@ -287,7 +287,7 @@ pub fn validate_body_properties(props: &[String]) -> Result<()> {
                 "body property name {name:?} is not a single word"
             )));
         }
-        if !seen.insert(crate::body::fold_case(name)) {
+        if !seen.insert(crate::fold_case(name)) {
             return Err(vault_error(format!(
                 "body property '{name}' appears twice in the list (case-insensitively)"
             )));

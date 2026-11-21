@@ -100,17 +100,29 @@ pub(crate) fn create_constraint_backing_index(
 /// materializes them at commit. `CREATE INDEX` (both spellings) and the
 /// index-backed constraints' backing indexes all record their detail
 /// through this one place; `options` is the resolved `OPTIONS` map.
+/// The `CatalogIndexDetail` op's one construction — the DDL push and
+/// the committed open tail ([`crate::exec::ddl_options::
+/// committed_catalog_ops`]) both build it here, so a change to the
+/// detail's shape or its options encoding reaches every producer.
+pub(crate) fn index_detail_op(
+    name: &str,
+    detail: IndexDetailSpec,
+    options: &BTreeMap<String, Value>,
+) -> RedoOp {
+    RedoOp::CatalogIndexDetail {
+        name: name.to_string(),
+        detail,
+        options: crate::redo::props_json(options),
+    }
+}
+
 pub(crate) fn push_index_detail(
     graph: &ExecGraph<'_>,
     name: &str,
     detail: IndexDetailSpec,
     options: &BTreeMap<String, Value>,
 ) {
-    graph.push_catalog_redo(RedoOp::CatalogIndexDetail {
-        name: name.to_string(),
-        detail,
-        options: crate::redo::props_json(options),
-    });
+    graph.push_catalog_redo(index_detail_op(name, detail, options));
 }
 
 /// The existing index an `IF NOT EXISTS` create accepted, carried out of the
@@ -317,9 +329,11 @@ pub(crate) fn index_conflict_gate(graph: &ExecGraph<'_>, facts: &IndexFacts) -> 
     if !facts.relationship && matches!(facts.kind, IndexKind::Range) && facts.labels.len() == 1 {
         let legacy = graph.named_indexes().into_iter().find(|index| {
             !details.contains_key(&index.name)
-                && index.label == facts.labels[0]
-                && crate::redo::split_legacy_property_encoding(&index.property).0
-                    == facts.properties.join(",")
+                && crate::redo::holds_index_pair(
+                    index,
+                    &facts.labels[0],
+                    &facts.properties.join(","),
+                )
         });
         if let Some(index) = legacy {
             return skip_existing(

@@ -214,10 +214,9 @@ impl<'a> ExecGraph<'a> {
     }
 
     pub fn named_index_by_schema(&self, label: &str, property: &str) -> Option<IndexDef> {
-        self.named_indexes().into_iter().find(|d| {
-            d.label == label
-                && crate::redo::split_legacy_property_encoding(&d.property).0 == property
-        })
+        self.named_indexes()
+            .into_iter()
+            .find(|d| crate::redo::holds_index_pair(d, label, property))
     }
 
     pub fn named_constraints(&self) -> Vec<ConstraintDef> {
