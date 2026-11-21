@@ -13,10 +13,9 @@ use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::summary::ROUTE_TTL_SECS;
 use crate::testutil::{
-    failure_map, field, read_msg, send_pull, send_route, send_run_at, send_struct, spawn_handler,
-    success_map,
+    failure_map, field, read_msg, read_route_rt, send_pull, send_route, send_run_with, send_struct,
+    spawn_handler, success_map,
 };
-use crate::version::BoltVersion;
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -145,9 +144,7 @@ fn assert_pre_hello_is_unauthorized(send: impl FnOnce(&mut TcpStream)) {
 #[test]
 fn run_without_hello_is_unauthorized_when_auth_is_on() {
     // RUN straight away, no HELLO
-    assert_pre_hello_is_unauthorized(|client| {
-        send_run_at(client, BoltVersion::V4_4, "RETURN 1 AS n", None)
-    });
+    assert_pre_hello_is_unauthorized(|client| send_run_with(client, "RETURN 1 AS n", None));
 }
 
 /// And the permissive pre-auth behavior is untouched when auth is disabled:
@@ -158,7 +155,7 @@ fn run_without_hello_works_when_auth_is_none() {
     let addr = spawn_handler(db, ConnConfig::default());
     let mut client = crate::testutil::connect(addr);
     crate::testutil::handshake(&mut client);
-    send_run_at(&mut client, BoltVersion::V4_4, "RETURN 1 AS n", None);
+    send_run_with(&mut client, "RETURN 1 AS n", None);
     let msg = read_msg(&mut client);
     assert!(
         matches!(msg, Pack::Struct { tag: 0x70, .. }),
@@ -221,12 +218,7 @@ fn show_current_user_row(auth: crate::auth::AuthConfig, entries: Vec<(Pack, Pack
     let mut client = crate::testutil::connect(addr);
     crate::testutil::handshake(&mut client);
     assert_tag(&hello_with(&mut client, entries), 0x70);
-    send_run_at(
-        &mut client,
-        BoltVersion::V4_4,
-        "CALL dbms.showCurrentUser()",
-        None,
-    );
+    send_run_with(&mut client, "CALL dbms.showCurrentUser()", None);
     success_map(read_msg(&mut client));
     send_pull(&mut client, Message::Pull, vec![("n", Pack::Int(-1))]);
     let Pack::Struct { tag: 0x71, fields } = read_msg(&mut client) else {
@@ -290,22 +282,15 @@ fn show_current_user_ignores_the_unverified_principal_when_auth_is_none() {
 
 /// Send the neo4j-browser connect message — `ROUTE <routing> [] {db:"system"}`
 /// — after a successful HELLO and return the `rt` map of the SUCCESS.
-fn route_rt<S: Read + std::io::Write>(client: &mut S, routing: Vec<(Pack, Pack)>) -> Pack {
+fn route_rt<S: Read + std::io::Write>(client: &mut S, routing: Vec<(&str, Pack)>) -> Pack {
     send_struct(
         client,
         Message::Hello.signature(),
         crate::testutil::hello_fields(),
     );
     success_map(read_msg(client));
-    send_route(
-        client,
-        routing,
-        vec![(Pack::String("db".into()), Pack::String("system".into()))],
-    );
-    let m = Pack::Map(success_map(read_msg(client)));
-    m.get("rt")
-        .expect("ROUTE SUCCESS must carry an rt map")
-        .clone()
+    send_route(client, routing, vec![("db", Pack::String("system".into()))]);
+    read_route_rt(client)
 }
 
 /// The ADR-0269 invariants plus the ADR-0140 address rule and the ADR-0318
@@ -357,20 +342,15 @@ fn route_without_a_db_answers_the_home_database() {
     let mut client = crate::testutil::connected_client();
     for extra in [
         vec![],
-        vec![(Pack::String("db".into()), Pack::Null)],
-        vec![(Pack::String("db".into()), Pack::String(String::new()))],
+        vec![("db", Pack::Null)],
+        vec![("db", Pack::String(String::new()))],
     ] {
         send_route(
             &mut client,
-            vec![(
-                Pack::String("address".into()),
-                Pack::String("localhost:7687".into()),
-            )],
+            vec![("address", Pack::String("localhost:7687".into()))],
             extra,
         );
-        let m = Pack::Map(success_map(read_msg(&mut client)));
-        let rt = m.get("rt").expect("ROUTE SUCCESS must carry an rt map");
-        assert_routing_table(rt, "neo4j", &["localhost:7687"]);
+        assert_routing_table(&read_route_rt(&mut client), "neo4j", &["localhost:7687"]);
     }
 }
 
@@ -410,10 +390,7 @@ fn route_echoes_the_dialed_address() {
 
     let rt = route_rt(
         &mut client,
-        vec![(
-            Pack::String("address".into()),
-            Pack::String("localhost:7687".into()),
-        )],
+        vec![("address", Pack::String("localhost:7687".into()))],
     );
     assert_self_routing_table(&rt, &["localhost:7687"]);
 }
@@ -439,10 +416,7 @@ fn route_falls_back_to_the_connection_local_address() {
     let mut client = crate::testutil::connect(addr);
     crate::testutil::handshake(&mut client);
 
-    for routing in [
-        vec![],
-        vec![(Pack::String("address".into()), Pack::String(String::new()))],
-    ] {
+    for routing in [vec![], vec![("address", Pack::String(String::new()))]] {
         let rt = route_rt(&mut client, routing);
         assert_self_routing_table(&rt, &["127.0.0.1:9"]);
     }

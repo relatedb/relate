@@ -83,7 +83,6 @@ public sealed class RelateConnection : IDisposable, IAsyncDisposable
             nint err = 0;
             Native.Check(relate_conn_set_namespace(_handle, @namespace, &err), err, "set namespace");
             _namespace = NormalizeNamespace(@namespace);
-            return true;
         });
     }
 
@@ -192,7 +191,7 @@ public sealed class RelateConnection : IDisposable, IAsyncDisposable
 
     internal void Rollback(RelateTransaction transaction) => Exclusive(() => RollbackCore(transaction));
 
-    private unsafe bool RollbackCore(RelateTransaction transaction)
+    private unsafe void RollbackCore(RelateTransaction transaction)
     {
         EnsureCurrent(transaction);
         nint err = 0;
@@ -206,7 +205,6 @@ public sealed class RelateConnection : IDisposable, IAsyncDisposable
         }
 
         _transaction = null;
-        return true;
     }
 
     internal Task RollbackAsync(RelateTransaction transaction, CancellationToken cancellationToken) =>
@@ -257,6 +255,12 @@ public sealed class RelateConnection : IDisposable, IAsyncDisposable
         }
     }
 
+    private void Exclusive(Action action) => Exclusive(() =>
+    {
+        action();
+        return true;
+    });
+
     private T Exclusive<T>(Func<T> action)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -271,6 +275,15 @@ public sealed class RelateConnection : IDisposable, IAsyncDisposable
             _gate.Release();
         }
     }
+
+    private Task ExclusiveAsync(Action action, CancellationToken cancellationToken) =>
+        ExclusiveAsync(
+            () =>
+            {
+                action();
+                return true;
+            },
+            cancellationToken);
 
     private async Task<T> ExclusiveAsync<T>(Func<T> action, CancellationToken cancellationToken)
     {

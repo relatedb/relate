@@ -19,10 +19,10 @@ use crate::version::BoltVersion;
 // instance test-support links against is a different type (measured:
 // E0308). External integration tests (the CLI's e2e_serve) therefore use
 // `relate_test_support::bolt` directly for the Pack-carrying helpers.
-pub use relate_test_support::bolt::{handshake, handshake_at, try_handshake};
+pub(crate) use relate_test_support::bolt::{handshake, handshake_at, try_handshake};
 
 /// Write one struct message to the client; panics on failure.
-pub fn send_struct<S: Write>(client: &mut S, tag: u8, fields: Vec<Pack>) {
+pub(crate) fn send_struct<S: Write>(client: &mut S, tag: u8, fields: Vec<Pack>) {
     client
         .write_all(&crate::packstream::try_struct_msg(tag, fields).unwrap())
         .unwrap();
@@ -30,7 +30,7 @@ pub fn send_struct<S: Write>(client: &mut S, tag: u8, fields: Vec<Pack>) {
 }
 
 /// Extract the metadata map of a FAILURE message; panics otherwise.
-pub fn failure_map(msg: Pack) -> Pack {
+pub(crate) fn failure_map(msg: Pack) -> Pack {
     let Pack::Struct { tag: 0x7F, fields } = msg else {
         panic!("expected FAILURE, got {msg:?}");
     };
@@ -40,9 +40,19 @@ pub fn failure_map(msg: Pack) -> Pack {
     m
 }
 
+/// Read the next message as a ROUTE SUCCESS and return its `rt` routing
+/// table (ADR-0269): the one extraction the route and namespace tests share.
+pub(crate) fn read_route_rt<S: Read>(client: &mut S) -> Pack {
+    let reply = Pack::Map(success_map(read_msg(client)));
+    reply
+        .get("rt")
+        .expect("ROUTE SUCCESS must carry an rt map")
+        .clone()
+}
+
 /// Extract a string field from a Pack map; panics when absent or not a
 /// string. The lookup itself is the canonical [`Pack::get`].
-pub fn field<'a>(m: &'a Pack, key: &str) -> &'a str {
+pub(crate) fn field<'a>(m: &'a Pack, key: &str) -> &'a str {
     m.get(key)
         .and_then(Pack::as_str)
         .unwrap_or_else(|| panic!("missing field {key}"))
@@ -52,19 +62,19 @@ pub fn field<'a>(m: &'a Pack, key: &str) -> &'a str {
 ///
 /// Delegates the chunk loop to [`crate::protocol::read_message`] so tests
 /// inherit its 16 MiB message cap.
-pub fn try_read_msg<S: Read>(client: &mut S) -> std::io::Result<Pack> {
+pub(crate) fn try_read_msg<S: Read>(client: &mut S) -> std::io::Result<Pack> {
     let payload = crate::protocol::read_message(client)?;
     crate::packstream::decode(&payload)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 /// Read one chunked Bolt message and decode it; panics on failure.
-pub fn read_msg<S: Read>(client: &mut S) -> Pack {
+pub(crate) fn read_msg<S: Read>(client: &mut S) -> Pack {
     try_read_msg(client).unwrap()
 }
 
 /// Extract the metadata map of a SUCCESS message; panics otherwise.
-pub fn success_map(msg: Pack) -> Vec<(Pack, Pack)> {
+pub(crate) fn success_map(msg: Pack) -> Vec<(Pack, Pack)> {
     let Pack::Struct { tag: 0x70, fields } = msg else {
         panic!("expected SUCCESS, got {msg:?}");
     };
@@ -80,14 +90,14 @@ pub fn success_map(msg: Pack) -> Vec<(Pack, Pack)> {
 /// Raw HTTP WebSocket upgrade request bytes: the one definition lives in
 /// the shared test-support crate; re-exported so the in-crate tests keep
 /// their `testutil::upgrade_request` path.
-pub use relate_test_support::ws_upgrade_request as upgrade_request;
+pub(crate) use relate_test_support::ws_upgrade_request as upgrade_request;
 
 /// A full HELLO / `RUN RETURN 1 AS n` / PULL exchange over a Bolt byte
 /// stream; asserts the RECORD carries `1`.
-pub fn return_one_exchange<S: Read + Write>(client: &mut S) {
+pub(crate) fn return_one_exchange<S: Read + Write>(client: &mut S) {
     handshake(client);
     send_hello_at(client, BoltVersion::V4_4, vec![]);
-    send_run_at(client, BoltVersion::V4_4, "RETURN 1 AS n", None);
+    send_run_with(client, "RETURN 1 AS n", None);
     success_map(read_msg(client));
     send_pull(
         client,
@@ -104,50 +114,48 @@ pub fn return_one_exchange<S: Read + Write>(client: &mut S) {
     success_map(read_msg(client));
 }
 
-/// A Pack map from string keys.
-pub fn map(entries: Vec<(&str, Pack)>) -> Pack {
-    Pack::Map(
-        entries
-            .into_iter()
-            .map(|(key, value)| (Pack::String(key.into()), value))
-            .collect(),
-    )
+/// String-keyed entries as Pack map entries: the one key-wrapping policy
+/// [`map`] and the HELLO extra family share.
+pub(crate) fn pack_entries(entries: Vec<(&str, Pack)>) -> Vec<(Pack, Pack)> {
+    entries
+        .into_iter()
+        .map(|(key, value)| (Pack::String(key.into()), value))
+        .collect()
 }
 
-/// Send RUN `cypher` with empty params at `version` (ADR-0484): the
-/// two-field wire form at 4.4, the three-field form at 5.x — `extra`
-/// entries ride the extra map at either version (the Bolt 4.3+ `db`
-/// routing field at 4.4). The one RUN sender: the version axis is this
-/// parameter, not a helper name.
-pub(crate) fn send_run_at<S: Write>(
+/// A Pack map from string keys.
+pub(crate) fn map(entries: Vec<(&str, Pack)>) -> Pack {
+    Pack::Map(pack_entries(entries))
+}
+
+/// Send RUN `cypher` with empty params (ADR-0484): the two-field wire form
+/// when `extra` is `None`, the three-field form with `extra` as its extra
+/// map otherwise (the Bolt 4.3+ `db` routing field at 4.4). The one RUN
+/// sender: whether the extra map rides is the caller's explicit choice.
+pub(crate) fn send_run_with<S: Write>(
     client: &mut S,
-    version: BoltVersion,
     cypher: &str,
-    extra: Option<Vec<(Pack, Pack)>>,
+    extra: Option<Vec<(&str, Pack)>>,
 ) {
     let mut fields = vec![Pack::String(cypher.into()), Pack::Map(vec![])];
-    match extra {
-        Some(entries) => fields.push(Pack::Map(entries)),
-        None if version.speaks_5x() => fields.push(Pack::Map(vec![])),
-        None => {}
-    }
+    fields.extend(extra.map(map));
     send_struct(client, crate::requests::Message::Run.signature(), fields);
 }
 
 /// Send RUN `cypher` with empty params and an empty extra map — the
-/// three-field form, [`send_run_at`] at 5.4: the suite's historical
-/// spelling, byte-identical to the form it has always sent (the server
-/// accepts the extra field at every spoken version).
-pub fn send_run<S: Write>(client: &mut S, cypher: &str) {
-    send_run_at(client, BoltVersion::V5_4, cypher, None);
+/// three-field form, [`send_run_with`] with `Some(vec![])`: the suite's
+/// historical spelling, byte-identical to the form it has always sent (the
+/// server accepts the extra field at every spoken version).
+pub(crate) fn send_run<S: Write>(client: &mut S, cypher: &str) {
+    send_run_with(client, cypher, Some(vec![]));
 }
 
 /// Send BEGIN with a caller-supplied extra map.
-pub(crate) fn send_begin<S: Write>(client: &mut S, entries: Vec<(Pack, Pack)>) {
+pub(crate) fn send_begin<S: Write>(client: &mut S, entries: Vec<(&str, Pack)>) {
     send_struct(
         client,
         crate::requests::Message::Begin.signature(),
-        vec![Pack::Map(entries)],
+        vec![map(entries)],
     );
 }
 
@@ -188,13 +196,13 @@ pub(crate) fn send_logon<S: Write>(client: &mut S, entries: Vec<(&str, Pack)>) {
 /// form the route tests share.
 pub(crate) fn send_route<S: Write>(
     client: &mut S,
-    routing: Vec<(Pack, Pack)>,
-    extra: Vec<(Pack, Pack)>,
+    routing: Vec<(&str, Pack)>,
+    extra: Vec<(&str, Pack)>,
 ) {
     send_struct(
         client,
         crate::requests::Message::Route.signature(),
-        vec![Pack::Map(routing), Pack::List(vec![]), Pack::Map(extra)],
+        vec![map(routing), Pack::List(vec![]), map(extra)],
     );
 }
 
@@ -212,14 +220,10 @@ pub(crate) fn send_logoff<S: Write>(client: &mut S) {
 /// the malformed-`api` table's row axis (the logon module's
 /// `Option<Pack>` row shape for a missing field).
 pub(crate) fn send_telemetry<S: Write>(client: &mut S, api: Option<Pack>) {
-    let fields = match api {
-        Some(api) => vec![api],
-        None => vec![],
-    };
     send_struct(
         client,
         crate::requests::Message::Telemetry.signature(),
-        fields,
+        api.into_iter().collect(),
     );
 }
 
@@ -252,7 +256,7 @@ pub(crate) fn drain_all<S: Read + Write>(
 
 /// Read RECORDs until the first other message: each RECORD's values, and
 /// that message.
-pub fn read_records<S: Read>(client: &mut S) -> (Vec<Vec<Pack>>, Pack) {
+pub(crate) fn read_records<S: Read>(client: &mut S) -> (Vec<Vec<Pack>>, Pack) {
     let mut records = Vec::new();
     loop {
         match read_msg(client) {
@@ -269,7 +273,7 @@ pub fn read_records<S: Read>(client: &mut S) -> (Vec<Vec<Pack>>, Pack) {
 
 /// Assert the next message is IGNORED (`0x7E`, no fields): the one
 /// spelling of the "reply is IGNORED" policy (ADR-0316, ADR-0319).
-pub fn assert_ignored<S: Read>(client: &mut S, why: &str) {
+pub(crate) fn assert_ignored<S: Read>(client: &mut S, why: &str) {
     assert_eq!(
         read_msg(client),
         Pack::Struct {
@@ -345,7 +349,7 @@ pub(crate) fn assert_ignored_in_failed_state_then_recovers<S: Read + Write>(
 }
 
 /// The keys of a metadata map, in wire order.
-pub fn keys(metadata: &[(Pack, Pack)]) -> Vec<&str> {
+pub(crate) fn keys(metadata: &[(Pack, Pack)]) -> Vec<&str> {
     metadata
         .iter()
         .map(|(key, _)| key.as_str().expect("metadata keys are strings"))
@@ -364,14 +368,4 @@ pub(crate) fn bookmark_sequence(success: &Pack, label: &str) -> u64 {
     number
         .parse()
         .unwrap_or_else(|_| panic!("{label}: not a sequence number: {bookmark}"))
-}
-
-/// `base` wrapped in `depth` nested lists: the one spelling of the
-/// wrap-in-N-lists loop the nesting-limit tests share.
-pub(crate) fn wrapped_in_lists(base: relate::Value, depth: usize) -> relate::Value {
-    let mut value = base;
-    for _ in 0..depth {
-        value = relate::Value::List(vec![value].into());
-    }
-    value
 }

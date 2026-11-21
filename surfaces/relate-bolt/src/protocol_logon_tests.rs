@@ -40,19 +40,10 @@ fn hello_at_5_4_answers_success_and_leaves_the_session_unauthenticated() {
         vec![hello_extra_at(
             BoltVersion::V5_4,
             vec![
-                (Pack::String("scheme".into()), Pack::String("basic".into())),
-                (
-                    Pack::String("principal".into()),
-                    Pack::String("neo4j".into()),
-                ),
-                (
-                    Pack::String("credentials".into()),
-                    Pack::String("wrong".into()),
-                ),
-                (
-                    Pack::String("patch_bolt".into()),
-                    Pack::List(vec![Pack::String("utc".into())]),
-                ),
+                ("scheme", Pack::String("basic".into())),
+                ("principal", Pack::String("neo4j".into())),
+                ("credentials", Pack::String("wrong".into())),
+                ("patch_bolt", Pack::List(vec![Pack::String("utc".into())])),
             ],
         )],
     );

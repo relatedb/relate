@@ -16,7 +16,7 @@ use crate::requests::Message;
 use crate::testutil::{
     connected_client, connected_client_at_with, failure_map, field, handshaken, hello_extra,
     hello_extra_at, keys, read_msg, send_begin, send_commit, send_reset, send_rollback,
-    send_run_at, send_struct, success_map, two_label_db, TWO_LABEL_CARTESIAN,
+    send_run_with, send_struct, success_map, two_label_db, TWO_LABEL_CARTESIAN,
 };
 use crate::version::BoltVersion;
 
@@ -26,18 +26,15 @@ const UNKNOWN_LABEL: &str = "EXPLAIN MATCH (n:NotALabel) RETURN n";
 
 /// The `notifications_minimum_severity` extra entry the config tests
 /// share, in the key's one spelling.
-fn severity(value: &str) -> (Pack, Pack) {
-    (
-        Pack::String(NOTIFICATIONS_MINIMUM_SEVERITY.into()),
-        Pack::String(value.into()),
-    )
+fn severity(value: &str) -> (&'static str, Pack) {
+    (NOTIFICATIONS_MINIMUM_SEVERITY, Pack::String(value.into()))
 }
 
 /// The `notifications_disabled_categories` extra entry, from the listed
 /// free strings.
-fn categories(values: &[&str]) -> (Pack, Pack) {
+fn categories(values: &[&str]) -> (&'static str, Pack) {
     (
-        Pack::String(NOTIFICATIONS_DISABLED_CATEGORIES.into()),
+        NOTIFICATIONS_DISABLED_CATEGORIES,
         Pack::List(
             values
                 .iter()
@@ -51,7 +48,7 @@ fn categories(values: &[&str]) -> (Pack, Pack) {
 /// two-label store ([`two_label_db`]) the triggers read, whose HELLO
 /// carried `entries` beside the required fields: the fixture for the
 /// HELLO-level notifications config.
-fn open_client_with(entries: Vec<(Pack, Pack)>) -> TcpStream {
+fn open_client_with(entries: Vec<(&str, Pack)>) -> TcpStream {
     connected_client_at_with(two_label_db(), BoltVersion::V5_4, entries)
 }
 
@@ -60,9 +57,9 @@ fn open_client_with(entries: Vec<(Pack, Pack)>) -> TcpStream {
 fn ending_has_notifications(
     client: &mut TcpStream,
     cypher: &str,
-    entries: Vec<(Pack, Pack)>,
+    entries: Vec<(&str, Pack)>,
 ) -> bool {
-    send_run_at(client, BoltVersion::V5_4, cypher, Some(entries));
+    send_run_with(client, cypher, Some(entries));
     success_map(read_msg(client));
     let (_, ending) = crate::testutil::drain_all(client, Message::Pull);
     ending.get("notifications").is_some()
@@ -96,9 +93,8 @@ fn an_invalid_severity_in_hello_answers_the_probed_failure() {
 #[test]
 fn an_invalid_severity_in_run_extra_answers_the_probed_failure() {
     let mut client = open_client_with(vec![]);
-    send_run_at(
+    send_run_with(
         &mut client,
-        BoltVersion::V5_4,
         "RETURN 1 AS n",
         Some(vec![severity("INVALID")]),
     );
@@ -148,10 +144,7 @@ fn a_wrong_typed_value_fails_the_request() {
         Message::Hello.signature(),
         vec![hello_extra_at(
             BoltVersion::V5_4,
-            vec![(
-                Pack::String(NOTIFICATIONS_MINIMUM_SEVERITY.into()),
-                Pack::Int(4),
-            )],
+            vec![(NOTIFICATIONS_MINIMUM_SEVERITY, Pack::Int(4))],
         )],
     );
     let failure = failure_map(read_msg(&mut client));
@@ -161,12 +154,11 @@ fn a_wrong_typed_value_fails_the_request() {
     );
 
     let mut client = open_client_with(vec![]);
-    send_run_at(
+    send_run_with(
         &mut client,
-        BoltVersion::V5_4,
         "RETURN 1 AS n",
         Some(vec![(
-            Pack::String(NOTIFICATIONS_DISABLED_CATEGORIES.into()),
+            NOTIFICATIONS_DISABLED_CATEGORIES,
             Pack::String("PERFORMANCE".into()),
         )]),
     );
@@ -180,12 +172,11 @@ fn a_wrong_typed_value_fails_the_request() {
     // clears the failed state the first failure left.
     send_reset(&mut client);
     success_map(read_msg(&mut client));
-    send_run_at(
+    send_run_with(
         &mut client,
-        BoltVersion::V5_4,
         "RETURN 1 AS n",
         Some(vec![(
-            Pack::String(NOTIFICATIONS_DISABLED_CATEGORIES.into()),
+            NOTIFICATIONS_DISABLED_CATEGORIES,
             Pack::List(vec![Pack::Int(1)]),
         )]),
     );
@@ -268,10 +259,7 @@ fn run_extra_keys_override_the_hello_config_and_null_falls_back() {
     assert!(!ending_has_notifications(
         &mut client,
         TWO_LABEL_CARTESIAN,
-        vec![(
-            Pack::String(NOTIFICATIONS_MINIMUM_SEVERITY.into()),
-            Pack::Null
-        )]
+        vec![(NOTIFICATIONS_MINIMUM_SEVERITY, Pack::Null)]
     ));
     assert!(!ending_has_notifications(
         &mut client,
