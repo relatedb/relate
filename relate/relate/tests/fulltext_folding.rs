@@ -13,6 +13,7 @@ use common::fulltext::assert_syntax_error_on_both_paths;
 use common::fulltext::fulltext_agree;
 use common::fulltext::fulltext_search;
 use common::fulltext::sorted_names;
+use common::fulltext::AnalyzerOverride;
 use common::run;
 
 /// The speaker corpus — the fact every speaker-count assertion derives
@@ -34,6 +35,16 @@ const SPEAKERS: [&str; 14] = [
     "Crème brûlée",
 ];
 
+/// The speaker store's two sides — `(label, index options)`: the one fact
+/// the store builder and every both-sides assertion derive from.
+const SIDES: [(&str, &str); 2] = [
+    (
+        "Folded",
+        " OPTIONS {indexConfig: {`fulltext.analyzer`: 'standard-folding'}}",
+    ),
+    ("Plain", ""),
+];
+
 /// The speaker-template store: the same accented names under a
 /// `standard-folding` index (`Folded`) and the default one (`Plain`),
 /// mirroring the live Neo4j 2026.09-enterprise probe corpus. The two
@@ -41,14 +52,7 @@ const SPEAKERS: [&str; 14] = [
 /// corpus.
 fn speaker_store() -> relate::Connection {
     let mut c = connection();
-    let sides = [
-        (
-            "Folded",
-            " OPTIONS {indexConfig: {`fulltext.analyzer`: 'standard-folding'}}",
-        ),
-        ("Plain", ""),
-    ];
-    for (label, options) in sides {
+    for (label, options) in SIDES {
         run(
             &mut c,
             &format!(
@@ -63,7 +67,7 @@ fn speaker_store() -> relate::Connection {
         .map(|name| format!("'{name}'"))
         .collect::<Vec<_>>()
         .join(", ");
-    for (label, _) in sides {
+    for (label, _) in SIDES {
         run(
             &mut c,
             &format!("UNWIND [{names}] AS n CREATE (:{label} {{name: n}})"),
@@ -117,7 +121,7 @@ fn a_folding_index_folds_stored_tokens_and_query_terms() {
         "name",
         5,
         "muller",
-        Some("standard-folding")
+        AnalyzerOverride::Named("standard-folding")
     )
     .is_empty());
 }
@@ -181,7 +185,7 @@ fn wildcard_terms_match_prefixes_infixes_and_single_characters() {
         ("nosuch:kolleg*", vec![]),
         ("zzz*", vec![]),
     ] {
-        for label in ["Plain", "Folded"] {
+        for (label, _) in SIDES {
             assert_eq!(speakers(&mut c, label, query), expected, "{label} {query}");
         }
     }
