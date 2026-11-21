@@ -70,11 +70,11 @@ fn rollback(vfs: &dyn Vfs, intent: &VaultManifest) -> Result<()> {
     // exist: a path the crashed checkpoint created (absent from the
     // journal and the pre-image) is removed; a file that predates the
     // checkpoint is restored above, never deleted.
-    let remove_created = |path: String| -> Result<bool> {
-        Ok(!journaled.contains_key(&path) && !preimage.contains(&path) && vfs.exists(&path)?)
+    let remove_created = |path: &str| -> Result<bool> {
+        Ok(!journaled.contains_key(path) && !preimage.contains(path) && vfs.exists(path)?)
     };
     for path in intent.files.keys().cloned().chain(walk_view_paths(vfs)?) {
-        if remove_created(path.clone())? {
+        if remove_created(&path)? {
             vfs.remove_file(&path)
                 .map_err(|e| md::vault_error(format!("rolling back new file {path}: {e}")))?;
         }

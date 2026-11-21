@@ -162,16 +162,17 @@ pub(crate) fn is_virtual_prefix<'a>(mut keys: impl Iterator<Item = &'a str>, pat
 /// Classify a virtual (non-durable) namespace entry: a file hit by exact
 /// name, a directory when any entry sits beneath it, otherwise missing —
 /// the one policy every virtual backend's `metadata` reports. The
-/// prefix scan is passed lazily: a file hit returns before it runs.
-pub(crate) fn virtual_entry_meta(
+/// namespace keys are passed as an iterator, scanned only on a miss: a
+/// file hit returns before the prefix test runs.
+pub(crate) fn virtual_entry_meta<'a>(
     file_len: Option<u64>,
-    is_prefix: impl FnOnce() -> bool,
+    keys: impl Iterator<Item = &'a str>,
     path: &str,
 ) -> Result<VfsMeta> {
     if let Some(len) = file_len {
         return Ok(VfsMeta::file(len, None));
     }
-    if is_prefix() {
+    if is_virtual_prefix(keys, path) {
         return Ok(VfsMeta::dir());
     }
     Err(Error::io(format!("missing {path}")))

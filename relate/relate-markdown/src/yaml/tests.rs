@@ -224,3 +224,47 @@ fn control_characters_and_del_round_trip_through_the_quoted_form() {
         assert_eq!(reparsed, json!(value));
     }
 }
+
+#[test]
+fn integer_literal_outside_i64_is_refused_not_retyped_as_float() {
+    let max = parse_yaml_value("a: 9223372036854775807").unwrap();
+    assert_eq!(max, json!({"a": i64::MAX}));
+    for raw in [
+        "9223372036854775808",
+        "-9223372036854775809",
+        "+99999999999999999999",
+    ] {
+        let err = parse_yaml_value(&format!("a: {raw}")).unwrap_err();
+        assert!(
+            err.to_string().contains("64-bit signed range"),
+            "{raw}: {err}"
+        );
+    }
+    // A real float literal still parses as one.
+    assert_eq!(parse_yaml_value("a: 1e30").unwrap(), json!({"a": 1e30}));
+}
+
+#[test]
+fn out_of_range_number_strings_are_quoted_and_round_trip() {
+    for raw in [
+        "9223372036854775808",
+        "-9223372036854775809",
+        "1e999",
+        "-1e999",
+    ] {
+        let emitted = emit_yaml_entries(vec![(raw.to_string(), json!(raw))]);
+        assert!(emitted.contains('"'), "{raw} must be quoted: {emitted}");
+        let reparsed = parse_yaml_value(&emitted).unwrap();
+        assert_eq!(reparsed, json!({ raw: raw }));
+    }
+}
+
+#[test]
+fn float_literal_outside_f64_is_refused_but_inf_nan_words_stay_strings() {
+    let err = parse_yaml_value("a: 1e999").unwrap_err();
+    assert!(err.to_string().contains("float range"), "{err}");
+    assert_eq!(
+        parse_yaml_value("a: inf\nb: NaN").unwrap(),
+        json!({"a": "inf", "b": "NaN"})
+    );
+}

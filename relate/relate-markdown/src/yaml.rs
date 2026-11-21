@@ -285,24 +285,39 @@ fn resolve_plain(raw: &str) -> Result<serde_json::Value> {
         "false" | "False" | "FALSE" => return Ok(serde_json::Value::Bool(false)),
         _ => {}
     }
-    if let Some(int) = parse_yaml_integer(raw) {
-        return Ok(serde_json::Value::Number(int));
+    if is_integer_literal(raw) {
+        // The one home of the integer-literal fact: an integer literal
+        // outside i64 must not fall through to the float parse, which
+        // would silently re-type it as f64 and lose digits.
+        return raw
+            .parse::<i64>()
+            .map(|int| serde_json::Value::Number(int.into()))
+            .map_err(|_| {
+                yaml_error(format!(
+                    "integer '{raw}' is outside the 64-bit signed range"
+                ))
+            });
     }
-    if let Some(float) = parse_yaml_float(raw) {
-        return serde_json::Number::from_f64(float)
-            .map(serde_json::Value::Number)
-            .ok_or_else(|| yaml_error(format!("number '{raw}' is not representable")));
+    if let Ok(float) = raw.parse::<f64>() {
+        if float.is_finite() {
+            return Ok(serde_json::Number::from_f64(float)
+                .map(serde_json::Value::Number)
+                .expect("finite f64 is representable"));
+        }
+        // `inf`/`nan` spellings carry no digit and stay strings; a
+        // numeric literal that overflows f64 is refused, not re-typed.
+        if raw.bytes().any(|b| b.is_ascii_digit()) {
+            return Err(yaml_error(format!(
+                "number '{raw}' is outside the finite 64-bit float range"
+            )));
+        }
     }
     Ok(serde_json::Value::String(raw.to_string()))
 }
 
-fn parse_yaml_integer(raw: &str) -> Option<serde_json::Number> {
-    raw.parse::<i64>().ok().map(serde_json::Number::from)
-}
-
-fn parse_yaml_float(raw: &str) -> Option<f64> {
-    let value: f64 = raw.parse().ok()?;
-    value.is_finite().then_some(value)
+fn is_integer_literal(raw: &str) -> bool {
+    let digits = raw.strip_prefix(['+', '-']).unwrap_or(raw);
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Split a markdown file into its YAML frontmatter text and body.
@@ -583,14 +598,11 @@ fn is_plain_safe(text: &str) -> bool {
     if text.contains(": ") || text.contains(" #") {
         return false;
     }
-    // A plain scalar that would resolve to null, a bool or a number on
-    // reload is a different value — quote it so it stays a string.
-    !matches!(
-        resolve_plain(text),
-        Ok(serde_json::Value::Null)
-            | Ok(serde_json::Value::Bool(_))
-            | Ok(serde_json::Value::Number(_))
-    )
+    // Only a scalar that reloads as the same string may stay plain: one
+    // that resolves to null, a bool or a number is a different value, and
+    // one the reader refuses (an out-of-range number) would write a file
+    // that cannot be read back — quote both.
+    matches!(resolve_plain(text), Ok(serde_json::Value::String(_)))
 }
 
 fn double_quoted(text: &str) -> String {
