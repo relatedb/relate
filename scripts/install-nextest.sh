@@ -32,11 +32,13 @@ sh "$here/github-download.sh" \
   -o "$work/nextest.sha256"
 
 expected="$(awk '{print $1; exit}' "$work/nextest.sha256")"
-if command -v sha256sum >/dev/null 2>&1; then
-  actual="$(sha256sum "$work/$asset" | awk '{print $1}')"
-else
-  actual="$(shasum -a 256 "$work/$asset" | awk '{print $1}')"
-fi
+# The digest policy is the repo's one canonical helper (scripts/lib/
+# common.sh, sha256_of): it hashes through stdin, so a file name with a
+# backslash or newline cannot leak sha256sum/shasum's leading '\' marker
+# into the digest the comparison reads.
+# shellcheck source=lib/common.sh
+. "$here/lib/common.sh"
+actual="$(sha256_of "$work/$asset")"
 if [[ -z "$expected" || "$expected" != "$actual" ]]; then
   echo "install-nextest: checksum mismatch for ${asset}" >&2
   exit 1

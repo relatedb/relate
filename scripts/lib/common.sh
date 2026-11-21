@@ -23,24 +23,37 @@ step_summary_append() {
 }
 
 # Bare-hex SHA256 of a file: sha256sum where it exists (Linux, CI
-# runners), shasum -a 256 elsewhere (macOS hosts). Both tools mark an
-# output line whose file name carries a backslash or newline with a
-# leading '\' before the digest — and the release runners' Windows legs
-# pass $RUNNER_TEMP paths (C:\Users\..., backslashes) in through the
+# runners), shasum -a 256 elsewhere (macOS hosts), and a python fallback
+# on a host that ships neither coreutils. The shell tools mark an output
+# line whose file name carries a backslash or newline with a leading '\'
+# before the digest — and the release runners' Windows legs pass
+# $RUNNER_TEMP paths (C:\Users\..., backslashes) in through the
 # digest-pinned installs — so the file is hashed through stdin, where
-# the tools print no file name at all and the marker cannot appear (the
-# v1.1.0 windows FFI release job failed its cargo-auditable digest pin
-# on exactly that marker). The tool's status is the function's: a
-# failed read yields no output and status 1 under any shell — never the
-# pipeline's awk-0 — so the helper does not lean on the caller's
-# pipefail.
+# they print a bare '-' as the file name and the marker cannot appear
+# (the v1.1.0 windows FFI release job failed its cargo-auditable digest
+# pin on exactly that marker). The stdin form's trailing '  -' is cut at
+# the first space in the shell — no awk fork, no pipeline — so the
+# tool's status is the function's: a failed read yields no output and
+# status 1 under any shell, never a pipeline's trailing-command 0.
+# The body is a subshell (`( … )`, POSIX): its scratch `digest` is
+# local to the call, so a sourcing caller that owns a `digest` variable
+# is not clobbered, and `return 1` still ends the call with status 1.
 # distribution/install.sh keeps its own inline resolution — it is a
 # piped curl|sh installer and cannot source repo files.
-sha256_of() {
+sha256_of() (
   if command -v sha256sum >/dev/null 2>&1; then
     digest=$(sha256sum < "$1") || return 1
-  else
+  elif command -v shasum >/dev/null 2>&1; then
     digest=$(shasum -a 256 < "$1") || return 1
+  else
+    # No shell digest tool: the one python fallback, so an installer
+    # never forks this policy to carry its own. The interpreter reads
+    # the path from argv, so a name spelling cannot confuse it either.
+    py=python3
+    command -v python3 >/dev/null 2>&1 || py=python
+    digest=$(
+      "$py" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"
+    ) || return 1
   fi
-  printf '%s\n' "$digest" | awk '{print $1}'
-}
+  printf '%s\n' "${digest%% *}"
+)

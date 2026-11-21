@@ -36,6 +36,10 @@ ENV = {
     "memory": "6g",
 }
 
+# The mismatched-environment fixture: ENV under a `local` runner,
+# derived beside ENV so the mismatch's shape is one edit.
+LOCAL_ENV = dict(ENV, runner="local")
+
 
 def query(qid, profile, p50_ns, mean_ns=None, status="ok", detail=None):
     """One QueryOutcome in the suite report's shape (engine Stats)."""
@@ -99,7 +103,7 @@ class QueryLatencyFreezeTests(unittest.TestCase):
         self.assertEqual(result.payload["peak_rss_bytes"], 3_400_000_000)
 
     def test_envelope_refuses_mixed_environment_classes(self):
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         result = self.run_freeze([
             report([query(1, "upstream", 1_000_000)]),
             report([query(1, "upstream", 1_000_000)], environment=other),
@@ -183,14 +187,14 @@ class QueryLatencyCompareTests(unittest.TestCase):
     def test_class_mismatch_is_incompatible_bands_skipped_answers_kept(self):
         local = report(
             [query(1, "upstream", 1_700_000), query(19, "upstream", 130_000_000)],
-            environment=dict(ENV, runner="local"),
+            environment=LOCAL_ENV,
         )
         status, diags = ql_compare.verdict(self.base(), local)
         self.assertEqual(status, "incompatible")
         self.assertEqual(diags, [])
         wrong = report(
             [query(1, "upstream", 1_700_000, status="wrong", detail="answer differs")],
-            environment=dict(ENV, runner="local"),
+            environment=LOCAL_ENV,
         )
         status, diags = ql_compare.verdict(self.base(), wrong)
         self.assertEqual(status, "fail")
@@ -221,7 +225,7 @@ class QueryLatencyCompareTests(unittest.TestCase):
         self.assertEqual(self.run_compare(self.base(), bad).returncode, 1)
         local = report(
             [query(1, "upstream", 1_700_000), query(19, "upstream", 130_000_000)],
-            environment=dict(ENV, runner="local"),
+            environment=LOCAL_ENV,
         )
         # The class mismatch skips bands locally but hard-fails in
         # GitHub Actions (the loadtest compare's GITHUB_ACTIONS idiom).

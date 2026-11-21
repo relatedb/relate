@@ -43,7 +43,13 @@ install_prebuilt() {
   sh "$here/github-download.sh" --repo rustwasm/wasm-bindgen --tag "$WBG" --asset "$asset" -o "$work/wbg.tar.gz" || return 1
   sh "$here/github-download.sh" --repo rustwasm/wasm-bindgen --tag "$WBG" --asset "${asset}.sha256sum" -o "$work/wbg.sha256sum" || return 1
   expected="$(awk '{print $1}' "$work/wbg.sha256sum")"
-  actual="$(shasum -a 256 "$work/wbg.tar.gz" | awk '{print $1}')"
+  # The digest policy is the repo's one canonical helper (scripts/lib/
+  # common.sh, sha256_of): it hashes through stdin, so a name with a
+  # backslash or newline cannot leak sha256sum/shasum's leading '\'
+  # marker into the digest the comparison reads.
+  # shellcheck source=lib/common.sh
+  . "$here/lib/common.sh"
+  actual="$(sha256_of "$work/wbg.tar.gz")"
   [[ -n "$expected" && "$expected" == "$actual" ]] || return 1
   tar --no-same-owner -xzf "$work/wbg.tar.gz" -C "$work" || return 1
   install -m755 "$work/wasm-bindgen-${WBG}-${target}/wasm-bindgen" "$BIN_DIR/wasm-bindgen"

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from loadtest_fixtures import ENV, memory_report, report
+from loadtest_fixtures import ENV, LOCAL_ENV, memory_report, report
 
 ROOT = Path(__file__).resolve().parents[2]
 ENVELOPE = ROOT / "scripts" / "freeze-baseline-envelope.py"
@@ -36,7 +36,7 @@ class FreezeEnvelopeTests(unittest.TestCase):
     def test_rejects_environment_mismatch(self) -> None:
         a = report(ops_per_sec=10, p99=1, ops=[1, 2, 3], p50=1)
         b = report(
-            ops_per_sec=9, p99=2, env=dict(ENV, runner="local"), ops=[1, 2, 3], p50=1
+            ops_per_sec=9, p99=2, env=LOCAL_ENV, ops=[1, 2, 3], p50=1
         )
         result = self.run_envelope([a, b])
         self.assertEqual(result.returncode, 1)

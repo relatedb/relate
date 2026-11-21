@@ -11,7 +11,13 @@ docs/datasets.md.
 import unittest
 
 from comparator_runner import render, render_mode, run_pair
-from loadtest_fixtures import ENV, checkpoint_report, memory_report, report
+from loadtest_fixtures import (
+    ENV,
+    LOCAL_ENV,
+    checkpoint_report,
+    memory_report,
+    report,
+)
 
 
 def uc(uid, ops=100, errors=0, p99=1_000_000):
@@ -85,7 +91,7 @@ class FailureCountTests(unittest.TestCase):
     from the local count)."""
 
     def test_errors_plus_mismatch_counts_both_checks(self) -> None:
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         base = report(p99=1_000_000)
         cur = report(p99=1_000_000, env=other, errors=1)
         local, _ = run_pair(base, cur)
@@ -99,7 +105,7 @@ class FailureCountTests(unittest.TestCase):
         self.assertIn("2 check(s) failed", ci.stderr)
 
     def test_memory_shape_logical_plus_mismatch_counts_both_checks(self) -> None:
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         base = memory_report(logical=1000, ratio=2.0)
         cur = memory_report(logical=1001, ratio=2.0, env=other)
         local, _ = run_pair(base, cur)
@@ -112,7 +118,7 @@ class FailureCountTests(unittest.TestCase):
         self.assertIn("2 check(s) failed", ci.stderr)
 
     def test_pure_mismatch_in_ci_still_counts_exactly_one(self) -> None:
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         result, _ = run_pair(
             report(p99=1_000_000),
             report(p99=1_000_000, env=other, ops_per_sec=1.0),
@@ -122,7 +128,7 @@ class FailureCountTests(unittest.TestCase):
         self.assertIn("1 check(s) failed", result.stderr)
 
     def test_schema_and_errors_plus_mismatch_counts_three(self) -> None:
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         base = report(p99=1_000_000, schema=5)
         cur = report(p99=1_000_000, schema=6, env=other, errors=1)
         result, _ = run_pair(base, cur)
@@ -222,7 +228,7 @@ class StatusOutTests(unittest.TestCase):
         self.assertEqual(token, "ok\n")
 
     def test_failing_rows_outranks_environment_mismatch(self) -> None:
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         result, token = self.status(
             report(p99=1_000_000), report(p99=1_000_000, env=other, errors=1)
         )
@@ -237,7 +243,7 @@ class StatusOutTests(unittest.TestCase):
         self.assertEqual(token, "failing-rows\n")
 
     def test_mismatch_without_failing_rows_writes_environment_mismatch(self) -> None:
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         result, token = self.status(
             report(p99=1_000_000),
             report(p99=1_000_000, env=other, ops_per_sec=1.0),

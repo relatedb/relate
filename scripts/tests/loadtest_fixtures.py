@@ -96,6 +96,12 @@ ENV = {
     "runner": "github-actions:ubuntu-24.04",
 }
 
+# The mismatched-environment fixture: ENV under a `local` runner, so a
+# comparator reads an environment mismatch. Derived here, beside ENV, so
+# the mismatch's shape is one edit — the comparator suites import it
+# instead of re-spelling `dict(ENV, runner="local")` at each call site.
+LOCAL_ENV = dict(ENV, runner="local")
+
 
 def report(
     *,
