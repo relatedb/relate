@@ -31,6 +31,16 @@ fn drain_success(client: &mut TcpStream, message: Message) -> Pack {
     drain_all(client, message).1
 }
 
+/// A plan node's `children` list — the one unpack the plan tests read, so
+/// a node without a list names itself in the failure.
+fn plan_children<'a>(node: &'a Pack, what: &str) -> &'a [Pack] {
+    match node.get("children") {
+        None => &[],
+        Some(Pack::List(children)) => children,
+        Some(other) => panic!("{what} children, when present, is a list: {other:?}"),
+    }
+}
+
 /// The per-case wire contract of a drained plan tree (ADR-0344/0345,
 /// ADR-0357): the Neo4j dict shape — operatorType / args / identifiers /
 /// children, the root operator named and numbered first — with the PROFILE
@@ -62,10 +72,7 @@ fn assert_plan_summary_contract(plan: &Pack, cypher: &str, root: &str, profiled:
         matches!(plan.get("identifiers"), Some(Pack::List(_))),
         "{cypher} carries an identifiers list: {plan:?}"
     );
-    assert!(
-        matches!(plan.get("children"), None | Some(Pack::List(_))),
-        "{cypher} children, when present, is a list: {plan:?}"
-    );
+    plan_children(plan, cypher);
     // The Neo4j-facing root args (ADR-0357): the rendered plan text
     // (header included — tooling parses the Cypher/Planner/Runtime
     // lines from it) and the planner/runtime identity, named honestly.
@@ -152,9 +159,7 @@ fn pull_success_carries_the_structured_plan() {
             .unwrap_or_else(|| panic!("{cypher} must carry {key} on the drained result"));
         assert_plan_summary_contract(plan, cypher, root, profiled);
         if let Some(operator) = child {
-            let Some(Pack::List(children)) = plan.get("children") else {
-                panic!("{cypher} must carry a children list: {plan:?}")
-            };
+            let children = plan_children(plan, cypher);
             assert_eq!(
                 children[0].get("operatorType").and_then(Pack::as_str),
                 Some(operator),
@@ -194,10 +199,9 @@ fn pull_success_carries_the_traversal_rung() {
         if let Some(value) = node.get("args").and_then(|args| args.get(key)) {
             return Some(value);
         }
-        match node.get("children") {
-            Some(Pack::List(children)) => children.iter().find_map(|child| arg(child, key)),
-            _ => None,
-        }
+        plan_children(node, "the PROFILE plan")
+            .iter()
+            .find_map(|child| arg(child, key))
     }
 
     assert_eq!(
@@ -215,6 +219,36 @@ fn pull_success_carries_the_traversal_rung() {
         Some("auto"),
         "the static pattern-engine mode rides the MATCH operator: {plan:?}"
     );
+}
+
+/// Virtual plan operators: an index-seek-started MATCH's plan value lists
+/// the fused children, each carrying `FusedInto` in its args.
+#[test]
+fn pull_success_carries_the_fused_children() {
+    let mut client = crate::testutil::connected_client();
+    for statement in relate_test_support::fused_seek::FUSED_SEEK_SEED {
+        run_success(&mut client, statement);
+        drain_success(&mut client, Message::Pull);
+    }
+    run_success(
+        &mut client,
+        &format!(
+            "EXPLAIN {}",
+            relate_test_support::fused_seek::FUSED_SEEK_MATCH
+        ),
+    );
+    let pull = drain_success(&mut client, Message::Pull);
+    let plan = pull
+        .get("plan")
+        .unwrap_or_else(|| panic!("the drained EXPLAIN carries the plan: {pull:?}"));
+    let fused = plan_children(&plan_children(plan, "the plan")[0], "the seek");
+    assert_eq!(fused.len(), 2, "the seek step plus one hop: {plan:?}");
+    for child in fused {
+        let args = child
+            .get("args")
+            .unwrap_or_else(|| panic!("the fused child carries an args map: {child:?}"));
+        assert!(args.get("FusedInto").and_then(Pack::as_int).is_some());
+    }
 }
 
 /// A DISCARD ending carries the same pair (ADR-0357): the plan rides the
@@ -260,10 +294,9 @@ fn an_index_backed_start_narrates_the_seek_on_the_bolt_wire() {
         .get("plan")
         .unwrap_or_else(|| panic!("{cypher} must carry the plan on the drained result"));
     assert_plan_summary_contract(plan, cypher, "ProduceResults", false);
-    let Some(Pack::List(children)) = plan.get("children") else {
-        panic!("{cypher} must carry a children list: {plan:?}")
-    };
-    let seek = &children[0];
+    let seek = plan_children(plan, cypher)
+        .first()
+        .unwrap_or_else(|| panic!("{cypher} must carry a seek step: {plan:?}"));
     assert_eq!(
         seek.get("operatorType").and_then(Pack::as_str),
         Some("NodeIndexSeekByRange"),

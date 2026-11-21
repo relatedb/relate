@@ -34,6 +34,7 @@ res.Namespace                                   // typed Namespace — resolved 
 res.Bookmark                                    // "relate:<n>" after a write
 res.Stats                                       // typed Stats — the 11 mutation counters, zeros included (ADR-0216)
 res.Plan                                        // *PlanDocument — EXPLAIN/PROFILE
+                                                // a seek-started MATCH nests display-only fused children (ADR-0622) — ordinary `children` entries; the wire plan marks them with `FusedInto`; this document adds `fused_into`/`fused_metrics` (null on a real operator)
 res.Notifications                               // [] on a plain run; Severity / Category are typed, closed vocabularies
 
 _ = conn.Begin()                                // explicit transaction

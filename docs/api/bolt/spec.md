@@ -209,6 +209,9 @@ client-integration-test example for this key; the truncation marker by
 operators by `an_index_backed_start_narrates_the_seek_on_the_bolt_wire`
 beside those.
 
+A seek-started `MATCH` with at least one relationship nests display-only
+children (ADR-0622): a fused virtual child (ADR-0622) is an ordinary child node whose args carry `FusedInto` (the parent operator's `Id`; the key's presence is what marks the node fused) and, only on the seek step of a PROFILE tree, the pair `SeekTimeNs` + `NodeReads`. It never carries `Rows`/`TimeNs`/`DbHits`/`MemoryBytes`/`ExpressionBuiltBytes`: those stay the parent clause's totals. A hop `Expand` child carries no metrics (no per-hop counter exists). Execution is unchanged; clients counting executed operators skip nodes carrying `FusedInto`.
+
 ### Notifications (ADR-0363)
 
 The SUCCESS that ends a result — the final PULL, or a DISCARD that drains it

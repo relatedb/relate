@@ -127,23 +127,21 @@ fn walk_events(
     // The executed children with their own inclusive times — each must
     // carry PROFILE metrics too; a half-metriced tree is a wire-contract
     // break, kept loud. A fused virtual child is a display-only breakdown
-    // step with no metrics of its own, so it is skipped: the timeline is
-    // the executed operators, whose totals it would otherwise be counted
-    // against. The pair keeps the child and its time together, so the
-    // layout can never read them out of step.
-    let mut executed: Vec<(PlanNodeWire<'_>, i64)> = Vec::new();
-    for child in node.children {
-        let child_node = plan_node_wire(child);
-        if child_node.fused.is_none() {
-            let time = child_node
+    // step: its measured pair is a phase of this parent's clause totals,
+    // so it is skipped rather than laid out a second time. The times are
+    // projected once, in child order, and the layout is zipped back onto
+    // the same children.
+    let executed: Vec<PlanNodeWire<'_>> = node.executed_children().collect();
+    let child_times = executed
+        .iter()
+        .map(|child| {
+            child
                 .metrics
-                .ok_or_else(|| no_profile_times("an operator carries no PROFILE metrics"))?
-                .time_ns;
-            executed.push((child_node, time));
-        }
-    }
-    let child_times: Vec<i64> = executed.iter().map(|(_, time)| *time).collect();
-    for ((child, _), (child_start, child_span)) in
+                .map(|metrics| metrics.time_ns)
+                .ok_or_else(|| no_profile_times("an operator carries no PROFILE metrics"))
+        })
+        .collect::<io::Result<Vec<i64>>>()?;
+    for (child, (child_start, child_span)) in
         executed
             .iter()
             .zip(laid_out_children(&child_times, start, duration))

@@ -77,6 +77,8 @@ in the MCP parameter path.
 
 **Byte arrays (ADR-0327).** The engine's statement-scoped byte array enters only through Bolt or a Rust `Value::Bytes` parameter, never through this surface's own parameters. A result value holding one renders as a list of integers 0–255 (the `value_to_cypher` crossing) and its column stamps `BINARY`; byte arrays cannot be stored as properties.
 
+The wire plan tree (the `plan` args form every other surface carries) nests display-only fused virtual children under a seek-started `MATCH` (ADR-0622), each marked by the arg `FusedInto` (the parent operator id); only a seek step may carry `SeekTimeNs` + `NodeReads`, never the parent's rows/time/memory block. The `relate.plan/v1` document projects the tree's `children` as they are and adds two fields to every node, both `null` on a real operator (ADR-0622, additive under ADR-0381): `fused_into` (the parent operator's id) and `fused_metrics` (`{seek_ms, node_reads}`, only on a PROFILE seek step). A fused child's `actual` stays `null`.
+
 Write detection mirrors the reference server: `EXPLAIN <statement>`
 classifies the plan (ADR-0162 `query_type`) before execution.
 

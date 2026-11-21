@@ -660,6 +660,8 @@ de-chunk the frames first, and inflate when gzip was negotiated.
   string reading `RANGE INDEX <var>:<Label>(<prop>) WHERE <prop> <op>
   <bound>` and `EstimatedRows` carrying the seek's own count — the same
   names and details every plan surface renders.
+  A seek-started `MATCH` with at least one relationship also nests display-only
+  children — the seek step and one `Expand` per hop: a fused virtual child (ADR-0622) is an ordinary child node whose `arguments` carry `FusedInto` (the parent operator's `Id`; the key's presence is what marks the node fused) and, only on the seek step of a PROFILE tree, the pair `SeekTimeNs` + `NodeReads`. It never carries `Rows`/`TimeNs`/`DbHits`/`MemoryBytes`/`ExpressionBuiltBytes`: those stay the parent clause's totals. A hop `Expand` child carries no metrics (no per-hop counter exists).
   `arguments` carries the engine's own args map as-is — the richer internal
   form: `Id` (the pre-order operator number), `Details` (the one-line
   details string), `EstimatedRows` (an integer on children; on the root the

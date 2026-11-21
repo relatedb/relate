@@ -1483,6 +1483,19 @@ The plan representation is the `PlanNode` tree:
   contract. An embedded consumer that wants plan text depends on the
   formatter crate (`relate-formatter` is a surface crate — not available
   to, and not used by, the engine).
+- `PlanNode.fused: Option<FusedChild>` (ADR-0622) — `Some` on a display-only
+  fused virtual child: the seek step or one `Expand` hop step nested under a
+  seek-started `MATCH` that has at least one relationship; `None` on every
+  other node. `FusedChild { parent: usize, metrics: Option<FusedChildMetrics> }`
+  keeps the fused parent's operator id and the step's measured pair together,
+  so a flag without a parent is unrepresentable. `FusedChildMetrics { seek_ns,
+  node_reads }` is the seek step's only measured data on a PROFILE tree; a hop
+  step and every EXPLAIN child has `metrics: None`, and a fused child never
+  carries the parent's `PlanMetrics` (rows, time, db hits, memory). On the wire
+  (`to_value`) the fact is `args.FusedInto` (the parent
+  id) and, on the seek step, `args.SeekTimeNs` + `args.NodeReads`;
+  `relate_model::wire::plan_node_wire` parses them and rejects any
+  half-state. Build one with `PlanNode::with_fused(parent, metrics)`; `PlanNode::executed_children()` yields the children that are not fused — the one skip policy for a walk reading executed operators or metrics.
 - `PlanNode::to_neo4j_value(plan_text)` — the Neo4j-facing plan value
   (ADR-0357), called on a result's plan root: the machine-native form
   decorated with the root args Neo4j's plan carries —

@@ -113,3 +113,7 @@ which is what client tooling (Browser, drivers) renders.
   observe: a pull stream of rows or bounded batches rather than a whole
   vector. Row counts describe rows passing that boundary, and retained
  state is charged by the declared breakers ([ADR-0463](./0463-expression-allocation-budget.md)), not by every operator.
+- ADR-0622 adds display-only fused virtual children under a seek-started
+  `MATCH` (marked by the `FusedInto` key on the wire) and the rule that a
+  fused child carries only metrics a real counter measured. The clause
+  stays the executed unit and the operator's own metrics are unchanged.

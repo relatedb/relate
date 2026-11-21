@@ -55,3 +55,5 @@ so the HTTP/1.1-only chunked framing never reaches a 1.0 peer (ADR-0386 §8).
 See [spec.md](spec.md) for the exact route, envelope, and error-code
 contract, and [examples/query.md](examples/query.md) for a runnable
 walkthrough.
+
+A seek-started `MATCH` in a `queryPlan`/`profiledQueryPlan` tree nests display-only fused children — the seek step and one `Expand` per hop — marked by `FusedInto` in `arguments` (ADR-0622). They carry no per-step rows, time or memory; the parent's totals stand.

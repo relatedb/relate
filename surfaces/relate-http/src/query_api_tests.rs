@@ -439,6 +439,34 @@ fn an_index_backed_start_narrates_the_seek_over_http() {
     assert_eq!(seek["arguments"]["EstimatedRows"], json!(5));
 }
 
+/// Virtual plan operators: an index-seek-started MATCH's v2 plan lists the
+/// fused children, each carrying `FusedInto` (the parent
+/// operator's id) in its `arguments` — the engine's own wire args.
+#[test]
+fn explain_plan_lists_the_fused_children_over_http() {
+    let db = db();
+    {
+        let mut conn = db.connect().unwrap();
+        for statement in relate_test_support::fused_seek::FUSED_SEEK_SEED {
+            conn.query(statement).unwrap();
+        }
+    }
+    let body = serde_json::json!({
+        "statement": format!("EXPLAIN {}", relate_test_support::fused_seek::FUSED_SEEK_MATCH)
+    })
+    .to_string();
+    let reply = dispatch(&db, &post("neo4j", &body), OPEN, &txs());
+    assert_eq!(reply.status, 200);
+    let body = body_json(&reply);
+    let seek = &body["queryPlan"]["children"][0];
+    assert!(seek["arguments"].get("FusedInto").is_none());
+    let fused = seek["children"].as_array().expect("fused children");
+    assert_eq!(fused.len(), 2, "the seek step plus one hop: {seek:?}");
+    for child in fused {
+        assert!(child["arguments"]["FusedInto"].is_number(), "{child:?}");
+    }
+}
+
 /// LABS-1117: the v2 plan's `arguments` carry the per-clause traversal
 /// rung (`KernelRung`, with the chain's `KernelHops`) and the static
 /// pattern-engine mode (`PatternEngine`) on the MATCH operator — the

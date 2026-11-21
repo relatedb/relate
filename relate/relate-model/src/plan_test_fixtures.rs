@@ -89,3 +89,25 @@ pub(crate) fn plan_seek_wire_node(
     );
     node
 }
+
+/// Compose a fused wire child: the seek step's shape — `FusedInto`
+/// beside the seek pair, no metric block.
+pub(crate) fn fused_seek_wire_node(
+    id: i64,
+    parent: i64,
+    seek_ns: i64,
+    node_reads: i64,
+) -> CypherValue {
+    let mut node = plan_wire_node("NodeIndexSeek", id, None, vec![]);
+    let args = args_mut(&mut node);
+    args.insert(plan_keys::FUSED_INTO.to_string(), CypherValue::Int(parent));
+    args.insert(
+        plan_keys::SEEK_TIME_NS.to_string(),
+        CypherValue::Int(seek_ns),
+    );
+    args.insert(
+        plan_keys::NODE_READS.to_string(),
+        CypherValue::Int(node_reads),
+    );
+    node
+}

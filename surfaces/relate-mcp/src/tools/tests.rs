@@ -430,6 +430,42 @@ fn the_tool_results_carry_the_canonical_envelope() {
     assert_eq!(rows["plan"]["schema"], serde_json::json!("relate.plan/v1"));
 }
 
+/// Virtual plan operators: the classification plan an index-seek-started
+/// MATCH rides lists its fused children — the seek step and one step per
+/// hop — each naming the fused parent operator's id.
+#[test]
+fn the_plan_lists_the_fused_children_of_an_index_seek_match() {
+    let server = server();
+    for statement in relate_test_support::fused_seek::FUSED_SEEK_SEED {
+        call_tool(
+            &server,
+            WRITE_CYPHER,
+            &serde_json::json!({ "statement": statement }),
+        )
+        .unwrap();
+    }
+    let rows = call_tool(
+        &server,
+        READ_CYPHER,
+        &serde_json::json!({
+            "statement": relate_test_support::fused_seek::FUSED_SEEK_MATCH
+        }),
+    )
+    .unwrap();
+    let rows: Json = serde_json::from_str(&rows).unwrap();
+    let seek = &rows["plan"]["root"]["children"][0];
+    assert!(
+        seek["fused_into"].is_null(),
+        "the parent is a real operator"
+    );
+    let fused = seek["children"].as_array().expect("fused children");
+    assert_eq!(fused.len(), 2, "the seek step plus one hop: {seek:?}");
+    let parent_id = seek["children"][0]["fused_into"]
+        .as_i64()
+        .expect("parent id");
+    assert!(fused.iter().all(|c| c["fused_into"] == parent_id));
+}
+
 /// ADR-0491: both cypher tools carry the executed statement's phase split —
 /// `parse_ms` / `plan_ms` / `execute_ms` beside the envelope's
 /// `elapsed_ms` — as non-negative milliseconds whose sum never exceeds

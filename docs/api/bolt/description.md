@@ -109,3 +109,5 @@ defaults to loopback plus the hosted Neo4j Browser and Console (loopback
 only under `--auth none`; ADR-0459). A WebSocket-only concurrency cap is
 opt-in via `--ws-max-connections`. See the
 [WebSocket example](examples/websocket.md).
+
+A seek-started `MATCH` in the `plan`/`profile` summary nests display-only fused children — the seek step and one `Expand` per hop — marked by `FusedInto` in `args` (ADR-0622). They carry no per-step rows, time or memory; the parent's totals stand.

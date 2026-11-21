@@ -751,7 +751,7 @@ pub fn profiled_facts(
     }
 }
 
-impl PlanNodeWire<'_> {
+impl<'a> PlanNodeWire<'a> {
     /// The node's input-row count (LABS-343's structural fact): the first
     /// child's produced rows — the bottom-up nesting puts each earlier
     /// clause under the one it feeds — `None` when the node has no input
@@ -761,6 +761,19 @@ impl PlanNodeWire<'_> {
         self.children
             .first()
             .and_then(|first| plan_node_wire(first).metrics.map(|m| metric_u64(m.rows)))
+    }
+
+    /// The node's executed children: every child except a display-only
+    /// fused breakdown step (ADR-0622). A fused step's measured pair
+    /// (`fused.metrics`, never the `metrics` block) is a phase of the
+    /// fused parent's clause totals, so a walk reading executed operators
+    /// or their PROFILE metrics must not count or lay it out a second
+    /// time — the one skip policy.
+    pub fn executed_children(&self) -> impl Iterator<Item = PlanNodeWire<'a>> + 'a {
+        self.children
+            .iter()
+            .map(plan_node_wire)
+            .filter(|child| child.fused.is_none())
     }
 }
 

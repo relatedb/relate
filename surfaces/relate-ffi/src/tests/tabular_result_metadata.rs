@@ -297,3 +297,31 @@ fn ffi_result_plan_json_reports_the_agent_native_document() {
         relate_destroy_result(result);
     }
 }
+
+/// Virtual plan operators: the FFI plan document passes the engine's
+/// fused children through — each names its fused parent operator.
+#[test]
+fn ffi_result_plan_json_lists_the_fused_children() {
+    // SAFETY: test drives the FFI with handles, strings and out-params it
+    // owns.
+    unsafe {
+        let session = Session::open();
+        let (_, conn) = session.handles();
+        for statement in relate_test_support::fused_seek::FUSED_SEEK_SEED {
+            relate_destroy_result(run(conn, statement));
+        }
+        let result = run(
+            conn,
+            &format!(
+                "EXPLAIN {}",
+                relate_test_support::fused_seek::FUSED_SEEK_MATCH
+            ),
+        );
+        let doc = result_plan_json(result);
+        let seek = &doc["root"]["children"][0];
+        let fused = seek["children"].as_array().expect("fused children");
+        assert_eq!(fused.len(), 2, "the seek step plus one hop: {seek:?}");
+        assert!(fused.iter().all(|c| c["fused_into"].is_number()));
+        relate_destroy_result(result);
+    }
+}

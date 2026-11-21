@@ -16,6 +16,7 @@ pub mod envelope;
 pub mod fetch;
 #[cfg(feature = "fold_shapes")]
 pub mod fold_shapes;
+pub mod fused_seek;
 pub mod git;
 #[cfg(feature = "graph")]
 pub mod graph;

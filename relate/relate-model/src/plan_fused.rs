@@ -75,24 +75,7 @@ pub(crate) fn fused_child(args: &crate::IndexMap<String, CypherValue>) -> Option
 mod tests {
     use super::*;
     use crate::wire::plan_node_wire;
-    use crate::wire::plan_test_fixtures::{args_mut, plan_wire_node};
-
-    /// Compose a fused wire child: the seek step's shape — `FusedInto`
-    /// beside the seek pair, no metric block.
-    fn fused_seek_wire_node(id: i64, parent: i64, seek_ns: i64, node_reads: i64) -> CypherValue {
-        let mut node = plan_wire_node("NodeIndexSeek", id, None, vec![]);
-        let args = args_mut(&mut node);
-        args.insert(plan_keys::FUSED_INTO.to_string(), CypherValue::Int(parent));
-        args.insert(
-            plan_keys::SEEK_TIME_NS.to_string(),
-            CypherValue::Int(seek_ns),
-        );
-        args.insert(
-            plan_keys::NODE_READS.to_string(),
-            CypherValue::Int(node_reads),
-        );
-        node
-    }
+    use crate::wire::plan_test_fixtures::{args_mut, fused_seek_wire_node, plan_wire_node};
 
     /// The fused seek child reads its parent link and its own measured
     /// pair — never the parent's metric block. The `FusedInto` key's

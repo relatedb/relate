@@ -132,11 +132,7 @@ fn node_json(
     // child operator's `Rows`, the number the table shows one cell up),
     // named here for consumers that do not walk children. `None` when the
     // node has no input child (the statement's seed row).
-    let loops = node.children.first().and_then(|first| {
-        plan_node_wire(first)
-            .metrics
-            .map(|m| crate::wire::metric_u64(m.rows))
-    });
+    let loops = node.input_rows();
     let mut out = Map::new();
     out.insert("operator".to_string(), json!(node.operator_type));
     out.insert("details".to_string(), json!(node.details));
@@ -158,6 +154,14 @@ fn node_json(
             None => Value::Null,
         },
     );
+    // Virtual plan operators: a display-only fused child names its fused
+    // parent operator's id and, on a PROFILE seek step, its own measured
+    // pair; both are always present, `null` on every real operator — the
+    // document's one absence spelling. A fused child's `actual` stays
+    // `null`: the clause's totals are the parent's.
+    let (fused_into, fused_metrics) = fused_fields(node);
+    out.insert("fused_into".to_string(), fused_into);
+    out.insert("fused_metrics".to_string(), fused_metrics);
     out.insert("children".to_string(), Value::Array(children));
     // The operator's warnings: the remedy-bearing notifications raised for
     // it (ADR-0363), looked up by the operator id the engine stamps — the
@@ -185,6 +189,24 @@ fn node_json(
         ),
     );
     (Value::Object(out), profiled)
+}
+
+/// The fused-child pair of a node's document: the parent operator's id and
+/// the seek step's measured `{seek_ms, node_reads}`. Each is `null` where
+/// the node carries none — every real operator, and a hop step's metrics.
+fn fused_fields(node: &PlanNodeWire<'_>) -> (Value, Value) {
+    match node.fused {
+        Some(fused) => (
+            json!(fused.parent),
+            fused.metrics.map_or(Value::Null, |m| {
+                json!({
+                    "seek_ms": crate::wire::time_ns_ms(m.seek_ns),
+                    "node_reads": m.node_reads,
+                })
+            }),
+        ),
+        None => (Value::Null, Value::Null),
+    }
 }
 
 /// The runtime metrics of a profiled node: rows, the operator's own time
@@ -397,6 +419,30 @@ mod tests {
             node["actual"].is_null(),
             "an EXPLAIN-shaped seek node carries no metrics"
         );
+    }
+
+    /// Virtual plan operators: a fused seek child projects its parent id
+    /// and its own measured pair; every real operator reads `null` for
+    /// both, and the child's `actual` stays `null`.
+    #[test]
+    fn a_fused_child_projects_its_parent_and_seek_pair() {
+        use crate::wire::plan_test_fixtures::fused_seek_wire_node;
+
+        let child = fused_seek_wire_node(2, 1, 2_000_000, 3);
+        let parent = plan_wire_node("NodeIndexSeek", 1, None, vec![child]);
+        let doc = plan_document(
+            &plan_wire_node("ProduceResults", 0, None, vec![parent]),
+            None,
+            &[],
+        );
+        let parent = &doc["root"]["children"][0];
+        assert!(parent["fused_into"].is_null());
+        assert!(parent["fused_metrics"].is_null());
+        let child = &parent["children"][0];
+        assert_eq!(child["fused_into"], 1);
+        assert_eq!(child["fused_metrics"]["seek_ms"], 2.0);
+        assert_eq!(child["fused_metrics"]["node_reads"], 3);
+        assert!(child["actual"].is_null());
     }
 
     #[test]

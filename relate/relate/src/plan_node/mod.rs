@@ -397,6 +397,14 @@ impl PlanNode {
         self
     }
 
+    /// The node's executed children: every child except a display-only
+    /// fused breakdown step (ADR-0622). The one skip policy for a walk
+    /// that reads executed operators or their metrics — the wire twin is
+    /// `PlanNodeWire::executed_children`.
+    pub fn executed_children(&self) -> impl Iterator<Item = &PlanNode> {
+        self.children.iter().filter(|child| child.fused.is_none())
+    }
+
     /// The echoed statement — the formatter's header input (external
     /// callers read it, never re-derive). Empty on a hand-built tree: a
     /// public accessor that never panics (the engine stamps the real echo

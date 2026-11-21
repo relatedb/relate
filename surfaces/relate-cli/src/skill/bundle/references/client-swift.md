@@ -33,6 +33,7 @@ r.namespace      // .neo4j | .system | .systemOntologies, resolved (ADR-0117)
 r.stats          // QueryStats, the 11 counters
 r.notifications  // [] on a plain run; EXPLAIN / PROFILE populate it
 r.plan           // PlanDocument? (relate.plan/v1)
+                 // a seek-started MATCH nests display-only fused children (ADR-0622) — ordinary `children` entries; the wire plan marks them with `FusedInto`; this document adds `fused_into`/`fused_metrics` (null on a real operator)
 r.bookmark       // String?, the auto-commit write's bookmark (ADR-0502)
 r.elapsedMs      // engine time; r.parseMs / r.planMs / r.executeMs — its
                 // phase split (ADR-0491), sum never exceeding the total

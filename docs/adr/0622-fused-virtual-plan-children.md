@@ -53,6 +53,9 @@ does; the timeline is the executed operators).
 
 The plan wire gains the fused link key and the seek's measured pair; a
 fused child never carries the metric block, which is a contract a parser
-enforces rather than a convention. Renderers that assumed every child
+enforces rather than a convention. The versioned agent plan document
+(`relate.plan/v1`) projects the link and the pair as two additive node
+fields, `fused_into` and `fused_metrics`, `null` on a real operator —
+an additive change under its own schema rule, not a version bump. Renderers that assumed every child
 carries metrics must skip fused children. Per-hop counters remain future
 work, as does rendering the steps in surfaces beyond the table renderer.

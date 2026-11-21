@@ -28,3 +28,5 @@ shared across Bolt, HTTP, and MCP.
 Session semantics on HTTP are stateless per request — the reference server
 runs the same way — so any HTTP client that can POST JSON can drive the
 server; no session handshake bookkeeping is required.
+
+Plan trees an agent reads through this surface describe a seek-started `MATCH` with display-only fused children (ADR-0622); they are narration, never executed operators, and carry no per-step rows, time or memory.

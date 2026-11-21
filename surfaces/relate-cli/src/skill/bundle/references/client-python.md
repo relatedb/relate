@@ -37,6 +37,10 @@ The cursor adds the Neo4j driver's `single()`,
 resolved namespace, query type, bookmark, timings, notifications, plan)
 and `graph()`.
 
+A `plan` tree for a seek-started `MATCH` nests display-only fused children
+(ADR-0622): ordinary `children` entries, never executed operators, with no
+rows/time/memory of their own (the parent's totals stand).
+
 ## Gotchas
 
 - **Errors carry the engine's classification** — every `relate.Error`

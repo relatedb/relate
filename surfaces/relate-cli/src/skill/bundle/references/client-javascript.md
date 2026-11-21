@@ -38,6 +38,7 @@ const result = conn.query("RETURN 1 AS n");
 // result.queryType: "r" | "w" | "rw" | "s"   (ADR-0162 wire code)
 // result.namespace: "neo4j" | "system" | "system_ontologies" (resolved)
 // result.plan: object | null — the relate.plan/v1 document (ADR-0381)
+// a seek-started MATCH nests display-only fused children (ADR-0622) — ordinary `children` entries; the wire plan marks them with `FusedInto`; this document adds `fused_into`/`fused_metrics` (null on a real operator)
 // result.notifications: object[] — engine-native query notifications
 //                            (ADR-0363); [] on a plain run, populated by
 //                            EXPLAIN and PROFILE (PROFILE adds the

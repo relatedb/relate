@@ -493,7 +493,7 @@ plan.
   (or `null`), `actual` (or `null`), `children`, and `warnings` — the
   remedy-bearing notifications raised for that operator, matched by
   operator id, each `{code, gql_status, severity, category, title,
-  description, remedy}`; `[]` when the operator raised none. `actual` carries `rows`, `time_ms` (a float), `total_time_ms` (a
+  description, remedy}`; `[]` when the operator raised none. `fused_into` is the fused parent operator's id on a display-only fused child (an index-seek MATCH's seek and hop steps), `null` on a real operator; `fused_metrics` is `{seek_ms, node_reads}` on a PROFILE seek step, else `null`. `actual` carries `rows`, `time_ms` (a float), `total_time_ms` (a
   float, the operator's own time plus every descendant's — the cumulative
   form of `time_ms`), `seek_ms`/`walk_ms` (floats, the phase times: the
   candidate resolution and the relationship traversal each spent,

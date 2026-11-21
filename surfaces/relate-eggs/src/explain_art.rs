@@ -45,7 +45,10 @@ impl Frame {
             rows,
             db_hits,
             time_ns,
-            children: node.children.iter().map(Frame::from_plan).collect(),
+            // A fused child is a display-only step of its parent's clause:
+            // its measured pair is a phase of the parent's interval, so
+            // drawing it would double-count the parent's bar.
+            children: node.executed_children().map(Frame::from_plan).collect(),
         }
     }
 

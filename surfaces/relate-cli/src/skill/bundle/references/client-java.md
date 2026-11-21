@@ -33,6 +33,7 @@ try (Database db = Database.open(":memory:");          // or "./mydata" / "./tas
     // result.getBookmark(): "relate:<n>" after an auto-commit write, else null
     // result.getNotifications(): List<Notification> — [] on a plain run
     // result.getPlan(): PlanDocument | null — EXPLAIN / PROFILE only
+    // a seek-started MATCH nests display-only fused children (ADR-0622) — ordinary `children` entries; the wire plan marks them with `FusedInto`; this document adds `fused_into`/`fused_metrics` (null on a real operator)
 }
 ```
 

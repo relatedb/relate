@@ -423,3 +423,5 @@ serialized forms, which are unchanged. See the
 
 Use this surface from Rust applications and from the CLI. The C ABI is
 `relate_*` (`relate-ffi`; ADR-0054).
+
+Plan trees from `EXPLAIN` and `PROFILE` describe a seek-started `MATCH` as a pipeline: the clause operator nests display-only fused children — the index seek step and one `Expand` per hop (ADR-0622). They are narration, not executed operators: execution is unchanged, and a child carries a number only where a real counter measured it (the seek step's seek time and node reads), never a share of the parent's rows, time or memory.

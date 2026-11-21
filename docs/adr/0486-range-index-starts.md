@@ -281,3 +281,6 @@ already serves these predicates; this decision adds pricing
   level here and the executor funnel's `Seek::Range` serve consult the
   one policy. The ranking below stands unchanged for windows under the
   crossover.
+- **ADR-0622** breaks a seek-started `MATCH` into virtual children — the
+  seek step and one `Expand` step per hop — beside the seek narration
+  here; the seek step carries only its measured seek time and node reads.
