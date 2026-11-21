@@ -130,3 +130,24 @@ fn the_gate_closed_keeps_the_unexpected_character_error() {
         );
     }
 }
+
+#[test]
+fn an_annotation_never_splits_a_clause_from_its_paging_tail() {
+    for query in [
+        "MATCH (n) WITH n @a() ORDER BY n.x RETURN n",
+        "MATCH (n) WITH n @a() LIMIT 2 RETURN n",
+        "MATCH (n) WITH n @a() SKIP 1 RETURN n",
+        "MATCH (n) WITH n @a() OFFSET 1 RETURN n",
+        "MATCH (n) RETURN n @a() LIMIT 1",
+        "MATCH (n) RETURN n @a() UNION MATCH (m) RETURN m",
+    ] {
+        let message = rejected(query);
+        assert!(
+            message.contains("InvalidAnnotation: an annotation must directly precede a clause"),
+            "{query}: {message}"
+        );
+    }
+    // The tail unannotated, and an annotation before a real clause, still parse.
+    accepted("MATCH (n) WITH n ORDER BY n.x LIMIT 2 RETURN n");
+    accepted("MATCH (n) WITH n @a() MATCH (m) RETURN n, m");
+}

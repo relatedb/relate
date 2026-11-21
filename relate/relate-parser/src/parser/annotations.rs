@@ -12,7 +12,9 @@
 //!   of those and lists of those -- never a nested map, `null`, an
 //!   expression, a variable or a query parameter;
 //! - one parameter may be positional or named; two or more must all be named;
-//! - names are unique within one annotation.
+//! - names are unique within one annotation;
+//! - an annotation directly precedes a clause: one followed by `ORDER BY`,
+//!   `SKIP`, `OFFSET`, `LIMIT` or `UNION` is rejected.
 
 use super::*;
 
@@ -20,10 +22,30 @@ impl<'a> Parser<'a> {
     /// Consumes every annotation at the current position (none when the
     /// gate is closed: the lexer never produces the introducer then).
     pub(super) fn skip_clause_annotations(&mut self) -> ParseResult<()> {
+        let mut seen = false;
         while self.peek_type() == TokenType::At {
             self.parse_annotation()?;
+            seen = true;
+        }
+        if seen && self.at_paging_tail() {
+            // An annotation here would end the WITH/RETURN before it and
+            // re-read its ORDER BY / SKIP / LIMIT as a standalone paging
+            // clause, silently changing what the query means.
+            return Err(self.error(
+                "InvalidAnnotation: an annotation must directly precede a clause, not ORDER BY, SKIP, OFFSET, LIMIT or UNION",
+            ));
         }
         Ok(())
+    }
+
+    /// The next token is a clause tail (paging or `UNION`), never the start
+    /// of an annotatable clause.
+    fn at_paging_tail(&self) -> bool {
+        match self.peek_type() {
+            TokenType::ORDER | TokenType::SKIP | TokenType::LIMIT | TokenType::UNION => true,
+            TokenType::Identifier => Self::token_is_ident(self.peek(), "offset"),
+            _ => false,
+        }
     }
 
     fn parse_annotation(&mut self) -> ParseResult<()> {

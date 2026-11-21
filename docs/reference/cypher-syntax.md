@@ -1100,7 +1100,9 @@ literal may carry a sign), or a list of those, or a map of those and lists of
 those — no nested maps, `null`, expressions, variables or query parameters.
 One parameter may be positional or named; two or more must all be named, and
 names are unique within one annotation. Annotations go before a clause, never
-inside a clause or a pattern. Without the opt-in `@` is the ordinary
+inside a clause or a pattern; one followed by `ORDER BY`, `SKIP`, `OFFSET`,
+`LIMIT` or `UNION` is rejected rather than splitting a clause from its tail.
+Without the opt-in `@` is the ordinary
 `unexpected character: @` syntax error.
 
 ### Local callables (DEFINE, preview)
