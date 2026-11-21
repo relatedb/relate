@@ -198,19 +198,18 @@ impl<T: MemoTable> Memo<T> {
         key: T::Key,
         compute: impl FnOnce() -> Result<T::Value>,
     ) -> Result<T::Value> {
-        self.answer_lazy(meter, || Some(key), compute, |_| true)
+        self.answer_lazy(meter, || Some(key), compute)
     }
 
     /// [`Self::answer`] for a key that costs something to build: `key` runs
     /// only once the memo is warm and enabled, so a warming or bypassed
-    /// memo pays one branch, not the key. `None` (an unkeyable input) and a
-    /// value `storable` refuses are computed and never remembered.
+    /// memo pays one branch, not the key. `None` (an unkeyable input) is
+    /// computed and never remembered.
     pub(crate) fn answer_lazy(
         &mut self,
         meter: &impl MemoMeter,
         key: impl FnOnce() -> Option<T::Key>,
         compute: impl FnOnce() -> Result<T::Value>,
-        storable: impl FnOnce(&T::Value) -> bool,
     ) -> Result<T::Value> {
         if self.disabled {
             return compute();
@@ -228,9 +227,7 @@ impl<T: MemoTable> Memo<T> {
             return Ok(known);
         }
         let fresh = compute()?;
-        if storable(&fresh) {
-            self.remember(meter, key, fresh.clone());
-        }
+        self.remember(meter, key, fresh.clone());
         self.review();
         Ok(fresh)
     }

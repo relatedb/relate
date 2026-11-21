@@ -55,6 +55,14 @@ impl ClockKind {
         super::lookup(Self::TABLE, name)
     }
 
+    /// [`ClockKind::from_name`] over any ASCII casing, without allocating.
+    pub(super) fn from_name_ignore_case(name: &str) -> Option<Self> {
+        Self::TABLE
+            .iter()
+            .find(|(spelling, _)| spelling.eq_ignore_ascii_case(name))
+            .map(|(_, kind)| *kind)
+    }
+
     /// Whether the kind carries a calendar date. The capability model the
     /// field policy (`accepts` and its guards) and the component readers both
     /// read, so a kind's parts are stated once.

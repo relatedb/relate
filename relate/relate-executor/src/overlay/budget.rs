@@ -8,8 +8,6 @@ use std::sync::Arc;
 
 use relate_core::{Error, Result, Value};
 
-use crate::exec::kernels::construct_memo::ConstructMemos;
-
 use super::ExecGraph;
 
 /// ADR-0395: the fixed per-top-level-statement budget on nested
@@ -150,9 +148,11 @@ impl<'a> ExecGraph<'a> {
         self.memo_live.clone()
     }
 
-    /// The statement's `datetime(text)` memo (ADR-0640).
-    pub(crate) fn construct_memos(&self) -> &ConstructMemos {
-        &self.construct_memos
+    /// `name(vals…)` through the statement's temporal-constructor memo
+    /// (ADR-0640): the one entry the evaluator uses, so the memo's
+    /// interior mutability stays behind the graph.
+    pub(crate) fn construct_temporal(&self, name: &str, vals: &[Value]) -> Result<Value> {
+        self.construct_memos.construct(self, name, vals)
     }
 
     /// The configured per-allocation cap (`None` = no cap).

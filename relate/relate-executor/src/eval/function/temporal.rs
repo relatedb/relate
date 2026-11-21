@@ -37,7 +37,7 @@ pub(super) fn bi_format(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> R
 /// the statement's hashed-value memo (`ConstructMemos`, which owns the
 /// decision).
 pub(super) fn bi_date(graph: &ExecGraph<'_>, n: &str, vals: Vec<Value>) -> Result<Value> {
-    graph.construct_memos().construct(graph, n, &vals)
+    graph.construct_temporal(n, &vals)
 }
 pub(super) fn bi_datetime_fromepoch(
     _graph: &ExecGraph<'_>,

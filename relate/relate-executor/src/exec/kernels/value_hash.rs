@@ -70,6 +70,15 @@ mod tag {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Hash128(u128);
 
+impl Hash128 {
+    /// The key split for the table: the high word verified on lookup, the
+    /// low word as the map key (a `NodeId`-keyed map). The one place the
+    /// halves are decoded.
+    fn halves(self) -> (u64, NodeId) {
+        ((self.0 >> 64) as u64, self.0 as u64 as NodeId)
+    }
+}
+
 /// The stream's XXH3 seed: two words of the executor's one process-wide
 /// secret ([`shared_random_state`]), folded once and cached.
 fn seed() -> u64 {
@@ -279,22 +288,19 @@ impl<V: Clone + RetainedHeap> MemoTable for HashedValues<V> {
     type Value = V;
 
     fn get(&self, key: Hash128) -> Option<V> {
-        let (hi, lo) = ((key.0 >> 64) as u64, key.0 as u64);
-        match self.map.get(lo as NodeId) {
+        let (hi, lo) = key.halves();
+        match self.map.get(lo) {
             Some((stored, value)) if *stored == hi => Some(value.clone()),
             _ => None,
         }
     }
 
     fn insert(&mut self, key: Hash128, value: V) {
-        let (hi, lo) = ((key.0 >> 64) as u64, key.0 as u64);
+        let (hi, lo) = key.halves();
         // A low-half clash replaces the resident entry: its payload leaves.
-        let replaced = self
-            .map
-            .get(lo as NodeId)
-            .map_or(0, |(_, old)| old.retained_heap());
+        let replaced = self.map.get(lo).map_or(0, |(_, old)| old.retained_heap());
         self.payload = self.payload - replaced + value.retained_heap();
-        self.map.insert(lo as NodeId, (hi, value));
+        self.map.insert(lo, (hi, value));
     }
 
     fn heap_bytes(&self) -> usize {

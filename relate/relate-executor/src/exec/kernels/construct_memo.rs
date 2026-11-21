@@ -57,20 +57,15 @@ const POLICY: MemoPolicy = MemoPolicy {
 /// (`Temporal::DateTime::zone`, a `String`; even `Z` is one), so the table
 /// charges each stored answer's [`RetainedHeap`] beside the map's own
 /// allocation: the byte ceiling, the ADR-0463 meter and the query's memo
-/// budget see the whole retained size. Only temporals are stored
-/// ([`storable`]); any other answer is computed and bypassed.
+/// budget see the whole retained size. A one-string-argument
+/// `datetime` answers a temporal or an error (errors are never stored), so
+/// the table holds temporals only and [`RetainedHeap`] charges nothing for
+/// any other shape.
 pub(crate) struct ConstructMemos {
     datetime: RefCell<Table>,
 }
 
-/// Whether `value` is an answer this memo stores: a temporal, whose heap
-/// payload [`RetainedHeap`] accounts for.
-fn storable(value: &Value) -> bool {
-    matches!(value, Value::Temporal(_))
-}
-
-/// Only [`storable`] values reach the table, so the non-temporal arm is
-/// never charged.
+/// Only temporals reach the table, so the non-temporal arm is never charged.
 impl RetainedHeap for Value {
     fn retained_heap(&self) -> usize {
         match self {
@@ -106,7 +101,7 @@ impl ConstructMemos {
             ([arg @ Value::String(_)], Some(ClockKind::DateTime)) => self
                 .datetime
                 .borrow_mut()
-                .answer_lazy(meter, || hash_value(arg), compute, storable),
+                .answer_lazy(meter, || hash_value(arg), compute),
             _ => compute(),
         }
     }
@@ -199,7 +194,13 @@ mod tests {
         let meter = Charged::default();
         let before = hashes();
         for name in ["date", "time", "duration", "localdatetime", "zoned_time"] {
-            let _ = call(&memos, &meter, name, &text("2024-05-05"));
+            let arg = text("2024-05-05");
+            let got = call(&memos, &meter, name, &arg);
+            let direct = temporal::construct_named(name, std::slice::from_ref(&arg));
+            assert_eq!(got.is_ok(), direct.is_ok(), "{name}: same outcome");
+            if let (Ok(got), Ok(direct)) = (got, direct) {
+                assert_eq!(got, direct, "{name}: same value");
+            }
         }
         assert_eq!(hashes(), before, "a non-datetime kind never hashes");
         let s = text("2024-05-05T10:00:00Z");

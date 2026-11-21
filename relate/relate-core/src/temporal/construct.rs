@@ -105,38 +105,90 @@ pub(super) fn date_from_week(year: i32, week: u32, dow: Weekday) -> Result<Naive
         .ok_or_else(|| Error::argument_error("invalid week date"))
 }
 
+/// The typed constructor vocabulary: a clock kind or `duration`, the one
+/// non-clock constructor. Every name reader ([`is_constructor`],
+/// [`clock_kind`], [`construct_named`], [`accepts_pattern`]) classifies a
+/// spelling through [`Constructor::from_name`], so none can disagree on a
+/// spelling and none allocates to compare one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Constructor {
+    Clock(ClockKind),
+    Duration,
+}
+
+impl Constructor {
+    /// The alias spellings and the base constructor each stands for; the
+    /// base spellings are the kind table's own ([`ClockKind::from_name_ignore_case`])
+    /// plus `duration`.
+    const ALIASES: &'static [(&'static str, Constructor)] = &[
+        ("local_time", Constructor::Clock(ClockKind::LocalTime)),
+        (
+            "local_datetime",
+            Constructor::Clock(ClockKind::LocalDateTime),
+        ),
+        (
+            "local_date_time",
+            Constructor::Clock(ClockKind::LocalDateTime),
+        ),
+        ("zoned_time", Constructor::Clock(ClockKind::Time)),
+        ("zoned_datetime", Constructor::Clock(ClockKind::DateTime)),
+        ("zoned_date_time", Constructor::Clock(ClockKind::DateTime)),
+    ];
+
+    /// The constructor `name` spells, case-insensitively and without
+    /// allocating; `None` for every non-constructor.
+    fn from_name(name: &str) -> Option<Self> {
+        if name.eq_ignore_ascii_case("duration") {
+            return Some(Self::Duration);
+        }
+        ClockKind::from_name_ignore_case(name)
+            .map(Self::Clock)
+            .or_else(|| {
+                Self::ALIASES
+                    .iter()
+                    .find(|(spelling, _)| spelling.eq_ignore_ascii_case(name))
+                    .map(|(_, ctor)| *ctor)
+            })
+    }
+
+    /// The base constructor spelling (`localdatetime`, `duration`, …).
+    fn base_name(self) -> &'static str {
+        match self {
+            Self::Clock(kind) => kind.name(),
+            Self::Duration => "duration",
+        }
+    }
+}
+
 /// Whether `name` is a temporal constructor spelling [`construct_named`]
-/// builds values from — a clock kind ([`ClockKind::from_name`], which reads
-/// the canonical kind table) or `duration`, the one non-clock constructor.
-/// The one predicate the front-end's dialect gate and literal folding and
-/// the executor's scan-predicate specialization consult, so none can
-/// recognize a name the shared policy would not construct. The alias
-/// spellings (`local_time`, …) canonicalize inside; the clock-access
+/// builds values from — a clock kind or `duration`, the one non-clock
+/// constructor. The one predicate the front-end's dialect gate and literal
+/// folding and the executor's scan-predicate specialization consult, so
+/// none can recognize a name the shared policy would not construct. The
+/// alias spellings (`local_time`, …) are recognized; the clock-access
 /// spellings are not constructors of arguments at all.
 pub fn is_constructor(name: &str) -> bool {
-    let canon = canonical(name);
-    canon == "duration" || ClockKind::from_name(&canon).is_some()
+    Constructor::from_name(name).is_some()
 }
 
 /// The clock kind `name` constructs, spellings canonicalized (`zoned_datetime`
 /// is [`ClockKind::DateTime`]); `None` for `duration` and every non-constructor.
-/// The typed form of [`is_constructor`] for a caller that decides per kind.
+/// The typed form of [`is_constructor`] for a caller that decides per kind;
+/// it allocates nothing, so it is safe on a per-row path.
 pub fn clock_kind(name: &str) -> Option<ClockKind> {
-    ClockKind::from_name(&canonical(name))
+    match Constructor::from_name(name)? {
+        Constructor::Clock(kind) => Some(kind),
+        Constructor::Duration => None,
+    }
 }
 
-/// The one name canonicalization both readers share: every spelling is
-/// case-folded and mapped to the base constructor it stands for.
-/// [`is_constructor`] recognizes only the base and alias spellings, so every name
-/// comparison goes through here first — [`accepts_pattern`] and
-/// [`construct_named`] cannot disagree on a spelling.
-fn canonical(name: &str) -> String {
-    match name.to_ascii_lowercase().as_str() {
-        "local_time" => "localtime".to_string(),
-        "local_datetime" | "local_date_time" => "localdatetime".to_string(),
-        "zoned_time" => "time".to_string(),
-        "zoned_datetime" | "zoned_date_time" => "datetime".to_string(),
-        other => other.to_string(),
+/// The base spelling `construct_named` and the pattern parser key on. A
+/// non-constructor keeps its case-folded spelling, which both consumers
+/// reject by name.
+fn base_spelling(name: &str) -> std::borrow::Cow<'static, str> {
+    match Constructor::from_name(name) {
+        Some(ctor) => std::borrow::Cow::Borrowed(ctor.base_name()),
+        None => std::borrow::Cow::Owned(name.to_ascii_lowercase()),
     }
 }
 
@@ -350,7 +402,7 @@ fn too_many_arguments(name: &str, got: usize) -> Error {
 /// what `date("…")` means. Callers passing zero arguments get the clock
 /// reading (`QueryClockGuard` pins it per statement).
 pub fn construct_named(name: &str, vals: &[Value]) -> Result<Value> {
-    let canon = canonical(name);
+    let canon = base_spelling(name);
     match vals {
         // The clock reading: the base constructor with no argument.
         [] => base_value(&canon, None),
