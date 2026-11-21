@@ -145,13 +145,12 @@ impl Spill {
 /// The tiered distinct set. See the module docs.
 pub(crate) struct DistinctSet {
     null: bool,
-    /// The tag whose words the active tier holds; `None` while no word
-    /// has been taken (an active tier exists but is empty).
-    word_tag: Option<WordTag>,
-    /// The active word tier: the current tag's [`TieredWordSet`], inline
-    /// in the set (the one inline phase), promoted in place on the 17th
-    /// word, parked into its spill slot on a tag switch.
-    words: TieredWordSet,
+    /// The active word tier with the tag whose words it holds, as one
+    /// fact: the current tag's [`TieredWordSet`], inline in the set (the
+    /// one inline phase), promoted in place on the 17th word, parked into
+    /// its spill slot on a tag switch. `None` while no word has been
+    /// taken — no placeholder tier stands in for it.
+    active: Option<(WordTag, TieredWordSet)>,
     spill: Option<Box<Spill>>,
     charge: WorkspaceCharge,
 }
@@ -160,8 +159,7 @@ impl Default for DistinctSet {
     fn default() -> Self {
         Self {
             null: false,
-            word_tag: None,
-            words: TieredWordSet::new(WordHash::Value),
+            active: None,
             spill: None,
             charge: WorkspaceCharge::empty(),
         }
@@ -174,8 +172,10 @@ impl DistinctSet {
     pub(crate) fn clone_contents(&self) -> Self {
         Self {
             null: self.null,
-            word_tag: self.word_tag,
-            words: self.words.clone_contents(),
+            active: self
+                .active
+                .as_ref()
+                .map(|(tag, words)| (*tag, words.clone_contents())),
             spill: self
                 .spill
                 .as_ref()
@@ -187,7 +187,7 @@ impl DistinctSet {
     /// Every word tier's bytes: the active tier's and the parked ones'.
     #[cfg(test)]
     fn word_bytes(&self) -> u64 {
-        self.words.bytes()
+        self.active_words().map_or(0, TieredWordSet::bytes)
             + self
                 .spill_ref()
                 .map_or(0, |spill| spill.parked_sum(TieredWordSet::bytes))
@@ -202,7 +202,11 @@ impl DistinctSet {
         // the general tables' share is the remainder, retained once. The
         // copy is built from those parts, never from a contents copy that
         // is then discarded.
-        let words = self.words.try_clone()?;
+        let active = self
+            .active
+            .as_ref()
+            .map(|(tag, words)| words.try_clone().map(|words| (*tag, words)))
+            .transpose()?;
         let spill = self
             .spill
             .as_ref()
@@ -211,8 +215,7 @@ impl DistinctSet {
         let general = self.spill_ref().map_or(0, Spill::general_bytes);
         Ok(Self {
             null: self.null,
-            word_tag: self.word_tag,
-            words,
+            active,
             spill,
             charge: WorkspaceCharge::retain_with(|| general)?,
         })
@@ -242,7 +245,9 @@ impl DistinctSet {
 
     /// Distinct keys held, across every tier.
     pub(crate) fn len(&self) -> usize {
-        usize::from(self.null) + self.words.len() + self.spill_ref().map_or(0, Spill::len)
+        usize::from(self.null)
+            + self.active_words().map_or(0, TieredWordSet::len)
+            + self.spill_ref().map_or(0, Spill::len)
     }
 
     /// The accounted bytes of every held representation — the walk the
@@ -256,7 +261,7 @@ impl DistinctSet {
     /// Whether the word tier has promoted to its per-tag tables (T2).
     #[cfg(test)]
     pub(crate) fn words_promoted(&self) -> bool {
-        self.words.promoted()
+        self.active_words().is_some_and(TieredWordSet::promoted)
             || self
                 .spill_ref()
                 .is_some_and(|spill| spill.word_tiers().any(TieredWordSet::promoted))
@@ -266,11 +271,16 @@ impl DistinctSet {
     /// charge plus the general tables' charge.
     #[cfg(test)]
     pub(crate) fn charged(&self) -> u64 {
-        self.words.charged()
+        self.active_words().map_or(0, TieredWordSet::charged)
             + self
                 .spill_ref()
                 .map_or(0, |spill| spill.parked_sum(TieredWordSet::charged))
             + self.charge.bytes()
+    }
+
+    /// The active word tier, when a word has been taken.
+    fn active_words(&self) -> Option<&TieredWordSet> {
+        self.active.as_ref().map(|(_, words)| words)
     }
 
     /// The heap tiers, allocated on first need. Associated-function form
@@ -286,42 +296,41 @@ impl DistinctSet {
     }
 
     fn insert_word(&mut self, tag: WordTag, word: u64) -> Result<bool> {
-        if self.word_tag != Some(tag) {
-            self.switch_word_tier(tag);
-        }
-        self.words.insert(word, DISTINCT_PEAK_FAMILY)
+        self.active_tier(tag).insert(word, DISTINCT_PEAK_FAMILY)
     }
 
-    /// A tag switch (or the first word): park the active tier — promoted
-    /// first, ADR-0507 §6's tag-homogeneous inline phase ends here — in
-    /// its tag's spill slot, then seat the incoming tag's parked tier,
-    /// or a fresh one, as the active tier. A refused charge can leave
-    /// the fresh tier empty with the tag claimed; the next same-tag word
-    /// fills it, and an empty tier is never parked.
-    fn switch_word_tier(&mut self, tag: WordTag) {
-        if let Some(held) = self.word_tag.take() {
-            let mut active = std::mem::replace(&mut self.words, TieredWordSet::new(word_hash(tag)));
-            active.promote_inline();
-            if active.len() > 0 {
-                *Self::spill(&mut self.spill).word_tier_mut(held) = Some(active);
+    /// The active word tier for `tag`: the held one when the tag matches,
+    /// else the incoming tag's parked tier or a fresh one built from
+    /// [`word_hash`] alone (never from insert history). A refused charge
+    /// can leave the fresh tier empty with the tag claimed; the next
+    /// same-tag word fills it.
+    fn active_tier(&mut self, tag: WordTag) -> &mut TieredWordSet {
+        // A held tier of another tag is parked first, promoted — ADR-0507
+        // §6's tag-homogeneous inline phase ends here — in its tag's slot;
+        // an empty tier is never parked.
+        if self.active.as_ref().is_some_and(|(held, _)| *held != tag) {
+            if let Some((held, mut active)) = self.active.take() {
+                active.promote_inline();
+                if active.len() > 0 {
+                    *Self::spill(&mut self.spill).word_tier_mut(held) = Some(active);
+                }
             }
-        } else {
-            // The set's first word: Default's placeholder tier carries the
-            // seeded Value hasher regardless of this tag — seat the tag's
-            // own, so every active tier's hasher derives from word_hash
-            // alone, never from insert history.
-            self.words = TieredWordSet::new(word_hash(tag));
         }
-        // Seating a parked tier must not materialize the spill: a set that
-        // never parks anything stays allocation-free on this path.
-        if let Some(parked) = self
-            .spill
-            .as_deref_mut()
-            .and_then(|spill| spill.word_tier_mut(tag).take())
-        {
-            self.words = parked;
-        }
-        self.word_tag = Some(tag);
+        let spill = &mut self.spill;
+        &mut self
+            .active
+            .get_or_insert_with(|| {
+                // Seating a parked tier must not materialize the spill: a
+                // set that never parks anything stays allocation-free here.
+                let parked = spill
+                    .as_deref_mut()
+                    .and_then(|spill| spill.word_tier_mut(tag).take());
+                (
+                    tag,
+                    parked.unwrap_or_else(|| TieredWordSet::new(word_hash(tag))),
+                )
+            })
+            .1
     }
 
     fn insert_single(&mut self, key: GroupKey) -> Result<bool> {

@@ -26,22 +26,13 @@ pub(crate) struct Residual<'a> {
     pub scope: &'a HashSet<String>,
 }
 
-/// The degenerate residual — no conjuncts, empty scope: the one spelling
-/// of "read with no residual pushdown".
 impl Residual<'_> {
-    /// The degenerate case of [`Self::with_conjuncts`]: no conjuncts
-    /// either.
+    /// The degenerate residual — no conjuncts, empty scope: the one
+    /// spelling of "read with no residual pushdown".
     pub(crate) fn empty() -> Residual<'static> {
-        Self::with_conjuncts(&[])
-    }
-
-    /// Seek material without a scope: conjuncts to consider, no names
-    /// bound — the one spelling of that shape, so no caller fabricates a
-    /// dead local scope beside its conjuncts.
-    pub(crate) fn with_conjuncts(conjuncts: &[Expr]) -> Residual<'_> {
         static EMPTY_SCOPE: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
         Residual {
-            conjuncts,
+            conjuncts: &[],
             scope: EMPTY_SCOPE.get_or_init(HashSet::new),
         }
     }
