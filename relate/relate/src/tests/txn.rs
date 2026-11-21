@@ -182,20 +182,28 @@ fn named_index_in_explicit_txn() {
     );
 }
 
-/// A statement whose own redo crosses the ADR-0086 per-commit WAL payload
-/// cap is refused at that statement, with the capacity refusal the commit
-/// would have produced (ADR-0494) — not left to run on to a COMMIT that
+/// A statement whose own redo crosses the store's resolved per-commit WAL
+/// payload cap (ADR-0650; here a lowered 1 MiB) is refused at that
+/// statement, with the capacity refusal the commit would have produced
+/// (ADR-0494) — not left to run on to a COMMIT that
 /// fails with every later statement's work already done (LABS-858).
 #[test]
 fn explicit_txn_refuses_the_statement_that_crosses_the_commit_cap() {
-    let db = Database::open(":memory:").unwrap();
+    // A 1 MiB cap (ADR-0650's knob) keeps the crossing cheap: the payload
+    // below is 2 MiB, over the cap, far under the expression cap.
+    let db = Database::open_with(
+        ":memory:",
+        crate::OpenOptions {
+            wal_payload_limit: Some(1 << 20),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let mut c = db.connect().unwrap();
     c.begin().unwrap();
     c.query("CREATE (:Small {p: 'x'})").unwrap();
-    // One 64 MiB string (26 doublings of one byte): over the cap, under the
-    // 256 MiB expression cap.
     let err = c
-        .query("CREATE (:Big {p: reduce(s = 'x', i IN range(1, 26) | s + s)})")
+        .query("CREATE (:Big {p: reduce(s = 'x', i IN range(1, 21) | s + s)})")
         .unwrap_err();
     assert!(
         matches!(
@@ -207,7 +215,7 @@ fn explicit_txn_refuses_the_statement_that_crosses_the_commit_cap() {
         ),
         "{err}"
     );
-    assert!(err.to_string().contains("64 MiB"), "{err}");
+    assert!(err.to_string().contains("1 MB"), "{err}");
     // Refused at that statement, so the transaction is failed there: the
     // next statement is turned away rather than run.
     let after = c.query("CREATE (:Later)").unwrap_err();
@@ -221,12 +229,20 @@ fn explicit_txn_refuses_the_statement_that_crosses_the_commit_cap() {
 /// accumulated redo over is the one refused.
 #[test]
 fn explicit_txn_refuses_the_statement_that_crosses_the_accumulated_cap() {
-    let db = Database::open(":memory:").unwrap();
+    // A 1 MiB cap (ADR-0650's knob): three 256 KiB statements fit under it
+    // with their record overhead, the fourth takes the accumulated redo
+    // over (each record carries its ops' framing bytes past the payload).
+    let db = Database::open_with(
+        ":memory:",
+        crate::OpenOptions {
+            wal_payload_limit: Some(1 << 20),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let mut c = db.connect().unwrap();
     c.begin().unwrap();
-    // 16 MiB per statement (24 doublings of one byte): three fit under the
-    // cap, the fourth crosses it.
-    let chunk = "CREATE (:Chunk {p: reduce(s = 'x', i IN range(1, 24) | s + s)})";
+    let chunk = "CREATE (:Chunk {p: reduce(s = 'x', i IN range(1, 18) | s + s)})";
     for _ in 0..3 {
         c.query(chunk).unwrap();
     }

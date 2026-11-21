@@ -104,7 +104,8 @@ fn concurrent_oversized_commits_peak_within_the_limit_plus_one_step() {
                     let mut ledger = TokenLedger::new(LIMIT, 0, pool);
                     let _installed = LedgerGuard::install(&mut ledger);
                     let mut charge = WorkspaceCharge::empty();
-                    let encoded = EncodedOps::encode(ops, &mut charge);
+                    let encoded =
+                        EncodedOps::encode(ops, &mut charge, Error::WAL_PAYLOAD_CAP_BYTES);
                     // Hold every success until all attempts have finished,
                     // as the commit slots hold theirs until the waiter
                     // completes.

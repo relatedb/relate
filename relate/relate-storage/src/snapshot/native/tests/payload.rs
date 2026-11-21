@@ -307,7 +307,9 @@ fn refold_after_dropping_payload_selection(store: &StoreTarget) -> Graph {
 /// in the payload path or the cause — and answers matching a payload-less
 /// open of the same store.
 fn assert_degrades(store: &StoreTarget, needle: &str) -> Graph {
-    let (opened, _, _, report) = crate::open_store_with_report::<Graph>(store).unwrap();
+    let (opened, _, _, report) =
+        crate::open_store_with_report::<Graph>(store, relate_core::Error::WAL_PAYLOAD_CAP_BYTES)
+            .unwrap();
     assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
     let warning = &report.warnings[0];
     assert!(
@@ -583,7 +585,9 @@ fn a_payload_at_another_checkpoint_degrades_to_the_refold() {
     put_object(&store, &path, &forged).unwrap();
     // A torn publication degrades, never refuses: the store opens on the
     // row re-fold, and the warning names both checkpoints.
-    let (opened, _, _, report) = crate::open_store_with_report::<Graph>(&store).unwrap();
+    let (opened, _, _, report) =
+        crate::open_store_with_report::<Graph>(&store, relate_core::Error::WAL_PAYLOAD_CAP_BYTES)
+            .unwrap();
     assert_eq!(opened.degree_out(0).len(), 6);
     assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
     let warning = &report.warnings[0];
@@ -699,7 +703,9 @@ fn a_delete_after_the_fold_installs_with_its_tombstone() {
 #[test]
 fn an_installed_payload_matches_the_refold_across_every_node_adjacency() {
     let store = every_tier_store();
-    let (installed, _, _, report) = crate::open_store_with_report::<Graph>(&store).unwrap();
+    let (installed, _, _, report) =
+        crate::open_store_with_report::<Graph>(&store, relate_core::Error::WAL_PAYLOAD_CAP_BYTES)
+            .unwrap();
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     let refolded = refold_after_dropping_payload_selection(&store);
     let observed = node_adjacencies(&installed);
@@ -724,7 +730,9 @@ fn an_installed_payload_answers_like_a_refolded_open_over_a_wal_tail() {
         vec![create_node(2), create_rel(6, 0, 1, Some(9))],
     );
 
-    let (installed, _, _, report) = crate::open_store_with_report::<Graph>(&store).unwrap();
+    let (installed, _, _, report) =
+        crate::open_store_with_report::<Graph>(&store, relate_core::Error::WAL_PAYLOAD_CAP_BYTES)
+            .unwrap();
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     let refolded = refold_after_dropping_payload_selection(&store);
 
@@ -899,7 +907,9 @@ fn a_default_off_open_answers_like_the_writer_and_reads_no_payload() {
     let planted = crate::snapshot::payload_object_name().unwrap();
     put_object(&store, &planted, b"never read").unwrap();
     let (watched, opens) = watch_opens(&store, &planted);
-    let (opened, _, _, report) = crate::open_store_with_report::<Graph>(&watched).unwrap();
+    let (opened, _, _, report) =
+        crate::open_store_with_report::<Graph>(&watched, relate_core::Error::WAL_PAYLOAD_CAP_BYTES)
+            .unwrap();
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     assert_eq!(opens.load(Ordering::SeqCst), 0, "the open read a payload");
     assert_eq!(node_adjacencies(&opened), node_adjacencies(&graph));

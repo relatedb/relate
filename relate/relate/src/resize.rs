@@ -211,8 +211,11 @@ fn adopt_writer(shared: &Shared) -> Result<()> {
     // A promote trims a torn tail exactly as a bootstrap open does, so it
     // reports it the same way (LABS-1535) — one helper, both writable opens,
     // each tail the moment it is trimmed so a failure below cannot swallow it.
-    let mut wal =
-        relate_storage::open_writer_wal_notifying(&shared.store, &mut crate::report_trimmed_tail)?;
+    let mut wal = relate_storage::open_writer_wal_notifying(
+        &shared.store,
+        shared.resolved.wal_payload_limit,
+        &mut crate::report_trimmed_tail,
+    )?;
     if wal.lsn != applied {
         return Err(Error::storage(format!(
             "promote WAL LSN {} does not match the applied LSN {applied}",
@@ -272,7 +275,7 @@ fn demote_inner(shared: &Arc<Shared>) -> Result<()> {
 /// Replace the append WAL with a read-only one positioned at the published
 /// checkpoint. The loaded graph stays.
 fn adopt_follower_wal(shared: &Shared) -> Result<()> {
-    let wal = relate_storage::open_follower_wal(&shared.store)?;
+    let wal = relate_storage::open_follower_wal(&shared.store, shared.resolved.wal_payload_limit)?;
     let mut slot = shared.wal.lock()?;
     *slot = wal;
     Ok(())

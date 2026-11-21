@@ -64,7 +64,9 @@ fn a_legacy_store_upgrades_wide_at_its_next_checkpoint_and_sticks() {
     {
         // The open is a plain one: no knob to set, and no migration.
         let target = parse_uri(uri.to_str().unwrap()).unwrap();
-        let (opened, wal, _, report) = open_store_with_report::<Graph>(&target).unwrap();
+        let (opened, wal, _, report) =
+            open_store_with_report::<Graph>(&target, relate_core::Error::WAL_PAYLOAD_CAP_BYTES)
+                .unwrap();
         assert!(
             report.migrations.migration().is_none(),
             "a current v3 store does not migrate: {:?}",
@@ -101,7 +103,9 @@ fn a_legacy_store_upgrades_wide_at_its_next_checkpoint_and_sticks() {
     // as is.
     {
         let target = parse_uri(uri.to_str().unwrap()).unwrap();
-        let (opened, wal, _, report) = open_store_with_report::<Graph>(&target).unwrap();
+        let (opened, wal, _, report) =
+            open_store_with_report::<Graph>(&target, relate_core::Error::WAL_PAYLOAD_CAP_BYTES)
+                .unwrap();
         assert!(
             report.migrations.migration().is_none(),
             "{:?}",
@@ -147,7 +151,9 @@ fn a_wide_checkpoint_copies_clean_rows_and_keeps_every_property() {
     let before: Vec<Vec<(String, relate_core::Value)>>;
     {
         let target = parse_uri(uri.to_str().unwrap()).unwrap();
-        let (opened, mut wal, _, _) = open_store_with_report::<Graph>(&target).unwrap();
+        let (opened, mut wal, _, _) =
+            open_store_with_report::<Graph>(&target, relate_core::Error::WAL_PAYLOAD_CAP_BYTES)
+                .unwrap();
         checkpoint_with_lsn(&target, &opened, wal.lsn, None).unwrap();
         // The next checkpoint copies the clean rows: only nodes 1 and 2
         // are dirty — node 1's `age` turns String (the carried Int
@@ -170,7 +176,9 @@ fn a_wide_checkpoint_copies_clean_rows_and_keeps_every_property() {
     // Reopened, every row carries exactly the properties it had before
     // the copying checkpoint.
     let target = parse_uri(uri.to_str().unwrap()).unwrap();
-    let (opened, _wal, _, _) = open_store_with_report::<Graph>(&target).unwrap();
+    let (opened, _wal, _, _) =
+        open_store_with_report::<Graph>(&target, relate_core::Error::WAL_PAYLOAD_CAP_BYTES)
+            .unwrap();
     let after: Vec<Vec<(String, relate_core::Value)>> =
         (0..6).map(|i| node_properties(&opened, i)).collect();
     assert_eq!(after, before, "every row keeps every property");

@@ -1,5 +1,5 @@
 //! End-to-end: a transaction whose commit record crosses the per-commit
-//! WAL payload cap (ADR-0086, typed by ADR-0494) is refused with the
+//! WAL payload cap (ADR-0650's knob, typed by ADR-0494) is refused with the
 //! capacity family's caller-facing error on every surface — never the
 //! generic `UnknownError: internal error` — and the message names the cap
 //! and the remedy. The same refusal is driven through a Bolt explicit
@@ -16,20 +16,27 @@ mod support;
 use relate_bolt::packstream::Pack;
 use relate_test_support::loopback::{exchange, post};
 use support::bolt::{connect_and_hello, failure_map, read_msg, send_struct, success_map};
-use support::serve::{auth_header, free_port, spawn_serve_with, wait_for_ports, AUTH};
+use support::serve::{auth_header, free_port, spawn_serve_with_env, wait_for_ports, AUTH};
 use support::{run_cli, tempdir, CliRunOptions};
 
-/// A write whose commit record crosses the 64 MiB cap: one 64 MiB string
-/// built in-engine (26 doublings of one byte), so the statement needs no
-/// large wire message and stays under the 256 MiB expression cap.
+/// A write whose commit record crosses the surfaces' configured cap: one
+/// 64 MiB string built in-engine (26 doublings of one byte), so the
+/// statement needs no large wire message and stays under the 256 MiB
+/// expression cap. Every surface below is spawned with
+/// `RELATE_WAL_PAYLOAD_LIMIT=1mb` (ADR-0650), so the record crosses a 1 MB
+/// cap without any surface carrying a big payload.
 const OVER_CAP_WRITE: &str = "CREATE (:Big {p: reduce(s = 'x', i IN range(1, 26) | s + s)})";
+
+/// The child env entry every spawned surface carries. The binary `mib`
+/// form, so the refusal's rendered figure is the round "1 MB".
+const LOW_CAP_ENV: (&str, &str) = ("RELATE_WAL_PAYLOAD_LIMIT", "1mib");
 
 const CAPACITY_CODE: &str = "Neo.ClientError.General.TransactionOutOfMemoryError";
 
 /// The text every surface carries: the cap in its stated unit and the
 /// batching remedy.
 fn assert_names_the_cap_and_the_remedy(message: &str) {
-    assert!(message.contains("64 MiB"), "{message}");
+    assert!(message.contains("1 MB"), "{message}");
     assert!(message.contains("smaller transactions"), "{message}");
     assert!(message.contains("IN TRANSACTIONS"), "{message}");
 }
@@ -40,7 +47,14 @@ fn test_bolt_explicit_run_over_the_cap_is_a_capacity_failure() {
     let db = dir.path().join("graph").to_str().unwrap().to_string();
     let (http_port, mcp_port, bolt_port) = (free_port(), free_port(), free_port());
     let bolt_arg = bolt_port.to_string();
-    let child = spawn_serve_with(&db, http_port, mcp_port, Some(AUTH), &["--bolt", &bolt_arg]);
+    let child = spawn_serve_with_env(
+        &db,
+        http_port,
+        mcp_port,
+        Some(AUTH),
+        &["--bolt", &bolt_arg],
+        &[LOW_CAP_ENV],
+    );
     wait_for_ports(&[http_port, mcp_port, bolt_port]);
 
     let mut client = connect_and_hello(bolt_port, AUTH);
@@ -79,7 +93,7 @@ fn test_http_transaction_run_over_the_cap_is_a_capacity_error() {
     let dir = tempdir();
     let db = dir.path().join("graph").to_str().unwrap().to_string();
     let (http_port, mcp_port) = (free_port(), free_port());
-    let child = spawn_serve_with(&db, http_port, mcp_port, Some(AUTH), &[]);
+    let child = spawn_serve_with_env(&db, http_port, mcp_port, Some(AUTH), &[], &[LOW_CAP_ENV]);
     wait_for_ports(&[http_port, mcp_port]);
 
     let (status, body) = exchange(
@@ -114,7 +128,9 @@ fn test_cli_query_over_the_cap_is_a_capacity_error() {
     let db = home.path().join("graph");
     let db = db.to_str().unwrap();
     let (status, _stdout, stderr) = run_cli(
-        CliRunOptions::new(&["query", "--database", db, OVER_CAP_WRITE]).in_home(home.path()),
+        CliRunOptions::new(&["query", "--database", db, OVER_CAP_WRITE])
+            .in_home(home.path())
+            .with_envs(&[LOW_CAP_ENV]),
     );
     assert!(!status.success(), "{stderr}");
     assert!(!stderr.contains("internal error"), "{stderr}");

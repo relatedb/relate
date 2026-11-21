@@ -257,7 +257,10 @@ pub(crate) fn reload(shared: &Shared) -> Result<()> {
     }
     // The replacement is private until the swap. Queries keep reading the
     // installed graph for the whole disk load.
-    let (graph, wal, ontology) = crate::open::open_store_readonly_screened(&shared.store)?;
+    let (graph, wal, ontology) = crate::open::open_store_readonly_screened(
+        &shared.store,
+        shared.resolved.wal_payload_limit,
+    )?;
     crate::check_loaded_graph(&graph)?;
     // An open statement or explicit transaction holds a pin after it has
     // dropped `read_guard`. Wait until those pins are gone, and hold the

@@ -204,7 +204,7 @@ fn sweep_after_open(target: &StoreTarget) -> Result<()> {
 /// first query is served (ADR-0127: migrate-on-open, hands-off,
 /// forward-only); see [`open_store_with_report`].
 pub fn open_store<G: SnapshotGraph>(target: &StoreTarget) -> Result<(G, Wal)> {
-    let (graph, wal, _, _) = open_store_with_report(target)?;
+    let (graph, wal, _, _) = open_store_with_report(target, Error::WAL_PAYLOAD_CAP_BYTES)?;
     Ok((graph, wal))
 }
 
@@ -213,12 +213,14 @@ pub fn open_store<G: SnapshotGraph>(target: &StoreTarget) -> Result<(G, Wal)> {
 /// Skips migrate-on-open, orphan sweep, and torn-tail trim. Retries when the
 /// manifest changes during the load.
 pub fn open_store_readonly<G: SnapshotGraph>(target: &StoreTarget) -> Result<(G, Wal)> {
-    let (graph, wal, _) = open_store_readonly_with_ontology::<G>(target, &mut |_| {})?;
+    let (graph, wal, _) =
+        open_store_readonly_with_ontology::<G>(target, Error::WAL_PAYLOAD_CAP_BYTES, &mut |_| {})?;
     Ok((graph, wal))
 }
 
 /// [`open_store_readonly`] plus the store's current ontology document
-/// (ADR-0120), folded exactly as in [`open_store_with_report`]. `on_warning`
+/// (ADR-0120), folded exactly as in [`open_store_with_report`], at the
+/// store's resolved per-record payload cap (ADR-0650). `on_warning`
 /// receives each degrade the load took instead of failing (the adjacency
 /// payload it could not install) — the read-only twin of
 /// [`open_store_notifying`]'s warning sink, wired by the read-only open
@@ -228,13 +230,14 @@ pub fn open_store_readonly<G: SnapshotGraph>(target: &StoreTarget) -> Result<(G,
 #[doc(hidden)]
 pub fn open_store_readonly_with_ontology<G: SnapshotGraph>(
     target: &StoreTarget,
+    payload_cap: u64,
     on_warning: &mut dyn FnMut(&crate::DegradedPayload),
 ) -> Result<(G, Wal, Option<String>)> {
     const ATTEMPTS: u32 = 8;
     let mut last_err = None;
     for attempt in 0..ATTEMPTS {
         let before = manifest_stamp(target)?;
-        match open_store_readonly_once(target) {
+        match open_store_readonly_once(target, payload_cap) {
             Ok((graph, wal, ontology, warnings)) => {
                 let after = manifest_stamp(target)?;
                 if before == after {
@@ -261,10 +264,10 @@ pub fn open_store_readonly_with_ontology<G: SnapshotGraph>(
 /// [`Wal::poll_follow`] refuses an append handle. A writer that has just
 /// checkpointed already holds the graph that snapshot describes, so it can
 /// swap in this WAL and keep the graph.
-pub fn open_follower_wal(target: &StoreTarget) -> Result<Wal> {
+pub fn open_follower_wal(target: &StoreTarget, payload_cap: u64) -> Result<Wal> {
     let checkpoint_lsn = crate::published_checkpoint_lsn(target)?;
     let (vfs, prefix) = target.wal_vfs();
-    Wal::open_readonly(vfs, prefix, checkpoint_lsn)
+    Wal::open_readonly(vfs, prefix, checkpoint_lsn, payload_cap)
 }
 
 /// Open the WAL for append at the published checkpoint, without loading
@@ -273,8 +276,8 @@ pub fn open_follower_wal(target: &StoreTarget) -> Result<Wal> {
 /// [`Wal::open`] rescans `bytes` and `commits` and trims a torn tail. A
 /// follower that has applied through the tip swaps this handle in and
 /// keeps the loaded graph (ADR-0440).
-pub fn open_writer_wal(target: &StoreTarget) -> Result<Wal> {
-    open_writer_wal_notifying(target, &mut |_| {})
+pub fn open_writer_wal(target: &StoreTarget, payload_cap: u64) -> Result<Wal> {
+    open_writer_wal_notifying(target, payload_cap, &mut |_| {})
 }
 
 /// [`open_writer_wal`] that hands each torn tail it trims (ADR-0114) to
@@ -284,11 +287,12 @@ pub fn open_writer_wal(target: &StoreTarget) -> Result<Wal> {
 #[doc(hidden)]
 pub fn open_writer_wal_notifying(
     target: &StoreTarget,
+    payload_cap: u64,
     on_trim: &mut dyn FnMut(&crate::TrimmedTail),
 ) -> Result<Wal> {
     let checkpoint_lsn = crate::published_checkpoint_lsn(target)?;
     let (vfs, prefix) = target.wal_vfs();
-    Ok(Wal::open_notifying(vfs, prefix, checkpoint_lsn, on_trim)?.0)
+    Ok(Wal::open_notifying(vfs, prefix, checkpoint_lsn, payload_cap, on_trim)?.0)
 }
 
 fn manifest_stamp(target: &StoreTarget) -> Result<Option<Vec<u8>>> {
@@ -302,6 +306,7 @@ fn manifest_stamp(target: &StoreTarget) -> Result<Option<Vec<u8>>> {
 
 fn open_store_readonly_once<G: SnapshotGraph>(
     target: &StoreTarget,
+    payload_cap: u64,
 ) -> Result<(G, Wal, Option<String>, Vec<crate::DegradedPayload>)> {
     let LoadedSnapshot {
         graph,
@@ -311,7 +316,7 @@ fn open_store_readonly_once<G: SnapshotGraph>(
         ..
     } = load_snapshot_with_schema_guard::<G>(target)?;
     let (wal_vfs, wal_prefix) = target.wal_vfs();
-    let wal = Wal::open_readonly(wal_vfs, wal_prefix, checkpoint_lsn)?;
+    let wal = Wal::open_readonly(wal_vfs, wal_prefix, checkpoint_lsn, payload_cap)?;
     // The read-only open tail: the one call with no deferred action —
     // for the markdown codec that is exactly the dirty-WAL guard
     // (`markdown::finish_open` runs its guard before any deferred
@@ -363,8 +368,9 @@ pub struct OpenReport {
 #[doc(hidden)]
 pub fn open_store_with_report<G: SnapshotGraph>(
     target: &StoreTarget,
+    payload_cap: u64,
 ) -> Result<(G, Wal, Option<String>, OpenReport)> {
-    open_store_notifying(target, &mut |_| {}, &mut |_| {})
+    open_store_notifying(target, payload_cap, &mut |_| {}, &mut |_| {})
 }
 
 /// [`open_store_with_report`] that also hands each torn tail to `on_trim`
@@ -382,6 +388,7 @@ pub fn open_store_with_report<G: SnapshotGraph>(
 #[doc(hidden)]
 pub fn open_store_notifying<G: SnapshotGraph>(
     target: &StoreTarget,
+    payload_cap: u64,
     on_trim: &mut dyn FnMut(&crate::TrimmedTail),
     on_warning: &mut dyn FnMut(&crate::DegradedPayload),
 ) -> Result<(G, Wal, Option<String>, OpenReport)> {
@@ -399,7 +406,7 @@ pub fn open_store_notifying<G: SnapshotGraph>(
     }
     let (wal_vfs, wal_prefix) = target.wal_vfs();
     let (mut wal, trimmed_tails) =
-        Wal::open_notifying(wal_vfs, wal_prefix, checkpoint_lsn, on_trim)?;
+        Wal::open_notifying(wal_vfs, wal_prefix, checkpoint_lsn, payload_cap, on_trim)?;
     // The writable-open tail (ADR-0406 §5), codec-owned through the ops
     // table: the dirty-WAL guard first, then — no WAL deltas pending
     // over the loaded base — the load's deferred action runs.

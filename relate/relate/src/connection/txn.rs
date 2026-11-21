@@ -35,7 +35,8 @@ pub(crate) struct OpenTxn {
     ontology_document: Option<Arc<str>>,
     /// The running tally of the transaction's prospective commit record
     /// (LABS-858). An explicit transaction commits as one WAL record, so
-    /// its size is bounded by the ADR-0086 cap from its first statement on
+    /// its size is bounded by the store's resolved payload cap (ADR-0650,
+    /// `OpenResolved::wal_payload_limit`) from its first statement on
     /// — the tally is what lets a statement that crosses the cap be
     /// refused there, instead of leaving every later statement to run and
     /// the commit to fail. It also owns the redo-log position it has
@@ -46,13 +47,14 @@ pub(crate) struct OpenTxn {
 
 impl OpenTxn {
     /// Refuse the statement that takes the transaction's prospective commit
-    /// record over the ADR-0086 payload cap, with the same refusal the
-    /// commit would have produced (ADR-0494). Each op is encoded once, as
+    /// record over `payload_cap` (the store's resolved cap, ADR-0650), with
+    /// the same refusal the commit would have produced (ADR-0494). Each op
+    /// is encoded once, as
     /// the statement that appended it returns, so a statement that stays
     /// under the cap never re-encodes what it already counted. The tally
     /// owns the resume position (its own op count), so there is no second
     /// cursor beside it to keep in step.
-    fn check_commit_cap(&self) -> Result<()> {
+    fn check_commit_cap(&self, payload_cap: u64) -> Result<()> {
         let scratch = self.scratch.borrow();
         let cursor = self.cap_tally.borrow().ops_count();
         // The log only grows while a transaction is open: the one path that
@@ -69,11 +71,8 @@ impl OpenTxn {
         let mut tally = self.cap_tally.borrow_mut();
         tally.add(&delta)?;
         let bytes = tally.bytes();
-        if bytes > Error::WAL_PAYLOAD_CAP_BYTES {
-            return Err(Error::capacity_wal_payload(
-                bytes,
-                Error::WAL_PAYLOAD_CAP_BYTES,
-            ));
+        if bytes > payload_cap {
+            return Err(Error::capacity_wal_payload(bytes, payload_cap));
         }
         Ok(())
     }
@@ -285,7 +284,10 @@ impl Connection {
         // Refuse it here, at the statement that crossed (LABS-858) — the
         // check folded into the statement's own result, so the failure
         // epilogue (fail the transaction, return the error) is spelled once.
-        let checked = result.and_then(|r| txn.check_commit_cap().map(|()| r));
+        let checked = result.and_then(|r| {
+            txn.check_commit_cap(self.inner.resolved.wal_payload_limit)
+                .map(|()| r)
+        });
         if checked.is_err() {
             txn.failed.set(true);
         }

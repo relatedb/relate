@@ -52,6 +52,37 @@ imported by copying it to `<dir>/graph.json` before opening.
 - Inside one process, use transactions (`.begin` / `.commit` /
   `.rollback`) to make a group of writes atomic; `.rollback` discards them.
 
+## Large writes in one go: the two memory knobs
+
+A bulk load can hit two different memory bounds, and they are set by two
+independent knobs — size both when you want one big commit:
+
+- **How large each commit may be** — the per-commit WAL record cap
+  (ADR-0650). Default **256 MiB**. One commit whose serialized record
+  crosses it is refused with the message that names the remedy:
+
+  ```sh
+  RELATE_WAL_PAYLOAD_LIMIT=512mb relate --database ./mydata
+  ```
+
+  The alternative to raising it is the statement-level form the refusal
+  names: `LOAD CSV … CALL (r) { … } IN TRANSACTIONS OF n ROWS`, which
+  commits every n rows as its own record — usually the better choice for
+  very large loads.
+- **How many large commits may run at once** — the concurrent
+  logical-workspace pool (ADR-0452). Off by default; a big single commit
+  needs headroom in it once enabled:
+
+  ```sh
+  RELATE_CONCURRENT_LOGICAL_WORKSPACE_LIMIT=2g relate --database ./mydata
+  ```
+
+Both read the same `SIZE` grammar (bytes, or `mb`/`mib`/`gb`/`gib`); a
+zero or unparseable value fails the open naming the variable, never a
+silent default. Embedded callers set the same knobs as
+`OpenOptions::wal_payload_limit` and
+`OpenOptions::concurrent_logical_workspace_limit`.
+
 ## Ontology as a query-steering source
 
 Before generating Cypher from a natural-language request, load the ontology

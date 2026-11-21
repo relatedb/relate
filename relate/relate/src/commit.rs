@@ -67,7 +67,8 @@ impl CommitSlot {
         Self {
             snapshot_ts,
             txn_id,
-            encoded: EncodedOps::encode_unmetered(&ops).expect("test ops encode"),
+            encoded: EncodedOps::encode_unmetered(&ops, Error::WAL_PAYLOAD_CAP_BYTES)
+                .expect("test ops encode"),
             ops,
             parse_plan_ns: 0,
             execute_ns: 0,
@@ -376,7 +377,7 @@ pub(super) fn try_wal_commit(
     // admission instead of evicting a write that has already crossed the
     // WAL boundary.
     let mut wal_workspace = WorkspaceCharge::empty();
-    let encoded = EncodedOps::encode(&ops, &mut wal_workspace)?;
+    let encoded = EncodedOps::encode(&ops, &mut wal_workspace, shared.resolved.wal_payload_limit)?;
     let waiter = CommitWaiter::new();
     let slot = CommitSlot {
         snapshot_ts,
@@ -558,7 +559,11 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
     // Charged to this thread's workspace like an admitted commit's, and held
     // until the record is appended.
     let mut wal_workspace = WorkspaceCharge::empty();
-    let encoded = EncodedOps::encode(&record.ops, &mut wal_workspace)?;
+    let encoded = EncodedOps::encode(
+        &record.ops,
+        &mut wal_workspace,
+        shared.resolved.wal_payload_limit,
+    )?;
     let wal = lock_wal_checked(shared)?;
     // The replicated path records no group-commit timing: it does not ask
     // the core to measure (`measure: false`), so it pays for no samples it

@@ -1,13 +1,14 @@
 //! The group append refuses a batch whose own timestamps do not advance
 //! before writing any frame, and reports each record by its timestamp.
 
+use relate_core::Error;
 use relate_storage::{EncodedOps, Wal};
 use relate_write_local::{append_assigned, AssignedRecord};
 
 fn record(commit_ts: u64) -> AssignedRecord {
     AssignedRecord {
         commit_ts,
-        encoded: EncodedOps::encode_unmetered(&[]).unwrap(),
+        encoded: EncodedOps::encode_unmetered(&[], Error::WAL_PAYLOAD_CAP_BYTES).unwrap(),
     }
 }
 

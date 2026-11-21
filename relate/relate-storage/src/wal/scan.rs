@@ -364,13 +364,16 @@ pub(super) fn scan_seg(
         pos += 8;
         let crc = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
         let len = u32::from_le_bytes(hdr[4..8].try_into().unwrap()) as usize;
-        if len == 0 || len > Error::WAL_PAYLOAD_CAP_BYTES as usize {
-            // The limit text is derived from the same constant the check
-            // consults, so the diagnostic cannot re-spell a stale figure
-            // (ADR-0492's single-source rule).
+        // A frame's validity bound is what the format can encode — the
+        // 32-bit length field — never the store's per-open admission cap
+        // (ADR-0650): a record written under a larger cap than a later
+        // open's is still a valid frame, and refusing it here would brick
+        // the store. An absurd length is caught by the file-length check
+        // below as an incomplete payload (a torn tail), so only the
+        // structurally invalid zero length is refused here.
+        if len == 0 {
             return Err(Error::storage(format!(
-                "invalid WAL payload length {len} in {path} (limit {} MiB)",
-                Error::WAL_PAYLOAD_CAP_BYTES / 1024 / 1024
+                "invalid WAL payload length 0 in {path}"
             )));
         }
         let payload_end = pos

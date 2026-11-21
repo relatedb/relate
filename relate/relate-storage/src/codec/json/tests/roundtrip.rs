@@ -215,7 +215,10 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
     // A durable-form edit without its mirror is drift the guard refuses
     // (ADR-0481 §4), naming the mirror file the content outgrew — the
     // refusal fires before the migration could normalize anything.
-    let Err(refused) = crate::open_store_with_report::<relate_executor::Graph>(&target) else {
+    let Err(refused) = crate::open_store_with_report::<relate_executor::Graph>(
+        &target,
+        relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
+    ) else {
         panic!("an ontology the mirror does not carry opened the store")
     };
     assert!(refused.to_string().contains("ontology.json"), "{refused}");
@@ -227,8 +230,11 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
         ONTOLOGY_DOC.as_bytes(),
     )
     .unwrap();
-    let (_, _, _, report) =
-        crate::open_store_with_report::<relate_executor::Graph>(&target).unwrap();
+    let (_, _, _, report) = crate::open_store_with_report::<relate_executor::Graph>(
+        &target,
+        relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
+    )
+    .unwrap();
     assert_eq!(
         report.migrations.migration(),
         Some((
@@ -261,8 +267,11 @@ fn content_mismatched_value_encoding_migrates_to_the_contents_version() {
         .vfs()
         .remove_file(crate::schema_files::ONTOLOGY_JSON_FILE)
         .unwrap();
-    let (_, _, _, report) =
-        crate::open_store_with_report::<relate_executor::Graph>(&target).unwrap();
+    let (_, _, _, report) = crate::open_store_with_report::<relate_executor::Graph>(
+        &target,
+        relate_core::Error::WAL_PAYLOAD_CAP_BYTES,
+    )
+    .unwrap();
     assert_eq!(
         report.migrations.migration(),
         Some((

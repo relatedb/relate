@@ -12,7 +12,8 @@
 //! writes are parameterized `UNWIND $rows AS row` batches, each batch its
 //! own explicit transaction (ADR-0392, the manifest's `per-batch` commit
 //! policy): one whole-import transaction would serialise its entire redo
-//! as a single WAL record past the store's 64 MiB payload cap at the
+//! as a single WAL record past the store's per-commit payload cap (the
+//! WAL-payload knob, ADR-0650) at the
 //! history scale the pair cap admits. The range indexes are created
 //! before the first write and the full-text index after the last, each a
 //! `update_schema` call at the point in the session this child places it,

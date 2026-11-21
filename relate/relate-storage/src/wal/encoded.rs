@@ -50,7 +50,10 @@ impl EncodedOps {
     /// on the whole prospective record (maximum-width header included), so
     /// the refusal — [`Error::Capacity`] in [`CapacityKind::WalPayload`]
     /// (ADR-0494) — and its figures are exactly those of encoding the
-    /// record with maximum-width LSN and timestamp.
+    /// record with maximum-width LSN and timestamp. `cap` is the store's
+    /// resolved payload cap (ADR-0650) — the commit pipeline and the write
+    /// engine pass the resolved value; an ad-hoc encoding passes
+    /// [`Error::WAL_PAYLOAD_CAP_BYTES`].
     ///
     /// The buffer is charged as it is built: `charge` is extended before
     /// each growth of the buffer (doubling from 1 KiB, clamped to the cap,
@@ -62,8 +65,8 @@ impl EncodedOps {
     /// top of whatever it held before) and the caller keeps it for as long
     /// as the encoding lives. A commit whose buffer stayed within 64 KiB
     /// is trimmed to its length and charged for that.
-    pub fn encode(ops: &[RedoOp], charge: &mut WorkspaceCharge) -> Result<Self> {
-        Self::encode_with(ops, Some(charge))
+    pub fn encode(ops: &[RedoOp], charge: &mut WorkspaceCharge, cap: u64) -> Result<Self> {
+        Self::encode_with(ops, Some(charge), cap)
     }
 
     /// [`Self::encode`] with no workspace charge at all, for a throwaway
@@ -71,11 +74,18 @@ impl EncodedOps {
     /// nothing is charged, so no charge can be released while the buffer
     /// it covered is still alive. The payload, the cap and its refusal are
     /// exactly those of [`Self::encode`].
-    pub fn encode_unmetered(ops: &[RedoOp]) -> Result<Self> {
-        Self::encode_with(ops, None)
+    pub fn encode_unmetered(ops: &[RedoOp], cap: u64) -> Result<Self> {
+        Self::encode_with(ops, None, cap)
     }
 
-    fn encode_with(ops: &[RedoOp], mut meter: Option<&mut WorkspaceCharge>) -> Result<Self> {
+    fn encode_with(
+        ops: &[RedoOp],
+        mut meter: Option<&mut WorkspaceCharge>,
+        cap: u64,
+    ) -> Result<Self> {
+        // The frame-bound admission lives in the one core every encoding
+        // funnels through, so no entry point can bypass it (ADR-0650).
+        super::check_payload_cap(cap, "WAL payload cap")?;
         let t0 = Instant::now();
         // The one validation pass per op: persisted-ID range plus the
         // ADR-0120 §3 16 MiB ontology envelope (the ADR-0086 object
@@ -83,10 +93,10 @@ impl EncodedOps {
         validate_redo_ids(ops)?;
         let ontology_op = ops.iter().any(RedoOp::is_ontology_op);
         let mut buf = vec![0u8; HEADER_MAX];
-        // The per-record WAL payload cap (ADR-0086) and the capacity kind
-        // its crossing refusal carries (ADR-0494), spelled together here —
-        // the one bounded pass over a commit record.
-        let cap = Error::WAL_PAYLOAD_CAP_BYTES;
+        // The per-record WAL payload cap (ADR-0650, the caller's resolved
+        // value) and the capacity kind its crossing refusal carries
+        // (ADR-0494), spelled together here — the one bounded pass over a
+        // commit record.
         let refusal = Refusal::Capacity(CapacityKind::WalPayload);
         // What the charge held before this encoding, read once: the sink
         // charges the buffer on top of it and the trim settles against it.
@@ -189,14 +199,13 @@ fn op_element_len(op: &RedoOp) -> Result<u64> {
 }
 
 /// A running tally of a commit record's prospective frame payload
-/// (ADR-0086) over the ops a transaction has accumulated, one op encoded
+/// (ADR-0650) over the ops a transaction has accumulated, one op encoded
 /// once as it is added instead of the whole array once at commit: the
 /// maximum-width header slack, the array's brackets, one separator between
 /// elements, the closing brace, and each op's encoded length — the exact
-/// figure [`EncodedOps::encode`] bounds against
-/// [`Error::WAL_PAYLOAD_CAP_BYTES`], so a caller can refuse a transaction
-/// the moment its redo crosses the cap rather than at the commit that would
-/// have failed anyway.
+/// figure [`EncodedOps::encode`] bounds against the store's resolved cap
+/// (ADR-0650), so a caller can refuse a transaction the moment its redo
+/// crosses the cap rather than at the commit that would have failed anyway.
 #[derive(Debug, Default)]
 pub struct PayloadTally {
     /// The summed encoded length of the elements added so far.
@@ -280,7 +289,7 @@ mod tests {
             (0..64i64).map(node).collect(),
         ];
         for ops in sets {
-            let encoded = EncodedOps::encode_unmetered(&ops).unwrap();
+            let encoded = EncodedOps::encode_unmetered(&ops, Error::WAL_PAYLOAD_CAP_BYTES).unwrap();
             // `payload()` is the body; the cap bounds the frame, header
             // slack included.
             let frame = HEADER_MAX as u64 + encoded.payload().len() as u64;

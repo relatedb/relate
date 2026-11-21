@@ -132,7 +132,16 @@ fn applicability_preflight_completes_all_waiters_in_batch() {
 fn oversized_commit_is_refused_at_admission_and_leaves_wal_and_graph_intact_after_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db");
-    let db = Database::open(path.to_str().unwrap()).unwrap();
+    // A 1 MiB cap (ADR-0650's knob) keeps the oversized payload cheap: the
+    // property below is exactly 1 MiB, and one op's record crosses it.
+    let db = Database::open_with(
+        path.to_str().unwrap(),
+        crate::OpenOptions {
+            wal_payload_limit: Some(1 << 20),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let shared = db.shared();
     // The ops are encoded once at admission, so the payload cap refuses an
     // oversized commit before it joins the queue: nothing reaches the WAL
@@ -145,10 +154,7 @@ fn oversized_commit_is_refused_at_admission_and_leaves_wal_and_graph_intact_afte
         labels: Arc::new(vec!["N".into()]),
         properties: relate_core::PropertyMap::share(BTreeMap::from([(
             "big".into(),
-            Value::String(
-                "x".repeat(relate_core::Error::WAL_PAYLOAD_CAP_BYTES as usize)
-                    .into(),
-            ),
+            Value::String("x".repeat(1 << 20).into()),
         )])),
     };
     let error = try_wal_commit(&shared, 0, 2, vec![big], 0, 0).unwrap_err();
@@ -166,7 +172,7 @@ fn oversized_commit_is_refused_at_admission_and_leaves_wal_and_graph_intact_afte
         "{error:?}"
     );
     assert!(error.to_string().contains("single WAL record"), "{error}");
-    assert!(error.to_string().contains("64 MiB"), "{error}");
+    assert!(error.to_string().contains("1 MB"), "{error}");
     assert_eq!(shared.wal.lock().unwrap().lsn, 1);
     assert_eq!(std::fs::read(&wal_file).unwrap(), before);
     assert_eq!(shared.graph.all_node_ids().len(), 1);

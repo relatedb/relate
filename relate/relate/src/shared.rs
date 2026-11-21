@@ -150,6 +150,12 @@ pub(crate) struct OpenResolved {
     /// `RELATE_BULK_BATCH_THRESHOLD` / `RELATE_BULK_BATCH_BUDGET`.
     pub(crate) bulk_batch_threshold: u64,
     pub(crate) bulk_batch_budget: u64,
+    /// The per-commit WAL payload cap (ADR-0650), resolved once at open —
+    /// the value the commit pipeline's encode and the explicit
+    /// transaction's tally check read, and the one the opened `Wal` itself
+    /// carries for the storage layer (both set from the same resolution;
+    /// never mutated after).
+    pub(crate) wal_payload_limit: u64,
     /// The checkpoint timer period this handle was opened with (ADR-0041).
     /// Resolved once, like every other field here, so `promote` (ADR-0440)
     /// can start the same timer a bootstrap writable open would have

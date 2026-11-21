@@ -17,9 +17,10 @@ pub enum CapacityKind {
     Graph,
     /// One expression-built allocation over the per-value cap (ADR-0463).
     Expression,
-    /// The per-record WAL payload cap (ADR-0086, ADR-0494): one commit
-    /// record whose serialized payload crosses
-    /// [`Error::WAL_PAYLOAD_CAP_BYTES`], refused mid-serialization before
+    /// The per-record WAL payload cap (ADR-0650, ADR-0494): one commit
+    /// record whose serialized payload crosses the store's resolved cap
+    /// (`OpenOptions::wal_payload_limit`, defaulting to
+    /// [`Error::WAL_PAYLOAD_CAP_BYTES`]), refused mid-serialization before
     /// any frame is written. `used` is the counted byte total at which
     /// the bounded serializer stopped — a lower bound of the record the
     /// statement tried to commit, never its final size.
@@ -64,17 +65,18 @@ fn capacity_detail(kind: CapacityKind, used: u64, limit: u64) -> String {
              it with --expression-memory-limit.",
             human_bytes(used)
         ),
-        // The cap is named in the binary unit ADR-0086 states it in
-        // (`64 MiB`), so the message and the spec agree; the remedy names
-        // the batching forms that stay under it.
+        // The cap is named in the binary unit ADR-0650 states it in, as
+        // rendered from the `limit` the check consulted (the resolved cap,
+        // not a re-spelled constant), so the message and the spec agree;
+        // the remedy names the batching forms that stay under it.
         CapacityKind::WalPayload => format!(
             "This statement tried to commit a single WAL record of at \
              least {}. This is a safety limit protecting against memory \
-             exhaustion — the per-commit WAL payload cap is {} (ADR-0086); \
+             exhaustion — the per-commit WAL payload cap is {} (ADR-0650); \
              commit the data in smaller transactions (CALL {{ … }} IN \
              TRANSACTIONS OF n ROWS, or client-side batches).",
-            wal_mib(used),
-            wal_mib(limit)
+            human_bytes(used),
+            human_bytes(limit)
         ),
         CapacityKind::SeekCandidates => format!(
             "A shortest-path endpoint pattern matches at least {used} nodes; \
@@ -105,16 +107,6 @@ fn capacity_detail(kind: CapacityKind, used: u64, limit: u64) -> String {
              statement into shorter clause chains to see the plan."
         ),
     }
-}
-
-/// A WAL-cap figure in whole MiB, rounded down so an "at least" lower bound
-/// never overstates the record. Both callers' figures are at or above the
-/// 64 MiB cap (the cap itself and the byte count where the bounded
-/// serializer stopped), so no sub-MiB form exists; it is not
-/// [`human_bytes`] because the cap is stated in the binary unit (ADR-0086),
-/// which `human_bytes` renders as `MB`.
-fn wal_mib(bytes: u64) -> String {
-    format!("{} MiB", bytes / (1024 * 1024))
 }
 
 /// A user-facing byte size: MB/GB at whole units, never the raw byte count.
@@ -300,15 +292,18 @@ impl Error {
     /// and opens a new one; this process does not load a second graph.
     pub const FOLLOW_GAP: &'static str = "follow-gap";
 
-    /// The per-record WAL payload cap (ADR-0086): one commit record whose
-    /// serialized JSON crosses this many bytes is refused with
+    /// The **default** per-record WAL payload cap (ADR-0650): one commit
+    /// record whose serialized JSON crosses this many bytes is refused with
     /// [`Self::Capacity`] in the [`CapacityKind::WalPayload`] kind
-    /// (ADR-0494) before any frame is written. The one source of the
-    /// number — the refusal carries it as `limit`, and the storage
-    /// crate's WAL encoder and scanner both consume it, so the rendered
-    /// message, the write refusal and the recovery bound cannot drift
-    /// apart (ADR-0492).
-    pub const WAL_PAYLOAD_CAP_BYTES: u64 = 64 * 1024 * 1024;
+    /// (ADR-0494) before any frame is written. The *resolved* cap is an
+    /// open-time knob (`OpenOptions::wal_payload_limit`,
+    /// `RELATE_WAL_PAYLOAD_LIMIT`) — this constant is its unset default,
+    /// and the resolved value is the one source the refusal carries as
+    /// `limit` and the storage crate's WAL encoder consumes, so the
+    /// rendered message and the write refusal cannot drift apart
+    /// (ADR-0492; the replay scanner's frame bound is the segment
+    /// format's own, ADR-0650).
+    pub const WAL_PAYLOAD_CAP_BYTES: u64 = 256 * 1024 * 1024;
 
     pub fn syntax(msg: impl Into<String>) -> Self {
         Self::Syntax(msg.into())
@@ -564,7 +559,8 @@ impl Error {
     /// The ADR-0494 per-record WAL payload cap refusal: the bounded
     /// serializer stopped at `counted` bytes — a lower bound of the record
     /// the statement tried to commit — against the `limit` the check
-    /// consulted (`WAL_PAYLOAD_CAP_BYTES` at both refusal sites).
+    /// consulted (the store's resolved `wal_payload_limit`, defaulting to
+    /// [`Self::WAL_PAYLOAD_CAP_BYTES`], ADR-0650).
     pub fn capacity_wal_payload(counted: u64, limit: u64) -> Self {
         Self::Capacity {
             used: counted,

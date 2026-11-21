@@ -310,6 +310,19 @@ pub struct OpenOptions {
     /// value, fail open. A set `RELATE_TOKEN_ADMISSION` fails open:
     /// the limit is the switch.
     pub concurrent_logical_workspace_limit: Option<u64>,
+    /// The per-commit WAL payload cap in bytes (ADR-0650): one commit
+    /// record whose serialized form crosses it is refused before any frame
+    /// is written, with the message that names the smaller-transaction
+    /// forms. Unset keeps the 256 MiB default; the
+    /// `RELATE_WAL_PAYLOAD_LIMIT` environment variable is the fallback
+    /// when this is `None` (the same `SIZE` grammar as every memory knob).
+    /// `Some(0)`, a zero or unparsable value, and a value above the WAL
+    /// frame format's 32-bit record-length bound are `Error::Semantic`
+    /// naming the source the value came from. Independent of
+    /// [`OpenOptions::concurrent_logical_workspace_limit`], which bounds
+    /// how many large commits may be in flight — this bounds how large
+    /// each may be.
+    pub wal_payload_limit: Option<u64>,
     /// The largest explicit traversal hop bound a statement may ask for
     /// (LABS-610, ADR-0466): `*1..N`, `*..N` and a CIP-28 quantifier
     /// `{1,N}` above this fail at admission with `TraversalDepthExceeded`,

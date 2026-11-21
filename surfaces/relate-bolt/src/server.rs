@@ -53,6 +53,10 @@ impl Args {
                 .map(std::time::Duration::from_secs),
             durability_mode: self.durability_mode,
             logical_graph_size_limit: self.logical_graph_size_limit,
+            // The WAL payload cap resolves through RELATE_WAL_PAYLOAD_LIMIT
+            // (the open preflight, ADR-0650); the server Args carries no
+            // flag of its own.
+            wal_payload_limit: None,
             snapshot_codec: None,
             // The markdown body-property knob resolves through
             // RELATE_MARKDOWN_BODY_PROPERTIES (the open preflight);

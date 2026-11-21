@@ -270,6 +270,65 @@ fn positive_u64_setting(name: &str, raw: Option<&str>, default: u64) -> Result<u
     }
 }
 
+/// The per-commit WAL payload cap (ADR-0650): the
+/// `OpenOptions::wal_payload_limit` option with the
+/// `RELATE_WAL_PAYLOAD_LIMIT` fallback, unset keeping the 256 MiB default
+/// (`Error::WAL_PAYLOAD_CAP_BYTES`). A present-but-invalid value fails open
+/// naming the source the value came from — the same contract as every
+/// memory knob, never a silent fall-back to the default. The cap is
+/// bounded by the WAL frame format's own record-length field
+/// (`MAX_RECORD_PAYLOAD`), so a value the format cannot encode is refused
+/// at resolution.
+pub(crate) fn resolve_wal_payload_limit(opts: &OpenOptions) -> Result<u64> {
+    resolved_wal_payload_limit(
+        opts.wal_payload_limit,
+        std::env::var("RELATE_WAL_PAYLOAD_LIMIT"),
+    )
+}
+
+/// The pure core of [`resolve_wal_payload_limit`]: the option, the
+/// already-read environment value, and the default. Each source's parse
+/// failure and frame-bound refusal name that source — the field or the
+/// variable the operator actually set — and unset-everywhere keeps the
+/// 256 MiB default.
+fn resolved_wal_payload_limit(
+    option: Option<u64>,
+    setting: std::result::Result<String, std::env::VarError>,
+) -> Result<u64> {
+    match option {
+        Some(n) => bounded_wal_payload_limit(
+            require_positive_memory_limit("wal_payload_limit", n)?,
+            "wal_payload_limit",
+        ),
+        None => match wal_payload_limit_from_setting(setting)? {
+            Some(cap) => bounded_wal_payload_limit(cap, "RELATE_WAL_PAYLOAD_LIMIT"),
+            None => Ok(relate_core::Error::WAL_PAYLOAD_CAP_BYTES),
+        },
+    }
+}
+
+/// Refuse a cap the WAL frame format cannot encode (ADR-0650), through
+/// relate-storage's one check — the same comparison, bound and refusal
+/// sentence its own constructors run — so the two spellings cannot drift;
+/// the source label names where the value came from.
+fn bounded_wal_payload_limit(cap: u64, source: &str) -> Result<u64> {
+    relate_storage::check_payload_cap(cap, source).map(|()| cap)
+}
+
+/// The `RELATE_WAL_PAYLOAD_LIMIT` value: unset, blank, and whitespace are
+/// `Ok(None)` (the caller keeps the default); a present value uses
+/// [`parse_positive_memory_limit`], the same `SIZE` grammar as every memory
+/// knob, and a bad value fails naming the variable. Pure in the raw value,
+/// so tests never touch the process environment.
+fn wal_payload_limit_from_setting(
+    raw: std::result::Result<String, std::env::VarError>,
+) -> Result<Option<u64>> {
+    match present_env_value("RELATE_WAL_PAYLOAD_LIMIT", raw)? {
+        Some(raw) => parse_positive_memory_limit("RELATE_WAL_PAYLOAD_LIMIT", &raw).map(Some),
+        None => Ok(None),
+    }
+}
+
 /// The ADR-0209 bulk-write batching knobs, resolved once at open from
 /// `RELATE_BULK_BATCH_THRESHOLD` / `RELATE_BULK_BATCH_BUDGET`
 /// (tests set them to exercise batching on small graphs). Set-but-bad

@@ -57,13 +57,22 @@ pub fn append_assigned(wal: &mut Wal, records: Vec<AssignedRecord>) -> Result<Ve
 pub struct LocalWriteEngine {
     wal: Mutex<Wal>,
     store: StoreTarget,
+    /// The handle's per-record payload cap (ADR-0650), copied once at
+    /// construction: every handle this engine can ever hold — the initial
+    /// open, a promote, a follower adopt, a reload — is constructed from
+    /// the same resolved `wal_payload_limit`, so the value is invariant for
+    /// the engine's lifetime and the commit path reads it without taking
+    /// the log lock.
+    payload_cap: u64,
 }
 
 impl LocalWriteEngine {
     pub fn new(store: StoreTarget, wal: Wal) -> Self {
+        let payload_cap = wal.payload_cap();
         Self {
             wal: Mutex::new(wal),
             store,
+            payload_cap,
         }
     }
 
@@ -87,12 +96,13 @@ impl WriteEngine for LocalWriteEngine {
         // charging the encodings to one workspace charge held until the
         // append has consumed them.
         let mut charge = WorkspaceCharge::empty();
+        let payload_cap = self.payload_cap;
         let borrowed: Vec<AssignedRecord> = groups
             .iter()
             .map(|group| {
                 Ok(AssignedRecord {
                     commit_ts: group.commit_ts,
-                    encoded: EncodedOps::encode(&group.ops, &mut charge)?,
+                    encoded: EncodedOps::encode(&group.ops, &mut charge, payload_cap)?,
                 })
             })
             .collect::<Result<_>>()?;
@@ -100,6 +110,17 @@ impl WriteEngine for LocalWriteEngine {
             .wal
             .lock()
             .map_err(|_| Error::storage("WAL lock poisoned"))?;
+        // The cached cap and the installed handle cannot disagree: every
+        // handle this engine ever holds is constructed from the same
+        // resolved `wal_payload_limit`. Pinned here, under the lock the
+        // commit already takes, so a future install path that breaks that
+        // invariant fails loudly in debug builds instead of encoding
+        // against a bound the append would refuse.
+        debug_assert_eq!(
+            wal.payload_cap(),
+            payload_cap,
+            "engine cap cache diverged from the installed handle"
+        );
         let appended = append_assigned(&mut wal, borrowed)?;
         wal.sync()?;
         drop(charge);
@@ -132,9 +153,13 @@ impl WriteEngine for LocalWriteEngine {
 
     fn reload(&self, graph: &mut dyn GraphImport) -> Result<()> {
         // Recovery builds a new query engine and the facade installs it.
-        // The log is reopened against the snapshot that engine loaded.
+        // This is the validation half of that reload on the write side: the
+        // follower log is reopened read-only against the published
+        // checkpoint — its scan proves the on-disk WAL is whole — and the
+        // handle itself is deliberately dropped; the facade's adopt installs
+        // the live one.
         let _ = graph;
-        let _ = relate_storage::open_follower_wal(&self.store)?;
+        let _ = relate_storage::open_follower_wal(&self.store, self.payload_cap)?;
         Ok(())
     }
 }

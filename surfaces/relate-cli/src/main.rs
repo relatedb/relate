@@ -418,6 +418,10 @@ fn main() {
             load_csv_max_bytes: None,
             mode: open_mode,
             concurrent_logical_workspace_limit,
+            // The per-commit WAL payload cap resolves through
+            // RELATE_WAL_PAYLOAD_LIMIT (the open preflight, ADR-0650);
+            // the CLI carries no flag of its own.
+            wal_payload_limit: None,
             max_traversal_depth,
             safe_mode,
             follow_gap: Default::default(),

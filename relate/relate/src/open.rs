@@ -21,6 +21,7 @@ use super::open_config::{
     resolve_codec_config, resolve_durability_mode, resolve_expression_memory_limit,
     resolve_max_traversal_depth, resolve_memory_limit, resolve_pattern_engine,
     resolve_preview_features, resolve_snapshot_codec, resolve_token_limits,
+    resolve_wal_payload_limit,
 };
 use super::shared::{OpenResolved, SharedOpenState};
 use super::token_budget;
@@ -36,9 +37,10 @@ use super::{
 /// reload both load through this, so the invariant has one home.
 pub(crate) fn open_store_readonly_screened(
     target: &StoreTarget,
+    wal_payload_limit: u64,
 ) -> Result<(Graph, Wal, Option<String>)> {
     let (graph, wal, ontology) =
-        open_store_readonly_with_ontology(target, &mut report_degraded_payload)?;
+        open_store_readonly_with_ontology(target, wal_payload_limit, &mut report_degraded_payload)?;
     ontology::validate_stored_document(ontology.as_deref())?;
     Ok((graph, wal, ontology))
 }
@@ -54,11 +56,12 @@ pub(crate) fn open_store_readonly_screened(
 fn open_store_screened(
     target: &StoreTarget,
     read_only: bool,
+    wal_payload_limit: u64,
 ) -> Result<(Graph, Wal, Option<String>)> {
     if read_only && target.vfs().durable() {
-        open_store_readonly_screened(target)
+        open_store_readonly_screened(target, wal_payload_limit)
     } else {
-        open_store_writable_screened(target)
+        open_store_writable_screened(target, wal_payload_limit)
     }
 }
 
@@ -68,9 +71,13 @@ fn open_store_screened(
 /// (a trim is durable, so a failure anywhere later in the open must not
 /// swallow the durability event — the same reporting the promote path
 /// uses), then screen the ontology document where it is produced.
-fn open_store_writable_screened(target: &StoreTarget) -> Result<(Graph, Wal, Option<String>)> {
+fn open_store_writable_screened(
+    target: &StoreTarget,
+    wal_payload_limit: u64,
+) -> Result<(Graph, Wal, Option<String>)> {
     let (graph, wal, ontology, _) = open_store_notifying(
         target,
+        wal_payload_limit,
         &mut report_trimmed_tail,
         &mut report_degraded_payload,
     )?;
@@ -84,7 +91,8 @@ fn open_store_writable_screened(target: &StoreTarget) -> Result<(Graph, Wal, Opt
 /// resolved preview set (ADR-0371), the diagnostic pattern-engine switch
 /// (ADR-0519), the requested snapshot codec, the
 /// markdown vault's body-property configuration (ADR-0460), the
-/// checkpoint interval, the bulk-batch limits and the token limits.
+/// checkpoint interval, the bulk-batch limits, the token limits and the
+/// per-record WAL payload cap (ADR-0650).
 /// [`Database::open_preflight`] resolves every knob before a store
 /// directory is leased, so every environment-driven failure precedes the
 /// store load. [`Database::open_store`] installs the rest; the snapshot
@@ -107,6 +115,7 @@ struct OpenKnobs {
     checkpoint_interval: std::time::Duration,
     /// `(threshold, budget)` of the bulk-batch commit path.
     bulk_batch_limits: (u64, u64),
+    wal_payload_limit: u64,
     token_limits: token_budget::TokenLimits,
 }
 
@@ -249,6 +258,7 @@ impl Database {
             codec_config: resolve_codec_config(opts)?,
             checkpoint_interval: resolve_checkpoint_interval(opts),
             bulk_batch_limits: resolve_bulk_batch_limits()?,
+            wal_payload_limit: resolve_wal_payload_limit(opts)?,
             token_limits: resolve_token_limits(opts)?,
         })
     }
@@ -292,9 +302,11 @@ impl Database {
             codec_config: _,
             checkpoint_interval,
             bulk_batch_limits: (bulk_batch_threshold, bulk_batch_budget),
+            wal_payload_limit,
             token_limits,
         } = knobs;
-        let (mut graph, mut wal, ontology) = open_store_screened(&store, read_only)?;
+        let (mut graph, mut wal, ontology) =
+            open_store_screened(&store, read_only, wal_payload_limit)?;
         check_loaded_graph(&graph)?;
         graph.configure_load_csv(csv_policy);
         // ADR-0463: the per-allocation expression cap rides the same
@@ -330,6 +342,7 @@ impl Database {
             budget,
             bulk_batch_threshold,
             bulk_batch_budget,
+            wal_payload_limit,
             checkpoint_interval,
             follow_gap: opts.follow_gap,
         };

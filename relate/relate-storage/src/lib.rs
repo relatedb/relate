@@ -55,7 +55,7 @@ pub use vfs::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use vfs::{BundleVfs, NativeVfs};
 #[doc(hidden)]
-pub use wal::MAGIC;
+pub use wal::{check_payload_cap, MAGIC, MAX_RECORD_PAYLOAD};
 pub use wal::{
     AppendCommitStats, EncodedOps, PayloadTally, TrimmedTail, Wal, WalCatchUp, WalPreflight,
     WalRecord,

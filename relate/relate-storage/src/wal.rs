@@ -184,6 +184,14 @@ pub struct Wal {
     /// appended to an `MDBWAL02` segment (ADR-0120 §4); appending one while
     /// this is `MDBWAL01` rotates to a fresh `MDBWAL02` segment first.
     active_magic: [u8; 8],
+    /// The per-record WAL payload cap this handle enforces (ADR-0650): the
+    /// bounded encode and the preflight read it at write admission. The
+    /// replay scanner does NOT — its frame-length bound is the segment
+    /// format's own (`MAX_RECORD_PAYLOAD`), so a store written under a
+    /// larger cap still replays under a smaller one. Set at construction
+    /// from the store's resolved `wal_payload_limit` (defaulting to
+    /// [`Error::WAL_PAYLOAD_CAP_BYTES`]); never mutated after.
+    payload_cap: u64,
     /// LABS-903: the source was [`Wal::release_source`]d — the segment
     /// inventory and handles left with it, replaced by one fresh empty
     /// segment. A [`Wal::records_after`] that would need the released
@@ -200,7 +208,38 @@ pub struct Wal {
     barrier_calls: u64,
 }
 
+/// The largest per-record payload cap the WAL frame format can encode:
+/// a record's length field is 32 bits (`u32::from_le_bytes` in the
+/// scanner, `payload.len() as u32` at the append), so a cap above this
+/// would admit records whose persisted length truncates and the store
+/// could never reopen. The one bound, owned beside the frame code it
+/// protects — the open-time resolver and every capped constructor
+/// consult it (ADR-0650).
+pub const MAX_RECORD_PAYLOAD: u64 = u32::MAX as u64;
+
+/// Refuse a payload cap the frame format cannot encode (ADR-0650), so a
+/// direct caller of a cap-taking constructor cannot hand the append path a
+/// truncating bound — `source` names what the caller configured (this
+/// crate's constructors pass "WAL payload cap"; the facade's open-time
+/// resolver passes its knob's field/env spelling). One check, one refusal
+/// sentence, both layers.
+pub fn check_payload_cap(cap: u64, source: &str) -> Result<()> {
+    if cap > MAX_RECORD_PAYLOAD {
+        return Err(Error::semantic(format!(
+            "invalid {source}: a WAL record's length field is 32 bits, \
+             so the cap cannot exceed {MAX_RECORD_PAYLOAD} bytes (got {cap} bytes)"
+        )));
+    }
+    Ok(())
+}
+
 impl Wal {
+    /// The per-record WAL payload cap this handle enforces (ADR-0650) —
+    /// the resolved `wal_payload_limit` the store opened with.
+    pub fn payload_cap(&self) -> u64 {
+        self.payload_cap
+    }
+
     /// Check every redo node/relationship ID, relationship endpoint and pull
     /// identity local ID is in `0..i64::MAX` before persisting or applying a
     /// batch. Invalid IDs return `Error::Storage`; no WAL or graph state is changed.
@@ -220,149 +259,6 @@ impl Wal {
     /// The log's current position, which a record must advance.
     fn tip(&self) -> Tip {
         Tip::after(self.lsn, self.last_commit_ts)
-    }
-
-    /// Open for append, returning the handle plus the open-time report: the
-    /// torn tails this open trimmed (ADR-0114's tolerated cases). The trims
-    /// are open-time output, not handle state — the opener that wants to
-    /// report the durability event takes them from the return; every other
-    /// caller uses [`open`](Self::open), which drops them.
-    pub fn open_with_report(
-        vfs: Arc<dyn Vfs>,
-        prefix: &str,
-        checkpoint_lsn: u64,
-    ) -> Result<(Self, Vec<TrimmedTail>)> {
-        Self::open_notifying(vfs, prefix, checkpoint_lsn, &mut |_| {})
-    }
-
-    /// [`open_with_report`](Self::open_with_report) that also hands each
-    /// trim to `on_trim` the moment it is durable — before any later step of
-    /// this open can fail. A trim rewrites the torn segment for good, so an
-    /// open that fails afterwards (here, or in the caller's replay and
-    /// migration steps) would otherwise lose the durability event: a retry
-    /// finds no torn tail left to report. The returned list is the same
-    /// trims the callback saw.
-    pub fn open_notifying(
-        vfs: Arc<dyn Vfs>,
-        prefix: &str,
-        checkpoint_lsn: u64,
-        on_trim: &mut dyn FnMut(&TrimmedTail),
-    ) -> Result<(Self, Vec<TrimmedTail>)> {
-        vfs.create_dir_all(prefix)?;
-        let mut ids = list_segment_ids(&*vfs, prefix)?;
-        if ids.is_empty() {
-            ids.push(FIRST_SEGMENT_ID);
-            // A brand-new store holds no ontology: `MDBWAL01` (ADR-0120 §4)
-            // — the empty-segment construction
-            // [`write_empty_segment`] owns.
-            write_empty_segment(&*vfs, prefix)?;
-        }
-        let current_id = *ids.last().unwrap();
-        // Tolerated-tail trims are applied only after every segment has been
-        // scanned without error: a hard failure must leave all WAL bytes
-        // untouched (ADR-0114).
-        let scan = scan_segments(&*vfs, prefix, &ids, checkpoint_lsn, true)?;
-        let mut trimmed_tails = Vec::new();
-        for (path, end) in &scan.trims {
-            let discarded_bytes = replace_torn_tail(&*vfs, path, *end)?;
-            let tail = TrimmedTail {
-                path: path.clone(),
-                discarded_bytes,
-            };
-            on_trim(&tail);
-            trimmed_tails.push(tail);
-        }
-        let active_path = segment_path(prefix, current_id);
-        let file = open_append(&*vfs, &active_path)?;
-        let mut wal = Self {
-            inner: FileWal {
-                vfs,
-                prefix: prefix.to_string(),
-                seg_id: current_id,
-                file,
-                closed: scan.closed,
-                page_hint: None,
-                follow_cursor: None,
-            },
-            lsn: scan.lsn,
-            bytes: scan.current_bytes,
-            commits: scan.current_commits,
-            last_commit_ts: scan.last_commit_ts,
-            synced: true,
-            poisoned: false,
-            read_only: false,
-            // Conservative default until the store layer reports the real
-            // ontology state: an active `MDBWAL02` segment means the WAL
-            // holds (or held) an ontology op, so keep writing `MDBWAL02`.
-            ontology_held: scan.current_magic == *ONTOLOGY_MAGIC,
-            active_magic: scan.current_magic,
-            source_released: false,
-            #[cfg(test)]
-            barrier_calls: 0,
-        };
-        // A trimmed active segment must not grow again under the same id.
-        // A follower cursor in the discarded tail then sees `len < cursor`
-        // and reloads, instead of applying frames that reused those offsets.
-        if scan.trimmed_active {
-            wal.rotate_away_from_trimmed_active()?;
-        }
-        Ok((wal, trimmed_tails))
-    }
-
-    /// [`open_with_report`](Self::open_with_report) for callers that do not
-    /// report the trimmed tails: the report is dropped, the handle is the
-    /// same.
-    pub fn open(vfs: Arc<dyn Vfs>, prefix: &str, checkpoint_lsn: u64) -> Result<Self> {
-        Ok(Self::open_with_report(vfs, prefix, checkpoint_lsn)?.0)
-    }
-
-    /// Scan an existing WAL without creating segments or trimming a torn tail
-    /// (ADR-0136). Incomplete frames at the end of the active segment are
-    /// ignored. A missing WAL is an error.
-    pub fn open_readonly(vfs: Arc<dyn Vfs>, prefix: &str, checkpoint_lsn: u64) -> Result<Self> {
-        let ids = list_segment_ids(&*vfs, prefix)?;
-        if ids.is_empty() {
-            return Err(Error::storage("read-only open requires an existing WAL"));
-        }
-        let current_id = *ids.last().unwrap();
-        let scan = scan_segments(&*vfs, prefix, &ids, checkpoint_lsn, false)?;
-        let active_path = segment_path(prefix, current_id);
-        let file = vfs.open(&active_path, VfsOpen::read_only())?;
-        // A skipped short highest segment leaves `current_bytes` under the
-        // magic. A cursor there would fail the offset check on every poll.
-        let cursor = scan.cursor.unwrap_or(WalCursor {
-            lsn: scan.lsn,
-            seg_id: current_id,
-            offset: scan.current_bytes.max(MAGIC.len() as u64),
-            commit_ts: scan.last_commit_ts,
-        });
-        Ok(Self {
-            inner: FileWal {
-                vfs,
-                prefix: prefix.to_string(),
-                seg_id: current_id,
-                file,
-                closed: scan.closed,
-                page_hint: None,
-                follow_cursor: Some(cursor),
-            },
-            lsn: scan.lsn,
-            bytes: scan.current_bytes,
-            commits: scan.current_commits,
-            last_commit_ts: scan.last_commit_ts,
-            synced: true,
-            poisoned: false,
-            read_only: true,
-            ontology_held: scan.current_magic == *ONTOLOGY_MAGIC,
-            active_magic: scan.current_magic,
-            source_released: false,
-            #[cfg(test)]
-            barrier_calls: 0,
-        })
-    }
-
-    pub fn memory() -> Self {
-        Self::open(Arc::new(MemoryVfs::new()), "wal", 0).expect("memory WAL")
     }
 
     /// LABS-903: release this WAL's source — the segment files and, with
@@ -516,7 +412,11 @@ impl Wal {
         commit_ts: u64,
         ops: &[RedoOp],
     ) -> Result<WalPreflight> {
-        self.preflight_encoded(lsn, commit_ts, EncodedOps::encode_unmetered(ops)?)
+        self.preflight_encoded(
+            lsn,
+            commit_ts,
+            EncodedOps::encode_unmetered(ops, self.payload_cap)?,
+        )
     }
 
     /// [`Wal::preflight_record`] over an existing encoding: checks the
@@ -530,7 +430,7 @@ impl Wal {
     /// use relate_storage::{EncodedOps, Wal};
     /// let mut wal = Wal::memory();
     /// let mut charge = WorkspaceCharge::empty();
-    /// let encoded = EncodedOps::encode(&[], &mut charge).unwrap();
+    /// let encoded = EncodedOps::encode(&[], &mut charge, wal.payload_cap()).unwrap();
     /// let proof = wal.preflight_encoded(1, 1, encoded).unwrap();
     /// assert_eq!(wal.append_preflighted(proof).unwrap().lsn, 1);
     /// ```
@@ -551,9 +451,10 @@ impl Wal {
     /// encoding, and the proofs come back in the same order.
     ///
     /// ```
+    /// use relate_core::Error;
     /// use relate_storage::{EncodedOps, Wal};
     /// let wal = Wal::memory();
-    /// let encode = || EncodedOps::encode_unmetered(&[]).unwrap();
+    /// let encode = || EncodedOps::encode_unmetered(&[], Error::WAL_PAYLOAD_CAP_BYTES).unwrap();
     /// // The second timestamp does not advance past the first.
     /// assert!(wal.preflight_group([(5, encode()), (5, encode())]).is_err());
     /// assert_eq!(wal.preflight_group([(5, encode()), (6, encode())]).unwrap().len(), 2);
@@ -589,6 +490,15 @@ impl Wal {
                 "WAL commit timestamp {commit_ts} must advance past {} and be below u64::MAX",
                 tip.commit_ts
             )));
+        }
+        // The append boundary enforces the store's own resolved cap
+        // (ADR-0650): a caller that encoded against another bound — the
+        // uncapped default entry, or a direct construction — cannot write
+        // a frame this store's admission would have refused. One length
+        // comparison, no re-encode.
+        let len = encoded.payload().len() as u64;
+        if len > self.payload_cap {
+            return Err(Error::capacity_wal_payload(len, self.payload_cap));
         }
         encoded.stamp(lsn, commit_ts);
         Ok(WalPreflight {
@@ -880,6 +790,7 @@ impl Wal {
 }
 
 mod encoded;
+mod open;
 mod rotation;
 mod scan;
 pub(crate) use scan::parse_seg_name;

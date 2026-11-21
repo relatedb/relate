@@ -20,7 +20,7 @@ struct WalRecordRef<'a> {
 
 /// Encode with no workspace charge.
 fn encode(ops: &[RedoOp]) -> Result<EncodedOps> {
-    EncodedOps::encode_unmetered(ops)
+    EncodedOps::encode_unmetered(ops, Error::WAL_PAYLOAD_CAP_BYTES)
 }
 
 fn reference_payload(lsn: u64, commit_ts: u64, ops: &[RedoOp]) -> Vec<u8> {
@@ -298,7 +298,7 @@ fn the_charge_follows_the_buffer_and_is_released_with_it() {
     let _installed = relate_core::tokens::LedgerGuard::install(&mut ledger);
     let ops = [big_string_op(300_000)];
     let mut charge = WorkspaceCharge::empty();
-    let encoded = EncodedOps::encode(&ops, &mut charge).unwrap();
+    let encoded = EncodedOps::encode(&ops, &mut charge, Error::WAL_PAYLOAD_CAP_BYTES).unwrap();
     // Doubling from 64 KiB: 512 KiB holds the 300 kB record.
     assert_eq!(encoded.reservation_bytes(), 512 * 1024);
     assert_eq!(charge.bytes(), encoded.reservation_bytes());
@@ -313,7 +313,12 @@ fn a_refused_charge_aborts_the_encoding_and_releases_what_it_held() {
     let mut ledger = relate_core::tokens::TokenLedger::new(pool.capacity, 0, pool.clone());
     let _installed = relate_core::tokens::LedgerGuard::install(&mut ledger);
     let mut charge = WorkspaceCharge::empty();
-    let err = EncodedOps::encode(&[big_string_op(1 << 20)], &mut charge).unwrap_err();
+    let err = EncodedOps::encode(
+        &[big_string_op(1 << 20)],
+        &mut charge,
+        Error::WAL_PAYLOAD_CAP_BYTES,
+    )
+    .unwrap_err();
     assert!(
         matches!(
             err,
@@ -339,7 +344,7 @@ fn the_payload_cap_refuses_before_any_charge_for_the_crossing_growth() {
     let ops = [big_string_op((cap - base) as usize + 1)];
     let crossed = reference_count(u64::MAX, u64::MAX, &ops, cap).unwrap_err();
     let mut charge = WorkspaceCharge::empty();
-    let err = EncodedOps::encode(&ops, &mut charge).unwrap_err();
+    let err = EncodedOps::encode(&ops, &mut charge, Error::WAL_PAYLOAD_CAP_BYTES).unwrap_err();
     assert_eq!(
         err,
         Error::Capacity {

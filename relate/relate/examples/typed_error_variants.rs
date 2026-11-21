@@ -49,7 +49,7 @@ fn main() {
         conn.query("USE nosuch RETURN 1"),
         Err(Error::DatabaseNotFound { .. })
     ));
-    // ADR-0494: a single commit whose record crosses the 64 MiB WAL payload
+    // ADR-0494: a single commit whose record crosses the default 256 MiB WAL payload
     // cap is refused as the capacity family's WalPayload kind — the
     // memory-limit class — before any frame is written, with the message
     // naming the record and the cap.
@@ -69,7 +69,7 @@ fn main() {
     ));
     assert!(err
         .to_string()
-        .contains("per-commit WAL payload cap is 64 MiB"));
+        .contains("per-commit WAL payload cap is 256 MB"));
     // ADR-0567: a shortest-path statement whose two endpoint maps each match
     // more than the listing limit is refused, never truncated. Reaching the
     // limit needs over a million nodes, so the example builds the refusal

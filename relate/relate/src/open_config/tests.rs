@@ -424,3 +424,53 @@ fn pattern_engine_setting_parses_unset_and_fails_open() {
         "{utf8}"
     );
 }
+
+#[test]
+fn wal_payload_limit_resolves_option_zero_and_default() {
+    // The option wins, in the shared SIZE grammar's plain-bytes form.
+    let opts = OpenOptions {
+        wal_payload_limit: Some(512 << 20),
+        ..OpenOptions::default()
+    };
+    assert_eq!(resolve_wal_payload_limit(&opts).unwrap(), 512 << 20);
+    // A zero option is refused naming the field, never silently defaulted.
+    let opts = OpenOptions {
+        wal_payload_limit: Some(0),
+        ..OpenOptions::default()
+    };
+    let err = resolve_wal_payload_limit(&opts).unwrap_err();
+    assert!(err.to_string().contains("wal_payload_limit"), "{err}");
+    // The pure seam: unset/blank is `None` (the default follows), a SIZE
+    // parses, a bad value fails naming the variable — no environment
+    // branch, the crate's convention for every *_from_setting helper.
+    assert_eq!(
+        wal_payload_limit_from_setting(Err(std::env::VarError::NotPresent)).unwrap(),
+        None
+    );
+    // The SIZE grammar's binary form (`mib`); the decimal `mb` is 10^6.
+    assert_eq!(
+        wal_payload_limit_from_setting(Ok("512mib".to_string())).unwrap(),
+        Some(512 << 20)
+    );
+    let err = wal_payload_limit_from_setting(Ok("0".to_string())).unwrap_err();
+    assert!(
+        err.to_string().contains("RELATE_WAL_PAYLOAD_LIMIT"),
+        "{err}"
+    );
+    // The frame bound (ADR-0650): each source's over-bound value is
+    // refused naming that source, and unset-everywhere keeps the default.
+    let err =
+        resolved_wal_payload_limit(Some((1u64 << 32) + 1), Err(std::env::VarError::NotPresent))
+            .unwrap_err();
+    assert!(err.to_string().contains("wal_payload_limit"), "{err}");
+    assert!(err.to_string().contains("32 bits"), "{err}");
+    let err = resolved_wal_payload_limit(None, Ok("5gib".to_string())).unwrap_err();
+    assert!(
+        err.to_string().contains("RELATE_WAL_PAYLOAD_LIMIT"),
+        "{err}"
+    );
+    assert_eq!(
+        resolved_wal_payload_limit(None, Err(std::env::VarError::NotPresent)).unwrap(),
+        relate_core::Error::WAL_PAYLOAD_CAP_BYTES
+    );
+}
