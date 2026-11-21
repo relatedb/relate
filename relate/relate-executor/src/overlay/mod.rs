@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use relate_core::{CancelToken, Namespace, NodeId, RelId, Result, Value};
 
 use crate::csv::CsvReader;
+use crate::exec::kernels::construct_memo::ConstructMemos;
 use crate::graph::{Graph, Procedure, QueryStats, SchemaSnapshot};
 
 mod budget;
@@ -70,6 +71,9 @@ pub struct ExecGraph<'a> {
     /// shared counter the memos reserve from and return on drop, so the
     /// query's memo footprint is bounded as a whole.
     memo_live: MemoLive,
+    /// The statement's hashed-value memos over `datetime(text)`
+    /// (ADR-0640): a pure parse, so it carries across the statement's stages.
+    construct_memos: ConstructMemos,
     /// The store's ontology document as the calling transaction sees it
     /// (ADR-0121 §3, ADR-0227): per-admission state attached like the
     /// cancel token ([`Self::with_ontology_document`]), read by the
@@ -190,6 +194,7 @@ impl<'a> ExecGraph<'a> {
         pinned_ts: u64,
         scratch: Option<&'a RefCell<WriteScratch>>,
     ) -> Self {
+        let memo_live = MemoLive::default();
         Self {
             base,
             schema: None,
@@ -200,7 +205,8 @@ impl<'a> ExecGraph<'a> {
             nested_evals: NestedEvalCounter::default(),
             expression_budget: ExpressionBudgetCounter::default(),
             expression_limit: base.expression_memory_limit(),
-            memo_live: Default::default(),
+            construct_memos: ConstructMemos::new(memo_live.clone()),
+            memo_live,
             ontology_document: None,
             csv: CsvReader::new(base.csv_policy()),
         }

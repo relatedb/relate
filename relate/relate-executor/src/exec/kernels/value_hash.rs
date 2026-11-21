@@ -32,11 +32,6 @@
 //! memo bypasses): an entity is keyed by its id in the id tables, not by
 //! content. Nesting deeper than [`MAX_DEPTH`] returns `None`.
 
-#![allow(
-    dead_code,
-    reason = "memo tier 3: the first consumer is a value-keyed expression memo (LABS-1478 follow-up); pinned by the tests below"
-)]
-
 use std::hash::BuildHasher;
 use std::sync::OnceLock;
 
@@ -236,43 +231,74 @@ fn walk(s: &mut Stream, value: &Value, depth: u32) -> Option<()> {
     Some(())
 }
 
+// Calls to `hash_value` on this thread, so a test can prove a path never hashes.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static HASH_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// `value`'s content key, `None` for a value the memo bypasses.
 pub(crate) fn hash_value(value: &Value) -> Option<Hash128> {
+    #[cfg(test)]
+    HASH_CALLS.with(|c| c.set(c.get() + 1));
     let mut stream = Stream::new();
     walk(&mut stream, value, 0)?;
     Some(stream.finish())
 }
 
-/// Any `Copy` value per [`Hash128`] key, in the sparse node map: the low 64
+/// What a stored answer owns beyond its own inline size, so a table that
+/// holds heap-bearing answers charges them (ADR-0463): [`HashedValues`] adds
+/// it to [`MemoTable::heap_bytes`], which is what the byte ceiling, the
+/// retained meter and the query's shared memo budget all read.
+pub(crate) trait RetainedHeap {
+    /// Heap bytes this value owns.
+    fn retained_heap(&self) -> usize;
+}
+
+/// Any `Clone` value per [`Hash128`] key, in the sparse node map: the low 64
 /// bits index it and the high 64 are stored beside the value, so a hit
 /// matches all 128 bits and a low-half clash is a miss, never a wrong hit.
-pub(crate) struct HashedValues<V>(NodeMap<(u64, V)>);
+/// The table's bytes are the map's allocation plus every stored value's
+/// [`RetainedHeap`].
+pub(crate) struct HashedValues<V> {
+    map: NodeMap<(u64, V)>,
+    payload: usize,
+}
 
 impl<V> Default for HashedValues<V> {
     fn default() -> Self {
-        Self(NodeMap::default())
+        Self {
+            map: NodeMap::default(),
+            payload: 0,
+        }
     }
 }
 
-impl<V: Copy> MemoTable for HashedValues<V> {
+impl<V: Clone + RetainedHeap> MemoTable for HashedValues<V> {
     type Key = Hash128;
     type Value = V;
 
     fn get(&self, key: Hash128) -> Option<V> {
         let (hi, lo) = ((key.0 >> 64) as u64, key.0 as u64);
-        match self.0.get(lo as NodeId) {
-            Some(&(stored, value)) if stored == hi => Some(value),
+        match self.map.get(lo as NodeId) {
+            Some((stored, value)) if *stored == hi => Some(value.clone()),
             _ => None,
         }
     }
 
     fn insert(&mut self, key: Hash128, value: V) {
         let (hi, lo) = ((key.0 >> 64) as u64, key.0 as u64);
-        self.0.insert(lo as NodeId, (hi, value));
+        // A low-half clash replaces the resident entry: its payload leaves.
+        let replaced = self
+            .map
+            .get(lo as NodeId)
+            .map_or(0, |(_, old)| old.retained_heap());
+        self.payload = self.payload - replaced + value.retained_heap();
+        self.map.insert(lo as NodeId, (hi, value));
     }
 
     fn heap_bytes(&self) -> usize {
-        self.0.heap_bytes()
+        self.map.heap_bytes() + self.payload
     }
 }
 
@@ -303,6 +329,17 @@ mod tests {
 
     fn h(value: &Value) -> Hash128 {
         hash_value(value).expect("hashable")
+    }
+
+    impl RetainedHeap for u32 {
+        fn retained_heap(&self) -> usize {
+            0
+        }
+    }
+    impl RetainedHeap for u64 {
+        fn retained_heap(&self) -> usize {
+            0
+        }
     }
 
     struct Unmetered;

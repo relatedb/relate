@@ -118,6 +118,13 @@ pub fn is_constructor(name: &str) -> bool {
     canon == "duration" || ClockKind::from_name(&canon).is_some()
 }
 
+/// The clock kind `name` constructs, spellings canonicalized (`zoned_datetime`
+/// is [`ClockKind::DateTime`]); `None` for `duration` and every non-constructor.
+/// The typed form of [`is_constructor`] for a caller that decides per kind.
+pub fn clock_kind(name: &str) -> Option<ClockKind> {
+    ClockKind::from_name(&canonical(name))
+}
+
 /// The one name canonicalization both readers share: every spelling is
 /// case-folded and mapped to the base constructor it stands for.
 /// [`is_constructor`] recognizes only the base and alias spellings, so every name

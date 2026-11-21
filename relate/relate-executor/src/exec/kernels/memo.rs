@@ -20,21 +20,22 @@
 //! exactly as it would unmemoised.
 //!
 //! **Hashing the input can cost more than the expression**, so the key
-//! scheme is part of the API, in four tiers, cheapest first:
-//! 0. no key — a value constant for the stage, computed once ([`Once`]);
+//! scheme is part of the API, in three tiers, cheapest first. A value
+//! constant for the stage needs no memo: the kernels' lazy `prepared` slot
+//! already evaluates it once ([`NodePred::admits`]).
 //! 1. a direct-indexed table over id keys, no hashing ([`PagedBits`] for
-//!    boolean answers, [`NodeValues`] for any `Copy` value);
+//!    boolean answers);
 //! 2. pointer identity of a borrowed, stage-pinned slice (a table plugs in
 //!    through [`MemoTable`]; none is needed yet);
 //! 3. a wide-value hash, only for expressions whose cost dwarfs it.
 //!
-//! [`MemoClass`] is the decode-time gate: a cheap expression is never
-//! wrapped, because the probe would cost as much as the work.
+//! A cheap expression is never wrapped: the probe would cost as much as
+//! the work (ADR-0640 break-even rule).
 //!
 //! **Cost shape.** Tables follow the keys *touched*, never the row or path
 //! count, and report exact bytes ([`MemoTable::heap_bytes`]). Two guards
 //! keep a memo from costing more than it saves, both set by a
-//! [`MemoPolicy`] per cost class: a warm-up (the first inputs of a stage
+//! [`MemoPolicy`]: a warm-up (the first inputs of a stage
 //! run unmemoised, so a small stage never allocates a table) and a
 //! ceiling (past it the stage keeps answering from the function, hits
 //! still served). Three safety nets bound the whole: the table's bytes are
@@ -46,12 +47,11 @@
 
 use std::sync::atomic::Ordering;
 
-use relate_core::{Error, NodeId, Result};
+use relate_core::{NodeId, Result};
 
 use crate::ctx::ExecCtx;
 use crate::overlay::{ExecGraph, MemoLive, MEMO_QUERY_BUDGET};
 
-use super::node_map::NodeMap;
 use super::program::NodePred;
 
 /// A memo's tuning: when it starts, when it gives up, how large it may
@@ -88,59 +88,12 @@ impl MemoPolicy {
         min_hit_percent: 10,
         max_bytes: 8 << 20,
     };
-    /// A microsecond-class expression (a parse, a compile, a subquery).
-    #[allow(
-        dead_code,
-        reason = "API surface for the next consumers (LABS-1478 follow-ups); pinned by the tests below"
-    )]
-    pub(crate) const EXPENSIVE: Self = Self {
-        warm_up: 8,
-        window: 1 << 16,
-        min_hit_percent: 2,
-        max_bytes: 8 << 20,
-    };
-}
-
-/// The decode-time verdict on whether an expression is worth a memo.
-#[allow(
-    dead_code,
-    reason = "API surface for the next consumers (LABS-1478 follow-ups); pinned by the tests below"
-)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MemoClass {
-    /// Costs about what a probe costs (`id`, `size`, a string compare):
-    /// never wrapped.
-    Cheap,
-    /// Pure, a store read per distinct key (a label or property check):
-    /// memoised by input key once warm.
-    PerKeyModerate,
-    /// Pure and microsecond-class per distinct key (a parse, a compile, a
-    /// subquery): memoised by input key almost at once.
-    PerKeyExpensive,
-    /// Row-invariant: one value per stage ([`Once`]), no key at all.
-    ConstantPerStage,
-}
-
-impl MemoClass {
-    /// The memo's tuning, `None` when the class is not keyed-memoised
-    /// (cheap work is never wrapped, a constant uses [`Once`]).
-    #[allow(
-        dead_code,
-        reason = "API surface for the next consumers (LABS-1478 follow-ups); pinned by the tests below"
-    )]
-    pub(crate) fn policy(self) -> Option<MemoPolicy> {
-        match self {
-            Self::PerKeyModerate => Some(MemoPolicy::MODERATE),
-            Self::PerKeyExpensive => Some(MemoPolicy::EXPENSIVE),
-            Self::Cheap | Self::ConstantPerStage => None,
-        }
-    }
 }
 
 /// A stage-local table from an input key to its answer.
 pub(crate) trait MemoTable: Default {
     type Key: Copy;
-    type Value: Copy;
+    type Value: Clone;
 
     fn get(&self, key: Self::Key) -> Option<Self::Value>;
     fn insert(&mut self, key: Self::Key, value: Self::Value);
@@ -245,6 +198,20 @@ impl<T: MemoTable> Memo<T> {
         key: T::Key,
         compute: impl FnOnce() -> Result<T::Value>,
     ) -> Result<T::Value> {
+        self.answer_lazy(meter, || Some(key), compute, |_| true)
+    }
+
+    /// [`Self::answer`] for a key that costs something to build: `key` runs
+    /// only once the memo is warm and enabled, so a warming or bypassed
+    /// memo pays one branch, not the key. `None` (an unkeyable input) and a
+    /// value `storable` refuses are computed and never remembered.
+    pub(crate) fn answer_lazy(
+        &mut self,
+        meter: &impl MemoMeter,
+        key: impl FnOnce() -> Option<T::Key>,
+        compute: impl FnOnce() -> Result<T::Value>,
+        storable: impl FnOnce(&T::Value) -> bool,
+    ) -> Result<T::Value> {
         if self.disabled {
             return compute();
         }
@@ -252,76 +219,20 @@ impl<T: MemoTable> Memo<T> {
             self.warm += 1;
             return compute();
         }
+        let Some(key) = key() else {
+            return compute();
+        };
         self.stats.probes += 1;
         if let Some(known) = self.table.get(key) {
             self.stats.hits += 1;
             return Ok(known);
         }
         let fresh = compute()?;
-        self.remember(meter, key, fresh);
+        if storable(&fresh) {
+            self.remember(meter, key, fresh.clone());
+        }
         self.review();
         Ok(fresh)
-    }
-
-    /// The answers for `keys`, in order, into `out` (cleared first): the
-    /// misses go to `compute` together — one call with the missing keys
-    /// and a buffer it fills one value per key, in order — so a batched
-    /// function pays its setup once. A key repeated inside one batch is
-    /// computed once per occurrence. On an error nothing is remembered.
-    #[allow(
-        dead_code,
-        reason = "API surface for the next consumers (LABS-1478 follow-ups); pinned by the tests below"
-    )]
-    pub(crate) fn answer_batch(
-        &mut self,
-        meter: &impl MemoMeter,
-        keys: &[T::Key],
-        out: &mut Vec<T::Value>,
-        compute: impl FnOnce(&[T::Key], &mut Vec<T::Value>) -> Result<()>,
-    ) -> Result<()> {
-        out.clear();
-        if self.disabled {
-            compute(keys, out)?;
-            return check_batch_shape(out.len(), keys.len());
-        }
-        if self.warm < self.policy.warm_up {
-            self.warm = self
-                .warm
-                .saturating_add(keys.len().min(u32::MAX as usize) as u32);
-            compute(keys, out)?;
-            return check_batch_shape(out.len(), keys.len());
-        }
-        // One probe per input, taken once: a slot is the table's answer or
-        // empty, and the output is assembled from the slots and the
-        // computed values by position, never re-probed (a miss the table
-        // refuses to store must still get its own computed value).
-        let slots: Vec<Option<T::Value>> = keys.iter().map(|&key| self.table.get(key)).collect();
-        let misses: Vec<T::Key> = keys
-            .iter()
-            .zip(&slots)
-            .filter(|(_, slot)| slot.is_none())
-            .map(|(&key, _)| key)
-            .collect();
-        self.stats.probes += keys.len() as u64;
-        self.stats.hits += (keys.len() - misses.len()) as u64;
-        let mut fresh = Vec::with_capacity(misses.len());
-        if !misses.is_empty() {
-            compute(&misses, &mut fresh)?;
-            check_batch_shape(fresh.len(), misses.len())?;
-            for (&key, &value) in misses.iter().zip(&fresh) {
-                self.remember(meter, key, value);
-            }
-        }
-        self.review();
-        let mut fresh = fresh.into_iter();
-        for slot in slots {
-            out.push(match slot {
-                Some(known) => known,
-                // `fresh` holds exactly one value per miss (checked above).
-                None => fresh.next().expect("one computed value per miss"),
-            });
-        }
-        Ok(())
     }
 
     /// Store an answer unless the memo is frozen or at its ceiling; charge
@@ -368,10 +279,7 @@ impl<T: MemoTable> Memo<T> {
     }
 
     /// What the memo did so far, with the table's current allocation.
-    #[allow(
-        dead_code,
-        reason = "read by PROFILE once the metric is threaded (LABS-1478)"
-    )]
+    #[cfg(test)]
     pub(crate) fn stats(&self) -> MemoStats {
         MemoStats {
             bytes: self.table.heap_bytes() as u64,
@@ -384,61 +292,6 @@ impl<T: MemoTable> Memo<T> {
     #[cfg(test)]
     fn heap_bytes(&self) -> usize {
         self.table.heap_bytes()
-    }
-}
-
-/// Tier 0: a value constant for the stage, computed on first use. An
-/// error is returned and the next ask computes again.
-#[allow(
-    dead_code,
-    reason = "API surface for the next consumers (LABS-1478 follow-ups); pinned by the tests below"
-)]
-#[derive(Default)]
-pub(crate) struct Once<V: Copy>(Option<V>);
-
-impl<V: Copy> Once<V> {
-    #[allow(
-        dead_code,
-        reason = "API surface for the next consumers (LABS-1478 follow-ups); pinned by the tests below"
-    )]
-    pub(crate) fn get_or_init(&mut self, compute: impl FnOnce() -> Result<V>) -> Result<V> {
-        if let Some(known) = self.0 {
-            return Ok(known);
-        }
-        let fresh = compute()?;
-        self.0 = Some(fresh);
-        Ok(fresh)
-    }
-}
-
-/// Tier 1: any `Copy` value per node id, in the frontier family's sparse
-/// map (open addressed, hashed by one multiply).
-#[allow(
-    dead_code,
-    reason = "API surface for the next consumers (LABS-1478 follow-ups); pinned by the tests below"
-)]
-pub(crate) struct NodeValues<V>(NodeMap<V>);
-
-impl<V> Default for NodeValues<V> {
-    fn default() -> Self {
-        Self(NodeMap::default())
-    }
-}
-
-impl<V: Copy> MemoTable for NodeValues<V> {
-    type Key = NodeId;
-    type Value = V;
-
-    fn get(&self, key: NodeId) -> Option<V> {
-        self.0.get(key).copied()
-    }
-
-    fn insert(&mut self, key: NodeId, value: V) {
-        self.0.insert(key, value);
-    }
-
-    fn heap_bytes(&self) -> usize {
-        self.0.heap_bytes()
     }
 }
 
@@ -543,17 +396,6 @@ impl<P: NodePred> NodePred for Memoized<P> {
         let MemoState { inner, memo } = state;
         memo.answer(ctx.graph, node, || self.0.check(inner, ctx, node))
     }
-}
-
-/// The one home of the batch contract — one computed value per key, in
-/// order — checked on every `answer_batch` arm before the output is used.
-fn check_batch_shape(got: usize, want: usize) -> Result<()> {
-    if got == want {
-        return Ok(());
-    }
-    Err(Error::execution(format!(
-        "memoised batch function returned {got} values for {want} keys"
-    )))
 }
 
 #[cfg(test)]

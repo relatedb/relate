@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use relate_core::{Error, Result, Value};
 
+use crate::exec::kernels::construct_memo::ConstructMemos;
+
 use super::ExecGraph;
 
 /// ADR-0395: the fixed per-top-level-statement budget on nested
@@ -146,6 +148,11 @@ impl<'a> ExecGraph<'a> {
     /// The statement's shared live-memo-bytes counter (LABS-1478).
     pub(crate) fn memo_live(&self) -> MemoLive {
         self.memo_live.clone()
+    }
+
+    /// The statement's `datetime(text)` memo (ADR-0640).
+    pub(crate) fn construct_memos(&self) -> &ConstructMemos {
+        &self.construct_memos
     }
 
     /// The configured per-allocation cap (`None` = no cap).

@@ -5,7 +5,7 @@
 
 use relate_core::Value;
 
-use super::super::test_support::{exec_autocommit, Builder};
+use super::super::test_support::{build, exec_autocommit, run_metered, Builder};
 use super::{differential, families, Engagement};
 
 /// The hub-star family: the open star (distinct terminals), the shared
@@ -134,4 +134,35 @@ fn hub_star_anonymous_terminals_match_the_row_path() {
         Engagement::Engaged,
     );
     assert_eq!(none.rows, Vec::<Vec<Value>>::new());
+}
+
+/// The kernel keeps no per-path state beyond the hub's own buffers: a
+/// shared-terminal star over `hubs` hubs, each reaching the same terminals
+/// by both rel types, runs at N and 4N hubs (4x the paths) and the peak
+/// workspace charge at 4N stays within 1.25x of the peak at N.
+#[test]
+fn hub_star_footprint_is_independent_of_path_count() {
+    const TERMINALS: usize = 40;
+    let star = |hubs: usize| {
+        let mut labels = vec![&["H"][..]; hubs];
+        labels.extend(vec![&["T"][..]; TERMINALS]);
+        let mut rels = Vec::new();
+        for h in 0..hubs {
+            for t in 0..TERMINALS {
+                rels.push((h, hubs + t, "A"));
+                rels.push((h, hubs + t, "B"));
+            }
+        }
+        build(&labels, &rels)
+    };
+    let cypher = "MATCH (h:H)-[:A]->(t:T), (h)-[:B]->(t) RETURN count(*) AS c";
+    let (small_rows, at_n) = run_metered(&star(100).graph, cypher);
+    let (large_rows, at_4n) = run_metered(&star(400).graph, cypher);
+    assert_eq!(small_rows, vec![vec![Value::Int(100 * TERMINALS as i64)]]);
+    assert_eq!(large_rows, vec![vec![Value::Int(400 * TERMINALS as i64)]]);
+    eprintln!("hub-star peak at N = {at_n}, at 4N = {at_4n}");
+    assert!(
+        at_4n as f64 <= at_n as f64 * 1.25,
+        "peak {at_4n} at 4N vs {at_n} at N"
+    );
 }

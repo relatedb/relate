@@ -62,6 +62,7 @@ pub(crate) mod node_map;
 // Input-keyed memoisation of pure per-node checks (LABS-1478): the
 // stage-local table and the `Memoized` predicate wrapper the chain kernel
 // puts in front of its admission.
+pub(crate) mod construct_memo;
 mod guard_memo;
 pub(crate) mod memo;
 pub(crate) mod value_hash;

@@ -20,7 +20,10 @@
 //!   `expansion_3`, `expansion_3_unrolled`, `scan_expand_2hop_filter`, and
 //!   the shortest-path groups `shortest_pair`, `shortest_path_fn`,
 //!   `shortest_expr`, `all_shortest_paths`, `shortest_postfix`,
-//!   `shortest_fan`, `shortest_all_pairs`).
+//!   `shortest_fan`, `shortest_all_pairs`), and the expression-memo A/B
+//!   groups `memo_prop_read`, `memo_date_call`, `memo_datetime_call`,
+//!   `memo_date_row`, `memo_datetime_row`, `memo_labels`, `memo_in_list`, `memo_regex`, `memo_hub_star`,
+//!   `memo_site_where`, `memo_site_project`, `memo_site_order`.
 //! * `--sample DIR` runs the selected groups under the in-process profiler
 //!   and writes `DIR/<group>/top.txt`, `folded.txt` and `flame.svg`; no
 //!   samply needed.
@@ -34,14 +37,44 @@
 //! Record a profile: `samply record -s -n -o prof.json.gz -- <binary> small`.
 //! Build with frame pointers for trustworthy stacks
 //! (`RUSTFLAGS="-C force-frame-pointers=yes"`).
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
 use relate::{Connection, PlanNode, QueryResult, Result, Value};
 use relate_test_support::pokec::{open, PokecShape};
 use relate_test_support::profiler::{sample, DEFAULT_FREQUENCY};
+
+/// Bytes requested from the heap, summed over every allocation and growth:
+/// the figure the A/B workflow compares between revisions (requested, not
+/// live, so it is stable across allocator behavior).
+static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+
+struct CountingAlloc;
+
+// SAFETY: every method tallies a relaxed atomic beside the identical
+// `System` call; the layout and pointer arguments reach `System` unchanged.
+unsafe impl GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        ALLOC_BYTES.fetch_add(l.size() as u64, Ordering::Relaxed);
+        System.alloc(l)
+    }
+
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        System.dealloc(p, l)
+    }
+
+    unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
+        ALLOC_BYTES.fetch_add(n as u64, Ordering::Relaxed);
+        System.realloc(p, l, n)
+    }
+}
+
+#[global_allocator]
+static A: CountingAlloc = CountingAlloc;
 
 /// What a group's query binds: the single shape rides here, never a sniff
 /// of the query text.
@@ -105,7 +138,7 @@ impl Group {
 
 /// Start ids 1.. are the fixture's hub-heavy head (i^-0.4 weights), the
 /// shape multi-hop expansion cost hangs on.
-const GROUPS: [Group; 12] = [
+const GROUPS: [Group; 24] = [
     Group {
         name: "count",
         query: "MATCH (n:User) RETURN count(*)",
@@ -185,6 +218,95 @@ const GROUPS: [Group; 12] = [
         rounds: 2,
         binds: Binds::Start(16),
     },
+    // The expression-memo A/B groups (ab-harness): each scans a fixture
+    // column through one expression class, so a memo tier's saving or cost
+    // shows per class. The `memo_site_*` groups run a loop-invariant call
+    // at each of the three wired sites (filter, projection, ordering key).
+    Group {
+        name: "memo_prop_read",
+        query: "MATCH (n:User) WHERE n.completion_percentage > 50 RETURN count(n)",
+        rounds: 10,
+        binds: Binds::None,
+    },
+    Group {
+        name: "memo_date_call",
+        query: "MATCH (n:User) WHERE date('2024-05-05').year = 2024 AND n.age > 25 \
+                RETURN count(n)",
+        rounds: 10,
+        binds: Binds::None,
+    },
+    Group {
+        name: "memo_datetime_call",
+        query: "MATCH (n:User) WHERE datetime('2024-05-05T10:00:00Z').hour = 10 AND n.age > 25 \
+                RETURN count(n)",
+        rounds: 10,
+        binds: Binds::None,
+    },
+    // A literal `date('...')` folds at lowering, so these two feed the call a
+    // per-row value (two distinct strings across the column).
+    Group {
+        name: "memo_date_row",
+        query: "MATCH (n:User) \
+                WHERE date(CASE n.gender WHEN 'man' THEN '2024-05-05' ELSE '2023-01-01' END).year \
+                = 2024 RETURN count(n)",
+        rounds: 10,
+        binds: Binds::None,
+    },
+    Group {
+        name: "memo_datetime_row",
+        query: "MATCH (n:User) \
+                WHERE datetime(CASE n.gender WHEN 'man' THEN '2024-05-05T10:00:00Z' \
+                ELSE '2023-01-01T09:00:00Z' END).hour = 10 RETURN count(n)",
+        rounds: 10,
+        binds: Binds::None,
+    },
+    Group {
+        name: "memo_labels",
+        query: "MATCH (n:User) WHERE 'User' IN labels(n) RETURN count(n)",
+        rounds: 10,
+        binds: Binds::None,
+    },
+    Group {
+        name: "memo_in_list",
+        query: "MATCH (n:User) WHERE n.age IN [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30] \
+                RETURN count(n)",
+        rounds: 10,
+        binds: Binds::None,
+    },
+    Group {
+        name: "memo_regex",
+        query: "MATCH (n:User) WHERE n.gender =~ 'm.*' RETURN count(n)",
+        rounds: 10,
+        binds: Binds::None,
+    },
+    Group {
+        name: "memo_hub_star",
+        query: "MATCH (a:User)-[:Friend]->(b:User), (a)<-[:Friend]-(b) \
+                WHERE b.gender =~ 'm.*' \
+                RETURN count(b)",
+        rounds: 2,
+        binds: Binds::None,
+    },
+    Group {
+        name: "memo_site_where",
+        query: "MATCH (n:User) WHERE n.age > toInteger(date('2024-05-05').year / 100) \
+                RETURN count(n)",
+        rounds: 10,
+        binds: Binds::None,
+    },
+    Group {
+        name: "memo_site_project",
+        query: "MATCH (n:User) RETURN sum(n.age + date('2024-05-05').month)",
+        rounds: 10,
+        binds: Binds::None,
+    },
+    Group {
+        name: "memo_site_order",
+        query: "MATCH (n:User) WITH n ORDER BY n.age + date('2024-05-05').month, n.id LIMIT 1 \
+                RETURN n.id",
+        rounds: 10,
+        binds: Binds::None,
+    },
 ];
 
 /// The fixture shape to open.
@@ -217,8 +339,8 @@ struct Args {
     /// Run only this group (`count`, `scan_agg_global`, `expansion_3`,
     /// `expansion_3_unrolled`, `scan_expand_2hop_filter`, `shortest_pair`,
     /// `shortest_path_fn`, `shortest_expr`, `all_shortest_paths`,
-    /// `shortest_postfix`, `shortest_fan`, `shortest_all_pairs`); every group
-    /// when omitted.
+    /// `shortest_postfix`, `shortest_fan`, `shortest_all_pairs`, and the
+    /// `memo_*` expression groups); every group when omitted.
     #[arg(long, value_parser = group_by_name)]
     group: Option<&'static Group>,
     /// Run the selected groups under the in-process sampler and write
@@ -363,11 +485,12 @@ fn run_timed(conn: &mut Connection, g: &Group, sample_dir: Option<&Path>) -> Res
         None => measure(conn, g)?,
     };
     println!(
-        "{}: {} ms rows={} checksum={}",
+        "{}: {} ms rows={} checksum={} alloc_bytes={}",
         g.name,
         m.elapsed.as_millis(),
         m.rows,
-        m.checksum
+        m.checksum,
+        m.alloc_bytes
     );
     Ok(())
 }
@@ -402,11 +525,13 @@ struct Measured {
     rows: i64,
     checksum: i64,
     elapsed: Duration,
+    alloc_bytes: u64,
 }
 
 /// Run `g`'s measured rounds.
 fn measure(conn: &mut Connection, g: &Group) -> Result<Measured> {
     let t = Instant::now();
+    let bytes_before = ALLOC_BYTES.load(Ordering::Relaxed);
     let mut rows = 0i64;
     let mut checksum = 0i64;
     for r in 0..g.rounds {
@@ -426,6 +551,7 @@ fn measure(conn: &mut Connection, g: &Group) -> Result<Measured> {
         rows,
         checksum,
         elapsed: t.elapsed(),
+        alloc_bytes: ALLOC_BYTES.load(Ordering::Relaxed) - bytes_before,
     })
 }
 

@@ -32,8 +32,12 @@ pub(super) fn bi_format(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> R
 /// `duration()`: the one shared construction policy
 /// (`temporal::construct_named`) behind the builtin dispatch, the
 /// front-end's literal folding, and the scan-predicate specialization.
-pub(super) fn bi_date(_graph: &ExecGraph<'_>, n: &str, vals: Vec<Value>) -> Result<Value> {
-    temporal::construct_named(n, &vals)
+///
+/// The one-string-argument `datetime` form is a pure parse, served through
+/// the statement's hashed-value memo (`ConstructMemos`, which owns the
+/// decision).
+pub(super) fn bi_date(graph: &ExecGraph<'_>, n: &str, vals: Vec<Value>) -> Result<Value> {
+    graph.construct_memos().construct(graph, n, &vals)
 }
 pub(super) fn bi_datetime_fromepoch(
     _graph: &ExecGraph<'_>,

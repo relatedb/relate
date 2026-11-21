@@ -56,7 +56,7 @@ pub use clock::{
     now_epoch_millis, now_utc_dt, ClockKind, ClockMode, QueryClockGuard,
 };
 pub use construct::{
-    accepts_pattern, construct_date, construct_datetime, construct_duration,
+    accepts_pattern, clock_kind, construct_date, construct_datetime, construct_duration,
     construct_localdatetime, construct_localtime, construct_named, construct_time, is_constructor,
     samples_clock,
 };

@@ -1227,6 +1227,22 @@ cargo run --profile profiling -p relate-query-latency --bin pokec_profile -- sma
 | `--profile` | Print the `PROFILE` result of the group's query at start id 1 instead of timing it. Needs `--group`. |
 | `--help` | The generated usage and flag list. |
 
+The expression-memo A/B groups (`memo_prop_read`, `memo_date_call`,
+`memo_datetime_call`, `memo_date_row`, `memo_datetime_row`, `memo_labels`, `memo_in_list`, `memo_regex`,
+`memo_hub_star`, `memo_site_where`, `memo_site_project`, `memo_site_order`)
+each push one expression class through a full `:User` scan (the hub-star group
+through a hub expansion). A timed line also prints `alloc_bytes`, the bytes
+the counting allocator saw requested during the measured rounds. The
+branch-only `.github/workflows/memo-ab.yml` (inputs `base_ref`, `head_ref`,
+`groups`, `rounds`) builds the binary at two refs, runs each group in a fresh
+process per revision, interleaved, and reports per group the median ms,
+checksum equality, peak RSS and `alloc_bytes`:
+
+```bash
+gh workflow run memo-ab.yml --ref perf/expression-memo-tiers \
+  -f base_ref=main -f head_ref=perf/expression-memo-tiers
+```
+
 `scan_agg_global` is `MATCH (n:User) RETURN n.age, count(*) ORDER BY n.age`,
 the grouped shape the index-backed aggregate shortcut recognizes
 ([ADR-0611](adr/0611-index-backed-aggregates.md)); the fixture’s `user_age`

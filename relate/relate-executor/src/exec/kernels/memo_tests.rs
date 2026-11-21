@@ -110,152 +110,6 @@ fn footprint_follows_distinct_nodes_not_checks() {
     );
 }
 
-// A batch past the warm-up sends only the misses to the function, in
-// one call, and serves the rest from the table.
-#[test]
-fn batch_computes_only_the_misses_in_one_call() {
-    let mut memo = warm();
-    let mut out = Vec::new();
-    let mut calls = Vec::new();
-    let mut run = |memo: &mut NodeMemo, keys: &[i64]| {
-        memo.answer_batch(&Unmetered, keys, &mut out, |misses, fresh| {
-            calls.push(misses.to_vec());
-            fresh.extend(misses.iter().map(|k| k % 2 == 0));
-            Ok(())
-        })
-        .unwrap();
-        out.clone()
-    };
-    assert_eq!(run(&mut memo, &[2, 3, 4]), [true, false, true]);
-    assert_eq!(run(&mut memo, &[3, 4, 5, 6]), [false, true, false, true]);
-    assert_eq!(calls, vec![vec![2, 3, 4], vec![5, 6]]);
-}
-
-// A repeated key whose later misses the table refuses to store still gets
-// its own computed value, by position: the output is never re-probed.
-#[test]
-fn batch_pairs_each_input_with_its_own_value_when_a_miss_is_not_stored() {
-    let mut memo = Memo::<NodeValues<u32>>::new(
-        MemoPolicy {
-            warm_up: 0,
-            window: u32::MAX,
-            ..MemoPolicy::MODERATE
-        },
-        None,
-    );
-    // The first store crosses the cap and freezes the table: key 5 is
-    // stored, key 6 is refused.
-    let meter = Capped(0);
-    let mut out = Vec::new();
-    memo.answer_batch(&meter, &[5, 6, 5], &mut out, |misses, fresh| {
-        assert_eq!(misses, [5, 6, 5]);
-        fresh.extend([10, 20, 30]);
-        Ok(())
-    })
-    .unwrap();
-    assert!(memo.frozen, "the meter refused the first store");
-    assert_eq!(out, [10, 20, 30]);
-}
-
-// The one-value-per-key contract is a typed error on the warm-up arm and on
-// the disabled arm, not a debug-only assertion.
-#[test]
-fn a_short_batch_result_is_a_typed_error_on_every_arm() {
-    let mut out = Vec::new();
-    let mut warm_up = Memo::<NodeValues<u32>>::new(MemoPolicy::MODERATE, None);
-    let short = warm_up.answer_batch(&Unmetered, &[1, 2], &mut out, |_, fresh| {
-        fresh.push(1);
-        Ok(())
-    });
-    assert!(short.is_err(), "warm-up arm");
-    let mut disabled = Memo::<NodeValues<u32>>::new(MemoPolicy::MODERATE, None);
-    disabled.disabled = true;
-    let short = disabled.answer_batch(&Unmetered, &[1, 2], &mut out, |_, fresh| {
-        fresh.push(1);
-        Ok(())
-    });
-    assert!(short.is_err(), "disabled arm");
-}
-
-// A batch error remembers nothing, and the warm-up batch computes all.
-#[test]
-fn batch_error_is_not_cached_and_warm_up_computes_all() {
-    let mut memo = warm();
-    let mut out = Vec::new();
-    let failed = memo.answer_batch(&Unmetered, &[7, 8], &mut out, |_, _| {
-        Err(Error::Execution("boom".into()))
-    });
-    assert!(failed.is_err());
-    let mut asked = 0;
-    memo.answer_batch(&Unmetered, &[7, 8], &mut out, |misses, fresh| {
-        asked = misses.len();
-        fresh.extend(misses.iter().map(|_| true));
-        Ok(())
-    })
-    .unwrap();
-    assert_eq!(asked, 2, "neither key was remembered");
-
-    let mut cold = NodeMemo::default();
-    let mut seen = 0;
-    cold.answer_batch(&Unmetered, &[1, 2, 3], &mut out, |keys, fresh| {
-        seen = keys.len();
-        fresh.extend(keys.iter().map(|_| false));
-        Ok(())
-    })
-    .unwrap();
-    assert_eq!((seen, cold.heap_bytes()), (3, 0));
-}
-
-// The value table memoises any `Copy` value, not only booleans.
-#[test]
-fn value_table_memoises_any_copy_value() {
-    let mut memo = Memo::<NodeValues<u32>>::default();
-    for node in 0..WARMUP_CHECKS {
-        memo.answer(&Unmetered, i64::from(node) + 9_000_000, || Ok(0))
-            .unwrap();
-    }
-    let mut calls = 0;
-    for _ in 0..3 {
-        let got = memo
-            .answer(&Unmetered, 41, || {
-                calls += 1;
-                Ok(7)
-            })
-            .unwrap();
-        assert_eq!(got, 7);
-    }
-    assert_eq!(calls, 1);
-}
-
-// Tier 0: computed once per stage; an error is retried.
-#[test]
-fn once_computes_once_and_retries_after_an_error() {
-    let mut once = Once::<u64>::default();
-    assert!(once
-        .get_or_init(|| Err(Error::Execution("boom".into())))
-        .is_err());
-    let mut calls = 0;
-    for _ in 0..3 {
-        let got = once
-            .get_or_init(|| {
-                calls += 1;
-                Ok(99)
-            })
-            .unwrap();
-        assert_eq!(got, 99);
-    }
-    assert_eq!(calls, 1);
-}
-
-// Only a per-key-expensive expression gets the keyed memo.
-#[test]
-fn only_per_key_expensive_is_keyed() {
-    assert!(MemoClass::PerKeyExpensive.policy().is_some());
-    assert!(MemoClass::PerKeyModerate.policy().is_some());
-    assert!(MemoClass::Cheap.policy().is_none());
-    assert!(MemoClass::ConstantPerStage.policy().is_none());
-}
-
 // The bitmap's bytes, measured: clustered ids cost 1 KiB per 4096-id
 // page plus the directory; scattered ids flatten at the page count.
 #[test]
@@ -332,21 +186,6 @@ fn stats_count_probes_hits_inserts_and_bytes() {
     assert!(s.bytes > 0);
 }
 
-// A policy-driven warm-up: the expensive class starts almost at once.
-#[test]
-fn the_class_policy_sets_the_trigger() {
-    let mut memo = Memo::<PagedBits>::new(MemoPolicy::EXPENSIVE, None);
-    for node in 0..MemoPolicy::EXPENSIVE.warm_up {
-        memo.answer(&Unmetered, i64::from(node), || Ok(true))
-            .unwrap();
-    }
-    assert_eq!(memo.heap_bytes(), 0, "still warming");
-    memo.answer(&Unmetered, 7, || Ok(true)).unwrap();
-    assert!(memo.heap_bytes() > 0, "memoising after eight inputs");
-    assert!(MemoClass::PerKeyModerate.policy().is_some());
-    assert!(MemoClass::Cheap.policy().is_none());
-}
-
 // The review: a memo whose answers are used once drops its table,
 // returns its bytes, and bypasses itself; a memo that hits keeps it.
 #[test]
@@ -403,4 +242,42 @@ fn the_query_budget_freezes_memos_in_total() {
     assert!(memo.frozen, "the first page crosses the shared budget");
     memo.answer(&Unmetered, 99_999, || Ok(true)).unwrap();
     assert!(memo.stats().refused >= 1);
+}
+
+// The wired sites (frontier guard, re-arrival, distinct endpoint) all
+// run `Memoized` under `MODERATE`. The harness prints no hit rate for
+// them (wired_site_numbers), so each is modelled by its key stream: a
+// cold pass over a large domain that later repeats, which the review must
+// keep, and a stream that never repeats, which it must still drop. A
+// window as short as the pre-fix 4096 reads the cold pass as zero reuse
+// and disables the memo that pays.
+#[test]
+fn the_review_window_keeps_a_memo_over_a_large_domain_that_repeats() {
+    const PRE_FIX_WINDOW: u32 = 4096;
+    let probes = i64::from(MemoPolicy::MODERATE.window);
+    let domain = 60_000i64;
+    let run = |policy: MemoPolicy, keys: &dyn Fn(i64) -> i64| {
+        let mut memo = Memo::<PagedBits>::new(policy, None);
+        for i in 0..(i64::from(policy.warm_up) + probes) {
+            memo.answer(&Unmetered, keys(i), || Ok(true)).unwrap();
+        }
+        memo.stats()
+    };
+    let repeating = |i: i64| i % domain;
+
+    let kept = run(MemoPolicy::MODERATE, &repeating);
+    assert!(!kept.disabled, "cumulative hit rate over the window pays");
+    assert!(kept.hits * 100 >= kept.probes * 90, "{kept:?}");
+
+    let short = MemoPolicy {
+        window: PRE_FIX_WINDOW,
+        ..MemoPolicy::MODERATE
+    };
+    assert!(
+        run(short, &repeating).disabled,
+        "a window of {PRE_FIX_WINDOW} misjudges the cold start as no reuse"
+    );
+
+    let never_repeats = run(MemoPolicy::MODERATE, &|i| i);
+    assert!(never_repeats.disabled, "all-distinct keys still disable");
 }
