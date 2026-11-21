@@ -56,22 +56,46 @@ fn as_floats(v: &Value) -> std::result::Result<Vec<f64>, CoordFault> {
     }
 }
 
+/// The `vector()` coordinate source: a borrowed list (the common literal
+/// path, never copied into a second buffer) or the floats a coordinate text
+/// parsed to. Both answer the one question the construction asks, by index.
+enum Coords<'a> {
+    List(&'a [Value]),
+    Parsed(Vec<f64>),
+}
+
+impl Coords<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::List(items) => items.len(),
+            Self::Parsed(floats) => floats.len(),
+        }
+    }
+
+    /// The `i`th coordinate as a number, `None` when a list entry is not one.
+    fn number_at(&self, i: usize) -> Option<f64> {
+        match self {
+            Self::List(items) => items[i].as_number(),
+            Self::Parsed(floats) => Some(floats[i]),
+        }
+    }
+}
+
 pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
     // The three-argument count is the registry row's contract, enforced
     // before any argument is evaluated.
     if vals.iter().any(Value::is_null) {
         return Ok(Value::Null);
     }
-    // Both sources reduce to one numbers-or-not sequence: a coordinate
-    // text parses straight to floats, a list maps each element once. A
-    // non-number is reported only after the dimension checks below.
-    let numbers: Vec<Option<f64>> = match &vals[0] {
-        Value::List(items) => items.iter().map(Value::as_number).collect(),
-        Value::String(s) => VectorCoordKind::parse_coordinates(s)
-            .ok_or_else(|| Error::ty("InvalidVectorCoordinates"))?
-            .into_iter()
-            .map(Some)
-            .collect(),
+    // Both sources are read through [`Coords`]: a coordinate text parses
+    // straight to floats, a list stays borrowed. A non-number is reported
+    // only after the dimension checks below.
+    let numbers = match &vals[0] {
+        Value::List(items) => Coords::List(items),
+        Value::String(s) => Coords::Parsed(
+            VectorCoordKind::parse_coordinates(s)
+                .ok_or_else(|| Error::ty("InvalidVectorCoordinates"))?,
+        ),
         _ => return Err(Error::ty("vector() requires a numeric list")),
     };
     let dim = vals[1]
@@ -103,8 +127,10 @@ pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
     // loop-invariant `coord`, not on the element being converted.
     let convert = coord_converter(coord);
     let mut values = Vec::with_capacity(numbers.len());
-    for n in numbers {
-        let n = n.ok_or_else(|| Error::ty("vector() coordinates must be numbers"))?;
+    for i in 0..numbers.len() {
+        let n = numbers
+            .number_at(i)
+            .ok_or_else(|| Error::ty("vector() coordinates must be numbers"))?;
         values.push(convert(n)?);
     }
     Ok(Value::Vector {
@@ -118,10 +144,10 @@ pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
 /// loop-invariant kind.
 fn coord_converter(coord: VectorCoordKind) -> fn(f64) -> Result<Value> {
     match coord {
-        VectorCoordKind::Int8 => |n| int_coord(n, i8::MIN as f64, i8::MAX as f64),
-        VectorCoordKind::Int16 => |n| int_coord(n, i16::MIN as f64, i16::MAX as f64),
-        VectorCoordKind::Int32 => |n| int_coord(n, i32::MIN as f64, i32::MAX as f64),
-        VectorCoordKind::Int64 => |n| int_coord(n, i64::MIN as f64, i64::MAX as f64),
+        VectorCoordKind::Int8 => int8_coord,
+        VectorCoordKind::Int16 => int16_coord,
+        VectorCoordKind::Int32 => int32_coord,
+        VectorCoordKind::Int64 => int64_coord,
         VectorCoordKind::Float16 => float16_coord,
         VectorCoordKind::BFloat16 => bfloat16_coord,
         VectorCoordKind::Float32 => float32_coord,
@@ -153,6 +179,22 @@ fn float_coord(n: f64, kind: VectorCoordKind) -> Result<Value> {
     kind.narrow_float(n)
         .map(Value::Float)
         .ok_or_else(|| Error::ty("InvalidVectorCoordinates"))
+}
+
+fn int8_coord(n: f64) -> Result<Value> {
+    int_coord(n, i8::MIN as f64, i8::MAX as f64)
+}
+
+fn int16_coord(n: f64) -> Result<Value> {
+    int_coord(n, i16::MIN as f64, i16::MAX as f64)
+}
+
+fn int32_coord(n: f64) -> Result<Value> {
+    int_coord(n, i32::MIN as f64, i32::MAX as f64)
+}
+
+fn int64_coord(n: f64) -> Result<Value> {
+    int_coord(n, i64::MIN as f64, i64::MAX as f64)
 }
 
 fn float16_coord(n: f64) -> Result<Value> {
@@ -290,13 +332,17 @@ pub(crate) fn vector_cosine(vals: &[Value]) -> Result<Value> {
         return Err(dimension_mismatch());
     }
     // A non-finite coordinate was already rejected as a `CoordFault`;
-    // cosine keeps only its zero-vector rule.
+    // cosine keeps only its zero-vector rule: the one rejection of a vector
+    // whose coordinates are all zero.
     if x.iter().all(|f| *f == 0.0) || y.iter().all(|f| *f == 0.0) {
         return Err(invalid_vector("not a valid vector"));
     }
     let dot: f64 = x.iter().zip(&y).map(|(a, b)| a * b).sum();
     let nx: f64 = x.iter().map(|a| a * a).sum::<f64>().sqrt();
     let ny: f64 = y.iter().map(|a| a * a).sum::<f64>().sqrt();
+    // Not the zero-vector rule above (every such vector was rejected): a
+    // nonzero vector whose squared coordinates underflow has a zero norm
+    // and a defined similarity of zero.
     if nx == 0.0 || ny == 0.0 {
         return Ok(Value::Float(0.0));
     }
