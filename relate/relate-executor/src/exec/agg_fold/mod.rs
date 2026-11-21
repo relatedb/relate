@@ -6,6 +6,9 @@
 //! [`plan`]), the streaming accumulators in [`acc`].
 
 mod acc;
+mod one_hop;
+mod path;
+mod plan;
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -19,6 +22,9 @@ use crate::group_key::GroupKey;
 use crate::overlay::{ExecGraph, MaterializeCache};
 use crate::row::Row;
 pub(in crate::exec) use acc::StreamAgg;
+pub(crate) use one_hop::try_fold_one_hop_aggs;
+pub(crate) use path::try_fold_path_aggs;
+pub(in crate::exec) use plan::is_pred_op;
 
 /// Shared fold scaffolding: the derived group key beside the key values
 /// it was built from, so a repeat of the same key values reuses both.
@@ -233,21 +239,14 @@ where
     row
 }
 
-/// ADR-0036: fold one-hop MATCH + streamable RETURN aggregates (no row per edge).
-/// A MATCH fold that already built the following RETURN.
+/// A MATCH fold that already built the following RETURN (ADR-0036: one-hop
+/// MATCH + streamable RETURN aggregates, no row per edge).
 pub(crate) struct FoldedReturn {
     pub rows: Vec<Row>,
     pub result: QueryResult,
     /// Clauses after the current MATCH that the fold consumed, including RETURN.
     pub consumed_after: usize,
 }
-
-mod one_hop;
-mod path;
-mod plan;
-pub(crate) use one_hop::try_fold_one_hop_aggs;
-pub(crate) use path::try_fold_path_aggs;
-pub(in crate::exec) use plan::is_pred_op;
 
 fn folded_return(graph: &ExecGraph<'_>, rows: Vec<Row>, items: &[Projection]) -> FoldedReturn {
     FoldedReturn {
@@ -277,9 +276,7 @@ pub(crate) fn result_from_projected(
         .map(|r| {
             columns
                 .iter()
-                .map(|c| {
-                    graph.materialize_cached(r.get(c).cloned().unwrap_or(Value::Null), &mut cache)
-                })
+                .map(|c| graph.materialize_cached(result_column(r, c).clone(), &mut cache))
                 .collect()
         })
         .collect();

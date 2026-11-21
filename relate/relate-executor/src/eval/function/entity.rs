@@ -235,10 +235,7 @@ pub(in crate::eval) fn entity_backing_map(
 
 pub(super) fn bi_properties(graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
     Ok(match vals.first() {
-        Some(v @ Value::Node(_)) => {
-            properties_value(entity_backing_map(graph, v, "properties()")?.as_ref())
-        }
-        Some(v @ Value::Relationship(_)) => {
+        Some(v @ (Value::Node(_) | Value::Relationship(_))) => {
             properties_value(entity_backing_map(graph, v, "properties()")?.as_ref())
         }
         Some(Value::Map(m)) => Value::Map(m.clone()),
@@ -254,14 +251,12 @@ pub(super) fn bi_keys(graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Resu
     Ok(match vals.first() {
         // `keys()` reads the keys of the very map `properties()` returns —
         // the one resolver, never a second spelling of the entity read.
-        Some(v @ Value::Node(_)) => {
-            key_list(entity_backing_map(graph, v, "keys()")?.keys().cloned())
-        }
-        Some(v @ Value::Relationship(_)) => {
+        Some(v @ (Value::Node(_) | Value::Relationship(_))) => {
             key_list(entity_backing_map(graph, v, "keys()")?.keys().cloned())
         }
         Some(Value::Map(m)) => key_list(m.keys().cloned()),
-        Some(Value::Null) | None => Value::Null,
+        // NULL (and any other non-entity argument) answers NULL: the
+        // historical `keys()` contract, kept as the one wildcard.
         _ => Value::Null,
     })
 }

@@ -1,7 +1,7 @@
 //! Cooperative query cancellation (ADR-0111).
 //!
-//! A query running long enough to be cancelled from another thread returns a
-//! typed error whose message contains `"query cancelled"`, and the
+//! A query running long enough to be cancelled from another thread returns the
+//! typed [`Error::Cancelled`] (displayed as `query cancelled`), and the
 //! connection it ran on stays usable.
 
 use std::collections::BTreeMap;
@@ -127,6 +127,17 @@ fn assert_uncancelled_outlasts_floor(elapsed: Duration, stop: LadderStop, worklo
     );
 }
 
+/// The typed pin: a cancelled run fails with the dedicated
+/// [`Error::Cancelled`] variant, not an `Execution` error whose text happens
+/// to read "query cancelled" (the Display text is a rendering of the
+/// variant, never the contract).
+fn assert_cancelled(error: &Error, workload: &str) {
+    assert!(
+        matches!(error, Error::Cancelled),
+        "expected Error::Cancelled from the {workload}, got {error:?}"
+    );
+}
+
 /// Run `query` on `conn`, cancel it 20 ms in, and assert the cancellation
 /// is observed *inside* the workload's loop: the run fails with the
 /// cancellation error, returns well before half of `uncancelled_elapsed`
@@ -160,10 +171,7 @@ fn assert_cancels_promptly(
     let elapsed = started.elapsed();
 
     let error = outcome.unwrap_err();
-    assert!(
-        error.to_string().contains("query cancelled"),
-        "expected a cancellation error from the {workload}, got {error}"
-    );
+    assert_cancelled(&error, workload);
     let bound = uncancelled_elapsed / 2;
     assert!(
         elapsed < bound,
@@ -197,10 +205,7 @@ fn cancelling_a_running_query_errors_and_connection_stays_usable() {
     });
 
     let error = outcome.unwrap_err();
-    assert!(
-        error.to_string().contains("query cancelled"),
-        "expected a cancellation error, got {error}"
-    );
+    assert_cancelled(&error, "the running query");
 
     // The same connection still answers a normal query after the cancelled one.
     let result = conn.query("RETURN 1 AS one").unwrap();
@@ -254,10 +259,7 @@ fn cancelling_inside_a_match_scan_errors_promptly() {
     let elapsed = started.elapsed();
 
     let error = outcome.unwrap_err();
-    assert!(
-        error.to_string().contains("query cancelled"),
-        "expected a cancellation error from the MATCH scan, got {error}"
-    );
+    assert_cancelled(&error, "MATCH scan");
     // The scan observes cancellation through its sampled per-candidate check,
     // so it returns within a few samples of the cancel, not after the whole
     // O(n^2) scan.
@@ -521,10 +523,7 @@ fn cancelling_inside_a_path_predicate_shortest_path_errors_promptly() {
     let elapsed = started.elapsed();
 
     let error = outcome.unwrap_err();
-    assert!(
-        error.to_string().contains("query cancelled"),
-        "expected a cancellation error from the predicate search, got {error}"
-    );
+    assert_cancelled(&error, "predicate search");
     assert!(
         elapsed < Duration::from_secs(2),
         "cancelled predicate search took {elapsed:?}, far longer than the cancel latency"
@@ -600,10 +599,7 @@ fn cancelling_a_constraint_recheck_errors_promptly() {
     let elapsed = started.elapsed();
 
     let error = outcome.unwrap_err();
-    assert!(
-        error.to_string().contains("query cancelled"),
-        "expected a cancellation error from the constraint recheck, got {error}"
-    );
+    assert_cancelled(&error, "constraint recheck");
     // The recheck loop samples the token once per 1024 entities, so after
     // the cancel lands the loop exits within one sampling window and the
     // whole cancelled run is the cancel latency plus that window — well
