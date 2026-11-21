@@ -1037,6 +1037,39 @@ CRC-invalid predecessor cases fail without this repair.
 | Parquet manifest and pull-identity JSON; JSON `graph.json` pull identity | Each Parquet-store object is at most **16 MiB (16,777,216 bytes)** on write and before read (both VFS metadata and opened-handle length). The legacy ADR-0092 v3 `pull_identity_path` selector is removed from `Manifest`: a key still present in an old manifest is ignored on read (unknown manifest fields are ignored, so old manifests open unchanged) and dropped on the next write — current code never writes the key — and any `pull-identity/` objects or `pull-identity.json` sidecar an old store still holds are inert legacy data, never read. Every `PullIdentityEntry.local_id` must be in `0..i64::MAX` (inclusive zero, exclusive `i64::MAX`). A checkpoint with an invalid local ID returns `Error::Storage` before creating a new selected map object or publishing a new manifest; the previous snapshot and committed WAL remain available for recovery. Selected and legacy map reads return `Error::Storage` before installing any entries with an invalid local ID. Source names and remote IDs are not subject to the local-ID bound. v1/v2 monolith snapshots remain readable. The map is loaded before WAL replay; identity WAL ops replay with their graph commits. JSON stores have no separate map object: entries live in the optional `graph.json` `pull_identity` array and share its read path with no separate size envelope (ADR-0106), and the same `0..i64::MAX` local-ID rule applies — an invalid entry fails checkpoint with `Error::Storage` before writing `graph.json` or advancing its manifest, and fails load before installing any entries. |
 | Parquet node/relationship shard recovery, including older monoliths | Before whole-file allocation, the VFS metadata and opened file length must each be at most **1 GiB (1,073,741,824 bytes)**; a changed length during the read fails. Loader preflight also rejects a shard over **1 GiB** on disk, footer metadata over **16 MiB**, or more than **1,000,000** declared rows across row groups. Checked file/column ranges and at most **2 GiB (2,147,483,648 bytes)** of declared uncompressed column data are required. Before Arrow page decompression, the actual page-header scan bounds headers to **64 KiB**, at most **65,536 pages** per shard, compressed *and* uncompressed payloads to **128 MiB (134,217,728 bytes)** per page, page value/row counts to **1,000,000**, and summed observed uncompressed page bytes to **2 GiB**. It also bounds Thrift nesting/container counts and checks declared/observed totals. Decode uses batches of at most **1024 rows**, counting actual rows (at most **1,000,000**) per batch and decoded column-value bytes (at most **384 MiB / 402,653,184 bytes** per row and **2 GiB** per shard) before copying/parsing each row into graph values. Limits are **per shard**, not per database or total snapshot. |
 
+A Parquet checkpoint can also publish the **opt-in adjacency payload**
+(ADR-0551): one `adjacency/payload-<128-bit-hex>.parquet` object holding
+every adjacency chunk of the checkpointed graph — a sealed chunk's ADR-0551
+codec stream verbatim, an unsealed chunk's hop list — listed in the manifest,
+its own file metadata naming the checkpoint's `checkpoint_lsn`, with a CRC-32
+digest per row group of every rel part and, per row, a CRC-32 over the row's
+identity columns (node, type, side, hop count) and its hop data. Each row
+also carries the chunk's **tombstones** — the hop ids a delete or reposition
+hides at the checkpoint's snapshot timestamp, each with its kind, because
+only the export knows which supersede put it there: the fold never rewrites a
+sealed stream, so the install needs the tombstone beside the verbatim bytes
+to answer like a re-fold. An open whose manifest lists the payload installs
+it instead of
+deriving adjacency from the relationship rows: the rows decode in node-id
+windows, each chunk's sealed stream is copied into the arena verbatim and its
+delta hop ids into their chunk (both borrowed from the decoded row), and the
+load tail keeps the installed adjacency while it still runs the degree and
+count folds over the rel rows. The payload is a **cache tier**: a payload
+naming another checkpoint (a torn publication), a corrupt or missing object,
+or a rel row group whose digest moved each degrades the open to the full row
+re-fold, reported on `OpenReport::warnings` as a `DegradedPayload { path,
+cause }` — it never refuses the store. A WAL tail past the checkpoint replays over the installed adjacency
+exactly as over a re-folded one. It is **default off and
+Parquet only**: `RELATE_ADJACENCY_PAYLOAD=1` turns it on (`0` or unset off;
+any other value fails the checkpoint with `Storage`), and
+`RELATE_ADJACENCY_PAYLOAD_MIN_RELS` (default **10,000,000**, a non-negative
+integer) is the live relationship count at or above which a payload is
+written — below it none is, even when opted in. The payload publishes under
+the same exclusive-create, sync and durable-name rules as the shards; a
+later checkpoint with the opt-in off retires it, and an unreferenced
+payload is a crash-window orphan the open's sweep removes. JSON and
+markdown snapshots never write one.
+
 The loader copies its bounded file bytes again when building the Parquet
 reader. `RELATE_SHARD_TARGET_BYTES` defaults to **256 MiB (268,435,456
 bytes)** and accepts only decimal integers in **1..=1,073,741,824 bytes**;

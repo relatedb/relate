@@ -4,9 +4,13 @@ use std::collections::HashSet;
 
 use relate_catalog::{ConstraintDef, IndexDef};
 use relate_core::{Node, NodeId, RelId, Relationship, Result};
-use relate_engine_api::{CheckpointTheater, GraphExport, GraphImport, RedoOp};
+use relate_engine_api::{
+    AdjacencyChunk, AdjacencyChunkRef, AdjacencySource, CheckpointTheater, GraphExport,
+    GraphImport, RedoOp,
+};
 use relate_model::Constraint;
 
+use super::adjacency::for_each_adjacency_chunk;
 use super::Graph;
 
 impl GraphExport for Graph {
@@ -33,6 +37,9 @@ impl GraphExport for Graph {
     }
     fn all_rel_ids_at(&self, ts: u64) -> Vec<RelId> {
         Graph::all_rel_ids_at(self, ts)
+    }
+    fn live_rel_count(&self, ts: u64) -> usize {
+        Graph::live_rel_count(self, ts)
     }
     fn node_at(&self, id: NodeId, ts: u64) -> Option<Node> {
         Graph::node_at(self, id, ts)
@@ -64,6 +71,13 @@ impl GraphExport for Graph {
     fn catalog_ddl(&self) -> Vec<String> {
         crate::catalog_create_statements(self)
     }
+    fn for_each_adjacency_chunk(
+        &self,
+        ts: u64,
+        f: &mut dyn FnMut(AdjacencyChunk) -> Result<()>,
+    ) -> Result<()> {
+        for_each_adjacency_chunk(self, ts, f)
+    }
 }
 
 impl GraphImport for Graph {
@@ -88,8 +102,11 @@ impl GraphImport for Graph {
     fn mark_legacy_unenforced(&self) {
         Graph::mark_legacy_unenforced(self)
     }
-    fn finish_restore(&self) {
-        Graph::finish_restore(self)
+    fn finish_restore(&self, adjacency: AdjacencySource) {
+        Graph::finish_restore(self, adjacency)
+    }
+    fn install_adjacency_chunks(&self, chunks: &[AdjacencyChunkRef<'_>]) -> Result<()> {
+        Graph::install_adjacency_chunks(self, chunks)
     }
     fn load_checkpoint_nodes(&self, nodes: &[Node]) -> Result<()> {
         Graph::load_checkpoint_nodes(self, nodes)

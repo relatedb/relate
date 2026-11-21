@@ -95,6 +95,54 @@ pub struct Manifest {
     /// Write engine that wrote this checkpoint. Absent means the local engine.
     #[serde(default = "default_write_engine")]
     pub write_engine: String,
+    /// The adjacency payload object this checkpoint published (opt-in,
+    /// `RELATE_ADJACENCY_PAYLOAD`). Absent means no payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adjacency_payload: Option<AdjacencyPayload>,
+}
+
+/// The opt-in adjacency payload a checkpoint publishes beside its parts:
+/// the one `adjacency/payload-<128-bit-hex>.parquet` object holding every
+/// adjacency chunk of the checkpointed graph. The payload's own file
+/// metadata names the checkpoint it was published at; the manifest carries
+/// only the selection (a second copy of the lsn could disagree with the
+/// file's). A disagreement is a torn publication, which the Parquet open
+/// degrades to the row re-fold around — this payload is a cache tier, not
+/// the store's only copy of the graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdjacencyPayload {
+    /// The payload object path.
+    pub path: String,
+}
+
+/// The archive/manifest checkpoint-identity policy the experimental
+/// codec's reader enforces: the archive names the checkpoint it was
+/// published with, and a disagreement with the manifest is a torn
+/// publication (the two halves publish separately) — the store is
+/// refused, never served. The codec named in the message is the caller's
+/// typed fact, resolved before the payload was read.
+#[cfg_attr(not(rkyv_codec), allow(dead_code))]
+pub(crate) fn checkpoint_identity_mismatch(
+    codec: impl std::fmt::Display,
+    manifest_lsn: u64,
+    what: &str,
+    payload_lsn: u64,
+) -> relate_core::Error {
+    relate_core::Error::storage(format!(
+        "{codec} store is damaged: the {what} holds checkpoint lsn {payload_lsn} but {} names {manifest_lsn}",
+        crate::snapshot::MANIFEST_JSON,
+    ))
+}
+
+/// The adjacency payload's checkpoint-identity policy: a payload naming
+/// another checkpoint is a stale cache tier, not a damaged store — the open
+/// degrades to the row re-fold around it, so the text must not borrow the
+/// refusal wording [`checkpoint_identity_mismatch`] carries.
+#[cfg_attr(not(parquet_codec), allow(dead_code))]
+pub(crate) fn payload_checkpoint_stale(payload_lsn: u64, manifest_lsn: u64) -> relate_core::Error {
+    relate_core::Error::storage(format!(
+        "the payload holds checkpoint lsn {payload_lsn} but the manifest names {manifest_lsn}"
+    ))
 }
 
 /// Refuse a manifest whose engine ids are not the engines this process

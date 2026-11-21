@@ -2067,6 +2067,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "relate-adjacency-payload-lab"
+version = "1.2.1"
+dependencies = [
+ "libc",
+ "relate",
+ "relate-datasets",
+ "relate-executor",
+ "relate-storage",
+ "relate-test-support",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "relate-agentbench"
 version = "1.2.1"
 dependencies = [

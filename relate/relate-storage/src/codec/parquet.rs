@@ -12,7 +12,7 @@ mod wide;
 use envelope::invalid;
 pub(crate) use envelope::{preflight, VfsChunkReader};
 use rules::{IdWindow, ShardRules};
-pub(crate) use span::SpanReaders;
+pub(crate) use span::{join_or_resume, load_workers, SpanReaders};
 
 pub(crate) use budget::DecodedBudget;
 #[cfg(test)]

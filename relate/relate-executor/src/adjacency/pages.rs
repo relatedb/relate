@@ -31,11 +31,11 @@ struct TableReader<'a> {
 }
 
 impl WidthReader for TableReader<'_> {
-    fn take(&mut self, _rest: &[u8]) -> (u32, usize) {
-        (
+    fn take(&mut self, _rest: &[u8]) -> Option<(u32, usize)> {
+        Some((
             *self.widths.next().expect("pages: width table short") as u32,
             0,
-        )
+        ))
     }
 }
 
@@ -215,6 +215,7 @@ fn page_payload_len(map: &ZoneMap, bytes: &[u8]) -> usize {
         widths: map.widths.iter(),
     };
     codec::stream_len_with(bytes, map.hops as usize, &mut reader)
+        .expect("a page's payload holds the sections its header names")
 }
 
 /// Decode one page's payload — the bitmap, then the ts and id streams —

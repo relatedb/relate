@@ -40,6 +40,17 @@ impl SpanReaders {
     /// per group.
     pub(crate) fn open(file: Bytes, metadata: &Arc<ParquetMetaData>, spans: usize) -> Result<Self> {
         let groups = cut(metadata.num_row_groups(), spans);
+        Self::open_groups(file, metadata, groups)
+    }
+
+    /// [`Self::open`] over caller-chosen row-group spans: the adjacency
+    /// payload install cuts its spans at node-id boundaries instead of by
+    /// balanced group count, so no node's chunks straddle two workers.
+    pub(crate) fn open_groups(
+        file: Bytes,
+        metadata: &Arc<ParquetMetaData>,
+        groups: Vec<Range<usize>>,
+    ) -> Result<Self> {
         let metadata =
             ArrowReaderMetadata::try_new(Arc::clone(metadata), ArrowReaderOptions::default())
                 .map_err(|e| Error::storage(e.to_string()))?;
@@ -166,10 +177,7 @@ pub(super) fn load(
             .collect();
         handles
             .into_iter()
-            .map(|handle| match handle.join() {
-                Ok(result) => result,
-                Err(panic) => std::panic::resume_unwind(panic),
-            })
+            .map(join_or_resume)
             .collect::<Result<Vec<_>>>()
     })?;
     // The spans tile the file's row groups in file order, so folding their
@@ -186,9 +194,19 @@ pub(super) fn load(
     Ok(())
 }
 
+/// Join a scoped worker, resuming its panic in the caller — the one
+/// spelling of "a worker's panic is the parent's" both parallel walks (the
+/// shard load and the payload install) use.
+pub(crate) fn join_or_resume<T>(handle: std::thread::ScopedJoinHandle<'_, Result<T>>) -> Result<T> {
+    match handle.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
 /// The concurrent open's worker count: one decode-and-install worker per
 /// available core. The load cuts each shard file into that many spans.
-pub(super) fn load_workers() -> usize {
+pub(crate) fn load_workers() -> usize {
     #[cfg(test)]
     if let Some(forced) = forced_workers() {
         return forced;

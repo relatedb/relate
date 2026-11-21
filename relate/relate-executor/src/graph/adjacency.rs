@@ -4,6 +4,8 @@
 //! Not to be confused with [`crate::adjacency`], the store tier these
 //! accessors read and write: the typed hop chunks, the sealed stream, and
 //! the fold between them.
+use relate_engine_api::{AdjacencyChunk, AdjacencySide, ChunkTombstone};
+
 use super::id_vec::IdVec;
 use super::rebuild::RelRow;
 use super::shard;
@@ -192,6 +194,71 @@ impl<'a> AdjSide<'a> {
     }
 }
 
+/// The graph's adjacency chunks in ascending node-id order, out side before
+/// in side per node — [`GraphExport::for_each_adjacency_chunk`]'s one walk.
+/// A folded chunk keeps its (empty-hop) delta entry, so the delta tables
+/// name every node that holds a chunk on either tier.
+pub(super) fn for_each_adjacency_chunk(
+    graph: &Graph,
+    ts: u64,
+    f: &mut dyn FnMut(AdjacencyChunk) -> Result<()>,
+) -> Result<()> {
+    let mut nodes = graph.out_side().delta().keys();
+    nodes.extend(graph.in_side().delta().keys());
+    nodes.sort_unstable();
+    nodes.dedup();
+    for node in nodes {
+        // The canonical both-directions expansion: the side pairs and their
+        // order (out before in) live in `Graph::sides` alone, and the chunk's
+        // side is the direction it answers to.
+        for (side, direction) in graph.sides(relate_ir::Direction::Both) {
+            let chunk_side = AdjacencySide::from_is_in(direction == relate_ir::Direction::Incoming);
+            let Some(chunks) = side.with_adj(node, |adj, region| {
+                adj.chunks
+                    .iter()
+                    .map(|chunk| {
+                        // The hop count and the stream come from one lock
+                        // acquisition, so a count can never outrun its bytes.
+                        let (sealed_hops, sealed) =
+                            match region.and_then(|r| r.stream_with_len(chunk.type_id)) {
+                                Some((hops, stream)) => (hops as u64, stream),
+                                None => (0, Vec::new()),
+                            };
+                        AdjacencyChunk {
+                            node_id: node,
+                            // The chunk's type id is process-local; the
+                            // payload keys by the name a load re-interns.
+                            type_name: graph.interner.get(chunk.type_id).to_string(),
+                            side: chunk_side,
+                            sealed_hops,
+                            sealed,
+                            delta: chunk.hops.iter().map(|hop| hop.id).collect(),
+                            // Only the tombstones a read at `ts` filters:
+                            // a later delete belongs to the WAL tail.
+                            tombstones: region.map_or_else(Vec::new, |r| {
+                                r.tombstones(chunk.type_id)
+                                    .into_iter()
+                                    .filter(|tombstone| tombstone.xmax <= ts)
+                                    .map(|tombstone| ChunkTombstone {
+                                        id: tombstone.id,
+                                        deleted: tombstone.deleted.is_some(),
+                                    })
+                                    .collect()
+                            }),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            }) else {
+                continue;
+            };
+            for chunk in chunks {
+                f(chunk)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Graph {
     /// The outgoing adjacency pair — the one place `out_adj` meets
     /// `sealed_out`.
@@ -236,6 +303,17 @@ pub enum Side {
     End,
 }
 
+impl From<AdjacencySide> for Side {
+    /// The engine-api side's engine spelling — the payload install's one
+    /// conversion, so [`Side::adj`] stays the only side selection.
+    fn from(side: AdjacencySide) -> Self {
+        match side {
+            AdjacencySide::Out => Self::Start,
+            AdjacencySide::In => Self::End,
+        }
+    }
+}
+
 impl Side {
     fn endpoint(&self, row: &RelRow) -> NodeId {
         match self {
@@ -246,8 +324,9 @@ impl Side {
 
     /// This direction's adjacency pair — the one place the endpoint a
     /// direction partitions rows by meets the tables it installs into, so
-    /// the two cannot be paired the wrong way round.
-    fn adj(self, graph: &Graph) -> AdjSide<'_> {
+    /// the two cannot be paired the wrong way round. The payload install's
+    /// side selection routes through here too.
+    pub(super) fn adj(self, graph: &Graph) -> AdjSide<'_> {
         match self {
             Side::Start => graph.out_side(),
             Side::End => graph.in_side(),
@@ -409,6 +488,21 @@ impl Graph {
             Side::End => &self.sealed_in,
         };
         sealed.region(node).map_or(0, |region| region.chunk_count())
+    }
+
+    /// The hop ids `node`'s adjacency shows on `side` at `ts` — the
+    /// tombstone-filtered walk, read by the storage checkpoint tests across
+    /// the crate boundary. Test seam behind the off-by-default `test-hooks`
+    /// feature, never in a shipped build.
+    #[cfg(feature = "test-hooks")]
+    pub fn visible_adjacency(&self, node: NodeId, side: Side, ts: u64) -> Vec<RelId> {
+        side.adj(self)
+            .with_adj(node, |adj, region| {
+                let mut ids = Vec::new();
+                adj.for_each_hop(region, ts, |hop| ids.push(hop.id));
+                ids
+            })
+            .unwrap_or_default()
     }
 
     pub fn degree_out(&self, id: NodeId) -> Vec<RelId> {
