@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use crate::parse_error::ParseError;
 use crate::release_channel::download_route::{probe_route_at, release_download_base};
 use crate::release_channel::signing::{verify, SigningError};
-use crate::release_channel::{env_nonempty, platform_for, sha256_hex, Platform};
+use crate::release_channel::{env_nonempty, platform_check, sha256_hex, Platform, Unsupported};
 
 /// The signed `SHA256SUMS` manifest contract (ADR-0115, ADR-0457): the
 /// version header, its binding to the requested release, and the entry
@@ -314,17 +314,20 @@ fn platform_support() -> Result<Platform, UpgradeError> {
 /// the `None` vocabulary are pinned once, in
 /// `release_channel::platform_for`'s tests — the one table.
 fn platform_support_for(os: &str, arch: &str) -> Result<Platform, UpgradeError> {
-    match platform_for(os, arch) {
-        Some(platform) => Ok(platform),
+    match platform_check(os, arch) {
+        Ok(platform) => Ok(platform),
         // unsupported_platform: self-upgrade on this OS/arch is out of scope
         // (ADR-0069 §6) — Windows gets the PowerShell installer pointer
         // (ADR-0586), which installs the verified relate-windows-amd64.exe.
-        None if os == "windows" => Err(UpgradeError::new(format!(
+        Err(Unsupported::Windows) => Err(UpgradeError::new(format!(
             "self-upgrade is not supported on Windows (a running .exe cannot replace itself); \
              reinstall with the PowerShell installer to upgrade: {WINDOWS_INSTALL_ONE_LINER}"
         ))),
         // unsupported_platform: an OS/arch pair with no release asset.
-        None => Err(UpgradeError::new(format!(
+        Err(Unsupported::Other {
+            input_os: os,
+            input_arch: arch,
+        }) => Err(UpgradeError::new(format!(
             "self-upgrade is not supported on {os}/{arch} (supported: macOS and Linux, \
              amd64 and arm64); see the README for manual downloads: \
              https://github.com/relatedb/relate#install"

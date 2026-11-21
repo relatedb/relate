@@ -27,10 +27,6 @@ const RELEASE_SUMS_SIG: &str = include_str!("fixtures/release/SHA256SUMS.sig");
 /// The bearer token every fallback request must carry.
 const TOKEN: &str = "ghp_test_token";
 
-/// The tokenless run's `GITHUB_TOKEN` value: an empty value means no token,
-/// so a host token cannot leak into the run.
-const NO_TOKEN: &str = "";
-
 /// The bytes served as the platform binary asset: deliberately not the
 /// released binary, so the run stops at the checksum check before any
 /// replace.
@@ -51,10 +47,10 @@ fn fixture_assets() -> Vec<(String, u64)> {
         .as_array()
         .expect("the fixture's latest.assets is an array")
         .iter()
-        .enumerate()
-        .map(|(position, name)| {
+        .zip(FIRST_FIXTURE_ASSET_ID..)
+        .map(|(name, id)| {
             let name = name.as_str().expect("every fixture asset is a string");
-            (name.to_string(), FIRST_FIXTURE_ASSET_ID + position as u64)
+            (name.to_string(), id)
         })
         .collect()
 }
@@ -99,67 +95,72 @@ enum DirectRoute {
     Probe404,
 }
 
-/// The API route's fixture, in the shape the run's token selects.
-enum ApiRoute {
-    /// A recording sink: the run must leave the API route untouched.
-    Sink(CaptureSink),
-    /// The scripted fallback responses: the tag lookup, then the three
-    /// assets.
-    Fallback(CapturingFixture),
-}
-
-impl ApiRoute {
-    /// The recording sink; the tokenless route tests assert its request
-    /// count. Panics when this fixture serves the fallback instead.
-    fn sink(&self) -> &CaptureSink {
-        match self {
-            ApiRoute::Sink(sink) => sink,
-            ApiRoute::Fallback(_) => panic!("this fixture serves the API fallback"),
-        }
-    }
-
-    /// The scripted fallback fixture; the fallback test joins it for the
-    /// captured heads. Panics when this fixture records the API route.
-    fn fallback(self) -> CapturingFixture {
-        match self {
-            ApiRoute::Fallback(fixture) => fixture,
-            ApiRoute::Sink(_) => panic!("this fixture records the API route instead"),
-        }
-    }
-}
-
 /// The loopback fixtures the three download-route tests share: the
 /// releases.json document, the direct download route, and the API route,
 /// with the three base URLs and the four upgrade env pairs derived from
-/// them. Spawned by [`spawn_route_fixture`].
-struct RouteFixture {
+/// them. Spawned by [`spawn_tokenless_fixture`] (the API side is a
+/// recording [`CaptureSink`]) or [`spawn_token_fixture`] (the API side is
+/// the scripted [`CapturingFixture`]); `A` is that API-side fixture, so a
+/// test holds the one it spawned with no runtime variant check.
+struct RouteFixture<A> {
     /// The releases.json document fixture: one metadata fetch per run.
     releases: ReleasesFixture,
     /// The direct download route, scripted by the test's [`DirectRoute`].
     direct: CapturingFixture,
-    /// The API route, in the shape the run's token selects.
-    api: ApiRoute,
+    /// The API route fixture.
+    api: A,
     /// `RELATE_RELEASE_DOWNLOAD_URL`.
     direct_base: String,
     /// `RELATE_GITHUB_API_URL`.
     api_base: String,
-    /// The run's `GITHUB_TOKEN` ([`NO_TOKEN`] means no token).
-    token: String,
+    /// The run's `GITHUB_TOKEN`; `None` is a tokenless run.
+    token: Option<&'static str>,
 }
 
-impl RouteFixture {
+impl<A> RouteFixture<A> {
     /// The four upgrade env pairs every route test runs with: the metadata
     /// pair [`ReleasesFixture::envs`] seeds, plus the two loopback bases and
-    /// the token. Everything else stays at the harness default.
+    /// the token. A tokenless run sets `GITHUB_TOKEN` empty (an empty value
+    /// means no token), so a host token cannot leak into the run. Everything
+    /// else stays at the harness default.
     fn envs(&self) -> Vec<(&str, &str)> {
         let mut envs = self.releases.envs();
         envs.extend([
             ("RELATE_RELEASE_DOWNLOAD_URL", self.direct_base.as_str()),
             ("RELATE_GITHUB_API_URL", self.api_base.as_str()),
-            ("GITHUB_TOKEN", self.token.as_str()),
+            ("GITHUB_TOKEN", self.token.unwrap_or("")),
         ]);
         envs
     }
+}
+
+/// The metadata document is fetched exactly once per run.
+fn assert_metadata_fetched_once(releases: ReleasesFixture) {
+    assert_eq!(
+        releases.heads().len(),
+        1,
+        "the metadata document is fetched exactly once"
+    );
+}
+
+/// The two stderr/stdout asserts every refusal-at-the-signature route test
+/// shares: the run announced an asset the releases fixture lists (the
+/// platform -> asset mapping, read back), and the pinned release key refused
+/// the fixture-signed manifest before the checksum/binary download.
+fn assert_refused_before_binary(stdout: &str, stderr: &str) {
+    let asset = announced_asset(stdout);
+    assert!(
+        fixture_assets().iter().any(|(name, _)| name == asset),
+        "the announced asset must be listed by the releases fixture: {asset}"
+    );
+    assert!(
+        stderr.contains("SHA256SUMS.sig verification failed"),
+        "the run must refuse a manifest the release key did not sign: {stderr}"
+    );
+    assert!(
+        !stderr.contains("checksum verification failed"),
+        "the run must stop before the checksum/binary download: {stderr}"
+    );
 }
 
 /// The three asset bodies in the run's download order — the release
@@ -189,15 +190,13 @@ fn fallback_api_responses() -> Vec<String> {
     responses
 }
 
-/// Spawn the loopback fixtures the three download-route tests share: the
-/// releases.json document, the direct download route scripted by `direct`,
-/// and the API route. `token` is written to `GITHUB_TOKEN` verbatim and
-/// selects the API route's shape exactly as it selects the CLI's route
-/// (ADR-0358 §4): without one the fallback cannot be entered, so the API
-/// side is a recording sink; with one it is the scripted fallback responses.
-/// The three base URLs and the four env pairs derive from the returned
-/// fixture.
-fn spawn_route_fixture(direct: DirectRoute, token: &str) -> RouteFixture {
+/// The releases.json fixture and the direct route scripted by `direct`,
+/// assembled with the API-side fixture `api` listening on `api_port`.
+fn assemble_route_fixture<A>(
+    direct: DirectRoute,
+    (api, api_port): (A, u16),
+    token: Option<&'static str>,
+) -> RouteFixture<A> {
     let releases = ReleasesFixture::spawn(NEWER_RELEASES_JSON);
     let (direct_fixture, direct_port) = match direct {
         DirectRoute::ServesAllThreeAssets => {
@@ -205,22 +204,30 @@ fn spawn_route_fixture(direct: DirectRoute, token: &str) -> RouteFixture {
         }
         DirectRoute::Probe404 => spawn_single_response_capturing("404 Not Found", ""),
     };
-    let (api, api_port) = if token.is_empty() {
-        let (sink, port) = spawn_capture_server("200 OK", "1");
-        (ApiRoute::Sink(sink), port)
-    } else {
-        let (fixture, port) =
-            spawn_scripted_responses_capturing("200 OK", fallback_api_responses());
-        (ApiRoute::Fallback(fixture), port)
-    };
     RouteFixture {
         releases,
         direct: direct_fixture,
         api,
         direct_base: format!("http://127.0.0.1:{direct_port}"),
         api_base: format!("http://127.0.0.1:{api_port}"),
-        token: token.to_string(),
+        token,
     }
+}
+
+/// A run without a token cannot enter the API fallback (ADR-0358 §4), so
+/// its API side is a recording sink the test asserts untouched.
+fn spawn_tokenless_fixture(direct: DirectRoute) -> RouteFixture<CaptureSink> {
+    assemble_route_fixture(direct, spawn_capture_server("200 OK", "1"), None)
+}
+
+/// A run with `token` can fall back to the API route, so its API side is
+/// the scripted fallback responses.
+fn spawn_token_fixture(direct: DirectRoute, token: &'static str) -> RouteFixture<CapturingFixture> {
+    assemble_route_fixture(
+        direct,
+        spawn_scripted_responses_capturing("200 OK", fallback_api_responses()),
+        Some(token),
+    )
 }
 
 /// The direct route serves the manifest and its signature (ADR-0358 §2): a
@@ -235,28 +242,14 @@ fn spawn_route_fixture(direct: DirectRoute, token: &str) -> RouteFixture {
 #[test]
 fn test_upgrade_direct_route_refuses_a_non_release_signer() {
     let home = tempdir();
-    let route = spawn_route_fixture(DirectRoute::ServesAllThreeAssets, NO_TOKEN);
+    let route = spawn_tokenless_fixture(DirectRoute::ServesAllThreeAssets);
     let (status, stdout, stderr) = run_cli(
         Opts::new(&["upgrade"])
             .in_home(home.path())
             .with_envs(&route.envs()),
     );
     assert_eq!(status.code(), Some(1), "stdout: {stdout}\nstderr: {stderr}");
-    // The run's own announcement names the host's asset: assert it is one
-    // the release document lists (the platform → asset mapping, read back).
-    let asset = announced_asset(&stdout);
-    assert!(
-        fixture_assets().iter().any(|(name, _)| name == asset),
-        "the announced asset must be listed by the releases fixture: {asset}"
-    );
-    assert!(
-        stderr.contains("SHA256SUMS.sig verification failed"),
-        "the run must refuse a manifest the release key did not sign: {stderr}"
-    );
-    assert!(
-        !stderr.contains("checksum verification failed"),
-        "the run must stop before the checksum/binary download: {stderr}"
-    );
+    assert_refused_before_binary(&stdout, &stderr);
     assert!(
         !stderr.contains("falling back"),
         "a 2xx probe must not fall back to the API route: {stderr}"
@@ -284,15 +277,11 @@ fn test_upgrade_direct_route_refuses_a_non_release_signer() {
         );
     }
     assert_eq!(
-        route.api.sink().request_count(),
+        route.api.request_count(),
         0,
         "the direct route must not touch the API base"
     );
-    assert_eq!(
-        route.releases.heads().len(),
-        1,
-        "the metadata document is fetched exactly once"
-    );
+    assert_metadata_fetched_once(route.releases);
 }
 
 /// A typed 404 on the direct probe with `GITHUB_TOKEN` set falls back to the
@@ -304,28 +293,14 @@ fn test_upgrade_direct_route_refuses_a_non_release_signer() {
 #[test]
 fn test_upgrade_falls_back_to_api_assets_on_probe_404() {
     let home = tempdir();
-    let route = spawn_route_fixture(DirectRoute::Probe404, TOKEN);
+    let route = spawn_token_fixture(DirectRoute::Probe404, TOKEN);
     let (status, stdout, stderr) = run_cli(
         Opts::new(&["upgrade"])
             .in_home(home.path())
             .with_envs(&route.envs()),
     );
     assert_eq!(status.code(), Some(1), "stdout: {stdout}\nstderr: {stderr}");
-    // The run's own announcement names the host's asset: assert it is one
-    // the release document lists (the platform → asset mapping, read back).
-    let asset = announced_asset(&stdout);
-    assert!(
-        fixture_assets().iter().any(|(name, _)| name == asset),
-        "the announced asset must be listed by the releases fixture: {asset}"
-    );
-    assert!(
-        stderr.contains("SHA256SUMS.sig verification failed"),
-        "the run must refuse a manifest the release key did not sign: {stderr}"
-    );
-    assert!(
-        !stderr.contains("checksum verification failed"),
-        "the run must stop before the checksum/binary download: {stderr}"
-    );
+    assert_refused_before_binary(&stdout, &stderr);
     // Exactly the one fallback note, naming the direct probe URL.
     let probe_url = format!("{}/v99.0.0/SHA256SUMS", route.direct_base);
     let notes: Vec<&str> = stderr
@@ -349,7 +324,7 @@ fn test_upgrade_falls_back_to_api_assets_on_probe_404() {
     );
     // The API fixture saw the tag lookup plus the manifest and its
     // signature; the binary download never starts.
-    let heads = route.api.fallback().join();
+    let heads = route.api.join();
     assert_eq!(
         heads.len(),
         3,
@@ -392,11 +367,7 @@ fn test_upgrade_falls_back_to_api_assets_on_probe_404() {
             "asset downloads ask for the raw bytes: {head:?}"
         );
     }
-    assert_eq!(
-        route.releases.heads().len(),
-        1,
-        "the metadata document is fetched exactly once"
-    );
+    assert_metadata_fetched_once(route.releases);
 }
 
 /// A typed 404 on the direct probe without `GITHUB_TOKEN` aborts with the
@@ -405,7 +376,7 @@ fn test_upgrade_falls_back_to_api_assets_on_probe_404() {
 #[test]
 fn test_upgrade_probe_404_without_token_names_github_token() {
     let home = tempdir();
-    let route = spawn_route_fixture(DirectRoute::Probe404, NO_TOKEN);
+    let route = spawn_tokenless_fixture(DirectRoute::Probe404);
     let (status, _stdout, stderr) = run_cli(
         Opts::new(&["upgrade"])
             .in_home(home.path())
@@ -441,13 +412,9 @@ fn test_upgrade_probe_404_without_token_names_github_token() {
         heads[0]
     );
     assert_eq!(
-        route.api.sink().request_count(),
+        route.api.request_count(),
         0,
         "a tokenless 404 must not touch the API base"
     );
-    assert_eq!(
-        route.releases.heads().len(),
-        1,
-        "the metadata document is fetched exactly once"
-    );
+    assert_metadata_fetched_once(route.releases);
 }

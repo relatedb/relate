@@ -106,23 +106,52 @@ pub(crate) struct Platform {
     pub(crate) arch: &'static str,
 }
 
+/// Why a host has no channel platform: the typed reason each consumer
+/// renders its own authored refusal over (`upgrade` points Windows at the
+/// PowerShell installer; every other pair is named as `os/arch`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Unsupported<'a> {
+    /// Windows: the vocabulary names it, the channel publishes no
+    /// self-upgrade or extension asset for it (ADR-0586).
+    Windows,
+    /// Any other os/arch pair the channel does not publish.
+    Other {
+        input_os: &'a str,
+        input_arch: &'a str,
+    },
+}
+
+/// The os words the channel publishes assets for (macOS and Linux only,
+/// ADR-0068 via ADR-0431 §1): the channel's own allowlist over
+/// `platform`'s vocabulary, so a word added there for another consumer
+/// is refused here until it is listed.
+const PUBLISHED_OS_WORDS: [&str; 2] = ["darwin", "linux"];
+
+/// The vocabulary word the channel refuses with the PowerShell pointer.
+const WINDOWS_WORD: &str = "windows";
+
 /// Map a Rust `std::env::consts::{OS, ARCH}` pair onto the channel's
 /// platform vocabulary (ADR-0068 via ADR-0431 §1: macOS and Linux only),
-/// or `None` on a host with no channel platform — each consumer renders
-/// its own authored refusal over the `None` (`upgrade` adds its
-/// Windows-specific manual-download pointer; the channel names the
-/// platform and the package). Pure over the given pair, so the table is
-/// unit-testable from any host.
-pub(crate) fn platform_for(os: &str, arch: &str) -> Option<Platform> {
-    // The channel's restriction (macOS and Linux only) over the shared
-    // vocabulary tables: the words are `platform`'s, the pair is ours.
-    if !matches!(os, "macos" | "linux") {
-        return None;
+/// or the typed [`Unsupported`] reason. Pure over the given pair, so the
+/// table is unit-testable from any host.
+pub(crate) fn platform_check<'a>(os: &'a str, arch: &'a str) -> Result<Platform, Unsupported<'a>> {
+    match (
+        crate::platform::os_word(os),
+        crate::platform::arch_word(arch),
+    ) {
+        (Some(WINDOWS_WORD), _) => Err(Unsupported::Windows),
+        (Some(os), Some(arch)) if PUBLISHED_OS_WORDS.contains(&os) => Ok(Platform { os, arch }),
+        _ => Err(Unsupported::Other {
+            input_os: os,
+            input_arch: arch,
+        }),
     }
-    Some(Platform {
-        os: crate::platform::os_word(os)?,
-        arch: crate::platform::arch_word(arch)?,
-    })
+}
+
+/// [`platform_check`] without the reason, for consumers whose refusal is
+/// the same for every unsupported pair.
+pub(crate) fn platform_for(os: &str, arch: &str) -> Option<Platform> {
+    platform_check(os, arch).ok()
 }
 
 /// The host's own platform in the channel vocabulary, or `None` — the
@@ -201,6 +230,32 @@ mod tests {
                 "{os}/{arch} must carry no channel platform"
             );
         }
+    }
+
+    #[test]
+    fn platform_check_types_the_refusal_reason() {
+        assert_eq!(
+            platform_check("windows", "x86_64"),
+            Err(Unsupported::Windows)
+        );
+        assert_eq!(
+            platform_check("windows", "riscv64"),
+            Err(Unsupported::Windows)
+        );
+        assert_eq!(
+            platform_check("freebsd", "x86_64"),
+            Err(Unsupported::Other {
+                input_os: "freebsd",
+                input_arch: "x86_64"
+            })
+        );
+        assert_eq!(
+            platform_check("macos", "riscv64"),
+            Err(Unsupported::Other {
+                input_os: "macos",
+                input_arch: "riscv64"
+            })
+        );
     }
 
     #[test]

@@ -175,15 +175,17 @@ asset="${ASSET_PREFIX}-${os}-${arch}"
 # brace; a deeper-indented "tag" (the prerelease slot, the releases
 # window) never matches. The parser owns its three outcomes, so the
 # caller never matches a sentinel value: exit 0 prints the latest.tag
-# on stdout, validated as vX.Y.Z; exit 2 = latest is null; exit 3 = no
-# readable latest.tag; exit 4 = a latest.tag outside the vX.Y.Z shape,
-# printed on stdout for the caller's message. No outcome ever falls
-# back to a guessed tag.
+# on stdout, validated as vX.Y.Z; exit 10 = latest is null; exit 11 = no
+# readable latest.tag; exit 12 = a latest.tag outside the vX.Y.Z shape,
+# printed on stdout for the caller's message. The failure codes sit
+# clear of awk's own statuses (1 = usage, 2 = fatal error), so an awk
+# failure never reads as an outcome. No outcome ever falls back to a
+# guessed tag.
 latest_tag_of() {
 	awk '
-		BEGIN { status = 3 }
+		BEGIN { status = 11 }
 		!latest && /^  "latest"[[:space:]]*:[[:space:]]*null/ {
-			status = 2
+			status = 10
 			exit
 		}
 		!latest && /^  "latest"[[:space:]]*:[[:space:]]*\{/ {
@@ -199,7 +201,7 @@ latest_tag_of() {
 				if (s ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) {
 					status = 0
 				} else {
-					status = 4
+					status = 12
 				}
 				print s
 				exit
@@ -223,7 +225,7 @@ latest_tag_of() {
 metadata_url=${RELATE_RELEASES_JSON_URL:-$RELEASES_JSON_URL}
 # The asset-download base resolves beside the metadata seam, so both
 # seams' contracts are checked before the first request. The https://
-# gate (Oplane REQ-00358639, CWE-295) is deliberately narrower than the
+# gate (CWE-295) is deliberately narrower than the
 # seam's canonical predicate on the CLI side (release_channel http.rs's
 # approved_transport, which admits plain http on the loopback interface
 # for dev/test fixtures): the installer is the end-user curl|sh surface,
@@ -250,9 +252,10 @@ latest_tag=$(latest_tag_of <"$tmp/releases.json") ||
 	latest_status=$?
 case "$latest_status" in
 0) tag=$latest_tag ;;
-2) die "$metadata_fail: latest is null: no stable release is published" ;;
-4) die "$metadata_fail: latest.tag '$latest_tag' is not a vX.Y.Z release tag" ;;
-*) die "$metadata_fail: the document is malformed: no latest.tag" ;;
+10) die "$metadata_fail: latest is null: no stable release is published" ;;
+11) die "$metadata_fail: the document is malformed: no latest.tag" ;;
+12) die "$metadata_fail: latest.tag '$latest_tag' is not a vX.Y.Z release tag" ;;
+*) die "internal error: latest_tag_of exited with unexpected status $latest_status" ;;
 esac
 
 echo "Installing relate $tag ($os/$arch) to $INSTALL_DIR"

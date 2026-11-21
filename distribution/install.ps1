@@ -444,16 +444,15 @@ function Add-RelateUserPath {
     # Opens the key writable, creating it when absent.
     $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
     try {
-        # Only a string-typed Path is rewritten: any other registry kind is
-        # left as it is, and the caller reports the PATH step as not done.
-        if ($key.GetValueNames() -contains 'Path') {
-            $kind = $key.GetValueKind('Path')
-            if ($kind -ne [Microsoft.Win32.RegistryValueKind]::String -and
-                $kind -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) {
-                throw "the user Path value is a $kind, not a string; it was left unchanged"
-            }
+        # Only a string-typed Path is rewritten: any other registry kind (a
+        # DWORD, binary) reads back as a non-string, is left as it is, and
+        # the caller reports the PATH step as not done. One read carries both
+        # the presence and the type; an absent value is an empty PATH.
+        $value = $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if ($value -isnot [string]) {
+            throw "the user Path value is a $($value.GetType().Name), not a string; it was left unchanged"
         }
-        $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $raw = $value
         $entries = @($raw -split ';' | Where-Object { $_ -ne '' })
         if (Test-RelatePathEntry -Entries $entries -Directory $Directory) {
             return $false
