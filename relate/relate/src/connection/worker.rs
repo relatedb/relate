@@ -89,7 +89,12 @@ impl Connection {
         // caught panic) collapse to the one not-admitted tail at the
         // only consumer.
         let decision = catch_inline_panic(|| {
-            let admission = self.admit_statement(cypher, &params, super::cache::CacheUse::Query)?;
+            let admission = self.admit_statement(
+                cypher,
+                &params,
+                super::cache::CacheUse::Query,
+                web_time::Instant::now(),
+            )?;
             let route = if plan_is_bounded_work(&admission.logical) {
                 Route::Inline
             } else {
@@ -109,20 +114,22 @@ impl Connection {
                 // due — a bounded-work statement finishes far inside any
                 // interval a caller arms one for (ADR-0312's own
                 // first-tick rule). The heartbeat rides unused to the end
-                // of this frame.
+                // of this frame. REL8-1120's optimistic-hit retry rides
+                // `run_admitted`, inside the same panic guard.
                 QueryOutcome::from_result(catch_inline_panic(|| {
-                    self.run_admitted(admission, cypher, params, token)
+                    self.run_admitted(admission, cypher, &params, token)
                 }))
             }
             Ok(Ok((admission, Route::Escalate))) => {
                 // Escalate: the post-admission body runs on the 64 MiB
-                // worker, the admission travelling with it (no
-                // re-admission), the caller waiting with the heartbeat
-                // armed exactly as an unasserted connection's statement
-                // does.
+                // worker, the admission travelling with it, the caller
+                // waiting with the heartbeat armed exactly as an
+                // unasserted connection's statement does. REL8-1120's
+                // optimistic-hit retry rides `run_admitted`, the same
+                // worker job.
                 QueryOutcome::from_result(Self::run_on_worker(
                     self.worker_slot(),
-                    || self.run_admitted(admission, cypher, params, token),
+                    || self.run_admitted(admission, cypher, &params, token),
                     heartbeat,
                 ))
             }

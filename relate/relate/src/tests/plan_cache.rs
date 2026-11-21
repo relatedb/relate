@@ -112,6 +112,71 @@ fn in_lists_bind_this_statements_values() {
     assert_eq!(rows(&none), vec![vec![Value::Int(0)]]);
 }
 
+/// REL8-1120: a deeply nested literal list rides the payload boundary
+/// (`plan_cache::engine_values`), whose depth guard is the hit path's one
+/// value-dependent literal check beside the normalizer's aligned nesting
+/// cap (`MAX_NESTING_DEPTH` == `MAX_VALUE_DEPTH`). A list well under both
+/// caps caches and serves each same-template statement's own value; the
+/// unit test in `plan_cache` pins the refusal past the cap.
+#[test]
+fn deep_literal_lists_bind_through_the_payload_boundary() {
+    let (_db, mut c) = users();
+    let deep = |core: &str| {
+        let mut s = String::new();
+        for _ in 0..400 {
+            s.push('[');
+        }
+        s.push_str(core);
+        for _ in 0..400 {
+            s.push(']');
+        }
+        format!("RETURN {s} AS l")
+    };
+    let one = c.query(&deep("1")).unwrap();
+    let one_again = c.query(&deep("1")).unwrap();
+    assert_eq!(
+        rows(&one),
+        rows(&one_again),
+        "a repeat serves its own value"
+    );
+    let two = c.query(&deep("2")).unwrap();
+    assert_ne!(
+        rows(&one),
+        rows(&two),
+        "a same-template statement binds its own core"
+    );
+    let two_again = c.query(&deep("2")).unwrap();
+    assert_eq!(rows(&two), rows(&two_again));
+}
+
+/// REL8-1120's retry leg, pinned: the same template with a literal list
+/// whose element types the compile rejects (a quantifier `%` over a
+/// string list) is served by the cached plan and fails with the runtime
+/// type error first — the retry re-runs the statement uncached, and the
+/// caller sees the compile's own verdict and error class. The suite's
+/// own bar (a cached run indistinguishable in result and error) holds
+/// only through this leg.
+#[test]
+fn a_type_error_hit_retries_uncached_and_reports_the_compile_verdict() {
+    let (_db, mut c) = users();
+    // Warm the template: the numeric list inserts, the second statement
+    // is a template hit.
+    c.query("RETURN all(x IN [1, 2] WHERE x % 2 = 0) AS n")
+        .unwrap();
+    let warm = c
+        .query("RETURN all(x IN [1, 2] WHERE x % 2 = 0) AS n")
+        .unwrap();
+    assert_eq!(rows(&warm), vec![vec![Value::Bool(false)]]);
+    let err = c
+        .query("RETURN all(x IN ['Clara'] WHERE x % 2 = 0) AS n")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("Type mismatch") && err.contains("non-numeric"),
+        "the compile's own verdict, not the runtime twin: {err}"
+    );
+}
+
 /// Every write commit advances the stats generation, and the next read
 /// re-plans from the cached AST (a generation mismatch) against the new
 /// state — the rows reflect the write.

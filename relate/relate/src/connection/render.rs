@@ -11,7 +11,7 @@ use std::time::Duration;
 use web_time::Instant;
 
 use super::admission::Admission;
-use super::dispatch::{Executed, QueryOutcome};
+use super::outcome::{Executed, QueryOutcome};
 use super::Connection;
 use crate::explain;
 use crate::phase_timing::TimingStamp;
@@ -82,7 +82,7 @@ impl Connection {
     /// The PROFILE epilogue: append the profiled plan and its statistics to
     /// a finished result. A failed statement stays failed — PROFILE adds
     /// nothing to a staged execution failure. The epilogue input is
-    /// non-optional: `run_admitted` calls this only for a PROFILE
+    /// non-optional: `run_admitted_once` calls this only for a PROFILE
     /// statement, so the common case skips the call instead of threading
     /// a `None` through it.
     pub(super) fn profile_epilogue(

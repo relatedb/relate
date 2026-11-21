@@ -100,13 +100,15 @@ impl Connection {
         cypher: &str,
         params: &BTreeMap<String, Value>,
         cache: CacheUse,
+        started: Instant,
     ) -> Result<Admission> {
-        // The clock, armed before the first gate so the ADR-0221 total
-        // covers admission itself: `started` for every result, and the
-        // commit-timing flag when the store's policy is on
+        // The clock is the caller's input, armed before the first gate so
+        // the ADR-0221 total covers admission itself: `started` for every
+        // result, and the commit-timing flag when the store's policy is on
         // (the opt-in window the write path consumes; LABS-832's
-        // always-on split is the `parse`/`plan` durations below).
-        let started = Instant::now();
+        // always-on split is the `parse`/`plan` durations below). A caller
+        // retrying a statement passes the first attempt's clock so the
+        // caller-visible total spans both attempts (REL8-1120).
         // The commit-timing window opens with the statement; the flag is
         // the policy opt-in, and the write path derives the instant from
         // `started` under it — no second clock reading exists.
@@ -154,10 +156,10 @@ impl Connection {
     /// generation check under the guard), and the caller receives the
     /// already-merged effective map (it merges nothing). The lookup was
     /// the whole PARSE window, so the fine sub-split stamps the true
-    /// zero and the outcome explains it; the literal-shape
-    /// re-verification below runs inside the PLAN window — armed before
-    /// it, closed after — so its cost stays measured in the coarse
-    /// `plan` duration, never hidden from the envelope.
+    /// zero and the outcome explains it; the hit verification below (the
+    /// bound float/integer site check) runs inside the PLAN window —
+    /// armed before it, closed after — so its cost stays measured in the
+    /// coarse `plan` duration, never hidden from the envelope.
     fn admit_hit(
         &self,
         cypher: &str,
@@ -169,8 +171,8 @@ impl Connection {
     ) -> Result<Admission> {
         let parse = parse_started.elapsed();
         // LABS-832: the PLAN phase — the generation check, a possible
-        // replan from the carried AST, the literal-shape re-verification,
-        // and the admission gates.
+        // replan from the carried AST, the hit verification, and the
+        // admission gates.
         let plan_started = Instant::now();
         let CacheHit {
             plan,
@@ -178,19 +180,17 @@ impl Connection {
             effective,
             outcome,
         } = self.admit_from_cache(cypher, hit.handles, hit.stage, &hit.values, params)?;
-        // A shared plan was compiled for one literal value. A later
-        // statement on the same template can be a float SKIP, a
-        // non-boolean operand, or a float slice bound. Those fail
-        // on the statement as written; the cached plan is left in
-        // place and this run takes the original compile.
-        let policy = StatementPolicy {
-            safe_mode: self.inner.resolved.safe_mode,
-            max_traversal_depth: self.inner.resolved.max_traversal_depth,
-        };
-        let literal_rejected =
-            parse_and_lower_statement_with_policy_and_params(cypher, preview, policy, params)
-                .is_err()
-                || plan_has_bound_float_integer_site(&plan, &effective);
+        // A shared plan was compiled for one literal value. The two
+        // value-dependent classes that survive to a hit each have exactly
+        // one owner — the bound float/integer site class is vetoed here
+        // by the targeted check below, and the bound-list type-analysis
+        // class is tripped by dispatch's optimistic-hit retry — while
+        // every other class the front could reject on values is closed
+        // before this point. ADR-0651 §Decision is the one ledger: it
+        // names every class and its owner (the insert gate, the typed
+        // auto-parameter names, the constructor guard, the normalizer's
+        // depth cap and the payload boundary's guard close the rest).
+        let literal_rejected = plan_has_bound_float_integer_site(&plan, &effective);
         if literal_rejected {
             // LABS-1120: the hit was rejected for literal-shape
             // safety — the statement runs an original compile, so
@@ -218,8 +218,8 @@ impl Connection {
                 plan: plan_started.elapsed(),
                 // LABS-1120: the hit path's PARSE window was the lookup
                 // alone, so the fine sub-split is the true zero and the
-                // outcome explains it — the literal-shape re-verification
-                // above rides the coarse PLAN window instead.
+                // outcome explains it — the hit verification above rides
+                // the coarse PLAN window instead.
                 stages: relate_front::ParseStages::ZERO,
                 plan_cache: outcome,
             },

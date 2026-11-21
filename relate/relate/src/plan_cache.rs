@@ -209,6 +209,19 @@ impl PlanCacheOutcome {
             Self::Bypassed => "bypassed",
         }
     }
+
+    /// Whether this outcome served a cached artifact (REL8-1120): the
+    /// template hit, the raw-string fast path, and the
+    /// generation-mismatch replan alike — the three flavors that skipped
+    /// the front's value-dependent validation, and so the retry
+    /// eligibility of the statement that reported it. Exhaustive by
+    /// construction: a future variant must classify here to compile.
+    pub(crate) fn served_from_cache(self) -> bool {
+        match self {
+            Self::HitTemplate | Self::HitRawFastPath | Self::ReplanGenerationMismatch => true,
+            Self::Miss | Self::Bypassed => false,
+        }
+    }
 }
 
 /// The per-store cache: entries most-recent-first, at most
@@ -378,22 +391,33 @@ pub(crate) fn lock(shared: &Shared) -> MutexGuard<'_, PlanCache> {
 }
 
 /// Convert the normalizer's extracted values into the engine's parameter
-/// values, at the one boundary where both vocabularies exist.
-pub(crate) fn engine_values(values: Vec<(String, NormalizedValue)>) -> Vec<(String, Value)> {
+/// values, at the one boundary where both vocabularies exist. `None` is
+/// the depth refusal (ADR-0462, [`Value::checked_list`]): a literal list
+/// nested past the value-depth bound fails here, exactly where the
+/// uncached run's evaluation would fail it — the lookup then declines the
+/// cache for the statement, whose own compile reports the error (REL8-1120:
+/// the one value-dependent literal class the hit path must still catch).
+pub(crate) fn engine_values(
+    values: Vec<(String, NormalizedValue)>,
+) -> Option<Vec<(String, Value)>> {
     values
         .into_iter()
-        .map(|(name, value)| (name, engine_value(value)))
+        .map(|(name, value)| engine_value(value).map(|value| (name, value)))
         .collect()
 }
 
-fn engine_value(value: NormalizedValue) -> Value {
+fn engine_value(value: NormalizedValue) -> Option<Value> {
     match value {
-        NormalizedValue::Int(i) => Value::Int(i),
-        NormalizedValue::Float(f) => Value::Float(f),
-        NormalizedValue::Str(s) => Value::String(s.as_str().into()),
-        NormalizedValue::List(elements) => {
-            Value::List(Arc::new(elements.into_iter().map(engine_value).collect()))
-        }
+        NormalizedValue::Int(i) => Some(Value::Int(i)),
+        NormalizedValue::Float(f) => Some(Value::Float(f)),
+        NormalizedValue::Str(s) => Some(Value::String(s.as_str().into())),
+        NormalizedValue::List(elements) => Value::checked_list(
+            elements
+                .into_iter()
+                .map(engine_value)
+                .collect::<Option<Vec<_>>>()?,
+        )
+        .ok(),
     }
 }
 
@@ -571,7 +595,8 @@ mod tests {
                     NormalizedValue::Float(2.5),
                 ]),
             ),
-        ]);
+        ])
+        .expect("in-bound literals convert");
         assert_eq!(values[0].1, Value::Int(1));
         assert_eq!(
             values[1].1,
@@ -579,6 +604,28 @@ mod tests {
                 vec![Value::String("x".into()), Value::Float(2.5),]
             ))
         );
+    }
+
+    /// REL8-1120: a literal list nested past the value-depth bound
+    /// (ADR-0462) refuses conversion — the payload boundary is where the
+    /// hit path catches the one value-dependent literal class the plan
+    /// itself cannot, so an over-deep literal never rides a cached plan.
+    #[test]
+    fn engine_values_refuse_over_depth_list() {
+        let nested = |depth: u32| -> NormalizedValue {
+            let mut value = NormalizedValue::Int(0);
+            for _ in 0..depth {
+                value = NormalizedValue::List(vec![value]);
+            }
+            value
+        };
+        // A scalar is depth 0 and each list wrap adds one (ADR-0462), so
+        // `bound` wraps sit exactly at the cap and one more refuses.
+        let bound = relate_core::MAX_VALUE_DEPTH;
+        let in_bound = engine_values(vec![("a".into(), nested(bound))]);
+        assert!(in_bound.is_some(), "a list at the bound converts");
+        let over_bound = engine_values(vec![("a".into(), nested(bound + 1))]);
+        assert!(over_bound.is_none(), "a list past the bound refuses");
     }
 
     /// ADR-0541: tokens are resolved only in the compiled plan. The cached

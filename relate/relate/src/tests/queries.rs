@@ -121,7 +121,9 @@ fn auto_parameterized_return_keeps_authored_column_names() {
 }
 
 /// `all(x IN [1, 2] WHERE …)` and `all(x IN ['Clara'] WHERE …)` share a
-/// template. The string list is still a compile-time type error.
+/// template. The string list is still a compile-time type error — this
+/// pins REL8-1120's optimistic-hit retry leg from the plain-query side;
+/// `tests/plan_cache`'s retry test asserts the cache-served antecedent.
 #[test]
 fn all_quantifier_over_a_string_list_stays_a_compile_error() {
     let db = Database::open(":memory:").unwrap();

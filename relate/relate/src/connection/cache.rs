@@ -142,24 +142,31 @@ impl Connection {
         // Stage 2: the template, normalized without any lock held. The
         // participation rule (the reserved-prefix caller check above) is
         // decided here and only here — the front's normalize is a pure
-        // mapping.
-        match relate_front::normalize_statement(cypher, preview) {
-            relate_parser::NormalizeOutcome::NotCacheable => Lookup::Skip,
-            relate_parser::NormalizeOutcome::Normalized(normalized) => {
-                let values = crate::plan_cache::engine_values(normalized.values);
-                match crate::plan_cache::lock(&self.inner).find_template(&normalized.template) {
-                    Some(handles) => Lookup::Hit(HitPayload {
-                        handles,
-                        values: Arc::new(values),
-                        stage: crate::PlanCacheOutcome::HitTemplate,
-                    }),
-                    None => Lookup::Miss(InsertSeed {
-                        template: normalized.template,
-                        rewritten: normalized.rewritten,
-                        values,
-                    }),
-                }
-            }
+        // mapping. Both declines are one guard-chain shape: a statement
+        // the normalizer refuses as non-cacheable, and one whose payload
+        // literal fails the value-depth bound (ADR-0462) — the uncached
+        // tail compiles the original text and reports the error the
+        // uncached run reports, never a silently over-deep value riding
+        // the payload (REL8-1120).
+        let relate_parser::NormalizeOutcome::Normalized(normalized) =
+            relate_front::normalize_statement(cypher, preview)
+        else {
+            return Lookup::Skip;
+        };
+        let Some(values) = crate::plan_cache::engine_values(normalized.values) else {
+            return Lookup::Skip;
+        };
+        match crate::plan_cache::lock(&self.inner).find_template(&normalized.template) {
+            Some(handles) => Lookup::Hit(HitPayload {
+                handles,
+                values: Arc::new(values),
+                stage: crate::PlanCacheOutcome::HitTemplate,
+            }),
+            None => Lookup::Miss(InsertSeed {
+                template: normalized.template,
+                rewritten: normalized.rewritten,
+                values,
+            }),
         }
     }
 

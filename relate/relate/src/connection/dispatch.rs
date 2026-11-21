@@ -1,12 +1,12 @@
 //! Statement dispatch (ADR-0248, ADR-0344/0345 phase 2).
 //!
-//! The reservation → dispatch epilogue and the outcome vocabulary — the
-//! dispatch context (`DispatchCtx`: stamp, start, PROFILE sink), the
-//! per-transaction run facts, `QueryOutcome` and its `Executed` variants
-//! — live here, beside the methods that consume them. The admission
-//! sequence that produces the `Admission` bundle this epilogue reads
-//! lives in `admission.rs` (ADR-0503's completion of this file's
-//! stages), the cache itself in `cache.rs`, and `Connection`'s lifecycle
+//! The reservation → dispatch epilogue lives here, beside the methods
+//! that consume it; the outcome vocabulary it produces (`QueryOutcome`,
+//! `Executed`, the per-arm companions) lives in `outcome.rs`, extracted
+//! when this file crossed the 1k-line budget. The admission sequence
+//! that produces the `Admission` bundle this epilogue reads lives in
+//! `admission.rs` (ADR-0503's completion of this file's stages), the
+//! cache itself in `cache.rs`, and `Connection`'s lifecycle
 //! (transactions, namespace, pull) stays in the parent module.
 
 use std::cell::RefCell;
@@ -15,109 +15,33 @@ use std::collections::BTreeMap;
 use web_time::Instant;
 
 use relate_executor::{
-    execute_read_at, ExecGraph, ExecRequest, Graph, PlanMetricsSink, QueryResult as ExecResult,
-    ReadAdmission, WriteScratch,
+    execute_read_at, ExecGraph, ExecRequest, Graph, PlanMetricsSink, ReadAdmission, WriteScratch,
 };
 
 use relate_core::Namespace;
+use relate_error::{error_info, TYPE_ERROR_CODE};
 use relate_parser::PreambleMode;
 use relate_planner::{is_show_databases_with_next, LogicalPlan};
 
 use super::admission::Admission;
 use super::cache::CacheUse;
+use super::outcome::{ArmOutput, ArmRun, Executed, ExecutionFailure, QueryOutcome};
 use super::txn::{OpenTxn, TxnRun};
 use super::Connection;
 use crate::commit::commit_write;
 use crate::gate::ResultStamp;
 use crate::phase_timing::TimingStamp;
-use crate::{CancelToken, Error, QueryResult, Result, ResultHeader, Value};
-
-/// A statement's staged outcome (ADR-0319: `Err` before dispatch, `Ok` with
-/// the dispatch outcome after) together with whether it admitted its read
-/// before it ran. `admitted` stays true when an admitted read then fails, so
-/// its caller can skip the post-run health check for a read that already
-/// pinned the last safe snapshot; a read that finished keeps its rows —
-/// nothing after execution (the PROFILE estimates read included) may turn a
-/// finished result back into an error.
-pub(super) struct QueryOutcome {
-    pub(super) result: Result<Executed>,
-    pub(super) admitted: bool,
-}
-
-impl QueryOutcome {
-    pub(super) fn not_admitted(result: Result<Executed>) -> Self {
-        Self {
-            result,
-            admitted: false,
-        }
-    }
-
-    /// The `Result<QueryOutcome>` → `QueryOutcome` tail every statement
-    /// path ends in: a worker-spawn refusal, a worker panic (ADR-0259) or
-    /// an inline panic (ADR-0504) becomes the not-admitted outcome the
-    /// epilogue fails the transaction on. One mapping, shared by
-    /// `dispatch_query` and both arms of the fast path.
-    pub(super) fn from_result(result: Result<QueryOutcome>) -> Self {
-        match result {
-            Ok(outcome) => outcome,
-            Err(error) => QueryOutcome::not_admitted(Err(error)),
-        }
-    }
-}
-
-/// What a running arm produced: the raw executor result with the commit
-/// sequence its WAL commit was assigned (ADR-0502 §7). Only the auto-commit
-/// write commits at the statement boundary; [`ArmOutput::read`] owns the
-/// `None` of every arm that does not.
-struct ArmOutput {
-    result: ExecResult,
-    commit_sequence: Option<u64>,
-}
-
-impl ArmOutput {
-    /// The output of an arm that commits nothing (read, explicit
-    /// transaction): no commit sequence.
-    fn read(result: ExecResult) -> Self {
-        Self {
-            result,
-            commit_sequence: None,
-        }
-    }
-
-    /// The output of the auto-commit write: `commit_write`'s result paired
-    /// with its commit sequence.
-    fn committed((result, commit_sequence): (ExecResult, Option<u64>)) -> Self {
-        Self {
-            result,
-            commit_sequence,
-        }
-    }
-}
-
-/// What one dispatch arm produced: either a refused admission (the
-/// statement never ran) or the run's own result ([`ArmOutput`]) with whether
-/// the run admitted its read first. One type across the transaction, write and read arms, so
-/// "refused", "ran admitted" and "ran not admitted" are variants, not a
-/// nested `Result` beside a bare flag.
-enum ArmRun {
-    /// The admission was refused (read guard, target, pin): the statement
-    /// never ran. The one refusal path of every arm.
-    Refused(Error),
-    /// The arm admitted its read, then ran; the result may be a failure.
-    Admitted(Result<ArmOutput>),
-    /// The arm ran without a read admission (the auto-commit write).
-    NotAdmitted(Result<ArmOutput>),
-}
+use crate::{CancelToken, Error, QueryResult, Result, Value};
 
 /// The statement's token-budget reservation as one owner: the reserved
 /// ledger and its observation key as one pair — always `Some` together —
 /// plus the consuming half of its lifecycle, `settle` (observe the peak,
 /// keep the ledger alive on a finished result). The two ambient steps —
 /// charging the retained rows and attaching the receipt — stay the free
-/// functions below: they run on the thread-local ledger the admission
-/// guard installs, and `LedgerGuard`'s exclusive-borrow lifetime cannot
-/// be co-owned with the ledger it guards, so the owner is not borrowable
-/// while the guard is armed. Constructed by
+/// functions in `dispatch.rs`: they run on the thread-local ledger the
+/// admission guard installs, and `LedgerGuard`'s exclusive-borrow lifetime
+/// cannot be co-owned with the ledger it guards, so the owner is not
+/// borrowable while the guard is armed. Constructed by
 /// [`Connection::reserve_statement`].
 struct StatementReservation {
     ledger: relate_core::tokens::TokenLedger,
@@ -142,68 +66,6 @@ impl StatementReservation {
         );
         if let Ok(Executed::Rows(result)) = outcome.result.as_mut() {
             result._retained_ledger = Some(Box::new(self.ledger));
-        }
-    }
-}
-
-/// The outcome of a statement that parsed, validated and planned
-/// (ADR-0319): it either produced its result or failed while executing.
-#[derive(Debug)]
-pub enum Executed {
-    /// Execution finished; the buffered result.
-    Rows(QueryResult),
-    /// Execution of the planned statement failed.
-    Failed(ExecutionFailure),
-}
-
-/// A statement that planned but failed while executing (ADR-0319): what a
-/// surface needs to announce the result before it reports the error.
-#[derive(Debug)]
-pub struct ExecutionFailure {
-    /// The planned result metadata — the same header a `QueryResult`
-    /// carries: the output `columns`
-    /// (`relate_planner::plan_output_names`), their `column_types`
-    /// (`ANY` per column, ADR-0224's no-rows stamp), the plan-derived
-    /// `query_type` (ADR-0162), the `namespace` (ADR-0117 §7), the
-    /// `elapsed` (ADR-0221) and its PARSE / PLAN / EXECUTE phase split
-    /// (LABS-832).
-    pub header: ResultHeader,
-    /// The execution error.
-    pub error: Error,
-}
-
-impl ExecutionFailure {
-    /// Stage a dispatch-phase failure of `logical`. A planned statement's
-    /// output names always derive (the UNION column-agreement check ran in
-    /// `plan`), so [`plan_output_names_expect`] holds the one expect for
-    /// that invariant — the same policy the planner's `query_type` uses
-    /// (ADR-0319, ADR-0332).
-    ///
-    /// [`plan_output_names_expect`]: relate_planner::plan_output_names_expect
-    pub(crate) fn staged(
-        logical: &LogicalPlan,
-        stamp: ResultStamp,
-        timing: impl FnOnce() -> TimingStamp,
-        error: Error,
-    ) -> Executed {
-        let columns = relate_planner::plan_output_names_expect(logical);
-        Executed::Failed(Self {
-            // The no-rows construction (`&[]`): every column stamps `ANY`
-            // (ADR-0224), through the same one construction as every other
-            // result.
-            header: ResultHeader::new(columns, &[], stamp.qtype, stamp.namespace, timing),
-            error,
-        })
-    }
-}
-
-impl Executed {
-    /// The finished result, or the execution error: the shape of the
-    /// non-staged entry points (`query`, `query_with_params`, …).
-    pub fn into_result(self) -> Result<QueryResult> {
-        match self {
-            Executed::Rows(result) => Ok(result),
-            Executed::Failed(failure) => Err(failure.error),
         }
     }
 }
@@ -362,7 +224,8 @@ impl Connection {
         params: BTreeMap<String, Value>,
         token: &CancelToken,
     ) -> QueryOutcome {
-        let admission = match self.admit_statement(cypher, &params, CacheUse::Query) {
+        let admission = match self.admit_statement(cypher, &params, CacheUse::Query, Instant::now())
+        {
             Ok(admission) => admission,
             // The plain not-admitted outcome: `run_cancellable`'s
             // epilogue owns failing the open transaction for every
@@ -370,7 +233,7 @@ impl Connection {
             // no statement body pre-empts it.
             Err(e) => return QueryOutcome::not_admitted(Err(e)),
         };
-        self.run_admitted(admission, cypher, params, token)
+        self.run_admitted(admission, cypher, &params, token)
     }
 
     /// The query body after admission (ADR-0504): the EXPLAIN early
@@ -379,13 +242,77 @@ impl Connection {
     /// `run_query` (the worker body of an unasserted connection), the
     /// inline fast path of a worker-stack-asserted connection, and that
     /// path's escalation to the worker with the admission already in
-    /// hand — so no path can re-admit a statement and no gate can be
-    /// skipped between paths.
+    /// hand — so no path can skip a step between paths.
+    ///
+    /// REL8-1120 wraps the body with the optimistic-hit retry leg: a
+    /// cache-served statement (the admission's outcome
+    /// [`PlanCacheOutcome::served_from_cache`]) runs optimistically — the
+    /// hit no longer re-runs the front with this statement's values, so a
+    /// value-dependent compile verdict (a type analysis that read a bound
+    /// list's element types) can surface first at execution, in the
+    /// runtime error class. The compile's own verdict wins: on a
+    /// type-error-class execution failure the statement runs once more
+    /// uncached, and that outcome — the compile error, or a clean run —
+    /// is what the caller sees. Read-ness is the insert gate's own
+    /// guarantee (`cache_insert_eligible` refuses every write-routed
+    /// plan, and the hit's stamp re-derives from that plan), so the only
+    /// eligibility conjuncts are the cache service itself and being
+    /// outside an explicit transaction (the failed attempt already
+    /// failed it, so a re-admission would report the transaction
+    /// refusal instead of the statement's own verdict). The type-error
+    /// class is the one where compile and runtime
+    /// verdicts can diverge — a type error raised by runtime *data* also
+    /// re-runs once, the accepted cost of a wasted compile on a statement
+    /// that was already failing; every other error keeps its outcome, so
+    /// no query executes twice for any other reason. The retry re-runs
+    /// the body directly (its `Bypass` admission is never cache-served),
+    /// so the leg cannot recurse.
+    ///
+    /// [`PlanCacheOutcome::served_from_cache`]:
+    /// crate::PlanCacheOutcome::served_from_cache
     pub(super) fn run_admitted(
+        &mut self,
+        admission: Admission,
+        cypher: &str,
+        params: &BTreeMap<String, Value>,
+        token: &CancelToken,
+    ) -> QueryOutcome {
+        // REL8-1120 retry eligibility, captured before the admission is
+        // consumed — the doc above states the contract; read-ness needs
+        // no conjunct because `cache_insert_eligible` already refuses
+        // every write-routed plan, and the hit's stamp re-derives from
+        // that same plan.
+        let started = admission.started;
+        let retryable_hit = admission.timing.plan_cache.served_from_cache() && self.txn.is_none();
+        let outcome = self.run_admitted_once(admission, cypher, params, token);
+        // The run's own error is the staged failure (ADR-0319): every
+        // executor type error rides `Ok(Executed::Failed(..))`, while an
+        // `Err` is a pre-execution refusal or a post-run resource charge —
+        // never this retry's class. The type-error family is read from
+        // the one classification table (`error_info`'s `TYPE_ERROR_CODE`
+        // grouping), never re-derived as a variant list here.
+        let retryable = retryable_hit
+            && outcome
+                .staged_failure()
+                .is_some_and(|failure| error_info(&failure.error).neo4j_code == TYPE_ERROR_CODE);
+        if !retryable {
+            return outcome;
+        }
+        // ADR-0221: the caller's one measurement spans both attempts —
+        // the retry's admission is built on the first attempt's clock.
+        match self.admit_statement(cypher, params, CacheUse::Bypass, started) {
+            Ok(admission) => self.run_admitted_once(admission, cypher, params, token),
+            Err(e) => QueryOutcome::not_admitted(Err(e)),
+        }
+    }
+
+    /// [`Self::run_admitted`]'s body: everything after admission, run
+    /// exactly once per attempt.
+    fn run_admitted_once(
         &mut self,
         mut admission: Admission,
         cypher: &str,
-        params: BTreeMap<String, Value>,
+        params: &BTreeMap<String, Value>,
         token: &CancelToken,
     ) -> QueryOutcome {
         // EXPLAIN plans and compile-time validates the wrapped statement,
@@ -396,7 +323,7 @@ impl Connection {
             // The plain not-admitted outcome: `run_cancellable`'s
             // epilogue owns failing the open transaction for every
             // non-Ok result, so this body does not pre-empt it.
-            return match self.explain_run(cypher, &params, &admission) {
+            return match self.explain_run(cypher, params, &admission) {
                 Ok(result) => QueryOutcome::not_admitted(Ok(Executed::Rows(result))),
                 Err(e) => QueryOutcome::not_admitted(Err(e)),
             };
@@ -410,7 +337,7 @@ impl Connection {
         // of the same statement must resolve to the same identity the
         // first, uncached run recorded its peak under — the caller's
         // undisturbed map, still owned here, is exactly that identity.
-        let budget_params = &params;
+        let budget_params = params;
         let effective = admission.effective.take();
         let params = effective.as_ref().unwrap_or(budget_params);
         // Taken before the destructure below so the epilogue can still

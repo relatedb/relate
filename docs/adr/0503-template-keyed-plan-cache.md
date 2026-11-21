@@ -292,3 +292,12 @@ observe.
   normalizer, stats-generation replanning, read-only gating — as one
   concern. The session's fallback (tokenizer/AST-level caching one level
   below the plan) is not needed.
+
+## Later references
+
+- Refined by [[adr/0651-plan-cache-hit-verification-without-front-reparse]]:
+  the cache-hit admission no longer re-runs the front end per hit. The
+  verification the re-parse provided is covered by the insert gate's
+  dynamic-operand exclusion, the typed auto-parameter names, the payload
+  boundary's value-depth guard, the bound float/integer site walk, and a
+  single uncached retry on type-error-class execution failures.

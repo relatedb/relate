@@ -14,13 +14,14 @@ use crate::{CancelToken, PullKind, QueryResult, Result, Shared, Value};
 
 mod admission;
 mod cache;
+mod outcome;
 mod render;
 mod staged;
 mod txn;
 mod worker;
 
 use cache::CacheUse;
-pub use dispatch::{Executed, ExecutionFailure};
+pub use outcome::{Executed, ExecutionFailure};
 use txn::OpenTxn;
 
 /// Test hook for the processing-memory load test (ADR-0333). Unset in
@@ -86,7 +87,7 @@ pub struct Connection {
 
 mod dispatch;
 
-use dispatch::QueryOutcome;
+use outcome::QueryOutcome;
 
 /// A connection with no open transaction and no query worker yet.
 pub(crate) fn fresh(inner: Arc<Shared>, namespace: Namespace) -> Connection {
@@ -394,7 +395,8 @@ impl Connection {
     /// render `$__AUTO_*__` in its seek lines.
     fn plan_body(&mut self, cypher: &str) -> Result<crate::PlanNode> {
         let params = BTreeMap::new();
-        let admission = self.admit_statement(cypher, &params, CacheUse::Bypass)?;
+        let admission =
+            self.admit_statement(cypher, &params, CacheUse::Bypass, web_time::Instant::now())?;
         let _read = self.inner.read_guard()?;
         let stats = crate::stats::GraphPatternStats::new(&self.inner.graph, &params);
         Ok(crate::plan_node::plan_tree(&admission.logical, &stats).root)
