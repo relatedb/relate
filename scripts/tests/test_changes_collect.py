@@ -115,6 +115,20 @@ class Discovery(Sandbox):
             findings,
         )
 
+    def test_a_newline_in_a_pool_name_cannot_start_a_log_line(self) -> None:
+        # A pull request controls the fragment file name, so a name can
+        # carry a newline; every refusal renders the echoed name quoted
+        # (log_name), so no finding breaks into a fresh line GitHub
+        # Actions could read as a workflow command (`::error::…`). The
+        # 'changes_collect: ' prefix alone cannot carry that.
+        self.fragment("1-ok.md", "### Added\n\n- ok\n")
+        self.fragment("2-bad\n::error::boom.txt", "no\n")
+        fragments, findings = collector.discover(self.changes)
+        self.assertEqual([p.name for p in fragments], ["1-ok.md"])
+        self.assertEqual(len(findings), 1, findings)
+        self.assertNotIn("\n", findings[0])
+        self.assertIn("::error::boom", findings[0])
+
 
 class FragmentGrammar(Sandbox):
     def test_bullets_and_wrapped_continuations_parse(self) -> None:
@@ -270,6 +284,26 @@ class Collect(Sandbox):
         self.assertTrue((self.changes / "1-a.md").exists())
         self.assertTrue((self.changes / "2-b.md").exists())
 
+    def test_a_newline_in_a_colliding_fragment_name_cannot_start_a_log_line(
+        self,
+    ) -> None:
+        # The collision refusal is the second place a PR-controlled
+        # fragment name lands in a message; it goes through log_name too,
+        # so no refusal channel can break a log line.
+        self.changelog.write_text(
+            CHANGELOG.replace(
+                "## [Unreleased]\n",
+                "## [Unreleased]\n\n### Added\n\n- Hand-filed entry.\n",
+                1,
+            )
+        )
+        self.fragment("1-a\n::error::boom.md", "### Added\n\n- Fragment entry.\n")
+        with self.assertRaises(collector.CollectError) as ctx:
+            collector.collect(self.changelog, self.changes)
+        message = str(ctx.exception)
+        self.assertNotIn("\n", message)
+        self.assertIn("::error::boom", message)
+
     def test_first_release_body_shape_passes_through(self) -> None:
         # A first-release changelog carries no version section below
         # [Unreleased]; the body ends at the ref block, and a
@@ -291,6 +325,17 @@ class Collect(Sandbox):
     def test_empty_pool_leaves_the_changelog_untouched(self) -> None:
         self.assertEqual(collector.collect(self.changelog, self.changes), 0)
         self.assertEqual(self.changelog.read_text(), CHANGELOG)
+
+    def test_a_newline_in_a_name_cannot_break_a_content_refusal(self) -> None:
+        # The content-validation channel (read_pool) names the fragment in
+        # its `context:lineno` prefix; it goes through log_name too, so an
+        # invalid fragment whose name carries a newline still cannot start
+        # a fresh log line.
+        self.fragment("1-bad\n::error::boom.md", "### Nope\n\n- x\n")
+        _, findings = collector.read_pool(self.changes)
+        self.assertEqual(len(findings), 1, findings)
+        self.assertNotIn("\n", findings[0])
+        self.assertIn("::error::boom", findings[0])
 
     def test_every_invalid_fragment_is_named(self) -> None:
         # The accumulation contract: two refused fragments, both named in

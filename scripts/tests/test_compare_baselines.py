@@ -22,6 +22,7 @@ from pathlib import Path
 
 from loadtest_fixtures import (
     ENV,
+    LOCAL_ENV,
     BaselineReportTreeMixin,
     aggregator_env,
     checkpoint_report,
@@ -186,7 +187,7 @@ class CompareBaselinesRenderTests(CompareBaselinesTestBase):
             "fraud-loadtest.json",
             report(p99=1_300_000, ops_per_sec=50.0, logical_used_bytes=2000, errors=1),
         )
-        other = dict(ENV, runner="local")
+        other = LOCAL_ENV
         self.write_report(
             "identity-loadtest.json",
             report(p99=1_000_000, kind="identity", env=other),

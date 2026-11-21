@@ -28,52 +28,42 @@ MCP_INIT_RESULT=
 # The host's request pipe (fd 3, set by `mcp_init`): requests go here, so a
 # `$(mcp_call …)` capture takes the tool result and not the request.
 MCP_FD=
+# The last response line `mcp_request` read.
+MCP_RESPONSE=
 
 mcp_fail() {
     printf 'mcp: %s\n' "$*" >&2
     exit 1
 }
 
-# The raw JSON token of flag NAME from the envelope (`"rust"`, `2`,
-# `false`, `["rust","cypher"]`). Fails when the manifest and the child
-# disagree about the flag table.
-_mcp_flag_value() {
-    local rest decoded
+# The raw envelope text from flag NAME's value on — everything after
+# `"NAME":`, exactly as the envelope spells it. The one place the
+# envelope is searched for a flag: `mcp_fail` when the manifest and the
+# child disagree about the flag table. A string flag's slice goes to the
+# kit's one decoder, which terminates it at the value's own closing
+# quote (the `mcp_string` shape for tool results), so a string is
+# decoded exactly once — never decoded, re-encoded by `json_string`,
+# and decoded again.
+_mcp_flag_slice() {
     case $MCP_ENVELOPE in
-        *"\"$1\":"*) rest=${MCP_ENVELOPE#*\"$1\":} ;;
+        *"\"$1\":"*) printf '%s' "${MCP_ENVELOPE#*\"$1\":}" ;;
         *) mcp_fail "the request envelope carries no '$1' flag" ;;
     esac
-    case $rest in
-        \[*)
-            # The array runs to its closing bracket — the first `]`, the
-            # pre-existing boundary (an entry holding a bare `]` inside
-            # quotes truncates here; the manifest's flag tables carry
-            # identifiers, not brackets). Re-emit a well-formed
-            # `[entries]` token: the opening bracket the strip removed
-            # and the closing one, so the list walker starts from a
-            # complete array.
-            rest=${rest#\[}
-            printf '[%s]' "${rest%%\]*}"
-            ;;
-        \"*)
-            # A string runs to its closing quote — the decoder finds it.
-            # The `,`/`}` cuts below would truncate a string that
-            # contains either, so the token is decoded here and
-            # re-encoded by the kit's own writer: a clean, terminated
-            # literal whatever it contained.
-            _mcp_decode_string "$rest" decoded ||
-                mcp_fail "the '$1' flag's value is not a terminated JSON string: $rest"
-            json_string "$decoded"
-            ;;
-        *)
-            # A scalar ends at the next `,` — or at the envelope's closing
-            # `}` when the flag is the last one. The two cuts stay separate
-            # because `}` inside a bracket expression ends the expansion.
-            # Numbers and booleans only: a string token took the arm above.
-            rest=${rest%%,*}
-            printf '%s' "${rest%%\}*}"
-            ;;
-    esac
+}
+
+# The scalar token of flag NAME (`2`, `false`), shaped for the scalar
+# readers (`mcp_flag_int`, `mcp_flag_bool`). A string flag is the string
+# reader's and a list the list reader's — this reader never decodes,
+# re-encodes or brackets anything. Fails when the manifest and the child
+# disagree about the flag table.
+_mcp_flag_value() {
+    local rest
+    rest=$(_mcp_flag_slice "$1")
+    # A scalar ends at the next `,` — or at the envelope's closing `}`
+    # when the flag is the last one. The two cuts stay separate because
+    # `}` inside a bracket expression ends the expansion.
+    rest=${rest%%,*}
+    printf '%s' "${rest%%\}*}"
 }
 
 # _mcp_decode_string TOKEN OUT [TAIL] — the value of the JSON string
@@ -134,12 +124,16 @@ _mcp_decode_string() {
 }
 
 # mcp_flag_string NAME — a string flag's value, unquoted and unescaped.
+# The raw slice is decoded exactly once (the value ends at the first
+# quote no backslash escapes, so a quote inside it decodes rather than
+# truncating the read); an unterminated value fails inside the one
+# decoder.
 mcp_flag_string() {
     local value decoded
-    value=$(_mcp_flag_value "$1")
+    value=$(_mcp_flag_slice "$1")
     case $value in
         \"*) ;;
-        *) mcp_fail "flag '$1' is not a string: $value" ;;
+        *) mcp_fail "flag '$1' is not a string: ${value%%,*}" ;;
     esac
     _mcp_decode_string "$value" decoded ||
         mcp_fail "flag '$1' is not a terminated JSON string: $value"
@@ -172,13 +166,19 @@ mcp_flag_bool() {
 # decoder's reported tail to the next entry.
 mcp_flag_list() {
     local value rest entry tail
-    value=$(_mcp_flag_value "$1")
+    value=$(_mcp_flag_slice "$1")
     case $value in
-        \[*\]) ;;
-        *) mcp_fail "flag '$1' is not a list: $value" ;;
+        \[*\]*) ;;
+        \[*) mcp_fail "flag '$1' is not a terminated list: $value" ;;
+        *) mcp_fail "flag '$1' is not a list: ${value%%,*}" ;;
     esac
+    # The array runs to its closing bracket — the first `]`, the
+    # pre-existing boundary (an entry holding a bare `]` inside quotes
+    # truncates here; the manifest's flag tables carry identifiers, not
+    # brackets). The gate above proved the bracket is there, so the cut
+    # never turns an unterminated array into a shorter list.
     value=${value#\[}
-    value=${value%\]}
+    value=${value%%\]*}
     [ -z "$value" ] && return 0
     rest=$value
     while :; do
@@ -226,6 +226,21 @@ mcp_init() {
     printf '{"jsonrpc":"2.0","method":"notifications/initialized"}\n' >&3
 }
 
+# mcp_request TOOL ARGS_JSON — the raw `tools/call` frame: bumps the
+# request id, writes the envelope, and leaves the one response line, as
+# the host sent it, error or not, in MCP_RESPONSE. Only a host that closes
+# the session fails here; `mcp_call` judges the response, and a step that
+# expects a refusal reads it itself. It sets a variable rather than
+# printing so the id bump survives in the caller's shell.
+mcp_request() {
+    local tool=$1 arguments=$2
+    MCP_ID=$((MCP_ID + 1))
+    printf '{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"%s","arguments":%s}}\n' \
+        "$MCP_ID" "$tool" "$arguments" >&3
+    IFS= read -r MCP_RESPONSE ||
+        mcp_fail "the host closed the session before answering '$tool'"
+}
+
 # mcp_call TOOL ARGS_JSON — one `tools/call`, its arguments the JSON
 # object ARGS_JSON. Prints the tool's own JSON result (the MCP text
 # content, unescaped); a JSON-RPC error or an unreadable response exits
@@ -237,11 +252,8 @@ mcp_call() {
         *) mcp_fail "mcp_call '$tool': the arguments must be a JSON object" ;;
     esac
     [ -n "$MCP_FD" ] || mcp_fail "mcp_call '$tool' before mcp_init"
-    MCP_ID=$((MCP_ID + 1))
-    printf '{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"%s","arguments":%s}}\n' \
-        "$MCP_ID" "$tool" "$arguments" >&3
-    IFS= read -r response ||
-        mcp_fail "the host closed the session before answering '$tool'"
+    mcp_request "$tool" "$arguments"
+    response=$MCP_RESPONSE
     case $response in
         *'"error":'*) mcp_fail "'$tool' refused: $response" ;;
         *'"content":'*) ;;
@@ -310,18 +322,15 @@ json_string() {
             $'\t') out+='\t' ;;
             $'\b') out+='\b' ;;
             $'\f') out+='\f' ;;
-            *)
+            [[:cntrl:]])
                 # A control character the shortcuts have no name for:
                 # its \u00XX escape, from the code point printf reads
-                # off the quoted char.
-                case $char in
-                    [[:cntrl:]])
-                        printf -v code '%04x' "'$char"
-                        out+="\\u$code"
-                        ;;
-                    *) out+=$char ;;
-                esac
+                # off the quoted char. The named escapes above take
+                # their characters first.
+                printf -v code '%04x' "'$char"
+                out+="\\u$code"
                 ;;
+            *) out+=$char ;;
         esac
     done
     printf '"%s"' "$out"

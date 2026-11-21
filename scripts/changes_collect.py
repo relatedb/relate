@@ -180,25 +180,41 @@ def fragment_sort_key(path: Path) -> tuple[int, str]:
     return (fragment_number(path.name), path.name)
 
 
+def log_name(entry: str) -> str:
+    """A pool entry's name as a refusal spells it: repr-quoted, so a name
+    a pull request controls cannot break the line it lands in. A file
+    name may carry a newline, and GitHub Actions reads a workflow command
+    (`::error::…`) only where a line begins — a bare newline in a name
+    would start a fresh log line the runner could act on, which the
+    'changes_collect: ' prefix cannot prevent. Quoting renders the
+    newline as `\\n`, mid-line, inert. Every refusal echoes the basename
+    through this one helper, so one pool entry has one spelling."""
+    return repr(entry)
+
+
 # Every membership cause's pool disposition, one total table: None is a
 # skip (the pool's own documentation, editor noise), anything else the
-# refusal message the cause earns. NESTED cannot arise from a flat
-# directory walk — it carries its entry anyway, so the table is total
-# over the enum: a cause without a disposition is a loud hole at
-# definition time, never a silent skip or a KeyError mid-walk.
+# refusal message the cause earns. The table is total over the enum — a
+# cause without a disposition is a loud hole at definition time, never a
+# silent skip or a KeyError mid-walk — and it is the one place a cause's
+# disposition is decided: discover maps a directory entry to NESTED and
+# sends it here like any other cause. Every echoed entry name goes
+# through log_name, so a name the pull request controls cannot break a
+# refusal's line.
 POOL_DISPOSITIONS: dict[FragmentCause, Callable[[Path, Path], str] | None] = {
     FragmentCause.README: None,
     FragmentCause.DOTFILE: None,
     FragmentCause.NESTED: lambda entry, changes_dir: (
-        f"changes_collect: {entry.name} is nested — fragments are flat"
-        f" .md files under {changes_dir}"
+        f"changes_collect: {log_name(entry.name)} is a directory —"
+        f" fragments are flat .md files, one per pull request under"
+        f" {changes_dir}"
     ),
     FragmentCause.WRONG_SUFFIX: lambda entry, changes_dir: (
-        f"changes_collect: {entry.name} is not a fragment — one .md"
-        f" file per pull request under {changes_dir}"
+        f"changes_collect: {log_name(entry.name)} is not a fragment —"
+        f" one .md file per pull request under {changes_dir}"
     ),
     FragmentCause.BAD_NAME: lambda entry, changes_dir: (
-        f"changes_collect: {entry.name} is not named"
+        f"changes_collect: {log_name(entry.name)} is not named"
         " <PR number>-<slug>.md — the number orders the collected"
         " entries"
     ),
@@ -213,19 +229,17 @@ def discover(changes_dir: Path) -> tuple[list[Path], list[str]]:
     The membership decision is fragment_cause's, the one rule, and each
     cause's disposition is POOL_DISPOSITIONS', the one table; the walk
     adds only the one fact a filesystem can see — a directory entry is
-    not a file."""
+    NESTED, not a name to classify."""
     if not changes_dir.is_dir():
         return [], [f"changes_collect: no fragment directory at {changes_dir}"]
     fragments: list[Path] = []
     findings: list[str] = []
     for entry in sorted(changes_dir.iterdir()):
-        if entry.is_dir():
-            findings.append(
-                f"changes_collect: {entry} is a directory — fragments"
-                " are flat .md files, one per pull request"
-            )
-            continue
-        cause = fragment_cause(entry.name)
+        cause = (
+            FragmentCause.NESTED
+            if entry.is_dir()
+            else fragment_cause(entry.name)
+        )
         if cause is None:
             fragments.append(entry)
             continue
@@ -254,7 +268,11 @@ def read_pool(
                     fragment,
                     parse_sections(
                         fragment.read_text().splitlines(keepends=True),
-                        str(fragment),
+                        # The content refusals name the fragment through
+                        # log_name like every other channel: a raw
+                        # newline in the name would otherwise break the
+                        # `context:lineno` line into a fresh log line.
+                        log_name(fragment.name),
                     ),
                 )
             )
@@ -358,9 +376,10 @@ def collect(changelog: Path, changes_dir: Path) -> int:
         for name, entries in sections.items():
             if name in existing:
                 collisions.append(
-                    f"changes_collect: {fragment.name} contributes a"
-                    f" '{name}' section [Unreleased] already carries —"
-                    " move the entries into fragments before the cut"
+                    f"changes_collect: {log_name(fragment.name)}"
+                    f" contributes a '{name}' section [Unreleased] already"
+                    " carries — move the entries into fragments before the"
+                    " cut"
                 )
             else:
                 contributed.setdefault(name, []).extend(entries)
@@ -388,7 +407,7 @@ def collect(changelog: Path, changes_dir: Path) -> int:
                 "changes_collect: [Unreleased] was written but consumed"
                 " fragments could not be deleted — remove them by hand"
                 " (their entries are already collected): "
-                + ", ".join(str(fragment) for fragment in undeleted)
+                + ", ".join(log_name(fragment.name) for fragment in undeleted)
             ]
         )
     entries = sum(len(section) for _, sections in pool for section in sections.values())

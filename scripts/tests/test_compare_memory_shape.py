@@ -28,6 +28,10 @@ ENV = {
     "runner": "github-actions:linux-4-core-x86",
 }
 
+# The mismatched-environment fixture: ENV under a `local` runner,
+# derived beside ENV so the mismatch's shape is one edit.
+LOCAL_ENV = dict(ENV, runner="local")
+
 KNOBS = {
     "logical_target_bytes": 33_554_432,
     "attributes": 1,
@@ -193,7 +197,7 @@ class CompareMemoryShapeTests(unittest.TestCase):
     def test_incompatible_is_local_skip_and_ci_failure(self):
         _, payload = self.freeze([report(), report()])
         current = report()
-        current["environment"] = dict(ENV, runner="local")
+        current["environment"] = LOCAL_ENV
         current["shapes"][1]["attributed_rss_bytes"] = 60_000_000
         local = self.run_compare(payload, current, env={"CI_COMPARE": "0", "GITHUB_ACTIONS": ""})
         self.assertEqual(local.returncode, 0, local.stderr)
