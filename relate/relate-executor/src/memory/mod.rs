@@ -278,6 +278,65 @@ impl ChainShape {
 /// admission runs (ADR-0086, ADR-0532).
 pub const DENSE_SPAN_CAP_BYTES: u64 = 1 << 30;
 
+/// The dense id spans a group admission walk has advanced to. The walk
+/// seeds its first slot's estimate from the committed spans
+/// ([`Graph::dense_spans`](crate::graph::Graph::dense_spans)) and carries
+/// the values each admitted slot advanced them to, so a growth rung the
+/// group already reserved is charged to the first slot that crosses it and
+/// priced no span growth for every later mate inside that rung — the span a
+/// placement advances to is the gate's own `idx + 1`
+/// ([`SpanPlacement::Grew`](crate::memory::SpanPlacement::Grew)), so a mate
+/// on the next id classifies `Grew` again but its rung is unchanged and the
+/// charge is zero. The committed span cannot advance mid-group, so
+/// re-seeding each slot from it would re-charge the whole rung once per
+/// group-mate. A single-record admission seeds fresh from the committed
+/// spans and drops the advance.
+///
+/// The same protocol covers every dense span the admission estimate
+/// prices: beside the node and relationship slot arrays, the adjacency
+/// tier's two direction spans and the sealed span table's two — a
+/// group-mate crossing the same adjacency or sealed rung would re-charge
+/// it exactly as the chain spans did.
+///
+/// The seed is admission state, not free input: it starts at
+/// [`Graph::dense_spans`](crate::graph::Graph::dense_spans) — the one
+/// constructor — and only ever grows, so the fields are crate-private and
+/// out-of-crate callers can only hold the value and pass it on. Each walk
+/// returns only the spans it owns — the chain half as
+/// [`ChainSpanAdvance`], the adjacency half as the graph estimator's own
+/// advance type — never a full copy with foreign fields echoed back; the
+/// one merge into `GroupSpans` happens at the admission entry point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupSpans {
+    /// Span the node slot array is reserved through.
+    pub(crate) node: usize,
+    /// Span the relationship slot array is reserved through.
+    pub(crate) rel: usize,
+    /// Span the out-direction adjacency slot array is reserved through.
+    pub(crate) adj_out: usize,
+    /// Span the in-direction adjacency slot array is reserved through.
+    pub(crate) adj_in: usize,
+    /// Span the out-direction sealed span table is reserved through.
+    pub(crate) sealed_out: usize,
+    /// Span the in-direction sealed span table is reserved through.
+    pub(crate) sealed_in: usize,
+}
+
+/// The chain-span half of a [`GroupSpans`] advance — the two fields
+/// [`estimate_redo_delta`](self::account::estimate_redo_delta) owns. A walk
+/// returns only the spans it prices, so the fields it does not own are
+/// never echoed back; the merge into the group seed happens once, at the
+/// admission entry point. Crate-internal like its adjacency sibling
+/// (`graph::accounting`'s `AdjSpanAdvance`): no cross-crate caller names an
+/// advance, only the seed it merges into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ChainSpanAdvance {
+    /// Span the node slot array is reserved through.
+    pub(crate) node: usize,
+    /// Span the relationship slot array is reserved through.
+    pub(crate) rel: usize,
+}
+
 /// Reserved bytes of a dense id span at the ladder reservation of
 /// [`dense_reserved`], or `None` when that product does not fit in
 /// `u64`. That id cannot have a slot array (ADR-0532) and lives in the

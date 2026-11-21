@@ -441,8 +441,8 @@ fn corrupt_derived_entity_type_is_unpriceable_before_preflight_and_rejected_by_i
             enforced_label: None,
         },
     };
-    assert!(graph.estimate_redo_delta(&[classifiable]) > 0);
-    assert_eq!(graph.estimate_redo_delta(&[corrupt.clone()]), 0);
+    assert!(graph.estimate_redo_delta(&[classifiable]).total > 0);
+    assert_eq!(graph.estimate_redo_delta(&[corrupt.clone()]).total, 0);
     assert!(graph.constraint_key_spec("c").is_none());
 
     // Seam 2: the admission probe. It checks the slot, finds no key to

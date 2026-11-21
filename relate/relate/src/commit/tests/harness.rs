@@ -229,6 +229,44 @@ pub(super) fn ordinal(index: usize) -> u64 {
     u64::try_from(index).expect("a test batch index fits a timestamp")
 }
 
+/// The probe-positioned bounded store of the once-per-group rung tests
+/// (REL8-1785): commit `base_ops` on an unlimited probe, measure the one
+/// true cost of `crossing` (a single-slot group), drop the probe, and
+/// reopen a store bounded at the base plus the crossing plus half the
+/// crossing's cost of slack — headroom for exactly one charge of the
+/// crossed rung, never two. The returned store has `base_ops` committed.
+pub(super) fn bounded_crossing_store(
+    base_ops: Vec<RedoOp>,
+    crossing: RedoOp,
+) -> (Database, Arc<Shared>) {
+    let probe = Database::open(":memory:").unwrap();
+    let probe_shared = probe.shared();
+    try_wal_commit(&probe_shared, 0, 1, base_ops.clone(), 0, 0).unwrap();
+    let base = probe.memory_usage().unwrap().0;
+    let waiter = CommitWaiter::new();
+    flush_group(
+        &probe_shared,
+        vec![slot_with_ops(vec![crossing], 2, 1, &waiter)],
+    )
+    .unwrap();
+    waiter.wait().unwrap();
+    let cost = probe.memory_usage().unwrap().0 - base;
+    drop(probe_shared);
+    drop(probe);
+    let limit = base + cost + cost / 2;
+    let db = Database::open_with(
+        ":memory:",
+        OpenOptions {
+            logical_graph_size_limit: Some(limit),
+            ..OpenOptions::default()
+        },
+    )
+    .unwrap();
+    let shared = db.shared();
+    try_wal_commit(&shared, 0, 1, base_ops, 0, 0).unwrap();
+    (db, shared)
+}
+
 /// The two-slot batch of `Uncertain`-labelled creates the uncertain-WAL
 /// fault tests flush, one waiter per slot.
 pub(super) fn uncertain_batch(waiters: &[Arc<CommitWaiter>]) -> Vec<CommitSlot> {

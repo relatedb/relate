@@ -517,9 +517,7 @@ impl Database {
     /// empty, unlimited graph (ADR-0099).
     pub fn memory_usage(&self) -> Result<(u64, Option<u64>)> {
         let _read = self.inner.read_guard()?;
-        let used = self.inner.total_used_bytes();
-        let limit = self.inner.resolved.logical_graph_size_limit;
-        Ok((used, if limit == 0 { None } else { Some(limit) }))
+        Ok((self.inner.total_used_bytes(), self.inner.size_limit()))
     }
 
     /// Tokens reserved in the process pool. `None` when admission is off.

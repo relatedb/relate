@@ -143,6 +143,16 @@ pub use graph_type::GraphTypeSpec;
 #[cfg(feature = "research")]
 #[doc(hidden)]
 pub use memory::ChainCensus;
+// The dense-span seed the group admission walk carries (ADR-0617 family):
+// workspace-internal — the write-local commit path threads it, deliberately
+// not advertised API beyond the workspace.
+#[doc(hidden)]
+pub use memory::GroupSpans;
+// The return of the admission entry points (`Graph::estimate_redo_delta` and
+// its `_with` variant): the same workspace-internal path as `GroupSpans`, so
+// the entry points' documented return type is nameable beside it.
+#[doc(hidden)]
+pub use memory::RedoDelta;
 pub use overlay::{ExecGraph, WriteScratch};
 // The diagnostic switch's typed value (ADR-0519): re-exported for the
 // `relate` crate's open path (the resolver and the installer below),

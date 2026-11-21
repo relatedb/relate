@@ -14,8 +14,8 @@ use crate::redo::RedoOp;
 use crate::store::{Interner, LiveNode, LiveRel, PayloadForm, RelPayload};
 
 use super::{
-    overflow_entry_bytes, place_in_span, vec_heap, ChainShape, SpanPlacement, OVERHEAD_MAP_ENTRY,
-    OVERHEAD_POSTING, OVERHEAD_VERSION,
+    overflow_entry_bytes, place_in_span, vec_heap, ChainShape, ChainSpanAdvance, GroupSpans,
+    SpanPlacement, OVERHEAD_MAP_ENTRY, OVERHEAD_POSTING, OVERHEAD_VERSION,
 };
 
 fn prop_vec_heap(count: usize) -> u64 {
@@ -347,7 +347,12 @@ impl RedoDelta {
     }
 }
 
-/// Sequential live-size delta of `ops` against `lookup` (committed graph).
+/// Sequential live-size delta of `ops` against `lookup` (committed graph),
+/// seeded from `spans`: a dense rung the batch crosses is charged here, and
+/// the spans the batch advanced to come back beside the delta — never
+/// written through the seed — so the group admission walk's next slot prices
+/// its ids against the spans this batch reserved instead of the committed
+/// ones, and a caller that refuses the batch keeps no phantom rung behind.
 ///
 /// Every node is accounted under `charge`, the index charge in force after
 /// `ops` (DDL in the same batch included). When `ops` also change the
@@ -369,23 +374,22 @@ pub fn estimate_redo_delta(
     rel_shape: impl Fn(RelId) -> ChainShape,
     node_bytes: fn(ChainShape) -> u64,
     rel_bytes: fn(ChainShape) -> u64,
-    node_span: usize,
-    rel_span: usize,
+    spans: GroupSpans,
     charge: &IndexCharge,
-) -> RedoDelta {
+) -> (RedoDelta, ChainSpanAdvance) {
     let mut nodes: HashMap<NodeId, Option<Node>> = HashMap::new();
     let mut rels: HashMap<RelId, Option<PayloadForm>> = HashMap::new();
     let mut node_shapes = Shapes::new(
         node_shape,
         node_bytes,
-        node_span,
+        spans.node,
         crate::graph::node_slot(),
         crate::graph::node_value(),
     );
     let mut rel_shapes = Shapes::new(
         rel_shape,
         rel_bytes,
-        rel_span,
+        spans.rel,
         crate::graph::rel_slot(),
         crate::graph::rel_value(),
     );
@@ -542,10 +546,21 @@ pub fn estimate_redo_delta(
             | RedoOp::OntologyDrop { .. } => {}
         }
     }
-    RedoDelta {
-        total: delta,
-        spill,
-    }
+    // Placement only ever grows a span; the caller gets the high-water mark
+    // back so it can seed the next estimate — and keep it only when it
+    // accepts the slot. Only the chain spans this walk owns come back; the
+    // adjacency half is the graph-level estimator's own advance, and the
+    // one merge into the group seed happens at the admission entry point.
+    (
+        RedoDelta {
+            total: delta,
+            spill,
+        },
+        ChainSpanAdvance {
+            node: node_shapes.span,
+            rel: rel_shapes.span,
+        },
+    )
 }
 
 #[cfg(test)]

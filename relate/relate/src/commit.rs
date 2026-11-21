@@ -14,6 +14,7 @@ use relate_executor::{
 use relate_storage::{EncodedOps, Wal, WalRecord};
 
 use crate::checkpoint::{begin_publication, lock_wal_checked, Publication};
+use crate::shared::Reserved;
 use crate::{CancelToken, DurabilityMode, Error, Result, Shared};
 use relate_core::tokens::WorkspaceCharge;
 
@@ -553,7 +554,7 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
     crate::ensure_writable(shared)?;
     // The canonical capacity admission and durability-fenced WAL acquire:
     // this path spells neither policy itself.
-    shared.admit_redo_capacity(&record.ops, 0)?;
+    shared.admit_redo_capacity(&record.ops)?;
     // The record's one encoding, before the WAL lock is taken.
     // Charged to this thread's workspace like an admitted commit's, and held
     // until the record is appended.
@@ -578,6 +579,26 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
     Ok(committed.last_lsn)
 }
 
+/// The group admission walk's mutable state: the accepted slots (their ops
+/// standing in for the old `unapplied` shadow list, ADR-0063), the
+/// reservation the accepted slots established, and the ADR-0439 constraint
+/// overlay — one carrier threaded through [`admit_slot`] instead of lockstep
+/// out-params. `reserved` moves only for an accepted slot: a slot refused at
+/// any stage leaves no reservation, no phantom growth rung, and no overlay
+/// hold behind.
+struct AdmissionWalk<'a> {
+    accepted: Vec<(usize, Admitted)>,
+    /// The bytes and dense spans the accepted slots reserved. Each slot's
+    /// estimate seeds from these spans instead of the committed spans, which
+    /// cannot advance mid-group, so a growth rung is charged to the first slot
+    /// that crosses it and costs no span growth for every later mate inside
+    /// it — never re-charged per group-mate.
+    reserved: Reserved,
+    /// ADR-0439: the group's constraint-key admission state — the committed
+    /// map plus the delta earlier accepted slots establish.
+    constraint_admission: ConstraintAdmission<'a>,
+}
+
 /// Run one slot through every admission stage — element-id conflict,
 /// commit-time uniqueness, capacity, timestamp — and merge its constraint
 /// delta on acceptance. The one per-slot policy: the caller owns the single
@@ -593,18 +614,21 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
 /// commits.
 fn admit_slot(
     shared: &Shared,
+    walk: &mut AdmissionWalk<'_>,
     slot: CommitSlot,
-    accepted: &[(usize, Admitted)],
-    reserved: &mut u64,
-    constraint_admission: &mut ConstraintAdmission<'_>,
     position: SlotPosition,
     batch_start: Instant,
 ) -> Result<Admitted> {
+    // Disjoint field borrows: the earlier-ops view of `accepted` coexists
+    // with the reserved/overlay mutations below.
+    let AdmissionWalk {
+        accepted,
+        reserved,
+        constraint_admission,
+    } = walk;
     let wal_lock_ns = batch_start
         .saturating_duration_since(slot.enqueued)
         .as_nanos() as u64;
-    // Previously accepted slots' ops stand in for the old `unapplied` shadow
-    // list (ADR-0063: no second deep clone of the redo ops).
     let conflict = shared
         .graph
         .write_set_conflicts(slot.snapshot_ts, &slot.ops)
@@ -632,7 +656,7 @@ fn admit_slot(
         .map(|next| next.max(slot.txn_id))
         .ok_or_else(|| Error::storage("commit timestamp overflow"))?;
     *reserved =
-        shared.admit_redo_capacity_with(&slot.ops, *reserved, Some(constraint_growth), &earlier)?;
+        shared.admit_redo_capacity_with(&slot.ops, *reserved, constraint_growth, &earlier)?;
     constraint_admission.accept(pending);
     Ok(Admitted {
         record: Accepted {
@@ -660,25 +684,20 @@ fn flush_group(shared: &Arc<Shared>, batch: Vec<CommitSlot>) -> Result<()> {
         // The batch index travels with the accepted record, so the
         // completion list below derives from this one source instead of a
         // parallel vector.
-        let mut accepted: Vec<(usize, Admitted)> = Vec::new();
-        let mut reserved = 0u64;
-        // ADR-0439: the group's constraint-key admission state — the
-        // committed map plus the delta earlier accepted slots establish.
-        let mut constraint_admission = shared.graph.begin_constraint_admission();
+        let mut walk = AdmissionWalk {
+            accepted: Vec::new(),
+            reserved: Reserved {
+                bytes: 0,
+                spans: shared.graph.dense_spans(),
+            },
+            constraint_admission: shared.graph.begin_constraint_admission(),
+        };
         let batch_len = batch.len();
 
         for (index, slot) in batch.into_iter().enumerate() {
             let position = SlotPosition::of(index, batch_len);
-            match admit_slot(
-                shared,
-                slot,
-                &accepted,
-                &mut reserved,
-                &mut constraint_admission,
-                position,
-                batch_start,
-            ) {
-                Ok(slot) => accepted.push((index, slot)),
+            match admit_slot(shared, &mut walk, slot, position, batch_start) {
+                Ok(admitted) => walk.accepted.push((index, admitted)),
                 Err(e) => waiters.reject(index, e),
             }
         }
@@ -687,7 +706,8 @@ fn flush_group(shared: &Arc<Shared>, batch: Vec<CommitSlot>) -> Result<()> {
         // core is shared with the replicated path, which never sees them —
         // deriving each accepted waiter's success value from the same
         // records, just before the move.
-        let (assigned, records): (Vec<(usize, u64)>, Vec<Admitted>) = accepted
+        let (assigned, records): (Vec<(usize, u64)>, Vec<Admitted>) = walk
+            .accepted
             .into_iter()
             .map(|(index, a)| ((index, a.record.commit_ts), a))
             .unzip();

@@ -63,7 +63,7 @@ fn other_rel_that_gains_triple_keys_stays_on_the_floor() {
         },
     ];
     let before = g.used_bytes();
-    let estimate = g.estimate_redo_delta(&same_batch);
+    let estimate = g.estimate_redo_delta(&same_batch).total;
     g.apply_redo(same_batch, g.commit_ts() + 1).unwrap();
     assert_eq!(g.used_bytes(), g.accounted_bytes());
     assert_eq!(g.used_bytes() as i64 - before as i64, estimate);
@@ -74,7 +74,7 @@ fn other_rel_that_gains_triple_keys_stays_on_the_floor() {
         key: "note".into(),
         value: Value::String("x".into()),
     }];
-    let estimate = g.estimate_redo_delta(&set_again);
+    let estimate = g.estimate_redo_delta(&set_again).total;
     g.apply_redo(set_again, g.commit_ts() + 1).unwrap();
     assert_eq!(g.used_bytes(), g.accounted_bytes());
     assert_eq!(g.used_bytes() as i64 - before as i64, estimate);
@@ -92,12 +92,111 @@ fn other_rel_that_gains_triple_keys_stays_on_the_floor() {
         properties: relate_core::PropertyMap::share(triple),
     }];
     let before = g.used_bytes();
-    let estimate = g.estimate_redo_delta(&created);
+    let estimate = g.estimate_redo_delta(&created).total;
     g.apply_redo(created, g.commit_ts() + 1).unwrap();
     assert_eq!(g.used_bytes(), g.accounted_bytes());
     assert_eq!(g.used_bytes() as i64 - before as i64, estimate);
     assert_eq!(g.rel(1).unwrap().properties.len(), 4);
     assert_eq!(g.rel(2).unwrap().properties.len(), 3);
+}
+
+/// The once-per-walk seeded-mate protocol, stated once for every
+/// dense-span family: the crossing estimate advances the seed, the mate
+/// estimated from that advance pays no rung the walk reserved, the mate
+/// still pays its own record, and no estimate ever moves the seed. A test
+/// supplies only the ops — which family's rung they cross is its business —
+/// and asserts the megabyte-scale gap on the returned totals. (Every
+/// message stays value-free: CodeQL's cleartext-logging heuristic reads the
+/// `*_account` accounting helpers as sensitive, and an interpolated byte
+/// count is the one sink that trips it.)
+fn seeded_mate_gain(g: &Graph, crossing: &[RedoOp], mate: &[RedoOp]) -> (i64, i64) {
+    let seed = g.dense_spans();
+    // Each estimate derives its own ADR-0439 term — the walk's own
+    // protocol: a caller holding a seed supplies the term for the batch it
+    // prices, never a foreign batch's.
+    let (_, advanced) = g.estimate_redo_delta_with_constraint_growth(
+        crossing,
+        g.estimate_constraint_key_entry_growth(crossing),
+        seed,
+    );
+    let (seeded, _) = g.estimate_redo_delta_with_constraint_growth(
+        mate,
+        g.estimate_constraint_key_entry_growth(mate),
+        advanced,
+    );
+    // The single-record entry point, which seeds from the committed spans.
+    let fresh = g.estimate_redo_delta(mate);
+    assert!(
+        seeded.total > 0,
+        "the mate still pays its own record: seeding removes the rung re-charge, nothing else"
+    );
+    // An estimate never moves its seed: a refused slot must not leave a
+    // phantom rung behind for the next mate.
+    assert_eq!(
+        seed,
+        g.dense_spans(),
+        "the seed is the committed spans, untouched by any estimate"
+    );
+    (seeded.total, fresh.total)
+}
+
+/// A dense growth rung is charged once per admission walk, never once per
+/// estimate: the walk's advanced spans seed the next estimate, so a create
+/// placing an id inside the rung an earlier create of the same walk already
+/// reserved prices no span growth — where a fresh estimate from the
+/// committed span, which cannot advance mid-walk, re-charges the whole
+/// rung (megabyte-scale at these ids).
+#[test]
+fn seeded_spans_price_a_mate_inside_the_reserved_rung() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let a = g.create_node(Vec::new(), BTreeMap::new()).unwrap();
+    let b = g.create_node(Vec::new(), BTreeMap::new()).unwrap();
+    g.commit_write();
+    let rel = |id: i64| {
+        vec![RedoOp::create_rel(
+            id,
+            a,
+            b,
+            "KNOWS".into(),
+            BTreeMap::new(),
+        )]
+    };
+    let (seeded, fresh) = seeded_mate_gain(&g, &rel(60_000), &rel(60_001));
+    assert!(
+        fresh - seeded > 1024 * 1024,
+        "the re-charged chain rung is megabyte-scale"
+    );
+}
+
+/// The adjacency tier's dense rungs follow the same one-charge-per-walk
+/// protocol: a rel create placing an endpoint inside the adjacency rung an
+/// earlier create of the same walk reserved prices no adjacency growth —
+/// where a fresh estimate from the committed span, which cannot advance
+/// mid-walk, re-charges the whole rung (the endpoints sit at ids no
+/// committed adjacency entry covers, so only the adjacency term differs
+/// between the two estimates; the rel ids stay low so the chain spans do
+/// not).
+#[test]
+fn seeded_adjacency_spans_price_a_mate_inside_the_reserved_rung() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let b = g.create_node(Vec::new(), BTreeMap::new()).unwrap();
+    g.commit_write();
+    let rel = |id: i64, start: i64| {
+        vec![RedoOp::create_rel(
+            id,
+            start,
+            b,
+            "KNOWS".into(),
+            BTreeMap::new(),
+        )]
+    };
+    let (seeded, fresh) = seeded_mate_gain(&g, &rel(1, 60_000), &rel(2, 60_001));
+    assert!(
+        fresh - seeded > 1024 * 1024,
+        "the re-charged adjacency rung is megabyte-scale"
+    );
 }
 
 /// F-1-30: a self-loop's delete charges both on-demand zero-hop regions —
@@ -131,14 +230,14 @@ fn self_loop_delete_charges_both_sealed_regions() {
     let region = (crate::memory::vec_growth(entries, 1, entry)
         + crate::memory::vec_growth(tombstones, 1, column)
         + crate::memory::vec_heap(1, tombstone)) as i64;
-    let AdjDelta {
-        refusable: loop_refusable,
-        spill: self_loop,
-    } = g.estimate_adj_delta(&[RedoOp::DeleteRel { id: loop_id }]);
-    let AdjDelta {
-        refusable: pair_refusable,
-        spill: pair,
-    } = g.estimate_adj_delta(&[RedoOp::DeleteRel { id: pair_id }]);
+    let delta = |id: i64| {
+        let AdjDelta { refusable, spill } = g
+            .estimate_adj_delta(&[RedoOp::DeleteRel { id }], &g.dense_spans())
+            .0;
+        (refusable, spill)
+    };
+    let (loop_refusable, self_loop) = delta(loop_id);
+    let (pair_refusable, pair) = delta(pair_id);
     assert_eq!(
         (loop_refusable, pair_refusable),
         (0, 0),
@@ -175,7 +274,7 @@ fn estimate_redo_delta_includes_stats_entry_growth() {
         properties: relate_core::PropertyMap::share(BTreeMap::new()),
     }];
     let before = g.used_bytes();
-    let estimate = g.estimate_redo_delta(&rel);
+    let estimate = g.estimate_redo_delta(&rel).total;
     g.apply_redo(rel, g.commit_ts() + 1).unwrap();
     assert_eq!(g.used_bytes(), g.accounted_bytes());
     assert_eq!(g.used_bytes() as i64 - before as i64, estimate);
@@ -191,7 +290,7 @@ fn estimate_redo_delta_includes_stats_entry_growth() {
         properties: relate_core::PropertyMap::share(BTreeMap::new()),
     }];
     let before = g.used_bytes();
-    let estimate = g.estimate_redo_delta(&node);
+    let estimate = g.estimate_redo_delta(&node).total;
     g.apply_redo(node, g.commit_ts() + 1).unwrap();
     assert_eq!(g.used_bytes(), g.accounted_bytes());
     assert_eq!(g.used_bytes() as i64 - before as i64, estimate);
@@ -244,7 +343,7 @@ fn estimate_redo_delta_is_exact_for_ddl_mixed_with_writes() {
             properties: relate_core::PropertyMap::share(title("Middlemarch")),
         },
     ];
-    let estimate = g.estimate_redo_delta(&ops);
+    let estimate = g.estimate_redo_delta(&ops).total;
     g.apply_redo(ops, g.commit_ts() + 1).unwrap();
     assert_eq!(g.used_bytes(), g.accounted_bytes());
     assert_eq!(g.used_bytes() as i64 - before as i64, estimate);

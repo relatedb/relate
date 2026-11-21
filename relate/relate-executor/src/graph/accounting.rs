@@ -84,33 +84,70 @@ impl Graph {
             .store(self.structure_bytes(), Ordering::Relaxed);
     }
 
-    /// Live-size delta of `ops`. Nodes are accounted under the charge in
-    /// force after `ops`; when that differs from the current charge (DDL in
-    /// the batch), every retained version — including ones `ops` tombstone —
-    /// is moved from the old charge to the new one. A delete keeps its
-    /// record until GC, so it adds nothing. A copy-on-write set adds the
-    /// new version.
-    pub fn estimate_redo_delta(&self, ops: &[RedoOp]) -> i64 {
-        self.estimate_redo_delta_with_constraint_growth(ops, None)
-            .total
+    /// The committed dense id spans — a group admission walk's seed
+    /// ([`GroupSpans`](crate::memory::GroupSpans)): its first slot
+    /// estimates against these and the walk carries the values each
+    /// admitted slot advanced them to. Every dense span the admission
+    /// estimate prices rides here: the node and relationship slot arrays,
+    /// the adjacency tier's two directions, and the sealed span table's
+    /// two.
+    #[doc(hidden)]
+    pub fn dense_spans(&self) -> crate::memory::GroupSpans {
+        crate::memory::GroupSpans {
+            node: self.nodes.span(),
+            rel: self.rels.span(),
+            adj_out: self.out_side().delta().span(),
+            adj_in: self.in_side().delta().span(),
+            sealed_out: self.out_side().sealed().span(),
+            sealed_in: self.in_side().sealed().span(),
+        }
+    }
+
+    /// Live-size delta of `ops`, its spill reported separately
+    /// ([`RedoDelta::spill`](crate::memory::RedoDelta::spill)). Nodes are
+    /// accounted under the charge in force after `ops`; when that differs
+    /// from the current charge (DDL in the batch), every retained version —
+    /// including ones `ops` tombstone — is moved from the old charge to the
+    /// new one. A delete keeps its record until GC, so it adds nothing. A
+    /// copy-on-write set adds the new version.
+    ///
+    /// The one single-record entry point: it seeds from the committed spans
+    /// and derives the ADR-0439 term itself, so no caller re-spells that
+    /// order — a caller holding a seed (the group admission walk) instead
+    /// passes its own term to [`Graph::estimate_redo_delta_with_constraint_growth`].
+    #[doc(hidden)]
+    pub fn estimate_redo_delta(&self, ops: &[RedoOp]) -> crate::memory::RedoDelta {
+        let growth = self.estimate_constraint_key_entry_growth(ops);
+        self.estimate_redo_delta_with_constraint_growth(ops, growth, self.dense_spans())
+            .0
     }
 
     /// [`Graph::estimate_redo_delta`] with the constraint-key entry-growth
-    /// term optionally supplied by the caller. The group-commit admission
-    /// loop classifies each slot once and passes the delta its walk produced,
-    /// so the slot's ops are not re-classified here (ADR-0439).
+    /// term and the dense-span seed supplied by the caller. The group-commit
+    /// admission loop classifies each slot once and passes the delta its walk
+    /// produced, so the slot's ops are not re-classified here (ADR-0439).
+    /// `spans` is the seed — the walk's advanced dense spans for a group (its
+    /// slots price against what the group already reserved), the committed
+    /// ones for a single-record caller — and the advanced spans come back OUT
+    /// beside the delta, never written through the seed: the caller keeps them
+    /// only for an accepted slot, so a refused estimate leaves no phantom rung
+    /// behind.
     #[doc(hidden)]
     pub fn estimate_redo_delta_with_constraint_growth(
         &self,
         ops: &[RedoOp],
-        constraint_growth: Option<i64>,
-    ) -> crate::memory::RedoDelta {
+        constraint_growth: i64,
+        spans: crate::memory::GroupSpans,
+    ) -> (crate::memory::RedoDelta, crate::memory::GroupSpans) {
         let before = self.index_charge();
         let after = self.charge_after_ops(ops);
-        let crate::memory::RedoDelta {
-            total: mut delta,
-            mut spill,
-        } = crate::memory::estimate_redo_delta(
+        let (
+            crate::memory::RedoDelta {
+                total: mut delta,
+                mut spill,
+            },
+            chain,
+        ) = crate::memory::estimate_redo_delta(
             &self.interner,
             ops,
             |id| self.node(id),
@@ -119,11 +156,10 @@ impl Graph {
             |id| self.rel_chain_shape(id),
             |s| crate::memory::chain_bytes(s, node_version_stride()),
             |s| crate::memory::chain_bytes(s, rel_version_stride()),
-            self.nodes.span(),
-            self.rels.span(),
+            spans,
             &after,
         );
-        let adj = self.estimate_adj_delta(ops);
+        let (adj, adj_spans) = self.estimate_adj_delta(ops, &spans);
         delta += adj.refusable + adj.spill;
         spill += adj.spill;
         delta += self.estimate_intern_delta(ops);
@@ -134,11 +170,11 @@ impl Graph {
         delta += self.estimate_stats_entry_growth(ops);
         // ADR-0439: a constrained write's new entries are committed
         // structure too — refused at admission, never after they land. The
-        // group path supplies the delta its admission walk already computed.
-        delta += match constraint_growth {
-            Some(growth) => growth,
-            None => self.estimate_constraint_key_entry_growth(ops),
-        };
+        // caller supplies the term: derived by
+        // [`Graph::estimate_constraint_key_entry_growth`] for a single-record
+        // caller,
+        // or the delta the group admission walk already computed.
+        delta += constraint_growth;
         if before.as_ref() != &after {
             self.nodes.for_each(|id, vers| {
                 for v in vers.iter() {
@@ -148,10 +184,24 @@ impl Graph {
                 }
             });
         }
-        crate::memory::RedoDelta {
-            total: delta,
-            spill,
-        }
+        (
+            crate::memory::RedoDelta {
+                total: delta,
+                spill,
+            },
+            // The one merge of the two advances: the chain spans from the
+            // memory walk, the adjacency and sealed spans from this one — a
+            // seed advanced by every dense-span family the estimate prices,
+            // each walk owning exactly its fields.
+            crate::memory::GroupSpans {
+                node: chain.node,
+                rel: chain.rel,
+                adj_out: adj_spans.adj_out,
+                adj_in: adj_spans.adj_in,
+                sealed_out: adj_spans.sealed_out,
+                sealed_in: adj_spans.sealed_in,
+            },
+        )
     }
 
     /// The adjacency share of a batch's live-size delta, split into the
@@ -161,9 +211,21 @@ impl Graph {
     /// the checkpoint fold reclaims: a delete's region, chunk, and tombstone
     /// terms, and the side-map entry a founding delete at a wide id takes
     /// (ADR-0529).
-    pub(super) fn estimate_adj_delta(&self, ops: &[RedoOp]) -> AdjDelta {
-        let mut out = SideAdmission::new(self.out_side());
-        let mut inn = SideAdmission::new(self.in_side());
+    ///
+    /// Seeded from `spans` by the same protocol as the chain spans: the
+    /// adjacency tier's dense spans and the sealed span table's take their
+    /// start from the seed — not the committed graph — and come back
+    /// advanced ([`AdjSpanAdvance`], the spans this walk owns and nothing
+    /// else), so a group-mate inside a rung the group already reserved
+    /// prices no adjacency growth; the caller merges the advance with the
+    /// chain-span one at the admission entry point.
+    pub(super) fn estimate_adj_delta(
+        &self,
+        ops: &[RedoOp],
+        spans: &crate::memory::GroupSpans,
+    ) -> (AdjDelta, AdjSpanAdvance) {
+        let mut out = SideAdmission::new(self.out_side(), spans.adj_out);
+        let mut inn = SideAdmission::new(self.in_side(), spans.adj_in);
         let mut fresh_ids = FreshIds::new();
         let mut delta = AdjDelta::default();
         // One traversal carries both halves: the create terms, and the
@@ -218,7 +280,16 @@ impl Graph {
         // refuse a batch (ADR-0529: a delete at the cap commits). The
         // founding side-table slot is the exception — the dense span only
         // grows (ADR-0086) — so it stays refusable.
-        delta + self.estimate_delete_spill(&pending_out, &pending_in, Supersede::Deleted)
+        let (spilled, sealed) = self.estimate_delete_spill(&pending_out, &pending_in, spans);
+        (
+            delta + spilled,
+            AdjSpanAdvance {
+                adj_out: out.span,
+                adj_in: inn.span,
+                sealed_out: sealed.out,
+                sealed_in: sealed.inn,
+            },
+        )
     }
 
     /// The adjacency tier's structural limits (ADR-0599), the ones its
@@ -296,26 +367,39 @@ impl Graph {
     /// (ADR-0529) — while a founding delete's dense side-table span is
     /// permanent (ADR-0086) and stays refusable; its side-map entry,
     /// reclaimed with the region, is spill like the rest.
+    /// The delete half always supersedes as a delete: no batch-reposition
+    /// path exists (a reposition prices per event through
+    /// [`Graph::price_sealed_event`]), so `Supersede::Deleted` is stated
+    /// here once, and the shared leaves keep the parameter for the
+    /// per-event spelling.
     fn estimate_delete_spill(
         &self,
         pending_out: &PendingTombstones,
         pending_in: &PendingTombstones,
-        supersede: Supersede,
-    ) -> AdjDelta {
+        spans: &crate::memory::GroupSpans,
+    ) -> (AdjDelta, SealedSpanAdvance) {
         let sealed_slot = sealed_slot();
         let sealed_overflow = crate::memory::overflow_entry_bytes(sealed_slot);
-        price_side(
+        let (out, sealed_out) = price_side(
             self.out_side().sealed(),
             pending_out,
             sealed_slot,
             sealed_overflow,
-            supersede,
-        ) + price_side(
+            spans.sealed_out,
+        );
+        let (inn, sealed_in) = price_side(
             self.in_side().sealed(),
             pending_in,
             sealed_slot,
             sealed_overflow,
-            supersede,
+            spans.sealed_in,
+        );
+        (
+            out + inn,
+            SealedSpanAdvance {
+                out: sealed_out,
+                inn: sealed_in,
+            },
         )
     }
 
@@ -570,6 +654,31 @@ pub(super) struct AdjDelta {
     pub(super) spill: i64,
 }
 
+/// The adjacency half of a group seed's advance — the four spans
+/// [`Graph::estimate_adj_delta`] owns. A walk returns only the spans it
+/// prices, never a full copy with foreign fields echoed back; the one
+/// merge into the group seed happens at the admission entry point
+/// ([`Graph::estimate_redo_delta_with_constraint_growth`]). Mirrors the
+/// chain half's (`memory::ChainSpanAdvance`) derives: one protocol, one
+/// struct shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct AdjSpanAdvance {
+    pub(super) adj_out: usize,
+    pub(super) adj_in: usize,
+    pub(super) sealed_out: usize,
+    pub(super) sealed_in: usize,
+}
+
+/// The two sealed span-table spans one delete-half estimate advanced —
+/// named, so the same-typed pair cannot be transposed at
+/// [`estimate_delete_spill`](Graph::estimate_delete_spill)'s seam (the
+/// wrong-direction's-seed class this protocol exists to remove).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SealedSpanAdvance {
+    out: usize,
+    inn: usize,
+}
+
 impl std::ops::Add for AdjDelta {
     type Output = Self;
 
@@ -610,8 +719,11 @@ fn place(span: &mut usize, node: NodeId, slot: u64) -> PlacementCharge {
 }
 
 /// One side's create-admission state: the committed pair, the dense span the
-/// batch has grown so far, the wide ids already priced, and the simulated
-/// chunk lists the batch's creates have built. One op touches both sides by
+/// batch has grown so far (seeded from the admission walk's
+/// [`GroupSpans`](crate::memory::GroupSpans), not the committed graph — a
+/// group-mate inside a rung the group reserved prices no growth), the wide
+/// ids already priced, and the simulated chunk lists the batch's creates
+/// have built. One op touches both sides by
 /// the same rule, so the loop calls [`SideAdmission::create`] once per
 /// endpoint.
 struct SideAdmission<'a> {
@@ -624,9 +736,9 @@ struct SideAdmission<'a> {
 }
 
 impl<'a> SideAdmission<'a> {
-    fn new(side: AdjSide<'a>) -> Self {
+    fn new(side: AdjSide<'a>, seed_span: usize) -> Self {
         Self {
-            span: side.delta().span(),
+            span: seed_span,
             side,
             wide: HashSet::new(),
             pending: HashMap::new(),
@@ -747,15 +859,20 @@ impl Graph {
 /// its tombstone on demand and so founds the entry (ADR-0551); a
 /// reposition only supersedes a position a sealed chunk holds
 /// ([`AdjSide::reposition`]'s delta-only arm writes no tombstone), so a
-/// missing chunk prices nothing.
+/// missing chunk prices nothing. `seed_span` is the span-table span the
+/// admission walk carries (a group-mate inside a rung the group reserved
+/// prices no founding growth) — not `sealed.span()`, the committed one —
+/// and the advanced span comes back beside the delta. This is the delete
+/// half's spelling: it supersedes as a delete (`Supersede::Deleted`), the
+/// only mode a batch ever prices here.
 fn price_side(
     sealed: &SealedArena,
     pending: &PendingTombstones,
     sealed_slot: u64,
     sealed_overflow: u64,
-    supersede: Supersede,
-) -> AdjDelta {
-    let mut span = sealed.span();
+    seed_span: usize,
+) -> (AdjDelta, usize) {
+    let mut span = seed_span;
     let (mut entries, mut tombstones) = sealed.entry_counts();
     let mut priced = AdjDelta::default();
     for (node, keys) in pending {
@@ -773,7 +890,7 @@ fn price_side(
                 ids,
                 &mut entries,
                 &mut tombstones,
-                supersede,
+                Supersede::Deleted,
             );
         }
         // The region-level term, once per node: a founding delete grows the
@@ -787,12 +904,12 @@ fn price_side(
             *node,
             sealed_slot,
             sealed_overflow,
-            supersede,
+            Supersede::Deleted,
         );
         priced.refusable += node_refusable;
         priced.spill += node_spill;
     }
-    priced
+    (priced, span)
 }
 
 /// One `(node, key)` entry's sealed-tier spill terms — the per-key body

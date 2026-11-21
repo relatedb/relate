@@ -216,7 +216,7 @@ fn inline_slot_charges_no_version_list_or_xmax() {
 fn step_matches_charge(g: &Graph, ops: Vec<RedoOp>, spill: bool) {
     let ops_dbg = format!("{ops:?}");
     let before = g.used_bytes();
-    let estimate = g.estimate_redo_delta_with_constraint_growth(&ops, None);
+    let estimate = g.estimate_redo_delta(&ops);
     g.apply_redo(ops, g.commit_ts() + 1).unwrap();
     assert_eq!(g.used_bytes(), g.accounted_bytes());
     assert_eq!(
@@ -389,11 +389,20 @@ fn estimate_matches_the_charge_on_sealed_deletes() {
         true,
     );
 
+    // The one spelling of this test's single-record seam: a one-delete
+    // estimate seeded from the committed spans, priced off the very ops the
+    // site then charges — one construction of the delete, never a second
+    // spelling beside the estimate. It returns the estimate's own named
+    // value beside those ops.
+    let delete_delta = |rel: RelId| {
+        let ops = vec![RedoOp::delete_rel(rel)];
+        (g.estimate_adj_delta(&ops, &g.dense_spans()).0, ops)
+    };
+
     // A hop in a folded chunk: the delete grows that chunk's tombstones —
     // one per endpoint — and that growth is all spill.
     let (a, b, ids, _) = crate::graph::test_support::folded_floor_chunk(&g);
-    let sealed = vec![RedoOp::delete_rel(ids[0])];
-    let AdjDelta { refusable, spill } = g.estimate_adj_delta(&sealed);
+    let (AdjDelta { refusable, spill }, sealed) = delete_delta(ids[0]);
     let stride = crate::adjacency::tombstone_stride() as i64;
     assert_eq!(refusable, 0);
     assert_eq!(spill, 2 * stride, "one tombstone slot per endpoint");
@@ -425,16 +434,19 @@ fn estimate_matches_the_charge_on_sealed_deletes() {
     // it) and its chunk and tombstone terms as spill.
     let (edge, other) = crate::graph::test_support::endpoints(&g);
     let founder = crate::graph::test_support::doomed_rel(&g, edge, other, "Y");
-    let AdjDelta {
-        refusable: found_refusable,
-        spill: found_spill,
-    } = g.estimate_adj_delta(&[RedoOp::delete_rel(founder)]);
+    let (
+        AdjDelta {
+            refusable: found_refusable,
+            spill: found_spill,
+        },
+        founder_ops,
+    ) = delete_delta(founder);
     assert!(
         found_refusable > 0,
         "a founding delete's slot growth is refusable"
     );
     assert!(found_spill > 0, "its chunk and tombstone terms spill");
-    step(vec![RedoOp::delete_rel(founder)], true);
+    step(founder_ops, true);
 
     // The same founding delete at a side-map id — past the dense cap, so the
     // store holds the entry in its side map: the entry is reclaimed with the
@@ -443,10 +455,13 @@ fn estimate_matches_the_charge_on_sealed_deletes() {
     g.apply_redo(vec![create(sparse)], g.commit_ts() + 1)
         .unwrap();
     let doomed = crate::graph::test_support::doomed_rel(&g, sparse, 0, "Z");
-    let AdjDelta {
-        refusable: sparse_refusable,
-        spill: sparse_spill,
-    } = g.estimate_adj_delta(&[RedoOp::delete_rel(doomed)]);
+    let (
+        AdjDelta {
+            refusable: sparse_refusable,
+            spill: sparse_spill,
+        },
+        doomed_ops,
+    ) = delete_delta(doomed);
     assert_eq!(
         sparse_refusable, 0,
         "a founding delete at a side-map id refuses nothing"
@@ -455,5 +470,5 @@ fn estimate_matches_the_charge_on_sealed_deletes() {
         sparse_spill > 0,
         "its side-map entry is reclaimed, so spill"
     );
-    step(vec![RedoOp::delete_rel(doomed)], true);
+    step(doomed_ops, true);
 }

@@ -355,3 +355,136 @@ fn group_overlay_hold_from_an_earlier_slot_rejects_a_later_duplicate() {
     assert_eq!(shared.graph.all_node_ids(), [0]);
     assert_eq!(count(&db, "MATCH (n:Person) RETURN count(n)"), 1);
 }
+
+/// A dense growth rung is charged once per group, never once per
+/// group-mate (REL8-1785). The committed span cannot advance mid-group, so
+/// a walk that re-seeds each slot's estimate from it re-charges the same
+/// rung on every mate crossing it — near the logical cap a KB-scale write
+/// is then refused with `Error::Capacity` on a group-mate's multi-MB
+/// reservation (the fraud loadtest's intermittent capacity errors). The
+/// walk instead carries the spans its accepted slots advanced to, so the
+/// mate places `Inside` the reserved rung.
+///
+/// Hand-built slots are the deterministic two-slot group (the overlay test
+/// above), and the limit is positioned by
+/// [`bounded_crossing_store`](super::harness::bounded_crossing_store)'s
+/// probe: it admits the crossing plus half its cost of slack, and a second
+/// charge of the same rung busts it.
+#[test]
+fn group_charges_a_span_rung_once_not_once_per_mate() {
+    let rel = |id: i64| RedoOp::CreateRel {
+        id,
+        start: 0,
+        end: 1,
+        rel_type: "KNOWS".into(),
+        properties: relate_core::PropertyMap::share(BTreeMap::new()),
+    };
+    let (db, shared) = bounded_crossing_store(vec![node_op(0), node_op(1)], rel(60_000));
+    let snapshot = shared.graph.commit_ts();
+    let waiters: Vec<_> = (0..2).map(|_| CommitWaiter::new()).collect();
+    let batch: Vec<_> = [rel(60_000), rel(60_001)]
+        .into_iter()
+        .enumerate()
+        .map(|(i, op)| slot_with_ops(vec![op], ordinal(i) + 2, snapshot, &waiters[i]))
+        .collect();
+    flush_group(&shared, batch).unwrap();
+    waiters[0]
+        .wait()
+        .expect("the crossing slot's reservation fits the limit");
+    waiters[1].wait().expect(
+        "the mate places inside the rung the crossing reserved: it pays its own record, not the rung again",
+    );
+    assert_eq!(count(&db, "MATCH ()-[r:KNOWS]->() RETURN count(r)"), 2);
+
+    // The limit still refuses a genuinely new rung — and a refused slot
+    // must not advance the group's seed either: in one group, the write
+    // crossing the new rung past the headroom is refused, and the mate
+    // placing inside the rung that refused write would have reserved is
+    // refused too, because it re-charges from the committed span instead
+    // of riding a phantom reservation.
+    let snapshot = shared.graph.commit_ts();
+    let waiters: Vec<_> = (0..2).map(|_| CommitWaiter::new()).collect();
+    let batch: Vec<_> = [rel(200_000), rel(190_000)]
+        .into_iter()
+        .enumerate()
+        .map(|(i, op)| slot_with_ops(vec![op], ordinal(i) + 4, snapshot, &waiters[i]))
+        .collect();
+    flush_group(&shared, batch).unwrap();
+    assert!(
+        matches!(waiters[0].wait().unwrap_err(), Error::Capacity { .. }),
+        "a write crossing a new rung past the headroom must stay refused"
+    );
+    assert!(
+        matches!(waiters[1].wait().unwrap_err(), Error::Capacity { .. }),
+        "the mate must not place inside a refused slot's phantom rung"
+    );
+    assert_eq!(count(&db, "MATCH ()-[r:KNOWS]->() RETURN count(r)"), 2);
+}
+
+/// The adjacency tier's dense rungs follow the same one-charge-per-group
+/// rule (REL8-1785): the committed adjacency span cannot advance mid-group,
+/// so a walk that re-seeds each slot's side admission from it re-charges
+/// the same rung on every mate crossing it — the same intermittent
+/// `Error::Capacity` class the chain spans had. The walk's seed carries the
+/// adjacency spans too, so the mate places inside the reserved rung.
+///
+/// The endpoints sit at committed high node ids no rel touches (the node
+/// chain spans are already past them, so only the adjacency term crosses),
+/// and the rel ids stay low so the rel chain spans never move. Same
+/// [`bounded_crossing_store`](super::harness::bounded_crossing_store)
+/// probe as the chain-span test above.
+#[test]
+fn group_charges_an_adjacency_rung_once_not_once_per_mate() {
+    let rel = |id: i64, start: i64| RedoOp::CreateRel {
+        id,
+        start,
+        end: 0,
+        rel_type: "KNOWS".into(),
+        properties: relate_core::PropertyMap::share(BTreeMap::new()),
+    };
+    let base_ops = vec![
+        node_op(0),
+        node_op(60_000),
+        node_op(60_001),
+        node_op(190_000),
+        node_op(200_000),
+    ];
+    let (db, shared) = bounded_crossing_store(base_ops, rel(0, 60_000));
+    let snapshot = shared.graph.commit_ts();
+    let waiters: Vec<_> = (0..2).map(|_| CommitWaiter::new()).collect();
+    let batch: Vec<_> = [rel(0, 60_000), rel(1, 60_001)]
+        .into_iter()
+        .enumerate()
+        .map(|(i, op)| slot_with_ops(vec![op], ordinal(i) + 2, snapshot, &waiters[i]))
+        .collect();
+    flush_group(&shared, batch).unwrap();
+    waiters[0]
+        .wait()
+        .expect("the crossing slot's reservation fits the limit");
+    waiters[1].wait().expect(
+        "the mate places inside the adjacency rung the crossing reserved: it pays its own record, not the rung again",
+    );
+    assert_eq!(count(&db, "MATCH ()-[r:KNOWS]->() RETURN count(r)"), 2);
+
+    // A genuinely new adjacency rung stays refused, and a refused slot
+    // leaves no phantom rung: the mate re-charges from the committed span
+    // instead of riding the refused write's reservation, so it is refused
+    // too.
+    let snapshot = shared.graph.commit_ts();
+    let waiters: Vec<_> = (0..2).map(|_| CommitWaiter::new()).collect();
+    let batch: Vec<_> = [rel(2, 200_000), rel(3, 190_000)]
+        .into_iter()
+        .enumerate()
+        .map(|(i, op)| slot_with_ops(vec![op], ordinal(i) + 4, snapshot, &waiters[i]))
+        .collect();
+    flush_group(&shared, batch).unwrap();
+    assert!(
+        matches!(waiters[0].wait().unwrap_err(), Error::Capacity { .. }),
+        "a write crossing a new adjacency rung past the headroom must stay refused"
+    );
+    assert!(
+        matches!(waiters[1].wait().unwrap_err(), Error::Capacity { .. }),
+        "the mate must not place inside a refused slot's phantom adjacency rung"
+    );
+    assert_eq!(count(&db, "MATCH ()-[r:KNOWS]->() RETURN count(r)"), 2);
+}
