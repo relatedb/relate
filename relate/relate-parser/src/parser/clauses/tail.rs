@@ -1,5 +1,13 @@
 use super::*;
 
+/// Which page stage a paging introducer starts (CIP-168).
+#[derive(Clone, Copy)]
+pub(in crate::parser) enum PageStageStart {
+    OrderBy,
+    Skip,
+    Limit,
+}
+
 impl<'a> Parser<'a> {
     /// `USE <graph-expr>` (CIP-141 feature-interaction scenarios). `USE`
     /// is not a reserved keyword -- recognized by spelling at clause
@@ -106,30 +114,33 @@ impl<'a> Parser<'a> {
     /// SKIP is (`peek_is_skip_or_offset`, CIP-168), including inside SHOW paging.
     pub(in crate::parser) fn parse_page_stages(&mut self) -> ParseResult<Vec<PageStage>> {
         let mut stages = Vec::new();
-        loop {
-            if self.peek_type() == TokenType::ORDER {
-                self.next_token();
-                self.expect(TokenType::BY)?;
-                stages.push(PageStage::OrderBy(self.parse_order_by()?));
-            } else if self.peek_is_skip_or_offset() {
-                self.next_token();
-                stages.push(PageStage::Skip(self.parse_expression()?));
-            } else if self.peek_type() == TokenType::LIMIT {
-                self.next_token();
-                stages.push(PageStage::Limit(self.parse_expression()?));
-            } else {
-                break;
-            }
+        while let Some(start) = self.peek_page_stage_start() {
+            self.next_token();
+            stages.push(match start {
+                PageStageStart::OrderBy => {
+                    self.expect(TokenType::BY)?;
+                    PageStage::OrderBy(self.parse_order_by()?)
+                }
+                PageStageStart::Skip => PageStage::Skip(self.parse_expression()?),
+                PageStageStart::Limit => PageStage::Limit(self.parse_expression()?),
+            });
         }
         Ok(stages)
     }
 
-    /// The next token introduces a page stage (`ORDER BY`, `SKIP`/`OFFSET`,
-    /// `LIMIT`) -- the vocabulary `parse_page_stages` consumes.
-    pub(in crate::parser) fn peek_starts_page_stage(&self) -> bool {
-        self.peek_type() == TokenType::ORDER
-            || self.peek_is_skip_or_offset()
-            || self.peek_type() == TokenType::LIMIT
+    /// The page stage the next token introduces (`ORDER BY`, `SKIP`/`OFFSET`,
+    /// `LIMIT`): the one home of the paging-introducer vocabulary, read by
+    /// `parse_page_stages` and by the annotation placement check.
+    pub(in crate::parser) fn peek_page_stage_start(&self) -> Option<PageStageStart> {
+        if self.peek_type() == TokenType::ORDER {
+            Some(PageStageStart::OrderBy)
+        } else if self.peek_is_skip_or_offset() {
+            Some(PageStageStart::Skip)
+        } else if self.peek_type() == TokenType::LIMIT {
+            Some(PageStageStart::Limit)
+        } else {
+            None
+        }
     }
 
     /// CIP-168: a standalone `<order by and page statement>` at clause

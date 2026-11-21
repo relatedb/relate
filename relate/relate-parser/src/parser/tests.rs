@@ -201,6 +201,11 @@ fn parse_ok(q: &str) -> Statement {
     parse(q).unwrap_or_else(|e| panic!("{q:?} must parse: {e}"))
 }
 
+/// [`parse_ok`] under explicit parse options (a preview gate open).
+fn parse_ok_with(q: &str, options: crate::lexer::ParseOptions) -> Statement {
+    parse_with_options(q, options).unwrap_or_else(|e| panic!("{q:?} must parse: {e}"))
+}
+
 /// The leading MATCH clause of `s`, which must be a MATCH.
 fn match_clause(s: &Statement) -> &MatchClause {
     match &s.clauses[0] {

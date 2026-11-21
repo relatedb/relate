@@ -11,7 +11,7 @@ fn on() -> ParseOptions {
 }
 
 fn accepted(query: &str) -> Statement {
-    parse_with_options(query, on()).unwrap_or_else(|e| panic!("{query:?} must parse: {e}"))
+    parse_ok_with(query, on())
 }
 
 fn rejected(query: &str) -> String {
@@ -112,7 +112,7 @@ fn annotations_belong_before_a_clause_only() {
         "RETURN 1 + @a()",
         "@a()",
     ] {
-        assert!(parse_with_options(query, on()).is_err(), "{query}");
+        rejected(query);
     }
 }
 

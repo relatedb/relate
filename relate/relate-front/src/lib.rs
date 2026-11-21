@@ -331,8 +331,9 @@ fn parse_sized(src: &str) -> Result<relate_parser::Statement> {
 /// The parse-affecting options derived from the store's preview set: the
 /// registered features that change what the parser accepts rather than
 /// something an AST walk can detect -- the token stream
-/// (`obfuscated-literals`) and the parser's grammar (`mixed-label-syntax`,
-/// and `path-construction`'s one-element reading).
+/// (`obfuscated-literals`, and `cypher-annotations`' `@` introducer) and the
+/// parser's grammar (`mixed-label-syntax`, and `path-construction`'s
+/// one-element reading).
 fn parse_options(preview: relate_core::PreviewFeatures) -> relate_parser::lexer::ParseOptions {
     relate_parser::lexer::ParseOptions {
         obfuscated_literals: preview.enabled(relate_core::PreviewFeature::ObfuscatedLiterals),
