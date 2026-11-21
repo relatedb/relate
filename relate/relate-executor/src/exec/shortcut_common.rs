@@ -19,9 +19,9 @@ use crate::overlay::{ExecGraph, RetainedTotal};
 use crate::row::Row;
 
 use super::order::{park_order_keys, OrderKeys};
-use super::project::{project_rows, return_result, RowSource};
+use super::project::{project_rows, return_result, ProjectionInput};
 use super::scope::ProjectionFields;
-use super::{QueryResult, RowFeed};
+use super::QueryResult;
 
 /// The population a pattern node's own shape can answer a whole-count
 /// for — the one classification both node arms share (LABS-851's
@@ -194,7 +194,7 @@ pub(super) struct GroupedPage<'a> {
 
 /// The finish both grouped-aggregate shortcuts share: ordering and paging
 /// over the grouped rows — rows that already carry every output column
-/// ([`RowSource::SinkProjected`]: the projector's one pre-projected
+/// ([`ProjectionInput::SinkProjected`]: the projector's one pre-projected
 /// pass-through owns the policy, so the finish states the fact through
 /// the source instead of fabricating projections it can evaluate) — with
 /// an identity projection of the output columns declaring the column
@@ -232,7 +232,7 @@ pub(super) fn finish_grouped_rows(
     }
     let mut rows = project_rows(
         ctx,
-        RowFeed::Held(grouped),
+        ProjectionInput::SinkProjected(grouped),
         &ProjectionFields {
             items: &identity,
             distinct: false,
@@ -243,7 +243,6 @@ pub(super) fn finish_grouped_rows(
             where_clause: None,
         },
         true,
-        RowSource::SinkProjected,
         scope,
     )?;
     let result = return_result(ctx.graph, items, clauses, &mut rows)?;

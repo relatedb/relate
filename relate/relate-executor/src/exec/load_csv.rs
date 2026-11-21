@@ -44,11 +44,23 @@ fn yields_row(record: &str) -> bool {
     !record.is_empty()
 }
 
+/// One `LOAD CSV` clause's fields, bundled once (the way `SubquerySpec`
+/// bundles `CALL { … }`): the dispatcher's arm, the batch-major driver's
+/// head and every entry below take the clause by this one value, so a new
+/// clause field widens one struct, not three signatures.
+#[derive(Clone, Copy)]
+pub(super) struct LoadCsvSpec<'a> {
+    pub(super) with_headers: bool,
+    pub(super) url: &'a Expr,
+    pub(super) variable: &'a SmallName,
+    pub(super) field_terminator: Option<&'a str>,
+}
+
 /// The `LOAD CSV` producer: the [`FeedSource`] the shared spine drives.
 /// Owns the field terminator (resolved once at construction — an invalid
 /// one refuses the clause before any file is read), the URL expression,
 /// the bound variable, and the read opened on the current input row.
-pub(crate) struct LoadCsvSource<'a> {
+pub(super) struct LoadCsvSource<'a> {
     delim: char,
     with_headers: bool,
     url: &'a Expr,
@@ -59,12 +71,13 @@ pub(crate) struct LoadCsvSource<'a> {
 impl<'a> LoadCsvSource<'a> {
     /// A bad terminator is a clause-level refusal: it fails here, before
     /// the first source is opened.
-    pub(crate) fn new(
-        with_headers: bool,
-        url: &'a Expr,
-        variable: &'a SmallName,
-        field_terminator: Option<&'a str>,
-    ) -> Result<Self> {
+    pub(super) fn new(spec: LoadCsvSpec<'a>) -> Result<Self> {
+        let LoadCsvSpec {
+            with_headers,
+            url,
+            variable,
+            field_terminator,
+        } = spec;
         Ok(Self {
             delim: field_terminator_char(field_terminator)?,
             with_headers,
@@ -128,15 +141,17 @@ impl FeedSource for LoadCsvSource<'_> {
         ))
     }
 
-    fn pull(&mut self, ctx: ExecCtx<'_>) -> Option<Result<Row>> {
-        let current = self.current.as_mut()?;
+    fn pull(&mut self, ctx: ExecCtx<'_>) -> Result<Option<Row>> {
+        let Some(current) = self.current.as_mut() else {
+            return Ok(None);
+        };
         loop {
-            let record = current.cursor.next_record(self.delim)?;
+            let Some(record) = current.cursor.next_record(self.delim) else {
+                return Ok(None);
+            };
             // The cancel sample sits at the loop head — before the skip —
             // so a run of blank physical lines stays cancellable.
-            if let Err(error) = ctx.graph.cancel_tick() {
-                return Some(Err(error));
-            }
+            ctx.graph.cancel_tick()?;
             // Blank-line policy for the data records: a blank record (an
             // empty physical line between record breaks) yields no row.
             if !yields_row(record) {
@@ -154,54 +169,34 @@ impl FeedSource for LoadCsvSource<'_> {
             );
             let mut row = current.template.clone();
             row.insert(self.variable.to_string(), val);
-            return Some(Ok(row));
+            return Ok(Some(row));
         }
     }
 }
 
 /// The clause's materializing form: the feed spine's `materialize` for a
 /// consumer that cannot fold rows as they arrive (`exec_unwind`'s shape).
-pub(crate) fn exec_load_csv(
+pub(super) fn exec_load_csv(
     ctx: ExecCtx<'_>,
     rows: Vec<Row>,
-    with_headers: bool,
-    url: &Expr,
-    variable: &SmallName,
-    field_terminator: Option<&str>,
+    spec: LoadCsvSpec<'_>,
 ) -> Result<Vec<Row>> {
-    load_csv_feed(
-        ctx,
-        rows,
-        with_headers,
-        url,
-        variable,
-        field_terminator,
-        false,
-    )?
-    .materialize()
+    load_csv_feed(ctx, rows, spec, false)?.materialize()
 }
 
 /// The clause's feed over its source: the constructor both the parked
 /// (fused) and the materializing form build, so the two share the source
 /// construction and its terminator refusal.
-pub(crate) fn load_csv_feed<'a>(
+pub(super) fn load_csv_feed<'a>(
     ctx: ExecCtx<'a>,
     rows: Vec<Row>,
-    with_headers: bool,
-    url: &'a Expr,
-    variable: &'a SmallName,
-    field_terminator: Option<&'a str>,
+    spec: LoadCsvSpec<'a>,
     profiled: bool,
 ) -> Result<StreamedFeed<'a>> {
     Ok(StreamedFeed::new(
         ctx,
         rows,
-        Box::new(LoadCsvSource::new(
-            with_headers,
-            url,
-            variable,
-            field_terminator,
-        )?),
+        Box::new(LoadCsvSource::new(spec)?),
         profiled,
     ))
 }
@@ -216,7 +211,7 @@ mod tests {
     use relate_names::SmallName;
 
     use super::super::test_support::{exec_cypher_on, profiled_write_routed, try_exec_cypher_on};
-    use super::{exec_load_csv, LoadCsvSource};
+    use super::{exec_load_csv, load_csv_feed, LoadCsvSource, LoadCsvSpec};
     use crate::csv::{local_file_url, test_root, CsvPolicy};
     use crate::ctx::ExecCtx;
     use crate::exec::feed::FeedSource;
@@ -242,10 +237,12 @@ mod tests {
         let err = exec_load_csv(
             ExecCtx::new(&view, &params),
             vec![Row::new()],
-            false,
-            &url,
-            &SmallName::from_name("row"),
-            Some("||"),
+            LoadCsvSpec {
+                with_headers: false,
+                url: &url,
+                variable: &SmallName::from_name("row"),
+                field_terminator: Some("||"),
+            },
         )
         .unwrap_err();
         assert_eq!(
@@ -542,6 +539,65 @@ mod tests {
         assert_eq!(result.rows, vec![vec![Value::Int(50_000)]]);
     }
 
+    /// The ordered window is a fold too (`unwind_streams_into`'s `may_cut`
+    /// half): `ORDER BY ... LIMIT` over the file parks the generator and the
+    /// bounded top-k heap folds the rows as the records are read, so the
+    /// plain projection's refusal at the same lowered cap never fires —
+    /// pinned for this producer independently of the aggregation test, so
+    /// a park narrowed to aggregations alone would collect the file and
+    /// fail here.
+    #[test]
+    fn an_ordered_window_streams_the_file_whatever_the_record_count() {
+        let dir = test_root();
+        let root = dir.path();
+        fs::write(root.join("many.csv"), "1\n".repeat(50_000)).unwrap();
+        let mut graph = csv_rooted_graph(root);
+        graph.configure_expression_memory_limit(Some(1 << 20));
+        let view = ExecGraph::read(&graph);
+        let result = exec_cypher_on(
+            &view,
+            "LOAD CSV FROM 'many.csv' AS row RETURN row[0] AS v ORDER BY v LIMIT 3",
+        );
+        assert_eq!(
+            result.rows,
+            vec![vec![Value::String("1".into())]; 3],
+            "the window answers from the streamed records"
+        );
+    }
+
+    /// The collecting drain books the same PROFILE facts the streaming walk
+    /// does: a feed whose rows a consumer collects (a parked generator
+    /// whose window resolves to none) reports the rows it generated, not
+    /// zero. Pinned at the spine — the feed's own stats after
+    /// `materialize` — because no 64-bit bound resolves a parked window to
+    /// none through Cypher (`skip + limit` cannot overflow `usize`).
+    #[test]
+    fn a_collected_feed_reports_its_rows_like_a_streamed_one() {
+        let dir = test_root();
+        let root = dir.path();
+        fs::write(root.join("rows.csv"), "a\nb\nc\n").unwrap();
+        let graph = csv_rooted_graph(root);
+        let view = ExecGraph::read(&graph);
+        let params = BTreeMap::new();
+        let url = Expr::String("rows.csv".into());
+        let variable = SmallName::from_name("row");
+        let feed = load_csv_feed(
+            ExecCtx::new(&view, &params),
+            vec![Row::new()],
+            LoadCsvSpec {
+                with_headers: false,
+                url: &url,
+                variable: &variable,
+                field_terminator: None,
+            },
+            true,
+        )
+        .unwrap();
+        let stats = feed.stats();
+        assert_eq!(feed.materialize().unwrap().len(), 3);
+        assert_eq!(stats.rows(), 3, "the collecting drain notes every row");
+    }
+
     /// LABS-1845: a streamed `LOAD CSV` reports its own clause facts after
     /// its consumer drained it — the rows it generated (3, the file's
     /// records), one row's size as its in-flight memory, no expression
@@ -593,11 +649,17 @@ mod tests {
         let params = BTreeMap::new();
         let url = Expr::String("rows.csv".into());
         let variable = SmallName::from_name("row");
-        let mut source = LoadCsvSource::new(false, &url, &variable, None).unwrap();
+        let mut source = LoadCsvSource::new(LoadCsvSpec {
+            with_headers: false,
+            url: &url,
+            variable: &variable,
+            field_terminator: None,
+        })
+        .unwrap();
         let ctx = ExecCtx::new(&view, &params);
         // Nothing open yet: the spine never reads the facts before an
         // open succeeds, and pulling with nothing open is spent.
-        assert!(source.pull(ctx).is_none());
+        assert!(source.pull(ctx).unwrap().is_none());
         assert!(source.open(ctx, Row::new()).unwrap());
         assert_eq!(
             source.charge_facts().unwrap().0,
@@ -605,8 +667,7 @@ mod tests {
             "three records yield a row; the blank one is not billed"
         );
         let mut pulled = 0;
-        while let Some(row) = source.pull(ctx) {
-            row.unwrap();
+        while source.pull(ctx).unwrap().is_some() {
             pulled += 1;
         }
         assert_eq!(pulled, 3, "the count matches what the walk built");

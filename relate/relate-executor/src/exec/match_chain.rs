@@ -73,7 +73,8 @@ use super::match_folds::fold_would_take;
 use super::pattern_policies::{MatchFold, RowFold};
 use super::profile_chain::{CountingFold, StageStats};
 use super::project::{
-    maps_each_row, open_match_fold, project_rows, streams_into_projection, RowSource,
+    maps_each_row, open_match_fold, project_rows, streams_into_projection, ProjectionInput,
+    RowSource,
 };
 use super::pushdown::{live_from, match_limit_cap, trim_rows};
 use super::scope::{carry_scope_bindings, ProjectionFields};
@@ -260,7 +261,7 @@ fn stage_transform<'a>(
             }))
         }
         Clause::With { .. } => {
-            let spec = ProjectionFields::of_projection(&clauses[0]);
+            let spec = ProjectionFields::of_projection(&clauses[0])?;
             Ok(maps_each_row(&spec).then_some(Transform::With { spec, scope }))
         }
         _ => Ok(None),
@@ -441,10 +442,9 @@ impl<'a> Stage<'a> {
             Transform::With { spec, scope } => {
                 let mut rows = project_rows(
                     self.ctx,
-                    RowFeed::Held(batch),
+                    ProjectionInput::Feed(RowFeed::Held(batch)),
                     spec,
                     false,
-                    RowSource::Bindings,
                     *scope,
                 )?;
                 // An importing subquery's scope bindings survive a `WITH`.

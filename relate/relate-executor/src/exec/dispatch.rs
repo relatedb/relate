@@ -25,14 +25,14 @@ use super::clause_arms::{
     exec_create, exec_delete, exec_merge, exec_remove, exec_set, exec_unwind,
 };
 use super::ddl::{exec_create_index, exec_drop_index};
-use super::feed::{park_generator, take_feed, PendingFeed, StreamedFeed};
+use super::feed::{park_generator, PendingFeed, StreamedFeed};
 use super::foreach::exec_foreach;
-use super::load_csv::{exec_load_csv, load_csv_feed};
+use super::load_csv::{exec_load_csv, load_csv_feed, LoadCsvSpec};
 use super::match_arm::exec_match_arm;
 use super::match_clause::LadderFacts;
 use super::procedures::{exec_call_clause, CallClauseOut, CallPipeline, CallSpec};
-use super::profile_tick::{finish_parked_feed, profile_tick, ProfileTick};
-use super::project::{project_rows, return_result, unwind_streams_into, RowSource};
+use super::profile_tick::{profile_tick, ProfileTick};
+use super::project::{project_clause, return_result, unwind_streams_into, RowSource};
 use super::scope::{carry_scope_bindings, star_scope_names, ProjectionFields};
 use super::stats_short_circuit::stats_short_circuit;
 use super::unwind::unwind_feed;
@@ -222,9 +222,6 @@ fn run_clauses_mode(
         // one-clause advance). Recording and advancing happen once, at
         // the shared tail.
         let mut skip = 0;
-        // `RETURN` moves its cells into the query result before this tail
-        // runs. Record that clause while the values are still in the rows.
-        let mut profile_recorded = false;
         // The operator that served this clause's `MATCH` (LABS-1117) — the
         // single source both PROFILE facts project from (`batched` and the
         // rung). `None` exactly when no `MATCH` operator ran: a non-`MATCH`
@@ -291,37 +288,24 @@ fn run_clauses_mode(
                 url,
                 variable,
                 field_terminator,
-            } if unwind_streams_into(clauses.get(i + 1)) => {
-                park_and_defer(
-                    load_csv_feed(
-                        ctx,
-                        std::mem::take(&mut rows),
-                        *with_headers,
-                        url,
-                        variable,
-                        field_terminator.as_deref(),
-                        profile.is_some(),
-                    )?,
-                    profile,
-                    i,
-                    &mut pending,
-                    &mut metrics_tick,
-                );
-            }
-            Clause::LoadCsv {
-                with_headers,
-                url,
-                variable,
-                field_terminator,
             } => {
-                rows = exec_load_csv(
-                    ctx,
-                    rows,
-                    *with_headers,
+                let spec = LoadCsvSpec {
+                    with_headers: *with_headers,
                     url,
                     variable,
-                    field_terminator.as_deref(),
-                )?;
+                    field_terminator: field_terminator.as_deref(),
+                };
+                if unwind_streams_into(clauses.get(i + 1)) {
+                    park_and_defer(
+                        load_csv_feed(ctx, std::mem::take(&mut rows), spec, profile.is_some())?,
+                        profile,
+                        i,
+                        &mut pending,
+                        &mut metrics_tick,
+                    );
+                } else {
+                    rows = exec_load_csv(ctx, rows, spec)?;
+                }
             }
             // The `CALL { … }` product as the feed spine's one driver
             // (ADR-0555): `IN TRANSACTIONS` owns its batching and commits
@@ -394,11 +378,19 @@ fn run_clauses_mode(
                 last_result = arm.last_result.or(last_result);
                 skip = arm.skip;
                 clause_ladder = arm.ladder;
-                pending = arm
-                    .pending_fold
-                    .take()
-                    .map(|a| PendingFeed::Folded(Box::new(a)))
-                    .or(pending);
+                if let Some(fold) = arm.pending_fold.take() {
+                    // A parked generator is always consumed by the very
+                    // next clause (a `WITH`/`RETURN`, the only shapes the
+                    // park admits), so the slot is empty at a `MATCH`:
+                    // a fold meeting an occupied slot is an engine wiring
+                    // error, never a silent precedence.
+                    if pending.is_some() {
+                        return Err(Error::internal(
+                            "a folded MATCH met a parked feed that was never consumed",
+                        ));
+                    }
+                    pending = Some(PendingFeed::Folded(Box::new(fold)));
+                }
                 rows_source = arm.rows_source;
                 if let Some(tick) = metrics_tick.as_mut() {
                     tick.streamed = arm.streamed;
@@ -489,14 +481,11 @@ fn run_clauses_mode(
                 }
             }
             Clause::With { .. } => {
-                let spec = ProjectionFields::of_projection(clause);
-                let mut feeds = ProjectionFeeds {
-                    pending: &mut pending,
-                    rows: &mut rows,
-                };
+                let spec = ProjectionFields::of_projection(clause)?;
                 project_clause(
                     ctx,
-                    &mut feeds,
+                    &mut pending,
+                    &mut rows,
                     &spec,
                     false,
                     rows_from,
@@ -511,23 +500,24 @@ fn run_clauses_mode(
                 }
             }
             Clause::Return { items, .. } => {
-                let spec = ProjectionFields::of_projection(clause);
-                let mut feeds = ProjectionFeeds {
-                    pending: &mut pending,
-                    rows: &mut rows,
-                };
+                let spec = ProjectionFields::of_projection(clause)?;
                 project_clause(
                     ctx,
-                    &mut feeds,
+                    &mut pending,
+                    &mut rows,
                     &spec,
                     true,
                     rows_from,
                     scope,
                     &mut metrics_tick,
                 )?;
-                if let Some(tick) = &metrics_tick {
+                // `RETURN` moves its cells into the query result below, so
+                // the clause is recorded here, while the values are still in
+                // the rows; the tick is then taken, so the shared tail's
+                // "the tick is still live" is the one fact that says the
+                // clause is unrecorded.
+                if let Some(tick) = metrics_tick.take() {
                     tick.record(i, &rows, clause_ladder);
-                    profile_recorded = true;
                 }
                 last_result = Some(return_result(graph, items, clauses, &mut rows)?);
             }
@@ -540,7 +530,7 @@ fn run_clauses_mode(
         // when no sink is attached (the off-path branch), so the elapsed
         // read, the counter reads, and the row-size walk happen only on the
         // PROFILE path.
-        if let Some(tick) = metrics_tick.filter(|_| !profile_recorded) {
+        if let Some(tick) = metrics_tick {
             tick.record(i, &rows, clause_ladder);
         }
         clause_i = i + 1 + skip;
@@ -567,15 +557,7 @@ fn run_generator_batches(
     scope: Option<&Row>,
 ) -> Result<(Vec<Row>, Option<QueryResult>)> {
     let ctx = ExecCtx::new(graph, params).with_principal(qctx.principal);
-    let mut feed = load_csv_feed(
-        ctx,
-        rows,
-        head.with_headers,
-        head.url,
-        head.variable,
-        head.field_terminator,
-        false,
-    )?;
+    let mut feed = load_csv_feed(ctx, rows, head.generator, false)?;
     loop {
         graph.check_cancelled()?;
         let batch: Vec<Row> = feed.by_ref().take(BATCH_ROWS).collect::<Result<_>>()?;
@@ -586,37 +568,14 @@ fn run_generator_batches(
         // `MATCH* CREATE` passes through 1:1); the statement has no
         // projection, so they are dropped with the batch, never held. The
         // admitted tail projects nothing, so its result is always `None` —
-        // asserted where the empty return relies on it.
+        // refused loudly where the empty return relies on it.
         let (_, result) =
             run_clauses_mode(graph, mode, head.tail, params, batch, qctx, None, scope)?;
-        debug_assert!(result.is_none(), "the admitted tail projects nothing");
+        if result.is_some() {
+            return Err(Error::internal("the admitted tail projected a result"));
+        }
     }
     Ok((Vec::new(), None))
-}
-
-/// The three places a `WITH`/`RETURN` can find its input: the generator of a
-/// streamed `UNWIND`, the aggregation a streamed `MATCH` fed, or the held
-/// rows.
-struct ProjectionFeeds<'f, 'a> {
-    pending: &'f mut Option<PendingFeed<'a>>,
-    rows: &'f mut Vec<Row>,
-}
-
-/// Run one `WITH`/`RETURN` projection over its feed and close a fused
-/// `UNWIND` it drained; the projected rows land in the held rows.
-fn project_clause(
-    ctx: ExecCtx<'_>,
-    feeds: &mut ProjectionFeeds<'_, '_>,
-    spec: &ProjectionFields<'_>,
-    inflate: bool,
-    rows_from: RowSource,
-    scope: Option<&Row>,
-    tick: &mut Option<ProfileTick<'_>>,
-) -> Result<()> {
-    let (feed, parked) = take_feed(feeds.pending, feeds.rows);
-    *feeds.rows = project_rows(ctx, feed, spec, inflate, rows_from, scope)?;
-    finish_parked_feed(parked, tick.as_mut());
-    Ok(())
 }
 
 /// The `CALL { … }` product's park admission — the one named predicate
@@ -632,8 +591,7 @@ fn call_product_parks(next: Option<&Clause>, query: &relate_ir::Query) -> bool {
 /// close its tick — the one epilogue every parking arm (LOAD CSV, UNWIND,
 /// CALL) runs: no arm ran, the consumer's own tick covers the work, and
 /// the parked clause reports its facts when that tick closes (the taken
-/// tick makes the tail's `profile_recorded` read unreachable on these
-/// paths, so the flag is not touched here).
+/// tick is what keeps the shared tail from recording it again).
 fn park_and_defer<'a>(
     feed: StreamedFeed<'a>,
     profile: Option<PlanMetricsSite<'a>>,

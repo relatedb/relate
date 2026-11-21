@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use relate_core::Value;
+use relate_core::{Error, Result, Value};
 use relate_ir::{
     CallScope, Clause, Expr, OrderItem, PathPattern, PatternElement, Projection, SingleQuery,
 };
@@ -158,10 +158,13 @@ impl<'a> ProjectionFields<'a> {
     }
 
     /// [`Self::from_clause`] for the arm that has already matched a
-    /// `WITH`/`RETURN`: the one place that states the invariant, so an arm
-    /// never re-asserts it by hand.
-    pub(crate) fn of_projection(clause: &'a Clause) -> Self {
-        Self::from_clause(clause).expect("the caller matched a WITH/RETURN clause")
+    /// `WITH`/`RETURN`: the one place that states the invariant, as a
+    /// typed engine error — never a panic beside the handled `None` of
+    /// the same failure.
+    pub(crate) fn of_projection(clause: &'a Clause) -> Result<Self> {
+        Self::from_clause(clause).ok_or_else(|| {
+            Error::internal("a projection arm was dispatched on a non-projection clause")
+        })
     }
 }
 

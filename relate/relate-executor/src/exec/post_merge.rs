@@ -278,7 +278,7 @@ pub(crate) fn land_feed(
 /// for the shapes that merge unordered rows, the DISTINCT first-seen pass
 /// with its row-buffer charge re-measured at each shrink, the page
 /// itself), then the result extraction. The eager stop already paged on
-/// its own resolved bounds (`prepare_feed`), so the tail pages only
+/// its own resolved bounds (`prepare_input`), so the tail pages only
 /// on the non-eager path.
 pub(crate) fn finish_projection(
     graph: &ExecGraph<'_>,

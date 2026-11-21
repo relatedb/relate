@@ -402,6 +402,20 @@ mod tests {
         assert_eq!(builtin_procedure_deprecation("no.such.procedure"), None);
     }
 
+    /// ADR-0463 round 6: the list spelling is exactly `LIST` or `LIST<…>`;
+    /// a bare prefix match would silently accept `LISTS`/`LISTING` as any
+    /// list, re-opening the fail-closed vocabulary.
+    #[test]
+    fn list_type_accepts_only_list_or_list_generic() {
+        let list = Value::List(Vec::new().into());
+        assert!(value_matches_proc_type(&list, "LIST"));
+        assert!(value_matches_proc_type(&list, "LIST<FLOAT>"));
+        assert!(value_matches_proc_type(&list, "list<string>"));
+        assert!(!value_matches_proc_type(&list, "LISTS"));
+        assert!(!value_matches_proc_type(&list, "LISTING"));
+        assert!(!value_matches_proc_type(&Value::Int(1), "LISTS"));
+    }
+
     #[test]
     fn every_listed_procedure_has_a_signature() {
         // The catalog placeholder path is gone: every `SHOW PROCEDURES`

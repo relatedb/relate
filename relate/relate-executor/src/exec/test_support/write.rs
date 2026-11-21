@@ -9,6 +9,7 @@ use relate_front::parse_and_lower;
 use relate_planner::{plan, plan_with_tokens, NoPatternStats};
 
 use crate::graph::Graph;
+use crate::metrics::PlanMetricsSink;
 use crate::overlay::{ExecGraph, WriteScratch};
 use crate::redo::RedoOp;
 
@@ -35,7 +36,7 @@ pub(crate) fn exec_write(
     scratch: &RefCell<WriteScratch>,
     cypher: &str,
 ) -> Result<QueryResult> {
-    run_write(g, scratch, cypher, execute)
+    run_write(g, scratch, cypher, execute, None)
 }
 
 /// Run `cypher` the way the facade's ADR-0210 auto-commit path runs a
@@ -66,7 +67,7 @@ pub(crate) fn exec_write_unvalidated(
     scratch: &RefCell<WriteScratch>,
     cypher: &str,
 ) -> Result<QueryResult> {
-    run_write(g, scratch, cypher, execute_unvalidated)
+    run_write(g, scratch, cypher, execute_unvalidated, None)
 }
 
 /// One autocommit statement: `cypher` on a fresh scratch through `execute`,
@@ -97,26 +98,26 @@ pub(crate) fn profiled_write_routed(
 ) -> Vec<crate::metrics::ClauseMetricsRecord> {
     let recorder = super::ClauseRecords(RefCell::new(Vec::new()));
     let scratch = write_scratch(g);
-    let p = plan(parse_and_lower(cypher).unwrap(), &mut |_| false).unwrap();
-    let binding = BTreeMap::new();
-    let mut request = ExecRequest::new(&p, &binding, cypher);
-    request.plan_metrics = Some(&recorder);
-    execute(&ExecGraph::write(g, &scratch), &request).unwrap();
+    run_write(g, &scratch, cypher, execute, Some(&recorder)).unwrap();
     drop(scratch);
     recorder.0.take()
 }
 
+/// The module's one plan-and-execute scaffold for a write statement:
+/// `plan_metrics` attaches the PROFILE sink the way the read path's
+/// `try_exec_lowered_with_metrics` does, `None` for every plain run.
 fn run_write(
     g: &Graph,
     scratch: &RefCell<WriteScratch>,
     cypher: &str,
     run: fn(&ExecGraph<'_>, &ExecRequest<'_>) -> Result<QueryResult>,
+    plan_metrics: Option<&dyn PlanMetricsSink>,
 ) -> Result<QueryResult> {
     let p = plan(parse_and_lower(cypher)?, &mut |_| false)?;
-    run(
-        &ExecGraph::write(g, scratch),
-        &ExecRequest::new(&p, &BTreeMap::new(), cypher),
-    )
+    let binding = BTreeMap::new();
+    let mut request = ExecRequest::new(&p, &binding, cypher);
+    request.plan_metrics = plan_metrics;
+    run(&ExecGraph::write(g, scratch), &request)
 }
 
 /// Apply `scratch`'s redo to the graph as the next commit. A scratch that

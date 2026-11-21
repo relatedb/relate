@@ -341,25 +341,31 @@ mod tests {
     fn render_document_round_trips_and_converts() {
         let json = "{\"schema\":\"https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json\",\"id\":\"t\",\"version\":\"1\"}";
         // Stored JSON, requested JSON: unchanged bytes.
-        assert_eq!(render_document(json, DocumentFormat::Json).unwrap(), json);
+        assert_eq!(
+            render_document(json, DocumentFormat::Json).expect("stored JSON renders as JSON"),
+            json
+        );
         // Stored JSON, requested YAML: canonical block-style conversion.
-        let yaml = render_document(json, DocumentFormat::Yaml).unwrap();
+        let yaml =
+            render_document(json, DocumentFormat::Yaml).expect("stored JSON converts to YAML");
         assert!(yaml.contains("schema:"), "{yaml}");
         assert!(yaml.contains("id: t"), "{yaml}");
         // And the YAML converts back to the canonical JSON.
-        let back = render_document(&yaml, DocumentFormat::Json).unwrap();
+        let back =
+            render_document(&yaml, DocumentFormat::Json).expect("the YAML converts back to JSON");
         assert_eq!(back, json);
         // Stored YAML, requested YAML: unchanged bytes (comments survive).
         let commented = "# a comment\nschema: https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json\nid: t\nversion: \"1\"\n";
         assert_eq!(
-            render_document(commented, DocumentFormat::Yaml).unwrap(),
+            render_document(commented, DocumentFormat::Yaml).expect("stored YAML renders as YAML"),
             commented
         );
         // ADR-0364 §4: a pre-bump document still converts across formats —
         // the conversion is syntax-only and runs neither the gate nor the
         // structural validator.
         let pre_bump = "{\"schema\":\"https://neo4j.com/ontology-graph-spec/1.0.0/schema.json\",\"id\":\"old\",\"version\":1}";
-        let converted = render_document(pre_bump, DocumentFormat::Yaml).unwrap();
+        let converted = render_document(pre_bump, DocumentFormat::Yaml)
+            .expect("a pre-bump document converts across formats");
         assert!(
             converted.contains("https://neo4j.com/ontology-graph-spec/1.0.0/schema.json"),
             "{converted}"
@@ -474,7 +480,7 @@ mod tests {
             },
             Vec::new,
         )
-        .unwrap()
+        .expect("the explicit-default call runs")
         {
             super::super::CallClauseOut::Ran { rows, .. } => rows,
             super::super::CallClauseOut::Parked(_) => {
@@ -549,7 +555,7 @@ mod tests {
                 &CallArgs::Explicit(Vec::new()),
                 &SmallName::from_name("db.ontology.get")
             )
-            .unwrap(),
+            .expect("an absent format argument defaults"),
             DocumentFormat::Yaml
         );
         assert_eq!(
@@ -559,7 +565,7 @@ mod tests {
                 &CallArgs::Explicit(vec![relate_ir::Expr::Null]),
                 &SmallName::from_name("db.ontology.get"),
             )
-            .unwrap(),
+            .expect("a null format argument defaults"),
             DocumentFormat::Yaml
         );
     }

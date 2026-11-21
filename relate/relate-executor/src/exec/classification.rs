@@ -271,7 +271,7 @@ impl<'a> ProjectionClass<'a> {
     /// dispatcher's `UNWIND` arm parks on the static half only
     /// ([`unwind_streams_into`][super::project::unwind_streams_into]), so a
     /// parked feed that resolves to no window is collected, not folded.
-    /// [`prepare_feed`][super::project::prepare_feed] is its one
+    /// [`prepare_input`][super::project::prepare_input] is its one
     /// reader.
     pub(crate) fn folds_feed(&self, bounds: PageBounds) -> bool {
         self.shape.streams() || self.window_keep(bounds).is_some()

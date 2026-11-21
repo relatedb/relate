@@ -1,26 +1,6 @@
 //! The `CALL` procedure contract's behavior tests (the executor's
-//! `procedures` module family): the argument type vocabulary's fail-closed
-//! edge, the diverted scan contract's paren-less rejections, the YIELD
+//! `procedures` module family): the diverted scan contract's paren-less rejections, the YIELD
 //! WHERE typed gate, and the row-provenance shapes of the registry path.
-
-mod type_vocabulary_tests {
-    use crate::procedure_registry::value_matches_proc_type;
-    use relate_core::Value;
-
-    /// ADR-0463 round 6: the list spelling is exactly `LIST` or `LIST<…>`;
-    /// a bare prefix match would silently accept `LISTS`/`LISTING` as any
-    /// list, re-opening the fail-closed vocabulary.
-    #[test]
-    fn list_type_accepts_only_list_or_list_generic() {
-        let list = Value::List(Vec::new().into());
-        assert!(value_matches_proc_type(&list, "LIST"));
-        assert!(value_matches_proc_type(&list, "LIST<FLOAT>"));
-        assert!(value_matches_proc_type(&list, "list<string>"));
-        assert!(!value_matches_proc_type(&list, "LISTS"));
-        assert!(!value_matches_proc_type(&list, "LISTING"));
-        assert!(!value_matches_proc_type(&Value::Int(1), "LISTS"));
-    }
-}
 
 mod row_provenance_tests {
     use std::collections::BTreeMap;

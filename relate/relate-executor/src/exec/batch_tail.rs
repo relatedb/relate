@@ -21,13 +21,13 @@
 
 use std::collections::HashSet;
 
-use relate_ir::{Clause, Expr, PathPattern};
-use relate_names::SmallName;
+use relate_ir::{Clause, PathPattern};
 
 use super::create_admission::{
     compact_pattern, create_endpoint_is_fresh, create_patterns_eligible,
 };
 use super::label_expr_ok;
+use super::load_csv::LoadCsvSpec;
 use super::shortcut_common::plain_match_patterns;
 
 /// Driving rows per batch (ADR-0555's batch bound). The tail runs once per
@@ -123,10 +123,7 @@ impl Footprint {
 /// tail it drives. Carrying the head's fields means the driver never
 /// re-matches `clauses[0]` — the admitted-head fact lives here, once.
 pub(super) struct BatchTail<'a> {
-    pub(super) with_headers: bool,
-    pub(super) url: &'a Expr,
-    pub(super) variable: &'a SmallName,
-    pub(super) field_terminator: Option<&'a str>,
+    pub(super) generator: LoadCsvSpec<'a>,
     pub(super) tail: &'a [Clause],
 }
 
@@ -212,10 +209,12 @@ pub(super) fn generator_seeded_tail(clauses: &[Clause]) -> Option<BatchTail<'_>>
         }
     }
     Some(BatchTail {
-        with_headers: *with_headers,
-        url,
-        variable,
-        field_terminator: field_terminator.as_deref(),
+        generator: LoadCsvSpec {
+            with_headers: *with_headers,
+            url,
+            variable,
+            field_terminator: field_terminator.as_deref(),
+        },
         tail,
     })
 }

@@ -14,9 +14,11 @@ use crate::row::Row;
 
 use super::aggregate::{aggregate_ex, Aggregation, WhereMode};
 use super::classification::{may_cut, ProjectionClass, ProjectionShape};
+use super::feed::{take_input, PendingFeed};
 use super::order::{page, PageBounds};
 use super::pattern_policies::MatchFold;
 use super::post_merge::{adopt_rows, finish_projection, land_feed, Landed};
+use super::profile_tick::{finish_parked_feed, ProfileTick};
 use super::scope::{
     is_internal_column, return_columns, star_scope_names, visible_keys, ProjectionFields,
 };
@@ -104,18 +106,20 @@ pub(crate) fn streams_into_projection(next: Option<&Clause>) -> bool {
     next_fold_shape(next).is_some_and(|(_, shape)| shape.streams())
 }
 
-/// Whether the clause after an `UNWIND` keeps its generator: a follower that
-/// folds rows as rows arrive — the aggregation, or a clause that *may* take
-/// the ordered window. Every other follower still takes the rows as a held
-/// vector. `UNWIND` is the one producer whose output is always generatable,
-/// so it is the one this answers; a `MATCH` keeps
+/// Whether the clause after a generator clause keeps its generator: a
+/// follower that folds rows as rows arrive — the aggregation, or a clause
+/// that *may* take the ordered window. Every other follower still takes the
+/// rows as a held vector. This is the one park admission of every
+/// always-generatable producer — `UNWIND` (its list elements), `LOAD CSV`
+/// (its records) and `CALL` (the composed procedure rows) each read it,
+/// the name keeping its first caller; a `MATCH` keeps
 /// [`streams_into_projection`], whose answer the match chain also reads for
 /// its stage runs.
 ///
 /// Parking is deliberately the *static* half of the fold decision, answered
 /// from the clause's fields and shape alone: no page bounds are resolved
 /// here and no per-clause plan is built. The projection resolves the bounds
-/// once, from its own classification, and its `prepare_feed` decides
+/// once, from its own classification, and its `prepare_input` decides
 /// fold against collect — so a parked feed that resolves to no window (a
 /// zero page, an overflowing `skip + limit`) collects there, a
 /// nondeterministic bound is one draw rather than two, and the shapes that
@@ -218,10 +222,14 @@ impl Refresh<'_> {
     }
 }
 
-/// Where a `RETURN`/`WITH` projection's incoming rows come from. The sink's
-/// caller is the only authority for the projected case: a row carries no
-/// marker a user alias could forge, and an ordinary batch whose bindings
-/// happen to bind every output name is still evaluated, not passed through.
+/// Where a `RETURN`/`WITH` projection's incoming rows come from, as the
+/// dispatcher's loop carries it between clauses. The sink's caller is the
+/// only authority for the projected case: a row carries no marker a user
+/// alias could forge, and an ordinary batch whose bindings happen to bind
+/// every output name is still evaluated, not passed through. The
+/// projection itself reads the decided [`ProjectionInput`], never this
+/// flag.
+#[derive(Clone, Copy)]
 pub(crate) enum RowSource {
     /// Bindings the projection must evaluate its items against.
     Bindings,
@@ -231,12 +239,56 @@ pub(crate) enum RowSource {
     SinkProjected,
 }
 
-pub(crate) fn project_rows(
-    ctx: ExecCtx<'_>,
-    feed: RowFeed<'_>,
+/// The one input type of the projection: the rows it evaluates its items
+/// against ([`RowFeed`]: held, generated or already folded), or the rows a
+/// producer already projected — which owns them, so the sink shape can
+/// never hold a generated or folded feed.
+pub(crate) enum ProjectionInput<'a> {
+    /// Bindings the projection evaluates its items against.
+    Feed(RowFeed<'a>),
+    /// The match sink's (or a grouped shortcut's) rows, already carrying
+    /// this clause's columns plus the parked `__ord*` sort keys: only the
+    /// sort, page, DISTINCT and column-extraction stages are left.
+    SinkProjected(Vec<Row>),
+}
+
+impl ProjectionInput<'_> {
+    /// The rows already in hand, for the decisions that read the row shape
+    /// before the walk starts.
+    fn probe(&self) -> &[Row] {
+        match self {
+            Self::Feed(feed) => feed.probe(),
+            Self::SinkProjected(rows) => rows,
+        }
+    }
+}
+
+/// Run one `WITH`/`RETURN` projection over its input slot and close a fused
+/// generator it drained: the dispatcher's one delegation for both clauses,
+/// beside the projection that owns the input model. The projected rows land
+/// in the held `rows`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn project_clause<'a>(
+    ctx: ExecCtx<'a>,
+    pending: &mut Option<PendingFeed<'a>>,
+    rows: &mut Vec<Row>,
     fields: &ProjectionFields<'_>,
     inflate: bool,
-    source: RowSource,
+    rows_from: RowSource,
+    scope: Option<&Row>,
+    tick: &mut Option<ProfileTick<'_>>,
+) -> Result<()> {
+    let (input, parked) = take_input(pending, rows, rows_from)?;
+    *rows = project_rows(ctx, input, fields, inflate, scope)?;
+    finish_parked_feed(parked, tick.as_mut());
+    Ok(())
+}
+
+pub(crate) fn project_rows(
+    ctx: ExecCtx<'_>,
+    input: ProjectionInput<'_>,
+    fields: &ProjectionFields<'_>,
+    inflate: bool,
     scope: Option<&Row>,
 ) -> Result<Vec<Row>> {
     let ExecCtx { graph, params, .. } = ctx;
@@ -258,7 +310,7 @@ pub(crate) fn project_rows(
     if bounds.answers_nothing() {
         return Ok(Vec::new());
     }
-    let feed = prepare_feed(feed, &class, bounds)?;
+    let input = prepare_input(input, &class, bounds)?;
     // The windowed shape no longer reserves the sort's merged buffer — the
     // window's own container is bounded — but the feed it drains is live for
     // this whole call, and the producer releases its own reservation as it
@@ -268,7 +320,7 @@ pub(crate) fn project_rows(
     // rather than only the `skip + limit` window it answers with.
     let _held_feed = if class.window_keep(bounds).is_some() {
         Some(relate_core::tokens::WorkspaceCharge::retain_with(|| {
-            crate::workspace::row_buffer_bytes(feed.probe())
+            crate::workspace::row_buffer_bytes(input.probe())
         })?)
     } else {
         None
@@ -281,106 +333,107 @@ pub(crate) fn project_rows(
     } else {
         Refresh::Identity
     };
-    let merged = merge_rows(
-        graph,
-        params,
-        &class,
-        feed,
-        source,
-        scope,
-        &mut refresh,
-        bounds,
-    )?;
+    let merged = merge_rows(graph, params, &class, input, scope, &mut refresh, bounds)?;
     finish_projection(graph, params, &class, merged, bounds)
 }
 
-/// The merge dispatch: which path turns the prepared feed into the
-/// projection's landed rows. One dispatch over both facts — the feed's
-/// source and the clause's shape — so a pre-projected feed has to say what
+/// The merge dispatch: which path turns the prepared input into the
+/// projection's landed rows. One dispatch over both facts — the input's
+/// kind and the clause's shape — so a pre-projected input has to say what
 /// it means for every shape, and a shape added later cannot inherit the
 /// pass-through by accident.
-#[allow(clippy::too_many_arguments)]
 fn merge_rows(
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
     class: &ProjectionClass<'_>,
-    feed: RowFeed<'_>,
-    source: RowSource,
+    input: ProjectionInput<'_>,
     scope: Option<&Row>,
     refresh: &mut Refresh<'_>,
     bounds: PageBounds,
 ) -> Result<Landed> {
-    match (source, class.shape) {
+    match (input, class.shape) {
         // The sink already projected these rows, so the pass-through's only
         // mutation is the inflate refresh, in place, and the landing owns
         // the container (ADR-0463's retaining `Vec`, or the ordered
         // window's bounded heap).
-        (RowSource::SinkProjected, ProjectionShape::Plain) => {
-            let RowFeed::Held(mut rows) = feed else {
-                return Err(Error::internal(
-                    "a sink-projected feed arrived as a generated feed",
-                ));
-            };
+        (ProjectionInput::SinkProjected(mut rows), ProjectionShape::Plain) => {
             refresh.rows(graph, &mut rows);
             adopt_rows(graph, params, class, bounds, rows)
         }
         // `sinkable_projection` declines every aggregating and `*` shape, so
         // a sink-projected feed never arrives with one — and none of them
         // has a pre-projected policy to fall back on.
-        (RowSource::SinkProjected, _) => Err(Error::internal(
+        (ProjectionInput::SinkProjected(_), _) => Err(Error::internal(
             "a sink-projected feed reached a shape the sink never projects",
         )),
-        (RowSource::Bindings, ProjectionShape::Star) => {
+        (ProjectionInput::Feed(feed), ProjectionShape::Star) => {
             star_rows(graph, params, feed, class, refresh, bounds)
         }
         // The aggregating path lands no container: its charge lives in
         // the aggregation's own emission loop, and its rows are an
         // unordered table the tail still sorts.
-        (RowSource::Bindings, ProjectionShape::Aggregate { .. }) => Ok(Landed {
+        (ProjectionInput::Feed(feed), ProjectionShape::Aggregate { .. }) => Ok(Landed {
             rows: aggregate_rows(graph, params, feed, class, scope, refresh)?,
             windowed: false,
         }),
-        (RowSource::Bindings, ProjectionShape::Plain) => {
+        (ProjectionInput::Feed(feed), ProjectionShape::Plain) => {
             plain_rows(graph, params, feed, class, refresh, bounds)
         }
     }
 }
 
-/// The feed as the merge paths consume it — the pipeline's materialization
-/// stage: a collected row vector, or — when the projection folds a
-/// generated feed ([`ProjectionClass::folds_feed`]: the aggregation, or the
-/// ordered window over its once-resolved bounds) — the rows still flowing.
-/// A parked feed that resolves to no window is collected here under the one
-/// retaining charge, and the eager pre-projection page applies at this
-/// stage, so a `LIMIT 1` must not evaluate a later row whose projection
-/// raises an error (CIP-27).
-fn prepare_feed<'a>(
-    feed: RowFeed<'a>,
+/// The input as the merge paths consume it — the pipeline's
+/// materialization stage: a collected row vector, or — when the projection
+/// folds a generated feed ([`ProjectionClass::folds_feed`]: the
+/// aggregation, or the ordered window over its once-resolved bounds) — the
+/// rows still flowing. A parked feed that resolves to no window is
+/// collected here under the one retaining charge, and the eager
+/// pre-projection page applies at this stage, so a `LIMIT 1` must not
+/// evaluate a later row whose projection raises an error (CIP-27).
+fn prepare_input<'a>(
+    input: ProjectionInput<'a>,
     class: &ProjectionClass<'_>,
     bounds: PageBounds,
-) -> Result<RowFeed<'a>> {
-    let rows = match feed {
-        RowFeed::Held(rows) => rows,
+) -> Result<ProjectionInput<'a>> {
+    // The collected rows and how they are handed back: a pre-projected
+    // input stays pre-projected, every collected feed becomes held rows.
+    let (rows, wrap): (Vec<Row>, Rewrap<'a>) = match input {
+        ProjectionInput::SinkProjected(rows) => (rows, ProjectionInput::SinkProjected),
+        ProjectionInput::Feed(RowFeed::Held(rows)) => (rows, held_input),
         // A generated feed stays generated for the shapes that fold it as
         // rows arrive — the aggregation and the ordered window
         // ([`ProjectionClass::folds_feed`]): the window's `land` is a
         // per-row fold, every row is evaluated to compare it, so the
         // producer is never materialized on those shapes. The collecting
         // shapes still land below.
-        generated @ RowFeed::Generated(_) if class.folds_feed(bounds) => return Ok(generated),
-        folded @ RowFeed::Folded(_) => return Ok(folded),
+        ProjectionInput::Feed(generated @ RowFeed::Generated(_)) if class.folds_feed(bounds) => {
+            return Ok(ProjectionInput::Feed(generated));
+        }
+        ProjectionInput::Feed(folded @ RowFeed::Folded(_)) => {
+            return Ok(ProjectionInput::Feed(folded));
+        }
         // The generator's own materializing form — the one place a feed
         // that cannot fold becomes rows, so its charge cannot drift from
-        // the one `exec_unwind` pays.
-        RowFeed::Generated(generated) => generated.materialize()?,
+        // the one the clause arm pays.
+        ProjectionInput::Feed(RowFeed::Generated(generated)) => {
+            (generated.materialize()?, held_input)
+        }
     };
-    // The eager shape pages here, on the clause's one resolved bounds; every
-    // other shape leaves the page to the finish tail.
-    Ok(RowFeed::Held(if class.eager_paged {
+    // The eager shape pages here, on the clause's one resolved bounds;
+    // every other shape leaves the page to the finish tail.
+    Ok(wrap(if class.eager_paged {
         page(rows, bounds)
     } else {
         rows
     }))
+}
+
+/// How collected rows are handed back as the projection's input.
+type Rewrap<'a> = fn(Vec<Row>) -> ProjectionInput<'a>;
+
+/// Collected rows as the projection's feed input.
+fn held_input(rows: Vec<Row>) -> ProjectionInput<'static> {
+    ProjectionInput::Feed(RowFeed::Held(rows))
 }
 
 /// The `RETURN *` mode: the visible incoming bindings plus the explicit

@@ -2,6 +2,7 @@
 //! `LOAD CSV`) the clause dispatcher (`dispatch.rs`) reports through it.
 
 use std::cell::Cell;
+use std::rc::Rc;
 // `web_time` on wasm32: `std::time::Instant::now()` traps on
 // `wasm32-unknown-unknown`, and PROFILE is a user-reachable path in the
 // browser build — the clock must read, not panic (the facade uses the
@@ -13,7 +14,6 @@ use crate::metrics::PlanMetricsSite;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::feed::ParkedFacts;
 use super::match_clause::LadderFacts;
 use super::profile_chain::clause_record;
 use super::{DeltaSnapshot, StageDelta};
@@ -216,6 +216,24 @@ impl StreamedStats {
         self.time_ns
             .set(self.time_ns.get() + started.elapsed().as_nanos());
         out
+    }
+}
+
+/// A streamed generator's PROFILE facts: the statistics its generator
+/// filled — the handle the feed itself owns, cloned off it when the feed
+/// is handed to its consumer — and the PROFILE position its facts are
+/// reported at. Read by [`finish_parked_feed`] alone.
+pub(super) struct ParkedFacts<'a> {
+    stats: Rc<StreamedStats>,
+    record: Option<(PlanMetricsSite<'a>, usize)>,
+}
+
+impl<'a> ParkedFacts<'a> {
+    pub(super) fn new(
+        stats: Rc<StreamedStats>,
+        record: Option<(PlanMetricsSite<'a>, usize)>,
+    ) -> Self {
+        Self { stats, record }
     }
 }
 

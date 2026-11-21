@@ -300,24 +300,24 @@ impl super::feed::FeedSource for UnwindSource<'_> {
         Ok((elements.remaining()?, template.len().saturating_add(1)))
     }
 
-    fn pull(&mut self, ctx: ExecCtx<'_>) -> Option<Result<Row>> {
-        let (template, elements) = self.current.as_mut()?;
+    fn pull(&mut self, ctx: ExecCtx<'_>) -> Result<Option<Row>> {
+        let Some((template, elements)) = self.current.as_mut() else {
+            return Ok(None);
+        };
         match elements.next() {
             Some(Ok(value)) => {
-                if let Err(error) = ctx.graph.cancel_tick() {
-                    return Some(Err(error));
-                }
+                ctx.graph.cancel_tick()?;
                 let mut row = template.clone();
                 row.insert(self.alias.to_string(), value);
-                Some(Ok(row))
+                Ok(Some(row))
             }
             Some(Err(error)) => {
                 self.current = None;
-                Some(Err(error))
+                Err(error)
             }
             None => {
                 self.current = None;
-                None
+                Ok(None)
             }
         }
     }

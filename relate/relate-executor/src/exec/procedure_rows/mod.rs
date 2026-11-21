@@ -169,8 +169,6 @@ fn distinct_string_rows(
         .collect()
 }
 
-/// Row for `db.ping` (Neo4j Browser's connectivity probe): reaching this
-/// code means the database answered, so the row is a constant `true`.
 /// Rows for `dbms.listCapabilities` (ADR-0558): what this engine can do.
 ///
 /// The name vocabulary is vendor-owned -- Neo4j's rows describe its Graph
@@ -209,6 +207,8 @@ fn dbms_list_capabilities_rows(graph: &ExecGraph<'_>) -> Vec<BTreeMap<String, Va
     ]
 }
 
+/// Row for `db.ping` (Neo4j Browser's connectivity probe): reaching this
+/// code means the database answered, so the row is a constant `true`.
 fn ping_rows() -> Vec<BTreeMap<String, Value>> {
     vec![BTreeMap::from([("success".into(), Value::Bool(true))])]
 }

@@ -75,8 +75,7 @@ exec/post_merge.rs::retain_distinct # projection/filter stage materializes its r
 exec/search.rs::search_match_clause # clause arm materializes its output rows; to be replaced by streaming
 exec/search/deferred.rs::deferred_search_rows # clause arm materializes its output rows; to be replaced by streaming
 exec/search/direct.rs::direct_search_rows # clause arm materializes its output rows; to be replaced by streaming
-exec/feed.rs::held # the materializing form over a source alone; the ADR-0463 charge guards it (held_rows)
-exec/feed.rs::held_rows # the materializing drain both feed entries share; the ADR-0463 charge guards it
+exec/feed.rs::held_rows # the materializing drain both the feed's own form and the CALL composition share; the ADR-0463 charge guards it
 exec/feed.rs::materialize # the feed spine's materializing form: the consumer that cannot fold holds these rows, and ADR-0463 charges them
 show_catalog.rs::function_catalog_rows # bounded catalog/admin/procedure result, not graph-sized
 show_catalog.rs::procedure_catalog_rows # bounded catalog/admin/procedure result, not graph-sized

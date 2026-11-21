@@ -204,11 +204,9 @@ impl FeedSource for SubquerySource<'_> {
         Ok((staged.len(), staged.first().map_or(0, Row::len)))
     }
 
-    fn pull(&mut self, ctx: ExecCtx<'_>) -> Option<Result<Row>> {
-        if let Err(error) = ctx.graph.cancel_tick() {
-            return Some(Err(error));
-        }
-        self.staged.next().map(Ok)
+    fn pull(&mut self, ctx: ExecCtx<'_>) -> Result<Option<Row>> {
+        ctx.graph.cancel_tick()?;
+        Ok(self.staged.next())
     }
 }
 

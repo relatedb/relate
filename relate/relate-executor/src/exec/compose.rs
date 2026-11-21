@@ -26,7 +26,7 @@ use crate::ctx::ExecCtx;
 use crate::eval::where_clause_holds;
 use crate::row::Row;
 
-use super::feed::{FeedSource, StreamedFeed};
+use super::feed::{held_rows, FeedSource};
 
 /// What one input row's call produced, as the composition's input: row maps
 /// to compose under the YIELD keys — owned, when this row's bound arguments
@@ -141,7 +141,7 @@ impl<'a> ComposeSource<'a> {
     /// production is charged to the running total before its first row is
     /// built (ADR-0463).
     pub(crate) fn compose_into(self, ctx: ExecCtx<'_>, rows: Vec<Row>) -> Result<Vec<Row>> {
-        StreamedFeed::held(ctx, rows, Box::new(self))
+        held_rows(ctx, rows, Box::new(self), None)
     }
 
     /// One produced row's yielded cells: cloned per yielded column only,
@@ -203,14 +203,14 @@ impl FeedSource for ComposeSource<'_> {
         ))
     }
 
-    fn pull(&mut self, ctx: ExecCtx<'_>) -> Option<Result<Row>> {
-        let current = self.current.as_mut()?;
+    fn pull(&mut self, ctx: ExecCtx<'_>) -> Result<Option<Row>> {
+        let Some(current) = self.current.as_mut() else {
+            return Ok(None);
+        };
         loop {
             // The cancel sample sits at the loop head — before the skip —
             // so a long cross product stays cancellable.
-            if let Err(error) = ctx.graph.cancel_tick() {
-                return Some(Err(error));
-            }
+            ctx.graph.cancel_tick()?;
             // The pad row is the composition of an empty produced map —
             // every column absent, each cell the explicit Null — through
             // the same insert path as every composed row, once: it counts
@@ -224,24 +224,20 @@ impl FeedSource for ComposeSource<'_> {
                     current.passed_any = true;
                     (vec![Value::Null; self.resolved.len()], true)
                 }
-                None => return None,
+                None => return Ok(None),
             };
             let mut row = current.input.clone();
             for (column, cell) in self.resolved.iter().zip(cells) {
                 row.insert(column.key.clone(), cell);
             }
             if pad {
-                return Some(Ok(row));
+                return Ok(Some(row));
             }
             // The one WHERE spelling: a non-boolean predicate is the typed
             // rejection every other WHERE site raises, never a silent drop.
-            match where_clause_holds(ctx.graph, &row, self.where_clause, ctx.params) {
-                Ok(true) => {
-                    current.passed_any = true;
-                    return Some(Ok(row));
-                }
-                Ok(false) => continue,
-                Err(error) => return Some(Err(error)),
+            if where_clause_holds(ctx.graph, &row, self.where_clause, ctx.params)? {
+                current.passed_any = true;
+                return Ok(Some(row));
             }
         }
     }

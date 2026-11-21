@@ -152,13 +152,51 @@ pub const ROW_VEC_CARRIERS: [(&str, &str); 3] = [
     ("CallClauseOut", "exec/procedures/mod.rs"),
 ];
 
+/// Whether `c` can be part of an identifier — the one spelling every
+/// whole-word and name-extraction read below shares.
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// The identifier that starts `text` (empty when `text` starts with a
+/// non-identifier character).
+fn ident_at(text: &str) -> &str {
+    let end = text
+        .char_indices()
+        .find(|&(_, c)| !is_ident_char(c))
+        .map_or(text.len(), |(i, _)| i);
+    &text[..end]
+}
+
+/// Whether the identifier match at `at` in `text` starts a word: no
+/// identifier character right before it.
+fn starts_word(text: &str, at: usize) -> bool {
+    !text[..at].chars().next_back().is_some_and(is_ident_char)
+}
+
+/// Whether the match of `len` bytes at `at` in `text` is a whole
+/// identifier: no identifier character on either side.
+fn is_whole_word(text: &str, at: usize, len: usize) -> bool {
+    starts_word(text, at) && !text[at + len..].chars().next().is_some_and(is_ident_char)
+}
+
 /// Whether `word` occurs in `ty` as a whole identifier.
 fn mentions_word(ty: &str, word: &str) -> bool {
-    ty.match_indices(word).any(|(p, w)| {
-        let ident = |c: char| c.is_alphanumeric() || c == '_';
-        !ty[..p].chars().next_back().is_some_and(ident)
-            && !ty[p + w.len()..].chars().next().is_some_and(ident)
-    })
+    ty.match_indices(word)
+        .any(|(p, w)| is_whole_word(ty, p, w.len()))
+}
+
+/// The text of the `struct`/`enum` definition named `name` in masked
+/// source `code` (from the name to the closing `}` at line start), or
+/// `None` when it is not defined there.
+#[cfg(test)]
+fn defined_body<'a>(code: &'a str, name: &str) -> Option<&'a str> {
+    let at = ["struct ", "enum "]
+        .iter()
+        .flat_map(|kw| code.match_indices(kw).map(|(p, _)| p + kw.len()))
+        .find(|&p| ident_at(&code[p..]) == name)?;
+    let body = &code[at..];
+    Some(&body[..body.find("\n}\n")?])
 }
 
 /// Whether a whitespace-stripped type names `Vec<Row>` anywhere (whole-word
@@ -177,18 +215,12 @@ pub fn row_vec_fns(src: &str) -> BTreeSet<String> {
     let code = strip_cfg_test(&mask(src));
     let mut found = BTreeSet::new();
     for (p, _) in code.match_indices("fn ") {
-        if code[..p]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_')
-        {
+        // `fn` as a whole word at its front: `cfn`-style tails are not fns.
+        if !starts_word(&code, p) {
             continue;
         }
         let sig = &code[p + 3..];
-        let name: String = sig
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect();
+        let name = ident_at(sig).to_string();
         let Some(end) = sig.find(['{', ';']) else {
             continue;
         };
@@ -340,19 +372,8 @@ fn fine() -> Result<LadderRunner> { todo!() }
                 &fs::read_to_string(&path)
                     .unwrap_or_else(|e| panic!("carrier {name} readable at {path:?}: {e}")),
             );
-            let at = ["struct ", "enum "]
-                .iter()
-                .flat_map(|kw| code.match_indices(kw).map(|(p, _)| p + kw.len()))
-                .find(|&p| {
-                    let ident: String = code[p..]
-                        .chars()
-                        .take_while(|c| c.is_alphanumeric() || *c == '_')
-                        .collect();
-                    ident == name
-                })
-                .unwrap_or_else(|| panic!("{name} defined in {file}"));
-            let body = &code[at..];
-            let body = &body[..body.find("\n}\n").expect("closing brace")];
+            let body = defined_body(&code, name)
+                .unwrap_or_else(|| panic!("{name} defined in {file} with a closing brace"));
             assert!(
                 mentions_word(body, "Vec<Row>"),
                 "{name} no longer carries Vec<Row>"
