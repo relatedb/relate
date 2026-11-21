@@ -106,11 +106,10 @@ const INSTALL_SLICE_ROWS: usize = 1024;
 impl SnapshotRows {
     /// Rebuild the in-memory graph from these rows — the load tail every
     /// codec that decodes into rows shares: id validation, next-id
-    /// seeding, the checkpoint rows, the commit-timestamp floor, the
-    /// catalog restore and the restore-phase end (adjacency derived from
-    /// the rows just restored). Each kind installs in bounded slices: the
-    /// graph's bulk impl reads a slice in place, and the row order is kept,
-    /// so the later row of an id still wins.
+    /// seeding, the checkpoint rows, the commit-timestamp floor, then the
+    /// catalog restore. Each kind installs in bounded slices: the graph's
+    /// bulk impl reads a slice in place, and the row order is kept, so the
+    /// later row of an id still wins.
     pub(crate) fn into_graph<G: SnapshotGraph>(
         self,
         wire: CatalogWire,
@@ -137,7 +136,6 @@ impl SnapshotRows {
         }
         crate::snapshot::ensure_commit_ts(&graph, rows);
         catalog::restore(&graph, wire, theater)?;
-        graph.finish_restore(relate_engine_api::AdjacencySource::RelRows);
         Ok(graph)
     }
 }

@@ -32,10 +32,7 @@ mod delta;
 #[cfg(test)]
 mod pages;
 
-pub(crate) use self::codec::stream_len;
-pub(crate) use self::delta::{
-    adjacency_bytes, cmp_ts_desc, resolve, AdjHop, DeltaChunk, Hop, TypedAdj,
-};
+pub(crate) use self::delta::{adjacency_bytes, cmp_ts_desc, resolve, AdjHop, Hop, TypedAdj};
 
 use std::cmp::Ordering;
 use std::collections::HashSet;

@@ -26,8 +26,8 @@ use super::open_config::{
 use super::shared::{OpenResolved, SharedOpenState};
 use super::token_budget;
 use super::{
-    check_loaded_graph, report_degraded_payload, report_trimmed_tail, Database, DurabilityMode,
-    OpenMode, OpenOptions, Shared,
+    check_loaded_graph, report_trimmed_tail, Database, DurabilityMode, OpenMode, OpenOptions,
+    Shared,
 };
 
 /// [`open_store_readonly_with_ontology`] plus the screen every consumer of a
@@ -39,8 +39,7 @@ pub(crate) fn open_store_readonly_screened(
     target: &StoreTarget,
     wal_payload_limit: u64,
 ) -> Result<(Graph, Wal, Option<String>)> {
-    let (graph, wal, ontology) =
-        open_store_readonly_with_ontology(target, wal_payload_limit, &mut report_degraded_payload)?;
+    let (graph, wal, ontology) = open_store_readonly_with_ontology(target, wal_payload_limit)?;
     ontology::validate_stored_document(ontology.as_deref())?;
     Ok((graph, wal, ontology))
 }
@@ -75,12 +74,8 @@ fn open_store_writable_screened(
     target: &StoreTarget,
     wal_payload_limit: u64,
 ) -> Result<(Graph, Wal, Option<String>)> {
-    let (graph, wal, ontology, _) = open_store_notifying(
-        target,
-        wal_payload_limit,
-        &mut report_trimmed_tail,
-        &mut report_degraded_payload,
-    )?;
+    let (graph, wal, ontology, _) =
+        open_store_notifying(target, wal_payload_limit, &mut report_trimmed_tail)?;
     ontology::validate_stored_document(ontology.as_deref())?;
     Ok((graph, wal, ontology))
 }

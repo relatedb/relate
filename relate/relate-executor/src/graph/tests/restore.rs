@@ -66,7 +66,7 @@ fn restored_graph(rels: RelId) -> Graph {
 fn a_restore_builds_the_durable_folded_shape() {
     let floor = crate::adjacency::RESTORE_SEAL_HOPS;
     let restored = restored_graph(floor as RelId);
-    restored.finish_restore(relate_engine_api::AdjacencySource::RelRows);
+    restored.finish_restore();
     let type_id = restored.interner.get_id("T").unwrap();
 
     // Both endpoints carry a floor-sized `:T` chunk here (node 0's out
@@ -87,7 +87,7 @@ fn a_restore_builds_the_durable_folded_shape() {
     // The floor gates the emission: the same rows with one hop fewer
     // build nothing folded.
     let below = restored_graph(floor as RelId - 1);
-    below.finish_restore(relate_engine_api::AdjacencySource::RelRows);
+    below.finish_restore();
     assert!(
         below.out_side().sealed().region(0).is_none(),
         "below the floor"
@@ -172,7 +172,7 @@ fn multi_element_slice_install_equals_one_element_slice_install() {
     }
     for g in [&bulk, &serial] {
         g.set_commit_ts(1);
-        g.finish_restore(relate_engine_api::AdjacencySource::RelRows);
+        g.finish_restore();
         g.rebuild_indexes();
     }
 
@@ -204,7 +204,7 @@ fn restoring_a_node_twice_keeps_one_version_of_the_later_row() {
     g.load_checkpoint_node(restored_node(3, "New", "second"))
         .unwrap();
     g.set_commit_ts(1);
-    g.finish_restore(relate_engine_api::AdjacencySource::RelRows);
+    g.finish_restore();
     // The open flow's single post-replay site owns the index rebuild — a
     // bare load (this test's shape) supplies it the same way.
     g.rebuild_indexes();
@@ -243,7 +243,7 @@ fn restoring_a_rel_twice_keeps_one_version_and_one_hop_per_endpoint() {
     // Other endpoints and type: the later row wins entirely.
     g.load_checkpoint_rel(restored_rel(2, 3, "S", 3)).unwrap();
     g.set_commit_ts(1);
-    g.finish_restore(relate_engine_api::AdjacencySource::RelRows);
+    g.finish_restore();
     assert_eq!(g.rels.get(&0).unwrap().len(), 1);
     let rel = g.rel(0).unwrap();
     assert_eq!((rel.start, rel.end, rel.rel_type.as_str()), (2, 3, "S"));
@@ -280,7 +280,7 @@ fn restored_adjacency_follows_id_order_not_load_order() {
         .unwrap();
     }
     g.set_commit_ts(1);
-    g.finish_restore(relate_engine_api::AdjacencySource::RelRows);
+    g.finish_restore();
     assert_eq!(g.degree_out(0), [0, 1, 3, 2]);
     assert_eq!(g.degree_in(1), [0, 1, 3, 2]);
 }
@@ -290,7 +290,7 @@ fn restore_during_an_open_write_is_a_storage_error() {
     let g = Graph::default();
     g.load_checkpoint_node(restored_node(0, "N", "n")).unwrap();
     g.set_commit_ts(1);
-    g.finish_restore(relate_engine_api::AdjacencySource::RelRows);
+    g.finish_restore();
     g.begin_write().unwrap();
     let written = g.create_node(vec!["W".into()], BTreeMap::new()).unwrap();
 
@@ -345,7 +345,7 @@ fn restore_over_a_committed_write_is_a_storage_error() {
     g.load_checkpoint_node(restored_node(0, "N", "first"))
         .unwrap();
     g.set_commit_ts(1);
-    g.finish_restore(relate_engine_api::AdjacencySource::RelRows);
+    g.finish_restore();
     g.begin_write().unwrap();
     g.set_property_node(0, "name", Value::String("second".into()));
     g.commit_write();
@@ -427,7 +427,7 @@ fn checkpoint_load_and_wal_replay_build_adjacency_once() {
     for rel in rels {
         opened.load_checkpoint_rel(rel).unwrap();
     }
-    opened.finish_restore(relate_engine_api::AdjacencySource::RelRows);
+    opened.finish_restore();
     for (ops, ts) in tail.into_iter().zip(2..) {
         opened.apply_replayed_redo(ops, ts).unwrap();
     }
@@ -537,7 +537,7 @@ fn compaction_restore_roundtrip_rebuilds_the_durable_shape() {
     for rel in rels {
         opened.load_checkpoint_rel(rel).unwrap();
     }
-    opened.finish_restore(relate_engine_api::AdjacencySource::RelRows);
+    opened.finish_restore();
     for (ts, ops) in tail {
         opened.apply_replayed_redo(ops, ts).unwrap();
     }
@@ -605,7 +605,7 @@ fn restore_seals_multi_hop_chunks_and_leaves_short_ones_delta() {
     for rel in rels {
         opened.load_checkpoint_rel(rel).unwrap();
     }
-    opened.finish_restore(relate_engine_api::AdjacencySource::RelRows);
+    opened.finish_restore();
     opened.rebuild_indexes();
 
     // The build ends with both arenas at exact size (ADR-0599): every
@@ -637,33 +637,4 @@ fn restore_seals_multi_hop_chunks_and_leaves_short_ones_delta() {
     // The short type stays delta: nothing sealed, its hops untouched.
     assert_eq!(lens(0, "SHORT", true), (short as usize, 0));
     assert_eq!(lens(2, "SHORT", false), (short as usize, 0));
-}
-
-/// The payload install holds a sealed stream to the codec's own length: a
-/// stream whose presence bitmap promises more ts values than its bytes hold
-/// degrades the install instead of panicking on the first read.
-#[test]
-fn a_stream_promising_more_ts_than_it_holds_degrades_the_install() {
-    use relate_engine_api::{AdjacencyChunkRef, AdjacencySide};
-    // 32 hops, every presence bit set — and no ts bytes after the bitmap.
-    let promised = [0xFFu8; 4];
-    let chunk = AdjacencyChunkRef {
-        node_id: 0,
-        type_name: "LINK",
-        side: AdjacencySide::Out,
-        sealed_hops: 32,
-        sealed: &promised,
-        delta: &[],
-        tombstones: &[],
-    };
-    let graph = Graph::default();
-    let error = graph
-        .install_adjacency_chunks(&[chunk])
-        .expect_err("the install refuses a stream shorter than its hop count encodes");
-    assert!(
-        error
-            .to_string()
-            .contains("not the 32 sealed hops it names"),
-        "{error}"
-    );
 }

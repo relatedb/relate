@@ -557,9 +557,22 @@ fn string_list(value: &Value) -> Vec<String> {
 
 fn copy_fixture(fixture: &Path, working: &Path) {
     if fixture.is_dir() {
-        relate_test_support::copy_dir(fixture, working);
+        copy_dir_all(fixture, working);
     } else {
         std::fs::copy(fixture, working).unwrap();
+    }
+}
+
+fn copy_dir_all(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir_all(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
     }
 }
 

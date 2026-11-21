@@ -78,18 +78,6 @@ impl Graph {
         visible_ids(&self.rels, ts)
     }
 
-    /// The live relationship count at `ts`, without materializing or
-    /// sorting the id list.
-    pub fn live_rel_count(&self, ts: u64) -> usize {
-        let mut count = 0;
-        self.rels.for_each(|_, vers| {
-            if visible_version(vers, ts).is_some() {
-                count += 1;
-            }
-        });
-        count
-    }
-
     pub fn all_node_ids(&self) -> Vec<NodeId> {
         self.all_node_ids_at(self.read_ts())
     }

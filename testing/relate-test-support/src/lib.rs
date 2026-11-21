@@ -189,35 +189,12 @@ impl<F: FnMut()> Drop for ClearOnDrop<F> {
     }
 }
 
-/// The process-wide environment lock: the process environment is shared by
-/// a test binary's threads, so a test that sets variables takes this guard
-/// before its first mutation and holds it until every [`EnvRestore`] has
-/// run. One static per linked test binary, so sibling modules serialize on
-/// the same lock instead of each re-inventing a local one.
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// [`ENV_LOCK`]'s guard, held for the duration of one test's env mutations.
-/// A poisoned lock (a sibling test panicked while holding it) is recovered,
-/// not propagated: the mutations are still undone by their [`EnvRestore`]s.
-pub struct EnvLock {
-    _guard: std::sync::MutexGuard<'static, ()>,
-}
-
-impl EnvLock {
-    /// Take the process-wide env lock.
-    pub fn acquire() -> Self {
-        Self {
-            _guard: ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner()),
-        }
-    }
-}
-
 /// Restores an environment variable on drop: [`EnvRestore::new`] captures
 /// the variable's current value (`var_os`), and every mutation the test
 /// makes while the guard lives — panic path included, a failing assert
 /// must not leak the mutation to later tests — is undone when it drops.
-/// Take an [`EnvLock`] beside it, so a parallel test's read never observes
-/// the mutation.
+/// The one env guard for tests that read the process environment, which
+/// parallel tests share.
 pub struct EnvRestore {
     var: &'static str,
     previous: Option<std::ffi::OsString>,
@@ -238,38 +215,6 @@ impl Drop for EnvRestore {
         match self.previous.take() {
             Some(value) => std::env::set_var(self.var, value),
             None => std::env::remove_var(self.var),
-        }
-    }
-}
-
-/// Recursively copy the host directory `from` under `to`: `to` is created
-/// and every file of `from`'s tree lands at the same relative path. The one
-/// recursive copy the store suites, the fixture kits and the measurement
-/// lab share.
-pub fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
-    copy_dir_filtered(from, to, &|_| false);
-}
-
-/// [`copy_dir`] with a per-entry policy: `skip` receives each entry's file
-/// name and refuses the entries it answers `true` for — the vault fixtures
-/// skip dot entries (`.git`, a stray `.relate/`), the store copies skip
-/// nothing.
-pub fn copy_dir_filtered(
-    from: &std::path::Path,
-    to: &std::path::Path,
-    skip: &dyn Fn(&std::ffi::OsStr) -> bool,
-) {
-    std::fs::create_dir_all(to).unwrap();
-    for entry in std::fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        if skip(&entry.file_name()) {
-            continue;
-        }
-        let target = to.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir_filtered(&entry.path(), &target, skip);
-        } else {
-            std::fs::copy(entry.path(), &target).unwrap();
         }
     }
 }

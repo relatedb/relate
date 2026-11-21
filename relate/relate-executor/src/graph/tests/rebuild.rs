@@ -23,19 +23,6 @@ fn abort_write_rebuilds_adjacency() {
     assert_eq!(g.degree_in(b), [kept]);
 }
 
-/// A payload-installed load records no adjacency build — the chunks landed
-/// with the payload — while the row re-fold records one: the counter moves
-/// inside `rebuild_adj_from`'s `RelRows` arm.
-#[test]
-fn the_adjacency_build_counter_counts_only_the_row_refold() {
-    let g = Graph::default();
-    take_adj_builds();
-    g.rebuild_adj_from(relate_engine_api::AdjacencySource::Payload);
-    assert_eq!(take_adj_builds(), 0);
-    g.rebuild_adj_from(relate_engine_api::AdjacencySource::RelRows);
-    assert_eq!(take_adj_builds(), 1);
-}
-
 /// Everything `rebuild_adj` publishes: both adjacency directions with their
 /// hop order, the degree histograms, the count bundle itself, and the
 /// `used_bytes` the rebuild's tail recomputes from them. The bundle is held
@@ -156,9 +143,7 @@ fn finish_restore_sharded_matches_the_single_shard_restore() {
         for rel in rels.clone() {
             g.load_checkpoint_rel(rel).unwrap();
         }
-        crate::graph::shard::with_workers(workers, || {
-            g.finish_restore(relate_engine_api::AdjacencySource::RelRows)
-        });
+        crate::graph::shard::with_workers(workers, || g.finish_restore());
         g
     };
 

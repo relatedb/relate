@@ -5,7 +5,7 @@
 
 use std::mem::size_of;
 
-use relate_core::{Error, RelId, Result};
+use relate_core::RelId;
 
 use crate::UsedSet;
 
@@ -127,42 +127,23 @@ impl DeltaChunk {
         hops
     }
 
-    /// The chunk's one construction from presence-resolved hops: `type_id`
-    /// plus `hops` in `cmp_ts_desc` order, so the absent ones lead. Packs the
-    /// presence boundary — the one place absence is encoded — and refuses a
-    /// present hop followed by an absent one with a typed error, because the
-    /// payload install hands over hops whose ts it read from the rel rows.
-    pub(crate) fn from_hops(type_id: u32, hops: Vec<Hop>) -> Result<Self> {
-        let absent = hops.iter().take_while(|h| h.ts.is_none()).count();
-        let absent = u32::try_from(absent)
-            .map_err(|_| Error::storage("adjacency chunk holds more than u32::MAX hops"))?;
-        if hops[absent as usize..].iter().any(|h| h.ts.is_none()) {
-            return Err(Error::storage(
-                "adjacency chunk lists a hop without a ts after one with",
-            ));
-        }
-        Ok(Self {
-            type_id,
-            absent,
-            stable_len: 0,
-            hops: hops
-                .into_iter()
-                .map(|h| AdjHop {
-                    ts: h.ts.unwrap_or(0),
-                    id: h.id,
-                })
-                .collect(),
-        })
-    }
-
-    /// Replace the chunk's hops with `hops` (which must be in `cmp_ts_desc`
-    /// order, so the absent ones lead) — [`Self::from_hops`]' packing on the
-    /// chunk's own identity, for the fold's already-ordered hops.
+    /// Install `hops` (which must be in `cmp_ts_desc` order, so the
+    /// absent ones lead) as the chunk's storage, packing the presence
+    /// boundary — the one place absence is encoded.
     fn set_hops(&mut self, hops: Vec<Hop>) {
-        let packed = Self::from_hops(self.type_id, hops)
-            .expect("a fold's merged hops are cmp_ts_desc ordered");
-        self.absent = packed.absent;
-        self.hops = packed.hops;
+        let absent = hops.iter().take_while(|h| h.ts.is_none()).count();
+        debug_assert!(
+            !hops.iter().skip(absent).any(|h| h.ts.is_none()),
+            "absent hops are the chunk's head"
+        );
+        self.absent = u32::try_from(absent).expect("adjacency chunk longer than u32::MAX hops");
+        self.hops = hops
+            .into_iter()
+            .map(|h| AdjHop {
+                ts: h.ts.unwrap_or(0),
+                id: h.id,
+            })
+            .collect();
     }
 }
 
@@ -303,21 +284,16 @@ impl TypedAdj {
     }
 
     /// Append a whole chunk for `type_id`, fitting its hop vector and the
-    /// chunk vector to their reserved capacities — the one place a chunk
-    /// built from hop ids is installed as a unit ([`Self::insert`]'s create
-    /// arm and [`Self::from_runs`] land here), so the chunk shape —
-    /// appended in first-seen order, hops reserved — has one owner. The
-    /// checkpoint payload's install already holds its hop vector in shape
-    /// and calls [`Self::install_chunk`] directly.
-    pub(crate) fn push_chunk(&mut self, type_id: u32, hops: Vec<Hop>) {
-        self.install_chunk(DeltaChunk::from_hops(type_id, hops).expect("a chunk run is ordered"));
-    }
-
-    /// Append one chunk as the open-time payload carries it (ADR-0551): its
-    /// hops already sit in `cmp_ts_desc` order with the presence boundary
-    /// resolved, so the chunk's own storage moves in as-is — no second hop
-    /// vector, unlike [`Self::set_hops`]'s re-pack.
-    pub(crate) fn install_chunk(&mut self, mut chunk: DeltaChunk) {
+    /// chunk vector to their reserved capacities. The one place a chunk is
+    /// installed as a unit: [`Self::insert`]'s create arm and
+    /// [`Self::from_runs`] both land here, so the chunk shape — appended in
+    /// first-seen order, hops reserved — has one owner.
+    fn push_chunk(&mut self, type_id: u32, hops: Vec<Hop>) {
+        let mut chunk = DeltaChunk {
+            type_id,
+            ..DeltaChunk::default()
+        };
+        chunk.set_hops(hops);
         crate::memory::fit_reserved(&mut chunk.hops);
         self.chunks.push(chunk);
         crate::memory::fit_reserved(&mut self.chunks);

@@ -186,11 +186,6 @@ including for older monoliths. Parquet writers split multi-row shards to fit
 the recovery envelope; the 256 MiB default shard target can be overridden by
 `RELATE_SHARD_TARGET_BYTES` only within 1..=1 GiB. An invalid override
 fails checkpoint. These per-shard limits are not a whole-database memory cap.
-A Parquet checkpoint can additionally publish the opt-in adjacency payload
-(`RELATE_ADJACENCY_PAYLOAD=1`, at or above `RELATE_ADJACENCY_PAYLOAD_MIN_RELS`
-live relationships, default 10,000,000): the graph's adjacency chunks and a
-per-rel-row-group digest, which a restart can install instead of rebuilding
-adjacency from the relationship rows. It is default off, Parquet only.
 
 Checkpoint replacements use exclusive, unpredictable temporary files and
 sync their contents before a close-and-rename (ADR-0098). On Linux/macOS,

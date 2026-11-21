@@ -95,7 +95,6 @@ pub(crate) fn bare_manifest(
         ontology_path: None,
         query_engine: relate_engine_api::MEMORY_QUERY_ENGINE.to_owned(),
         write_engine: relate_engine_api::LOCAL_WRITE_ENGINE.to_owned(),
-        adjacency_payload: None,
     }
 }
 

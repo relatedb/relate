@@ -151,9 +151,6 @@ impl GraphExport for InMemoryQueryEngine {
     fn all_rel_ids_at(&self, ts: u64) -> Vec<relate_core::RelId> {
         Graph::all_rel_ids_at(&self.graph, ts)
     }
-    fn live_rel_count(&self, ts: u64) -> usize {
-        Graph::live_rel_count(&self.graph, ts)
-    }
     fn node_at(&self, id: relate_core::NodeId, ts: u64) -> Option<relate_core::Node> {
         Graph::node_at(&self.graph, id, ts)
     }
@@ -184,13 +181,6 @@ impl GraphExport for InMemoryQueryEngine {
     fn catalog_ddl(&self) -> Vec<String> {
         crate::catalog_create_statements(&self.graph)
     }
-    fn for_each_adjacency_chunk(
-        &self,
-        ts: u64,
-        f: &mut dyn FnMut(relate_engine_api::AdjacencyChunk) -> Result<()>,
-    ) -> Result<()> {
-        GraphExport::for_each_adjacency_chunk(&self.graph, ts, f)
-    }
 }
 
 impl GraphImport for InMemoryQueryEngine {
@@ -218,14 +208,8 @@ impl GraphImport for InMemoryQueryEngine {
     fn mark_legacy_unenforced(&self) {
         Graph::mark_legacy_unenforced(&self.graph)
     }
-    fn finish_restore(&self, adjacency: relate_engine_api::AdjacencySource) {
-        Graph::finish_restore(&self.graph, adjacency)
-    }
-    fn install_adjacency_chunks(
-        &self,
-        chunks: &[relate_engine_api::AdjacencyChunkRef<'_>],
-    ) -> Result<()> {
-        Graph::install_adjacency_chunks(&self.graph, chunks)
+    fn finish_restore(&self) {
+        Graph::finish_restore(&self.graph)
     }
     fn load_checkpoint_nodes(&self, nodes: &[relate_core::Node]) -> Result<()> {
         Graph::load_checkpoint_nodes(&self.graph, nodes)

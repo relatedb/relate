@@ -126,13 +126,6 @@ pub use graph::take_index_rebuilds;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub use graph::Side;
-// Every live node's raw adjacency and each direction's expansion — the
-// observation the storage payload tests compare a payload-installed open
-// against a re-folded one with. Test seam behind `test-hooks`, never in a
-// shipped build.
-#[cfg(feature = "test-hooks")]
-#[doc(hidden)]
-pub use graph::observation::{node_adjacencies, NodeAdjacency};
 pub use query_engine::InMemoryQueryEngine;
 // Research-only (speed-of-light kernels), quarantined behind the
 // non-default `research` cargo feature (ADR-0476): the re-export (and the

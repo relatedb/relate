@@ -215,9 +215,6 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
         ontology,
         marker,
         deferred: None,
-        // The JSON codec does not time its adjacency tail.
-        adjacency: None,
-        warnings: Vec::new(),
     })
 }
 

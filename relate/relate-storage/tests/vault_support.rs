@@ -62,11 +62,15 @@ fn copy_tree(from: &Path, rel: &str, sink: &dyn Fn(&str, &[u8])) {
     }
 }
 
-/// Copy a host directory tree to another host directory, skipping the dot
-/// entries [`copy_tree`]'s policy refuses.
+/// Copy a host directory tree to another host directory.
 pub fn copy_dir(from: &Path, to: &Path) {
-    relate_test_support::copy_dir_filtered(from, to, &|name| {
-        name.to_string_lossy().starts_with('.')
+    std::fs::create_dir_all(to).unwrap();
+    copy_tree(from, "", &|rel, bytes| {
+        let target = to.join(rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&target, bytes).unwrap();
     });
 }
 

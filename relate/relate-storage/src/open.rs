@@ -97,38 +97,9 @@ pub(crate) fn codec_ops(codec: SnapshotCodecKind) -> CodecOps {
 /// per path — `finish_restore` in the codec tail builds adjacency in one
 /// pass and emits its durable folded shape (ADR-0608).
 pub fn load<G: SnapshotGraph>(target: &StoreTarget) -> Result<G> {
-    Ok(load_timed::<G>(target)?.graph)
-}
-
-/// [`load`] plus what the load measured beyond it — the measurement seam the
-/// adjacency-payload A/B lab reads. The graph is returned exactly as
-/// [`load`] returns it, with the load's degrade warnings so a lab cannot
-/// mistake a degraded run for the payload arm.
-#[doc(hidden)]
-pub struct TimedLoad<G> {
-    pub graph: G,
-    /// Wall of the load's adjacency tail (the opt-in payload install, or the
-    /// rel-row re-fold); `None` for a codec that does not measure it.
-    pub adjacency: Option<std::time::Duration>,
-    /// The degrades the load took instead of failing.
-    pub warnings: Vec<crate::DegradedPayload>,
-}
-
-/// [`load`] with its timing and degrade warnings.
-#[doc(hidden)]
-pub fn load_timed<G: SnapshotGraph>(target: &StoreTarget) -> Result<TimedLoad<G>> {
-    let LoadedSnapshot {
-        graph,
-        adjacency,
-        warnings,
-        ..
-    } = load_snapshot_with_schema_guard::<G>(target)?;
+    let graph: G = load_snapshot_with_schema_guard(target)?.graph;
     graph.rebuild_indexes();
-    Ok(TimedLoad {
-        graph,
-        adjacency,
-        warnings,
-    })
+    Ok(graph)
 }
 
 /// Load the snapshot and its checkpoint LSN from one manifest read
@@ -214,36 +185,26 @@ pub fn open_store<G: SnapshotGraph>(target: &StoreTarget) -> Result<(G, Wal)> {
 /// manifest changes during the load.
 pub fn open_store_readonly<G: SnapshotGraph>(target: &StoreTarget) -> Result<(G, Wal)> {
     let (graph, wal, _) =
-        open_store_readonly_with_ontology::<G>(target, Error::WAL_PAYLOAD_CAP_BYTES, &mut |_| {})?;
+        open_store_readonly_with_ontology::<G>(target, Error::WAL_PAYLOAD_CAP_BYTES)?;
     Ok((graph, wal))
 }
 
 /// [`open_store_readonly`] plus the store's current ontology document
 /// (ADR-0120), folded exactly as in [`open_store_with_report`], at the
-/// store's resolved per-record payload cap (ADR-0650). `on_warning`
-/// receives each degrade the load took instead of failing (the adjacency
-/// payload it could not install) — the read-only twin of
-/// [`open_store_notifying`]'s warning sink, wired by the read-only open
-/// path. The retry collects each attempt's warnings with the load and emits
-/// only the accepted attempt's set, so a superseded attempt's degrade is
-/// never reported.
+/// store's resolved per-record payload cap (ADR-0650).
 #[doc(hidden)]
 pub fn open_store_readonly_with_ontology<G: SnapshotGraph>(
     target: &StoreTarget,
     payload_cap: u64,
-    on_warning: &mut dyn FnMut(&crate::DegradedPayload),
 ) -> Result<(G, Wal, Option<String>)> {
     const ATTEMPTS: u32 = 8;
     let mut last_err = None;
     for attempt in 0..ATTEMPTS {
         let before = manifest_stamp(target)?;
         match open_store_readonly_once(target, payload_cap) {
-            Ok((graph, wal, ontology, warnings)) => {
+            Ok((graph, wal, ontology)) => {
                 let after = manifest_stamp(target)?;
                 if before == after {
-                    for warning in &warnings {
-                        on_warning(warning);
-                    }
                     return Ok((graph, wal, ontology));
                 }
             }
@@ -307,12 +268,11 @@ fn manifest_stamp(target: &StoreTarget) -> Result<Option<Vec<u8>>> {
 fn open_store_readonly_once<G: SnapshotGraph>(
     target: &StoreTarget,
     payload_cap: u64,
-) -> Result<(G, Wal, Option<String>, Vec<crate::DegradedPayload>)> {
-    let LoadedSnapshot {
+) -> Result<(G, Wal, Option<String>)> {
+    let LoadedSnapshot::<G> {
         graph,
         checkpoint_lsn,
         ontology,
-        warnings,
         ..
     } = load_snapshot_with_schema_guard::<G>(target)?;
     let (wal_vfs, wal_prefix) = target.wal_vfs();
@@ -323,7 +283,7 @@ fn open_store_readonly_once<G: SnapshotGraph>(
     // action); the classic codecs admit every replay.
     finish_open(target, &wal, checkpoint_lsn, None)?;
     let ontology = replay_after_ontology(&graph, &wal, checkpoint_lsn, ontology)?;
-    Ok((graph, wal, ontology, warnings))
+    Ok((graph, wal, ontology))
 }
 
 /// The open path's report: what a writable open did beyond loading — the
@@ -341,10 +301,6 @@ pub struct OpenReport {
     /// The torn tails this open trimmed (ADR-0114), for the opener to
     /// report — empty when recovery found none.
     pub trimmed_tails: Vec<crate::TrimmedTail>,
-    /// What the load degraded around instead of failing — the opt-in
-    /// adjacency payload it could not install, each entry naming the
-    /// mismatch, with the store opened on the row re-fold (ADR-0551).
-    pub warnings: Vec<crate::DegradedPayload>,
 }
 
 /// [`open_store`] plus the store's current ontology document (ADR-0120)
@@ -370,7 +326,7 @@ pub fn open_store_with_report<G: SnapshotGraph>(
     target: &StoreTarget,
     payload_cap: u64,
 ) -> Result<(G, Wal, Option<String>, OpenReport)> {
-    open_store_notifying(target, payload_cap, &mut |_| {}, &mut |_| {})
+    open_store_notifying(target, payload_cap, &mut |_| {})
 }
 
 /// [`open_store_with_report`] that also hands each torn tail to `on_trim`
@@ -379,18 +335,12 @@ pub fn open_store_with_report<G: SnapshotGraph>(
 /// trim is already durable when the loader returns, so a failed open
 /// must still surface it (a retry finds nothing left to report);
 /// `report.trimmed_tails` lists the same tails for a caller that only
-/// needs them after a successful open. `on_warning` receives each degrade
-/// the load took (the adjacency payload it could not install) at the
-/// moment the load takes it, for the same reason: a later open step may
-/// fail, and the degrade is still part of what the open did. The same
-/// warnings land in `report.warnings` for a caller reading them after a
-/// successful open.
+/// needs them after a successful open.
 #[doc(hidden)]
 pub fn open_store_notifying<G: SnapshotGraph>(
     target: &StoreTarget,
     payload_cap: u64,
     on_trim: &mut dyn FnMut(&crate::TrimmedTail),
-    on_warning: &mut dyn FnMut(&crate::DegradedPayload),
 ) -> Result<(G, Wal, Option<String>, OpenReport)> {
     let LoadedSnapshot::<G> {
         graph,
@@ -398,12 +348,7 @@ pub fn open_store_notifying<G: SnapshotGraph>(
         ontology,
         marker,
         deferred,
-        warnings,
-        adjacency: _,
     } = load_snapshot_with_schema_guard::<G>(target)?;
-    for warning in &warnings {
-        on_warning(warning);
-    }
     let (wal_vfs, wal_prefix) = target.wal_vfs();
     let (mut wal, trimmed_tails) =
         Wal::open_notifying(wal_vfs, wal_prefix, checkpoint_lsn, payload_cap, on_trim)?;
@@ -415,7 +360,6 @@ pub fn open_store_notifying<G: SnapshotGraph>(
     let mut report = OpenReport {
         migrations: version::MigrationReport::default(),
         trimmed_tails,
-        warnings,
     };
     if let version::SnapshotMarker::Legacy(subsystem, from) = marker {
         if target.is_fully_durable() {

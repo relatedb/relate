@@ -35,13 +35,12 @@ pub(crate) const ID_BLOCK: usize = 64;
 /// Where a stream's packed sections read their bit widths from: the chunk
 /// codec keeps each width inline ahead of its block, the paged format
 /// hoists them into its page header's table. The one seam the shared
-/// section walk is parameterized by. `None` when the stream is too short to
-/// hold the width it names.
+/// section walk is parameterized by.
 pub(crate) trait WidthReader {
     /// The next section's width from the stream at `rest`, with the number
     /// of bytes the width itself occupies there — `1` inline, `0` from a
     /// table.
-    fn take(&mut self, rest: &[u8]) -> Option<(u32, usize)>;
+    fn take(&mut self, rest: &[u8]) -> (u32, usize);
 }
 
 /// Where a stream's packed sections write their bit widths to — inline
@@ -56,8 +55,8 @@ pub(crate) trait WidthWriter {
 struct Inline;
 
 impl WidthReader for Inline {
-    fn take(&mut self, rest: &[u8]) -> Option<(u32, usize)> {
-        Some((u32::from(*rest.first()?), 1))
+    fn take(&mut self, rest: &[u8]) -> (u32, usize) {
+        (rest[0] as u32, 1)
     }
 }
 
@@ -145,67 +144,58 @@ pub(crate) fn encode_stream(hops: &[Hop], out: &mut Vec<u8>, widths: &mut impl W
 }
 
 /// The encoded byte length of a chunk stream for `n` hops, starting at the
-/// stream head: the bytes [`encode_chunk`] produced for the same hops.
-/// Walks the block structure without decoding, so the arena can find the end
-/// of a chunk's slice without an allocation. `None` when `bytes` does not
-/// hold the whole `n`-hop stream — the open-time payload install reads bytes
-/// it never encoded, so a short stream degrades instead of panicking the
-/// first read, and the arena's own streams expect their encoder's length.
-pub(crate) fn stream_len(bytes: &[u8], n: usize) -> Option<usize> {
+/// stream head: the bytes [`encode_chunk`] produced for the same hops. Walks
+/// the block structure without decoding, so the arena can find the end of a
+/// chunk's slice without an allocation.
+pub(crate) fn stream_len(bytes: &[u8], n: usize) -> usize {
     stream_len_with(bytes, n, &mut Inline)
 }
 
 /// The byte length of one stream for `n` hops without decoding it, reading
 /// each packed section's width through `widths` (inline for the codec, the
-/// page header's table for the paged format). `None` when `bytes` is too
-/// short for the structure `n` promises.
-pub(crate) fn stream_len_with(
-    bytes: &[u8],
-    n: usize,
-    widths: &mut impl WidthReader,
-) -> Option<usize> {
-    let bitmap_len = n.checked_add(7)? / 8;
-    let present: usize = bytes
-        .get(..bitmap_len)?
+/// page header's table for the paged format).
+pub(crate) fn stream_len_with(bytes: &[u8], n: usize, widths: &mut impl WidthReader) -> usize {
+    let bitmap_len = n.div_ceil(8);
+    let present: usize = bytes[..bitmap_len]
         .iter()
         .map(|b| b.count_ones() as usize)
         .sum();
-    let mut rest = bytes.get(bitmap_len..)?;
+    let mut rest = &bytes[bitmap_len..];
     let mut consumed = bitmap_len;
     if present > 0 {
-        rest = rest.get(8..)?;
         consumed += 8;
-        consumed += section_len(&mut rest, present - 1, TS_BLOCK, widths)?;
+        rest = &rest[8..];
+        consumed += section_len(&mut rest, present - 1, TS_BLOCK, widths);
     }
     if n > 0 {
-        rest = rest.get(8..)?;
         consumed += 8;
-        consumed += section_len(&mut rest, n - 1, ID_BLOCK, widths)?;
+        rest = &rest[8..];
+        consumed += section_len(&mut rest, n - 1, ID_BLOCK, widths);
     }
-    Some(consumed)
+    consumed
 }
 
 /// Walk one stream's packed section — `count` values in blocks of `block` —
 /// advancing `rest` past it and returning the bytes it occupies. Each
 /// block's width comes from `widths`, its packed length from the width and
-/// the block's value count. `None` when `rest` is too short for either.
+/// the block's value count.
 fn section_len(
     rest: &mut &[u8],
     count: usize,
     block: usize,
     widths: &mut impl WidthReader,
-) -> Option<usize> {
+) -> usize {
     let mut consumed = 0;
     let mut remaining = count;
     while remaining > 0 {
         let take = remaining.min(block);
-        let (width, skip) = widths.take(rest)?;
+        let (width, skip) = widths.take(rest);
         let packed_len = (take * width as usize).div_ceil(8);
-        *rest = rest.get(skip + packed_len..)?;
         consumed += skip + packed_len;
+        *rest = &rest[skip + packed_len..];
         remaining -= take;
     }
-    Some(consumed)
+    consumed
 }
 
 /// Decode one chunk encoded by [`encode_chunk`], whose hop count `n` rides
@@ -232,7 +222,7 @@ pub(crate) fn decode_stream(bytes: &[u8], n: usize, widths: &mut impl WidthReade
         let mut remaining = present - 1;
         while remaining > 0 {
             let take = remaining.min(TS_BLOCK);
-            let (width, skip) = widths.take(rest).expect("codec: ts width section short");
+            let (width, skip) = widths.take(rest);
             let packed_len = (take * width as usize).div_ceil(8);
             let mut r = BitReader::new(&rest[skip..skip + packed_len]);
             rest = &rest[skip + packed_len..];
@@ -254,7 +244,7 @@ pub(crate) fn decode_stream(bytes: &[u8], n: usize, widths: &mut impl WidthReade
         let mut remaining = n - 1;
         while remaining > 0 {
             let take = remaining.min(ID_BLOCK);
-            let (width, skip) = widths.take(rest).expect("codec: id width section short");
+            let (width, skip) = widths.take(rest);
             let packed_len = (take * width as usize).div_ceil(8);
             let mut r = BitReader::new(&rest[skip..skip + packed_len]);
             rest = &rest[skip + packed_len..];
@@ -285,25 +275,7 @@ mod tests {
     fn roundtrip(hops: &[Hop]) {
         let bytes = encode_chunk(hops);
         assert_eq!(decode_chunk(&bytes, hops.len()), hops);
-        assert_eq!(stream_len(&bytes, hops.len()), Some(bytes.len()));
-    }
-
-    /// A stream cut inside a section its hop count promises is `None`, not a
-    /// panic: the payload install reads streams it never encoded.
-    #[test]
-    fn a_truncated_stream_does_not_fit() {
-        let hops: Vec<Hop> = (0..32)
-            .map(|i| Hop {
-                ts: Some(i64::MAX - i),
-                id: i,
-            })
-            .collect();
-        let bytes = encode_chunk(&hops);
-        // The presence bitmap promises 32 ts values; one byte short of the
-        // ts section cannot hold them.
-        assert_eq!(stream_len(&bytes[..bytes.len() - 1], hops.len()), None);
-        // Even the bitmap alone may be short.
-        assert_eq!(stream_len(&bytes[..3], hops.len()), None);
+        assert_eq!(stream_len(&bytes, hops.len()), bytes.len());
     }
 
     #[test]

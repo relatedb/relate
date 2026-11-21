@@ -12,8 +12,8 @@ mod convert;
 mod experimental;
 #[cfg(rkyv_codec)]
 pub(crate) use experimental::{
-    assemble_loaded, content_encoding, publication_failure, read_codec_manifest, restore_object,
-    write_codec_manifest,
+    assemble_loaded, checkpoint_identity_mismatch, content_encoding, publication_failure,
+    read_codec_manifest, restore_object, write_codec_manifest,
 };
 pub mod json;
 mod kind;

@@ -9,6 +9,8 @@ use super::*;
 use std::ops::Range;
 
 use relate_engine_api::CheckpointTheater;
+#[cfg(test)]
+use relate_executor::Graph;
 
 use crate::codec::parquet::{load_nodes, load_rels, Loader, Origin, MAX_FILE};
 // Test modules reach the preflighting wrappers through `use super::*`.
@@ -19,16 +21,9 @@ use crate::{storage_context, Manifest, SnapshotCodecKind};
 
 mod coalesce;
 mod layout;
-mod load;
 mod ontology;
-mod payload;
 mod shard_name;
-pub(crate) use load::load_with_checkpoint_lsn;
-pub(crate) use payload::PayloadConfig;
 pub(crate) use shard_name::ShardName;
-
-#[cfg(test)]
-pub(crate) use load::load;
 
 /// Per-kind manifest/graph pairing: the four choices `rewrite_kind` and
 /// the manifest recheck must keep consistent, stated once here.
@@ -161,8 +156,7 @@ fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Resolve the configured shard byte budget, the adjacency payload opt-in
-/// and the snapshot.
+/// Resolve the configured shard byte budget and snapshot.
 pub fn checkpoint_at(
     target: &StoreTarget,
     graph: &dyn relate_engine_api::GraphImport,
@@ -170,19 +164,15 @@ pub fn checkpoint_at(
     snapshot_ts: u64,
     ontology: Option<&str>,
 ) -> Result<()> {
-    checkpoint_at_with_config(
+    checkpoint_at_with_bytes(
         target,
         graph,
         checkpoint_lsn,
         snapshot_ts,
         shard_target_bytes()?,
         ontology,
-        PayloadConfig::from_env()?,
     )
 }
-/// The byte-budget checkpoint with the adjacency payload off — the test
-/// seam the pre-payload suites call.
-#[cfg(test)]
 pub(crate) fn checkpoint_at_with_bytes(
     target: &StoreTarget,
     graph: &dyn relate_engine_api::GraphImport,
@@ -190,25 +180,6 @@ pub(crate) fn checkpoint_at_with_bytes(
     snapshot_ts: u64,
     target_bytes: u64,
     ontology: Option<&str>,
-) -> Result<()> {
-    checkpoint_at_with_config(
-        target,
-        graph,
-        checkpoint_lsn,
-        snapshot_ts,
-        target_bytes,
-        ontology,
-        PayloadConfig::disabled(),
-    )
-}
-fn checkpoint_at_with_config(
-    target: &StoreTarget,
-    graph: &dyn relate_engine_api::GraphImport,
-    checkpoint_lsn: u64,
-    snapshot_ts: u64,
-    target_bytes: u64,
-    ontology: Option<&str>,
-    payload: PayloadConfig,
 ) -> Result<()> {
     if !(1..=MAX_FILE).contains(&target_bytes) {
         return Err(Error::storage(format!(
@@ -241,17 +212,11 @@ fn checkpoint_at_with_config(
     );
     // The publish phase is known statically: a prepare failure cleans up as
     // not-publishing, a publish failure as publishing.
-    let prepared = match prepare_manifest(
-        &mut ctx,
-        checkpoint_lsn,
-        theater,
-        prev.as_ref(),
-        ontology,
-        payload,
-    ) {
-        Ok(result) => result,
-        Err(error) => return Err(cleanup_unreferenced(target, &owned, false, error)),
-    };
+    let prepared =
+        match prepare_manifest(&mut ctx, checkpoint_lsn, theater, prev.as_ref(), ontology) {
+            Ok(result) => result,
+            Err(error) => return Err(cleanup_unreferenced(target, &owned, false, error)),
+        };
     if let Err(error) = put_object(target, MANIFEST_JSON, &prepared.bytes) {
         return Err(cleanup_unreferenced(target, &owned, true, error));
     }
@@ -294,12 +259,106 @@ fn retire_superseded(
             retired.push(old.to_owned());
         }
     }
-    // A superseded adjacency payload retires the same way: the next
-    // checkpoint either publishes a new one or turns the opt-in off.
-    payload::retire(prev, manifest, &mut retired);
     // One batch keeps a `.rl` retirement to a single catalog generation.
     delete_objects(target, &retired);
 }
+#[cfg(test)]
+pub fn load(target: &StoreTarget) -> Result<Graph> {
+    Ok(load_with_checkpoint_lsn::<Graph>(target)?.graph)
+}
+
+/// Load the snapshot and the checkpoint LSN from the one manifest read,
+/// reporting the decoded manifest version marker (ADR-0127 Decision 2) and
+/// the ontology document the manifest selects (ADR-0120 §5; `None` when
+/// the store holds none). The LSN is 0 when no manifest exists yet.
+pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
+    target: &StoreTarget,
+) -> Result<LoadedSnapshot<G>> {
+    // read_manifest rejects an unsupported format_version and classifies the
+    // marker at its gate before anything else inspects the manifest
+    // (ADR-0114 Decision 2, ADR-0127 Decision 2).
+    let Some((manifest, marker)) = read_manifest(target)? else {
+        return Ok(LoadedSnapshot::empty(0));
+    };
+    let checkpoint_lsn = manifest.checkpoint_lsn;
+    match load_manifest_body(target, &manifest) {
+        Ok((graph, ontology)) => Ok(LoadedSnapshot {
+            graph,
+            checkpoint_lsn,
+            ontology,
+            marker,
+            deferred: None,
+        }),
+        // A legacy-store failure names the version where the loader knows
+        // it (ADR-0127 Decision 4); a current store keeps its error verbatim.
+        Err(error) => Err(crate::version::annotate_legacy_failure(error, marker)),
+    }
+}
+
+/// Load one kind's shards: the pre-shard monolith object when the manifest
+/// predates sharding (format ≤ 2 with no parts), else every manifest part,
+/// each held to the shard rules over its `[id_lo, id_hi)`;
+/// [`Origin::Monolith`] says why the monolith is not. A failure names the
+/// object that failed.
+/// All per-kind projections derive from `kind` itself.
+fn load_kind(
+    target: &StoreTarget,
+    graph: &dyn relate_engine_api::GraphImport,
+    manifest: &Manifest,
+    kind: Kind,
+) -> Result<()> {
+    let load = kind.loader();
+    if manifest.format_version < FORMAT_VERSION && kind.parts(manifest).is_empty() {
+        let name = kind.legacy_names()[0];
+        if let Some(b) = get_parquet_opt(target, name)? {
+            load(graph, b, Origin::Monolith)
+                .map_err(|e| storage_context(e, format_args!("legacy shard {name}")))?;
+        }
+        return Ok(());
+    }
+    for part in kind.parts(manifest) {
+        let b = get_parquet(target, &part.path)?;
+        load(graph, b, Origin::Part(part.id_lo..part.id_hi))
+            .map_err(|e| storage_context(e, format_args!("manifest part {}", part.path)))?;
+    }
+    Ok(())
+}
+
+fn load_manifest_body<G: relate_engine_api::SnapshotGraph>(
+    target: &StoreTarget,
+    manifest: &Manifest,
+) -> Result<(G, Option<String>)> {
+    let graph = G::default();
+    graph.set_next_node_id(manifest.next_node_id);
+    graph.set_next_rel_id(manifest.next_rel_id);
+    graph.set_commit_ts(manifest.commit_ts);
+    for kind in Kind::ALL {
+        load_kind(target, &graph, manifest, kind)?;
+    }
+    // The load-tail commit-timestamp floor, through the one home of the
+    // policy (the graph is fresh, so its live nodes are this load's
+    // rows).
+    crate::snapshot::ensure_commit_ts(&graph, graph.live_node_count());
+    for idx in &manifest.indexes {
+        graph.install_named_index(idx.clone())?;
+    }
+    for constraint in &manifest.constraints {
+        graph.install_named_constraint(constraint.clone())?;
+    }
+    if let Some(theater) = &manifest.theater {
+        graph.restore_checkpoint_theater(theater.clone())?;
+    } else {
+        graph.mark_legacy_unenforced();
+    }
+    graph.finish_restore();
+    let ontology = manifest
+        .ontology_path
+        .as_deref()
+        .map(|path| ontology::load_ontology_document(target, path))
+        .transpose()?;
+    Ok((graph, ontology))
+}
+
 /// Sum of live snapshot objects (manifest + Parquet parts). Excludes WAL
 /// and `.tmp`.
 pub fn snapshot_data_bytes(target: &StoreTarget) -> Result<u64> {
@@ -319,11 +378,6 @@ pub fn snapshot_data_bytes(target: &StoreTarget) -> Result<u64> {
     // (ADR-0120 §5).
     if let Some(path) = &manifest.ontology_path {
         names.push((path.as_str(), true));
-    }
-    // The payload is a cache tier: a store that degraded-opened around a
-    // missing payload still accounts, exactly like a retired monolith.
-    if let Some(payload) = &manifest.adjacency_payload {
-        names.push((payload.path.as_str(), false));
     }
     let mut sum = 0u64;
     for (name, required) in names {
@@ -345,25 +399,6 @@ pub fn snapshot_data_bytes(target: &StoreTarget) -> Result<u64> {
 #[cfg(test)]
 pub(crate) fn read_manifest_for_test(target: &StoreTarget) -> Result<Option<Manifest>> {
     Ok(read_manifest(target)?.map(|(m, _)| m))
-}
-
-/// Test-only seam: the payload object path `target`'s manifest selects.
-/// Consumers run their A/B comparison through these instead of parsing the
-/// manifest JSON themselves.
-#[doc(hidden)]
-pub fn adjacency_payload_path(target: &StoreTarget) -> Result<Option<String>> {
-    Ok(read_manifest(target)?.and_then(|(m, _)| m.adjacency_payload.map(|payload| payload.path)))
-}
-
-/// Test-only seam: drop the manifest's adjacency-payload selection and
-/// publish it back, so the same store opens on the row re-fold.
-#[doc(hidden)]
-pub fn drop_adjacency_payload_selection(target: &StoreTarget) -> Result<()> {
-    let Some((mut manifest, _)) = read_manifest(target)? else {
-        return Err(Error::storage("store has no manifest"));
-    };
-    manifest.adjacency_payload = None;
-    put_object(target, MANIFEST_JSON, &encode_manifest(&manifest)?)
 }
 
 /// How [`validate_dir`] treats an absent directory — the two admission
@@ -440,10 +475,6 @@ pub(crate) fn read_manifest(
             )));
         }
     }
-    // The opt-in payload names the checkpoint it was published at; a
-    // disagreement with the manifest is a torn publication (the shared
-    // payload-identity refusal).
-    payload::validate(&m)?;
     if m.commit_ts == u64::MAX || m.next_node_id < 0 || m.next_rel_id < 0 {
         return Err(Error::storage(
             "manifest has unsupported timestamp or next ID",
@@ -570,17 +601,16 @@ struct Prepared {
 
 /// Prepare one checkpoint generation (ADR-0183, ADR-0534): rewrite both
 /// kinds' parts under the store's encoding, publish the ontology object
-/// the manifest selects and the opt-in adjacency payload, and assemble and
-/// revalidate the manifest — everything before the manifest object itself
-/// is put. Runs with `ctx`'s kind set per rewrite pass; a failure here
-/// cleans up as not-publishing.
+/// the manifest selects, and assemble and revalidate the manifest —
+/// everything before the manifest object itself is put. Runs with
+/// `ctx`'s kind set per rewrite pass; a failure here cleans up as
+/// not-publishing.
 fn prepare_manifest(
     ctx: &mut ShardWrite<'_>,
     checkpoint_lsn: u64,
     theater: CheckpointTheater,
     prev: Option<&Manifest>,
     ontology: Option<&str>,
-    payload: PayloadConfig,
 ) -> Result<Prepared> {
     ctx.kind = Kind::Node;
     let (node_parts, retired_nodes) = rewrite_kind(ctx, prev)?;
@@ -601,9 +631,6 @@ fn prepare_manifest(
     let ontology_path = ontology
         .map(|document| ontology::publish_ontology(ctx.target, prev, document, ctx.owned))
         .transpose()?;
-    // The opt-in adjacency payload publishes under the same rules, after
-    // the rel parts whose row groups it digests.
-    let adjacency_payload = payload::write(ctx, checkpoint_lsn, &rel_parts, payload)?;
     let manifest = Manifest {
         // The Parquet codec writes the wide pair, always (ADR-0553).
         format_version: crate::version::manifest::version_for_write(ontology_path.is_some(), true),
@@ -622,7 +649,6 @@ fn prepare_manifest(
         ontology_path,
         query_engine: relate_engine_api::MEMORY_QUERY_ENGINE.to_owned(),
         write_engine: relate_engine_api::LOCAL_WRITE_ENGINE.to_owned(),
-        adjacency_payload,
     };
     // Unchanged (including legacy fixed-name) parts are published again.
     // Recheck every proposed reference after writing, not just new leaves.
@@ -727,7 +753,6 @@ fn prepare_object_dir(target: &StoreTarget, dir: &str, what: &str) -> Result<()>
 
 fn referenced(m: &Manifest, path: &str) -> bool {
     m.ontology_path.as_deref() == Some(path)
-        || payload::is_referenced(m, path)
         || m.node_parts
             .iter()
             .chain(&m.rel_parts)
@@ -787,7 +812,6 @@ pub(crate) fn sweep_orphans(target: &StoreTarget) -> Result<()> {
         );
     }
     ontology::sweep_ontology_orphans(target, &manifest);
-    payload::sweep(target, &manifest);
     Ok(())
 }
 
@@ -877,7 +901,6 @@ fn validate_deletable(target: &StoreTarget, name: &str) -> Result<()> {
         Some(ObjectName::LegacyShard) => Ok(()),
         Some(ObjectName::Ontology) => ontology::validate_ontology_object(target, name),
         Some(ObjectName::Shard(shard)) => validate_shard_name(target, shard),
-        Some(ObjectName::Payload) => payload::validate_deletable(target, name),
         _ => Err(Error::storage(format!(
             "invalid manifest shard path: {name}"
         ))),

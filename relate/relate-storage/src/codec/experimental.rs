@@ -100,6 +100,25 @@ pub(crate) fn missing_payload(manifest: &CodecManifest, what: &str) -> Error {
     ))
 }
 
+/// The payload/manifest checkpoint-identity policy every experimental
+/// loader enforces: the payload names the checkpoint it was published
+/// with, and a disagreement with the manifest is a torn publication (the
+/// two halves publish separately) — the store is refused, never served.
+/// The codec named in the message is the manifest envelope's own typed
+/// fact, the one resolution already matched against this loader.
+pub(crate) fn checkpoint_identity_mismatch(
+    manifest: &CodecManifest,
+    what: &str,
+    payload_lsn: u64,
+) -> Error {
+    Error::storage(format!(
+        "{} store is damaged: the {what} holds checkpoint lsn {payload_lsn} but {} names {}",
+        manifest.envelope.codec,
+        crate::snapshot::MANIFEST_JSON,
+        manifest.envelope.checkpoint_lsn,
+    ))
+}
+
 /// The payload content gate every experimental loader enforces: the
 /// payload's own value-encoding marker is gated and the gated version is
 /// the decode encoding (the JSON codec's rule). The payload's marker
@@ -181,8 +200,5 @@ pub(crate) fn assemble_loaded<G: relate_engine_api::SnapshotGraph>(
         ontology,
         marker,
         deferred: None,
-        // The rkyv codec does not time its adjacency tail.
-        adjacency: None,
-        warnings: Vec::new(),
     })
 }
