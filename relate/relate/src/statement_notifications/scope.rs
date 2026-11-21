@@ -41,7 +41,7 @@ pub(super) fn observe_subquery_scopes(ctx: &mut ShapeCtx<'_>, parts: &[&[Clause]
     // sibling detectors. The SEARCH family stays checked — its cost is per
     // index-specification name, not per scope.
     let mut declared: BTreeSet<String> = BTreeSet::new();
-    let mut subqueries = 0u64;
+    let mut subqueries = 0usize;
     let mut expression_bodies: Vec<&Query> = Vec::new();
     for part in parts {
         relate_ir::walk_clauses(
@@ -59,18 +59,33 @@ pub(super) fn observe_subquery_scopes(ctx: &mut ShapeCtx<'_>, parts: &[&[Clause]
             },
         );
     }
-    subqueries += expression_bodies.len() as u64;
+    subqueries += expression_bodies.len();
     let subquery_scan = meter.charge_pairs(subqueries, declared.len());
+    // The one visit both checks share: the SEARCH shadow test always, the
+    // `CALL { … }` body test only while the subquery scan is affordable.
+    let mut visit = |clause: &Clause, scope: &Scope, own: &BTreeSet<String>| {
+        observe_search_shadow(notifications, clause, scope, own);
+        if let Clause::CallSubquery {
+            query,
+            scope: call_scope,
+            ..
+        } = clause
+        {
+            if subquery_scan {
+                observe_call_body(notifications, query, call_scope, scope);
+            }
+        }
+    };
     // A UNION arm and a `NEXT` stage are independent statements: each is its
     // own clause list, so neither sees the other's names.
     for part in parts {
-        observe_scope_frame(notifications, part, &Scope::new(), subquery_scan);
+        walk_scope_frame(part, &Scope::new(), &mut visit);
     }
-    // `observe_query_frames` descends into clause-level bodies only, so each
+    // `walk_query_frames` descends into clause-level bodies only, so each
     // expression body is analysed exactly once here; a body nested in
     // another expression body is its own entry in the list.
     for query in expression_bodies {
-        observe_query_frames(notifications, query, &Scope::new(), subquery_scan);
+        walk_query_frames(query, &Scope::new(), &mut visit);
     }
 }
 
@@ -78,36 +93,34 @@ pub(super) fn observe_subquery_scopes(ctx: &mut ShapeCtx<'_>, parts: &[&[Clause]
 type Scope = BTreeSet<String>;
 
 /// One structural recursion over a clause list, carrying the frame the list
-/// runs in.
+/// runs in, and calling `visit` once per clause with the frame before the
+/// clause and the names the clause introduces.
 ///
 /// `outer` is the frame the enclosing position supplies (empty for a
 /// top-level part, the frame at the `CALL { … }` clause for its body, plus
 /// the loop variable for a `FOREACH` body). A clause sees the frame its
 /// predecessors built; its own names join it for the clauses after it.
-fn observe_scope_frame(
-    notifications: &mut Vec<Notification>,
+fn walk_scope_frame(
     clauses: &[Clause],
     outer: &Scope,
-    subquery_scan: bool,
+    visit: &mut impl FnMut(&Clause, &Scope, &BTreeSet<String>),
 ) {
     let mut scope = outer.clone();
     for clause in clauses {
         let own = introduced_names(clause);
-        observe_scope_clause(notifications, clause, &scope, &own, subquery_scan);
+        visit(clause, &scope, &own);
+        walk_clause_bodies(clause, &scope, visit);
         scope.extend(own);
     }
 }
 
-/// The per-clause half of [`observe_scope_frame`]: the `SEARCH` shadow test
-/// against the frame before the clause (plus the clause's own pattern
-/// variables, which its index specification sees), and the descent into
-/// whatever clause lists the clause carries.
-fn observe_scope_clause(
+/// The `SEARCH` shadow test against the frame before the clause (plus the
+/// clause's own pattern variables, which its index specification sees).
+fn observe_search_shadow(
     notifications: &mut Vec<Notification>,
     clause: &Clause,
     scope: &Scope,
     own: &BTreeSet<String>,
-    subquery_scan: bool,
 ) {
     if let Clause::Match {
         search: Some(search),
@@ -126,27 +139,26 @@ fn observe_scope_clause(
             }
         }
     }
+}
+
+/// The descent into whatever clause lists a clause carries.
+fn walk_clause_bodies(
+    clause: &Clause,
+    scope: &Scope,
+    visit: &mut impl FnMut(&Clause, &Scope, &BTreeSet<String>),
+) {
     match clause {
-        Clause::CallSubquery {
-            query,
-            scope: call_scope,
-            ..
-        } => {
-            if subquery_scan {
-                observe_call_body(notifications, query, call_scope, scope);
-            }
-            // The body runs in the frame at the CALL clause, whichever arm.
-            observe_query_frames(notifications, query, scope, subquery_scan);
-        }
+        // The body runs in the frame at the CALL clause, whichever arm.
+        Clause::CallSubquery { query, .. } => walk_query_frames(query, scope, visit),
         Clause::Conditional {
             branches,
             else_query,
         } => {
             for (_, query) in branches {
-                observe_query_frames(notifications, query, scope, subquery_scan);
+                walk_query_frames(query, scope, visit);
             }
             if let Some(query) = else_query.as_deref() {
-                observe_query_frames(notifications, query, scope, subquery_scan);
+                walk_query_frames(query, scope, visit);
             }
         }
         Clause::Foreach {
@@ -154,7 +166,7 @@ fn observe_scope_clause(
         } => {
             let mut inner = scope.clone();
             inner.insert(variable.to_string());
-            observe_scope_frame(notifications, clauses, &inner, subquery_scan);
+            walk_scope_frame(clauses, &inner, visit);
         }
         _ => {}
     }
@@ -162,17 +174,16 @@ fn observe_scope_clause(
 
 /// Every part of a nested [`Query`], each against the same `outer` frame:
 /// UNION arms and `NEXT` stages do not see each other's names.
-fn observe_query_frames(
-    notifications: &mut Vec<Notification>,
+fn walk_query_frames(
     query: &Query,
     outer: &Scope,
-    subquery_scan: bool,
+    visit: &mut impl FnMut(&Clause, &Scope, &BTreeSet<String>),
 ) {
     for part in &query.parts {
-        observe_scope_frame(notifications, &part.clauses, outer, subquery_scan);
+        walk_scope_frame(&part.clauses, outer, visit);
     }
     if let Some(next) = query.next.as_deref() {
-        observe_query_frames(notifications, next, outer, subquery_scan);
+        walk_query_frames(next, outer, visit);
     }
 }
 
@@ -268,18 +279,15 @@ fn introduced_names(clause: &Clause) -> BTreeSet<String> {
 fn collect_pattern_names(pattern: &PathPattern, out: &mut BTreeSet<String>) {
     // Text render: the collected scope names are the String sink.
     out.extend(pattern.path_names().map(|name| name.to_string()));
-    walk_pattern_payloads(pattern, &mut |payload| match payload {
-        PatternPayload::Node(node) => {
-            if let Some(variable) = &node.variable {
-                out.insert(variable.to_string());
-            }
+    walk_pattern_payloads(pattern, &mut |payload| {
+        let variable = match payload {
+            PatternPayload::Node(node) => &node.variable,
+            PatternPayload::Relationship(rel) => &rel.variable,
+            PatternPayload::Quantified(_) => return,
+        };
+        if let Some(variable) = variable {
+            out.insert(variable.to_string());
         }
-        PatternPayload::Relationship(rel) => {
-            if let Some(variable) = &rel.variable {
-                out.insert(variable.to_string());
-            }
-        }
-        PatternPayload::Quantified(_) => {}
     });
 }
 
@@ -297,19 +305,22 @@ pub(super) fn call_imports(
     query: &Query,
     outer: &BTreeSet<String>,
 ) -> Vec<BTreeSet<String>> {
-    match scope {
-        CallScope::Wildcard => query.parts.iter().map(|_| outer.clone()).collect(),
-        CallScope::Vars(names) => {
-            // Text render: the import sets are the String scope domain.
-            let declared: BTreeSet<String> = names.iter().map(|name| name.to_string()).collect();
-            query.parts.iter().map(|_| declared.clone()).collect()
-        }
-        CallScope::None => query
-            .parts
-            .iter()
-            .map(|part| part.leading_imports(outer))
-            .collect(),
-    }
+    // Resolve the body-wide import set once: a scope clause declares one
+    // for every arm; a scope-less body imports per arm.
+    let shared: Option<BTreeSet<String>> = match scope {
+        CallScope::Wildcard => Some(outer.clone()),
+        // Text render: the import sets are the String scope domain.
+        CallScope::Vars(names) => Some(names.iter().map(|name| name.to_string()).collect()),
+        CallScope::None => None,
+    };
+    query
+        .parts
+        .iter()
+        .map(|part| match &shared {
+            Some(imports) => imports.clone(),
+            None => part.leading_imports(outer),
+        })
+        .collect()
 }
 
 /// The index names a `SEARCH` source specification names.

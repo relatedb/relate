@@ -70,8 +70,9 @@ impl WorkMeter {
 
     /// [`Self::charge`] for the product of two statement dimensions, the
     /// one shape every detector spends in.
-    pub(super) fn charge_pairs(&mut self, a: u64, b: usize) -> bool {
-        self.charge(a.saturating_mul(u64::try_from(b).unwrap_or(u64::MAX)))
+    pub(super) fn charge_pairs(&mut self, a: usize, b: usize) -> bool {
+        let widen = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+        self.charge(widen(a).saturating_mul(widen(b)))
     }
 }
 
@@ -246,7 +247,7 @@ pub(super) fn observe_create(ctx: &mut ShapeCtx<'_>, patterns: &[PathPattern]) {
     // past the shared budget, like the sibling detectors, so a crafted `CREATE`
     // with a wide property map and many created entities cannot pin a core
     // before execution.
-    let values: u64 = property_maps.iter().map(|items| items.len() as u64).sum();
+    let values: usize = property_maps.iter().map(|items| items.len()).sum();
     if !meter.charge_pairs(values, created.len()) {
         return;
     }
@@ -336,10 +337,7 @@ fn observe_ambiguous_references(ctx: &mut ShapeCtx<'_>, items: &[Projection], su
     // family is declined past the shared budget, decided once here, while
     // the complex-reference family keeps its own guard. One wide dimension
     // therefore never silences the other family.
-    if !ctx
-        .meter
-        .charge_pairs(subclause.len() as u64, shadowing.len())
-    {
+    if !ctx.meter.charge_pairs(subclause.len(), shadowing.len()) {
         return;
     }
     for expr in subclause {
@@ -501,7 +499,7 @@ fn complex_references<'a>(
     // Count the visited nodes first — a comparison-free walk — so a
     // pathological nodes × items pair declines before any of the pair work
     // rather than partway through it.
-    let mut nodes = 0u64;
+    let mut nodes = 0usize;
     for child in expr.children() {
         child.visit(&mut |_| nodes += 1);
     }
@@ -538,7 +536,7 @@ fn complex_references<'a>(
 fn type_expression_unsatisfiable(expr: &LabelExpr, meter: &mut WorkMeter) -> bool {
     let mut names = BTreeSet::new();
     collect_label_names(expr, &mut names);
-    let candidate_count = names.len() as u64 + 1;
+    let candidate_count = names.len() + 1;
     if !meter.charge_pairs(candidate_count, label_expression_size(expr)) {
         return false;
     }

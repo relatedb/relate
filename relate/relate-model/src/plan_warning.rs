@@ -102,52 +102,54 @@ pub enum PlanWarning {
     },
 }
 
-/// One variant's vocabulary row — the wire name, the base message text,
-/// and the notification kind the warning projects to, each named so a
-/// transposed read (`name()` reading the text) stops compiling, the
-/// same boundary the notification vocabulary's own row struct draws.
-struct VocabularyRow {
-    name: &'static str,
-    /// The base message text — `String` because the `EstimationMiss`
-    /// row names [`ESTIMATION_MISS_FACTOR`], built here rather than
-    /// spelled a second time.
-    text: String,
-    kind: NotificationKind,
-}
+/// The payload-less variants, the one table the wire parse searches by
+/// [`PlanWarning::name`] — a new payload-less variant is added here and
+/// to [`PlanWarning::identity`]'s exhaustive match.
+const PAYLOAD_LESS: [PlanWarning; 3] = [
+    PlanWarning::EstimationMiss,
+    PlanWarning::CartesianProduct,
+    PlanWarning::AllNodesScan,
+];
 
 impl PlanWarning {
-    /// One exhaustive variant mapping: the wire name, the base message
-    /// text, and the notification kind the warning projects to (ADR-0363
-    /// decision 1) — a fourth warning variant must choose all three
-    /// here rather than falling through a wildcard. Every projected kind
-    /// is a plan warning in the model's partition
+    /// One exhaustive variant mapping of the allocation-free half of the
+    /// vocabulary: the wire name and the notification kind the warning
+    /// projects to (ADR-0363 decision 1) — a fifth warning variant must
+    /// choose both here rather than falling through a wildcard. Every
+    /// projected kind is a plan warning in the model's partition
     /// ([`NotificationKind::is_plan_warning`]), so the plan table's
     /// warning text and the notification description are one spelling.
-    fn vocabulary(&self) -> VocabularyRow {
+    fn identity(&self) -> (&'static str, NotificationKind) {
         match self {
-            PlanWarning::EstimationMiss => VocabularyRow {
-                name: WARNING_ESTIMATION_MISS,
-                text: format!(
-                    "estimated rows {ESTIMATION_MISS_FACTOR}x or more above the actual rows"
-                ),
-                kind: NotificationKind::EstimationMiss,
-            },
-            PlanWarning::CartesianProduct => VocabularyRow {
-                name: WARNING_CARTESIAN_PRODUCT,
-                text: "the MATCH patterns share no join anchor".to_string(),
-                kind: NotificationKind::CartesianProduct,
-            },
-            PlanWarning::AllNodesScan => VocabularyRow {
-                name: WARNING_ALL_NODES_SCAN,
-                text: "the scan matches every node; add a label to narrow it".to_string(),
-                kind: NotificationKind::AllNodesScan,
-            },
-            PlanWarning::LabelDisjunctionScan { .. } => VocabularyRow {
-                name: WARNING_LABEL_DISJUNCTION_SCAN,
-                text: "the disjunction scan answers per label; consider the property index"
-                    .to_string(),
-                kind: NotificationKind::LabelDisjunctionScan,
-            },
+            PlanWarning::EstimationMiss => {
+                (WARNING_ESTIMATION_MISS, NotificationKind::EstimationMiss)
+            }
+            PlanWarning::CartesianProduct => (
+                WARNING_CARTESIAN_PRODUCT,
+                NotificationKind::CartesianProduct,
+            ),
+            PlanWarning::AllNodesScan => (WARNING_ALL_NODES_SCAN, NotificationKind::AllNodesScan),
+            PlanWarning::LabelDisjunctionScan { .. } => (
+                WARNING_LABEL_DISJUNCTION_SCAN,
+                NotificationKind::LabelDisjunctionScan,
+            ),
+        }
+    }
+
+    /// The base message text, before any payload — one exhaustive match,
+    /// built only where a message is rendered ([`Self::message`]).
+    fn base_text(&self) -> String {
+        match self {
+            PlanWarning::EstimationMiss => {
+                format!("estimated rows {ESTIMATION_MISS_FACTOR}x or more above the actual rows")
+            }
+            PlanWarning::CartesianProduct => "the MATCH patterns share no join anchor".to_string(),
+            PlanWarning::AllNodesScan => {
+                "the scan matches every node; add a label to narrow it".to_string()
+            }
+            PlanWarning::LabelDisjunctionScan { .. } => {
+                "the disjunction scan answers per label; consider the property index".to_string()
+            }
         }
     }
 
@@ -155,7 +157,7 @@ impl PlanWarning {
     /// serializes (`warnings` on the node) and
     /// [`Self::from_wire_parts`] validates against.
     pub fn name(&self) -> &'static str {
-        self.vocabulary().name
+        self.identity().0
     }
 
     /// The warning's index payload — the `LabelDisjunctionScan` warning's
@@ -188,19 +190,19 @@ impl PlanWarning {
     ///     .is_plan_warning());
     /// ```
     pub fn notification_kind(&self) -> NotificationKind {
-        self.vocabulary().kind
+        self.identity().1
     }
 
     /// The warning's message text — the vocabulary's base text
-    /// ([`Self::vocabulary`]'s one spelling), with the payload appended in
+    /// ([`Self::base_text`]'s one spelling), with the payload appended in
     /// parentheses when the warning carries one (the `LabelDisjunctionScan`
     /// warning's suggested index pairs). The one spelling the engine
     /// renderer and every surface's table layout render, so the text
     /// cannot drift between the forms.
     pub fn message(&self) -> String {
         match self.suggested_index() {
-            Some(index) => format!("{} ({index})", self.vocabulary().text),
-            None => self.vocabulary().text.to_string(),
+            Some(index) => format!("{} ({index})", self.base_text()),
+            None => self.base_text(),
         }
     }
 
@@ -215,16 +217,13 @@ impl PlanWarning {
     /// change as the first cross-crate consumer parsing raw wire
     /// warning maps.
     pub(crate) fn from_wire_parts(name: &str, index: Option<&str>) -> Option<Self> {
-        match (name, index) {
-            (WARNING_ESTIMATION_MISS, None) => Some(PlanWarning::EstimationMiss),
-            (WARNING_CARTESIAN_PRODUCT, None) => Some(PlanWarning::CartesianProduct),
-            (WARNING_ALL_NODES_SCAN, None) => Some(PlanWarning::AllNodesScan),
-            (WARNING_LABEL_DISJUNCTION_SCAN, Some(indexes)) => {
-                Some(PlanWarning::LabelDisjunctionScan {
+        match index {
+            None => PAYLOAD_LESS.into_iter().find(|w| w.name() == name),
+            Some(indexes) => (name == WARNING_LABEL_DISJUNCTION_SCAN).then(|| {
+                PlanWarning::LabelDisjunctionScan {
                     indexes: indexes.to_string(),
-                })
-            }
-            _ => None,
+                }
+            }),
         }
     }
 }

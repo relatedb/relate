@@ -121,6 +121,9 @@ pub(crate) fn merge(
     merged
 }
 
+/// One plan part with its visited clauses, each flagged nested or not.
+type StagedPart<'a> = (&'a [relate_ir::Clause], Vec<(&'a relate_ir::Clause, bool)>);
+
 /// The statement-scoped entries of one planned statement (ADR-0363
 /// decision 5). The plan is walked through the planner's canonical
 /// part/stage walk and the IR's exhaustive clause-tree walk, so `NEXT`
@@ -138,9 +141,8 @@ pub(crate) fn statement_notifications(
     // expression roles first so the one `Facts` accumulator is borrowed by
     // a single fold below (no duplicated traversal, no interior mutability
     // just to split the two callback borrows).
-    let mut part_clauses: Vec<Vec<(&relate_ir::Clause, bool)>> = Vec::new();
+    let mut staged: Vec<StagedPart<'_>> = Vec::new();
     let mut exprs = Vec::new();
-    let mut parts = Vec::new();
     // A clause is nested when it sits inside a `CALL { … }` body, a `WHEN`
     // branch or an expression subquery. The walk reports that as data on its
     // clause callback (never inferred from callback order), so a walker
@@ -156,22 +158,22 @@ pub(crate) fn statement_notifications(
     // never by merging two scopes; the walk reports nesting, not body
     // identity, and importing a body-identity walk is deferred).
     relate_planner::walk_plan_parts(plan, &mut |part| {
-        parts.push(part);
         let mut group = Vec::new();
         relate_ir::walk_clauses_with_roles(
             part,
             &mut |clause, nested| group.push((clause, nested)),
             &mut |expr, role| exprs.push((expr, role)),
         );
-        part_clauses.push(group);
+        staged.push((part, group));
     });
     let mut facts = Facts::default();
+    let parts: Vec<&[relate_ir::Clause]> = staged.iter().map(|(part, _)| *part).collect();
     scope::observe_subquery_scopes(&mut facts.shape(), &parts);
     // One typed-index snapshot per statement (catalog state is
     // statement-scoped, not part- or clause-scoped): every part's fire
     // reads the same slice.
     let indexes = view.index_facts()?;
-    for group in part_clauses {
+    for (_, group) in staged {
         facts.observe_part(group, view, params, &indexes)?;
     }
     for (expr, role) in exprs {

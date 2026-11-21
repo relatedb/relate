@@ -463,43 +463,25 @@ mod tests {
     fn to_value_serializes_warnings_by_name() {
         let node = PlanNode::new("AllNodesScan", "()".to_string(), Vec::new(), Vec::new())
             .with_warnings(vec![PlanWarning::AllNodesScan]);
-        let Value::Map(node) = node.to_value() else {
-            panic!("the wire node is a map");
-        };
-        let warnings = match node.get(plan_keys::WARNINGS) {
-            Some(Value::List(warnings)) => warnings,
-            other => panic!("warnings serialize as a list, got {other:?}"),
-        };
-        // The warning map carries the name and the payload — the
-        // suggested index — so the wire consumer renders the engine's
-        // own message text.
-        let all_nodes_scan = warnings
-            .iter()
-            .map(|w| match w {
-                Value::Map(fields) => (
-                    match fields.get(plan_keys::WARNING_NAME) {
-                        Some(Value::String(name)) => name.to_string(),
-                        other => panic!(
-                            "a warning's {} is a string, got {other:?}",
-                            plan_keys::WARNING_NAME
-                        ),
-                    },
-                    match fields.get(plan_keys::WARNING_INDEX) {
-                        Some(Value::String(index)) => Some(index.to_string()),
-                        None => None,
-                        other => panic!(
-                            "a warning's {} is a string when present, got {other:?}",
-                            plan_keys::WARNING_INDEX
-                        ),
-                    },
-                ),
-                other => panic!("a warning serializes as a map, got {other:?}"),
-            })
-            .collect::<Vec<_>>();
+        // Round-trip through the wire accessor's one validating parse
+        // (`from_wire_parts`): the name is the wire spelling and the
+        // warning carries no payload.
+        let wire_value = relate_core::value_to_cypher(&node.to_value());
         assert_eq!(
-            all_nodes_scan,
-            vec![("AllNodesScan".to_string(), None)],
-            "the name is the wire spelling and the warning carries no payload"
+            wire::plan_node_wire(&wire_value).warnings,
+            vec![PlanWarning::AllNodesScan]
+        );
+        let with_payload =
+            PlanNode::new("NodeByLabelScan", "()".to_string(), Vec::new(), Vec::new())
+                .with_warnings(vec![PlanWarning::LabelDisjunctionScan {
+                    indexes: ":A(x), :B(x)".to_string(),
+                }]);
+        assert_eq!(
+            wire::plan_node_wire(&relate_core::value_to_cypher(&with_payload.to_value())).warnings,
+            vec![PlanWarning::LabelDisjunctionScan {
+                indexes: ":A(x), :B(x)".to_string()
+            }],
+            "the payload survives the round trip"
         );
         // A node with no warnings carries no `warnings` key — never an
         // empty list fabricated beside the absent ones.

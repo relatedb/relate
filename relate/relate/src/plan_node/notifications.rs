@@ -579,8 +579,8 @@ mod tests {
     }
 
     impl PlanStats for LabelStats {
-        fn property_index_texts(&self) -> Vec<String> {
-            Vec::new()
+        fn has_property_index(&self) -> bool {
+            false
         }
         fn range_indexed_properties(&self) -> Vec<crate::stats::RangeIndexedProperty> {
             Vec::new()

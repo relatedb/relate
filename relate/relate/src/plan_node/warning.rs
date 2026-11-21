@@ -98,8 +98,11 @@ fn scan_warning(
 ) -> Option<PlanWarning> {
     // The `AllNodesScan` gate both every-node shapes below read: whether
     // the store carries any property index. The warning names no index.
-    let all_nodes_scan =
-        || (!stats.property_index_texts().is_empty()).then_some(PlanWarning::AllNodesScan);
+    let all_nodes_scan = || {
+        stats
+            .has_property_index()
+            .then_some(PlanWarning::AllNodesScan)
+    };
     // The classic label-less scan, whatever predicates filter it — the
     // naming's derivation's own half, read here (ADR-0363).
     if super::subject::is_label_less(node) {

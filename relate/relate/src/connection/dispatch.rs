@@ -589,9 +589,8 @@ impl Connection {
                         // cannot follow a `Refused` (same budget); a refused
                         // grow leaves the plan uncharged by design — the
                         // statement already holds its own reservation.
-                        match budget.try_hold_grow(bytes) {
-                            HoldAttempt::Held(hold) => park(reservation, hold),
-                            HoldAttempt::Off | HoldAttempt::Refused => {}
+                        if let HoldAttempt::Held(hold) = budget.try_hold_grow(bytes) {
+                            park(reservation, hold);
                         }
                     }
                 }

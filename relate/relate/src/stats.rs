@@ -25,9 +25,9 @@ pub(crate) struct RangeIndexedProperty {
 /// [`GraphPatternStats`] (the one construction every plan read site
 /// builds, ADR-0218) and by the test fakes.
 pub(crate) trait PlanStats: PatternStats {
-    /// The property indexes the store carries, as `:Label(property)` texts
-    /// — the gate the plan tree's `AllNodesScan` warning reads.
-    fn property_index_texts(&self) -> Vec<String>;
+    /// Whether the store carries any property index — the gate the plan
+    /// tree's `AllNodesScan` warning reads (it names no index).
+    fn has_property_index(&self) -> bool;
 
     /// Every node `(label, property)` pair a RANGE index serves an equality
     /// seek on — the fact the `MissingIndex` notification tests against,
@@ -81,15 +81,10 @@ impl<'a> GraphPatternStats<'a> {
 }
 
 impl PlanStats for GraphPatternStats<'_> {
-    /// The property indexes the store carries, as `:Label(property)` texts —
-    /// the gate the plan tree's `AllNodesScan` warning reads. The
-    /// catalog's own listing order, never a re-sorted copy.
-    fn property_index_texts(&self) -> Vec<String> {
-        self.graph
-            .named_indexes()
-            .into_iter()
-            .map(|index| index.index_text())
-            .collect()
+    /// Whether the store carries any property index — the gate the plan
+    /// tree's `AllNodesScan` warning reads.
+    fn has_property_index(&self) -> bool {
+        !self.graph.named_indexes().is_empty()
     }
 
     /// The store's range-indexed node pairs, read through the executor's
@@ -116,7 +111,7 @@ impl PatternStats for GraphPatternStats<'_> {
     // One canonical live-graph implementation (LABS-351): every
     // PatternStats method delegates to the executor's GraphStats, so
     // plan-time ordering and exec-time start selection read the same
-    // numbers. Only property_index_texts and range_indexed_properties
+    // numbers. Only has_property_index and range_indexed_properties
     // (this crate's own plan-warning/notification facts) stay local.
     fn label_rows(&self, label: &NamedToken) -> Option<u64> {
         relate_executor::GraphStats::new(self.graph, self.params).label_rows(label)
