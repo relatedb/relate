@@ -355,6 +355,15 @@ pub(crate) fn report_trimmed_tail(tail: &relate_storage::TrimmedTail) {
     );
 }
 
+/// Report one load degrade (the opt-in adjacency payload the open could
+/// not install, ADR-0551) the moment the load takes the row re-fold: one
+/// stderr line on the channel and prefix [`report_trimmed_tail`] uses.
+/// Both shipped open paths — the writable loader and the read-only loader
+/// — wire this sink, so a degraded open is never silent on either.
+pub(crate) fn report_degraded_payload(warning: &str) {
+    eprintln!("relate: {warning}");
+}
+
 /// The single write-admission gate every commit path calls before it
 /// enqueues anything (ADR-0042, ADR-0440): draining refuses retryably, a
 /// non-writable handle (frozen read-only, or a follower that was never

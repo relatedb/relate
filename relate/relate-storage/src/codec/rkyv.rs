@@ -512,8 +512,9 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
     let archived = rkyv::access::<ArchivedSnapshot, rkyv::rancor::Error>(&bytes)
         .map_err(|e| Error::storage(format!("rkyv snapshot validation failed: {e}")))?;
     if archived.checkpoint_lsn.to_native() != manifest.envelope.checkpoint_lsn {
-        return Err(super::checkpoint_identity_mismatch(
-            &manifest,
+        return Err(crate::manifest::checkpoint_identity_mismatch(
+            manifest.envelope.codec,
+            manifest.envelope.checkpoint_lsn,
             "archive",
             archived.checkpoint_lsn.to_native(),
         ));

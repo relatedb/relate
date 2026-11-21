@@ -52,6 +52,45 @@ pub(crate) fn is_ontology_object_name(name: &str) -> bool {
     crate::vfs::is_lower_hex_32(hex)
 }
 
+/// The directory of the opt-in adjacency payload objects
+/// `adjacency/payload-<128-bit-hex>.parquet`.
+pub(crate) const PAYLOAD_DIR: &str = "adjacency";
+
+/// The adjacency payload's opt-in variable. Unset or `0` keeps it off; `1`
+/// turns it on. One public home: the codec reads it and the lab and
+/// integration test set it.
+pub const ADJACENCY_PAYLOAD_ENV: &str = "RELATE_ADJACENCY_PAYLOAD";
+
+/// The adjacency payload's live-relationship threshold variable.
+pub const ADJACENCY_PAYLOAD_MIN_RELS_ENV: &str = "RELATE_ADJACENCY_PAYLOAD_MIN_RELS";
+
+/// The one grammar of the opt-in adjacency payload object name
+/// (`adjacency/payload-<32 lowercase hex>.parquet`): the name builder, the
+/// manifest's path check, the deletion allowlist and the orphan sweep all
+/// go through it.
+pub(crate) fn is_payload_object_name(name: &str) -> bool {
+    let Some(file) = name
+        .strip_prefix(PAYLOAD_DIR)
+        .and_then(|rest| rest.strip_prefix("/payload-"))
+    else {
+        return false;
+    };
+    let Some(hex) = file.strip_suffix(".parquet") else {
+        return false;
+    };
+    crate::vfs::is_lower_hex_32(hex)
+}
+
+/// Name one new adjacency payload object from a fresh 128-bit token.
+/// Written only by the Parquet checkpoint's payload path.
+#[cfg_attr(not(parquet_codec), allow(dead_code))]
+pub(crate) fn payload_object_name() -> relate_core::Result<String> {
+    Ok(format!(
+        "{PAYLOAD_DIR}/payload-{}.parquet",
+        crate::vfs::random_hex_16()?
+    ))
+}
+
 /// What one snapshot load decodes, named instead of positional (ADR-0120,
 /// ADR-0127 Decision 2): the graph, the checkpoint LSN (0 when the store
 /// has no manifest yet), the ontology document the snapshot carries
@@ -69,6 +108,17 @@ pub(crate) struct LoadedSnapshot<G: SnapshotGraph> {
     /// may run it; a read-only open never does. `None` for every codec
     /// that defers nothing and every unchanged store.
     pub(crate) deferred: Option<DeferredOpenAction>,
+    /// Wall of the load's adjacency tail — the opt-in payload install plus
+    /// the restore tail that keeps it (Parquet). `None` when the codec does
+    /// not measure it, so an unmeasured tail is explicit. The measurement
+    /// harness reads it through [`crate::load_timed`].
+    pub(crate) adjacency: Option<std::time::Duration>,
+    /// What the load degraded around instead of failing — the opt-in
+    /// adjacency payload it could not install, each entry naming the
+    /// mismatch, with the store opened on the row re-fold (ADR-0551).
+    /// Carried with the load so a retry can emit only the accepted
+    /// attempt's set.
+    pub(crate) warnings: Vec<String>,
 }
 
 impl<G: SnapshotGraph> LoadedSnapshot<G> {
@@ -84,6 +134,8 @@ impl<G: SnapshotGraph> LoadedSnapshot<G> {
             ontology: None,
             marker: crate::version::SnapshotMarker::Current,
             deferred: None,
+            adjacency: None,
+            warnings: Vec::new(),
         }
     }
 }
@@ -136,6 +188,9 @@ pub(crate) enum ObjectName {
     Manifest,
     /// An immutable `ontology/<128-bit-hex>.json` document object.
     Ontology,
+    /// An opt-in `adjacency/payload-<128-bit-hex>.parquet` adjacency
+    /// payload object.
+    Payload,
     /// A text-mirror file under the schema mirror's directory
     /// (`schema_files::SCHEMA_DIR`, ADR-0481): written only by the
     /// checkpoint tail, read only by the open-time drift guard — both
@@ -158,6 +213,9 @@ pub(crate) fn object_name(name: &str) -> Option<ObjectName> {
     }
     if is_ontology_object_name(name) {
         return Some(ObjectName::Ontology);
+    }
+    if is_payload_object_name(name) {
+        return Some(ObjectName::Payload);
     }
     if crate::schema_files::MirrorFile::is_contract_path(name) {
         return Some(ObjectName::SchemaMirror);
@@ -298,7 +356,8 @@ pub(crate) fn bounded_read_for(name: &str) -> Option<&'static BoundedRead> {
         Some(ObjectName::Manifest) => Some(&JSON_META),
         Some(ObjectName::Ontology) => Some(&ONTOLOGY_DOC),
         Some(ObjectName::SchemaMirror) => Some(&SCHEMA_MIRROR),
-        Some(ObjectName::LegacyShard) | None => None,
+        // An adjacency payload is a large generated object, like a shard.
+        Some(ObjectName::Payload) | Some(ObjectName::LegacyShard) | None => None,
         #[cfg(parquet_codec)]
         Some(ObjectName::Shard(_)) => None,
     }

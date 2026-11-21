@@ -233,36 +233,10 @@ pub(super) fn sealed_chunk_len(side: &AdjSide<'_>, node: NodeId, type_id: u32) -
         .chunk_len(type_id)
 }
 
-/// One node's adjacency, raw and as each direction expands it — the
-/// observation the restore and rebuild submodules compare graphs by.
-#[derive(Debug, PartialEq)]
-pub(crate) struct NodeAdjacency {
-    pub(crate) id: NodeId,
-    pub(crate) out: Vec<RelId>,
-    pub(crate) r#in: Vec<RelId>,
-    /// `Outgoing`, `Incoming`, then `Both` hops.
-    pub(crate) expands: [Vec<RelId>; 3],
-}
-
-/// Every live node's [`NodeAdjacency`] at the graph's commit ts.
-pub(crate) fn node_adjacencies(g: &Graph) -> Vec<NodeAdjacency> {
-    use relate_ir::Direction;
-
-    let ts = g.commit_ts();
-    g.all_node_ids_at(ts)
-        .into_iter()
-        .map(|id| {
-            let expands = [Direction::Outgoing, Direction::Incoming, Direction::Both]
-                .map(|dir| g.neighbors_at(id, dir, ts));
-            NodeAdjacency {
-                id,
-                out: g.degree_out(id),
-                r#in: g.degree_in(id),
-                expands,
-            }
-        })
-        .collect()
-}
+// The whole-graph adjacency observation lives in its own module so the
+// storage payload tests can read it behind `test-hooks`; this re-export
+// keeps the graph test modules' one import path.
+pub(crate) use super::observation::{node_adjacencies, NodeAdjacency};
 
 /// Every live node's and rel's rows at `ts`, in id order — the dump a
 /// checkpoint writes and a restore installs.
