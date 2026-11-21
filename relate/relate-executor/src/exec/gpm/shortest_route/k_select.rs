@@ -46,16 +46,19 @@ pub(super) fn select_k(
         if route.halted() {
             break;
         }
-        let done = match keep {
+        // Whether this class completed the selection: `k` trails (or
+        // groups) taken. A halted sink ends the walk through the one
+        // exit test below.
+        let full = match keep {
             Keep::Groups(k) => {
                 let mut any = false;
-                let halted = walk.each_trail(length, |trail, _| {
+                walk.each_trail(length, |trail, _| {
                     any = true;
                     route.offer_trail(s, e, trail, srow, out)?;
                     Ok(route.halted())
                 })?;
                 taken += usize::from(any);
-                halted || taken >= k
+                taken >= k
             }
             Keep::Paths(k) => {
                 let mut heap = Retained::new(k - taken);
@@ -71,10 +74,10 @@ pub(super) fn select_k(
                     }
                     route.offer_trail(s, e, &member.trail, srow, out)?;
                 }
-                route.halted() || taken >= k
+                taken >= k
             }
         };
-        if done || walk.unreachable() || walk.complete() {
+        if full || route.halted() || walk.unreachable() || walk.complete() {
             break;
         }
     }

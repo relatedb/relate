@@ -5,7 +5,7 @@
 use std::cell::{Cell, OnceCell};
 
 use relate_core::{Error, NodeId, RelId, Result, Value};
-use relate_ir::{MatchMode, NodePattern, PathPattern};
+use relate_ir::{NodePattern, PathPattern};
 
 use crate::ctx::ExecCtx;
 use crate::exec::candidates::node_ok;
@@ -147,14 +147,14 @@ impl<'a> Route<'a> {
 
     /// The route's unbounded DFS cap, resolved once — the
     /// [`unbounded_dfs_cap`] value this route's filtered partitions read
-    /// when the pattern is unbounded. The route guard admits only
-    /// DIFFERENT RELATIONSHIPS patterns (the admission fact's one home,
-    /// `route_shape`), so the cap is that arm: the live rel count, the
+    /// when the pattern is unbounded, under the match mode the guard
+    /// admitted ([`Shape::match_mode`], the admission fact's one home,
+    /// `route_shape`): the live rel count for DIFFERENT RELATIONSHIPS, the
     /// sound bound of a trail that never revisits a relationship.
     fn memoized_unbounded_cap(&self) -> u32 {
         *self
             .unbounded_cap
-            .get_or_init(|| unbounded_dfs_cap(self.ctx.graph, MatchMode::DifferentRelationships))
+            .get_or_init(|| unbounded_dfs_cap(self.ctx.graph, self.shape.match_mode))
     }
 
     /// Whether a count selector (`SHORTEST k`, ADR-0607) picks this

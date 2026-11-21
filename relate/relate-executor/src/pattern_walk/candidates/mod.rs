@@ -92,20 +92,25 @@ fn seek_union(
     union_dedup(per_arm.into_iter()).map(Some)
 }
 
+/// A node id as the raw word the tiered set holds: `NodeId` is `i64` and
+/// the bit-pattern cast is injective over its whole range, so distinct ids
+/// stay distinct words whatever their sign.
+fn id_word(id: NodeId) -> u64 {
+    id as u64
+}
+
 /// The union of the per-arm served answers, deduplicated by node id and
 /// ascending — the one per-arm union spelling every disjunction serve
 /// reads (the keyed seek union and the scan tail's per-arm property
 /// lookup alike). The dedup set is the tiered word set (ADR-0522): its
 /// inline tier holds the common keyed case's handful of ids
-/// allocation-free. `NodeId` is `i64` and the set knows raw `u64` words:
-/// the bit-pattern cast is injective over the whole `i64` range, so
-/// distinct ids stay distinct words whatever their sign.
+/// allocation-free; ids enter it as [`id_word`]s.
 fn union_dedup(served: impl Iterator<Item = Vec<NodeId>>) -> Result<Vec<NodeId>> {
     let mut seen = TieredWordSet::new(WordHash::Id);
     let mut ids = Vec::new();
     for arm_ids in served {
         for id in arm_ids {
-            if seen.insert(id as u64, "union")? {
+            if seen.insert(id_word(id), "union")? {
                 ids.push(id);
             }
         }
@@ -394,15 +399,15 @@ struct Ask<'a> {
 }
 
 /// A capped funnel answer: the complete candidate list when at most
-/// `cap` nodes match, or `Over` — more than `cap` match — with no list,
-/// carrying the first count past the cap (`cap + 1`) so a caller that
-/// refuses reads it instead of rebuilding it. Both capped entries answer
+/// `cap` nodes match, or `Over` — more than `cap` match — with no list
+/// and no count: the caller that refuses states its own bound. Both capped
+/// entries answer
 /// `Option<Capped>`: `None` is "no answer a caller may size a side by" —
 /// a shape whose scan is a superset of its matches (the plain funnel
 /// reports it before scanning), or a point ask no point seek served.
 pub(crate) enum Capped {
     Within(Vec<NodeId>),
-    Over(u64),
+    Over,
 }
 
 /// [`node_candidates`] for a caller that only needs the candidates when
@@ -458,12 +463,11 @@ pub(crate) fn point_candidates_capped(
         .map(|answer| answer.map(|ids| cap_answer(ids, cap)))
 }
 
-/// The capped answer of a complete candidate list: `Over` — with the
-/// first count past the cap, `cap + 1` — once more than `cap` nodes
-/// match.
+/// The capped answer of a complete candidate list: `Over` once more than
+/// `cap` nodes match.
 fn cap_answer(ids: Vec<NodeId>, cap: usize) -> Capped {
     if ids.len() > cap {
-        Capped::Over(cap as u64 + 1)
+        Capped::Over
     } else {
         Capped::Within(ids)
     }

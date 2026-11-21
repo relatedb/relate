@@ -155,6 +155,9 @@ struct TrailState {
     trail: Vec<RelId>,
     nodes: Vec<NodeId>,
     used: UsedSet,
+    /// The class length: the hop that makes the trail this long is the
+    /// closing one.
+    length: usize,
 }
 
 impl TrailState {
@@ -166,27 +169,45 @@ impl TrailState {
             trail: Vec::with_capacity(length),
             nodes,
             used: UsedSet::default(),
+            length,
         }
+    }
+
+    /// Whether the next hop closes the trail: the one that makes it
+    /// `length` long.
+    fn closing(&self) -> bool {
+        self.trail.len() + 1 == self.length
     }
 
     /// Take `rid` to `node`; `false` — nothing taken — when the trail
     /// already used `rid`: a trail never reuses one relationship, the
     /// rule this pair owns (as `TrailWalk::enter` spells it for the
-    /// route's own walk).
+    /// route's own walk). The closing hop of a class-length trail is only
+    /// checked against the used set, never recorded: nothing extends past
+    /// it, so its relationship is never probed again. [`Self::leave`]
+    /// derives the same fact from the trail's length, so the pair cannot
+    /// disagree.
     fn enter(&mut self, rid: RelId, node: NodeId) -> bool {
-        if !self.used.insert(rid) {
-            return false;
+        let free = if self.closing() {
+            !self.used.contains(&rid)
+        } else {
+            self.used.insert(rid)
+        };
+        if free {
+            self.trail.push(rid);
+            self.nodes.push(node);
+            debug_assert_eq!(self.nodes.len(), self.trail.len() + 1);
         }
-        self.trail.push(rid);
-        self.nodes.push(node);
-        debug_assert_eq!(self.nodes.len(), self.trail.len() + 1);
-        true
+        free
     }
 
     /// Undo the last hop; a no-op on the empty trail.
     fn leave(&mut self) {
+        let closing = self.trail.len() == self.length;
         if let Some(rid) = self.trail.pop() {
-            self.used.remove(&rid);
+            if !closing {
+                self.used.remove(&rid);
+            }
             self.nodes.pop();
         }
     }
@@ -294,6 +315,19 @@ impl<'a, 'g> ClassWalk<'a, 'g> {
         !self.cut
     }
 
+    /// Whether a hop onto `next` with `remaining` relationships to go can
+    /// still reach the end: its ball bound fits. A node outside the
+    /// exhausted ball never reaches the end; any other refusal is a cut a
+    /// longer class could admit ([`Self::complete`]).
+    fn admit_hop(&mut self, next: NodeId, remaining: u64) -> bool {
+        let bound = self.ball.lower_bound(next);
+        let fits = u64::from(bound) <= remaining;
+        if !fits {
+            self.cut |= bound != u32::MAX;
+        }
+        fits
+    }
+
     /// Call `visit(trail, nodes)` for every trail of exactly `length`
     /// relationships, `nodes` being the `length + 1` nodes it passes, until
     /// `visit` returns `true` (stop). Returns whether it stopped. Each frame
@@ -334,26 +368,24 @@ impl<'a, 'g> ClassWalk<'a, 'g> {
             frame.next += 1;
             let at = walk.trail.len() + 1;
             let remaining = (length - at) as u64;
-            // A trail never reuses a relationship: `enter` refuses a
-            // consumed one, nothing taken.
+            // The closing hop is a verdict per trail: entered without
+            // recording its relationship in the used set.
+            let closing = walk.closing();
             if !walk.enter(rid, next) {
                 continue;
             }
-            let bound = self.ball.lower_bound(next);
-            if u64::from(bound) > remaining {
-                // A node outside the exhausted ball never reaches the end.
-                self.cut |= bound != u32::MAX;
+            if !self.admit_hop(next, remaining) {
                 walk.leave();
                 continue;
             }
-            if at == length {
+            if closing {
                 // The bound is zero only at the end: this is a trail of
-                // the class.
-                // A trail ending here may extend through the end again.
+                // the class. A trail ending here may extend through the
+                // end again.
                 self.cut = true;
-                let stop = visit(&walk.trail, &walk.nodes)?;
+                let stop = visit(&walk.trail, &walk.nodes);
                 walk.leave();
-                if stop {
+                if stop? {
                     return Ok(true);
                 }
                 continue;

@@ -124,6 +124,11 @@ pub(super) struct Shape<'p> {
     pub selection: Selection,
     /// The shortest-path spelling this pattern was written with.
     pub spelling: Spelling,
+    /// The match mode the guard admitted — always
+    /// [`MatchMode::DifferentRelationships`] (the guard declines every
+    /// other), carried so the route's unbounded cap reads the admitted
+    /// mode instead of restating the admission.
+    pub match_mode: MatchMode,
 }
 
 /// The one guard: the selectors, match and path modes, and pattern shape of
@@ -181,7 +186,7 @@ pub(super) fn route_shape<'p>(
     if explicit_walk && selection.counted().is_some() {
         return None;
     }
-    let hop = routed_hop(path, filters, selection, spelling)?;
+    let hop = routed_hop(path, filters, selection, spelling, match_mode)?;
     if hop.min > 1
         || hop.rel.where_clause.is_some()
         || !followable(hop.start, hop.rel, hop.end)
@@ -255,6 +260,7 @@ fn routed_hop<'p>(
     filters: &'p GpmFilters,
     selection: Selection,
     spelling: Spelling,
+    match_mode: MatchMode,
 ) -> Option<Shape<'p>> {
     let [PatternElement::Node(start), rel_element, PatternElement::Node(end)] =
         path.elements.as_slice()
@@ -287,6 +293,7 @@ fn routed_hop<'p>(
         max: max.or(spelling.unbounded_ceiling()),
         selection,
         spelling,
+        match_mode,
     })
 }
 

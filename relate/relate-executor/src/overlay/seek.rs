@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 
-use relate_core::{NodeId, Value};
+use relate_core::{Node, NodeId, Value};
 
 use crate::graph::{spatial_holds, Graph, RangeSeek, SpatialSeek};
 
@@ -35,38 +35,39 @@ impl<'a> ExecGraph<'a> {
         props: &BTreeMap<String, Value>,
         cap: Option<usize>,
     ) -> Option<Vec<NodeId>> {
-        let base_cap = if self.scratch.is_some() { None } else { cap };
+        let ts = self.snapshot_ts();
         // The base's own answer carries the both-empty policy (its only
         // `None` is the `Unindexed` arm), so the overlay propagates it
         // instead of re-checking the fact beside a handled form of it.
-        let mut ids =
-            self.base
-                .lookup_nodes_upto_at(labels, props, self.snapshot_ts(), base_cap)?;
-        // The base answer is already visibility-filtered at the snapshot;
-        // only the scratch's deletions can hide more of it, so a
-        // read-only view (no scratch) retains nothing — every candidate
-        // it would re-check already passed the same visibility read.
+        let Some(cell) = self.scratch else {
+            // The read-only view: the base answer is already
+            // visibility-filtered at the snapshot and nothing merges into
+            // it, so the capped answer is the view's own.
+            return self.base.lookup_nodes_upto_at(labels, props, ts, cap);
+        };
+        // A view with write scratch asks the base uncapped: a truncated
+        // base subset could lose members to the scratch's deletions.
+        let mut ids = self.base.lookup_nodes_upto_at(labels, props, ts, None)?;
+        // Only the scratch's deletions can hide more of the base answer.
         // Existence check is clone-free (node_exists, not node()).
-        if let Some(cell) = self.scratch {
-            ids.retain(|id| self.node_exists(*id));
-            // This lookup's scratch additions merge through the
-            // ascending-list algebra (LABS-803): [`scratch_lookup_adds`]
-            // answers the family's ascending contract on its own, and
-            // union_ids merges it with the ascending base — no duplicate
-            // guard, no closing re-sort. (The string-lookup merges below
-            // still spell the older push-and-sort idiom — their
-            // migration is the review backlog's seek-family
-            // unification.)
-            //
-            // The scratch half runs in the base half's own equality mode:
-            // an index-served probe seeks the scratch's identity-keyed
-            // index (ADR-0446 both halves), a scan-served probe scans
-            // the scratch with `=` — one lookup, one relation, however
-            // the base is served (LABS-1085 review).
-            let by_index = self.base.equality_served_by_index(labels, props);
-            ids = union_ids(ids, scratch_lookup_adds(cell, labels, props, by_index));
-        }
-        Some(ids)
+        ids.retain(|id| self.node_exists(*id));
+        // This lookup's scratch additions merge through the ascending-list
+        // algebra (LABS-803): [`scratch_lookup_adds`] answers the family's
+        // ascending contract on its own, and union_ids merges it with the
+        // ascending base — no duplicate guard, no closing re-sort — the
+        // same algebra the string, range and spatial lookups merge through
+        // ([`Self::merge_scratch_lookup`]).
+        //
+        // The scratch half runs in the base half's own equality mode: an
+        // index-served probe seeks the scratch's identity-keyed index
+        // (ADR-0446 both halves), a scan-served probe scans the scratch
+        // with `=` — one lookup, one relation, however the base is served
+        // (LABS-1085 review).
+        let by_index = self.base.equality_served_by_index(labels, props);
+        Some(union_ids(
+            ids,
+            scratch_lookup_adds(cell, labels, props, by_index),
+        ))
     }
 
     /// Committed postings plus the scratch's, for one equality probe
@@ -237,22 +238,17 @@ impl<'a> ExecGraph<'a> {
         let mut ids = base?;
         ids.retain(|id| self.node_exists(*id));
         if let Some(cell) = self.scratch {
-            let seen: HashSet<NodeId> = ids.iter().copied().collect();
-            // Read the scratch copy in place — `self.node` would clone its
-            // whole property map per scratch node; `node_exists` keeps the
-            // one visibility prologue (a scratch deletion hides the copy).
-            let scratch = cell.borrow();
-            for (id, n) in &scratch.batch.nodes {
-                if seen.contains(id) || !self.node_exists(*id) {
-                    continue;
-                }
-                if Graph::node_carries_labels(n, labels) && n.properties.get(key).is_some_and(&pred)
-                {
-                    ids.push(*id);
-                }
-            }
+            // The same ascending-list merge `lookup_nodes_upto` reads: the
+            // scratch's matches come back ascending and `union_ids` merges
+            // them with the ascending base — no duplicate guard, no closing
+            // re-sort. `node_exists` keeps the one visibility prologue (a
+            // scratch deletion hides the copy).
+            let mut adds = scratch_adds(cell, |n| {
+                Graph::node_carries_labels(n, labels) && n.properties.get(key).is_some_and(&pred)
+            });
+            adds.retain(|id| self.node_exists(*id));
+            ids = union_ids(ids, adds);
         }
-        ids.sort();
         Some(ids)
     }
 }
@@ -300,16 +296,24 @@ fn scratch_lookup_adds(
                 })
                 .collect()
         }
-        None => {
-            let s = cell.borrow();
-            s.batch
-                .nodes
-                .iter()
-                .filter(|(_, n)| Graph::node_matches(n, labels, props))
-                .map(|(id, _)| *id)
-                .collect()
-        }
+        None => scratch_adds(cell, |n| Graph::node_matches(n, labels, props)),
     };
+    adds.sort_unstable();
+    adds
+}
+
+/// The scratch nodes satisfying `pred`, ascending: the scratch map read in
+/// place — never a per-node clone — the one scan every scratch merge of the
+/// seek family answers its additions through.
+fn scratch_adds(cell: &RefCell<WriteScratch>, pred: impl Fn(&Node) -> bool) -> Vec<NodeId> {
+    let s = cell.borrow();
+    let mut adds: Vec<NodeId> = s
+        .batch
+        .nodes
+        .iter()
+        .filter(|(_, n)| pred(n))
+        .map(|(id, _)| *id)
+        .collect();
     adds.sort_unstable();
     adds
 }

@@ -379,7 +379,7 @@ impl Route<'_> {
         };
         Ok(match self.asked(np, ask, SEEK_PAIR_LIMIT)? {
             Some(Capped::Within(ids)) => Probed::Within(Side::Many(ids)),
-            Some(Capped::Over(_)) => Probed::Over(ask),
+            Some(Capped::Over) => Probed::Over(ask),
             // No ask answers this side: the side keeps the fan's own
             // handling.
             None => self.scanned_side(np, class, cell)?,
@@ -457,7 +457,13 @@ impl Route<'_> {
         })?;
         Ok(match capped {
             Capped::Within(ids) => Side::Many(ids),
-            Capped::Over(stop) => return Err(Error::capacity_seek_candidates(stop, limit as u64)),
+            // Over the bound: the first count past it is `limit + 1`.
+            Capped::Over => {
+                return Err(Error::capacity_seek_candidates(
+                    limit as u64 + 1,
+                    limit as u64,
+                ))
+            }
         })
     }
 
