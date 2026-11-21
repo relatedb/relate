@@ -80,7 +80,7 @@ impl Vfs for MemoryVfs {
         let files = self.lock();
         virtual_entry_meta(
             files.get(path).map(|b| b.len() as u64),
-            || is_prefix(&files, path),
+            files.keys().map(String::as_str),
             path,
         )
     }
