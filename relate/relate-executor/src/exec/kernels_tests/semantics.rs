@@ -4,7 +4,7 @@
 
 use relate_core::Value;
 
-use super::{differential, error_differential, families, Engagement};
+use super::{differential, error_differential, families, ExpectedEngagement};
 
 /// Existence: the boolean-count fold's `count(DISTINCT var.key) > 0` —
 /// the early-exit road to both kernels.
@@ -15,7 +15,7 @@ fn existence_matches_the_probe() {
         &g,
         "MATCH (h:Hub)-[:A]->(t:Tag), (h)-[:B]->(u:Tag) WHERE t.name = 'x' \
          RETURN count(DISTINCT h.k) > 0 AS has_pair",
-        Engagement::Engaged,
+        ExpectedEngagement::Engaged,
     );
     assert_eq!(has_pair.rows, vec![vec![Value::Bool(true)]]);
 
@@ -24,7 +24,7 @@ fn existence_matches_the_probe() {
         &g,
         "MATCH (h:Hub)-[:A]->(t:Tag), (h)-[:B]->(u:Tag) WHERE t.name = 'zz' \
          RETURN count(DISTINCT h.k) > 0 AS has_pair",
-        Engagement::Engaged,
+        ExpectedEngagement::Engaged,
     );
     assert_eq!(no_pair.rows, vec![vec![Value::Bool(false)]]);
 
@@ -33,13 +33,13 @@ fn existence_matches_the_probe() {
         &g,
         "MATCH (h:Hub)-[:C]->(m:Mid)-[:D]->(t:Tag), (h)-[:A]->(t) \
          RETURN count(DISTINCT h.k) > 0 AS has_cycle",
-        Engagement::Engaged,
+        ExpectedEngagement::Engaged,
     );
     differential(
         &g,
         "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE g.name = 'two' \
          RETURN count(DISTINCT a.k) > 0 AS has_a",
-        Engagement::Engaged,
+        ExpectedEngagement::Engaged,
     );
 }
 
@@ -52,7 +52,7 @@ fn null_predicates_keep_three_valued_logic() {
         &g,
         "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE a.s IS NULL \
          RETURN a.k AS ak LIMIT 99",
-        Engagement::Engaged,
+        ExpectedEngagement::Engaged,
     );
     // a2 carries no `s`.
     assert_eq!(is_null.rows, vec![vec![Value::Int(2)]]);
@@ -60,14 +60,14 @@ fn null_predicates_keep_three_valued_logic() {
         &g,
         "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE a.s IS NOT NULL \
          RETURN a.k AS ak LIMIT 99",
-        Engagement::Engaged,
+        ExpectedEngagement::Engaged,
     );
     assert_eq!(not_null.rows.len(), 4);
     let null_bound = differential(
         &g,
         "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE a.k > null \
          RETURN a.k AS ak LIMIT 99",
-        Engagement::Engaged,
+        ExpectedEngagement::Engaged,
     );
     assert_eq!(null_bound.rows, Vec::<Vec<Value>>::new());
 }
@@ -87,6 +87,6 @@ fn error_parity_on_a_bad_bound_operand() {
         &g,
         "MATCH (a:Nope)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE g.name =~ '[' \
          RETURN a.k AS ak LIMIT 99",
-        Engagement::Engaged,
+        ExpectedEngagement::Engaged,
     );
 }
