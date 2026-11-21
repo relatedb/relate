@@ -61,6 +61,21 @@ pub(crate) fn label_pattern(labels: &[String]) -> Result<String, LoadError> {
     node_pattern(labels, None)
 }
 
+/// The pre-read's relationship pattern `(a:`S`)-[r:`T`]->(b:`E`)` — the
+/// grammar's one home beside the write statements' endpoint matches.
+pub(crate) fn rel_pattern(
+    rel_type: &str,
+    start_label: &str,
+    end_label: &str,
+) -> Result<String, LoadError> {
+    Ok(format!(
+        "(a:{})-[r:{}]->(b:{})",
+        quote_ident(start_label)?,
+        quote_ident(rel_type)?,
+        quote_ident(end_label)?
+    ))
+}
+
 /// The whole SET clause from its comma-joined items — statement.rs
 /// owns every Cypher keyword; the policy contributes only its item.
 fn set_clause(items: &str) -> String {

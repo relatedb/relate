@@ -107,8 +107,5 @@ pub fn push(opts: &PushOpts, db: &Database) -> Result<PushOutcome, LoadError> {
             batch_size, &plan, started,
         )));
     }
-    match execute::execute(opts, batch_size, &plan, started) {
-        (report, None) => Ok(PushOutcome::Completed(report)),
-        (report, Some(error)) => Ok(PushOutcome::Partial { report, error }),
-    }
+    Ok(execute::execute(opts, batch_size, &plan, started))
 }

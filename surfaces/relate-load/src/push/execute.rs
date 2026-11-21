@@ -18,17 +18,18 @@ use super::policy::{resolve_candidate, updated_at_decision, ConflictDecision, Up
 use super::report::{BatchSize, EntityReport, Outcome, PushReport, Totals};
 use super::statement::write_row;
 use super::wire::{encode_value, envelope_rows, quote_ident};
+use super::PushOutcome;
 use crate::{http, LoadError, PushOpts};
 
 /// Execute the plan (not a dry run): pre-read, classify, write, report.
-/// Returns the report — on a failed batch the partial one, exactly which
-/// batches landed — plus the failure when one occurred (ADR-0401 §6).
+/// A failed batch yields `PushOutcome::Partial`: the partial report,
+/// exactly which batches landed, plus the failure (ADR-0401 §6).
 pub(crate) fn execute(
     opts: &PushOpts,
     batch_size: BatchSize,
     plan: &PushPlan,
     started: Instant,
-) -> (PushReport, Option<LoadError>) {
+) -> PushOutcome {
     let mut entities: Vec<EntityReport> = Vec::with_capacity(plan.entities.len());
     let mut sent = Totals::default();
     let mut failure: Option<LoadError> = None;
@@ -61,7 +62,10 @@ pub(crate) fn execute(
     // totals, no batches, no writes.
     entities.extend(iter.map(EntityReport::planned));
     let report = PushReport::build(false, entities, &sent, started.elapsed());
-    (report, failure)
+    match failure {
+        None => PushOutcome::Completed(report),
+        Some(error) => PushOutcome::Partial { report, error },
+    }
 }
 
 /// The statement an entity writes with: `None` for an entity with no rows
@@ -106,11 +110,7 @@ fn run_entity(
     sent: &mut Totals,
 ) -> Result<(), LoadError> {
     let apply = classify(opts, entity, report)?;
-    let writes: Vec<(Json, Outcome)> = apply
-        .iter()
-        .map(|&(row, outcome)| Ok((write_row(entity, row)?, outcome)))
-        .collect::<Result<_, LoadError>>()?;
-    send_batches(opts, batch_size, entity, statement, &writes, report, sent)
+    send_batches(opts, batch_size, entity, statement, &apply, report, sent)
 }
 
 /// The classification phase (ADR-0401 §4): which of the entity's rows
@@ -181,25 +181,28 @@ fn classify_keyed<'a>(
 /// The batched writes (ADR-0401 §6): one parameterized statement per
 /// `--batch-size` slice, one failure context per batch. `batches` and the
 /// created/updated counters count what actually landed: each batch's
-/// outcomes are recorded only after its statement succeeded.
+/// outcomes are recorded only after its statement succeeded. Each batch's
+/// parameter rows are built from the classified rows just before it is
+/// sent, so the wire form of an entity is never held whole (ADR-0555).
 fn send_batches(
     opts: &PushOpts,
     batch_size: BatchSize,
     entity: &PlannedEntity,
     statement: &str,
-    writes: &[(Json, Outcome)],
+    writes: &[(&EntityRow, Outcome)],
     report: &mut EntityReport,
     sent: &mut Totals,
 ) -> Result<(), LoadError> {
     let name = entity.kind.display_name();
     for (batch_no, offset, batch) in batch_size.batches(writes) {
+        let rows: Vec<Json> = batch
+            .iter()
+            .map(|&(row, _)| write_row(entity, row))
+            .collect::<Result<_, LoadError>>()?;
         let mut parameters = serde_json::Map::new();
         // The rows parameter is the wire module's List-of-Map envelope
         // (the one spelling of the typed-envelope shape).
-        parameters.insert(
-            "rows".into(),
-            envelope_rows(batch.iter().map(|(row, _)| row)),
-        );
+        parameters.insert("rows".into(), envelope_rows(&rows));
         let (_, body_bytes) = http::run_query_typed_params(
             &opts.credentials,
             statement,
@@ -320,12 +323,7 @@ fn pre_read_pattern(entity: &PlannedEntity) -> Result<String, LoadError> {
             start_label,
             end_label,
             ..
-        } => Ok(format!(
-            "(a:{})-[r:{}]->(b:{})",
-            quote_ident(start_label)?,
-            quote_ident(rel_type)?,
-            quote_ident(end_label)?
-        )),
+        } => super::statement::rel_pattern(rel_type, start_label, end_label),
         EntityKind::NodeCreate { .. }
         | EntityKind::NodeSkipped { .. }
         | EntityKind::RelSkipped { .. }
