@@ -129,8 +129,10 @@ impl<'a> Parser<'a> {
     }
 
     /// The page stage the next token introduces (`ORDER BY`, `SKIP`/`OFFSET`,
-    /// `LIMIT`): the one home of the paging-introducer vocabulary, read by
-    /// `parse_page_stages` and by the annotation placement check.
+    /// `LIMIT`): the one classifier of paging introducers, read by
+    /// `parse_page_stages`, the standalone-paging clause dispatch and the
+    /// annotation placement check. `parse_order_page` is the fixed-order
+    /// WITH/RETURN tail and matches the same tokens by position.
     pub(in crate::parser) fn peek_page_stage_start(&self) -> Option<PageStageStart> {
         if self.peek_type() == TokenType::ORDER {
             Some(PageStageStart::OrderBy)

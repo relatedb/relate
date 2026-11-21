@@ -187,12 +187,7 @@ impl<'a> Parser<'a> {
             // CIP-168: standalone `<order by and page statement>` -- a new
             // clause starting directly with ORDER BY / SKIP / OFFSET /
             // LIMIT rather than attached to WITH/RETURN/YIELD.
-            TokenType::ORDER | TokenType::SKIP | TokenType::LIMIT => {
-                self.parse_standalone_order_by_page()
-            }
-            TokenType::Identifier if Self::token_is_ident(&tok, "offset") => {
-                self.parse_standalone_order_by_page()
-            }
+            _ if self.peek_page_stage_start().is_some() => self.parse_standalone_order_by_page(),
             _ => Err(self.error_at_token(&tok, format!("unexpected token {:?}", tok.literal))),
         }
     }
@@ -520,7 +515,9 @@ impl<'a> Parser<'a> {
     }
 
     /// The `ORDER BY` / `SKIP` (or `OFFSET`) / `LIMIT` tail the RETURN and
-    /// WITH clauses share, in that order.
+    /// WITH clauses share, in that order -- a fixed-position tail that reads
+    /// each introducer where its slot is, unlike the free-order
+    /// `parse_page_stages` loop that [`Self::peek_page_stage_start`] drives.
     fn parse_order_page(&mut self) -> ParseResult<(Vec<OrderByItem>, Option<Expr>, Option<Expr>)> {
         let order_by = if self.peek_type() == TokenType::ORDER {
             self.next_token();

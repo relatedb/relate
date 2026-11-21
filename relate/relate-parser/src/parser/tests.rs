@@ -198,7 +198,7 @@ fn probe_accepted_rows_parse(group: &str) {
 
 /// Parses `q`, which must succeed, naming the query text when it does not.
 fn parse_ok(q: &str) -> Statement {
-    parse(q).unwrap_or_else(|e| panic!("{q:?} must parse: {e}"))
+    parse_ok_with(q, crate::lexer::ParseOptions::default())
 }
 
 /// [`parse_ok`] under explicit parse options (a preview gate open).
