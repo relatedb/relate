@@ -101,6 +101,49 @@ fn validate_call_positions(graph: &Graph, logical: &LogicalPlan, result: &mut Re
     });
 }
 
+/// One call's resolved contract: its declared parameters, how many of them
+/// are mandatory, and the columns it returns — whichever registry it came
+/// from.
+struct CallContract {
+    arg_names: Vec<String>,
+    arg_types: Vec<String>,
+    required_args: usize,
+    output_names: Vec<String>,
+}
+
+/// Resolve a call's contract out of the two registries, which have
+/// different shapes: the store's registered procedures first, then the
+/// executor's executable built-in signatures. A name in neither is the
+/// procedure-not-found error.
+fn resolve_call_contract(graph: &Graph, name: &relate_names::SmallName) -> Result<CallContract> {
+    // The procedure registry is &str-keyed (the executor's catalog
+    // domain); the IR call name reads through the text bridge.
+    if let Some(proc) = name.with_str(|text| graph.procedure(text)) {
+        let required_args = proc.arg_names.len();
+        return Ok(CallContract {
+            arg_names: proc.arg_names,
+            arg_types: proc.arg_types,
+            required_args,
+            output_names: proc.yield_names,
+        });
+    }
+    let signature = name
+        .with_str(relate_executor::builtin_procedure_signature)
+        .filter(|signature| signature.executable)
+        // Text render (the not-found error path, cold).
+        .ok_or_else(|| Error::procedure_not_found(name.to_string().as_str()))?;
+    let (arg_names, arg_types): (Vec<_>, Vec<_>) = signature
+        .parameters()
+        .map(|(name, type_str)| (name.to_string(), type_str.to_string()))
+        .unzip();
+    Ok(CallContract {
+        arg_names,
+        arg_types,
+        required_args: signature.required_args(),
+        output_names: signature.return_columns().map(str::to_string).collect(),
+    })
+}
+
 /// The per-clause validation body of [`validate_calls`]: a no-op for
 /// non-`CALL` clauses.
 fn validate_call_clause(
@@ -122,41 +165,13 @@ fn validate_call_clause(
     // fact here — `is_explicit` and `args` are its two projections.
     let explicit = args.is_explicit();
     let args = args.args();
-    // The procedure registry is &str-keyed (the executor's catalog
-    // domain); the IR call name reads through the text bridge.
-    let registered = name.with_str(|text| graph.procedure(text));
-    let builtin = if registered.is_none() {
-        name.with_str(relate_executor::builtin_procedure_signature)
-            .filter(|signature| signature.executable)
-    } else {
-        None
-    };
-    let (arg_names, arg_types, required_args, output_names) = if let Some(proc) = registered {
-        let required_args = proc.arg_names.len();
-        (
-            proc.arg_names,
-            proc.arg_types,
-            required_args,
-            proc.yield_names,
-        )
-    } else if let Some(signature) = builtin {
-        let (arg_names, arg_types): (Vec<_>, Vec<_>) = signature
-            .parameters()
-            .map(|(name, type_str)| (name.to_string(), type_str.to_string()))
-            .unzip();
-        (
-            arg_names,
-            arg_types,
-            signature.required_args(),
-            signature
-                .return_columns()
-                .map(str::to_string)
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        // Text render (the not-found error path, cold).
-        return Err(Error::procedure_not_found(name.to_string().as_str()));
-    };
+    let contract = resolve_call_contract(graph, name)?;
+    let CallContract {
+        arg_names,
+        arg_types,
+        required_args,
+        output_names,
+    } = contract;
     // A procedure whose parameters all carry defaults is callable
     // paren-less in-query too (LABS-389): only parameters without a
     // default are mandatory, so the implicit-pass guard keys on

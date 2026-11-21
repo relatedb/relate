@@ -10,7 +10,7 @@ use relate_ir::{
 };
 use relate_names::SmallName;
 
-use crate::eval::expr_vars;
+use crate::eval::{expr_vars, is_agg_expr};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -142,6 +142,19 @@ impl<'a> ProjectionFields<'a> {
             }),
             _ => None,
         }
+    }
+
+    /// Whether an `ORDER BY` key or the `WITH` filter aggregates: the
+    /// aggregating subclauses, which make a `DISTINCT` projection
+    /// aggregating and route the filter to `HAVING`.
+    pub(crate) fn subclause_aggregates(&self) -> bool {
+        self.order.iter().any(|o| is_agg_expr(&o.expr))
+            || self.where_clause.is_some_and(is_agg_expr)
+    }
+
+    /// Whether any projected item aggregates.
+    pub(crate) fn items_aggregate(&self) -> bool {
+        self.items.iter().any(|p| is_agg_expr(&p.expr))
     }
 
     /// [`Self::from_clause`] for the arm that has already matched a

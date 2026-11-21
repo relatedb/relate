@@ -898,6 +898,8 @@ mod shortest_expression_tests;
 #[cfg(test)]
 mod shortest_path_tests;
 #[cfg(test)]
+mod stream_agg_tests;
+#[cfg(test)]
 mod subquery_eval_tests;
 #[cfg(test)]
 pub(crate) mod test_support;

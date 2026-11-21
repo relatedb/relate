@@ -201,7 +201,7 @@ fn compose_catalog_rows(
     // `RETURN *` never observes them. The two marker keys carry what the
     // restore needs; no Cypher identifier can spell them.
     //
-    // Coupling invariant, with the `Some(pairs)` write site below as its
+    // Coupling invariant, with `project_columns_shadowing_sources` as its
     // only producer: `SOURCE_CELLS` and `SOURCE_PREVIOUS` are inserted
     // together, each always a map, and only when there is something to
     // restore. The restore therefore reads an absent `SOURCE_CELLS` as
@@ -218,42 +218,48 @@ fn compose_catalog_rows(
                         row.entry(k.clone()).or_insert_with(|| v.clone());
                     }
                 }
-                Some(pairs) => {
-                    // A renamed YIELD keeps both names in scope, but a
-                    // projected (output) column always wins: in
-                    // `YIELD name AS options, options AS name` the
-                    // clause's own `size(options)` reads the *renamed*
-                    // string column, not the raw map.
-                    let outputs: std::collections::HashSet<&str> =
-                        pairs.iter().map(|(out, _)| out.as_str()).collect();
-                    let mut sources = BTreeMap::new();
-                    for (out, src) in pairs {
-                        let value = raw.get(src).cloned().unwrap_or(Value::Null);
-                        // The shadow keeps its own copy; the projected cell
-                        // takes the original, so the clone happens only when
-                        // this column is actually shadowed.
-                        if src != out && !outputs.contains(src.as_str()) {
-                            sources.insert(src.clone(), value.clone());
-                        }
-                        row.insert(out.clone(), value);
-                    }
-                    if !sources.is_empty() {
-                        let mut previous = BTreeMap::new();
-                        for (key, value) in &sources {
-                            if let Some(old) = row.get(key) {
-                                previous.insert(key.clone(), old.clone());
-                            }
-                            row.insert(key.clone(), value.clone());
-                        }
-                        row.insert(SOURCE_CELLS.into(), Value::Map(sources.into()));
-                        row.insert(SOURCE_PREVIOUS.into(), Value::Map(previous.into()));
-                    }
-                }
+                Some(pairs) => project_columns_shadowing_sources(&mut row, raw, pairs),
             }
             output.push(row);
         }
     }
     output
+}
+
+/// The write half of the source-name shadowing protocol (its read half is
+/// [`restore_source_names`], directly below): compose one projected
+/// catalog row — each `(output, source)` column from `raw` — and, for a
+/// renamed YIELD, shadow the source names at the row's top level while
+/// parking what the restore needs under [`SOURCE_CELLS`] and
+/// [`SOURCE_PREVIOUS`]. A renamed YIELD keeps both names in scope, but a
+/// projected (output) column always wins: in
+/// `YIELD name AS options, options AS name` the clause's own
+/// `size(options)` reads the *renamed* string column, not the raw map.
+fn project_columns_shadowing_sources(row: &mut Row, raw: &Row, pairs: &[(String, String)]) {
+    let outputs: std::collections::HashSet<&str> =
+        pairs.iter().map(|(out, _)| out.as_str()).collect();
+    let mut sources = BTreeMap::new();
+    for (out, src) in pairs {
+        let value = raw.get(src).cloned().unwrap_or(Value::Null);
+        // The shadow keeps its own copy; the projected cell takes the
+        // original, so the clone happens only when this column is actually
+        // shadowed.
+        if src != out && !outputs.contains(src.as_str()) {
+            sources.insert(src.clone(), value.clone());
+        }
+        row.insert(out.clone(), value);
+    }
+    if !sources.is_empty() {
+        let mut previous = BTreeMap::new();
+        for (key, value) in &sources {
+            if let Some(old) = row.get(key) {
+                previous.insert(key.clone(), old.clone());
+            }
+            row.insert(key.clone(), value.clone());
+        }
+        row.insert(SOURCE_CELLS.into(), Value::Map(sources.into()));
+        row.insert(SOURCE_PREVIOUS.into(), Value::Map(previous.into()));
+    }
 }
 
 /// Undo the source-name shadowing (see the marker coupling invariant

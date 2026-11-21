@@ -65,20 +65,42 @@ pub(crate) fn schema_visualization_rows(
         return Vec::new();
     }
 
-    // One virtual node per label. Neo4j's virtual nodes carry
-    // `{name, indexes, constraints}`: `name` is the honest label and
-    // `indexes`/`constraints` are read from the catalog at call time via
-    // the same overlay-aware accessors SHOW INDEXES/SHOW CONSTRAINTS
-    // render from (ADR-0166), so in-transaction DDL is visible here too.
-    // Relationship constraints render on no virtual node (Neo4j parity).
+    let mut counter: i64 = -1;
+    let (nodes, label_node_id) = label_nodes(graph, &labels, &mut counter);
+    let relationships = relationship_values(
+        &label_node_id,
+        relationship_triples(graph, include_synthesized),
+        &mut counter,
+    );
+
+    vec![BTreeMap::from([
+        ("nodes".into(), Value::List(nodes.into())),
+        ("relationships".into(), Value::List(relationships.into())),
+    ])]
+}
+
+type Triple = (String, String, String);
+
+/// One virtual node per label, ids allocated from `counter` downward, and
+/// the label-to-id map the relationship phase resolves its endpoints
+/// through. Neo4j's virtual nodes carry `{name, indexes, constraints}`:
+/// `name` is the honest label and `indexes`/`constraints` are read from the
+/// catalog at call time via the same overlay-aware accessors SHOW
+/// INDEXES/SHOW CONSTRAINTS render from (ADR-0166), so in-transaction DDL
+/// is visible here too. Relationship constraints render on no virtual node
+/// (Neo4j parity).
+fn label_nodes(
+    graph: &ExecGraph<'_>,
+    labels: &BTreeSet<String>,
+    counter: &mut i64,
+) -> (Vec<Value>, BTreeMap<String, i64>) {
     let catalog_indexes = graph.named_indexes();
     let catalog_constraints = graph.named_constraints();
-    let mut counter: i64 = -1;
     let mut label_node_id: BTreeMap<String, i64> = BTreeMap::new();
     let mut nodes: Vec<Value> = Vec::with_capacity(labels.len());
-    for label in &labels {
-        let id = counter;
-        counter -= 1;
+    for label in labels {
+        let id = *counter;
+        *counter -= 1;
         label_node_id.insert(label.clone(), id);
 
         let (indexes, constraints) =
@@ -95,23 +117,30 @@ pub(crate) fn schema_visualization_rows(
         crate::overlay::register_virtual_node(id, value_to_cypher(&node));
         nodes.push(node);
     }
+    (nodes, label_node_id)
+}
 
-    // One virtual relationship per (startLabel, relType, endLabel) triple —
-    // where the triple set is the per-type CARTESIAN PRODUCT of every label
-    // starting a rel of the type and every label ending one, not just the
-    // pairs present in data (LABS-257 follow-up; verified empirically
-    // against the 2026.09 reference: a chain `(:A)-[:NEXT]->(:B)-[:NEXT]->(:C)`
-    // yields A→B, B→B, B→C, and A→C, and contact-tracing's PART_OF chain
-    // over {Place, Region, Country} × {Region, Country, Continent} yields
-    // all 9). A multi-label endpoint contributes every label of its node.
-    // Each rel carries exactly `{name: <relType>}` (ADR-0187).
+/// The (startLabel, relType, endLabel) triples the relationship phase
+/// emits, scanning the stored relationships once and building only the
+/// containers the mode reads.
+///
+/// Synthesized: the per-type CARTESIAN PRODUCT of every label starting a
+/// rel of the type and every label ending one, not just the pairs present
+/// in data (LABS-257 follow-up; verified empirically against the 2026.09
+/// reference: a chain `(:A)-[:NEXT]->(:B)-[:NEXT]->(:C)` yields A→B, B→B,
+/// B→C, and A→C, and contact-tracing's PART_OF chain over
+/// {Place, Region, Country} × {Region, Country, Continent} yields all 9). A
+/// multi-label endpoint contributes every label of its node.
+///
+/// Observed (`include_synthesized == false`): the combinations that exist
+/// in the data — every stored relationship contributes the product of its
+/// start node's labels with its end node's labels, so a multi-label
+/// endpoint still expands to each of its labels (Neo4j's
+/// `db.schema.visualization(false)` source).
+fn relationship_triples(graph: &ExecGraph<'_>, include_synthesized: bool) -> BTreeSet<Triple> {
     let mut start_labels: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut end_labels: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    // The combinations that exist in the data: every stored relationship
-    // contributes the product of its start node's labels with its end
-    // node's labels, so a multi-label endpoint still expands to each of its
-    // labels (Neo4j's `db.schema.visualization(false)` source).
-    let mut observed: BTreeSet<(String, String, String)> = BTreeSet::new();
+    let mut observed: BTreeSet<Triple> = BTreeSet::new();
     for id in graph.all_rel_ids() {
         let Some(rel_type) = graph.rel_type(id) else {
             continue;
@@ -121,49 +150,58 @@ pub(crate) fn schema_visualization_rows(
         };
         let start_node_labels = graph.node_labels(start).unwrap_or_default();
         let end_node_labels = graph.node_labels(end).unwrap_or_default();
-        for label in &start_node_labels {
+        if include_synthesized {
             start_labels
                 .entry(rel_type.clone())
                 .or_default()
-                .insert(label.clone());
-            for end_label in &end_node_labels {
-                observed.insert((label.clone(), rel_type.clone(), end_label.clone()));
-            }
-        }
-        for label in &end_node_labels {
+                .extend(start_node_labels);
             end_labels
-                .entry(rel_type.clone())
+                .entry(rel_type)
                 .or_default()
-                .insert(label.clone());
-        }
-    }
-    let mut triples: BTreeSet<(String, String, String)> = BTreeSet::new();
-    if include_synthesized {
-        for (rel_type, starts) in &start_labels {
-            for start_label in starts {
-                for end_label in end_labels
-                    .get(rel_type)
-                    .into_iter()
-                    .flat_map(|ends| ends.iter())
-                {
-                    triples.insert((start_label.clone(), rel_type.clone(), end_label.clone()));
+                .extend(end_node_labels);
+        } else {
+            for label in &start_node_labels {
+                for end_label in &end_node_labels {
+                    observed.insert((label.clone(), rel_type.clone(), end_label.clone()));
                 }
             }
         }
-    } else {
-        triples = observed;
     }
+    if !include_synthesized {
+        return observed;
+    }
+    let mut triples = BTreeSet::new();
+    for (rel_type, starts) in &start_labels {
+        for start_label in starts {
+            for end_label in end_labels
+                .get(rel_type)
+                .into_iter()
+                .flat_map(|ends| ends.iter())
+            {
+                triples.insert((start_label.clone(), rel_type.clone(), end_label.clone()));
+            }
+        }
+    }
+    triples
+}
+
+/// One virtual relationship per triple, ids continuing from `counter`.
+/// Each rel carries exactly `{name: <relType>}` (ADR-0187), the type read
+/// back as `r.name` (Neo4j parity).
+fn relationship_values(
+    label_node_id: &BTreeMap<String, i64>,
+    triples: BTreeSet<Triple>,
+    counter: &mut i64,
+) -> Vec<Value> {
     let mut relationships: Vec<Value> = Vec::with_capacity(triples.len());
     for (start_label, rel_type, end_label) in triples {
         // By construction both lookups hit: triple labels were collected
-        // from `labels`, which populated `label_node_id`.
+        // from the stored labels, which populated `label_node_id`.
         let start = label_node_id[&start_label];
         let end = label_node_id[&end_label];
-        let id = counter;
-        counter -= 1;
-        // ADR-0187: the virtual relationship's property map is exactly
-        // `{name: <relType>}`, the type read back as `r.name` (Neo4j
-        // parity). Build the value before `rel_type` moves into the struct.
+        let id = *counter;
+        *counter -= 1;
+        // Build the value before `rel_type` moves into the struct.
         let name = Value::String(rel_type.as_str().into());
         relationships.push(Value::from_relationship(Relationship {
             id,
@@ -173,11 +211,7 @@ pub(crate) fn schema_visualization_rows(
             properties: relate_core::PropertyMap::share(BTreeMap::from([("name".into(), name)])),
         }));
     }
-
-    vec![BTreeMap::from([
-        ("nodes".into(), Value::List(nodes.into())),
-        ("relationships".into(), Value::List(relationships.into())),
-    ])]
+    relationships
 }
 
 /// Per-label catalog decoration for one `db.schema.visualization()` virtual

@@ -77,7 +77,7 @@ pub(crate) fn maps_each_row(fields: &ProjectionFields<'_>) -> bool {
         && fields.order.is_empty()
         && fields.skip.is_none()
         && fields.limit.is_none()
-        && !fields.items.iter().any(|item| is_agg_expr(&item.expr))
+        && !fields.items_aggregate()
         && !fields.where_clause.is_some_and(is_agg_expr)
 }
 
@@ -115,7 +115,7 @@ pub(crate) fn streams_into_projection(next: Option<&Clause>) -> bool {
 /// Parking is deliberately the *static* half of the fold decision, answered
 /// from the clause's fields and shape alone: no page bounds are resolved
 /// here and no per-clause plan is built. The projection resolves the bounds
-/// once, from its own classification, and its `materialize_feed` decides
+/// once, from its own classification, and its `prepare_feed` decides
 /// fold against collect — so a parked feed that resolves to no window (a
 /// zero page, an overflowing `skip + limit`) collects there, a
 /// nondeterministic bound is one draw rather than two, and the shapes that
@@ -258,7 +258,7 @@ pub(crate) fn project_rows(
     if bounds.answers_nothing() {
         return Ok(Vec::new());
     }
-    let feed = materialize_feed(feed, &class, bounds)?;
+    let feed = prepare_feed(feed, &class, bounds)?;
     // The windowed shape no longer reserves the sort's merged buffer — the
     // window's own container is bounded — but the feed it drains is live for
     // this whole call, and the producer releases its own reservation as it
@@ -281,10 +281,36 @@ pub(crate) fn project_rows(
     } else {
         Refresh::Identity
     };
-    // One dispatch over both facts: a pre-projected feed has to say what it
-    // means for every shape, so a shape added later cannot inherit the
-    // pass-through by accident.
-    let merged = match (source, class.shape) {
+    let merged = merge_rows(
+        graph,
+        params,
+        &class,
+        feed,
+        source,
+        scope,
+        &mut refresh,
+        bounds,
+    )?;
+    finish_projection(graph, params, &class, merged, bounds)
+}
+
+/// The merge dispatch: which path turns the prepared feed into the
+/// projection's landed rows. One dispatch over both facts — the feed's
+/// source and the clause's shape — so a pre-projected feed has to say what
+/// it means for every shape, and a shape added later cannot inherit the
+/// pass-through by accident.
+#[allow(clippy::too_many_arguments)]
+fn merge_rows(
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+    class: &ProjectionClass<'_>,
+    feed: RowFeed<'_>,
+    source: RowSource,
+    scope: Option<&Row>,
+    refresh: &mut Refresh<'_>,
+    bounds: PageBounds,
+) -> Result<Landed> {
+    match (source, class.shape) {
         // The sink already projected these rows, so the pass-through's only
         // mutation is the inflate refresh, in place, and the landing owns
         // the container (ADR-0463's retaining `Vec`, or the ordered
@@ -296,31 +322,28 @@ pub(crate) fn project_rows(
                 ));
             };
             refresh.rows(graph, &mut rows);
-            adopt_rows(graph, params, &class, bounds, rows)?
+            adopt_rows(graph, params, class, bounds, rows)
         }
         // `sinkable_projection` declines every aggregating and `*` shape, so
         // a sink-projected feed never arrives with one — and none of them
         // has a pre-projected policy to fall back on.
-        (RowSource::SinkProjected, _) => {
-            return Err(Error::internal(
-                "a sink-projected feed reached a shape the sink never projects",
-            ))
+        (RowSource::SinkProjected, _) => Err(Error::internal(
+            "a sink-projected feed reached a shape the sink never projects",
+        )),
+        (RowSource::Bindings, ProjectionShape::Star) => {
+            star_rows(graph, params, feed, class, refresh, bounds)
         }
-        (RowSource::Bindings, shape) => match shape {
-            ProjectionShape::Star => star_rows(graph, params, feed, &class, &mut refresh, bounds)?,
-            // The aggregating path lands no container: its charge lives in
-            // the aggregation's own emission loop, and its rows are an
-            // unordered table the tail still sorts.
-            ProjectionShape::Aggregate { .. } => Landed {
-                rows: aggregate_rows(graph, params, feed, &class, scope, &mut refresh)?,
-                windowed: false,
-            },
-            ProjectionShape::Plain => {
-                plain_rows(graph, params, feed, &class, &mut refresh, bounds)?
-            }
-        },
-    };
-    finish_projection(graph, params, &class, merged, bounds)
+        // The aggregating path lands no container: its charge lives in
+        // the aggregation's own emission loop, and its rows are an
+        // unordered table the tail still sorts.
+        (RowSource::Bindings, ProjectionShape::Aggregate { .. }) => Ok(Landed {
+            rows: aggregate_rows(graph, params, feed, class, scope, refresh)?,
+            windowed: false,
+        }),
+        (RowSource::Bindings, ProjectionShape::Plain) => {
+            plain_rows(graph, params, feed, class, refresh, bounds)
+        }
+    }
 }
 
 /// The feed as the merge paths consume it — the pipeline's materialization
@@ -331,7 +354,7 @@ pub(crate) fn project_rows(
 /// retaining charge, and the eager pre-projection page applies at this
 /// stage, so a `LIMIT 1` must not evaluate a later row whose projection
 /// raises an error (CIP-27).
-fn materialize_feed<'a>(
+fn prepare_feed<'a>(
     feed: RowFeed<'a>,
     class: &ProjectionClass<'_>,
     bounds: PageBounds,
@@ -473,16 +496,10 @@ fn plain_rows(
             })
             .collect::<Result<Vec<_>>>()?;
         let mut row2 = Row::new();
-        let kept: Vec<String> = row
-            .keys()
-            .filter(|name| keep.contains(name.as_str()))
-            .cloned()
-            .collect();
-        for name in kept {
-            let value = row
-                .take_value(&name)
-                .expect("a key just read from the row is bound in it");
-            row2.insert(name, value);
+        for (name, value) in row.iter_mut() {
+            if keep.contains(name.as_str()) {
+                row2.insert(name.clone(), std::mem::replace(value, Value::Null));
+            }
         }
         for (name, value) in projected {
             row2.insert(name, value);

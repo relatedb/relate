@@ -49,10 +49,9 @@ impl ProjectionShape {
     /// error is swallowed (the WHERE form returned zero rows, the ORDER
     /// BY form sorted on null keys), so the combination fails closed.
     pub(crate) fn decide(fields: &ProjectionFields<'_>) -> Result<Self> {
-        let aggregating_subclause = fields.order.iter().any(|o| is_agg_expr(&o.expr))
-            || fields.where_clause.is_some_and(is_agg_expr);
+        let aggregating_subclause = fields.subclause_aggregates();
         let star = has_star_item(fields.items);
-        let has_agg = fields.items.iter().any(|p| is_agg_expr(&p.expr))
+        let has_agg = fields.items_aggregate()
             || fields.group_by.is_some()
             || (fields.distinct && aggregating_subclause);
         if fields.distinct && star && aggregating_subclause {
@@ -272,7 +271,7 @@ impl<'a> ProjectionClass<'a> {
     /// dispatcher's `UNWIND` arm parks on the static half only
     /// ([`unwind_streams_into`][super::project::unwind_streams_into]), so a
     /// parked feed that resolves to no window is collected, not folded.
-    /// [`materialize_feed`][super::project::materialize_feed] is its one
+    /// [`prepare_feed`][super::project::prepare_feed] is its one
     /// reader.
     pub(crate) fn folds_feed(&self, bounds: PageBounds) -> bool {
         self.shape.streams() || self.window_keep(bounds).is_some()
