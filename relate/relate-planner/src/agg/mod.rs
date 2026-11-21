@@ -236,8 +236,7 @@ fn check_nested_scope_refs(
     imports: &Imports,
     outer_names: &crate::binding::Env,
 ) -> Result<()> {
-    let mut leaves = Vec::new();
-    collect_nested_scope_leaves(item, &mut leaves);
+    let leaves = collect_nested_scope_leaves(item);
     for leaf in &leaves {
         let root = leaf_root_name(leaf);
         if root.is_none_or(|name| name.with_str(|text| outer_names.contains_key(text)))
@@ -268,17 +267,51 @@ fn leaf_root_name(leaf: &Expr) -> Option<&SmallName> {
 
 /// The leaves of [`check_nested_scope_refs`]: every variable or property
 /// read `expr` makes outside its aggregate calls, in the same shape
-/// [`collect_non_agg_leaves`] produces, with the identifiers its own nested
-/// scopes bind subtracted from the scopes they govern. The entry owns the
-/// traversal's scope accumulator; the recursive body
+/// [`collect_non_agg_leaves`] produces, with the identifiers its own
+/// nested scopes bind subtracted from the scopes they govern — including
+/// the reads inside subquery-expression bodies, merged uniformly: the
+/// caller's `outer_names` filter drops each body's own bindings. The
+/// entry owns the traversal's scope accumulator; the recursive body
 /// ([`nested_scope_leaves`]) carries it.
-pub(super) fn collect_nested_scope_leaves(expr: &Expr, out: &mut Vec<Expr>) {
-    nested_scope_leaves(expr, &mut Vec::new(), out);
+fn collect_nested_scope_leaves(expr: &Expr) -> Vec<Expr> {
+    let mut out = Vec::new();
+    nested_scope_leaves(expr, &mut Vec::new(), SubqueryBodies::Merged, &mut out);
+    out
 }
 
-/// [`collect_nested_scope_leaves`]'s recursive body, carrying the
-/// traversal's own scope accumulator.
-fn nested_scope_leaves(expr: &Expr, bound: &mut Vec<SmallName>, out: &mut Vec<Expr>) {
+/// The row-scope leaves of [`check_post_projection_leaves`]: the same
+/// walk with subquery-expression bodies left uncollected. A body's
+/// pattern binds its names afresh — a name the enclosing projection
+/// dropped is a fresh declaration there, never a read of this clause's
+/// row, and a body *expression* reading a dropped name is the front
+/// end's undefined-name rejection — while a correlation on a name the
+/// projection still exposes is admitted by that same projection, so the
+/// subclause discipline gains no verdict from a body read.
+fn collect_row_scope_leaves(expr: &Expr) -> Vec<Expr> {
+    let mut out = Vec::new();
+    nested_scope_leaves(expr, &mut Vec::new(), SubqueryBodies::Excluded, &mut out);
+    out
+}
+
+/// The two entries' policy split on subquery-expression bodies: whether
+/// an `EXISTS`/`COUNT`/`COLLECT` body's reads join the walk's output or
+/// stay uncollected.
+#[derive(Clone, Copy)]
+enum SubqueryBodies {
+    Merged,
+    Excluded,
+}
+
+/// The two entries' shared recursive body: a pre-order walk of `expr`
+/// carrying the traversal's own scope accumulator (the nested scopes'
+/// binders, subtracted from the reads they govern) and the body policy
+/// the entry selected.
+fn nested_scope_leaves(
+    expr: &Expr,
+    bound: &mut Vec<SmallName>,
+    bodies: SubqueryBodies,
+    out: &mut Vec<Expr>,
+) {
     // Aggregate calls fold the group; their arguments are the aggregation's
     // input, not enclosing-row reads.
     if is_agg_call(expr) {
@@ -342,17 +375,23 @@ fn nested_scope_leaves(expr: &Expr, bound: &mut Vec<SmallName>, out: &mut Vec<Ex
             let mark = bound.len();
             bound.extend(names.into_iter().cloned());
             if let Some(predicate) = predicate {
-                nested_scope_leaves(predicate, bound, out);
+                nested_scope_leaves(predicate, bound, bodies, out);
             }
-            nested_scope_leaves(projection, bound, out);
+            nested_scope_leaves(projection, bound, bodies, out);
             bound.truncate(mark);
             return;
         }
-        // A subquery body's own bindings are not enumerable here; the
-        // caller's `outer_names` filter drops them.
+        // A subquery body's own bindings are not enumerable here: the
+        // all-leaves walk reports every name the body mentions and the
+        // caller's `outer_names` filter drops the body's own; the
+        // row-scope walk leaves the body uncollected entirely (its
+        // entry's doc).
         Expr::ExistsSubquery { query }
         | Expr::CountSubquery { query }
         | Expr::CollectSubquery { query } => {
+            if matches!(bodies, SubqueryBodies::Excluded) {
+                return;
+            }
             // The two walker callbacks cannot share one collection, so the
             // body is walked twice: pattern bindings, then expression
             // variables.
@@ -388,11 +427,11 @@ fn nested_scope_leaves(expr: &Expr, bound: &mut Vec<SmallName>, out: &mut Vec<Ex
     // Per-element bodies scope the identifiers their variant binds, so the
     // shared walk pushes them for the body's descent and drops them after.
     walk_scope_children(expr, &mut |child, scope| match scope {
-        ChildScope::Enclosing => nested_scope_leaves(child, bound, out),
+        ChildScope::Enclosing => nested_scope_leaves(child, bound, bodies, out),
         ChildScope::Element(names) => {
             let mark = bound.len();
             bound.extend(names.iter().cloned());
-            nested_scope_leaves(child, bound, out);
+            nested_scope_leaves(child, bound, bodies, out);
             bound.truncate(mark);
         }
     });

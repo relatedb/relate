@@ -12,7 +12,7 @@ use relate_core::{Error, Result};
 use relate_ir::{is_agg_call, is_agg_expr, Expr, OrderItem, Projection};
 
 use super::{
-    collect_nested_scope_leaves, collect_non_agg_leaves, grouping_keys, leaf_allowed_as_group,
+    collect_non_agg_leaves, collect_row_scope_leaves, grouping_keys, leaf_allowed_as_group,
     leaf_root_name, projection_aggregates, Imports,
 };
 use crate::binding::Env;
@@ -107,11 +107,13 @@ pub(crate) fn check_post_projection_leaves(
     expr: &Expr,
     context: &str,
 ) -> Result<()> {
-    let mut leaves = Vec::new();
-    collect_nested_scope_leaves(expr, &mut leaves);
+    let leaves = collect_row_scope_leaves(expr);
     for leaf in &leaves {
-        // A name the subclause's own nested scopes bind (`z` in `EXISTS {
-        // WITH x + 1 AS z RETURN z }`) is not a read of this clause's row.
+        // A name the subclause's own nested scopes bind — a comprehension's
+        // or pattern predicate's element name (`s` in `exists((s)-[:R]->(o))`
+        // where the row never bound `s`) — is not a read of this clause's
+        // row. Subquery-expression bodies stay uncollected entirely (the
+        // row-scope entry's doc).
         if leaf_root_name(leaf)
             .is_some_and(|name| !name.with_str(|text| scope.outer_names.contains_key(text)))
         {
