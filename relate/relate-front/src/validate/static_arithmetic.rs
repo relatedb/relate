@@ -8,9 +8,9 @@
 use relate_core::Value;
 use relate_error::EngineError;
 use relate_names::SmallName;
-use relate_parser::{Expr, Statement};
+use relate_parser::Expr;
 
-use crate::ast::collect::{walk_expr_scoped, ScopedExprVisitor};
+use crate::ast::collect::{walk_expr_scoped, BinderStack, ScopedExprVisitor};
 use crate::ast::tree::unparen;
 
 use super::static_literal::{
@@ -62,7 +62,7 @@ pub(super) fn list_literal_all_non_numeric(list: &Expr) -> bool {
 
 /// True if `e`, ignoring wrapping parentheses, is exactly the bare variable
 /// `var`.
-pub(super) fn expr_is_bare_var(e: &Expr, var: &str) -> bool {
+pub(super) fn expr_is_bare_var(e: &Expr, var: &SmallName) -> bool {
     matches!(unparen(e), Expr::Variable(v) if v == var)
 }
 
@@ -82,16 +82,16 @@ pub(super) fn applies_arithmetic_to_var(expr: &Expr, var: &str, is_op: fn(&str) 
     /// Records the `var <op> …` shape wherever the binder stack open at
     /// that point does not shadow `var`.
     struct ArithVarSearch<'a> {
-        var: &'a str,
+        var: &'a SmallName,
         is_op: fn(&str) -> bool,
-        binders: Vec<SmallName>,
+        binders: BinderStack,
         found: bool,
     }
     impl ScopedExprVisitor for ArithVarSearch<'_> {
         fn enter_expr(&mut self, expr: &Expr) -> Result<(), EngineError> {
             if let Expr::Binary(b) = expr {
                 if (self.is_op)(b.op)
-                    && !self.binders.iter().any(|bound| bound == self.var)
+                    && !self.binders.shadows(self.var)
                     && (expr_is_bare_var(&b.left, self.var) || expr_is_bare_var(&b.right, self.var))
                 {
                     self.found = true;
@@ -99,31 +99,20 @@ pub(super) fn applies_arithmetic_to_var(expr: &Expr, var: &str, is_op: fn(&str) 
             }
             Ok(())
         }
-        // A read outside expression position — a pattern name, a projection
-        // selector — is never the `x <op> …` shape this search records.
-        fn read_name(&mut self, _name: &SmallName) -> Result<(), EngineError> {
-            Ok(())
-        }
         fn bind_name(&mut self, name: &SmallName) -> Result<(), EngineError> {
-            self.binders.push(name.clone());
+            self.binders.bind(name);
             Ok(())
         }
-        // The event stream is well-nested (the trait's contract), so the
-        // pop is always the youngest open binder.
         fn unbind_name(&mut self) -> Result<(), EngineError> {
-            self.binders.pop();
-            Ok(())
-        }
-        // A subquery body is an opaque leaf to this rule, as it was to the
-        // hand-rolled recursion it replaces.
-        fn subquery_body(&mut self, _statement: &Statement) -> Result<(), EngineError> {
+            self.binders.unbind();
             Ok(())
         }
     }
+    let var = SmallName::from_name(var);
     let mut search = ArithVarSearch {
-        var,
+        var: &var,
         is_op,
-        binders: Vec::new(),
+        binders: BinderStack::default(),
         found: false,
     };
     match walk_expr_scoped(expr, &mut search) {

@@ -1,0 +1,372 @@
+//! The scope-aware expression walk: the visitor trait, the shared binder
+//! stack, and the walker — split from the collector (the LABS-311 size
+//! gate) as one self-contained family.
+
+use relate_error::EngineError;
+use relate_names::SmallName;
+use relate_parser::{Expr, InterpPart, Statement};
+
+use super::{distance_metric_arg_index, pattern_vars};
+use crate::ast::tree::nesting_depth_error;
+use crate::ast::MAX_NESTING_DEPTH;
+use crate::ident_hash::IdentHashMap;
+
+/// The scope-aware expression visit: the consumer owns what a *read* and a
+/// *binder* mean for its rule — which reads count, what a binder shadows,
+/// how a nested statement's own scope is modeled — while this module owns
+/// the one table of which construct binds which name and where each scope
+/// begins and ends. The scope-tracking validators implement the visit and
+/// ride [`walk_expr_scoped`] instead of re-listing the expression child
+/// edges beside the walker family (ADR-0513's 42I58 collector is the
+/// first consumer).
+pub(crate) trait ScopedExprVisitor {
+    /// Pre-order visit of an expression node — the visit itself, so every
+    /// consumer implements it. An `Err` stops the whole walk and
+    /// propagates.
+    fn enter_expr(&mut self, expr: &Expr) -> Result<(), EngineError>;
+    /// A name read outside expression position: a pattern variable of a
+    /// pattern predicate, `shortestPath()` or pattern comprehension, or a
+    /// map projection's bare variable selector.
+    fn read_name(&mut self, _name: &SmallName) -> Result<(), EngineError> {
+        Ok(())
+    }
+    /// One binder's scope begins: the name is in scope until the matching
+    /// [`unbind_name`](Self::unbind_name).
+    fn bind_name(&mut self, _name: &SmallName) -> Result<(), EngineError> {
+        Ok(())
+    }
+    /// The most recently bound, still-open scope ends. The event stream is
+    /// well-nested: this is always the youngest open binder.
+    fn unbind_name(&mut self) -> Result<(), EngineError> {
+        Ok(())
+    }
+    /// An `EXISTS`/`COUNT`/`COLLECT { … }` body. The consumer owns the
+    /// statement-level scope model; the walker does not descend further.
+    fn subquery_body(&mut self, _statement: &Statement) -> Result<(), EngineError> {
+        Ok(())
+    }
+}
+
+/// The binder bookkeeping every shadow-aware visitor shares: the names the
+/// walker's [`bind_name`](ScopedExprVisitor::bind_name) /
+/// [`unbind_name`](ScopedExprVisitor::unbind_name) events have opened,
+/// innermost last, with the O(1) membership query — the count-map shape,
+/// because a rule that consults the stack per name read over a linear
+/// scan is the admission-time quadratic (#741). One home for the
+/// well-nesting invariant the walker's event stream guarantees.
+#[derive(Default)]
+pub(crate) struct BinderStack {
+    /// Binder names in scope, innermost last — the frame stack `bind` and
+    /// `unbind_to` own; the map below is its index, never edited beside
+    /// them.
+    shadowed: Vec<SmallName>,
+    /// Binder name -> number of live frames binding it (nested binders of
+    /// one name stack up).
+    live: IdentHashMap<SmallName, usize>,
+}
+
+impl BinderStack {
+    /// Bind `name` in the current frame.
+    pub(crate) fn bind(&mut self, name: &SmallName) {
+        self.shadowed.push(name.clone());
+        *self.live.entry(name.clone()).or_insert(0) += 1;
+    }
+
+    /// Unbind back to the frame boundary `len` (a previously captured
+    /// [`len`](Self::len)), reversing exactly the binds pushed above it.
+    /// A boundary above the current depth is a stale capture, not a
+    /// no-op: the walker's binder events are well-nested, so a captured
+    /// length never exceeds the depth it was taken at.
+    pub(crate) fn unbind_to(&mut self, len: usize) {
+        if len > self.shadowed.len() {
+            panic!("a captured frame boundary never exceeds the stack depth");
+        }
+        while self.shadowed.len() > len {
+            self.unbind();
+        }
+    }
+
+    /// The most recently bound, still-open scope ends — the walker's
+    /// well-nested unbind event.
+    pub(crate) fn unbind(&mut self) {
+        let name = self
+            .shadowed
+            .pop()
+            .expect("the walker's binder events are well-nested");
+        let count = self
+            .live
+            .get_mut(&name)
+            .expect("every stacked binder is live");
+        if *count == 1 {
+            self.live.remove(&name);
+        } else {
+            *count -= 1;
+        }
+    }
+
+    /// The current frame boundary, for a later
+    /// [`unbind_to`](Self::unbind_to).
+    pub(crate) fn len(&self) -> usize {
+        self.shadowed.len()
+    }
+
+    /// Whether a binder in scope shadows `name`.
+    pub(crate) fn shadows(&self, name: &SmallName) -> bool {
+        self.live.contains_key(name)
+    }
+}
+
+/// Walk one expression with [`ScopedExprVisitor`] semantics: every
+/// expression child edge the plain expression walker reaches, plus the
+/// scope-introducing constructs' binder events — a comprehension's binders
+/// scope their WHERE and projection (the list is outside), a map
+/// comprehension's key/value binders scope theirs, `reduce`/`allReduce`
+/// scope their body (and `allReduce`'s predicate), a quantifier's binder
+/// scopes its predicate, and a pattern comprehension's pattern names are
+/// read and then bound around its WHERE and projection. A subquery body is
+/// handed to [`subquery_body`](ScopedExprVisitor::subquery_body) instead
+/// of being descended. Three edges are deliberately not reads of an
+/// entity, so they are not walked: the distance-metric keyword argument of
+/// `vector_distance`/`vector_norm` (the one
+/// [`distance_metric_arg_index`] table every variable reach consults), a
+/// property's dynamic-key expression, and `hasLabel`'s label expression.
+/// A pattern predicate's and `shortestPath()`'s embedded expressions are
+/// likewise the pattern walk's own reach — only their pattern variables
+/// are read here. Nesting is capped at [`MAX_NESTING_DEPTH`] from the
+/// walk's root with the one shared
+/// [`nesting_depth_error`](super::tree::nesting_depth_error); a nested
+/// statement's clause roots each start a fresh walk, so a body's
+/// expressions restart the count exactly as the per-expression walks
+/// always did.
+pub(crate) fn walk_expr_scoped(
+    expr: &Expr,
+    visitor: &mut dyn ScopedExprVisitor,
+) -> Result<(), EngineError> {
+    walk_expr_scoped_at(expr, 0, visitor)
+}
+
+fn walk_expr_scoped_at(
+    expr: &Expr,
+    depth: usize,
+    visitor: &mut dyn ScopedExprVisitor,
+) -> Result<(), EngineError> {
+    use relate_parser::MapProjectionItem;
+    if depth > MAX_NESTING_DEPTH {
+        return Err(nesting_depth_error());
+    }
+    visitor.enter_expr(expr)?;
+    match expr {
+        Expr::Literal(_)
+        | Expr::Variable(_)
+        | Expr::Parameter(_)
+        | Expr::CountStar
+        | Expr::Star
+        | Expr::OptionValuePlaceholder => Ok(()),
+        Expr::StringInterp(parts) => {
+            for part in parts {
+                if let InterpPart::Interp(embed) = part {
+                    walk_expr_scoped_at(embed, depth + 1, visitor)?;
+                }
+            }
+            Ok(())
+        }
+        // The projection's base and key/value selectors are ordinary
+        // expression children; a bare `Variable` selector pulls a
+        // same-named variable from the surrounding scope, so it is a read
+        // of that variable.
+        Expr::MapProjection(projection) => {
+            walk_expr_scoped_at(&projection.expr, depth + 1, visitor)?;
+            for item in &projection.items {
+                match item {
+                    MapProjectionItem::Variable(name) => visitor.read_name(name),
+                    MapProjectionItem::KeyValue(_, value) => {
+                        walk_expr_scoped_at(value, depth + 1, visitor)
+                    }
+                    MapProjectionItem::AllProperties | MapProjectionItem::Property(_) => Ok(()),
+                }?;
+            }
+            Ok(())
+        }
+        // The list is outside the binder's scope; the WHERE and the
+        // projection are inside it.
+        Expr::ListComprehension(comprehension) => {
+            walk_expr_scoped_at(&comprehension.list_expr, depth + 1, visitor)?;
+            visitor.bind_name(&comprehension.variable)?;
+            if let Some(where_expr) = &comprehension.where_expr {
+                walk_expr_scoped_at(where_expr, depth + 1, visitor)?;
+            }
+            if let Some(map_expr) = &comprehension.map_expr {
+                walk_expr_scoped_at(map_expr, depth + 1, visitor)?;
+            }
+            visitor.unbind_name()
+        }
+        Expr::MapComprehension(comprehension) => {
+            walk_expr_scoped_at(&comprehension.source_expr, depth + 1, visitor)?;
+            // One statement of how many binders this comprehension opens:
+            // the value binder always, the key binder beside it on a map
+            // source — opened in order, closed in reverse by the same
+            // sequence, so the stack cannot desynchronise from the count.
+            let opened: Vec<&SmallName> = comprehension
+                .key_var
+                .as_ref()
+                .into_iter()
+                .chain(std::iter::once(&comprehension.value_var))
+                .collect();
+            for name in &opened {
+                visitor.bind_name(name)?;
+            }
+            if let Some(where_expr) = &comprehension.where_expr {
+                walk_expr_scoped_at(where_expr, depth + 1, visitor)?;
+            }
+            walk_expr_scoped_at(&comprehension.key_expr, depth + 1, visitor)?;
+            walk_expr_scoped_at(&comprehension.value_expr, depth + 1, visitor)?;
+            for _ in opened {
+                visitor.unbind_name()?;
+            }
+            Ok(())
+        }
+        // The init and the list are outside the binders' scope; the body
+        // (and `allReduce`'s predicate) are inside it.
+        Expr::Reduce(reduce) => {
+            walk_expr_scoped_at(&reduce.init_expr, depth + 1, visitor)?;
+            walk_expr_scoped_at(&reduce.list_expr, depth + 1, visitor)?;
+            visitor.bind_name(&reduce.accumulator)?;
+            visitor.bind_name(&reduce.variable)?;
+            walk_expr_scoped_at(&reduce.expression, depth + 1, visitor)?;
+            visitor.unbind_name()?;
+            visitor.unbind_name()
+        }
+        Expr::AllReduce(reduce) => {
+            walk_expr_scoped_at(&reduce.init_expr, depth + 1, visitor)?;
+            walk_expr_scoped_at(&reduce.list_expr, depth + 1, visitor)?;
+            visitor.bind_name(&reduce.accumulator)?;
+            visitor.bind_name(&reduce.variable)?;
+            walk_expr_scoped_at(&reduce.expression, depth + 1, visitor)?;
+            walk_expr_scoped_at(&reduce.predicate, depth + 1, visitor)?;
+            visitor.unbind_name()?;
+            visitor.unbind_name()
+        }
+        Expr::Quantifier(quantifier) => {
+            walk_expr_scoped_at(&quantifier.list, depth + 1, visitor)?;
+            visitor.bind_name(&quantifier.variable)?;
+            if let Some(predicate) = &quantifier.predicate {
+                walk_expr_scoped_at(predicate, depth + 1, visitor)?;
+            }
+            visitor.unbind_name()
+        }
+        // A pattern variable that is already bound is a reference, not a
+        // fresh binding; the pattern's own names then shadow its WHERE and
+        // projection. The pattern's embedded expressions are the pattern
+        // walk's own reach, exactly as the scope-aware check pair treats
+        // them.
+        Expr::PatternComprehension(comprehension) => {
+            let names = pattern_vars(std::slice::from_ref(&comprehension.pattern));
+            for name in &names {
+                visitor.read_name(name)?;
+            }
+            for name in &names {
+                visitor.bind_name(name)?;
+            }
+            if let Some(where_expr) = &comprehension.where_expr {
+                walk_expr_scoped_at(where_expr, depth + 1, visitor)?;
+            }
+            walk_expr_scoped_at(&comprehension.map_expr, depth + 1, visitor)?;
+            for _ in &names {
+                visitor.unbind_name()?;
+            }
+            Ok(())
+        }
+        Expr::PatternPredicate(predicate) => {
+            for name in pattern_vars(std::slice::from_ref(&predicate.pattern)) {
+                visitor.read_name(name)?;
+            }
+            Ok(())
+        }
+        Expr::ShortestPath(shortest) => {
+            for name in pattern_vars(std::slice::from_ref(&shortest.pattern)) {
+                visitor.read_name(name)?;
+            }
+            Ok(())
+        }
+        // A subquery body reads the enclosing scope: a name it mentions is
+        // the outer entity, exactly as a `MATCH` on it inside the subquery
+        // would be. The body's own scope model is the visitor's.
+        Expr::ExistsSubquery(subquery) => visitor.subquery_body(&subquery.statement),
+        Expr::CountSubquery(subquery) => visitor.subquery_body(&subquery.statement),
+        Expr::CollectSubquery(subquery) => visitor.subquery_body(&subquery.statement),
+        Expr::List(items) | Expr::PathConstruct(items) => {
+            for item in items {
+                walk_expr_scoped_at(item, depth + 1, visitor)?;
+            }
+            Ok(())
+        }
+        Expr::Map(pairs) => {
+            for pair in pairs {
+                walk_expr_scoped_at(&pair.value, depth + 1, visitor)?;
+            }
+            Ok(())
+        }
+        // The dynamic-key form's key expression is not a read of an entity.
+        Expr::Property(access) => walk_expr_scoped_at(&access.expr, depth + 1, visitor),
+        Expr::FunctionCall(call) => {
+            let skip = call.name.with_str(distance_metric_arg_index);
+            for (index, arg) in call.args.iter().enumerate() {
+                if skip != Some(index) {
+                    walk_expr_scoped_at(arg, depth + 1, visitor)?;
+                }
+            }
+            Ok(())
+        }
+        Expr::Binary(binary) => {
+            walk_expr_scoped_at(&binary.left, depth + 1, visitor)?;
+            walk_expr_scoped_at(&binary.right, depth + 1, visitor)
+        }
+        Expr::Unary(unary) => walk_expr_scoped_at(&unary.expr, depth + 1, visitor),
+        Expr::Comparison(comparison) => {
+            walk_expr_scoped_at(&comparison.left, depth + 1, visitor)?;
+            walk_expr_scoped_at(&comparison.right, depth + 1, visitor)
+        }
+        Expr::In(in_expr) => {
+            walk_expr_scoped_at(&in_expr.expr, depth + 1, visitor)?;
+            walk_expr_scoped_at(&in_expr.list, depth + 1, visitor)
+        }
+        Expr::IsNull(check) => walk_expr_scoped_at(&check.expr, depth + 1, visitor),
+        Expr::IsType(check) => walk_expr_scoped_at(&check.expr, depth + 1, visitor),
+        Expr::IsNormalized(check) => walk_expr_scoped_at(&check.expr, depth + 1, visitor),
+        Expr::ChronologicalCompare(comparison) => {
+            walk_expr_scoped_at(&comparison.left, depth + 1, visitor)?;
+            walk_expr_scoped_at(&comparison.right, depth + 1, visitor)
+        }
+        Expr::StringMatch(match_expr) => {
+            walk_expr_scoped_at(&match_expr.left, depth + 1, visitor)?;
+            walk_expr_scoped_at(&match_expr.right, depth + 1, visitor)
+        }
+        Expr::Case(case) => {
+            for when in &case.whens {
+                walk_expr_scoped_at(&when.condition, depth + 1, visitor)?;
+                walk_expr_scoped_at(&when.result, depth + 1, visitor)?;
+            }
+            if let Some(else_expr) = &case.else_expr {
+                walk_expr_scoped_at(else_expr, depth + 1, visitor)?;
+            }
+            Ok(())
+        }
+        Expr::Subscript(subscript) => {
+            walk_expr_scoped_at(&subscript.expr, depth + 1, visitor)?;
+            if let Some(index) = &subscript.index {
+                walk_expr_scoped_at(index, depth + 1, visitor)?;
+            }
+            if let Some(from) = &subscript.from {
+                walk_expr_scoped_at(from, depth + 1, visitor)?;
+            }
+            if let Some(to) = &subscript.to {
+                walk_expr_scoped_at(to, depth + 1, visitor)?;
+            }
+            Ok(())
+        }
+        // The label expression is the dynamic-label half's own walk; only
+        // the base expression is a read here.
+        Expr::HasLabel(has_label) => walk_expr_scoped_at(&has_label.expr, depth + 1, visitor),
+        Expr::Paren(inner) => walk_expr_scoped_at(inner, depth + 1, visitor),
+    }
+}

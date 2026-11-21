@@ -187,6 +187,31 @@ fn static_kind_rules_read_paren_transparent_operands() {
     );
 }
 
+/// A binder inside the expression shadows the walk's classification of a
+/// same-named outer variable: the quantifier's own `p` is the bound list
+/// element, so `labels(p)` inside its predicate is not the statically
+/// known path — the bound element's kind is the runtime's to check (the
+/// TCK's path-variable-shadowed-by-predicate-function scenario). An
+/// unshadowed spelling keeps its rejection: a different binder name
+/// leaves the outer path statically known.
+#[test]
+fn static_kind_rules_honor_binder_shadowing() {
+    parse_and_validate_expression_constraints(
+        "MATCH p=()-->() WHERE ALL(p IN nodes(p) WHERE size(labels(p)) > 0) RETURN nodes(p)",
+    )
+    .expect("the predicate's p is the bound element, not the path");
+    parse_and_validate_expression_constraints("MATCH p=()-->() RETURN [p IN [1] | labels(p)]")
+        .expect("a comprehension's binder shadows the outer path name");
+    let error = parse_and_validate_expression_constraints(
+        "MATCH p=()-->() WHERE ALL(x IN [1] WHERE size(labels(p)) > 0) RETURN p",
+    )
+    .expect_err("labels(p) with an unrelated binder reads the path");
+    assert_eq!(
+        error.to_string(),
+        "InvalidArgumentType: labels() requires a node, got PATH"
+    );
+}
+
 /// A quantified path pattern's subpath variable binds a name (a list of
 /// the sub-paths its group matched — a value, no kind): the name
 /// survives its clause for every later name check, and its lone

@@ -13,14 +13,14 @@ use relate_error::{EngineError, ErrorKind};
 use relate_parser::{Clause, Expr, PatternElement, Statement};
 
 use super::delete::check_delete_expr;
-use super::scope::{leading_import_form, ExprScope, VarType};
+use super::scope::{leading_import_form, ExprScope};
 use super::writes::{walk_write_elements, WriteClause};
 use crate::agg::contains_aggregation;
 use crate::ast::collect::{
     check_expr_vars_defined, check_name_defined, clause_introduced_names, interp_embeds,
     union_chain, walk_expr_scoped, ScopedExprVisitor,
 };
-use crate::ast::tree::{unparen, var_property, walk_clause_expr_roots, walk_expr};
+use crate::ast::tree::{walk_clause_expr_roots, walk_expr};
 
 /// Validate expression-position constraints:
 /// - Pattern predicates in WHERE must not introduce new (unbound) variables for relationships
@@ -127,19 +127,9 @@ struct SubqueryExprVisitor {
 }
 
 impl ScopedExprVisitor for SubqueryExprVisitor {
+    // `enter_expr` is the one required event; this consumer's rule has no
+    // shape inside an expression, only the bodies it collects.
     fn enter_expr(&mut self, _expr: &Expr) -> Result<(), EngineError> {
-        Ok(())
-    }
-
-    fn read_name(&mut self, _name: &SmallName) -> Result<(), EngineError> {
-        Ok(())
-    }
-
-    fn bind_name(&mut self, _name: &SmallName) -> Result<(), EngineError> {
-        Ok(())
-    }
-
-    fn unbind_name(&mut self) -> Result<(), EngineError> {
         Ok(())
     }
 
@@ -650,82 +640,6 @@ fn check_dynamic_label_expressions(
     Ok(())
 }
 
-/// The walk's one static-kind rule family, one pass over an expression:
-/// property access on a statically-known path variable (a path is not a
-/// map), `labels()` on one (Graph3 [8]), and `type()` on a
-/// statically-known node variable — the three statically-certain kind
-/// misuses, one rule ([`reject_operand_kind`]) behind both shapes. Every
-/// expression position this walk validates runs the same family: the
-/// WITH/RETURN item lists, the MATCH's element-pattern, path-pattern and
-/// own WHEREs, and the WITH's WHERE against the projection view built
-/// there — no position applies a subset. The property operand reads
-/// through the canonical property-on-a-variable recognizer
-/// ([`var_property`]) and the builtin argument through the paren
-/// transparency helper ([`unparen`]), so `(p).foo` and `labels((p))`
-/// resolve through the same paren policy as the classification itself.
-/// Relate has no general type inferencer, so each rule stays scoped to
-/// the shape it can decide (a variable the walk classified); anything
-/// else (a variable that might be fine, a property access on an
-/// unconstrained name, `labels()` on a relationship — the executor's
-/// own coercion rejects it) is left to the runtime type check.
-fn check_static_kind_rules(expr: &Expr, scope: &ExprScope) -> Result<(), EngineError> {
-    walk_expr(expr, &mut |e| {
-        // Property access on a path variable, through the one
-        // property-on-a-variable recognizer.
-        if let Some((v, _)) = var_property(e) {
-            return reject_operand_kind(
-                v,
-                VarType::Path,
-                "property access is not allowed on paths",
-                scope,
-            );
-        }
-        // The one-argument builtins a statically-known variable kind
-        // disproves: `labels()` on a path, `type()` on a node.
-        if let Expr::FunctionCall(fc) = e {
-            if fc.args.len() == 1 {
-                if let Some((kind, message)) =
-                    fc.name.with_str(|n| match n.to_lowercase().as_str() {
-                        "labels" => Some((VarType::Path, "labels() requires a node, got PATH")),
-                        "type" => Some((
-                            VarType::Node,
-                            "type() can only be applied to relationships, not nodes",
-                        )),
-                        _ => None,
-                    })
-                {
-                    // The argument through the paren-transparency helper,
-                    // so `labels((p))` resolves like `labels(p)`.
-                    if let Expr::Variable(v) = unparen(&fc.args[0]) {
-                        return reject_operand_kind(v, kind, message, scope);
-                    }
-                }
-            }
-        }
-        Ok(())
-    })
-}
-
-/// The family's one rule: a variable the walk classified to `kind` is
-/// rejected with `message` — the kind equality test and the rejection
-/// exist once, behind both of the family's shapes (the property access's
-/// base, resolved through [`var_property`], and the builtin's argument,
-/// resolved through [`unparen`]).
-fn reject_operand_kind(
-    name: &SmallName,
-    kind: VarType,
-    message: &str,
-    scope: &ExprScope,
-) -> Result<(), EngineError> {
-    if scope.kind_of(name) == Some(kind) {
-        return Err(EngineError::semantic(
-            ErrorKind::InvalidArgumentType,
-            message.to_string(),
-        ));
-    }
-    Ok(())
-}
-
 /// Find the root variable name from an expression (traversing property access and subscripts).
 fn find_root_variable(expr: &Expr) -> Option<SmallName> {
     match expr {
@@ -737,6 +651,9 @@ fn find_root_variable(expr: &Expr) -> Option<SmallName> {
         _ => None,
     }
 }
+
+mod kind_rules;
+use kind_rules::check_static_kind_rules;
 
 #[cfg(test)]
 mod tests;

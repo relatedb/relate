@@ -25,9 +25,10 @@ use relate_names::SmallName;
 use relate_parser::{Clause, Expr, LabelExpr, NodePattern, PatternElement, PatternPath, Statement};
 
 use crate::ast::collect::{
-    clause_introduced_names, clause_patterns, pattern_vars, walk_expr_scoped, ScopedExprVisitor,
+    clause_introduced_names, clause_patterns, pattern_vars, walk_expr_scoped, BinderStack,
+    ScopedExprVisitor,
 };
-use crate::ident_hash::{IdentHashMap, IdentHashSet};
+use crate::ident_hash::IdentHashSet;
 
 /// Neo4j's verbatim 42I58 sentence. The one spelling both halves of the rule
 /// report.
@@ -269,15 +270,11 @@ fn collect_new_element_vars(
 /// never panicked).
 #[derive(Default)]
 struct ReadCollector {
-    /// Binder names in scope, innermost last — the frame stack `bind` and
-    /// `unbind_to` own; the map below is its index, never edited beside
-    /// them.
-    shadowed: Vec<SmallName>,
-    /// Binder name -> number of live frames binding it (nested binders of
-    /// one name stack up). The O(1) membership `read` consults — a linear
-    /// scan of the stack per variable read was the admission-time
-    /// quadratic (rust-review + security-review, #741).
-    live: IdentHashMap<SmallName, usize>,
+    /// The binder stack the shared [`BinderStack`] owns — the O(1)
+    /// membership `read` consults; a linear scan of the stack per variable
+    /// read was the admission-time quadratic (rust-review +
+    /// security-review, #741).
+    shadowed: BinderStack,
     /// Every unshadowed variable read seen so far.
     reads: IdentHashSet<SmallName>,
 }
@@ -285,31 +282,8 @@ struct ReadCollector {
 impl ReadCollector {
     /// Record a read of `name` unless a binder in scope shadows it.
     fn read(&mut self, name: &SmallName) {
-        if !self.live.contains_key(name) {
+        if !self.shadowed.shadows(name) {
             self.reads.insert(name.clone());
-        }
-    }
-
-    /// Bind `name` in the current frame.
-    fn bind(&mut self, name: &SmallName) {
-        self.shadowed.push(name.clone());
-        *self.live.entry(name.clone()).or_insert(0) += 1;
-    }
-
-    /// Unbind back to the frame boundary `scope` (a previously captured
-    /// `shadowed.len()`), reversing exactly the binds pushed above it.
-    fn unbind_to(&mut self, scope: usize) {
-        while self.shadowed.len() > scope {
-            let name = self.shadowed.pop().expect("scope is a captured length");
-            let count = self
-                .live
-                .get_mut(&name)
-                .expect("every stacked binder is live");
-            if *count == 1 {
-                self.live.remove(&name);
-            } else {
-                *count -= 1;
-            }
         }
     }
 
@@ -388,10 +362,10 @@ impl ReadCollector {
             crate::ast::tree::walk_clause_expr_roots(clause, &mut roots)?;
             self.clause_level_bodies(clause)?;
             for name in clause_introduced_names(clause) {
-                self.bind(&name);
+                self.shadowed.bind(&name);
             }
         }
-        self.unbind_to(scope);
+        self.shadowed.unbind_to(scope);
         Ok(())
     }
 
@@ -408,9 +382,9 @@ impl ReadCollector {
         match clause {
             Clause::Foreach(foreach) => {
                 let scope = self.shadowed.len();
-                self.bind(&foreach.variable);
+                self.shadowed.bind(&foreach.variable);
                 let body = self.clause_list(&foreach.clauses);
-                self.unbind_to(scope);
+                self.shadowed.unbind_to(scope);
                 body
             }
             Clause::CallSubquery(subquery) => self.clause_list(&subquery.statement.clauses),
@@ -444,15 +418,14 @@ impl ScopedExprVisitor for ReadCollector {
     }
 
     fn bind_name(&mut self, name: &SmallName) -> Result<(), EngineError> {
-        self.bind(name);
+        self.shadowed.bind(name);
         Ok(())
     }
 
     fn unbind_name(&mut self) -> Result<(), EngineError> {
         // The walker's event stream is well-nested, so the frame being
         // popped is always the youngest open binder.
-        let scope = self.shadowed.len() - 1;
-        self.unbind_to(scope);
+        self.shadowed.unbind();
         Ok(())
     }
 

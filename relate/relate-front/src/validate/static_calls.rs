@@ -298,9 +298,7 @@ fn check_all_reduce(r: &relate_parser::AllReduceExpr) -> Result<(), EngineError>
     require_list_operand(&r.list_expr, "allReduce()")?;
     // A predicate that is the accumulator itself has the init expression's
     // static type: resolve the effective predicate once.
-    let predicate_is_accumulator = r
-        .accumulator
-        .with_str(|name| expr_is_bare_var(&r.predicate, name));
+    let predicate_is_accumulator = expr_is_bare_var(&r.predicate, &r.accumulator);
     let effective_predicate = if predicate_is_accumulator {
         &r.init_expr
     } else {
