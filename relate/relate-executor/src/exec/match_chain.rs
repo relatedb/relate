@@ -398,16 +398,25 @@ impl<'a> Stage<'a> {
             .try_for_each(|row| consumer.offer(graph, row))
     }
 
-    /// Run the remaining buffered rows, then close the stages after this
-    /// one. A stage that never ran still runs its transform once over no
-    /// rows, as the held clause does.
-    fn finish(&self, graph: &ExecGraph<'_>) -> Result<()> {
+    /// Run the remaining buffered rows, close the stages after this one
+    /// and hand over what the last left: one traversal of the run. A
+    /// stage that never ran still runs its transform once over no rows,
+    /// as the held clause does.
+    fn finish(self, graph: &ExecGraph<'_>) -> Result<ChainOutput<'a>> {
         if !self.buffer.borrow().is_empty() || !self.ran.get() {
             self.flush(graph)?;
         }
-        match &self.next {
+        match self.next {
             Next::Stage(stage) => stage.finish(graph),
-            Next::Fold(_) | Next::Rows(_) => Ok(()),
+            Next::Fold(fold) => Ok(ChainOutput::Folded(Box::new((*fold).into_parts().0))),
+            Next::Rows(collector) => {
+                let mut rows = collector.rows.into_inner();
+                Row::share_schemas(&mut rows);
+                Ok(ChainOutput::Rows {
+                    rows,
+                    source: collector.shape.source(),
+                })
+            }
         }
     }
 }
@@ -437,24 +446,7 @@ impl<'a> MatchChain<'a> {
     /// Run what is still buffered through every stage and hand over what
     /// the last one left.
     fn finish(self, graph: &ExecGraph<'_>) -> Result<ChainOutput<'a>> {
-        self.head.finish(graph)?;
-        let mut stage = self.head;
-        loop {
-            match stage.next {
-                Next::Stage(next) => stage = *next,
-                Next::Fold(fold) => {
-                    return Ok(ChainOutput::Folded(Box::new((*fold).into_parts().0)))
-                }
-                Next::Rows(collector) => {
-                    let mut rows = collector.rows.into_inner();
-                    Row::share_schemas(&mut rows);
-                    return Ok(ChainOutput::Rows {
-                        rows,
-                        source: collector.shape.source(),
-                    });
-                }
-            }
-        }
+        self.head.finish(graph)
     }
 }
 

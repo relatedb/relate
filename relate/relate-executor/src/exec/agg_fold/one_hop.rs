@@ -428,6 +428,7 @@ impl<'a> OneHopFold<'a> {
         // self mutably.
         let rel_types = self.rel_filter.types.clone();
         let rp = &self.path.rels[0];
+        let graph = self.graph;
         // The bind names are run-local facts (`self.path` never changes
         // across the row loop): rendered once beside the filter, never
         // re-rendered per row.
@@ -490,7 +491,6 @@ impl<'a> OneHopFold<'a> {
                 let Some(base) = self.start_base(row, sid)? else {
                     continue;
                 };
-                let graph = self.graph;
                 crate::ctx::phase_walk(|| {
                     graph.try_for_each_neighbor_resolved(sid, rp.direction, &rel_types, |rid| {
                         self.accept(&base, sid, rid, &rung)
