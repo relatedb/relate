@@ -16,6 +16,9 @@ pub enum InterpPart {
 pub enum Expr {
     Literal(LiteralValue),
     List(Vec<Expr>),
+    /// `PATH [n1, r1, n2, ...]` path constructor (preview `path-construction`):
+    /// the element list, parsed but not yet checked for alternation.
+    PathConstruct(Vec<Expr>),
     Map(Vec<MapPair>),
     /// CIP-261 interpolated string literal: text segments interleaved with
     /// `{expression}` embeds, lowered to the internal `string.interp`

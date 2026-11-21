@@ -176,6 +176,7 @@ pub(crate) fn expr_child_reaches_scope(parent: &Expr, child: &Expr) -> bool {
         | Expr::Comparison(_)
         | Expr::Unary(_)
         | Expr::List(_)
+        | Expr::PathConstruct(_)
         | Expr::Paren(_)
         | Expr::Subscript(_)
         | Expr::In(_)
@@ -792,7 +793,7 @@ fn walk_expr_scoped_at(
         Expr::ExistsSubquery(subquery) => visitor.subquery_body(&subquery.statement),
         Expr::CountSubquery(subquery) => visitor.subquery_body(&subquery.statement),
         Expr::CollectSubquery(subquery) => visitor.subquery_body(&subquery.statement),
-        Expr::List(items) => {
+        Expr::List(items) | Expr::PathConstruct(items) => {
             for item in items {
                 walk_expr_scoped_at(item, depth + 1, visitor)?;
             }

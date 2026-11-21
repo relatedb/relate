@@ -210,6 +210,7 @@ fn expr_payload(expr: &Expr) -> u64 {
         | Expr::DynamicProperty { .. }
         | Expr::LabelPredicate { .. }
         | Expr::List(_)
+        | Expr::PathConstruct { .. }
         | Expr::Unary { .. }
         | Expr::Binary { .. }
         | Expr::CountStar

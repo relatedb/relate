@@ -40,6 +40,10 @@ pub enum Expr {
     },
     Map(Vec<(String, Expr)>),
     List(Vec<Expr>),
+    /// `PATH [n1, r1, n2, ...]`: the path constructor over its element list.
+    PathConstruct {
+        elements: Vec<Expr>,
+    },
     Unary {
         op: UnaryOp,
         expr: Box<Expr>,

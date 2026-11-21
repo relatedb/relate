@@ -263,6 +263,9 @@ pub fn parse_and_lower_statement_with_policy_and_params(
             relate_core::PreviewFeature::Float16CoordinateTypes => {
                 validate::statement_uses_float16_coordinate_types(&stmt)
             }
+            relate_core::PreviewFeature::PathConstruction => {
+                validate::statement_uses_path_construction(&stmt)
+            }
             relate_core::PreviewFeature::ChronologicalComparisons => {
                 validate::statement_uses_chronological_comparisons(&stmt)
             }
@@ -293,7 +296,10 @@ pub fn parse_and_lower_statement_with_policy_and_params(
             | relate_core::PreviewFeature::Ontology
             | relate_core::PreviewFeature::CollectionZip
             | relate_core::PreviewFeature::CollectionHas
-            | relate_core::PreviewFeature::GqlStddevAliases => Ok(false),
+            | relate_core::PreviewFeature::GqlStddevAliases
+            // `path-concatenation` has no detector until the `||` path
+            // operand is typed at lowering.
+            | relate_core::PreviewFeature::PathConcatenation => Ok(false),
         };
         if uses.map_err(|error| Error::syntax(error.to_string()))? {
             preview.require(feature)?;
@@ -602,6 +608,41 @@ mod tests {
         assert!(
             matches!(items[0].expr, Expr::ChronoCompare { .. }),
             "expected the chronological comparison, got {:?}",
+            items[0].expr
+        );
+    }
+
+    const PATH_CONSTRUCT_QUERY: &str = "MATCH (a)-[r]->(b) RETURN PATH [a, r, b] AS p";
+
+    #[test]
+    fn path_construction_gate_fails_closed_without_the_opt_in() {
+        let error = match parse_and_lower_statement_with_preview(
+            PATH_CONSTRUCT_QUERY,
+            relate_core::PreviewFeatures::none(),
+        ) {
+            Ok(_) => panic!("a gated query unexpectedly lowered without the opt-in"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains(
+                "preview feature 'path-construction' is not enabled: \
+                 set RELATE_PREVIEW=path-construction"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn path_construction_gate_admits_the_opt_in() {
+        let enabled = relate_core::PreviewFeatures::parse("path-construction").unwrap();
+        let lowered = parse_and_lower_statement_with_preview(PATH_CONSTRUCT_QUERY, enabled)
+            .expect("the gated entry lowers a path constructor under the opt-in");
+        let Clause::Return { items, .. } = &lowered.query.parts[0].clauses[1] else {
+            panic!("expected a RETURN clause");
+        };
+        assert!(
+            matches!(&items[0].expr, Expr::PathConstruct { elements } if elements.len() == 3),
+            "expected the path constructor, got {:?}",
             items[0].expr
         );
     }

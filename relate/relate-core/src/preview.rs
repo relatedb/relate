@@ -187,6 +187,20 @@ preview_feature_registry! {
         "CIP-275 graph-type display variants of SHOW CURRENT GRAPH TYPE: consolidated and flattened.",
         "graph-type-show-variants"
     ),
+    (
+        PathConstruction,
+        "The `PATH [n1, r1, n2, ...]` path constructor: builds a path value from an \
+         alternating node, relationship, ... list. Detected at the parse point (the \
+         `PATH` word before `[`); the disabled form is ADR-0371's authored error.",
+        "path-construction"
+    ),
+    (
+        PathConcatenation,
+        "The `p1 || p2` path concatenation: joins two paths that share a boundary \
+         node. Gates the `||` operator over path operands at evaluation; the disabled \
+         form is the existing `||` operand type error, not the authored error.",
+        "path-concatenation"
+    ),
 }
 
 /// The registered feature names, comma-separated, for the fail-closed

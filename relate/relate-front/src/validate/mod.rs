@@ -281,6 +281,13 @@ pub(crate) fn statement_uses_chronological_comparisons(
     statement_any_expr(stmt, |expr| matches!(expr, Expr::ChronologicalCompare(_)))
 }
 
+/// Whether the statement's AST uses the `PATH [ ... ]` constructor anywhere --
+/// the predicate the ADR-0371 `path-construction` preview gate checks. A walk
+/// error propagates, as for the other detectors.
+pub(crate) fn statement_uses_path_construction(stmt: &Statement) -> Result<bool, EngineError> {
+    statement_any_expr(stmt, |expr| matches!(expr, Expr::PathConstruct(_)))
+}
+
 // ---- ADR-0257 nesting-depth guard and whole-tree validation ----
 
 use crate::ast::stmt_ref::StmtRef;

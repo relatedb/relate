@@ -1273,6 +1273,34 @@ Beyond the openCypher function set, Relate adds GQL string functions (`trim(BOTH
 
 Three function names accepted into a CIP that no reference release ships sit behind `RELATE_PREVIEW` *name* gates (ADR-0497): `coll.zip` (`coll-zip`), the `coll.hasAnyOf`/`coll.hasAllOf`/`coll.hasNoneOf` family (`coll-has`) and the GQL `stddev_samp`/`stddev_pop` aliases (`gql-stddev-aliases`). They hide a name rather than a syntax, so a gated call while off is the ordinary unknown-function error, and the default dialect lists none of them in `SHOW FUNCTIONS`.
 
+### Path construction and concatenation (preview)
+
+Build a path from parts with `PATH [ ... ]`, and join two paths with `||`.
+Both are preview features (ADR-0637): `RELATE_PREVIEW=path-construction`
+enables the constructor and `RELATE_PREVIEW=path-concatenation` enables `||`
+on paths; while `path-construction` is off the constructor fails with the authored
+`preview feature … is not enabled` error, and while `path-concatenation` is
+off `||` on paths keeps the existing `||` operand type error. `||` on
+strings and lists is unaffected.
+
+```cypher
+MATCH (a:Person)-[r:KNOWS]->(b:Person)
+RETURN PATH [a, r, b] AS p;
+
+MATCH p1 = (a:Person)-[:KNOWS]->(b), p2 = (b)-[:LIKES]->(c)
+RETURN p1 || p2 AS joined;
+```
+
+The list alternates node, relationship, node, ... and starts and ends with a
+node; anything else, or a relationship that does not connect its neighbours,
+is an error. A one-element `PATH [n]` is not constructible in this preview (it is
+indistinguishable from subscripting a variable named `path`; an open question
+for the maintainers). A relationship matches in
+either stored direction and keeps it. A null element or list gives `null`.
+`p1 || p2` requires the last node of `p1` to be the first node of `p2` (same
+node id), shared once in the result; otherwise it is an error. A null operand
+gives `null`; a non-path operand is an invalid argument type error.
+
 ### Scope note
 
 Server- and multi-user-oriented Cypher (RBAC & privileges, user auth, remote/composite/sharded databases, clustering) is intentionally **not** implemented — Relate is a single-process embedded engine. Multi-database surface follows Neo4j Community Edition over three fixed namespaces (`neo4j`, `system`, `system_ontologies`; ADR-0116): `USE` routes a statement to one of them (unknown names fail with 42N00), composite forms (`USE graph.byName`, composite databases) fail with 42N72/51N27, and `SHOW DATABASES` lists the fixed rows — two by default, since `system_ontologies` is visible only under `RELATE_PREVIEW=ontology` (ADR-0593: CE's own listing is exactly the two). `SHOW` commands are supported over local metadata with a stable column subset. The CIP-derived evaluation suite in the spec harness tracks this scope per CIP (`features/cip-eval`, ADR-0482, ADR-0520).

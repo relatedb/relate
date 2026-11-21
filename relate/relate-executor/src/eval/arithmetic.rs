@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use relate_core::{temporal, ArithmeticFailure, Error, Result, Value};
+use relate_core::{temporal, ArithmeticFailure, Error, PreviewFeature, Result, Value};
 
 use crate::overlay::ExecGraph;
 
@@ -120,6 +120,16 @@ pub(crate) fn concat(graph: &ExecGraph<'_>, l: Value, r: Value) -> Result<Value>
         // `+` on two strings or two lists IS `||`: delegate so the
         // charge-and-build policy has one spelling.
         (Value::String(_), Value::String(_)) | (Value::List(_), Value::List(_)) => add(graph, l, r),
+        (Value::Path(a), Value::Path(b))
+            if graph.preview().enabled(PreviewFeature::PathConcatenation) =>
+        {
+            super::path_value::join(graph, a, b)
+        }
+        (Value::Null, Value::Path(_)) | (Value::Path(_), Value::Null)
+            if graph.preview().enabled(PreviewFeature::PathConcatenation) =>
+        {
+            Ok(Value::Null)
+        }
         (Value::Null, Value::String(_) | Value::List(_))
         | (Value::String(_) | Value::List(_), Value::Null)
         | (Value::Null, Value::Null) => Ok(Value::Null),

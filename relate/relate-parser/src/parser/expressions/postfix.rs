@@ -191,6 +191,10 @@ impl<'a> Parser<'a> {
     }
 
     pub(in crate::parser) fn parse_postfix(&mut self) -> ParseResult<Expr> {
+        // `PATH [` read at the token level, before the primary is consumed:
+        // only the first postfix operator can be the constructor's bracket.
+        let mut path_open =
+            self.peek_is_ident("PATH") && self.peek_at(1).ty == TokenType::LeftBracket;
         let primary = self.parse_primary()?;
         let ns = Self::extract_namespace(&primary);
         let mut base = PostfixBase::Built(primary, ns);
@@ -312,6 +316,7 @@ impl<'a> Parser<'a> {
                             "a call-bound dot-chain only continues at '.' or '('",
                         ));
                     };
+                    let is_path_open = std::mem::take(&mut path_open);
                     self.next_token(); // consume [
                                        // Check for [..to]
                     if self.peek_type() == TokenType::DotDot {
@@ -331,6 +336,19 @@ impl<'a> Parser<'a> {
                         continue;
                     }
                     let first = self.parse_expression()?;
+                    // `PATH [a, r, b]`: a comma can never follow a subscript
+                    // index, so a `PATH [` opener followed by a
+                    // comma-separated list is the path constructor.
+                    if self.peek_type() == TokenType::Comma && is_path_open {
+                        let mut elements = vec![first];
+                        while self.peek_type() == TokenType::Comma {
+                            self.next_token(); // consume ,
+                            elements.push(self.parse_expression()?);
+                        }
+                        self.expect(TokenType::RightBracket)?;
+                        base = PostfixBase::Built(Expr::PathConstruct(elements), None);
+                        continue;
+                    }
                     if self.peek_type() == TokenType::DotDot {
                         self.next_token(); // consume ..
                         let to = if self.peek_type() != TokenType::RightBracket {

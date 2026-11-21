@@ -129,6 +129,9 @@ pub fn lower_expr(e: &cl::Expr) -> Result<mdb::Expr> {
             }
         }
         cl::Expr::List(xs) => mdb::Expr::List(map_exprs(xs)?),
+        cl::Expr::PathConstruct(xs) => mdb::Expr::PathConstruct {
+            elements: map_exprs(xs)?,
+        },
         cl::Expr::Map(pairs) => mdb::Expr::Map(
             pairs
                 .iter()

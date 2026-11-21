@@ -33,6 +33,7 @@ mod items;
 mod labels;
 mod membership_index;
 mod numeric;
+mod path_value;
 mod predicates;
 mod quantifier;
 mod regex_cache;
@@ -411,6 +412,13 @@ pub fn eval(
             Ok(temporal::chrono_compare(*op, &l, &r, *negated))
         }
         Expr::MapProjection { expr, items } => eval_map_projection(ctx, expr, items),
+        Expr::PathConstruct { elements } => path_value::construct(
+            graph,
+            elements
+                .iter()
+                .map(|e| eval(graph, row, e, params))
+                .collect::<Result<Vec<_>>>()?,
+        ),
         Expr::DistanceMetric(_) => Err(Error::semantic(
             "distance metrics are only valid as a vector_distance/vector_norm argument",
         )),

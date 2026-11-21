@@ -60,6 +60,14 @@ pub(crate) fn expr_text(expr: &Expr) -> String {
             "[{}]",
             items.iter().map(expr_text).collect::<Vec<_>>().join(", ")
         ),
+        Expr::PathConstruct { elements } => format!(
+            "PATH [{}]",
+            elements
+                .iter()
+                .map(expr_text)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         Expr::Map(pairs) => format!(
             "{{{}}}",
             pairs

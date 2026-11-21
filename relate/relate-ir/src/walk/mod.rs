@@ -81,7 +81,9 @@ impl Expr {
                     visit(value);
                 }
             }
-            Expr::List(items) | Expr::Function { args: items, .. } => {
+            Expr::List(items)
+            | Expr::PathConstruct { elements: items }
+            | Expr::Function { args: items, .. } => {
                 for item in items {
                     visit(item);
                 }
@@ -264,6 +266,9 @@ impl Expr {
                     .collect::<std::result::Result<_, E>>()?,
             ),
             Expr::List(items) => Expr::List(map_expr_children(items, f)?),
+            Expr::PathConstruct { elements } => Expr::PathConstruct {
+                elements: map_expr_children(elements, f)?,
+            },
             Expr::Unary { op, expr } => Expr::Unary {
                 op: *op,
                 expr: Box::new(f(expr)?),

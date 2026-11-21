@@ -62,7 +62,9 @@ macro_rules! edge_table {
             | Expr::OptionValuePlaceholder
             | Expr::CountStar
             | Expr::Star => {}
-            Expr::List(items) => edge_table!(@exprs $f, $edge, items.$iter()),
+            Expr::List(items) | Expr::PathConstruct(items) => {
+                edge_table!(@exprs $f, $edge, items.$iter())
+            }
             Expr::Map(pairs) => {
                 edge_table!(@exprs $f, $edge, pairs.$iter().map(|p| $($r)+ p.value))
             }
