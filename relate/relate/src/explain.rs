@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 
 use relate_executor::ExecGraph;
 use relate_model::wire::Notification;
+use relate_parser::PreambleMode;
 use relate_planner::{LogicalPlan, QueryType};
 
 use crate::phase_timing::TimingStamp;
@@ -35,21 +36,24 @@ use relate_core::{Namespace, Result};
 /// parse classified the preamble (`parsed.preamble`), so
 /// the engine strips the one classified keyword token here, once, at the
 /// producer — the boundary reads the stamped text and never re-scans for
-/// the keyword. `keyword` is the classified token (`EXPLAIN`/`PROFILE`).
-pub(crate) fn statement_echo(cypher: &str, keyword: &str) -> String {
-    let mut stripped = false;
-    cypher
-        .split_whitespace()
-        .filter(|token| {
-            if !stripped && token.eq_ignore_ascii_case(keyword) {
-                stripped = true;
-                false
-            } else {
-                true
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+/// the keyword. `mode` is the parse's classified preamble.
+pub(crate) fn statement_echo(cypher: &str, mode: PreambleMode) -> String {
+    let keyword = match mode {
+        PreambleMode::Explain => "EXPLAIN",
+        PreambleMode::Profile => "PROFILE",
+        PreambleMode::Execute => return cypher.split_whitespace().collect::<Vec<_>>().join(" "),
+    };
+    // The keyword is not always the first token: a statement may open with
+    // another preamble form (`CYPHER 25 EXPLAIN …`), so the first token
+    // equal to it is the one dropped.
+    let mut tokens = cypher.split_whitespace().collect::<Vec<_>>();
+    if let Some(at) = tokens
+        .iter()
+        .position(|token| token.eq_ignore_ascii_case(keyword))
+    {
+        tokens.remove(at);
+    }
+    tokens.join(" ")
 }
 
 /// The two inputs the statement-scoped notification derivation reads —
@@ -94,11 +98,8 @@ pub(crate) fn explain_result(
     timing: impl FnOnce() -> TimingStamp,
     stats: &crate::stats::GraphPatternStats,
     statement_echo: String,
-    inputs: NotificationInputs<'_>,
-) -> Result<QueryResult> {
-    // The statement-scoped half is fallible (it reads the catalog); EXPLAIN
-    // fails with the read's own error rather than silently dropping notes.
-    let statement = inputs.derive(plan)?;
+    statement: Vec<Notification>,
+) -> QueryResult {
     // The structured tree (ADR-0359): the plan rides `QueryResult.plan`
     // alone — the rendered plan column is gone, so every surface renders
     // its own text through `relate-formatter` on demand.
@@ -114,14 +115,14 @@ pub(crate) fn explain_result(
     // here — after the render (LABS-832) — so the EXECUTE arm covers the
     // plan render it is documented to cover; `ResultHeader::new` takes it
     // lazily and invokes it at the header's construction.
-    Ok(QueryResult::not_executed(ResultHeader::new(
+    QueryResult::not_executed(ResultHeader::new(
         Vec::new(),
         &[],
         query_type,
         namespace,
         timing,
     ))
-    .with_plan(tree.root, notifications))
+    .with_plan(tree.root, notifications)
 }
 
 /// `PROFILE <statement>`'s epilogue. `statement` is the statement-scoped
@@ -150,4 +151,24 @@ pub(crate) fn profile_result(
     // stays valid; the tree carries the profile facts (per-operator
     // time, so no wall-clock cell is appended).
     result.with_plan(tree.root, notifications)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn echo_drops_the_classified_keyword_wherever_it_sits() {
+        assert_eq!(
+            statement_echo("EXPLAIN  MATCH (n) RETURN n", PreambleMode::Explain),
+            "MATCH (n) RETURN n"
+        );
+        assert_eq!(
+            statement_echo(
+                "CYPHER 25 profile MATCH (n) RETURN n",
+                PreambleMode::Profile
+            ),
+            "CYPHER 25 MATCH (n) RETURN n"
+        );
+    }
 }

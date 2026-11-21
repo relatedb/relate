@@ -309,19 +309,17 @@ pub enum RuleDisposition<'a> {
 /// `existing` is an iterator (a slice, a catalog map's values) so every
 /// caller hands over the constraints it already holds.
 pub fn rule_disposition<'a>(
-    existing: impl Clone + IntoIterator<Item = &'a ConstraintDef>,
+    existing: impl IntoIterator<Item = &'a ConstraintDef>,
     declaration: &ConstraintSchema,
 ) -> RuleDisposition<'a> {
-    if let Some(rule) = existing
-        .clone()
-        .into_iter()
-        .find(|rule| declaration.matches(rule.schema_view()))
-    {
-        RuleDisposition::Equivalent(rule)
-    } else if existing
-        .into_iter()
-        .any(|rule| declaration.conflicts_with(rule.schema_view()))
-    {
+    let mut conflicts = false;
+    for rule in existing {
+        if declaration.matches(rule.schema_view()) {
+            return RuleDisposition::Equivalent(rule);
+        }
+        conflicts |= declaration.conflicts_with(rule.schema_view());
+    }
+    if conflicts {
         RuleDisposition::Conflicts
     } else {
         RuleDisposition::New

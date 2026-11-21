@@ -59,18 +59,24 @@ impl Connection {
                 admission.timing,
             )
         };
-        explain::explain_result(
+        // The statement-scoped half is fallible (it reads the catalog);
+        // EXPLAIN fails with the read's own error rather than silently
+        // dropping notes — PROFILE's epilogue settles the same derive with
+        // the opposite policy at its own boundary.
+        let statement = explain::NotificationInputs {
+            view: &view,
+            params,
+        }
+        .derive(&admission.logical)?;
+        Ok(explain::explain_result(
             &admission.logical,
             admission.stamp.namespace,
             admission.stamp.qtype,
             timing,
             &stats,
-            explain::statement_echo(cypher, "EXPLAIN"),
-            explain::NotificationInputs {
-                view: &view,
-                params,
-            },
-        )
+            explain::statement_echo(cypher, admission.preamble),
+            statement,
+        ))
     }
 
     /// The PROFILE epilogue: append the profiled plan and its statistics to
@@ -142,7 +148,7 @@ impl Connection {
             metrics,
             result,
             &stats,
-            explain::statement_echo(cypher, "PROFILE"),
+            explain::statement_echo(cypher, admission.preamble),
             statement,
         )
     }

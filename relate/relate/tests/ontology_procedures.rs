@@ -16,6 +16,9 @@ use relate_storage::{MemoryVfs, Vfs};
 
 use common::{err_text, get_doc, set_doc};
 
+/// The one read of the current graph type's specification.
+const SHOW_SPEC: &str = "SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification";
+
 /// A small valid document as canonical compact JSON (same shape as the
 /// YAML twin below — the cross-format conversion test depends on the two
 /// denoting the same document in the same key order).
@@ -395,18 +398,18 @@ fn apply_semantics() {
     assert!(err.contains("constraint_63dbe7c8"), "{err}");
     assert!(err.contains("4:rl-id:n0"), "{err}");
     // The failed apply changed nothing: the graph type is still empty.
-    let result = conn
-        .query("SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification")
-        .unwrap();
-    assert_eq!(result.rows[0][0], Value::String("{}".into()));
+    assert_eq!(
+        common::scalar_one(&mut conn, SHOW_SPEC),
+        Value::String("{}".into())
+    );
 
     // Fix the data; apply now succeeds and sets the current graph type.
     conn.query("MATCH (n:Person) SET n.id = 'p0'").unwrap();
     conn.query("CALL db.ontology.apply()").unwrap();
-    let result = conn
-        .query("SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification")
-        .unwrap();
-    let graph_type = result.rows[0][0].as_string().unwrap().to_string();
+    let graph_type = common::scalar_one(&mut conn, SHOW_SPEC)
+        .as_string()
+        .unwrap()
+        .to_string();
     assert!(graph_type.contains("Person"), "{graph_type}");
     assert!(graph_type.contains("KNOWS"), "{graph_type}");
     // And the derived key constraint now gates writes.
@@ -419,11 +422,10 @@ fn apply_semantics() {
     conn.begin().unwrap();
     conn.query("CALL db.ontology.apply()").unwrap();
     conn.rollback().unwrap();
-    let result = conn
-        .query("SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification")
-        .unwrap();
     assert_eq!(
-        result.rows[0][0].as_string().unwrap(),
+        common::scalar_one(&mut conn, SHOW_SPEC)
+            .as_string()
+            .unwrap(),
         graph_type.as_str(),
         "rollback discards the re-applied graph type"
     );
@@ -482,10 +484,11 @@ fn apply_rejects_main_valid_but_unconvertible_documents() {
         let err = err_text(conn.query("CALL db.ontology.apply()"));
         assert!(err.contains(needle), "{doc}: {err}");
         // The failed apply changed nothing.
-        let result = conn
-            .query("SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification")
-            .unwrap();
-        assert_eq!(result.rows[0][0], Value::String("{}".into()), "{doc}");
+        assert_eq!(
+            common::scalar_one(&mut conn, SHOW_SPEC),
+            Value::String("{}".into()),
+            "{doc}"
+        );
     }
 }
 
@@ -637,12 +640,10 @@ fn system_ontologies_is_not_queryable_after_set() {
         Value::String(DOC_JSON.into())
     );
     conn.query("CALL db.ontology.apply()").unwrap();
-    let result = conn
-        .query("SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification")
-        .unwrap();
+    let spec = common::scalar_one(&mut conn, SHOW_SPEC);
     assert!(
-        result.rows[0][0].as_string().unwrap().contains("Person"),
+        spec.as_string().unwrap().contains("Person"),
         "{}",
-        result.rows[0][0].as_string().unwrap()
+        spec.as_string().unwrap()
     );
 }
