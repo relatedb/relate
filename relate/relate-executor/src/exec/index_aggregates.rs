@@ -19,43 +19,48 @@ use relate_names::SmallName;
 use crate::ctx::ExecCtx;
 use crate::eval::key_of;
 use crate::graph::Extremum;
+use crate::overlay::RetainedTotal;
 use crate::row::Row;
 
 use super::order::order_on_columns;
 use super::project::return_result;
 use super::scope::projection_names;
 use super::shortcut_common::{
-    finish_grouped_rows, is_node_count, match_return_pattern, single_label_node, CountedGroups,
-    GroupedPage,
+    count_value, finish_grouped_rows, grouped_row, is_node_count, match_return_pattern,
+    single_label_node, CountedGroups, GroupedPage,
 };
 use super::QueryResult;
-
-/// Where the key sits among the two output cells of a grouped row.
-#[derive(Clone, Copy)]
-pub(super) enum CellOrder {
-    KeyThenCount,
-    CountThenKey,
-}
 
 /// A recognized statement over `(label, key)` — the node variable is
 /// resolved away: every item reads it only through `n.key`.
 pub(super) enum Shape<'a> {
     /// `n.key` beside a node count: one row per distinct value, ordered
-    /// and paged by the statement's own [`GroupedPage`].
+    /// and paged by the statement's own [`GroupedPage`]. `count_at` is
+    /// the count item's position among the items — the one place the
+    /// cell placement is decided (label_set_groups' idiom).
     Grouped {
-        cells: CellOrder,
+        count_at: usize,
         page: GroupedPage<'a>,
     },
     /// Only `min`/`max`/`count` of `n.key`: one row.
-    Folds { folds: Vec<Fold> },
+    Folds { folds: Vec<FoldItem> },
 }
 
-/// The aggregates a fold statement may ask of one property.
+/// One fold ask and the output column it lands in — the pairing the
+/// fold arm reads, never a positionally aligned sibling vec beside the
+/// items.
+pub(super) struct FoldItem {
+    fold: Fold,
+    name: String,
+}
+
+/// The aggregates a fold statement may ask of one property — the
+/// extremum direction carried as [`Extremum`] itself, not a duplicate
+/// Min/Max vocabulary beside it.
 #[derive(Clone, Copy)]
 pub(super) enum Fold {
+    Extremum(Extremum),
     Count,
-    Min,
-    Max,
 }
 
 pub(super) struct Recognized<'a> {
@@ -83,25 +88,25 @@ fn property_fold<'a>(expr: &'a Expr, var: &SmallName) -> Option<(Fold, &'a Small
     let key = key_of(arg, var)?;
     let fold = match kind {
         relate_ir::AggregateKind::Count => Fold::Count,
-        relate_ir::AggregateKind::Min => Fold::Min,
-        relate_ir::AggregateKind::Max => Fold::Max,
+        relate_ir::AggregateKind::Min => Fold::Extremum(Extremum::Min),
+        relate_ir::AggregateKind::Max => Fold::Extremum(Extremum::Max),
         _ => return None,
     };
     Some((fold, key))
 }
 
 /// The two cells of a grouped row — `n.p` beside a node count, in either
-/// order: which cell is the key, the key itself, and the count item.
+/// order: the count item's position, the key itself, and the count item.
 fn grouped_cells<'a>(
     items: &'a [Projection],
     var: &SmallName,
-) -> Option<(CellOrder, &'a SmallName, &'a Projection)> {
+) -> Option<(usize, &'a SmallName, &'a Projection)> {
     let [a, b] = items else {
         return None;
     };
     match (key_of(&a.expr, var), key_of(&b.expr, var)) {
-        (Some(key), None) => Some((CellOrder::KeyThenCount, key, b)),
-        (None, Some(key)) => Some((CellOrder::CountThenKey, key, a)),
+        (Some(key), None) => Some((1, key, b)),
+        (None, Some(key)) => Some((0, key, a)),
         _ => None,
     }
 }
@@ -114,8 +119,8 @@ fn grouped_shape<'a>(
     order: &'a [OrderItem],
     skip: Option<&'a Expr>,
     limit: Option<&'a Expr>,
-) -> Option<(CellOrder, &'a SmallName, GroupedPage<'a>)> {
-    let (cells, key, count) = grouped_cells(items, var)?;
+) -> Option<(usize, &'a SmallName, GroupedPage<'a>)> {
+    let (count_at, key, count) = grouped_cells(items, var)?;
     // The count must be the pattern's own node count — the scan's to
     // resolve otherwise. (The node-variable output-column gate is
     // `order_on_columns`'s own precondition, below.)
@@ -123,7 +128,7 @@ fn grouped_shape<'a>(
         return None;
     }
     let order = order_on_columns(order, items, var)?;
-    Some((cells, key, GroupedPage { order, skip, limit }))
+    Some((count_at, key, GroupedPage { order, skip, limit }))
 }
 
 /// The fold rung: only `min`/`max`/`count` of one property with no
@@ -135,19 +140,26 @@ fn folds_shape<'a>(
     order: &[OrderItem],
     skip: Option<&Expr>,
     limit: Option<&Expr>,
-) -> Option<(&'a SmallName, Vec<Fold>)> {
+) -> Option<(&'a SmallName, Vec<FoldItem>)> {
     if !order.is_empty() || skip.is_some() || limit.is_some() {
         return None;
     }
-    let found: Vec<(Fold, &SmallName)> = items
-        .iter()
-        .map(|p| property_fold(&p.expr, var))
-        .collect::<Option<_>>()?;
-    let key = found.first()?.1;
-    if found.iter().any(|(_, k)| *k != key) {
-        return None;
+    // Seeded from the first item: every later fold must read the same
+    // property — a plain comparison, no accumulator.
+    let (first, _) = items.split_first()?;
+    let (_, key) = property_fold(&first.expr, var)?;
+    let mut folds = Vec::with_capacity(items.len());
+    for (i, p) in items.iter().enumerate() {
+        let (fold, item_key) = property_fold(&p.expr, var)?;
+        if item_key != key {
+            return None;
+        }
+        folds.push(FoldItem {
+            fold,
+            name: p.output_name(i),
+        });
     }
-    Some((key, found.into_iter().map(|(fold, _)| fold).collect()))
+    Some((key, folds))
 }
 
 /// Recognize the shape: exactly `[Match, Return]` (the `MATCH` half is
@@ -170,14 +182,14 @@ pub(super) fn recognize(clauses: &[Clause]) -> Option<Recognized<'_>> {
         return None;
     };
     let (var, label) = single_label_node(pattern)?;
-    if let Some((cells, key, page)) =
+    if let Some((count_at, key, page)) =
         grouped_shape(var, items, order, skip.as_ref(), limit.as_ref())
     {
         return Some(Recognized {
             label,
             key,
             items,
-            shape: Shape::Grouped { cells, page },
+            shape: Shape::Grouped { count_at, page },
         });
     }
     let (key, folds) = folds_shape(var, items, order, skip.as_ref(), limit.as_ref())?;
@@ -212,48 +224,72 @@ pub(super) fn index_aggregates_result(
     };
     let (label, key) = (label.to_string(), key.to_string());
     let ts = graph.snapshot_ts();
-    match shape {
+    // The shape's reads, before any emission: the fold row, or the
+    // grouped rows with their page.
+    let read = match shape {
         Shape::Folds { folds } => {
-            let Some(values) = fold_values(ctx, &label, &key, ts, &folds)? else {
+            let Some(row) = fold_values(ctx, &label, &key, ts, folds)? else {
                 return Ok(None);
             };
-            // The same exactness window the grouped arm closes: the
-            // index reads ran at the statement's `ts` under the ladder's
-            // one pre-check — a writer that committed since would let a
-            // stale end answer min/max. Decline to the scan instead.
-            if !graph.sees_exact_base_stats() {
+            Read::Folds(row)
+        }
+        Shape::Grouped { count_at, page } => {
+            let Some(rows) = group_values(ctx, &label, &key, ts, items, count_at)? else {
                 return Ok(None);
-            }
-            let columns = projection_names(items);
-            let mut rows: Vec<Row> = vec![columns.into_iter().zip(values).collect()];
+            };
+            Read::Grouped { rows, page }
+        }
+    };
+    // The one exactness-window close, after every read and before any
+    // emission: the index reads ran at the statement's `ts` under the
+    // ladder's one pre-check — a writer that committed since would
+    // answer min/max from a stale end or tear the grouped halves.
+    // Decline to the scan instead.
+    if !graph.sees_exact_base_stats() {
+        return Ok(None);
+    }
+    match read {
+        Read::Folds(row) => {
+            let mut rows: Vec<Row> = vec![row];
             let result = return_result(graph, items, clauses, &mut rows)?;
             Ok(Some((rows, result)))
         }
-        Shape::Grouped { cells, page } => {
-            let Some(grouped) = group_values(ctx, &label, &key, ts, items, cells)? else {
-                return Ok(None);
-            };
-            let answer = finish_grouped_rows(ctx, clauses, items, page, grouped, scope)?;
+        Read::Grouped { rows, page } => {
+            let answer = finish_grouped_rows(ctx, clauses, items, page, rows, scope)?;
             Ok(Some(answer))
         }
     }
 }
 
-/// One value per fold, `Ok(None)` when the graph cannot answer one, the
+/// What a recognized shape read, before the exactness window closes and
+/// the emission runs.
+enum Read<'a> {
+    /// One row: each fold's value in its own named column — the
+    /// `FoldItem` pairing, never a second aligned vec.
+    Folds(Row),
+    /// The grouped rows and the statement's own paging.
+    Grouped {
+        rows: Vec<Row>,
+        page: GroupedPage<'a>,
+    },
+}
+
+/// The fold statement's one row — each fold's value inserted under its
+/// own `FoldItem` column as it resolves, the pairing consumed and never
+/// re-joined — `Ok(None)` when the graph cannot answer one fold, the
 /// walk's error when one fires.
 fn fold_values(
     ctx: ExecCtx<'_>,
     label: &str,
     key: &str,
     ts: u64,
-    folds: &[Fold],
-) -> Result<Option<Vec<Value>>> {
+    folds: Vec<FoldItem>,
+) -> Result<Option<Row>> {
     let base = ctx.graph.base();
-    let mut values = Vec::with_capacity(folds.len());
-    for fold in folds {
-        let value = match fold {
-            Fold::Min => base.range_extremum_at(label, key, Extremum::Min, ts),
-            Fold::Max => base.range_extremum_at(label, key, Extremum::Max, ts),
+    let mut row = Row::new();
+    for item in folds {
+        let value = match item.fold {
+            Fold::Extremum(end) => base.range_extremum_at(label, key, end, ts),
             Fold::Count => {
                 let mut count = 0u64;
                 // The walk's decline is the fold's decline — a swallowed
@@ -262,19 +298,15 @@ fn fold_values(
                     count += 1;
                     Ok(())
                 })?
-                .map(|()| {
-                    Value::Int(
-                        i64::try_from(count).expect("a group count past i64 is a broken store"),
-                    )
-                })
+                .map(|()| count_value(count))
             }
         };
         let Some(value) = value else {
             return Ok(None);
         };
-        values.push(value);
+        row.insert(item.name, value);
     }
-    Ok(Some(values))
+    Ok(Some(row))
 }
 
 /// One row per distinct value of `key` (the first-seen representation, as
@@ -287,7 +319,7 @@ fn group_values(
     key: &str,
     ts: u64,
     items: &[Projection],
-    cells: CellOrder,
+    count_at: usize,
 ) -> Result<Option<Vec<Row>>> {
     let graph = ctx.graph;
     // ADR-0463: the group table is a retained container, charged as groups
@@ -300,16 +332,41 @@ fn group_values(
         .for_each_posted_value_at(label, key, ts, |value| {
             groups.add_one(graph, &mut retained, value, 1)
         });
-    match walk {
-        Ok(None) => return Ok(None),
-        Err(e) => return Err(e),
-        Ok(Some(())) => {}
-    }
+    // The walk's decline is the shape's decline; its error propagates.
+    let Some(()) = walk? else {
+        return Ok(None);
+    };
     // The nodes holding no value: the label's exact live count less the
-    // counted ones, read in the same exactness window. Postings are id
-    // sets, so a node cannot be counted twice under one key: `counted`
-    // is at most the label's live count, and a smaller total is a broken
-    // store — the same invariant the sibling group checks state.
+    // counted ones, read in the same exactness window.
+    // The walk's one decline protocol: a null group that cannot be read
+    // in the exactness window declines the whole answer — never an
+    // emission missing it.
+    let Some(()) = null_group(ctx, label, &mut groups, &mut retained)? else {
+        return Ok(None);
+    };
+    let rows = groups.into_rows(graph, &mut retained, |keys, count| {
+        // The one emission policy: the count in its `count_at` column,
+        // the group's key in the other — shortcut_common's row shape.
+        grouped_row(&names, count_at, keys, count)
+    })?;
+    Ok(Some(rows))
+}
+
+/// The grouped answer's synthesized null group: the label's exact live
+/// count less the counted ones, landing as the null key's count. `None`
+/// (the caller's decline) when the label total cannot be read in the
+/// same exactness window.
+fn null_group(
+    ctx: ExecCtx<'_>,
+    label: &str,
+    groups: &mut CountedGroups,
+    retained: &mut RetainedTotal,
+) -> Result<Option<()>> {
+    let graph = ctx.graph;
+    // Postings are id sets, so a node cannot be counted twice under one
+    // key: `counted` is at most the label's live count, and a smaller
+    // total is a broken store — the same invariant the sibling group
+    // checks state.
     let counted: u64 = groups.total_count();
     let Some(total) = graph.base().windowed_stats_count(
         || graph.sees_exact_base_stats(),
@@ -321,26 +378,7 @@ fn group_values(
         .checked_sub(counted)
         .expect("a label's live count below its posted ids is a broken store");
     if nulls > 0 {
-        groups.add_one(graph, &mut retained, &Value::Null, nulls)?;
+        groups.add_one(graph, retained, &Value::Null, nulls)?;
     }
-    // The same exactness window the sibling shortcuts close: a writer
-    // that committed between the postings walk (at the statement's `ts`)
-    // and the label total (read as of now) would tear the two halves —
-    // the postings of the old state, the count of the new. The view was
-    // exact when the ladder admitted the statement; if it no longer is,
-    // decline to the scan rather than answer across the tear.
-    if !graph.sees_exact_base_stats() {
-        return Ok(None);
-    }
-    let rows = groups.into_rows(graph, &mut retained, |keys, count| {
-        let count =
-            Value::Int(i64::try_from(count).expect("a group count past i64 is a broken store"));
-        let [value]: [Value; 1] = keys.try_into().expect("one key column per group");
-        let values = match cells {
-            CellOrder::KeyThenCount => [value, count],
-            CellOrder::CountThenKey => [count, value],
-        };
-        names.iter().cloned().zip(values).collect()
-    })?;
-    Ok(Some(rows))
+    Ok(Some(()))
 }

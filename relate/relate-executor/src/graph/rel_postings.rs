@@ -9,6 +9,7 @@
 //! nobody probes costs nothing on the write path.
 
 use super::index::{dirty_mark_built, PropPairIndex};
+use super::index_postings::prop_pair_post;
 use super::*;
 
 impl Graph {
@@ -92,9 +93,14 @@ impl Graph {
         self.with_pair(
             &self.indexes.rel_prop_pairs,
             (type_id, kid),
-            |g: &Graph| g.rels.keys(),
-            |g: &Graph, id: i64, f: &mut dyn FnMut(&Value)| {
-                g.for_each_rel_pair_value(id, type_id, key, kid, f)
+            || self.rels.keys(),
+            // The relationship pairs carry no aggregate trust mark, so
+            // their feed posts alone — the recency classification stays
+            // on the node side.
+            |id, st| {
+                self.for_each_rel_pair_value(id, type_id, key, kid, |val| {
+                    prop_pair_post(st, id, GroupKey::for_property_index(val).as_ref());
+                });
             },
             read,
         )

@@ -14,7 +14,7 @@ use relate_ir::{Clause, Expr, MatchMode, OrderItem, PathPattern, Projection};
 use relate_names::SmallName;
 
 use crate::ctx::ExecCtx;
-use crate::group_key::GroupKey;
+use crate::group_key::{row_key, GroupKey};
 use crate::overlay::{ExecGraph, RetainedTotal};
 use crate::row::Row;
 
@@ -269,14 +269,15 @@ impl CountedGroups {
         keys: Vec<Value>,
         count: u64,
     ) -> Result<()> {
-        let identity: Vec<GroupKey> = keys.iter().map(GroupKey::new).collect();
-        self.land(graph, retained, &identity, keys, count)
+        // The canonical row identity (the one DISTINCT/UNION read).
+        let identity = row_key(&keys);
+        self.land(graph, retained, &identity, || keys, count)
     }
 
     /// The single-key landing the index-aggregate walk takes per posted
     /// node: merges on the identity derived from the value directly, and
-    /// only a new group materializes the payload — no one-element vector
-    /// on the merge path.
+    /// only a new group materializes the payload — the value clones once
+    /// per distinct group, never once per posting.
     pub(super) fn add_one(
         &mut self,
         graph: &ExecGraph<'_>,
@@ -289,21 +290,22 @@ impl CountedGroups {
             graph,
             retained,
             std::slice::from_ref(&identity),
-            vec![value.clone()],
+            || vec![value.clone()],
             count,
         )
     }
 
     /// The one insert-or-bump: an existing group's count is checked and
-    /// bumped; a new group is charged through the canonical
-    /// [`RetainedTotal::add_group_landing`] (a zero-seat table: the count
-    /// is inline) and lands with its first-seen payload.
+    /// bumped — the payload closure never runs on that path; a new group
+    /// is charged through the canonical [`RetainedTotal::add_group_landing`]
+    /// (a zero-seat table: the count is inline) and lands with its
+    /// first-seen payload, materialized by the closure only now.
     fn land(
         &mut self,
         graph: &ExecGraph<'_>,
         retained: &mut RetainedTotal,
         identity: &[GroupKey],
-        keys: Vec<Value>,
+        keys: impl FnOnce() -> Vec<Value>,
         count: u64,
     ) -> Result<()> {
         if let Some((_, n)) = self.table.get_mut(identity) {
@@ -312,6 +314,7 @@ impl CountedGroups {
                 .expect("count overflow: a group sum past u64 is a broken store");
             return Ok(());
         }
+        let keys = keys();
         // The canonical landing charges the entry and the value slots;
         // this table also *retains the payload values themselves* (a
         // group's first-seen keys are heap — a string, a list), so their
@@ -359,6 +362,41 @@ impl CountedGroups {
                 .expect("count overflow: a group sum past u64 is a broken store")
         })
     }
+}
+
+/// The one count emission: a group's summed count as the answer's Int —
+/// the conversion and its invariant stated once for every shortcut that
+/// answers a `count(*)` (the fold rung, the grouped rows, the label-set
+/// groups).
+pub(super) fn count_value(count: u64) -> Value {
+    Value::Int(i64::try_from(count).expect("a group count past i64 is a broken store"))
+}
+
+/// One grouped row under the shared emission policy: the summed count in
+/// its own column — `count_at` among `names`, resolved once by the
+/// recognizer — and each group key in the next other column, in name
+/// order. The two grouped shortcuts (the index aggregate, the label-set
+/// groups) hand their keys in; the placement is stated here and nowhere
+/// else.
+pub(super) fn grouped_row(
+    names: &[String],
+    count_at: usize,
+    mut keys: Vec<Value>,
+    count: u64,
+) -> Row {
+    // The count's column is `count_at`; the keys fill the others in name
+    // order — the placement stated as one insertion, never per-item
+    // optionality.
+    keys.insert(count_at, count_value(count));
+    // The recognizer guarantees one count column and one per key item;
+    // checked in every build — zip would silently truncate a broken
+    // shape in a release build.
+    assert_eq!(
+        names.len(),
+        keys.len(),
+        "one count column and one per key item"
+    );
+    names.iter().cloned().zip(keys).collect()
 }
 
 /// Round 3, F-1-4 (the count-only recognizer's shape guard): repeated

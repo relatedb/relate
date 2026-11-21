@@ -150,9 +150,25 @@ impl<Live> Chain<Live> {
             .find(|v| super::visible(v.xmin, v.xmax, ts))
     }
 
-    /// The LIVE version: the newest one with `xmax == 0`.
+    /// The LIVE version: the newest one with `xmax == 0` — found from the
+    /// end, so the common single-version chain exits on its first item.
     pub(super) fn live(&self) -> Option<VerRef<'_, Live>> {
         self.iter().rev().find(|v| v.xmax == 0)
+    }
+
+    /// [`Self::live`]'s position form, for the walks that classify every
+    /// version as they pass (a shadowed open-ended version from a
+    /// replayed re-create is superseded: only the newest counts). The
+    /// forward scan keeps the last open-ended hit — the rule is the same
+    /// one [`Self::live`] states, read from the other end.
+    pub(super) fn live_index(&self) -> Option<usize> {
+        let mut live = None;
+        for (idx, v) in self.iter().enumerate() {
+            if v.xmax == 0 {
+                live = Some(idx);
+            }
+        }
+        live
     }
 
     /// Take the slot's versions as a vector, leaving an empty `Spilled`

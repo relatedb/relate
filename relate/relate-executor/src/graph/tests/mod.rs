@@ -12,6 +12,7 @@ mod label_set_counts;
 mod pattern_stats;
 mod point;
 mod poisoned;
+mod range;
 mod rebuild;
 mod restore;
 mod sealed;
@@ -998,87 +999,6 @@ fn string_index_star_pair_covers_all_labels() {
         .lookup_string_contains_at(&["B".into()], "name", "needle", g.commit_ts())
         .unwrap();
     assert_eq!(ids, vec![b]);
-}
-
-#[test]
-fn range_index_orders_numbers_and_prefix() {
-    let g = Graph::default();
-    g.begin_write().unwrap();
-    let low = g
-        .create_node(
-            vec!["N".into()],
-            BTreeMap::from([("x".into(), Value::Int(1))]),
-        )
-        .unwrap();
-    let high = g
-        .create_node(
-            vec!["N".into()],
-            BTreeMap::from([("x".into(), Value::Int(5))]),
-        )
-        .unwrap();
-    g.commit_write();
-    assert!(g
-        .lookup_range_seek(
-            &["N".into()],
-            "x",
-            &RangeSeek::Cmp {
-                op: relate_ir::BinaryOp::Gt,
-                bound: Value::Int(1),
-            },
-            g.commit_ts(),
-        )
-        .is_none());
-    g.materialize_range_index("N", "x");
-    let ids = g
-        .lookup_range_seek(
-            &["N".into()],
-            "x",
-            &RangeSeek::Cmp {
-                op: relate_ir::BinaryOp::Gt,
-                bound: Value::Int(1),
-            },
-            g.commit_ts(),
-        )
-        .unwrap();
-    assert_eq!(ids, vec![high]);
-    let ids = g
-        .lookup_nodes(
-            &["N".into()],
-            &BTreeMap::from([("x".into(), Value::Int(1))]),
-        )
-        .unwrap();
-    assert_eq!(ids, vec![low]);
-}
-
-#[test]
-fn range_seek_scans_when_a_datetime_does_not_fit_the_order_key() {
-    use chrono::NaiveDate;
-    use relate_core::Temporal;
-
-    let g = Graph::default();
-    g.begin_write().unwrap();
-    let far = NaiveDate::from_ymd_opt(9999, 1, 1)
-        .unwrap()
-        .and_hms_opt(0, 0, 0)
-        .unwrap();
-    g.create_node(
-        vec!["N".into()],
-        BTreeMap::from([("t".into(), Value::Temporal(Temporal::LocalDateTime(far)))]),
-    )
-    .unwrap();
-    g.commit_write();
-    g.materialize_range_index("N", "t");
-    assert!(g
-        .lookup_range_seek(
-            &["N".into()],
-            "t",
-            &RangeSeek::Cmp {
-                op: relate_ir::BinaryOp::Gt,
-                bound: Value::Int(0),
-            },
-            g.commit_ts(),
-        )
-        .is_none());
 }
 
 #[test]

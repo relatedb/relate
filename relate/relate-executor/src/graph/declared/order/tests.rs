@@ -5,7 +5,9 @@
 //! directly, so the tests live where those are visible and stay private
 //! to their module.
 
+use super::DrainState;
 use super::*;
+use crate::graph::test_support::out_of_window_local_datetime;
 
 #[test]
 fn prefix_without_successor_scans_to_string_variant_end() {
@@ -178,11 +180,7 @@ fn range_count_sums_posting_lengths() {
 
 #[test]
 fn out_of_window_datetime_is_not_an_order_key() {
-    let far = chrono::NaiveDate::from_ymd_opt(9999, 1, 1)
-        .unwrap()
-        .and_hms_opt(0, 0, 0)
-        .unwrap();
-    let value = Value::Temporal(Temporal::LocalDateTime(far));
+    let value = out_of_window_local_datetime();
     let mut st = RangeIndex::default();
     insert_order(&mut st, &value, 7);
     assert!(st.order.is_empty());
@@ -224,4 +222,86 @@ fn zoned_datetime_equality_bucket_keeps_the_instant() {
         zone: Some("Europe/Berlin".into()),
     });
     assert!(equality_ids(&st, &other_zone).is_empty());
+}
+
+/// The aggregate trust mark follows the LIVE value: the per-version
+/// inserts post the superset and never decide it, so a superseded NaN
+/// cannot leave its mark and the live value alone decides.
+#[test]
+fn a_superseded_nan_does_not_mark_the_pair() {
+    let nan = Value::Float(f64::NAN);
+    let mut st = RangeIndex::default();
+    // Two versions of node 7: the stale NaN, the live 5. The per-version
+    // inserts decided no trust mark; the live restatement keeps the node
+    // clean and the pair complete.
+    let live = Value::Int(5);
+    insert_order(&mut st, &nan, 7);
+    insert_order(&mut st, &live, 7);
+    assert!(!st.unposted.contains(&7));
+    st.reconcile_live(7, Some(&live));
+    assert!(!st.unposted.contains(&7));
+    assert!(st.order_is_complete(), "the pair can serve aggregates");
+}
+
+/// The other direction: the LIVE value is the NaN — the mark is set and
+/// the aggregates decline.
+#[test]
+fn a_live_nan_marks_the_pair() {
+    let nan = Value::Float(f64::NAN);
+    let mut st = RangeIndex::default();
+    insert_order(&mut st, &nan, 8);
+    st.reconcile_live(8, Some(&nan));
+    assert!(st.unposted.contains(&8));
+    assert!(!st.order_is_complete(), "the NaN still declines aggregates");
+}
+
+/// `unbounded` is the comparison seeks' any-snapshot gate, NOT an
+/// aggregate mark: a superseded out-of-window temporal keeps it even
+/// behind a live ordering value (a seek whose statement snapshot still
+/// sees that version must scan), so the reconcile never touches it — and
+/// the aggregate decline the stale mark costs is the safe direction. A
+/// node whose live version carries no value for the pair is marked by
+/// nothing: the reconcile's clear is its own work.
+#[test]
+fn the_seek_gate_keeps_its_superset_while_the_mark_clears() {
+    let nan = Value::Float(f64::NAN);
+    let out_of_window = out_of_window_local_datetime();
+    let mut st = RangeIndex::default();
+    let live = Value::String("live".into());
+    insert_order(&mut st, &out_of_window, 8);
+    insert_order(&mut st, &live, 8);
+    st.reconcile_live(8, Some(&live));
+    assert!(
+        st.unbounded.contains(&8),
+        "the seek gate keeps the superset"
+    );
+    assert!(
+        !st.order_is_complete(),
+        "the stale mark safely declines aggregates"
+    );
+
+    // The live value itself out of the order window: `unbounded` holds
+    // from the per-version post (the reconcile never touches it), and
+    // the aggregate mark clears — the temporal reaches `eq_only`.
+    st.reconcile_live(8, Some(&out_of_window));
+    assert!(st.unbounded.contains(&8));
+    assert!(!st.unposted.contains(&8));
+
+    // No live value for the pair: the node contributes nothing at the
+    // latest state, so the aggregate mark clears — the seek gate keeps
+    // its superset.
+    insert_order(&mut st, &nan, 8);
+    st.reconcile_live(8, None);
+    assert!(!st.unposted.contains(&8));
+    assert!(st.unbounded.contains(&8));
+
+    // The None path against a marked node: the per-version inserts set
+    // nothing, so the clear is the reconcile's own work.
+    let mut st = RangeIndex::default();
+    insert_order(&mut st, &nan, 9);
+    st.reconcile_live(9, Some(&nan));
+    assert!(st.unposted.contains(&9));
+    st.reconcile_live(9, None);
+    assert!(!st.unposted.contains(&9), "the clear is the reconcile's");
+    assert!(!st.unbounded.contains(&9));
 }

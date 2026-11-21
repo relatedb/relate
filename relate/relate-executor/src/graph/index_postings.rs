@@ -26,6 +26,29 @@ pub(in crate::graph) enum EqualityRoute {
     Scan,
 }
 
+/// One walked version's recency — the live/superseded distinction the
+/// pair walk hands its consumer alongside the value: named, not a
+/// positional `bool` (the `Extremum` precedent).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PairVersion {
+    /// The newest version with no `xmax` — the current committed value.
+    Live,
+    /// A version an older statement snapshot may still see.
+    Superseded,
+}
+
+impl PairVersion {
+    /// The classification at one walk position, against
+    /// [`Chain::live_index`]'s position — stated once for the pair walk.
+    fn at(idx: usize, live_at: Option<usize>) -> Self {
+        if Some(idx) == live_at {
+            PairVersion::Live
+        } else {
+            PairVersion::Superseded
+        }
+    }
+}
+
 impl Graph {
     /// `(label, key)` strings → interned pair key, honouring the `*`
     /// any-label bucket. `None` when either side was never interned.
@@ -42,10 +65,14 @@ impl Graph {
     /// Build the pair from `candidates` on first use, drain the ids written
     /// since it was last current, and hand it to `read` while its write
     /// guard is held (ADR-0063, ADR-0185). The one committed-side pair
-    /// engine for nodes and relationships: the entity seam is the two
+    /// engine for nodes and relationships: the entity seam is the three
     /// closures — `candidates` lists the pair's ids (the label index, or
-    /// the whole `rels` map) and `values` reads one entity's versions (a
-    /// label match plus property read, or a type match plus payload read).
+    /// the whole `rels` map), `feed` posts one candidate's every version
+    /// and, where the pair kind keeps a trust mark, reconciles it from the
+    /// live version, and `read` consumes the pair under its guard. The two
+    /// adapters are `with_prop_pair` (nodes: the label-plus-property walk,
+    /// the live-reconciled mark) and `with_rel_prop_pair` (relationships:
+    /// the type-plus-payload walk, post-only — its pairs carry no mark).
     ///
     /// Lock order: the pair's write guard is held across the build and the
     /// drain, which take `label_index`, `nodes` or `rels` read guards.
@@ -65,14 +92,18 @@ impl Graph {
         &self,
         pairs: &CoreMap<(u32, u32), PropPairIndex>,
         pair: (u32, u32),
-        candidates: impl Fn(&Graph) -> Vec<i64>,
-        values: impl Fn(&Graph, i64, &mut dyn FnMut(&Value)),
+        candidates: impl Fn() -> Vec<i64>,
+        // The pair kind's one feed: post one candidate's every version,
+        // and — where the pair keeps a trust mark — reconcile it from the
+        // live version. The node pairs do; the relationship pairs post
+        // alone.
+        feed: impl Fn(i64, &mut PropPairIndex),
         read: impl FnOnce(&PropPairIndex) -> R,
     ) -> R {
         let mut st = pairs.entry(pair).or_default();
         if !st.built {
-            for id in candidates(self) {
-                values(self, id, &mut |val| prop_pair_post(&mut st, id, val));
+            for id in candidates() {
+                feed(id, &mut st);
             }
             st.built = true;
         }
@@ -80,12 +111,11 @@ impl Graph {
             let ids = std::mem::take(&mut st.dirty);
             for id in ids {
                 // The remove-then-post order the range index's drain uses:
-                // the id's `unposted` mark dies with the version it
-                // described, so the set means "the current version cannot
-                // post" — an overwrite with a postable value stops
-                // declining instead of poisoning the pair forever.
+                // a live version that carries no value for the pair leaves
+                // whatever a stale version marked — cleared, not trusted
+                // (the feed restates the mark when one exists).
                 st.unposted.remove(&id);
-                values(self, id, &mut |val| prop_pair_post(&mut st, id, val));
+                feed(id, &mut st);
             }
         }
         read(&st)
@@ -154,9 +184,29 @@ impl Graph {
         self.with_pair(
             &self.indexes.prop_pairs,
             (lid, kid),
-            |g: &Graph| g.pair_candidate_ids(lid),
-            |g: &Graph, id: i64, f: &mut dyn FnMut(&Value)| {
-                g.for_each_node_pair_value(id, lid, kid, f)
+            || self.pair_candidate_ids(lid),
+            // The node pairs' feed: post every version, and on THE live
+            // version restate `unposted` from it alone — a superseded NaN
+            // must not poison the pair, the live NaN still declines, and a
+            // live version carrying no value clears whatever a stale one
+            // marked.
+            |id, st| {
+                let mut live_seen = false;
+                self.for_each_node_pair_value(id, lid, kid, |value, version| {
+                    let gk = GroupKey::for_property_index(value);
+                    prop_pair_post(st, id, gk.as_ref());
+                    if version == PairVersion::Live {
+                        live_seen = true;
+                        if gk.is_some() {
+                            st.unposted.remove(&id);
+                        } else {
+                            st.unposted.insert(id);
+                        }
+                    }
+                });
+                if !live_seen {
+                    st.unposted.remove(&id);
+                }
             },
             read,
         )
@@ -363,64 +413,61 @@ impl Graph {
         })
     }
 
-    /// Candidate ids of a `(label, key)` pair: the label index, or every
-    /// node for the `*` bucket.
-    fn pair_candidate_ids(&self, lid: u32) -> Vec<NodeId> {
+    /// Candidate ids of a `(label, key)` pair: the label index (the
+    /// canonical bucket copy, uncapped), or every node for the `*`
+    /// bucket.
+    pub(super) fn pair_candidate_ids(&self, lid: u32) -> Vec<NodeId> {
         if lid == self.indexes.star_label_id {
             return self.nodes.keys();
         }
-        self.indexes
-            .label_index
-            .get(&lid)
-            .map(|set| set.iter().copied().collect())
-            .unwrap_or_default()
+        self.label_index_copy(lid, usize::MAX).0
     }
 
     /// The value of `kid` on every version of `id` that carries `lid` (any
-    /// label for the `*` bucket). Every pair build and drain walks versions
-    /// here, so all declared and equality postings share one superset
-    /// contract (ADR-0018): the seek re-checks the snapshot.
+    /// label for the `*` bucket), each handed to `f` with whether it is
+    /// THE live version (the newest with no `xmax`, [`Chain::live`]'s
+    /// rule — a shadowed open-ended version is superseded).
+    /// Every pair build and drain walks versions here, so all declared
+    /// and equality postings share one superset contract (ADR-0018): the
+    /// seek re-checks the snapshot. The [`PairVersion`] flag is the one
+    /// pass's way out for per-node trust state that must reflect the
+    /// current committed value (the range index's `unposted`): a second
+    /// nodes-map read to recover it would walk what this already visited.
     pub(super) fn for_each_node_pair_value(
         &self,
         id: NodeId,
         lid: u32,
         kid: u32,
-        mut f: impl FnMut(&Value),
+        mut f: impl FnMut(&Value, PairVersion),
     ) {
         let Some(vers) = self.nodes.get(&id) else {
             return;
         };
         let star = lid == self.indexes.star_label_id;
-        for v in vers.iter() {
+        // THE live version is the newest open-ended one —
+        // [`Chain::live_index`]'s one statement of the rule, consulted
+        // by position so the walk keeps its oldest-to-newest order: the
+        // point drain's per-id posting is last-writer-wins, so a value
+        // posted by a superseded version must not come after the live
+        // one's.
+        let live_at = vers.live_index();
+        for (idx, v) in vers.iter().enumerate() {
             if !star && !v.live.has_label(lid) {
                 continue;
             }
             if let Some(val) = v.live.props.get(kid) {
-                f(val);
+                f(val, PairVersion::at(idx, live_at));
             }
-        }
-    }
-
-    /// [`Self::for_each_node_pair_value`] over every candidate of the pair.
-    pub(super) fn for_each_pair_value(
-        &self,
-        lid: u32,
-        kid: u32,
-        mut f: impl FnMut(NodeId, &Value),
-    ) {
-        for id in self.pair_candidate_ids(lid) {
-            self.for_each_node_pair_value(id, lid, kid, |val| f(id, val));
         }
     }
 }
 
-fn prop_pair_post(st: &mut PropPairIndex, id: NodeId, val: &Value) {
-    match GroupKey::for_property_index(val) {
-        Some(gk) => {
-            st.postings.entry(gk).or_default().insert(id);
-        }
-        None => {
-            st.unposted.insert(id);
-        }
+/// The one posting step both pair feeds take — the identity computed by
+/// the caller, which the node feed also needs for the trust mark. The
+/// `unposted` mark is never decided here: only the live reconciliation
+/// writes it (a superseded NaN must not poison the pair).
+pub(super) fn prop_pair_post(st: &mut PropPairIndex, id: NodeId, gk: Option<&GroupKey>) {
+    if let Some(gk) = gk {
+        st.postings.entry(gk.clone()).or_default().insert(id);
     }
 }

@@ -246,6 +246,29 @@ impl DrainState for RangeIndex {
     fn remove_node(&mut self, id: NodeId) {
         order_remove_node(self, id);
     }
+    fn reconcile_live(&mut self, id: NodeId, live: Option<&Value>) {
+        // `unposted` is the aggregate reads' trust mark, and those run
+        // in the exactness window — the latest committed state — so it
+        // reflects the LIVE value alone: a superseded NaN must not
+        // over-decline, a superseded posting must not under-decline, and
+        // a node whose live version carries no value for the pair is
+        // marked by nothing. `unbounded` is NOT reconciled: it is the
+        // comparison seeks' any-snapshot gate (a seek whose statement
+        // snapshot still sees a superseded out-of-window temporal must
+        // scan, or it would miss a node the order map never holds), so
+        // it keeps the per-version superset `insert_order` posts — and
+        // the aggregate decline that stale mark costs is the safe
+        // direction.
+        let unposted = match live {
+            Some(value) => !Destinations::of(value).reaches_a_map(),
+            None => false,
+        };
+        if unposted {
+            self.unposted.insert(id);
+        } else {
+            self.unposted.remove(&id);
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -437,10 +460,6 @@ pub(super) fn prefix_successor(prefix: &str) -> Option<String> {
     None
 }
 
-pub(super) fn unorderable_temporal(value: &Value) -> bool {
-    matches!(value, Value::Temporal(_)) && order_key(value).is_none()
-}
-
 fn remember<T: PartialEq + Clone>(map: &mut HashMap<NodeId, RevKeys<T>>, id: NodeId, key: T) {
     match map.entry(id) {
         std::collections::hash_map::Entry::Occupied(mut entry) => entry.get_mut().insert(key),
@@ -453,6 +472,9 @@ fn remember<T: PartialEq + Clone>(map: &mut HashMap<NodeId, RevKeys<T>>, id: Nod
 trait ForwardPostings {
     type Key;
     fn unpost(&mut self, key: &Self::Key, id: NodeId);
+    /// Post `id` under `key` — the forward half of the shared [`post`],
+    /// the fresh bucket seeded with the posting itself (no sentinel).
+    fn post(&mut self, key: Self::Key, id: NodeId);
 }
 
 impl<K: Ord> ForwardPostings for BTreeMap<K, Postings> {
@@ -465,6 +487,9 @@ impl<K: Ord> ForwardPostings for BTreeMap<K, Postings> {
             self.remove(key);
         }
     }
+    fn post(&mut self, key: K, id: NodeId) {
+        self.entry(key).or_insert(Postings::One(id)).insert(id);
+    }
 }
 
 impl<K: Eq + std::hash::Hash> ForwardPostings for HashMap<K, Postings> {
@@ -476,6 +501,9 @@ impl<K: Eq + std::hash::Hash> ForwardPostings for HashMap<K, Postings> {
         if empty {
             self.remove(key);
         }
+    }
+    fn post(&mut self, key: K, id: NodeId) {
+        self.entry(key).or_insert(Postings::One(id)).insert(id);
     }
 }
 
@@ -491,41 +519,80 @@ where
     }
 }
 
+/// [`forget`]'s posting counterpart — the one forward-and-reverse pair
+/// write every [`insert_order`] arm takes: remember the key on the node's
+/// reverse side, then post the id under it forward.
+fn post<K, M>(reverse: &mut HashMap<NodeId, RevKeys<K>>, forward: &mut M, id: NodeId, key: K)
+where
+    K: PartialEq + Clone,
+    M: ForwardPostings<Key = K>,
+{
+    remember(reverse, id, key.clone());
+    forward.post(key, id);
+}
+
 pub(super) fn insert_order(st: &mut RangeIndex, value: &Value, id: NodeId) {
-    let ordered = order_key(value);
-    if let Some(k) = &ordered {
-        remember(&mut st.by_node, id, k.clone());
-        st.order
-            .entry(k.clone())
-            .or_insert(Postings::One(id))
-            .insert(id);
-    } else if unorderable_temporal(value) {
+    // The one posting-destination classification, consulted by the
+    // posting arms and the live reconciliation alike. Two contracts
+    // follow: the forward maps and `unbounded` are the per-version
+    // superset (ADR-0018; `unbounded` gates comparison seeks at ANY
+    // statement snapshot, so a superseded out-of-window temporal must
+    // keep its mark), while `unposted` — the aggregate reads'
+    // exactness-window mark — is written only by the drain's
+    // `reconcile_live`, from the live value.
+    let d = Destinations::of(value);
+    if let Some(k) = d.order {
+        post(&mut st.by_node, &mut st.order, id, k);
+    }
+    if d.unbounded {
         st.unbounded.insert(id);
     }
-    // The one posting-destination decision: a value with an order key
-    // only needs the `eq_only` copy when its order key is not a
-    // coarsening of `=` (see [`order_key_finer_than_equality`]); a value
-    // that landed nowhere and is not an unbounded temporal is unposted.
-    let eq_posted = post_equality_side(st, value, ordered.is_some(), id);
-    if ordered.is_none() && !eq_posted && !st.unbounded.contains(&id) {
-        st.unposted.insert(id);
+    if let Some(gk) = d.eq {
+        post(&mut st.eq_by_node, &mut st.eq_only, id, gk);
     }
 }
 
-/// Post `value` on the equality side map when it needs the copy, and
-/// report whether it landed — `false` for a value that posts on its
-/// order key alone and for one no map can hold (a NaN).
-fn post_equality_side(st: &mut RangeIndex, value: &Value, has_order: bool, id: NodeId) -> bool {
-    if has_order && !order_key_finer_than_equality(value) {
-        return false;
-    }
-    match GroupKey::for_property_index(value) {
-        Some(gk) => {
-            remember(&mut st.eq_by_node, id, gk.clone());
-            st.eq_only.entry(gk).or_insert(Postings::One(id)).insert(id);
-            true
+/// Where one value lands in the index's maps — the one classification,
+/// computed once per value and consumed by [`insert_order`]'s posting
+/// arms and [`RangeIndex::reconcile_live`]'s reach question alike. The
+/// destinations are independent, not exclusive: a zoned DateTime posts
+/// `order` AND `eq_only`, an out-of-window temporal posts `unbounded`
+/// AND `eq_only`. A NaN (alone or inside a list or map) is the one value
+/// with no destination at all.
+struct Destinations {
+    /// Its own order key, when the value sorts.
+    order: Option<OrderKey>,
+    /// A temporal outside the order window.
+    unbounded: bool,
+    /// Its index identity, when `=` needs the side map.
+    eq: Option<GroupKey>,
+}
+
+impl Destinations {
+    /// The admission is decided here, in the direction the predicate
+    /// reads: the `eq_only` copy is admitted when there is no order key
+    /// or the key is finer than the `=` identity
+    /// ([`order_key_finer_than_equality`] — a zoned `DateTime` orders by
+    /// instant, so its key cannot answer `=` alone). Each field is then a
+    /// real destination and `reaches_a_map` stays exact.
+    fn of(value: &Value) -> Self {
+        let order = order_key(value);
+        Destinations {
+            eq: if order.is_none() || order_key_finer_than_equality(value) {
+                GroupKey::for_property_index(value)
+            } else {
+                None
+            },
+            // The order key is derived once: an out-of-window temporal is
+            // one that has no key, read off the `order` already bound.
+            unbounded: matches!(value, Value::Temporal(_)) && order.is_none(),
+            order,
         }
-        None => false,
+    }
+
+    /// Whether the value reaches any of the index's maps.
+    fn reaches_a_map(&self) -> bool {
+        self.order.is_some() || self.unbounded || self.eq.is_some()
     }
 }
 

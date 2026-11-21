@@ -19,14 +19,13 @@ use relate_names::SmallName;
 use crate::ctx::ExecCtx;
 use crate::eval::{eval, named_call};
 use crate::graph::LabelSetCount;
-use crate::overlay::ExecGraph;
 use crate::row::Row;
 use crate::store::empty_properties;
 
 use super::order::order_on_columns;
 use super::shortcut_common::{
-    finish_grouped_rows, is_node_count, match_return_pattern, whole_population_node_var,
-    CountedGroups, GroupedPage,
+    finish_grouped_rows, grouped_row, is_node_count, match_return_pattern,
+    whole_population_node_var, CountedGroups, GroupedPage,
 };
 use super::QueryResult;
 
@@ -45,6 +44,9 @@ struct LabelGroupShape<'a> {
     var: &'a SmallName,
     items: &'a [Projection],
     count_at: usize,
+    /// The key items, in item order — the count/key split the recognizer
+    /// already made, carried so the grouping body never re-derives it.
+    key_items: Vec<&'a Projection>,
     /// The paging half, carried once: the ORDER BY rewritten onto output
     /// columns and the statement's own SKIP and LIMIT.
     page: GroupedPage<'a>,
@@ -107,12 +109,15 @@ fn recognize_label_groups(clauses: &[Clause]) -> Option<LabelGroupShape<'_>> {
     if counts.next().is_some() || items.len() == 1 {
         return None;
     }
-    let keys_only = items
-        .iter()
-        .enumerate()
-        .all(|(i, p)| i == count_at || is_label_key(&p.expr, var));
-    if !keys_only {
-        return None;
+    let mut key_items: Vec<&Projection> = Vec::with_capacity(items.len() - 1);
+    for (i, p) in items.iter().enumerate() {
+        if i == count_at {
+            continue;
+        }
+        if !is_label_key(&p.expr, var) {
+            return None;
+        }
+        key_items.push(p);
     }
     // The node-variable gate is [`order_on_columns`]'s own precondition —
     // an alias-shadowed order key is the scan's to resolve.
@@ -121,6 +126,7 @@ fn recognize_label_groups(clauses: &[Clause]) -> Option<LabelGroupShape<'_>> {
         var,
         items,
         count_at,
+        key_items,
         page: GroupedPage {
             order: page_order,
             skip: skip.as_ref(),
@@ -133,29 +139,22 @@ fn recognize_label_groups(clauses: &[Clause]) -> Option<LabelGroupShape<'_>> {
 /// key tuple: the grouped rows (one per group, first-seen in the sets'
 /// deterministic order), each carrying every output column.
 fn group_label_sets(
-    graph: &ExecGraph<'_>,
     ctx: ExecCtx<'_>,
     shape: &LabelGroupShape<'_>,
     sets: Vec<LabelSetCount>,
 ) -> Result<Vec<Row>> {
-    let names: Vec<String> = shape
-        .items
-        .iter()
-        .enumerate()
-        .map(|(i, p)| p.output_name(i))
-        .collect();
+    let graph = ctx.graph;
+    // The canonical output-name derivation — the same list the identity
+    // projection builds. (A star item never reaches a recognized shape:
+    // every item is the count or a label key.)
+    let names = super::scope::projection_names(shape.items);
     // ADR-0463: the clone of the set map and the group table are retained
     // containers, charged to the expression budget as they land — a paged
     // (SKIP/LIMIT) statement materializes the whole table before it pages,
     // exactly as the scan's aggregation does.
     let mut retained = graph.retain_bytes(0)?;
-    for (labels, _) in &sets {
-        retained.add_bytes(
-            graph,
-            (std::mem::size_of::<LabelSetCount>() as u64)
-                .saturating_add(crate::workspace::value_buffer_bytes(labels.len()))
-                .saturating_add(labels.iter().map(|l| l.len() as u64).sum::<u64>()),
-        )?;
+    for row in &sets {
+        retained.add_bytes(graph, label_set_retained_bytes(row))?;
     }
     let mut groups = CountedGroups::new();
     let var_name = shape.var.to_string();
@@ -167,31 +166,36 @@ fn group_label_sets(
         };
         let mut row = Row::new();
         row.insert(var_name.clone(), Value::from_node(node));
-        let mut keys = Vec::new();
-        for (_, p) in shape
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != shape.count_at)
-        {
+        let mut keys = Vec::with_capacity(shape.key_items.len());
+        for p in &shape.key_items {
             keys.push(eval(graph, &row, &p.expr, ctx.params)?);
         }
         groups.add(graph, &mut retained, keys, count)?;
     }
+    // The one emission policy: the count in its `count_at` column, the
+    // set's keys in the others — shortcut_common's row shape.
     groups.into_rows(graph, &mut retained, |keys, count| {
-        let mut keys = keys.into_iter();
-        let mut row = Row::new();
-        for (i, name) in names.iter().enumerate() {
-            let value = if i == shape.count_at {
-                Value::Int(i64::try_from(count).expect("a group count past i64 is a broken store"))
-            } else {
-                keys.next()
-                    .expect("every key item evaluated one value per set")
-            };
-            row.insert(name.clone(), value);
-        }
-        row
+        grouped_row(&names, shape.count_at, keys, count)
     })
+}
+
+/// The retained bytes of one label-set row — the one statement of the
+/// figure the exec aggregation charges for a label-set answer (ADR-0463):
+/// the pair itself, its label-string buffer (a `Vec<String>` buffer —
+/// `stride = size_of::<String>()`), and each string's own logical size
+/// through the crate's one string-size spelling.
+fn label_set_retained_bytes((labels, _): &LabelSetCount) -> u64 {
+    (std::mem::size_of::<LabelSetCount>() as u64)
+        .saturating_add(crate::workspace::buffer_bytes_saturating(
+            labels.len(),
+            std::mem::size_of::<String>() as u64,
+        ))
+        .saturating_add(
+            labels
+                .iter()
+                .map(|l| relate_core::str_logical_bytes(l))
+                .sum::<u64>(),
+        )
 }
 
 /// ADR-0589: recognize the label-group shape and answer it from the
@@ -217,7 +221,7 @@ pub(super) fn label_set_groups_result(
     else {
         return Ok(None);
     };
-    let grouped = group_label_sets(graph, ctx, &shape, sets)?;
+    let grouped = group_label_sets(ctx, &shape, sets)?;
     let (rows, result) =
         finish_grouped_rows(ctx, clauses, shape.items, shape.page, grouped, scope)?;
     Ok(Some((rows, result)))

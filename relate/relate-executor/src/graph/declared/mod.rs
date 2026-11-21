@@ -10,6 +10,7 @@ use relate_core::{NodeId, Value};
 
 use crate::redo::{IndexDetailSpec, IndexKindSpec};
 
+use super::index_postings::PairVersion;
 use super::*;
 
 mod aggregate;
@@ -38,6 +39,13 @@ pub(super) trait DrainState: Default {
     fn insert(&mut self, id: NodeId, value: &Value);
     /// Drop every posting of `id`.
     fn remove_node(&mut self, id: NodeId);
+    /// Reconcile per-node trust state after a re-post — [`Self::insert`]
+    /// sees every version, so a set that must reflect the current
+    /// committed value corrects here from the LIVE value: `Some` when
+    /// the live version carries the pair's value, `None` when it does
+    /// not (the node contributes nothing at the latest state). The
+    /// default is nothing to do.
+    fn reconcile_live(&mut self, _id: NodeId, _live: Option<&Value>) {}
     /// Finalize a full local build (create, reopen rebuild) before the
     /// pair is published: a seek never observes an unsealed pair. The
     /// default is nothing to do.
@@ -175,6 +183,35 @@ impl Graph {
         (!ids.is_empty()).then_some((kid, ids))
     }
 
+    /// Feed one node to a pair's [`DrainState`]: drop its earlier
+    /// postings (a no-op on a freshly built pair), post every version's
+    /// value (the superset contract, ADR-0018), and reconcile the
+    /// per-node trust state from the LIVE value the same pass visits —
+    /// or from its absence, when no live version carries the pair's
+    /// value. The ordered protocol every build and drain path keeps, in
+    /// its one home, so a new path cannot post without the reconcile
+    /// that keeps the range index's trust marks honest.
+    fn post_pair_node<St: DrainState>(&self, st: &mut St, id: NodeId, lid: u32, kid: u32) {
+        st.remove_node(id);
+        // The reconcile runs inside the walk (the value reference cannot
+        // leave it — the walk's closure is higher-ranked over the value
+        // borrow), tracked by a seen flag rather than a held `Option`.
+        // Exactly one version is THE live one (the walk's newest-
+        // open-ended rule), so exactly one reconcile call decides the
+        // marks.
+        let mut live_seen = false;
+        self.for_each_node_pair_value(id, lid, kid, |value, version| {
+            st.insert(id, value);
+            if version == PairVersion::Live {
+                live_seen = true;
+                st.reconcile_live(id, Some(value));
+            }
+        });
+        if !live_seen {
+            st.reconcile_live(id, None);
+        }
+    }
+
     /// Build one pair from every version of every node in the label index
     /// (a superset; the seek re-checks the snapshot, ADR-0018).
     fn materialize_pair<St: DrainState>(
@@ -185,7 +222,9 @@ impl Graph {
     ) {
         let (lid, kid) = self.intern_pair(label, property);
         let mut st = St::default();
-        self.for_each_pair_value(lid, kid, |id, value| st.insert(id, value));
+        for id in self.pair_candidate_ids(lid) {
+            self.post_pair_node(&mut st, id, lid, kid);
+        }
         // Sealed before publish: a concurrent seek either sees the fully
         // built pair or none of it.
         st.seal();
@@ -221,8 +260,7 @@ impl Graph {
         };
         let ids = std::mem::take(st.dirty_mut());
         for id in ids {
-            st.remove_node(id);
-            self.for_each_node_pair_value(id, lid, kid, |value| st.insert(id, value));
+            self.post_pair_node(&mut *st, id, lid, kid);
         }
         true
     }

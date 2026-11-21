@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use relate_core::{Node, NodeId, RelId, Relationship, Value};
+use relate_core::{Node, NodeId, RelId, Relationship, Temporal, Value};
 
 use super::adjacency::AdjSide;
 use super::Graph;
@@ -210,6 +210,18 @@ pub(crate) fn doomed_rel(g: &Graph, a: NodeId, b: NodeId, rel_type: &str) -> Rel
 /// LABS-1083): `materialize_range_index` itself stays `pub(super)`.
 pub(crate) fn range_index(g: &Graph, label: &str, property: &str) {
     g.materialize_range_index(label, property);
+}
+
+/// The out-of-window temporal the range-index tests build: a year past the
+/// order key's window (`dt_nanos` cannot represent it), the one fixture
+/// statement they share.
+pub(crate) fn out_of_window_local_datetime() -> Value {
+    Value::Temporal(Temporal::LocalDateTime(
+        chrono::NaiveDate::from_ymd_opt(9999, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap(),
+    ))
 }
 
 /// The length of `node`'s sealed chunk for `type_id` on one side — the one

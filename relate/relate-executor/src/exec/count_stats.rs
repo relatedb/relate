@@ -5,7 +5,7 @@
 //! this module owns the count-only recognizer and its answer. Declared
 //! beside `count_stats_tests`, its contract tests (ADR-0387).
 
-use relate_core::{Result, Value};
+use relate_core::Result;
 use relate_ir::{Clause, Direction, Projection};
 
 use crate::graph::CountProbe;
@@ -15,7 +15,7 @@ use crate::row::Row;
 use super::label_expr_ok;
 use super::project::return_result;
 use super::shortcut_common::{
-    count_of, match_return_pattern, node_population, node_vars_unique, Count, Pop,
+    count_of, count_value, match_return_pattern, node_population, node_vars_unique, Count, Pop,
 };
 use super::QueryResult;
 
@@ -194,8 +194,7 @@ pub(super) fn count_only_stats_result(
         return Ok(None);
     };
     // Round 3, F-1-18: the value is constructed once.
-    let value =
-        Value::Int(i64::try_from(count).expect("a node or rel count past i64 is a broken store"));
+    let value = count_value(count);
     // The same result boundary the ladder's other two rungs finish
     // through — columns, the strict cell move, the view's own stats.
     let mut rows = vec![Row::from([(item.output_name(0), value)])];
