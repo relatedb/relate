@@ -342,6 +342,14 @@ Process, not code shape:
   human for a decision — never reroute the same action through another
   mechanism (synthetic commits, wrapper tools, subagents) to get past the
   guard. The denial is a human-in-the-loop signal, not an obstacle
+- **Keep progressing while any work is unfinished.** A turn never ends on
+  a stated next step ("merging next") that was not taken, and a PR never
+  waits between turns. Take the next step now: run the merge sequence,
+  dispatch the rebase or fix worker, flip when the bar is met. When
+  blocked on CI or a background worker, arm a wake-up (a scheduled check
+  or a watcher on `gh pr checks`) before ending the turn, so the work
+  resumes without a human prompt. Check conflicts early with
+  `scripts/premerge-check.sh --pr <PR>`, not after the matrix finishes
 - **Re-squash via `scripts/re-squash.sh <old-commit> -F <message-file>
   <file>...` only.** Bare `git reset --soft origin/main` is BANNED: it
   keeps the stale *index* (fix rounds silently drop), and when main moved
