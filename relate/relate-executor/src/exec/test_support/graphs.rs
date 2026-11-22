@@ -1,4 +1,5 @@
-//! Graph builders: the hub-and-fan and range-start fixtures, and the name-keyed `Builder`.
+//! Graph builders: the hub-and-fan, range-start, layered and star
+//! fixtures, the `build` pair, and the name-keyed `Builder`.
 use std::collections::BTreeMap;
 
 use relate_core::{NodeId, RelId, Value};
@@ -90,6 +91,41 @@ pub(crate) fn range_start_graph(prop: &str, values: &[Value]) -> Graph {
     }
     g.commit_write();
     g
+}
+
+/// A layered graph: `layers + 1` layers of `width` nodes, every node of
+/// one layer linked `R` to every node of the next — `width^k` walks of
+/// length `k` from any layer-0 seed, the count shapes' fan substrate.
+/// One definition shared by the frontier count suite and the kernel
+/// ratio guard.
+pub(crate) fn layered(layers: usize, width: usize) -> Graph {
+    let labels = vec![&["N"][..]; (layers + 1) * width];
+    let mut rels = Vec::with_capacity(layers * width * width);
+    for layer in 0..layers {
+        for from in 0..width {
+            for to in 0..width {
+                rels.push((layer * width + from, (layer + 1) * width + to, "R"));
+            }
+        }
+    }
+    build(&labels, &rels).graph
+}
+
+/// The shared-terminal star: `hubs` `:H` nodes, each reaching the same
+/// `terminals` `:T` nodes by both `A` and `B` — the hub-star kernel's
+/// per-hub combination shape. One definition shared by the footprint
+/// suite and the kernel ratio guard.
+pub(crate) fn star(hubs: usize, terminals: usize) -> Graph {
+    let mut labels = vec![&["H"][..]; hubs];
+    labels.extend(vec![&["T"][..]; terminals]);
+    let mut rels = Vec::with_capacity(hubs * terminals * 2);
+    for hub in 0..hubs {
+        for terminal in 0..terminals {
+            rels.push((hub, hubs + terminal, "A"));
+            rels.push((hub, hubs + terminal, "B"));
+        }
+    }
+    build(&labels, &rels).graph
 }
 
 /// A built graph and its node and relationship ids, by index.

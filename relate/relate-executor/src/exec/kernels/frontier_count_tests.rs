@@ -9,7 +9,7 @@
 use proptest::prelude::*;
 use relate_core::Value;
 
-use crate::exec::test_support::{build, exec_cypher, reset_frontier_facts, Built};
+use crate::exec::test_support::{exec_cypher, layered, reset_frontier_facts};
 use crate::graph::Graph;
 use crate::test_support::config_with_floor;
 use crate::QueryResult;
@@ -17,23 +17,6 @@ use crate::QueryResult;
 use super::super::take_frontier_counters;
 use super::rearival_tests::{multigraph, multigraph_case, pattern_body};
 use super::{take_kernel_engagements, with_frontier_disabled};
-
-/// A layered graph: `layers + 1` layers of `width` nodes, every node of
-/// one layer linked `R` to every node of the next — `width^k` walks of
-/// length `k` from any layer-0 seed, every one a distinct path to one
-/// of only `width` endpoints per layer.
-fn layered(layers: usize, width: usize) -> Built {
-    let labels: Vec<&[&str]> = (0..(layers + 1) * width).map(|_| &["N"][..]).collect();
-    let mut rels = Vec::new();
-    for layer in 0..layers {
-        for a in 0..width {
-            for b in 0..width {
-                rels.push((layer * width + a, (layer + 1) * width + b, "R"));
-            }
-        }
-    }
-    build(&labels, &rels)
-}
 
 /// The single answer cell of a one-row, one-column result.
 fn scalar(g: &Graph, cypher: &str) -> Value {
@@ -126,8 +109,7 @@ fn declines(g: &Graph, cypher: &str) {
 // star, the target, the seed) is the same walk count, matching the DFS.
 #[test]
 fn counts_walks_not_endpoints_on_a_multi_path_graph() {
-    let built = layered(3, 2);
-    let g = &built.graph;
+    let g = &layered(3, 2);
     for counted in ["count(*)", "count(d)", "count(s)"] {
         let cypher = format!(
             "MATCH REPEATABLE ELEMENTS (s:N {{id: 0}})-[:R*1..3]->(d) RETURN {counted} AS n"
@@ -166,10 +148,10 @@ fn counts_walks_not_endpoints_on_a_multi_path_graph() {
 // touches 4 cells per level and answers in milliseconds.
 #[test]
 fn branching_twelve_level_count_answers_without_enumeration() {
-    let built = layered(12, 4);
+    let g = layered(12, 4);
     let started = std::time::Instant::now();
     let answer = engaged(
-        &built.graph,
+        &g,
         "MATCH REPEATABLE ELEMENTS (s:N {id: 0})-[:R*1..12]->(d) RETURN count(d) AS walks",
     );
     assert_eq!(answer, Value::Int(22_369_620));
@@ -188,8 +170,7 @@ fn branching_twelve_level_count_answers_without_enumeration() {
 // the endpoint set's arm may serve it.
 #[test]
 fn every_guard_shape_pins_its_verdict() {
-    let built = layered(3, 2);
-    let g = &built.graph;
+    let g = &layered(3, 2);
     for (cypher, expect) in [
         (
             "MATCH (s:N {id: 0})-[:R*1..3]->(d) RETURN count(*) AS n",
@@ -257,8 +238,7 @@ fn every_guard_shape_pins_its_verdict() {
 // arrival is the seed itself: it counts only when it passes the filter.
 #[test]
 fn a_target_filter_counts_the_admitted_arrivals() {
-    let built = layered(3, 2);
-    let g = &built.graph;
+    let g = &layered(3, 2);
     for (query, walks) in [
         (
             "MATCH REPEATABLE ELEMENTS (s:N {id: 0})-[:R*1..3]->(d:N) RETURN count(*) AS n",

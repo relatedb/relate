@@ -5,7 +5,7 @@
 
 use relate_core::Value;
 
-use super::super::test_support::{build, exec_autocommit, run_metered, Builder};
+use super::super::test_support::{exec_autocommit, run_metered, star, Builder};
 use super::{differential, families, ExpectedEngagement};
 
 /// The hub-star family: the open star (distinct terminals), the shared
@@ -143,21 +143,9 @@ fn hub_star_anonymous_terminals_match_the_row_path() {
 #[test]
 fn hub_star_footprint_is_independent_of_path_count() {
     const TERMINALS: usize = 40;
-    let star = |hubs: usize| {
-        let mut labels = vec![&["H"][..]; hubs];
-        labels.extend(vec![&["T"][..]; TERMINALS]);
-        let mut rels = Vec::new();
-        for h in 0..hubs {
-            for t in 0..TERMINALS {
-                rels.push((h, hubs + t, "A"));
-                rels.push((h, hubs + t, "B"));
-            }
-        }
-        build(&labels, &rels)
-    };
     let cypher = "MATCH (h:H)-[:A]->(t:T), (h)-[:B]->(t) RETURN count(*) AS c";
-    let (small_rows, at_n) = run_metered(&star(100).graph, cypher);
-    let (large_rows, at_4n) = run_metered(&star(400).graph, cypher);
+    let (small_rows, at_n) = run_metered(&star(100, TERMINALS), cypher);
+    let (large_rows, at_4n) = run_metered(&star(400, TERMINALS), cypher);
     assert_eq!(small_rows, vec![vec![Value::Int(100 * TERMINALS as i64)]]);
     assert_eq!(large_rows, vec![vec![Value::Int(400 * TERMINALS as i64)]]);
     eprintln!("hub-star peak at N = {at_n}, at 4N = {at_4n}");

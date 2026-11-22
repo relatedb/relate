@@ -148,6 +148,12 @@ mod engine_switch_tests;
 #[cfg(test)]
 mod rung_tests;
 
+// The kernel ratio guard (REL8-1969): every traversal kernel must beat
+// the stood-down walker by 1.5x or more on its own engaging shape — the
+// A/B timing lane whose failure retires or widens a kernel.
+#[cfg(test)]
+mod ratio_guard_tests;
+
 mod chain;
 mod chain_count;
 mod hub_star;
