@@ -18,6 +18,48 @@ pub(super) struct ChunkHops {
     pub(super) hops: usize,
 }
 
+/// Most hops one [`Graph::try_for_each_hop_batch_resolved_at`] call resolves.
+pub(crate) const HOP_BATCH: usize = 256;
+
+/// The reusable buffers of a batched hop read: the node's hop ids copied
+/// out of the adjacency guard and the resolved `(peer, rel id)` batch. A
+/// read keeps them across nodes, so a hop list is never allocated per node;
+/// they grow to the largest degree seen. Cloning yields an empty value: a
+/// copy of a search must never carry a node's hop list.
+#[derive(Default)]
+pub(crate) struct HopBuf {
+    ids: Vec<RelId>,
+    hops: Vec<(NodeId, RelId)>,
+}
+
+impl HopBuf {
+    /// Forget the batch a collecting walk left behind.
+    pub(crate) fn clear_hops(&mut self) {
+        self.hops.clear();
+    }
+
+    /// Append one collected hop for [`Self::emit_batches`].
+    pub(crate) fn push_hop(&mut self, peer: NodeId, rid: RelId) {
+        self.hops.push((peer, rid));
+    }
+
+    /// Call `f` once per slice of at most [`HOP_BATCH`] collected hops: the
+    /// one batching rule, shared by the walk that resolves per batch and
+    /// the one that collects first.
+    pub(crate) fn emit_batches<E>(
+        &self,
+        f: impl FnMut(&[(NodeId, RelId)]) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        self.hops.chunks(HOP_BATCH).try_for_each(f)
+    }
+}
+
+impl Clone for HopBuf {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
 /// One direction's adjacency pair: the live delta map and the sealed side
 /// table beside it (ADR-0551), borrowed together. The pairing
 /// (`out_adj`/`sealed_out`, `in_adj`/`sealed_in`) is stated once, in
@@ -567,6 +609,94 @@ impl Graph {
         Ok(())
     }
 
+    /// Call `f` once per batch of at most [`HOP_BATCH`] of `id`'s hops
+    /// visible at `ts`, each as `(peer, rel id)`, in the walk's order. The
+    /// node's hop ids are copied under the adjacency guard into `buf` and
+    /// the guard is dropped before any endpoint is resolved or `f` runs
+    /// (`IdVec`'s lock is not re-entrant); each batch then resolves the next
+    /// slice of ids' endpoints and picks the peers. `Both` reads the
+    /// outgoing list, then the incoming one; a self-loop is the one rel in
+    /// both lists and is recognised by its endpoints, so the incoming pass
+    /// skips it instead of keeping a per-node seen set (a reused rel id
+    /// repeated within one list is therefore not collapsed, as in the
+    /// directed arms).
+    pub(crate) fn try_for_each_hop_batch_resolved_at<E>(
+        &self,
+        id: NodeId,
+        dir: relate_ir::Direction,
+        ts: u64,
+        types: &RelTypes,
+        buf: &mut HopBuf,
+        mut f: impl FnMut(&[(NodeId, RelId)]) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        use relate_ir::Direction;
+        for (side, scan_dir) in self.sides(dir) {
+            // A self-loop is in both lists: the outgoing pass emits it, the
+            // incoming pass of a `Both` walk skips it.
+            let skip_self_loops = dir == Direction::Both && scan_dir == Direction::Incoming;
+            self.batch_side(side, skip_self_loops, id, dir, ts, types, buf, &mut f)?;
+        }
+        Ok(())
+    }
+
+    /// One side's hops in batches: copy the ids under the guard, then resolve
+    /// and hand out `HOP_BATCH` at a time, never an empty batch.
+    #[allow(clippy::too_many_arguments)]
+    fn batch_side<E>(
+        &self,
+        side: AdjSide<'_>,
+        skip_self_loops: bool,
+        id: NodeId,
+        dir: relate_ir::Direction,
+        ts: u64,
+        types: &RelTypes,
+        buf: &mut HopBuf,
+        f: &mut impl FnMut(&[(NodeId, RelId)]) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        let HopBuf { ids, hops } = buf;
+        ids.clear();
+        self.copy_hop_ids(side, id, ts, types, ids);
+        for chunk in ids.chunks(HOP_BATCH) {
+            hops.clear();
+            for &rid in chunk {
+                let Some((start, stop)) = self.rel_ends_at(rid, ts) else {
+                    continue;
+                };
+                if skip_self_loops && start == stop {
+                    continue;
+                }
+                if let Some(peer) = crate::store::hop_other(id, start, stop, dir) {
+                    hops.push((peer, rid));
+                }
+            }
+            if !hops.is_empty() {
+                f(hops)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Append `id`'s visible hop ids on `side` at `ts` to `ids`, in merged
+    /// order, and drop the store guard before returning. `IdVec`'s lock is
+    /// not re-entrant, so no caller visits hops while holding it.
+    fn copy_hop_ids(
+        &self,
+        side: AdjSide<'_>,
+        id: NodeId,
+        ts: u64,
+        types: &RelTypes,
+        ids: &mut Vec<RelId>,
+    ) {
+        side.with_adj(id, |by_type, region| match types.ids() {
+            None => by_type.for_each_hop(region, ts, |hop| ids.push(hop.id)),
+            Some(type_ids) => {
+                for tid in type_ids {
+                    by_type.for_each_hop_of(region, tid, ts, |hop| ids.push(hop.id));
+                }
+            }
+        });
+    }
+
     /// The one typed-chunk walk skeleton: chunk selection by the resolved
     /// type filter, one version-chain read per hop (visibility and both
     /// endpoints — `rel_ends_at` answering `Some` is the same check
@@ -585,20 +715,8 @@ impl Graph {
         // (`gpm_rel_dfs`) call back into this same map from `f`; holding
         // the guard across that call deadlocks on the second hop. The walk
         // is the delta+sealed merge at `ts` (ADR-0551), delta first.
-        let hops = side
-            .with_adj(id, |by_type, region| {
-                let mut hops = Vec::new();
-                match types.ids() {
-                    None => by_type.for_each_hop(region, ts, |hop| hops.push(hop.id)),
-                    Some(ids) => {
-                        for tid in ids {
-                            by_type.for_each_hop_of(region, tid, ts, |hop| hops.push(hop.id));
-                        }
-                    }
-                }
-                hops
-            })
-            .unwrap_or_default();
+        let mut hops = Vec::new();
+        self.copy_hop_ids(side, id, ts, types, &mut hops);
         for rid in hops {
             if let Some((start, end)) = self.rel_ends_at(rid, ts) {
                 f(rid, start, end)?;

@@ -375,6 +375,60 @@ fn hop_walk_dedups_a_reused_rel_ids_stale_hops() {
     assert_eq!(walk(3, Direction::Both), vec![(6, 1)]);
 }
 
+/// The batched hop read against the per-edge walk on the reused-rel-id
+/// fixture. It agrees everywhere but one place: `Both` has no per-node
+/// seen set (only a self-loop is recognised, from its endpoints), so node
+/// 1's two surviving out-hops named 6 stay two entries, as in the directed
+/// arms, where the per-edge `Both` walk collapses them.
+#[test]
+fn batched_hop_read_matches_the_per_edge_walk_on_a_reused_rel_id() {
+    use relate_ir::Direction;
+
+    use crate::graph::HopBuf;
+    use crate::store::RelTypes;
+
+    let g = reused_rel_id_graph();
+    let ts = g.commit_ts();
+    let batched = |at, dir| {
+        let mut out = Vec::new();
+        let mut batches = 0;
+        g.try_for_each_hop_batch_resolved_at(
+            at,
+            dir,
+            ts,
+            &RelTypes::Any,
+            &mut HopBuf::default(),
+            |hops| {
+                batches += 1;
+                out.extend_from_slice(hops);
+                Ok::<(), ()>(())
+            },
+        )
+        .unwrap();
+        assert!(batches <= 1, "a two-hop node is one batch");
+        out.into_iter()
+            .map(|(peer, rid)| (rid, peer))
+            .collect::<Vec<_>>()
+    };
+    for at in [1, 2, 3] {
+        for dir in [Direction::Outgoing, Direction::Incoming, Direction::Both] {
+            let mut per_edge = hop_pairs(&g, at, dir, ts, &RelTypes::Any);
+            let mut got = batched(at, dir);
+            per_edge.sort();
+            got.sort();
+            if dir == Direction::Both {
+                // The one intentional divergence: the per-edge `Both` walk
+                // collapses a repeated rel id, the batched one does not.
+                got.dedup();
+            }
+            assert_eq!(got, per_edge, "{dir:?} at {at}");
+        }
+    }
+    assert_eq!(batched(1, Direction::Both), vec![(6, 3), (6, 3)]);
+    assert_eq!(batched(1, Direction::Outgoing), vec![(6, 3), (6, 3)]);
+    assert_eq!(batched(2, Direction::Both), vec![]);
+}
+
 /// The same reused-rel-id fixture at the kernel's other call sites: the
 /// rid-only spelling (`try_for_each_neighbor_resolved_at`) and the
 /// name-keyed boundary walk (`for_each_neighbor_at`) ride the one hop walk,

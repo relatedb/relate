@@ -120,6 +120,7 @@ impl<'a> Route<'a> {
             max: shape.max.unwrap_or(u32::MAX),
             all: shape.selection.all(),
             skip: None,
+            scratch: Default::default(),
         };
         let route = Self {
             ctx,

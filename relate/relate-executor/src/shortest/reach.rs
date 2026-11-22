@@ -26,7 +26,6 @@ impl Search<'_, '_> {
         while !frontier.is_empty() && depth < self.max {
             let mut next = Vec::new();
             for &cur in &frontier {
-                self.graph.cancel_tick()?;
                 self.each_hop(cur, |n, _| {
                     // Stop inserting at `cap + 1`: the set never holds
                     // more, whatever a hub's degree.

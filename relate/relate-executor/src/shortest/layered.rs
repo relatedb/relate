@@ -199,7 +199,6 @@ impl Search<'_, '_> {
         let mut next = Vec::new();
         let mut stopped = false;
         for &cur in &grown.frontier {
-            self.graph.cancel_tick()?;
             self.each_hop(cur, |n, rid| {
                 if Some(rid) == self.skip || n == origin {
                     return Ok(());

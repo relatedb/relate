@@ -107,6 +107,10 @@ fn shallow(s: &Search<'_, '_>, start: NodeId, end: NodeId) -> Result<Option<Vec<
 /// bookkeeping cost.
 type Tree = IdMap<NodeId, (u32, Option<(NodeId, RelId)>)>;
 
+/// Starting room of a side's queue and tree, so the first layers of a pair
+/// search do not regrow them.
+const SIDE_CAPACITY: usize = 64;
+
 /// One BFS tree of the bidirectional search.
 struct Side<'a, 'g> {
     search: Search<'a, 'g>,
@@ -116,11 +120,14 @@ struct Side<'a, 'g> {
 
 impl<'a, 'g> Side<'a, 'g> {
     fn new(search: Search<'a, 'g>, origin: NodeId) -> Self {
-        Self {
+        let mut side = Self {
             search,
-            q: VecDeque::from([(origin, 0)]),
-            tree: IdMap::from_iter([(origin, (0, None))]),
-        }
+            q: VecDeque::with_capacity(SIDE_CAPACITY),
+            tree: IdMap::with_capacity_and_hasher(SIDE_CAPACITY, Default::default()),
+        };
+        side.q.push_back((origin, 0));
+        side.tree.insert(origin, (0, None));
+        side
     }
 
     /// Depth of the layer to expand next.
@@ -130,11 +137,14 @@ impl<'a, 'g> Side<'a, 'g> {
 }
 
 /// The tree trail from the origin to `at`, origin first.
-fn trail_to(tree: &Tree, mut at: NodeId) -> Vec<RelId> {
-    let mut trail = Vec::new();
-    while let Some(&(_, Some((prev, rid)))) = tree.get(&at) {
+fn trail_to(tree: &Tree, at: NodeId) -> Vec<RelId> {
+    const OWN_TREE: &str = "trail_to: node of the search's own tree";
+    // The depth is the trail's length: one exact allocation, no regrowth.
+    let &(depth, mut link) = tree.get(&at).expect(OWN_TREE);
+    let mut trail = Vec::with_capacity(depth as usize);
+    while let Some((prev, rid)) = link {
         trail.push(rid);
-        at = prev;
+        link = tree.get(&prev).expect(OWN_TREE).1;
     }
     trail.reverse();
     trail
@@ -241,7 +251,6 @@ fn expand_layer(
             break;
         }
         q.pop_front();
-        search.graph.cancel_tick()?;
         let cur_parent = parent_rel(tree, cur);
         search.each_hop(cur, |next, rid| {
             if cur_parent == Some(rid) {

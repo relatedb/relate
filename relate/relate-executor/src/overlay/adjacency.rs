@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use relate_core::{NodeId, RelId};
 use relate_ir::{Direction, RelPattern};
 
+use crate::graph::HopBuf;
 use crate::store::RelTypes;
 
 use super::scratch::WriteScratch;
@@ -164,6 +165,39 @@ impl ExecGraph<'_> {
                 .base
                 .try_for_each_hop_resolved_at(id, dir, self.snapshot_ts(), types, f),
             Some(cell) => self.try_for_each_hop_overlay(cell, id, dir, types, f),
+        }
+    }
+
+    /// Call `f` once per batch of at most `HOP_BATCH` of `id`'s visible hops
+    /// as `(peer, rel id)`. The read-only snapshot resolves a batch at a
+    /// time ([`crate::graph::Graph::try_for_each_hop_batch_resolved_at`]); a
+    /// write overlay, a statement's own scratch, collects its whole walk
+    /// into the buffer first and then hands it out in the same batches.
+    pub(crate) fn try_for_each_hop_batch<E>(
+        &self,
+        id: NodeId,
+        dir: Direction,
+        types: &RelTypes,
+        buf: &mut HopBuf,
+        f: impl FnMut(&[(NodeId, RelId)]) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        match self.scratch {
+            None => self.base.try_for_each_hop_batch_resolved_at(
+                id,
+                dir,
+                self.snapshot_ts(),
+                types,
+                buf,
+                f,
+            ),
+            Some(cell) => {
+                buf.clear_hops();
+                self.try_for_each_hop_overlay(cell, id, dir, types, |rid, peer| {
+                    buf.push_hop(peer, rid);
+                    Ok::<(), E>(())
+                })?;
+                buf.emit_batches(f)
+            }
         }
     }
 

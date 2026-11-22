@@ -20,6 +20,7 @@ pub(crate) fn search<'a, 'g>(graph: &'a ExecGraph<'g>, dir: Direction, max: u32)
         max,
         all: false,
         skip: None,
+        scratch: Default::default(),
     }
 }
 

@@ -116,9 +116,12 @@ pub use query_stats::QueryStats;
 pub use index::take_index_rebuilds;
 // The adjacency side the `test-hooks` sealed-chunk seam is read by, so the
 // storage open tests can name the direction across the crate boundary.
+pub(crate) use adjacency::HopBuf;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub use adjacency::Side;
+#[cfg(test)]
+pub(crate) use adjacency::HOP_BATCH;
 pub use relate_planner::ContainsCount;
 pub(crate) use services::StoreServices;
 

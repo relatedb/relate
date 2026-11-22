@@ -88,6 +88,10 @@ pub struct ExecGraph<'a> {
 /// once per 1024 iterations, so the atomic load is not paid on every row.
 const CANCEL_SAMPLE_MASK: usize = 1023;
 
+/// Ticks between two token reads: the sampling interval the mask encodes.
+#[cfg(test)]
+pub(crate) const CANCEL_SAMPLE_INTERVAL: usize = CANCEL_SAMPLE_MASK + 1;
+
 impl<'a> ExecGraph<'a> {
     /// Schema-less read view of the committed graph. `show_schema` falls back
     /// to the live committed theater (under its lock); use

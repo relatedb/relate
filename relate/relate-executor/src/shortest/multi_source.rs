@@ -155,9 +155,9 @@ impl<'s, 'a, 'g> Sweep<'s, 'a, 'g> {
             visited: vec![0u64; span],
             frontier: vec![0u64; span],
             next: vec![0u64; span],
-            frontier_nodes: Vec::new(),
-            next_nodes: Vec::new(),
-            reached: Vec::new(),
+            frontier_nodes: Vec::with_capacity(origins.len()),
+            next_nodes: Vec::with_capacity(origins.len()),
+            reached: Vec::with_capacity(targets.len()),
             active,
         };
         for (lane, &origin) in origins.iter().enumerate() {
@@ -179,7 +179,6 @@ impl<'s, 'a, 'g> Sweep<'s, 'a, 'g> {
     fn pull_final(&mut self) -> Result<()> {
         self.reached.clear();
         for &target in self.targets {
-            self.search.graph.cancel_tick()?;
             let at = slot_in(target, self.span)?;
             let mut lanes = 0;
             self.back.each_hop(target, |peer, _| {
@@ -198,7 +197,6 @@ impl<'s, 'a, 'g> Sweep<'s, 'a, 'g> {
     /// first reached, and `reached` the targets among them.
     fn push_level(&mut self) -> Result<()> {
         for &node in &self.frontier_nodes {
-            self.search.graph.cancel_tick()?;
             let lanes = self.frontier[slot_in(node, self.span)?] & self.active;
             if lanes == 0 {
                 continue;

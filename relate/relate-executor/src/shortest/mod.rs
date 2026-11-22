@@ -18,14 +18,16 @@
 //!
 //! Searches take the graph and the pattern's direction, types and hop
 //! bounds, and return relationship-id trails; callers build paths with
-//! [`path_from_trail`]. Every followed relationship is one cancellation
-//! tick (ADR-0111) and one counted expansion.
+//! [`path_from_trail`]. Every node entry is one cancellation check
+//! (ADR-0111) and every followed relationship one counted expansion.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 
 use relate_core::{Error, NodeId, Path, RelId, Result};
 use relate_ir::{Direction, NodePattern, PathPattern, RelPattern};
 
+use crate::graph::HopBuf;
 use crate::overlay::ExecGraph;
 use crate::store::RelTypes;
 
@@ -92,6 +94,8 @@ pub(crate) fn reject_static_common_end_nodes(path: &PathPattern) -> Result<()> {
 #[cfg(test)]
 mod all_pair_tests;
 #[cfg(test)]
+mod hop_reader_tests;
+#[cfg(test)]
 pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
@@ -101,13 +105,15 @@ thread_local! {
     static EXPANDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Count one relationship a shortest-path search followed. The counter
+/// Count `n` relationships a shortest-path search followed. The counter
 /// exists only in tests, for the bounded-expansion regression tests.
-#[inline(always)]
-fn note_expand() {
-    #[cfg(test)]
-    EXPANDS.with(|c| c.set(c.get() + 1));
+#[cfg(test)]
+fn note_expands(n: usize) {
+    EXPANDS.with(|c| c.set(c.get() + n as u64));
 }
+
+#[cfg(not(test))]
+fn note_expands(_: usize) {}
 
 /// Take and reset this thread's count of followed relationships.
 #[cfg(test)]
@@ -136,6 +142,9 @@ pub(crate) struct Search<'a, 'g> {
     /// A relationship the layered search never follows: the first hop of a
     /// closed trail, which the way back must not reuse.
     pub skip: Option<RelId>,
+    /// The batched hop reader's reusable buffers, held for the search's
+    /// life instead of allocated per node entered.
+    pub scratch: RefCell<HopBuf>,
 }
 
 impl Search<'_, '_> {
@@ -161,15 +170,34 @@ impl Search<'_, '_> {
         node: NodeId,
         mut f: impl FnMut(NodeId, RelId) -> Result<()>,
     ) -> Result<()> {
-        let graph = self.graph;
-        // The hop spelling: the walk yields the peer from the one
-        // version-chain read it already makes, instead of a rel walk plus
-        // a `hop` lookup per followed relationship.
-        graph.try_for_each_hop_resolved(node, dir, &self.types, |rid, next| {
-            graph.cancel_tick()?;
-            note_expand();
-            f(next, rid)
+        self.each_hop_batch_along(dir, node, |hops| {
+            hops.iter().try_for_each(|&(next, rid)| f(next, rid))
         })
+    }
+
+    /// Call `f` once per batch of at most `HOP_BATCH` relationships
+    /// followed out of `node` along `dir`, each with the node it reaches,
+    /// resolved at the snapshot. This is the one place a node entry is
+    /// polled for cancellation: the sampled tick runs once per entry, never
+    /// per relationship, so callers do not tick again before calling it.
+    fn each_hop_batch_along(
+        &self,
+        dir: Direction,
+        node: NodeId,
+        mut f: impl FnMut(&[(NodeId, RelId)]) -> Result<()>,
+    ) -> Result<()> {
+        self.graph.cancel_tick()?;
+        // Taken out of the cell so a re-entrant walk from `f` gets its own
+        // buffers instead of a double borrow.
+        let mut buf = std::mem::take(&mut *self.scratch.borrow_mut());
+        let result = self
+            .graph
+            .try_for_each_hop_batch(node, dir, &self.types, &mut buf, |hops| {
+                note_expands(hops.len());
+                f(hops)
+            });
+        *self.scratch.borrow_mut() = buf;
+        result
     }
 
     /// Every relationship followed out of `node`, with the node it reaches.
@@ -180,8 +208,8 @@ impl Search<'_, '_> {
     /// [`Self::hops`] along `dir`.
     fn hops_along(&self, dir: Direction, node: NodeId) -> Result<Vec<(NodeId, RelId)>> {
         let mut out = Vec::new();
-        self.each_hop_along(dir, node, |next, rid| {
-            out.push((next, rid));
+        self.each_hop_batch_along(dir, node, |hops| {
+            out.extend_from_slice(hops);
             Ok(())
         })?;
         Ok(out)
