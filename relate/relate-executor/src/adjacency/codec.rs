@@ -165,25 +165,28 @@ pub(crate) fn stream_len_with(bytes: &[u8], n: usize, widths: &mut impl WidthRea
     if present > 0 {
         consumed += 8;
         rest = &rest[8..];
-        consumed += section_len(&mut rest, present - 1, TS_BLOCK, widths);
+        consumed += walk_section(&mut rest, present - 1, TS_BLOCK, widths, |_, _, _| {});
     }
     if n > 0 {
         consumed += 8;
         rest = &rest[8..];
-        consumed += section_len(&mut rest, n - 1, ID_BLOCK, widths);
+        consumed += walk_section(&mut rest, n - 1, ID_BLOCK, widths, |_, _, _| {});
     }
     consumed
 }
 
 /// Walk one stream's packed section — `count` values in blocks of `block` —
-/// advancing `rest` past it and returning the bytes it occupies. Each
+/// advancing `rest` past it and handing each block's width, packed bytes and
+/// value count to `visit`; returns the bytes the section occupies. Each
 /// block's width comes from `widths`, its packed length from the width and
-/// the block's value count.
-fn section_len(
-    rest: &mut &[u8],
+/// the block's value count. The one block walk the length scan and both
+/// decode loops share.
+fn walk_section<'a>(
+    rest: &mut &'a [u8],
     count: usize,
     block: usize,
     widths: &mut impl WidthReader,
+    mut visit: impl FnMut(u32, &'a [u8], usize),
 ) -> usize {
     let mut consumed = 0;
     let mut remaining = count;
@@ -191,6 +194,7 @@ fn section_len(
         let take = remaining.min(block);
         let (width, skip) = widths.take(rest);
         let packed_len = (take * width as usize).div_ceil(8);
+        visit(width, &rest[skip..skip + packed_len], take);
         consumed += skip + packed_len;
         *rest = &rest[skip + packed_len..];
         remaining -= take;
@@ -219,19 +223,19 @@ pub(crate) fn decode_stream(bytes: &[u8], n: usize, widths: &mut impl WidthReade
         rest = tail;
         let mut prev = i64::from_le_bytes(raw.try_into().expect("codec: ts head"));
         tss.push(prev);
-        let mut remaining = present - 1;
-        while remaining > 0 {
-            let take = remaining.min(TS_BLOCK);
-            let (width, skip) = widths.take(rest);
-            let packed_len = (take * width as usize).div_ceil(8);
-            let mut r = BitReader::new(&rest[skip..skip + packed_len]);
-            rest = &rest[skip + packed_len..];
-            for _ in 0..take {
-                prev = prev.wrapping_sub(r.read(width) as i64);
-                tss.push(prev);
-            }
-            remaining -= take;
-        }
+        walk_section(
+            &mut rest,
+            present - 1,
+            TS_BLOCK,
+            widths,
+            |width, packed, take| {
+                let mut r = BitReader::new(packed);
+                for _ in 0..take {
+                    prev = prev.wrapping_sub(r.read(width) as i64);
+                    tss.push(prev);
+                }
+            },
+        );
     }
 
     // (b) id stream.
@@ -241,19 +245,13 @@ pub(crate) fn decode_stream(bytes: &[u8], n: usize, widths: &mut impl WidthReade
         rest = tail;
         let mut prev = i64::from_le_bytes(raw.try_into().expect("codec: id head"));
         ids.push(prev);
-        let mut remaining = n - 1;
-        while remaining > 0 {
-            let take = remaining.min(ID_BLOCK);
-            let (width, skip) = widths.take(rest);
-            let packed_len = (take * width as usize).div_ceil(8);
-            let mut r = BitReader::new(&rest[skip..skip + packed_len]);
-            rest = &rest[skip + packed_len..];
+        walk_section(&mut rest, n - 1, ID_BLOCK, widths, |width, packed, take| {
+            let mut r = BitReader::new(packed);
             for _ in 0..take {
                 prev = prev.wrapping_add(unzigzag(r.read(width)));
                 ids.push(prev);
             }
-            remaining -= take;
-        }
+        });
     }
 
     // Zip the parallel streams back into hops, original order.

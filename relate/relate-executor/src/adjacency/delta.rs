@@ -267,6 +267,12 @@ pub(crate) struct TypedAdj {
 }
 
 impl TypedAdj {
+    /// `type_id`'s sealed hop count — `0` when the node holds no sealed
+    /// region: the one spelling of the absence contract.
+    fn sealed_len(sealed: Option<SealedRegion<'_>>, type_id: u32) -> usize {
+        sealed.map_or(0, |s| s.chunk_len(type_id))
+    }
+
     /// Whether this delta holds no chunk at all — one spelling of the
     /// per-node emptiness predicate that decides whether a node keeps an
     /// entry in a table (the sealed half is the arena span's `len == 0`).
@@ -377,7 +383,7 @@ impl TypedAdj {
         // zero-hop chunk (a never-sealed type that only recorded a tombstone)
         // covers no hop, so the type's slot goes as it did before the
         // tombstone existed — and its empty region goes with it.
-        if emptied && sealed.map_or(0, |s| s.chunk_len(type_id)) == 0 {
+        if emptied && Self::sealed_len(sealed, type_id) == 0 {
             self.chunks.remove(ci);
             if let Some(sealed) = sealed {
                 // The drop arm appends no stream: the walls never refuse it.
@@ -409,8 +415,7 @@ impl TypedAdj {
 
     /// Delta plus sealed hops of `type_id` — the degree/estimate length.
     pub(crate) fn total_len(&self, sealed: Option<SealedRegion<'_>>, type_id: u32) -> usize {
-        self.chunk_ref(type_id).map_or(0, |c| c.hops.len())
-            + sealed.map_or(0, |s| s.chunk_len(type_id))
+        self.chunk_ref(type_id).map_or(0, |c| c.hops.len()) + Self::sealed_len(sealed, type_id)
     }
 
     /// Every chunk's type id with its live delta and sealed hop counts, in
@@ -421,13 +426,9 @@ impl TypedAdj {
         &'a self,
         sealed: Option<SealedRegion<'a>>,
     ) -> impl Iterator<Item = (u32, usize, usize)> + 'a {
-        self.chunks.iter().map(move |c| {
-            (
-                c.type_id,
-                c.hops.len(),
-                sealed.map_or(0, |s| s.chunk_len(c.type_id)),
-            )
-        })
+        self.chunks
+            .iter()
+            .map(move |c| (c.type_id, c.hops.len(), Self::sealed_len(sealed, c.type_id)))
     }
 
     /// Visit `type_id`'s merged hop stream at read timestamp `ts`: delta
@@ -480,7 +481,7 @@ impl TypedAdj {
     /// baseline.
     pub(crate) fn note_stable(&mut self, sealed: Option<SealedRegion<'_>>) {
         for chunk in &mut self.chunks {
-            let sealed_len = sealed.map_or(0, |s| s.chunk_len(chunk.type_id));
+            let sealed_len = Self::sealed_len(sealed, chunk.type_id);
             if chunk.in_stability_band(sealed_len) {
                 chunk.stable_len = chunk.hops.len();
             }
@@ -516,7 +517,7 @@ impl TypedAdj {
     pub(crate) fn has_fold_work(&self, sealed: Option<SealedRegion<'_>>, horizon: u64) -> bool {
         self.chunks.iter().any(|c| {
             due_action(c, sealed, horizon).is_some()
-                || c.in_stability_band(sealed.map_or(0, |s| s.chunk_len(c.type_id)))
+                || c.in_stability_band(Self::sealed_len(sealed, c.type_id))
         })
     }
 

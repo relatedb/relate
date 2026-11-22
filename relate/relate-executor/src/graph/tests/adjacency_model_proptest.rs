@@ -369,6 +369,21 @@ fn apply_op(
     }
 }
 
+/// The seeded graph both proptests start from: [`NODE_POOL`] nodes
+/// created in one write, and the [`TYPES`] alphabet interned up front so
+/// chunk type ids are stable across the whole case.
+fn graph_fixture() -> (Graph, Vec<NodeId>, Vec<u32>) {
+    let g = Graph::default();
+    let mut nodes = Vec::with_capacity(NODE_POOL);
+    g.begin_write().unwrap();
+    for _ in 0..NODE_POOL {
+        nodes.push(g.create_node(vec!["N".into()], BTreeMap::new()).unwrap());
+    }
+    g.commit_write();
+    let type_ids: Vec<u32> = TYPES.iter().map(|t| g.interner.intern(t)).collect();
+    (g, nodes, type_ids)
+}
+
 proptest! {
     #![proptest_config(config())]
 
@@ -379,16 +394,7 @@ proptest! {
     /// semantics; it is the red-line guard for the sealed+delta rework.
     #[test]
     fn adjacency_matches_reference_model(ops in prop::collection::vec(adj_op_strategy(), 0..=200)) {
-        let g = Graph::default();
-        let mut nodes = Vec::with_capacity(NODE_POOL);
-        g.begin_write().unwrap();
-        for _ in 0..NODE_POOL {
-            nodes.push(g.create_node(vec!["N".into()], BTreeMap::new()).unwrap());
-        }
-        g.commit_write();
-        // Intern the type alphabet up front so chunk type ids are stable
-        // across the whole case.
-        let type_ids: Vec<u32> = TYPES.iter().map(|t| g.interner.intern(t)).collect();
+        let (g, nodes, type_ids) = graph_fixture();
 
         let mut model = ModelAdj::default();
         let mut live: Vec<RelId> = Vec::new();
@@ -409,14 +415,7 @@ proptest! {
     fn adjacency_model_proptest_compaction_confluence(
         steps in prop::collection::vec((adj_op_strategy(), any::<bool>()), 0..=200)
     ) {
-        let g = Graph::default();
-        let mut nodes = Vec::with_capacity(NODE_POOL);
-        g.begin_write().unwrap();
-        for _ in 0..NODE_POOL {
-            nodes.push(g.create_node(vec!["N".into()], BTreeMap::new()).unwrap());
-        }
-        g.commit_write();
-        let type_ids: Vec<u32> = TYPES.iter().map(|t| g.interner.intern(t)).collect();
+        let (g, nodes, type_ids) = graph_fixture();
 
         let mut model = ModelAdj::default();
         let mut live: Vec<RelId> = Vec::new();

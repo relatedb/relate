@@ -308,7 +308,6 @@ impl ArenaStore {
         // The walls under this lock, in the same spelling the fold's
         // pre-check uses: a founding needs a span slot, and the stream —
         // at the codec's own bound — must keep the arena under the offset.
-        let existing = self.entry_index(node, type_id);
         if existing.is_none() && !self.spans.has_room_for_type(node) {
             return false;
         }

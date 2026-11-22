@@ -246,20 +246,13 @@ pub(crate) struct NodeAdjacency {
 
 /// Every live node's [`NodeAdjacency`] at the graph's commit ts.
 pub(crate) fn node_adjacencies(g: &Graph) -> Vec<NodeAdjacency> {
-    use relate_ir::Direction;
-
-    let ts = g.commit_ts();
-    g.all_node_ids_at(ts)
+    node_expansions(g)
         .into_iter()
-        .map(|id| {
-            let expands = [Direction::Outgoing, Direction::Incoming, Direction::Both]
-                .map(|dir| g.neighbors_at(id, dir, ts));
-            NodeAdjacency {
-                id,
-                out: g.degree_out(id),
-                r#in: g.degree_in(id),
-                expands,
-            }
+        .map(|(id, expands)| NodeAdjacency {
+            id,
+            out: g.degree_out(id),
+            r#in: g.degree_in(id),
+            expands,
         })
         .collect()
 }

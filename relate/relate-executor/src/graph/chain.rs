@@ -159,16 +159,14 @@ impl<Live> Chain<Live> {
     /// [`Self::live`]'s position form, for the walks that classify every
     /// version as they pass (a shadowed open-ended version from a
     /// replayed re-create is superseded: only the newest counts). The
-    /// forward scan keeps the last open-ended hit — the rule is the same
-    /// one [`Self::live`] states, read from the other end.
+    /// reverse scan exits on the newest open-ended hit — the rule
+    /// [`Self::live`] states, as an index.
     pub(super) fn live_index(&self) -> Option<usize> {
-        let mut live = None;
-        for (idx, v) in self.iter().enumerate() {
-            if v.xmax == 0 {
-                live = Some(idx);
-            }
+        match self {
+            // The inline version is open-ended by construction.
+            Self::Inline { .. } => Some(0),
+            Self::Spilled(vers) => vers.iter().rposition(|v| v.xmax == 0),
         }
-        live
     }
 
     /// Take the slot's versions as a vector, leaving an empty `Spilled`
