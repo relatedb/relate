@@ -36,19 +36,41 @@ mcp_fail() {
     exit 1
 }
 
-# The raw envelope text from flag NAME's value on — everything after
-# `"NAME":`, exactly as the envelope spells it. The one place the
-# envelope is searched for a flag: `mcp_fail` when the manifest and the
-# child disagree about the flag table. A string flag's slice goes to the
-# kit's one decoder, which terminates it at the value's own closing
-# quote (the `mcp_string` shape for tool results), so a string is
-# decoded exactly once — never decoded, re-encoded by `json_string`,
-# and decoded again.
-_mcp_flag_slice() {
-    case $MCP_ENVELOPE in
-        *"\"$1\":"*) printf '%s' "${MCP_ENVELOPE#*\"$1\":}" ;;
-        *) mcp_fail "the request envelope carries no '$1' flag" ;;
+# _mcp_member_rest JSON NAME OUT — the raw text after `"NAME":` in the JSON
+# object JSON (the value's first character on — a string value's opening
+# quote included), into the variable OUT; returns 1 when JSON carries no
+# such member. The one spelling of the member find: the envelope's flag
+# readers, the scalar reader and the string reader all consult it, so "the
+# member is found by name" has one home — key order never matters, so the
+# kit does not couple to the host's member order (ADR-0634).
+_mcp_member_rest() {
+    case $1 in
+        *"\"$2\":"*) printf -v "$3" '%s' "${1#*\"$2\":}" ;;
+        *) return 1 ;;
     esac
+}
+
+# _mcp_scalar_token TEXT — TEXT's leading scalar token: everything up to
+# the next `,`, or to the object's closing `}` when the scalar is the
+# last member. The one spelling of "a scalar ends at the next comma or
+# the closing brace" — the two cuts stay separate because `}` inside a
+# bracket expression ends the expansion — read by `mcp_number` and
+# `_mcp_flag_value`, and by the flag readers cutting a mismatch's value
+# for display.
+_mcp_scalar_token() {
+    local rest=${1%%,*}
+    printf '%s' "${rest%%\}*}"
+}
+
+# _mcp_flag_required NAME OUT — the raw envelope text from flag NAME's
+# value on, into the variable OUT, or the one refusal when the manifest and
+# the child disagree about the flag table. The slice is always taken inside
+# a command substitution, where a `mcp_fail` there would end a subshell
+# rather than the child, so the refusal lives here, at the one boundary
+# every flag reader shares.
+_mcp_flag_required() {
+    _mcp_member_rest "$MCP_ENVELOPE" "$1" "$2" ||
+        mcp_fail "the request envelope carries no '$1' flag"
 }
 
 # The scalar token of flag NAME (`2`, `false`), shaped for the scalar
@@ -58,23 +80,19 @@ _mcp_flag_slice() {
 # disagree about the flag table.
 _mcp_flag_value() {
     local rest
-    rest=$(_mcp_flag_slice "$1")
-    # A scalar ends at the next `,` — or at the envelope's closing `}`
-    # when the flag is the last one. The two cuts stay separate because
-    # `}` inside a bracket expression ends the expansion.
-    rest=${rest%%,*}
-    printf '%s' "${rest%%\}*}"
+    _mcp_flag_required "$1" rest
+    _mcp_scalar_token "$rest"
 }
 
 # _mcp_decode_string TOKEN OUT [TAIL] — the value of the JSON string
 # literal TOKEN (its opening quote included), escapes undone, into the
 # variable OUT; the text after the closing quote, into TAIL when given
-# (the list walker needs it). Returns 1 — no message, no exit, so it
-# works wherever it is called, command substitutions included — when
-# TOKEN is not a string, its closing quote never comes (an unterminated
-# value is a failure, never a silent truncation), or a `\u` escape's
-# four hex digits are missing. The message and the exit belong to the
-# caller, which knows the flag or tool the value belongs to.
+# (the list walker needs it). Returns 2 when TOKEN is not a string, and 1
+# when its closing quote never comes (an unterminated value is a failure,
+# never a silent truncation) or a `\u` escape's four hex digits are
+# missing — no message, no exit, so it works wherever it is called,
+# command substitutions included; the caller picks its message from the
+# status.
 _mcp_decode_string() {
     # The out-parameter names are held in dedicated locals (`out_name`,
     # `tail_name`): a local sharing a caller's variable name would make
@@ -82,7 +100,7 @@ _mcp_decode_string() {
     local rest=$1 out_name=$2 tail_name=${3-} value= char hexchar
     case $rest in
         \"*) rest=${rest#\"} ;;
-        *) return 1 ;;
+        *) return 2 ;;
     esac
     while [ -n "$rest" ]; do
         char=${rest:0:1}
@@ -126,17 +144,18 @@ _mcp_decode_string() {
 # mcp_flag_string NAME — a string flag's value, unquoted and unescaped.
 # The raw slice is decoded exactly once (the value ends at the first
 # quote no backslash escapes, so a quote inside it decodes rather than
-# truncating the read); an unterminated value fails inside the one
-# decoder.
+# truncating the read); the one decoder's status picks the message — a
+# value that is not a string at all reads differently from an
+# unterminated one.
 mcp_flag_string() {
     local value decoded
-    value=$(_mcp_flag_slice "$1")
-    case $value in
-        \"*) ;;
-        *) mcp_fail "flag '$1' is not a string: ${value%%,*}" ;;
+    _mcp_flag_required "$1" value
+    _mcp_decode_string "$value" decoded
+    case $? in
+        0) ;;
+        2) mcp_fail "flag '$1' is not a string: $(_mcp_scalar_token "$value")" ;;
+        *) mcp_fail "flag '$1' is not a terminated JSON string: $value" ;;
     esac
-    _mcp_decode_string "$value" decoded ||
-        mcp_fail "flag '$1' is not a terminated JSON string: $value"
     printf '%s' "$decoded"
 }
 
@@ -166,11 +185,11 @@ mcp_flag_bool() {
 # decoder's reported tail to the next entry.
 mcp_flag_list() {
     local value rest entry tail
-    value=$(_mcp_flag_slice "$1")
+    _mcp_flag_required "$1" value
     case $value in
         \[*\]*) ;;
         \[*) mcp_fail "flag '$1' is not a terminated list: $value" ;;
-        *) mcp_fail "flag '$1' is not a list: ${value%%,*}" ;;
+        *) mcp_fail "flag '$1' is not a list: $(_mcp_scalar_token "$value")" ;;
     esac
     # The array runs to its closing bracket — the first `]`, the
     # pre-existing boundary (an entry holding a bare `]` inside quotes
@@ -259,48 +278,50 @@ mcp_call() {
         *'"content":'*) ;;
         *) mcp_fail "'$tool' answered no tool content: $response" ;;
     esac
-    case $response in
-        *'"text":"'*) ;;
-        *) mcp_fail "'$tool' answered no text content: $response" ;;
-    esac
     # The tool's result is the `text` member, read by the kit's one
-    # string reader (`mcp_string`): the member is found by name — key
-    # order never matters, so the kit does not couple to the host's
-    # member order (ADR-0634) — and the value ends at the first quote no
-    # backslash escapes, with an unterminated value failing inside the
-    # decoder, the one home of that predicate.
-    mcp_string "$response" text
+    # required string reader (`_mcp_string_required`): the member is found
+    # by name — key order never matters, so the kit does not couple to
+    # the host's member order (ADR-0634) — its value ends at the first
+    # quote no backslash escapes (an unterminated value fails inside the
+    # decoder, the one home of that predicate), and an absent member is a
+    # refusal there, so the response is not scanned for the member first.
+    _mcp_string_required "$response" text
 }
 
 # mcp_number JSON NAME — the number the JSON object JSON carries under
 # NAME (the counters, the read counts). Empty when absent.
 mcp_number() {
-    local rest=$1
-    case $1 in
-        *"\"$2\":"*) rest=${1#*\"$2\":} ;;
-        *) return 0 ;;
-    esac
-    rest=${rest%%,*}
-    printf '%s' "${rest%%\}*}"
+    local rest
+    _mcp_member_rest "$1" "$2" rest || return 0
+    _mcp_scalar_token "$rest"
 }
 
 # mcp_string JSON NAME — the string the JSON object JSON carries under NAME,
-# with the escapes `json_string` writes undone. Empty when absent. The
-# value ends at the first quote no backslash escapes, so a quote inside
-# it decodes rather than truncating the read; a present-but-unterminated
-# value fails through the one decoder, with the member named here.
+# with the escapes `json_string` writes undone. Prints nothing and returns
+# 1 when JSON carries no string member NAME (absent, or not a string at
+# all). The value ends at the first quote no backslash escapes, so a quote
+# inside it decodes rather than truncating the read; a
+# present-but-unterminated value fails through the one decoder, with the
+# member named here.
 mcp_string() {
     local rest decoded
-    case $1 in
-        *"\"$2\":\""*) rest=${1#*\"$2\":\"} ;;
-        *) return 0 ;;
+    _mcp_member_rest "$1" "$2" rest || return 1
+    _mcp_decode_string "$rest" decoded
+    case $? in
+        0) ;;
+        2) return 1 ;;
+        *) mcp_fail "the '$2' member is not a terminated JSON string" ;;
     esac
-    # Only the opening quote is reconstituted: the member strip consumed
-    # it, and the decoder reads to the value's own closing quote — a
-    # synthetic one would mask an unterminated response as terminated.
-    _mcp_decode_string "\"$rest" decoded ||
-        mcp_fail "the '$2' member is not a terminated JSON string"
     printf '%s' "$decoded"
+}
+
+# _mcp_string_required JSON NAME — `mcp_string` with the member required: a
+# missing string member is a refusal through `mcp_fail`, so a caller that
+# needs the member (the tool result's `text`) requires it in the one read
+# instead of scanning the response for it first.
+_mcp_string_required() {
+    mcp_string "$1" "$2" ||
+        mcp_fail "the response carries no '$2' string member: $1"
 }
 
 # json_string VALUE — VALUE as a JSON string literal, quotes included: the

@@ -1,12 +1,9 @@
 """The memory-shape envelope and its regression / improvement verdicts."""
 
-import json
-import os
-import subprocess
-import sys
-import tempfile
 import unittest
 from pathlib import Path
+
+from comparator_runner import frozen_envelope, run_freeze, run_memory_comparator
 
 ROOT = Path(__file__).resolve().parents[2]
 FREEZE = ROOT / "scripts" / "freeze-memory-shape.py"
@@ -86,138 +83,99 @@ def report(**overrides):
 
 class CompareMemoryShapeTests(unittest.TestCase):
     def run_compare(self, baseline, current, env=None):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            baseline_path = root / "baseline.json"
-            report_path = root / "report.json"
-            doc = root / "memory-shape.md"
-            verdict = root / "verdict.json"
-            baseline_path.write_text(json.dumps(baseline))
-            report_path.write_text(json.dumps(current))
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(COMPARE),
-                    "--baseline",
-                    str(baseline_path),
-                    "--report",
-                    str(report_path),
-                    "--doc",
-                    str(doc),
-                    "--verdict",
-                    str(verdict),
-                ],
-                text=True,
-                capture_output=True,
-                check=False,
-                env={**os.environ, **(env or {})},
-            )
-            result.document = doc.read_text()  # type: ignore[attr-defined]
-            result.payload = json.loads(verdict.read_text())  # type: ignore[attr-defined]
-            return result
+        return run_memory_comparator(
+            COMPARE, baseline, current, extra_env=env
+        )
 
     def freeze(self, rounds):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            paths = []
-            for index, body in enumerate(rounds):
-                path = root / f"run{index}.json"
-                path.write_text(json.dumps(body))
-                paths.append(str(path))
-            out = root / "envelope.json"
-            result = subprocess.run(
-                [sys.executable, str(FREEZE), "--out", str(out), *paths],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            payload = json.loads(out.read_text()) if result.returncode == 0 else None
-            return result, payload
+        return run_freeze(FREEZE, rounds)
+
+    def frozen(self, rounds):
+        return frozen_envelope(self.freeze(rounds))
 
     def test_ok_states_baseline_validated_and_report(self):
-        frozen, payload = self.freeze([report(), report()])
-        self.assertEqual(frozen.returncode, 0, frozen.stderr)
-        result = self.run_compare(payload, report())
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.payload["status"], "ok")
+        result = self.run_compare(self.frozen([report(), report()]), report())
+        self.assertEqual(result.process.returncode, 0, result.process.stderr)
+        self.assertEqual(result.verdict["status"], "ok")
         self.assertIn("**Baseline:**", result.document)
         self.assertIn("**Validated:**", result.document)
         self.assertIn("**Report:** logical, disk, attributed RSS, and the ratio held.", result.document)
         self.assertIn("31.47 MB", result.document)
 
     def test_byte_regression(self):
-        _, payload = self.freeze([report(), report()])
+        payload = self.frozen([report(), report()])
         current = report()
         current["shapes"][1]["attributed_rss_bytes"] = 60_000_000
         result = self.run_compare(payload, current, env={"GITHUB_ACTIONS": ""})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.payload["status"], "regression")
+        self.assertEqual(result.process.returncode, 0, result.process.stderr)
+        self.assertEqual(result.verdict["status"], "regression")
         self.assertIn("**Given:**", result.document)
         self.assertIn("57.22 MB", result.document)
         self.assertIn("44.82 MB", result.document)
         self.assertIn("job stays green", result.document)
         warned = self.run_compare(payload, current, env={"GITHUB_ACTIONS": "true"})
-        self.assertEqual(warned.returncode, 0, warned.stderr)
-        self.assertIn("::warning::compare-memory-shape:", warned.stderr)
+        self.assertEqual(warned.process.returncode, 0, warned.process.stderr)
+        self.assertIn("::warning::compare-memory-shape:", warned.process.stderr)
 
     def test_ratio_regression(self):
-        _, payload = self.freeze([report(), report()])
+        payload = self.frozen([report(), report()])
         current = report()
         current["shapes"][1]["ratio"] = 1.6
         result = self.run_compare(payload, current)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.payload["status"], "regression")
+        self.assertEqual(result.process.returncode, 0, result.process.stderr)
+        self.assertEqual(result.verdict["status"], "regression")
         self.assertIn("ratio measured 1.600x", result.document)
 
     def test_improvement(self):
-        _, payload = self.freeze([report(), report()])
+        payload = self.frozen([report(), report()])
         current = report()
         current["shapes"][1]["logical_bytes"] = 20_000_000
         result = self.run_compare(payload, current, env={"GITHUB_ACTIONS": ""})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.payload["status"], "improvement")
+        self.assertEqual(result.process.returncode, 0, result.process.stderr)
+        self.assertEqual(result.verdict["status"], "improvement")
         self.assertIn("create-loadtest-baselines", result.document)
-        self.assertIn("improvement", result.stderr)
-        self.assertNotIn("::warning::", result.stderr)
+        self.assertIn("improvement", result.process.stderr)
+        self.assertNotIn("::warning::", result.process.stderr)
         warned = self.run_compare(payload, current, env={"GITHUB_ACTIONS": "true"})
-        self.assertEqual(warned.returncode, 0, warned.stderr)
-        self.assertIn("::warning::compare-memory-shape:", warned.stderr)
-        self.assertIn("improvement", warned.stderr)
+        self.assertEqual(warned.process.returncode, 0, warned.process.stderr)
+        self.assertIn("::warning::compare-memory-shape:", warned.process.stderr)
+        self.assertIn("improvement", warned.process.stderr)
 
     def test_wrong_count_is_a_regression(self):
-        _, payload = self.freeze([report(), report()])
+        payload = self.frozen([report(), report()])
         current = report()
         current["shapes"][1]["nodes"] = 130_000
         result = self.run_compare(payload, current)
-        self.assertEqual(result.returncode, 1)
-        self.assertEqual(result.payload["status"], "regression")
+        self.assertEqual(result.process.returncode, 1)
+        self.assertEqual(result.verdict["status"], "regression")
         self.assertIn("130000 nodes", result.document)
         self.assertIn("120000 nodes", result.document)
 
     def test_incompatible_is_local_skip_and_ci_failure(self):
-        _, payload = self.freeze([report(), report()])
+        payload = self.frozen([report(), report()])
         current = report()
         current["environment"] = LOCAL_ENV
         current["shapes"][1]["attributed_rss_bytes"] = 60_000_000
-        local = self.run_compare(payload, current, env={"CI_COMPARE": "0", "GITHUB_ACTIONS": ""})
-        self.assertEqual(local.returncode, 0, local.stderr)
-        self.assertEqual(local.payload["status"], "incompatible")
-        ci = self.run_compare(payload, current, env={"CI_COMPARE": "1"})
-        self.assertEqual(ci.returncode, 1)
-        self.assertEqual(ci.payload["status"], "incompatible")
+        # The one parametrized policy case: a local run (CI_COMPARE=0)
+        # skips the bands and exits 0, a CI run (CI_COMPARE=1) hard-fails.
+        for env, code in (({"CI_COMPARE": "0", "GITHUB_ACTIONS": ""}, 0), ({"CI_COMPARE": "1"}, 1)):
+            with self.subTest(env=env):
+                result = self.run_compare(payload, current, env=env)
+                self.assertEqual(result.process.returncode, code, result.process.stderr)
+                self.assertEqual(result.verdict["status"], "incompatible")
 
     def test_no_baseline(self):
         result = self.run_compare({"schema_version": 1, "name": "memory-shape", "frozen": False}, report())
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.payload["status"], "no-baseline")
+        self.assertEqual(result.process.returncode, 0, result.process.stderr)
+        self.assertEqual(result.verdict["status"], "no-baseline")
         self.assertIn("**Status:** no-baseline", result.document)
 
     def test_freeze_refuses_a_different_count(self):
         drifted = report()
         drifted["shapes"][1]["nodes"] = 130_000
-        result, _payload = self.freeze([report(), drifted])
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("120000", result.stderr)
+        result = self.freeze([report(), drifted])
+        self.assertEqual(result.process.returncode, 1)
+        self.assertIn("120000", result.process.stderr)
 
 
 if __name__ == "__main__":

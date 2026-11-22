@@ -31,6 +31,19 @@ instead of carrying a third copy of the temp-dir-and-two-reports core.
 so a caller asks for the flags it wants out of the one PAIR_SIDECARS table
 and reads the result back under the same names.
 
+`run_memory_comparator` is the binding the two memory suites share: the
+memory comparators spell the pair `--baseline`/`--report` and write their
+artefacts through `--doc`/`--verdict`, so the one binding returns a
+`MemoryCompare` — the process and the two artefacts, parsed — instead of
+each suite grafting `.document`/`.payload` onto a `CompletedProcess` and
+passing `os.environ` straight through (the drift the shared primitive
+exists to end).
+
+`run_freeze` is the one freeze/envelope harness: write N reports as
+`run{i}.json`, run the freeze script with `--out`, read the payload back —
+the shape `test_freeze_baseline_envelope.py`, `test_query_latency_gate.py`
+and the two memory suites each carried near-verbatim.
+
 Imported as a plain sibling module: the Makefile runs each test file
 directly with `python3`, so `sys.path[0]` is `scripts/tests/`.
 """
@@ -42,6 +55,8 @@ import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
+
 
 from child_env import child_env
 
@@ -60,6 +75,50 @@ SCRUB_PREFIXES = ("LOADTEST_", "QUERY_LATENCY_")
 # by flag (never a boolean per flag), and reads the contents back under the
 # same flag names.
 PAIR_SIDECARS = {"--markdown-out": "table.md", "--status-out": "status.txt"}
+
+# The two memory comparators' sidecar flags -> the file each writes inside
+# the run's temp dir: the rendered document (`--doc`) and the verdict JSON
+# (`--verdict`). The one table `run_memory_comparator` binds, so neither
+# memory suite re-spells the pair.
+MEMORY_SIDECARS = {"--doc": "report.md", "--verdict": "verdict.json"}
+
+
+class FreezeRun(NamedTuple):
+    """A freeze/envelope script's run and the envelope it wrote: the
+    process, and the parsed payload (None when the freeze refused, so no
+    envelope was written)."""
+
+    process: subprocess.CompletedProcess[str]
+    payload: dict | None
+
+
+def run_freeze(
+    script: Path, reports: list[dict]
+) -> FreezeRun:
+    """Run the freeze/envelope `script` over `reports`; return the process
+    and the envelope payload it wrote (`--out`), parsed, or None when the
+    freeze refused (non-zero exit, so nothing was written).
+
+    The one freeze harness the four suites share: N reports written as
+    `run{i}.json` in a temp dir, the script invoked with `--out` and their
+    paths, the payload read back on success. The child environment is the
+    ambient one — a freeze script reads no comparator knob.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        paths = []
+        for index, body in enumerate(reports):
+            path = root / f"run{index}.json"
+            path.write_text(json.dumps(body))
+            paths.append(path)
+        out = root / "out.json"
+        cmd = [sys.executable, str(script), "--out", str(out), *map(str, paths)]
+        result = subprocess.run(
+            cmd, text=True, capture_output=True, check=False
+        )
+        payload = json.loads(out.read_text()) if result.returncode == 0 else None
+    return FreezeRun(result, payload)
+
 
 
 def scrubbed_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -209,3 +268,55 @@ def render(
     table = written["--markdown-out"]
     assert table is not None
     return result, table
+
+
+class MemoryCompare(NamedTuple):
+    """One memory-comparator run and the artefacts it wrote: the process,
+    the rendered document (`--doc`), and the parsed verdict (`--verdict`)."""
+
+    process: subprocess.CompletedProcess[str]
+    document: str
+    verdict: dict
+
+
+def frozen_envelope(result: FreezeRun) -> dict:
+    """The frozen envelope `result` wrote, its write asserted: `run_freeze`
+    answers None only when the freeze refused, which is not what a case
+    comparing against the envelope is testing — so the Optional dies here,
+    once, instead of at every call site.
+    """
+    assert result.process.returncode == 0, result.process.stderr
+    assert result.payload is not None, "the freeze wrote no envelope"
+    return result.payload
+
+
+def run_memory_comparator(
+    script: Path,
+    baseline: dict,
+    current: dict,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> MemoryCompare:
+    """Run the memory comparator `script` over a report pair; return the
+    process and its two artefacts, parsed.
+
+    The memory comparators' binding of `run_comparator`: they spell the
+    pair `--baseline`/`--report` (not compare-loadtest.py's positional
+    pair) and write their document and verdict through MEMORY_SIDECARS'
+    flags, so the temp dir, the report pair, the child environment (the
+    scrub) and the run stay the primitive's — never a per-suite copy that
+    passes `os.environ` straight through.
+    """
+    result, written = run_comparator(
+        script,
+        baseline,
+        current,
+        lambda base, cur: ["--baseline", str(base), "--report", str(cur)],
+        extra_env=extra_env,
+        sidecars=dict(MEMORY_SIDECARS),
+    )
+    document = written["--doc"]
+    verdict = written["--verdict"]
+    assert document is not None, "the comparator wrote no --doc document"
+    assert verdict is not None, "the comparator wrote no --verdict payload"
+    return MemoryCompare(result, document, json.loads(verdict))

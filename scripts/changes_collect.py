@@ -50,6 +50,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 from typing import Callable
 
@@ -192,28 +194,66 @@ def log_name(entry: str) -> str:
     return repr(entry)
 
 
-# Every membership cause's pool disposition, one total table: None is a
-# skip (the pool's own documentation, editor noise), anything else the
-# refusal message the cause earns. The table is total over the enum — a
-# cause without a disposition is a loud hole at definition time, never a
-# silent skip or a KeyError mid-walk — and it is the one place a cause's
-# disposition is decided: discover maps a directory entry to NESTED and
-# sends it here like any other cause. Every echoed entry name goes
+class PoolOutcome(Enum):
+    """What discovery does with one pool entry."""
+
+    KEEP = auto()  # a fragment: it pools
+    SKIP = auto()  # the pool's own documentation, editor noise
+    REFUSE = auto()  # a pool-shape refusal
+
+
+@dataclass(frozen=True)
+class Disposition:
+    """One pool entry's disposition: the outcome, and the refusal message a
+    REFUSE carries. The whole decision is one typed value — KEEP, SKIP or
+    REFUSE(message) — instead of the two nullable layers it replaced
+    (fragment_cause's `None` meaning keep, POOL_DISPOSITIONS' `None` meaning
+    skip), where one `None` carried two different meanings. The message is
+    present exactly when the outcome refuses; the type enforces it."""
+
+    outcome: PoolOutcome
+    message: str = ""
+
+    def __post_init__(self) -> None:
+        if (self.outcome is PoolOutcome.REFUSE) != bool(self.message):
+            raise ValueError(
+                "a Disposition carries a message exactly when it refuses"
+            )
+
+    @classmethod
+    def refuse(cls, message: str) -> "Disposition":
+        """The REFUSE disposition carrying `message`."""
+        return cls(PoolOutcome.REFUSE, message)
+
+
+KEEP = Disposition(PoolOutcome.KEEP)
+SKIP = Disposition(PoolOutcome.SKIP)
+
+
+# Every membership cause's pool disposition, one total table: the pool's
+# own documentation and editor noise skip, anything else refuses with the
+# message its cause earns. The table is total over the enum — a cause
+# without a disposition is a loud hole at definition time, never a silent
+# skip or a KeyError mid-walk — and it is the one place a cause's
+# disposition is decided: pool_disposition maps a directory entry to NESTED
+# and sends it here like any other cause. Every echoed entry name goes
 # through log_name, so a name the pull request controls cannot break a
 # refusal's line.
-POOL_DISPOSITIONS: dict[FragmentCause, Callable[[Path, Path], str] | None] = {
-    FragmentCause.README: None,
-    FragmentCause.DOTFILE: None,
-    FragmentCause.NESTED: lambda entry, changes_dir: (
+POOL_DISPOSITIONS: dict[
+    FragmentCause, Callable[[Path, Path], Disposition]
+] = {
+    FragmentCause.README: lambda entry, changes_dir: SKIP,
+    FragmentCause.DOTFILE: lambda entry, changes_dir: SKIP,
+    FragmentCause.NESTED: lambda entry, changes_dir: Disposition.refuse(
         f"changes_collect: {log_name(entry.name)} is a directory —"
         f" fragments are flat .md files, one per pull request under"
         f" {changes_dir}"
     ),
-    FragmentCause.WRONG_SUFFIX: lambda entry, changes_dir: (
+    FragmentCause.WRONG_SUFFIX: lambda entry, changes_dir: Disposition.refuse(
         f"changes_collect: {log_name(entry.name)} is not a fragment —"
         f" one .md file per pull request under {changes_dir}"
     ),
-    FragmentCause.BAD_NAME: lambda entry, changes_dir: (
+    FragmentCause.BAD_NAME: lambda entry, changes_dir: Disposition.refuse(
         f"changes_collect: {log_name(entry.name)} is not named"
         " <PR number>-<slug>.md — the number orders the collected"
         " entries"
@@ -221,32 +261,42 @@ POOL_DISPOSITIONS: dict[FragmentCause, Callable[[Path, Path], str] | None] = {
 }
 
 
+# The table's totality is enforced, not just asserted in prose: a cause
+# added to the enum without a disposition fails at import, never as a
+# KeyError mid-walk.
+assert set(POOL_DISPOSITIONS) == set(FragmentCause)
+
+
+def pool_disposition(entry: Path, changes_dir: Path) -> Disposition:
+    """The one disposition of a pool entry — KEEP (a fragment), SKIP (the
+    pool's own documentation, editor noise) or REFUSE naming why. The
+    membership rule is fragment_cause's, the one rule, and each cause's
+    disposition is POOL_DISPOSITIONS', the one table; the walk adds only
+    the one fact a filesystem can see — a directory entry is NESTED, not a
+    name to classify."""
+    cause = (
+        FragmentCause.NESTED if entry.is_dir() else fragment_cause(entry.name)
+    )
+    if cause is None:
+        return KEEP
+    return POOL_DISPOSITIONS[cause](entry, changes_dir)
+
+
 def discover(changes_dir: Path) -> tuple[list[Path], list[str]]:
     """The fragment pool, in collection order, and every pool-shape
     refusal — one findings list, never one offender per run (the same
     accumulate-then-refuse discipline the content validation follows),
-    with a missing directory a finding like any other: no pool to walk.
-    The membership decision is fragment_cause's, the one rule, and each
-    cause's disposition is POOL_DISPOSITIONS', the one table; the walk
-    adds only the one fact a filesystem can see — a directory entry is
-    NESTED, not a name to classify."""
+    with a missing directory a finding like any other: no pool to walk."""
     if not changes_dir.is_dir():
         return [], [f"changes_collect: no fragment directory at {changes_dir}"]
     fragments: list[Path] = []
     findings: list[str] = []
     for entry in sorted(changes_dir.iterdir()):
-        cause = (
-            FragmentCause.NESTED
-            if entry.is_dir()
-            else fragment_cause(entry.name)
-        )
-        if cause is None:
+        disposition = pool_disposition(entry, changes_dir)
+        if disposition.outcome is PoolOutcome.KEEP:
             fragments.append(entry)
-            continue
-        disposition = POOL_DISPOSITIONS[cause]
-        if disposition is None:
-            continue
-        findings.append(disposition(entry, changes_dir))
+        elif disposition.outcome is PoolOutcome.REFUSE:
+            findings.append(disposition.message)
     return sorted(fragments, key=fragment_sort_key), findings
 
 

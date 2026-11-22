@@ -20,29 +20,15 @@ esac
 asset="cargo-nextest-${VERSION}-${triple}.tar.gz"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-sh "$here/github-download.sh" \
-  --repo nextest-rs/nextest \
-  --tag "cargo-nextest-${VERSION}" \
-  --asset "$asset" \
-  -o "$work/$asset"
-sh "$here/github-download.sh" \
-  --repo nextest-rs/nextest \
-  --tag "cargo-nextest-${VERSION}" \
-  --asset "${asset%.tar.gz}.sha256" \
-  -o "$work/nextest.sha256"
-
-expected="$(awk '{print $1; exit}' "$work/nextest.sha256")"
 # The digest policy is the repo's one canonical helper (scripts/lib/
-# common.sh, sha256_of): it hashes through stdin, so a file name with a
-# backslash or newline cannot leak sha256sum/shasum's leading '\' marker
-# into the digest the comparison reads.
+# common.sh, download_verified): it downloads the tarball and its .sha256
+# sidecar and refuses a mismatch, so this installer keeps only its unpack
+# arm.
 # shellcheck source=lib/common.sh
 . "$here/lib/common.sh"
-actual="$(sha256_of "$work/$asset")"
-if [[ -z "$expected" || "$expected" != "$actual" ]]; then
-  echo "install-nextest: checksum mismatch for ${asset}" >&2
-  exit 1
-fi
+download_verified "$here/github-download.sh" \
+  nextest-rs/nextest "cargo-nextest-${VERSION}" \
+  "$asset" "$work/$asset" "${asset%.tar.gz}.sha256"
 
 tar --no-same-owner -xzf "$work/$asset" -C "$work"
 bin="$(find "$work" -type f -name cargo-nextest | head -n 1)"

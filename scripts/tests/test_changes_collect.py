@@ -62,6 +62,34 @@ class Sandbox(unittest.TestCase):
     def fragment(self, name: str, text: str) -> Path:
         return write(self.changes, name, text)
 
+    def with_hand_filed(self, body: str = "### Added\n\n- Hand-filed entry.\n") -> str:
+        """The changelog with `body` hand-filed under [Unreleased], written
+        to disk and returned — the transition-window fixture the Collect
+        tests inject before collecting fragments."""
+        text = CHANGELOG.replace(
+            "## [Unreleased]\n", f"## [Unreleased]\n\n{body}", 1
+        )
+        self.changelog.write_text(text)
+        return text
+
+    def assert_finding(self, findings: list[str], *needles: str) -> None:
+        """One finding carries every needle — the shared shape of the
+        pool-shape and content-refusal assertions. At least one needle is
+        required: `all([])` is true, so a needleless call would assert only
+        that some finding exists."""
+        self.assertTrue(needles, "assert_finding needs at least one needle")
+        self.assertTrue(
+            any(all(needle in finding for needle in needles) for finding in findings),
+            findings,
+        )
+
+    def assert_no_log_break(self, message: str, needle: str) -> None:
+        """`message` names `needle` yet carries no newline — the one shape
+        every refusal channel's log-line safety has (a name a pull request
+        controls cannot start a fresh GitHub Actions log line)."""
+        self.assertNotIn("\n", message)
+        self.assertIn(needle, message)
+
 
 class Discovery(Sandbox):
     def test_readme_and_dotfiles_are_not_fragments(self) -> None:
@@ -99,21 +127,9 @@ class Discovery(Sandbox):
         fragments, findings = collector.discover(self.changes)
         self.assertEqual([p.name for p in fragments], ["1-one.md"])
         self.assertEqual(len(findings), 3, findings)
-        self.assertTrue(
-            any("2-two.txt" in f and "not a fragment" in f for f in findings),
-            findings,
-        )
-        self.assertTrue(
-            any("3-nested.md" in f and "directory" in f for f in findings),
-            findings,
-        )
-        self.assertTrue(
-            any(
-                "four-change.md" in f and "<PR number>-<slug>.md" in f
-                for f in findings
-            ),
-            findings,
-        )
+        self.assert_finding(findings, "2-two.txt", "not a fragment")
+        self.assert_finding(findings, "3-nested.md", "directory")
+        self.assert_finding(findings, "four-change.md", "<PR number>-<slug>.md")
 
     def test_a_newline_in_a_pool_name_cannot_start_a_log_line(self) -> None:
         # A pull request controls the fragment file name, so a name can
@@ -126,8 +142,7 @@ class Discovery(Sandbox):
         fragments, findings = collector.discover(self.changes)
         self.assertEqual([p.name for p in fragments], ["1-ok.md"])
         self.assertEqual(len(findings), 1, findings)
-        self.assertNotIn("\n", findings[0])
-        self.assertIn("::error::boom", findings[0])
+        self.assert_no_log_break(findings[0], "::error::boom")
 
 
 class FragmentGrammar(Sandbox):
@@ -247,12 +262,7 @@ class Collect(Sandbox):
         self.assertIn("- First.\n- Second.\n", text)
 
     def test_existing_body_passes_through_and_fragments_append(self) -> None:
-        changelog = CHANGELOG.replace(
-            "## [Unreleased]\n",
-            "## [Unreleased]\n\n### Added\n\n- Hand-filed entry.\n",
-            1,
-        )
-        self.changelog.write_text(changelog)
+        self.with_hand_filed()
         self.fragment("1-frag.md", "### Changed\n\n- Fragment entry.\n")
         self.assertEqual(collector.collect(self.changelog, self.changes), 0)
         text = self.changelog.read_text()
@@ -263,13 +273,10 @@ class Collect(Sandbox):
         # The transition window: the body already carries Added and
         # Changed sections, and two fragments collide on each. Every
         # collision is named — fragment and section — in one refusal.
-        changelog = CHANGELOG.replace(
-            "## [Unreleased]\n",
-            "## [Unreleased]\n\n### Added\n\n- Hand-filed entry.\n\n"
-            "### Changed\n\n- Also hand-filed.\n",
-            1,
+        changelog = self.with_hand_filed(
+            "### Added\n\n- Hand-filed entry.\n\n"
+            "### Changed\n\n- Also hand-filed.\n"
         )
-        self.changelog.write_text(changelog)
         self.fragment("1-a.md", "### Added\n\n- Fragment entry.\n")
         self.fragment("2-b.md", "### Changed\n\n- Fragment entry.\n")
         with self.assertRaises(collector.CollectError) as ctx:
@@ -290,19 +297,11 @@ class Collect(Sandbox):
         # The collision refusal is the second place a PR-controlled
         # fragment name lands in a message; it goes through log_name too,
         # so no refusal channel can break a log line.
-        self.changelog.write_text(
-            CHANGELOG.replace(
-                "## [Unreleased]\n",
-                "## [Unreleased]\n\n### Added\n\n- Hand-filed entry.\n",
-                1,
-            )
-        )
+        self.with_hand_filed()
         self.fragment("1-a\n::error::boom.md", "### Added\n\n- Fragment entry.\n")
         with self.assertRaises(collector.CollectError) as ctx:
             collector.collect(self.changelog, self.changes)
-        message = str(ctx.exception)
-        self.assertNotIn("\n", message)
-        self.assertIn("::error::boom", message)
+        self.assert_no_log_break(str(ctx.exception), "::error::boom")
 
     def test_first_release_body_shape_passes_through(self) -> None:
         # A first-release changelog carries no version section below
@@ -334,8 +333,7 @@ class Collect(Sandbox):
         self.fragment("1-bad\n::error::boom.md", "### Nope\n\n- x\n")
         _, findings = collector.read_pool(self.changes)
         self.assertEqual(len(findings), 1, findings)
-        self.assertNotIn("\n", findings[0])
-        self.assertIn("::error::boom", findings[0])
+        self.assert_no_log_break(findings[0], "::error::boom")
 
     def test_every_invalid_fragment_is_named(self) -> None:
         # The accumulation contract: two refused fragments, both named in
@@ -349,14 +347,8 @@ class Collect(Sandbox):
         # carries its sections with it, never a parallel list.
         self.assertEqual([p.name for p, _ in pool], ["1-good.md"])
         self.assertEqual(pool[0][1], {"Added": [["- One."]]})
-        self.assertTrue(
-            any("2-bad-section.md" in f and "unknown section" in f for f in findings),
-            findings,
-        )
-        self.assertTrue(
-            any("3-bad-line.md" in f and "neither a '- ' bullet" in f for f in findings),
-            findings,
-        )
+        self.assert_finding(findings, "2-bad-section.md", "unknown section")
+        self.assert_finding(findings, "3-bad-line.md", "neither a '- ' bullet")
         # Collecting the same pool refuses through one channel, touching
         # nothing.
         with self.assertRaises(collector.CollectError) as ctx:

@@ -84,20 +84,24 @@ assert_same \
 # fabricated digest and never silent success: the digest-pinned
 # installs guard on -z, and the helper owns its failure under any
 # shell — no pipefail inheritance. The status is read plainly off the
-# call, so the assertion pins the helper's own exit, not a sentinel.
-missing=$(sha256_of "$sandbox/absent.zip" 2>/dev/null)
-missing_status=$?
-[ -z "$missing" ] && [ "$missing_status" -ne 0 ]
-tap_check "missing file -> no output, failed status (the helper owns its failure)" $?
+# call (assert_failed_empty), so the assertion pins the helper's own
+# exit, not a sentinel.
+assert_failed_empty \
+	"missing file -> no output, failed status (the helper owns its failure)" \
+	sha256_of "$sandbox/absent.zip"
 
 # --- 3. The python fallback -----------------------------------------------------
 
 # A host that ships neither coreutils: the helper falls back to python,
 # which reads the path from argv, so no name spelling can confuse it
-# either. PATH carries only the interpreter — sha256sum and shasum are
-# both absent — so the shell is invoked by absolute path (a bare `sh`
-# would be looked up in the narrowed PATH).
+# either. sha256_of_under narrows PATH to $2 and invokes $1 — the shell,
+# named by its absolute path so the narrowed PATH cannot hide it — over
+# $3.
 sh_bin=$(command -v sh)
+sha256_of_under() { # $1 = shell, $2 = PATH, $3 = file
+	PATH="$2" "$1" -c '. "$1"; sha256_of "$2"' \
+		sh "$ROOT/scripts/lib/common.sh" "$3"
+}
 py_only="$sandbox/py-only"
 mkdir -p "$py_only"
 py_src=
@@ -109,8 +113,7 @@ for cand in python3 python; do
 	fi
 done
 if [ -n "$py_src" ]; then
-	fallback_digest=$(PATH="$py_only" "$sh_bin" -c '. "$1"; sha256_of "$2"' \
-		sh "$ROOT/scripts/lib/common.sh" "$win_file")
+	fallback_digest=$(sha256_of_under "$sh_bin" "$py_only" "$win_file")
 	assert_same \
 		"the python fallback hashes the same bytes as the coreutils path" \
 		"$plain_digest" "$fallback_digest"
@@ -126,10 +129,8 @@ fi
 # failed status — never a fabricated digest.
 no_tools="$sandbox/no-tools"
 mkdir -p "$no_tools"
-no_tool_out=$(PATH="$no_tools" "$sh_bin" -c '. "$1"; sha256_of "$2"' \
-	sh "$ROOT/scripts/lib/common.sh" "$sandbox/plain.zip" 2>/dev/null)
-no_tool_status=$?
-[ -z "$no_tool_out" ] && [ "$no_tool_status" -ne 0 ]
-tap_check "no digest tool -> no output, failed status" $?
+assert_failed_empty \
+	"no digest tool -> no output, failed status" \
+	sha256_of_under "$sh_bin" "$no_tools" "$sandbox/plain.zip"
 
 tap_done

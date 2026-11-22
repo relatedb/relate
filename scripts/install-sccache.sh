@@ -14,61 +14,36 @@ set -euo pipefail
 VERSION=v0.19.0
 here="$(cd "$(dirname "$0")" && pwd)"
 
-os="${RUNNER_OS:-}"
-arch="${RUNNER_ARCH:-}"
-if [[ -z "$os" ]]; then
-  case "$(uname -s)" in
-    Linux) os=Linux ;;
-    Darwin) os=macOS ;;
-    MINGW*|MSYS*|CYGWIN*) os=Windows ;;
-    *) echo "install-sccache: unsupported OS $(uname -s)" >&2; exit 1 ;;
-  esac
-fi
-if [[ -z "$arch" ]]; then
-  case "$(uname -m)" in
-    x86_64|amd64) arch=X64 ;;
-    aarch64|arm64) arch=ARM64 ;;
-    armv7l|armv7) arch=ARM ;;
-    *) echo "install-sccache: unsupported arch $(uname -m)" >&2; exit 1 ;;
-  esac
-fi
-
-case "${os}-${arch}" in
-  Linux-X64) triple=x86_64-unknown-linux-musl; ext=tar.gz ;;
-  Linux-ARM64) triple=aarch64-unknown-linux-musl; ext=tar.gz ;;
-  Linux-ARM) triple=armv7-unknown-linux-musleabi; ext=tar.gz ;;
-  macOS-X64) triple=x86_64-apple-darwin; ext=tar.gz ;;
-  macOS-ARM64) triple=aarch64-apple-darwin; ext=tar.gz ;;
-  Windows-X64) triple=x86_64-pc-windows-msvc; ext=zip ;;
-  Windows-ARM64) triple=aarch64-pc-windows-msvc; ext=zip ;;
-  *) echo "install-sccache: unsupported platform ${os}-${arch}" >&2; exit 1 ;;
+# The host to a release triple and archive extension, the sibling
+# installers' one shape (uname's own vocabulary): `uname -s -m` straight
+# to the asset name the release publishes.
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64 | Linux-amd64) triple=x86_64-unknown-linux-musl; ext=tar.gz ;;
+  Linux-aarch64 | Linux-arm64) triple=aarch64-unknown-linux-musl; ext=tar.gz ;;
+  Linux-armv7l | Linux-armv7) triple=armv7-unknown-linux-musleabi; ext=tar.gz ;;
+  Darwin-x86_64) triple=x86_64-apple-darwin; ext=tar.gz ;;
+  Darwin-arm64) triple=aarch64-apple-darwin; ext=tar.gz ;;
+  MINGW*-x86_64 | MSYS*-x86_64 | CYGWIN*-x86_64) triple=x86_64-pc-windows-msvc; ext=zip ;;
+  MINGW*-aarch64 | MSYS*-aarch64 | CYGWIN*-aarch64) triple=aarch64-pc-windows-msvc; ext=zip ;;
+  *) echo "install-sccache: unsupported platform $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
 
 asset="sccache-${VERSION}-${triple}.${ext}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-sh "$here/github-download.sh" --repo mozilla/sccache --tag "$VERSION" --asset "$asset" -o "$work/$asset"
-sh "$here/github-download.sh" --repo mozilla/sccache --tag "$VERSION" --asset "${asset}.sha256" -o "$work/sccache.sha256"
-
-expected="$(awk '{print $1; exit}' "$work/sccache.sha256")"
 # The digest policy is the repo's one canonical helper (scripts/lib/
-# common.sh, sha256_of): it hashes through stdin, and it carries the
-# python fallback for a host with neither coreutils, so this installer
-# does not fork the policy.
+# common.sh, download_verified): it downloads the tarball and its .sha256
+# sidecar and refuses a mismatch, so this installer keeps only its unpack
+# arm.
 # shellcheck source=lib/common.sh
 . "$here/lib/common.sh"
-actual="$(sha256_of "$work/$asset")"
-if [[ -z "$expected" || "$expected" != "$actual" ]]; then
-  echo "install-sccache: checksum mismatch for ${asset}" >&2
-  exit 1
-fi
+download_verified "$here/github-download.sh" \
+  mozilla/sccache "$VERSION" "$asset" "$work/$asset" "${asset}.sha256"
 
 case "$ext" in
   zip)
-    py=python3
-    command -v python3 >/dev/null 2>&1 || py=python
-    "$py" -c 'import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$work/$asset" "$work/unpack"
+    "$(python_interpreter)" -c 'import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$work/$asset" "$work/unpack"
     ;;
   *)
     mkdir -p "$work/unpack"

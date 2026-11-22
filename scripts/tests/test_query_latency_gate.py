@@ -7,16 +7,11 @@ way test_compare_verdict.py exercises the loadtest comparator, plus
 subprocess exit codes for the gate's fail/incompatible/ok paths.
 """
 
-import json
 import os
-import subprocess
-import sys
-import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
-from comparator_runner import run_comparator, scrubbed_env
+from comparator_runner import run_comparator, run_freeze, scrubbed_env
 from script_loader import ROOT, load
 
 FREEZE = ROOT / "scripts" / "freeze-query-latency-envelope.py"
@@ -76,26 +71,13 @@ def report(queries, environment=ENV, peak_rss=3_000_000_000):
 
 class QueryLatencyFreezeTests(unittest.TestCase):
     def run_freeze(self, reports):
-        with tempfile.TemporaryDirectory() as tmp:
-            paths = []
-            for i, rep in enumerate(reports):
-                path = Path(tmp) / f"run{i}.json"
-                path.write_text(json.dumps(rep))
-                paths.append(path)
-            out = Path(tmp) / "out.json"
-            result = subprocess.run(
-                [sys.executable, str(FREEZE), "--out", str(out), *map(str, paths)],
-                text=True, capture_output=True, check=False,
-            )
-            if result.returncode == 0:
-                result.payload = json.loads(out.read_text())  # type: ignore[attr-defined]
-            return result
+        return run_freeze(FREEZE, reports)
 
     def test_envelope_keeps_the_worst_p50_mean_and_rss(self):
         r1 = report([query(1, "upstream", 1_000_000), query(19, "upstream", 120_000_000)], peak_rss=3_000_000_000)
         r2 = report([query(1, "upstream", 2_000_000), query(19, "upstream", 130_000_000)], peak_rss=3_400_000_000)
         result = self.run_freeze([r1, r2])
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.process.returncode, 0, result.process.stderr)
         q1 = next(q for q in result.payload["queries"] if q["qid"] == 1)
         q19 = next(q for q in result.payload["queries"] if q["qid"] == 19)
         self.assertEqual(q1["p50_ms"], 2.0)
@@ -108,21 +90,21 @@ class QueryLatencyFreezeTests(unittest.TestCase):
             report([query(1, "upstream", 1_000_000)]),
             report([query(1, "upstream", 1_000_000)], environment=other),
         ])
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("runner: 'github-actions:ubuntu-24.04' != 'local'", result.stderr)
+        self.assertEqual(result.process.returncode, 1)
+        self.assertIn("runner: 'github-actions:ubuntu-24.04' != 'local'", result.process.stderr)
 
     def test_envelope_refuses_a_changed_query_set(self):
         result = self.run_freeze([
             report([query(1, "upstream", 1_000_000)]),
             report([query(2, "upstream", 1_000_000)]),
         ])
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("query set differs", result.stderr)
+        self.assertEqual(result.process.returncode, 1)
+        self.assertIn("query set differs", result.process.stderr)
 
     def test_envelope_refuses_a_missing_environment(self):
         result = self.run_freeze([report([query(1, "upstream", 1)], environment=None)])
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("missing environment", result.stderr)
+        self.assertEqual(result.process.returncode, 1)
+        self.assertIn("missing environment", result.process.stderr)
 
 
 class QueryLatencyCompareTests(unittest.TestCase):
