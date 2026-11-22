@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use relate::Value;
 
-use super::plan::{EntityKind, EntityRow, PlannedEntity};
+use super::plan::{KeyedNodeRow, KeyedRelRow, PairRelRow, RowRef};
 use super::policy::UpdatePolicy;
 use super::wire::{encode_props, quote_ident};
 use serde_json::Value as Json;
@@ -213,9 +213,9 @@ pub(crate) fn rel_statement(
 
 /// The parameter row one applying planned row becomes (ADR-0401 §2): every
 /// value a typed parameter envelope; keys, endpoints, and the payload in
-/// the maps the statement reads.
-pub(crate) fn write_row(entity: &PlannedEntity, row: &EntityRow) -> Result<Json, LoadError> {
-    let name = entity.kind.display_name();
+/// the maps the statement reads. `name` is the entity's display name,
+/// carried into encoding errors.
+pub(crate) fn write_row(name: &str, row: RowRef<'_>) -> Result<Json, LoadError> {
     // Every container in a typed request body is itself an envelope: the
     // row's inner maps (key, props, start, end) travel as `Map` envelopes,
     // their values as typed envelopes (verified on Aura — a plain JSON
@@ -225,20 +225,15 @@ pub(crate) fn write_row(entity: &PlannedEntity, row: &EntityRow) -> Result<Json,
         encode_props(props).map_err(|e| e.with_context(&format!("entity {name}: ")))
     };
     let props = enc(row.props())?;
-    Ok(match (&entity.kind, row) {
-        (EntityKind::NodeLabel { .. }, EntityRow::Node { key, .. }) => serde_json::json!({
+    Ok(match row {
+        RowRef::Node(KeyedNodeRow { key, .. }) => serde_json::json!({
             "key": enc(key)?,
             "props": props,
         }),
-        (EntityKind::NodeCreate { .. }, EntityRow::Node { .. }) => {
-            serde_json::json!({ "props": props })
-        }
-        (
-            EntityKind::Rel { .. },
-            EntityRow::Rel {
-                start, end, key, ..
-            },
-        ) => {
+        RowRef::Create(_) => serde_json::json!({ "props": props }),
+        RowRef::Rel(KeyedRelRow {
+            start, end, key, ..
+        }) => {
             let mut body = serde_json::Map::new();
             body.insert("start".into(), enc(start)?);
             body.insert("end".into(), enc(end)?);
@@ -248,17 +243,12 @@ pub(crate) fn write_row(entity: &PlannedEntity, row: &EntityRow) -> Result<Json,
             body.insert("props".into(), props);
             Json::Object(body)
         }
-        (EntityKind::Rel { .. }, EntityRow::RelUnkeyed { start, end, .. }) => {
+        RowRef::Pair(PairRelRow { start, end, .. }) => {
             let mut body = serde_json::Map::new();
             body.insert("start".into(), enc(start)?);
             body.insert("end".into(), enc(end)?);
             body.insert("props".into(), props);
             Json::Object(body)
-        }
-        _ => {
-            return Err(LoadError::Push(format!(
-                "entity {name}: a row shape its kind does not take"
-            )))
         }
     })
 }

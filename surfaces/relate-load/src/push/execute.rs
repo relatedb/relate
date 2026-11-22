@@ -13,7 +13,7 @@ use std::time::Instant;
 use relate::Value;
 use serde_json::Value as Json;
 
-use super::plan::{EntityKind, EntityRow, PlannedEntity, PushPlan};
+use super::plan::{EntityKind, IdentityLayout, PlannedEntity, PushPlan, RowRef};
 use super::policy::{resolve_candidate, updated_at_decision, ConflictDecision, UpdatePolicy};
 use super::report::{BatchSize, EntityReport, Outcome, PushReport, Totals};
 use super::statement::write_row;
@@ -36,18 +36,11 @@ pub(crate) fn execute(
     let mut iter = plan.entities.iter();
     for entity in &mut iter {
         let mut report = EntityReport::planned(entity);
-        let statement = match writable_statement(entity) {
-            Ok(Some(statement)) => statement,
-            // Nothing to write (a skip-only group, or the dangling bucket).
-            Ok(None) => {
-                entities.push(report);
-                continue;
-            }
-            Err(error) => {
-                failure = Some(error);
-                entities.push(report);
-                break;
-            }
+        // Nothing to write for a counted bucket (a skip-only group, or the
+        // dangling bucket): the kind carries no statement.
+        let Some(statement) = entity.kind.statement() else {
+            entities.push(report);
+            continue;
         };
         if let Err(error) = run_entity(opts, batch_size, entity, statement, &mut report, &mut sent)
         {
@@ -65,21 +58,6 @@ pub(crate) fn execute(
     match failure {
         None => PushOutcome::Completed(report),
         Some(error) => PushOutcome::Partial { report, error },
-    }
-}
-
-/// The statement an entity writes with: `None` for an entity with no rows
-/// (a skip-only group, or the dangling bucket). Rows without a statement
-/// break the plan's invariant — every writing entity is built with its
-/// statement — so it fails loudly instead of reporting nothing to write.
-fn writable_statement(entity: &PlannedEntity) -> Result<Option<&str>, LoadError> {
-    match (entity.statement.as_deref(), entity.rows.is_empty()) {
-        (_, true) => Ok(None),
-        (Some(statement), false) => Ok(Some(statement)),
-        (None, false) => Err(LoadError::Push(format!(
-            "entity {}: rows planned without a statement",
-            entity.kind.display_name()
-        ))),
     }
 }
 
@@ -124,13 +102,9 @@ fn classify<'a>(
     opts: &PushOpts,
     entity: &'a PlannedEntity,
     report: &mut EntityReport,
-) -> Result<Vec<(&'a EntityRow, Outcome)>, LoadError> {
+) -> Result<Vec<(RowRef<'a>, Outcome)>, LoadError> {
     let Some(policy) = entity.kind.keyed_policy() else {
-        return Ok(entity
-            .rows
-            .iter()
-            .map(|row| (row, Outcome::Created))
-            .collect());
+        return Ok(entity.rows().map(|row| (row, Outcome::Created)).collect());
     };
     let remote = pre_read(opts, entity)?;
     classify_keyed(opts, entity, policy, &remote, report)
@@ -144,9 +118,9 @@ fn classify_keyed<'a>(
     policy: UpdatePolicy,
     remote: &BTreeMap<String, Option<Value>>,
     report: &mut EntityReport,
-) -> Result<Vec<(&'a EntityRow, Outcome)>, LoadError> {
-    let mut apply: Vec<(&EntityRow, Outcome)> = Vec::new();
-    for row in &entity.rows {
+) -> Result<Vec<(RowRef<'a>, Outcome)>, LoadError> {
+    let mut apply: Vec<(RowRef<'a>, Outcome)> = Vec::new();
+    for row in entity.rows() {
         let identity = row_identity(entity, row)?;
         // One lookup decides the three-way fact: absent on the remote
         // (a new row), present without a candidate, present with one.
@@ -189,7 +163,7 @@ fn send_batches(
     batch_size: BatchSize,
     entity: &PlannedEntity,
     statement: &str,
-    writes: &[(&EntityRow, Outcome)],
+    writes: &[(RowRef<'_>, Outcome)],
     report: &mut EntityReport,
     sent: &mut Totals,
 ) -> Result<(), LoadError> {
@@ -197,7 +171,7 @@ fn send_batches(
     for (batch_no, offset, batch) in batch_size.batches(writes) {
         let rows: Vec<Json> = batch
             .iter()
-            .map(|&(row, _)| write_row(entity, row))
+            .map(|&(row, _)| write_row(&name, row))
             .collect::<Result<_, LoadError>>()?;
         let mut parameters = serde_json::Map::new();
         // The rows parameter is the wire module's List-of-Map envelope
@@ -238,14 +212,19 @@ fn pre_read(
     opts: &PushOpts,
     entity: &PlannedEntity,
 ) -> Result<BTreeMap<String, Option<Value>>, LoadError> {
-    let layout = pre_read_layout(entity)?;
+    let layout = entity.identity_layout().ok_or_else(|| {
+        LoadError::Push(format!(
+            "entity {}: an unkeyed group has no pre-read",
+            entity.kind.display_name()
+        ))
+    })?;
     let select = format!(
         "MATCH {} RETURN {}",
         pre_read_pattern(entity)?,
         pre_read_columns(&layout, &opts.updated_at)?
     );
     let name = entity.kind.display_name();
-    let key_len = layout.identity.len();
+    let key_len = layout.column_count();
     let mut remote: BTreeMap<String, Option<Value>> = BTreeMap::new();
     http::run_query_streaming_typed(
         &opts.credentials,
@@ -329,59 +308,12 @@ fn pre_read_pattern(entity: &PlannedEntity) -> Result<String, LoadError> {
     }
 }
 
-/// One keyed entity's pre-read column layout: the identity columns
-/// as `(variable, alias prefix, property)` in the order [`row_identity`]
-/// encodes them (start keys, end keys, rel keys), and the variable the
-/// `--updated-at` candidate columns read from. The one derivation the
-/// RETURN items and the identity/candidate cell boundary share, so the
-/// two cannot disagree; an unkeyed kind has no layout.
-struct PreReadLayout<'a> {
-    identity: Vec<(&'static str, &'static str, &'a String)>,
-    candidate_var: &'static str,
-}
-
-/// One run of identity columns: every property of `props` under the one
-/// variable and alias prefix.
-fn identity_run<'a>(
-    var: &'static str,
-    alias: &'static str,
-    props: &'a [String],
-) -> Vec<(&'static str, &'static str, &'a String)> {
-    props.iter().map(|prop| (var, alias, prop)).collect()
-}
-
-fn pre_read_layout(entity: &PlannedEntity) -> Result<PreReadLayout<'_>, LoadError> {
-    match &entity.kind {
-        EntityKind::NodeLabel { .. } => Ok(PreReadLayout {
-            identity: identity_run("n", "k", &entity.merge_key),
-            candidate_var: "n",
-        }),
-        EntityKind::Rel {
-            start_key, end_key, ..
-        } => {
-            let mut identity = identity_run("a", "k", start_key);
-            identity.extend(identity_run("b", "e", end_key));
-            identity.extend(identity_run("r", "r", &entity.merge_key));
-            Ok(PreReadLayout {
-                identity,
-                candidate_var: "r",
-            })
-        }
-        EntityKind::NodeCreate { .. }
-        | EntityKind::NodeSkipped { .. }
-        | EntityKind::RelSkipped { .. }
-        | EntityKind::Dangling => Err(LoadError::Push(
-            "an unkeyed group has no pre-read".to_string(),
-        )),
-    }
-}
-
-/// The pre-read's RETURN items: the layout's identity columns, then the
+/// The pre-read's RETURN items: the identity layout's columns, then the
 /// candidate columns. Every identifier is backtick-quoted or the SELECT
 /// is refused — an escaping failure never downgrades to raw
 /// interpolation.
 fn pre_read_columns(
-    layout: &PreReadLayout<'_>,
+    layout: &IdentityLayout<'_>,
     candidates: &[String],
 ) -> Result<String, LoadError> {
     let column =
@@ -390,11 +322,13 @@ fn pre_read_columns(
         };
     let mut items = Vec::new();
     // Alias indexes count within each (variable, alias) run.
-    let mut run: BTreeMap<&str, usize> = BTreeMap::new();
-    for &(var, alias, prop) in &layout.identity {
-        let index = run.entry(alias).or_insert(0);
-        items.push(column(var, alias, prop, *index)?);
-        *index += 1;
+    let mut run_index: BTreeMap<&str, usize> = BTreeMap::new();
+    for run in &layout.runs {
+        for prop in run.props {
+            let index = run_index.entry(run.alias).or_insert(0);
+            items.push(column(run.var, run.alias, prop, *index)?);
+            *index += 1;
+        }
     }
     for (index, name) in candidates.iter().enumerate() {
         items.push(column(layout.candidate_var, "c", name, index)?);
@@ -424,91 +358,20 @@ fn canonical_key(encoded: &[Json]) -> String {
     serde_json::to_string(encoded).expect("serde_json serializes its own values")
 }
 
-/// The identity of one planned row, as the pre-read's identity-column order
-/// spells it: node keys; rel start keys, end keys, then rel keys.
-fn row_identity(entity: &PlannedEntity, row: &EntityRow) -> Result<String, LoadError> {
-    let ordered =
-        |props: &BTreeMap<String, Value>, names: &[String]| -> Result<Vec<Json>, LoadError> {
-            names
-                .iter()
-                .map(|prop| {
-                    props.get(prop).map(encode_value).unwrap_or_else(|| {
-                        Err(LoadError::Push(format!(
-                            "merge-key property {prop:?} missing from a {row_name} row",
-                            row_name = entity.kind.display_name()
-                        )))
-                    })
-                })
-                .collect()
-        };
-    let encoded = match (&entity.kind, row) {
-        (EntityKind::NodeLabel { .. }, EntityRow::Node { key, .. }) => {
-            ordered(key, &entity.merge_key)?
-        }
-        (
-            EntityKind::Rel {
-                start_key, end_key, ..
-            },
-            EntityRow::Rel {
-                start, end, key, ..
-            },
-        ) => {
-            let mut encoded = ordered(start, start_key)?;
-            encoded.extend(ordered(end, end_key)?);
-            encoded.extend(ordered(key, &entity.merge_key)?);
-            encoded
-        }
-        // A structural/CREATE rel row: the endpoints are the identity.
-        (
-            EntityKind::Rel {
-                start_key, end_key, ..
-            },
-            EntityRow::RelUnkeyed { start, end, .. },
-        ) => {
-            let mut encoded = ordered(start, start_key)?;
-            encoded.extend(ordered(end, end_key)?);
-            encoded
-        }
-        _ => {
-            return Err(LoadError::Push(
-                "an unkeyed CREATE row has no remote identity".to_string(),
-            ))
-        }
-    };
+/// The identity of one planned row, encoded through the same identity
+/// layout the pre-read selects by: node keys; rel start keys, end keys,
+/// then rel keys.
+fn row_identity(entity: &PlannedEntity, row: RowRef<'_>) -> Result<String, LoadError> {
+    let name = entity.kind.display_name();
+    let layout = entity.identity_layout().ok_or_else(|| {
+        LoadError::Push(format!(
+            "entity {name}: an unkeyed row has no remote identity"
+        ))
+    })?;
+    let encoded = layout
+        .row_values(&name, row)?
+        .into_iter()
+        .map(encode_value)
+        .collect::<Result<Vec<_>, LoadError>>()?;
     Ok(canonical_key(&encoded))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn entity(statement: Option<&str>, rows: usize) -> PlannedEntity {
-        PlannedEntity {
-            kind: EntityKind::Dangling,
-            merge_key: Vec::new(),
-            statement: statement.map(str::to_string),
-            rows: (0..rows)
-                .map(|_| EntityRow::Node {
-                    key: BTreeMap::new(),
-                    props: BTreeMap::new(),
-                })
-                .collect(),
-            skipped_unkeyed: 0,
-            skipped_dangling: 0,
-        }
-    }
-
-    /// Rows without a statement are a plan invariant violation, reported
-    /// loudly; no rows means nothing to write, with or without a statement.
-    #[test]
-    fn writable_statement_pins_the_plan_invariant() {
-        assert_eq!(
-            writable_statement(&entity(Some("S"), 1)).unwrap(),
-            Some("S")
-        );
-        assert_eq!(writable_statement(&entity(Some("S"), 0)).unwrap(), None);
-        assert_eq!(writable_statement(&entity(None, 0)).unwrap(), None);
-        let error = writable_statement(&entity(None, 2)).unwrap_err();
-        assert!(error.to_string().contains("without a statement"), "{error}");
-    }
 }

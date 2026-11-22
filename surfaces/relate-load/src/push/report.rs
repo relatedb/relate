@@ -164,7 +164,7 @@ impl EntityReport {
         Self {
             name: kind.display_name(),
             is_rel: kind.is_rel(),
-            total: entity.rows.len() + entity.skipped_unkeyed + entity.skipped_dangling,
+            total: entity.row_count() + entity.skipped_unkeyed + entity.skipped_dangling,
             created: 0,
             updated: 0,
             skipped_unkeyed: entity.skipped_unkeyed,
@@ -174,7 +174,7 @@ impl EntityReport {
             incomparable: 0,
             merge_key: entity.merge_key.clone(),
             policy: kind.policy(),
-            statement: entity.statement.clone(),
+            statement: kind.statement().map(str::to_string),
             batches: 0,
         }
     }
@@ -202,8 +202,9 @@ impl EntityReport {
     /// planned writes.
     pub(crate) fn dry_run(batch_size: BatchSize, entity: &PlannedEntity) -> Self {
         let mut planned = Self::planned(entity);
-        planned.created = entity.rows.len();
-        planned.batches = batch_size.batch_count(entity.rows.len());
+        let rows = entity.row_count();
+        planned.created = rows;
+        planned.batches = batch_size.batch_count(rows);
         planned
     }
 }
@@ -251,22 +252,25 @@ impl EntityReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::push::plan::{EntityKind, EntityRow};
+    use crate::push::plan::{EntityKind, KeyedNodeRow};
     use std::collections::BTreeMap;
 
-    fn placeholder_row() -> EntityRow {
-        EntityRow::Node {
-            key: BTreeMap::new(),
-            props: BTreeMap::new(),
-        }
-    }
-
-    fn planned_entity(kind: EntityKind, rows: usize) -> PlannedEntity {
+    /// A keyed `Person` node group of `rows` placeholder rows.
+    fn person_entity(rows: usize) -> PlannedEntity {
         PlannedEntity {
-            kind,
+            kind: EntityKind::NodeLabel {
+                labels: vec!["Person".into()],
+                keyed_label: "Person".into(),
+                policy: UpdatePolicy::Add,
+                statement: "UNWIND $rows AS row MERGE (n) SET n += row.props".to_string(),
+                rows: (0..rows)
+                    .map(|_| KeyedNodeRow {
+                        key: BTreeMap::new(),
+                        props: BTreeMap::new(),
+                    })
+                    .collect(),
+            },
             merge_key: vec!["name".to_string()],
-            statement: Some("UNWIND $rows AS row MERGE (n) SET n += row.props".to_string()),
-            rows: (0..rows).map(|_| placeholder_row()).collect(),
             skipped_unkeyed: 0,
             skipped_dangling: 0,
         }
@@ -286,14 +290,7 @@ mod tests {
 
     #[test]
     fn planned_report_carries_totals_and_statement() {
-        let entity = planned_entity(
-            EntityKind::NodeLabel {
-                labels: vec!["Person".into()],
-                keyed_label: "Person".into(),
-                policy: UpdatePolicy::Add,
-            },
-            3,
-        );
+        let entity = person_entity(3);
         let report = EntityReport::planned(&entity);
         assert_eq!(report.name, "Person");
         assert!(!report.is_rel);
@@ -303,21 +300,14 @@ mod tests {
         // count what actually landed — zero until a write sends.
         assert_eq!(report.created, 0);
         assert_eq!(report.batches, 0);
-        assert_eq!(report.statement, entity.statement);
+        assert_eq!(report.statement.as_deref(), entity.kind.statement());
     }
 
     /// Counters advance only through landed outcomes (LABS-626): an
     /// incomparable pair is an update and a warning at once.
     #[test]
     fn record_landed_counts_by_outcome() {
-        let entity = planned_entity(
-            EntityKind::NodeLabel {
-                labels: vec!["Person".into()],
-                keyed_label: "Person".into(),
-                policy: UpdatePolicy::Add,
-            },
-            3,
-        );
+        let entity = person_entity(3);
         let mut report = EntityReport::planned(&entity);
         report.record_landed([
             Outcome::Created,
@@ -338,8 +328,6 @@ mod tests {
         let entity = PlannedEntity {
             kind: EntityKind::Dangling,
             merge_key: Vec::new(),
-            statement: None,
-            rows: Vec::new(),
             skipped_unkeyed: 0,
             skipped_dangling: 3,
         };
@@ -354,14 +342,7 @@ mod tests {
     /// agents.
     #[test]
     fn json_form_carries_every_counter() {
-        let entity = planned_entity(
-            EntityKind::NodeLabel {
-                labels: vec!["Person".into()],
-                keyed_label: "Person".into(),
-                policy: UpdatePolicy::Add,
-            },
-            2,
-        );
+        let entity = person_entity(2);
         let mut report = EntityReport::dry_run(
             BatchSize::new(1000).expect("test batch size is positive"),
             &entity,

@@ -20,18 +20,15 @@ pub(crate) struct PushPlan {
     pub entities: Vec<PlannedEntity>,
 }
 
-/// One entity group's planned rows (ADR-0401 §2).
+/// One entity group's plan (ADR-0401 §2). The group's rows ride its
+/// [`EntityKind`] variant, so a row shape can never sit beside a kind
+/// that does not take it; execution splits them into batches of
+/// `batch_size`.
 #[derive(Debug, Clone)]
 pub(crate) struct PlannedEntity {
     pub kind: EntityKind,
     /// The merge key's properties (empty for an unkeyed `CREATE` group).
     pub merge_key: Vec<String>,
-    /// The statement shape: one text for every batch of this entity.
-    /// `None` for a group with nothing to write (the counted buckets).
-    pub statement: Option<String>,
-    /// The group's rows, pre-classification. Execution splits them into
-    /// batches of `batch_size`.
-    pub rows: Vec<EntityRow>,
     /// Nodes skipped because their label had no merge key (rel groups:
     /// rels skipped because an endpoint was not key-addressable).
     pub skipped_unkeyed: usize,
@@ -41,7 +38,7 @@ pub(crate) struct PlannedEntity {
 
 /// Which entity a group is (ADR-0401 §2): its identity determines the
 /// pre-read and the write statement.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) enum EntityKind {
     /// A keyed node label group: EVERY label its nodes carry, sorted —
     /// the display and the group identity — plus the set's KEYED label:
@@ -57,12 +54,18 @@ pub(crate) enum EntityKind {
         labels: Vec<String>,
         keyed_label: String,
         policy: UpdatePolicy,
+        /// The statement shape: one text for every batch of this group.
+        statement: String,
+        rows: Vec<KeyedNodeRow>,
     },
     /// An unkeyed label set switched to `CREATE` rows by
     /// `--unkeyed-labels create` (non-idempotent, documented).
     NodeCreate {
         labels: Vec<String>,
         policy: UpdatePolicy,
+        /// The statement shape: one text for every batch of this group.
+        statement: String,
+        rows: Vec<CreateNodeRow>,
     },
     /// A label set skipped entirely (`--unkeyed-labels skip`, the
     /// default): counted, never written.
@@ -91,6 +94,9 @@ pub(crate) enum EntityKind {
         end_label: String,
         end_key: Vec<String>,
         policy: UpdatePolicy,
+        /// The statement shape: one text for every batch of this group.
+        statement: String,
+        rows: RelRows,
     },
 }
 
@@ -115,6 +121,20 @@ impl EntityKind {
             EntityKind::NodeLabel { policy, .. }
             | EntityKind::NodeCreate { policy, .. }
             | EntityKind::Rel { policy, .. } => Some(*policy),
+            EntityKind::NodeSkipped { .. }
+            | EntityKind::RelSkipped { .. }
+            | EntityKind::Dangling => None,
+        }
+    }
+
+    /// The statement a group writes with — `Some` exactly for the kinds
+    /// that write, as the statement rides those variants beside their
+    /// rows: a writing group without a statement cannot be built.
+    pub(crate) fn statement(&self) -> Option<&str> {
+        match self {
+            EntityKind::NodeLabel { statement, .. }
+            | EntityKind::NodeCreate { statement, .. }
+            | EntityKind::Rel { statement, .. } => Some(statement),
             EntityKind::NodeSkipped { .. }
             | EntityKind::RelSkipped { .. }
             | EntityKind::Dangling => None,
@@ -171,39 +191,199 @@ impl EntityKind {
     }
 }
 
-/// One planned row, pre-classification (ADR-0401 §2): the identity the
-/// remote row is matched by, plus the payload.
+/// A keyed node row, pre-classification (ADR-0401 §2): the merge-key
+/// properties the remote row is matched by, plus the payload.
 #[derive(Debug, Clone)]
-pub(crate) enum EntityRow {
-    Node {
-        /// Merge-key properties (empty for an unkeyed `CREATE` row).
-        key: BTreeMap<String, Value>,
-        props: BTreeMap<String, Value>,
-    },
-    /// A rel row in the keyed mode with a resolved relationship key:
-    /// the key map is present by construction.
-    Rel {
-        start: BTreeMap<String, Value>,
-        end: BTreeMap<String, Value>,
-        key: BTreeMap<String, Value>,
-        props: BTreeMap<String, Value>,
-    },
-    /// A rel row in every other mode (structural, CREATE, or the keyed
-    /// mode with no resolved key): matched by endpoints only, no key map.
-    RelUnkeyed {
-        start: BTreeMap<String, Value>,
-        end: BTreeMap<String, Value>,
-        props: BTreeMap<String, Value>,
-    },
+pub(crate) struct KeyedNodeRow {
+    pub key: BTreeMap<String, Value>,
+    pub props: BTreeMap<String, Value>,
 }
 
-impl EntityRow {
+/// An unkeyed `CREATE` node row: payload only — it has no identity to
+/// match a remote row by.
+#[derive(Debug, Clone)]
+pub(crate) struct CreateNodeRow {
+    pub props: BTreeMap<String, Value>,
+}
+
+/// A rel row written under a resolved relationship key: the key map is
+/// present by construction.
+#[derive(Debug, Clone)]
+pub(crate) struct KeyedRelRow {
+    pub start: BTreeMap<String, Value>,
+    pub end: BTreeMap<String, Value>,
+    pub key: BTreeMap<String, Value>,
+    pub props: BTreeMap<String, Value>,
+}
+
+/// A rel row in every other mode (structural, CREATE, or the keyed mode
+/// with no resolved key): matched by endpoints only, no key map.
+#[derive(Debug, Clone)]
+pub(crate) struct PairRelRow {
+    pub start: BTreeMap<String, Value>,
+    pub end: BTreeMap<String, Value>,
+    pub props: BTreeMap<String, Value>,
+}
+
+/// A rel group's rows: the variant is the write mode's key decision, so
+/// a group never mixes keyed and pair rows.
+#[derive(Debug, Clone)]
+pub(crate) enum RelRows {
+    Keyed(Vec<KeyedRelRow>),
+    Pair(Vec<PairRelRow>),
+}
+
+/// One row of a group, borrowed: the single level execution matches on —
+/// the statement's parameter body ([`super::statement::write_row`]) and
+/// the identity encoder both read it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RowRef<'a> {
+    Node(&'a KeyedNodeRow),
+    Create(&'a CreateNodeRow),
+    Rel(&'a KeyedRelRow),
+    Pair(&'a PairRelRow),
+}
+
+impl<'a> RowRef<'a> {
     /// The row's property payload (the `row.props` the statement sets).
-    pub(crate) fn props(&self) -> &BTreeMap<String, Value> {
+    pub(crate) fn props(self) -> &'a BTreeMap<String, Value> {
         match self {
-            EntityRow::Node { props, .. }
-            | EntityRow::Rel { props, .. }
-            | EntityRow::RelUnkeyed { props, .. } => props,
+            RowRef::Node(row) => &row.props,
+            RowRef::Create(row) => &row.props,
+            RowRef::Rel(row) => &row.props,
+            RowRef::Pair(row) => &row.props,
+        }
+    }
+
+    /// The row's key-carrying map for one identity field, when its shape
+    /// has that field.
+    fn identity_map(self, field: IdentityField) -> Option<&'a BTreeMap<String, Value>> {
+        match (self, field) {
+            (RowRef::Node(row), IdentityField::Key) => Some(&row.key),
+            (RowRef::Rel(row), IdentityField::Key) => Some(&row.key),
+            (RowRef::Rel(row), IdentityField::Start) => Some(&row.start),
+            (RowRef::Rel(row), IdentityField::End) => Some(&row.end),
+            (RowRef::Pair(row), IdentityField::Start) => Some(&row.start),
+            (RowRef::Pair(row), IdentityField::End) => Some(&row.end),
+            (RowRef::Node(_), IdentityField::Start | IdentityField::End)
+            | (RowRef::Pair(_), IdentityField::Key)
+            | (RowRef::Create(_), _) => None,
+        }
+    }
+}
+
+/// Which key-carrying map of a row an identity column reads.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum IdentityField {
+    Key,
+    Start,
+    End,
+}
+
+/// One run of identity columns: every property of `props`, read from one
+/// row field and selected under one pre-read variable and alias prefix.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IdentityRun<'a> {
+    pub field: IdentityField,
+    pub var: &'static str,
+    pub alias: &'static str,
+    pub props: &'a [String],
+}
+
+/// A keyed group's identity-column derivation (start keys, end keys, rel
+/// keys, in that order) — the ONE source of the pre-read's RETURN items,
+/// its cell boundary, and the row identity encoder, so the remote side
+/// and the local side cannot disagree. Unkeyed kinds have none.
+#[derive(Debug, Clone)]
+pub(crate) struct IdentityLayout<'a> {
+    pub runs: Vec<IdentityRun<'a>>,
+    /// The pre-read variable the `--updated-at` candidate columns read.
+    pub candidate_var: &'static str,
+}
+
+impl IdentityLayout<'_> {
+    /// The number of identity columns.
+    pub(crate) fn column_count(&self) -> usize {
+        self.runs.iter().map(|run| run.props.len()).sum()
+    }
+
+    /// The identity values of one row, in column order, read through the
+    /// canonical keyed extraction.
+    pub(crate) fn row_values<'r>(
+        &self,
+        entity: &str,
+        row: RowRef<'r>,
+    ) -> Result<Vec<&'r Value>, LoadError> {
+        let mut values = Vec::with_capacity(self.column_count());
+        for run in &self.runs {
+            if run.props.is_empty() {
+                continue;
+            }
+            let map = row.identity_map(run.field).ok_or_else(|| {
+                LoadError::Push(format!(
+                    "entity {entity}: a row shape without the {:?} identity field",
+                    run.field
+                ))
+            })?;
+            values.extend(keyed_values(entity, map, run.props)?);
+        }
+        Ok(values)
+    }
+}
+
+impl PlannedEntity {
+    /// The group's rows, borrowed, in plan order.
+    pub(crate) fn rows(&self) -> Box<dyn Iterator<Item = RowRef<'_>> + '_> {
+        match &self.kind {
+            EntityKind::NodeLabel { rows, .. } => Box::new(rows.iter().map(RowRef::Node)),
+            EntityKind::NodeCreate { rows, .. } => Box::new(rows.iter().map(RowRef::Create)),
+            EntityKind::Rel {
+                rows: RelRows::Keyed(rows),
+                ..
+            } => Box::new(rows.iter().map(RowRef::Rel)),
+            EntityKind::Rel {
+                rows: RelRows::Pair(rows),
+                ..
+            } => Box::new(rows.iter().map(RowRef::Pair)),
+            EntityKind::NodeSkipped { .. }
+            | EntityKind::RelSkipped { .. }
+            | EntityKind::Dangling => Box::new(std::iter::empty()),
+        }
+    }
+
+    /// How many rows the group writes (counted buckets: none).
+    pub(crate) fn row_count(&self) -> usize {
+        self.rows().count()
+    }
+
+    /// The identity-column derivation of a keyed group; `None` for the
+    /// kinds that never pre-read (unkeyed `CREATE`, counted buckets).
+    pub(crate) fn identity_layout(&self) -> Option<IdentityLayout<'_>> {
+        let run = |field, var, alias, props| IdentityRun {
+            field,
+            var,
+            alias,
+            props,
+        };
+        match &self.kind {
+            EntityKind::NodeLabel { .. } => Some(IdentityLayout {
+                runs: vec![run(IdentityField::Key, "n", "k", &self.merge_key)],
+                candidate_var: "n",
+            }),
+            EntityKind::Rel {
+                start_key, end_key, ..
+            } => Some(IdentityLayout {
+                runs: vec![
+                    run(IdentityField::Start, "a", "k", start_key),
+                    run(IdentityField::End, "b", "e", end_key),
+                    run(IdentityField::Key, "r", "r", &self.merge_key),
+                ],
+                candidate_var: "r",
+            }),
+            EntityKind::NodeCreate { .. }
+            | EntityKind::NodeSkipped { .. }
+            | EntityKind::RelSkipped { .. }
+            | EntityKind::Dangling => None,
         }
     }
 }
@@ -227,10 +407,10 @@ enum NodeDraft {
     Keyed {
         label: String,
         merge_key: Vec<String>,
-        rows: Vec<EntityRow>,
+        rows: Vec<KeyedNodeRow>,
     },
     /// `--unkeyed-labels create`: rows without identity.
-    Created { rows: Vec<EntityRow> },
+    Created { rows: Vec<CreateNodeRow> },
     /// `--unkeyed-labels skip`: the counter, never a row.
     Skipped { count: usize },
 }
@@ -348,13 +528,12 @@ fn plan_nodes<'a>(
                 // label (one label with a key): the write created the
                 // node carrying it, so the endpoint MATCH finds it.
                 let row_key = keyed_props(label, &node.properties, merge_key)?;
-                rows.push(EntityRow::Node {
+                rows.push(KeyedNodeRow {
                     key: row_key,
                     props: node.properties.clone(),
                 });
             }
-            NodeDraft::Created { rows } => rows.push(EntityRow::Node {
-                key: BTreeMap::new(),
+            NodeDraft::Created { rows } => rows.push(CreateNodeRow {
                 props: node.properties.clone(),
             }),
             NodeDraft::Skipped { count } => *count += 1,
@@ -369,38 +548,41 @@ fn plan_nodes<'a>(
                 rows,
             } => {
                 let policy = opts.nodes_update.resolve(&label);
+                // The keyed-label/secondaries partition is derived
+                // inside the statement builder — one representation.
+                let statement = node_merge_statement(&labels, &label, &merge_key, policy)?;
                 entities.push(PlannedEntity {
-                    // The keyed-label/secondaries partition is derived
-                    // inside the statement builder — one representation.
-                    statement: Some(node_merge_statement(&labels, &label, &merge_key, policy)?),
                     kind: EntityKind::NodeLabel {
                         labels,
                         keyed_label: label,
                         policy,
+                        statement,
+                        rows,
                     },
                     merge_key,
-                    rows,
                     skipped_unkeyed: 0,
                     skipped_dangling: 0,
                 });
             }
             NodeDraft::Created { rows } => {
                 let policy = opts.nodes_update.resolve(&policy_label(&labels));
+                let statement = node_create_statement(&labels, policy)?;
                 entities.push(PlannedEntity {
-                    statement: Some(node_create_statement(&labels, policy)?),
-                    kind: EntityKind::NodeCreate { labels, policy },
+                    kind: EntityKind::NodeCreate {
+                        labels,
+                        policy,
+                        statement,
+                        rows,
+                    },
                     merge_key: Vec::new(),
-                    rows,
                     skipped_unkeyed: 0,
                     skipped_dangling: 0,
                 });
             }
             NodeDraft::Skipped { count } => {
                 entities.push(PlannedEntity {
-                    statement: None,
                     kind: EntityKind::NodeSkipped { labels },
                     merge_key: Vec::new(),
-                    rows: Vec::new(),
                     skipped_unkeyed: count,
                     skipped_dangling: 0,
                 });
@@ -422,8 +604,7 @@ enum RelDraft<'k> {
     Keyed {
         start: (String, Vec<String>),
         end: (String, Vec<String>),
-        write: RelWrite<'k>,
-        rows: Vec<EntityRow>,
+        rows: DraftRows<'k>,
     },
     /// An endpoint is not key-addressable: the report spellings of the
     /// two endpoints and the counter of rels never written.
@@ -450,8 +631,7 @@ impl<'k> RelDraft<'k> {
             ) => RelDraft::Keyed {
                 start: (start_label.clone(), start_key.clone()),
                 end: (end_label.clone(), end_key.clone()),
-                write,
-                rows: Vec::new(),
+                rows: DraftRows::new(write),
             },
             // An unkeyed endpoint on either side: counted, never
             // written. Both combinations are explicit so a third
@@ -461,6 +641,40 @@ impl<'k> RelDraft<'k> {
                 end: end.display(),
                 skipped: 0,
             },
+        }
+    }
+}
+
+/// A keyed rel group's rows with the write mode that shaped them, one
+/// type: the key resolved for the group and the row variant it takes
+/// cannot disagree.
+enum DraftRows<'k> {
+    /// `MERGE` on the type's key properties.
+    OnKey(&'k [String], Vec<KeyedRelRow>),
+    /// `CREATE`, or `MERGE` on the endpoint pair alone.
+    Pair(RelWrite<'k>, Vec<PairRelRow>),
+}
+
+impl<'k> DraftRows<'k> {
+    fn new(write: RelWrite<'k>) -> Self {
+        match write {
+            RelWrite::MergeOnKey(props) => DraftRows::OnKey(props, Vec::new()),
+            RelWrite::Create | RelWrite::MergeOnPair => DraftRows::Pair(write, Vec::new()),
+        }
+    }
+
+    /// The write mode the statement spells.
+    fn write(&self) -> RelWrite<'k> {
+        match self {
+            DraftRows::OnKey(props, _) => RelWrite::MergeOnKey(props),
+            DraftRows::Pair(write, _) => *write,
+        }
+    }
+
+    fn into_rows(self) -> RelRows {
+        match self {
+            DraftRows::OnKey(_, rows) => RelRows::Keyed(rows),
+            DraftRows::Pair(_, rows) => RelRows::Pair(rows),
         }
     }
 }
@@ -497,7 +711,6 @@ fn plan_rels(
             RelDraft::Keyed {
                 start: (start_label, start_merge),
                 end: (end_label, end_merge),
-                write,
                 rows,
             } => {
                 // Both endpoints key-addressable: the key values are
@@ -509,19 +722,19 @@ fn plan_rels(
                 // one exists — a --rel-key override, else the type's
                 // relationship constraint — and fall back to structural
                 // when neither does.
-                rows.push(match write {
-                    RelWrite::MergeOnKey(props) => EntityRow::Rel {
+                match rows {
+                    DraftRows::OnKey(props, rows) => rows.push(KeyedRelRow {
                         start: start_key,
                         end: end_key,
                         key: keyed_props(&rel.rel_type, &rel.properties, props)?,
                         props: rel.properties.clone(),
-                    },
-                    RelWrite::Create | RelWrite::MergeOnPair => EntityRow::RelUnkeyed {
+                    }),
+                    DraftRows::Pair(_, rows) => rows.push(PairRelRow {
                         start: start_key,
                         end: end_key,
                         props: rel.properties.clone(),
-                    },
-                });
+                    }),
+                }
             }
             RelDraft::Unkeyed { skipped, .. } => *skipped += 1,
         }
@@ -531,24 +744,20 @@ fn plan_rels(
             // A Keyed group's rows are non-empty by construction (the
             // draft is created and its first row pushed in the same
             // iteration), so no empty-rows branch exists.
-            RelDraft::Keyed {
-                start,
-                end,
-                write,
-                rows,
-            } => {
+            RelDraft::Keyed { start, end, rows } => {
+                let write = rows.write();
                 // The scoped policy is resolved here, where a writing
                 // kind is built — a counted group never resolves one
                 // (LABS-932).
                 let policy = opts.rels_update.resolve(&rel_type);
+                let statement = rel_statement(
+                    &rel_type,
+                    (&start.0, &start.1),
+                    (&end.0, &end.1),
+                    write,
+                    policy,
+                )?;
                 entities.push(PlannedEntity {
-                    statement: Some(rel_statement(
-                        &rel_type,
-                        (&start.0, &start.1),
-                        (&end.0, &end.1),
-                        write,
-                        policy,
-                    )?),
                     kind: EntityKind::Rel {
                         rel_type,
                         start_label: start.0,
@@ -556,11 +765,12 @@ fn plan_rels(
                         end_label: end.0,
                         end_key: end.1,
                         policy,
+                        statement,
+                        rows: rows.into_rows(),
                     },
                     // The keyed mode's key feeds the statement and the
                     // report's merge-key column alike.
                     merge_key: write.key().map(<[String]>::to_vec).unwrap_or_default(),
-                    rows,
                     skipped_unkeyed: 0,
                     skipped_dangling: 0,
                 });
@@ -571,14 +781,12 @@ fn plan_rels(
                 skipped,
             } => {
                 entities.push(PlannedEntity {
-                    statement: None,
                     kind: EntityKind::RelSkipped {
                         rel_type,
                         start,
                         end,
                     },
                     merge_key: Vec::new(),
-                    rows: Vec::new(),
                     skipped_unkeyed: skipped,
                     skipped_dangling: 0,
                 });
@@ -591,8 +799,6 @@ fn plan_rels(
         entities.push(PlannedEntity {
             kind: EntityKind::Dangling,
             merge_key: Vec::new(),
-            statement: None,
-            rows: Vec::new(),
             skipped_unkeyed: 0,
             skipped_dangling: graph.dangling_rels,
         });
@@ -620,24 +826,38 @@ fn rel_write<'a>(keys: &'a MergeKeys, opts: &PlanOpts, rel_type: &str) -> RelWri
     }
 }
 
-/// The keyed properties of one element, read in the merge key's order; a
-/// missing key property fails closed naming the entity and the property
-/// (a merge key the data does not satisfy is a local integrity error, not
-/// a silent partial push).
+/// The values of one element's key properties, read in the merge key's
+/// order — the one keyed extraction: [`keyed_props`] (the row's key map)
+/// and the identity encoder both consume it. A missing key property
+/// fails closed naming the entity and the property (a merge key the data
+/// does not satisfy is a local integrity error, not a silent partial
+/// push).
+pub(crate) fn keyed_values<'a>(
+    entity: &str,
+    props: &'a BTreeMap<String, Value>,
+    key: &[String],
+) -> Result<Vec<&'a Value>, LoadError> {
+    key.iter()
+        .map(|prop| {
+            props
+                .get(prop)
+                .ok_or_else(|| missing_key_prop(entity, prop))
+        })
+        .collect()
+}
+
+/// The keyed properties of one element as a map, in the merge key's order.
 fn keyed_props(
     entity: &str,
     props: &BTreeMap<String, Value>,
     key: &[String],
 ) -> Result<BTreeMap<String, Value>, LoadError> {
-    let mut map = BTreeMap::new();
-    for prop in key {
-        let value = props
-            .get(prop)
-            .cloned()
-            .ok_or_else(|| missing_key_prop(entity, prop))?;
-        map.insert(prop.clone(), value);
-    }
-    Ok(map)
+    let values = keyed_values(entity, props, key)?;
+    Ok(key
+        .iter()
+        .cloned()
+        .zip(values.into_iter().cloned())
+        .collect())
 }
 
 /// The merge-key-missing refusal, naming the entity and the property.
