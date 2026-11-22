@@ -97,7 +97,7 @@ pub(crate) use relate_test_support::ws_upgrade_request as upgrade_request;
 pub(crate) fn return_one_exchange<S: Read + Write>(client: &mut S) {
     handshake(client);
     send_hello_at(client, BoltVersion::V4_4, vec![]);
-    send_run_with(client, "RETURN 1 AS n", None);
+    send_run_legacy(client, "RETURN 1 AS n");
     success_map(read_msg(client));
     send_pull(
         client,
@@ -128,26 +128,36 @@ pub(crate) fn map(entries: Vec<(&str, Pack)>) -> Pack {
     Pack::Map(pack_entries(entries))
 }
 
-/// Send RUN `cypher` with empty params (ADR-0484): the two-field wire form
-/// when `extra` is `None`, the three-field form with `extra` as its extra
-/// map otherwise (the Bolt 4.3+ `db` routing field at 4.4). The one RUN
-/// sender: whether the extra map rides is the caller's explicit choice.
-pub(crate) fn send_run_with<S: Write>(
-    client: &mut S,
-    cypher: &str,
-    extra: Option<Vec<(&str, Pack)>>,
-) {
-    let mut fields = vec![Pack::String(cypher.into()), Pack::Map(vec![])];
-    fields.extend(extra.map(map));
-    send_struct(client, crate::requests::Message::Run.signature(), fields);
+/// Send RUN `cypher` with empty params in the legacy two-field wire form —
+/// no extra field at all (Bolt before 4.3; ADR-0484): the one spelling of
+/// the absent-extra form, and the server accepts it at every spoken
+/// version. The extra-carrying form is [`send_run_with`].
+pub(crate) fn send_run_legacy<S: Write>(client: &mut S, cypher: &str) {
+    send_struct(
+        client,
+        crate::requests::Message::Run.signature(),
+        vec![Pack::String(cypher.into()), Pack::Map(vec![])],
+    );
+}
+
+/// Send RUN `cypher` with empty params and `entries` as its extra map — the
+/// three-field form (Bolt 4.3+; ADR-0484): the one RUN sender that carries
+/// an extra map (the 4.4 `db` routing field). The absent-extra form is
+/// [`send_run_legacy`].
+pub(crate) fn send_run_with<S: Write>(client: &mut S, cypher: &str, entries: Vec<(&str, Pack)>) {
+    send_struct(
+        client,
+        crate::requests::Message::Run.signature(),
+        vec![Pack::String(cypher.into()), Pack::Map(vec![]), map(entries)],
+    );
 }
 
 /// Send RUN `cypher` with empty params and an empty extra map — the
-/// three-field form, [`send_run_with`] with `Some(vec![])`: the suite's
+/// three-field form, [`send_run_with`] with `vec![]`: the suite's
 /// historical spelling, byte-identical to the form it has always sent (the
 /// server accepts the extra field at every spoken version).
 pub(crate) fn send_run<S: Write>(client: &mut S, cypher: &str) {
-    send_run_with(client, cypher, Some(vec![]));
+    send_run_with(client, cypher, vec![]);
 }
 
 /// Send BEGIN with a caller-supplied extra map.

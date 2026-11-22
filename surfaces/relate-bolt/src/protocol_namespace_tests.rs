@@ -9,7 +9,8 @@ use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
     assert_closes, failure_map, field, read_msg, read_records, read_route_rt, send_begin,
-    send_commit, send_pull, send_reset, send_rollback, send_run_with, send_struct, success_map,
+    send_commit, send_pull, send_reset, send_rollback, send_run_legacy, send_run_with, send_struct,
+    success_map,
 };
 use std::net::TcpStream;
 
@@ -28,15 +29,18 @@ fn hello(client: &mut TcpStream) -> Vec<(Pack, Pack)> {
 type RunAndPull = (Vec<(Pack, Pack)>, Vec<Pack>, Vec<(Pack, Pack)>);
 
 /// Send RUN `cypher` at 4.4 — `extra` as its extra map through testutil's
-/// [`send_run_with`], no extra map at all when `None` — then PULL -1;
-/// return the RUN SUCCESS map, the RECORD first columns, and the final
-/// PULL SUCCESS map.
+/// [`send_run_with`], the absent-extra legacy form through
+/// [`send_run_legacy`] when `None` — then PULL -1; return the RUN SUCCESS
+/// map, the RECORD first columns, and the final PULL SUCCESS map.
 fn run_and_pull(
     client: &mut TcpStream,
     cypher: &str,
     extra: Option<Vec<(&str, Pack)>>,
 ) -> RunAndPull {
-    send_run_with(client, cypher, extra);
+    match extra {
+        Some(entries) => send_run_with(client, cypher, entries),
+        None => send_run_legacy(client, cypher),
+    }
     let run_success = success_map(read_msg(client));
     send_pull(client, Message::Pull, vec![("n", Pack::Int(-1))]);
     let (records, summary) = read_records(client);
@@ -136,7 +140,7 @@ fn unknown_db_on_run_or_begin_fails_with_the_ce_text() {
     send_run_with(
         &mut client,
         "RETURN 1 AS n",
-        Some(db_extra(Pack::String("nosuch".into()))),
+        db_extra(Pack::String("nosuch".into())),
     );
     let fields = failure_map(read_msg(&mut client));
     assert_eq!(
@@ -179,7 +183,7 @@ fn non_canonical_db_casing_echoes_the_canonical_namespace() {
     send_run_with(
         &mut client,
         "SHOW DATABASES",
-        Some(db_extra(Pack::String("SYSTEM".into()))),
+        db_extra(Pack::String("SYSTEM".into())),
     );
     success_map(read_msg(&mut client));
 
@@ -221,10 +225,9 @@ fn use_target_query_echoes_the_namespace_the_query_ran_in() {
 
     // DISCARD with a pending result also echoes the USE target, not the
     // session namespace.
-    send_run_with(
+    send_run_legacy(
         &mut client,
         "USE system CALL db.info() YIELD name RETURN name",
-        None,
     );
     success_map(read_msg(&mut client));
     send_pull(&mut client, Message::Discard, vec![]);
@@ -232,7 +235,7 @@ fn use_target_query_echoes_the_namespace_the_query_ran_in() {
     assert_eq!(success_db(&discard), "system");
 
     // A statement without USE echoes the session namespace on DISCARD.
-    send_run_with(&mut client, "RETURN 1 AS n", None);
+    send_run_legacy(&mut client, "RETURN 1 AS n");
     success_map(read_msg(&mut client));
     send_pull(&mut client, Message::Discard, vec![]);
     let discard = success_map(read_msg(&mut client));
@@ -261,7 +264,7 @@ fn discard_success_carries_db_and_hello_is_unchanged() {
     send_run_with(
         &mut client,
         "SHOW DATABASES",
-        Some(db_extra(Pack::String("system_ontologies".into()))),
+        db_extra(Pack::String("system_ontologies".into())),
     );
     success_map(read_msg(&mut client));
 

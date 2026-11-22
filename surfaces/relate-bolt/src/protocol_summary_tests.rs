@@ -11,7 +11,7 @@ use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
     bookmark_sequence, connected_client, connected_client_with, field, keys, map, read_msg,
-    read_records, send_begin, send_commit, send_pull, send_rollback, send_run, send_run_with,
+    read_records, send_begin, send_commit, send_pull, send_rollback, send_run, send_run_legacy,
     success_map,
 };
 use crate::value_codec::ValueCodec;
@@ -478,7 +478,7 @@ fn the_ending_success_carries_the_query_type() {
         ("PROFILE MATCH (n) RETURN n", "r"),
         ("PROFILE MATCH (n) SET n.x = 1 RETURN n", "rw"),
     ] {
-        send_run_with(&mut client, cypher, None);
+        send_run_legacy(&mut client, cypher);
         let run = Pack::Map(success_map(read_msg(&mut client)));
         assert!(
             run.get("type").is_none(),
