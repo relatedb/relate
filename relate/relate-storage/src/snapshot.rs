@@ -82,11 +82,28 @@ impl<G: SnapshotGraph> LoadedSnapshot<G> {
     /// metadata read already reported (0 when the store has no manifest
     /// yet).
     pub(crate) fn empty(checkpoint_lsn: u64) -> Self {
-        Self {
-            graph: G::default(),
+        Self::loaded(
+            G::default(),
             checkpoint_lsn,
-            ontology: None,
-            marker: crate::version::SnapshotMarker::Current,
+            None,
+            crate::version::SnapshotMarker::Current,
+        )
+    }
+
+    /// A codec's loaded snapshot with nothing deferred and no committed
+    /// schema (every classic codec): the one spelling of the six-field
+    /// literal those loaders share.
+    pub(crate) fn loaded(
+        graph: G,
+        checkpoint_lsn: u64,
+        ontology: Option<String>,
+        marker: crate::version::SnapshotMarker,
+    ) -> Self {
+        Self {
+            graph,
+            checkpoint_lsn,
+            ontology,
+            marker,
             deferred: None,
             committed: None,
         }

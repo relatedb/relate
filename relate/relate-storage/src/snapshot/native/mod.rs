@@ -21,8 +21,12 @@ use crate::{storage_context, Manifest, SnapshotCodecKind};
 
 mod coalesce;
 mod layout;
+mod load;
 mod ontology;
 mod shard_name;
+#[cfg(test)]
+pub use load::load;
+pub(crate) use load::load_with_checkpoint_lsn;
 pub(crate) use shard_name::ShardName;
 
 /// Per-kind manifest/graph pairing: the four choices `rewrite_kind` and
@@ -215,10 +219,10 @@ pub(crate) fn checkpoint_at_with_bytes(
     let prepared =
         match prepare_manifest(&mut ctx, checkpoint_lsn, theater, prev.as_ref(), ontology) {
             Ok(result) => result,
-            Err(error) => return Err(cleanup_unreferenced(target, &owned, false, error)),
+            Err(error) => return Err(cleanup_unreferenced(target, &owned, Phase::Prepare, error)),
         };
     if let Err(error) = put_object(target, MANIFEST_JSON, &prepared.bytes) {
-        return Err(cleanup_unreferenced(target, &owned, true, error));
+        return Err(cleanup_unreferenced(target, &owned, Phase::Publish, error));
     }
     retire_superseded(target, prev.as_ref(), &prepared.manifest, prepared.retired);
     // The shared checkpoint tail (ADR-0481 §4/§5): the mirror publishes
@@ -262,106 +266,6 @@ fn retire_superseded(
     // One batch keeps a `.rl` retirement to a single catalog generation.
     delete_objects(target, &retired);
 }
-#[cfg(test)]
-pub fn load(target: &StoreTarget) -> Result<Graph> {
-    Ok(load_with_checkpoint_lsn::<Graph>(target)?.graph)
-}
-
-/// Load the snapshot and the checkpoint LSN from the one manifest read,
-/// reporting the decoded manifest version marker (ADR-0127 Decision 2) and
-/// the ontology document the manifest selects (ADR-0120 §5; `None` when
-/// the store holds none). The LSN is 0 when no manifest exists yet.
-pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
-    target: &StoreTarget,
-) -> Result<LoadedSnapshot<G>> {
-    // read_manifest rejects an unsupported format_version and classifies the
-    // marker at its gate before anything else inspects the manifest
-    // (ADR-0114 Decision 2, ADR-0127 Decision 2).
-    let Some((manifest, marker)) = read_manifest(target)? else {
-        return Ok(LoadedSnapshot::empty(0));
-    };
-    let checkpoint_lsn = manifest.checkpoint_lsn;
-    match load_manifest_body(target, &manifest) {
-        Ok((graph, ontology)) => Ok(LoadedSnapshot {
-            graph,
-            checkpoint_lsn,
-            ontology,
-            marker,
-            deferred: None,
-            // The Parquet codec has no committed schema files (ADR-0649:
-            // `None` for every classic codec).
-            committed: None,
-        }),
-        // A legacy-store failure names the version where the loader knows
-        // it (ADR-0127 Decision 4); a current store keeps its error verbatim.
-        Err(error) => Err(crate::version::annotate_legacy_failure(error, marker)),
-    }
-}
-
-/// Load one kind's shards: the pre-shard monolith object when the manifest
-/// predates sharding (format ≤ 2 with no parts), else every manifest part,
-/// each held to the shard rules over its `[id_lo, id_hi)`;
-/// [`Origin::Monolith`] says why the monolith is not. A failure names the
-/// object that failed.
-/// All per-kind projections derive from `kind` itself.
-fn load_kind(
-    target: &StoreTarget,
-    graph: &dyn relate_engine_api::GraphImport,
-    manifest: &Manifest,
-    kind: Kind,
-) -> Result<()> {
-    let load = kind.loader();
-    if manifest.format_version < FORMAT_VERSION && kind.parts(manifest).is_empty() {
-        let name = kind.legacy_names()[0];
-        if let Some(b) = get_parquet_opt(target, name)? {
-            load(graph, b, Origin::Monolith)
-                .map_err(|e| storage_context(e, format_args!("legacy shard {name}")))?;
-        }
-        return Ok(());
-    }
-    for part in kind.parts(manifest) {
-        let b = get_parquet(target, &part.path)?;
-        load(graph, b, Origin::Part(part.id_lo..part.id_hi))
-            .map_err(|e| storage_context(e, format_args!("manifest part {}", part.path)))?;
-    }
-    Ok(())
-}
-
-fn load_manifest_body<G: relate_engine_api::SnapshotGraph>(
-    target: &StoreTarget,
-    manifest: &Manifest,
-) -> Result<(G, Option<String>)> {
-    let graph = G::default();
-    graph.set_next_node_id(manifest.next_node_id);
-    graph.set_next_rel_id(manifest.next_rel_id);
-    graph.set_commit_ts(manifest.commit_ts);
-    for kind in Kind::ALL {
-        load_kind(target, &graph, manifest, kind)?;
-    }
-    // The load-tail commit-timestamp floor, through the one home of the
-    // policy (the graph is fresh, so its live nodes are this load's
-    // rows).
-    crate::snapshot::ensure_commit_ts(&graph, graph.live_node_count());
-    for idx in &manifest.indexes {
-        graph.install_named_index(idx.clone())?;
-    }
-    for constraint in &manifest.constraints {
-        graph.install_named_constraint(constraint.clone())?;
-    }
-    if let Some(theater) = &manifest.theater {
-        graph.restore_checkpoint_theater(theater.clone())?;
-    } else {
-        graph.mark_legacy_unenforced();
-    }
-    graph.finish_restore();
-    let ontology = manifest
-        .ontology_path
-        .as_deref()
-        .map(|path| ontology::load_ontology_document(target, path))
-        .transpose()?;
-    Ok((graph, ontology))
-}
-
 /// Sum of live snapshot objects (manifest + Parquet parts). Excludes WAL
 /// and `.tmp`.
 pub fn snapshot_data_bytes(target: &StoreTarget) -> Result<u64> {
@@ -484,26 +388,8 @@ pub(crate) fn read_manifest(
         ));
     }
     for kind in Kind::ALL {
-        let (mut rows, mut bytes) = (0u64, 0u64);
         for part in kind.parts(&m) {
             validate_part(target, kind, part)?;
-            if part.rows == 0
-                || part.rows > MAX_WINDOW as u64
-                || part.rows > (part.id_hi - part.id_lo) as u64
-                || part.bytes == 0
-                || part.bytes > MAX_FILE
-            {
-                return Err(Error::storage(format!(
-                    "invalid manifest shard metrics: {} (rows {}, bytes {})",
-                    part.path, part.rows, part.bytes
-                )));
-            }
-            rows = rows
-                .checked_add(part.rows)
-                .ok_or_else(|| Error::storage("manifest shard row total overflow"))?;
-            bytes = bytes
-                .checked_add(part.bytes)
-                .ok_or_else(|| Error::storage("manifest shard byte total overflow"))?;
         }
     }
     Ok(Some((m, marker)))
@@ -515,7 +401,19 @@ fn validate_part(target: &StoreTarget, kind: Kind, part: &ShardPart) -> Result<(
     if name.kind != kind || name.lo != part.id_lo || name.hi != part.id_hi {
         return Err(invalid());
     }
-    validate_shard_name(target, name).map_err(|_| invalid())
+    validate_shard_name(target, name).map_err(|_| invalid())?;
+    if part.rows == 0
+        || part.rows > MAX_WINDOW as u64
+        || part.rows > name.width()
+        || part.bytes == 0
+        || part.bytes > MAX_FILE
+    {
+        return Err(Error::storage(format!(
+            "invalid manifest shard metrics: {} (rows {}, bytes {})",
+            part.path, part.rows, part.bytes
+        )));
+    }
+    Ok(())
 }
 
 /// Whether the `root`-relative `rel` resolves to a real directory, never
@@ -762,10 +660,18 @@ fn referenced(m: &Manifest, path: &str) -> bool {
             .any(|p| p.path == path)
 }
 
+/// Which checkpoint phase failed: a publish failure may have renamed the
+/// manifest before erroring, so its cleanup needs a readable manifest.
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    Prepare,
+    Publish,
+}
+
 fn cleanup_unreferenced(
     target: &StoreTarget,
     owned: &[String],
-    publishing: bool,
+    phase: Phase,
     error: Error,
 ) -> Error {
     if owned.is_empty() {
@@ -775,7 +681,7 @@ fn cleanup_unreferenced(
     // remove a part unless a readable manifest proves it is unreferenced.
     let manifest = match read_manifest(target) {
         Ok(Some((m, _))) => Some(m),
-        Ok(None) if !publishing => None,
+        Ok(None) if phase == Phase::Prepare => None,
         _ => return error,
     };
     let mut failures = Vec::new();

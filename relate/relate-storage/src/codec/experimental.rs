@@ -194,12 +194,10 @@ pub(crate) fn assemble_loaded<G: relate_engine_api::SnapshotGraph>(
         envelope_commit_ts,
         manifest.theater.clone(),
     )?;
-    Ok(LoadedSnapshot {
+    Ok(LoadedSnapshot::loaded(
         graph,
         checkpoint_lsn,
         ontology,
         marker,
-        deferred: None,
-        committed: None,
-    })
+    ))
 }

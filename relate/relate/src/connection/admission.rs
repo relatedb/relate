@@ -26,7 +26,7 @@ use super::Connection;
 use crate::gate::ResultStamp;
 use crate::plan_bytes::plan_bytes;
 use crate::plan_cache::{HitPayload, MAX_CACHED_STATEMENT_BYTES};
-use crate::{Error, Result, Value};
+use crate::{Result, Value};
 
 /// What [`Connection::admit_statement`] resolves: the parsed preamble
 /// mode plus the gated, classified logical plan — one bundle so
@@ -114,8 +114,8 @@ impl Connection {
         // `started` under it — no second clock reading exists.
         let timing_on = self.inner.timing_on.load(Ordering::Relaxed);
         self.inner.check_healthy()?;
-        if self.txn.as_ref().is_some_and(|t| t.failed.get()) {
-            return Err(Error::semantic("transaction failed; rollback required"));
+        if let Some(txn) = self.txn.as_ref() {
+            txn.refuse_if_failed()?;
         }
         // ADR-0371: the store's RELATE_PREVIEW-resolved set threads
         // into the parse -- a gated preview construct (CIP-278 COMBINE)

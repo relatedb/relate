@@ -227,6 +227,10 @@ pub fn open_store_readonly_with_ontology<G: SnapshotGraph>(
                 if before == after {
                     return Ok(opened);
                 }
+                // A successful but unstable attempt supersedes any earlier
+                // failure: exhaustion must report the instability, not a
+                // stale error from a different attempt.
+                last_err = None;
             }
             Err(e) => last_err = Some(e),
         }

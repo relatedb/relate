@@ -76,6 +76,22 @@ impl OpenTxn {
         }
         Ok(())
     }
+
+    /// The failed-transaction gate: the one spelling of the refusal
+    /// every statement path raises before touching a failed transaction.
+    pub(super) fn refuse_if_failed(&self) -> Result<()> {
+        if self.failed.get() {
+            Err(Error::semantic("transaction failed; rollback required"))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Mark the transaction failed: the one failure epilogue shared by
+    /// [`Connection::fail_txn`] and the in-transaction statement path.
+    pub(super) fn fail(&self) {
+        self.failed.set(true);
+    }
 }
 
 /// The drained redo of a prepared commit — the `Some` payload of
@@ -181,14 +197,11 @@ impl Connection {
     /// flush.
     pub(super) fn prepare_commit(&mut self) -> Result<Option<PreparedRedo>> {
         self.inner.check_healthy()?;
-        let txn = self
-            .txn
-            .take()
-            .ok_or_else(|| Error::semantic("no transaction"))?;
-        if txn.failed.get() {
-            self.txn = Some(txn);
-            return Err(Error::semantic("transaction failed; rollback required"));
-        }
+        self.txn
+            .as_ref()
+            .ok_or_else(|| Error::semantic("no transaction"))?
+            .refuse_if_failed()?;
+        let txn = self.txn.take().expect("checked present above");
         let snapshot_ts = txn.scratch.borrow().snapshot_ts();
         let txn_id = txn.txn_id;
         let pin_slot = txn.pin_slot;
@@ -235,7 +248,7 @@ impl Connection {
 
     pub(super) fn fail_txn(&mut self) {
         if let Some(txn) = self.txn.as_mut() {
-            txn.failed.set(true);
+            txn.fail();
         }
     }
 
@@ -248,9 +261,7 @@ impl Connection {
         token: &CancelToken,
     ) -> Result<ExecResult> {
         let txn = run.txn;
-        if txn.failed.get() {
-            return Err(Error::semantic("transaction failed; rollback required"));
-        }
+        txn.refuse_if_failed()?;
         let result = {
             // The transaction's write overlay applies to the writable
             // namespace (`neo4j`, the only one; ADR-0116 §5); a
@@ -289,7 +300,7 @@ impl Connection {
                 .map(|()| r)
         });
         if checked.is_err() {
-            txn.failed.set(true);
+            txn.fail();
         }
         checked
     }

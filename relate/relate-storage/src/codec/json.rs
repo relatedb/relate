@@ -209,14 +209,12 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
     // (ADR-0127 Decision 4); a current store keeps its error verbatim.
     let (graph, ontology) = graph_from_data::<G>(data, encoding, envelope_commit_ts)
         .map_err(|error| crate::version::annotate_legacy_failure(error, marker))?;
-    Ok(LoadedSnapshot {
+    Ok(LoadedSnapshot::loaded(
         graph,
         checkpoint_lsn,
         ontology,
         marker,
-        deferred: None,
-        committed: None,
-    })
+    ))
 }
 
 /// Error-path-only marker probe (ADR-0127 Decision 7): when the full

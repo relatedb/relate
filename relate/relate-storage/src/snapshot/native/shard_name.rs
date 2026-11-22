@@ -32,6 +32,12 @@ impl ShardName {
         })
     }
 
+    /// The number of IDs the window covers; `parse` and `fixed` both
+    /// guarantee `hi > lo >= 0`, so the span is never empty or negative.
+    pub(super) fn width(&self) -> u64 {
+        self.hi.abs_diff(self.lo)
+    }
+
     pub(crate) fn parse(path: &str) -> Option<Self> {
         let (dir, file) = path.split_once('/')?;
         let kind = match dir {
