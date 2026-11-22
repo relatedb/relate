@@ -9,8 +9,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use relate_core::{ce_messages, Namespace};
+use relate_executor::DenseSpans;
 use relate_executor::Graph;
-use relate_executor::GroupSpans;
 use relate_executor::RedoDelta;
 use relate_executor::RedoOp;
 use relate_storage::{StoreTarget, Wal};
@@ -837,7 +837,7 @@ pub(crate) struct ReadPause {
 #[derive(Clone, Copy)]
 pub(crate) struct Reserved {
     pub(crate) bytes: u64,
-    pub(crate) spans: GroupSpans,
+    pub(crate) spans: DenseSpans,
 }
 
 impl Shared {

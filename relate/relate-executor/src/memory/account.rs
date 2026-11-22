@@ -14,7 +14,7 @@ use crate::redo::RedoOp;
 use crate::store::{Interner, LiveNode, LiveRel, PayloadForm, RelPayload};
 
 use super::{
-    overflow_entry_bytes, place_in_span, vec_heap, ChainShape, ChainSpanAdvance, GroupSpans,
+    overflow_entry_bytes, place_in_span, vec_heap, ChainShape, ChainSpanAdvance, DenseSpans,
     SpanPlacement, OVERHEAD_MAP_ENTRY, OVERHEAD_POSTING, OVERHEAD_VERSION,
 };
 
@@ -374,42 +374,66 @@ pub fn estimate_redo_delta(
     rel_shape: impl Fn(RelId) -> ChainShape,
     node_bytes: fn(ChainShape) -> u64,
     rel_bytes: fn(ChainShape) -> u64,
-    spans: GroupSpans,
+    spans: DenseSpans,
     charge: &IndexCharge,
 ) -> (RedoDelta, ChainSpanAdvance) {
-    let mut nodes: HashMap<NodeId, Option<Node>> = HashMap::new();
-    let mut rels: HashMap<RelId, Option<PayloadForm>> = HashMap::new();
-    let mut node_shapes = Shapes::new(
-        node_shape,
-        node_bytes,
-        spans.node,
-        crate::graph::node_slot(),
-        crate::graph::node_value(),
-    );
-    let mut rel_shapes = Shapes::new(
-        rel_shape,
-        rel_bytes,
-        spans.rel,
-        crate::graph::rel_slot(),
-        crate::graph::rel_value(),
-    );
-    let mut delta = 0i64;
-    let mut spill = 0i64;
-
-    let get_node = |nodes: &HashMap<NodeId, Option<Node>>, id: NodeId| -> Option<Node> {
-        if let Some(v) = nodes.get(&id) {
-            return v.clone();
-        }
-        lookup_node(id)
+    let mut est = RedoEstimator {
+        interner,
+        charge,
+        lookup_node,
+        lookup_rel,
+        nodes: HashMap::new(),
+        rels: HashMap::new(),
+        node_shapes: Shapes::new(
+            node_shape,
+            node_bytes,
+            spans.node,
+            crate::graph::node_slot(),
+            crate::graph::node_value(),
+        ),
+        rel_shapes: Shapes::new(
+            rel_shape,
+            rel_bytes,
+            spans.rel,
+            crate::graph::rel_slot(),
+            crate::graph::rel_value(),
+        ),
+        delta: 0,
+        spill: 0,
     };
-    let get_rel = |rels: &HashMap<RelId, Option<PayloadForm>>, id: RelId| -> Option<PayloadForm> {
-        if let Some(v) = rels.get(&id) {
-            return v.clone();
-        }
-        lookup_rel(id)
-    };
-
     for op in ops {
+        est.apply(op);
+    }
+    est.finish()
+}
+
+/// The per-batch state of [`estimate_redo_delta`]: the batch's view of
+/// each node and relationship it touched (over the committed lookups), the
+/// two slot-shape trackers (which carry the dense-span seed the walk
+/// advances), and the running delta. One method per op family, so a new op
+/// variant is one arm of [`apply`](Self::apply) and one method.
+struct RedoEstimator<'a, LN, LR, NS, RS> {
+    interner: &'a Interner,
+    charge: &'a IndexCharge,
+    lookup_node: LN,
+    lookup_rel: LR,
+    /// `None` marks a record the batch deleted.
+    nodes: HashMap<NodeId, Option<Node>>,
+    rels: HashMap<RelId, Option<PayloadForm>>,
+    node_shapes: Shapes<NS>,
+    rel_shapes: Shapes<RS>,
+    delta: i64,
+    spill: i64,
+}
+
+impl<LN, LR, NS, RS> RedoEstimator<'_, LN, LR, NS, RS>
+where
+    LN: Fn(NodeId) -> Option<Node>,
+    LR: Fn(RelId) -> Option<PayloadForm>,
+    NS: Fn(i64) -> ChainShape,
+    RS: Fn(i64) -> ChainShape,
+{
+    fn apply(&mut self, op: &RedoOp) {
         match op {
             RedoOp::CreateNode {
                 id,
@@ -421,116 +445,58 @@ pub fn estimate_redo_delta(
                     labels: labels.clone(),
                     properties: properties.clone(),
                 };
-                delta += live_node_account(&n, charge) as i64
-                    + node_shapes.note_span(*id)
-                    + node_shapes.step(*id, ChainShape::after_install);
-                nodes.insert(*id, Some(n));
+                self.delta += live_node_account(&n, self.charge) as i64
+                    + self.node_shapes.note_span(*id)
+                    + self.node_shapes.step(*id, ChainShape::after_install);
+                self.nodes.insert(*id, Some(n));
             }
-            RedoOp::CreateRel {
-                id,
-                start: _,
-                end: _,
-                rel_type: _,
-                properties,
-            } => {
-                let form = PayloadForm::from_map(interner, (**properties).clone().into());
-                delta += payload_form_account(&form) as i64
-                    + rel_shapes.note_span(*id)
-                    + rel_shapes.step(*id, ChainShape::after_install);
-                rels.insert(*id, Some(form));
+            RedoOp::CreateRel { id, properties, .. } => {
+                let form = PayloadForm::from_map(self.interner, (**properties).clone().into());
+                self.delta += payload_form_account(&form) as i64
+                    + self.rel_shapes.note_span(*id)
+                    + self.rel_shapes.step(*id, ChainShape::after_install);
+                self.rels.insert(*id, Some(form));
             }
             RedoOp::DeleteNode { id } => {
                 // Retained until GC. Mark it so a later op in this batch
                 // does not edit the dropped record.
-                if !matches!(nodes.insert(*id, None), Some(None)) {
-                    let step = node_shapes.step(*id, ChainShape::after_delete);
-                    delta += step;
-                    spill += step;
+                if !matches!(self.nodes.insert(*id, None), Some(None)) {
+                    let step = self.node_shapes.step(*id, ChainShape::after_delete);
+                    self.delta += step;
+                    self.spill += step;
                 }
             }
             RedoOp::DeleteRel { id } => {
-                if !matches!(rels.insert(*id, None), Some(None)) {
-                    let step = rel_shapes.step(*id, ChainShape::after_delete);
-                    delta += step;
-                    spill += step;
+                if !matches!(self.rels.insert(*id, None), Some(None)) {
+                    let step = self.rel_shapes.step(*id, ChainShape::after_delete);
+                    self.delta += step;
+                    self.spill += step;
                 }
             }
-            RedoOp::SetNodeProp { id, key, value } => {
-                let in_batch = nodes.contains_key(id);
-                let mut n = match get_node(&nodes, *id) {
-                    Some(n) => n,
-                    None => continue,
-                };
-                let before = live_node_account(&n, charge);
+            RedoOp::SetNodeProp { id, key, value } => self.edit_node(*id, |n| {
                 Arc::make_mut(&mut n.properties).insert(key.clone(), value.clone());
-                let after = live_node_account(&n, charge);
-                delta += version_edit(in_batch, before, after, &mut node_shapes, *id);
-                nodes.insert(*id, Some(n));
-            }
-            RedoOp::RemoveNodeProp { id, key } => {
-                let in_batch = nodes.contains_key(id);
-                let mut n = match get_node(&nodes, *id) {
-                    Some(n) => n,
-                    None => continue,
-                };
-                let before = live_node_account(&n, charge);
+            }),
+            RedoOp::RemoveNodeProp { id, key } => self.edit_node(*id, |n| {
                 Arc::make_mut(&mut n.properties).remove(key);
-                let after = live_node_account(&n, charge);
-                delta += version_edit(in_batch, before, after, &mut node_shapes, *id);
-                nodes.insert(*id, Some(n));
-            }
+            }),
             RedoOp::SetRelProp { id, key, value } => {
-                let in_batch = rels.contains_key(id);
-                let mut form = match get_rel(&rels, *id) {
-                    Some(form) => form,
-                    None => continue,
-                };
-                let before = payload_form_account(&form);
-                form.set(interner, key, value.clone());
-                let after = payload_form_account(&form);
-                delta += version_edit(in_batch, before, after, &mut rel_shapes, *id);
-                rels.insert(*id, Some(form));
+                let interner = self.interner;
+                self.edit_rel(*id, |form| form.set(interner, key, value.clone()));
             }
             RedoOp::RemoveRelProp { id, key } => {
-                let in_batch = rels.contains_key(id);
-                let mut form = match get_rel(&rels, *id) {
-                    Some(form) => form,
-                    None => continue,
-                };
-                let before = payload_form_account(&form);
-                form.remove(interner, key);
-                let after = payload_form_account(&form);
-                delta += version_edit(in_batch, before, after, &mut rel_shapes, *id);
-                rels.insert(*id, Some(form));
+                let interner = self.interner;
+                self.edit_rel(*id, |form| form.remove(interner, key));
             }
-            RedoOp::AddLabels { id, labels } => {
-                let in_batch = nodes.contains_key(id);
-                let mut n = match get_node(&nodes, *id) {
-                    Some(n) => n,
-                    None => continue,
-                };
-                let before = live_node_account(&n, charge);
+            RedoOp::AddLabels { id, labels } => self.edit_node(*id, |n| {
                 for l in labels {
                     if !n.labels.iter().any(|x| x == l) {
                         Arc::make_mut(&mut n.labels).push(l.clone());
                     }
                 }
-                let after = live_node_account(&n, charge);
-                delta += version_edit(in_batch, before, after, &mut node_shapes, *id);
-                nodes.insert(*id, Some(n));
-            }
-            RedoOp::RemoveLabels { id, labels } => {
-                let in_batch = nodes.contains_key(id);
-                let mut n = match get_node(&nodes, *id) {
-                    Some(n) => n,
-                    None => continue,
-                };
-                let before = live_node_account(&n, charge);
+            }),
+            RedoOp::RemoveLabels { id, labels } => self.edit_node(*id, |n| {
                 Arc::make_mut(&mut n.labels).retain(|l| !labels.contains(l));
-                let after = live_node_account(&n, charge);
-                delta += version_edit(in_batch, before, after, &mut node_shapes, *id);
-                nodes.insert(*id, Some(n));
-            }
+            }),
             RedoOp::CreateIndex { .. }
             | RedoOp::DropIndex { .. }
             | RedoOp::CreateConstraint { .. }
@@ -546,21 +512,56 @@ pub fn estimate_redo_delta(
             | RedoOp::OntologyDrop { .. } => {}
         }
     }
-    // Placement only ever grows a span; the caller gets the high-water mark
-    // back so it can seed the next estimate — and keep it only when it
-    // accepts the slot. Only the chain spans this walk owns come back; the
-    // adjacency half is the graph-level estimator's own advance, and the
-    // one merge into the group seed happens at the admission entry point.
-    (
-        RedoDelta {
-            total: delta,
-            spill,
-        },
-        ChainSpanAdvance {
-            node: node_shapes.span,
-            rel: rel_shapes.span,
-        },
-    )
+
+    /// Edit a node the batch sees (its own copy, else the committed one);
+    /// a node that is absent or deleted prices nothing.
+    fn edit_node(&mut self, id: NodeId, edit: impl FnOnce(&mut Node)) {
+        let in_batch = self.nodes.contains_key(&id);
+        let found = match self.nodes.get(&id) {
+            Some(v) => v.clone(),
+            None => (self.lookup_node)(id),
+        };
+        let Some(mut n) = found else { return };
+        let before = live_node_account(&n, self.charge);
+        edit(&mut n);
+        let after = live_node_account(&n, self.charge);
+        self.delta += version_edit(in_batch, before, after, &mut self.node_shapes, id);
+        self.nodes.insert(id, Some(n));
+    }
+
+    /// [`edit_node`](Self::edit_node)'s relationship twin.
+    fn edit_rel(&mut self, id: RelId, edit: impl FnOnce(&mut PayloadForm)) {
+        let in_batch = self.rels.contains_key(&id);
+        let found = match self.rels.get(&id) {
+            Some(v) => v.clone(),
+            None => (self.lookup_rel)(id),
+        };
+        let Some(mut form) = found else { return };
+        let before = payload_form_account(&form);
+        edit(&mut form);
+        let after = payload_form_account(&form);
+        self.delta += version_edit(in_batch, before, after, &mut self.rel_shapes, id);
+        self.rels.insert(id, Some(form));
+    }
+
+    /// Placement only ever grows a span; the caller gets the high-water
+    /// mark back so it can seed the next estimate — and keep it only when
+    /// it accepts the slot. Only the chain spans this walk owns come back;
+    /// the adjacency half is the graph-level estimator's own advance, and
+    /// the one merge into the group seed happens at the admission entry
+    /// point.
+    fn finish(self) -> (RedoDelta, ChainSpanAdvance) {
+        (
+            RedoDelta {
+                total: self.delta,
+                spill: self.spill,
+            },
+            ChainSpanAdvance {
+                node: self.node_shapes.span,
+                rel: self.rel_shapes.span,
+            },
+        )
+    }
 }
 
 #[cfg(test)]

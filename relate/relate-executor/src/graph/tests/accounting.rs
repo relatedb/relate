@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::adjacency::{MAX_SPAN_TYPES, RESTORE_SEAL_HOPS};
-use crate::graph::accounting::{sealed_arena_breaches, AdjDelta};
+use crate::graph::accounting::adjacency::{sealed_arena_breaches, AdjDelta};
 use relate_core::{CapacityKind, Error};
 
 #[test]
@@ -242,7 +242,7 @@ fn self_loop_delete_charges_both_sealed_regions() {
         (loop_refusable, pair_refusable),
         (0, 0),
         "no slot growth at these ids: the chunk and tombstone terms are the spill \
-         (the founding-slot routing is pinned in chain.rs)"
+         (the founding-slot routing is pinned in sealed_arena.rs)"
     );
     assert_eq!(self_loop, 2 * region, "both sides of the self-loop charge");
     assert_eq!(pair, 2 * region, "one region per endpoint");

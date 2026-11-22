@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 
 use relate_core::{NodeId, RelId};
 
-use super::accounting::FreshIds;
+use super::accounting::adjacency::FreshIds;
 use super::count_state::CountDelta;
 use super::degree_stats_incident::IncidentRel;
 use super::rebuild::fill_labels;

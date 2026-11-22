@@ -150,9 +150,9 @@ pub use memory::ChainCensus;
 // workspace-internal — the write-local commit path threads it, deliberately
 // not advertised API beyond the workspace.
 #[doc(hidden)]
-pub use memory::GroupSpans;
+pub use memory::DenseSpans;
 // The return of the admission entry points (`Graph::estimate_redo_delta` and
-// its `_with` variant): the same workspace-internal path as `GroupSpans`, so
+// its `_with` variant): the same workspace-internal path as `DenseSpans`, so
 // the entry points' documented return type is nameable beside it.
 #[doc(hidden)]
 pub use memory::RedoDelta;

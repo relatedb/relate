@@ -305,9 +305,9 @@ pub const DENSE_SPAN_CAP_BYTES: u64 = 1 << 30;
 /// returns only the spans it owns — the chain half as
 /// [`ChainSpanAdvance`], the adjacency half as the graph estimator's own
 /// advance type — never a full copy with foreign fields echoed back; the
-/// one merge into `GroupSpans` happens at the admission entry point.
+/// one merge into `DenseSpans` happens at the admission entry point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GroupSpans {
+pub struct DenseSpans {
     /// Span the node slot array is reserved through.
     pub(crate) node: usize,
     /// Span the relationship slot array is reserved through.
@@ -322,7 +322,7 @@ pub struct GroupSpans {
     pub(crate) sealed_in: usize,
 }
 
-/// The chain-span half of a [`GroupSpans`] advance — the two fields
+/// The chain-span half of a [`DenseSpans`] advance — the two fields
 /// [`estimate_redo_delta`](self::account::estimate_redo_delta) owns. A walk
 /// returns only the spans it prices, so the fields it does not own are
 /// never echoed back; the merge into the group seed happens once, at the
