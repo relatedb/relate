@@ -97,7 +97,7 @@ setup() {
   {
     shard_crates engine
     shard_crates storage
-    shard_crates planner
+    shard_crates light
   } > "$BATS_TEST_TMPDIR/sharded"
   exempted_names > "$BATS_TEST_TMPDIR/exempted"
 }

@@ -23,7 +23,7 @@ matrix:
       priority: 1
     - name: storage
       priority: 2
-    - name: planner
+    - name: light
       priority: 3
   # Same split as the feature-bundles job. The two feature sets share no
   # cargo fingerprints, so CI runs them on separate runners.
@@ -180,9 +180,9 @@ stages:
           # The light mixed shard's load-balancing table
           # (docs/testing/runtime.md), one crate per line so every
           # rebalance or new-crate addition diffs as a single-line move.
-          # Still named `planner` for the cache-key prefix it has always
-          # had — the rename to `light` is tracked, not drifted.
-          planner) crates=(
+          # Shard `light` (renamed from `planner`; the cache-key prefix is
+          # now `test-light`).
+          light) crates=(
             relate-engine-api
             relate-executor
             relate-model

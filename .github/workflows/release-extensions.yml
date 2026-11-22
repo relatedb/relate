@@ -178,7 +178,7 @@ jobs:
   # suite must pass on the resolved commit — the exact tree the tarballs
   # carry — before any tag exists. `tag` needs this job, so a failed gate
   # leaves no tag, no release, and no index change (the PR boundary runs
-  # the same suites in the ci.yml test lane's planner shard).
+  # the same suites in the ci.yml test lane's light shard).
   test:
     name: Test first-party child crates
     needs: resolve

@@ -334,7 +334,7 @@ execution is the floor, so the duplicated-compile objection no longer
 applies. The Test lane is now 3 matrix shards on the same runner class,
 grouped by the measured exec numbers in the matrix above: `engine`
 (`relate`, ~118 s exec, alone), `storage` (`relate-storage` ~45 s
-+ `relate-cli`/`relate-ffi`/`relate-load`), `planner`
++ `relate-cli`/`relate-ffi`/`relate-load`), `light`
 (`relate-executor` ~38 s + the ≤ 3 s light suites — joined 2026-11-02
 by the three first-party extension children
 `relate-wire`/`relate-fs-to-graph`/`relate-git-to-graph`,

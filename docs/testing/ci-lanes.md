@@ -21,7 +21,7 @@ same until that pair exists.
 | --- | --- | --- |
 | `failfast` | ubuntu | Previous run's failed checks, annotated and cheap-replayed first (below) |
 | `lint` | ubuntu | fmt, clippy (workspace + CLI bundles + no-parquet), boundaries, keyword probe, OS-matrix check |
-| `test` | linux-4-core-x86 | Full unit/integration suite in 3 exec-balanced matrix shards (`engine`, `storage`, `planner`; LABS-310 round 3), documented Rust API examples on the engine shard (runner pilot, below) |
+| `test` | linux-4-core-x86 | Full unit/integration suite in 3 exec-balanced matrix shards (`engine`, `storage`, `light`; LABS-310 round 3), documented Rust API examples on the engine shard (runner pilot, below) |
 | `feature-bundles` | ubuntu | CLI `agent`/`minimal` bundles, engine without `parquet` |
 | `stack-release` | linux-4-core-x86 | Stack-depth engine tests, release profile (ADR-0259); on the 4-core runner group with the other release-profile lanes (runner pilot, [runtime.md](runtime.md)) |
 | `corpus` | linux-4-core-x86 | Corpus-profile build once, then TCK + CIP-eval + cookbook-native + the LDBC SF0.1 answer gate as steps of the same job (ADR-0252; profile split per ADR-0212; LDBC slice per ADR-0251 §6, [cadences.md](cadences.md)) |
