@@ -2,11 +2,14 @@
 
 ## Install
 
-Source integration under `clients/dotnet`; .NET 8+ runtime, .NET 10 SDK for the
-three-language tests. Build `cargo build -p relate-ffi`, then
-`dotnet test clients/dotnet/Relate.Net.sln`. Add a project reference to
-`clients/dotnet/src/Relate.Net/Relate.Net.csproj`. No registry publication is
-configured by this integration. Local packages contain one native RID.
+`dotnet add package Relate.Net` — .NET 8 or later. Each release publishes the
+package to nuget.org with all five supported RIDs (`win-x64`, `linux-x64`,
+`linux-arm64`, `osx-x64`, `osx-arm64`) inside it.
+
+From source instead: build `cargo build -p relate-ffi`, then
+`dotnet test clients/dotnet/Relate.Net.sln`; a project reference to
+`clients/dotnet/src/Relate.Net/Relate.Net.csproj` picks the native library up
+transitively. Local packages contain one native RID.
 
 ## Minimal usage
 

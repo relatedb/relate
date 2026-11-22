@@ -86,7 +86,8 @@ chmod +x "$stubbin/npm"
 build_fixture() {
 	local fx="$1" changelog_src="$2" p doc
 	mkdir -p "$fx/scripts" "$fx/surfaces/relate-python/python/relate" \
-		"$fx/clients/java" "$fx/clients/javascript/platforms" \
+		"$fx/clients/java" "$fx/clients/dotnet/src/Relate.Net" \
+		"$fx/clients/javascript/platforms" \
 		"$fx/docs/reference" "$fx/docs/api/cli/examples" "$fx/docs/api/java/examples"
 	cp "$ROOT/scripts/release-bump.sh" "$fx/scripts/"
 	cp "$ROOT/scripts/changelog_rotate.py" "$fx/scripts/"
@@ -140,42 +141,20 @@ EOF
   <version>0.16.1</version>
 </project>
 EOF
-	cat >"$fx/clients/javascript/package.json" <<'EOF'
-{
-  "name": "@relate/relate",
-  "version": "0.16.1",
-  "optionalDependencies": {
-    "@relate/relate-linux-x64": "file:platforms/linux-x64",
-    "@relate/relate-linux-arm64": "file:platforms/linux-arm64",
-    "@relate/relate-darwin-x64": "file:platforms/darwin-x64",
-    "@relate/relate-darwin-arm64": "file:platforms/darwin-arm64",
-    "@relate/relate-win32-x64": "file:platforms/win32-x64"
-  }
-}
+	cat >"$fx/clients/dotnet/src/Relate.Net/Relate.Net.csproj" <<'EOF'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Version>0.16.1</Version>
+    <Description>A client.</Description>
+  </PropertyGroup>
+</Project>
 EOF
-	cat >"$fx/clients/javascript/package-lock.json" <<'EOF'
-{
-  "version": "0.16.1",
-  "packages": {
-    "": {
-      "version": "0.16.1",
-      "optionalDependencies": {
-        "@relate/relate-linux-x64": "file:platforms/linux-x64",
-        "@relate/relate-linux-arm64": "file:platforms/linux-arm64",
-        "@relate/relate-darwin-x64": "file:platforms/darwin-x64",
-        "@relate/relate-darwin-arm64": "file:platforms/darwin-arm64",
-        "@relate/relate-win32-x64": "file:platforms/win32-x64"
-      }
-    },
-    "platforms/darwin-arm64": { "version": "0.16.1" },
-    "platforms/darwin-x64": { "version": "0.16.1" },
-    "platforms/linux-arm64": { "version": "0.16.1" },
-    "platforms/linux-x64": { "version": "0.16.1" },
-    "platforms/win32-x64": { "version": "0.16.1" }
-  }
-}
-EOF
-	for p in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+	# The five platform packages are spelled once, as one list; the two
+	# documents derive every row from it, emitted by the json.dump the npm
+	# stub above already uses — no hand-escaped quotes to get wrong.
+	local plats="linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64"
+	for p in $plats; do
 		mkdir -p "$fx/clients/javascript/platforms/$p"
 		cat >"$fx/clients/javascript/platforms/$p/package.json" <<EOF
 {
@@ -184,6 +163,34 @@ EOF
 }
 EOF
 	done
+	python3 - "$fx/clients/javascript" $plats <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+deps = {f"@relate/relate-{p}": f"file:platforms/{p}" for p in sys.argv[2:]}
+(root / "package.json").write_text(
+    json.dumps(
+        {"name": "@relate/relate", "version": "0.16.1", "optionalDependencies": deps},
+        indent=2,
+    )
+    + "\n"
+)
+(root / "package-lock.json").write_text(
+    json.dumps(
+        {
+            "version": "0.16.1",
+            "packages": {
+                "": {"version": "0.16.1", "optionalDependencies": deps},
+                **{f"platforms/{p}": {"version": "0.16.1"} for p in sys.argv[2:]},
+            },
+        },
+        indent=2,
+    )
+    + "\n"
+)
+PY
 	for doc in README.md docs/limitations.md docs/reference/rust-library.md \
 		docs/reference/cli-flags.md docs/api/cli/examples/agents.md \
 		docs/api/java/examples/RelateE2E.java; do

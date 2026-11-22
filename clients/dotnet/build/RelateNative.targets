@@ -1,29 +1,72 @@
 <Project>
-  <!-- Build the native library from this checkout; never download an older release. -->
+  <!-- The one supported-RID vocabulary: each entry pairs a RID with the native
+       library file name that RID ships inside the package. Every consumer —
+       the local library lookup, the release staging check, and the pack —
+       reads this table through the batched targets below, never re-lists it. -->
+  <ItemGroup>
+    <RelateNativeRid Include="win-x64" Lib="relate_ffi.dll" />
+    <RelateNativeRid Include="linux-x64" Lib="librelate_ffi.so" />
+    <RelateNativeRid Include="linux-arm64" Lib="librelate_ffi.so" />
+    <RelateNativeRid Include="osx-x64" Lib="librelate_ffi.dylib" />
+    <RelateNativeRid Include="osx-arm64" Lib="librelate_ffi.dylib" />
+  </ItemGroup>
+
+  <!-- One mode fact, derived once: a set RelateNativeDistDir means the release
+       job staged every RID's library for a fat, pack-only package; unset means
+       this checkout builds the one library for its own RID. -->
   <PropertyGroup>
     <RelateNativeRuntimeIdentifier Condition="'$(RelateNativeRuntimeIdentifier)' == ''">$(NETCoreSdkRuntimeIdentifier)</RelateNativeRuntimeIdentifier>
-    <!-- The one supported-RID vocabulary, delimiter-bounded for exact membership checks. -->
-    <RelateNativeRuntimeIdentifiers>;win-x64;linux-x64;linux-arm64;osx-x64;osx-arm64;</RelateNativeRuntimeIdentifiers>
-    <_RelateNativeName Condition="$([MSBuild]::IsOSPlatform('Windows'))">relate_ffi.dll</_RelateNativeName>
-    <_RelateNativeName Condition="$([MSBuild]::IsOSPlatform('OSX'))">librelate_ffi.dylib</_RelateNativeName>
-    <_RelateNativeName Condition="$([MSBuild]::IsOSPlatform('Linux'))">librelate_ffi.so</_RelateNativeName>
-    <RelateNativeLibraryPath Condition="'$(RelateNativeLibraryPath)' == '' And '$(RelateNativeRuntimeIdentifier)' == '$(NETCoreSdkRuntimeIdentifier)'">$(RepositoryRoot)target/debug/$(_RelateNativeName)</RelateNativeLibraryPath>
+    <_RelateNativeReleasePack Condition="'$(RelateNativeDistDir)' != ''">true</_RelateNativeReleasePack>
   </PropertyGroup>
-  <ItemGroup>
-    <None Include="$(RelateNativeLibraryPath)"
-          Link="$([System.IO.Path]::GetFileName('$(RelateNativeLibraryPath)'))"
-          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
-          Visible="false" Pack="true"
-          PackagePath="runtimes/$(RelateNativeRuntimeIdentifier)/native/" />
-  </ItemGroup>
-  <Target Name="CheckRelateNative" BeforeTargets="PrepareForBuild;_GetPackageFiles">
-    <Error Condition="'$(_RelateNativeName)' == ''"
-           Text="Building the native library from this checkout is not configured for this host OS; supply -p:RelateNativeLibraryPath explicitly." />
-    <Error Condition="'$(RelateNativeLibraryPath)' == '' And '$(RelateNativeRuntimeIdentifier)' != '$(NETCoreSdkRuntimeIdentifier)'"
+
+  <!-- Local development and the client's own CI: the one native library this
+       host built, packed for its own RID. The table row for the build's RID
+       carries the library file name — the default debug-build path derives
+       from it, never from a second OS-keyed spelling of the names. -->
+  <Target Name="RelateNativeLocalLibrary" BeforeTargets="PrepareForBuild;AssignTargetPaths;_GetPackageFiles"
+          Condition="'$(_RelateNativeReleasePack)' != 'true'">
+    <ItemGroup>
+      <_RelateNativeKnownRid Include="@(RelateNativeRid)"
+                             Condition="'%(RelateNativeRid.Identity)' == '$(RelateNativeRuntimeIdentifier)'" />
+    </ItemGroup>
+    <Error Condition="'@(_RelateNativeKnownRid)' == ''"
+           Text="Set RelateNativeRuntimeIdentifier to a supported RID of the native library: @(RelateNativeRid, ', ')." />
+    <PropertyGroup>
+      <RelateNativeLibraryPath Condition="'$(RelateNativeLibraryPath)' == '' And '$(RelateNativeRuntimeIdentifier)' == '$(NETCoreSdkRuntimeIdentifier)'">$(RepositoryRoot)target/debug/@(_RelateNativeKnownRid->'%(Lib)')</RelateNativeLibraryPath>
+    </PropertyGroup>
+    <!-- Empty here already means a non-SDK RID with no explicit path: the
+         default above lands exactly when the RID equals the SDK's. -->
+    <Error Condition="'$(RelateNativeLibraryPath)' == ''"
            Text="A different RelateNativeRuntimeIdentifier requires an explicit RelateNativeLibraryPath for that platform." />
     <Error Condition="!Exists('$(RelateNativeLibraryPath)')"
            Text="Build the current native library first: cargo build -p relate-ffi. Or pass -p:RelateNativeLibraryPath=/absolute/path/to/the/native/library." />
-    <Error Condition="!$([System.String]::Copy('$(RelateNativeRuntimeIdentifiers)').Contains(';$(RelateNativeRuntimeIdentifier);'))"
-           Text="Set RelateNativeRuntimeIdentifier to a supported RID of the native library: $([System.String]::Copy('$(RelateNativeRuntimeIdentifiers)').Trim(';').Replace(';', ', '))." />
+    <!-- The pack layout reads the matched table row, the one spelling both
+         mode targets share — the row is this build's RID. -->
+    <ItemGroup>
+      <None Include="$(RelateNativeLibraryPath)"
+            Link="$([System.IO.Path]::GetFileName('$(RelateNativeLibraryPath)'))"
+            CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+            Visible="false" Pack="true"
+            PackagePath="runtimes/%(_RelateNativeKnownRid.Identity)/native/" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Release packaging: one fat package carrying every supported RID, staged by
+       the release job. Pack-only — a release pack's build output is never
+       used, the package is the artifact. The staged path layout is spelled
+       once, as each table row's Dist metadata; the missing-library check and
+       the pack both read it. -->
+  <Target Name="RelateNativeDistLibraries" BeforeTargets="_GetPackageFiles"
+          Condition="'$(_RelateNativeReleasePack)' == 'true'">
+    <ItemGroup>
+      <RelateNativeRid Dist="$(RelateNativeDistDir)/%(RelateNativeRid.Identity)/%(RelateNativeRid.Lib)" />
+    </ItemGroup>
+    <Error Condition="!Exists('%(RelateNativeRid.Dist)')"
+           Text="Release packaging needs every supported RID's native library: %(RelateNativeRid.Dist) is missing." />
+    <ItemGroup>
+      <None Include="%(RelateNativeRid.Dist)"
+            Visible="false" Pack="true"
+            PackagePath="runtimes/%(RelateNativeRid.Identity)/native/" />
+    </ItemGroup>
   </Target>
 </Project>

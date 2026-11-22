@@ -149,6 +149,21 @@ artifact landed on that first release:
   packages (main, wasm, and the five platform packages), with the
   environment `release`. The `&& false` guards on the npm jobs were
   dropped once this was done.
+- [x] NuGet (ADR-0652): the `Relate.Net` package exists on nuget.org and the
+  account that owns it also owns the trusted-publishing policy. The policy
+  is owner `relate`, publisher GitHubActions `relatedb`/`relate`, workflow
+  `publish-registries.yml`, environment `release`, scopes *Push new
+  packages and package versions*, glob `Relate.Net` — the environment field
+  is what makes a token minted outside `release` unusable, and the workflow
+  file is what makes a *chained* release call unusable: that call's OIDC
+  token names `release.yml`, so the `nuget` leg publishes by **direct
+  dispatch** (`-f nuget=true`), like the OIDC legs above. The repository
+  secret `NUGET_USER` carries the owning account's nuget.org profile name
+  (never an email); there is no API key to store or rotate. Validate the
+  policy match before a real publish with `-f nuget=true -f
+  nuget-dry-run=true`: the job downloads the release's package, verifies
+  its provenance, exchanges the OIDC token for a short-lived key, and stops
+  before the push.
 - [ ] Slack (optional): set the `SLACK_WEBHOOK_URL` repository secret to
   enable the release announcement — the release run's final job
   (`slack-announce`) posts it after the website deploy and the self-update
@@ -158,10 +173,13 @@ artifact landed on that first release:
   If a publish job dies mid-loop, re-dispatch with that registry
   enabled: the npm-publish action skips tarballs whose versions are
   already on the registry (the same arm the crates.io loop carries), so
-  the re-run finishes the remainder.
+  the re-run finishes the remainder. nuget.org skips a version it already
+  has the same way, so a failed NuGet leg is recovered by re-dispatching
+  the same tag with `nuget=true`.
 
 The release payload is the CLI binaries and their checksums, the Python wheels,
-the FFI archives, the npm tarballs, and the Swift XCFramework zip. The
+the FFI archives, the npm tarballs, the `Relate.Net` NuGet package, and the
+Swift XCFramework zip. The
 XCFramework is not code-signed yet (no Apple Developer identity in the release
 secrets; ADR-0433).
 

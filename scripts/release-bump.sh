@@ -22,6 +22,10 @@
 #   clients/java/pom.xml                               (the project's own
 #                                                      <version>, anchored to
 #                                                      the artifactId block)
+#   clients/dotnet/src/Relate.Net/Relate.Net.csproj    (the package <Version>;
+#                                                       the published NuGet
+#                                                       version must be the
+#                                                       release tag)
 #   clients/javascript/package.json                    ("version"; its five
 #                                                       optionalDependencies
 #                                                       are file: links, no
@@ -81,6 +85,10 @@ cd "$repo_root"
 # read-back both call it, so read and write share one parser.
 pom_py="$repo_root/scripts/lib/pom.py"
 
+# The csproj package-<Version> accessor, the same get/set shape as the pom's:
+# the step-1 sweep and the step-4 read-back both call it.
+csproj_py="$repo_root/scripts/lib/csproj.py"
+
 # toml_section_version, toml_section_set_version and
 # toml_lock_package_version (the shared TOML vocabulary) back the sweep and
 # the consistency self-check.
@@ -95,10 +103,15 @@ source "$repo_root/scripts/lib/sedi.sh"
 cargo_toml="Cargo.toml"
 pyproject="surfaces/relate-python/pyproject.toml"
 pyinit="surfaces/relate-python/python/relate/__init__.py"
+# The fallback-literal grammar has one spelling, `return "<digit...>"`, in
+# this one pattern: the step-1 sweep and the stale check below both use it,
+# so they cannot disagree about what a fallback literal is.
+pyinit_fallback='return "[0-9][^"]*"'
 lockfile="Cargo.lock"
 changelog="CHANGELOG.md"
 changes_dir=".changes"
 java_pom="clients/java/pom.xml"
+dotnet_csproj="clients/dotnet/src/Relate.Net/Relate.Net.csproj"
 js_main_pkg="clients/javascript/package.json"
 js_lockfile="clients/javascript/package-lock.json"
 js_platform_pkgs=(
@@ -123,7 +136,7 @@ docs_version_files=(
   "docs/api/cli/examples/agents.md"
   "docs/api/java/examples/RelateE2E.java"
 )
-touched=("$cargo_toml" "$pyproject" "$pyinit" "$lockfile" "$changelog" "$java_pom" "$js_main_pkg" "$js_lockfile" "${js_platform_pkgs[@]}" "${docs_version_files[@]}")
+touched=("$cargo_toml" "$pyproject" "$pyinit" "$lockfile" "$changelog" "$java_pom" "$dotnet_csproj" "$js_main_pkg" "$js_lockfile" "${js_platform_pkgs[@]}" "${docs_version_files[@]}")
 
 # Changelog fragments (ADR-0627): consumed at the release cut. Globbed up
 # front — before the collector can delete them — so the up-front dirty-tree
@@ -220,7 +233,7 @@ toml_section_set_version "$cargo_toml" "[workspace.package]" "$next"
 # same lockstep version as every other surface.
 toml_workspace_deps_set_version "$cargo_toml" "$next"
 toml_section_set_version "$pyproject" "[project]" "$next"
-sedi "$pyinit" "s/return \"[0-9][^\"]*\"/return \"$next\"/g"
+sedi "$pyinit" "s/$pyinit_fallback/return \"$next\"/g"
 # Prose and examples that quote the Relate version — the sweep's own
 # membership rule sits at the docs_version_files definition above.
 python3 scripts/version_tokens.py rewrite --to "$next" "${docs_version_files[@]}"
@@ -241,6 +254,10 @@ done
 # accessor the step-4 read-back calls — dependency and plugin versions are
 # never touched.
 python3 "$pom_py" set "$java_pom" "$next"
+
+# .NET: the package <Version> only, through the same structural accessor the
+# step-4 read-back calls.
+python3 "$csproj_py" set "$dotnet_csproj" "$next"
 
 # Regenerate the npm lockfile from the bumped manifest instead of sed'ing it:
 # the lockfile's root-entry "version" sits at a different indent than the
@@ -330,12 +347,12 @@ stale_pins="$(toml_workspace_dep_versions "$cargo_toml" | awk -v v="$next" -v ex
   echo "$stale_pins" >&2
   fail=1
 }
-# The fallback-literal grammar has one spelling — `return "<digit...>"` —
-# shared by the step-1 sweep and this stale check, so they cannot disagree
-# about what a fallback literal is. The invariant is "no stale fallback
-# literal survives the sweep" — the count of literals is __init__.py's own
-# fact, never mirrored here.
-if grep -E 'return "[0-9]' "$pyinit" | grep -v "return \"$next\"" > /dev/null; then
+# The fallback-literal grammar is the one pattern defined beside `pyinit`
+# above, so the sweep and this check cannot disagree about what a fallback
+# literal is. The invariant is "no stale fallback literal survives the
+# sweep" — the count of literals is __init__.py's own fact, never mirrored
+# here.
+if grep -E "$pyinit_fallback" "$pyinit" | grep -v "return \"$next\"" > /dev/null; then
   echo "release-bump: __init__.py still has a stale fallback version literal" >&2
   fail=1
 fi
@@ -354,6 +371,12 @@ read_back_eq "Cargo.lock relate package version" \
 read_back_eq "$java_pom project version" \
   "$java_pom has no readable project <version> entry" \
   python3 "$pom_py" get "$java_pom"
+
+# .NET: read back through the same accessor; a non-zero status means the
+# entry is missing, blank, or ambiguous — distinct from a wrong value.
+read_back_eq "$dotnet_csproj package version" \
+  "$dotnet_csproj has no readable package <Version> entry" \
+  python3 "$csproj_py" get "$dotnet_csproj"
 
 # npm manifests: the main package's "version", the five file: platform
 # links in its optionalDependencies, and each platform package's "version".

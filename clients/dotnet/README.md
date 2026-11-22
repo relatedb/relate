@@ -39,16 +39,28 @@ dotnet test clients/dotnet/Relate.Net.sln \
 
 `RelateNativeRuntimeIdentifier` defaults to the SDK host RID. Override it when
 packing a native library for a different host. `dotnet pack` produces a **local,
-single-RID package**, version `1.1.1-local`; it is not a multi-platform release:
+single-RID package** named for the project's `<Version>`:
 
 ```sh
 dotnet pack clients/dotnet/src/Relate.Net --output clients/dotnet/artifacts
 ```
 
-This integration does not publish to NuGet or change ownership of the existing
-community `Relate.Net` package. To consume source, add a project reference to
-`clients/dotnet/src/Relate.Net/Relate.Net.csproj`; the native asset is copied
-transitively. A packaged application needs the matching native RID asset.
+Release packages are the multi-platform ones: the release job stages every
+supported RID's native library from that release's own FFI artifacts and packs
+them into one package (`-p:RelateNativeDistDir=<dir>`, the directory holding
+`<rid>/<library>`), so the published package carries all five RIDs.
+
+## Install
+
+```sh
+dotnet add package Relate.Net
+```
+
+The package ID is the adopted client's community package; this repository shares
+ownership of it and publishes its releases there. To consume source instead, add
+a project reference to `clients/dotnet/src/Relate.Net/Relate.Net.csproj`; the
+native asset is copied transitively. A packaged application needs the matching
+native RID asset.
 
 ## Minimal usage
 

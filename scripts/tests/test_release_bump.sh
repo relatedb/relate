@@ -90,6 +90,15 @@ grep -qF 'relate-test-support = { path = "testing/relate-test-support" }' \
 	"$fx2/Cargo.toml"
 tap_check "steady state: path-only dev-dependency entry untouched" $?
 
+# The .NET client's package version: the release's own package-name check
+# refuses a stale one, so the sweep must reach it.
+grep -qF '<Version>0.1.1</Version>' "$fx2/clients/dotnet/src/Relate.Net/Relate.Net.csproj"
+tap_check "steady state: csproj package version swept to the new version" $?
+
+grep -qF '<TargetFramework>net8.0</TargetFramework>' \
+	"$fx2/clients/dotnet/src/Relate.Net/Relate.Net.csproj"
+tap_check "steady state: csproj siblings untouched" $?
+
 # --- Case 3: populated cut (entries survive the rotation) ----------------------
 
 # The steady-state shape at a real cut: [Unreleased] carries the entries

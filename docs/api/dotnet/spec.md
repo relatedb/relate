@@ -13,8 +13,22 @@ Follow the [build instructions](../../../clients/dotnet/README.md). `cargo build
 into output directories. `RelateNativeLibraryPath` overrides the default
 `target/debug` native file. `RelateNativeRuntimeIdentifier` overrides the SDK
 host RID used in a local package's `runtimes/<rid>/native` asset. Supported RIDs
-are `win-x64`, `linux-x64`, `linux-arm64`, `osx-x64`, `osx-arm64`. A local package
-contains one native platform, not all five; registry publication is not enabled.
+are `win-x64`, `linux-x64`, `linux-arm64`, `osx-x64`, `osx-arm64`, and the file
+name each RID ships is that list's one table. A local package contains one native
+platform; `RelateNativeDistDir` names a directory holding `<rid>/<library>` for
+every supported RID and packs all five into one package instead — the mode the
+release uses.
+
+## Install
+
+```sh
+dotnet add package Relate.Net
+```
+
+The package ID is the adopted client's community package; this repository shares
+ownership of it and publishes its releases there, carrying all five RIDs'
+natives. Published versions equal the release tag: the release sweep bumps the
+project's `<Version>` and the release's package check refuses a mismatch.
 
 CI runs the C#, F# and VB tests and this directory's executable example against
 native code built from the same commit. .NET 8 runs the tests; newer compatible

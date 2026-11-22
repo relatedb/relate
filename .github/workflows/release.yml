@@ -845,6 +845,103 @@ jobs:
           name: java-jars
           path: clients/java/target/*.jar
 
+  # The .NET client's NuGet package (ADR-0652): one fat package carrying every
+  # supported RID's native library, packed from this release's own FFI
+  # artifacts — the same bytes the other clients stage, so the package can
+  # never ship a native this release did not build. It rides the release as an
+  # attested asset because publish-registries.yml publishes only from release
+  # assets.
+  dotnet-nupkg:
+    name: NuGet package (Relate.Net)
+    needs: [release-owner, version, swift-stamp, ffi]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+
+      # Package from the stamped release commit (ADR-0572) so the package
+      # carries the release version: the csproj is a release-bump sweep
+      # surface, and the check below refuses a package whose name is not the
+      # release version.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.swift-stamp.outputs.sha }}
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: ffi
+
+      # The release-side half of the RID vocabulary: each FFI artifact's
+      # target maps to the RID (and library file name) the package's own table
+      # in clients/dotnet/build/RelateNative.targets declares. A missing pair
+      # fails the pack loudly there, never silently ships a short package.
+      - name: Stage every supported RID's native library
+        shell: bash
+        run: |
+          set -euo pipefail
+          while read -r target rid lib; do
+            mkdir -p "dist/$rid"
+            tar xzf "ffi/relate-ffi-$target/relate-ffi-$target.tar.gz" -C "dist/$rid" "./$lib"
+          done <<'PAIRS'
+          x86_64-unknown-linux-gnu linux-x64 librelate_ffi.so
+          aarch64-unknown-linux-gnu linux-arm64 librelate_ffi.so
+          x86_64-apple-darwin osx-x64 librelate_ffi.dylib
+          aarch64-apple-darwin osx-arm64 librelate_ffi.dylib
+          x86_64-pc-windows-msvc win-x64 relate_ffi.dll
+          PAIRS
+          find dist -type f | sort
+
+      - name: Restore locked managed dependencies
+        run: dotnet restore clients/dotnet/src/Relate.Net --locked-mode
+
+      - name: Pack the fat package
+        run: |
+          set -euo pipefail
+          dotnet pack clients/dotnet/src/Relate.Net --no-restore -c Release \
+            -p:RelateNativeDistDir="$PWD/dist" -o out
+
+      # Count is the invariant the pack exists for: five runtimes folders, one
+      # per supported RID, and a package name that is the release version —
+      # a stale csproj version or a missing native fails here rather than
+      # reaching nuget.org.
+      - name: Check the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.version.outputs.version }}"
+          nupkg="out/Relate.Net.$version.nupkg"
+          if [ ! -f "$nupkg" ]; then
+            echo "expected $nupkg; packed: $(ls out)" >&2
+            exit 1
+          fi
+          test -f "out/Relate.Net.$version.snupkg"
+          natives="$(unzip -l "$nupkg" | grep -c 'runtimes/[^/]*/native/')"
+          if [ "$natives" -ne 5 ]; then
+            echo "expected 5 runtimes/<rid>/native entries, found $natives" >&2
+            unzip -l "$nupkg" >&2
+            exit 1
+          fi
+          unzip -l "$nupkg" | grep 'runtimes/'
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dotnet-nupkg
+          path: |
+            out/*.nupkg
+            out/*.snupkg
+
   npm-platform:
     name: npm platform package (${{ matrix.npm_name }})
     needs: [release-owner, swift-stamp, ffi]
@@ -1049,7 +1146,7 @@ jobs:
     # published tag pointing at a release commit. The npm pack jobs are part
     # of the invariant: a broken npm package blocks the tag like every other
     # artifact, so the published npm version always equals the tag.
-    needs: [version, swift-stamp, cli, ffi, python, java, npm-platform, npm-wasm, npm-main]
+    needs: [version, swift-stamp, cli, ffi, python, java, dotnet-nupkg, npm-platform, npm-wasm, npm-main]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1361,7 +1458,8 @@ jobs:
         run: |
           mkdir -p release
           find artifacts -type f \( -name "relate-*" -o -name "*.whl" -o -name "*.tar.gz" \
-            -o -name "*.jar" -o -name "RelateFFI.xcframework.zip" \) \
+            -o -name "*.jar" -o -name "*.nupkg" -o -name "*.snupkg" \
+            -o -name "RelateFFI.xcframework.zip" \) \
             -exec cp {} release/ \;
 
       # The third-party notices the binaries carry (LABS-1690): the committed
@@ -1373,7 +1471,8 @@ jobs:
       # verifies the attestation before uploading anything, so bytes swapped
       # onto the release after the fact cannot ride the trusted publishers.
       # The FFI archives are registry-bound too: the maven-central job
-      # stages its natives from them.
+      # stages its natives from them, and so does the NuGet package's own
+      # leg.
       - name: Attest registry-bound assets
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -1382,6 +1481,8 @@ jobs:
             release/relate_db-*.tar.gz
             release/relate-*.tgz
             release/relate-ffi-*.tar.gz
+            release/Relate.Net.*.nupkg
+            release/Relate.Net.*.snupkg
 
       # Publish SHA256 checksums for the downloadable CLI binaries so users can
       # verify downloads against the SHA256SUMS asset referenced from the README.
@@ -1527,6 +1628,11 @@ jobs:
   # only what its caller passes, repository secrets included — the
   # v1.2.0 cut's call forwarded nothing and the job died importing an
   # empty signing key (run 44705331863).
+  #
+  # NuGet (ADR-0652) stays out of this call: its trusted-publishing policy
+  # names publish-registries.yml while a chained token names release.yml,
+  # and its input defaults off on the called path. Publish it by direct
+  # dispatch, exactly like the OIDC legs above.
   publish-registries:
     name: Publish to registries
     needs: [version, create-release, npm-smoke-gate]

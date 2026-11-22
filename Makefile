@@ -606,7 +606,7 @@ test-bolt-compat-scripts:
 ##   changelog does not)
 test-release-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_version_tokens.py
-	$(PYTHON) $(CURDIR)/scripts/tests/test_pom_py.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_version_element.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_npm_json.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_changelog_rotate.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_changes_collect.py

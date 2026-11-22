@@ -55,6 +55,21 @@ on:
         required: false
         type: boolean
         default: false
+      # Off by default on this path too, for a harder reason: the nuget.org
+      # policy names this workflow file, and a chained call's OIDC token
+      # names release.yml instead (the mismatch the PyPI leg documents
+      # above) — a chained NuGet publish fails the policy check. The NuGet
+      # leg is a direct dispatch (docs/PUBLISHING.md).
+      nuget:
+        required: false
+        type: boolean
+        default: false
+      # Validate the policy match without publishing: the job exchanges the
+      # OIDC token for a short-lived key and stops before the push.
+      nuget-dry-run:
+        required: false
+        type: boolean
+        default: false
     # The Maven Central credentials are repository secrets (ADR-0630):
     # a called workflow's `secrets` context carries only what its caller
     # forwards — repository secrets included; the v1.2.0 cut's call
@@ -75,6 +90,14 @@ on:
         required: false
       MAVEN_CENTRAL_TOKEN:
         description: "Central Portal user-token password"
+        required: false
+      # The nuget.org profile name of the trusted-publishing policy's owner.
+      # A chained call forwards nothing and the NuGet leg does not run on
+      # that path (its policy names this workflow, not release.yml), so no
+      # caller passes it today; declaring it keeps the direct dispatch's
+      # requirement visible.
+      NUGET_USER:
+        description: "nuget.org profile name that owns the trusted-publishing policy"
         required: false
   workflow_dispatch:
     inputs:
@@ -104,6 +127,19 @@ on:
         default: true
       maven-dry-run:
         description: "mvn verify -Pcentral-publish against main: run the publish profile's enforcer, packaging and GPG signing without uploading"
+        required: false
+        type: boolean
+        default: false
+      # Off by default because only releases cut after the NuGet leg landed
+      # carry a Relate.Net package: a re-publish of an older tag would fail
+      # the asset download. Turn it on for a release cut with the leg.
+      nuget:
+        description: "Publish the .NET client's Relate.Net package to nuget.org"
+        required: false
+        type: boolean
+        default: false
+      nuget-dry-run:
+        description: "Exchange the OIDC token for a short-lived key (validates the nuget.org trusted-publishing policy) without pushing"
         required: false
         type: boolean
         default: false
@@ -502,6 +538,123 @@ jobs:
             done
             sleep 30
           done
+
+  # NuGet (ADR-0652). Trusted publishing: the job's OIDC token is exchanged
+  # for a short-lived API key — no stored credential exists. The nuget.org
+  # policy (owner `relate`, repository relatedb/relate, workflow
+  # publish-registries.yml, environment `release`, glob Relate.Net) is
+  # registered per docs/PUBLISHING.md; the environment field is what makes
+  # a token minted outside `release` unusable. Direct dispatch only: a
+  # chained call's OIDC token names release.yml, which the policy does not
+  # name, so the exchange fails closed.
+  nuget:
+    name: Publish Relate.Net to NuGet
+    needs: registry-owner
+    # Main-only like every publish job (see pypi).
+    if: github.ref == 'refs/heads/main' && inputs.nuget
+    runs-on: ubuntu-latest
+    # Publishes run in the `release` environment: its deployment branch
+    # rule (main only) stops a write-access collaborator from publishing
+    # with the registry's trust from a dispatched branch. No required
+    # reviewers. The policy's environment field is the registry-side half
+    # of the same binding.
+    environment: release
+    permissions:
+      id-token: write
+      contents: read
+      attestations: read
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+
+      # dotnet nuget push is the whole toolchain here; the package is built
+      # and checked by the release's dotnet-nupkg job.
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Download the release's NuGet package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'Relate.Net.*.nupkg' --pattern 'Relate.Net.*.snupkg' \
+            --dir dist --clobber
+
+      - name: Check the package set
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          packages=(dist/*.nupkg)
+          symbols=(dist/*.snupkg)
+          if [ "${#packages[@]}" -ne 1 ] || [ "${#symbols[@]}" -ne 1 ]; then
+            echo "expected one .nupkg and one .snupkg, found ${#packages[@]} and ${#symbols[@]}" >&2
+            exit 1
+          fi
+          # The published version must be the release: a package named for a
+          # stale csproj version would publish a version no one asked for.
+          expected="Relate.Net.${TAG#v}.nupkg"
+          if [ "${packages[0]}" != "dist/$expected" ]; then
+            echo "expected dist/$expected, found ${packages[0]}" >&2
+            exit 1
+          fi
+
+      # Count is not provenance: verify both files against the release run's
+      # build attestation, so bytes attached to the release after the fact
+      # cannot ride the trusted publisher.
+      - name: Verify build provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in dist/*.nupkg dist/*.snupkg; do
+            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref refs/heads/main
+          done
+
+      # The exchange itself: nuget.org validates this run's OIDC token
+      # against the trusted-publishing policy and returns a one-hour key.
+      # It is the step that fails when the policy, the workflow file, or the
+      # environment do not match, so nuget-dry-run stops right after it.
+      - name: NuGet login (OIDC → short-lived API key)
+        id: login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Publish to NuGet
+        if: ${{ !inputs.nuget-dry-run }}
+        shell: bash
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          packages=(dist/*.nupkg)
+          symbols=(dist/*.snupkg)
+          # The symbols package rides the same key; nuget.org links it to the
+          # package the push just published.
+          dotnet nuget push "${packages[0]}" --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json
+          dotnet nuget push "${symbols[0]}" --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json
+
+      - name: Dry run
+        if: ${{ inputs.nuget-dry-run }}
+        run: 'echo "nuget-dry-run: the OIDC exchange succeeded; nothing was pushed"'
 
   # Maven Central. On for direct dispatches (maven=true, the dispatch
   # input's default) and for the release's `registries` call (which sets
