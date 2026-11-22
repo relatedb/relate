@@ -22,11 +22,17 @@
 //! This rides the planner's canonical walks ([`plan_any_clause`], the
 //! expression descent of [`crate::plan::walk_plan_exprs`]) and the IR's
 //! own shape predicates ([`PathPattern::needs_gpm`],
-//! [`Expr::is_scope_bearing`]) rather than a parallel classifier: one
-//! free function over `&LogicalPlan`, the shape of the planner's other
-//! classifiers (`is_database_admin_command`, `query_type`).
+//! [`Expr::is_scope_bearing`]) rather than a parallel classifier: the
+//! shape of the planner's other classifiers
+//! (`is_database_admin_command`, `query_type`).
+//!
+//! The same module is also the home of the cache-hit inline route's
+//! containment rule (ADR-0663): [`hit_is_inline_safe`], the composer
+//! over the depth bound and the auto-parameter fact that decides
+//! whether a raw-string cache hit may run on a thread that never
+//! asserted the worker's stack budget.
 
-use relate_ir::{Clause, Expr, PathPattern};
+use relate_ir::{Clause, Expr, PathPattern, Query};
 
 use crate::clause_kind::clause_mutates_store;
 use crate::names::{projected_scope, stage_output_names};
@@ -58,6 +64,131 @@ pub fn plan_is_bounded_work(plan: &LogicalPlan) -> bool {
     !plan_any_clause(plan, &mut clause_escalates)
         && !plan_any_expr(plan, &mut Expr::is_scope_bearing)
         && !cartesian_join_graph(plan)
+}
+
+/// The maximum expression depth a shallow bounded plan may carry
+/// ([`plan_is_shallow_bounded_work`]): deep enough for every realistic
+/// projection or fold of the point-lookup family (a property read with
+/// arithmetic, a CASE, a function call), shallow enough that evaluating
+/// or packing any expression of the plan recurses a fixed handful of
+/// frames — the depth-bound half of the cache-hit inline route's
+/// stack-safety fact (ADR-0663). A deeply nested but bounded-work
+/// statement (the parser's nesting cap is far higher) stays on the
+/// query worker.
+const MAX_SHALLOW_EXPRESSION_DEPTH: usize = 16;
+
+/// Whether `expr`'s tree nests deeper than `bound` nodes along any one
+/// path — measured iteratively, over [`Expr::each_child`] with an
+/// explicit work stack: measuring nesting must never itself recurse
+/// with it (ADR-0663), because the measurement runs on the calling
+/// thread of a cache hit, whatever its stack budget. The flat child
+/// walk is complete here: every scope-bearing variant already
+/// escalated the plan ([`plan_is_bounded_work`]'s expression walk), so
+/// no expression-subquery body can appear beneath a bounded plan.
+fn deeper_than(expr: &Expr, bound: usize) -> bool {
+    let mut stack = vec![(expr, 1)];
+    while let Some((expr, depth)) = stack.pop() {
+        if depth > bound {
+            return true;
+        }
+        expr.each_child(&mut |child| stack.push((child, depth + 1)));
+    }
+    false
+}
+
+/// Whether every expression of the plan nests within
+/// [`MAX_SHALLOW_EXPRESSION_DEPTH`] — the stack-safety half of the
+/// cache-hit inline route's plan fact (ADR-0663), measured FIRST: the
+/// walks the bounded-work classification rides recurse one frame per
+/// expression level, so a plan within the bound is the only plan whose
+/// walks run on an unasserted thread.
+pub(crate) fn plan_is_shallow(plan: &LogicalPlan) -> bool {
+    !plan_any_expr(plan, &mut |expr| {
+        deeper_than(expr, MAX_SHALLOW_EXPRESSION_DEPTH)
+    })
+}
+
+/// Whether a plan is bounded work ([`plan_is_bounded_work`]) whose every
+/// expression also nests within [`MAX_SHALLOW_EXPRESSION_DEPTH`] — the
+/// plan fact the cache-hit inline route (ADR-0663) routes on. Bounded
+/// work alone is a *runtime*-boundedness classification, not a
+/// stack-safety one; the depth bound adds the missing half for a thread
+/// that never asserted the query worker's stack budget, and bounded
+/// work's own rules already cap the plan at one fixed-length hop per
+/// pipeline and exclude every nested engine and var-length shape. The
+/// depth conjunct runs first (see [`plan_is_shallow`]).
+pub(crate) fn plan_is_shallow_bounded_work(plan: &LogicalPlan) -> bool {
+    plan_is_shallow(plan) && plan_is_bounded_work(plan)
+}
+
+/// Whether a cache entry's carried lowered AST — the replan's input
+/// when the stats generation drifted (ADR-0503 stage 3) — is a single
+/// stage whose every expression nests within
+/// [`MAX_SHALLOW_EXPRESSION_DEPTH`]. The AST can nest deeper than the
+/// plan compiled from it (shapes the planner collapses — nested
+/// parentheses plan to their innermost expression), and a `NEXT` chain
+/// escapes the parser's nesting cap entirely (loop-built): a replan
+/// from such an AST is the same input-proportional recursion the query
+/// worker's stack exists for, so the cache-hit inline route (ADR-0663)
+/// declines it even when the compiled plan is shallow.
+pub(crate) fn query_is_shallow(query: &Query) -> bool {
+    // The structural pre-bound, measured iteratively: a `NEXT` chain is
+    // built by a loop in the parser, not by recursion, so the parser's
+    // nesting cap does not bound it — a cached statement can carry
+    // thousands of stages within the 64 KiB cache cap, and the walk
+    // that measures expressions recurses one frame per stage. The stage
+    // count is bounded FIRST, with a loop; the expression trees that
+    // remain are parser-recursion-built and capped at the nesting
+    // limit, whose walk fits a small stack (pinned by the route's
+    // suite).
+    if query.next.is_some() {
+        return false;
+    }
+    !crate::plan::query_any_expr(query, &mut |expr| {
+        deeper_than(expr, MAX_SHALLOW_EXPRESSION_DEPTH)
+    })
+}
+
+/// Whether any expression of the plan references an auto-extracted
+/// placeholder parameter (ADR-0503's `__AUTO_*__` names). Public for its
+/// two consumers, which must agree by construction (ADR-0663): the
+/// containment rule's conjunct (a placeholder-referencing plan makes the
+/// dispatch epilogue re-parse the statement's raw text to restore
+/// authored column names — recursion with the statement's own nesting,
+/// the query worker's stack, not an arbitrary caller's) and that very
+/// epilogue, which consults this fact as its re-parse trigger so the
+/// two sites can never diverge. Over-declining is the safe direction: a
+/// placeholder in a non-projected position declines too.
+pub fn plan_references_auto_parameter(plan: &LogicalPlan) -> bool {
+    plan_any_expr(plan, &mut |expr| {
+        matches!(expr, Expr::Parameter(name)
+            if relate_parser::name_is_auto_parameter(name))
+    })
+}
+
+/// The cache-hit inline route's containment rule (ADR-0663), in its one
+/// home: whether a raw-string cache hit may run its statement on a
+/// thread that never asserted the query worker's stack budget. Every
+/// conjunct must hold —
+///
+/// - [`plan_is_shallow_bounded_work`]: the entry's compiled plan is
+///   bounded work whose every expression nests within the depth bound —
+///   execution then recurses only over depth-bounded trees;
+/// - [`query_is_shallow`]: the entry's carried lowered AST nests within
+///   the same bound — it is the replan's input on a stats-generation
+///   mismatch, and it can nest deeper than the plan compiled from it
+///   (the planner collapses shapes);
+/// - [`!plan_references_auto_parameter`]: no expression references an
+///   auto-extracted placeholder — the dispatch epilogue re-parses the
+///   statement's raw text to restore authored column names for exactly
+///   those plans, recursion with the statement's own nesting.
+///
+/// A hit that fails any conjunct is the probe's cold: the query worker
+/// serves it on the stack the parser's nesting cap is tuned for.
+pub fn hit_is_inline_safe(plan: &LogicalPlan, query: &Query) -> bool {
+    plan_is_shallow_bounded_work(plan)
+        && query_is_shallow(query)
+        && !plan_references_auto_parameter(plan)
 }
 
 /// The clause shapes that escalate beyond the mutation table's answer
@@ -345,6 +476,99 @@ mod tests {
         ] {
             assert!(bounded_work(cypher), "must be bounded work: {cypher}");
         }
+    }
+
+    #[test]
+    fn shallow_bounded_work_tracks_the_depth_bound() {
+        // The point-lookup family: shallow and bounded.
+        for cypher in [
+            "MATCH (n:User {id: $i}) RETURN n.id",
+            "MATCH (n:User {id: $i}) RETURN n.id + 1 AS next",
+            "MATCH (a:User {id: $i})-[:T]->(b) RETURN count(b.id)",
+            "RETURN 1 AS n",
+        ] {
+            let plan = crate::plan_of(cypher);
+            assert!(
+                plan_is_shallow_bounded_work(&plan),
+                "must be shallow bounded work: {cypher}"
+            );
+        }
+        // A bounded-work statement whose expression nests past the bound
+        // escalates: the depth bound is the stack-safety half, and the
+        // parser's own nesting cap (500) is far above it. Nested
+        // parameter arithmetic — the one spelling that neither collapses
+        // at lowering (parentheses do) nor constant-folds (literals do).
+        let deep = format!("RETURN {}$x{} AS n", "$x+(".repeat(20), ")".repeat(20));
+        let plan = crate::plan_of(&deep);
+        assert!(
+            plan_is_bounded_work(&plan),
+            "the fixture stays bounded work: {deep}"
+        );
+        assert!(
+            !plan_is_shallow_bounded_work(&plan),
+            "a deep expression must not run inline on an unasserted thread: {deep}"
+        );
+        // Everything bounded work refuses is refused here too — the
+        // var-length and multi-hop classes, each one representative.
+        for cypher in [
+            "MATCH (n)-[r:T*1..3]->(m) RETURN n",
+            "MATCH (a:User {id: $i})-[:T]->(b)-[:U]->(c) RETURN b",
+            "UNWIND range(1, 10) AS x RETURN x",
+        ] {
+            let plan = crate::plan_of(cypher);
+            assert!(
+                !plan_is_shallow_bounded_work(&plan),
+                "must escalate: {cypher}"
+            );
+        }
+    }
+
+    /// The containment rule's own pins (ADR-0663): the auto-parameter
+    /// conjunct declines a placeholder-referencing plan that is
+    /// otherwise shallow bounded work, and the explicit-parameter family
+    /// passes the whole rule.
+    #[test]
+    fn the_containment_rule_composes_its_conjuncts() {
+        // A plan whose expression is a placeholder parameter (the
+        // rewritten form a cached entry carries) fails the rule even
+        // though the plan itself is shallow bounded work — the
+        // spelled-out placeholder stands in for what an auto-extracted
+        // literal compiles to.
+        let placeholder = crate::plan_of("MATCH (n:User {id: $__AUTO_INT_0__}) RETURN n.id");
+        assert!(
+            plan_is_shallow_bounded_work(&placeholder),
+            "the fixture is shallow bounded work"
+        );
+        assert!(
+            plan_references_auto_parameter(&placeholder),
+            "the placeholder reference is the conjunct's fact"
+        );
+        assert!(
+            !hit_is_inline_safe(
+                &placeholder,
+                &crate::query_of("MATCH (n:User {id: 1}) RETURN n.id")
+            ),
+            "the auto-parameter conjunct declines the hit"
+        );
+        // And the explicit-parameter family passes the whole rule.
+        let plan = crate::plan_of("MATCH (n:User {id: $i}) RETURN n.id");
+        assert!(
+            hit_is_inline_safe(
+                &plan,
+                &crate::query_of("MATCH (n:User {id: $i}) RETURN n.id")
+            ),
+            "the point-lookup family is inline-safe"
+        );
+        // A NEXT-chained AST declines structurally: the chain is
+        // loop-built in the parser, outside the nesting cap, and the
+        // depth-measuring walk recurses one frame per stage.
+        let chained = crate::query_of(
+            "MATCH (a:User {id: $i}) RETURN a AS n NEXT MATCH (b:City) RETURN b AS m",
+        );
+        assert!(
+            !query_is_shallow(&chained),
+            "a NEXT chain declines structurally"
+        );
     }
 
     #[test]

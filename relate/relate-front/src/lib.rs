@@ -21,6 +21,8 @@ pub use validate::{is_known_function, KNOWN_FUNCTIONS};
 
 // `StatementPolicy` is reached through its home module, `validate`, so the
 // type has one public path rather than a second re-export alias (LABS-311).
+use lower::authored_column_label;
+use relate_parser::BranchShape;
 use validate::StatementPolicy;
 
 /// A parsed and lowered top-level statement: the planner input plus the
@@ -373,6 +375,47 @@ fn parse_sized_with_options(
         )));
     }
     relate_parser::parse_with_options(src, options).map_err(map_parse_error)
+}
+
+/// The authored column names of a statement's final explicit `RETURN`,
+/// parsed under the given preview-derived options — the facade's
+/// authored-name restore reads these for columns the compiled plan
+/// spelled as auto-extraction placeholders (ADR-0663's trigger
+/// alignment): the same options, the same grammar, as the statement's
+/// own admission parse, and no raw parser AST crosses the crate
+/// boundary. `None` when the projection is any other shape (a UNION
+/// head, `RETURN *`, a conditional's body, a trailing `CALL`) — the
+/// parser's one projection model decides.
+pub fn authored_column_names(
+    src: &str,
+    preview: relate_core::PreviewFeatures,
+) -> Result<Option<Vec<String>>> {
+    let statement = parse_sized_with_options(src, parse_options(preview))?;
+    Ok(match statement.projection_shape() {
+        // A plain-items projection: the authored name per item — the
+        // alias, else the label `column_label`'s parser-level twin
+        // derives (the CIP-128 display rewrite included), else the
+        // implicit name. A parsed item always carries one of the three
+        // (`ReturnItem::output_name`'s own contract), so the per-item
+        // answer is total.
+        BranchShape::Items(items) => Some(
+            items
+                .iter()
+                .map(|item| {
+                    item.alias
+                        .as_ref()
+                        .map(|alias| alias.to_string())
+                        .or_else(|| authored_column_label(&item.expr, &item.source_text))
+                        .or_else(|| item.implicit_name().map(|name| name.to_string()))
+                        .expect("a parsed return item always has an output name")
+                })
+                .collect(),
+        ),
+        // Every other projection shape — `RETURN *`, a trailing
+        // column-exporting `CALL`, no result at all: no plain items to
+        // name, and the restore keeps the plan's spelling.
+        BranchShape::Wildcard | BranchShape::Omitted => None,
+    })
 }
 
 /// Parse Cypher for `Database::query`.

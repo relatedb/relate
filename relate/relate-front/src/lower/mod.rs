@@ -284,6 +284,8 @@ mod expr;
 mod pattern;
 mod search_filter;
 
+// The authored-label twin the facade's column restore reads (ADR-0663).
+pub(crate) use clause::authored_column_label;
 use clause::*;
 pub use expr::{lower_expr, lower_type_expr};
 use pattern::*;

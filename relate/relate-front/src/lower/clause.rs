@@ -300,18 +300,53 @@ fn column_label(
     source_text: &Option<String>,
     lowered: &mdb::Expr,
 ) -> Option<String> {
+    let display = match lowered {
+        // CIP-128: aggregate aliases execute under their canonical name
+        // (`percentile_cont` → `percentileCont`); the column name follows.
+        // Scoped to the function-call arm: `RETURN (1 + 2)` keeps its
+        // parens in the column name, matching Neo4j.
+        mdb::Expr::Function { name, .. } => Some(name.to_string()),
+        _ => None,
+    };
+    call_label_or_source(parsed, source_text, display.as_deref())
+}
+
+/// The authored column label for an unaliased parsed item —
+/// [`column_label`]'s parser-level twin, for the facade's authored-name
+/// restore (ADR-0663), which parses without lowering: the same core
+/// (see [`call_label_or_source`]), the display spelling read from the
+/// parsed call's name through the one alias table.
+pub(crate) fn authored_column_label(
+    parsed: &cl::Expr,
+    source_text: &Option<String>,
+) -> Option<String> {
+    let display = match parsed {
+        cl::Expr::FunctionCall(call) => call
+            .name
+            .with_str(crate::agg::lowered_alias_name)
+            .map(str::to_string),
+        _ => None,
+    };
+    call_label_or_source(parsed, source_text, display.as_deref())
+}
+
+/// The column-label policy's one core, shared by the lowering's
+/// [`column_label`] and its authored twin above: the verbatim source
+/// text, except for a function call whose column name follows its
+/// display spelling — `display` already resolved by the caller (the
+/// lowering's resolved name, the alias table's display spelling), and
+/// `unwrapped_call_source` splicing the argument-list source in
+/// lockstep with the AST (`Expr::Paren` is unwrapped by `lower_expr`,
+/// so the parsed side unwraps — and strips the matching outer parens
+/// from the text — in lockstep).
+fn call_label_or_source(
+    parsed: &cl::Expr,
+    source_text: &Option<String>,
+    display: Option<&str>,
+) -> Option<String> {
     let src = source_text.as_ref()?;
-    // CIP-128: aggregate aliases execute under their canonical name
-    // (`percentile_cont` → `percentileCont`); the column name follows.
-    // Scoped to the function-call arm: `RETURN (1 + 2)` keeps its parens
-    // in the column name, matching Neo4j. `Expr::Paren` is unwrapped by
-    // `lower_expr`, so unwrap it in the parsed AST too — and strip the
-    // matching outer parens from the source text in lockstep — before
-    // checking for the function call under the parens.
-    if let mdb::Expr::Function { name, .. } = lowered {
-        if let Some(args_src) = unwrapped_call_source(parsed, src) {
-            return Some(format!("{name}{args_src}"));
-        }
+    if let (Some(display), Some(args_src)) = (display, unwrapped_call_source(parsed, src)) {
+        return Some(format!("{display}{args_src}"));
     }
     Some(src.clone())
 }

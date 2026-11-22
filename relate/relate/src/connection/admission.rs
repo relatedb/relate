@@ -84,6 +84,13 @@ pub(super) struct Admission {
     /// A cacheable miss is charged on the cache ledger after the statement
     /// reservation, when the ceiling has room.
     pub(super) memory: PlanMemory,
+    /// The store's resolved preview set, read once under the publication
+    /// guard before the cache lookup (ADR-0378's one owner): every
+    /// consumer after admission — the uncached parse already inside, and
+    /// the dispatch epilogue's authored-name restore, whose re-parse must
+    /// run under the same derived options — reads this copy instead of
+    /// re-opening the guard (ADR-0663).
+    pub(super) preview: relate_core::PreviewFeatures,
 }
 
 impl Connection {
@@ -102,18 +109,44 @@ impl Connection {
         cache: CacheUse,
         started: Instant,
     ) -> Result<Admission> {
+        match self.admit_prefix(cypher, params, cache, started)? {
+            Prefix::Hit(admission) => Ok(admission),
+            Prefix::Cold {
+                preview,
+                tail,
+                clocks,
+            } => self.admit_uncached(cypher, params, preview, tail, clocks),
+        }
+    }
+
+    /// [`Self::admit_statement`]'s non-recursive half (ADR-0663): the
+    /// clock, health and failed-transaction gates, the preview read, and
+    /// the cache lookup with the hit admission — every stage that cannot
+    /// recurse with statement nesting (a hit carries no front, ADR-0651;
+    /// the parse-bearing tail is what the query worker exists for, its
+    /// nesting cap tuned for the worker's stack). Shared by
+    /// [`Self::admit_statement`] and the cache-hit inline route's probe
+    /// ([`Self::admit_hit_only`]), so no admission gate can run on one
+    /// path and be missed on the other.
+    fn admit_prefix(
+        &mut self,
+        cypher: &str,
+        params: &BTreeMap<String, Value>,
+        cache: CacheUse,
+        started: Instant,
+    ) -> Result<Prefix> {
         // The clock is the caller's input, armed before the first gate so
         // the ADR-0221 total covers admission itself: `started` for every
-        // result, and the commit-timing flag when the store's policy is on
-        // (the opt-in window the write path consumes; LABS-832's
-        // always-on split is the `parse`/`plan` durations below). A caller
-        // retrying a statement passes the first attempt's clock so the
-        // caller-visible total spans both attempts (REL8-1120).
+        // result. A caller retrying a statement passes the first
+        // attempt's clock so the caller-visible total spans both attempts
+        // (REL8-1120).
         // The commit-timing window opens with the statement; the flag is
         // the policy opt-in, and the write path derives the instant from
         // `started` under it — no second clock reading exists.
         let timing_on = self.inner.timing_on.load(Ordering::Relaxed);
         self.inner.check_healthy()?;
+        // The failed-transaction gate: the one spelling of the refusal
+        // (txn.rs), every statement path's own.
         if let Some(txn) = self.txn.as_ref() {
             txn.refuse_if_failed()?;
         }
@@ -145,14 +178,77 @@ impl Connection {
             parse_started,
         };
         let tail = match self.cache_lookup(cypher, params, cache, preview) {
-            Lookup::Hit(hit) => match self.admit_hit(cypher, params, hit, clocks)? {
-                Some(admission) => return Ok(admission),
-                None => UncachedTail::RejectedHit,
-            },
+            Lookup::Hit(hit) => {
+                // The cache-hit inline route's containment rule
+                // (ADR-0663), its one home: the planner's composer over
+                // the entry's plan and carried AST. A probe hit that
+                // fails any conjunct is the probe's cold — the worker's
+                // full admission re-runs every stage and serves the hit
+                // on its own stack. A probe hit that passes is the
+                // inline route's own (the observable the route's tests
+                // read); a query-mode hit below is the worker's and
+                // counts nothing.
+                if cache == CacheUse::RawProbe
+                    && !relate_planner::hit_is_inline_safe(&hit.handles.plan, &hit.handles.query)
+                {
+                    return Ok(Prefix::Cold {
+                        preview,
+                        tail: UncachedTail::Bypassed,
+                        clocks,
+                    });
+                }
+                match self.admit_hit(cypher, params, hit, clocks, preview)? {
+                    Some(admission) => {
+                        // A probe hit that passed the rule AND admitted
+                        // is the inline route's own — the observable the
+                        // route's tests read. A query-mode hit is the
+                        // worker's and counts nothing; a literal-shape
+                        // rejection below never ran inline and counts
+                        // nothing either.
+                        #[cfg(all(test, not(target_arch = "wasm32")))]
+                        if cache == CacheUse::RawProbe {
+                            self.hit_inline_statements += 1;
+                        }
+                        return Ok(Prefix::Hit(admission));
+                    }
+                    None => UncachedTail::RejectedHit,
+                }
+            }
             Lookup::Miss(seed) => UncachedTail::SeededMiss(seed),
             Lookup::Skip => UncachedTail::Bypassed,
         };
-        self.admit_uncached(cypher, params, preview, tail, clocks)
+        Ok(Prefix::Cold {
+            preview,
+            tail,
+            clocks,
+        })
+    }
+
+    /// The cache-hit inline route's probe (ADR-0663): the admission
+    /// prefix with the probe's cache mode — stage 1 of the lookup only,
+    /// never the normalizing stage 2, whose recursion belongs to the
+    /// query worker's stack — answering only a raw hit the prefix's
+    /// containment check admitted. Everything cold or declined returns
+    /// `None` and stays the query worker's, its parse recursion the
+    /// thing the worker's 64 MiB stack exists for. The prefix is the
+    /// one shared spelling: no admission stage can run on one path and
+    /// be missed on the other.
+    pub(super) fn admit_hit_only(
+        &mut self,
+        cypher: &str,
+        params: &BTreeMap<String, Value>,
+        started: Instant,
+    ) -> Result<Option<Admission>> {
+        match self.admit_prefix(cypher, params, CacheUse::RawProbe, started)? {
+            Prefix::Hit(admission) => Ok(Some(admission)),
+            // A `Cold` here is every declined outcome alike — a raw
+            // miss, a bypass, a reserved-prefix caller map, a hit the
+            // containment rule refused, or a hit rejected for
+            // literal-shape safety — and the probe drops the tail: the
+            // worker's own admission re-runs every stage and reports
+            // whatever the uncached run reports.
+            Prefix::Cold { .. } => Ok(None),
+        }
     }
 
     /// The cache-hit admission path (ADR-0503 stage 3): the entry's
@@ -171,6 +267,7 @@ impl Connection {
         params: &BTreeMap<String, Value>,
         hit: HitPayload,
         clocks: AdmitClocks,
+        preview: relate_core::PreviewFeatures,
     ) -> Result<Option<Admission>> {
         let parse = clocks.parse_started.elapsed();
         // LABS-832: the PLAN phase — the generation check, a possible
@@ -207,9 +304,12 @@ impl Connection {
         }
         Ok(Some(stage_admission(
             clocks,
-            PreambleMode::Execute,
-            plan,
-            stamp,
+            StagedPlan {
+                preamble: PreambleMode::Execute,
+                logical: plan,
+                stamp,
+                preview,
+            },
             crate::phase_timing::AdmissionTiming {
                 parse,
                 plan: plan_started.elapsed(),
@@ -269,9 +369,12 @@ impl Connection {
             )? {
                 let admission = stage_admission(
                     clocks,
-                    compiled.preamble,
-                    Arc::clone(&compiled.logical),
-                    compiled.stamp,
+                    StagedPlan {
+                        preamble: compiled.preamble,
+                        logical: Arc::clone(&compiled.logical),
+                        stamp: compiled.stamp,
+                        preview,
+                    },
                     crate::phase_timing::AdmissionTiming {
                         parse: compiled.parse,
                         plan: compiled.plan,
@@ -303,9 +406,12 @@ impl Connection {
         let bytes = plan_bytes(&logical);
         Ok(stage_admission(
             clocks,
-            mode,
-            logical,
-            stamp,
+            StagedPlan {
+                preamble: mode,
+                logical,
+                stamp,
+                preview,
+            },
             crate::phase_timing::AdmissionTiming {
                 parse,
                 plan,
@@ -332,6 +438,21 @@ struct AdmitClocks {
     /// riding the bundle so no admission seam carries a bare `Instant`
     /// beside it (REL8-1946).
     parse_started: Instant,
+}
+
+/// The admission prefix's resolution (ADR-0663): a hit that admitted —
+/// the statement can run now, nothing recursive ran and none will — or
+/// the cold tail with the facts [`Connection::admit_uncached`] needs.
+/// Modelled as exactly the reachable states, the `UncachedTail`
+/// convention: a nullable `Admission` beside a tail would compile but
+/// cannot occur (a hit never reaches the tail).
+enum Prefix {
+    Hit(Admission),
+    Cold {
+        preview: relate_core::PreviewFeatures,
+        tail: UncachedTail,
+        clocks: AdmitClocks,
+    },
 }
 
 /// The cache lookup's resolution for the uncached tail (LABS-1120),
@@ -378,9 +499,7 @@ impl UncachedTail {
 /// have one spelling and the struct cannot drift between paths.
 fn stage_admission(
     clocks: AdmitClocks,
-    mode: PreambleMode,
-    logical: Arc<LogicalPlan>,
-    stamp: ResultStamp,
+    staged: StagedPlan,
     timing: crate::phase_timing::AdmissionTiming,
     effective: Option<BTreeMap<String, Value>>,
     memory: PlanMemory,
@@ -388,14 +507,28 @@ fn stage_admission(
     Admission {
         started: clocks.started,
         timing_on: clocks.timing_on,
-        preamble: mode,
-        admin: is_database_admin_command(&logical),
-        logical,
-        stamp,
+        preamble: staged.preamble,
+        admin: is_database_admin_command(&staged.logical),
+        logical: staged.logical,
+        stamp: staged.stamp,
         timing,
         effective,
         memory,
+        preview: staged.preview,
     }
+}
+
+/// The staged plan's facts `stage_admission` carries beside its clocks
+/// and timing — the resolved preamble mode, the plan itself, its result
+/// stamp, and the preview set the admission read — bundled so the
+/// constructor stays under `clippy::too_many_arguments` (the
+/// `DispatchCtx` convention). The same facts `Admission` records, under
+/// the names it records them by.
+struct StagedPlan {
+    preamble: PreambleMode,
+    logical: Arc<LogicalPlan>,
+    stamp: ResultStamp,
+    preview: relate_core::PreviewFeatures,
 }
 
 /// ADR-0503's insert eligibility, read from the finished admission — the

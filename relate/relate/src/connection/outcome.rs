@@ -133,6 +133,16 @@ pub struct ExecutionFailure {
 }
 
 impl Executed {
+    /// The result header both variants carry — the one accessor the
+    /// epilogues that rename through it use (the authored-column
+    /// restore, ADR-0663), never a hand-spelled variant match beside it.
+    pub(super) fn header_mut(&mut self) -> &mut ResultHeader {
+        match self {
+            Executed::Rows(result) => &mut result.header,
+            Executed::Failed(failure) => &mut failure.header,
+        }
+    }
+
     /// Stage a dispatch-phase failure of `logical`. A planned statement's
     /// output names always derive (the UNION column-agreement check ran in
     /// `plan`), so [`plan_output_names_expect`] holds the one expect for

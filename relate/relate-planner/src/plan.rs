@@ -234,6 +234,15 @@ pub fn query_any_clause(query: &Query, pred: &mut impl FnMut(&Clause) -> bool) -
     found
 }
 
+/// The not-yet-planned [`Query`] analog of [`plan_any_expr`]: whether any
+/// expression of the query satisfies `pred`, riding
+/// [`relate_ir::walk_query`]'s full descent (subquery bodies included).
+pub(crate) fn query_any_expr(query: &Query, pred: &mut impl FnMut(&Expr) -> bool) -> bool {
+    let mut found = false;
+    relate_ir::walk_query(query, &mut |_| {}, &mut |expr| found |= pred(expr));
+    found
+}
+
 /// ADR-0210: whether the plan carries `CALL { … } IN TRANSACTIONS`
 /// anywhere (top level or nested in a `CALL { }` body — the nested form
 /// is rejected by [`crate::validate`], so in practice this is the

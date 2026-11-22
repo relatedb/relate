@@ -116,6 +116,16 @@ impl Statement {
         }
     }
 
+    /// The result shape of the statement's projection stage — the one
+    /// derivation, over [`Self::projection_stage`] and [`branch_shape`],
+    /// that the result-header naming paths read (the facade's
+    /// authored-column restore, ADR-0663), never a hand-rolled walk
+    /// beside it. A UNION head's own arm is the shape the composite
+    /// stands for; a sole conditional's is its representative body's.
+    pub fn projection_shape(&self) -> BranchShape<'_> {
+        branch_shape(&self.projection_stage().clauses)
+    }
+
     /// Whether the statement's final stage projects columns: it ends in a
     /// `RETURN`, or in a conditional / nested `CALL` subquery that does. A
     /// unit subquery call with no `RETURN` makes the enclosing arm a
