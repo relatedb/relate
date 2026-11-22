@@ -97,20 +97,43 @@ pub struct PeakCalibrationReport {
     pub conservative_cgroup_ratio: Option<f64>,
 }
 
-/// Summarize one scope's observations: a single family's, or — `None` —
-/// every observation for the overall row. The summary's `family` field
-/// carries the wire name, `overall` for the overall row; no caller
-/// discriminates a magic string. A scope with no observations, or with no
-/// one-holder observation to fit the single-holder slope on, is an error:
+/// What a summary covers: one family's observations, or every observation
+/// for the overall row.
+#[derive(Clone, Copy)]
+pub(super) enum Scope {
+    Overall,
+    Family(&'static FamilySpec),
+}
+
+impl Scope {
+    /// The wire name: the family's, or `overall`.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Overall => "overall",
+            Self::Family(spec) => spec.name,
+        }
+    }
+
+    fn covers(self, row: &PeakCalibrationObservation) -> bool {
+        match self {
+            Self::Overall => true,
+            Self::Family(spec) => row.family == spec.name,
+        }
+    }
+}
+
+/// Summarize one scope's observations. The summary's `family` field
+/// carries the scope's wire name; no caller discriminates a magic string. A
+/// scope with no observations, or with no one-holder observation to fit the single-holder slope on, is an error:
 /// there is no honest fit to report.
 pub(super) fn summarize_family(
-    family: Option<&'static FamilySpec>,
+    scope: Scope,
     observations: &[PeakCalibrationObservation],
 ) -> Result<PeakCalibrationSummary, String> {
-    let scope = family.map_or("overall", |spec| spec.name);
+    let name = scope.name();
     let rows = observations
         .iter()
-        .filter(|row| family.is_none_or(|spec| row.family == spec.name))
+        .filter(|row| scope.covers(row))
         .collect::<Vec<_>>();
     let rss_points = rows
         .iter()
@@ -124,7 +147,7 @@ pub(super) fn summarize_family(
         })
         .collect::<Vec<_>>();
     let rss_fit = linear_fit(&rss_points)
-        .ok_or_else(|| format!("calibration scope {scope} has no observations"))?;
+        .ok_or_else(|| format!("calibration scope {name} has no observations"))?;
     let cgroup_fit = linear_fit(&cgroup_points);
     let rss_max_abs_residual_bytes = max_abs_residual(&rss_points, rss_fit);
     let cgroup_max_abs_residual_bytes = cgroup_fit.map(|fit| max_abs_residual(&cgroup_points, fit));
@@ -136,12 +159,12 @@ pub(super) fn summarize_family(
     let rss_single = linear_fit(&logical_byte_points(&single, |row| {
         Some(row.rss_delta_bytes)
     }))
-    .ok_or_else(|| format!("calibration scope {scope} has no one-holder observations"))?;
+    .ok_or_else(|| format!("calibration scope {name} has no one-holder observations"))?;
     let cgroup_single_points = logical_byte_points(&single, |row| row.cgroup_delta_bytes);
     let cgroup_single = linear_fit(&cgroup_single_points);
-    let per_family = family.is_some();
+    let per_family = matches!(scope, Scope::Family(_));
     Ok(PeakCalibrationSummary {
-        family: scope.to_string(),
+        family: name.to_string(),
         observations: rows.len(),
         rss_slope: rss_fit.slope,
         rss_intercept_bytes: rss_fit.intercept,
@@ -385,17 +408,18 @@ mod tests {
             observation(bytes(2048), 2, bytes(4096), bytes(4096) * 2 + holder),
             observation(bytes(1024), 4, bytes(4096), bytes(4096) * 2 + 3 * holder),
         ];
-        let summary = summarize_family(family_spec("create").ok(), &rows).expect("summary");
+        let summary = summarize_family(Scope::Family(family_spec("create").unwrap()), &rows)
+            .expect("summary");
         assert!((summary.rss_single_holder_slope - 2.0).abs() < 1e-9);
         assert!((summary.rss_single_holder_r_squared - 1.0).abs() < 1e-9);
         let per_holder = summary.rss_per_holder_bytes.expect("per-holder cost");
         assert!((per_holder - holder as f64).abs() < 1.0, "{per_holder}");
         assert!(summary.rss_slope > summary.rss_single_holder_slope);
-        assert!(summarize_family(None, &rows)
+        assert!(summarize_family(Scope::Overall, &rows)
             .expect("summary")
             .rss_per_holder_bytes
             .is_none());
-        assert!(summarize_family(family_spec("sort").ok(), &rows).is_err());
+        assert!(summarize_family(Scope::Family(family_spec("sort").unwrap()), &rows).is_err());
     }
 
     #[test]

@@ -365,13 +365,17 @@ impl CorpusCommand {
                 run,
                 graph_benchmark_ldbc,
                 data,
-            } => (
-                Lane::GraphStore {
-                    workload: StoreWorkload::SnbBi,
-                    graph: graph_benchmark_ldbc.graph_options(&data),
-                },
+            } => store_lane(StoreWorkload::SnbBi, run, graph_benchmark_ldbc, &data),
+            Self::AggStress {
                 run,
-            ),
+                graph_benchmark_ldbc,
+                data,
+            } => store_lane(StoreWorkload::AggStress, run, graph_benchmark_ldbc, &data),
+            Self::EquiJoin {
+                run,
+                graph_benchmark_ldbc,
+                data,
+            } => store_lane(StoreWorkload::EquiJoin, run, graph_benchmark_ldbc, &data),
             Self::FraudQpp { run, fraud } => (
                 Lane::Fraud {
                     fraud: fraud.into_config(),
@@ -385,30 +389,26 @@ impl CorpusCommand {
                 },
                 run,
             ),
-            Self::AggStress {
-                run,
-                graph_benchmark_ldbc,
-                data,
-            } => (
-                Lane::GraphStore {
-                    workload: StoreWorkload::AggStress,
-                    graph: graph_benchmark_ldbc.graph_options(&data),
-                },
-                run,
-            ),
-            Self::EquiJoin {
-                run,
-                graph_benchmark_ldbc,
-                data,
-            } => (
-                Lane::GraphStore {
-                    workload: StoreWorkload::EquiJoin,
-                    graph: graph_benchmark_ldbc.graph_options(&data),
-                },
-                run,
-            ),
         }
     }
+}
+
+/// The lane of a workload that shares the graph-benchmark-ldbc store
+/// payload: the one place the store arms of [`CorpusCommand::into_lane`]
+/// build it.
+fn store_lane(
+    workload: StoreWorkload,
+    run: CorpusRunArgs,
+    graph_benchmark_ldbc: GraphBenchmarkLdbcStoreArgs,
+    data: &DataLaneArgs,
+) -> (Lane, CorpusRunArgs) {
+    (
+        Lane::GraphStore {
+            workload,
+            graph: graph_benchmark_ldbc.graph_options(data),
+        },
+        run,
+    )
 }
 
 /// A query id: one of [`QIDS`].

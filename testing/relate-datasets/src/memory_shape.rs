@@ -468,8 +468,30 @@ enum StatementOutcome {
     CapacityRejected,
 }
 
-/// Run one fill statement through the shared protocol: announce it, execute
-/// it, then ack or nack the cursor. Any other failure is returned as is.
+/// Execute one already-announced fill statement and settle the cursor: ack
+/// on success, nack on `capacity exceeded`. Any other failure is returned as
+/// is. The one place that classifies a statement's result.
+fn run_and_settle(
+    cursor: &mut FillCursor,
+    statement: &str,
+    run_one: &mut impl FnMut(&str) -> Result<(), String>,
+) -> Result<StatementOutcome, String> {
+    match run_one(statement) {
+        Ok(()) => {
+            cursor.ack()?;
+            Ok(StatementOutcome::Acked)
+        }
+        Err(err) if is_capacity(&err) => {
+            cursor.nack()?;
+            Ok(StatementOutcome::CapacityRejected)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Run one fill statement through the shared protocol: announce it, settle
+/// it with [`run_and_settle`], then mark it ended (or clear the marker on a
+/// capacity rejection).
 fn run_statement(
     cursor: &mut FillCursor,
     live: &Mutex<Live>,
@@ -480,19 +502,12 @@ fn run_statement(
 ) -> Result<StatementOutcome, String> {
     let label = abbreviate(statement);
     begin_statement(live, phase, n, &label)?;
-    match run_one(statement) {
-        Ok(()) => {
-            cursor.ack()?;
-            end_statement(live, phase, n, &label)?;
-            Ok(StatementOutcome::Acked)
-        }
-        Err(err) if is_capacity(&err) => {
-            cursor.nack()?;
-            clear_active(live);
-            Ok(StatementOutcome::CapacityRejected)
-        }
-        Err(err) => Err(err),
+    let outcome = run_and_settle(cursor, statement, run_one)?;
+    match outcome {
+        StatementOutcome::Acked => end_statement(live, phase, n, &label)?,
+        StatementOutcome::CapacityRejected => clear_active(live),
     }
+    Ok(outcome)
 }
 
 /// Write batches until the shape reaches [`shape_target`].
@@ -531,28 +546,15 @@ fn fill_to_target(
                 target.rels
             ));
         }
-        let statement = if cursor.nodes == target.nodes && cursor.rels + 1 == target.rels {
-            cursor.close_ring().ok_or_else(|| {
-                format!(
-                    "{} has {} nodes and {} relationships and no closing edge before {} relationships",
-                    shape.as_str(),
-                    cursor.nodes,
-                    cursor.rels,
-                    target.rels
-                )
-            })?
-        } else {
-            let Some(statement) = cursor.next_statement()? else {
-                return Err(format!(
-                    "{} stopped at {} nodes and {} relationships before {} nodes and {} relationships",
-                    shape.as_str(),
-                    cursor.nodes,
-                    cursor.rels,
-                    target.nodes,
-                    target.rels
-                ));
-            };
-            statement
+        let Some(statement) = cursor.next_statement_toward(target.nodes, target.rels)? else {
+            return Err(format!(
+                "{} stopped at {} nodes and {} relationships before {} nodes and {} relationships",
+                shape.as_str(),
+                cursor.nodes,
+                cursor.rels,
+                target.nodes,
+                target.rels
+            ));
         };
         n += 1;
         match run_statement(&mut cursor, live, phase, n, &statement, &mut run_one)? {
@@ -624,10 +626,15 @@ fn fill_until_capacity(
                     "      {phase:<5} stopped at the memory limit after {n} statements"
                 ));
                 if let Some(wrap) = cursor.close_ring() {
-                    match run_one(&wrap) {
-                        Ok(()) => cursor.ack()?,
-                        Err(err) if is_capacity(&err) => cursor.nack()?,
-                        Err(err) => return Err(err),
+                    // A closing edge the limit also rejects is expected: the
+                    // cursor rolled it back and the ring stays open, which is
+                    // the measured shape at the limit.
+                    if let StatementOutcome::CapacityRejected =
+                        run_and_settle(&mut cursor, &wrap, &mut run_one)?
+                    {
+                        progress(&format!(
+                            "      {phase:<5} the ring's closing edge also hit the memory limit"
+                        ));
                     }
                 }
                 return Ok(Filled {

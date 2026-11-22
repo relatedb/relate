@@ -63,12 +63,12 @@ pub(super) fn assert_routes_every_committed_entry(
 pub(super) fn the_oracle_covers(w: Workload, entries: usize, rows_per_entry: usize) {
     let queries = workload_queries(w).unwrap();
     let oracle = files::OracleFile::load(w, ScaleFactor::Sf0_1, &queries).unwrap();
-    assert_eq!(oracle.table.len(), entries, "{w}");
+    assert_eq!(oracle.table().len(), entries, "{w}");
     // The loader's validation already proved the bijection — every `ok`
     // entry carries a row and no kept or pinned entry does — so the
     // table itself is the complete inventory: walk it, never re-look-up
     // what the validation just guaranteed.
-    for (id, entry) in &oracle.table {
+    for (id, entry) in oracle.table() {
         assert_eq!(
             entry.expected.rows.len(),
             rows_per_entry,

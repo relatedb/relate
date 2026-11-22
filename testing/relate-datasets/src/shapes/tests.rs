@@ -462,3 +462,26 @@ fn shape_cli_spelling_roundtrips() {
     assert!("dense ring".parse::<GraphShape>().is_err());
     assert!("mid degree".parse::<GraphShape>().is_err());
 }
+
+#[test]
+fn next_statement_toward_takes_the_closing_edge_one_relationship_short() {
+    let mut ring = FillCursor::new(GraphShape::Ring, 1, IndexCounts::NONE);
+    ring.next_statement().unwrap().unwrap();
+    ring.ack().unwrap();
+    // Nodes are in, none linked yet: the ordinary next statement (the link).
+    let link = ring.next_statement_toward(2_000, 2_000).unwrap().unwrap();
+    assert!(link.contains("[:NEXT]"));
+    ring.ack().unwrap();
+    assert_eq!((ring.nodes, ring.rels), (2_000, 1_999));
+    // One relationship short of the target: the closing edge, pending like any.
+    let wrap = ring.next_statement_toward(2_000, 2_000).unwrap().unwrap();
+    assert!(wrap.contains("id: 1999") && wrap.contains("id: 0"));
+    ring.ack().unwrap();
+    assert_eq!((ring.nodes, ring.rels), (2_000, 2_000));
+
+    // A shape with no closing edge cannot reach the target: `None`, never a guess.
+    let mut flat = FillCursor::new(GraphShape::Flat, 1, IndexCounts::NONE);
+    flat.next_statement().unwrap().unwrap();
+    flat.ack().unwrap();
+    assert!(flat.next_statement_toward(2_000, 1).unwrap().is_none());
+}

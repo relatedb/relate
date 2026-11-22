@@ -137,6 +137,21 @@ impl FillCursor {
         Ok(Some(statement))
     }
 
+    /// The next statement on the way to exactly `nodes` nodes and `rels`
+    /// relationships: the ring's closing edge when the nodes are all in and
+    /// one relationship is short, otherwise [`next_statement`][Self::next_statement].
+    /// `None` when the shape cannot grow toward the target.
+    pub(crate) fn next_statement_toward(
+        &mut self,
+        nodes: u64,
+        rels: u64,
+    ) -> Result<Option<String>, String> {
+        if self.nodes == nodes && self.rels + 1 == rels {
+            return Ok(self.close_ring());
+        }
+        self.next_statement()
+    }
+
     pub(crate) fn ack(&mut self) -> Result<(), String> {
         let pending = self
             .pending

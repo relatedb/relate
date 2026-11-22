@@ -17,7 +17,7 @@ use relate_test_support::bolt::client::Session;
 
 mod report;
 
-use report::summarize_family;
+use report::{summarize_family, Scope};
 pub use report::{PeakCalibrationObservation, PeakCalibrationReport, PeakCalibrationSummary};
 
 const BATCH: i64 = 500;
@@ -215,9 +215,9 @@ pub(crate) fn case_workspace_memory(
     let mut summaries = families
         .iter()
         .copied()
-        .map(|spec| summarize_family(Some(spec), &observations))
+        .map(|spec| summarize_family(Scope::Family(spec), &observations))
         .collect::<Result<Vec<_>, _>>()?;
-    summaries.push(summarize_family(None, &observations)?);
+    summaries.push(summarize_family(Scope::Overall, &observations)?);
     let conservative_cgroup_ratio = observations
         .iter()
         .filter_map(|row| row.cgroup_to_logical_ratio)

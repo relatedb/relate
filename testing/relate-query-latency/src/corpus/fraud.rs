@@ -212,10 +212,7 @@ impl FraudGraphs {
     /// authored failure is its check) — and hold the generator knobs;
     /// the graphs open on first use.
     pub(super) fn new(config: FraudConfig, queries: &[CorpusQuery]) -> Result<Self> {
-        let oracle = OracleFile {
-            table: fraud_oracle()?,
-            path: oracle_path(),
-        };
+        let oracle = OracleFile::new(fraud_oracle()?, oracle_path());
         for q in queries {
             let check = oracle.row(&q.id)?;
             match (&q.classification, check) {
@@ -251,7 +248,7 @@ impl FraudGraphs {
         // No oracle row is without a query file — the shared stale-id
         // refusal, over this lane's own table.
         refuse_stale_ids(
-            oracle.table.keys().map(String::as_str),
+            oracle.table().keys().map(String::as_str),
             queries,
             "an oracle entry",
         )?;

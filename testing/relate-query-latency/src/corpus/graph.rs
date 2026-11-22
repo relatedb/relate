@@ -258,8 +258,8 @@ mod tests {
     fn rows_oracle_routes_run_check_plan_and_refuse_a_missing_row() {
         let mut handle = GraphHandle::memory("the rows-oracle route test's graph").unwrap();
         let path = PathBuf::from("oracle.json");
-        let oracle = OracleFile {
-            table: Oracle::from([(
+        let oracle = OracleFile::new(
+            Oracle::from([(
                 "q1".to_string(),
                 OracleEntry {
                     expected: crate::answers::Expected {
@@ -269,8 +269,8 @@ mod tests {
                     query_sha256: "aa".into(),
                 },
             )]),
-            path: path.clone(),
-        };
+            path.clone(),
+        );
         let q1 = ok_query("q1", "RETURN 1");
         let Routed::Run(target) = Routed::rows_checked(&mut handle.conn, &oracle, &q1).unwrap()
         else {
@@ -294,10 +294,7 @@ mod tests {
         // `unwrap_err`.
         let err = match Routed::rows_checked(
             &mut handle.conn,
-            &OracleFile {
-                table: Oracle::new(),
-                path,
-            },
+            &OracleFile::new(Oracle::new(), path),
             &ok_query("q9-not-in-the-oracle", "RETURN 1"),
         ) {
             Err(err) => err,
