@@ -16,6 +16,64 @@ use super::Connection;
 use crate::explain;
 use crate::phase_timing::TimingStamp;
 use crate::{QueryResult, Result, Value};
+use relate_planner::LogicalPlan;
+
+/// The render stage's read-only view of the admission (REL8-1946): every
+/// fact the EXPLAIN/PROFILE render paths consume, as ONE named carrier —
+/// the connection module's stage hand-off convention (`DispatchCtx`,
+/// `AdmitClocks`, `TxnRun`) — so no render signature grows a loose fact
+/// clump or an argument-count suppression, and the stage has one shape
+/// end to end. The render mode is deliberately NOT a field: each path is
+/// reached under exactly one preamble (`Explain` here, `Profile` in the
+/// epilogue), so each names its own constant and the mode cannot arrive
+/// wrong. [`RenderFacts::new`] is the one projection body — the
+/// destructured parts of a by-value admission — and `From<&Admission>`
+/// is its borrowed form.
+pub(super) struct RenderFacts<'a> {
+    pub(super) logical: &'a LogicalPlan,
+    pub(super) admin: bool,
+    pub(super) namespace: relate_core::Namespace,
+    /// ADR-0221's statement clock and the admission's measured timing —
+    /// the EXPLAIN render stamps its result from them.
+    pub(super) started: Instant,
+    pub(super) timing: crate::phase_timing::AdmissionTiming,
+    /// The stamp's plan-derived query type (ADR-0162), for the render's
+    /// header.
+    pub(super) qtype: crate::QueryType,
+}
+
+impl<'a> RenderFacts<'a> {
+    /// The one projection body: the admission's destructured parts, as
+    /// the by-value destructure in `run_admitted_once` holds them.
+    pub(super) fn new(
+        logical: &'a LogicalPlan,
+        admin: bool,
+        stamp: &crate::gate::ResultStamp,
+        started: Instant,
+        timing: crate::phase_timing::AdmissionTiming,
+    ) -> Self {
+        Self {
+            logical,
+            admin,
+            namespace: stamp.namespace,
+            started,
+            timing,
+            qtype: stamp.qtype,
+        }
+    }
+}
+
+impl<'a> From<&'a Admission> for RenderFacts<'a> {
+    fn from(admission: &'a Admission) -> Self {
+        Self::new(
+            admission.logical.as_ref(),
+            admission.admin,
+            &admission.stamp,
+            admission.started,
+            admission.timing,
+        )
+    }
+}
 
 impl Connection {
     /// The EXPLAIN stage: plan, compile-time validate and render the wrapped
@@ -26,7 +84,7 @@ impl Connection {
         &self,
         cypher: &str,
         params: &BTreeMap<String, Value>,
-        admission: &Admission,
+        facts: &RenderFacts<'_>,
     ) -> Result<QueryResult> {
         // LABS-832: the EXECUTE phase of an EXPLAIN run — the plan render,
         // this path's execute-equivalent stage (the wrapped statement never
@@ -40,7 +98,7 @@ impl Connection {
         // The estimates (ADR-0218) read the store under a read guard, like
         // the plan's own admission above.
         let _read = self.inner.read_guard()?;
-        let view = self.notification_view(&_read, admission)?;
+        let view = self.notification_view(&_read, facts)?;
         let stats = crate::stats::GraphPatternStats::new(&self.inner.graph, params);
         let timing = || {
             // LABS-1120: the EXPLAIN path carves nothing out of its
@@ -51,12 +109,12 @@ impl Connection {
             // plan-cache outcome ride from the admission like every
             // other path's.
             TimingStamp::stamped(
-                admission.started,
+                facts.started,
                 crate::phase_timing::DispatchWindows {
                     execute: execute_started.elapsed(),
                     result_generation: Duration::ZERO,
                 },
-                admission.timing,
+                facts.timing,
             )
         };
         // The statement-scoped half is fallible (it reads the catalog);
@@ -67,14 +125,14 @@ impl Connection {
             view: &view,
             params,
         }
-        .derive(&admission.logical)?;
+        .derive(facts.logical)?;
         Ok(explain::explain_result(
-            &admission.logical,
-            admission.stamp.namespace,
-            admission.stamp.qtype,
+            facts.logical,
+            facts.namespace,
+            facts.qtype,
             timing,
             &stats,
-            explain::statement_echo(cypher, admission.preamble),
+            explain::statement_echo(cypher, relate_parser::PreambleMode::Explain),
             statement,
         ))
     }
@@ -88,19 +146,19 @@ impl Connection {
     pub(super) fn profile_epilogue(
         &self,
         outcome: QueryOutcome,
-        admission: &Admission,
+        facts: &RenderFacts<'_>,
         params: &BTreeMap<String, Value>,
         cypher: &str,
         metrics: &crate::profile::ProfileMetrics,
     ) -> QueryOutcome {
-        // One signature, no intermediate bundle: the enrich reads the
-        // admission for its own facts (the plan, the admin flag, the
-        // stamp's namespace), and the module dependency stays one-way
-        // (dispatch imports nothing from render's internals).
+        // One signature, one carrier: the admission-derived facts ride as
+        // the `RenderFacts` bundle this module defines (REL8-1946) — the
+        // stage hand-off convention — and the dependency stays one-way
+        // (dispatch imports the carrier from here, never the reverse).
         let QueryOutcome { result, admitted } = outcome;
         let result = match result {
             Ok(Executed::Rows(result)) => Ok(Executed::Rows(
-                self.profile_enrich(admission, params, cypher, metrics, result),
+                self.profile_enrich(facts, params, cypher, metrics, result),
             )),
             failed => failed,
         };
@@ -120,7 +178,7 @@ impl Connection {
     /// fallback sites.
     fn profile_enrich(
         &self,
-        admission: &Admission,
+        facts: &RenderFacts<'_>,
         params: &BTreeMap<String, Value>,
         cypher: &str,
         metrics: &crate::profile::ProfileMetrics,
@@ -129,7 +187,7 @@ impl Connection {
         let Some(_read) = self.inner.read_guard().ok() else {
             return result;
         };
-        let view = match self.notification_view(&_read, admission) {
+        let view = match self.notification_view(&_read, facts) {
             Ok(view) => view,
             Err(_) => return result,
         };
@@ -137,18 +195,22 @@ impl Connection {
             view: &view,
             params,
         })
-        .derive(&admission.logical)
+        .derive(facts.logical)
         {
             Ok(statement) => statement,
             Err(_) => return result,
         };
         let stats = crate::stats::GraphPatternStats::new(&self.inner.graph, params);
         explain::profile_result(
-            &admission.logical,
+            facts.logical,
             metrics,
             result,
             &stats,
-            explain::statement_echo(cypher, admission.preamble),
+            // This path is reached only under the PROFILE epilogue, so its
+            // echo strips the PROFILE keyword — the one mode it can run
+            // under (the render carrier deliberately holds no mode field;
+            // each path names its own constant).
+            explain::statement_echo(cypher, relate_parser::PreambleMode::Profile),
             statement,
         )
     }

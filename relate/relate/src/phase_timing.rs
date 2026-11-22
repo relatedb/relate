@@ -134,7 +134,7 @@ impl PhaseTimings {
 /// same-typed fields beside it), what `DispatchCtx` forwards, and what
 /// [`TimingStamp::stamped`] consumes, so the admission's timing facts
 /// have exactly one shape between the admission and the stamping tail
-/// (the carrier convention of `AdmitPreamble`) and a fact cannot be
+/// (the carrier convention of `AdmitClocks`) and a fact cannot be
 /// stamped without the facts it partitions.
 #[derive(Clone, Copy)]
 pub(crate) struct AdmissionTiming {

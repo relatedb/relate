@@ -885,3 +885,25 @@ fn explain_scan_estimate_declines_when_filtered_without_stats() {
     let scan = &tree.children[0];
     assert_eq!(scan.estimated_rows, Some(2), "{tree:?}");
 }
+
+/// REL8-1946's round-3 blocker pin: the PROFILE render path names its own
+/// mode at its `statement_echo` call, so a PROFILE result's plan echo
+/// strips the keyword exactly as the EXPLAIN path does — with the mode
+/// hardcoded wrong (the EXPLAIN constant on this path), the echo would
+/// keep its leading `PROFILE`.
+#[test]
+fn profile_result_echo_strips_the_profile_keyword() {
+    let mut conn = connection();
+    let result = conn
+        .query("PROFILE MATCH (n:Person {name: 'Alice'}) RETURN n.name")
+        .unwrap();
+    let echo = plan(&result).statement_echo();
+    assert!(
+        !echo.to_ascii_uppercase().contains("PROFILE"),
+        "the PROFILE keyword is stripped from the echo: {echo}"
+    );
+    assert!(
+        echo.contains("MATCH"),
+        "the statement text survives: {echo}"
+    );
+}

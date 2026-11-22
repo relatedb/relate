@@ -84,7 +84,7 @@ impl ResultHeader {
     /// The one construction every result-metadata site builds: `columns` and
     /// the result's own `rows` go in, the ADR-0224 per-column stamp derives
     /// from the first row here, so `QueryResult::from_exec`,
-    /// `explain_result` and `ExecutionFailure::staged` cannot hand-spell the
+    /// `explain_result` and `Executed::staging_failure` cannot hand-spell the
     /// derivation (and its `column_types` length) apart. `rows` is `&[]`
     /// when the statement has none — a staged failure — which stamps every
     /// column `ANY`. `timing` produces the statement's measured timing as

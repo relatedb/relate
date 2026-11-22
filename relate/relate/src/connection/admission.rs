@@ -139,15 +139,20 @@ impl Connection {
         // its admission directly in [`Self::admit_hit`] and returns it; a
         // miss seeds the insert; a skip enters the tail with no seed. One
         // tail call serves the last two alike.
-        let preamble = AdmitPreamble { started, timing_on };
+        let clocks = AdmitClocks {
+            started,
+            timing_on,
+            parse_started,
+        };
         let tail = match self.cache_lookup(cypher, params, cache, preview) {
-            Lookup::Hit(hit) => {
-                return self.admit_hit(cypher, params, hit, preview, parse_started, preamble)
-            }
+            Lookup::Hit(hit) => match self.admit_hit(cypher, params, hit, clocks)? {
+                Some(admission) => return Ok(admission),
+                None => UncachedTail::RejectedHit,
+            },
             Lookup::Miss(seed) => UncachedTail::SeededMiss(seed),
             Lookup::Skip => UncachedTail::Bypassed,
         };
-        self.admit_uncached(cypher, params, preview, tail, parse_started, preamble)
+        self.admit_uncached(cypher, params, preview, tail, clocks)
     }
 
     /// The cache-hit admission path (ADR-0503 stage 3): the entry's
@@ -165,11 +170,9 @@ impl Connection {
         cypher: &str,
         params: &BTreeMap<String, Value>,
         hit: HitPayload,
-        preview: relate_core::PreviewFeatures,
-        parse_started: Instant,
-        preamble: AdmitPreamble,
-    ) -> Result<Admission> {
-        let parse = parse_started.elapsed();
+        clocks: AdmitClocks,
+    ) -> Result<Option<Admission>> {
+        let parse = clocks.parse_started.elapsed();
         // LABS-832: the PLAN phase — the generation check, a possible
         // replan from the carried AST, the hit verification, and the
         // admission gates.
@@ -192,24 +195,18 @@ impl Connection {
         // depth cap and the payload boundary's guard close the rest).
         let literal_rejected = plan_has_bound_float_integer_site(&plan, &effective);
         if literal_rejected {
-            // LABS-1120: the hit was rejected for literal-shape
-            // safety — the statement runs an original compile, so
-            // no cached plan served it: the outcome reports the
-            // miss that the run was. (The rejection itself never
-            // reaches a result: a statement whose literals fail
-            // the shape rules fails its own original compile too,
-            // and an admission failure carries no result header.)
-            return self.admit_uncached(
-                cypher,
-                params,
-                preview,
-                UncachedTail::RejectedHit,
-                parse_started,
-                preamble,
-            );
+            // LABS-1120: the hit was rejected for literal-shape safety —
+            // the statement runs an original compile, so no cached plan
+            // served it: the outcome reports the miss that the run was.
+            // (The rejection itself never reaches a result: a statement
+            // whose literals fail the shape rules fails its own original
+            // compile too, and an admission failure carries no result
+            // header.) `None` is the rejection; the tail decision is the
+            // caller's — it owns every uncached tail alike.
+            return Ok(None);
         }
-        Ok(stage_admission(
-            preamble,
+        Ok(Some(stage_admission(
+            clocks,
             PreambleMode::Execute,
             plan,
             stamp,
@@ -225,7 +222,7 @@ impl Connection {
             },
             Some(effective),
             PlanMemory::Cached,
-        ))
+        )))
     }
 
     /// The uncached admission tail (ADR-0259's parse-and-plan stages, with
@@ -241,8 +238,7 @@ impl Connection {
         params: &BTreeMap<String, Value>,
         preview: relate_core::PreviewFeatures,
         tail: UncachedTail,
-        parse_started: Instant,
-        preamble: AdmitPreamble,
+        clocks: AdmitClocks,
     ) -> Result<Admission> {
         let cache = tail.outcome();
         let seed = tail.seed();
@@ -263,11 +259,16 @@ impl Connection {
             max_traversal_depth: self.inner.resolved.max_traversal_depth,
         };
         if let Some(seed) = seed {
-            if let Some(compiled) =
-                self.compile_parameterized(cypher, preview, policy, params, seed, parse_started)?
-            {
+            if let Some(compiled) = self.compile_parameterized(
+                cypher,
+                preview,
+                policy,
+                params,
+                seed,
+                clocks.parse_started,
+            )? {
                 let admission = stage_admission(
-                    preamble,
+                    clocks,
                     compiled.preamble,
                     Arc::clone(&compiled.logical),
                     compiled.stamp,
@@ -291,7 +292,7 @@ impl Connection {
         }
         let parsed =
             parse_and_lower_statement_with_policy_and_params(cypher, preview, policy, params)?;
-        let parse = parse_started.elapsed();
+        let parse = clocks.parse_started.elapsed();
         let mode = parsed.preamble;
         // LABS-832: the PLAN phase — binding, logical planning and the
         // admission classification, measured always-on.
@@ -301,7 +302,7 @@ impl Connection {
         let logical = Arc::new(logical);
         let bytes = plan_bytes(&logical);
         Ok(stage_admission(
-            preamble,
+            clocks,
             mode,
             logical,
             stamp,
@@ -323,9 +324,14 @@ impl Connection {
 /// hand-offs (`DispatchCtx`, `TxnRun`) — instead of loose same-typed
 /// positionals whose swap would compile (found in review).
 #[derive(Clone, Copy)]
-struct AdmitPreamble {
+struct AdmitClocks {
     started: Instant,
     timing_on: bool,
+    /// The PARSE window's own clock (ADR-0491's coarse split): opened at
+    /// `admit_statement`'s entry, closed where the front's parse ran —
+    /// riding the bundle so no admission seam carries a bare `Instant`
+    /// beside it (REL8-1946).
+    parse_started: Instant,
 }
 
 /// The cache lookup's resolution for the uncached tail (LABS-1120),
@@ -371,7 +377,7 @@ impl UncachedTail {
 /// invariants (the admin fact derived once from the plan, ADR-0116 §2)
 /// have one spelling and the struct cannot drift between paths.
 fn stage_admission(
-    preamble: AdmitPreamble,
+    clocks: AdmitClocks,
     mode: PreambleMode,
     logical: Arc<LogicalPlan>,
     stamp: ResultStamp,
@@ -380,8 +386,8 @@ fn stage_admission(
     memory: PlanMemory,
 ) -> Admission {
     Admission {
-        started: preamble.started,
-        timing_on: preamble.timing_on,
+        started: clocks.started,
+        timing_on: clocks.timing_on,
         preamble: mode,
         admin: is_database_admin_command(&logical),
         logical,

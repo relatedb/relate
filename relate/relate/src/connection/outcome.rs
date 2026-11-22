@@ -132,7 +132,7 @@ pub struct ExecutionFailure {
     pub error: Error,
 }
 
-impl ExecutionFailure {
+impl Executed {
     /// Stage a dispatch-phase failure of `logical`. A planned statement's
     /// output names always derive (the UNION column-agreement check ran in
     /// `plan`), so [`plan_output_names_expect`] holds the one expect for
@@ -140,14 +140,14 @@ impl ExecutionFailure {
     /// (ADR-0319, ADR-0332).
     ///
     /// [`plan_output_names_expect`]: relate_planner::plan_output_names_expect
-    pub(crate) fn staged(
+    pub(super) fn staging_failure(
         logical: &LogicalPlan,
         stamp: ResultStamp,
         timing: impl FnOnce() -> TimingStamp,
         error: Error,
     ) -> Executed {
         let columns = relate_planner::plan_output_names_expect(logical);
-        Executed::Failed(Self {
+        Executed::Failed(ExecutionFailure {
             // The no-rows construction (`&[]`): every column stamps `ANY`
             // (ADR-0224), through the same one construction as every other
             // result.
@@ -155,9 +155,7 @@ impl ExecutionFailure {
             error,
         })
     }
-}
 
-impl Executed {
     /// The finished result, or the execution error: the shape of the
     /// non-staged entry points (`query`, `query_with_params`, …).
     pub fn into_result(self) -> Result<QueryResult> {

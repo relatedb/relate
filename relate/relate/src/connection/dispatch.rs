@@ -25,7 +25,8 @@ use relate_planner::{is_show_databases_with_next, LogicalPlan};
 
 use super::admission::Admission;
 use super::cache::CacheUse;
-use super::outcome::{ArmOutput, ArmRun, Executed, ExecutionFailure, QueryOutcome};
+use super::outcome::{ArmOutput, ArmRun, Executed, QueryOutcome};
+use super::render::RenderFacts;
 use super::txn::{OpenTxn, TxnRun};
 use super::Connection;
 use crate::commit::commit_write;
@@ -310,7 +311,7 @@ impl Connection {
     /// exactly once per attempt.
     fn run_admitted_once(
         &mut self,
-        mut admission: Admission,
+        admission: Admission,
         cypher: &str,
         params: &BTreeMap<String, Value>,
         token: &CancelToken,
@@ -323,7 +324,7 @@ impl Connection {
             // The plain not-admitted outcome: `run_cancellable`'s
             // epilogue owns failing the open transaction for every
             // non-Ok result, so this body does not pre-empt it.
-            return match self.explain_run(cypher, params, &admission) {
+            return match self.explain_run(cypher, params, &RenderFacts::from(&admission)) {
                 Ok(result) => QueryOutcome::not_admitted(Ok(Executed::Rows(result))),
                 Err(e) => QueryOutcome::not_admitted(Err(e)),
             };
@@ -337,21 +338,17 @@ impl Connection {
         // of the same statement must resolve to the same identity the
         // first, uncached run recorded its peak under — the caller's
         // undisturbed map, still owned here, is exactly that identity.
+        // One exhaustive by-value destructure — a new `Admission` field
+        // forces a decision here, not a silent `..` drop, and the bundle
+        // is never mutated past `stage_admission` (REL8-1946): the
+        // consumed payloads (`effective`, `memory`) move out here instead
+        // of being `take()`n or sentinel-swapped in place. The budget's
+        // own key reads the caller's undisturbed map — `budget_params`,
+        // never the effective map the shadow names: the PeakKey hashes
+        // the whole map, so keying the reservation by the merged map
+        // would give a cached retry a different identity than its first,
+        // uncached run (found in review).
         let budget_params = params;
-        let effective = admission.effective.take();
-        let params = effective.as_ref().unwrap_or(budget_params);
-        // Taken before the destructure below so the epilogue can still
-        // borrow `admission`. `Cached` is the already-handled state.
-        let memory = std::mem::replace(&mut admission.memory, super::cache::PlanMemory::Cached);
-        // The budget's own key reads the caller's undisturbed map —
-        // `budget_params`, never the effective map the shadow names: the
-        // PeakKey hashes the whole map, so keying the reservation by the
-        // merged map would give a cached retry a different identity than
-        // its first, uncached run (found in review).
-        // One exhaustive destructure — a new `Admission` field forces a
-        // decision here, not a silent `..` drop. The plan borrows (`ref`):
-        // the epilogue below carries the whole admission, and every other
-        // field is `Copy`.
         let Admission {
             started,
             timing_on,
@@ -360,17 +357,12 @@ impl Connection {
             logical,
             stamp,
             timing,
-            effective: _,
-            memory: _,
-        } = &admission;
-        let started = *started;
-        let timing_on = *timing_on;
-        let profile = *preamble == PreambleMode::Profile;
-        let admin = *admin;
-        let stamp = *stamp;
+            effective,
+            memory,
+        } = admission;
+        let params = effective.as_ref().unwrap_or(budget_params);
         // LABS-1120: the admission's timing facts ride as the one carrier
         // — the same bundle the stamping tail consumes, no re-shaping here.
-        let timing = *timing;
         let logical = logical.as_ref();
         // `commit_write` reserves returned rows before it appends to the
         // WAL. Explicit transactions still reserve here: their write has
@@ -401,7 +393,7 @@ impl Connection {
         // PROFILE runs the statement through the normal dispatch, then
         // appends the plan and execution statistics to its result. The
         // result keeps the wrapped statement's query type (ADR-0162).
-        let metrics = profile.then(crate::profile::ProfileMetrics::new);
+        let metrics = (preamble == PreambleMode::Profile).then(crate::profile::ProfileMetrics::new);
         // The one concrete→dyn coercion (ADR-0344 phase 2): every request
         // site carries the trait object; the concrete local stays here for
         // the PROFILE epilogue.
@@ -426,10 +418,12 @@ impl Connection {
         // The PROFILE epilogue runs only for a PROFILE statement —
         // `metrics` is `Some` exactly then (`profile`'s one use built
         // it), so the carrier decides and the non-PROFILE case skips
-        // the call. The admission stays whole inside the epilogue
-        // (ADR-0504's shared tail).
+        // the call. The epilogue's inputs ride as one `RenderFacts`
+        // bundle — the facts it consumes, never the whole admission
+        // (REL8-1946; ADR-0504's shared tail).
         let mut outcome = if let Some(metrics) = metrics {
-            self.profile_epilogue(outcome, &admission, params, cypher, &metrics)
+            let facts = RenderFacts::new(logical, admin, &stamp, started, timing);
+            self.profile_epilogue(outcome, &facts, params, cypher, &metrics)
         } else {
             outcome
         };
@@ -632,24 +626,24 @@ impl Connection {
                 ctx.timing,
             )
         };
-        let result = match result {
+        // Dispatch is total: every arm yields rows or a staged failure —
+        // never an `Err` — so the `Ok` wraps the match once, structurally.
+        let result = Ok(match result {
             // The auto-commit write's commit sequence (ADR-0502 §7) stamps
             // the result's bookmark at the same single tail — every other
             // arm's `None` leaves the result bookmark-free.
             Ok(ArmOutput {
                 result,
                 commit_sequence,
-            }) => Ok(Executed::Rows(
+            }) => Executed::Rows(
                 QueryResult::from_exec(result, ctx.stamp.namespace, ctx.stamp.qtype, stamp_tail)
                     .with_commit_sequence(commit_sequence),
-            )),
+            ),
             // `staged` derives the planned output names (the UNION
             // column-agreement check ran in `plan`), so a planned statement
             // always stages its failure with its columns.
-            Err(error) => Ok(ExecutionFailure::staged(
-                logical, ctx.stamp, stamp_tail, error,
-            )),
-        };
+            Err(error) => Executed::staging_failure(logical, ctx.stamp, stamp_tail, error),
+        });
         QueryOutcome { result, admitted }
     }
 
@@ -787,9 +781,9 @@ impl Connection {
     pub(super) fn notification_view<'a>(
         &'a self,
         _read: &'a crate::shared::ReadGuard<'_>,
-        admission: &Admission,
+        facts: &RenderFacts<'_>,
     ) -> Result<ExecGraph<'a>> {
-        let target = self.dispatch_target(admission.admin, admission.stamp.namespace)?;
+        let target = self.dispatch_target(facts.admin, facts.namespace)?;
         Ok(Self::statement_view(
             target,
             self.txn.as_ref().map(|txn| &txn.scratch),
