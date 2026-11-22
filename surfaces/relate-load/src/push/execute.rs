@@ -238,9 +238,14 @@ fn pre_read(
     opts: &PushOpts,
     entity: &PlannedEntity,
 ) -> Result<BTreeMap<String, Option<Value>>, LoadError> {
-    let select = pre_read_statement(entity, &opts.updated_at)?;
+    let layout = pre_read_layout(entity)?;
+    let select = format!(
+        "MATCH {} RETURN {}",
+        pre_read_pattern(entity)?,
+        pre_read_columns(&layout, &opts.updated_at)?
+    );
     let name = entity.kind.display_name();
-    let key_len = key_column_count(entity);
+    let key_len = layout.identity.len();
     let mut remote: BTreeMap<String, Option<Value>> = BTreeMap::new();
     http::run_query_streaming_typed(
         &opts.credentials,
@@ -289,24 +294,15 @@ fn decode_pre_read_row(
     }
     // Candidate cells: the first present one — the same "first present
     // wins" order the local side resolves in.
-    let candidate = cells[key_len..]
-        .iter()
-        .filter(|cell| !matches!(cell, Json::Null))
-        .map(decode_pre_read_cell)
-        .find_map(Result::transpose)
-        .transpose()?;
+    let mut candidate = None;
+    for cell in &cells[key_len..] {
+        candidate = decode_pre_read_cell(cell)?;
+        if candidate.is_some() {
+            break;
+        }
+    }
     remote.insert(canonical_key(&key), candidate);
     Ok(())
-}
-
-/// The pre-read SELECT for one entity: the MATCH pattern and the identity
-/// plus candidate columns.
-fn pre_read_statement(entity: &PlannedEntity, candidates: &[String]) -> Result<String, LoadError> {
-    Ok(format!(
-        "MATCH {} RETURN {}",
-        pre_read_pattern(entity)?,
-        pre_read_columns(entity, candidates)?
-    ))
 }
 
 /// The pre-read's MATCH pattern.
@@ -333,59 +329,77 @@ fn pre_read_pattern(entity: &PlannedEntity) -> Result<String, LoadError> {
     }
 }
 
-/// The pre-read's RETURN items: identity columns in the order
-/// [`row_identity`] encodes them (start keys, end keys, rel keys), then the
-/// candidate columns.
-fn pre_read_columns(entity: &PlannedEntity, candidates: &[String]) -> Result<String, LoadError> {
-    // Every identifier is backtick-quoted or the SELECT is refused — an
-    // escaping failure never downgrades to raw interpolation.
-    let mut items = Vec::new();
+/// One keyed entity's pre-read column layout: the identity columns
+/// as `(variable, alias prefix, property)` in the order [`row_identity`]
+/// encodes them (start keys, end keys, rel keys), and the variable the
+/// `--updated-at` candidate columns read from. The one derivation the
+/// RETURN items and the identity/candidate cell boundary share, so the
+/// two cannot disagree; an unkeyed kind has no layout.
+struct PreReadLayout<'a> {
+    identity: Vec<(&'static str, &'static str, &'a String)>,
+    candidate_var: &'static str,
+}
+
+/// One run of identity columns: every property of `props` under the one
+/// variable and alias prefix.
+fn identity_run<'a>(
+    var: &'static str,
+    alias: &'static str,
+    props: &'a [String],
+) -> Vec<(&'static str, &'static str, &'a String)> {
+    props.iter().map(|prop| (var, alias, prop)).collect()
+}
+
+fn pre_read_layout(entity: &PlannedEntity) -> Result<PreReadLayout<'_>, LoadError> {
+    match &entity.kind {
+        EntityKind::NodeLabel { .. } => Ok(PreReadLayout {
+            identity: identity_run("n", "k", &entity.merge_key),
+            candidate_var: "n",
+        }),
+        EntityKind::Rel {
+            start_key, end_key, ..
+        } => {
+            let mut identity = identity_run("a", "k", start_key);
+            identity.extend(identity_run("b", "e", end_key));
+            identity.extend(identity_run("r", "r", &entity.merge_key));
+            Ok(PreReadLayout {
+                identity,
+                candidate_var: "r",
+            })
+        }
+        EntityKind::NodeCreate { .. }
+        | EntityKind::NodeSkipped { .. }
+        | EntityKind::RelSkipped { .. }
+        | EntityKind::Dangling => Err(LoadError::Push(
+            "an unkeyed group has no pre-read".to_string(),
+        )),
+    }
+}
+
+/// The pre-read's RETURN items: the layout's identity columns, then the
+/// candidate columns. Every identifier is backtick-quoted or the SELECT
+/// is refused — an escaping failure never downgrades to raw
+/// interpolation.
+fn pre_read_columns(
+    layout: &PreReadLayout<'_>,
+    candidates: &[String],
+) -> Result<String, LoadError> {
     let column =
         |var: &str, alias: &str, prop: &String, index: usize| -> Result<String, LoadError> {
             Ok(format!("{var}.{} AS {alias}{index}", quote_ident(prop)?))
         };
-    match &entity.kind {
-        EntityKind::NodeLabel { .. } => {
-            for (index, prop) in entity.merge_key.iter().enumerate() {
-                items.push(column("n", "k", prop, index)?);
-            }
-        }
-        EntityKind::Rel {
-            start_key, end_key, ..
-        } => {
-            for (index, prop) in start_key.iter().enumerate() {
-                items.push(column("a", "k", prop, index)?);
-            }
-            for (index, prop) in end_key.iter().enumerate() {
-                items.push(column("b", "e", prop, index)?);
-            }
-            for (index, prop) in entity.merge_key.iter().enumerate() {
-                items.push(column("r", "r", prop, index)?);
-            }
-        }
-        _ => {}
+    let mut items = Vec::new();
+    // Alias indexes count within each (variable, alias) run.
+    let mut run: BTreeMap<&str, usize> = BTreeMap::new();
+    for &(var, alias, prop) in &layout.identity {
+        let index = run.entry(alias).or_insert(0);
+        items.push(column(var, alias, prop, *index)?);
+        *index += 1;
     }
-    let candidate_var = match &entity.kind {
-        EntityKind::Rel { .. } => "r",
-        _ => "n",
-    };
     for (index, name) in candidates.iter().enumerate() {
-        items.push(column(candidate_var, "c", name, index)?);
+        items.push(column(layout.candidate_var, "c", name, index)?);
     }
     Ok(items.join(", "))
-}
-
-/// The number of identity columns the pre-read returns — the boundary
-/// between identity cells and candidate cells in every row. The same order
-/// [`row_identity`] encodes, so the two sides agree by construction.
-fn key_column_count(entity: &PlannedEntity) -> usize {
-    match &entity.kind {
-        EntityKind::NodeLabel { .. } => entity.merge_key.len(),
-        EntityKind::Rel {
-            start_key, end_key, ..
-        } => start_key.len() + end_key.len() + entity.merge_key.len(),
-        _ => 0,
-    }
 }
 
 /// Decode one pre-read cell: a typed envelope into its engine value, null

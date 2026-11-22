@@ -4,7 +4,7 @@
 //! `--types` filters, or the whole store — into one scoped subgraph of
 //! nodes and relationships with locally resolved endpoints.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use relate::{Connection, Database, Value};
 use relate_core::{NodeId, RelId};
@@ -102,7 +102,7 @@ fn read_query_scope(conn: &mut Connection, arg: &str) -> Result<ScopeGraph, Load
     }
     let mut nodes: HashMap<NodeId, LocalNode> = HashMap::new();
     let mut rels: Vec<LocalRel> = Vec::new();
-    let mut seen_rels: HashMap<RelId, ()> = HashMap::new();
+    let mut seen_rels: HashSet<RelId> = HashSet::new();
     for statement in &statements {
         let result = conn
             .query(statement)
@@ -147,10 +147,10 @@ fn read_rels_between_scope_nodes(
     conn: &mut Connection,
     nodes: HashMap<NodeId, LocalNode>,
 ) -> Result<ScopeGraph, LoadError> {
-    let mut rels = Vec::new();
-    for rel in query_rels(conn, "MATCH (a)-[r]->(b) RETURN a, r, b")? {
-        rels.push(rel.1);
-    }
+    let rels = query_rels(conn, "MATCH (a)-[r]->(b) RETURN a, r, b")?
+        .into_iter()
+        .map(|(_, rel, _)| rel)
+        .collect();
     Ok(finish_graph(nodes, rels))
 }
 
@@ -183,7 +183,7 @@ fn read_types_scope(conn: &mut Connection, types: &[String]) -> Result<ScopeGrap
 fn finish_graph(nodes: HashMap<NodeId, LocalNode>, rels: Vec<LocalRel>) -> ScopeGraph {
     let mut nodes: Vec<LocalNode> = nodes.into_values().collect();
     nodes.sort_by(|a, b| a.id.cmp(&b.id));
-    let present: std::collections::HashSet<NodeId> = nodes.iter().map(|n| n.id).collect();
+    let present: HashSet<NodeId> = nodes.iter().map(|n| n.id).collect();
     let (rels, dangling): (Vec<LocalRel>, Vec<LocalRel>) = rels
         .into_iter()
         .partition(|rel| present.contains(&rel.start) && present.contains(&rel.end));
@@ -269,7 +269,7 @@ fn walk_value(
     value: &Value,
     nodes: &mut HashMap<NodeId, LocalNode>,
     rels: &mut Vec<LocalRel>,
-    seen_rels: &mut HashMap<RelId, ()>,
+    seen_rels: &mut HashSet<RelId>,
 ) {
     match value {
         Value::Node(node) => {
@@ -283,8 +283,7 @@ fn walk_value(
             // A statement list may return the same rel twice; the engine's
             // own relationship id identifies it for free, so the row set
             // never double-counts.
-            if let std::collections::hash_map::Entry::Vacant(entry) = seen_rels.entry(rel.id) {
-                entry.insert(());
+            if seen_rels.insert(rel.id) {
                 rels.push(LocalRel {
                     rel_type: rel.rel_type.clone(),
                     start: rel.start,

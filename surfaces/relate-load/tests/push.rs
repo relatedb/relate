@@ -58,6 +58,17 @@ fn opts(port: u16, scope: PushScope) -> PushOpts {
     }
 }
 
+/// The completed report of a push expected to succeed: a partial outcome
+/// fails the test with the remote failure and the report of what landed.
+fn completed(outcome: PushOutcome) -> relate_load::PushReport {
+    match outcome {
+        PushOutcome::Completed(report) => report,
+        PushOutcome::Partial { report, error } => {
+            panic!("push failed: {error}; report {report:?}")
+        }
+    }
+}
+
 fn empty_body() -> String {
     r#"{"data":{"fields":[],"values":[]},"errors":[]}"#.to_string()
 }
@@ -96,12 +107,7 @@ fn first_push_creates_the_scoped_graph() {
     let db = movies_db(&[]);
     let (fixture, port) = spawn_capture_server("200 OK", empty_body());
     let outcome = push(&opts(port, PushScope::All), &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { report, error } => {
-            panic!("first push failed: {error}; report {report:?}")
-        }
-    };
+    let report = completed(outcome);
     assert_eq!(entity(&report, "Movie").created, 2);
     assert_eq!(entity(&report, "Person").created, 2);
     assert_eq!(entity(&report, "(Person)-[:ACTED_IN]->(Movie)").created, 2);
@@ -149,12 +155,7 @@ fn secondary_labels_are_pushed_with_the_node() {
     let db = movies_db(&["MATCH (m:Movie {title: 'Youve'}) SET m:Sequel"]);
     let (fixture, port) = spawn_capture_server("200 OK", empty_body());
     let outcome = push(&opts(port, PushScope::All), &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { report, error } => {
-            panic!("push failed: {error}; report {report:?}")
-        }
-    };
+    let report = completed(outcome);
     // Two Movie groups: the plain set and the Movie:Sequel set.
     assert_eq!(entity(&report, "Movie").created, 1);
     assert_eq!(entity(&report, "Movie:Sequel").created, 1);
@@ -200,10 +201,7 @@ fn rel_keys_merge_property_keyed_under_the_default_mode() {
     ]);
     let (fixture, port) = spawn_capture_server("200 OK", empty_body());
     let outcome = push(&opts(port, PushScope::All), &db).unwrap();
-    match outcome {
-        PushOutcome::Completed(_) => {}
-        PushOutcome::Partial { error, .. } => panic!("keyed rel push failed: {error}"),
-    }
+    completed(outcome);
     let bodies = fixture.bodies();
     let rel_write = &bodies[5];
     assert!(
@@ -224,10 +222,7 @@ fn rel_keys_merge_property_keyed_under_the_default_mode() {
     o.rel_keys
         .insert("ACTED_IN".to_string(), vec!["roles".to_string()]);
     let outcome = push(&o, &db).unwrap();
-    match outcome {
-        PushOutcome::Completed(_) => {}
-        PushOutcome::Partial { error, .. } => panic!("--rel-key push failed: {error}"),
-    }
+    completed(outcome);
     let rel_write = &fixture.bodies()[5];
     assert!(
         rel_write.contains(
@@ -266,12 +261,7 @@ fn re_push_creates_nothing_and_updates_the_existing() {
     ];
     let (fixture, port) = spawn_scripted_responses_capturing_requests("200 OK", bodies);
     let outcome = push(&opts(port, PushScope::All), &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { report, error } => {
-            panic!("re-push failed: {error}; report {report:?}")
-        }
-    };
+    let report = completed(outcome);
     assert_eq!(entity(&report, "Movie").created, 0);
     assert_eq!(entity(&report, "Movie").updated, 2);
     assert_eq!(entity(&report, "Person").created, 0);
@@ -321,10 +311,7 @@ fn local_change_lands_as_update() {
     ];
     let (fixture, port) = spawn_scripted_responses_capturing_requests("200 OK", bodies);
     let outcome = push(&opts(port, PushScope::All), &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { error, .. } => panic!("push failed: {error}"),
-    };
+    let report = completed(outcome);
     assert_eq!(entity(&report, "Person").updated, 2);
     // Meg's row carries the new value as a typed parameter.
     let requests = fixture.join();
@@ -349,10 +336,7 @@ fn delta_push_creates_only_additions_and_updates_the_rest() {
     // First push: the remote starts empty, so every row is created.
     let (fixture, port) = spawn_capture_server("200 OK", empty_body());
     let outcome = push(&opts(port, PushScope::All), &db).unwrap();
-    match outcome {
-        PushOutcome::Completed(_) => {}
-        PushOutcome::Partial { error, .. } => panic!("first push failed: {error}"),
-    }
+    completed(outcome);
     drop(fixture);
     // Local edits: one new person, one new movie, one new rel, and a
     // property change on an existing person — one delta.
@@ -390,12 +374,7 @@ fn delta_push_creates_only_additions_and_updates_the_rest() {
     ];
     let (fixture, port) = spawn_scripted_responses_capturing_requests("200 OK", bodies);
     let outcome = push(&opts(port, PushScope::All), &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { report, error } => {
-            panic!("delta push failed: {error}; report {report:?}")
-        }
-    };
+    let report = completed(outcome);
     // Additions created, the rest updated — never re-created.
     let movies = entity(&report, "Movie");
     assert_eq!(movies.created, 1, "{movies:?}");
@@ -475,10 +454,7 @@ fn updated_at_gates_updates_by_timestamp() {
     let (fixture, port) = spawn_scripted_responses_capturing_requests("200 OK", bodies);
     o.credentials.uri = format!("http://127.0.0.1:{port}");
     let outcome = push(&o, &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { error, .. } => panic!("push failed: {error}"),
-    };
+    let report = completed(outcome);
     let people = entity(&report, "Person");
     // Remote newer → skipped and counted; local newer → updated.
     assert_eq!(people.skipped_remote_newer, 1);
@@ -521,10 +497,7 @@ fn updated_at_incomparable_pair_warns_and_applies() {
     let (fixture, port) = spawn_scripted_responses_capturing_requests("200 OK", bodies);
     o.credentials.uri = format!("http://127.0.0.1:{port}");
     let outcome = push(&o, &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { error, .. } => panic!("push failed: {error}"),
-    };
+    let report = completed(outcome);
     let people = entity(&report, "Person");
     assert_eq!(people.updated, 1);
     assert_eq!(people.incomparable, 1);
@@ -577,10 +550,7 @@ fn unkeyed_labels_are_skipped_and_counted_then_created_on_opt_in() {
     let db = movies_db(&["CREATE (:Untyped {name: 'x'})"]);
     let (fixture, port) = spawn_capture_server("200 OK", empty_body());
     let outcome = push(&opts(port, PushScope::All), &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { error, .. } => panic!("push failed: {error}"),
-    };
+    let report = completed(outcome);
     let untyped = entity(&report, "Untyped (unkeyed)");
     assert_eq!(untyped.skipped_unkeyed, 1);
     assert_eq!(untyped.total, 1);
@@ -594,10 +564,7 @@ fn unkeyed_labels_are_skipped_and_counted_then_created_on_opt_in() {
     let (_fixture_create, port_create) = spawn_capture_server("200 OK", empty_body());
     o.credentials.uri = format!("http://127.0.0.1:{port_create}");
     let outcome = push(&o, &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { error, .. } => panic!("push failed: {error}"),
-    };
+    let report = completed(outcome);
     let created = entity(&report, "Untyped");
     assert_eq!(created.created, 1);
     assert_eq!(
@@ -610,10 +577,7 @@ fn unkeyed_labels_are_skipped_and_counted_then_created_on_opt_in() {
     let (fixture_key, port_key) = spawn_capture_server("200 OK", empty_body());
     o_key.credentials.uri = format!("http://127.0.0.1:{port_key}");
     let outcome = push(&o_key, &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { error, .. } => panic!("push failed: {error}"),
-    };
+    let report = completed(outcome);
     assert_eq!(entity(&report, "Untyped").merge_key, ["name".to_string()]);
     assert!(fixture_key.bodies()[1].contains("MERGE (n:`Untyped` {`name`: row.key.`name`})"));
 }
@@ -627,10 +591,7 @@ fn batch_slicing_follows_batch_size() {
     let mut o = opts(port, PushScope::Labels(vec!["Person".into()]));
     o.batch_size = 1;
     let outcome = push(&o, &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { error, .. } => panic!("push failed: {error}"),
-    };
+    let report = completed(outcome);
     // One pre-read, two one-row writes.
     assert_eq!(fixture.bodies().len(), 3);
     assert_eq!(report.statements_sent, 2);
@@ -664,10 +625,7 @@ fn dry_run_never_touches_the_remote() {
     let mut o = opts(port, PushScope::All);
     o.dry_run = true;
     let outcome = push(&o, &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { .. } => panic!("a dry run cannot fail remotely"),
-    };
+    let report = completed(outcome);
     assert!(report.dry_run);
     assert_eq!(report.statements_sent, 0);
     assert_eq!(fixture.bodies().len(), 0);
@@ -759,10 +717,7 @@ fn labels_scope_pushes_the_induced_subgraph() {
     let db = movies_db(&[]);
     let (fixture, port) = spawn_capture_server("200 OK", empty_body());
     let outcome = push(&opts(port, PushScope::Labels(vec!["Movie".into()])), &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { error, .. } => panic!("push failed: {error}"),
-    };
+    let report = completed(outcome);
     assert_eq!(entity(&report, "Movie").created, 2);
     // The Person-endpoint rels are out of scope: counted in the reserved
     // dangling bucket, not written.
@@ -781,10 +736,7 @@ fn query_scope_pushes_the_returned_subgraph() {
             .into(),
     );
     let outcome = push(&opts(port, scope), &db).unwrap();
-    let report = match outcome {
-        PushOutcome::Completed(report) => report,
-        PushOutcome::Partial { error, .. } => panic!("push failed: {error}"),
-    };
+    let report = completed(outcome);
     // The whole joined subgraph: 1 movie + 1 person + 1 rel, plus the
     // second statement's extra person and movie.
     assert_eq!(entity(&report, "Movie").total, 2);
