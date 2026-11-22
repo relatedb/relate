@@ -17,6 +17,7 @@ mod keyword_variables;
 mod label_expressions;
 mod let_filter;
 mod literals;
+mod match_mode;
 mod next;
 mod patterns;
 mod qpp;
