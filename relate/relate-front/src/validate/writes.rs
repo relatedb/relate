@@ -7,10 +7,10 @@
 use crate::ident_hash::IdentHashSet;
 use relate_names::SmallName;
 
-use crate::ast::collect::{check_expr_vars_defined, has_relationship};
+use crate::ast::collect::{check_expr_vars_defined, has_relationship, pattern_of_expr};
 use crate::ast::tree::walk_label_expr;
 use relate_error::{EngineError, ErrorKind};
-use relate_parser::{Clause, LabelExpr, PatternElement, PatternPath};
+use relate_parser::{Clause, Expr, LabelExpr, PatternElement, PatternPath};
 
 /// 42N59: declaring a name that is already bound is `VariableAlreadyBound`,
 /// unless the enclosing scope admits shadowing it, or the use is a reference
@@ -245,11 +245,20 @@ pub(crate) fn walk_write_elements(
 /// syntax generically for any pattern position, but Neo4j rejects it in
 /// MATCH/MERGE patterns with `InvalidParameterUse` (TCK
 /// `clauses/match/Match1.feature` scenario 6, `Match2.feature` scenario 8,
-/// `clauses/merge/Merge1.feature` scenario 16).
+/// `clauses/merge/Merge1.feature` scenario 16) and in every
+/// expression-embedded pattern the same way (a pattern predicate
+/// `WHERE (a $props)-[:R]->(b)`, a pattern comprehension, a
+/// `shortestPath()` argument -- live 2026.10: "Parameter maps cannot be
+/// used in `MATCH` patterns").
 ///
-/// Checks one linear body. Nested bodies (`CALL { }`, `WHEN`/`ELSE`, UNION
-/// arms, NEXT stages) are covered by the whole-tree validation battery,
-/// which applies this pass to every nested statement it walks.
+/// The rule is split the way the traversal-bound pair is: this pass owns
+/// the clause-borne patterns of one linear body (a MATCH's and a MERGE's
+/// own pattern list -- not expressions), while
+/// [`validate_expr_param_property_shorthand`] is the expression half the
+/// battery's expression visitor calls on every expression node of every
+/// clause at every depth. Nested bodies (`CALL { }`, `WHEN`/`ELSE`, UNION
+/// arms, NEXT stages, expression-embedded subqueries) are covered by that
+/// whole-tree walk.
 pub fn validate_param_property_shorthand(clauses: &[Clause]) -> Result<(), EngineError> {
     for clause in clauses {
         match clause {
@@ -263,6 +272,22 @@ pub fn validate_param_property_shorthand(clauses: &[Clause]) -> Result<(), Engin
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+/// The expression half of the CREATE-only whole-map shorthand rule: the
+/// pattern an expression embeds -- a WHERE pattern predicate (the bare
+/// spelling and the `exists()` argument), a pattern comprehension, a
+/// `shortestPath()` argument -- is a MATCH pattern exactly like a MATCH
+/// clause's own, so the shorthand is CREATE-only in all of them. Called
+/// by the validation battery's expression visitor on every expression
+/// node, so whatever boolean structure nests the predicate -- and
+/// whatever clause position carries it -- is covered without a second
+/// clause enumeration.
+pub(crate) fn validate_expr_param_property_shorthand(expr: &Expr) -> Result<(), EngineError> {
+    if let Some(pattern) = pattern_of_expr(expr) {
+        check_no_param_property_shorthand_in_elements(&pattern.elements)?;
     }
     Ok(())
 }

@@ -399,6 +399,37 @@ fn param_property_shorthand_inside_subquery_expressions_is_rejected() {
 }
 
 #[test]
+fn param_property_shorthand_inside_expression_patterns_is_rejected() {
+    // The pattern an expression embeds -- a WHERE pattern predicate (the
+    // bare spelling and the exists() argument), a pattern comprehension,
+    // a shortestPath() argument -- is a MATCH pattern exactly like a
+    // MATCH clause's own; the `$props` whole-map shorthand is CREATE-only
+    // in all of them, whatever boolean structure nests it.
+    for query in [
+        "MATCH (a:L1), (b) WHERE (a:L1 $props)-[:R]->(b) RETURN a",
+        "MATCH (a:L1), (b) WHERE exists((a:L1 $props)-[:R]->(b)) RETURN a",
+        "MATCH (a) RETURN [(a:L1 $props)-[:R]->(b) | b] AS y",
+        "MATCH p = shortestPath((a:L1 $props)-[:R]->(b)) RETURN p",
+        "MATCH (a:L1) WITH a WHERE NOT ((a:L1 $props)-[:R]->(a)) OR true RETURN a",
+        // A relationship element's own shorthand, in the same predicate,
+        // and a pattern predicate inside an element-pattern WHERE.
+        "MATCH (a:L1), (b) WHERE (a:L1)-[r:R $props]->(b) RETURN a",
+        "MATCH (x WHERE (b:L1 $props)-[:R]->(x)) RETURN x",
+    ] {
+        let err = lower_err(query);
+        assert!(
+            err.contains("InvalidParameterUse"),
+            "wrong error for {query}: {err}"
+        );
+    }
+    // The legal spellings keep lowering: a literal map with a parameter
+    // *value* is not the whole-map shorthand, and CREATE keeps it.
+    lower("MATCH (a:L1 {t: $v})-[:R]->(b) RETURN a");
+    lower("MATCH (a:L1)-[:R {w: $v}]->(b) RETURN a");
+    lower("CREATE (n:L1 $props)");
+}
+
+#[test]
 fn valid_nested_statements_still_lower() {
     for query in [
         "CALL { RETURN 1 AS x } RETURN x",

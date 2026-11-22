@@ -129,7 +129,9 @@ pub use self::structure::{
     validate_shortest_path_mixing, validate_traversal_bounds, validate_union_columns,
     validate_use_placement,
 };
-pub(crate) use self::writes::validate_param_property_shorthand;
+pub(crate) use self::writes::{
+    validate_expr_param_property_shorthand, validate_param_property_shorthand,
+};
 
 /// The store's resolved preview set, carried into validation so the gates
 /// that do not parse syntax can read it: today the `complex-search-patterns`
@@ -500,6 +502,11 @@ pub(crate) fn validate_statement_tree_with_options_and_policy(
             // The expression-embedded pattern shapes: a shortest-path
             // expression's own shape and its bound endpoints.
             validate_shortest_path_expr_shape(expr)?;
+            // The expression half of the CREATE-only whole-map parameter
+            // shorthand: a pattern an expression carries is a MATCH
+            // pattern, so the shorthand rejects in it exactly as in a
+            // MATCH clause's own pattern.
+            validate_expr_param_property_shorthand(expr)?;
             // The expression-node half of the non-aggregating-position
             // policy (comprehension/quantifier/reduce slots): the walk
             // visits every expression of every clause at every depth, so a
