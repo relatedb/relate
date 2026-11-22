@@ -563,3 +563,20 @@ fn accepts_pattern_covers_the_constructors_and_their_aliases() {
         );
     }
 }
+
+/// REL8-772: only `T` separates date from time. A space-separated text is
+/// rejected for both datetime kinds (Neo4j rejects it); the `T` spelling
+/// keeps parsing.
+#[test]
+fn a_space_separator_is_rejected_for_datetime_kinds() {
+    for kind in ["datetime", "localdatetime"] {
+        assert!(
+            parse_iso(kind, "2024-01-02 03:04:05").is_err(),
+            "{kind} accepted a space separator"
+        );
+        assert!(
+            parse_iso(kind, "2024-01-02T03:04:05").is_ok(),
+            "{kind} rejected the T separator"
+        );
+    }
+}

@@ -131,7 +131,8 @@ nested_error_classes! {
     ConstraintVerificationFailed,
     /// A DDL argument-value rejection (`ArgumentError:`).
     ArgumentError,
-    /// A missing node or relationship (`EntityNotFound:`).
+    /// A well-formed reference to something absent (`EntityNotFound:`):
+    /// live's `EntityNotFound` class, GQLSTATUS `42001`.
     EntityNotFound,
     /// A registered procedure's own failure (`ProcedureError:`).
     ProcedureError,
@@ -287,13 +288,13 @@ pub(crate) fn stringly_gql_status(
         }
         Some(NestedErrorClass::SystemDatabaseRequired) => GQLSTATUS_NOT_SYSTEM_DATABASE,
         Some(NestedErrorClass::ElementIdUnexpectedFormat) => GQLSTATUS_EXECUTION_FAILED,
+        Some(NestedErrorClass::EntityNotFound) => GQLSTATUS_PROCEDURE_CALL,
         // The recognized nested classes without a class-specific GQLSTATUS
         // carry the general code, never the variant's own — named, not
         // wildcarded, so a future variant forces its own decision here.
         Some(
             NestedErrorClass::ConstraintVerificationFailed
             | NestedErrorClass::ArgumentError
-            | NestedErrorClass::EntityNotFound
             | NestedErrorClass::ProcedureError
             | NestedErrorClass::SemanticError
             | NestedErrorClass::TransactionError,

@@ -1,4 +1,5 @@
-//! The `=~` operator's compiled-pattern cache (LABS-1478).
+//! The compiled-pattern cache behind `=~` (LABS-1478) and
+//! `string.regexReplace` (REL8-618).
 //!
 //! A regex compile costs microseconds to tens of microseconds; the match it
 //! feeds costs tens of nanoseconds. `WHERE n.name =~ $p` used to compile on
@@ -14,6 +15,7 @@
 //! budget is remembered as such (no program retained), so it skips the
 //! failed budgeted compile and pays only the one default-limit compile.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 
 use regex::{Regex, RegexBuilder};
@@ -36,7 +38,17 @@ const CACHED_PATTERNS: usize = 8;
 /// front is the eviction victim. A hit refreshes its entry to the back;
 /// an insert into a full table first drops the front. Recency and
 /// eviction live here, never at a call site.
-struct PatternCache(Vec<(Box<str>, Entry)>);
+struct PatternCache(Vec<(Box<str>, Mode, Entry)>);
+
+/// How a cached pattern is spelled to the regex crate: the same pattern
+/// text compiles to two different programs, so the mode is part of the key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::eval) enum Mode {
+    /// `=~`: a whole-string match, the pattern wrapped in anchors.
+    Anchored,
+    /// `string.regexReplace`: the pattern as written, searched anywhere.
+    Search,
+}
 
 /// What the table knows about a pattern.
 enum Entry {
@@ -52,20 +64,23 @@ impl PatternCache {
     /// The refreshed entry for `pattern` — recency moves it to the back —
     /// or `None` when the table holds no such pattern. The caller owns the
     /// match, so this API never takes the subject text.
-    fn hit(&mut self, pattern: &str) -> Option<&Entry> {
-        let pos = self.0.iter().position(|(known, _)| &**known == pattern)?;
+    fn hit(&mut self, pattern: &str, mode: Mode) -> Option<&Entry> {
+        let pos = self
+            .0
+            .iter()
+            .position(|(known, known_mode, _)| *known_mode == mode && &**known == pattern)?;
         let entry = self.0.remove(pos);
         self.0.push(entry);
-        self.0.last().map(|(_, entry)| entry)
+        self.0.last().map(|(_, _, entry)| entry)
     }
 
     /// A newly classified pattern takes the back; a full table first drops
     /// its least recently used front entry.
-    fn insert(&mut self, pattern: &str, entry: Entry) {
+    fn insert(&mut self, pattern: &str, mode: Mode, entry: Entry) {
         if self.0.len() == CACHED_PATTERNS {
             self.0.remove(0);
         }
-        self.0.push((pattern.into(), entry));
+        self.0.push((pattern.into(), mode, entry));
     }
 }
 
@@ -88,30 +103,45 @@ fn anchored(pattern: &str) -> String {
     format!("^(?:{pattern})$")
 }
 
-/// The one default-limit compile for a pattern the table cannot keep —
-/// too long to store, or past the cached program budget — anchored,
-/// matched, never stored.
-fn uncached_match(text: &str, pattern: &str) -> Result<bool> {
-    Regex::new(&anchored(pattern))
-        .map(|re| re.is_match(text))
-        .map_err(|_| invalid_regex())
+/// The regex source a pattern compiles from under `mode`.
+fn source(pattern: &str, mode: Mode) -> Cow<'_, str> {
+    match mode {
+        Mode::Anchored => Cow::Owned(anchored(pattern)),
+        Mode::Search => Cow::Borrowed(pattern),
+    }
 }
 
-/// Whether `text` matches `pattern` as a whole string.
-pub(super) fn regex_is_match(text: &str, pattern: &str) -> Result<bool> {
+/// The one default-limit compile for a pattern the table cannot keep —
+/// too long to store, or past the cached program budget — used, never
+/// stored.
+fn uncached<R>(
+    pattern: &str,
+    mode: Mode,
+    use_regex: impl FnOnce(&Regex) -> R,
+) -> std::result::Result<R, regex::Error> {
+    Regex::new(&source(pattern, mode)).map(|re| use_regex(&re))
+}
+
+/// Runs `use_regex` on the compiled program for `pattern` under `mode`,
+/// compiling it once into the per-thread table when it fits the budget.
+/// An invalid pattern's compile error is returned, never cached.
+pub(in crate::eval) fn with_regex<R>(
+    pattern: &str,
+    mode: Mode,
+    use_regex: impl FnOnce(&Regex) -> R,
+) -> std::result::Result<R, regex::Error> {
     // The admission rule first: a pattern too long to keep never consults
-    // the table (it can never be in it) and never pays the anchoring copy.
+    // the table (it can never be in it).
     if pattern.len() > MAX_CACHED_PATTERN_BYTES {
-        return uncached_match(text, pattern);
+        return uncached(pattern, mode, use_regex);
     }
     COMPILED.with(|cache| {
-        match cache.borrow_mut().hit(pattern) {
-            Some(Entry::Compiled(re)) => return Ok(re.is_match(text)),
-            Some(Entry::OverBudget) => return uncached_match(text, pattern),
+        match cache.borrow_mut().hit(pattern, mode) {
+            Some(Entry::Compiled(re)) => return Ok(use_regex(re)),
+            Some(Entry::OverBudget) => return uncached(pattern, mode, use_regex),
             None => {}
         }
-        let anchored = anchored(pattern);
-        let re = match RegexBuilder::new(&anchored)
+        let re = match RegexBuilder::new(&source(pattern, mode))
             .size_limit(MAX_CACHED_PROGRAM_BYTES)
             // The matcher's lazy-DFA cache would otherwise default to
             // 2 MiB per cached pattern; bounded here so a cached program's
@@ -123,16 +153,23 @@ pub(super) fn regex_is_match(text: &str, pattern: &str) -> Result<bool> {
         {
             Ok(re) => re,
             Err(regex::Error::CompiledTooBig(_)) => {
-                cache.borrow_mut().insert(pattern, Entry::OverBudget);
-                return uncached_match(text, pattern);
+                cache.borrow_mut().insert(pattern, mode, Entry::OverBudget);
+                return uncached(pattern, mode, use_regex);
             }
             // An invalid pattern fails exactly as before, never cached.
-            Err(_) => return Err(invalid_regex()),
+            Err(error) => return Err(error),
         };
-        let matched = re.is_match(text);
-        cache.borrow_mut().insert(pattern, Entry::Compiled(re));
-        Ok(matched)
+        let used = use_regex(&re);
+        cache
+            .borrow_mut()
+            .insert(pattern, mode, Entry::Compiled(re));
+        Ok(used)
     })
+}
+
+/// Whether `text` matches `pattern` as a whole string.
+pub(super) fn regex_is_match(text: &str, pattern: &str) -> Result<bool> {
+    with_regex(pattern, Mode::Anchored, |re| re.is_match(text)).map_err(|_| invalid_regex())
 }
 
 #[cfg(test)]
@@ -148,6 +185,21 @@ mod tests {
     }
 
     #[test]
+    fn the_search_mode_is_keyed_apart_from_the_anchored_one() {
+        // The same text is two programs: whole-string for `=~`, anywhere
+        // for `string.regexReplace`; each is cached under its own mode.
+        assert!(!regex_is_match("xabcx", "abc").unwrap());
+        for _ in 0..2 {
+            assert!(with_regex("abc", Mode::Search, |re| re.is_match("xabcx")).unwrap());
+        }
+        assert!(!regex_is_match("xabcx", "abc").unwrap());
+        COMPILED.with(|c| {
+            let table = &c.borrow().0;
+            assert_eq!(table.iter().filter(|(p, _, _)| &**p == "abc").count(), 2);
+        });
+    }
+
+    #[test]
     fn a_cached_pattern_answers_like_a_fresh_one() {
         for _ in 0..3 {
             assert!(regex_is_match("hello", "h.*o").unwrap());
@@ -160,7 +212,7 @@ mod tests {
         for _ in 0..3 {
             assert!(regex_is_match("x", "(").is_err());
         }
-        COMPILED.with(|c| assert!(c.borrow().0.iter().all(|(p, _)| &**p != "(")));
+        COMPILED.with(|c| assert!(c.borrow().0.iter().all(|(p, _, _)| &**p != "(")));
     }
 
     #[test]
@@ -177,9 +229,9 @@ mod tests {
             let table = &c.borrow().0;
             assert!(table
                 .iter()
-                .filter(|(p, _)| &**p == pattern)
-                .all(|(_, entry)| matches!(entry, Entry::OverBudget)));
-            assert_eq!(table.iter().filter(|(p, _)| &**p == pattern).count(), 1);
+                .filter(|(p, _, _)| &**p == pattern)
+                .all(|(_, _, entry)| matches!(entry, Entry::OverBudget)));
+            assert_eq!(table.iter().filter(|(p, _, _)| &**p == pattern).count(), 1);
         });
     }
 
@@ -195,7 +247,7 @@ mod tests {
                 .borrow()
                 .0
                 .iter()
-                .all(|(p, _)| p.len() <= MAX_CACHED_PATTERN_BYTES))
+                .all(|(p, _, _)| p.len() <= MAX_CACHED_PATTERN_BYTES))
         });
     }
 
@@ -213,8 +265,8 @@ mod tests {
         assert!(regex_is_match("a", "a|q").unwrap());
         COMPILED.with(|c| {
             let table = &c.borrow().0;
-            assert!(table.iter().any(|(p, _)| &**p == "a|b"));
-            assert!(table.iter().all(|(p, _)| &**p != "a|p0"));
+            assert!(table.iter().any(|(p, _, _)| &**p == "a|b"));
+            assert!(table.iter().all(|(p, _, _)| &**p != "a|p0"));
             assert_eq!(table.len(), CACHED_PATTERNS);
         });
     }

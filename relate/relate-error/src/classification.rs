@@ -16,9 +16,10 @@
 //! [`ErrorInfo`] cannot change what that surface sends today.
 
 use crate::nested_class::{
-    nested_error_class, stringly_gql_status, GQLSTATUS_CONSTRAINT_CREATION_FAILED,
-    GQLSTATUS_DATABASE_NOT_FOUND, GQLSTATUS_GENERAL, GQLSTATUS_INTERNAL,
-    GQLSTATUS_PARAMETER_MISSING, GQLSTATUS_PROCEDURE_CALL, GQLSTATUS_SYNTAX, GQLSTATUS_TYPE,
+    nested_error_class, stringly_gql_status, NestedErrorClass,
+    GQLSTATUS_CONSTRAINT_CREATION_FAILED, GQLSTATUS_DATABASE_NOT_FOUND, GQLSTATUS_GENERAL,
+    GQLSTATUS_INTERNAL, GQLSTATUS_PARAMETER_MISSING, GQLSTATUS_PROCEDURE_CALL, GQLSTATUS_SYNTAX,
+    GQLSTATUS_TYPE,
 };
 use relate_core::{ArithmeticFailure, Error};
 
@@ -44,6 +45,11 @@ pub const DATABASE_NOT_FOUND_CODE: &str = "Neo.ClientError.Database.DatabaseNotF
 /// The `code` of every other caller-facing `Semantic` and `Execution`
 /// engine error.
 pub const SEMANTIC_ERROR_CODE: &str = "Neo.ClientError.Statement.SemanticError";
+
+/// The `code` of a well-formed reference to something that does not exist
+/// (`EntityNotFound:` token): what Neo4j 2026.10.1 sends for
+/// `db.nameFromElementId` over an element id naming an unknown database.
+pub const ENTITY_NOT_FOUND_CODE: &str = "Neo.ClientError.Statement.EntityNotFound";
 
 /// The `code` of a type failure (`Type`, `TypeError`, `InvalidArgumentType`).
 pub const TYPE_ERROR_CODE: &str = "Neo.ClientError.Statement.TypeError";
@@ -361,7 +367,10 @@ pub fn error_info(e: &Error) -> ErrorInfo {
         Error::Semantic(payload) | Error::Execution(payload) => {
             let nested = nested_error_class(payload);
             ErrorInfo {
-                neo4j_code: SEMANTIC_ERROR_CODE,
+                neo4j_code: match nested {
+                    Some(NestedErrorClass::EntityNotFound) => ENTITY_NOT_FOUND_CODE,
+                    _ => SEMANTIC_ERROR_CODE,
+                },
                 gql_status: stringly_gql_status(nested, GQLSTATUS_GENERAL),
                 stage: Runtime,
                 retryable: false,

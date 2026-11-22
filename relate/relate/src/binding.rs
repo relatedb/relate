@@ -619,6 +619,11 @@ mod tests {
                 "ConstraintVerificationFailed"
             )
         );
+        // A well-formed reference to an absent entity reports live's class.
+        assert_eq!(
+            binding_error_metadata(&Error::execution("EntityNotFound: no such database")),
+            ("EntityNotFound", "EntityNotFound")
+        );
         // The typed type-error/parameter classes classify from the variant,
         // wherever the detail text goes.
         assert_eq!(

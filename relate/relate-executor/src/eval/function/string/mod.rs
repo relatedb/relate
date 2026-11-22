@@ -17,6 +17,7 @@ use super::super::string::{
     trim_spec_function, TrimMode,
 };
 use super::render_scalar;
+use crate::eval::regex_cache::{with_regex, Mode};
 
 mod regex_replace;
 
@@ -482,9 +483,13 @@ pub(super) fn bi_string_regexreplace(
                     .saturating_add(1)
                     .saturating_mul((replacement.len() as u64).saturating_add(1)),
             )?;
-            let pattern = regex::Regex::new(pattern)
-                .map_err(|error| Error::execution(format!("InvalidRegex: {error}")))?;
-            Value::String(replace_all_java(&pattern, input, replacement)?.into())
+            // The compiled program comes from the per-thread pattern cache
+            // (REL8-618): a constant pattern over many rows compiles once.
+            let replaced = with_regex(pattern, Mode::Search, |re| {
+                replace_all_java(re, input, replacement)
+            })
+            .map_err(|error| Error::execution(format!("InvalidRegex: {error}")))??;
+            Value::String(replaced.into())
         }
         _ => return Err(Error::invalid_argument_type("string.regexReplace")),
     })

@@ -294,8 +294,9 @@ pub fn datetime_from_epoch_millis(ms: i64) -> Result<Temporal> {
 }
 
 fn parse_naive_dt(s: &str) -> Result<NaiveDateTime> {
-    let normalized = s.replace(' ', "T");
-    let (body, _) = split_offset(&normalized);
+    // Only `T` separates the date from the time (ISO 8601, as Neo4j reads
+    // it): a space-separated text is a rejection, never a silent rewrite.
+    let (body, _) = split_offset(s);
     // chrono's `%Y` needs the sign for a year outside `0000..=9999`
     // (`+275760-09-13T00:00`, the reference engine's maximum datetime), so
     // try the text as written before the unsigned spelling the shorter

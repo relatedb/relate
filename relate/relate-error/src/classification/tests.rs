@@ -325,6 +325,10 @@ fn schema_condition_tokens_carry_their_documented_gql_status() {
             Error::execution("ElementIdUnexpectedFormat: Element ID has an unexpected format"),
             "50N00",
         ),
+        (
+            Error::execution("EntityNotFound: Database corresponding to element id not found: x"),
+            "42001",
+        ),
     ];
     for (e, status) in rows {
         let i = error_info(&e);
@@ -356,4 +360,15 @@ fn the_creation_condition_carries_its_own_row() {
         .neo4j_code,
         SEMANTIC_ERROR_CODE
     );
+}
+
+/// A well-formed reference to an absent entity (`db.nameFromElementId` over
+/// an unknown database) carries live's `EntityNotFound` client code; the
+/// malformed-id token keeps the semantic code.
+#[test]
+fn entity_not_found_token_carries_its_own_client_code() {
+    let missing = error_info(&Error::execution("EntityNotFound: no such database"));
+    assert_eq!(missing.neo4j_code, ENTITY_NOT_FOUND_CODE);
+    let malformed = error_info(&Error::execution("ElementIdUnexpectedFormat: bad"));
+    assert_eq!(malformed.neo4j_code, SEMANTIC_ERROR_CODE);
 }

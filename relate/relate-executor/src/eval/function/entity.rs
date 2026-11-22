@@ -146,14 +146,16 @@ pub(super) fn bi_db_namefromelementid(
         Some(Value::String(id)) => {
             let parsed = ElementIdRef::parse(id);
             if !parsed.is_some_and(|p| p.has_known_kind() && !p.id.is_empty()) {
-                return Err(Error::execution(
-                    "ElementIdUnexpectedFormat: Element ID has an unexpected format",
-                ));
+                return Err(Error::execution(format!(
+                    "ElementIdUnexpectedFormat: Element ID {id} has an unexpected format."
+                )));
             }
             let Some(namespace) = parsed.and_then(|p| p.namespace()) else {
-                return Err(Error::execution(
-                    "ElementIdUnexpectedFormat: No database corresponds to the given element id",
-                ));
+                // A well-formed id naming no database is live's
+                // `EntityNotFound`, not the malformed-id condition above.
+                return Err(Error::execution(format!(
+                    "EntityNotFound: Database corresponding to element id not found: {id}"
+                )));
             };
             Value::String(namespace.as_str().into())
         }
@@ -503,7 +505,21 @@ mod tests {
         .unwrap_err();
         assert!(
             err.to_string()
-                .contains("No database corresponds to the given element id"),
+                .contains("Database corresponding to element id not found: 4:memorydb:n7"),
+            "{err}"
+        );
+        // A malformed id stays the unexpected-format condition.
+        let err = element_id_fn(
+            &graph,
+            &row,
+            &params,
+            "db.nameFromElementId",
+            Expr::String("nope".to_string()),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Element ID nope has an unexpected format."),
             "{err}"
         );
     }
