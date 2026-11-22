@@ -13,7 +13,8 @@
 use std::collections::{BTreeMap, HashSet};
 
 use super::simulation::TouchedEntity;
-use super::{EntityId, KeySpec, KeyTuple};
+use super::{KeySpec, KeyTuple};
+use crate::graph::EntityId;
 
 /// Where an effective constraint's entry came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

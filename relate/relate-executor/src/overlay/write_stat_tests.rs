@@ -2,9 +2,12 @@
 //! REMOVE counts for nodes, labels, and properties a statement reports.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::AtomicUsize;
 
 use super::test_support::run_write;
-use crate::exec::test_support::exec_write_uncommitted;
+use crate::exec::test_support::{
+    exec_write_batched, exec_write_uncommitted, write_scratch, ApplySink,
+};
 use crate::graph::Graph;
 use relate_core::Value;
 
@@ -126,4 +129,31 @@ fn set_labels_overwrite_makes_the_label_list_exact() {
     );
     assert_eq!(r.stats.labels_added, 1);
     assert_eq!(r.stats.labels_removed, 1);
+}
+
+/// REL8-1188, the batched twin: a `CALL { … } IN TRANSACTIONS` batch that
+/// deletes a node an earlier batch of the same statement already
+/// committed counts the delete — and the create stays counted too (each
+/// batch is a real commit, ADR-0210), so both counters report and
+/// neither nets negative across the batch rebase.
+#[test]
+fn batched_delete_of_node_committed_by_earlier_batch_counts_both() {
+    let g = Graph::default();
+    let scratch = write_scratch(&g);
+    let sink = ApplySink {
+        graph: &g,
+        calls: AtomicUsize::new(0),
+    };
+    let result = exec_write_batched(
+        &g,
+        &scratch,
+        "UNWIND [1, 2] AS i \
+         CALL { WITH i OPTIONAL MATCH (n:N) WHERE n.i < i DELETE n CREATE (:N {i: i}) } \
+         IN TRANSACTIONS OF 1 ROWS",
+        &sink,
+    )
+    .unwrap();
+    assert_eq!(result.stats.nodes_created, 2);
+    assert_eq!(result.stats.nodes_deleted, 1);
+    assert_eq!(g.live_node_count(), 1);
 }

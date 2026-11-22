@@ -14,8 +14,8 @@ use std::str::FromStr;
 use relate_core::{NodeId, PropertyMap, RelId, Result, Value};
 use relate_model::{Constraint, ConstraintType};
 
-use super::{spec_from_model, ConstraintKeyScope, EntityId, KeySpec, KeyTuple, SpecSide};
-use crate::graph::{live_version, Graph};
+use super::{spec_from_model, ConstraintKeyScope, KeySpec, KeyTuple, SpecSide};
+use crate::graph::{live_version, EntityId, Graph};
 use crate::graph_type::GraphTypeSpec;
 use crate::redo::RedoOp;
 use crate::store::{CompactProps, Interner, RelPayload};

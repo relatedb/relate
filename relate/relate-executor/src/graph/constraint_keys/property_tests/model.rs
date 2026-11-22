@@ -13,8 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use relate_core::Value;
 
-use super::super::{EntityId, KeyTuple};
+use super::super::KeyTuple;
 use super::generate::{ConstraintDesc, TestOp, VALUE_ALPHABET};
+use crate::graph::EntityId;
 use crate::graph::Graph;
 
 /// One model-level value. `Null` and `Nan` are representable (a tuple

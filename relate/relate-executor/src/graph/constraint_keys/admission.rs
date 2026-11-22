@@ -20,8 +20,8 @@ use super::estimate::{price_drop, price_install};
 use super::simulation::{
     constraint_effect, is_constraint_ddl, ConstraintOp, DdlOp, SlotSimulation,
 };
-use super::{ConstraintKeyIndex, ConstraintKeyScope, EntityId, KeySpec, KeyTuple};
-use crate::graph::Graph;
+use super::{ConstraintKeyIndex, ConstraintKeyScope, KeySpec, KeyTuple};
+use crate::graph::{EntityId, Graph};
 use crate::redo::RedoOp;
 
 /// The identity of one constrained tuple in the group overlay: the interned

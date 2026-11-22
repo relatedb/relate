@@ -12,9 +12,10 @@
 use relate_core::{NodeId, RelId};
 
 use super::super::{live_version, Graph};
-use super::{ConstraintKeyIndex, ConstraintKeyScope, EntityId};
+use super::{ConstraintKeyIndex, ConstraintKeyScope};
 #[cfg(test)]
 use super::{KeySpec, KeyTuple};
+use crate::graph::EntityId;
 use crate::store::{LiveNode, LiveRel};
 
 /// One node edit's constraint-key hand-off. A seam asks the map's scope one

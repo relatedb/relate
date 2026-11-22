@@ -20,6 +20,17 @@ use count_state::{CountDelta, CountStats};
 // for the recognizer in `exec` — the window itself lives on `Graph`.
 pub(crate) use count_state::{CountProbe, LabelSetCount};
 
+/// A live entity addressed by kind: an id alone does not say whether it names
+/// a node or a relationship, so every kind-dependent decision takes this pair
+/// rather than a bare id beside a separate selector. The maintained
+/// constraint-key map stores its holders as one (`graph/constraint_keys`) and
+/// the overlay's delete accounting nets a create per kind (`overlay/writes`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum EntityId {
+    Node(NodeId),
+    Rel(RelId),
+}
+
 /// `Atomic*::fetch_update` was renamed to `try_update` in Rust 1.95 and
 /// deprecated in 1.99. MSRV is 1.88, where `try_update` does not exist, so
 /// the call keeps the old name. `#[expect(deprecated)]` is wrong here: on

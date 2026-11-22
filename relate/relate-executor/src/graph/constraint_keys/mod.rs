@@ -28,21 +28,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
 
 use relate_catalog::ConstraintDef;
-use relate_core::{NodeId, RelId, Result, Value};
+use relate_core::{NodeId, Result, Value};
 use relate_model::{Constraint, ConstraintType};
 
 use crate::group_key::GroupKey;
 use crate::store::{Interner, LiveNode, LiveRel, PayloadKeyIds};
 
-use super::Graph;
-
-/// The live entity holding a constrained tuple. A constraint's entity kind
-/// fixes which variant its entries carry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum EntityId {
-    Node(NodeId),
-    Rel(RelId),
-}
+use super::{EntityId, Graph};
 
 /// One entry's tuple: the full constrained property list in the
 /// constraint's declared order.

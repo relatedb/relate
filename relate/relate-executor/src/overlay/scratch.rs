@@ -51,8 +51,9 @@ pub(super) struct PerBatchState {
 }
 
 /// The statement-spanning scratch state (ADR-0309 counters, ADR-0402 applied
-/// fact): the two facts that outlive one `CALL { … } IN TRANSACTIONS` batch
-/// (ADR-0210). One struct, and one unit on both edges of a batch's life:
+/// fact, REL8-1188 statement-local created sets): the four facts that outlive
+/// one `CALL { … } IN TRANSACTIONS` batch (ADR-0210). One struct, and one
+/// unit on both edges of a batch's life:
 ///
 /// - **carried** by [`WriteScratch::rebase`] — a batch commit moves it whole
 ///   to the next batch's scratch, so a new statement-spanning field joins the
@@ -78,6 +79,20 @@ pub(super) struct StatementState {
     /// image, so a restored batch leaves it exactly as it was at the
     /// capture — a batch that rolled back applied nothing.
     pub(super) applied_ops: u64,
+    /// The node ids *this statement* created through the redo funnel: the
+    /// statement-local twin of [`PerBatchState::created_nodes`], which
+    /// additionally spans the earlier statements of the transaction. Delete
+    /// accounting nets a create only against the statement that counted it —
+    /// a delete of a node an earlier statement of the transaction created
+    /// counts as this statement's delete, never as a negative create
+    /// (REL8-1188). The node and rel twins are filled at the one funnel and
+    /// cleared at a statement entry and a batch rebase, so each holds exactly
+    /// its statement's creates inside the current batch — never more ids than
+    /// the workspace-charged batch twin, whose size the charge measures.
+    pub(super) created_nodes: HashSet<NodeId>,
+    /// The relationship ids *this statement* created: the rel half of
+    /// [`Self::created_nodes`]'s rule.
+    pub(super) created_rels: HashSet<RelId>,
 }
 
 /// Per-attempt write buffer. The shared `Graph` is not mutated until `apply_redo`.
@@ -311,11 +326,16 @@ impl WriteScratch {
     /// entity maps, prop indexes, adjacency, deleted/created sets, label
     /// probe, live-label delta) at the new snapshot timestamp, keeping the
     /// statement-spanning [`StatementState`] — the accumulated `stats` and the
-    /// applied-change count — which moves over as one unit. The survivor set
-    /// is decided here, next to the fields, not at the `commit_batch` call
-    /// site.
+    /// applied-change count — which moves over as one unit. Its created-id
+    /// sets are the one exception, cleared here with the batch's own created
+    /// sets: an id nets a create only inside the batch that counted it
+    /// (REL8-1188), so a carried id would only grow the sets past the bytes
+    /// the workspace charge measures. The survivor set is decided here, next
+    /// to the fields, not at the `commit_batch` call site.
     pub(crate) fn rebase(&mut self, new_ts: u64) {
-        let statement = std::mem::take(&mut self.statement);
+        let mut statement = std::mem::take(&mut self.statement);
+        statement.created_nodes.clear();
+        statement.created_rels.clear();
         let node_id_alloc = Arc::clone(&self.node_id_alloc);
         let rel_id_alloc = Arc::clone(&self.rel_id_alloc);
         *self = Self::with_statement(new_ts, statement, node_id_alloc, rel_id_alloc);
@@ -398,17 +418,29 @@ impl WriteScratch {
     /// `node_labels_removed` count labels per node and `properties_written`
     /// counts one per property write. Deriving them from the op keeps the
     /// two counter vocabularies in one accounting site, so a write verb
-    /// cannot bump one and forget the other.
+    /// cannot bump one and forget the other. The same match records which
+    /// entities were created — the statement-local set ([`StatementState::
+    /// created_nodes`] / `created_rels`) and its transaction-spanning batch
+    /// twin ([`PerBatchState::created_nodes`] / `created_rels`) in the same
+    /// arm, so the two registration sites cannot drift — the fact the delete
+    /// verbs' net-or-count decision reads (REL8-1188).
     fn account_update_counters(&mut self, op: &RedoOp) {
         match op {
             RedoOp::CreateNode {
-                labels, properties, ..
+                id,
+                labels,
+                properties,
+                ..
             } => {
                 self.statement.stats.node_labels_added += distinct_labels(labels).len() as i64;
                 self.statement.stats.properties_written += properties.len() as i64;
+                self.statement.created_nodes.insert(*id);
+                self.batch.created_nodes.insert(*id);
             }
-            RedoOp::CreateRel { properties, .. } => {
+            RedoOp::CreateRel { id, properties, .. } => {
                 self.statement.stats.properties_written += properties.len() as i64;
+                self.statement.created_rels.insert(*id);
+                self.batch.created_rels.insert(*id);
             }
             RedoOp::AddLabels { labels, .. } => {
                 self.statement.stats.node_labels_added += distinct_labels(labels).len() as i64;

@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashSet};
 use relate_core::{Node, NodeId, RelId, Relationship, Result, Value};
 use relate_ir::Direction;
 
-use crate::graph::Graph;
+use crate::graph::{EntityId, Graph};
 use crate::redo::RedoOp;
 
 use super::label_probe::LabelChange;
@@ -48,7 +48,6 @@ impl ExecGraph<'_> {
             },
         );
         s.bump_live_labels(&labels, 1);
-        s.batch.created_nodes.insert(id);
         s.push_redo(RedoOp::CreateNode {
             id,
             labels,
@@ -93,7 +92,6 @@ impl ExecGraph<'_> {
         );
         s.batch.out_adj.entry(start).or_default().push(id);
         s.batch.in_adj.entry(end).or_default().push(id);
-        s.batch.created_rels.insert(id);
         s.push_redo(RedoOp::CreateRel {
             id,
             start,
@@ -301,26 +299,15 @@ impl ExecGraph<'_> {
     }
 
     pub fn delete_rel(&self, id: RelId) {
-        let nprops = match self.rel(id) {
-            Some(r) => r.properties.len() as i64,
-            None => return,
-        };
+        // One fetch answers both "is the rel live" and "what it carries":
+        // a missing rel has nothing to delete (the `let … else` twin of
+        // `delete_node`'s form).
+        let Some(r) = self.rel(id) else { return };
+        let nprops = r.properties.len() as i64;
         let mut s = self.scratch_mut();
-        let removed = created_rel_removal(&s, id);
+        release_created(&mut s, EntityId::Rel(id));
         s.batch.deleted_rels.insert(id);
-        s.batch.rels.remove(&id);
-        if s.batch.created_rels.remove(&id) {
-            if let Some(delta) = removed {
-                s.shift_workspace(delta, 0);
-            }
-            s.statement.stats.relationships_created =
-                s.statement.stats.relationships_created.saturating_sub(1);
-            s.statement.stats.properties_set =
-                s.statement.stats.properties_set.saturating_sub(nprops);
-        } else {
-            s.statement.stats.relationships_deleted += 1;
-            s.statement.stats.properties_removed += nprops;
-        }
+        net_or_count_delete(&mut s, EntityId::Rel(id), nprops);
         s.push_redo(RedoOp::delete_rel(id));
     }
 
@@ -341,24 +328,77 @@ impl ExecGraph<'_> {
         let labels = node.labels;
         let mut s = self.scratch_mut();
         let (labels_added, labels_removed) = self.label_deltas(&s, &labels, LabelChange::Loss);
-        let removed = created_node_removal(&s, id);
+        release_created(&mut s, EntityId::Node(id));
         s.batch.deleted_nodes.insert(id);
-        s.batch.nodes.remove(&id);
         s.bump_live_labels(&labels, -1);
         s.net_label_stats(labels_added, labels_removed);
-        if s.batch.created_nodes.remove(&id) {
-            if let Some(delta) = removed {
-                s.shift_workspace(delta, 0);
-            }
-            s.statement.stats.nodes_created = s.statement.stats.nodes_created.saturating_sub(1);
-            s.statement.stats.properties_set =
-                s.statement.stats.properties_set.saturating_sub(nprops);
-        } else {
-            s.statement.stats.nodes_deleted += 1;
-            s.statement.stats.properties_removed += nprops;
-        }
+        net_or_count_delete(&mut s, EntityId::Node(id), nprops);
         s.push_redo(RedoOp::delete_node(id));
         Ok(())
+    }
+}
+
+/// The per-kind state one delete nets against (REL8-1188): the statement-local
+/// created set's verdict plus the four counter targets the decision writes.
+/// One bundle per kind, so the node/rel vocabulary is dispatched exactly once.
+struct DeleteNets<'a> {
+    statement_created: bool,
+    created: &'a mut i64,
+    set: &'a mut i64,
+    deleted: &'a mut i64,
+    removed: &'a mut i64,
+}
+
+/// The net-or-count decision both delete verbs share (REL8-1188). A delete
+/// nets the create's counters only for an entity *this statement* created in
+/// the batch it is deleting in — the id is still in the statement-local
+/// created set, which a batch rebase clears together with the batch's own
+/// charged created set ([`WriteScratch::rebase`]) — so a create/delete pair
+/// inside one statement cancels (the pinned
+/// `create_then_delete_cancels_create_stats` model). Every other delete
+/// counts as this statement's delete: of a pre-existing entity, of one an
+/// earlier statement of the transaction created (the create was counted by
+/// that statement, so netting here would drive the counter negative and
+/// poison every binding through the wire-stats boundary), or of one an
+/// earlier batch of this batched statement already committed
+/// (`CALL { … } IN TRANSACTIONS`, ADR-0210 — the committed create and the
+/// delete both report).
+fn net_or_count_delete(s: &mut WriteScratch, entity: EntityId, nprops: i64) {
+    let nets = match entity {
+        EntityId::Node(id) => DeleteNets {
+            statement_created: s.statement.created_nodes.remove(&id),
+            created: &mut s.statement.stats.nodes_created,
+            set: &mut s.statement.stats.properties_set,
+            deleted: &mut s.statement.stats.nodes_deleted,
+            removed: &mut s.statement.stats.properties_removed,
+        },
+        EntityId::Rel(id) => DeleteNets {
+            statement_created: s.statement.created_rels.remove(&id),
+            created: &mut s.statement.stats.relationships_created,
+            set: &mut s.statement.stats.properties_set,
+            deleted: &mut s.statement.stats.relationships_deleted,
+            removed: &mut s.statement.stats.properties_removed,
+        },
+    };
+    if nets.statement_created {
+        // The statement counted this create, so both counters still hold it:
+        // every property the entity carries was counted at the create or by a
+        // later write. `checked_sub` + the named expect keep a broken
+        // statement-created fact from the silent `saturating_sub` clamp that
+        // was the REL8-1188 bug; the i64 floor is refused here, and
+        // non-negativity is tripped where it is owned — the wire boundary's
+        // own expect (`relate::query_stats_to_wire`).
+        *nets.created = nets
+            .created
+            .checked_sub(1)
+            .expect("a statement-created entity's create counter still holds it");
+        *nets.set = nets
+            .set
+            .checked_sub(nprops)
+            .expect("a statement-created entity's property counter still holds it");
+    } else {
+        *nets.deleted += 1;
+        *nets.removed += nprops;
     }
 }
 
@@ -442,28 +482,56 @@ fn finish_set_property(
     }
 }
 
-fn created_rel_removal(s: &WriteScratch, id: RelId) -> Option<u64> {
-    if !relate_core::tokens::workspace_accounting() || !s.batch.created_rels.contains(&id) {
-        return None;
+/// The bookkeeping half of one delete, dispatched once per kind on
+/// [`EntityId`] (the same vocabulary [`net_or_count_delete`] reads): drop
+/// the entity's batch-set membership and take its scratch copy out — both
+/// unconditional, so the charged set never retains a deleted id — then
+/// release the copy's workspace charge when this batch created it. The
+/// write direction of the same charge is the `CreatedShift` pair beside
+/// this; a pre-existing entity's copy (a copy-on-write edit) was never
+/// charged as a create, so its delete releases nothing.
+fn release_created(s: &mut WriteScratch, entity: EntityId) {
+    match entity {
+        EntityId::Node(id) => {
+            let batch_created = s.batch.created_nodes.remove(&id);
+            let copy = s.batch.nodes.remove(&id);
+            let remaining = s.batch.created_nodes.len();
+            release_created_charge(s, batch_created, copy, |node| {
+                crate::workspace::created_node_remove_delta(remaining, node)
+            });
+        }
+        EntityId::Rel(id) => {
+            let batch_created = s.batch.created_rels.remove(&id);
+            let copy = s.batch.rels.remove(&id);
+            let remaining = s.batch.created_rels.len();
+            release_created_charge(s, batch_created, copy, |rel| {
+                crate::workspace::created_rel_remove_delta(remaining, rel)
+            });
+        }
     }
-    s.batch.rels.get(&id).map(|rel| {
-        crate::workspace::created_rel_remove_delta(
-            s.batch.created_rels.len().saturating_sub(1),
-            rel,
-        )
-    })
 }
 
-fn created_node_removal(s: &WriteScratch, id: NodeId) -> Option<u64> {
-    if !relate_core::tokens::workspace_accounting() || !s.batch.created_nodes.contains(&id) {
-        return None;
+/// The shared tail of [`release_created`]: a copy this batch created is
+/// charged with its own bytes plus one created-set slot, so its delete
+/// releases exactly that, priced against the set's post-removal size. A
+/// copy this batch did not create (a copy-on-write copy of a pre-existing
+/// entity) releases nothing. A created entity's copy is asserted live in
+/// every configuration, accounting off included; the priced release
+/// itself runs only while the workspace ledger is on.
+fn release_created_charge<T>(
+    s: &mut WriteScratch,
+    batch_created: bool,
+    copy: Option<T>,
+    delta: impl FnOnce(&T) -> u64,
+) {
+    if !batch_created {
+        return;
     }
-    s.batch.nodes.get(&id).map(|node| {
-        crate::workspace::created_node_remove_delta(
-            s.batch.created_nodes.len().saturating_sub(1),
-            node,
-        )
-    })
+    let copy = copy.expect("a batch-created entity's copy is live in the scratch");
+    if !relate_core::tokens::workspace_accounting() {
+        return;
+    }
+    s.shift_workspace(delta(&copy), 0);
 }
 
 /// The redo-op payload of one set_property, before the node/rel verb wraps
