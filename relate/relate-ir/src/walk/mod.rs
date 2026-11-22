@@ -27,7 +27,7 @@ mod vars;
 // The name-collection family's one path out of the private `vars`
 // module: the crate re-export in `lib.rs` reads these names from here,
 // so the public spelling (`relate_ir::expr_vars` &c.) never changed.
-pub use vars::{expr_vars, label_expr_vars, path_pattern_vars, references_any};
+pub use vars::{exists_outer_vars, expr_vars, label_expr_vars, path_pattern_vars, references_any};
 
 impl Expr {
     /// Direct child expressions, one canonical callback traversal.

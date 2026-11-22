@@ -387,15 +387,15 @@ impl ReadCollector {
                 self.shadowed.unbind_to(scope);
                 body
             }
-            Clause::CallSubquery(subquery) => self.clause_list(&subquery.statement.clauses),
+            Clause::CallSubquery(subquery) => self.statement(&subquery.statement),
             Clause::Conditional(conditional) => {
                 // The branch predicates are clause expression roots, already
                 // read by `clause_list`'s root walk; only the bodies remain.
                 for branch in &conditional.branches {
-                    self.clause_list(&branch.body.clauses)?;
+                    self.statement(&branch.body)?;
                 }
                 if let Some(else_body) = &conditional.else_body {
-                    self.clause_list(&else_body.clauses)?;
+                    self.statement(else_body)?;
                 }
                 Ok(())
             }

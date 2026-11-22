@@ -208,7 +208,7 @@ fn path_var_names(path: &PathPattern, out: &mut HashSet<String>) {
 /// a pattern's names are values the expression needs from the surrounding
 /// row, `expr_vars`'s documented rule — a `CREATE`/`MERGE` target pattern
 /// included, whose WriteTarget payload the Read filter skips by design).
-fn exists_outer_vars(query: &Query, out: &mut HashSet<String>) {
+pub fn exists_outer_vars(query: &Query, out: &mut HashSet<String>) {
     // The pattern mentions land in their own sink so the two callbacks
     // never share a borrow; the union happens once at the end.
     let mut pattern_names = HashSet::new();

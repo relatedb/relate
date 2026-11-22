@@ -242,8 +242,7 @@ fn check_nested_scope_refs(
         if root.is_none_or(|name| name.with_str(|text| outer_names.contains_key(text)))
             && !leaf_allowed_as_group(leaf, group_keys, imports)
         {
-            let mut offending = Vec::new();
-            push_offending_name(leaf, &mut offending);
+            let offending: Vec<String> = root.map(ToString::to_string).into_iter().collect();
             return Err(non_grouping_ref(&offending));
         }
     }
@@ -346,11 +345,27 @@ fn nested_scope_leaves(
             return;
         }
     }
+    // A subquery body's own bindings are not enumerable here: the
+    // all-leaves walk reports every name the body mentions
+    // ([`relate_ir::exists_outer_vars`], the one home of that policy) and
+    // the caller's `outer_names` filter drops the body's own; the
+    // row-scope walk leaves the body uncollected entirely (its entry's
+    // doc).
+    if let Some(query) = expr.subquery_body() {
+        if matches!(bodies, SubqueryBodies::Merged) {
+            let mut names = std::collections::HashSet::new();
+            relate_ir::exists_outer_vars(query, &mut names);
+            for name in &names {
+                read(&SmallName::from(name.as_str()), bound, out);
+            }
+        }
+        return;
+    }
     match expr {
         // A pattern predicate correlates the pattern against already-bound
         // names; its element variables are reads, never bindings here.
         Expr::PatternPred { path } | Expr::ShortestPath { path, .. } => {
-            for name in path.path_names().chain(relate_ir::path_pattern_vars(path)) {
+            for name in pattern_names(path) {
                 read(name, bound, out);
             }
             return;
@@ -365,10 +380,7 @@ fn nested_scope_leaves(
             predicate,
             projection,
         } => {
-            let names: Vec<&SmallName> = path
-                .path_names()
-                .chain(relate_ir::path_pattern_vars(path))
-                .collect();
+            let names: Vec<&SmallName> = pattern_names(path).collect();
             for name in names.iter().copied() {
                 read(name, bound, out);
             }
@@ -379,47 +391,6 @@ fn nested_scope_leaves(
             }
             nested_scope_leaves(projection, bound, bodies, out);
             bound.truncate(mark);
-            return;
-        }
-        // A subquery body's own bindings are not enumerable here: the
-        // all-leaves walk reports every name the body mentions and the
-        // caller's `outer_names` filter drops the body's own; the
-        // row-scope walk leaves the body uncollected entirely (its
-        // entry's doc).
-        Expr::ExistsSubquery { query }
-        | Expr::CountSubquery { query }
-        | Expr::CollectSubquery { query } => {
-            if matches!(bodies, SubqueryBodies::Excluded) {
-                return;
-            }
-            // The two walker callbacks cannot share one collection, so the
-            // body is walked twice: pattern bindings, then expression
-            // variables.
-            let mut names: Vec<&SmallName> = Vec::new();
-            relate_ir::walk_query(
-                query,
-                &mut |clause| {
-                    let relate_ir::Clause::Match { patterns, .. } = clause else {
-                        return;
-                    };
-                    for pattern in patterns {
-                        names.extend(
-                            pattern
-                                .path_names()
-                                .chain(relate_ir::path_pattern_vars(pattern)),
-                        );
-                    }
-                },
-                &mut |_| {},
-            );
-            relate_ir::walk_query(query, &mut |_| {}, &mut |e| {
-                if let Expr::Variable(v) = e {
-                    names.push(v);
-                }
-            });
-            for name in names {
-                read(name, bound, out);
-            }
             return;
         }
         _ => {}
@@ -435,6 +406,12 @@ fn nested_scope_leaves(
             bound.truncate(mark);
         }
     });
+}
+
+/// Every name a pattern mentions as a row value: the path variable(s),
+/// then the node and relationship variables.
+fn pattern_names(path: &relate_ir::PathPattern) -> impl Iterator<Item = &SmallName> {
+    path.path_names().chain(relate_ir::path_pattern_vars(path))
 }
 
 /// The atomic-leaf classification the grouping walks share: a bare

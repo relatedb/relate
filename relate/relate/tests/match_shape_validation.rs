@@ -202,6 +202,8 @@ fn create_self_reference_is_rejected() {
         "CREATE (a), (b {prop: EXISTS { (a)-[r2]->(c) }})",
         "CREATE (a)-[r:R]->(b {prop: CASE WHEN true THEN EXISTS { (a)-[r2]->(c) } END})",
         "CREATE (a)-[r:R]->(b {prop: EXISTS { (c) WHERE EXISTS { (c)<-[r2]-(a) }}})",
+        // A CALL body's UNION arm reads the created entity too.
+        "CREATE (a), (b {prop: EXISTS { CALL { MATCH (z) RETURN z UNION MATCH (a) RETURN a AS z } RETURN z }})",
         // A plain property read is the same 42I58 reference (Cypher 25).
         "CREATE (a {num: 0}), ({num: a.num})",
         "CREATE (a {prop: 7})-[r:R {prop: a.prop}]->(b)",
