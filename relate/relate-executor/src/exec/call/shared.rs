@@ -13,15 +13,13 @@
 //! for the naked `CALL { }` form it is the outer rows' runtime key set
 //! (plus its homogeneity), known only at execution.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
-use relate_core::{Result, Value};
+use relate_core::Result;
 use relate_ir::{expr_vars, Clause, Expr, Projection, Query};
 
-use super::{empty_body_row, execute_query_scoped, import_seed, merge_body_export, SubquerySpec};
-use crate::ctx::QueryCtx;
+use super::import_seed;
 use crate::exec::scope::nested_seed_row;
-use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 /// What one shared execution of a `CALL { … }` body needs: the single seed
@@ -236,39 +234,4 @@ pub(super) fn import_invariant_body(query: &Query, check: &HashSet<String>) -> b
         },
     );
     clauses_clean && exprs_clean
-}
-
-/// The shared-execution fast path itself: execute once on the plan's seed
-/// with that seed as the body's importing scope (exactly like the per-row
-/// path), then merge the single result against every outer row.
-pub(super) fn exec_call_subquery_shared(
-    graph: &ExecGraph<'_>,
-    rows: Vec<Row>,
-    spec: SubquerySpec<'_>,
-    plan: SharedExecution,
-    params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
-) -> Result<Vec<Row>> {
-    // One fact, one read: the checked names are the seed's keys, computed
-    // before the seed moves into the one scoped entry.
-    let check = plan.check();
-    // Same import set as the per-row path: only a scope
-    // clause shapes its arms onto the exported names. (The shared plan only
-    // reaches here for `(vars)`/naked scopes, so `check` is exactly that
-    // import set.)
-    let scoped_imports = spec.scope.has_scope_clause().then_some(&check);
-    let result = execute_query_scoped(graph, spec.query, params, plan.seed, scoped_imports, qctx)?;
-    if result.rows.is_empty() {
-        return Ok(rows
-            .into_iter()
-            .filter_map(|row| empty_body_row(row, spec.optional, spec.query, spec.scope))
-            .collect());
-    }
-    let mut out = Vec::new();
-    for row in &rows {
-        for values in &result.rows {
-            out.push(merge_body_export(row, &result.columns, values, &check));
-        }
-    }
-    Ok(out)
 }

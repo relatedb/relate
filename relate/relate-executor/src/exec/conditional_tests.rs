@@ -6,7 +6,10 @@
 
 use relate_core::Value;
 
-use super::test_support::{column, exec_autocommit, exec_cypher, int_cell, string_cell};
+use super::test_support::{
+    assert_expression_cap, column, exec_autocommit, exec_cypher, int_cell, string_cell,
+    try_exec_cypher,
+};
 use super::QueryResult;
 use crate::graph::Graph;
 
@@ -362,4 +365,49 @@ fn a_unit_conditional_call_in_transactions_reports_every_iteration() {
     assert_eq!(integers(&z, "i"), vec![2]);
     let x = exec_cypher(&graph, "MATCH (x:X) RETURN count(*) AS c");
     assert_eq!(integers(&x, "c"), vec![0]);
+}
+
+/// REL8-1845 (ADR-0463): the conditional's output buckets are a retaining
+/// container — each driving row's branch production is charged to the
+/// running total before its rows land, where the pre-conversion form held
+/// the whole branch output unbilled. A 5_000-row NEXT chain whose branch
+/// bodies each produce 200 rows (a million bucketed rows) refuses at the
+/// lowered cap instead of building them.
+#[test]
+fn a_conditional_output_charges_each_driving_rows_branch_production() {
+    let mut graph = Graph::default();
+    graph.configure_expression_memory_limit(Some(1 << 20));
+    let error = try_exec_cypher(
+        &graph,
+        "UNWIND range(1, 5_000) AS i \
+         RETURN i \
+         NEXT \
+         WHEN i > 0 THEN UNWIND range(1, 200) AS j RETURN i * 1000 + j AS v",
+    )
+    .err()
+    .expect("a million bucketed conditional rows must be refused at the lowered cap");
+    assert_expression_cap(&error, 1 << 20);
+}
+
+/// REL8-1845: the same million-row conditional output under a cap it fits
+/// in — the charge is honest, not a blanket refusal: the buckets build and
+/// the branch-major order (the two `WHEN` rows of row 1, then row 2's, …)
+/// holds for the statement result.
+#[test]
+fn a_charged_conditional_output_still_builds_under_a_cap_it_fits() {
+    let mut graph = Graph::default();
+    graph.configure_expression_memory_limit(Some(128 << 20));
+    let result = exec_cypher(
+        &graph,
+        "UNWIND range(1, 5_000) AS i \
+         RETURN i \
+         NEXT \
+         WHEN i > 0 THEN UNWIND range(1, 200) AS j RETURN i * 1000 + j AS v",
+    );
+    assert_eq!(result.rows.len(), 1_000_000);
+    // Row-major within each driving row's branch output, branch order the
+    // written order — the pinned conditional output order at scale.
+    assert_eq!(result.rows[0][0], Value::Int(1001));
+    assert_eq!(result.rows[199][0], Value::Int(1200));
+    assert_eq!(result.rows[200][0], Value::Int(2001));
 }

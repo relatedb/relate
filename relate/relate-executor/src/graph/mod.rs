@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+
 use std::sync::{Arc, Mutex};
 
 use relate_catalog::{Catalog, ConstraintDef, IndexDef};
@@ -39,6 +40,8 @@ mod access;
 mod accounting;
 #[cfg(any(test, feature = "test-hooks"))]
 mod build_counter;
+#[cfg(test)]
+pub(crate) use build_counter::BuildCounter;
 mod engine_api;
 
 mod adjacency;

@@ -8,9 +8,7 @@ exec/batch.rs::try_scan_filter_batch # batch rung result handed back to the ladd
 exec/call/conditional.rs::exec_conditional # projection/filter stage materializes its rows; to be replaced by streaming
 exec/call/in_transactions.rs::exec_call_in_transactions # projection/filter stage materializes its rows; to be replaced by streaming
 exec/call/mod.rs::call_subquery_row # projection/filter stage materializes its rows; to be replaced by streaming
-exec/call/mod.rs::exec_call_subquery # projection/filter stage materializes its rows; to be replaced by streaming
 exec/load_csv.rs::exec_load_csv # projection/filter stage materializes its rows; to be replaced by streaming
-exec/call/shared.rs::exec_call_subquery_shared # projection/filter stage materializes its rows; to be replaced by streaming
 exec/catalog.rs::compose_catalog_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/catalog.rs::execute_catalog # projection/filter stage materializes its rows; to be replaced by streaming
 exec/catalog.rs::finish_catalog_rows # projection/filter stage materializes its rows; to be replaced by streaming
@@ -85,3 +83,4 @@ show_catalog.rs::procedure_catalog_rows # bounded catalog/admin/procedure result
 exec/top_k.rs::finish # returns the ordered window's own rows — at most `skip + limit`, the bounded top-k container itself (ADR-0555 §3)
 exec/post_merge.rs::finish # the landing sink: the window's bounded rows on the ordered-LIMIT shape, the retaining Vec otherwise
 exec/post_merge.rs::adopt # the same landing's container method, the body of that one entry point
+exec/call/feed.rs::rows_for # the shared body's merged view of ONE outer row — bounded by the single body result (ADR-0555)

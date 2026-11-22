@@ -257,6 +257,25 @@ impl RetainedTotal {
         self.add_bytes(graph, crate::workspace::row_entry_bytes(values))
     }
 
+    /// A bulk row landing — `count` rows of `slots_per_row` slots each —
+    /// the one spelling of the count x width charge a retaining container
+    /// bills before its rows land: the feed spine's held form and the
+    /// conditional's buckets both call it, charged ahead of the landing
+    /// so a refusal never leaves the rows retained. Both meters, exactly
+    /// the charge a just-built allocation pays: PROFILE's construction
+    /// telemetry records it and the running total enforces it.
+    pub(crate) fn add_rows(
+        &mut self,
+        graph: &ExecGraph<'_>,
+        count: usize,
+        slots_per_row: usize,
+    ) -> Result<()> {
+        self.add_allocation(
+            graph,
+            crate::workspace::retained_rows_bytes(count, slots_per_row),
+        )
+    }
+
     /// One group-table landing in a streaming fold: the map entry's
     /// slot growth plus the key's slots and owned payload (the workspace
     /// group-entry delta — the meter's own figures, which count each key

@@ -14,7 +14,10 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::batch_tail::{generator_seeded_tail, BatchTail, BATCH_ROWS};
-use super::call::{concluding_part_result, exec_call_subquery, exec_conditional, SubquerySpec};
+use super::call::{
+    call_subquery_feed, concluding_part_result, exec_call_in_transactions, exec_conditional,
+    query_writes, SubquerySpec,
+};
 use super::catalog::{catalog_result, execute_catalog};
 use super::catalog_show::show_indexes_result;
 use super::classification::ProjectionClass;
@@ -320,24 +323,45 @@ fn run_clauses_mode(
                     field_terminator.as_deref(),
                 )?;
             }
+            // The `CALL { … }` product as the feed spine's one driver
+            // (ADR-0555): `IN TRANSACTIONS` owns its batching and commits
+            // and stays materializing; otherwise a follower that folds
+            // rows as they arrive (`unwind_streams_into` admits exactly
+            // those) parks the product — the consumer pulls one merged row
+            // at a time, so peak memory is one outer row's body result,
+            // not the input count times it — and every other consumer
+            // holds it charged (ADR-0463).
             Clause::CallSubquery {
                 query,
                 optional,
                 scope,
                 in_transactions,
             } => {
-                rows = exec_call_subquery(
-                    graph,
-                    rows,
-                    SubquerySpec {
-                        query,
-                        optional: *optional,
-                        scope,
-                        in_transactions: in_transactions.as_ref(),
-                    },
-                    params,
-                    qctx,
-                )?;
+                let spec = SubquerySpec {
+                    query,
+                    optional: *optional,
+                    scope,
+                };
+                if let Some(tx) = in_transactions.as_ref() {
+                    rows = exec_call_in_transactions(graph, rows, spec, tx, params, qctx)?;
+                } else if call_product_parks(clauses.get(i + 1), query) {
+                    park_and_defer(
+                        call_subquery_feed(
+                            ctx,
+                            qctx,
+                            std::mem::take(&mut rows),
+                            spec,
+                            profile.is_some(),
+                        )?,
+                        profile,
+                        i,
+                        &mut pending,
+                        &mut metrics_tick,
+                    );
+                } else {
+                    rows = call_subquery_feed(ctx, qctx, rows, spec, profile.is_some())?
+                        .materialize()?;
+                }
             }
             Clause::Conditional {
                 branches,
@@ -593,6 +617,15 @@ fn project_clause(
     *feeds.rows = project_rows(ctx, feed, spec, inflate, rows_from, scope)?;
     finish_parked_feed(parked, tick.as_mut());
     Ok(())
+}
+
+/// The `CALL { … }` product's park admission — the one named predicate
+/// every sibling producer parks on (`unwind_streams_into` for the folding
+/// consumer), plus this clause's own fact: a writing body never parks
+/// (see [`query_writes`]), so its semantics never depend on when the
+/// consuming projection evaluates its items.
+fn call_product_parks(next: Option<&Clause>, query: &relate_ir::Query) -> bool {
+    unwind_streams_into(next) && !query_writes(query)
 }
 
 /// Park a clause's generator for the folding consumer that follows and

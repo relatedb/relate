@@ -13,15 +13,15 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 mod conditional;
+mod feed;
 mod in_transactions;
 mod shared;
 
 pub(crate) use conditional::{conditional_produces_rows, exec_conditional};
+pub(crate) use feed::call_subquery_feed;
 pub(crate) use in_transactions::exec_call_in_transactions;
 #[cfg(test)]
 pub(crate) use in_transactions::transaction_error_message;
-
-use shared::{exec_call_subquery_shared, import_invariant_body, shared_execution_plan};
 
 use super::dispatch::{run_nested_clauses, run_nested_clauses_scoped};
 use super::scope::{
@@ -30,40 +30,12 @@ use super::scope::{
 };
 use super::{materialize_rows, QueryResult};
 
-/// `CALL { }` clause shape (CIP-141/CIP-32 + IN TRANSACTIONS), bundled to
+/// `CALL { }` clause shape (CIP-141/CIP-32), bundled to
 /// keep the executors under the argument-count lint.
 pub(crate) struct SubquerySpec<'a> {
     pub query: &'a Query,
     pub optional: bool,
     pub scope: &'a relate_ir::CallScope,
-    pub in_transactions: Option<&'a relate_ir::InTransactions>,
-}
-
-pub(crate) fn exec_call_subquery(
-    graph: &ExecGraph<'_>,
-    rows: Vec<Row>,
-    spec: SubquerySpec<'_>,
-    params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
-) -> Result<Vec<Row>> {
-    if let Some(tx) = spec.in_transactions {
-        return exec_call_in_transactions(graph, rows, spec, tx, params, qctx);
-    }
-    if let Some(plan) = shared_execution_plan(spec.scope, &rows)? {
-        if import_invariant_body(spec.query, &plan.check()) {
-            return exec_call_subquery_shared(graph, rows, spec, plan, params, qctx);
-        }
-    }
-    let mut out = Vec::new();
-    for row in rows {
-        let produced = call_subquery_row(graph, &row, spec.query, spec.scope, params, qctx)?;
-        if produced.is_empty() {
-            out.extend(empty_body_row(row, spec.optional, spec.query, spec.scope));
-        } else {
-            out.extend(produced);
-        }
-    }
-    Ok(out)
 }
 
 /// The seed row of one outer row for a `CALL (vars) { … }` body — the
@@ -97,6 +69,16 @@ fn scope_seed(scope: &relate_ir::CallScope, outer: &Row) -> Result<Row> {
         relate_ir::CallScope::None | relate_ir::CallScope::Wildcard => Ok(nested_seed_row(outer)),
         relate_ir::CallScope::Vars(vars) => import_seed(vars, outer),
     }
+}
+
+/// The import set a body run excludes from its merge: the seed's own
+/// keys, only under a scope clause — the one derivation both execution
+/// paths pass to [`execute_query_scoped`] (the per-row path from its
+/// fresh seed, the shared fast path from the plan's).
+pub(crate) fn scope_imports(scope: &relate_ir::CallScope, seed: &Row) -> Option<HashSet<String>> {
+    scope
+        .has_scope_clause()
+        .then(|| seed.keys().cloned().collect())
 }
 
 /// The one row-merge policy of both subquery paths: the body's export
@@ -148,6 +130,29 @@ fn imported_names(scope: &relate_ir::CallScope, outer: Option<&Row>) -> HashSet<
     }
 }
 
+/// Whether a `CALL { … }` body writes — any store-mutating clause
+/// anywhere in it, through the one canonical per-clause classification
+/// ([`super::mutates_store`]: the planner's table, with this layer's
+/// `LOAD CSV`-reads and procedure-registry rulings). The `walk_query`
+/// traversal descends into nested bodies, so one flat fold sees every
+/// clause.
+///
+/// The parked form runs the body lazily, one outer row at a time, so a
+/// writing body's writes would interleave with the consuming projection's
+/// per-row graph reads (a `COUNT { MATCH … }` item would see the writes
+/// of the rows pulled so far, not all of them); the materializing form
+/// runs every body before any projection row is evaluated. A writing body
+/// therefore never parks, whatever its consumer.
+pub(crate) fn query_writes(query: &Query) -> bool {
+    let mut writes = false;
+    relate_ir::walk_query(
+        query,
+        &mut |clause| writes |= super::mutates_store(clause),
+        &mut |_| {},
+    );
+    writes
+}
+
 pub(crate) fn call_subquery_row(
     graph: &ExecGraph<'_>,
     outer: &Row,
@@ -173,9 +178,7 @@ pub(crate) fn call_subquery_row(
     // `(*)` forms bind) — one derivation, not a parallel walk. A naked
     // `CALL { … }` keeps the legacy whole-row star expansion, so only a
     // scope clause has a set.
-    let imported = scope
-        .has_scope_clause()
-        .then(|| seed.keys().cloned().collect::<HashSet<String>>());
+    let imported = scope_imports(scope, &seed);
     let result = execute_query_scoped(graph, query, params, seed, imported.as_ref(), qctx)?;
     // A part merges its rows back only when the body's FINAL stage projects
     // a statement result (`super::part_projects_rows`, read through

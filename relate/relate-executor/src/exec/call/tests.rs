@@ -5,7 +5,9 @@
 
 use relate_core::{Error, Value};
 
-use super::super::test_support::{exec_autocommit, exec_cypher_on};
+use super::super::test_support::{
+    assert_expression_cap, exec_autocommit, exec_cypher_on, try_exec_cypher_on,
+};
 use crate::{ExecGraph, Graph};
 
 #[test]
@@ -392,4 +394,111 @@ fn all_unit_scoped_call_union_arms_need_no_column_agreement() {
     )
     .unwrap();
     assert_eq!(result.rows, vec![vec![Value::Int(2)]]);
+}
+
+/// REL8-1845 (ADR-0463): the subquery product's materializing form —
+/// a terminal `CALL { … }` with a plain projection over it — charges
+/// each outer row's staged body result, so 5_000 driving rows x a
+/// 200-row body refuses at the lowered cap instead of building the
+/// million rows. Parametrized over the body: an import-computing body
+/// pins the per-row path, an import-invariant one the shared fast path
+/// (its one body execution, then the first outer row's merged view
+/// crosses the cap).
+fn plain_projection_charges_the_product(body: &str, expected_shared_runs: u64) {
+    let mut graph = Graph::default();
+    graph.configure_expression_memory_limit(Some(1 << 20));
+    let view = ExecGraph::read(&graph);
+    let error = try_exec_cypher_on(
+        &view,
+        &format!(
+            "UNWIND range(1, 5_000) AS i \
+             CALL (i) {{ {body} }} \
+             RETURN v"
+        ),
+    )
+    .err()
+    .expect("a materialized subquery product must be refused at the lowered cap");
+    assert_expression_cap(&error, 1 << 20);
+    assert_eq!(
+        super::feed::take_shared_body_runs(),
+        expected_shared_runs,
+        "the mode the refusal pins"
+    );
+}
+
+#[test]
+fn a_plain_projection_over_the_subquery_product_charges_the_staged_rows() {
+    plain_projection_charges_the_product("UNWIND range(1, 200) AS j RETURN i * 1000 + j AS v", 0);
+}
+
+#[test]
+fn a_plain_projection_over_the_shared_product_charges_the_merged_rows() {
+    plain_projection_charges_the_product("UNWIND range(1, 200) AS j RETURN j AS v", 1);
+}
+
+/// REL8-1845 (ADR-0555): the same body, the same cap, the same clause —
+/// only the consumer differs. A folding consumer keeps the product's
+/// feed, so the million merged rows are never held and the answer is
+/// one integer. Parametrized over the body the same way: the shared
+/// member asserts the fast path ran the body once for all 5_000 outer
+/// rows, the per-row member that it never engaged — the statement's
+/// rows alone cannot tell the two modes apart.
+fn folding_consumer_streams_the_product(body: &str, expected_shared_runs: u64) {
+    let mut graph = Graph::default();
+    graph.configure_expression_memory_limit(Some(1 << 20));
+    let view = ExecGraph::read(&graph);
+    let result = exec_cypher_on(
+        &view,
+        &format!(
+            "UNWIND range(1, 5_000) AS i \
+             CALL (i) {{ {body} }} \
+             RETURN count(v) AS c"
+        ),
+    );
+    assert_eq!(result.rows, vec![vec![Value::Int(1_000_000)]]);
+    assert_eq!(
+        super::feed::take_shared_body_runs(),
+        expected_shared_runs,
+        "the mode the fold pinned"
+    );
+}
+
+#[test]
+fn a_folding_consumer_streams_the_subquery_product_whatever_its_size() {
+    folding_consumer_streams_the_product("UNWIND range(1, 200) AS j RETURN i * 1000 + j AS v", 0);
+}
+
+#[test]
+fn a_folding_consumer_streams_the_shared_execution_product() {
+    folding_consumer_streams_the_product("UNWIND range(1, 200) AS j RETURN j AS v", 1);
+}
+
+/// REL8-1845 (round 3): a writing body never parks, whatever its
+/// consumer — `query_writes` is the by-construction guard, so a writing
+/// body's semantics never depend on when the consuming projection
+/// evaluates its items. The ordered window sits on the WITH — the CALL's
+/// direct follower, the clause `call_product_parks` consults — so the
+/// admission is reached and the guard is what holds this body. The
+/// asserted answer is the
+/// materializing order — every row's `COUNT { … }` sees all three
+/// writes; today's window evaluates its items after the feed drains, so
+/// the interleave the guard forecloses is not directly observable.
+#[test]
+fn a_writing_body_never_parks_whatever_its_consumer() {
+    let mut graph = Graph::default();
+    graph.configure_expression_memory_limit(Some(1 << 20));
+    let result = exec_autocommit(
+        &graph,
+        "UNWIND range(1, 3) AS i \
+         CALL (i) { WITH i CREATE (:N) } \
+         WITH i, COUNT { MATCH (m:N) RETURN m } AS c \
+         RETURN i, c ORDER BY c DESC, i LIMIT 2",
+    )
+    .unwrap();
+    let counts: Vec<i64> = result
+        .rows
+        .iter()
+        .map(|row| row[1].as_int().unwrap_or_default())
+        .collect();
+    assert_eq!(counts, vec![3, 3], "{:?}", result.rows);
 }

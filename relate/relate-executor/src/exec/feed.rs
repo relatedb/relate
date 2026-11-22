@@ -145,8 +145,7 @@ fn held_rows(
             continue;
         }
         let (count, width) = source.charge_facts()?;
-        let added = crate::workspace::retained_rows_bytes(count, width);
-        retained.add_allocation(ctx.graph, added)?;
+        retained.add_rows(ctx.graph, count, width)?;
         while let Some(row) = source.pull(ctx) {
             rows.push(row?);
         }

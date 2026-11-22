@@ -6,21 +6,21 @@
 use std::cell::Cell;
 
 /// A per-thread event counter, read-and-reset by [`BuildCounter::take`].
-pub(super) struct BuildCounter(Cell<u64>);
+pub(crate) struct BuildCounter(Cell<u64>);
 
 impl BuildCounter {
     /// A zeroed counter, usable as a `thread_local!` const initializer.
-    pub(super) const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self(Cell::new(0))
     }
 
     /// Count one event.
-    pub(super) fn bump(&self) {
+    pub(crate) fn bump(&self) {
         self.0.set(self.0.get() + 1);
     }
 
     /// The count so far, resetting it to zero.
-    pub(super) fn take(&self) -> u64 {
+    pub(crate) fn take(&self) -> u64 {
         self.0.replace(0)
     }
 }

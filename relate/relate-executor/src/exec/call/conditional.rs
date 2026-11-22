@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 use relate_core::{Result, Value};
 use relate_ir::{Expr, Query};
 
-use super::{execute_query_scoped, project_row};
 use crate::ctx::QueryCtx;
+
+use super::{execute_query_scoped, project_row};
 use crate::eval::{bool_or_null, eval};
 use crate::exec::scope::refresh_rows;
 use crate::exec::{materialize_rows_strict, QueryResult};
@@ -34,8 +35,12 @@ pub(crate) fn exec_conditional(
 ) -> Result<(Vec<Row>, QueryResult)> {
     // One bucket per branch plus `ELSE`: the conditional's output is grouped
     // by branch in the branches' written order (Neo4j's observed order),
-    // while each row is still driven on its own.
+    // while each row is still driven on its own. The buckets are a
+    // retaining container: each driving row's production is charged to the
+    // running total before its rows land (ADR-0463), the same per-row
+    // charge the feed spine's hold bills.
     let mut buckets: Vec<Vec<Row>> = vec![Vec::new(); branches.len() + 1];
+    let mut retained = graph.retain_bytes(0)?;
     // CIP-135's conditional is a per-row operator: a driving row's branch
     // predicate is evaluated against the state its predecessors left (the
     // taken branch body ran already), so a branch that writes is visible to
@@ -62,6 +67,7 @@ pub(crate) fn exec_conditional(
         // pass-through, never a result. The branch still ran, so its writes
         // stand.
         if body_projects_rows(query) {
+            retained.add_rows(graph, result.rows.len(), result.columns.len())?;
             append_query_rows(&mut buckets[index], result);
         }
     }

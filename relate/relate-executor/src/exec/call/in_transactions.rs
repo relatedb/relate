@@ -26,7 +26,6 @@ pub(crate) fn exec_call_in_transactions(
         query,
         optional,
         scope,
-        in_transactions: _,
     } = spec;
     // No input rows: no batch runs, and the batch-size/concurrency
     // expressions have no row to evaluate against — the call is a no-op
