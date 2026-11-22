@@ -6,6 +6,7 @@
 use super::*;
 use relate_core::tokens::WorkspaceCharge;
 use relate_core::{CapacityKind, Value};
+use relate_engine_api::CommitRecord;
 use serde::Serialize;
 use std::io::Write;
 
@@ -183,6 +184,28 @@ fn reservation_is_the_buffer_and_covers_the_maximum_width_record() {
         assert_eq!(encoded.reservation_bytes(), max_record, "{name}");
         encoded.stamp(u64::MAX, u64::MAX);
         assert_eq!(encoded.payload().len() as u64, max_record, "{name}");
+    }
+}
+
+/// The early-refusal tally must measure exactly what the encoder bounds:
+/// a tally that undercounts lets a transaction run on to the commit
+/// refusal it was meant to pre-empt, one that overcounts refuses a
+/// transaction that would have committed. Proven over the encoder
+/// reference tests' own corpus, so the tally and the encoder are measured
+/// on the same op shapes.
+#[test]
+fn payload_tally_matches_the_encoder() {
+    for (name, ops) in op_mixes() {
+        let encoded = encode(&ops).unwrap();
+        // `payload()` is the body; the cap bounds the frame, header slack
+        // included.
+        let frame = CommitRecord::HEADER_MAX as u64 + encoded.payload().len() as u64;
+        let mut tally = PayloadTally::default();
+        // Fed in batches, the way a transaction feeds its statements.
+        let mid = ops.len() / 2;
+        tally.add(&ops[..mid]).unwrap();
+        tally.add(&ops[mid..]).unwrap();
+        assert_eq!(tally.bytes(), frame, "{name}");
     }
 }
 

@@ -106,15 +106,11 @@ impl EncodedOps {
         let result: io::Result<()> = serde_json::to_writer(&mut sink, ops)
             .map_err(io::Error::from)
             .and_then(|()| sink.write_all(b"}"));
-        sink.finish(
-            result,
-            |e| Error::storage(format!("WAL serialization failed: {e}")),
-            |bytes| {
-                Error::storage(format!(
-                    "WAL encode buffer allocation of {bytes} bytes failed"
-                ))
-            },
-        )?;
+        sink.finish(result, wal_serialization_error, |bytes| {
+            Error::storage(format!(
+                "WAL encode buffer allocation of {bytes} bytes failed"
+            ))
+        })?;
         // A record within 64 KiB is small enough that
         // trimming its slack is a cheap copy: hand the slack back. A
         // larger buffer keeps its capacity (and its charge) — it is never
@@ -189,12 +185,19 @@ impl Write for ByteCounter {
     }
 }
 
+/// The one spelling of a redo-op serialization failure — the encoder's
+/// `serde_error` and [`op_element_len`] both word it here. Generic over the
+/// error's `Display`: the encoder's sink folds the serde error into an
+/// `io::Error`, while the per-op length pass keeps the `serde_json::Error`.
+fn wal_serialization_error(e: impl std::fmt::Display) -> Error {
+    Error::storage(format!("WAL serialization failed: {e}"))
+}
+
 /// The encoded length of one op as an element of a record's `ops` array —
 /// the unit [`PayloadTally`] accumulates.
 fn op_element_len(op: &RedoOp) -> Result<u64> {
     let mut counter = ByteCounter(0);
-    serde_json::to_writer(&mut counter, op)
-        .map_err(|e| Error::storage(format!("WAL serialization failed: {e}")))?;
+    serde_json::to_writer(&mut counter, op).map_err(wal_serialization_error)?;
     Ok(counter.0)
 }
 
@@ -243,62 +246,5 @@ impl PayloadTally {
     /// elements with a `,` between them, `]`, and the record's `}`.
     pub fn bytes(&self) -> u64 {
         HEADER_MAX as u64 + 2 + self.elements + self.ops.saturating_sub(1) + 1
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use relate_core::{PropertyMap, Value};
-
-    use super::*;
-
-    /// The early-refusal tally must measure exactly what the encoder
-    /// bounds: a tally that undercounts lets a transaction run on to the
-    /// commit refusal it was meant to pre-empt, one that overcounts refuses
-    /// a transaction that would have committed.
-    #[test]
-    fn payload_tally_matches_the_encoder() {
-        let node = |id: i64| RedoOp::CreateNode {
-            id,
-            labels: Arc::new(vec!["User".to_string()]),
-            properties: Arc::new(PropertyMap::new()),
-        };
-        let sets: Vec<Vec<RedoOp>> = vec![
-            vec![],
-            vec![node(1)],
-            vec![
-                node(1),
-                RedoOp::SetNodeProp {
-                    id: 1,
-                    key: "name".to_string(),
-                    value: Value::String("u1".into()),
-                },
-                RedoOp::DeleteRel { id: 9 },
-                RedoOp::AddLabels {
-                    id: 1,
-                    labels: vec!["Admin".to_string()],
-                },
-                RedoOp::CreateIndex {
-                    name: "ix".to_string(),
-                    label: "User".to_string(),
-                    property: "name".to_string(),
-                },
-            ],
-            (0..64i64).map(node).collect(),
-        ];
-        for ops in sets {
-            let encoded = EncodedOps::encode_unmetered(&ops, Error::WAL_PAYLOAD_CAP_BYTES).unwrap();
-            // `payload()` is the body; the cap bounds the frame, header
-            // slack included.
-            let frame = HEADER_MAX as u64 + encoded.payload().len() as u64;
-            let mut tally = PayloadTally::default();
-            // Fed in batches, the way a transaction feeds its statements.
-            let mid = ops.len() / 2;
-            tally.add(&ops[..mid]).unwrap();
-            tally.add(&ops[mid..]).unwrap();
-            assert_eq!(tally.bytes(), frame, "{} ops", ops.len());
-        }
     }
 }
