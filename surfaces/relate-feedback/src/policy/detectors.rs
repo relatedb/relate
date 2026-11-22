@@ -243,16 +243,16 @@ const PROCEDURE_WORDS: [&str; 15] = [
 
 /// Whether `token` names a procedure in one of the exempted namespaces —
 /// checked before the host rules, so `apoc.export.json.all` is an
-/// identifier, not a hostname. Only a port-less token is exempt: an
-/// explicit port is the strongest host signal a token carries
-/// (`gds.prod.internal:7687` is a host even though bare `gds.*` reads as
-/// procedure namespace), and no procedure reference carries one.
-fn is_procedure_name(token: &str) -> bool {
-    if token.contains(':') {
+/// identifier, not a hostname. The caller passes the host of a token whose
+/// port split ([`host_port_token`]) found no port: an explicit port is the
+/// strongest host signal a token carries (`gds.prod.internal:7687` is a
+/// host even though bare `gds.*` reads as procedure namespace), and no
+/// procedure reference carries one. A procedure name always has its dot.
+fn is_procedure_name(host: &str) -> bool {
+    let Some((_, last_label)) = host.rsplit_once('.') else {
         return false;
-    }
-    let last_label = token.rsplit_once('.').map_or(token, |(_, last)| last);
-    PROCEDURE_WORDS.contains(&last_label) && PROCEDURE_PREFIXES.iter().any(|p| token.starts_with(p))
+    };
+    PROCEDURE_WORDS.contains(&last_label) && PROCEDURE_PREFIXES.iter().any(|p| host.starts_with(p))
 }
 
 /// A host is a hit with or without a port: one token pass, one place that
@@ -269,15 +269,15 @@ fn has_host_port(text: &str) -> bool {
 
 fn host_port_token(token: &str) -> bool {
     let token = trim_token_punct(authority(token));
-    if is_procedure_name(&token.to_ascii_lowercase()) {
-        return false;
-    }
     let (host, port) = match token.rsplit_once(':') {
         Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
             (host, Some(port))
         }
         _ => (token, None),
     };
+    if port.is_none() && is_procedure_name(&host.to_ascii_lowercase()) {
+        return false;
+    }
     host_token(host)
         || host.eq_ignore_ascii_case("localhost")
         // A single label is a host only with an explicit port, and only

@@ -173,11 +173,11 @@ pub fn run(action: FeedbackAction) -> i32 {
             category,
             expected,
         } => submit_issue(&text, category, expected.as_deref(), &open_in_browser),
-        FeedbackAction::Enable => {
-            with_config_dir("enable", |dir| enable(dir, &env, io::stdin().is_terminal()))
-        }
-        FeedbackAction::Disable => with_config_dir("disable", disable),
-        FeedbackAction::State => with_config_dir("state", |dir| {
+        FeedbackAction::Enable => crate::config_dir::with_config_dir("feedback enable", |dir| {
+            enable(dir, &env, io::stdin().is_terminal())
+        }),
+        FeedbackAction::Disable => crate::config_dir::with_config_dir("feedback disable", disable),
+        FeedbackAction::State => crate::config_dir::with_config_dir("feedback state", |dir| {
             state_with(
                 dir,
                 &env,
@@ -185,15 +185,6 @@ pub fn run(action: FeedbackAction) -> i32 {
                 &mut io::stdin().lock(),
             )
         }),
-    }
-}
-
-/// Resolve the config directory every stateful action lives in, or the
-/// unresolved-base error as exit 1 (the `telemetry` command's contract).
-fn with_config_dir(verb: &str, run: impl FnOnce(&Path) -> i32) -> i32 {
-    match crate::config_dir::config_dir() {
-        Some(dir) => run(&dir),
-        None => crate::config_dir::no_base(&format!("feedback {verb}")),
     }
 }
 

@@ -74,6 +74,16 @@ pub(crate) fn no_base(command: &str) -> i32 {
     1
 }
 
+/// Resolve the config directory a stateful command lives in and run it
+/// there, or answer the unresolved-base refusal ([`no_base`], exit 1):
+/// the one resolve-or-refuse for every config-dir verb.
+pub(crate) fn with_config_dir(command: &str, run: impl FnOnce(&std::path::Path) -> i32) -> i32 {
+    match config_dir() {
+        Some(dir) => run(&dir),
+        None => no_base(command),
+    }
+}
+
 /// The process environment, unfiltered — [`env_var`] and [`config_dir_with`]
 /// apply the set-and-non-empty rule to it.
 fn real_env(key: &str) -> Option<String> {

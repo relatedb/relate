@@ -101,13 +101,13 @@ pub fn parse(args: &[String]) -> Result<Input, ParseError> {
 /// (a local decision), 1 otherwise; a missing or expired grant is the loud
 /// `not_enabled` refusal that names the person's `relate feedback enable`.
 pub fn run(input: &Input) -> i32 {
-    let dir = match crate::config_dir::config_dir() {
-        Some(dir) => dir,
-        None => return crate::config_dir::no_base(WORD),
-    };
+    crate::config_dir::with_config_dir(WORD, |dir| run_in(dir, input))
+}
+
+fn run_in(dir: &std::path::Path, input: &Input) -> i32 {
     let now = Utc::now();
     if !matches!(
-        FeedbackConsent::load(&dir).authorization(now),
+        FeedbackConsent::load(dir).authorization(now),
         Authorization::Authorized { .. }
     ) {
         crate::print_error(format!(
@@ -121,11 +121,11 @@ pub fn run(input: &Input) -> i32 {
     let context = report_context(&env, invoker(&env));
     let doc = submit::submit(
         &Request {
-            dir: &dir,
+            dir,
             input,
             context: &context,
             env: &env,
-            config_telemetry: state::load_config_telemetry(&dir),
+            config_telemetry: state::load_config_telemetry(dir),
             now,
         },
         &sender,
