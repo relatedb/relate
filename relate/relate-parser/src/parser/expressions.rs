@@ -776,5 +776,3 @@ mod collections;
 mod postfix;
 mod special_calls;
 mod subquery;
-
-pub(super) use special_calls::BracketSet;

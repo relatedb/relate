@@ -7,7 +7,7 @@ mod comprehension_where;
 mod side_effects;
 mod speculation;
 
-use comprehension_where::BracketProof;
+use comprehension_where::{ComprehensionWhereContext, PipeScan};
 use side_effects::{LabelMixFlags, LabelMixTarget, PatternSideEffectFlags, QuantifierForms};
 use speculation::{ProbeGate, Speculation};
 
@@ -274,10 +274,10 @@ struct Parser<'a> {
     clause_depth: u32,
     /// The comprehension-WHERE context currently active, if any: which
     /// comprehension's `WHERE`-part expression (or `IN` source
-    /// expression) is being parsed — carrying the bracket proof that
-    /// decides the `]` arm of the label side's tail classification (see
-    /// [`BracketProof`]) — one state with one lifecycle
-    /// owner, [`Parser::with_comprehension_where`].
+    /// expression) is being parsed — carrying the construct's closer
+    /// token and opener index that the pipe classification's one-pass
+    /// scan reads (see [`ComprehensionWhereContext`]) — one state with
+    /// one lifecycle owner, [`Parser::with_comprehension_where`].
     /// While a context is active a bare `|` is genuinely ambiguous: it
     /// could continue a label-expression disjunction (`x:A|B`), continue
     /// a `<value type>` union (`IS :: STRING | INTEGER`) or be the
@@ -287,7 +287,12 @@ struct Parser<'a> {
     /// shared mechanism, [`Parser::ambiguous_pipe_continuation`], which
     /// consults this state before committing to the disjunction/union
     /// reading.
-    comprehension_where: Option<BracketProof>,
+    comprehension_where: Option<ComprehensionWhereContext>,
+    /// The one-pass pipe scan of the active comprehension-WHERE context
+    /// (see [`comprehension_where::PipeScan`]): computed at context entry,
+    /// restored with the context — the per-pipe classification is a
+    /// lookup into it.
+    comprehension_pipe_scan: Option<PipeScan>,
     /// Depth of `EXISTS { … }` bodies currently being parsed. An unbounded
     /// quantified path pattern under REPEATABLE ELEMENTS is safe inside an
     /// existence probe (the probe stops at the first row) and is accepted
@@ -446,6 +451,7 @@ impl<'a> Parser<'a> {
             expr_depth: 0,
             clause_depth: 0,
             comprehension_where: None,
+            comprehension_pipe_scan: None,
             exists_subquery_depth: 0,
             speculation: Speculation::default(),
             pattern_element_depth: 0,
@@ -760,6 +766,87 @@ impl<'a> Parser<'a> {
             .map_err(|error| self.int_literal_error(tok, error, site))?;
         u32::try_from(value)
             .map_err(|_| self.int_literal_error(tok, IntLiteralError::Overflow, site))
+    }
+    /// Type of the token at absolute index `pos` (`EOF` past the end) --
+    /// the absolute-index counterpart of [`Self::peek_at`] for
+    /// token-level scans, in the idiom of `scan_dot_chain_for_call`.
+    fn token_type_at(&self, pos: usize) -> TokenType {
+        match self.tokens.get(pos) {
+            Some(t) => t.ty,
+            None => TokenType::EOF,
+        }
+    }
+
+    /// Lookahead from `self.pos` without consuming tokens: true when
+    /// `target` appears at depth 0 before the closer that ends the
+    /// construct opened just before `self.pos` (the caller has already
+    /// consumed the opener). Only the bracket kinds in [`BracketSet`]
+    /// count toward the depth, so a paren-only scan (inside a call's
+    /// argument list) and an all-bracket scan (inside a comprehension
+    /// brace, whose source expression can nest brackets and parens) are
+    /// explicit per-site choices. The one scan behind
+    /// [`Parser::trim_args_have_top_level_from`],
+    /// [`Parser::pipe_before_closing_paren`], and
+    /// [`Parser::has_pipe_before_matching_brace`].
+    fn top_level_token_before_matching_close(
+        &self,
+        target: TokenType,
+        brackets: BracketSet,
+    ) -> bool {
+        let mut depth = 0usize;
+        let mut pos = self.pos;
+        loop {
+            match self.token_type_at(pos) {
+                TokenType::EOF => return false,
+                ty if brackets.opens(ty) => depth += 1,
+                ty if brackets.closes(ty) => {
+                    if depth == 0 {
+                        return false; // the construct's own closer
+                    }
+                    depth -= 1;
+                }
+                ty if ty == target && depth == 0 => return true,
+                _ => {}
+            }
+            pos += 1;
+        }
+    }
+}
+
+/// The bracket kinds a
+/// [`Parser::top_level_token_before_matching_close`] scan counts toward
+/// its depth — the per-site choice of which groups are transparent,
+/// declared beside the scan it parameterizes.
+#[derive(Clone, Copy)]
+enum BracketSet {
+    /// Only `(` / `)` nest: the scan runs inside a call's argument list.
+    Parens,
+    /// `{`, `[`, and `(` all nest: the scan runs inside a comprehension
+    /// brace, whose source expression can contain brackets and parens.
+    AllBrackets,
+}
+
+impl BracketSet {
+    /// True when `ty` is an opening bracket of one of this set's kinds.
+    fn opens(self, ty: TokenType) -> bool {
+        match self {
+            BracketSet::Parens => ty == TokenType::LeftParen,
+            BracketSet::AllBrackets => matches!(
+                ty,
+                TokenType::LeftBrace | TokenType::LeftBracket | TokenType::LeftParen
+            ),
+        }
+    }
+
+    /// True when `ty` is a closing bracket of one of this set's kinds.
+    fn closes(self, ty: TokenType) -> bool {
+        match self {
+            BracketSet::Parens => ty == TokenType::RightParen,
+            BracketSet::AllBrackets => matches!(
+                ty,
+                TokenType::RightBrace | TokenType::RightBracket | TokenType::RightParen
+            ),
+        }
     }
 }
 

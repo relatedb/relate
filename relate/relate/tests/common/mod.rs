@@ -447,6 +447,16 @@ pub fn strings(values: &[&str]) -> relate::Value {
     list(values.iter().map(|value| string(value)).collect())
 }
 
+/// The A/B/C `p1`-valued store the comprehension pipe suites share —
+/// one node per label, so label filters and disjunctions have distinct
+/// rows to answer with.
+pub fn abc_store() -> relate::Connection {
+    let mut c = connection();
+    c.query("CREATE (:A {p1: 'a'}), (:B {p1: 'b'}), (:C {p1: 'c'})")
+        .unwrap();
+    c
+}
+
 /// The first cell of a one-row query, as the STRING it must be — the
 /// one toString-extraction helper the temporal integration tests share.
 pub fn text(conn: &mut relate::Connection, query: &str) -> String {

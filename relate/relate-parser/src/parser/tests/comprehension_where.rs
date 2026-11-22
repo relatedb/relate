@@ -6,6 +6,7 @@
 
 use super::labels::LabelSpec;
 use super::*;
+use crate::parser::comprehension_where::ComprehensionWhereContext;
 
 #[test]
 fn test_list_comprehension_dynamic_label_where_then_map_pipe_not_swallowed() {
@@ -30,31 +31,53 @@ fn test_list_comprehension_dynamic_label_where_then_map_pipe_not_swallowed() {
     }
 }
 
+/// Live Neo4j resolves the comprehension-WHERE pipe by preferring the
+/// map separator whenever the rest parses as the map expression, so a
+/// single `|` with no later pipe in the comprehension is the separator:
+/// `x:A|B]` reads `WHERE x:A` with the map expression `B` (which then
+/// fails on the undefined name) — the disjunction reading survives only
+/// when a later pipe in the same comprehension makes the separator
+/// unparseable.
 #[test]
-fn test_list_comprehension_real_label_disjunction_still_parses_with_no_map() {
-    // Without a following map-expr, a genuine `|`-disjunction inside a
-    // comprehension WHERE must still parse as a label expression (the
-    // ambiguity-avoidance must not over-fire when it's unambiguous).
-    let stmt = parse("MATCH (n) RETURN [x IN [n] WHERE x:A|B] AS filtered").unwrap();
-    match &stmt.clauses[1] {
-        Clause::Return(rc) => match &rc.items[0].expr {
-            Expr::ListComprehension(lc) => match lc.where_expr.as_ref().unwrap() {
-                Expr::HasLabel(hl) => match &hl.label_expr {
-                    LabelExpr::Or(parts) => assert_eq!(parts.len(), 2),
-                    other => panic!("expected Or, got {other:?}"),
-                },
-                other => panic!("expected HasLabel, got {other:?}"),
-            },
-            other => panic!("expected ListComprehension, got {other:?}"),
-        },
-        other => panic!("expected return, got {other:?}"),
+fn test_list_comprehension_single_pipe_yields_to_the_map_separator() {
+    for (q, want_or) in [
+        // No second pipe: the separator reading — the WHERE keeps the
+        // first label and the map expression is the bare `B`.
+        ("MATCH (n) RETURN [x IN [n] WHERE x:A|B] AS filtered", false),
+        // No second pipe but a boolean operator after the would-be
+        // continuation: still the separator — the map expression is the
+        // whole `B AND ...` chain.
+        (
+            "MATCH (n) RETURN [x IN [n] WHERE x:A|B AND x.p1 IS NOT NULL] AS filtered",
+            false,
+        ),
+        // A later pipe makes the separator unparseable, so the
+        // disjunction commits and the second pipe is the separator.
+        (
+            "MATCH (n) RETURN [x IN [n] WHERE x:A|B | x.p1] AS filtered",
+            true,
+        ),
+    ] {
+        let stmt = parse_ok(q);
+        let Expr::ListComprehension(lc) = return_expr(&stmt) else {
+            panic!("{q}: expected a list comprehension");
+        };
+        let Some(where_expr) = lc.where_expr.as_ref() else {
+            panic!("{q}: expected a WHERE");
+        };
+        let Expr::HasLabel(hl) = where_expr else {
+            panic!("{q}: expected a HasLabel WHERE");
+        };
+        let is_or = matches!(&hl.label_expr, LabelExpr::Or(parts) if parts.len() == 2);
+        assert_eq!(is_or, want_or, "{q}: WHERE is {:#?}", hl.label_expr);
+        assert!(lc.map_expr.is_some(), "{q}: the map expression exists");
     }
 }
 
 /// A comprehension WHERE's label predicate leaves the `|` for the map
-/// separator when the chain past it ends at a token no label expression
-/// can continue with: a map projection `{` joins the property access `.`
-/// as the dead-end set. `[n IN nodes(p) WHERE n:L1 | n{.p1}]` keeps the
+/// separator when no later pipe in the comprehension keeps the
+/// disjunction alive — the closer-scan rule, whatever token follows the
+/// would-be disjunct. `[n IN nodes(p) WHERE n:L1 | n{.p1}]` keeps the
 /// WHERE `n:L1` and takes `n{.p1}` as its map expression.
 #[test]
 fn comprehension_where_label_predicate_yields_the_pipe_to_a_map_projection() {
@@ -80,7 +103,7 @@ fn comprehension_where_label_predicate_yields_the_pipe_to_a_map_projection() {
     }
 }
 
-/// A pattern comprehension's WHERE: the same dead-end rule, map still
+/// A pattern comprehension's WHERE: the same closer-scan rule, map
 /// required — `[(a)-[:R]->(b) WHERE a:L1 | b{.p1}]` keeps its WHERE
 /// predicate and projects through `b{.p1}`.
 #[test]
@@ -101,8 +124,9 @@ fn pattern_comprehension_where_yields_the_pipe_to_a_map_projection() {
     }
 }
 
-/// The Dot dead-end keeps its behavior: a property access map expression
-/// still takes the pipe.
+/// A property access map expression still takes the pipe: with no later
+/// pipe in the comprehension the closer-scan rule yields the `|` to the
+/// map separator, whatever token follows the would-be disjunct.
 #[test]
 fn a_property_access_map_expression_still_takes_the_pipe() {
     let stmt = parse_ok("MATCH (n) RETURN [m IN [n] WHERE m:L1 | m.p1] AS x");
@@ -115,12 +139,13 @@ fn a_property_access_map_expression_still_takes_the_pipe() {
     }
 }
 
-/// A function call's `(` joins the dead-end set: a map expression
-/// beginning with a function name (`substring(m.p1, 0, 1)`) takes the
-/// pipe after a label-filter WHERE exactly as a property access does.
-/// Without it the would-be continuation commits the function's name as a
-/// label atom and the `(` then fails the comprehension
-/// (`expected RightBracket, got "("`), the REL8-1871 gap.
+/// A map expression beginning with a function name
+/// (`substring(m.p1, 0, 1)`) takes the pipe after a label-filter WHERE
+/// exactly as a property access does — no later pipe, so the
+/// closer-scan rule yields the `|` to the separator. The REL8-1871 gap
+/// this family once covered: the would-be continuation committed the
+/// function's name as a label atom and the `(` then failed the
+/// comprehension (`expected RightBracket, got "("`).
 #[test]
 fn a_function_call_map_expression_takes_the_pipe_after_a_label_filter() {
     for query in [
@@ -162,9 +187,9 @@ fn a_pattern_comprehension_function_call_map_expression_takes_the_pipe() {
     }
 }
 
-/// The dead-end does not over-fire: a real label disjunction whose
-/// continuation is followed by an operator still commits (`m:A|B AND …`
-/// stays the pre-existing reading), so only the map-expression tails
+/// The scan does not over-fire: a real label disjunction whose
+/// comprehension holds a later pipe still commits (`m:A|B AND … | …`
+/// keeps the disjunction as the WHERE), so only the no-later-pipe tails
 /// yield the pipe.
 #[test]
 fn a_label_disjunction_still_commits_before_a_map_expression_tail() {
@@ -263,6 +288,50 @@ fn a_type_disjunction_in_a_comprehension_where_keeps_the_pipe() {
     );
 }
 
+/// A continuation that cannot start a map expression keeps the chain
+/// reading: the yield is confirmed by a parse, not assumed — each of
+/// these shapes parsed before the closer-scan branch and regressed on
+/// its first head (the rust review's round-3 parse regressions), because
+/// the rolled-back separator reading is itself unparseable.
+#[test]
+fn an_unparseable_separator_reading_keeps_the_chain_reading() {
+    for (query, disjunct_shape) in [
+        // `&` continues the label chain: `B&C` is a label conjunction,
+        // never a map expression.
+        (
+            "RETURN [x IN [1] WHERE x:A|B&C] AS r",
+            "Or([A, And([B, C])])",
+        ),
+        // A negation atom cannot start a map expression.
+        ("RETURN [x IN [1] WHERE x:A|!B] AS r", "Or([A, Not(B)])"),
+        // A dynamic label atom cannot either.
+        (
+            "RETURN [x IN [1] WHERE x:A|$(x.p)] AS r",
+            "Or([A, Dynamic])",
+        ),
+    ] {
+        let stmt = parse_ok(query);
+        let Expr::ListComprehension(lc) = return_expr(&stmt) else {
+            panic!("{query}: expected a list comprehension");
+        };
+        let Some(where_expr) = lc.where_expr.as_ref() else {
+            panic!("{query}: expected a WHERE");
+        };
+        let Expr::HasLabel(hl) = where_expr else {
+            panic!("{query}: expected a HasLabel WHERE, got {where_expr:?}");
+        };
+        assert!(
+            matches!(&hl.label_expr, LabelExpr::Or(parts) if parts.len() == 2),
+            "{query}: the disjunction survived ({disjunct_shape}), got {:#?}",
+            hl.label_expr
+        );
+        assert!(
+            lc.map_expr.is_none(),
+            "{query}: no map expression — the pipe stayed in the chain"
+        );
+    }
+}
+
 /// Drives `parse_label_or(true)` on `source` inside a list-comprehension
 /// WHERE context — the direct-driver scaffold the pipe-mechanism rollback
 /// test's two cases share: a parser over `source`, the disjunction parsed
@@ -273,7 +342,13 @@ fn label_or_in_comprehension_where(source: &str) -> (Parser<'_>, LabelSpec) {
         .expect("the scaffold's source always tokenizes");
     let spec = parser
         .with_comprehension_where(
-            Some(BracketProof::RightBracketClosesWithTheMapOmitted),
+            Some(ComprehensionWhereContext {
+                closer: TokenType::RightBracket,
+                // The fragment's first token: the direct driver owns no
+                // opener, so the scan's span starts at the fragment's
+                // beginning.
+                opener: 0,
+            }),
             |p| p.parse_label_or(true),
         )
         .expect("the scaffold's sources always parse");
@@ -292,10 +367,12 @@ fn label_or_in_comprehension_where(source: &str) -> (Parser<'_>, LabelSpec) {
 /// errors before the spec is observable.
 #[test]
 fn a_rolled_back_legacy_pipe_colon_continuation_leaves_no_fact_behind() {
-    // The rollback: the `|: T` chain parses, but the `.` after it ends
-    // its usefulness as a disjunction continuation, so the `|` is the
-    // comprehension's separator — and the `|:` fact dies with it.
-    let (parser, spec) = label_or_in_comprehension_where("S |: T.foo");
+    // The rollback: the `|: T` chain parses, but the comprehension's
+    // `]` closer arrives before any later pipe, so the mechanism yields
+    // the `|` to the map separator — and the `|:` fact dies with the
+    // rollback (drop the `]` and the scan hits EOF, the continuation
+    // commits, and the fact survives — the committed case below).
+    let (parser, spec) = label_or_in_comprehension_where("S |: T.foo]");
     assert!(
         !spec.saw_legacy_pipe_colon,
         "the rolled-back `|:` stays unseen"
@@ -356,19 +433,19 @@ fn a_rolled_back_pipe_keeps_its_gql_symbol_note() {
     );
 }
 
-/// A probe verdict must not cross-feed across comprehension contexts:
-/// the verdict memo's key carries the context (the gates' parses read
-/// it through their grammar-specific tail classifications), because the same position
-/// can be probed under different contexts — a failed map-comprehension
-/// speculation's tokens are re-parsed by the map-literal fallback
-/// outside the context. Pinned on a shape whose verdict genuinely
-/// differs: under the map-required kind the inline WHERE's inner list
-/// `]` proves the disjunction's pipe was the separator, the pipe
-/// strands inside the bracket and the pattern parse fails; outside any
-/// context the disjunction survives and the same `(` is a pattern
-/// followed by a relationship start.
+/// An inline node-pattern WHERE's pipe is nesting-owned: the node
+/// pattern's own parentheses enclose it, so no comprehension context —
+/// not even the map-required kind whose closer would otherwise yield a
+/// top-level pipe — can read it as a comprehension's map separator. The
+/// disjunction survives and the pattern parses identically under the
+/// context and outside it. (This resolves the hazard this test once
+/// pinned: the pre-nesting classifier let the map-required proof yield
+/// the pipe inside the brackets, stranding it — a verdict that changed
+/// with the context and could cross-feed the speculation memo. The
+/// verdict key still carries the context; no gate's verdict depends on
+/// it through a nested pipe anymore.)
 #[test]
-fn a_probe_verdict_does_not_cross_feed_across_comprehension_contexts() {
+fn an_inline_node_pattern_where_pipe_is_nesting_owned_in_every_context() {
     let mut parser = Parser::new(
         "(n WHERE [x IS L1 | q] = z)-[:R]->()",
         "query text",
@@ -376,18 +453,24 @@ fn a_probe_verdict_does_not_cross_feed_across_comprehension_contexts() {
     )
     .unwrap();
     let under_map_required = parser.with_comprehension_where(
-        Some(BracketProof::RightBracketClosesTheComprehension),
+        Some(ComprehensionWhereContext {
+            closer: TokenType::RightBracket,
+            // The fragment's first token: the direct driver owns no
+            // opener, so the nesting scan's span starts at the
+            // fragment's beginning.
+            opener: 0,
+        }),
         |p| p.node_pattern_precedes_relationship(),
     );
     assert!(
-        !under_map_required,
-        "under the map-required kind the inline WHERE's pipe rolls back and the pattern fails"
+        under_map_required,
+        "under the map-required kind the inline WHERE's pipe is still the inner grammar's"
     );
     // The probe restored the position; the same `(` outside any context
-    // computes — not memo-feeds — its own verdict.
+    // computes the same verdict.
     let plain = parser.node_pattern_precedes_relationship();
     assert!(
         plain,
-        "outside any context the same position's verdict is its own"
+        "outside any context the same position's verdict is its own — and equal"
     );
 }

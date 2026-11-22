@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use super::comprehension_where::BracketProof;
+use super::comprehension_where::ComprehensionWhereContext;
 use super::side_effects::PatternSideEffectFlags;
 use super::Parser;
 use crate::ast::NodePattern;
@@ -31,6 +31,14 @@ pub(super) enum ProbeGate {
     /// The `(`-form node-pattern gate
     /// (`node_pattern_precedes_relationship`).
     LeftParenNodePattern,
+    /// The comprehension-WHERE yield's separator-confirmation probe
+    /// ([`Parser::separator_reading_parses`]): whether the tokens after
+    /// an ambiguous pipe parse as the comprehension's map expression.
+    /// Nested comprehension WHEREs re-parse inner spans per outer
+    /// confirmation — this gate's verdict memo collapses that to one
+    /// parse per position (the LABS-183 discipline the lookahead gates
+    /// already ride).
+    SeparatorConfirmation,
 }
 
 /// The verdict-memo key's three dimensions: the probe-start position, the
@@ -47,7 +55,7 @@ pub(super) enum ProbeGate {
 pub(super) struct VerdictKey {
     pos: usize,
     gate: ProbeGate,
-    comprehension_where: Option<BracketProof>,
+    comprehension_where: Option<ComprehensionWhereContext>,
 }
 
 /// One parked node-pattern parse: the token position a re-parse of the

@@ -351,6 +351,91 @@ fn test_nested_pattern_predicate_fanout_is_not_size_times_depth() {
     });
 }
 
+#[test]
+fn test_nested_comprehension_where_scans_stay_capped() {
+    // Complexity regression guard (the security round's size-x-depth
+    // memory shape): each nesting level of a comprehension WHERE once
+    // materialised a span-length depth vector, so K nested levels over a
+    // large flat tail allocated K x span u32 entries of uncharged parse
+    // memory (~2 GB on a 4 MiB query at the 500-deep nesting cap). The
+    // one-pass scan's walk cap bounds every level's vector to a fixed
+    // size, so the whole stack stays in single-digit megabytes; K=60
+    // levels, each entering its WHERE context over a ~5k-token span
+    // (well past the cap), parse in the same linear budget as one flat
+    // query.
+    const K: usize = 60;
+    const SPAN: usize = 5_000;
+    run_with_big_stack(|| {
+        let bulk = {
+            let mut list = String::from("[");
+            for i in 0..SPAN {
+                if i > 0 {
+                    list.push(',');
+                }
+                list.push_str(&(i % 9).to_string());
+            }
+            list.push(']');
+            list
+        };
+        let mut source = String::from("RETURN ");
+        let mut closers = String::new();
+        for level in 0..K {
+            // A real WHERE at every level: each nesting level enters the
+            // comprehension-WHERE context and materialises a (capped)
+            // scan over its span.
+            source.push_str(&format!("[x{level} IN {bulk} WHERE x{level} IN {bulk} | "));
+            closers.push(']');
+        }
+        source.push('0');
+        source.push_str(&closers);
+        let start = std::time::Instant::now();
+        let stmt = parse(&source).expect("the nested comprehension stack parses");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_secs() < 20,
+            "the capped scans keep the nested stack linear: {elapsed:?}"
+        );
+        assert!(
+            !stmt.clauses.is_empty(),
+            "the statement carries its RETURN clause"
+        );
+    });
+}
+
+#[test]
+fn test_nested_separator_confirmations_are_memoized() {
+    // Complexity regression guard (the security round's exponential
+    // shape): every level's comprehension WHERE carries an ambiguous
+    // pipe whose separator confirmation re-parses the whole map
+    // expression — which is the next level's comprehension, pipes and
+    // all. Unmemoized, K nested levels parse 2^K times; the
+    // confirmation's ride on the probe-verdict memo (the LABS-183
+    // discipline) parses each position once, so K=25 (a 33-million-way
+    // blowup without the memo) parses in milliseconds.
+    const K: usize = 25;
+    run_with_big_stack(|| {
+        let mut source = String::from("RETURN ");
+        let mut closers = String::new();
+        for level in 0..K {
+            source.push_str(&format!("[x{level} IN [1] WHERE x{level}:A|B{level} | "));
+            closers.push(']');
+        }
+        source.push('0');
+        source.push_str(&closers);
+        let start = std::time::Instant::now();
+        let stmt = parse(&source).expect("the nested ambiguous-pipe stack parses");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_secs() < 10,
+            "the memoized confirmations keep the nested stack linear: {elapsed:?}"
+        );
+        assert!(
+            !stmt.clauses.is_empty(),
+            "the statement carries its RETURN clause"
+        );
+    });
+}
+
 fn build_and_parse_fanout(k: usize, f: usize) -> (relate_parser::Statement, std::time::Duration) {
     // The innermost chain link: `(aK)-[:R]->()`.
     let mut expr = format!("(a{k})-[:R]->()");
