@@ -236,3 +236,21 @@ fn labs_199_comparison_mixed_sides_follow_binary_rules() {
         }
     }
 }
+
+// REL8-1891 / REL8-1944: an aggregate hidden inside a list literal is that
+// aggregation's own input, so the projection is *admitted* — live Neo4j
+// 2026.10.1 accepts it (probed 2026-11-21). The front-end pins the
+// acceptance; this is the end-to-end pin through the public API. Over an
+// empty graph the aggregating projection has no groups, so the admitted
+// statement runs to an empty result instead of being refused as
+// `AmbiguousAggregationExpression`.
+#[test]
+fn an_aggregate_inside_a_list_literal_is_the_aggregations_own_input() {
+    let mut c = connection();
+    let r = run(
+        &mut c,
+        "MATCH (n) RETURN n, n.p1, count(*) + coalesce(n, [collect(n.p1)]) AS y",
+    );
+    assert!(r.rows.is_empty(), "no nodes, no groups: {:?}", r.rows);
+    assert_eq!(r.header.columns, vec!["n", "n.p1", "y"]);
+}

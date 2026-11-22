@@ -597,30 +597,26 @@ mod tests {
         let read = |conn: &mut crate::Connection, name: &str| {
             let statement = format!("MATCH (n:Person {{name: '{name}'}}) RETURN n.age");
             let result = conn.query(&statement).unwrap();
-            (result.plan_cache(), result.parse_ms())
+            (result.plan_cache(), result.lex_parse_ms())
         };
         // No entry yet: the first run of the template compiles and inserts.
-        let (first, first_parse) = read(&mut conn, "a");
+        let (first, _) = read(&mut conn, "a");
         assert_eq!(first, PlanCacheOutcome::Miss);
         // The same text again: stage 1, the raw fast path — no normalizer.
         let (again, _) = read(&mut conn, "a");
         assert_eq!(again, PlanCacheOutcome::HitRawFastPath);
         // A different literal, same template: stage 2 — and the parse
-        // window collapses to the lookup (the fine parse sub-windows are
-        // zero), which is exactly what the outcome explains.
-        let (templated, templated_parse) = read(&mut conn, "zzz-not-there");
+        // window collapses to the lookup, which is exactly what the outcome
+        // explains: a hit parses nothing, so the fine parse sub-window is
+        // exactly zero. The pin is that structural zero, never a
+        // wall-clock comparison against the first compile (REL8-1808: the
+        // `hit < miss` timing assertion was the flake — two sub-millisecond
+        // windows on a loaded runner reorder at will).
+        let (templated, templated_lex_parse) = read(&mut conn, "zzz-not-there");
         assert_eq!(templated, PlanCacheOutcome::HitTemplate);
         assert_eq!(
-            conn.query("MATCH (n:Person {name: 'a'}) RETURN n.age")
-                .unwrap()
-                .lex_parse_ms(),
-            0.0,
+            templated_lex_parse, 0.0,
             "a hit parses nothing: the fine parse sub-windows are zero"
-        );
-        assert!(
-            templated_parse < first_parse,
-            "a hit's parse window ({templated_parse}) must be smaller than the first \
-             compile's ({first_parse}) — otherwise the cache never served it"
         );
         // A write bumps the stats generation: the next hit re-plans from
         // the entry's carried AST under the fresh generation.

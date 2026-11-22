@@ -138,6 +138,27 @@ fn assert_cancelled(error: &Error, workload: &str) {
     );
 }
 
+/// Run `query` on `conn` on a worker thread, cancel it 20 ms in, and return
+/// the run's outcome with the wall-clock time from start to join. The one
+/// harness every in-loop cancellation test shares; each test keeps its own
+/// bound on the returned duration.
+fn run_cancelled(
+    conn: &mut Connection,
+    query: &str,
+) -> (relate::Result<relate::QueryResult>, Duration) {
+    let token = CancelToken::new();
+    let canceller = token.clone();
+    let started = std::time::Instant::now();
+    let outcome = std::thread::scope(|scope| {
+        let running =
+            scope.spawn(|| conn.query_with_params_cancellable(query, BTreeMap::new(), canceller));
+        std::thread::sleep(Duration::from_millis(20));
+        token.cancel();
+        running.join().unwrap()
+    });
+    (outcome, started.elapsed())
+}
+
 /// Run `query` on `conn`, cancel it 20 ms in, and assert the cancellation
 /// is observed *inside* the workload's loop: the run fails with the
 /// cancellation error, returns well before half of `uncancelled_elapsed`
@@ -158,17 +179,7 @@ fn assert_cancels_promptly(
     workload: &str,
     diagnosis: &str,
 ) {
-    let token = CancelToken::new();
-    let canceller = token.clone();
-    let started = std::time::Instant::now();
-    let outcome = std::thread::scope(|scope| {
-        let running =
-            scope.spawn(|| conn.query_with_params_cancellable(query, BTreeMap::new(), canceller));
-        std::thread::sleep(Duration::from_millis(20));
-        token.cancel();
-        running.join().unwrap()
-    });
-    let elapsed = started.elapsed();
+    let (outcome, elapsed) = run_cancelled(conn, query);
 
     let error = outcome.unwrap_err();
     assert_cancelled(&error, workload);
@@ -188,21 +199,10 @@ fn assert_cancels_promptly(
 fn cancelling_a_running_query_errors_and_connection_stays_usable() {
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect().unwrap();
-    let token = CancelToken::new();
-    let canceller = token.clone();
-
-    let outcome = std::thread::scope(|scope| {
-        let running = scope.spawn(|| {
-            conn.query_with_params_cancellable(
-                "UNWIND range(1, 100000) AS a UNWIND range(1, 100000) AS b RETURN a + b",
-                BTreeMap::new(),
-                canceller,
-            )
-        });
-        std::thread::sleep(Duration::from_millis(20));
-        token.cancel();
-        running.join().unwrap()
-    });
+    let (outcome, _) = run_cancelled(
+        &mut conn,
+        "UNWIND range(1, 100000) AS a UNWIND range(1, 100000) AS b RETURN a + b",
+    );
 
     let error = outcome.unwrap_err();
     assert_cancelled(&error, "the running query");
@@ -241,22 +241,10 @@ fn cancelling_inside_a_match_scan_errors_promptly() {
     conn.query("UNWIND range(1, 4000) AS i CREATE (:N {v: i})")
         .unwrap();
 
-    let token = CancelToken::new();
-    let canceller = token.clone();
-    let started = std::time::Instant::now();
-    let outcome = std::thread::scope(|scope| {
-        let running = scope.spawn(|| {
-            conn.query_with_params_cancellable(
-                "MATCH (a:N),(b:N) WHERE a.v + b.v < 0 RETURN count(a) AS n",
-                BTreeMap::new(),
-                canceller,
-            )
-        });
-        std::thread::sleep(Duration::from_millis(20));
-        token.cancel();
-        running.join().unwrap()
-    });
-    let elapsed = started.elapsed();
+    let (outcome, elapsed) = run_cancelled(
+        &mut conn,
+        "MATCH (a:N),(b:N) WHERE a.v + b.v < 0 RETURN count(a) AS n",
+    );
 
     let error = outcome.unwrap_err();
     assert_cancelled(&error, "MATCH scan");
@@ -510,17 +498,7 @@ fn cancelling_inside_a_path_predicate_shortest_path_errors_promptly() {
     let query = "MATCH (a:M {v: 1}), (t:T) \
                  MATCH p = shortestPath((a)-[*]->(t)) \
                  WHERE NONE(n IN nodes(p) WHERE n.v = 2) RETURN count(p) AS n";
-    let token = CancelToken::new();
-    let canceller = token.clone();
-    let started = std::time::Instant::now();
-    let outcome = std::thread::scope(|scope| {
-        let running =
-            scope.spawn(|| conn.query_with_params_cancellable(query, BTreeMap::new(), canceller));
-        std::thread::sleep(Duration::from_millis(20));
-        token.cancel();
-        running.join().unwrap()
-    });
-    let elapsed = started.elapsed();
+    let (outcome, elapsed) = run_cancelled(&mut conn, query);
 
     let error = outcome.unwrap_err();
     assert_cancelled(&error, "predicate search");
@@ -586,17 +564,7 @@ fn cancelling_a_constraint_recheck_errors_promptly() {
     );
     conn.query("DROP CONSTRAINT p_id").unwrap();
 
-    let token = CancelToken::new();
-    let canceller = token.clone();
-    let started = std::time::Instant::now();
-    let outcome = std::thread::scope(|scope| {
-        let running =
-            scope.spawn(|| conn.query_with_params_cancellable(ddl, BTreeMap::new(), canceller));
-        std::thread::sleep(Duration::from_millis(20));
-        token.cancel();
-        running.join().unwrap()
-    });
-    let elapsed = started.elapsed();
+    let (outcome, elapsed) = run_cancelled(&mut conn, ddl);
 
     let error = outcome.unwrap_err();
     assert_cancelled(&error, "constraint recheck");
