@@ -1,6 +1,7 @@
 //! MATCH-shape validation (V1 harness wave): the CIP-73 path-selector,
-//! REPEATABLE ELEMENTS, quantified-path-pattern, LIMIT/SKIP, subquery-body
-//! and CREATE self-reference shapes Neo4j 2026 rejects at compile time.
+//! REPEATABLE ELEMENTS, quantified-path-pattern, LIMIT/SKIP, subquery-body,
+//! CREATE self-reference and CIP-60 match-mode-position shapes Neo4j
+//! 2026 rejects at compile time.
 //!
 //! One test per newly rejected shape, beside the other engine-level
 //! validation suites. Each test also pins the allowed neighbouring form so
@@ -280,5 +281,36 @@ fn subquery_projection_may_not_shadow_an_outer_name() {
     run(
         &mut conn,
         "WITH 1 AS x RETURN EXISTS { MATCH (n) RETURN x AS x } AS y",
+    );
+}
+
+// ---- CIP-60: the match-mode phrase belongs directly after MATCH ----
+
+#[test]
+fn match_mode_phrase_after_a_path_variable_is_rejected() {
+    // Neo4j accepts `REPEATABLE ELEMENTS`/`DIFFERENT RELATIONSHIPS` only
+    // between MATCH and the graph pattern; every later position — after a
+    // path variable declaration, starting a comma-separated later path,
+    // in an OPTIONAL MATCH — is the authored position error, in both
+    // spellings of both modes.
+    let mut conn = connection();
+    for query in [
+        "MATCH p = REPEATABLE ELEMENTS (x:SL)-[:R*2..2]->(y) RETURN y.p1",
+        "MATCH p = REPEATABLE ELEMENT (x:SL)-[:R*2..2]->(y) RETURN y.p1",
+        "MATCH p = DIFFERENT RELATIONSHIPS (x:SL)-[:R*2..2]->(y) RETURN y.p1",
+        "MATCH p = DIFFERENT RELATIONSHIP (x:SL)-[:R*2..2]->(y) RETURN y.p1",
+        "MATCH (a), p = REPEATABLE ELEMENTS (b)-[:R*2..2]->(c) RETURN p",
+        "MATCH (a), REPEATABLE ELEMENTS (b)-[:R*2..2]->(c) RETURN a",
+        "OPTIONAL MATCH p = REPEATABLE ELEMENTS (x:SL)-[:R*2..2]->(y) RETURN y.p1",
+    ] {
+        assert_rejected(&mut conn, query, "InvalidPathModePosition");
+    }
+    // The CIP-51 *path* modes keep their own variable-first order, and so
+    // does the shortestPath() sugar — neither is a match mode.
+    run(&mut conn, "CREATE (s:SL {p1: 1})-[:R]->(s)");
+    run(&mut conn, "MATCH p = TRAIL (x:SL)-[:R]->(y) RETURN y.p1");
+    run(
+        &mut conn,
+        "MATCH p = shortestPath((x:SL)-[:R]->(y)) RETURN y.p1",
     );
 }

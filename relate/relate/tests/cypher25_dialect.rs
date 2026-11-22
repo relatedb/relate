@@ -11,8 +11,10 @@
 //! Pinned here (execution level; the parser-side shape pins live in
 //! `relate-parser`'s `patterns`/`qpp`/`expressions`/`cypher_prefix`
 //! test modules): the WALK/TRAIL/SIMPLE/ACYCLIC path-mode family, the
-//! `p = REPEATABLE ELEMENTS (...)` spelling and the singular `REPEATABLE
-//! ELEMENT` match-mode phrase, the allReduce three-argument
+//! `MATCH REPEATABLE ELEMENTS p = (...)` clause-initial match-mode
+//! spelling and its singular `REPEATABLE ELEMENT` form (the
+//! path-variable-first spelling matches live Neo4j in rejecting), the
+//! allReduce three-argument
 //! expression form, the `CYPHER 25` header (with `runtime=` value
 //! validation), NEXT chains carrying rows between stages, zero-lower-bound
 //! quantified path patterns, and chained comparisons.
@@ -170,25 +172,46 @@ fn walk_trail_simple_acyclic_path_modes_execute_the_pinned_rows() {
 }
 
 #[test]
-fn repeatable_elements_path_variable_first_spelling_executes() {
-    // `MATCH p = REPEATABLE ELEMENTS (pattern)`: the path variable binds
+fn repeatable_elements_mode_first_spelling_executes_the_walk_rows() {
+    // `MATCH REPEATABLE ELEMENTS p = (pattern)`: the path variable binds
     // and the clause executes with relaxed relationship uniqueness --
-    // the same rows pinned for the match-mode-first spelling.
+    // the same rows pinned for the WALK mode. (The path-variable-first
+    // spelling of the phrase is the position rejection
+    // `match_shape_validation.rs` owns.)
     let mut c = background_graph();
-    let var_first = node_lists(
-        &mut c,
-        "MATCH p = REPEATABLE ELEMENTS (:B)((a)-->(b:A WHERE b.p = a.p)){1,4} \
-         RETURN [n IN nodes(p) | n.i] AS ns",
-    );
-    assert_eq!(var_first, expected_node_lists("walk"));
-    // ...and identical rows to the clause-initial spelling of the same
-    // clause.
     let mode_first = node_lists(
         &mut c,
         "MATCH REPEATABLE ELEMENTS p = (:B)((a)-->(b:A WHERE b.p = a.p)){1,4} \
          RETURN [n IN nodes(p) | n.i] AS ns",
     );
-    assert_eq!(var_first, mode_first);
+    assert_eq!(mode_first, expected_node_lists("walk"));
+}
+
+#[test]
+fn repeatable_elements_mode_is_honored_in_execution() {
+    // A self-loop under a two-hop quantifier: the mode phrase between
+    // MATCH and the pattern lifts relationship uniqueness, so the loop's
+    // relationship is traversed twice (one path); the implicit default
+    // and the explicit DIFFERENT RELATIONSHIPS keep uniqueness (none).
+    let mut c = connection();
+    common::run(&mut c, "CREATE (s:SL {p1: 7})-[:R]->(s)");
+    for (q, want) in [
+        (
+            "MATCH REPEATABLE ELEMENTS p = (x:SL)-[:R*2..2]->(y) RETURN count(*) AS n",
+            1,
+        ),
+        ("MATCH p = (x:SL)-[:R*2..2]->(y) RETURN count(*) AS n", 0),
+        (
+            "MATCH DIFFERENT RELATIONSHIPS p = (x:SL)-[:R*2..2]->(y) RETURN count(*) AS n",
+            0,
+        ),
+    ] {
+        assert_eq!(
+            scalar_one(&mut c, q),
+            Value::Int(want),
+            "{q}: the self-loop is traversed twice only under REPEATABLE ELEMENTS"
+        );
+    }
 }
 
 #[test]
@@ -202,10 +225,6 @@ fn repeatable_elements_permits_relationship_equijoins() {
         "CREATE (a:A), (b:B), (c:C), (a)-[:T]->(b), (b)-[:T]->(c)",
     );
     for (q, want) in [
-        (
-            "MATCH p = REPEATABLE ELEMENTS ()-[r]-()-[r]-() RETURN count(*) AS n",
-            4,
-        ),
         (
             "MATCH REPEATABLE ELEMENTS p = ()-[r]-()-[r]-() RETURN count(*) AS n",
             4,

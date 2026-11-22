@@ -14,32 +14,9 @@ impl<'a> Parser<'a> {
     // ---- Pattern parsing ----
 
     pub(super) fn parse_pattern(&mut self) -> ParseResult<Vec<PatternPath>> {
-        self.parse_pattern_after(None)
-    }
-
-    /// A pattern list whose first path carries a path variable the caller
-    /// already consumed — the `MATCH p = REPEATABLE ELEMENTS …` form, where
-    /// the `<name> =` prefix precedes the clause-level match-mode phrase.
-    /// The variable is handed to the one path-variable production instead of
-    /// being patched onto the parsed path afterwards.
-    pub(super) fn parse_pattern_after_leading_variable(
-        &mut self,
-        variable: SmallName,
-    ) -> ParseResult<Vec<PatternPath>> {
-        self.parse_pattern_after(Some(variable))
-    }
-
-    fn parse_pattern_after(
-        &mut self,
-        mut leading_variable: Option<SmallName>,
-    ) -> ParseResult<Vec<PatternPath>> {
         let mut paths = Vec::new();
         loop {
-            let path = match leading_variable.take() {
-                Some(variable) => self.parse_pattern_path_with_variable(variable)?,
-                None => self.parse_pattern_path()?,
-            };
-            paths.push(path);
+            paths.push(self.parse_pattern_path()?);
             if self.peek_type() != TokenType::Comma {
                 break;
             }
@@ -74,123 +51,134 @@ impl<'a> Parser<'a> {
         self.parse_pattern_path_named(outer_var)
     }
 
-    /// [`parse_pattern_path`] with the `<name> =` prefix already consumed
-    /// (the path variable may precede a match-mode phrase).
-    pub(super) fn parse_pattern_path_with_variable(
-        &mut self,
-        variable: SmallName,
-    ) -> ParseResult<PatternPath> {
-        self.parse_pattern_path_named(Some(variable))
-    }
-
     fn parse_pattern_path_named(
         &mut self,
         outer_var: Option<SmallName>,
     ) -> ParseResult<PatternPath> {
         // Pre-GPM `shortestPath(...)`/`allShortestPaths(...)` used as a
-        // top-level MATCH pattern: sugar for
-        // `SHORTEST 1 PATH (...)` / `ALL SHORTEST (...)` respectively.
-        // Checked before `parse_path_prefix` -- a bare `shortestPath`
-        // identifier can never otherwise start a pattern (every path
-        // pattern begins with `(`), so there is no ambiguity with the
-        // `ALL`/`ANY`/`SHORTEST` selector keywords.
-        if self.peek_type() == TokenType::Identifier {
-            let lower = self.peek().literal.to_ascii_lowercase();
-            if (lower == "shortestpath" || lower == "allshortestpaths")
-                && self.peek_at(1).ty == TokenType::LeftParen
-            {
-                self.next_token(); // consume shortestPath/allShortestPaths
-                self.next_token(); // consume (
-                let selector = if lower == "allshortestpaths" {
-                    PathSelector::AllShortest
-                } else {
-                    PathSelector::Shortest {
-                        count: Some(PathCount::Literal(1)),
-                        group: false,
-                    }
-                };
-                // The 42N42 rule, resolved the same way as the general
-                // path (the function form's selector is always
-                // selective, so a named group stays allowed here).
-                let mut path = self.parse_pattern_path_body(subpath_binding_allowed(
-                    outer_var.is_some(),
-                    Some(&selector),
-                ))?;
-                self.expect(TokenType::RightParen)?;
-                if contains_gpm_quantification(&path.elements) {
+        // top-level MATCH pattern is one reader of its own
+        // ([`Self::try_parse_shortest_path_function`]), so this function
+        // stays a linear read: sugar-or-general body, the one shared
+        // outer-variable bind, the tail.
+        let mut path = match self.try_parse_shortest_path_function()? {
+            Some(path) => path,
+            None => {
+                let (selector, mode) = self.parse_path_prefix()?;
+
+                // The path variable declaration
+                // must precede the mode/selector prefix. If another `name =`
+                // follows the prefix we just consumed, the input was actually
+                // `MODE p = ...` (mode before the variable) -- reject it
+                // explicitly rather than silently reinterpreting it. A
+                // keyword spelling is a path variable too (ADR-0191), so it
+                // must be rejected here the same way.
+                if self.peek_named_path_prefix(0) {
                     return Err(self.error(
-                        "QuantifiedPathPatternInShortestPath: a quantified path pattern cannot be used inside shortestPath()/allShortestPaths()",
+                        "InvalidPathModePosition: the path variable declaration must precede the path mode/selector prefix",
                     ));
                 }
-                if let Some(var) = outer_var {
-                    if let Some(inner) = path.variable.take() {
-                        if inner == var {
-                            return Err(self.error(format!(
-                                "VariableAlreadyDefined: variable `{var}` already declared"
-                            )));
-                        }
-                        path.subpath_variable = Some(inner);
-                    }
-                    if path.subpath_variable.as_ref() == Some(&var) {
-                        return Err(self.error(format!(
-                            "VariableAlreadyDefined: variable `{var}` already declared"
-                        )));
-                    }
-                    path.variable = Some(var);
-                }
-                path.mode = None;
-                path.selector = Some(selector);
-                path.is_shortest_path_function = true;
-                return self.finish_pattern_path(path);
+
+                // The 42N42 sub-path-binding rule, resolved once
+                // (`subpath_binding_allowed`) and threaded through the body
+                // reader unchanged.
+                let allowed = subpath_binding_allowed(outer_var.is_some(), selector.as_ref());
+                let mut path = self.parse_pattern_path_body(allowed)?;
+                path.mode = mode;
+                path.selector = selector;
+                path
             }
+        };
+        // A named parenthesized group that is the whole body
+        // (`p = ANY SHORTEST (q = (:A)-->+(:B))`) keeps both names: the
+        // element group already put `q` in `variable`, and the enclosing
+        // path name `p` binds the same path value. Reusing the enclosing
+        // path's own name for the group is Neo4j's 42N59 duplicate
+        // declaration, not a silent collapse to one name.
+        if let Some(var) = outer_var {
+            self.bind_outer_path_variable(&mut path, var)?;
         }
+        self.finish_pattern_path(path)
+    }
 
-        let (selector, mode) = self.parse_path_prefix()?;
+    /// Binds the path's outer `<name> =` variable — the declaration
+    /// `parse_pattern_path` consumed before the body (or a later path of
+    /// the comma list carries). A body that already bound its own name
+    /// keeps it as the path's subpath variable, unless it reuses the
+    /// outer name (Neo4j's 42N59 duplicate declaration, never a silent
+    /// collapse to one name). The one bind for both named-path readers
+    /// in [`Self::parse_pattern_path_named`]; the two duplicate checks
+    /// stay separate on purpose — the second reads the subpath slot
+    /// *after* the inner name moved into it, so folding them into one
+    /// pre-assignment guard would change what `p = q = (p = ...)`
+    /// rejects. Both raise the one error
+    /// [`Self::variable_already_defined`] authors.
+    fn bind_outer_path_variable(&self, path: &mut PatternPath, var: SmallName) -> ParseResult<()> {
+        if let Some(inner) = path.variable.take() {
+            if inner == var {
+                return Err(self.variable_already_defined(&var));
+            }
+            path.subpath_variable = Some(inner);
+        }
+        if path.subpath_variable.as_ref() == Some(&var) {
+            return Err(self.variable_already_defined(&var));
+        }
+        path.variable = Some(var);
+        Ok(())
+    }
 
-        // The path variable declaration
-        // must precede the mode/selector prefix. If another `name =`
-        // follows the prefix we just consumed, the input was actually
-        // `MODE p = ...` (mode before the variable) -- reject it explicitly
-        // rather than silently reinterpreting it. A keyword spelling is a
-        // path variable too (ADR-0191), so it must be rejected here the
-        // same way.
-        if self.peek_named_path_prefix(0) {
+    /// The one construction of the 42N59 duplicate-declaration parse
+    /// error — the message is a single fact, authored once for every
+    /// binder that rejects a reused name.
+    fn variable_already_defined(&self, var: &SmallName) -> crate::error::ParseError {
+        self.error(format!(
+            "VariableAlreadyDefined: variable `{var}` already declared"
+        ))
+    }
+
+    /// The pre-GPM `shortestPath(...)`/`allShortestPaths(...)` function
+    /// sugar as a top-level MATCH pattern: `SHORTEST 1 PATH (...)` /
+    /// `ALL SHORTEST (...)` respectively. `Some(path)` when the pattern
+    /// at the cursor is the function form, its tail fields set and the
+    /// outer-variable bind left to the caller (the one bind both arms
+    /// share); `None` when it is not, with no token consumed -- the
+    /// caller proceeds to the general prefix-and-body read. Recognition
+    /// rides the canonical contextual-word probes -- no lowered copy, no
+    /// separate `Identifier` guard -- with the one `(` lookahead spelled
+    /// as the raw token-type check the crate's other readers use. The
+    /// 42N42 rule resolves the sugar arm's
+    /// body directly: the function form's selector is always selective,
+    /// so sub-path binding stays allowed whatever the enclosing path --
+    /// `subpath_binding_allowed(true)` at its one reader. A quantified
+    /// path pattern inside the function is the authored rejection, not a
+    /// silent partial sugar.
+    fn try_parse_shortest_path_function(&mut self) -> ParseResult<Option<PatternPath>> {
+        let selector = if self.peek_at_is_ident(0, "allshortestpaths") {
+            PathSelector::AllShortest
+        } else if self.peek_at_is_ident(0, "shortestpath") {
+            PathSelector::Shortest {
+                count: Some(PathCount::Literal(1)),
+                group: false,
+            }
+        } else {
+            return Ok(None);
+        };
+        if self.peek_at(1).ty != TokenType::LeftParen {
+            return Ok(None);
+        }
+        self.next_token(); // consume shortestPath/allShortestPaths
+        self.next_token(); // consume (
+        let mut path =
+            self.parse_pattern_path_body(subpath_binding_allowed(true, Some(&selector)))?;
+        self.expect(TokenType::RightParen)?;
+        if contains_gpm_quantification(&path.elements) {
             return Err(self.error(
-                "InvalidPathModePosition: the path variable declaration must precede the path mode/selector prefix",
+                "QuantifiedPathPatternInShortestPath: a quantified path pattern cannot be used inside shortestPath()/allShortestPaths()",
             ));
         }
-
-        // The 42N42 sub-path-binding rule, resolved once
-        // (`subpath_binding_allowed`) and threaded through the body
-        // reader unchanged.
-        let allowed = subpath_binding_allowed(outer_var.is_some(), selector.as_ref());
-        let mut path = self.parse_pattern_path_body(allowed)?;
-        if let Some(var) = outer_var {
-            // A named parenthesized group that is the whole body
-            // (`p = ANY SHORTEST (q = (:A)-->+(:B))`) keeps both names: the
-            // element group already put `q` in `variable`, and the enclosing
-            // path name `p` binds the same path value. Reusing the enclosing
-            // path's own name for the group is Neo4j's 42N59 duplicate
-            // declaration, not a silent collapse to one name.
-            if let Some(inner) = path.variable.take() {
-                if inner == var {
-                    return Err(self.error(format!(
-                        "VariableAlreadyDefined: variable `{var}` already declared"
-                    )));
-                }
-                path.subpath_variable = Some(inner);
-            }
-            if path.subpath_variable.as_ref() == Some(&var) {
-                return Err(self.error(format!(
-                    "VariableAlreadyDefined: variable `{var}` already declared"
-                )));
-            }
-            path.variable = Some(var);
-        }
-        path.mode = mode;
-        path.selector = selector;
-
-        self.finish_pattern_path(path)
+        path.mode = None;
+        path.selector = Some(selector);
+        path.is_shortest_path_function = true;
+        Ok(Some(path))
     }
 
     /// Shared tail of `parse_pattern_path`: the rule that a
@@ -250,6 +238,26 @@ impl<'a> Parser<'a> {
             let tok = self.next_token();
             self.next_token(); // consume =
             path.variable = Some(SmallName::from_name(&tok.literal));
+        }
+
+        // A match-mode phrase (`REPEATABLE ELEMENTS` / `DIFFERENT
+        // RELATIONSHIPS`) can never start a path pattern body: the one
+        // legal position is directly after `MATCH`, where
+        // `parse_match_mode_prefix` consumes it before the pattern is
+        // parsed. Neo4j rejects the phrase everywhere else in the pattern
+        // (`MATCH p = REPEATABLE ELEMENTS (...)`, a comma-separated later
+        // path, a `shortestPath(...)` argument, an `OPTIONAL MATCH`
+        // alike), so the shared body boundary every pattern reader
+        // crosses — the named path, the `shortestPath()` sugar, a
+        // parenthesized group — rejects it with the authored position
+        // error instead of the generic expected-paren message. The phrase
+        // is not a *path* mode (`WALK`/`TRAIL`/`ACYCLIC`/`SIMPLE`,
+        // legitimately prefixable per CIP-51) — `parse_path_prefix`
+        // leaves the cursor on it.
+        if self.peek_match_mode_at(0).is_some() {
+            return Err(self.error(
+                "InvalidPathModePosition: the match mode phrase must follow MATCH, not a path pattern",
+            ));
         }
 
         loop {

@@ -77,30 +77,13 @@ impl UsingHintKind {
 
 impl<'a> Parser<'a> {
     pub(in crate::parser) fn parse_match(&mut self, optional: bool) -> ParseResult<Clause> {
-        // Cypher 25 (Neo4j 2025.06, CIP-60): the path variable declaration
-        // may precede the clause-level match-mode phrase --
-        // `MATCH p = REPEATABLE ELEMENTS (pattern)` -- exactly as it
-        // precedes a path-mode/selector prefix (`p = TRAIL (...)`, CIP-51).
-        // Recognized up front by lookahead (`name =`
-        // followed by a match-mode phrase) so the phrase itself is still
-        // consumed by `parse_match_mode_prefix` and the declared variable
-        // lands on the first parsed path pattern.
         self.next_token(); // consume MATCH
-        let mut lead_path_var: Option<SmallName> = None;
-        if self.peek_named_path_prefix(0) && self.peek_match_mode_at(2).is_some() {
-            let tok = self.next_token(); // consume the path variable
-            self.next_token(); // consume =
-            lead_path_var = Some(SmallName::from_name(&tok.literal));
-        }
+                           // The match-mode phrase is legal only in this position — directly
+                           // after MATCH; `parse_pattern_path_named` rejects it at every other
+                           // pattern start (the rationale lives there, at the enforcing site).
         let explicit_mode = self.parse_match_mode_prefix();
         let match_mode = explicit_mode.unwrap_or(MatchMode::DifferentRelationships);
-        // The one path-variable production parses the leading variable with
-        // the path (it wins over any inner subpath variable, the same
-        // precedence `parse_pattern_path` gives its own outer-var binding).
-        let pattern = match lead_path_var {
-            Some(variable) => self.parse_pattern_after_leading_variable(variable)?,
-            None => self.parse_pattern()?,
-        };
+        let pattern = self.parse_pattern()?;
         self.validate_path_modes(&pattern, match_mode, explicit_mode.is_some())?;
 
         // Query-planner hints (CIP-79) -- `USING INDEX`/`USING INDEX SEEK`/`USING
@@ -239,10 +222,13 @@ impl<'a> Parser<'a> {
     /// The CIP-51/CIP-60 match mode whose two-word phrase
     /// (`REPEATABLE ELEMENTS` / `DIFFERENT RELATIONSHIPS`) starts at the
     /// token `offset` ahead, or `None` when no match-mode phrase starts
-    /// there. The single spelling table for both positions a match mode
-    /// can be written: directly after `MATCH`
-    /// (`parse_match_mode_prefix`) and after a path variable declaration
-    /// (`p = REPEATABLE ELEMENTS (...)`, looked ahead in `parse_match`).
+    /// there. The single spelling table for every reader of the phrase:
+    /// `parse_match_mode_prefix` consumes it in the one legal position
+    /// (directly after `MATCH`), and `parse_pattern_path_body` rejects it
+    /// at a pattern-body start (`MATCH p = REPEATABLE ELEMENTS (...)`, a
+    /// comma-separated later path, a `shortestPath(...)` argument), where
+    /// the phrase is illegal — Neo4j accepts the mode only between `MATCH`
+    /// and the graph pattern.
     /// Both keyword pairs are contextual -- plain identifiers everywhere
     /// else in the grammar -- and both are admitted in the singular too
     /// (`DIFFERENT RELATIONSHIP` per MatchModes [1.2]; `REPEATABLE
