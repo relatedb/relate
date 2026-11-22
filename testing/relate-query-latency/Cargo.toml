@@ -87,3 +87,12 @@ required-features = ["research"]
 [[example]]
 name = "heap_census"
 required-features = ["research"]
+
+# The update-shape measurement harness behind the delta-tier decisions
+# (ADR-0655, ADR-0658): the delta tier and the record store under
+# big-tx/concurrent/mixed writes, before and after a fold. Research-gated
+# like `heap_census` — it reads the census through the engine's research
+# feature.
+[[example]]
+name = "update_bench"
+required-features = ["research"]

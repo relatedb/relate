@@ -30,8 +30,8 @@ interned `*` and `""`, 258 bytes (ADR-0229 dropped the empty
 `mid degree` is the degree-8–512 ladder (LABS-277, REL8-280): every
 node's out-degree straddles both adjacency seal floors — the knee (32
 hops, [ADR-0551](../adr/0551-sealed-delta-adjacency-store.md)) and the
-adaptive stability floor (8 hops,
-[ADR-0635](../adr/0635-adaptive-stability-seal-floor.md)) — so it is the
+adaptive stability floor (4 hops,
+[ADR-0655](../adr/0655-churn-guarded-stability-seal-floor.md)) — so it is the
 shape whose adjacency chunks seal both at a checkpoint and on a held
 length (and a reopen re-seals what that checkpoint folded,
 [ADR-0608](../adr/0608-seal-restored-adjacency.md)) — the other shapes'

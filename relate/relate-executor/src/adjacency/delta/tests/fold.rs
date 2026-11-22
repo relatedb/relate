@@ -336,9 +336,12 @@ fn the_fold_guard_blocks_a_delete_above_the_horizon_after_a_reposition() {
 
 /// The adaptive floor's three facts (REL8-280): a never-sealed chunk
 /// below the knee is due once its length holds across a pass; growth
-/// resets the baseline (a still-growing chunk keeps the knee's floor);
-/// the sub-[`STABILITY_SEAL_FLOOR`] band stays delta — the header
-/// outweighs the stream it would buy.
+/// The adaptive floor's facts: a never-sealed chunk below the knee is due
+/// only once its length held across two fold passes — one quiet interval
+/// is not evidence the chunk stopped growing; growth resets the baseline
+/// (a still-growing chunk keeps the knee's floor); the
+/// sub-[`STABILITY_SEAL_FLOOR`] band stays delta — the header outweighs
+/// the stream it would buy.
 #[test]
 fn the_stability_floor_reads_the_noted_baseline() {
     let mut a = TypedAdj::default();
@@ -356,23 +359,65 @@ fn the_stability_floor_reads_the_noted_baseline() {
         "a sub-knee chunk carries a baseline"
     );
     a.note_stable(None);
-    assert!(due(&a, None, 1, 0), "the held length seals below the knee");
+    assert!(
+        !due(&a, None, 1, 0),
+        "one held interval is not evidence of a steady state"
+    );
+    a.note_stable(None);
+    assert!(
+        due(&a, None, 1, 0),
+        "the twice-held length seals below the knee"
+    );
 
-    // Growth invalidates the baseline; the new length needs its own
-    // stable pass before it can seal.
+    // Growth invalidates the baseline; the new length needs its own two
+    // stable passes before it can seal.
     a.insert(1, 99, Some(1));
     assert!(!due(&a, None, 1, 0), "growth resets the stability baseline");
     a.note_stable(None);
-    assert!(due(&a, None, 1, 0), "the new length holds");
+    assert!(!due(&a, None, 1, 0), "the new length must hold twice too");
+    a.note_stable(None);
+    assert!(due(&a, None, 1, 0), "the new length held");
 
-    // The header-overhead band: noted and stable, still delta.
+    // The header-overhead band: noted and held, still delta.
     let mut small = TypedAdj::default();
     for i in 0..(STABILITY_SEAL_FLOOR - 1) as i64 {
         small.insert(1, i, Some(50 - i));
     }
     small.note_stable(None);
+    small.note_stable(None);
     assert!(
         !due(&small, None, 1, 0),
         "the sub-stability band stays delta"
     );
+}
+
+/// The derived floor's residency bound: once the settle passes run — note,
+/// held confirmation, seal — no chunk at or above the floor is still
+/// unsealed, and the sub-floor band is still delta.
+#[test]
+fn the_settled_band_drains_into_the_sealed_stream() {
+    let arena = SealedArena::default();
+    let sealed = arena.region_or_default(7);
+    let mut a = TypedAdj::default();
+    let settled = STABILITY_SEAL_FLOOR + 3;
+    for i in 0..settled as i64 {
+        a.insert(1, i, Some(100 - i));
+    }
+    for i in 0..(STABILITY_SEAL_FLOOR - 1) as i64 {
+        a.insert(2, i, Some(100 - i));
+    }
+    for _ in 0..3 {
+        a.fold_at(sealed, 0);
+    }
+    assert_eq!(
+        sealed.chunk_len(1),
+        settled,
+        "the settled chunk's whole stream is sealed"
+    );
+    assert_eq!(
+        a.chunk_hops(2).len(),
+        STABILITY_SEAL_FLOOR - 1,
+        "the sub-floor band stays delta"
+    );
+    assert_eq!(sealed.chunk_len(2), 0, "the sub-floor band is never sealed");
 }

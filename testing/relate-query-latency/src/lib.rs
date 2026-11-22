@@ -44,7 +44,10 @@ pub mod schema;
 pub mod suite;
 pub mod workload;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+use relate::{Database, OpenOptions, Value};
 
 /// Every fallible step reports a human-readable message: the suite is a
 /// harness, and its callers print the error and exit.
@@ -76,6 +79,30 @@ pub fn work_root() -> PathBuf {
 /// workload-directory spelling consults.
 pub(crate) fn workloads_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("workloads")
+}
+
+/// One batched-`UNWIND $rows` parameter map — the loaders' and the
+/// research harnesses' one spelling of the batch parameter.
+pub fn rows_param(rows: Vec<Value>) -> BTreeMap<String, Value> {
+    BTreeMap::from([("rows".to_string(), Value::List(rows.into()))])
+}
+
+/// A sampler's reading, or the harness's one explicit error: a
+/// measurement the process failed to take is never printed as a zero —
+/// it fails the run. The one refusal the research harnesses
+/// (`heap_census`, `update_bench`) share.
+pub fn measured(sample: Option<u64>, what: &str) -> Result<u64> {
+    sample.ok_or_else(|| format!("{what}: process RSS sampling unavailable"))
+}
+
+/// Open `store` with `opts`; `what` names the operation in the error —
+/// the research harnesses' one store-open spelling, the UTF-8 path
+/// refusal included.
+pub fn open_store(store: &Path, opts: OpenOptions, what: &str) -> Result<Database> {
+    let path = store
+        .to_str()
+        .ok_or_else(|| format!("store path is not UTF-8: {}", store.display()))?;
+    Database::open_with(path, opts).map_err(|e| format!("{what} {}: {e}", store.display()))
 }
 
 /// Split a workload input file into its header comment and its one

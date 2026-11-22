@@ -300,7 +300,8 @@ fn the_sixteen_byte_hop_preserves_the_option_semantics() {
                         .chunks
                         .iter()
                         .filter(|chunk| {
-                            chunk.absent > 0 && (chunk.absent as usize) < chunk.hops.len()
+                            chunk.absent_len() > 0
+                                && (chunk.absent_len() as usize) < chunk.hops.len()
                         })
                         .count();
                 });

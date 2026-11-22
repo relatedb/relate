@@ -10,7 +10,7 @@ use relate_core::RelId;
 use crate::UsedSet;
 
 use super::{
-    merge_chunk, reclaim, SealedRegion, Supersede, Tombstone, COMPACTION_DELTA_FLOOR,
+    hop_count, merge_chunk, reclaim, SealedRegion, Supersede, Tombstone, COMPACTION_DELTA_FLOOR,
     PHYSICAL_READ_TS, RESTORE_SEAL_HOPS, STABILITY_SEAL_FLOOR,
 };
 
@@ -37,13 +37,32 @@ pub(crate) struct Hop {
     pub id: RelId,
 }
 
-/// Resolve hop `i` of a raw hop slice whose first `absent` entries carry
-/// no ts — the one decode of the chunk's presence encoding, shared by the
-/// read paths ([`merge_chunk`], `TypedAdj`'s iteration) and the tests.
-pub(crate) fn resolve(hops: &[AdjHop], absent: u32, i: usize) -> Hop {
+/// Decode one raw hop's presence: `present` picks the side of the
+/// boundary the hop sits on. The one decode of the presence encoding —
+/// [`resolve`]'s element spelling, shared by the read paths
+/// ([`merge_chunk`], `TypedAdj`'s iteration), the tests and the insert's
+/// comparator.
+fn resolve_one(h: &AdjHop, present: bool) -> Hop {
     Hop {
-        ts: (i >= absent as usize).then_some(hops[i].ts),
-        id: hops[i].id,
+        ts: present.then_some(h.ts),
+        id: h.id,
+    }
+}
+
+/// Resolve hop `i` of a raw hop slice whose first `absent` entries carry
+/// no ts.
+pub(crate) fn resolve(hops: &[AdjHop], absent: u32, i: usize) -> Hop {
+    resolve_one(&hops[i], i >= absent as usize)
+}
+
+/// [`resolve`]'s inverse — the one encode of the presence boundary's dead
+/// payload, so no second site can pack it differently.
+impl From<Hop> for AdjHop {
+    fn from(h: Hop) -> Self {
+        AdjHop {
+            ts: h.ts.unwrap_or(0),
+            id: h.id,
+        }
     }
 }
 
@@ -58,30 +77,99 @@ pub(crate) fn resolve(hops: &[AdjHop], absent: u32, i: usize) -> Hop {
 /// per-hop bitmap would spill a `Vec<u64>` — one word even for a
 /// ≤64-hop chunk — to say strictly less).
 ///
-/// `stable_len` is the chunk's hop count as the previous fold pass noted
-/// it — the stability baseline the adaptive seal floor reads; a chunk at
-/// the same length two passes running has stopped growing, so the
+/// `noted_len` + `held` are the two-pass stability baseline the adaptive
+/// seal floor reads: the hop count the previous fold pass noted, and
+/// whether a second pass found the same length — a chunk at the same
+/// length two passes running has stopped growing, so the
 /// [`STABILITY_SEAL_FLOOR`] arm seals it below the knee. The stride is
-/// 40 B, the entry size the floor arithmetic charts.
+/// 40 B — the u32 count and the bool fit the padding before the hop
+/// vector's own word — the entry size the floor arithmetic charts.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DeltaChunk {
     pub type_id: u32,
-    pub absent: u32,
+    /// The presence boundary — the count of leading absent hops. Private
+    /// like the stability baseline: it is written only by the chunk's own
+    /// arms ([`Self::set_hops`], `insert_hop`, [`Self::remove_hop`],
+    /// [`Self::take_hops`]) and read through [`Self::absent_len`], so no
+    /// outside writer can move `hops` and the boundary independently.
+    absent: u32,
     /// Hop count at the previous fold pass — 0 until first noted, which
     /// no non-empty chunk equals, so an unnoted chunk is never
-    /// stability-sealed.
-    pub stable_len: usize,
+    /// stability-sealed. Private: the baseline is written only by
+    /// [`DeltaChunk::set_baseline`].
+    noted_len: u32,
+    /// Whether the chunk held its noted length across a second pass —
+    /// what tells a chunk that paused for one interval from one that
+    /// stopped growing: only the latter seals.
+    held: bool,
     pub hops: Vec<AdjHop>,
 }
 
 impl DeltaChunk {
+    /// The presence boundary as the read paths and the tests see it.
+    pub(crate) fn absent_len(&self) -> u32 {
+        self.absent
+    }
+
+    /// Remove `rid`'s hop, keeping the chunk's order and presence
+    /// boundary — the removal's one spelling, so `hops` and the boundary
+    /// never move independently. Returns whether a hop was removed.
+    pub(crate) fn remove_hop(&mut self, rid: RelId) -> bool {
+        let Some(i) = self.hops.iter().position(|h| h.id == rid) else {
+            return false;
+        };
+        self.hops.remove(i);
+        // A removed absent hop shrinks the presence prefix by one.
+        if i < self.absent as usize {
+            self.absent -= 1;
+        }
+        true
+    }
+
+    /// Sorted insert of one hop, maintaining `cmp_ts_desc` order and the
+    /// chunk's presence boundary — the fourth boundary writer, beside its
+    /// three siblings. The chunk's two sorted ranges — the absent head by
+    /// id DESC, the present tail by (ts, id) DESC — are `cmp_ts_desc`
+    /// partitioned by presence, so the probe searches the one range the
+    /// hop belongs to: an absent hop can only land inside the head (it
+    /// orders before every present hop) and grows the boundary by one; a
+    /// present hop lands in the tail and leaves it alone.
+    fn insert_hop(&mut self, hop: Hop) {
+        let absent = self.absent as usize;
+        // The range the hop belongs to, and that range's element decode: an
+        // absent hop searches the head by id, a present hop the tail by
+        // (ts, id). One search, one offset.
+        let (range, decode): (std::ops::Range<usize>, fn(&AdjHop) -> Hop) = match hop.ts {
+            None => (0..absent, |h| resolve_one(h, false)),
+            Some(_) => (absent..self.hops.len(), |h| resolve_one(h, true)),
+        };
+        let start = range.start;
+        if let Err(i) = self.hops[range].binary_search_by(|h| cmp_ts_desc(&decode(h), &hop)) {
+            self.hops.insert(start + i, AdjHop::from(hop));
+            self.absent = hop_count(absent + usize::from(hop.ts.is_none()));
+            crate::memory::fit_hops_reserved(&mut self.hops);
+        }
+    }
+
+    /// Note the next pass's baseline — the one derivation of the hold: a
+    /// second pass at the same length, and 0 never holds (no non-empty
+    /// chunk equals it), so a reset to 0 clears both. `len` is
+    /// `arena::hop_count`-bounded.
+    fn set_baseline(&mut self, len: usize) {
+        let len = hop_count(len);
+        self.held = len != 0 && self.noted_len == len;
+        self.noted_len = len;
+    }
+
     /// Whether the chunk is stability-eligible: at or above the stability
-    /// floor and at the length the previous pass noted. The due rule's
-    /// below-knee arm and the fold's below-floor guard read this one fact,
-    /// so a chunk the pass marked due for its held length is never turned
-    /// back at the guard.
+    /// floor, at the length the previous pass noted, and held across a
+    /// second pass. The due rule's below-knee arm and the fold's below-floor
+    /// guard read this one fact, so a chunk the pass marked due for its
+    /// held length is never turned back at the guard.
     fn stability_due(&self) -> bool {
-        self.hops.len() >= STABILITY_SEAL_FLOOR && self.stable_len == self.hops.len()
+        self.hops.len() >= STABILITY_SEAL_FLOOR
+            && self.noted_len as usize == self.hops.len()
+            && self.held
     }
 
     /// Whether this chunk is in the adaptive floor's band: the floor gates
@@ -100,8 +188,8 @@ impl DeltaChunk {
     /// Whether the floor gate admits this chunk's fold — the chunk has no
     /// sealed hop stream to ratio against, and it folds rather than waits:
     /// at the knee's [`COMPACTION_DELTA_FLOOR`], or at the adaptive
-    /// [`STABILITY_SEAL_FLOOR`] because its length held since the previous
-    /// pass. The one spelling of the floor's admission: the due predicate's
+    /// [`STABILITY_SEAL_FLOOR`] because its length held across two passes.
+    /// The one spelling of the floor's admission: the due predicate's
     /// floor arm reads it as the reason a chunk is due, and the fold's
     /// action as the reason the fold merges instead of reclaiming
     /// tombstones.
@@ -129,21 +217,19 @@ impl DeltaChunk {
 
     /// Install `hops` (which must be in `cmp_ts_desc` order, so the
     /// absent ones lead) as the chunk's storage, packing the presence
-    /// boundary — the one place absence is encoded.
+    /// boundary — the one place absence is encoded — and fitting the
+    /// vector to the hop reservation. Every install (a chunk pushed, a
+    /// fold's hand-back) comes through here, so no caller has to remember
+    /// the fit and the reservation cannot drift from the charge.
     fn set_hops(&mut self, hops: Vec<Hop>) {
         let absent = hops.iter().take_while(|h| h.ts.is_none()).count();
         debug_assert!(
             !hops.iter().skip(absent).any(|h| h.ts.is_none()),
             "absent hops are the chunk's head"
         );
-        self.absent = u32::try_from(absent).expect("adjacency chunk longer than u32::MAX hops");
-        self.hops = hops
-            .into_iter()
-            .map(|h| AdjHop {
-                ts: h.ts.unwrap_or(0),
-                id: h.id,
-            })
-            .collect();
+        self.absent = hop_count(absent);
+        self.hops = hops.into_iter().map(AdjHop::from).collect();
+        crate::memory::fit_hops_reserved(&mut self.hops);
     }
 }
 
@@ -173,7 +259,7 @@ pub(crate) struct FoldCandidate {
 /// The action the fold takes on `chunk` at `horizon`, or `None` when the
 /// chunk is not due (ADR-0551): a never-sealed chunk at the floor — the
 /// knee's 32, or the adaptive [`STABILITY_SEAL_FLOOR`] for a chunk whose
-/// length held since the previous pass — a delta past 25% of the sealed
+/// length held across two passes — a delta past 25% of the sealed
 /// hops, or a tombstone reclaimable at the GC horizon. One walk over the
 /// chunk's sealed facts decides both, so due-ness and the action cannot
 /// drift apart. A free function because it reads the chunk and the sealed
@@ -236,7 +322,9 @@ fn live_tombstones(
 /// so it is not charged again here. The chunk stride is the delta chunk
 /// header — `type_id` plus the ts-presence boundary in the old
 /// `(u32, Vec)` tuple's padding — so presence costs no entry bytes; the
-/// hop stride is the raw 16-byte [`AdjHop`].
+/// hop stride is the raw 16-byte [`AdjHop`] at the hop reservation's
+/// [`crate::memory::hops_reserved_len`] quantum (ADR-0658), the same
+/// policy the chunk's fit applies.
 pub(crate) fn adjacency_bytes(chunk_hops: impl Iterator<Item = usize>) -> u64 {
     let chunk_stride = size_of::<DeltaChunk>() as u64;
     let hop_stride = size_of::<AdjHop>() as u64;
@@ -244,7 +332,7 @@ pub(crate) fn adjacency_bytes(chunk_hops: impl Iterator<Item = usize>) -> u64 {
     let mut hop_bytes = 0u64;
     for n in chunk_hops {
         chunks += 1;
-        hop_bytes += crate::memory::vec_heap(n, hop_stride);
+        hop_bytes += crate::memory::vec_heap_hops(n, hop_stride);
     }
     crate::memory::vec_heap(chunks, chunk_stride) + hop_bytes
 }
@@ -283,24 +371,23 @@ impl TypedAdj {
     pub(crate) fn insert(&mut self, type_id: u32, rid: RelId, ts: Option<i64>) {
         let hop = Hop { ts, id: rid };
         if let Some(c) = self.chunk_mut(type_id) {
-            insert_hop(c, hop);
+            c.insert_hop(hop);
         } else {
             self.push_chunk(type_id, vec![hop]);
         }
     }
 
-    /// Append a whole chunk for `type_id`, fitting its hop vector and the
-    /// chunk vector to their reserved capacities. The one place a chunk is
-    /// installed as a unit: [`Self::insert`]'s create arm and
-    /// [`Self::from_runs`] both land here, so the chunk shape — appended in
-    /// first-seen order, hops reserved — has one owner.
+    /// Append a whole chunk for `type_id`, fitting the chunk vector to its
+    /// reserved capacity (the hop vector is [`DeltaChunk::set_hops`]'s).
+    /// The one place a chunk is installed as a unit: [`Self::insert`]'s
+    /// create arm and [`Self::from_runs`] both land here, so the chunk
+    /// shape — appended in first-seen order, hops reserved — has one owner.
     fn push_chunk(&mut self, type_id: u32, hops: Vec<Hop>) {
         let mut chunk = DeltaChunk {
             type_id,
             ..DeltaChunk::default()
         };
         chunk.set_hops(hops);
-        crate::memory::fit_reserved(&mut chunk.hops);
         self.chunks.push(chunk);
         crate::memory::fit_reserved(&mut self.chunks);
     }
@@ -369,16 +456,10 @@ impl TypedAdj {
         let Some(ci) = self.chunks.iter().position(|c| c.type_id == type_id) else {
             return;
         };
-        let chunk = &mut self.chunks[ci];
-        let Some(i) = chunk.hops.iter().position(|h| h.id == rid) else {
+        if !self.chunks[ci].remove_hop(rid) {
             return;
-        };
-        chunk.hops.remove(i);
-        // A removed absent hop shrinks the presence prefix by one.
-        if i < chunk.absent as usize {
-            chunk.absent -= 1;
         }
-        let emptied = chunk.hops.is_empty();
+        let emptied = self.chunks[ci].hops.is_empty();
         // The sealed *stream* holds the slot, not the sealed region: a
         // zero-hop chunk (a never-sealed type that only recorded a tombstone)
         // covers no hop, so the type's slot goes as it did before the
@@ -476,14 +557,15 @@ impl TypedAdj {
     }
 
     /// Note every banded chunk's current length as its stability baseline —
-    /// the value the next pass's [`due_action`] compares against. A chunk
-    /// outside the band (ratio-gated, empty, or at the knee) needs no
-    /// baseline.
+    /// the value the next pass's [`due_action`] compares against; the hold
+    /// against the previous note is [`DeltaChunk::set_baseline`]'s own
+    /// derivation. A chunk outside the band (ratio-gated, empty, or at the
+    /// knee) needs no baseline.
     pub(crate) fn note_stable(&mut self, sealed: Option<SealedRegion<'_>>) {
         for chunk in &mut self.chunks {
             let sealed_len = Self::sealed_len(sealed, chunk.type_id);
             if chunk.in_stability_band(sealed_len) {
-                chunk.stable_len = chunk.hops.len();
+                chunk.set_baseline(chunk.hops.len());
             }
         }
     }
@@ -547,30 +629,24 @@ impl TypedAdj {
                 .iter()
                 .position(|c| c.type_id == candidate.type_id)
                 .expect("a selected chunk is still present");
-            changed |= self.fold_chunk(sealed, ci, horizon, candidate.action);
+            // The action dispatch happens where it is held: the reclaim is
+            // the sibling method's whole work and runs before any take, the
+            // fold has no early arm of its own.
+            changed |= match candidate.action {
+                FoldAction::Reclaim => self.reclaim_orphans(sealed, ci),
+                FoldAction::Fold => self.fold_chunk(sealed, ci, horizon),
+            };
         }
         changed
     }
 
-    /// Fold the chunk at `ci` by `action`. An empty delta with no
-    /// reclaimable tombstone is a true no-op (no re-encode, ADR-0551).
-    fn fold_chunk(
-        &mut self,
-        sealed: SealedRegion<'_>,
-        ci: usize,
-        horizon: u64,
-        action: FoldAction,
-    ) -> bool {
+    /// Fold the chunk at `ci` into its sealed stream. An empty delta with
+    /// no reclaimable tombstone is a true no-op (no re-encode, ADR-0551).
+    fn fold_chunk(&mut self, sealed: SealedRegion<'_>, ci: usize, horizon: u64) -> bool {
         // The chunk's own header, read once: the delta writes go through
         // `ci` and the sealed ones through this type id, so the two can
         // never name different types.
         let type_id = self.chunks[ci].type_id;
-        match action {
-            // The reclaim changes nothing in the delta — its hops name the
-            // tombstones to keep — so the arm runs before any take.
-            FoldAction::Reclaim => return self.reclaim_orphans(sealed, ci),
-            FoldAction::Fold => {}
-        }
         let mut delta = self.chunks[ci].take_hops();
         // `decoded` and `tombstones` answer empty for a type with no sealed
         // entry, so the absence contract needs no branch here.
@@ -593,17 +669,13 @@ impl TypedAdj {
         // delete, so the hop folds in under its tombstone (and the reclaim
         // drops both at the horizon).
         let reclaimed = hops.len() != sealed_hops || kept.len() != sealed_tombstones;
-        if delta.iter().any(|h| {
-            kept.iter()
-                .any(|t| t.id == h.id && t.deleted != Some(t.xmax))
-        }) {
+        if kept
+            .iter()
+            .any(|t| t.deleted != Some(t.xmax) && delta_ids.contains(&t.id))
+        {
             // The reclaim still applies to the sealed stream; only the delta
             // hop waits for its own delete stamp, so its hops stay delta.
-            if !reclaimed {
-                self.chunks[ci].set_hops(delta);
-                return false;
-            }
-            let written = sealed.put_chunk(type_id, &hops, kept);
+            let written = reclaimed && sealed.put_chunk(type_id, &hops, kept);
             self.chunks[ci].set_hops(delta);
             return written;
         }
@@ -623,10 +695,11 @@ impl TypedAdj {
             self.chunks.remove(ci);
         } else {
             // The fold consumed the chunk's hops into the sealed stream, so
-            // its stability baseline goes with them: a chunk that grows
-            // again starts unnoted and must hold its new length before it
-            // seals on stability.
-            self.chunks[ci].stable_len = 0;
+            // its stability baseline — the noted length and its hold — goes
+            // with them: a chunk that grows again starts unnoted and must
+            // hold its new length across two passes before it seals on
+            // stability.
+            self.chunks[ci].set_baseline(0);
         }
         true
     }
@@ -666,17 +739,12 @@ fn visit_chunk(
     ts: u64,
     f: &mut impl FnMut(Hop),
 ) {
-    // A missing delta chunk (a type whose hops all sealed away) is the
-    // empty hop slice: the sealed stream still reads, merged against
-    // nothing.
-    let (raw, absent): (&[AdjHop], u32) = delta.map_or((&[], 0), |c| (&c.hops, c.absent));
+    // A missing delta chunk is the empty hop slice and a missing sealed
+    // region the empty sealed stream — the one merge, against nothing,
+    // with the chunk passed whole so its boundary never travels split.
     match sealed {
-        Some(region) => merge_chunk(raw, absent, &region.visible_hops(type_id, ts), &mut *f),
-        None => {
-            for i in 0..raw.len() {
-                f(resolve(raw, absent, i));
-            }
-        }
+        Some(region) => merge_chunk(delta, &region.visible_hops(type_id, ts), &mut *f),
+        None => merge_chunk(delta, &[], &mut *f),
     }
 }
 
@@ -692,47 +760,6 @@ pub(crate) fn cmp_ts_desc(a: &Hop, b: &Hop) -> std::cmp::Ordering {
         (None, Some(_)) => std::cmp::Ordering::Less,
         (Some(_), None) => std::cmp::Ordering::Greater,
         (Some(ta), Some(tb)) => tb.cmp(&ta).then(b.id.cmp(&a.id)),
-    }
-}
-
-/// Sorted insert of one hop, maintaining `cmp_ts_desc` order and the
-/// chunk's presence boundary. The chunk's two sorted ranges — the absent
-/// head by id DESC, the present tail by (ts, id) DESC — are `cmp_ts_desc`
-/// partitioned by presence, so the probe searches the one range the hop
-/// belongs to: an absent hop can only land inside the head (it orders
-/// before every present hop) and grows the boundary by one; a present hop
-/// lands in the tail and leaves it alone.
-fn insert_hop(chunk: &mut DeltaChunk, hop: Hop) {
-    let absent = chunk.absent as usize;
-    let pos = match hop.ts {
-        None => chunk.hops[..absent]
-            .binary_search_by(|h| cmp_ts_desc(&Hop { ts: None, id: h.id }, &hop)),
-        Some(_) => chunk.hops[absent..]
-            .binary_search_by(|h| {
-                cmp_ts_desc(
-                    &Hop {
-                        ts: Some(h.ts),
-                        id: h.id,
-                    },
-                    &hop,
-                )
-            })
-            .map(|i| i + absent)
-            .map_err(|i| i + absent),
-    };
-    match pos {
-        Ok(_) => {}
-        Err(pos) => {
-            chunk.hops.insert(
-                pos,
-                AdjHop {
-                    ts: hop.ts.unwrap_or(0),
-                    id: hop.id,
-                },
-            );
-            chunk.absent += hop.ts.is_none() as u32;
-            crate::memory::fit_reserved(&mut chunk.hops);
-        }
     }
 }
 

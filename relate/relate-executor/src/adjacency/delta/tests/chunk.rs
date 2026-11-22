@@ -235,13 +235,13 @@ fn header_presence_flags_roundtrip_the_option_semantics() {
     for i in 0..3 {
         present.insert(1, i, Some(30 - i));
     }
-    assert_eq!(present.chunks[0].absent, 0, "all-present: boundary 0");
+    assert_eq!(present.chunks[0].absent_len(), 0, "all-present: boundary 0");
     let mut absent = TypedAdj::default();
     for i in 0..3 {
         absent.insert(1, i, None);
     }
     assert_eq!(
-        absent.chunks[0].absent as usize,
+        absent.chunks[0].absent_len() as usize,
         absent.chunks[0].hops.len(),
         "all-absent: boundary at the end"
     );
@@ -258,7 +258,7 @@ fn header_presence_flags_roundtrip_the_option_semantics() {
     ] {
         a.insert(1, id, ts);
     }
-    assert_eq!(a.chunks[0].absent, 2, "the mixed boundary");
+    assert_eq!(a.chunks[0].absent_len(), 2, "the mixed boundary");
     assert_eq!(
         a.chunk_hops(1),
         vec![
@@ -279,13 +279,13 @@ fn header_presence_flags_roundtrip_the_option_semantics() {
         ]
     );
     a.remove(None, 1, 2); // an absent hop leaves
-    assert_eq!(a.chunks[0].absent, 1, "the boundary shrinks with it");
+    assert_eq!(a.chunks[0].absent_len(), 1, "the boundary shrinks with it");
     a.remove(None, 1, 3); // a present hop leaves
-    assert_eq!(a.chunks[0].absent, 1, "and is untouched by one");
+    assert_eq!(a.chunks[0].absent_len(), 1, "and is untouched by one");
     // A reposition onto `None` moves the hop to the absent head.
     let arena = SealedArena::default();
     a.reposition(arena.region_or_default(0), 1, 1, None, 0);
-    assert_eq!(a.chunks[0].absent, 2);
+    assert_eq!(a.chunks[0].absent_len(), 2);
     assert_eq!(
         a.chunk_hops(1),
         vec![

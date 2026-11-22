@@ -20,25 +20,14 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use relate::{Database, DurabilityMode, HeapCensus, OpenMode, OpenOptions, SnapshotCodecKind};
+use relate::{DurabilityMode, HeapCensus, OpenMode, OpenOptions, SnapshotCodecKind};
 use relate_query_latency::load::{self, LoadReport};
 use relate_query_latency::workload::{IndexProfile, ScaleFactor};
+use relate_query_latency::{measured, open_store as open};
 use relate_test_support::sampling::{process_peak_rss_bytes, process_rss_bytes};
-
-/// A sampler's reading, or the harness's one explicit error: a measurement
-/// the process failed to take is never printed as a zero.
-fn measured(sample: Option<u64>, what: &str) -> Result<u64, String> {
-    sample.ok_or_else(|| format!("{what}: process RSS sampling unavailable"))
-}
 
 fn mb(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
-}
-
-/// Open `store` with `opts`; `what` names the operation in the error.
-fn open(store: &Path, opts: OpenOptions, what: &str) -> Result<Database, String> {
-    let path = store.to_str().ok_or("store path is not UTF-8")?;
-    Database::open_with(path, opts).map_err(|e| format!("{what} {}: {e}", store.display()))
 }
 
 fn build(csv_dir: &Path, store: &Path) -> Result<(), String> {

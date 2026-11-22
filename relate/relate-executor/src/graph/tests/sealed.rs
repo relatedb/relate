@@ -599,11 +599,12 @@ fn the_floor_charges_the_sealed_slot_arrays() {
     );
 }
 
-/// The adaptive seal floor (REL8-280): a mid-degree chunk — steady degree
-/// below the knee — survives the first checkpoint fold (which only notes
-/// its length) and seals at the next, no write in between. The knee's
-/// floor would leave it delta forever; a growing chunk never takes this
-/// path (the delta-tier test pins that half).
+/// The adaptive seal floor: a mid-degree chunk — steady degree below the
+/// knee — survives two checkpoint folds (the first notes its length, the
+/// second finds it held) and seals at the third, no write in between. One
+/// quiet interval alone never seals — that is the churn the guard refuses.
+/// The knee's floor would leave it delta forever; a growing chunk never
+/// takes this path (the delta-tier test pins that half).
 #[test]
 fn the_stability_floor_seals_a_settled_mid_degree_chunk() {
     let g = Graph::default();
@@ -630,7 +631,13 @@ fn the_stability_floor_seals_a_settled_mid_degree_chunk() {
         g.out_side().sealed().region(a).is_none(),
         "one pass only notes the baseline"
     );
-    // No writes: the next checkpoint's fold sees the held length.
+    // No writes: the second checkpoint finds the noted length held once.
+    g.gc_versions();
+    assert!(
+        g.out_side().sealed().region(a).is_none(),
+        "one held interval is not evidence of a steady state"
+    );
+    // The hold is confirmed, so the chunk seals whole.
     g.gc_versions();
     assert_eq!(
         crate::graph::test_support::sealed_chunk_len(&g.out_side(), a, type_id),

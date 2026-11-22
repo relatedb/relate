@@ -117,7 +117,7 @@ impl Report {
 /// Seconds since the Unix epoch now — a report's `started_unix`. A
 /// clock reading before the epoch is a broken-clock invariant, stated
 /// here and reported loudly — never fabricated as zero.
-pub(crate) fn started_unix() -> u64 {
+pub fn started_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the system clock is set after the Unix epoch")

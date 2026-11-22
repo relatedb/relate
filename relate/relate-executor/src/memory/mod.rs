@@ -14,9 +14,10 @@
 //! [`reserved_len`]`(n)` elements, not for whatever the allocator rounded
 //! the allocation up to — except the sealed arena's immutable byte buffer,
 //! sized once per compaction and charged for exactly its length
-//! ([`vec_heap_exact`], ADR-0599), and the dense span arrays, which
-//! reserve and charge the 1.5 growth ladder ([`dense_reserved`],
-//! ADR-0617).
+//! ([`vec_heap_exact`], ADR-0599), the dense span arrays, which reserve and
+//! charge the 1.5 growth ladder ([`dense_reserved`], ADR-0617), and the
+//! delta hop vectors, whose charge and fit take the 256-hop reservation
+//! quantum above the ladder band ([`hops_reserved_len`], [`vec_heap_hops`]).
 
 mod account;
 
@@ -170,6 +171,37 @@ fn fit_capacity<T>(v: &mut Vec<T>, want: usize) {
 /// Grow `v` so `capacity == reserved_len(len)`.
 pub(crate) fn fit_reserved<T>(v: &mut Vec<T>) {
     fit_capacity(v, reserved_len(v.len()));
+}
+
+/// The delta hop vector's reservation quantum (ADR-0658): the Teseo/
+/// Sortledton segment size, imported evidence rather than derived here,
+/// backed by the concentrated big-tx A/B on this change (the unfolded
+/// out-delta 13,114,272 -> 8,199,072 B).
+pub const HOP_RESERVE_QUANTUM: usize = 256;
+
+/// The delta hop vector's reservation policy (ADR-0658). Below the
+/// [`HOP_RESERVE_QUANTUM`] boundary the power-of-two ladder stays — the
+/// tier's steady state is 1–5-hop chunks, where the ladder is tight (5
+/// reserves 8) — and above it the quantum's granularity kills the ladder's
+/// doubling overshoot (a 4097-hop chunk reserves 8192 slots: 64 KB of dead
+/// capacity for one hop). `min` picks the tighter of the two everywhere,
+/// so the bands share the boundary exactly.
+pub fn hops_reserved_len(len: usize) -> usize {
+    reserved_len(len).min(len.div_ceil(HOP_RESERVE_QUANTUM) * HOP_RESERVE_QUANTUM)
+}
+
+/// [`fit_reserved`](self::fit_reserved)'s counterpart for delta hop
+/// vectors: capacity follows [`hops_reserved_len`], never the bare
+/// ladder — the reservation and its charge stay one policy.
+pub(crate) fn fit_hops_reserved<T>(v: &mut Vec<T>) {
+    fit_capacity(v, hops_reserved_len(v.len()));
+}
+
+/// [`vec_heap`]'s charge for delta hop vectors — [`hops_reserved_len`],
+/// the same policy the fit applies, so the admission estimate, the redo
+/// estimator and the census never disagree with the reservation.
+pub fn vec_heap_hops(len: usize, elem: u64) -> u64 {
+    hops_reserved_len(len) as u64 * elem
 }
 
 /// Grow `v` so `capacity == len` — the exact-size counterpart of

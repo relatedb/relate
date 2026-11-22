@@ -48,12 +48,11 @@ fn floor_prices_sealed_at_stream_length_and_delta_at_live_hop_bytes() {
     let adj = TypedAdj {
         chunks: vec![DeltaChunk {
             type_id: 9,
-            absent: 0,
-            stable_len: 0,
             hops: vec![AdjHop {
                 ts: 20_000,
                 id: 999,
             }],
+            ..DeltaChunk::default()
         }],
     };
     assert_eq!(
@@ -90,4 +89,95 @@ fn adjacency_bytes_prices_the_hop_at_sixteen_bytes() {
         crate::memory::vec_heap(1, 40) + crate::memory::vec_heap(3, 16),
         "the chunk entry at 40 B and the hop at 16 B"
     );
+}
+
+/// ADR-0658's reservation quantum: above the 256-hop boundary the hop
+/// vector reserves 256-granularity, not the power-of-two ladder — a
+/// 4097-hop chunk the ladder would reserve 8192 slots for (64 KB of dead
+/// capacity for one hop) reserves 4352. Below the boundary the ladder
+/// stays (5 hops reserve 8, the steady-state chunk's tight fit), and the
+/// bands share the 256 boundary exactly. The charge and the fit are one
+/// policy: a chunk grown by inserts holds the same capacity the census
+/// and the admission estimate price.
+#[test]
+fn hop_vectors_reserve_the_256_quantum_above_the_ladder_band() {
+    let hop_stride = std::mem::size_of::<AdjHop>() as u64;
+    assert_eq!(
+        crate::memory::hops_reserved_len(0),
+        0,
+        "an empty hop vector reserves nothing"
+    );
+    assert_eq!(
+        crate::memory::hops_reserved_len(5),
+        8,
+        "the sub-quantum band keeps the ladder"
+    );
+    assert_eq!(
+        crate::memory::hops_reserved_len(256),
+        256,
+        "the shared boundary"
+    );
+    // 4097: the ladder reserves 8192 slots, the quantum 4352 — it wins.
+    assert_eq!(
+        crate::memory::reserved_len(4097),
+        8192,
+        "the pure power-of-two ladder"
+    );
+    assert_eq!(crate::memory::hops_reserved_len(4097), 4352);
+    let quantum = crate::memory::HOP_RESERVE_QUANTUM as u64;
+    let chunk_stride = std::mem::size_of::<DeltaChunk>() as u64;
+    assert_eq!(
+        adjacency_bytes(std::iter::once(4097)),
+        crate::memory::vec_heap(1, chunk_stride) + 4097u64.div_ceil(quantum) * quantum * hop_stride,
+        "the charge follows the quantum, not the ladder"
+    );
+    assert_ne!(
+        adjacency_bytes(std::iter::once(4097)),
+        crate::memory::vec_heap(1, chunk_stride) + crate::memory::vec_heap(4097, hop_stride),
+        "the ladder would overshoot by 64 KB here"
+    );
+
+    // The fit agrees on the insert path: 600 hops reserve the quantum's
+    // 768 where the ladder says 1024 — a count on which the two differ.
+    let mut adj = TypedAdj::default();
+    for i in 0..600 {
+        adj.insert(1, i, Some(600 - i));
+    }
+    assert_eq!(crate::memory::reserved_len(600), 1024, "the ladder rung");
+    let chunk = &adj.chunks[0];
+    assert_eq!(
+        chunk.hops.capacity(),
+        crate::memory::hops_reserved_len(600),
+        "the insert path reserves at the quantum, not the ladder"
+    );
+}
+
+/// The stability floor is the seal's break-even at the live strides: sealing
+/// retires `AdjHop`'s 16 B per hop against the sealed entry's 56 B plus the
+/// arena stream's ~1.1 B/hop, while the delta entry the chunk keeps is
+/// retained either way and cancels. A stride change moves the break-even
+/// and fails here (ADR-0655).
+#[test]
+fn the_stability_floor_is_the_seal_break_even() {
+    use std::mem::size_of;
+    // The sealed entry's fixed cost and the stream's arena charge per hop
+    // in tenths of a byte (ADR-0599's measurement).
+    const SEALED_ENTRY_BYTES: u64 = 56;
+    const ARENA_TENTHS_PER_HOP: u64 = 11;
+    // The delta entry (40 B) is priced on both sides — it is retained either
+    // way; the hop is the 16 B the seal retires.
+    let delta_entry = size_of::<DeltaChunk>() as u64;
+    let hop = size_of::<AdjHop>() as u64;
+    // Both sides in tenths of a byte.
+    let delta_cost = |len: u64| (delta_entry + hop * len) * 10;
+    let sealed_cost =
+        |len: u64| delta_entry * 10 + SEALED_ENTRY_BYTES * 10 + ARENA_TENTHS_PER_HOP * len;
+    let derived = (1..=COMPACTION_DELTA_FLOOR as u64)
+        .find(|&len| sealed_cost(len) <= delta_cost(len))
+        .expect("sealing pays below the knee");
+    assert_eq!(STABILITY_SEAL_FLOOR as u64, derived);
+    // The wholesale build's gate reads the same break-even (ADR-0599 /
+    // ADR-0608); it is allowed to diverge later, but a stride change must
+    // fail here for both, not leave one silently stale.
+    assert_eq!(RESTORE_SEAL_HOPS as u64, derived);
 }

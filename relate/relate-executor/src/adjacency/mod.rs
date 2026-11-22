@@ -32,7 +32,9 @@ mod delta;
 #[cfg(test)]
 mod pages;
 
-pub(crate) use self::delta::{adjacency_bytes, cmp_ts_desc, resolve, AdjHop, Hop, TypedAdj};
+pub(crate) use self::delta::{
+    adjacency_bytes, cmp_ts_desc, resolve, AdjHop, DeltaChunk, Hop, TypedAdj,
+};
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -51,20 +53,22 @@ use crate::memory::{vec_growth, vec_heap};
 /// (ADR-0551: the measured knee of the cutoff sweep).
 pub(crate) const COMPACTION_DELTA_FLOOR: usize = 32;
 
-/// A never-sealed chunk whose delta length held since the previous fold
-/// pass seals at this hop count instead of [`COMPACTION_DELTA_FLOOR`]: a
-/// chunk that stopped growing is at its steady state, so the knee's reason
-/// for waiting — a still-growing chunk would only re-fold later — is gone.
-/// The floor of 8 keeps the seal clear of the sub-8-hop band where the
-/// entry header outweighs the stream it buys (ADR-0551's sweep); the
-/// wholesale build keeps its own [`RESTORE_SEAL_HOPS`] gate.
-pub(crate) const STABILITY_SEAL_FLOOR: usize = 8;
+/// A never-sealed chunk whose delta length held across two fold passes
+/// seals at this hop count instead of [`COMPACTION_DELTA_FLOOR`]: a chunk
+/// that stopped growing is at its steady state, so the knee's reason for
+/// waiting — a still-growing chunk would only re-fold later — is gone. The
+/// floor is the seal's break-even at the tier's own strides: sealing
+/// retires a [`AdjHop`]'s 16 B per hop against a 56 B sealed entry plus the
+/// arena stream's ~1.1 B/hop, while the 40 B delta entry is retained either
+/// way and cancels — net positive at 4 hops, a wash at 3, a loss below
+/// (ADR-0655). The wholesale build keeps its own [`RESTORE_SEAL_HOPS`] gate.
+pub(crate) const STABILITY_SEAL_FLOOR: usize = 4;
 
 /// A rebuilt chunk whose delta reaches this hop count is sealed by the
 /// wholesale adjacency build's own pass (ADR-0599 / ADR-0608). The measured
-/// break-even from the seal-policy record: sealing swaps a chunk's 24 B/hop
+/// break-even from the seal-policy record: sealing swaps a chunk's 16 B/hop
 /// delta heap for a 56 B sealed entry plus a ~1.1 B/hop stream while its
-/// 32 B delta entry is retained either way — net positive at 4 hops, a wash
+/// 40 B delta entry is retained either way — net positive at 4 hops, a wash
 /// at 3, a loss below. Deliberately below [`COMPACTION_DELTA_FLOOR`] (32):
 /// the build folds short chunks the write path leaves delta.
 pub(crate) const RESTORE_SEAL_HOPS: usize = 4;
@@ -76,11 +80,9 @@ pub(crate) const PHYSICAL_READ_TS: u64 = 0;
 mod arena;
 mod span_table;
 
-/// The paging format's hop-count header writer (test-gated with `pages`).
-#[cfg(test)]
-pub(crate) use self::arena::hop_count;
 pub(crate) use self::arena::{
-    arena_admits, tombstone_stride, Entry, SealedArena, SealedRegion, Supersede, Tombstone,
+    arena_admits, hop_count, tombstone_stride, Entry, SealedArena, SealedRegion, Supersede,
+    Tombstone,
 };
 pub(crate) use self::span_table::{span_stride, MAX_SPAN_TYPES};
 
@@ -99,16 +101,16 @@ pub(crate) fn fresh_sealed_chunk_floor_bytes(tombstone_count: usize) -> u64 {
     vec_heap(tombstone_count, tombstone_stride())
 }
 
-/// Merge a delta chunk's raw hop slice — with its presence boundary, so
-/// each hop resolves through [`resolve`] — and a decoded sealed chunk in
-/// `cmp_ts_desc` order. Both inputs are already sorted; on a tie the delta
-/// hop goes first.
-pub(crate) fn merge_chunk(
-    delta: &[AdjHop],
-    delta_absent: u32,
-    sealed: &[Hop],
-    mut f: impl FnMut(Hop),
-) {
+/// Merge a delta chunk — its raw hop slice and presence boundary derived
+/// inside, so each hop resolves through [`resolve`] and the pair never
+/// travels split — and a decoded sealed chunk in `cmp_ts_desc` order. Both
+/// inputs are already sorted; on a tie the delta hop goes first.
+pub(crate) fn merge_chunk(delta: Option<&DeltaChunk>, sealed: &[Hop], mut f: impl FnMut(Hop)) {
+    // A missing delta chunk (a type whose hops all sealed away) is the
+    // empty hop slice: the sealed stream still reads, merged against
+    // nothing.
+    let (delta, delta_absent): (&[AdjHop], u32) =
+        delta.map_or((&[], 0), |c| (&c.hops, c.absent_len()));
     let (mut i, mut j) = (0, 0);
     while i < delta.len() && j < sealed.len() {
         if cmp_ts_desc(&sealed[j], &resolve(delta, delta_absent, i)) == Ordering::Less {

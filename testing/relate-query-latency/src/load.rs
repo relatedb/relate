@@ -10,6 +10,7 @@
 //! 5. every label and type counted against its file's rows, and the totals
 //!    against the published ones.
 
+use crate::rows_param;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
@@ -147,10 +148,6 @@ fn prop_value(cell: &str, ty: PropType, what: &str) -> Result<Option<Value>> {
         PropType::Str => Value::String(cell.into()),
         PropType::Int => Value::Int(parse_int(cell, what)?),
     }))
-}
-
-fn rows_param(rows: Vec<Value>) -> BTreeMap<String, Value> {
-    BTreeMap::from([("rows".to_string(), Value::List(rows.into()))])
 }
 
 fn load_nodes(

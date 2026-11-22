@@ -12,6 +12,7 @@ title: "The never-sealed seal floor adapts: a chunk whose length held across a c
 REFERENCES:
   - "[[adr/0551-sealed-delta-adjacency-store]]"
   - "[[adr/0608-seal-restored-adjacency]]"
+  - "[[adr/0655-churn-guarded-stability-seal-floor]]"
 ---
 
 # 0635: The never-sealed seal floor adapts — a chunk whose length held across a checkpoint interval seals at 8
@@ -83,3 +84,11 @@ construction (4 of 16 rungs); a sub-knee-dominated graph converts more.
 - Confluence and idempotence unchanged: the rule moves **when** a fold
   fires, never its result (ADR-0551's argument); restore keeps
   ADR-0608's own gate.
+
+## Later references
+
+- [ADR-0655](./0655-churn-guarded-stability-seal-floor.md) derives the floor
+  from the tier's strides (4, not 8) and requires the held length to survive
+  two fold passes before the stability arm seals a chunk: a chunk that paused
+  for one interval and resumed is no longer accepted as steady, so a steady
+  sub-knee chunk seals three checkpoint intervals after its last write.
