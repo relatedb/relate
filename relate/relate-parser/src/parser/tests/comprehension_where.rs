@@ -115,6 +115,71 @@ fn a_property_access_map_expression_still_takes_the_pipe() {
     }
 }
 
+/// A function call's `(` joins the dead-end set: a map expression
+/// beginning with a function name (`substring(m.p1, 0, 1)`) takes the
+/// pipe after a label-filter WHERE exactly as a property access does.
+/// Without it the would-be continuation commits the function's name as a
+/// label atom and the `(` then fails the comprehension
+/// (`expected RightBracket, got "("`), the REL8-1871 gap.
+#[test]
+fn a_function_call_map_expression_takes_the_pipe_after_a_label_filter() {
+    for query in [
+        "MATCH (n) RETURN [m IN [n] WHERE m:L1 | substring(m.p1, 0, 1)] AS x",
+        // The label-filter WHERE's `IS` introducer spelling, same reader.
+        "MATCH (n) RETURN [m IN [n] WHERE m IS L1 | substring(m.p1, 0, 1)] AS x",
+        // A zero-argument call, and a nested call as the argument.
+        "MATCH (n) RETURN [m IN [n] WHERE m:L1 | toString(m)] AS x",
+        "MATCH (n) RETURN [m IN [n] WHERE m:L1 | substring(toString(m.p1), 0, 1)] AS x",
+    ] {
+        let stmt = parse_ok(query);
+        match return_expr(&stmt) {
+            Expr::ListComprehension(lc) => {
+                assert!(
+                    is_plain_label(&lc.where_expr),
+                    "{query}: the WHERE stayed the label predicate"
+                );
+                assert!(
+                    matches!(lc.map_expr.as_ref(), Some(Expr::FunctionCall(_))),
+                    "{query}: the map expression is the function call"
+                );
+            }
+            other => panic!("{query}: expected ListComprehension, got {other:?}"),
+        }
+    }
+}
+
+/// A pattern comprehension's map expression gets the same treatment: the
+/// required map after a label-filter WHERE may be a function call.
+#[test]
+fn a_pattern_comprehension_function_call_map_expression_takes_the_pipe() {
+    let stmt = parse_ok("MATCH (a) RETURN [(a)-[:R]->(b) WHERE a:L1 | toString(b.p1)] AS x");
+    match return_expr(&stmt) {
+        Expr::PatternComprehension(pc) => {
+            assert!(is_plain_label(&pc.where_expr));
+            assert!(matches!(pc.map_expr, Expr::FunctionCall(_)));
+        }
+        other => panic!("expected PatternComprehension, got {other:?}"),
+    }
+}
+
+/// The dead-end does not over-fire: a real label disjunction whose
+/// continuation is followed by an operator still commits (`m:A|B AND …`
+/// stays the pre-existing reading), so only the map-expression tails
+/// yield the pipe.
+#[test]
+fn a_label_disjunction_still_commits_before_a_map_expression_tail() {
+    let stmt = parse_ok("MATCH (n) RETURN [m IN [n] WHERE m:A|B AND m.p1 IS NOT NULL | m.p1] AS x");
+    match return_expr(&stmt) {
+        Expr::ListComprehension(lc) => {
+            // The WHERE is the conjunction over the committed disjunction,
+            // and the map expression is the property access.
+            assert!(!is_plain_label(&lc.where_expr));
+            assert!(matches!(lc.map_expr.as_ref(), Some(Expr::Property(_))));
+        }
+        other => panic!("expected ListComprehension, got {other:?}"),
+    }
+}
+
 /// A pattern element's inline property map is not a map projection: the
 /// `{` dead end is suppressed inside an element's own label/type chain
 /// (`pattern_element_depth`), so a type/label disjunction followed by a

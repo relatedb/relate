@@ -319,19 +319,25 @@ impl<'a> Parser<'a> {
     /// dead-end set, deliberately not the value-type side's continuation
     /// whitelist: label disjunctions commit on operators (`x:A | B AND y`
     /// reads as `(x:A|B) AND y`), a pre-existing behavior that stays.
-    /// Property access (`.`) and a map projection (`{`) postfix the map
-    /// expression's base variable and can never continue a label chain;
-    /// a `]` proves the separator only where the context's bracket proof
-    /// says the `]` would close the comprehension with its map stranded
+    /// Property access (`.`), a function call's `(` and a map projection
+    /// (`{`) postfix the map expression's base and can never continue a
+    /// label chain; a `]` proves the separator only where the context's
+    /// bracket proof says the `]` would close the comprehension with its
+    /// map stranded
     /// ([`BracketProof::RightBracketClosesTheComprehension`]). The `{`
     /// and `]` arms are gated on the pattern-element depth: inside a
     /// pattern element's own label/type chain, `{` is the element's
     /// inline property map (`(x:A|B {p: 1})`, `-[r:S|T {w: 1}]->`) and
     /// `]` closes the element's type brackets, never the comprehension's
     /// closer, so a `|` in a type disjunction there (`[:S|T]` in a
-    /// comprehension's WHERE) stays a disjunction.
+    /// comprehension's WHERE) stays a disjunction. The `.` and `(` arms
+    /// are ungated: no grammar postfixes a complete label chain with a
+    /// parenthesized group at any depth (a `(` only ever opens a label
+    /// primary of its own), while both postfix the map expression's base
+    /// — a variable (`x.p1`) or a function name (`substring(x.p1, 0, 1)`)
+    /// — which is where the two tokens appear in practice.
     fn chain_tail_ends_where(&self, ty: TokenType) -> bool {
-        matches!(ty, TokenType::Dot)
+        matches!(ty, TokenType::Dot | TokenType::LeftParen)
             || (self.pattern_element_depth == 0
                 && (matches!(ty, TokenType::LeftBrace)
                     || (self.comprehension_where
