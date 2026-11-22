@@ -3,7 +3,7 @@ type: adr
 area: cypher
 claim: c71fc14511315657532d8f98af3cef7ba0f6267e
 date: 2026-11-20
-deciders: MemoryDB maintainers
+deciders: the maintainers
 name: 0637-path-construction-and-concatenation-preview
 status: proposed
 tags:

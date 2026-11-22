@@ -115,24 +115,27 @@ pub(crate) fn add(graph: &ExecGraph<'_>, l: Value, r: Value) -> Result<Value> {
     })
 }
 
+/// Whether `v` may sit beside a null in `||`: the string and list operands
+/// (and null itself) always, a path only under `path-concatenation`.
+fn concat_operand(v: &Value, paths: bool) -> bool {
+    matches!(v, Value::String(_) | Value::List(_) | Value::Null)
+        || (paths && matches!(v, Value::Path(_)))
+}
+
+/// `||`. `path-concatenation` is gated here, at run time, rather than by a
+/// lowering detector: the operand types are only known once evaluated, so
+/// the disabled form is the ordinary operand-type rejection, never the
+/// authored preview error. The gate is read once.
 pub(crate) fn concat(graph: &ExecGraph<'_>, l: Value, r: Value) -> Result<Value> {
+    let paths = graph.preview().enabled(PreviewFeature::PathConcatenation);
     match (&l, &r) {
         // `+` on two strings or two lists IS `||`: delegate so the
         // charge-and-build policy has one spelling.
         (Value::String(_), Value::String(_)) | (Value::List(_), Value::List(_)) => add(graph, l, r),
-        (Value::Path(a), Value::Path(b))
-            if graph.preview().enabled(PreviewFeature::PathConcatenation) =>
-        {
-            super::path_value::join(graph, a, b)
-        }
-        (Value::Null, Value::Path(_)) | (Value::Path(_), Value::Null)
-            if graph.preview().enabled(PreviewFeature::PathConcatenation) =>
-        {
+        (Value::Path(a), Value::Path(b)) if paths => super::path_value::join(graph, a, b),
+        (Value::Null, other) | (other, Value::Null) if concat_operand(other, paths) => {
             Ok(Value::Null)
         }
-        (Value::Null, Value::String(_) | Value::List(_))
-        | (Value::String(_) | Value::List(_), Value::Null)
-        | (Value::Null, Value::Null) => Ok(Value::Null),
         _ => Err(Error::invalid_argument_type(
             "|| requires two strings or two lists",
         )),

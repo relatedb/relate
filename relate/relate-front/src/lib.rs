@@ -299,8 +299,10 @@ pub fn parse_and_lower_statement_with_policy_and_params(
             | relate_core::PreviewFeature::CollectionZip
             | relate_core::PreviewFeature::CollectionHas
             | relate_core::PreviewFeature::GqlStddevAliases
-            // `path-concatenation` has no detector until the `||` path
-            // operand is typed at lowering.
+            // `path-concatenation` gates at run time in the executor's
+            // `concat` (the `||` operand types are only known once
+            // evaluated; the disabled form is the ordinary operand-type
+            // rejection), never at lowering, so it has no detector here.
             | relate_core::PreviewFeature::PathConcatenation => Ok(false),
         };
         if uses.map_err(|error| Error::syntax(error.to_string()))? {

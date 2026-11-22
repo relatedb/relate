@@ -1,5 +1,19 @@
 use super::*;
 
+/// The options an embedded fragment is parsed under: the enclosing parse's
+/// dialect gates, minus every fact that needs the whole statement. A
+/// fragment's own token stream cannot see the enclosing statement's
+/// variables, so the one-element `PATH [x]` constructor reading (which asks
+/// whether `path` is bound anywhere in the statement) stays off inside it.
+/// The one owner of that exception: a new statement-scoped option is
+/// cleared here.
+fn fragment_options(options: crate::lexer::ParseOptions) -> crate::lexer::ParseOptions {
+    crate::lexer::ParseOptions {
+        path_construction: false,
+        ..options
+    }
+}
+
 // TODO(CIP-261): an interpolated literal is scanned three times -- once by
 // the lexer (`Lexer::read_interpolation`), once here to split text from
 // `{...}` embeds, and once more when each embed is re-tokenized by
@@ -12,8 +26,9 @@ use super::*;
 /// braces; a top-level `{` starts an expression segment that runs to its
 /// matching `}` (nesting, inner strings and backtick-quoted identifiers
 /// respected), sub-parsed with [`parse_expression_str_with_options`] under
-/// the caller's [`crate::lexer::ParseOptions`], so an embed inherits the
-/// dialect gates of the parse that lexed the enclosing statement.
+/// the caller's [`crate::lexer::ParseOptions`] as narrowed by
+/// [`fragment_options`], so an embed inherits the dialect gates of the parse
+/// that lexed the enclosing statement, except the statement-scoped ones.
 ///
 /// The lexer leaves every escape unresolved in the payload, so literal-text
 /// escapes are decoded here -- after the two-byte lookahead that tells `\\`
@@ -88,14 +103,7 @@ pub(super) fn parse_interp_body(
             return Err("unterminated { expression } in interpolated string".into());
         }
         let expr_src: String = chars[i + 1..j].iter().collect();
-        // The embed's own token stream cannot see the enclosing statement's
-        // variables, so the one-element `PATH [x]` constructor reading
-        // (which needs the whole statement's tokens) stays off inside it.
-        let embed_options = crate::lexer::ParseOptions {
-            path_construction: false,
-            ..options
-        };
-        let expr = parse_expression_str_with_options(&expr_src, embed_options)
+        let expr = parse_expression_str_with_options(&expr_src, fragment_options(options))
             .map_err(|e| format!("invalid expression in interpolated string: {e}"))?;
         if !text.is_empty() {
             parts.push(InterpPart::Text(std::mem::take(&mut text)));

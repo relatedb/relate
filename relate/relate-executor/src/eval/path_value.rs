@@ -4,6 +4,11 @@ use relate_core::{Error, Path, Result, Value};
 
 use crate::overlay::ExecGraph;
 
+/// The one rejection for an element list that does not alternate node,
+/// relationship, ..., node.
+const ALTERNATING_LIST: &str =
+    "PATH [ ... ] requires an alternating node, relationship, ..., node list";
+
 /// Builds a path from evaluated constructor elements. Any null element
 /// yields null; the list must alternate node, relationship, ... starting
 /// and ending with a node, and each relationship must join its neighbours
@@ -13,9 +18,7 @@ pub(super) fn construct(graph: &ExecGraph<'_>, elements: Vec<Value>) -> Result<V
         return Ok(Value::Null);
     }
     if elements.len() % 2 == 0 {
-        return Err(Error::invalid_argument_type(
-            "PATH [ ... ] requires an alternating node, relationship, ..., node list",
-        ));
+        return Err(Error::invalid_argument_type(ALTERNATING_LIST));
     }
     // ADR-0463: charge the element vectors before building them.
     graph.charge_value_buffer(elements.len() / 2 + 1)?;
@@ -28,11 +31,7 @@ pub(super) fn construct(graph: &ExecGraph<'_>, elements: Vec<Value>) -> Result<V
         match (i % 2, element) {
             (0, Value::Node(n)) => path.nodes.push((*n).clone()),
             (1, Value::Relationship(r)) => path.rels.push((*r).clone()),
-            _ => {
-                return Err(Error::invalid_argument_type(
-                    "PATH [ ... ] requires an alternating node, relationship, ..., node list",
-                ))
-            }
+            _ => return Err(Error::invalid_argument_type(ALTERNATING_LIST)),
         }
     }
     for (rel, pair) in path.rels.iter().zip(path.nodes.windows(2)) {
@@ -48,6 +47,8 @@ pub(super) fn construct(graph: &ExecGraph<'_>, elements: Vec<Value>) -> Result<V
 
 /// Joins two paths at their shared boundary node (same node id).
 pub(super) fn join(graph: &ExecGraph<'_>, a: &Path, b: &Path) -> Result<Value> {
+    // `Path` is a public struct: a path parameter can arrive with no nodes,
+    // so a missing boundary node is the same typed rejection as a mismatch.
     let boundary_matches = match (a.nodes.last(), b.nodes.first()) {
         (Some(last), Some(first)) => last.id == first.id,
         _ => false,
@@ -74,6 +75,7 @@ mod tests {
     use relate_core::{Error, Node, PreviewFeature, PreviewFeatures, Relationship, Value};
     use relate_ir::{BinaryOp, Expr};
 
+    use crate::exec::test_support::path_value;
     use crate::graph::Graph;
     use crate::overlay::ExecGraph;
     use crate::row::Row;
@@ -96,36 +98,43 @@ mod tests {
         }))
     }
 
-    fn construct(items: Vec<Value>) -> relate_core::Result<Value> {
-        let g = Graph::default();
-        let graph = ExecGraph::read(&g);
-        let expr = Expr::PathConstruct {
-            elements: items.into_iter().map(Expr::RuntimeValue).collect(),
-        };
-        super::super::eval(&graph, &Row::new(), &expr, &BTreeMap::new())
+    /// A graph with the given preview set configured: the one fixture every
+    /// evaluation below runs against.
+    fn graph_with(preview: PreviewFeatures) -> Graph {
+        let mut g = Graph::default();
+        g.configure_preview(preview);
+        g
     }
 
-    fn concat(l: Value, r: Value, on: bool) -> relate_core::Result<Value> {
-        let mut g = Graph::default();
-        if on {
-            g.configure_preview(
-                PreviewFeatures::none().with_feature(PreviewFeature::PathConcatenation),
-            );
+    fn eval_on(g: &Graph, expr: &Expr) -> relate_core::Result<Value> {
+        super::super::eval(&ExecGraph::read(g), &Row::new(), expr, &BTreeMap::new())
+    }
+
+    fn construct_expr(items: Vec<Value>) -> Expr {
+        Expr::PathConstruct {
+            elements: items.into_iter().map(Expr::RuntimeValue).collect(),
         }
-        let graph = ExecGraph::read(&g);
+    }
+
+    fn construct(items: Vec<Value>) -> relate_core::Result<Value> {
+        eval_on(&Graph::default(), &construct_expr(items))
+    }
+
+    fn concat(l: Value, r: Value, preview: PreviewFeatures) -> relate_core::Result<Value> {
         let expr = Expr::Binary {
             op: BinaryOp::Concat,
             left: Box::new(Expr::RuntimeValue(l)),
             right: Box::new(Expr::RuntimeValue(r)),
         };
-        super::super::eval(&graph, &Row::new(), &expr, &BTreeMap::new())
+        eval_on(&graph_with(preview), &expr)
+    }
+
+    fn concat_on() -> PreviewFeatures {
+        PreviewFeatures::none().with_feature(PreviewFeature::PathConcatenation)
     }
 
     fn path_of(v: Value) -> Arc<relate_core::Path> {
-        match v {
-            Value::Path(p) => p,
-            _ => panic!("expected a path value"),
-        }
+        path_value(&v).expect("expected a path value")
     }
 
     #[test]
@@ -151,23 +160,11 @@ mod tests {
 
     #[test]
     fn path_construct_and_join_over_the_cap_error_as_capacity() {
-        let mut g = Graph::default();
+        let mut g = graph_with(concat_on());
         g.configure_expression_memory_limit(Some(1));
-        g.configure_preview(
-            PreviewFeatures::none().with_feature(PreviewFeature::PathConcatenation),
-        );
         let graph = ExecGraph::read(&g);
         let p = path_of(construct(vec![node(1), rel(9, 1, 2), node(2)]).unwrap());
-        let items = [node(1), rel(9, 1, 2), node(2)]
-            .map(Expr::RuntimeValue)
-            .to_vec();
-        let err = super::super::eval(
-            &graph,
-            &Row::new(),
-            &Expr::PathConstruct { elements: items },
-            &BTreeMap::new(),
-        )
-        .unwrap_err();
+        let err = eval_on(&g, &construct_expr(vec![node(1), rel(9, 1, 2), node(2)])).unwrap_err();
         assert!(matches!(err, Error::Capacity { .. }), "{err}");
         let q = path_of(construct(vec![node(2), rel(8, 2, 3), node(3)]).unwrap());
         let err = super::join(&graph, &p, &q).unwrap_err();
@@ -175,18 +172,40 @@ mod tests {
     }
 
     #[test]
+    fn path_concat_with_an_empty_path_parameter_is_a_typed_error() {
+        let empty = Value::from_path(relate_core::Path {
+            nodes: Vec::new(),
+            rels: Vec::new(),
+        });
+        let a = construct(vec![node(1), rel(9, 1, 2), node(2)]).unwrap();
+        for (l, r) in [
+            (empty.clone(), a.clone()),
+            (a.clone(), empty.clone()),
+            (empty.clone(), empty.clone()),
+        ] {
+            assert!(matches!(
+                concat(l, r, concat_on()),
+                Err(Error::InvalidArgumentType(_))
+            ));
+        }
+    }
+
+    #[test]
     fn path_concat_joins_at_the_shared_node() {
         let a = construct(vec![node(1), rel(9, 1, 2), node(2)]).unwrap();
         let b = construct(vec![node(2), rel(8, 2, 3), node(3)]).unwrap();
-        let joined = path_of(concat(a.clone(), b.clone(), true).unwrap());
+        let joined = path_of(concat(a.clone(), b.clone(), concat_on()).unwrap());
         assert_eq!((joined.nodes.len(), joined.rels.len()), (3, 2));
         assert!(matches!(
-            concat(b.clone(), a.clone(), true),
+            concat(b.clone(), a.clone(), concat_on()),
             Err(Error::InvalidArgumentType(_))
         ));
-        assert_eq!(concat(a.clone(), Value::Null, true).unwrap(), Value::Null);
-        assert!(concat(a.clone(), Value::Int(1), true).is_err());
-        let off = concat(a, b, false).unwrap_err();
+        assert_eq!(
+            concat(a.clone(), Value::Null, concat_on()).unwrap(),
+            Value::Null
+        );
+        assert!(concat(a.clone(), Value::Int(1), concat_on()).is_err());
+        let off = concat(a, b, PreviewFeatures::none()).unwrap_err();
         assert!(off
             .to_string()
             .ends_with("|| requires two strings or two lists"));

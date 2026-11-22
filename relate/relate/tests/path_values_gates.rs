@@ -63,14 +63,12 @@ fn path_value(conn: &mut relate::Connection, query: &str) -> Value {
     run(conn, query).rows[0][0].clone()
 }
 
-fn path_ids(p: &Value) -> (Vec<i64>, Vec<i64>) {
+/// The `(node count, relationship count)` of a path value.
+fn path_shape(p: &Value) -> (usize, usize) {
     let Value::Path(path) = p else {
         panic!("expected a path value")
     };
-    (
-        path.nodes.iter().map(|n| n.id).collect(),
-        path.rels.iter().map(|r| r.id).collect(),
-    )
+    (path.nodes.len(), path.rels.len())
 }
 
 #[test]
@@ -95,10 +93,9 @@ fn each_flag_opens_only_its_own_form() {
 fn both_flags_open_both_forms() {
     let mut c = both();
     let built = path_value(&mut c, CONSTRUCT);
-    assert_eq!(path_ids(&built).0.len(), 2);
+    assert_eq!(path_shape(&built).0, 2);
     let joined = path_value(&mut c, CONCAT);
-    let (nodes, rels) = path_ids(&joined);
-    assert_eq!((nodes.len(), rels.len()), (3, 2));
+    assert_eq!(path_shape(&joined), (3, 2));
 }
 
 #[test]
@@ -121,7 +118,7 @@ fn relationship_direction_is_not_checked() {
     let mut c = both();
     // The relationship is stored A -> B; listing B first still forms a path.
     let reversed = path_value(&mut c, "MATCH (a:A)-[r]->(b:B) RETURN PATH [b, r, a] AS p");
-    assert_eq!(path_ids(&reversed).1.len(), 1);
+    assert_eq!(path_shape(&reversed).1, 1);
 }
 
 #[test]
@@ -195,8 +192,7 @@ fn a_concatenated_path_shares_the_boundary_node_once() {
 fn a_one_element_constructor_is_a_zero_length_path_when_path_is_unbound() {
     let mut conn = both();
     let p = path_value(&mut conn, "MATCH (a:A) RETURN PATH [a] AS p");
-    let (nodes, rels) = path_ids(&p);
-    assert_eq!((nodes.len(), rels.len()), (1, 0));
+    assert_eq!(path_shape(&p), (1, 0));
 }
 
 #[test]

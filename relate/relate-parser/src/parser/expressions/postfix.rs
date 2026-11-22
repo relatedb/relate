@@ -190,10 +190,35 @@ impl<'a> Parser<'a> {
         (pos, false)
     }
 
+    /// With `PATH [ first` consumed, whether the bracket opens the path
+    /// constructor rather than a subscript. A comma can never follow a
+    /// subscript index, so `PATH [a, r, b]` is the constructor. A
+    /// one-element `PATH [x]` is the constructor only under
+    /// `path-construction` and when `path` is bound nowhere in the statement
+    /// (the subscript reading could only have been an undefined variable).
+    fn path_constructor_follows(&self) -> bool {
+        match self.peek_type() {
+            TokenType::Comma => true,
+            TokenType::RightBracket => {
+                self.options.path_construction && self.path_ident_never_bound()
+            }
+            _ => false,
+        }
+    }
+
+    /// The element list of a path constructor whose `first` element is
+    /// parsed, through the closing `]` (ADR-0637).
+    fn parse_path_constructor_rest(&mut self, first: Expr) -> ParseResult<Vec<Expr>> {
+        let mut elements = vec![first];
+        while self.peek_type() == TokenType::Comma {
+            self.next_token(); // consume ,
+            elements.push(self.parse_expression()?);
+        }
+        self.expect(TokenType::RightBracket)?;
+        Ok(elements)
+    }
+
     pub(in crate::parser) fn parse_postfix(&mut self) -> ParseResult<Expr> {
-        // `PATH [` read at the token level, before the primary is consumed:
-        // only the first postfix operator can be the constructor's bracket.
-        let mut path_open = self.is_path_opener_at(self.pos);
         let primary = self.parse_primary()?;
         let ns = Self::extract_namespace(&primary);
         let mut base = PostfixBase::Built(primary, ns);
@@ -315,7 +340,11 @@ impl<'a> Parser<'a> {
                             "a call-bound dot-chain only continues at '.' or '('",
                         ));
                     };
-                    let is_path_open = std::mem::take(&mut path_open);
+                    // The constructor's `[` directly follows a bare `PATH`
+                    // variable: `x.PATH [`, `(PATH) [` and a second bracket
+                    // all fail one of the two tests.
+                    let is_path_open =
+                        matches!(expr, Expr::Variable(_)) && self.is_path_opener_at(self.pos - 1);
                     self.next_token(); // consume [
                                        // Check for [..to]
                     if self.peek_type() == TokenType::DotDot {
@@ -335,30 +364,9 @@ impl<'a> Parser<'a> {
                         continue;
                     }
                     let first = self.parse_expression()?;
-                    // `PATH [a, r, b]`: a comma can never follow a subscript
-                    // index, so a `PATH [` opener followed by a
-                    // comma-separated list is the path constructor.
-                    if self.peek_type() == TokenType::Comma && is_path_open {
-                        let mut elements = vec![first];
-                        while self.peek_type() == TokenType::Comma {
-                            self.next_token(); // consume ,
-                            elements.push(self.parse_expression()?);
-                        }
-                        self.expect(TokenType::RightBracket)?;
+                    if is_path_open && self.path_constructor_follows() {
+                        let elements = self.parse_path_constructor_rest(first)?;
                         base = PostfixBase::Built(Expr::PathConstruct(elements), None);
-                        continue;
-                    }
-                    // A one-element `PATH [x]` under `path-construction`: the
-                    // constructor when `path` is bound nowhere in the
-                    // statement, so the subscript reading could only have
-                    // been an undefined variable.
-                    if is_path_open
-                        && self.options.path_construction
-                        && self.peek_type() == TokenType::RightBracket
-                        && self.path_ident_never_bound()
-                    {
-                        self.next_token(); // consume ]
-                        base = PostfixBase::Built(Expr::PathConstruct(vec![first]), None);
                         continue;
                     }
                     if self.peek_type() == TokenType::DotDot {

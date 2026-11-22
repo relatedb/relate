@@ -308,14 +308,26 @@ fn test_node_pattern_probe_nested_is_not_exponential() {
         "nested pattern-predicate parse took {elapsed:?} (exponential probing?)"
     );
     // AST spot-check: the top-level WHERE is the outermost pattern
-    // predicate, whose node pattern is `a1`.
+    // predicate, whose node pattern is `a{K-1}`; each node's inline WHERE
+    // holds the next level down, ending at the bare `(a)`.
     let Clause::Match(m) = &stmt.clauses[0] else {
         panic!("expected match");
     };
-    assert!(matches!(
-        m.where_expr.as_ref(),
-        Some(Expr::PatternPredicate(_))
-    ));
+    let mut cur = m.where_expr.as_ref();
+    for level in (1..K).rev() {
+        let Some(Expr::PatternPredicate(pp)) = cur else {
+            panic!("expected PatternPredicate at level {level}, got {cur:?}")
+        };
+        let Some(PatternElement::Node(node)) = pp.pattern.elements.first() else {
+            panic!("expected a leading node pattern at level {level}")
+        };
+        assert_eq!(
+            node.variable,
+            Some(SmallName::from_name(&format!("a{level}")))
+        );
+        cur = node.where_expr.as_ref();
+    }
+    assert!(matches!(cur, Some(Expr::PatternPredicate(_))));
 }
 
 #[test]
