@@ -299,6 +299,134 @@ fn a_capped_funnel_stops_scanning_past_the_cap() {
     assert_eq!(crate::ctx::take_node_reads(), 200);
 }
 
+/// The point ask over `p.name = <value>` / `IN <values>` (a WHERE-form
+/// conjunct), capped at `cap`, on `view` — the shortest route's endpoint
+/// ask for a non-unique property.
+fn point_where(
+    view: &ExecGraph<'_>,
+    np: &NodePattern,
+    bound: Expr,
+    op: BinaryOp,
+    cap: usize,
+) -> Option<Capped> {
+    point_candidates_capped(
+        view,
+        np,
+        &Row::new(),
+        &BTreeMap::new(),
+        &[comparison("p", "name", op, bound)],
+        cap,
+    )
+    .unwrap()
+}
+
+fn bob() -> Expr {
+    Expr::RuntimeValue(Value::String("Bob".into()))
+}
+
+/// REL8-1799: a non-unique property `=` point seek stops its posting
+/// read at `cap + 1` matches — the node reads stay at `cap + 1` where
+/// the complete posting list is `n` — and still answers the complete
+/// list at or under the cap, from the lazy postings and from a declared
+/// RANGE index alike.
+#[test]
+fn a_capped_point_ask_stops_reading_postings_past_the_cap() {
+    for declared in [false, true] {
+        let g = Graph::default();
+        let mut ids = same_name(&g, 200);
+        ids.sort_unstable();
+        if declared {
+            test_support::range_index(&g, "Person", "name");
+        }
+        let np = pattern("p", &["Person"], None);
+        let view = ExecGraph::read(&g);
+        let _ = crate::ctx::take_node_reads();
+        assert!(
+            matches!(
+                point_where(&view, &np, bob(), BinaryOp::Eq, 16),
+                Some(Capped::Over)
+            ),
+            "declared={declared}"
+        );
+        assert_eq!(crate::ctx::take_node_reads(), 17, "declared={declared}");
+        assert!(matches!(
+            point_where(&view, &np, bob(), BinaryOp::Eq, 200),
+            Some(Capped::Within(got)) if got == ids
+        ));
+    }
+}
+
+/// An `IN` list unions its values' matches (deduplicated) under the cap,
+/// and a write overlay answers in full so a scratch node counts.
+#[test]
+fn a_capped_point_ask_unions_in_values_and_sees_the_overlay() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let a = labeled_node(&g, &["Person"], "Al", 1);
+    let b = labeled_node(&g, &["Person"], "Bob", 2);
+    let _c = labeled_node(&g, &["Person"], "Cy", 3);
+    g.commit_write();
+    let np = pattern("p", &["Person"], None);
+    let list = Expr::RuntimeValue(Value::List(
+        vec![
+            Value::String("Al".into()),
+            Value::String("Bob".into()),
+            Value::String("Al".into()),
+        ]
+        .into(),
+    ));
+    let view = ExecGraph::read(&g);
+    let mut want = vec![a, b];
+    want.sort_unstable();
+    assert!(matches!(
+        point_where(&view, &np, list.clone(), BinaryOp::In, 2),
+        Some(Capped::Within(got)) if got == want
+    ));
+    assert!(matches!(
+        point_where(&view, &np, list.clone(), BinaryOp::In, 1),
+        Some(Capped::Over)
+    ));
+    let scratch = crate::exec::test_support::write_scratch(&g);
+    let write_view = ExecGraph::write(&g, &scratch);
+    write_view
+        .create_node(
+            vec!["Person".into()],
+            BTreeMap::from([("name".into(), Value::String("Al".into()))]),
+        )
+        .unwrap();
+    assert!(matches!(
+        point_where(&write_view, &np, list.clone(), BinaryOp::In, 2),
+        Some(Capped::Over)
+    ));
+    assert!(matches!(
+        point_where(&write_view, &np, list, BinaryOp::In, 3),
+        Some(Capped::Within(got)) if got.len() == 3
+    ));
+}
+
+/// A pattern property map re-narrows the served ids, so the point ask
+/// serves it in full: the capped answer is still exact either side of
+/// the cap, never a truncated subset read as complete.
+#[test]
+fn a_point_ask_with_a_pattern_map_serves_in_full() {
+    let g = Graph::default();
+    same_name(&g, 20);
+    let np = pattern(
+        "p",
+        &["Person"],
+        Some(&[("name", Value::String("Bob".into()))]),
+    );
+    let view = ExecGraph::read(&g);
+    assert!(matches!(
+        point_where(&view, &np, bob(), BinaryOp::Eq, 20),
+        Some(Capped::Within(got)) if got.len() == 20
+    ));
+    assert!(matches!(
+        point_where(&view, &np, bob(), BinaryOp::Eq, 19),
+        Some(Capped::Over)
+    ));
+}
+
 /// The fold's nested shape: the pattern's own conjunction `base` carried
 /// beside the folded `Or` — `And([C, Or([A, B])])` with `np.labels` the
 /// base, the shape `MATCH (p:C) WHERE p:A OR p:B` carries after the

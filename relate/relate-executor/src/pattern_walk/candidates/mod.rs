@@ -75,7 +75,7 @@ fn seek_union(
         // classifier, so the arm's own label criterion passes; the
         // crossover prices the arm's own scan population. The union is
         // all-or-nothing: one unserved arm declines the whole conjunct.
-        let Some(ids) = served(seek, graph, &labels, true) else {
+        let Some(ids) = served(seek, graph, &labels, true, None) else {
             return Ok(None);
         };
         per_arm.push(ids.into_ids());
@@ -208,11 +208,15 @@ fn served(
     graph: &ExecGraph<'_>,
     labels: &[String],
     label_seekable: bool,
+    cap: Option<usize>,
 ) -> Option<ServedIds> {
     if !seek.servable(graph, labels, label_seekable) {
         return None;
     }
-    seek.serve(graph, labels)
+    match cap {
+        Some(cap) => seek.serve_upto(graph, labels, cap),
+        None => seek.serve(graph, labels),
+    }
 }
 
 fn index_leaf(var: &SmallName, expr: &Expr, ctx: &OrCtx<'_>) -> IndexArm {
@@ -230,7 +234,7 @@ fn index_leaf(var: &SmallName, expr: &Expr, ctx: &OrCtx<'_>) -> IndexArm {
     let Some(seek) = leaf_seek(var, expr, ctx.graph, ctx.row, ctx.params) else {
         return IndexArm::Decline;
     };
-    served(&seek, ctx.graph, ctx.labels, ctx.label_seekable)
+    served(&seek, ctx.graph, ctx.labels, ctx.label_seekable, None)
         .map_or(IndexArm::Unserved, IndexArm::Served)
 }
 
@@ -323,7 +327,7 @@ impl Prepared<'_> {
                 }
                 continue;
             }
-            if let Some(ids) = self.served_plain(seek, graph) {
+            if let Some(ids) = self.served_plain(seek, graph, None) {
                 return Ok(Some(Answered::Serve { ids }));
             }
         }
@@ -334,11 +338,16 @@ impl Prepared<'_> {
     /// union-only seek never answers this way (`None` — its answer is the
     /// per-arm union, [`Self::first_answered`]'s own arm), every other
     /// seek answers through [`served`] when an index serves it.
-    fn served_plain(&self, seek: &Seek, graph: &ExecGraph<'_>) -> Option<ServedIds> {
+    fn served_plain(
+        &self,
+        seek: &Seek,
+        graph: &ExecGraph<'_>,
+        cap: Option<usize>,
+    ) -> Option<ServedIds> {
         if self.union_step(seek).is_some() {
             return None;
         }
-        served(seek, graph, &self.labels, self.label_seekable)
+        served(seek, graph, &self.labels, self.label_seekable, cap)
     }
 
     /// The point-only walk ([`point_arm`]'s one question): the first seek
@@ -347,10 +356,12 @@ impl Prepared<'_> {
     /// answers, but only when it is itself a point lookup
     /// ([`Seek::is_point`]); the first served seek decides, so any other
     /// served seek answers the pattern without a bounded list and the ask
-    /// declines. `None`: no point seek serves the pattern.
-    fn first_point(&self, graph: &ExecGraph<'_>) -> Option<ServedIds> {
+    /// declines. `None`: no point seek serves the pattern. `cap` is the
+    /// ask's stop ([`Seek::serve_upto`]): a served answer longer than it
+    /// is a subset meaningful only by its length.
+    fn first_point(&self, graph: &ExecGraph<'_>, cap: Option<usize>) -> Option<ServedIds> {
         for seek in &self.seeks {
-            let Some(ids) = self.served_plain(seek, graph) else {
+            let Some(ids) = self.served_plain(seek, graph, cap) else {
                 continue;
             };
             return seek.is_point().then_some(ids);
@@ -450,7 +461,7 @@ pub(crate) fn point_candidates_capped(
     conjuncts: &[Expr],
     cap: usize,
 ) -> Result<Option<Capped>> {
-    point_funnel(graph, np, row, params, conjuncts)
+    point_funnel(graph, np, row, params, conjuncts, cap)
         .map(|answer| answer.map(|ids| cap_answer(ids, cap)))
 }
 
@@ -510,9 +521,10 @@ fn point_funnel(
     row: &Row,
     params: &BTreeMap<String, Value>,
     conjuncts: &[Expr],
+    cap: usize,
 ) -> Result<Option<Vec<NodeId>>> {
     counted(
-        || point_arm(binding(np, row), np, conjuncts, graph, row, params),
+        || point_arm(binding(np, row), np, conjuncts, graph, row, params, cap),
         |answer: &Option<Vec<NodeId>>| answer.as_ref().map_or(0, Vec::len),
     )
 }
@@ -655,6 +667,7 @@ fn point_arm(
     graph: &ExecGraph<'_>,
     row: &Row,
     params: &BTreeMap<String, Value>,
+    cap: usize,
 ) -> Result<Option<Vec<NodeId>>> {
     let v = match admitted(class) {
         Admitted::One(id) => return Ok(Some(vec![id])),
@@ -669,7 +682,12 @@ fn point_arm(
         // included.
         return Ok(None);
     };
-    let Some(ids) = p.first_point(graph) else {
+    // The seek serve stops at `cap + 1` matches only when nothing narrows
+    // it afterwards: a pattern property map re-narrows a superset serve
+    // ([`ServedIds::narrowed`]), which could shrink a truncated subset
+    // under the cap and read as complete. Such a pattern serves in full.
+    let serve_cap = np.properties.is_none().then_some(cap);
+    let Some(ids) = p.first_point(graph, serve_cap) else {
         return Ok(None);
     };
     let props = map_thunk(graph, row, np, params);

@@ -111,6 +111,27 @@ impl Seek {
         })
     }
 
+    /// [`Self::serve`] for a caller that only needs the ids when at most
+    /// `cap` match (the point ask): a property `=` / `IN` point seek
+    /// streams its postings and stops at `cap + 1` matches
+    /// ([`ExecGraph::lookup_point_upto`]), so an answer longer than `cap`
+    /// is an arbitrary subset meaningful only by its length. Every other
+    /// seek answers in full — an ids seek is bounded by its list, and no
+    /// other seek is a point lookup.
+    pub(crate) fn serve_upto(
+        &self,
+        graph: &ExecGraph<'_>,
+        labels: &[String],
+        cap: usize,
+    ) -> Option<ServedIds> {
+        match self {
+            Seek::Range(key, seek) if self.is_point() => graph
+                .lookup_point_upto(labels, key, seek, cap)
+                .map(ServedIds::Superset),
+            _ => self.serve(graph, labels),
+        }
+    }
+
     /// `Some(n)` is an upper bound on the ids this seek would materialize.
     /// `None` when no index serves it (text and spatial seeks included).
     pub(crate) fn cardinality(&self, graph: &ExecGraph<'_>, labels: &[String]) -> Option<usize> {

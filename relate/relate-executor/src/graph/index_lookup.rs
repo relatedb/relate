@@ -189,6 +189,51 @@ impl Graph {
         }
     }
 
+    /// The capped `=` / `IN` point seek over one property: the ids whose
+    /// `key` equals any of `values` and that carry every label, stopping
+    /// once more than `cap` distinct ids match. Each value rides the
+    /// capped keyed lookup ([`Graph::lookup_nodes_upto_at`]) — the
+    /// shortest posting streamed through the shared re-check walk, never
+    /// the whole posting list built into an id set — so a non-unique
+    /// value matching a large store reads `cap + 1` postings, not every
+    /// match. `None` when the equality route is the scan (the seek does
+    /// not serve; same decline as [`Graph::lookup_range_seek`]). An
+    /// answer of at most `cap` ids is complete, ascending and
+    /// deduplicated; a longer one is an arbitrary subset meaningful only
+    /// by its length. A value with no property-index key (a NaN)
+    /// matches nothing.
+    pub(crate) fn lookup_equality_upto(
+        &self,
+        labels: &[String],
+        key: &str,
+        values: &[Value],
+        ts: u64,
+        cap: usize,
+    ) -> Option<Vec<NodeId>> {
+        let probe = |value: &Value| BTreeMap::from([(key.to_string(), value.clone())]);
+        // The one route decision the uncapped serve reads
+        // ([`Graph::lookup_range_seek`]): the scan route does not serve.
+        if matches!(
+            self.values_equality_route(labels, key, values),
+            EqualityRoute::Scan
+        ) {
+            return None;
+        }
+        let mut found = std::collections::BTreeSet::new();
+        for value in values
+            .iter()
+            .filter(|v| GroupKey::for_property_index(v).is_some())
+        {
+            // `None` is the keyed lookup's decline: propagated, so the
+            // serve declines with it.
+            found.extend(self.lookup_nodes_upto_at(labels, &probe(value), ts, Some(cap))?);
+            if found.len() > cap {
+                break;
+            }
+        }
+        Some(found.into_iter().collect())
+    }
+
     /// The ids posted under every label in `labels`: the label-index
     /// buckets intersected through `intersect_acc`, the fold every
     /// multi-set seek uses. A label the store never interned can match

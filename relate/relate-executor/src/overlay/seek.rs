@@ -174,6 +174,33 @@ impl<'a> ExecGraph<'a> {
         )
     }
 
+    /// [`Self::lookup_range`] for the `=` / `IN` point seek when the
+    /// caller only needs to know whether more than `cap` nodes match
+    /// ([`Graph::lookup_equality_upto`] carries the contract). A view
+    /// with write scratch answers in full: a truncated base subset could
+    /// lose members to the scratch's deletions and read as complete
+    /// ([`Self::lookup_nodes_upto`]'s rule). `None`: the seek is not an
+    /// equality, or the equality route is the scan.
+    pub(crate) fn lookup_point_upto(
+        &self,
+        labels: &[String],
+        key: &str,
+        seek: &RangeSeek,
+        cap: usize,
+    ) -> Option<Vec<NodeId>> {
+        if self.scratch.is_some() {
+            return self.lookup_range(labels, key, seek);
+        }
+        // A comparison window is no point seek: declined, as documented.
+        let values = match seek {
+            RangeSeek::Eq(v) => std::slice::from_ref(v),
+            RangeSeek::In(vs) => vs.as_slice(),
+            RangeSeek::Cmp { .. } => return None,
+        };
+        self.base
+            .lookup_equality_upto(labels, key, values, self.snapshot_ts(), cap)
+    }
+
     /// Upper bound on [`Self::lookup_range`], counted from posting lengths.
     /// `None` when the index cannot serve the predicate or the write overlay
     /// has created, updated, or deleted a node: the committed postings are
