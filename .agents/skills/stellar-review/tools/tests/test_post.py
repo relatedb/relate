@@ -4,7 +4,6 @@ import argparse
 import io
 import json
 import os
-import secrets
 import subprocess
 import sys
 import tempfile
@@ -12,6 +11,7 @@ import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from helpers import FACTS  # noqa: E402  (the canonical facts fixture)
 import ledger as ledger_mod  # noqa: E402
 import post  # noqa: E402
 
@@ -66,20 +66,6 @@ def recording_gh(sink, fail_when=None, stderr=b"gh: down"):
                 raise subprocess.CalledProcessError(1, list(a), stderr=stderr)
         return ""
     return fake
-
-
-FACTS = {
-    "version": 1, "base": "a", "head": "b", "has_code_changes": True,
-    "files": [{"path": "src/lib.rs", "status": "m", "old_path": None, "added": 5,
-               "deleted": 1, "lines_now": 20, "lines_base": 16, "crossed_1k": False,
-               "kind": "rust", "is_docs": False, "hunks": [[3, 12]]}],
-    "units": [{"id": "src/lib.rs::parse", "path": "src/lib.rs", "kind": "fn",
-               "name": "parse", "start": 1, "end": 15, "signature": "s",
-               "signature_hash": "sh", "hash": "h1", "body": "b", "changed": True,
-               "is_new": False, "signature_changed": False, "body_truncated": False}],
-    "changed_units": ["src/lib.rs::parse"], "deleted_units": [], "sites": [],
-    "similarity": [], "deps": {}, "expanded_unit_files": [],
-}
 
 
 class TestShaping(unittest.TestCase):
@@ -197,14 +183,6 @@ class TestLedgerBlob(unittest.TestCase):
         led = post.extract_ledger_from_comment(body)
         self.assertEqual(led["rounds"], 2)
 
-    def test_ledger_blob_is_always_compressed(self):
-        # even a tiny ledger (filenames are attacker-controlled and the
-        # plaintext arm would embed them verbatim)
-        enc = post.encode_ledger(ledger_mod.empty_ledger())
-        self.assertTrue(enc.startswith("z:"))
-        for marker in ("<!--", "-->"):
-            self.assertNotIn(marker, enc)
-
     def test_validate_strips_html_comment_markers_from_all_string_fields(self):
         doc = {"version": 1, "findings": [
             {"area": "boundaries", "severity": "nit", "path": "a.rs -->",
@@ -233,26 +211,6 @@ class TestLedgerBlob(unittest.TestCase):
             self.assertEqual(f[key].splitlines(), [f[key]], key)
             self.assertIn("**Stellar review:** ✅ no issues found", f[key])
             self.assertIn("**Security review:** ✅ no issues found", f[key])
-
-    def test_compress_and_round_trip(self):
-        led = {"version": 1, "rounds": 1, "last_head": "x",
-               "units": {f"m{i}::f": "a" * 16 + ":" + "b" * 16 for i in range(500)},
-               "findings": {}}
-        enc = post.encode_ledger(led)
-        self.assertTrue(enc.startswith("z:"))
-        self.assertEqual(post.decode_ledger(enc), led)
-
-    def test_budget_drops_unit_map_as_last_resort(self):
-        # pathological: long uncompressible ids at huge unit counts
-        led = {"version": 1, "rounds": 1, "last_head": "x",
-               "units": {secrets.token_hex(40): secrets.token_hex(20)
-                         for _ in range(4000)},
-               "findings": {}}
-        enc = post.encode_ledger(led)
-        dec = post.decode_ledger(enc)
-        self.assertLessEqual(len(enc), post.LEDGER_BUDGET + 200)
-        self.assertEqual(dec["units"], {})
-        self.assertEqual(dec["dropped_units"], 4000)
 
 
 class TestUpsertSummary(unittest.TestCase):
@@ -795,64 +753,26 @@ class TestCanonicalIntersection(PostHarnessMixin, unittest.TestCase):
         self.assertIn("F-1-1", summary)
 
 
-class TestDegradedContextSplit(unittest.TestCase):
-    """PR #329's mislabel: when the review API rejects inline comments
-    (degraded), context findings must keep their own heading — never ride
-    under "API rejected" — and the open count names its arithmetic."""
+class TestInlineBatch(unittest.TestCase):
+    """The inline attempt (REL8-1769): inline_batch builds the comment
+    payloads and records the ids it attempted; cmd_post turns that set into
+    the rejected set once, after the post, only when the batch degraded."""
 
-    def entry(self, finding_id):
-        return {"id": f"F-3-{finding_id}", "severity": "medium", "area": "boundaries",
-                "checklist_id": "std-5", "path": "src/lib.rs", "lines": [5, 9],
+    HUNKS = {"src/lib.rs": [[3, 12]]}
+
+    def fail_finding(self, fid, lines):
+        return {"id": fid, "severity": "medium", "area": "boundaries",
+                "checklist_id": "std-5", "path": "src/lib.rs", "lines": list(lines),
                 "summary": "s", "remedy": "r"}
 
-    def summary(self, inline_outcome, context_ids, anchored_ids):
-        led = ledger_mod.empty_ledger()
-        entries = [self.entry(i) for i in anchored_ids]
-        disp = {"fail_new": entries, "low_new": [],
-                "unanchored": [self.entry(i) for i in context_ids],
-
-                "carried": [], "anchored_carried": [],
-                "resolved": [], "waived": [],
-                "dropped_nits": 0, "dropped_scope": 0,
-                "inline_outcome": inline_outcome,
-                "timeout_partial": False}
-        return post.build_summary(FACTS, None, 3, "deadbeef", "fail", led, disp)
-
-    @staticmethod
-    def uniform(status, ids):
-        """Every listed finding in one state — the round-level cases."""
-        return {f"F-3-{i}": status for i in ids}
-
-    def test_degraded_keeps_context_section_separate(self):
-        out = self.summary(self.uniform(post.INLINE_REJECTED, [1]),
-                           context_ids=[2, 3], anchored_ids=[1])
-        self.assertIn("**Findings the review API rejected inline for**", out)
-        self.assertIn("**Findings on context units**", out)
-        # both sections present, each with exactly its own findings
-        rejected = out.split("**Findings the review API rejected inline for**")[1]
-        rejected = rejected.split("**Findings on context units**")[0]
-        self.assertEqual(rejected.count("F-3-1"), 1, rejected)
-        context = out.split("**Findings on context units**")[1]
-        self.assertEqual(context.count("F-3-2"), 1, context)
-        self.assertEqual(context.count("F-3-3"), 1, context)
-
-    def test_degraded_never_mislabels_a_no_anchor_finding(self):
-        # A finding with no diff anchor was never attempted inline, so a
-        # degraded round must not file it under "rejected inline" — only
-        # the attempted-and-refused ones belong there.
-        outcome = {"F-3-1": post.INLINE_REJECTED, "F-3-2": post.NO_ANCHOR}
-        out = self.summary(outcome, context_ids=[], anchored_ids=[1, 2])
-        rejected = out.split("**Findings the review API rejected inline for**")[1]
-        self.assertEqual(rejected.count("F-3-1"), 1, rejected)
-        self.assertEqual(rejected.count("F-3-2"), 0, rejected)
-        new = out.split("**New findings**")[1].split(
-            "**Findings the review API rejected inline for**")[0]
-        self.assertEqual(new.count("F-3-2"), 1, new)
-
-    def test_open_count_names_arithmetic(self):
-        out = self.summary(self.uniform(post.INLINED, [1]),
-                           context_ids=[2], anchored_ids=[1])
-        self.assertIn("1 issue(s) open (1 + 0 anchored new (fail/low) + 0 carried)", out)
+    def test_anchorless_finding_is_not_attempted(self):
+        anchored = self.fail_finding("F-1-1", (5, 9))
+        anchorless = self.fail_finding("F-1-2", (40, 45))
+        with redirect_stderr(io.StringIO()):
+            comments, attempted = post.inline_batch([anchored, anchorless], self.HUNKS)
+        # only the anchored finding threads; the anchorless one is not attempted
+        self.assertEqual([c["line"] for c in comments], [9])
+        self.assertEqual(attempted, {"F-1-1"})
 
 
 class TestNitAppendixADR0354(PostHarnessMixin, unittest.TestCase):

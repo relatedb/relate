@@ -82,3 +82,21 @@ def led(*fs):
 def utc(h, month=1):
     """A UTC datetime inside the night-shift window (or not, per h)."""
     return datetime(2026, month, 15, h, 0, tzinfo=timezone.utc)
+
+
+# The canonical facts document: one changed Rust file with a single hunk
+# [3, 12] and one changed unit. The poster's tests and the summary
+# renderer's tests share this one fixture — the hunk edge the anchoring
+# and context-split tests pin lives here, once.
+FACTS = {
+    "version": 1, "base": "a", "head": "b", "has_code_changes": True,
+    "files": [{"path": "src/lib.rs", "status": "m", "old_path": None, "added": 5,
+               "deleted": 1, "lines_now": 20, "lines_base": 16, "crossed_1k": False,
+               "kind": "rust", "is_docs": False, "hunks": [[3, 12]]}],
+    "units": [{"id": "src/lib.rs::parse", "path": "src/lib.rs", "kind": "fn",
+               "name": "parse", "start": 1, "end": 15, "signature": "s",
+               "signature_hash": "sh", "hash": "h1", "body": "b", "changed": True,
+               "is_new": False, "signature_changed": False, "body_truncated": False}],
+    "changed_units": ["src/lib.rs::parse"], "deleted_units": [], "sites": [],
+    "similarity": [], "deps": {}, "expanded_unit_files": [],
+}

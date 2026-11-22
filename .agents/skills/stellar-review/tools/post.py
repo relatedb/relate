@@ -22,11 +22,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import base64
 import contextlib
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -38,8 +36,22 @@ import briefs as briefs_mod  # noqa: E402
 import facts as facts_mod  # noqa: E402
 import ledger as ledger_mod  # noqa: E402
 from fileout import ensure_parent  # noqa: E402
+# The summary comment's renderer, the ledger blob it carries, and the
+# rendering vocabulary the poster and the renderer share — one module
+# (summary.py), imported here so post.py stays the gh client + findings
+# policy + commands (REL8-1769). The per-kind posters read verdict_comment
+# through this module's namespace (their `import post`).
+from summary import (  # noqa: E402
+    LEDGER_RE,
+    SEVERITY_TO_GH,
+    SUMMARY_MARKER,
+    build_summary,
+    decode_ledger,
+    encode_ledger,
+    partition,
+    verdict_comment,
+)
 
-SEVERITY_TO_GH = {"blocker": "High", "medium": "Medium", "nit": "Low"}
 FAIL_SEVERITIES = {"blocker", "medium"}
 
 
@@ -49,40 +61,6 @@ def is_fail_severity(finding: dict) -> bool:
     severity-vocabulary change touches one site."""
     return finding["severity"] in FAIL_SEVERITIES
 NIT_CAP = 8
-SUMMARY_MARKER = "**Stellar review:**"
-LEDGER_RE = re.compile(r"<!--\s*stellar-ledger:\s*(\{.*?\}|z:[A-Za-z0-9+/=]+)\s*-->", re.DOTALL)
-# The comment-embedded ledger is ALWAYS zlib+base64 ("z:" arm): the
-# plaintext arm would embed unit ids (attacker-controlled filenames)
-# verbatim, and a crafted filename could smuggle a forged
-# `<!-- stellar-ledger: z:... -->` block into the comment. Base64 never
-# contains the HTML comment markers.
-LEDGER_COMPRESS_OVER = 0
-
-
-LEDGER_BUDGET = 48000  # leave room for the summary text under 65536
-
-
-def encode_ledger(led: dict) -> str:
-    def enc(d: dict) -> str:
-        raw = json.dumps(d, sort_keys=True, separators=(",", ":"))
-        return raw if len(raw) <= LEDGER_COMPRESS_OVER else _compressed(raw)
-
-    out = enc(led)
-    if len(out) > LEDGER_BUDGET and led.get("units"):
-        # extreme PR: drop the unit map (see trim_for_comment docstring)
-        led = dict(led, units={}, dropped_units=len(led["units"]))
-        out = enc(led)
-    return out
-
-
-def _compressed(raw: str) -> str:
-    return "z:" + base64.b64encode(zlib.compress(raw.encode(), 9)).decode()
-
-
-def decode_ledger(blob: str) -> dict:
-    if blob.startswith("z:"):
-        blob = zlib.decompress(base64.b64decode(blob[2:])).decode()
-    return json.loads(blob)
 
 # ---------------------------------------------------------------------------
 # gh helpers
@@ -235,15 +213,6 @@ def dedupe(findings: list[dict]) -> list[dict]:
 
 ONE_K_CROSSING = "flag-1k-crossing"
 
-# The three states a fail-severity finding's inline attempt can end in
-# (ADR-0354's split, refined by the anchor policy): the comment was posted,
-# the API refused the batch it rode in, or there was no diff anchor to
-# attempt at all. The disposition carries one per finding and the summary
-# buckets by it — minted and compared only through these names.
-INLINED = "inlined"
-INLINE_REJECTED = "inline_rejected"
-NO_ANCHOR = "no_anchor"
-
 
 def cap_nits(findings: list[dict]) -> tuple[list[dict], int]:
     """Only high-conviction nits survive, capped (merge-time rationing,
@@ -253,17 +222,6 @@ def cap_nits(findings: list[dict]) -> tuple[list[dict], int]:
     kept_nits = strong[:NIT_CAP]
     dropped = len(findings) - len(keep) - len(kept_nits)
     return keep + kept_nits, dropped
-
-
-def partition(items: list[dict], pred) -> tuple[list[dict], list[dict]]:
-    """One complementary split of `items` on `pred`: both halves of the
-    partition in a single pass, so the halves cannot drift apart. The
-    module's canonical split shape — every two-bucket site routes through
-    it."""
-    yes, no = [], []
-    for item in items:
-        (yes if pred(item) else no).append(item)
-    return yes, no
 
 
 def anchor_line(f: dict, hunks_by_path: dict[str, list[list[int]]]) -> int | None:
@@ -363,150 +321,6 @@ def inline_body(f: dict, fid: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# summary
-
-
-def fmt_summary_line(f: dict) -> str:
-    sev = SEVERITY_TO_GH[f["severity"]]
-    end = f["lines"][1] or f["lines"][0]
-    fix = f" _Fix:_ {f['remedy']}" if f.get("remedy") else ""
-    return (f"- **[{sev}] {f['area']} ({f['checklist_id']}) {f['id']}:** "
-            f"`{f['path']}:{f['lines'][0]}-{end}` — {f['summary']}{fix}")
-
-
-def verdict_comment(verdict: str) -> str:
-    """The enforce gate's tier-2 wire format (enforce-opencode-verdict.sh
-    matches exactly this shape), the one derivation: every summary
-    assembler — stellar's and the per-kind lanes' — appends its output
-    instead of re-spelling the HTML comment, so a format change lands
-    once and every lane's tier-2 signal moves with it."""
-    return f"<!-- opencode-verdict: {verdict} -->"
-
-
-def build_summary(facts: dict, scope_stats: dict | None, round_no: int, head: str,
-                  verdict: str, led: dict, disposition: dict) -> str:
-    """Render the summary comment. `disposition` bundles the round's
-    outcome — every key the body reads is declared here exactly once:
-    fail_new, low_new (the severity halves of the round's new findings),
-    carried, anchored_carried, unanchored, resolved, waived,
-    dropped_nits, dropped_scope, inline_outcome, timeout_partial. New
-    summary elements grow the bundle, not the parameter list; the inline
-    re-bucketing and its heading are decided here, in one place."""
-    # ADR-0346: "New findings" shows the diff-anchored round findings only;
-    # context-unit findings appear exactly once, in their own section below,
-    # never merged into the rejected bucket — "context" (by design, never
-    # posted inline) and "the review API rejected inline for" (counts in
-    # the verdict) are different facts with different headings.
-    # ADR-0354: the severity halves shipped in the disposition — computed
-    # once in cmd_post. Fail-severity (blocker/medium) findings render in
-    # the New-findings / rejected sections and thread inline; nits render
-    # once, in the collapsed appendix, and never thread.
-    fail_new = disposition["fail_new"]
-    low_new = disposition["low_new"]
-    carried = disposition["carried"]
-    # Each finding's own inline outcome decides its bucket: only the ones
-    # the API actually refused are "rejected inline" — a finding that had
-    # no diff anchor to attempt was never rejected, and claiming so would
-    # misname it.
-    outcome = disposition["inline_outcome"]
-    degraded_new, shown_new = partition(
-        fail_new, lambda f: outcome[f["id"]] == INLINE_REJECTED)
-    total = scope_stats["units_total"] if scope_stats else len(facts["units"])
-    in_scope = scope_stats["units_in_scope"] if scope_stats else total
-    lines = [
-        "**Stellar review** (stellar-review skill)",
-        "",
-        f"Round {round_no} · head `{head[:8]}` · scope: {in_scope}/{total} units "
-        f"({total - in_scope} sealed from earlier rounds).",
-        "",
-    ]
-    def section(title: str, note: str, items: list[dict],
-                collapsed: str = "") -> None:
-        """One titled finding list. `collapsed` renders the list as an HTML
-        <details> block with that summary note instead of a bold heading
-        (ADR-0354's Low appendix shape)."""
-        if not items:
-            return
-        lines.append("")
-        if collapsed:
-            lines.append("<details>")
-            lines.append(f"<summary>{title} — {collapsed}</summary>")
-            lines.append("")
-            lines.extend(fmt_summary_line(f) for f in items)
-            lines.append("")
-            lines.append("</details>")
-            return
-        lines.append(f"**{title}**" + (f" ({note})" if note else ""))
-        lines.extend(fmt_summary_line(f) for f in items)
-
-    section("New findings", "", shown_new)
-    section("Findings the review API rejected inline for",
-            "summary only — they still count in the verdict; see run log",
-            degraded_new)
-    section("Findings on context units",
-            "not on the current diff — summary only; night-shift backlog, "
-            "never inline, never verdict blockers",
-            disposition["unanchored"])
-    # carried entries keep their one rendering difference: no remedy line
-    section("Still open from earlier rounds", "",
-            [{**f, "remedy": None} for f in carried])
-    # ADR-0354: anchored nits never open inline threads — they print once,
-    # collapsed; the next round's list supersedes them automatically
-    section("Low findings", "", low_new,
-            collapsed="collapsed, no inline threads (ADR-0354); "
-                      "superseded by the next round's list")
-    trail = []
-    if disposition["resolved"]:
-        trail.append("**Resolved:** " + ", ".join(disposition["resolved"]))
-    if disposition["waived"]:
-        trail.append("**Waived:** " + ", ".join(
-            f"{w['id']} ({w.get('waive_reason', '')})" for w in disposition["waived"]))
-    if disposition["dropped_nits"]:
-        trail.append(f"**Nits dropped by the cap:** {disposition['dropped_nits']}")
-    if disposition["dropped_scope"]:
-        trail.append(f"**Findings dropped by the scope/incremental filter:** "
-                     f"{disposition['dropped_scope']}"
-                     " (out-of-scope unit, or unchanged lines in an incremental round — "
-                     "see run log)")
-    if trail:
-        lines += ["", " · ".join(trail)]
-    # 'Open' is decided once, from every set that can hold an open
-    # finding, spelled from the authoritative lists the outcome logic
-    # reads: shown_new/degraded_new are complementary render buckets of
-    # fail_new (a degraded round's findings are open even though
-    # shown_new is empty), and unanchored context findings are open in
-    # the ledger.
-    has_open = bool(fail_new or low_new or carried
-                    or disposition["anchored_carried"]
-                    or disposition["unanchored"])
-    # a clean salvage round is not "No open issues." — the partial
-    # outcome line below is that round's outcome, unqualified
-    if not has_open and not disposition["timeout_partial"]:
-        lines.append("No open issues.")
-    lines.append("")
-    n_open = len(fail_new) + len(low_new) + len(disposition["anchored_carried"])
-    if verdict == "pass":
-        lines.append(f"{SUMMARY_MARKER} ✅ no issues found")
-    elif disposition["timeout_partial"]:
-        # LABS-635 salvage mode, the fail arm's own outcome: the
-        # findings above are the passes a timed-out round completed; the
-        # uncovered passes could still hold blockers, so the check fails
-        # regardless of the count above.
-        lines.append(f"{SUMMARY_MARKER} ⚠️ partial round — the model run hit "
-                     f"the review timeout; the passes not covered could "
-                     f"still hold blockers, so this check fails and the "
-                     f"next push or re-run reviews fresh")
-    else:
-        lines.append(f"{SUMMARY_MARKER} ⚠️ {n_open} issue(s) open "
-                     f"({len(fail_new)} + {len(low_new)} anchored new (fail/low) + "
-                     f"{len(disposition['anchored_carried'])} carried)")
-    lines.append(verdict_comment(verdict))
-    trimmed = ledger_mod.trim_for_comment(led)
-    lines.append(f"<!-- stellar-ledger: {encode_ledger(trimmed)} -->")
-    return "\n".join(lines) + "\n"
-
-
-# ---------------------------------------------------------------------------
 # post command
 
 
@@ -517,6 +331,36 @@ def dry_run_dump(review_doc: dict, verdict: str, summary: str) -> None:
     print(json.dumps(review_doc, indent=2, sort_keys=True))
     print("--- verdict:", verdict)
     print(summary)
+
+
+def inline_batch(fail_new: list[dict],
+                 hunks: dict[str, list[list[int]]]) -> tuple[list[dict], set[str]]:
+    """Attempt one inline comment per fail-severity finding (the ADR-0354
+    split's threading half — context findings ride the summary once, nits
+    the collapsed appendix). Returns the comment payloads and the set of
+    finding ids it attempted (every finding it built a comment for). A
+    finding whose range misses every hunk (the 1k-crossing exemption's
+    whole-file findings) has no line to anchor to — an off-diff line is the
+    422 that loses the batch — so it is not attempted and rides the
+    summary's new-findings section instead. cmd_post turns the attempted
+    set into the rejected set once, after the post."""
+    comments: list[dict] = []
+    attempted: set[str] = set()
+    for f in fail_new:
+        fdoc = finding_doc(f)
+        line = anchor_line(fdoc, hunks)
+        if line is None:
+            print(f"post: {f['id']} has no diff anchor; summary only",
+                  file=sys.stderr)
+            continue
+        attempted.add(f["id"])
+        comments.append({
+            "path": fdoc["path"],
+            "line": line,
+            "side": "RIGHT",
+            "body": inline_body(fdoc, f["id"]),
+        })
+    return comments, attempted
 
 
 def cmd_post(args: argparse.Namespace) -> None:
@@ -599,29 +443,10 @@ def cmd_post(args: argparse.Namespace) -> None:
 
     # inline comments: the fail-severity half of the ADR-0354 split above;
     # context findings ride in the summary deterministically (once —
-    # ADR-0346), and nits ride the collapsed Low appendix. Each finding's
-    # inline outcome is recorded as it is decided — the summary buckets by
-    # that reason, never by re-deriving it from one round-level boolean.
-    comments = []
-    inline_outcome: dict[str, str] = {}
-    for f in fail_new:
-        fdoc = finding_doc(f)
-        line = anchor_line(fdoc, hunks)
-        if line is None:
-            # No hunk to anchor to (the 1k-crossing exemption's whole-file
-            # findings): an off-diff line is the 422 that loses the batch,
-            # so the finding rides the summary's new-findings section only.
-            inline_outcome[f["id"]] = NO_ANCHOR
-            print(f"post: {f['id']} has no diff anchor; summary only",
-                  file=sys.stderr)
-            continue
-        inline_outcome[f["id"]] = INLINED
-        comments.append({
-            "path": fdoc["path"],
-            "line": line,
-            "side": "RIGHT",
-            "body": inline_body(fdoc, f["id"]),
-        })
+    # ADR-0346), and nits ride the collapsed Low appendix. The rejected
+    # set is minted once, after the post: what was attempted, if the batch
+    # was refused, else nothing.
+    comments, attempted = inline_batch(fail_new, hunks)
 
     review_doc = {
         "commit_id": args.head_sha,
@@ -639,19 +464,13 @@ def cmd_post(args: argparse.Namespace) -> None:
     degraded = False
     if comments and not args.dry_run:
         degraded = post_review(args.repo, args.pr, review_doc)
-    if degraded:
-        # The API refused the whole batch: every comment that was attempted
-        # is now summary-only. A `NO_ANCHOR` finding was never attempted —
-        # it keeps its own reason.
-        inline_outcome = {i: (INLINE_REJECTED if o == INLINED else o)
-                          for i, o in inline_outcome.items()}
     summary = build_summary(facts, scope_stats, round_no, args.head_sha, verdict, led,
                             {**disp, "fail_new": fail_new, "low_new": low_new,
                              "unanchored": unanchored,
                              "anchored_carried": anchored_carried,
                              "dropped_nits": dropped_nits,
                              "dropped_scope": len(dropped_scope),
-                             "inline_outcome": inline_outcome,
+                             "rejected": attempted if degraded else set(),
                              "timeout_partial": args.timeout_partial})
 
     if args.dry_run:
