@@ -58,7 +58,7 @@ pub(super) struct PropPairIndex {
     /// True once the pair has been built from the label index at least once.
     pub(super) built: bool,
     /// Property value → ids that have carried it for this pair.
-    pub(super) postings: HashMap<GroupKey, HashSet<NodeId>>,
+    pub(super) postings: super::pair_postings::PairPostings,
     /// Ids whose **current** version carries a value the pair cannot post
     /// (a NaN, alone or inside a list or map). A walk of `postings` misses
     /// them, so the aggregate reads decline while this is non-empty;

@@ -316,6 +316,23 @@ impl GroupKey {
         Some(GroupKey(norm(value)))
     }
 
+    /// The integer this key stands for: an `Int`, or a `Float` that is an
+    /// exact `i64` (both normalize to the same key). `None` for every other
+    /// value. The lazy equality pairs key their dominant integer buckets by
+    /// this word.
+    pub(crate) fn as_int(&self) -> Option<i64> {
+        match &self.0 {
+            Norm::Num(NormNum::Int(i)) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// The key [`Self::as_int`] reads back: the same key `GroupKey::new` gives
+    /// `Value::Int(i)`.
+    pub(crate) fn from_int(i: i64) -> Self {
+        GroupKey::new(&Value::Int(i))
+    }
+
     /// Estimated heap footprint of the key, for the ADR-0042 logical index
     /// accounting in `memory.rs` (which charges per index map entry).
     pub(crate) fn logical_bytes(&self) -> u64 {

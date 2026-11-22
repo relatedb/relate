@@ -187,10 +187,7 @@ impl Graph {
                     if !st.unposted.is_empty() {
                         return None;
                     }
-                    let mut keys: Vec<crate::group_key::GroupKey> =
-                        st.postings.keys().cloned().collect();
-                    keys.sort();
-                    Some(keys)
+                    Some(st.postings.keys_sorted())
                 })
             else {
                 return Ok(None);
@@ -200,11 +197,7 @@ impl Graph {
                 // missing key is a torn window — decline to the scan, the
                 // range arm's own policy, never a fabricated empty bucket.
                 let ids: Option<Vec<NodeId>> = self.with_prop_pair(pair.0, pair.1, |st| {
-                    st.postings.get(&gk).map(|ids| {
-                        let mut ids: Vec<NodeId> = ids.iter().copied().collect();
-                        ids.sort_unstable();
-                        ids
-                    })
+                    st.postings.bucket(&gk).map(<[NodeId]>::to_vec)
                 });
                 let Some(ids) = ids else {
                     return Ok(None);

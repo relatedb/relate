@@ -67,6 +67,7 @@ mod index_lookup;
 mod index_postings;
 mod label_mutation;
 mod label_probe;
+mod pair_postings;
 mod pin;
 mod prop_read;
 mod query_stats;

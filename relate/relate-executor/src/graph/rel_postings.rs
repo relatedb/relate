@@ -27,8 +27,6 @@ impl Graph {
             return Vec::new();
         };
         self.rel_prop_postings(type_id, kid, key, gk)
-            .into_iter()
-            .collect()
     }
 
     /// The committed bucket's length for `(rel_type, key) = value`, without
@@ -45,9 +43,7 @@ impl Graph {
         let Some((type_id, kid, gk)) = self.rel_equality_pair_key(rel_type, key, value) else {
             return 0;
         };
-        self.with_rel_prop_pair(type_id, kid, key, |st| {
-            st.postings.get(&gk).map_or(0, HashSet::len)
-        })
+        self.with_rel_prop_pair(type_id, kid, key, |st| st.postings.ids(&gk).len())
     }
 
     /// The guard preamble `rel_equality_postings` and
@@ -116,10 +112,8 @@ impl Graph {
         kid: u32,
         key: &str,
         gk: GroupKey,
-    ) -> HashSet<RelId> {
-        self.with_rel_prop_pair(type_id, kid, key, |st| {
-            st.postings.get(&gk).cloned().unwrap_or_default()
-        })
+    ) -> Vec<RelId> {
+        self.with_rel_prop_pair(type_id, kid, key, |st| st.postings.ids(&gk).to_vec())
     }
 
     /// The value of `key` (interned as `kid`) on every version of `id` of

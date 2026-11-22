@@ -103,13 +103,17 @@ impl Graph {
     ) -> R {
         let mut st = pairs.entry(pair).or_default();
         if !st.built {
-            for id in candidates() {
+            // Ascending, so each bucket's sorted id vector grows by append.
+            let mut ids = candidates();
+            ids.sort_unstable();
+            for id in ids {
                 feed(id, &mut st);
             }
             st.built = true;
         }
         if !st.dirty.is_empty() {
-            let ids = std::mem::take(&mut st.dirty);
+            let mut ids: Vec<i64> = std::mem::take(&mut st.dirty).into_iter().collect();
+            ids.sort_unstable();
             for id in ids {
                 // The feed owns the remove-then-post order (the node
                 // pairs' is `post_pair_node`'s): a live version that
@@ -151,9 +155,7 @@ impl Graph {
         for (class, kid, gk) in drop_set.difference(&keep) {
             if let Some(mut st) = pairs.get_mut(&(*class, *kid)) {
                 if st.built {
-                    if let Some(set) = st.postings.get_mut(gk) {
-                        set.remove(&id);
-                    }
+                    st.postings.unpost(gk, id);
                 }
             }
         }
@@ -200,10 +202,8 @@ impl Graph {
     /// through [`Self::with_prop_pair`]. A superset (ADR-0063: every version
     /// of every candidate), so callers re-verify every id; empty when no
     /// indexed version carries `gk`.
-    pub(super) fn prop_postings(&self, lid: u32, kid: u32, gk: GroupKey) -> HashSet<NodeId> {
-        self.with_prop_pair(lid, kid, |st| {
-            st.postings.get(&gk).cloned().unwrap_or_default()
-        })
+    pub(super) fn prop_postings(&self, lid: u32, kid: u32, gk: GroupKey) -> Vec<NodeId> {
+        self.with_prop_pair(lid, kid, |st| st.postings.ids(&gk).to_vec())
     }
 
     /// The guard preamble `equality_postings` and `equality_postings_len`
@@ -234,7 +234,7 @@ impl Graph {
         let Some((lid, kid, gk)) = self.equality_pair_key(label, key, value) else {
             return Vec::new();
         };
-        self.prop_postings(lid, kid, gk).into_iter().collect()
+        self.prop_postings(lid, kid, gk)
     }
 
     /// The size of the `(label, key) = value` equality bucket from the same
@@ -245,7 +245,7 @@ impl Graph {
         let Some((lid, kid, gk)) = self.equality_pair_key(label, key, value) else {
             return 0;
         };
-        self.with_prop_pair(lid, kid, |st| st.postings.get(&gk).map_or(0, HashSet::len))
+        self.with_prop_pair(lid, kid, |st| st.postings.ids(&gk).len())
     }
 
     /// Whether the lazy equality postings can answer a keyed equality
@@ -359,7 +359,7 @@ impl Graph {
         };
         let mut walk = self.recheck_walk(&spec);
         self.with_prop_pair(lid, kid, |st| {
-            for id in st.postings.get(&gk).into_iter().flat_map(HashSet::iter) {
+            for id in st.postings.ids(&gk) {
                 if walk.visit(*id).is_break() {
                     break;
                 }
@@ -389,7 +389,7 @@ impl Graph {
         let mut acc: HashSet<NodeId> = HashSet::new();
         for value in values {
             if let Some(gk) = GroupKey::for_property_index(value) {
-                acc.extend(self.prop_postings(lid, kid, gk));
+                self.with_prop_pair(lid, kid, |st| acc.extend(st.postings.ids(&gk)));
             }
         }
         self.finish_ids(acc, labels, key, ts, |v| {
@@ -473,6 +473,6 @@ impl DrainState for PropPairIndex {
 /// writes it (a superseded NaN must not poison the pair).
 pub(super) fn prop_pair_post(st: &mut PropPairIndex, id: NodeId, gk: Option<&GroupKey>) {
     if let Some(gk) = gk {
-        st.postings.entry(gk.clone()).or_default().insert(id);
+        st.postings.post(gk, id);
     }
 }
