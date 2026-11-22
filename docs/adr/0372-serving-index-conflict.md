@@ -73,3 +73,21 @@ the data's real schema.
 - LABS-274 (CypherLite accepting index-then-constraint for the range-backed
   pair) is resolved for non-serving pairs by this decision; the
   range-backed pair keeps a single conflict rule in both orders.
+
+## Later references
+
+Re-probed against live Neo4j 2026.10.1 (2026-11-22): the 2026.09 blanket
+equivalence recorded in the Context above is gone. Neo4j 2026.10 accepts
+the non-serving coexistence this decision allows — a FULLTEXT index
+beside an existence `REQUIRE n.title IS NOT NULL`, a type
+`REQUIRE n.title IS TYPED STRING` and a uniqueness constraint on the same
+property, in both creation orders, and beside a graph type's
+`(:Pt => {title :: STRING NOT NULL})` declaration — so the conflict rule
+this ADR set is parity with current Neo4j, not the divergence the
+Context records. The one conflicting pair survives on both sides
+unchanged: a RANGE index and an index-backed (uniqueness/key) constraint
+on the same entity/label/properties reject in both creation orders. No
+decision changes — the rule is the one both engines now share; the
+2026.09 observation stands as the record of what was probed then, and
+the 2026.10.1 probe is pinned in the spec harness's gap-report corpus
+(batch 4).
