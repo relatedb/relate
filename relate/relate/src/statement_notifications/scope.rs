@@ -305,22 +305,19 @@ pub(super) fn call_imports(
     query: &Query,
     outer: &BTreeSet<String>,
 ) -> Vec<BTreeSet<String>> {
-    // Resolve the body-wide import set once: a scope clause declares one
-    // for every arm; a scope-less body imports per arm.
-    let shared: Option<BTreeSet<String>> = match scope {
-        CallScope::Wildcard => Some(outer.clone()),
+    // A scope clause declares one import set for every arm; a scope-less
+    // body imports per arm.
+    let per_arm = |imports: BTreeSet<String>| vec![imports; query.parts.len()];
+    match scope {
+        CallScope::Wildcard => per_arm(outer.clone()),
         // Text render: the import sets are the String scope domain.
-        CallScope::Vars(names) => Some(names.iter().map(|name| name.to_string()).collect()),
-        CallScope::None => None,
-    };
-    query
-        .parts
-        .iter()
-        .map(|part| match &shared {
-            Some(imports) => imports.clone(),
-            None => part.leading_imports(outer),
-        })
-        .collect()
+        CallScope::Vars(names) => per_arm(names.iter().map(|name| name.to_string()).collect()),
+        CallScope::None => query
+            .parts
+            .iter()
+            .map(|part| part.leading_imports(outer))
+            .collect(),
+    }
 }
 
 /// The index names a `SEARCH` source specification names.

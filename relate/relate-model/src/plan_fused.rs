@@ -17,7 +17,8 @@ use crate::CypherValue;
 
 /// The metrics a fused virtual child carries: the seek step's seek-phase
 /// time and node reads — the same candidate-funnel counter family, so
-/// they ride together or not at all. An `Expand` hop step carries none.
+/// they ride together or not at all. An `Expand` hop step carries none,
+/// and neither does any step on an EXPLAIN tree (nothing executed).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanFusedMetricsWire {
     /// The seek step's phase time, nanoseconds (LABS-448's seek clock).

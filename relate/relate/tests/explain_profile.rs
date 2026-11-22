@@ -738,16 +738,12 @@ fn explain_range_start_narrates_node_index_seek_by_range() {
     );
 }
 
-/// Virtual plan operators: an index-seek-started MATCH breaks down into
-/// display-only fused children — the seek step and one `Expand` step per
-/// hop of the logical pattern, each fused into the parent with an
-/// estimate off the ADR-0218 ladder. EXPLAIN and PROFILE build the same
-/// shape; on PROFILE the parent keeps the clause's totals and a child
-/// carries a metric only where a real counter measured the step (the
-/// seek's phase time and node reads) — never a copy of the parent's
-/// rows, time or memory.
-#[test]
-fn explain_and_profile_break_down_an_index_seek_started_match() {
+const FUSED_STATEMENT: &str = "MATCH (p:Person)-[:ACTED_IN]->(m:Movie)<-[:ACTED_IN]-(co:Person) \
+                                WHERE p.name = 'Alice' RETURN co.name";
+
+/// The seek-started fixture's `EXPLAIN` and `PROFILE` trees, each with
+/// its prefix: the fused parent is `children[0]` of the root.
+fn fused_breakdown_trees() -> Vec<(&'static str, relate::PlanNode)> {
     let mut conn = connection();
     conn.query("CREATE RANGE INDEX person_name FOR (p:Person) ON (p.name)")
         .unwrap();
@@ -756,12 +752,26 @@ fn explain_and_profile_break_down_an_index_seek_started_match() {
          <-[:ACTED_IN]-(b:Person {name: 'Bob'})",
     )
     .unwrap();
-    let statement = "MATCH (p:Person)-[:ACTED_IN]->(m:Movie)<-[:ACTED_IN]-(co:Person) \
-                     WHERE p.name = 'Alice' RETURN co.name";
-    for prefix in ["EXPLAIN", "PROFILE"] {
-        let profiled = prefix == "PROFILE";
-        let result = conn.query(&format!("{prefix} {statement}")).unwrap();
-        let tree = plan(&result);
+    ["EXPLAIN", "PROFILE"]
+        .into_iter()
+        .map(|prefix| {
+            let result = conn.query(&format!("{prefix} {FUSED_STATEMENT}")).unwrap();
+            (prefix, plan(&result).clone())
+        })
+        .collect()
+}
+
+fn step_metrics(step: &relate::PlanNode) -> Option<relate::FusedChildMetrics> {
+    step.fused.and_then(|fused| fused.metrics)
+}
+
+/// Virtual plan operators: an index-seek-started MATCH breaks down into
+/// display-only fused children — the seek step and one `Expand` step per
+/// hop of the logical pattern, each fused into the parent. EXPLAIN and
+/// PROFILE build the same shape.
+#[test]
+fn fused_breakdown_has_a_seek_step_and_one_expand_step_per_hop() {
+    for (prefix, tree) in fused_breakdown_trees() {
         let parent = &tree.children[0];
         assert_eq!(parent.operator, "NodeIndexSeek", "{prefix}: {tree:?}");
         assert!(
@@ -773,53 +783,66 @@ fn explain_and_profile_break_down_an_index_seek_started_match() {
             3,
             "{prefix}: the seek step plus one Expand step per hop: {tree:?}"
         );
-        // The seek step: the seek's own narration and count, fused into
-        // the parent.
         let seek = &parent.children[0];
         assert_eq!(seek.operator, "NodeIndexSeek", "{prefix}: {tree:?}");
         assert_eq!(
             seek.details, "RANGE INDEX p:Person(name) WHERE name = 'Alice'",
             "{prefix}: {tree:?}"
         );
-        assert_eq!(seek.estimated_rows, Some(1), "{prefix}: {tree:?}");
-        assert_eq!(
-            seek.fused.map(|fused| fused.parent),
-            Some(parent.id),
-            "{prefix}: {tree:?}"
-        );
-        // One Expand step per hop, pattern order, estimates off the
-        // ladder.
         let hop0 = &parent.children[1];
         assert_eq!(hop0.operator, "Expand", "{prefix}: {tree:?}");
         assert_eq!(
             hop0.details, "(p:Person)-[:ACTED_IN]->(m:Movie)",
             "{prefix}: {tree:?}"
         );
-        assert_eq!(
-            hop0.fused.map(|fused| fused.parent),
-            Some(parent.id),
-            "{prefix}: {tree:?}"
-        );
-        assert!(hop0.estimated_rows.is_some(), "{prefix}: {tree:?}");
         let hop1 = &parent.children[2];
         assert_eq!(
             hop1.details, "(m:Movie)<-[:ACTED_IN]-(co:Person)",
             "{prefix}: {tree:?}"
         );
-        assert_eq!(
-            hop1.fused.map(|fused| fused.parent),
-            Some(parent.id),
-            "{prefix}: {tree:?}"
+        for step in &parent.children {
+            assert_eq!(
+                step.fused.map(|fused| fused.parent),
+                Some(parent.id),
+                "{prefix}: {tree:?}"
+            );
+        }
+    }
+}
+
+/// The steps carry estimates off the ADR-0218 ladder, and the ids stay
+/// pre-order and dense: the steps ride right behind their parent.
+#[test]
+fn fused_breakdown_steps_carry_estimates_and_dense_pre_order_ids() {
+    for (prefix, tree) in fused_breakdown_trees() {
+        let parent = &tree.children[0];
+        let (seek, hop0, hop1) = (
+            &parent.children[0],
+            &parent.children[1],
+            &parent.children[2],
         );
+        assert_eq!(seek.estimated_rows, Some(1), "{prefix}: {tree:?}");
+        assert!(hop0.estimated_rows.is_some(), "{prefix}: {tree:?}");
         assert!(hop1.estimated_rows.is_some(), "{prefix}: {tree:?}");
-        // The ids stay pre-order and dense: the steps ride right behind
-        // their parent.
         assert_eq!(parent.id, 1, "{prefix}: {tree:?}");
         assert_eq!((seek.id, hop0.id, hop1.id), (2, 3, 4), "{prefix}: {tree:?}");
-        let step_metrics = |step: &relate::PlanNode| step.fused.and_then(|fused| fused.metrics);
-        if profiled {
-            // The parent keeps the clause's totals; the seek step
-            // carries only its measured pair; the hop steps carry none.
+    }
+}
+
+/// On PROFILE the parent keeps the clause's totals and a child carries a
+/// metric only where a real counter measured the step (the seek's phase
+/// time and node reads) — never a copy of the parent's rows, time or
+/// memory. EXPLAIN measures nothing.
+#[test]
+fn fused_breakdown_children_carry_only_measured_metrics() {
+    for (prefix, tree) in fused_breakdown_trees() {
+        let parent = &tree.children[0];
+        let (seek, hop0, hop1) = (
+            &parent.children[0],
+            &parent.children[1],
+            &parent.children[2],
+        );
+        if prefix == "PROFILE" {
             let parent_metrics = parent.metrics.expect("PROFILE stamps the clause");
             assert!(parent_metrics.rows > 0, "{tree:?}");
             let seek_metrics = step_metrics(seek).expect("the seek step's pair");
@@ -835,10 +858,17 @@ fn explain_and_profile_break_down_an_index_seek_started_match() {
         } else {
             assert!(step_metrics(seek).is_none(), "EXPLAIN measures nothing");
         }
-        // The wire form carries the fused fact beside the id and
-        // details — the `FusedInto` key's presence IS "fused child", no
-        // separate flag — and never the parent's metric block on a
-        // child.
+    }
+}
+
+/// The wire form carries the fused fact beside the id and details — the
+/// `FusedInto` key's presence IS "fused child", no separate flag — and
+/// never the parent's metric block on a child.
+#[test]
+fn fused_breakdown_wire_form_links_each_child_to_its_parent() {
+    for (prefix, tree) in fused_breakdown_trees() {
+        let parent = &tree.children[0];
+        let (seek, hop0) = (&parent.children[0], &parent.children[1]);
         assert_eq!(
             common::wire_arg(seek, "Fused"),
             None,
@@ -854,7 +884,7 @@ fn explain_and_profile_break_down_an_index_seek_started_match() {
             None,
             "{prefix}: a child never carries the parent's rows"
         );
-        if profiled {
+        if prefix == "PROFILE" {
             assert!(
                 matches!(common::wire_arg(seek, "SeekTimeNs"), Some(Value::Int(_))),
                 "{prefix}: the seek step's measured pair rides the wire"

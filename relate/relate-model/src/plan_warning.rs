@@ -219,11 +219,14 @@ impl PlanWarning {
     pub(crate) fn from_wire_parts(name: &str, index: Option<&str>) -> Option<Self> {
         match index {
             None => PAYLOAD_LESS.into_iter().find(|w| w.name() == name),
-            Some(indexes) => (name == WARNING_LABEL_DISJUNCTION_SCAN).then(|| {
-                PlanWarning::LabelDisjunctionScan {
+            Some(indexes) => {
+                // The payload variant's name comes from `identity()`
+                // like every other, not a second hand comparison.
+                let candidate = PlanWarning::LabelDisjunctionScan {
                     indexes: indexes.to_string(),
-                }
-            }),
+                };
+                (candidate.name() == name).then_some(candidate)
+            }
         }
     }
 }

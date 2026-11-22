@@ -373,11 +373,7 @@ pub(super) fn hop_text(pattern: &PathPattern, hop: usize) -> String {
     let mut text = String::new();
     push_node(&mut text, &pattern.nodes[hop]);
     let rel = &pattern.rels[hop];
-    push_rel(
-        &mut text,
-        rel,
-        (rel.var_length || rel.quantified).then_some((rel.min_hops, rel.max_hops)),
-    );
+    push_plain_rel(&mut text, rel);
     push_node(&mut text, &pattern.nodes[hop + 1]);
     text
 }
@@ -398,11 +394,7 @@ pub(super) fn pattern_text(pattern: &PathPattern) -> String {
         for (index, node) in pattern.nodes.iter().enumerate() {
             push_node(&mut text, node);
             if let Some(rel) = pattern.rels.get(index) {
-                push_rel(
-                    &mut text,
-                    rel,
-                    (rel.var_length || rel.quantified).then_some((rel.min_hops, rel.max_hops)),
-                );
+                push_plain_rel(&mut text, rel);
             }
         }
     }
@@ -417,11 +409,7 @@ pub(super) fn pattern_text(pattern: &PathPattern) -> String {
 fn push_element(text: &mut String, element: &PatternElement) {
     match element {
         PatternElement::Node(node) => push_node(text, node),
-        PatternElement::Relationship(rel) => push_rel(
-            text,
-            rel,
-            (rel.var_length || rel.quantified).then_some((rel.min_hops, rel.max_hops)),
-        ),
+        PatternElement::Relationship(rel) => push_plain_rel(text, rel),
         PatternElement::Quantified(quantified) => {
             if let Some(rel) = quantified.implicit_var_length_rel() {
                 push_rel(text, rel, Some((quantified.min, quantified.max)));
@@ -454,6 +442,18 @@ fn push_node(text: &mut String, node: &NodePattern) {
         push_name(text, label);
     }
     text.push(')');
+}
+
+/// Append a relationship in its own spelling: a var-length or quantified
+/// relationship renders its own hop bounds. The one place that reads
+/// them, so the pattern text and the fused breakdown's per-hop subject
+/// cannot spell a hop differently.
+fn push_plain_rel(text: &mut String, rel: &RelPattern) {
+    push_rel(
+        text,
+        rel,
+        (rel.var_length || rel.quantified).then_some((rel.min_hops, rel.max_hops)),
+    );
 }
 
 /// Append one relationship with its direction: `-[v:T1|T2*1..2]->`. The
