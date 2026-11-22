@@ -102,6 +102,35 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    /// CIP-168: `OFFSET` is a synonym for `SKIP`, usable everywhere SKIP
+    /// is (standalone paging clause, WITH, RETURN, YIELD). Not a reserved
+    /// keyword -- recognized by spelling, same technique as `SHOW`/`USE`,
+    /// so existing uses like the property access `d.offset` (TCK
+    /// Temporal5) keep working.
+    pub(in crate::parser) fn peek_is_offset(&self) -> bool {
+        self.peek_is_ident("offset")
+    }
+
+    /// The paging-offset word: `SKIP` or its `OFFSET` synonym (CIP-168).
+    pub(in crate::parser) fn peek_is_skip_or_offset(&self) -> bool {
+        self.peek_type() == TokenType::SKIP || self.peek_is_offset()
+    }
+
+    /// An optional `<introducer> <expression>` slot: when `present` (the
+    /// caller's own peek of the introducer token), consumes the introducer
+    /// and parses the expression. The one primitive behind the fixed-order
+    /// `SKIP`/`LIMIT` slots and the SEARCH offset.
+    pub(in crate::parser) fn parse_optional_keyword_expr(
+        &mut self,
+        present: bool,
+    ) -> ParseResult<Option<Expr>> {
+        if !present {
+            return Ok(None);
+        }
+        self.next_token();
+        Ok(Some(self.parse_expression()?))
+    }
+
     /// The `ORDER BY`/`SKIP`/`LIMIT` paging sub-grammar: loops consuming
     /// one stage per iteration until none of the three introducer tokens
     /// are next, so `LIMIT 3 OFFSET 1` and `ORDER BY x SKIP 1 LIMIT 2`

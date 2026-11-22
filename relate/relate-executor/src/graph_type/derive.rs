@@ -117,6 +117,37 @@ pub(crate) fn constraint_type_of(kind: &GraphTypeConstraintVerb) -> ConstraintTy
     }
 }
 
+/// What a stored constraint type means to the display variants: the one
+/// exhaustive table over [`ConstraintType`], next to the verb mapping
+/// ([`constraint_type_of`]) it inverts for the property kinds.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum ConstraintCategory {
+    /// A key / unique constraint, shown per node label as its verb.
+    Undesignated(GraphTypeConstraintVerb),
+    /// A `NOT NULL` rule over one property.
+    ExistsRule,
+    /// A `:: <type>` rule over one property.
+    TypeRule,
+    /// A label-existence or endpoint-label constraint: always stays a
+    /// constraint.
+    Structural,
+}
+
+pub(crate) fn constraint_category(kind: ConstraintType) -> ConstraintCategory {
+    match kind {
+        ConstraintType::Key => ConstraintCategory::Undesignated(GraphTypeConstraintVerb::Key),
+        ConstraintType::Unique => ConstraintCategory::Undesignated(GraphTypeConstraintVerb::Unique),
+        ConstraintType::Exists => ConstraintCategory::ExistsRule,
+        ConstraintType::PropertyType => ConstraintCategory::TypeRule,
+        ConstraintType::LabelExistence
+        | ConstraintType::NodeLabelExistence
+        | ConstraintType::SourceLabel
+        | ConstraintType::SourceLabelExistence
+        | ConstraintType::TargetLabel
+        | ConstraintType::TargetLabelExistence => ConstraintCategory::Structural,
+    }
+}
+
 impl DeclaredKind {
     fn of(c: &GraphTypeConstraintSpec) -> Self {
         match &c.kind {

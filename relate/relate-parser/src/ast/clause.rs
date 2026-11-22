@@ -26,6 +26,51 @@ impl ConditionalClause {
     }
 }
 
+/// A statement arm's result shape, as far as the text decides it: the
+/// UNION column rules compare it across arms (see [`branch_shape`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BranchShape<'a> {
+    /// A trailing `RETURN` with these explicit items.
+    Items(&'a [ReturnItem]),
+    /// `RETURN *`, or a trailing `CALL` subquery that exports columns:
+    /// the column set is unknowable until execution.
+    Wildcard,
+    /// No result at all (`FINISH`, a write-only arm, a unit `CALL`).
+    Omitted,
+}
+
+/// The conditional a clause list consists of alone (`{ WHEN ... }`), if
+/// it is one: such an arm has no `RETURN` of its own, so its shape is its
+/// branches' ([`ConditionalClause::representative_body`]).
+pub fn sole_conditional(clauses: &[Clause]) -> Option<&ConditionalClause> {
+    match clauses {
+        [Clause::Conditional(cc)] => Some(cc),
+        _ => None,
+    }
+}
+
+/// Classifies one arm's clause list. CIP-135: a sole conditional is
+/// classified through its representative body (CIP-213: that body's own
+/// projection stage).
+pub fn branch_shape(clauses: &[Clause]) -> BranchShape<'_> {
+    if let Some(cc) = sole_conditional(clauses) {
+        return match cc.representative_body() {
+            Some(inner) => branch_shape(&inner.projection_stage().clauses),
+            None => BranchShape::Omitted,
+        };
+    }
+    match clauses.last() {
+        Some(Clause::Return(rc)) if rc.items.iter().any(|item| item.all) => BranchShape::Wildcard,
+        Some(Clause::Return(rc)) => BranchShape::Items(&rc.items),
+        // A final CALL subquery exports that body's columns (plus the
+        // in-scope names before it); a unit call leaves the arm columnless.
+        Some(Clause::CallSubquery(csq)) if csq.statement.projects_columns() => {
+            BranchShape::Wildcard
+        }
+        _ => BranchShape::Omitted,
+    }
+}
+
 /// One `WHEN <predicate> THEN <single-query>` branch of a `ConditionalClause`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WhenBranch {
@@ -385,6 +430,30 @@ pub struct ReturnItem {
     pub alias: Option<SmallName>,
     pub all: bool,
     pub source_text: Option<String>,
+}
+
+impl ReturnItem {
+    /// The implicit name an unaliased item carries: its bare variable, or
+    /// the variable a map projection is a view of (both paren-transparent).
+    /// The one derivation of the implicit-name vocabulary.
+    pub fn implicit_name(&self) -> Option<&SmallName> {
+        match self.expr.unparen() {
+            Expr::Variable(v) => Some(v),
+            other => other.map_projection_var(),
+        }
+    }
+
+    /// The column name the item projects: its alias, else
+    /// [`Self::implicit_name`], else its verbatim source text. `None` only
+    /// for an item that carries none of the three (never a parsed one). The
+    /// one home of the output-name rule: the parser's UNION column check and
+    /// the front's scope passes both read it.
+    pub fn output_name(&self) -> Option<SmallName> {
+        self.alias
+            .clone()
+            .or_else(|| self.implicit_name().cloned())
+            .or_else(|| self.source_text.as_deref().map(SmallName::from_name))
+    }
 }
 
 /// An item in ORDER BY.

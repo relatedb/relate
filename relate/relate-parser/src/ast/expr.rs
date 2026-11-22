@@ -229,6 +229,39 @@ pub enum TypeExpr {
     },
 }
 
+impl Expr {
+    /// A plain (non-`DISTINCT`) function call node, the shape every
+    /// parser-lowered special form (`trim`, `normalize`, `vector`, ...) takes.
+    pub fn call(name: &str, args: Vec<Expr>) -> Expr {
+        Expr::FunctionCall(FunctionCallExpr {
+            name: SmallName::from_name(name),
+            args,
+            distinct: false,
+        })
+    }
+
+    /// The expression with any wrapping parentheses stripped (the lowering
+    /// unwraps them, so every classifier reads through them).
+    pub fn unparen(&self) -> &Expr {
+        match self {
+            Expr::Paren(inner) => inner.unparen(),
+            other => other,
+        }
+    }
+
+    /// The projected variable of a map projection over a variable
+    /// (`n {.p}`), paren-transparent at the outer wrapper and the base
+    /// alike -- the shape that carries its own variable's name.
+    pub fn map_projection_var(&self) -> Option<&SmallName> {
+        if let Expr::MapProjection(mp) = self.unparen() {
+            if let Expr::Variable(v) = mp.expr.unparen() {
+                return Some(v);
+            }
+        }
+        None
+    }
+}
+
 impl TypeExpr {
     /// The `NOT NULL` flag attached directly to this node's own grammar
     /// production. Used only to check that a closed union's components all
@@ -268,30 +301,6 @@ impl TypeExpr {
                 dimension,
                 not_null: true,
             },
-        }
-    }
-
-    /// The declaration form of a normalized type: the inverse of
-    /// [`type_expr_to_canon`](crate::type_normalize::type_expr_to_canon).
-    pub fn from_canon(canon: &crate::type_normalize::CanonType) -> TypeExpr {
-        use crate::type_normalize::CanonKind;
-        match &canon.kind {
-            CanonKind::Predefined(kind) => TypeExpr::Predefined {
-                kind: *kind,
-                not_null: canon.not_null,
-            },
-            CanonKind::List(element) => TypeExpr::List {
-                element: Box::new(TypeExpr::from_canon(element)),
-                not_null: canon.not_null,
-            },
-            CanonKind::Vector { coord, dimension } => TypeExpr::Vector {
-                coord: *coord,
-                dimension: *dimension,
-                not_null: canon.not_null,
-            },
-            CanonKind::Union(members) => {
-                TypeExpr::Union(members.iter().map(TypeExpr::from_canon).collect())
-            }
         }
     }
 }

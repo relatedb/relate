@@ -112,6 +112,25 @@ fn test_parse_count_subquery_with_union() {
 }
 
 #[test]
+fn test_count_subquery_union_column_names_follow_the_output_name_rule() {
+    // `ReturnItem::output_name`: a parenthesized variable and a map
+    // projection over one carry the variable's name; an unaliased
+    // expression is its source text.
+    assert!(
+        parse("RETURN COUNT { MATCH (a) RETURN (a) UNION ALL MATCH (b) RETURN b AS a } AS c")
+            .is_ok()
+    );
+    assert!(parse(
+        "RETURN COUNT { MATCH (a) RETURN a {.x} UNION ALL MATCH (b) RETURN b AS a } AS c"
+    )
+    .is_ok());
+    assert!(
+        parse("RETURN COUNT { MATCH (a) RETURN a.x UNION ALL MATCH (b) RETURN b AS a } AS c")
+            .is_err()
+    );
+}
+
+#[test]
 fn test_parse_count_empty_braces_is_error() {
     assert!(parse("RETURN COUNT { } AS n").is_err());
 }

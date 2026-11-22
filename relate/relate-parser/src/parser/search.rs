@@ -164,12 +164,7 @@ impl<'a> Parser<'a> {
 
         // CIP-225: the optional `<offset clause>` (`SKIP` or `OFFSET`)
         // before the mandatory LIMIT, shared by both index kinds.
-        let offset_expr = if self.peek_is_skip_or_offset() {
-            self.next_token();
-            Some(self.parse_expression()?)
-        } else {
-            None
-        };
+        let offset_expr = self.parse_optional_keyword_expr(self.peek_is_skip_or_offset())?;
 
         self.expect(TokenType::LIMIT)?;
         let limit_expr = self.parse_expression()?;

@@ -15,7 +15,7 @@ use relate_names::SmallName;
 
 use relate_parser::{Expr, ReturnItem};
 
-use super::tree::{map_projection_var, unparen};
+use super::tree::unparen;
 
 /// The paren-transparent form of a projection item's expression — the one
 /// home of the paren-transparency policy (LABS-1615/1616): redundant
@@ -28,7 +28,7 @@ use super::tree::{map_projection_var, unparen};
 /// expression keeps the raw form (parens are transparent to walkers by
 /// descent, and the lowering owns the unwrap). The `tree` shape
 /// recognizers this module's own derivations hand the form to
-/// ([`map_projection_var`] and its kin) unparen again internally — a
+/// (`Expr::map_projection_var` and its kin) unparen again internally — a
 /// no-op over the already-unwrapped form that keeps the
 /// one-entry-point invariant true by construction.
 pub(crate) fn effective_expr(item: &ReturnItem) -> &Expr {
@@ -62,7 +62,7 @@ pub(crate) fn item_variable(item: &ReturnItem) -> Option<&SmallName> {
 /// (by verbatim source text) yet stays an expression every alias gate
 /// rejects.
 pub(crate) fn implicit_name(item: &ReturnItem) -> Option<&SmallName> {
-    item_variable(item).or_else(|| map_projection_var(effective_expr(item)))
+    item.implicit_name()
 }
 
 /// Whether a projection item needs an explicit `AS` to name its column:
@@ -78,30 +78,13 @@ pub(crate) fn item_needs_alias(item: &ReturnItem) -> bool {
 }
 
 pub(crate) fn effective_name(item: &ReturnItem) -> Option<SmallName> {
-    // The name arms hand the AST's already-classified `SmallName` straight
-    // to the scope sets (ADR-0509 §1's wired shape). The `source_text` arm
-    // is the one classification point here: an unaliased expression's
-    // column name is its verbatim source text, which the parser carries as
-    // text, not as a name — classified once, where it becomes a column.
-    // The resolution order mirrors the IR `Projection::output_name`'s by
-    // construction: an alias, else [`implicit_name`]'s canonically-named
-    // shapes (LABS-1616's parens included), else the verbatim text —
-    // [`relate_ir::canonical_name`]'s doc owns the property-spelling
-    // facts behind that last arm — so two spellings of one property are
-    // two distinct columns and only an exact-text duplicate conflicts.
-    if let Some(alias) = &item.alias {
-        Some(alias.clone())
-    } else if let Some(v) = implicit_name(item) {
-        Some(v.clone())
-    } else {
-        source_text_name(item)
-    }
-}
-
-/// An unaliased non-variable item's column name: its verbatim source text,
-/// classified (see [`effective_name`]).
-fn source_text_name(item: &ReturnItem) -> Option<SmallName> {
-    item.source_text.as_deref().map(SmallName::from_name)
+    // The name rule's one home is `ReturnItem::output_name` in relate-parser
+    // (alias, else the implicit name, else the verbatim source text, which
+    // mirrors the IR `Projection::output_name` by construction --
+    // [`relate_ir::canonical_name`]'s doc owns the property-spelling facts
+    // behind the last arm, so two spellings of one property are two
+    // distinct columns and only an exact-text duplicate conflicts).
+    item.output_name()
 }
 
 #[cfg(test)]

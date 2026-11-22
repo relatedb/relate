@@ -36,9 +36,10 @@ use relate_parser::{
 };
 
 use super::{
-    alias_tables, classify_constraint, classify_constraint_parts, constraint_type_of,
-    effective_default_map, endpoint_identity, resolve_ref_label, storage_constraint_order,
-    EffectiveDefault, EffectiveProperties, EffectiveProperty, EndpointIdentity, Inheritance,
+    alias_tables, classify_constraint, classify_constraint_parts, constraint_category,
+    constraint_type_of, effective_default_map, endpoint_identity, resolve_ref_label,
+    storage_constraint_order, ConstraintCategory, EffectiveDefault, EffectiveProperties,
+    EffectiveProperty, EndpointIdentity, Inheritance,
 };
 
 /// The variant's view of the stored graph type: the body and the extra
@@ -93,10 +94,10 @@ fn rule_of(
     kind: ConstraintType,
     property_type: impl FnOnce() -> Result<TypeExpr>,
 ) -> Result<Option<Rule>> {
-    match kind {
-        ConstraintType::Exists => Ok(Some(Rule::Exists)),
-        ConstraintType::PropertyType => Ok(Some(Rule::Type(property_type()?))),
-        _ => Ok(None),
+    match constraint_category(kind) {
+        ConstraintCategory::ExistsRule => Ok(Some(Rule::Exists)),
+        ConstraintCategory::TypeRule => Ok(Some(Rule::Type(property_type()?))),
+        ConstraintCategory::Undesignated(_) | ConstraintCategory::Structural => Ok(None),
     }
 }
 
@@ -317,10 +318,11 @@ struct Undesignated {
 /// The verb of an undesignated constraint kind (key or unique), `None`
 /// for every other kind -- the one place the vocabulary is spelled.
 fn undesignated_verb(kind: ConstraintType) -> Option<GraphTypeConstraintVerb> {
-    match kind {
-        ConstraintType::Key => Some(GraphTypeConstraintVerb::Key),
-        ConstraintType::Unique => Some(GraphTypeConstraintVerb::Unique),
-        _ => None,
+    match constraint_category(kind) {
+        ConstraintCategory::Undesignated(verb) => Some(verb),
+        ConstraintCategory::ExistsRule
+        | ConstraintCategory::TypeRule
+        | ConstraintCategory::Structural => None,
     }
 }
 
@@ -511,20 +513,7 @@ fn inherited_constraints(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use relate_parser::parse;
-
-    fn body_of(query: &str) -> GraphTypeBody {
-        let stmt = parse(query).expect("should parse");
-        match stmt.clauses.into_iter().next().unwrap() {
-            relate_parser::Clause::AlterCurrentGraphType(c) => match c.target {
-                relate_parser::AlterCurrentGraphTypeTarget::Body(body) => body,
-                relate_parser::AlterCurrentGraphTypeTarget::Named(name) => {
-                    panic!("expected an inline body, got named type {name}")
-                }
-            },
-            other => panic!("expected a graph-type clause, got {other:?}"),
-        }
-    }
+    use crate::graph_type::tests::body_of;
 
     fn extra(
         name: &str,

@@ -1,7 +1,7 @@
 use super::*;
 use relate_parser::parse;
 
-fn body_of(query: &str) -> GraphTypeBody {
+pub(super) fn body_of(query: &str) -> GraphTypeBody {
     let stmt = parse(query).expect("should parse");
     match stmt.clauses.into_iter().next().unwrap() {
         relate_parser::Clause::CreateGraphType(cgt) => cgt.body,

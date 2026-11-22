@@ -402,18 +402,4 @@ impl<'a> Parser<'a> {
 
         Ok(OnErrorMode::Retry { duration, fallback })
     }
-
-    /// CIP-168: `OFFSET` is a synonym for `SKIP`, usable everywhere SKIP
-    /// is (standalone paging clause, WITH, RETURN, YIELD). Not a reserved
-    /// keyword -- recognized by spelling, same technique as `SHOW`/`USE`,
-    /// so existing uses like the property access `d.offset` (TCK
-    /// Temporal5) keep working.
-    pub(in crate::parser) fn peek_is_offset(&self) -> bool {
-        self.peek_is_ident("offset")
-    }
-
-    /// The paging-offset word: `SKIP` or its `OFFSET` synonym (CIP-168).
-    pub(in crate::parser) fn peek_is_skip_or_offset(&self) -> bool {
-        self.peek_type() == TokenType::SKIP || self.peek_is_offset()
-    }
 }

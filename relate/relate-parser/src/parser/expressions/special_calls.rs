@@ -10,6 +10,19 @@ pub(in crate::parser) enum TrimSpec {
     Trailing,
 }
 
+impl TrimSpec {
+    /// The direction a `trim(...)` word spells, ASCII case-insensitively.
+    fn from_ident(word: &str) -> Option<TrimSpec> {
+        [
+            ("BOTH", TrimSpec::Both),
+            ("LEADING", TrimSpec::Leading),
+            ("TRAILING", TrimSpec::Trailing),
+        ]
+        .into_iter()
+        .find_map(|(spelling, spec)| word.eq_ignore_ascii_case(spelling).then_some(spec))
+    }
+}
+
 impl<'a> Parser<'a> {
     /// The comma spelling's lowered form: the specification is an ordinary
     /// expression, so the direction cannot be baked into the dispatch name
@@ -17,24 +30,16 @@ impl<'a> Parser<'a> {
     /// selects the direction (and the strict single-character rule of the
     /// direction-named entries) during evaluation.
     pub(in crate::parser) fn build_trim_spec_call(args: Vec<Expr>) -> Expr {
-        Expr::FunctionCall(FunctionCallExpr {
-            name: SmallName::from_name("trim_spec"),
-            args,
-            distinct: false,
-        })
+        Expr::call("trim_spec", args)
     }
 
-    pub(in crate::parser) fn build_trim_call(spec: Option<TrimSpec>, args: Vec<Expr>) -> Expr {
+    pub(in crate::parser) fn build_trim_call(spec: TrimSpec, args: Vec<Expr>) -> Expr {
         let name = match spec {
-            Some(TrimSpec::Leading) => "trim_leading",
-            Some(TrimSpec::Trailing) => "trim_trailing",
-            Some(TrimSpec::Both) | None => "trim",
+            TrimSpec::Leading => "trim_leading",
+            TrimSpec::Trailing => "trim_trailing",
+            TrimSpec::Both => "trim",
         };
-        Expr::FunctionCall(FunctionCallExpr {
-            name: SmallName::from_name(name),
-            args,
-            distinct: false,
-        })
+        Expr::call(name, args)
     }
 
     /// Parses `normalize(input)` or `normalize(input, normalForm)`. The
@@ -67,11 +72,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenType::RightParen)?;
-        Ok(Expr::FunctionCall(FunctionCallExpr {
-            name: SmallName::from_name("normalize"),
-            args,
-            distinct: false,
-        }))
+        Ok(Expr::call("normalize", args))
     }
 
     /// Parses the GQL TRIM special form (CIP-149):
@@ -111,7 +112,7 @@ impl<'a> Parser<'a> {
             let first = self.parse_expression()?;
             if self.peek_type() != TokenType::Comma {
                 self.expect(TokenType::RightParen)?;
-                return Ok(Self::build_trim_call(None, vec![first]));
+                return Ok(Self::build_trim_call(TrimSpec::Both, vec![first]));
             }
             self.next_token(); // consume ,
             let second = self.parse_expression()?;
@@ -126,19 +127,18 @@ impl<'a> Parser<'a> {
 
         let start = self.save_pos();
 
-        let mut spec: Option<TrimSpec> = None;
-        let peek = self.peek().clone();
-        if peek.ty == TokenType::Identifier {
-            spec = match peek.literal.to_ascii_uppercase().as_str() {
-                "BOTH" => Some(TrimSpec::Both),
-                "LEADING" => Some(TrimSpec::Leading),
-                "TRAILING" => Some(TrimSpec::Trailing),
-                _ => None,
-            };
-            if spec.is_some() {
-                self.next_token();
+        let spec_word = {
+            let peek = self.peek();
+            if peek.ty == TokenType::Identifier {
+                TrimSpec::from_ident(&peek.literal)
+            } else {
+                None
             }
+        };
+        if spec_word.is_some() {
+            self.next_token();
         }
+        let spec = spec_word.unwrap_or(TrimSpec::Both);
 
         // `[spec] FROM input` — no trim character string given.
         if self.peek_type() == TokenType::FROM {
@@ -156,15 +156,15 @@ impl<'a> Parser<'a> {
                 self.expect(TokenType::RightParen)?;
                 Ok(Self::build_trim_call(spec, vec![input, chars_expr]))
             }
-            Ok(chars_expr) if spec.is_none() => {
+            Ok(chars_expr) if spec_word.is_none() => {
                 // No spec word was consumed, so the already-parsed expression
                 // *is* the plain trim(input) argument: a re-parse from
                 // `start` would see the identical token stream, so reuse the
                 // result instead of backtracking.
                 self.expect(TokenType::RightParen)?;
-                Ok(Self::build_trim_call(None, vec![chars_expr]))
+                Ok(Self::build_trim_call(TrimSpec::Both, vec![chars_expr]))
             }
-            Err(e) if spec.is_none() => {
+            Err(e) if spec_word.is_none() => {
                 // Same reasoning: with nothing consumed since `start`, a
                 // re-parse would fail identically — propagate directly.
                 Err(e)
@@ -180,7 +180,7 @@ impl<'a> Parser<'a> {
                 self.restore_pos(start);
                 let input = self.parse_expression()?;
                 self.expect(TokenType::RightParen)?;
-                Ok(Self::build_trim_call(None, vec![input]))
+                Ok(Self::build_trim_call(TrimSpec::Both, vec![input]))
             }
         }
     }
@@ -272,14 +272,13 @@ impl<'a> Parser<'a> {
             ));
         }
         self.next_token(); // consume )
-        Ok(Expr::FunctionCall(FunctionCallExpr {
-            name: SmallName::from_name("property_exists"),
-            args: vec![
+        Ok(Expr::call(
+            "property_exists",
+            vec![
                 Expr::Variable(var_name),
                 Expr::Literal(LiteralValue::String(prop_tok.literal.into_owned())),
             ],
-            distinct: false,
-        }))
+        ))
     }
 
     /// Parses `vector(list)` or `vector(list, dimension, coordType)`
@@ -320,11 +319,7 @@ impl<'a> Parser<'a> {
             args.push(Expr::Literal(LiteralValue::String(coord_name)));
         }
         self.expect(TokenType::RightParen)?;
-        Ok(Expr::FunctionCall(FunctionCallExpr {
-            name: SmallName::from_name("vector"),
-            args,
-            distinct: false,
-        }))
+        Ok(Expr::call("vector", args))
     }
 }
 

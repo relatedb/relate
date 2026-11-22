@@ -349,6 +349,31 @@ pub fn normalize_union(components: Vec<CanonType>) -> CanonType {
     }
 }
 
+impl TypeExpr {
+    /// The declaration form of a normalized type: the inverse of
+    /// [`type_expr_to_canon`](crate::type_normalize::type_expr_to_canon).
+    pub fn from_canon(canon: &CanonType) -> TypeExpr {
+        match &canon.kind {
+            CanonKind::Predefined(kind) => TypeExpr::Predefined {
+                kind: *kind,
+                not_null: canon.not_null,
+            },
+            CanonKind::List(element) => TypeExpr::List {
+                element: Box::new(TypeExpr::from_canon(element)),
+                not_null: canon.not_null,
+            },
+            CanonKind::Vector { coord, dimension } => TypeExpr::Vector {
+                coord: *coord,
+                dimension: *dimension,
+                not_null: canon.not_null,
+            },
+            CanonKind::Union(members) => {
+                TypeExpr::Union(members.iter().map(TypeExpr::from_canon).collect())
+            }
+        }
+    }
+}
+
 /// Converts a parsed `TypeExpr` (CIP-86 grammar) to its CIP-100 canonical
 /// form.
 pub fn type_expr_to_canon(te: &TypeExpr) -> CanonType {

@@ -149,59 +149,6 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
-        // A branch's result shape. CIP-135: a `{ WHEN ... }`/`{ WHEN ...
-        // ELSE ... }` arm has no direct `Clause::Return` -- its shape is
-        // whatever its branch bodies project (all branches agree, enforced
-        // by the conditional's own rules), so recursing on the first one
-        // stands in for the whole clause. Mirrors the front's
-        // `union_branch_shape`, which owns the same classification for
-        // statements the parser does not screen.
-        enum BranchShape {
-            Cols(Vec<String>),
-            /// `RETURN *` -- columns unknowable until execution.
-            Wildcard,
-            /// No RETURN clause at all (FINISH / write-only arm).
-            Omitted,
-        }
-        fn branch_shape(s: &Statement) -> BranchShape {
-            let body = s.projection_stage();
-            if let [Clause::Conditional(cc)] = body.clauses.as_slice() {
-                let inner = cc.representative_body();
-                return match inner {
-                    Some(inner) => branch_shape(inner),
-                    None => BranchShape::Omitted,
-                };
-            }
-            let Some(Clause::Return(rc)) = body.clauses.last() else {
-                // An arm whose final clause is a CALL subquery exports that
-                // body's columns (plus the in-scope names before it), so the
-                // column set is only known at execution: a wildcard. A unit
-                // subquery call with no RETURN leaves the arm columnless.
-                if let Some(Clause::CallSubquery(csq)) = body.clauses.last() {
-                    if csq.statement.projects_columns() {
-                        return BranchShape::Wildcard;
-                    }
-                }
-                return BranchShape::Omitted;
-            };
-            let mut cols = Vec::with_capacity(rc.items.len());
-            for item in &rc.items {
-                if item.all {
-                    return BranchShape::Wildcard;
-                }
-                if let Some(alias) = &item.alias {
-                    cols.push(alias.to_string());
-                } else if let Expr::Variable(v) = &item.expr {
-                    cols.push(v.to_string());
-                } else if let Some(src) = &item.source_text {
-                    cols.push(src.clone());
-                } else {
-                    cols.push(String::new());
-                }
-            }
-            BranchShape::Cols(cols)
-        }
-
         let mut branches: Vec<&Statement> = vec![stmt];
         let mut distinct_link_seen = false;
         let mut current = &stmt.union;
@@ -213,7 +160,10 @@ impl<'a> Parser<'a> {
             current = &u.statement.union;
         }
 
-        let shapes: Vec<BranchShape> = branches.iter().map(|s| branch_shape(s)).collect();
+        let shapes: Vec<BranchShape> = branches
+            .iter()
+            .map(|s| branch_shape(&s.projection_stage().clauses))
+            .collect();
         let any_missing = shapes.iter().any(|s| matches!(s, BranchShape::Omitted));
         let any_present = shapes.iter().any(|s| !matches!(s, BranchShape::Omitted));
 
@@ -230,10 +180,14 @@ impl<'a> Parser<'a> {
         if !any_missing {
             let mut reference: Option<Vec<String>> = None;
             for shape in &shapes {
-                if let BranchShape::Cols(cols) = shape {
+                if let BranchShape::Items(items) = shape {
+                    let cols = items
+                        .iter()
+                        .map(|item| self.column_name(item))
+                        .collect::<ParseResult<Vec<String>>>()?;
                     match &reference {
-                        None => reference = Some(cols.clone()),
-                        Some(r) if !same_name_multiset(r, cols) => {
+                        None => reference = Some(cols),
+                        Some(r) if !same_name_multiset(r, &cols) => {
                             return Err(self.error(
                                 "DifferentColumnsInUnion: all UNION branches must have the same column names",
                             ));
@@ -244,6 +198,14 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(())
+    }
+
+    /// A RETURN item's column name ([`ReturnItem::output_name`]); a parsed
+    /// item always has one.
+    fn column_name(&self, item: &ReturnItem) -> ParseResult<String> {
+        item.output_name()
+            .map(|name| name.to_string())
+            .ok_or_else(|| self.error("a RETURN item has no column name"))
     }
 
     /// `COLLECT { <RegularQuery> } (CIP-71): mirrors `parse_count_subquery`'s

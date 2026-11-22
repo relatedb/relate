@@ -442,9 +442,7 @@ impl<'a> Parser<'a> {
         // optional `SINGLE`/`SEPARATE` any-node keyword after it) are plain
         // identifiers, so this only commits once both `AS` and an
         // identifier literally spelled `GRAPH` are seen.
-        let as_graph = if self.peek_type() == TokenType::AS && self.peek_at_is_ident(1, "graph") {
-            self.next_token(); // AS
-            self.next_token(); // GRAPH
+        let as_graph = if self.eat_as_word("graph") {
             let mode = if self.peek_is_ident("single") {
                 self.next_token();
                 AnyNodeMode::Single
@@ -473,22 +471,30 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    /// The `AS <word>` probe of the contextual SHOW CURRENT GRAPH TYPE
+    /// words: consumes both tokens only when `AS` is followed by an
+    /// identifier spelled `word`.
+    fn eat_as_word(&mut self, word: &str) -> bool {
+        if self.peek_type() == TokenType::AS && self.peek_at_is_ident(1, word) {
+            self.next_token(); // AS
+            self.next_token(); // the word
+            true
+        } else {
+            false
+        }
+    }
+
     /// The optional `AS CONSOLIDATED` / `AS FLATTENED` of `SHOW CURRENT
     /// GRAPH TYPE`: consumes `AS` and the word only when the word after
     /// `AS` names a variant, so `AS GRAPH` and anything else stay for the
     /// caller.
     fn parse_show_graph_type_variant(&mut self) -> Option<GraphTypeShowVariant> {
-        if self.peek_type() != TokenType::AS {
-            return None;
-        }
         let variant = [
             ("consolidated", GraphTypeShowVariant::Consolidated),
             ("flattened", GraphTypeShowVariant::Flattened),
         ]
         .into_iter()
-        .find_map(|(word, variant)| self.peek_at_is_ident(1, word).then_some(variant))?;
-        self.next_token(); // AS
-        self.next_token(); // the variant word
+        .find_map(|(word, variant)| self.eat_as_word(word).then_some(variant))?;
         Some(variant)
     }
 

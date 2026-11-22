@@ -527,19 +527,8 @@ impl<'a> Parser<'a> {
             Vec::new()
         };
 
-        let skip = if self.peek_is_skip_or_offset() {
-            self.next_token();
-            Some(self.parse_expression()?)
-        } else {
-            None
-        };
-
-        let limit = if self.peek_type() == TokenType::LIMIT {
-            self.next_token();
-            Some(self.parse_expression()?)
-        } else {
-            None
-        };
+        let skip = self.parse_optional_keyword_expr(self.peek_is_skip_or_offset())?;
+        let limit = self.parse_optional_keyword_expr(self.peek_type() == TokenType::LIMIT)?;
 
         Ok((order_by, skip, limit))
     }

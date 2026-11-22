@@ -514,10 +514,7 @@ fn walk_element_exprs_tree(
 
 /// Strip wrapping parentheses.
 pub(crate) fn unparen(expr: &Expr) -> &Expr {
-    match expr {
-        Expr::Paren(inner) => unparen(inner),
-        other => other,
-    }
+    expr.unparen()
 }
 
 /// The `v.key` static property access — a property of a variable by a
@@ -536,20 +533,6 @@ pub(crate) fn var_property(e: &Expr) -> Option<(&SmallName, &SmallName)> {
             if let Expr::Variable(v) = unparen(&pa.expr) {
                 return Some((v, &pa.property));
             }
-        }
-    }
-    None
-}
-
-/// A map projection over a variable — the projected variable, the shape
-/// that carries its own name (`RETURN n {.p}` projects the column `n`).
-/// The one recognizer, sharing [`var_property`]'s home and whole-policy
-/// paren transparency (outer wrapper and projected base alike): the
-/// naming rule's arm and the 42N21 item gate both read it.
-pub(crate) fn map_projection_var(e: &Expr) -> Option<&SmallName> {
-    if let Expr::MapProjection(mp) = unparen(e) {
-        if let Expr::Variable(v) = unparen(&mp.expr) {
-            return Some(v);
         }
     }
     None
