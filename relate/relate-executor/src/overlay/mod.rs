@@ -3,7 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
-use relate_core::{CancelToken, Namespace, NodeId, RelId, Result, Value};
+use relate_core::{CancelToken, Namespace, NodeId, RelId, Result, TransactionClock, Value};
 
 use crate::csv::CsvReader;
 use crate::exec::kernels::construct_memo::ConstructMemos;
@@ -80,6 +80,10 @@ pub struct ExecGraph<'a> {
     /// `db.ontology.get` / `db.ontology.apply` procedure arms.
     /// `None` = no ontology set (also every test/diagnostic view).
     ontology_document: Option<&'a str>,
+    /// The instant the calling explicit transaction began at, so every
+    /// statement's clock pin reads one `<kind>.transaction()` instant
+    /// ([`Self::with_transaction_clock`]); `None` = autocommit.
+    transaction_clock: Option<TransactionClock>,
     pub(crate) csv: CsvReader<'a>,
 }
 
@@ -212,6 +216,7 @@ impl<'a> ExecGraph<'a> {
             construct_memos: ConstructMemos::new(memo_live.clone()),
             memo_live,
             ontology_document: None,
+            transaction_clock: None,
             csv: CsvReader::new(base.csv_policy()),
         }
     }
@@ -241,6 +246,19 @@ impl<'a> ExecGraph<'a> {
     pub fn with_ontology_document(mut self, document: Option<&'a str>) -> Self {
         self.ontology_document = document;
         self
+    }
+
+    /// Attach the explicit transaction's begin-time clock: per-admission
+    /// state like [`Self::with_cancel`]. A view without one is an autocommit
+    /// statement, whose own instant is its transaction's.
+    pub fn with_transaction_clock(mut self, clock: TransactionClock) -> Self {
+        self.transaction_clock = Some(clock);
+        self
+    }
+
+    /// The transaction clock attached by [`Self::with_transaction_clock`].
+    pub(crate) fn transaction_clock(&self) -> Option<TransactionClock> {
+        self.transaction_clock
     }
 
     /// The ontology document attached by [`Self::with_ontology_document`].

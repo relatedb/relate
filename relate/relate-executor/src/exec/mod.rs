@@ -396,7 +396,7 @@ fn run_statement(graph: &ExecGraph<'_>, request: &ExecRequest<'_>) -> Result<(Qu
     // nested-evaluation budget restart together.
     graph.begin_statement();
     graph.check_cancelled()?;
-    let _clock = QueryClockGuard::new();
+    let _clock = QueryClockGuard::within(graph.transaction_clock());
     let qctx = QueryCtx::new(request.query_text)
         .with_principal(request.principal)
         .with_batch_commit(request.batch_commit);

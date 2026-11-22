@@ -66,7 +66,7 @@ pub use presence_bits::PresenceBits;
 pub use preview::{
     preview_feature_disabled_text, PreviewFeature, PreviewFeatures, PREVIEW_FEATURES,
 };
-pub use temporal::{QueryClockGuard, Temporal};
+pub use temporal::{QueryClockGuard, Temporal, TransactionClock};
 pub use tokens::{ExecutionReceipt, TokenEstimate, TokenOutcome};
 pub use traversal::{
     require_traversal_depth, traversal_depth_exceeded_message, MAX_TRAVERSAL_DEPTH,

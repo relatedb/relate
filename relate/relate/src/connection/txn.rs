@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use relate_core::{Error, Result};
+use relate_core::{Error, Result, TransactionClock};
 use relate_executor::{
     ExecRequest, QueryResult as ExecResult, RedoOp, SchemaSnapshot, WriteScratch,
 };
@@ -43,6 +43,10 @@ pub(crate) struct OpenTxn {
     /// counted to (its op count), so no second cursor field exists to
     /// drift out of step with it.
     cap_tally: RefCell<PayloadTally>,
+    /// The instant the transaction began at, captured once at `BEGIN`: every
+    /// statement's clock pin carries it, so `<kind>.transaction()` is one
+    /// instant for the whole transaction.
+    clock: TransactionClock,
 }
 
 impl OpenTxn {
@@ -146,6 +150,7 @@ impl Connection {
             pin_slot,
             ontology_document: self.inner.ontology.get(),
             cap_tally: RefCell::new(PayloadTally::default()),
+            clock: TransactionClock::begin(),
         });
         Ok(())
     }
@@ -274,7 +279,8 @@ impl Connection {
             let view = Self::statement_view(run.target, Some(&txn.scratch))
                 .with_schema(run.schema)
                 .with_cancel(Some(token))
-                .with_ontology_document(txn.ontology_document.as_deref());
+                .with_ontology_document(txn.ontology_document.as_deref())
+                .with_transaction_clock(txn.clock);
             run.target.execute(
                 &view,
                 &ExecRequest {
