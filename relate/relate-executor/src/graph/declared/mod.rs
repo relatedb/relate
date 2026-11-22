@@ -191,7 +191,13 @@ impl Graph {
     /// value. The ordered protocol every build and drain path keeps, in
     /// its one home, so a new path cannot post without the reconcile
     /// that keeps the range index's trust marks honest.
-    fn post_pair_node<St: DrainState>(&self, st: &mut St, id: NodeId, lid: u32, kid: u32) {
+    pub(super) fn post_pair_node<St: DrainState>(
+        &self,
+        st: &mut St,
+        id: NodeId,
+        lid: u32,
+        kid: u32,
+    ) {
         st.remove_node(id);
         // The reconcile runs inside the walk (the value reference cannot
         // leave it — the walk's closure is higher-ranked over the value

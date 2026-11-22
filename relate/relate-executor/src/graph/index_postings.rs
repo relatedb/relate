@@ -4,6 +4,7 @@
 //! parent keeps the index state, the apply seams, and the rebuild
 //! orchestration.
 
+use super::declared::DrainState;
 use super::index::PropPairIndex;
 use super::index_lookup::RecheckSpec;
 use super::*;
@@ -110,11 +111,10 @@ impl Graph {
         if !st.dirty.is_empty() {
             let ids = std::mem::take(&mut st.dirty);
             for id in ids {
-                // The remove-then-post order the range index's drain uses:
-                // a live version that carries no value for the pair leaves
-                // whatever a stale version marked — cleared, not trusted
-                // (the feed restates the mark when one exists).
-                st.unposted.remove(&id);
+                // The feed owns the remove-then-post order (the node
+                // pairs' is `post_pair_node`'s): a live version that
+                // carries no value for the pair leaves whatever a stale
+                // version marked cleared, not trusted.
                 feed(id, &mut st);
             }
         }
@@ -185,29 +185,13 @@ impl Graph {
             &self.indexes.prop_pairs,
             (lid, kid),
             || self.pair_candidate_ids(lid),
-            // The node pairs' feed: post every version, and on THE live
+            // The node pairs' feed is the declared pairs' one protocol
+            // (`post_pair_node`): post every version, and on THE live
             // version restate `unposted` from it alone — a superseded NaN
             // must not poison the pair, the live NaN still declines, and a
             // live version carrying no value clears whatever a stale one
             // marked.
-            |id, st| {
-                let mut live_seen = false;
-                self.for_each_node_pair_value(id, lid, kid, |value, version| {
-                    let gk = GroupKey::for_property_index(value);
-                    prop_pair_post(st, id, gk.as_ref());
-                    if version == PairVersion::Live {
-                        live_seen = true;
-                        if gk.is_some() {
-                            st.unposted.remove(&id);
-                        } else {
-                            st.unposted.insert(id);
-                        }
-                    }
-                });
-                if !live_seen {
-                    st.unposted.remove(&id);
-                }
-            },
+            |id, st| self.post_pair_node(st, id, lid, kid),
             read,
         )
     }
@@ -459,6 +443,27 @@ impl Graph {
                 f(val, PairVersion::at(idx, live_at));
             }
         }
+    }
+}
+
+/// The equality pair as a [`DrainState`], so the node feed runs the one
+/// post/reconcile protocol (`Graph::post_pair_node`) the declared pairs
+/// run. Its posting policy is the lazy superset: `remove_node` does not
+/// unpost (stale versions' buckets are pruned by `drop_unused_pairs`),
+/// it only drops the trust mark the reconcile restates.
+impl DrainState for PropPairIndex {
+    fn dirty_mut(&mut self) -> &mut HashSet<NodeId> {
+        &mut self.dirty
+    }
+    fn insert(&mut self, id: NodeId, value: &Value) {
+        prop_pair_post(self, id, GroupKey::for_property_index(value).as_ref());
+    }
+    fn remove_node(&mut self, id: NodeId) {
+        self.unposted.clear(id);
+    }
+    fn reconcile_live(&mut self, id: NodeId, live: Option<&Value>) {
+        let unpostable = live.is_some_and(|v| GroupKey::for_property_index(v).is_none());
+        self.unposted.restate(id, unpostable);
     }
 }
 

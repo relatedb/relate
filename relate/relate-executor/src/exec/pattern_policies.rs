@@ -518,6 +518,12 @@ pub(crate) enum MatchTail<'a> {
     /// reads the tail — `Carry` is that named fact, the honest spelling
     /// of the probe's tailless ride.
     Carry,
+    /// An intermediate shortest-path pattern's tail: the walk starts from
+    /// an empty used-set and its result rows carry none — the caller
+    /// restores the entering row's set over every returned row, so the
+    /// set is never built per row only to be overwritten. No reduce, like
+    /// [`MatchTail::Carry`].
+    Restore,
     /// The last pattern's tail: the used-set is dropped (finished rows
     /// do not carry it) and the reduce runs when the clause sink
     /// projects here.
@@ -540,7 +546,7 @@ impl MatchTail<'_> {
             row,
             match self {
                 MatchTail::Carry => set(),
-                MatchTail::Finish { .. } => UsedSet::default(),
+                MatchTail::Finish { .. } | MatchTail::Restore => UsedSet::default(),
             },
         ));
     }
@@ -590,7 +596,7 @@ impl MatchTail<'_> {
                 }
                 Ok(Some(stored))
             }
-            MatchTail::Finish { reduce: None } | MatchTail::Carry => {
+            MatchTail::Finish { reduce: None } | MatchTail::Carry | MatchTail::Restore => {
                 count(cap, &row)?;
                 Ok(Some(row))
             }
@@ -668,6 +674,16 @@ mod tests {
             || UsedSet::from_iter([1, 2]),
             &mut out,
         );
+        assert_eq!(out.len(), 1);
+        assert!(out[0].1.is_empty());
+    }
+
+    #[test]
+    fn store_row_leaves_a_restore_tails_set_to_the_caller() {
+        // The caller restores the entering row's set over every row, so
+        // the producer's closure never runs and the stored set is empty.
+        let mut out: Matched = Vec::new();
+        MatchTail::Restore.store_row(Row::new(), || UsedSet::from_iter([1, 2]), &mut out);
         assert_eq!(out.len(), 1);
         assert!(out[0].1.is_empty());
     }

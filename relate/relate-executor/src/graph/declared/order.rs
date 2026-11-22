@@ -13,6 +13,7 @@ use crate::eval;
 use crate::group_key::GroupKey;
 
 use super::DrainState;
+use crate::graph::index::UnpostedMark;
 
 /// Node ids posted under one key. A unique value stays a single id; a
 /// second distinct id promotes the arm to a set.
@@ -179,7 +180,7 @@ pub(crate) struct RangeIndex {
     /// or inside a list or map): they are posted nowhere, so a walk of the
     /// postings does not see them. Comparison seeks are unaffected (a NaN
     /// satisfies no comparison); only the aggregate reads consult it.
-    pub(super) unposted: HashSet<NodeId>,
+    pub(super) unposted: UnpostedMark,
     pub(super) dirty: HashSet<NodeId>,
 }
 
@@ -259,15 +260,8 @@ impl DrainState for RangeIndex {
         // it keeps the per-version superset `insert_order` posts — and
         // the aggregate decline that stale mark costs is the safe
         // direction.
-        let unposted = match live {
-            Some(value) => !Destinations::of(value).reaches_a_map(),
-            None => false,
-        };
-        if unposted {
-            self.unposted.insert(id);
-        } else {
-            self.unposted.remove(&id);
-        }
+        let unpostable = live.is_some_and(|v| !Destinations::of(v).reaches_a_map());
+        self.unposted.restate(id, unpostable);
     }
 }
 
@@ -598,7 +592,7 @@ impl Destinations {
 
 pub(super) fn order_remove_node(st: &mut RangeIndex, id: NodeId) {
     st.unbounded.remove(&id);
-    st.unposted.remove(&id);
+    st.unposted.clear(id);
     forget(&mut st.by_node, &mut st.order, id);
     forget(&mut st.eq_by_node, &mut st.eq_only, id);
 }

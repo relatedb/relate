@@ -466,17 +466,19 @@ pub(crate) fn match_paths(
         // pattern carries its used-set forward.
         let tail = if last_pat {
             MatchTail::Finish { reduce }
+        } else if p.is_shortest_path_function {
+            MatchTail::Restore
         } else {
             MatchTail::Carry
         };
         // The shortest-path function's used-set restore is pattern-level,
         // like the tail (F-1-11): only patterns before the last restore
         // the entering row's set, so the predicate is decided once per
-        // pattern and the common case clones nothing per row. The carry
-        // half reads the tail (F-1-14) — the one spelling of the
-        // carry-or-drop decision ([`MatchTail::store_row`]'s), never a
-        // second `!last_pat` encoding that must stay hand-in-sync with it.
-        let keep_used = p.is_shortest_path_function && matches!(tail, MatchTail::Carry);
+        // pattern and the common case clones nothing per row. The tail
+        // carries it too (`MatchTail::Restore`), the one spelling of the
+        // carry-restore-or-drop decision ([`MatchTail::store_row`]'s),
+        // never a second `!last_pat` encoding kept in hand-in-sync.
+        let keep_used = matches!(tail, MatchTail::Restore);
         // LABS-801: the pattern's rel-type filters arrive resolved with
         // it, from the caller's widest loop.
         for (r, used) in current {

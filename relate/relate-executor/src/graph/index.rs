@@ -12,6 +12,47 @@ use super::*;
 /// nothing, writes after materialization dirty-mark the entity. A node
 /// pair's class is a label id; a relationship pair's class is a type id
 /// (ADR-0185); the ids share `NodeId`'s/`RelId`'s `i64` shape.
+/// The aggregate reads' trust mark, shared by the equality pair and the
+/// range index: ids whose **current** version carries a value the pair
+/// cannot post (a NaN, alone or inside a list or map). It reflects the
+/// LIVE version alone — a superseded NaN must not over-decline and a
+/// superseded posting must not under-decline — so only the live
+/// reconciliation ([`Self::restate`]) and the node's removal
+/// ([`Self::clear`]) write it; the posting step never does.
+#[derive(Debug, Default)]
+pub(super) struct UnpostedMark(HashSet<NodeId>);
+
+impl UnpostedMark {
+    /// Restate `id`'s mark from its live version: marked when that
+    /// version's value cannot be posted, cleared otherwise.
+    pub(super) fn restate(&mut self, id: NodeId, unpostable: bool) {
+        if unpostable {
+            self.0.insert(id);
+        } else {
+            self.0.remove(&id);
+        }
+    }
+
+    /// Drop `id`'s mark (a node leaving the pair, or about to be reposted).
+    pub(super) fn clear(&mut self, id: NodeId) {
+        self.0.remove(&id);
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[cfg(feature = "research")]
+    pub(super) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn contains(&self, id: &NodeId) -> bool {
+        self.0.contains(id)
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct PropPairIndex {
     /// True once the pair has been built from the label index at least once.
@@ -24,7 +65,7 @@ pub(super) struct PropPairIndex {
     /// seeks are unaffected (a NaN equals nothing). Pruned on the
     /// remove-then-post drain, so an overwrite with a postable value
     /// stops declining.
-    pub(super) unposted: HashSet<NodeId>,
+    pub(super) unposted: UnpostedMark,
     /// Ids written since `postings` was last brought current for this pair.
     pub(super) dirty: HashSet<NodeId>,
 }
