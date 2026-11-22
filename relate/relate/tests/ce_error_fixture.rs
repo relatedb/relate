@@ -188,7 +188,7 @@ fn run_case(case: &Case) -> Result<(), String> {
     // The read-only-namespace cases run on `system_ontologies`, which is
     // hidden without the `ontology` opt-in (ADR-0593) — the CE fixture is
     // captured against the visible namespace, so the runner opts in.
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let namespace = match case.harness {
         Some(Harness::ConnectNamespace) => {

@@ -75,8 +75,8 @@ fn assert_gate_open(db: &Database, when: &str) {
 /// suite's reload fixture (`src/tests/follow.rs`) driven through the store
 /// instead of the crate-private pause/park controls.
 fn truncate_active_segment(root: &std::path::Path) {
-    let vfs = common::store_vfs(root);
-    let segment = common::active_segment(&*vfs);
+    let vfs = common::store::store_vfs(root);
+    let segment = common::store::active_segment(&*vfs);
     vfs.open(&segment, relate_storage::VfsOpen::read_write())
         .expect("the active WAL segment must open for writing")
         .set_len(relate_storage::MAGIC.len() as u64)
@@ -93,7 +93,7 @@ fn follow_reload_keeps_the_ontology_preview_gate_open() {
     // Before the first open in this process (ADR-0371 reads the variable
     // once per open); `Once` makes it idempotent, so a future sibling test
     // in this crate may call it again.
-    common::preview_ontology();
+    common::ontology::preview_ontology();
 
     let dir = tempfile::tempdir().unwrap();
     let uri = dir.path().to_str().unwrap();

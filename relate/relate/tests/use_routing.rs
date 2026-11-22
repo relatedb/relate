@@ -8,7 +8,9 @@ use relate::{Database, Namespace, Value};
 
 mod common;
 
-use common::{connection, err_text, preview_ontology, NOT_QUERYABLE_SUFFIX, SYSTEM_CLAUSES_SUFFIX};
+use common::ce_errors::{NOT_QUERYABLE_SUFFIX, SYSTEM_CLAUSES_SUFFIX};
+use common::ontology::preview_ontology;
+use common::{connection, err_text};
 
 /// CE 42NA5 text (ADR-0116 §3); CE names the attempted graph on a second
 /// line (testdata/ce-errors/neo4j-ce.json `multi_graph_*`).

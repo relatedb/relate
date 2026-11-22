@@ -13,7 +13,8 @@ mod common;
 
 use relate::Value;
 
-use common::{rows, run, scalar_one, show_spec};
+use common::show_variants::show_spec;
+use common::{rows, run, scalar_one};
 
 /// The engine's own, unprinted specification: byte-identity checks.
 fn raw_spec(c: &mut relate::Connection, variant: &str) -> Value {
@@ -29,7 +30,7 @@ fn constraint_names(c: &mut relate::Connection) -> Vec<Value> {
 
 #[test]
 fn store_only_independent_constraints_consolidate_too() {
-    let mut c = common::show_variants_connection();
+    let mut c = common::show_variants::show_variants_connection();
     run(
         &mut c,
         "ALTER CURRENT GRAPH TYPE SET { (:A => :B {p1 :: STRING}), \
@@ -93,7 +94,7 @@ fn store_only_independent_constraints_consolidate_too() {
 
 #[test]
 fn rules_of_one_property_merge_across_the_body_and_the_store() {
-    let mut c = common::show_variants_connection();
+    let mut c = common::show_variants::show_variants_connection();
     // The body's type constraint and a store-only existence constraint on
     // the same property of the same label are one property definition.
     run(
@@ -128,7 +129,7 @@ fn rules_of_one_property_merge_across_the_body_and_the_store() {
 
 #[test]
 fn states_a_variant_has_nothing_to_do_with_are_returned_as_they_are() {
-    let mut c = common::show_variants_connection();
+    let mut c = common::show_variants::show_variants_connection();
     // The empty graph type.
     for variant in ["AS CONSOLIDATED", "AS FLATTENED"] {
         assert_eq!(raw_spec(&mut c, variant), raw_spec(&mut c, ""));
@@ -158,7 +159,7 @@ fn states_a_variant_has_nothing_to_do_with_are_returned_as_they_are() {
 
 #[test]
 fn flattening_follows_inheritance_chains() {
-    let mut c = common::show_variants_connection();
+    let mut c = common::show_variants::show_variants_connection();
     run(
         &mut c,
         "ALTER CURRENT GRAPH TYPE SET { (:N1 => {a :: STRING}), \
@@ -184,7 +185,7 @@ fn flattening_follows_inheritance_chains() {
 
 #[test]
 fn variants_take_yield_where_and_as_graph() {
-    let mut c = common::show_variants_connection();
+    let mut c = common::show_variants::show_variants_connection();
     run(
         &mut c,
         "ALTER CURRENT GRAPH TYPE SET { (:A => {p1 :: STRING}), \
@@ -214,7 +215,7 @@ fn variants_take_yield_where_and_as_graph() {
 #[test]
 fn the_variants_persist_nothing() {
     // Opt in before any store opens (the shared fixture does it once).
-    drop(common::show_variants_connection());
+    drop(common::show_variants::show_variants_connection());
     let dir = tempfile::tempdir().unwrap();
     let uri = dir.path().join("variants").to_str().unwrap().to_string();
     let (plain, names) = {

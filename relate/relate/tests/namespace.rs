@@ -12,7 +12,9 @@ use relate::{Database, Namespace, Procedure, Value};
 
 mod common;
 
-use common::{err_text, preview_ontology, NOT_QUERYABLE_SUFFIX, SYSTEM_CLAUSES_SUFFIX};
+use common::ce_errors::{NOT_QUERYABLE_SUFFIX, SYSTEM_CLAUSES_SUFFIX};
+use common::err_text;
+use common::ontology::preview_ontology;
 use std::sync::Arc;
 
 #[test]

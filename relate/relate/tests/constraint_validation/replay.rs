@@ -9,9 +9,8 @@ use relate::{Database, Value, WalRecord};
 use relate_executor::RedoOp;
 use relate_storage::{SnapshotCodecKind, VfsOpen};
 
-use crate::common::{
-    active_segment, err_text, scalar, seed_store_with, store_vfs, uniqueness, wal_frame,
-};
+use crate::common::store::{active_segment, seed_store_with, store_vfs, wal_frame};
+use crate::common::{err_text, scalar, uniqueness};
 use crate::support::UNIQUE;
 
 /// Seed a legacy/replay duplicate: two committed entities holding the same

@@ -19,7 +19,7 @@ use relate::Database;
 use relate_core::Error;
 use relate_storage::{read_to_vec, SnapshotCodecKind, Vfs, VfsOpen};
 
-use common::{active_segment, seed_store, store_vfs, wal_frame};
+use common::store::{active_segment, seed_store, store_vfs, wal_frame};
 
 const UNDECODABLE_PHRASE: &str = "may have been written by a newer Relate";
 

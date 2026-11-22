@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use relate::SnapshotCodecKind;
 use relate::{Database, Value};
 
-use common::{opts, row, string};
+use common::store::opts;
+use common::{row, string};
 
 /// The set-but-ignored refusal assertion the two contract tests share:
 /// the error names the ignored-configuration refusal.

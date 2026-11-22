@@ -7,7 +7,7 @@
 //! 5|25`: every other integer fails with the authored
 //! unsupported-version error), and `SHOW DATABASES` reports the
 //! three fixed namespaces — this suite opts into the `ontology`
-//! preview feature (`common::preview_ontology`) so `system_ontologies`
+//! preview feature (`common::ontology::preview_ontology`) so `system_ontologies`
 //! stays visible; ADR-0593 hides it while the opt-in is off. Amended 2026-11-04: a `USE` clause targeting a
 //! non-system namespace on an administration-command statement is
 //! rejected with CE's 42N79 auto-routing text, and a `WITH` composing an
@@ -19,10 +19,13 @@ use relate::{Database, Namespace, Value};
 
 mod common;
 
+use common::ce_errors::{
+    NEEDS_SYSTEM_DATABASE_SUFFIX, USE_WITH_ADMIN_SUFFIX, WITH_ON_SYSTEM_SUFFIX,
+};
+use common::ontology::preview_ontology;
 use common::{
     assert_ce_rejection, assert_ce_rejection_with_params, connection, connection_in, err_text,
-    list, params, preview_ontology, scalar_one, string, NEEDS_SYSTEM_DATABASE_SUFFIX,
-    USE_WITH_ADMIN_SUFFIX, WITH_ON_SYSTEM_SUFFIX,
+    list, params, scalar_one, string,
 };
 
 /// The statement is echoed verbatim; a leading `CYPHER n` preamble is

@@ -14,7 +14,8 @@ use relate::{Database, Value};
 use relate_ontology::PINNED_SCHEMA_URI as SCHEMA_URI;
 use relate_storage::{MemoryVfs, Vfs};
 
-use common::{err_text, get_doc, set_doc};
+use common::err_text;
+use common::ontology::{get_doc, set_doc};
 
 /// The one read of the current graph type's specification.
 const SHOW_SPEC: &str = "SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification";
@@ -71,7 +72,7 @@ fn memory_db() -> (Arc<dyn Vfs>, Database) {
 /// otherwise; the document survives a reopen.
 #[test]
 fn set_get_round_trip_yaml_and_json() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let (vfs, db) = memory_db();
     let mut conn = db.connect().unwrap();
 
@@ -163,7 +164,7 @@ fn set_get_round_trip_yaml_and_json() {
 /// an oversized document is refused — none of them touch the store.
 #[test]
 fn set_validates_before_committing() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect().unwrap();
     set_doc(&mut conn, DOC_JSON).unwrap();
@@ -209,7 +210,7 @@ fn set_validates_before_committing() {
 /// shape fails structural validation on its first old member.
 #[test]
 fn set_rejects_pre_bump_documents() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect().unwrap();
 
@@ -257,7 +258,7 @@ fn set_rejects_pre_bump_documents() {
 /// empty state survives a reopen.
 #[test]
 fn drop_removes_the_document_and_is_idempotent() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let (vfs, db) = memory_db();
     let mut conn = db.connect().unwrap();
 
@@ -299,7 +300,7 @@ fn drop_removes_the_document_and_is_idempotent() {
 /// else (42N03); `get` reads the calling transaction's captured document.
 #[test]
 fn transaction_rules() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect().unwrap();
 
@@ -379,7 +380,7 @@ fn transaction_rules() {
 /// applies the type on conforming data; runs in explicit transactions.
 #[test]
 fn apply_semantics() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect().unwrap();
 
@@ -443,7 +444,7 @@ fn apply_semantics() {
 /// silent drop (ADR-0364 §3/§5.4).
 #[test]
 fn apply_rejects_main_valid_but_unconvertible_documents() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let header = |id: &str| {
         serde_json::json!({
             "schema": SCHEMA_URI,
@@ -496,7 +497,7 @@ fn apply_rejects_main_valid_but_unconvertible_documents() {
 /// modes (ADR-0121 §7).
 #[test]
 fn show_procedures_lists_the_ontology_procedures() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect().unwrap();
     let result = conn
@@ -542,7 +543,7 @@ fn show_procedures_lists_the_ontology_procedures() {
 /// neo4j-only text of ADR-0227 §1, which now fires only on `system`.
 #[test]
 fn namespace_gating() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     set_doc(&mut db.connect().unwrap(), DOC_JSON).unwrap();
 
@@ -610,7 +611,7 @@ fn namespace_gating() {
 /// procedures against `neo4j` keep working on it.
 #[test]
 fn system_ontologies_is_not_queryable_after_set() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect().unwrap();
     set_doc(&mut conn, DOC_JSON).unwrap();

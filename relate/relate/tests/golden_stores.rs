@@ -25,7 +25,7 @@ use relate_storage::{
 };
 use relate_test_support::vfs_walk::walk_vfs;
 
-use common::store_vfs;
+use common::store::store_vfs;
 
 /// Committed before the generator's checkpoint: the schema, the databases,
 /// and the base graph every golden store shares.

@@ -12,7 +12,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::preview_ontology;
+use common::ontology::preview_ontology;
 use relate::{Database, OpenOptions, SnapshotCodecKind, Value};
 
 /// One node, one label directory — the minimal vault that carries a

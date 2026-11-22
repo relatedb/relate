@@ -19,10 +19,10 @@ use std::sync::Arc;
 use relate::{Database, Value};
 use relate_storage::{MemoryVfs, SnapshotCodecKind, Vfs};
 
-use common::{
-    assert_checkpoint_format, err_text, get_doc, magics, opts, segment_magics, set_doc,
-    ExpectedOntology,
-};
+use common::checkpoint::{assert_checkpoint_format, ExpectedOntology};
+use common::err_text;
+use common::ontology::{get_doc, set_doc};
+use common::store::{magics, opts, segment_magics};
 
 /// The YAML matrix document (the twin-ontology shape, freely formatted —
 /// the byte-identity legs pin verbatim storage across reopens).
@@ -218,19 +218,19 @@ fn run_matrix_stores_without_a_native_root(
 
 #[test]
 fn native_directory_procedure_matrix_compiled_codecs() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     run_matrix(native_dir_reopen);
 }
 
 #[test]
 fn memory_vfs_procedure_matrix_compiled_codecs() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     run_matrix_stores_without_a_native_root(memory_vfs_reopen);
 }
 
 #[test]
 fn bundle_procedure_matrix_compiled_codecs() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     run_matrix_stores_without_a_native_root(bundle_reopen);
 }
 
@@ -248,7 +248,7 @@ fn bundle_procedure_matrix_compiled_codecs() {
 /// rotation the facade test does not observe.
 #[test]
 fn procedure_driven_format_transitions() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     for &codec in SnapshotCodecKind::compiled() {
         let dir = tempfile::tempdir().unwrap();
         let uri = dir.path().to_str().unwrap().to_string();

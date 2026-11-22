@@ -35,7 +35,8 @@ use std::collections::HashMap;
 
 use relate::Value;
 
-use common::{err_text, printed_spec, rows, run, scalar_one, show_spec};
+use common::show_variants::{printed_spec, show_spec};
+use common::{err_text, rows, run, scalar_one};
 
 fn graph_text(value: &Value) -> String {
     match value {
@@ -140,7 +141,7 @@ struct Example<'a> {
 }
 
 fn check(example: Example<'_>) {
-    let mut c = common::show_variants_connection();
+    let mut c = common::show_variants::show_variants_connection();
     run(&mut c, example.set);
     assert_variant(&mut c, "", example.plain);
     assert_variant(&mut c, "AS CONSOLIDATED", example.consolidated);
@@ -153,13 +154,17 @@ fn check(example: Example<'_>) {
 // E1 -- dependent and independent constraints on nodes
 // ---------------------------------------------------------------------
 
+/// The E1 fixture: dependent and independent constraints on nodes, shared by
+/// E1 and the three-variants-in-one-query example E8.
+const E1_SET: &str = "ALTER CURRENT GRAPH TYPE SET { (:A => :B {p1 :: STRING}), \
+              (:C => :A&D {p2 :: FLOAT NOT NULL}), \
+              CONSTRAINT d_p_int FOR (n:D) REQUIRE (n.p) IS :: INTEGER, \
+              CONSTRAINT FOR (n:E) REQUIRE (n.p) IS NOT NULL }";
+
 #[test]
 fn e1_independent_node_constraints() {
     check(Example {
-        set: "ALTER CURRENT GRAPH TYPE SET { (:A => :B {p1 :: STRING}), \
-              (:C => :A&D {p2 :: FLOAT NOT NULL}), \
-              CONSTRAINT d_p_int FOR (n:D) REQUIRE (n.p) IS :: INTEGER, \
-              CONSTRAINT FOR (n:E) REQUIRE (n.p) IS NOT NULL }",
+        set: E1_SET,
         plain: Expect {
             spec: "{  (:A => :B {p1 :: STRING}),  (:C => :A&D {p2 :: FLOAT NOT NULL}),  \
                    CONSTRAINT d_p_int FOR (n:D) REQUIRE (n.p) IS :: INTEGER,  \
@@ -386,7 +391,7 @@ fn e4_a_mix_of_constraint_classifications() {
             .map(|s| s.to_string())
             .collect()
     };
-    let mut c = common::show_variants_connection();
+    let mut c = common::show_variants::show_variants_connection();
     run(&mut c, E4_SET);
 
     // Plain.
@@ -593,7 +598,7 @@ fn e5_inherited_defaults_are_inlined() {
 
 #[test]
 fn e6_variants_that_cannot_be_set() {
-    let mut c = common::show_variants_connection();
+    let mut c = common::show_variants::show_variants_connection();
     run(
         &mut c,
         "ALTER CURRENT GRAPH TYPE SET { (:A => :B {p1 :: STRING}), \
@@ -672,7 +677,7 @@ fn e6_variants_that_cannot_be_set() {
 
 #[test]
 fn e7_the_consolidated_type_can_be_set() {
-    let mut c = common::show_variants_connection();
+    let mut c = common::show_variants::show_variants_connection();
     run(
         &mut c,
         "ALTER CURRENT GRAPH TYPE SET { (:A => :B { p1 :: STRING }), \
@@ -703,14 +708,8 @@ fn e7_the_consolidated_type_can_be_set() {
 
 #[test]
 fn e8_the_three_variants_in_one_query() {
-    let mut c = common::show_variants_connection();
-    run(
-        &mut c,
-        "ALTER CURRENT GRAPH TYPE SET { (:A => :B {p1 :: STRING}), \
-         (:C => :A&D {p2 :: FLOAT NOT NULL}), \
-         CONSTRAINT d_p_int FOR (n:D) REQUIRE (n.p) IS :: INTEGER, \
-         CONSTRAINT FOR (n:E) REQUIRE (n.p) IS NOT NULL }",
-    );
+    let mut c = common::show_variants::show_variants_connection();
+    run(&mut c, E1_SET);
     let row = common::row(
         &mut c,
         "SHOW CURRENT GRAPH TYPE YIELD specification AS actual \

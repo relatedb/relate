@@ -15,7 +15,7 @@
 //! The enabled side (the calls succeed, the four rows are listed and the
 //! namespace is visible and not queryable) lives in the four ontology
 //! test crates and the namespace suites, which opt in through
-//! `common::preview_ontology`. This crate must never opt in — it exists
+//! `common::ontology::preview_ontology`. This crate must never opt in — it exists
 //! to pin the closed gate.
 
 mod common;
@@ -23,7 +23,8 @@ mod common;
 use relate::test_opts::assert_preview_unset;
 use relate::{Database, Namespace, Value};
 
-use common::{err_text, set_doc, ONTOLOGY_DOC};
+use common::err_text;
+use common::ontology::{set_doc, ONTOLOGY_DOC};
 
 /// ADR-0371's authored disabled-feature text for the `ontology` row.
 const DISABLED: &str = "semantic error: SemanticError: preview feature 'ontology' is not enabled: \

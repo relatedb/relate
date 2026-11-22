@@ -12,10 +12,10 @@ use std::sync::Arc;
 use relate::{Database, Value};
 use relate_storage::{read_to_vec, MemoryVfs, SnapshotCodecKind, Vfs, VfsOpen};
 
-use common::{
-    active_segment, assert_checkpoint_format, err_text, get_doc, magics, ontology_set_frame, opts,
-    seed_store, set_doc, store_vfs, ExpectedOntology,
-};
+use common::checkpoint::{assert_checkpoint_format, ExpectedOntology};
+use common::err_text;
+use common::ontology::{get_doc, set_doc};
+use common::store::{active_segment, magics, ontology_set_frame, opts, seed_store, store_vfs};
 
 /// A small main-shape document (the gate URI, one node entry with two
 /// properties, one relationship entry).
@@ -92,7 +92,7 @@ where
 
 #[test]
 fn native_dir_roundtrips_compiled_codecs() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     roundtrips_compiled_codecs(|codec| {
         let dir = tempfile::tempdir().unwrap();
         move || Database::open_with(dir.path().to_str().unwrap(), opts(codec)).unwrap()
@@ -101,7 +101,7 @@ fn native_dir_roundtrips_compiled_codecs() {
 
 #[test]
 fn memory_vfs_roundtrips_compiled_codecs() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     roundtrips_stores_without_a_native_root(|codec| {
         let vfs: Arc<dyn Vfs> = Arc::new(MemoryVfs::new());
         move || Database::open_vfs(Arc::clone(&vfs), opts(codec)).unwrap()
@@ -110,7 +110,7 @@ fn memory_vfs_roundtrips_compiled_codecs() {
 
 #[test]
 fn bundle_roundtrips_compiled_codecs() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     roundtrips_stores_without_a_native_root(|codec| {
         let dir = tempfile::tempdir().unwrap();
         let uri = dir.path().join("graph.rl");
@@ -126,7 +126,7 @@ fn bundle_roundtrips_compiled_codecs() {
 /// checkpoint and makes the same scenario racy.
 #[test]
 fn set_without_checkpoint_survives_reopen_via_wal() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     // Memory-VFS stores only: the LSM keyspace codec needs a directory.
     for &codec in SnapshotCodecKind::compiled() {
         let vfs: Arc<dyn Vfs> = Arc::new(MemoryVfs::new());
@@ -147,7 +147,7 @@ fn set_without_checkpoint_survives_reopen_via_wal() {
 /// segments only.
 #[test]
 fn drop_checkpoint_and_recycle_returns_the_store_to_the_plain_format() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     for &codec in SnapshotCodecKind::compiled() {
         let dir = tempfile::tempdir().unwrap();
         let uri = dir.path().to_str().unwrap().to_string();
@@ -177,7 +177,7 @@ fn drop_checkpoint_and_recycle_returns_the_store_to_the_plain_format() {
 /// (ADR-0120 §7 through `publish_cut`).
 #[test]
 fn clone_carries_the_ontology_document() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("source").to_str().unwrap().to_string();
     let dest = dir.path().join("dest").to_str().unwrap().to_string();
@@ -197,7 +197,7 @@ fn clone_carries_the_ontology_document() {
 /// check is gone with the derived graph.
 #[test]
 fn invalid_document_is_refused() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let err = err_text(
         db.commit_ontology_set("{\"schema\":\"wrong\",\"id\":\"x\",\"version\":\"1\"}".to_string()),
@@ -214,7 +214,7 @@ fn invalid_document_is_refused() {
 /// document is reachable only through the `db.ontology.*` procedures.
 #[test]
 fn stored_document_derives_no_queryable_graph() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     db.commit_ontology_set(DOC.to_string()).unwrap();
     let mut conn = db.connect().unwrap();
@@ -257,7 +257,7 @@ const PRE_BUMP_DOC: &str = concat!(
 /// `set` still rejects the same document.
 #[test]
 fn pre_bump_stored_document_opens_reads_and_fails_at_apply() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let dir = tempfile::tempdir().unwrap();
     let uri = dir.path().join("db");
     seed_store(&uri, SnapshotCodecKind::Json);

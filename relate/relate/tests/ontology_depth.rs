@@ -21,7 +21,8 @@ use std::collections::BTreeMap;
 use relate::{Database, Value};
 use relate_storage::{read_to_vec, SnapshotCodecKind, VfsOpen};
 
-use common::{active_segment, err_text, ontology_set_frame, seed_store, store_vfs};
+use common::err_text;
+use common::store::{active_segment, ontology_set_frame, seed_store, store_vfs};
 
 /// The typed error text the depth pre-screen raises (`OntologyError`).
 const DEPTH_ERROR: &str = "nesting exceeds the 128-level depth limit";
@@ -35,7 +36,7 @@ fn deep_yaml() -> String {
 
 #[test]
 fn ontology_set_rejects_deep_document_and_store_stays_unchanged() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect().unwrap();
 
@@ -54,7 +55,7 @@ fn ontology_set_rejects_deep_document_and_store_stays_unchanged() {
 
 #[test]
 fn deep_ontology_in_wal_fails_open_with_typed_error() {
-    common::preview_ontology();
+    common::ontology::preview_ontology();
     let dir = tempfile::tempdir().unwrap();
     let uri = dir.path().join("db");
     seed_store(&uri, SnapshotCodecKind::Json);
