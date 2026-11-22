@@ -129,37 +129,81 @@ fn classify(dir: &str) -> Option<Group> {
     }
 }
 
-fn rule_for(from: Group, kind: DepKind, to: Group, to_dir: &str) -> Option<Rule> {
-    let test_support = to_dir == TEST_SUPPORT_DIR;
-    // The one extensions-group package a surface may link: the wire kit.
-    let linkable_extension = to_dir == WIRE_KIT_DIR;
-    // The engine leaf crates an extensions child may reach (ADR-0434).
-    let leaf_engine = to == Group::Engine && LEAF_ENGINE_DIRS.contains(&to_dir);
+/// Where a dependency target sits: its group, with the three named
+/// special cases the rules single out resolved once from its directory
+/// rather than re-derived from the path inside every rule arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    /// An engine crate outside the leaf set.
+    Engine,
+    /// An engine leaf crate (`LEAF_ENGINE_DIRS`, ADR-0434).
+    LeafEngine,
+    Surface,
+    /// A testing crate other than the shared test-support one.
+    Testing,
+    /// `testing/relate-test-support` (`TEST_SUPPORT_DIR`).
+    TestSupport,
+    /// An extensions crate other than the wire kit.
+    Extension,
+    /// The one extensions-group package a surface may link
+    /// (`WIRE_KIT_DIR`).
+    WireKit,
+}
+
+impl Placement {
+    fn of(group: Group, dir: &str) -> Self {
+        match group {
+            Group::Engine if LEAF_ENGINE_DIRS.contains(&dir) => Self::LeafEngine,
+            Group::Engine => Self::Engine,
+            Group::Surfaces => Self::Surface,
+            Group::Testing if dir == TEST_SUPPORT_DIR => Self::TestSupport,
+            Group::Testing => Self::Testing,
+            Group::Extensions if dir == WIRE_KIT_DIR => Self::WireKit,
+            Group::Extensions => Self::Extension,
+        }
+    }
+
+    fn group(self) -> Group {
+        match self {
+            Self::Engine | Self::LeafEngine => Group::Engine,
+            Self::Surface => Group::Surfaces,
+            Self::Testing | Self::TestSupport => Group::Testing,
+            Self::Extension | Self::WireKit => Group::Extensions,
+        }
+    }
+}
+
+fn rule_for(from: Group, kind: DepKind, to: Placement) -> Option<Rule> {
+    let test_support = to == Placement::TestSupport;
+    let to_group = to.group();
     match (from, kind) {
         (Group::Engine, DepKind::Normal | DepKind::Build) => {
-            (to != Group::Engine).then_some(Rule::R1)
+            (to_group != Group::Engine).then_some(Rule::R1)
         }
-        (Group::Engine, DepKind::Dev) => (to != Group::Engine && !test_support).then_some(Rule::R2),
+        (Group::Engine, DepKind::Dev) => {
+            (to_group != Group::Engine && !test_support).then_some(Rule::R2)
+        }
         // Surfaces reach the extensions group for the wire kit only on
         // the product path (ADR-0431 §11): a surface linking an importer
         // child would re-create the compiled-in importer surface the
         // extraction retired. Dev deps are test ties — the e2e suites'
         // pins against the importer crates' own constants — and may
         // reach any member, because a dev edge never ships in a binary.
-        (Group::Surfaces, DepKind::Normal | DepKind::Build) => (to == Group::Testing
-            || (to == Group::Extensions && !linkable_extension))
+        (Group::Surfaces, DepKind::Normal | DepKind::Build) => (to_group == Group::Testing
+            || (to_group == Group::Extensions && to != Placement::WireKit))
             .then_some(Rule::R3),
         (Group::Surfaces, DepKind::Dev) => {
-            (to == Group::Testing && !test_support).then_some(Rule::R3)
+            (to_group == Group::Testing && !test_support).then_some(Rule::R3)
         }
         // First-party children reach the engine's LEAF crates (the
         // Database-free set, `LEAF_ENGINE_DIRS`) and their own group's
         // kit, nothing further (ADR-0434).
         (Group::Extensions, DepKind::Normal | DepKind::Build) => {
-            (!(leaf_engine || to == Group::Extensions)).then_some(Rule::R7)
+            (!(to == Placement::LeafEngine || to_group == Group::Extensions)).then_some(Rule::R7)
         }
         (Group::Extensions, DepKind::Dev) => {
-            (!(leaf_engine || to == Group::Extensions || test_support)).then_some(Rule::R7)
+            (!(to == Placement::LeafEngine || to_group == Group::Extensions || test_support))
+                .then_some(Rule::R7)
         }
         (Group::Testing, _) => None,
     }
@@ -186,7 +230,7 @@ pub fn check(packages: &[Package]) -> Report {
                 let (Some(from), Some(to)) = (from_group, classify(&target.dir)) else {
                     continue;
                 };
-                if let Some(rule) = rule_for(from, dep.kind, to, &target.dir) {
+                if let Some(rule) = rule_for(from, dep.kind, Placement::of(to, &target.dir)) {
                     violations.push(Violation::Edge {
                         from: package.name.clone(),
                         to: target.name.clone(),

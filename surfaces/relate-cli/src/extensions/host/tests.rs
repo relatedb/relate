@@ -394,6 +394,16 @@ fn the_commit_policy_is_the_kits_commit_facts() {
 // ---------------------------------------------------------------------
 
 #[cfg(unix)]
+/// One `write_cypher` call writing `ids`' `:N` nodes.
+fn write_nodes(ids: &[i64]) -> String {
+    let rows: Vec<String> = ids.iter().map(|id| format!("{{\"id\": {id}}}")).collect();
+    format!(
+        "mcp_call write_cypher '{{\"statement\":\"UNWIND $rows AS row CREATE (n:N {{id: row.id}})\",\"parameters\":{{\"rows\":[{}]}}}}' >/dev/null",
+        rows.join(",")
+    )
+}
+
+#[cfg(unix)]
 mod driver {
     use super::*;
     use crate::extensions::mcp::McpError;
@@ -437,15 +447,6 @@ mod driver {
     /// The store's node count, read the way the freshness read reads it.
     fn nodes(conn: &mut relate::Connection) -> i64 {
         write::node_count(conn).unwrap()
-    }
-
-    /// One `write_cypher` call writing `ids`' `:N` nodes.
-    fn write_nodes(ids: &[i64]) -> String {
-        let rows: Vec<String> = ids.iter().map(|id| format!("{{\"id\": {id}}}")).collect();
-        format!(
-            "mcp_call write_cypher '{{\"statement\":\"UNWIND $rows AS row CREATE (n:N {{id: row.id}})\",\"parameters\":{{\"rows\":[{}]}}}}' >/dev/null",
-            rows.join(",")
-        )
     }
 
     #[test]
@@ -648,9 +649,10 @@ mod lifecycle {
 
     /// The clean-run body: one writing call of two rows, then the summary.
     fn clean_body() -> String {
-        r#"mcp_call write_cypher '{"statement":"UNWIND $rows AS row CREATE (n:N {id: row.id})","parameters":{"rows":[{"id":1},{"id":2}]}}' >/dev/null
-mcp_call report_output '{"text":"imported 2"}' >/dev/null"#
-            .to_string()
+        format!(
+            "{}\nmcp_call report_output '{{\"text\":\"imported 2\"}}' >/dev/null",
+            write_nodes(&[1, 2])
+        )
     }
 
     #[test]

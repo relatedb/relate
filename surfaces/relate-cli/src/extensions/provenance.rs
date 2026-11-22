@@ -204,6 +204,22 @@ impl Provenance {
 mod tests {
     use super::*;
 
+    /// The listing label and the marker's serde spelling are one
+    /// vocabulary: each tier's `as_str` decodes back to the same tier, so
+    /// the hand table cannot drift from the derive.
+    #[test]
+    fn a_tiers_label_is_its_serde_spelling() {
+        for tier in [
+            Tier::FirstParty,
+            Tier::GithubPin,
+            Tier::ThirdParty,
+            Tier::Local,
+        ] {
+            let decoded: Tier = serde_json::from_str(&format!("\"{}\"", tier.as_str())).unwrap();
+            assert_eq!(decoded, tier);
+        }
+    }
+
     /// A package directory under `tmp` with a manifest and optional marker.
     fn package(tmp: &tempfile::TempDir, marker: Option<&str>) -> std::path::PathBuf {
         let dir = tmp.path().join("pkg");

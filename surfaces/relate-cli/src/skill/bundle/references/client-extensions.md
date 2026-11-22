@@ -3,7 +3,9 @@
 Command-kind extensions: userland commands that install as packages and
 mount as `relate run <name> [flags]` (ADR-0429), speaking MCP stdio to
 a host that alone owns the store (ADR-0442, ADR-0447). The child is a
-minimal MCP client over the two pipes — an MCP SDK works unchanged, and so
+minimal MCP client over the two pipes — an MCP SDK's protocol layer works
+once it has read the envelope line and runs over a client transport on the
+child's own pipes (the SDKs' stock stdio transport spawns a server), and so
 does a shell script that writes one JSON-RPC line per request.
 
 ## Install

@@ -156,6 +156,70 @@ impl McpRefusal {
     }
 }
 
+/// One decoded request classified by the mount's method vocabulary: the
+/// single dispatcher both the session loop and the `check` verb's tool
+/// stage match, so a notification's skip, a missing id's failure and the
+/// arm set cannot drift between them.
+#[derive(Debug)]
+pub(crate) enum Route {
+    /// A request without an id and a notification method: read, never
+    /// answered.
+    Notification { method: String },
+    /// `initialize`.
+    Initialize { id: Value, params: Option<Value> },
+    /// `tools/list`.
+    ToolsList { id: Value },
+    /// `tools/call`.
+    ToolsCall { id: Value, params: Option<Value> },
+    /// Any other method: the mount's unknown-method refusal.
+    Unknown { id: Value, method: String },
+}
+
+impl Route {
+    /// Classify `request`. A request without an id that is not a
+    /// notification would wait for an answer forever, so it is the
+    /// fatal [`McpError::RequestWithoutId`].
+    pub(crate) fn of(request: mcp::Request) -> Result<Self, McpError> {
+        let Some(id) = request.id else {
+            return if mcp::is_notification(&request.method) {
+                Ok(Self::Notification {
+                    method: request.method,
+                })
+            } else {
+                Err(McpError::RequestWithoutId {
+                    method: request.method,
+                })
+            };
+        };
+        Ok(match request.method.as_str() {
+            mcp::METHOD_INITIALIZE => Self::Initialize {
+                id,
+                params: request.params,
+            },
+            mcp::METHOD_TOOLS_LIST => Self::ToolsList { id },
+            mcp::METHOD_TOOLS_CALL => Self::ToolsCall {
+                id,
+                params: request.params,
+            },
+            _ => Self::Unknown {
+                id,
+                method: request.method,
+            },
+        })
+    }
+
+    /// The method this route was classified from, for error text.
+    fn method(&self) -> String {
+        match self {
+            Self::Notification { method } => method.clone(),
+            Self::Initialize { .. } => mcp::METHOD_INITIALIZE.to_string(),
+            Self::ToolsList { .. } => mcp::METHOD_TOOLS_LIST.to_string(),
+            Self::ToolsCall { .. } => mcp::METHOD_TOOLS_CALL.to_string(),
+            Self::Unknown { method, .. } => method.clone(),
+        }
+    }
+}
+
 impl std::fmt::Display for McpRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -539,60 +603,52 @@ impl<O: Write> Session<O> {
                 return self.respond(refusal.into_line(Value::Null));
             }
         };
-        // A partial move: the id is needed by every answer below, the
-        // method and params by their own arms — no reason to clone the id
-        // out of a request this loop owns.
-        let Some(id) = request.id else {
-            // A notification carries no id: nothing to answer. A method that
-            // needs an answer cannot be a notification, so a child that
-            // omitted its id would wait forever — the session fails instead
-            // of hanging on a response that will never be written.
-            if mcp::is_notification(&request.method) {
-                return Ok(());
-            }
-            return Err(McpError::RequestWithoutId {
-                method: request.method,
-            }
-            .into());
-        };
         // Every arm renders its one response line here, so the write below
         // never re-serializes what was already measured against the cap.
-        let response_line = match request.method.as_str() {
-            mcp::METHOD_INITIALIZE => {
-                if self.initialized {
-                    McpRefusal::AlreadyInitialized.into_line(id)
-                } else {
-                    match require_protocol_version(request.params.as_ref()) {
-                        // The mount answers its one revision whatever the
-                        // child named — the value is the check verb's to
-                        // compare, not this arm's.
-                        Ok(_) => {
-                            let facts = self.initialize_result(store)?;
-                            self.initialized = true;
-                            Response::success(id, facts).to_line()
-                        }
-                        Err(refusal) => refusal.into_line(id),
-                    }
-                }
-            }
+        let route = Route::of(request)?;
+        let response_line = match route {
+            // A notification carries no id: nothing to answer.
+            Route::Notification { .. } => return Ok(()),
+            Route::Initialize { id, params } => self.initialize_line(store, id, params.as_ref())?,
             // Every other method is served only after the handshake: the
             // initialize arm above is the handshake's only owner.
-            _ if !self.initialized => {
+            other if !self.initialized => {
                 return Err(McpError::InitializeNotFirst {
-                    method: request.method,
+                    method: other.method(),
                 }
                 .into())
             }
             // The mount's catalog is the wire kit's extension-mount rows —
             // the one tool table, no per-surface copy.
-            mcp::METHOD_TOOLS_LIST => Response::success(id, mcp::extension_tools_list()).to_line(),
-            mcp::METHOD_TOOLS_CALL => self.call_tool(store, conn, id, request.params)?,
-            other => McpRefusal::UnknownMethod {
-                method: other.to_string(),
-            }
-            .into_line(id),
+            Route::ToolsList { id } => Response::success(id, mcp::extension_tools_list()).to_line(),
+            Route::ToolsCall { id, params } => self.call_tool(store, conn, id, params)?,
+            Route::Unknown { id, method } => McpRefusal::UnknownMethod { method }.into_line(id),
         };
         self.respond(response_line)
+    }
+
+    /// The `initialize` arm: the handshake's one owner. A second
+    /// `initialize` is refused, a request naming a revision shape the mount
+    /// cannot read is the typed refusal, and a good one answers the mount's
+    /// one revision whatever the child named — the value is the check
+    /// verb's to compare, not this arm's — and opens the session.
+    fn initialize_line(
+        &mut self,
+        store: &Database,
+        id: Value,
+        params: Option<&Value>,
+    ) -> Result<String, HostError> {
+        if self.initialized {
+            return Ok(McpRefusal::AlreadyInitialized.into_line(id));
+        }
+        match require_protocol_version(params) {
+            Ok(_) => {
+                let facts = self.initialize_result(store)?;
+                self.initialized = true;
+                Ok(Response::success(id, facts).to_line())
+            }
+            Err(refusal) => Ok(refusal.into_line(id)),
+        }
     }
 
     /// The `initialize` result: the kit's typed [`ServerFacts`], so the

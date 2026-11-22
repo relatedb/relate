@@ -65,15 +65,14 @@ use std::time::Duration;
 use relate_formatter::sanitize_error_text;
 use relate_mcp::tools as tool_layer;
 use relate_wire::mcp::{
-    decode_request, extension_tools_list, is_notification, Capacity, Response,
-    MCP_PROTOCOL_VERSION, METHOD_INITIALIZE, METHOD_INITIALIZED, METHOD_TOOLS_CALL,
-    METHOD_TOOLS_LIST,
+    decode_request, extension_tools_list, Capacity, Response, MCP_PROTOCOL_VERSION,
+    METHOD_INITIALIZE, METHOD_INITIALIZED,
 };
 use relate_wire::read_cap::{write_line, DeadlineReader, LineArrival};
 
 use crate::extensions::host::{check_manifest, default_envelope};
 use crate::extensions::mcp::{
-    initialize_facts, require_protocol_version, server_info, McpError, McpRefusal,
+    initialize_facts, require_protocol_version, server_info, McpError, McpRefusal, Route,
 };
 use crate::extensions::protocol::{self, Caps};
 use crate::extensions::provenance::{Pin, Provenance, Tier};
@@ -364,7 +363,7 @@ fn stage_initialize(
         Capacity::new(0, None),
     );
     child
-        .answer(&Response::success(id, facts))
+        .answer(&Response::success(id, facts).to_line())
         .map_err(|detail| Failure::at(Stage::Initialize, detail))?;
     let identity = server_info();
     lines.push(format!(
@@ -405,15 +404,36 @@ fn stage_initialized(child: &mut Child, lines: &mut Vec<String>) -> Result<(), F
 fn stage_tool_table(child: &mut Child, lines: &mut Vec<String>) -> Result<(), Failure> {
     let table = extension_tools_list();
     let served = tool_names(&table);
-    let mut called: Option<String> = None;
-    // At most two requests: a child that asks for the table and then names
-    // its first tool, or one that goes straight to the call. A child that
-    // asks for anything else, ends, or stalls has asked nothing more of
-    // the host — the mount would keep serving it, but the check's contract
-    // is the table, not the import.
+    let called = serve_tool_requests(child, &table, &served)?;
+    lines.push(match called {
+        Some(tool) => format!(
+            "tools/list: ok (the shared tool table: {} tools; the extension calls '{}')",
+            served.len(),
+            sanitize_error_text(&tool)
+        ),
+        None => format!(
+            "tools/list: ok (the shared tool table: {} tools)",
+            served.len()
+        ),
+    });
+    Ok(())
+}
+
+/// Serve the child's post-handshake requests the way the mount would, at
+/// most two: a child that asks for the table and then names its first
+/// tool, or one that goes straight to the call. A child that asks for
+/// anything else, ends, or stalls has asked nothing more of the host — the
+/// mount would keep serving it, but the check's contract is the table, not
+/// the import. Returns the tool the child called, when it called one; every
+/// request is classified by the mount's own [`Route`].
+fn serve_tool_requests(
+    child: &mut Child,
+    table: &serde_json::Value,
+    served: &[String],
+) -> Result<Option<String>, Failure> {
     for _ in 0..2 {
         let request = match child.next() {
-            None | Some(LineArrival::Eof) => break,
+            None | Some(LineArrival::Eof) => return Ok(None),
             Some(LineArrival::Exceeded) => return Err(child.record_too_large(Stage::ToolTable)),
             Some(LineArrival::Failed(detail)) => {
                 return Err(Failure::at(
@@ -425,27 +445,16 @@ fn stage_tool_table(child: &mut Child, lines: &mut Vec<String>) -> Result<(), Fa
                 Failure::at(Stage::ToolTable, McpRefusal::from(error).to_string())
             })?,
         };
-        let Some(id) = request.id else {
-            // A notification asks nothing of the host; anything else
-            // without an id would wait for an answer forever (the mount's
-            // own rule).
-            if is_notification(&request.method) {
-                continue;
-            }
-            return Err(Failure::at(
-                Stage::ToolTable,
-                McpError::RequestWithoutId {
-                    method: request.method,
-                }
-                .to_string(),
-            ));
-        };
-        match request.method.as_str() {
-            METHOD_TOOLS_LIST => child
-                .answer(&Response::success(id, table.clone()))
+        let route =
+            Route::of(request).map_err(|error| Failure::at(Stage::ToolTable, error.to_string()))?;
+        match route {
+            // A notification asks nothing of the host.
+            Route::Notification { .. } => {}
+            Route::ToolsList { id } => child
+                .answer(&Response::success(id, table.clone()).to_line())
                 .map_err(|detail| Failure::at(Stage::ToolTable, detail))?,
-            METHOD_TOOLS_CALL => {
-                let (name, _arguments) = tool_layer::call_parts(request.params.as_ref())
+            Route::ToolsCall { params, .. } => {
+                let (name, _arguments) = tool_layer::call_parts(params.as_ref())
                     .map_err(|error| Failure::at(Stage::ToolTable, error.to_string()))?;
                 if !served.iter().any(|tool| tool == name) {
                     return Err(Failure::at(
@@ -456,35 +465,26 @@ fn stage_tool_table(child: &mut Child, lines: &mut Vec<String>) -> Result<(), Fa
                         ),
                     ));
                 }
-                called = Some(name.to_string());
-                break;
+                return Ok(Some(name.to_string()));
             }
-            // Any other method is the mount's unknown-method refusal,
-            // answered and not a check failure: the mount would answer it
-            // too and keep the session.
-            other => {
-                let refusal = McpRefusal::UnknownMethod {
-                    method: other.to_string(),
-                };
-                child
-                    .answer(&Response::error(id, refusal.code(), refusal.to_string()))
-                    .map_err(|detail| Failure::at(Stage::ToolTable, detail))?;
-                break;
+            // A second `initialize` or any other method is the mount's own
+            // refusal, answered and not a check failure: the mount would
+            // answer it too and keep the session.
+            Route::Initialize { id, .. } => {
+                return child
+                    .answer(&McpRefusal::AlreadyInitialized.into_line(id))
+                    .map_err(|detail| Failure::at(Stage::ToolTable, detail))
+                    .map(|()| None)
+            }
+            Route::Unknown { id, method } => {
+                return child
+                    .answer(&McpRefusal::UnknownMethod { method }.into_line(id))
+                    .map_err(|detail| Failure::at(Stage::ToolTable, detail))
+                    .map(|()| None)
             }
         }
     }
-    match called {
-        Some(tool) => lines.push(format!(
-            "tools/list: ok (the shared tool table: {} tools; the extension calls '{}')",
-            served.len(),
-            sanitize_error_text(&tool)
-        )),
-        None => lines.push(format!(
-            "tools/list: ok (the shared tool table: {} tools)",
-            served.len()
-        )),
-    }
-    Ok(())
+    Ok(None)
 }
 
 /// The tool names one `tools/list` result carries, in table order — read
@@ -523,17 +523,19 @@ fn tool_names(table: &serde_json::Value) -> Vec<String> {
 enum PinStatus {
     /// The marker's pin is exactly the trust store's entry for this name.
     Approved(Pin),
-    /// The marker's pin is not the store's entry; `approved` is `None` when
-    /// the store holds no pin for the name at all.
+    /// The marker's pin is not the store's entry for the name.
     Drifted {
         /// The pin the package's marker records.
         installed: Pin,
-        /// The pin the trust store records for the name, when it has one.
-        approved: Option<Pin>,
+        /// The pin the trust store records for the name.
+        approved: Pin,
     },
-    /// The package did not arrive by the GitHub tier: the state is its
-    /// tier's label, or `unmarked` when the package carries no marker.
-    NotGithub(&'static str),
+    /// The trust store holds no pin for the name at all; the payload is
+    /// the pin the package's marker records.
+    Unapproved(Pin),
+    /// The package did not arrive by the GitHub tier: its tier, or `None`
+    /// when the package carries no marker.
+    NotGithub(Option<Tier>),
     /// The marker or the trust store could not be read, or a github-pin
     /// marker carries no pin; the refusal's text rides along.
     Unknown(String),
@@ -545,7 +547,7 @@ impl PinStatus {
     fn as_str(&self) -> &'static str {
         match self {
             Self::Approved(_) => "approved",
-            Self::Drifted { .. } => "drifted",
+            Self::Drifted { .. } | Self::Unapproved(_) => "drifted",
             Self::NotGithub(_) => "not from a GitHub source",
             Self::Unknown(_) => "unknown",
         }
@@ -558,11 +560,11 @@ impl PinStatus {
 fn pin_status(package_dir: &Path, name: &str, trust_file: Option<&Path>) -> PinStatus {
     let provenance = match Provenance::read(package_dir) {
         Ok(Some(provenance)) => provenance,
-        Ok(None) => return PinStatus::NotGithub("unmarked"),
+        Ok(None) => return PinStatus::NotGithub(None),
         Err(error) => return PinStatus::Unknown(error.to_string()),
     };
     if provenance.tier != Tier::GithubPin {
-        return PinStatus::NotGithub(provenance.tier.as_str());
+        return PinStatus::NotGithub(Some(provenance.tier));
     }
     let Some(installed) = provenance.pin else {
         return PinStatus::Unknown(
@@ -578,10 +580,11 @@ fn pin_status(package_dir: &Path, name: &str, trust_file: Option<&Path>) -> PinS
     };
     match store.get(name) {
         Some(approved) if *approved == installed => PinStatus::Approved(installed),
-        approved => PinStatus::Drifted {
+        Some(approved) => PinStatus::Drifted {
             installed,
-            approved: approved.cloned(),
+            approved: approved.clone(),
         },
+        None => PinStatus::Unapproved(installed),
     }
 }
 
@@ -605,23 +608,21 @@ fn pin_line(name: &str, package_dir: &Path, trust_file: Option<&Path>) -> String
         PinStatus::Drifted {
             installed,
             approved,
-        } => match approved {
-            Some(approved) => format!(
-                "installed {}; the trust store holds {} — re-approve with \
-                 'relate extension install {} --github {}@{} --re-approve'",
-                pin_facts(installed),
-                pin_facts(approved),
-                sanitize_error_text(name),
-                sanitize_error_text(&installed.repo),
-                sanitize_error_text(&installed.tag)
-            ),
-            None => format!(
-                "the trust store holds no pin for '{}'; the package carries {}",
-                sanitize_error_text(name),
-                pin_facts(installed)
-            ),
-        },
-        PinStatus::NotGithub(tier) => (*tier).to_string(),
+        } => format!(
+            "installed {}; the trust store holds {} — re-approve with \
+             'relate extension install {} --github {}@{} --re-approve'",
+            pin_facts(installed),
+            pin_facts(approved),
+            sanitize_error_text(name),
+            sanitize_error_text(&installed.repo),
+            sanitize_error_text(&installed.tag)
+        ),
+        PinStatus::Unapproved(installed) => format!(
+            "the trust store holds no pin for '{}'; the package carries {}",
+            sanitize_error_text(name),
+            pin_facts(installed)
+        ),
+        PinStatus::NotGithub(tier) => tier.map_or("unmarked", Tier::as_str).to_string(),
         PinStatus::Unknown(detail) => sanitize_error_text(detail),
     };
     format!("pin: {} ({detail})", status.as_str())
@@ -714,8 +715,8 @@ impl Child {
 
     /// Write one response line to the child — the mount's own write, so the
     /// failure text is the mount's.
-    fn answer(&mut self, response: &Response) -> Result<(), String> {
-        write_line(&mut self.stdin, &response.to_line())
+    fn answer(&mut self, line: &str) -> Result<(), String> {
+        write_line(&mut self.stdin, line)
             .map_err(|error| McpError::ResponseWriteFailed(error.to_string()).to_string())
     }
 }
