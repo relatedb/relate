@@ -1,0 +1,21 @@
+[package]
+name = "relate-vortex-lab"
+version.workspace = true
+edition.workspace = true
+# Lab-only MSRV lift (round 1 of the columnar property-store evaluation):
+# vortex 0.93.0 declares rust-version 1.95. This crate never ships, never
+# merges behind the repo's 1.88 pin — the MSRV question is ADR material.
+rust-version = "1.95"
+description = "Vortex in-memory columnar property-store measurement harness — never a shipped surface"
+publish = false
+license.workspace = true
+
+[dependencies]
+# files: the vortex file format reader/writer; memmap2: the mmap open path
+# the VFS prototype builds on. zstd (default) stays off — no native C++
+# build in the lab; vortex's own lightweight encodings are the object of
+# study.
+vortex = { version = "0.93.0", default-features = false, features = ["files", "memmap2"] }
+# Same version vortex-buffer pins (0.9.11 in our lock): the mmap open path
+# needs one Mmap construction on our side of the VFS seam.
+memmap2 = "0.9.11"
