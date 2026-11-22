@@ -319,9 +319,17 @@ fn ffi_result_plan_json_lists_the_fused_children() {
         );
         let doc = result_plan_json(result);
         let seek = &doc["root"]["children"][0];
+        assert!(
+            seek["fused_into"].is_null(),
+            "the parent is a real operator: {seek:?}"
+        );
         let fused = seek["children"].as_array().expect("fused children");
         assert_eq!(fused.len(), 2, "the seek step plus one hop: {seek:?}");
-        assert!(fused.iter().all(|c| c["fused_into"].is_number()));
+        let parent_id = fused[0]["fused_into"].as_i64().expect("parent id");
+        assert!(
+            fused.iter().all(|c| c["fused_into"] == parent_id),
+            "every fused child names the same parent: {seek:?}"
+        );
         relate_destroy_result(result);
     }
 }

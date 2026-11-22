@@ -40,6 +40,13 @@ fn plan_children<'a>(node: &'a Pack, what: &str) -> &'a [Pack] {
     }
 }
 
+/// A required key off a plan map, named loudly when absent — the fused-child
+/// pin's spelling of it.
+fn required<'a>(pack: &'a Pack, key: &str, what: &str) -> &'a Pack {
+    pack.get(key)
+        .unwrap_or_else(|| panic!("{what} carries `{key}`: {pack:?}"))
+}
+
 /// The per-case wire contract of a drained plan tree (ADR-0344/0345,
 /// ADR-0357): the Neo4j dict shape — operatorType / args / identifiers /
 /// children, the root operator named and numbered first — with the PROFILE
@@ -51,11 +58,7 @@ fn assert_plan_summary_contract(plan: &Pack, cypher: &str, root: &str, profiled:
         Some(root),
         "{cypher}"
     );
-    // The args map — bound once, the file's one loud spelling of a
-    // required key off the plan map.
-    let args = plan
-        .get("args")
-        .unwrap_or_else(|| panic!("{cypher} carries an args map: {plan:?}"));
+    let args = required(plan, "args", cypher);
     assert_eq!(
         args.get("Id").and_then(Pack::as_int),
         Some(0),
@@ -240,13 +243,24 @@ fn pull_success_carries_the_fused_children() {
     let plan = pull
         .get("plan")
         .unwrap_or_else(|| panic!("the drained EXPLAIN carries the plan: {pull:?}"));
-    let fused = plan_children(&plan_children(plan, "the plan")[0], "the seek");
+    let parent = &plan_children(plan, "the plan")[0];
+    let parent_args = required(parent, "args", "the fused parent");
+    assert!(
+        parent_args.get("FusedInto").is_none(),
+        "the parent is a real operator: {parent:?}"
+    );
+    let parent_id = required(parent_args, "Id", "the fused parent")
+        .as_int()
+        .expect("the parent id is an integer");
+    let fused = plan_children(parent, "the fused parent");
     assert_eq!(fused.len(), 2, "the seek step plus one hop: {plan:?}");
     for child in fused {
-        let args = child
-            .get("args")
-            .unwrap_or_else(|| panic!("the fused child carries an args map: {child:?}"));
-        assert!(args.get("FusedInto").and_then(Pack::as_int).is_some());
+        let args = required(child, "args", "the fused child");
+        assert_eq!(
+            args.get("FusedInto").and_then(Pack::as_int),
+            Some(parent_id),
+            "every fused child names the parent's id: {child:?}"
+        );
     }
 }
 

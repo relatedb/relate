@@ -339,6 +339,10 @@ mod notifications_tests;
 #[path = "negotiation_tests.rs"]
 mod negotiation_tests;
 
+#[cfg(test)]
+#[path = "plan_tests.rs"]
+mod plan_tests;
+
 // The managed-transaction flow tests, split by concern from one 858-line
 // file: expiry and the honest deadline, the cap and its reservations, and
 // the lease-concurrency tests beside their start_slow harness. The shared
