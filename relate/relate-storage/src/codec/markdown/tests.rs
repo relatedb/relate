@@ -523,6 +523,72 @@ fn fail_closed_rules() {
 }
 
 #[test]
+fn key_choice_refusals_name_the_committed_ontology_file() {
+    // The three refusals that fire on the choice of key property
+    // carry the one remedy suffix (REL8-1997): the committed ontology
+    // file declares per-label keys, so a bad learned-or-inferred key
+    // is fixable by declaration — the error says how, never only what
+    // the vault requires. The wording rides the ontology module's
+    // file-name spellings, so the assertion pins that same phrase.
+    let store = crate::memory_store_with_codec(SnapshotCodecKind::Markdown).unwrap();
+    let remedy = "committed ontology file (ontology.yaml or ontology.json)";
+
+    // Missing key property: no string property at all, so the
+    // inference falls to the default 'name' the node does not carry.
+    let graph = Graph::default();
+    graph
+        .load_checkpoint_node(Node {
+            id: 1,
+            labels: Arc::new(vec!["Source".into()]),
+            properties: no_props(),
+        })
+        .unwrap();
+    graph.set_next_node_id(2);
+    graph.set_commit_ts(1);
+    let err = crate::checkpoint(&store, &graph, None).unwrap_err();
+    assert!(err.to_string().contains("has no 'name' property"), "{err}");
+    assert!(err.to_string().contains(remedy), "{err}");
+
+    // Non-string key value: the default 'name' is an integer.
+    let graph = Graph::default();
+    graph
+        .load_checkpoint_node(Node {
+            id: 1,
+            labels: Arc::new(vec!["Source".into()]),
+            properties: props(&[("name", int(42))]),
+        })
+        .unwrap();
+    graph.set_next_node_id(2);
+    graph.set_commit_ts(1);
+    let err = crate::checkpoint(&store, &graph, None).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("key property 'name' must be a string"),
+        "{err}"
+    );
+    assert!(err.to_string().contains(remedy), "{err}");
+
+    // Empty key value: a string with no representable characters —
+    // the REL8-1922 report's exact refusal.
+    let graph = Graph::default();
+    graph
+        .load_checkpoint_node(Node {
+            id: 1,
+            labels: Arc::new(vec!["Source".into()]),
+            properties: props(&[("name", string(""))]),
+        })
+        .unwrap();
+    graph.set_next_node_id(2);
+    graph.set_commit_ts(1);
+    let err = crate::checkpoint(&store, &graph, None).unwrap_err();
+    assert!(
+        err.to_string().contains("no representable characters"),
+        "{err}"
+    );
+    assert!(err.to_string().contains(remedy), "{err}");
+}
+
+#[test]
 fn type_and_labels_properties_round_trip_through_demotion() {
     let graph = Graph::default();
     graph

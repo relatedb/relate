@@ -198,6 +198,23 @@ fn plan_node_files(
     Ok((plans, raw_live))
 }
 
+/// The key-choice refusals' one remedy suffix (REL8-1997): a
+/// learned-or-inferred key property is not the only spelling — the
+/// vault's committed ontology file (ADR-0649) declares per-label key
+/// properties, and its declarations bind the load and the checkpoint
+/// alike. Every refusal that fires on the *choice* of key property
+/// carries this suffix through the one helper, never a hand-spelled
+/// copy per message; the file-name spellings come from the ontology
+/// module's one table.
+fn key_property_remedy(label: &str) -> String {
+    format!(
+        "pin another property by declaring key: true on the :{label} node type \
+         in the vault's committed ontology file ({} or {})",
+        super::ontology::VAULT_ONTOLOGY_YAML,
+        super::ontology::VAULT_ONTOLOGY_JSON
+    )
+}
+
 /// One node's plan decision — the plan loop's per-node body as one
 /// named pass, the eight policy gates in their fixed order: the
 /// primary-label resolution, the key-property extraction and type
@@ -232,18 +249,25 @@ fn plan_node(
     let Value::String(key_value) = node.properties.get(&key_name).ok_or_else(|| {
         md::vault_error(format!(
             "node {} of label {primary} has no '{key_name}' property; the markdown \
-             vault requires a non-null unique '{key_name}' on :{primary}",
-            node.id
+             vault requires a non-null unique '{key_name}' on :{primary}; {}",
+            node.id,
+            key_property_remedy(primary)
         ))
     })?
     else {
         return Err(md::vault_error(format!(
-            "node {} of label {primary}: key property '{key_name}' must be a string",
-            node.id
+            "node {} of label {primary}: key property '{key_name}' must be a string; {}",
+            node.id,
+            key_property_remedy(primary)
         )));
     };
-    let name = md::sanitize_name_path(key_value)
-        .map_err(|e| Error::storage(format!("node {}: {e}", node.id)))?;
+    let name = md::sanitize_name_path(key_value).map_err(|e| {
+        Error::storage(format!(
+            "node {}: {e}; {}",
+            node.id,
+            key_property_remedy(primary)
+        ))
+    })?;
     // The engine never writes to the vault root (ADR-0406 §2): a
     // :Vault node round-trips only into the exact root path it
     // loaded from — decided by provenance (the walked root file),
