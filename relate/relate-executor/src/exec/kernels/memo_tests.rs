@@ -150,9 +150,9 @@ fn a_refusing_meter_freezes_the_table_without_failing() {
     for id in 0..4096i64 {
         memo.answer(&meter, id, || Ok(true)).unwrap();
     }
-    assert!(!memo.frozen, "the first page fit under the cap");
+    assert!(!memo.is_frozen(), "the first page fit under the cap");
     memo.answer(&meter, 9000, || Ok(true)).unwrap();
-    assert!(memo.frozen, "the second page crossed the cap");
+    assert!(memo.is_frozen(), "the second page crossed the cap");
     // Frozen: a new key is computed every time, an old key still hits.
     for _ in 0..3 {
         memo.answer(&meter, 9001, || {
@@ -239,7 +239,7 @@ fn the_query_budget_freezes_memos_in_total() {
     };
     let mut memo = Memo::<PagedBits>::new(policy, Some(live));
     memo.answer(&Unmetered, 1, || Ok(true)).unwrap();
-    assert!(memo.frozen, "the first page crosses the shared budget");
+    assert!(memo.is_frozen(), "the first page crosses the shared budget");
     memo.answer(&Unmetered, 99_999, || Ok(true)).unwrap();
     assert!(memo.stats().refused >= 1);
 }

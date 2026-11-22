@@ -123,15 +123,12 @@ pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
         .to_ascii_uppercase();
     let coord = VectorCoordKind::from_alias(&coord_name)
         .ok_or_else(|| Error::ty("unknown vector coordinate type"))?;
-    // Choose the coordinate conversion once: it depends only on the
-    // loop-invariant `coord`, not on the element being converted.
-    let convert = coord_converter(coord);
     let mut values = Vec::with_capacity(numbers.len());
     for i in 0..numbers.len() {
         let n = numbers
             .number_at(i)
             .ok_or_else(|| Error::ty("vector() coordinates must be numbers"))?;
-        values.push(convert(n)?);
+        values.push(coord_value(coord, n)?);
     }
     Ok(Value::Vector {
         coord,
@@ -139,33 +136,42 @@ pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
     })
 }
 
-/// The per-element coordinate conversion for one `VectorCoordKind`, chosen
-/// once per `vector()` call so the loop body never re-dispatches on the
-/// loop-invariant kind.
-fn coord_converter(coord: VectorCoordKind) -> fn(f64) -> Result<Value> {
-    match coord {
-        VectorCoordKind::Int8 => int8_coord,
-        VectorCoordKind::Int16 => int16_coord,
-        VectorCoordKind::Int32 => int32_coord,
-        VectorCoordKind::Int64 => int64_coord,
-        VectorCoordKind::Float16 => float16_coord,
-        VectorCoordKind::BFloat16 => bfloat16_coord,
-        VectorCoordKind::Float32 => float32_coord,
-        VectorCoordKind::Float64 => float64_coord,
+/// One `vector()` coordinate converted to `kind`: an integer kind
+/// truncates toward zero within the kind's width, a floating kind narrows
+/// to its precision.
+fn coord_value(kind: VectorCoordKind, n: f64) -> Result<Value> {
+    if kind.is_integer() {
+        int_coord(n, kind)
+    } else {
+        float_coord(n, kind)
     }
 }
 
 /// Integer-family conversion: NaN coerces to 0, any other non-finite input
-/// is an error, and a finite out-of-range value is an `Overflow`.
-fn int_coord(n: f64, min: f64, max: f64) -> Result<Value> {
+/// is an error, and a finite value outside the kind's width is an
+/// `Overflow`. The value is truncated toward zero *before* the width test,
+/// as live Neo4j 2026.10 does: `vector([127.9], 1, INTEGER8)` is `127`, not
+/// an overflow.
+fn int_coord(n: f64, kind: VectorCoordKind) -> Result<Value> {
     let n = if n.is_nan() { 0.0 } else { n };
     if !n.is_finite() {
         return Err(Error::ty("vector() coordinates must be finite numbers"));
     }
-    if n < min || n > max {
+    let truncated = n.trunc();
+    // `f64 as i64` saturates, so guard the cast before it: a truncated
+    // value outside INT64's range would clamp silently. `i64::MAX as f64`
+    // rounds up to 2^63, so the upper bound is inclusive at 2^63 — the one
+    // value past `i64::MAX`, which the saturating cast clamps to `i64::MAX`
+    // exactly as live Neo4j 2026.10 does. The kind's own width predicate
+    // then rejects the narrower kinds.
+    if truncated < i64::MIN as f64 || truncated > i64::MAX as f64 {
         return Err(Error::ty("Overflow"));
     }
-    Ok(Value::Int(n as i64))
+    let value = truncated as i64;
+    if !kind.holds_int(value) {
+        return Err(Error::ty("Overflow"));
+    }
+    Ok(Value::Int(value))
 }
 
 /// Float-family conversion: the input must be finite, and the value
@@ -179,39 +185,6 @@ fn float_coord(n: f64, kind: VectorCoordKind) -> Result<Value> {
     kind.narrow_float(n)
         .map(Value::Float)
         .ok_or_else(|| Error::ty("InvalidVectorCoordinates"))
-}
-
-fn int8_coord(n: f64) -> Result<Value> {
-    int_coord(n, i8::MIN as f64, i8::MAX as f64)
-}
-
-fn int16_coord(n: f64) -> Result<Value> {
-    int_coord(n, i16::MIN as f64, i16::MAX as f64)
-}
-
-fn int32_coord(n: f64) -> Result<Value> {
-    int_coord(n, i32::MIN as f64, i32::MAX as f64)
-}
-
-fn int64_coord(n: f64) -> Result<Value> {
-    int_coord(n, i64::MIN as f64, i64::MAX as f64)
-}
-
-fn float16_coord(n: f64) -> Result<Value> {
-    float_coord(n, VectorCoordKind::Float16)
-}
-
-fn bfloat16_coord(n: f64) -> Result<Value> {
-    float_coord(n, VectorCoordKind::BFloat16)
-}
-
-fn float32_coord(n: f64) -> Result<Value> {
-    float_coord(n, VectorCoordKind::Float32)
-}
-
-/// Float64 conversion: any finite `f64` is stored as-is.
-fn float64_coord(n: f64) -> Result<Value> {
-    float_coord(n, VectorCoordKind::Float64)
 }
 
 pub(crate) fn vector_dimension_count(vals: &[Value]) -> Result<Value> {
@@ -401,6 +374,35 @@ mod tests {
     fn integer_coord_rejects_out_of_range_and_non_finite() {
         assert!(construct(list(&[128.0]), 1, "INT8").is_err());
         assert!(construct(list(&[f64::INFINITY]), 1, "INT64").is_err());
+    }
+
+    /// Live Neo4j 2026.10 truncates toward zero before the width test, so
+    /// a fractional coordinate just inside a bound is the truncated
+    /// integer, not an overflow; INT64's upper bound is `i64::MAX as f64`
+    /// (2^63), so exactly 2^63 is in range and clamps to `i64::MAX`.
+    #[test]
+    fn integer_coord_truncates_toward_zero_within_the_kind_width() {
+        let one = |coord: &str, n: f64| construct(list(&[n]), 1, coord);
+        let int = |coord, value| Value::Vector {
+            coord,
+            values: vec![Value::Int(value)].into(),
+        };
+        assert_eq!(one("INT8", 127.9).unwrap(), int(VectorCoordKind::Int8, 127));
+        assert_eq!(
+            one("INT8", -128.9).unwrap(),
+            int(VectorCoordKind::Int8, -128)
+        );
+        assert!(one("INT8", 128.0).is_err());
+        assert!(one("INT8", -129.0).is_err());
+        assert_eq!(
+            one("INT64", 9_223_372_036_854_775_808.0).unwrap(),
+            int(VectorCoordKind::Int64, i64::MAX)
+        );
+        assert!(one("INT64", 9.3e18).is_err());
+        assert_eq!(
+            one("INT64", -9_223_372_036_854_775_808.0).unwrap(),
+            int(VectorCoordKind::Int64, i64::MIN)
+        );
     }
 
     #[test]

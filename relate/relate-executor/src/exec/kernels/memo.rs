@@ -133,20 +133,36 @@ pub(crate) struct MemoStats {
     pub(crate) disabled: bool,
 }
 
+/// The memo's lifecycle: one field in place of the separate warm-up
+/// counter and frozen/disabled flags the earlier version carried, so the
+/// three can no longer disagree.
+#[derive(Clone, Copy, Debug)]
+enum Phase {
+    /// Below the policy's warm-up: the count of inputs answered by the
+    /// function so far, each run unmemoised with nothing allocated.
+    Warming(u32),
+    /// The table is in use and growing.
+    Active,
+    /// A meter, the ceiling or the query budget refused an insert: the
+    /// table stops growing, hits are still served.
+    Frozen,
+    /// The hit-rate review dropped the table and the memo bypasses
+    /// itself.
+    Disabled,
+}
+
 /// One stage's memo of a pure function over the table's keys — see the
 /// module docs for the contract the function must meet.
 pub(crate) struct Memo<T: MemoTable> {
     policy: MemoPolicy,
-    /// Inputs answered by the function so far, up to the policy's warm-up.
-    warm: u32,
+    /// The lifecycle phase: warming, active, frozen or disabled.
+    phase: Phase,
     table: T,
     /// The table's running size as charged to the retained-container meter.
     retained: u64,
-    /// Set once a meter or the query budget refuses: the table stops
-    /// growing, hits are still served.
-    frozen: bool,
-    /// Set at the hit-rate review when the memo is not paying.
-    disabled: bool,
+    /// Whether the one hit-rate review has run. Kept apart from `phase`
+    /// because it is orthogonal: a memo can be reviewed while active or
+    /// frozen, so it is a latch, not a phase.
     reviewed: bool,
     /// This memo's share of the query's live memo bytes, returned on drop.
     reserved: u64,
@@ -177,11 +193,9 @@ impl<T: MemoTable> Memo<T> {
     pub(crate) fn new(policy: MemoPolicy, live: Option<MemoLive>) -> Self {
         Self {
             policy,
-            warm: 0,
+            phase: Phase::Warming(0),
             table: T::default(),
             retained: 0,
-            frozen: false,
-            disabled: false,
             reviewed: false,
             reserved: 0,
             live,
@@ -211,12 +225,16 @@ impl<T: MemoTable> Memo<T> {
         key: impl FnOnce() -> Option<T::Key>,
         compute: impl FnOnce() -> Result<T::Value>,
     ) -> Result<T::Value> {
-        if self.disabled {
-            return compute();
-        }
-        if self.warm < self.policy.warm_up {
-            self.warm += 1;
-            return compute();
+        match self.phase {
+            Phase::Disabled => return compute(),
+            Phase::Warming(seen) if seen < self.policy.warm_up => {
+                self.phase = Phase::Warming(seen + 1);
+                return compute();
+            }
+            // The warm-up is done: this input, and every later one, is a
+            // probe.
+            Phase::Warming(_) => self.phase = Phase::Active,
+            Phase::Active | Phase::Frozen => {}
         }
         let Some(key) = key() else {
             return compute();
@@ -236,7 +254,7 @@ impl<T: MemoTable> Memo<T> {
     /// the table's growth to the meter, and freeze on a refusal (the
     /// overshoot is at most one page).
     fn remember(&mut self, meter: &impl MemoMeter, key: T::Key, value: T::Value) {
-        if self.frozen || self.table.heap_bytes() >= self.policy.max_bytes {
+        if matches!(self.phase, Phase::Frozen) || self.table.heap_bytes() >= self.policy.max_bytes {
             self.stats.refused += 1;
             return;
         }
@@ -244,13 +262,16 @@ impl<T: MemoTable> Memo<T> {
         self.table.insert(key, value);
         self.stats.inserts += 1;
         let grew = self.table.heap_bytes().saturating_sub(before) as u64;
-        if grew > 0 && meter.charge(&mut self.retained, grew).is_err() {
-            self.frozen = true;
+        if grew == 0 {
+            return;
         }
-        if let (true, Some(live)) = (grew > 0, &self.live) {
+        if meter.charge(&mut self.retained, grew).is_err() {
+            self.phase = Phase::Frozen;
+        }
+        if let Some(live) = &self.live {
             self.reserved += grew;
             if live.fetch_add(grew, Ordering::Relaxed) + grew > MEMO_QUERY_BUDGET {
-                self.frozen = true;
+                self.phase = Phase::Frozen;
             }
         }
     }
@@ -267,7 +288,7 @@ impl<T: MemoTable> Memo<T> {
         if self.stats.hits * 100 < self.stats.probes * floor {
             self.table = T::default();
             self.retained = 0;
-            self.disabled = true;
+            self.phase = Phase::Disabled;
             if let Some(live) = &self.live {
                 live.fetch_sub(self.reserved, Ordering::Relaxed);
             }
@@ -280,9 +301,15 @@ impl<T: MemoTable> Memo<T> {
     pub(crate) fn stats(&self) -> MemoStats {
         MemoStats {
             bytes: self.table.heap_bytes() as u64,
-            disabled: self.disabled,
+            disabled: matches!(self.phase, Phase::Disabled),
             ..self.stats
         }
+    }
+
+    /// Whether the table has stopped growing (test introspection).
+    #[cfg(test)]
+    fn is_frozen(&self) -> bool {
+        matches!(self.phase, Phase::Frozen)
     }
 
     /// The table's exact allocation.
