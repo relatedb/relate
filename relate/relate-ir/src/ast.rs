@@ -543,15 +543,15 @@ impl Projection {
     ///
     /// Resolution order (matches Neo4j):
     /// 1. explicit `AS alias`
-    /// 2. [`canonical_name`] — a bare variable (`RETURN n` → `n`), a
-    ///    `v.key` property access (`RETURN n.name` → `n.name`), or a map
-    ///    projection on a variable (`RETURN n {.name}` → `n`; the map is a
-    ///    view of that variable, and a CALL subquery exports it under the
-    ///    variable's name), the shapes Neo4j names regardless of source
+    /// 2. [`canonical_name`] — `*`, a bare variable (`RETURN n` → `n`), or
+    ///    a map projection on a variable (`RETURN n {.name}` → `n`; the map
+    ///    is a view of that variable, and a CALL subquery exports it under
+    ///    the variable's name), the shapes Neo4j names regardless of source
     ///    formatting
-    /// 3. the verbatim source text captured by the parser (`RETURN 1+2`
-    ///    → `1+2`, `RETURN count{()}` → `count{()}`); covers every other
-    ///    expression shape without a parser-synthesized name
+    /// 3. the verbatim source text captured by the parser — a property
+    ///    access (`RETURN n.name` → `n.name`) and every other expression
+    ///    shape (`RETURN 1+2` → `1+2`, `RETURN count{()}` → `count{()}`)
+    ///    without a parser-synthesized name
     /// 4. `column_<idx>` for synthetic post-parse projections that have
     ///    no `source_text`
     pub fn output_name(&self, idx: usize) -> String {

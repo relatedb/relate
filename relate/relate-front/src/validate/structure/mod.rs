@@ -10,7 +10,7 @@ use relate_names::SmallName;
 
 use relate_error::{EngineError, ErrorKind, COUNT_UNION_MIX_MESSAGE, COUNT_UNION_OMITTED_MESSAGE};
 use relate_model::name_list::same_name_multiset;
-use relate_parser::{Clause, PatternElement, ReturnItem, Statement};
+use relate_parser::{Clause, PatternElement, PatternPath, ReturnItem, Statement};
 
 use crate::ast::collect::union_arms;
 use crate::ast::naming::{effective_name, item_needs_alias};
@@ -393,8 +393,10 @@ pub fn validate_count_subquery_union_shapes(body: &Statement) -> Result<(), Engi
     Ok(())
 }
 
-/// Validate that WITH/RETURN don't have duplicate column names.
-pub fn validate_column_name_conflicts(clauses: &[Clause]) -> Result<(), EngineError> {
+/// Validate a WITH/RETURN projection's names: no duplicate output columns
+/// in either clause, and WITH's alias rule (an item without an implicit
+/// name must carry `AS`) — [`check_projected_names`] is the one fold.
+pub fn validate_projection_names(clauses: &[Clause]) -> Result<(), EngineError> {
     for clause in clauses {
         match clause {
             // WITH's items must be aliased unless they carry an implicit
@@ -467,69 +469,82 @@ fn check_projected_names(items: &[ReturnItem], require_alias: bool) -> Result<()
 /// it unsatisfiable at runtime.
 pub fn validate_relationship_uniqueness(clauses: &[Clause]) -> Result<(), EngineError> {
     for clause in clauses {
-        if let Clause::Match(mc) = clause {
-            // Under the `REPEATABLE ELEMENTS` match
-            // mode, a relationship variable declared twice is a legitimate
-            // equijoin (the same relationship bound at both positions), not
-            // a compile-time error.
-            if mc.match_mode == relate_parser::MatchMode::RepeatableElements {
-                continue;
+        let Clause::Match(mc) = clause else {
+            continue;
+        };
+        // Under the `REPEATABLE ELEMENTS` match mode, a relationship
+        // variable declared twice is a legitimate equijoin (the same
+        // relationship bound at both positions), not a compile-time error.
+        if mc.match_mode == relate_parser::MatchMode::RepeatableElements {
+            continue;
+        }
+        let mut shortest_relationships: IdentHashSet<SmallName> = IdentHashSet::default();
+        for path in &mc.pattern {
+            if path.is_shortest_path_function {
+                check_shortest_path_relationships(path, &mut shortest_relationships)?;
             }
-            let mut shortest_relationships = IdentHashSet::default();
-            for path in &mc.pattern {
-                if path.is_shortest_path_function {
-                    for elem in &path.elements {
-                        if let PatternElement::Relationship(rp) = elem {
-                            if let Some(variable) = &rp.variable {
-                                if !shortest_relationships.insert(variable.clone()) {
-                                    return Err(EngineError::semantic(
-                                        ErrorKind::RelationshipUniquenessViolation,
-                                        format!(
-                                            "relationship '{variable}' is reused by two shortest-path patterns"
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-                let mut seen_rels: IdentHashSet<SmallName> = IdentHashSet::default();
-                let mut seen_nodes: IdentHashSet<SmallName> = IdentHashSet::default();
-                let mut repeated_rel: Option<SmallName> = None;
-                let mut repeated_node = false;
-                for elem in &path.elements {
-                    match elem {
-                        PatternElement::Relationship(rp) => {
-                            if let Some(v) = &rp.variable {
-                                if !seen_rels.insert(v.clone()) && repeated_rel.is_none() {
-                                    repeated_rel = Some(v.clone());
-                                }
-                            }
-                        }
-                        PatternElement::Node(np) => {
-                            if let Some(v) = &np.variable {
-                                if !seen_nodes.insert(v.clone()) {
-                                    repeated_node = true;
-                                }
-                            }
-                        }
-                        PatternElement::Quantified(_) => {}
-                    }
-                }
-                if repeated_node {
-                    if let Some(v) = repeated_rel {
-                        return Err(EngineError::semantic(
-                            ErrorKind::RelationshipUniquenessViolation,
-                            format!(
-                                "relationship '{v}' used more than once in the same MATCH pattern"
-                            ),
-                        ));
-                    }
-                }
+            check_cycle_reuses_relationship(path)?;
+        }
+    }
+    Ok(())
+}
+
+/// The shortest-path half of [`validate_relationship_uniqueness`]: records
+/// each of one `shortestPath()` pattern's relationship variables in the
+/// MATCH-wide `seen` set; a variable another shortest-path pattern of the
+/// same MATCH already took is the violation.
+fn check_shortest_path_relationships(
+    path: &PatternPath,
+    seen: &mut IdentHashSet<SmallName>,
+) -> Result<(), EngineError> {
+    for elem in &path.elements {
+        let PatternElement::Relationship(rp) = elem else {
+            continue;
+        };
+        if let Some(variable) = &rp.variable {
+            if !seen.insert(variable.clone()) {
+                return Err(EngineError::semantic(
+                    ErrorKind::RelationshipUniquenessViolation,
+                    format!("relationship '{variable}' is reused by two shortest-path patterns"),
+                ));
             }
         }
     }
     Ok(())
+}
+
+/// The cycle half of [`validate_relationship_uniqueness`]: one path whose
+/// first repeated relationship variable shares the path with a repeated
+/// node variable (the TCK `Match3` #29 shape).
+fn check_cycle_reuses_relationship(path: &PatternPath) -> Result<(), EngineError> {
+    let mut seen_rels: IdentHashSet<SmallName> = IdentHashSet::default();
+    let mut seen_nodes: IdentHashSet<SmallName> = IdentHashSet::default();
+    let mut repeated_rel: Option<&SmallName> = None;
+    let mut repeated_node = false;
+    for elem in &path.elements {
+        match elem {
+            PatternElement::Relationship(rp) => {
+                if let Some(v) = &rp.variable {
+                    if !seen_rels.insert(v.clone()) && repeated_rel.is_none() {
+                        repeated_rel = Some(v);
+                    }
+                }
+            }
+            PatternElement::Node(np) => {
+                if let Some(v) = &np.variable {
+                    repeated_node |= !seen_nodes.insert(v.clone());
+                }
+            }
+            PatternElement::Quantified(_) => {}
+        }
+    }
+    match (repeated_node, repeated_rel) {
+        (true, Some(v)) => Err(EngineError::semantic(
+            ErrorKind::RelationshipUniquenessViolation,
+            format!("relationship '{v}' used more than once in the same MATCH pattern"),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// CIP-40's mixing rule inside a SUBQUERY body (42I39): a

@@ -114,7 +114,7 @@ fn implicit_name_agrees_with_ir_canonical_name_on_lowered_shapes() {
     // One statement holding every vocabulary arm and near-miss, each on
     // its own variable so no two items collide on one column name.
     let query = "MATCH (a:L1), (b:L1), (c:L1), (d:L1), (e:L1), (f:L1), (g:L1) \
-                 WITH a, (b), c{.*}, (d{.*}), e.p1 AS p, (f.p2) AS q, g.p3 + 1 AS r \
+                 WITH *, a, (b), c{.*}, (d{.*}), e.p1 AS p, (f.p2) AS q, g.p3 + 1 AS r \
                  RETURN a, b{.p4}, c.p5";
     let statement = relate_parser::parse(query).unwrap();
     let mut front_items: Vec<&ReturnItem> = Vec::new();

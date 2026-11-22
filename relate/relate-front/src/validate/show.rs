@@ -22,7 +22,7 @@ use relate_core::Namespace;
 use relate_error::{EngineError, ErrorKind};
 use relate_parser::{Clause, Expr, Statement, YieldList, YieldMode};
 
-use crate::ast::collect::{check_expr_vars_defined, clause_introduced_names, projected_names};
+use crate::ast::collect::{check_expr_vars_defined, union_chain};
 
 /// Every explicitly YIELD'd column must be one the command accepts in a
 /// `YIELD`: the one validity guard the SHOW validator family shares. The
@@ -131,12 +131,7 @@ pub fn validate_show_column_names(stmt: &Statement) -> Result<(), EngineError> {
                 validate_show_row_expressions(&info, &outer_scope)?;
             }
         }
-        // A WITH replaces the scope; every other clause extends it.
-        if let Clause::With(wc) = clause {
-            outer_scope = projected_names(&wc.items, &outer_scope);
-        } else {
-            outer_scope.extend(clause_introduced_names(clause));
-        }
+        crate::call_scope::advance_scope(&mut outer_scope, clause);
     }
     Ok(())
 }
@@ -227,11 +222,9 @@ pub fn validate_show_composability(stmt: &Statement) -> Result<(), EngineError> 
     // shape (live 2026.10: `SHOW CONSTRAINTS YIELD * RETURN name UNION …`
     // reports 22N94), so the leniency is off for the whole chain.
     let has_union = stmt.union.is_some();
-    validate_show_composability_clauses(&stmt.clauses, stmt.brace_wrapped || has_union)?;
-    let mut current = stmt;
-    while let Some(union) = &current.union {
-        validate_show_composability_clauses(&union.statement.clauses, true)?;
-        current = &union.statement;
+    for (index, arm) in union_chain(stmt).enumerate() {
+        let brace_wrapped = index > 0 || stmt.brace_wrapped || has_union;
+        validate_show_composability_clauses(&arm.clauses, brace_wrapped)?;
     }
     Ok(())
 }
@@ -244,14 +237,7 @@ pub fn validate_show_composability(stmt: &Statement) -> Result<(), EngineError> 
 /// `YIELD *` is the 22N94 invalid star — live-verified 2026.10. The body's
 /// own UNION arms are checked like top-level arms.
 pub(crate) fn validate_nested_show_composability(stmt: &Statement) -> Result<(), EngineError> {
-    let mut current = stmt;
-    loop {
-        validate_show_composability_clauses(&current.clauses, true)?;
-        match &current.union {
-            Some(union) => current = &union.statement,
-            None => return Ok(()),
-        }
-    }
+    union_chain(stmt).try_for_each(|arm| validate_show_composability_clauses(&arm.clauses, true))
 }
 
 /// Any `SHOW`/`TERMINATE` clause followed by a `RETURN` must carry an
@@ -263,13 +249,8 @@ pub(crate) fn validate_nested_show_composability(stmt: &Statement) -> Result<(),
 /// `SHOW TRANSACTIONS` alike. Applied to `stmt`'s own clause list and each
 /// union arm, same recursion shape as `validate_show_composability`.
 pub fn validate_show_requires_yield_before_return(stmt: &Statement) -> Result<(), EngineError> {
-    validate_show_requires_yield_before_return_clauses(&stmt.clauses)?;
-    let mut current = stmt;
-    while let Some(union) = &current.union {
-        validate_show_requires_yield_before_return_clauses(&union.statement.clauses)?;
-        current = &union.statement;
-    }
-    Ok(())
+    union_chain(stmt)
+        .try_for_each(|arm| validate_show_requires_yield_before_return_clauses(&arm.clauses))
 }
 
 fn validate_show_requires_yield_before_return_clauses(
@@ -435,13 +416,7 @@ fn system_graph_read_phrase(expr: &Expr) -> Option<&'static str> {
 /// graph read in a later arm is rejected on that arm's own routing and a
 /// sibling arm's expressions are never judged by it.
 pub fn validate_show_system_graph_reads(stmt: &Statement) -> Result<(), EngineError> {
-    validate_show_system_graph_reads_clauses(&stmt.clauses)?;
-    let mut current = stmt;
-    while let Some(union) = &current.union {
-        validate_show_system_graph_reads_clauses(&union.statement.clauses)?;
-        current = &union.statement;
-    }
-    Ok(())
+    union_chain(stmt).try_for_each(|arm| validate_show_system_graph_reads_clauses(&arm.clauses))
 }
 
 /// One arm's half of [`validate_show_system_graph_reads`]: when the arm
@@ -610,6 +585,17 @@ mod tests {
         assert!(lower(
             "USE neo4j SHOW PROCEDURES YIELD name RETURN COUNT { () } AS c \
              UNION USE system SHOW PROCEDURES YIELD name RETURN 1 AS c",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn a_composed_show_where_sees_a_preceding_call_subquerys_exports() {
+        // The one scope-lifecycle fold (`advance_scope`) gives a `CALL { }`
+        // its exports for a later SHOW's own WHERE, as it does for SEARCH.
+        assert!(lower(
+            "CALL { RETURN 'db.' AS pfx } \
+             SHOW PROCEDURES YIELD name WHERE name STARTS WITH pfx RETURN name"
         )
         .is_ok());
     }

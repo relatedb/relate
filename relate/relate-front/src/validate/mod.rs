@@ -124,10 +124,10 @@ pub use self::show::{
 pub use self::static_calls::validate_static_call_types;
 pub(crate) use self::static_types::validate_static_operator_types;
 pub use self::structure::{
-    validate_column_name_conflicts, validate_count_subquery_union_shapes,
-    validate_expr_traversal_bounds, validate_foreach_body, validate_next_no_admin_commands,
-    validate_relationship_uniqueness, validate_shortest_path_mixing, validate_traversal_bounds,
-    validate_union_columns, validate_use_placement,
+    validate_count_subquery_union_shapes, validate_expr_traversal_bounds, validate_foreach_body,
+    validate_next_no_admin_commands, validate_projection_names, validate_relationship_uniqueness,
+    validate_shortest_path_mixing, validate_traversal_bounds, validate_union_columns,
+    validate_use_placement,
 };
 pub(crate) use self::writes::validate_param_property_shorthand;
 
@@ -551,7 +551,7 @@ fn validate_statement_node(
     validate_create_self_reference_conservative(clauses)?;
     validate_relationship_uniqueness(clauses)?;
     validate_order_by_aggregation(clauses)?;
-    validate_column_name_conflicts(clauses)?;
+    validate_projection_names(clauses)?;
     validate_use_placement(stmt)?;
     validate_next_no_admin_commands(stmt)?;
     validate_search_clauses(clauses, options)?;

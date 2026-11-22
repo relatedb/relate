@@ -23,8 +23,8 @@ fn sorted_coverage_rows(result: relate::QueryResult) -> Vec<(f64, i64)> {
     let mut rows: Vec<(f64, i64)> = result
         .rows
         .into_iter()
-        .map(|row| match (&row[0], &row[1]) {
-            (Value::Float(x), Value::Int(y)) => (*x, *y),
+        .map(|row| match row.as_slice() {
+            [Value::Float(x), Value::Int(y)] => (*x, *y),
             other => panic!("expected (float, int) coverage rows, got {other:?}"),
         })
         .collect();
@@ -45,18 +45,11 @@ fn aggregation_alias_reused_as_grouping_key_through_a_scalar_call() {
 
     // Planning is accepted: the plan nests the two aggregations with the
     // carried c as the second one's key.
-    c.query(
-        "EXPLAIN MATCH (n) WHERE n.p1 IS NOT NULL WITH count(n) AS c MATCH (m) \
-         RETURN toFloat(c) / count(m) AS coverage, c",
-    )
-    .unwrap();
+    let q = "MATCH (n) WHERE n.p1 IS NOT NULL WITH count(n) AS c MATCH (m) \
+             RETURN toFloat(c) / count(m) AS coverage, c";
+    c.query(&format!("EXPLAIN {q}")).unwrap();
 
-    let r = c
-        .query(
-            "MATCH (n) WHERE n.p1 IS NOT NULL WITH count(n) AS c MATCH (m) \
-             RETURN toFloat(c) / count(m) AS coverage, c",
-        )
-        .unwrap();
+    let r = c.query(q).unwrap();
     assert_eq!(
         r.rows,
         vec![vec![Value::Float(2.0 / 3.0), Value::Int(2)]],

@@ -837,19 +837,26 @@ pub(crate) fn call_subquery_exports(
     csq: &CallSubqueryClause,
     outer_scope: &IdentHashSet<SmallName>,
 ) -> IdentHashSet<SmallName> {
-    match &csq.scope {
-        // CIP-213: `compute_subquery_output_vars` already walks
-        // MATCH/WITH/UNWIND/RETURN/FINISH/CREATE/MERGE/CallSubquery/
-        // Conditional *and* recurses through a `.next` chain to its true
-        // final stage, so it subsumes the old direct "scan for a
-        // Return-or-Conditional clause" loop this used to do -- which
-        // never looked past a naked CALL body's *first* stage, silently
-        // reporting nothing exported by `CALL { RETURN 1 AS x NEXT RETURN
-        // x + 1 AS y }` (it would have found no top-level `Return`/
-        // `Conditional` clause at all, since the real one is one NEXT
-        // stage deeper).
-        CallScope::None => compute_subquery_output_vars(&csq.statement).unwrap_or_default(),
-        _ => resolve_nested_call(csq, outer_scope, false).unwrap_or_default(),
+    // The one dispatch (naked call -> `compute_subquery_output_vars`, which
+    // walks a `.next` chain to its true final stage; scoped call -> the
+    // import-set resolution) is `resolve_nested_call`'s; lenient here.
+    resolve_nested_call(csq, outer_scope, false).unwrap_or_default()
+}
+
+/// Advances a linear body's visible-variable `scope` past one clause: a
+/// WITH replaces the scope (a projection — names it drops stop being
+/// referenceable), a `CALL { }` extends it by its body's exports (which
+/// depend on the scope so far), and every other clause extends it by its
+/// introduced names. The one scope-lifecycle fold the validators that walk
+/// clauses in order share.
+pub(crate) fn advance_scope(scope: &mut IdentHashSet<SmallName>, clause: &Clause) {
+    match clause {
+        Clause::With(wc) => *scope = projected_names(&wc.items, scope),
+        Clause::CallSubquery(csq) => {
+            let exports = call_subquery_exports(csq, scope);
+            scope.extend(exports);
+        }
+        other => scope.extend(clause_introduced_names(other)),
     }
 }
 

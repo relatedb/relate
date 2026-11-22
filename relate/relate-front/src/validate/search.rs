@@ -8,10 +8,7 @@ use relate_names::SmallName;
 use relate_error::{EngineError, ErrorKind};
 use relate_parser::{Clause, PatternElement, PatternPath, SearchClause, SearchKind};
 
-use crate::ast::collect::{
-    bind_pattern_vars, clause_introduced_names, collect_expr_variables, projected_names,
-    search_score_var,
-};
+use crate::ast::collect::{bind_pattern_vars, collect_expr_variables, search_score_var};
 use crate::ast::search_spec::{walk_search_spec, SearchSlot};
 use crate::validate::ValidateOptions;
 
@@ -78,20 +75,9 @@ pub(crate) fn validate_search_clauses(
                         }
                     }
                 }
-                None => scope.extend(clause_introduced_names(clause)),
+                None => crate::call_scope::advance_scope(&mut scope, clause),
             },
-            // A WITH replaces the scope (a projection), it does not extend
-            // it -- the canonical project-items-to-names skeleton answers
-            // exactly that (`*` passes the incoming scope through).
-            Clause::With(wc) => {
-                scope = projected_names(&wc.items, &scope);
-            }
-            // A `CALL { }` body's exports depend on the enclosing scope.
-            Clause::CallSubquery(csq) => {
-                let exports = crate::call_scope::call_subquery_exports(csq, &scope);
-                scope.extend(exports);
-            }
-            clause => scope.extend(clause_introduced_names(clause)),
+            clause => crate::call_scope::advance_scope(&mut scope, clause),
         }
     }
     Ok(())

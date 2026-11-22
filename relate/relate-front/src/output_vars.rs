@@ -62,45 +62,44 @@ fn local_stage_output_vars(
     let mut bound: IdentHashSet<SmallName> = seed.clone();
     let mut last_projection: Option<IdentHashSet<SmallName>> = None;
     for clause in &stmt.clauses {
-        match clause {
+        // Each arm yields the projection standing after its clause: a
+        // binding clause voids it (`None`), a projecting clause sets it, and
+        // a clause this stage ignores leaves it as it was.
+        last_projection = match clause {
             Clause::Match(mc) => {
                 bind_pattern_vars(&mc.pattern, &mut bound);
                 if let Some(sv) = search_score_var(mc) {
                     bound.insert(sv.clone());
                 }
-                last_projection = None;
+                None
             }
             Clause::With(wc) => {
                 let projected = projected_names(&wc.items, &bound);
                 bound = projected.clone();
-                last_projection = Some(projected);
+                Some(projected)
             }
             Clause::Unwind(uw) => {
                 bound.insert(uw.alias.clone());
-                last_projection = None;
+                None
             }
-            Clause::Return(rc) => {
-                last_projection = Some(projected_names(&rc.items, &bound));
-            }
+            Clause::Return(rc) => Some(projected_names(&rc.items, &bound)),
             // CIP-140/CIP-213: FINISH is always terminal (enforced
             // elsewhere) and exports nothing -- neither back into an
             // enclosing CALL's outer scope, nor (CIP-213) forward into a
             // following NEXT stage.
-            Clause::Finish => {
-                last_projection = Some(IdentHashSet::default());
-            }
+            Clause::Finish => Some(IdentHashSet::default()),
             Clause::Create(cc) => {
                 bind_pattern_vars(&cc.pattern, &mut bound);
-                last_projection = None;
+                None
             }
             Clause::Merge(mc) => {
                 bind_pattern_vars(std::slice::from_ref(&mc.pattern), &mut bound);
-                last_projection = None;
+                None
             }
             Clause::CallSubquery(csq) => {
                 let exports = crate::call_scope::call_subquery_exports(csq, &bound);
                 bound.extend(exports);
-                last_projection = None;
+                None
             }
             // A write clause after the last projection means the body does
             // not conclude with that projection: `WITH n DETACH DELETE n`
@@ -111,9 +110,7 @@ fn local_stage_output_vars(
             // the Create/Merge arms above. The shared updating-clause
             // classification (the Create/Merge arms above handle their
             // bindings first), never a hand-listed subset of it.
-            c if is_updating_clause(c) => {
-                last_projection = None;
-            }
+            c if is_updating_clause(c) => None,
             // CIP-46/CIP-187: a SHOW clause introduces its YIELD'd (or,
             // bare/`YIELD *`, its default/full catalog) column names into
             // scope, same as `call_subquery_exports`'s identical handling
@@ -130,7 +127,7 @@ fn local_stage_output_vars(
                     IdentHashSet::with_capacity_and_hasher(columns.len(), IdentBuildHasher);
                 cols.extend(columns);
                 bound.extend(cols.iter().cloned());
-                last_projection = Some(cols);
+                Some(cols)
             }
             // CIP-135: a conditional clause is always the sole clause of
             // its list, so `bound` here is exactly `seed`. Every
@@ -139,11 +136,10 @@ fn local_stage_output_vars(
             // falling back to ELSE) represents the whole clause's output.
             Clause::Conditional(cc) => {
                 let inner = cc.representative_body();
-                last_projection =
-                    inner.and_then(|s| compute_subquery_output_vars_seeded(s, &bound));
+                inner.and_then(|s| compute_subquery_output_vars_seeded(s, &bound))
             }
-            _ => {}
-        }
+            _ => last_projection.take(),
+        };
     }
     last_projection
 }

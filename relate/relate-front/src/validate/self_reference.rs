@@ -88,14 +88,13 @@ enum SelfReferenceTier<'a> {
 }
 
 impl SelfReferenceTier<'_> {
-    /// The declaration predicate and the MERGE inclusion — the tier's one
-    /// correlated pair, derived together in a single match. Never two
-    /// independently-settable parameters: a tier fixes both facts or
-    /// neither.
-    fn rules(self) -> (fn(&NodePattern) -> bool, bool) {
+    /// The tier's declaration predicate: every element of a created pattern
+    /// declares under the exact tier; only a labelled or property-carrying
+    /// node does under the conservative one.
+    fn declares_node(self) -> fn(&NodePattern) -> bool {
         match self {
-            SelfReferenceTier::Exact { .. } => (|_| true, true),
-            SelfReferenceTier::Conservative => (declares_shape, false),
+            SelfReferenceTier::Exact { .. } => |_| true,
+            SelfReferenceTier::Conservative => declares_shape,
         }
     }
 
@@ -136,49 +135,29 @@ pub(crate) fn validate_create_self_reference(
 /// correlating outer bindings, so only an unambiguous declaration counts as
 /// created. The under-approximation is deliberate and recorded in
 /// ADR-0513 §Consequences.
+///
+/// A name is "bound before the clause" when it sits in `introduced`, the
+/// names earlier clauses of this list bound — a pattern variable that is
+/// already bound is a *reference* to the existing entity, not a new one
+/// (`MATCH (a) … CREATE (a)-[:R]->(b)`), and reading it in a property
+/// value is legal. Only `CREATE` is scanned: in a body whose correlated
+/// outer bindings this tier cannot see, a merged element with a
+/// label/property map may be a reference to an imported entity rather than
+/// a declaration, so only the exact tier (one clause, entered through
+/// [`validate_create_self_reference`]) can decide `MERGE`.
 pub(crate) fn validate_create_self_reference_conservative(
     clauses: &[Clause],
 ) -> Result<(), EngineError> {
-    // MERGE is excluded: in a body whose correlated outer bindings this
-    // tier cannot see, a merged element with a label/property map may be a
-    // reference to an imported entity rather than a declaration, so only the
-    // exact tier can decide it.
-    validate_create_self_reference_with(clauses, SelfReferenceTier::Conservative)
-}
-
-/// The conservative battery's whole-list span. A name is "bound before the
-/// clause" when the tier says so or it sits in `introduced`, the names
-/// earlier clauses of this list bound — a pattern variable that is already
-/// bound is a *reference* to the existing entity, not a new one
-/// (`MATCH (a) … CREATE (a)-[:R]->(b)`), and reading it in a property
-/// value is legal. The exact tier never reaches this body: its callers
-/// hold one clause and enter through [`validate_create_self_reference`]'s
-/// pattern entry directly, so neither tier ever clones the enclosing set.
-fn validate_create_self_reference_with(
-    clauses: &[Clause],
-    tier: SelfReferenceTier<'_>,
-) -> Result<(), EngineError> {
-    let (_, include_merge) = tier.rules();
     let mut introduced: IdentHashSet<SmallName> = IdentHashSet::default();
     for clause in clauses {
         let mut created: IdentHashSet<SmallName> = IdentHashSet::default();
         match clause {
-            Clause::Create(create) => {
-                scan_patterns(&create.pattern, tier, &introduced, &mut created)?;
-            }
-            // MERGE's pattern property maps are the same-clause reads the
-            // rule rejects when the merged entity is a fresh declaration
-            // (`MATCH (a) WITH a AS b MERGE (a {prop: a.prop})`, live
-            // 2026.10 42I58). Its ON CREATE/ON MATCH SET values read the
-            // merged entity after the merge, which live allows.
-            Clause::Merge(merge) if include_merge => {
-                scan_patterns(
-                    std::slice::from_ref(&merge.pattern),
-                    tier,
-                    &introduced,
-                    &mut created,
-                )?;
-            }
+            Clause::Create(create) => scan_patterns(
+                &create.pattern,
+                SelfReferenceTier::Conservative,
+                &introduced,
+                &mut created,
+            )?,
             _ => {
                 introduced.extend(clause_introduced_names(clause));
                 continue;
@@ -200,7 +179,7 @@ fn scan_patterns(
     introduced: &IdentHashSet<SmallName>,
     created: &mut IdentHashSet<SmallName>,
 ) -> Result<(), EngineError> {
-    let (declares_node, _) = tier.rules();
+    let declares_node = tier.declares_node();
     let mut collector = ReadCollector::default();
     for path in patterns {
         // A CREATE/MERGE path name is always a fresh binding.
