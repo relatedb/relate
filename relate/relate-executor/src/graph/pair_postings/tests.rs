@@ -103,3 +103,32 @@ fn a_bucket_entry_is_no_wider_than_a_vec_and_a_word() {
     assert!(std::mem::size_of::<IdBag>() <= 32);
     assert_eq!(IdBag::One(1).as_slice(), &[1]);
 }
+
+#[test]
+fn shrinking_after_a_build_keeps_every_bucket_and_leaves_no_slack() {
+    let mut p = PairPostings::default();
+    let many = key(Value::Int(1));
+    let one = key(Value::String("solo".into()));
+    for id in 0..100 {
+        p.post(&many, id);
+    }
+    p.post(&one, 7);
+    p.shrink_to_fit();
+    assert_eq!(p.ids(&many).len(), 100);
+    assert_eq!(p.ids(&one), &[7]);
+    match p.ints.0.get(&1) {
+        Some(IdBag::Many(ids)) => assert_eq!(ids.capacity(), ids.len()),
+        other => panic!("expected a Many bucket, got {other:?}"),
+    }
+}
+
+#[test]
+fn removing_an_absent_id_from_a_many_bucket_changes_nothing() {
+    let mut p = PairPostings::default();
+    let k = key(Value::Int(2));
+    for id in [1, 2, 3] {
+        p.post(&k, id);
+    }
+    p.unpost(&k, 99);
+    assert_eq!(p.ids(&k), &[1, 2, 3]);
+}

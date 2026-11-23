@@ -840,6 +840,33 @@ fn string_index_is_lazy_until_first_seek() {
 }
 
 #[test]
+fn an_unaddressable_in_list_answers_empty_without_building_the_pair() {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    g.create_node(
+        vec!["C".into()],
+        BTreeMap::from([("k".into(), Value::Int(1))]),
+    )
+    .unwrap();
+    g.commit_write();
+    let lid = g.interner.get_id("C").unwrap();
+    let kid = g.interner.get_id("k").unwrap();
+    let labels = ["C".to_string()];
+    let ts = g.commit_ts();
+    assert!(g.equality_postings_values(&labels, "k", &[], ts).is_empty());
+    assert!(g
+        .equality_postings_values(&labels, "k", &[Value::Float(f64::NAN)], ts)
+        .is_empty());
+    assert!(!g.prop_pair_built((lid, kid)), "no probe, no build");
+    assert_eq!(
+        g.equality_postings_values(&labels, "k", &[Value::Int(1)], ts)
+            .len(),
+        1
+    );
+    assert!(g.prop_pair_built((lid, kid)));
+}
+
+#[test]
 fn string_index_dirty_catchup_after_writes() {
     let g = Graph::default();
     g.begin_write().unwrap();

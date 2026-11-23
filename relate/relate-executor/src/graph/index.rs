@@ -546,7 +546,7 @@ impl Graph {
         // resolver (`*` bucket included).
         let drop_props: Vec<(String, String, GroupKey)> = drop_props.into_iter().collect();
         let keep_props: Vec<(String, String, GroupKey)> = keep_props.into_iter().collect();
-        self.drop_unused_pairs(
+        Self::drop_unused_pairs(
             &self.indexes.prop_pairs,
             id,
             &drop_props,
