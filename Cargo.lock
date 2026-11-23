@@ -3842,6 +3842,7 @@ dependencies = [
 name = "relate-vortex-lab"
 version = "1.2.1"
 dependencies = [
+ "csv",
  "memmap2",
  "vortex",
 ]
