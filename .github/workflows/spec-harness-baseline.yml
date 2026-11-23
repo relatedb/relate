@@ -186,6 +186,14 @@ jobs:
       - name: Write the gate baseline (ADR-0661 §2)
         if: env.DOCS_ONLY != '1'
         env:
+          # gh refuses to run any command without gh-level auth, even
+          # with the explicit Authorization header the PUT carries — the
+          # first merge run died here (exit 4, "set the GH_TOKEN
+          # environment variable") and the baseline never landed. The
+          # github.token is contents:read on this job; the write itself
+          # authenticates with the PAT header, this only satisfies gh's
+          # preflight (and the watchdog's issue creation below).
+          GH_TOKEN: ${{ github.token }}
           HARNESS_WRITE_TOKEN: ${{ secrets.HARNESS_WRITE_TOKEN }}
         run: |
           set -euo pipefail
