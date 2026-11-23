@@ -1,13 +1,14 @@
 use super::envelope::{compact_integer, page_header, Compact};
 use super::fixtures::{commit_ops, load_part, write_bare_table, write_rel_table, write_table};
 use super::*;
-use arrow::array::{RecordBatch, StringArray};
+use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use bytes::Bytes;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
+use relate_core::Value;
 use relate_executor::Graph;
 use std::sync::Arc;
 

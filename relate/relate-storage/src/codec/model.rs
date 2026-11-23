@@ -106,6 +106,38 @@ pub(crate) struct SnapshotRows {
 /// install policy.
 pub(crate) const INSTALL_SLICE_ROWS: usize = 1024;
 
+/// Decoded row bytes per install slice: the memory cap a loader that
+/// stages decoded rows layers on [`INSTALL_SLICE_ROWS`]. Such a loader
+/// installs once its staged rows reach either bound, so a slice of wide
+/// rows installs before it is a full row ceiling — the Parquet load's
+/// workers each stage one slice beside their decode batch, not the batch
+/// decoded over again.
+#[cfg(parquet_codec)]
+pub(crate) const INSTALL_SLICE_BYTES: u64 = 256 << 10;
+
+/// The decoded-byte install bound in force: [`INSTALL_SLICE_BYTES`], or
+/// a test's override.
+#[cfg(parquet_codec)]
+pub(crate) fn install_slice_bytes() -> u64 {
+    #[cfg(test)]
+    if let Some(bytes) = TEST_INSTALL_SLICE_BYTES.get() {
+        return bytes;
+    }
+    INSTALL_SLICE_BYTES
+}
+
+#[cfg(all(parquet_codec, test))]
+thread_local! {
+    static TEST_INSTALL_SLICE_BYTES: std::cell::Cell<Option<u64>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with the decoded-byte install bound at `bytes`.
+#[cfg(all(parquet_codec, test))]
+pub(crate) fn with_test_install_slice<T>(bytes: u64, f: impl FnOnce() -> T) -> T {
+    crate::codec::with_test_override(&TEST_INSTALL_SLICE_BYTES, bytes, f)
+}
+
 impl SnapshotRows {
     /// Rebuild the in-memory graph from these rows — the load tail every
     /// codec that decodes into rows shares: id validation, next-id

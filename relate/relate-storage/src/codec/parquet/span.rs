@@ -133,13 +133,13 @@ fn load_reader(
     Ok(bounds)
 }
 
-/// One loaded file ([`super::load_batches`]): the file's spans decode and
+/// One loaded file ([`super::load::load_batches`]): the file's spans decode and
 /// install on the shared load pool, one task per span, and after the join
 /// the file's id order holds across the span boundaries too. A file that
 /// cuts into one span runs its one reader on the current thread. The file's
 /// row and decoded accounting is one [`Decoded`] every reader charges as it
-/// decodes, so a file over an envelope refuses the batch that crosses it
-/// before that batch installs.
+/// decodes, so a file over an envelope refuses at the row that crosses it,
+/// before that row installs.
 pub(super) fn load(
     spans: SpanReaders,
     rules: Option<&ShardRules>,
@@ -175,6 +175,7 @@ pub(super) fn load(
 
 #[cfg(test)]
 mod tests {
+    use crate::codec::model::with_test_install_slice;
     use crate::codec::parquet::fixtures::{
         commit_ops, load_part, write_bare_table, write_rel_table, write_table,
     };
@@ -202,6 +203,33 @@ mod tests {
         (0..n)
             .filter(|id| graph.node_at(*id, 1).is_some())
             .collect()
+    }
+
+    /// Load node file `nodes` then relationship file `rels` into `graph`
+    /// under a load scope of `workers` load threads.
+    fn restore(workers: usize, graph: &Graph, nodes: &[u8], rels: &[u8]) {
+        with_workers(workers, || {
+            load_part(load_nodes, graph, nodes).unwrap();
+            load_part(load_rels, graph, rels).unwrap();
+        })
+    }
+
+    /// `b` holds exactly the nodes and relationships `a` holds at `ids`:
+    /// the same ids, labels, endpoints, types and properties.
+    fn assert_same_graph(a: &Graph, b: &Graph, ids: &[i64]) {
+        let n = ids.len() as i64;
+        assert_eq!(loaded_ids(a, n), ids);
+        assert_eq!(loaded_ids(b, n), ids);
+        for id in ids {
+            let (x, y) = (a.node_at(*id, 1).unwrap(), b.node_at(*id, 1).unwrap());
+            assert_eq!(x.labels, y.labels, "node {id}");
+            assert_eq!(x.properties, y.properties, "node {id}");
+            let (x, y) = (a.rel_at(*id, 1).unwrap(), b.rel_at(*id, 1).unwrap());
+            assert_eq!(x.start, y.start, "rel {id}");
+            assert_eq!(x.end, y.end, "rel {id}");
+            assert_eq!(x.rel_type, y.rel_type, "rel {id}");
+            assert_eq!(x.properties, y.properties, "rel {id}");
+        }
     }
 
     /// The ids a file's spans decode to, span by span.
@@ -343,29 +371,42 @@ mod tests {
             vec![Some("{}".into()); rows as usize],
         )
         .unwrap();
-        let restore = |workers: usize, graph: &Graph| {
-            with_workers(workers, || {
-                load_part(load_nodes, graph, &nodes).unwrap();
-                load_part(load_rels, graph, &rels).unwrap();
-            })
-        };
         let serial = Graph::default();
-        restore(1, &serial);
+        restore(1, &serial, &nodes, &rels);
         let many = Graph::default();
-        restore(4, &many);
-        assert_eq!(loaded_ids(&serial, rows), ids);
-        assert_eq!(loaded_ids(&many, rows), ids);
-        for id in &ids {
-            let from_serial = serial.node_at(*id, 1).expect("serial node");
-            let from_many = many.node_at(*id, 1).expect("parallel node");
-            assert_eq!(from_serial.labels, from_many.labels, "node {id}");
-            assert_eq!(from_serial.properties, from_many.properties, "node {id}");
-            let from_serial = serial.rel_at(*id, 1).expect("serial rel");
-            let from_many = many.rel_at(*id, 1).expect("parallel rel");
-            assert_eq!(from_serial.start, from_many.start, "rel {id}");
-            assert_eq!(from_serial.end, from_many.end, "rel {id}");
-            assert_eq!(from_serial.rel_type, from_many.rel_type, "rel {id}");
-            assert_eq!(from_serial.properties, from_many.properties, "rel {id}");
+        restore(4, &many, &nodes, &rels);
+        assert_same_graph(&serial, &many, &ids);
+    }
+
+    /// A batch installed a few rows per slice builds the same graph as one
+    /// installed whole, under one load thread and four.
+    #[test]
+    fn small_install_slices_restore_the_same_graph_as_whole_batches() {
+        let rows = 2 * ROW_GROUP_CAP as i64 + 5;
+        let ids: Vec<i64> = (0..rows).collect();
+        let text = |id: i64| Some(format!("{{\"p\":{{\"t\":\"string\",\"v\":\"v{id}\"}}}}"));
+        let nodes = write_table(
+            ids.clone(),
+            ids.iter()
+                .map(|id| Some(vec![Some(format!("L{}", id % 3))]))
+                .collect(),
+            ids.iter().map(|id| text(*id)).collect(),
+        )
+        .unwrap();
+        let rels = write_rel_table(
+            ids.clone(),
+            (0..rows).map(|id| id / 2).collect(),
+            (0..rows).map(|id| id / 2 + 1).collect(),
+            ids.iter().map(|id| Some(format!("T{}", id % 2))).collect(),
+            ids.iter().map(|id| text(*id)).collect(),
+        )
+        .unwrap();
+        let whole = Graph::default();
+        with_test_install_slice(u64::MAX, || restore(1, &whole, &nodes, &rels));
+        for workers in [1, 4] {
+            let sliced = Graph::default();
+            with_test_install_slice(200, || restore(workers, &sliced, &nodes, &rels));
+            assert_same_graph(&whole, &sliced, &ids);
         }
     }
 
@@ -386,7 +427,7 @@ mod tests {
             .lock()
             .unwrap()
             .push((current.id(), current.name().unwrap_or_default().to_owned()));
-        crate::codec::parquet::wide_node_rows(graph, origin, batch, ids, decoded, columns)
+        crate::codec::parquet::load::wide_node_rows(graph, origin, batch, ids, decoded, columns)
     }
 
     #[test]
