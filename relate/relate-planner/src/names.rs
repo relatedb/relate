@@ -94,6 +94,13 @@ pub fn query_with_persistent_imports(query: &Query, imported: &[String]) -> Quer
     query
 }
 
+/// The `excluded_imports` argument of a stage with no CIP-218 star
+/// exclusion: a plain stage, a planned statement's output names, a
+/// projection-shadowing probe. The one spelling of the empty set.
+pub(crate) fn no_excluded_imports() -> HashSet<String> {
+    HashSet::new()
+}
+
 /// Output names of a single query stage (its `parts`, ignoring `next`).
 pub(crate) fn parts_output_names(
     parts: &[SingleQuery],

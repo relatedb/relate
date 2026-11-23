@@ -24,17 +24,15 @@ pub(crate) fn create_patterns(
     params: &BTreeMap<String, Value>,
 ) -> Result<()> {
     for p in patterns {
-        // A standalone node pattern (`CREATE (n)`, no relationships) is a
-        // declaration, never a reference: a name it reuses from an enclosing
-        // scope is *shadowed* — the new node takes the name — which is what
-        // the `FOREACH` body's fresh scope licenses (Neo4j `ForeachAcceptance`
-        // "Shadow outer variable in CREATE/MERGE"). A node that appears in a
-        // relationship pattern is instead a reference to the existing binding
-        // (the same suite's `(n)-[:R]->(n)` rows), so only the standalone form
-        // is forced fresh.
-        let fresh = p.rels.is_empty();
         let mut node_ids: Vec<NodeId> = Vec::new();
         for np in &p.nodes {
+            // A declaration (standalone, or a node that adds labels or
+            // properties) takes the name fresh, shadowing an enclosing
+            // binding — the `FOREACH` body's fresh scope (Neo4j
+            // `ForeachAcceptance` "Shadow outer variable in CREATE/MERGE");
+            // only a bare node beside a relationship references the existing
+            // binding. The planner's binder reads the same predicate.
+            let fresh = !p.node_reuses_binding(np);
             let id = create_or_bind_node(graph, row, np, fresh, params)?;
             node_ids.push(id);
         }

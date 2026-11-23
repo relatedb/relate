@@ -54,6 +54,17 @@ pub enum PatternElement {
 }
 
 impl PathPattern {
+    /// Whether node `np` of this CREATE/MERGE path is a *reference* to an
+    /// existing binding of its name instead of a fresh declaration. Only a
+    /// bare variable beside a relationship reuses (`(a)-[:R]->(b)`, the
+    /// openCypher `(n)-[:R]->(n)` rows); a standalone node, or one that adds
+    /// labels or properties, declares — and when an enclosing scope bound
+    /// the name (a `FOREACH` body), the declaration shadows it. The one rule
+    /// the planner's CREATE binder and the executor's materializer share.
+    pub fn node_reuses_binding(&self, np: &NodePattern) -> bool {
+        !self.rels.is_empty() && !np.declares_shape()
+    }
+
     /// The names this pattern binds its path value under, in declaration
     /// order: the outer path variable, then a named parenthesized subpath.
     /// The one enumeration every binder, scope walk and variable collector
@@ -244,6 +255,14 @@ pub struct NodePattern {
 }
 
 impl NodePattern {
+    /// Whether the node spells a label requirement or a property map: the
+    /// shape that makes an element variable a *declaration* rather than a
+    /// bare reference to an existing binding. The one predicate behind
+    /// [`PathPattern::node_reuses_binding`].
+    pub fn declares_shape(&self) -> bool {
+        !self.labels.is_empty() || self.label_expr.is_some() || self.properties.is_some()
+    }
+
     /// Whether the label requirement is static: no label expression, or a
     /// plain conjunction (so `labels` holds its operands, except that a
     /// nested conjunction keeps its shape only in `label_expr`). The one

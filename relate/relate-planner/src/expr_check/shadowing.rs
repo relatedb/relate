@@ -81,7 +81,7 @@ pub(super) fn reject_projection_shadowing(query: &Query, imported: &[String]) ->
         let exported = crate::names::parts_output_names(
             &stage.parts,
             Vec::new(),
-            &std::collections::HashSet::new(),
+            &crate::names::no_excluded_imports(),
         )?;
         if let Some(name) = exported.iter().find(|n| imported.contains(*n)) {
             return Err(shadowing_error(&SmallName::from_name(name.as_str())));

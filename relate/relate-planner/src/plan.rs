@@ -2,8 +2,6 @@
 //! validate it, and build the `LogicalPlan` the executor interprets
 //! (ADR-0009), with MATCH rewrites applied after bind (ADR-0024).
 
-use std::collections::HashSet;
-
 use relate_core::Result;
 use relate_ir::{Clause, Expr, Query};
 use relate_names::TokenResolver;
@@ -68,7 +66,7 @@ pub fn plan_output_names(plan: &LogicalPlan) -> Result<Vec<String>> {
         stage_output_names(
             stage.parts.iter().map(Vec::as_slice),
             names,
-            &HashSet::new(),
+            &crate::names::no_excluded_imports(),
         )
     })
 }
@@ -372,7 +370,7 @@ pub(crate) fn plan_with_env(
         &query,
         &seed_env,
         &seed_names,
-        &HashSet::new(),
+        &crate::names::no_excluded_imports(),
         is_write_procedure,
     )?;
     // A NEXT stage's scope is the previous stage's exported columns plus the

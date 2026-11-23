@@ -360,17 +360,10 @@ pub(crate) fn bind_create_path(
     // A plain variable node in a rel-bearing path (`(a)-[:R]->(b)` where the
     // pattern reuses an earlier element variable) is a reuse, not a
     // redeclaration; adding a label or a property spec makes it a
-    // declaration again.
-    let node_may_reuse = !p.rels.is_empty();
+    // declaration again ([`PathPattern::node_reuses_binding`]).
     for n in &p.nodes {
         if let Some(v) = &n.variable {
-            declare(
-                env,
-                v,
-                Binding::Node,
-                shadowable,
-                node_may_reuse && n.labels.is_empty() && n.properties.is_none(),
-            )?;
+            declare(env, v, Binding::Node, shadowable, p.node_reuses_binding(n))?;
         }
     }
     for r in &p.rels {
