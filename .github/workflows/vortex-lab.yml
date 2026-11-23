@@ -1,0 +1,115 @@
+# Vortex lab lane — REPORT-ONLY (REL8-1982, ADR-0665 round 1).
+#
+# Never a required check, never a merge gate: it publishes the lab's
+# measurement tables (kernel suite + LDBC SF0.1 CSVs + the seam A/B) as a
+# job summary and artifacts so the columnar property-store evaluation has
+# CI-recorded numbers. The lab crate is workspace-excluded (root
+# Cargo.toml): the repo's 1.88-pinned lanes never resolve or build it.
+# This lane alone lifts the toolchain to 1.95 — the vortex git dep
+# (relatedb fork) requires it; the MSRV decision for any engine-side
+# merge is ADR material, out of scope here.
+#
+# CI caveat printed into the summary: these are shared-runner numbers
+# with a load stamp, not the quiet-box protocol the recorded baselines
+# in vortex-research-results.md use — compare shapes and ratios, not
+# absolute times, across runs.
+name: Vortex lab (report-only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["perf/rel8-1982-vortex-lab", "perf/vortex-engine-integration"]
+    paths:
+      - "testing/relate-vortex-lab/**"
+      - ".github/workflows/vortex-lab.yml"
+  pull_request:
+    paths:
+      - "testing/relate-vortex-lab/**"
+      - ".github/workflows/vortex-lab.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  vortex-lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # The SF0.1 social-network archive the query-latency suite pins
+      # (workloads/graph-benchmark-ldbc/data.sha256): same source, same
+      # sha — one pin table for both lanes.
+      LDBC_URL: https://datasets.ldbcouncil.org/snb-interactive-v1/social_network-sf0.1-CsvBasic-StringDateFormatter.tar.zst
+      LDBC_SHA256: 61dea06f162cda1624edfe55f458ee7f13f532847318d65596fcd7282fc3aff8
+      OUT: ${{ github.workspace }}/vortex-lab-out
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust 1.95 (the lab's MSRV lift, this lane only)
+        run: |
+          rustup toolchain install 1.95 --profile minimal
+          rustup default 1.95
+          rustc --version
+
+      # The standalone (workspace-excluded) crate keeps its own target
+      # dir under testing/relate-vortex-lab/target; `workspaces` points
+      # rust-cache at exactly that manifest so the 244-crate vortex dep
+      # tree is cached between runs.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: testing/relate-vortex-lab
+
+      - name: Fetch the LDBC SF0.1 CSVs (sha-pinned)
+        run: |
+          mkdir -p "$OUT/ldbc"
+          curl -fsSL "$LDBC_URL" -o "$OUT/ldbc/archive.tar.zst"
+          echo "$LDBC_SHA256  $OUT/ldbc/archive.tar.zst" | sha256sum -c -
+          tar --zstd -xf "$OUT/ldbc/archive.tar.zst" -C "$OUT/ldbc"
+          test -f "$OUT/ldbc/social_network-sf0.1-CsvBasic-StringDateFormatter/dynamic/person_0_0.csv"
+
+      - name: Build the lab
+        working-directory: testing/relate-vortex-lab
+        run: cargo build --release --locked
+
+      - name: Run the kernel suite
+        working-directory: testing/relate-vortex-lab
+        env:
+          VORTEX_LAB_CSV: ${{ env.OUT }}/ldbc/social_network-sf0.1-CsvBasic-StringDateFormatter/dynamic/person_0_0.csv
+          VORTEX_LAB_OUT: ${{ env.OUT }}
+        run: |
+          mkdir -p "$OUT/stdio"
+          for cmd in size point seek filter agg join sets probe vfs seam; do
+            echo "::group::vortex-lab $cmd"
+            ./target/release/relate-vortex-lab "$cmd" 2>&1 | tee "$OUT/stdio/$cmd.txt"
+            echo "::endgroup::"
+          done
+
+      - name: Publish the numbers
+        if: always()
+        run: |
+          {
+            echo "# Vortex lab numbers (report-only)"
+            echo
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "Revision: $GITHUB_SHA"
+            echo
+            echo "**CI caveat**: shared-runner numbers with the lab's own load stamp —"
+            echo "compare shapes and ratios across runs, not absolute times. The recorded"
+            echo "quiet-box baselines live in \`vortex-research-results.md\`."
+            echo
+            for f in "$OUT"/stdio/*.txt; do
+              echo "## $(basename "$f" .txt)"
+              echo
+              echo '```'
+              cat "$f"
+              echo '```'
+              echo
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: vortex-lab-report
+          path: vortex-lab-out/
+          retention-days: 30

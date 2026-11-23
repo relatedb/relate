@@ -5,8 +5,12 @@ members = ["relate/*", "surfaces/*", "testing/*", "extensions/*"]
 # testing/jepsen is the standalone Clojure Jepsen harness (LABS-650, deps.edn,
 # never a cargo package) — the testing/* glob would otherwise try to read
 # each as a workspace member and every cargo invocation would fail on the
-# missing Cargo.toml.
-exclude = ["testing/expand-workload", "testing/jepsen"]
+# missing Cargo.toml. testing/relate-vortex-lab carries a vortex git dep
+# (rust-version 1.95, REL8-1982): excluded so the 1.88-pinned workspace
+# never resolves or builds it — it builds standalone in its own
+# report-only CI lane (.github/workflows/vortex-lab.yml) under a 1.95
+# toolchain. Its own Cargo.lock is committed beside it.
+exclude = ["testing/expand-workload", "testing/jepsen", "testing/relate-vortex-lab"]
 # Deliberately outside the default set (plain `cargo build` / `cargo test`
 # skips them): surfaces/relate-python is a pyo3 cdylib linked through
 # maturin, testing/xtask backs the `cargo xtask` maintenance command, and

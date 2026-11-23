@@ -45,7 +45,11 @@ pub enum Cmp {
 /// A pushed predicate: leaves are column comparisons, and/or compose.
 #[derive(Debug)]
 pub enum Pred {
-    Cmp { key: &'static str, op: Cmp, val: i64 },
+    Cmp {
+        key: &'static str,
+        op: Cmp,
+        val: i64,
+    },
     And(Box<Pred>, Box<Pred>),
     Or(Box<Pred>, Box<Pred>),
 }
@@ -130,7 +134,11 @@ impl RowProps {
         let mut key_index: Vec<(String, u64)> = table
             .column("key")
             .map(|c| match c {
-                store::Col::Str(v) => v.iter().enumerate().map(|(i, s)| (s.clone(), i as u64)).collect(),
+                store::Col::Str(v) => v
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| (s.clone(), i as u64))
+                    .collect(),
                 _ => Vec::new(),
             })
             .unwrap_or_default();
@@ -143,7 +151,13 @@ impl RowProps {
                 _ => vec![0; table.rows()],
             })
             .unwrap_or_else(|| vec![0; table.rows()]);
-        Self { rows, names, lookup, labels, key_index }
+        Self {
+            rows,
+            names,
+            lookup,
+            labels,
+            key_index,
+        }
     }
 
     fn kid(&self, key: &str) -> Option<u32> {
@@ -249,7 +263,10 @@ impl PropStore for RowProps {
 
     fn seek(&self, _key: &str, val: &str) -> RowIds {
         // unique keys in the synthetic shapes: 0 or 1 hit
-        match self.key_index.binary_search_by(|(k, _)| k.as_str().cmp(val)) {
+        match self
+            .key_index
+            .binary_search_by(|(k, _)| k.as_str().cmp(val))
+        {
             Ok(i) => vec![self.key_index[i].1],
             Err(_) => Vec::new(),
         }

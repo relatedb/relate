@@ -31,7 +31,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("vortex-lab: out={} load={:.1}", out_dir.display(), bench::loadavg1());
+    println!(
+        "vortex-lab: out={} load={:.1}",
+        out_dir.display(),
+        bench::loadavg1()
+    );
 
     match cmd {
         "size" => {
@@ -82,10 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ops::point::run(&csv, &out_dir, 100_000)?;
         }
         "seek" => {
-            let n: usize = args
-                .get(2)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(150_000);
+            let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(150_000);
             ops::seek::run("flat", n, 4, &out_dir, 20_000)?;
         }
         "filter" => {

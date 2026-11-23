@@ -12,16 +12,16 @@
 
 use std::path::{Path, PathBuf};
 
-use vortex::array::VortexSessionExecute;
 use vortex::array::arrays::primitive::PrimitiveArray;
 use vortex::array::arrays::struct_::{Struct, StructArrayExt};
-use vortex::array::expr::{Expression, get_item, root, select};
+use vortex::array::expr::{get_item, root, select, Expression};
 use vortex::array::stream::ArrayStreamExt;
 use vortex::array::validity::Validity;
+use vortex::array::VortexSessionExecute;
 use vortex::array::{ArrayRef, Canonical, IntoArray};
-use vortex::scalar::Scalar;
 use vortex::buffer::Buffer;
 use vortex::io::runtime::BlockingRuntime;
+use vortex::scalar::Scalar;
 use vortex::scan::strict_sorted_buffer::StrictSortedBuffer;
 
 use crate::bench::{measure, Measured};
@@ -77,9 +77,13 @@ fn o2(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn s
 
     // Per-column cost of the one-off probe path point.rs measured.
     for (name, f) in PROPS.iter().zip(&fields) {
-        let m = measure(&format!("O2 old: 1 col execute_scalar ({name})"), iters, |i| {
-            std::hint::black_box(f.execute_scalar(row_of(i), &mut ctx).unwrap());
-        });
+        let m = measure(
+            &format!("O2 old: 1 col execute_scalar ({name})"),
+            iters,
+            |i| {
+                std::hint::black_box(f.execute_scalar(row_of(i), &mut ctx).unwrap());
+            },
+        );
         m.report();
         results.push(m);
     }
@@ -113,29 +117,41 @@ fn o2(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn s
     let n = ids.len();
     let idx = || PrimitiveArray::new(Buffer::from(ids.clone()), Validity::NonNullable).into_array();
 
-    let old_morsel = measure("O2 old: per-value probes, 4 cols x rows", (iters / 20).max(2), |_| {
-        let mut total = 0usize;
-        for &r in &ids {
-            for f in &fields {
-                total += utf8(&f.execute_scalar(r as usize, &mut ctx).unwrap()).len();
+    let old_morsel = measure(
+        "O2 old: per-value probes, 4 cols x rows",
+        (iters / 20).max(2),
+        |_| {
+            let mut total = 0usize;
+            for &r in &ids {
+                for f in &fields {
+                    total += utf8(&f.execute_scalar(r as usize, &mut ctx).unwrap()).len();
+                }
             }
-        }
-        std::hint::black_box(total);
-    });
+            std::hint::black_box(total);
+        },
+    );
     per_row("O2 old: per-value probes, 4 cols", &old_morsel, n as u64);
     results.push(old_morsel);
 
-    let gather = measure("O2 new: take 4 cols x rows (batched)", (iters / 20).max(2), |_| {
-        let mut total = 0usize;
-        for f in &fields {
-            let canon = f.take(idx()).unwrap().execute::<Canonical>(&mut ctx).unwrap();
-            let v = canon.as_varbinview();
-            for j in 0..n {
-                total += v.bytes_at(j).len();
+    let gather = measure(
+        "O2 new: take 4 cols x rows (batched)",
+        (iters / 20).max(2),
+        |_| {
+            let mut total = 0usize;
+            for f in &fields {
+                let canon = f
+                    .take(idx())
+                    .unwrap()
+                    .execute::<Canonical>(&mut ctx)
+                    .unwrap();
+                let v = canon.as_varbinview();
+                for j in 0..n {
+                    total += v.bytes_at(j).len();
+                }
             }
-        }
-        std::hint::black_box(total);
-    });
+            std::hint::black_box(total);
+        },
+    );
     per_row("O2 new: take 4 cols (batched)", &gather, n as u64);
     results.push(gather);
 
@@ -152,13 +168,17 @@ fn o2(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn s
 
     // Decoding the columns once is what makes a per-value read cheap: the
     // probes above pay a block decode inside the encoding on every call.
-    let decode = measure("O2 new: decode 4 cols to canonical, once", (iters / 100).max(2), |_| {
-        let canon: Vec<Canonical> = fields
-            .iter()
-            .map(|f| f.clone().execute::<Canonical>(&mut ctx).unwrap())
-            .collect();
-        std::hint::black_box(canon);
-    });
+    let decode = measure(
+        "O2 new: decode 4 cols to canonical, once",
+        (iters / 100).max(2),
+        |_| {
+            let canon: Vec<Canonical> = fields
+                .iter()
+                .map(|f| f.clone().execute::<Canonical>(&mut ctx).unwrap())
+                .collect();
+            std::hint::black_box(canon);
+        },
+    );
     per_row("O2 new: decode 4 cols to canonical", &decode, rows);
     results.push(decode);
 
@@ -166,37 +186,51 @@ fn o2(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn s
         .iter()
         .map(|f| f.clone().execute::<Canonical>(&mut ctx))
         .collect::<Result<_, _>>()?;
-    let reads = measure("O2 new: canonical per-value reads, 4 cols x rows", (iters / 20).max(2), |_| {
-        let mut total = 0usize;
-        for c in &canon {
-            let v = c.as_varbinview();
-            for &r in &ids {
-                total += v.bytes_at(r as usize).len();
+    let reads = measure(
+        "O2 new: canonical per-value reads, 4 cols x rows",
+        (iters / 20).max(2),
+        |_| {
+            let mut total = 0usize;
+            for c in &canon {
+                let v = c.as_varbinview();
+                for &r in &ids {
+                    total += v.bytes_at(r as usize).len();
+                }
             }
-        }
-        std::hint::black_box(total);
-    });
-    per_row("O2 new: canonical per-value reads, 4 cols", &reads, n as u64);
+            std::hint::black_box(total);
+        },
+    );
+    per_row(
+        "O2 new: canonical per-value reads, 4 cols",
+        &reads,
+        n as u64,
+    );
     results.push(reads);
 
     // One projected scan with a row selection: the file reader's own path.
     let sel = StrictSortedBuffer::try_new(Buffer::from(ids))?;
-    let proj = select(PROPS, root()).bind(vfile.dtype())?.optimize_recursive()?;
-    let scan = measure("O2 new: projection + row_indices scan", (iters / 100).max(2), |_| {
-        let batch = rt
-            .block_on(async {
-                vfile
-                    .scan()?
-                    .with_projection(proj.clone())
-                    .with_row_indices(sel.clone())
-                    .into_array_stream()?
-                    .read_all()
-                    .await
-            })
-            .unwrap();
-        assert_eq!(batch.len(), n, "scan returned the wrong row count");
-        std::hint::black_box(batch);
-    });
+    let proj = select(PROPS, root())
+        .bind(vfile.dtype())?
+        .optimize_recursive()?;
+    let scan = measure(
+        "O2 new: projection + row_indices scan",
+        (iters / 100).max(2),
+        |_| {
+            let batch = rt
+                .block_on(async {
+                    vfile
+                        .scan()?
+                        .with_projection(proj.clone())
+                        .with_row_indices(sel.clone())
+                        .into_array_stream()?
+                        .read_all()
+                        .await
+                })
+                .unwrap();
+            assert_eq!(batch.len(), n, "scan returned the wrong row count");
+            std::hint::black_box(batch);
+        },
+    );
     per_row("O2 new: projection + row_indices scan", &scan, n as u64);
     results.push(scan);
 
@@ -230,7 +264,15 @@ fn o10b(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::error:
     // Reference: a whole-file scan says what one decoded row costs at all.
     let m = measure("O10b full scan (all rows), reference", 2, |_| {
         let batch = rt
-            .block_on(async { vfile.scan().unwrap().into_array_stream().unwrap().read_all().await })
+            .block_on(async {
+                vfile
+                    .scan()
+                    .unwrap()
+                    .into_array_stream()
+                    .unwrap()
+                    .read_all()
+                    .await
+            })
             .unwrap();
         assert_eq!(batch.len() as u64, rows);
         std::hint::black_box(batch);
@@ -238,22 +280,27 @@ fn o10b(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::error:
     per_row("O10b full scan, reference", &m, rows);
     results.push(m);
 
-    let fresh = |sel: Option<StrictSortedBuffer<u64>>, range: Option<std::ops::Range<u64>>, expect: u64| {
-        let batch = rt
-            .block_on(async {
-                let mut builder = vfile.scan()?;
-                if let Some(sel) = sel {
-                    builder = builder.with_row_indices(sel);
-                }
-                if let Some(range) = range {
-                    builder = builder.with_row_range(range);
-                }
-                builder.into_array_stream()?.read_all().await
-            })
-            .unwrap();
-        assert_eq!(batch.len(), expect as usize, "scan returned the wrong row count");
-        std::hint::black_box(batch);
-    };
+    let fresh =
+        |sel: Option<StrictSortedBuffer<u64>>, range: Option<std::ops::Range<u64>>, expect: u64| {
+            let batch = rt
+                .block_on(async {
+                    let mut builder = vfile.scan()?;
+                    if let Some(sel) = sel {
+                        builder = builder.with_row_indices(sel);
+                    }
+                    if let Some(range) = range {
+                        builder = builder.with_row_range(range);
+                    }
+                    builder.into_array_stream()?.read_all().await
+                })
+                .unwrap();
+            assert_eq!(
+                batch.len(),
+                expect as usize,
+                "scan returned the wrong row count"
+            );
+            std::hint::black_box(batch);
+        };
 
     let m = measure("O10b row_range 1 row, fresh scan", scan_iters, |_| {
         fresh(None, Some(rows / 2..rows / 2 + 1), 1)
@@ -267,7 +314,10 @@ fn o10b(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::error:
     per_row("O10b row_indices sparse, fresh scan", &m, vs);
     results.push(m);
 
-    let prepared = vfile.scan()?.with_row_indices(sparse_sel.clone()).prepare()?;
+    let prepared = vfile
+        .scan()?
+        .with_row_indices(sparse_sel.clone())
+        .prepare()?;
     let m = measure("O10b row_indices sparse, prepared scan", scan_iters, |_| {
         let batch = rt
             .block_on(async {
@@ -277,46 +327,63 @@ fn o10b(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::error:
                     .await
             })
             .unwrap();
-        assert_eq!(batch.len(), vs as usize, "prepared scan returned the wrong row count");
+        assert_eq!(
+            batch.len(),
+            vs as usize,
+            "prepared scan returned the wrong row count"
+        );
         std::hint::black_box(batch);
     });
     per_row("O10b row_indices sparse, prepared scan", &m, vs);
     results.push(m);
 
-    let m = measure("O10b row_range contiguous (1024), fresh scan", scan_iters, |_| {
-        fresh(None, Some(rows / 2..rows / 2 + 1024), vb)
-    });
+    let m = measure(
+        "O10b row_range contiguous (1024), fresh scan",
+        scan_iters,
+        |_| fresh(None, Some(rows / 2..rows / 2 + 1024), vb),
+    );
     per_row("O10b row_range contiguous, fresh scan", &m, vb);
     results.push(m);
 
-    let m = measure("O10b row_indices contiguous (1024), fresh scan", scan_iters, |_| {
-        fresh(Some(block_sel.clone()), None, vb)
-    });
+    let m = measure(
+        "O10b row_indices contiguous (1024), fresh scan",
+        scan_iters,
+        |_| fresh(Some(block_sel.clone()), None, vb),
+    );
     per_row("O10b row_indices contiguous, fresh scan", &m, vb);
     results.push(m);
 
     // The sparse ids' whole span: what the reader is implicitly asked for.
     let span = sparse[0]..sparse[sparse.len() - 1] + 1;
     let span_rows = span.end - span.start;
-    let m = measure("O10b row_range over the sparse span, fresh scan", scan_iters, |_| {
-        fresh(None, Some(span.clone()), span_rows)
-    });
+    let m = measure(
+        "O10b row_range over the sparse span, fresh scan",
+        scan_iters,
+        |_| fresh(None, Some(span.clone()), span_rows),
+    );
     per_row("O10b row_range over the sparse span", &m, vs);
     results.push(m);
 
-    let prepared_range = vfile.scan()?.with_row_range(rows / 2..rows / 2 + 1024).prepare()?;
-    let m = measure("O10b row_range contiguous (1024), prepared scan", scan_iters, |_| {
-        let batch = rt
-            .block_on(async {
-                prepared_range
-                    .execute_array_stream(None::<std::ops::Range<u64>>)?
-                    .read_all()
-                    .await
-            })
-            .unwrap();
-        assert_eq!(batch.len(), vb as usize);
-        std::hint::black_box(batch);
-    });
+    let prepared_range = vfile
+        .scan()?
+        .with_row_range(rows / 2..rows / 2 + 1024)
+        .prepare()?;
+    let m = measure(
+        "O10b row_range contiguous (1024), prepared scan",
+        scan_iters,
+        |_| {
+            let batch = rt
+                .block_on(async {
+                    prepared_range
+                        .execute_array_stream(None::<std::ops::Range<u64>>)?
+                        .read_all()
+                        .await
+                })
+                .unwrap();
+            assert_eq!(batch.len(), vb as usize);
+            std::hint::black_box(batch);
+        },
+    );
     per_row("O10b row_range contiguous, prepared scan", &m, vb);
     results.push(m);
 
@@ -330,47 +397,73 @@ fn o10b(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::error:
     );
     let four = projection_column(&rt, &vfile, select(["id", "key", "attr0", "attr1"], root()))?;
     let mut ctx = session.create_execution_ctx();
-    let idx = || PrimitiveArray::new(Buffer::from(sparse.clone()), Validity::NonNullable).into_array();
+    let idx =
+        || PrimitiveArray::new(Buffer::from(sparse.clone()), Validity::NonNullable).into_array();
     let gather_iters = (iters / 20).max(2);
 
-    let m = measure("O10b take kernel on decoded key, sparse", gather_iters, |_| {
-        let canon = key.take(idx()).unwrap().execute::<Canonical>(&mut ctx).unwrap();
-        let v = canon.as_varbinview();
-        let mut total = 0usize;
-        for j in 0..sparse.len() {
-            total += v.bytes_at(j).len();
-        }
-        std::hint::black_box(total);
-    });
+    let m = measure(
+        "O10b take kernel on decoded key, sparse",
+        gather_iters,
+        |_| {
+            let canon = key
+                .take(idx())
+                .unwrap()
+                .execute::<Canonical>(&mut ctx)
+                .unwrap();
+            let v = canon.as_varbinview();
+            let mut total = 0usize;
+            for j in 0..sparse.len() {
+                total += v.bytes_at(j).len();
+            }
+            std::hint::black_box(total);
+        },
+    );
     per_row("O10b take kernel on decoded key", &m, vs);
     results.push(m);
 
-    let m = measure("O10b take on decoded 4-col struct, sparse", gather_iters, |_| {
-        let canon = four.clone().take(idx()).unwrap().execute::<Canonical>(&mut ctx).unwrap();
-        let k = canon.as_struct().unmasked_field_by_name("key").unwrap();
-        let mut total = 0usize;
-        for j in 0..sparse.len() {
-            total += utf8(&k.execute_scalar(j, &mut ctx).unwrap()).len();
-        }
-        std::hint::black_box(total);
-    });
+    let m = measure(
+        "O10b take on decoded 4-col struct, sparse",
+        gather_iters,
+        |_| {
+            let canon = four
+                .clone()
+                .take(idx())
+                .unwrap()
+                .execute::<Canonical>(&mut ctx)
+                .unwrap();
+            let k = canon.as_struct().unmasked_field_by_name("key").unwrap();
+            let mut total = 0usize;
+            for j in 0..sparse.len() {
+                total += utf8(&k.execute_scalar(j, &mut ctx).unwrap()).len();
+            }
+            std::hint::black_box(total);
+        },
+    );
     per_row("O10b take on decoded 4-col struct + read", &m, vs);
     results.push(m);
 
-    let m = measure("O10b per-value probes on decoded key, sparse", gather_iters, |_| {
-        let mut total = 0usize;
-        for &r in &sparse {
-            total += utf8(&key.execute_scalar(r as usize, &mut ctx).unwrap()).len();
-        }
-        std::hint::black_box(total);
-    });
+    let m = measure(
+        "O10b per-value probes on decoded key, sparse",
+        gather_iters,
+        |_| {
+            let mut total = 0usize;
+            for &r in &sparse {
+                total += utf8(&key.execute_scalar(r as usize, &mut ctx).unwrap()).len();
+            }
+            std::hint::black_box(total);
+        },
+    );
     per_row("O10b per-value probes on decoded key", &m, vs);
     results.push(m);
 
-    let decode = measure("O10b decode key to canonical, once", (iters / 100).max(2), |_| {
-        let c = key.clone().execute::<Canonical>(&mut ctx).unwrap();
-        std::hint::black_box(c);
-    });
+    let decode = measure(
+        "O10b decode key to canonical, once",
+        (iters / 100).max(2),
+        |_| {
+            let c = key.clone().execute::<Canonical>(&mut ctx).unwrap();
+            std::hint::black_box(c);
+        },
+    );
     per_row("O10b decode key to canonical", &decode, rows);
     results.push(decode);
 
@@ -390,7 +483,11 @@ fn o10b(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::error:
     let batch = rt.block_on(async {
         vfile
             .scan()?
-            .with_projection(get_item("key", root()).bind(vfile.dtype())?.optimize_recursive()?)
+            .with_projection(
+                get_item("key", root())
+                    .bind(vfile.dtype())?
+                    .optimize_recursive()?,
+            )
             .with_row_range(rows / 2..rows / 2 + 1024)
             .into_array_stream()?
             .read_all()
@@ -399,7 +496,10 @@ fn o10b(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::error:
     for j in [0usize, 1, 511, 1023] {
         let want = utf8(&key.execute_scalar((rows / 2) as usize + j, &mut ctx)?);
         let got = utf8(&batch.execute_scalar(j, &mut ctx)?);
-        assert_eq!(got, want, "range scan row {j} disagrees with the decoded column");
+        assert_eq!(
+            got, want,
+            "range scan row {j} disagrees with the decoded column"
+        );
     }
 
     Ok(results)

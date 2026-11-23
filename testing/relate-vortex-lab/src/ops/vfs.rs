@@ -19,13 +19,13 @@
 
 use std::path::Path;
 
-use vortex::array::ArrayRef;
 use vortex::array::arrays::struct_::{Struct, StructArrayExt};
 use vortex::array::expr::{col, BoundExpression};
 use vortex::array::stream::ArrayStreamExt;
+use vortex::array::ArrayRef;
 use vortex::file::VortexFile;
-use vortex::io::runtime::BlockingRuntime;
 use vortex::io::runtime::single::SingleThreadRuntime;
+use vortex::io::runtime::BlockingRuntime;
 
 use crate::bench::{loadavg1, measure, Measured};
 use crate::store::{self, Ty};
@@ -47,16 +47,21 @@ fn rss_kb() -> u64 {
         .args(["-o", "rss=", "-p", &std::process::id().to_string()])
         .output();
     match out {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0)
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0),
         _ => 0,
     }
 }
 
 fn print_rss(label: &str, before: u64) {
     let now = rss_kb();
-    println!("  {label}: RSS {before} -> {now} KB (delta {} KB, load {:.1})", now.saturating_sub(before), loadavg1());
+    println!(
+        "  {label}: RSS {before} -> {now} KB (delta {} KB, load {:.1})",
+        now.saturating_sub(before),
+        loadavg1()
+    );
 }
 
 /// A projected read of one column from a struct file — the scan shape the
@@ -99,7 +104,11 @@ fn file_read(
     Ok(view.unmasked_field_by_name(name)?.clone())
 }
 
-pub fn run(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::error::Error>> {
+pub fn run(
+    csv: &Path,
+    out_dir: &Path,
+    iters: u64,
+) -> Result<Vec<Measured>, Box<dyn std::error::Error>> {
     let mut results = Vec::new();
 
     // ---- build both layouts of the same table ----
@@ -129,11 +138,15 @@ pub fn run(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<
     );
 
     // ---- V1: open cost, 1 file vs N files ----
-    let m = measure("V1 open struct file (1 mmap + footer)", iters.clamp(1, 200), |_| {
-        let f = store::open_mmap(&struct_path).unwrap();
-        std::hint::black_box(&f);
-        drop(f);
-    });
+    let m = measure(
+        "V1 open struct file (1 mmap + footer)",
+        iters.clamp(1, 200),
+        |_| {
+            let f = store::open_mmap(&struct_path).unwrap();
+            std::hint::black_box(&f);
+            drop(f);
+        },
+    );
     m.report();
     results.push(m);
 
@@ -166,10 +179,14 @@ pub fn run(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<
     let last_struct = project_read(&sfile, &rt, "lastName")?;
     print_rss("V3a struct projected read lastName (fresh open)", before);
     let last_struct_warm = last_struct.clone();
-    let m = measure("V3a struct file, projected read lastName", iters.clamp(5, 100), |_| {
-        let a = project_read(&sfile, &rt, "lastName").unwrap();
-        std::hint::black_box(a.len());
-    });
+    let m = measure(
+        "V3a struct file, projected read lastName",
+        iters.clamp(5, 100),
+        |_| {
+            let a = project_read(&sfile, &rt, "lastName").unwrap();
+            std::hint::black_box(a.len());
+        },
+    );
     m.report();
     results.push(m);
 
@@ -183,24 +200,36 @@ pub fn run(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<
     let _ = lname;
     let last_col = file_read(cfile, crt, "lastName")?;
     print_rss("V3b column file read lastName (fresh open)", before);
-    assert_eq!(last_col.len(), last_struct_warm.len(), "both layouts must agree on length");
-    let m = measure("V3b column file, read lastName", iters.clamp(5, 100), |_| {
-        let a = file_read(cfile, crt, "lastName").unwrap();
-        std::hint::black_box(a.len());
-    });
+    assert_eq!(
+        last_col.len(),
+        last_struct_warm.len(),
+        "both layouts must agree on length"
+    );
+    let m = measure(
+        "V3b column file, read lastName",
+        iters.clamp(5, 100),
+        |_| {
+            let a = file_read(cfile, crt, "lastName").unwrap();
+            std::hint::black_box(a.len());
+        },
+    );
     m.report();
     results.push(m);
     let _ = csession;
 
     // ---- V4: three-column read (the RETURN shape) ----
     let want = ["firstName", "lastName", "birthday"];
-    let m = measure("V4a struct file, 3 projected scans", iters.clamp(5, 100), |_| {
-        let mut total = 0usize;
-        for w in want {
-            total += project_read(&sfile, &rt, w).unwrap().len();
-        }
-        std::hint::black_box(total);
-    });
+    let m = measure(
+        "V4a struct file, 3 projected scans",
+        iters.clamp(5, 100),
+        |_| {
+            let mut total = 0usize;
+            for w in want {
+                total += project_read(&sfile, &rt, w).unwrap().len();
+            }
+            std::hint::black_box(total);
+        },
+    );
     m.report();
     results.push(m);
 
@@ -243,7 +272,11 @@ pub fn run(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<
         let big_path = out_dir.join("vfs-comment.vortex");
         let (big_written, _) = store::write(&big_path, &big)?;
         let (_bs, brt, bfile) = store::open_mmap(&big_path)?;
-        println!("V7 comment store: {} rows, file {} B", big.rows(), big_written);
+        println!(
+            "V7 comment store: {} rows, file {} B",
+            big.rows(),
+            big_written
+        );
 
         // drop decoded arrays immediately so RSS deltas are page-dominated
         let before = rss_kb();
@@ -274,11 +307,15 @@ pub fn run(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<
     };
     let v2_path = out_dir.join("vfs-person-col-lastName-v2.vortex");
     store::write(&v2_path, &one)?;
-    let m = measure("V6a remap: open rewritten column file", iters.clamp(1, 200), |_| {
-        let f = store::open_mmap(&v2_path).unwrap();
-        std::hint::black_box(&f);
-        drop(f);
-    });
+    let m = measure(
+        "V6a remap: open rewritten column file",
+        iters.clamp(1, 200),
+        |_| {
+            let f = store::open_mmap(&v2_path).unwrap();
+            std::hint::black_box(&f);
+            drop(f);
+        },
+    );
     m.report();
     results.push(m);
 
@@ -286,10 +323,14 @@ pub fn run(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<
     let before = rss_kb();
     let v6 = file_read(&f6, &rt6, "lastName")?;
     print_rss("V6b remapped file, first read (cold pages)", before);
-    let m = measure("V6b remapped column file, read lastName", iters.clamp(5, 100), |_| {
-        let a = file_read(&f6, &rt6, "lastName").unwrap();
-        std::hint::black_box(a.len());
-    });
+    let m = measure(
+        "V6b remapped column file, read lastName",
+        iters.clamp(5, 100),
+        |_| {
+            let a = file_read(&f6, &rt6, "lastName").unwrap();
+            std::hint::black_box(a.len());
+        },
+    );
     m.report();
     results.push(m);
     assert_eq!(v6.len(), last_struct_warm.len());

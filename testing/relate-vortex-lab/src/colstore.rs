@@ -28,8 +28,8 @@ use vortex::array::expr::{
 use vortex::array::stream::ArrayStreamExt;
 use vortex::array::{ArrayRef, VortexSessionExecute};
 use vortex::file::VortexFile;
-use vortex::io::runtime::BlockingRuntime;
 use vortex::io::runtime::single::SingleThreadRuntime;
+use vortex::io::runtime::BlockingRuntime;
 use vortex::session::VortexSession;
 
 use crate::seam::{Cmp, Pred, PropStore, RowIds, Val};
@@ -71,9 +71,11 @@ impl ColProps {
         let mut key_index: Vec<(String, u64)> = table
             .column("key")
             .map(|c| match c {
-                store::Col::Str(v) => {
-                    v.iter().enumerate().map(|(i, s)| (s.clone(), i as u64)).collect()
-                }
+                store::Col::Str(v) => v
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| (s.clone(), i as u64))
+                    .collect(),
                 _ => Vec::new(),
             })
             .unwrap_or_default();
@@ -101,8 +103,7 @@ impl ColProps {
     fn decode_ints(&self, key: &str) -> Result<Rc<Vec<i64>>, Box<dyn std::error::Error>> {
         // projected scan: the multi-chunk file yields the column directly
         // (the unprojected root is a chunked struct — same as agg.rs's scan)
-        let proj: BoundExpression =
-            col(key).bind(self.vfile.dtype())?.optimize_recursive()?;
+        let proj: BoundExpression = col(key).bind(self.vfile.dtype())?.optimize_recursive()?;
         let arr = self.rt.block_on(async {
             self.vfile
                 .scan()?
@@ -151,10 +152,8 @@ impl ColProps {
                 .expect("non-empty labels reduce");
             expr = and(expr, label_expr);
         }
-        let bound: BoundExpression =
-            expr.bind(self.vfile.dtype())?.optimize_recursive()?;
-        let proj: BoundExpression =
-            col("id").bind(self.vfile.dtype())?.optimize_recursive()?;
+        let bound: BoundExpression = expr.bind(self.vfile.dtype())?.optimize_recursive()?;
+        let proj: BoundExpression = col("id").bind(self.vfile.dtype())?.optimize_recursive()?;
         let mut b = self.vfile.scan()?;
         b = b.with_filter(bound).with_projection(proj);
         if let Some(c) = cap {
@@ -165,12 +164,18 @@ impl ColProps {
                 .with_limit(c as u64 + 1)
                 .with_some_max_splits_in_flight(std::num::NonZeroUsize::new(1));
         }
-        let arr = self.rt.block_on(async { b.into_array_stream()?.read_all().await })?;
+        let arr = self
+            .rt
+            .block_on(async { b.into_array_stream()?.read_all().await })?;
         // projection yields the field (or a struct holding it)
         let field = self.unwrap_field(arr, "id")?;
         let mut ctx = self.session.create_execution_ctx();
         let canonical = field.execute::<PrimitiveArray>(&mut ctx)?;
-        Ok(canonical.as_slice::<i64>().iter().map(|&v| v as u64).collect())
+        Ok(canonical
+            .as_slice::<i64>()
+            .iter()
+            .map(|&v| v as u64)
+            .collect())
     }
 }
 
@@ -217,7 +222,10 @@ impl PropStore for ColProps {
     }
 
     fn seek(&self, _key: &str, val: &str) -> RowIds {
-        match self.key_index.binary_search_by(|(k, _)| k.as_str().cmp(val)) {
+        match self
+            .key_index
+            .binary_search_by(|(k, _)| k.as_str().cmp(val))
+        {
             Ok(i) => vec![self.key_index[i].1],
             Err(_) => Vec::new(),
         }
@@ -236,8 +244,11 @@ impl PropStore for ColProps {
 
     fn topk(&self, key: &str, k: usize) -> Vec<(u64, i64)> {
         let col = self.ints(key);
-        let mut pairs: Vec<(u64, i64)> =
-            col.iter().enumerate().map(|(r, &v)| (r as u64, v)).collect();
+        let mut pairs: Vec<(u64, i64)> = col
+            .iter()
+            .enumerate()
+            .map(|(r, &v)| (r as u64, v))
+            .collect();
         pairs.select_nth_unstable_by_key(k.saturating_sub(1), |p| p.1);
         pairs.truncate(k);
         pairs.sort_unstable_by_key(|p| p.1);

@@ -89,11 +89,17 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     o7c.report();
     results.push(o7c);
 
-    assert_eq!(hash_matches, expected, "hash join must agree with sort-merge");
+    assert_eq!(
+        hash_matches, expected,
+        "hash join must agree with sort-merge"
+    );
     println!(
         "  O7 join key: attr0, {} rows/side, {} distinct keys, {} matches (hash == merge)",
         half,
-        left.iter().map(|(k, _)| *k).collect::<std::collections::BTreeSet<_>>().len(),
+        left.iter()
+            .map(|(k, _)| *k)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
         expected
     );
 
@@ -152,7 +158,11 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     .into_array();
     let scalar_shift = (0..n - 1).filter(|&i| attr0[i] < attr0[i + 1]).count();
     let shift_bits = run_compare(shifted.clone(), &lt(col("l"), col("r")), &mut ctx)?;
-    assert_eq!(shift_bits.true_count(), scalar_shift, "O8c must match scalar");
+    assert_eq!(
+        shift_bits.true_count(),
+        scalar_shift,
+        "O8c must match scalar"
+    );
     let shift_bound = lt(col("l"), col("r")).bind(shifted.dtype())?;
     let o8c = measure("O8c cross-row (i vs i+1) compare, vectorized", cit, |_| {
         let bits: BitBuffer = shifted
@@ -199,24 +209,28 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     results.push(o11a);
 
     let mut scan_matches = 0usize;
-    let o11b = measure("O11b compare all rows, filter at 1024 positions", jit, |_| {
-        let rows = rt
-            .block_on(async {
-                vfile
-                    .scan()?
-                    .with_projection(projection.clone())
-                    .into_array_stream()?
-                    .read_all()
-                    .await
-            })
-            .unwrap();
-        let bits = run_compare(rows, &lt(col("attr0"), col("attr1")), &mut ctx).unwrap();
-        scan_matches = positions
-            .iter()
-            .filter(|&&i| bits.value(i as usize))
-            .count();
-        std::hint::black_box(scan_matches);
-    });
+    let o11b = measure(
+        "O11b compare all rows, filter at 1024 positions",
+        jit,
+        |_| {
+            let rows = rt
+                .block_on(async {
+                    vfile
+                        .scan()?
+                        .with_projection(projection.clone())
+                        .into_array_stream()?
+                        .read_all()
+                        .await
+                })
+                .unwrap();
+            let bits = run_compare(rows, &lt(col("attr0"), col("attr1")), &mut ctx).unwrap();
+            scan_matches = positions
+                .iter()
+                .filter(|&&i| bits.value(i as usize))
+                .count();
+            std::hint::black_box(scan_matches);
+        },
+    );
     o11b.report();
     results.push(o11b);
 

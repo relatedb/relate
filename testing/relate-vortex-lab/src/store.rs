@@ -21,8 +21,8 @@ use vortex::array::{ArrayRef, IntoArray};
 use vortex::buffer::{Buffer, ByteBuffer};
 use vortex::error::VortexResult;
 use vortex::file::{OpenOptionsSessionExt, WriteOptionsSessionExt};
-use vortex::io::runtime::BlockingRuntime;
 use vortex::io::runtime::single::SingleThreadRuntime;
+use vortex::io::runtime::BlockingRuntime;
 use vortex::io::session::RuntimeSessionExt;
 use vortex::session::VortexSession;
 use vortex::VortexSessionDefault;
@@ -113,22 +113,16 @@ impl Table {
     pub fn to_vortex(&self) -> VortexResult<ArrayRef> {
         let names: Vec<&str> = self.columns.iter().map(|(n, _, _)| n.as_str()).collect();
         let children: Vec<ArrayRef> = self.columns.iter().map(|(_, _, c)| c.to_vortex()).collect();
-        Ok(StructArray::try_new(
-            names.into(),
-            children,
-            self.rows(),
-            Validity::NonNullable,
-        )?
-        .into_array())
+        Ok(
+            StructArray::try_new(names.into(), children, self.rows(), Validity::NonNullable)?
+                .into_array(),
+        )
     }
 }
 
 /// Read selected columns of a pipe-delimited LDBC CSV (escaped quoting is
 /// real, so the `csv` crate does the parsing).
-pub fn load_csv(
-    path: &Path,
-    cols: &[(&str, Ty)],
-) -> Result<Table, Box<dyn Error>> {
+pub fn load_csv(path: &Path, cols: &[(&str, Ty)]) -> Result<Table, Box<dyn Error>> {
     let mut rdr = csv::ReaderBuilder::new()
         .delimiter(b'|')
         .has_headers(true)
@@ -161,7 +155,10 @@ pub fn load_csv(
         let rec = rec?;
         for (i, _, ty) in &idx {
             let field = rec.get(*i).unwrap_or("");
-            match (&mut out[idx.iter().position(|(j, _, _)| j == i).unwrap()].2, ty) {
+            match (
+                &mut out[idx.iter().position(|(j, _, _)| j == i).unwrap()].2,
+                ty,
+            ) {
                 (Col::Bool(v), Ty::Bool) => v.push(field == "true" || field == "1"),
                 (Col::Int(v), Ty::Int) => v.push(field.parse().unwrap_or(0)),
                 (Col::Float(v), Ty::Float) => v.push(field.parse().unwrap_or(0.0)),
@@ -194,7 +191,9 @@ pub fn synthetic(kind: &str, n: usize, attrs: usize) -> Table {
         // a key that sorts in the same order as the node id (cheapest case)
         "flat" | "mono" => (0..n).map(|i| format!("node-{i:08}")).collect(),
         // a key whose sort order is a permutation of the node order
-        "ring" => (0..n).map(|i| format!("node-{:08}", (i * 7919) % n)).collect(),
+        "ring" => (0..n)
+            .map(|i| format!("node-{:08}", (i * 7919) % n))
+            .collect(),
         other => panic!("unknown synthetic shape {other}"),
     };
     let mut columns: Vec<(String, Ty, Col)> = vec![
@@ -230,7 +229,9 @@ pub fn write(path: &Path, table: &Table) -> Result<(u64, Vec<u64>), Box<dyn Erro
 }
 
 /// Open a vortex file through an mmap: zero decode, pages fault in on use.
-pub fn open_mmap(path: &Path) -> Result<(VortexSession, SingleThreadRuntime, vortex::file::VortexFile), Box<dyn Error>> {
+pub fn open_mmap(
+    path: &Path,
+) -> Result<(VortexSession, SingleThreadRuntime, vortex::file::VortexFile), Box<dyn Error>> {
     let rt = SingleThreadRuntime::default();
     let session = VortexSession::default().with_handle(rt.handle());
     let f = fs::File::open(path)?;

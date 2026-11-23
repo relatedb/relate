@@ -28,8 +28,8 @@ use vortex::array::{ArrayRef, VortexSessionExecute};
 use vortex::expr::stats::{Stat, StatsProvider};
 use vortex::expr::{get_item, root, select, BoundExpression, Expression};
 use vortex::file::VortexFile;
-use vortex::io::runtime::BlockingRuntime;
 use vortex::io::runtime::single::SingleThreadRuntime;
+use vortex::io::runtime::BlockingRuntime;
 use vortex::layout::LayoutReaderContext;
 use vortex::session::VortexSession;
 
@@ -133,7 +133,8 @@ fn find_column_layout(
 ) -> Result<Option<vortex::layout::LayoutRef>, Res> {
     for i in 0..root_layout.dyn_nslots() {
         if let Some(l) = root_layout.dyn_slot(i)? {
-            if let Some(vortex::layout::LayoutChildType::Field(name)) = root_layout.dyn_slot_type(i) {
+            if let Some(vortex::layout::LayoutChildType::Field(name)) = root_layout.dyn_slot_type(i)
+            {
                 if name.as_ref() == field {
                     return Ok(Some(l));
                 }
@@ -218,7 +219,9 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Res> {
         .into_iter()
         .find(|c| c.is::<Struct>())
         .ok_or("no struct chunk")?;
-    let struct_view = struct_chunk.as_opt::<Struct>().ok_or("chunk is not a struct")?;
+    let struct_view = struct_chunk
+        .as_opt::<Struct>()
+        .ok_or("chunk is not a struct")?;
     for (i, name) in ["id", "key", "attr0", "attr1", "attr2", "attr3"]
         .iter()
         .enumerate()
@@ -237,15 +240,15 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Res> {
             .unwrap_or_default();
         let file_stat = vfile
             .file_stats()
-            .and_then(|fs| fs.paths().iter().position(|p| format!("{p:?}").contains(name)))
+            .and_then(|fs| {
+                fs.paths()
+                    .iter()
+                    .position(|p| format!("{p:?}").contains(name))
+            })
             .map(|idx| {
                 let (agg, _) = vfile.file_stats().unwrap().get(idx);
                 let s = agg.to_stats_set();
-                format!(
-                    "min={:?} max={:?}",
-                    s.get(Stat::Min),
-                    s.get(Stat::Max)
-                )
+                format!("min={:?} max={:?}", s.get(Stat::Min), s.get(Stat::Max))
             })
             .unwrap_or_else(|| "none".into());
         println!(
@@ -263,12 +266,16 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Res> {
     let attr1_expr = bind(&vfile, get_item("attr1", root()))?;
     let attr0_expr = bind(&vfile, get_item("attr0", root()))?;
 
-    let m = measure("O13a countDistinct: decode + HashSet (attr1, 250)", heavy, |_| {
-        let col = scan(&rt, &vfile, Some(attr1_expr.clone()), None).unwrap();
-        let vals = decode_i64(&session, &col).unwrap();
-        let set: HashSet<i64> = vals.into_iter().collect();
-        std::hint::black_box(set.len());
-    });
+    let m = measure(
+        "O13a countDistinct: decode + HashSet (attr1, 250)",
+        heavy,
+        |_| {
+            let col = scan(&rt, &vfile, Some(attr1_expr.clone()), None).unwrap();
+            let vals = decode_i64(&session, &col).unwrap();
+            let set: HashSet<i64> = vals.into_iter().collect();
+            std::hint::black_box(set.len());
+        },
+    );
     m.report();
     results.push(m);
 
@@ -281,11 +288,18 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Res> {
     m.report();
     results.push(m);
 
-    let attr1_vals = decode_i64(&session, &scan(&rt, &vfile, Some(attr1_expr.clone()), None)?)?;
-    let m = measure("O13a'' HashSet over pre-decoded values (attr1)", heavy, |_| {
-        let set: HashSet<i64> = attr1_vals.iter().copied().collect();
-        std::hint::black_box(set.len());
-    });
+    let attr1_vals = decode_i64(
+        &session,
+        &scan(&rt, &vfile, Some(attr1_expr.clone()), None)?,
+    )?;
+    let m = measure(
+        "O13a'' HashSet over pre-decoded values (attr1)",
+        heavy,
+        |_| {
+            let set: HashSet<i64> = attr1_vals.iter().copied().collect();
+            std::hint::black_box(set.len());
+        },
+    );
     m.report();
     results.push(m);
 
@@ -315,32 +329,40 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Res> {
     }
 
     // (b2) what the scan actually hands you: union the per-chunk dict values.
-    let m = measure("O13b2 countDistinct: union chunk dict values (attr1)", heavy, |_| {
-        let col = scan(&rt, &vfile, Some(attr1_expr.clone()), None).unwrap();
-        let mut set: HashSet<i64> = HashSet::new();
-        for chunk in chunks(&col) {
-            if let Some(d) = chunk.as_opt::<Dict>() {
-                let mut ctx = session.create_execution_ctx();
-                let v = d
-                    .values()
-                    .clone()
-                    .execute::<PrimitiveArray>(&mut ctx)
-                    .unwrap();
-                set.extend(v.as_slice::<i64>().iter().copied());
+    let m = measure(
+        "O13b2 countDistinct: union chunk dict values (attr1)",
+        heavy,
+        |_| {
+            let col = scan(&rt, &vfile, Some(attr1_expr.clone()), None).unwrap();
+            let mut set: HashSet<i64> = HashSet::new();
+            for chunk in chunks(&col) {
+                if let Some(d) = chunk.as_opt::<Dict>() {
+                    let mut ctx = session.create_execution_ctx();
+                    let v = d
+                        .values()
+                        .clone()
+                        .execute::<PrimitiveArray>(&mut ctx)
+                        .unwrap();
+                    set.extend(v.as_slice::<i64>().iter().copied());
+                }
             }
-        }
-        std::hint::black_box(set.len());
-    });
+            std::hint::black_box(set.len());
+        },
+    );
     m.report();
     results.push(m);
 
     // (c) the column the compressor did NOT dictionary-encode: no cheap path.
-    let m = measure("O13c countDistinct: decode + HashSet (attr0, 1000)", heavy, |_| {
-        let col = scan(&rt, &vfile, Some(attr0_expr.clone()), None).unwrap();
-        let vals = decode_i64(&session, &col).unwrap();
-        let set: HashSet<i64> = vals.into_iter().collect();
-        std::hint::black_box(set.len());
-    });
+    let m = measure(
+        "O13c countDistinct: decode + HashSet (attr0, 1000)",
+        heavy,
+        |_| {
+            let col = scan(&rt, &vfile, Some(attr0_expr.clone()), None).unwrap();
+            let vals = decode_i64(&session, &col).unwrap();
+            let set: HashSet<i64> = vals.into_iter().collect();
+            std::hint::black_box(set.len());
+        },
+    );
     m.report();
     results.push(m);
     println!(
@@ -354,18 +376,26 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Res> {
     // self-check: the footer's dict size is the true distinct count for attr1,
     // and attr0 (no dict) really has 1000 distinct values.
     {
-        let vals = decode_i64(&session, &scan(&rt, &vfile, Some(attr1_expr.clone()), None)?)?;
+        let vals = decode_i64(
+            &session,
+            &scan(&rt, &vfile, Some(attr1_expr.clone()), None)?,
+        )?;
         let decoded: HashSet<i64> = vals.into_iter().collect();
-        let layout_n = find_column_layout(&root_layout, "attr1")?.as_ref().and_then(layout_dict_size);
+        let layout_n = find_column_layout(&root_layout, "attr1")?
+            .as_ref()
+            .and_then(layout_dict_size);
         assert_eq!(
             layout_n,
             Some(decoded.len() as u64),
             "layout dict size must equal the decoded distinct count"
         );
-        let distinct0 = decode_i64(&session, &scan(&rt, &vfile, Some(attr0_expr.clone()), None)?)?
-            .into_iter()
-            .collect::<HashSet<i64>>()
-            .len();
+        let distinct0 = decode_i64(
+            &session,
+            &scan(&rt, &vfile, Some(attr0_expr.clone()), None)?,
+        )?
+        .into_iter()
+        .collect::<HashSet<i64>>()
+        .len();
         println!(
             "  O13 self-check: attr1 layout dict size == decoded distinct ({}); attr0 decoded distinct = {distinct0}",
             decoded.len()
@@ -412,21 +442,31 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Res> {
         for v in decode_i64(&session, &col)? {
             *from_decode.entry(v).or_insert(0) += 1;
         }
-        assert_eq!(from_codes, from_decode, "dict-code histogram must equal decode");
-        println!("  O14a self-check: dict-code histogram == decode+HashMap ({} groups)", from_decode.len());
+        assert_eq!(
+            from_codes, from_decode,
+            "dict-code histogram must equal decode"
+        );
+        println!(
+            "  O14a self-check: dict-code histogram == decode+HashMap ({} groups)",
+            from_decode.len()
+        );
     }
 
     // (b) equi-width binning from per-zone Min/Max, no value decode.
     let attr0_layout = find_column_layout(&root_layout, "attr0")?.ok_or("no attr0 layout")?;
-    let m = measure("O14b zone-table read (19 Min/Max pairs, attr0)", it.min(200), |_| {
-        let z = zone_table(&session, &rt, &vfile, &attr0_layout).unwrap();
-        std::hint::black_box(z);
-    });
+    let m = measure(
+        "O14b zone-table read (19 Min/Max pairs, attr0)",
+        it.min(200),
+        |_| {
+            let z = zone_table(&session, &rt, &vfile, &attr0_layout).unwrap();
+            std::hint::black_box(z);
+        },
+    );
     m.report();
     results.push(m);
     {
-        let (mins, maxes) = zone_table(&session, &rt, &vfile, &attr0_layout)?
-            .ok_or("attr0 has no zone table")?;
+        let (mins, maxes) =
+            zone_table(&session, &rt, &vfile, &attr0_layout)?.ok_or("attr0 has no zone table")?;
         let lo = *mins.iter().min().unwrap();
         let hi = *maxes.iter().max().unwrap();
         let width = ((hi - lo + 1) as f64 / BINS as f64).max(1.0);
@@ -445,7 +485,10 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Res> {
             mins.len()
         );
         // The exact histogram is only available after decoding the column.
-        let vals = decode_i64(&session, &scan(&rt, &vfile, Some(attr0_expr.clone()), None)?)?;
+        let vals = decode_i64(
+            &session,
+            &scan(&rt, &vfile, Some(attr0_expr.clone()), None)?,
+        )?;
         let mut bins = vec![0u64; BINS];
         for v in vals {
             let b = (((v - lo) as f64) / width) as usize;
@@ -518,20 +561,31 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Res> {
     results.push(m);
 
     // (b) top-k by value over the decoded column: full sort vs partial selection.
-    let attr0_vals = decode_i64(&session, &scan(&rt, &vfile, Some(attr0_expr.clone()), None)?)?;
-    let m = measure("O15b top-10: full sort of decoded column", heavy.min(20), |_| {
-        let mut v = attr0_vals.clone();
-        v.sort_unstable();
-        std::hint::black_box(&v[v.len() - 10..]);
-    });
+    let attr0_vals = decode_i64(
+        &session,
+        &scan(&rt, &vfile, Some(attr0_expr.clone()), None)?,
+    )?;
+    let m = measure(
+        "O15b top-10: full sort of decoded column",
+        heavy.min(20),
+        |_| {
+            let mut v = attr0_vals.clone();
+            v.sort_unstable();
+            std::hint::black_box(&v[v.len() - 10..]);
+        },
+    );
     m.report();
     results.push(m);
-    let m = measure("O15b top-10: select_nth_unstable (partial)", heavy.min(20), |_| {
-        let mut v = attr0_vals.clone();
-        let cut = v.len() - 10;
-        v.select_nth_unstable(cut);
-        std::hint::black_box(&v[cut..]);
-    });
+    let m = measure(
+        "O15b top-10: select_nth_unstable (partial)",
+        heavy.min(20),
+        |_| {
+            let mut v = attr0_vals.clone();
+            let cut = v.len() - 10;
+            v.select_nth_unstable(cut);
+            std::hint::black_box(&v[cut..]);
+        },
+    );
     m.report();
     results.push(m);
 
@@ -557,15 +611,19 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Res> {
             .chunk(0)
             .encoding_id()
     );
-    let m = measure("O6b group-count: dict codes, no value decode (attr1)", heavy, |_| {
-        let col = scan(&rt, &vfile, Some(attr1_expr.clone()), None).unwrap();
-        let (values, codes) = dict_codes(&session, &col).unwrap().unwrap();
-        let mut counts = vec![0u64; values.len()];
-        for &c in &codes {
-            counts[c as usize] += 1;
-        }
-        std::hint::black_box(counts.len());
-    });
+    let m = measure(
+        "O6b group-count: dict codes, no value decode (attr1)",
+        heavy,
+        |_| {
+            let col = scan(&rt, &vfile, Some(attr1_expr.clone()), None).unwrap();
+            let (values, codes) = dict_codes(&session, &col).unwrap().unwrap();
+            let mut counts = vec![0u64; values.len()];
+            for &c in &codes {
+                counts[c as usize] += 1;
+            }
+            std::hint::black_box(counts.len());
+        },
+    );
     m.report();
     results.push(m);
     println!(
@@ -633,7 +691,9 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Res> {
         let mut dec_set: HashSet<(i64, i64)> = HashSet::new();
         let mut shared = true;
         for chunk in chunks(&col) {
-            let view = chunk.as_opt::<Struct>().ok_or("pair chunk is not a struct")?;
+            let view = chunk
+                .as_opt::<Struct>()
+                .ok_or("pair chunk is not a struct")?;
             let a = view.unmasked_field_by_name("attr1")?.clone();
             let b = view.unmasked_field_by_name("attr2")?.clone();
             let (Some((_, ca)), Some((_, cb))) =

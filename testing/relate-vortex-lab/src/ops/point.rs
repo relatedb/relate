@@ -29,7 +29,11 @@ const PERSON_COLS: &[(&str, Ty)] = &[
 /// The size bench alone, for any table: bytes/property vs the uncompressed
 /// value bytes. The comment/post tables (151k/136k rows, content strings)
 /// are where the memory thesis actually gets tested.
-pub fn size(csv: &Path, cols: &[(&str, Ty)], out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn size(
+    csv: &Path,
+    cols: &[(&str, Ty)],
+    out_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let table = store::load_csv(csv, cols)?;
     let path = out_dir.join(format!("{}.vortex", table.name));
     let (written, per_column) = store::write(&path, &table)?;
@@ -57,7 +61,11 @@ pub fn size(csv: &Path, cols: &[(&str, Ty)], out_dir: &Path) -> Result<(), Box<d
     Ok(())
 }
 
-pub fn run(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::error::Error>> {
+pub fn run(
+    csv: &Path,
+    out_dir: &Path,
+    iters: u64,
+) -> Result<Vec<Measured>, Box<dyn std::error::Error>> {
     let mut results = Vec::new();
 
     let table = store::load_csv(csv, PERSON_COLS)?;
@@ -91,16 +99,22 @@ pub fn run(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<
     let (session, rt, vfile) = store::open_mmap(&path)?;
     let decode = measure("O1 read_all (COMPRESSED arrays, not decoded)", 1, |_| {
         let arr = rt
-            .block_on(async { vfile.scan().unwrap().into_array_stream().unwrap().read_all().await })
+            .block_on(async {
+                vfile
+                    .scan()
+                    .unwrap()
+                    .into_array_stream()
+                    .unwrap()
+                    .read_all()
+                    .await
+            })
             .unwrap();
         std::hint::black_box(arr);
     });
     decode.report();
     results.push(decode);
 
-    let root = rt.block_on(async {
-        vfile.scan()?.into_array_stream()?.read_all().await
-    })?;
+    let root = rt.block_on(async { vfile.scan()?.into_array_stream()?.read_all().await })?;
     let rows = root.len();
     let (gender, first, last, birthday) = {
         let view = root.as_opt::<Struct>().ok_or("root is not a struct")?;

@@ -293,7 +293,11 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
             black_box(out.len());
         }
     });
-    let ascend = per_level("O19 order: bitset scan + push (per level)", m, LEVELS as f64);
+    let ascend = per_level(
+        "O19 order: bitset scan + push (per level)",
+        m,
+        LEVELS as f64,
+    );
     ascend.report();
     results.push(ascend);
 
@@ -335,7 +339,11 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
             black_box(arrival.len());
         }
     });
-    let arrival_m = per_level("O19 order: expand -> bitset+vec (per level)", m, LEVELS as f64);
+    let arrival_m = per_level(
+        "O19 order: expand -> bitset+vec (per level)",
+        m,
+        LEVELS as f64,
+    );
     arrival_m.report();
     results.push(arrival_m);
 
@@ -399,9 +407,7 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     // ---- kernel 5: where does the bitset lose? fixed 100k visited, growing space ----
     println!("sparsity sweep: 100k visited, 10k frontier, bitset vs HashSet<u64>");
     for space in [200_000u64, 1_000_000, 10_000_000, 100_000_000] {
-        let ids: Vec<u64> = (0..100_000u64)
-            .map(|i| i * space / 100_000)
-            .collect();
+        let ids: Vec<u64> = (0..100_000u64).map(|i| i * space / 100_000).collect();
         let mem = measure("O19 sparsity mem", 1, |_| {
             let mut s: HashSet<u64> = HashSet::with_capacity(ids.len());
             for &id in &ids {

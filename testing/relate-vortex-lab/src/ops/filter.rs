@@ -14,21 +14,21 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use vortex::array::ArrayRef;
 use vortex::array::arrays::primitive::PrimitiveArray;
 use vortex::array::arrays::struct_::{Struct, StructArrayExt};
 use vortex::array::expr::{
     and, col, gt, gt_eq, is_not_null, is_null, lit, lt, lt_eq, BoundExpression, Expression,
 };
 use vortex::array::stream::ArrayStreamExt;
+use vortex::array::ArrayRef;
 use vortex::array::VortexSessionExecute;
 use vortex::buffer::Buffer;
 use vortex::dtype::FieldPath;
 use vortex::error::VortexResult;
 use vortex::expr::stats::Stat;
 use vortex::file::VortexFile;
-use vortex::io::runtime::BlockingRuntime;
 use vortex::io::runtime::single::SingleThreadRuntime;
+use vortex::io::runtime::BlockingRuntime;
 use vortex::layout::LayoutReader;
 use vortex::mask::Mask;
 use vortex::scan::strict_sorted_buffer::StrictSortedBuffer;
@@ -71,16 +71,34 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     // ---- O4a: range filter -> count ----
     let f_attr0_lt500 = bind(&vfile, lt(col("attr0"), lit(500i64)))?;
     let expect_lt500 = attr0.iter().filter(|&&v| v < 500).count();
-    let got = run_scan(&vfile, &rt, Some(&f_attr0_lt500), Some(&p_attr0), None, None)?.len();
-    assert_eq!(got, expect_lt500, "O4a count disagrees with in-memory truth");
+    let got = run_scan(
+        &vfile,
+        &rt,
+        Some(&f_attr0_lt500),
+        Some(&p_attr0),
+        None,
+        None,
+    )?
+    .len();
+    assert_eq!(
+        got, expect_lt500,
+        "O4a count disagrees with in-memory truth"
+    );
     println!(
         "  O4a attr0<500 survives {got} of {} rows (in-memory agrees)",
         vfile.row_count()
     );
     let m = measure("O4a range scan+count attr0<500", scan_iters, |_| {
-        let len = run_scan(&vfile, &rt, Some(&f_attr0_lt500), Some(&p_attr0), None, None)
-            .unwrap()
-            .len();
+        let len = run_scan(
+            &vfile,
+            &rt,
+            Some(&f_attr0_lt500),
+            Some(&p_attr0),
+            None,
+            None,
+        )
+        .unwrap()
+        .len();
         std::hint::black_box(len);
     });
     m.report();
@@ -90,9 +108,7 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     let e_attr0_gt100k = gt(col("attr0"), lit(100_000i64));
     let file_max = attr0.iter().copied().max().unwrap_or(i64::MIN);
     let prunes = vfile.can_prune(&e_attr0_gt100k)?;
-    println!(
-        "  O4b can_prune(attr0 > 100000) = {prunes} (file attr0 max = {file_max})"
-    );
+    println!("  O4b can_prune(attr0 > 100000) = {prunes} (file attr0 max = {file_max})");
     let m = measure("O4b can_prune attr0>100000", cheap_iters, |_| {
         let p = vfile.can_prune(&e_attr0_gt100k).unwrap();
         std::hint::black_box(p);
@@ -109,12 +125,27 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
 
     // The whole-file prune through a real scan: nothing should be decoded.
     let f_attr0_gt100k = bind(&vfile, e_attr0_gt100k.clone())?;
-    let n_pruned = run_scan(&vfile, &rt, Some(&f_attr0_gt100k), Some(&p_attr0), None, None)?.len();
+    let n_pruned = run_scan(
+        &vfile,
+        &rt,
+        Some(&f_attr0_gt100k),
+        Some(&p_attr0),
+        None,
+        None,
+    )?
+    .len();
     assert_eq!(n_pruned, 0);
     let m = measure("O4b scan attr0>100000 (file prunes)", scan_iters, |_| {
-        let len = run_scan(&vfile, &rt, Some(&f_attr0_gt100k), Some(&p_attr0), None, None)
-            .unwrap()
-            .len();
+        let len = run_scan(
+            &vfile,
+            &rt,
+            Some(&f_attr0_gt100k),
+            Some(&p_attr0),
+            None,
+            None,
+        )
+        .unwrap()
+        .len();
         std::hint::black_box(len);
         assert_eq!(len, 0);
     });
@@ -122,12 +153,27 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     results.push(m);
 
     // ---- O4c: exists-style early exit ----
-    let one = run_scan(&vfile, &rt, Some(&f_attr0_lt500), Some(&p_attr0), None, Some(1))?.len();
+    let one = run_scan(
+        &vfile,
+        &rt,
+        Some(&f_attr0_lt500),
+        Some(&p_attr0),
+        None,
+        Some(1),
+    )?
+    .len();
     assert_eq!(one, 1);
     let m = measure("O4c exists with_limit(1) attr0<500", scan_iters, |_| {
-        let len = run_scan(&vfile, &rt, Some(&f_attr0_lt500), Some(&p_attr0), None, Some(1))
-            .unwrap()
-            .len();
+        let len = run_scan(
+            &vfile,
+            &rt,
+            Some(&f_attr0_lt500),
+            Some(&p_attr0),
+            None,
+            Some(1),
+        )
+        .unwrap()
+        .len();
         std::hint::black_box(len);
     });
     m.report();
@@ -157,23 +203,27 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     // The fork's bound (max_splits_in_flight, unreleased upstream): sequential
     // split issue under a limit, so the budget stop actually saves the other
     // splits' IO+decode — the #11808 mitigation the maintainer pointed at.
-    let m = measure("O4c exists limit(1) max_splits_in_flight=1", scan_iters, |_| {
-        let arr = rt
-            .block_on(async {
-                vfile
-                    .scan()?
-                    .with_filter(f_attr0_lt500.clone())
-                    .with_projection(p_attr0.clone())
-                    .with_limit(1)
-                    .with_some_max_splits_in_flight(std::num::NonZeroUsize::new(1))
-                    .into_array_stream()?
-                    .read_all()
-                    .await
-            })
-            .unwrap();
-        assert_eq!(arr.len(), 1);
-        std::hint::black_box(arr.len());
-    });
+    let m = measure(
+        "O4c exists limit(1) max_splits_in_flight=1",
+        scan_iters,
+        |_| {
+            let arr = rt
+                .block_on(async {
+                    vfile
+                        .scan()?
+                        .with_filter(f_attr0_lt500.clone())
+                        .with_projection(p_attr0.clone())
+                        .with_limit(1)
+                        .with_some_max_splits_in_flight(std::num::NonZeroUsize::new(1))
+                        .into_array_stream()?
+                        .read_all()
+                        .await
+                })
+                .unwrap();
+            assert_eq!(arr.len(), 1);
+            std::hint::black_box(arr.len());
+        },
+    );
     m.report();
     results.push(m);
 
@@ -226,7 +276,10 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
 
     let conj_n = run_scan(&vfile, &rt, Some(&f_conj), Some(&p_attr0), None, None)?.len();
     assert_eq!(conj_n, expect_conj, "O5 conjunction count wrong");
-    println!("  O5a conjunction survives {conj_n} of {}", vfile.row_count());
+    println!(
+        "  O5a conjunction survives {conj_n} of {}",
+        vfile.row_count()
+    );
     let m = measure("O5a conjunction scan+count", scan_iters, |_| {
         let len = run_scan(&vfile, &rt, Some(&f_conj), Some(&p_attr0), None, None)
             .unwrap()
@@ -250,27 +303,47 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     let mut ctx = session.create_execution_ctx();
     let seq_check = {
         let ids = run_scan(&vfile, &rt, Some(&f_attr0_lt500), Some(&p_id), None, None)?;
-        let ids = ids.execute::<PrimitiveArray>(&mut ctx)?.as_slice::<i64>().to_vec();
+        let ids = ids
+            .execute::<PrimitiveArray>(&mut ctx)?
+            .as_slice::<i64>()
+            .to_vec();
         assert!(
             ids.windows(2).all(|w| w[0] < w[1]),
             "survivor ids must be strictly ascending for with_row_indices"
         );
         let sel = index_buffer(&ids);
-        run_scan(&vfile, &rt, Some(&f_attr1_gt100), Some(&p_id), Some(&sel), None)?.len()
+        run_scan(
+            &vfile,
+            &rt,
+            Some(&f_attr1_gt100),
+            Some(&p_id),
+            Some(&sel),
+            None,
+        )?
+        .len()
     };
-    assert_eq!(seq_check, expect_conj, "O5 sequential disagree with conjunction");
+    assert_eq!(
+        seq_check, expect_conj,
+        "O5 sequential disagree with conjunction"
+    );
     let m = measure("O5b sequential: 2 scans (f0 then f1)", scan_iters, |_| {
-        let ids = run_scan(&vfile, &rt, Some(&f_attr0_lt500), Some(&p_id), None, None)
-            .unwrap();
+        let ids = run_scan(&vfile, &rt, Some(&f_attr0_lt500), Some(&p_id), None, None).unwrap();
         let ids = ids
             .execute::<PrimitiveArray>(&mut ctx)
             .unwrap()
             .as_slice::<i64>()
             .to_vec();
         let sel = index_buffer(&ids);
-        let len = run_scan(&vfile, &rt, Some(&f_attr1_gt100), Some(&p_id), Some(&sel), None)
-            .unwrap()
-            .len();
+        let len = run_scan(
+            &vfile,
+            &rt,
+            Some(&f_attr1_gt100),
+            Some(&p_id),
+            Some(&sel),
+            None,
+        )
+        .unwrap()
+        .len();
         std::hint::black_box(len);
     });
     m.report();
@@ -311,7 +384,10 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     )?;
     let p_key = bind(&vfile, col("key"))?;
     let prefix_hits = run_scan(&vfile, &rt, Some(&f_prefix), Some(&p_key), None, None)?.len();
-    assert_eq!(prefix_hits, 10_000, "prefix range should match ids 10000..19999");
+    assert_eq!(
+        prefix_hits, 10_000,
+        "prefix range should match ids 10000..19999"
+    );
     let pruned_prefix = pruned_splits(reader.as_ref(), &rt, &splits, &f_prefix)?;
     println!(
         "  O12a prefix \"node-0001\" matches {prefix_hits} rows, splits pruned {pruned_prefix}/{} \
@@ -385,24 +461,45 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     let m1 = ints(&mono, "attr1");
     // A one-third-of-range bound: selective (first ~n/3 rows match) but not
     // degenerate, so surviving zones remain to pay for.
-    let (lo0, hi0) = (m0.iter().copied().min().unwrap(), m0.iter().copied().max().unwrap());
-    let (lo1, hi1) = (m1.iter().copied().min().unwrap(), m1.iter().copied().max().unwrap());
+    let (lo0, hi0) = (
+        m0.iter().copied().min().unwrap(),
+        m0.iter().copied().max().unwrap(),
+    );
+    let (lo1, hi1) = (
+        m1.iter().copied().min().unwrap(),
+        m1.iter().copied().max().unwrap(),
+    );
     let third0 = lo0 + (hi0 - lo0) / 3;
     let third1 = lo1 + (hi1 - lo1) / 3;
 
     let p_m0 = bind(&mono_vfile, col("attr0"))?;
     let f_m0_lt = bind(&mono_vfile, lt(col("attr0"), lit(third0)))?;
     let expect_lt = m0.iter().filter(|&&v| v < third0).count();
-    let got = run_scan(&mono_vfile, &mono_rt, Some(&f_m0_lt), Some(&p_m0), None, None)?.len();
+    let got = run_scan(
+        &mono_vfile,
+        &mono_rt,
+        Some(&f_m0_lt),
+        Some(&p_m0),
+        None,
+        None,
+    )?
+    .len();
     assert_eq!(got, expect_lt);
     println!("  O4m range scan+count attr0<{third0} survives {got} of {n} rows (in-memory agrees)");
     let m = measure(
         &format!("O4m range scan+count attr0<{third0} (monotone, zone-pruned)"),
         scan_iters,
         |_| {
-            let len = run_scan(&mono_vfile, &mono_rt, Some(&f_m0_lt), Some(&p_m0), None, None)
-                .unwrap()
-                .len();
+            let len = run_scan(
+                &mono_vfile,
+                &mono_rt,
+                Some(&f_m0_lt),
+                Some(&p_m0),
+                None,
+                None,
+            )
+            .unwrap()
+            .len();
             std::hint::black_box(len);
         },
     );
@@ -413,12 +510,23 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     let e_m0_none = gt(col("attr0"), lit(hi0 + 1));
     assert!(mono_vfile.can_prune(&e_m0_none)?);
     let f_m0_none = bind(&mono_vfile, e_m0_none)?;
-    let m = measure("O4m scan attr0>max (monotone, file prunes)", scan_iters, |_| {
-        let len = run_scan(&mono_vfile, &mono_rt, Some(&f_m0_none), Some(&p_m0), None, None)
+    let m = measure(
+        "O4m scan attr0>max (monotone, file prunes)",
+        scan_iters,
+        |_| {
+            let len = run_scan(
+                &mono_vfile,
+                &mono_rt,
+                Some(&f_m0_none),
+                Some(&p_m0),
+                None,
+                None,
+            )
             .unwrap()
             .len();
-        std::hint::black_box(len);
-    });
+            std::hint::black_box(len);
+        },
+    );
     m.report();
     results.push(m);
 
@@ -461,7 +569,10 @@ fn run_o16(
             )
         });
     if !csv.exists() {
-        println!("O16 skipped: no Person CSV at {} (set VORTEX_LAB_CSV)", csv.display());
+        println!(
+            "O16 skipped: no Person CSV at {} (set VORTEX_LAB_CSV)",
+            csv.display()
+        );
         return Ok(());
     }
 
@@ -497,7 +608,9 @@ fn run_o16(
 
     // The decoded columns: is NullCount present (cached) or computed on demand?
     let root = run_scan(&vfile, &rt, None, None, None, None)?;
-    let view = root.as_opt::<Struct>().ok_or("person root is not a struct")?;
+    let view = root
+        .as_opt::<Struct>()
+        .ok_or("person root is not a struct")?;
     let gender = view.unmasked_field_by_name("gender")?.clone();
     let last = view.unmasked_field_by_name("lastName")?.clone();
     let mut ctx = session.create_execution_ctx();
@@ -510,7 +623,10 @@ fn run_o16(
     }
 
     // Cost of the presence decision when it is computed over a decoded column.
-    for (label, arr) in [("O16 NullCount compute gender", &gender), ("O16 NullCount compute lastName", &last)] {
+    for (label, arr) in [
+        ("O16 NullCount compute gender", &gender),
+        ("O16 NullCount compute lastName", &last),
+    ] {
         let m = measure(label, cheap_iters, |_| {
             let n = arr.statistics().compute_null_count(&mut ctx);
             std::hint::black_box(n);
@@ -542,13 +658,17 @@ fn run_o16(
     let f_isnull = bind(&vfile, is_null(col("gender")))?;
     let n_null = run_scan(&vfile, &rt, Some(&f_isnull), Some(&p_gender), None, None)?.len();
     assert_eq!(n_null, 0, "a NonNullable column must have no nulls");
-    let m = measure("O16 scan IS NULL gender (prunes all)", cheap_iters.max(5), |_| {
-        let len = run_scan(&vfile, &rt, Some(&f_isnull), Some(&p_gender), None, None)
-            .unwrap()
-            .len();
-        std::hint::black_box(len);
-        assert_eq!(len, 0);
-    });
+    let m = measure(
+        "O16 scan IS NULL gender (prunes all)",
+        cheap_iters.max(5),
+        |_| {
+            let len = run_scan(&vfile, &rt, Some(&f_isnull), Some(&p_gender), None, None)
+                .unwrap()
+                .len();
+            std::hint::black_box(len);
+            assert_eq!(len, 0);
+        },
+    );
     m.report();
     results.push(m);
 
@@ -616,7 +736,10 @@ fn print_splits(label: &str, splits: &[Range<u64>]) {
     let total: u64 = sizes.iter().sum();
     let min = sizes.iter().copied().min().unwrap_or(0);
     let max = sizes.iter().copied().max().unwrap_or(0);
-    let ranges: Vec<String> = splits.iter().map(|r| format!("{}..{}", r.start, r.end)).collect();
+    let ranges: Vec<String> = splits
+        .iter()
+        .map(|r| format!("{}..{}", r.start, r.end))
+        .collect();
     println!(
         "{label} splits: {} ranges covering {} rows, {min}..{max} rows each (mean {:.0}) — the zone-map prune unit",
         splits.len(),

@@ -16,7 +16,13 @@ use vortex::scan::strict_sorted_buffer::StrictSortedBuffer;
 use crate::bench::{measure, Measured};
 use crate::store;
 
-pub fn run(shape: &str, n: usize, attrs: usize, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::error::Error>> {
+pub fn run(
+    shape: &str,
+    n: usize,
+    attrs: usize,
+    out_dir: &Path,
+    iters: u64,
+) -> Result<Vec<Measured>, Box<dyn std::error::Error>> {
     let mut results = Vec::new();
 
     let table = store::synthetic(shape, n, attrs);
@@ -49,7 +55,15 @@ pub fn run(shape: &str, n: usize, attrs: usize, out_dir: &Path, iters: u64) -> R
     // The key column, decoded once (what any seek pays to touch the column).
     let decode = measure("O3 read_all (COMPRESSED arrays, not decoded)", 1, |_| {
         let a = rt
-            .block_on(async { vfile.scan().unwrap().into_array_stream().unwrap().read_all().await })
+            .block_on(async {
+                vfile
+                    .scan()
+                    .unwrap()
+                    .into_array_stream()
+                    .unwrap()
+                    .read_all()
+                    .await
+            })
             .unwrap();
         std::hint::black_box(a);
     });
@@ -86,26 +100,28 @@ pub fn run(shape: &str, n: usize, attrs: usize, out_dir: &Path, iters: u64) -> R
 
     // O10b: read exactly the rows a morsel would carry — 1024 random ids,
     // sorted (the file wants a strictly sorted buffer).
-    let mut idx: Vec<u64> = (0..1024)
-        .map(|i| (i as u64 * 7919) % rows as u64)
-        .collect();
+    let mut idx: Vec<u64> = (0..1024).map(|i| (i as u64 * 7919) % rows as u64).collect();
     idx.sort_unstable();
     idx.dedup();
     let rows_per_batch = idx.len() as u64;
     let selection = StrictSortedBuffer::try_new(Buffer::from(idx))?;
-    let o10b = measure("O10b with_row_indices gather (1024 rows)", iters.max(1) / 100 + 1, |_| {
-        let batch = rt
-            .block_on(async {
-                vfile
-                    .scan()?
-                    .with_row_indices(selection.clone())
-                    .into_array_stream()?
-                    .read_all()
-                    .await
-            })
-            .unwrap();
-        std::hint::black_box(batch);
-    });
+    let o10b = measure(
+        "O10b with_row_indices gather (1024 rows)",
+        iters.max(1) / 100 + 1,
+        |_| {
+            let batch = rt
+                .block_on(async {
+                    vfile
+                        .scan()?
+                        .with_row_indices(selection.clone())
+                        .into_array_stream()?
+                        .read_all()
+                        .await
+                })
+                .unwrap();
+            std::hint::black_box(batch);
+        },
+    );
     println!(
         "  (O10b reads {rows_per_batch} rows per call; ns/op above is per gather, not per row)"
     );
