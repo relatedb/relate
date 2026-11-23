@@ -1616,7 +1616,20 @@ dropped as the statement runs, so peak live memory is lower — and it is
 never an enforcement total. The enforcement itself is per allocation: one
 built value over the `--expression-memory-limit` cap (default 256 MiB) is
 refused. It is reported separately from `Memory (Bytes)` so a reader can
-tell a row-materializing operator from one that built values. Neither page-cache columns nor other Neo4j cache columns
+tell a row-materializing operator from one that built values.
+`Memo` (ADR-0654) reports the expression memos (ADR-0640) the operator's
+stage ran, as `hits/probes` — `90/100` is ninety answers served from a memo
+table out of a hundred lookups — suffixed `*` when any of the operator's
+memos gave up at its hit-rate review (`1/2000000*`), and empty on an
+operator that ran none. It sits after `Expression Built (Bytes)` and
+renders **only when the statement used a memo** (some operator, or the
+root, carries the group): a plan whose statement probed no memo has no
+`Memo` column, never an always-empty one. The constructor memos
+(`datetime(<string>)`) serve any expression in the statement, so their
+counts appear on the root row, added to the root's own. The memo tables'
+bytes, refusals and inserts are in the machine modes (`MemoBytes`,
+`MemoRefused`, `MemoInserts`) — never folded into `Memory (Bytes)`, which
+counts result rows. Neither page-cache columns nor other Neo4j cache columns
 exist: the engine is in-memory (ADR-0344). On `PROFILE` trees that carry
 estimates, an `Est/Actual` column renders the estimated-vs-actual ratio
 per operator (`25.0x`), flagged with `!` when the estimate overshoots the
@@ -1728,6 +1741,9 @@ Plan:
 +------------------+----+----------------------------------+------+-----------+------------+---------+-------+---------+-----------+----------------+--------------------+
 ```
 
+The `Memo` column appears when the statement used an expression memo; see
+the [executable memo example](examples/profile_memo.md).
+
 In the machine modes the structured plan's `args` carry `Rows`, `TimeNs`,
 `DbHits`, `MemoryBytes`, `ExpressionBuiltBytes`, `Hops`, `NeighborWalks`,
 `NodeReads`, `SeekTimeNs` and `WalkTimeNs` together on every profiled
@@ -1747,7 +1763,12 @@ re-arrival rule's verdict-table asks), the admission asks by verdict
 `FrontierSearchDisproven`/`FrontierDeclinedExhausted`, and the
 `FrontierBudgetFraction` float — the rule's spent work over its budget
 constant, `1.0` a run the budget cut; only when engaged, the set
-together) — and `FrontierDeclineReason` (ADR-0516, ADR-0582) when the rung did
+together) — and the
+expression-memo group when a memo was probed on the operator (ADR-0654;
+presence-only, the set together): `MemoProbes`, `MemoHits`, `MemoInserts`,
+`MemoRefused`, `MemoBytes` (the memo tables' allocation, never part of
+`MemoryBytes`) and `MemoDisabledCount`, with the root's `MemoKinds` — a list
+of the memo type names (`node-label`, `datetime`) behind its sums — and `FrontierDeclineReason` (ADR-0516, ADR-0582) when the rung did
 not serve the clause: the typed reason's stable name. A run-time decline
 (`rearrival-budget`, ADR-0516, or `table-budget`, the sparse tables'
 allocation ceiling, ADR-0521) sits beside the counters of the run that

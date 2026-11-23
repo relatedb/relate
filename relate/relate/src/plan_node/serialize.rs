@@ -361,6 +361,37 @@ impl PlanNode {
                 Value::String(reason.as_str().into()),
             );
         }
+        // ADR-0654: the expression-memo group — emitted only when a memo
+        // was probed on the operator (the `frontier` group's presence
+        // rule), the six integers together; the root's memo types ride
+        // beside it. `MemoBytes` is its own field, never `MemoryBytes`.
+        if metrics.memo.probes > 0 {
+            let memo = &metrics.memo;
+            let counts = [
+                memo.probes,
+                memo.hits,
+                memo.inserts,
+                memo.refused,
+                memo.bytes,
+                memo.disabled_count,
+            ];
+            for (key, count) in plan_keys::MEMO_GROUP_KEYS.into_iter().zip(counts) {
+                put_metric(args, key, u128::from(count));
+            }
+            if !metrics.memo_kinds.is_empty() {
+                args.insert(
+                    plan_keys::MEMO_KINDS.to_string(),
+                    Value::List(
+                        metrics
+                            .memo_kinds
+                            .names()
+                            .map(|name| Value::String(name.into()))
+                            .collect::<Vec<_>>()
+                            .into(),
+                    ),
+                );
+            }
+        }
         put_metric(args, plan_keys::MEMORY_BYTES, metrics.memory_bytes as u128);
         // ADR-0463: the expression allocation charged by the operator's
         // clause, beside the row-materialization bytes it already reports.

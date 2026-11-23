@@ -181,6 +181,23 @@ impl PlanTree {
         self
     }
 
+    /// Attach the statement's constructor-memo facts at the plan root
+    /// (ADR-0654 §3): they serve any expression, so no operator owns them.
+    /// The root's own guarded-state sums keep their place and the
+    /// constructor sums add to them; `memo_kinds` then names every memo
+    /// type behind the total (empty when none was probed). A root that recorded no metrics
+    /// (nothing ran there to measure) has nowhere to carry them.
+    pub(crate) fn with_statement_memos(
+        mut self,
+        record: relate_executor::StatementMemoRecord,
+    ) -> Self {
+        if let Some(metrics) = self.root.metrics.as_mut() {
+            metrics.memo_kinds = record.kinds.union(metrics.memo.operator_kinds());
+            metrics.memo += record.counters;
+        }
+        self
+    }
+
     /// The operator-scoped notifications staged on `operator_id` — empty
     /// when the node derived none.
     pub(crate) fn staged(&self, operator_id: usize) -> &[Notification] {
@@ -279,6 +296,16 @@ pub struct ClauseMetrics {
     /// `Details` cell marks it (`[frontier-declined …]`) and the wire
     /// emits `FrontierDeclineReason` with the metric set when present.
     pub frontier_decline: Option<relate_executor::FrontierDeclineReason>,
+    /// The expression-memo counters (ADR-0654): the guarded-state memos
+    /// the clause's stage ran, summed — and, on the plan root only, the
+    /// statement's constructor memos added ([`ClauseMetrics::memo_kinds`]
+    /// naming the memo types behind the sums). Zero when no memo was
+    /// probed; the wire emits the `Memo*` group only when `probes > 0`,
+    /// and the plan table's `Memo` column renders `hits/probes`.
+    pub memo: relate_executor::MemoCounters,
+    /// The memo types behind the root's [`ClauseMetrics::memo`] (ADR-0654
+    /// §3): empty on every operator but the root.
+    pub memo_kinds: relate_model::wire::MemoKindsWire,
 }
 
 /// The one record→metric conversion: destructured, so a new
@@ -302,6 +329,7 @@ impl From<relate_executor::ClauseMetricsRecord> for ClauseMetrics {
             batch,
             frontier,
             frontier_decline,
+            memo,
         } = record;
         ClauseMetrics {
             rows,
@@ -317,6 +345,8 @@ impl From<relate_executor::ClauseMetricsRecord> for ClauseMetrics {
             zone_skips: batch.zone_skips,
             frontier,
             frontier_decline,
+            memo,
+            memo_kinds: Default::default(),
         }
     }
 }

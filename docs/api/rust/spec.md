@@ -1380,7 +1380,8 @@ The plan representation is the `PlanNode` tree:
   single-label scan's label row count, a single typed relationship's
   type count), `None` where no signal covers the operator; `metrics`
   (`Option<ClauseMetrics { rows, db_hits, memory_bytes, expression_built_bytes,
-  time_ns, reads, start, phases, batched, zone_skips, frontier, frontier_decline }>` — `reads` is the
+  time_ns, reads, start, phases, batched, zone_skips, frontier, frontier_decline,
+  memo, memo_kinds }>` — `reads` is the
   `StoreReads` kind mix behind `db_hits` (hops / neighbor walks / node
   reads), `start` the `Option<WalkStart>` naming the walk's element,
   direction and reason class, both re-exported by this crate (LABS-369,
@@ -1440,7 +1441,23 @@ The plan representation is the `PlanNode` tree:
   down; `None` on every clause the rung served and on every clause it
   never considered. The `Details` cell marks it
   `[frontier-declined conjunct]` (the kebab-case name) and the wire emits
-  `FrontierDeclineReason` with the metric set when present) is
+  `FrontierDeclineReason` with the metric set when present — and `memo`
+  (ADR-0654) the `MemoCounters` of the expression memos the operator's
+  stage ran (ADR-0640's per-memo facts summed): `probes` (table lookups,
+  warm-up inputs not counted), `hits`, `inserts`, `refused` (answers a
+  byte ceiling or the retained meter turned away), `bytes` (the tables'
+  allocation when read — its own figure, never part of `memory_bytes`,
+  and `0` for a memo that gave up and dropped its table) and
+  `disabled_count` (how many of the memos gave up at their hit-rate
+  review). The datetime-constructor memo serves any expression, so its
+  sums attach to the plan root instead, added to the root's own, and
+  `memo_kinds` (`MemoKindsWire`, empty on every other operator) names the
+  memo types behind the root's sums (`node-label`, `datetime`). All zero
+  on every operator that probed no memo; the `Memo` table column reads
+  `hits/probes` (`*`-suffixed when `disabled_count > 0`) and the wire
+  emits `MemoProbes`, `MemoHits`, `MemoInserts`, `MemoRefused`,
+  `MemoBytes`, `MemoDisabledCount` together with the metric set only when
+  `probes > 0`, plus the root's `MemoKinds` list of names) is
   `None` on every EXPLAIN node and stamped on every clause-granularity
   node the dispatch loop executed on a PROFILE run (ADR-0344). `kernel`
   (`Option<KernelRung>`, LABS-1117) names the traversal rung that served
@@ -1604,7 +1621,8 @@ The plan representation is the `PlanNode` tree:
   `is_profiled_classifies_explain_from_profile`
   (`relate/relate/tests/explain_profile.rs`).
 
-See the [plan-tree example](examples/plan_tree.md).
+See the [plan-tree example](examples/plan_tree.md) and the
+[PROFILE memo-counters example](examples/profile_memo.md).
 
 ## Query notifications (ADR-0363)
 

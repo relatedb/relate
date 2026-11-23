@@ -156,7 +156,12 @@ shape: `operatorType` (string), `args` (map: `Id` the pre-order operator
 number, `Details` the one-line details string, `EstimatedRows` when the
 estimate phase filled it — a float, Neo4j's form — and on PROFILE trees the
 metrics set `Rows` + `TimeNs` + `DbHits` + `MemoryBytes` +
-`ExpressionBuiltBytes`, always together;
+`ExpressionBuiltBytes`, always together, and — only on an operator whose
+expression memos (ADR-0640) were probed (ADR-0654) — the memo group
+`MemoProbes` + `MemoHits` + `MemoInserts` + `MemoRefused` + `MemoBytes` +
+`MemoDisabledCount`, together, with the root's `MemoKinds` (list of
+strings: `node-label`, `datetime`); `MemoBytes` is never part of
+`MemoryBytes`;
 when admission produced a receipt the same args also carry `PeakLogicalBytes`
 (ADR-0501); on a `MATCH` operator `PatternEngine` names the store's
 `RELATE_PATTERN_ENGINE` mode, and a PROFILE tree's served `MATCH` clause

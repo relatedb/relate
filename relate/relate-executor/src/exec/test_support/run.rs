@@ -11,7 +11,7 @@ use relate_ir::Query;
 use relate_planner::{plan, plan_with_tokens, LogicalPlan, NoPatternStats};
 
 use crate::graph::Graph;
-use crate::metrics::{ClauseMetricsRecord, PlanMetricsSink};
+use crate::metrics::{ClauseMetricsRecord, PlanMetricsSink, StatementMemoRecord};
 use crate::overlay::ExecGraph;
 use crate::pattern_engine::PatternEngine;
 use crate::test_support::PeakPoolDouble;
@@ -158,6 +158,41 @@ pub(crate) fn profiled(g: &Graph, cypher: &str) -> Vec<ClauseMetricsRecord> {
     let recorder = super::ClauseRecords(RefCell::new(Vec::new()));
     run_cypher_with(g, cypher, Some(&recorder));
     recorder.0.take()
+}
+
+/// A PROFILE sink that keeps the clause records and the statement-level
+/// memo facts (ADR-0654 §3): the harness the memo PROFILE pins read.
+struct MemoSink {
+    clauses: RefCell<Vec<ClauseMetricsRecord>>,
+    statement: Cell<StatementMemoRecord>,
+}
+
+impl PlanMetricsSink for MemoSink {
+    fn record_clause(&self, record: ClauseMetricsRecord) {
+        self.clauses.borrow_mut().push(record);
+    }
+
+    fn record_statement_memos(&self, record: StatementMemoRecord) {
+        self.statement.set(record);
+    }
+}
+
+/// Run `cypher` PROFILEd, returning the rows, the clause records, and the
+/// statement-level (constructor) memo record the sink received.
+pub(crate) fn profiled_memos(
+    g: &Graph,
+    cypher: &str,
+) -> (
+    Vec<Vec<Value>>,
+    Vec<ClauseMetricsRecord>,
+    StatementMemoRecord,
+) {
+    let sink = MemoSink {
+        clauses: RefCell::new(Vec::new()),
+        statement: Cell::new(StatementMemoRecord::default()),
+    };
+    let result = run_cypher_with(g, cypher, Some(&sink));
+    (result.rows, sink.clauses.take(), sink.statement.get())
 }
 
 /// Run `cypher` under a workspace ledger — PROFILEd when a sink is given —

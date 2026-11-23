@@ -13,12 +13,29 @@ use relate_core::{NodeId, Result, Value};
 use super::memo::{MemoPolicy, NodeMemo};
 use super::nfa::FrontierNfa;
 use crate::exec::candidates::node_ok;
+use crate::metrics::MemoCounters;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 /// One run's guard memos, one per automaton state, behind interior
 /// mutability so the read-only guard bundles can answer through them.
 pub(super) struct StateMemos(RefCell<Vec<NodeMemo>>);
+
+impl Drop for StateMemos {
+    /// Fold the run's memos into the PROFILE total (ADR-0654), summed over
+    /// the automaton's states, when a PROFILE arm is armed; otherwise no
+    /// memo is read.
+    fn drop(&mut self) {
+        let memos = self.0.get_mut();
+        crate::exec::record_memos(|| {
+            let mut sum = MemoCounters::default();
+            for memo in memos.iter() {
+                sum += memo.stats().counters();
+            }
+            sum
+        });
+    }
+}
 
 impl StateMemos {
     /// Empty memos for an automaton of `states` states: no table is

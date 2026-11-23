@@ -12,7 +12,7 @@ use super::{take_kernel_engagements, with_kernels_disabled};
 /// More nodes than the warm-up has checks, over several 4096-id pages.
 const NODES: usize = 9_000;
 
-fn wide_graph() -> Graph {
+pub(super) fn wide_graph() -> Graph {
     let b = Builder::new();
     let nodes: Vec<_> = (0..NODES)
         .map(|i| {

@@ -4,10 +4,12 @@
 //! the never-executed derivation, the ratio cell, the footer line.
 
 use super::super::plan_table::{
-    never_executed, plan_columns, plan_row_cells, ratio_cell, warnings_footer_line, MetricKinds,
-    PlanColumnFlags, PlanRow,
+    memo_cell, never_executed, plan_columns, plan_row_cells, ratio_cell, warnings_footer_line,
+    MetricKinds, PlanColumnFlags, PlanRow,
 };
-use relate_model::wire::{PlanMetricsWire, PlanPhasesWire, PlanProfiledFacts, PlanReadsWire};
+use relate_model::wire::{
+    PlanMemoWire, PlanMetricsWire, PlanPhasesWire, PlanProfiledFacts, PlanReadsWire,
+};
 
 /// One hand-built row facts bundle: a profiled node's metrics and
 /// total, an estimate, and no warnings.
@@ -39,6 +41,7 @@ fn facts() -> PlanRow {
                 zone_skips: 0,
                 frontier: Default::default(),
                 frontier_decline: None,
+                memo: None,
             },
             total_time_ns: 2_000,
         }),
@@ -63,7 +66,7 @@ fn header_and_cells_walk_the_same_descriptor_list() {
         ["Operator", "Id", "Details"]
     );
     // The widest bundle renders every column, in the render order —
-    // the concrete fifteen names, so the render list omitting or
+    // the concrete names, so the render list omitting or
     // misplacing a variant fails here.
     let all = plan_columns(PlanColumnFlags {
         estimate: true,
@@ -71,6 +74,7 @@ fn header_and_cells_walk_the_same_descriptor_list() {
             nodes: true,
             rels: true,
             degree: true,
+            memo: true,
         }),
         warnings: true,
         executed: true,
@@ -92,6 +96,7 @@ fn header_and_cells_walk_the_same_descriptor_list() {
             "Degree",
             "Memory (Bytes)",
             "Expression Built (Bytes)",
+            "Memo",
             "Est/Actual",
             "Warnings",
         ]
@@ -118,6 +123,7 @@ fn header_and_cells_walk_the_same_descriptor_list() {
                 nodes: true,
                 rels: true,
                 degree: true,
+                memo: true,
             }),
             ..Default::default()
         },
@@ -132,6 +138,38 @@ fn header_and_cells_walk_the_same_descriptor_list() {
         );
     }
 }
+/// The `Memo` cell (ADR-0654 §5): `hits/probes`, `*` when any memo of the
+/// operator gave up, empty where the operator has no group; and the column
+/// renders only when some operator carries the group.
+#[test]
+fn memo_cell_reads_hits_over_probes_with_a_disabled_marker() {
+    let memo = |hits, probes, disabled_count| PlanMemoWire {
+        probes,
+        hits,
+        disabled_count,
+        ..Default::default()
+    };
+    assert_eq!(memo_cell(None), "");
+    assert_eq!(memo_cell(Some(memo(90, 100, 0))), "90/100");
+    assert_eq!(memo_cell(Some(memo(1, 2_000_000, 2))), "1/2000000*");
+    let mut with = facts();
+    with.metrics.as_mut().unwrap().metrics.memo = Some(memo(7, 8, 0));
+    let flags = {
+        let mut flags = PlanColumnFlags::default();
+        flags.fold_row(&facts());
+        assert!(!flags.metrics.unwrap().memo, "a memo-free plan: no column");
+        flags.fold_row(&with);
+        flags
+    };
+    assert!(flags.metrics.unwrap().memo, "a memo anywhere opens it");
+    let headers = plan_columns(flags);
+    let cells = plan_row_cells(&with, flags);
+    let at = headers.iter().position(|h| *h == "Memo").unwrap();
+    assert_eq!(cells[at], "7/8");
+    let cells = plan_row_cells(&facts(), flags);
+    assert_eq!(cells[at], "", "empty where the node has none");
+}
+
 /// The never-executed derivation policy: zero rows in and zero rows out —
 /// the input fact arrives as the input clause's produced rows, `None`
 /// when the operator starts from the statement's seed row.

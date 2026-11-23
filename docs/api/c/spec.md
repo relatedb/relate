@@ -520,7 +520,13 @@ plan.
   operator the chain declined), `zone_skips` (that chain's filter's zone
   skips — conjunct-batch evaluations the chunk's derived per-column min/max
   provably replaced with the correct empty survivor set, `0` when it
-  skipped nothing), and `start` (`{element, backward, reason}`) when the
+  skipped nothing), `memo` (ADR-0654 — present only on an operator whose
+  expression memos were probed, absent otherwise: `{probes, hits, inserts,
+  refused, bytes, disabled_count}`, the memos' counters summed, `bytes` the
+  memo tables' allocation and never part of `memory_bytes`; the plan root's
+  `memo` also carries `kinds`, the memo type names `node-label` and
+  `datetime`, since the datetime constructor memo serves any expression and
+  reports there), and `start` (`{element, backward, reason}`) when the
   operator walked a pattern.
 - Field names are `snake_case` and numbers are numbers; there is no nested
   `args` map and no rendered text to parse. A breaking change bumps the

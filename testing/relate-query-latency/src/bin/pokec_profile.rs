@@ -36,6 +36,9 @@
 //!   group's query at start id 1, recorded before its timed rounds.
 //! * `--profile` (needs `--group`) prints the `PROFILE` result of the
 //!   group's query at start id 1 instead of timing it.
+//! * `--profiled` times every round as `PROFILE <query>` (the memo
+//!   counters of ADR-0654 collected), the A/B arm against an unprofiled
+//!   run's `alloc_bytes`, `live_peak` and `rss_peak`.
 //! * No env vars beyond cargo's own, except the engine's open-time settings the
 //!   fixture's `Database::open` reads: `RELATE_EXPRESSION_MEMO_BUDGET=<MiB>`
 //!   (ADR-0657) sizes or, at `0`, disables the memo tables for a sweep.
@@ -44,6 +47,7 @@
 //! Build with frame pointers for trustworthy stacks
 //! (`RUSTFLAGS="-C force-frame-pointers=yes"`).
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -587,6 +591,10 @@ struct Args {
     /// instead of timing it.
     #[arg(long, requires = "group")]
     profile: bool,
+    /// Time every round as `PROFILE <query>` instead of the bare query: the
+    /// profiled arm of the memory A/B (ADR-0654).
+    #[arg(long, conflicts_with = "profile")]
+    profiled: bool,
 }
 
 /// What the invocation does: exactly one of three jobs, resolved once from
@@ -642,8 +650,8 @@ fn main() -> Result<()> {
     for g in selected {
         match &mode {
             Mode::Profile => run_profile(&mut conn, g)?,
-            Mode::Sampled(dir) => run_timed(&mut conn, g, Some(&dir.join(g.name)))?,
-            Mode::Timed => run_timed(&mut conn, g, None)?,
+            Mode::Sampled(dir) => run_timed(&mut conn, g, Some(&dir.join(g.name)), args.profiled)?,
+            Mode::Timed => run_timed(&mut conn, g, None, args.profiled)?,
         }
     }
     Ok(())
@@ -703,11 +711,23 @@ fn plan_evidence(out: &QueryResult) -> String {
 
 /// Time `g`'s measured rounds and print rows and checksum; under the
 /// in-process sampler, writing into `sample_dir`, when it is given.
-fn run_timed(conn: &mut Connection, g: &Group, sample_dir: Option<&Path>) -> Result<()> {
+fn run_timed(
+    conn: &mut Connection,
+    g: &Group,
+    sample_dir: Option<&Path>,
+    profiled: bool,
+) -> Result<()> {
     // One warm round of the group's own query — primes its plans and
     // caches so the measured rounds are steady-state. Propagated like
     // a measured round: a warm-up failure is a harness failure.
-    warm(conn, g)?;
+    // The statement text is resolved once per group, outside the timed
+    // rounds: `--profiled` prefixes `PROFILE`, never a per-round format.
+    let statement = if profiled {
+        Cow::Owned(format!("PROFILE {}", g.query))
+    } else {
+        Cow::Borrowed(g.query)
+    };
+    warm(conn, g, &statement)?;
     // The plan evidence is recorded before the timed rounds, from the
     // warmed plan: a group that regressed to enumeration is visible here
     // even when its rounds never finish a sample.
@@ -717,8 +737,8 @@ fn run_timed(conn: &mut Connection, g: &Group, sample_dir: Option<&Path>) -> Res
         plan_evidence(&profile_query(conn, g)?)
     );
     let m = match sample_dir {
-        Some(dir) => run_sampled(conn, g, dir)?,
-        None => measure(conn, g)?,
+        Some(dir) => run_sampled(conn, g, dir, &statement)?,
+        None => measure(conn, g, &statement)?,
     };
     println!(
         "{}: {} ms rows={} checksum={} alloc_bytes={} live_peak={} live_end={} \
@@ -739,12 +759,12 @@ fn run_timed(conn: &mut Connection, g: &Group, sample_dir: Option<&Path>) -> Res
 /// [`measure`] under the in-process profiler, writing the shared
 /// `top.txt` / `folded.txt` / `flame.svg` trio into `dir` (one directory
 /// per group).
-fn run_sampled(conn: &mut Connection, g: &Group, dir: &Path) -> Result<Measured> {
+fn run_sampled(conn: &mut Connection, g: &Group, dir: &Path, statement: &str) -> Result<Measured> {
     // Create (and so validate) the directory before the sampled run, so an
     // unwritable `--sample DIR` fails fast, not after the whole measurement.
     std::fs::create_dir_all(dir)?;
-    let sampled =
-        sample(DEFAULT_FREQUENCY, || measure(conn, g)).map_err(relate::Error::internal)?;
+    let sampled = sample(DEFAULT_FREQUENCY, || measure(conn, g, statement))
+        .map_err(relate::Error::internal)?;
     // The rounds have already run: write the profile before propagating a
     // failed round's error, so the failure case keeps its stacks — the
     // case they are most useful for.
@@ -778,7 +798,7 @@ struct Measured {
 }
 
 /// Run `g`'s measured rounds.
-fn measure(conn: &mut Connection, g: &Group) -> Result<Measured> {
+fn measure(conn: &mut Connection, g: &Group, statement: &str) -> Result<Measured> {
     let live_before = LIVE_BYTES.load(Ordering::Relaxed);
     reset_peak();
     let rss_base = peak_rss_bytes();
@@ -788,7 +808,7 @@ fn measure(conn: &mut Connection, g: &Group) -> Result<Measured> {
     let mut checksum = 0i64;
     for r in 0..g.rounds {
         for start in g.schedule() {
-            let out = run(conn, g, start)?;
+            let out = run(conn, g, statement, start)?;
             rows += out;
             // The fold mixes the round and (as 0 when absent) the start id,
             // so recorded checksums stay comparable across revisions of
@@ -813,13 +833,14 @@ fn measure(conn: &mut Connection, g: &Group) -> Result<Measured> {
 
 /// One warm round of `g`'s own query — its first start id, or the single
 /// unparametrized run. Not counted in the measurements.
-fn warm(conn: &mut Connection, g: &Group) -> Result<()> {
-    run(conn, g, g.first_start()).map(|_| ())
+fn warm(conn: &mut Connection, g: &Group, statement: &str) -> Result<()> {
+    run(conn, g, statement, g.first_start()).map(|_| ())
 }
 
-/// Run `g`'s query once at `start` and return its one integer answer.
-fn run(conn: &mut Connection, g: &Group, start: Option<u64>) -> Result<i64> {
-    let out = conn.query_with_params(g.query, g.params(start))?;
+/// Run `statement` — `g`'s query, `PROFILE`d under `--profiled` — once at
+/// `start` and return its one integer answer.
+fn run(conn: &mut Connection, g: &Group, statement: &str, start: Option<u64>) -> Result<i64> {
+    let out = conn.query_with_params(statement, g.params(start))?;
     match out.rows.first().and_then(|row| row.first()) {
         Some(Value::Int(n)) => Ok(*n),
         other => panic!(
@@ -874,7 +895,8 @@ mod tests {
         let db = open(SHAPE).expect("open the fixture");
         let mut conn = db.connect().expect("connect");
         for g in &GROUPS {
-            run(&mut conn, g, g.first_start()).unwrap_or_else(|e| panic!("{}: {e}", g.name));
+            run(&mut conn, g, g.query, g.first_start())
+                .unwrap_or_else(|e| panic!("{}: {e}", g.name));
             let evidence = plan_evidence(&profile_query(&mut conn, g).expect("PROFILE"));
             assert!(
                 evidence.contains("kernel="),
@@ -897,11 +919,14 @@ mod tests {
             .iter()
             .map(|n| {
                 let g = by_name(n);
-                run(&mut conn, g, Some(1)).expect(n)
+                run(&mut conn, g, g.query, Some(1)).expect(n)
             })
             .collect();
         assert!(answers.iter().all(|a| *a == answers[0]), "{answers:?}");
-        let expr = run(&mut conn, by_name("shortest_expr"), Some(1)).expect("expr");
+        let expr = {
+            let g = by_name("shortest_expr");
+            run(&mut conn, g, g.query, Some(1)).expect("expr")
+        };
         assert_eq!(expr, answers[0], "the expression form finds the same pair");
     }
 }

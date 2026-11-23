@@ -131,6 +131,10 @@ pub struct PlanMetricsWire {
     /// `plan_keys::DECLINE_REASONS` vocabulary — `None` on every clause
     /// the rung served or never considered, present only on a PROFILE node.
     pub frontier_decline: Option<&'static str>,
+    /// The expression-memo counters (ADR-0654): `None` = no memo was
+    /// probed on this node, the producer emitting the group only when one
+    /// was (the `batched` / `zone_skips` / `frontier` presence rule).
+    pub memo: Option<super::plan_memo::PlanMemoWire>,
 }
 
 /// The frontier family's run counters a PROFILE node reports (ADR-0478):
@@ -570,6 +574,9 @@ pub fn plan_node_wire(value: &CypherValue) -> PlanNodeWire<'_> {
             plan_keys::FRONTIER_DECLINE_REASON
         ),
     };
+    // The expression-memo group (ADR-0654), read and validated by its
+    // own module.
+    let memo = super::plan_memo::memo_group(args, has_metrics);
     // The scalar group already enforced all-or-none and non-negative; the
     // wire form has one shape here, derived from the group read above.
     let metrics = scalars.map(
@@ -587,6 +594,7 @@ pub fn plan_node_wire(value: &CypherValue) -> PlanNodeWire<'_> {
             zone_skips,
             frontier,
             frontier_decline,
+            memo,
         },
     );
     let children = match node.get(plan_keys::CHILDREN) {

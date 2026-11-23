@@ -12,7 +12,7 @@ use std::io::Write;
 
 use relate_model::wire::{
     estimation_miss, metric_u64, profiled_facts, ratio_defined, time_ns_ms, KernelRungWire,
-    PlanMetricsWire, PlanProfiledFacts, PlanWarning, PLAN_UNAVAILABLE,
+    PlanMemoWire, PlanMetricsWire, PlanProfiledFacts, PlanWarning, PLAN_UNAVAILABLE,
 };
 use relate_model::CypherValue;
 
@@ -133,6 +133,11 @@ pub(crate) enum PlanColumn {
     /// The expression allocation bytes (ADR-0463): the metric group's
     /// closer, reported separately from the row bytes beside it.
     ExpressionBuiltBytes,
+    /// The expression-memo `hits/probes` (ADR-0654), `*`-suffixed when any
+    /// memo of the operator gave up: renders only when the statement used
+    /// a memo (some operator or the root carries the group), empty where
+    /// the operator has none.
+    Memo,
     /// The estimated-vs-actual ratio: renders where the metric group and
     /// the estimate column both render.
     Ratio,
@@ -147,7 +152,7 @@ impl PlanColumn {
     /// (the all-off and widest bundles assert the exact headers), so a
     /// variant added without a render-list entry fails there — not the
     /// compiler.
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 17] = [
         Self::Operator,
         Self::Id,
         Self::Details,
@@ -162,6 +167,7 @@ impl PlanColumn {
         Self::Degree,
         Self::MemoryBytes,
         Self::ExpressionBuiltBytes,
+        Self::Memo,
         Self::Ratio,
         Self::Warnings,
     ];
@@ -184,6 +190,7 @@ impl PlanColumn {
             Self::Degree => "Degree",
             Self::MemoryBytes => "Memory (Bytes)",
             Self::ExpressionBuiltBytes => "Expression Built (Bytes)",
+            Self::Memo => "Memo",
             Self::Ratio => "Est/Actual",
             Self::Warnings => "Warnings",
         }
@@ -210,6 +217,7 @@ impl PlanColumn {
             Self::Nodes => flags.metrics.is_some_and(|k| k.nodes),
             Self::Rels => flags.metrics.is_some_and(|k| k.rels),
             Self::Degree => flags.metrics.is_some_and(|k| k.degree),
+            Self::Memo => flags.metrics.is_some_and(|k| k.memo),
             Self::Ratio => flags.metrics.is_some() && flags.estimate,
             Self::Warnings => flags.warnings,
         }
@@ -261,6 +269,7 @@ impl PlanColumn {
             Self::ExpressionBuiltBytes => {
                 metric_cell(row, |f| f.metrics.expression_built_bytes.to_string())
             }
+            Self::Memo => metric_cell(row, |f| memo_cell(f.metrics.memo)),
             Self::Ratio => match (metrics.as_ref(), *estimated) {
                 (Some(f), Some(estimated)) => {
                     ratio_cell(metric_u64(estimated), metric_u64(f.metrics.rows))
@@ -397,6 +406,22 @@ fn read_kind_cell(value: i64) -> String {
         String::new()
     } else {
         value.to_string()
+    }
+}
+
+/// The `Memo` cell (ADR-0654 §5): `hits/probes` of the operator's memos,
+/// suffixed `*` when any of them gave up at its hit-rate review, empty
+/// where the operator has no memo group — absence, like the kind columns'
+/// zero, so the operators that used one stand out.
+pub(crate) fn memo_cell(memo: Option<PlanMemoWire>) -> String {
+    match memo {
+        None => String::new(),
+        Some(memo) => format!(
+            "{}/{}{}",
+            memo.hits,
+            memo.probes,
+            if memo.disabled_count > 0 { "*" } else { "" }
+        ),
     }
 }
 
@@ -549,6 +574,9 @@ pub(crate) struct MetricKinds {
     /// `Degree` — adjacency enumerations, one per neighbor a walk read
     /// (the wire's `neighbor_walks` kind).
     pub(crate) degree: bool,
+    /// `Memo` — some operator or the root carries the expression-memo
+    /// group (ADR-0654), so the column is never an always-empty one.
+    pub(crate) memo: bool,
 }
 
 impl PlanColumnFlags {
@@ -557,13 +585,14 @@ impl PlanColumnFlags {
     /// rows the walk already builds, through the one per-node contract
     /// the cell assembly reads, never a second traversal of the tree or
     /// a re-split into positionals.
-    fn fold_row(&mut self, row: &PlanRow) {
+    pub(crate) fn fold_row(&mut self, row: &PlanRow) {
         self.estimate |= row.estimated.is_some();
         if let Some(metrics) = row.metrics.as_ref() {
             let kinds = MetricKinds {
                 nodes: metrics.metrics.reads.node_reads > 0,
                 rels: metrics.metrics.reads.hops > 0,
                 degree: metrics.metrics.reads.neighbor_walks > 0,
+                memo: metrics.metrics.memo.is_some(),
             };
             // The kinds fold into the group the first metrics-carrying
             // node opened — a kind cannot exist without the metric set
@@ -574,6 +603,7 @@ impl PlanColumnFlags {
                     nodes: k.nodes || kinds.nodes,
                     rels: k.rels || kinds.rels,
                     degree: k.degree || kinds.degree,
+                    memo: k.memo || kinds.memo,
                 },
             });
             self.executed |= never_executed_metrics(&metrics.metrics, row.input_rows, row.is_root);

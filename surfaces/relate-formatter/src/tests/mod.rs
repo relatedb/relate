@@ -249,6 +249,8 @@ fn profile_fixture() -> PlanFixture {
             zone_skips: 0,
             frontier: Default::default(),
             frontier_decline: None,
+            memo: Default::default(),
+            memo_kinds: Default::default(),
         })),
     )
 }

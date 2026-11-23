@@ -21,9 +21,11 @@ use std::cell::RefCell;
 
 use relate_core::temporal::{self, ClockKind, Temporal};
 use relate_core::{Result, Value};
+use relate_model::wire::MemoKindWire;
 
 use super::memo::{Memo, MemoMeter, MemoPolicy};
 use super::value_hash::{hash_value, HashedValues, RetainedHeap};
+use crate::metrics::StatementMemoRecord;
 use crate::overlay::MemoLive;
 
 type Table = Memo<HashedValues<Value>>;
@@ -88,6 +90,19 @@ impl ConstructMemos {
         Self {
             datetime: RefCell::new(Table::new(policy, Some(live))),
         }
+    }
+
+    /// What the constructor memos did over the statement (ADR-0654 §3): the
+    /// counters summed over the memos that were probed, and their kinds.
+    /// Read once, at the statement's end behind PROFILE's sink.
+    pub(crate) fn statement_record(&self) -> StatementMemoRecord {
+        let datetime = self.datetime.borrow().stats();
+        let mut record = StatementMemoRecord::default();
+        if datetime.probes > 0 {
+            record.counters += datetime.counters();
+            record.kinds = record.kinds.with(MemoKindWire::Datetime);
+        }
+        record
     }
 
     /// `name(vals…)`: the shared construction (`temporal::construct_named`),

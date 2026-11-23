@@ -1225,6 +1225,7 @@ cargo run --profile profiling -p relate-query-latency --bin pokec_profile -- sma
 | `--group NAME` | Run one group: `count`, `scan_agg_global`, `expansion_3`, `expansion_3_unrolled`, `scan_expand_2hop_filter`, or a shortest-path group (below). All groups when omitted; an unknown name is a usage error before the fixture opens. |
 | `--sample DIR` | Run the selected groups under the in-process profiler (997 Hz, ADR-0244) and write `DIR/<group>/top.txt`, `folded.txt` and `flame.svg`, one directory per group. Conflicts with `--profile`; a failed round keeps its stacks. |
 | `--profile` | Print the `PROFILE` result of the group's query at start id 1 instead of timing it. Needs `--group`. |
+| `--profiled` | Time every round as `PROFILE <query>` instead of the bare query — the profiled arm of the expression-memo counters' memory A/B (ADR-0654), compared against an unprofiled run's `alloc_bytes`, `live_peak` and `rss_peak`. Conflicts with `--profile`. |
 | `--help` | The generated usage and flag list. |
 
 The expression-memo A/B groups (`memo_prop_read`, `memo_date_call`,

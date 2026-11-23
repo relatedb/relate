@@ -307,3 +307,60 @@ fn the_review_window_keeps_a_memo_over_a_large_domain_that_repeats() {
     let never_repeats = run(MemoPolicy::MODERATE, &|i| i);
     assert!(never_repeats.disabled, "all-distinct keys still disable");
 }
+
+/// A meter that adds up what the memo charges, for the bytes pin below.
+#[derive(Default)]
+struct Summing(std::cell::Cell<u64>);
+impl MemoMeter for Summing {
+    fn charge(&self, total: &mut u64, added: u64) -> Result<()> {
+        *total += added;
+        self.0.set(self.0.get() + added);
+        Ok(())
+    }
+}
+
+// ADR-0654: the PROFILE counters are the stats unchanged in meaning, the
+// disabled flag counted; `bytes` equals the table's allocation and every
+// one of those bytes was charged to the ADR-0463 retained meter.
+#[test]
+fn profile_counters_are_the_stats_and_their_bytes_are_the_charged_bytes() {
+    let meter = Summing::default();
+    let mut memo = NodeMemo::default();
+    for node in 0..WARMUP_CHECKS {
+        memo.answer(&meter, i64::from(node), || Ok(true)).unwrap();
+    }
+    for node in 0..10_000 {
+        memo.answer(&meter, node, || Ok(node % 2 == 0)).unwrap();
+        memo.answer(&meter, node, || Ok(node % 2 == 0)).unwrap();
+    }
+    let stats = memo.stats();
+    let counters = stats.counters();
+    assert_eq!(counters.probes, stats.probes);
+    assert_eq!(counters.hits, stats.hits);
+    assert_eq!(counters.inserts, stats.inserts);
+    assert_eq!(counters.refused, stats.refused);
+    assert_eq!(counters.disabled_count, 0);
+    assert!(counters.hits > 0 && counters.bytes > 0);
+    assert_eq!(counters.bytes, memo.heap_bytes() as u64);
+    assert_eq!(meter.0.get(), counters.bytes, "every table byte is charged");
+}
+
+#[test]
+fn a_disabled_memo_counts_once_in_the_sums() {
+    let mut memo = NodeMemo::new(
+        MemoPolicy {
+            warm_up: 0,
+            window: 8,
+            min_hit_percent: 50,
+            max_bytes: 1 << 20,
+        },
+        None,
+    );
+    for node in 0..32 {
+        memo.answer(&Unmetered, node, || Ok(true)).unwrap();
+    }
+    let mut sum = memo.stats().counters();
+    sum += memo.stats().counters();
+    assert_eq!(sum.disabled_count, 2, "two disabled memos sum to two");
+    assert_eq!(sum.bytes, 0, "the dropped table reads zero");
+}

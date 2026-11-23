@@ -223,6 +223,51 @@ fn pull_success_carries_the_traversal_rung() {
     );
 }
 
+/// ADR-0654: the drained PROFILE summary's root args carry the memo group
+/// (integers) and `MemoKinds` (a list of names) when a memo was used.
+#[test]
+fn pull_success_carries_the_memo_group_when_a_memo_was_used() {
+    let mut client = crate::testutil::connected_client();
+    run_success(
+        &mut client,
+        "PROFILE UNWIND range(0, 1999) AS i \
+         WITH ['2024-05-05T10:00:00Z', '2023-01-01T09:00:00Z'][i % 2] AS s \
+         RETURN count(datetime(s)) AS n",
+    );
+    let pull = drain_success(&mut client, Message::Pull);
+    let plan = pull
+        .get("profile")
+        .unwrap_or_else(|| panic!("the drained PROFILE carries the plan: {pull:?}"));
+    let args = plan.get("args").expect("the root's args");
+    assert!(
+        args.get("MemoProbes").and_then(Pack::as_int) > Some(0),
+        "{plan:?}"
+    );
+    assert!(
+        args.get("MemoHits").and_then(Pack::as_int) > Some(0),
+        "{plan:?}"
+    );
+    for key in [
+        "MemoInserts",
+        "MemoRefused",
+        "MemoBytes",
+        "MemoDisabledCount",
+    ] {
+        assert!(
+            args.get(key).and_then(Pack::as_int).is_some(),
+            "{key}: {plan:?}"
+        );
+    }
+    let kinds = args
+        .get("MemoKinds")
+        .expect("the root names the memo kinds");
+    assert_eq!(
+        format!("{kinds:?}").matches("datetime").count(),
+        1,
+        "{kinds:?}"
+    );
+}
+
 /// Virtual plan operators: an index-seek-started MATCH's plan value lists
 /// the fused children, each carrying `FusedInto` in its args.
 #[test]

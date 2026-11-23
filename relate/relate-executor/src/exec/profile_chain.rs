@@ -68,6 +68,7 @@ pub(crate) fn clause_record(
         },
         frontier: own.frontier,
         frontier_decline,
+        memo: own.memo,
     }
 }
 

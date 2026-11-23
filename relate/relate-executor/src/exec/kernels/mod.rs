@@ -160,6 +160,8 @@ mod hub_star;
 #[cfg(test)]
 mod memo_differential_tests;
 #[cfg(test)]
+mod memo_profile_tests;
+#[cfg(test)]
 mod memo_wiring_tests;
 
 // The chain count fold's entry, lifted the way the aggregate folds lift

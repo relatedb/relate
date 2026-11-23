@@ -380,7 +380,10 @@ tolerated, LABS-836); `PlanActual` models every key of the wire `actual` object:
 (`PlanFrontier`: `edgeVisits`, `levels`, `endpoints`, `cells`, `memoHits`,
 `memoMisses`, `representativeProofs`, `searchProven`, `searchDisproven`,
 `declinedExhausted`, `budgetFraction`), `frontierDecline` (nullable
-`String`), `start` and `kernel` (`PlanKernel`: `rung`, `hops` — a `Long`, present for the chain
+`String`), `memo` (nullable `PlanMemo`, ADR-0654: `probes`, `hits`,
+`inserts`, `refused`, `bytes` — the memo tables' allocation, never part of
+`memoryBytes` — `disabledCount`, and `kinds`, a `List<String>` on the root
+only; null when no memo was probed on the operator), `start` and `kernel` (`PlanKernel`: `rung`, `hops` — a `Long`, present for the chain
 rung only and null otherwise; nullable).
 
 ## Query notifications (ADR-0363)

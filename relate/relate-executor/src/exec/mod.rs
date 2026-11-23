@@ -22,9 +22,9 @@ use crate::overlay::ExecGraph;
 use crate::procedure_registry::call_writes_store;
 use crate::StatementEffect;
 pub(crate) use profiling::{
-    arm_store_profiling, count_frontier, count_neighbor_walks, count_zone_skip, record_walk_start,
-    restore_store_profiling, take_walk_start, DeltaSnapshot, StageDelta, WalkStartSwap,
-    WalkTallies,
+    arm_store_profiling, count_frontier, count_neighbor_walks, count_zone_skip, record_memos,
+    record_walk_start, restore_store_profiling, take_walk_start, DeltaSnapshot, StageDelta,
+    WalkStartSwap, WalkTallies,
 };
 #[cfg(test)]
 pub(crate) use profiling::{
@@ -697,7 +697,7 @@ fn execute_plan_stage_seeded(
     qctx: QueryCtx<'_>,
     sink: Option<&dyn PlanMetricsSink>,
 ) -> Result<QueryResult> {
-    walk_plan_stages(plan, 1, seeds, &|stage, part, part_clauses, part_seeds| {
+    let result = walk_plan_stages(plan, 1, seeds, &|stage, part, part_clauses, part_seeds| {
         let (mut rows, last) = run_clauses(
             graph,
             part_clauses,
@@ -715,7 +715,19 @@ fn execute_plan_stage_seeded(
             last,
             graph.stats(),
         ))
-    })
+    })?;
+    report_statement_memos(graph, sink);
+    Ok(result)
+}
+
+/// Hand the statement's constructor-memo facts (ADR-0654 §3) to the
+/// PROFILE sink once the statement finished: they serve any expression, so
+/// they belong to the statement, not to an operator. A non-PROFILE
+/// statement has no sink and reads nothing.
+fn report_statement_memos(graph: &ExecGraph<'_>, sink: Option<&dyn PlanMetricsSink>) {
+    if let Some(sink) = sink {
+        sink.record_statement_memos(graph.construct_memo_record());
+    }
 }
 
 /// The NEXT-stage seeding policy (one spelling, every NEXT-chain walker
@@ -741,7 +753,7 @@ pub(crate) fn execute_plan_read_seeded(
     qctx: QueryCtx<'_>,
     sink: Option<&dyn PlanMetricsSink>,
 ) -> Result<QueryResult> {
-    walk_plan_stages(plan, 1, seeds, &|stage, part, part_clauses, part_seeds| {
+    let result = walk_plan_stages(plan, 1, seeds, &|stage, part, part_clauses, part_seeds| {
         execute_part_read_seeded(
             graph,
             part_clauses,
@@ -753,7 +765,9 @@ pub(crate) fn execute_plan_read_seeded(
             // the clause loop here too.
             sink.map(|sink| PlanMetricsSite::at(sink, stage, part)),
         )
-    })
+    })?;
+    report_statement_memos(graph, sink);
+    Ok(result)
 }
 
 /// Whether a finished stage seeds the next `NEXT` stage with one unit row

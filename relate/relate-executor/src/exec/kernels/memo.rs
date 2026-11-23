@@ -49,6 +49,7 @@ use relate_core::{NodeId, Result};
 
 use crate::ctx::ExecCtx;
 use crate::memory::{memo_budget_bytes, DEFAULT_MEMO_BUDGET_MIB};
+use crate::metrics::MemoCounters;
 use crate::overlay::{memo_table_ceiling, ExecGraph, MemoLive};
 
 use super::program::NodePred;
@@ -143,6 +144,28 @@ pub(crate) struct MemoStats {
     pub(crate) bytes: u64,
     /// The memo gave up at its hit-rate review and bypasses itself.
     pub(crate) disabled: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`Memo::stats`] ran on this thread: the zero-cost
+    /// pin's witness that a non-PROFILE statement never reads a memo.
+    pub(crate) static STATS_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+impl MemoStats {
+    /// The PROFILE counters of one memo (ADR-0654): the same facts, the
+    /// `disabled` flag counted as the sum's `disabled_count`.
+    pub(crate) fn counters(self) -> MemoCounters {
+        MemoCounters {
+            probes: self.probes,
+            hits: self.hits,
+            inserts: self.inserts,
+            refused: self.refused,
+            bytes: self.bytes,
+            disabled_count: u64::from(self.disabled),
+        }
+    }
 }
 
 /// The memo's lifecycle: one field in place of the separate warm-up
@@ -316,9 +339,13 @@ impl<T: MemoTable> Memo<T> {
         }
     }
 
-    /// What the memo did so far, with the table's current allocation.
-    #[cfg(test)]
+    /// What the memo did so far, with the table's current allocation: the
+    /// one stats reader (ADR-0654). It walks the table's size, so it runs
+    /// only behind PROFILE's arm ([`crate::exec::record_memos`]) or in a
+    /// test, never on the probe path.
     pub(crate) fn stats(&self) -> MemoStats {
+        #[cfg(test)]
+        STATS_READS.with(|reads| reads.set(reads.get() + 1));
         MemoStats {
             bytes: self.table.heap_bytes() as u64,
             disabled: matches!(self.phase, Phase::Disabled),
@@ -421,6 +448,14 @@ pub(crate) struct Memoized<P>(pub(crate) P);
 pub(crate) struct MemoState<T> {
     inner: T,
     memo: NodeMemo,
+}
+
+impl<T> Drop for MemoState<T> {
+    /// Fold the run's memo into the PROFILE total (ADR-0654) when a
+    /// PROFILE arm is armed; otherwise nothing is read.
+    fn drop(&mut self) {
+        crate::exec::record_memos(|| self.memo.stats().counters());
+    }
 }
 
 impl<P: NodePred> NodePred for Memoized<P> {

@@ -111,6 +111,32 @@ pub const FRONTIER_SEARCH_PROVEN: &str = "FrontierSearchProven";
 pub const FRONTIER_SEARCH_DISPROVEN: &str = "FrontierSearchDisproven";
 pub const FRONTIER_DECLINED_EXHAUSTED: &str = "FrontierDeclinedExhausted";
 pub const FRONTIER_BUDGET_FRACTION: &str = "FrontierBudgetFraction";
+/// The expression-memo group (ADR-0654): the probes, hits, inserts,
+/// refused inserts, table bytes and disabled-memo count the operator's
+/// memos reported, emitted together only on a PROFILE node whose memos
+/// were probed at least once (`MemoProbes > 0`) — absent means no memo
+/// was used. `MemoBytes` is never part of `MemoryBytes` (ADR-0654 §2).
+pub const MEMO_PROBES: &str = "MemoProbes";
+pub const MEMO_HITS: &str = "MemoHits";
+pub const MEMO_INSERTS: &str = "MemoInserts";
+pub const MEMO_REFUSED: &str = "MemoRefused";
+pub const MEMO_BYTES: &str = "MemoBytes";
+pub const MEMO_DISABLED_COUNT: &str = "MemoDisabledCount";
+/// The group's six integer keys in the order of `PlanMemoWire`'s fields
+/// (probes, hits, inserts, refused, bytes, disabled count): the one table
+/// the decoder, the producer and any consumer iterate.
+pub const MEMO_GROUP_KEYS: [&str; 6] = [
+    MEMO_PROBES,
+    MEMO_HITS,
+    MEMO_INSERTS,
+    MEMO_REFUSED,
+    MEMO_BYTES,
+    MEMO_DISABLED_COUNT,
+];
+/// The memo types behind the group, one name each from
+/// [`MemoKindWire::NAMES`](crate::wire::MemoKindWire::NAMES) — emitted
+/// only on the plan root, beside the group (ADR-0654 §3).
+pub const MEMO_KINDS: &str = "MemoKinds";
 /// Why the frontier rung did not serve the clause, one of the
 /// `DECLINE_REASONS` vocabulary — emitted with the metric set when the
 /// rung declined at plan time (counters absent: it never ran) or engaged,

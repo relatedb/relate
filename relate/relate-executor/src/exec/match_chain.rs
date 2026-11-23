@@ -610,6 +610,10 @@ impl RowFold for MatchChain<'_> {
 /// What takes a `MATCH`'s rows as they are emitted instead of the clause
 /// collecting them: the aggregation of a following aggregating
 /// `WITH`/`RETURN`, or the run of stages after it.
+// The chain's PROFILE window totals (one `StageDelta`, now carrying the memo
+// counters) put its size past the lint's variant-difference budget; a consumer
+// is built once per clause and moves by value, so boxing it buys nothing.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum MatchConsumer<'a> {
     Fold(MatchFold<'a>),
     Chain(MatchChain<'a>),

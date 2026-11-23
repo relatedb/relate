@@ -217,6 +217,12 @@ impl<'a> ExecGraph<'a> {
         self.construct_memos.construct(self, name, vals)
     }
 
+    /// The constructor memos' statement-level facts (ADR-0654 §3), for the
+    /// PROFILE sink at the statement's end.
+    pub(crate) fn construct_memo_record(&self) -> crate::metrics::StatementMemoRecord {
+        self.construct_memos.statement_record()
+    }
+
     /// The configured per-allocation cap (`None` = no cap).
     #[cfg(test)]
     pub(crate) fn expression_limit(&self) -> Option<u64> {

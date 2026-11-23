@@ -142,7 +142,8 @@ pub(crate) fn profile_result(
     // deprecated `_profile_*` columns are gone (ADR-0345's sanctioned
     // removal), their information strictly exceeded by the tree.
     let tree = plan_node::profiled_tree(plan, Some(&metrics.collected()), stats)
-        .with_statement_echo(statement_echo);
+        .with_statement_echo(statement_echo)
+        .with_statement_memos(metrics.statement_memos());
     // ADR-0363: the list derives from the same profiled tree, so the
     // PROFILE-only `EstimationMiss` (stamped beside the metrics) rides it;
     // the caller settled the statement-scoped half from the same plan.

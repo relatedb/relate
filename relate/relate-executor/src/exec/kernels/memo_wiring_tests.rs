@@ -40,7 +40,7 @@ const LAYERS: usize = 8;
 /// stays finite (no cycles), and one run makes thousands of guard checks.
 /// Labels mix hits, misses and overlaps; every seventh layer-0 node is a
 /// `Hub` seed.
-fn layered_graph() -> Graph {
+pub(super) fn layered_graph() -> Graph {
     let b = Builder::new();
     let ids: Vec<Vec<_>> = (0..LAYERS)
         .map(|layer| {
@@ -82,7 +82,7 @@ fn layered_graph() -> Graph {
 /// Guarded quantified bodies (per-state label guards), a repeated target
 /// admission across many seeds, and EXISTS subqueries (the hit pass and the
 /// all-miss pass).
-fn guarded_queries() -> Vec<String> {
+pub(super) fn guarded_queries() -> Vec<String> {
     let mut qs = Vec::new();
     for body in [
         "(a:Hub)((m)-[:E]->(n:U)){1,}(y:V)",
