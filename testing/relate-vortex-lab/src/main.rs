@@ -5,7 +5,9 @@
 //! one kernel at a time on a shared box (quiet-box protocol).
 
 mod bench;
+mod colstore;
 mod ops;
+mod seam;
 mod store;
 
 #[global_allocator]
@@ -100,6 +102,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "vfs" => {
             ops::vfs::run(&csv, &out_dir, 20_000)?;
+        }
+        "seam" => {
+            ops::seam_bench::run(&out_dir, 20_000)?;
         }
         "all" => {
             ops::point::run(&csv, &out_dir, 100_000)?;

@@ -482,14 +482,61 @@ reused SF0.1 store, same box as the prototype runs:
    default, so the eventual A/B is opt-in and the existing gates stay
    green by construction.
 
+## The property-store seam, wired and A/B'd (2026-11-23, load 4.8–5.5)
+
+The store is wired in behind one trait (`seam.rs`), with two
+implementations: `RowProps` (the compact-records-shaped baseline: per-row
+interned key list + values, ADR-0033's shape) and `ColProps` (the vortex
+store: mmap file, decoded-column cache, pushed scans, sorted-key arm —
+`colstore.rs`). Every operator answers identically through both
+(asserted). The A/B (`ops/seam_bench.rs`, 150k rows, mono shape):
+
+| op | row store | col store | col effect |
+|---|---|---|---|
+| point attr0 | 20.9 ns | 8.0 ns | 2.6x |
+| batch 1024 rows x 2 keys | 7.05 µs / 2 allocs | 2.23 µs / 2 allocs | 3.2x, alloc parity |
+| expand conjunction (50k survive) | 2.99 ms / 15 allocs / 1.05 MB | 146 µs / **1,116 allocs** / 1.41 MB | 20x wall, **74x allocs** |
+| expand cap=100 | 1.12 ms | 120 µs | 9.3x — cap works, but only 18% cheaper than uncapped: vortex's limit truncates without stopping decode (#11808, through the seam) |
+| seek (sorted key arm) | 178 ns | 173 ns | parity — same index on both; postings parity by design |
+| distinct attr0 (150k distinct) | 8.24 ms | 7.44 ms | parity — naive path; the dict-native rung is the real aggregation answer |
+| top-k 10 attr1 | 863 µs / 8.4 MB | 209 µs / 2.4 MB | 4.1x, 3.5x memory |
+
+Readings:
+- **The wall-time win trades allocations**: one pushed expand costs ~1.1k
+  allocs of scan machinery — a whole statement's plan_bench budget (928).
+  Fast-band statements cannot absorb that per lookup; slow-band ones don't
+  notice. The engine-side design must batch expands (one scan serving a
+  morsel's whole predicate set), not expand per row.
+- **Aggregation pushdown must ride the dictionary rung**, not the naive
+  path — `stats_short_circuit`'s ladder shape (ADR-0611 precedent); the
+  dict-native distinct is 22 µs / 247 allocs (O13b2) vs 7.4 ms here.
+- **Seek parity is the design**: both stores use the same sorted
+  (key,row) arm; swapping representation changes nothing until the
+  side-file replaces the postings — that win is memory, not time.
+
+## Seam ↔ engine API mapping (research: `exec-surface-findings.md`)
+
+| Seam method | Engine API it serves | Adapter note |
+|---|---|---|
+| `expand(pred, cap)` | `lookup_nodes_upto(labels, props, cap)` → `Graph::lookup_nodes_upto_at` (index_lookup.rs:123), the candidates funnel's scan tail | same cap semantics (stop at cap+1); candidates are an owned `Vec<NodeId>` — a streaming sibling is the adapter for a lazy store |
+| `seek` | ADR-0614 serve: `equality_postings_upto(labels, props, ts, cap)`, `EqualityRoute` decline/narrow | mirror the signature + decline semantics |
+| `batch` | `Chunk` typed buffers (CHUNK_ROWS=512 / BATCH_ROWS=1024), `RowFeed` pull/push | emit Chunk-shaped, never a third exchange type |
+| `distinct` (aggregation) | next rung of the `stats_short_circuit` ladder (ADR-0611 `index_aggregates` precedent) | value-level store reads feeding the shared group table |
+| `topk(k)` | `TopKWindow` / `TopWindow`; ordered top-k scan pushdown is the engine's recorded gap | the seam fills the gap |
+| `point` | `node_prop_id_at` / `node_prop_resolved` | the trait sits exactly at that boundary |
+| `Pred` | IR `Expr` conjuncts + `Residual` — no plan→storage pushdown trait exists today | the seam's `Pred` is that missing trait; executor-side recognizers (Seek, WalkSpec, BatchPred) compile to it |
+
 ## Open
 
 - The engine-side A/B (CompactProps + postings) — needs the container
   harness or the `research`-feature read path; `CompactProps` is `pub(crate)`.
 - `Ty::Temporal` column for date properties.
 - Nullable-column re-measure for presence (filter section finding 6).
-- Engine-side property-read trait prototype at the
-  `node_prop_id_at` boundary (the one new seam, per `seam-findings.md`).
+- Engine-side insertion of the (now designed and lab-validated) `PropStore`
+  seam: at `node_prop_id_at`, the candidates funnel's scan tail
+  (`lookup_nodes_upto_at`), and the `stats_short_circuit` ladder — the
+  trait + A/B live in the lab (`seam.rs`, `colstore.rs`,
+  `ops/seam_bench.rs`); the mapping table above is the wiring plan.
 
 ### Upstream tracking (checked 2026-11-23, vortex-data/vortex)
 

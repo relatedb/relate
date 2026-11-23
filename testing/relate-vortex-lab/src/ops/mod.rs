@@ -6,5 +6,6 @@ pub mod join;
 pub mod point;
 pub mod probe;
 pub mod seek;
+pub mod seam_bench;
 pub mod sets;
 pub mod vfs;

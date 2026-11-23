@@ -104,6 +104,21 @@ mechanism is introduced together with the new store. The store's shape:
    probe-shaped morsel seam carrying a density hint; a membership-mask
    batched key check; a limit-shaped exists terminal), so landing upstream
    implementations is a delegation change, not a redesign.
+6. **The seam is a `PropStore` trait** (prototyped and A/B'd in the
+   experiment's lab): point, morsel batch, bulk expansion with the whole
+   predicate pushed plus the engine's cap semantics (stop at cap+1,
+   mirroring `lookup_nodes_upto_at`), sorted-key seek, aggregation,
+   top-k/limit, presence — behind it, the row-oriented compact-record
+   shape and the columnar store are interchangeable. The method set maps
+   one-to-one onto existing executor APIs (the candidates funnel's scan
+   tail, the ADR-0614 equality serve, the `Chunk`/`RowFeed` batch shapes,
+   the statistics short-circuit ladder's rung form, the cap chain) — the
+   experiment's surface research carries the table. Measured through the
+   seam (150k rows): pushed expansion 20× faster at the cost of ~74× more
+   allocations (scan machinery — the engine must batch expands per
+   morsel, not per row); morsel batch 3.2×; top-k 4× at 3.5× less memory;
+   seek parity by design (both stores share the sorted-key arm); naive
+   aggregation parity — the dict-native rung is the required path.
 
 Seam verdicts from the round-1 research (full detail in the experiment's
 seam findings):
