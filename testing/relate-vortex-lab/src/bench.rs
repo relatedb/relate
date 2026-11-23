@@ -83,9 +83,11 @@ pub fn measure<F: FnMut(u64)>(name: &str, iters: u64, mut f: F) -> Measured {
 }
 
 /// The 1-minute load average. Shelling out once per measurement is fine —
-/// a measurement is seconds long and the box state is the point.
+/// a measurement is seconds long and the box state is the point. macOS
+/// sysctl first, then Linux /proc/loadavg (the CI lane runs there; the
+/// first lane run printed load=NaN because sysctl does not exist on it).
 pub fn loadavg1() -> f64 {
-    std::process::Command::new("sysctl")
+    if let Some(v) = std::process::Command::new("sysctl")
         .args(["-n", "vm.loadavg"])
         .output()
         .ok()
@@ -97,6 +99,12 @@ pub fn loadavg1() -> f64 {
                 .next()
                 .and_then(|v| v.parse().ok())
         })
+    {
+        return v;
+    }
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse().ok()))
         .unwrap_or(f64::NAN)
 }
 
