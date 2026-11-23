@@ -77,6 +77,12 @@ pub(crate) const ROW_GROUP_CAP: usize = 1024;
 /// the public bound on decode batches (`docs/api/rust/spec.md`).
 pub(crate) const DECODE_BATCH_ROWS: usize = 1024;
 
+/// The most decoded row bytes one load worker stages before it hands them
+/// to the bulk installer. A decode batch installs in as many slices as its
+/// rows need, so a worker holds one slice of staged rows beside its Arrow
+/// batch, not the whole batch decoded twice over.
+const INSTALL_SLICE_BYTES: u64 = 256 << 10;
+
 /// A row group must not outgrow a decode batch, or a copied batch would
 /// exceed the public decode bound. Raising the cap past it is a contract
 /// change, not a constant edit.
@@ -197,6 +203,26 @@ pub(crate) fn with_test_envelope<T>(page: u64, row: u64, decoded: u64, f: impl F
     with_test_override(&TEST_ENVELOPE, Envelope { page, row, decoded }, f)
 }
 
+fn install_slice_bytes() -> u64 {
+    #[cfg(test)]
+    if let Some(bytes) = TEST_INSTALL_SLICE_BYTES.get() {
+        return bytes;
+    }
+    INSTALL_SLICE_BYTES
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_INSTALL_SLICE_BYTES: std::cell::Cell<Option<u64>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with the install slice at `bytes` staged row bytes.
+#[cfg(test)]
+pub(crate) fn with_test_install_slice<T>(bytes: u64, f: impl FnOnce() -> T) -> T {
+    with_test_override(&TEST_INSTALL_SLICE_BYTES, bytes, f)
+}
+
 /// ADR-0086's checks on one decoded row, shared by the load side
 /// ([`Decoded::row`]) and the checkpoint side ([`DecodedBudget`]): it must
 /// fit the row envelope, and the decoded envelope by itself. The error names
@@ -252,6 +278,9 @@ fn charge(counter: &AtomicU64, add: u64, limit: u64, what: &str) -> Result<()> {
 /// workers join.
 struct Decoded {
     limits: Envelope,
+    /// The install slice, read with the limits on the loading thread so
+    /// every worker of the file stages to the same bound.
+    slice_bytes: u64,
     rows: AtomicU64,
     bytes: AtomicU64,
 }
@@ -260,6 +289,7 @@ impl Decoded {
     fn new() -> Self {
         Self {
             limits: envelope(),
+            slice_bytes: install_slice_bytes(),
             rows: AtomicU64::new(0),
             bytes: AtomicU64::new(0),
         }
@@ -482,7 +512,8 @@ fn wide_node_rows(
         .collect::<Result<_>>()?;
     let props = Properties::column(batch, head + columns.len())?;
     let phrases = Kind::Node.phrases();
-    let mut nodes = Vec::with_capacity(batch.num_rows());
+    let mut nodes = Staged::new(decoded);
+    let install = |nodes: &[Node]| graph.load_checkpoint_nodes(nodes);
     for i in 0..batch.num_rows() {
         let mut row_bytes = encode::fixed_column_bytes(Kind::Node);
         let mut row_labels = Vec::new();
@@ -515,14 +546,15 @@ fn wide_node_rows(
             values: &values,
             props: &props,
         };
-        let properties = row.properties(Kind::Node, decoded, row_bytes)?;
-        nodes.push(Node {
+        let (properties, row_bytes) = row.properties(Kind::Node, decoded, row_bytes)?;
+        let node = Node {
             id: row.id,
             labels: std::sync::Arc::new(row_labels),
             properties: relate_core::PropertyMap::share(properties),
-        });
+        };
+        nodes.push(node, row_bytes, install)?;
     }
-    graph.load_checkpoint_nodes(&nodes)
+    nodes.flush(install)
 }
 
 pub(crate) fn load_rels(
@@ -571,7 +603,8 @@ fn wide_rel_rows(
         .collect::<Result<_>>()?;
     let props = Properties::column(batch, head + columns.len())?;
     let phrases = Kind::Rel.phrases();
-    let mut rels = Vec::with_capacity(batch.num_rows());
+    let mut rels = Staged::new(decoded);
+    let install = |rels: &[Relationship]| graph.load_checkpoint_rels(rels);
     for i in 0..batch.num_rows() {
         let mut row_bytes = encode::fixed_column_bytes(Kind::Rel);
         let rel_type = if types.is_null(i) {
@@ -590,16 +623,60 @@ fn wide_rel_rows(
         };
         // The bulk installer checks the id and both endpoints, so the
         // decode does not re-validate them.
-        let properties = row.properties(Kind::Rel, decoded, row_bytes)?;
-        rels.push(Relationship {
+        let (properties, row_bytes) = row.properties(Kind::Rel, decoded, row_bytes)?;
+        let rel = Relationship {
             id: row.id,
             start: starts.value(i),
             end: ends.value(i),
             rel_type,
             properties: relate_core::PropertyMap::share(properties),
-        });
+        };
+        rels.push(rel, row_bytes, install)?;
     }
-    graph.load_checkpoint_rels(&rels)
+    rels.flush(install)
+}
+
+/// One decode batch's rows on their way to the bulk installer, installed
+/// a slice at a time: once the staged rows' decoded bytes reach the file's
+/// install slice, they install and the slice starts over. A batch that
+/// fails mid-way keeps the slices it already installed, as a file that
+/// fails keeps its earlier batches; a failed open discards the graph.
+struct Staged<T> {
+    rows: Vec<T>,
+    bytes: u64,
+    slice_bytes: u64,
+}
+
+impl<T> Staged<T> {
+    fn new(decoded: &Decoded) -> Self {
+        Self {
+            rows: Vec::new(),
+            bytes: 0,
+            slice_bytes: decoded.slice_bytes,
+        }
+    }
+
+    /// Stage `row` of `bytes` decoded bytes, installing the slice once it
+    /// reaches the bound.
+    fn push(&mut self, row: T, bytes: u64, install: impl Fn(&[T]) -> Result<()>) -> Result<()> {
+        self.rows.push(row);
+        self.bytes = self.bytes.saturating_add(bytes);
+        if self.bytes >= self.slice_bytes {
+            self.flush(install)?;
+        }
+        Ok(())
+    }
+
+    /// Install whatever is staged.
+    fn flush(&mut self, install: impl Fn(&[T]) -> Result<()>) -> Result<()> {
+        if self.rows.is_empty() {
+            return Ok(());
+        }
+        install(&self.rows)?;
+        self.rows.clear();
+        self.bytes = 0;
+        Ok(())
+    }
 }
 
 /// One row's column side: everything the shared row tail reads — the
@@ -619,14 +696,14 @@ impl RowColumns<'_> {
     /// the columns' values — the retained key beside its value, the same
     /// bytes the legacy column counted inside its text — and the residual
     /// text, the decoded-row check, and the residual decode with the
-    /// column overlay, returning the row's properties. The row id is
-    /// checked by the bulk installer, not here.
+    /// column overlay, returning the row's properties and its decoded
+    /// bytes. The row id is checked by the bulk installer, not here.
     fn properties(
         &self,
         kind: Kind,
         decoded: &Decoded,
         mut row_bytes: u64,
-    ) -> Result<BTreeMap<String, Value>> {
+    ) -> Result<(BTreeMap<String, Value>, u64)> {
         let phrases = kind.phrases();
         for ((key, _), value) in self.columns.iter().zip(self.values) {
             // A null slot retains neither the key nor its value; a carried
@@ -642,7 +719,7 @@ impl RowColumns<'_> {
         decoded.row(row_bytes)?;
         let mut properties = self.props.decode(self.i)?;
         wide::overlay_values(self.values, &mut properties, self.columns, self.i);
-        Ok(properties)
+        Ok((properties, row_bytes))
     }
 }
 

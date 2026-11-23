@@ -179,7 +179,8 @@ mod tests {
     };
     use crate::codec::parquet::{
         encode_wide_rows, file_ceiling, load_nodes, load_rels, preflight, with_test_envelope,
-        with_wide_shard_writer, ColumnType, MAX_PAGE, MAX_ROW_BYTES, ROW_GROUP_CAP,
+        with_test_install_slice, with_wide_shard_writer, ColumnType, MAX_PAGE, MAX_ROW_BYTES,
+        ROW_GROUP_CAP,
     };
     use crate::snapshot::Kind;
     use relate_core::{with_test_load_scope, OpenTransientTracker};
@@ -359,6 +360,59 @@ mod tests {
             assert_eq!(from_serial.end, from_many.end, "rel {id}");
             assert_eq!(from_serial.rel_type, from_many.rel_type, "rel {id}");
             assert_eq!(from_serial.properties, from_many.properties, "rel {id}");
+        }
+    }
+
+    /// A batch installed a few rows per slice builds the same graph as one
+    /// installed whole, under one load thread and four.
+    #[test]
+    fn small_install_slices_restore_the_same_graph_as_whole_batches() {
+        let rows = 2 * ROW_GROUP_CAP as i64 + 5;
+        let ids: Vec<i64> = (0..rows).collect();
+        let text = |id: i64| Some(format!("{{\"p\":{{\"t\":\"string\",\"v\":\"v{id}\"}}}}"));
+        let nodes = write_table(
+            ids.clone(),
+            ids.iter()
+                .map(|id| Some(vec![Some(format!("L{}", id % 3))]))
+                .collect(),
+            ids.iter().map(|id| text(*id)).collect(),
+        )
+        .unwrap();
+        let rels = write_rel_table(
+            ids.clone(),
+            (0..rows).map(|id| id / 2).collect(),
+            (0..rows).map(|id| id / 2 + 1).collect(),
+            ids.iter().map(|id| Some(format!("T{}", id % 2))).collect(),
+            ids.iter().map(|id| text(*id)).collect(),
+        )
+        .unwrap();
+        let restore = |workers: usize, graph: &Graph| {
+            with_test_load_scope(workers, &Arc::default(), || {
+                load_part(load_nodes, graph, &nodes).unwrap();
+                load_part(load_rels, graph, &rels).unwrap();
+            })
+        };
+        let whole = Graph::default();
+        restore(1, &whole);
+        for workers in [1, 4] {
+            let sliced = Graph::default();
+            with_test_install_slice(200, || restore(workers, &sliced));
+            assert_eq!(loaded_ids(&sliced, rows), ids, "workers = {workers}");
+            for id in &ids {
+                let (a, b) = (
+                    whole.node_at(*id, 1).unwrap(),
+                    sliced.node_at(*id, 1).unwrap(),
+                );
+                assert_eq!(a.labels, b.labels, "node {id}");
+                assert_eq!(a.properties, b.properties, "node {id}");
+                let (a, b) = (
+                    whole.rel_at(*id, 1).unwrap(),
+                    sliced.rel_at(*id, 1).unwrap(),
+                );
+                assert_eq!((a.start, a.end), (b.start, b.end), "rel {id}");
+                assert_eq!(a.rel_type, b.rel_type, "rel {id}");
+                assert_eq!(a.properties, b.properties, "rel {id}");
+            }
         }
     }
 

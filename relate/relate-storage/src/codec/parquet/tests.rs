@@ -515,6 +515,27 @@ fn nested_test_overrides_restore_the_outer_value() {
 }
 
 #[test]
+fn staged_rows_install_a_slice_each_time_they_reach_the_bound() {
+    // A 100-byte slice over rows of 30 bytes: every fourth row installs
+    // the four staged, and the flush installs the remainder once.
+    let slices = std::cell::RefCell::new(Vec::new());
+    let install = |rows: &[i64]| {
+        slices.borrow_mut().push(rows.to_vec());
+        Ok(())
+    };
+    let mut staged = with_test_install_slice(100, || Staged::new(&Decoded::new()));
+    for row in 0..10 {
+        staged.push(row, 30, install).unwrap();
+    }
+    staged.flush(install).unwrap();
+    staged.flush(install).unwrap();
+    assert_eq!(
+        slices.into_inner(),
+        vec![vec![0, 1, 2, 3], vec![4, 5, 6, 7], vec![8, 9]]
+    );
+}
+
+#[test]
 fn page_envelope_rows_fill_max_pages_at_the_row_group_cap() {
     // The wide worst case (ADR-0534): reserved leaves + the column cap —
     // every written part is wide (ADR-0553).
