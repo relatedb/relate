@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use relate_core::{resolve_load_threads, with_load_scope, OpenTransientTracker};
+use relate_core::{with_test_load_scope, OpenTransientTracker};
 
 use super::*;
 use crate::graph::count_state::CountStats;
@@ -123,8 +123,7 @@ fn sharded_rebuild_matches_the_single_shard_one() {
 /// Run `f` as a four-thread load phase and return the tracker it charged.
 fn in_load_scope(f: impl FnOnce()) -> Arc<OpenTransientTracker> {
     let tracker = Arc::new(OpenTransientTracker::new());
-    let threads = resolve_load_threads(Some(4)).unwrap();
-    with_load_scope(threads, Arc::clone(&tracker), f);
+    with_test_load_scope(4, &tracker, f);
     tracker
 }
 

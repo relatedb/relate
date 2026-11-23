@@ -96,22 +96,21 @@ struct FirstLast {
 }
 
 /// Decode one span's batches and install each as it goes, holding each
-/// batch's ids to the shard rules' id window and the rows to the decoded
+/// part batch's ids to the shard rules' id window and the rows to the decoded
 /// envelope. Every batch holds a transient lease only while it is
 /// installed, so a span never accumulates its batches' memory.
 fn load_reader(
     reader: ParquetRecordBatchReader,
-    rules: Option<&ShardRules>,
+    rules: &ShardRules,
     decoded: &Decoded,
     graph: &dyn relate_engine_api::GraphImport,
     origin: &Origin,
     load: RowLoader,
 ) -> Result<IdBounds> {
     // The columns and this span's id window come from the one `ShardRules`
-    // — a monolith is handed none, so it reads no columns and checks no
-    // window.
-    let columns = rules.map_or(&[][..], ShardRules::columns);
-    let mut window = rules.map(ShardRules::restart);
+    // — a monolith checks no window.
+    let columns = rules.columns();
+    let mut window = origin.is_part().then(|| rules.restart());
     let mut bounds: IdBounds = None;
     for batch in reader {
         let batch = batch.map_err(|e| Error::storage(e.to_string()))?;
@@ -142,7 +141,7 @@ fn load_reader(
 /// before that batch installs.
 pub(super) fn load(
     spans: SpanReaders,
-    rules: Option<&ShardRules>,
+    rules: &ShardRules,
     graph: &dyn relate_engine_api::GraphImport,
     origin: &Origin,
     load: RowLoader,
@@ -165,7 +164,7 @@ pub(super) fn load(
     // checked batch by batch.
     let mut last: Option<i64> = None;
     for bounds in results.into_iter().flatten() {
-        if rules.is_some() {
+        if origin.is_part() {
             ascending(last, bounds.first)?;
         }
         last = Some(bounds.last);
@@ -183,19 +182,13 @@ mod tests {
         with_wide_shard_writer, ColumnType, MAX_PAGE, MAX_ROW_BYTES, ROW_GROUP_CAP,
     };
     use crate::snapshot::Kind;
-    use relate_core::{resolve_load_threads, with_load_scope, OpenTransientTracker};
+    use relate_core::{with_test_load_scope, OpenTransientTracker};
     use relate_executor::Graph;
     use std::collections::HashSet;
     use std::sync::Mutex;
     use std::thread::{self, ThreadId};
 
     use super::*;
-
-    /// Run `f` as a load scope of `threads` load threads.
-    fn with_workers<R>(threads: usize, f: impl FnOnce() -> R) -> R {
-        let threads = resolve_load_threads(Some(threads)).unwrap();
-        with_load_scope(threads, Arc::default(), f)
-    }
 
     /// The ids among the first `n` a loaded graph holds, in order.
     fn loaded_ids(graph: &Graph, n: i64) -> Vec<i64> {
@@ -249,7 +242,7 @@ mod tests {
         // every row, in file order.
         let ids: Vec<i64> = (0..2 * ROW_GROUP_CAP as i64 + 5).collect();
         let bytes = write_bare_table(ids.clone()).unwrap();
-        with_workers(3, || {
+        with_test_load_scope(3, &Arc::default(), || {
             let graph = Graph::default();
             load_part(load_nodes, &graph, &bytes).unwrap();
             assert_eq!(loaded_ids(&graph, ids.len() as i64), ids);
@@ -283,7 +276,7 @@ mod tests {
         let row_bytes = 8 + text.len() as u64;
         let span_bytes = (ROW_GROUP_CAP as u64 + 5) * row_bytes;
         let graph = Graph::default();
-        let error = with_workers(2, || {
+        let error = with_test_load_scope(2, &Arc::default(), || {
             with_test_envelope(MAX_PAGE, MAX_ROW_BYTES, span_bytes + row_bytes, || {
                 load_part(load_nodes, &graph, &bytes)
             })
@@ -344,7 +337,7 @@ mod tests {
         )
         .unwrap();
         let restore = |workers: usize, graph: &Graph| {
-            with_workers(workers, || {
+            with_test_load_scope(workers, &Arc::default(), || {
                 load_part(load_nodes, graph, &nodes).unwrap();
                 load_part(load_rels, graph, &rels).unwrap();
             })
@@ -395,9 +388,8 @@ mod tests {
         let ids: Vec<i64> = (0..rows).collect();
         let bytes = write_bare_table(ids.clone()).unwrap();
         let tracker = Arc::new(OpenTransientTracker::new());
-        let threads = resolve_load_threads(Some(4)).unwrap();
         let mut per_load = Vec::new();
-        with_load_scope(threads, Arc::clone(&tracker), || {
+        with_test_load_scope(4, &tracker, || {
             // Two parts of one open, then a second load: every load's four
             // spans run on the pool's four slots.
             for _ in 0..3 {
@@ -409,7 +401,7 @@ mod tests {
                 PREPARED_ON.lock().unwrap().clear();
                 load(
                     spans,
-                    Some(&rules),
+                    &rules,
                     &graph,
                     &Origin::Part(0..i64::MAX),
                     record_thread,
@@ -434,9 +426,8 @@ mod tests {
         let bytes = write_bare_table(ids.clone()).unwrap();
         for k in [1, 4] {
             let tracker = Arc::new(OpenTransientTracker::new());
-            let threads = resolve_load_threads(Some(k)).unwrap();
             let graph = Graph::default();
-            with_load_scope(threads, Arc::clone(&tracker), || {
+            with_test_load_scope(k, &tracker, || {
                 load_part(load_nodes, &graph, &bytes).unwrap();
             });
             assert_eq!(loaded_ids(&graph, ids.len() as i64), ids);

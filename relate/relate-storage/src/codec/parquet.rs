@@ -346,6 +346,11 @@ pub(crate) enum Origin {
 }
 
 impl Origin {
+    /// Whether the file is a manifest part, held to [`ShardRules`].
+    fn is_part(&self) -> bool {
+        matches!(self, Origin::Part(_))
+    }
+
     /// The one policy for a slot a pre-shard monolith's writer could
     /// leave null and a manifest part's writer never does: a part —
     /// held to the shard rules, its writer one this binary knows —
@@ -395,19 +400,19 @@ fn load_batches(
     let file = Bytes::from(bytes);
     let builder = preflight(file.clone())?;
     let rules = match origin {
-        Origin::Part(range) => Some(ShardRules::open(&builder, kind, range.clone())?),
-        Origin::Monolith => None,
+        Origin::Part(range) => ShardRules::open(&builder, kind, range.clone())?,
+        Origin::Monolith => ShardRules::monolith(),
     };
     // A monolith's ids are not held to the ascending-and-unique rule (only
     // parts are), so its rows install on one thread: a duplicate id keeps
     // file order instead of racing the spans.
-    let workers = if rules.is_some() {
+    let workers = if origin.is_part() {
         relate_core::current_load_threads().get()
     } else {
         1
     };
     let spans = SpanReaders::open(file, builder.metadata(), workers)?;
-    span::load(spans, rules.as_ref(), graph, origin, load)
+    span::load(spans, &rules, graph, origin, load)
 }
 
 /// A shard's properties column: one tagged-JSON object per row.

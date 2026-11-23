@@ -54,8 +54,9 @@ pub use error_kinds::{
     TckErrorClass,
 };
 pub use load_pool::{
-    current_load_threads, record_transient_lease, resolve_load_threads, run_load_tasks,
-    with_load_scope, LoadThreads, OpenTransientTracker, TransientLease,
+    current_load_threads, present_env_value, record_transient_lease, resolve_load_threads,
+    run_load_tasks, with_load_scope, with_test_load_scope, LoadThreads, OpenTransientTracker,
+    TransientLease,
 };
 pub use memory_limit::{
     parse_expression_memory_limit, parse_memory_limit, parse_positive_memory_limit,

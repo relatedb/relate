@@ -79,6 +79,19 @@ impl ShardRules {
         })
     }
 
+    /// The rules a format ≤ 2 monolith is read by ([`super::Origin::Monolith`]):
+    /// the fixed layout, no promoted columns. It declares no id range and is
+    /// not held to one, so the loader never takes a window from these.
+    pub(super) fn monolith() -> Self {
+        Self {
+            columns: Vec::new(),
+            window: IdWindow {
+                range: i64::MIN..i64::MAX,
+                last: None,
+            },
+        }
+    }
+
     /// The id window over the validated rules, from the file's start: one
     /// per span, so a load worker checks the ids it decodes while the file's
     /// rules stay the column set recovered once from its schema.
