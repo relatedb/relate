@@ -174,15 +174,7 @@ pub(super) fn with_workers<R>(workers: usize, f: impl FnOnce() -> R) -> R {
     // the invariant `rebuild_workers` guarantees and `shard_rows`
     // divides by, rather than letting a zero reach the modulo.
     assert!(workers > 0, "a shard count is non-zero");
-    struct Reset(Option<usize>);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            FORCED_WORKERS.with(|pin| pin.set(self.0));
-        }
-    }
-    let previous = FORCED_WORKERS.with(|pin| pin.replace(Some(workers)));
-    let _reset = Reset(previous);
-    f()
+    crate::test_support::with_override(&FORCED_WORKERS, workers, f)
 }
 
 /// Take the threads of every [`run_shards`] call on this thread since the

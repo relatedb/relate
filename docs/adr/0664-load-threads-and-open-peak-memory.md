@@ -75,12 +75,12 @@ way to read the peak the tracker saw.
    unchanged and does not count transient bytes.
 8. **An over-wall build stays in the delta tier.** The sealed arena's byte
    offsets are `u32`, so its streams stop at 4 GiB ([ADR-0599](./0599-adjacency-floor-arena.md)).
-   A wholesale build that would cross that wall keeps each run that does
-   not fit in the delta tier, the same as a run at the span-length wall,
-   and the open returns normally: it never panics on the wall. Each shard's
-   stream checks the wall on its own bytes; when the shards fit alone but
-   their sum does not, the side is built again with every run in the delta
-   tier. The graph reads back the same either way.
+   A wholesale build that would cross that wall keeps the whole side in the
+   delta tier, and the open returns normally: it never panics on the wall.
+   The shards of a side share one arena cursor, so the wall is checked
+   against the side's whole total, not each shard's own bytes: the side is
+   either sealed in full or built again with every run in the delta tier.
+   The graph reads back the same either way.
 
 ## Alternatives considered
 

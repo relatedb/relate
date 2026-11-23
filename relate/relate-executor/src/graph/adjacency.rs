@@ -8,7 +8,8 @@ use super::id_vec::IdVec;
 use super::rebuild::RelRow;
 use super::shard::{self, ShardPartition};
 use super::*;
-use crate::adjacency::{streams_admit, Hop, SealedRegion, SealedStream};
+use crate::adjacency::{Hop, SealedRegion, SealedStream};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// One adjacency chunk's type and delta + sealed hop count — named, because
 /// the two integers swap silently as a tuple.
@@ -319,40 +320,50 @@ fn build_side(graph: &Graph, rows: &[RelRow], side: Side, shards: &mut ShardPart
     // stale chunks behind.
     let adjacency = side.adj(graph);
     adjacency.clear();
-    let parts = shard::run_shards(shards, |shard| build_shard(rows, shard, side, true));
-    // Each shard's stream passed the arena wall on its own bytes; the sum is
-    // what the install lays. Over the wall, no shard sees it, so the side is
-    // built again with every run in the delta tier (ADR-0599) — the open
-    // returns the same graph, only unsealed.
-    let parts = if streams_admit(parts.iter().map(|(_, stream)| stream)) {
-        parts
-    } else {
-        drop(parts);
-        shard::run_shards(shards, |shard| build_shard(rows, shard, side, false))
-    };
-    let mut streams = Vec::with_capacity(parts.len());
-    for (nodes, stream) in parts {
+    // The side's running arena offset, shared by every shard: each sealed
+    // chunk reserves its bytes here, so the side's whole total is known once
+    // the shards join — before any stream is laid.
+    let arena_base = AtomicU64::new(0);
+    let parts = shard::run_shards(shards, |shard| {
+        build_shard(rows, shard, side, Some(&arena_base))
+    });
+    let install_nodes = |nodes: Vec<(NodeId, TypedAdj)>| {
         for (node, adj) in nodes {
             adjacency.delta.insert(node, adj);
         }
-        streams.push(stream);
+    };
+    if adjacency.sealed.admits(arena_base.load(Ordering::Relaxed)) {
+        let mut streams = Vec::with_capacity(parts.len());
+        for (nodes, stream) in parts {
+            install_nodes(nodes);
+            streams.push(stream.expect("a sealing shard returns its stream"));
+        }
+        adjacency.sealed.install(streams);
+        adjacency.sealed.fit();
+    } else {
+        // The whole side is over the wall: no run seals, so the side is
+        // built again entirely in the delta tier (ADR-0599) — the open
+        // returns the same graph, unsealed.
+        drop(parts);
+        for (nodes, _) in shard::run_shards(shards, |shard| build_shard(rows, shard, side, None)) {
+            install_nodes(nodes);
+        }
     }
-    adjacency.sealed.install(streams);
-    adjacency.sealed.fit();
 }
 
 /// One shard's whole build: sort its row indices by `(endpoint, type)`,
-/// then one [`TypedAdj`] per node from that node's runs, with the sealed
-/// chunks encoded into the shard's own [`SealedStream`] when `seal` is set
-/// (`false` leaves every run in the delta). The sort works the shard slice
-/// in place — a shard's indices are a set, so the other consumers of a
-/// shared partition never depend on their order.
+/// then one [`TypedAdj`] per node from that node's runs. With `arena_base`
+/// the sealed chunks are encoded into the shard's own [`SealedStream`],
+/// against the side's shared arena cursor; without it every run stays in
+/// the delta and the shard keeps no sealed bookkeeping. The sort works the
+/// shard slice in place — a shard's indices are a set, so the other
+/// consumers of a shared partition never depend on their order.
 fn build_shard(
     rows: &[RelRow],
     shard: &mut [usize],
     side: Side,
-    seal: bool,
-) -> (Vec<(NodeId, TypedAdj)>, SealedStream) {
+    arena_base: Option<&AtomicU64>,
+) -> (Vec<(NodeId, TypedAdj)>, Option<SealedStream>) {
     let endpoint = |row: &RelRow| side.endpoint(row);
     shard.sort_unstable_by(|&a, &b| {
         let (a, b) = (&rows[a], &rows[b]);
@@ -361,11 +372,15 @@ fn build_shard(
             .then(a.type_id.cmp(&b.type_id))
     });
     let mut built = Vec::new();
-    let mut sealed = SealedStream::default();
+    let mut sealed = arena_base.map(|_| SealedStream::default());
     for node_run in shard.chunk_by(|&a, &b| endpoint(&rows[a]) == endpoint(&rows[b])) {
-        built.push(build_node(rows, node_run, side, &mut sealed, seal));
+        let pass = sealed.as_mut().zip(arena_base);
+        built.push(build_node(rows, node_run, side, pass));
     }
-    sealed.shrink();
+    let sealed = sealed.map(|mut stream| {
+        stream.shrink();
+        stream
+    });
     (built, sealed)
 }
 
@@ -375,20 +390,19 @@ fn build_shard(
 ///
 /// The durable shape: the build seals through its own gate — every run at
 /// [`RESTORE_SEAL_HOPS`] hops or more, horizon 0 — encoding the run's
-/// sorted hops directly into `sealed` rather than staging them in a delta
-/// chunk to fold out again. The stream is the one the checkpoint's GC fold
-/// would encode for the same hops, in the same chunk order, so a rebuilt
-/// graph and a checkpoint-folded one cannot land on different layouts.
-/// Both wholesale rebuilds (a restore and an aborted write's) emit it
-/// here, in the one pass that derives adjacency, instead of a second
-/// serial walk folding afterwards. Runs below the gate stay packed in the
-/// delta.
+/// sorted hops directly into the shard's stream rather than staging them in
+/// a delta chunk to fold out again. The stream is the one the checkpoint's
+/// GC fold would encode for the same hops, in the same chunk order, so a
+/// rebuilt graph and a checkpoint-folded one cannot land on different
+/// layouts. Both wholesale rebuilds (a restore and an aborted write's) emit
+/// it here, in the one pass that derives adjacency, instead of a second
+/// serial walk folding afterwards. Runs below the gate, or every run of an
+/// unsealed pass, stay packed in the delta.
 fn build_node(
     rows: &[RelRow],
     node_run: &[usize],
     side: Side,
-    sealed: &mut SealedStream,
-    seal: bool,
+    mut sealed: Option<(&mut SealedStream, &AtomicU64)>,
 ) -> (NodeId, TypedAdj) {
     let node = side.endpoint(&rows[node_run[0]]);
     // One run per type: its type id and its hops, unsorted and keyless —
@@ -408,10 +422,13 @@ fn build_node(
                 .collect();
             (rows[run[0]].type_id, hops)
         });
-    let adj = TypedAdj::from_runs(runs, |type_id, hops| {
-        seal && sealed.seal_chunk(node, type_id, hops)
+    let adj = TypedAdj::from_runs(runs, |type_id, hops| match sealed.as_mut() {
+        Some((stream, arena_base)) => stream.seal_chunk(node, type_id, hops, arena_base),
+        None => false,
     });
-    sealed.end_node();
+    if let Some((stream, _)) = sealed {
+        stream.end_node();
+    }
     (node, adj)
 }
 
@@ -463,10 +480,10 @@ impl Graph {
 
     /// How many sealed chunks `node`'s adjacency holds on `side` — the out
     /// (`Side::Start`) or in (`Side::End`) direction — the wholesale build's
-    /// emission (ADR-0608), read by the storage open tests across the crate
-    /// boundary. Test seam behind the off-by-default `test-hooks` feature,
-    /// never in a shipped build.
-    #[cfg(feature = "test-hooks")]
+    /// emission (ADR-0608). The crate's unit tests read it directly; the
+    /// off-by-default `test-hooks` feature exposes it to the storage open
+    /// tests across the crate boundary. Never in a shipped build.
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn sealed_chunk_count(&self, node: NodeId, side: Side) -> usize {
         let sealed = match side {
             Side::Start => &self.sealed_out,
