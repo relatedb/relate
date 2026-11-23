@@ -12,8 +12,10 @@
 #
 # So: build the merge before making it. `merge-tree` decides the merge in
 # object space, the result is materialized in a scratch export, and the
-# workspace is type-checked there. A conflict is reported as a conflict; a
-# tree that merges but does not compile is the case this exists for.
+# workspace is type-checked there — then the repo guards CI's Lint job runs
+# (`cargo xtask check-boundaries`) run on that same tree. A conflict is
+# reported as a conflict; a tree that merges, compiles, and still breaks a
+# guard is the case this exists for.
 #
 # Usage:
 #   scripts/premerge-check.sh --pr <number> [<base>]
@@ -39,9 +41,10 @@
 #   PREMERGE_KEEP=1       keep the scratch export and print its path, for
 #                         inspecting a failure by hand.
 #
-# Exit: 0 the merged tree type-checks; 1 the merge conflicts or the merged
-#       tree does not compile — either way, do not merge; 2 usage or
-#       environment error (nothing was concluded about the merge).
+# Exit: 0 the merged tree type-checks and passes the repo guards; 1 the
+#       merge conflicts, the merged tree does not compile, or it fails a
+#       repo guard — either way, do not merge; 2 usage or environment error
+#       (nothing was concluded about the merge).
 
 set -euo pipefail
 
@@ -56,8 +59,9 @@ usage() {
 
 # Every environment/usage failure reads the same way and exits the same
 # code, so the script's prefix, stream and exit contract are stated once
-# rather than at each of the guards that enforce it. The conflict and
-# compile verdicts do not come through here: they exit 1, a different fact.
+# rather than at each of the guards that enforce it. The conflict, compile
+# and repo-guard verdicts do not come through here: they exit 1, a different
+# fact.
 # `fail <message> [log]`: the message, then the head of the producer's own
 # log when one was captured. The conflict report is not a producer log — it
 # is merge-tree's own output, sliced where it is printed.
@@ -67,6 +71,34 @@ fail() {
         sed -n '1,10p' "$2" >&2
     fi
     exit 2
+}
+
+# The verdict reporter, `fail`'s counterpart: the blank line, the
+# `premerge-check:` prefix on every line, the stderr stream and the exit
+# status (1 — "do not merge") are stated here, never at each arm that
+# concludes one. Only the lines that explain the verdict stay at the site.
+do_not_merge() {
+    echo >&2
+    printf 'premerge-check: %s\n' "$@" >&2
+    exit 1
+}
+
+# The status-to-verdict mapping, one home. A command this gate runs has
+# three outcomes, and this is the table they are read through: it passed
+# (0), it concluded "do not merge" (1), or it never concluded at all (any
+# other status — an environment fault, never a finding).
+#   <cmd> || verdict $? <label> <log> <verdict line>...
+# `<log>` is the producer's captured stderr, or an empty string when it
+# wrote none; `fail` prints its head so an environment fault shows why the
+# command could not run.
+verdict() {
+    local status=$1 label=$2 log=$3
+    shift 3
+    case $status in
+        0) return 0 ;;
+        1) do_not_merge "$@" ;;
+        *) fail "$label could not run (status $status)" "$log" ;;
+    esac
 }
 
 # Loaded after `fail`, per the loading contract stated once in
@@ -221,19 +253,15 @@ echo "premerge-check: merging $head_rev onto $base_rev"
 merge_status=0
 git -C "$REPO" merge-tree --write-tree "$base_ref" "$head_rev" \
     >"$scratch/tree" 2>"$scratch/tree.err" || merge_status=$?
-case $merge_status in
-    0) ;;
-    1)
-        # merge-tree writes the conflict report to stdout, after the tree
-        # OID on line 1; stderr carries only fatal errors (the arm below).
-        echo "premerge-check: the merge CONFLICTS — resolve before merging:" >&2
-        sed -n '2,40p' "$scratch/tree" >&2
-        exit 1
-        ;;
-    *)
-        fail "merge-tree failed (status $merge_status)" "$scratch/tree.err"
-        ;;
-esac
+# The conflict report is merge-tree's own output, sliced where it is
+# printed — not a verdict line — so it keeps its site; the other two
+# statuses are read through the one mapping.
+if [ "$merge_status" -eq 1 ]; then
+    echo "premerge-check: the merge CONFLICTS — resolve before merging:" >&2
+    sed -n '2,40p' "$scratch/tree" >&2
+    exit 1
+fi
+verdict "$merge_status" "merge-tree" "$scratch/tree.err"
 tree=$(head -n 1 "$scratch/tree")
 echo "premerge-check: merged tree $tree"
 
@@ -244,15 +272,40 @@ echo "premerge-check: merged tree $tree"
     && git -C "$REPO" archive "$tree" | tar -x -C "$scratch/wt"; } \
     || fail "could not materialize the merged tree"
 
+# The one anchor for running a command inside the export: the `cd` and the
+# shared CARGO_TARGET_DIR prefix are stated here, so every check the merged
+# tree gets runs the same way. The export is a tree, not a commit — nothing
+# else in the script may assume a working copy with a `.git`.
+in_export() {
+    (cd "$scratch/wt" && CARGO_TARGET_DIR="$target_dir" "$@")
+}
+
 echo "premerge-check: type-checking the merged tree (target dir $target_dir)"
-if ! (cd "$scratch/wt" && CARGO_TARGET_DIR="$target_dir" \
-        cargo check --workspace --exclude relate-python); then
-    echo >&2
-    echo "premerge-check: THE MERGED TREE DOES NOT COMPILE." >&2
-    echo "premerge-check: this is the commit CI on the head cannot see — the" >&2
-    echo "premerge-check: merge would break $base_rev. Rebase the branch onto" >&2
-    echo "premerge-check: $base_rev, fix, and re-run." >&2
-    exit 1
-fi
+# `cargo check` is the one command here that does not go through `verdict`:
+# cargo reports a rustc diagnostic and a failure of cargo itself (a fetch, a
+# manifest, a toolchain) with the same status, so its status cannot carry
+# the cause. Every nonzero is therefore the one fact both share — the
+# merged tree is not checkable, so it is not mergeable — and cargo's own
+# output, still on the terminal above, tells the operator which it was.
+in_export cargo check --workspace --exclude relate-python || do_not_merge \
+    "THE MERGED TREE DOES NOT COMPILE." \
+    "this is the commit CI on the head cannot see — the merge would break" \
+    "$base_rev. Rebase the branch onto $base_rev, fix, and re-run."
 
 echo "premerge-check: the merged tree compiles"
+
+# The merged tree's repo-level guards, the ones the Lint job runs: a branch
+# that extracts a helper into a second unbounded `Vec<Row>` (or breaks a
+# crate boundary, or drifts a fixture copy) compiles fine and still breaks
+# main's Lint — the case a PR's own CI cannot report when its Lint job
+# fails on an unrelated setup step (REL8-2026: #671 merged with the ADR-0555
+# guard unrun). `check-boundaries` is the one command that runs all three,
+# and it reports its finding through the same status table: 1 is the guard
+# finding, anything else means the guard never ran.
+echo "premerge-check: checking the merged tree's repo guards (cargo xtask check-boundaries)"
+in_export cargo xtask check-boundaries || verdict $? "cargo xtask check-boundaries" "" \
+    "THE MERGED TREE FAILS A REPO GUARD (see above)." \
+    "CI's Lint job reports the same failure on main after the merge; fix it" \
+    "on the branch and re-run."
+
+echo "premerge-check: the merged tree passes the repo guards"
