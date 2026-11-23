@@ -2,7 +2,7 @@
 //! `RowProps` (compact-records-shaped baseline) vs `ColProps` (the vortex
 //! store) — same operators, same answers asserted, both measured.
 //!
-//! The point is not to re-measure the kernels (RESULTS.md has those); it is
+//! The point is not to re-measure the kernels (vortex-research-results.md has those); it is
 //! the seam overhead and the representation effect per operator: what the
 //! executor would feel if the property store swapped behind the trait.
 
