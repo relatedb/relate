@@ -71,6 +71,7 @@ eval/predicates.rs::filter_rows_where # projection/filter stage materializes its
 exec/post_merge.rs::output_rows # the tail's output stage: the star shape's unparked rows, or the declared-column rebuild, to be replaced by streaming
 exec/post_merge.rs::finish_projection # projection/filter stage materializes its rows; the post-merge tail carved out of the allowlisted project_rows, to be replaced by streaming
 exec/project.rs::project_rows # projection/filter stage materializes its rows; to be replaced by streaming
+exec/project.rs::project_classed # projection/filter stage materializes its rows; the classed half carved out of the allowlisted project_rows, to be replaced by streaming
 exec/post_merge.rs::retain_distinct # projection/filter stage materializes its rows; to be replaced by streaming
 exec/search.rs::search_match_clause # clause arm materializes its output rows; to be replaced by streaming
 exec/search/deferred.rs::deferred_search_rows # clause arm materializes its output rows; to be replaced by streaming
