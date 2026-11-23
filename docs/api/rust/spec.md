@@ -1056,11 +1056,12 @@ durability barrier. A physical append, sync or rotation error poisons that
 `uncertain WAL outcome` until reopened. Deterministic preflight errors leave
 it usable. See the runnable `Wal::preflight_record` doctest.
 
-On open, only a highest segment with 1–7 bytes exactly matching a prefix of
-`MDBWAL01` can have its header atomically completed, and only after all
+On open, only a highest segment that is empty (a segment created but stopped
+before its header was written) or holds 1–7 bytes exactly matching a prefix
+of `MDBWAL01` can have its header atomically completed, and only after all
 predecessors have been fully verified. The repaired header always becomes
 `MDBWAL01`: such a segment holds no frames, and ontology ops are never
-appended to it (ADR-0120 §4). Empty, sole, closed, mismatching and
+appended to it (ADR-0120 §4). Sole (empty or short), closed, mismatching and
 CRC-invalid predecessor cases fail without this repair.
 
 | Format / operation | Enforced boundary |

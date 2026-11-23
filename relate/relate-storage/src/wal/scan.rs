@@ -41,10 +41,11 @@ pub(super) fn write_magic(vfs: &dyn Vfs, path: &str, magic: &[u8; 8], sync: bool
     file.write_all(magic)?;
     // The magic is the segment's identity header — a metadata-only write to a
     // fresh file, not the commit barrier. `rotate` barriers the *old* data
-    // segment via the `synced` check above; this syncs the new segment's
-    // header so a crash after rotate can open it. Relaxed (snapshot) rotation
-    // deliberately skips it: its stable-storage boundary is the completed
-    // checkpoint, and `repair_short_new_magic` recovers a short header.
+    // segment via the `synced` check in `close_active_segment`; this syncs
+    // the new segment's header so a crash after rotate can open it. Relaxed
+    // (snapshot) rotation deliberately skips it: its stable-storage boundary
+    // is the completed checkpoint, and `repair_short_new_magic` recovers a
+    // short or empty header.
     if sync {
         file.sync_all()?;
     }
@@ -68,22 +69,30 @@ pub(super) fn write_empty_segment(vfs: &dyn Vfs, prefix: &str) -> Result<String>
     Ok(path)
 }
 
-/// Called only on the highest segment after every predecessor scanned cleanly.
-/// A nonempty proper magic prefix cannot include even a frame header. Do not
-/// touch empty, mismatching or complete headers (the normal scanner handles
-/// complete headers and all frame corruption).
-pub(super) fn repair_short_new_magic(vfs: &dyn Vfs, path: &str) -> Result<()> {
-    let len = vfs.metadata(path)?.len;
-    if !(1..MAGIC.len() as u64).contains(&len) {
-        return Ok(());
+/// The one classification of a highest segment shorter than the magic,
+/// shared by writable repair, the read-only skip and the live follower:
+/// `true` when the segment's entire contents are empty or a proper prefix
+/// of the magic — a torn rotate, which cannot include even a frame header —
+/// and `false` for any other short header, which is corruption everywhere.
+/// Complete headers are `false` too: the normal scanner owns them.
+pub(super) fn is_torn_short_magic(vfs: &dyn Vfs, path: &str) -> Result<bool> {
+    if vfs.metadata(path)?.len >= MAGIC.len() as u64 {
+        return Ok(false);
     }
-    let mut file = vfs.open(path, VfsOpen::read_only())?;
-    let mut prefix = [0u8; MAGIC.len() - 1];
-    file.read_exact(&mut prefix[..len as usize])?;
-    drop(file);
+    let body = crate::vfs::read_to_vec(vfs, path)?;
+    Ok(MAGIC.starts_with(&body))
+}
+
+/// Called only on the highest segment after every predecessor scanned cleanly.
+/// A torn rotate — the segment created but stopped before its header was
+/// written, or holding a proper magic prefix — is completed to a whole magic
+/// through an atomic replacement. Mismatching and complete headers are left
+/// to the normal scanner, which handles complete headers and all frame
+/// corruption.
+pub(super) fn repair_short_new_magic(vfs: &dyn Vfs, path: &str) -> Result<()> {
     // ADR-0120 §4: a repaired short header always becomes `MDBWAL01` — the
     // segment holds no frames, so no ontology op can ever be appended to it.
-    if prefix[..len as usize] == MAGIC[..len as usize] {
+    if is_torn_short_magic(vfs, path)? {
         crate::vfs::atomic_write(vfs, path, MAGIC)?;
     }
     Ok(())
@@ -434,6 +443,123 @@ pub(super) fn scan_seg(
     })
 }
 
+/// The verdict of a read-only follower's segment walk: the records it may
+/// replay in order and the cursor the next poll resumes from, the resting
+/// position when nothing was deliverable, or the gap verdict that asks the
+/// caller to reload from the snapshot.
+pub(super) enum FollowOutcome {
+    /// Consecutive records after the follower's position; `next` is only a
+    /// proposal: the caller commits it through `commit_follow_cursor` once
+    /// the records are applied.
+    Records {
+        records: Vec<WalRecord>,
+        next: WalCursor,
+    },
+    /// Nothing to deliver. `at` is the follower's resting position — the
+    /// cursor the walk started from when that cursor was live, the active
+    /// segment's end otherwise (never under the magic) — for the handle to
+    /// store through its one cursor-store path.
+    Idle { at: WalCursor },
+    /// A segment the cursor still needs is gone, or the active segment
+    /// shrank under it: the caller reloads from the snapshot.
+    Gap,
+}
+
+/// The read-only follower's one segment walk — in the module that owns every
+/// other segment policy (the header's "shared by writable recovery and
+/// read-only follow"): which segments a follower reads, the torn-header
+/// tolerance it shares with the read-only open, the shrink exemption for a
+/// cursor the open placed at the magic over a not-yet-written header, and
+/// the consecutive-LSN rule that turns a hole into a `Gap`. The cursor is
+/// the follower's whole position — the walk seeds its expectations from it —
+/// and an empty segment inventory is a `Gap` verdict here, not a
+/// precondition on the caller.
+pub(super) fn follow_walk(
+    vfs: &dyn Vfs,
+    prefix: &str,
+    ids: &[u32],
+    cursor: WalCursor,
+) -> Result<FollowOutcome> {
+    let Some(&first_id) = ids.first() else {
+        return Ok(FollowOutcome::Gap);
+    };
+    let active_id = *ids.last().unwrap_or(&first_id);
+    let cursor_live = ids.contains(&cursor.seg_id);
+    if cursor_live {
+        let path = segment_path(prefix, cursor.seg_id);
+        let len = vfs.metadata(&path)?.len;
+        // A highest segment shorter than its magic is a rotate in
+        // progress or one that crashed. The read-only open skipped it
+        // with a cursor at `MAGIC.len()`; that is not a shrink.
+        let short_active = cursor.seg_id == active_id && len < MAGIC.len() as u64;
+        if len < cursor.offset && !(short_active && cursor.offset == MAGIC.len() as u64) {
+            return Ok(FollowOutcome::Gap);
+        }
+    }
+    let start_seg = if cursor_live { cursor.seg_id } else { first_id };
+    let mut out = Vec::new();
+    let mut last_hint = None;
+    let mut last_ts = cursor.commit_ts;
+    let mut expect = cursor.lsn.saturating_add(1);
+    for seg in ids.iter().copied().filter(|id| *id >= start_seg) {
+        let path = segment_path(prefix, seg);
+        let active = active_id == seg;
+        // Mirror the read-only open: a highest segment whose whole
+        // contents are a torn magic prefix has no frames — the writer
+        // completes it, the follower reads it on a later poll. Any other
+        // short header is corruption and fails the scan below.
+        if active && is_torn_short_magic(vfs, &path)? {
+            continue;
+        }
+        // A segment equal to the cursor's is by construction one of `ids`,
+        // so this arm implies the cursor was live and its offset stands.
+        let start = if seg == cursor.seg_id {
+            cursor.offset
+        } else {
+            0
+        };
+        let (recs, end) = read_seg_limited(
+            vfs,
+            &path,
+            start,
+            ScanWindow {
+                from_lsn: cursor.lsn,
+                limit: usize::MAX,
+                last_ts: &mut last_ts,
+            },
+            SegSource { id: seg, active },
+        )?;
+        for rec in recs {
+            if rec.lsn != expect {
+                return Ok(FollowOutcome::Gap);
+            }
+            expect = expect.saturating_add(1);
+            out.push(rec);
+        }
+        if let Some(hint) = end {
+            last_hint = Some(hint);
+        }
+    }
+    if out.is_empty() {
+        let at = if cursor_live {
+            cursor
+        } else {
+            let path = segment_path(prefix, active_id);
+            let len = vfs.metadata(&path)?.len;
+            WalCursor {
+                lsn: cursor.lsn,
+                seg_id: active_id,
+                offset: len.max(MAGIC.len() as u64),
+                commit_ts: cursor.commit_ts,
+            }
+        };
+        return Ok(FollowOutcome::Idle { at });
+    }
+    let next = last_hint
+        .ok_or_else(|| Error::storage("WAL follow cursor missing after a non-empty catch-up"))?;
+    Ok(FollowOutcome::Records { records: out, next })
+}
+
 pub(super) struct SegmentScan {
     pub(super) closed: Vec<(u32, u64, u64)>,
     pub(super) lsn: u64,
@@ -449,9 +575,43 @@ pub(super) struct SegmentScan {
     pub(super) current_magic: [u8; 8],
 }
 
-/// Scan every segment once. Writable recovery repairs a short new magic and
-/// records tolerated tails for a later trim. Read-only follow skips a short
-/// highest segment that cannot hold a frame and never trims.
+/// The running recovery state every scanned segment folds into: the highest
+/// LSN and the latest read cursor (both from each segment's scan cursor),
+/// and the tolerated tails a writable recovery trims after the scan. One
+/// home for the fold, so the closed-segment loop and the active segment
+/// absorb identically. The running commit timestamp stays a `scan_segments`
+/// local: `scan_seg` folds it through the scan window's `last_ts` out-param.
+struct Recovery {
+    lsn: u64,
+    cursor: Option<WalCursor>,
+    trims: Vec<(String, u64)>,
+}
+
+impl Recovery {
+    /// Absorb one scanned segment: advance the LSN from the segment's read
+    /// cursor and adopt that cursor — the cursor carries the last delivered
+    /// record's LSN, the one channel `scan_seg` reports it through — and, on
+    /// writable recovery only, record a tolerated tail for the later trim.
+    /// The trim-vs-never-trim mode arrives as a parameter, not struct state:
+    /// `scan_segments` owns every mode distinction, and the active segment's
+    /// caller derives `trimmed_active` from the `SegScan` it owns. The fold
+    /// itself returns nothing.
+    fn absorb(&mut self, scan: &SegScan, path: &str, writable: bool) {
+        if let Some(hint) = scan.hint {
+            self.lsn = self.lsn.max(hint.lsn);
+            self.cursor = Some(hint);
+        }
+        if writable {
+            if let Some(at) = scan.tail_at {
+                self.trims.push((path.to_string(), at));
+            }
+        }
+    }
+}
+
+/// Scan every segment once. Writable recovery repairs a torn new magic and
+/// records tolerated tails for a later trim. Read-only follow skips a torn
+/// highest segment as frameless and never trims.
 pub(super) fn scan_segments(
     vfs: &dyn Vfs,
     prefix: &str,
@@ -463,17 +623,17 @@ pub(super) fn scan_segments(
         .split_last()
         .ok_or_else(|| Error::storage("WAL segment list is empty"))?;
     let mut closed = Vec::new();
-    let mut lsn = checkpoint_lsn;
     let mut last_commit_ts = 0u64;
-    let mut cursor = None;
-    let mut trims = Vec::new();
+    let mut recovery = Recovery {
+        lsn: checkpoint_lsn,
+        cursor: None,
+        trims: Vec::new(),
+    };
 
     // Closed segments scan identically in both modes: no short-header
-    // handling, no commit counting, no active-tail bookkeeping. A tolerated
-    // tail is recorded for a later trim only on writable recovery.
+    // handling, no commit counting, no active-tail bookkeeping.
     for &id in closed_ids {
         let path = segment_path(prefix, id);
-        let mut last = None;
         let scan = scan_seg(
             vfs,
             &path,
@@ -484,104 +644,74 @@ pub(super) fn scan_segments(
                 last_ts: &mut last_commit_ts,
             },
             SegSource { id, active: false },
-            |rec| {
-                last = Some((rec.lsn, rec.commit_ts));
-                Ok(())
-            },
+            |_| Ok(()),
         )?;
-        if let Some((max_lsn, max_ts)) = last {
-            lsn = lsn.max(max_lsn);
-            last_commit_ts = max_ts;
-        }
-        if let Some(hint) = scan.hint {
-            cursor = Some(hint);
-        }
-        if writable {
-            if let Some(at) = scan.tail_at {
-                trims.push((path, at));
-            }
-        }
-        let (max_lsn, max_ts) = last.unwrap_or((0, 0));
+        recovery.absorb(&scan, &path, writable);
+        let (max_lsn, max_ts) = scan.hint.map_or((0, 0), |hint| (hint.lsn, hint.commit_ts));
         closed.push((id, max_lsn, max_ts));
     }
 
     // The active segment owns every mode-dependent distinction: writable
-    // recovery repairs a short new magic (only with a verified predecessor)
-    // and reports a trimmed tail; read-only follow tolerates a short header
-    // on a multi-segment WAL as frameless, while a short *sole* segment is
-    // unprovable and falls through to `scan_seg`'s truncated-magic error.
+    // recovery repairs a torn new magic (only with a verified predecessor);
+    // read-only follow skips a torn highest segment on a multi-segment WAL
+    // as frameless, while any other short header — and a *sole* segment
+    // shorter than the magic, torn or not, without a predecessor to prove
+    // the rotate — falls through to `scan_seg`'s truncated-magic error.
     let path = segment_path(prefix, current_id);
+    // A short highest header is interpretable only with a verified
+    // predecessor — the one load-bearing precondition both modes share.
+    let predecessor_verified = !closed_ids.is_empty();
+    let skip_active = !writable && predecessor_verified && is_torn_short_magic(vfs, &path)?;
     let mut current_commits = 0u64;
-    let mut trimmed_active = false;
     let mut current_magic = *MAGIC;
-    if writable {
-        if !closed_ids.is_empty() {
+    let mut trimmed_active = false;
+    let active_scan = if skip_active {
+        None
+    } else {
+        if writable && predecessor_verified {
             repair_short_new_magic(vfs, &path)?;
         }
-    } else {
-        let len = vfs.metadata(&path)?.len;
-        if len < MAGIC.len() as u64 && !closed_ids.is_empty() {
-            return Ok(SegmentScan {
-                closed,
-                lsn,
-                last_commit_ts,
-                current_bytes: len,
-                current_commits,
-                cursor,
-                trims,
-                trimmed_active,
-                current_magic,
-            });
-        }
+        Some(scan_seg(
+            vfs,
+            &path,
+            0,
+            ScanWindow {
+                from_lsn: 0,
+                limit: usize::MAX,
+                last_ts: &mut last_commit_ts,
+            },
+            SegSource {
+                id: current_id,
+                active: true,
+            },
+            |rec| {
+                if rec.lsn > checkpoint_lsn {
+                    current_commits += 1;
+                }
+                Ok(())
+            },
+        )?)
+    };
+    if let Some(scan) = &active_scan {
+        recovery.absorb(scan, &path, writable);
+        current_magic = scan.magic;
+        trimmed_active = writable && scan.tail_at.is_some();
     }
-    let mut last = None;
-    let scan = scan_seg(
-        vfs,
-        &path,
-        0,
-        ScanWindow {
-            from_lsn: 0,
-            limit: usize::MAX,
-            last_ts: &mut last_commit_ts,
-        },
-        SegSource {
-            id: current_id,
-            active: true,
-        },
-        |rec| {
-            last = Some((rec.lsn, rec.commit_ts));
-            if rec.lsn > checkpoint_lsn {
-                current_commits += 1;
-            }
-            Ok(())
-        },
-    )?;
-    if let Some((max_lsn, max_ts)) = last {
-        lsn = lsn.max(max_lsn);
-        last_commit_ts = max_ts;
-    }
-    if let Some(hint) = scan.hint {
-        cursor = Some(hint);
-    }
-    if writable {
-        if let Some(at) = scan.tail_at {
-            trimmed_active = true;
-            trims.push((path.clone(), at));
-        }
-    }
-    current_magic = scan.magic;
-    let current_bytes = match scan.tail_at {
+    // A skipped short header is frameless — its physical length is where the
+    // active segment resumes — exactly as a fully scanned segment resumes at
+    // its tolerated tail, if any, or its physical end.
+    let current_bytes = match active_scan.as_ref().and_then(|scan| scan.tail_at) {
         Some(at) => at,
         None => vfs.metadata(&path)?.len,
     };
     Ok(SegmentScan {
         closed,
-        lsn,
+        lsn: recovery.lsn,
         last_commit_ts,
         current_bytes,
         current_commits,
-        cursor,
-        trims,
+        cursor: recovery.cursor,
+        trims: recovery.trims,
         trimmed_active,
         current_magic,
     })

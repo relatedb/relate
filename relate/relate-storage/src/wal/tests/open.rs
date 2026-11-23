@@ -359,6 +359,149 @@ fn readonly_open_rejects_a_short_sole_segment() {
 }
 
 #[test]
+fn every_short_or_empty_highest_magic_prefix_recovers_on_memory_and_native() {
+    for native in [false, true] {
+        // size 0 is the segment file created but stopped before its magic
+        // was written; 1..8 are the torn header prefixes.
+        for size in 0..MAGIC.len() {
+            let dir = native.then(|| tempfile::tempdir().unwrap());
+            let vfs: Arc<dyn Vfs> = match dir.as_ref() {
+                Some(dir) => Arc::new(NativeVfs::new(dir.path())),
+                None => Arc::new(MemoryVfs::new()),
+            };
+            let mut wal = Wal::open(Arc::clone(&vfs), "wal", 0).unwrap();
+            wal.append_commit(1, &[]).unwrap();
+            let first = crate::vfs::read_to_vec(&*vfs, "wal/00000001.log").unwrap();
+            drop(wal);
+            vfs.open("wal/00000002.log", VfsOpen::create_truncate())
+                .unwrap()
+                .write_all(&MAGIC[..size])
+                .unwrap();
+            let mut reopened = Wal::open(Arc::clone(&vfs), "wal", 0).unwrap();
+            assert_eq!(reopened.replay(0).unwrap().len(), 1);
+            assert_eq!(
+                crate::vfs::read_to_vec(&*vfs, "wal/00000001.log").unwrap(),
+                first
+            );
+            assert_eq!(reopened.append_commit(2, &[]).unwrap(), 2);
+            drop(reopened);
+            assert_eq!(
+                Wal::open(vfs, "wal", 0).unwrap().replay(0).unwrap().len(),
+                2
+            );
+        }
+    }
+}
+
+/// A two-segment WAL whose committed predecessor is valid — or
+/// CRC-corrupted at its first frame header when `corrupt_predecessor` — and
+/// whose highest segment holds exactly `bad` bytes: the store a stop between
+/// the new segment's creation and its magic write leaves behind. The shared
+/// fixture of the short-magic repair tests.
+fn wal_with_committed_prefix_and_short_highest(
+    bad: &[u8],
+    corrupt_predecessor: bool,
+) -> Arc<dyn Vfs> {
+    let vfs: Arc<dyn Vfs> = Arc::new(MemoryVfs::new());
+    let mut wal = Wal::open(Arc::clone(&vfs), "wal", 0).unwrap();
+    wal.append_commit(1, &[]).unwrap();
+    drop(wal);
+    if corrupt_predecessor {
+        let mut corrupt = crate::vfs::read_to_vec(&*vfs, "wal/00000001.log").unwrap();
+        corrupt[MAGIC.len()] ^= 1;
+        crate::vfs::atomic_write(&*vfs, "wal/00000001.log", &corrupt).unwrap();
+    }
+    vfs.open("wal/00000002.log", VfsOpen::create_truncate())
+        .unwrap()
+        .write_all(bad)
+        .unwrap();
+    vfs
+}
+
+/// A mismatching short header on the highest segment is not a torn magic:
+/// repair leaves it alone and open fails on the truncation.
+#[test]
+fn short_magic_repair_requires_exact_prefix() {
+    let vfs = wal_with_committed_prefix_and_short_highest(b"MZ", false);
+    assert!(Wal::open(Arc::clone(&vfs), "wal", 0).is_err());
+    assert_eq!(
+        crate::vfs::read_to_vec(&*vfs, "wal/00000002.log").unwrap(),
+        b"MZ".as_slice()
+    );
+}
+
+/// A bad CRC in the predecessor must be reported before touching even an
+/// otherwise repairable highest magic — empty or torn prefix alike.
+#[test]
+fn short_magic_repair_requires_clean_predecessor() {
+    for bad in [b"".as_slice(), &MAGIC[..2]] {
+        let vfs = wal_with_committed_prefix_and_short_highest(bad, true);
+        assert!(Wal::open(Arc::clone(&vfs), "wal", 0).is_err());
+        assert_eq!(
+            crate::vfs::read_to_vec(&*vfs, "wal/00000002.log").unwrap(),
+            bad
+        );
+    }
+}
+
+/// A sole segment shorter than the magic — empty or a torn prefix — cannot
+/// be repaired: without a predecessor, an empty file may hide lost data.
+#[test]
+fn short_magic_repair_refuses_sole_short_segment() {
+    for bad in [b"".as_slice(), &MAGIC[..2]] {
+        let vfs = Arc::new(MemoryVfs::new());
+        vfs.open("00000001.log", VfsOpen::create_truncate())
+            .unwrap()
+            .write_all(bad)
+            .unwrap();
+        assert!(
+            Wal::open(vfs, "", 0).is_err(),
+            "a sole segment of {bad:?} cannot be repaired"
+        );
+    }
+}
+
+/// A short *closed* segment is corruption, not a torn rotate: the repair
+/// only ever touches the highest segment.
+#[test]
+fn short_magic_repair_refuses_short_closed_segment() {
+    let vfs = Arc::new(MemoryVfs::new());
+    vfs.create_dir_all("wal").unwrap();
+    vfs.open("wal/00000001.log", VfsOpen::create_truncate())
+        .unwrap()
+        .write_all(&MAGIC[..3])
+        .unwrap();
+    write_magic(&*vfs, "wal/00000002.log", MAGIC, true).unwrap();
+    assert!(
+        Wal::open(vfs, "wal", 0).is_err(),
+        "closed segment cannot be repaired"
+    );
+}
+
+/// A highest segment appearing after a clean read-only open, whose short
+/// header is not a torn magic prefix, fails the follower's poll exactly as
+/// it would fail the open: one classification, and corruption is never
+/// frameless.
+#[test]
+fn poll_follow_rejects_a_mismatching_short_highest_segment() {
+    let (dir, writer) = file_wal();
+    drop(writer);
+    let mut follower = Wal::open_readonly(
+        Arc::new(NativeVfs::new(dir.path())),
+        "",
+        0,
+        Error::WAL_PAYLOAD_CAP_BYTES,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("00000002.log"), b"MZ").unwrap();
+    let err = follower.poll_follow(0).unwrap_err();
+    assert!(
+        err.to_string().contains("truncated WAL magic"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn open_rejects_corruption_in_closed_segment() {
     use std::io::{Seek, Write};
 

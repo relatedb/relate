@@ -28,7 +28,7 @@ REFERENCES:
 
 # 0086. Bounded decoding of persisted WAL, bundles, and Parquet
 
-- **Amended**: 2026-09-24
+- **Amended**: 2026-09-24, 2026-11-23 (§1: the highest segment's empty file joins the 1–7 byte prefixes as repairable, GH relatedb/relate#576)
 
 ## Context
 
@@ -83,10 +83,15 @@ a blanket 256 MiB file cap would reject snapshots the engine itself can write.
    active segment's physical EOF, or an excessive length is corruption and
    fails open, with one narrow exception: after
     successfully validating every earlier segment (including the immediately
-    preceding one), recovery may replace the highest segment's 1–7 bytes with
-    a complete magic if its entire contents are an exact prefix of the magic.
+    preceding one), recovery may replace the highest segment's 0–7 bytes —
+    an empty file is the exact zero-length prefix, a segment created but
+    stopped before its magic was written, as when a store without an atomic
+    create publishes the new segment's path before the WAL writes its
+    header (the browser OPFS catalog; GH relatedb/relate#576) — with a
+    complete magic if its entire contents are an exact prefix of the magic.
     Such a segment cannot contain a frame. Replace it atomically through the
-    VFS before opening for append; never repair an empty or sole segment, a
+    VFS before opening for append; never repair a sole segment — empty or
+    short, without a predecessor an empty file may hide lost data — a
     non-prefix header, or any closed segment. A failed replacement fails open
     without changing the validated predecessor. Fresh segments are created
     with a complete magic. Use the observed file length and checked offsets to
