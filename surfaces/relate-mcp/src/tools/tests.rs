@@ -11,10 +11,19 @@ fn store() -> (Database, Connection) {
     (db, conn)
 }
 
+/// The object of one inline arguments literal, as the tool layer takes it.
+macro_rules! args {
+    ($($json:tt)*) => {
+        serde_json::json!($($json)*)
+            .as_object()
+            .expect("an object literal")
+    };
+}
+
 /// Run one tool call over a fresh store, returning the outcome.
 fn run(name: &str, arguments: Json) -> Result<ToolOutcome, ToolError> {
     let (_db, mut conn) = store();
-    Tools::new(&mut conn, Limits::shipped()).call(name, &arguments)
+    Tools::new(&mut conn, Limits::shipped()).call(name, arguments.as_object().expect("an object"))
 }
 
 /// The counters of the first result of a written statement.
@@ -153,7 +162,7 @@ fn the_caps_refuse_before_the_engine() {
         tools
             .call(
                 WRITE_CYPHER,
-                &serde_json::json!({"statement": "UNWIND $rows AS row CREATE (n:N {id: row.id})"}),
+                args!({"statement": "UNWIND $rows AS row CREATE (n:N {id: row.id})"}),
             )
             .unwrap_err(),
         ToolError::StatementTooLarge { limit: 16 }
@@ -162,7 +171,7 @@ fn the_caps_refuse_before_the_engine() {
         tools
             .call(
                 WRITE_CYPHER,
-                &serde_json::json!({
+                args!({
                     "statement": "X",
                     "parameters": {"rows": [{"id": 1}, {"id": 2}, {"id": 3}]},
                 }),
@@ -174,7 +183,7 @@ fn the_caps_refuse_before_the_engine() {
         tools
             .call(
                 BATCH_CYPHER,
-                &serde_json::json!({"statements": [{"statement": "X"}, {"statement": "Y"}]}),
+                args!({"statements": [{"statement": "X"}, {"statement": "Y"}]}),
             )
             .unwrap_err(),
         ToolError::TooManyStatements { count: 2, limit: 1 }
@@ -187,27 +196,22 @@ fn a_malformed_payload_names_what_is_missing() {
     let mut tools = Tools::new(&mut conn, Limits::shipped());
     for (call, detail) in [
         (
-            tools.call(WRITE_CYPHER, &serde_json::json!({})),
+            tools.call(WRITE_CYPHER, args!({})),
             "missing string \"statement\"",
         ),
         (
             tools.call(
                 WRITE_CYPHER,
-                &serde_json::json!({"statement": "RETURN 1", "parameters": 4}),
+                args!({"statement": "RETURN 1", "parameters": 4}),
             ),
             "\"parameters\" must be an object",
         ),
         (
-            tools.call(BATCH_CYPHER, &serde_json::json!({})),
+            tools.call(BATCH_CYPHER, args!({})),
             "missing array \"statements\"",
         ),
-        // A non-object arguments object names the member it malformed.
         (
-            tools.call(READ_CYPHER, &serde_json::json!(4)),
-            "\"arguments\" must be an object",
-        ),
-        (
-            tools.call(BATCH_CYPHER, &serde_json::json!({"statements": [4]})),
+            tools.call(BATCH_CYPHER, args!({"statements": [4]})),
             "statements[0] must be an object",
         ),
     ] {
@@ -227,10 +231,24 @@ fn call_parts_reads_the_name_and_arguments() {
     let params = serde_json::json!({"name": "read_cypher", "arguments": {"statement": "RETURN 1"}});
     let (name, arguments) = call_parts(Some(&params)).unwrap();
     assert_eq!(name, READ_CYPHER);
-    assert_eq!(*arguments, serde_json::json!({"statement": "RETURN 1"}));
-    // Absent arguments is the empty call, not a refusal.
-    let params = serde_json::json!({"name": "get_schema"});
-    assert_eq!(*call_parts(Some(&params)).unwrap().1, Json::Null);
+    assert_eq!(arguments, args!({"statement": "RETURN 1"}));
+    // Absent or null arguments is the empty call, not a refusal.
+    for params in [
+        serde_json::json!({"name": "get_schema"}),
+        serde_json::json!({"name": "get_schema", "arguments": null}),
+    ] {
+        assert!(call_parts(Some(&params)).unwrap().1.is_empty());
+    }
+    // A non-object arguments is refused in the one shared wording.
+    assert_eq!(
+        call_parts(Some(
+            &serde_json::json!({"name": "read_cypher", "arguments": 4})
+        ))
+        .unwrap_err(),
+        ToolError::InvalidParams {
+            detail: "\"arguments\" must be an object".to_string()
+        }
+    );
     for params in [
         Json::Null,
         serde_json::json!({}),
@@ -389,12 +407,7 @@ fn a_read_only_server_hides_and_rejects_the_writing_tool() {
         [READ_CYPHER, GET_SCHEMA]
     );
     assert_eq!(
-        call_tool(
-            &read_only,
-            WRITE_CYPHER,
-            &serde_json::json!({"statement": "CREATE (n)"}),
-        )
-        .unwrap_err(),
+        call_tool(&read_only, WRITE_CYPHER, args!({"statement": "CREATE (n)"}),).unwrap_err(),
         format!("unknown tool '{WRITE_CYPHER}'")
     );
 }
@@ -408,7 +421,7 @@ fn the_tool_results_carry_the_canonical_envelope() {
     let counters = call_tool(
         &server,
         WRITE_CYPHER,
-        &serde_json::json!({
+        args!({
             "statement": "CREATE (n:Person {name: $name})",
             "parameters": {"name": "Ada"},
         }),
@@ -420,7 +433,7 @@ fn the_tool_results_carry_the_canonical_envelope() {
     let rows = call_tool(
         &server,
         READ_CYPHER,
-        &serde_json::json!({"statement": "MATCH (n:Person) RETURN n.name AS name"}),
+        args!({"statement": "MATCH (n:Person) RETURN n.name AS name"}),
     )
     .unwrap();
     let rows: Json = serde_json::from_str(&rows).unwrap();
@@ -437,17 +450,12 @@ fn the_tool_results_carry_the_canonical_envelope() {
 fn the_plan_lists_the_fused_children_of_an_index_seek_match() {
     let server = server();
     for statement in relate_test_support::fused_seek::FUSED_SEEK_SEED {
-        call_tool(
-            &server,
-            WRITE_CYPHER,
-            &serde_json::json!({ "statement": statement }),
-        )
-        .unwrap();
+        call_tool(&server, WRITE_CYPHER, args!({ "statement": statement })).unwrap();
     }
     let rows = call_tool(
         &server,
         READ_CYPHER,
-        &serde_json::json!({
+        args!({
             "statement": relate_test_support::fused_seek::FUSED_SEEK_MATCH
         }),
     )
@@ -473,12 +481,7 @@ fn the_plan_lists_the_fused_children_of_an_index_seek_match() {
 #[test]
 fn the_tool_results_carry_the_phase_split_beside_elapsed_ms() {
     let server = server();
-    let rows = call_tool(
-        &server,
-        READ_CYPHER,
-        &serde_json::json!({"statement": "RETURN 1 AS n"}),
-    )
-    .unwrap();
+    let rows = call_tool(&server, READ_CYPHER, args!({"statement": "RETURN 1 AS n"})).unwrap();
     let envelope: Json = serde_json::from_str(&rows).unwrap();
     let elapsed = envelope["elapsed_ms"].as_f64().expect("elapsed_ms");
     let mut sum = 0.0;
@@ -501,19 +504,14 @@ fn the_tool_results_carry_the_phase_split_beside_elapsed_ms() {
 fn the_guard_and_engine_refusals_keep_their_texts() {
     let server = server();
     assert_eq!(
-        call_tool(
-            &server,
-            READ_CYPHER,
-            &serde_json::json!({"statement": "CREATE (n)"}),
-        )
-        .unwrap_err(),
+        call_tool(&server, READ_CYPHER, args!({"statement": "CREATE (n)"}),).unwrap_err(),
         READ_ONLY_REJECTION
     );
     assert_eq!(
         call_tool(
             &server,
             WRITE_CYPHER,
-            &serde_json::json!({"statement": "MATCH (n) RETURN n"}),
+            args!({"statement": "MATCH (n) RETURN n"}),
         )
         .unwrap_err(),
         WRITE_ONLY_REJECTION
@@ -521,7 +519,7 @@ fn the_guard_and_engine_refusals_keep_their_texts() {
     let engine = call_tool(
         &server,
         READ_CYPHER,
-        &serde_json::json!({"statement": "MATCH (n RETURN n"}),
+        args!({"statement": "MATCH (n RETURN n"}),
     )
     .unwrap_err();
     assert!(engine.starts_with("Error: "), "{engine}");
@@ -533,11 +531,28 @@ fn the_guard_and_engine_refusals_keep_their_texts() {
 fn get_schema_answers_the_map_and_unknown_names_are_refused() {
     let server = server();
     assert_eq!(
-        call_tool(&server, "drop_everything", &serde_json::json!({})).unwrap_err(),
+        call_tool(&server, "drop_everything", args!({})).unwrap_err(),
         "unknown tool 'drop_everything'"
     );
-    let schema: Json =
-        serde_json::from_str(&call_tool(&server, GET_SCHEMA, &serde_json::json!({})).unwrap())
-            .expect("the schema map is JSON");
-    assert!(schema.get("labels").is_some() || schema.get("nodes").is_some() || schema.is_object());
+    let schema: Json = serde_json::from_str(&call_tool(&server, GET_SCHEMA, args!({})).unwrap())
+        .expect("the schema map is JSON");
+    assert!(schema.is_object());
+}
+
+/// Null is absent for every optional member: `parameters.rows: null` is not
+/// a shape error, exactly like a null `parameters` or `arguments`.
+#[test]
+fn null_rows_is_absent_like_every_optional_member() {
+    let outcome = run(
+        READ_CYPHER,
+        serde_json::json!({"statement": "RETURN 1 AS x", "parameters": {"rows": null}}),
+    )
+    .unwrap();
+    assert!(matches!(outcome, ToolOutcome::Query(_)));
+    let outcome = run(
+        READ_CYPHER,
+        serde_json::json!({"statement": "RETURN 1 AS x", "parameters": null}),
+    )
+    .unwrap();
+    assert!(matches!(outcome, ToolOutcome::Query(_)));
 }

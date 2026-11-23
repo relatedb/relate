@@ -354,6 +354,32 @@ fn report_output_stores_the_summary_and_starters() {
     assert_eq!(tool_result(&outcome.responses[1]), json!({}));
 }
 
+/// `report_output` reads the same validated arguments the shared tools do: a
+/// non-object `arguments` answers the one shared wording, and a null
+/// `starters` is absent.
+#[test]
+fn report_output_shares_the_arguments_refusal_and_the_null_absence() {
+    let mut input = opened();
+    input.push(call(2, mcp::REPORT_OUTPUT, json!(4)));
+    let outcome = run_with(input, "per-batch", caps());
+    let (code, message) = refusal(&outcome.responses[1]);
+    assert_eq!(code, mcp::INVALID_PARAMS);
+    assert!(
+        message.ends_with("\"arguments\" must be an object"),
+        "{message}"
+    );
+
+    let mut input = opened();
+    input.push(call(
+        2,
+        mcp::REPORT_OUTPUT,
+        json!({"text": "t", "starters": null}),
+    ));
+    let outcome = run_with(input, "per-batch", caps());
+    let summary = outcome.result.unwrap().expect("a summary");
+    assert!(summary.starters.is_empty());
+}
+
 // ---------------------------------------------------------------------
 // The pinned per-call refusals
 // ---------------------------------------------------------------------

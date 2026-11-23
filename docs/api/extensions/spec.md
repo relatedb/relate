@@ -350,6 +350,9 @@ handshake's reading for the whole session; a child that needs per-call
 feedback declares `per-batch`.
 
 After the handshake the host serves `tools/list` and `tools/call`. A
+`tools/call`'s `arguments` is an object (absent or `null` is the empty
+object); `null` is absent for every optional member (`parameters`,
+`parameters.rows`, `starters`), including on `report_output`. A
 message without an id is a notification and is read and ignored;
 `notifications/*` are the only methods that may omit the id — a `tools/call`
 without one is fatal (`the MCP request 'tools/call' carries no id; only
@@ -413,7 +416,7 @@ an engine failure are JSON-RPC error responses:
 | A request that is not JSON-RPC 2.0 | `-32600` | `unsupported JSON-RPC version '<version>'` |
 | An unknown (non-notification) method | `-32601` | `unknown method '<method>'` |
 | An unknown tool | `-32602` | `unknown tool '<name>'` |
-| A malformed `tools/call` payload | `-32602` | `invalid tools/call params: <detail>` |
+| A malformed `tools/call` payload (including a non-object `arguments`: `"arguments" must be an object`) | `-32602` | `invalid tools/call params: <detail>` |
 | The statement byte cap | `-32602` | `the statement exceeds the <n>-byte statement cap` |
 | The rows cap | `-32602` | `the call carries <n> rows, over the <n>-row cap` |
 | The statements cap | `-32602` | `the call carries <n> statements, over the <n>-statement cap` |
