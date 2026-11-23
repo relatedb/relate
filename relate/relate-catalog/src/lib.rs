@@ -289,9 +289,11 @@ impl ConstraintSchema {
 
 /// How an existing constraint set receives a new declaration. One
 /// computation of the equivalence-then-conflict disposition, so the
-/// `CREATE CONSTRAINT` gate (`catalog_schema::constraint_create_gate`), the
-/// graph-type derived-constraint sync, and the durable catalog's own insert
-/// gate cannot drift.
+/// `CREATE CONSTRAINT` gate (`catalog_schema::constraint_create_gate`),
+/// the graph-type derived-constraint paths (the statement sync and the
+/// replay plan, both through
+/// [`derived_install_disposition`]), and the durable catalog's own
+/// insert gate cannot drift.
 pub enum RuleDisposition<'a> {
     /// A schema-equivalent rule already exists; the rule itself rides out so
     /// the notification note names it instead of re-probing the catalog.
@@ -300,6 +302,43 @@ pub enum RuleDisposition<'a> {
     Conflicts,
     /// No existing rule claims the schema.
     New,
+}
+
+/// The disposition of a *derived* constraint against the rules a catalog
+/// already holds — the question a graph type's derived set (and a
+/// committed schema's install) asks: does an equivalent rule already own
+/// the schema, does a conflicting rule or a cross-kind backing-index
+/// claim refuse it, or does it install fresh. [`rule_disposition`]'s own
+/// ranking (equivalence above conflict, order-independent) plus the
+/// cross-kind backing claim [`rule_disposition`] cannot see (its kinds
+/// differ) — the claim probed only when [`rule_disposition`] reports
+/// `New`, so equivalence keeps its precedence and equivalently-held
+/// rules skip the second scan. One decision, consulted by both the
+/// statement-time sync and the replay-path plan, so the skip/refuse rule
+/// cannot exist in one path and not the other. `live` is the caller's
+/// view of the rows still held.
+pub fn derived_install_disposition<'a>(
+    live: &[&'a ConstraintDef],
+    declaration: &ConstraintDef,
+) -> RuleDisposition<'a> {
+    match rule_disposition(live.iter().copied(), &declaration.schema()) {
+        RuleDisposition::New => {
+            // The cross-kind backing-index claim: a KEY and a UNIQUE on
+            // the same subject cannot coexist, whether the second arrives
+            // through the same graph type or an independent
+            // `CREATE CONSTRAINT`. `rule_disposition` misses it because
+            // the kinds differ; `claims_backing_subject_of` is the one
+            // predicate for the rule.
+            if live
+                .iter()
+                .any(|rule| declaration.claims_backing_subject_of(rule))
+            {
+                return RuleDisposition::Conflicts;
+            }
+            RuleDisposition::New
+        }
+        found => found,
+    }
 }
 
 /// The disposition of `declaration` against `existing`: the

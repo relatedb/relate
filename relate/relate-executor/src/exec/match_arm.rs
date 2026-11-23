@@ -104,7 +104,7 @@ pub(super) fn exec_match_arm<'a>(
         // never the ladder — its rung is the walker (LABS-1117).
         out.ladder = Some(LadderFacts::walker());
         if let Some(live) = live_from(&clauses[i + 1..]) {
-            trim_rows(&mut rows, &live);
+            trim_rows(graph, &mut rows, &live);
         }
         // The same ADR-0463 (LABS-781) MATCH-container charge
         // as the ladder landing below, through the one bulk
@@ -160,7 +160,9 @@ pub(super) fn exec_match_arm<'a>(
                     None
                 };
                 let projection = if consumer.is_none() {
-                    clauses.get(i + 1).and_then(sinkable_projection)
+                    clauses
+                        .get(i + 1)
+                        .and_then(|next| sinkable_projection(graph, next))
                 } else {
                     None
                 };
@@ -233,7 +235,7 @@ pub(super) fn exec_match_arm<'a>(
                     // bindings the next clause does not name.
                     // Trimming here would keep the pre-projection
                     // variables and discard the output columns.
-                    trim_rows(&mut rows, &live);
+                    trim_rows(graph, &mut rows, &live);
                 }
                 // ADR-0463 (LABS-781,
                 // OPLANE_REQ-00345609): the MATCH output

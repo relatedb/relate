@@ -1,0 +1,10 @@
+Origin: Relate
+Label: relate
+Suite: stable
+Codename: stable
+Architectures: amd64 arm64
+Components: main
+Description: Relate APT repository (test fixture: the bytes the repo-signing-key suite signs and verifies)
+Date: Sat, 01 Nov 2025 00:00:00 UTC
+MD5SUM:
+ 00000000000000000000000000000000 0 main/binary-amd64/Packages

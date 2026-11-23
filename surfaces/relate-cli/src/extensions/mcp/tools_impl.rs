@@ -27,7 +27,10 @@ use crate::extensions::host::RunSummary;
 impl<O: Write> Session<O> {
     /// `report_output`: the child's summary text and starters, printed by
     /// the host after the session ends — the mount's own lifecycle call.
-    pub(super) fn report_output(&mut self, arguments: &Value) -> Result<Value, ToolFailure> {
+    pub(super) fn report_output(
+        &mut self,
+        arguments: &serde_json::Map<String, Value>,
+    ) -> Result<Value, ToolFailure> {
         let Some(text) = arguments.get("text").and_then(Value::as_str) else {
             return Err(ToolError::InvalidParams {
                 detail: "missing string \"text\"".to_string(),
@@ -36,7 +39,7 @@ impl<O: Write> Session<O> {
         };
         self.summary = Some(RunSummary {
             text: text.to_string(),
-            starters: string_array_arg(arguments.get("starters"), "starters")?,
+            starters: string_array_arg(arguments.get("starters"), "starters", Vec::new())?,
         });
         Ok(json!({}))
     }
@@ -122,14 +125,18 @@ fn unexpected(tool: &str) -> ToolFailure {
     })
 }
 
-/// An optional string-array argument: absent or null is empty, an array of
-/// strings is itself, anything else the pinned refusal naming the key.
-fn string_array_arg(value: Option<&Value>, key: &str) -> Result<Vec<String>, ToolError> {
+/// An optional string-array argument: absent or null is `default`, an array
+/// of strings is itself, anything else the pinned refusal naming the key.
+fn string_array_arg(
+    value: Option<&Value>,
+    key: &str,
+    default: Vec<String>,
+) -> Result<Vec<String>, ToolError> {
     let detail = || ToolError::InvalidParams {
         detail: format!("\"{key}\" must be an array of strings"),
     };
     match value {
-        None | Some(Value::Null) => Ok(Vec::new()),
+        None | Some(Value::Null) => Ok(default),
         Some(Value::Array(items)) => items
             .iter()
             .map(|item| item.as_str().map(str::to_string).ok_or_else(detail))

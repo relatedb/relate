@@ -29,8 +29,8 @@ use crate::store::RelTypes;
 
 use super::super::candidates::{node_ok, oriented_start, resolve_rel_seek, SeekedRel};
 use super::super::match_folds::FoldCtx;
-use super::super::pushdown::{flatten_and_owned, match_scope};
-use super::super::scope::is_internal_column;
+use super::super::pushdown::flatten_and_owned;
+use super::super::scope::{for_each_pattern_bound_name, visible_keys};
 use super::super::WalkTallies;
 use super::{
     finish_folded_rows, fold_hop_vars, fold_return, project_ranked_row, CachedKey, FoldOutput,
@@ -40,7 +40,12 @@ use super::{
 /// A residual the one-hop fold cannot decide — a named path, or a conjunct
 /// whose scope variables are not on the input row or the hop — keeps the
 /// full-match path.
-fn where_fold_ready(where_clause: Option<&Expr>, path: &PathPattern, rows: &[Row]) -> bool {
+fn where_fold_ready(
+    graph: &ExecGraph<'_>,
+    where_clause: Option<&Expr>,
+    path: &PathPattern,
+    rows: &[Row],
+) -> bool {
     let Some(expr) = where_clause else {
         return true;
     };
@@ -54,14 +59,24 @@ fn where_fold_ready(where_clause: Option<&Expr>, path: &PathPattern, rows: &[Row
         return false;
     }
     let patterns = std::slice::from_ref(path);
-    for row in rows {
-        let scope = match_scope(row, patterns);
-        let mut available = hop.clone();
-        for key in row.keys() {
-            if !is_internal_column(key) {
-                available.insert(key.clone());
-            }
+    // The pattern's bound names are row-independent — collected once, so
+    // each row pays exactly one visible-keys walk and both sets derive
+    // from it: the scope adds the pattern's names, the available set
+    // keeps the hop's beside the row's visible ones.
+    let bound: HashSet<String> = {
+        let mut bound = HashSet::new();
+        for pattern in patterns {
+            for_each_pattern_bound_name(pattern, &mut |name| {
+                bound.insert(name.to_string());
+            });
         }
+        bound
+    };
+    for row in rows {
+        let visible = visible_keys(graph, row);
+        let mut available = hop.clone();
+        available.extend(visible.iter().cloned());
+        let scope: HashSet<String> = visible.into_iter().chain(bound.iter().cloned()).collect();
         for conjunct in flatten_and_owned(expr) {
             let mut vars = HashSet::new();
             expr_vars(&conjunct, &mut vars);
@@ -223,7 +238,7 @@ pub(crate) fn try_fold_one_hop_aggs(ctx: &FoldCtx<'_>) -> Result<Option<FoldedRe
             return Ok(None);
         }
     }
-    if !where_fold_ready(where_clause, path, rows) {
+    if !where_fold_ready(graph, where_clause, path, rows) {
         return Ok(None);
     }
     let mut fold = OneHopFold {

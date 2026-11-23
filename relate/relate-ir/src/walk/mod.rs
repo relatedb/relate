@@ -572,6 +572,23 @@ fn reads(name: &SmallName, bound: &[SmallName]) -> bool {
     !bound.iter().any(|b| b == name)
 }
 
+/// The variable an expression is rooted in, descending only through the
+/// access chain — a bare variable, a property access (`n.k`), a dynamic
+/// property (`n[k]`) and a subscript (`n[x][y]`) — or `None` for any other
+/// shape (a literal, a function call, a `CASE`). The one walk of the
+/// target-shape fact the write-target class decision reads (REL8-1813):
+/// a variable-rooted SET/REMOVE target is the runtime type-error shape,
+/// every other target the pinned compile-time one.
+pub fn root_variable(expr: &Expr) -> Option<&SmallName> {
+    match expr {
+        Expr::Variable(name) => Some(name),
+        Expr::Property { expr, .. }
+        | Expr::DynamicProperty { expr, .. }
+        | Expr::Subscript { expr, .. } => root_variable(expr),
+        _ => None,
+    }
+}
+
 /// Visit `expr`'s children with their scope class.
 ///
 /// [`Expr::children`] is the descent for every variant outside

@@ -13,8 +13,8 @@ use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::summary::ROUTE_TTL_SECS;
 use crate::testutil::{
-    failure_map, field, read_msg, read_route_rt, send_pull, send_route, send_run_with, send_struct,
-    spawn_handler, success_map,
+    failure_map, field, read_msg, read_route_rt, send_pull, send_route, send_run_legacy,
+    send_struct, spawn_handler, success_map,
 };
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
@@ -144,7 +144,7 @@ fn assert_pre_hello_is_unauthorized(send: impl FnOnce(&mut TcpStream)) {
 #[test]
 fn run_without_hello_is_unauthorized_when_auth_is_on() {
     // RUN straight away, no HELLO
-    assert_pre_hello_is_unauthorized(|client| send_run_with(client, "RETURN 1 AS n", None));
+    assert_pre_hello_is_unauthorized(|client| send_run_legacy(client, "RETURN 1 AS n"));
 }
 
 /// And the permissive pre-auth behavior is untouched when auth is disabled:
@@ -155,7 +155,7 @@ fn run_without_hello_works_when_auth_is_none() {
     let addr = spawn_handler(db, ConnConfig::default());
     let mut client = crate::testutil::connect(addr);
     crate::testutil::handshake(&mut client);
-    send_run_with(&mut client, "RETURN 1 AS n", None);
+    send_run_legacy(&mut client, "RETURN 1 AS n");
     let msg = read_msg(&mut client);
     assert!(
         matches!(msg, Pack::Struct { tag: 0x70, .. }),
@@ -218,7 +218,7 @@ fn show_current_user_row(auth: crate::auth::AuthConfig, entries: Vec<(Pack, Pack
     let mut client = crate::testutil::connect(addr);
     crate::testutil::handshake(&mut client);
     assert_tag(&hello_with(&mut client, entries), 0x70);
-    send_run_with(&mut client, "CALL dbms.showCurrentUser()", None);
+    send_run_legacy(&mut client, "CALL dbms.showCurrentUser()");
     success_map(read_msg(&mut client));
     send_pull(&mut client, Message::Pull, vec![("n", Pack::Int(-1))]);
     let Pack::Struct { tag: 0x71, fields } = read_msg(&mut client) else {

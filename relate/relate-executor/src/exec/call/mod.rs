@@ -4,10 +4,11 @@
 use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{Error, Result, Value};
-use relate_ir::{Clause, Query};
+use relate_ir::{Clause, Projection, Query};
 use relate_names::SmallName;
 
 use crate::ctx::QueryCtx;
+use crate::eval::is_agg_expr;
 use crate::graph::QueryStats;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -25,8 +26,8 @@ pub(crate) use in_transactions::transaction_error_message;
 
 use super::dispatch::{run_nested_clauses, run_nested_clauses_scoped};
 use super::scope::{
-    carry_scope_bindings, nested_seed_row, return_columns, star_scope_names, terminal_return_items,
-    visible_keys,
+    carry_scope_bindings, has_star_item, nested_seed_row, return_columns, star_scope_names,
+    terminal_return_items, visible_keys,
 };
 use super::{materialize_rows, QueryResult};
 
@@ -64,9 +65,11 @@ fn import_seed(vars: &[SmallName], outer: &Row) -> Result<Row> {
 /// clause's state, never a binding the body may read as its own. A `(vars)`
 /// import list names its bindings explicitly, so it needs no strip
 /// ([`import_seed`]).
-fn scope_seed(scope: &relate_ir::CallScope, outer: &Row) -> Result<Row> {
+fn scope_seed(graph: &ExecGraph<'_>, scope: &relate_ir::CallScope, outer: &Row) -> Result<Row> {
     match scope {
-        relate_ir::CallScope::None | relate_ir::CallScope::Wildcard => Ok(nested_seed_row(outer)),
+        relate_ir::CallScope::None | relate_ir::CallScope::Wildcard => {
+            Ok(nested_seed_row(graph, outer))
+        }
         relate_ir::CallScope::Vars(vars) => import_seed(vars, outer),
     }
 }
@@ -103,12 +106,13 @@ fn merge_body_export(
 /// The one empty-body policy: `OPTIONAL CALL` null-pads the outer row,
 /// plain `CALL` drops it.
 fn empty_body_row(
+    graph: &ExecGraph<'_>,
     row: Row,
     optional: bool,
     query: &Query,
     scope: &relate_ir::CallScope,
 ) -> Option<Row> {
-    optional.then(|| null_pad_call_row(row, query, scope))
+    optional.then(|| null_pad_call_row(graph, row, query, scope))
 }
 
 /// The names a `CALL { … }` scope imports from the outer row — the export
@@ -119,13 +123,25 @@ fn empty_body_row(
 /// seed binds). `None` (no row to derive from, e.g. a columns-only
 /// question over an empty table) imports nothing — the star expansion then
 /// falls back to the declared scope.
-fn imported_names(scope: &relate_ir::CallScope, outer: Option<&Row>) -> HashSet<String> {
+fn imported_names(
+    graph: &ExecGraph<'_>,
+    scope: &relate_ir::CallScope,
+    outer: Option<&Row>,
+) -> HashSet<String> {
+    // The scope's own spelling of the imported names, derived without a
+    // seed row so there is no fallible step to default: a `(vars)` list
+    // names its bindings (exactly the keys [`import_seed`] would build),
+    // the naked scope imports nothing (the [`scope_imports`] scope-clause
+    // gate), and `(*)` imports the outer row's visible names (exactly the
+    // keys [`nested_seed_row`] would bind). `None` — no row to derive
+    // from, e.g. a columns-only question over an empty table — imports
+    // nothing, and the star expansion falls back to the declared scope.
     match scope {
         // Text render: the imported-name set is the String scope domain.
         relate_ir::CallScope::Vars(vars) => vars.iter().map(|name| name.to_string()).collect(),
         relate_ir::CallScope::None => HashSet::new(),
         relate_ir::CallScope::Wildcard => outer
-            .map(|row| visible_keys(row).into_iter().collect())
+            .map(|row| visible_keys(graph, row).into_iter().collect())
             .unwrap_or_default(),
     }
 }
@@ -163,7 +179,7 @@ pub(crate) fn call_subquery_row(
 ) -> Result<Vec<Row>> {
     // The seed row is the imported bindings — the one CallScope → seed
     // policy lives in [`scope_seed`].
-    let seed = scope_seed(scope, outer)?;
+    let seed = scope_seed(graph, scope, outer)?;
     // The seed is the body's importing scope: every binding it carries stays
     // visible to the whole body, even across a `WITH` that does not project
     // it (`run_nested_clauses_scoped` re-attaches a dropped binding after
@@ -473,6 +489,7 @@ fn strip_import_columns(mut result: QueryResult, imported: &HashSet<String>) -> 
 /// and every introducing clause arm, so it is only as equal to this as
 /// `star_scope_names`'s doc says the declared-scope walk is.
 pub(crate) fn call_export_columns(
+    graph: &ExecGraph<'_>,
     query: &Query,
     scope: &relate_ir::CallScope,
     outer: Option<&Row>,
@@ -482,7 +499,7 @@ pub(crate) fn call_export_columns(
     // `None` imports nothing, `(*)` imports every visible outer name,
     // `(vars)` names its bindings. An exported name that is an import is a
     // pass-through, never a new column.
-    let imported = imported_names(scope, outer);
+    let imported = imported_names(graph, scope, outer);
     stage_export_columns(query.final_stage(), &imported)
 }
 
@@ -491,13 +508,7 @@ pub(crate) fn call_export_columns(
 /// the stage's last clause is not a `RETURN` (a `WHEN` body, `FINISH`, a
 /// write) — such a stage has no projected export shape to agree on.
 fn stage_export_columns(stage: &Query, imported: &HashSet<String>) -> Vec<String> {
-    // A `Query` invariantly carries at least one part — the same invariant
-    // the subquery fold in this file asserts.
-    let part = stage
-        .parts
-        .first()
-        .expect("a Query invariantly carries at least one part");
-    let Some((clauses, items)) = terminal_return_items(part) else {
+    let Some((clauses, items)) = final_export_items(stage) else {
         return Vec::new();
     };
     return_columns(items, || star_scope_names(clauses))
@@ -506,8 +517,38 @@ fn stage_export_columns(stage: &Query, imported: &HashSet<String>) -> Vec<String
         .collect()
 }
 
-pub(crate) fn null_pad_call_row(mut row: Row, query: &Query, scope: &relate_ir::CallScope) -> Row {
-    for column in call_export_columns(query, scope, Some(&row)) {
+/// A body's final-stage export projection — the final stage's first part
+/// through [`terminal_return_items`] — the one derivation every
+/// export-shape consumer reads: [`stage_export_columns`]'s column walk
+/// here, and the IN TRANSACTIONS failed-batch row's per-row evaluation
+/// (`call::in_transactions`). `None` when the stage does not conclude in
+/// a `RETURN` (a `WHEN` body, `FINISH`, a write) — such a body has no
+/// projected export shape to agree on.
+fn final_export_items(stage: &Query) -> Option<(&[Clause], &[Projection])> {
+    // A `Query` invariantly carries at least one part — the same invariant
+    // the subquery fold in this file asserts.
+    let part = stage
+        .parts
+        .first()
+        .expect("a Query invariantly carries at least one part");
+    terminal_return_items(part)
+}
+
+/// Whether a body's export projection is a plain per-row projection — no
+/// `*` item to expand, no aggregate to fold — so a caller without the
+/// body's rows (a rolled-back IN TRANSACTIONS batch) can still evaluate
+/// it over an import seed.
+fn plain_per_row_projection(items: &[Projection]) -> bool {
+    !has_star_item(items) && !items.iter().any(|item| is_agg_expr(&item.expr))
+}
+
+fn null_pad_call_row(
+    graph: &ExecGraph<'_>,
+    mut row: Row,
+    query: &Query,
+    scope: &relate_ir::CallScope,
+) -> Row {
+    for column in call_export_columns(graph, query, scope, Some(&row)) {
         row.insert(column, Value::Null);
     }
     row
@@ -523,12 +564,16 @@ pub(crate) fn null_pad_call_row(mut row: Row, query: &Query, scope: &relate_ir::
 /// STATUS AS <var>` column never appears here: the planner rejects
 /// REPORT STATUS without a following RETURN, so the status column only
 /// surfaces through that trailing RETURN.
-pub(crate) fn concluding_call_columns(clauses: &[Clause], rows: &[Row]) -> Option<Vec<String>> {
+fn concluding_call_columns(
+    graph: &ExecGraph<'_>,
+    clauses: &[Clause],
+    rows: &[Row],
+) -> Option<Vec<String>> {
     if clauses.iter().any(|c| matches!(c, Clause::Return { .. })) {
         return None;
     }
     if let Some(Clause::CallSubquery { query, scope, .. }) = clauses.last() {
-        let columns = call_export_columns(query, scope, rows.first());
+        let columns = call_export_columns(graph, query, scope, rows.first());
         // A unit/write-only body exports nothing: the statement result is
         // empty (no columns, no rows), matching the pre-ADR-0210 behavior
         // for concluding subqueries — pass-through outer rows must not
@@ -539,7 +584,11 @@ pub(crate) fn concluding_call_columns(clauses: &[Clause], rows: &[Row]) -> Optio
     }
     if clauses.iter().any(|c| matches!(c, Clause::Call { .. })) {
         // Historical order: the row's own visible key order, unsorted.
-        return Some(rows.first().map(visible_keys).unwrap_or_default());
+        return Some(
+            rows.first()
+                .map(|row| visible_keys(graph, row))
+                .unwrap_or_default(),
+        );
     }
     None
 }
@@ -551,6 +600,7 @@ pub(crate) fn concluding_call_columns(clauses: &[Clause], rows: &[Row]) -> Optio
 /// `QueryStats::default()` on the read path (`execute_part_read_seeded`),
 /// whose wrapper resets stats on the way out regardless.
 pub(crate) fn concluding_part_result(
+    graph: &ExecGraph<'_>,
     clauses: &[Clause],
     rows: &mut [Row],
     last_result: Option<QueryResult>,
@@ -558,7 +608,7 @@ pub(crate) fn concluding_part_result(
 ) -> QueryResult {
     last_result
         .or_else(|| {
-            concluding_call_columns(clauses, rows).map(|columns| {
+            concluding_call_columns(graph, clauses, rows).map(|columns| {
                 let data = materialize_rows(rows, &columns);
                 QueryResult::intermediate(columns, data, stats.clone())
             })

@@ -196,6 +196,58 @@ delta_counters! {
     }
 }
 
+delta_counters! {
+    merge
+    /// The expression-memo counters of one operator or statement (ADR-0654,
+    /// ADR-0640): the per-memo facts summed over the memos the unit ran,
+    /// read once when each memo finishes — a memo's increments are the
+    /// ones already on its path, so collecting them adds none. Zero on
+    /// every unit that probed no memo.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct MemoCounters: u64 {
+        /// Inputs looked up in a memo table (warm-up inputs are not probes).
+        probes,
+        /// Probes a table answered.
+        hits,
+        /// Answers stored.
+        inserts,
+        /// Answers not stored because the meter or the ceiling refused.
+        refused,
+        /// The tables' allocation when read, bytes — never part of
+        /// `memory_bytes` (ADR-0654 §2).
+        bytes,
+        /// How many memos gave up at their hit-rate review.
+        disabled_count,
+    }
+}
+
+impl MemoCounters {
+    /// The memo types behind an operator's sums (ADR-0654 §3): every
+    /// operator-level memo is a guarded-state node-label memo (the
+    /// constructor memos report at statement level through
+    /// [`StatementMemoRecord`]), so a probed operator names that one kind.
+    /// The rule lives here, beside the sums it describes — the plan builder
+    /// asks, never decides which memo produced a count.
+    pub fn operator_kinds(&self) -> relate_model::wire::MemoKindsWire {
+        use relate_model::wire::{MemoKindWire, MemoKindsWire};
+        if self.probes > 0 {
+            MemoKindsWire::default().with(MemoKindWire::NodeLabel)
+        } else {
+            MemoKindsWire::default()
+        }
+    }
+}
+
+/// The statement-level memo facts (ADR-0654 §3): the constructor memos
+/// live in the query overlay and serve any expression, so they report once
+/// for the whole statement, attached at the plan root — the counters
+/// summed over them and the memo types that were probed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StatementMemoRecord {
+    pub counters: MemoCounters,
+    pub kinds: relate_model::wire::MemoKindsWire,
+}
+
 impl FrontierCounters {
     /// The fraction of one run's re-arrival work budget the clause's
     /// runs spent: summed [`Self::rearrival_work`] over
@@ -277,7 +329,7 @@ impl StartReason {
 /// operator, not plan nodes. The ladder records it per clause; the
 /// PROFILE record carries it. [`Walker`](Self::Walker) is the per-row
 /// walker, the rung every decline's home — the batch scan/filter chain
-/// is its own fact (`ClauseMetricsRecord::batched`), never a rung here.
+/// is its own fact (`BatchFacts::ran`), never a rung here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KernelRung {
     /// The unrolled fixed-k chain kernel, `hops` hops (ADR-0473).
@@ -304,6 +356,22 @@ impl KernelRung {
             KernelRung::Walker => relate_model::wire::KernelRungWire::WALKER,
         }
     }
+}
+
+/// The batch chain's PROFILE facts for one clause, carried as one value so
+/// the record never holds a loose flag beside its counter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BatchFacts {
+    /// Whether the clause ran ADR-0468's batch scan/filter/project chain
+    /// over `Chunk` (LABS-359) — the PROFILE-visible fact that a
+    /// scan-shaped `MATCH` interior executed as batch operators. `false`
+    /// is every other clause, and every clause the chain declined.
+    pub ran: bool,
+    /// The batch filter's zone skips (LABS-645): how many conjunct-batch
+    /// evaluations the chunk's derived min/max zone metadata provably
+    /// replaced with the correct empty survivor set. `0` on every clause
+    /// the chain declined and every clause that skipped nothing.
+    pub zone_skips: u64,
 }
 
 /// One clause operator's PROFILE metrics, reported to the sink (ADR-0344
@@ -355,16 +423,9 @@ pub struct ClauseMetricsRecord {
     /// `MATCH` the ADR-0468 batch chain answered — that operator is
     /// [`Self::batched`]'s own fact, never a traversal rung.
     pub kernel: Option<KernelRung>,
-    /// Whether the clause ran ADR-0468's batch scan/filter/project chain
-    /// over `Chunk` (LABS-359) — the PROFILE-visible fact that a
-    /// scan-shaped `MATCH` interior executed as batch operators. `false`
-    /// is every other clause, and every clause the chain declined.
-    pub batched: bool,
-    /// The batch filter's zone skips (LABS-645): how many conjunct-batch
-    /// evaluations the chunk's derived min/max zone metadata provably
-    /// replaced with the correct empty survivor set. `0` on every clause
-    /// the chain declined and every clause that skipped nothing.
-    pub zone_skips: u64,
+    /// What ADR-0468's batch scan/filter/project chain did for the
+    /// clause: whether it ran and what its filter skipped.
+    pub batch: BatchFacts,
     /// The frontier family's run counters (ADR-0478): the BFS's edge
     /// visits, completed levels, and accepted endpoints, summed over the
     /// clause's per-seed runs. Zero on every clause the frontier's
@@ -386,6 +447,11 @@ pub struct ClauseMetricsRecord {
     /// exhaustion or the table ceiling's crossing, the counters recorded
     /// beside it.
     pub frontier_decline: Option<FrontierDeclineReason>,
+    /// The expression-memo counters of the guarded-state memos the clause's
+    /// stage ran (ADR-0654 §3), summed, with `disabled_count` in place of a
+    /// per-memo flag. Zero on every clause that probed no memo; stamped
+    /// only while a PROFILE statement's arm runs.
+    pub memo: MemoCounters,
 }
 
 /// Per-clause PROFILE metrics sink (ADR-0344 phase 2): the dispatch loop
@@ -400,4 +466,9 @@ pub trait PlanMetricsSink {
     /// chained statement's later stage overwrites the earlier stage's
     /// entries.
     fn record_clause(&self, record: ClauseMetricsRecord);
+
+    /// The statement's constructor-memo facts, reported once when the
+    /// statement finished (ADR-0654 §3): they belong to no one operator,
+    /// so the consumer attaches them at the plan root.
+    fn record_statement_memos(&self, record: StatementMemoRecord);
 }

@@ -81,7 +81,7 @@ fn walk_collect(
     // The eval walk's ladder: the forward (k=0) arm of the one ladder
     // build (pattern_walk), node-named false — the eval walk binds no
     // anonymous `__node{idx}` stubs.
-    let ladder = WalkLadder::new(row, path, None, false);
+    let ladder = WalkLadder::new(&graph.seat_prefixes(), row, path, None, false);
     // LABS-801: the path's rel filters resolve once per walk, beside the
     // ladder — the frames below index them by rel position, never
     // re-resolve per arrival.
@@ -577,10 +577,16 @@ pub(crate) fn bind_eval_path(
         row,
         rung,
         |row, nodes| {
-            if let Some(name) = crate::pattern_walk::node_bind_name(&path.nodes[0], 0, false) {
-                if let Some(Value::Node(n)) = row.get(&name) {
-                    nodes.push(graph.node(n.id).unwrap_or_else(|| (**n).clone()));
-                }
+            let first = crate::pattern_walk::node_bind_name(
+                &graph.seat_prefixes(),
+                &path.nodes[0],
+                0,
+                false,
+                |name| row.get(name),
+            )
+            .flatten();
+            if let Some(Value::Node(n)) = first {
+                nodes.push(graph.node(n.id).unwrap_or_else(|| (**n).clone()));
             }
         },
         |_, _, _| {},

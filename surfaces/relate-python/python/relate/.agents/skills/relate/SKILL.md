@@ -65,7 +65,9 @@ plain run): the operator tree with per-node estimates, PROFILE metrics
 whether the operator ran the batch scan/filter/project chain, and
 `zone_skips` — how many conjunct-batch evaluations that chain's filter
 provably replaced with the correct empty survivor set via the chunk's
-derived per-column min/max zone) and the
+derived per-column min/max zone, and — only when a memo was probed —
+`memo`: `{probes, hits, inserts, refused, bytes, disabled_count}`, the
+expression-memo counters, `kinds` on the root) and the
 operator's remedy-bearing warnings. Reach for `summary.plan` when a query is slow:
 the `actual` numbers and the warnings name the operator to fix.
 `cursor.description` type codes come from the engine-reported column

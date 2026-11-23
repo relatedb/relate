@@ -1,5 +1,7 @@
 //! List, map, comprehension and `reduce` expressions.
 
+use super::super::comprehension_where::ComprehensionWhereContext;
+use super::super::BracketSet;
 use super::*;
 
 /// `parse_reduce_head`'s result: the `( acc = init, var IN list | expr`
@@ -15,6 +17,10 @@ struct ReduceHead {
 impl<'a> Parser<'a> {
     pub(in crate::parser) fn parse_list_literal(&mut self) -> ParseResult<Expr> {
         self.next_token(); // consume [
+                           // The opener's token index — the comprehension-WHERE context's
+                           // scan span for the list and pattern comprehension forms this
+                           // bracket may turn out to open.
+        let opener = self.pos - 1;
 
         if self.peek_type() == TokenType::RightBracket {
             self.next_token();
@@ -45,10 +51,14 @@ impl<'a> Parser<'a> {
                     self.restore_pos(first_pos);
                 } else {
                     // A list comprehension may omit its map expression, so
-                    // a trailing `]` does not disambiguate a `|`.
-                    let where_expr = self.parse_optional_comprehension_where(
-                        BracketProof::RightBracketClosesWithTheMapOmitted,
-                    )?;
+                    // a trailing `]` does not disambiguate a `|`: the
+                    // closer token names the form (the optionality is
+                    // nothing any classification reads anymore).
+                    let where_expr =
+                        self.parse_optional_comprehension_where(ComprehensionWhereContext {
+                            closer: TokenType::RightBracket,
+                            opener,
+                        })?;
 
                     let map_expr = if self.peek_type() == TokenType::Pipe {
                         self.next_token();
@@ -81,7 +91,7 @@ impl<'a> Parser<'a> {
                 {
                     let path_var = SmallName::from_name(&first.literal);
                     self.next_token(); // consume =
-                    return self.parse_pattern_comprehension_body(Some(path_var));
+                    return self.parse_pattern_comprehension_body(Some(path_var), opener);
                 }
 
                 // Not a list comprehension, backup and parse as regular list
@@ -94,7 +104,7 @@ impl<'a> Parser<'a> {
             // Use lookahead to check if this looks like a pattern comprehension.
             // A pattern comprehension starts with a node pattern (a) followed by a relationship.
             if self.node_pattern_precedes_relationship() {
-                return self.parse_pattern_comprehension_body(None);
+                return self.parse_pattern_comprehension_body(None, opener);
             }
         }
 
@@ -187,6 +197,7 @@ impl<'a> Parser<'a> {
     pub(in crate::parser) fn parse_pattern_comprehension_body(
         &mut self,
         path_var: Option<SmallName>,
+        opener: usize,
     ) -> ParseResult<Expr> {
         // A pattern comprehension's inner pattern is its own pattern
         // context for the quantifier-mixing check: its quantifier forms
@@ -205,8 +216,13 @@ impl<'a> Parser<'a> {
 
         // A pattern comprehension always needs `| <map>`, so a `]` right
         // after the scanned label chain proves `|` was the separator.
-        let where_expr = self
-            .parse_optional_comprehension_where(BracketProof::RightBracketClosesTheComprehension)?;
+        let where_expr = self.parse_optional_comprehension_where(ComprehensionWhereContext {
+            // The pattern form's closer; its map expression is required,
+            // which no classification reads anymore — same yield as the
+            // list form's single pipe.
+            closer: TokenType::RightBracket,
+            opener,
+        })?;
 
         self.expect(TokenType::Pipe)?;
         let map_expr = self.parse_expression()?;
@@ -226,7 +242,7 @@ impl<'a> Parser<'a> {
     /// trailing `|` may be that comprehension's own separator rather than
     /// an expression continuation — entered through
     /// [`Parser::with_comprehension_where`] with the comprehension form's
-    /// [`BracketProof`], so a `|` that can't validly continue a
+    /// [`ComprehensionWhereContext`], so a `|` that can't validly continue a
     /// label-expression disjunction or a `<value type>` union is left for
     /// the comprehension's own map-separator grammar instead of being
     /// consumed as part of the expression. The direct site is the CIP-272
@@ -235,9 +251,9 @@ impl<'a> Parser<'a> {
     /// arrives through the optional-WHERE entry below.
     pub(in crate::parser) fn parse_comprehension_where_expr(
         &mut self,
-        proof: BracketProof,
+        context: ComprehensionWhereContext,
     ) -> ParseResult<Expr> {
-        self.with_comprehension_where(Some(proof), Self::parse_expression)
+        self.with_comprehension_where(Some(context), Self::parse_expression)
     }
 
     /// The optional `WHERE` entry of a comprehension body: consumes the
@@ -247,13 +263,13 @@ impl<'a> Parser<'a> {
     /// list, pattern and CIP-272 map forms' optional WHERE share.
     pub(in crate::parser) fn parse_optional_comprehension_where(
         &mut self,
-        proof: BracketProof,
+        context: ComprehensionWhereContext,
     ) -> ParseResult<Option<Expr>> {
         if self.peek_type() != TokenType::WHERE {
             return Ok(None);
         }
         self.next_token();
-        self.parse_comprehension_where_expr(proof).map(Some)
+        self.parse_comprehension_where_expr(context).map(Some)
     }
 
     /// CIP-272 map comprehension, attempted from the `{` of a primary
@@ -349,7 +365,10 @@ impl<'a> Parser<'a> {
         if self.has_pipe_before_matching_brace() {
             #[cfg(test)]
             SPECULATIVE_COMPREHENSION_PARSES.with(|c| c.set(c.get() + 1));
-            if let Ok(comprehension) = self.map_comprehension_tail(key_var, value_var) {
+            // The saved start is the brace's own index (it was saved
+            // before the `{` was consumed) — the comprehension-WHERE
+            // context's scan span begins exactly there.
+            if let Ok(comprehension) = self.map_comprehension_tail(key_var, value_var, start) {
                 return Some(Expr::MapComprehension(Box::new(comprehension)));
             }
         }
@@ -370,6 +389,7 @@ impl<'a> Parser<'a> {
         &mut self,
         key_var: Option<SmallName>,
         value_var: SmallName,
+        opener: usize,
     ) -> ParseResult<MapComprehensionExpr> {
         // The source expression must stop at the comprehension's `|`: the
         // comprehension-WHERE context parse refuses an ambiguous trailing
@@ -377,9 +397,15 @@ impl<'a> Parser<'a> {
         // a label disjunction. Both the source and the WHERE pass the
         // inner-bracket-only proof: the map form's closer is `}`, so
         // every `]` inside it belongs to an inner bracket.
-        let source_expr = self.parse_comprehension_where_expr(BracketProof::InnerBracketOnly)?;
+        let context = ComprehensionWhereContext {
+            // The map form's closer: every `]` inside it belongs to an
+            // inner bracket.
+            closer: TokenType::RightBrace,
+            opener,
+        };
+        let source_expr = self.parse_comprehension_where_expr(context)?;
 
-        let where_expr = self.parse_optional_comprehension_where(BracketProof::InnerBracketOnly)?;
+        let where_expr = self.parse_optional_comprehension_where(context)?;
 
         self.expect(TokenType::Pipe)?;
 

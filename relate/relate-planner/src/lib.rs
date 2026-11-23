@@ -31,6 +31,9 @@
 //! - [`inline`] — the bounded-work plan predicate (which planned
 //!   statements are quick at this engine's scale and may run on the
 //!   calling thread of a worker-stack-asserting connection, ADR-0504)
+//!   and the cache-hit inline route's containment rule (whether a
+//!   raw-string plan-cache hit may run on a thread that never asserted
+//!   the worker's stack, ADR-0663)
 
 mod access;
 mod agg;
@@ -53,12 +56,12 @@ mod use_target;
 mod validate;
 
 pub use crate::clause_kind::{clause_keyword, clause_mutates_store, clause_projects_rows};
-pub use crate::inline::plan_is_bounded_work;
+pub use crate::inline::{hit_is_inline_safe, plan_is_bounded_work, plan_references_auto_parameter};
 pub use crate::names::{conditional_declared_columns, query_with_persistent_imports};
 pub use crate::namespaces::{
-    admin_command_heads_statement, composed_show_databases, composed_show_disallowed_clause,
-    is_database_admin_command, is_show_databases_with_next, is_write, plan_calls_write_procedure,
-    unsupported_system_clause_names,
+    admin_command_heads_statement, composed_show_current_user, composed_show_databases,
+    composed_show_disallowed_clause, is_database_admin_command, is_show_databases_with_next,
+    is_write, plan_calls_write_procedure, unsupported_system_clause_names,
 };
 pub use crate::order::{
     apply_degree, apply_hop_bound, apply_path_degree, best_seek, endpoint_estimate,
@@ -84,6 +87,14 @@ pub use crate::validate::check_union_joiners;
 pub(crate) fn plan_of(cypher: &str) -> LogicalPlan {
     let ast = relate_front::parse_cypher(cypher).unwrap();
     plan(ast, &mut |_| false).unwrap()
+}
+
+/// Test helper: parse and lower `cypher` to the [`relate_ir::Query`] the
+/// cache carries beside its plan — the inline suite's composer pins read
+/// it as the entry's carried AST.
+#[cfg(test)]
+pub(crate) fn query_of(cypher: &str) -> relate_ir::Query {
+    relate_front::parse_and_lower(cypher).unwrap()
 }
 
 /// Test helper: the error text of a statement the product parser or the

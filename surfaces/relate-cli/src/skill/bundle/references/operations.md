@@ -102,6 +102,20 @@ open naming `RELATE_LOAD_THREADS` (ADR-0664). Embedded callers set
 latest load (`0` for an empty `:memory:` store; a follower's gap reload
 refreshes it). It is a measurement, not a limit.
 
+## Memo budget (advanced)
+
+The executor memoises repeated pure checks within one statement under a shared
+budget, default **16 MiB** (ADR-0657). Lower it on a tight host, or set `0` for a
+no-memo control run; results never change, only speed and memory:
+
+```sh
+RELATE_EXPRESSION_MEMO_BUDGET=4 relate --database ./mydata
+```
+
+A plain whole-MiB integer; a negative or unparsable value fails the open naming
+the variable. Embedded callers set `OpenOptions::expression_memo_budget`. No CLI
+flag.
+
 ## Ontology as a query-steering source
 
 Before generating Cypher from a natural-language request, load the ontology

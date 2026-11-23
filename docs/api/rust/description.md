@@ -124,6 +124,13 @@ cannot replay an old WAL. Newly created Native paths are private on Unix
 (directories `0700`, files `0600`); a newly created `.rl` bundle is one `0600`
 host file. Existing permissions are preserved; Windows inherits ACLs. See the
 [runnable exclusive-open example](examples/storage_lock.md).
+
+The executor memoises pure, repeated checks (node-label tests, `datetime(text)`
+parses) in per-statement tables bounded by one shared budget. A host with a tight
+memory ceiling, or a maintainer who wants a control run, sets
+`OpenOptions::expression_memo_budget` (whole MiB, default 16, `0` off) or
+`RELATE_EXPRESSION_MEMO_BUDGET` at open; results never depend on it. See the
+[runnable memo-budget example](examples/memo_budget.md).
 Persistent Native roots cannot contain nested Native databases or `.rl`
 bundles. Reset detects pre-existing nested identities in both the root and any
 disjoint external WAL tree and refuses to delete them, even if an independent

@@ -1,7 +1,7 @@
 //! Catalog command execution: row shaping for `SHOW ...` and dispatch into
 //! `catalog_show` / `catalog_schema` / `graph_type_schema`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use std::str::FromStr;
 
@@ -9,12 +9,16 @@ use relate_core::{Error, Result, Value};
 use relate_model::identifier::quote_identifier_always;
 use relate_model::EntityKind;
 
-use crate::eval::filter_rows_where;
+use crate::eval::{eval, filter_rows_where};
 use crate::graph::QueryStats;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::ddl_options::KEY_INDEX_CONFIG;
+use super::order::{
+    page, park_order_keys, resolve_page_bound, sort_rows_by_parked_keys, unpark_order_keys,
+    OrderKeys, PageBounds,
+};
 use super::scope::visible_keys;
 use super::{catalog_schema, catalog_show, graph_type_schema, QueryResult};
 use crate::ctx::QueryCtx;
@@ -301,6 +305,59 @@ fn restore_source_names(row: &mut Row) -> Result<()> {
     Ok(())
 }
 
+/// Apply a catalog clause's own `YIELD` paging stages (`ORDER BY`/`SKIP`/
+/// `LIMIT`), in written order, to the composed rows — the composition this
+/// module owns, beside the WHERE lowering that follows the stages. The
+/// generic paging primitives (parking, the parked sort, the page cut) stay
+/// in `order.rs`; this is the one catalog-side application that reads the
+/// composed rows' own column vocabulary.
+fn apply_yield_page_stages(
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+    stages: &[relate_parser::PageStage],
+    output: &mut Vec<Row>,
+) -> Result<()> {
+    for stage in stages {
+        match stage {
+            relate_parser::PageStage::OrderBy(items) => {
+                // The front end's own order-by lowering — the one
+                // parser-to-IR contract for an order item, published beside
+                // `lower_expr` — never a second spelling here.
+                let order = relate_front::lower_order(items)?;
+                // The catalog rows are their own scope: a `YIELD` key names
+                // an output column, so parking reads the row itself, and
+                // the key plan resolves its parked-prefix collision guard
+                // and null-on-failure policy from the column vocabulary
+                // the composed rows actually carry — every column any row
+                // of the cross join holds — never from a projection item
+                // list this path does not have.
+                let columns: Vec<String> = {
+                    let mut columns = HashSet::new();
+                    for row in output.iter() {
+                        columns.extend(row.keys().cloned());
+                    }
+                    columns.into_iter().collect()
+                };
+                let keys = OrderKeys::over_columns(graph, &order, &columns);
+                for row in output.iter_mut() {
+                    park_order_keys(&keys, row, |expr, scope| eval(graph, scope, expr, params))?;
+                }
+                sort_rows_by_parked_keys(&keys, output, None)?;
+                unpark_order_keys(&keys, output);
+            }
+            relate_parser::PageStage::Skip(expr) => {
+                let count = resolve_page_bound(graph, params, &relate_front::lower_expr(expr)?)?;
+                *output = page(std::mem::take(output), PageBounds::skip(count));
+            }
+            relate_parser::PageStage::Limit(expr) => {
+                let count = resolve_page_bound(graph, params, &relate_front::lower_expr(expr)?)?;
+                *output = page(std::mem::take(output), PageBounds::limit(count));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The stage half of the catalog projection, applied once over the composed
 /// cross join: the clause's own `ORDER BY`/`SKIP`/`LIMIT` in written order,
 /// then the trailing WHERE, then the source-name restore. Paging before the
@@ -316,7 +373,7 @@ fn finish_catalog_rows(
     // The predicate lowers before the paging stages run, so an invalid WHERE
     // expression reports ahead of any paging-expression error (ADR-0335).
     let predicate = info.where_expr.map(relate_front::lower_expr).transpose()?;
-    super::order::apply_yield_page_stages(graph, params, info.stages, &mut output)?;
+    apply_yield_page_stages(graph, params, info.stages, &mut output)?;
     if let Some(predicate) = predicate.as_ref() {
         // ADR-0335: the predicate lowers at run time, so an undefined
         // variable surfaces its typed error here instead of silently
@@ -376,7 +433,11 @@ where
 /// Neo4j's `CREATE CONSTRAINT` expectation. The row-producing
 /// classification is the canonical `relate-front` predicate, so this
 /// module never re-enumerates the command set.
-pub(crate) fn catalog_result(rows: &[Row], clause: &relate_parser::Clause) -> Option<QueryResult> {
+pub(crate) fn catalog_result(
+    graph: &ExecGraph<'_>,
+    rows: &[Row],
+    clause: &relate_parser::Clause,
+) -> Option<QueryResult> {
     let info = relate_front::show_columns::catalog_info(clause)?;
     // The projection: `YIELD *` keeps the first row's key order when a row
     // exists (falling back to the command's full column table for a
@@ -385,7 +446,7 @@ pub(crate) fn catalog_result(rows: &[Row], clause: &relate_parser::Clause) -> Op
     let columns = match info.projection() {
         relate_front::show_columns::CatalogProjection::Star => rows
             .first()
-            .map(visible_keys)
+            .map(|row| visible_keys(graph, row))
             .unwrap_or_else(|| info.full_columns.clone()),
         relate_front::show_columns::CatalogProjection::Columns(pairs) => {
             pairs.into_iter().map(|(output, _)| output).collect()

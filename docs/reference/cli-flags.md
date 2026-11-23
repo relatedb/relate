@@ -204,6 +204,13 @@ with no `version:` line). **Installed = Owned ∪ Legacy.**
   one `relate skill install --agent <name>` per non-foreign agent (no
   `--force`), so a forced clobber never reaches the Foreign dir.
 
+A package-managed install is never replaced: a package manager writes
+`.relate-package-managed` (JSON `{"manager": …, "upgrade": …}`) beside the
+real binary, and `upgrade` reads it first — a plain run exits 1 naming the
+package's own `upgrade` command, and `--check` advises that command instead
+of `relate upgrade`. `distribution/install.sh` and `distribution/install.ps1`
+refuse an existing package-managed target the same way.
+
 The upgrade exit code stays 0 on every post-replace path. `skill install`
 adopts a recognizable relate bundle on its own, so the refresh spawns no
 `--force`; `skill remove` keeps the strict marker refusal above.

@@ -14,6 +14,9 @@
 # The stubs, the fixture factories and the per-case runner live in
 # scripts/tests/lib/install_ps1_harness.ps1, the TAP runtime in
 # scripts/tests/lib/tap.ps1; this file holds the fixtures and the cases.
+# The Chocolatey package template's source-shape checks are host-independent
+# and live in scripts/tests/test_chocolatey_install.py, beside the Scoop and
+# winget template tests.
 #
 # The constants the installer shares with install.sh and the CLI are held
 # together by scripts/tests/test_install_sh.sh's drift guards, which run on
@@ -82,15 +85,11 @@ try {
     Test-Check 'PATH: an absent directory does not match' `
         (-not (Test-RelatePathEntry -Entries @('C:\Other', '') -Directory 'C:\Users\u\Programs\relate'))
     # LOCALAPPDATA, the install directory's base, is validated on its own.
-    $savedLocalAppData = $env:LOCALAPPDATA
-    try {
-        foreach ($badBase in @('Programs', 'C:\a"b')) {
-            $env:LOCALAPPDATA = $badBase
+    foreach ($badBase in @('Programs', 'C:\a"b')) {
+        Invoke-WithLocalAppData $badBase {
             Test-Throws "install dir: an unusable LOCALAPPDATA is refused ($badBase)" `
                 { Get-RelateInstallDir } 'LOCALAPPDATA must be an absolute directory'
         }
-    } finally {
-        $env:LOCALAPPDATA = $savedLocalAppData
     }
 
     Test-NoThrow 'PATH entry: a rooted plain directory is accepted' `
@@ -126,10 +125,14 @@ try {
 
     # --- 5. Fixtures: keys, signed manifests, release documents ----------------
 
-    $keygen = Find-RelateSshKeygen
-    Test-Check 'ssh-keygen is available to the harness' ([bool]$keygen)
+    $keygen = Resolve-RelateSshKeygen
     Write-Output "# ssh-keygen: $keygen"
-    if (-not $keygen) { throw 'ssh-keygen is required for the signature roundtrip' }
+    # The resolver refuses rather than returning $null; probe that the way the
+    # other refusing functions are probed.
+    Invoke-WithNoSshKeygen {
+        Test-Throws 'ssh-keygen resolver: an absent client is refused' `
+            { Resolve-RelateSshKeygen } 'Add-WindowsCapability -Online -Name OpenSSH.Client'
+    }
 
     $signingKey = New-TestKey 'signing-key'
     $wrongKey = New-TestKey 'wrong-key'
@@ -186,13 +189,12 @@ try {
         (Test-OnlyBinaryIn $run.Dir)
 
     # Piped execution (no script path, as under `irm | iex`) says so once and
-    # still installs; a run from a file stays quiet.
-    $RelateInstallerPath = ''
-    $run = Invoke-InstallCase (Get-DefaultRelease)
+    # still installs; a run from a file stays quiet. The mode is a per-case
+    # parameter, so every case after these keeps the loaded value.
+    $run = Invoke-InstallCase (Get-DefaultRelease) -InstallerPath ''
     Test-Succeeded 'piped run: the installer succeeds' $run `
         ($run.Output.Contains('so this installer ran before you could read it'))
-    $RelateInstallerPath = 'C:\relate\install.ps1'
-    $run = Invoke-InstallCase (Get-DefaultRelease)
+    $run = Invoke-InstallCase (Get-DefaultRelease) -InstallerPath 'C:\relate\install.ps1'
     Test-Succeeded 'run from a file: no piped-execution note' $run `
         (-not $run.Output.Contains('so this installer ran before you could read it'))
 
@@ -237,10 +239,10 @@ try {
     $run = Invoke-InstallCase $serve
     Test-Refused 'missing signature asset' $run "GET $RelateDownloadBase/$tag/SHA256SUMS.sig: http status: 404"
 
-    $run = Invoke-WithStub 'Find-RelateSshKeygen' { return $null } { Invoke-InstallCase (Get-DefaultRelease) }
+    $run = Invoke-WithNoSshKeygen { Invoke-InstallCase (Get-DefaultRelease) }
     Test-Refused 'no ssh-keygen' $run 'Add-WindowsCapability -Online -Name OpenSSH.Client'
     Test-Check 'no ssh-keygen: refused before any request' ($run.Calls.Count -eq 0)
-    Test-Check 'no ssh-keygen: the stub ended with its case' ((Find-RelateSshKeygen) -ceq $keygen)
+    Test-Check 'no ssh-keygen: the stubs ended with their case' ((Resolve-RelateSshKeygen) -ceq $keygen)
 
     # --- 8. Signed version binding (ADR-0457) ----------------------------------
 
@@ -303,6 +305,31 @@ try {
     $run = Invoke-InstallCase (Get-DefaultRelease) @{ RELATE_RELEASES_JSON_URL = 'http://metadata.invalid/releases.json' }
     Test-Refused 'plain-http metadata override' $run 'RELATE_RELEASES_JSON_URL must be an https:// URL'
     Test-Check 'plain-http metadata override: refused before any request' ($run.Calls.Count -eq 0)
+
+    # --- 11a. A package-managed install is never overwritten ------------------
+
+    # The marker `relate upgrade` reads, beside the real binary: a package
+    # writes it, this installer refuses to overwrite that binary, and the
+    # refusal body is the CLI's own sentence. One fixture per case through
+    # the harness factory, so no case inherits another's marker mutation.
+    $pm = New-PackageManagedInstall (Join-Path $Sandbox 'pm-scoop') `
+        '{"manager": "scoop", "upgrade": "scoop update relate"}'
+    $run = Invoke-InstallCase (Get-DefaultRelease) @{ LOCALAPPDATA = $pm.Root }
+    Test-Check 'package-managed: the installer refuses' ($null -ne $run.Error)
+    Test-Check 'package-managed: the refusal names the package command' `
+        ($null -ne $run.Error -and $run.Error.Contains('relate was installed by scoop; upgrade it with: scoop update relate'))
+    Test-Check 'package-managed: refused before any request' ($run.Calls.Count -eq 0)
+    Test-Check 'package-managed: the package binary is untouched' `
+        ((Get-FileHash -LiteralPath $pm.Exe).Hash -eq $pm.Hash)
+
+    $pmBad = New-PackageManagedInstall (Join-Path $Sandbox 'pm-malformed') '{"manager": "scoop"}'
+    $run = Invoke-InstallCase (Get-DefaultRelease) @{ LOCALAPPDATA = $pmBad.Root }
+    Test-Check 'package-managed: a malformed marker still refuses' `
+        ($null -ne $run.Error -and $run.Error.Contains('is package-managed; marker'))
+
+    $pmFree = New-PackageManagedInstall (Join-Path $Sandbox 'pm-unmanaged')
+    $run = Invoke-InstallCase (Get-DefaultRelease) @{ LOCALAPPDATA = $pmFree.Root }
+    Test-Succeeded 'package-managed: without a marker the install proceeds' $run
 
     # --- 12. Platform probe ---------------------------------------------------
 

@@ -353,3 +353,27 @@ fn pinned_reading_derives_the_local_wall_clock_instead_of_storing_it() {
     assert_eq!(now_time(), parse_iso("time", "17:00+05:00").unwrap());
     assert_eq!(now_utc_dt(), utc);
 }
+
+/// Inside an explicit transaction `transaction` reads the begin-time
+/// instant while `statement` and the default constructors read the
+/// statement's own; the nested guard restores both pins on drop.
+#[test]
+fn transaction_mode_reads_the_transaction_instant_not_the_statement_pin() {
+    let began = naive_utc(2021, 6, 1, 12, 0, 0);
+    let stmt = naive_utc(2021, 6, 1, 12, 0, 5);
+    let _clock = QueryClockGuard::pinned_in_transaction(stmt, began);
+    let read = |mode| match construct_clock(ClockKind::LocalDateTime, mode, None).unwrap() {
+        Value::Temporal(t) => t,
+        other => panic!("expected a temporal, got {other:?}"),
+    };
+    assert_eq!(read(ClockMode::Transaction), Temporal::LocalDateTime(began));
+    assert_eq!(read(ClockMode::Statement), Temporal::LocalDateTime(stmt));
+    assert_eq!(read(ClockMode::Statement), now_local_dt());
+    assert_eq!(now_utc_dt(), stmt);
+    {
+        let _next = QueryClockGuard::pinned_at(naive_utc(2000, 1, 1, 0, 0, 0), 0);
+        // An autocommit pin is its own transaction: both modes agree.
+        assert_eq!(read(ClockMode::Transaction), read(ClockMode::Statement));
+    }
+    assert_ne!(read(ClockMode::Transaction), read(ClockMode::Statement));
+}

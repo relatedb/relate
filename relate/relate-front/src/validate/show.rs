@@ -26,8 +26,7 @@ use crate::ast::collect::{check_expr_vars_defined, union_chain};
 
 /// Every explicitly YIELD'd column must be one the command accepts in a
 /// `YIELD`: the one validity guard the SHOW validator family shares. The
-/// accepted set is the command's `YIELD *` columns, except where the
-/// descriptor overrides it ([`CatalogInfo::accepted_columns`]).
+/// accepted set is the command's `YIELD *` columns.
 fn check_yield_column_names(
     yields: &YieldList,
     accepted: &[String],
@@ -54,7 +53,7 @@ fn validate_show_columns(
     info: &crate::show_columns::CatalogInfo<'_>,
     outer_scope: &IdentHashSet<SmallName>,
 ) -> Result<(), EngineError> {
-    check_yield_column_names(info.yields, info.accepted_columns(), info.command)?;
+    check_yield_column_names(info.yields, &info.full_columns, info.command)?;
     validate_show_row_expressions(info, outer_scope)
 }
 

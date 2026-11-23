@@ -24,6 +24,7 @@ use relate_core::Result;
 use crate::ctx::{ExecCtx, QueryCtx};
 use crate::exec::feed::{FeedSource, StreamedFeed};
 use crate::exec::QueryResult;
+use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::shared::{import_invariant_body, shared_execution_plan, SharedExecution};
@@ -145,8 +146,13 @@ impl SharedBody {
 impl<'a> SubquerySource<'a> {
     /// Decide the execution mode once (the shared plan needs the whole
     /// input), then hand the source to the feed spine.
-    pub(crate) fn new(spec: SubquerySpec<'a>, rows: &[Row], qctx: QueryCtx<'a>) -> Result<Self> {
-        let mode = match shared_execution_plan(spec.scope, rows)? {
+    fn new(
+        graph: &ExecGraph<'_>,
+        spec: SubquerySpec<'a>,
+        rows: &[Row],
+        qctx: QueryCtx<'a>,
+    ) -> Result<Self> {
+        let mode = match shared_execution_plan(graph, spec.scope, rows)? {
             Some(plan) => {
                 let check = plan.check();
                 if import_invariant_body(spec.query, &check) {
@@ -190,7 +196,7 @@ impl FeedSource for SubquerySource<'_> {
             }
         };
         self.staged = if produced.is_empty() {
-            pad_rows(row, self.optional, self.query, self.scope)
+            pad_rows(ctx.graph, row, self.optional, self.query, self.scope)
         } else {
             produced.into_iter()
         };
@@ -213,12 +219,13 @@ impl FeedSource for SubquerySource<'_> {
 /// The `OPTIONAL CALL` empty-body pad as staged rows: one null-padded row
 /// for the optional form, nothing for the plain one.
 fn pad_rows(
+    graph: &ExecGraph<'_>,
     row: Row,
     optional: bool,
     query: &relate_ir::Query,
     scope: &relate_ir::CallScope,
 ) -> std::vec::IntoIter<Row> {
-    empty_body_row(row, optional, query, scope)
+    empty_body_row(graph, row, optional, query, scope)
         .into_iter()
         .collect::<Vec<_>>()
         .into_iter()
@@ -236,6 +243,6 @@ pub(crate) fn call_subquery_feed<'a>(
     spec: SubquerySpec<'a>,
     profiled: bool,
 ) -> Result<StreamedFeed<'a>> {
-    let source = SubquerySource::new(spec, &rows, qctx)?;
+    let source = SubquerySource::new(ctx.graph, spec, &rows, qctx)?;
     Ok(StreamedFeed::new(ctx, rows, Box::new(source), profiled))
 }

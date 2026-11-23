@@ -26,7 +26,7 @@ impl Graph {
         let Some((type_id, kid, gk)) = self.rel_equality_pair_key(rel_type, key, value) else {
             return Vec::new();
         };
-        self.rel_prop_postings(type_id, kid, key, gk)
+        self.with_rel_prop_pair(type_id, kid, key, |st| st.postings.ids(&gk).to_vec())
     }
 
     /// The committed bucket's length for `(rel_type, key) = value`, without
@@ -76,7 +76,7 @@ impl Graph {
     /// collects the candidate ids first, so no `rels` guard is held across
     /// the per-id version walk, and the write side (`install_rel`,
     /// `set_property_rel`) dirty-marks only after the installed version's
-    /// `rels` guard is released. `rel_prop_postings` and
+    /// `rels` guard is released. `rel_equality_postings` and
     /// `rel_equality_postings_len` both read through this, so a bucket's
     /// contents and its size cannot drift.
     fn with_rel_prop_pair<R>(
@@ -100,20 +100,6 @@ impl Graph {
             },
             read,
         )
-    }
-
-    /// Postings for `(type_id, key_id)` at value `gk`, built and drained
-    /// through [`Self::with_rel_prop_pair`]. A superset (ADR-0063: every
-    /// version of every candidate), so callers re-verify every id; empty
-    /// when no indexed version carries `gk`.
-    pub(super) fn rel_prop_postings(
-        &self,
-        type_id: u32,
-        kid: u32,
-        key: &str,
-        gk: GroupKey,
-    ) -> Vec<RelId> {
-        self.with_rel_prop_pair(type_id, kid, key, |st| st.postings.ids(&gk).to_vec())
     }
 
     /// The value of `key` (interned as `kid`) on every version of `id` of
@@ -170,7 +156,7 @@ impl Graph {
     /// version carries the same `(type, key, value)`. The caller has
     /// already dropped its `rels` guard.
     pub(super) fn rel_index_drop_unused(&self, id: RelId, dead: &[LiveRel], remaining: &[LiveRel]) {
-        self.drop_unused_pairs(&self.indexes.rel_prop_pairs, id, dead, remaining, |r, f| {
+        Self::drop_unused_pairs(&self.indexes.rel_prop_pairs, id, dead, remaining, |r, f| {
             r.payload.for_each_key_value(&self.interner, |kid, val| {
                 if let Some(gk) = GroupKey::for_property_index(val) {
                     f(r.type_id, kid, gk);

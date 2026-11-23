@@ -8,9 +8,9 @@ use relate_ir::Query;
 
 use super::{call_subquery_row, empty_body_row, null_pad_call_row, scope_seed, SubquerySpec};
 use crate::ctx::QueryCtx;
-use crate::eval::{eval, is_agg_expr};
+use crate::eval::eval;
 use crate::exec::constraint_validation::validate_constraints;
-use crate::exec::scope::{has_star_item, star_scope_names, terminal_return_items};
+use crate::exec::scope::star_scope_names;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -49,7 +49,7 @@ pub(crate) fn exec_call_in_transactions(
             for row in batch {
                 let mut produced = call_subquery_row(graph, row, query, scope, params, qctx)?;
                 if produced.is_empty() {
-                    produced.extend(empty_body_row(row.clone(), optional, query, scope));
+                    produced.extend(empty_body_row(graph, row.clone(), optional, query, scope));
                 }
                 batch_out.extend(produced);
             }
@@ -109,7 +109,12 @@ pub(crate) fn exec_call_in_transactions(
                     let mut never_started_rows = Vec::new();
                     for (_, batch) in batches.by_ref() {
                         for row in batch {
-                            never_started_rows.push(null_pad_call_row(row.clone(), query, scope));
+                            never_started_rows.push(null_pad_call_row(
+                                graph,
+                                row.clone(),
+                                query,
+                                scope,
+                            ));
                         }
                     }
                     BatchOutcome::NeverStarted
@@ -240,21 +245,18 @@ fn failed_batch_row(
     scope: &relate_ir::CallScope,
     params: &BTreeMap<String, Value>,
 ) -> Result<Row> {
-    // The body's export shape is its FINAL stage's projection — the same
-    // trailing-clause classification `call_subquery_row` and the conditional
-    // branches read (`final_stage`).
-    let projected = query.final_stage().parts.first().and_then(|part| {
-        let (clauses, items) = terminal_return_items(part)?;
-        (!has_star_item(items) && !items.iter().any(|item| is_agg_expr(&item.expr)))
-            .then_some((clauses, items))
-    });
+    // The body's export shape through the one derivation every
+    // export-shape consumer reads (`super::final_export_items`), gated to
+    // the plain per-row projections a seed row can evaluate.
+    let projected = super::final_export_items(query.final_stage())
+        .filter(|(_, items)| super::plain_per_row_projection(items));
     let Some((clauses, items)) = projected else {
-        return Ok(null_pad_call_row(outer.clone(), query, scope));
+        return Ok(null_pad_call_row(graph, outer.clone(), query, scope));
     };
     // The imports plus, for every other name the body declares before its
     // RETURN, an explicit null: a row miss is an undefined variable, and
     // the failing iteration's bindings are gone with its rolled-back row.
-    let mut seed = scope_seed(scope, outer)?;
+    let mut seed = scope_seed(graph, scope, outer)?;
     for name in star_scope_names(clauses) {
         seed.entry(name).or_insert(Value::Null);
     }

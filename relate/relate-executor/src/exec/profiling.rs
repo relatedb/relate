@@ -218,6 +218,45 @@ pub(crate) fn frontier_counters() -> crate::metrics::FrontierCounters {
 }
 
 thread_local! {
+    /// The expression-memo counters (ADR-0654) of the memos that finished
+    /// inside a PROFILE arm, summed — written only while the arm is armed
+    /// ([`record_memos`]) and read per clause like the zone skips: the
+    /// delta across the arm is the clause's own memos.
+    static MEMO: Cell<crate::metrics::MemoCounters> = const {
+        Cell::new(crate::metrics::MemoCounters {
+            probes: 0,
+            hits: 0,
+            inserts: 0,
+            refused: 0,
+            bytes: 0,
+            disabled_count: 0,
+        })
+    };
+}
+
+/// Fold a finishing memo owner's counters into the PROFILE total
+/// (ADR-0654 §6). `read` is the stats reader and runs **only** while a
+/// PROFILE arm is armed: a non-PROFILEd statement pays this one flag read
+/// where the owner drops — never an increment, atomic or branch on the
+/// memo's probe path — and never reads a table.
+pub(crate) fn record_memos(read: impl FnOnce() -> crate::metrics::MemoCounters) {
+    if STORE_PROFILING.with(Cell::get) {
+        let run = read();
+        MEMO.with(|c| {
+            let mut total = c.get();
+            total += run;
+            c.set(total);
+        });
+    }
+}
+
+/// The memo counters right now, snapshotted at the clause tick the way
+/// [`zone_skips`] is.
+pub(crate) fn memo_counters() -> crate::metrics::MemoCounters {
+    MEMO.with(Cell::get)
+}
+
+thread_local! {
     /// The start the current clause's walk chose (LABS-369), recorded once
     /// per walk by the selection site and taken at the clause's metric
     /// tick. `None` until a walk records one.
@@ -425,9 +464,9 @@ macro_rules! profile_family {
 }
 
 profile_family! {
-    /// The six-metric PROFILE snapshot — LABS-369's read kinds,
+    /// The seven-metric PROFILE snapshot — LABS-369's read kinds,
     /// LABS-448's phase times, LABS-645's zone skips, ADR-0478's frontier
-    /// counters, ADR-0463's expression meter, and the clock — the one
+    /// counters, ADR-0654's memo counters, ADR-0463's expression meter, and the clock — the one
     /// snapshot family the clause tick (`profile_tick.rs`) and the
     /// streamed stage windows (`profile_chain.rs`) both take.
     DeltaSnapshot / StageDelta {
@@ -435,6 +474,7 @@ profile_family! {
         phases: crate::metrics::PhaseTimes,
         zone_skips: ZoneSkips,
         frontier: crate::metrics::FrontierCounters,
+        memo: crate::metrics::MemoCounters,
         expression_built: ExpressionBytes,
     }
 }
@@ -448,6 +488,7 @@ impl DeltaSnapshot {
             phases: crate::ctx::phase_times(),
             zone_skips: ZoneSkips::now(),
             frontier: frontier_counters(),
+            memo: memo_counters(),
             expression_built: ExpressionBytes::now(graph),
         }
     }

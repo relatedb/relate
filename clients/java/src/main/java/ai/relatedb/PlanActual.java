@@ -44,6 +44,8 @@ public class PlanActual {
     /** The frontier rung's run-time decline name, or null when it never declined. */
     @JsonProperty("frontier_decline")
     public String frontierDecline;
+    /** The expression-memo counters (ADR-0654); null when no memo was probed on the operator. */
+    public PlanMemo memo;
     public PlanStart start;
     /** Which rung served the clause's MATCH walk, or null when none did. */
     public PlanKernel kernel;

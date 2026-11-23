@@ -14,6 +14,14 @@
 //! inline, on a 64 MiB caller), a panic is contained to the same typed
 //! internal error class, and the statements that could outlive a
 //! keep-alive interval still take the worker.
+//!
+//! ADR-0663 (the cache-hit inline route): a connection whose caller never
+//! asserted anything still runs the point-lookup family inline from its
+//! second execution — the plan cache carries the plan, a hit skips the
+//! front (ADR-0651), and the shallow-bounded predicate is the
+//! stack-safety fact. The route's tests below prove it on the 2 MiB
+//! caller stack the worker existed to protect, and that everything cold,
+//! deep or unbounded stays on the worker.
 
 use crate::{Database, Error};
 use relate_test_support::run_with_stack;
@@ -587,4 +595,177 @@ fn cancelled_token_fails_statements_identically_on_both_paths() {
         let result = conn.query("RETURN 1 AS n").unwrap();
         assert_eq!(result.rows, vec![vec![crate::Value::Int(1)]]);
     });
+}
+
+/// A nested-addition expression of the given depth over a parameter — a
+/// bounded-work statement whose expression tree neither collapses at
+/// lowering (parentheses do) nor constant-folds (literals do), so its
+/// plan is deeper than the shallow bound and its cache hits must stay
+/// on the worker (ADR-0663's stack-safety half).
+fn nested_add(depth: usize) -> String {
+    format!("RETURN {}$x{}", "$x+(".repeat(depth), ")".repeat(depth))
+}
+
+/// ADR-0663: the point-lookup family runs inline from its second
+/// execution on a connection whose caller never asserted a stack budget —
+/// proven on the 2 MiB stack the query worker exists to protect. The
+/// first execution is cold (the worker parses); every hit after that is
+/// the inline route, binding-invariant, answering exactly what the worker
+/// answered — the point read, the one-fixed-hop read, and the count fold.
+#[test]
+fn cache_hits_of_the_point_lookup_family_run_inline_on_a_small_caller_stack() {
+    use crate::Value;
+    use std::collections::BTreeMap;
+    on_small_stack_caller(|| {
+        let db = Database::open(":memory:").unwrap();
+        let mut conn = db.connect().unwrap();
+        conn.query(
+            "CREATE (:Commit {id: 'c1', position: 7}), \
+                   (:Commit {id: 'c2', position: 9}), \
+                   (c:Build {id: 'b1'})-[:R]->(:Artifact {id: 'c1'})",
+        )
+        .unwrap();
+        let point = "MATCH (c:Commit {id: $id}) RETURN c.position AS position";
+        let one_hop = "MATCH (b:Build {id: $id})-[:R]->(a) RETURN a.id AS artifact";
+        let fold = "MATCH (c:Commit) WHERE c.position > $min RETURN count(c.id) AS c";
+        for (cypher, binding, key, expected) in [
+            (
+                point,
+                BTreeMap::from([("id".to_string(), Value::String("c1".into()))]),
+                "id",
+                vec![vec![Value::Int(7)]],
+            ),
+            (
+                one_hop,
+                BTreeMap::from([("id".to_string(), Value::String("b1".into()))]),
+                "id",
+                vec![vec![Value::String("c1".into())]],
+            ),
+            (
+                fold,
+                BTreeMap::from([("min".to_string(), Value::Int(5))]),
+                "min",
+                vec![vec![Value::Int(2)]],
+            ),
+        ] {
+            // The counter is cumulative across the connection, so each
+            // phase reads as a delta against the statements before it.
+            let before = conn.hit_inline_served();
+            let first = conn.query_with_params(cypher, binding.clone()).unwrap();
+            assert_eq!(
+                conn.hit_inline_served(),
+                before,
+                "the first execution is cold — the worker parses: {cypher}"
+            );
+            assert_eq!(first.rows, expected, "the worker answers: {cypher}");
+            let second = conn.query_with_params(cypher, binding.clone()).unwrap();
+            assert_eq!(
+                conn.hit_inline_served(),
+                before + 1,
+                "the cache hit runs inline: {cypher}"
+            );
+            assert_eq!(
+                second.rows, expected,
+                "the inline hit answers the worker: {cypher}"
+            );
+            // A different binding over the same template is still a hit —
+            // the route is binding-invariant, the plan cache's own
+            // contract. The swap key rides the fixture tuple: the
+            // binding-invariance assert is unconditional, never skipped.
+            let mut other = binding.clone();
+            other.insert(key.to_string(), Value::String("zz".into()));
+            conn.query_with_params(cypher, other).unwrap();
+            assert_eq!(
+                conn.hit_inline_served(),
+                before + 2,
+                "the hit serves any binding: {cypher}"
+            );
+        }
+    })
+}
+
+/// ADR-0663's own walk depth, pinned: the probe measures nesting on the
+/// calling thread, so its measurement walks must fit a small stack on
+/// the deepest statement the parser admits — a 499-deep NOT chain, the
+/// deepest *bounded-work* shape (its plan keeps the chain; parentheses
+/// collapse). The hit declines on the depth conjunct and the probe's
+/// walks complete on this 2 MiB stack with room to spare — the pin that
+/// keeps the depth-measuring walks honest as they evolve.
+#[test]
+fn the_probes_depth_measurement_fits_a_small_stack_on_the_deepest_plan() {
+    // The margin pin first: the deepest bounded plan's probe walks fit
+    // a 384 KiB stack — 5x below the 2 MiB floor this route promises
+    // (measured: the walks' frames are ~350 bytes, not the parser's
+    // ~6 KiB). Pinning the margin catches a walk-frame regression five
+    // times before it can break the contract below.
+    relate_test_support::run_with_stack(384 * 1024, || {
+        let db = Database::open(":memory:").unwrap();
+        let mut conn = db.connect().unwrap();
+        let nots = format!("RETURN {}$x", "NOT ".repeat(499));
+        let params =
+            std::collections::BTreeMap::from([("x".to_string(), crate::Value::Bool(true))]);
+        conn.query_with_params(&nots, params.clone()).unwrap();
+        let second = conn.query_with_params(&nots, params).unwrap();
+        assert_eq!(second.rows, vec![vec![crate::Value::Bool(false)]]);
+        assert_eq!(conn.hit_inline_served(), 0);
+    });
+    on_small_stack_caller(|| {
+        let db = Database::open(":memory:").unwrap();
+        let mut conn = db.connect().unwrap();
+        // Over a parameter, so neither the front nor the planner can
+        // fold the chain away: the cached plan keeps all 499 levels.
+        let nots = format!("RETURN {}$x", "NOT ".repeat(499));
+        let params =
+            std::collections::BTreeMap::from([("x".to_string(), crate::Value::Bool(true))]);
+        conn.query_with_params(&nots, params.clone()).unwrap();
+        let second = conn.query_with_params(&nots, params).unwrap();
+        assert_eq!(second.rows, vec![vec![crate::Value::Bool(false)]]);
+        assert_eq!(
+            conn.hit_inline_served(),
+            0,
+            "the depth conjunct declines the deepest bounded plan"
+        );
+    })
+}
+
+/// ADR-0663's exclusions: a write is never inline (cold every time), a
+/// var-length statement is never bounded work (its hits stay on the
+/// worker), and a deep-expression bounded statement's hits stay on the
+/// worker too — the depth bound is the stack-safety half of the route's
+/// plan fact.
+#[test]
+fn cold_deep_and_unbounded_statements_stay_on_the_worker() {
+    let db = Database::open(":memory:").unwrap();
+    let mut conn = db.connect().unwrap();
+    conn.query("CREATE (a:X {id: 'a'})-[:T]->(b:X {id: 'b'})")
+        .unwrap();
+    assert_eq!(
+        conn.hit_inline_served(),
+        0,
+        "a write is cold: the worker serves"
+    );
+    conn.query("CREATE (:N)").unwrap();
+    assert_eq!(conn.hit_inline_served(), 0, "every write is cold");
+    // Var-length: bounded work refuses the shape, so even its cache hits
+    // take the worker.
+    let varlen = "MATCH (a:X {id: $id})-[:T*]->(b) RETURN count(b) AS c";
+    let params =
+        std::collections::BTreeMap::from([("id".to_string(), crate::Value::String("a".into()))]);
+    conn.query_with_params(varlen, params.clone()).unwrap();
+    conn.query_with_params(varlen, params).unwrap();
+    assert_eq!(
+        conn.hit_inline_served(),
+        0,
+        "a var-length statement's hits stay on the worker"
+    );
+    // Deep expressions: bounded work, but deeper than the shallow bound.
+    let deep = nested_add(20);
+    let deep_params = std::collections::BTreeMap::from([("x".to_string(), crate::Value::Int(1))]);
+    conn.query_with_params(&deep, deep_params.clone()).unwrap();
+    conn.query_with_params(&deep, deep_params).unwrap();
+    assert_eq!(
+        conn.hit_inline_served(),
+        0,
+        "a deep-expression hit stays on the worker"
+    );
 }

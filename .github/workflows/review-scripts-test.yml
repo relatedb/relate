@@ -20,6 +20,7 @@ on:
       - ".github/workflows/stellar-nightshift.yml"
       - ".github/workflows/release.yml"
       - ".github/workflows/release-notes.yml"
+      - ".github/workflows/install-smoke.yml"
   workflow_dispatch:
 
 permissions:
@@ -74,8 +75,40 @@ jobs:
       - name: Run the spec-harness coverage suite (ADR-0482)
         run: python3 scripts/tests/test_spec_harness_coverage.py
 
+      - name: Run the spec-harness gate suite (ADR-0661)
+        run: python3 scripts/tests/test_spec_harness_gate.py
+
+      - name: Run the spec-harness id-model suite (ADR-0661)
+        run: python3 scripts/tests/test_spec_harness_ids.py
+
+      - name: Run the spec-harness baseline suite (ADR-0661)
+        run: python3 scripts/tests/test_spec_harness_baseline.py
+
       - name: Run the scripts/tests suites (one owner, the aggregate)
         run: make test-scripts
+
+  # The winget manifests (ADR-0659 §4) are generated at release time from
+  # the release asset manifest, so no manifest is committed: this lane
+  # generates them from the checked-in fixture asset manifest — the same
+  # input shape the release job hands the generator — and puts them through
+  # the winget client's own schema gate before any release can submit them.
+  winget-manifests:
+    name: winget manifest validation
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Generate the manifests from the fixture release manifest
+        run: >
+          python scripts/winget_manifests.py generate
+          scripts/tests/fixtures/winget/assets.json
+          --version 0.16.2 --output winget-manifests
+
+      - name: Validate the manifests with winget
+        run: winget validate --manifest winget-manifests
+
+      - name: Run the winget manifest suite
+        run: python scripts/tests/test_winget_manifests.py
 
   stellar-tools:
     runs-on: ubuntu-latest

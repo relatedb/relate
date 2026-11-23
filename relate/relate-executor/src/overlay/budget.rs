@@ -3,12 +3,13 @@
 //! constants, their counters, and the [`ExecGraph`] charge/limit seam.
 
 use std::cell::Cell;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use relate_core::{Error, Result, Value};
 
 use super::ExecGraph;
+use crate::memory::{memo_budget_bytes, DEFAULT_MEMO_BUDGET_MIB};
 
 /// ADR-0395: the fixed per-top-level-statement budget on nested
 /// clause-engine part passes — every `execute_query_seeded` part
@@ -95,13 +96,74 @@ impl ExpressionBudgetCounter {
     }
 }
 
-/// The whole query's live memo bytes, across every stage's memos (a
-/// refusal freezes the asking memo, never fails the query; LABS-1478).
-pub(crate) const MEMO_QUERY_BUDGET: u64 = 16 << 20;
+/// The per-table byte ceiling derived from a shared `budget` in bytes
+/// (ADR-0657 §2): half of it, so one table cannot starve the others. The
+/// one derivation both memo policies read.
+pub(crate) const fn memo_table_ceiling(budget: u64) -> usize {
+    // Saturating: a budget past the address space (32-bit targets) caps
+    // at `usize::MAX` instead of wrapping to a tiny ceiling.
+    let half = budget / 2;
+    if half > usize::MAX as u64 {
+        usize::MAX
+    } else {
+        half as usize
+    }
+}
 
-/// The per-statement live-bytes counter every memo of a query shares,
-/// owned by the execution view beside the other statement budgets.
-pub(crate) type MemoLive = Arc<AtomicU64>;
+/// The per-statement memo budget (ADR-0657): the shared live-bytes
+/// counter every memo of a query charges (a refusal freezes the asking
+/// memo, never fails the query; LABS-1478) beside the budget it is
+/// charged against, owned by the execution view with the other statement
+/// budgets. Cloning shares the counter.
+#[derive(Clone, Debug)]
+pub(crate) struct MemoLive {
+    bytes: Arc<AtomicU64>,
+    budget: u64,
+}
+
+impl MemoLive {
+    /// A fresh counter charged against `budget` bytes (`0` = no budgeted
+    /// memo table is ever allocated).
+    pub(crate) fn new(budget: u64) -> Self {
+        Self {
+            bytes: Arc::default(),
+            budget,
+        }
+    }
+
+    /// The shared budget in bytes.
+    pub(crate) fn budget(&self) -> u64 {
+        self.budget
+    }
+
+    /// The per-table ceiling this budget derives.
+    pub(crate) fn table_ceiling(&self) -> usize {
+        memo_table_ceiling(self.budget)
+    }
+
+    /// Charge `grew` live bytes; whether the shared total now exceeds the
+    /// budget.
+    pub(crate) fn charge(&self, grew: u64) -> bool {
+        self.bytes.fetch_add(grew, Ordering::Relaxed) + grew > self.budget
+    }
+
+    /// Return `bytes` to the shared total.
+    pub(crate) fn release(&self, bytes: u64) {
+        self.bytes.fetch_sub(bytes, Ordering::Relaxed);
+    }
+
+    /// The live bytes held now.
+    #[cfg(test)]
+    pub(crate) fn live_bytes(&self) -> u64 {
+        self.bytes.load(Ordering::Relaxed)
+    }
+}
+
+impl Default for MemoLive {
+    fn default() -> Self {
+        Self::new(memo_budget_bytes(DEFAULT_MEMO_BUDGET_MIB))
+    }
+}
 
 impl<'a> ExecGraph<'a> {
     /// Refuse one expression-built allocation larger than the view's cap
@@ -153,6 +215,12 @@ impl<'a> ExecGraph<'a> {
     /// interior mutability stays behind the graph.
     pub(crate) fn construct_temporal(&self, name: &str, vals: &[Value]) -> Result<Value> {
         self.construct_memos.construct(self, name, vals)
+    }
+
+    /// The constructor memos' statement-level facts (ADR-0654 §3), for the
+    /// PROFILE sink at the statement's end.
+    pub(crate) fn construct_memo_record(&self) -> crate::metrics::StatementMemoRecord {
+        self.construct_memos.statement_record()
     }
 
     /// The configured per-allocation cap (`None` = no cap).

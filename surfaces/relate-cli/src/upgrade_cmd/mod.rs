@@ -27,6 +27,10 @@
 //! base and the GitHub API base through the one [`seam`] policy helper (its
 //! core is [`env_nonempty`], shared with the `GITHUB_TOKEN` read), so tests
 //! can point the fetches at a fixture server.
+//!
+//! Before either mode touches the network, [`provenance`] decides whether a
+//! package manager installed this binary: such an install is never replaced,
+//! and `--check` advises the package's own upgrade command.
 
 use std::path::{Path, PathBuf};
 
@@ -45,7 +49,14 @@ mod manifest;
 /// fetch.
 mod releases_json;
 
+/// The package-managed marker: a package manager's install declares itself
+/// beside the real binary, and `upgrade` defers to the package's own upgrade
+/// command instead of replacing it. Read-only here — the package recipe
+/// writes the marker.
+mod provenance;
+
 use manifest::{bind_signed_version, legacy_ceiling_label, sha256sums_entry, ManifestBinding};
+use provenance::PackageManaged;
 use releases_json::fetch_latest_release;
 
 /// Single-sourced from the crate's `Cargo.toml` (`version.workspace = true`).
@@ -123,8 +134,17 @@ pub fn run(opts: UpgradeOpts) -> i32 {
 }
 
 fn run_inner(opts: &UpgradeOpts) -> Result<(), UpgradeError> {
+    // Provenance first, in both modes: a package-managed install is never
+    // replaced, and `--check`'s advice names the package's own command
+    // instead of `relate upgrade`. The lookup is local — no platform gate,
+    // no token read, no request — so a package's refusal cannot be
+    // preempted by a network failure.
+    let managed = provenance::detect()?;
     if opts.check {
-        return run_check();
+        return run_check(managed.as_ref());
+    }
+    if let Some(managed) = &managed {
+        return Err(UpgradeError::new(managed.refusal()));
     }
     // Only the replace needs a supported os/arch pair; an unsupported one
     // refuses here, before any network request.
@@ -274,27 +294,39 @@ impl From<crate::release_channel::ChannelError> for UpgradeError {
 
 /// `relate upgrade --check`: report current-vs-latest and the advice, then
 /// stop. It downloads no asset and replaces nothing, so it runs on every
-/// platform (ADR-0586), and an unsupported pair's refusal becomes its
-/// advice rather than its error.
-fn run_check() -> Result<(), UpgradeError> {
+/// platform (ADR-0586), and a package-managed install's or an unsupported
+/// pair's refusal becomes its advice rather than its error.
+fn run_check(managed: Option<&PackageManaged>) -> Result<(), UpgradeError> {
     let (release, latest_version) = fetch_latest_release()?;
     let label = strip_v_prefix(&release.tag);
     let newer = version_is_newer(latest_version, VERSION);
     println!("current version: {VERSION}");
     println!("latest release:  {label}");
-    println!("{}", check_verdict(&platform_support(), newer, label));
+    println!(
+        "{}",
+        check_verdict(&platform_support(), managed, newer, label)
+    );
     Ok(())
 }
 
-/// The `--check` report's last line: up to date, or the upgrade advice —
-/// `relate upgrade` where the replace is supported, else the platform's
-/// refusal (on Windows, the PowerShell installer one-liner), so the report
-/// never advises a command that would refuse.
-fn check_verdict(platform: &Result<Platform, UpgradeError>, newer: bool, latest: &str) -> String {
-    match (newer, platform) {
-        (false, _) => "relate is up to date".to_string(),
-        (true, Ok(_)) => format!("upgrade available: run `relate upgrade` to install {latest}"),
-        (true, Err(refusal)) => format!("upgrade available: {latest}; {refusal}"),
+/// The `--check` report's last line: up to date, or the upgrade advice — the
+/// package's own upgrade command for a package-managed install, `relate
+/// upgrade` where the replace is supported, else the platform's refusal (on
+/// Windows, the PowerShell installer one-liner), so the report never advises
+/// a command that would refuse.
+fn check_verdict(
+    platform: &Result<Platform, UpgradeError>,
+    managed: Option<&PackageManaged>,
+    newer: bool,
+    latest: &str,
+) -> String {
+    match (newer, managed, platform) {
+        (false, _, _) => "relate is up to date".to_string(),
+        (true, Some(managed), _) => format!("upgrade available: {latest}; {}", managed.refusal()),
+        (true, None, Ok(_)) => {
+            format!("upgrade available: run `relate upgrade` to install {latest}")
+        }
+        (true, None, Err(refusal)) => format!("upgrade available: {latest}; {refusal}"),
     }
 }
 
@@ -573,18 +605,18 @@ mod tests {
         });
         let windows = platform_support_for("windows", "x86_64");
         assert_eq!(
-            check_verdict(&supported, false, "1.2.3"),
+            check_verdict(&supported, None, false, "1.2.3"),
             "relate is up to date"
         );
         assert_eq!(
-            check_verdict(&windows, false, "1.2.3"),
+            check_verdict(&windows, None, false, "1.2.3"),
             "relate is up to date"
         );
         assert_eq!(
-            check_verdict(&supported, true, "1.2.3"),
+            check_verdict(&supported, None, true, "1.2.3"),
             "upgrade available: run `relate upgrade` to install 1.2.3"
         );
-        let advice = check_verdict(&windows, true, "1.2.3");
+        let advice = check_verdict(&windows, None, true, "1.2.3");
         assert!(
             advice
                 .starts_with("upgrade available: 1.2.3; self-upgrade is not supported on Windows"),
@@ -592,6 +624,29 @@ mod tests {
         );
         assert!(advice.contains(WINDOWS_INSTALL_ONE_LINER), "{advice}");
         assert!(!advice.contains("run `relate upgrade`"), "{advice}");
+    }
+
+    #[test]
+    fn check_verdict_advises_the_packages_own_command() {
+        // A package-managed install is never `relate upgrade`'s to replace,
+        // on any platform: the advice carries the package's command instead.
+        let supported = Ok(Platform {
+            os: "linux",
+            arch: "amd64",
+        });
+        let managed = PackageManaged::Declared {
+            manager: "homebrew".to_string(),
+            upgrade: "brew upgrade relate".to_string(),
+        };
+        assert_eq!(
+            check_verdict(&supported, Some(&managed), true, "1.2.3"),
+            "upgrade available: 1.2.3; relate was installed by homebrew; \
+             upgrade it with: brew upgrade relate"
+        );
+        assert_eq!(
+            check_verdict(&supported, Some(&managed), false, "1.2.3"),
+            "relate is up to date"
+        );
     }
 
     #[test]

@@ -21,10 +21,10 @@ use super::commit::commit_timing_env;
 use super::ontology;
 use super::open_config::{
     reject_cypherlite_env, resolve_bulk_batch_limits, resolve_checkpoint_interval,
-    resolve_codec_config, resolve_durability_mode, resolve_expression_memory_limit,
-    resolve_load_threads, resolve_max_traversal_depth, resolve_memory_limit,
-    resolve_pattern_engine, resolve_preview_features, resolve_snapshot_codec, resolve_token_limits,
-    resolve_wal_payload_limit,
+    resolve_codec_config, resolve_durability_mode, resolve_expression_memo_budget,
+    resolve_expression_memory_limit, resolve_load_threads, resolve_max_traversal_depth,
+    resolve_memory_limit, resolve_pattern_engine, resolve_preview_features, resolve_snapshot_codec,
+    resolve_token_limits, resolve_wal_payload_limit,
 };
 use super::shared::{OpenResolved, SharedOpenState};
 use super::token_budget;
@@ -112,6 +112,8 @@ struct OpenKnobs {
     max_traversal_depth: u32,
 
     expression_memory_limit: Option<u64>,
+    /// Whole MiB (ADR-0657).
+    expression_memo_budget: u64,
     durability_mode: DurabilityMode,
     preview: PreviewFeatures,
     pattern_engine: PatternEngine,
@@ -277,6 +279,7 @@ impl Database {
             max_traversal_depth: resolve_max_traversal_depth(opts)?,
 
             expression_memory_limit: resolve_expression_memory_limit(opts)?,
+            expression_memo_budget: resolve_expression_memo_budget(opts)?,
             durability_mode: resolve_durability_mode(opts)?,
             preview: resolve_preview_features()?,
             pattern_engine: resolve_pattern_engine()?,
@@ -322,6 +325,7 @@ impl Database {
             max_traversal_depth,
 
             expression_memory_limit,
+            expression_memo_budget,
             durability_mode,
             preview,
             pattern_engine,
@@ -347,6 +351,8 @@ impl Database {
         // ADR-0463: the per-allocation expression cap rides the same
         // pre-share store-level bundle as the CSV policy and preview set.
         graph.configure_expression_memory_limit(expression_memory_limit);
+        // ADR-0657: the shared memo budget rides the same bundle.
+        graph.configure_expression_memo_budget(expression_memo_budget);
         // ADR-0378: the store's resolved preview set lives on the same
         // store-level `StoreServices` bundle as the CSV policy, so every
         // namespace and session of the store gates (and lists) alike.

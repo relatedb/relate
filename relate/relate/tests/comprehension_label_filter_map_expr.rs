@@ -99,9 +99,7 @@ fn function_call_map_expression_controls() {
 /// and the map separator is the later pipe.
 #[test]
 fn label_disjunction_in_comprehension_where_keeps_committing() {
-    let mut c = connection();
-    c.query("CREATE (:A {p1: 'a'}), (:B {p1: 'b'}), (:C {p1: 'c'})")
-        .unwrap();
+    let mut c = common::abc_store();
     // `x:A|B` filters to two rows; the map expression is the later pipe.
     assert_eq!(
         first_column(

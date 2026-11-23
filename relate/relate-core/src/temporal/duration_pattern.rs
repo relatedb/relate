@@ -76,7 +76,7 @@ pub(super) fn parse_duration_pattern(value: &str, pattern: &str) -> Result<Tempo
                 // Fraction digits name a fraction of a second: right-pad to
                 // nine digits, never truncate (`0080090` → 8_009_000 ns).
                 let nanos = nanos_from_fraction(number.value, number.digits)?;
-                tiers.nanos.add_whole(i128::from(nanos), 1)?;
+                tiers.sub_second.add_whole(i128::from(nanos), 1)?;
             }
         }
     }

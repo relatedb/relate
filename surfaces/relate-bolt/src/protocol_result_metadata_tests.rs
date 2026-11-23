@@ -12,7 +12,7 @@ use std::net::TcpStream;
 use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
-    connected_client_with, drain_all, field, read_msg, send_run, send_run_with, success_map,
+    connected_client_with, drain_all, field, read_msg, send_run, send_run_legacy, success_map,
     two_label_db, TWO_LABEL_CARTESIAN,
 };
 
@@ -220,6 +220,51 @@ fn pull_success_carries_the_traversal_rung() {
         arg(plan, "PatternEngine").and_then(Pack::as_str),
         Some("auto"),
         "the static pattern-engine mode rides the MATCH operator: {plan:?}"
+    );
+}
+
+/// ADR-0654: the drained PROFILE summary's root args carry the memo group
+/// (integers) and `MemoKinds` (a list of names) when a memo was used.
+#[test]
+fn pull_success_carries_the_memo_group_when_a_memo_was_used() {
+    let mut client = crate::testutil::connected_client();
+    run_success(
+        &mut client,
+        "PROFILE UNWIND range(0, 1999) AS i \
+         WITH ['2024-05-05T10:00:00Z', '2023-01-01T09:00:00Z'][i % 2] AS s \
+         RETURN count(datetime(s)) AS n",
+    );
+    let pull = drain_success(&mut client, Message::Pull);
+    let plan = pull
+        .get("profile")
+        .unwrap_or_else(|| panic!("the drained PROFILE carries the plan: {pull:?}"));
+    let args = plan.get("args").expect("the root's args");
+    assert!(
+        args.get("MemoProbes").and_then(Pack::as_int) > Some(0),
+        "{plan:?}"
+    );
+    assert!(
+        args.get("MemoHits").and_then(Pack::as_int) > Some(0),
+        "{plan:?}"
+    );
+    for key in [
+        "MemoInserts",
+        "MemoRefused",
+        "MemoBytes",
+        "MemoDisabledCount",
+    ] {
+        assert!(
+            args.get(key).and_then(Pack::as_int).is_some(),
+            "{key}: {plan:?}"
+        );
+    }
+    let kinds = args
+        .get("MemoKinds")
+        .expect("the root names the memo kinds");
+    assert_eq!(
+        format!("{kinds:?}").matches("datetime").count(),
+        1,
+        "{kinds:?}"
     );
 }
 
@@ -533,7 +578,7 @@ fn run_success_carries_the_engine_column_types() {
         let expected: Vec<String> = conn.query(cypher).unwrap().header.column_types.clone();
         drop(conn);
 
-        send_run_with(&mut client, cypher, None);
+        send_run_legacy(&mut client, cypher);
         let run = Pack::Map(success_map(read_msg(&mut client)));
         let column_types = column_types_strings(&run);
         assert_eq!(column_types, expected, "{cypher}");

@@ -425,6 +425,9 @@ fn main() {
             // RELATE_WAL_PAYLOAD_LIMIT (the open preflight, ADR-0650);
             // the CLI carries no flag of its own.
             wal_payload_limit: None,
+            // The memo budget resolves through RELATE_EXPRESSION_MEMO_BUDGET
+            // (the open preflight, ADR-0657); the CLI carries no flag.
+            expression_memo_budget: None,
             max_traversal_depth,
             safe_mode,
             follow_gap: Default::default(),

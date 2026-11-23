@@ -10,7 +10,9 @@ use relate_names::SmallName;
 
 use relate_error::{EngineError, ErrorKind, COUNT_UNION_MIX_MESSAGE, COUNT_UNION_OMITTED_MESSAGE};
 use relate_model::name_list::same_name_multiset;
-use relate_parser::{Clause, PatternElement, PatternPath, ReturnItem, Statement};
+use relate_parser::{
+    branch_shape, BranchShape, Clause, PatternElement, PatternPath, ReturnItem, Statement,
+};
 
 use crate::ast::collect::union_arms;
 use crate::ast::naming::{effective_name, item_needs_alias};
@@ -195,59 +197,19 @@ fn foreach_body_clause_name(clause: &Clause) -> &'static str {
     }
 }
 
-/// A UNION branch's result shape, as far as it's staticaly checkable: either
-/// a concrete list of RETURN column names, `RETURN *` (can't determine the
-/// columns until runtime, so skipped for name comparison), or no RETURN
-/// clause at all (an "omitted" result -- CIP-140 FINISH, or an updating
-/// clause with no trailing RETURN).
-enum UnionBranchShape {
-    Cols(Vec<String>),
-    Wildcard,
-    Omitted,
-}
-
-fn union_branch_shape(clauses: &[Clause]) -> UnionBranchShape {
-    // Note: a union arm carrying its *own* private CIP-213 NEXT chain
-    // (e.g. a top-level-brace block used as one arm, whose own content
-    // chains internally) never reaches here with `.next` set -- the
-    // parser's `maybe_wrap_composite_union_arm` absorbs that chain into a
-    // self-contained `CALL (*) { ... } RETURN *`/`FINISH` node before it
-    // is ever attached as an arm, specifically so this function (and every
-    // other "what does this arm project" analysis) never has to
-    // distinguish "this arm's own continuation" from "the whole
-    // composite's shared trailing NEXT stage" (this `stmt` itself, when
-    // it's the outermost composite node, may still carry `.next` for the
-    // *latter* meaning -- deliberately not consulted here, since it
-    // applies uniformly after every arm, not per-arm).
-    //
-    // CIP-135: a `{ WHEN ... }`/`{ WHEN ... ELSE ... }` UNION arm has no
-    // direct `Clause::Return` of its own -- its shape is whatever its
-    // branches project. Every branch/ELSE body has the same shape
-    // (validated separately), so any one of them stands in
-    // for the whole clause.
-    if let [Clause::Conditional(cc)] = clauses {
-        let inner = cc.representative_body();
-        return match inner {
-            Some(s) => union_branch_shape(&s.clauses),
-            None => UnionBranchShape::Omitted,
-        };
-    }
-    if !clauses.iter().any(|c| matches!(c, Clause::Return(_))) {
-        // An arm whose final clause is a CALL subquery exports that body's
-        // columns (plus the in-scope names before it), so the exact set is
-        // only known once the scope fold runs: a wildcard. A unit subquery
-        // call with no RETURN leaves the arm columnless.
-        if let Some(Clause::CallSubquery(csq)) = clauses.last() {
-            if csq.statement.projects_columns() {
-                return UnionBranchShape::Wildcard;
-            }
-        }
-        return UnionBranchShape::Omitted;
-    }
-    match get_return_columns(clauses) {
-        Some(cols) => UnionBranchShape::Cols(cols),
-        None => UnionBranchShape::Wildcard,
-    }
+/// The column names of a `RETURN` item list, each named by the one
+/// output-name rule ([`effective_name`], which matches the planner's
+/// `Projection::output_name`): an alias, a bare variable, and a
+/// map-projection over a variable all take the variable's name, so
+/// `RETURN n {.p}` and `RETURN n` agree across UNION branches. Rendered to
+/// text: the list feeds the model's `same_name_multiset` comparison (a
+/// value-domain list, not a scope map).
+fn item_columns(items: &[ReturnItem]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(effective_name)
+        .map(|name| name.to_string())
+        .collect()
 }
 
 /// Validate UNION column consistency: all branches must have the same column
@@ -270,17 +232,13 @@ pub fn validate_union_columns(stmt: StmtRef<'_>) -> Result<(), EngineError> {
         return Ok(());
     }
 
-    let mut shapes = vec![union_branch_shape(stmt.clauses())];
+    let mut shapes = vec![branch_shape(stmt.clauses())];
     for (arm, _) in union_arms(stmt.union()) {
-        shapes.push(union_branch_shape(&arm.clauses));
+        shapes.push(branch_shape(&arm.clauses));
     }
 
-    let any_omitted = shapes
-        .iter()
-        .any(|s| matches!(s, UnionBranchShape::Omitted));
-    let any_tabular = shapes
-        .iter()
-        .any(|s| !matches!(s, UnionBranchShape::Omitted));
+    let any_omitted = shapes.iter().any(|s| matches!(s, BranchShape::Omitted));
+    let any_tabular = shapes.iter().any(|s| !matches!(s, BranchShape::Omitted));
     if any_omitted && any_tabular {
         return Err(EngineError::semantic(
             ErrorKind::DifferentColumnsInUnion,
@@ -288,12 +246,13 @@ pub fn validate_union_columns(stmt: StmtRef<'_>) -> Result<(), EngineError> {
         ));
     }
 
-    let mut first_cols: Option<&Vec<String>> = None;
+    let mut first_cols: Option<Vec<String>> = None;
     for shape in &shapes {
-        if let UnionBranchShape::Cols(cols) = shape {
-            match first_cols {
+        if let BranchShape::Items(items) = shape {
+            let cols = item_columns(items);
+            match &first_cols {
                 None => first_cols = Some(cols),
-                Some(fc) if !same_name_multiset(fc, cols) => {
+                Some(fc) if !same_name_multiset(fc, &cols) => {
                     return Err(EngineError::semantic(
                         ErrorKind::DifferentColumnsInUnion,
                         "all UNION branches must have the same column names".to_string(),
@@ -305,33 +264,6 @@ pub fn validate_union_columns(stmt: StmtRef<'_>) -> Result<(), EngineError> {
     }
     Ok(())
 }
-/// Get the column names from a RETURN clause in a statement body.
-///
-/// Each column is named by the one output-name rule
-/// ([`effective_name`], which matches the planner's
-/// `Projection::output_name`): an alias, a bare variable, and a
-/// map-projection over a variable all take the variable's name — so
-/// `RETURN n {.p}` and `RETURN n` agree across UNION branches.
-fn get_return_columns(clauses: &[Clause]) -> Option<Vec<String>> {
-    let rc = clauses.iter().find_map(|clause| match clause {
-        Clause::Return(rc) => Some(rc),
-        _ => None,
-    })?;
-    if rc.items.iter().any(|item| item.all) {
-        return None; // RETURN * - can't easily determine columns
-    }
-    // Rendered to text: the column list feeds the model's
-    // `same_name_multiset` comparison (a value-domain list, not a scope
-    // map).
-    Some(
-        rc.items
-            .iter()
-            .filter_map(effective_name)
-            .map(|name| name.to_string())
-            .collect(),
-    )
-}
-
 /// The two statement-shape UNION rules a `COUNT { … }` body's own UNION
 /// chain must satisfy (CIP-66): its branches must make the same
 /// explicit-vs-omitted RETURN choice, and a body whose every branch omits
@@ -368,15 +300,10 @@ pub fn validate_count_subquery_union_shapes(body: &Statement) -> Result<(), Engi
         .collect::<Vec<_>>();
     // A CIP-135 conditional part is explicit when its branch bodies return:
     // its own clause list has no `Clause::Return` of its own (the same
-    // classification `union_branch_shape` owns).
+    // classification `relate_parser::branch_shape` owns).
     let explicit = branches
         .iter()
-        .filter(|branch| {
-            !matches!(
-                union_branch_shape(&branch.clauses),
-                UnionBranchShape::Omitted
-            )
-        })
+        .filter(|branch| !matches!(branch_shape(&branch.clauses), BranchShape::Omitted))
         .count();
     if explicit > 0 && explicit < branches.len() {
         return Err(EngineError::semantic(
@@ -413,7 +340,7 @@ pub fn validate_projection_names(clauses: &[Clause]) -> Result<(), EngineError> 
 /// The one WITH/RETURN duplicate-column check over a projection's items:
 /// every item's output name comes from the one name rule
 /// ([`effective_name`] — alias, else the variable, else the source text,
-/// the same rule `get_return_columns` renders), and a second item
+/// the same rule `item_columns` renders), and a second item
 /// contributing a name already taken is the `ColumnNameConflict`
 /// rejection — spelled once for both clauses instead of once per arm.
 /// `require_alias` is WITH's own rule (an item that needs an alias —

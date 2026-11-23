@@ -41,6 +41,11 @@ A `plan` tree for a seek-started `MATCH` nests display-only fused children
 (ADR-0622): ordinary `children` entries, never executed operators, with no
 rows/time/memory of their own (the parent's totals stand).
 
+A PROFILE operator's `actual` carries a `memo` dict — `probes`, `hits`,
+`inserts`, `refused`, `bytes`, `disabled_count` (and `kinds` on the root) —
+only when an expression memo was probed on it (ADR-0654); `bytes` is the
+memo tables' allocation, never part of `memory_bytes`.
+
 ## Gotchas
 
 - **Errors carry the engine's classification** — every `relate.Error`

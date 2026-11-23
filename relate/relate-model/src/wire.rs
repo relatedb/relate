@@ -723,6 +723,9 @@ mod plan_wire;
 #[path = "plan_fused.rs"]
 mod plan_fused;
 
+#[path = "plan_memo.rs"]
+mod plan_memo;
+
 // The plan wire form's key vocabulary, its own module beside the types and
 // decoder it names (`plan_keys.rs`); `wire::plan_keys` stays the one public
 // path.
@@ -730,6 +733,7 @@ mod plan_fused;
 pub mod plan_keys;
 
 pub use plan_fused::{FusedChildWire, PlanFusedMetricsWire};
+pub use plan_memo::{MemoKindWire, MemoKindsWire, PlanMemoWire};
 pub use plan_wire::{
     metric_i64, metric_u64, plan_node_wire, plan_subtree_totals, profiled_facts, time_ns_ms,
     KernelRungWire, PlanMetricsWire, PlanNodeWire, PlanPhasesWire, PlanProfiledFacts,

@@ -148,11 +148,19 @@ mod engine_switch_tests;
 #[cfg(test)]
 mod rung_tests;
 
+// The kernel ratio guard (REL8-1969): every traversal kernel must beat
+// the stood-down walker by 1.5x or more on its own engaging shape — the
+// A/B timing lane whose failure retires or widens a kernel.
+#[cfg(test)]
+mod ratio_guard_tests;
+
 mod chain;
 mod chain_count;
 mod hub_star;
 #[cfg(test)]
 mod memo_differential_tests;
+#[cfg(test)]
+mod memo_profile_tests;
 #[cfg(test)]
 mod memo_wiring_tests;
 
@@ -332,7 +340,7 @@ pub(crate) fn try_match_kernel(
     kernel_engaged();
     let residual = Residual {
         conjuncts: &conjuncts,
-        scope: &match_scope(&rows[0], patterns),
+        scope: &match_scope(ctx.graph, &rows[0], patterns),
     };
     let output = run(
         ctx,
@@ -392,7 +400,7 @@ pub(crate) fn try_exists_kernel(
             kernel_engaged();
             let residual = Residual {
                 conjuncts: &conjuncts,
-                scope: &match_scope(row, patterns),
+                scope: &match_scope(ctx.graph, row, patterns),
             };
             let output = run(ctx, &contract, &residual, KernelMode::Exists { counted })?;
             return Ok(Some(match output {

@@ -2,14 +2,14 @@
 
 use std::collections::BTreeMap;
 
-use relate_catalog::{rule_disposition, ConstraintDef, RuleDisposition};
+use relate_catalog::{derived_install_disposition, ConstraintDef, RuleDisposition};
 use relate_core::{Error, Result, Value};
 use relate_ir::DropIndexTarget;
 use relate_names::SmallName;
 use relate_parser::IndexKind;
 
 use crate::overlay::ExecGraph;
-use crate::redo::{backing_constraint_by_name, IndexDetailSpec, IndexKindSpec, RedoOp};
+use crate::redo::{backing_constraint_by_name, IndexDetailSpec, RedoOp};
 
 pub(crate) fn default_index_name(label: &str, property: &str) -> String {
     format!("{label}_{property}")
@@ -35,35 +35,22 @@ fn push_encoded_list(name: &mut String, parts: &[String]) {
 /// Create the range backing index of an index-backed (`unique`/`key`)
 /// constraint: the index shares the constraint's name and label and
 /// encodes the first constrained property with the shared legacy encoder.
-/// The one place this backing-index rule lives. The recorded detail
-/// carries **every** constrained property — SHOW INDEXES reports the
-/// composite backing index with the constraint's full property list
-/// (CIP-11/46/62), and `covered_pairs` materializes a range pair for
-/// each, so an equality seek on any constrained property is served. Only
-/// the legacy `CreateIndex` redo stays first-property-only (the
-/// single-property legacy encoding).
-///
-/// `relationship` is the constraint's entity kind: a relationship
-/// constraint's backing detail records the flag truthfully (SHOW INDEXES
-/// reports it as a relationship index), and `covered_pairs` — the
-/// postings machinery being node-only today — yields no pairs for it, so
-/// nothing is materialized, exactly as before this fix.
+/// The pair itself — the row and its seek-postings detail — is
+/// [`crate::redo::constraint_backing_pair`], the one construction the
+/// derived-migration install shares; this fn owns the DDL half only: the
+/// detail push through [`push_index_detail`] and the encoded
+/// `CreateIndex` redo. A relationship constraint's backing detail
+/// records the flag truthfully (SHOW INDEXES reports it as a
+/// relationship index), while `covered_pairs` — the postings machinery
+/// being node-only today — yields no pairs for it, so nothing is
+/// materialized.
 pub(crate) fn create_constraint_backing_index(
     graph: &ExecGraph<'_>,
-    name: &str,
-    relationship: bool,
-    label: &str,
-    properties: &[String],
+    def: &ConstraintDef,
 ) -> Result<()> {
-    // Only index-backed (`unique`/`key`) constraints reach here, and the
-    // parser guarantees those carry at least one property
-    // (`parse_create_constraint` and the graph-type constraint forms all
-    // require a non-empty property spec) — an empty list would encode a
-    // malformed `"#RANGE#<name>"`, so the invariant is an expect, never a
-    // silent default.
-    let property = properties
-        .first()
-        .expect("index-backed constraints carry at least one property (parser guarantee)");
+    let Some((row, detail)) = crate::redo::constraint_backing_pair(def)? else {
+        return Ok(());
+    };
     // The catalog detail is what materializes the backing index's seek
     // postings (`RedoOp::CatalogIndexDetail` → `materialize_detail` — the
     // same path `exec_create_index` takes through
@@ -73,26 +60,11 @@ pub(crate) fn create_constraint_backing_index(
     // the LABS-328 quadratic merge/match. The encoded `CreateIndex` redo
     // below keeps the catalog's `IndexDef` (whose property consumers split
     // back via `split_legacy_property_encoding`).
-    push_index_detail(
-        graph,
-        name,
-        IndexDetailSpec {
-            kind: IndexKindSpec::Range,
-            relationship,
-            labels: vec![label.to_string()],
-            properties: properties.to_vec(),
-            with_properties: vec![],
-        },
-        &BTreeMap::new(),
-    );
+    push_index_detail(graph, &row.name, detail, &BTreeMap::new());
     // The constraint's backing index is part of the constraint, so it is
     // not counted in `QueryStats::indexes_added` (ADR-0309) — the branch's
     // `create_backing_index` call, kept beside main's LABS-328 detail push.
-    graph.create_backing_index(
-        name.to_string(),
-        label.to_string(),
-        crate::redo::legacy_property_encoding(property, crate::redo::IndexKindSpec::Range, name),
-    )
+    graph.create_backing_index(row.name, row.label, row.property)
 }
 
 /// The one construction of the `CatalogIndexDetail` redo — the push that
@@ -509,11 +481,9 @@ pub(crate) fn create_constraint_core(
     derived: Option<relate_model::Constraint>,
 ) -> Result<()> {
     let index_backed = def.is_index_backed();
-    // The backing index needs the def's fields after it moves.
     let name = def.name.clone();
-    let relationship = def.relationship;
-    let label = def.label.clone();
-    let properties = def.properties.clone();
+    // The backing pair needs the def's fields after it moves into its row.
+    let held = def.clone();
     graph.create_named_constraint(def)?;
     if let Some(constraint) = derived {
         graph.push_catalog_redo(RedoOp::CatalogDerivedConstraint { constraint });
@@ -522,7 +492,7 @@ pub(crate) fn create_constraint_core(
     // under the same effective name; an index already holding the name is
     // left alone.
     if index_backed && graph.named_index(&name).is_none() {
-        create_constraint_backing_index(graph, &name, relationship, &label, &properties)?;
+        create_constraint_backing_index(graph, &held)?;
     }
     Ok(())
 }
@@ -587,26 +557,21 @@ pub(crate) fn sync_derived_constraints(
         // label looked schema-equivalent to its first and was silently
         // skipped. The effective view resolves a legacy row's label first
         // (ADR-0450), so an upgraded store keeps its old skip behavior.
+        // The skip/refuse/install decision is
+        // [`relate_catalog::derived_install_disposition`] — the one home
+        // the replay-path plan shares — so a conflict here (ADR-0489: a
+        // graph-type DDL body is validated as syntax, so a derived
+        // constraint clashing with an independent one is Neo4j's
+        // syntax-class conflict (42001), unlike the same conflict through
+        // `CREATE CONSTRAINT`) and the cross-kind backing-index claim
+        // (a KEY and a UNIQUE on the same subject) cannot exist in one
+        // path and not the other.
         let existing = graph.effective_constraints()?;
-        match rule_disposition(&existing, &def.schema()) {
+        let live: Vec<&ConstraintDef> = existing.iter().collect();
+        match derived_install_disposition(&live, &def) {
             RuleDisposition::Equivalent(_) => continue,
-            // ADR-0489: a graph-type DDL body is validated as syntax, so a
-            // derived constraint clashing with an independent one is
-            // Neo4j's syntax-class conflict (42001), unlike the same
-            // conflict through `CREATE CONSTRAINT` (a schema error).
             RuleDisposition::Conflicts => return Err(Error::syntax("ConstraintConflict")),
             RuleDisposition::New => {}
-        }
-        // The cross-kind backing-index claim: a KEY and a UNIQUE on the same
-        // subject cannot coexist, whether the second arrives through the same
-        // graph type or an independent `CREATE CONSTRAINT`. `rule_disposition`
-        // misses it because the kinds differ; `claims_backing_subject_of` is
-        // the one predicate for the rule.
-        if existing
-            .iter()
-            .any(|committed| def.claims_backing_subject_of(committed))
-        {
-            return Err(Error::syntax("ConstraintConflict"));
         }
         create_constraint_core(graph, def, None)?;
     }

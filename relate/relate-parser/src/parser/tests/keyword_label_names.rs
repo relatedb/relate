@@ -276,40 +276,55 @@ fn test_keyword_label_names_in_label_predicates() {
 #[test]
 fn test_keyword_labels_keep_the_comprehension_pipe_probe() {
     // `ambiguous_pipe_continuation` still splits a comprehension's WHERE
-    // from its map expression when the label is a keyword, and still reads
-    // a keyword after `|` as a disjunct when no map expression follows.
+    // from its map expression when the label is a keyword. A keyword
+    // after `|` is a disjunct only when a later pipe in the same
+    // comprehension keeps the disjunction alive; otherwise the pipe
+    // yields to the map separator and the keyword-spelled name is the
+    // map expression.
     for k in keyword_spellings() {
-        let q = format!("RETURN [x IN [1] WHERE x:{k} | x.p] AS r");
-        match return_expr(&parse_ok(&q)) {
-            Expr::ListComprehension(lc) => {
-                assert_eq!(
-                    *has_label(lc.where_expr.as_ref().expect("WHERE")),
-                    label_predicate("x", label(&k), false, false),
-                    "{q}"
-                );
-                assert!(matches!(lc.map_expr, Some(Expr::Property(_))), "{q}");
+        // (template, expected WHERE's label expression, map matcher)
+        for (template, want_label, map_is_variable) in [
+            // The keyword label before the pipe: the pipe is the
+            // separator, the map is the property access.
+            ("RETURN [x IN [1] WHERE x:{K} | x.p] AS r", label(&k), false),
+            // A single pipe with no later pipe in the comprehension is
+            // the map separator (live's reading): the WHERE keeps `x:A`
+            // and the map expression is the bare keyword-spelled name.
+            ("RETURN [x IN [1] WHERE x:A|{K}] AS r", label("A"), true),
+            // A later pipe keeps the keyword disjunct alive: the first
+            // pipe commits the disjunction and the second is the
+            // separator.
+            (
+                "RETURN [x IN [1] WHERE x:A|{K} | x.p] AS r",
+                LabelExpr::Or(vec![label("A"), label(&k)]),
+                false,
+            ),
+        ] {
+            let q = template.replace("{K}", &k);
+            match return_expr(&parse_ok(&q)) {
+                Expr::ListComprehension(lc) => {
+                    assert_eq!(
+                        *has_label(lc.where_expr.as_ref().expect("WHERE")),
+                        label_predicate("x", want_label, false, false),
+                        "{q}"
+                    );
+                    let map_is_property = matches!(&lc.map_expr, Some(Expr::Property(_)));
+                    assert!(
+                        map_is_property
+                            || (map_is_variable && matches!(&lc.map_expr, Some(Expr::Variable(_)))),
+                        "{q}: the map expression is the {}",
+                        if map_is_variable {
+                            "name"
+                        } else {
+                            "property access"
+                        }
+                    );
+                }
+                other => panic!("{q}: expected a list comprehension, got {other:?}"),
             }
-            other => panic!("{q}: expected a list comprehension, got {other:?}"),
         }
 
-        let q = format!("RETURN [x IN [1] WHERE x:A|{k}] AS r");
-        match return_expr(&parse_ok(&q)) {
-            Expr::ListComprehension(lc) => {
-                assert_eq!(
-                    *has_label(lc.where_expr.as_ref().expect("WHERE")),
-                    label_predicate(
-                        "x",
-                        LabelExpr::Or(vec![label("A"), label(&k)]),
-                        false,
-                        false
-                    ),
-                    "{q}"
-                );
-                assert!(lc.map_expr.is_none(), "{q}");
-            }
-            other => panic!("{q}: expected a list comprehension, got {other:?}"),
-        }
-
+        // The pattern comprehension's keyword label reads the same way.
         let q = format!("RETURN [(a)-->(b) WHERE b:{k} | b.p] AS r");
         match return_expr(&parse_ok(&q)) {
             Expr::PatternComprehension(pc) => {

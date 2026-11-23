@@ -198,6 +198,84 @@ INSTALLER_SIGNER=$(quoted_literal SIGNER "$INSTALLER")
 assert_same "drift guard: install.sh's SIGNER matches install.ps1's \$RelateSigner (ADR-0115)" \
 	"$INSTALLER_SIGNER" "$(quoted_literal '\$RelateSigner' "$PS_INSTALLER")"
 
+# The Chocolatey template (ADR-0659) carries the release URL and the Windows
+# asset the installers use, and the shared package-managed marker. Its own
+# behavior runs on Windows alone (the publish-registries job), but its copies
+# are held to install.sh's and the shared vocabulary here, on every host, so
+# a URL move or an asset rename cannot strand the channel.
+CHOCO_TEMPLATE="$ROOT/distribution/chocolatey/tools/chocolateyinstall.ps1"
+installer_asset_prefix=$(sed -n 's/^ASSET_PREFIX=//p' "$INSTALLER")
+assert_same "drift guard: the Chocolatey template's release base matches install.sh's DOWNLOAD_BASE" \
+	"$(quoted_literal '\$RelateReleaseUrl' "$CHOCO_TEMPLATE")" "$installer_download_base"
+assert_same "drift guard: the Chocolatey template's Windows asset is the shared relate-windows-amd64.exe" \
+	"$(quoted_literal '\$RelateAsset' "$CHOCO_TEMPLATE")" "$installer_asset_prefix-windows-amd64.exe"
+assert_same "drift guard: the Chocolatey template's package-managed marker matches install.sh's and install.ps1's" \
+	"$(quoted_literal '\$RelatePackageMarker' "$CHOCO_TEMPLATE")" \
+	"$(sed -n 's/^MARKER_NAME=//p' "$INSTALLER")" \
+	"$(quoted_literal '\$RelatePackageMarker' "$PS_INSTALLER")"
+# Its copy of the pinned signing key and the signer identity are held to the
+# canonical values install.sh and install.ps1 carry: a rotation that misses
+# this copy breaks every Chocolatey install.
+assert_same "drift guard: the Chocolatey template's pinned signing key matches distribution/release-signing-key.pub" \
+	"$(quoted_literal '\$RelateSigningKey' "$CHOCO_TEMPLATE")" "$pub_key"
+assert_same "drift guard: the Chocolatey template's signer matches install.sh's SIGNER" \
+	"$(quoted_literal '\$RelateSigner' "$CHOCO_TEMPLATE")" "$INSTALLER_SIGNER"
+# The signed version header's prefix and legacy ceiling are the ADR-0457
+# literals manifest.rs owns: the template's binding reads them, so its copies
+# are held to the same source as install.ps1's.
+assert_same "drift guard: the Chocolatey template's sums header prefix matches manifest.rs (ADR-0457)" \
+	"$(quoted_literal '\$RelateSumsVersionPrefix' "$CHOCO_TEMPLATE")" "$rust_prefix"
+assert_same "drift guard: the Chocolatey template's legacy ceiling matches manifest.rs (ADR-0457)" \
+	"$(quoted_literal '\$RelateLegacyManifestCeiling' "$CHOCO_TEMPLATE")" "$rust_ceiling"
+# The vX.Y.Z tag grammar is one literal in both PowerShell installers
+# (install.sh's awk spelling is a different dialect and carries its own).
+assert_same "drift guard: the vX.Y.Z tag grammar is one literal in install.ps1 and the Chocolatey template" \
+	"$(quoted_literal '\$RelateTagPattern' "$PS_INSTALLER")" \
+	"$(quoted_literal '\$RelateTagPattern' "$CHOCO_TEMPLATE")"
+
+# The one extraction idiom for a PowerShell function: the lines from
+# `function $1 {` through its column-0 closing brace, empty when the function
+# is absent (assert_same fails on an empty operand, so a missing copy cannot
+# pass vacuously).
+ps_function_body() { # $1 = function name, $2 = file
+	sed -n "/^function $1 {$/,/^}$/p" "$2"
+}
+
+# The one normalization of the two copies' naming differences, so a shared
+# body compares equal: the refusal helper (install.ps1's Stop-RelateInstall,
+# the template's Stop-RelateChocolateyInstall) and the script label each copy
+# prefixes a warning with both fold to one token.
+normalize_shared() {
+	sed -e 's/Stop-RelateChocolateyInstall /Stop-Relate /g' \
+		-e 's/Stop-RelateInstall /Stop-Relate /g' \
+		-e 's/chocolateyinstall\.ps1: /SCRIPT: /g' \
+		-e 's/install\.ps1: /SCRIPT: /g'
+}
+
+# The function names a PowerShell file declares: one sed idiom over both
+# copies, so the shared set below is derived, never a hand-kept list.
+ps_function_names() { # $1 = file
+	sed -n 's/^function \([A-Za-z0-9-]*\) {.*/\1/p' "$1"
+}
+
+# A Chocolatey package is installed from the community repository and cannot
+# source install.ps1, so its template carries its own copy of every helper it
+# shares with the one-liner. The intersection of the two files' declared
+# function names is the shared set: each is one body here, on every host, so
+# a fix to either copy cannot strand the other, and a helper added to both
+# copies joins the guard the moment it lands in both.
+shared_count=0
+for shared_function in $(ps_function_names "$PS_INSTALLER"); do
+	ps_function_names "$CHOCO_TEMPLATE" | grep -qx "$shared_function" || continue
+	shared_count=$((shared_count + 1))
+	assert_same "drift guard: $shared_function is one body in install.ps1 and the Chocolatey template" \
+		"$(ps_function_body "$shared_function" "$PS_INSTALLER" | normalize_shared)" \
+		"$(ps_function_body "$shared_function" "$CHOCO_TEMPLATE" | normalize_shared)"
+done
+# Guard the guard: an empty intersection would make the loop vacuous.
+[ "$shared_count" -gt 0 ]
+tap_check "drift guard: install.ps1 and the Chocolatey template share at least one helper" $?
+
 # The Windows one-liner is spelled in three places — install.sh's pointer
 # for Git Bash/MSYS/Cygwin, the CLI's Windows upgrade refusal, and
 # install.ps1's own header — and must be one string.
@@ -604,6 +682,51 @@ install_run releases-bad-tag
 assert_resolution_failure \
 	"latest.tag outside the vX.Y.Z shape" \
 	"is not a vX.Y.Z release tag"
+
+# --- 5a. A package-managed install is never overwritten -------------------------
+
+# The marker `relate upgrade` reads: a package writes it beside the real
+# binary and exposes that binary on PATH, so the install path is a symlink
+# into the package's own directory. The refusal body is the CLI's own
+# sentence, so the two consumers cannot advise different commands.
+
+reset_case
+pm_keg="$sandbox/pm-keg"
+pm_home="$sandbox/home-package-managed"
+mkdir -p "$pm_keg" "$pm_home/.local/bin"
+printf 'package-owned binary\n' >"$pm_keg/relate"
+printf '{"manager": "homebrew", "upgrade": "brew upgrade relate"}\n' \
+	>"$pm_keg/.relate-package-managed"
+ln -s "$pm_keg/relate" "$pm_home/.local/bin/relate"
+install_run package-managed
+assert_install_failure "package-managed (symlinked install path)" \
+	"relate was installed by homebrew; upgrade it with: brew upgrade relate"
+[ -L "$pm_home/.local/bin/relate" ]
+tap_check "package-managed: the package's symlink is untouched" $?
+! grep -q 'releases.json' "$RUN_LOG"
+tap_check "package-managed: refused before any request" $?
+
+reset_case
+pm_keg="$sandbox/pm-keg-malformed"
+pm_home="$sandbox/home-package-managed-malformed"
+mkdir -p "$pm_keg" "$pm_home/.local/bin"
+printf 'package-owned binary\n' >"$pm_keg/relate"
+printf '{"manager": "homebrew"}\n' >"$pm_keg/.relate-package-managed"
+ln -s "$pm_keg/relate" "$pm_home/.local/bin/relate"
+install_run package-managed-malformed
+assert_install_failure "package-managed (malformed marker)" \
+	"relate is package-managed; marker"
+grep -qF "unreadable/invalid" "$RUN_ERR"
+tap_check "package-managed (malformed marker): the refusal names the marker's fault" $?
+
+reset_case
+pm_home="$sandbox/home-unmanaged-existing"
+mkdir -p "$pm_home/.local/bin"
+printf 'old binary\n' >"$pm_home/.local/bin/relate"
+install_run unmanaged-existing
+tap_check "unmanaged existing install: installer exits 0" "$RUN_STATUS"
+assert_installed "unmanaged existing install: installed content matches the fixture" \
+	"$fixtures/relate-darwin-arm64"
 
 # --- 6. Cleanliness -------------------------------------------------------------
 

@@ -263,7 +263,11 @@ impl<'a, 'g> ClauseRun<'a, 'g> {
         // agrees.
         let residual = Residual {
             conjuncts: self.conjuncts,
-            scope: &match_scope(entering, std::slice::from_ref(self.contract.pattern)),
+            scope: &match_scope(
+                self.ctx.graph,
+                entering,
+                std::slice::from_ref(self.contract.pattern),
+            ),
         };
         seeds(self.ctx, self.contract, entering, &residual)
     }

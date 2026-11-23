@@ -161,6 +161,42 @@ pub fn is_database_admin_command(plan: &LogicalPlan) -> bool {
 /// 2026.10.1 raises the same rejection for the head and the mid-body
 /// position alike.
 pub fn composed_show_databases(plan: &LogicalPlan) -> Option<&'static str> {
+    composed_command(plan, show_databases_label)
+}
+
+/// The composition rule for `SHOW CURRENT USER`, the second command live
+/// refuses composed off `system` (51N28, verified 2026.10.1: `SHOW CURRENT
+/// USER YIELD user MATCH (n) RETURN n`). Same shape rule as
+/// [`composed_show_databases`], but a *composition-only* classifier: the
+/// ADR-0116 §2 vocabulary ([`DatabaseAdminCommand`]) is untouched, so the
+/// bare command's behaviour and the `system_ontologies` exemption
+/// ([`is_database_admin_command`]) do not move. `SHOW USERS`/`ROLES`/
+/// `SERVERS` are not covered: they were not probed (`SHOW USERS` does not
+/// compose on live at all — a parse error).
+pub fn composed_show_current_user(plan: &LogicalPlan) -> Option<&'static str> {
+    composed_command(plan, show_current_user_label)
+}
+
+/// The command spelling for `SHOW CURRENT USER`, or `None` for every other
+/// clause (the plural/`SHOW USER[S]` forms are not a composition subject).
+fn show_current_user_label(clause: &Clause) -> Option<&'static str> {
+    match clause {
+        Clause::Catalog(command) => match command.as_ref() {
+            relate_parser::Clause::ShowUsers(show) if show.current_only => {
+                Some("SHOW CURRENT USER")
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The shared composition walk of [`composed_show_databases`] and
+/// [`composed_show_current_user`]: `label` names the command a clause is.
+fn composed_command(
+    plan: &LogicalPlan,
+    label: fn(&Clause) -> Option<&'static str>,
+) -> Option<&'static str> {
     let standalone = plan.parts.len() == 1 && plan.next.is_none();
     for part in plan.parts() {
         let mut clauses = part
@@ -169,7 +205,7 @@ pub fn composed_show_databases(plan: &LogicalPlan) -> Option<&'static str> {
         let Some((index, label)) = clauses
             .by_ref()
             .enumerate()
-            .find_map(|(index, clause)| show_databases_label(clause).map(|label| (index, label)))
+            .find_map(|(index, clause)| label(clause).map(|label| (index, label)))
         else {
             continue;
         };

@@ -226,13 +226,19 @@ are stamped at the end of execution):
   warnings}`. `actual` is `None` on an `EXPLAIN` tree and otherwise
   `{rows, time_ms, total_time_ms, db_hits, memory_bytes, expression_built_bytes,
   hops, neighbor_walks, node_reads, seek_ms, walk_ms, loops, batched,
-  zone_skips, start}`
+  zone_skips, start}` — plus `memo` only when a memo was probed on the
+  operator (ADR-0654; see below)
   (`batched` says whether the operator ran the ADR-0468 batch
   scan/filter/project chain — `False` on every operator the chain
   declined; `zone_skips` counts that chain's filter's zone skips —
   conjunct-batch evaluations the chunk's derived per-column min/max
   provably replaced with the correct empty survivor set, `0` when it
-  skipped nothing) where
+  skipped nothing; `memo` is `{probes, hits, inserts, refused, bytes,
+  disabled_count}` — the expression memos' counters summed over the
+  operator's memos, `bytes` their table allocation (never part of
+  `memory_bytes`), the key absent on an operator that used no memo, and
+  the root's `memo` adds `kinds`, the memo type names `node-label` /
+  `datetime`) where
   `start` is `{element, backward, reason}` (the walk's chosen
   start element index, its direction, and why: `bound-pivot`, `cheapest`,
   `seek-anchored` or `index-0`). `seek_ms`/`walk_ms` are the phase times

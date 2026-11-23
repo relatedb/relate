@@ -29,13 +29,15 @@ consumer would hand it.
 On a `PROFILE` run the stamped tree (`QueryResult::plan_root()`) carries the
 per-operator metrics (`ClauseMetrics { rows, time_ns, db_hits,
 memory_bytes, expression_built_bytes, reads, start, phases, batched,
-zone_skips }` — `reads` breaks `db_hits` into hops / neighbor walks /
+zone_skips, memo }` — `reads` breaks `db_hits` into hops / neighbor walks /
 node reads, `start` names the walk's element, direction and reason class
 (LABS-369), `phases` the seek/walk time split (LABS-448), `batched`
 whether the clause ran the ADR-0468 batch scan/filter/project chain,
 `zone_skips` (LABS-645) how many conjunct-batch evaluations that chain's
 filter provably replaced with the correct empty survivor set via the
-chunk's derived per-column min/max zone) and the typed warnings — the
+chunk's derived per-column min/max zone, `memo` the expression-memo
+counters of ADR-0654 — see the [PROFILE memo-counters example](profile_memo.md)) and
+the typed warnings — the
 example profiles a
 27-row-labeled scan filtered to one row and asserts the scan's metrics
 and the `EstimationMiss` warning behind the flagged `Est/Actual` cell

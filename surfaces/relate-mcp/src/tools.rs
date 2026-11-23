@@ -192,39 +192,30 @@ fn invalid_params(detail: String) -> ToolError {
 /// map-shaped member is optional.
 static EMPTY_OBJECT: std::sync::LazyLock<Map<String, Json>> = std::sync::LazyLock::new(Map::new);
 
-/// One tool call's shape: the object a `tools/call` carries its arguments
-/// in.
-fn arguments_of(arguments: &Json) -> Result<&Map<String, Json>, ToolError> {
-    // The borrow is the point: a tools/call's arguments (parameters.rows
-    // included, up to the row cap) are read, never cloned, on their way
-    // through the caps — the one owned copy is the engine parameter map
-    // the tool build makes. The null case answers the canonical empty map
-    // so every caller keeps one reference type.
-    mcp::object_member("arguments", Some(arguments))
-        .map_err(invalid_params)
-        .map(|arguments| arguments.unwrap_or(&EMPTY_OBJECT))
-}
-
-/// The tool name and arguments object of one `tools/call` params value —
-/// the one extraction both surfaces run before they dispatch.
-pub fn call_parts(params: Option<&Json>) -> Result<(&str, &Json), ToolError> {
+/// The tool name and the validated arguments object of one `tools/call`
+/// params value — the one extraction both surfaces run before they
+/// dispatch. Absent or `null` arguments fold to the empty map here, once (the
+/// vocabulary's one absence rule); a non-object is refused with the shared
+/// `"arguments" must be an object`.
+pub fn call_parts(params: Option<&Json>) -> Result<(&str, &Map<String, Json>), ToolError> {
     // Both halves borrowed: the name is matched on and the arguments read
     // by the dispatch — neither surface needs an owned copy of the
-    // payload. An absent arguments object answers a static null so the
-    // callers keep one reference type; an absent params object folds into
-    // the one name guard — an empty map has no "name" either, so absence
-    // and empty answer the same refusal.
-    static NULL_ARGUMENTS: Json = Json::Null;
-    let params = mcp::object_member("params", params)
-        .map_err(invalid_params)?
-        .unwrap_or(&EMPTY_OBJECT);
-    let Some(name) = params.get("name").and_then(Json::as_str) else {
+    // payload. An absent params object folds into the one name guard — an
+    // empty map has no "name" either, so absence and empty answer the same
+    // refusal; the empty map is passed to the read as its default.
+    let params = mcp::object_member("params", params).map_err(invalid_params)?;
+    let Some(name) = params
+        .unwrap_or(&EMPTY_OBJECT)
+        .get("name")
+        .and_then(Json::as_str)
+    else {
         return Err(ToolError::InvalidParams {
             detail: "missing string \"name\"".to_string(),
         });
     };
-    let arguments = params.get("arguments").unwrap_or(&NULL_ARGUMENTS);
-    Ok((name, arguments))
+    let arguments = mcp::object_member("arguments", params.and_then(|p| p.get("arguments")))
+        .map_err(invalid_params)?;
+    Ok((name, arguments.unwrap_or(&EMPTY_OBJECT)))
 }
 
 /// Whether `name` is a tool that writes — read from the one tool table, so a
@@ -281,7 +272,11 @@ impl<'a> Tools<'a> {
     /// handle rather than a connection ([`get_schema_json`]) and
     /// `report_output` is the extension mount's own lifecycle call, so
     /// neither is dispatched here.
-    pub fn call(&mut self, name: &str, arguments: &Json) -> Result<ToolOutcome, ToolError> {
+    pub fn call(
+        &mut self,
+        name: &str,
+        arguments: &Map<String, Json>,
+    ) -> Result<ToolOutcome, ToolError> {
         match name {
             mcp::WRITE_CYPHER => self
                 .write_cypher(arguments)
@@ -300,14 +295,20 @@ impl<'a> Tools<'a> {
     /// `write_cypher`: one writing statement with its parameters (a `rows`
     /// array feeds `$rows`). A pure read is refused — the write tool is for
     /// writes on both surfaces.
-    pub fn write_cypher(&mut self, arguments: &Json) -> Result<QueryOutcome, ToolError> {
+    pub fn write_cypher(
+        &mut self,
+        arguments: &Map<String, Json>,
+    ) -> Result<QueryOutcome, ToolError> {
         let (statement, params) = self.cypher_call(arguments)?;
         self.run(statement, params, Gate::Write)
     }
 
     /// `read_cypher`: one read-only statement. A writing or schema statement
     /// is refused with the reference server's pinned text.
-    pub fn read_cypher(&mut self, arguments: &Json) -> Result<QueryOutcome, ToolError> {
+    pub fn read_cypher(
+        &mut self,
+        arguments: &Map<String, Json>,
+    ) -> Result<QueryOutcome, ToolError> {
         let (statement, params) = self.cypher_call(arguments)?;
         self.run(statement, params, Gate::Read)
     }
@@ -316,8 +317,10 @@ impl<'a> Tools<'a> {
     /// created — the `SHOW INDEXES` / `SHOW CONSTRAINTS` name difference
     /// across the call. A data write or a read is refused before it touches
     /// the graph.
-    pub fn update_schema(&mut self, arguments: &Json) -> Result<Vec<String>, ToolError> {
-        let arguments = arguments_of(arguments)?;
+    pub fn update_schema(
+        &mut self,
+        arguments: &Map<String, Json>,
+    ) -> Result<Vec<String>, ToolError> {
         let statement = self.statement(arguments)?;
         self.gate(statement, BTreeMap::new(), Gate::Schema)?;
         let before = self.schema_names()?;
@@ -330,8 +333,10 @@ impl<'a> Tools<'a> {
     /// transaction around them is the caller's framing (the extension
     /// mount's commit policy; the product server runs them as it receives
     /// them).
-    pub fn batch_cypher(&mut self, arguments: &Json) -> Result<Vec<QueryResult>, ToolError> {
-        let arguments = arguments_of(arguments)?;
+    pub fn batch_cypher(
+        &mut self,
+        arguments: &Map<String, Json>,
+    ) -> Result<Vec<QueryResult>, ToolError> {
         let Some(statements) = arguments.get("statements") else {
             return Err(ToolError::InvalidParams {
                 detail: "missing array \"statements\"".to_string(),
@@ -358,7 +363,7 @@ impl<'a> Tools<'a> {
                 });
             };
             let statement = self.statement(item)?.to_string();
-            let parameters = self.parameters(item)?;
+            let parameters = self.parameters(item, &EMPTY_OBJECT)?;
             prepared.push((statement, params_map(parameters)?));
         }
         let mut results = Vec::with_capacity(prepared.len());
@@ -372,11 +377,10 @@ impl<'a> Tools<'a> {
     /// arguments, caps applied.
     fn cypher_call<'v>(
         &self,
-        arguments: &'v Json,
+        arguments: &'v Map<String, Json>,
     ) -> Result<(&'v str, BTreeMap<String, Value>), ToolError> {
-        let arguments = arguments_of(arguments)?;
         let statement = self.statement(arguments)?;
-        let parameters = self.parameters(arguments)?;
+        let parameters = self.parameters(arguments, &EMPTY_OBJECT)?;
         Ok((statement, params_map(parameters)?))
     }
 
@@ -436,17 +440,20 @@ impl<'a> Tools<'a> {
     fn parameters<'v>(
         &self,
         arguments: &'v Map<String, Json>,
+        default: &'v Map<String, Json>,
     ) -> Result<&'v Map<String, Json>, ToolError> {
         // The caps run on the BORROWED object: an oversized or malformed
         // payload is refused before the engine's own copy is built, so a
         // too-large rows array never doubles the request's memory on its
-        // way to the refusal. Absence answers the canonical empty object.
+        // way to the refusal. Absence (or null) answers the default the
+        // caller passes in.
         let Some(parameters) = mcp::object_member("parameters", arguments.get("parameters"))
             .map_err(invalid_params)?
         else {
-            return Ok(&EMPTY_OBJECT);
+            return Ok(default);
         };
-        if let Some(rows) = parameters.get("rows") {
+        // Null is absent, like every optional member of the vocabulary.
+        if let Some(rows) = parameters.get("rows").filter(|rows| !rows.is_null()) {
             let Some(rows) = rows.as_array() else {
                 return Err(ToolError::InvalidParams {
                     detail: "\"parameters.rows\" must be an array".to_string(),
@@ -539,23 +546,19 @@ pub fn get_schema_json(db: &Database, sample_size: Option<u64>) -> Result<String
 /// is converted at the wire edge (`-1` = the whole graph), anything else is
 /// the pinned refusal.
 fn sample_size_argument(
-    arguments: &Json,
+    arguments: &Map<String, Json>,
     configured: Option<u64>,
 ) -> Result<Option<u64>, ToolError> {
-    let arguments = arguments_of(arguments)?;
+    let not_an_integer = || ToolError::InvalidParams {
+        detail: "\"sample_size\" must be an integer".to_string(),
+    };
     match arguments.get("sample_size") {
         None | Some(Json::Null) => Ok(configured),
-        Some(Json::Number(n)) => {
-            crate::server::sample_size_at_edge(n.as_i64().ok_or_else(|| {
-                ToolError::InvalidParams {
-                    detail: "\"sample_size\" must be an integer".to_string(),
-                }
-            })?)
-            .map_err(|detail| ToolError::InvalidParams { detail })
+        Some(value) => {
+            let n = value.as_i64().ok_or_else(not_an_integer)?;
+            crate::server::sample_size_at_edge(n)
+                .map_err(|detail| ToolError::InvalidParams { detail })
         }
-        Some(_) => Err(ToolError::InvalidParams {
-            detail: "\"sample_size\" must be an integer".to_string(),
-        }),
     }
 }
 
@@ -631,7 +634,11 @@ impl ResponseShape {
 /// Execute one `tools/call`: returns the tool's text content on success or
 /// the tool-error text (surfaced as `isError: true`) on failure. Unknown or
 /// disabled tool names are tool errors too.
-pub fn call_tool(server: &McpServer, name: &str, arguments: &Json) -> Result<String, String> {
+pub fn call_tool(
+    server: &McpServer,
+    name: &str,
+    arguments: &Map<String, Json>,
+) -> Result<String, String> {
     let prefix = server.namespace_prefix();
     let Some(base) = name.strip_prefix(&prefix) else {
         return Err(unknown_tool(name));
@@ -651,7 +658,11 @@ pub fn call_tool(server: &McpServer, name: &str, arguments: &Json) -> Result<Str
 /// One cypher tool call over the shared tool bodies: the access names the
 /// tool, the body classifies, gates and runs it, and the shape renders the
 /// envelope.
-fn call_cypher(server: &McpServer, arguments: &Json, access: Access) -> Result<String, String> {
+fn call_cypher(
+    server: &McpServer,
+    arguments: &Map<String, Json>,
+    access: Access,
+) -> Result<String, String> {
     let mut conn = server
         .database()
         .connect()

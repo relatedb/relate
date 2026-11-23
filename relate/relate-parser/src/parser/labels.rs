@@ -295,6 +295,10 @@ impl<'a> Parser<'a> {
                         .map(|expr| (expr, legacy_pipe_colon))
                 },
                 Self::chain_tail_ends_where,
+                // The legacy `|:` spelling is this grammar's fact: the
+                // pipe's continuation and the separator confirmation both
+                // skip the same optional colon.
+                pipe_is_legacy.then_some(TokenType::Colon),
             )?;
             let Some((chain, legacy_pipe_colon)) = chain else {
                 break; // the `|` is the comprehension's map separator
@@ -314,45 +318,27 @@ impl<'a> Parser<'a> {
     }
 
     /// The label side's tail classification for the shared pipe
-    /// mechanism: whether the token after a would-be label chain ends
-    /// its usefulness as a disjunction continuation — the narrow
-    /// dead-end set, deliberately not the value-type side's continuation
-    /// whitelist: label disjunctions commit on operators (`x:A | B AND y`
-    /// reads as `(x:A|B) AND y`), a pre-existing behavior that stays.
-    /// Property access (`.`), a function call's `(` and a map projection
-    /// (`{`) postfix the map expression's base and can never continue a
-    /// label chain; a `]` proves the separator only where the context's
-    /// bracket proof says the `]` would close the comprehension with its
-    /// map stranded
-    /// ([`BracketProof::RightBracketClosesTheComprehension`]). The `{`
-    /// and `]` arms are gated on the pattern-element depth: inside a
-    /// pattern element's own label/type chain, `{` is the element's
-    /// inline property map (`(x:A|B {p: 1})`, `-[r:S|T {w: 1}]->`) and
-    /// `]` closes the element's type brackets, never the comprehension's
-    /// closer, so a `|` in a type disjunction there (`[:S|T]` in a
-    /// comprehension's WHERE) stays a disjunction. The `.` and `(` arms
-    /// are ungated: no grammar postfixes a complete label chain with a
-    /// parenthesized group at any depth (a `(` only ever opens a label
-    /// primary of its own), while both postfix the map expression's base
-    /// — a variable (`x.p1`) or a function name (`substring(x.p1, 0, 1)`)
-    /// — which is where the two tokens appear in practice.
-    fn chain_tail_ends_where(&self, ty: TokenType) -> bool {
-        matches!(ty, TokenType::Dot | TokenType::LeftParen)
-            || (self.pattern_element_depth == 0
-                && (matches!(ty, TokenType::LeftBrace)
-                    || (self.comprehension_where
-                        == Some(BracketProof::RightBracketClosesTheComprehension)
-                        && ty == TokenType::RightBracket)))
-    }
-
-    /// Type of the token at absolute index `pos` (`EOF` past the end) --
-    /// the absolute-index counterpart of `peek_at` for token-level scans,
-    /// in the idiom of `scan_dot_chain_for_call`.
-    fn token_type_at(&self, pos: usize) -> TokenType {
-        match self.tokens.get(pos) {
-            Some(t) => t.ty,
-            None => TokenType::EOF,
-        }
+    /// mechanism: whether the would-be disjunction continuation ends —
+    /// yielding the `|` to the comprehension's map separator. The whole
+    /// decision is the one shared context fact both grammars read
+    /// ([`Parser::comprehension_where_yields_the_pipe`]: live Neo4j's
+    /// separator preference — `x:A|B]` and `x:A|B AND y]` yield the pipe
+    /// to the map, whose expression then names `B` and fails on the
+    /// undefined name; a later pipe in the same comprehension keeps the
+    /// disjunction alive); the label grammar adds one rule of its own —
+    /// a span the one-pass scan could not answer (past its walk cap, or
+    /// never closed) falls back to the pre-branch map-base postfix
+    /// dead-end set (`.`/`(`), keeping the wide-fanout pin's trailing
+    /// separator working on spans too large to scan — and inside a
+    /// pattern element's own label/type chain
+    /// (`(x:A|B {p: 1})`, `[:S|T]`) the shared fact is gated off and the
+    /// pipe is a real disjunction. Outside a comprehension-WHERE context
+    /// the fact never fires (the mechanism's context gate), so the
+    /// strict grammar is preserved exactly.
+    fn chain_tail_ends_where(&self) -> bool {
+        self.comprehension_where_yields_the_pipe()
+            || (self.comprehension_scan_unanswered()
+                && matches!(self.peek_type(), TokenType::Dot | TokenType::LeftParen))
     }
 
     /// Skips the balanced `(...)` group opening at absolute index `open`

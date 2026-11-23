@@ -3,7 +3,7 @@
 //! `case`-as-variable lookahead. Split out of `expressions` so that
 //! file stops growing with the CASE grammar (AGENTS.md file-size rule).
 
-use super::expressions::BracketSet;
+use super::BracketSet;
 use super::*;
 use crate::token::is_clause_boundary;
 

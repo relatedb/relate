@@ -6,13 +6,11 @@ use crate::testutil::{connected_client_with_hello, read_msg, send_struct, succes
 use std::net::TcpStream;
 
 /// The module's HELLO extra: the canonical `user_agent` map (ADR-0313)
-/// plus `scheme` and the optional `patch_bolt` entry.
-fn hello_extra(patch_bolt: Option<Pack>) -> Pack {
-    let mut entries = vec![("scheme", Pack::String("none".into()))];
-    if let Some(patch_bolt) = patch_bolt {
-        entries.push(("patch_bolt", patch_bolt));
-    }
-    crate::testutil::hello_extra(entries)
+/// plus `scheme` and the caller's extra `entries`.
+fn hello_extra(entries: Vec<(&str, Pack)>) -> Pack {
+    let mut all = vec![("scheme", Pack::String("none".into()))];
+    all.extend(entries);
+    crate::testutil::hello_extra(all)
 }
 
 fn strings(names: &[&str]) -> Pack {
@@ -55,10 +53,15 @@ fn the_wire_name_is_the_only_vocabulary() {
     assert!(!BoltPatches::default().applies(BoltPatch::Utc));
 }
 
-/// A connection past HELLO with `patch_bolt`; returns the HELLO SUCCESS.
-fn client_with_hello(patch_bolt: Option<Pack>) -> (TcpStream, Pack) {
+/// A connection past HELLO carrying `patch_bolt` as its patch entry;
+/// returns the HELLO SUCCESS.
+fn client_with_hello(patch_bolt: Pack) -> (TcpStream, Pack) {
     let db = std::sync::Arc::new(relate::Database::open(":memory:").unwrap());
-    connected_client_with_hello(db, Default::default(), hello_extra(patch_bolt))
+    connected_client_with_hello(
+        db,
+        Default::default(),
+        hello_extra(vec![("patch_bolt", patch_bolt)]),
+    )
 }
 
 /// RUN `cypher` with `params`, PULL everything, and return the first
@@ -87,7 +90,7 @@ fn single_value(client: &mut TcpStream, cypher: &str, params: Vec<(Pack, Pack)>)
 
 #[test]
 fn a_utc_hello_is_echoed_and_switches_datetimes_to_utc_structures() {
-    let (mut client, hello) = client_with_hello(Some(strings(&["utc"])));
+    let (mut client, hello) = client_with_hello(strings(&["utc"]));
     assert_eq!(hello.get("patch_bolt"), Some(&strings(&["utc"])));
     assert_eq!(
         single_value(
@@ -117,7 +120,7 @@ fn a_utc_hello_is_echoed_and_switches_datetimes_to_utc_structures() {
 
 #[test]
 fn without_the_patch_there_is_no_echo_and_datetimes_stay_legacy() {
-    let (mut client, hello) = client_with_hello(Some(strings(&["elementid"])));
+    let (mut client, hello) = client_with_hello(strings(&["elementid"]));
     assert_eq!(hello.get("patch_bolt"), None);
     assert_eq!(
         single_value(
@@ -138,13 +141,13 @@ fn without_the_patch_there_is_no_echo_and_datetimes_stay_legacy() {
 #[test]
 fn only_a_lists_string_entries_are_negotiated() {
     for patch_bolt in [Pack::String("utc".into()), Pack::List(vec![Pack::Int(1)])] {
-        let (_client, hello) = client_with_hello(Some(patch_bolt));
+        let (_client, hello) = client_with_hello(patch_bolt);
         assert_eq!(hello.get("patch_bolt"), None);
     }
-    let (_client, hello) = client_with_hello(Some(Pack::List(vec![
+    let (_client, hello) = client_with_hello(Pack::List(vec![
         Pack::String("elementid".into()),
         Pack::Int(1),
         Pack::String("utc".into()),
-    ])));
+    ]));
     assert_eq!(hello.get("patch_bolt"), Some(&strings(&["utc"])));
 }

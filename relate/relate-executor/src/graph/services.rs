@@ -51,6 +51,10 @@ pub(crate) struct StoreServices {
     /// of the store enforces. `None` is the explicit opt-out; the default is
     /// [`crate::memory::EXPRESSION_BUDGET_BYTES`].
     pub(crate) expression_memory_limit: Option<u64>,
+    /// The shared memo live-bytes budget (ADR-0657) every statement of the
+    /// store enforces, in bytes (the open-time setting is whole MiB).
+    /// `0` disables the budgeted memo tables.
+    pub(crate) memo_budget_bytes: u64,
     /// The store's diagnostic pattern-engine switch (ADR-0519), resolved
     /// once at open from `RELATE_PATTERN_ENGINE` and read by the
     /// kernel rungs' routing. Configuration the store owns, like the
@@ -67,6 +71,9 @@ impl Default for StoreServices {
             preview: PreviewFeatures::default(),
             databases: DatabasesCatalog::default(),
             expression_memory_limit: Some(crate::memory::EXPRESSION_BUDGET_BYTES),
+            memo_budget_bytes: crate::memory::memo_budget_bytes(
+                crate::memory::DEFAULT_MEMO_BUDGET_MIB,
+            ),
             pattern_engine: PatternEngine::Auto,
         }
     }
@@ -94,6 +101,18 @@ impl Graph {
     #[doc(hidden)]
     pub fn configure_expression_memory_limit(&mut self, limit: Option<u64>) {
         self.services_mut().expression_memory_limit = limit;
+    }
+
+    /// Install the shared memo budget (ADR-0657), in whole MiB, before the
+    /// services bundle is shared. `0` disables the budgeted memo tables.
+    #[doc(hidden)]
+    pub fn configure_expression_memo_budget(&mut self, mib: u64) {
+        self.services_mut().memo_budget_bytes = crate::memory::memo_budget_bytes(mib);
+    }
+
+    /// The configured shared memo budget in bytes (ADR-0657).
+    pub(crate) fn memo_budget_bytes(&self) -> u64 {
+        self.services.memo_budget_bytes
     }
 
     /// The configured per-allocation expression cap (`None` = no cap).

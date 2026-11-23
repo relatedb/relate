@@ -14,6 +14,7 @@ use crate::{CancelToken, PullKind, QueryResult, Result, Shared, Value};
 
 mod admission;
 mod cache;
+mod columns;
 mod outcome;
 mod render;
 mod staged;
@@ -83,6 +84,11 @@ pub struct Connection {
     /// every later statement, including after a caught worker panic.
     #[cfg(all(test, not(target_arch = "wasm32")))]
     worker_spawns: u32,
+    /// How many statements the cache-hit inline route (ADR-0663) served
+    /// on the calling thread — the route's own observable, so tests pin
+    /// which statements it takes and which it leaves the worker.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    hit_inline_statements: u32,
 }
 
 mod dispatch;
@@ -102,6 +108,8 @@ pub(crate) fn fresh(inner: Arc<Shared>, namespace: Namespace) -> Connection {
         caller_stack_asserted: false,
         #[cfg(all(test, not(target_arch = "wasm32")))]
         worker_spawns: 0,
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        hit_inline_statements: 0,
     }
 }
 

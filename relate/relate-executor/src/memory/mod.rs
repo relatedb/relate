@@ -42,6 +42,18 @@ pub const VEC_HEADER: u64 = 24;
 /// disables it.
 pub const EXPRESSION_BUDGET_BYTES: u64 = 256 << 20;
 
+/// The default shared memo budget in whole MiB (ADR-0657): the live bytes
+/// every budgeted memo of a statement may hold together. The open-time
+/// setting `expression_memo_budget` replaces it per store.
+pub const DEFAULT_MEMO_BUDGET_MIB: u64 = 16;
+
+/// The one MiB-to-bytes conversion of the memo budget, saturating so a
+/// caller that skipped the open-time range check cannot wrap to a small
+/// budget.
+pub(crate) const fn memo_budget_bytes(mib: u64) -> u64 {
+    mib.saturating_mul(1 << 20)
+}
+
 /// Capacity the floor charges for a vector of length `len`.
 ///
 /// `0` reserves nothing. Every other length rounds up to the next power of

@@ -57,3 +57,36 @@ fn null_bound_create_and_merge_endpoints_is_an_argument_error() {
         Value::Int(2)
     );
 }
+
+/// REL8-1813: a *variable-rooted* property target whose value is not an
+/// entity is the runtime type error live reports (CIP-131 [15]/[16] —
+/// `SET n[x][y] = 1` where `n[x]` is a string, its parenthesized spelling,
+/// and the REMOVE twin), while a *general target expression* keeps the
+/// pinned compile-time SyntaxError class (`Set.feature` "An assignment
+/// target expression that is an integer is a semantic error").
+#[test]
+fn a_variable_rooted_non_entity_write_target_is_a_runtime_type_error() {
+    let mut conn = connection();
+    run(&mut conn, "CREATE (:Item {a: 'hello'})");
+    for query in [
+        "MATCH (n:Item) WITH n, 'a' AS x, 'b' AS y SET n[x][y] = 1 RETURN n",
+        "MATCH (n:Item) WITH n, 'a' AS x, 'b' AS y SET (n[x])[y] = 1 RETURN n",
+        "MATCH (n:Item) WITH n, 'a' AS x, 'b' AS y REMOVE n[x][y] RETURN n",
+    ] {
+        assert_eq!(
+            error_class_literal(&mut conn, query),
+            "TypeError",
+            "a variable-rooted non-entity target is a runtime type error: {query}"
+        );
+    }
+    // The pinned general-expression shape keeps its compile-time class:
+    // the target is not rooted in a variable, so the fault is static.
+    assert_eq!(
+        error_class_literal(
+            &mut conn,
+            "MATCH (n:Item) SET (CASE WHEN true THEN 42 END).name = 'x' RETURN count(*)"
+        ),
+        "SyntaxError",
+        "a general target expression keeps the pinned SyntaxError class"
+    );
+}

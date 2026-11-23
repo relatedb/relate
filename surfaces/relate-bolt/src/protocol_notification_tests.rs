@@ -59,7 +59,7 @@ fn ending_has_notifications(
     cypher: &str,
     entries: Vec<(&str, Pack)>,
 ) -> bool {
-    send_run_with(client, cypher, Some(entries));
+    send_run_with(client, cypher, entries);
     success_map(read_msg(client));
     let (_, ending) = crate::testutil::drain_all(client, Message::Pull);
     ending.get("notifications").is_some()
@@ -93,11 +93,7 @@ fn an_invalid_severity_in_hello_answers_the_probed_failure() {
 #[test]
 fn an_invalid_severity_in_run_extra_answers_the_probed_failure() {
     let mut client = open_client_with(vec![]);
-    send_run_with(
-        &mut client,
-        "RETURN 1 AS n",
-        Some(vec![severity("INVALID")]),
-    );
+    send_run_with(&mut client, "RETURN 1 AS n", vec![severity("INVALID")]);
     let failure = failure_map(read_msg(&mut client));
     assert_eq!(field(&failure, "code"), REQUEST_INVALID_CODE);
     assert_eq!(
@@ -157,10 +153,10 @@ fn a_wrong_typed_value_fails_the_request() {
     send_run_with(
         &mut client,
         "RETURN 1 AS n",
-        Some(vec![(
+        vec![(
             NOTIFICATIONS_DISABLED_CATEGORIES,
             Pack::String("PERFORMANCE".into()),
-        )]),
+        )],
     );
     let failure = failure_map(read_msg(&mut client));
     assert_eq!(
@@ -175,10 +171,10 @@ fn a_wrong_typed_value_fails_the_request() {
     send_run_with(
         &mut client,
         "RETURN 1 AS n",
-        Some(vec![(
+        vec![(
             NOTIFICATIONS_DISABLED_CATEGORIES,
             Pack::List(vec![Pack::Int(1)]),
-        )]),
+        )],
     );
     let failure = failure_map(read_msg(&mut client));
     assert_eq!(

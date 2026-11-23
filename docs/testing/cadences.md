@@ -21,7 +21,7 @@ merge.
 
 | Lane | Continuous slice (ci.yml, blocks PRs) | Background full version | Cadence |
 | --- | --- | --- | --- |
-| TCK | — (retired with the in-repo harness, ADR-0520; language coverage is the spec-harness lane, ADR-0482) | — | — |
+| TCK | — (retired with the in-repo harness, ADR-0520; language coverage is the spec-harness lane, ADR-0482, with the ADR-0661 regression gate as its own required check) | — | — |
 | Loadtest baselines | `loadtest-baselines` job: fraud + identity in the pinned ADR-0070 Docker env | — (stays continuous, see below) | continuous |
 | Loadtest / large fixtures | `loadtest-smoke`: dataset suites at `ci()` scale (0.05), comparator + install.sh harness tests | `large-fixtures`: full-scale (scale=1.0) fraud + identity fixtures (`RELATE_FULL_DATA=1`, release profile) | nightly 03:30 UTC |
 | LDBC query latency (ADR-0243/ADR-0244) | `corpus` job step: SF0.1 answer gate (`RELATE_QUERY_LATENCY=1`, answers only, no latency judgement) | `ldbc-sf01`: all 30 queries, `--min-time 5`, p50/mean/p99 report uploaded as an artifact | nightly 03:30 UTC |
@@ -69,7 +69,8 @@ out (recorded as a Later-references note on ADR-0251, which is immutable):
   compile, and the TCK run itself is seconds, so the merge gate kept the full
   3892/3892 check on every PR. The corpus job's TCK and cip-eval steps and
   the in-repo harness have since retired (ADR-0520): the corpora live in the
-  spec harness (ADR-0482), which reports language coverage without blocking.
+  spec harness (ADR-0482), which reports language coverage and blocks PRs on
+  failing-id regressions (ADR-0661).
 - **Loadtest baselines stay continuous.** §6 listed them as nightly, but the
   `loadtest-baselines` job is the ADR-0070/ADR-0071 CI-owned freeze gate —
   envelope comparison only means something on the merge path. Demoting it

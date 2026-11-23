@@ -81,8 +81,8 @@ pub use relate_core::Namespace;
 pub use relate_core::{
     next_depth, parse_expression_memory_limit, parse_memory_limit, parse_positive_memory_limit,
     require_positive_memory_limit, uuid_hyphenated, uuid_parse, value_depth_exceeded,
-    ArithmeticFailure, CapacityKind, Error, Node, Path, PropertyMap, Relationship, Result,
-    Temporal, Value, MAX_VALUE_DEPTH,
+    ArgumentFault, ArithmeticFailure, CapacityKind, Error, Node, Path, PropertyMap, Relationship,
+    Result, Temporal, Value, MAX_VALUE_DEPTH,
 };
 pub use relate_core::{
     require_traversal_depth, traversal_depth_exceeded_message, MAX_TRAVERSAL_DEPTH,
@@ -102,8 +102,8 @@ pub use relate_error::{
 };
 pub use relate_executor::{
     FrontierCounters, FrontierDecline, FrontierDeclineReason, FrontierRunDecline, KernelRung,
-    PatternEngine, PhaseTimes, Procedure, PullKind, QueryStats, StartReason, StatementEffect,
-    StoreReads, WalkStart,
+    MemoCounters, PatternEngine, PhaseTimes, Procedure, PullKind, QueryStats, StartReason,
+    StatementEffect, StoreReads, WalkStart,
 };
 // Research-only (speed-of-light kernels), quarantined behind the
 // non-default `research` cargo feature (ADR-0476): this re-export and the
@@ -342,6 +342,17 @@ pub struct OpenOptions {
     /// does not parse fails open with a semantic error, like the other
     /// memory-limit knobs.
     pub expression_memory_limit: Option<u64>,
+    /// The shared live-bytes budget of the executor's memo tables, in whole
+    /// MiB (ADR-0657). `Some(0)` disables the budgeted tables (no table is
+    /// allocated and every pure check runs as without a memo); the compiled
+    /// regex cache and the `IN`-list membership index stay on. The
+    /// node-label memo is a budgeted table too, so it is off at zero. `None` uses `RELATE_EXPRESSION_MEMO_BUDGET`
+    /// (a plain non-negative integer of MiB) and otherwise the default,
+    /// 16. Each table's ceiling is half the budget. A value that does not
+    /// parse, or is too large to express in bytes, fails open naming the
+    /// setting, before the store lease. Speed and memory only: every
+    /// budget returns the same rows.
+    pub expression_memo_budget: Option<u64>,
     /// Opt-in safe mode (LABS-680, ADR-0477): refuse agent-typical
     /// dangerous statement shapes — a new named node without a label, and a
     /// `MATCH` read without `LIMIT` or a reducing aggregate (the exemption is

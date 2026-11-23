@@ -25,6 +25,8 @@ impl crate::metrics::PlanMetricsSink for ClauseRecords {
     fn record_clause(&self, record: ClauseMetricsRecord) {
         self.0.borrow_mut().push(record);
     }
+
+    fn record_statement_memos(&self, _record: crate::metrics::StatementMemoRecord) {}
 }
 
 pub(crate) use aggregate::*;

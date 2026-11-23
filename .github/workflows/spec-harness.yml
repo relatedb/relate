@@ -1,16 +1,29 @@
 name: spec-harness
 
-# The spec-coverage lane (ADR-0482): every in-review PR runs the
-# cypher-test-harness suites against the PR's own Python-wheel build — the
-# wheel installed in the venv IS the engine under test — and reports
-# coverage (passed / (passed + failed), @fails / nondeterministic /
-# skipped never counted) with a traffic light in the job summary and a PR
-# comment. Every merge to main runs the same suite on the merge commit, so
-# the tree that actually landed carries its own number. The engine's TCK
-# extension corpus and CIP evaluation suite run in that harness too, as two
-# of its own features/ suites — the engine no longer vendors them
-# (ADR-0520). Reporting, not gating: coverage below 100% never fails the
-# build; only a summary the report script cannot read does.
+# The PR-side spec lane (ADR-0482 coverage + the ADR-0661 gate): every
+# in-review PR runs the cypher-test-harness suites against the PR's own
+# Python-wheel build — the wheel installed in the venv IS the engine
+# under test — reports coverage (passed / (passed + failed), @fails /
+# nondeterministic / skipped never counted) with a traffic light in the
+# job summary and a PR comment, and gates: red when a scenario fails
+# that the machine-written baseline does not already carry as failing.
+# The engine's TCK extension corpus and CIP evaluation suite run in
+# that harness too, as two of its own features/ suites (ADR-0520).
+#
+# The merge run (the baseline write, the merge coverage number, the
+# watchdog) is a separate workflow — spec-harness-baseline.yml, push to
+# main only — so the write-scoped token it needs is never referenced by
+# any PR-triggered run (the security posture, ADR-0661 §5): GitHub runs
+# a push-triggered workflow from the pushed ref's own file, which no
+# pull request can make execute. This file references no write secret.
+#
+# Reporting and gating are two verdicts: the coverage report never
+# fails a build on a number (ADR-0482 §4), and the gate — a required
+# status check — fails it on a scenario that main does not already
+# carry as failing (ADR-0661 §1). The PR run checks out the harness at
+# the baseline's recorded revision, so the comparison is engine-only
+# (§3); the `spec-gate-follow-harness` label opts a corpus-coupled PR
+# into gating against current harness main instead.
 on:
   pull_request:
     branches: [main]
@@ -18,21 +31,19 @@ on:
     # here, flipping a draft to ready would never trigger this lane.
     # Draft pushes (synchronize) still reach the job and skip below.
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-  # A merge to main produces its own coverage number. The squash-merge
-  # deletes the head branch, which cancels the PR's in-flight run before it
-  # posts — a merge once moved a report category's mismatches from 42 to
-  # 463 and no run ever reported it. This run keys on the pushed ref, so
-  # nothing about the merge's own number depends on the branch surviving.
-  push:
-    branches: [main]
+    # No paths-ignore, on purpose (ADR-0661 §5): a path-filtered
+    # workflow leaves a required check in Expected and blocks the PRs
+    # it filters out. Docs-only diffs are detected inside the job and
+    # skip the suite with an explicit success conclusion instead.
+  # Dispatch stays (ad-hoc runs of the PR lane on any ref — this file
+  # references no write secret, so a dispatched branch's own copy is
+  # harmless; the merge lane's file is the one a dispatch can never
+  # reach, ADR-0661 §5). The docs-only detector's non-PR arm diffs
+  # HEAD~1..HEAD for dispatched refs.
   workflow_dispatch:
 
 permissions:
   contents: read
-  pull-requests: write   # the coverage comment
 
 # The draft-state suffix keeps a draft -> ready flip from canceling the
 # in-flight draft run (a status change is not a new push); a new push in
@@ -40,20 +51,29 @@ permissions:
 # cancellation is cancel-on-merge.yml's.
 #
 # A push to main has no head_ref, so its group falls back to github.ref
-# (`spec-harness-refs/heads/main`): no PR group collides with it, and the
-# null draft suffix keeps it apart from the `-draft` variant. Two merges
-# closer together than one run cancel the older run — acceptable, the newer
-# merge commit supersedes it.
+# (`spec-harness-refs/heads/main`): no PR group collides with it, and
+# the null draft suffix keeps it apart from the `-draft` variant. Two
+# merges closer together than one run cancel the older run —
+# acceptable, the newer merge commit supersedes it.
 concurrency:
   group: spec-harness-${{ github.head_ref || github.ref }}${{ github.event.pull_request.draft && '-draft' || '' }}
   cancel-in-progress: true
 
 jobs:
   harness:
-    name: Spec harness (coverage traffic light)
-    # The draft contract (AGENTS.md): drafts run the light fast gate only;
-    # this lane waits for ready-for-review. A dispatch or push run has no
-    # pull_request context and passes the guard.
+    name: Spec harness (coverage and regression gate)
+    # Least privilege (ADR-0661, security review): this job builds and
+    # executes PR-authored code (the wheel under test), so it carries
+    # the minimum grant — contents: read. The write grants the report
+    # surfaces need (the PR comment, the watchdog issue) live on the
+    # `report` job, which never executes PR code and receives only the
+    # counts-only markdown the report scripts already render for the
+    # public log.
+    permissions:
+      contents: read
+    # The draft contract (AGENTS.md): drafts run the light fast gate
+    # only; this lane waits for ready-for-review. A dispatch or push
+    # run has no pull_request context and passes the guard.
     if: ${{ !github.event.pull_request.draft }}
     # The free tier is enough (measured, ADR-0482 Later references): the
     # lane's whole footprint is ~1–2 GB (its rust-cache is 188 MiB — one
@@ -66,19 +86,76 @@ jobs:
     steps:
       # No stored credentials: this checkout is never used to push, and
       # the comment step passes github.token explicitly (ADR-0482 §5,
-      # security review).
+      # security review). Depth 2: the docs-only detection on push
+      # events diffs HEAD~1..HEAD.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 2
+
+      # The in-job docs-only skip (ADR-0661 §5): the required check must
+      # conclude success for a diff the suite cannot move, instead of
+      # hanging in Expected behind a workflow-level path filter. The
+      # skip writes its own step-summary line so the conclusion is
+      # visible, never silent.
+      #
+      # The file list is fetched through a PIPE into a file, never a
+      # process substitution: a gh failure (or a mid-pagination cut)
+      # fails the step under pipefail — fail-closed — instead of
+      # silently handing the detector a truncated list that could
+      # classify a code diff as docs-only and skip the required gate on
+      # files it never saw.
+      - name: Detect a docs-only diff (the required check must still conclude)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          paths=()
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" \
+              --jq '.[].filename' > "$RUNNER_TEMP/pr-files.txt"
+            mapfile -t paths < "$RUNNER_TEMP/pr-files.txt"
+            # The files API caps at 3000 entries — a list at the cap is
+            # an incomplete list, and an incomplete list never skips
+            # the required gate: a PR past the cap runs the lane
+            # regardless of what the visible slice looks like.
+            if [ "${#paths[@]}" -ge 3000 ]; then
+              echo "PR file list at the API's 3000-file cap — incomplete by construction; the lane runs"
+              paths=()
+            fi
+          elif git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+            mapfile -t paths < <(git diff --name-only HEAD~1 HEAD)
+          fi
+          docs_only=1
+          for path in ${paths[@]+"${paths[@]}"}; do
+            case "$path" in
+              docs/*|*.md) ;;
+              *) docs_only=0; break ;;
+            esac
+          done
+          if [ "$docs_only" = 1 ] && [ ${#paths[@]} -gt 0 ]; then
+            {
+              echo "## Spec harness — skipped (docs-only diff)"
+              echo ""
+              echo "The diff touches no engine code; the suite cannot move it. The required check concludes success by the in-job skip (ADR-0661 §5)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "DOCS_ONLY=1" >> "$GITHUB_ENV"
+            echo "docs-only diff — the suite and the gate are skipped"
+          else
+            echo "not docs-only — the lane runs"
+          fi
 
       # The harness repo (private, same org). A read token is REQUIRED
       # (ADR-0482 §5, verified in CI 2026-11-02): github.token is scoped
       # to this repository, so a cross-repo checkout fails with
       # "Repository not found" even with the harness repo internal.
-      # Remedies: set HARNESS_READ_TOKEN (fine-grained PAT, Contents: Read
-      # on the harness repo) or use a GitHub App token. The fallback keeps
-      # the lane correct should a default-token path ever exist. Ref is
-      # main — the numbers are current, the sha lands in the report.
+      # Remedies: set HARNESS_READ_TOKEN (fine-grained PAT, Contents:
+      # Read on the harness repo) or use a GitHub App token. The
+      # fallback keeps the lane correct should a default-token path
+      # ever exist. Ref is main here; the gate re-checks out the
+      # baseline's recorded revision below (ADR-0661 §3).
       # ADR-0517 §3: the external home is acquired outside this repo. The
       # 2026-11-05 relatedb cutover moved the harness to
       # relatedb/relate-cypher-compat-private (not the
@@ -88,6 +165,7 @@ jobs:
       # world. HARNESS_READ_TOKEN must carry Contents: Read on the new
       # home or the cross-repo checkout fails (ADR-0482 §5).
       - name: Check out the spec harness (relatedb/relate-cypher-compat-private)
+        if: env.DOCS_ONLY != '1'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: relatedb/relate-cypher-compat-private
@@ -99,10 +177,48 @@ jobs:
           # code runs (security review, ADR-0482 §5).
           persist-credentials: false
 
+      # The like-for-like pin (ADR-0661 §3): the gate must compare the
+      # PR against exactly the corpus the baseline measured, so corpus
+      # churn can never red an engine PR. The baseline is a REFERENCE
+      # document, not part of the pinned corpus: it records the revision
+      # the run was measured at, and lands in its own later commit (the
+      # writer's PUT) — so it is read and STASHED from the main checkout
+      # before the re-checkout, and the gate compares against the
+      # stashed copy (the pinned tree does not carry it). The recorded
+      # revision is validated as a 40-hex sha before it becomes a
+      # checkout ref; a missing baseline is a hard failure — fail-closed,
+      # never a silent pass (§5): bootstrap (dispatch the lane on main)
+      # precedes the ruleset flip by contract.
+      - name: Read and stash the gate baseline; pin the harness to its recorded revision (ADR-0661 §3)
+        if: ${{ env.DOCS_ONLY != '1' && github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'spec-gate-follow-harness') }}
+        id: baseline
+        run: |
+          set -euo pipefail
+          sha=$(python3 -c \
+            "import json; print(json.load(open('harness/baselines/engine-main.json'))['harness_sha'])")
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::the baseline's recorded harness revision is not a 40-hex sha — refusing to check it out"
+            exit 1
+          fi
+          cp harness/baselines/engine-main.json "$RUNNER_TEMP/engine-main.json"
+          echo "harness_sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "gate baseline pins the harness at $sha (baseline stashed)"
+
+      - name: Re-check out the harness at the baseline's revision (like-for-like, ADR-0661 §3)
+        if: ${{ env.DOCS_ONLY != '1' && github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'spec-gate-follow-harness') }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: relatedb/relate-cypher-compat-private
+          path: harness
+          ref: ${{ steps.baseline.outputs.harness_sha }}
+          token: ${{ secrets.HARNESS_READ_TOKEN || github.token }}
+          persist-credentials: false
+
       # Informational, never blocking (ADR-0482 §5): the default token is
-      # expected to see the same-org harness repo. Shell-inert probe of the
-      # secret's presence — the value never reaches the log.
+      # expected to see the same-org harness repo. Shell-inert probe of
+      # the secret's presence — the value never reaches the log.
       - name: Note the harness checkout token in use
+        if: env.DOCS_ONLY != '1'
         env:
           HARNESS_TOKEN: ${{ secrets.HARNESS_READ_TOKEN }}
         run: |
@@ -113,6 +229,7 @@ jobs:
           fi
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        if: env.DOCS_ONLY != '1'
         with:
           python-version: "3.12"
 
@@ -124,6 +241,7 @@ jobs:
       # precedes. The release-profile cache key is this lane's own — it
       # must not pollute the debug-profile shared keys.
       - uses: ./.github/actions/setup-rust-ci
+        if: env.DOCS_ONLY != '1'
         with:
           free-disk: "false"
           cache-shared-key: spec-harness-v1
@@ -135,6 +253,7 @@ jobs:
       # silently measures the wrong engine (ADR-0482). Only cargo/sccache
       # artifacts are cached, never pip state.
       - name: Create the harness venv (never cached — the wheel is reinstalled every run)
+        if: env.DOCS_ONLY != '1'
         run: |
           python3 -m venv harness/.venv
           harness/.venv/bin/pip install --upgrade pip
@@ -146,6 +265,7 @@ jobs:
       # scratch dir wiped before the build, so no stale wheel from any
       # cache can be picked up by the install glob below.
       - name: Build the engine wheel from the PR's commit (maturin, release)
+        if: env.DOCS_ONLY != '1'
         run: |
           rm -rf dist
           cd surfaces/relate-python
@@ -153,11 +273,13 @@ jobs:
           ls -l "$GITHUB_WORKSPACE/dist"
 
       - name: Install the PR's wheel into the venv (force-reinstall)
+        if: env.DOCS_ONLY != '1'
         run: |
           harness/.venv/bin/pip install --force-reinstall dist/relate_db-*.whl
           harness/.venv/bin/python -c "import relate; print('engine under test:', relate.__file__)"
 
       - name: Run the spec-harness suite (~32k scenarios)
+        if: env.DOCS_ONLY != '1'
         env:
           # One engine pair today. A second pair repeats this step with the
           # other ids; the harness opens the in-memory engine and the local
@@ -174,6 +296,7 @@ jobs:
       # summary the report script cannot read — a real problem, since
       # then there is no number at all.
       - name: Spec coverage report (traffic light, never fails on a number)
+        if: env.DOCS_ONLY != '1'
         run: |
           set -o pipefail
           # The runtime row is context: when the suite step did not record
@@ -188,21 +311,125 @@ jobs:
             "${run_seconds_args[@]}" \
             | tee "$RUNNER_TEMP/coverage.md"
 
+      # The gate (ADR-0661): red — exit 1 — iff a scenario fails that
+      # the baseline does not already carry as failing. The verdict
+      # appends to the coverage comment payload; a first-run red gets
+      # one suite re-run before it stands (§5, the flake absorption);
+      # a shape failure (exit 2) is never retried — there is no verdict
+      # to retry toward. The `--require-baseline-revision` assertion
+      # holds only on pinned runs (the default); a follow-label run
+      # gates against current harness main by choice and skips it.
+      - name: Spec gate (ADR-0661) — red on a scenario main does not already fail
+        if: ${{ env.DOCS_ONLY != '1' && github.event_name == 'pull_request' }}
+        env:
+          SPEC_GATE_FOLLOW: ${{ contains(github.event.pull_request.labels.*.name, 'spec-gate-follow-harness') }}
+        run: |
+          set -o pipefail
+          # The stashed baseline: pinned runs read the copy taken from
+          # main before the re-checkout (the pinned tree does not carry
+          # it — the baseline lands in its own later commit); follow
+          # runs stash it just the same, so one code path reads one file.
+          baseline_path="$RUNNER_TEMP/engine-main.json"
+          if [ ! -f "$baseline_path" ]; then
+            baseline_path="harness/baselines/engine-main.json"
+          fi
+          pin_args=()
+          if [ "${SPEC_GATE_FOLLOW}" != "true" ]; then
+            pin_args=(--require-baseline-revision)
+          fi
+          gate() {
+            python3 scripts/spec-harness-gate.py \
+              harness/reports/summary.json \
+              --baseline "$baseline_path" \
+              --harness-sha "$(git -C harness rev-parse HEAD)" \
+              "${pin_args[@]}" \
+              | tee "$RUNNER_TEMP/gate.md"
+          }
+          # Only the FINAL verdict rides the comment payload: a red first
+          # run is retried once, and the retry's table replaces the first
+          # in gate.md (tee overwrites) before the single append — the
+          # comment never carries two gate sections.
+          rc=0
+          gate || rc=$?
+          if [ "$rc" -eq 0 ] || [ "$rc" -ne 1 ]; then
+            cat "$RUNNER_TEMP/gate.md" >> "$RUNNER_TEMP/coverage.md"
+            exit "$rc"
+          fi
+          echo "::warning::spec gate red on the first run — one suite re-run before the verdict stands (ADR-0661 §5)"
+          ( cd harness && .venv/bin/python scripts/generate_report.py )
+          rc=0
+          gate || rc=$?
+          cat "$RUNNER_TEMP/gate.md" >> "$RUNNER_TEMP/coverage.md"
+          exit "$rc"
+
       # One upserted comment per PR, not one per push. Never fails the
-      # lane: a comment-posting hiccup must not turn a green report red.
-      # A push run has no PR to comment on — its number is the job summary.
+      # lane: a comment-posting hiccup must not turn a green report red,
+      # and a red gate must not hide the report — the step runs after
+      # any verdict (`!cancelled()`), so the comment carries the
+      # coverage table and the gate verdict alike. A push run has no PR
+      # to comment on — its number is the job summary.
+      # The counts-only report surfaces (the coverage comment payload,
+      # the writer's log with the watchdog delta line) ride an artifact
+      # to the `report` job — the one holding the write grants. The
+      # payload is exactly what the report scripts render for the public
+      # log: counts and categories, never an id (ADR-0661 §4), so the
+      # public repo's world-readable artifact store leaks nothing it
+      # does not already publish in the comment itself.
+      - name: Upload the report payload for the report job
+        if: ${{ !cancelled() && env.DOCS_ONLY != '1' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: spec-harness-report
+          path: ${{ runner.temp }}/coverage.md
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Disk headroom (telemetry)
+        if: always() && runner.os == 'Linux'
+        run: scripts/report-disk.sh
+
+  # The report surfaces (ADR-0661 §4): one job holding every write
+  # grant the lane needs, executing nothing but GitHub API calls — the
+  # coverage comment on PRs, the watchdog issue on merges. It never
+  # runs PR-authored code (the wheel lives and dies in the harness
+  # job), and its input is the counts-only payload the report scripts
+  # already render for the public log.
+  report:
+    name: Spec harness (report surfaces)
+    needs: harness
+    if: ${{ !cancelled() && needs.harness.result != 'skipped' }}
+    permissions:
+      pull-requests: write   # the coverage comment (the only write this
+                             # job performs; the watchdog's issues grant
+                             # rides the merge lane, which never runs
+                             # PR-authored code)
+    runs-on: ubuntu-latest
+    steps:
+      # The artifact may legitimately not exist (a docs-only run, a
+      # harness failure before the report): the download step tolerates
+      # that and each consumer guards on the file itself.
+      - name: Download the report payload
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: spec-harness-report
+        continue-on-error: true
+
       - name: Post the coverage report as a PR comment
-        if: github.event_name == 'pull_request'
+        if: ${{ github.event_name == 'pull_request' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
+          if [ ! -f coverage.md ]; then
+            echo "no comment payload (the lane failed before the report, or the diff was docs-only)"
+            exit 0
+          fi
           marker="<!-- spec-harness-coverage -->"
           body="$marker
-          $(cat "$RUNNER_TEMP/coverage.md")
+          $(cat coverage.md)
 
-          <sub>Rerun \`spec-harness\` to refresh. Coverage below 100% never fails the build (ADR-0482 §4).</sub>"
+          <sub>Rerun \`spec-harness\` to refresh. Coverage below 100% never fails the build (ADR-0482 §4); a scenario that main does not already fail does (ADR-0661).</sub>"
           existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
             --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
           if [ -n "$existing" ]; then
@@ -215,6 +442,3 @@ jobs:
             echo "created coverage comment"
           fi
 
-      - name: Disk headroom (telemetry)
-        if: always() && runner.os == 'Linux'
-        run: scripts/report-disk.sh

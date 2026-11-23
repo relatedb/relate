@@ -55,7 +55,7 @@ pub use arith::{
 pub use between::{duration_between, duration_between_unit, BetweenUnit};
 pub use clock::{
     clock_access, clock_spelling, clock_spelling_rows, clock_spellings, construct_clock,
-    now_epoch_millis, now_utc_dt, ClockKind, ClockMode, QueryClockGuard,
+    now_epoch_millis, now_utc_dt, ClockKind, ClockMode, QueryClockGuard, TransactionClock,
 };
 pub use construct::{
     accepts_pattern, clock_kind, construct_date, construct_datetime, construct_duration,

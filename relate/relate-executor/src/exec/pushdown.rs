@@ -16,7 +16,7 @@ pub(crate) use super::agg_fold::FoldedReturn;
 pub(crate) use super::match_cap::{match_limit_cap, MatchCap};
 use super::scope::{
     add_gpm_element_names, call_scope_reads, for_each_pattern_bound_name, has_star_item,
-    is_internal_column, ProjectionFields,
+    ProjectionFields,
 };
 
 static ANON: AtomicU64 = AtomicU64::new(1);
@@ -392,18 +392,20 @@ pub(crate) fn remove_item_vars(item: &RemoveItem, out: &mut HashSet<String>) {
     }
 }
 
-pub(crate) fn trim_rows(rows: &mut [Row], live: &HashSet<String>) {
+pub(crate) fn trim_rows(graph: &ExecGraph<'_>, rows: &mut [Row], live: &HashSet<String>) {
     for row in rows {
-        row.retain(|k, _| live.contains(k) || is_internal_column(k));
+        row.retain(|k, _| live.contains(k) || graph.is_internal_key(k));
     }
 }
 
-pub(crate) fn match_scope(row: &Row, patterns: &[PathPattern]) -> HashSet<String> {
-    let mut s: HashSet<String> = row
-        .keys()
-        .filter(|k| !is_internal_column(k))
-        .cloned()
-        .collect();
+pub(crate) fn match_scope(
+    graph: &ExecGraph<'_>,
+    row: &Row,
+    patterns: &[PathPattern],
+) -> HashSet<String> {
+    // The row-key half is the one visible-keys walk; the pattern half adds
+    // the names this clause is about to bind.
+    let mut s: HashSet<String> = super::scope::visible_keys(graph, row).into_iter().collect();
     for pattern in patterns {
         for_each_pattern_bound_name(pattern, &mut |name| {
             s.insert(name.to_string());
@@ -412,6 +414,12 @@ pub(crate) fn match_scope(row: &Row, patterns: &[PathPattern]) -> HashSet<String
     s
 }
 
-pub(crate) fn anon_name() -> String {
-    format!("__a{}", ANON.fetch_add(1, Ordering::Relaxed))
+/// A fresh anonymous-element name: the `__a` prefix through the one
+/// freshening policy ([`ExecGraph::uncolliding_prefix`], lengthened past
+/// every declared name), then the global counter — so a user binding such
+/// as `` `__a0` `` is never overwritten by (or read back as) a synthetic
+/// one, by construction rather than a retry loop.
+pub(crate) fn anon_name(graph: &ExecGraph<'_>) -> String {
+    let prefix = graph.uncolliding_prefix("__a", std::iter::empty());
+    format!("{prefix}{}", ANON.fetch_add(1, Ordering::Relaxed))
 }

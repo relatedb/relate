@@ -295,6 +295,25 @@ fn actual_json(metrics: &PlanMetricsWire, subtree_ns: i64, loops: Option<u64>) -
         "frontier_decline".to_string(),
         json!(metrics.frontier_decline),
     );
+    // ADR-0654: the expression-memo counters — unlike the always-present
+    // groups above, present only when a memo was probed on the node (the
+    // plan wire's presence-only rule), so a memo-free plan carries no
+    // `memo` key. `bytes` is the memo tables' allocation, never part of
+    // `memory_bytes`; `kinds` is non-empty on the root only.
+    if let Some(memo) = metrics.memo {
+        let mut group = json!({
+            "probes": memo.probes,
+            "hits": memo.hits,
+            "inserts": memo.inserts,
+            "refused": memo.refused,
+            "bytes": memo.bytes,
+            "disabled_count": memo.disabled_count,
+        });
+        if !memo.kinds.is_empty() {
+            group["kinds"] = json!(memo.kinds.names().collect::<Vec<_>>());
+        }
+        out.insert("memo".to_string(), group);
+    }
     // Always present, `null` when the operator walked no pattern: the one
     // absence spelling the document uses (a consumer never faces a
     // missing-key rule).
@@ -374,6 +393,44 @@ mod tests {
         assert_eq!(doc["root"]["actual"]["loops"], 1, "the scan's rows");
         let child = &doc["root"]["children"][0];
         assert!(child["actual"]["loops"].is_null());
+    }
+
+    /// ADR-0654: `actual.memo` is present only where the node carries the
+    /// group, snake_case with numbers as numbers, `kinds` on the root.
+    #[test]
+    fn actual_carries_the_memo_group_only_when_used() {
+        use crate::wire::plan_keys;
+        let scan = plan_wire_node("NodeByLabelScan", 1, Some(3_000_000), vec![]);
+        let mut root = plan_wire_node("ProduceResults", 0, Some(10_000_000), vec![scan]);
+        let doc = plan_document(&root, Some("MATCH (n) RETURN n"), &[]);
+        assert!(doc["root"]["actual"].get("memo").is_none());
+        let CypherValue::Map(node) = &mut root else {
+            unreachable!()
+        };
+        let Some(CypherValue::Map(args)) = node.get_mut(plan_keys::ARGS) else {
+            unreachable!()
+        };
+        for (key, value) in [
+            (plan_keys::MEMO_PROBES, 100),
+            (plan_keys::MEMO_HITS, 90),
+            (plan_keys::MEMO_INSERTS, 10),
+            (plan_keys::MEMO_REFUSED, 0),
+            (plan_keys::MEMO_BYTES, 1024),
+            (plan_keys::MEMO_DISABLED_COUNT, 1),
+        ] {
+            args.insert(key.to_string(), CypherValue::Int(value));
+        }
+        args.insert(
+            plan_keys::MEMO_KINDS.to_string(),
+            CypherValue::List(vec![CypherValue::Str("datetime".into())]),
+        );
+        let doc = plan_document(&root, Some("MATCH (n) RETURN n"), &[]);
+        assert_eq!(
+            doc["root"]["actual"]["memo"],
+            json!({"probes": 100, "hits": 90, "inserts": 10, "refused": 0,
+                   "bytes": 1024, "disabled_count": 1, "kinds": ["datetime"]})
+        );
+        assert!(doc["root"]["children"][0]["actual"].get("memo").is_none());
     }
 
     #[test]

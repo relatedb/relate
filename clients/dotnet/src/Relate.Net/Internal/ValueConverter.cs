@@ -39,12 +39,8 @@ internal static class ValueConverter
                 return zoned.DateTimeOffset;
             case CypherDuration duration when type == typeof(TimeSpan):
                 return duration.ToTimeSpan();
-            case CypherVector vector when type == typeof(double[]):
-                return vector.ToDoubleArray();
-            case CypherVector vector when type == typeof(float[]):
-                return vector.ToSingleArray();
-            case CypherVector vector when type == typeof(long[]):
-                return vector.ToInt64Array();
+            case CypherVector vector when TryVectorArray(vector, type, out object? vectorArray):
+                return vectorArray;
             case string s when type == typeof(Guid):
                 return Guid.Parse(s);
             case string s when type.IsEnum:
@@ -53,16 +49,20 @@ internal static class ValueConverter
                 return Enum.ToObject(type, l);
             case string s when type == typeof(char) && s.Length == 1:
                 return s[0];
+            // A string has no conversion left — its Guid, enum and single-char targets are
+            // handled above — so it is terminal here: a string-to-numeric Get<T> throws
+            // rather than silently parsing.
+            case string:
+                throw new InvalidCastException($"Cannot convert a string to {target}.");
         }
 
-        // The string target has its own rendering before ChangeType; string sources stay excluded
-        // so a string-to-numeric Get<T> keeps throwing rather than silently parsing.
+        // The string target has its own rendering before ChangeType.
         if (type == typeof(string))
         {
             return System.Convert.ToString(value, CultureInfo.InvariantCulture);
         }
 
-        if (value is IConvertible && typeof(IConvertible).IsAssignableFrom(type) && value is not string)
+        if (value is IConvertible && typeof(IConvertible).IsAssignableFrom(type))
         {
             return System.Convert.ChangeType(value, type, CultureInfo.InvariantCulture);
         }
@@ -78,6 +78,35 @@ internal static class ValueConverter
         }
 
         throw new InvalidCastException($"Cannot convert a value of type {value.GetType()} to {target}.");
+    }
+
+    /// <summary>
+    /// A <see cref="CypherVector"/> as the array target asks for it — the one place the three vector
+    /// array targets are spelled; <see langword="false"/> for any other target. The matcher
+    /// vocabulary of <see cref="TryConvertList"/> and <see cref="TryConvertMap"/>.
+    /// </summary>
+    private static bool TryVectorArray(CypherVector vector, Type type, out object? result)
+    {
+        if (type == typeof(double[]))
+        {
+            result = vector.ToDoubleArray();
+            return true;
+        }
+
+        if (type == typeof(float[]))
+        {
+            result = vector.ToSingleArray();
+            return true;
+        }
+
+        if (type == typeof(long[]))
+        {
+            result = vector.ToInt64Array();
+            return true;
+        }
+
+        result = null;
+        return false;
     }
 
     private static bool TryConvertList(IReadOnlyList<object?> list, Type type, out object? result)

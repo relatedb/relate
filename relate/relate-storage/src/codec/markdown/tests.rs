@@ -792,3 +792,26 @@ fn a_control_byte_in_a_node_file_name_still_refuses() {
         "the control-byte node file refuses: {refused}"
     );
 }
+
+/// The sidecar probe fails closed when the engine directory cannot be
+/// stat'ed: a denied stat is an error naming the engine directory, never
+/// `ManifestProbe::Absent` (which would let the open proceed as fresh).
+#[cfg(unix)]
+#[test]
+fn probe_sidecar_fails_closed_on_a_denied_stat() {
+    use crate::vfs::NativeVfs;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = dir.path().join(LEGACY_ENGINE_DIR);
+    std::fs::create_dir(&engine).unwrap();
+    std::fs::write(engine.join("manifest.json"), b"{}").unwrap();
+    let vfs = NativeVfs::new(dir.path());
+    std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let denied = std::fs::metadata(engine.join("manifest.json")).is_err();
+    let probed = manifest::probe_sidecar(&vfs, SidecarSpelling::Legacy);
+    std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if denied {
+        let err = probed.expect_err("denied stat must be an error");
+        assert!(err.to_string().contains(LEGACY_ENGINE_DIR), "{err}");
+    }
+}

@@ -62,10 +62,11 @@ use relate_model::identifier::parameter_reference;
 /// The reserved prefix of every auto-parameter name. A statement whose
 /// token stream references a parameter with this prefix, or a caller whose
 /// parameter map carries a key with it, is [`NormalizeOutcome::NotCacheable`]
-/// — the caller can never collide with the engine's own names. An
-/// implementation detail of this module and the one helper below:
-/// `params_carry_reserved_prefix` is the public spelling of the policy.
-pub(crate) const AUTO_PARAM_PREFIX: &str = "__AUTO_";
+/// — the caller can never collide with the engine's own names. Private
+/// behind the two named predicates that spell the policy
+/// ([`name_is_auto_parameter`] on names, [`column_carries_auto_parameter`]
+/// on rendered column text): the prefix itself is not surface.
+const AUTO_PARAM_PREFIX: &str = "__AUTO_";
 
 /// Whether a caller's parameter map carries any [`AUTO_PARAM_PREFIX`]-named
 /// key — the one spelling of the reserved-prefix collision policy, consulted
@@ -74,9 +75,26 @@ pub(crate) const AUTO_PARAM_PREFIX: &str = "__AUTO_";
 /// disables the cache for the statement entirely. Generic over the value
 /// type — the policy is about the names only.
 pub fn params_carry_reserved_prefix<V>(params: &std::collections::BTreeMap<String, V>) -> bool {
-    params
-        .keys()
-        .any(|name| name.starts_with(AUTO_PARAM_PREFIX))
+    params.keys().any(|name| name_is_auto_parameter(name))
+}
+
+/// Whether `name` is an auto-parameter name ([`AUTO_PARAM_PREFIX`]) —
+/// the one spelling of the prefix test, shared by the caller-map
+/// boundary above and the planner's auto-parameter plan predicate (the
+/// dispatch epilogue's authored-name restore is keyed on the same
+/// prefix, ADR-0663).
+pub fn name_is_auto_parameter(name: &str) -> bool {
+    name.starts_with(AUTO_PARAM_PREFIX)
+}
+
+/// Whether a rendered result column carries the auto-parameter prefix
+/// (the compiled plan spells an unaliased auto-extracted item as the
+/// placeholder) — the text-level half of the epilogue's re-parse
+/// trigger, beside the name-level [`name_is_auto_parameter`]: the two
+/// consult one prefix, one on names the plan holds typed, one on the
+/// column text the plan rendered.
+pub fn column_carries_auto_parameter(column: &str) -> bool {
+    column.contains(AUTO_PARAM_PREFIX)
 }
 
 /// One extracted literal value: the normalizer's own small vocabulary (the
@@ -222,7 +240,7 @@ impl<'a, 't> Pass<'a, 't> {
                 // nothing to cache.
                 TokenType::Error => return None,
                 TokenType::Parameter => {
-                    if tok.literal.starts_with(AUTO_PARAM_PREFIX) {
+                    if name_is_auto_parameter(&tok.literal) {
                         return None;
                     }
                     if tok.is_dynamic_opener_sentinel() {

@@ -241,6 +241,47 @@ pub(crate) fn resolve_expression_memory_limit(opts: &OpenOptions) -> Result<Opti
     })
 }
 
+/// The largest memo budget (whole MiB) whose byte form fits a `u64`.
+const MAX_MEMO_BUDGET_MIB: u64 = u64::MAX >> 20;
+
+/// Resolve the executor memo budget in whole MiB (ADR-0657): an explicit
+/// [`OpenOptions`] value wins, then `RELATE_EXPRESSION_MEMO_BUDGET`, then
+/// the default. A bad value fails the open naming the setting.
+pub(crate) fn resolve_expression_memo_budget(opts: &OpenOptions) -> Result<u64> {
+    match opts.expression_memo_budget {
+        Some(mib) => require_memo_budget("expression_memo_budget", mib),
+        None => expression_memo_budget_from_setting(std::env::var("RELATE_EXPRESSION_MEMO_BUDGET")),
+    }
+}
+
+/// The memo budget from the raw `RELATE_EXPRESSION_MEMO_BUDGET` read:
+/// unset or blank is the default; otherwise a plain non-negative integer
+/// of MiB (no sign, no unit). Pure in the raw result, so tests never touch
+/// the process environment.
+pub(crate) fn expression_memo_budget_from_setting(
+    raw: std::result::Result<String, std::env::VarError>,
+) -> Result<u64> {
+    const NAME: &str = "RELATE_EXPRESSION_MEMO_BUDGET";
+    let Some(raw) = present_env_value(NAME, raw)? else {
+        return Ok(relate_executor::DEFAULT_MEMO_BUDGET_MIB);
+    };
+    let mib = raw.trim().parse::<u64>().map_err(|_| {
+        crate::Error::semantic(format!(
+            "invalid {NAME} '{raw}': expected a non-negative whole number of MiB"
+        ))
+    })?;
+    require_memo_budget(NAME, mib)
+}
+
+fn require_memo_budget(name: &str, mib: u64) -> Result<u64> {
+    if mib > MAX_MEMO_BUDGET_MIB {
+        return Err(crate::Error::semantic(format!(
+            "invalid {name} {mib}: exceeds {MAX_MEMO_BUDGET_MIB} MiB"
+        )));
+    }
+    Ok(mib)
+}
+
 /// Bytes from the raw `RELATE_EXPRESSION_MEMORY_LIMIT` read: `None`
 /// (unset or blank) leaves the engine default to the caller; `none`/`0` is
 /// the explicit no-cap opt-out. A present-but-unusable value (bad UTF-8 or a

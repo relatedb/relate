@@ -105,5 +105,17 @@ pub(crate) fn persisted_validation_error(error: relate_error::EngineError) -> re
     ))
 }
 
+/// A persisted spec's derived-constraint index, derived with the
+/// persisted-bytes error mapping — the one entry every site that derives
+/// from stored graph-type bytes consults (the fresh-install theater
+/// write, the persisted-spec restore, the replay path's plan, its
+/// checkpoint re-derive, and the redo preflight), so the
+/// derive-plus-map pair never re-spells per caller.
+pub(crate) fn persisted_derived_map(
+    spec: &GraphTypeSpec,
+) -> relate_core::Result<BTreeMap<String, Constraint>> {
+    derived_constraints_map(&spec.to_body()).map_err(persisted_derive_error)
+}
+
 #[cfg(test)]
 mod tests;

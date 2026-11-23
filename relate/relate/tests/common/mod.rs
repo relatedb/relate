@@ -323,7 +323,7 @@ pub fn empty_map() -> relate::Value {
 /// call — `Connection::query` is exactly `query_with_params(cypher,
 /// BTreeMap::new())`), so the class tables and the rejection assertions share
 /// one run instead of each forking on an empty map.
-fn refused(
+pub fn refused(
     conn: &mut relate::Connection,
     statement: &str,
     params: BTreeMap<String, relate::Value>,
@@ -445,6 +445,16 @@ pub fn string(value: &str) -> relate::Value {
 /// `labels` and `schema_procedures`' `strings`; F-1-53).
 pub fn strings(values: &[&str]) -> relate::Value {
     list(values.iter().map(|value| string(value)).collect())
+}
+
+/// The A/B/C `p1`-valued store the comprehension pipe suites share —
+/// one node per label, so label filters and disjunctions have distinct
+/// rows to answer with.
+pub fn abc_store() -> relate::Connection {
+    let mut c = connection();
+    c.query("CREATE (:A {p1: 'a'}), (:B {p1: 'b'}), (:C {p1: 'c'})")
+        .unwrap();
+    c
 }
 
 /// The first cell of a one-row query, as the STRING it must be — the

@@ -612,107 +612,38 @@ impl Wal {
             return Err(Error::storage("follow poll requires a read-only WAL"));
         }
         let ids = list_segment_ids(&*self.inner.vfs, &self.inner.prefix)?;
-        if ids.is_empty() {
-            return Ok(WalCatchUp::Gap);
-        }
         let cursor = self.inner.follow_cursor.unwrap_or(WalCursor {
             lsn: self.lsn,
             seg_id: self.inner.seg_id,
             offset: MAGIC.len() as u64,
             commit_ts: self.last_commit_ts,
         });
-        let cursor_seg = cursor.seg_id;
-        let cursor_off = cursor.offset;
-        let cursor_ts = cursor.commit_ts;
-        let cursor_live = ids.contains(&cursor_seg);
-        let active_id = *ids.last().unwrap();
-        if cursor_live {
-            let path = segment_path(&self.inner.prefix, cursor_seg);
-            let len = self.inner.vfs.metadata(&path)?.len;
-            // A highest segment shorter than its magic is a rotate in
-            // progress or one that crashed. The read-only open skipped it
-            // with a cursor at `MAGIC.len()`; that is not a shrink.
-            let short_active = cursor_seg == active_id && len < MAGIC.len() as u64;
-            if len < cursor_off && !(short_active && cursor_off == MAGIC.len() as u64) {
-                return Ok(WalCatchUp::Gap);
-            }
-        } else if self.lsn < checkpoint_lsn {
+        // A follower that has not yet applied the checkpoint reloads rather
+        // than retarget; the cursor's disappearance alone is the walk's to
+        // classify, and an empty inventory is likewise the walk's `Gap`.
+        if !ids.contains(&cursor.seg_id) && self.lsn < checkpoint_lsn {
             return Ok(WalCatchUp::Gap);
         }
-        let start_seg = if cursor_live {
-            cursor_seg
-        } else {
-            *ids.first().unwrap()
-        };
-        let mut out = Vec::new();
-        let mut last_hint = None;
-        let mut last_ts = if cursor_live {
-            cursor_ts
-        } else {
-            self.last_commit_ts
-        };
-        let mut expect = self.lsn.saturating_add(1);
-        for seg in ids.iter().copied().filter(|id| *id >= start_seg) {
-            let path = segment_path(&self.inner.prefix, seg);
-            let active = active_id == seg;
-            // Mirror the read-only open: a highest segment that cannot hold
-            // its magic yet has no frames. The writer repairs or completes
-            // it; the follower reads it on a later poll.
-            if active && self.inner.vfs.metadata(&path)?.len < MAGIC.len() as u64 {
-                continue;
+        // The segment walk — which segments a follower reads, the
+        // torn-header tolerance, the shrink exemption — lives in `scan.rs`,
+        // the declared home of framing shared by recovery and follow; this
+        // handle owns the cursor state and the catch-up bookkeeping.
+        match follow_walk(&*self.inner.vfs, &self.inner.prefix, &ids, cursor)? {
+            FollowOutcome::Records { records, next } => Ok(WalCatchUp::Records {
+                records,
+                cursor: next,
+            }),
+            FollowOutcome::Idle { at } => {
+                self.commit_follow_cursor(at);
+                Ok(WalCatchUp::Idle)
             }
-            let start = if seg == cursor_seg && cursor_live {
-                cursor_off
-            } else {
-                0
-            };
-            let (recs, end) = read_seg_limited(
-                &*self.inner.vfs,
-                &path,
-                start,
-                ScanWindow {
-                    from_lsn: self.lsn,
-                    limit: usize::MAX,
-                    last_ts: &mut last_ts,
-                },
-                SegSource { id: seg, active },
-            )?;
-            for rec in recs {
-                if rec.lsn != expect {
-                    return Ok(WalCatchUp::Gap);
-                }
-                expect = expect.saturating_add(1);
-                out.push(rec);
-            }
-            if let Some(hint) = end {
-                last_hint = Some(hint);
-            }
+            FollowOutcome::Gap => Ok(WalCatchUp::Gap),
         }
-        if out.is_empty() {
-            if !cursor_live {
-                let path = segment_path(&self.inner.prefix, active_id);
-                let len = self.inner.vfs.metadata(&path)?.len;
-                self.inner.seg_id = active_id;
-                self.inner.follow_cursor = Some(WalCursor {
-                    lsn: self.lsn,
-                    seg_id: active_id,
-                    offset: len.max(MAGIC.len() as u64),
-                    commit_ts: self.last_commit_ts,
-                });
-            }
-            return Ok(WalCatchUp::Idle);
-        }
-        let cursor = last_hint.ok_or_else(|| {
-            Error::storage("WAL follow cursor missing after a non-empty catch-up")
-        })?;
-        Ok(WalCatchUp::Records {
-            records: out,
-            cursor,
-        })
     }
 
-    /// Store the cursor returned by [`Wal::poll_follow`] after every record
-    /// in that batch has been applied.
+    /// Store the position a poll reports: the cursor returned by
+    /// [`Wal::poll_follow`] once every record in that batch has been
+    /// applied, and the resting position an `Idle` poll carries.
     pub fn commit_follow_cursor(&mut self, cursor: WalCursor) {
         self.lsn = cursor.lsn;
         self.last_commit_ts = cursor.commit_ts;

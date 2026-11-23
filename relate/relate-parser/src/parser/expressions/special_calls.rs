@@ -185,43 +185,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Lookahead from `self.pos` without consuming tokens: true when
-    /// `target` appears at depth 0 before the closer that ends the
-    /// construct opened just before `self.pos` (the caller has already
-    /// consumed the opener). Only the bracket kinds in `brackets` count
-    /// toward the depth, so a paren-only scan (inside a call's argument
-    /// list) and an all-bracket scan (inside a comprehension brace, whose
-    /// source expression can nest brackets and parens) are explicit
-    /// per-site choices. The one scan behind
-    /// [`Parser::trim_args_have_top_level_from`],
-    /// [`Parser::pipe_before_closing_paren`], and
-    /// [`Parser::has_pipe_before_matching_brace`].
-    pub(super) fn top_level_token_before_matching_close(
-        &self,
-        target: TokenType,
-        brackets: BracketSet,
-    ) -> bool {
-        let mut depth = 0usize;
-        let mut pos = self.pos;
-        while pos < self.tokens.len() {
-            let ty = self.tokens[pos].ty;
-            if brackets.opens(ty) {
-                depth += 1;
-            } else if brackets.closes(ty) {
-                if depth == 0 {
-                    return false; // the construct's own closer
-                }
-                depth -= 1;
-            } else if ty == TokenType::EOF {
-                return false;
-            } else if ty == target && depth == 0 {
-                return true;
-            }
-            pos += 1;
-        }
-        false
-    }
-
     /// Returns true if a `FROM` keyword token appears at this trim call's own
     /// paren depth before its closing `)` — i.e. whether the GQL
     /// `[spec] [chars] FROM input` forms are possible at all. Pure lookahead
@@ -320,42 +283,5 @@ impl<'a> Parser<'a> {
         }
         self.expect(TokenType::RightParen)?;
         Ok(Expr::call("vector", args))
-    }
-}
-
-/// The bracket kinds that count toward nesting in
-/// [`Parser::top_level_token_before_matching_close`] — an explicit,
-/// per-site choice, so a paren-only scan (a call's argument list) and an
-/// all-bracket scan (a comprehension brace) cannot be silently confused.
-#[derive(Clone, Copy)]
-pub(in crate::parser) enum BracketSet {
-    /// Only `(` / `)` nest: the scan runs inside a call's argument list.
-    Parens,
-    /// `{`, `[`, and `(` all nest: the scan runs inside a comprehension
-    /// brace, whose source expression can contain brackets and parens.
-    AllBrackets,
-}
-
-impl BracketSet {
-    /// True when `ty` is an opening bracket of one of this set's kinds.
-    pub(in crate::parser) fn opens(self, ty: TokenType) -> bool {
-        match self {
-            BracketSet::Parens => ty == TokenType::LeftParen,
-            BracketSet::AllBrackets => matches!(
-                ty,
-                TokenType::LeftBrace | TokenType::LeftBracket | TokenType::LeftParen
-            ),
-        }
-    }
-
-    /// True when `ty` is a closing bracket of one of this set's kinds.
-    pub(in crate::parser) fn closes(self, ty: TokenType) -> bool {
-        match self {
-            BracketSet::Parens => ty == TokenType::RightParen,
-            BracketSet::AllBrackets => matches!(
-                ty,
-                TokenType::RightBrace | TokenType::RightBracket | TokenType::RightParen
-            ),
-        }
     }
 }

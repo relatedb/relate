@@ -730,7 +730,7 @@ impl<O: Write> Session<O> {
     fn run_tool(
         &mut self,
         name: &str,
-        arguments: &Value,
+        arguments: &serde_json::Map<String, Value>,
         conn: &mut Connection,
     ) -> Result<ToolOutcome, ToolFailure> {
         let limits = self.limits();

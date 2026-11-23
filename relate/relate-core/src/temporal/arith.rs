@@ -233,7 +233,7 @@ pub fn scale_duration(t: &Temporal, factor: f64) -> Result<Temporal> {
     let mut tiers = DurationTiers::default();
     tiers.months.add_float(months as f64 * factor)?;
     tiers.days.add_float(days as f64 * factor)?;
-    tiers.nanos.add_float(nanos as f64 * factor)?;
+    tiers.sub_second.add_float(nanos as f64 * factor)?;
     let (months, days, nanos) = tiers.finish()?;
     Temporal::duration_checked(months, days, nanos)
 }

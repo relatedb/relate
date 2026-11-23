@@ -34,6 +34,22 @@ use crate::gate::ResultStamp;
 use crate::phase_timing::TimingStamp;
 use crate::{CancelToken, Error, QueryResult, Result, Value};
 
+/// Where REL8-1120's optimistic-hit retry leg runs its uncached
+/// re-admission — the parse-bearing tail: on this thread (the worker
+/// body, the escalation arm, or the asserted fast path's inline arm,
+/// whose stacks carry the parser's nesting-proportional recursion), or
+/// on the query worker (the cache-hit inline route's arm, ADR-0663,
+/// whose thread never asserted that budget).
+#[derive(Clone, Copy)]
+pub(super) enum RetryHost {
+    ThisThread,
+    /// The query-worker host — native only: wasm32 has no worker, so
+    /// the enum itself carries no `Worker` variant there and the retry
+    /// below runs in place on the caller (the platform's only thread).
+    #[cfg(not(target_arch = "wasm32"))]
+    Worker,
+}
+
 /// The statement's token-budget reservation as one owner: the reserved
 /// ledger and its observation key as one pair — always `Some` together —
 /// plus the consuming half of its lifecycle, `settle` (observe the peak,
@@ -95,51 +111,6 @@ pub(super) struct DispatchCtx<'a> {
     /// stamp: built and coerced to the trait object once in
     /// `run_query`, read at the dispatch's request sites.
     profile_metrics: Option<&'a dyn PlanMetricsSink>,
-}
-
-/// Result columns of an auto-parameterized plan name the placeholder
-/// (`$__AUTO_INT_0__`). The statement's own return items already carry
-/// the column text (`1 + 2`, `(1 + 2)`), so use those instead of the
-/// rewritten expression.
-fn restore_authored_column_names(cypher: &str, columns: &mut [String]) {
-    if !columns.iter().any(|column| column.contains("__AUTO_")) {
-        return;
-    }
-    let Ok(statement) = relate_parser::parser::parse(cypher) else {
-        return;
-    };
-    let Some(items) = final_return_items(&statement) else {
-        return;
-    };
-    if items.len() != columns.len() {
-        return;
-    }
-    for (column, item) in columns.iter_mut().zip(items) {
-        if !column.contains("__AUTO_") {
-            continue;
-        }
-        if let Some(alias) = &item.alias {
-            *column = alias.to_string();
-        } else if let Some(source) = &item.source_text {
-            *column = source.clone();
-        }
-    }
-}
-
-/// The return items whose names are the result columns: the final NEXT
-/// stage, and within it the last RETURN (a UNION result takes the left
-/// arm's names).
-fn final_return_items(
-    statement: &relate_parser::Statement,
-) -> Option<&[relate_parser::ReturnItem]> {
-    let mut stage = statement;
-    while let Some(next) = &stage.next {
-        stage = next;
-    }
-    stage.clauses.iter().rev().find_map(|clause| match clause {
-        relate_parser::Clause::Return(ret) => Some(ret.items.as_slice()),
-        _ => None,
-    })
 }
 
 /// The admission gates between the EXPLAIN early return and dispatch: the
@@ -234,7 +205,7 @@ impl Connection {
             // no statement body pre-empts it.
             Err(e) => return QueryOutcome::not_admitted(Err(e)),
         };
-        self.run_admitted(admission, cypher, &params, token)
+        self.run_admitted(admission, cypher, &params, token, RetryHost::ThisThread)
     }
 
     /// The query body after admission (ADR-0504): the EXPLAIN early
@@ -277,6 +248,7 @@ impl Connection {
         cypher: &str,
         params: &BTreeMap<String, Value>,
         token: &CancelToken,
+        retry_host: RetryHost,
     ) -> QueryOutcome {
         // REL8-1120 retry eligibility, captured before the admission is
         // consumed — the doc above states the contract; read-ness needs
@@ -301,6 +273,28 @@ impl Connection {
         }
         // ADR-0221: the caller's one measurement spans both attempts —
         // the retry's admission is built on the first attempt's clock.
+        // The host: the retry re-admits with the bypass, whose uncached
+        // tail parses the raw text — recursion with the statement's
+        // nesting that only the query worker's stack (or a caller that
+        // asserted it) carries. The worker body, the escalation arm and
+        // the asserted fast path run it in place; the cache-hit inline
+        // route's arm (ADR-0663, an unasserted thread) sends it to the
+        // worker, the re-run itself bounded by the same statement that
+        // just ran inline.
+        #[cfg(not(target_arch = "wasm32"))]
+        if matches!(retry_host, RetryHost::Worker) {
+            return QueryOutcome::from_result(Self::run_on_worker(
+                self.worker_slot(),
+                || match self.admit_statement(cypher, params, CacheUse::Bypass, started) {
+                    Ok(admission) => self.run_admitted_once(admission, cypher, params, token),
+                    Err(e) => QueryOutcome::not_admitted(Err(e)),
+                },
+                // No heartbeat: the retry is one more run of a statement
+                // that just finished inline, far inside any interval a
+                // caller arms one for (the inline arm's own arithmetic).
+                None,
+            ));
+        }
         match self.admit_statement(cypher, params, CacheUse::Bypass, started) {
             Ok(admission) => self.run_admitted_once(admission, cypher, params, token),
             Err(e) => QueryOutcome::not_admitted(Err(e)),
@@ -359,6 +353,7 @@ impl Connection {
             timing,
             effective,
             memory,
+            preview,
         } = admission;
         let params = effective.as_ref().unwrap_or(budget_params);
         // LABS-1120: the admission's timing facts ride as the one carrier
@@ -434,8 +429,20 @@ impl Connection {
         if let Some(reservation) = reservation {
             reservation.settle(&self.inner.resolved.budget, &mut outcome);
         }
-        if let Ok(Executed::Rows(result)) = outcome.result.as_mut() {
-            restore_authored_column_names(cypher, &mut result.header.columns);
+        if let Ok(executed) = outcome.result.as_mut() {
+            // The admission's own preview copy (read once under the
+            // publication guard, ADR-0378): the restore's re-parse runs
+            // under the same options the statement's admission parsed
+            // with, so the two can never disagree on the grammar. The
+            // header both `Executed` variants carry (`Failed` included —
+            // its columns are user-visible too), read through the one
+            // accessor.
+            super::columns::restore_authored_column_names(
+                logical,
+                cypher,
+                &mut executed.header_mut().columns,
+                preview,
+            );
         }
         outcome
     }

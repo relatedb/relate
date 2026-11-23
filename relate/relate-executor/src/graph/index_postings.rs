@@ -10,6 +10,7 @@ use super::index_lookup::RecheckSpec;
 use super::*;
 
 use crate::group_key::identity_narrower_than_eq;
+use crate::hash_seed::seeded_set;
 
 /// How a keyed equality lookup is answered (ADR-0614): a declared
 /// RANGE pair (ordered postings, no lazy build) always wins; else the
@@ -47,6 +48,15 @@ impl PairVersion {
         } else {
             PairVersion::Superseded
         }
+    }
+}
+
+/// Feed `ids` to the pair ascending, so each bucket's sorted id vector
+/// grows by append — the one owner of that ordering for a build and a drain.
+fn feed_sorted(mut ids: Vec<i64>, st: &mut PropPairIndex, feed: &impl Fn(i64, &mut PropPairIndex)) {
+    ids.sort_unstable();
+    for id in ids {
+        feed(id, st);
     }
 }
 
@@ -103,24 +113,17 @@ impl Graph {
     ) -> R {
         let mut st = pairs.entry(pair).or_default();
         if !st.built {
-            // Ascending, so each bucket's sorted id vector grows by append.
-            let mut ids = candidates();
-            ids.sort_unstable();
-            for id in ids {
-                feed(id, &mut st);
-            }
+            feed_sorted(candidates(), &mut st, &feed);
             st.built = true;
+            st.postings.shrink_to_fit();
         }
         if !st.dirty.is_empty() {
-            let mut ids: Vec<i64> = std::mem::take(&mut st.dirty).into_iter().collect();
-            ids.sort_unstable();
-            for id in ids {
-                // The feed owns the remove-then-post order (the node
-                // pairs' is `post_pair_node`'s): a live version that
-                // carries no value for the pair leaves whatever a stale
-                // version marked cleared, not trusted.
-                feed(id, &mut st);
-            }
+            let ids: Vec<i64> = std::mem::take(&mut st.dirty).into_iter().collect();
+            // The feed owns the remove-then-post order (the node pairs' is
+            // `post_pair_node`'s): a live version that carries no value for
+            // the pair leaves whatever a stale version marked cleared, not
+            // trusted.
+            feed_sorted(ids, &mut st, &feed);
         }
         read(&st)
     }
@@ -133,31 +136,31 @@ impl Graph {
     /// `triples` closure enumerates its versions' (class, key, value key)
     /// triples.
     pub(super) fn drop_unused_pairs<V>(
-        &self,
         pairs: &CoreMap<(u32, u32), PropPairIndex>,
         id: i64,
         dead: &[V],
         remaining: &[V],
         triples: impl Fn(&V, &mut dyn FnMut(u32, u32, GroupKey)),
     ) {
-        let mut keep = HashSet::new();
+        let mut keep = seeded_set();
         for v in remaining {
             triples(v, &mut |class, kid, gk| {
                 keep.insert((class, kid, gk));
             });
         }
-        let mut drop_set = HashSet::new();
+        // `unpost` is idempotent, so a triple a dead version repeats is
+        // pruned once and a no-op after.
         for v in dead {
             triples(v, &mut |class, kid, gk| {
-                drop_set.insert((class, kid, gk));
-            });
-        }
-        for (class, kid, gk) in drop_set.difference(&keep) {
-            if let Some(mut st) = pairs.get_mut(&(*class, *kid)) {
-                if st.built {
-                    st.postings.unpost(gk, id);
+                if keep.contains(&(class, kid, gk.clone())) {
+                    return;
                 }
-            }
+                if let Some(mut st) = pairs.get_mut(&(class, kid)) {
+                    if st.built {
+                        st.postings.unpost(&gk, id);
+                    }
+                }
+            });
         }
     }
 
@@ -174,7 +177,7 @@ impl Graph {
     /// Build `(label_id, key_id)` from the label index on first use, drain
     /// the ids written since the pair was last current, and hand the pair to
     /// `read` while its write guard is held (ADR-0063) — the node adapter of
-    /// [`Self::with_pair`], whose lock order applies here. `prop_postings`
+    /// [`Self::with_pair`], whose lock order applies here. `equality_postings`
     /// and `equality_postings_len` both read through this, so a bucket's
     /// contents and its size cannot drift.
     pub(super) fn with_prop_pair<R>(
@@ -196,14 +199,6 @@ impl Graph {
             |id, st| self.post_pair_node(st, id, lid, kid),
             read,
         )
-    }
-
-    /// Postings for `(label_id, key_id)` at value `gk`, built and drained
-    /// through [`Self::with_prop_pair`]. A superset (ADR-0063: every version
-    /// of every candidate), so callers re-verify every id; empty when no
-    /// indexed version carries `gk`.
-    pub(super) fn prop_postings(&self, lid: u32, kid: u32, gk: GroupKey) -> Vec<NodeId> {
-        self.with_prop_pair(lid, kid, |st| st.postings.ids(&gk).to_vec())
     }
 
     /// The guard preamble `equality_postings` and `equality_postings_len`
@@ -234,7 +229,7 @@ impl Graph {
         let Some((lid, kid, gk)) = self.equality_pair_key(label, key, value) else {
             return Vec::new();
         };
-        self.prop_postings(lid, kid, gk)
+        self.with_prop_pair(lid, kid, |st| st.postings.ids(&gk).to_vec())
     }
 
     /// The size of the `(label, key) = value` equality bucket from the same
@@ -383,15 +378,25 @@ impl Graph {
         values: &[Value],
         ts: u64,
     ) -> Vec<NodeId> {
+        // A NaN has no property-index key and equals nothing, so it
+        // contributes no bucket (the doc's contract). Nothing addressable
+        // answers empty before the pair is built.
+        let keys: Vec<GroupKey> = values
+            .iter()
+            .filter_map(GroupKey::for_property_index)
+            .collect();
+        if keys.is_empty() {
+            return Vec::new();
+        }
         let Some((lid, kid)) = self.smallest_serve_pair(labels, key) else {
             return Vec::new();
         };
         let mut acc: HashSet<NodeId> = HashSet::new();
-        for value in values {
-            if let Some(gk) = GroupKey::for_property_index(value) {
-                self.with_prop_pair(lid, kid, |st| acc.extend(st.postings.ids(&gk)));
+        self.with_prop_pair(lid, kid, |st| {
+            for gk in &keys {
+                acc.extend(st.postings.ids(gk));
             }
-        }
+        });
         self.finish_ids(acc, labels, key, ts, |v| {
             values.iter().any(|b| v.eq_non_null(b))
         })

@@ -1,0 +1,147 @@
+name: Scoop bucket
+
+# Installs the CLI from the bucket manifest on Windows and proves what the
+# Scoop channel owes (ADR-0659): `scoop install` yields a binary whose
+# `--version` prints the release version, `checkver` resolves the latest
+# release tag, and `autoupdate` re-derives the installer URL and hash from
+# the release asset manifest (`assets.json`), so a new tag needs no edit in
+# the bucket. The release's own `create-release` job renders that manifest
+# and pushes it to the bucket; this lane generates the same manifest for the
+# tag and installs it locally, so a bad render fails the check, not a user.
+#
+# Runs by hand and on every release. A release cut before the asset
+# manifest step (ADR-0659) has no `assets.json` and fails the download step
+# by name; the first cut carrying it satisfies the lane.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scoop:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Extension-channel releases share the publish path; only a stable
+      # core tag (vX.Y.Z) has a Scoop manifest. A non-core tag skips the
+      # rest of the lane instead of failing it.
+      - name: Resolve the release tag
+        id: tag
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          $tag = "$env:RELEASE_TAG".Trim()
+          if (-not $tag) {
+            # The CLI's own release document (ADR-0546), not GitHub's
+            # releases/latest, which an extension-channel release can win.
+            $tag = (Invoke-RestMethod -Uri 'https://relatedb.ai/releases.json').latest.tag
+          }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            Write-Host "::notice::'$tag' is not a stable core release; no Scoop manifest to check."
+            "stable=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "stable=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Download the release asset manifest
+        if: steps.tag.outputs.stable == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          $tag = "$env:RELEASE_TAG"
+          gh release download $tag --pattern assets.json --dir $env:RUNNER_TEMP
+          $manifest = Join-Path $env:RUNNER_TEMP 'assets.json'
+          if (-not (Test-Path $manifest)) {
+            throw "release $tag has no assets.json; it predates the release asset manifest (ADR-0659)"
+          }
+
+      # The manifest the bucket publishes, rendered from that release's own
+      # asset manifest, then checked against it: version, URL and hash must
+      # all be the release's entry for relate-windows-amd64.exe, and the
+      # checkver/autoupdate contract must still be intact.
+      - name: Generate and check the bucket manifest
+        if: steps.tag.outputs.stable == 'true'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          $tag = "$env:RELEASE_TAG"
+          $bucket = Join-Path $env:RUNNER_TEMP 'bucket'
+          $assets = Join-Path $env:RUNNER_TEMP 'assets.json'
+          python scripts/scoop_manifest.py generate $assets --tag $tag --output (Join-Path $bucket 'relate.json')
+          if ($LASTEXITCODE -ne 0) { throw "generate failed for $tag" }
+          python scripts/scoop_manifest.py check (Join-Path $bucket 'relate.json') $assets --tag $tag
+          if ($LASTEXITCODE -ne 0) { throw "manifest does not match $tag's asset manifest" }
+
+      - name: Install Scoop
+        if: steps.tag.outputs.stable == 'true'
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          irm get.scoop.sh | iex
+          # `scoop` itself lives in the app directory; installed apps' shims
+          # (including `relate`) in shims\. Both must reach later steps.
+          "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "$env:USERPROFILE\scoop\apps\scoop\current\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # Acceptance: scoop install from the bucket manifest, then the binary
+      # prints the release version.
+      - name: scoop install from the bucket manifest
+        if: steps.tag.outputs.stable == 'true'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          $tag = "$env:RELEASE_TAG"
+          $version = $tag.TrimStart('v')
+          $bucket = Join-Path $env:RUNNER_TEMP 'bucket'
+          scoop install (Join-Path $bucket 'relate.json')
+          if ($LASTEXITCODE -ne 0) { throw "scoop install failed" }
+          $reported = (& relate --version) -join "`n"
+          Write-Host $reported
+          if ($reported -notmatch [regex]::Escape("Relate v$version")) {
+            throw "relate --version did not print 'Relate v$version'"
+          }
+          # The package records itself beside the installed binary, so
+          # `relate upgrade` defers to Scoop (ADR-0659). `current` is the
+          # junction to the version directory post_install wrote into.
+          $marker = Join-Path $env:USERPROFILE "scoop\apps\relate\current\.relate-package-managed"
+          if (-not (Test-Path $marker)) { throw "scoop install wrote no provenance marker at $marker" }
+          $managed = Get-Content $marker -Raw | ConvertFrom-Json
+          if ($managed.manager -ne 'scoop') { throw "marker manager is '$($managed.manager)', not 'scoop'" }
+
+      # Acceptance: checkver resolves the latest release tag, and autoupdate
+      # regenerates URL and hash from that tag's asset manifest — the
+      # regenerated manifest still equals the release entry.
+      - name: checkver and autoupdate keep the manifest in step
+        if: steps.tag.outputs.stable == 'true'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          $tag = "$env:RELEASE_TAG"
+          $version = $tag.TrimStart('v')
+          $bucket = Join-Path $env:RUNNER_TEMP 'bucket'
+          $assets = Join-Path $env:RUNNER_TEMP 'assets.json'
+          $checkver = Join-Path (scoop prefix scoop).Trim() 'bin\checkver.ps1'
+
+          $resolved = & $checkver -App relate -Dir $bucket -ThrowError 2>&1 | Out-String
+          Write-Host $resolved
+          if ($resolved -notmatch [regex]::Escape($version)) {
+            throw "checkver did not resolve the latest release tag $tag"
+          }
+
+          & $checkver -App relate -Dir $bucket -ForceUpdate -ThrowError
+
+          python scripts/scoop_manifest.py check (Join-Path $bucket 'relate.json') $assets --tag $tag
+          if ($LASTEXITCODE -ne 0) { throw "autoupdate did not keep URL and hash on $tag's asset manifest" }

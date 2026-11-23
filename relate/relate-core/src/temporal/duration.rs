@@ -287,7 +287,7 @@ fn parse_duration_datetime_style(
             }
             let (whole, frac) =
                 split_duration_numeral(field).map_err(|_| invalid_duration_time())?;
-            tiers.nanos.add_unit(whole, frac, *scale)?;
+            tiers.seconds.add_unit(whole, frac, *scale)?;
         }
     }
     Ok(())

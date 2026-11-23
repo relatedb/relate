@@ -322,7 +322,7 @@ pub(crate) fn match_clause(
         if cap.as_ref().is_some_and(|c| c.full()) {
             break;
         }
-        let scope = match_scope(&row, patterns);
+        let scope = match_scope(graph, &row, patterns);
         let residual = Residual {
             conjuncts: &conjuncts,
             scope: &scope,

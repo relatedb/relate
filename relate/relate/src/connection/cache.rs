@@ -38,6 +38,17 @@ pub(super) enum CacheUse {
     Query,
     /// The plan-tree path: no lookup, no insert.
     Bypass,
+    /// The cache-hit inline route's probe (ADR-0663): stage 1 of the
+    /// lookup only — the raw string, a map probe that cannot recurse
+    /// with statement nesting. Stage 2's normalizer is part of the
+    /// front: it walks the statement to its nesting depth (ADR-0257's
+    /// cap the bound), the recursion the query worker's 64 MiB stack
+    /// exists for — the probe never runs it on the caller's thread. A
+    /// probe miss is the ordinary cold path: the worker's full admission
+    /// re-runs every stage, including the normalizer, on its own stack.
+    /// Probe-only: `admit_statement` is never called with it (the probe
+    /// drops its cold tail instead of running it).
+    RawProbe,
 }
 
 /// What the plan-cache lookup stages (ADR-0503) resolved to, before any
@@ -124,9 +135,6 @@ impl Connection {
         cache: CacheUse,
         preview: relate_core::PreviewFeatures,
     ) -> Lookup {
-        if cache == CacheUse::Bypass {
-            return Lookup::Skip;
-        }
         // A caller parameter map carrying the reserved prefix disables the
         // cache for the statement entirely — no stage, not even the raw
         // lookup: the caller can never collide with the engine's own
@@ -135,10 +143,38 @@ impl Connection {
         if relate_parser::params_carry_reserved_prefix(params) {
             return Lookup::Skip;
         }
-        // Stage 1: the raw string.
-        if let Some(raw) = crate::plan_cache::lock(&self.inner).lookup_raw(cypher) {
-            return Lookup::Hit(raw);
+        // The consulting modes, every variant named — a fourth
+        // `CacheUse` fails this match instead of silently falling into
+        // a lookup stage (the module's own exhaustiveness convention).
+        // The probe's arm (ADR-0663) is stage 1 only, never the
+        // normalizing stage 2; a miss is `Skip`: for the probe that is
+        // simply "cold" (its caller drops the tail), and the probe is
+        // never the inserting path.
+        match cache {
+            // The plan-tree path: no lookup, no insert. The match owns
+            // the bypass answer — one home, ahead of the guard above
+            // only in position, never in effect (both return `Skip`).
+            CacheUse::Bypass => Lookup::Skip,
+            CacheUse::RawProbe => self.raw_lookup(cypher).map_or(Lookup::Skip, Lookup::Hit),
+            CacheUse::Query => {
+                // Stage 1: the raw string.
+                if let Some(raw) = self.raw_lookup(cypher) {
+                    return Lookup::Hit(raw);
+                }
+                self.lookup_template(cypher, preview)
+            }
         }
+    }
+
+    /// Stage 1 of the cache lookup: the raw string against each entry's
+    /// last raw text — the one spelling of the raw lookup, shared by the
+    /// query path and the probe's raw-only resolution (ADR-0663).
+    fn raw_lookup(&self, cypher: &str) -> Option<crate::plan_cache::HitPayload> {
+        crate::plan_cache::lock(&self.inner).lookup_raw(cypher)
+    }
+
+    /// Stage 2 of the cache lookup: the auto-parameterized template.
+    fn lookup_template(&self, cypher: &str, preview: relate_core::PreviewFeatures) -> Lookup {
         // Stage 2: the template, normalized without any lock held. The
         // participation rule (the reserved-prefix caller check above) is
         // decided here and only here — the front's normalize is a pure

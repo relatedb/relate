@@ -329,10 +329,9 @@ impl<'a> ExecGraph<'a> {
 }
 
 /// Fill each row's missing enforced label from the theater's
-/// derived-constraint index — its historical source. ADR-0450's one
-/// legacy-resolution rule: a row that already carries the label keeps it,
-/// and a field-less legacy row resolves to the same identity its
-/// current-shape twin would have. New rows never change here.
+/// derived-constraint index — its historical source — through
+/// [`crate::graph::resolve_enforced_label`], ADR-0450's one
+/// legacy-resolution rule, mapped over the set.
 fn resolve_enforced_labels(
     constraints: Vec<ConstraintDef>,
     derived: &BTreeMap<String, relate_model::Constraint>,
@@ -340,11 +339,10 @@ fn resolve_enforced_labels(
     constraints
         .into_iter()
         .map(|mut def| {
-            if def.enforced_label.is_none() {
-                def.enforced_label = derived
-                    .get(&def.name)
-                    .and_then(|constraint| constraint.enforced_label.clone());
-            }
+            let twin_label = derived
+                .get(&def.name)
+                .and_then(|constraint| constraint.enforced_label.as_deref());
+            crate::graph::resolve_enforced_label(&mut def, twin_label);
             def
         })
         .collect()

@@ -5,7 +5,7 @@
 use relate_core::NodeId;
 use relate_ir::PathPattern;
 
-use super::binds::{node_bind_name, rel_bind_name};
+use super::binds::{node_bind_name, rel_bind_name, SeatPrefixes};
 use crate::row::{push_bind_name, Row, RowRung};
 
 /// The exec walker's chosen start: the bound pivot (ADR-0350 — the
@@ -80,6 +80,7 @@ impl WalkLadder {
     /// node, rel, node — is pinned once at the top, before any arm
     /// indexes into them.
     pub(crate) fn new(
+        seats: &SeatPrefixes,
         entry: &Row,
         path: &PathPattern,
         selection: Option<&Selection>,
@@ -114,21 +115,21 @@ impl WalkLadder {
                 // the name).
                 push_bind_name(
                     &mut names,
-                    node_bind_name(&path.nodes[*k], *k, named).as_deref(),
+                    node_bind_name(seats, &path.nodes[*k], *k, named, |n| n.to_string()).as_deref(),
                 );
                 let start = RowRung::from_names(&names);
-                backward_prefix(&mut names, &mut node, &mut rel, path, named, *k);
+                backward_prefix(seats, &mut names, &mut node, &mut rel, path, named, *k);
                 node.push(start);
-                forward_suffix(&mut names, &mut node, &mut rel, path, named, *k);
+                forward_suffix(seats, &mut names, &mut node, &mut rel, path, named, *k);
             }
             Selection::Pivot((k, _)) => {
-                backward_prefix(&mut names, &mut node, &mut rel, path, named, *k);
+                backward_prefix(seats, &mut names, &mut node, &mut rel, path, named, *k);
                 // The suffix hand-off: match_node(pivot) rebinds nothing
                 // (node k is the row-bound pivot), so its schema is the
                 // completed prefix's — node rung 0's content, one shared
                 // Arc with the rung the last backward bind stamped.
                 node.push(node[0].clone());
-                forward_suffix(&mut names, &mut node, &mut rel, path, named, *k);
+                forward_suffix(seats, &mut names, &mut node, &mut rel, path, named, *k);
             }
         }
         // The finished row: the walk's last schema plus the pattern's
@@ -150,6 +151,7 @@ impl WalkLadder {
 /// order and reversed into element-index order. On return `names` holds
 /// the completed prefix's names — the forward suffix's base.
 fn backward_prefix(
+    seats: &SeatPrefixes,
     names: &mut Vec<String>,
     node: &mut Vec<RowRung>,
     rel: &mut Vec<RowRung>,
@@ -161,9 +163,15 @@ fn backward_prefix(
     let mut back_rel = Vec::with_capacity(k);
     let mut back_node = Vec::with_capacity(k);
     for j in (0..k).rev() {
-        push_bind_name(names, rel_bind_name(&path.rels[j], j, rel_named).as_deref());
+        push_bind_name(
+            names,
+            rel_bind_name(seats, &path.rels[j], j, rel_named, |n| n.to_string()).as_deref(),
+        );
         back_rel.push(RowRung::from_names(names));
-        push_bind_name(names, node_bind_name(&path.nodes[j], j, named).as_deref());
+        push_bind_name(
+            names,
+            node_bind_name(seats, &path.nodes[j], j, named, |n| n.to_string()).as_deref(),
+        );
         back_node.push(RowRung::from_names(names));
     }
     // The binding order was k-1 … 0; the walk indexes rungs by element.
@@ -180,6 +188,7 @@ fn backward_prefix(
 /// [`WalkLadder::new`]) makes `path.nodes[j + 1]` exist for every
 /// `j < path.rels.len()`.
 fn forward_suffix(
+    seats: &SeatPrefixes,
     names: &mut Vec<String>,
     node: &mut Vec<RowRung>,
     rel: &mut Vec<RowRung>,
@@ -189,10 +198,16 @@ fn forward_suffix(
 ) {
     let rel_named = path.has_path_name();
     for j in k..path.rels.len() {
-        push_bind_name(names, rel_bind_name(&path.rels[j], j, rel_named).as_deref());
+        push_bind_name(
+            names,
+            rel_bind_name(seats, &path.rels[j], j, rel_named, |n| n.to_string()).as_deref(),
+        );
         rel.push(RowRung::from_names(names));
         let np = &path.nodes[j + 1];
-        push_bind_name(names, node_bind_name(np, j + 1, named).as_deref());
+        push_bind_name(
+            names,
+            node_bind_name(seats, np, j + 1, named, |n| n.to_string()).as_deref(),
+        );
         node.push(RowRung::from_names(names));
     }
 }

@@ -591,19 +591,8 @@ test-rename-residuals:
 test-bolt-compat-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_bolt_compat_probe.py
 
-## test-release-scripts: Unit-test the release sweep's version-token rule
-##   (scripts/version_tokens.py) and the CHANGELOG rotation
-##   (scripts/changelog_rotate.py) that scripts/release-bump.sh runs,
-##   the CHANGELOG placement guard (scripts/check_changelog_placement.py,
-##   ADR-0618 §4) that CI runs on every pull request,
-##   the release-notes output-boundary guard
-##   (scripts/release_notes_validate.py, ADR-0618 §1),
-##   the npm JSON reader (scripts/lib/npm_json.py),
-##   the portable in-place sed (scripts/lib/sedi.sh),
-##   the bump script end to end (first-release, steady-state and
-##   populated-cut paths), and the advance's scoped sweep (scripts/release-bump.sh
-##   --skip-changelog, ADR-0580: the version surfaces advance, the
-##   changelog does not)
+## test-release-scripts: Unit-test the release sweep, its changelog and
+##   release-notes guards, and the per-channel packaging scripts
 test-release-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_version_tokens.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_version_element.py
@@ -613,11 +602,20 @@ test-release-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_check_changelog_placement.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_check_changelog_presence.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_release_notes_validate.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_release_asset_manifest.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_winget_manifests.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_scoop_manifest.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_chocolatey_install.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_build_rpm_repo.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_homebrew_formula.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_install_smoke.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_third_party_licenses.py
 	sh $(CURDIR)/scripts/tests/test_release_bump.sh
 	sh $(CURDIR)/scripts/tests/test_release_advance.sh
 	sh $(CURDIR)/scripts/tests/test_toml_sh.sh
 	sh $(CURDIR)/scripts/tests/test_sedi_sh.sh
+	sh $(CURDIR)/scripts/tests/test_check_linux_isa.sh
+	sh $(CURDIR)/scripts/tests/test_check_glibc_floor.sh
 
 ## test-front-bench-scripts: Unit-test the front-bench statement corpus
 ##   builder (scripts/front_bench_corpus.py): the Gherkin walk's container
@@ -636,6 +634,21 @@ test-opencode-review-post:
 ## test-install-sh: Offline stub-curl harness for distribution/install.sh
 test-install-sh:
 	sh $(CURDIR)/scripts/tests/test_install_sh.sh
+
+## test-sign-repo-metadata: The repository signing key suite — the
+##   committed public key and fingerprint verify the committed fixture
+##   signature, and sign-repo-metadata.sh signs, self-verifies and fails
+##   closed on an empty or wrong secret key (skips without gpg)
+test-sign-repo-metadata:
+	sh $(CURDIR)/scripts/tests/test_sign_repo_metadata.sh
+
+## test-build-apt-repo: The Debian/Ubuntu channel builder suite
+##   (scripts/build-apt-repo.sh: the .deb control declares the glibc floor
+##   and carries the provenance marker, the Packages/Release indices carry
+##   the right digests, and Release is signed with the repository key the
+##   tree publishes; skips without dpkg-deb or gpg)
+test-build-apt-repo:
+	sh $(CURDIR)/scripts/tests/test_build_apt_repo.sh
 
 ## test-common-sh: The scripts/lib/common.sh helper suite — sha256_of's
 ##   bare-hex contract holds whatever the file's name looks like (the
@@ -682,13 +695,10 @@ test-stamp-swift-package:
 test-build-xcframework:
 	sh $(CURDIR)/scripts/tests/test_build_xcframework.sh
 
-## test-scripts: Every scripts/tests suite through one owner — the CI
-##   lanes invoke this aggregate, not each suite, so a new script guard
-##   extends the prerequisite list below instead of a lane's command
-##   flow. The prerequisite list is the member inventory; membership is
-##   enforced by test_makefile_targets.sh (every target whose recipe
-##   runs a scripts/tests suite hangs off this list)
-test-scripts: test-compare-loadtest test-install-sh test-common-sh \
+## test-scripts: Every scripts/tests suite through one owner — the CI lanes
+##   run this aggregate; membership is enforced by test_makefile_targets.sh
+test-scripts: test-compare-loadtest test-install-sh test-sign-repo-metadata \
+	test-build-apt-repo test-common-sh \
 	test-stage-setup-scripts \
 	test-baseline-scripts test-bolt-compat-scripts test-adr-scripts \
 	test-release-scripts test-front-bench-scripts test-opencode-review-post \

@@ -107,6 +107,39 @@ fn explain_plan_lists_the_fused_children_over_http() {
     }
 }
 
+/// ADR-0654: the v2 plan's `arguments` carry the expression-memo group on
+/// the operator that used a memo (numbers as numbers) and the root's
+/// `MemoKinds`; a memo-free PROFILE carries none of it.
+#[test]
+fn profile_plan_arguments_carry_the_memo_group_only_when_used() {
+    let db = db();
+    let profile = |statement: &str| {
+        let body = serde_json::json!({ "statement": format!("PROFILE {statement}") }).to_string();
+        let reply = dispatch(&db, &post("neo4j", &body), OPEN, &txs());
+        assert_eq!(reply.status, 200);
+        body_json(&reply)["profiledQueryPlan"].clone()
+    };
+    let plan = profile(
+        "UNWIND range(0, 1999) AS i \
+         WITH ['2024-05-05T10:00:00Z', '2023-01-01T09:00:00Z'][i % 2] AS s \
+         RETURN count(datetime(s)) AS n",
+    );
+    let args = &plan["arguments"];
+    assert!(args["MemoProbes"].as_i64().unwrap() > 0, "{plan:?}");
+    assert!(args["MemoHits"].as_i64().unwrap() > 0, "{plan:?}");
+    for key in [
+        "MemoInserts",
+        "MemoRefused",
+        "MemoBytes",
+        "MemoDisabledCount",
+    ] {
+        assert!(args[key].is_number(), "{key}: {plan:?}");
+    }
+    assert_eq!(args["MemoKinds"], json!(["datetime"]), "{plan:?}");
+    let plain = profile("RETURN 1 AS n");
+    assert!(plain["arguments"].get("MemoProbes").is_none(), "{plain:?}");
+}
+
 /// LABS-1117: the v2 plan's `arguments` carry the per-clause traversal
 /// rung (`KernelRung`, with the chain's `KernelHops`) and the static
 /// pattern-engine mode (`PatternEngine`) on the MATCH operator — the

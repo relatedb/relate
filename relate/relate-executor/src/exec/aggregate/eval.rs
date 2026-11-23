@@ -11,7 +11,6 @@ use relate_ir::{walk_scope_children, ChildScope, Expr};
 use relate_names::SmallName;
 
 use crate::eval::{eval, eval_case_with, expr_vars};
-use crate::exec::scope::uncolliding_prefix;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -109,13 +108,13 @@ const SYNTHETIC_CHILD_PREFIX: &str = "__agg_c";
 /// variable `expr` reads starts with it, so a synthetic binding can never
 /// shadow a user variable (a user may spell a name in the internal `__`
 /// namespace).
-fn fresh_prefix(seed: Option<&Row>, expr: &Expr) -> String {
+fn fresh_prefix(graph: &ExecGraph<'_>, seed: Option<&Row>, expr: &Expr) -> String {
     let mut read = HashSet::new();
     expr_vars(expr, &mut read);
     let seed_columns = seed
         .into_iter()
         .flat_map(|row| row.keys().map(String::as_str));
-    uncolliding_prefix(
+    graph.uncolliding_prefix(
         SYNTHETIC_CHILD_PREFIX,
         read.iter().map(String::as_str).chain(seed_columns),
     )
@@ -299,7 +298,7 @@ fn agg_eval_compound<'e>(
     params: &BTreeMap<String, Value>,
 ) -> Result<Value> {
     let mut children = Vec::new();
-    let prefix = fresh_prefix(scope.seed, expr);
+    let prefix = fresh_prefix(graph, scope.seed, expr);
     let rebuilt = bind_enclosing_children(expr, &prefix, &mut children);
     agg_eval_combinator(graph, scope, &children, params, || rebuilt)
 }

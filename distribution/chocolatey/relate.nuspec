@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Chocolatey package template for the Windows CLI (ADR-0659):
+     one nuspec for every release. `choco pack` fills in $version$ from its
+     version flag; the install script derives the release tag from that
+     version, verifies the release's SSHSIG-signed SHA256SUMS and reads the
+     binary's checksum from that authenticated set, so no checksum is ever
+     baked into this file. -->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>relate</id>
+    <version>$version$</version>
+    <packageSourceUrl>https://github.com/relatedb/relate/tree/main/distribution/chocolatey</packageSourceUrl>
+    <owners>relatedb</owners>
+    <title>Relate</title>
+    <authors>Relate maintainers</authors>
+    <projectUrl>https://relatedb.ai</projectUrl>
+    <license type="expression">Apache-2.0</license>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <summary>Embedded openCypher graph database with a single-binary CLI.</summary>
+    <description>Relate is an embedded, in-memory property graph engine queried
+with openCypher. This package installs the Authenticode-signed Windows
+x86-64 CLI (`relate.exe`) and verifies the download's SHA-256 against the
+release's SSHSIG-signed SHA256SUMS before installing.</description>
+    <tags>graph database cypher neo4j cli</tags>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

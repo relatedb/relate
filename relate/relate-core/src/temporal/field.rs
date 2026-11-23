@@ -200,11 +200,13 @@ impl DurationField {
     /// Where a component of this field lands: its accumulator in `tiers`
     /// and its unit scale, from one read of the field table.
     pub(super) fn slot(self, tiers: &mut exact::DurationTiers) -> FieldSlot<'_> {
-        let (tier, scale) = self.tier_and_scale();
-        let accumulator = match tier {
-            DurationTier::Months => &mut tiers.months,
-            DurationTier::Days => &mut tiers.days,
-            DurationTier::Nanos => &mut tiers.nanos,
+        let (lane, _) = self.lane_and_unit();
+        let (_, scale) = self.tier_and_scale();
+        let accumulator = match lane {
+            DurationLane::Months => &mut tiers.months,
+            DurationLane::Days => &mut tiers.days,
+            DurationLane::Seconds => &mut tiers.seconds,
+            DurationLane::SubSecond => &mut tiers.sub_second,
         };
         FieldSlot { accumulator, scale }
     }

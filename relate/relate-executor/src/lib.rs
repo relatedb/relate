@@ -114,8 +114,8 @@ pub use graph::{
     SnapshotPin,
 };
 pub use metrics::{
-    ClauseMetricsRecord, FrontierCounters, KernelRung, PhaseTimes, PlanMetricsSink, StartReason,
-    StoreReads, WalkStart,
+    BatchFacts, ClauseMetricsRecord, FrontierCounters, KernelRung, MemoCounters, PhaseTimes,
+    PlanMetricsSink, StartReason, StatementMemoRecord, StoreReads, WalkStart,
 };
 // One public path (the graph module stays private): the whole-graph
 // index-rebuild count the facade's reopen tests read to pin the
@@ -178,6 +178,10 @@ pub use metrics::REARRIVAL_WORK_BUDGET;
 // advertised API. The operator knob lives on the open options, not here.
 #[doc(hidden)]
 pub use memory::EXPRESSION_BUDGET_BYTES;
+// The ADR-0657 default shared memo budget (whole MiB): read by the engine's
+// open-time resolver, deliberately not advertised API.
+#[doc(hidden)]
+pub use memory::DEFAULT_MEMO_BUDGET_MIB;
 pub use procedure_gate::procedure_preview_feature;
 pub use procedure_registry::{
     builtin_procedure_deprecation, builtin_procedure_signature, call_is_write,

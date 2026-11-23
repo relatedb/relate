@@ -35,6 +35,9 @@ fn transaction_ids(value: &Value) -> Result<Vec<Option<&str>>> {
         .collect()
 }
 
+/// The id of the one running transaction an embedded engine holds.
+const SELF_TRANSACTION_ID: &str = "neo4j-transaction-1";
+
 pub(crate) fn show_transactions_rows(
     graph: &ExecGraph<'_>,
     c: &relate_parser::ShowTransactionsClause,
@@ -42,7 +45,6 @@ pub(crate) fn show_transactions_rows(
     params: &BTreeMap<String, Value>,
     qctx: QueryCtx<'_>,
 ) -> Result<Vec<Row>> {
-    const TXID: &str = "neo4j-transaction-1";
     // Every id argument is evaluated even after one matches: a malformed
     // later argument is the argument's own type error, never skipped.
     let mut found = c.ids.is_empty();
@@ -53,28 +55,53 @@ pub(crate) fn show_transactions_rows(
             found |= transaction_ids(&value)?
                 .into_iter()
                 .flatten()
-                .any(|id| id == TXID);
+                .any(|id| id == SELF_TRANSACTION_ID);
         }
     }
     Ok(if found {
-        // The self row: the one running transaction an embedded engine
-        // holds. `database` follows the session's namespace; `username`
-        // is the connection's authenticated principal (ADR-0273), empty
-        // for an embedded connection. There is one embedded connection
-        // (`connectionId` empty) and no client socket (`clientAddress`
-        // null under Cypher 25).
-        vec![catalog_row([
-            ("transactionId", Value::String(TXID.into())),
-            ("currentQuery", Value::String(qctx.query_text.into())),
-            ("database", Value::String(graph.namespace().as_str().into())),
-            ("username", principal_cell(qctx.principal, "")),
-            ("status", Value::String("Running".into())),
-            ("connectionId", Value::String("".into())),
-            ("clientAddress", Value::Null),
-        ])]
+        vec![self_row(graph, params, qctx)]
     } else {
         Vec::new()
     })
+}
+
+/// The self row: the one running transaction an embedded engine holds,
+/// carrying every `YIELD *` column in the front table's (alphabetical)
+/// order. `database` follows the session's namespace; `username` is the
+/// connection's authenticated principal (ADR-0273), empty for an embedded
+/// connection. There is one embedded connection (`connectionId` empty) and
+/// no client socket (`clientAddress` null under Cypher 25). `parameters` is
+/// the statement's own parameter map, `metaData` is empty (no transaction
+/// metadata API) and `currentQueryStatus` is `running`. Every other
+/// server-observability column (timings, lock/page/heap counters, query id,
+/// planner/runtime, ...) has no engine state behind it and is a typed Null,
+/// never a fabricated value: that is the one place a column absent from the
+/// filled cells falls back to Null.
+fn self_row(graph: &ExecGraph<'_>, params: &BTreeMap<String, Value>, qctx: QueryCtx<'_>) -> Row {
+    let mut filled: BTreeMap<&str, Value> = BTreeMap::from([
+        ("transactionId", Value::String(SELF_TRANSACTION_ID.into())),
+        ("currentQuery", Value::String(qctx.query_text.into())),
+        ("database", Value::String(graph.namespace().as_str().into())),
+        ("username", principal_cell(qctx.principal, "")),
+        ("status", Value::String("Running".into())),
+        ("connectionId", Value::String("".into())),
+        ("currentQueryStatus", Value::String("running".into())),
+        ("metaData", Value::Map(Default::default())),
+        ("parameters", Value::Map(params.clone().into())),
+    ]);
+    let row: Row = relate_front::show_columns::full_transaction_columns()
+        .into_iter()
+        .map(|column| {
+            let cell = filled.remove(column.as_str()).unwrap_or(Value::Null);
+            (column, cell)
+        })
+        .collect();
+    assert!(
+        filled.is_empty(),
+        "self-row cells {:?} name no SHOW TRANSACTIONS column",
+        filled.keys().collect::<Vec<_>>()
+    );
+    row
 }
 
 /// The id live reports for one STRING id: the database name of a
@@ -142,19 +169,14 @@ pub(crate) fn terminate_transactions_rows(
 
 #[cfg(test)]
 mod tests {
-    /// Pins the `YIELD *` column set and order: the self row inserts keys in
-    /// exactly `DEFAULT_TRANSACTION_COLUMNS` order, so the producer's
-    /// hand-spelled pair list can never drift from the front table it
-    /// renders.
+    /// Pins the `YIELD *` column set and order: the self row carries keys in
+    /// exactly the front table's order.
     #[test]
     fn show_transactions_row_key_order_matches_front_column_table() {
         crate::exec::test_support::assert_row_keys_match(
             None,
             "SHOW TRANSACTIONS YIELD *",
-            &relate_front::show_columns::DEFAULT_TRANSACTION_COLUMNS
-                .iter()
-                .map(|column| (*column).to_string())
-                .collect::<Vec<_>>(),
+            &relate_front::show_columns::full_transaction_columns(),
         );
     }
 }

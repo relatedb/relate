@@ -15,8 +15,8 @@ mod unicode_identifier;
 pub use ast::*;
 pub use error::{ParseError, ParseResult};
 pub use normalize::{
-    normalize_statement, params_carry_reserved_prefix, NormalizeOutcome, Normalized,
-    NormalizedValue,
+    column_carries_auto_parameter, name_is_auto_parameter, normalize_statement,
+    params_carry_reserved_prefix, NormalizeOutcome, Normalized, NormalizedValue,
 };
 pub use parser::{parse, parse_graph_type_body, parse_with_options, selector_is_selective};
 pub use token::{Token, TokenType};

@@ -66,7 +66,7 @@ object — no C structs cross the ABI:
 The classification — `code`, `gql_status`, `stage`, `retryable` — comes from
 the engine's single table (`relate::error_info`); Bolt, HTTP, the CLI,
 Python and this ABI all derive from it, so a client never classifies an
-error itself. Internal-class messages are genericized (ADR-0260): a
+error itself. A `point()` argument rejection carries its site's `gql_status` (`22N20` dimension, `22N21` unknown srid/crs, `22N23` latitude, `22N24` non-finite, `22G03` wrong type) under `Neo.ClientError.Statement.ArgumentError`, not `42000`. Internal-class messages are genericized (ADR-0260): a
 storage failure's file path or a panic payload never crosses the ABI —
 `message` is the fixed `internal error` text, the same policy as Bolt's
 and HTTP's boundaries. The redacted original is logged to the host's
@@ -520,7 +520,13 @@ plan.
   operator the chain declined), `zone_skips` (that chain's filter's zone
   skips — conjunct-batch evaluations the chunk's derived per-column min/max
   provably replaced with the correct empty survivor set, `0` when it
-  skipped nothing), and `start` (`{element, backward, reason}`) when the
+  skipped nothing), `memo` (ADR-0654 — present only on an operator whose
+  expression memos were probed, absent otherwise: `{probes, hits, inserts,
+  refused, bytes, disabled_count}`, the memos' counters summed, `bytes` the
+  memo tables' allocation and never part of `memory_bytes`; the plan root's
+  `memo` also carries `kinds`, the memo type names `node-label` and
+  `datetime`, since the datetime constructor memo serves any expression and
+  reports there), and `start` (`{element, backward, reason}`) when the
   operator walked a pattern.
 - Field names are `snake_case` and numbers are numbers; there is no nested
   `args` map and no rendered text to parse. A breaking change bumps the

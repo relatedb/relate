@@ -35,6 +35,9 @@ impl<'a> Parser<'a> {
             let Some(term) = self.ambiguous_pipe_continuation(
                 Self::parse_type_term,
                 Self::type_pipe_tail_ends_where,
+                // No grammar-owned pipe prefix: the type grammar has no
+                // legacy `|:` spelling.
+                None,
             )?
             else {
                 break; // the `|` is the comprehension's map separator
@@ -56,37 +59,29 @@ impl<'a> Parser<'a> {
     }
 
     /// The value-type side's tail classification for the shared pipe
-    /// mechanism: whether the token after a would-be union component
-    /// ends its usefulness as one — spelled as the positive whitelist of
-    /// the tokens that continue, in three classes. The type grammar's
-    /// own continuations: `|` (another union arm), `NOT`/`NULL` (the NOT
-    /// NULL suffix) and the `LIST`/`ARRAY` postfix keywords. The bracket
-    /// tokens: `,` and `)` continuing an enclosing call or parenthesized
-    /// group, and `}` closing a nested map literal — each can only
-    /// appear inside a bracket opened before the pipe, exactly where the
-    /// union reading is legitimate and the comprehension's separator
-    /// cannot appear (a `}` directly closing a map comprehension's WHERE
-    /// is malformed either way, so committing only changes which error) —
-    /// and `]`, gated on the context's bracket proof exactly as the
-    /// label side gates it: a nested list's `]` continues unless the
-    /// proof says the `]` would close the comprehension itself with its
-    /// map stranded ([`BracketProof::RightBracketClosesTheComprehension`]
-    /// — the pattern form's own closer still yields the pipe). The
-    /// expression continuations: the boolean connectives and the
-    /// comparison operators (including `=~`), which legally continue the
-    /// expression whose operand is the finished union — the comparison
-    /// chain of `parse_comparison` and the AND/OR/XOR levels above it —
-    /// so the union commits greedily exactly as the label side's
-    /// disjunctions do. Every other token can only continue the
-    /// comprehension's map expression — in particular the CIP-87
-    /// no-chaining set (`IS`, `IN`, `STARTS`/`ENDS`/`CONTAINS`:
-    /// `parse_string_null_check` allows at most one predicate suffix, so
-    /// those tails can never legally follow a type predicate) — so a map
-    /// beginning with a type-named base (`date(n[k])`, `string[0]`,
-    /// `string IS NOT NULL`) still wins and the `|` restores as the
-    /// separator. Inside `LIST<...>`/`ANY<...>` brackets the context is
-    /// suspended, so the closing `>` never reaches this classification.
-    fn type_pipe_tail_ends_where(&self, ty: TokenType) -> bool {
+    /// mechanism: whether the would-be union component ends — yielding
+    /// the `|` to the comprehension's map separator. The one shared
+    /// context fact both grammars read decides
+    /// ([`Parser::comprehension_where_yields_the_pipe`]: live's
+    /// separator preference, probed on both grammars against live
+    /// 2026.10.1 — `x IS :: STRING|INTEGER]` and
+    /// `x IS :: STRING|INTEGER AND y]` yield the pipe there, the map
+    /// expression naming `INTEGER` and failing on the undefined name);
+    /// the value-type grammar adds its own continuation whitelist for
+    /// the cases the shared fact gates off — a nested pipe (inside call
+    /// arguments, a list literal) or one inside a pattern element: `|`
+    /// (another union arm), `NOT`/`NULL` (the NOT NULL suffix), the
+    /// `LIST`/`ARRAY` postfix keywords, the bracket tokens continuing an
+    /// inner group (`,`, `)`, `}`, `]` — at top level the shared fact
+    /// has already yielded, so the whitelist's `]` arm only ever serves
+    /// the nested case), and the boolean connectives and comparison
+    /// operators that legally continue the expression whose operand is
+    /// the finished union.
+    fn type_pipe_tail_ends_where(&self) -> bool {
+        if self.comprehension_where_yields_the_pipe() {
+            return true;
+        }
+        let ty = self.peek_type();
         !(matches!(
             ty,
             TokenType::Pipe
@@ -94,6 +89,7 @@ impl<'a> Parser<'a> {
                 | TokenType::NULL
                 | TokenType::Comma
                 | TokenType::RightParen
+                | TokenType::RightBracket
                 | TokenType::RightBrace
                 | TokenType::AND
                 | TokenType::OR
@@ -105,10 +101,7 @@ impl<'a> Parser<'a> {
                 | TokenType::LessEqual
                 | TokenType::GreaterEqual
                 | TokenType::RegexMatch
-        ) || (ty == TokenType::Identifier && self.peek_is_list_or_array_keyword())
-            || (ty == TokenType::RightBracket
-                && self.comprehension_where
-                    != Some(BracketProof::RightBracketClosesTheComprehension)))
+        ) || (ty == TokenType::Identifier && self.peek_is_list_or_array_keyword()))
     }
 
     /// A `<value type>` inside the `LIST<...>`/`ANY<...>` brackets: the

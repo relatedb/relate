@@ -694,19 +694,35 @@ fn a_bracket_internal_type_union_commits_and_the_top_level_pipe_separates() {
     assert_map_is_loop_variable(query, &lc);
 }
 
-/// The expression-continuation class of the whitelist: a boolean
-/// connective after a would-be union component continues the expression
-/// whose operand is the finished union — the AND/OR/XOR levels legally
-/// take a type predicate as an operand, exactly as the comparison chain
-/// does — so the union commits greedily, matching the label side's rule
-/// (`x:A | B AND y` reads as `(x:A|B) AND y`) and the changelog's "a
-/// genuine `IS :: STRING | INTEGER` union inside the filter still parses
-/// greedily". The CIP-87 no-chaining set (`IS`, `IN`,
-/// `STARTS`/`ENDS`/`CONTAINS` — `parse_string_null_check`'s "at most
-/// one" rule) stays dead-end, so the round-2 map bases
-/// (`string IS NOT NULL`) still win.
+/// A bracketed type term cannot start a map expression, so the union
+/// survives the single pipe (these parsed before the closer-scan branch
+/// and regressed on its first head — the rust review's round-3 parse
+/// regressions).
 #[test]
-fn an_expression_continuation_tail_commits_the_union_greedily() {
+fn a_bracketed_type_term_keeps_the_union_over_a_single_pipe() {
+    for query in [
+        "RETURN [k IN ['a'] WHERE k IS :: STRING | LIST<INTEGER>] AS r",
+        "RETURN [k IN ['a'] WHERE k IS :: STRING | ANY<INTEGER>] AS r",
+    ] {
+        let lc = comprehension_of(query);
+        assert!(
+            matches!(&lc.where_expr, Some(Expr::IsType(it))
+                if matches!(&it.type_expr, TypeExpr::Union(parts) if parts.len() == 2)),
+            "{query}: the union survived, got {:?}",
+            lc.where_expr
+        );
+        assert!(lc.map_expr.is_none(), "{query}: no map expression");
+    }
+}
+
+/// Live 2026.10.1 reads the operator tail with no later pipe as the
+/// comprehension's map separator (`x IS :: STRING | INTEGER AND true]`
+/// fails there with `Variable INTEGER not defined`, probed 2026-11-22):
+/// the WHERE keeps the first type term and the map expression is the
+/// whole `INTEGER AND true` chain — the union survives only when a
+/// later pipe in the same comprehension keeps it alive.
+#[test]
+fn an_expression_continuation_tail_yields_the_pipe_to_the_map_separator() {
     for (query, op) in [
         (
             "RETURN [k IN ['a'] WHERE k IS :: STRING | INTEGER AND true] AS x",
@@ -718,24 +734,22 @@ fn an_expression_continuation_tail_commits_the_union_greedily() {
         ),
     ] {
         let lc = comprehension_of(query);
-        let Some(Expr::Binary(bin)) = &lc.where_expr else {
+        // The map expression is the connective over the would-be union
+        // arm and the trailing operand.
+        let Some(Expr::Binary(bin)) = &lc.map_expr else {
             panic!(
-                "{query}: the WHERE is the connective, got {:?}",
-                lc.where_expr
+                "{query}: the map expression is the connective, got {:?}",
+                lc.map_expr
             )
         };
         assert_eq!(bin.op, op, "{query}");
-        let Expr::IsType(it) = &bin.left else {
-            panic!(
-                "{query}: the connective's left is the type predicate, got {:?}",
-                bin.left
-            )
-        };
+        // The WHERE is the single type predicate.
         assert!(
-            matches!(&it.type_expr, TypeExpr::Union(parts) if parts.len() == 2),
-            "{query}: the union stayed the filter's operand"
+            matches!(&lc.where_expr, Some(Expr::IsType(it))
+                if !matches!(&it.type_expr, TypeExpr::Union(_))),
+            "{query}: the WHERE kept the first type term, got {:?}",
+            lc.where_expr
         );
-        assert!(lc.map_expr.is_none(), "{query}: no map expression follows");
     }
 }
 

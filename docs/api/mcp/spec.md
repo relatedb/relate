@@ -63,6 +63,13 @@ namespace prefix and its read-only gate (ADR-0447 §3). The names and the
 `{statement, parameters}` inputs are the extension mount's vocabulary, so
 one table serves both MCP surfaces.
 
+A `tools/call`'s `arguments` is an object: a non-object is refused with
+`-32602` and `"arguments" must be an object` — the one wording the extension
+mount answers too. Absent or `null` is the empty object. `null` is absent for
+every optional member of the vocabulary (`arguments`, `parameters`,
+`parameters.rows`, `sample_size`, `starters`): it takes the member's default
+rather than a shape refusal.
+
 Request `params` accept plain JSON values (ADR-0425): an envelope-shaped
 object — a client echoing a response value back — stays a user map whose
 entries are reachable as map lookups; there is no typed-form acceptance

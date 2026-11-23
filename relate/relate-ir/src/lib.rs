@@ -18,7 +18,7 @@ pub use recognize::{key_of, orient, orient_side, var_key_side};
 pub use search::*;
 pub use walk::{
     exists_outer_vars, expr_vars, label_expr_vars, path_pattern_vars, references_any,
-    walk_scope_children, ChildScope,
+    root_variable, walk_scope_children, ChildScope,
 };
 pub use walk_query::{
     any_pattern_payload, path_pattern_mentions, pattern_anchor_variables,

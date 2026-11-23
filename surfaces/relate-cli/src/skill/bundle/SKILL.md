@@ -7,7 +7,8 @@ version: {{VERSION}}
 # Relate
 
 Relate is an embedded, single-process openCypher graph database (openCypher
-TCK coverage is measured by the project's spec harness, reporting-only) plus
+TCK coverage is measured by the project's spec harness — coverage reported
+per PR, regressions gated) plus
 a large slice of Neo4j's Cypher 25 / GQL-aligned extensions. One binary, no
 server, no configuration. Databases are a local directory, a single `.rl`
 file, or `:memory:`.

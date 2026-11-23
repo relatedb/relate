@@ -1,6 +1,6 @@
 # Cypher Syntax Reference
 
-Relate implements the [openCypher](https://opencypher.org/) query language (measured by the spec harness against the openCypher TCK — reporting-only, ADR-0482, ADR-0520) plus a large slice of Neo4j's post-standard Cypher (GQL alignment), verified against an evaluation suite derived from ~200 Neo4j CIP documents. This page documents the openCypher base first, then the Neo4j / GQL extensions.
+Relate implements the [openCypher](https://opencypher.org/) query language (measured by the spec harness against the openCypher TCK — coverage reported per PR, regressions gated, ADR-0482, ADR-0520, ADR-0661) plus a large slice of Neo4j's post-standard Cypher (GQL alignment), verified against an evaluation suite derived from ~200 Neo4j CIP documents. This page documents the openCypher base first, then the Neo4j / GQL extensions.
 
 For the full language semantics behind the extensions, consult the
 [Neo4j Cypher Manual](https://neo4j.com/docs/cypher-manual/current/introduction/)

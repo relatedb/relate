@@ -268,6 +268,8 @@ mod tests {
             zone_skips: 0,
             frontier: Default::default(),
             frontier_decline: None,
+            memo: Default::default(),
+            memo_kinds: Default::default(),
         };
         let children = build_children(breakdown, &mut cursor_at(2), 1, Some(metrics));
         assert_eq!(

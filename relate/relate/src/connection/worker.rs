@@ -1,11 +1,16 @@
-//! The connection's query-worker cluster (ADR-0259, ADR-0312, ADR-0504):
-//! the one statement-dispatch entry (worker body, or the caller-stack
-//! assertion's fast path — admit inline, then execute inline or escalate
-//! to the worker), spawning and reusing the per-connection 64 MiB worker,
-//! and the `Drop` join that keeps a busy worker from outliving its
-//! connection. Every item but the wasm32 dispatch twin in the parent
-//! module is native-only: wasm32 has no threads, so its twin runs the one
-//! `run_query` body directly on the caller's own thread (ADR-0312).
+//! The connection's query-worker cluster (ADR-0259, ADR-0312, ADR-0504,
+//! ADR-0663): the one statement-dispatch entry — the guarded admission
+//! and route decision, then the one tail every route ends in — with two
+//! admission paths: the caller-stack assertion's fast path (ADR-0504,
+//! full admission inline, then execute inline or escalate) and the
+//! cache-hit inline route (ADR-0663, a raw-stage plan-cache probe; a hit
+//! the containment rule admitted executes inline, everything cold or
+//! declined is the worker's). Spawns and reuses the per-connection
+//! 64 MiB worker, and the `Drop` join that keeps a busy worker from
+//! outliving its connection. Every item but the wasm32 dispatch twin in
+//! the parent module is native-only: wasm32 has no threads, so its twin
+//! runs the one `run_query` body directly on the caller's own thread
+//! (ADR-0312).
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::BTreeMap;
@@ -28,11 +33,12 @@ use crate::{CancelToken, Value};
 use super::QueryOutcome;
 
 impl Connection {
-    /// The statement dispatch entry (ADR-0259, ADR-0504): a connection
-    /// whose caller asserted the worker stack takes the fast path, every
-    /// other connection the worker body. One entry point so the shared
-    /// epilogue (`run_cancellable`) stays mode-free — the shape
-    /// `dispatch_plan` already uses.
+    /// The statement dispatch entry (ADR-0259, ADR-0504, ADR-0663): one
+    /// guarded admission-and-route decision, then one tail every route
+    /// ends in — the shape `dispatch_plan` already uses, so the shared
+    /// epilogue (`run_cancellable`) stays mode-free. The two admission
+    /// paths differ only in the decision's closure; every arm below is
+    /// theirs alike.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn dispatch_query(
         &mut self,
@@ -41,98 +47,131 @@ impl Connection {
         token: &CancelToken,
         heartbeat: Option<Heartbeat<'_>>,
     ) -> QueryOutcome {
-        if self.caller_stack_asserted {
-            self.dispatch_query_or_inline(cypher, params, token, heartbeat)
-        } else {
-            // The worker-slot refusal and the worker's panic error flow
-            // through the one tail every statement path ends in.
-            QueryOutcome::from_result(Self::run_on_worker(
-                self.worker_slot(),
-                || self.run_query(cypher, params, token),
-                heartbeat,
-            ))
-        }
-    }
-
-    /// The caller-stack fast path (ADR-0504), for a connection whose
-    /// calling thread carries the query worker's own stack budget: the
-    /// statement admits on this thread — parse, lowering and planning
-    /// recurse proportionally to nesting, and the asserted stack is the
-    /// worker's own 64 MiB, so ADR-0259's margin holds unchanged — and
-    /// then either executes here (bounded work, no handoff at all) or
-    /// escalates to the worker with the admission in hand (the statement
-    /// may outlive the keep-alive interval, so the caller must keep
-    /// ADR-0312's wait shape and its NOOP ticks).
-    ///
-    /// ADR-0259's panic containment holds on the whole inline statement,
-    /// not only its execution half: the worker loop catches a panic
-    /// anywhere in the statement (admission included), so the fast path
-    /// guards admission and the inline body with the same
-    /// [`catch_inline_panic`] mapping. The escalate arm stays outside the
-    /// guard — its wait is the unasserted path's wait, tick panics
-    /// included (ADR-0334), and a worker-side panic is already contained
-    /// by the worker loop.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn dispatch_query_or_inline(
-        &mut self,
-        cypher: &str,
-        params: BTreeMap<String, Value>,
-        token: &CancelToken,
-        heartbeat: Option<Heartbeat<'_>>,
-    ) -> QueryOutcome {
-        // The guarded admission: the one admission sequence (its clock
-        // armed inside, ADR-0221) and the route decision, under the fast
-        // path's panic guard. The closure returns the ordinary
-        // `Result<(Admission, Route)>` — a refusal is a plain `Err`, the
-        // same error the worker path's admission refusal produces — and
-        // the guard wraps it once; the two failure channels (refusal,
-        // caught panic) collapse to the one not-admitted tail at the
-        // only consumer.
+        // The guarded decision: the admission and its route under the
+        // fast path's panic guard, so ADR-0259's containment holds on
+        // the caller's thread — a refusal and a caught panic collapse to
+        // the one not-admitted tail at the only consumer, the same error
+        // the worker path's admission refusal produces. The two decision
+        // methods share the tail below; each yields its own two of the
+        // three routes.
         let decision = catch_inline_panic(|| {
-            let admission = self.admit_statement(
-                cypher,
-                &params,
-                super::cache::CacheUse::Query,
-                web_time::Instant::now(),
-            )?;
-            let route = if plan_is_bounded_work(&admission.logical) {
-                Route::Inline
+            if self.caller_stack_asserted {
+                self.decide_route_asserted(cypher, &params)
             } else {
-                Route::Escalate
-            };
-            Ok((admission, route))
+                self.decide_route_probed(cypher, &params)
+            }
         });
+        // The one tail. The decision released the connection
+        // (`run_on_worker`'s own shape), the arms take it back.
         match decision {
             // The plain not-admitted outcome — an admission refusal or a
             // caught panic, indistinguishable at this consumer:
             // `run_cancellable`'s epilogue owns failing the open
-            // transaction for every non-Ok result, so the fast path does
-            // not pre-empt it either.
+            // transaction for every non-Ok result, so no arm pre-empts
+            // it either.
             Ok(Err(e)) | Err(e) => QueryOutcome::not_admitted(Err(e)),
-            Ok(Ok((admission, Route::Inline))) => {
-                // Inline: there is no wait, so a heartbeat can never be
-                // due — a bounded-work statement finishes far inside any
-                // interval a caller arms one for (ADR-0312's own
-                // first-tick rule). The heartbeat rides unused to the end
-                // of this frame. REL8-1120's optimistic-hit retry rides
-                // `run_admitted`, inside the same panic guard.
+            // Cold: the worker runs the whole statement — admission
+            // included, on the 64 MiB stack the parser's nesting cap is
+            // tuned for — the caller waiting with the heartbeat armed
+            // exactly as an unasserted connection's statement always did.
+            Ok(Ok(Route::WorkerCold)) => QueryOutcome::from_result(Self::run_on_worker(
+                self.worker_slot(),
+                || self.run_query(cypher, params, token),
+                heartbeat,
+            )),
+            // Inline: there is no wait, so a heartbeat can never be due
+            // — a bounded-work statement finishes far inside any interval
+            // a caller arms one for (ADR-0312's own first-tick rule). The
+            // heartbeat rides unused to the end of this frame. REL8-1120's
+            // optimistic-hit retry rides `run_admitted`, inside the same
+            // panic guard. The probe's containment rule already vetted
+            // the entry: a generation-mismatch replan compiles the same
+            // depth-bounded carried AST, so the plan that runs is
+            // bounded by the same fact (ADR-0663).
+            Ok(Ok(Route::Inline(admission))) => {
+                // The inline route's two producers need different retry
+                // hosts: the asserted fast path's thread carries the
+                // worker's own stack (retry in place); the probe's
+                // (ADR-0663, an unasserted thread) sends REL8-1120's
+                // retry — whose re-admission parses the raw text — to
+                // the worker. The flag is exactly the producer: the
+                // asserted path requires it, the probe refuses it.
+                let retry_host = if self.caller_stack_asserted {
+                    super::dispatch::RetryHost::ThisThread
+                } else {
+                    super::dispatch::RetryHost::Worker
+                };
                 QueryOutcome::from_result(catch_inline_panic(|| {
-                    self.run_admitted(admission, cypher, &params, token)
+                    self.run_admitted(admission, cypher, &params, token, retry_host)
                 }))
             }
-            Ok(Ok((admission, Route::Escalate))) => {
-                // Escalate: the post-admission body runs on the 64 MiB
-                // worker, the admission travelling with it, the caller
-                // waiting with the heartbeat armed exactly as an
-                // unasserted connection's statement does. REL8-1120's
-                // optimistic-hit retry rides `run_admitted`, the same
-                // worker job.
-                QueryOutcome::from_result(Self::run_on_worker(
-                    self.worker_slot(),
-                    || self.run_admitted(admission, cypher, &params, token),
-                    heartbeat,
-                ))
-            }
+            // Escalate: the post-admission body runs on the 64 MiB
+            // worker, the admission travelling with it, the caller
+            // waiting with the heartbeat armed exactly as an unasserted
+            // connection's statement does. This arm stays outside the
+            // panic guard — its wait is the unasserted path's wait, tick
+            // panics included (ADR-0334), and a worker-side panic is
+            // already contained by the worker loop.
+            Ok(Ok(Route::Escalate(admission))) => QueryOutcome::from_result(Self::run_on_worker(
+                self.worker_slot(),
+                || {
+                    self.run_admitted(
+                        admission,
+                        cypher,
+                        &params,
+                        token,
+                        super::dispatch::RetryHost::ThisThread,
+                    )
+                },
+                heartbeat,
+            )),
+        }
+    }
+
+    /// ADR-0504, the caller-stack fast path's decision: the calling
+    /// thread carries the worker's own stack budget, so the full
+    /// admission — parse, lowering and planning, which recurse
+    /// proportionally to nesting — runs here, and bounded work executes
+    /// here too (no handoff at all) while everything else escalates with
+    /// the admission in hand (the statement may outlive the keep-alive
+    /// interval, so the caller must keep ADR-0312's wait shape and its
+    /// NOOP ticks).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn decide_route_asserted(
+        &mut self,
+        cypher: &str,
+        params: &BTreeMap<String, Value>,
+    ) -> Result<Route> {
+        let admission = self.admit_statement(
+            cypher,
+            params,
+            super::cache::CacheUse::Query,
+            web_time::Instant::now(),
+        )?;
+        Ok(if plan_is_bounded_work(&admission.logical) {
+            Route::Inline(admission)
+        } else {
+            Route::Escalate(admission)
+        })
+    }
+
+    /// ADR-0663, the cache-hit inline route's decision: the probe is the
+    /// admission prefix with the raw-only cache mode — a map probe that
+    /// cannot recurse with nesting — and a hit its containment rule
+    /// admitted runs inline, no handoff, the largest single component of
+    /// the warm per-statement floor gone. Everything cold or declined is
+    /// the worker's: its parse recursion is what the 64 MiB stack exists
+    /// for, and its wait keeps ADR-0312's NOOP ticks for statements that
+    /// can outlive the interval.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn decide_route_probed(
+        &mut self,
+        cypher: &str,
+        params: &BTreeMap<String, Value>,
+    ) -> Result<Route> {
+        match self.admit_hit_only(cypher, params, web_time::Instant::now())? {
+            Some(admission) => Ok(Route::Inline(admission)),
+            None => Ok(Route::WorkerCold),
         }
     }
 
@@ -177,6 +216,13 @@ impl Connection {
         self.worker_spawns
     }
 
+    /// Statements the cache-hit inline route (ADR-0663) served on the
+    /// calling thread.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn hit_inline_served(&self) -> u32 {
+        self.hit_inline_statements
+    }
+
     /// Run `f` on this connection's worker. Used to prove a panic leaves the
     /// same worker usable for the next statement.
     #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -188,14 +234,17 @@ impl Connection {
     }
 }
 
-/// The fast path's route for one admitted statement (ADR-0504): inline on
-/// the calling thread, or escalated to the query worker. A named route —
-/// not a boolean mode — so the dispatch arms read as what they are and a
+/// The dispatch route for one statement (ADR-0504, ADR-0663): inline on
+/// the calling thread (the admission in hand), escalated to the query
+/// worker (the admission in hand), or cold — the worker runs the whole
+/// statement, admission included, on its own stack. A named route — not
+/// a boolean mode — so the dispatch arms read as what they are and a
 /// future route cannot be conflated with either.
 #[cfg(not(target_arch = "wasm32"))]
 enum Route {
-    Inline,
-    Escalate,
+    Inline(super::admission::Admission),
+    Escalate(super::admission::Admission),
+    WorkerCold,
 }
 
 impl Drop for Connection {

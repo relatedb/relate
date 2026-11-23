@@ -391,6 +391,22 @@ impl<'a> CliRunOptions<'a> {
 // a subset of it; allow the rest.
 #[allow(dead_code)]
 pub fn run_cli(options: CliRunOptions<'_>) -> (ExitStatus, String, String) {
+    run_command(cli_command(), options)
+}
+
+/// [`run_cli`] against an explicit binary path, with the same scrub, env
+/// policy and capture: the upgrade suite stages a copy of the binary in a
+/// scratch directory (a package-managed fixture needs the marker beside the
+/// running file) and runs that copy.
+#[allow(dead_code)] // Only the upgrade suite stages its own binary.
+pub fn run_cli_bin(bin: &Path, options: CliRunOptions<'_>) -> (ExitStatus, String, String) {
+    let mut cmd = Command::new(bin);
+    scrub_ambient(&mut cmd);
+    cmd.env("RELATE_TELEMETRY", "off");
+    run_command(cmd, options)
+}
+
+fn run_command(mut cmd: Command, options: CliRunOptions<'_>) -> (ExitStatus, String, String) {
     let CliRunOptions {
         args,
         home,
@@ -399,7 +415,6 @@ pub fn run_cli(options: CliRunOptions<'_>) -> (ExitStatus, String, String) {
         unset_env,
         stdin,
     } = options;
-    let mut cmd = cli_command();
     cmd.args(args);
     // One ordered env policy: ambient values go first, then the ordered
     // `env` map (defaults pre-populated, builders' entries later) is

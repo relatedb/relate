@@ -120,7 +120,7 @@ pub(crate) use admit::{
 pub(crate) use binds::{
     bind_node_stub, bind_path_names, bind_pattern_node, bind_reconstructed_path, bind_rel_stub,
     bind_rel_stub_list, bind_rung_name, bind_trail, commit_trail, memoized_path_rung,
-    node_bind_name,
+    node_bind_name, SeatPrefixes,
 };
 pub(crate) use candidates::{
     admitted, id_fn_conversion, leaf_seek, node_candidates, node_candidates_capped,

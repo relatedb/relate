@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use relate_core::{NodeId, RelId};
 use relate_ir::{Direction, RelPattern};
 
-use crate::graph::HopBuf;
+use crate::graph::{HopBuf, PeerHop};
 use crate::store::RelTypes;
 
 use super::scratch::WriteScratch;
@@ -169,7 +169,7 @@ impl ExecGraph<'_> {
     }
 
     /// Call `f` once per batch of at most `HOP_BATCH` of `id`'s visible hops
-    /// as `(peer, rel id)`. The read-only snapshot resolves a batch at a
+    /// as [`PeerHop`]s. The read-only snapshot resolves a batch at a
     /// time ([`crate::graph::Graph::try_for_each_hop_batch_resolved_at`]); a
     /// write overlay, a statement's own scratch, collects its whole walk
     /// into the buffer first and then hands it out in the same batches.
@@ -179,7 +179,7 @@ impl ExecGraph<'_> {
         dir: Direction,
         types: &RelTypes,
         buf: &mut HopBuf,
-        f: impl FnMut(&[(NodeId, RelId)]) -> std::result::Result<(), E>,
+        f: impl FnMut(&[PeerHop]) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
         match self.scratch {
             None => self.base.try_for_each_hop_batch_resolved_at(
@@ -193,7 +193,7 @@ impl ExecGraph<'_> {
             Some(cell) => {
                 buf.clear_hops();
                 self.try_for_each_hop_overlay(cell, id, dir, types, |rid, peer| {
-                    buf.push_hop(peer, rid);
+                    buf.push_hop(PeerHop { peer, rid });
                     Ok::<(), E>(())
                 })?;
                 buf.emit_batches(f)
@@ -227,8 +227,8 @@ impl ExecGraph<'_> {
                 }
                 f(rid, peer)
             })?;
-        for (rid, peer) in extras {
-            f(rid, peer)?;
+        for hop in extras {
+            f(hop.rid, hop.peer)?;
         }
         Ok(())
     }
@@ -247,7 +247,7 @@ impl ExecGraph<'_> {
         id: NodeId,
         dir: Direction,
         types: &RelTypes,
-    ) -> Vec<(RelId, NodeId)> {
+    ) -> Vec<PeerHop> {
         let s = scratch.borrow();
         let lists = match dir {
             Direction::Outgoing => [Some(&s.batch.out_adj), None],
@@ -271,7 +271,7 @@ impl ExecGraph<'_> {
                     "a scratch adjacency entry lies under the endpoint list that yielded it",
                 );
                 if seen.insert(rid) {
-                    hops.push((rid, peer));
+                    hops.push(PeerHop { peer, rid });
                 }
             }
         }

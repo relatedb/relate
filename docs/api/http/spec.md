@@ -668,7 +668,11 @@ de-chunk the frames first, and inflate when gzip was negotiated.
   Neo4j-facing float the decoration writes, ADR-0357), the PROFILE metric
   entries (`Rows`, `TimeNs`, `DbHits`, `MemoryBytes`, `ExpressionBuiltBytes` —
   Neo4j's own
-  `arguments` keeps its `Rows`/`DbHits` there too), the ADR-0538
+  `arguments` keeps its `Rows`/`DbHits` there too), the expression-memo
+  entries when a memo was probed on the operator (ADR-0654, presence-only:
+  `MemoProbes`, `MemoHits`, `MemoInserts`, `MemoRefused`, `MemoBytes` — never
+  part of `MemoryBytes` — and `MemoDisabledCount`, with the root's
+  `MemoKinds` list of `node-label`/`datetime`), the ADR-0538
   traversal-rung entries on a `MATCH` operator (`PatternEngine`, the
   store's `RELATE_PATTERN_ENGINE` mode; and on a PROFILE tree the served
   clause's `KernelRung` — `chain` with `KernelHops`, `hub-star`,
@@ -751,6 +755,7 @@ HTTP status and `code` by failure:
 | 400 | `22G03` | type error |
 | 400 | `51N27` | unsupported database-administration command (ADR-0116) |
 | 400 | `42N18` | write against the read-only `system_ontologies` namespace |
+| 400 | `22N20` / `22N21` / `22N23` / `22N24` / `22G03` | a `point()` map rejection at its own site: dimension mismatch, unknown srid or crs, latitude out of range, non-finite coordinate, wrong-typed argument (code `Neo.ClientError.Statement.ArgumentError`, ADR-0559) |
 | 400 | `42000` | any other caller-facing engine error |
 | 507 | `42000` | engine `Capacity`: the graph cap, the 256 MiB expression cap, or the 64 MiB per-commit WAL payload cap (ADR-0494) — the message names the cap and, for the commit cap, the batching remedy (`CALL { … } IN TRANSACTIONS OF n ROWS` or client-side batches); never the generic 500. Inside a transaction the commit cap is refused on the statement that takes the transaction's redo over it (ADR-0604), so the reply carries the refusal, not the later commit |
 | 500 | `50N42` | engine-internal error; the message is genericized per the ADR-0260 trust-boundary rule (OPLANE_REQ-00340359) |

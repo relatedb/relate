@@ -208,6 +208,8 @@ public class DatabaseTest {
                 + "\"memo_hits\":14,\"memo_misses\":15,\"representative_proofs\":16,"
                 + "\"search_proven\":17,\"search_disproven\":18,\"declined_exhausted\":19,"
                 + "\"budget_fraction\":0.5},\"frontier_decline\":\"table-budget\",\"start\":null,"
+                + "\"memo\":{\"probes\":20,\"hits\":18,\"inserts\":2,\"refused\":1,"
+                + "\"bytes\":4096,\"disabled_count\":1,\"kinds\":[\"datetime\"]},"
                 + "\"kernel\":{\"rung\":\"nfa\",\"hops\":2}}", PlanActual.class);
         assertEquals(2.5, a.totalTimeMs);
         assertEquals(0.25, a.walkMs);
@@ -221,6 +223,16 @@ public class DatabaseTest {
         assertEquals("table-budget", a.frontierDecline);
         assertEquals("nfa", a.kernel.rung);
         assertNull(a.start);
+        assertEquals(18, a.memo.hits);
+        assertEquals(4096, a.memo.bytes);
+        assertEquals(1, a.memo.disabledCount);
+        assertEquals(java.util.List.of("datetime"), a.memo.kinds);
+    }
+
+    @Test
+    void planActualMemoIsAbsentWhenNoMemoWasUsed() throws Exception {
+        PlanActual a = Json.PLAN.readValue("{\"rows\":1}", PlanActual.class);
+        assertNull(a.memo);
     }
 
     @Test

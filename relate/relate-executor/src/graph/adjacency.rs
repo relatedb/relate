@@ -21,15 +21,23 @@ pub(super) struct ChunkHops {
 /// Most hops one [`Graph::try_for_each_hop_batch_resolved_at`] call resolves.
 pub(crate) const HOP_BATCH: usize = 256;
 
+/// One resolved hop of the batched reader: the relationship and the node it
+/// reaches from the node being walked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PeerHop {
+    pub(crate) peer: NodeId,
+    pub(crate) rid: RelId,
+}
+
 /// The reusable buffers of a batched hop read: the node's hop ids copied
-/// out of the adjacency guard and the resolved `(peer, rel id)` batch. A
+/// out of the adjacency guard and the resolved [`PeerHop`] batch. A
 /// read keeps them across nodes, so a hop list is never allocated per node;
 /// they grow to the largest degree seen. Cloning yields an empty value: a
 /// copy of a search must never carry a node's hop list.
 #[derive(Default)]
 pub(crate) struct HopBuf {
     ids: Vec<RelId>,
-    hops: Vec<(NodeId, RelId)>,
+    hops: Vec<PeerHop>,
 }
 
 impl HopBuf {
@@ -39,8 +47,8 @@ impl HopBuf {
     }
 
     /// Append one collected hop for [`Self::emit_batches`].
-    pub(crate) fn push_hop(&mut self, peer: NodeId, rid: RelId) {
-        self.hops.push((peer, rid));
+    pub(crate) fn push_hop(&mut self, hop: PeerHop) {
+        self.hops.push(hop);
     }
 
     /// Call `f` once per slice of at most [`HOP_BATCH`] collected hops: the
@@ -48,7 +56,7 @@ impl HopBuf {
     /// the one that collects first.
     pub(crate) fn emit_batches<E>(
         &self,
-        f: impl FnMut(&[(NodeId, RelId)]) -> std::result::Result<(), E>,
+        f: impl FnMut(&[PeerHop]) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
         self.hops.chunks(HOP_BATCH).try_for_each(f)
     }
@@ -94,6 +102,20 @@ impl<'a> AdjSide<'a> {
         let adj = self.delta.get(&node)?;
         let region = self.sealed.region(node);
         Some(f(&adj, region))
+    }
+
+    /// Append `node`'s visible hop ids at `ts` to `ids`, in merged order,
+    /// and drop the store guard before returning. `IdVec`'s lock is not
+    /// re-entrant, so no caller visits hops while holding it.
+    fn copy_hop_ids(&self, node: NodeId, ts: u64, types: &RelTypes, ids: &mut Vec<RelId>) {
+        self.with_adj(node, |by_type, region| match types.ids() {
+            None => by_type.for_each_hop(region, ts, |hop| ids.push(hop.id)),
+            Some(type_ids) => {
+                for tid in type_ids {
+                    by_type.for_each_hop_of(region, tid, ts, |hop| ids.push(hop.id));
+                }
+            }
+        });
     }
 
     /// Drop both of this side's tables — the wholesale build's replacement
@@ -632,7 +654,7 @@ impl Graph {
     }
 
     /// Call `f` once per batch of at most [`HOP_BATCH`] of `id`'s hops
-    /// visible at `ts`, each as `(peer, rel id)`, in the walk's order. The
+    /// visible at `ts`, each as a [`PeerHop`], in the walk's order. The
     /// node's hop ids are copied under the adjacency guard into `buf` and
     /// the guard is dropped before any endpoint is resolved or `f` runs
     /// (`IdVec`'s lock is not re-entrant); each batch then resolves the next
@@ -649,7 +671,7 @@ impl Graph {
         ts: u64,
         types: &RelTypes,
         buf: &mut HopBuf,
-        mut f: impl FnMut(&[(NodeId, RelId)]) -> std::result::Result<(), E>,
+        mut f: impl FnMut(&[PeerHop]) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
         use relate_ir::Direction;
         for (side, scan_dir) in self.sides(dir) {
@@ -661,8 +683,9 @@ impl Graph {
         Ok(())
     }
 
-    /// One side's hops in batches: copy the ids under the guard, then resolve
-    /// and hand out `HOP_BATCH` at a time, never an empty batch.
+    /// One side's hops in batches, on the one typed-chunk skeleton: resolved
+    /// hops collect in `buf` and go out `HOP_BATCH` at a time, never an
+    /// empty batch.
     #[allow(clippy::too_many_arguments)]
     fn batch_side<E>(
         &self,
@@ -673,50 +696,27 @@ impl Graph {
         ts: u64,
         types: &RelTypes,
         buf: &mut HopBuf,
-        f: &mut impl FnMut(&[(NodeId, RelId)]) -> std::result::Result<(), E>,
+        f: &mut impl FnMut(&[PeerHop]) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
         let HopBuf { ids, hops } = buf;
-        ids.clear();
-        self.copy_hop_ids(side, id, ts, types, ids);
-        for chunk in ids.chunks(HOP_BATCH) {
-            hops.clear();
-            for &rid in chunk {
-                let Some((start, stop)) = self.rel_ends_at(rid, ts) else {
-                    continue;
-                };
-                if skip_self_loops && start == stop {
-                    continue;
-                }
-                if let Some(peer) = crate::store::hop_other(id, start, stop, dir) {
-                    hops.push((peer, rid));
+        hops.clear();
+        self.for_each_typed_ends_in(side, id, ts, types, ids, &mut |rid, start, stop| {
+            if skip_self_loops && start == stop {
+                return Ok(());
+            }
+            if let Some(peer) = crate::store::hop_other(id, start, stop, dir) {
+                hops.push(PeerHop { peer, rid });
+                if hops.len() == HOP_BATCH {
+                    f(hops)?;
+                    hops.clear();
                 }
             }
-            if !hops.is_empty() {
-                f(hops)?;
-            }
+            Ok(())
+        })?;
+        if !hops.is_empty() {
+            f(hops)?;
         }
         Ok(())
-    }
-
-    /// Append `id`'s visible hop ids on `side` at `ts` to `ids`, in merged
-    /// order, and drop the store guard before returning. `IdVec`'s lock is
-    /// not re-entrant, so no caller visits hops while holding it.
-    fn copy_hop_ids(
-        &self,
-        side: AdjSide<'_>,
-        id: NodeId,
-        ts: u64,
-        types: &RelTypes,
-        ids: &mut Vec<RelId>,
-    ) {
-        side.with_adj(id, |by_type, region| match types.ids() {
-            None => by_type.for_each_hop(region, ts, |hop| ids.push(hop.id)),
-            Some(type_ids) => {
-                for tid in type_ids {
-                    by_type.for_each_hop_of(region, tid, ts, |hop| ids.push(hop.id));
-                }
-            }
-        });
     }
 
     /// The one typed-chunk walk skeleton: chunk selection by the resolved
@@ -731,15 +731,29 @@ impl Graph {
         types: &RelTypes,
         f: &mut impl FnMut(RelId, NodeId, NodeId) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
+        self.for_each_typed_ends_in(side, id, ts, types, &mut Vec::new(), f)
+    }
+
+    /// [`Self::for_each_typed_ends`] over a caller-held id buffer, so a
+    /// reader that walks many nodes keeps one allocation (cleared here).
+    fn for_each_typed_ends_in<E>(
+        &self,
+        side: AdjSide<'_>,
+        id: NodeId,
+        ts: u64,
+        types: &RelTypes,
+        ids: &mut Vec<RelId>,
+        f: &mut impl FnMut(RelId, NodeId, NodeId) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
         // Copy the hop ids, then drop the store guard before visiting.
         // `IdVec`'s lock is not re-entrant. The variable-length walker
         // (`pattern_walk::walk_var_length`) and the GPM descent
         // (`gpm_rel_dfs`) call back into this same map from `f`; holding
         // the guard across that call deadlocks on the second hop. The walk
         // is the delta+sealed merge at `ts` (ADR-0551), delta first.
-        let mut hops = Vec::new();
-        self.copy_hop_ids(side, id, ts, types, &mut hops);
-        for rid in hops {
+        ids.clear();
+        side.copy_hop_ids(id, ts, types, ids);
+        for &rid in ids.iter() {
             if let Some((start, end)) = self.rel_ends_at(rid, ts) {
                 f(rid, start, end)?;
             }

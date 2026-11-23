@@ -125,3 +125,54 @@ fn point_incomplete_literal_map_is_the_planners_syntax_error() {
         "SyntaxError"
     );
 }
+
+/// The wire facts beside the class (REL8-1100): every in-map rejection is
+/// `Neo.ClientError.Statement.ArgumentError` at the runtime stage, with the
+/// per-site GQLSTATUS the site's fault names — not the DDL variant's
+/// `InvalidArguments`/`42000`/compile row. Sites with no per-site live
+/// code stay on the general `42000`.
+#[test]
+fn point_rejections_carry_their_own_wire_facts() {
+    let mut conn = connection();
+    for (statement, gql_status) in [
+        // dimension mismatch
+        ("RETURN point({srid: 9157, x: 2.3, y: 4.5}) AS p", "22N20"),
+        // unknown srid code and unknown crs name
+        ("RETURN point({srid: 12345, x: 2.3, y: 4.5}) AS p", "22N21"),
+        ("RETURN point({x: 2.3, y: 4.5, crs: 'cart'}) AS p", "22N21"),
+        // out-of-range latitude
+        (
+            "RETURN point({longitude: 0.0, latitude: 91.0}) AS p",
+            "22N23",
+        ),
+        // wrong-typed arguments
+        ("RETURN point({x: '2.3', y: 4.5}) AS p", "22G03"),
+        ("RETURN point({x: 2.3, y: 4.5, crs: 5}) AS p", "22G03"),
+        ("RETURN point({srid: '4326', x: 2.3, y: 4.5}) AS p", "22G03"),
+        // no per-site code recorded: the general one
+        (
+            "RETURN point({crs: 'cartesian', srid: 4326, x: 2.3, y: 4.5}) AS p",
+            "42000",
+        ),
+    ] {
+        let info = relate::error_info(&common::refused_literal(&mut conn, statement));
+        assert_eq!(
+            info.neo4j_code, "Neo.ClientError.Statement.ArgumentError",
+            "{statement}"
+        );
+        assert_eq!(info.stage, relate::ErrorStage::Runtime, "{statement}");
+        assert_eq!(info.gql_status, gql_status, "{statement}");
+    }
+}
+
+/// A non-finite coordinate is its own site (22N24).
+#[test]
+fn point_non_finite_coordinate_carries_its_gql_status() {
+    let mut conn = connection();
+    let error = common::refused(
+        &mut conn,
+        "RETURN point({x: 2.3, y: $v}) AS p",
+        params(&[("v", Value::Float(f64::NAN))]),
+    );
+    assert_eq!(relate::error_info(&error).gql_status, "22N24");
+}

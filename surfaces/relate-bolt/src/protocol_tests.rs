@@ -3,7 +3,7 @@ use crate::packstream::{decode, try_struct_msg, Pack};
 use crate::requests::Message;
 use crate::testutil::{
     assert_closes, connected_client_with, failure_map, field, read_msg, send_pull, send_reset,
-    send_run_with, spawn_handler, success_map,
+    send_run_legacy, spawn_handler, success_map,
 };
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -172,11 +172,7 @@ fn result_over_cap_fails_naming_the_limit() {
         },
     );
 
-    send_run_with(
-        &mut client,
-        "RETURN 'abcdefghijklmnopqrstuvwxyz' AS s",
-        None,
-    );
+    send_run_legacy(&mut client, "RETURN 'abcdefghijklmnopqrstuvwxyz' AS s");
     let metadata = failure_map(read_msg(&mut client));
     let message = field(&metadata, "message");
     assert!(
@@ -207,11 +203,10 @@ fn shared_payload_over_cap_fails_fast() {
         );
 
         let started = std::time::Instant::now();
-        send_run_with(
+        send_run_legacy(
             &mut client,
             "WITH range(1, 100000) AS v \
              UNWIND range(1, 20000) AS i RETURN v",
-            None,
         );
         let metadata = failure_map(read_msg(&mut client));
         let elapsed = started.elapsed();
@@ -256,7 +251,7 @@ fn query_timeout_cancels_the_run_and_the_session_stays_usable() {
     // and at every clause boundary, so cancellation is observed promptly.
     let stage = "UNWIND range(1, 100000) AS x WITH count(x) AS c ";
     let long_query = format!("{}RETURN c", stage.repeat(400));
-    send_run_with(&mut client, &long_query, None);
+    send_run_legacy(&mut client, &long_query);
     success_map(read_msg(&mut client));
     send_pull(&mut client, Message::Pull, vec![("n", Pack::Int(-1))]);
 
@@ -277,7 +272,7 @@ fn query_timeout_cancels_the_run_and_the_session_stays_usable() {
     send_reset(&mut client);
     success_map(read_msg(&mut client));
 
-    send_run_with(&mut client, "RETURN 1 AS n", None);
+    send_run_legacy(&mut client, "RETURN 1 AS n");
     success_map(read_msg(&mut client));
     send_pull(&mut client, Message::Pull, vec![("n", Pack::Int(-1))]);
     assert_eq!(

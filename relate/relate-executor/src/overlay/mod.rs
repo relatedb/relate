@@ -3,7 +3,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
-use relate_core::{CancelToken, Namespace, NodeId, RelId, Result, Value};
+use relate_core::{CancelToken, Namespace, NodeId, RelId, Result, TransactionClock, Value};
+use relate_planner::LogicalPlan;
 
 use crate::csv::CsvReader;
 use crate::exec::kernels::construct_memo::ConstructMemos;
@@ -11,13 +12,17 @@ use crate::graph::{Graph, Procedure, QueryStats, SchemaSnapshot};
 
 mod budget;
 mod idlists;
+mod spelled;
+
+pub(crate) use spelled::is_internal_column;
 
 pub use budget::NESTED_EVAL_BUDGET;
 pub(crate) use budget::{
-    ExpressionBudgetCounter, MemoLive, NestedEvalCounter, RetainedTotal, SeatShape,
-    MEMO_QUERY_BUDGET,
+    memo_table_ceiling, ExpressionBudgetCounter, MemoLive, NestedEvalCounter, RetainedTotal,
+    SeatShape,
 };
 pub(crate) use idlists::{intersect_ids, union_ids};
+use spelled::SpelledNames;
 
 /// The distinct labels of `labels`, in first-occurrence order — the one
 /// dedup every label-accounting walk rides (live-label bumps, net
@@ -80,7 +85,15 @@ pub struct ExecGraph<'a> {
     /// `db.ontology.get` / `db.ontology.apply` procedure arms.
     /// `None` = no ontology set (also every test/diagnostic view).
     ontology_document: Option<&'a str>,
+    /// The instant the calling explicit transaction began at, so every
+    /// statement's clock pin reads one `<kind>.transaction()` instant
+    /// ([`Self::with_transaction_clock`]); `None` = autocommit.
+    transaction_clock: Option<TransactionClock>,
     pub(crate) csv: CsvReader<'a>,
+    /// The `__`-prefixed names this statement declares itself, so the
+    /// executor's synthetic columns can be told from a user's binding
+    /// that spells the same prefix (REL8-1732).
+    spelled: SpelledNames,
 }
 
 /// Sampling mask for cooperative cancellation checks on hot per-row loops
@@ -198,7 +211,7 @@ impl<'a> ExecGraph<'a> {
         pinned_ts: u64,
         scratch: Option<&'a RefCell<WriteScratch>>,
     ) -> Self {
-        let memo_live = MemoLive::default();
+        let memo_live = MemoLive::new(base.memo_budget_bytes());
         Self {
             base,
             schema: None,
@@ -212,7 +225,9 @@ impl<'a> ExecGraph<'a> {
             construct_memos: ConstructMemos::new(memo_live.clone()),
             memo_live,
             ontology_document: None,
+            transaction_clock: None,
             csv: CsvReader::new(base.csv_policy()),
+            spelled: SpelledNames::default(),
         }
     }
 
@@ -241,6 +256,19 @@ impl<'a> ExecGraph<'a> {
     pub fn with_ontology_document(mut self, document: Option<&'a str>) -> Self {
         self.ontology_document = document;
         self
+    }
+
+    /// Attach the explicit transaction's begin-time clock: per-admission
+    /// state like [`Self::with_cancel`]. A view without one is an autocommit
+    /// statement, whose own instant is its transaction's.
+    pub fn with_transaction_clock(mut self, clock: TransactionClock) -> Self {
+        self.transaction_clock = Some(clock);
+        self
+    }
+
+    /// The transaction clock attached by [`Self::with_transaction_clock`].
+    pub(crate) fn transaction_clock(&self) -> Option<TransactionClock> {
+        self.transaction_clock
     }
 
     /// The ontology document attached by [`Self::with_ontology_document`].
@@ -329,16 +357,54 @@ impl<'a> ExecGraph<'a> {
         }
     }
 
-    /// One statement's entry reset: the CSV memo, the statement-spanning
-    /// scratch state (the ADR-0309 counters and the ADR-0402 applied count in
-    /// one scratch reset), the ADR-0395 nested-evaluation budget and the
-    /// ADR-0463 expression-build meter restart together. Every statement
-    /// entry calls this and nothing else.
-    pub(crate) fn begin_statement(&self) {
+    /// One statement's entry: the CSV memo, the statement-spanning scratch
+    /// state (the ADR-0309 counters and the ADR-0402 applied count in one
+    /// scratch reset), the ADR-0395 nested-evaluation budget, the
+    /// ADR-0463 expression-build meter and the declared-name set restart
+    /// together, and the declared-name set is re-seeded from `plan` in the
+    /// same call — so no entry can produce a reset-but-undeclared
+    /// statement. Every statement entry calls this and nothing else; the
+    /// budget tests call it with an empty plan for the reset alone.
+    pub(crate) fn begin_statement(&self, plan: &LogicalPlan) {
         self.csv.begin_statement();
         self.reset_statement();
         self.nested_evals().reset();
         self.expression_budget.reset();
+        self.spelled.reset();
+        crate::exec::declare_plan_names(self, plan);
+    }
+
+    /// Record names the statement declares: the `__`-prefixed ones are the
+    /// statement's own, not the executor's. Called only by the statement-entry
+    /// plan walk ([`crate::exec::scope::declare_plan_names`]).
+    pub(crate) fn declare_names<'n>(&self, names: impl IntoIterator<Item = &'n str>) {
+        for name in names {
+            self.spelled.declare(name);
+        }
+    }
+
+    /// Whether `key` is a column the executor synthesized: in the `__`
+    /// namespace and not declared by this statement. The one typed
+    /// internality test every row-scanning consumer asks.
+    pub(crate) fn is_internal_key(&self, key: &str) -> bool {
+        spelled::is_internal_column(key) && !self.spelled.contains(key)
+    }
+
+    /// The statement's anonymous-seat prefixes, resolved once per
+    /// statement and cached (see [`SpelledNames`]) — the data the
+    /// pattern-walk schema builders take instead of the live view.
+    pub(crate) fn seat_prefixes(&self) -> std::sync::Arc<crate::pattern_walk::SeatPrefixes> {
+        self.spelled.seat_prefixes()
+    }
+
+    /// The statement's synthetic `__` prefix for `base`, lengthened past
+    /// `names` and every declared name (see [`SpelledNames`]).
+    pub(crate) fn uncolliding_prefix<'n>(
+        &self,
+        base: &str,
+        names: impl IntoIterator<Item = &'n str>,
+    ) -> String {
+        self.spelled.uncolliding_prefix(base, names)
     }
 
     pub fn stats(&self) -> QueryStats {

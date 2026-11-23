@@ -128,12 +128,12 @@ pub use query_stats::QueryStats;
 pub use index::take_index_rebuilds;
 // The adjacency side the `test-hooks` sealed-chunk seam is read by, so the
 // storage open tests can name the direction across the crate boundary.
-pub(crate) use adjacency::HopBuf;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub use adjacency::Side;
 #[cfg(test)]
 pub(crate) use adjacency::HOP_BATCH;
+pub(crate) use adjacency::{HopBuf, PeerHop};
 pub use relate_planner::ContainsCount;
 pub(crate) use services::StoreServices;
 
@@ -473,6 +473,22 @@ fn matching_enforced_label(def: &ConstraintDef, c: &relate_model::Constraint) ->
         && c.enforced_label
             .as_deref()
             .is_some_and(|label| !label.is_empty())
+}
+
+/// ADR-0450's one legacy-resolution rule, one row at a time: a field-less
+/// catalog row resolves its enforced label from its current-shape twin —
+/// the derived record under its own name, whose label the caller holds.
+/// A row that already carries the label keeps it, and a field-less row
+/// resolves to the same identity its twin would have, so an upgraded
+/// store keeps its old skip behavior.
+/// [`crate::overlay::catalog::resolve_enforced_labels`] maps this rule
+/// over a whole set (the twin's label looked up by name in the derived
+/// index); the replay plan's held-row comparison applies it to the one
+/// row under a derived name.
+pub(crate) fn resolve_enforced_label(def: &mut ConstraintDef, twin_label: Option<&str>) {
+    if def.enforced_label.is_none() {
+        def.enforced_label = twin_label.map(str::to_string);
+    }
 }
 
 /// Whether a derived record names an enforced label at all: its kind

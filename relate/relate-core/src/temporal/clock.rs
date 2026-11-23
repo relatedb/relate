@@ -3,10 +3,12 @@
 //! `{timezone: …}` map reading, and the per-statement clock pin every
 //! `date()` / `time()` / `now()` reading shares.
 //!
-//! The engine pins one instant per statement ([`QueryClockGuard`]) and keeps
-//! no longer-lived transaction clock, so [`ClockMode::Transaction`] reads
-//! that same pinned instant while [`ClockMode::Realtime`] reads the wall
-//! clock at each call.
+//! The engine pins one instant per statement ([`QueryClockGuard`]) and, for an
+//! explicit transaction, one instant at `BEGIN` ([`TransactionClock`]) that
+//! every statement of the transaction carries. [`ClockMode::Transaction`]
+//! reads the transaction instant, [`ClockMode::Statement`] the statement's
+//! own, and [`ClockMode::Realtime`] the wall clock at each call. An
+//! autocommit statement is its own transaction, so both read the one pin.
 
 use std::collections::BTreeMap;
 
@@ -298,11 +300,11 @@ pub(super) fn clock_temporal(
     })
 }
 
-/// The clock-reading map form: the current instant (transaction clock) read
+/// The clock-reading map form: the current instant (statement clock) read
 /// in the map's `timezone`. A present but non-string timezone is
 /// [`offset_from_map`]'s typed rejection, never a silent UTC reading.
 pub(super) fn clock_from_map(kind: ClockKind, m: &BTreeMap<String, Value>) -> Result<Temporal> {
-    let reading = clock_reading(ClockMode::Transaction);
+    let reading = clock_reading(ClockMode::Statement);
     let resolved = offset_from_map(m, IanaAt::Utc(reading.utc))?;
     clock_temporal(kind, reading.utc, resolved)
 }
@@ -339,15 +341,41 @@ pub fn construct_clock(kind: ClockKind, mode: ClockMode, arg: Option<&Value>) ->
     }
 }
 
+/// The instants the running statement reads: its own pin, and the pin of the
+/// transaction it belongs to — the explicit transaction's begin instant, or
+/// (autocommit) the statement's own, settled once at guard installation.
+/// Both `None` only outside any guard. One cell, so the pair is installed and
+/// restored in lockstep.
+#[derive(Clone, Copy)]
+struct Pins {
+    statement: Option<ClockReading>,
+    transaction: Option<ClockReading>,
+}
+
 thread_local! {
-    static PINNED: std::cell::Cell<Option<ClockReading>> =
-        const { std::cell::Cell::new(None) };
+    static PINS: std::cell::Cell<Pins> = const {
+        std::cell::Cell::new(Pins { statement: None, transaction: None })
+    };
+}
+
+/// The instant an explicit transaction began at, captured once at `BEGIN`
+/// and handed to every statement run in it ([`QueryClockGuard::within`]),
+/// so `<kind>.transaction()` reads one instant for the whole transaction
+/// while `<kind>.statement()` still moves with each statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransactionClock(ClockReading);
+
+impl TransactionClock {
+    /// Samples the wall clock as the transaction's instant.
+    pub fn begin() -> Self {
+        Self(ClockReading::wall_clock())
+    }
 }
 
 /// Pins `date()` / `datetime()` / `time()` to one instant for a statement,
-/// restoring the previous pin when it drops.
+/// restoring the previous pins when it drops.
 pub struct QueryClockGuard {
-    previous: Option<ClockReading>,
+    previous: Pins,
 }
 
 impl Default for QueryClockGuard {
@@ -357,14 +385,26 @@ impl Default for QueryClockGuard {
 }
 
 impl QueryClockGuard {
+    /// An autocommit statement: its own instant is also its transaction's.
     pub fn new() -> Self {
-        Self::install(ClockReading::wall_clock())
+        Self::within(None)
     }
 
-    /// Installs `reading` for the guard's lifetime, keeping the previous pin
-    /// so a nested guard restores the outer statement's instant.
-    fn install(reading: ClockReading) -> Self {
-        let previous = PINNED.with(|c| c.replace(Some(reading)));
+    /// A statement of `transaction` (`None` = autocommit): a fresh statement
+    /// instant, and the transaction's instant when it has one.
+    pub fn within(transaction: Option<TransactionClock>) -> Self {
+        Self::install(ClockReading::wall_clock(), transaction.map(|t| t.0))
+    }
+
+    /// Installs the pins for the guard's lifetime, keeping the previous ones
+    /// so a nested guard restores the outer statement's instants.
+    fn install(reading: ClockReading, transaction: Option<ClockReading>) -> Self {
+        let previous = PINS.with(|c| {
+            c.replace(Pins {
+                statement: Some(reading),
+                transaction: Some(transaction.unwrap_or(reading)),
+            })
+        });
         Self { previous }
     }
 }
@@ -374,13 +414,22 @@ impl QueryClockGuard {
     /// Test seam: pins the statement clock to `utc` with host local offset
     /// `local_offset`.
     pub fn pinned_at(utc: NaiveDateTime, local_offset: i32) -> Self {
-        Self::install(ClockReading::pinned(utc, local_offset))
+        Self::install(ClockReading::pinned(utc, local_offset), None)
+    }
+
+    /// Test seam: a statement pinned at `statement` inside a transaction
+    /// that began at `transaction`, both at host local offset 0.
+    pub fn pinned_in_transaction(statement: NaiveDateTime, transaction: NaiveDateTime) -> Self {
+        Self::install(
+            ClockReading::pinned(statement, 0),
+            Some(ClockReading::pinned(transaction, 0)),
+        )
     }
 }
 
 impl Drop for QueryClockGuard {
     fn drop(&mut self) {
-        PINNED.with(|c| c.set(self.previous));
+        PINS.with(|c| c.set(self.previous));
     }
 }
 
@@ -394,15 +443,22 @@ fn unpinned_reading() -> ClockReading {
 }
 
 fn pinned() -> ClockReading {
-    PINNED.with(|c| c.get()).unwrap_or_else(unpinned_reading)
+    PINS.with(|c| c.get())
+        .statement
+        .unwrap_or_else(unpinned_reading)
 }
 
-/// The observation `mode` names: the pinned statement instant for
-/// [`ClockMode::Transaction`] and [`ClockMode::Statement`], the live wall
-/// clock for [`ClockMode::Realtime`].
+/// The observation `mode` names: the transaction's instant for
+/// [`ClockMode::Transaction`] (the statement's own pin outside an explicit
+/// transaction), the pinned statement instant for [`ClockMode::Statement`],
+/// the live wall clock for [`ClockMode::Realtime`].
 fn clock_reading(mode: ClockMode) -> ClockReading {
     match mode {
-        ClockMode::Transaction | ClockMode::Statement => pinned(),
+        ClockMode::Transaction => PINS
+            .with(|c| c.get())
+            .transaction
+            .unwrap_or_else(unpinned_reading),
+        ClockMode::Statement => pinned(),
         ClockMode::Realtime => ClockReading::wall_clock(),
     }
 }

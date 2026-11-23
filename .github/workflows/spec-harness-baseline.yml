@@ -1,0 +1,258 @@
+name: spec-harness-baseline
+
+# The merge-run lane (ADR-0661 §2/§6): every push to main measures the
+# landed tree, reports its coverage in the job summary, and writes the
+# gate baseline the next PR compares against — machine-written, never
+# hand-edited — plus the watchdog that files an issue when new failing
+# scenarios reached main.
+#
+# Why a workflow of its own, triggered by push to main ONLY (the
+# security posture, ADR-0661 §5): GitHub runs a push-triggered workflow
+# from the pushed ref's own file, so this file with the write-scoped
+# HARNESS_WRITE_TOKEN is only ever executed as main's copy — a pull
+# request can edit its branch's copy, but no PR-triggered run of any
+# workflow materializes this token, and no branch push triggers this
+# file. The write path never runs off refs/heads/main by construction,
+# not by an `if` the workflow file itself could restate. The PR lane
+# (spec-harness.yml) references no write secret at all. Bootstrap is
+# the first merge run after the change lands; a dispatched branch can
+# never write baselines.
+#
+# The watchdog's issue lives inline here (github.token, issues: write):
+# this job executes main's code only, never PR-authored code — the
+# least-privilege split the PR lane carries does not apply to main runs.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  issues: write          # the merge watchdog (ADR-0661 §6)
+
+# One merge at a time; two merges closer together than one run cancel
+# the older — acceptable, the newer merge commit supersedes it.
+concurrency:
+  group: spec-harness-baseline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    name: "Spec harness (merge run: coverage + baseline)"
+    runs-on: ubuntu-latest
+    steps:
+      # Depth 2: the docs-only detection diffs HEAD~1..HEAD (the
+      # squash-merge against the tree it landed on).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      # The in-job docs-only skip: a docs-only merge cannot move the
+      # number, and the run that would prove it costs more than the
+      # merge itself. The skip writes its own step-summary line so the
+      # absence of a fresh number is visible, never silent. The file
+      # list comes from git itself (push events have no PR context);
+      # no list (the first push) runs the lane — the fail-safe
+      # direction.
+      - name: Detect a docs-only merge
+        run: |
+          set -euo pipefail
+          paths=()
+          if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+            mapfile -t paths < <(git diff --name-only HEAD~1 HEAD)
+          fi
+          docs_only=1
+          for path in ${paths[@]+"${paths[@]}"}; do
+            case "$path" in
+              docs/*|*.md) ;;
+              *) docs_only=0; break ;;
+            esac
+          done
+          if [ "$docs_only" = 1 ] && [ ${#paths[@]} -gt 0 ]; then
+            {
+              echo "## Spec harness — skipped (docs-only merge)"
+              echo ""
+              echo "The merge touches no engine code; the suite cannot move its number. The baseline keeps the last measured one (ADR-0661 §2)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "DOCS_ONLY=1" >> "$GITHUB_ENV"
+            echo "docs-only merge — the suite is skipped"
+          else
+            echo "not docs-only — the lane runs"
+          fi
+
+      # The harness repo (private, same org): checkout at main, the
+      # revision this run measures (ADR-0482 §5 — a read token is
+      # required for the cross-repo checkout).
+      - name: Check out the spec harness (relatedb/relate-cypher-compat-private)
+        if: env.DOCS_ONLY != '1'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: relatedb/relate-cypher-compat-private
+          path: harness
+          ref: main
+          token: ${{ secrets.HARNESS_READ_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Note the harness checkout token in use
+        if: env.DOCS_ONLY != '1'
+        env:
+          HARNESS_TOKEN: ${{ secrets.HARNESS_READ_TOKEN }}
+        run: |
+          if [ -n "${HARNESS_TOKEN}" ]; then
+            echo "harness checkout: HARNESS_READ_TOKEN"
+          else
+            echo "::warning::HARNESS_READ_TOKEN is not set — using the default GITHUB_TOKEN for the harness checkout (ADR-0482 §5)."
+          fi
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        if: env.DOCS_ONLY != '1'
+        with:
+          python-version: "3.12"
+
+      # The same Rust preamble the PR lane uses (toolchain 1.88,
+      # sccache, mold, rust-cache) with the PR lane's release-profile
+      # cache key — the merge run shares the PR lane's artifact shape.
+      - uses: ./.github/actions/setup-rust-ci
+        if: env.DOCS_ONLY != '1'
+        with:
+          free-disk: "false"
+          cache-shared-key: spec-harness-v1
+          cache-workspace-crates: "true"
+          cache-save-if-cold-only: "true"
+
+      # The venv is created fresh every run and never cached: a cached
+      # venv holds the engine wheel (the thing under test) and a stale
+      # one silently measures the wrong engine (ADR-0482).
+      - name: Create the harness venv (never cached — the wheel is reinstalled every run)
+        if: env.DOCS_ONLY != '1'
+        run: |
+          python3 -m venv harness/.venv
+          harness/.venv/bin/pip install --upgrade pip
+          harness/.venv/bin/pip install behave maturin
+
+      - name: Build the engine wheel from the merged commit (maturin, release)
+        if: env.DOCS_ONLY != '1'
+        run: |
+          rm -rf dist
+          cd surfaces/relate-python
+          ../../harness/.venv/bin/maturin build --release --out "$GITHUB_WORKSPACE/dist"
+          ls -l "$GITHUB_WORKSPACE/dist"
+
+      - name: Install the wheel into the venv (force-reinstall)
+        if: env.DOCS_ONLY != '1'
+        run: |
+          harness/.venv/bin/pip install --force-reinstall dist/relate_db-*.whl
+          harness/.venv/bin/python -c "import relate; print('engine under test:', relate.__file__)"
+
+      - name: Run the spec-harness suite (~32k scenarios)
+        if: env.DOCS_ONLY != '1'
+        env:
+          RELATE_ENGINE_PAIR: in-memory,local
+        run: |
+          cd harness
+          start=$SECONDS
+          .venv/bin/python scripts/generate_report.py
+          echo "HARNESS_SECONDS=$((SECONDS - start))" >> "$GITHUB_ENV"
+
+      # The merge run's own coverage number (ADR-0482 §4): the traffic
+      # light lands in the job summary; there is no PR to comment on.
+      - name: Spec coverage report (traffic light, never fails on a number)
+        if: env.DOCS_ONLY != '1'
+        run: |
+          set -o pipefail
+          run_seconds_args=()
+          if [ -n "${HARNESS_SECONDS:-}" ]; then
+            run_seconds_args=(--run-seconds "$HARNESS_SECONDS")
+          fi
+          python3 scripts/spec-harness-coverage.py \
+            harness/reports/summary.json \
+            --harness-sha "$(git -C harness rev-parse HEAD)" \
+            "${run_seconds_args[@]}"
+
+      # The baseline writer (ADR-0661 §2): the previous baseline is the
+      # checkout's copy — main still points at the last written one
+      # until the PUT below. The write token is a fine-grained PAT
+      # scoped to the harness repository (Contents: read+write), passed
+      # per call and never persisted to a git config. A missing token
+      # warns and skips: the gate then compares against the last
+      # written baseline — like-for-like still holds, the report names
+      # the older engine sha.
+      #
+      # The PUT rides a payload FILE: the base64 of a ~37k-scenario
+      # baseline (thousands of ids) dwarfs the kernel's per-argument
+      # limit, and gh api --input reads the body from disk instead of
+      # argv. The blob sha of the file being replaced, when one exists,
+      # joins the payload the same way.
+      - name: Write the gate baseline (ADR-0661 §2)
+        if: env.DOCS_ONLY != '1'
+        env:
+          # gh refuses to run any command without gh-level auth, even
+          # with the explicit Authorization header the PUT carries — the
+          # first merge run died here (exit 4, "set the GH_TOKEN
+          # environment variable") and the baseline never landed. The
+          # github.token is contents:read on this job; the write itself
+          # authenticates with the PAT header, this only satisfies gh's
+          # preflight (and the watchdog's issue creation below).
+          GH_TOKEN: ${{ github.token }}
+          HARNESS_WRITE_TOKEN: ${{ secrets.HARNESS_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$HARNESS_WRITE_TOKEN" ]; then
+            echo "::warning::HARNESS_WRITE_TOKEN is not set — the baseline was not written; the gate keeps comparing against the last written one (ADR-0661 §2). Set the fine-grained PAT (Contents: read+write on the harness repository only)."
+            exit 0
+          fi
+          python3 scripts/spec-harness-gate.py harness/reports/summary.json \
+            --emit-baseline "$RUNNER_TEMP/engine-main.json" \
+            --engine-sha "$GITHUB_SHA" \
+            --harness-sha "$(git -C harness rev-parse HEAD)" \
+            --previous-baseline harness/baselines/engine-main.json \
+            | tee "$RUNNER_TEMP/baseline.log"
+          blob_sha=$(gh api \
+            -H "Authorization: Bearer $HARNESS_WRITE_TOKEN" \
+            repos/relatedb/relate-cypher-compat-private/contents/baselines/engine-main.json \
+            --jq .sha 2>/dev/null || true)
+          BASELINE_BLOB_SHA="$blob_sha" python3 - "$RUNNER_TEMP/engine-main.json" "$RUNNER_TEMP/payload.json" <<'PYEOF'
+          import base64, json, os, sys
+          source, target = sys.argv[1], sys.argv[2]
+          with open(source, "rb") as fh:
+              content = base64.b64encode(fh.read()).decode("ascii")
+          payload = {
+              "message": (
+                  "baseline: engine " + os.environ["GITHUB_SHA"]
+                  + " (spec-harness merge run, ADR-0661)"
+              ),
+              "content": content,
+          }
+          blob = os.environ.get("BASELINE_BLOB_SHA", "")
+          if blob:
+              payload["sha"] = blob
+          with open(target, "w", encoding="utf-8") as fh:
+              json.dump(payload, fh)
+          PYEOF
+          gh api --method PUT \
+            -H "Authorization: Bearer $HARNESS_WRITE_TOKEN" \
+            repos/relatedb/relate-cypher-compat-private/contents/baselines/engine-main.json \
+            --input "$RUNNER_TEMP/payload.json" >/dev/null
+          echo "baseline written to the harness repository"
+          # The watchdog (ADR-0661 §6): the derivation lives in the
+          # writer script (the delta line); this step only files the
+          # issue when new failures reached main. Counts and categories
+          # only — this issue is on a public repository (ADR-0661 §4).
+          delta=$(sed -n 's/^spec-harness-baseline: \(delta new=[0-9]* fixed=[0-9]* harness_moved=[01] new_categories=[^ ]*\)$/\1/p' "$RUNNER_TEMP/baseline.log" | tail -1)
+          new=$(printf '%s\n' "$delta" | sed -n 's/delta new=\([0-9]*\).*/\1/p')
+          if [ -n "$new" ] && [ "$new" != "0" ]; then
+            gh issue create \
+              --title "Spec gate: new failing scenarios landed on main" \
+              --body "The spec gate's merge-run watchdog (ADR-0661 §6): the baseline write after a merge to main found new failing scenarios.
+
+          - $delta
+          - engine: $GITHUB_SHA
+          - The scenario ids live in the harness repository: diff the previous \`baselines/engine-main.json\` against the new one.
+
+          Counts and categories only (ADR-0661 §4 — this issue is public)." \
+              || echo "::warning::the watchdog issue could not be opened"
+          fi
+
+      - name: Disk headroom (telemetry)
+        if: always() && runner.os == 'Linux'
+        run: scripts/report-disk.sh

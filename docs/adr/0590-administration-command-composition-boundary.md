@@ -98,3 +98,12 @@ Bare, each of them still runs from any namespace.
   elsewhere.
 - The recorded claim that live runs the mid-body position is superseded;
   the mid-body and `UNION`-arm positions are rejected with the rest.
+
+## Later references
+
+- The rule also covers the composed `SHOW CURRENT USER` form (rejected 51N28
+  off `system`, as live does), through a composition-only classifier that
+  leaves the ADR-0116 section 2 vocabulary, and so the `system_ontologies`
+  exemption, unchanged. The standalone command keeps running on any
+  database. `SHOW USERS`/`ROLES`/`SERVERS` stay out of scope: they were not
+  shown to compose on live.

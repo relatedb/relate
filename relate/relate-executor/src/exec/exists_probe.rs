@@ -104,7 +104,7 @@ pub(crate) fn patterns_exist(
         return Ok(Some(hit));
     }
     let conjuncts: Vec<Expr> = wheres.iter().flat_map(flatten_and_owned).collect();
-    let scope = match_scope(&row, patterns);
+    let scope = match_scope(ctx.graph, &row, patterns);
     let residual = Residual {
         conjuncts: &conjuncts,
         scope: &scope,

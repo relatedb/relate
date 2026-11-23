@@ -261,6 +261,10 @@ pub trait Vfs: Send + Sync {
         self.create_dir_all(path)
     }
     fn list_dir(&self, path: &str) -> Result<Vec<String>>;
+    /// Presence probe that fails closed: `Ok(false)` means the path is
+    /// genuinely absent (NotFound-class); any other stat failure (EACCES,
+    /// EIO, ...) is an `Err`, never folded into "absent". A caller that can
+    /// tolerate an unreadable path must say so by handling the `Err`.
     fn exists(&self, path: &str) -> Result<bool>;
     fn metadata(&self, path: &str) -> Result<VfsMeta>;
     fn open(&self, path: &str, opts: VfsOpen) -> Result<Box<dyn VfsFile>>;
@@ -270,8 +274,11 @@ pub trait Vfs: Send + Sync {
     fn open_exclusive(&self, path: &str) -> Result<Option<Box<dyn VfsFile>>> {
         match self.open(path, VfsOpen::create_new()) {
             Ok(file) => Ok(Some(file)),
-            Err(_) if self.exists(path)? => Ok(None),
-            Err(e) => Err(e),
+            Err(e) => match self.exists(path) {
+                Ok(true) => Ok(None),
+                // the open failure is the cause; a failing probe adds nothing
+                Ok(false) | Err(_) => Err(e),
+            },
         }
     }
     fn remove_file(&self, path: &str) -> Result<()>;

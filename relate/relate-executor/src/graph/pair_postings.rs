@@ -21,11 +21,12 @@
 use super::*;
 use crate::group_key::GroupKey;
 use crate::hash_seed::{seeded_map, SeededMap};
+use std::hash::Hash;
 
 /// The ids that carried one value, ascending. `Many` always holds two or
 /// more ids: a removal that leaves one demotes it to `One`, so the vector
 /// is freed when the bucket shrinks back to a singleton.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 enum IdBag {
     One(NodeId),
     Many(Vec<NodeId>),
@@ -55,22 +56,67 @@ impl IdBag {
     }
 
     /// Remove `id`; `true` when the bag is now empty and its entry should
-    /// leave the table.
+    /// leave the table. An absent id changes nothing.
     fn remove(&mut self, id: NodeId) -> bool {
         match self {
             IdBag::One(held) => *held == id,
             IdBag::Many(ids) => {
                 if let Ok(at) = ids.binary_search(&id) {
                     ids.remove(at);
-                }
-                if let [only] = ids.as_slice() {
-                    *self = IdBag::One(*only);
-                } else if ids.capacity() > 2 * ids.len() + 8 {
-                    ids.shrink_to_fit();
+                    if let [only] = ids.as_slice() {
+                        *self = IdBag::One(*only);
+                    } else if ids.capacity() > 2 * ids.len() + 8 {
+                        ids.shrink_to_fit();
+                    }
                 }
                 false
             }
         }
+    }
+
+    /// Drop the slack a bulk build's appends leave in a `Many` vector.
+    fn shrink(&mut self) {
+        if let IdBag::Many(ids) = self {
+            ids.shrink_to_fit();
+        }
+    }
+}
+
+/// One key class's table: the bucket protocol written once, for either key
+/// type.
+#[derive(Debug)]
+struct Table<K>(SeededMap<K, IdBag>);
+
+impl<K: Eq + Hash> Table<K> {
+    fn post(&mut self, key: K, id: NodeId) {
+        self.0
+            .entry(key)
+            .and_modify(|b| b.insert(id))
+            .or_insert(IdBag::One(id));
+    }
+
+    fn unpost(&mut self, key: &K, id: NodeId) {
+        if self.0.get_mut(key).is_some_and(|b| b.remove(id)) {
+            self.0.remove(key);
+        }
+    }
+
+    fn get(&self, key: &K) -> Option<&[NodeId]> {
+        self.0.get(key).map(IdBag::as_slice)
+    }
+
+    fn shrink_to_fit(&mut self) {
+        self.0.values_mut().for_each(IdBag::shrink);
+        self.0.shrink_to_fit();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &K> {
+        self.0.keys()
     }
 }
 
@@ -78,15 +124,15 @@ impl IdBag {
 /// the `i64` table; every other value keys the general one.
 #[derive(Debug)]
 pub(super) struct PairPostings {
-    ints: SeededMap<i64, IdBag>,
-    others: SeededMap<GroupKey, IdBag>,
+    ints: Table<i64>,
+    others: Table<GroupKey>,
 }
 
 impl Default for PairPostings {
     fn default() -> Self {
         Self {
-            ints: seeded_map(),
-            others: seeded_map(),
+            ints: Table(seeded_map()),
+            others: Table(seeded_map()),
         }
     }
 }
@@ -96,42 +142,32 @@ impl PairPostings {
     /// every `Many` bucket an append.
     pub(super) fn post(&mut self, gk: &GroupKey, id: NodeId) {
         match gk.as_int() {
-            Some(int) => self
-                .ints
-                .entry(int)
-                .and_modify(|b| b.insert(id))
-                .or_insert(IdBag::One(id)),
-            None => self
-                .others
-                .entry(gk.clone())
-                .and_modify(|b| b.insert(id))
-                .or_insert(IdBag::One(id)),
-        };
+            Some(i) => self.ints.post(i, id),
+            None => self.others.post(gk.clone(), id),
+        }
     }
 
     /// Remove `id` from `gk`'s bucket, dropping the bucket when it empties.
     pub(super) fn unpost(&mut self, gk: &GroupKey, id: NodeId) {
         match gk.as_int() {
-            Some(int) => {
-                if self.ints.get_mut(&int).is_some_and(|b| b.remove(id)) {
-                    self.ints.remove(&int);
-                }
-            }
-            None => {
-                if self.others.get_mut(gk).is_some_and(|b| b.remove(id)) {
-                    self.others.remove(gk);
-                }
-            }
+            Some(i) => self.ints.unpost(&i, id),
+            None => self.others.unpost(gk, id),
         }
     }
 
     /// The bucket's ids ascending, or `None` when no id carries `gk`.
     pub(super) fn bucket(&self, gk: &GroupKey) -> Option<&[NodeId]> {
         match gk.as_int() {
-            Some(int) => self.ints.get(&int),
+            Some(i) => self.ints.get(&i),
             None => self.others.get(gk),
         }
-        .map(IdBag::as_slice)
+    }
+
+    /// Release the capacity a build's appends left behind: every `Many`
+    /// vector to its length, both tables to their entry count.
+    pub(super) fn shrink_to_fit(&mut self) {
+        self.ints.shrink_to_fit();
+        self.others.shrink_to_fit();
     }
 
     /// The bucket's ids ascending; empty when no id carries `gk`.

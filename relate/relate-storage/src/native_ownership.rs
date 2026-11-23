@@ -247,7 +247,12 @@ fn preflight_open_roles(root: &Path, wal: &Path) -> Result<PreflightedOpen> {
     reject_nested(root)?;
     let resolved_root = resolve_identity_path(root)?;
     let resolved_wal = resolve_identity_path(wal)?;
-    let root_was_empty = !resolved_root.exists() || empty_except_lock(&resolved_root)?;
+    let root_was_empty = !resolved_root.try_exists().map_err(|err| {
+        Error::storage(format!(
+            "cannot stat store root {}: {err}",
+            resolved_root.display()
+        ))
+    })? || empty_except_lock(&resolved_root)?;
     let same = is_same_dir(&resolved_root, &resolved_wal)?;
     let root_shape = markdown_root_shape(&resolved_root, &resolved_wal);
     preflight_role(

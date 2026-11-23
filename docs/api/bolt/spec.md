@@ -156,7 +156,12 @@ shape: `operatorType` (string), `args` (map: `Id` the pre-order operator
 number, `Details` the one-line details string, `EstimatedRows` when the
 estimate phase filled it — a float, Neo4j's form — and on PROFILE trees the
 metrics set `Rows` + `TimeNs` + `DbHits` + `MemoryBytes` +
-`ExpressionBuiltBytes`, always together;
+`ExpressionBuiltBytes`, always together, and — only on an operator whose
+expression memos (ADR-0640) were probed (ADR-0654) — the memo group
+`MemoProbes` + `MemoHits` + `MemoInserts` + `MemoRefused` + `MemoBytes` +
+`MemoDisabledCount`, together, with the root's `MemoKinds` (list of
+strings: `node-label`, `datetime`); `MemoBytes` is never part of
+`MemoryBytes`;
 when admission produced a receipt the same args also carry `PeakLogicalBytes`
 (ADR-0501); on a `MATCH` operator `PatternEngine` names the store's
 `RELATE_PATTERN_ENGINE` mode, and a PROFILE tree's served `MATCH` clause
@@ -463,7 +468,7 @@ engine's own text, verbatim. An engine error maps by its typed
 | `ParameterMissing` (ADR-0308) | `Neo.ClientError.Statement.ParameterMissing` |
 | `Type`, `TypeError`, `InvalidArgumentType` (a type fault only a per-row value reveals, ADR-0566) | `Neo.ClientError.Statement.TypeError` |
 | `ArgumentError` (a DDL `OPTIONS`/`indexConfig` value rejection, ADR-0489) | `Neo.ClientError.General.InvalidArguments` |
-| `ArgumentValue` (a run-time function-argument value rejection — `range()`'s zero step, the `substring()`/`left()`/`right()` range checks, list-slice bounds, `point()`'s in-map values, `bar()`'s width, the percentile aggregates' argument, the vector similarity/distance and `vector()` dimension faults, `round()`'s precision/mode checks, `replace()`'s limit, the `trim()` single-character rule and a zero `CALL … IN TRANSACTIONS` batch size; ADR-0559, ADR-0565) | `Neo.ClientError.Statement.ArgumentError` |
+| `ArgumentValue` (a run-time function-argument value rejection — `range()`'s zero step, the `substring()`/`left()`/`right()` range checks, list-slice bounds, `point()`'s in-map values, `bar()`'s width, the percentile aggregates' argument, the vector similarity/distance and `vector()` dimension faults, `round()`'s precision/mode checks, `replace()`'s limit, the `trim()` single-character rule and a zero `CALL … IN TRANSACTIONS` batch size; ADR-0559, ADR-0565; `point()` rejections carry the site's GQLSTATUS: 22N20, 22N21, 22N23, 22N24, 22G03) | `Neo.ClientError.Statement.ArgumentError` |
 | `Arithmetic` (`/ by zero`, `% by zero`, `ArithmeticError: rounding necessary`) | `Neo.ClientError.Statement.ArithmeticError` |
 | `DatabaseNotFound` (unknown `db` extra or `USE` target) | `Neo.ClientError.Database.DatabaseNotFound` |
 | `UniquenessViolation` | `Neo.ClientError.Schema.ConstraintValidationFailed` |

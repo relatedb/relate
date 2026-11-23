@@ -515,3 +515,50 @@ fn retired_load_threads_name_is_rejected_naming_the_current_one() {
     .unwrap_err();
     assert!(err.to_string().contains("RELATE_LOAD_THREADS"), "{err}");
 }
+
+#[test]
+fn expression_memo_budget_resolution_defaults_and_fails_loud() {
+    let unset = || Err(std::env::VarError::NotPresent);
+    assert_eq!(expression_memo_budget_from_setting(unset()).unwrap(), 16);
+    assert_eq!(
+        expression_memo_budget_from_setting(Ok("  ".into())).unwrap(),
+        16
+    );
+    assert_eq!(
+        expression_memo_budget_from_setting(Ok("0".into())).unwrap(),
+        0
+    );
+    assert_eq!(
+        expression_memo_budget_from_setting(Ok("32".into())).unwrap(),
+        32
+    );
+    // Negative, unit-suffixed, fractional, empty-after-sign and oversized
+    // values fail naming the variable; none falls back to the default.
+    for bad in ["-1", "8mb", "1.5", "+", "abc", "99999999999999999999999"] {
+        let err = expression_memo_budget_from_setting(Ok(bad.into())).unwrap_err();
+        assert!(
+            err.to_string().contains("RELATE_EXPRESSION_MEMO_BUDGET"),
+            "{bad}: {err}"
+        );
+    }
+    let too_big = (u64::MAX >> 20) + 1;
+    assert!(expression_memo_budget_from_setting(Ok(too_big.to_string())).is_err());
+    assert!(
+        expression_memo_budget_from_setting(Err(std::env::VarError::NotUnicode(
+            std::ffi::OsString::from("x")
+        )))
+        .is_err()
+    );
+    // The option wins over the environment and is range-checked by name.
+    let opts = OpenOptions {
+        expression_memo_budget: Some(3),
+        ..Default::default()
+    };
+    assert_eq!(resolve_expression_memo_budget(&opts).unwrap(), 3);
+    let opts = OpenOptions {
+        expression_memo_budget: Some(u64::MAX),
+        ..Default::default()
+    };
+    let err = resolve_expression_memo_budget(&opts).unwrap_err();
+    assert!(err.to_string().contains("expression_memo_budget"), "{err}");
+}

@@ -46,8 +46,8 @@ pub use dynamic::{
     dynamic_label_names, dynamic_property_key, DynamicAccessError, DynamicNameToken,
 };
 pub use error::{
-    expected_type_detail, negative_page_bound_text, uniqueness_violation_detail, ArithmeticFailure,
-    CapacityKind, Error, Result, NEGATIVE_PAGE_BOUND_DETAIL,
+    expected_type_detail, negative_page_bound_text, uniqueness_violation_detail, ArgumentFault,
+    ArithmeticFailure, CapacityKind, Error, Result, NEGATIVE_PAGE_BOUND_DETAIL,
 };
 pub use error_kinds::{
     duplicate_variable_detail, undefined_variable_detail, unknown_function_detail, ErrorKind,
@@ -69,9 +69,9 @@ pub use namespace::{
 pub use output_safety::is_unsafe_output_char;
 pub use presence_bits::PresenceBits;
 pub use preview::{
-    preview_feature_disabled_text, PreviewFeature, PreviewFeatures, PREVIEW_FEATURES,
+    preview_feature_disabled_text, GateSite, PreviewFeature, PreviewFeatures, PREVIEW_FEATURES,
 };
-pub use temporal::{QueryClockGuard, Temporal};
+pub use temporal::{QueryClockGuard, Temporal, TransactionClock};
 pub use tokens::{ExecutionReceipt, TokenEstimate, TokenOutcome};
 pub use traversal::{
     require_traversal_depth, traversal_depth_exceeded_message, MAX_TRAVERSAL_DEPTH,

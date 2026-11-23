@@ -8,6 +8,95 @@ cargo run -p relate-cli -- --logical-graph-size-limit 1gib ./graph
 cargo run -p relate-cli -- --help
 ```
 
+## Platform requirements
+
+Release binaries ship for Linux (x86-64 and arm64), macOS (amd64 and
+arm64) and Windows (x86-64).
+
+`relate-linux-amd64` runs on any x86-64 Linux with glibc 2.35 or newer
+(Debian 12+, Ubuntu 22.04+, Fedora 36+) and kernel 3.2 or newer — the glibc
+floor is whatever the artifact's symbol versions require, never above the
+`GLIBC_2.35` cap, and the kernel its ELF ABI tag names. It is built in the
+pinned `rust:1.88-bookworm`
+container (Debian 12 with glibc 2.36) for the x86-64 baseline ISA:
+`readelf -n` lists `x86 ISA needed: x86-64-baseline` only, so it needs no
+x86-64-v2/v3 CPU feature. `scripts/check-linux-isa.sh relate-linux-amd64`
+gates the release artifact on that note, and
+`scripts/check-glibc-floor.sh relate-linux-amd64` derives the artifact's
+floor from its `readelf --version-info` symbol versions, fails the release
+when it exceeds `GLIBC_2.35`, and hands the derived value to the APT and
+RPM builders.
+
+The Debian/Ubuntu package declares that derived floor — `Depends: libc6
+(>= <the derived floor>)` — and is served from the signed APT repository at
+<https://relatedb.ai/apt> ([ADR-0659](../../adr/0659-package-manager-distribution-channels.md),
+install steps in the README).
+
+## Installation channels
+
+Release binaries install through six package-manager channels besides the
+GitHub release assets and the two installers; each package writes
+`.relate-package-managed` beside the real binary, so `relate upgrade` never
+replaces a package-managed install and points at the manager's upgrade
+command instead ([ADR-0659](../../adr/0659-package-manager-distribution-channels.md);
+the refusal text and the marker contract are under
+[Lifecycle commands](#lifecycle-commands)).
+
+**Homebrew — macOS and Linux.** Tap:
+<https://github.com/relatedb/homebrew-tap>.
+
+```bash
+brew install relatedb/tap/relate
+```
+
+Upgrade: `brew upgrade relate`.
+
+**APT — Debian and Ubuntu.** Repository: <https://relatedb.ai/apt>.
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://relatedb.ai/apt/repo-signing-key.asc | sudo tee /etc/apt/keyrings/relate.asc >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/relate.asc] https://relatedb.ai/apt stable main" | sudo tee /etc/apt/sources.list.d/relate.list >/dev/null
+sudo apt-get update
+sudo apt-get install relate
+```
+
+Upgrade: `sudo apt-get update && sudo apt-get install --only-upgrade relate`.
+
+**RPM — Fedora, RHEL and openSUSE.** Repository: <https://relatedb.ai/rpm>.
+
+```bash
+sudo curl -fsSL https://relatedb.ai/rpm/relate.repo -o /etc/yum.repos.d/relate.repo && sudo dnf install relate
+```
+
+Upgrade: `sudo dnf upgrade relate`.
+
+**winget — Windows.** Repository:
+[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs).
+
+```powershell
+winget install --id Relatedb.Relate -e
+```
+
+Upgrade: `winget upgrade --id Relatedb.Relate -e`.
+
+**Scoop — Windows.** Bucket: <https://github.com/relatedb/scoop-bucket>.
+
+```powershell
+scoop bucket add relatedb https://github.com/relatedb/scoop-bucket && scoop install relate
+```
+
+Upgrade: `scoop update relate`.
+
+**Chocolatey — Windows.** Repository:
+[community.chocolatey.org](https://community.chocolatey.org/packages/relate).
+
+```powershell
+choco install relate
+```
+
+Upgrade: `choco upgrade relate`.
+
 ## Synopsis
 
 ```
@@ -502,7 +591,40 @@ downloads and replaces nothing, so it runs on every platform. It prints
 `relate is up to date` or the advice. The advice is
 ``upgrade available: run `relate upgrade` to install X.Y.Z`` where the replace
 is supported, and `upgrade available: X.Y.Z; <the platform's refusal>`
-elsewhere, so it never advises a command that would refuse. The signature is an OpenSSH SSHSIG
+elsewhere, so it never advises a command that would refuse.
+
+A **package-managed install** is never replaced. A package manager that
+ships relate writes `.relate-package-managed` beside the real binary — a
+regular file holding JSON `{"manager": "<kebab-case id>", "upgrade": "<the
+command the user runs>"}`, both required non-empty strings; unknown fields
+are ignored, so a new package manager needs no relate release — and exposes
+that binary on `PATH` by symlink (Homebrew's keg `bin/relate`, deb/rpm's
+`/usr/lib/relate/relate`). `upgrade` resolves `current_exe()`, canonicalizes
+it (macOS returns the invoked `PATH` symlink; Linux already resolves), takes
+its parent directory, and tests `<dir>/.relate-package-managed`: only
+`NotFound` is an unmanaged install — a regular file, a symlink, a directory,
+or an uninspectable entry is package-managed (fail closed, symlinks never
+followed, only a regular file's content is read). The gate runs first in both
+modes, before the platform gate, the `GITHUB_TOKEN` read, and any request: a
+plain `relate upgrade` on such an install exits 1 with one line `Error:
+upgrade: relate was installed by <manager>; upgrade it with: <upgrade>` (a
+malformed marker: `Error: upgrade: relate is package-managed; marker <path>
+is unreadable/invalid: <e>`), replaces nothing, and runs no skill refresh;
+`upgrade --check` still reads `releases.json` and reports current-vs-latest,
+but its advice line is `upgrade available: X.Y.Z; relate was installed by
+<manager>; upgrade it with: <upgrade>`. Writing the marker is the only
+cooperation a package manager owes — relate only reads it, and it is a
+convention, not a security control (whoever can write the binary's directory
+can replace the binary anyway). Unmanaged installs write no marker: the curl
+installers' `$HOME/.local/bin/relate` and
+`%LOCALAPPDATA%\Programs\relate`, and a manual copy, are all unmanaged and
+self-replace exactly as before; copying a package's binary without its
+sibling marker also yields an unmanaged install. `distribution/install.sh`
+and `distribution/install.ps1` apply the same rule to their own target —
+resolving the target's symlinks first — and refuse with the same sentence,
+so neither overwrites a package-managed binary.
+
+The signature is an OpenSSH SSHSIG
 (`ssh-keygen -Y sign`) over the exact `SHA256SUMS` bytes, in the namespace
 `relate-release`, made with the Ed25519 release key whose public half is
 pinned in the binary; it is never fetched from the release (ADR-0115). The
@@ -1616,7 +1738,20 @@ dropped as the statement runs, so peak live memory is lower — and it is
 never an enforcement total. The enforcement itself is per allocation: one
 built value over the `--expression-memory-limit` cap (default 256 MiB) is
 refused. It is reported separately from `Memory (Bytes)` so a reader can
-tell a row-materializing operator from one that built values. Neither page-cache columns nor other Neo4j cache columns
+tell a row-materializing operator from one that built values.
+`Memo` (ADR-0654) reports the expression memos (ADR-0640) the operator's
+stage ran, as `hits/probes` — `90/100` is ninety answers served from a memo
+table out of a hundred lookups — suffixed `*` when any of the operator's
+memos gave up at its hit-rate review (`1/2000000*`), and empty on an
+operator that ran none. It sits after `Expression Built (Bytes)` and
+renders **only when the statement used a memo** (some operator, or the
+root, carries the group): a plan whose statement probed no memo has no
+`Memo` column, never an always-empty one. The constructor memos
+(`datetime(<string>)`) serve any expression in the statement, so their
+counts appear on the root row, added to the root's own. The memo tables'
+bytes, refusals and inserts are in the machine modes (`MemoBytes`,
+`MemoRefused`, `MemoInserts`) — never folded into `Memory (Bytes)`, which
+counts result rows. Neither page-cache columns nor other Neo4j cache columns
 exist: the engine is in-memory (ADR-0344). On `PROFILE` trees that carry
 estimates, an `Est/Actual` column renders the estimated-vs-actual ratio
 per operator (`25.0x`), flagged with `!` when the estimate overshoots the
@@ -1728,6 +1863,9 @@ Plan:
 +------------------+----+----------------------------------+------+-----------+------------+---------+-------+---------+-----------+----------------+--------------------+
 ```
 
+The `Memo` column appears when the statement used an expression memo; see
+the [executable memo example](examples/profile_memo.md).
+
 In the machine modes the structured plan's `args` carry `Rows`, `TimeNs`,
 `DbHits`, `MemoryBytes`, `ExpressionBuiltBytes`, `Hops`, `NeighborWalks`,
 `NodeReads`, `SeekTimeNs` and `WalkTimeNs` together on every profiled
@@ -1747,7 +1885,12 @@ re-arrival rule's verdict-table asks), the admission asks by verdict
 `FrontierSearchDisproven`/`FrontierDeclinedExhausted`, and the
 `FrontierBudgetFraction` float — the rule's spent work over its budget
 constant, `1.0` a run the budget cut; only when engaged, the set
-together) — and `FrontierDeclineReason` (ADR-0516, ADR-0582) when the rung did
+together) — and the
+expression-memo group when a memo was probed on the operator (ADR-0654;
+presence-only, the set together): `MemoProbes`, `MemoHits`, `MemoInserts`,
+`MemoRefused`, `MemoBytes` (the memo tables' allocation, never part of
+`MemoryBytes`) and `MemoDisabledCount`, with the root's `MemoKinds` — a list
+of the memo type names (`node-label`, `datetime`) behind its sums — and `FrontierDeclineReason` (ADR-0516, ADR-0582) when the rung did
 not serve the clause: the typed reason's stable name. A run-time decline
 (`rearrival-budget`, ADR-0516, or `table-budget`, the sparse tables'
 allocation ceiling, ADR-0521) sits beside the counters of the run that
@@ -2187,6 +2330,7 @@ See the [executable help example](examples/help.md).
 | `RELATE_PROMPT` | (none) | `eggs` builds, interactive REPL only: `archie` turns the primary prompt into the `∩ ` glyph (the continuation prompt is unchanged). Falls back to `cypher> ` on a non-UTF-8 locale, under `NO_COLOR`, in agent mode, or on a non-terminal stdout. Any other value is reported on stderr and ignored |
 | `RELATE_LOGICAL_GRAPH_SIZE_LIMIT` | `--logical-graph-size-limit` | Default live graph + index cap; `0` or unset is unlimited. A value that does not parse exits 2 with `Error: invalid RELATE_LOGICAL_GRAPH_SIZE_LIMIT: …`, the same rejection as a bad `--logical-graph-size-limit` (no usage dump). `--help` and `--version` still win |
 | `RELATE_EXPRESSION_MEMORY_LIMIT` | `--expression-memory-limit` | Default per-allocation expression cap (ADR-0463); unset keeps 256 MiB, `none`/`0` disables it. A value that does not parse exits 2 with `Error: invalid RELATE_EXPRESSION_MEMORY_LIMIT: …` |
+| `RELATE_EXPRESSION_MEMO_BUDGET` | (none) | Shared live-bytes budget of the executor's memo tables for one statement, in whole MiB (ADR-0657): a plain non-negative integer, no sign or unit. Unset or blank keeps 16; each table's ceiling is half the budget. `0` allocates no budgeted table, so pure checks run as without a memo (the regex cache and the `IN`-list index stay on; the node-label memo is a budgeted table and is off at zero). A value that does not parse, or is too large for bytes, fails the open (exit 1) with `Failed to open Relate: semantic error: invalid RELATE_EXPRESSION_MEMO_BUDGET …` before the store lease. Speed and memory only, never results. No flag; library embeddings use `OpenOptions::expression_memo_budget` |
 | `RELATE_WAL_PAYLOAD_LIMIT` | (none) | Default per-commit WAL record cap (ADR-0650). Unset or blank keeps the 256 MiB default. A positive `SIZE` (bytes or mb/mib/gb/gib) raises or lowers it — one commit whose serialized record crosses it is refused with the message naming the `CALL { … } IN TRANSACTIONS` alternative. `0` and a value that does not parse fail the open naming the variable. Independent of `RELATE_CONCURRENT_LOGICAL_WORKSPACE_LIMIT`, which bounds how many large commits may be in flight |
 | `RELATE_LOAD_THREADS` | (none) | The most threads an open's load phase (snapshot decode, adjacency rebuild) may use (ADR-0664). Unset or blank uses the machine's `available_parallelism()`. A positive integer sets the count. `0` or a value that is not a positive integer fails the open with `Error::Semantic` naming the variable, exit 2, before the store is leased, so no store directory is left behind. A set `CYPHERLITE_LOAD_THREADS` is rejected the same way as every retired `CYPHERLITE_*` name, naming `RELATE_LOAD_THREADS` |
 | `RELATE_CONCURRENT_LOGICAL_WORKSPACE_LIMIT` | `--concurrent-logical-workspace-limit` | Default concurrent logical-workspace pool (ADR-0452). Unset or blank leaves admission off. A positive `SIZE` (bytes or mb/mib/gb/gib) turns admission on. `0` exits 2 with `Error: invalid RELATE_CONCURRENT_LOGICAL_WORKSPACE_LIMIT: must be positive`; a value that does not parse exits 2 with `Error: invalid RELATE_CONCURRENT_LOGICAL_WORKSPACE_LIMIT: …` (no usage dump). The flag overrides it. `--help` and `--version` still win. A set `RELATE_TOKEN_ADMISSION` fails open: that variable is ignored; set this one |

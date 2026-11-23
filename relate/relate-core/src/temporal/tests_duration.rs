@@ -154,6 +154,40 @@ fn duration_construction_keeps_integer_components_exact() {
     assert_eq!(from_map.iso_string(), "PT2562047788015215H30M7S");
 }
 
+/// REL8-1164: a fractional sub-second field beside a seconds lane at the
+/// `f64` mantissa edges folds the lanes apart as Neo4j does — the seconds
+/// lane is one `double` (ties-to-even, `2^63` saturating), the sub-second
+/// lane truncates alone. The three values are live (Neo4j 2026.10.1,
+/// 2026-11-08, per the ticket); the common sub-2^53 values keep the
+/// combined fold.
+#[test]
+fn duration_map_fraction_beside_a_huge_seconds_lane_matches_neo4j() {
+    for (seconds, nanoseconds, expected) in [
+        (
+            9_223_372_036_854_775_807_i64,
+            0.1,
+            "PT2562047788015215H30M7S",
+        ),
+        (9_223_372_036_854_775, 0.5, "PT2562047788015H12M56S"),
+        (9_007_199_254_740_993, 0.5, "PT2501999792983H36M32S"),
+    ] {
+        assert_eq!(
+            map_text(&[
+                ("seconds", Value::Int(seconds)),
+                ("nanoseconds", Value::Float(nanoseconds)),
+            ]),
+            expected,
+            "{seconds} s + {nanoseconds} ns"
+        );
+    }
+    // Below the mantissa edge the exact combined fold stands.
+    assert_eq!(
+        map_text(&[("seconds", Value::Float(2.3))]),
+        "PT2.3S",
+        "a common fractional second keeps its tail"
+    );
+}
+
 /// LABS-712: the CIP-228 pattern path keeps an integer component above
 /// 2^53 exact instead of rounding through `f64`.
 #[test]

@@ -208,7 +208,13 @@ pub(crate) fn match_resolved_path(
     // before the candidate loop the dispatch enters. The one ladder
     // build (pattern_walk), the classic walker's node-named policy,
     // total over every pattern shape — no insert path anywhere.
-    let ladder = WalkLadder::new(&row, path, selection.as_ref(), path.has_path_name());
+    let ladder = WalkLadder::new(
+        &graph.seat_prefixes(),
+        &row,
+        path,
+        selection.as_ref(),
+        path.has_path_name(),
+    );
     // The walk's per-edge counts tally here through the whole dispatch
     // and flush on drop at the walk's end (LABS-805).
     let tallies = super::WalkTallies::default();

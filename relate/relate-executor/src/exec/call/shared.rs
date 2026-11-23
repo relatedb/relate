@@ -20,6 +20,7 @@ use relate_ir::{expr_vars, Clause, Expr, Projection, Query};
 
 use super::import_seed;
 use crate::exec::scope::nested_seed_row;
+use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 /// What one shared execution of a `CALL { … }` body needs: the single seed
@@ -56,6 +57,7 @@ impl SharedExecution {
 /// keep absent). The seed comes from the same `import_seed` as the per-row
 /// path, so a missing import is its internal error here too.
 pub(super) fn shared_execution_plan(
+    graph: &ExecGraph<'_>,
     scope: &relate_ir::CallScope,
     rows: &[Row],
 ) -> Result<Option<SharedExecution>> {
@@ -80,7 +82,7 @@ pub(super) fn shared_execution_plan(
             // per-row path (`call_subquery_row`); the check set follows the
             // stripped seed, since an internal slot is never a binding the
             // body could compute from.
-            let seed = nested_seed_row(first);
+            let seed = nested_seed_row(graph, first);
             (!seed.is_empty()).then_some(SharedExecution { seed })
         }
         _ => None,

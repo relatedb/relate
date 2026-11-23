@@ -1,0 +1,121 @@
+name: Install smoke
+
+# Installs every package-manager channel's published package for one release
+# tag and asserts the CLI it left runs: `relate --version` prints the tag's
+# version and one query answers (ADR-0659). One job per channel, each on the
+# platform that channel serves, so a broken channel fails alone and the
+# others still report. The tag is an input rather than the dispatch's own
+# release: every manager publishes after the release is cut, at its own pace
+# — winget waits on its microsoft/winget-pkgs PR and Chocolatey on
+# community-repository moderation, so a run straight after a cut can fail a
+# channel that is merely not published yet. Dispatch it again once it is.
+#
+# The commands and the assertions live in scripts/install_smoke.py; this
+# workflow only says which runner each channel needs and what it must
+# provision first (Scoop and the RPM container's toolchain).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag whose packages to install (vX.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# CI is not a user session: the CLI's anonymous usage metrics (ADR-0079) are
+# opted out on every relate spawn. Workflow-level — the ADR-0255
+# single-source placement, so every job inherits the identical value.
+env:
+  DO_NOT_TRACK: "1"
+
+jobs:
+  homebrew:
+    name: Homebrew
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts
+      - env:
+          TAG: ${{ inputs.tag }}
+        run: python3 scripts/install_smoke.py --channel homebrew --tag "$TAG"
+
+  apt:
+    name: APT
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts
+      - env:
+          TAG: ${{ inputs.tag }}
+        run: python3 scripts/install_smoke.py --channel apt --tag "$TAG"
+
+  # No Fedora runner exists, so the channel's own distribution is the
+  # container: a current fedora, with the toolchain the documented command
+  # and the runner's checkout action need.
+  rpm:
+    name: RPM
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: fedora:latest
+    steps:
+      - run: dnf install -y curl git python3 sudo
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts
+      - env:
+          TAG: ${{ inputs.tag }}
+        run: python3 scripts/install_smoke.py --channel rpm --tag "$TAG"
+
+  # The runner ships no Scoop, and the channel's install command is
+  # `scoop bucket add … && scoop install relate`, so the lane provides the
+  # manager first — the same bootstrap the scoop-bucket lane runs.
+  scoop:
+    name: Scoop
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts
+      - name: Install Scoop
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          irm get.scoop.sh | iex
+          # Scoop's own bin and the shims of the apps it installs (including
+          # `relate`) must both reach the driver's step.
+          "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "$env:USERPROFILE\scoop\apps\scoop\current\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - env:
+          TAG: ${{ inputs.tag }}
+        run: python scripts/install_smoke.py --channel scoop --tag "$env:TAG"
+
+  winget:
+    name: winget
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts
+      - env:
+          TAG: ${{ inputs.tag }}
+        run: python scripts/install_smoke.py --channel winget --tag "$env:TAG"
+
+  chocolatey:
+    name: Chocolatey
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts
+      - env:
+          TAG: ${{ inputs.tag }}
+        run: python scripts/install_smoke.py --channel chocolatey --tag "$env:TAG"

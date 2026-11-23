@@ -60,12 +60,14 @@ mod shared_subquery {
     }
 
     fn invariant(cypher: &str) -> bool {
+        let store = Graph::default();
+        let graph = ExecGraph::read(&store);
         let (body, scope) = call_body(cypher);
         let rows = vec![crate::row::Row::from([
             ("i".to_string(), Value::Int(1)),
             ("p".to_string(), Value::Int(1)),
         ])];
-        let plan = shared_execution_plan(&scope, &rows)
+        let plan = shared_execution_plan(&graph, &scope, &rows)
             .expect("the fixture's imports are all in the outer row");
         let Some(plan) = plan else {
             panic!("fixture must admit the fast path: {cypher}");
