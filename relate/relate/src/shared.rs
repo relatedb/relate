@@ -166,6 +166,9 @@ pub(crate) struct OpenResolved {
     /// Gap recovery for a follower (ADR-0441). Fixed for the life of the
     /// handle, like the open mode.
     pub(crate) follow_gap: crate::FollowGapPolicy,
+    /// The load thread count (ADR-0664), resolved once at open; a follower's
+    /// gap reload loads on the same cap.
+    pub(crate) load_threads: relate_core::LoadThreads,
 }
 
 /// One background worker's stop signal and join handle, together so a
@@ -324,6 +327,9 @@ pub(crate) struct Shared {
     /// and stopped-and-joined by `Database::promote` before it takes the
     /// writer lease (ADR-0440).
     pub(crate) follow_ctl: BgWorker,
+    /// The peak transient bytes of the latest load: set by the open, then
+    /// replaced by each follower gap reload ([`Database::open_peak_transient_bytes`]).
+    pub(crate) open_peak_transient_bytes: AtomicU64,
     /// Timer workers and one-shot rotation checkpoints. Joined from
     /// [`crate::Database`]'s drop before this `Arc` can release the store lock.
     pub(crate) background: Mutex<Vec<JoinHandle<()>>>,
@@ -392,6 +398,8 @@ pub(crate) struct SharedOpenState {
     pub(crate) resolved: OpenResolved,
     pub(crate) ontology: Option<String>,
     pub(crate) commit_timing: bool,
+    /// The peak transient bytes the open's load charged.
+    pub(crate) open_peak_transient_bytes: u64,
 }
 
 impl Shared {
@@ -458,6 +466,7 @@ impl Shared {
             ontology: ontology::OntologySlot::new(open.ontology),
             follow_health: Mutex::new(FollowHealth::Healthy),
             follow_ctl: Mutex::new(None),
+            open_peak_transient_bytes: AtomicU64::new(open.open_peak_transient_bytes),
             background: Mutex::new(Vec::new()),
             #[cfg(test)]
             follow_test: Mutex::new(follow::FollowTest::default()),

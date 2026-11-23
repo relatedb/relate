@@ -6,9 +6,9 @@
 //! the fold between them.
 use super::id_vec::IdVec;
 use super::rebuild::RelRow;
-use super::shard;
+use super::shard::{self, ShardPartition};
 use super::*;
-use crate::adjacency::{Hop, SealedRegion};
+use crate::adjacency::{Hop, SealedRegion, SealedStream};
 
 /// One adjacency chunk's type and delta + sealed hop count — named, because
 /// the two integers swap silently as a tuple.
@@ -307,70 +307,75 @@ impl Side {
 /// a shard owns every row of every node it carries and builds those
 /// nodes whole. The per-node delta follows `from_runs`'s order (each run's
 /// first rel id, hops `cmp_ts_desc`, both total orders over a node's own
-/// hops), and the sealed chunks land in the arena from the shards' threads
-/// — the build pass's own emission (ADR-0608), not a second walk. The
-/// arena's buffers are fitted to their charged size at the end, with no
-/// dead ranges to compact.
-fn build_side(graph: &Graph, rows: &[RelRow], side: Side, shards: &[Vec<usize>]) {
+/// hops), and the sealed chunks are encoded by the shards straight from
+/// their sorted runs into streams of their own — the build pass's own
+/// emission (ADR-0608), not a second walk, and no shard touches the
+/// arena's lock. The streams are laid into the arena once, in shard order,
+/// into buffers reserved at their final size, so the closing fit copies
+/// nothing and no dead ranges are left to compact.
+fn build_side(graph: &Graph, rows: &[RelRow], side: Side, shards: &mut ShardPartition) {
     // The replace-wholesale step belongs to the build that replaces: this
     // side's pair is emptied here, so a rebuild cannot leave a direction's
     // stale chunks behind.
     let adjacency = side.adj(graph);
     adjacency.clear();
-    let parts = shard::run_shards(shards, |shard| {
-        build_shard(rows, shard, side, adjacency.sealed)
-    });
-    for (node, adj) in parts.into_iter().flatten() {
-        adjacency.delta.insert(node, adj);
+    let parts = shard::run_shards(shards, |shard| build_shard(rows, shard, side));
+    let mut streams = Vec::with_capacity(parts.len());
+    for (nodes, stream) in parts {
+        for (node, adj) in nodes {
+            adjacency.delta.insert(node, adj);
+        }
+        streams.push(stream);
     }
+    adjacency.sealed.install(streams);
     adjacency.sealed.fit();
 }
 
 /// One shard's whole build: sort its row indices by `(endpoint, type)`,
-/// then one [`TypedAdj`] per node from that node's runs. The sort works
-/// a local copy of the caller's shard — the partition is shared
-/// read-only across the rebuild's consumers, so this pass never
-/// reorders it.
+/// then one [`TypedAdj`] per node from that node's runs, with the sealed
+/// chunks encoded into the shard's own [`SealedStream`]. The sort works
+/// the shard slice in place — a shard's indices are a set, so the
+/// other consumers of a shared partition never depend on their order.
 fn build_shard(
     rows: &[RelRow],
-    shard: &[usize],
+    shard: &mut [usize],
     side: Side,
-    sealed: &SealedArena,
-) -> Vec<(NodeId, TypedAdj)> {
+) -> (Vec<(NodeId, TypedAdj)>, SealedStream) {
     let endpoint = |row: &RelRow| side.endpoint(row);
-    let mut order = shard.to_vec();
-    order.sort_unstable_by(|&a, &b| {
+    shard.sort_unstable_by(|&a, &b| {
         let (a, b) = (&rows[a], &rows[b]);
         endpoint(a)
             .cmp(&endpoint(b))
             .then(a.type_id.cmp(&b.type_id))
     });
     let mut built = Vec::new();
-    for node_run in order.chunk_by(|&a, &b| endpoint(&rows[a]) == endpoint(&rows[b])) {
-        built.push(build_node(rows, node_run, side, sealed));
+    let mut sealed = SealedStream::default();
+    for node_run in shard.chunk_by(|&a, &b| endpoint(&rows[a]) == endpoint(&rows[b])) {
+        built.push(build_node(rows, node_run, side, &mut sealed));
     }
-    built
+    sealed.shrink();
+    (built, sealed)
 }
 
 /// One node's whole build from its `(endpoint, type)`-sorted row indices:
 /// the per-type runs in one [`TypedAdj`], then the durable shape
 /// (ADR-0608).
 ///
-/// The durable shape: the build seals through its own gate
-/// ([`TypedAdj::seal_whole`] — every chunk at [`RESTORE_SEAL_HOPS`],
-/// horizon 0) over the fold the checkpoint's GC pass also runs, so a
-/// rebuilt graph and a checkpoint-folded one share one fold, one sort and
-/// one chunk order and cannot land on different layouts. Both wholesale
-/// rebuilds (a restore and an aborted write's) emit it here, in the one
-/// pass that derives adjacency, instead of a second serial walk folding
-/// afterwards. The node is one shard's alone, so the arena's one write
-/// lock serializes the emission's appends but never two folds of the same
-/// node.
+/// The durable shape: the build seals through its own gate — every run at
+/// [`RESTORE_SEAL_HOPS`] hops or more, horizon 0 — encoding the run's
+/// sorted hops directly into `sealed` rather than staging them in a delta
+/// chunk to fold out again. The stream is the one the checkpoint's GC fold
+/// would encode for the same hops, in the same chunk order, so a rebuilt
+/// graph and a checkpoint-folded one cannot land on different layouts.
+/// Both wholesale rebuilds (a restore and an aborted write's) emit it
+/// here, in the one pass that derives adjacency, instead of a second
+/// serial walk folding afterwards. Runs below the gate stay packed in the
+/// delta.
 fn build_node(
     rows: &[RelRow],
     node_run: &[usize],
     side: Side,
-    sealed: &SealedArena,
+    sealed: &mut SealedStream,
 ) -> (NodeId, TypedAdj) {
     let node = side.endpoint(&rows[node_run[0]]);
     // One run per type: its type id and its hops, unsorted and keyless —
@@ -390,8 +395,8 @@ fn build_node(
                 .collect();
             (rows[run[0]].type_id, hops)
         });
-    let mut adj = TypedAdj::from_runs(runs);
-    adj.seal_whole(sealed.region_or_default(node));
+    let adj = TypedAdj::from_runs(runs, |type_id, hops| sealed.seal_chunk(node, type_id, hops));
+    sealed.end_node();
     (node, adj)
 }
 
@@ -400,20 +405,22 @@ fn build_node(
 /// with each pair's sealed table filled alongside it. Each side's pair is
 /// emptied by [`build_side`] as it is built, so a rebuild cannot leave a
 /// direction's stale chunks behind — this is the whole build, not a merge.
-/// `rows` is read-only — the start side reads the start-keyed partition
-/// `rebuild_adj` computed for every start-keyed consumer, the end side
-/// partitions by its own endpoint here, and no fold that follows a rebuild
-/// depends on the buffer's order.
+/// `rows` is read-only — the start side reads (and sorts in place) the
+/// start-keyed partition `rebuild_adj` computed for every start-keyed
+/// consumer, the end side partitions by its own endpoint here and drops
+/// that partition before returning, and no fold that follows a rebuild
+/// depends on the buffers' order.
 ///
 /// Memory shape: the shard parts and the tables they fill coexist at
 /// peak, but each node's `TypedAdj` is **moved** from its part into
 /// the map, never copied — the build materializes one adjacency, not
 /// two. Above it sit the rebuild's declared transients: the row buffer
 /// and the index partitions (8 bytes per row per partition).
-pub(super) fn adj_build(graph: &Graph, rows: &[RelRow], start_shards: &[Vec<usize>]) {
+pub(super) fn adj_build(graph: &Graph, rows: &[RelRow], start_shards: &mut ShardPartition) {
     build_side(graph, rows, Side::Start, start_shards);
-    let end_shards = shard::shard_rows(rows, |row| row.end);
-    build_side(graph, rows, Side::End, &end_shards);
+    let mut end_shards = shard::shard_rows(rows, |row| row.end);
+    let _end_lease = end_shards.lease();
+    build_side(graph, rows, Side::End, &mut end_shards);
 }
 
 impl Graph {

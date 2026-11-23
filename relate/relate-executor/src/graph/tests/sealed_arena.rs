@@ -7,7 +7,50 @@ use relate_core::{NodeId, RelId, Value};
 use super::super::accounting::adjacency::AdjDelta;
 use super::super::Graph;
 use super::chain::{props, step_matches_charge};
+use crate::adjacency::{Hop, SealedArena, SealedStream};
 use crate::redo::RedoOp;
+
+/// A wholesale install reserves every buffer at the size the closing fit
+/// lands it at: the byte buffer's capacity is its length, and `fit` moves
+/// none of the four buffers — no reallocation copy, so the build's peak
+/// never holds a buffer twice. The streams come from two shards, nodes
+/// interleaved, types pushed out of order: the install rebases the second
+/// shard's offsets and the entries read back type-sorted.
+#[test]
+fn a_wholesale_install_leaves_fit_nothing_to_copy() {
+    let hops: Vec<Hop> = (0..9).rev().map(|id| Hop { ts: Some(id), id }).collect();
+    let arena = SealedArena::default();
+    let mut streams = vec![SealedStream::default(), SealedStream::default()];
+    for node in 0..40 {
+        let stream = &mut streams[node as usize % 2];
+        for type_id in [3, 1, 2] {
+            assert!(stream.seal_chunk(node, type_id, &hops));
+        }
+        stream.end_node();
+    }
+
+    arena.install(streams);
+    let (buffers, capacity, len) = arena.buffer_probe();
+    assert_eq!(
+        capacity, len,
+        "the byte buffer is exactly its encoded length"
+    );
+    arena.fit();
+    assert_eq!(
+        arena.buffer_probe(),
+        (buffers, capacity, len),
+        "fit copied nothing"
+    );
+    assert_eq!(arena.assert_fit(), 0);
+
+    for node in [0, 7, 39] {
+        let region = arena.region(node).expect("every node sealed");
+        assert_eq!(region.type_ids(), vec![1, 2, 3]);
+        for type_id in 1..=3 {
+            assert_eq!(region.decoded(type_id), hops, "node {node} type {type_id}");
+        }
+    }
+}
 
 /// The reposition's sealed charge follows price_side's arms — the one
 /// formula the admission estimate prices delete batches with: a second

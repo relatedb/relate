@@ -379,12 +379,12 @@ type RowLoader = fn(
 /// path serves both shapes; it alone tolerates the pre-shard writers'
 /// null label and type slots.
 ///
-/// The file decodes through one reader per [`SpanReaders`] span, one span
-/// per worker ([`span::load`]): every worker decodes its own batches and
-/// installs them as it goes, charging the file's one [`Decoded`] as it goes,
-/// so decode and install share the worker and the file's decode runs across
-/// the cores. A file too small to shard runs its one reader on the current
-/// thread.
+/// The file decodes through one reader per [`SpanReaders`] span, at most one
+/// span per load thread of the current load scope ([`span::load`]): the
+/// shared load pool decodes each span's batches and installs them as it
+/// goes, charging the file's one [`Decoded`] and leasing one batch at a
+/// time. Outside a load scope, or for a file too small to shard, the one
+/// reader runs on the current thread.
 fn load_batches(
     graph: &dyn relate_engine_api::GraphImport,
     bytes: Vec<u8>,
@@ -402,7 +402,7 @@ fn load_batches(
     // parts are), so its rows install on one thread: a duplicate id keeps
     // file order instead of racing the spans.
     let workers = if rules.is_some() {
-        span::load_workers()
+        relate_core::current_load_threads().get()
     } else {
         1
     };

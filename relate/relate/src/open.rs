@@ -5,9 +5,12 @@
 //! paths are unchanged.
 
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use relate_core::{Error, PreviewFeatures, Result};
+use relate_core::{
+    with_load_scope, Error, LoadThreads, OpenTransientTracker, PreviewFeatures, Result,
+};
 use relate_executor::{CsvPolicy, Graph, PatternEngine};
 use relate_storage::{
     open_store_notifying, open_store_readonly_with_ontology, parse_uri_opening_with_config,
@@ -19,8 +22,8 @@ use super::ontology;
 use super::open_config::{
     reject_cypherlite_env, resolve_bulk_batch_limits, resolve_checkpoint_interval,
     resolve_codec_config, resolve_durability_mode, resolve_expression_memory_limit,
-    resolve_max_traversal_depth, resolve_memory_limit, resolve_pattern_engine,
-    resolve_preview_features, resolve_snapshot_codec, resolve_token_limits,
+    resolve_load_threads, resolve_max_traversal_depth, resolve_memory_limit,
+    resolve_pattern_engine, resolve_preview_features, resolve_snapshot_codec, resolve_token_limits,
     resolve_wal_payload_limit,
 };
 use super::shared::{OpenResolved, SharedOpenState};
@@ -72,6 +75,23 @@ pub(crate) fn open_store_screened(
     Ok(opened)
 }
 
+/// [`open_store_screened`] inside a load scope of `threads`: the load's
+/// transient allocations are charged to one fresh tracker, and its peak is
+/// returned beside the screened store. The open and the Follow gap reload
+/// both load through this.
+pub(crate) fn open_store_scoped(
+    target: &StoreTarget,
+    mode: OpenMode,
+    wal_payload_limit: u64,
+    threads: LoadThreads,
+) -> Result<(ScreenedOpen, u64)> {
+    let tracker = Arc::new(OpenTransientTracker::new());
+    let opened = with_load_scope(threads, Arc::clone(&tracker), || {
+        open_store_screened(target, mode, wal_payload_limit)
+    })?;
+    Ok((opened, tracker.peak_bytes()))
+}
+
 /// The preflight-resolved open knobs, in one named carrier: the validated
 /// LOAD CSV policy, the memory limit, the traversal-depth admission limit
 /// (LABS-610), the commit durability policy (ADR-0470), the store's
@@ -79,7 +99,8 @@ pub(crate) fn open_store_screened(
 /// (ADR-0519), the requested snapshot codec, the
 /// markdown vault's body-property configuration (ADR-0460), the
 /// checkpoint interval, the bulk-batch limits, the token limits and the
-/// per-record WAL payload cap (ADR-0650).
+/// per-record WAL payload cap (ADR-0650), and the load thread count
+/// (ADR-0664).
 /// [`Database::open_preflight`] resolves every knob before a store
 /// directory is leased, so every environment-driven failure precedes the
 /// store load. [`Database::open_store`] installs the rest; the snapshot
@@ -104,6 +125,7 @@ struct OpenKnobs {
     bulk_batch_limits: (u64, u64),
     wal_payload_limit: u64,
     token_limits: token_budget::TokenLimits,
+    load_threads: LoadThreads,
 }
 
 impl Database {
@@ -131,6 +153,23 @@ impl Database {
     /// write back to). A missing store is not created.
     pub fn open_ephemeral(uri: &str) -> Result<Self> {
         Self::open_with(uri, OpenOptions::with_mode(OpenMode::Ephemeral))
+    }
+
+    /// The peak transient memory, in bytes, of the load that built this
+    /// handle's graph: the most the snapshot decode and the adjacency
+    /// rebuild held at once beyond the graph they produced. `0` for an
+    /// empty `:memory:` store, which loads nothing. A `Follow` handle
+    /// replaces it with the peak of each gap reload.
+    ///
+    /// ```
+    /// use relate::Database;
+    ///
+    /// let db = Database::open(":memory:")?;
+    /// assert_eq!(db.open_peak_transient_bytes(), 0);
+    /// # Ok::<(), relate::Error>(())
+    /// ```
+    pub fn open_peak_transient_bytes(&self) -> u64 {
+        self.inner.open_peak_transient_bytes.load(Ordering::Relaxed)
     }
 
     /// Test hook: the shared engine state, for `commit.rs` group-commit tests
@@ -247,6 +286,7 @@ impl Database {
             bulk_batch_limits: resolve_bulk_batch_limits()?,
             wal_payload_limit: resolve_wal_payload_limit(opts)?,
             token_limits: resolve_token_limits(opts)?,
+            load_threads: resolve_load_threads(opts)?,
         })
     }
 
@@ -291,13 +331,17 @@ impl Database {
             bulk_batch_limits: (bulk_batch_threshold, bulk_batch_budget),
             wal_payload_limit,
             token_limits,
+            load_threads,
         } = knobs;
-        let ScreenedOpen {
-            mut graph,
-            mut wal,
-            ontology,
-            committed,
-        } = open_store_screened(&store, opts.mode, wal_payload_limit)?;
+        let (
+            ScreenedOpen {
+                mut graph,
+                mut wal,
+                ontology,
+                committed,
+            },
+            open_peak_transient_bytes,
+        ) = open_store_scoped(&store, opts.mode, wal_payload_limit, load_threads)?;
         check_loaded_graph(&graph)?;
         graph.configure_load_csv(csv_policy);
         // ADR-0463: the per-allocation expression cap rides the same
@@ -336,6 +380,7 @@ impl Database {
             wal_payload_limit,
             checkpoint_interval,
             follow_gap: opts.follow_gap,
+            load_threads,
         };
         // LABS-903's turn-into, at the seam the memory-first load created:
         // everything above materialized the graph and the replayed WAL into
@@ -358,6 +403,7 @@ impl Database {
                     resolved,
                     ontology,
                     commit_timing,
+                    open_peak_transient_bytes,
                 },
             )?),
         };

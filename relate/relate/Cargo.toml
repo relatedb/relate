@@ -50,3 +50,4 @@ relate-executor = { workspace = true }
 tempfile = { workspace = true }
 crc32fast = { workspace = true }
 relate-test-support = { workspace = true, features = ["durability", "fold_shapes", "nested_eval", "pokec", "vfs_walk"] }
+mimalloc = { workspace = true }

@@ -21,6 +21,7 @@ mod error;
 mod error_kinds;
 pub mod file_identity;
 pub mod integer_args;
+mod load_pool;
 mod memory_limit;
 mod namespace;
 mod output_safety;
@@ -51,6 +52,10 @@ pub use error::{
 pub use error_kinds::{
     duplicate_variable_detail, undefined_variable_detail, unknown_function_detail, ErrorKind,
     TckErrorClass,
+};
+pub use load_pool::{
+    current_load_threads, record_transient_lease, resolve_load_threads, run_load_tasks,
+    with_load_scope, LoadThreads, OpenTransientTracker, TransientLease,
 };
 pub use memory_limit::{
     parse_expression_memory_limit, parse_memory_limit, parse_positive_memory_limit,

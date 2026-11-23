@@ -64,6 +64,7 @@ impl Args {
             markdown_body_properties: None,
             load_csv_dir: self.load_csv_dir.clone(),
             load_csv_max_bytes: None,
+            load_threads: None,
             mode: if self.read_only {
                 relate::OpenMode::ReadOnly
             } else {

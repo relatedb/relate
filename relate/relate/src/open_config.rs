@@ -184,6 +184,13 @@ pub(crate) fn resolve_memory_limit(opts: &OpenOptions) -> Result<u64> {
     }
 }
 
+/// The load thread count: the option's `Some` value wins, then
+/// `RELATE_LOAD_THREADS`, then the machine's available parallelism. Zero and
+/// invalid values fail the open in the fail-before-lease preflight.
+pub(crate) fn resolve_load_threads(opts: &OpenOptions) -> Result<relate_core::LoadThreads> {
+    relate_core::resolve_load_threads(opts.load_threads)
+}
+
 /// The traversal-depth admission limit from an already-read
 /// `RELATE_MAX_TRAVERSAL_DEPTH` value (LABS-610). Unset or blank is the
 /// default ([`MAX_TRAVERSAL_DEPTH`]). A present value must parse as an

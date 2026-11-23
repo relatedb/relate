@@ -81,8 +81,8 @@ mod arena;
 mod span_table;
 
 pub(crate) use self::arena::{
-    arena_admits, hop_count, tombstone_stride, Entry, SealedArena, SealedRegion, Supersede,
-    Tombstone,
+    arena_admits, hop_count, tombstone_stride, Entry, SealedArena, SealedRegion, SealedStream,
+    Supersede, Tombstone,
 };
 pub(crate) use self::span_table::{span_stride, MAX_SPAN_TYPES};
 

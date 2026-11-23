@@ -257,15 +257,19 @@ pub(crate) fn reload(shared: &Shared) -> Result<()> {
     }
     // The replacement is private until the swap. Queries keep reading the
     // installed graph for the whole disk load.
-    let crate::open::ScreenedOpen {
-        graph,
-        wal,
-        ontology,
-        committed,
-    } = crate::open::open_store_screened(
+    let (
+        crate::open::ScreenedOpen {
+            graph,
+            wal,
+            ontology,
+            committed,
+        },
+        peak,
+    ) = crate::open::open_store_scoped(
         &shared.store,
         crate::OpenMode::ReadOnly,
         shared.resolved.wal_payload_limit,
+        shared.resolved.load_threads,
     )?;
     crate::check_loaded_graph(&graph)?;
     // An open statement or explicit transaction holds a pin after it has
@@ -293,6 +297,9 @@ pub(crate) fn reload(shared: &Shared) -> Result<()> {
         crate::committed::apply_facts(&graph, graph_type, indexes)?;
     }
     shared.install_reloaded(&publication, graph, wal, ontology)?;
+    shared
+        .open_peak_transient_bytes
+        .store(peak, std::sync::atomic::Ordering::Relaxed);
     match committed {
         Some(relate_storage::CommittedSchema { document, .. }) => {
             crate::ontology::install_state(shared, document);
