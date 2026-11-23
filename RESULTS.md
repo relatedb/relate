@@ -526,6 +526,30 @@ Readings:
 | `point` | `node_prop_id_at` / `node_prop_resolved` | the trait sits exactly at that boundary |
 | `Pred` | IR `Expr` conjuncts + `Residual` — no plan→storage pushdown trait exists today | the seam's `Pred` is that missing trait; executor-side recognizers (Seek, WalkSpec, BatchPred) compile to it |
 
+### Fast batch node+property filters — the seam closures (2026-11-23, load 7.8)
+
+`expand` now takes labels (the `lookup_nodes_upto(labels, …)` shape) and
+`member(key, sorted_vals)` serves the batched key check; adjacency stays
+in the CSR arena by decision.
+
+| op | row store | col store | effect |
+|---|---|---|---|
+| S7 label{0,1} + conjunction | 2.57 ms / 14 allocs | 387 µs / 2,020 allocs | **6.6x** — labels AND into the ONE pushed scan (or-of-eq over the dict label column) |
+| S8 member, 1024 uniform keys | 463 µs | 435 µs | parity with individual binary seeks (~425 ns/key) — the suffix window barely shrinks on a uniform spread |
+| S8c member, 1024 clustered keys | 161 µs | 157 µs | **153 ns/key, 2.8x better** — the morsel shape; the #9551 win is locality-dependent |
+
+- The label filter riding the same scan works and is 6.6x, but costs +80%
+  allocs over the property-only scan (2,020 vs 1,116 — or-of-eq decodes
+  the label column per scan); a per-label bitset/bucket intersect inside
+  the store is the cheaper future form.
+- `member`'s galloping suffix search wins exactly where #9551 assumes it
+  does: clustered batches. On uniform spreads it is seek-parity. The
+  arm's pointer-heavy `Vec<(String,u64)>` layout is the limiter — a
+  columnar arm (keys and rows in separate contiguous arrays, or the merge
+  running over the still-encoded column) is the next optimization, not
+  the algorithm.
+- Anti-join (O17) composes as `member`'s complement — free.
+
 ## Open
 
 - The engine-side A/B (CompactProps + postings) — needs the container

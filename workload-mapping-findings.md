@@ -204,19 +204,20 @@ property store's scope by design.
 | O7 merge join | 🔶 sorted (key,row) arm via `seek`/`member`; executor composes sort-merge (23×, alloc-free measured) | executor join composition; the arm replaces postings-served equality sides |
 | O8 intra-row compare | 🔶 `batch` both columns; compare executor-side | `WalkSpec::compile` settled conjuncts (one store read, inline reads) |
 | O9 traversal-order reads | 🚫 adjacency, not the property store | adjacency store / traversal kernels (ADR-0551 sealed delta tiers) |
-| O10a batched key check / IN | ⚠️ `member(key, vals: &[&str])` — sorted×sorted merge, the #9551 membership-mask shape | `lookup_point_upto` (overlay/seek.rs:184, the WHERE `=`/`IN` runtime seek) |
+| O10a batched key check / IN | ✅ `member(key, sorted_vals)` — galloping suffix search; uniform batch = seek parity, clustered 2.8x (locality-dependent, as #9551 assumes) | `lookup_point_upto` (overlay/seek.rs:184, the WHERE `=`/`IN` runtime seek) |
 | O10b morsel gather (scattered ids) | ✅ `batch(rows, keys)` — decoded-cache indexing; per-chunk density-hinted probe when #8694 lands | morsel producers feeding `Chunk`/`RowFeed` |
 | O11 row-position gather-compares | ✅ `batch` (row==node-id identity) | batch chain `filter_chunk` selection vector + `Chunk::select_columns` |
 | O12 prefix range (STARTS WITH) | ⚠️ `prefix_range(key, prefix)` — partition_point bounds on the arm (249 ns measured) | `Seek::Text` (candidates/seek.rs:29) — the text-seek vocabulary exists |
 | O13 countDistinct | ✅ `distinct(key)` | aggregate site classification (`site.rs`); rung form for whole-population |
 | O14 histogram/quantiles | 🔶 histogram = `distinct`'s (value,count) output; quantiles = sorted arm + position reads (`topk`-shaped) | computed in projection today; rung-able |
 | O15 order/top-k | ✅ `topk(key, k)` | `TopKWindow` (exec/top_k.rs:57), `TopWindow`, `take_parked_top_k` (order.rs:467); ordered top-k scan pushdown = the seam filling the engine's recorded gap |
-| O16 presence + label-prune | ✅ `null_count(key)`; ⚠️ labels param on `expand` (engine shape is `lookup_nodes_upto(labels, …)`) | IS NULL via the predicate gate; labels via label buckets `node_ids_with_label_at` (index_lookup.rs:137) |
-| O17 anti-join | ⚠️ complement of `member` (comes free with it) | executor anti-join site; no storage API today |
-| O18 IN-list | ⚠️ `member` (same method as O10a) | `lookup_point_upto` (WHERE `=`/`IN`) |
+| O16 presence + label-prune | ✅ `null_count(key)` + labels on `expand` (one pushed scan; 6.6x, +80% allocs vs property-only — bitset intersect is the cheaper future form) | IS NULL via the predicate gate; labels via label buckets `node_ids_with_label_at` (index_lookup.rs:137) |
+| O17 anti-join | ✅ complement of `member` (composes free) | executor anti-join site; no storage API today |
+| O18 IN-list | ✅ `member` (same method as O10a) | `lookup_point_upto` (WHERE `=`/`IN`) |
 | O19 seen/frontier state | 🚫 executor traversal state, not the store (bitset decision: 0.125 B/node, alloc-free algebra) | `RowFeed`/traversal kernels own it |
 | O20 pair-distinct (dict code pairs) | 🔶 `batch` two columns / dict-code rung form | `stats_short_circuit` rung extension (multi-column grouping keys) |
 
-Closures to full coverage: `member` (O10a/O17/O18), `prefix_range` (O12),
-labels on `expand` (O16's label half). Everything else is either a method,
-a measured building block, or executor-side by design.
+Closures landed (2026-11-23): `member` (O10a/O17/O18), labels on `expand`
+(O16's label half). Remaining: `prefix_range` (O12). Adjacency (O9) stays
+in the relationship CSR arena by decision (2026-11-23). Everything else is
+a method, a measured building block, or executor-side by design.

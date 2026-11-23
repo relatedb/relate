@@ -58,6 +58,9 @@ impl Pred {
 
 pub type RowIds = Vec<u64>;
 
+/// Interned label id — the engine's `CoreMap<u32, HashSet<NodeId>>` keys.
+pub type Label = u32;
+
 pub trait PropStore {
     fn len(&self) -> usize;
     /// point read (O1): the value at one row of one key
@@ -65,11 +68,15 @@ pub trait PropStore {
     /// morsel gather (O2/O10): `rows` ascending, `keys` the wanted
     /// columns; out is key-major, len = rows.len() * keys.len()
     fn batch(&self, rows: &[u64], keys: &[&str]) -> Vec<Val>;
-    /// bulk expansion with filter pushdown (O4/O5): rows satisfying `pred`,
-    /// stopping at `cap`+1 survivors — the engine's cap chain shape
-    /// (`lookup_nodes_upto_at(…, cap)`, whose `RecheckWalk` stops the scan
-    /// at the first cap+1 matches)
-    fn expand(&self, pred: &Pred, cap: Option<usize>) -> RowIds;
+    /// bulk expansion with filter pushdown (O4/O5/O16): rows of `labels`
+    /// (empty = all labels, the engine's unlabeled-scan semantics)
+    /// satisfying `pred`, stopping at `cap`+1 survivors — the engine's
+    /// `lookup_nodes_upto(labels, props, cap)` shape
+    fn expand(&self, labels: &[Label], pred: &Pred, cap: Option<usize>) -> RowIds;
+    /// batched key check / IN-list (O10a/O18, the #9551 shape):
+    /// rows whose `key` is in `sorted_vals` — one sorted-merge pass over
+    /// the (key,row) arm, not one seek per value
+    fn member(&self, key: &str, sorted_vals: &[String]) -> RowIds;
     /// equality seek on the sorted key column — the (key,row) arm (O3)
     fn seek(&self, key: &str, val: &str) -> RowIds;
     /// aggregation pushdown (O6/O13): (value, count) per distinct value
@@ -87,6 +94,9 @@ pub struct RowProps {
     rows: Vec<(Vec<u32>, Vec<Val>)>,
     names: Vec<String>,
     lookup: HashMap<String, u32>,
+    /// per-row labels (the engine's `LiveNode.labels`, one per synthetic
+    /// node; label 0 = the table carried no label column)
+    labels: Vec<u32>,
     /// the (key,row) arm, here too, so `seek` compares index technique on
     /// both stores (the engine's postings serve this today, ADR-0614)
     key_index: Vec<(String, u64)>,
@@ -125,7 +135,15 @@ impl RowProps {
             })
             .unwrap_or_default();
         key_index.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        Self { rows, names, lookup, key_index }
+        let labels: Vec<u32> = table
+            .column("label")
+            .map(|c| match c {
+                store::Col::Int(v) => v.iter().map(|&x| x as u32).collect(),
+                store::Col::Bool(v) => v.iter().map(|&x| x as u32).collect(),
+                _ => vec![0; table.rows()],
+            })
+            .unwrap_or_else(|| vec![0; table.rows()]);
+        Self { rows, names, lookup, labels, key_index }
     }
 
     fn kid(&self, key: &str) -> Option<u32> {
@@ -190,13 +208,16 @@ impl PropStore for RowProps {
         out
     }
 
-    fn expand(&self, pred: &Pred, cap: Option<usize>) -> RowIds {
+    fn expand(&self, labels: &[Label], pred: &Pred, cap: Option<usize>) -> RowIds {
+        let label_ok = |r: usize| labels.is_empty() || labels.contains(&self.labels[r]);
         match cap {
-            None => (0..self.rows.len() as u64).filter(|&r| self.eval(r, pred)).collect(),
+            None => (0..self.rows.len() as u64)
+                .filter(|&r| label_ok(r as usize) && self.eval(r, pred))
+                .collect(),
             Some(cap) => {
                 let mut out = Vec::with_capacity(cap + 1);
                 for r in 0..self.rows.len() as u64 {
-                    if self.eval(r, pred) {
+                    if label_ok(r as usize) && self.eval(r, pred) {
                         out.push(r);
                         if out.len() > cap {
                             break;
@@ -206,6 +227,24 @@ impl PropStore for RowProps {
                 out
             }
         }
+    }
+
+    fn member(&self, _key: &str, sorted_vals: &[String]) -> RowIds {
+        // sorted batch against the sorted arm: galloping suffix search —
+        // O(vals * log(arm/vals)), not O(arm + vals) and not a seek per value
+        let arm = &self.key_index;
+        let mut out = Vec::new();
+        let mut pos = 0usize;
+        for val in sorted_vals {
+            let idx = pos + arm[pos..].partition_point(|(k, _)| k.as_str() < val.as_str());
+            if idx < arm.len() && arm[idx].0 == *val {
+                out.push(arm[idx].1);
+                pos = idx + 1;
+            } else {
+                pos = idx;
+            }
+        }
+        out
     }
 
     fn seek(&self, _key: &str, val: &str) -> RowIds {

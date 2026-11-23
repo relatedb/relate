@@ -131,12 +131,28 @@ impl ColProps {
     }
 
     /// scan with the predicate pushed into the layout reader, projecting
-    /// `id` (row == node id) to recover the surviving rows; `cap` mirrors
-    /// the engine's `lookup_nodes_upto_at(…, cap)` — with_limit truncates
-    /// but does not stop decoding (the upstream early-exit gap, #11808)
-    fn scan_ids(&self, pred: &Pred, cap: Option<usize>) -> Result<RowIds, Box<dyn std::error::Error>> {
+    /// `id` (row == node id) to recover the surviving rows; labels AND in
+    /// as a label-code predicate so node+property filtering is ONE scan;
+    /// `cap` mirrors the engine's `lookup_nodes_upto_at(…, cap)` —
+    /// with_limit truncates but does not stop decoding (#11808)
+    fn scan_ids(
+        &self,
+        labels: &[crate::seam::Label],
+        pred: &Pred,
+        cap: Option<usize>,
+    ) -> Result<RowIds, Box<dyn std::error::Error>> {
+        let mut expr = to_expr(pred);
+        if !labels.is_empty() {
+            // label filter as or-of-eq on the label-code column, ANDed in
+            let label_expr = labels
+                .iter()
+                .map(|&l| eq(col("label"), lit(l as i64)))
+                .reduce(or)
+                .expect("non-empty labels reduce");
+            expr = and(expr, label_expr);
+        }
         let bound: BoundExpression =
-            to_expr(pred).bind(self.vfile.dtype())?.optimize_recursive()?;
+            expr.bind(self.vfile.dtype())?.optimize_recursive()?;
         let proj: BoundExpression =
             col("id").bind(self.vfile.dtype())?.optimize_recursive()?;
         let mut b = self.vfile.scan()?;
@@ -173,8 +189,26 @@ impl PropStore for ColProps {
         out
     }
 
-    fn expand(&self, pred: &Pred, cap: Option<usize>) -> RowIds {
-        self.scan_ids(pred, cap).expect("scan failed")
+    fn expand(&self, labels: &[crate::seam::Label], pred: &Pred, cap: Option<usize>) -> RowIds {
+        self.scan_ids(labels, pred, cap).expect("scan failed")
+    }
+
+    fn member(&self, _key: &str, sorted_vals: &[String]) -> RowIds {
+        // sorted batch against the sorted arm: galloping suffix search —
+        // O(vals * log(arm/vals)), the #9551 shape
+        let arm = &self.key_index;
+        let mut out = Vec::new();
+        let mut pos = 0usize;
+        for val in sorted_vals {
+            let idx = pos + arm[pos..].partition_point(|(k, _)| k.as_str() < val.as_str());
+            if idx < arm.len() && arm[idx].0 == *val {
+                out.push(arm[idx].1);
+                pos = idx + 1;
+            } else {
+                pos = idx;
+            }
+        }
+        out
     }
 
     fn seek(&self, _key: &str, val: &str) -> RowIds {
