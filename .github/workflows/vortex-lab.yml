@@ -35,6 +35,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
+      # Beats the repo-root rust-toolchain.toml (1.88.0): rustup env
+      # override > toolchain file, so every cargo call in this job runs
+      # the lab's 1.95 toolchain without touching the repo pin.
+      RUSTUP_TOOLCHAIN: "1.95"
       # The SF0.1 social-network archive the query-latency suite pins
       # (workloads/graph-benchmark-ldbc/data.sha256): same source, same
       # sha — one pin table for both lanes.
@@ -47,7 +51,6 @@ jobs:
       - name: Install Rust 1.95 (the lab's MSRV lift, this lane only)
         run: |
           rustup toolchain install 1.95 --profile minimal
-          rustup default 1.95
           rustc --version
 
       # The standalone (workspace-excluded) crate keeps its own target
@@ -86,6 +89,9 @@ jobs:
       - name: Publish the numbers
         if: always()
         run: |
+          # nullglob: a step that never ran leaves no stdio files — the
+          # summary then shows whatever exists instead of failing the job
+          shopt -s nullglob
           {
             echo "# Vortex lab numbers (report-only)"
             echo
