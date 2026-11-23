@@ -212,7 +212,7 @@ property store's scope by design.
 | O14 histogram/quantiles | 🔶 histogram = `distinct`'s (value,count) output; quantiles = sorted arm + position reads (`topk`-shaped) | computed in projection today; rung-able |
 | O15 order/top-k | ✅ `topk(key, k)` | `TopKWindow` (exec/top_k.rs:57), `TopWindow`, `take_parked_top_k` (order.rs:467); ordered top-k scan pushdown = the seam filling the engine's recorded gap |
 | O16 presence + label-prune | ✅ `null_count(key)` + labels on `expand` (one pushed scan; 6.6x, +80% allocs vs property-only — bitset intersect is the cheaper future form) | IS NULL via the predicate gate; labels via label buckets `node_ids_with_label_at` (index_lookup.rs:137) |
-| O17 anti-join | ✅ complement of `member` (composes free) | executor anti-join site; no storage API today |
+| O17 anti-join | two shapes by target-set source (2026-11-23): **adjacency-sourced** (the common form) = NOT a store operator — CSR supplies the candidate morsel, the store only serves `batch(candidates, [key])`, complement test runs executor-side over the morsel (the O10b/O11 path); **population-sourced** (`WHERE NOT b.key IN $batch` with no hop) = complement of `member` / anti predicate in `expand` | adjacency form: CSR + morsel predicate; population form: `lookup_nodes_upto` scan with the anti residual |
 | O18 IN-list | ✅ `member` (same method as O10a) | `lookup_point_upto` (WHERE `=`/`IN`) |
 | O19 seen/frontier state | 🚫 executor traversal state, not the store (bitset decision: 0.125 B/node, alloc-free algebra) | `RowFeed`/traversal kernels own it |
 | O20 pair-distinct (dict code pairs) | 🔶 `batch` two columns / dict-code rung form | `stats_short_circuit` rung extension (multi-column grouping keys) |
