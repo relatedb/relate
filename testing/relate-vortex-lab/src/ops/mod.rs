@@ -7,3 +7,4 @@ pub mod point;
 pub mod probe;
 pub mod seek;
 pub mod sets;
+pub mod vfs;

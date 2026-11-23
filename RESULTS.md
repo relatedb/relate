@@ -345,15 +345,88 @@ values array (`ArrayRef::ptr_eq` across chunks → column-global dict codes).
    column-global and shared; it correctly reports "not available" when chunks
    do not share one values array.
 
+## Design decisions from the round-1 discussion (2026-11-23)
+
+Post-measurement discussion with the round-1 owner; these shape round 2.
+
+1. **Nullable promoted columns replace the JSON residual.** Every property
+   key gets its own nullable column, added as we go: null = absent (the
+   engine's lenient semantics, no sentinel values), a mostly-absent key
+   costs ~its present-ids + values (Sparse), and `NullCount` serves IS
+   NULL / IS NOT NULL per zone. The long tail that would never earn a
+   column is a typed `list<struct{key,value}>` residual — scan-only, no
+   JSON parse. The JSON residual was a wide-parquet-checkpoint concern, not
+   an in-memory one.
+2. **Immutable vortex files are the checkpoints — same lifecycle, no new
+   machinery.** WAL is the append log (unchanged), the live/delta tier is
+   the in-memory overlay (ADR-0016's shape), the checkpoint fold
+   rewrites/compacts the touched column files, reads mmap the sealed
+   files. Vortex 0.93 needs no append API because the engine never asked
+   the snapshot format for one.
+3. **File-per-column vs file-per-table is a real trade, now measured**
+   (VFS prototype below): per-column files make add-a-column and
+   per-column compaction free across seals, but each file costs its own
+   footer parse at open (~1.7k allocs per file, V1) — so a per-column
+   layout requires **lazy open per touched column**, not eager
+   all-files-open. File-per-table avoids the tax but rewrites the table at
+   every seal that adds a column.
+4. **Engine integration goes through the existing seams only.** The
+   experimental store loads through the regular VFS APIs (ADR-0072) — no
+   new I/O mechanism introduced together with the new store — and slots in
+   as an experimental storage option in the shape of the other optional
+   codecs (ADR-0105), following ADR-0534's precedent (column files inside
+   a codec, not a new flag). mmap is a later, separate step where the VFS
+   permits.
+5. **Store additions are shaped like the upstream proposed APIs** (the
+   rule recorded under Upstream tracking): probe-shaped morsel seam with a
+   density hint, membership-mask batched key check, limit-shaped exists.
+   When vortex lands them, our seam delegates instead of reimplementing.
+
+## VFS prototype (2026-11-23, load 99.5 — ns noise-dominated; allocs and
+RSS deltas are the signal)
+
+`ops/vfs.rs`: the same Person table (1,528 rows, 6 columns) as one struct
+file (47,312 B) and as 6 column files (55,056 B).
+
+| measurement | struct file | column files |
+|---|---|---|
+| V1 open | 1,765 allocs / 788 KB | **10,140 allocs / 4.65 MB** (6× footers) |
+| V3 single-column read | 219 allocs / 35 KB | 210 allocs / 34 KB |
+| V4 3-column read | 629 allocs / 101 KB | 602 allocs / 98 KB |
+
+- **Reads are layout-neutral; opens are not.** Per-file footer parse costs
+  ~1.7k allocs and ~790 KB regardless of file size — the per-column
+  layout's tax is paid at open, and at 60 columns an eager open is
+  ~100k allocs / ~47 MB transient. Lazy open per touched column is
+  mandatory in a per-column layout.
+- V6 compaction remap: open of a rewritten column file = one footer
+  (1,691 allocs), first read on the new inode is cold pages — the honest
+  per-column fold cost.
+- **V7 page-level skipping is real and large**: on the 6.2 MB Comment
+  file, a projected read of one column of six faults **16 KB** of pages;
+  reading all columns faults **672 KB** — the untouched columns' pages
+  never enter RSS (42x). Per-query resident memory ≈ touched segments,
+  which is the mmap store's whole memory story in one number. (RSS deltas,
+  load ~20.)
+
+## Seam fit vs the engine (2026-11-23, full detail in `seam-findings.md`)
+
+| Seam | Verdict |
+|---|---|
+| VFS (ADR-0072) | **Fits** — a new backend is a new `Vfs` impl, no trait change; caveat: `VfsFile` is byte-copy, no borrowed-slice arm, so zero-copy decode mmaps outside the trait or the trait gains one optional method |
+| Snapshot codec (ADR-0050/0105) | **Fits** — a `SnapshotCodecKind::Vortex` + `CodecOps` + evidence row is additive; the Parquet codec already publishes many immutable per-column files with add-column-at-checkpoint (ADR-0022/0089/0534). Extends: `dump` sees the graph only as `GraphImport` *rows* (no columnar export), dirtiness exported as ids only (no per-key stats for per-column compaction) |
+| Property read path (ADR-0033/0016/0614) | **New seam needed** — `CompactProps` (pub(crate)) inside `LiveNode` inside `Graph` MVCC chains; zero traits between executor and property storage. A property-read trait at the `node_prop_id_at` / scan-predicate boundary (plus the overlay `base`, the restore path, and the ADR-0614 postings — the sorted (key,row) side-file is their natural replacement) is the one hard-wired seam |
+| Checkpoint lifecycle (ADR-0012/0014/0022/0089/0183) | **Fits** — immutable publication, dirty-id incremental rewrite, orphan sweep, follow reload all exist; per-key dirty tracking is the extension |
+| Memory metering (ADR-0042/0463) | **Extends** — charge logical (uncompressed-size-style) bytes to the ADR-0042 `used` counter; mmap resident-page accounting is undecided and needs its own decision record |
+
 ## Open
 
 - The engine-side A/B (CompactProps + postings) — needs the container
   harness or the `research`-feature read path; `CompactProps` is `pub(crate)`.
 - `Ty::Temporal` column for date properties.
-- The VFS mmap prototype (round-1 deliverable, step 60).
-- Monotone synthetic shape in `store.rs` + re-run of the range-pruning
-  kernels (methodology correction, filter section finding 4).
 - Nullable-column re-measure for presence (filter section finding 6).
+- Engine-side property-read trait prototype at the
+  `node_prop_id_at` boundary (the one new seam, per `seam-findings.md`).
 
 ### Upstream tracking (checked 2026-11-23, vortex-data/vortex)
 
