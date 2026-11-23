@@ -20,8 +20,7 @@ use relate_names::SmallName;
 use relate_parser::{Clause, Expr, PageStage, YieldList, YieldMode};
 
 /// One column table followed by another: the merge every `full_*_columns()`
-/// builder delegates to, and the one `SHOW TRANSACTIONS` uses to widen its
-/// accepted `YIELD` names past its `YIELD *` columns.
+/// builder delegates to.
 fn merged_columns(first: &[&str], second: &[&str]) -> Vec<String> {
     first
         .iter()
@@ -219,8 +218,9 @@ pub const GRAPH_TYPE_COLUMNS: &[&str] = &["name", "body"];
 pub const CURRENT_GRAPH_TYPE_COLUMNS: &[&str] = &["specification"];
 pub const CURRENT_GRAPH_TYPE_AS_GRAPH_COLUMNS: &[&str] = &["nodes", "relationships"];
 
-/// `SHOW TRANSACTION[S]`'s default columns: the seven the embedded engine's
-/// single self row renders, and the whole of a bare `SHOW TRANSACTIONS`.
+/// `SHOW TRANSACTION[S]`'s default columns: the seven a bare `SHOW
+/// TRANSACTIONS` renders (a `YIELD *` row carries all forty, see
+/// [`full_transaction_columns`]).
 pub const DEFAULT_TRANSACTION_COLUMNS: &[&str] = &[
     "transactionId",
     "currentQuery",
@@ -231,13 +231,11 @@ pub const DEFAULT_TRANSACTION_COLUMNS: &[&str] = &[
     "clientAddress",
 ];
 
-/// `SHOW TRANSACTION[S]`'s accepted-but-not-rendered columns: the
-/// server-observability names live accepts in `YIELD` that the embedded
-/// engine's self row has no value for, so they compose as Null. Unlike every
-/// other `NON_DEFAULT_*` table in this module this is not the second half of
-/// a `full_*_columns()` builder -- these names are not in `full_columns` at
-/// all, they only widen what an explicit `YIELD` may name.
-pub const ACCEPTED_ONLY_TRANSACTION_COLUMNS: &[&str] = &[
+/// `SHOW TRANSACTION[S]`'s non-default columns: the server-observability
+/// names live carries on a `YIELD` or `YIELD *` row beyond the seven
+/// defaults. The self row fills the ones the engine has state for and
+/// carries the rest as Null (`exec/catalog_show/transactions.rs`).
+pub const NON_DEFAULT_TRANSACTION_COLUMNS: &[&str] = &[
     "activeLockCount",
     "allocatedDirectBytes",
     "cpuTime",
@@ -272,6 +270,15 @@ pub const ACCEPTED_ONLY_TRANSACTION_COLUMNS: &[&str] = &[
     "statusDetails",
     "waitTime",
 ];
+
+/// `SHOW TRANSACTION[S]`'s `YIELD *` columns: the defaults and the
+/// non-default names together, alphabetical as live orders them -- the one
+/// set the command both renders and accepts in `YIELD`.
+pub fn full_transaction_columns() -> Vec<String> {
+    let mut columns = merged_columns(DEFAULT_TRANSACTION_COLUMNS, NON_DEFAULT_TRANSACTION_COLUMNS);
+    columns.sort_unstable();
+    columns
+}
 
 /// `TERMINATE TRANSACTION[S]`'s columns (no default-vs-full split).
 pub const TERMINATE_TRANSACTION_COLUMNS: &[&str] = &["transactionId", "username", "message"];
@@ -308,12 +315,6 @@ pub struct CatalogInfo<'a> {
     pub graph_schema_catalog: bool,
     pub default_columns: &'static [&'static str],
     pub full_columns: Vec<String>,
-    /// The override for the names an explicit `YIELD` may name, for the one
-    /// command whose accepted set differs from its `YIELD *` columns.
-    /// `None` -- every command but `SHOW TRANSACTIONS` -- means it accepts
-    /// exactly what it carries. Read through [`Self::accepted_columns`],
-    /// never directly.
-    accepted_columns: Option<Vec<String>>,
 }
 
 /// How a catalog clause projects its columns: `YIELD *` passes the raw row
@@ -327,17 +328,6 @@ pub enum CatalogProjection {
 }
 
 impl CatalogInfo<'_> {
-    /// The names an explicit `YIELD` may name: the override when a command
-    /// has one, its `YIELD *` set otherwise. `SHOW TRANSACTIONS` is the one
-    /// command that overrides -- live accepts far more names there than the
-    /// self row renders, so the validator's set and the row's shape are two
-    /// different questions, and this is the one place that records it.
-    pub fn accepted_columns(&self) -> &[String] {
-        self.accepted_columns
-            .as_deref()
-            .unwrap_or(&self.full_columns)
-    }
-
     /// The one derivation from the yield mode to the projection columns.
     pub fn projection(&self) -> CatalogProjection {
         match self.yields.mode() {
@@ -376,7 +366,6 @@ pub fn catalog_info(clause: &Clause) -> Option<CatalogInfo<'_>> {
             graph_schema_catalog: $graph_schema:expr,
             defaults: $defaults:expr,
             full: $full:expr,
-            $(accepted: $accepted:expr,)?
             $(arguments: $arguments:expr,)?
         ) => {
             Some(CatalogInfo {
@@ -398,14 +387,6 @@ pub fn catalog_info(clause: &Clause) -> Option<CatalogInfo<'_>> {
                 graph_schema_catalog: $graph_schema,
                 default_columns: $defaults,
                 full_columns: $full,
-                // Optional so only the command whose accepted YIELD names
-                // differ from its `YIELD *` columns spells them.
-                accepted_columns: {
-                    #[allow(unused_mut)]
-                    let mut accepted: Option<Vec<String>> = None;
-                    $(accepted.get_or_insert_with(|| $accepted);)?
-                    accepted
-                },
             })
         };
     }
@@ -538,18 +519,7 @@ pub fn catalog_info(clause: &Clause) -> Option<CatalogInfo<'_>> {
             composable: true,
             graph_schema_catalog: false,
             defaults: DEFAULT_TRANSACTION_COLUMNS,
-            full: DEFAULT_TRANSACTION_COLUMNS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            // The one command whose accepted YIELD names are wider than the
-            // columns it renders: live rejects an unknown name here but
-            // accepts its server-observability columns too, and those compose
-            // as Null rather than being refused.
-            accepted: merged_columns(
-                DEFAULT_TRANSACTION_COLUMNS,
-                ACCEPTED_ONLY_TRANSACTION_COLUMNS,
-            ),
+            full: full_transaction_columns(),
             arguments: c.ids.iter(),
         ),
         Clause::TerminateTransactions(c) => info!(
@@ -795,34 +765,20 @@ mod tests {
         }
     }
 
-    /// `SHOW TRANSACTIONS` is the one command whose accepted `YIELD` names
-    /// are wider than the columns a `YIELD *` row carries. Pinned at the
-    /// descriptor, not at the table arithmetic: what can break is the
-    /// wiring -- which set the command renders and which it accepts -- and
-    /// the two tables must stay disjoint or the same name would be both
-    /// rendered and accepted-only.
+    /// `SHOW TRANSACTIONS` renders the seven defaults bare and all forty
+    /// columns, alphabetical, on `YIELD *`; the two tables stay disjoint so
+    /// no name is both default and non-default.
     #[test]
-    fn show_transactions_renders_the_defaults_and_accepts_both_tables() {
+    fn show_transactions_star_carries_every_column_alphabetically() {
         let show_transactions = clause("SHOW TRANSACTIONS");
         let info = catalog_info(&show_transactions).expect("a catalog command");
-        assert_eq!(
-            info.full_columns, DEFAULT_TRANSACTION_COLUMNS,
-            "YIELD * stays the rendered set"
-        );
-        // Equality, not containment: a name accepted from neither table -- a
-        // stray literal on the arm -- would pass a membership loop.
-        assert_eq!(
-            info.accepted_columns(),
-            merged_columns(
-                DEFAULT_TRANSACTION_COLUMNS,
-                ACCEPTED_ONLY_TRANSACTION_COLUMNS
-            ),
-            "the accepted set is both tables"
-        );
-        for name in ACCEPTED_ONLY_TRANSACTION_COLUMNS {
+        assert_eq!(info.full_columns, full_transaction_columns());
+        assert_eq!(info.full_columns.len(), 40);
+        assert!(info.full_columns.is_sorted());
+        for name in NON_DEFAULT_TRANSACTION_COLUMNS {
             assert!(
                 !DEFAULT_TRANSACTION_COLUMNS.contains(name),
-                "{name} is both rendered and accepted-only"
+                "{name} is both default and non-default"
             );
         }
     }

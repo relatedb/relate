@@ -618,11 +618,7 @@ fn show_transactions_self_row_reports_the_session_namespace() {
 
 /// `SHOW TRANSACTIONS` rejects a YIELD name it does not accept: live CE
 /// 2026.10.1 answers `YIELD nope` with a SyntaxError ("Trying to YIELD
-/// non-existing column: `nope`", 42001), never a silently null column. The
-/// accepted set is wider than the rendered one (see
-/// `CatalogInfo::accepted_columns`), so a server-observability column the
-/// embedded engine has no value for stays a valid name and composes as
-/// Null, while the rendered set must not widen with it.
+/// non-existing column: `nope`", 42001), never a silently null column.
 #[test]
 fn show_transactions_rejects_an_unknown_yield_column() {
     let mut conn = connection();
@@ -632,30 +628,72 @@ fn show_transactions_rejects_an_unknown_yield_column() {
         "is not a valid SHOW TRANSACTIONS column",
         "SyntaxError",
     );
-    // Driven from the canonical table, so a name added to the accepted set
-    // is covered here without the test re-spelling it.
-    for column in relate_front::show_columns::ACCEPTED_ONLY_TRANSACTION_COLUMNS {
-        let src = format!("SHOW TRANSACTIONS YIELD {column} RETURN {column}");
-        assert_eq!(
-            scalar_one(&mut conn, &src),
-            Value::Null,
-            "{src}: a live-valid column the self row does not render composes as Null"
-        );
-    }
-    // The accepted set is wider than the rendered one, so it must not reach
-    // the `YIELD *` shape: the star row and the zero-row header both stay
-    // the rendered columns, matched or not.
+}
+
+/// The columns the self row has engine state for; every other live column is
+/// a typed Null (documented in the Rust spec).
+const FILLED_TRANSACTION_COLUMNS: &[&str] = &[
+    "connectionId",
+    "currentQuery",
+    "database",
+    "status",
+    "transactionId",
+    "username",
+    "currentQueryStatus",
+    "metaData",
+    "parameters",
+];
+
+/// `YIELD *` carries every live column, alphabetical, matched or not, and a
+/// named `YIELD` of a column beyond the seven defaults yields its value.
+#[test]
+fn show_transactions_yield_star_carries_every_live_column() {
+    let mut conn = connection();
+    let full = relate_front::show_columns::full_transaction_columns();
+    assert_eq!(full.len(), 40);
     for src in [
         "SHOW TRANSACTIONS YIELD *",
         "SHOW TRANSACTIONS 'none-transaction-9' YIELD *",
     ] {
         let result = conn.query(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+        assert_eq!(result.header.columns, full, "{src}");
+    }
+    let result = conn.query("SHOW TRANSACTIONS YIELD *").unwrap();
+    assert_eq!(result.rows.len(), 1);
+    for (column, cell) in full.iter().zip(&result.rows[0]) {
+        let filled = FILLED_TRANSACTION_COLUMNS.contains(&column.as_str());
         assert_eq!(
-            result.header.columns,
-            relate_front::show_columns::DEFAULT_TRANSACTION_COLUMNS,
-            "{src}: YIELD * stays the rendered set"
+            *cell == Value::Null,
+            !filled,
+            "{column}: filled iff the engine has state for it"
         );
     }
+    // A named YIELD of a non-default column: a typed Null where the engine
+    // has no state, a real value where it has.
+    assert_eq!(
+        scalar_one(
+            &mut conn,
+            "SHOW TRANSACTIONS YIELD elapsedTime RETURN elapsedTime"
+        ),
+        Value::Null
+    );
+    assert_eq!(
+        scalar_one(
+            &mut conn,
+            "SHOW TRANSACTIONS YIELD currentQueryStatus RETURN currentQueryStatus"
+        ),
+        Value::String("running".into())
+    );
+    // Live: `YIELD * RETURN elapsedTime` and `YIELD * WHERE elapsedTime IS
+    // NULL` bring every column into scope.
+    assert_eq!(
+        scalar_one(&mut conn, "SHOW TRANSACTIONS YIELD * RETURN elapsedTime"),
+        Value::Null
+    );
+    let matched = conn
+        .query("SHOW TRANSACTIONS YIELD * WHERE elapsedTime IS NULL")
+        .unwrap();
+    assert_eq!(matched.rows.len(), 1);
 }
 
 /// `TERMINATE TRANSACTIONS` projects over each input row independently: a

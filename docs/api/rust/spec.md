@@ -290,6 +290,34 @@ policy are store-level and shared by every namespace; the memory limit
 (`OpenOptions.logical_graph_size_limit`, `Database::memory_usage`) covers every
 namespace.
 
+### `SHOW TRANSACTIONS` columns
+
+A bare `SHOW TRANSACTIONS` renders the seven default columns
+(`transactionId`, `currentQuery`, `database`, `username`, `status`,
+`connectionId`, `clientAddress`) for the one self row an embedded engine
+holds. `YIELD *` renders all forty columns live CE 2026.10.1 carries,
+alphabetical (live's order), and every name is valid in a named `YIELD`,
+`RETURN` or `WHERE`; an unknown name is a SyntaxError. The zero-row result of
+`SHOW TRANSACTIONS '<id>' YIELD *` carries the same forty columns.
+
+Filled from engine state: the seven defaults (`clientAddress` is Null under
+Cypher 25), `parameters` (the statement's own parameter map), `metaData`
+(empty map: there is no transaction-metadata API) and `currentQueryStatus`
+(`running`). Typed Null, because the engine keeps no state behind them and no
+value is fabricated: `activeLockCount`, `allocatedDirectBytes`, `cpuTime`,
+`currentQueryActiveLockCount`, `currentQueryAllocatedBytes`,
+`currentQueryCpuTime`, `currentQueryElapsedTime`, `currentQueryId`,
+`currentQueryIdleTime`, `currentQueryPageFaults`, `currentQueryPageHits`,
+`currentQueryProgress`, `currentQueryStartTime`, `currentQueryWaitTime`,
+`elapsedTime`, `estimatedUsedHeapMemory`, `idleTime`, `indexes`,
+`initializationStackTrace`, `outerTransactionId`, `pageFaults`, `pageHits`,
+`planner`, `protocol`, `requestUri`, `resourceInformation`, `runtime`,
+`startTime`, `statusDetails`, `waitTime`.
+
+```cypher
+SHOW TRANSACTIONS YIELD currentQueryStatus, parameters, elapsedTime
+```
+
 ### Ontology procedures (ADR-0121, ADR-0226, ADR-0227, ADR-0364, ADR-0378)
 
 `db.ontology.set(ontology :: STRING)`, `db.ontology.get(format = "yaml" ::
