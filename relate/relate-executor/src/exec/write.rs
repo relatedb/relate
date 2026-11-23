@@ -8,6 +8,7 @@ use relate_ir::{Expr, LabelsFunctionOp, RemoveItem, SetItem};
 use relate_names::SmallName;
 
 use crate::eval::{dynamic_label_names, dynamic_property_key, eval, resolve_write_labels};
+use crate::graph::EntityId;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -28,57 +29,36 @@ pub(crate) fn apply_sets(
     apply_resolved_sets(graph, resolved)
 }
 
-/// One resolved assignment's entity-kind dispatch, spelled once for the
-/// four property-shaped arms of [`apply_resolved_sets`] and
-/// [`apply_resolved_removes`]: a node or relationship runs its verb on
-/// the moved payload, a null target is a no-op (Cypher's null-tolerant
-/// SET/REMOVE, payload dropped), anything else fails with the one shared
-/// non-entity write-target rejection ([`non_entity_target`]).
-fn apply_to_entity<T>(
-    entity: Value,
-    err: &'static str,
-    payload: T,
-    on_node: impl FnOnce(NodeId, T),
-    on_rel: impl FnOnce(RelId, T),
-) -> Result<()> {
-    match entity {
-        Value::Node(n) => {
-            on_node(n.id, payload);
-            Ok(())
-        }
-        Value::Relationship(r) => {
-            on_rel(r.id, payload);
-            Ok(())
-        }
-        Value::Null => Ok(()),
-        _ => Err(non_entity_target(err)),
-    }
-}
-
 /// One resolved write item's node-only entity-kind dispatch, spelled once
 /// for the two label arms of [`apply_resolved_sets`] and
 /// [`apply_resolved_removes`]: a live node runs its verb on the moved
-/// payload, a null target is a no-op (payload dropped), anything else
-/// fails with the one shared non-entity write-target rejection
-/// ([`non_entity_target`]). A CIP-257 virtual node (negative id —
-/// `is_virtual_id`, "Write behavior on virtual entities") has no store
-/// entry and cannot be labeled: the arm fails with "Unable to load NODE".
-/// A tombstoned (deleted-but-bound) node keeps its non-negative id, takes
+/// payload; a relationship target fails with the one shared non-entity
+/// write-target rejection ([`non_entity_target`], the label arms' static
+/// class — the label verbs are node-only by contract).
+///
+/// The CIP-257 virtual-node guard is deliberately this mover's own, not a
+/// rule of [`resolve_entity`]: labeling needs a *live* store entry, so a
+/// virtual node (negative id — `is_virtual_id`, "Write behavior on virtual
+/// entities") fails with "Unable to load NODE" here, while a property
+/// write to one stays the store no-op the property verbs define. A
+/// tombstoned (deleted-but-bound) node keeps its non-negative id, takes
 /// the verb arm, and no-ops inside the store write.
 fn apply_to_node<T>(
-    entity: Value,
+    entity: EntityId,
     err: &'static str,
     payload: T,
     on_node: impl FnOnce(NodeId, T),
 ) -> Result<()> {
     match entity {
-        Value::Node(n) if is_virtual_id(n.id) => Err(Error::execution("Unable to load NODE")),
-        Value::Node(n) => {
-            on_node(n.id, payload);
+        EntityId::Node(id) if is_virtual_id(id) => Err(Error::execution("Unable to load NODE")),
+        EntityId::Node(id) => {
+            on_node(id, payload);
             Ok(())
         }
-        Value::Null => Ok(()),
-        _ => Err(non_entity_target(err)),
+        // A relationship target cannot carry labels: the shape's static
+        // class, the same one a non-entity value earned before the
+        // rejection moved to resolution time.
+        EntityId::Rel(_) => Err(non_entity_target(err, TargetReject::Static)),
     }
 }
 
@@ -86,29 +66,89 @@ fn apply_to_node<T>(
 /// helpers so the property arms (`SET x.p`, `REMOVE x.p`) and the label arms
 /// (`SET x:Label`, `REMOVE x:Label`) cannot answer different classes.
 ///
-/// The reference engine splits by shape, and the write helpers run after
-/// target resolution, where that shape is no longer visible: a *general
-/// target expression* (`SET (CASE … END).p`) is a compile-time
-/// SyntaxError-class type mismatch (live-verified 2026.09; the corpus pins
-/// it in `Set.feature` "An assignment target expression that is an integer
-/// is a semantic error"), while a *variable* target is the runtime
-/// data-exception 22N27 (`TypeError`). The pinned shape is the general
-/// expression, so both helpers answer that SyntaxError class; the variable
-/// target's 22N27 divergence is unpinned and left with the deferred
-/// write-target typing work.
-fn non_entity_target(err: &'static str) -> Error {
-    Error::syntax(err)
+/// The reference engine splits by target shape: a *general target
+/// expression* (`SET (CASE … END).p`) is a compile-time SyntaxError-class
+/// type mismatch (live-verified 2026.09; the corpus pins it in
+/// `Set.feature` "An assignment target expression that is an integer is a
+/// semantic error"), while a *variable-rooted* target — a bare variable,
+/// `n.k`, or a container-index chain (`SET n[x][y]`) whose inner index
+/// evaluates to a non-entity — is the runtime 22G03-family type error
+/// (CIP-131 [15]/[16]). The shape is decided at resolution
+/// ([`TargetReject::classify`], read by [`resolve_entity`]), where the
+/// target expression is still visible; the apply step carries only the
+/// resolved entity.
+fn non_entity_target(err: &'static str, reject: TargetReject) -> Error {
+    match reject {
+        TargetReject::Runtime => Error::ty(err),
+        TargetReject::Static => Error::syntax(err),
+    }
+}
+
+/// How a property-shaped write target's non-entity rejection is classed
+/// (REL8-1813). Live splits the two shapes: a *general target expression*
+/// (`SET (CASE … END).p`) is the pinned compile-time SyntaxError-class
+/// mismatch (`Set.feature` "An assignment target expression that is an
+/// integer is a semantic error"), while a *variable-rooted* target — a
+/// bare variable, `n.k`, or a container-index chain like `n[x][y]` whose
+/// inner index evaluates to a non-entity — is the runtime 22G03-family
+/// type error. The shape is visible only at resolution, so
+/// [`resolve_entity`] raises the rejection there and the apply step
+/// receives a typed entity.
+#[derive(Clone, Copy)]
+pub(crate) enum TargetReject {
+    /// A general target expression: the pinned SyntaxError class.
+    Static,
+    /// A variable-rooted target: the runtime type error live reports.
+    Runtime,
+}
+
+impl TargetReject {
+    /// The class a non-entity rejection of this target shape carries.
+    fn classify(target: &Expr) -> Self {
+        // The front end's one root-variable walk decides the shape: a
+        // target rooted in a variable (`n`, `n.k`, `n[x][y]`) is the
+        // runtime shape, a general expression (`(CASE … END).p`,
+        // `(1).p`) the pinned static one.
+        if relate_ir::root_variable(target).is_some() {
+            TargetReject::Runtime
+        } else {
+            TargetReject::Static
+        }
+    }
 }
 
 enum ResolvedSet {
     /// `SET n = <map>` -- full property replacement.
-    ReplaceAllProps(Value, BTreeMap<String, Value>),
+    ReplaceAllProps(EntityId, BTreeMap<String, Value>),
     /// `SET n.k = v` / `SET n[expr] = v` with the key pre-resolved.
-    Prop(Value, String, Value),
+    Prop(EntityId, String, Value),
     /// `SET n += <map>`.
-    MergeMap(Value, BTreeMap<String, Value>),
+    MergeMap(EntityId, BTreeMap<String, Value>),
     /// `SET LABEL(n) = ...` (CIP-162 dynamic labels).
-    LabelsFunction(Value, Vec<String>, LabelsFunctionOp),
+    LabelsFunction(EntityId, Vec<String>, LabelsFunctionOp),
+}
+
+/// Resolve a write item's target expression to the entity id it names,
+/// raising the non-entity rejection *here*, where the target's shape is
+/// still visible — so the class is decided once, by the shape
+/// ([`TargetReject`]), and the apply step carries a typed entity and no
+/// policy. A null target yields `None` (Cypher's null-tolerant write: the
+/// payload is dropped), and a non-entity value fails with the caller's
+/// message under the caller's class.
+fn resolve_entity(
+    graph: &ExecGraph<'_>,
+    row: &Row,
+    entity: &Expr,
+    err: &'static str,
+    reject: TargetReject,
+    params: &BTreeMap<String, Value>,
+) -> Result<Option<EntityId>> {
+    match eval(graph, row, entity, params)? {
+        Value::Null => Ok(None),
+        Value::Node(n) => Ok(Some(EntityId::Node(n.id))),
+        Value::Relationship(r) => Ok(Some(EntityId::Rel(r.id))),
+        _ => Err(non_entity_target(err, reject)),
+    }
 }
 
 /// Resolve one write item's `n.k` / `n[expr]` property target against the
@@ -125,7 +165,7 @@ fn resolve_property_target(
     target: &Expr,
     err: &'static str,
     params: &BTreeMap<String, Value>,
-) -> Result<Option<(Value, String)>> {
+) -> Result<Option<(EntityId, String)>> {
     /// How a property target's key resolves: the static name (`n.k`) or
     /// the runtime expression (`n[expr]`).
     enum KeySource<'a> {
@@ -137,10 +177,17 @@ fn resolve_property_target(
         Expr::DynamicProperty { expr, key } => (expr, KeySource::Dynamic(key)),
         _ => return Err(Error::ty(err)),
     };
-    let entity = eval(graph, row, expr, params)?;
-    if entity.is_null() {
+    let Some(entity) = resolve_entity(
+        graph,
+        row,
+        expr,
+        err,
+        TargetReject::classify(target),
+        params,
+    )?
+    else {
         return Ok(None);
-    }
+    };
     let key = match key {
         // The property key renders once, at the write it names.
         KeySource::Static(key) => key.to_string(),
@@ -267,38 +314,72 @@ fn resolve_sets(
                 // its current properties as the replacement map.
                 let val = eval(graph, row, value, params)?;
                 let map = set_map_source(graph, val, SetMapForm::Replace)?;
-                resolved.push(ResolvedSet::ReplaceAllProps(
-                    eval(graph, row, target, params)?,
-                    map,
-                ));
+                let Some(entity) = resolve_entity(
+                    graph,
+                    row,
+                    target,
+                    "SET map target must be a node or relationship",
+                    TargetReject::Static,
+                    params,
+                )?
+                else {
+                    continue;
+                };
+                resolved.push(ResolvedSet::ReplaceAllProps(entity, map));
             }
             SetItem::MergeMap { target, value } => {
                 let val = eval(graph, row, value, params)?;
                 // `+=`: a null entry survives admission and records the
                 // key's removal (see [`SetMapRules::nulls`]).
                 let map = set_map_source(graph, val, SetMapForm::Merge)?;
-                resolved.push(ResolvedSet::MergeMap(
-                    eval(graph, row, target, params)?,
-                    map,
-                ));
+                let Some(entity) = resolve_entity(
+                    graph,
+                    row,
+                    target,
+                    "+= target must be a node or relationship",
+                    TargetReject::Static,
+                    params,
+                )?
+                else {
+                    continue;
+                };
+                resolved.push(ResolvedSet::MergeMap(entity, map));
             }
             SetItem::Labels { target, labels } => {
                 let labels = resolve_write_labels(graph, row, params, labels)?;
                 // `SET n :Label` is exactly LabelsFunction(Extend) — one
                 // apply arm instead of two (round-3 review).
+                let Some(entity) = resolve_entity(
+                    graph,
+                    row,
+                    target,
+                    "SET labels() requires a node",
+                    TargetReject::Static,
+                    params,
+                )?
+                else {
+                    continue;
+                };
                 resolved.push(ResolvedSet::LabelsFunction(
-                    eval(graph, row, target, params)?,
+                    entity,
                     labels,
                     LabelsFunctionOp::Extend,
                 ));
             }
             SetItem::LabelsFunction { target, value, op } => {
                 let labels = dynamic_label_names(graph, row, params, value)?;
-                resolved.push(ResolvedSet::LabelsFunction(
-                    eval(graph, row, target, params)?,
-                    labels,
-                    *op,
-                ));
+                let Some(entity) = resolve_entity(
+                    graph,
+                    row,
+                    target,
+                    "SET labels() requires a node",
+                    TargetReject::Static,
+                    params,
+                )?
+                else {
+                    continue;
+                };
+                resolved.push(ResolvedSet::LabelsFunction(entity, labels, *op));
             }
         }
     }
@@ -308,27 +389,9 @@ fn resolve_sets(
 fn apply_resolved_sets(graph: &ExecGraph<'_>, resolved: Vec<ResolvedSet>) -> Result<()> {
     for item in resolved {
         match item {
-            ResolvedSet::ReplaceAllProps(entity, map) => apply_to_entity(
-                entity,
-                "SET map target must be a node or relationship",
-                map,
-                |id, m| graph.replace_properties_node(id, m),
-                |id, m| graph.replace_properties_rel(id, m),
-            )?,
-            ResolvedSet::Prop(entity, key, val) => apply_to_entity(
-                entity,
-                "SET property target invalid",
-                (key, val),
-                |id, (k, v)| graph.set_property_node(id, &k, v),
-                |id, (k, v)| graph.set_property_rel(id, &k, v),
-            )?,
-            ResolvedSet::MergeMap(entity, map) => apply_to_entity(
-                entity,
-                "+= target must be a node or relationship",
-                &map,
-                |id, m| graph.merge_properties_node(id, m),
-                |id, m| graph.merge_properties_rel(id, m),
-            )?,
+            ResolvedSet::ReplaceAllProps(entity, map) => graph.replace_properties(entity, map),
+            ResolvedSet::Prop(entity, key, val) => graph.set_property(entity, &key, val),
+            ResolvedSet::MergeMap(entity, map) => graph.merge_properties(entity, &map),
             ResolvedSet::LabelsFunction(entity, labels, op) => apply_to_node(
                 entity,
                 "SET labels() requires a node",
@@ -345,8 +408,9 @@ fn apply_resolved_sets(graph: &ExecGraph<'_>, resolved: Vec<ResolvedSet>) -> Res
 }
 
 pub(crate) enum ResolvedRemove {
-    Property(Value, String),
-    Labels(Value, Vec<String>),
+    /// `REMOVE n.k` / `REMOVE n[expr]`, the entity already resolved.
+    Property(EntityId, String),
+    Labels(EntityId, Vec<String>),
 }
 
 pub(crate) fn resolve_removes(
@@ -372,10 +436,18 @@ pub(crate) fn resolve_removes(
             }
             RemoveItem::Labels { target, labels } => {
                 let labels = resolve_write_labels(graph, row, params, labels)?;
-                resolved.push(ResolvedRemove::Labels(
-                    eval(graph, row, target, params)?,
-                    labels,
-                ));
+                let Some(entity) = resolve_entity(
+                    graph,
+                    row,
+                    target,
+                    "REMOVE labels requires a node",
+                    TargetReject::Static,
+                    params,
+                )?
+                else {
+                    continue;
+                };
+                resolved.push(ResolvedRemove::Labels(entity, labels));
             }
         }
     }
@@ -388,13 +460,7 @@ pub(crate) fn apply_resolved_removes(
 ) -> Result<()> {
     for item in resolved {
         match item {
-            ResolvedRemove::Property(entity, key) => apply_to_entity(
-                entity,
-                "REMOVE property target invalid",
-                key,
-                |id, k| graph.set_property_node(id, &k, Value::Null),
-                |id, k| graph.set_property_rel(id, &k, Value::Null),
-            )?,
+            ResolvedRemove::Property(entity, key) => graph.set_property(entity, &key, Value::Null),
             ResolvedRemove::Labels(entity, labels) => apply_to_node(
                 entity,
                 "REMOVE labels requires a node",
@@ -526,28 +592,49 @@ mod tests {
         assert!(error.to_string().contains("InvalidPropertyType"), "{error}");
     }
 
-    /// A write target whose value is not an entity is the one shared
-    /// SyntaxError-class type mismatch — the pinned general-target shape
-    /// (`Set.feature` "An assignment target expression that is an integer is
-    /// a semantic error") — for the property and label arms alike. Asserted
-    /// on the typed variant, never on the rendered prefix.
+    /// A write target whose value is not an entity is rejected by the one
+    /// shared helper, classed by the target's *shape* (REL8-1813): a
+    /// general target expression is the pinned compile-time
+    /// SyntaxError-class type mismatch (`Set.feature` "An assignment
+    /// target expression that is an integer is a semantic error"), while a
+    /// variable-rooted target — including the label arms, which stay
+    /// static — carries the runtime type error. Asserted on the typed
+    /// variant, never on the rendered prefix.
     #[test]
-    fn non_entity_write_targets_share_the_one_typed_rejection() {
+    fn non_entity_write_targets_are_classed_by_the_target_shape() {
         let graph = Graph::default();
-        for query in [
-            "SET (CASE WHEN true THEN 42 END).name = 'neo4j'",
-            "UNWIND [42] AS x SET x.p = 1",
-            "UNWIND [42] AS x REMOVE x.p",
-            "UNWIND [42] AS x SET x:Label",
-            "UNWIND [42] AS x REMOVE x:Label",
-        ] {
+        let cases: [(&str, bool); 7] = [
+            // A general target expression: the pinned static class.
+            ("SET (CASE WHEN true THEN 42 END).name = 'neo4j'", true),
+            // Variable-rooted property targets: the runtime class
+            // (`n[x][y]` is CIP-131 [15]/[16]).
+            ("UNWIND [42] AS x SET x.p = 1", false),
+            ("UNWIND [42] AS x REMOVE x.p", false),
+            (
+                "UNWIND [{a: 1}] AS n UNWIND ['a'] AS x UNWIND ['b'] AS y SET n[x][y] = 1",
+                false,
+            ),
+            // The label arms keep the static class: the fault is the
+            // target's shape, not a runtime index value.
+            ("UNWIND [42] AS x SET x:Label", true),
+            ("UNWIND [42] AS x REMOVE x:Label", true),
+            // A literal target is not variable-rooted either.
+            ("SET (1).p = 2", true),
+        ];
+        for (query, is_static) in cases {
             let error = match exec_write(&graph, &write_scratch(&graph), query) {
                 Err(error) => error,
                 Ok(_) => panic!("{query}: a non-entity write target must be rejected"),
             };
-            assert!(
+            let expected = if is_static {
+                "the static SyntaxError class"
+            } else {
+                "the runtime type-error class"
+            };
+            assert_eq!(
                 matches!(error, Error::Syntax(_)),
-                "{query}: expected the shared syntax-class rejection, got: {error}"
+                is_static,
+                "{query}: expected {expected}, got: {error}"
             );
         }
     }

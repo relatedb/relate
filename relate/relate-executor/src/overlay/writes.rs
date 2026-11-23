@@ -298,6 +298,33 @@ impl ExecGraph<'_> {
         replace_props(keys, map, |k, v| self.set_property_rel(id, k, v));
     }
 
+    /// The kind-addressed forms of the three property verbs a resolved
+    /// write drives: the `EntityId` selector lives here once, so no write
+    /// arm re-opens a `match entity { Node => …_node, Rel => …_rel }` of
+    /// its own.
+    pub(crate) fn set_property(&self, entity: EntityId, key: &str, value: Value) {
+        match entity {
+            EntityId::Node(id) => self.set_property_node(id, key, value),
+            EntityId::Rel(id) => self.set_property_rel(id, key, value),
+        }
+    }
+
+    /// [`Self::set_property`]'s full-replacement form.
+    pub(crate) fn replace_properties(&self, entity: EntityId, map: BTreeMap<String, Value>) {
+        match entity {
+            EntityId::Node(id) => self.replace_properties_node(id, map),
+            EntityId::Rel(id) => self.replace_properties_rel(id, map),
+        }
+    }
+
+    /// [`Self::set_property`]'s per-key merge form.
+    pub(crate) fn merge_properties(&self, entity: EntityId, map: &BTreeMap<String, Value>) {
+        match entity {
+            EntityId::Node(id) => self.merge_properties_node(id, map),
+            EntityId::Rel(id) => self.merge_properties_rel(id, map),
+        }
+    }
+
     pub fn delete_rel(&self, id: RelId) {
         // One fetch answers both "is the rel live" and "what it carries":
         // a missing rel has nothing to delete (the `let … else` twin of

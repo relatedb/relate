@@ -166,8 +166,14 @@ fn bare_rel_factor(pattern: &PathPattern) -> Option<Factor> {
     })
 }
 
-/// The variable a `SET`/`REMOVE` target expression roots at:
-/// `n`, `n.k`, or `n[k]` with `n` a plain variable.
+/// The variable a `SET`/`REMOVE` target expression roots at, for the bulk
+/// eligibility rule below: `n`, `n.k`, or `n[k]` with `n` a plain
+/// variable. Deliberately one level deep — a deeper access chain
+/// (`n[x][y]`) is not eligible here, because the bulk path's per-row
+/// effect must depend on a single matched variable. The recursive twin
+/// ([`relate_ir::root_variable`], REL8-1813) answers the different
+/// question the write-target class decision asks — "is this target
+/// variable-rooted at all" — and must not replace this test.
 fn target_root_var(expr: &Expr) -> Option<&SmallName> {
     match expr {
         Expr::Variable(name) => Some(name),
