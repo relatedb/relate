@@ -32,20 +32,39 @@ fn concat_scalar_string(
     ))
 }
 
-/// The scalar types `+` concatenates with a STRING: every non-container
-/// non-graph scalar that has a display form. `is_concat_scalar` is the one
+/// The scalar types `+` concatenates with a STRING: INTEGER, FLOAT, BOOLEAN,
+/// the temporals and the points — the non-container non-graph scalars live
+/// accepts as a `+` operand. A UUID is deliberately not in the set: live
+/// rejects both `'a' + UUID()` and `UUID() + 'a'` as a type mismatch, so
+/// neither mirror arm may concatenate it (BYTES and VECTOR have display
+/// forms too and are equally outside the set). `is_concat_scalar` is the one
 /// spelling of that set — both mirror arms of [`add`] guard on it, so
-/// `'a' + x` and `x + 'a'` can never disagree about what concatenates.
+/// `'a' + x` and `x + 'a'` can never disagree about what concatenates. The
+/// match is exhaustive with no `_`, the shape `render_scalar`'s set in
+/// `eval/function.rs` spells: a new `Value` variant fails compilation
+/// here, so its accept/reject decision is made at this site, not
+/// inherited from a wildcard.
 fn is_concat_scalar(v: &Value) -> bool {
-    matches!(
-        v,
-        Value::Int(_)
-            | Value::Float(_)
-            | Value::Bool(_)
-            | Value::Temporal(_)
-            | Value::Point(_)
-            | Value::Uuid(_)
-    )
+    match v {
+        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Temporal(_) | Value::Point(_) => {
+            true
+        }
+        // The declined vocabulary, spelled: the UUID, BYTES and VECTOR
+        // scalars (live rejects a UUID beside a string; BYTES and VECTOR
+        // are not `+` operands), the containers and graph values the arms
+        // route on their own, and the STRING/NULL pairs that reach their
+        // own arms first.
+        Value::Uuid(_)
+        | Value::Bytes(_)
+        | Value::Vector { .. }
+        | Value::String(_)
+        | Value::Null
+        | Value::List(_)
+        | Value::Map(_)
+        | Value::Node(_)
+        | Value::Relationship(_)
+        | Value::Path(_) => false,
+    }
 }
 
 pub(crate) fn add(graph: &ExecGraph<'_>, l: Value, r: Value) -> Result<Value> {

@@ -190,28 +190,30 @@ fn add_concatenates_a_string_with_temporal_and_point_scalars() {
     let point = Value::Point(relate_core::PointValue::cartesian_2d(1.0, 0.0));
     let point_text = "point({x: 1.0, y: 0.0, crs: 'cartesian'})";
     let cases: Vec<(Value, Value, String)> = vec![
-        (s("hi"), duration(0, 1), "hiP1D".into()),
-        (duration(0, 1), s("hi"), "P1Dhi".into()),
+        (s("hi"), duration(0, 1), "hiP1D".to_string()),
+        (duration(0, 1), s("hi"), "P1Dhi".to_string()),
         (s("hi"), point.clone(), format!("hi{point_text}")),
         (point, s("hi"), format!("{point_text}hi")),
         // The scalar arms keep their old rendering.
         (s("hi"), int(2), "hi2".to_string()),
         (int(2), s("hi"), "2hi".to_string()),
-        // A UUID has a display form like every other scalar (both mirror
-        // arms consult the one concat predicate).
-        (
-            s("id="),
-            Value::Uuid(1),
-            "id=00000000-0000-0000-0000-000000000001".into(),
-        ),
-        (
-            Value::Uuid(1),
-            s("!"),
-            "00000000-0000-0000-0000-000000000001!".into(),
-        ),
     ];
     for (l, r, expected) in cases {
         assert_eq!(add(&graph, l, r).unwrap(), s(&expected), "{expected}");
+    }
+}
+
+/// A UUID has a display form but is not a `+` operand: live rejects both
+/// spellings, so neither mirror arm may concatenate it.
+#[test]
+fn add_rejects_a_uuid_operand_beside_a_string() {
+    let g = crate::graph::Graph::default();
+    let graph = ExecGraph::read(&g);
+    for (l, r) in [(s("id="), Value::Uuid(1)), (Value::Uuid(1), s("!"))] {
+        assert_eq!(
+            add(&graph, l, r).unwrap_err().to_string(),
+            ty_err("+ type mismatch")
+        );
     }
 }
 
