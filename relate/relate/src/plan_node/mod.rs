@@ -299,8 +299,7 @@ impl From<relate_executor::ClauseMetricsRecord> for ClauseMetrics {
             phases,
             start,
             kernel,
-            batched,
-            zone_skips,
+            batch,
             frontier,
             frontier_decline,
         } = record;
@@ -314,8 +313,8 @@ impl From<relate_executor::ClauseMetricsRecord> for ClauseMetrics {
             start,
             kernel,
             phases,
-            batched,
-            zone_skips,
+            batched: batch.ran,
+            zone_skips: batch.zone_skips,
             frontier,
             frontier_decline,
         }

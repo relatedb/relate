@@ -114,8 +114,8 @@ pub use graph::{
     SnapshotPin,
 };
 pub use metrics::{
-    ClauseMetricsRecord, FrontierCounters, KernelRung, PhaseTimes, PlanMetricsSink, StartReason,
-    StoreReads, WalkStart,
+    BatchFacts, ClauseMetricsRecord, FrontierCounters, KernelRung, PhaseTimes, PlanMetricsSink,
+    StartReason, StoreReads, WalkStart,
 };
 // One public path (the graph module stays private): the whole-graph
 // index-rebuild count the facade's reopen tests read to pin the

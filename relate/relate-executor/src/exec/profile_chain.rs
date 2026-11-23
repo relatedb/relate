@@ -13,7 +13,7 @@ use std::cell::{Cell, OnceCell};
 
 use relate_core::Result;
 
-use crate::metrics::{ClauseMetricsRecord, PlanMetricsSite, WalkStart};
+use crate::metrics::{BatchFacts, ClauseMetricsRecord, PlanMetricsSite, WalkStart};
 use crate::overlay::ExecGraph;
 
 use super::match_clause::{LadderFacts, MatchOperator};
@@ -62,8 +62,10 @@ pub(crate) fn clause_record(
         phases: own.phases,
         start,
         kernel,
-        batched,
-        zone_skips: own.zone_skips.get(),
+        batch: BatchFacts {
+            ran: batched,
+            zone_skips: own.zone_skips.get(),
+        },
         frontier: own.frontier,
         frontier_decline,
     }

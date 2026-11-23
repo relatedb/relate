@@ -277,7 +277,7 @@ impl StartReason {
 /// operator, not plan nodes. The ladder records it per clause; the
 /// PROFILE record carries it. [`Walker`](Self::Walker) is the per-row
 /// walker, the rung every decline's home — the batch scan/filter chain
-/// is its own fact (`ClauseMetricsRecord::batched`), never a rung here.
+/// is its own fact (`BatchFacts::ran`), never a rung here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KernelRung {
     /// The unrolled fixed-k chain kernel, `hops` hops (ADR-0473).
@@ -304,6 +304,22 @@ impl KernelRung {
             KernelRung::Walker => relate_model::wire::KernelRungWire::WALKER,
         }
     }
+}
+
+/// The batch chain's PROFILE facts for one clause, carried as one value so
+/// the record never holds a loose flag beside its counter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BatchFacts {
+    /// Whether the clause ran ADR-0468's batch scan/filter/project chain
+    /// over `Chunk` (LABS-359) — the PROFILE-visible fact that a
+    /// scan-shaped `MATCH` interior executed as batch operators. `false`
+    /// is every other clause, and every clause the chain declined.
+    pub ran: bool,
+    /// The batch filter's zone skips (LABS-645): how many conjunct-batch
+    /// evaluations the chunk's derived min/max zone metadata provably
+    /// replaced with the correct empty survivor set. `0` on every clause
+    /// the chain declined and every clause that skipped nothing.
+    pub zone_skips: u64,
 }
 
 /// One clause operator's PROFILE metrics, reported to the sink (ADR-0344
@@ -355,16 +371,9 @@ pub struct ClauseMetricsRecord {
     /// `MATCH` the ADR-0468 batch chain answered — that operator is
     /// [`Self::batched`]'s own fact, never a traversal rung.
     pub kernel: Option<KernelRung>,
-    /// Whether the clause ran ADR-0468's batch scan/filter/project chain
-    /// over `Chunk` (LABS-359) — the PROFILE-visible fact that a
-    /// scan-shaped `MATCH` interior executed as batch operators. `false`
-    /// is every other clause, and every clause the chain declined.
-    pub batched: bool,
-    /// The batch filter's zone skips (LABS-645): how many conjunct-batch
-    /// evaluations the chunk's derived min/max zone metadata provably
-    /// replaced with the correct empty survivor set. `0` on every clause
-    /// the chain declined and every clause that skipped nothing.
-    pub zone_skips: u64,
+    /// What ADR-0468's batch scan/filter/project chain did for the
+    /// clause: whether it ran and what its filter skipped.
+    pub batch: BatchFacts,
     /// The frontier family's run counters (ADR-0478): the BFS's edge
     /// visits, completed levels, and accepted endpoints, summed over the
     /// clause's per-seed runs. Zero on every clause the frontier's
