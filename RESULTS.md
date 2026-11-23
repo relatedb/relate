@@ -562,7 +562,40 @@ in the CSR arena by decision.
   trait + A/B live in the lab (`seam.rs`, `colstore.rs`,
   `ops/seam_bench.rs`); the mapping table above is the wiring plan.
 
-### Upstream tracking (checked 2026-11-23, vortex-data/vortex)
+### Upstream responses (2026-11-23, all four threads answered)
+
+- **#11808 (limit early exit)** — answered by a contributor: `with_limit`
+  *does* terminate the split loop early; the cost is **spawned-ahead IO
+  that is not cancelled**. Mitigation today: `max_splits_in_flight` —
+  **on main, not in 0.93**. Closed then reopened 2s later: it stays open
+  as the tracking issue for lazy IO scheduling (the real fix). Measured
+  on the fork: `max_splits_in_flight=1` takes the exists shape from
+  103.5 µs / 751 allocs to **58.9 µs / 506 allocs** (43% faster, −33%
+  allocs) — real savings, still ~57% of a full scan because IO read-ahead
+  remains uncapped (the knob's docs say so explicitly). The capped seam
+  expand improves to 113 µs / 906 allocs vs 206 µs / 1,145 uncapped (45%).
+- **#8694 (Probe API)** — closed as shipped: the API exists; #9971 tracks
+  the per-encoding migration (`scalar_at` → `probe_scalar`, state carried
+  per encoding + child probes). Our 0.93 already carries
+  `array.probe()` / `repeated_probe()` — the seam's decoded-cache design
+  maps onto it directly (switch pending in the lab queue). A maintainer
+  comment proposes downcasting probes to canonical types to avoid Scalar
+  wrapping — exactly our ~9-allocs/string-value cost.
+- **#9551 (membership masks)** — a contributor has prototyped the sorted
+  `IN` wiring: `col IN (list)` today runs one full-column Eq per literal
+  (O(list × column)); the prototype sorts the literal list once and uses
+  `sorted_membership` when the column's `IsSorted` stat is known — the
+  same design as our `member`, and double confirmation that persisted
+  sortedness (our sidecar) is the enabling stat.
+- **#8948 (indexed layout)** — active but "still figuring things out";
+  arm-A stands until their shape lands.
+
+**Lab now pinned to the relatedb fork** (`github.com/relatedb/vortex` at
+main, `0.93.0-343`): the fork carries `max_splits_in_flight` (unreleased
+upstream) and becomes the home for our patches (native aggregation). Zero
+API drift across the 343 commits — the lab compiled unchanged; the newer
+upstream code already improved the file-prune scan baseline (O4b:
+292 → 162 allocs).
 
 - **Morsel gather — designed, not landed.** #8694 (open, 2026-07-09):
   "Probe API: encoding-owned repeated random access with density-hinted

@@ -15,7 +15,11 @@ license.workspace = true
 # the VFS prototype builds on. zstd (default) stays off — no native C++
 # build in the lab; vortex's own lightweight encodings are the object of
 # study.
-vortex = { version = "0.93.0", default-features = false, features = ["files", "memmap2"] }
+# The relatedb fork at main: carries max_splits_in_flight (the filtered-limit
+# bound upstream 0.93.0 lacks) and the Probe API. Pinned by rev in the
+# lockfile; fork commits (limit-bound use, native aggregation) ride this dep.
+# Upstream releases re-enter via version once the knob is published.
+vortex = { git = "https://github.com/relatedb/vortex", default-features = false, features = ["files", "memmap2"] }
 # Same version vortex-buffer pins (0.9.11 in our lock): the mmap open path
 # needs one Mmap construction on our side of the VFS seam.
 csv = "1"

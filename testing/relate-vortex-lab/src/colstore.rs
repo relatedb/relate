@@ -158,7 +158,12 @@ impl ColProps {
         let mut b = self.vfile.scan()?;
         b = b.with_filter(bound).with_projection(proj);
         if let Some(c) = cap {
-            b = b.with_limit(c as u64 + 1);
+            // the fork's bound: sequential split issue under a limit, so the
+            // budget check (is_exhausted) stops remaining splits instead of
+            // paying spawned-ahead IO for all of them (upstream #11808)
+            b = b
+                .with_limit(c as u64 + 1)
+                .with_some_max_splits_in_flight(std::num::NonZeroUsize::new(1));
         }
         let arr = self.rt.block_on(async { b.into_array_stream()?.read_all().await })?;
         // projection yields the field (or a struct holding it)

@@ -154,6 +154,29 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     m.report();
     results.push(m);
 
+    // The fork's bound (max_splits_in_flight, unreleased upstream): sequential
+    // split issue under a limit, so the budget stop actually saves the other
+    // splits' IO+decode — the #11808 mitigation the maintainer pointed at.
+    let m = measure("O4c exists limit(1) max_splits_in_flight=1", scan_iters, |_| {
+        let arr = rt
+            .block_on(async {
+                vfile
+                    .scan()?
+                    .with_filter(f_attr0_lt500.clone())
+                    .with_projection(p_attr0.clone())
+                    .with_limit(1)
+                    .with_some_max_splits_in_flight(std::num::NonZeroUsize::new(1))
+                    .into_array_stream()?
+                    .read_all()
+                    .await
+            })
+            .unwrap();
+        assert_eq!(arr.len(), 1);
+        std::hint::black_box(arr.len());
+    });
+    m.report();
+    results.push(m);
+
     // ---- O4d: per-split zone-map pruning (the real prune unit) ----
     let reader = vfile.layout_reader()?;
     let pruned_no_match = pruned_splits(reader.as_ref(), &rt, &splits, &f_attr0_gt100k)?;
