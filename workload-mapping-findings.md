@@ -12,8 +12,8 @@ allocs, ns) — the operator, not the query, is the unit.
 | O1 | Point property read by node-id | every projection; pathdb seeds; fraud ring return | node-major store, row index == node-id, one column's segment slice | decode ONE cell, not the chunk (scalar-at-row); mmap segment cache |
 | O2 | Multi-column point read, same rows | q3 (firstName+lastName+org.name), q9, fraud `[n.id]` | struct take: one row-id list, k column gathers | one gather plan over k columns, shared row mask, no per-column search |
 | O3 | Equality seek by business key | 16 LDBC queries, fraud `{id:}`, pathdb `$seed`, bi-07 `$tag` | arm A (key, node_id) sorted index, IsStrictSorted stat; or arm B dictionary | seek-not-scan; dict lookup O(log dict) |
-| O4 | Range filter -> count/exists | q4, q8, q20 + the 8 `COUNT(..)>0` existence queries (q21-q28) | zone-map prune per chunk, compute-on-compressed compare | exists early-exit; stats-only answer when every chunk prunes; count = mask popcount |
-| O5 | Conjunctive filter | q24 `l.name=X AND t.name=Y` shape (16/30) | per-column prune, intersect, late materialization | filter key columns first, decode property columns only for survivors |
+| O4 | Range filter -> count/exists | q4, q8, q20 + the 8 `COUNT(..)>0` existence queries (q21-q28) | MEASURED (filter.rs): zone-map prune exists at FILE level via `can_prune` (22.7 us, decode-free); per-split prune needs `LayoutReader::pruning_evaluation` (36 us/5 splits) — no public "which splits prune" call (API gap). **No exists early-exit**: `.with_limit(1)` costs 98% of the full count (2.71 vs 2.77 ms) — the limit truncates output, not decoding. Cheap negatives come only from the file-level prune. No popcount/mask terminal either, so counts materialize the projected column at survivors |
+| O5 | Conjunctive filter | q24 `l.name=X AND t.name=Y` shape (16/30) | MEASURED (filter.rs): pruning IS per-column (struct reader splits And/Or into per-column masks and ANDs them) but **a zone survives iff EVERY conjunct keeps it** — a conjunction never prunes more than its most selective conjunct. The real win: one scan beats executor-side sequential re-filter by **1.9x time and 8x memory traffic** (8.14 ms/515 KB vs 15.6 ms/4.19 MB), because the sequential path materializes survivor ids and gathers them |
 | O6 | Group-by + aggregate + top-k | q11, q17, q19, bi-07, bi-02, bi-13 | dictionary = the group universe; Min/Max/Sum chunk stats (Sum confirmed mergeable via merge_sum; RowCount scalar fn exists) | group over dict codes (cardinality = dict size, not row count); stats-served partials; top-k over dictionary; **stats-only aggregates**: COUNT = len - NullCount, SUM = sum of chunk Sums, AVG = sum Sums / sum (len - NullCount) with zero decode — exact when unfiltered OR when min/max proves a chunk all-matching (partial-match chunks still decode); bench float NaN awareness (NaNCount exists) and integer Sum overflow width |
 | O7 | Join on property key | equi-join e01-e03 (`a.birthday = b.birthday`), q9 | key-sorted index on both sides | sort-merge join instead of hash — no build side, no hash table |
 | O8 | Intra-row property compare | fraud f05 `ti.date < tj.date` | two aligned gathers from the node-major store | batched two-column compare kernel, not per-row point reads |
@@ -58,6 +58,20 @@ New kernels:
 | O18 | IN-list as query operator | seed lists, parameter sets | same is_in kernel as O10a, operator-level shape |
 | O19 | Traversal set state: seen/frontier as row-sets (QPP, shortest path, varlen) | every expansion loop: new = next - seen, seen += new, frontier filter = O10b over a row-set; shortest-path frontiers; DISTINCT-node path semantics (per-path sets stay executor-side) | MEASURED (sets.rs): HashSet<u64> **18.9 B/node** at 1M visited (the spec's "48+ B" was wrong — hashbrown is 18.9, and 11.8 at 100k from power-of-two rounding), HashSet<u32> 10.5, dense bitset 0.875 B/node at 7-bit spacing / **0.125 B/node at 1 bit/node** — 21.6x smaller. Frontier algebra (100 levels, 10k new/level): bitset 42-49 us/level, **0 allocs**, vs HashSet 151-171 us, 13 allocs, 262 KB/level — 3.4-3.7x faster, alloc-free. Order: arrival-order parallel Vec +9 us/level (+29%), sort-at-end 58 us, ascending bitset materialization 86 us (space scan) — keep the Vec. frontier ∩ predicate: bitset probe 6.6 us vs HashSet 65-76 us (10x). Crossover: bitset wins memory below ~1% density of the id space, time crossover ~12-15M bits for a 10k frontier; LDBC/Pokec reachability (~14% density) is deep in the win region |
 | O20 | Distinct over multi-column projections | q5 DISTINCT firstName+lastName, snb-bi distincts | packed dictionary code pairs (u32+u32) — hash/compare codes, never decode strings; generalizes to k dict-encoded columns |
+
+**METHODOLOGY CORRECTION (2026-11-23, from the filter kernel):** the
+synthetic shapes in `store.rs` use `attrN = (i*(N+3)) % 1000`, which makes
+every 8k-40k-row zone span the full value range — **zone-map pruning can
+never fire on them**. All range-pruning numbers must come from a monotone or
+clustered column (`id<75000` prunes 3/5 splits; `attr0<500` prunes 0/5).
+`store.rs` needs a monotone shape before the next campaign. Also measured:
+splits are 8k-40k rows (the prune unit, coarser than a morsel); a string
+range predicate IS expressible (`gt_eq/lt_eq` on a Utf8 column with
+`upper = prefix + "\u{10FFFF}"`) and prunes 4/5 splits, but is a loss
+(10.7 ms) against decoding + in-memory compare (0.71 ms) or a binary search
+(624 ns); and presence is not expressible for promoted columns (NonNullable
+→ `NullCount = Exact(0)` always) — lenient presence needs the residual or
+per-label sparse columns.
 
 Cross-cutting vortex features newly mapped: page-level row-group skipping on
 the mmap path (untouched segments never fault: per-query RSS == segments

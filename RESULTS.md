@@ -155,6 +155,67 @@ from `lt(col("l"), col("r"))` → `.bind(dtype)` → `ArrayRef::apply_bound` →
 **encoding-space compare pushdown (comparing without decompressing) is not
 yet measured** — the obvious next kernel.
 
+## O4/O5/O12/O16 filters, pruning, presence (measured, load 20.5)
+
+Prune unit: `vfile.splits()` on the 150k synthetic store returns **5 ranges of
+8k–40k rows** (compressor-chosen), not 1024 — coarser than a morsel.
+
+| kernel | ns/op | allocs | B/op |
+|---|---|---|---|
+| O4a range scan+count `attr0<500` | 2.78 ms | 716 | 123 KB |
+| O4b `can_prune(attr0>100000)` | 22.7 µs | 63 | 5.8 KB |
+| O4b scan `attr0>100000` (whole-file prune) | 134 µs | 301 | 37 KB |
+| O4c exists `.with_limit(1)` | 2.71 ms | 745 | 126 KB |
+| O4d per-split stats-only prune pass | 36 µs | 35 | 47 KB |
+| O4e range scan `id<75000` (monotone col) | 583 µs | 641 | 112 KB |
+| O5a conjunction (`attr0<500 AND attr1>100`) | 8.14 ms | 1202 | 515 KB |
+| O5b sequential two scans + gather | 15.6 ms | 1520 | 4.19 MB |
+| O12a prefix range `node-0001` | 10.7 ms | 986 | 1.74 MB |
+| O12c prefix binary search (in-memory) | 624 ns | 0 | 0 |
+
+### Findings
+
+1. **`with_limit(1)` is not an exists short-circuit** (2.71 vs 2.77 ms — 98% of
+   the full count; identical at `with_concurrency(1)`). The limit truncates
+   output, it does not stop decoding. A cheap exists exists only as the
+   *file-level* prune (134 µs). Corrects the O4 spec's early-exit assumption.
+2. **`can_prune` works and is decode-free, but is file-level only.** Per-split
+   pruning requires `LayoutReader::pruning_evaluation(split, &bound,
+   Mask::new_true(len))` — a real API gap: no public "which splits does this
+   filter prune". The stats-only pass over 5 splits costs 36 µs / 35 allocs.
+3. **Conjunction prunes per column, but a zone survives iff *every* conjunct
+   keeps it** — so a conjunction never prunes more than its most selective
+   conjunct (`attr0<500` 0/5, `attr1>100` 0/5, conjunction 0/5; `id<75000` 3/5,
+   conjunction 3/5). The measured win is elsewhere: **one scan with per-column
+   zone masks beats executor-side sequential re-filter by 1.9x in time and 8x
+   in memory traffic** (8.14 ms/515 KB vs 15.6 ms/4.19 MB), because the
+   sequential path materializes 75k survivor ids and gathers them.
+4. **My synthetic `attr0` distribution silently defeats zone-map pruning.**
+   `attr0 = (i*3)%1000` means every 8k–40k-row zone spans the full 0..999
+   range, so a range predicate can never prune. `attr0<500` prunes 0/5 splits;
+   the honest demonstration needs a monotone column — `id<75000` prunes 3/5
+   and is 4.8x faster (583 µs vs 2.78 ms). **Any range-pruning claim must use
+   a monotone or clustered column**; the synthetic shapes in `store.rs` need a
+   monotone variant before the next campaign.
+5. **A string range predicate is expressible** —
+   `and(gt_eq(col("key"), lit(lower)), lt_eq(col("key"), lit(upper)))` with
+   `upper = prefix + "\u{10FFFF}"` binds and runs, and prunes 4/5 splits — **but
+   it is a loss**: 10.7 ms / 1.74 MB per scan vs 0.71 ms to decode the whole key
+   column plus 1.5 ms to `starts_with` it in memory (binary search: 624 ns). The
+   Utf8 comparison path dominates. So STARTS WITH via range is *expressible and
+   prune-friendly, not a win* at this size.
+6. **Presence: a property some nodes lack is not representable as a null.**
+   The store writes NonNullable columns, so the footer records
+   `NullCount = Exact(0)` for every promoted column, `can_prune(IS NULL)` is
+   always true and `can_prune(IS NOT NULL)` always false. `arr.statistics()` on
+   the *decoded* array reports `NullCount = Absent` (stats are not carried
+   footer → canonical; `compute_null_count` recomputes in 98 ns). Consequence
+   for our lenient-presence semantics: per-key presence needs the residual
+   column or per-label sparse columns — a promoted non-null column cannot
+   express "absent".
+7. No count-without-materialization: the scan builder has no popcount/mask
+   terminal, so counts include materializing the projected column at survivors.
+
 ## Open
 
 - O4–O20 kernel results (fan-out in progress).
