@@ -18,4 +18,5 @@ license.workspace = true
 vortex = { version = "0.93.0", default-features = false, features = ["files", "memmap2"] }
 # Same version vortex-buffer pins (0.9.11 in our lock): the mmap open path
 # needs one Mmap construction on our side of the VFS seam.
+csv = "1"
 memmap2 = "0.9.11"

@@ -1,63 +1,55 @@
-//! Round-1 smoke for the vortex property-store evaluation: write one sorted
-//! u64 key column as a vortex file through a plain `std::fs::File` (the same
-//! sink a `VfsFile` adapter would present), reopen it through an mmap'd
-//! `ByteBuffer`, and read it back — proving the zero-decode mmap open path
-//! end to end before any bench is built on it.
+//! Round-1 harness for the vortex property-store evaluation.
+//!
+//! Kernels are named O1..O20 in `workload-mapping-findings.md`; each reports
+//! ns/op, allocs/op, B/op with a load stamp. Measurements are serialized —
+//! one kernel at a time on a shared box (quiet-box protocol).
 
-use std::fs;
+mod bench;
+mod ops;
+mod store;
 
-use vortex::array::arrays::PrimitiveArray;
-use vortex::array::stream::ArrayStreamExt;
-use vortex::array::validity::Validity;
-use vortex::array::IntoArray;
-use vortex::buffer::{Buffer, ByteBuffer};
-use vortex::error::VortexResult;
-use vortex::file::{OpenOptionsSessionExt, WriteOptionsSessionExt};
-use vortex::io::runtime::single::SingleThreadRuntime;
-use vortex::io::runtime::BlockingRuntime;
-use vortex::io::session::RuntimeSessionExt;
-use vortex::session::VortexSession;
-use vortex::VortexSessionDefault;
+#[global_allocator]
+static ALLOC: bench::Counting = bench::Counting;
 
-fn main() -> VortexResult<()> {
-    let n: u64 = 1 << 20;
-    let rt = SingleThreadRuntime::default();
-    let session = VortexSession::default().with_handle(rt.handle());
+use std::path::PathBuf;
 
-    // One sorted unique-key column, the shape the point-seek bench uses.
-    let keys: Vec<u64> = (0..n).collect();
-    let array = PrimitiveArray::new(Buffer::from(keys), Validity::NonNullable).into_array();
-    let dtype = array.dtype().clone();
-
-    let path = std::env::temp_dir().join("relate-vortex-lab-smoke.vortex");
-    let out = fs::File::create(&path)?;
-    let summary = session
-        .write_options()
-        .blocking(&rt)
-        .write(out, array.to_array_iterator())?;
-
-    // Open = mmap, zero decode: pages fault in on demand from here on.
-    let file = fs::File::open(&path)?;
-    let mmap = unsafe { memmap2::Mmap::map(&file)? };
-    let vfile = session.open_options().open_buffer(ByteBuffer::from(mmap))?;
-
-    let read = rt.block_on(async {
-        vfile
-            .scan()?
-            .into_array_stream()?
-            .read_all()
-            .await
-    })?;
-
-    assert_eq!(read.len(), n as usize, "row count survived the roundtrip");
-    assert_eq!(read.dtype(), &dtype, "dtype survived the roundtrip");
-
-    let file_bytes = fs::metadata(&path)?.len();
-    let raw_bytes = n * 8;
-    println!(
-        "smoke ok: {n} rows, {file_bytes} file bytes (summary {}) vs {raw_bytes} raw ({:.1}%)",
-        summary.size(),
-        100.0 * file_bytes as f64 / raw_bytes as f64,
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    let cmd = args.get(1).map(String::as_str).unwrap_or("all");
+    let out_dir = PathBuf::from(
+        std::env::var("VORTEX_LAB_OUT").unwrap_or_else(|_| "/tmp/relate-vortex-lab".to_string()),
     );
+    std::fs::create_dir_all(&out_dir)?;
+
+    // The LDBC SF0.1 CSV the query-latency suite already has on disk.
+    let csv = PathBuf::from(
+        std::env::var("VORTEX_LAB_CSV").unwrap_or_else(|_| {
+            "target/query-latency/data/social_network-sf0.1-CsvBasic-StringDateFormatter/dynamic/person_0_0.csv"
+                .to_string()
+        }),
+    );
+
+    println!("vortex-lab: out={} load={:.1}", out_dir.display(), bench::loadavg1());
+
+    match cmd {
+        "point" => {
+            ops::point::run(&csv, &out_dir, 100_000)?;
+        }
+        "seek" => {
+            let n: usize = args
+                .get(2)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(150_000);
+            ops::seek::run("flat", n, 4, &out_dir, 20_000)?;
+        }
+        "all" => {
+            ops::point::run(&csv, &out_dir, 100_000)?;
+            ops::seek::run("flat", 150_000, 4, &out_dir, 20_000)?;
+        }
+        other => {
+            eprintln!("unknown command {other}: point | seek | all");
+            std::process::exit(2);
+        }
+    }
     Ok(())
 }
