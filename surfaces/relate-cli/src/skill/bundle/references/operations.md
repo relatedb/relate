@@ -95,8 +95,8 @@ RELATE_LOAD_THREADS=2 relate --database ./mydata
 ```
 
 A zero, non-integer, or non-UTF-8 value fails the open naming the variable,
-before the store is leased; a still-set `CYPHERLITE_LOAD_THREADS` fails the
-open naming `RELATE_LOAD_THREADS` (ADR-0664). Embedded callers set
+before the store is leased; a still-set pre-rename spelling of the variable
+fails the open naming `RELATE_LOAD_THREADS` (ADR-0517, ADR-0664). Embedded callers set
 `OpenOptions::load_threads` and read what the open actually used from
 `Database::open_peak_transient_bytes()` — the peak temporary bytes of the
 latest load (`0` for an empty `:memory:` store; a follower's gap reload

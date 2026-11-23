@@ -386,7 +386,8 @@ pub struct OpenOptions {
     /// `RELATE_LOAD_THREADS`, then the machine's available parallelism.
     /// `Some(0)`, and a zero, non-integer or non-UTF-8 environment value,
     /// fail open with `Error::Semantic` before the store is leased; a set
-    /// `CYPHERLITE_LOAD_THREADS` fails open like every retired name.
+    /// pre-rename spelling of the variable fails open like every retired
+    /// name (ADR-0517).
     pub load_threads: Option<usize>,
     /// Writable, frozen read-only, a read-only WAL follower, or the
     /// ephemeral turn-into (ADR-0136, ADR-0137, ADR-0500).

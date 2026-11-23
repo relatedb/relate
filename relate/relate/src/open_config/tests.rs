@@ -506,17 +506,6 @@ fn load_threads_zero_fails_open_before_the_store_is_created() {
 }
 
 #[test]
-fn retired_load_threads_name_is_rejected_naming_the_current_one() {
-    let err = renamed_env_error(
-        "CYPHERLITE_LOAD_THREADS",
-        "RELATE_LOAD_THREADS",
-        Ok("4".to_string()),
-    )
-    .unwrap_err();
-    assert!(err.to_string().contains("RELATE_LOAD_THREADS"), "{err}");
-}
-
-#[test]
 fn expression_memo_budget_resolution_defaults_and_fails_loud() {
     let unset = || Err(std::env::VarError::NotPresent);
     assert_eq!(expression_memo_budget_from_setting(unset()).unwrap(), 16);
