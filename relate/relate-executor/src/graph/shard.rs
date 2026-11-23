@@ -59,8 +59,8 @@ impl ShardPartition {
     }
 
     /// Charge the partition's buffers to the open's transient tracker
-    /// until the returned lease drops.
-    pub(super) fn lease(&self) -> TransientLease {
+    /// until the returned lease drops; none outside a load scope.
+    pub(super) fn lease(&self) -> Option<TransientLease> {
         let words = self.indices.capacity() + self.offsets.capacity();
         record_transient_lease((words * std::mem::size_of::<usize>()) as u64)
     }

@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use relate_core::{
     parse_expression_memory_limit, parse_memory_limit, parse_positive_memory_limit,
-    require_positive_memory_limit, require_traversal_depth, PreviewFeatures, MAX_TRAVERSAL_DEPTH,
+    present_env_value, require_positive_memory_limit, require_traversal_depth, PreviewFeatures,
+    MAX_TRAVERSAL_DEPTH,
 };
 use relate_executor::PatternEngine;
 use relate_storage::{CodecOpenConfig, SnapshotCodecKind};
@@ -55,26 +56,6 @@ pub(crate) fn resolve_markdown_bodies(
         return Ok(Some(bodies.clone()));
     }
     markdown_bodies_from_setting(std::env::var("RELATE_MARKDOWN_BODY_PROPERTIES"))
-}
-
-/// The one environment-value triage the variable-backed resolvers
-/// share: unset, blank, and whitespace are `None`; a value that is not
-/// valid UTF-8 fails open naming the variable — an invalid value is
-/// never silently ignored, the preview-feature contract
-/// ([`preview_features_from_setting`]). Pure in the raw result, so
-/// tests never touch the process environment.
-fn present_env_value(
-    name: &'static str,
-    raw: std::result::Result<String, std::env::VarError>,
-) -> Result<Option<String>> {
-    match raw {
-        Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(std::env::VarError::NotUnicode(_)) => Err(crate::Error::semantic(format!(
-            "invalid {name}: value is not valid UTF-8"
-        ))),
-        Ok(value) if value.trim().is_empty() => Ok(None),
-        Ok(value) => Ok(Some(value)),
-    }
 }
 
 /// The markdown vault's body-property configuration from an already-read

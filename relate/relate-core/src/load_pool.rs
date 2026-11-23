@@ -9,10 +9,12 @@
 //! [`run_load_tasks`] runs its tasks sequentially.
 
 use std::cell::RefCell;
-use std::ffi::OsStr;
+use std::env::VarError;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::{Error, Result};
 
@@ -31,32 +33,49 @@ impl LoadThreads {
     }
 }
 
+/// The one environment-value triage the variable-backed resolvers share:
+/// unset, blank, and whitespace are `None`; a value that is not valid UTF-8
+/// fails naming the variable `name` — an invalid value is never silently
+/// ignored — the preview-feature contract. Pure in the raw `std::env::var`
+/// result, so tests never touch the process environment.
+pub fn present_env_value(
+    name: &str,
+    raw: std::result::Result<String, VarError>,
+) -> Result<Option<String>> {
+    match raw {
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(_)) => Err(Error::semantic(format!(
+            "invalid {name}: value is not valid UTF-8"
+        ))),
+        Ok(value) if value.trim().is_empty() => Ok(None),
+        Ok(value) => Ok(Some(value)),
+    }
+}
+
 /// Resolve the load thread count: an explicit `load_threads` wins, then
 /// `RELATE_LOAD_THREADS`, then the machine's available parallelism. Zero,
 /// negative, non-integer and non-UTF-8 values are rejected; an unset or
 /// blank environment variable counts as absent.
 pub fn resolve_load_threads(load_threads: Option<usize>) -> Result<LoadThreads> {
-    resolve(load_threads, std::env::var_os(LOAD_THREADS_ENV).as_deref())
+    resolve(load_threads, std::env::var(LOAD_THREADS_ENV))
 }
 
-fn resolve(load_threads: Option<usize>, env: Option<&OsStr>) -> Result<LoadThreads> {
-    let requested = match (load_threads, env) {
-        (Some(n), _) => NonZeroUsize::new(n)
+fn resolve(
+    load_threads: Option<usize>,
+    env: std::result::Result<String, VarError>,
+) -> Result<LoadThreads> {
+    let requested = match load_threads {
+        Some(n) => NonZeroUsize::new(n)
             .ok_or_else(|| Error::semantic("invalid load_threads: must be positive"))?,
-        (None, Some(raw)) => {
-            let text = raw.to_str().ok_or_else(|| {
-                Error::semantic(format!("invalid {LOAD_THREADS_ENV}: not valid UTF-8"))
-            })?;
-            match text.trim() {
-                "" => available(),
-                text => text.parse::<NonZeroUsize>().map_err(|_| {
-                    Error::semantic(format!(
-                        "invalid {LOAD_THREADS_ENV} '{text}': must be a positive integer"
-                    ))
-                })?,
-            }
-        }
-        (None, None) => available(),
+        None => match present_env_value(LOAD_THREADS_ENV, env)? {
+            Some(text) => text.trim().parse::<NonZeroUsize>().map_err(|_| {
+                Error::semantic(format!(
+                    "invalid {LOAD_THREADS_ENV} '{}': must be a positive integer",
+                    text.trim()
+                ))
+            })?,
+            None => available(),
+        },
     };
     Ok(LoadThreads(requested))
 }
@@ -88,38 +107,34 @@ impl OpenTransientTracker {
         let now = self.current.fetch_add(bytes, Ordering::Relaxed) + bytes;
         self.peak.fetch_max(now, Ordering::Relaxed);
         TransientLease {
-            tracker: Some(Arc::clone(self)),
+            tracker: Arc::clone(self),
             bytes,
         }
     }
 }
 
-/// Bytes charged to an open's tracker until this guard drops. Inert when
-/// taken outside a load scope.
+/// Bytes charged to an open's tracker until this guard drops.
 #[derive(Debug)]
+#[must_use = "the lease is released as soon as it is dropped"]
 pub struct TransientLease {
-    tracker: Option<Arc<OpenTransientTracker>>,
+    tracker: Arc<OpenTransientTracker>,
     bytes: u64,
 }
 
 impl Drop for TransientLease {
     fn drop(&mut self) {
-        if let Some(tracker) = &self.tracker {
-            tracker.current.fetch_sub(self.bytes, Ordering::Relaxed);
-        }
+        self.tracker
+            .current
+            .fetch_sub(self.bytes, Ordering::Relaxed);
     }
 }
 
 /// Charge `bytes` of transient memory to the tracker of the load scope the
 /// calling thread is in (load workers inherit their caller's scope).
-pub fn record_transient_lease(bytes: u64) -> TransientLease {
-    match SCOPE.with(|scope| scope.borrow().as_ref().map(|s| Arc::clone(&s.tracker))) {
-        Some(tracker) => tracker.lease(bytes),
-        None => TransientLease {
-            tracker: None,
-            bytes,
-        },
-    }
+/// Outside a load scope there is no tracker and no lease.
+pub fn record_transient_lease(bytes: u64) -> Option<TransientLease> {
+    let tracker = SCOPE.with(|scope| scope.borrow().as_ref().map(|s| Arc::clone(&s.tracker)))?;
+    Some(tracker.lease(bytes))
 }
 
 #[derive(Clone)]
@@ -157,6 +172,18 @@ pub fn with_load_scope<R>(
     f()
 }
 
+/// [`with_load_scope`] of `threads` load threads, for tests that name a
+/// count instead of resolving one.
+#[doc(hidden)]
+pub fn with_test_load_scope<R>(
+    threads: usize,
+    tracker: &Arc<OpenTransientTracker>,
+    f: impl FnOnce() -> R,
+) -> R {
+    let threads = resolve_load_threads(Some(threads)).expect("a positive thread count");
+    with_load_scope(threads, Arc::clone(tracker), f)
+}
+
 /// The load thread count of the scope the calling thread is in; one outside
 /// any scope.
 pub fn current_load_threads() -> LoadThreads {
@@ -184,6 +211,7 @@ pub fn run_load_tasks<T: Send, F: FnOnce() -> T + Send>(tasks: Vec<F>) -> Vec<T>
     tasks.into_iter().map(|task| task()).collect()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -327,14 +355,6 @@ mod tests {
 
     use super::*;
 
-    fn threads(n: usize) -> LoadThreads {
-        resolve_load_threads(Some(n)).unwrap()
-    }
-
-    fn scope_with<R>(k: usize, tracker: &Arc<OpenTransientTracker>, f: impl FnOnce() -> R) -> R {
-        with_load_scope(threads(k), Arc::clone(tracker), f)
-    }
-
     fn thread_ids(count: usize) -> Vec<(ThreadId, String)> {
         run_load_tasks(
             (0..count)
@@ -350,33 +370,37 @@ mod tests {
         )
     }
 
+    fn unset() -> std::result::Result<String, VarError> {
+        Err(VarError::NotPresent)
+    }
+
     #[test]
     fn load_pool_resolve_rejects_bad_values() {
         let semantic = |r: Result<LoadThreads>| match r.unwrap_err() {
             Error::Semantic(msg) => msg,
             other => panic!("not semantic: {other:?}"),
         };
-        assert!(semantic(resolve(Some(0), None)).contains("load_threads"));
+        assert!(semantic(resolve(Some(0), unset())).contains("load_threads"));
         let mut bad = vec![OsString::from("0"), "-1".into(), "two".into(), "1.5".into()];
         #[cfg(unix)]
         bad.push(std::os::unix::ffi::OsStringExt::from_vec(vec![0x66, 0xff]));
         for raw in bad {
-            let msg = semantic(resolve(None, Some(&raw)));
-            assert!(msg.contains("RELATE_LOAD_THREADS"), "{raw:?}: {msg}");
+            let label = format!("{raw:?}");
+            let raw = raw.into_string().map_err(VarError::NotUnicode);
+            let msg = semantic(resolve(None, raw));
+            assert!(msg.contains("RELATE_LOAD_THREADS"), "{label}: {msg}");
         }
     }
 
     #[test]
     fn load_pool_resolve_accepts_values_and_defaults() {
         let parallelism = std::thread::available_parallelism().unwrap().get();
-        assert_eq!(resolve(Some(3), None).unwrap().get(), 3);
-        assert_eq!(resolve(Some(3), Some(OsStr::new("9"))).unwrap().get(), 3);
-        assert_eq!(resolve(None, Some(OsStr::new(" 4 "))).unwrap().get(), 4);
-        assert_eq!(resolve(None, None).unwrap().get(), parallelism);
-        assert_eq!(
-            resolve(None, Some(OsStr::new("  "))).unwrap().get(),
-            parallelism
-        );
+        let set = |text: &str| Ok(text.to_owned());
+        assert_eq!(resolve(Some(3), unset()).unwrap().get(), 3);
+        assert_eq!(resolve(Some(3), set("9")).unwrap().get(), 3);
+        assert_eq!(resolve(None, set(" 4 ")).unwrap().get(), 4);
+        assert_eq!(resolve(None, unset()).unwrap().get(), parallelism);
+        assert_eq!(resolve(None, set("  ")).unwrap().get(), parallelism);
     }
 
     #[test]
@@ -387,7 +411,7 @@ mod tests {
                 s.spawn(|| {
                     let tracker = Arc::default();
                     for _ in 0..5 {
-                        let ids = scope_with(2, &tracker, || thread_ids(6));
+                        let ids = with_test_load_scope(2, &tracker, || thread_ids(6));
                         lock(&seen).extend(ids);
                     }
                 });
@@ -406,13 +430,13 @@ mod tests {
         let finished = AtomicUsize::new(0);
         let data = [1_u64, 2, 3, 4];
         let tracker = Arc::default();
-        let sums = scope_with(2, &tracker, || {
+        let sums = with_test_load_scope(2, &tracker, || {
             run_load_tasks(data.iter().map(|n| || *n * 10).collect())
         });
         assert_eq!(sums, [10, 20, 30, 40]);
 
         let outcome = std::panic::catch_unwind(|| {
-            scope_with(2, &tracker, || {
+            with_test_load_scope(2, &tracker, || {
                 run_load_tasks(
                     (0..4)
                         .map(|i| {
@@ -432,13 +456,13 @@ mod tests {
         assert_eq!(*outcome.unwrap_err().downcast::<&str>().unwrap(), "boom");
         assert_eq!(finished.load(Ordering::SeqCst), 3);
         // The pool survives a panicking task.
-        assert_eq!(scope_with(2, &tracker, || thread_ids(2)).len(), 2);
+        assert_eq!(with_test_load_scope(2, &tracker, || thread_ids(2)).len(), 2);
     }
 
     #[test]
     fn load_pool_nested_calls_run_inline_on_the_worker() {
         let tracker = Arc::default();
-        let nested = scope_with(2, &tracker, || {
+        let nested = with_test_load_scope(2, &tracker, || {
             run_load_tasks(
                 (0..2)
                     .map(|_| {
@@ -465,7 +489,7 @@ mod tests {
             for (tracker, bytes) in trackers.iter().zip([100_u64, 7]) {
                 s.spawn(move || {
                     let barrier = Barrier::new(2);
-                    scope_with(2, tracker, || {
+                    with_test_load_scope(2, tracker, || {
                         run_load_tasks(
                             (0..2)
                                 .map(|_| {
@@ -484,6 +508,6 @@ mod tests {
         assert_eq!(trackers[0].peak_bytes(), 200);
         assert_eq!(trackers[1].peak_bytes(), 14);
         assert_eq!(trackers[0].current.load(Ordering::Relaxed), 0);
-        drop(record_transient_lease(5)); // outside a scope: inert
+        assert!(record_transient_lease(5).is_none()); // outside a scope: no lease
     }
 }
