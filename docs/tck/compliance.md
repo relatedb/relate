@@ -5,11 +5,18 @@ longer measured inside this repository. The **spec harness**
 (`relatedb/relate-cypher-compat-private`, ADR-0482) runs Neo4j's Cypher
 spec suites — the openCypher TCK synced from Neo4j's compatibility-spec-suite
 among them — against the engine through the Python binding: the wheel built
-from the PR's commit is the engine under test. The `spec-harness` lane
+from the PR's commit is the engine under test. The PR lane
 (`.github/workflows/spec-harness.yml`) reports coverage on every
-ready-for-review PR with a traffic light in the job summary and a PR comment,
-and on every merge to main (the run at the merge commit), and never gates the
-build on it.
+ready-for-review PR with a traffic light in the job summary and a PR comment;
+the merge lane (`.github/workflows/spec-harness-baseline.yml`, push to
+main only) measures every landed merge, writes the baseline and runs the
+watchdog. Since ADR-0661 the
+PR lane is also a required status check — the regression gate: a PR is red when
+a scenario fails that the gate baseline does not already carry as failing.
+The baseline is machine-written into the harness repository by every merge
+run (failing ids per scenario, never hand-edited), and the PR run checks out
+the harness revision the baseline records, so corpus churn never reds an
+engine PR and the passing number refreshes on every merge by construction.
 
 The engine's own TCK extension corpus and its CIP-derived evaluation suite
 moved to that harness on 2026-11-05 (ADR-0520). The in-repo Rust harness, its

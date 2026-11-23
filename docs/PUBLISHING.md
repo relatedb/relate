@@ -31,7 +31,7 @@ everything at the `relatedb/relate` repository (private for now) and turn it on.
   the environment is rejected by the registry even if the repository
   rule is ever weakened.
 
-- [ ] `main` is green: `make lint` and `make test` pass; the spec-harness lane (ADR-0482) reports language coverage on the release PR — reporting-only, never a gate.
+- [ ] `main` is green: `make lint` and `make test` pass; the spec-harness lane (ADR-0482, ADR-0661) reports language coverage on the release PR and gates it on failing-id regressions like any other PR.
 - [ ] The old repository’s `v*` tags did **not** come across with the move —
   the release workflow seeds the first tag at `v0.1.0`
   (ADR-0067; see `RELEASING.md`). Verify with

@@ -140,13 +140,17 @@ No behavior without tests.
 | --- | --- |
 | Unit | next to code (`#[cfg(test)]` / crate `tests/`) |
 | Integration | crate `tests/`, `relate/relate/tests/` |
-| Cypher contract | openCypher TCK via the spec harness (ADR-0482, ADR-0520) |
+| Cypher contract | openCypher TCK via the spec harness (ADR-0482, ADR-0520, ADR-0661) |
 | Client contract | each client's tests against C ABI |
 | Persistence | WAL + snapshot roundtrip, Native + Memory VFS |
 
-- Language contract lives in the spec harness (ADR-0482): it runs Neo4j's
-  Cypher spec suites against the PR's Python wheel and reports coverage per
-  ready PR — reporting-only, never a merge gate.
+- Language contract lives in the spec harness (ADR-0482, ADR-0661): it
+  runs Neo4j's Cypher spec suites against the PR's Python wheel, reports
+  coverage per ready PR, and the ADR-0661 gate — a required status check —
+  fails a PR on a scenario that main does not already carry as failing: a
+  failing-id ratchet against the machine-written baseline in the harness
+  repository, the PR run pinned to the baseline's recorded harness revision
+  (a fix-N-break-N swap is red; corpus churn never reds an engine PR).
   [`docs/tck/compliance.md`](docs/tck/compliance.md) is the retired pin's
   history and a pointer
 - The engine's TCK extension corpus and the CIP-derived eval suite live in
@@ -659,10 +663,13 @@ Diagnostic-only, never Cypher syntax; it dies with the old engines.
 The openCypher TCK = language **floor**
 (ADR-0056), measured by the spec harness: its `tck` suite is the upstream
 TCK synced from Neo4j's compatibility-spec-suite, reported on every ready
-PR with the ADR-0482 bands and never gated. The in-repo pinned 2024.3
-corpus, its allowlist and its 3892-of-3892 claim are retired (ADR-0520).
+PR with the ADR-0482 bands and gated on failing-id regressions by the
+ADR-0661 ratchet (a scenario main does not already carry as failing is
+red). The in-repo pinned 2024.3 corpus, its allowlist and its
+3892-of-3892 claim are retired (ADR-0520).
 The CIP-derived eval suite = **stretch** (the harness's `cip-eval` suite;
-reporting only, no ratchet).
+its failing backlog never blocks a PR, while a currently-passing scenario
+newly failing is a red regression like any other, ADR-0661).
 
 Database administration (ADR-0116): every store has three fixed namespaces
 — `neo4j`, `system`, `system_ontologies`; `USE` routes the statement,

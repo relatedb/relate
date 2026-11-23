@@ -8,6 +8,8 @@ tags:
   - ci
   - conformance
 title: The spec-harness coverage lane
+REFERENCES:
+  - "[[adr/0661-spec-harness-regression-gate]]"
 ---
 
 # ADR-0482: The spec-harness coverage lane
@@ -175,3 +177,13 @@ since errored scenarios carry no category. The harness side runs one
 behave worker per core (harness PR #24), which the lane inherits
 automatically — its suite step already calls the report script with no
 arguments.
+
+A fourth follow-up reversed §4's reporting-only posture:
+[ADR-0661](./0661-spec-harness-regression-gate.md) adds the regression
+gate beside the unchanged report — the lane's job becomes a required
+status check, red when a scenario fails that the machine-written
+baseline in the harness repository does not already carry as failing.
+The traffic light, the bands, the comment and the report's exit-0
+contract all stand as written; the gate is a separate script and a
+separate verdict, and the lane's path filter moved inside the job so
+the required check still concludes for docs-only diffs.

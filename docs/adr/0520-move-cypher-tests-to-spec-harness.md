@@ -15,6 +15,7 @@ REFERENCES:
   - "[[adr/0472-repin-order-by-scenarios]]"
   - "[[adr/0482-spec-harness-coverage-lane]]"
   - "[[adr/0513-cypher25-create-entity-reference-admission]]"
+  - "[[adr/0661-spec-harness-regression-gate]]"
 ---
 
 # ADR-0520: The spec harness owns the Cypher language corpora; the in-repo TCK gate retires
@@ -182,3 +183,18 @@ the harness already applies to its synced suites.
 - If the harness is unreachable (missing read token, repo access lost), the
   engine still builds and ships; language coverage is simply unreported —
   there is no in-tree fallback measurement.
+
+## Later references
+
+[ADR-0661](./0661-spec-harness-regression-gate.md) revisits §4's
+reporting-only decision. The corpora stay where this ADR put them, and no
+ratchet moved into this repository — but the harness repository now carries
+a machine-written failing-id baseline (written by the lane's main-merge
+run, never hand-edited) that backs a required regression gate on every
+ready PR. The §4 objections are answered by machinery rather than
+overturned: like-for-like pinning (the PR run checks out the harness
+revision the baseline recorded) means Neo4j suite churn cannot red an
+engine PR, and the baseline refreshes on every merge by construction —
+no frozen count, no re-pin ceremony, so the stale-pin problem does not
+return. §5's landing-run numbers remain the record of the transfer run;
+no engine document republishes a current pass count as a claim.

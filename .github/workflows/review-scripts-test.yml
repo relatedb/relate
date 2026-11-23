@@ -75,6 +75,15 @@ jobs:
       - name: Run the spec-harness coverage suite (ADR-0482)
         run: python3 scripts/tests/test_spec_harness_coverage.py
 
+      - name: Run the spec-harness gate suite (ADR-0661)
+        run: python3 scripts/tests/test_spec_harness_gate.py
+
+      - name: Run the spec-harness id-model suite (ADR-0661)
+        run: python3 scripts/tests/test_spec_harness_ids.py
+
+      - name: Run the spec-harness baseline suite (ADR-0661)
+        run: python3 scripts/tests/test_spec_harness_baseline.py
+
       - name: Run the scripts/tests suites (one owner, the aggregate)
         run: make test-scripts
 

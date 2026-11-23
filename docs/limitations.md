@@ -239,10 +239,12 @@ call the engine in-process.
 
 ## openCypher TCK: the retired in-repo pin
 
-Language coverage is measured by the spec harness (ADR-0482, ADR-0520): the
+Language coverage is measured by the spec harness (ADR-0482, ADR-0520,
+ADR-0661): the
 openCypher TCK synced from Neo4j's compatibility-spec-suite plus Neo4j's other
 Cypher suites, run against the engine's Python wheel and reported per ready PR
-— reporting-only, never a merge gate. The engine no longer runs the TCK in CI.
+— and gated: a PR that fails a scenario main does not already carry as
+failing is red (ADR-0661). The engine no longer runs the TCK in CI.
 
 Until 2026-11-05 the engine ran openCypher TCK **2024.3** under a strict
 in-repo Rust harness (it checked error class, error phase, and side effects,
@@ -269,8 +271,9 @@ instead of the 2024.3 expectation (ADR-0002, ADR-0472):
 The CIP-derived evaluation suite (Neo4j Cypher beyond the TCK) moved to the
 spec harness with the same change (`features/cip-eval`). It is a stretch
 tracker, not a floor: its landing run reports 4942 passed / 924 left failing /
-51 skipped of 5917 scenarios under the harness's strict TCK grammar,
-reporting-only (ADR-0482 §4).
+51 skipped of 5917 scenarios under the harness's strict TCK grammar — the
+failing backlog never blocks a PR, while a currently-passing scenario newly
+failing is a red ADR-0661 regression like any other.
 
 ## Not in scope for the embedded engine
 

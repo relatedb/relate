@@ -482,7 +482,7 @@ loudly about it — for encrypted Bolt, front it with a TLS-terminating proxy.
 | Area | What it covers |
 | --- | --- |
 | **Cypher** | Reading and writing (`MATCH`, `OPTIONAL MATCH`, `CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, `FOREACH`, `INSERT`), composing (`WITH`, `UNWIND`, `UNION`, `CALL {}` subqueries, subquery expressions), schema DDL (indexes, constraints, graph types), 80+ built-in functions, and modern pattern matching — label expressions, quantified path patterns, path selectors. One dialect: current Cypher. |
-| **Language floor** | The openCypher TCK is the dialect floor, measured by the project's spec harness: Neo4j's Cypher suites — the upstream TCK among them — run against the engine's Python wheel on every ready PR, as reported coverage, never a merge gate. History: [`docs/tck/compliance.md`](docs/tck/compliance.md). |
+| **Language floor** | The openCypher TCK is the dialect floor, measured by the project's spec harness: Neo4j's Cypher suites — the upstream TCK among them — run against the engine's Python wheel on every ready PR, as reported coverage plus the ADR-0661 regression gate (a scenario main does not already carry as failing is red). History: [`docs/tck/compliance.md`](docs/tck/compliance.md). |
 | **Vector search** | `vector()` properties, `vector.similarity.*` scoring functions, `CREATE VECTOR INDEX` plus the `SEARCH` clause for index-backed top-K with pre-filtering, and hybrid vector + full-text queries. |
 | **Geospatial** | WGS-84 and Cartesian points (2D/3D), `point.distance()`, radius and bounding-box predicates (`point.withinBBox`), and R-tree point indexes (`CREATE POINT INDEX`). The dialect covers points only — richer geometry is host-language work. |
 | **Profiling** | `EXPLAIN` renders the plan tree; `PROFILE` adds per-operator rows and time. Profiling costs nothing on non-PROFILE runs. |
@@ -663,7 +663,8 @@ make build-wasm
 
 Language coverage: the openCypher TCK and Neo4j's Cypher suites run in the
 spec harness against the Python wheel on every ready PR — reported coverage,
-never a merge gate. History and pointer:
+plus the ADR-0661 regression gate (a scenario main does not already carry as
+failing is red). History and pointer:
 [`docs/tck/compliance.md`](docs/tck/compliance.md).
 
 ### Python development
