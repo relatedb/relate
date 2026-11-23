@@ -648,3 +648,79 @@ fn system_ontologies_is_not_queryable_after_set() {
         spec.as_string().unwrap()
     );
 }
+
+/// A multi-pair document (REL8-2042's shape): `PART_OF` declared across
+/// two endpoint pairs, `KNOWS` declared once as the enforcing control.
+const MULTI_PAIR_JSON: &str = concat!(
+    "{\"schema\":\"https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json\",",
+    "\"id\":\"multi-pair\",\"version\":\"1\",",
+    "\"nodes\":{",
+    "\"LedgerRecord\":{\"label\":\"LedgerRecord\",\"properties\":{",
+    "\"k\":{\"type\":\"STRING\",\"key\":true}}},",
+    "\"Draft\":{\"label\":\"Draft\",\"properties\":{",
+    "\"k\":{\"type\":\"STRING\",\"key\":true}}},",
+    "\"Todo\":{\"label\":\"Todo\",\"properties\":{",
+    "\"k\":{\"type\":\"STRING\",\"key\":true}}},",
+    "\"Source\":{\"label\":\"Source\",\"properties\":{",
+    "\"k\":{\"type\":\"STRING\",\"key\":true}}}},",
+    "\"relationships\":{",
+    "\"part_of_ledgerrecord_to_draft\":{\"type\":\"PART_OF\",",
+    "\"from\":{\"node\":\"LedgerRecord\"},",
+    "\"to\":{\"node\":\"Draft\"}},",
+    "\"part_of_todo_to_source\":{\"type\":\"PART_OF\",",
+    "\"from\":{\"node\":\"Todo\"},",
+    "\"to\":{\"node\":\"Source\"}},",
+    "\"knows\":{\"type\":\"KNOWS\",",
+    "\"from\":{\"node\":\"Todo\"},",
+    "\"to\":{\"node\":\"Source\"}}}}"
+);
+
+/// (5c) A relationship type declared across several endpoint pairs
+/// defines no graph type (ADR-0668): `apply` accepts the document — the
+/// pre-fix refusal (`duplicate identifying label`) is gone — no
+/// endpoint rows derive for the type, its relationships stay writable
+/// under any labels, and the singly-declared type beside it enforces as
+/// before.
+#[test]
+fn apply_accepts_multi_pair_relationship_types_as_vocabulary_only() {
+    common::ontology::preview_ontology();
+    let db = Database::open(":memory:").unwrap();
+    let mut conn = db.connect().unwrap();
+
+    // Existing data already spanning the pairs — including an
+    // undeclared cross pair — does not block the apply: the type
+    // carries no constraints to violate.
+    conn.query(
+        "CREATE (:LedgerRecord {k: 'lr'}), (:Draft {k: 'd'}), \
+         (:Todo {k: 't'}), (:Source {k: 's'}), (:Odd {k: 'o'}), \
+         (:LedgerRecord {k: 'lr2'})-[:PART_OF]->(:Draft {k: 'd2'}), \
+         (:Todo {k: 't2'})-[:PART_OF]->(:Source {k: 's2'})",
+    )
+    .unwrap();
+    // The undeclared cross pair, onto an existing Draft.
+    conn.query("MATCH (o:Odd), (d:Draft {k: 'd'}) CREATE (o)-[:PART_OF]->(d)")
+        .unwrap();
+    set_doc(&mut conn, MULTI_PAIR_JSON).unwrap();
+    conn.query("CALL db.ontology.apply()").unwrap();
+
+    // The type carries no endpoint rows and stays writable.
+    assert_eq!(
+        common::scalar_one(
+            &mut conn,
+            "SHOW CONSTRAINTS YIELD labelsOrTypes, type WHERE labelsOrTypes = ['PART_OF'] RETURN count(*)"
+        ),
+        Value::Int(0)
+    );
+    conn.query("MATCH (a:Todo {k: 't'}), (b:Source {k: 's'}) CREATE (a)-[:PART_OF]->(b)")
+        .unwrap();
+    conn.query("MATCH (a:Todo {k: 't'}), (b:Draft {k: 'd'}) CREATE (a)-[:PART_OF]->(b)")
+        .unwrap();
+
+    // The singly-declared type beside it enforces both endpoints.
+    let refused =
+        err_text(conn.query("MATCH (o:Odd), (s:Source {k: 's'}) CREATE (o)-[:KNOWS]->(s)"));
+    assert!(
+        refused.starts_with("ConstraintValidationFailed: endpoint label presence verification"),
+        "the singly-declared type still enforces: {refused}"
+    );
+}

@@ -19,13 +19,7 @@ use relate::{Database, OpenOptions, SnapshotCodecKind, Value};
 /// One node, one label directory — the minimal vault that carries a
 /// committed ontology.
 fn vault_with_ontology(dir: &std::path::Path) {
-    let person = dir.join("Person");
-    std::fs::create_dir_all(&person).unwrap();
-    std::fs::write(
-        person.join("Ada.md"),
-        "---\ntype: Person\ntitle: Ada\n---\nbody",
-    )
-    .unwrap();
+    vault_note(dir, "Person", "Ada");
 }
 
 /// The committed ontology: Person keyed by `title`, one RANGE index on
@@ -571,13 +565,7 @@ fn a_label_that_sanitizes_into_the_reserved_root_directory_refuses() {
     // directory the next open refuses — a checkpoint-to-unopenable
     // loop. The plan refuses it instead, naming the label.
     let dir = tempfile::tempdir().unwrap();
-    let person = dir.path().join("Person");
-    std::fs::create_dir_all(&person).unwrap();
-    std::fs::write(
-        person.join("Ada.md"),
-        "---\ntype: Person\ntitle: Ada\n---\nbody\n",
-    )
-    .unwrap();
+    vault_note(dir.path(), "Person", "Ada");
     let db = open(dir.path());
     db.connect()
         .unwrap()
@@ -605,4 +593,123 @@ fn a_label_that_sanitizes_into_the_reserved_root_directory_refuses() {
         .as_int()
         .unwrap();
     assert_eq!(count, 1, "the node is still live after the refusal");
+}
+
+/// The committed ontology of the multi-pair fixture: `PART_OF` declared
+/// across two endpoint pairs (REL8-2042's shape) and `KNOWS`, a type
+/// declared once, as the enforcing control.
+const MULTI_PAIR_ONTOLOGY: &str = r#"schema: https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json
+id: multi-pair
+version: "1"
+nodes:
+  ledgerrecord:
+    label: LedgerRecord
+    properties:
+      title: { type: STRING, key: true }
+  draft:
+    label: Draft
+    properties:
+      title: { type: STRING, key: true }
+  todo:
+    label: Todo
+    properties:
+      title: { type: STRING, key: true }
+  source:
+    label: Source
+    properties:
+      title: { type: STRING, key: true }
+relationships:
+  part_of_ledgerrecord_to_draft:
+    type: PART_OF
+    from: { node: ledgerrecord }
+    to: { node: draft }
+  part_of_todo_to_source:
+    type: PART_OF
+    from: { node: todo }
+    to: { node: source }
+  knows:
+    type: KNOWS
+    from: { node: todo }
+    to: { node: source }
+"#;
+
+/// One note in its label directory — the vault fixture every ontology
+/// test in this file builds from, one spelling.
+fn vault_note(dir: &std::path::Path, label: &str, title: &str) {
+    let directory = dir.join(label);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join(format!("{title}.md")),
+        format!("---\ntype: {label}\ntitle: {title}\n---\nbody"),
+    )
+    .unwrap();
+}
+
+/// One vault carrying the multi-pair fixture's four label directories,
+/// one file each.
+fn multi_pair_vault(dir: &std::path::Path) {
+    for (label, title) in [
+        ("LedgerRecord", "lr1"),
+        ("Draft", "d1"),
+        ("Todo", "t1"),
+        ("Source", "s1"),
+    ] {
+        vault_note(dir, label, title);
+    }
+}
+
+/// A relationship type declared across several endpoint pairs defines
+/// no graph type (ADR-0668): the vault opens, every PART_OF write —
+/// declared pair or cross pair — succeeds, no PART_OF endpoint rows
+/// sit in the catalog, the type still seeds the vocabulary, and the
+/// singly-declared type beside it enforces as before. The report's
+/// exact repro (REL8-2042) is the second write.
+#[test]
+fn a_multi_pair_relationship_type_defines_no_graph_type() {
+    preview_ontology();
+    let dir = tempfile::tempdir().unwrap();
+    multi_pair_vault(dir.path());
+    std::fs::write(dir.path().join("ontology.yaml"), MULTI_PAIR_ONTOLOGY).unwrap();
+
+    let db = open(dir.path());
+    let mut conn = db.connect().unwrap();
+    // Every PART_OF write succeeds: the report's two declared pairs...
+    conn.query(
+        "MATCH (a:LedgerRecord {title: 'lr1'}), (b:Draft {title: 'd1'}) CREATE (a)-[:PART_OF]->(b)",
+    )
+    .unwrap();
+    conn.query("MATCH (a:Todo {title: 't1'}), (b:Source {title: 's1'}) CREATE (a)-[:PART_OF]->(b)")
+        .unwrap();
+    // ...and a cross pair no entry declared.
+    conn.query("MATCH (a:Todo {title: 't1'}), (b:Draft {title: 'd1'}) CREATE (a)-[:PART_OF]->(b)")
+        .unwrap();
+
+    // No PART_OF endpoint rows: the type carries no graph type.
+    assert_eq!(
+        scalar_one(
+            &mut conn,
+            "SHOW CONSTRAINTS YIELD labelsOrTypes, type WHERE labelsOrTypes = ['PART_OF'] RETURN count(*)"
+        ),
+        Value::Int(0)
+    );
+    // The singly-declared type beside it still enforces both endpoints.
+    let refused = err_text(conn.query("CREATE (:Odd)-[:KNOWS]->(:Source {title: 's1'})"));
+    assert!(
+        refused.starts_with("ConstraintValidationFailed: endpoint label presence verification"),
+        "the singly-declared type still enforces: {refused}"
+    );
+
+    // The declared pair count survives the checkpoint and reopen: the
+    // vocabulary is committed, the enforcement absent, both stably.
+    db.checkpoint().unwrap();
+    drop(conn);
+    drop(db);
+    let db = open(dir.path());
+    let mut conn = db.connect().unwrap();
+    assert_eq!(
+        scalar_one(&mut conn, "MATCH ()-[r:PART_OF]->() RETURN count(r)"),
+        Value::Int(3)
+    );
+    conn.query("MATCH (a:Todo {title: 't1'}), (b:Draft {title: 'd1'}) CREATE (a)-[:PART_OF]->(b)")
+        .unwrap();
 }

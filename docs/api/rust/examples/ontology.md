@@ -26,7 +26,11 @@ and stores the submitted bytes verbatim, `get` returns it in the
 requested format (`yaml` by default, `json` converted canonically), `apply`
 converts it to the database's current graph type with `ALTER CURRENT GRAPH
 TYPE SET` semantics (failing when existing data violates it), and `drop`
-removes it. The accepted document is 1.1.0-shaped: `version` is a string,
+removes it. A relationship `type` the document declares across several
+`relationships` entries — one type, several endpoint pairs — defines no
+graph type at all: the document applies, the type still seeds the
+vocabulary, and its relationships stay writable under any labels, with
+no endpoint or property rows enforced for it (ADR-0668). The accepted document is 1.1.0-shaped: `version` is a string,
 property existence is `must_exist`, and `constraints` is an id-keyed map
 with `type: EXISTS | KEY | UNIQUE | PROPERTY_TYPE`; a pre-bump document is
 rejected at `set`. The stored document is the sole source of truth — the

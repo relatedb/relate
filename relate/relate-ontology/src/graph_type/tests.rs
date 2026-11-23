@@ -1,7 +1,12 @@
 use super::*;
+use crate::model::Neo4jType;
 use crate::tests::doc;
+use constraints::in_situ;
 use relate_names::SmallName;
-use relate_parser::{OptionsForm, PredefinedKind, VectorCoordKind};
+use relate_parser::{
+    GraphTypeConstraintVerb, GraphTypePropertyType, OptionsForm, PredefinedKind, TypeExpr,
+    VectorCoordKind,
+};
 use serde_json::json;
 
 /// A document with one node `N` carrying `properties` and `constraints`.
@@ -604,5 +609,28 @@ fn a_dimension_on_a_non_vector_token_has_no_effect() {
             kind: PredefinedKind::String,
             not_null: false,
         }
+    );
+}
+
+mod relationships;
+
+/// One label, one node type (ADR-0668): two node entries declaring the
+/// same identifying label — whatever their keys — are a duplicate the
+/// mapping refuses by name, never a body the graph-type validation
+/// would refuse late and generically.
+#[test]
+fn same_label_node_entries_refuse() {
+    let document = doc(
+        r#","nodes":{"a":{"label":"A"},"a2":{"label":"A"},"b":{"label":"B"}},"relationships":{}"#,
+    );
+    let error = to_graph_type_body(&document).expect_err("a shared identifying label refuses");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("a2") && rendered.contains("'a'") && rendered.contains("A"),
+        "the refusal names both entries and the label, got {rendered}"
+    );
+    assert!(
+        rendered.contains("one label, one node type"),
+        "the refusal names the policy, got {rendered}"
     );
 }
