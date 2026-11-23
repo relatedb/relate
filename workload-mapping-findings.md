@@ -184,3 +184,39 @@ element) on d98aee8f, with `--store` writing the reusable artifact. Raw
 samply capture at /tmp/vortex-load-q30.json (unsymbolized — atos
 symbolication of a full load capture is a ~40 min background job; the load's
 *memory* attribution already exists in the REL8-1949 learnings comment).
+
+## Operator → seam/SPI map (2026-11-23)
+
+Every O1–O20 operator mapped to the `PropStore` seam method (lab:
+`seam.rs`/`colstore.rs`) and the engine API it lands on (`exec-surface-findings.md`
+has the signatures). ✅ = seam method exists; 🔶 = building block (store hands
+over data, executor composes); ⚠️ = gap, named closure method; 🚫 = out of the
+property store's scope by design.
+
+| Op | Seam method | Engine SPI it lands on |
+|---|---|---|
+| O1 point read | ✅ `point(row, key)` | `node_prop_id_at` (graph/prop_read.rs:8); token-resolved `node_prop_resolved` (overlay/reads.rs:256, ADR-0541) |
+| O2 multi-column read | ✅ `batch(rows, keys)` | `Chunk` typed buffers / `RowFeed::Generated`; ADR-0468 batch chain `scan_chunk` |
+| O3 key seek | ✅ `seek(key, val)` | ADR-0614 serve `equality_postings_upto(labels, props, ts, cap)` behind `ExecGraph::lookup_nodes_upto`; `Seek::serve` → `ServedIds::Exact/Superset` |
+| O4 range → count/exists | ✅ `expand(pred, cap)` (exists = `Some(0)`; no decode-stop upstream, #11808) | candidates funnel scan tail `scan_ids` → `lookup_nodes_upto_at(…, cap)`; whole-population count via the `stats_short_circuit` count rung (`CountProbe`) |
+| O5 conjunctive filter | ✅ `expand(pred)` — whole tree pushed; prunes = union of conjuncts' prunes | `WalkSpec::compile` predicate gate + `BatchPred` zone-map skips (exec/batch.rs) |
+| O6 group-by | 🔶 `distinct` + the rung form (dict-native required: 22 µs vs 7.4 ms naive) | next rung of `stats_short_circuit` (ADR-0611 `index_aggregates` precedent); seeded/filtered = `aggregate_ex` offer loop (new engine work) |
+| O7 merge join | 🔶 sorted (key,row) arm via `seek`/`member`; executor composes sort-merge (23×, alloc-free measured) | executor join composition; the arm replaces postings-served equality sides |
+| O8 intra-row compare | 🔶 `batch` both columns; compare executor-side | `WalkSpec::compile` settled conjuncts (one store read, inline reads) |
+| O9 traversal-order reads | 🚫 adjacency, not the property store | adjacency store / traversal kernels (ADR-0551 sealed delta tiers) |
+| O10a batched key check / IN | ⚠️ `member(key, vals: &[&str])` — sorted×sorted merge, the #9551 membership-mask shape | `lookup_point_upto` (overlay/seek.rs:184, the WHERE `=`/`IN` runtime seek) |
+| O10b morsel gather (scattered ids) | ✅ `batch(rows, keys)` — decoded-cache indexing; per-chunk density-hinted probe when #8694 lands | morsel producers feeding `Chunk`/`RowFeed` |
+| O11 row-position gather-compares | ✅ `batch` (row==node-id identity) | batch chain `filter_chunk` selection vector + `Chunk::select_columns` |
+| O12 prefix range (STARTS WITH) | ⚠️ `prefix_range(key, prefix)` — partition_point bounds on the arm (249 ns measured) | `Seek::Text` (candidates/seek.rs:29) — the text-seek vocabulary exists |
+| O13 countDistinct | ✅ `distinct(key)` | aggregate site classification (`site.rs`); rung form for whole-population |
+| O14 histogram/quantiles | 🔶 histogram = `distinct`'s (value,count) output; quantiles = sorted arm + position reads (`topk`-shaped) | computed in projection today; rung-able |
+| O15 order/top-k | ✅ `topk(key, k)` | `TopKWindow` (exec/top_k.rs:57), `TopWindow`, `take_parked_top_k` (order.rs:467); ordered top-k scan pushdown = the seam filling the engine's recorded gap |
+| O16 presence + label-prune | ✅ `null_count(key)`; ⚠️ labels param on `expand` (engine shape is `lookup_nodes_upto(labels, …)`) | IS NULL via the predicate gate; labels via label buckets `node_ids_with_label_at` (index_lookup.rs:137) |
+| O17 anti-join | ⚠️ complement of `member` (comes free with it) | executor anti-join site; no storage API today |
+| O18 IN-list | ⚠️ `member` (same method as O10a) | `lookup_point_upto` (WHERE `=`/`IN`) |
+| O19 seen/frontier state | 🚫 executor traversal state, not the store (bitset decision: 0.125 B/node, alloc-free algebra) | `RowFeed`/traversal kernels own it |
+| O20 pair-distinct (dict code pairs) | 🔶 `batch` two columns / dict-code rung form | `stats_short_circuit` rung extension (multi-column grouping keys) |
+
+Closures to full coverage: `member` (O10a/O17/O18), `prefix_range` (O12),
+labels on `expand` (O16's label half). Everything else is either a method,
+a measured building block, or executor-side by design.
