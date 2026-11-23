@@ -58,17 +58,21 @@ allocation counts are the load-robust signal**.
    it dominates the Comment table's absolute bytes (2.94 MB of 6.23 MB).
 5. **Repeating ints compress 6–20x** (`length` 0.40–0.89 vs 8 raw).
 
-## Kernels O1/O2/O3 (first pass, load 13–20 — ns noisy, allocs reliable)
+## Kernels O1/O2/O3 (quiet-box re-run 2026-11-23, load 5.3–6.0 — supersedes
+the load-13–20 first pass whose ns figures were 3–17x inflated; allocs were
+stable across both runs)
 
-- O1 point read on a warm decoded column: 2,083 ns, 3 allocs/value.
-- O2 three columns at the same rows: 36,555 ns, 28.5 allocs — **18x for 3x**
-  (see the probe investigation; per-value string extraction is
-  allocation-heavy, ~9.5 allocs per string value).
-- O3 seek, 150k rows: full scan+compare 457 µs vs binary search on the
-  sorted key **586 ns** (780x).
-- O3 key-column decode (mmap + read_all): 1.19 ms, 1425 allocs, 182 KB.
-- O10b `with_row_indices` 1024-row gather: 899 µs = 878 ns/row, 1.4
-  allocs/row — suspicious (see probe investigation).
+- O1 point read on a warm compressed column: **258 ns, 3 allocs/value**.
+- O2 three columns at the same rows: **2.1 µs, 26.5 allocs** — linear in
+  columns (~8.8 allocs per string-column value; see the probe
+  investigation for the per-encoding breakdown), no superlinearity.
+- O3 seek, 150k rows: full scan+compare **176 µs** vs binary search on the
+  sorted key **490 ns** (~360x).
+- O3 read_all (compressed arrays, whole file): 205 µs, 1,393 allocs, 181 KB.
+- O10b `with_row_indices` 1024-row gather: 106 µs per gather (~103 ns/row),
+  1.45 allocs/row — still the decode-and-mask fallback (see the probe
+  investigation; the per-row cost only looks cheap because the fallback
+  decodes once per gather call, not per row).
 
 ## O19 traversal set state (measured, load 27–36; ratios stable across 3 runs)
 
