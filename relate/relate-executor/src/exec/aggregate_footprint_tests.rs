@@ -42,7 +42,7 @@ fn billed(groups: i64, extra: usize, make_key: impl Fn(i64) -> Value) -> u64 {
         item(Expr::Variable("k".into()), "k"),
         item(Expr::CountStar, "n"),
     ];
-    let order = OrderKeys::new(&[], &items, false);
+    let order = OrderKeys::new(&graph, &[], &items, false);
     let params = BTreeMap::new();
     let mut aggregation = Aggregation::open(
         &graph,
@@ -342,7 +342,7 @@ fn a_collect_reserves_its_operands_on_the_workspace_ledger() {
         },
         "xs",
     )];
-    let order = OrderKeys::new(&[], &items, false);
+    let order = OrderKeys::new(&graph, &[], &items, false);
     let params = BTreeMap::new();
     let mut aggregation = Aggregation::open(
         &graph,

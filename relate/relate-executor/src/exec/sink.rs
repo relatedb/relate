@@ -36,13 +36,17 @@ pub(crate) struct SinkProjection<'a> {
 }
 
 impl<'a> SinkProjection<'a> {
-    fn new(items: &'a [Projection], order: &'a [relate_ir::OrderItem]) -> Self {
+    fn new(
+        graph: &ExecGraph<'_>,
+        items: &'a [Projection],
+        order: &'a [relate_ir::OrderItem],
+    ) -> Self {
         // The sink declines a `*` item and any repeated resolved name, so the
         // filtered name list aligns with `items` index for index and the
         // output schema opens with the items' columns in that order.
         let mut names = projection_names(items);
         debug_assert_eq!(names.len(), items.len());
-        let order = OrderKeys::new(order, items, false);
+        let order = OrderKeys::new(graph, order, items, false);
         for index in 0..order.len() {
             names.push(order.name(index).to_string());
         }
@@ -62,7 +66,10 @@ impl<'a> SinkProjection<'a> {
 
 /// The projection a `MATCH` may finish in its sink, when the next clause
 /// is a non-aggregate `RETURN` or `WITH`.
-pub(crate) fn sinkable_projection(clause: &Clause) -> Option<SinkProjection<'_>> {
+pub(crate) fn sinkable_projection<'c>(
+    graph: &ExecGraph<'_>,
+    clause: &'c Clause,
+) -> Option<SinkProjection<'c>> {
     let fields = ProjectionFields::from_clause(clause)?;
     let ProjectionFields {
         items,
@@ -106,7 +113,7 @@ pub(crate) fn sinkable_projection(clause: &Clause) -> Option<SinkProjection<'_>>
     if pages_eagerly(&fields) {
         return None;
     }
-    Some(SinkProjection::new(items, order))
+    Some(SinkProjection::new(graph, items, order))
 }
 
 /// Evaluate `projection` against `row` and keep only those values, plus the
@@ -163,7 +170,9 @@ mod tests {
     /// The sink projection a lone `RETURN` clause yields — the shape the
     /// match sink finishes each row with.
     fn projection_of(query: &Query) -> SinkProjection<'_> {
-        sinkable_projection(&query.parts[0].clauses[0]).expect("the RETURN clause is sinkable")
+        let g = Graph::default();
+        sinkable_projection(&ExecGraph::read(&g), &query.parts[0].clauses[0])
+            .expect("the RETURN clause is sinkable")
     }
 
     /// A row binding `n` to a map with the given properties.
@@ -319,8 +328,9 @@ mod tests {
     #[test]
     fn two_spellings_of_one_property_are_two_columns() {
         let query = parse_and_lower("RETURN n.name, n.`name`").unwrap();
+        let g = Graph::default();
         assert!(
-            sinkable_projection(&query.parts[0].clauses[0]).is_some(),
+            sinkable_projection(&ExecGraph::read(&g), &query.parts[0].clauses[0]).is_some(),
             "two verbatim names are two columns: an ordinary sinkable projection"
         );
 

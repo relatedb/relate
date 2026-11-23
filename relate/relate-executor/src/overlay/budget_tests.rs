@@ -7,6 +7,7 @@ use super::*;
 
 use crate::memory::EXPRESSION_BUDGET_BYTES;
 use relate_core::{CapacityKind, Error};
+use relate_planner::LogicalPlan;
 
 #[test]
 fn per_allocation_refusal_is_exact_and_stateless() {
@@ -31,7 +32,28 @@ fn per_allocation_refusal_is_exact_and_stateless() {
     // refuses a second under-cap allocation (no cumulative enforcement).
     view.charge_expression(EXPRESSION_BUDGET_BYTES).unwrap();
     assert_eq!(view.expression_built_bytes(), 2 * EXPRESSION_BUDGET_BYTES);
-    view.begin_statement();
+}
+
+/// The empty plan [`ExecGraph::begin_statement`] seeds from: no clauses,
+/// so nothing is declared — the reset is the only effect.
+fn empty_plan() -> LogicalPlan {
+    LogicalPlan {
+        parts: Vec::new(),
+        union_all: Vec::new(),
+        next: None,
+        use_target: None,
+    }
+}
+
+/// The statement entry resets the expression-build meter, its own policy
+/// and its own test — never a rider on the per-allocation refusal.
+#[test]
+fn statement_entry_resets_the_expression_budget() {
+    let g = Graph::default();
+    let view = ExecGraph::read(&g);
+    view.charge_expression(EXPRESSION_BUDGET_BYTES).unwrap();
+    assert_eq!(view.expression_built_bytes(), EXPRESSION_BUDGET_BYTES);
+    view.begin_statement(&empty_plan());
     assert_eq!(view.expression_built_bytes(), 0);
 }
 

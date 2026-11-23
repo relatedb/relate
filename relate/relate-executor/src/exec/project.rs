@@ -19,9 +19,7 @@ use super::order::{page, PageBounds};
 use super::pattern_policies::MatchFold;
 use super::post_merge::{adopt_rows, finish_projection, land_feed, Landed};
 use super::profile_tick::{finish_parked_feed, ProfileTick};
-use super::scope::{
-    is_internal_column, return_columns, star_scope_names, visible_keys, ProjectionFields,
-};
+use super::scope::{return_columns, star_scope_names, visible_keys, ProjectionFields};
 use super::{materialize_rows_strict, QueryResult, RowFeed};
 
 /// The statement's result columns for a `RETURN`/`WITH`: the shared
@@ -32,6 +30,7 @@ use super::{materialize_rows_strict, QueryResult, RowFeed};
 /// set for the following clause is a different question, asked by
 /// `clause_introduced_names` / `call_subquery_exports` in `relate-front`.
 pub(crate) fn projection_result_columns(
+    graph: &ExecGraph<'_>,
     items: &[Projection],
     rows: &[Row],
     clauses: &[Clause],
@@ -39,7 +38,7 @@ pub(crate) fn projection_result_columns(
     return_columns(items, || match rows.first() {
         None => star_scope_names(clauses),
         Some(row) => {
-            let mut keys = visible_keys(row);
+            let mut keys = visible_keys(graph, row);
             keys.sort();
             keys
         }
@@ -56,7 +55,7 @@ pub(crate) fn return_result(
     clauses: &[Clause],
     rows: &mut [Row],
 ) -> Result<QueryResult> {
-    let columns = projection_result_columns(items, rows, clauses);
+    let columns = projection_result_columns(graph, items, rows, clauses);
     // Projection rows are rectangular by contract (ADR-0339): every result
     // column is bound, so a miss is an engine contract break. Move the cells
     // out instead of cloning.
@@ -181,7 +180,7 @@ pub(crate) fn open_match_fold<'a>(
     // The slot owns the clause's one classification: the parked-key plan
     // is built exactly once, here, and kept alive for the fold's borrow
     // (a fold that already claimed the slot was declined above).
-    let class = class_slot.get_or_init(|| ProjectionClass::new(&fields, shape));
+    let class = class_slot.get_or_init(|| ProjectionClass::new(graph, &fields, shape));
     open_fold(graph, class, params, scope).map(|aggregation| Some(MatchFold::new(aggregation)))
 }
 
@@ -213,7 +212,7 @@ impl Refresh<'_> {
         }
         for row in rows {
             for (key, value) in row.iter_mut() {
-                if !is_internal_column(key) {
+                if !graph.is_internal_key(key) {
                     let taken = std::mem::replace(value, Value::Null);
                     *value = self.apply(graph, taken);
                 }
@@ -291,11 +290,27 @@ pub(crate) fn project_rows(
     inflate: bool,
     scope: Option<&Row>,
 ) -> Result<Vec<Row>> {
-    let ExecCtx { graph, params, .. } = ctx;
+    let ExecCtx { graph, .. } = ctx;
     // The clause's one classification: every decision below reads it, so
     // the paths cannot disagree on the shape — and the shape's decision
     // ([`ProjectionShape::decide`]) owns the DISTINCT-* rejection.
-    let class = ProjectionClass::new(fields, ProjectionShape::decide(fields)?);
+    let class = ProjectionClass::new(graph, fields, ProjectionShape::decide(fields)?);
+    project_classed(ctx, &class, input, inflate, scope)
+}
+
+/// [`project_rows`] over the caller's already-built classification — for
+/// the grouped finishes, which park their folded rows through the class's
+/// own parked-key plan ([`ProjectionClass::order_keys`]) before handing
+/// them over, so one plan both writes and reads the parked columns and no
+/// caller re-derives the plan the projection is about to build anyway.
+pub(super) fn project_classed(
+    ctx: ExecCtx<'_>,
+    class: &ProjectionClass<'_>,
+    input: ProjectionInput<'_>,
+    inflate: bool,
+    scope: Option<&Row>,
+) -> Result<Vec<Row>> {
+    let ExecCtx { graph, params, .. } = ctx;
     // The clause's paging bounds, resolved once, and the bounded window of
     // the ordered `LIMIT` shape (ADR-0555 §3) derived from them — the one
     // pair of facts the feed, the non-aggregating merge paths and the
@@ -310,7 +325,7 @@ pub(crate) fn project_rows(
     if bounds.answers_nothing() {
         return Ok(Vec::new());
     }
-    let input = prepare_input(input, &class, bounds)?;
+    let input = prepare_input(input, class, bounds)?;
     // The windowed shape no longer reserves the sort's merged buffer — the
     // window's own container is bounded — but the feed it drains is live for
     // this whole call, and the producer releases its own reservation as it
@@ -333,8 +348,8 @@ pub(crate) fn project_rows(
     } else {
         Refresh::Identity
     };
-    let merged = merge_rows(graph, params, &class, input, scope, &mut refresh, bounds)?;
-    finish_projection(graph, params, &class, merged, bounds)
+    let merged = merge_rows(graph, params, class, input, scope, &mut refresh, bounds)?;
+    finish_projection(graph, params, class, merged, bounds)
 }
 
 /// The merge dispatch: which path turns the prepared input into the
@@ -454,7 +469,7 @@ fn star_rows(
     let built = |r: Row| -> Result<Row> {
         let mut n = Row::new();
         for (k, v) in &r {
-            if !is_internal_column(k) {
+            if !graph.is_internal_key(k) {
                 n.insert(k.clone(), refresh.apply(graph, v.clone()));
             }
         }

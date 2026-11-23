@@ -496,6 +496,8 @@ fn stdev_nan_and_infinite_inputs_are_nan() {
 
 #[test]
 fn star_key_desugar_preserves_borrows_scope_and_empty_inputs() {
+    let store = Graph::default();
+    let graph = ExecGraph::read(&store);
     let star = Expr::Star;
     let key = Expr::Variable("x".into());
     let rows = [Row::from([
@@ -503,25 +505,29 @@ fn star_key_desugar_preserves_borrows_scope_and_empty_inputs() {
         ("__agg_0".into(), Value::Int(9)),
         ("a".into(), Value::Int(1)),
     ])];
-    let expanded = desugar_star_keys(vec![Cow::Borrowed(&star), Cow::Borrowed(&key)], &rows);
+    let expanded = desugar_star_keys(
+        &graph,
+        vec![Cow::Borrowed(&star), Cow::Borrowed(&key)],
+        &rows,
+    );
     assert!(matches!(&expanded[0], Cow::Owned(Expr::Variable(n)) if n == "a"));
     assert!(matches!(&expanded[1], Cow::Owned(Expr::Variable(n)) if n == "b"));
     assert!(matches!(&expanded[2], Cow::Borrowed(e) if std::ptr::eq(*e, &key)));
 
-    let repeated = desugar_star_keys(vec![Cow::Borrowed(&star); 2], &rows);
+    let repeated = desugar_star_keys(&graph, vec![Cow::Borrowed(&star); 2], &rows);
     assert_eq!(repeated.len(), 4);
     assert_eq!(&repeated[..2], &repeated[2..]);
 
-    let empty = desugar_star_keys(vec![Cow::Borrowed(&star)], &[]);
+    let empty = desugar_star_keys(&graph, vec![Cow::Borrowed(&star)], &[]);
     assert!(matches!(empty.as_slice(), [Cow::Borrowed(Expr::Star)]));
-    assert!(desugar_star_keys(vec![], &[]).is_empty());
-    assert!(desugar_star_keys(vec![Cow::Borrowed(&star)], &[Row::new()]).is_empty());
-    let no_star = desugar_star_keys(vec![Cow::Borrowed(&key)], &[]);
+    assert!(desugar_star_keys(&graph, vec![], &[]).is_empty());
+    assert!(desugar_star_keys(&graph, vec![Cow::Borrowed(&star)], &[Row::new()]).is_empty());
+    let no_star = desugar_star_keys(&graph, vec![Cow::Borrowed(&key)], &[]);
     assert!(matches!(no_star.as_slice(), [Cow::Borrowed(e)] if std::ptr::eq(*e, &key)));
 
     let no_star = vec![Cow::Borrowed(&key)];
     let allocation = no_star.as_ptr();
-    let no_star = desugar_star_keys(no_star, &rows);
+    let no_star = desugar_star_keys(&graph, no_star, &rows);
     assert_eq!(no_star.as_ptr(), allocation);
     assert!(matches!(no_star.as_slice(), [Cow::Borrowed(e)] if std::ptr::eq(*e, &key)));
 }

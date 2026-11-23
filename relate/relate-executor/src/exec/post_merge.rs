@@ -323,7 +323,10 @@ pub(crate) fn finish_projection(
     // and a named projection its output columns. An empty row set has no
     // keys to compare, so the degenerate empty plan is never read.
     let key_columns: Vec<String> = if class.shape.star() {
-        merged.first().map(visible_keys).unwrap_or_default()
+        merged
+            .first()
+            .map(|row| visible_keys(graph, row))
+            .unwrap_or_default()
     } else {
         class.out_names.clone()
     };

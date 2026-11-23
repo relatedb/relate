@@ -250,7 +250,7 @@ fn run_clauses_mode(
                 // unset so the part finishes with zero rows and zero columns
                 // (Neo4j parity, CIP-161).
                 if i + 1 == clauses.len() {
-                    last_result = catalog_result(&rows, command);
+                    last_result = catalog_result(graph, &rows, command);
                 }
             }
             Clause::Create { patterns } => {
@@ -624,6 +624,7 @@ pub(crate) fn execute_part_read_seeded(
     // The read path reports no write stats; its wrapper resets stats on
     // the way out regardless.
     Ok(concluding_part_result(
+        graph,
         clauses,
         &mut rows,
         last_result,

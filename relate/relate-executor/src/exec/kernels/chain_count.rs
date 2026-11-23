@@ -73,7 +73,7 @@ pub(crate) fn try_fold_chain_count(ctx: &FoldCtx<'_>) -> Result<Option<FoldedRet
     let ctx = ExecCtx::new(graph, params);
     let residual = Residual {
         conjuncts: &conjuncts,
-        scope: &match_scope(entering, &compiled),
+        scope: &match_scope(graph, entering, &compiled),
     };
     record_walk_start(WalkStart::seed_side_forward());
     let starts = scan_segment(ctx, &contract.start, &residual)?;

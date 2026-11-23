@@ -169,7 +169,7 @@ impl Collected {
 impl RowFold for Collector {
     fn offer(&self, graph: &ExecGraph<'_>, mut row: Row) -> Result<()> {
         if let Collected::Bindings(Some(live)) = &self.shape {
-            trim_rows(std::slice::from_mut(&mut row), live);
+            trim_rows(graph, std::slice::from_mut(&mut row), live);
         }
         self.retained.borrow_mut().add_row(graph, row.values())?;
         self.rows.borrow_mut().push(row);
@@ -332,7 +332,7 @@ pub(crate) fn open_match_chain<'a>(
             // A last `MATCH` owns the barrier's sink projection, else
             // its bindings are trimmed to what the barrier names.
             if let Some(Transform::Match { projection, .. }) = transforms.last_mut() {
-                *projection = after.and_then(sinkable_projection);
+                *projection = after.and_then(|next| sinkable_projection(graph, next));
                 if projection.is_some() {
                     collector.shape = Collected::SinkProjected;
                 } else {
@@ -413,7 +413,7 @@ impl<'a> Stage<'a> {
                 tail,
             } => {
                 if let Some(live) = live_in {
-                    trim_rows(&mut batch, live);
+                    trim_rows(graph, &mut batch, live);
                 }
                 // A stage hands its walk the stage after it as the fold, so
                 // the walk pushes row by row; the last stage's rows come

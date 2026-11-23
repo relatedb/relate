@@ -340,7 +340,7 @@ pub(crate) fn try_match_kernel(
     kernel_engaged();
     let residual = Residual {
         conjuncts: &conjuncts,
-        scope: &match_scope(&rows[0], patterns),
+        scope: &match_scope(ctx.graph, &rows[0], patterns),
     };
     let output = run(
         ctx,
@@ -400,7 +400,7 @@ pub(crate) fn try_exists_kernel(
             kernel_engaged();
             let residual = Residual {
                 conjuncts: &conjuncts,
-                scope: &match_scope(row, patterns),
+                scope: &match_scope(ctx.graph, row, patterns),
             };
             let output = run(ctx, &contract, &residual, KernelMode::Exists { counted })?;
             return Ok(Some(match output {

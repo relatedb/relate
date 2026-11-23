@@ -48,8 +48,14 @@ pub(crate) fn bind_named_path(
             // (`node_bind_name`, the same one the ladder build and the
             // bind arm read): the first node's variable, else the
             // exec-only `__node0` seat on a named path.
-            if let Some(n) = node_bind_name(&path.nodes[0], 0, path.has_path_name())
-                .and_then(|name| row_node(row, &name))
+            if let Some(n) = node_bind_name(
+                &graph.seat_prefixes(),
+                &path.nodes[0],
+                0,
+                path.has_path_name(),
+                |name| row_node(row, name),
+            )
+            .flatten()
             {
                 nodes.push((**n).clone());
             }

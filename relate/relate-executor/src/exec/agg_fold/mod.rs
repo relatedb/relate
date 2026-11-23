@@ -161,8 +161,11 @@ pub(super) fn finish_folded_rows(
         // The folded row is the only row the fold kept: each key parks the
         // value of the item `folded_order_names` resolved for it, and the
         // shared sort entry point orders the rows by those parked columns.
-        let keys =
-            OrderKeys::parked_only(output.order.iter().map(|folded| folded.key), output.items);
+        let keys = OrderKeys::parked_only(
+            graph,
+            output.order.iter().map(|folded| folded.key),
+            output.items,
+        );
         for row in out.iter_mut() {
             let parked: Vec<Value> = output
                 .order

@@ -16,7 +16,9 @@ use relate_core::{Error, Result};
 use relate_ir::Query;
 use web_time::Instant;
 
-pub use lower::{lower_expr, lower_statement, lower_statement_with_limits, lower_type_expr};
+pub use lower::{
+    lower_expr, lower_order, lower_statement, lower_statement_with_limits, lower_type_expr,
+};
 pub use validate::{is_known_function, KNOWN_FUNCTIONS};
 
 // `StatementPolicy` is reached through its home module, `validate`, so the

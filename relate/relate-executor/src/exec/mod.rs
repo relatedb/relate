@@ -176,6 +176,27 @@ pub(crate) fn plan_mutates_store(plan: &LogicalPlan) -> bool {
     plan_any_clause(plan, &mut mutates_store)
 }
 
+/// Record on the statement's view every name the plan declares — the one
+/// per-clause vocabulary ([`scope::clause_declared_names`]) folded
+/// cumulatively over the same canonical plan walk
+/// ([`plan_mutates_store`]'s `plan_any_clause`), nested bodies (`CALL { … }`,
+/// `FOREACH`, expression subqueries) included, so the set is complete
+/// before any clause runs and does not depend on which body has run. A
+/// name declared only in a nested body is therefore declared
+/// statement-wide; no synthetic column can carry it, because every
+/// synthetic prefix is chosen past the declared set
+/// ([`ExecGraph::uncolliding_prefix`]). Cumulative: a name dropped by a
+/// later `WITH` stays declared, since rows between the two still carry it.
+/// Called only by [`ExecGraph::begin_statement`], so the reset and this
+/// seeding are one operation no entry can split.
+pub(crate) fn declare_plan_names(graph: &ExecGraph<'_>, plan: &LogicalPlan) {
+    plan_any_clause(plan, &mut |clause| {
+        let names = scope::clause_declared_names(clause);
+        graph.declare_names(names.iter().map(String::as_str));
+        false
+    });
+}
+
 use constraint_validation::validate_constraints;
 use dispatch::{execute_part_read_seeded, run_clauses};
 use scope::visible_keys;
@@ -391,10 +412,10 @@ pub(crate) fn execute_unvalidated(
 /// [`finish_statement`] unchanged.
 fn run_statement(graph: &ExecGraph<'_>, request: &ExecRequest<'_>) -> Result<(QueryResult, bool)> {
     let attempted = plan_mutates_store(request.plan);
-    // One statement entry: the CSV memo, the statement-spanning scratch state
-    // (ADR-0309 stats + the ADR-0402 applied count) and the ADR-0395
-    // nested-evaluation budget restart together.
-    graph.begin_statement();
+    // One statement entry: the per-statement resets and the declared-name
+    // seeding restart together (ADR-0309 stats + the ADR-0402 applied count,
+    // the ADR-0395 nested-evaluation budget, the spelled-name set).
+    graph.begin_statement(request.plan);
     graph.check_cancelled()?;
     let _clock = QueryClockGuard::within(graph.transaction_clock());
     let qctx = QueryCtx::new(request.query_text)
@@ -427,6 +448,11 @@ pub fn execute_read_at(admission: &ReadAdmission<'_>) -> Result<QueryResult> {
         .with_cancel(admission.cancel)
         .with_ontology_document(admission.ontology_document);
     view.check_cancelled()?;
+    // A read view carries no scratch, so the resets are vacuous and this
+    // call is the declared-name seeding — kept through the same one
+    // statement-entry operation every write entry takes, never a second
+    // spelling of it.
+    view.begin_statement(admission.request.plan);
     let _clock = QueryClockGuard::new();
     // A read admission records its write-attempt fact from the same canonical
     // plan walk as every write entry — never a hardcoded "a read cannot
@@ -501,7 +527,10 @@ pub(crate) fn result_seed_rows(result: &QueryResult) -> Vec<Row> {
 /// PROFILE tick still reads these rows. [`materialize_rows`] is the move
 /// path, used once a tick has already recorded the clause.
 pub(crate) fn rows_as_result(graph: &ExecGraph<'_>, rows: &[Row]) -> QueryResult {
-    let mut columns = rows.first().map(visible_keys).unwrap_or_default();
+    let mut columns = rows
+        .first()
+        .map(|row| visible_keys(graph, row))
+        .unwrap_or_default();
     columns.sort();
     let data = rows
         .iter()
@@ -710,6 +739,7 @@ fn execute_plan_stage_seeded(
             sink.map(|sink| PlanMetricsSite::at(sink, stage, part)),
         )?;
         Ok(call::concluding_part_result(
+            graph,
             part_clauses,
             &mut rows,
             last,

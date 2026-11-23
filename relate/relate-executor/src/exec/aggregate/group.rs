@@ -15,7 +15,7 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::super::order::{park_order_keys, OrderKeys};
-use super::super::scope::{is_internal_column, visible_keys};
+use super::super::scope::visible_keys;
 use super::super::RowFeed;
 use super::bill::{GroupBill, InputBill};
 use super::eval::{agg_eval, AggScope};
@@ -154,6 +154,7 @@ impl<'a> Aggregation<'a> {
         // key comes from the explicit `group_by` expressions or from the
         // inferred non-aggregating projection items.
         let key_exprs = desugar_star_keys(
+            graph,
             match group_by {
                 Some(keys) => keys.iter().map(Cow::Borrowed).collect(),
                 None => items
@@ -322,7 +323,7 @@ impl<'a> Aggregation<'a> {
                 // The variables `*` carries are already in the first-row
                 // seed; keep the internal `__*` names out of the projected
                 // row, the same filter the non-aggregating `*` path applies.
-                n.retain(|name, _| !is_internal_column(name));
+                n.retain(|name, _| !graph.is_internal_key(name));
             }
             for (i, (p, role)) in items.iter().zip(&roles).enumerate() {
                 let val = match *role {
@@ -412,6 +413,7 @@ pub(crate) fn aggregate_ex<'a>(
 /// the unexpanded `*` then only keeps `keyless` false (a star key means
 /// keys exist), and the row loop never runs.
 pub(crate) fn desugar_star_keys<'a>(
+    graph: &ExecGraph<'_>,
     key_exprs: Vec<Cow<'a, Expr>>,
     rows: &[Row],
 ) -> Vec<Cow<'a, Expr>> {
@@ -421,7 +423,7 @@ pub(crate) fn desugar_star_keys<'a>(
     if !key_exprs.iter().any(|k| matches!(&**k, Expr::Star)) {
         return key_exprs;
     }
-    let mut carried = visible_keys(first);
+    let mut carried = visible_keys(graph, first);
     carried.sort();
     // Row keys (String) enter the IR's name domain at construction.
     let star_keys: Vec<Expr> = carried

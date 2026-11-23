@@ -335,7 +335,7 @@ pub(crate) fn create_or_bind_node(
     let name = np
         .variable
         .clone()
-        .unwrap_or_else(|| SmallName::from_name(&anon_name()));
+        .unwrap_or_else(|| SmallName::from_name(&anon_name(graph)));
     row.insert(name.to_string(), graph.node_value(id));
     Ok(id)
 }

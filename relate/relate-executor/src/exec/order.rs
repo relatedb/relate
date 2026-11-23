@@ -17,7 +17,7 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::scope::is_star_item;
-use super::scope::{projection_names, projects_name, result_column, uncolliding_prefix};
+use super::scope::{projection_names, projects_name, result_column};
 
 /// Whether an `ORDER BY` key must read the projected row even when its
 /// expression is verbatim a projection item.
@@ -41,16 +41,16 @@ fn order_key_alias_scoped(expr: &Expr, items: &[Projection], explicit_grouping: 
 /// key can never overwrite — or be read back as — a user alias. The `__`
 /// namespace is where internal columns live, and a user alias is allowed to
 /// spell one (`AS __ord0`).
-fn parked_prefix(items: &[Projection]) -> String {
-    uncolliding_parked_prefix(&projection_names(items))
+fn parked_prefix(graph: &ExecGraph<'_>, items: &[Projection]) -> String {
+    uncolliding_parked_prefix(graph, &projection_names(items))
 }
 
 /// [`parked_prefix`] over a row scope's real column vocabulary: the form
 /// for the paths that order rows without projection items (the catalog
 /// `YIELD` paging, whose composed rows are their own scope), so the
 /// collision guard is decided by the columns that actually exist.
-fn uncolliding_parked_prefix(columns: &[String]) -> String {
-    uncolliding_prefix("__ord", columns.iter().map(String::as_str))
+fn uncolliding_parked_prefix(graph: &ExecGraph<'_>, columns: &[String]) -> String {
+    graph.uncolliding_prefix("__ord", columns.iter().map(String::as_str))
 }
 
 /// One projection's `ORDER BY` keys, each with its resolved scope decision
@@ -78,17 +78,41 @@ struct KeyPlan<'a> {
     parked: String,
 }
 
+/// The one per-key plan builder both column-vocabulary constructors share
+/// ([`OrderKeys::parked_only`] over projection items,
+/// [`OrderKeys::over_columns`] over a row scope's real columns): a parked
+/// name per key off the caller's freshened `prefix`, and the
+/// null-on-failure policy the caller's vocabulary decides — the two
+/// constructors differ in nothing else ([`OrderKeys::new`] layers the
+/// verbatim table on top of the parked-only plan).
+fn keyed_plan<'a>(
+    keys: impl IntoIterator<Item = &'a relate_ir::OrderItem>,
+    prefix: &str,
+    null_on_failure: impl Fn(&Expr) -> bool,
+) -> Vec<KeyPlan<'a>> {
+    keys.into_iter()
+        .enumerate()
+        .map(|(index, key)| KeyPlan {
+            key,
+            verbatim: None,
+            null_on_failure: null_on_failure(&key.expr),
+            parked: format!("{prefix}{index}"),
+        })
+        .collect()
+}
+
 impl<'a> OrderKeys<'a> {
     /// Every key's plan, verbatim resolution included — for callers that
     /// evaluate keys against a projected row. The per-key scope depends only
     /// on the key expressions and the items, never on a row, so the decision
     /// is taken once here.
     pub(crate) fn new(
+        graph: &ExecGraph<'_>,
         keys: &'a [relate_ir::OrderItem],
         items: &'a [Projection],
         explicit_grouping: bool,
     ) -> Self {
-        let mut this = Self::parked_only(keys, items);
+        let mut this = Self::parked_only(graph, keys, items);
         for (index, key) in keys.iter().enumerate() {
             if !order_key_alias_scoped(&key.expr, items, explicit_grouping) {
                 this.plan[index].verbatim = verbatim_column(items, &key.expr);
@@ -104,21 +128,15 @@ impl<'a> OrderKeys<'a> {
     /// `null_on_failure` decision for every plan it builds; [`Self::new`]
     /// inherits it rather than recomputing the same value.
     pub(crate) fn parked_only(
+        graph: &ExecGraph<'_>,
         keys: impl IntoIterator<Item = &'a relate_ir::OrderItem>,
         items: &'a [Projection],
     ) -> Self {
-        let parked_prefix = parked_prefix(items);
+        let parked_prefix = parked_prefix(graph, items);
         Self {
-            plan: keys
-                .into_iter()
-                .enumerate()
-                .map(|(index, key)| KeyPlan {
-                    key,
-                    verbatim: None,
-                    null_on_failure: reads_unprojected_name(&key.expr, items),
-                    parked: format!("{parked_prefix}{index}"),
-                })
-                .collect(),
+            plan: keyed_plan(keys, &parked_prefix, |expr| {
+                reads_unprojected_name(expr, items)
+            }),
         }
     }
 
@@ -130,19 +148,16 @@ impl<'a> OrderKeys<'a> {
     /// rows actually carry, never by a projection item list this path
     /// does not have. No verbatim table: with no projection items to
     /// answer from, every key is evaluated against the row.
-    pub(crate) fn over_columns(keys: &'a [relate_ir::OrderItem], columns: &[String]) -> Self {
-        let parked_prefix = uncolliding_parked_prefix(columns);
+    pub(crate) fn over_columns(
+        graph: &ExecGraph<'_>,
+        keys: &'a [relate_ir::OrderItem],
+        columns: &[String],
+    ) -> Self {
+        let parked_prefix = uncolliding_parked_prefix(graph, columns);
         Self {
-            plan: keys
-                .iter()
-                .enumerate()
-                .map(|(index, key)| KeyPlan {
-                    key,
-                    verbatim: None,
-                    null_on_failure: reads_name_outside(&key.expr, columns),
-                    parked: format!("{parked_prefix}{index}"),
-                })
-                .collect(),
+            plan: keyed_plan(keys, &parked_prefix, |expr| {
+                reads_name_outside(expr, columns)
+            }),
         }
     }
 
@@ -355,75 +370,6 @@ pub(crate) fn cmp_sort_keys(
     ia.cmp(&ib)
 }
 
-/// Apply a catalog clause's own `YIELD` paging stages (`ORDER BY`/`SKIP`/
-/// `LIMIT`), in written order, to the composed rows. The stage interpreter
-/// is the same one ordinary projections use for their paging sub-grammar;
-/// it lives here beside those helpers so `project_catalog` stays lookup →
-/// prefill → project → filter.
-pub(crate) fn apply_yield_page_stages(
-    graph: &ExecGraph<'_>,
-    params: &BTreeMap<String, Value>,
-    stages: &[relate_parser::PageStage],
-    output: &mut Vec<Row>,
-) -> Result<()> {
-    for stage in stages {
-        match stage {
-            relate_parser::PageStage::OrderBy(items) => {
-                let order = items
-                    .iter()
-                    .map(|item| {
-                        Ok(relate_ir::OrderItem {
-                            expr: relate_front::lower_expr(&item.expr)?,
-                            ascending: !item.descending,
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                // The catalog rows are their own scope: a `YIELD` key names
-                // an output column, so parking reads the row itself, and
-                // the key plan resolves its parked-prefix collision guard
-                // and null-on-failure policy from the column vocabulary
-                // the composed rows actually carry — every column any row
-                // of the cross join holds — never from a projection item
-                // list this path does not have.
-                let columns: Vec<String> = {
-                    let mut columns = HashSet::new();
-                    for row in output.iter() {
-                        columns.extend(row.keys().cloned());
-                    }
-                    columns.into_iter().collect()
-                };
-                let keys = OrderKeys::over_columns(&order, &columns);
-                for row in output.iter_mut() {
-                    park_order_keys(&keys, row, |expr, scope| eval(graph, scope, expr, params))?;
-                }
-                sort_rows_by_parked_keys(&keys, output, None)?;
-                unpark_order_keys(&keys, output);
-            }
-            relate_parser::PageStage::Skip(expr) => {
-                let count = resolve_page_bound(graph, params, &relate_front::lower_expr(expr)?)?;
-                *output = page(
-                    std::mem::take(output),
-                    PageBounds {
-                        skip: count,
-                        limit: None,
-                    },
-                );
-            }
-            relate_parser::PageStage::Limit(expr) => {
-                let count = resolve_page_bound(graph, params, &relate_front::lower_expr(expr)?)?;
-                *output = page(
-                    std::mem::take(output),
-                    PageBounds {
-                        skip: 0,
-                        limit: Some(count),
-                    },
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Reserve the row buffer, then sample RSS while those rows are still the
 /// live workspace and before the key vector is built.
 fn hold_sort_rows(rows: &[Row]) -> Result<relate_core::tokens::WorkspaceCharge> {
@@ -566,6 +512,21 @@ impl PageBounds {
     /// empty.
     pub(crate) fn answers_nothing(self) -> bool {
         self.limit == Some(0)
+    }
+
+    /// A skip-only page: everything before `skip` drops, the rest is kept.
+    /// The one spelling of the one-sided bounds, so a `SKIP`- or `LIMIT`-
+    /// only stage (the catalog's YIELD paging) never re-spells the literal.
+    pub(crate) fn skip(skip: usize) -> Self {
+        Self { skip, limit: None }
+    }
+
+    /// A limit-only page from the start: the first `limit` rows are kept.
+    pub(crate) fn limit(limit: usize) -> Self {
+        Self {
+            skip: 0,
+            limit: Some(limit),
+        }
     }
 }
 

@@ -108,7 +108,7 @@ pub(crate) fn try_fold_walk_count(ctx: &FoldCtx<'_>) -> Result<Option<FoldedRetu
     let ctx = ExecCtx::new(graph, params);
     let residual = Residual {
         conjuncts: &conjuncts,
-        scope: &match_scope(entering, patterns),
+        scope: &match_scope(graph, entering, patterns),
     };
     // The target's admission is stage-fixed, so its prepared form (and the
     // memo's table) lives across the seeds. An unfiltered target admits

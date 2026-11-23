@@ -372,7 +372,7 @@ fn unwrapped_call_source<'a>(parsed: &cl::Expr, src: &'a str) -> Option<&'a str>
     text.find('(').map(|open| &text[open..])
 }
 
-pub(super) fn lower_order(items: &[cl::OrderByItem]) -> Result<Vec<mdb::OrderItem>> {
+pub fn lower_order(items: &[cl::OrderByItem]) -> Result<Vec<mdb::OrderItem>> {
     items
         .iter()
         .map(|o| {

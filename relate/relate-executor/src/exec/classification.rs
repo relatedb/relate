@@ -196,7 +196,11 @@ pub(crate) fn may_cut(fields: &ProjectionFields<'_>) -> bool {
 impl<'a> ProjectionClass<'a> {
     /// The plan over an already-decided shape — the one construction
     /// site of the parked-key plan and the output names.
-    pub(crate) fn new(fields: &ProjectionFields<'a>, shape: ProjectionShape) -> Self {
+    pub(crate) fn new(
+        graph: &ExecGraph<'_>,
+        fields: &ProjectionFields<'a>,
+        shape: ProjectionShape,
+    ) -> Self {
         let aggregating = shape.aggregating();
         let where_mode = match fields.where_clause {
             Some(w) if aggregating && is_agg_expr(w) => Some(WhereMode::Having(w)),
@@ -215,7 +219,12 @@ impl<'a> ProjectionClass<'a> {
             shape,
             where_mode,
             eager_paged: !aggregating && pages_eagerly(fields),
-            order_keys: OrderKeys::new(fields.order, fields.items, fields.group_by.is_some()),
+            order_keys: OrderKeys::new(
+                graph,
+                fields.order,
+                fields.items,
+                fields.group_by.is_some(),
+            ),
             out_names: value_items.iter().map(|(_, name)| name.clone()).collect(),
             value_items,
         }

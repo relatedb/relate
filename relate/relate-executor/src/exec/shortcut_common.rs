@@ -18,8 +18,9 @@ use crate::group_key::{row_key, GroupKey};
 use crate::overlay::{ExecGraph, RetainedTotal};
 use crate::row::Row;
 
-use super::order::{park_order_keys, OrderKeys};
-use super::project::{project_rows, return_result, ProjectionInput};
+use super::classification::{ProjectionClass, ProjectionShape};
+use super::order::park_order_keys;
+use super::project::{project_classed, return_result, ProjectionInput};
 use super::scope::ProjectionFields;
 use super::QueryResult;
 
@@ -220,28 +221,32 @@ pub(super) fn finish_grouped_rows(
             source_text: None,
         })
         .collect();
-    // The pre-projected surface's parked sort keys: the sink parks its
-    // rows' keys before handing them over, so the grouped finish parks
-    // its own — every key already rewritten onto an output column, so
-    // parking copies the column under its `__ord*` name.
-    let order_keys = OrderKeys::new(&page.order, &identity, false);
+    // The clause's one classification — built once here, parked through
+    // and handed to the projection whole: the class's own parked-key plan
+    // ([`ProjectionClass::order_keys`]) both writes the grouped rows'
+    // `__ord*` columns (every key already rewritten onto an output column,
+    // so parking copies the column) and is the plan the projection reads
+    // them back by, so the two cannot drift apart as two derived plans
+    // could.
+    let fields = ProjectionFields {
+        items: &identity,
+        distinct: false,
+        group_by: None,
+        order: &page.order,
+        skip: page.skip,
+        limit: page.limit,
+        where_clause: None,
+    };
+    let class = ProjectionClass::new(ctx.graph, &fields, ProjectionShape::decide(&fields)?);
     for row in &mut grouped {
-        park_order_keys(&order_keys, row, |expr, scope| {
+        park_order_keys(&class.order_keys, row, |expr, scope| {
             crate::eval::eval(ctx.graph, scope, expr, ctx.params)
         })?;
     }
-    let mut rows = project_rows(
+    let mut rows = project_classed(
         ctx,
+        &class,
         ProjectionInput::SinkProjected(grouped),
-        &ProjectionFields {
-            items: &identity,
-            distinct: false,
-            group_by: None,
-            order: &page.order,
-            skip: page.skip,
-            limit: page.limit,
-            where_clause: None,
-        },
         true,
         scope,
     )?;

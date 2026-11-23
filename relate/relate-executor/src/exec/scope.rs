@@ -11,38 +11,9 @@ use relate_ir::{
 use relate_names::SmallName;
 
 use crate::eval::{expr_vars, is_agg_expr};
+use crate::overlay::is_internal_column;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
-
-/// Internal/synthetic row column names start with `__` (e.g. the `__agg_*`
-/// bindings aggregation seeds, or `anon_name` temporaries); they are never
-/// projected to users.
-pub(crate) fn is_internal_column(name: &str) -> bool {
-    name.starts_with("__")
-}
-
-/// `base` lengthened with `_` until no name in `names` starts with it: the
-/// one freshening policy for a synthetic `__` column prefix (parked sort
-/// keys, aggregate child bindings), so a user spelling of an internal name
-/// can never be shadowed or read back as a synthetic one. One pass over the
-/// names, linear in their total length (a name can be as long as the query
-/// cap): the prefix needs one more `_` than the longest run of them any
-/// name carries right after `base`.
-pub(crate) fn uncolliding_prefix<'n>(
-    base: &str,
-    names: impl IntoIterator<Item = &'n str>,
-) -> String {
-    let longest_run = names
-        .into_iter()
-        .filter_map(|name| name.strip_prefix(base))
-        .map(|rest| rest.bytes().take_while(|&byte| byte == b'_').count())
-        .max();
-    let mut prefix = String::from(base);
-    if let Some(run) = longest_run {
-        prefix.extend(std::iter::repeat_n('_', run + 1));
-    }
-    prefix
-}
 
 /// The output names of a projection's non-`*` items, in item order —
 /// the one walk the parked-prefix check, the sink's output names and the
@@ -170,7 +141,7 @@ impl<'a> ProjectionFields<'a> {
 
 pub(crate) fn push_scope_name(names: &mut Vec<String>, name: impl Into<String>) {
     let name = name.into();
-    if !is_internal_column(&name) && !names.iter().any(|n| n == &name) {
+    if !names.iter().any(|n| n == &name) {
         names.push(name);
     }
 }
@@ -263,38 +234,74 @@ pub(crate) fn add_gpm_element_names(elements: &[PatternElement], out: &mut HashS
     });
 }
 
-pub(crate) fn add_path_scope(names: &mut Vec<String>, p: &PathPattern) {
-    for_each_pattern_bound_name(p, &mut |name| {
-        push_scope_name(names, name.to_string());
-    });
+/// The names one clause declares, in declaration order — the one walk of
+/// the clause → bound-names vocabulary: pattern variables (a `MATCH`'s
+/// attached `SEARCH` includes its `SCORE AS` column), `UNWIND` aliases,
+/// the `LOAD CSV` variable, `CALL … YIELD` columns, and a projection's
+/// non-`*` output names. Both consumers of the vocabulary fold over this
+/// one walk — [`star_scope_names`] (the evolving scope: a `WITH` replaces
+/// it) and [`declare_plan_names`] (the cumulative statement-wide declared
+/// set) — so the two can never disagree about which names a clause binds.
+/// This is the executor's walk over the *planned* clause; the front's
+/// `clause_introduced_names` walks the parser AST before planning and also
+/// folds the catalog commands' output columns, which no plan carries.
+pub(crate) fn clause_declared_names(clause: &Clause) -> Vec<String> {
+    let mut names = Vec::new();
+    let pattern_names = |patterns: &[PathPattern], names: &mut Vec<String>| {
+        for pattern in patterns {
+            for_each_pattern_bound_name(pattern, &mut |name| {
+                push_scope_name(names, name.to_string())
+            });
+        }
+    };
+    match clause {
+        Clause::Match {
+            patterns, search, ..
+        } => {
+            pattern_names(patterns, &mut names);
+            // A `MATCH`'s attached `SEARCH` binds its `SCORE AS` column
+            // exactly as a pattern variable does — `RETURN *` star-projects
+            // it and the declaration walk records it.
+            if let Some(score) = search.as_deref().and_then(|s| s.score_var.as_ref()) {
+                push_scope_name(&mut names, score.to_string());
+            }
+        }
+        Clause::Create { patterns } => pattern_names(patterns, &mut names),
+        Clause::Merge { pattern, .. } => {
+            for_each_pattern_bound_name(pattern, &mut |name| {
+                push_scope_name(&mut names, name.to_string())
+            });
+        }
+        Clause::Unwind { alias, .. } => push_scope_name(&mut names, alias.to_string()),
+        Clause::LoadCsv { variable, .. } => push_scope_name(&mut names, variable.to_string()),
+        Clause::Call { yield_items, .. } => {
+            for name in yield_items.effective_names() {
+                push_scope_name(&mut names, name.to_string());
+            }
+        }
+        Clause::With { items, .. } | Clause::Return { items, .. } => {
+            for name in projection_names(items) {
+                push_scope_name(&mut names, name);
+            }
+        }
+        _ => {}
+    }
+    names
 }
 
 /// The names a `RETURN *`/`WITH *` expands when there is no row to read them
 /// off — the declared scope, so the empty table still has the right columns.
-/// It walks the arms that bind a name before the projection: MATCH/MERGE/
-/// CREATE patterns, `UNWIND` aliases, `CALL … YIELD` columns, and the
-/// preceding `WITH`.
-///
-/// This is the executor's runtime stand-in for an empty table, not the
-/// front's admission set: the front's `clause_introduced_names` also folds
-/// the catalog commands' output columns, the `LOAD CSV` alias and a nested
-/// `CALL { … }`'s exports, which this walk does not model.
+/// Every binding clause folds through the one per-clause vocabulary
+/// ([`clause_declared_names`], which returns nothing for the non-binding
+/// variants), so the star scope and the statement's declaration walk model
+/// exactly the same names — a `LOAD CSV` alias or a later binding form
+/// cannot appear in one and not the other. The only local policy is the
+/// scope's own: a `WITH` replaces the carried names, the terminal `RETURN`
+/// stops the walk.
 pub(crate) fn star_scope_names(clauses: &[Clause]) -> Vec<String> {
     let mut names = Vec::new();
     for c in clauses {
         match c {
-            Clause::Match { patterns, .. } | Clause::Create { patterns } => {
-                for p in patterns {
-                    add_path_scope(&mut names, p);
-                }
-            }
-            Clause::Merge { pattern, .. } => add_path_scope(&mut names, pattern),
-            Clause::Unwind { alias, .. } => push_scope_name(&mut names, alias.to_string()),
-            Clause::Call { yield_items, .. } => {
-                for name in yield_items.effective_names() {
-                    push_scope_name(&mut names, name.to_string());
-                }
-            }
             Clause::With { items, .. } => {
                 // A `WITH` replaces the scope; under `WITH *` it keeps the
                 // names bound so far and adds the explicit items.
@@ -302,7 +309,11 @@ pub(crate) fn star_scope_names(clauses: &[Clause]) -> Vec<String> {
                 names = return_columns(items, move || carried);
             }
             Clause::Return { .. } => break,
-            _ => {}
+            _ => {
+                for name in clause_declared_names(c) {
+                    push_scope_name(&mut names, name);
+                }
+            }
         }
     }
     names.sort();
@@ -429,9 +440,10 @@ pub(crate) fn fill_columns<'n>(
     );
 }
 
-pub(crate) fn visible_keys(row: &Row) -> Vec<String> {
+/// The row's user-visible keys: every key the executor did not synthesize.
+pub(crate) fn visible_keys(graph: &ExecGraph<'_>, row: &Row) -> Vec<String> {
     row.keys()
-        .filter(|k| !is_internal_column(k))
+        .filter(|k| !graph.is_internal_key(k))
         .cloned()
         .collect()
 }
@@ -450,9 +462,9 @@ pub(crate) fn visible_keys(row: &Row) -> Vec<String> {
 /// caller's row unchanged — a sink projection only ever feeds the clause
 /// immediately after its MATCH, so a `Conditional`/`Foreach` body can never
 /// receive sink-parked `__ord*`/`__agg_*` rows, and no strip is needed.
-pub(crate) fn nested_seed_row(row: &Row) -> Row {
+pub(crate) fn nested_seed_row(graph: &ExecGraph<'_>, row: &Row) -> Row {
     let mut seed = row.clone();
-    seed.retain(|name, _| !is_internal_column(name));
+    seed.retain(|name, _| !graph.is_internal_key(name));
     seed
 }
 

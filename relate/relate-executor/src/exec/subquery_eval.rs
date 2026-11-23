@@ -58,8 +58,12 @@ fn nested_row_count(rows: &[Row], last: &Option<QueryResult>) -> usize {
 /// row). A `CALL` subquery's explicit import is a different contract —
 /// `call` carries it as a live scope, not as `WITH` items — so this
 /// rewrite stays on the expression-subquery path only.
-fn nested_body(query: &Query, outer: &Row) -> (Query, QueryCtx<'static>, Row) {
-    let seed = nested_seed_row(outer);
+fn nested_body(
+    graph: &ExecGraph<'_>,
+    query: &Query,
+    outer: &Row,
+) -> (Query, QueryCtx<'static>, Row) {
+    let seed = nested_seed_row(graph, outer);
     let imported: Vec<String> = seed.keys().cloned().collect();
     let query = relate_planner::query_with_persistent_imports(query, &imported);
     let qctx = QueryCtx::new("");
@@ -90,7 +94,7 @@ pub(crate) fn eval_exists_query(
     params: &BTreeMap<String, Value>,
     query: &Query,
 ) -> Result<Value> {
-    let (query, qctx, seed) = nested_body(query, row);
+    let (query, qctx, seed) = nested_body(graph, query, row);
     // LABS-193: a pattern-only body between row-bound nodes answers
     // existence without running the subquery engine — and never ticks
     // the budget (ADR-0395).
@@ -156,7 +160,7 @@ pub(crate) fn eval_count_query(
     params: &BTreeMap<String, Value>,
     query: &Query,
 ) -> Result<Value> {
-    let (query, qctx, seed) = nested_body(query, row);
+    let (query, qctx, seed) = nested_body(graph, query, row);
     // The parts' explicit-vs-omitted RETURN classification as one count:
     // some-but-not-all is the mix error, zero is the omitted-RETURN path,
     // and every other count takes the seeded statement engine below. Both
@@ -206,7 +210,7 @@ pub(crate) fn eval_collect_query(
     params: &BTreeMap<String, Value>,
     query: &Query,
 ) -> Result<Value> {
-    let (query, qctx, seed) = nested_body(query, row);
+    let (query, qctx, seed) = nested_body(graph, query, row);
     let result = execute_query_seeded(graph, &query, params, vec![seed], qctx)?;
     if result.columns.len() != 1 {
         return Err(Error::syntax(

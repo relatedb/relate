@@ -14,7 +14,6 @@
 //! per-hop atom: the exec walkers and the eval walk engine
 //! (`crate::eval_walk`) import both arms downward from the tier.
 
-use std::borrow::Cow;
 use std::cell::Cell;
 
 use relate_core::{Node, NodeId, Path, RelId, Relationship, Value};
@@ -73,14 +72,29 @@ pub(crate) fn bind_rel_stub_list(graph: &ExecGraph<'_>, trail: &[RelId]) -> Valu
     )
 }
 
+/// The statement's freshened anonymous-seat prefixes — `__node` and
+/// `__trail` lengthened past every declared name through the one
+/// freshening policy ([`ExecGraph::uncolliding_prefix`]), resolved once
+/// at statement scope and cached there (nothing declares mid-statement,
+/// so the pair is fixed for the statement's lifetime). The
+/// binding-schema ladder and the seat selectors take it as data, never
+/// the live view: a pure schema builder stays independent of the store.
+#[derive(Clone)]
+pub(crate) struct SeatPrefixes {
+    /// The anonymous first-seat node prefix (`__node0`, …).
+    pub(crate) node: String,
+    /// The anonymous rel-stub trail prefix (`__trail0`, …).
+    pub(crate) trail: String,
+}
+
 /// The named path's first-seat row key (`__node0`) — the one spelling of
 /// the anonymous node seat: this module's writer ([`bind_pattern_node`],
 /// seat 0 only) and its one reader (`bind_named_path`,
 /// exec/expand.rs) consult it through [`anon_node_name`], so a
 /// scheme change is one edit, never a hand-propagated rename that
 /// silently empties a seat read.
-pub(crate) fn anon_node_name(idx: usize) -> String {
-    format!("__node{idx}")
+pub(crate) fn anon_node_name(seats: &SeatPrefixes, idx: usize) -> String {
+    format!("{}{idx}", seats.node)
 }
 
 /// The anonymous rel stub name a rel element of a named path binds:
@@ -88,8 +102,8 @@ pub(crate) fn anon_node_name(idx: usize) -> String {
 /// nodes: [`bind_trail`] writes it and the path-value reconstruction's
 /// chunk walk ([`walk_rel_chunks`]) reads it back, so the two agree by
 /// construction.
-pub(crate) fn anon_rel_name(idx: usize) -> String {
-    format!("__trail{idx}")
+pub(crate) fn anon_rel_name(seats: &SeatPrefixes, idx: usize) -> String {
+    format!("{}{idx}", seats.trail)
 }
 
 /// The name a node element binds: its variable, or — anonymous FIRST
@@ -100,19 +114,22 @@ pub(crate) fn anon_rel_name(idx: usize) -> String {
 /// The one spelling the bind policy ([`bind_pattern_node`]) and every
 /// ladder build ([`super::ladder::WalkLadder::new`]) read, so the
 /// precomputed schemas and the runtime binds agree by construction.
-/// Borrowed when the element names its variable (no caller consumes the
-/// name owned — every read site re-borrows it), owned only for the one
-/// synthesized seat.
-pub(crate) fn node_bind_name<'a>(
-    np: &'a NodePattern,
+/// The sink shape this module already uses for name plumbing
+/// ([`push_bind_name`], `for_each_pattern_bound_name`): the variable arm
+/// renders through `SmallName::with_str` into the caller's sink, so a
+/// per-row bind never heap-allocates the name; only the synthesized seat
+/// (one format, the anonymous first element of a named path) materializes
+/// a string, and only when it is asked for.
+pub(crate) fn node_bind_name<R>(
+    seats: &SeatPrefixes,
+    np: &NodePattern,
     idx: usize,
     named: bool,
-) -> Option<Cow<'a, str>> {
+    render: impl FnOnce(&str) -> R,
+) -> Option<R> {
     match &np.variable {
-        // The bind-name feed renders the IR name once (the row schema's
-        // names are the String domain; rung builds are per-walk, memoized).
-        Some(variable) => Some(Cow::Owned(variable.to_string())),
-        None if named && idx == 0 => Some(Cow::Owned(anon_node_name(idx))),
+        Some(variable) => Some(variable.with_str(render)),
+        None if named && idx == 0 => Some(render(&anon_node_name(seats, idx))),
         None => None,
     }
 }
@@ -125,17 +142,18 @@ pub(crate) fn node_bind_name<'a>(
 /// rel-list expansion also binds through), and the path-value
 /// reconstruction's chunk walk ([`walk_rel_chunks`]) — so the
 /// precomputed schemas and the runtime binds agree by construction.
-/// Borrowed/owned on the same rule as [`node_bind_name`]: the variable
-/// is never consumed owned, the synthesized seat is.
-pub(crate) fn rel_bind_name<'a>(
-    rp: &'a RelPattern,
+/// The sink shape, on the same rule as [`node_bind_name`]: a bound trail's
+/// name is rendered into the caller's sink, never allocated.
+pub(crate) fn rel_bind_name<R>(
+    seats: &SeatPrefixes,
+    rp: &RelPattern,
     idx: usize,
     named: bool,
-) -> Option<Cow<'a, str>> {
+    render: impl FnOnce(&str) -> R,
+) -> Option<R> {
     match &rp.variable {
-        // Same render-once rule as [`node_bind_name`].
-        Some(variable) => Some(Cow::Owned(variable.to_string())),
-        None if named => Some(Cow::Owned(anon_rel_name(idx))),
+        Some(variable) => Some(variable.with_str(render)),
+        None if named => Some(render(&anon_rel_name(seats, idx))),
         None => None,
     }
 }
@@ -193,7 +211,7 @@ pub(crate) fn bind_trail(
             bind_rel_stub_list(graph, trail)
         }
     };
-    if let Some(v) = &rp.variable {
+    if rp.variable.is_some() {
         // Pre-bound reconciliation, every trail shape through the one
         // vocabulary and the one accept predicate ([`Binding::accepts`],
         // candidate by reference): a single-hop trail reconciles through
@@ -218,13 +236,14 @@ pub(crate) fn bind_trail(
         if !reconciled {
             return false;
         }
-        v.with_str(|name| bind_rung_name(row, name, value(), rung));
-    } else if let Some(seat) = rel_bind_name(rp, rel_idx, named) {
-        // The anonymous arm's name through the one selection spelling
-        // ([`rel_bind_name`]: the seat iff `named`) — the same derivation
-        // the ladder build and the chunk walk read.
-        bind_rung_name(row, &seat, value(), rung);
+        // Reconciliation is the variable arm's only step: the bind
+        // itself goes through the one variable-else-seat selection
+        // ([`rel_bind_name`]) both arms share, so the naming policy has
+        // one spelling here too.
     }
+    rel_bind_name(&graph.seat_prefixes(), rp, rel_idx, named, |name| {
+        bind_rung_name(row, name, value(), rung)
+    });
     true
 }
 
@@ -322,9 +341,9 @@ pub(crate) fn bind_pattern_node(
     // reader agree on the seat scheme's width, LABS-811's stellar round).
     match class {
         Binding::Unbound(_) | Binding::Anonymous => {
-            if let Some(name) = node_bind_name(np, idx, named) {
-                bind_rung_name(row, &name, bind_node_stub(graph, id), rung);
-            }
+            node_bind_name(&graph.seat_prefixes(), np, idx, named, |name| {
+                bind_rung_name(row, name, bind_node_stub(graph, id), rung)
+            });
         }
         // Accepted above through `accepts`: a row-bound variable keeps
         // its binding, and `Mismatch` never reaches the match.
@@ -480,9 +499,14 @@ fn walk_rel_chunks(
 ) {
     for (i, rp) in path.rels.iter().enumerate() {
         let chunk = rel_chunk(
-            rel_bind_name(rp, i, path.has_path_name())
-                .as_deref()
-                .and_then(|name| row.get(name)),
+            rel_bind_name(
+                &graph.seat_prefixes(),
+                rp,
+                i,
+                path.has_path_name(),
+                |name| row.get(name),
+            )
+            .flatten(),
         );
         let empty = chunk.is_empty();
         for r in chunk {
