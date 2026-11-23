@@ -441,30 +441,28 @@ impl VaultOntology {
     /// describes a label the vault does not carry yet — and stays
     /// inert: the keys map is keyed by walked labels only, and the
     /// vocabulary of an absent label has nothing to bind.
+    ///
+    /// The walked labels arrive as the canonicalization pass's own
+    /// fold→canonical-label table — the declarations are keyed by the
+    /// same fold ([`keys_of`]), so each declaration meets the walked
+    /// spelling at one direct lookup, never a re-folded walked set.
     pub(super) fn bind_keys(
         &self,
-        walked_labels: &BTreeSet<String>,
+        label_folds: &BTreeMap<String, String>,
         keys: &mut BTreeMap<String, String>,
         learned: &mut LearnedSchema,
     ) {
-        // The walked labels are fold-unique (canonicalize_by_fold
-        // dropped the losers) and the declarations are keyed by the
-        // same fold ([`keys_of`]), so each declaration matches at
-        // most one walked label at a direct lookup — no re-fold, and
-        // no remove: the fold-collision case was refused where the
-        // declarations were built.
-        let walked: BTreeMap<String, &str> = walked_labels
-            .iter()
-            .map(|label| (md::fold_case(label), label.as_str()))
-            .collect();
+        // The walked table is fold-unique (canonicalize_by_fold dropped
+        // the losers) and the declarations are keyed by the same fold,
+        // so each declaration matches at most one walked label at a
+        // direct lookup — no re-fold, and no remove: the fold-collision
+        // case was refused where the declarations were built.
         for (fold, key) in &self.keys {
-            let Some(walked_label) = walked.get(fold) else {
+            let Some(walked_label) = label_folds.get(fold) else {
                 continue;
             };
-            keys.insert((*walked_label).to_string(), key.clone());
-            learned
-                .keys
-                .insert((*walked_label).to_string(), key.clone());
+            keys.insert(walked_label.clone(), key.clone());
+            learned.keys.insert(walked_label.clone(), key.clone());
         }
     }
 

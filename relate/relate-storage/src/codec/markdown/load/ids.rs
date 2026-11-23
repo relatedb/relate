@@ -26,16 +26,23 @@ use relate_markdown::fold_case;
 
 /// The stable-id assignment's own state: every canonical key's id, the
 /// next fresh id — the one "next free id" fact every consumer reads —
-/// and the short-form link candidate index. The pair cannot desync by
-/// construction: every key insertion goes through
-/// [`IdAssignment::register`], which maintains both tables, the id
-/// map is read through [`IdAssignment::ids`], and the allocator head
-/// is read through [`IdAssignment::next_fresh_id`] —
-/// [`IdAssignment::assign_fresh`] is the one writer of both halves.
+/// and the two link-resolution indexes (the short-form candidate index,
+/// the full-form fold index). The tables cannot desync by construction:
+/// every key insertion goes through [`IdAssignment::register`], which
+/// maintains all of them, the id map is read through
+/// [`IdAssignment::ids`], and the allocator head is read through
+/// [`IdAssignment::next_fresh_id`] — [`IdAssignment::assign_fresh`] is
+/// the one writer of both halves.
 pub(super) struct IdAssignment {
     ids_by_key: BTreeMap<String, i64>,
     next_fresh_id: i64,
     short_links: ShortLinkIndex,
+    /// fold(vault key) → the first-registered key of that fold — the
+    /// full-form link pass resolves a case- or normalization-variant
+    /// key spelling through it (the vault's one identity relation,
+    /// ADR-0406 §2 + ADR-0647) instead of an exact match, so a variant
+    /// link resolves to the existing node and never stubs a duplicate.
+    by_fold: BTreeMap<String, String>,
 }
 
 impl IdAssignment {
@@ -58,15 +65,35 @@ impl IdAssignment {
         self.next_fresh_id
     }
 
-    /// The one key insertion: a key enters the id map and the
-    /// short-form candidate index together, and the index's membership
-    /// is derived from the map insert itself — only a first insertion
-    /// indexes the key, so a re-registration can never leave a stale
-    /// or duplicate group entry and the two tables cannot desync.
+    /// The one key insertion: a key enters the id map and both link
+    /// indexes together, and each index's membership is derived from
+    /// the map insert itself — only a first insertion indexes the key,
+    /// so a re-registration can never leave a stale or duplicate group
+    /// entry and the tables cannot desync.
     fn register(&mut self, key: &str, id: i64) {
         if self.ids_by_key.insert(key.to_string(), id).is_none() {
             self.short_links.insert(key);
+            self.by_fold
+                .entry(fold_case(key))
+                .or_insert_with(|| key.to_string());
         }
+    }
+
+    /// The fold-keyed registration query the full-form arms ask — the
+    /// short-form side's [`ShortLinkIndex::candidates`] contract over
+    /// whole keys: the canonical key and its id when a registered key
+    /// folds to this one, `None` when nothing is registered under the
+    /// fold (a genuinely novel name). The hit's id is the id map's by
+    /// construction — [`Self::register`] fills the fold index and the
+    /// id map together — so the caller asks one question and never a
+    /// follow-up lookup.
+    fn registered_under_fold(&self, key: &str) -> Option<(String, i64)> {
+        let canonical = self.by_fold.get(&fold_case(key))?;
+        let id = *self
+            .ids_by_key
+            .get(canonical)
+            .expect("register fills the id map and the fold index together");
+        Some((canonical.clone(), id))
     }
 
     /// Hand out the next fresh id and register its key — the one
@@ -89,16 +116,25 @@ impl IdAssignment {
 pub(super) struct RelAssignment {
     ids: BTreeMap<String, i64>,
     next_rel_id: i64,
+    /// The manifest's recorded next free rel id, frozen at
+    /// construction — the bound every restored rel id is judged
+    /// against ([`restored_id`]'s invariant), an implementation detail
+    /// of the carrier, never a per-call parameter.
+    seeded_rel_id: i64,
 }
 
 impl RelAssignment {
     /// The allocator, seeded with the manifest's recorded next free
-    /// rel id — the bound every restored rel id is judged against,
-    /// captured before any fresh id advances the live head.
-    fn new(next_rel_id: i64) -> Self {
+    /// rel id — the derivation's one home (the `max(1)` clamp
+    /// `restore_ids` applies for the node side, mirrored here), and the
+    /// frozen bound every restored rel id is judged against, captured
+    /// before any fresh id advances the live head.
+    fn new(recorded_next_rel_id: i64) -> Self {
+        let next_rel_id = recorded_next_rel_id.max(1);
         Self {
             ids: BTreeMap::new(),
             next_rel_id,
+            seeded_rel_id: next_rel_id,
         }
     }
 
@@ -112,12 +148,19 @@ impl RelAssignment {
         self.next_rel_id
     }
 
-    /// One relationship's id: the manifest's restored one when it
-    /// holds and passes the invariant, else the next fresh id — the
-    /// node side's [`IdAssignment::assign_fresh`] contract over the
-    /// rel half.
-    fn assign(&mut self, restored: Option<i64>, seed: i64, identity: &str) -> Result<i64> {
-        let id = match restored_id(restored, seed, "relationship", identity)? {
+    /// One relationship's id: the id this pass already assigned the
+    /// same identity — set semantics, ADR-0406 §2: two link entries
+    /// resolving to one `(start, type, end, properties)` are one edge,
+    /// and the shared id makes the install's later-row-wins rule
+    /// collapse them — else the manifest's restored one when it holds
+    /// and passes the invariant, else the next fresh id — the node
+    /// side's [`IdAssignment::assign_fresh`] contract over the rel
+    /// half.
+    fn assign(&mut self, restored: Option<i64>, identity: &str) -> Result<i64> {
+        if let Some(&assigned) = self.ids.get(identity) {
+            return Ok(assigned);
+        }
+        let id = match restored_id(restored, self.seeded_rel_id, "relationship", identity)? {
             Some(restored) => restored,
             None => {
                 let fresh = self.next_rel_id;
@@ -160,6 +203,7 @@ pub(super) fn restore_ids(parsed: &[ParsedFile], manifest: &VaultManifest) -> Re
         ids_by_key: BTreeMap::new(),
         next_fresh_id: manifest.next_node_id.max(1),
         short_links: ShortLinkIndex::default(),
+        by_fold: BTreeMap::new(),
     };
     // The recorded seed, captured before any fresh id advances the live
     // allocator head: the guard below judges restored ids against it, so a
@@ -181,18 +225,57 @@ pub(super) fn restore_ids(parsed: &[ParsedFile], manifest: &VaultManifest) -> Re
     Ok(ids)
 }
 
-/// Secondary label → primary label mapping (ADR-0406 §2): a target
-/// naming a secondary label resolves to that node's primary path.
-fn primary_label_map(parsed: &[ParsedFile]) -> BTreeMap<String, String> {
-    let mut primary_of: BTreeMap<String, String> = BTreeMap::new();
-    for file in parsed {
-        for label in std::iter::once(&file.label).chain(&file.doc.extra_labels) {
-            primary_of
-                .entry(fold_case(label))
-                .or_insert_with(|| file.label.clone());
+/// The walked-label index (ADR-0406 §2): the two distinct facts the
+/// full-form target resolution consults — which label folds some node
+/// carries as its **primary** label (with the canonical spelling: the
+/// `Label/<key>` namespace that owns node identity), and which folds
+/// are carried as **extra** labels (with the substituting primary of
+/// the first file in walk order, the secondary-label mapping §2
+/// defines). The two are never one map: a label that real nodes carry
+/// as primary while other, earlier-sorted files carry it as extra (the
+/// converted vault's `Source`, claimed by `Draft`-primary files) must
+/// resolve at its own namespace, never be hijacked by the substitution
+/// (REL8-2039 — every `[[Source/…]]` link in the vault silently
+/// resolved into the `Draft/` namespace and the checkpoint rewrote the
+/// files to match, making container rewires lossy).
+///
+/// `primary` is the canonicalization pass's own fold→canonical-label
+/// table, handed over by [`super::parse_and_canonicalize_files`] — the
+/// walked-label fact's one home, never re-derived by re-folding the
+/// files here; this index adds only `secondary`, the extra-label
+/// claims the canonicalization pass does not see.
+struct WalkedLabelIndex<'a> {
+    /// fold → the canonical spelling of a label some node carries as
+    /// primary (the identity-owning namespace) — the canonicalization
+    /// pass's own table, borrowed, never re-derived here.
+    primary: &'a BTreeMap<String, String>,
+    /// fold → the substituting primary of the first file carrying the
+    /// label as an extra label (§2's secondary-label mapping).
+    secondary: BTreeMap<String, String>,
+}
+
+impl<'a> WalkedLabelIndex<'a> {
+    /// One pass over the canonical vault's extra labels — the primary
+    /// table is the bundle's own canonicalization table, borrowed
+    /// as-is; this construction claims only the secondary folds. The
+    /// resolution's fixed order — primary namespace first, substitution
+    /// only for a fold no node claims as primary — is what keeps the
+    /// two tables from becoming one.
+    fn of(canonical: &'a super::CanonicalVault) -> Self {
+        let mut index = WalkedLabelIndex {
+            primary: &canonical.label_folds,
+            secondary: BTreeMap::new(),
+        };
+        for file in &canonical.files {
+            for label in &file.doc.extra_labels {
+                index
+                    .secondary
+                    .entry(fold_case(label))
+                    .or_insert_with(|| file.label.clone());
+            }
         }
+        index
     }
-    primary_of
 }
 
 /// A resolved full-form target (ADR-0406 §4): the existing node, or
@@ -205,46 +288,131 @@ enum ResolvedTarget {
     Stub { key: String, node: Node },
 }
 
-/// Resolve a full-form link target (ADR-0406 §4): the named label
-/// substitutes to the target's primary label (secondary labels map to
-/// primaries), and a not-yet-materialized target is materialized as a
-/// stub right here. The stub row is returned to the caller's batch,
-/// not installed inline: nothing in this pass reads installed rows, so
-/// the slices install whole.
+/// One namespace resolution step — the mechanics every arm of
+/// [`resolve_full_target`] shares: the target key under `namespace`,
+/// resolved through the vault's one identity relation (the fold), as
+/// the registered canonical key and its id when the pass already holds
+/// that key (a walked file or an earlier link's stub) — `None` when
+/// the name is novel. The resolution stays a pair: matched-vs-novel is
+/// the caller's decision (the miss arms stub, the substitution arm
+/// falls through), never a second discrimination inside the helper.
+fn resolve_at(ids: &IdAssignment, namespace: &str, key: &str) -> Option<(String, i64)> {
+    ids.registered_under_fold(&vault_key(namespace, key))
+}
+
+/// The resolve-or-stub step the two miss arms share: the target key
+/// under `namespace` when the pass already holds it, else the §4 stub
+/// materialized under that same label — the one home of the decision,
+/// so neither miss arm can stub a name [`resolve_at`] can find.
+fn resolve_or_stub(
+    keys: &BTreeMap<String, String>,
+    ids: &mut IdAssignment,
+    namespace: &str,
+    key: &str,
+) -> ResolvedTarget {
+    resolve_at(ids, namespace, key).map_or_else(
+        || stub_row(keys, ids, namespace, key),
+        |(key, id)| ResolvedTarget::Existing { key, id },
+    )
+}
+
+/// Resolve a full-form link target (ADR-0406 §2/§4), three policies
+/// over the shared steps ([`resolve_at`], [`resolve_or_stub`]): the
+/// named label's **own namespace** first — `[[Label/<key>]]` names the
+/// `Label/` directory, which owns node identity, so when a walked node
+/// carries the label as primary (fold-matched, canonical spelling) the
+/// link resolves there and never leaves it; then, only for a label no
+/// node carries as primary, §2's secondary substitution to the primary
+/// of the first file carrying it as extra; the miss arms —
+/// own-namespace and named-label alike — materialize a stub under the
+/// **named** label (§4: the stub's label comes from the wikilink),
+/// never under a substituted primary, and only after [`resolve_at`]
+/// proved the name novel: a repeated link to the same
+/// not-yet-existing target resolves to the first stub instead of
+/// stubbing a second node under the same key. The ladder always
+/// answers, so the return is the target itself, no error channel. The
+/// stub row is returned to the caller's batch, not installed inline:
+/// nothing in this pass reads installed rows, so the slices install
+/// whole.
 fn resolve_full_target(
     keys: &BTreeMap<String, String>,
     ids: &mut IdAssignment,
-    primary_of: &BTreeMap<String, String>,
+    labels: &WalkedLabelIndex,
     label: &str,
     key: &str,
-) -> Result<ResolvedTarget> {
-    let primary = primary_of
-        .get(&fold_case(label))
-        .cloned()
-        .unwrap_or_else(|| label.to_string());
-    let target_key = vault_key(&primary, key);
-    match ids.ids().get(&target_key) {
-        Some(&id) => Ok(ResolvedTarget::Existing {
+) -> ResolvedTarget {
+    // The link label's one identity fold — both table lookups consult
+    // it, computed once.
+    let folded = fold_case(label);
+    // The named label's own namespace: a walked primary label owns its
+    // directory's identity, and an extra-label claim on an
+    // earlier-sorted file must not redirect it.
+    if let Some(named) = labels.primary.get(&folded) {
+        return resolve_or_stub(keys, ids, named, key);
+    }
+    // A label no node carries as primary is a secondary label: §2's
+    // substitution resolves it at the primary path of the first file
+    // carrying it. A miss falls through — the stub belongs to the named
+    // label, not the substituted one.
+    if let Some((target_key, id)) = labels
+        .secondary
+        .get(&folded)
+        .and_then(|primary| resolve_at(ids, primary, key))
+    {
+        return ResolvedTarget::Existing {
             key: target_key,
             id,
-        }),
-        None => {
-            let key_name = keys
-                .get(&primary)
-                .cloned()
-                .unwrap_or_else(|| DEFAULT_KEY_PROPERTY.to_string());
-            let id = ids.assign_fresh(&target_key);
-            let mut stub_props = BTreeMap::new();
-            stub_props.insert(key_name, Value::String(key.into()));
-            Ok(ResolvedTarget::Stub {
-                key: target_key,
-                node: Node {
-                    id,
-                    labels: Arc::new(vec![primary.clone()]),
-                    properties: relate_core::PropertyMap::share(stub_props),
-                },
-            })
-        }
+        };
+    }
+    // The named label, raw: the fold resolves case- and
+    // normalization-variant spellings, and a hit returns the
+    // registered canonical key — composition belongs to the stub
+    // alone, where the spelling is written. A hit is the pass's own
+    // earlier stub for the same wikilink; the miss is the novel name
+    // §4 materializes.
+    resolve_or_stub(keys, ids, label, key)
+}
+
+/// One stub row (the shared miss arm): a fresh id, the label's key
+/// property mirroring the wikilink's key segment — the one construction
+/// both miss paths (own-namespace and named-label) share. The
+/// constructor owns both segments' canonical spelling (ADR-0647):
+/// compose is idempotent over the already-canonical spellings the
+/// primary arm passes, and heals a decomposed wikilink's spelling —
+/// the stub's file lands at the canonical name, the same checkpoint
+/// rename a decomposed filename takes.
+///
+/// The stub label's key property: the learned schema's record for that
+/// exact spelling, else the default — the default is the
+/// schema-unknown label's answer, never a silent fallback over a
+/// record the vault walks. The own-namespace arm passes the walked
+/// canonical spelling, which always finds the record; the named-label
+/// arm's label is by construction not a walked primary (the
+/// own-namespace arm owns every walked-primary fold), so no walked
+/// record exists for it to skip.
+fn stub_row(
+    keys: &BTreeMap<String, String>,
+    ids: &mut IdAssignment,
+    label: &str,
+    key: &str,
+) -> ResolvedTarget {
+    let label = md::compose(label);
+    let key = md::compose(key);
+    let target_key = vault_key(&label, &key);
+    let key_name = keys
+        .get(&label)
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_KEY_PROPERTY.to_string());
+    let id = ids.assign_fresh(&target_key);
+    let mut stub_props = BTreeMap::new();
+    stub_props.insert(key_name, Value::String(key.into()));
+    ResolvedTarget::Stub {
+        key: target_key,
+        node: Node {
+            id,
+            labels: Arc::new(vec![label]),
+            properties: relate_core::PropertyMap::share(stub_props),
+        },
     }
 }
 
@@ -340,14 +508,15 @@ impl ShortLinkIndex {
 /// proportional to the vault.
 pub(super) fn resolve_links_and_stubs(
     graph: &dyn relate_engine_api::GraphImport,
-    parsed: &[ParsedFile],
-    keys: &BTreeMap<String, String>,
+    canonical: &super::CanonicalVault,
     ids: &mut IdAssignment,
     rel_ids: &BTreeMap<String, i64>,
     next_rel_id: i64,
     value_encoding: u64,
 ) -> Result<RelAssignment> {
-    let primary_of = primary_label_map(parsed);
+    let parsed = &canonical.files;
+    let keys = &canonical.keys;
+    let labels = WalkedLabelIndex::of(canonical);
     let mut pending = PendingSlices::new();
     let mut rels = RelAssignment::new(next_rel_id);
 
@@ -362,7 +531,7 @@ pub(super) fn resolve_links_and_stubs(
                 // right in the arm that produced it.
                 let (target_key, end_id) = match &entry.target {
                     md::LinkTarget::Full { label, key } => {
-                        match resolve_full_target(keys, ids, &primary_of, label, key)? {
+                        match resolve_full_target(keys, ids, &labels, label, key) {
                             ResolvedTarget::Existing { key, id } => (key, id),
                             ResolvedTarget::Stub { key, node } => {
                                 let id = node.id;
@@ -390,7 +559,7 @@ pub(super) fn resolve_links_and_stubs(
                 // The manifest invariant's rel half rides the one home
                 // (`restored_id`), completed by the allocator's own
                 // fresh path — the node side's twin contract.
-                let id = rels.assign(rel_ids.get(&identity).copied(), next_rel_id, &identity)?;
+                let id = rels.assign(rel_ids.get(&identity).copied(), &identity)?;
                 pending.push_rel(Relationship {
                     id,
                     start: *ids

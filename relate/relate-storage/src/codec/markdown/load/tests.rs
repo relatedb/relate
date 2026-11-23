@@ -2,7 +2,9 @@
 //! external vault, stub materialization, closed-engine edit pickup,
 //! the walk's fail-closed rules, and the fold and set semantics.
 
-use super::super::tests::{int, node_by_name, person_graph, props, signature, string};
+use super::super::tests::{
+    int, node_by_name, open_markdown, person_graph, props, signature, string,
+};
 use super::*;
 use crate::codec::markdown::manifest::FileStat;
 use crate::codec::SnapshotCodecKind;
@@ -415,4 +417,149 @@ fn the_publication_gate_compares_every_overwritten_field() {
     // The untouched recording is never drift: an unchanged vault keeps
     // its sidecar.
     assert!(manifest.clone() == manifest);
+}
+
+/// The REL8-2039 vault shape: a conversion-debris `Draft`-primary file
+/// carries the real `Source` label as an extra label and sorts before
+/// every `Source/` file in walk order, while the todos' frontmatter
+/// links `[[Source/ledger_todos]]` — the container rewire. The extra
+/// label claim must not hijack the named label's own namespace.
+#[test]
+fn a_full_form_link_resolves_at_its_own_label_namespace_not_an_extra_label_claim() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for label in ["Draft", "Source", "Todo"] {
+        std::fs::create_dir_all(root.join(label)).unwrap();
+    }
+    // The debris stub under Draft, first in walk order.
+    std::fs::write(
+        root.join("Draft/ledger_todos.md"),
+        "---\ntype: Draft\nname: ledger_todos\n---\n",
+    )
+    .unwrap();
+    // The extra-label claim: a Draft-primary file carrying Source —
+    // walk order puts it before every real Source/ file.
+    std::fs::write(
+        root.join("Draft/wip.md"),
+        "---\ntype: Draft\nname: wip\nlabels:\n  - Source\n---\n",
+    )
+    .unwrap();
+    // The real container, in its own namespace.
+    std::fs::write(
+        root.join("Source/ledger_todos.md"),
+        "---\ntype: Source\nname: ledger_todos\nkind: ledger\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("Todo/task.md"),
+        "---\ntype: Todo\nname: task\nPART_OF:\n  - \"[[Source/ledger_todos]]\"\n  - \"[[Source/LEDGER_TODOS]]\"\n---\n",
+    )
+    .unwrap();
+
+    let (store, graph) = open_markdown(root).unwrap();
+    let declared = signature(&graph);
+    assert_eq!(
+        declared.1,
+        vec![(
+            "Todo/task".to_string(),
+            "PART_OF".to_string(),
+            "Source/ledger_todos".to_string()
+        )],
+        "the link resolves at the named label's own namespace, not the extra-label claim; \\
+         the case-variant key spelling folds onto the same relationship (set semantics, no \\
+         duplicate stub)"
+    );
+    // The cycle the rewire runs through: load -> checkpoint -> reload
+    // keeps the link the file declared (the pre-fix cycle rewrote the
+    // file back to the Draft stub, silently reverting the rewire).
+    crate::checkpoint(&store, &graph, None).unwrap();
+    let task = std::fs::read_to_string(root.join("Todo/task.md")).unwrap();
+    assert!(
+        task.contains("- \"[[Source/ledger_todos]]\""),
+        "the todo file keeps its declared link: {task}"
+    );
+    let (reloaded, _) = crate::open_store::<relate_executor::Graph>(&store).unwrap();
+    assert_eq!(
+        signature(&reloaded),
+        declared,
+        "the rewire survives the round trip"
+    );
+}
+
+/// The secondary-label mapping ADR-0406 §2 defines: a link naming a
+/// label no node carries as primary substitutes to the primary path of
+/// the file that carries it as extra; a miss stubs under the **named**
+/// label (§4: the stub's label comes from the wikilink), never under
+/// the substituted primary. The extra label (`Writer`) sorts after the
+/// directory label, so the node's primary label (the alphabetically
+/// first) stays `Person` and the substitution is what the link exercises.
+#[test]
+fn a_secondary_label_link_substitutes_and_a_miss_stubs_under_the_named_label() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("Person")).unwrap();
+    std::fs::write(
+        root.join("Person/Ada.md"),
+        "---\ntype: Person\nname: Ada\nlabels:\n  - Writer\nKNOWS:\n  - \"[[writer/zed]]\"\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("Person/Grace.md"),
+        "---\ntype: Person\nname: Grace\nKNOWS:\n  - \"[[Writer/Ada]]\"\n  - \"[[Writer/Zed]]\"\n---\n",
+    )
+    .unwrap();
+
+    let (store, graph) = open_markdown(root).unwrap();
+    let (nodes, rels) = signature(&graph);
+    // The hit substitutes to Person/Ada; both novel-target links —
+    // Ada's case-variant `[[writer/zed]]` (walk order: Ada first) and
+    // Grace's `[[Writer/Zed]]` — end at ONE stub node, keyed by the
+    // first link's spelling: fold identity, one node, never a second
+    // stub under the same fold.
+    assert_eq!(
+        rels,
+        vec![
+            (
+                "Person/Ada".to_string(),
+                "KNOWS".to_string(),
+                "writer/zed".to_string()
+            ),
+            (
+                "Person/Grace".to_string(),
+                "KNOWS".to_string(),
+                "Person/Ada".to_string()
+            ),
+            (
+                "Person/Grace".to_string(),
+                "KNOWS".to_string(),
+                "writer/zed".to_string()
+            ),
+        ]
+    );
+    let stubs: Vec<&String> = nodes
+        .keys()
+        .filter(|key| relate_markdown::fold_case(key) == relate_markdown::fold_case("Writer/Zed"))
+        .collect();
+    assert_eq!(
+        stubs.len(),
+        1,
+        "exactly one stub node for the one novel target (fold identity): {nodes:?}"
+    );
+    // The checkpoint renders the substituted hit at its canonical path
+    // and materializes the stub as a real file in its own namespace.
+    crate::checkpoint(&store, &graph, None).unwrap();
+    let grace = std::fs::read_to_string(root.join("Person/Grace.md")).unwrap();
+    assert!(
+        grace.contains("- \"[[Person/Ada]]\"") && grace.contains("- \"[[writer/zed]]\""),
+        "canonical render: {grace}"
+    );
+    let ada = std::fs::read_to_string(root.join("Person/Ada.md")).unwrap();
+    assert!(
+        ada.contains("- \"[[writer/zed]]\""),
+        "the case-variant link renders at the stub's canonical spelling: {ada}"
+    );
+    assert!(
+        root.join("writer/zed.md").exists(),
+        "the stub gets a real file under the named label"
+    );
 }

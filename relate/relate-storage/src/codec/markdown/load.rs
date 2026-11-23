@@ -242,6 +242,18 @@ fn vault_identity(walked: &WalkedPath) -> Result<(String, String, String)> {
     Ok((label, name, key))
 }
 
+/// Load phase 1's output — the canonical vault: the fold-canonicalized
+/// files plus the two schema facts its later phases consult, the
+/// per-label key property map and the canonicalization pass's
+/// fold→canonical-label table (the walked-label fact's one home, which
+/// the link pass's primary-label resolution consults instead of
+/// re-deriving it).
+struct CanonicalVault {
+    files: Vec<ParsedFile>,
+    keys: BTreeMap<String, String>,
+    label_folds: BTreeMap<String, String>,
+}
+
 /// Load phase 1 (ADR-0406 §2/§6): parse every file once — the
 /// frontmatter's tri-state deciding the node parse vs the raw-file
 /// tolerance — infer the per-label key properties, and canonicalize
@@ -253,16 +265,15 @@ fn vault_identity(walked: &WalkedPath) -> Result<(String, String, String)> {
 /// classification before the parse runs and binds its key declarations
 /// against the fold-canonical walked labels after it — the whole
 /// committed feature lives inside this phase, never as branches
-/// flanking it in the orchestrator. Returns the canonical files and
-/// the per-label key property map; `learned` accumulates the raw-file
-/// and fold records.
+/// flanking it in the orchestrator. Returns the canonical vault
+/// ([`CanonicalVault`]); `learned` accumulates the raw-file and fold
+/// records.
 fn parse_and_canonicalize_files(
-    files: &[VaultFile],
     frontmatter: &[Frontmatter<'_>],
     learned: &mut LearnedSchema,
     bodies: &MarkdownBodyProperties,
     committed: Option<&ontology::VaultOntology>,
-) -> Result<(Vec<ParsedFile>, BTreeMap<String, String>)> {
+) -> Result<CanonicalVault> {
     // The classification vocabulary: the learned schema's set extended
     // by this open's bare-link evidence (drift regenerates the schema)
     // — and seeded first by the committed ontology's declared
@@ -277,8 +288,12 @@ fn parse_and_canonicalize_files(
     vocabulary.extend(evidence.bare.iter().cloned());
     evidence.reject_undeclared_map_links(&vocabulary)?;
 
-    let mut parsed = Vec::with_capacity(files.len());
-    for (file, fm) in files.iter().zip(frontmatter) {
+    // `frontmatter` alone carries the rows — each `Frontmatter` holds
+    // its own `file` reference (one carrier, no positional pairing to
+    // keep in step).
+    let mut parsed = Vec::with_capacity(frontmatter.len());
+    for fm in frontmatter {
+        let file = fm.file;
         let (label, name, vault_key) = vault_identity(&file.walked)?;
         // The frontmatter's tri-state, matched once (ADR-0406 §6):
         // parsed or absent feeds the node parse; present-but-unparseable
@@ -324,7 +339,7 @@ fn parse_and_canonicalize_files(
         keys.entry(label).or_insert(inferred);
     }
 
-    let parsed = canonicalize_by_fold(parsed, learned);
+    let (parsed, label_folds) = canonicalize_by_fold(parsed, learned);
 
     // The committed key declarations bind after the parse, against the
     // fold-canonical walked labels, through the vault's one identity
@@ -332,13 +347,17 @@ fn parse_and_canonicalize_files(
     // in case or normalization from a label directory binds to the
     // walked canonical spelling, overriding both the sidecar's stale
     // record and the inference; a forward declaration — a label the
-    // vault does not carry yet — stays inert.
+    // vault does not carry yet — stays inert. The declarations are
+    // fold-keyed and so is the canonicalization table: one direct
+    // lookup per declaration, no walked-set re-derivation.
     if let Some(ontology) = committed {
-        let walked_labels: BTreeSet<String> =
-            parsed.iter().map(|file| file.label.clone()).collect();
-        ontology.bind_keys(&walked_labels, &mut keys, learned);
+        ontology.bind_keys(&label_folds, &mut keys, learned);
     }
-    Ok((parsed, keys))
+    Ok(CanonicalVault {
+        files: parsed,
+        keys,
+        label_folds,
+    })
 }
 
 /// The canonicalization pass (ADR-0406 §2), one home: the canonical
@@ -346,36 +365,37 @@ fn parse_and_canonicalize_files(
 /// order, and a case-only duplicate row is dropped right here — its
 /// fold recorded as the load's warning. Later passes never re-split or
 /// re-derive the identity: the structured (label, name) fields are the
-/// composite key's one spelling.
-fn canonicalize_by_fold(parsed: Vec<ParsedFile>, learned: &mut LearnedSchema) -> Vec<ParsedFile> {
+/// composite key's one spelling, and the fold→canonical-label table
+/// built along the way is returned with the files — the walked-label
+/// fact's one home, consulted by the link pass's primary-label
+/// resolution instead of being re-derived there.
+fn canonicalize_by_fold(
+    parsed: Vec<ParsedFile>,
+    learned: &mut LearnedSchema,
+) -> (Vec<ParsedFile>, BTreeMap<String, String>) {
+    // First occurrence in path order decides everything: the canonical
+    // label per fold (the table this pass returns — its payload is
+    // read downstream), and the surviving key — a key fold already
+    // seen drops its file right here, the fold recorded as the load's
+    // warning. No per-fold canonical-key payload: nothing downstream
+    // reads one, first occurrence is the whole decision.
     let mut label_by_fold: BTreeMap<String, String> = BTreeMap::new();
-    let mut key_by_fold: BTreeMap<(String, String), String> = BTreeMap::new();
-    for file in &parsed {
-        label_by_fold
-            .entry(md::fold_case(&file.label))
-            .or_insert_with(|| file.label.clone());
-        key_by_fold
-            .entry((md::fold_case(&file.label), md::fold_case(&file.key)))
-            .or_insert_with(|| file.key.clone());
-    }
+    let mut seen_key_folds: BTreeSet<(String, String)> = BTreeSet::new();
     let mut canonical: Vec<ParsedFile> = Vec::with_capacity(parsed.len());
     for mut file in parsed {
-        let canonical_key = key_by_fold
-            .get(&(md::fold_case(&file.label), md::fold_case(&file.key)))
-            .expect("the fold pass keyed every parsed file")
-            .clone();
-        if canonical_key != file.key {
+        let label_fold = md::fold_case(&file.label);
+        let canonical_label = label_by_fold
+            .entry(label_fold.clone())
+            .or_insert_with(|| file.label.clone());
+        if !seen_key_folds.insert((label_fold, md::fold_case(&file.key))) {
             learned.folded_keys.insert(file.path.clone());
             continue;
         }
-        file.label = label_by_fold
-            .get(&md::fold_case(&file.label))
-            .expect("the fold pass keyed every parsed label")
-            .clone();
+        file.label = canonical_label.clone();
         file.key = super::vault_key(&file.label, &file.name);
         canonical.push(file);
     }
-    canonical
+    (canonical, label_by_fold)
 }
 
 /// One parsed file's node row (load phase 3's row policy, named): the
@@ -688,26 +708,25 @@ pub(crate) fn load_with_checkpoint_lsn<G: relate_engine_api::SnapshotGraph>(
     let mut learned = manifest.learned.clone();
     let bodies = super::resolve_bodies(target, &manifest.bodies)?;
     let recorded = super::recorded_bodies(target, &manifest.bodies);
-    let (parsed, keys) = parse_and_canonicalize_files(
-        &files,
-        &frontmatter,
-        &mut learned,
-        &bodies,
-        vault_ontology.as_ref(),
-    )?;
+    let canonical =
+        parse_and_canonicalize_files(&frontmatter, &mut learned, &bodies, vault_ontology.as_ref())?;
 
-    let mut ids = restore_ids(&parsed, manifest)?;
+    let mut ids = restore_ids(&canonical.files, manifest)?;
     let graph = G::default();
-    let loaded = load_nodes(&graph, &parsed, &keys, ids.ids(), value_encoding)?;
+    let loaded = load_nodes(
+        &graph,
+        &canonical.files,
+        &canonical.keys,
+        ids.ids(),
+        value_encoding,
+    )?;
     let rel_ids = manifest.rel_ids.clone();
-    let next_rel_id = manifest.next_rel_id.max(1);
     let rels = resolve_links_and_stubs(
         &graph,
-        &parsed,
-        &keys,
+        &canonical,
         &mut ids,
         &rel_ids,
-        next_rel_id,
+        manifest.next_rel_id,
         value_encoding,
     )?;
     // The allocator's final values: the node side threaded through

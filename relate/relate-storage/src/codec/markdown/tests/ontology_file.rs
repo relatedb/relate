@@ -12,6 +12,113 @@ fn open(dir: &std::path::Path) -> Result<Graph, relate_core::Error> {
     open_markdown(dir).map(|(_, graph)| graph)
 }
 
+/// REL8-2039's shape: an ontology-declared rel type whose frontmatter
+/// link lists carry **bare** wikilinks — the container-rewire shape of
+/// the agent-memory vault conversion. `name` is the pinned key on every
+/// label (the shape REL8-2022 verified).
+const LEDGER_ONTOLOGY: &str = r#"schema: https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json
+id: ledger-vault
+version: "1"
+nodes:
+  todo:
+    label: Todo
+    properties:
+      name: { type: STRING, key: true }
+  ledger_record:
+    label: LedgerRecord
+    properties:
+      name: { type: STRING, key: true }
+  source:
+    label: Source
+    properties:
+      name: { type: STRING, key: true }
+relationships:
+  part_of:
+    type: PART_OF
+    from: { node: todo }
+    to: { node: source }
+  sourced_from:
+    type: SOURCED_FROM
+    from: { node: ledger_record }
+    to: { node: source }
+"#;
+
+/// The container-and-todo file set REL8-2039 reports: a Source
+/// container, a Todo whose frontmatter carries a bare-wikilink PART_OF
+/// list, and a LedgerRecord with a SOURCED_FROM list.
+fn write_ledger_vault(dir: &std::path::Path) {
+    let source = dir.join("Source");
+    let todo = dir.join("Todo");
+    let record = dir.join("LedgerRecord");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(&todo).unwrap();
+    std::fs::create_dir_all(&record).unwrap();
+    std::fs::write(
+        source.join("ledger_todos.md"),
+        "---\ntype: Source\nname: ledger_todos\n---\n\n# ledger_todos\n",
+    )
+    .unwrap();
+    std::fs::write(
+        todo.join("task_1.md"),
+        "---\ntype: Todo\nname: task_1\nPART_OF:\n  - \"[[Source/ledger_todos]]\"\n---\n\nfix the thing\n",
+    )
+    .unwrap();
+    std::fs::write(
+        record.join("rec_1.md"),
+        "---\ntype: LedgerRecord\nname: rec_1\nSOURCED_FROM:\n  - \"[[Source/ledger_todos]]\"\n---\n\nsome entry\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("ontology.yaml"), LEDGER_ONTOLOGY).unwrap();
+}
+
+#[test]
+fn ontology_declared_bare_link_lists_survive_a_load_checkpoint_cycle() {
+    let dir = tempfile::tempdir().unwrap();
+    write_ledger_vault(dir.path());
+    let (store, graph) = open_markdown(dir.path()).unwrap();
+    let signature = super::signature(&graph);
+    assert_eq!(
+        signature.1,
+        vec![
+            (
+                "LedgerRecord/rec_1".to_string(),
+                "SOURCED_FROM".to_string(),
+                "Source/ledger_todos".to_string()
+            ),
+            (
+                "Todo/task_1".to_string(),
+                "PART_OF".to_string(),
+                "Source/ledger_todos".to_string()
+            ),
+        ],
+        "the declared bare-wikilink lists load as relationships"
+    );
+    crate::checkpoint(&store, &graph, None).unwrap();
+    let task = std::fs::read_to_string(dir.path().join("Todo/task_1.md")).unwrap();
+    assert!(
+        task.contains("PART_OF:"),
+        "the todo file keeps its PART_OF list: {task}"
+    );
+    let (reloaded, _wal) = crate::open_store::<Graph>(&store).unwrap();
+    let signature = super::signature(&reloaded);
+    assert_eq!(
+        signature.1,
+        vec![
+            (
+                "LedgerRecord/rec_1".to_string(),
+                "SOURCED_FROM".to_string(),
+                "Source/ledger_todos".to_string()
+            ),
+            (
+                "Todo/task_1".to_string(),
+                "PART_OF".to_string(),
+                "Source/ledger_todos".to_string()
+            ),
+        ],
+        "the relationships survive the checkpoint round trip"
+    );
+}
+
 /// The minimal valid 1.1.0 ontology declaring `KNOWS` and Person's key
 /// property (`title`).
 const PERSON_ONTOLOGY: &str = r#"schema: https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json
