@@ -42,12 +42,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or(150_000);
             ops::seek::run("flat", n, 4, &out_dir, 20_000)?;
         }
+        "filter" => {
+            ops::filter::run(&out_dir, 20_000)?;
+        }
+        "agg" => {
+            ops::agg::run(&out_dir, 20_000)?;
+        }
+        "join" => {
+            ops::join::run(&out_dir, 20_000)?;
+        }
+        "sets" => {
+            ops::sets::run(&out_dir, 20_000)?;
+        }
         "all" => {
             ops::point::run(&csv, &out_dir, 100_000)?;
             ops::seek::run("flat", 150_000, 4, &out_dir, 20_000)?;
+            ops::filter::run(&out_dir, 20_000)?;
+            ops::agg::run(&out_dir, 20_000)?;
+            ops::join::run(&out_dir, 20_000)?;
+            ops::sets::run(&out_dir, 20_000)?;
         }
         other => {
-            eprintln!("unknown command {other}: point | seek | all");
+            eprintln!("unknown command {other}: point | seek | filter | agg | join | sets | all");
             std::process::exit(2);
         }
     }
