@@ -127,8 +127,8 @@ pub(crate) fn eval_exists_query(
 
 /// Whether a UNION part explicitly projects a result: a direct trailing
 /// `RETURN`, or a sole CIP-135 conditional part whose branch bodies do (a
-/// conditional's own clause list carries no `Return`). The front's
-/// `union_branch_shape` owns the same classification for parsed text; this
+/// conditional's own clause list carries no `Return`). The parser's
+/// `branch_shape` owns the same classification for parsed text; this
 /// is the executor's defense-in-depth spelling for callers that bypass it.
 fn part_explicitly_returns(clauses: &[Clause]) -> bool {
     if let [Clause::Conditional {
