@@ -14,8 +14,8 @@ mod idlists;
 
 pub use budget::NESTED_EVAL_BUDGET;
 pub(crate) use budget::{
-    ExpressionBudgetCounter, MemoLive, NestedEvalCounter, RetainedTotal, SeatShape,
-    MEMO_QUERY_BUDGET,
+    memo_table_ceiling, ExpressionBudgetCounter, MemoLive, NestedEvalCounter, RetainedTotal,
+    SeatShape,
 };
 pub(crate) use idlists::{intersect_ids, union_ids};
 
@@ -198,7 +198,7 @@ impl<'a> ExecGraph<'a> {
         pinned_ts: u64,
         scratch: Option<&'a RefCell<WriteScratch>>,
     ) -> Self {
-        let memo_live = MemoLive::default();
+        let memo_live = MemoLive::new(base.memo_budget_bytes());
         Self {
             base,
             schema: None,

@@ -342,6 +342,17 @@ pub struct OpenOptions {
     /// does not parse fails open with a semantic error, like the other
     /// memory-limit knobs.
     pub expression_memory_limit: Option<u64>,
+    /// The shared live-bytes budget of the executor's memo tables, in whole
+    /// MiB (ADR-0657). `Some(0)` disables the budgeted tables (no table is
+    /// allocated and every pure check runs as without a memo); the compiled
+    /// regex cache and the `IN`-list membership index stay on. The
+    /// node-label memo is a budgeted table too, so it is off at zero. `None` uses `RELATE_EXPRESSION_MEMO_BUDGET`
+    /// (a plain non-negative integer of MiB) and otherwise the default,
+    /// 16. Each table's ceiling is half the budget. A value that does not
+    /// parse, or is too large to express in bytes, fails open naming the
+    /// setting, before the store lease. Speed and memory only: every
+    /// budget returns the same rows.
+    pub expression_memo_budget: Option<u64>,
     /// Opt-in safe mode (LABS-680, ADR-0477): refuse agent-typical
     /// dangerous statement shapes — a new named node without a label, and a
     /// `MATCH` read without `LIMIT` or a reducing aggregate (the exemption is

@@ -1,6 +1,3 @@
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
-
 use relate_core::Error;
 
 use super::*;
@@ -203,7 +200,7 @@ fn a_memo_that_never_hits_disables_itself_and_returns_its_bytes() {
     }
     let stats = cold.stats();
     assert!(stats.disabled, "no repeats: not paying");
-    assert_eq!((stats.bytes, live.load(Ordering::Relaxed)), (0, 0));
+    assert_eq!((stats.bytes, live.live_bytes()), (0, 0));
     // Bypassed: the function runs every time, nothing is stored.
     let mut calls = 0;
     for _ in 0..3 {
@@ -220,19 +217,16 @@ fn a_memo_that_never_hits_disables_itself_and_returns_its_bytes() {
         hot.answer(&Unmetered, id % 5, || Ok(true)).unwrap();
     }
     assert!(!hot.stats().disabled, "mostly repeats: keep it");
-    assert!(live.load(Ordering::Relaxed) > 0);
+    assert!(live.live_bytes() > 0);
     drop(hot);
-    assert_eq!(
-        live.load(Ordering::Relaxed),
-        0,
-        "dropped memo returns its bytes"
-    );
+    assert_eq!(live.live_bytes(), 0, "dropped memo returns its bytes");
 }
 
 // The query-wide budget freezes a memo that would cross it.
 #[test]
 fn the_query_budget_freezes_memos_in_total() {
-    let live: MemoLive = Arc::new(AtomicU64::new(MEMO_QUERY_BUDGET - 100));
+    let live = MemoLive::default();
+    live.charge(live.budget() - 100);
     let policy = MemoPolicy {
         warm_up: 0,
         ..MemoPolicy::MODERATE
@@ -242,6 +236,38 @@ fn the_query_budget_freezes_memos_in_total() {
     assert!(memo.is_frozen(), "the first page crosses the shared budget");
     memo.answer(&Unmetered, 99_999, || Ok(true)).unwrap();
     assert!(memo.stats().refused >= 1);
+}
+
+// ADR-0657: a zero budget allocates no table and runs the function every
+// time; the ceiling derives as half the configured budget.
+#[test]
+fn a_zero_budget_allocates_no_table_and_always_computes() {
+    let live = MemoLive::new(0);
+    let mut memo = Memo::<PagedBits>::new(MemoPolicy::moderate(&live), Some(live.clone()));
+    let mut calls = 0;
+    for id in 0..5000i64 {
+        memo.answer(&Unmetered, id % 3, || {
+            calls += 1;
+            Ok(true)
+        })
+        .unwrap();
+    }
+    assert_eq!(calls, 5000);
+    let s = memo.stats();
+    assert_eq!((s.probes, s.inserts, s.bytes), (0, 0, 0));
+    assert_eq!(live.live_bytes(), 0);
+}
+
+#[test]
+fn the_table_ceiling_is_half_the_configured_budget() {
+    for mib in [1u64, 8, 32] {
+        let live = MemoLive::new(mib << 20);
+        assert_eq!(
+            MemoPolicy::moderate(&live).max_bytes,
+            usize::try_from(mib << 19).unwrap()
+        );
+    }
+    assert_eq!(MemoPolicy::MODERATE.max_bytes, 8 << 20);
 }
 
 // The wired sites (frontier guard, re-arrival, distinct endpoint) all

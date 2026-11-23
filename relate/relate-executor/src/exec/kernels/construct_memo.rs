@@ -10,7 +10,7 @@
 //! of the argument text, and the key is the text's content hash. An
 //! erroring parse is never remembered ([`Memo::answer`]).
 //!
-//! The break-even policy is microsecond-class ([`POLICY`]): a parse costs
+//! The break-even policy is microsecond-class ([`policy`]): a parse costs
 //! hundreds of nanoseconds, the hash of a short string a fraction of that,
 //! so the memo warms after a handful of inputs and reviews early.
 //! A literal argument never gets here (the front end folds it at lowering);
@@ -29,13 +29,15 @@ use crate::overlay::MemoLive;
 type Table = Memo<HashedValues<Value>>;
 
 /// Warm after 8 inputs, review the hit rate after 65 536 probes, keep the
-/// table under 8 MiB.
-const POLICY: MemoPolicy = MemoPolicy {
-    warm_up: 8,
-    window: 1 << 16,
-    min_hit_percent: 2,
-    max_bytes: 8 << 20,
-};
+/// table under half the shared memo budget (ADR-0657).
+fn policy(live: &MemoLive) -> MemoPolicy {
+    MemoPolicy {
+        warm_up: 8,
+        window: 1 << 16,
+        min_hit_percent: 2,
+        max_bytes: live.table_ceiling(),
+    }
+}
 
 /// The temporal constructors' memos, behind their own interior mutability
 /// so the read-only expression evaluator answers through a shared `&self`.
@@ -79,7 +81,7 @@ impl RetainedHeap for Value {
 
 impl ConstructMemos {
     pub(crate) fn new(live: MemoLive) -> Self {
-        Self::with_policy(POLICY, live)
+        Self::with_policy(policy(&live), live)
     }
 
     fn with_policy(policy: MemoPolicy, live: MemoLive) -> Self {
@@ -278,6 +280,26 @@ mod tests {
         assert!(stats.refused > 0);
         assert_eq!(meter.0.get(), stats.bytes, "every table byte is charged");
         assert!(stats.bytes >= owned as u64, "the zone id is in the bytes");
-        assert_eq!(live.load(std::sync::atomic::Ordering::Relaxed), stats.bytes);
+        assert_eq!(live.live_bytes(), stats.bytes);
+    }
+
+    #[test]
+    fn a_zero_budget_never_hashes_or_allocates_a_table() {
+        let live = MemoLive::new(0);
+        let memos = ConstructMemos::new(live.clone());
+        let meter = Charged::default();
+        let arg = text("2024-05-05T10:00:00Z");
+        let before = hashes();
+        for _ in 0..100 {
+            let got = call(&memos, &meter, "datetime", &arg).unwrap();
+            assert_eq!(
+                got,
+                temporal::construct_named("datetime", &[arg.clone()]).unwrap()
+            );
+        }
+        assert_eq!(hashes(), before);
+        let stats = memos.datetime.borrow().stats();
+        assert_eq!((stats.bytes, stats.inserts, stats.probes), (0, 0, 0));
+        assert_eq!((meter.0.get(), live.live_bytes()), (0, 0));
     }
 }

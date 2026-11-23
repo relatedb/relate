@@ -36,7 +36,9 @@
 //!   group's query at start id 1, recorded before its timed rounds.
 //! * `--profile` (needs `--group`) prints the `PROFILE` result of the
 //!   group's query at start id 1 instead of timing it.
-//! * No env vars beyond cargo's own.
+//! * No env vars beyond cargo's own, except the engine's open-time settings the
+//!   fixture's `Database::open` reads: `RELATE_EXPRESSION_MEMO_BUDGET=<MiB>`
+//!   (ADR-0657) sizes or, at `0`, disables the memo tables for a sweep.
 //!
 //! Record a profile: `samply record -s -n -o prof.json.gz -- <binary> small`.
 //! Build with frame pointers for trustworthy stacks

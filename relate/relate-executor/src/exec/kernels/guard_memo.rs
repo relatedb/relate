@@ -27,7 +27,7 @@ impl StateMemos {
         let live = graph.memo_live();
         Self(RefCell::new(
             (0..states)
-                .map(|_| NodeMemo::new(MemoPolicy::MODERATE, Some(live.clone())))
+                .map(|_| NodeMemo::new(MemoPolicy::moderate(&live), Some(live.clone())))
                 .collect(),
         ))
     }

@@ -40,17 +40,16 @@
 //! ceiling (past it the stage keeps answering from the function, hits
 //! still served). Three safety nets bound the whole: the table's bytes are
 //! charged to the retained-container meter (ADR-0463), every memo of a
-//! query shares one live-bytes budget ([`MEMO_QUERY_BUDGET`]), and a memo
+//! query shares one live-bytes budget ([`MemoLive`], ADR-0657), and a memo
 //! whose hit rate is below the policy floor at its one review drops its
 //! table and bypasses itself. A refusal or a bypass never fails the
 //! query: memoisation is an optimisation, always on.
 
-use std::sync::atomic::Ordering;
-
 use relate_core::{NodeId, Result};
 
 use crate::ctx::ExecCtx;
-use crate::overlay::{ExecGraph, MemoLive, MEMO_QUERY_BUDGET};
+use crate::memory::{memo_budget_bytes, DEFAULT_MEMO_BUDGET_MIB};
+use crate::overlay::{memo_table_ceiling, ExecGraph, MemoLive};
 
 use super::program::NodePred;
 
@@ -81,13 +80,26 @@ pub(crate) struct MemoPolicy {
 }
 
 impl MemoPolicy {
-    /// A store-read check (a label or property test): about 20-100 ns.
-    pub(crate) const MODERATE: Self = Self {
-        warm_up: 1024,
-        window: 1 << 20,
-        min_hit_percent: 10,
-        max_bytes: 8 << 20,
-    };
+    /// A store-read check (a label or property test): about 20-100 ns,
+    /// under the default budget's table ceiling. Production sites take
+    /// [`Self::moderate`] with the statement's configured budget.
+    pub(crate) const MODERATE: Self =
+        Self::moderate_for(memo_budget_bytes(DEFAULT_MEMO_BUDGET_MIB));
+
+    /// [`Self::MODERATE`] with the table ceiling derived from `live`'s
+    /// configured budget (ADR-0657).
+    pub(crate) fn moderate(live: &MemoLive) -> Self {
+        Self::moderate_for(live.budget())
+    }
+
+    const fn moderate_for(budget: u64) -> Self {
+        Self {
+            warm_up: 1024,
+            window: 1 << 20,
+            min_hit_percent: 10,
+            max_bytes: memo_table_ceiling(budget),
+        }
+    }
 }
 
 /// A stage-local table from an input key to its answer.
@@ -179,7 +191,7 @@ impl<T: MemoTable> Default for Memo<T> {
 impl<T: MemoTable> Drop for Memo<T> {
     fn drop(&mut self) {
         if let Some(live) = &self.live {
-            live.fetch_sub(self.reserved, Ordering::Relaxed);
+            live.release(self.reserved);
         }
     }
 }
@@ -191,9 +203,17 @@ impl<T: MemoTable> Memo<T> {
     /// A memo under `policy`, counting its bytes against the query's
     /// shared `live` total when one is given.
     pub(crate) fn new(policy: MemoPolicy, live: Option<MemoLive>) -> Self {
+        // A zero ceiling (a zero budget, ADR-0657) bypasses the memo from
+        // the first input: no table is allocated and the function runs as
+        // without a memo.
+        let phase = if policy.max_bytes == 0 {
+            Phase::Disabled
+        } else {
+            Phase::Warming(0)
+        };
         Self {
             policy,
-            phase: Phase::Warming(0),
+            phase,
             table: T::default(),
             retained: 0,
             reviewed: false,
@@ -270,7 +290,7 @@ impl<T: MemoTable> Memo<T> {
         }
         if let Some(live) = &self.live {
             self.reserved += grew;
-            if live.fetch_add(grew, Ordering::Relaxed) + grew > MEMO_QUERY_BUDGET {
+            if live.charge(grew) {
                 self.phase = Phase::Frozen;
             }
         }
@@ -290,7 +310,7 @@ impl<T: MemoTable> Memo<T> {
             self.retained = 0;
             self.phase = Phase::Disabled;
             if let Some(live) = &self.live {
-                live.fetch_sub(self.reserved, Ordering::Relaxed);
+                live.release(self.reserved);
             }
             self.reserved = 0;
         }
@@ -412,7 +432,10 @@ impl<P: NodePred> NodePred for Memoized<P> {
         // not — the wrapped predicate keeps its once-per-stage bound.
         Ok(MemoState {
             inner: self.0.prepare(ctx)?,
-            memo: NodeMemo::new(MemoPolicy::MODERATE, Some(ctx.graph.memo_live())),
+            memo: {
+                let live = ctx.graph.memo_live();
+                NodeMemo::new(MemoPolicy::moderate(&live), Some(live))
+            },
         })
     }
 

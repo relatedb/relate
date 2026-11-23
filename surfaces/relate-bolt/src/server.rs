@@ -72,6 +72,9 @@ impl Args {
             concurrent_logical_workspace_limit: self.concurrent_logical_workspace_limit,
             max_traversal_depth: self.max_traversal_depth,
             expression_memory_limit: self.expression_memory_limit,
+            // The memo budget resolves through RELATE_EXPRESSION_MEMO_BUDGET
+            // (the open preflight, ADR-0657); no flag of its own.
+            expression_memo_budget: None,
             // The standalone Bolt crate's Args has no safe-mode flag; the
             // product path (`relate serve --bolt --safe`) resolves it
             // in serve_cmd's own open. A host embedding this server opts in
