@@ -106,6 +106,55 @@ bits for a 10k frontier — beyond that the space scan dominates and the
 HashSet wins. LDBC/Pokec BFS-like reachability (14% density in this kernel)
 sits deep in the bitset's win region.
 
+## O7/O8/O11 joins and compares (measured, release, load 17.4 -> 16.3)
+
+Join on a low-cardinality int key (attr0, 1000 distinct values, 5,625,000
+matching pairs over two 75k-row halves — the corpus `a.birthday = b.birthday`
+shape; all three arms assert the same match count):
+
+| arm | ns/op | allocs/op | B/op |
+|---|---|---|---|
+| O7a sort-merge (both sides key-sorted) | 45,908 | **0** | 0 |
+| O7b hash join (build + probe) | 1,044,608 | 6,001 | 5,333,384 |
+| O7c sort both sides + merge (no index) | 1,931,231 | 2 | 2,400,000 |
+
+**Merge join is 23x faster and allocation-free — but only when both sides
+arrive key-sorted.** Without an index the sort dominates (1.93 ms) and the
+hash join wins. This is the measured payoff of the `(key, node_id)` sorted
+index arm: it does not just serve point seeks, it turns the corpus's
+property-equality joins into alloc-free merges.
+
+Compare kernels:
+
+| arm | ns/op | allocs/op |
+|---|---|---|
+| O8a intra-row compare, decoded vec per row | 21,948 | 0 |
+| O8b intra-row compare, vectorized kernel | 22,055 | 7 |
+| O8c cross-row (i vs i+1) via two slices | 17,272 | 7 |
+| O11a gather 1024 rows, then compare | 69,660 | 640 |
+| O11b compare all rows, filter at 1024 positions | 132,165 | 592 |
+
+- **The vectorized compare is NOT faster than an autovectorized scalar loop**
+  (22.1 vs 21.9 µs) — LLVM emits the same lane kernel. Its value is comparing
+  encoded/lazy arrays without materializing values, not per-element speed;
+  it costs 7 allocs/op (output bitmap + scaffolding).
+- **Late materialization pays in miniature**: gathering 1024 of 150k rows and
+  comparing only those beats comparing everything and filtering —
+  **1.9x** (69.7 vs 132.2 µs) even with the gather's 640 allocs/op. The
+  gather path is the one the probe agent is investigating for exactly that
+  allocation cost.
+- Cross-row comparison (the fraud `ti.date < tj.date` shape) via two
+  constant-time slices costs no extra decode (17.3 µs).
+
+API facts: the vectorized compare is
+`vortex_array::scalar_fn::fns::binary::compare::execute_compare`, reached
+from `lt(col("l"), col("r"))` → `.bind(dtype)` → `ArrayRef::apply_bound` →
+`execute::<BitBuffer>(&mut ctx)`; `BitBuffer::true_count()` gives the count.
+`vortex::compute` is deprecated and effectively empty — kernels live under
+`scalar_fn::fns/`. Comparisons were measured over in-memory canonical arrays;
+**encoding-space compare pushdown (comparing without decompressing) is not
+yet measured** — the obvious next kernel.
+
 ## Open
 
 - O4–O20 kernel results (fan-out in progress).
