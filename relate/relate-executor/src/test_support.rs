@@ -4,8 +4,10 @@
 //! `exec::test_support`; the write-composing helpers live there instead, so
 //! the dependency stays one-directional.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::thread::LocalKey;
 
 use proptest::test_runner::Config as ProptestConfig;
 use relate_core::tokens::TokenLedger;
@@ -65,6 +67,30 @@ pub(crate) fn roomy_ledger() -> TokenLedger {
 pub(crate) fn refusing_ledger() -> TokenLedger {
     let pool = Arc::new(PeakPoolDouble::new(0));
     TokenLedger::new(0, 0, pool)
+}
+
+/// Run `f` with the thread-local test override `pin` set to `value`,
+/// restoring the previous pin afterwards — so a pin never outlives its
+/// closure, even on unwind. The one spelling of every test seam that
+/// lowers a production bound on the current thread (the arena wall, the
+/// rebuild's shard count).
+pub(crate) fn with_override<T: Copy + 'static, R>(
+    pin: &'static LocalKey<Cell<Option<T>>>,
+    value: T,
+    f: impl FnOnce() -> R,
+) -> R {
+    struct Reset<T: Copy + 'static> {
+        pin: &'static LocalKey<Cell<Option<T>>>,
+        previous: Option<T>,
+    }
+    impl<T: Copy + 'static> Drop for Reset<T> {
+        fn drop(&mut self) {
+            self.pin.with(|cell| cell.set(self.previous));
+        }
+    }
+    let previous = pin.with(|cell| cell.replace(Some(value)));
+    let _reset = Reset { pin, previous };
+    f()
 }
 
 /// The layering guard of the charge-owning set modules: `source` (a module's

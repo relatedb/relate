@@ -8,7 +8,9 @@ use super::super::accounting::adjacency::AdjDelta;
 use super::super::Graph;
 use super::chain::{props, step_matches_charge};
 use crate::adjacency::{with_arena_wall, Hop, SealedArena, SealedStream, RESTORE_SEAL_HOPS};
+use crate::graph::adjacency::Side;
 use crate::redo::RedoOp;
+use std::sync::atomic::AtomicU64;
 
 /// A wholesale install reserves every buffer at the size the closing fit
 /// lands it at: the byte buffer's capacity is its length, and `fit` moves
@@ -20,11 +22,12 @@ use crate::redo::RedoOp;
 fn a_wholesale_install_leaves_fit_nothing_to_copy() {
     let hops: Vec<Hop> = (0..9).rev().map(|id| Hop { ts: Some(id), id }).collect();
     let arena = SealedArena::default();
+    let arena_base = AtomicU64::new(0);
     let mut streams = vec![SealedStream::default(), SealedStream::default()];
     for node in 0..40 {
         let stream = &mut streams[node as usize % 2];
         for type_id in [3, 1, 2] {
-            assert!(stream.seal_chunk(node, type_id, &hops));
+            assert!(stream.seal_chunk(node, type_id, &hops, &arena_base));
         }
         stream.end_node();
     }
@@ -307,39 +310,27 @@ fn three_sealable_runs(g: &Graph, from: NodeId, to: NodeId) {
     g.commit_write();
 }
 
-/// How many sealed chunks `node` holds on the out side.
-fn sealed_chunks(g: &Graph, node: NodeId) -> usize {
-    g.out_side()
-        .sealed()
-        .region(node)
-        .map_or(0, |region| region.chunk_count())
-}
-
 /// A wholesale build whose streams would cross the arena's 4 GiB wall keeps
-/// the run that does not fit in the delta tier and returns: the open never
-/// panics on the wall (ADR-0599). The wall is pinned lower through
-/// [`with_arena_wall`] — a real 4 GiB build is not a unit test — and one
-/// shard runs inline, so the single stream is the whole build.
+/// the whole side in the delta tier and returns: the open never panics on the
+/// wall (ADR-0599). The wall is pinned lower through [`with_arena_wall`] — a
+/// real 4 GiB build is not a unit test — and one shard runs inline, so the
+/// single stream is the whole build. One byte short of the side's total, the
+/// side is over the wall as a whole: no run seals, the same outcome a
+/// multi-shard side reaches.
 #[test]
-fn a_wholesale_build_past_the_wall_keeps_the_overflow_in_delta() {
+fn a_wholesale_build_past_the_wall_keeps_the_whole_side_in_delta() {
     let g = Graph::default();
     let (a, b) = crate::graph::test_support::endpoints(&g);
     three_sealable_runs(&g, a, b);
 
     g.rebuild_adj();
-    assert_eq!(sealed_chunks(&g, a), 3);
+    assert_eq!(g.sealed_chunk_count(a, Side::Start), 3);
     let whole = g.out_side().sealed().arena_bytes();
     let degree = g.degree_out(a);
 
-    // One byte short of the whole build: the last run's stream crosses it.
-    let wall = whole - 1;
-    with_arena_wall(wall, || g.rebuild_adj());
-    assert!(g.out_side().sealed().arena_bytes() <= wall);
-    assert_eq!(
-        sealed_chunks(&g, a),
-        2,
-        "the overflowing run stays in the delta tier"
-    );
+    with_arena_wall(whole - 1, || g.rebuild_adj());
+    assert_eq!(g.out_side().sealed().arena_bytes(), 0, "all delta");
+    assert_eq!(g.sealed_chunk_count(a, Side::Start), 0);
     assert_eq!(
         g.degree_out(a),
         degree,
@@ -347,9 +338,10 @@ fn a_wholesale_build_past_the_wall_keeps_the_overflow_in_delta() {
     );
 }
 
-/// Two shards that each fit the wall alone but not together: no shard sees
-/// the sum, so the side is built again with every run in the delta tier
-/// (ADR-0599) and the build still returns.
+/// Two shards that each fit the wall alone but not together: the shards
+/// share one arena cursor, so the side's whole total is what the wall is
+/// checked against, and the side is built again with every run in the delta
+/// tier (ADR-0599) and the build still returns.
 #[test]
 fn shards_that_overflow_the_wall_together_build_all_delta() {
     let g = Graph::default();
@@ -370,6 +362,6 @@ fn shards_that_overflow_the_wall_together_build_all_delta() {
         with_arena_wall(whole - 1, || g.rebuild_adj());
     });
     assert_eq!(g.out_side().sealed().arena_bytes(), 0, "all delta");
-    assert_eq!(sealed_chunks(&g, a), 0);
+    assert_eq!(g.sealed_chunk_count(a, Side::Start), 0);
     assert_eq!((g.degree_out(a), g.degree_out(d)), degree);
 }
