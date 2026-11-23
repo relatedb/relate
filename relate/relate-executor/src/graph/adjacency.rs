@@ -8,7 +8,7 @@ use super::id_vec::IdVec;
 use super::rebuild::RelRow;
 use super::shard::{self, ShardPartition};
 use super::*;
-use crate::adjacency::{Hop, SealedRegion, SealedStream};
+use crate::adjacency::{streams_admit, Hop, SealedRegion, SealedStream};
 
 /// One adjacency chunk's type and delta + sealed hop count — named, because
 /// the two integers swap silently as a tuple.
@@ -319,7 +319,17 @@ fn build_side(graph: &Graph, rows: &[RelRow], side: Side, shards: &mut ShardPart
     // stale chunks behind.
     let adjacency = side.adj(graph);
     adjacency.clear();
-    let parts = shard::run_shards(shards, |shard| build_shard(rows, shard, side));
+    let parts = shard::run_shards(shards, |shard| build_shard(rows, shard, side, true));
+    // Each shard's stream passed the arena wall on its own bytes; the sum is
+    // what the install lays. Over the wall, no shard sees it, so the side is
+    // built again with every run in the delta tier (ADR-0599) — the open
+    // returns the same graph, only unsealed.
+    let parts = if streams_admit(parts.iter().map(|(_, stream)| stream)) {
+        parts
+    } else {
+        drop(parts);
+        shard::run_shards(shards, |shard| build_shard(rows, shard, side, false))
+    };
     let mut streams = Vec::with_capacity(parts.len());
     for (nodes, stream) in parts {
         for (node, adj) in nodes {
@@ -333,13 +343,15 @@ fn build_side(graph: &Graph, rows: &[RelRow], side: Side, shards: &mut ShardPart
 
 /// One shard's whole build: sort its row indices by `(endpoint, type)`,
 /// then one [`TypedAdj`] per node from that node's runs, with the sealed
-/// chunks encoded into the shard's own [`SealedStream`]. The sort works
-/// the shard slice in place — a shard's indices are a set, so the
-/// other consumers of a shared partition never depend on their order.
+/// chunks encoded into the shard's own [`SealedStream`] when `seal` is set
+/// (`false` leaves every run in the delta). The sort works the shard slice
+/// in place — a shard's indices are a set, so the other consumers of a
+/// shared partition never depend on their order.
 fn build_shard(
     rows: &[RelRow],
     shard: &mut [usize],
     side: Side,
+    seal: bool,
 ) -> (Vec<(NodeId, TypedAdj)>, SealedStream) {
     let endpoint = |row: &RelRow| side.endpoint(row);
     shard.sort_unstable_by(|&a, &b| {
@@ -351,7 +363,7 @@ fn build_shard(
     let mut built = Vec::new();
     let mut sealed = SealedStream::default();
     for node_run in shard.chunk_by(|&a, &b| endpoint(&rows[a]) == endpoint(&rows[b])) {
-        built.push(build_node(rows, node_run, side, &mut sealed));
+        built.push(build_node(rows, node_run, side, &mut sealed, seal));
     }
     sealed.shrink();
     (built, sealed)
@@ -376,6 +388,7 @@ fn build_node(
     node_run: &[usize],
     side: Side,
     sealed: &mut SealedStream,
+    seal: bool,
 ) -> (NodeId, TypedAdj) {
     let node = side.endpoint(&rows[node_run[0]]);
     // One run per type: its type id and its hops, unsorted and keyless —
@@ -395,7 +408,9 @@ fn build_node(
                 .collect();
             (rows[run[0]].type_id, hops)
         });
-    let adj = TypedAdj::from_runs(runs, |type_id, hops| sealed.seal_chunk(node, type_id, hops));
+    let adj = TypedAdj::from_runs(runs, |type_id, hops| {
+        seal && sealed.seal_chunk(node, type_id, hops)
+    });
     sealed.end_node();
     (node, adj)
 }
