@@ -81,8 +81,8 @@ pub use relate_core::Namespace;
 pub use relate_core::{
     next_depth, parse_expression_memory_limit, parse_memory_limit, parse_positive_memory_limit,
     require_positive_memory_limit, uuid_hyphenated, uuid_parse, value_depth_exceeded,
-    ArithmeticFailure, CapacityKind, Error, Node, Path, PropertyMap, Relationship, Result,
-    Temporal, Value, MAX_VALUE_DEPTH,
+    ArgumentFault, ArithmeticFailure, CapacityKind, Error, Node, Path, PropertyMap, Relationship,
+    Result, Temporal, Value, MAX_VALUE_DEPTH,
 };
 pub use relate_core::{
     require_traversal_depth, traversal_depth_exceeded_message, MAX_TRAVERSAL_DEPTH,

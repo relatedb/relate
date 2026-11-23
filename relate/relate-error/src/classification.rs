@@ -21,7 +21,7 @@ use crate::nested_class::{
     GQLSTATUS_INTERNAL, GQLSTATUS_PARAMETER_MISSING, GQLSTATUS_PROCEDURE_CALL, GQLSTATUS_SYNTAX,
     GQLSTATUS_TYPE,
 };
-use relate_core::{ArithmeticFailure, Error};
+use relate_core::{ArgumentFault, ArithmeticFailure, Error};
 
 /// The `code` of a statement the parser rejects (engine `Syntax`).
 pub const SYNTAX_ERROR_CODE: &str = "Neo.ClientError.Statement.SyntaxError";
@@ -64,6 +64,19 @@ pub const ARGUMENT_ERROR_CODE: &str = "Neo.ClientError.General.InvalidArguments"
 /// `substring()`/`left()`/`right()` int32-range rejections — the same
 /// `ArgumentError` class as [`ARGUMENT_ERROR_CODE`], a different stage.
 pub const ARGUMENT_VALUE_ERROR_CODE: &str = "Neo.ClientError.Statement.ArgumentError";
+
+/// The GQLSTATUS of a run-time argument rejection's per-site fault — live's
+/// codes for `point()`'s in-map rejections (probed on 2026.09.0): the one
+/// table a site's code derives from.
+fn argument_fault_gql_status(fault: ArgumentFault) -> &'static str {
+    match fault {
+        ArgumentFault::InvalidDimension => "22N20",
+        ArgumentFault::UnknownCrs => "22N21",
+        ArgumentFault::InvalidLatitude => "22N23",
+        ArgumentFault::NonFiniteCoordinate => "22N24",
+        ArgumentFault::WrongType => GQLSTATUS_TYPE,
+    }
+}
 
 /// The `code` of an arithmetic failure (`Arithmetic`: division or modulo by
 /// zero, rounding necessary).
@@ -282,9 +295,9 @@ pub fn error_info(e: &Error) -> ErrorInfo {
         // The function-argument validator's rejections share the DDL
         // argument class but are discovered while rows are produced, so live
         // fails the PULL — its own code and stage, not the DDL one's.
-        Error::ArgumentValue { .. } => ErrorInfo {
+        Error::ArgumentValue { fault, .. } => ErrorInfo {
             neo4j_code: ARGUMENT_VALUE_ERROR_CODE,
-            gql_status: GQLSTATUS_GENERAL,
+            gql_status: fault.map_or(GQLSTATUS_GENERAL, argument_fault_gql_status),
             stage: Runtime,
             retryable: false,
         },

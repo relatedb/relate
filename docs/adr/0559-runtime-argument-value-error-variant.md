@@ -52,6 +52,10 @@ kind and the detail as data, not as a prefix inside a message string.
 - The classifier maps the variant to
   `Neo.ClientError.Statement.ArgumentError`, a general GQLSTATUS, the
   runtime stage, and non-retryable.
+- A site whose live GQLSTATUS is its own (`point()`'s in-map rejections:
+  22N20 dimension, 22N21 unknown srid/crs, 22N23 latitude, 22N24
+  non-finite, 22G03 for the type rows) names a typed fault the classifier
+  maps to that code; every other site keeps the general GQLSTATUS.
 - The sites above migrate. A non-numeric percentile is a wrong-type
   rejection and keeps the invalid-argument-type variant, not this one.
 - The plain-detail run-time sites that already build the DDL argument

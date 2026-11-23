@@ -45,8 +45,8 @@ pub use dynamic::{
     dynamic_label_names, dynamic_property_key, DynamicAccessError, DynamicNameToken,
 };
 pub use error::{
-    expected_type_detail, negative_page_bound_text, uniqueness_violation_detail, ArithmeticFailure,
-    CapacityKind, Error, Result, NEGATIVE_PAGE_BOUND_DETAIL,
+    expected_type_detail, negative_page_bound_text, uniqueness_violation_detail, ArgumentFault,
+    ArithmeticFailure, CapacityKind, Error, Result, NEGATIVE_PAGE_BOUND_DETAIL,
 };
 pub use error_kinds::{
     duplicate_variable_detail, undefined_variable_detail, unknown_function_detail, ErrorKind,

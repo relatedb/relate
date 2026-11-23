@@ -323,7 +323,7 @@ pub fn empty_map() -> relate::Value {
 /// call — `Connection::query` is exactly `query_with_params(cypher,
 /// BTreeMap::new())`), so the class tables and the rejection assertions share
 /// one run instead of each forking on an empty map.
-fn refused(
+pub fn refused(
     conn: &mut relate::Connection,
     statement: &str,
     params: BTreeMap<String, relate::Value>,

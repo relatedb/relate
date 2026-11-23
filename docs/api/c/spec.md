@@ -66,7 +66,7 @@ object — no C structs cross the ABI:
 The classification — `code`, `gql_status`, `stage`, `retryable` — comes from
 the engine's single table (`relate::error_info`); Bolt, HTTP, the CLI,
 Python and this ABI all derive from it, so a client never classifies an
-error itself. Internal-class messages are genericized (ADR-0260): a
+error itself. A `point()` argument rejection carries its site's `gql_status` (`22N20` dimension, `22N21` unknown srid/crs, `22N23` latitude, `22N24` non-finite, `22G03` wrong type) under `Neo.ClientError.Statement.ArgumentError`, not `42000`. Internal-class messages are genericized (ADR-0260): a
 storage failure's file path or a panic payload never crosses the ABI —
 `message` is the fixed `internal error` text, the same policy as Bolt's
 and HTTP's boundaries. The redacted original is logged to the host's

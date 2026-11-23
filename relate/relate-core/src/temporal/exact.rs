@@ -126,17 +126,32 @@ pub(super) fn add_exact_nanos(dst: &mut i128, delta: i128) -> Result<()> {
     Ok(())
 }
 
-/// The three tiers a duration accumulates into. The ISO numeral parser
+/// The tiers a duration accumulates into. The ISO numeral parser
 /// ([`super::duration`]), the map constructor ([`super::construct`]), the
 /// duration-pattern parser ([`super::duration_pattern`]) and duration
 /// scaling ([`super::arith`]) share one fold, [`Self::finish`], so the stored
-/// triple is assembled one way.
+/// triple is assembled one way. The nanosecond tier is two lanes, as in
+/// Neo4j's `DurationValue`: `seconds` (hours, minutes and seconds) and
+/// `sub_second` (milliseconds, microseconds and nanoseconds, the pattern's
+/// fraction digits, and scaled stored nanoseconds). Both count in
+/// nanoseconds.
 #[derive(Default)]
 pub(super) struct DurationTiers {
     pub(super) months: ExactAccumulator,
     pub(super) days: ExactAccumulator,
-    pub(super) nanos: ExactAccumulator,
+    pub(super) seconds: ExactAccumulator,
+    pub(super) sub_second: ExactAccumulator,
 }
+
+/// Whole seconds from which the seconds lane no longer fits an `f64`
+/// mantissa (2^53): below it the combined-nanosecond fold is exact for
+/// every value the corpus pins, from here Neo4j's per-lane double
+/// arithmetic is mirrored.
+const LANE_MANTISSA_SECONDS: i128 = 1 << 53;
+
+/// `2^63` as an `f64`: the value `i64::MAX` rounds to, which Java's
+/// saturating `(long)` cast sends back to `i64::MAX`.
+const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
 
 impl DurationTiers {
     /// The stored `(months, days, nanos)` triple, through Neo4j's
@@ -147,13 +162,27 @@ impl DurationTiers {
     /// (Neo4j's all-integral split), so counts above 2^53 keep every digit
     /// while a sub-nanosecond remainder is dropped
     /// (`duration({nanoseconds: 1.9})` is `PT0.000000001S`).
+    ///
+    /// A fractional duration whose seconds lane holds 2^53 seconds or more
+    /// folds the lanes apart as Neo4j does (REL8-1164): the seconds lane is
+    /// one `double` (ties-to-even, `2^63` saturating to `i64::MAX`) cast to
+    /// `long` on its own, and the sub-second lane's nanoseconds join it
+    /// only through the seconds remainder.
     pub(super) fn finish(self) -> Result<(i64, i64, i128)> {
-        let fractional = self.months.frac != 0.0 || self.days.frac != 0.0 || self.nanos.frac != 0.0;
+        let fractional = self.months.frac != 0.0
+            || self.days.frac != 0.0
+            || self.seconds.frac != 0.0
+            || self.sub_second.frac != 0.0;
+        let whole_nanos = self
+            .seconds
+            .whole
+            .checked_add(self.sub_second.whole)
+            .ok_or_else(range_err)?;
         if !fractional {
             return Ok((
                 self.months.whole_i64()?,
                 self.days.whole_i64()?,
-                self.nanos.whole,
+                whole_nanos,
             ));
         }
         let months = self.months.whole as f64 + self.months.frac;
@@ -163,19 +192,49 @@ impl DurationTiers {
         let days_whole = days.trunc();
         let day_nanos = NANOS_PER_DAY as f64 * (days - days_whole);
         let seconds = day_nanos / NANOS_PER_SECOND as f64;
-        let seconds_whole = seconds.trunc();
-        let second_nanos = NANOS_PER_SECOND as f64 * (seconds - seconds_whole);
-        let nanos = self.nanos.whole as f64 + self.nanos.frac + second_nanos;
-        let nanos_whole = f64_to_i128_range(nanos.trunc())?;
-        let total_nanos = f64_to_i128_range(seconds_whole)?
-            .checked_mul(NANOS_PER_SECOND)
-            .and_then(|total| total.checked_add(nanos_whole))
-            .ok_or_else(range_err)?;
+        let total_nanos = if self.seconds.whole.abs() / NANOS_PER_SECOND >= LANE_MANTISSA_SECONDS {
+            self.fold_lanes_apart(seconds)?
+        } else {
+            let seconds_whole = seconds.trunc();
+            let second_nanos = NANOS_PER_SECOND as f64 * (seconds - seconds_whole);
+            let nanos =
+                whole_nanos as f64 + (self.seconds.frac + self.sub_second.frac) + second_nanos;
+            let nanos_whole = f64_to_i128_range(nanos.trunc())?;
+            f64_to_i128_range(seconds_whole)?
+                .checked_mul(NANOS_PER_SECOND)
+                .and_then(|total| total.checked_add(nanos_whole))
+                .ok_or_else(range_err)?
+        };
         Ok((
             f64_to_i64_range(months_whole)?,
             f64_to_i64_range(days_whole)?,
             total_nanos,
         ))
+    }
+
+    /// The total nanoseconds with the seconds lane folded as one `double`
+    /// (`day_seconds` is the day fraction's seconds), the way Neo4j's
+    /// `approximate` does: the lane's whole seconds are rounded to the
+    /// nearest representable `double` before the `long` cast, and the
+    /// sub-second lane's nanoseconds are cast on their own.
+    fn fold_lanes_apart(&self, day_seconds: f64) -> Result<i128> {
+        let lane_seconds = self.seconds.whole / NANOS_PER_SECOND;
+        let lane_rest = self.seconds.whole % NANOS_PER_SECOND;
+        let seconds = lane_seconds as f64
+            + (lane_rest as f64 + self.seconds.frac) / NANOS_PER_SECOND as f64
+            + day_seconds;
+        let seconds_whole = seconds.trunc();
+        let second_nanos = NANOS_PER_SECOND as f64 * (seconds - seconds_whole);
+        let nanos = self.sub_second.whole as f64 + self.sub_second.frac + second_nanos;
+        let seconds_whole = if seconds_whole == TWO_POW_63 {
+            i128::from(i64::MAX)
+        } else {
+            f64_to_i128_range(seconds_whole)?
+        };
+        seconds_whole
+            .checked_mul(NANOS_PER_SECOND)
+            .and_then(|total| total.checked_add(f64_to_i128_range(nanos.trunc()).ok()?))
+            .ok_or_else(range_err)
     }
 }
 
@@ -201,7 +260,7 @@ mod tests {
     #[test]
     fn nanosecond_fold_truncates_like_neo4j_long_cast() {
         let mut tiers = DurationTiers::default();
-        tiers.nanos.add_float(1.9).unwrap();
+        tiers.sub_second.add_float(1.9).unwrap();
         assert_eq!(tiers.finish().unwrap().2, 1);
     }
 
@@ -209,7 +268,7 @@ mod tests {
     fn exact_integers_above_f64_precision_survive() {
         let mut tiers = DurationTiers::default();
         tiers
-            .nanos
+            .seconds
             .add(ExactNumber::Int(i128::from(i64::MAX)), NANOS_PER_SECOND)
             .unwrap();
         assert_eq!(
