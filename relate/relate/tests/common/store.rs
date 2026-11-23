@@ -91,7 +91,7 @@ pub fn seed_store_with(
     codec: relate_storage::SnapshotCodecKind,
     pre_checkpoint: &[&str],
 ) {
-    let db = relate::Database::open_with(root.to_str().unwrap(), opts(codec)).unwrap();
+    let db = super::env_seam::open(relate_test_support::uri(root), opts(codec));
     let mut conn = db.connect().unwrap();
     conn.query("CREATE (:T {name: 'checkpointed'})").unwrap();
     for statement in pre_checkpoint {

@@ -6,8 +6,6 @@
 //! [`stats_short_circuit`](super::stats_short_circuit); this module holds
 //! what the rungs read, never the ordering.
 
-use std::collections::HashSet;
-
 use indexmap::IndexMap;
 use relate_core::{Result, Value};
 use relate_ir::{Clause, Expr, MatchMode, OrderItem, PathPattern, Projection};
@@ -20,6 +18,7 @@ use crate::row::Row;
 
 use super::classification::{ProjectionClass, ProjectionShape};
 use super::order::park_order_keys;
+use super::pattern_policies::node_occurrence_counts;
 use super::project::{project_classed, return_result, ProjectionInput};
 use super::scope::ProjectionFields;
 use super::QueryResult;
@@ -414,12 +413,13 @@ pub(super) fn grouped_row(
 /// Round 3, F-1-4 (the count-only recognizer's shape guard): repeated
 /// node variables (a same-variable self-loop shape, `(a:A)-[:R]->(a:A)`)
 /// would answer from the (A,R,A) pair count, which includes
-/// distinct-endpoint rels the scan's same-variable shape excludes.
+/// distinct-endpoint rels the scan's same-variable shape excludes —
+/// every node variable of the pattern occurs exactly once. The counts
+/// are [`super::pattern_policies::node_occurrence_counts`], the one
+/// home of the repeated-variable fact, which the issue-21 scan-gate
+/// rule also reads.
 pub(super) fn node_vars_unique(pattern: &PathPattern) -> bool {
-    let mut node_vars: HashSet<&SmallName> = HashSet::new();
-    pattern
-        .nodes
-        .iter()
-        .filter_map(|n| n.variable.as_ref())
-        .all(|v| node_vars.insert(v))
+    node_occurrence_counts(pattern)
+        .values()
+        .all(|count| *count == 1)
 }

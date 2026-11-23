@@ -248,6 +248,31 @@ fn remove_items_eligible(items: &[RemoveItem], scope: &HashSet<String>) -> bool 
         )
 }
 
+/// The `SET` target kind — eligible when every item reads only the
+/// final scope's variables ([`set_items_eligible`]'s own contract).
+fn set_kind(items: &[SetItem], scope: &HashSet<String>) -> Option<BulkKind> {
+    set_items_eligible(items, scope).then(|| BulkKind::Set {
+        items: items.to_vec(),
+    })
+}
+
+/// The `REMOVE` target kind — eligible when every item reads only the
+/// final scope's variables ([`remove_items_eligible`]'s own contract).
+fn remove_kind(items: &[RemoveItem], scope: &HashSet<String>) -> Option<BulkKind> {
+    remove_items_eligible(items, scope).then(|| BulkKind::Remove {
+        items: items.to_vec(),
+    })
+}
+
+/// The `CREATE` target kind — eligible when every pattern's refs stay
+/// within the final scope ([`create_patterns_eligible`]'s own
+/// contract).
+fn create_kind(patterns: &[PathPattern], scope: &HashSet<String>) -> Option<BulkKind> {
+    create_patterns_eligible(patterns, scope).then(|| BulkKind::Create {
+        patterns: patterns.to_vec(),
+    })
+}
+
 /// Whether the `DELETE` clause is batch-safe, and its kind when it is:
 /// every expression must be a plain variable naming a matched factor
 /// (one walk collects the named factors and classifies their sources),
@@ -337,34 +362,41 @@ fn with_rename_projection(clause: &Clause) -> Option<RenameProjection> {
     Some(RenameProjection { star, renames })
 }
 
-/// Apply one pure-rename `WITH` to the surviving factors, following the
+/// Rewrite the factors through one pure-rename `WITH`, following the
 /// clause's simultaneous-assignment semantics: every item reads the
 /// incoming scope, so each factor's name is rewritten by at most one
-/// item (its first match), and a factor no item mentions survives only
-/// under `*`. Returns `None` when the projection would make the scope
-/// ambiguous for batched targeting: `*` mixed with a real rename binds
-/// two names to one entity, and an alias colliding with another
-/// surviving factor's name shadows it.
-fn apply_rename_projection(factors: &mut Vec<Factor>, projection: &RenameProjection) -> Option<()> {
-    if projection.star && projection.renames.iter().any(|(old, new)| old != new) {
-        return None;
+/// item (its first match). The projection must cover the factors
+/// exactly: under `*` every factor survives unchanged (identity
+/// renames only — a real rename would bind two names to one entity),
+/// and without `*` every factor must be renamed — a factor no item
+/// mentions is dropped, and a dropped factor still multiplies the row
+/// space (its emptiness empties the write, its multiplicity scales it
+/// — REL8-2023 issues 72 and 77's WITH shape), which the batched
+/// path, targeting the surviving factors' entities once each, can see
+/// neither. `None` also when an alias collides with another surviving
+/// factor's name (it would shadow it). The input is consumed whole, so
+/// a decline never leaves a half-rewritten scope behind.
+fn apply_rename_projection(
+    factors: Vec<Factor>,
+    projection: &RenameProjection,
+) -> Option<Vec<Factor>> {
+    if projection.star {
+        if projection.renames.iter().any(|(old, new)| old != new) {
+            return None;
+        }
+        return Some(factors);
     }
     let mut kept = Vec::with_capacity(factors.len());
-    for mut factor in factors.drain(..) {
-        match projection
+    for mut factor in factors {
+        let (_, new) = projection
             .renames
             .iter()
-            .find(|(old, _)| *old == factor.var)
-        {
-            Some((_, new)) => factor.var = new.clone(),
-            None if projection.star => {}
-            None => continue,
-        }
+            .find(|(old, _)| *old == factor.var)?;
+        factor.var = new.clone();
         kept.push(factor);
     }
-    *factors = kept;
-    let names: HashSet<&str> = factors.iter().map(|f| f.var.as_str()).collect();
-    (names.len() == factors.len()).then_some(())
+    let names: HashSet<&str> = kept.iter().map(|f| f.var.as_str()).collect();
+    (names.len() == kept.len()).then_some(kept)
 }
 
 /// Plan-time detection of a batchable global bulk write (ADR-0209 §1).
@@ -445,34 +477,36 @@ pub fn analyze_bulk_write(plan: &LogicalPlan) -> Option<BulkWrite> {
     if factors.iter().map(|f| &f.var).collect::<HashSet<_>>().len() != factors.len() {
         return None;
     }
-    // Pure-rename WITHs only; the write clause references the final names.
-    while let Some(clause @ Clause::With { .. }) = clauses.get(i) {
-        let projection = with_rename_projection(clause)?;
-        apply_rename_projection(&mut factors, &projection)?;
+    // Pure-rename WITHs only; the write clause references the final
+    // names. The decoder owns the `With` variant test — this loop owns
+    // only the phase boundary: any clause the pure-rename decoder
+    // declines, `With` or not, ends the phase here, and the terminal
+    // checks below decline the leftover shape either way.
+    while let Some(clause) = clauses.get(i) {
+        let Some(projection) = with_rename_projection(clause) else {
+            break;
+        };
+        factors = apply_rename_projection(factors, &projection)?;
         i += 1;
     }
-    // Exactly one terminal write clause; nothing may follow it.
-    if i + 1 != clauses.len() {
+    // Exactly one terminal write clause; nothing may follow it — the
+    // one binding that carries both the arity and the scrutinee.
+    let [write] = &clauses[i..] else {
         return None;
-    }
+    };
     let scope: HashSet<String> = factors.iter().map(|f| f.var.clone()).collect();
-    let kind = match &clauses[i] {
+    // One constructor shape per write kind — eligibility is each
+    // constructor's own `Option`; anything else is not a terminal
+    // write clause, and the recognizer declines.
+    let kind = match write {
         Clause::Delete {
             detach,
             expressions,
-        } => delete_kind(*detach, expressions, &factors)?,
-        Clause::Set { items } if set_items_eligible(items, &scope) => BulkKind::Set {
-            items: items.clone(),
-        },
-        Clause::Remove { items } if remove_items_eligible(items, &scope) => BulkKind::Remove {
-            items: items.clone(),
-        },
-        Clause::Create { patterns } if create_patterns_eligible(patterns, &scope) => {
-            BulkKind::Create {
-                patterns: patterns.clone(),
-            }
-        }
+        } => delete_kind(*detach, expressions, &factors),
+        Clause::Set { items } => set_kind(items, &scope),
+        Clause::Remove { items } => remove_kind(items, &scope),
+        Clause::Create { patterns } => create_kind(patterns, &scope),
         _ => return None,
-    };
+    }?;
     Some(BulkWrite { kind, factors })
 }

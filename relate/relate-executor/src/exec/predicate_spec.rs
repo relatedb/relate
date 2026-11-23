@@ -67,6 +67,7 @@ use crate::overlay::{ExecGraph, ScanNode};
 use crate::row::Row;
 
 use super::agg_fold::is_pred_op;
+use super::pattern_policies::node_occurrence_counts;
 use super::pushdown::Residual;
 
 #[cfg(test)]
@@ -282,28 +283,33 @@ impl VarSpec {
 /// run the residual pass (a conjunct over already-bound node variables is
 /// settled truthy, or the walk died, before any later node's candidates),
 /// rel binds do not (their conjuncts first evaluate at the NEXT node
-/// bind). Built once per [`WalkSpec::compile`].
+/// bind). Built once per [`WalkSpec::compile`]. The node side is the
+/// occurrence counts — the one home of the repeated-variable fact
+/// (issue 21), computed by
+/// [`super::pattern_policies::node_occurrence_counts`], never a second
+/// membership table over the same names.
 struct PathVars {
-    nodes: HashSet<String>,
+    node_occurrences: HashMap<String, usize>,
     rels: HashSet<String>,
 }
 
 impl PathVars {
     fn of(path: &PathPattern) -> Self {
-        let mut nodes = HashSet::new();
         let mut rels = HashSet::new();
-        // Text render: the compiled var sets are String-keyed.
-        for np in &path.nodes {
-            if let Some(v) = &np.variable {
-                nodes.insert(v.to_string());
-            }
-        }
         for rp in &path.rels {
             if let Some(v) = &rp.variable {
                 rels.insert(v.to_string());
             }
         }
-        Self { nodes, rels }
+        Self {
+            node_occurrences: node_occurrence_counts(path),
+            rels,
+        }
+    }
+
+    /// Whether `var` names exactly one node entry of the path.
+    fn occurs_once(&self, var: &SmallName) -> bool {
+        var.with_str(|text| self.node_occurrences.get(text)) == Some(&1)
     }
 }
 
@@ -323,11 +329,13 @@ impl WalkSpec {
     /// Compile for one path walk. A node variable gets an entry only when
     /// the pattern is scan-shaped (a static label conjunction or no label
     /// expression, no pattern property map — those keep `node_ok`'s
-    /// property checks), its variable is not already bound by the entry
-    /// row (the gate would decline it; the generic path owns rebinds),
-    /// and **every** conjunct over exactly that variable compiles — the
-    /// all-or-nothing rule that keeps the evaluation order, and so the
-    /// error surface, the generic path's.
+    /// property checks), it occurs on exactly one node entry of the path
+    /// (a repeated variable's gate is keyed by name and would skip the
+    /// other occurrence's checks — issue 21), its variable is not already
+    /// bound by the entry row (the gate would decline it; the generic
+    /// path owns rebinds), and **every** conjunct over exactly that
+    /// variable compiles — the all-or-nothing rule that keeps the
+    /// evaluation order, and so the error surface, the generic path's.
     ///
     /// The compiled conjuncts are also the walk's `settled` set: the gate
     /// evaluated each of them against the candidate's live record under
@@ -424,6 +432,14 @@ impl WalkSpec {
         if var.with_str(|text| entry_bound(text)) {
             return None;
         }
+        // A variable repeated on another entry of the path (a cycle
+        // closing onto it) never takes a gate: gates are keyed by
+        // variable name, so one occurrence's gate would be applied to the
+        // other, skipping that occurrence's labels and property map
+        // (issue 21). The generic `node_ok` checks every occurrence.
+        if !path_vars.occurs_once(var) {
+            return None;
+        }
         // The scan shapes only: a dynamic label expression and a pattern
         // property map keep `node_ok`'s own checks.
         if np.properties.is_some() {
@@ -432,56 +448,9 @@ impl WalkSpec {
         if !np.has_static_labels() {
             return None;
         }
-        let mut named = HashSet::new();
-        let mut preds = Vec::new();
-        // This variable's gated conjunct indices, published to `settled`
-        // only once the all-or-nothing decision completes: a declined
-        // variable must leave no settled claim behind.
-        let mut mine = Vec::new();
-        // Set once a conjunct the gate cannot evaluate — and that is
-        // evaluable at this node's bind — precedes this variable's
-        // compiled conjuncts: the evaluation order the gate would flip.
-        let mut gate_order_broken = false;
-        for (index, conjunct) in residual.conjuncts.iter().enumerate() {
-            named.clear();
-            expr_vars(conjunct, &mut named);
-            // `named` is the expr_vars String sink; the IR variable
-            // probes it through the text bridge.
-            if named.len() != 1 || !var.with_str(|text| named.contains(text)) {
-                // Not this variable's conjunct. Safe ahead of a compiled
-                // one only when an earlier node bind settles it: it names
-                // at least one node variable of this path, never this
-                // variable (a cross-variable comparison's readiness is
-                // the walk orientation's choice), never a rel variable
-                // (rel binds run no residual pass), and at least one name
-                // at all (a constant or an outer/subquery-only name is
-                // ready at every bind).
-                let safe_ahead = !var.with_str(|text| named.contains(text))
-                    && !named.is_empty()
-                    && !named.iter().any(|name| path_vars.rels.contains(name))
-                    && named.iter().any(|name| path_vars.nodes.contains(name));
-                if !safe_ahead {
-                    gate_order_broken = true;
-                }
-                continue;
-            }
-            // The order-safety gate: the compiled conjunct would evaluate
-            // before the conjunct that precedes it, so the variable takes
-            // the generic path wholesale.
-            if gate_order_broken {
-                return None;
-            }
-            // All-or-nothing: one declined conjunct over this variable
-            // returns the whole variable to the generic path.
-            preds.push(InlinePred::compile(graph, var, conjunct, params)?);
-            // The gate evaluates this conjunct for every candidate it
-            // accepts: the residual's re-run is redundant, and the walk's
-            // residual pass skips it by this index.
-            mine.push(index);
-        }
-        if preds.is_empty() {
-            return None;
-        }
+        let (preds, mine) = Self::gate_conjuncts(graph, var, path_vars, params, residual)?;
+        // Published only on success — a declined variable leaves no
+        // settled claim behind.
         settled.extend(mine);
         let labels = np
             .labels
@@ -494,6 +463,101 @@ impl WalkSpec {
             })
             .collect();
         Some((var.to_string(), VarSpec { labels, preds }))
+    }
+
+    /// The conjunct classification for one gated variable: the residual
+    /// conjuncts it owns — compiled to gate predicates — versus the ones
+    /// safe ahead of them, returned as the compiled preds and this
+    /// variable's settled indices. All-or-nothing: a declined or
+    /// order-unsafe conjunct returns `None`, and the caller publishes
+    /// the indices only on `Some` — a declined variable leaves no
+    /// settled claim behind. The classification facts are computed once
+    /// per conjunct: `names_this_var` binds the one text-bridge probe
+    /// the classification reads.
+    fn gate_conjuncts(
+        graph: &ExecGraph<'_>,
+        var: &SmallName,
+        path_vars: &PathVars,
+        params: &BTreeMap<String, Value>,
+        residual: &Residual<'_>,
+    ) -> Option<(Vec<InlinePred>, Vec<usize>)> {
+        // The classification's three outcomes, stated once — each
+        // conjunct is exactly one of them.
+        enum Class {
+            /// Exactly one name and it is this variable's: compiled
+            /// into the gate.
+            Owned,
+            /// Never names this variable, and an earlier node bind
+            /// settles it: it names at least one node variable of this
+            /// path and no rel variable (rel binds run no residual
+            /// pass — a cross-variable comparison's readiness is the
+            /// walk orientation's choice).
+            Ahead,
+            /// Anything else: a conjunct the gate cannot evaluate — or
+            /// that is only evaluable after this variable's bind —
+            /// sitting ahead of this variable's compiled conjuncts
+            /// would flip the evaluation order. A constant or an
+            /// outer/subquery-only name lands here too: the generic
+            /// order raises or short-circuits it at this node's bind,
+            /// so evaluating the compiled conjuncts ahead of it
+            /// diverges.
+            Breaks,
+        }
+        let mut named = HashSet::new();
+        let mut preds = Vec::new();
+        // This variable's gated conjunct indices, returned to the
+        // caller for `settled` — published only on success.
+        let mut mine = Vec::new();
+        // Set once a `Breaks` conjunct precedes any of this variable's
+        // compiled conjuncts: the evaluation order the gate would flip.
+        let mut gate_order_broken = false;
+        for (index, conjunct) in residual.conjuncts.iter().enumerate() {
+            named.clear();
+            expr_vars(conjunct, &mut named);
+            // `named` is the expr_vars String sink; the IR variable
+            // probes it through the text bridge — once, the fact the
+            // classification reads.
+            let names_this_var = var.with_str(|text| named.contains(text));
+            let class = if named.len() == 1 && names_this_var {
+                Class::Owned
+            } else if !names_this_var
+                && !named.is_empty()
+                && !named.iter().any(|name| path_vars.rels.contains(name))
+                && named
+                    .iter()
+                    .any(|name| path_vars.node_occurrences.contains_key(name))
+            {
+                Class::Ahead
+            } else {
+                Class::Breaks
+            };
+            match class {
+                Class::Owned => {
+                    // The order-safety gate: the compiled conjunct would
+                    // evaluate before the conjunct that precedes it, so
+                    // the variable takes the generic path wholesale.
+                    if gate_order_broken {
+                        return None;
+                    }
+                    // All-or-nothing: one declined conjunct over this
+                    // variable returns the whole variable to the generic
+                    // path.
+                    preds.push(InlinePred::compile(graph, var, conjunct, params)?);
+                    // The gate evaluates this conjunct for every
+                    // candidate it accepts: the residual's re-run is
+                    // redundant, and the walk's residual pass skips it
+                    // by this index.
+                    mine.push(index);
+                }
+                // Safe ahead of every compiled conjunct below it.
+                Class::Ahead => {}
+                Class::Breaks => gate_order_broken = true,
+            }
+        }
+        if preds.is_empty() {
+            return None;
+        }
+        Some((preds, mine))
     }
 
     /// The gate material one walk loop hoists OUT of its candidate loop

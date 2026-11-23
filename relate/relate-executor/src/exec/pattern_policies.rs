@@ -10,6 +10,10 @@
 //!   rebinding-name vocabulary of a quantified group, the element-level
 //!   spelling and the whole-group one that adds the group's own subpath
 //!   variable;
+//! - [`node_occurrence_counts`] — the node-variable occurrence counts
+//!   of one path pattern, the repeated-variable fact (REL8-2023 issue
+//!   21) the walk compiler's scan-gate rule and the count-only
+//!   recognizer's shape guard both read;
 //! - [`gpm_path_mode_allows`] and [`path_mode_requires_unique_rels`] —
 //!   the per-path mode check table and its uniqueness half;
 //! - [`inlined_all_reduces`] and [`InlinedAllReduce`] — the MATCH-WHERE
@@ -41,7 +45,7 @@
 
 use crate::UsedSet;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use relate_core::{NodeId, RelId, Result, Value};
 use relate_ir::{Expr, PathMode, PathPattern, PatternElement, QuantifiedPathPattern};
@@ -104,6 +108,22 @@ fn push_new(out: &mut Vec<String>, name: &SmallName) {
     if !out.iter().any(|n| name == n.as_str()) {
         out.push(name.to_string());
     }
+}
+
+/// Node-variable occurrence counts of one path pattern — the one home
+/// of the repeated-variable fact (REL8-2023 issue 21), which the walk
+/// compiler's scan-gate rule (`predicate_spec::PathVars::of`) and the
+/// count-only recognizer's shape guard (`shortcut_common::node_vars_unique`)
+/// both read: a variable on more than one node entry of the path (a
+/// cycle closing onto it) never takes a scan gate.
+pub(crate) fn node_occurrence_counts(pattern: &PathPattern) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for np in &pattern.nodes {
+        if let Some(v) = &np.variable {
+            *counts.entry(v.to_string()).or_default() += 1;
+        }
+    }
+    counts
 }
 
 /// The one path-mode → relationship-uniqueness policy: the modes whose

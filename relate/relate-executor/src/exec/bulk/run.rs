@@ -70,6 +70,16 @@ enum TargetsInner {
 #[derive(Debug)]
 pub struct BulkTargets(TargetsInner);
 
+/// The row-space size of a batched write: the product of the factor id
+/// sets — one empty factor empties the whole space (issue 77). The one
+/// spelling both the threshold estimate and the `DELETE` guard read.
+fn factor_space_len(factor_ids: &[Vec<i64>]) -> u64 {
+    factor_ids
+        .iter()
+        .map(|ids| ids.len() as u64)
+        .fold(1u64, u64::saturating_mul)
+}
+
 impl BulkTargets {
     /// The estimated touched-entity count used against the batching
     /// threshold: entity count plus incident relationships for `DELETE`,
@@ -82,10 +92,7 @@ impl BulkTargets {
                 .fold(0u64, u64::saturating_add),
             TargetsInner::Set { factors, .. }
             | TargetsInner::Remove { factors, .. }
-            | TargetsInner::Create { factors, .. } => factors
-                .iter()
-                .map(|ids| ids.len() as u64)
-                .fold(1u64, u64::saturating_mul),
+            | TargetsInner::Create { factors, .. } => factor_space_len(factors),
         }
     }
 }
@@ -207,6 +214,18 @@ impl BulkWrite {
     ) -> Result<TargetsInner> {
         let mut node_ids: Vec<NodeId> = Vec::new();
         let mut rel_ids: Vec<RelId> = Vec::new();
+        // The row space is the cross product of ALL factors, named or
+        // not: one empty factor empties it, so the DELETE deletes
+        // nothing (issue 77) — the same `factor_space_len` product the
+        // row-driven arms' `total_work` charges (the DELETE arm sums
+        // entity work and never sees the row space, so this guard is
+        // the empty-factor fact's one home on this path).
+        if factor_space_len(factor_ids) == 0 {
+            return Ok(TargetsInner::Delete {
+                detach,
+                entities: Vec::new(),
+            });
+        }
         for (factor, ids) in self.factors.iter().zip(factor_ids) {
             if !targets.contains(&factor.var) {
                 continue;
@@ -226,10 +245,14 @@ impl BulkWrite {
             // while no concurrent writer adds a relationship after this
             // snapshot.
             for &id in &node_ids {
-                let connected = view
+                // The probe's predicate is infallible; an error that
+                // ever becomes constructible must fail loudly, not
+                // read as "no neighbor" — which would delete a
+                // connected node as if it had none.
+                let hit = view
                     .try_find_neighbor(id, Direction::Both, &[], |_| Ok::<bool, ()>(true))
-                    .is_ok_and(|hit| hit.is_some());
-                if connected {
+                    .expect("the neighbor probe's predicate is infallible");
+                if hit.is_some() {
                     return Err(crate::graph::delete_connected_node_error());
                 }
             }

@@ -223,70 +223,69 @@ fn plain_match(clause: &Clause) -> Option<PlainMatch<'_>> {
     })
 }
 
+/// The clause-list shape the `EXISTS` probe decodes: exactly one plain
+/// `MATCH` clause. Relationship uniqueness is scoped to one clause, so
+/// the patterns of two clauses cannot be probed as one `DIFFERENT
+/// RELATIONSHIPS` list — the general engine answers multi-clause
+/// bodies.
+fn single_plain_match(clauses: &[Clause]) -> Option<PlainMatch<'_>> {
+    let [clause] = clauses else {
+        return None;
+    };
+    plain_match(clause)
+}
+
 struct BoolCount<'a> {
-    patterns: Vec<PathPattern>,
-    wheres: Vec<Expr>,
-    /// MATCH clauses after the one currently being dispatched.
-    extra_matches: usize,
+    /// The one decoded clause (issue 84) — its patterns and WHERE are
+    /// the fold's span, held decoded, not re-spread field by field.
+    plain: PlainMatch<'a>,
     output: String,
     counted: &'a Expr,
 }
 
-/// One or more plain `MATCH` clauses followed by an ungrouped
+/// One plain `MATCH` clause followed by an ungrouped
 /// `RETURN count(DISTINCT expr) > 0` or `>= 1` — the threshold literal or
-/// a parameter resolving to it (see [`counted_existence`]).
+/// a parameter resolving to it (see [`counted_existence`]). The `MATCH`
+/// decodes through [`plain_match`], the module's one plain-MATCH
+/// decoder: relationship uniqueness is scoped to a clause, so two
+/// clauses' patterns cannot be probed as one list (issue 84). The
+/// empty-patterns decline is [`patterns_exist`]'s own gate, not spelled
+/// again here.
 fn boolean_count_span<'a>(
     clauses: &'a [Clause],
     params: &BTreeMap<String, Value>,
 ) -> Option<BoolCount<'a>> {
-    let mut patterns = Vec::new();
-    let mut wheres = Vec::new();
-    let mut matches = 0usize;
-    for clause in clauses {
-        match clause {
-            Clause::Match { .. } => {
-                let plain = plain_match(clause)?;
-                if plain.patterns.is_empty() {
-                    return None;
-                }
-                patterns.extend(plain.patterns.iter().cloned());
-                if let Some(where_clause) = plain.where_clause {
-                    wheres.push(where_clause.clone());
-                }
-                matches += 1;
-            }
-            Clause::Return {
-                distinct,
-                group_by,
-                items,
-                order,
-                skip,
-                limit,
-            } => {
-                if matches == 0
-                    || *distinct
-                    || group_by.is_some()
-                    || !order.is_empty()
-                    || skip.is_some()
-                    || limit.is_some()
-                    || items.len() != 1
-                {
-                    return None;
-                }
-                let Projection { expr, .. } = &items[0];
-                let counted = counted_existence(expr, params)?;
-                return Some(BoolCount {
-                    patterns,
-                    wheres,
-                    extra_matches: matches - 1,
-                    output: items[0].output_name(0),
-                    counted,
-                });
-            }
-            _ => return None,
-        }
+    let [match_clause, ret] = clauses else {
+        return None;
+    };
+    let plain = plain_match(match_clause)?;
+    let Clause::Return {
+        distinct,
+        group_by,
+        items,
+        order,
+        skip,
+        limit,
+    } = ret
+    else {
+        return None;
+    };
+    if *distinct
+        || group_by.is_some()
+        || !order.is_empty()
+        || skip.is_some()
+        || limit.is_some()
+        || items.len() != 1
+    {
+        return None;
     }
-    None
+    let Projection { expr, .. } = &items[0];
+    let counted = counted_existence(expr, params)?;
+    Some(BoolCount {
+        plain,
+        output: items[0].output_name(0),
+        counted,
+    })
 }
 
 /// `count(DISTINCT expr) > 0` or `count(DISTINCT expr) >= 1` — the
@@ -339,12 +338,19 @@ pub(crate) fn try_fold_boolean_count(ctx: &FoldCtx<'_>) -> Result<Option<FoldedR
     // decides whether the counted expression is non-null.
     let pred = ExistencePred::Counted(span.counted);
     let mut hit = false;
+    // The one clause's WHERE as the residual list `patterns_exist`
+    // takes — at most one element, so an `Option` in the decoded
+    // clause.
+    let wheres: &[Expr] = match span.plain.where_clause {
+        Some(expr) => std::slice::from_ref(expr),
+        None => &[],
+    };
     for row in rows {
         graph.cancel_tick()?;
         match patterns_exist(
             ExecCtx::new(graph, params),
-            &span.patterns,
-            &span.wheres,
+            span.plain.patterns,
+            wheres,
             row.clone(),
             pred,
         )? {
@@ -365,35 +371,32 @@ pub(crate) fn try_fold_boolean_count(ctx: &FoldCtx<'_>) -> Result<Option<FoldedR
             graph.stats(),
         ),
         rows: vec![out],
-        // Remaining MATCH clauses plus the RETURN this fold consumed.
-        consumed_after: span.extra_matches + 1,
+        // The RETURN this fold consumed — the span's one MATCH clause
+        // is the clause being dispatched.
+        consumed_after: 1,
     }))
 }
 
-/// `EXISTS { MATCH ... }` bodies of plain (non-optional, non-search,
-/// WHERE-less, DIFFERENT RELATIONSHIPS) MATCH clauses, one pattern or
-/// many — the one clause-level probe ladder. The clauses decode through
-/// [`plain_match`] exactly once here; a decoded list holding exactly one
-/// pattern answers on the LABS-193 endpoint probe first, and a declined
-/// shape (multi-hop, var-length, GPM) and every other eligible body walk
-/// the depth-first probe, which stops at the first hit. `Ok(None)` keeps
-/// the subquery engine; the empty-patterns decline is
-/// [`patterns_exist`]'s own gate, not spelled again here.
+/// `EXISTS { MATCH ... }` bodies of one plain (non-optional, non-search,
+/// WHERE-less, DIFFERENT RELATIONSHIPS) MATCH clause, one pattern or
+/// many — the one clause-level probe ladder. The clause decodes through
+/// [`single_plain_match`] exactly once here; a decoded list holding
+/// exactly one pattern answers on the LABS-193 endpoint probe first, and
+/// a declined shape (multi-hop, var-length, GPM) and every other
+/// eligible body walk the depth-first probe, which stops at the first
+/// hit. `Ok(None)` keeps the subquery engine; the empty-patterns decline
+/// is [`patterns_exist`]'s own gate, not spelled again here.
 pub(crate) fn probe_multi_pattern_exists(
     graph: &ExecGraph<'_>,
     row: &Row,
     clauses: &[Clause],
     params: &BTreeMap<String, Value>,
 ) -> Result<Option<bool>> {
-    let mut patterns = Vec::new();
-    for clause in clauses {
-        let Some(plain) = plain_match(clause) else {
-            return Ok(None);
-        };
-        if plain.where_clause.is_some() {
-            return Ok(None);
-        }
-        patterns.extend(plain.patterns.iter().cloned());
+    let Some(plain) = single_plain_match(clauses) else {
+        return Ok(None);
+    };
+    if plain.where_clause.is_some() {
+        return Ok(None);
     }
     // The LABS-193 endpoint rung. GPM eligibility is decided where it is
     // owned: needs_gpm in resolved_endpoints_exist (the path-level
@@ -402,14 +405,14 @@ pub(crate) fn probe_multi_pattern_exists(
     // through the GPM engine with the early-exit rider for GPM shapes
     // (ADR-0471's lost early exit restored), through the classic
     // ProbeSink otherwise.
-    if let [pattern] = &patterns[..] {
+    if let [pattern] = plain.patterns {
         if let Some(hit) = resolved_endpoints_exist(graph, row, pattern, params)? {
             return Ok(Some(hit));
         }
     }
     patterns_exist(
         ExecCtx::new(graph, params),
-        &patterns,
+        plain.patterns,
         &[],
         row.clone(),
         ExistencePred::Any,

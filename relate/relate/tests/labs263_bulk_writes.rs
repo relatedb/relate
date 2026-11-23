@@ -7,42 +7,7 @@
 
 mod common;
 
-use std::sync::{Mutex, MutexGuard};
-
-use common::{run, scalar_one};
-
-/// The batching limits are process-global env vars, so the tests that set
-/// them serialize on this lock and restore the defaults on drop.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-struct BatchEnv {
-    _guard: MutexGuard<'static, ()>,
-}
-
-impl BatchEnv {
-    /// Force batching: threshold 50 estimated touched entities, budget
-    /// 100 per batch.
-    fn forced() -> Self {
-        let guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("RELATE_BULK_BATCH_THRESHOLD", "50");
-        std::env::set_var("RELATE_BULK_BATCH_BUDGET", "100");
-        Self { _guard: guard }
-    }
-
-    /// Effectively disable batching.
-    fn disabled() -> Self {
-        let guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("RELATE_BULK_BATCH_THRESHOLD", "100000000");
-        Self { _guard: guard }
-    }
-}
-
-impl Drop for BatchEnv {
-    fn drop(&mut self) {
-        std::env::remove_var("RELATE_BULK_BATCH_THRESHOLD");
-        std::env::remove_var("RELATE_BULK_BATCH_BUDGET");
-    }
-}
+use common::{run, scalar_one, BatchEnv};
 
 /// WAL records committed so far. Each commit advances the LSN by one.
 fn committed_records(db: &relate::Database) -> u64 {
@@ -52,7 +17,7 @@ fn committed_records(db: &relate::Database) -> u64 {
 #[test]
 fn detach_delete_dense_store_batches_and_completes() {
     let _env = BatchEnv::forced();
-    let db = relate::Database::open(":memory:").unwrap();
+    let db = common::env_seam::open(":memory:", relate::OpenOptions::default());
     let mut conn = db.connect().unwrap();
     // 60 nodes, all pairs connected: 3600 rels — the ticket's dense store.
     run(&mut conn, "UNWIND range(1, 60) AS i CREATE (:N {id: i})");
@@ -82,7 +47,7 @@ fn detach_delete_dense_store_batches_and_completes() {
 #[test]
 fn cross_product_create_batches_and_completes() {
     let _env = BatchEnv::forced();
-    let db = relate::Database::open(":memory:").unwrap();
+    let db = common::env_seam::open(":memory:", relate::OpenOptions::default());
     let mut conn = db.connect().unwrap();
     run(&mut conn, "UNWIND range(1, 40) AS i CREATE (:N {id: i})");
     let before = committed_records(&db);
@@ -103,7 +68,7 @@ fn cross_product_create_batches_and_completes() {
 #[test]
 fn set_remove_and_rel_delete_batch_with_correct_stats() {
     let _env = BatchEnv::forced();
-    let db = relate::Database::open(":memory:").unwrap();
+    let db = common::env_seam::open(":memory:", relate::OpenOptions::default());
     let mut conn = db.connect().unwrap();
     run(
         &mut conn,
@@ -132,7 +97,7 @@ fn set_remove_and_rel_delete_batch_with_correct_stats() {
 #[test]
 fn non_detach_delete_error_is_preflighted_atomically() {
     let _env = BatchEnv::forced();
-    let db = relate::Database::open(":memory:").unwrap();
+    let db = common::env_seam::open(":memory:", relate::OpenOptions::default());
     let mut conn = db.connect().unwrap();
     run(
         &mut conn,
@@ -158,7 +123,7 @@ fn non_detach_delete_error_is_preflighted_atomically() {
 #[test]
 fn constrained_catalog_keeps_the_atomic_unbatched_path() {
     let _env = BatchEnv::forced();
-    let db = relate::Database::open(":memory:").unwrap();
+    let db = common::env_seam::open(":memory:", relate::OpenOptions::default());
     let mut conn = db.connect().unwrap();
     run(
         &mut conn,
@@ -182,7 +147,7 @@ fn constrained_catalog_keeps_the_atomic_unbatched_path() {
 #[test]
 fn below_threshold_writes_keep_a_single_commit() {
     let _env = BatchEnv::disabled();
-    let db = relate::Database::open(":memory:").unwrap();
+    let db = common::env_seam::open(":memory:", relate::OpenOptions::default());
     let mut conn = db.connect().unwrap();
     run(&mut conn, "UNWIND range(1, 40) AS i CREATE (:N {id: i})");
     let before = committed_records(&db);

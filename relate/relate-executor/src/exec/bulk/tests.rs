@@ -126,14 +126,11 @@ mod detection {
     #[test]
     fn shadowing_rename_drops_the_shadowed_factor() {
         // `WITH n AS m` (no `*`) carries only `m` = old `n`; the
-        // incoming `m` factor leaves the scope instead of colliding.
-        let bulk = analyze("MATCH (n:A), (m:B) WITH n AS m DELETE m").unwrap();
-        assert_eq!(bulk.factors.len(), 1);
-        assert_eq!(bulk.factors[0].var, "m");
-        assert!(matches!(
-            bulk.factors[0].source,
-            FactorSource::Nodes { ref labels } if labels == &["A".to_string()]
-        ));
+        // incoming `m` factor leaves the scope instead of colliding —
+        // and a projection that drops a factor declines batching
+        // entirely (REL8-2023: the dropped factor still empties or
+        // scales the row space, which the batched path cannot see).
+        assert!(analyze("MATCH (n:A), (m:B) WITH n AS m DELETE m").is_none());
     }
 }
 
@@ -219,18 +216,6 @@ mod execution {
         let g = Graph::default();
         seed(&g, "CREATE (:A {id: 1}), (:B {id: 2})");
         let stats = run_batched(&g, "MATCH (n:A), (m:B) DELETE n", 10);
-        assert_eq!(stats.nodes_deleted, 1);
-        let r = exec_cypher(&g, "MATCH (x) RETURN x.id AS id");
-        assert_eq!(r.rows, vec![vec![Value::Int(2)]]);
-    }
-
-    #[test]
-    fn shadowing_rename_deletes_the_aliasing_set_only() {
-        let g = Graph::default();
-        seed(&g, "CREATE (:A {id: 1}), (:B {id: 2})");
-        // `m` is rebound to old `n` (:A); the incoming `m` (:B) is out
-        // of scope, so only the :A node is deleted.
-        let stats = run_batched(&g, "MATCH (n:A), (m:B) WITH n AS m DELETE m", 10);
         assert_eq!(stats.nodes_deleted, 1);
         let r = exec_cypher(&g, "MATCH (x) RETURN x.id AS id");
         assert_eq!(r.rows, vec![vec![Value::Int(2)]]);

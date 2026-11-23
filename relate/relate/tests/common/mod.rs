@@ -5,9 +5,11 @@
 //! preview opt-in and the `db.ontology.*` document helpers), `store` (WAL
 //! segment readers, the frame encoder, the crash-seeded store fixtures,
 //! the test-store open policy), `checkpoint` (the ADR-0120 format-marker
-//! assertion), `show_variants` (the CIP-275 display-variant fixtures) and
-//! `fulltext` (the fulltext family's scaffolding). Callers name the
-//! submodule (`common::store::opts`); nothing is re-exported here.
+//! assertion), `env_seam` (the reentrant lock every env pin and test
+//! store open runs under), `show_variants` (the CIP-275 display-variant
+//! fixtures) and `fulltext` (the fulltext family's scaffolding). Callers
+//! name the submodule (`common::store::opts`); nothing is re-exported
+//! here.
 //!
 //! Each including test crate uses a different subset of these helpers, so
 //! the ones it does not use would warn as dead code — allow it module-wide.
@@ -15,12 +17,49 @@
 
 pub mod ce_errors;
 pub mod checkpoint;
+pub mod env_seam;
 pub mod fulltext;
 pub mod ontology;
 pub mod show_variants;
 pub mod store;
 
 use std::collections::BTreeMap;
+
+/// The ADR-0209 bulk-batch env seam for tests: forces (or disables)
+/// batching on small graphs by setting `RELATE_BULK_BATCH_THRESHOLD` /
+/// `RELATE_BULK_BATCH_BUDGET`, which the store reads once at open — hold
+/// the guard across the open (labs263_bulk_writes, rel8_2023_correctness).
+/// The limits are process-global env vars, so every BatchEnv user holds
+/// the env-seam window for its span, and the window's own drop restores
+/// the prior values, not a hard removal, while the seam is still held.
+pub struct BatchEnv {
+    _window: env_seam::EnvSeamWindow,
+}
+
+impl BatchEnv {
+    /// Force batching: threshold 50 estimated touched entities, budget
+    /// 100 per batch.
+    pub fn forced() -> Self {
+        Self::pinned("50", "100")
+    }
+
+    /// Effectively disable batching: both knobs pinned far past any
+    /// fixture's size.
+    pub fn disabled() -> Self {
+        Self::pinned("100000000", "100000000")
+    }
+
+    /// The one constructor — the seam window pinning both knobs; the
+    /// public pair differs only in its literals.
+    fn pinned(threshold: &str, budget: &str) -> Self {
+        Self {
+            _window: env_seam::EnvSeamWindow::pin(&[
+                ("RELATE_BULK_BATCH_THRESHOLD", threshold),
+                ("RELATE_BULK_BATCH_BUDGET", budget),
+            ]),
+        }
+    }
+}
 
 pub fn err_text<T>(result: relate::Result<T>) -> String {
     // `err().expect` over `unwrap_err`: no `T: Debug` bound, so callers
@@ -56,10 +95,10 @@ pub fn assert_preview_closed(feature: relate_core::PreviewFeature, query: &str) 
 
 /// A fresh connection on a fresh in-memory store, its session namespace set
 /// to `namespace` — the shared starting point of the fixed-namespace
-/// integration tests.
+/// integration tests. The open goes through [`env_seam::open`], the one
+/// seam-held open path.
 pub fn connection_in(namespace: &str) -> relate::Connection {
-    relate::Database::open(":memory:")
-        .unwrap()
+    env_seam::open(":memory:", relate::OpenOptions::default())
         .connect_namespace(namespace)
         .unwrap()
 }
@@ -119,21 +158,13 @@ pub fn wire_arg(node: &relate::PlanNode, key: &str) -> Option<relate::Value> {
 
 /// Opens a fresh in-memory store with `RELATE_PATTERN_ENGINE` forced to
 /// `engine` (ADR-0519). The switch is read once at open and the variable
-/// is process-global, so the lock keeps the `set_var` + open pair atomic
-/// against sibling tests: a sibling's open must never read this leg's
-/// value.
+/// is process-global, so the pin window keeps the set_var + open pair
+/// atomic against sibling tests: a sibling's open must never read this
+/// leg's value, and the open (through [`env_seam::open`], nested under
+/// the pin) never reads a sibling's half-set pin.
 pub fn open_with_engine(engine: &str) -> relate::Connection {
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Restores the process-global variable on the way out — to its value
-    // before this call, the state every other test in the process assumes
-    // — even if the open panics, still under the lock.
-    let _restore = relate_test_support::EnvRestore::new("RELATE_PATTERN_ENGINE");
-    std::env::set_var("RELATE_PATTERN_ENGINE", engine);
-    relate::Database::open(":memory:")
-        .unwrap()
+    let _env = env_seam::EnvSeamWindow::pin(&[("RELATE_PATTERN_ENGINE", engine)]);
+    env_seam::open(":memory:", relate::OpenOptions::default())
         .connect()
         .unwrap()
 }
