@@ -448,10 +448,8 @@ fn use_system_with_administration_command_stays_accepted() {
 /// `SHOW DATABASES` is the whole scope: `ALTER DATABASE`, the other §2
 /// command, cannot be composed at all — every composed form of it is
 /// rejected before this gate (the front end's stand-alone rule, or 51N27).
-/// The user- and role-management commands (`SHOW USERS`/`ROLES`/`SERVERS`,
-/// `TERMINATE TRANSACTIONS`) are a follow-up: the §2 vocabulary also decides
-/// which commands run from any namespace (ADR-0116 §2, ADR-0229 §1), so
-/// extending it is its own decision.
+/// `SHOW CURRENT USER` joins the rule below; `SHOW USERS`/`ROLES`/`SERVERS`
+/// and `TERMINATE TRANSACTIONS` are not covered (not shown to compose on live).
 #[test]
 fn composed_show_databases_is_rejected_off_system() {
     let mut conn = connection();
@@ -476,6 +474,35 @@ fn composed_show_databases_is_rejected_off_system() {
             &format!("SystemDatabaseRequired: {NEEDS_SYSTEM_DATABASE_SUFFIX}SHOW DATABASES"),
             "SemanticError", // 51N28 rides the nested SystemDatabaseRequired token
         );
+    }
+}
+
+/// The composed `SHOW CURRENT USER` form is the same 51N28 off `system`
+/// (live 2026.10.1 verified), while the standalone command keeps running on
+/// the user namespace. Composition-only: the §2 vocabulary is untouched.
+#[test]
+fn composed_show_current_user_is_rejected_off_system() {
+    let mut conn = connection();
+    for src in [
+        "SHOW CURRENT USER YIELD user MATCH (n) RETURN n",
+        "SHOW CURRENT USER YIELD user WITH 1 AS n RETURN n",
+        "EXPLAIN SHOW CURRENT USER YIELD user MATCH (n) RETURN n",
+    ] {
+        assert_ce_rejection(
+            &mut conn,
+            src,
+            &format!("SystemDatabaseRequired: {NEEDS_SYSTEM_DATABASE_SUFFIX}SHOW CURRENT USER"),
+            "SemanticError",
+        );
+    }
+    for src in [
+        "SHOW CURRENT USER",
+        "SHOW CURRENT USER YIELD user RETURN user",
+    ] {
+        let result = conn
+            .query(src)
+            .unwrap_or_else(|e| panic!("{src} should still run: {e}"));
+        assert_eq!(result.rows.len(), 1, "{src}");
     }
 }
 

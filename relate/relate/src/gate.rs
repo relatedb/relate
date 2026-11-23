@@ -14,9 +14,9 @@ use relate_core::{ce_messages, Namespace};
 use relate_executor::{is_ontology_store_op, is_ontology_write_procedure};
 use relate_ir::{Clause, Query};
 use relate_planner::{
-    admin_command_heads_statement, composed_show_databases, composed_show_disallowed_clause,
-    is_database_admin_command, is_write, plan_with_tokens, query_type,
-    unsupported_system_clause_names, LogicalPlan, QueryType,
+    admin_command_heads_statement, composed_show_current_user, composed_show_databases,
+    composed_show_disallowed_clause, is_database_admin_command, is_write, plan_with_tokens,
+    query_type, unsupported_system_clause_names, LogicalPlan, QueryType,
 };
 
 use crate::connection::Connection;
@@ -374,6 +374,7 @@ impl Connection {
             // was already answered 42N79 by `admin_use_gate_error` above, and
             // a `system` target is answered by §4's whitelist arm.)
             Namespace::Neo4j => composed_show_databases(logical)
+                .or_else(|| composed_show_current_user(logical))
                 .map(ce_messages::administration_command_needs_system_database),
         }
     }
