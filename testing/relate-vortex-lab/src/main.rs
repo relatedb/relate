@@ -32,6 +32,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("vortex-lab: out={} load={:.1}", out_dir.display(), bench::loadavg1());
 
     match cmd {
+        "size" => {
+            // The LDBC tables, largest first: the memory thesis lives in the
+            // string-heavy ones.
+            let base = csv.parent().ok_or("csv has no parent dir")?;
+            let tables: Vec<(&str, Vec<(&str, store::Ty)>)> = vec![
+                (
+                    "comment_0_0.csv",
+                    vec![
+                        ("id", store::Ty::Int),
+                        ("creationDate", store::Ty::Str),
+                        ("locationIP", store::Ty::Str),
+                        ("browserUsed", store::Ty::Str),
+                        ("content", store::Ty::Str),
+                        ("length", store::Ty::Int),
+                    ],
+                ),
+                (
+                    "post_0_0.csv",
+                    vec![
+                        ("id", store::Ty::Int),
+                        ("creationDate", store::Ty::Str),
+                        ("locationIP", store::Ty::Str),
+                        ("browserUsed", store::Ty::Str),
+                        ("language", store::Ty::Str),
+                        ("content", store::Ty::Str),
+                        ("length", store::Ty::Int),
+                    ],
+                ),
+                (
+                    "forum_0_0.csv",
+                    vec![
+                        ("id", store::Ty::Int),
+                        ("title", store::Ty::Str),
+                        ("creationDate", store::Ty::Str),
+                    ],
+                ),
+            ];
+            for (file, cols) in tables {
+                ops::point::size(&base.join(file), &cols, &out_dir)?;
+            }
+        }
         "point" => {
             ops::point::run(&csv, &out_dir, 100_000)?;
         }

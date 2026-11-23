@@ -26,6 +26,37 @@ const PERSON_COLS: &[(&str, Ty)] = &[
     ("browserUsed", Ty::Str),
 ];
 
+/// The size bench alone, for any table: bytes/property vs the uncompressed
+/// value bytes. The comment/post tables (151k/136k rows, content strings)
+/// are where the memory thesis actually gets tested.
+pub fn size(csv: &Path, cols: &[(&str, Ty)], out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let table = store::load_csv(csv, cols)?;
+    let path = out_dir.join(format!("{}.vortex", table.name));
+    let (written, per_column) = store::write(&path, &table)?;
+    println!(
+        "size: {} — {} rows, {} columns, {} B raw -> {} B vortex ({:.1}%), file {} B",
+        table.name,
+        table.rows(),
+        table.columns.len(),
+        table.raw_bytes(),
+        per_column.iter().sum::<u64>(),
+        100.0 * per_column.iter().sum::<u64>() as f64 / table.raw_bytes().max(1) as f64,
+        written
+    );
+    for ((name, ty, col), bytes) in table.columns.iter().zip(per_column.iter()) {
+        println!(
+            "  {:<14} {:<5} {:>8} values {:>10} B raw -> {:>9} B ({:>6.2} B/value)",
+            name,
+            format!("{ty:?}"),
+            col.len(),
+            col.raw_bytes(),
+            bytes,
+            *bytes as f64 / col.len().max(1) as f64
+        );
+    }
+    Ok(())
+}
+
 pub fn run(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::error::Error>> {
     let mut results = Vec::new();
 
