@@ -27,7 +27,7 @@ use std::collections::HashSet;
 use relate_core::{Error, NodeId, Path, RelId, Result};
 use relate_ir::{Direction, NodePattern, PathPattern, RelPattern};
 
-use crate::graph::HopBuf;
+use crate::graph::{HopBuf, PeerHop};
 use crate::overlay::ExecGraph;
 use crate::store::RelTypes;
 
@@ -158,20 +158,9 @@ impl Search<'_, '_> {
 
     /// Call `f` with each relationship followed out of `node` and the node
     /// it reaches.
-    fn each_hop(&self, node: NodeId, f: impl FnMut(NodeId, RelId) -> Result<()>) -> Result<()> {
-        self.each_hop_along(self.dir, node, f)
-    }
-
-    /// [`Self::each_hop`] along `dir` instead of the search's own direction:
-    /// one search value serves a walk and the balls grown against it.
-    fn each_hop_along(
-        &self,
-        dir: Direction,
-        node: NodeId,
-        mut f: impl FnMut(NodeId, RelId) -> Result<()>,
-    ) -> Result<()> {
-        self.each_hop_batch_along(dir, node, |hops| {
-            hops.iter().try_for_each(|&(next, rid)| f(next, rid))
+    fn each_hop(&self, node: NodeId, mut f: impl FnMut(NodeId, RelId) -> Result<()>) -> Result<()> {
+        self.each_hop_batch_along(self.dir, node, |hops| {
+            hops.iter().try_for_each(|hop| f(hop.peer, hop.rid))
         })
     }
 
@@ -184,7 +173,7 @@ impl Search<'_, '_> {
         &self,
         dir: Direction,
         node: NodeId,
-        mut f: impl FnMut(&[(NodeId, RelId)]) -> Result<()>,
+        mut f: impl FnMut(&[PeerHop]) -> Result<()>,
     ) -> Result<()> {
         self.graph.cancel_tick()?;
         // Taken out of the cell so a re-entrant walk from `f` gets its own
@@ -209,7 +198,7 @@ impl Search<'_, '_> {
     fn hops_along(&self, dir: Direction, node: NodeId) -> Result<Vec<(NodeId, RelId)>> {
         let mut out = Vec::new();
         self.each_hop_batch_along(dir, node, |hops| {
-            out.extend_from_slice(hops);
+            out.extend(hops.iter().map(|hop| (hop.peer, hop.rid)));
             Ok(())
         })?;
         Ok(out)

@@ -407,7 +407,7 @@ fn batched_hop_read_matches_the_per_edge_walk_on_a_reused_rel_id() {
         .unwrap();
         assert!(batches <= 1, "a two-hop node is one batch");
         out.into_iter()
-            .map(|(peer, rid)| (rid, peer))
+            .map(|hop| (hop.rid, hop.peer))
             .collect::<Vec<_>>()
     };
     for at in [1, 2, 3] {

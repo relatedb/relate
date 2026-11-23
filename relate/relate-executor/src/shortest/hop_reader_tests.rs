@@ -85,7 +85,7 @@ fn a_hub_reads_in_batches_that_equal_the_per_edge_walk() {
         &mut HopBuf::default(),
         |hops| {
             assert!(hops.len() <= HOP_BATCH, "a batch is bounded by HOP_BATCH");
-            got.extend_from_slice(hops);
+            got.extend(hops.iter().map(|hop| (hop.peer, hop.rid)));
             batches += 1;
             Ok::<(), relate_core::Error>(())
         },
