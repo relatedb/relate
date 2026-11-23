@@ -30,6 +30,17 @@ larger-than-memory warehouse, an analytics engine, or a multi-tenant server.
 curl -sSfL https://relatedb.ai/install.sh | bash
 ```
 
+**CLI (Homebrew, macOS & Linux):**
+
+```bash
+brew install relatedb/tap/relate
+```
+
+The project tap installs the release binary and records the install as
+package-managed, so `relate upgrade` defers to `brew upgrade relate` instead
+of replacing what Homebrew owns
+([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)).
+
 **CLI (Windows, PowerShell):**
 
 ```powershell
@@ -44,6 +55,20 @@ the inbox Windows `ssh-keygen`, in Windows PowerShell 5.1 and PowerShell 7
 ([ADR-0586](docs/adr/0586-windows-powershell-installer.md)). The binary
 links the C runtime statically, so it needs no Visual C++ redistributable
 ([ADR-0587](docs/adr/0587-windows-static-crt.md)).
+
+**CLI (Fedora & RHEL, dnf):**
+
+```bash
+sudo curl -fsSL https://relatedb.ai/rpm/relate.repo -o /etc/yum.repos.d/relate.repo && sudo dnf install relate
+```
+
+The repo file enables `repo_gpgcheck=1`, so dnf verifies the repository
+metadata (`repomd.xml`) against the committed repository key
+([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)) and
+imports that key from the same host — no `--nogpgcheck` and no manual key
+import. This install is owned by dnf: the real binary lives at
+`/usr/lib/relate/relate` with a `/usr/bin/relate` symlink, and `relate
+upgrade` replaces nothing — upgrade it with `sudo dnf upgrade relate`.
 
 > **Piping a script into a shell runs it before you have read it.** Both
 > installers authenticate everything they download (the signed manifest,
@@ -95,6 +120,35 @@ On Windows a running `.exe` cannot replace itself, so `relate upgrade`
 points you at the PowerShell installer: rerun it to upgrade.
 `relate upgrade --check` works on every platform.
 
+**CLI (Windows, winget):**
+
+```powershell
+winget install --id Relatedb.Relate -e
+```
+
+The release pipeline generates the winget manifests from each release's
+asset manifest — the installer is the tagged `relate-windows-amd64.exe` with
+its published sha256 — and submits the version bump to
+[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs)
+([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)).
+
+**CLI (Debian & Ubuntu, apt):**
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://relatedb.ai/apt/repo-signing-key.asc | sudo tee /etc/apt/keyrings/relate.asc >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/relate.asc] https://relatedb.ai/apt stable main" | sudo tee /etc/apt/sources.list.d/relate.list >/dev/null
+sudo apt-get update
+sudo apt-get install relate
+```
+
+The package keeps the binary in `/usr/lib/relate` and symlinks it to
+`/usr/bin/relate`; upgrade it with apt
+(`sudo apt-get update && sudo apt-get install --only-upgrade relate`).
+apt verifies the repository metadata against the committed key it fetches
+from the same root — no `--allow-unauthenticated`
+([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)).
+
 **CLI (Windows):** download `relate-windows-amd64.exe` from the
 [releases page](https://github.com/relatedb/relate/releases/latest), then
 check its Authenticode signature before the first run:
@@ -112,6 +166,19 @@ name the expected publisher: the code-signing certificate held in DigiCert
 Software Trust Manager, set up in
 [RELEASING.md](RELEASING.md#windows-signing)
 ([ADR-0594](docs/adr/0594-windows-authenticode-signing.md)).
+
+**CLI (Windows, Chocolatey):**
+
+```powershell
+choco install relate
+```
+
+The package runs the release's Windows binary from Chocolatey's package
+directory, shimmed onto `PATH`, and verifies the download's SHA-256
+against the release's `assets.json` before installing. It writes the
+`.relate-package-managed` marker beside the binary, so `relate upgrade`
+defers to `choco upgrade relate`
+([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)).
 
 **Python:**
 

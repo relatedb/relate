@@ -1,0 +1,14 @@
+{
+  "SHA256SUMS": {
+    "sha256": "df094675a2196044622c073a2110073a4d38fc1b657dcf2651933579ff12db91",
+    "size": 34
+  },
+  "relate-linux-x64": {
+    "sha256": "acab195ccbde1a3ab9b7c821cab8aaab14f92e44a0a305c555d9e486598bfd88",
+    "size": 9
+  },
+  "relate-windows-amd64.exe": {
+    "sha256": "9f2c8f6a5b1e4d3c2a1b0f9e8d7c6b5a4938271605f4e3d2c1b0a99887766554",
+    "size": 12
+  }
+}

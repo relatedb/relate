@@ -8,6 +8,95 @@ cargo run -p relate-cli -- --logical-graph-size-limit 1gib ./graph
 cargo run -p relate-cli -- --help
 ```
 
+## Platform requirements
+
+Release binaries ship for Linux (x86-64 and arm64), macOS (amd64 and
+arm64) and Windows (x86-64).
+
+`relate-linux-amd64` runs on any x86-64 Linux with glibc 2.35 or newer
+(Debian 12+, Ubuntu 22.04+, Fedora 36+) and kernel 3.2 or newer — the glibc
+floor is whatever the artifact's symbol versions require, never above the
+`GLIBC_2.35` cap, and the kernel its ELF ABI tag names. It is built in the
+pinned `rust:1.88-bookworm`
+container (Debian 12 with glibc 2.36) for the x86-64 baseline ISA:
+`readelf -n` lists `x86 ISA needed: x86-64-baseline` only, so it needs no
+x86-64-v2/v3 CPU feature. `scripts/check-linux-isa.sh relate-linux-amd64`
+gates the release artifact on that note, and
+`scripts/check-glibc-floor.sh relate-linux-amd64` derives the artifact's
+floor from its `readelf --version-info` symbol versions, fails the release
+when it exceeds `GLIBC_2.35`, and hands the derived value to the APT and
+RPM builders.
+
+The Debian/Ubuntu package declares that derived floor — `Depends: libc6
+(>= <the derived floor>)` — and is served from the signed APT repository at
+<https://relatedb.ai/apt> ([ADR-0659](../../adr/0659-package-manager-distribution-channels.md),
+install steps in the README).
+
+## Installation channels
+
+Release binaries install through six package-manager channels besides the
+GitHub release assets and the two installers; each package writes
+`.relate-package-managed` beside the real binary, so `relate upgrade` never
+replaces a package-managed install and points at the manager's upgrade
+command instead ([ADR-0659](../../adr/0659-package-manager-distribution-channels.md);
+the refusal text and the marker contract are under
+[Lifecycle commands](#lifecycle-commands)).
+
+**Homebrew — macOS and Linux.** Tap:
+<https://github.com/relatedb/homebrew-tap>.
+
+```bash
+brew install relatedb/tap/relate
+```
+
+Upgrade: `brew upgrade relate`.
+
+**APT — Debian and Ubuntu.** Repository: <https://relatedb.ai/apt>.
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://relatedb.ai/apt/repo-signing-key.asc | sudo tee /etc/apt/keyrings/relate.asc >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/relate.asc] https://relatedb.ai/apt stable main" | sudo tee /etc/apt/sources.list.d/relate.list >/dev/null
+sudo apt-get update
+sudo apt-get install relate
+```
+
+Upgrade: `sudo apt-get update && sudo apt-get install --only-upgrade relate`.
+
+**RPM — Fedora, RHEL and openSUSE.** Repository: <https://relatedb.ai/rpm>.
+
+```bash
+sudo curl -fsSL https://relatedb.ai/rpm/relate.repo -o /etc/yum.repos.d/relate.repo && sudo dnf install relate
+```
+
+Upgrade: `sudo dnf upgrade relate`.
+
+**winget — Windows.** Repository:
+[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs).
+
+```powershell
+winget install --id Relatedb.Relate -e
+```
+
+Upgrade: `winget upgrade --id Relatedb.Relate -e`.
+
+**Scoop — Windows.** Bucket: <https://github.com/relatedb/scoop-bucket>.
+
+```powershell
+scoop bucket add relatedb https://github.com/relatedb/scoop-bucket && scoop install relate
+```
+
+Upgrade: `scoop update relate`.
+
+**Chocolatey — Windows.** Repository:
+[community.chocolatey.org](https://community.chocolatey.org/packages/relate).
+
+```powershell
+choco install relate
+```
+
+Upgrade: `choco upgrade relate`.
+
 ## Synopsis
 
 ```
@@ -502,7 +591,40 @@ downloads and replaces nothing, so it runs on every platform. It prints
 `relate is up to date` or the advice. The advice is
 ``upgrade available: run `relate upgrade` to install X.Y.Z`` where the replace
 is supported, and `upgrade available: X.Y.Z; <the platform's refusal>`
-elsewhere, so it never advises a command that would refuse. The signature is an OpenSSH SSHSIG
+elsewhere, so it never advises a command that would refuse.
+
+A **package-managed install** is never replaced. A package manager that
+ships relate writes `.relate-package-managed` beside the real binary — a
+regular file holding JSON `{"manager": "<kebab-case id>", "upgrade": "<the
+command the user runs>"}`, both required non-empty strings; unknown fields
+are ignored, so a new package manager needs no relate release — and exposes
+that binary on `PATH` by symlink (Homebrew's keg `bin/relate`, deb/rpm's
+`/usr/lib/relate/relate`). `upgrade` resolves `current_exe()`, canonicalizes
+it (macOS returns the invoked `PATH` symlink; Linux already resolves), takes
+its parent directory, and tests `<dir>/.relate-package-managed`: only
+`NotFound` is an unmanaged install — a regular file, a symlink, a directory,
+or an uninspectable entry is package-managed (fail closed, symlinks never
+followed, only a regular file's content is read). The gate runs first in both
+modes, before the platform gate, the `GITHUB_TOKEN` read, and any request: a
+plain `relate upgrade` on such an install exits 1 with one line `Error:
+upgrade: relate was installed by <manager>; upgrade it with: <upgrade>` (a
+malformed marker: `Error: upgrade: relate is package-managed; marker <path>
+is unreadable/invalid: <e>`), replaces nothing, and runs no skill refresh;
+`upgrade --check` still reads `releases.json` and reports current-vs-latest,
+but its advice line is `upgrade available: X.Y.Z; relate was installed by
+<manager>; upgrade it with: <upgrade>`. Writing the marker is the only
+cooperation a package manager owes — relate only reads it, and it is a
+convention, not a security control (whoever can write the binary's directory
+can replace the binary anyway). Unmanaged installs write no marker: the curl
+installers' `$HOME/.local/bin/relate` and
+`%LOCALAPPDATA%\Programs\relate`, and a manual copy, are all unmanaged and
+self-replace exactly as before; copying a package's binary without its
+sibling marker also yields an unmanaged install. `distribution/install.sh`
+and `distribution/install.ps1` apply the same rule to their own target —
+resolving the target's symlinks first — and refuse with the same sentence,
+so neither overwrites a package-managed binary.
+
+The signature is an OpenSSH SSHSIG
 (`ssh-keygen -Y sign`) over the exact `SHA256SUMS` bytes, in the namespace
 `relate-release`, made with the Ed25519 release key whose public half is
 pinned in the binary; it is never fetched from the release (ADR-0115). The

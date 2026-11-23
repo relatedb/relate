@@ -14,9 +14,11 @@ The versioning and process policy is recorded in
 3. [Registry publishing](#registry-publishing)
 4. [Extension package releases](#extension-package-releases)
 5. [Signing key](#signing-key)
-6. [Apple signing and notarization](#apple-signing-and-notarization)
-7. [Windows signing](#windows-signing)
-8. [Failure recovery](#failure-recovery)
+6. [Repository signing key](#repository-signing-key)
+7. [Apple signing and notarization](#apple-signing-and-notarization)
+8. [Windows signing](#windows-signing)
+9. [Chocolatey package](#chocolatey-package)
+10. [Failure recovery](#failure-recovery)
 
 ## Dispatch a release
 
@@ -91,8 +93,13 @@ from this repository; the old repository’s tags never came across.
    `RELEASE_SIGNING_PRIVATE_KEY` is unset, so a release cannot ship unsigned
    (see [Signing key](#signing-key), [ADR-0115](docs/adr/0115-sshsig-release-signing.md)).
 6. **GitHub release** — the release is created for the tag with all artifacts,
-   `SHA256SUMS`, `SHA256SUMS.sig`, and GitHub's auto-generated notes (the
-   full pull-request list). The chained **Release notes** workflow then
+   `SHA256SUMS`, `SHA256SUMS.sig`, `assets.json` — the asset manifest
+   mapping every attached asset to its sha256 and size, generated from the
+   staged directory and gated in the same step so no asset ships without a
+   manifest entry
+   ([`scripts/release_asset_manifest.py`](scripts/release_asset_manifest.py);
+   the manifest carries no entry for itself) — and GitHub's auto-generated
+   notes (the full pull-request list). The chained **Release notes** workflow then
    regenerates the narrative: a trusted step harvests the tag range's
    merged pull requests into a corpus
    ([`.github/scripts/release-notes-corpus.sh`](.github/scripts/release-notes-corpus.sh),
@@ -144,6 +151,18 @@ from this repository; the old repository’s tags never came across.
    an IAM role that trusts only `release.yml` running from `main`; the role
    ARN and repository name come from the `AWS_ECR_PUSH_ROLE_ARN` and
    `AWS_ECR_REPOSITORY` secrets. Offline releases skip both jobs.
+10. **winget** — the `winget` job downloads the release's `assets.json`,
+    generates the three winget manifests for the Windows channel with
+    [`scripts/winget_manifests.py`](scripts/winget_manifests.py) — the
+    installer URL is the tagged `relate-windows-amd64.exe` release asset and
+    its sha256 is the manifest's own entry for it, so the package carries
+    the published hash ([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md) §4) —
+    and validates them with `winget validate`. Unless the dispatch set
+    `winget_dry_run` (which stops after validation and prints the submission
+    it would make), the job then submits the version bump to
+    `microsoft/winget-pkgs` through wingetcreate, using the `WINGET_TOKEN`
+    secret; while that secret is unset the submission skips with a notice,
+    like the relate-web poke. Offline releases skip the job.
 
 ## Third-party licenses
 
@@ -368,6 +387,105 @@ signs can be trusted.
    `relate upgrade` fails closed against a new-key signature — reinstall via
    the one-line installer to pick up the new pinned key.
 
+## Repository signing key
+
+The APT and RPM repository metadata is signed with a GPG key separate from
+the SSHSIG release key above: package managers verify repository metadata
+(`Release`, `repomd.xml`), not the release manifest. The public key is
+committed as `distribution/repo-signing-key.asc` with its 40-hex
+fingerprint in `distribution/repo-signing-key.fingerprint` beside it —
+users import that file, and it is the anchor the signing step checks
+itself against. The private key is an **unencrypted** RSA-4096 key held
+only as the Actions secret `REPO_GPG_KEY` on `relatedb/relate`
+(ADR-0630): `scripts/sign-repo-metadata.sh` decodes it into a throwaway
+GNUPGHOME, refuses a secret whose fingerprint is not the committed one,
+signs the metadata, and verifies the fresh signature against the
+committed public key before anything is published. The offline suite
+`make test-sign-repo-metadata` proves the same contract with a fixture
+keypair.
+
+### Repository signing first-time setup
+
+1. Generate the keypair (no passphrase: CI cannot answer a prompt) and
+   note the fingerprint:
+
+   ```sh
+   gpg --batch --passphrase '' --pinentry-mode loopback \
+     --quick-generate-key relate-repo-signing rsa4096 sign never
+   gpg --list-secret-keys --with-colons | grep '^fpr:' | head -n 1 | cut -d: -f10
+   ```
+
+2. Commit the public half and its fingerprint:
+
+   ```sh
+   gpg --armor --export <FINGERPRINT> > distribution/repo-signing-key.asc
+   printf '%s\n' <FINGERPRINT> > distribution/repo-signing-key.fingerprint
+   ```
+
+3. Upload the private half as the secret, then delete the local copy:
+
+   ```sh
+   gpg --armor --export-secret-keys <FINGERPRINT> | base64 | tr -d '\n' \
+     | gh secret set REPO_GPG_KEY
+   ```
+
+4. Rehearse the secret against `main` — the dry-run job signs the
+   fixture repository metadata and fails closed unless the secret is the
+   committed key's private half:
+
+   ```sh
+   gh workflow run publish-registries.yml -f tag=vX.Y.Z \
+     -f repo-signing-dry-run=true -f npm=false -f pypi=false \
+     -f crates-io=false -f maven=false
+   ```
+
+### The RPM repository tree
+
+`scripts/build_rpm_repo.py` turns a staged release binary into the RPM
+package and the signed tree dnf reads, one architecture per run:
+
+```sh
+python3 scripts/build_rpm_repo.py --binary relate-linux-amd64 --version 1.2.0 \
+  --glibc-floor GLIBC_2.35 --output rpm
+```
+
+It builds the package with `rpmbuild` — the real binary at
+`/usr/lib/relate/relate`, a `/usr/bin/relate` symlink, the
+`.relate-package-managed` provenance marker beside the binary, and
+`Requires: glibc >= <floor>` from the release binary's glibc floor — then
+writes the metadata with `createrepo_c` and signs `repomd.xml` through
+`scripts/sign-repo-metadata.sh`, which needs `REPO_GPG_KEY` set. The output
+tree also carries `relate.repo` and `repo-signing-key.asc`, which publish
+at `https://relatedb.ai/rpm`; the repo file's `gpgkey=` points at that key
+copy, so users import nothing by hand. `make test-release-scripts` covers
+the spec and repo file, and its end-to-end case builds and verifies a real
+signed tree where `rpmbuild` and `createrepo_c` are installed. `release.yml`'s
+`rpm-repo` job runs it in a Fedora container and attaches the tree as
+`relate-rpm-repo.tar.gz`.
+
+### The APT repository
+
+`release.yml`'s `apt-repo` job turns the release's own
+`relate-linux-amd64` and `relate-linux-arm64` into the Debian package and
+the signed repository tree that serves it (`scripts/build-apt-repo.sh`,
+which takes the Debian architecture as its second argument and derives the
+control's `Architecture`, the pool file name and the `binary-<arch>` index
+path from it), attaches the trees as `relate-apt-repo-amd64.tar.gz` and
+`relate-apt-repo-arm64.tar.gz`, and relate-web serves them at
+`https://relatedb.ai/apt`. The tree holds
+`dists/stable/{Release,Release.gpg,main/binary-<arch>/Packages*}`,
+`pool/main/r/relate/relate_<version>_<arch>.deb`, and `repo-signing-key.asc`
+beside them, so the documented install command fetches the key from the
+same root. The package keeps the binary in `/usr/lib/relate` and symlinks
+it to `/usr/bin/relate`, declares the ISA gate's glibc floor as
+`libc6 (>= <floor>)` in `Depends`, and writes the provenance marker
+`.relate-package-managed` beside the real binary.
+
+Locally, `make test-build-apt-repo` covers the package and index contract
+offline, and `scripts/check-apt-repo.sh <tree> GLIBC_2.35` installs from a
+built tree in a clean `ubuntu:24.04` container, checking the signed
+metadata, the reported version, the floor and the marker.
+
 ## Apple signing and notarization
 
 The macOS CLI binaries are signed with a Developer ID Application identity and
@@ -591,6 +709,53 @@ The status must be `Valid` with a `TimeStamperCertificate` present, the
 `SignerSubject` must be the subject of the code-signing certificate held
 for the `WINDOWS_SIGN_KEYPAIR_ALIAS` keypair in DigiCert Software Trust
 Manager, and the binary must report its version.
+
+## Chocolatey package
+
+Windows users can install the CLI from the Chocolatey community
+repository:
+
+```powershell
+choco install relate
+```
+
+The package ([`distribution/chocolatey`](distribution/chocolatey)) is one
+template for every release: `choco pack --version <X.Y.Z>` fills in the
+version, the install script derives the release tag from it, fetches that
+release's `assets.json` and installs nothing unless the downloaded
+`relate-windows-amd64.exe` matches the manifest entry's SHA-256. The
+binary lands in Chocolatey's package directory with the
+`.relate-package-managed` marker beside it
+(`{"manager":"chocolatey","upgrade":"choco upgrade relate"}`), so
+`relate upgrade` refuses to self-replace
+([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)).
+
+The `chocolatey` job in
+[`publish-registries.yml`](.github/workflows/publish-registries.yml)
+packs the package, installs it from a local source on `windows-latest`
+and asserts the installed `relate --version` reports the release version,
+then pushes the `.nupkg`. It is on by default (`chocolatey=true`);
+`chocolatey-dry-run=true` stops after the local install, before the push.
+While the `CHOCOLATEY_API_KEY` secret is unset the push step warns and
+skips — a direct dispatch still proves packaging and installation.
+
+### Chocolatey first-time setup
+
+1. Create a Chocolatey community account and its API key
+   (<https://community.chocolatey.org/account>).
+2. Store the key as the repository secret:
+
+   ```sh
+   gh secret set CHOCOLATEY_API_KEY
+   ```
+
+3. Rehearse packaging and the local install without pushing:
+
+   ```sh
+   gh workflow run publish-registries.yml -f tag=vX.Y.Z \
+     -f chocolatey-dry-run=true -f npm=false -f pypi=false \
+     -f crates-io=false -f maven=false
+   ```
 
 ## Failure recovery
 

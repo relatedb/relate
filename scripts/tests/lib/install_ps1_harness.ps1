@@ -79,6 +79,25 @@ function New-ReleasesDoc {
         "  `"latest_prerelease`": { `"tag`": `"v0.11.0-rc.1`", `"prerelease`": true },`n  `"releases`": []`n}`n")
 }
 
+# The package-managed install tree: a package-owned binary under $Root's
+# install directory (through the installer's own rule, so the fixture cannot
+# drift from it) and the marker `relate upgrade` reads. $Marker omitted leaves
+# the tree unmanaged. Returns the root, the directory, the binary, the marker
+# path and the binary's hash, for the case's assertions.
+function New-PackageManagedInstall {
+    param([string] $Root, [string] $Marker = '')
+    $dir = Invoke-WithLocalAppData $Root { Get-RelateInstallDir }
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $exe = Join-Path $dir $RelateBinName
+    Write-TestFile -Path $exe -Text 'package-owned binary'
+    $markerPath = Join-Path $dir $RelatePackageMarker
+    if ($Marker) { Write-TestFile -Path $markerPath -Text $Marker }
+    return @{
+        Root = $Root; Dir = $dir; Exe = $exe; Marker = $markerPath
+        Hash = (Get-FileHash -LiteralPath $exe).Hash
+    }
+}
+
 # --- The stubbed seams and the per-case runner ---------------------------
 
 # The real architecture probe, kept before its stub replaces it, for the
@@ -122,7 +141,11 @@ $script:CaseNum = 0
 # result carries the thrown message (or $null), the captured output, the
 # requested URLs and the install directory.
 function Invoke-InstallCase {
-    param([hashtable] $Serve, [hashtable] $Overrides = @{})
+    param([hashtable] $Serve, [hashtable] $Overrides = @{}, [string] $InstallerPath)
+    # The installer's own piped-vs-file seam, per case: bound, it shadows the
+    # loaded value for this call's subtree and vanishes with the call, so no
+    # case inherits another's mode and there is no restore step to skip.
+    if ($PSBoundParameters.ContainsKey('InstallerPath')) { $RelateInstallerPath = $InstallerPath }
     $script:CaseNum++
     $script:Served = $Serve
     $script:Calls.Clear()
@@ -183,6 +206,20 @@ function Test-Succeeded {
     Test-Check "$Description$suffix" ($null -eq $Run.Error -and $Passed)
 }
 
+# Run $Script with $env:LOCALAPPDATA set to $Value, restoring the caller's
+# value afterward: the one swap-set-restore policy for a case that exercises
+# a different install root. $Script's output is the call's output.
+function Invoke-WithLocalAppData {
+    param([string] $Value, [scriptblock] $Script)
+    $saved = $env:LOCALAPPDATA
+    try {
+        $env:LOCALAPPDATA = $Value
+        & $Script
+    } finally {
+        $env:LOCALAPPDATA = $saved
+    }
+}
+
 # Run $Body with the function $Name replaced by $Stub for this call only.
 # The stub is defined in this call's own scope: every function $Body calls
 # resolves through it first (PowerShell's dynamic scoping), and it vanishes
@@ -191,6 +228,18 @@ function Invoke-WithStub {
     param([string] $Name, [scriptblock] $Stub, [scriptblock] $Body)
     . ([ScriptBlock]::Create("function $Name {$Stub}"))
     & $Body
+}
+
+# "No ssh-keygen on this host" is one seam — both stubs together are what
+# makes Resolve-RelateSshKeygen refuse — so the stacking has one home. The
+# parameter is named $Run, never $Body: inside Invoke-WithStub the body
+# resolves names up the call stack, and a $Body here would resolve to
+# Invoke-WithStub's own parameter — itself — instead of this one.
+function Invoke-WithNoSshKeygen {
+    param([scriptblock] $Run)
+    Invoke-WithStub 'Get-RelateSystem32Path' { return $null } {
+        Invoke-WithStub 'Get-Command' { return $null } { & $Run }
+    }
 }
 
 function Test-Installed {

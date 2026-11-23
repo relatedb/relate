@@ -24,6 +24,11 @@ on:
         required: false
         default: false
         type: boolean
+      winget_dry_run:
+        description: "Generate and validate the winget manifests, then stop before submitting the version bump to microsoft/winget-pkgs"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -378,6 +383,195 @@ jobs:
           name: swift-xcframework
           path: target/apple/RelateFFI.xcframework.zip
 
+  # The Linux x86-64 CLI is built in the pinned baseline container, not on
+  # the ubuntu-latest runner: the runner's link environment puts x86-64-v2
+  # and x86-64-v3 in the binary's ELF GNU property note ("x86 ISA needed"),
+  # which refuses older CPUs. rust:1.88-bookworm is the pinned build image
+  # every baseline lane uses (Dockerfile.baseline, ADR-0495); its glibc
+  # 2.36 caps the artifact's symbol floor. The gate steps derive both
+  # properties from the built artifact, fail the release when the ISA level
+  # or the glibc floor exceeds the documented promise, and hand the derived
+  # floor to the channel builders (docs/api/cli/spec.md, "Platform
+  # requirements").
+  cli-linux-amd64:
+    name: CLI (x86_64-unknown-linux-gnu, baseline ISA)
+    needs: [release-owner, version, swift-stamp]
+    runs-on: ubuntu-latest
+    container: rust:1.88-bookworm
+    outputs:
+      glibc_floor: ${{ steps.glibc_floor.outputs.floor }}
+    steps:
+      # The eMudhra CA break (2026-10): crates.io TLS fetches ride this
+      # image's CA bundle, so the pre-existing jobs' CA step runs before any
+      # cargo network access. The image runs as root, so its `sudo` spelling
+      # is dropped.
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        run: |
+          apt-get update
+          apt-get install --only-upgrade -y ca-certificates
+          update-ca-certificates --fresh
+          # Post-condition (remediation assurance): the compromised root
+          # must be absent from the rebuilt store -- an on-path attacker
+          # replaying validly-signed metadata could otherwise make the
+          # upgrade a silent no-op behind a green check. A fixed runner
+          # image satisfies this too, so it never false-fails the lane.
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+      # The installer runs from the default checkout — the workflow's own
+      # tree — never the stamped ref, so no repo script executes from a
+      # ref-overridden checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Embedded dependency manifests, same as the other CLI legs
+      # (RELEASING.md, "Embedded dependency manifests").
+      - name: Install cargo-auditable (pinned)
+        run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
+
+      # Build from the stamped release commit (ADR-0572) — the one tree
+      # every artifact and the tag share.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.swift-stamp.outputs.sha }}
+
+      - name: Build (auditable)
+        run: cargo auditable build -p relate-cli --release --target x86_64-unknown-linux-gnu
+
+      - name: Rename binary
+        run: cp target/x86_64-unknown-linux-gnu/release/relate relate-linux-amd64
+
+      - name: Check the x86-64 baseline ISA
+        run: bash scripts/check-linux-isa.sh relate-linux-amd64
+
+      - name: Check the glibc floor
+        id: glibc_floor
+        run: echo "floor=$(bash scripts/check-glibc-floor.sh relate-linux-amd64)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: relate-linux-amd64
+          path: relate-linux-amd64
+
+  # The Debian/Ubuntu channel (ADR-0659): the .deb and the signed APT
+  # repository tree that serves it, built from the release's own binaries
+  # and attached as one tarball per architecture for relate-web to serve at
+  # /apt. The metadata is signed with the repository key (REPO_GPG_KEY,
+  # ADR-0630) and the committed public key rides the tree, so a user's apt
+  # trusts exactly that anchor.
+  apt-repo:
+    name: APT repository (${{ matrix.arch }}, signed)
+    needs: [release-owner, version, swift-stamp, cli-linux-amd64, cli]
+    # Like every secret-using publish job (ADR-0630): REPO_GPG_KEY is
+    # environment-scoped, and the `release` environment's branch policy is
+    # what gates a run dispatched from a non-main ref to it.
+    environment: release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { arch: amd64, asset: relate-linux-amd64 }
+          - { arch: arm64, asset: relate-linux-arm64 }
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          # Post-condition (remediation assurance): the compromised root
+          # must be absent from the rebuilt store -- an on-path attacker
+          # replaying validly-signed metadata could otherwise make the
+          # upgrade a silent no-op behind a green check. A fixed runner
+          # image satisfies this too, so it never false-fails the lane.
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.swift-stamp.outputs.sha }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ matrix.asset }}
+          path: artifacts
+
+      - name: Build the .deb and the signed repository tree
+        env:
+          REPO_GPG_KEY: ${{ secrets.REPO_GPG_KEY }}
+        run: |
+          set -euo pipefail
+          chmod +x "artifacts/${{ matrix.asset }}"
+          scripts/build-apt-repo.sh "artifacts/${{ matrix.asset }}" "${{ matrix.arch }}" \
+            "${{ needs.version.outputs.version }}" \
+            "${{ needs.cli-linux-amd64.outputs.glibc_floor }}" "$RUNNER_TEMP/apt-${{ matrix.arch }}"
+          tar -C "$RUNNER_TEMP/apt-${{ matrix.arch }}" \
+            -czf "relate-apt-repo-${{ matrix.arch }}.tar.gz" .
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: relate-apt-repo-${{ matrix.arch }}
+          path: relate-apt-repo-${{ matrix.arch }}.tar.gz
+
+  # The Fedora/RHEL/openSUSE channel (ADR-0659): the rpm and the signed
+  # YUM/DNF repository tree dnf reads, built in the channel's own
+  # distribution from the release's baseline-ISA x86-64 binary and attached
+  # as one tarball for relate-web to serve at /rpm. The builder writes the
+  # metadata with createrepo_c and signs repomd.xml through
+  # scripts/sign-repo-metadata.sh with the repository key (REPO_GPG_KEY,
+  # ADR-0630); the committed public key rides the tree. The container is a
+  # pinned Fedora release: `latest` would move the rpm's build inputs under
+  # a released tree, so the tag is bumped deliberately, never by drift.
+  rpm-repo:
+    name: RPM repository (signed)
+    needs: [release-owner, version, swift-stamp, cli-linux-amd64]
+    # Same binding as apt-repo above, for the same key.
+    environment: release
+    runs-on: ubuntu-latest
+    container: fedora:43
+    steps:
+      # The standing posture (CVE-2026-111943): the compromised eMudhra root
+      # must be gone before the toolchain install below fetches from the
+      # Fedora repositories. This is the Fedora spelling of the pre-existing
+      # release jobs' apt step.
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        run: dnf upgrade -y ca-certificates && update-ca-trust extract
+
+      # rpmbuild, createrepo_c and gpg are the builder's toolchain; the
+      # checkout action and the tar packaging need git, python3 and tar.
+      - name: Install the RPM toolchain
+        run: dnf install -y git python3 rpm-build createrepo_c gnupg2 tar gzip
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.swift-stamp.outputs.sha }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: relate-linux-amd64
+          path: artifacts
+
+      - name: Build the rpm and the signed repository tree
+        env:
+          REPO_GPG_KEY: ${{ secrets.REPO_GPG_KEY }}
+        run: |
+          set -euo pipefail
+          chmod +x artifacts/relate-linux-amd64
+          python3 scripts/build_rpm_repo.py --binary artifacts/relate-linux-amd64 \
+            --version "${{ needs.version.outputs.version }}" \
+            --glibc-floor "${{ needs.cli-linux-amd64.outputs.glibc_floor }}" \
+            --output "$RUNNER_TEMP/rpm"
+          tar -C "$RUNNER_TEMP/rpm" -czf relate-rpm-repo.tar.gz .
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: relate-rpm-repo
+          path: relate-rpm-repo.tar.gz
+
   cli:
     name: CLI (${{ matrix.target }})
     # `version` for the Windows smoke's expected version (swift-stamp
@@ -387,7 +581,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - { target: x86_64-unknown-linux-gnu,  runner: ubuntu-latest,  artifact: relate-linux-amd64 }
           - { target: aarch64-unknown-linux-gnu,  runner: ubuntu-latest,  artifact: relate-linux-arm64 }
           - { target: x86_64-apple-darwin,        runner: macos-15-intel, artifact: relate-darwin-amd64 }
           - { target: aarch64-apple-darwin,       runner: macos-latest,   artifact: relate-darwin-arm64 }
@@ -409,6 +602,23 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+      # The installer runs from the default checkout — the workflow's own
+      # tree — never the stamped ref, so no repo script executes from a
+      # ref-overridden checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Embedded dependency manifests: the non-Windows legs build through
+      # cargo-auditable (pinned install, the install-binaryen.sh pattern), so
+      # every shipped `relate` binary carries its crate list in the `.dep-v0`
+      # linker section — `cargo audit bin <binary>` reads it (RELEASING.md,
+      # "Embedded dependency manifests"). The Windows leg is owned by the
+      # windows-authenticode-signing lane and builds exactly as before —
+      # plain `cargo build`, same command and env; that lane integrates the
+      # manifest on Windows.
+      - name: Install cargo-auditable (pinned)
+        if: runner.os != 'Windows'
+        run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
+
       # Build from the stamped release commit (ADR-0572) — the one tree
       # every artifact and the tag share — so artifacts carry the release
       # version.
@@ -436,18 +646,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      # Embedded dependency manifests: the non-Windows legs build through
-      # cargo-auditable (pinned install, the install-binaryen.sh pattern), so
-      # every shipped `relate` binary carries its crate list in the `.dep-v0`
-      # linker section — `cargo audit bin <binary>` reads it (RELEASING.md,
-      # "Embedded dependency manifests"). The Windows leg is owned by the
-      # windows-authenticode-signing lane and builds exactly as before —
-      # plain `cargo build`, same command and env; that lane integrates the
-      # manifest on Windows.
-      - name: Install cargo-auditable (pinned)
-        if: runner.os != 'Windows'
-        run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
 
       - name: Build (auditable)
         if: runner.os != 'Windows'
@@ -608,6 +806,25 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+      # The installer runs from the default checkout — the workflow's own
+      # tree — never the stamped ref, so no repo script executes from a
+      # ref-overridden checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Embedded dependency manifests for the shipped FFI libraries: every
+      # leg (Windows included — no lane owns a leg of this job) builds
+      # through cargo-auditable (pinned install, the install-binaryen.sh
+      # pattern), so the cdylib (.so/.dylib/.dll) carries its crate list in
+      # the `.dep-v0` section and answers `cargo audit bin`. The section is
+      # allocated data, not debuginfo: the Linux packaging's
+      # `strip --strip-unneeded` keeps it. The staticlib carries no manifest
+      # — archives have no link step for the injection; the cdylib is the
+      # auditable surface (the same tree's staticlibs for the Swift
+      # XCFramework are the xcframework lanes' exclusion reason).
+      - name: Install cargo-auditable (pinned)
+        shell: bash
+        run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
+
       # Build from the stamped release commit (ADR-0572) — the one tree
       # every artifact and the tag share — so artifacts carry the release
       # version.
@@ -635,20 +852,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      # Embedded dependency manifests for the shipped FFI libraries: every
-      # leg (Windows included — no lane owns a leg of this job) builds
-      # through cargo-auditable (pinned install, the install-binaryen.sh
-      # pattern), so the cdylib (.so/.dylib/.dll) carries its crate list in
-      # the `.dep-v0` section and answers `cargo audit bin`. The section is
-      # allocated data, not debuginfo: the Linux packaging's
-      # `strip --strip-unneeded` keeps it. The staticlib carries no manifest
-      # — archives have no link step for the injection; the cdylib is the
-      # auditable surface (the same tree's staticlibs for the Swift
-      # XCFramework are the xcframework lanes' exclusion reason).
-      - name: Install cargo-auditable (pinned)
-        shell: bash
-        run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
 
       - name: Build FFI
         env:
@@ -1030,6 +1233,18 @@ jobs:
             exit 1
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+      # The installer runs from the default checkout — the workflow's own
+      # tree — never the stamped ref, so no repo script executes from a
+      # ref-overridden checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Embedded dependency manifest for the wasm bundle: build-wasm.sh
+      # --auditable drives the cargo step through the pinned cargo-auditable,
+      # so the shipped relate_bg.wasm carries its crate list in the .dep-v0
+      # custom section (verified to survive wasm-bindgen and wasm-opt).
+      - name: Install cargo-auditable (pinned)
+        run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
@@ -1053,13 +1268,6 @@ jobs:
       # externref table (see scripts/install-binaryen.sh).
       - name: Install binaryen (wasm-opt)
         run: bash scripts/install-binaryen.sh "$RUNNER_TEMP/binaryen" >> "$GITHUB_PATH"
-
-      # Embedded dependency manifest for the wasm bundle: build-wasm.sh
-      # --auditable drives the cargo step through the pinned cargo-auditable,
-      # so the shipped relate_bg.wasm carries its crate list in the .dep-v0
-      # custom section (verified to survive wasm-bindgen and wasm-opt).
-      - name: Install cargo-auditable (pinned)
-        run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
 
       - name: Build the wasm bundle
         run: bash scripts/build-wasm.sh --mode release --auditable
@@ -1146,7 +1354,7 @@ jobs:
     # published tag pointing at a release commit. The npm pack jobs are part
     # of the invariant: a broken npm package blocks the tag like every other
     # artifact, so the published npm version always equals the tag.
-    needs: [version, swift-stamp, cli, ffi, python, java, dotnet-nupkg, npm-platform, npm-wasm, npm-main]
+    needs: [version, swift-stamp, cli, cli-linux-amd64, apt-repo, rpm-repo, ffi, python, java, dotnet-nupkg, npm-platform, npm-wasm, npm-main]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1484,13 +1692,27 @@ jobs:
             release/Relate.Net.*.nupkg
             release/Relate.Net.*.snupkg
 
-      # Publish SHA256 checksums for the downloadable CLI binaries so users can
-      # verify downloads against the SHA256SUMS asset referenced from the README.
-      # The first line names the release (ADR-0457): it sits inside the bytes
-      # the signature covers, so `upgrade` and install.sh can bind the version
-      # they requested to the artifact they verify. Write it before the
-      # manifest is signed, with the exact published tag.
-      - name: Generate SHA256SUMS for CLI binaries
+      # The asset manifest (assets.json): one entry per staged release asset —
+      # name, sha256, size — so package-manager channels and installers verify
+      # exactly what they fetch. Generated and gated HERE, before SHA256SUMS,
+      # so the checksum set signed next carries an assets.json line: the signed
+      # anchor that makes the manifest trustworthy. The check fails the release
+      # if any staged asset would ship without an entry. The manifest carries no
+      # entry for itself — a file cannot contain its own digest.
+      - name: Generate and gate the release asset manifest
+        run: |
+          python3 scripts/release_asset_manifest.py generate release
+          python3 scripts/release_asset_manifest.py check release release/assets.json
+
+      # Publish SHA256 checksums for the CLI binaries and the asset manifest so
+      # users can verify downloads against the SHA256SUMS asset referenced from
+      # the README, and a package-manager channel can trust assets.json. The
+      # manifest is generated above, so its line is checksummed here and the
+      # signature below covers it. The first line names the release (ADR-0457):
+      # it sits inside the bytes the signature covers, so `upgrade` and
+      # install.sh can bind the version they requested to the artifact they
+      # verify. Write it before signing, with the exact published tag.
+      - name: Generate SHA256SUMS
         working-directory: release
         shell: bash
         env:
@@ -1506,8 +1728,12 @@ jobs:
             echo "release tag '$RELEASE_TAG' is not vX.Y.Z" >&2
             exit 1
           fi
+          if [ ! -f assets.json ]; then
+            echo "the release asset manifest (assets.json) is missing" >&2
+            exit 1
+          fi
           printf '# relate-release-version: %s\n' "$RELEASE_TAG" > SHA256SUMS
-          shasum -a 256 "${binaries[@]}" >> SHA256SUMS
+          shasum -a 256 "${binaries[@]}" assets.json >> SHA256SUMS
           cat SHA256SUMS
 
       # SSHSIG signature (namespace relate-release) over SHA256SUMS, so one
@@ -1532,6 +1758,14 @@ jobs:
           ssh-keygen -Y sign -f "$keyfile" -n relate-release SHA256SUMS
           test -s SHA256SUMS.sig
 
+      # The post-signing gate: the signed checksum set must carry the
+      # manifest's own digest, not merely a line naming it. The gate above
+      # ran before SHA256SUMS existed (it covers the manifest); this one
+      # binds the signed bytes to these manifest bytes.
+      - name: Gate the signed SHA256SUMS anchor
+        run: |
+          python3 scripts/release_asset_manifest.py anchor release release/assets.json
+
       # tag_name is explicit: on workflow_dispatch there is no tag context for
       # action-gh-release to infer, so we pass the tag created by the tag job.
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
@@ -1539,6 +1773,71 @@ jobs:
           tag_name: ${{ needs.version.outputs.tag }}
           files: release/*
           generate_release_notes: true
+
+      # The Homebrew formula for this tag, rendered from the assets.json the
+      # release just published (ADR-0659). The dry run prints the formula and
+      # writes nothing — the render is proven on every release. The update
+      # itself pushes to the project tap; GITHUB_TOKEN cannot write another
+      # repository, so it needs HOMEBREW_TAP_TOKEN, and without it the update
+      # is skipped with a notice (the relate-web poke's shape).
+      - name: Update the Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 scripts/homebrew_formula.py release/assets.json "$RELEASE_TAG" \
+            --tap-dir tap --dry-run
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not set — skipping the Homebrew tap update."
+            exit 0
+          fi
+          git clone --depth 1 \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/relatedb/homebrew-tap.git" tap
+          python3 scripts/homebrew_formula.py release/assets.json "$RELEASE_TAG" --tap-dir tap
+          cd tap
+          git config user.name "release-bot"
+          git config user.email "actions@github.com"
+          git add Formula/relate.rb
+          if git diff --cached --quiet; then
+            echo "the tap already carries the $RELEASE_TAG formula"
+            exit 0
+          fi
+          git commit -m "relate $RELEASE_TAG"
+          git push
+
+      # The Scoop manifest for this tag, rendered from the assets.json the
+      # release just published (ADR-0659) and pushed to the project bucket
+      # (the same shape as the tap update above). GITHUB_TOKEN cannot write
+      # another repository, so it needs SCOOP_BUCKET_TOKEN, and without it
+      # the update is skipped with a notice.
+      - name: Update the Scoop bucket
+        env:
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bucket="$RUNNER_TEMP/bucket"
+          python3 scripts/scoop_manifest.py generate release/assets.json \
+            --tag "$RELEASE_TAG" --output "$bucket/relate.json"
+          if [ -z "${SCOOP_BUCKET_TOKEN:-}" ]; then
+            echo "::notice::SCOOP_BUCKET_TOKEN is not set — skipping the Scoop bucket update."
+            exit 0
+          fi
+          git clone --depth 1 \
+            "https://x-access-token:${SCOOP_BUCKET_TOKEN}@github.com/relatedb/scoop-bucket.git" bucket-repo
+          mkdir -p bucket-repo/bucket
+          cp "$bucket/relate.json" bucket-repo/bucket/relate.json
+          cd bucket-repo
+          git config user.name "release-bot"
+          git config user.email "actions@github.com"
+          git add bucket/relate.json
+          if git diff --cached --quiet; then
+            echo "the bucket already carries the $RELEASE_TAG manifest"
+            exit 0
+          fi
+          git commit -m "relate $RELEASE_TAG"
+          git push
 
   # Smoke-gate the actual packed release tarballs before anything publishes:
   # install them into fresh projects and run a query through each surface.
@@ -1643,8 +1942,10 @@ jobs:
     # nested job requests but the caller does not grant (attestations:
     # read, added to the nested verify jobs by #180) invalidates the
     # whole workflow file at dispatch (startup failure, run 43064659136).
-    # No secrets: inherit — the called workflow runs on OIDC alone and
-    # needs none.
+    # No secrets: inherit — the called workflow's OIDC registries need
+    # none; only the Chocolatey push's API key is forwarded (a called
+    # workflow's `secrets` context carries nothing its caller does not
+    # pass, so an unforwarded key would always read empty and skip).
     permissions:
       id-token: write
       contents: read
@@ -1652,11 +1953,14 @@ jobs:
     uses: ./.github/workflows/publish-registries.yml
     with:
       tag: ${{ needs.version.outputs.tag }}
+    secrets:
+      CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
 
   # The Maven leg of the `registries` opt-in: same gate as the OIDC call
-  # above, its own call because its inputs differ — maven on, the OIDC
-  # three off, so a release with `registries` on deploys the jars
-  # exactly once. The four Central credentials are repository secrets
+  # above, its own call because its inputs differ — maven on, every other
+  # channel off (the OIDC three and Chocolatey, which the call above
+  # publishes), so a release with `registries` on deploys each exactly
+  # once. The four Central credentials are repository secrets
   # (ADR-0630) and are passed explicitly: a called workflow's `secrets`
   # context carries only what its caller forwards, repository secrets
   # included, and the v1.2.0 cut's call forwarded nothing — the job
@@ -1683,6 +1987,7 @@ jobs:
       npm: false
       pypi: false
       crates-io: false
+      chocolatey: false
     secrets:
       MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_KEY }}
       MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
@@ -1928,6 +2233,71 @@ jobs:
           $env:RELATE_RELEASES_JSON_URL = "$env:RELEASE_BASE/releases.json"
           relate upgrade --check
           if ($LASTEXITCODE -ne 0) { throw 'upgrade --check failed' }
+
+  # The Windows package channel (ADR-0659 §4). The manifests are generated
+  # from the release's own asset manifest: the installer URL is the tagged
+  # relate-windows-amd64.exe asset and its sha256 is the published
+  # assets.json entry, never a re-derived value. `winget validate` gates the
+  # schema before wingetcreate submits the version bump to
+  # microsoft/winget-pkgs; a missing WINGET_TOKEN skips the submission with
+  # a notice (the channel lives outside this repository), and the
+  # winget_dry_run dispatch input stops after validation. Offline releases
+  # touch nothing outside GitHub, so they skip the job.
+  winget:
+    name: winget manifests
+    needs: [version, create-release]
+    if: ${{ !inputs.offline }}
+    # WINGET_TOKEN is environment-scoped like REPO_GPG_KEY above.
+    environment: release
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      - name: Download the release asset manifest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download $env:TAG --pattern assets.json --dir winget-release
+
+      - name: Generate the winget manifests
+        run: >
+          python scripts/winget_manifests.py generate
+          winget-release/assets.json
+          --version $env:VERSION --output winget-manifests
+
+      - name: Validate the manifests with winget
+        run: winget validate --manifest winget-manifests
+
+      # The submitter is installed in its own step, pinned to an exact
+      # version, so the process that later holds WINGET_TOKEN is a known
+      # build: a floating `winget install` inside the token step could run a
+      # release published after this one was reviewed.
+      - name: Install the pinned wingetcreate
+        shell: pwsh
+        run: |
+          winget install --id Microsoft.WingetCreate --exact --version 1.28.1.0 --silent --accept-package-agreements --accept-source-agreements
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Submit the version bump to microsoft/winget-pkgs
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          DRY_RUN: ${{ inputs.winget_dry_run }}
+        run: |
+          if ($env:DRY_RUN -eq 'true' -or -not $env:WINGET_TOKEN) {
+            if (-not $env:WINGET_TOKEN) { Write-Warning 'WINGET_TOKEN is not set; the winget version bump is not submitted.' }
+            python scripts/winget_manifests.py submit winget-manifests --dry-run
+            exit 0
+          }
+          python scripts/winget_manifests.py submit winget-manifests --token $env:WINGET_TOKEN
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # ADR-0465: the Slack announcement is the release pipeline's final step.
   # The release-notes run generates the payload early — publish-releases-json

@@ -30,6 +30,10 @@ $RelateSumsVersionPrefix = '# relate-release-version: '
 # (ADR-0457): a headerless manifest is accepted only at or below it.
 $RelateLegacyManifestCeiling = '0.14.0'
 
+# The release-tag grammar: a release tag is vX.Y.Z and nothing else. \A and
+# \z, not ^ and $: .NET's $ also matches before a final newline.
+$RelateTagPattern = '\Av[0-9]+\.[0-9]+\.[0-9]+\z'
+
 # The release-metadata URL (ADR-0250 sec. 1, ADR-0571). RELATE_RELEASES_JSON_URL
 # overrides it (the dev/test seam install.sh and `relate upgrade` share);
 # unset or empty means this canonical URL.
@@ -76,6 +80,64 @@ function Get-RelateRefusalCause {
 function Format-RelateShown {
     param([string] $Value)
     return ($Value -replace '[\x00-\x1f\x7f]', '?')
+}
+
+# The package-managed marker: a package that ships relate writes
+# `.relate-package-managed` beside the real binary, in JSON
+# {"manager": "<id>", "upgrade": "<command>"}. `relate upgrade` reads it and
+# refuses to replace the install; this installer reads it the same way, so it
+# never overwrites a package's binary.
+$RelatePackageMarker = '.relate-package-managed'
+
+# The refusal body for the marker at $Marker: the declared package's own
+# upgrade command, or - when the marker is not a readable declaration - the
+# CLI's malformed-marker wording. A present marker always refuses.
+function Get-RelatePackageManagedRefusal {
+    param([string] $Marker)
+    $item = Get-Item -LiteralPath $Marker -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) {
+        return "relate is package-managed; marker $Marker is unreadable/invalid: cannot be read"
+    }
+    if ($item.PSIsContainer -or $item.LinkType) {
+        return "relate is package-managed; marker $Marker is unreadable/invalid: not a regular file"
+    }
+    try {
+        $declared = [IO.File]::ReadAllText($Marker, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    } catch {
+        return "relate is package-managed; marker $Marker is unreadable/invalid: $($_.Exception.Message)"
+    }
+    if (-not $declared.manager -or -not $declared.upgrade) {
+        return "relate is package-managed; marker $Marker is unreadable/invalid: manager and upgrade must be non-empty strings"
+    }
+    return "relate was installed by $($declared.manager); upgrade it with: $($declared.upgrade)"
+}
+
+# Refuse when the install target is owned by a package manager: the real
+# file's directory carries the marker. The target may be a symlink into the
+# package's own directory, so the link chain is followed first (a relative
+# target is rebased on the link's directory); an absent target or marker is an
+# unmanaged install, which this script replaces exactly as it always did.
+function Assert-RelateNotPackageManaged {
+    param([string] $InstallDir)
+    $target = Join-Path $InstallDir $RelateBinName
+    if (-not (Test-Path -LiteralPath $target)) { return }
+    $real = $target
+    $hops = 0
+    while ($hops -lt 40) {
+        $item = Get-Item -LiteralPath $real -Force -ErrorAction SilentlyContinue
+        if ($null -eq $item -or -not $item.LinkType) { break }
+        $next = @($item.Target)[0]
+        if (-not $next) { break }
+        if ([IO.Path]::IsPathRooted($next)) {
+            $real = $next
+        } else {
+            $real = Join-Path (Split-Path -Parent $real) $next
+        }
+        $hops++
+    }
+    $marker = Join-Path (Split-Path -Parent $real) $RelatePackageMarker
+    if (-not (Test-Path -LiteralPath $marker)) { return }
+    Stop-RelateInstall (Get-RelatePackageManagedRefusal -Marker $marker)
 }
 
 # The host's release-asset architecture. The binary is a Windows binary: any
@@ -210,9 +272,7 @@ function Get-RelateLatestTag {
     if (-not ($tag -is [string]) -or $tag -eq '') {
         Stop-RelateInstall $malformed
     }
-    # \A and \z, not ^ and $: .NET's $ also matches before a final newline,
-    # which would admit "v1.2.3`n".
-    if ($tag -cnotmatch '\Av[0-9]+\.[0-9]+\.[0-9]+\z') {
+    if ($tag -cnotmatch $RelateTagPattern) {
         Stop-RelateInstall "${fail}: latest.tag '$(Format-RelateShown $tag)' is not a vX.Y.Z release tag"
     }
     return $tag
@@ -285,16 +345,19 @@ function Get-RelateSystem32Path {
 }
 
 # ssh-keygen: the inbox Windows OpenSSH client first (present by default
-# since Windows 10 1809), PATH only when it is absent. The verifier decides
-# whether a manifest is trusted, so the system copy wins over whatever a
-# PATH entry earlier in the search order would resolve.
-function Find-RelateSshKeygen {
+# since Windows 10 1809), PATH only when it is absent, or a refusal naming
+# the Add-WindowsCapability command. The verifier decides whether a manifest
+# is trusted, so the system copy wins over whatever a PATH entry earlier in
+# the search order would resolve.
+function Resolve-RelateSshKeygen {
     $inbox = Get-RelateSystem32Path 'OpenSSH\ssh-keygen.exe'
     if ($inbox -and (Test-Path -LiteralPath $inbox)) { return $inbox }
     $command = Get-Command ssh-keygen -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($command) { return $command.Path }
-    return $null
+    Stop-RelateInstall ('ssh-keygen (the Windows OpenSSH client) is required to verify release signatures. ' +
+        'Install it from an elevated PowerShell with: Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0 ' +
+        '- then retry.')
 }
 
 # Verify the SSHSIG $SigPath over the manifest $SumsPath against the pinned
@@ -527,17 +590,16 @@ function Install-Relate {
     $asset = "relate-windows-$arch.exe"
     $installDir = Get-RelateInstallDir
 
+    # A package-managed install is never overwritten: the package owns the
+    # binary and its own upgrade path, and the refusal needs no request.
+    Assert-RelateNotPackageManaged -InstallDir $installDir
+
     # Both seams are gated before the first request of any kind, so a
     # mis-set override dies before any network hop (ADR-0585, ADR-0586).
     $metadataUrl = Get-RelateHttpsSeam -Name 'RELATE_RELEASES_JSON_URL' -Default $RelateReleasesJsonUrl
     $downloadBase = Get-RelateHttpsSeam -Name 'RELATE_RELEASE_DOWNLOAD_URL' -Default $RelateDownloadBase
 
-    $keygen = Find-RelateSshKeygen
-    if (-not $keygen) {
-        Stop-RelateInstall ('ssh-keygen (the Windows OpenSSH client) is required to verify release signatures. ' +
-            'Install it from an elevated PowerShell with: Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0 ' +
-            '- then retry.')
-    }
+    $keygen = Resolve-RelateSshKeygen
 
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ('relate-install-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tmp | Out-Null

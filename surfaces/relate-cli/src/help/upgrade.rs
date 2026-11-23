@@ -14,7 +14,9 @@ pub(super) fn upgrade_help() -> String {
 
 upgrade checks the latest release listed by the website's releases.json
 and replaces the running binary (macOS and Linux only);
-`update` is an alias.
+`update` is an alias. An install owned by a package manager (its
+.relate-package-managed marker sits beside the binary) is never
+replaced: upgrade names the package's own upgrade command instead.
   --yes    Install the skill when none is installed, without asking
            (installed skills update regardless)
   --check  Report current-vs-latest only; download and modify nothing
@@ -46,6 +48,13 @@ mod tests {
         // the drift back fails here.
         assert!(
             help.contains("Install the skill when none is installed, without asking"),
+            "{help}"
+        );
+        // A package-managed install is never self-replaced; pin the sentence
+        // so the help cannot drift back to implying it is.
+        assert!(
+            help.contains("An install owned by a package manager")
+                && help.contains("package's own upgrade command"),
             "{help}"
         );
         assert!(!help.contains("Auto-accept"), "{help}");

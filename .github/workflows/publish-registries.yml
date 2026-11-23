@@ -48,6 +48,14 @@ on:
         required: false
         type: boolean
         default: false
+      chocolatey:
+        required: false
+        type: boolean
+        default: true
+      chocolatey-dry-run:
+        required: false
+        type: boolean
+        default: false
       # Off by default on this path so the OIDC chain call above never
       # deploys the jars a second time: the release publishes Maven from
       # its own call (publish-maven-central), which sets the flag.
@@ -91,6 +99,20 @@ on:
       MAVEN_CENTRAL_TOKEN:
         description: "Central Portal user-token password"
         required: false
+      # The repository signing key for the APT and RPM channels — the
+      # public half is committed as distribution/repo-signing-key.asc, the
+      # private half only ever exists as this secret (ADR-0630; see
+      # RELEASING.md, "Repository signing key"). The apt/rpm publish lanes
+      # read it through their signing step; a direct dispatch reads the
+      # repository secret ambiently.
+      REPO_GPG_KEY:
+        description: "base64-encoded GPG secret key that signs the APT and RPM repository metadata"
+        required: false
+      # The Chocolatey community repository API key (ADR-0659); the push
+      # step warns and skips while it is unset, and fails closed once set.
+      CHOCOLATEY_API_KEY:
+        description: "API key that pushes the relate package to the Chocolatey community repository"
+        required: false
       # The nuget.org profile name of the trusted-publishing policy's owner.
       # A chained call forwards nothing and the NuGet leg does not run on
       # that path (its policy names this workflow, not release.yml), so no
@@ -130,6 +152,11 @@ on:
         required: false
         type: boolean
         default: false
+      repo-signing-dry-run:
+        description: "sign the fixture repository metadata with the REPO_GPG_KEY secret against main, proving the secret matches the committed public key without publishing"
+        required: false
+        type: boolean
+        default: false
       # Off by default because only releases cut after the NuGet leg landed
       # carry a Relate.Net package: a re-publish of an older tag would fail
       # the asset download. Turn it on for a release cut with the leg.
@@ -158,6 +185,16 @@ on:
         default: false
       crates-io-dry-run:
         description: "cargo publish --dry-run: validate packaging without publishing"
+        required: false
+        type: boolean
+        default: false
+      chocolatey:
+        description: "Pack, install-verify and push the Windows Chocolatey package"
+        required: false
+        type: boolean
+        default: true
+      chocolatey-dry-run:
+        description: "pack and install the package from a local source on Windows, then stop before the choco push"
         required: false
         type: boolean
         default: false
@@ -794,3 +831,148 @@ jobs:
             mvn -B -f clients/java/pom.xml deploy -Pcentral-publish \
               -Drelate.natives.dir="$PWD/natives"
           fi
+
+  # A rehearsal for the APT/RPM signing lanes before they exist as
+  # publish jobs: nothing is signed into a registry, so the tag's tree is
+  # not the subject — the dry run takes main, like the maven dry run, and
+  # proves the one thing that cannot be proven anywhere else: the
+  # REPO_GPG_KEY secret holds the private half of the committed public
+  # key (the v1.2.0 maven cut imported an empty key instead and died at
+  # the cryptic `gpg: no valid OpenPGP data found`, ADR-0630).
+  repo-signing-dry-run:
+    name: Prove the REPO_GPG_KEY secret against the committed public key
+    needs: registry-owner
+    # Main-only like every secret-using publish job: the dry run still reads
+    # REPO_GPG_KEY, so it declares the same ref gate and environment binding.
+    if: github.ref == 'refs/heads/main' && inputs.repo-signing-dry-run
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+
+      # The signing step the APT and RPM lanes will run: the secret key,
+      # the committed fingerprint and the committed public key must agree
+      # before any metadata is signed. The fixture Release is the same
+      # bytes the scripts/tests suite signs and verifies offline.
+      - name: Sign the fixture repository metadata with the repository signing key
+        env:
+          REPO_GPG_KEY: ${{ secrets.REPO_GPG_KEY }}
+        run: |
+          set -euo pipefail
+          scripts/sign-repo-metadata.sh \
+            scripts/tests/fixtures/repo-signing/Release \
+            "$RUNNER_TEMP/Release.gpg"
+
+  # Chocolatey (ADR-0659): the Windows CLI as a Chocolatey package. The
+  # package is one template (distribution/chocolatey) with no baked
+  # checksum — its install script verifies the release's SSHSIG-signed
+  # SHA256SUMS and gates the download on that entry, and refuses a binary
+  # not signed by the pinned Authenticode certificate — so the same nuspec
+  # serves every version. The job packs it from the dispatched tree (the
+  # machinery, not the frozen tag: see the npm job's checkout note), installs
+  # the packed package from a local source on Windows and asserts the
+  # installed binary reports the release version; only then does the push
+  # run. The push reads CHOCOLATEY_API_KEY, and a dry run stops before it.
+  chocolatey:
+    name: Pack, install and push the Chocolatey package
+    needs: registry-owner
+    # Main-only like every publish job (see pypi). A dry run is a publish
+    # job too: it packs and installs the same package, and only the push
+    # is skipped.
+    if: github.ref == 'refs/heads/main' && inputs.chocolatey
+    runs-on: windows-latest
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      # The package version is the release tag without its `v` — the only
+      # input the template needs; the install script derives the release
+      # URL from it, so a mismatch would fetch the wrong release. The
+      # Authenticode signer thumbprint the install refuses anything else
+      # against is the same variable the release's windows-sign action pins
+      # (ADR-0594): the pack step writes it into the package's tools so a
+      # package packed without it never installs.
+      - name: Pack the package at the release version
+        shell: pwsh
+        env:
+          TAG: ${{ inputs.tag }}
+          WINDOWS_SIGN_CERT_FINGERPRINT: ${{ vars.WINDOWS_SIGN_CERT_FINGERPRINT }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TAG -match '^v(\d+\.\d+\.\d+)$') { $version = $Matches[1] }
+          else { throw "tag '$env:TAG' is not vX.Y.Z" }
+          if (-not $env:WINDOWS_SIGN_CERT_FINGERPRINT) {
+            throw 'WINDOWS_SIGN_CERT_FINGERPRINT is not set; the Chocolatey package pins the Authenticode signer thumbprint (ADR-0594)'
+          }
+          $nupkg = "dist/relate.$version.nupkg"
+          # GITHUB_ENV writes apply to later steps, so they carry what the
+          # install and push steps need.
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NUPKG=$nupkg" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Set-Content -LiteralPath distribution/chocolatey/tools/signer-thumbprint.txt -Value $env:WINDOWS_SIGN_CERT_FINGERPRINT -NoNewline -Encoding ascii
+          choco pack distribution/chocolatey/relate.nuspec --version $version --output-directory dist
+          if ($LASTEXITCODE -ne 0) { throw 'choco pack failed' }
+          if (-not (Test-Path -LiteralPath $nupkg)) { throw "$nupkg was not packed" }
+
+      # The install the acceptance names: the nupkg from a local source
+      # (never a public feed), so the package's own install path runs — the
+      # manifest fetch, the sha256 gate, the provenance marker and the
+      # shim — and the resulting `relate --version` must report the release
+      # version.
+      - name: Install the packed package from a local source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install relate --source (Join-Path $PWD 'dist') --version $env:VERSION -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'choco install failed' }
+          $shim = Join-Path $env:ChocolateyInstall 'bin\relate.exe'
+          $resolved = (Get-Command relate -CommandType Application | Select-Object -First 1).Path
+          if ($resolved -ne $shim) { throw "relate resolves to '$resolved', not the Chocolatey shim $shim" }
+          $printed = relate --version | Out-String
+          if ($LASTEXITCODE -ne 0 -or -not $printed.Contains("v$env:VERSION")) { throw "--version: $printed" }
+          # Install provenance (ADR-0659): the marker sits beside the real
+          # binary, not the shim, so `relate upgrade` defers to choco.
+          $markerPath = Join-Path $env:ChocolateyInstall 'lib\relate\tools\.relate-package-managed'
+          if (-not (Test-Path -LiteralPath $markerPath)) { throw "no provenance marker at $markerPath" }
+          $marker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
+          if ($marker.manager -ne 'chocolatey' -or -not $marker.upgrade) { throw "provenance marker: $marker" }
+
+      - name: Dry run — stop before the push
+        if: inputs.chocolatey-dry-run
+        shell: pwsh
+        run: |
+          Write-Host "dry run: packed and installed $env:NUPKG; stopping before choco push"
+
+      # Skip-open, then fail closed (the windows-sign precedent): while the
+      # API key secret is unset the push warns and stands down, and a push
+      # that does run must succeed.
+      - name: Push to the Chocolatey community repository
+        if: ${{ !inputs.chocolatey-dry-run }}
+        shell: pwsh
+        env:
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:CHOCOLATEY_API_KEY) {
+            Write-Host '::warning::CHOCOLATEY_API_KEY is not set - skipping the Chocolatey push (ADR-0659).'
+            exit 0
+          }
+          choco push $env:NUPKG --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
+          if ($LASTEXITCODE -ne 0) { throw 'choco push failed' }

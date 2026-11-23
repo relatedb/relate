@@ -1,18 +1,34 @@
-"""Shared importlib loader for the scripts/tests/ suites.
+"""Shared helpers for the scripts/tests/ suites, owning two policies.
 
-The subjects under scripts/ are hyphenated (`ci-timings-report.py`,
-`baseline-fingerprint.py`), so they are not importable by name; each test
-loads its subject from a path. The loader lives exactly once here (the two
-suites previously carried verbatim copies) and is imported as a plain
-module — scripts/tests/ is sys.path[0] when the suite runs.
+The first policy is loading a subject from a path: the subjects under
+scripts/ are hyphenated (`ci-timings-report.py`, `baseline-fingerprint.py`),
+so they are not importable by name, and `load` is the one importlib loader
+(the two suites previously carried verbatim copies). The second is capturing
+a subject's run: `capture_stderr` calls a subject's main(argv) with stderr
+captured — the one capture policy a test uses instead of hand-rolling a
+StringIO sequence. Both are imported as a plain module: scripts/tests/ is
+sys.path[0] when the suite runs.
 """
 
+import contextlib
 import importlib.util
+import io
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def capture_stderr(main: Callable[[list[str]], int], argv: list[str]) -> tuple[int, str]:
+    """Call a subject's main(argv) with stderr captured — the code path a
+    workflow step runs, where a refusal names its offenders. Returns the
+    exit code and the captured stderr."""
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        code = main(argv)
+    return code, err.getvalue()
 
 
 def load(name: str, path: Path) -> ModuleType:

@@ -12,9 +12,11 @@
 
 mod support;
 
+use std::path::Path;
+
 use relate_test_support::loopback::header_values;
 use support::releases::{ReleasesFixture, NEWER_RELEASES_JSON};
-use support::{run_cli, tempdir, CliRunOptions as Opts};
+use support::{binary_path, run_cli, run_cli_bin, tempdir, CliRunOptions as Opts};
 
 /// The committed `releases.json` fixture, served as the website's document.
 const RELEASES_JSON: &str = include_str!("fixtures/releases.json");
@@ -325,5 +327,108 @@ fn test_upgrade_on_windows_refuses_with_the_powershell_installer() {
     assert!(
         stderr.contains("https://relatedb.ai/install.ps1"),
         "{stderr}"
+    );
+}
+
+// --- a package-managed install is never replaced -----------------------------
+
+/// The package-managed fixture: a copy of the built binary at `root`, with
+/// the marker a package recipe writes beside the real binary. The copy is
+/// what runs, so `current_exe()` resolves to it and finds the marker — the
+/// same layout as a Homebrew keg's binary and its sibling marker.
+fn package_managed_fixture(root: &Path) -> std::path::PathBuf {
+    let exe = root.join(if cfg!(windows) {
+        "relate.exe"
+    } else {
+        "relate"
+    });
+    std::fs::copy(binary_path(), &exe).expect("copy the built binary");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))
+            .expect("mark the copy executable");
+    }
+    std::fs::write(
+        root.join(".relate-package-managed"),
+        r#"{"manager": "homebrew", "upgrade": "brew upgrade relate"}"#,
+    )
+    .expect("write the package-managed marker");
+    exe
+}
+
+/// `upgrade` on a package-managed install names the package's own upgrade
+/// command, exits non-zero, and leaves the package's binary byte-identical.
+/// The metadata URL is a dead port, so the refusal must run before any fetch:
+/// a run that reached the network would fail differently.
+#[test]
+fn test_upgrade_defers_to_a_package_managed_install() {
+    let home = tempdir();
+    let root = tempdir();
+    let exe = package_managed_fixture(root.path());
+    let before = std::fs::read(&exe).expect("read the fixture binary");
+    let envs = [(
+        "RELATE_RELEASES_JSON_URL",
+        "http://127.0.0.1:1/releases.json",
+    )];
+    let (status, stdout, stderr) = run_cli_bin(
+        &exe,
+        Opts::new(&["upgrade"])
+            .in_home(home.path())
+            .with_envs(&envs),
+    );
+    assert_eq!(status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stdout.is_empty(),
+        "the refusal prints nothing on stdout: {stdout}"
+    );
+    assert_eq!(stderr.lines().count(), 1, "single-line error: {stderr}");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("Error: upgrade: relate was installed by homebrew; upgrade it with: brew upgrade relate")
+    );
+    assert_eq!(
+        std::fs::read(&exe).expect("read the fixture binary"),
+        before,
+        "the package's binary must be byte-identical after the refusal"
+    );
+}
+
+/// `--check` still reports current-vs-latest on a package-managed install,
+/// but its advice carries the package's command instead of `relate upgrade`.
+#[test]
+fn test_upgrade_check_advises_the_packages_command() {
+    let home = tempdir();
+    let root = tempdir();
+    let exe = package_managed_fixture(root.path());
+    let before = std::fs::read(&exe).expect("read the fixture binary");
+    let fixture = ReleasesFixture::spawn(NEWER_RELEASES_JSON);
+    let (status, stdout, stderr) = run_cli_bin(
+        &exe,
+        Opts::new(&["upgrade", "--check"])
+            .in_home(home.path())
+            .with_envs(&fixture.envs()),
+    );
+    assert_eq!(status.code(), Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.contains("latest release:  99.0.0"),
+        "the report still reads releases.json: {stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "upgrade available: 99.0.0; relate was installed by homebrew; \
+             upgrade it with: brew upgrade relate"
+        ),
+        "the advice must name the package's command: {stdout}"
+    );
+    assert!(
+        !stdout.contains("run `relate upgrade`"),
+        "never advise a command that would refuse: {stdout}"
+    );
+    assert_eq!(fixture.heads().len(), 1, "one metadata request only");
+    assert_eq!(
+        std::fs::read(&exe).expect("read the fixture binary"),
+        before,
+        "--check modifies nothing"
     );
 }
