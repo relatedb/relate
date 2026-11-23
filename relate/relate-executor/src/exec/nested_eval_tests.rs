@@ -8,33 +8,45 @@
 //! it). A UNION body ticks once per part, so a wide body driven by many
 //! rows spends rows × parts on the budget and crosses it instead of
 //! hiding its width inside one invocation tick. A statement whose
-//! passes exceed the fixed 100 000 budget fails with the typed
+//! passes exceed the fixed 1 000 000 budget fails with the typed
 //! `NestedEvaluationBudgetExceeded` execution error instead of running
 //! the exponentially compounding fan.
 //!
-//! The bomb tests drive each counting site past the budget; every bomb
-//! fails at the 100 001st pass, before its full theoretical fan runs.
+//! The bomb tests drive each counting site past the budget: each
+//! configures its store with `BOMB_BUDGET` and fails one past it,
+//! before its full theoretical fan runs — whatever the published
+//! constant (ADR-0670) says, the crossings stay cheap. Every bomb
+//! asserts through the shared
+//! [`assert_nested_eval_budget_error`](relate_test_support::nested_eval::assert_nested_eval_budget_error)
+//! helper over `error_of`'s extraction, so the enforced value and the
+//! asserted text read the same number.
 //! The counting-rule test pins each event's exact tick count — and, by
 //! running every case on one reused view, that the counter resets per
 //! statement and compounds only within one.
 
 use std::collections::BTreeMap;
 
-use relate_core::{Error, Value};
+use relate_core::Value;
+use relate_test_support::nested_eval::assert_nested_eval_budget_error;
 
 use super::kernels::{take_kernel_engagements, with_kernels_disabled};
 use super::test_support::{
-    exec_write_unvalidated, try_exec_cypher, try_exec_cypher_on, write_scratch,
+    error_of, exec_write_unvalidated, try_exec_cypher, try_exec_cypher_on, write_scratch,
 };
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 
-/// The one budget-error assertion, typed for this crate's bombs: the
-/// shared `relate_test_support` helper checks the exact authored
-/// message (single-sourced from `NESTED_EVAL_BUDGET`) and the `Kind:`
-/// prefix's parse-back to the ADR-0395 `ErrorKind` row.
-fn assert_budget_error(error: Error) {
-    relate_test_support::nested_eval::assert_nested_eval_budget_error(&error.to_string());
+/// The bomb budget: small enough that five crossings cost nothing,
+/// large enough that the drivers' shapes (rows x parts, list items)
+/// still mean something.
+const BOMB_BUDGET: u64 = 1_000;
+
+/// The driver rows that spend one pass past the bomb budget, given the
+/// statement's per-row tick factor (1 for a single body, 2 for a
+/// two-part UNION or a two-subquery projection) — the one derivation
+/// every crossing driver reads.
+fn rows_past_the_budget(ticks_per_row: u64) -> u64 {
+    BOMB_BUDGET / ticks_per_row + 1
 }
 
 /// The doubling nested-CALL bomb (the LABS-416 shape): each level's body
@@ -92,13 +104,30 @@ fn exists_chain_bomb(depth: usize) -> String {
     format!("RETURN EXISTS {{ {body} }} AS bomb")
 }
 
-/// The nested CALL counting site: depth 16 (196 606 body passes) crosses
-/// the budget, and the error arrives at the 100 001st pass — before the
-/// fan completes — with the typed kind and the exact message.
+/// The nested-CALL counting site: one `CALL (i) { … }` body pass per
+/// imported row — under the seam's budget, a driver one row past it
+/// crosses at the next pass with the typed kind and the exact message.
+/// The doubling fan form (`nested_call_bomb`, driven by the
+/// counting-rule test below) pins the compounding-per-level counts
+/// exactly; past half a million passes its retained row product meets
+/// the ADR-0463 expression cap first — the two guards are coupled
+/// through the retained rows — so the budget's own crossing is shown by
+/// this flat read-only form: a `RETURN`-body `CALL` per row, ticking per
+/// row while retaining no graph writes.
 #[test]
-fn nested_call_bomb_exceeds_the_budget() {
-    let g = Graph::default();
-    assert_budget_error(try_exec_cypher(&g, &nested_call_bomb(16)).err().unwrap());
+fn per_row_call_body_exceeds_the_budget() {
+    let mut g = Graph::default();
+    g.set_nested_eval_budget(BOMB_BUDGET);
+    assert_nested_eval_budget_error(
+        &error_of(try_exec_cypher(
+            &g,
+            &format!(
+                "UNWIND range(1, {}) AS i CALL (i) {{ RETURN i AS x }} RETURN count(*) AS c",
+                rows_past_the_budget(1)
+            ),
+        )),
+        BOMB_BUDGET,
+    )
 }
 
 /// The EXISTS clause-engine counting site (`subquery_eval`): the
@@ -106,59 +135,79 @@ fn nested_call_bomb_exceeds_the_budget() {
 /// the budget with the same typed error.
 #[test]
 fn exists_chain_bomb_exceeds_the_budget() {
-    let g = label_graph();
-    assert_budget_error(try_exec_cypher(&g, &exists_chain_bomb(9)).err().unwrap());
+    let mut g = label_graph();
+    g.set_nested_eval_budget(BOMB_BUDGET);
+    // Four candidates per level: depth 5's 1 + 4 + ... + 4^5 = 1 365
+    // passes cross a thousand.
+    assert_nested_eval_budget_error(
+        &error_of(try_exec_cypher(&g, &exists_chain_bomb(5))),
+        BOMB_BUDGET,
+    )
 }
 
 /// The wide-UNION counting rule (the granularity the security review
 /// pinned): a body's UNION parts each tick, so a two-part body driven
-/// by 60 000 rows spends 120 000 part passes on the budget and crosses
-/// it at the 100 001st — the rows × parts product lands on the
-/// counter, not just the row axis.
+/// by half-the-budget-plus-one rows spends one-past-budget part passes
+/// on the counter and crosses — the rows × parts product lands on the
+/// budget, not just the row axis.
 #[test]
 fn wide_union_body_driven_by_rows_exceeds_the_budget() {
-    let g = Graph::default();
-    assert_budget_error(
-        try_exec_cypher(
+    let mut g = Graph::default();
+    g.set_nested_eval_budget(BOMB_BUDGET);
+    assert_nested_eval_budget_error(
+        &error_of(try_exec_cypher(
             &g,
-            "UNWIND range(1, 60000) AS i \
-             CALL (i) { RETURN i AS x UNION ALL RETURN i + 1 AS x } \
+            &format!(
+                "UNWIND range(1, {}) AS i \
+             CALL (i) {{ RETURN i AS x UNION ALL RETURN i + 1 AS x }} \
              RETURN count(*) AS c",
-        )
-        .err()
-        .unwrap(),
-    );
+                rows_past_the_budget(2)
+            ),
+        )),
+        BOMB_BUDGET,
+    )
 }
 
 /// The omitted-RETURN COUNT counting site (`subquery_eval`): a COUNT
 /// body with no RETURN runs the clause engine directly, once per
-/// subquery per row — two per row over 60 000 rows crosses the budget.
+/// subquery per row — two per row, so a half-the-budget-plus-one-row
+/// driver crosses.
 #[test]
 fn omitted_return_count_bomb_exceeds_the_budget() {
-    let g = label_graph();
-    assert_budget_error(
-        try_exec_cypher(
+    let mut g = label_graph();
+    g.set_nested_eval_budget(BOMB_BUDGET);
+    assert_nested_eval_budget_error(
+        &error_of(try_exec_cypher(
             &g,
-            "UNWIND range(1, 60000) AS i \
-             RETURN COUNT { MATCH (n:L0) } + COUNT { MATCH (n:L1) } AS x",
-        )
-        .err()
-        .unwrap(),
-    );
+            &format!(
+                "UNWIND range(1, {}) AS i \
+             RETURN COUNT {{ MATCH (n:L0) }} + COUNT {{ MATCH (n:L1) }} AS x",
+                rows_past_the_budget(2)
+            ),
+        )),
+        BOMB_BUDGET,
+    )
 }
 
 /// The FOREACH counting site (`dispatch`): the clause list runs once per
-/// list item per row, so a 100 001-item list crosses the budget before
-/// its last pass.
+/// list item per row, so a one-past-budget-item list crosses before its
+/// last pass.
 #[test]
 fn foreach_bomb_exceeds_the_budget() {
-    let g = Graph::default();
+    let mut g = Graph::default();
+    g.set_nested_eval_budget(BOMB_BUDGET);
     let scratch = write_scratch(&g);
-    assert_budget_error(
-        exec_write_unvalidated(&g, &scratch, "FOREACH (i IN range(1, 100001) | CREATE ())")
-            .err()
-            .unwrap(),
-    );
+    assert_nested_eval_budget_error(
+        &error_of(exec_write_unvalidated(
+            &g,
+            &scratch,
+            &format!(
+                "FOREACH (i IN range(1, {}) | CREATE ())",
+                rows_past_the_budget(1)
+            ),
+        )),
+        BOMB_BUDGET,
+    )
 }
 
 /// The counting rule (ADR-0395), pinned per event on one reused view: each
@@ -233,6 +282,34 @@ fn the_counting_rule_ticks_each_event_once() {
     let wview = ExecGraph::write(&g, &scratch);
     try_exec_cypher_on(&wview, "FOREACH (i IN range(1, 5) | CREATE ())").unwrap();
     assert_eq!(wview.nested_evals().count(), 5);
+    // `CALL { … } IN TRANSACTIONS` (ADR-0669): an admissible body —
+    // reads included, the body runs in pipeline order over the batch —
+    // costs one pass per batch, 10 rows at OF 3 ROWS being four batches;
+    // a `WITH`-carrying body keeps the per-row path's one pass per row
+    // (10 here).
+    try_exec_cypher_on(
+        &wview,
+        "UNWIND range(1, 10) AS id CALL (id) { CREATE (:P {i: id}) } \
+         IN TRANSACTIONS OF 3 ROWS",
+    )
+    .unwrap();
+    assert_eq!(wview.nested_evals().count(), 4);
+    try_exec_cypher_on(
+        &wview,
+        "UNWIND range(1, 10) AS id \
+         CALL (id) { CREATE (:Q {i: id}) MATCH (x:Q) DELETE x } \
+         IN TRANSACTIONS OF 3 ROWS",
+    )
+    .unwrap();
+    assert_eq!(wview.nested_evals().count(), 4);
+    try_exec_cypher_on(
+        &wview,
+        "UNWIND range(1, 10) AS id \
+         CALL (id) { WITH id CREATE (:W {i: id}) } \
+         IN TRANSACTIONS OF 3 ROWS",
+    )
+    .unwrap();
+    assert_eq!(wview.nested_evals().count(), 10);
 }
 
 /// A chain corridor for the kernel arm's EXISTS shape: two
@@ -277,4 +354,27 @@ fn kernel_served_exists_walk_ticks_the_budget_once() {
     assert_eq!(take_kernel_engagements(), 0);
     assert_eq!(probed.rows, vec![vec![Value::Bool(true)]]);
     assert_eq!(view.nested_evals().count(), 1);
+}
+
+/// The local-callable counting site (LABS-416's residue): a procedure
+/// body is a nested statement-engine pass, once per calling row. Under
+/// the seam's budget a flat driver crosses it — the cheapest shape that
+/// pins the site's crossing; the relate-crate twin this replaces drove
+/// the real million-pass budget at a per-pass cost no suite should pay
+/// on every run.
+#[test]
+fn local_callable_bomb_exceeds_the_budget() {
+    let mut g = Graph::default();
+    g.set_nested_eval_budget(BOMB_BUDGET);
+    assert_nested_eval_budget_error(
+        &error_of(try_exec_cypher(
+            &g,
+            &format!(
+                "DEFINE PROCEDURE p1() {{ RETURN 1 AS v }} \
+                 UNWIND range(1, {}) AS i CALL p1() YIELD v RETURN count(v) AS c",
+                rows_past_the_budget(1)
+            ),
+        )),
+        BOMB_BUDGET,
+    );
 }

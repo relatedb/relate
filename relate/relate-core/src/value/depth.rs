@@ -23,7 +23,7 @@ use super::{Node, PropertyMap, Relationship, Value};
 /// building a value that later overflows a recursive walker.
 ///
 /// Fixed constant, no knob: the same house rule as ADR-0257's 4 MiB/500 and
-/// ADR-0395's fixed 100 000-pass budget. Lifting it would require a
+/// ADR-0395's fixed budget (1 000 000 passes since ADR-0670). Lifting it would require a
 /// payload-newtype `Drop` for `Value` (never `impl Drop for Value`, which
 /// makes the move-out matches E0509), so a recursive drop cannot overflow.
 pub const MAX_VALUE_DEPTH: u32 = 500;

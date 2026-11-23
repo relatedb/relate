@@ -11,18 +11,13 @@ use relate_core::{Error, Result, Value};
 use super::ExecGraph;
 use crate::memory::{memo_budget_bytes, DEFAULT_MEMO_BUDGET_MIB};
 
-/// ADR-0395: the fixed per-top-level-statement budget on nested
-/// clause-engine part passes — every `execute_query_seeded` part
-/// iteration (a CALL body per imported row, an import-invariant CALL's
-/// shared execution, a conditional's taken branch bodies, the
-/// COUNT/COLLECT expression-subquery engines, the NEXT-stage recursion;
-/// a UNION body ticks once per part, so a wide body costs its part
-/// count) plus the direct part passes of the EXISTS/COUNT paths and
-/// the FOREACH arm (one `run_nested_clauses` call each). The runtime
-/// twin of the compile-side `MAX_CLONED_NODES` (ADR-0382), at the same
-/// number: a fixed constant, no knob — the remedy for legitimate work
-/// that needs more is a new ADR, never ambient configuration.
-pub const NESTED_EVAL_BUDGET: u64 = 100_000;
+/// The per-statement nested-evaluation budget (ADR-0395, 1 000 000
+/// since ADR-0670) — the published re-export of the one constant at
+/// [`crate::memory::NESTED_EVAL_BUDGET`], which the store layer reads
+/// without reaching up into this view. The full decision record
+/// (counting rule, no-knob rule, the compile-twin split) lives with the
+/// constant and in ADR-0395/ADR-0669/ADR-0670.
+pub use crate::memory::NESTED_EVAL_BUDGET;
 
 /// The per-top-level-statement nested-evaluation counter (ADR-0395): one
 /// shared cell per statement, owned by the execution view beside
@@ -32,38 +27,64 @@ pub const NESTED_EVAL_BUDGET: u64 = 100_000;
 /// a context-local cell. A `Cell` suffices for the same reason the
 /// cancellation window's does: a statement's executor access is
 /// single-threaded.
-#[derive(Debug, Default)]
-pub(crate) struct NestedEvalCounter(Cell<u64>);
+/// The budget this counter enforces: [`NESTED_EVAL_BUDGET`] unless a
+/// test store lowered it — carried as data from the store's services
+/// (the `expression_limit` pattern), never an ambient channel. The one
+/// value the tick guard and the authored error message read.
+pub(crate) struct NestedEvalCounter {
+    passes: Cell<u64>,
+    budget: u64,
+}
+
+impl Default for NestedEvalCounter {
+    fn default() -> Self {
+        Self::new(NESTED_EVAL_BUDGET)
+    }
+}
 
 impl NestedEvalCounter {
+    /// A counter enforcing `budget` passes per statement (the store's
+    /// configured value; `Default` is the published constant).
+    pub(crate) fn new(budget: u64) -> Self {
+        Self {
+            passes: Cell::new(0),
+            budget,
+        }
+    }
+
     /// Zero the counter: the per-statement reset a reused view runs at
     /// statement entry (freshly constructed views start at zero
     /// already).
     pub(crate) fn reset(&self) {
-        self.0.set(0);
+        self.passes.set(0);
     }
 
     /// The passes counted so far — the test-side read of the budget's
     /// counter, for asserting the counting rule's exact tick counts.
     #[cfg(test)]
     pub(crate) fn count(&self) -> u64 {
-        self.0.get()
+        self.passes.get()
     }
 
     /// Count one nested statement-engine pass; the authored typed error
-    /// when the pass would exceed [`NESTED_EVAL_BUDGET`]. The message's
+    /// when the pass would exceed the counter's carried budget (the
+    /// store's configured value; [`NESTED_EVAL_BUDGET`] only as
+    /// `Default`). The message's
     /// `Kind:` prefix is the token the error channel classifies
     /// (`ErrorKind::NestedEvaluationBudgetExceeded`, ADR-0395).
     pub(crate) fn tick(&self) -> Result<()> {
-        let passes = self.0.get() + 1;
-        if passes > NESTED_EVAL_BUDGET {
+        let passes = self.passes.get() + 1;
+        // One read above the guard: the number the comparison enforces
+        // and the number the refusal names are visibly one value.
+        let budget = self.budget;
+        if passes > budget {
             return Err(Error::execution(format!(
                 "NestedEvaluationBudgetExceeded: nested evaluation exceeds \
-                 {NESTED_EVAL_BUDGET} passes per statement; nested subqueries \
+                 {budget} passes per statement; nested subqueries \
                  compound per level (security budget)."
             )));
         }
-        self.0.set(passes);
+        self.passes.set(passes);
         Ok(())
     }
 }

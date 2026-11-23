@@ -219,7 +219,7 @@ impl<'a> ExecGraph<'a> {
             pinned_ts,
             cancel: None,
             cancel_ticks: Cell::new(0),
-            nested_evals: NestedEvalCounter::default(),
+            nested_evals: NestedEvalCounter::new(base.nested_eval_budget()),
             expression_budget: ExpressionBudgetCounter::default(),
             expression_limit: base.expression_memory_limit(),
             construct_memos: ConstructMemos::new(memo_live.clone()),

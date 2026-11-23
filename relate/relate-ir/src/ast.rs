@@ -39,6 +39,15 @@ impl Query {
         tail
     }
 
+    /// Whether this query is one flat part with no `NEXT` stage — no
+    /// UNION arms, no stage chain. The one IR spelling of the fact, read
+    /// by the subquery fast paths that need a single clause list (the
+    /// import-invariant shared execution, the `IN TRANSACTIONS` batch
+    /// pass, ADR-0669), so none re-spells the two conjuncts.
+    pub fn is_single_flat_part(&self) -> bool {
+        self.next.is_none() && self.parts.len() == 1
+    }
+
     /// Whether this query projects columns: its true final stage (the end of
     /// its `NEXT` chain, not merely its own part list) ends in a `RETURN`,
     /// or in a `CONDITIONAL` / nested `CALL { … }` that projects. A body

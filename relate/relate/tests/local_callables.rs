@@ -229,32 +229,6 @@ fn wide_definition_body_hits_the_expansion_budget() {
     );
 }
 
-/// The LABS-416 residue, closed by ADR-0395: one call site per level
-/// keeps the compile-side clone weight linear, so `MAX_CLONED_NODES`
-/// never fires — but each level's `UNWIND` doubles the nested
-/// statement-engine passes per level at execution. Depth 19 is the
-/// measured case (524 288 leaf-body executions, 16.3 s in release before
-/// the budget); the per-statement nested-evaluation budget turns it into
-/// the typed error at the 100 000th pass, long before the fan completes.
-#[test]
-fn chained_definition_bombs_hit_the_nested_evaluation_budget() {
-    let mut bomb = String::from("DEFINE PROCEDURE p0() { RETURN 1 AS v } ");
-    for k in 1..=19 {
-        bomb.push_str(&format!(
-            "DEFINE PROCEDURE p{k}() {{ UNWIND [0, 1] AS u{k} \
-             CALL p{}() YIELD v RETURN v }} ",
-            k - 1
-        ));
-    }
-    bomb.push_str("CALL p19() YIELD v RETURN count(v) AS c");
-    let mut c = gated_connection();
-    let err = c.query(&bomb).unwrap_err().to_string();
-    // The one shared budget-error assertion (test-support): the exact
-    // authored message, single-sourced from NESTED_EVAL_BUDGET, and the
-    // kind's parse-back to the ADR-0395 row.
-    relate_test_support::nested_eval::assert_nested_eval_budget_error(&err);
-}
-
 #[test]
 fn simple_function_matches_its_table() {
     let mut c = gated_connection();

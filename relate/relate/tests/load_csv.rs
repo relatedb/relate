@@ -273,3 +273,29 @@ fn repeated_input_rows_and_nested_paths_use_same_capability() {
         assert!(matches!(error, Error::Syntax(_)), "{query}: {error}");
     }
 }
+
+/// ADR-0669: a terminal `LOAD CSV` projects rows by the canonical
+/// trailing-clause table, so the `IN TRANSACTIONS` batch pass must not
+/// take it — the per-row path emits the CSV rows per input row (2 × 2),
+/// never one pass-through outer row each.
+#[test]
+fn in_transactions_terminal_load_csv_keeps_per_row_row_count() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("rows.csv"), "a\nb\n").unwrap();
+    let db = Database::open_with(":memory:", options(dir.path(), None)).unwrap();
+    let mut conn = db.connect().unwrap();
+    let result = conn
+        .query(
+            "UNWIND [1, 2] AS n \
+             CALL (n) { LOAD CSV FROM 'rows.csv' AS row } \
+             IN TRANSACTIONS OF 2 ROWS \
+             RETURN n",
+        )
+        .unwrap();
+    assert_eq!(
+        result.rows.len(),
+        4,
+        "two input rows x two CSV lines: the per-row path emits the body's \
+         projected rows, never one pass-through outer row each"
+    );
+}

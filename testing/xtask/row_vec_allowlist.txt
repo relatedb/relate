@@ -7,6 +7,7 @@ exec/aggregate/group.rs::aggregate_ex # the aggregate landing's group rows, boun
 exec/batch.rs::try_scan_filter_batch # batch rung result handed back to the ladder; to be replaced by streaming (ADR-0555 follow-up)
 exec/call/conditional.rs::exec_conditional # projection/filter stage materializes its rows; to be replaced by streaming
 exec/call/mod.rs::call_subquery_row # projection/filter stage materializes its rows; to be replaced by streaming
+exec/call/mod.rs::row_product # one outer row's product: the allowlisted call_subquery_row plus the OPTIONAL empty-body pad — per-row bounded, the one tail both per-row consumers share (ADR-0669)
 exec/call/feed.rs::exec_call_subquery # the CALL product's materializing form for a consumer it cannot be parked for: the feed spine's `materialize` charges the staged rows, mirroring `exec_load_csv`
 exec/load_csv.rs::exec_load_csv # projection/filter stage materializes its rows; to be replaced by streaming
 exec/catalog.rs::compose_catalog_rows # projection/filter stage materializes its rows; to be replaced by streaming

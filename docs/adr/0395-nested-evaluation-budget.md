@@ -215,3 +215,19 @@ the implementation.
   three `run_nested_clauses` sites (the EXISTS and COUNT-omitted paths in
   `exec/subquery_eval.rs`, the FOREACH arm in `exec/dispatch.rs`), never
   inside `run_clauses` itself.
+
+## Later references
+
+[ADR-0669](./0669-in-transactions-batch-pass.md) changes this ADR's counting
+rule for one arm: a `CALL { … } IN TRANSACTIONS` body that is a single
+flat non-projecting part with no `WITH` and no schema/admin DDL — reads
+included — now runs as one clause-engine pass per batch and costs the
+budget one tick per batch instead of one per row. Every other counting
+site keeps the per-row rule.
+
+[ADR-0670](./0670-nested-eval-budget-one-million.md) raises this ADR's
+budget from 100 000 to 1 000 000 passes per statement (2026-11-23):
+million-row bulk loads spend a million legitimate linear passes, and the
+no-knob remedy this ADR recorded is the ADR that raised it. The
+compile-side twin (`MAX_CLONED_NODES`, ADR-0382) keeps its 100 000 — the
+two axes carry different cost models and no longer share a number.

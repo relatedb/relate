@@ -8,7 +8,10 @@
 
 use std::borrow::Cow;
 
-use relate_ir::{is_agg_expr, Clause, Expr, Projection, WithOrigin};
+use relate_ir::{
+    is_agg_expr, Clause, Expr, InTransactions, OnError, Projection, Query, RetryFallback,
+    WithOrigin,
+};
 use relate_model::wire::Notification;
 
 use crate::plan_node::warning::PlanWarning;
@@ -277,15 +280,21 @@ pub(super) fn clause_node(clause: &Clause, stats: &dyn PlanStats) -> ClauseNode 
         ),
         Clause::CallSubquery {
             optional,
+            query,
             in_transactions,
             ..
         } => {
-            let mut details = Vec::new();
+            let mut details: Vec<String> = Vec::new();
             if *optional {
-                details.push("optional");
+                details.push("optional".into());
             }
-            if in_transactions.is_some() {
-                details.push("IN TRANSACTIONS");
+            // ADR-0669: the details carry the batch fact (the size
+            // when authored), the failure policy, and the execution
+            // strategy the executor chose — plan-time, so EXPLAIN shows
+            // them before any row runs. The block is
+            // [`in_transactions_details`]'s.
+            if let Some(tx) = in_transactions {
+                details.extend(in_transactions_details(tx, query));
             }
             ClauseNode::new("CallSubquery", details.join(", "), Vec::new())
         }
@@ -311,6 +320,46 @@ pub(super) fn clause_node(clause: &Clause, stats: &dyn PlanStats) -> ClauseNode 
             Vec::new(),
         ),
     }
+}
+
+/// The `IN TRANSACTIONS` facts of a batched `CALL { … }`'s details
+/// (ADR-0669): the batch size when authored, the failure policy in
+/// Neo4j's spelling, and the execution strategy — all plan-time, so
+/// EXPLAIN shows them before any row runs. The rendering lives here
+/// with the rest of the plan text (relate-ir stays a pure data model);
+/// the policy's mode comes through the vocabulary's one projection
+/// (`OnError::outcome`) and its word through one exhaustive
+/// `RetryFallback` table, so a new variant is a compile error, never a
+/// silent drift. RETRY is not implemented (the LABS-712 follow-up), so
+/// its fallback mode is what shows.
+fn in_transactions_details(tx: &InTransactions, query: &Query) -> Vec<String> {
+    let mut details = vec![match &tx.batch_size {
+        Some(size) => format!(
+            "IN TRANSACTIONS OF {} ROWS",
+            relate_planner::expr_text(size)
+        ),
+        None => "IN TRANSACTIONS".into(),
+    }];
+    let word = match tx.on_error.outcome() {
+        RetryFallback::Fail => "FAIL",
+        RetryFallback::Continue => "CONTINUE",
+        RetryFallback::Break => "BREAK",
+    };
+    let policy = if matches!(tx.on_error, OnError::Retry { .. }) {
+        format!("RETRY THEN {word}")
+    } else {
+        word.to_string()
+    };
+    details.push(format!("ON ERROR {policy}"));
+    details.push(
+        if relate_executor::batch_pass_admission(query) {
+            "batch pass"
+        } else {
+            "per-row"
+        }
+        .into(),
+    );
+    details
 }
 
 /// The paging-and-filter tail a `WITH`/`RETURN` clause can carry — one

@@ -30,7 +30,12 @@ use super::{DatabasesCatalog, Graph, Procedure};
 /// a reload. The databases catalog is durable state: a checkpoint restores
 /// it into the loaded graph's fresh bundle, so the follow reload installs
 /// it with [`Graph::install_databases_from`] before adopting the surviving
-/// bundle instead of letting that bundle's stale copy win.
+/// bundle instead of letting that bundle's stale copy win. A third member
+/// walks the line: the nested-evaluation budget is plain data in every
+/// build (never production configuration beyond its constant
+/// initializer, never reloaded by a follower), whose only writer is a
+/// `cfg(test)` setter — the budget-bomb seam, absent from every
+/// production build's write surface.
 #[derive(Debug)]
 pub(crate) struct StoreServices {
     /// Registered procedures (TCK / user). Store-level state (ADR-0116 §10).
@@ -61,6 +66,14 @@ pub(crate) struct StoreServices {
     /// preview set; the default [`PatternEngine::Auto`] is today's
     /// routing exactly.
     pub(crate) pattern_engine: PatternEngine,
+    /// The per-statement nested-evaluation budget (ADR-0395, 1 000 000
+    /// since ADR-0670) — plain data in every build, whose only
+    /// production initializer is the published constant; the only writer
+    /// is the `cfg(test)` `set_nested_eval_budget` (the budget bombs).
+    /// The no-knob rule holds by write-path: no production code reads
+    /// anything but the default, and no process-global or thread-local
+    /// channel exists.
+    pub(crate) nested_eval_budget: u64,
 }
 
 impl Default for StoreServices {
@@ -75,6 +88,7 @@ impl Default for StoreServices {
                 crate::memory::DEFAULT_MEMO_BUDGET_MIB,
             ),
             pattern_engine: PatternEngine::Auto,
+            nested_eval_budget: crate::memory::NESTED_EVAL_BUDGET,
         }
     }
 }
@@ -216,6 +230,20 @@ impl Graph {
     #[doc(hidden)]
     pub fn configure_pattern_engine(&mut self, engine: PatternEngine) {
         self.services_mut().pattern_engine = engine;
+    }
+
+    /// The store's nested-evaluation budget (ADR-0395/ADR-0670) — the
+    /// field's contract is stated once, at the field.
+    pub(crate) fn nested_eval_budget(&self) -> u64 {
+        self.services.nested_eval_budget
+    }
+
+    /// The budget field's only writer (`cfg(test)` only): the budget
+    /// bombs lower their own store's budget. See the field's contract
+    /// for the no-knob rule it preserves.
+    #[cfg(test)]
+    pub(crate) fn set_nested_eval_budget(&mut self, budget: u64) {
+        self.services_mut().nested_eval_budget = budget;
     }
 
     /// The store-level pattern-engine switch (ADR-0519) the kernel

@@ -153,7 +153,8 @@ accumulator that wraps itself in a new list each iteration — fails with the
 typed `ValueDepthExceeded` error instead of building a value that overflows
 a later recursive walk. Exactly 500 levels are accepted. A statement that
 nests evaluations (nested `CALL`/`EXISTS`/`FOREACH`) is additionally bounded
-by the fixed 100 000-pass per-statement budget (ADR-0395). All three limits
+by the fixed 1 000 000-pass per-statement budget (ADR-0395, raised
+from 100 000 by ADR-0670). All three limits
 are fixed: no option or environment override.
 
 ## Traversal depth

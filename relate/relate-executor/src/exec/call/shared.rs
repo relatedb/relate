@@ -20,7 +20,7 @@ use relate_core::Result;
 use relate_ir::{expr_vars, Clause, Expr, Projection, Query};
 
 use super::import_seed;
-use crate::exec::scope::nested_seed_row;
+use crate::exec::scope::{nested_seed_row, terminal_return_items};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -230,10 +230,10 @@ fn body_safe_clause(clause: &Clause, check: &HashSet<String>) -> bool {
 /// folded `on_clause`: a nested query exists only under a clause or
 /// expression this same walk already refuses.
 pub(super) fn import_invariant_body(query: &Query, check: &HashSet<String>) -> bool {
-    if query.next.is_some() || query.parts.len() != 1 {
+    if !query.is_single_flat_part() {
         return false;
     }
-    if !matches!(query.parts[0].clauses.last(), Some(Clause::Return { .. })) {
+    if terminal_return_items(&query.parts[0]).is_none() {
         return false;
     }
     let mut clauses_clean = true;

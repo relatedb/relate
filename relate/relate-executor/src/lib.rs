@@ -136,6 +136,7 @@ pub use query_engine::InMemoryQueryEngine;
 #[cfg(feature = "research")]
 #[doc(hidden)]
 pub use graph::sol;
+
 // Research-only heap-census harness (same quarantine, ADR-0476): the
 // census example in relate-query-latency names `HeapCensus`; the nested
 // types are re-exported so every public census field has a public type.
@@ -161,10 +162,10 @@ pub use overlay::{ExecGraph, WriteScratch};
 // `relate` crate's open path (the resolver and the installer below),
 // the one public path — deliberately not advertised API beyond it.
 pub use pattern_engine::PatternEngine;
-// The ADR-0395 budget constant: workspace-internal (test-support's
-// single-sourced assertion reads it), deliberately not advertised API —
-// the budget is a fixed contract, not a knob (ADR-0395: "never ambient
-// configuration").
+// The ADR-0395 budget constant: workspace-internal (the `relate`
+// integration twin crosses the real budget with it), deliberately not
+// advertised API — the budget is a fixed contract, not a knob (ADR-0395:
+// "never ambient configuration").
 #[doc(hidden)]
 pub use overlay::NESTED_EVAL_BUDGET;
 // The re-arrival rule's work budget (the ADR-0395 fixed-constant family,
@@ -194,3 +195,9 @@ pub use redo::{
 };
 #[doc(hidden)]
 pub use workspace::result_rows_bytes;
+
+/// Whether an `IN TRANSACTIONS` body takes the batch pass (ADR-0669):
+/// one clause-engine pass per batch instead of one nested invocation
+/// per row. Plan-time over the body's IR, so the plan node renders the
+/// execution strategy in its details.
+pub use exec::call::in_transactions::batch_pass_admission;

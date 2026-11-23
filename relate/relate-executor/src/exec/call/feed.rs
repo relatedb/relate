@@ -27,7 +27,7 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::shared::{import_invariant_body, shared_execution_plan, SharedExecution};
-use super::{call_subquery_row, empty_body_row, merge_body_export, SubquerySpec};
+use super::{empty_body_row, merge_body_export, row_product, SubquerySpec};
 
 #[cfg(test)]
 thread_local! {
@@ -188,19 +188,30 @@ impl FeedSource for SubquerySource<'_> {
         // Both execution paths agree on the one tail: a body that produced
         // nothing stages the `OPTIONAL CALL` null pad (or nothing, for the
         // plain form); a producing body stages its rows.
+        // The per-row path pads inside `row_product` (its doc's one
+        // home); the shared path pads here, so each arm pads exactly
+        // once and a later change to one pad cannot silently diverge
+        // from the other.
         let produced: Vec<Row> = match &mut self.mode {
-            Mode::PerRow => call_subquery_row(
-                ctx.graph, &row, self.query, self.scope, ctx.params, self.qctx,
+            Mode::PerRow => row_product(
+                ctx.graph,
+                &row,
+                self.optional,
+                self.query,
+                self.scope,
+                ctx.params,
+                self.qctx,
             )?,
             Mode::Shared(shared) => {
-                shared.rows_for(ctx, &row, self.query, self.scope, self.qctx)?
+                let produced = shared.rows_for(ctx, &row, self.query, self.scope, self.qctx)?;
+                if produced.is_empty() {
+                    pad_rows(ctx.graph, row, self.optional, self.query, self.scope).collect()
+                } else {
+                    produced
+                }
             }
         };
-        self.staged = if produced.is_empty() {
-            pad_rows(ctx.graph, row, self.optional, self.query, self.scope)
-        } else {
-            produced.into_iter()
-        };
+        self.staged = produced.into_iter();
         Ok(!self.staged.as_slice().is_empty())
     }
 

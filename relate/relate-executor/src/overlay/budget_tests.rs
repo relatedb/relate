@@ -1,7 +1,9 @@
-//! The ADR-0463 per-allocation expression cap's own tests: the exact
-//! single-allocation refusal, the cumulative construction-work telemetry
-//! (never enforcement), the configured limit and its explicit opt-out, and
-//! the plain-language refusal message.
+//! The per-statement budget mechanisms' own tests: the ADR-0463
+//! per-allocation expression cap (the exact single-allocation refusal,
+//! the cumulative construction-work telemetry — never enforcement — the
+//! configured limit and its explicit opt-out, and the plain-language
+//! refusal message) and the ADR-0670 nested-evaluation budget's
+//! published-magnitude refusal text.
 
 use super::*;
 
@@ -132,5 +134,24 @@ fn retained_total_owns_the_running_container_check() {
             }
         ),
         "{error}"
+    );
+}
+
+/// The published budget's own refusal text (ADR-0670's 1 000 000, the
+/// number the specs' error contracts show): a default counter — the
+/// store's default configuration, no test seam — refuses its next pass
+/// with the message naming [`NESTED_EVAL_BUDGET`]. The bombs assert
+/// against their lowered budgets; this pins the published magnitude's
+/// formatting, cheaply (a tight tick loop, no engine work per pass).
+#[test]
+fn the_published_budgets_refusal_names_its_magnitude() {
+    let counter = NestedEvalCounter::default();
+    for _ in 0..NESTED_EVAL_BUDGET {
+        counter.tick().unwrap();
+    }
+    let message = counter.tick().unwrap_err().to_string();
+    assert!(
+        message.contains(&format!("exceeds {NESTED_EVAL_BUDGET} passes")),
+        "the published budget names its own magnitude: {message}"
     );
 }

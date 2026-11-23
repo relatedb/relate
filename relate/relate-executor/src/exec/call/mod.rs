@@ -15,7 +15,7 @@ use crate::row::Row;
 
 mod conditional;
 mod feed;
-mod in_transactions;
+pub(crate) mod in_transactions;
 mod shared;
 
 pub(crate) use conditional::{conditional_produces_rows, exec_conditional};
@@ -274,6 +274,28 @@ pub(crate) fn call_subquery_row(
             &values,
             &excluded,
         ));
+    }
+    Ok(produced)
+}
+
+/// One outer row's product from a subquery body: the per-row
+/// statement-engine invocation ([`call_subquery_row`]) plus the
+/// `OPTIONAL CALL` empty-body pad — the one tail every per-row consumer
+/// runs (the `IN TRANSACTIONS` per-row path, the streamed feed's
+/// [`SubquerySource`](feed::SubquerySource) `open`), so the pad policy
+/// has one home beside the invocation it pads.
+pub(crate) fn row_product(
+    graph: &ExecGraph<'_>,
+    row: &Row,
+    optional: bool,
+    query: &Query,
+    scope: &relate_ir::CallScope,
+    params: &BTreeMap<String, Value>,
+    qctx: QueryCtx<'_>,
+) -> Result<Vec<Row>> {
+    let mut produced = call_subquery_row(graph, row, query, scope, params, qctx)?;
+    if produced.is_empty() {
+        produced.extend(empty_body_row(graph, row.clone(), optional, query, scope));
     }
     Ok(produced)
 }

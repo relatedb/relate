@@ -55,7 +55,10 @@ mod stats;
 mod use_target;
 mod validate;
 
-pub use crate::clause_kind::{clause_keyword, clause_mutates_store, clause_projects_rows};
+pub use crate::clause_kind::{
+    clause_is_ddl_command, clause_keyword, clause_mutates_store, clause_projects_rows,
+};
+pub use crate::expr_text::expr_text;
 pub use crate::inline::{hit_is_inline_safe, plan_is_bounded_work, plan_references_auto_parameter};
 pub use crate::names::{conditional_declared_columns, query_with_persistent_imports};
 pub use crate::namespaces::{

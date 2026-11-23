@@ -42,6 +42,14 @@ pub const VEC_HEADER: u64 = 24;
 /// disables it.
 pub const EXPRESSION_BUDGET_BYTES: u64 = 256 << 20;
 
+/// The per-statement nested-evaluation budget (ADR-0395; 1 000 000 since
+/// ADR-0670, 100 000 until then): the fixed, no-knob default a store's
+/// counters enforce. Lives here beside the other budget knobs so the
+/// store layer reads it without reaching up into the execution view;
+/// `crate::overlay::budget` re-exports it as the published
+/// `NESTED_EVAL_BUDGET`.
+pub const NESTED_EVAL_BUDGET: u64 = 1_000_000;
+
 /// The default shared memo budget in whole MiB (ADR-0657): the live bytes
 /// every budgeted memo of a statement may hold together. The open-time
 /// setting `expression_memo_budget` replaces it per store.

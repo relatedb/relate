@@ -95,7 +95,7 @@ pub(crate) fn clause_is_routing(clause: &relate_ir::Clause) -> bool {
 /// `YIELD … RETURN` and UNION arms — so they are not members either. The
 /// standalone rule ([`crate::validate`]) reads this one answer instead of
 /// assembling the family at its use site.
-pub(crate) fn clause_is_ddl_command(clause: &relate_ir::Clause) -> bool {
+pub fn clause_is_ddl_command(clause: &relate_ir::Clause) -> bool {
     use relate_ir::Clause as Ir;
     clause_class(clause) == ClauseClass::Schema
         || matches!(

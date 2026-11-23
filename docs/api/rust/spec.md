@@ -897,7 +897,7 @@ checks both a Map and an incompatible `Int`/`Str` column in CI.
 - `Execution("LOAD CSV file unavailable")` — local file disabled, unavailable, outside the root, non-regular, malformed source, or I/O failure; `Execution("LOAD CSV file exceeds byte limit")` — source exceeds the configured per-file byte cap. Neither error reveals the source path or OS error.
 - `Execution("node ID exhausted")` / `Execution("relationship ID exhausted")` — creation cannot reserve another supported ID; direct `Graph` and query writes leave no failed-create redo.
 - `Execution("write timestamp exhausted")` — a direct graph write cannot start at the timestamp sentinel; graph write state, statistics and redo are unchanged.
-- `Execution("NestedEvaluationBudgetExceeded: nested evaluation exceeds 100000 passes per statement; nested subqueries compound per level (security budget).")` — a top-level statement's nested evaluation (nested `CALL` bodies, `EXISTS`/`COUNT`/`COLLECT` subqueries, taken conditional branches, `FOREACH` clause lists, NEXT-stage chains) would exceed the 100 000-pass budget ([Nested evaluation budget](#nested-evaluation-budget-adr-0395), ADR-0395).
+- `Execution("NestedEvaluationBudgetExceeded: nested evaluation exceeds 1000000 passes per statement; nested subqueries compound per level (security budget).")` — a top-level statement's nested evaluation (nested `CALL` bodies, `EXISTS`/`COUNT`/`COLLECT` subqueries, taken conditional branches, `FOREACH` clause lists, NEXT-stage chains) would exceed the 1 000 000-pass budget ([Nested evaluation budget](#nested-evaluation-budget-adr-0395), ADR-0395).
 - `Storage` — WAL redo with `commit_ts == u64::MAX` is unsupported and fails before graph mutation.
 - `Storage("parquet snapshot codec is not compiled into this build (enable the \"parquet\" feature)")` — at `Database::open` / `open_with` in a build without the `parquet` feature, when the store resolves to Parquet or Parquet is requested ([Cargo features](#cargo-features), ADR-0105).
 - `Storage` — a replicated or directly appended WAL record with a negative or `i64::MAX` node/relationship ID in any redo operation, relationship endpoint, or pull-identity `local_id` is rejected before writing any part of the record. WAL recovery, selected or legacy Parquet snapshot pull-map reads, and JSON `graph.json` `pull_identity` reads apply the same local ID bounds; source names, remote IDs, labels, property keys and values are not local IDs.
@@ -1226,31 +1226,40 @@ A nested `CALL { … }` body runs once per imported row, an `EXISTS { … }` /
 multiplies the passes of the level below — a few hundred bytes of query
 text can compound to an exponential number of nested engine passes that no
 static limit sees. Every top-level statement therefore carries a **nested
-evaluation budget of 100 000 nested clause-engine part passes** — the runtime
-twin of the compile-side `MAX_CLONED_NODES` rewrite budget (ADR-0382), at
-the same number.
+evaluation budget of 1 000 000 nested clause-engine part passes**
+(ADR-0670 raised it from 100 000). ADR-0395 originally coupled it to the
+compile-side `MAX_CLONED_NODES` rewrite budget (ADR-0382) at the same
+number; ADR-0670 split the two axes — a pass is bounded clause-engine
+work a bulk load legitimately spends a million of, a cloned plan node is
+memory — so the compile budget keeps its 100 000.
 
 **Counting rule:** per top-level statement, the engine counts one nested
 clause-engine part pass for every nested body run — each `CALL { … }` body
-once per imported row **per UNION part of the body** (every
-`CALL … IN TRANSACTIONS` row included), each taken conditional
+once per imported row **per UNION part of the body** — except that a
+`CALL … IN TRANSACTIONS` body that is a single flat non-projecting part
+free of `WITH` and schema/admin DDL ticks **once per batch**, not once
+per row (ADR-0669), each taken conditional
 branch body once, each `EXISTS { … }` / `COUNT { … }` /
 `COLLECT { … }` subquery once per outer row, each `FOREACH` clause list once
 per list item per row, and each chained NEXT-stage statement once — and a
-statement whose next pass would take the count past 100 000 fails instead
+statement whose next pass would take the count past 1 000 000 fails instead
 of running that pass. A wide body costs its part count, so the
 rows × parts product lands on the budget, not just the row axis.
 
 A flat query never ticks: the top-level statement's own clause run is not
 counted. The budget is a fixed constant — no option, no environment
 override. A statement whose legitimate nested fan would exceed it must
-split into separate top-level statements; each gets its own budget.
+split into separate top-level statements; each gets its own budget. The budget is also the one
+per-statement bound on nested clause-engine work on every surface alike
+(embedded, Bolt, HTTP); deployment guidance for untrusted clients should
+treat its 1 000 000-pass magnitude as the accepted per-statement work
+ceiling (ADR-0670).
 
 Exceeding the budget fails the statement with `Error::Execution`, whose
 message is:
 
 ```text
-NestedEvaluationBudgetExceeded: nested evaluation exceeds 100000 passes per statement; nested subqueries compound per level (security budget).
+NestedEvaluationBudgetExceeded: nested evaluation exceeds 1000000 passes per statement; nested subqueries compound per level (security budget).
 ```
 
 ## Local `LOAD CSV` capability (ADR-0081)

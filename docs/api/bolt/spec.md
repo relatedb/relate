@@ -366,19 +366,26 @@ fail as syntax errors naming the exceeded limit.
 
 Those limits bound static shape; nesting multiplies dynamically. Per
 ADR-0395, every top-level statement also carries a **nested evaluation
-budget of 100 000 nested clause-engine part passes**. The counting rule: per
+budget of 1 000 000 nested clause-engine part passes** (ADR-0395,
+raised from 100 000 by ADR-0670). The counting rule: per
 top-level statement, the engine counts one nested clause-engine part pass
 for every nested body run — each `CALL { … }` body once per imported row
-**per UNION part of the body** (every `CALL … IN TRANSACTIONS` row
-included), each taken conditional branch body once, each
+**per UNION part of the body** — except that a `CALL … IN
+TRANSACTIONS` body that is a single flat non-projecting part free of
+`WITH` and schema/admin DDL ticks **once per batch**, not once per row
+(ADR-0669), each taken conditional branch body once, each
 `EXISTS { … }` / `COUNT { … }` / `COLLECT { … }` subquery once per outer
 row, each `FOREACH` clause list once per list item per row, and each
 chained NEXT-stage statement once — and a statement whose next pass would
-take the count past 100 000 fails instead of running that pass. A wide body
+take the count past 1 000 000 fails instead of running that pass. A wide body
 costs its part count, so the rows × parts product lands on the budget, not
 just the row axis. There is no knob: a statement whose legitimate nested
 fan would exceed the budget must split into separate top-level statements,
-each of which gets its own. Exceeding it is an execution failure reported at the
+each of which gets its own. The budget is the one per-statement bound on
+nested clause-engine work on every surface alike (Bolt, HTTP, embedded);
+for deployments facing untrusted clients its 1 000 000-pass magnitude is
+the accepted per-statement work ceiling (ADR-0670) — no wall-clock
+companion cap exists. Exceeding it is an execution failure reported at the
 first PULL or DISCARD of that result ([Execution
 failures](#execution-failures-adr-0319)) with code
 `Neo.ClientError.Statement.SemanticError` — the `Execution` mapping in
@@ -386,7 +393,7 @@ failures](#execution-failures-adr-0319)) with code
 verbatim:
 
 ```text
-NestedEvaluationBudgetExceeded: nested evaluation exceeds 100000 passes per statement; nested subqueries compound per level (security budget).
+NestedEvaluationBudgetExceeded: nested evaluation exceeds 1000000 passes per statement; nested subqueries compound per level (security budget).
 ```
 
 Runtime values are capped independently at **500 container levels**

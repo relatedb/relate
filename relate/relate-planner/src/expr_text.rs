@@ -20,7 +20,7 @@ use relate_names::SmallName;
 /// spelling. Idempotent and allocation-light; recursion follows the arms
 /// below, which cover every variant either by rendering its operands or by
 /// naming its structural form.
-pub(crate) fn expr_text(expr: &Expr) -> String {
+pub fn expr_text(expr: &Expr) -> String {
     match expr {
         Expr::Null => "null".to_string(),
         Expr::Bool(value) => value.to_string(),
