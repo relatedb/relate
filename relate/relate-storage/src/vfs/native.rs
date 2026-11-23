@@ -340,7 +340,11 @@ impl Vfs for NativeVfs {
     }
 
     fn exists(&self, path: &str) -> Result<bool> {
-        Ok(self.resolve(path)?.exists())
+        match fs::metadata(self.resolve(path)?) {
+            Ok(_) => Ok(true),
+            Err(err) if crate::codec::benign_absence(&err) => Ok(false),
+            Err(err) => Err(err.into()),
+        }
     }
 
     fn metadata(&self, path: &str) -> Result<VfsMeta> {

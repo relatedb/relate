@@ -569,3 +569,28 @@ fn is_lower_hex_32_rejects_noncanonical_tokens() {
         assert!(!is_lower_hex_32(bad), "{bad}");
     }
 }
+
+/// `exists` fails closed: a path whose stat is denied is an `Err`, not
+/// "absent"; a missing path is `Ok(false)`.
+#[cfg(unix)]
+#[test]
+fn native_exists_separates_absence_from_a_denied_stat() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let locked = dir.path().join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::write(locked.join("manifest.json"), b"{}").unwrap();
+    let vfs = NativeVfs::new(dir.path());
+    assert!(vfs.exists("locked/manifest.json").unwrap());
+    assert!(!vfs.exists("locked/missing.json").unwrap());
+    assert!(!vfs.exists("nowhere/manifest.json").unwrap());
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let denied = std::fs::metadata(locked.join("manifest.json")).is_err();
+    let probed = vfs.exists("locked/manifest.json");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if denied {
+        // (root bypasses the mode bits; then there is nothing to deny)
+        assert!(probed.is_err(), "exists must surface the denied stat");
+    }
+}
