@@ -90,6 +90,9 @@ loopback = ["wire", "dep:relate-load"]
 # The recursive `Vfs` traversal (`vfs_walk`): the golden-store and
 # markdown-vault suites' one walk policy.
 vfs_walk = ["dep:relate-storage"]
+# The read-tracking `Vfs` wrapper (`read_log`): the store suites' one
+# read-open log, so a checkpoint test names the shards it read.
+read_log = ["dep:relate-storage"]
 # The shared pinned fetch kit (`fetch`): the pin-table parse, the streamed
 # sha256, the verified download and the lock-and-stamp ensure the
 # query-latency data-set fetches use.

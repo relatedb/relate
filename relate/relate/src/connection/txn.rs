@@ -1,15 +1,18 @@
-//! The explicit-transaction cluster (ADR-0028): the open transaction's
-//! pinned snapshot and write overlay, `BEGIN`/`COMMIT`/`ROLLBACK`, the
-//! in-transaction dispatch, and the failure epilogue `run_query` shares.
+//! The transaction cluster: two residents on the same [`OpenTxn`] state — the
+//! user's explicit transaction (ADR-0028: pinned snapshot and write overlay,
+//! `BEGIN`/`COMMIT`/`ROLLBACK`, the failure epilogue `run_query` shares) and
+//! the Bolt session's pipelined write batch (ADR-0642, [`TxnMode::Batch`]:
+//! consecutive eligible CREATE-only auto-commit statements sharing one WAL
+//! commit at the framed batch's end).
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use relate_core::{Error, Result, TransactionClock};
 use relate_executor::{
-    ExecRequest, QueryResult as ExecResult, RedoOp, SchemaSnapshot, WriteScratch,
+    ExecRequest, QueryResult as ExecResult, RedoOp, SchemaSnapshot, StatementMark, WriteScratch,
 };
 use relate_planner::LogicalPlan;
 use relate_storage::PayloadTally;
@@ -17,14 +20,54 @@ use relate_storage::PayloadTally;
 use crate::commit::try_wal_commit;
 use crate::{CancelToken, Connection, Value};
 
-/// A connection-scoped explicit transaction (ADR-0028).
+/// Why an open transaction exists (ADR-0642). The explicit `begin()`
+/// transaction is the user's: it commits at COMMIT and fails for good on a
+/// statement error. The pipelined write batch is the Bolt session's: it
+/// absorbs consecutive eligible CREATE-only auto-commit statements of one
+/// framed message batch, commits once at that batch's end, and gives up only
+/// the failing statement's own redo — so `in_transaction` stays false and a
+/// statement error rolls the statement back instead of failing the batch.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TxnMode {
+    Explicit,
+    Batch,
+}
+
+impl TxnMode {
+    /// Whether this mode is the pipelined write batch (ADR-0642) — the one
+    /// batch-vs-explicit predicate `write_batch_open`, `in_transaction` and
+    /// the batch statement-failure policy read, so no site compares the mode
+    /// to a variant directly.
+    fn is_batch(self) -> bool {
+        matches!(self, TxnMode::Batch)
+    }
+
+    /// Whether a transaction in this mode is the one `mode`'s commit
+    /// consumes: `commit` never consumes the pipelined write batch, and the
+    /// batch's commit never consumes the user's transaction (ADR-0642) —
+    /// the one owner check, so no site compares the modes directly.
+    fn commits_as(self, mode: TxnMode) -> bool {
+        self == mode
+    }
+}
+
+/// A connection-scoped explicit transaction (ADR-0028), or the pipelined
+/// write batch ([`TxnMode::Batch`], ADR-0642) that runs on the same state.
 pub(crate) struct OpenTxn {
+    mode: TxnMode,
     txn_id: u64,
     /// The transaction's write overlay; `pull_local_alive` and `dispatch`
     /// in the parent module read it too.
     pub(super) scratch: RefCell<WriteScratch>,
-    /// The failed flag `run_query` checks before admitting a statement.
-    pub(super) failed: Cell<bool>,
+    /// The transaction's terminal failure — the one carrier of "this
+    /// transaction is uncommittable", the fact [`OpenTxn::refuse_if_failed`]
+    /// gates every statement on. The explicit mode stores its authored
+    /// refusal ("transaction failed; rollback required", via `fail`);
+    /// a batch stores its unrecoverable rollback cause (ADR-0642 §3, via
+    /// `abort_statement`'s batch arm) — a batch has no ROLLBACK, so its
+    /// refusal names the cause, never the explicit mode's rollback demand.
+    /// `None` while the transaction is still committable.
+    failure: RefCell<Option<Error>>,
     /// The snapshot pin `Drop` releases after joining the worker.
     pub(super) pin_slot: usize,
     /// The store's ontology document captured at `BEGIN` (ADR-0121 §3):
@@ -47,6 +90,15 @@ pub(crate) struct OpenTxn {
     /// statement's clock pin carries it, so `<kind>.transaction()` is one
     /// instant for the whole transaction.
     clock: TransactionClock,
+    /// The in-flight statement's pre-state (ADR-0642), one value with three
+    /// states: set before the statement runs and taken by the one
+    /// statement-failure epilogue ([`OpenTxn::abort_statement`]). The
+    /// batch-vs-explicit decision is taken once, when the statement begins —
+    /// the epilogues match the value, they do not re-read the mode. A
+    /// [`StatementMark`], not a [`ScratchCheckpoint`]: the batch admits only
+    /// CREATE-only statements, so the mark's O(statement) image undoes exactly
+    /// as much as the full batch clone would.
+    in_flight: RefCell<InFlight>,
 }
 
 impl OpenTxn {
@@ -83,19 +135,106 @@ impl OpenTxn {
 
     /// The failed-transaction gate: the one spelling of the refusal
     /// every statement path raises before touching a failed transaction.
+    /// The stored refusal names the mode's own failure — the explicit
+    /// mode's rollback demand, or the batch's rollback cause.
     pub(super) fn refuse_if_failed(&self) -> Result<()> {
-        if self.failed.get() {
-            Err(Error::semantic("transaction failed; rollback required"))
-        } else {
-            Ok(())
+        if let Some(error) = self.failure.borrow().as_ref() {
+            return Err(error.clone());
         }
+        Ok(())
     }
 
     /// Mark the transaction failed: the one failure epilogue shared by
     /// [`Connection::fail_txn`] and the in-transaction statement path.
+    /// Stores the explicit mode's authored refusal.
     pub(super) fn fail(&self) {
-        self.failed.set(true);
+        *self.failure.borrow_mut() = Some(Error::semantic("transaction failed; rollback required"));
     }
+
+    /// ADR-0642: the statement's pre-state is captured before it runs, so any
+    /// failure — including a worker panic that never returns to
+    /// `query_in_txn`'s own settle — can restore it. The one place the
+    /// batch-vs-explicit decision is read: the epilogues match the value.
+    fn begin_statement(&self) {
+        *self.in_flight.borrow_mut() = if self.mode.is_batch() {
+            InFlight::Batch(Box::new(BatchPreState {
+                mark: self.scratch.borrow().mark_statement(),
+                tally: self.cap_tally.borrow().clone(),
+            }))
+        } else {
+            InFlight::Explicit
+        };
+    }
+
+    /// The one statement-failure epilogue (ADR-0642, ADR-0028), matching the
+    /// value [`Self::begin_statement`] left: a batched statement's partial
+    /// redo must not stay in the batch (auto-commit would have discarded it),
+    /// so its captured scratch is restored and the cap tally rewound to its
+    /// captured value — the restored log is exactly as long as the tally's
+    /// cursor again, so the next statement counts only its own ops, never the
+    /// batch's whole redo — while the batch stays alive. An explicit
+    /// transaction fails for good. Between statements it is inert.
+    fn abort_statement(&self) {
+        match std::mem::replace(&mut *self.in_flight.borrow_mut(), InFlight::Idle) {
+            InFlight::Batch(pre) => {
+                let BatchPreState { mark, tally } = *pre;
+                // A rollback this mark cannot finish fails the batch instead:
+                // its commit then refuses and the session closes, rather than
+                // the failed statement's writes riding the batch to durability.
+                match self.scratch.borrow_mut().rollback_statement(mark) {
+                    Ok(()) => *self.cap_tally.borrow_mut() = tally,
+                    Err(error) => *self.failure.borrow_mut() = Some(error),
+                }
+            }
+            InFlight::Explicit => self.fail(),
+            // A statement that failed before it began — a planning error, a
+            // panicking worker — never reached `begin_statement`, so the
+            // value says nothing about the mode: an explicit transaction
+            // still fails for good, and a batch has nothing to roll back.
+            InFlight::Idle => {
+                if !self.mode.is_batch() {
+                    self.fail();
+                }
+            }
+        }
+    }
+
+    /// The statement epilogue: a failure hands over to
+    /// [`Self::abort_statement`]; a success commits the statement's work
+    /// into the batch (its captured pre-state is simply dropped).
+    fn settle_statement(&self, result: Result<ExecResult>) -> Result<ExecResult> {
+        if result.is_err() {
+            self.abort_statement();
+        } else {
+            *self.in_flight.borrow_mut() = InFlight::Idle;
+        }
+        result
+    }
+}
+
+/// One statement's in-flight pre-state (ADR-0642), the value
+/// [`OpenTxn::begin_statement`] leaves and its epilogues take. The
+/// batch-vs-explicit choice is made once, at construction; the epilogues
+/// match the value instead of re-reading [`OpenTxn::mode`].
+enum InFlight {
+    /// Between statements: nothing to restore.
+    Idle,
+    /// An explicit transaction's statement: no rollback image, and a failure
+    /// fails the transaction for good.
+    Explicit,
+    /// A batched statement's pre-state, restored on failure. Boxed: the mark
+    /// is a cursor plus the statement state, and the two data-free variants
+    /// should not pay for it in every `InFlight` value.
+    Batch(Box<BatchPreState>),
+}
+
+/// What a batched statement's failure restores: the scratch mark and the
+/// commit-cap tally as they stood before the statement ran. The tally covers
+/// the whole log at that point (the cap check settles after every
+/// statement), so restoring both leaves them in step again.
+struct BatchPreState {
+    mark: StatementMark,
+    tally: PayloadTally,
 }
 
 /// The drained redo of a prepared commit — the `Some` payload of
@@ -129,8 +268,18 @@ pub(super) struct TxnRun<'a> {
 }
 
 impl Connection {
-    /// Start an explicit transaction (ADR-0028). Nested `begin` is an error.
+    /// Start an explicit transaction (ADR-0028). Nested `begin` is an error;
+    /// an armed pipelined batch (ADR-0642) ends first, so its statements are
+    /// committed before the user's transaction starts.
     pub fn begin(&mut self) -> Result<()> {
+        self.commit_write_batch()?;
+        self.begin_mode(TxnMode::Explicit)
+    }
+
+    /// Open the connection's one transaction state in `mode`: the
+    /// explicit-transaction `begin` and the pipelined batch's lazy open
+    /// (ADR-0642) share every step but the mode.
+    fn begin_mode(&mut self, mode: TxnMode) -> Result<()> {
         let _read = self.inner.read_guard()?;
         if self.txn.is_some() {
             return Err(Error::semantic("already in a transaction"));
@@ -140,19 +289,120 @@ impl Connection {
         let pin_slot = pin.detach();
         let txn_id = self.inner.next_txn_id.fetch_add(1, Ordering::SeqCst);
         self.txn = Some(OpenTxn {
+            mode,
             txn_id,
             scratch: RefCell::new(WriteScratch::new(
                 snapshot_ts,
                 Arc::clone(&self.inner.next_node_id),
                 Arc::clone(&self.inner.next_rel_id),
             )),
-            failed: Cell::new(false),
+            failure: RefCell::new(None),
             pin_slot,
             ontology_document: self.inner.ontology.get(),
             cap_tally: RefCell::new(PayloadTally::default()),
             clock: TransactionClock::begin(),
+            in_flight: RefCell::new(InFlight::Idle),
         });
         Ok(())
+    }
+
+    /// Arm the pipelined write batch (ADR-0642) for one framed message
+    /// batch: the eligible CREATE-only auto-commit statements the caller runs
+    /// from here until [`Self::commit_write_batch`] share one WAL commit
+    /// instead of committing one per statement. Infallible and inert — a
+    /// batch opens only on the first eligible statement, and a surface that
+    /// never calls this keeps per-statement commits.
+    ///
+    /// Arming also drops any unreported failure of the batch before it: an
+    /// error belongs to the batch that produced it, so a caller that ignored
+    /// it does not meet it again on an unrelated batch.
+    pub fn begin_write_batch(&mut self) {
+        self.write_batch_armed = true;
+        self.batch_commit_error.borrow_mut().take();
+    }
+
+    /// End the armed pipelined write batch (ADR-0642): commit its statements'
+    /// accumulated redo as one WAL commit and disarm. `Ok(None)` when nothing
+    /// joined the batch — no bookmark is fabricated. An explicit transaction
+    /// is untouched.
+    ///
+    /// A failure here is re-reported on the next call when it happened
+    /// mid-batch: the statements it covered already answered SUCCESS on the
+    /// wire, so the batch's end must not read as clean — the session answers
+    /// the re-reported error by closing the connection.
+    pub fn commit_write_batch(&mut self) -> Result<Option<String>> {
+        self.write_batch_armed = false;
+        if let Some(error) = self.batch_commit_error.borrow_mut().take() {
+            return Err(error);
+        }
+        if !self.write_batch_open() {
+            return Ok(None);
+        }
+        let result = self.commit_mode(TxnMode::Batch);
+        if let Err(error) = &result {
+            *self.batch_commit_error.borrow_mut() = Some(error.clone());
+        }
+        result
+    }
+
+    /// The open transaction's mode, if any — the one read of `OpenTxn::mode`
+    /// that [`Self::write_batch_open`] and [`Self::in_transaction`] share.
+    fn txn_mode(&self) -> Option<TxnMode> {
+        self.txn.as_ref().map(|txn| txn.mode)
+    }
+
+    /// Apply the pipelined write batch policy (ADR-0642) to `logical`: an
+    /// armed batch opens on the first eligible CREATE-only auto-commit
+    /// statement, and any other statement ends it (committing what it holds)
+    /// so the statement runs on the committed state it expects. One policy,
+    /// one predicate — the same answer decides both edges. It lives here with
+    /// the batch's other verbs, because it is transaction lifecycle: it opens
+    /// and commits `self.txn`.
+    pub(super) fn write_batch_policy(&mut self, logical: &LogicalPlan) -> Result<()> {
+        // A statement outside any batch keeps the per-statement path
+        // (ADR-0642 §4) without asking whether it would have been eligible.
+        if !self.write_batch_armed && !self.write_batch_open() {
+            return Ok(());
+        }
+        if relate_planner::plan_is_create_only(logical) {
+            // The whole open precondition — armed, and no transaction of any
+            // mode open — is `open_write_batch`'s alone.
+            self.open_write_batch()?;
+        } else {
+            // A leading ineligible statement closes a batch that never
+            // opened too: the rest of the framed batch commits per statement
+            // (ADR-0642 §1).
+            self.commit_write_batch()?;
+        }
+        Ok(())
+    }
+
+    /// Whether the connection's open transaction is the pipelined write batch
+    /// (ADR-0642) — the one batch-open predicate the commit, the dispatch
+    /// policy and the failure epilogue share.
+    pub(super) fn write_batch_open(&self) -> bool {
+        self.txn_mode().is_some_and(TxnMode::is_batch)
+    }
+
+    /// Open the pipelined batch's transaction (ADR-0642). The statement
+    /// dispatch calls it for the first eligible statement of an armed batch;
+    /// inside an open transaction of any mode it is a no-op, since that
+    /// transaction already commits once — and a batch opens only when one
+    /// was armed. The whole open precondition lives here; the caller does
+    /// not re-derive either half.
+    pub(super) fn open_write_batch(&mut self) -> Result<()> {
+        if self.txn.is_some() || !self.write_batch_armed {
+            return Ok(());
+        }
+        self.begin_mode(TxnMode::Batch)
+    }
+
+    /// Whether this statement runs as an auto-commit write — the routing
+    /// fact's one home: a write route with no transaction open. The
+    /// dispatch arm and the row-charge exemption both read this predicate;
+    /// neither re-derives the conjunction as control flow.
+    pub(super) fn auto_commit_write(&self, write_route: bool) -> bool {
+        write_route && self.txn.is_none()
     }
 
     /// Publish the transaction's redo as one WAL commit and return its
@@ -185,7 +435,15 @@ impl Connection {
     /// # Ok::<(), relate::Error>(())
     /// ```
     pub fn commit(&mut self) -> Result<Option<String>> {
-        match self.prepare_commit()? {
+        self.commit_mode(TxnMode::Explicit)
+    }
+
+    /// The prepare-then-flush tail [`Self::commit`] and
+    /// [`Self::commit_write_batch`] share: prepare `mode`'s transaction, then
+    /// flush the redo it drained, fabricating no bookmark for a no-op drain.
+    /// Each caller states its own precondition and delegates here.
+    fn commit_mode(&mut self, mode: TxnMode) -> Result<Option<String>> {
+        match self.prepare_commit(mode)? {
             Some(redo) => self.flush_commit(redo).map(Some),
             None => Ok(None),
         }
@@ -200,12 +458,20 @@ impl Connection {
     /// otherwise — instead of a second derivation of the fact, with the
     /// preconditions running before any worker is spawned for a doomed
     /// flush.
-    pub(super) fn prepare_commit(&mut self) -> Result<Option<PreparedRedo>> {
+    pub(super) fn prepare_commit(&mut self, mode: TxnMode) -> Result<Option<PreparedRedo>> {
         self.inner.check_healthy()?;
-        self.txn
+        // The caller commits its own state only: `commit` never consumes the
+        // pipelined write batch, and the batch's commit never consumes the
+        // user's transaction (ADR-0642). Both refusals run before the take,
+        // so the transaction stays in place for its owner.
+        let txn = self
+            .txn
             .as_ref()
-            .ok_or_else(|| Error::semantic("no transaction"))?
-            .refuse_if_failed()?;
+            .ok_or_else(|| Error::semantic("no transaction"))?;
+        if !txn.mode.commits_as(mode) {
+            return Err(Error::semantic("no transaction"));
+        }
+        txn.refuse_if_failed()?;
         let txn = self.txn.take().expect("checked present above");
         let snapshot_ts = txn.scratch.borrow().snapshot_ts();
         let txn_id = txn.txn_id;
@@ -239,7 +505,13 @@ impl Connection {
     }
 
     /// Discard uncommitted writes. Connection drop is implicit rollback.
+    ///
+    /// A pipelined write batch is not the user's transaction (ADR-0642): its
+    /// statements already answered SUCCESS on the wire, so it commits first —
+    /// the same order [`Self::begin`] uses — and the rollback finds no
+    /// transaction to discard.
     pub fn rollback(&mut self) -> Result<()> {
+        self.commit_write_batch()?;
         let Some(txn) = self.txn.take() else {
             return Err(Error::semantic("no transaction"));
         };
@@ -247,13 +519,23 @@ impl Connection {
         Ok(())
     }
 
+    /// Whether the user's explicit transaction is open. The pipelined write
+    /// batch (ADR-0642) is not one: it is the session's own coalescing, so
+    /// `in_transaction` stays false for it and no protocol state (the RUN
+    /// `qid`, the transaction breach checks, the `db` selection) sees it.
     pub fn in_transaction(&self) -> bool {
-        self.txn.is_some()
+        self.txn_mode().is_some_and(|mode| !mode.is_batch())
     }
 
+    /// The failure epilogue for the statement paths a statement error never
+    /// reaches — a panicking or unspawnable worker (ADR-0028): the same
+    /// mode-aware statement settlement [`Self::query_in_txn`] applies, so a
+    /// batched statement's partial redo is rolled back (its captured
+    /// pre-state restored; the batch keeps its earlier statements,
+    /// ADR-0642) and an explicit transaction fails for good.
     pub(super) fn fail_txn(&mut self) {
         if let Some(txn) = self.txn.as_mut() {
-            txn.fail();
+            txn.abort_statement();
         }
     }
 
@@ -267,6 +549,9 @@ impl Connection {
     ) -> Result<ExecResult> {
         let txn = run.txn;
         txn.refuse_if_failed()?;
+        // ADR-0642: a batch captures the statement's pre-state so a failed
+        // statement can restore it; `settle_statement` owns the epilogue.
+        txn.begin_statement();
         let result = {
             // The transaction's write overlay applies to the writable
             // namespace (`neo4j`, the only one; ADR-0116 §5); a
@@ -299,15 +584,70 @@ impl Connection {
         // commits as one WAL record: a transaction already over the cap can
         // only fail at COMMIT, after every statement still to come has run.
         // Refuse it here, at the statement that crossed (LABS-858) — the
-        // check folded into the statement's own result, so the failure
-        // epilogue (fail the transaction, return the error) is spelled once.
+        // check folded into the statement's own result, so the one
+        // statement-failure epilogue ([`OpenTxn::abort_statement`]: batch
+        // restores the statement and keeps the batch, explicit fails for
+        // good) settles every outcome.
         let checked = result.and_then(|r| {
             txn.check_commit_cap(self.inner.resolved.wal_payload_limit)
                 .map(|()| r)
         });
-        if checked.is_err() {
-            txn.fail();
+        txn.settle_statement(checked)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// ADR-0642, ADR-0650: a failed batched statement rewinds the commit-cap
+    /// tally to its pre-statement value, so the tally stays in step with the
+    /// rolled-back redo log and the next statement measures only its own ops.
+    /// A tally reset to zero instead re-encodes the whole batch prefix on
+    /// every later statement — the re-measurement the incremental tally
+    /// exists to avoid. Asserted on the tally's own position, because the
+    /// byte total it produces is the same either way: no behaviour-only test
+    /// can see the difference.
+    #[test]
+    fn a_failed_batched_statement_leaves_the_cap_tally_in_step_with_the_log() {
+        let db = crate::Database::open_with(
+            ":memory:",
+            crate::OpenOptions {
+                wal_payload_limit: Some(1 << 20),
+                ..crate::OpenOptions::default()
+            },
+        )
+        .expect("the store opens");
+        let mut conn = db.connect().expect("the connection opens");
+        let big = "x".repeat(400 << 10);
+        let create = |conn: &mut crate::Connection, id: i64| {
+            conn.query(&format!("CREATE (:N {{id: {id}, p: '{big}'}})"))
+        };
+        conn.begin_write_batch();
+        create(&mut conn, 1).expect("the first statement fits the cap");
+        create(&mut conn, 2).expect("the second statement fits the cap");
+        let error = create(&mut conn, 3).expect_err("the third crosses the 1 MiB cap");
+        match error {
+            crate::Error::Capacity {
+                used,
+                limit,
+                kind: crate::CapacityKind::WalPayload,
+            } => assert!(
+                used > limit,
+                "the refusal carries the bytes it counted against the cap: {used} vs {limit}"
+            ),
+            other => panic!("the third statement must be refused by the WAL payload cap: {other}"),
         }
-        checked
+
+        let txn = conn.txn.as_ref().expect("the batch stays open");
+        let measured = txn.cap_tally.borrow().ops_count();
+        let in_log = txn
+            .scratch
+            .borrow()
+            .redo_since(0)
+            .map_or(0, |ops| ops.len());
+        assert!(in_log > 0, "the two accepted statements are the prefix");
+        assert_eq!(
+            measured, in_log,
+            "the refused statement's ops are rolled back, and the tally must sit at the same position"
+        );
     }
 }

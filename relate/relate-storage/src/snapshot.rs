@@ -620,10 +620,8 @@ mod unavailable {
 
     pub fn checkpoint_at(
         _: &StoreTarget,
-        _: &dyn relate_engine_api::GraphImport,
-        _: u64,
-        _: u64,
-        _: Option<&str>,
+        _: &crate::codec::cut::CheckpointCut<'_>,
+        _: crate::codec::cut::Rewrite,
     ) -> Result<()> {
         Err(codec_unavailable(SnapshotCodecKind::Parquet))
     }

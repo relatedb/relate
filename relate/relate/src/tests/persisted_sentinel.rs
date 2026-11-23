@@ -109,13 +109,7 @@ fn invalid_replicated_ids_leave_existing_wal_and_graph_reopenable() {
         };
 
         // Even the earlier valid create in this same record must not be logged.
-        let err = db
-            .apply_replicated(&WalRecord {
-                lsn: 999, // The destination assigns its own LSN.
-                commit_ts: 2,
-                ops: vec![node(1), invalid],
-            })
-            .unwrap_err();
+        let err = db.apply_replicated(2, vec![node(1), invalid]).unwrap_err();
         assert!(matches!(err, Error::Storage(_)), "{name}: {err}");
         assert_eq!(
             {
@@ -162,15 +156,7 @@ fn valid_replicated_create_survives_reopen_but_not_the_identity_map() {
             local_id: 1,
         },
     ];
-    assert_eq!(
-        db.apply_replicated(&WalRecord {
-            lsn: 42,
-            commit_ts: 7,
-            ops: ops.clone(),
-        })
-        .unwrap(),
-        1
-    );
+    assert_eq!(db.apply_replicated(7, ops.clone()).unwrap(), 1);
     assert_eq!(
         db.inner.wal.lock().unwrap().records_after(0, 10).unwrap()[0]
             .ops
@@ -206,13 +192,7 @@ fn replicated_missing_or_previously_deleted_endpoint_does_not_append() {
         vec![node(1), rel(0, 1, 99)],
         vec![node(1), RedoOp::DeleteNode { id: 1 }, rel(0, 0, 1)],
     ] {
-        let error = db
-            .apply_replicated(&WalRecord {
-                lsn: 999,
-                commit_ts: 2,
-                ops,
-            })
-            .unwrap_err();
+        let error = db.apply_replicated(2, ops).unwrap_err();
         assert!(matches!(error, Error::Semantic(_)), "{error}");
         assert_eq!(db.inner.wal.lock().unwrap().lsn, 1);
         assert_eq!(std::fs::read(&wal_file).unwrap(), prior);
@@ -256,13 +236,7 @@ fn replicated_incomplete_label_constraint_does_not_append() {
         vec![node(1), constraint.clone()],
         vec![constraint, mismatched],
     ] {
-        let error = db
-            .apply_replicated(&WalRecord {
-                lsn: 90,
-                commit_ts: 2,
-                ops,
-            })
-            .unwrap_err();
+        let error = db.apply_replicated(2, ops).unwrap_err();
         assert!(matches!(error, Error::Storage(_)), "{error}");
         assert_eq!(db.inner.wal.lock().unwrap().lsn, 1);
         assert_eq!(std::fs::read(&wal_file).unwrap(), before);
@@ -280,13 +254,7 @@ fn replicated_post_sync_apply_failure_fences_and_replays_on_reopen() {
     let uri = tmp.path().join("db");
     let db = Database::open(uri.to_str().unwrap()).unwrap();
     db.inner.fail_after_sync.store(true, Ordering::SeqCst);
-    let err = db
-        .apply_replicated(&WalRecord {
-            lsn: 999,
-            commit_ts: 1,
-            ops: vec![node(0)],
-        })
-        .unwrap_err();
+    let err = db.apply_replicated(1, vec![node(0)]).unwrap_err();
     assert!(err.to_string().contains("uncertain WAL outcome"), "{err}");
     assert_eq!(db.inner.safe_lsn.load(Ordering::Acquire), 0);
     assert!(db.checkpoint().is_err());

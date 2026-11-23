@@ -32,7 +32,7 @@ impl Kind {
     /// measures rows.
     fn checkpoint_bytes(
         self,
-        graph: &dyn relate_engine_api::GraphImport,
+        graph: &dyn relate_engine_api::GraphExport,
         id: i64,
         ts: u64,
     ) -> Result<Option<u64>> {
@@ -54,7 +54,7 @@ impl Kind {
 /// make rows, not bytes, the binding bound), and the ADR-0086 row and
 /// decoded envelopes.
 pub(crate) struct DecodedBudget<'g> {
-    graph: &'g dyn relate_engine_api::GraphImport,
+    graph: &'g dyn relate_engine_api::GraphExport,
     ts: u64,
     kind: Kind,
     /// The most rows one file of this kind holds within ADR-0086's
@@ -76,7 +76,7 @@ fn add(bytes: u64, row: u64) -> Result<u64> {
 
 impl<'g> DecodedBudget<'g> {
     pub(crate) fn new(
-        graph: &'g dyn relate_engine_api::GraphImport,
+        graph: &'g dyn relate_engine_api::GraphExport,
         ts: u64,
         kind: Kind,
         target: u64,
@@ -176,7 +176,7 @@ impl<'g> DecodedBudget<'g> {
 /// row cap, no more live rows than one file of `kind` holds.
 #[cfg(test)]
 pub(crate) fn decoded_preflight(
-    graph: &dyn relate_engine_api::GraphImport,
+    graph: &dyn relate_engine_api::GraphExport,
     ts: u64,
     ids: &[i64],
     kind: Kind,

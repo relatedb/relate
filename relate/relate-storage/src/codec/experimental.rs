@@ -4,6 +4,7 @@
 //! codec and not otherwise.
 
 use relate_core::{Error, Result};
+use relate_engine_api::GraphExport;
 
 use super::catalog;
 use super::model::SnapshotRows;
@@ -43,12 +44,16 @@ pub(crate) struct CodecManifest {
 pub(crate) fn write_codec_manifest(
     target: &StoreTarget,
     codec: SnapshotCodecKind,
-    checkpoint_lsn: u64,
-    commit_ts: u64,
-    theater: Option<relate_engine_api::CheckpointTheater>,
+    cut: &crate::codec::cut::CheckpointCut<'_>,
     wire: catalog::CatalogWire,
-    ontology: Option<&str>,
 ) -> Result<()> {
+    // The LSN, the commit timestamp, the theater and the ontology document
+    // all come off the cut: the pairing the cut exists for is made once, in
+    // the type, not unpacked again at this call site.
+    let ontology = cut.ontology_document();
+    let checkpoint_lsn = cut.lsn();
+    let commit_ts = cut.snapshot_ts();
+    let theater = Some(cut.checkpoint_theater_for_write()?);
     let manifest = CodecManifest {
         // An experimental codec never writes wide parts: ADR-0534's
         // encoding belongs to the Parquet codec's parts.

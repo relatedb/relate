@@ -82,7 +82,7 @@ fn exists_pattern_probe(
     query: &Query,
     params: &BTreeMap<String, Value>,
 ) -> Result<Option<bool>> {
-    if query.parts.len() != 1 || !query.union_all.is_empty() || query.next.is_some() {
+    if !query.is_single_flat_part() {
         return Ok(None);
     }
     exists_probe::probe_multi_pattern_exists(graph, row, &query.parts[0].clauses, params)

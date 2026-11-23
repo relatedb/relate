@@ -363,3 +363,8 @@ publication guard.
 - [ADR-0558](./0558-encode-commit-redo-once-at-admission.md) moves the single encoding of a commit's redo to
   admission, so the group leader no longer serializes the ops: it stamps the
   record header into the buffer the committing thread already produced.
+- [ADR-0643](./0643-checkpoint-cuts-before-the-dump.md) removes the drain in item 4: a checkpoint's
+  cut is taken under the publication write guard, so its horizon provably
+  precedes a writer's record without the writer waiting for an in-flight
+  dump. A checkpoint's failure is returned to its own caller only; the
+  writer-facing fence survives solely as WAL poisoning.

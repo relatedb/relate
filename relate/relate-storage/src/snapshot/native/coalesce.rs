@@ -8,7 +8,7 @@
 //! file for a unit that fits, byte-budgeted files for a lone seed over the
 //! target. Each file copies clean rows out of the kept parts' previous
 //! shards and encodes the rest. Kept parts outside every unit are kept as
-//! is.
+//! is, and an incremental rewrite absorbs no neighbour at all.
 
 use super::layout::{lay_out, Slot};
 use super::*;
@@ -28,6 +28,7 @@ use crate::codec::parquet::{
 /// parts to publish and the replaced parts' paths to retire.
 pub(super) fn rewrite(
     ctx: &mut ShardWrite<'_>,
+    kind: Kind,
     parts: Vec<ShardPart>,
     all_ids: &[i64],
     dirty: &[i64],
@@ -36,14 +37,14 @@ pub(super) fn rewrite(
     // Decision 1: from here on the slots are disjoint.
     let (slots, mut retired) = lay_out(parts, all_ids, w);
     let mut out = Vec::with_capacity(slots.len());
-    for step in plan_units(ctx, &slots, all_ids, dirty)? {
+    for step in plan_units(ctx, kind, &slots, all_ids, dirty)? {
         match step {
             // Decision 4: a part outside every unit is reused verbatim.
             Step::Keep(part) => out.push(part.clone()),
             Step::Rewrite(unit) => {
                 let kept: Vec<&ShardPart> =
                     slots[unit.slots].iter().filter_map(Slot::kept).collect();
-                out.extend(UnitWriter::new(ctx, &kept, dirty)?.write(&unit.files, all_ids)?);
+                out.extend(UnitWriter::new(ctx, kind, &kept, dirty)?.write(&unit.files, all_ids)?);
                 retired.extend(kept.into_iter().map(|part| part.path.clone()));
             }
         }
@@ -107,9 +108,11 @@ impl Published {
 /// within the target absorbs free neighbors, left then right, while the
 /// unit fits, and is one file; a seed over the target absorbs nothing and
 /// keeps its cuts. Seeds are taken left to right, so no slot joins two
-/// units.
+/// units. An incremental rewrite never absorbs, so its units are exactly
+/// the seeding slots.
 pub(super) fn plan_units<'s>(
     ctx: &ShardWrite<'_>,
+    kind: Kind,
     slots: &'s [Slot],
     all_ids: &[i64],
     dirty: &[i64],
@@ -119,7 +122,7 @@ pub(super) fn plan_units<'s>(
     let width = |lo: usize, hi: usize| slots[hi - 1].span().end - slots[lo].span().start;
     // One file's page envelope rows and byte cap.
     let max = Published {
-        rows: ctx.kind.page_envelope_rows() as u64,
+        rows: kind.page_envelope_rows() as u64,
         bytes: ctx.file_cap(),
     };
     let mut steps = Vec::new();
@@ -132,9 +135,9 @@ pub(super) fn plan_units<'s>(
             continue;
         }
         let ids = live(&slot.span());
-        let (cuts, mut budget) = cut_seed(ctx, ids)?;
+        let (cuts, mut budget) = cut_seed(ctx, kind, ids)?;
         let (mut lo, mut hi) = (seed, seed + 1);
-        if cuts.is_empty() && budget.within() {
+        if ctx.rewrite == Rewrite::Coalesce && cuts.is_empty() && budget.within() {
             // Decision 2: the merged range spans at most `MAX_WINDOW` ids,
             // the ADR-0022 window bound; its kept parts' files hold no more
             // rows than one file's page envelope and no more bytes than its
@@ -188,8 +191,12 @@ pub(super) fn plan_units<'s>(
 /// (ADR-0534: a wide part's leaf columns make rows the binding bound),
 /// measuring each row once. Returns the id each file after the first
 /// starts at, and the budget holding the last file.
-fn cut_seed<'g>(ctx: &ShardWrite<'g>, ids: &[i64]) -> Result<(Vec<i64>, DecodedBudget<'g>)> {
-    let mut budget = DecodedBudget::new(ctx.graph, ctx.ts, ctx.kind, ctx.target_bytes);
+fn cut_seed<'g>(
+    ctx: &ShardWrite<'g>,
+    kind: Kind,
+    ids: &[i64],
+) -> Result<(Vec<i64>, DecodedBudget<'g>)> {
+    let mut budget = DecodedBudget::new(ctx.graph, ctx.ts, kind, ctx.target_bytes);
     let cuts = budget.cut(ids)?;
     Ok((cuts, budget))
 }
@@ -245,6 +252,8 @@ fn source(kept: &[Member<'_>], dirty: &[i64], id: i64) -> Option<usize> {
 /// carried from the parts it copies and promoted from the rows it encodes.
 struct UnitWriter<'u, 'a> {
     ctx: &'u mut ShardWrite<'a>,
+    /// The kind this unit rewrites, fixed by its pass.
+    kind: Kind,
     /// The parts of the unit's kept slots, whose previous shards hold the
     /// unit's clean rows, each with whether the unit re-encodes it
     /// instead of copying (ADR-0534).
@@ -283,10 +292,16 @@ struct OpenShard {
 }
 
 impl<'u, 'a> UnitWriter<'u, 'a> {
-    fn new(ctx: &'u mut ShardWrite<'a>, kept: &[&'u ShardPart], dirty: &'u [i64]) -> Result<Self> {
-        let carried = Self::carried_columns(ctx, kept)?;
+    fn new(
+        ctx: &'u mut ShardWrite<'a>,
+        kind: Kind,
+        kept: &[&'u ShardPart],
+        dirty: &'u [i64],
+    ) -> Result<Self> {
+        let carried = Self::carried_columns(ctx, kind, kept)?;
         Ok(Self {
             ctx,
+            kind,
             kept: carried.members,
             dirty,
             carried: carried.columns,
@@ -302,18 +317,18 @@ impl<'u, 'a> UnitWriter<'u, 'a> {
     /// every part, the columns then coming from the encoded rows alone.
     /// Every part is wide since ADR-0553, so every kept part carries a
     /// footer to read.
-    fn carried_columns<'p>(ctx: &ShardWrite<'_>, kept: &[&'p ShardPart]) -> Result<Carried<'p>> {
+    fn carried_columns<'p>(
+        ctx: &ShardWrite<'_>,
+        kind: Kind,
+        kept: &[&'p ShardPart],
+    ) -> Result<Carried<'p>> {
         let mut carried = std::collections::BTreeMap::new();
         let mut members = Vec::with_capacity(kept.len());
         for part in kept {
             // A kept part's rows are re-read, not re-derived (ADR-0534),
             // so its columns carry forward unchanged.
-            let columns = previous_shard_columns(
-                Arc::clone(&ctx.target.vfs),
-                &part.path,
-                ctx.kind,
-                span(part),
-            )?;
+            let columns =
+                previous_shard_columns(Arc::clone(&ctx.target.vfs), &part.path, kind, span(part))?;
             let mut reencode = false;
             for (key, ty) in &columns {
                 if carried.get(key).is_some_and(|held| *held != *ty) {
@@ -401,27 +416,33 @@ impl<'u, 'a> UnitWriter<'u, 'a> {
         ids: &[i64],
         cap: u64,
     ) -> std::result::Result<ShardPart, ShardError> {
-        let (graph, ts, kind) = (self.ctx.graph, self.ctx.ts, self.ctx.kind);
-        // The members are cloned out so the run-splitting closures do not
-        // borrow the writer they run inside.
-        let (kept, dirty) = (self.kept.clone(), self.dirty);
+        let (graph, ts, kind) = (self.ctx.graph, self.ctx.ts, self.kind);
         // ADR-0534: the rows the file encodes are its dirty and new ids
         // plus the rows of a kept part the unit re-encodes; `source` is
-        // the one predicate — a copyable member or `None` to encode.
-        let source_of = |id: &i64| source(kept.as_slice(), dirty, *id);
+        // the one predicate — a copyable member or `None` to encode. The
+        // run plan is decided before the writer opens, while the unit's
+        // own fields are still borrowable: the writer closure takes
+        // `&mut Self`, so it cannot borrow `self.kept` — it consumes the
+        // plan instead, never a clone of the members.
+        let runs: Vec<(&[i64], Option<usize>)> = ids
+            .chunk_by(|a, b| {
+                source(&self.kept, self.dirty, *a) == source(&self.kept, self.dirty, *b)
+            })
+            .map(|run| (run, source(&self.kept, self.dirty, run[0])))
+            .collect();
         // The part carries the unit's carried columns plus its encoded
         // rows' promoted keys — the wide schema with no promoted columns
         // when none promote (ADR-0534).
-        let encoded: Vec<i64> = ids
+        let encoded: Vec<i64> = runs
             .iter()
-            .copied()
-            .filter(|id| source_of(id).is_none())
+            .filter(|(_, member)| member.is_none())
+            .flat_map(|(run, _)| run.iter().copied())
             .collect();
         let columns = part_columns(kind, graph, ts, &encoded, &self.carried);
         self.publish_candidate(file, &columns, cap, |me, writer| {
             let mut written = 0;
-            for run in ids.chunk_by(|a, b| source_of(a) == source_of(b)) {
-                written += match source_of(&run[0]) {
+            for (run, member) in runs {
+                written += match member {
                     Some(member) => me.copy(member, run, writer)?,
                     None => encode_wide_rows(writer, graph, ts, kind, run, &columns)?,
                 };
@@ -454,7 +475,7 @@ impl<'u, 'a> UnitWriter<'u, 'a> {
         ) -> std::result::Result<usize, ShardError>,
     ) -> std::result::Result<ShardPart, ShardError> {
         let (path, mut output) = self.reserve_candidate(file)?;
-        let kind = self.ctx.kind;
+        let kind = self.kind;
         let result = with_part_shard_writer_to(&mut *output, kind, columns, cap, |writer| {
             write(self, writer)
         })
@@ -463,7 +484,7 @@ impl<'u, 'a> UnitWriter<'u, 'a> {
             self.ctx
                 .target
                 .vfs
-                .sync_dir(self.ctx.kind.dir())
+                .sync_dir(self.kind.dir())
                 .map_err(ShardError::Fatal)?;
             Ok(rows)
         });
@@ -501,11 +522,11 @@ impl<'u, 'a> UnitWriter<'u, 'a> {
         file: &Range<i64>,
     ) -> std::result::Result<(String, Box<dyn crate::vfs::VfsFile>), ShardError> {
         let target = self.ctx.target;
-        let dir = self.ctx.kind.dir();
+        let dir = self.kind.dir();
         prepare_object_dir(target, dir, "shard directory").map_err(ShardError::Fatal)?;
         let (path, output) = reserve_exclusive(
             &*target.vfs,
-            || ShardName::random(self.ctx.kind, file.start, file.end).map(|name| name.path()),
+            || ShardName::random(self.kind, file.start, file.end).map(|name| name.path()),
             self.ctx.owned,
             "Parquet shard part",
         )
@@ -544,7 +565,7 @@ impl<'u, 'a> UnitWriter<'u, 'a> {
                 ShardCursor::open(
                     Arc::clone(&self.ctx.target.vfs),
                     &part.path,
-                    self.ctx.kind,
+                    self.kind,
                     span(part),
                 )?
             }

@@ -24,10 +24,10 @@ use crate::fields::{
     metadata_notifications_failure, patch_names, ConsumeRequest, NotificationConfig, RunRequest,
 };
 use crate::keepalive::{run_statement, with_keep_alive};
-use crate::packstream::{chunk_message, decode_message, encode, encode_error, DecodeLimit, Pack};
+use crate::packstream::{chunk_message, encode, encode_error, DecodeLimit, Pack};
 use crate::patches::BoltPatches;
 use crate::protocol::{ConnConfig, QueryOutcome};
-use crate::requests::{breach_text, request, Message, OverBudget, Refused, Undecodable};
+use crate::requests::{breach_text, Message, OverBudget, Refused, Undecodable};
 use crate::results::{fails_run, Body, OpenResults, OverCap};
 use crate::summary::{self, send_success};
 use crate::value_codec::{MdbPackError, ValueCodec};
@@ -156,37 +156,6 @@ impl Session {
         if let Some(on_query) = &self.on_query {
             on_query(outcome);
         }
-    }
-
-    /// Serve one batch of framed messages (ADR-0317): every message queued
-    /// ahead of the batch's last reachable RESET that has not started
-    /// answers IGNORED; the RESETs and everything after the last one run
-    /// normally ([`crate::session_batch::last_reset`] locates that RESET).
-    ///
-    /// Messages are decoded one at a time, never as a batch: the RESET
-    /// pre-scan decodes the decodable prefix one message at a time, and the
-    /// dispatch decodes one message at a time, dropping it before the next.
-    /// A batch's peak heap is one message's values, not the sum over its
-    /// messages (SEC-serve-batch).
-    pub(crate) fn serve_batch<W: Write>(
-        &mut self,
-        stream: &mut W,
-        batch: Vec<Vec<u8>>,
-        config: &ConnConfig,
-    ) -> Result<Flow, Box<dyn std::error::Error + Send + Sync>> {
-        let last_reset =
-            crate::session_batch::last_reset(&batch, self.decode_limit(), self.dialect.version);
-        for (index, payload) in batch.iter().enumerate() {
-            let queued_ahead_of_reset = last_reset.is_some_and(|reset| index < reset);
-            let decoded = match decode_message(payload, self.decode_limit()) {
-                Ok(pack) => request(pack, self.dialect.version).map_err(Refused::Undecodable),
-                Err(error) => Err(Refused::from_decode(error, payload, self.dialect.version)?),
-            };
-            if let Flow::Close = self.dispatch(stream, decoded, queued_ahead_of_reset, config)? {
-                return Ok(Flow::Close);
-            }
-        }
-        Ok(Flow::Continue)
     }
 
     /// Dispatch one decoded message through the state machine: each
@@ -983,6 +952,13 @@ enum Consume {
 /// handlers keep touching the session's private state.
 #[path = "session_5x.rs"]
 mod session_5x;
+
+/// The framed-batch rule of the session dispatch (ADR-0317, ADR-0642): the
+/// RESET pre-scan, the batch's serving loop, and the pipelined write batch it
+/// arms for the engine — split from this file at the thousand-line rule like
+/// the 5.x leg. A child of this module.
+#[path = "session_batch.rs"]
+mod session_batch;
 
 /// The PULL/DISCARD page-writing machinery (ADR-0309, ADR-0110): the
 /// page outcome, the typed RECORD-write failure and the page writers

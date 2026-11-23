@@ -9,7 +9,7 @@ use std::mem::size_of;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
-use crate::graph::{LabelProbe, QueryStats};
+use crate::graph::{EntityId, LabelProbe, QueryStats};
 use crate::redo::RedoOp;
 use relate_core::tokens::WorkspaceCharge;
 use relate_core::{Node, NodeId, RelId, Relationship, Result};
@@ -48,6 +48,54 @@ pub(super) struct PerBatchState {
     /// Net live occupancy vs the snapshot (this statement's creates /
     /// deletes / SET/REMOVE). `live = snapshot + delta`.
     pub(super) live_label_delta: HashMap<String, i32>,
+}
+
+impl PerBatchState {
+    /// Undo one created node (ADR-0642's per-statement rollback): the inverse
+    /// of the batch entries the create path makes, stated on the state that
+    /// owns them — so the rollback vocabulary lives once, and a field added
+    /// here is a compile error at its inverse rather than a silent gap.
+    pub(super) fn uncreate_node(&mut self, id: NodeId) {
+        let node = self
+            .nodes
+            .remove(&id)
+            .expect("a batched CREATE's node is live in the batch");
+        self.bump_live_labels(&node.labels, -1);
+        self.created_nodes.remove(&id);
+    }
+
+    /// The relationship half of [`Self::uncreate_node`]. Both endpoints'
+    /// adjacency lists are cleared separately, in one bulk pass over the
+    /// statement's dropped ids ([`Self::drop_adjacency`]) — not a scan per
+    /// id, so a statement that created many relationships on one endpoint
+    /// rolls back in O(adjacency) instead of O(creates × list).
+    pub(super) fn uncreate_rel(&mut self, id: RelId) {
+        self.rels
+            .remove(&id)
+            .expect("a batched CREATE's relationship is live in the batch");
+        self.created_rels.remove(&id);
+    }
+
+    /// Take the statement's dropped relationship ids back off both endpoint
+    /// adjacency lists — one retain pass per map, the bulk inverse of the
+    /// push each create made. Called once per rolled-back statement, before
+    /// the per-entity undo.
+    pub(super) fn drop_adjacency(&mut self, dropped: &HashSet<RelId>) {
+        for adj in [&mut self.out_adj, &mut self.in_adj] {
+            adj.retain(|_, list| {
+                list.retain(|id| !dropped.contains(id));
+                !list.is_empty()
+            });
+        }
+    }
+
+    /// Net `delta` onto each distinct label's live-carrier count. The one
+    /// home of the accounting: every write verb and the rollback consult it.
+    pub(super) fn bump_live_labels(&mut self, labels: &[String], delta: i32) {
+        for label in distinct_labels(labels) {
+            *self.live_label_delta.entry(label.to_string()).or_insert(0) += delta;
+        }
+    }
 }
 
 /// The statement-spanning scratch state (ADR-0309 counters, ADR-0402 applied
@@ -282,20 +330,6 @@ impl WriteScratch {
 
     pub(super) fn live_label_delta(&self, label: &str) -> i64 {
         i64::from(self.batch.live_label_delta.get(label).copied().unwrap_or(0))
-    }
-
-    fn bump_live_label(&mut self, label: &str, delta: i32) {
-        *self
-            .batch
-            .live_label_delta
-            .entry(label.to_string())
-            .or_insert(0) += delta;
-    }
-
-    pub(super) fn bump_live_labels(&mut self, labels: &[String], delta: i32) {
-        for l in distinct_labels(labels) {
-            self.bump_live_label(l, delta);
-        }
     }
 
     /// Net one `label_deltas` outcome into the statement's `+labels` /
@@ -572,7 +606,11 @@ impl WriteScratch {
     /// no-sink path, where each batch re-captures over an ever-growing log).
     /// Id allocators stay on the live scratch so a rolled-back batch does not
     /// hand the same id out again; they are not part of the image.
-    pub(crate) fn checkpoint(&self) -> ScratchCheckpoint {
+    ///
+    /// The pipelined write batch does not use this: its per-statement rollback
+    /// is [`Self::mark_statement`], which the batch's CREATE-only eligibility
+    /// rule makes exact at O(statement) instead of O(batch).
+    pub fn checkpoint(&self) -> ScratchCheckpoint {
         ScratchCheckpoint {
             batch: self.batch.clone(),
             statement: self.statement.clone(),
@@ -588,12 +626,110 @@ impl WriteScratch {
     /// failed is still a zero-effect write (ADR-0402 Decision 2) — and the
     /// restore never has to derive that from how many ops the truncation
     /// dropped.
-    pub(crate) fn restore(&mut self, checkpoint: ScratchCheckpoint) {
+    pub fn restore(&mut self, checkpoint: ScratchCheckpoint) {
         self.batch = checkpoint.batch;
         self.statement = checkpoint.statement;
         self.redo.restore_cursor(checkpoint.redo);
         self.sync_workspace_best_effort();
     }
+
+    /// Pre-statement mark for the pipelined write batch (ADR-0642): the redo
+    /// cursor and the statement-spanning state as of the statement's entry.
+    /// Cheap by construction — O(statement), never a copy of the batch image —
+    /// because the batch admits only CREATE-only statements, so the entries a
+    /// failed statement can have added are exactly the ids its own
+    /// [`StatementState::created_nodes`] / `created_rels` recorded at the redo
+    /// funnel.
+    pub fn mark_statement(&self) -> StatementMark {
+        StatementMark {
+            redo: self.redo.cursor(),
+            statement: self.statement.clone(),
+        }
+    }
+
+    /// Roll back to a [`Self::mark_statement`]: drop the entities the failed
+    /// statement created, truncate the redo to the mark's cursor and put the
+    /// statement-spanning state back. The batch's other entries — the earlier
+    /// statements' rows — are untouched, so a failing batched statement loses
+    /// only its own writes.
+    ///
+    /// The lazy equality indexes keep their postings for the dropped ids: they
+    /// are additions-only supersets every seek re-verifies on its view
+    /// (ADR-0172 §3), which is the same state a delete leaves behind.
+    ///
+    /// A redo this mark cannot invert is refused, not half-applied: the
+    /// statement's entries stay where they are and the caller fails the batch,
+    /// so a rollback that could not finish never leaves partial writes to be
+    /// committed with the batch — the durability lie the batch's whole
+    /// failure contract exists to avoid.
+    pub fn rollback_statement(&mut self, mark: StatementMark) -> Result<()> {
+        // The batch admits CREATE-only statements, so the only non-create ops
+        // a statement appends are the property defaults and label changes the
+        // engine makes for the entities it just created — and dropping those
+        // entities undoes those ops with them. Anything else is a redo this
+        // mark cannot invert.
+        let created: HashSet<EntityId> = self
+            .statement
+            .created_nodes
+            .iter()
+            .map(|id| EntityId::Node(*id))
+            .chain(
+                self.statement
+                    .created_rels
+                    .iter()
+                    .map(|id| EntityId::Rel(*id)),
+            )
+            .collect();
+        for op in self.redo.ops_after(&mark.redo) {
+            if !invertible_by_dropping_creates(&op, &created) {
+                return Err(relate_core::Error::storage(
+                    "a batched statement's redo holds an op its rollback cannot invert",
+                ));
+            }
+        }
+        let created_rels = std::mem::take(&mut self.statement.created_rels);
+        let created_nodes = std::mem::take(&mut self.statement.created_nodes);
+        // The bulk adjacency pass before the per-entity undo: one retain per
+        // map, never a scan per dropped id.
+        self.batch.drop_adjacency(&created_rels);
+        for id in created_rels {
+            self.batch.uncreate_rel(id);
+        }
+        for id in created_nodes {
+            self.batch.uncreate_node(id);
+        }
+        self.redo.restore_cursor(mark.redo);
+        self.statement = mark.statement;
+        self.sync_workspace_best_effort();
+        Ok(())
+    }
+}
+
+/// Whether dropping the statement's created entities undoes `op`: a create is
+/// the entity itself, and a property or label op is undone by the same drop
+/// when it names one of them — which is the only target a CREATE-only
+/// statement's defaults can reach.
+pub(super) fn invertible_by_dropping_creates(op: &RedoOp, created: &HashSet<EntityId>) -> bool {
+    match op {
+        RedoOp::CreateNode { .. } | RedoOp::CreateRel { .. } => true,
+        RedoOp::SetNodeProp { id, .. }
+        | RedoOp::RemoveNodeProp { id, .. }
+        | RedoOp::AddLabels { id, .. }
+        | RedoOp::RemoveLabels { id, .. } => created.contains(&EntityId::Node(*id)),
+        RedoOp::SetRelProp { id, .. } | RedoOp::RemoveRelProp { id, .. } => {
+            created.contains(&EntityId::Rel(*id))
+        }
+        _ => false,
+    }
+}
+
+/// The pipelined write batch's pre-statement rollback image
+/// ([`WriteScratch::mark_statement`]): the redo cursor and the
+/// statement-spanning state as of the statement's entry. Opaque to the facade,
+/// which marks once per batched statement and rolls back when it fails.
+pub struct StatementMark {
+    redo: super::redo_log::RedoCursor,
+    statement: StatementState,
 }
 
 /// Rollback image of a [`WriteScratch`]: its two state halves — the per-batch
@@ -602,7 +738,11 @@ impl WriteScratch {
 /// the redo log's positional cursor. Cloning the maps is shallow once node and
 /// relationship payloads are `Arc`s; the redo ops stay with the live log, and
 /// the id allocators are not captured (they never roll back).
-pub(crate) struct ScratchCheckpoint {
+///
+/// Opaque to the facade, which captures one per `CALL { … } IN TRANSACTIONS`
+/// batch and restores it when that batch fails. Its clone is O(batch), so it
+/// is a per-batch image — never a per-statement one ([`StatementMark`]).
+pub struct ScratchCheckpoint {
     batch: PerBatchState,
     statement: StatementState,
     redo: super::redo_log::RedoCursor,

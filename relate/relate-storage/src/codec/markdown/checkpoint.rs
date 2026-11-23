@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use relate_core::{Error, Node, Relationship, Result, Value};
-use relate_engine_api::{CheckpointTheater, IndexKindSpec};
+use relate_engine_api::{CheckpointTheater, GraphExport, IndexKindSpec};
 use relate_markdown as md;
 use serde_json::Value as Json;
 
@@ -525,14 +525,18 @@ fn render_node_files(
 
 pub(crate) fn checkpoint_at(
     target: &StoreTarget,
-    graph: &dyn relate_engine_api::GraphImport,
-    checkpoint_lsn: u64,
-    snapshot_ts: u64,
-    ontology: Option<&str>,
+    cut: &crate::codec::cut::CheckpointCut<'_>,
+    _rewrite: crate::codec::cut::Rewrite,
 ) -> Result<()> {
+    let ontology = cut.ontology_document();
+    let snapshot_ts = cut.snapshot_ts();
+    // The timestamp half keeps this codec's authored refusal — the shared
+    // guard's generic wording would not say which codec refused — while the
+    // id half is the shared one.
     if snapshot_ts == u64::MAX {
         return Err(md::vault_error("markdown snapshot timestamp exhausted"));
     }
+    crate::codec::ensure_dump_ids(cut.next_node_id(), cut.next_rel_id())?;
     journal::recover(target)?;
     let previous = read_manifest(target)?;
     let vfs = target.vfs();
@@ -573,8 +577,8 @@ pub(crate) fn checkpoint_at(
         }
     }
 
-    let contents = SnapshotContents::from_graph(graph, snapshot_ts)?;
-    let theater = graph.checkpoint_theater_for_write()?;
+    let contents = SnapshotContents::from_graph(cut, snapshot_ts)?;
+    let theater = cut.checkpoint_theater_for_write()?;
     let vector_props = vector_indexed_properties(&contents, &theater);
     let learned = regenerate_learned(previous.as_ref(), &contents)?;
     // The body-property configuration resolves through the one
@@ -633,7 +637,7 @@ pub(crate) fn checkpoint_at(
     // The new manifest, published last.
     let manifest = VaultManifest {
         codec: Some(SnapshotCodecKind::Markdown),
-        checkpoint_lsn,
+        checkpoint_lsn: cut.lsn(),
         commit_ts: snapshot_ts,
         value_encoding: Some(crate::version::value_encoding::version_for_write(
             ontology.is_some(),
@@ -660,7 +664,7 @@ pub(crate) fn checkpoint_at(
 
     apply_checkpoint(
         target,
-        graph,
+        cut,
         &*vfs,
         &planned,
         &rendered_views,
@@ -676,7 +680,7 @@ pub(crate) fn checkpoint_at(
 /// checkpoint pipeline.
 fn apply_checkpoint(
     target: &StoreTarget,
-    graph: &dyn relate_engine_api::GraphImport,
+    graph: &dyn relate_engine_api::GraphExport,
     vfs: &dyn Vfs,
     planned: &BTreeMap<String, Vec<u8>>,
     rendered_views: &[(String, String)],

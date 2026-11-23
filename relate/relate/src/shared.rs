@@ -15,8 +15,9 @@ use relate_executor::RedoDelta;
 use relate_executor::RedoOp;
 use relate_storage::{StoreTarget, Wal};
 
-use crate::checkpoint::{self, rotate_for_mode, schedule_checkpoint, try_begin_checkpoint};
-use crate::commit::{CommitTimingBuf, GroupCommit};
+use crate::checkpoint::{self, schedule_checkpoint};
+use crate::commit::GroupCommit;
+use crate::commit_timing::CommitTimingBuf;
 use crate::engines::{self, LiveQuery, LiveWrite};
 #[cfg(test)]
 use crate::follow;
@@ -492,28 +493,15 @@ impl Shared {
         self.next_txn_id
             .fetch_max(commit_ts.saturating_add(1), Ordering::Relaxed);
 
-        if wal.should_checkpoint() {
-            if let Err(cause) = rotate_for_mode(&mut wal, self.resolved.durability_mode) {
-                return Err(self.poison(&cause));
-            }
-        }
+        let due = checkpoint::rotate_if_due(&mut wal, self.resolved.durability_mode)
+            .map_err(|cause| self.poison(&cause))?;
         self.publish_data_state(wal.lsn, commit_ts);
-        // The rotate arm above is the only producer of a closed
-        // segment in this function — it also just reset both counters
-        // a second `should_checkpoint` would read, so that operand is
-        // dead here; a prior commit's unrecycled segment is covered by
-        // the same read.
-        let pin = wal
-            .has_closed_segments()
-            .then(|| checkpoint::CheckpointPin::of(&wal));
         drop(wal);
         drop(publication);
-        // The admission attempt is a side effect, so it runs in the body
-        // rather than inside `Option::filter`, whose predicates read pure.
-        if let Some(pin) = pin {
-            if try_begin_checkpoint(self) {
-                schedule_checkpoint(self, pin);
-            }
+        // The checkpoint freezes its own cut; this commit only says one is
+        // due. It takes the busy flag itself and returns when it loses.
+        if due {
+            schedule_checkpoint(self);
         }
         Ok(())
     }

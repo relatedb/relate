@@ -284,7 +284,7 @@ impl<W: Write + Send + OutputLimit> ShardWriter<W> {
 /// is preflighted.
 pub(crate) fn encode_wide_rows<W: Write + Send + OutputLimit>(
     writer: &mut ShardWriter<W>,
-    graph: &dyn relate_engine_api::GraphImport,
+    graph: &dyn relate_engine_api::GraphExport,
     ts: u64,
     kind: Kind,
     ids: &[i64],

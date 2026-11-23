@@ -242,7 +242,7 @@ fn crash_between_ontology_object_and_manifest_publish_is_swept_on_open() {
             manifest_before,
             "open stays at the previous manifest"
         );
-        if !deferred_retire(&store) {
+        if !keeps_superseded(&store) {
             assert!(!object_exists(&store, &orphan).unwrap(), "orphan swept");
         }
     }

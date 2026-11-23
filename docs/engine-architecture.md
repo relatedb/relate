@@ -167,10 +167,13 @@ property maps). A snapshot directory has
 `manifest.json` plus node and relationship parts. Properties are tagged
 JSON so a key can mix TCK types. Current manifests list **id-window
 shards** (`nodes/{lo}-{hi}.parquet`, same for relationships) so a
-checkpoint rewrites dirty ranges instead of the whole graph. A
-checkpoint coalesces a rewritten id range with its undersized neighbors
-into byte-budgeted shards
-([ADR-0183](adr/0183-coalesce-checkpoint-shards.md)). Legacy
+checkpoint rewrites dirty ranges instead of the whole graph. An
+explicit checkpoint coalesces a rewritten id range with its undersized
+neighbors into byte-budgeted shards
+([ADR-0183](adr/0183-coalesce-checkpoint-shards.md)); an automatic one —
+the timer or a WAL rotation — rewrites only the dirty ranges and leaves
+every clean shard untouched
+([ADR-0022](adr/0022-id-window-checkpoint-shards.md)). Legacy
 single `nodes.parquet` / `relationships.parquet` still load.
 
 **JSON layout.** Relate GraphData in `graph.json` (full rewrite each

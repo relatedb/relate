@@ -81,9 +81,10 @@ tempfile = { workspace = true }
 # `graph-type.cypher` must parse through the parser's own
 # `parse_graph_type_body` entry point. Dev-only, R2-legal engine dep.
 relate-parser = { workspace = true }
-# The one recursive VFS walk the markdown-vault integration suites
-# share with the golden-store suite (`vfs_walk` feature; test-only).
-relate-test-support = { workspace = true, features = ["vfs_walk", "graph"] }
+# The one recursive VFS walk the markdown-vault integration suites share
+# with the golden-store suite (`vfs_walk`) and the one read log the store
+# suites name shard reads through (`read_log`); test-only.
+relate-test-support = { workspace = true, features = ["vfs_walk", "graph", "read_log"] }
 # Property-testing harness for WAL/checkpoint invariants (ADR-0268).
 # Dev-only: never compiled into the library or the released artifact. This was
 # the first crate to adopt proptest; `relate-executor` also does now, for

@@ -143,13 +143,9 @@ fn late_numeric_collections_preflight_before_encoding_and_split_reopen() {
             (
                 &nodes,
                 nodes_parquet_ids
-                    as fn(&dyn relate_engine_api::GraphImport, u64, &[i64]) -> Result<Vec<u8>>,
+                    as fn(&dyn relate_engine_api::GraphExport, u64, &[i64]) -> Result<Vec<u8>>,
             ),
-            (
-                &rels,
-                rels_parquet_ids
-                    as fn(&dyn relate_engine_api::GraphImport, u64, &[i64]) -> Result<Vec<u8>>,
-            ),
+            (&rels, rels_parquet_ids),
         ] {
             let err = encode(&graph, ts, ids).unwrap_err();
             assert!(err.to_string().contains("decoded row"), "{err}");

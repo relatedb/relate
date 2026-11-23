@@ -11,9 +11,9 @@ use relate_executor::{
     result_rows_bytes, ExecGraph, ExecRequest, Graph, QueryResult as ExecResult, RedoOp,
     SnapshotPin, WriteScratch,
 };
-use relate_storage::{EncodedOps, Wal, WalRecord};
+use relate_storage::{EncodedOps, Wal};
 
-use crate::checkpoint::{begin_publication, lock_wal_checked, Publication};
+use crate::checkpoint::{begin_commit_publication, lock_wal_checked, Publication};
 use crate::{CancelToken, DurabilityMode, Error, Result, Shared};
 use relate_core::tokens::WorkspaceCharge;
 
@@ -22,10 +22,7 @@ mod bulk_batch;
 
 use bulk_batch::{BulkBatchPlan, GroupBatchCommit};
 
-use crate::commit_timing::TimingSample;
-pub(crate) use crate::commit_timing::{
-    commit_timing_env, elapsed_nanos, format_commit_timing, CommitTimingBuf,
-};
+use crate::commit_timing::{elapsed_nanos, TimingSample};
 
 #[derive(Default)]
 pub(crate) struct GroupCommit {
@@ -541,12 +538,23 @@ struct FlushOutcome {
 
 /// Apply one replicated record through the shared commit core — the replica
 /// write path's whole choreography, every step delegated to its named
-/// canonical helper (`ensure_writable`, `begin_publication`,
+/// canonical helper (`ensure_writable`, `begin_commit_publication`,
 /// `admit_redo_capacity`, `lock_wal_checked`) beside the group-commit
 /// leader, so the entry is self-fencing like `try_wal_commit`.
-pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Result<u64> {
+pub(crate) fn commit_replicated(
+    shared: &Arc<Shared>,
+    commit_ts: u64,
+    ops: Vec<RedoOp>,
+) -> Result<u64> {
     crate::ensure_writable(shared)?;
-    let publication = begin_publication(shared)?;
+    // The record's one encoding, taken before the publication acquire: the
+    // group path encodes off its serial path too (`try_wal_commit`), so a
+    // replica applying batches does not hold every other committer behind
+    // one record's encode. Charged to this thread's workspace like an
+    // admitted commit's, and held until the record is appended.
+    let mut wal_workspace = WorkspaceCharge::empty();
+    let encoded = EncodedOps::encode(&ops, &mut wal_workspace, shared.resolved.wal_payload_limit)?;
+    let publication = begin_commit_publication(shared)?;
     // Authoritative admission. This path never joins the group-commit
     // queue, so `demote` cannot see it in `wait_for_drain`. The publication
     // write lock is the same one `demote` holds across releasing the writer
@@ -555,16 +563,7 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
     crate::ensure_writable(shared)?;
     // The canonical capacity admission and durability-fenced WAL acquire:
     // this path spells neither policy itself.
-    shared.admit_redo_capacity(&record.ops)?;
-    // The record's one encoding, before the WAL lock is taken.
-    // Charged to this thread's workspace like an admitted commit's, and held
-    // until the record is appended.
-    let mut wal_workspace = WorkspaceCharge::empty();
-    let encoded = EncodedOps::encode(
-        &record.ops,
-        &mut wal_workspace,
-        shared.resolved.wal_payload_limit,
-    )?;
+    shared.admit_redo_capacity(&ops)?;
     let wal = lock_wal_checked(shared)?;
     // The replicated path records no group-commit timing: it does not ask
     // the core to measure (`measure: false`), so it pays for no samples it
@@ -572,11 +571,7 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
     let committed = commit_preflighted(
         shared,
         wal,
-        vec![Admitted::replicated(
-            record.ops.clone(),
-            encoded,
-            record.commit_ts,
-        )],
+        vec![Admitted::replicated(ops, encoded, commit_ts)],
         publication,
         false,
     )?;
@@ -591,7 +586,9 @@ fn flush_group(shared: &Arc<Shared>, batch: Vec<CommitSlot>) -> Result<()> {
     // known; the single terminal `match` is the only place that completes or
     // fails every waiter.
     let result = (|| -> Result<FlushOutcome> {
-        let publication = begin_publication(shared)?;
+        // The commit path's one publication acquire: the closed-segment
+        // budget's back-pressure gate runs inside it, before any guard.
+        let publication = begin_commit_publication(shared)?;
         let wal = lock_wal_checked(shared)?;
         let batch_start = Instant::now();
         let accepted = admission::admit_group(shared, batch, &mut waiters, batch_start);

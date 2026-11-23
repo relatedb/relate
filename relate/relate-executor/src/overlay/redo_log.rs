@@ -201,6 +201,15 @@ impl RedoLog {
         (from <= self.ops.len()).then(|| self.ops[from..].iter().map(LiveRedo::to_op).collect())
     }
 
+    /// The ops appended after `cursor` — the ones a rollback to it would drop.
+    /// The cursor's position is always within the live vec (it came from this
+    /// log, which only grows between a cursor and its [`Self::restore_cursor`]),
+    /// so the read never refuses.
+    pub(super) fn ops_after(&self, cursor: &RedoCursor) -> Vec<RedoOp> {
+        self.ops_since(cursor.len)
+            .expect("a rollback cursor is within the live redo log")
+    }
+
     /// The ops appended since the last [`Self::mark_validated`], and the log
     /// position just past them: the `end` to mark once they validate.
     pub(super) fn unvalidated(&self) -> (Vec<RedoOp>, usize) {

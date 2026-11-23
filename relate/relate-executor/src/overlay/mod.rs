@@ -575,8 +575,7 @@ pub(crate) use reads::ScanNode;
 pub(crate) use redo_log::ValidatedCatalog;
 pub(crate) use virtual_nodes::{lookup_virtual_node, register_virtual_node};
 
-use scratch::ScratchCheckpoint;
-pub use scratch::WriteScratch;
+pub use scratch::{ScratchCheckpoint, StatementMark, WriteScratch};
 
 #[cfg(test)]
 mod adjacency_tests;

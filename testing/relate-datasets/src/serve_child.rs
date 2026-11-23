@@ -264,25 +264,52 @@ fn wait_for_addr(
 mod tests {
     use super::*;
 
+    /// A live session against a fresh store's serve child under `limit`, or
+    /// `None` (with the skip printed) when no `relate` binary is configured.
+    ///
+    /// The store directory must outlive the server, so the fixture owns the
+    /// ordering instead of leaving it to a tuple's or a pattern's order: the
+    /// fields drop in declaration order, and `_server` is declared before
+    /// `_dir` so the child is killed and reaped while its store directory is
+    /// still there. Both are held for their lifetimes and never read — that is
+    /// the whole fixture.
+    struct LiveServe {
+        _server: ServeChild,
+        session: relate_test_support::bolt::client::Session,
+        _dir: tempfile::TempDir,
+    }
+
+    fn live_serve(limit: u64) -> Option<LiveServe> {
+        let Some(bin) = relate_test_support::relate_bin() else {
+            eprintln!(
+                "skipping the live Bolt session test: {}",
+                relate_test_support::relate_bin_missing_message()
+            );
+            return None;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let server = ServeChild::spawn_bolt(&bin, &dir.path().join("store"), limit).unwrap();
+        let session = relate_test_support::bolt::client::Session::connect(&server.addr).unwrap();
+        Some(LiveServe {
+            _server: server,
+            session,
+            _dir: dir,
+        })
+    }
+
     /// A live session against a spawned `relate serve`: the 5.4
     /// negotiation, one parameterized statement, one pipelined batch, and a
     /// batch whose failure the drain absorbs as IGNORED pairs before its
     /// RESET recovers the session.
     #[test]
     fn live_session_runs_parameterized_and_pipelined_statements() {
-        let Some(bin) = relate_test_support::relate_bin() else {
-            eprintln!(
-                "skipping the live Bolt session test: {}",
-                relate_test_support::relate_bin_missing_message()
-            );
+        let Some(live) = live_serve(1 << 30) else {
             return;
         };
-        let dir = tempfile::tempdir().unwrap();
-        // The memory-shape bolt case's serve child: the shared spawn under the
-        // harness's logical graph size limit.
-        let server = ServeChild::spawn_bolt(&bin, &dir.path().join("store"), 1 << 30).unwrap();
-        let mut session =
-            relate_test_support::bolt::client::Session::connect(&server.addr).unwrap();
+        // The session is moved out; `live` keeps the child and its store
+        // directory and drops whole, in declaration order (`server` before
+        // `dir`), so the child is reaped while the directory still exists.
+        let mut session = live.session;
         assert_eq!(
             session.version(),
             relate_test_support::bolt::client::BoltVersion::V5_4,
@@ -319,14 +346,13 @@ mod tests {
                 .unwrap();
         }
         session.flush().unwrap();
-        assert_eq!(
-            session.drain_batch(3).unwrap(),
-            relate_test_support::bolt::client::BatchDrain {
-                applied: 3,
-                errors: 0,
-                failure: None,
-            }
-        );
+        let batch = session.drain_batch().unwrap();
+        assert_eq!(batch.errors, 0);
+        assert!(batch.failure.is_none());
+        assert_eq!(batch.applied(), 3);
+        // ADR-0642: the batch commits once, at its end, so no statement
+        // carries a bookmark of its own.
+        assert_eq!(batch.bookmarks(), &[None, None, None]);
         assert_eq!(
             session
                 .run_records("MATCH (n:BatchProbe) RETURN n")
@@ -344,8 +370,8 @@ mod tests {
             .enqueue_run_pull("CREATE (:BatchProbe {id: $id})", &[("id", 100)])
             .unwrap();
         session.flush().unwrap();
-        let drained = session.drain_batch(3).unwrap();
-        assert_eq!(drained.applied, 1);
+        let drained = session.drain_batch().unwrap();
+        assert_eq!(drained.applied(), 1);
         assert_eq!(drained.errors, 2);
         assert!(!drained.failure.unwrap().is_empty());
         assert_eq!(
@@ -355,6 +381,141 @@ mod tests {
             4
         );
         session.goodbye().unwrap();
+    }
+
+    /// ADR-0642: one framed message batch's pipelined CREATE-only RUN+PULL
+    /// pairs commit once, at the batch's end. The wire proves it by
+    /// bookmarks: the three batched statements answer no bookmark of their
+    /// own, and the MERGE that follows — which cannot join the batch and so
+    /// commits on its own — advances the commit sequence by exactly two (the
+    /// batch's one commit plus its own).
+    #[test]
+    fn a_pipelined_create_batch_commits_once() {
+        let Some(live) = live_serve(1 << 30) else {
+            return;
+        };
+        // The session is moved out; `live` keeps the child and its store
+        // directory and drops whole, in declaration order (`server` before
+        // `dir`), so the child is reaped while the directory still exists.
+        let mut session = live.session;
+        // A MERGE is not CREATE-only: it commits alone, and its bookmark is
+        // the reference point.
+        session
+            .enqueue_run_pull("MERGE (:Before {id: 0})", &[])
+            .unwrap();
+        session.flush().unwrap();
+        let probe = session.drain_batch().unwrap();
+        let first = relate_test_support::bolt::client::bookmark_sequence(
+            probe.bookmarks()[0]
+                .as_deref()
+                .expect("the probe statements commit writes"),
+        );
+
+        for id in 0..3 {
+            session
+                .enqueue_run_pull("CREATE (:BatchCommit {id: $id})", &[("id", id)])
+                .unwrap();
+        }
+        session.flush().unwrap();
+        let batch = session.drain_batch().unwrap();
+        assert_eq!(batch.applied(), 3);
+        assert_eq!(batch.bookmarks(), &[None, None, None]);
+
+        session
+            .enqueue_run_pull("MERGE (:After {id: 0})", &[])
+            .unwrap();
+        session.flush().unwrap();
+        let after = session.drain_batch().unwrap();
+        let last = relate_test_support::bolt::client::bookmark_sequence(
+            after.bookmarks()[0]
+                .as_deref()
+                .expect("the probe statements commit writes"),
+        );
+        assert_eq!(
+            last - first,
+            2,
+            "the batch is one commit: {first:?} -> {last:?}"
+        );
+        assert_eq!(
+            session
+                .run_count("MATCH (n:BatchCommit) RETURN count(n)")
+                .unwrap(),
+            3,
+            "the batch's statements all landed"
+        );
+        session.goodbye().unwrap();
+    }
+
+    /// The pipelined-import rate (ADR-0642): 429 UNWIND-CREATE statements of
+    /// 200 rows each — the rebaseline-load identity load's statement shape —
+    /// flushed as one pipeline, timed from the first write to the last drained
+    /// summary. Set `RELATE_BIN` to compare builds; run with
+    /// `--ignored --nocapture`.
+    #[test]
+    #[ignore = "measurement, not a gate"]
+    fn measure_pipelined_import_rate() {
+        measure_pipelined(
+            "UNWIND $ids AS id CREATE (:Load {id: id})",
+            429,
+            200,
+            |base| {
+                let ids: Vec<relate_test_support::bolt::Pack> = (0..200)
+                    .map(|r| relate_test_support::bolt::Pack::Int(base + r))
+                    .collect();
+                vec![(
+                    relate_test_support::bolt::Pack::String("ids".into()),
+                    relate_test_support::bolt::Pack::List(ids),
+                )]
+            },
+        );
+    }
+
+    /// The commit-dominated twin (ADR-0642): 20 000 single-row CREATEs,
+    /// where a statement's own work is far below its commit. Same knobs as
+    /// [`measure_pipelined_import_rate`].
+    #[test]
+    #[ignore = "measurement, not a gate"]
+    fn measure_pipelined_small_statement_rate() {
+        measure_pipelined("CREATE (:Row {id: $id})", 20_000, 1, |base| {
+            relate_test_support::bolt::client::int_params(&[("id", base)])
+        });
+    }
+
+    /// Flush `statements` RUN+PULL pairs of `rows` rows each as one pipeline
+    /// and print the rate over the whole exchange. `params` builds each
+    /// statement's own parameter map from its first row id.
+    fn measure_pipelined(
+        cypher: &str,
+        statements: usize,
+        rows: i64,
+        params: impl Fn(
+            i64,
+        ) -> Vec<(
+            relate_test_support::bolt::Pack,
+            relate_test_support::bolt::Pack,
+        )>,
+    ) {
+        let Some(live) = live_serve(1 << 34) else {
+            panic!("set RELATE_BIN to compare builds");
+        };
+        let mut session = live.session;
+        let started = std::time::Instant::now();
+        for s in 0..statements {
+            let base = s as i64 * rows;
+            session.enqueue_run_pull_pack(cypher, params(base)).unwrap();
+        }
+        session.flush().unwrap();
+        let drained = session.drain_batch().unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(drained.applied(), statements, "{:?}", drained.failure);
+        let statements_per_s = statements as f64 / elapsed.as_secs_f64();
+        println!(
+            "pipelined import: {statements} statements ({} rows) in {:.1} ms = {:.0} statements/s, {:.0} rows/s",
+            statements as i64 * rows,
+            elapsed.as_secs_f64() * 1e3,
+            statements_per_s,
+            statements_per_s * rows as f64
+        );
     }
 
     /// Two ports reserved together stay distinct. Reserved one after

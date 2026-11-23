@@ -267,7 +267,7 @@ fn crash_orphans_swept_only_after_validated_reopen_on_all_vfs() {
         let (restored, _) = open_store::<relate_executor::Graph>(&reopened).unwrap();
         assert_eq!(restored.live_node_count(), 2);
         assert!(object_exists(&reopened, &live).unwrap());
-        if !deferred_retire(&reopened) {
+        if !keeps_superseded(&reopened) {
             assert!(!object_exists(&reopened, orphan).unwrap());
         }
     }

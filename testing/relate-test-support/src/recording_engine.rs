@@ -5,7 +5,9 @@
 use std::sync::Mutex;
 
 use relate_core::Result;
-use relate_engine_api::{CommitGroup, CommittedSlot, FollowBatch, GraphImport, WriteEngine};
+use relate_engine_api::{
+    CheckpointDirtyMarks, CommitGroup, CommittedSlot, FollowBatch, GraphImport, WriteEngine,
+};
 
 /// Records the groups, checkpoints, polls, and reloads it forwards.
 pub struct RecordingWriteEngine<E> {
@@ -42,6 +44,16 @@ impl<E> RecordingWriteEngine<E> {
     pub fn reloads(&self) -> u64 {
         *self.reloads.lock().expect("recording lock")
     }
+
+    /// The one recording protocol for every counted verb: delegate, count
+    /// the call that was forwarded, pass the outcome through — so
+    /// checkpoint, poll_follow, and reload spell the policy once instead
+    /// of three orderings of it.
+    fn forwarded<T>(&self, count: &Mutex<u64>, call: impl FnOnce() -> T) -> T {
+        let outcome = call();
+        *count.lock().expect("recording lock") += 1;
+        outcome
+    }
 }
 
 impl<E: WriteEngine> WriteEngine for RecordingWriteEngine<E> {
@@ -54,21 +66,23 @@ impl<E: WriteEngine> WriteEngine for RecordingWriteEngine<E> {
         Ok(slots)
     }
 
-    fn checkpoint(&self, graph: &dyn GraphImport, lsn: u64, snapshot_ts: u64) -> Result<()> {
-        let result = self.inner.checkpoint(graph, lsn, snapshot_ts);
-        *self.checkpoints.lock().expect("recording lock") += 1;
-        result
+    fn checkpoint(
+        &self,
+        graph: &dyn CheckpointDirtyMarks,
+        lsn: u64,
+        snapshot_ts: u64,
+    ) -> Result<()> {
+        self.forwarded(&self.checkpoints, || {
+            self.inner.checkpoint(graph, lsn, snapshot_ts)
+        })
     }
 
     fn poll_follow(&self, from_lsn: u64) -> Result<FollowBatch> {
-        *self.polls.lock().expect("recording lock") += 1;
-        self.inner.poll_follow(from_lsn)
+        self.forwarded(&self.polls, || self.inner.poll_follow(from_lsn))
     }
 
     fn reload(&self, graph: &mut dyn GraphImport) -> Result<()> {
-        let result = self.inner.reload(graph);
-        *self.reloads.lock().expect("recording lock") += 1;
-        result
+        self.forwarded(&self.reloads, || self.inner.reload(graph))
     }
 }
 

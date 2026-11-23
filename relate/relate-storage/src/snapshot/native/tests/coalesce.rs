@@ -11,7 +11,6 @@ use crate::codec::parquet::{
 use crate::memory_store;
 use relate_core::Value;
 use relate_executor::Graph;
-use std::sync::atomic::Ordering;
 
 #[test]
 fn interleaved_dirty_clean_nodes_stay_one_shard() {
@@ -276,7 +275,7 @@ fn mixed_file_envelope_retry_recopies_behind_cursor() {
 
         stage_dirty(&graph, 1, |id| id % 2 == dirty_parity);
         let ts = apply_commit(&graph);
-        let (watched, opens) = watch_opens(&store, &part.path);
+        let (watched, opens) = watch_opens(&store);
         with_test_file_ceiling(ceiling, || checkpoint_at(&watched, &graph, 0, ts, MAX_FILE))
             .unwrap();
         let parts = manifest(&store).node_parts;
@@ -286,7 +285,7 @@ fn mixed_file_envelope_retry_recopies_behind_cursor() {
         // Three opens: the kept part's schema read (ADR-0534 carry), the
         // failed file, and the first half's reopen — the second half
         // starts ahead of the first half's cursor and reuses it.
-        assert_eq!(opens.load(Ordering::SeqCst), 3, "parity {dirty_parity}");
+        assert_eq!(opens.opens(&part.path), 3, "parity {dirty_parity}");
         assert_reopens_as(&store, &graph);
     }
 }
@@ -403,7 +402,7 @@ fn over_target_seed_copies_clean_rows_across_files() {
     stage_dirty(&graph, 1, |id| dirty.contains(&id));
     let ts = apply_commit(&graph);
     let target = 10 * 1024;
-    let (watched, opens) = watch_opens(&store, &part.path);
+    let (watched, opens) = watch_opens(&store);
     take_measured_rows();
     take_encoded_rows();
     checkpoint_at(&watched, &graph, 0, ts, target).unwrap();
@@ -412,7 +411,7 @@ fn over_target_seed_copies_clean_rows_across_files() {
     // kept part's one schema read (ADR-0534 carry).
     assert_eq!(take_measured_rows(), 2000);
     assert_eq!(take_encoded_rows(), dirty.len());
-    assert_eq!(opens.load(Ordering::SeqCst), 2);
+    assert_eq!(opens.opens(&part.path), 2);
     let parts = assert_tiles(&store, &graph, ts, part.id_lo..part.id_hi, target);
     assert!(parts.len() > 1, "{parts:?}");
     assert_eq!(parts.iter().map(|p| p.rows).sum::<u64>(), 2000);
@@ -455,9 +454,9 @@ fn file_without_rows_is_refused() {
     let store = memory_store();
     let graph = Graph::default();
     let mut owned = Vec::new();
-    let mut ctx = ShardWrite::new(&store, &graph, 1, Kind::Node, 1, &mut owned);
+    let mut ctx = ShardWrite::new(&store, &graph, 1, 1, Rewrite::Coalesce, &mut owned);
     // Ids 7 and 8 get a new window [0, 4096), with no previous file.
-    let err = coalesce::rewrite(&mut ctx, Vec::new(), &[7, 8], &[], 4096).unwrap_err();
+    let err = coalesce::rewrite(&mut ctx, Kind::Node, Vec::new(), &[7, 8], &[], 4096).unwrap_err();
     assert!(matches!(err, Error::Storage(_)), "{err}");
     let refused = "Parquet shard [0, 4096) would hold no rows";
     assert!(err.to_string().contains(refused), "{err}");

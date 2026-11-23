@@ -1,6 +1,7 @@
 use super::*;
 use relate_catalog::ConstraintDef;
 use relate_executor::Graph;
+use relate_test_support::read_log::ReadLog;
 use std::sync::Arc;
 
 mod bundle;
@@ -18,6 +19,71 @@ mod migrate;
 mod reset;
 #[cfg(all(parquet_codec, not(target_arch = "wasm32")))]
 mod wide;
+
+/// The crate's one read-logging `Vfs` wrapper: every open is recorded in the
+/// workspace's [`ReadLog`] and everything else delegates. It lives here, not
+/// in one suite, because it is codec-neutral — the Parquet harness's
+/// fault-injecting `InjectVfs` is the parquet-gated sibling and shares the
+/// same log type.
+pub(super) struct ReadLogVfs {
+    inner: Arc<dyn Vfs>,
+    log: Arc<ReadLog>,
+}
+
+impl ReadLogVfs {
+    pub(super) fn new(inner: Arc<dyn Vfs>) -> Self {
+        Self {
+            inner,
+            log: Arc::new(ReadLog::default()),
+        }
+    }
+
+    /// The shared log handle, so a wrapper that composes this one records
+    /// through the same log instead of re-implementing the recording. Its
+    /// one caller is the Parquet snapshot harness, so it compiles only with
+    /// that codec — a JSON-codec build has no reader for it.
+    #[cfg(parquet_codec)]
+    pub(super) fn log(&self) -> Arc<ReadLog> {
+        Arc::clone(&self.log)
+    }
+}
+
+impl Vfs for ReadLogVfs {
+    fn durable(&self) -> bool {
+        self.inner.durable()
+    }
+    fn create_dir_all(&self, path: &str) -> Result<()> {
+        self.inner.create_dir_all(path)
+    }
+    fn create_dir_all_for_atomic(&self, path: &str) -> Result<()> {
+        self.inner.create_dir_all_for_atomic(path)
+    }
+    fn list_dir(&self, path: &str) -> Result<Vec<String>> {
+        self.inner.list_dir(path)
+    }
+    fn exists(&self, path: &str) -> Result<bool> {
+        self.inner.exists(path)
+    }
+    fn metadata(&self, path: &str) -> Result<VfsMeta> {
+        self.inner.metadata(path)
+    }
+    fn open(&self, path: &str, opts: VfsOpen) -> Result<Box<dyn VfsFile>> {
+        self.log.record_open(path, opts.reads_only());
+        self.inner.open(path, opts)
+    }
+    fn remove_file(&self, path: &str) -> Result<()> {
+        self.inner.remove_file(path)
+    }
+    fn remove_dir_all(&self, path: &str) -> Result<()> {
+        self.inner.remove_dir_all(path)
+    }
+    fn rename(&self, from: &str, to: &str) -> Result<()> {
+        self.inner.rename(from, to)
+    }
+    fn sync_dir(&self, path: &str) -> Result<()> {
+        self.inner.sync_dir(path)
+    }
+}
 
 #[test]
 fn storage_context_names_the_object_of_storage_and_io_messages_only() {

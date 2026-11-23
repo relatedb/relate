@@ -12,7 +12,10 @@ pub mod client;
 
 use std::io::{Read, Write};
 
-use relate_bolt::packstream::Pack;
+// The client's parameter and message vocabulary, re-exported so a harness
+// that pipelines parameterized statements does not need its own relate-bolt
+// dependency for the one type.
+pub use relate_bolt::packstream::Pack;
 
 /// Write one struct message to the client; panics on failure.
 pub fn send_struct<S: Write>(client: &mut S, tag: u8, fields: Vec<Pack>) {

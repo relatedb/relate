@@ -284,6 +284,55 @@ pub fn clause_mutates_store(clause: &relate_ir::Clause) -> bool {
     )
 }
 
+/// How one clause participates in the pipelined write batch's create-only
+/// gate ([`crate::plan::plan_is_create_only`], ADR-0642): beside
+/// [`clause_mutates_store`] and [`clause_projects_rows`], the table the gate
+/// folds instead of re-listing the eligible clauses at its use site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CreateOnlyRole {
+    /// A `CREATE` — the statement must carry at least one.
+    Create,
+    /// A clause that reshapes the input stream into the create **without
+    /// materializing the statement's own result rows or mutating**: the
+    /// routing `USE` and the feeding `MATCH`/`WITH`/`UNWIND`. These DO project
+    /// rows per [`clause_projects_rows`] — the gate's axis is the statement's
+    /// final result set and stream shape, not per-clause row projection.
+    Neutral,
+    /// Anything else refuses the statement: a second write flavor
+    /// (`MERGE`/`SET`/`REMOVE`/`DELETE`/`FOREACH`/`LOAD CSV`), a `RETURN`
+    /// (whose result rows would be held past the statement boundary), a
+    /// `CALL` (a writes-flagged procedure is a mutation the fold cannot see),
+    /// schema DDL, and the nested `CALL { … }`/`WHEN` bodies.
+    Refuse,
+}
+
+/// The per-clause verdict of [`CreateOnlyRole`]. Exhaustive over the IR
+/// enum, no `_ =>`: a new variant must state whether it may join a batch.
+pub(crate) fn clause_create_only_role(clause: &relate_ir::Clause) -> CreateOnlyRole {
+    use relate_ir::Clause as Ir;
+    match clause {
+        Ir::Create { .. } => CreateOnlyRole::Create,
+        Ir::Match { .. } | Ir::With { .. } | Ir::Unwind { .. } | Ir::Use { .. } => {
+            CreateOnlyRole::Neutral
+        }
+        Ir::Merge { .. }
+        | Ir::Delete { .. }
+        | Ir::Set { .. }
+        | Ir::Remove { .. }
+        | Ir::Return { .. }
+        | Ir::Call { .. }
+        | Ir::Finish
+        | Ir::CreateIndex { .. }
+        | Ir::DropIndex { .. }
+        | Ir::ShowIndexes
+        | Ir::LoadCsv { .. }
+        | Ir::CallSubquery { .. }
+        | Ir::Conditional { .. }
+        | Ir::Foreach { .. }
+        | Ir::Catalog(_) => CreateOnlyRole::Refuse,
+    }
+}
+
 /// ADR-0210: whether one clause is a `CALL { … } IN TRANSACTIONS` — the single
 /// spelling both in-transactions classifiers
 /// ([`crate::plan::plan_contains_in_transactions`],

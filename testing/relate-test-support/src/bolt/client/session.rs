@@ -9,7 +9,7 @@ use relate_bolt::packstream::{try_struct_msg, Pack};
 
 use super::messages::{
     describe, hello_entries, int_params, is_success, logon_entries, message_tag, pull_fields,
-    record_int, run_fields, run_pull_frame, tag,
+    record_int, run_fields, run_pull_frame, summary_bookmark, tag,
 };
 use super::version::{BoltVersion, MAGIC, PROPOSALS};
 
@@ -29,27 +29,40 @@ pub struct Session {
     /// Messages queued by [`Session::enqueue_run_pull`], written together by
     /// the batch's one [`Session::flush`].
     outbox: Vec<u8>,
+    /// RUN+PULL pairs queued since the last [`Session::drain_batch`] — the
+    /// count the drain reads, owned where the queue is: the session counts
+    /// in [`Session::enqueue_run_pull_pack`], so the drain reads exactly
+    /// what the last flush wrote instead of trusting a caller-supplied
+    /// count to match.
+    queued_pairs: usize,
 }
 
 /// The responses of one drained pipelined batch.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BatchDrain {
-    /// Pairs whose RUN and PULL both answered SUCCESS.
-    pub applied: usize,
     /// Pairs the server rejected: the one that answered FAILURE plus every
     /// pair it answered IGNORED behind it.
     pub errors: usize,
     /// The FAILURE text of the batch's first rejected pair.
     pub failure: Option<String>,
+    /// One entry per applied pair, in order: the ending summary's
+    /// `bookmark` (ADR-0310), `None` for a statement that committed nothing
+    /// at its own boundary.
+    bookmarks: Vec<Option<String>>,
 }
 
 impl BatchDrain {
-    fn new() -> Self {
-        Self {
-            applied: 0,
-            errors: 0,
-            failure: None,
-        }
+    /// The applied pairs' ending summaries' `bookmark` entries (ADR-0310), in
+    /// order — one per applied pair. Read this for the values; [`Self::applied`]
+    /// is the count.
+    pub fn bookmarks(&self) -> &[Option<String>] {
+        &self.bookmarks
+    }
+
+    /// Pairs whose RUN and PULL both answered SUCCESS — one per applied
+    /// bookmark, the one accessor for the applied count.
+    pub fn applied(&self) -> usize {
+        self.bookmarks.len()
     }
 
     /// Record one rejected pair, keeping the batch's first FAILURE text.
@@ -108,6 +121,7 @@ impl Session {
             version: BoltVersion::from_reply(reply)?,
             read_timeout,
             outbox: Vec::new(),
+            queued_pairs: 0,
         };
         session.open(auth)?;
         Ok(session)
@@ -257,6 +271,7 @@ impl Session {
         params: Vec<(Pack, Pack)>,
     ) -> Result<(), String> {
         self.outbox.extend(run_pull_frame(cypher, params)?);
+        self.queued_pairs += 1;
         Ok(())
     }
 
@@ -266,14 +281,17 @@ impl Session {
         self.stream.write_all(&outbox).map_err(|e| e.to_string())
     }
 
-    /// Drain the responses of `count` pipelined RUN+PULL pairs queued by
-    /// [`Session::enqueue_run_pull`] and written by [`Session::flush`].
+    /// Drain the responses of the pipelined RUN+PULL pairs queued by
+    /// [`Session::enqueue_run_pull`] and written by [`Session::flush`]:
+    /// exactly the pairs queued since the last drain, counted by the
+    /// session itself.
     ///
     /// A FAILURE leaves the server in its failed state: every pair still
     /// queued behind it answers IGNORED, and one RESET at the end of the
     /// drain recovers the session for the next batch.
-    pub fn drain_batch(&mut self, count: usize) -> Result<BatchDrain, String> {
-        let mut drain = BatchDrain::new();
+    pub fn drain_batch(&mut self) -> Result<BatchDrain, String> {
+        let count = std::mem::take(&mut self.queued_pairs);
+        let mut drain = BatchDrain::default();
         for _ in 0..count {
             if drain.failure.is_some() {
                 // The failed state answers both messages of every pair still
@@ -303,7 +321,7 @@ impl Session {
                 let msg = self.read_message()?;
                 match message_tag(&msg) {
                     Some(tag::SUCCESS) => {
-                        drain.applied += 1;
+                        drain.bookmarks.push(summary_bookmark(&msg));
                         break;
                     }
                     Some(tag::RECORD) => {}

@@ -10,7 +10,9 @@ use std::sync::Mutex;
 
 use relate_core::tokens::WorkspaceCharge;
 use relate_core::{Error, Result};
-use relate_engine_api::{CommitGroup, CommittedSlot, FollowBatch, GraphImport, WriteEngine};
+use relate_engine_api::{
+    CheckpointDirtyMarks, CommitGroup, CommittedSlot, FollowBatch, GraphImport, WriteEngine,
+};
 use relate_storage::{EncodedOps, StoreTarget, Wal, WalCatchUp, WalRecord};
 
 /// One accepted group's timestamp and the redo's one encoding (made at
@@ -133,7 +135,12 @@ impl WriteEngine for LocalWriteEngine {
             .collect())
     }
 
-    fn checkpoint(&self, graph: &dyn GraphImport, lsn: u64, snapshot_ts: u64) -> Result<()> {
+    fn checkpoint(
+        &self,
+        graph: &dyn CheckpointDirtyMarks,
+        lsn: u64,
+        snapshot_ts: u64,
+    ) -> Result<()> {
         relate_storage::checkpoint_at(&self.store, graph, lsn, snapshot_ts, None)
     }
 

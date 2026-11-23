@@ -179,7 +179,7 @@ impl<'a> ExpectedMirror<'a> {
 /// the SHOW createStatement renderings, one semicolon-terminated
 /// statement per line.
 fn expected_mirror<'a>(
-    graph: &'a dyn relate_engine_api::GraphImport,
+    graph: &'a dyn relate_engine_api::GraphExport,
     ontology: Option<&'a str>,
 ) -> Result<ExpectedMirror<'a>> {
     let ontology = ontology.map(|document| {
@@ -201,16 +201,23 @@ fn expected_mirror<'a>(
     })
 }
 
-/// Render and write the schema text mirror for one checkpoint
-/// (ADR-0481 §5/§6): unconditional, no flag. `graph` and `ontology` are
-/// the same in-memory state the checkpoint is persisting — the callers
-/// hold the checkpoint's graph and the store's current ontology
-/// document. Every expected-absent entry in [`ExpectedMirror::files`]
-/// is cleared, so the directory holds exactly the three-file contract
-/// after every checkpoint.
-fn write_checkpoint_schema_files(
+/// The checkpoint tail every codec shares (ADR-0481 §5/§6): render and
+/// write the schema text mirror for one checkpoint, unconditional, no
+/// flag. `graph` and `ontology` are the same frozen state the checkpoint is
+/// persisting — the callers hold the checkpoint's view over its cut and the
+/// store's ontology document as that cut saw it. The dirty tracking needs no
+/// clear here — the checkpoint took the ids it covers at its cut
+/// (`CheckpointImage::take`), so a commit that landed while this dump ran
+/// kept its own marks. The mirror publishes after the manifest the codec
+/// already wrote (the manifest and WAL stay authoritative, the mirror is the
+/// reflection). The markdown codec's journal removal follows this call: the
+/// mirror lands before the journal is cleared, the ordering its crash window
+/// records. Every expected-absent entry in [`ExpectedMirror::files`] is
+/// cleared, so the directory holds exactly the three-file contract after
+/// every checkpoint.
+pub(crate) fn finish_checkpoint(
     target: &StoreTarget,
-    graph: &dyn relate_engine_api::GraphImport,
+    graph: &dyn relate_engine_api::GraphExport,
     ontology: Option<&str>,
 ) -> Result<()> {
     let mirror = expected_mirror(graph, ontology)?;
@@ -220,26 +227,6 @@ fn write_checkpoint_schema_files(
             None => remove_object(target, file)?,
         }
     }
-    Ok(())
-}
-
-/// The checkpoint tail every codec shares (ADR-0481 §5): write the
-/// schema text mirror from the same in-memory state this checkpoint
-/// just persisted, then clear the graph's checkpoint-dirty tracking —
-/// the checkpoint now holds everything it tracked. Each codec calls
-/// this exactly where it wrote the mirror and cleared the flag, so the
-/// write/clear pairing is spelled once; the mirror still publishes
-/// after the manifest the codec already wrote (the manifest and WAL
-/// stay authoritative, the mirror is the reflection). The markdown
-/// codec's journal removal follows this call: the mirror lands before
-/// the journal is cleared, the ordering its crash window records.
-pub(crate) fn finish_checkpoint(
-    target: &StoreTarget,
-    graph: &dyn relate_engine_api::GraphImport,
-    ontology: Option<&str>,
-) -> Result<()> {
-    write_checkpoint_schema_files(target, graph, ontology)?;
-    graph.clear_checkpoint_dirty();
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-//! What a snapshot codec may ask of a query engine, and what recovery may
+//! What a checkpoint may ask of a query engine, and what recovery may
 //! put back. Codecs never name a concrete graph.
 
 use std::collections::HashSet;
@@ -15,8 +15,10 @@ pub trait GraphExport {
     fn next_node_id(&self) -> i64;
     fn next_rel_id(&self) -> i64;
     fn live_node_count(&self) -> usize;
-    fn dirty_node_ids(&self) -> HashSet<NodeId>;
-    fn dirty_rel_ids(&self) -> HashSet<RelId>;
+    /// The ids changed since the previous take — one carrier
+    /// ([`CheckpointDirty`]) for the pair, so an implementor spells the
+    /// node/rel split once.
+    fn checkpoint_dirty(&self) -> CheckpointDirty;
     fn all_node_ids_at(&self, ts: u64) -> Vec<NodeId>;
     fn all_rel_ids_at(&self, ts: u64) -> Vec<RelId>;
     fn node_at(&self, id: NodeId, ts: u64) -> Option<Node>;
@@ -27,9 +29,29 @@ pub trait GraphExport {
     fn named_constraints(&self) -> Vec<ConstraintDef>;
     fn checkpoint_theater_for_write(&self) -> Result<CheckpointTheater>;
     fn graph_type_spec(&self) -> Result<Option<String>>;
-    fn clear_checkpoint_dirty(&self);
     /// SHOW-style catalog DDL the schema mirror writes beside a checkpoint.
     fn catalog_ddl(&self) -> Vec<String>;
+}
+
+/// The checkpoint-dirty marks a graph with live write state carries: a
+/// checkpoint's cut takes them, a failed dump hands them back. Separate
+/// from [`GraphExport`], so a read-only view over a frozen cut — the
+/// storage crate's checkpoint cut — can neither clear nor restore the
+/// live marks.
+pub trait CheckpointDirtyMarks: GraphExport {
+    /// Hand over the ids changed since the previous take and clear them:
+    /// the checkpoint's cut takes the marks it is about to dump.
+    fn take_checkpoint_dirty(&self) -> CheckpointDirty;
+    /// Hand back a failed dump's marks, so the next checkpoint covers them.
+    fn merge_checkpoint_dirty(&self, dirty: &CheckpointDirty);
+}
+
+/// The ids a graph's checkpoint-dirty tracking has marked since the
+/// previous take (ADR-0022).
+#[derive(Clone, Default)]
+pub struct CheckpointDirty {
+    pub nodes: HashSet<NodeId>,
+    pub rels: HashSet<RelId>,
 }
 
 /// The fill side of a graph: what a codec installs checkpoint rows through.

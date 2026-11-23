@@ -1,7 +1,10 @@
 use super::*;
 use crate::{Database, OpenOptions, SnapshotCodecKind, Value};
-use std::sync::Arc;
 use std::time::Instant;
+
+mod pause;
+
+use pause::*;
 
 #[test]
 fn constraints_survive_wal_reopen() {
@@ -158,61 +161,6 @@ fn writes_continue_during_checkpoint() {
 }
 
 #[test]
-fn publication_drains_admitted_checkpoint_before_any_wal_frame() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let dir = tempfile::tempdir().unwrap();
-    let db = Arc::new(Database::open(dir.path().to_str().unwrap()).unwrap());
-    db.connect().unwrap().query("CREATE (:Prior)").unwrap();
-    let shared = db.shared();
-    let mut wal = shared.wal.lock().unwrap();
-    wal.rotate().unwrap();
-    let pin = CheckpointPin::of(&wal);
-    assert_eq!(pin.lsn, 1);
-    assert!(try_begin_checkpoint(&shared));
-    // Hold the WAL lock so the real worker can publish its manifest but
-    // cannot complete recycle. Publication must drain that in-flight work.
-    schedule_checkpoint(&shared, pin);
-    assert_eq!(
-        wait_checkpoint_lsn(dir.path(), Duration::from_secs(5)),
-        Some(1)
-    );
-    assert!(shared.checkpoint_busy.lock().unwrap().busy);
-    let finished = Arc::new(AtomicBool::new(false));
-    let worker = {
-        let db = Arc::clone(&db);
-        let finished = Arc::clone(&finished);
-        std::thread::spawn(move || {
-            db.apply_replicated(&crate::WalRecord {
-                lsn: 0,
-                commit_ts: 2,
-                ops: vec![relate_executor::RedoOp::CreateNode {
-                    id: 1,
-                    labels: Arc::new(vec![]),
-                    properties: std::sync::Arc::new(relate_core::PropertyMap::new()),
-                }],
-            })
-            .unwrap();
-            finished.store(true, Ordering::Release);
-        })
-    };
-    let start = Instant::now();
-    loop {
-        if shared.checkpoint_busy.lock().unwrap().blocked {
-            break;
-        }
-        assert!(start.elapsed() < Duration::from_secs(5));
-        std::thread::yield_now();
-    }
-    assert_eq!(wal.lsn, 1);
-    assert!(!finished.load(Ordering::Acquire));
-    drop(wal); // real worker now recycles and calls end_checkpoint
-    worker.join().unwrap();
-    assert!(finished.load(Ordering::Acquire));
-    assert_eq!(shared.wal.lock().unwrap().lsn, 2);
-    assert_eq!(manifest_checkpoint_lsn(dir.path()), Some(1));
-}
-
-#[test]
 fn drop_joins_rotation_checkpoint_before_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_str().unwrap();
@@ -234,37 +182,6 @@ fn drop_joins_rotation_checkpoint_before_reopen() {
         drop(shared);
         db.leak_without_checkpoint();
     }
-}
-
-#[test]
-fn standalone_failed_checkpoint_does_not_fence_later_writes() {
-    let db = Database::open(":memory:").unwrap();
-    let shared = db.shared();
-    // A checkpoint that failed while no writer was blocked on its
-    // admission drain must not leave a sticky fence (ADR-0094).
-    end_checkpoint(&shared, &Err(Error::io("checkpoint failed")));
-    assert!(shared.checkpoint_busy.lock().unwrap().last_error.is_none());
-    // Later writes still succeed.
-    db.connect()
-        .unwrap()
-        .query("CREATE (:AfterFailedCheckpoint)")
-        .unwrap();
-}
-
-#[test]
-fn failed_admitted_checkpoint_prevents_append() {
-    let db = Database::open(":memory:").unwrap();
-    let shared = db.shared();
-    shared.checkpoint_busy.lock().unwrap().last_error = Some(Error::io("checkpoint failed"));
-    let err = db
-        .apply_replicated(&crate::WalRecord {
-            lsn: 0,
-            commit_ts: 1,
-            ops: vec![],
-        })
-        .unwrap_err();
-    assert!(err.to_string().contains("checkpoint failed"));
-    assert_eq!(shared.wal.lock().unwrap().lsn, 0);
 }
 
 #[test]
@@ -365,10 +282,23 @@ fn named_index_wal_without_checkpoint() {
     let dir = tempfile::tempdir().unwrap();
     named_index_survives_reopen(dir.path().to_str().unwrap(), false);
 }
+/// The store's published manifest at `dir`, typed — the Parquet shape only,
+/// so its one caller is Parquet-gated beside it.
+#[cfg(feature = "parquet")]
+fn manifest(dir: &std::path::Path) -> Option<relate_storage::Manifest> {
+    let bytes = std::fs::read(dir.join("manifest.json")).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// The published checkpoint's LSN, read from whichever codec wrote
+/// `manifest.json` — the Parquet manifest carries it beside its other
+/// fields, and the JSON codec's envelope is its own top-level record, so
+/// one field lookup reads the same fact under every codec. (The Parquet
+/// `Manifest` type itself deserializes only from Parquet's shape.)
 fn manifest_checkpoint_lsn(dir: &std::path::Path) -> Option<u64> {
     let bytes = std::fs::read(dir.join("manifest.json")).ok()?;
-    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    manifest["checkpoint_lsn"].as_u64()
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value.get("checkpoint_lsn")?.as_u64()
 }
 
 fn wait_checkpoint_lsn(dir: &std::path::Path, timeout: Duration) -> Option<u64> {
@@ -486,49 +416,28 @@ fn snapshot_data_bytes_after_checkpoint() {
     assert!(db.snapshot_data_bytes().unwrap() > 0);
 }
 
-fn memory_wal_segments(db: &Database) -> Vec<String> {
-    let mut names = db.shared().store.vfs().list_dir("wal").unwrap();
-    names.sort();
-    names
-}
-
-fn assert_checkpoint_idle(shared: &Shared) {
+#[test]
+fn rotation_checkpoint_reports_trigger_and_duration() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Database::open(dir.path().to_str().unwrap()).unwrap();
+    db.connect().unwrap().query("CREATE (:Report)").unwrap();
+    let shared = db.shared();
+    {
+        let mut wal = shared.wal.lock().unwrap();
+        wal.rotate().unwrap();
+    }
+    schedule_checkpoint(&shared);
+    // A durable store's rotation checkpoint dumps off-thread; wait for it
+    // to end (which follows the report, so the report is set when idle).
+    wait_checkpoint_end(&shared);
     let state = shared.checkpoint_busy.lock().unwrap();
-    assert!(!state.busy && state.last_error.is_none());
-}
-
-#[test]
-fn memory_rotation_checkpoint_recycles_without_snapshot() {
-    let db = Database::open(":memory:").unwrap();
-    db.connect().unwrap().query("CREATE (:N)").unwrap();
-    // Empty replicated commits reach the WAL's commit threshold cheaply.
-    let rotated = (2..=50_000u64).any(|commit_ts| {
-        db.apply_replicated(&crate::WalRecord {
-            lsn: 0,
-            commit_ts,
-            ops: vec![],
-        })
-        .unwrap();
-        memory_wal_segments(&db).iter().any(|n| n == "00000002.log")
-    });
-    assert!(rotated, "WAL never rotated");
-    let shared = db.shared();
-    assert_checkpoint_idle(&shared);
-    assert!(!shared.wal.lock().unwrap().has_closed_segments());
-    assert_eq!(memory_wal_segments(&db), vec!["00000002.log".to_string()]);
-    assert_eq!(db.snapshot_data_bytes().unwrap(), 0);
-}
-
-#[test]
-fn memory_automatic_run_checkpoint_recycles_without_snapshot() {
-    let db = Database::open(":memory:").unwrap();
-    db.connect().unwrap().query("CREATE (:N)").unwrap();
-    let shared = db.shared();
-    run_checkpoint(&shared, Trigger::Automatic).unwrap();
-    assert_checkpoint_idle(&shared);
-    assert!(!shared.wal.lock().unwrap().has_closed_segments());
-    assert_eq!(memory_wal_segments(&db), vec!["00000002.log".to_string()]);
-    assert_eq!(db.snapshot_data_bytes().unwrap(), 0);
+    let report = state.last.as_ref().expect("completed checkpoint reported");
+    assert_eq!(report.trigger, Trigger::Rotation);
+    assert!(
+        report.duration > Duration::ZERO,
+        "a dumping checkpoint takes non-zero time, got {:?}",
+        report.duration
+    );
 }
 
 #[test]
@@ -561,6 +470,16 @@ fn vector_index_metadata_survives_wal_reopen() {
     );
 }
 
+/// The dump/commit-concurrency and closed-segment-backlog suite, split from
+/// this file (the no-1k-line rule).
+mod dump_concurrency;
 /// The exit-publication suite (ADR-0646), split from this file (the
 /// no-1k-line rule).
 mod exit_publication;
+/// The `:memory:` recycle-only checkpoints (ADR-0105).
+mod recycle;
+/// The copy-on-write shard rewrite (ADR-0643 Decision 6). Parquet-only:
+/// every unit reads the Parquet manifest's typed shard parts, so the whole
+/// module compiles with that codec and not otherwise.
+#[cfg(all(feature = "parquet", not(target_arch = "wasm32")))]
+mod rewrite;

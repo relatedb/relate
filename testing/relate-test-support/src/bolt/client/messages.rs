@@ -38,7 +38,10 @@ pub(super) const USER_AGENT: &str = "relate-datasets/1.0";
 
 /// An integer parameter map as packstream pairs: the one conversion the
 /// integer call sites go through.
-pub(super) fn int_params(params: &[(&str, i64)]) -> Vec<(Pack, Pack)> {
+/// The one integer-parameter builder: a statement's `(name, value)` pairs as
+/// the pack-level map every enqueue entry point takes, so a caller with plain
+/// integers never hand-builds the `Pack` pairs.
+pub fn int_params(params: &[(&str, i64)]) -> Vec<(Pack, Pack)> {
     params
         .iter()
         .map(|(name, value)| (Pack::String((*name).to_string()), Pack::Int(*value)))
@@ -154,6 +157,45 @@ pub(super) fn record_int(record: &[u8]) -> Option<i64> {
         return None;
     };
     Some(*value)
+}
+
+/// The `bookmark` entry of a PULL/DISCARD ending SUCCESS (ADR-0310): the
+/// commit sequence the surface stamped on the result, `None` when the
+/// statement committed nothing at its own boundary. The one reader a
+/// pipelined-batch check needs to see which statements committed. A present
+/// bookmark that is not a string is a wire-contract violation and panics
+/// rather than reading as absent.
+pub(super) fn summary_bookmark(msg: &[u8]) -> Option<String> {
+    let Ok(Pack::Struct {
+        tag: tag::SUCCESS,
+        fields,
+    }) = decode(msg)
+    else {
+        return None;
+    };
+    let [metadata] = fields.as_slice() else {
+        return None;
+    };
+    metadata.get("bookmark").map(|value| {
+        value
+            .as_str()
+            .expect("a SUCCESS bookmark is a string")
+            .to_owned()
+    })
+}
+
+/// The commit sequence of an ADR-0310 `relate:<n>` bookmark — the one decoder
+/// every harness that compares bookmarks shares, beside the [`summary_bookmark`]
+/// reader that produced the string. It takes the bookmark present: a probe
+/// statement that commits a write always carries one, so presence is the call
+/// site's to state where it knows it, and a bookmark is always `relate:<n>`, so
+/// the malformed case is a wire-contract violation and panics.
+pub fn bookmark_sequence(bookmark: &str) -> u64 {
+    bookmark
+        .strip_prefix("relate:")
+        .expect("a bookmark is relate:<n>")
+        .parse()
+        .expect("a bookmark carries a sequence")
 }
 
 #[cfg(test)]

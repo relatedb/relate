@@ -1,6 +1,8 @@
 //! Checkpoint-facing graph API: restoring checkpoint rows into a graph
 //! being loaded, and the payload sizes and dirty ids a checkpoint reads.
 
+use relate_engine_api::CheckpointDirty;
+
 use super::id_vec::IdVec;
 use super::*;
 use crate::store::NameCache;
@@ -47,19 +49,37 @@ fn visible_checkpoint_bytes<Live>(
 }
 
 impl Graph {
-    /// Node ids changed since the last `clear_checkpoint_dirty` (ADR-0022).
+    /// Node ids changed since the previous take (ADR-0022).
     pub fn dirty_node_ids(&self) -> HashSet<NodeId> {
         self.dirty_nodes.lock().unwrap().clone()
     }
 
-    /// Relationship ids changed since the last `clear_checkpoint_dirty`.
+    /// Relationship ids changed since the previous take.
     pub fn dirty_rel_ids(&self) -> HashSet<RelId> {
         self.dirty_rels.lock().unwrap().clone()
     }
 
-    pub fn clear_checkpoint_dirty(&self) {
-        self.dirty_nodes.lock().unwrap().clear();
-        self.dirty_rels.lock().unwrap().clear();
+    /// Take the ids changed since the previous take and clear them. One
+    /// swap per set, so a commit that lands right after re-marks its ids
+    /// instead of having its mark cleared by this checkpoint.
+    pub fn take_checkpoint_dirty(&self) -> CheckpointDirty {
+        CheckpointDirty {
+            nodes: std::mem::take(&mut *self.dirty_nodes.lock().unwrap()),
+            rels: std::mem::take(&mut *self.dirty_rels.lock().unwrap()),
+        }
+    }
+
+    /// Hand a failed dump's marks back: a dump that did not publish must
+    /// leave the next checkpoint covering the same ids.
+    pub fn merge_checkpoint_dirty(&self, dirty: &CheckpointDirty) {
+        self.dirty_nodes
+            .lock()
+            .unwrap()
+            .extend(dirty.nodes.iter().copied());
+        self.dirty_rels
+            .lock()
+            .unwrap()
+            .extend(dirty.rels.iter().copied());
     }
 
     /// Variable checkpoint payload of the node visible at `ts`: label bytes
@@ -183,7 +203,8 @@ impl Graph {
     pub fn finish_restore(&self) {
         self.close_restoring();
         self.rebuild_adj();
-        self.clear_checkpoint_dirty();
+        // The snapshot already holds every restored row: drop their marks.
+        let _ = self.take_checkpoint_dirty();
     }
 
     /// A checkpoint load's entry: take the graph's restore phase for a

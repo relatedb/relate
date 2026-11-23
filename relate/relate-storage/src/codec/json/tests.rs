@@ -49,7 +49,7 @@ fn json_checkpoint_roundtrip_preserves_the_enforced_label() {
             1,
         )
         .unwrap();
-    dump(&target, &graph, 1, 1, None).unwrap();
+    crate::checkpoint_at(&target, &graph, 1, 1, None).unwrap();
     let loaded = load(&target).unwrap();
     let def = loaded
         .named_constraints()
@@ -90,7 +90,7 @@ fn json_typed_theater_requires_every_named_enforced_label() {
             1,
         )
         .unwrap();
-    dump(&target, &graph, 1, 1, None).unwrap();
+    crate::checkpoint_at(&target, &graph, 1, 1, None).unwrap();
     let original: serde_json::Value =
         serde_json::from_slice(&get_object(&target, GRAPH_JSON).unwrap()).unwrap();
     assert_eq!(
@@ -140,7 +140,7 @@ fn json_legacy_enforced_label_import_and_invalid_theater() {
         imported.checkpoint_theater().enforced_label("rule"),
         Some("Verified")
     );
-    dump(&target, &imported, 1, 0, None).unwrap();
+    crate::checkpoint_at(&target, &imported, 1, 0, None).unwrap();
     let mut mismatch: serde_json::Value =
         serde_json::from_slice(&get_object(&target, GRAPH_JSON).unwrap()).unwrap();
     mismatch["constraints"][0]["enforced_label"] = serde_json::json!("Other");
@@ -195,53 +195,59 @@ fn load_rejects_max_manifest_timestamp_before_replay() {
     }
 }
 
-#[test]
-fn dump_rejects_max_timestamp_without_changing_snapshot() {
+/// The publish-then-dirty fixture both rejection tests start from: a JSON
+/// store with one published node — its `graph.json`/manifest bytes saved —
+/// and one further node created but not committed (dirty).
+fn published_then_dirty() -> (StoreTarget, Graph, Vec<u8>, Vec<u8>) {
     let target = memory_store_with_codec(SnapshotCodecKind::Json).unwrap();
     let graph = Graph::default();
     graph
         .create_node(vec!["First".into()], Default::default())
         .unwrap();
-    dump(&target, &graph, 5, 1, None).unwrap();
+    crate::checkpoint_at(&target, &graph, 5, 1, None).unwrap();
     let body = get_object(&target, GRAPH_JSON).unwrap();
     let manifest = get_object(&target, "manifest.json").unwrap();
     graph
         .create_node(vec!["Second".into()], Default::default())
         .unwrap();
     assert_eq!(graph.dirty_node_ids().len(), 1);
+    (target, graph, body, manifest)
+}
 
-    let err = dump(&target, &graph, 6, u64::MAX, None).unwrap_err();
-    assert!(matches!(err, Error::Storage(_)), "{err}");
-    assert_eq!(get_object(&target, GRAPH_JSON).unwrap(), body);
-    assert_eq!(get_object(&target, "manifest.json").unwrap(), manifest);
+/// A rejected dump publishes nothing: the stored bytes are the fixture's, the
+/// dirty id survives, and the one live node is the one published.
+fn assert_rejected_dump_published_nothing(
+    target: &StoreTarget,
+    graph: &Graph,
+    body: &[u8],
+    manifest: &[u8],
+) {
+    assert_eq!(get_object(target, GRAPH_JSON).unwrap(), body);
+    assert_eq!(get_object(target, "manifest.json").unwrap(), manifest);
     assert_eq!(graph.dirty_node_ids().len(), 1);
-    assert_eq!(load(&target).unwrap().live_node_count(), 1);
+    assert_eq!(load(target).unwrap().live_node_count(), 1);
+}
+
+#[test]
+fn dump_rejects_max_timestamp_without_changing_snapshot() {
+    let (target, graph, body, manifest) = published_then_dirty();
+
+    let err = crate::checkpoint_at(&target, &graph, 6, u64::MAX, None).unwrap_err();
+    assert!(matches!(err, Error::Storage(_)), "{err}");
+    assert_rejected_dump_published_nothing(&target, &graph, &body, &manifest);
 }
 
 #[test]
 fn dump_rejects_negative_next_ids_without_replacing_checkpoint() {
-    let target = memory_store_with_codec(SnapshotCodecKind::Json).unwrap();
-    let graph = Graph::default();
-    graph
-        .create_node(vec!["First".into()], Default::default())
-        .unwrap();
-    dump(&target, &graph, 5, 1, None).unwrap();
-    let body = get_object(&target, GRAPH_JSON).unwrap();
-    let manifest = get_object(&target, "manifest.json").unwrap();
-    graph
-        .create_node(vec!["Second".into()], Default::default())
-        .unwrap();
+    let (target, graph, body, manifest) = published_then_dirty();
 
     for (node, rel) in [(-1, 0), (2, -1)] {
         graph.set_next_node_id(node);
         graph.set_next_rel_id(rel);
-        let err = dump(&target, &graph, 6, 2, None).unwrap_err();
+        let err = crate::checkpoint_at(&target, &graph, 6, 2, None).unwrap_err();
         assert!(matches!(err, Error::Storage(_)), "{err}");
         assert!(err.to_string().contains("next ID"), "{err}");
-        assert_eq!(get_object(&target, GRAPH_JSON).unwrap(), body);
-        assert_eq!(get_object(&target, "manifest.json").unwrap(), manifest);
-        assert_eq!(graph.dirty_node_ids().len(), 1);
-        assert_eq!(load(&target).unwrap().live_node_count(), 1);
+        assert_rejected_dump_published_nothing(&target, &graph, &body, &manifest);
     }
 }
 

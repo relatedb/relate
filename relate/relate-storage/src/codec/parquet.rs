@@ -231,7 +231,7 @@ fn accumulate(sum: &mut u64, value: u64, limit: u64, what: &str) -> Result<()> {
 /// rejects a decoded-envelope overage before allocating.
 #[cfg(test)]
 pub(crate) fn nodes_parquet_ids(
-    graph: &dyn relate_engine_api::GraphImport,
+    graph: &dyn relate_engine_api::GraphExport,
     ts: u64,
     keys: &[i64],
 ) -> Result<Vec<u8>> {
@@ -241,7 +241,7 @@ pub(crate) fn nodes_parquet_ids(
 /// Relationship sibling of [`nodes_parquet_ids`], kept for direct-encode tests.
 #[cfg(test)]
 pub(crate) fn rels_parquet_ids(
-    graph: &dyn relate_engine_api::GraphImport,
+    graph: &dyn relate_engine_api::GraphExport,
     ts: u64,
     rids: &[i64],
 ) -> Result<Vec<u8>> {
@@ -250,7 +250,7 @@ pub(crate) fn rels_parquet_ids(
 
 #[cfg(test)]
 fn encode_ids(
-    graph: &dyn relate_engine_api::GraphImport,
+    graph: &dyn relate_engine_api::GraphExport,
     ts: u64,
     ids: &[i64],
     kind: Kind,
@@ -273,7 +273,7 @@ pub(super) fn source_error(path: &str, error: Error) -> Error {
 /// ids — promote and the carried set does not already hold.
 pub(crate) fn part_columns(
     kind: Kind,
-    graph: &dyn relate_engine_api::GraphImport,
+    graph: &dyn relate_engine_api::GraphExport,
     ts: u64,
     ids: &[i64],
     carried: &[(String, ColumnType)],

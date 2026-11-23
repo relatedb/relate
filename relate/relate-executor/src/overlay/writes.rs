@@ -47,7 +47,7 @@ impl ExecGraph<'_> {
                 properties: std::sync::Arc::clone(&properties),
             },
         );
-        s.bump_live_labels(&labels, 1);
+        s.batch.bump_live_labels(&labels, 1);
         s.push_redo(RedoOp::CreateNode {
             id,
             labels,
@@ -172,7 +172,7 @@ impl ExecGraph<'_> {
         shift.finish(&mut s);
         s.net_label_stats(labels_added, labels_removed);
         if !added.is_empty() {
-            s.bump_live_labels(&added, 1);
+            s.batch.bump_live_labels(&added, 1);
             s.push_redo(RedoOp::add_labels(id, added));
         }
     }
@@ -200,7 +200,7 @@ impl ExecGraph<'_> {
         let (labels_added, labels_removed) = self.label_deltas(&s, &actually, LabelChange::Loss);
         s.net_label_stats(labels_added, labels_removed);
         if !actually.is_empty() {
-            s.bump_live_labels(&actually, -1);
+            s.batch.bump_live_labels(&actually, -1);
             // The op carries the labels the node actually lost, so the
             // ADR-0309 per-node count is derived from it (a requested label
             // the node did not carry is a no-op).
@@ -357,7 +357,7 @@ impl ExecGraph<'_> {
         let (labels_added, labels_removed) = self.label_deltas(&s, &labels, LabelChange::Loss);
         release_created(&mut s, EntityId::Node(id));
         s.batch.deleted_nodes.insert(id);
-        s.bump_live_labels(&labels, -1);
+        s.batch.bump_live_labels(&labels, -1);
         s.net_label_stats(labels_added, labels_removed);
         net_or_count_delete(&mut s, EntityId::Node(id), nprops);
         s.push_redo(RedoOp::delete_node(id));

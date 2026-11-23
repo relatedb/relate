@@ -1272,6 +1272,24 @@ this is one embedded store, and every committed transaction is visible to
 the next statement on any connection, so every bookmark is already
 satisfied.
 
+### Pipelined write batches (ADR-0642)
+
+A framed message batch that carries two or more RUNs is served as a
+pipelined write batch: its consecutive `CREATE`-only auto-commit statements
+(no other write clause, no procedure call, no `RETURN`) commit together,
+once, when the batch ends, so a pipelined import pays one durability
+barrier per batch instead of one per statement. A statement that is not
+`CREATE`-only ends the batch first — the earlier statements commit, and it
+runs on their committed state — and the rest of that batch commits per
+statement. A failing batched statement loses only its own writes; the
+statements before it stay committed. Because a batched statement commits
+nothing at its own boundary, its ending summary carries **no** `bookmark`,
+and the batch's own commit is not reported on the wire: a client that needs
+a bookmark for a write runs it outside a pipeline. A framed batch with a
+single RUN is not pipelined and keeps its per-statement commit and
+bookmark. If the batch's commit fails (storage, capacity, or a write-write
+conflict with a concurrent commit) the connection closes.
+
 ### Execution failures (ADR-0319)
 
 A failure raised while executing an already planned statement — a runtime

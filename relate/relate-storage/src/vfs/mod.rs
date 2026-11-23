@@ -179,7 +179,7 @@ pub(crate) fn virtual_entry_meta<'a>(
     Err(Error::io(format!("missing {path}")))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct VfsOpen {
     pub create: bool,
     /// Atomically create a new file, even if a dangling symlink occupies the name.
@@ -191,6 +191,14 @@ pub struct VfsOpen {
 }
 
 impl VfsOpen {
+    /// Whether this open reads the object without writing it — the one
+    /// read-open classification a recording [`Vfs`] logs its opens by. Stated
+    /// against [`Self::read_only`], the flag set's one home, so a seventh flag
+    /// participates by construction instead of being re-split here.
+    pub fn reads_only(&self) -> bool {
+        *self == Self::read_only()
+    }
+
     pub fn create_truncate() -> Self {
         Self {
             create: true,

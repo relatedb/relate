@@ -111,7 +111,7 @@ impl Connection {
             // spawned for a doomed flush), then the drained work — the
             // variant is the routing decision, the commit's own, not a
             // second derivation of it.
-            let Some(redo) = self.prepare_commit()? else {
+            let Some(redo) = self.prepare_commit(super::txn::TxnMode::Explicit)? else {
                 // The no-op commit: nothing to flush, nothing waits — and
                 // no bookmark (ADR-0502 §7: none is fabricated for a
                 // commit that crossed no WAL boundary).

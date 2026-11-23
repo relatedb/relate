@@ -81,6 +81,9 @@ graph, and what recovery may put back:
 - `GraphImport` sets counters and the commit timestamp, loads nodes and
   relationships, installs indexes and constraints, applies replayed redo,
   and finishes the restore.
+- `CheckpointDirtyMarks` takes the ids changed since the previous take and
+  hands a failed dump's ids back. It extends `GraphExport`, so a codec's
+  read-only view over a frozen cut cannot clear or restore the live marks.
 
 Every snapshot codec takes `&dyn GraphImport`. The open and load
 functions are generic over `SnapshotGraph` (`GraphImport + Default`), so
@@ -125,7 +128,7 @@ those sinks yet.
 - `commit(groups)` makes a list of redo groups durable and returns the
   `lsn` and `commit_ts` of each.
 - `checkpoint(graph, lsn, snapshot_ts)` publishes a snapshot taken
-  through `GraphImport`, covering the log through `lsn`.
+  through `CheckpointDirtyMarks`, covering the log through `lsn`.
 - `poll_follow(from_lsn)` returns records past a follower's cursor:
   `Idle`, `Records`, or `Gap`, which means reload from the snapshot.
 - `reload(graph)` reopens the log against a freshly loaded graph.

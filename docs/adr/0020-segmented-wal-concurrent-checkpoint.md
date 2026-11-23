@@ -93,3 +93,12 @@ commit-count triggers are unchanged. `:memory:` has no timer.
 [ADR-0045](./0045-cdc-replication-slots.md) let optional CDC slots raise the recycle cut. [ADR-0574](./0574-withdraw-cdc-replication-slots.md)
 withdraws those slots. Recycle stays `checkpoint_lsn`, as this ADR
 decided.
+
+[ADR-0643](./0643-checkpoint-cuts-before-the-dump.md): the dump no longer runs under the
+checkpoint's busy flag with writers waiting it out. A checkpoint freezes
+its pin, its snapshot pin and its store image under the publication write
+guard, then dumps from that cut while commits proceed; the dirty ids are
+taken at the cut rather than cleared after the dump. Rotate, pin and
+recycle keep the shape decided here, and the dump still writes rows
+visible at `snapshot_ts` — under a snapshot pin instead of a graph read
+lock.

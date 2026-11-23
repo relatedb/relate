@@ -11,6 +11,35 @@ use super::catalog::{self, CatalogWire};
 use relate_core::Error;
 use relate_engine_api::{CheckpointTheater, SnapshotGraph};
 
+/// Refuse a dump whose next-id counters went negative — the one spelling
+/// both the write side ([`SnapshotContents::from_graph`]) and the read side
+/// ([`SnapshotRows::into_graph`]) consult.
+pub(crate) fn ensure_dump_ids(next_node_id: i64, next_rel_id: i64) -> Result<()> {
+    if next_node_id < 0 || next_rel_id < 0 {
+        return Err(Error::storage("snapshot has unsupported next ID"));
+    }
+    Ok(())
+}
+
+/// Refuse a dump whose shape cannot round-trip: an exhausted snapshot
+/// timestamp or a negative next-id counter — the one spelling every writer
+/// consults ([`SnapshotContents::from_graph`], the sharded Parquet writer
+/// and the markdown writer); [`SnapshotRows::into_graph`] re-consults the
+/// id half on the read side. Each refusal keeps its own authored text —
+/// the dedup is of the code path, never of the message a caller sees. The
+/// markdown writer keeps its own authored refusal for the timestamp half,
+/// so the re-export's only caller is the sharded Parquet writer.
+pub(crate) fn ensure_dump_shape(
+    snapshot_ts: u64,
+    next_node_id: i64,
+    next_rel_id: i64,
+) -> Result<()> {
+    if snapshot_ts == u64::MAX {
+        return Err(Error::storage("snapshot timestamp exhausted"));
+    }
+    ensure_dump_ids(next_node_id, next_rel_id)
+}
+
 pub(crate) struct SnapshotContents {
     pub nodes: Vec<Node>,
     pub relationships: Vec<Relationship>,
@@ -25,22 +54,14 @@ impl SnapshotContents {
     /// Every node and relationship visible at `snapshot_ts`, plus catalog
     /// fields. Node order follows `all_node_ids_at`. The dump
     /// preconditions — a usable snapshot timestamp and non-negative
-    /// next ids — are refused here, the funnel every writer that builds
-    /// its contents through this constructor passes through (the JSON and
-    /// experimental codecs). The Parquet and markdown writers keep their
-    /// own dump paths and their own copies of the guard (see
-    /// `snapshot::native`); unifying those onto one shared check is a
-    /// follow-up, not this change.
+    /// next ids — are refused here through [`ensure_dump_shape`], the one
+    /// guard every writer consults (the sharded and markdown writers call
+    /// it on their own dump paths too).
     pub(crate) fn from_graph(
-        graph: &dyn relate_engine_api::GraphImport,
+        graph: &dyn relate_engine_api::GraphExport,
         snapshot_ts: u64,
     ) -> Result<Self> {
-        if snapshot_ts == u64::MAX {
-            return Err(Error::storage("snapshot timestamp exhausted"));
-        }
-        if graph.next_node_id() < 0 || graph.next_rel_id() < 0 {
-            return Err(Error::storage("snapshot has unsupported next ID"));
-        }
+        ensure_dump_shape(snapshot_ts, graph.next_node_id(), graph.next_rel_id())?;
         Ok(Self {
             nodes: Self::nodes_in(graph, snapshot_ts, &graph.all_node_ids_at(snapshot_ts))?,
             relationships: Self::rels_in(graph, snapshot_ts, &graph.all_rel_ids_at(snapshot_ts))?,
@@ -55,7 +76,7 @@ impl SnapshotContents {
     /// Nodes for a Parquet id window. Missing ids are skipped, matching the
     /// previous direct `node_at` loop.
     pub(crate) fn nodes_in(
-        graph: &dyn relate_engine_api::GraphImport,
+        graph: &dyn relate_engine_api::GraphExport,
         snapshot_ts: u64,
         ids: &[i64],
     ) -> Result<Vec<Node>> {
@@ -71,7 +92,7 @@ impl SnapshotContents {
     }
 
     pub(crate) fn rels_in(
-        graph: &dyn relate_engine_api::GraphImport,
+        graph: &dyn relate_engine_api::GraphExport,
         snapshot_ts: u64,
         ids: &[i64],
     ) -> Result<Vec<Relationship>> {
@@ -151,9 +172,7 @@ impl SnapshotRows {
         envelope_commit_ts: Option<u64>,
         theater: Option<CheckpointTheater>,
     ) -> Result<G> {
-        if self.next_node_id < 0 || self.next_rel_id < 0 {
-            return Err(Error::storage("snapshot has unsupported next ID"));
-        }
+        ensure_dump_ids(self.next_node_id, self.next_rel_id)?;
         // Row ids are not re-validated here: the bulk installers below
         // validate the identical ids (one pass per row type, not two).
         let graph = G::default();

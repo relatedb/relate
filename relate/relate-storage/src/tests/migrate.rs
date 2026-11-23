@@ -390,70 +390,6 @@ fn corrupt_legacy_json_store_error_names_the_detected_version() {
     );
 }
 
-/// Read-counting VFS (the `snapshot::native::tests` `InjectVfs` pattern):
-/// counts read-only opens per path to prove detection costs no extra I/O.
-struct ReadCountingVfs {
-    inner: Arc<dyn Vfs>,
-    opens: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
-}
-
-impl ReadCountingVfs {
-    fn new(inner: Arc<dyn Vfs>) -> Self {
-        Self {
-            inner,
-            opens: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-        }
-    }
-
-    fn read_opens(&self, path: &str) -> usize {
-        self.opens.lock().unwrap().get(path).copied().unwrap_or(0)
-    }
-}
-
-impl Vfs for ReadCountingVfs {
-    fn durable(&self) -> bool {
-        self.inner.durable()
-    }
-    fn create_dir_all(&self, path: &str) -> Result<()> {
-        self.inner.create_dir_all(path)
-    }
-    fn create_dir_all_for_atomic(&self, path: &str) -> Result<()> {
-        self.inner.create_dir_all_for_atomic(path)
-    }
-    fn list_dir(&self, path: &str) -> Result<Vec<String>> {
-        self.inner.list_dir(path)
-    }
-    fn exists(&self, path: &str) -> Result<bool> {
-        self.inner.exists(path)
-    }
-    fn metadata(&self, path: &str) -> Result<VfsMeta> {
-        self.inner.metadata(path)
-    }
-    fn open(&self, path: &str, opts: VfsOpen) -> Result<Box<dyn VfsFile>> {
-        if opts.read && !opts.write && !opts.append && !opts.create && !opts.truncate {
-            *self
-                .opens
-                .lock()
-                .unwrap()
-                .entry(path.to_string())
-                .or_insert(0) += 1;
-        }
-        self.inner.open(path, opts)
-    }
-    fn remove_file(&self, path: &str) -> Result<()> {
-        self.inner.remove_file(path)
-    }
-    fn remove_dir_all(&self, path: &str) -> Result<()> {
-        self.inner.remove_dir_all(path)
-    }
-    fn rename(&self, from: &str, to: &str) -> Result<()> {
-        self.inner.rename(from, to)
-    }
-    fn sync_dir(&self, path: &str) -> Result<()> {
-        self.inner.sync_dir(path)
-    }
-}
-
 /// ADR-0127 Decision 2: detection is the marker the loader already
 /// decoded, so opening a current-format JSON store reads `graph.json`
 /// exactly once — there is no separate detection read or re-parse.
@@ -466,7 +402,7 @@ fn current_json_open_reads_graph_json_exactly_once() {
     wal.recycle(cut).unwrap();
     drop(wal);
 
-    let counting = Arc::new(ReadCountingVfs::new(store.vfs()));
+    let counting = Arc::new(ReadLogVfs::new(store.vfs()));
     let mut counted = store.clone();
     counted.vfs = counting.clone();
     let opened = open_store_with_report::<relate_executor::Graph>(
@@ -482,9 +418,8 @@ fn current_json_open_reads_graph_json_exactly_once() {
         report.migrations
     );
     assert_eq!(
-        counting.read_opens("graph.json"),
+        counting.log.read_opens("graph.json"),
         1,
-        "graph.json read-only opens: {:?}",
-        counting.opens.lock().unwrap()
+        "graph.json must be read exactly once"
     );
 }

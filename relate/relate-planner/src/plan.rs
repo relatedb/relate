@@ -51,6 +51,19 @@ impl LogicalPlan {
         self.stages()
             .flat_map(|stage| stage.parts.iter().map(Vec::as_slice))
     }
+
+    /// The plan's one part, when it has exactly one with no `UNION` and no
+    /// `NEXT` — the whole-statement shape a fast path requires (a bulk write,
+    /// an EXISTS probe, the create-only batch gate). The one home of the
+    /// parts/`union_all`/`next` test: a `UNION` arm is a second part and a
+    /// `NEXT` stage is a second plan, so either disqualifies it. Returning
+    /// the part keeps the shape test and the right to index `parts[0]` one
+    /// value, so a caller cannot pass the guard and then reach in.
+    pub fn single_part(&self) -> Option<&[Clause]> {
+        (self.union_all.is_empty() && self.next.is_none())
+            .then(|| self.parts.first().map(Vec::as_slice))
+            .flatten()
+    }
 }
 
 /// The output column names of a planned statement (ADR-0319): the names the
@@ -248,6 +261,36 @@ pub(crate) fn query_any_expr(query: &Query, pred: &mut impl FnMut(&Expr) -> bool
 /// this to attach the per-batch commit sink.
 pub fn plan_contains_in_transactions(plan: &LogicalPlan) -> bool {
     plan_any_clause(plan, &mut crate::clause_kind::clause_is_in_transactions)
+}
+
+/// Whether `plan` may join a pipelined write batch (ADR-0642): the
+/// statement's only mutating clause is `CREATE`, it produces no rows, and it
+/// is a single part with no `UNION` and no `NEXT`. The Bolt session opens one
+/// commit for a framed message batch's run of these, so the statement shape
+/// is the conservative gate, not a performance hint.
+///
+/// Deny by default: a clause outside the allowed read set — a second write
+/// flavor (`MERGE`, `SET`, `REMOVE`, `DELETE`, `FOREACH`, `LOAD CSV`), a
+/// `CALL` (a write procedure is a mutation this fold cannot see), a
+/// `CALL { … }` subquery, a `WHEN`/`ELSE` branch, schema DDL — refuses the
+/// plan, as does a `RETURN` (a batched statement's result rows would be held
+/// past its statement boundary). The walk is the full descent
+/// ([`walk_plan_clauses`]), so a write nested in any position counts.
+pub fn plan_is_create_only(plan: &LogicalPlan) -> bool {
+    if plan.single_part().is_none() {
+        return false;
+    }
+    let mut has_create = false;
+    let mut eligible = true;
+    walk_plan_clauses(
+        plan,
+        &mut |clause| match crate::clause_kind::clause_create_only_role(clause) {
+            crate::clause_kind::CreateOnlyRole::Create => has_create = true,
+            crate::clause_kind::CreateOnlyRole::Neutral => {}
+            crate::clause_kind::CreateOnlyRole::Refuse => eligible = false,
+        },
+    );
+    eligible && has_create
 }
 
 /// Whether a plan references any **dynamic name operand** — a dynamic
@@ -470,5 +513,65 @@ mod next_seed_tests {
             text.contains("VariableShadowing") || text.contains("already declared in outer scope"),
             "{err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod create_only_tests {
+    use super::*;
+    use crate::plan_of;
+
+    fn create_only(cypher: &str) -> bool {
+        plan_is_create_only(&plan_of(cypher))
+    }
+
+    #[test]
+    fn creates_of_every_matched_shape_are_eligible() {
+        for cypher in [
+            "CREATE (n)",
+            "CREATE (:A)-[:R]->(:B)",
+            "UNWIND $rows AS r CREATE (:N {id: r.id})",
+            "MATCH (a:A {id: 1}) MATCH (b:B {id: 2}) CREATE (a)-[:R]->(b)",
+            "UNWIND $rows AS r MATCH (u:User {id: r.u}) CREATE (u)-[:R]->(:N)",
+            "UNWIND $rows AS x WITH x MATCH (n {id: x}) CREATE (:N {v: x})",
+            "MATCH (n) WITH n CREATE (m)",
+        ] {
+            assert!(create_only(cypher), "{cypher}");
+        }
+    }
+
+    #[test]
+    fn every_other_write_flavor_is_refused() {
+        for cypher in [
+            "MATCH (n) SET n.x = 1",
+            "MERGE (n:N {id: 1})",
+            "MATCH (n) DELETE n",
+            "MATCH (n) REMOVE n.x",
+            "FOREACH (x IN [1] | CREATE (n))",
+            "CREATE INDEX i FOR (n:N) ON (n.p)",
+            "CREATE CONSTRAINT c FOR (n:N) REQUIRE n.id IS UNIQUE",
+            "CALL { CREATE (n) } IN TRANSACTIONS",
+            "CALL db.labels()",
+        ] {
+            assert!(!create_only(cypher), "{cypher}");
+        }
+    }
+
+    #[test]
+    fn a_statement_without_a_create_is_refused() {
+        for cypher in ["RETURN 1 AS n", "MATCH (n) RETURN n"] {
+            assert!(!create_only(cypher), "{cypher}");
+        }
+    }
+
+    #[test]
+    fn a_result_returning_create_and_a_multi_part_plan_are_refused() {
+        for cypher in [
+            "CREATE (n) RETURN n",
+            "CREATE (n) UNION CREATE (m)",
+            "CREATE (n) NEXT RETURN 1",
+        ] {
+            assert!(!create_only(cypher), "{cypher}");
+        }
     }
 }

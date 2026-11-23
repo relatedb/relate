@@ -200,7 +200,7 @@ fn op_element_len(op: &RedoOp) -> Result<u64> {
 /// figure [`EncodedOps::encode`] bounds against the store's resolved cap
 /// (ADR-0650), so a caller can refuse a transaction the moment its redo
 /// crosses the cap rather than at the commit that would have failed anyway.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct PayloadTally {
     /// The summed encoded length of the elements added so far.
     elements: u64,

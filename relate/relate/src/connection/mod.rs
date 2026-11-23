@@ -60,6 +60,17 @@ fn log_logical_bytes(shared: &Shared) {
 pub struct Connection {
     pub(crate) inner: Arc<Shared>,
     pub(crate) txn: Option<OpenTxn>,
+    /// Whether a surface armed the pipelined write batch (ADR-0642): the
+    /// next eligible CREATE-only auto-commit statement opens the batch and
+    /// shares its commit. The Bolt session arms it per framed message batch.
+    pub(crate) write_batch_armed: bool,
+    /// The pipelined write batch's commit failure, if one is outstanding
+    /// (ADR-0642): a statement that could not join the batch ends it, and if
+    /// that commit fails the batch's earlier statements have already answered
+    /// SUCCESS on the wire — so the failure is not the joining statement's to
+    /// report alone. [`Connection::commit_write_batch`] re-reports it at the
+    /// batch's end, which is where the session closes the connection.
+    pub(crate) batch_commit_error: std::cell::RefCell<Option<relate_core::Error>>,
     /// ADR-0273: the authenticated principal a surface verified for this
     /// connection (the Bolt server sets it after a validated HELLO).
     /// Display-only: read by `dbms.showCurrentUser`; it confers no
@@ -100,6 +111,8 @@ pub(crate) fn fresh(inner: Arc<Shared>, namespace: Namespace) -> Connection {
     Connection {
         inner,
         txn: None,
+        write_batch_armed: false,
+        batch_commit_error: std::cell::RefCell::new(None),
         principal: None,
         namespace,
         #[cfg(not(target_arch = "wasm32"))]
@@ -268,7 +281,7 @@ impl Connection {
     /// conn.set_namespace("neo4j").unwrap();
     /// ```
     pub fn set_namespace(&mut self, name: &str) -> Result<()> {
-        if self.txn.is_some() {
+        if self.in_transaction() {
             return Err(ce_messages::namespace_change_in_transaction());
         }
         let namespace = parse_session_namespace(name)?;

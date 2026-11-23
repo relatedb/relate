@@ -1,5 +1,6 @@
 mod catalog;
 mod convert;
+pub(crate) mod cut;
 // The experimental codec follows the Parquet codec's optional-module shape
 // (see `snapshot`'s `native`/`unavailable` pair): the implementation file
 // compiles only with its feature, and a same-named stub takes its place
@@ -20,6 +21,9 @@ mod kind;
 
 pub(crate) mod markdown;
 mod model;
+pub(crate) use model::ensure_dump_ids;
+#[cfg(parquet_codec)]
+pub(crate) use model::ensure_dump_shape;
 pub(crate) mod open_config;
 #[cfg(parquet_codec)]
 pub(crate) mod parquet;
@@ -33,10 +37,8 @@ pub(crate) mod rkyv {
 
     pub(crate) fn dump(
         _: &StoreTarget,
-        _: &dyn relate_engine_api::GraphImport,
-        _: u64,
-        _: u64,
-        _: Option<&str>,
+        _: &super::cut::CheckpointCut<'_>,
+        _: super::cut::Rewrite,
     ) -> Result<()> {
         Err(codec_unavailable(SnapshotCodecKind::Rkyv))
     }
@@ -78,6 +80,118 @@ use relate_core::{Error, Result};
 
 use crate::snapshot;
 use crate::StoreTarget;
+
+/// One codec's checkpoint writer. The cut is the export surface, so the
+/// pointer does not name a concrete engine: it carries the frozen image,
+/// the live graph the rows are read from, the ontology document the codecs
+/// publish (ADR-0120), and the LSN and snapshot timestamp the dump
+/// records. The rewrite policy is the one fact that is not the cut's —
+/// it is the trigger's classification of this checkpoint.
+pub(crate) type CheckpointDump =
+    fn(&StoreTarget, &cut::CheckpointCut<'_>, cut::Rewrite) -> Result<()>;
+
+/// The replay window an open hands the codec's open tail: where the WAL
+/// stands (`wal_lsn`) and the checkpoint it replays from
+/// (`checkpoint_lsn`) — the pair [`CodecOps::finish_open`] admits or
+/// defers replay against. Named at the boundary, so the two LSNs cannot
+/// be swapped or blurred by a bare `u64` pair.
+#[derive(Clone, Copy)]
+pub(crate) struct ReplayWindow {
+    pub(crate) wal_lsn: u64,
+    pub(crate) checkpoint_lsn: u64,
+}
+
+/// The codec vocabulary's one behavioral surface: what the codec does at
+/// the open tail — the dirty-WAL guard plus the load's deferred open-time
+/// action — whether it sweeps orphaned store objects after open, how it
+/// writes a checkpoint, how it sizes its snapshot objects, and whether it
+/// has already published a checkpoint image (the no-op checkpoint skip's
+/// presence probe, ADR-0646). One fn
+/// table per codec ([`codec_ops`]), so a codec's behavior is spelled once
+/// instead of one arm bolted onto every dispatch the open walk, the write
+/// path and the sizing path pass. The loader stays a generic match in
+/// `open::load_with_checkpoint_lsn`: the graph type is a type parameter, and
+/// a fn pointer in this table cannot carry it. A new codec lands in this
+/// table and in that match.
+pub(crate) struct CodecOps {
+    pub(crate) finish_open:
+        fn(&StoreTarget, ReplayWindow, Option<snapshot::DeferredOpenAction>) -> Result<()>,
+    pub(crate) sweep_after_open: fn(&StoreTarget) -> Result<()>,
+    pub(crate) dump: CheckpointDump,
+    pub(crate) snapshot_data_bytes: fn(&StoreTarget) -> Result<u64>,
+    /// Whether the store has already published a checkpoint image —
+    /// the presence probe the facade's no-op checkpoint skip consults
+    /// (a store that has never checkpointed still needs its first
+    /// dump to pin its codec and materialize its files). One row per
+    /// codec: the classic codecs' root `manifest.json`, the markdown
+    /// codec's `.relate/` sidecar — each the evidence probe that
+    /// codec's own resolution already speaks.
+    pub(crate) has_published_snapshot: fn(&StoreTarget) -> Result<bool>,
+}
+
+/// The classic codecs' open-tail default: no dirty-WAL window (their
+/// durable form cannot change underneath them) and no deferred action —
+/// every replay is admitted, nothing is deferred.
+fn admit_every_replay(
+    _target: &StoreTarget,
+    _window: ReplayWindow,
+    _deferred: Option<snapshot::DeferredOpenAction>,
+) -> Result<()> {
+    Ok(())
+}
+
+/// The file-per-checkpoint codecs' sweep default: the checkpoint image is
+/// rewritten wholesale, so no object is orphaned and there is nothing to
+/// retire.
+fn nothing_to_sweep(_target: &StoreTarget) -> Result<()> {
+    Ok(())
+}
+
+/// The one codec → ops mapping: Parquet overrides the sweep (it retires
+/// objects its newest manifest orphaned, ADR-0089), markdown overrides the
+/// open tail (the dirty-WAL guard and the deferred re-baseline, ADR-0406
+/// §5), and every codec names its own writer and sizer. The loader is the
+/// generic match in `open::load_with_checkpoint_lsn`. An uncompiled codec's
+/// stub module fails closed, so neither dispatch needs a cfg arm.
+pub(crate) fn codec_ops(codec: SnapshotCodecKind) -> CodecOps {
+    match codec {
+        SnapshotCodecKind::Parquet => CodecOps {
+            finish_open: admit_every_replay,
+            sweep_after_open: snapshot::sweep_orphans,
+            dump: snapshot::checkpoint_at,
+            snapshot_data_bytes: snapshot::snapshot_data_bytes,
+            has_published_snapshot: classic_manifest_present,
+        },
+        SnapshotCodecKind::Json => CodecOps {
+            finish_open: admit_every_replay,
+            sweep_after_open: nothing_to_sweep,
+            dump: json::dump,
+            snapshot_data_bytes: json::snapshot_data_bytes,
+            has_published_snapshot: classic_manifest_present,
+        },
+        SnapshotCodecKind::Markdown => CodecOps {
+            finish_open: markdown::finish_open,
+            sweep_after_open: nothing_to_sweep,
+            dump: markdown::checkpoint_at,
+            snapshot_data_bytes: markdown::snapshot_data_bytes,
+            has_published_snapshot: markdown::has_store_files,
+        },
+        SnapshotCodecKind::Rkyv => CodecOps {
+            finish_open: admit_every_replay,
+            sweep_after_open: nothing_to_sweep,
+            dump: rkyv::dump,
+            snapshot_data_bytes: rkyv::snapshot_data_bytes,
+            has_published_snapshot: classic_manifest_present,
+        },
+    }
+}
+
+/// The classic codecs' published-snapshot row: the shared root
+/// envelope's presence, the same object every classic checkpoint
+/// rewrites.
+fn classic_manifest_present(target: &StoreTarget) -> Result<bool> {
+    snapshot::object_exists(target, snapshot::MANIFEST_JSON)
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Envelope {

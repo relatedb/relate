@@ -10,7 +10,6 @@ use super::harness::*;
 use crate::codec::parquet::{write_bare_table, write_int_label_table, ROW_GROUP_CAP};
 use crate::{memory_store, StoreTarget};
 use relate_executor::Graph;
-use std::sync::atomic::Ordering;
 
 /// Commit unlabeled nodes `ids` with no properties and checkpoint them.
 fn checkpointed_nodes(store: &StoreTarget, ids: &[i64]) -> (Graph, u64) {
@@ -39,17 +38,13 @@ fn assert_fails_without_retry(
     expected: &str,
     opens: usize,
 ) {
-    let (watched, counted) = watch_opens(store, path);
+    let (watched, counted) = watch_opens(store);
     let err = checkpoint_at(&watched, graph, 0, ts, MAX_FILE).unwrap_err();
     assert!(matches!(err, Error::Storage(_)), "{err}");
     let named = format!("previous Parquet shard {path}: ");
     assert!(err.to_string().contains(&named), "{err}");
     assert!(err.to_string().contains(expected), "{err}");
-    assert_eq!(
-        counted.load(Ordering::SeqCst),
-        opens,
-        "the source was retried"
-    );
+    assert_eq!(counted.opens(path), opens, "the source was retried");
     assert_eq!(get_object(store, MANIFEST_JSON).unwrap(), manifest);
 }
 

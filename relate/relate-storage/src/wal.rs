@@ -655,8 +655,14 @@ impl Wal {
         self.bytes >= CHECKPOINT_BYTES || self.commits >= CHECKPOINT_COMMITS
     }
 
+    /// Closed segments still waiting for a dump to recycle them — the
+    /// backlog the writer's back-pressure budget is measured in.
+    pub fn closed_segments(&self) -> usize {
+        self.inner.closed.len()
+    }
+
     pub fn has_closed_segments(&self) -> bool {
-        !self.inner.closed.is_empty()
+        self.closed_segments() > 0
     }
 
     /// Open segment has records, or a closed segment is waiting for dump.

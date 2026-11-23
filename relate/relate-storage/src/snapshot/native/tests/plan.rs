@@ -15,7 +15,6 @@ use crate::memory_store;
 use relate_core::Value;
 use relate_executor::Graph;
 use std::collections::BTreeMap;
-use std::sync::atomic::Ordering;
 
 /// What planning makes of the slots: a kept part's `[id_lo, id_hi)`, or a
 /// unit's slot indexes and the `[start, end)` of each of its files.
@@ -32,8 +31,8 @@ fn plan(kind: Kind, target: u64, slots: &[Slot], all_ids: &[i64], dirty: &[i64])
     let store = memory_store();
     let graph = Graph::default();
     let mut owned = Vec::new();
-    let ctx = ShardWrite::new(&store, &graph, 1, kind, target, &mut owned);
-    let steps = plan_units(&ctx, slots, all_ids, dirty).unwrap();
+    let ctx = ShardWrite::new(&store, &graph, 1, target, Rewrite::Coalesce, &mut owned);
+    let steps = plan_units(&ctx, kind, slots, all_ids, dirty).unwrap();
     steps
         .into_iter()
         .map(|step| match step {
@@ -156,7 +155,7 @@ fn halves_of_a_halved_file_stay_apart() {
         graph.set_property_node(id, "text", Value::String(noise(&mut seed, 2000).into()));
         let ts = apply_commit(&graph);
         assert_eq!(decoded(ts).unwrap(), target);
-        let (watched, opens) = watch_opens(&store, &before[half].path);
+        let (watched, opens) = watch_opens(&store);
         take_measured_rows();
         take_encoded_rows();
         checkpoint_at(&watched, &graph, 0, ts, target).unwrap();
@@ -164,7 +163,7 @@ fn halves_of_a_halved_file_stay_apart() {
         assert_eq!(take_encoded_rows(), 1, "half {half}");
         // Two opens: the kept half's schema read (ADR-0534 carry) plus
         // the one cursor read of its copied rows.
-        assert_eq!(opens.load(Ordering::SeqCst), 2, "half {half}");
+        assert_eq!(opens.opens(&before[half].path), 2, "half {half}");
         let parts = manifest(&store).node_parts;
         assert_eq!(ranges(&parts), ranges(&before));
         assert_eq!(parts[1 - half], before[1 - half]);

@@ -2,7 +2,7 @@
 
 use super::super::*;
 use super::harness::*;
-use crate::{checkpoint::try_begin_checkpoint, Database, ReadPause, Value, WalRecord};
+use crate::{checkpoint::try_begin_checkpoint, Database, ReadPause, Value};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,12 +29,7 @@ fn uncertain_sync_apply_or_rotate_freezes_both_paths_before_checkpoint() {
                 }
             }
             let error = if replica {
-                db.apply_replicated(&WalRecord {
-                    lsn: 99,
-                    commit_ts: 2,
-                    ops: vec![node_op(1)],
-                })
-                .unwrap_err()
+                db.apply_replicated(2, vec![node_op(1)]).unwrap_err()
             } else {
                 let waiters: Vec<_> = (0..2).map(|_| CommitWaiter::new()).collect();
                 let error = flush_group(
@@ -61,7 +56,7 @@ fn uncertain_sync_apply_or_rotate_freezes_both_paths_before_checkpoint() {
             );
             assert!(shared.poisoned.load(Ordering::Acquire));
             assert!(!dir.path().join("manifest.json").exists());
-            assert!(!try_begin_checkpoint(&shared));
+            assert!(try_begin_checkpoint(&shared).is_none());
             drop(shared);
             drop(db);
             drop(fault);
@@ -100,12 +95,7 @@ fn admitted_read_finishes_while_replica_rotation_poison_is_published() {
     let writer = {
         let db = Arc::clone(&db);
         std::thread::spawn(move || {
-            tx.send(db.apply_replicated(&WalRecord {
-                lsn: 0,
-                commit_ts: 2,
-                ops: vec![node_op(1)],
-            }))
-            .unwrap();
+            tx.send(db.apply_replicated(2, vec![node_op(1)])).unwrap();
         })
     };
     let published = rx.recv_timeout(Duration::from_secs(10));
@@ -162,13 +152,7 @@ fn physical_uncertainty_fences_waiters_reads_checkpoint_and_drop() {
         assert!(shared.poisoned.load(Ordering::Acquire));
         assert!(db.connect().is_err());
         assert!(db.checkpoint().is_err());
-        assert!(db
-            .apply_replicated(&crate::WalRecord {
-                lsn: 0,
-                commit_ts: 4,
-                ops: vec![]
-            })
-            .is_err());
+        assert!(db.apply_replicated(4, vec![]).is_err());
         let mut c = raw_connection(&shared);
         assert!(c.query("MATCH (n) RETURN count(n)").is_err());
         assert!(c.query("CREATE (:Retry)").is_err());
@@ -238,7 +222,7 @@ fn actual_vfs_write_and_barrier_faults_fence_shared_publication() {
         assert!(c.query("CREATE (:Retry)").is_err());
         assert!(db.checkpoint().is_err());
         crate::checkpoint::timed_checkpoint(&shared);
-        assert!(!try_begin_checkpoint(&shared));
+        assert!(try_begin_checkpoint(&shared).is_none());
         assert!(shared.wal.lock().unwrap().rotate().is_err());
         assert!(shared.wal.lock().unwrap().recycle(1).is_err());
         assert_eq!(std::fs::read(&manifest).ok(), manifest_before);
@@ -257,4 +241,59 @@ fn actual_vfs_write_and_barrier_faults_fence_shared_publication() {
             .clone();
         assert_eq!(count, Value::Int(if short_write { 1 } else { 3 }));
     }
+}
+
+/// ADR-0642: a pipelined write batch's commit that fails after its statements
+/// already answered SUCCESS on the wire is not a clean batch end. The joining
+/// statement reports it, and the batch's own end re-answers it — the answer
+/// the session closes the connection on, so a client is never left believing
+/// writes that never became durable.
+#[test]
+fn a_failed_batch_commit_is_re_answered_at_the_batch_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = untimed_file_db(dir.path().join("db").to_str().unwrap());
+    let mut conn = db.connect().unwrap();
+    conn.begin_write_batch();
+    // A batch holds its statements' redo: nothing is written yet.
+    conn.query("CREATE (:N {id: 1})").unwrap();
+    db.shared().fail_after_sync.store(true, Ordering::SeqCst);
+    // Not CREATE-only, so it ends the batch first — and that commit is the
+    // one the fault strikes.
+    let joining = conn.query("MERGE (:N {id: 2})").unwrap_err();
+    assert!(
+        joining.to_string().contains("uncertain WAL outcome"),
+        "{joining}"
+    );
+    // The batch's end answers it again rather than reading as ended cleanly.
+    let at_end = conn.commit_write_batch().unwrap_err();
+    assert!(
+        at_end.to_string().contains("uncertain WAL outcome"),
+        "{at_end}"
+    );
+}
+
+/// ADR-0642: a batch's commit failure belongs to the batch that produced it,
+/// so arming the next batch drops an unreported one. Without that, a caller
+/// who ignored the first error meets it again on an unrelated batch — a call
+/// that would neither report the new batch nor commit it, losing its
+/// statements on drop.
+#[test]
+fn arming_a_batch_drops_an_unreported_commit_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = untimed_file_db(dir.path().join("db").to_str().unwrap());
+    let mut conn = db.connect().unwrap();
+    conn.begin_write_batch();
+    conn.query("CREATE (:N {id: 1})").unwrap();
+    db.shared().fail_after_sync.store(true, Ordering::SeqCst);
+    // Not CREATE-only: it ends the batch, and that commit takes the fault.
+    assert!(conn.query("MERGE (:N {id: 2})").is_err());
+    assert!(
+        conn.batch_commit_error.borrow().is_some(),
+        "the mid-batch failure is held for the batch's end"
+    );
+    conn.begin_write_batch();
+    assert!(
+        conn.batch_commit_error.borrow().is_none(),
+        "arming the next batch drops the previous batch's unreported failure"
+    );
 }

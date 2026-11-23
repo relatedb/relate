@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use relate_core::{Error, Node, PropertyMap, Relationship, Result};
+use relate_engine_api::GraphExport;
 use rkyv::{Archive, Deserialize, Serialize};
 
 use super::catalog;
@@ -293,13 +294,12 @@ fn decode_props(
 
 pub(crate) fn dump(
     target: &StoreTarget,
-    graph: &dyn relate_engine_api::GraphImport,
-    checkpoint_lsn: u64,
-    snapshot_ts: u64,
-    ontology: Option<&str>,
+    cut: &crate::codec::cut::CheckpointCut<'_>,
+    _rewrite: crate::codec::cut::Rewrite,
 ) -> Result<()> {
-    let contents = SnapshotContents::from_graph(graph, snapshot_ts)?;
-    let theater = graph.checkpoint_theater_for_write()?;
+    let ontology = cut.ontology_document();
+    let contents = SnapshotContents::from_graph(cut, cut.snapshot_ts())?;
+    let theater = cut.checkpoint_theater_for_write()?;
     let wire = catalog::to_json(&contents, &theater);
     let mut keys = Dict::default();
     let mut labels = Dict::default();
@@ -308,7 +308,7 @@ pub(crate) fn dump(
     // pushes and the layout read by the same field names.
     let mut snapshot = Snapshot {
         value_encoding: crate::version::value_encoding::version_for_write(ontology.is_some()),
-        checkpoint_lsn,
+        checkpoint_lsn: cut.lsn(),
         next_node_id: contents.next_node_id,
         next_rel_id: contents.next_rel_id,
         ontology: ontology.map(str::to_owned),
@@ -389,22 +389,14 @@ pub(crate) fn dump(
     // `codec::CodecManifest`); a failure rolls the archive swap and the
     // manifest both back — neither half of a checkpoint is left
     // published alone.
-    let published = super::write_codec_manifest(
-        target,
-        SnapshotCodecKind::Rkyv,
-        checkpoint_lsn,
-        snapshot_ts,
-        Some(theater),
-        wire,
-        ontology,
-    );
+    let published = super::write_codec_manifest(target, SnapshotCodecKind::Rkyv, cut, wire);
     if let Err(error) = published {
         let rollback = restore_archive(target).and_then(|()| {
             super::restore_object(target, crate::snapshot::MANIFEST_JSON, previous_manifest)
         });
         return Err(super::publication_failure(error, rollback));
     }
-    crate::schema_files::finish_checkpoint(target, graph, ontology)?;
+    crate::schema_files::finish_checkpoint(target, cut, ontology)?;
     // The retired backup is dropped best-effort: a cleanup failure leaves
     // residue, never a wrongly reported checkpoint.
     let _ = target.vfs.remove_file(super::GRAPH_RKYV_BACKUP);

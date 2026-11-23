@@ -484,10 +484,7 @@ fn factor_vars_are_distinct(factors: &[Factor]) -> bool {
 }
 
 pub fn analyze_bulk_write(plan: &LogicalPlan) -> Option<BulkWrite> {
-    if plan.parts.len() != 1 || !plan.union_all.is_empty() || plan.next.is_some() {
-        return None;
-    }
-    let clauses = &plan.parts[0];
+    let clauses = plan.single_part()?;
     let mut factors: Vec<Factor> = Vec::new();
     let mut i = 0;
     while let Some(Clause::Match {

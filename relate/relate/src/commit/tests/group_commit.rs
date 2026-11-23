@@ -2,7 +2,7 @@
 
 use super::super::*;
 use super::harness::*;
-use crate::{Database, Value, WalRecord};
+use crate::{Database, Value};
 use relate_executor::BatchCommit;
 use std::collections::BTreeMap;
 
@@ -235,15 +235,7 @@ fn group_and_replica_share_safe_horizon_allocators_and_checkpoint_pin() {
         // checkpoint, without writing thousands of unrelated records.
         shared.wal.lock().unwrap().bytes = 64 * 1024 * 1024;
         if replica {
-            assert_eq!(
-                db.apply_replicated(&WalRecord {
-                    lsn: 99,
-                    commit_ts: 7,
-                    ops,
-                })
-                .unwrap(),
-                1
-            );
+            assert_eq!(db.apply_replicated(7, ops).unwrap(), 1);
         } else {
             let waiter = CommitWaiter::new();
             let candidate = slot_with_ops(ops, 7, 0, &waiter);

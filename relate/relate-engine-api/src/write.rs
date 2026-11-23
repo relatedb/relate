@@ -4,7 +4,7 @@
 use relate_core::Result;
 
 use crate::commit::CommitRecord;
-use crate::export::GraphImport;
+use crate::export::{CheckpointDirtyMarks, GraphImport};
 use crate::redo::RedoOp;
 
 /// One group's redo, captured against the snapshot the statement read.
@@ -37,7 +37,12 @@ pub trait WriteEngine: Send {
 
     /// Publish a snapshot of `graph` at `snapshot_ts`, covering the log
     /// through `lsn`.
-    fn checkpoint(&self, graph: &dyn GraphImport, lsn: u64, snapshot_ts: u64) -> Result<()>;
+    fn checkpoint(
+        &self,
+        graph: &dyn CheckpointDirtyMarks,
+        lsn: u64,
+        snapshot_ts: u64,
+    ) -> Result<()>;
 
     /// Records with `lsn` greater than `from_lsn`.
     fn poll_follow(&self, from_lsn: u64) -> Result<FollowBatch>;

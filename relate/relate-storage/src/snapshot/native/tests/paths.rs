@@ -428,7 +428,7 @@ fn shard_parser_governs_manifest_deletion_and_sweep_on_all_vfs() {
         assert!(object_exists(&target, fixed_orphan).unwrap());
         assert!(object_exists(&target, spoof).unwrap());
         assert!(object_exists(&target, spoof_suffix).unwrap());
-        if !deferred_retire(&target) {
+        if !keeps_superseded(&target) {
             assert!(!object_exists(&target, orphan_node).unwrap());
             assert!(!object_exists(&target, orphan_rel).unwrap());
             assert!(!object_exists(&target, &selected_rel).unwrap());

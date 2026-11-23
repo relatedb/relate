@@ -233,7 +233,11 @@ let db = Database::open("./graph.rl")?; // one host file (ADR-0074)
 ```
 
 - `full` durability (the default) barriers the WAL before acknowledging a
-  group. `everysecond` acknowledges after apply and barriers dirty WAL records
+  group. One exception: a statement in a pipelined write batch (ADR-0642) is
+  answered as it runs, and the batch's single barrier lands at the framed
+  batch's end, so a crash inside that window loses writes whose `SUCCESS` the
+  client already saw. A lone `RUN` keeps the per-statement guarantee.
+  `everysecond` acknowledges after apply and barriers dirty WAL records
   approximately once per second; a failure can lose the latest approximately
   one second of acknowledged writes, and slow scheduling/storage can extend
   that window. `snapshot` acknowledges without a WAL barrier; only a completed

@@ -103,7 +103,8 @@ fn rkyv_evidence_refuses_a_mixed_store() {
     // one directory. (Opening an rkyv target *on* a JSON store is refused
     // earlier, by the codec-mismatch guard — that is the other half of
     // this policy, and it needs no directory.)
-    crate::codec::rkyv::dump(&json_target, &graph, 1, graph.commit_ts(), None).unwrap();
+    let cut = crate::CheckpointCut::take(&graph, 1, graph.commit_ts(), None).unwrap();
+    crate::codec::rkyv::dump(&json_target, &cut, crate::Rewrite::Coalesce).unwrap();
     // Release the writer lock before resolving the directory afresh.
     drop(json_target);
     let error = crate::parse_uri(dir.path().join("db").to_str().unwrap())

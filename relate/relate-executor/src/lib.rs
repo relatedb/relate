@@ -157,7 +157,7 @@ pub use memory::DenseSpans;
 // the entry points' documented return type is nameable beside it.
 #[doc(hidden)]
 pub use memory::RedoDelta;
-pub use overlay::{ExecGraph, WriteScratch};
+pub use overlay::{ExecGraph, ScratchCheckpoint, StatementMark, WriteScratch};
 // The diagnostic switch's typed value (ADR-0519): re-exported for the
 // `relate` crate's open path (the resolver and the installer below),
 // the one public path — deliberately not advertised API beyond it.

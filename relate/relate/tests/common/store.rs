@@ -3,8 +3,9 @@
 
 use super::run;
 
-/// `(segment name, magic)` of every WAL segment under `dir`, sorted by
-/// name — the last entry is the active segment. The per-codec WAL
+/// `(segment name, magic)` of every complete WAL segment under `dir`,
+/// sorted by name — the last entry is the active segment (a rotate in
+/// flight's just-created, still-empty segment is skipped). The per-codec WAL
 /// directory comes from [`relate_storage::SnapshotCodecKind::wal_dir`]
 /// (ADR-0406 §3 for the markdown store).
 pub fn segment_magics(
@@ -15,13 +16,26 @@ pub fn segment_magics(
         .unwrap()
         .filter_map(|entry| {
             let path = entry.unwrap().path();
-            (path.extension().and_then(|e| e.to_str()) == Some("log")).then(|| {
-                let bytes = std::fs::read(&path).unwrap();
-                (
-                    path.file_name().unwrap().to_string_lossy().into_owned(),
-                    bytes[..8].try_into().unwrap(),
-                )
-            })
+            if path.extension().and_then(|e| e.to_str()) != Some("log") {
+                return None;
+            }
+            // Skip only a rotate in flight's just-created, still-empty segment
+            // (or one recycled away), like the read-only WAL open. Any other
+            // unreadable or truncated segment is a real failure, not a skip.
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("read WAL segment {}: {error}", path.display()));
+            if bytes.is_empty() {
+                return None;
+            }
+            let magic: [u8; 8] = bytes
+                .get(..8)
+                .expect("a non-empty WAL segment carries its 8-byte magic")
+                .try_into()
+                .unwrap();
+            Some((
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                magic,
+            ))
         })
         .collect();
     segments.sort();

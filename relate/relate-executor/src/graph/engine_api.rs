@@ -1,10 +1,10 @@
 //! The in-memory graph as the snapshot contract other crates call.
 
-use std::collections::HashSet;
-
 use relate_catalog::{ConstraintDef, IndexDef};
 use relate_core::{Node, NodeId, RelId, Relationship, Result};
-use relate_engine_api::{CheckpointTheater, GraphExport, GraphImport, RedoOp};
+use relate_engine_api::{
+    CheckpointDirty, CheckpointDirtyMarks, CheckpointTheater, GraphExport, GraphImport, RedoOp,
+};
 use relate_model::Constraint;
 
 use super::Graph;
@@ -22,11 +22,11 @@ impl GraphExport for Graph {
     fn live_node_count(&self) -> usize {
         Graph::live_node_count(self)
     }
-    fn dirty_node_ids(&self) -> HashSet<NodeId> {
-        Graph::dirty_node_ids(self)
-    }
-    fn dirty_rel_ids(&self) -> HashSet<RelId> {
-        Graph::dirty_rel_ids(self)
+    fn checkpoint_dirty(&self) -> CheckpointDirty {
+        CheckpointDirty {
+            nodes: Graph::dirty_node_ids(self),
+            rels: Graph::dirty_rel_ids(self),
+        }
     }
     fn all_node_ids_at(&self, ts: u64) -> Vec<NodeId> {
         Graph::all_node_ids_at(self, ts)
@@ -58,11 +58,17 @@ impl GraphExport for Graph {
     fn graph_type_spec(&self) -> Result<Option<String>> {
         Graph::graph_type_spec(self)
     }
-    fn clear_checkpoint_dirty(&self) {
-        Graph::clear_checkpoint_dirty(self)
-    }
     fn catalog_ddl(&self) -> Vec<String> {
         crate::catalog_create_statements(self)
+    }
+}
+
+impl CheckpointDirtyMarks for Graph {
+    fn take_checkpoint_dirty(&self) -> CheckpointDirty {
+        Graph::take_checkpoint_dirty(self)
+    }
+    fn merge_checkpoint_dirty(&self, dirty: &CheckpointDirty) {
+        Graph::merge_checkpoint_dirty(self, dirty)
     }
 }
 

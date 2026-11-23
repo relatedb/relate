@@ -1,7 +1,7 @@
 //! Relate GraphData snapshot (`graph.json` full rewrite). ADR-0050.
 
 use relate_core::{Error, Node, Relationship, Result};
-use relate_engine_api::CheckpointTheater;
+use relate_engine_api::{CheckpointTheater, GraphExport};
 #[cfg(test)]
 use relate_executor::Graph;
 use serde::{Deserialize, Serialize};
@@ -73,18 +73,17 @@ struct JsonRelationship {
 
 pub fn dump(
     target: &StoreTarget,
-    graph: &dyn relate_engine_api::GraphImport,
-    checkpoint_lsn: u64,
-    snapshot_ts: u64,
-    ontology: Option<&str>,
+    cut: &crate::codec::cut::CheckpointCut<'_>,
+    _rewrite: crate::codec::cut::Rewrite,
 ) -> Result<()> {
-    let theater = graph.checkpoint_theater_for_write()?;
-    let body = dump_to_vec(graph, snapshot_ts, theater, ontology)?;
+    let ontology = cut.ontology_document();
+    let theater = cut.checkpoint_theater_for_write()?;
+    let body = dump_to_vec(cut, cut.snapshot_ts(), theater, ontology)?;
     put_object(target, GRAPH_JSON, &body)?;
     let envelope = Envelope {
         codec: SnapshotCodecKind::Json,
-        checkpoint_lsn,
-        commit_ts: snapshot_ts,
+        checkpoint_lsn: cut.lsn(),
+        commit_ts: cut.snapshot_ts(),
         query_engine: relate_engine_api::MEMORY_QUERY_ENGINE.to_owned(),
         write_engine: relate_engine_api::LOCAL_WRITE_ENGINE.to_owned(),
     };
@@ -92,13 +91,13 @@ pub fn dump(
         serde_json::to_vec_pretty(&envelope).map_err(|e| Error::storage(e.to_string()))?;
     put_object(target, crate::snapshot::MANIFEST_JSON, &env_bytes)?;
     // The shared checkpoint tail (ADR-0481 §4/§5): the mirror publishes
-    // after the envelope it reflects, then the dirty tracking clears.
-    crate::schema_files::finish_checkpoint(target, graph, ontology)?;
+    // after the envelope it reflects.
+    crate::schema_files::finish_checkpoint(target, cut, ontology)?;
     Ok(())
 }
 
 fn dump_to_vec(
-    graph: &dyn relate_engine_api::GraphImport,
+    graph: &dyn relate_engine_api::GraphExport,
     snapshot_ts: u64,
     theater: CheckpointTheater,
     ontology: Option<&str>,
@@ -108,7 +107,7 @@ fn dump_to_vec(
 }
 
 fn graph_to_data(
-    graph: &dyn relate_engine_api::GraphImport,
+    graph: &dyn relate_engine_api::GraphExport,
     snapshot_ts: u64,
     theater: CheckpointTheater,
     ontology: Option<&str>,

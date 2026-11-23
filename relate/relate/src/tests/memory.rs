@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::{Database, Error, OpenOptions, Value, WalRecord};
+use crate::{Database, Error, OpenOptions, Value};
 
 use super::support::{invalid_id_shapes, node};
 
@@ -257,13 +257,7 @@ fn logical_graph_size_limit_rejects_stats_entry_growth_pre_commit() {
 fn invalid_replicated_ids_are_refused_under_a_size_limit() {
     for (name, invalid) in invalid_id_shapes() {
         let db = open_limited(1 << 20);
-        let err = db
-            .apply_replicated(&WalRecord {
-                lsn: 999, // The destination assigns its own LSN.
-                commit_ts: 1,
-                ops: vec![node(0), invalid],
-            })
-            .unwrap_err();
+        let err = db.apply_replicated(1, vec![node(0), invalid]).unwrap_err();
         assert!(matches!(err, Error::Storage(_)), "{name}: {err}");
     }
 }

@@ -17,7 +17,7 @@ use relate_storage::{
     CodecOpenConfig, SnapshotCodecKind, StoreTarget, Vfs, Wal,
 };
 
-use super::commit::commit_timing_env;
+use super::commit_timing::commit_timing_env;
 use super::ontology;
 use super::open_config::{
     reject_cypherlite_env, resolve_bulk_batch_limits, resolve_checkpoint_interval,

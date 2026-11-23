@@ -237,7 +237,7 @@ impl Connection {
     /// 2026.10.1 raises GQLSTATUS 25N17 inside an open explicit
     /// transaction).
     fn transaction_gate_error(&self, logical: &LogicalPlan) -> Option<Error> {
-        (self.txn.is_some() && relate_planner::plan_contains_in_transactions(logical))
+        (self.in_transaction() && relate_planner::plan_contains_in_transactions(logical))
             .then(ce_messages::call_in_transactions_implicit_only)
     }
 
@@ -287,7 +287,7 @@ impl Connection {
             .find(|name| is_ontology_store_op(name.as_str()))?;
         // ADR-0121 §3: set/drop are store-level commits of their own —
         // implicit (auto-commit) transactions only.
-        if self.txn.is_some() {
+        if self.in_transaction() {
             return Some(ce_messages::ontology_implicit_transaction_only(set_or_drop));
         }
         // ADR-0121 §3: a statement calling set/drop may not write anything

@@ -159,7 +159,11 @@ pub(crate) use shared::{check_loaded_graph, ensure_writable, report_trimmed_tail
 pub use token_budget::TokenPoolSnapshot;
 
 use checkpoint::Trigger;
-use commit::{format_commit_timing, CommitTimingBuf};
+use commit_timing::{format_commit_timing, CommitTimingBuf};
+/// The redo vocabulary a replicated record carries — the element type of
+/// [`Database::apply_replicated`]'s argument, so it needs the public path a
+/// public signature requires.
+pub use relate_engine_api::RedoOp;
 /// Open handle to a Relate database.
 pub struct Database {
     inner: Arc<Shared>,
@@ -534,7 +538,7 @@ impl Database {
     /// db.checkpoint_if_pending().unwrap(); // nothing pending over the published snapshot: writes nothing
     /// ```
     pub fn checkpoint_if_pending(&self) -> Result<()> {
-        self.close_checkpoint_when_writable(Trigger::Automatic)
+        self.close_checkpoint_when_writable(Trigger::Close)
     }
 
     /// Research-only (speed-of-light kernels), quarantined behind the
@@ -673,11 +677,13 @@ impl Database {
     }
 
     /// Replica write path: validate redo IDs and complete named label-existence
-    /// enforcement metadata, append to this WAL, then `apply_redo`. Assigns a
-    /// new LSN; keeps the source `commit_ts` and graph IDs. Created IDs and
-    /// relationship endpoints outside `0..i64::MAX` return `Error::Storage`
-    /// without appending.
-    pub fn apply_replicated(&self, record: &WalRecord) -> Result<u64> {
-        commit::commit_replicated(&self.inner, record)
+    /// enforcement metadata, append to this WAL, then `apply_redo`. It takes
+    /// the source `commit_ts` and its redo, and assigns a new LSN — the
+    /// source's own LSN is not part of what this path consumes, so it is not
+    /// part of the call: a caller cannot state one, fabricated or not. Keeps
+    /// the graph IDs. Created IDs and relationship endpoints outside
+    /// `0..i64::MAX` return `Error::Storage` without appending.
+    pub fn apply_replicated(&self, commit_ts: u64, ops: Vec<RedoOp>) -> Result<u64> {
+        commit::commit_replicated(&self.inner, commit_ts, ops)
     }
 }

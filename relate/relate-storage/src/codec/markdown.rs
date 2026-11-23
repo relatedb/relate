@@ -48,6 +48,7 @@ use relate_markdown as md;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
+use super::ReplayWindow;
 use crate::snapshot::DeferredOpenAction;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::SnapshotCodecKind;
@@ -435,8 +436,8 @@ fn vault_changed_since_checkpoint(target: &StoreTarget) -> Result<bool> {
 /// records past the checkpoint LSN, replaying deltas over a vault that
 /// changed underneath is refused instead of corrupting the base. The
 /// codec owns the policy; `open` dispatches per codec.
-fn check_open_guard(target: &StoreTarget, wal_lsn: u64, checkpoint_lsn: u64) -> Result<()> {
-    if wal_lsn > checkpoint_lsn && vault_changed_since_checkpoint(target)? {
+fn check_open_guard(target: &StoreTarget, window: ReplayWindow) -> Result<()> {
+    if window.wal_lsn > window.checkpoint_lsn && vault_changed_since_checkpoint(target)? {
         return Err(md::vault_error(
             "the markdown vault changed on disk while uncheckpointed writes were pending; \
              reopen without the edits or recover from a checkpointed state",
@@ -453,11 +454,10 @@ fn check_open_guard(target: &StoreTarget, wal_lsn: u64, checkpoint_lsn: u64) -> 
 /// codec owns the policy; `open` dispatches per codec.
 pub(crate) fn finish_open(
     target: &StoreTarget,
-    wal_lsn: u64,
-    checkpoint_lsn: u64,
+    window: ReplayWindow,
     deferred: Option<DeferredOpenAction>,
 ) -> Result<()> {
-    check_open_guard(target, wal_lsn, checkpoint_lsn)?;
+    check_open_guard(target, window)?;
     match deferred {
         Some(action) => action.run(target),
         None => Ok(()),

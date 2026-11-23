@@ -4,10 +4,12 @@
 
 use super::super::*;
 use crate::codec::parquet::decoded_preflight;
+use crate::tests::ReadLogVfs;
 use crate::vfs::VfsMeta;
 use crate::{memory_store, open_store, StoreTarget, Vfs, VfsFile, Wal};
 use relate_core::Value;
 use relate_executor::{Graph, RedoOp};
+use relate_test_support::read_log::ReadLog;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::SeekFrom;
@@ -19,6 +21,10 @@ use std::sync::{
 
 pub(super) struct InjectVfs {
     pub(super) inner: Arc<dyn Vfs>,
+    /// The canonical read-logging wrapper `inner` is: composing it is what
+    /// keeps "which open paths get logged" one policy, and it is the handle a
+    /// suite reads the log through.
+    pub(super) logging: Arc<ReadLogVfs>,
     pub(super) oversized: Option<String>,
     pub(super) metadata_lies: bool,
     pub(super) metadata_error: Option<String>,
@@ -28,18 +34,16 @@ pub(super) struct InjectVfs {
     pub(super) fail_manifest_sync: bool,
     pub(super) fail_manifest_rename: bool,
     pub(super) part_opens: AtomicUsize,
-    /// Count opens of this path in `watched_opens`; each bounded read of an
-    /// object opens it once.
-    pub(super) watched: Option<String>,
-    pub(super) watched_opens: Arc<AtomicUsize>,
     #[cfg(unix)]
     pub(super) alias_after_sync: Option<(String, std::path::PathBuf, std::path::PathBuf)>,
 }
 
 impl InjectVfs {
     fn new(inner: Arc<dyn Vfs>) -> Self {
+        let logging = Arc::new(ReadLogVfs::new(inner));
         Self {
-            inner,
+            inner: Arc::clone(&logging) as Arc<dyn Vfs>,
+            logging,
             oversized: None,
             metadata_lies: false,
             metadata_error: None,
@@ -49,8 +53,6 @@ impl InjectVfs {
             fail_manifest_sync: false,
             fail_manifest_rename: false,
             part_opens: AtomicUsize::new(0),
-            watched: None,
-            watched_opens: Arc::new(AtomicUsize::new(0)),
             #[cfg(unix)]
             alias_after_sync: None,
         }
@@ -87,13 +89,6 @@ pub(super) fn inject_oversized(
         fake.oversized = Some(name.to_owned());
         fake.metadata_lies = metadata_lies;
     })
-}
-
-/// Whether `target` keeps superseded and orphaned shard objects rather
-/// than deleting them: on a Windows native directory, `retire_superseded`
-/// and `sweep_orphans` retain older generations for a fallback manifest.
-pub(super) fn deferred_retire(target: &StoreTarget) -> bool {
-    cfg!(windows) && target.native_root.is_some()
 }
 
 fn fake_oversized_len(name: &str) -> u64 {
@@ -169,9 +164,8 @@ impl Vfs for InjectVfs {
         Ok(m)
     }
     fn open(&self, path: &str, opts: VfsOpen) -> Result<Box<dyn VfsFile>> {
-        if self.watched.as_deref() == Some(path) {
-            self.watched_opens.fetch_add(1, Ordering::SeqCst);
-        }
+        // The recording is the canonical wrapper's, not this one's: `inner` is
+        // a `ReadLogVfs`, so which open paths get logged has one home.
         let inner = self.inner.open(path, opts)?;
         if self.selected(path) {
             Ok(Box::new(InjectFile {
@@ -512,11 +506,11 @@ pub(super) fn assert_tiles(
     parts
 }
 
-/// `store` behind an [`InjectVfs`] that counts opens of `path`; returns the
-/// wrapped store and the counter.
-pub(super) fn watch_opens(store: &StoreTarget, path: &str) -> (StoreTarget, Arc<AtomicUsize>) {
-    let (watched, fake) = inject_vfs(store, |fake| fake.watched = Some(path.to_owned()));
-    (watched, Arc::clone(&fake.watched_opens))
+/// `store` behind an [`InjectVfs`] that logs object opens; returns the
+/// wrapped store and the log a test counts one path's opens on.
+pub(super) fn watch_opens(store: &StoreTarget) -> (StoreTarget, Arc<ReadLog>) {
+    let (watched, fake) = inject_vfs(store, |_| {});
+    (watched, fake.logging.log())
 }
 
 /// Row counts of the row groups in published shard `path`.

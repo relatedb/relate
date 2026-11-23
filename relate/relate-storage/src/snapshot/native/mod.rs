@@ -8,7 +8,6 @@ use super::*;
 #[cfg(test)]
 use std::ops::Range;
 
-use relate_engine_api::CheckpointTheater;
 #[cfg(test)]
 use relate_executor::Graph;
 
@@ -16,18 +15,30 @@ use crate::codec::parquet::{load_nodes, load_rels, Loader, Origin, MAX_FILE};
 // Test modules reach the preflighting wrappers through `use super::*`.
 #[cfg(test)]
 use crate::codec::parquet::{nodes_parquet_ids, rels_parquet_ids};
-use crate::vfs::{native, BoundedSink, Refusal, Vfs};
-use crate::{storage_context, Manifest, SnapshotCodecKind};
+use crate::vfs::native;
+use crate::vfs::Vfs;
+#[cfg(test)]
+use crate::SnapshotCodecKind;
+use crate::{storage_context, Manifest};
 
 mod coalesce;
 mod layout;
 mod load;
 mod ontology;
 mod shard_name;
+mod write;
+
+use crate::codec::cut::{CheckpointCut, Rewrite};
 #[cfg(test)]
 pub use load::load;
 pub(crate) use load::load_with_checkpoint_lsn;
 pub(crate) use shard_name::ShardName;
+pub(crate) use write::checkpoint_at;
+#[cfg(test)]
+pub(crate) use write::checkpoint_at_with_bytes;
+#[cfg(test)]
+use write::ewma_density;
+use write::ShardWrite;
 
 /// Per-kind manifest/graph pairing: the four choices `rewrite_kind` and
 /// the manifest recheck must keep consistent, stated once here.
@@ -54,19 +65,19 @@ impl Kind {
         }
     }
 
-    /// Ids changed since the last checkpoint, sorted.
-    fn dirty_ids(self, graph: &dyn relate_engine_api::GraphImport) -> Vec<i64> {
+    /// Ids the previous checkpoint did not cover, sorted. Takes the marks the
+    /// caller already fetched — one fetch per checkpoint covers both kinds,
+    /// so neither pays for a clone of the other's set.
+    fn dirty_ids(self, marks: &relate_engine_api::CheckpointDirty) -> Vec<i64> {
         let mut ids: Vec<i64> = match self {
-            Self::Node => graph.dirty_node_ids(),
-            Self::Rel => graph.dirty_rel_ids(),
-        }
-        .into_iter()
-        .collect();
+            Self::Node => marks.nodes.iter().copied().collect(),
+            Self::Rel => marks.rels.iter().copied().collect(),
+        };
         ids.sort_unstable();
         ids
     }
 
-    fn all_ids(self, graph: &dyn relate_engine_api::GraphImport, ts: u64) -> Vec<i64> {
+    fn all_ids(self, graph: &dyn relate_engine_api::GraphExport, ts: u64) -> Vec<i64> {
         match self {
             Self::Node => graph.all_node_ids_at(ts),
             Self::Rel => graph.all_rel_ids_at(ts),
@@ -135,137 +146,6 @@ pub fn window_width(target_bytes: u64, bytes_per_row: f64) -> i64 {
     w.clamp(MIN_WINDOW, MAX_WINDOW)
 }
 
-// Stop serializing before retaining an unbounded schema image in the v3
-// manifest. The same 16 MiB limit applies on both checkpoint and recovery.
-fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    {
-        // The sink's refusal is the canonical manifest-size error — the
-        // size class's own too-large constructor, the same error the
-        // manifest length checks return — so the one refusal channel
-        // returns it directly (ADR-0492's one-channel sink shape).
-        let mut writer = BoundedSink::capture(
-            &mut bytes,
-            MAX_JSON_OBJECT,
-            Refusal::Fixed(manifest_too_large()),
-        );
-        let result = serde_json::to_writer_pretty(&mut writer, manifest);
-        writer.finish(
-            result,
-            |e| Error::storage(e.to_string()),
-            // An uncharged capture never refuses an allocation.
-            |bytes| Error::storage(format!("buffer allocation of {bytes} bytes failed")),
-        )?;
-    }
-    Ok(bytes)
-}
-
-/// Resolve the configured shard byte budget and snapshot.
-pub fn checkpoint_at(
-    target: &StoreTarget,
-    graph: &dyn relate_engine_api::GraphImport,
-    checkpoint_lsn: u64,
-    snapshot_ts: u64,
-    ontology: Option<&str>,
-) -> Result<()> {
-    checkpoint_at_with_bytes(
-        target,
-        graph,
-        checkpoint_lsn,
-        snapshot_ts,
-        shard_target_bytes()?,
-        ontology,
-    )
-}
-pub(crate) fn checkpoint_at_with_bytes(
-    target: &StoreTarget,
-    graph: &dyn relate_engine_api::GraphImport,
-    checkpoint_lsn: u64,
-    snapshot_ts: u64,
-    target_bytes: u64,
-    ontology: Option<&str>,
-) -> Result<()> {
-    if !(1..=MAX_FILE).contains(&target_bytes) {
-        return Err(Error::storage(format!(
-            "Parquet shard target must be in 1..={MAX_FILE} bytes"
-        )));
-    }
-    if snapshot_ts == u64::MAX || graph.next_node_id() < 0 || graph.next_rel_id() < 0 {
-        return Err(Error::storage(
-            "snapshot has unsupported timestamp or next ID",
-        ));
-    }
-    // Validate against the named catalog before creating *any* shard.
-    let theater = graph.checkpoint_theater_for_write()?;
-    let prev = read_manifest(target)?.map(|(m, _)| m);
-    // A kind with no previous parts is not checked by read_manifest. Reject
-    // even an unused alias before a new leaf can be created through it.
-    for kind in Kind::ALL {
-        if let Some(root) = &target.native_root {
-            validate_dir(root, kind.dir(), "shard directory", DirAdmit::Optional)?;
-        }
-    }
-    let mut owned = Vec::new();
-    let mut ctx = ShardWrite::new(
-        target,
-        graph,
-        snapshot_ts,
-        Kind::Node,
-        target_bytes,
-        &mut owned,
-    );
-    // The publish phase is known statically: a prepare failure cleans up as
-    // not-publishing, a publish failure as publishing.
-    let prepared =
-        match prepare_manifest(&mut ctx, checkpoint_lsn, theater, prev.as_ref(), ontology) {
-            Ok(result) => result,
-            Err(error) => return Err(cleanup_unreferenced(target, &owned, Phase::Prepare, error)),
-        };
-    if let Err(error) = put_object(target, MANIFEST_JSON, &prepared.bytes) {
-        return Err(cleanup_unreferenced(target, &owned, Phase::Publish, error));
-    }
-    retire_superseded(target, prev.as_ref(), &prepared.manifest, prepared.retired);
-    // The shared checkpoint tail (ADR-0481 §4/§5): the mirror publishes
-    // after the manifest it reflects, then the dirty tracking clears.
-    crate::schema_files::finish_checkpoint(target, graph, ontology)?;
-    Ok(())
-}
-
-/// Retire superseded and legacy-monolith objects after a successful publish.
-/// Windows cannot prove namespace persistence of a renamed manifest after
-/// power loss, so older generations are retained there for a possible
-/// fallback: a restored old manifest can still need its monolithic objects,
-/// and the retired generations may still be referenced.
-fn retire_superseded(
-    target: &StoreTarget,
-    prev: Option<&Manifest>,
-    manifest: &Manifest,
-    retired_parts: Vec<String>,
-) {
-    if cfg!(windows) && target.native_root.is_some() {
-        return;
-    }
-    let mut retired: Vec<String> = Vec::new();
-    for p in retired_parts {
-        if !referenced(manifest, &p) {
-            retired.push(p);
-        }
-    }
-    for kind in Kind::ALL {
-        if prev.is_none_or(|m| kind.parts(m).is_empty()) {
-            retired.extend(kind.legacy_names().map(str::to_string));
-        }
-    }
-    // The superseded ontology object retires only now, after the manifest
-    // that no longer selects it has published (ADR-0120 §5).
-    if let Some(old) = prev.and_then(|m| m.ontology_path.as_deref()) {
-        if manifest.ontology_path.as_deref() != Some(old) {
-            retired.push(old.to_owned());
-        }
-    }
-    // One batch keeps a `.rl` retirement to a single catalog generation.
-    delete_objects(target, &retired);
-}
 /// Sum of live snapshot objects (manifest + Parquet parts). Excludes WAL
 /// and `.tmp`.
 pub fn snapshot_data_bytes(target: &StoreTarget) -> Result<u64> {
@@ -387,12 +267,21 @@ pub(crate) fn read_manifest(
             "manifest has unsupported timestamp or next ID",
         ));
     }
+    validate_manifest_parts(target, &m)?;
+    Ok(Some((m, marker)))
+}
+
+/// Validate every part a manifest names — the established-part check both
+/// the open's `read_manifest` and a rewrite's recheck (every proposed
+/// reference after writing, not just new leaves) consult: one spelling of
+/// the walk over the `Kind::ALL` vocabulary.
+fn validate_manifest_parts(target: &StoreTarget, m: &Manifest) -> Result<()> {
     for kind in Kind::ALL {
-        for part in kind.parts(&m) {
+        for part in kind.parts(m) {
             validate_part(target, kind, part)?;
         }
     }
-    Ok(Some((m, marker)))
+    Ok(())
 }
 
 fn validate_part(target: &StoreTarget, kind: Kind, part: &ShardPart) -> Result<()> {
@@ -447,211 +336,6 @@ fn validate_native_plain_file(root: &std::path::Path, rel: &str, what: &str) -> 
     Ok(())
 }
 
-fn validate_shard_name(target: &StoreTarget, name: ShardName) -> Result<()> {
-    let path = name.path();
-    let invalid = || Error::storage(format!("invalid manifest shard path: {path}"));
-    if let Some(root) = &target.native_root {
-        validate_dir(root, name.kind.dir(), "shard directory", DirAdmit::Required)
-            .map_err(|_| invalid())?;
-        validate_native_plain_file(root, &path, "shard")?;
-    }
-    Ok(())
-}
-
-/// The invariant bundle threaded through the shard-write recursion
-/// (`rewrite_kind` → `coalesce::rewrite` → `publish_part`): everything
-/// except the varying id window.
-struct ShardWrite<'a> {
-    target: &'a StoreTarget,
-    graph: &'a dyn relate_engine_api::GraphImport,
-    ts: u64,
-    kind: Kind,
-    target_bytes: u64,
-    owned: &'a mut Vec<String>,
-}
-
-impl<'a> ShardWrite<'a> {
-    /// The one construction — both kinds' rewrites and the test literals,
-    /// so a field is added once.
-    fn new(
-        target: &'a StoreTarget,
-        graph: &'a dyn relate_engine_api::GraphImport,
-        ts: u64,
-        kind: Kind,
-        target_bytes: u64,
-        owned: &'a mut Vec<String>,
-    ) -> Self {
-        Self {
-            target,
-            graph,
-            ts,
-            kind,
-            target_bytes,
-            owned,
-        }
-    }
-}
-
-/// One prepared checkpoint generation (ADR-0183): the manifest, its
-/// encoded bytes, and the part paths its rewrites retired.
-struct Prepared {
-    manifest: Manifest,
-    bytes: Vec<u8>,
-    retired: Vec<String>,
-}
-
-/// Prepare one checkpoint generation (ADR-0183, ADR-0534): rewrite both
-/// kinds' parts under the store's encoding, publish the ontology object
-/// the manifest selects, and assemble and revalidate the manifest —
-/// everything before the manifest object itself is put. Runs with
-/// `ctx`'s kind set per rewrite pass; a failure here cleans up as
-/// not-publishing.
-fn prepare_manifest(
-    ctx: &mut ShardWrite<'_>,
-    checkpoint_lsn: u64,
-    theater: CheckpointTheater,
-    prev: Option<&Manifest>,
-    ontology: Option<&str>,
-) -> Result<Prepared> {
-    ctx.kind = Kind::Node;
-    let (node_parts, retired_nodes) = rewrite_kind(ctx, prev)?;
-    ctx.kind = Kind::Rel;
-    let (rel_parts, retired_rels) = rewrite_kind(ctx, prev)?;
-    let bytes_per_node = ewma_density(
-        prev.map(|m| Kind::Node.bytes_per_row(m)).unwrap_or(0.0),
-        &node_parts,
-    )?;
-    let bytes_per_rel = ewma_density(
-        prev.map(|m| Kind::Rel.bytes_per_row(m)).unwrap_or(0.0),
-        &rel_parts,
-    )?;
-    // The ontology object publishes before the manifest that selects it
-    // (ADR-0120 §5, the ADR-0092/ADR-0089 rules): exclusive create,
-    // sync, durable name — and `owned` collects it for the crash and
-    // failure cleanup paths.
-    let ontology_path = ontology
-        .map(|document| ontology::publish_ontology(ctx.target, prev, document, ctx.owned))
-        .transpose()?;
-    let manifest = Manifest {
-        // The Parquet codec writes the wide pair, always (ADR-0553).
-        format_version: crate::version::manifest::version_for_write(ontology_path.is_some(), true),
-        next_node_id: ctx.graph.next_node_id(),
-        next_rel_id: ctx.graph.next_rel_id(),
-        checkpoint_lsn,
-        commit_ts: ctx.ts,
-        node_parts,
-        rel_parts,
-        bytes_per_node,
-        bytes_per_rel,
-        codec: SnapshotCodecKind::Parquet,
-        indexes: ctx.graph.named_indexes(),
-        constraints: ctx.graph.named_constraints(),
-        theater: Some(theater),
-        ontology_path,
-        query_engine: relate_engine_api::MEMORY_QUERY_ENGINE.to_owned(),
-        write_engine: relate_engine_api::LOCAL_WRITE_ENGINE.to_owned(),
-    };
-    // Unchanged (including legacy fixed-name) parts are published again.
-    // Recheck every proposed reference after writing, not just new leaves.
-    for kind in Kind::ALL {
-        for part in kind.parts(&manifest) {
-            validate_part(ctx.target, kind, part)?;
-        }
-    }
-    let bytes = encode_manifest(&manifest)?;
-    Ok(Prepared {
-        manifest,
-        bytes,
-        retired: retired_nodes.into_iter().chain(retired_rels).collect(),
-    })
-}
-
-/// Rewrite one kind's parts, every live id joining the dirty set when
-/// this checkpoint is the one-time legacy→wide upgrade (ADR-0553) —
-/// extends, never replaces, so a part whose rows were all deleted stays
-/// touched and retires instead of republishing them.
-fn rewrite_kind(
-    ctx: &mut ShardWrite<'_>,
-    prev: Option<&Manifest>,
-) -> Result<(Vec<ShardPart>, Vec<String>)> {
-    let parts = prev.map(|m| ctx.kind.parts(m).to_vec()).unwrap_or_default();
-    let all_ids = ctx.kind.all_ids(ctx.graph, ctx.ts);
-    let mut dirty = ctx.kind.dirty_ids(ctx.graph);
-    // ADR-0553: the one derivation, from the manifest this rewrite serves —
-    // a previous manifest below the wide versions upgrades every part.
-    let upgrading = prev.is_some_and(|m| !crate::version::manifest::writes_wide(m.format_version));
-    if upgrading {
-        dirty.extend(all_ids.iter().copied());
-        dirty.sort_unstable();
-        dirty.dedup();
-    }
-    let bytes_per_row = prev.map(|m| ctx.kind.bytes_per_row(m)).unwrap_or(0.0);
-    let w = window_width(ctx.target_bytes, bytes_per_row);
-    // ADR-0183: heal, cover, plan and write id ranges as coalesced units,
-    // not per previous part.
-    coalesce::rewrite(ctx, parts, &all_ids, &dirty, w)
-}
-
-/// Exclusive-reservation loop shared by generated immutable objects: pick a
-/// fresh name, create it without overwriting, record it in `owned` for
-/// cleanup, write and fsync its bytes, then persist the containing directory.
-/// A collision retries with a new name; all other failures abort. Callers own
-/// any directory preparation before the first attempt.
-fn reserve_owned_object(
-    vfs: &dyn Vfs,
-    dir: &str,
-    make_name: impl FnMut() -> Result<String>,
-    bytes: &[u8],
-    owned: &mut Vec<String>,
-    what: &str,
-) -> Result<String> {
-    let (path, mut file) = reserve_exclusive(vfs, make_name, owned, what)?;
-    let result = file.write_all(bytes).and_then(|()| file.sync_all());
-    drop(file);
-    result?;
-    vfs.sync_dir(dir)?;
-    Ok(path)
-}
-
-/// The exclusive-reservation policy every generated immutable object
-/// runs: pick a fresh name, create it without overwriting, record it in
-/// `owned` for cleanup — up to eight collisions, then a refusal. The
-/// caller owns directory preparation and what it writes through the
-/// handle.
-fn reserve_exclusive(
-    vfs: &dyn Vfs,
-    mut make_name: impl FnMut() -> Result<String>,
-    owned: &mut Vec<String>,
-    what: &str,
-) -> Result<(String, Box<dyn crate::vfs::VfsFile>)> {
-    for _ in 0..8 {
-        let path = make_name()?;
-        if let Some(file) = vfs.open_exclusive(&path)? {
-            owned.push(path.clone());
-            return Ok((path, file));
-        }
-    }
-    Err(Error::storage(format!(
-        "could not reserve a unique {what} path"
-    )))
-}
-
-/// The validate/create/re-validate directory sandwich every immutable
-/// object publish performs on its family directory before the first
-/// reservation attempt: refuse an alias or non-directory both before and
-/// after creating the directory, so a race into the create window is
-/// caught (ADR-0089, ADR-0120 §5).
-fn prepare_object_dir(target: &StoreTarget, dir: &str, what: &str) -> Result<()> {
-    if let Some(root) = &target.native_root {
-        validate_dir(root, dir, what, DirAdmit::Optional)?;
-    }
-    target.vfs.create_dir_all_for_atomic(dir)?;
-    if let Some(root) = &target.native_root {
-        validate_dir(root, dir, what, DirAdmit::Required)?;
-    }
-    Ok(())
-}
-
 fn referenced(m: &Manifest, path: &str) -> bool {
     m.ontology_path.as_deref() == Some(path)
         || m.node_parts
@@ -660,46 +344,14 @@ fn referenced(m: &Manifest, path: &str) -> bool {
             .any(|p| p.path == path)
 }
 
-/// Which checkpoint phase failed: a publish failure may have renamed the
-/// manifest before erroring, so its cleanup needs a readable manifest.
-#[derive(Clone, Copy, PartialEq)]
-enum Phase {
-    Prepare,
-    Publish,
-}
-
-fn cleanup_unreferenced(
-    target: &StoreTarget,
-    owned: &[String],
-    phase: Phase,
-    error: Error,
-) -> Error {
-    if owned.is_empty() {
-        return error;
-    }
-    // Manifest replacement can return an error *after* the rename. Never
-    // remove a part unless a readable manifest proves it is unreferenced.
-    let manifest = match read_manifest(target) {
-        Ok(Some((m, _))) => Some(m),
-        Ok(None) if phase == Phase::Prepare => None,
-        _ => return error,
-    };
-    let mut failures = Vec::new();
-    for path in owned {
-        if manifest.as_ref().is_none_or(|m| !referenced(m, path)) {
-            if let Err(e) = delete_object(target, path) {
-                failures.push(format!("{path}: {e}"));
-            }
-        }
-    }
-    if failures.is_empty() {
-        error
-    } else {
-        Error::storage(format!(
-            "{error}; checkpoint cleanup failed: {}",
-            failures.join(", ")
-        ))
-    }
+/// Whether this store retains superseded and orphaned shard objects instead
+/// of deleting them: Windows cannot prove namespace persistence of a renamed
+/// manifest after power loss, so a native directory there keeps older
+/// generations for a fallback manifest. The one home of the rule — the
+/// superseded-object retirement and [`sweep_orphans`] both consult it, and
+/// so do the suites that assert which objects a store keeps.
+fn keeps_superseded(target: &StoreTarget) -> bool {
+    cfg!(windows) && target.native_root.is_some()
 }
 
 /// Run only after a complete snapshot and WAL replay have established the
@@ -708,8 +360,7 @@ pub(crate) fn sweep_orphans(target: &StoreTarget) -> Result<()> {
     let Some((manifest, _)) = read_manifest(target)? else {
         return Ok(());
     };
-    #[cfg(windows)]
-    if target.native_root.is_some() {
+    if keeps_superseded(target) {
         return Ok(());
     }
     for dir in Kind::ALL.map(Kind::dir) {
@@ -764,27 +415,6 @@ fn sweep_dir_orphans(
     }
 }
 
-fn ewma_density(prev: f64, parts: &[ShardPart]) -> Result<f64> {
-    let mut bytes = 0u64;
-    let mut rows = 0u64;
-    for p in parts {
-        bytes = bytes
-            .checked_add(p.bytes)
-            .ok_or_else(|| Error::storage("manifest shard byte total overflow"))?;
-        rows = rows
-            .checked_add(p.rows)
-            .ok_or_else(|| Error::storage("manifest shard row total overflow"))?;
-    }
-    if rows == 0 {
-        return Ok(prev);
-    }
-    let sample = bytes as f64 / rows as f64;
-    if prev > 0.0 && prev.is_finite() {
-        Ok(0.7 * prev + 0.3 * sample)
-    } else {
-        Ok(sample)
-    }
-}
 pub(crate) fn delete_object(target: &StoreTarget, name: &str) -> Result<()> {
     validate_deletable(target, name)?;
     target.vfs.remove_file(name)
@@ -814,6 +444,79 @@ fn validate_deletable(target: &StoreTarget, name: &str) -> Result<()> {
             "invalid manifest shard path: {name}"
         ))),
     }
+}
+
+/// The native alias proof of one shard part: its family directory must be a
+/// real directory and the part a plain file, never a symlink/junction.
+fn validate_shard_name(target: &StoreTarget, name: ShardName) -> Result<()> {
+    let path = name.path();
+    let invalid = || Error::storage(format!("invalid manifest shard path: {path}"));
+    if let Some(root) = &target.native_root {
+        validate_dir(root, name.kind.dir(), "shard directory", DirAdmit::Required)
+            .map_err(|_| invalid())?;
+        validate_native_plain_file(root, &path, "shard")?;
+    }
+    Ok(())
+}
+
+/// The validate/create/re-validate directory sandwich every immutable
+/// object publish performs on its family directory before the first
+/// reservation attempt: refuse an alias or non-directory both before and
+/// after creating the directory, so a race into the create window is
+/// caught (ADR-0089, ADR-0120 §5).
+fn prepare_object_dir(target: &StoreTarget, dir: &str, what: &str) -> Result<()> {
+    if let Some(root) = &target.native_root {
+        validate_dir(root, dir, what, DirAdmit::Optional)?;
+    }
+    target.vfs.create_dir_all_for_atomic(dir)?;
+    if let Some(root) = &target.native_root {
+        validate_dir(root, dir, what, DirAdmit::Required)?;
+    }
+    Ok(())
+}
+
+/// The exclusive-reservation policy every generated immutable object
+/// runs: pick a fresh name, create it without overwriting, record it in
+/// `owned` for cleanup — up to eight collisions, then a refusal. The
+/// caller owns directory preparation and what it writes through the
+/// handle.
+fn reserve_exclusive(
+    vfs: &dyn Vfs,
+    mut make_name: impl FnMut() -> Result<String>,
+    owned: &mut Vec<String>,
+    what: &str,
+) -> Result<(String, Box<dyn crate::vfs::VfsFile>)> {
+    for _ in 0..8 {
+        let path = make_name()?;
+        if let Some(file) = vfs.open_exclusive(&path)? {
+            owned.push(path.clone());
+            return Ok((path, file));
+        }
+    }
+    Err(Error::storage(format!(
+        "could not reserve a unique {what} path"
+    )))
+}
+
+/// Exclusive-reservation loop shared by generated immutable objects: pick a
+/// fresh name, create it without overwriting, record it in `owned` for
+/// cleanup, write and fsync its bytes, then persist the containing directory.
+/// A collision retries with a new name; all other failures abort. Callers own
+/// any directory preparation before the first attempt.
+fn reserve_owned_object(
+    vfs: &dyn Vfs,
+    dir: &str,
+    make_name: impl FnMut() -> Result<String>,
+    bytes: &[u8],
+    owned: &mut Vec<String>,
+    what: &str,
+) -> Result<String> {
+    let (path, mut file) = reserve_exclusive(vfs, make_name, owned, what)?;
+    let result = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    result?;
+    vfs.sync_dir(dir)?;
+    Ok(path)
 }
 
 #[cfg(test)]

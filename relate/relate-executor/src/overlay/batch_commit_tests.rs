@@ -294,3 +294,150 @@ fn absent_key_token_resolves_only_once_the_scratch_rebased() {
         "an Unresolved token looks the name up either way"
     );
 }
+
+/// The rollback's classification, one row per op kind: a create is the entity
+/// itself; a property or label op is undone by the same drop when it names one
+/// of the statement's created ids — the only target a CREATE-only statement's
+/// property defaults can reach — and is refused when it names anything else.
+#[test]
+fn a_property_or_label_op_is_invertible_only_on_a_created_entity() {
+    let mut created = std::collections::HashSet::new();
+    created.insert(crate::graph::EntityId::Node(7));
+    created.insert(crate::graph::EntityId::Rel(9));
+    let invertible = |op: &RedoOp| super::scratch::invertible_by_dropping_creates(op, &created);
+
+    assert!(invertible(&RedoOp::CreateNode {
+        id: 7,
+        labels: Arc::new(vec!["N".into()]),
+        properties: Arc::new(relate_core::PropertyMap::default()),
+    }));
+    assert!(invertible(&RedoOp::SetNodeProp {
+        id: 7,
+        key: "x".into(),
+        value: Value::Int(1),
+    }));
+    assert!(invertible(&RedoOp::RemoveNodeProp {
+        id: 7,
+        key: "x".into(),
+    }));
+    assert!(invertible(&RedoOp::AddLabels {
+        id: 7,
+        labels: vec!["N".into()],
+    }));
+    assert!(invertible(&RedoOp::SetRelProp {
+        id: 9,
+        key: "x".into(),
+        value: Value::Int(1),
+    }));
+    // A foreign entity, or a delete, is not this mark's to undo.
+    assert!(!invertible(&RedoOp::SetNodeProp {
+        id: 8,
+        key: "x".into(),
+        value: Value::Int(1),
+    }));
+    assert!(!invertible(&RedoOp::DeleteNode { id: 7 }));
+    assert!(!invertible(&RedoOp::DeleteRel { id: 9 }));
+}
+
+/// ADR-0642: a redo the mark cannot invert is refused rather than
+/// half-applied — the statement's entries stay put and the caller fails the
+/// batch, so a rollback that could not finish never leaves partial writes to
+/// be committed with the batch.
+#[test]
+fn a_rollback_that_cannot_invert_its_redo_is_refused_not_half_applied() {
+    let g = Graph::default();
+    let scratch = write_scratch(&g);
+    exec_write(&g, &scratch, "CREATE (:Person {name: 'Ada'})").unwrap();
+    let earlier = *scratch
+        .borrow()
+        .batch
+        .nodes
+        .keys()
+        .next()
+        .expect("the first statement's node is in the batch");
+
+    let mark = scratch.borrow().mark_statement();
+    exec_write(&g, &scratch, "CREATE (:Person {name: 'Grace'})").unwrap();
+    assert_eq!(scratch.borrow().batch.nodes.len(), 2);
+
+    // A property op on the *earlier* statement's node: reachable only through
+    // a redo the batch's eligibility rule forbids, and not undoable by
+    // dropping this statement's creates.
+    scratch.borrow_mut().push_redo(RedoOp::SetNodeProp {
+        id: earlier,
+        key: "x".into(),
+        value: Value::Int(1),
+    });
+    assert!(
+        scratch.borrow_mut().rollback_statement(mark).is_err(),
+        "a foreign-id property op is not invertible by dropping the statement's creates"
+    );
+    assert_eq!(
+        scratch.borrow().batch.nodes.len(),
+        2,
+        "a refused rollback leaves the batch as it was"
+    );
+}
+
+/// ADR-0642: the pipelined write batch's per-statement rollback is a
+/// [`StatementMark`], not a batch image. It must undo exactly what the
+/// statement created — rows, adjacency and live-label accounting included —
+/// and leave the batch's earlier statements untouched, or the batch would
+/// pay a per-statement batch copy for a guarantee it already has.
+#[test]
+fn a_statement_mark_rolls_back_only_the_marked_statement() {
+    let g = Graph::default();
+    let scratch = write_scratch(&g);
+    exec_write(&g, &scratch, "CREATE (:Person {name: 'Ada'})").unwrap();
+
+    let mark = scratch.borrow().mark_statement();
+    // Two relationships on one endpoint, so the rollback cannot read its
+    // adjacency entries off the end of the list.
+    exec_write(
+        &g,
+        &scratch,
+        "CREATE (a:Person {name: 'Grace'})-[:KNOWS]->(b:Person {name: 'Alan'}), \
+         (a)-[:KNOWS]->(c:Person {name: 'Ada L'})",
+    )
+    .unwrap();
+    {
+        let s = scratch.borrow();
+        assert_eq!(s.batch.nodes.len(), 4, "the statement's creates are in");
+        assert_eq!(s.batch.rels.len(), 2);
+        assert_eq!(s.batch.created_nodes.len(), 4);
+        assert_eq!(s.batch.created_rels.len(), 2);
+        assert_eq!(s.batch.out_adj.len(), 1);
+        assert_eq!(s.batch.out_adj.values().next().unwrap().len(), 2);
+        assert_eq!(s.batch.in_adj.len(), 2);
+        assert_eq!(s.live_label_delta("Person"), 4);
+    }
+
+    scratch
+        .borrow_mut()
+        .rollback_statement(mark)
+        .expect("the marked statement's redo is invertible");
+    let s = scratch.borrow();
+    assert_eq!(
+        s.batch.nodes.len(),
+        1,
+        "the earlier statement's row survives"
+    );
+    assert!(s.batch.rels.is_empty());
+    assert_eq!(
+        s.batch.created_nodes.len(),
+        1,
+        "the batch-spanning set keeps the earlier statement's create"
+    );
+    assert!(s.batch.created_rels.is_empty());
+    assert!(s.batch.out_adj.is_empty(), "the rel left no adjacency");
+    assert!(s.batch.in_adj.is_empty());
+    assert_eq!(
+        s.live_label_delta("Person"),
+        1,
+        "the failed statement's labels are off the accounting"
+    );
+    assert!(
+        s.redo_since(0).unwrap().len() == 1,
+        "the statement's own redo is dropped, the earlier one stays"
+    );
+}

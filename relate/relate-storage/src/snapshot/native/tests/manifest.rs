@@ -70,7 +70,10 @@ fn density_totals_use_checked_arithmetic() {
             bytes: u64::MAX,
         },
     ];
-    assert!(matches!(ewma_density(0.0, &parts), Err(Error::Storage(_))));
+    assert!(matches!(
+        ewma_density(Some(0.0), &parts),
+        Err(Error::Storage(_))
+    ));
 }
 
 #[test]

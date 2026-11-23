@@ -359,15 +359,19 @@ impl Connection {
         // LABS-1120: the admission's timing facts ride as the one carrier
         // — the same bundle the stamping tail consumes, no re-shaping here.
         let logical = logical.as_ref();
-        // `commit_write` reserves returned rows before it appends to the
-        // WAL. Explicit transactions still reserve here: their write has
-        // not committed until a later `COMMIT`.
-        let auto_commit_write = stamp.write_route && self.txn.is_none();
         // The admission gates between the EXPLAIN early return and dispatch:
         // the ADR-0308 parameter-completeness check and the ADR-0116 §2
         // SHOW DATABASES + NEXT restriction. One named seam.
         if let Err(e) = post_explain_gates(logical, params) {
             return QueryOutcome::not_admitted(Err(e));
+        }
+        // The statement's effect on the pipelined write batch (ADR-0642) is
+        // settled before the statement's ledger exists: ending a batch runs
+        // its commit, whose encoded record would otherwise be charged to the
+        // joining statement's reservation and its failure framed as that
+        // statement's admission — an identity that did not produce it.
+        if let Err(error) = self.write_batch_policy(logical) {
+            return QueryOutcome::not_admitted(Err(error));
         }
         let mut reservation = match self.reserve_statement(cypher, budget_params) {
             Ok(reservation) => reservation,
@@ -384,7 +388,7 @@ impl Connection {
             .as_mut()
             .map(|reservation| relate_core::tokens::LedgerGuard::install(&mut reservation.ledger));
         super::admit_hold();
-        let parse_plan_ns = crate::commit::elapsed_nanos(timing_on.then_some(started));
+        let parse_plan_ns = crate::commit_timing::elapsed_nanos(timing_on.then_some(started));
         // PROFILE runs the statement through the normal dispatch, then
         // appends the plan and execution statistics to its result. The
         // result keeps the wrapped statement's query type (ADR-0162).
@@ -402,6 +406,13 @@ impl Connection {
             profile_metrics,
         };
         let mut outcome = self.dispatch(logical, params, parse_plan_ns, cypher, token, ctx);
+        // `commit_write` reserves returned rows before it appends to the
+        // WAL, so an auto-commit write's result is exempt from the charge
+        // below. Read after dispatch, never before it: the dispatch's own
+        // pipelined-batch policy opens or ends the batch, so a statement
+        // that ends one runs as the auto-commit write it then is, and one
+        // that opens one is charged like the batched write it became.
+        let auto_commit_write = self.auto_commit_write(stamp.write_route);
         // Read and explicit-transaction results are charged here; an
         // auto-commit write charged its result before the WAL boundary in
         // `commit_write` (`retain_result_rows` owns that exemption).
@@ -560,7 +571,7 @@ impl Connection {
         // none — nothing it runs commits at the statement boundary.
         let arm = if let Some(txn) = self.txn.as_ref() {
             self.txn_arm(txn, &ctx, logical, params, cypher, token)
-        } else if ctx.stamp.write_route {
+        } else if self.auto_commit_write(ctx.stamp.write_route) {
             // Only reachable when the statement targets the `neo4j` graph:
             // the other namespaces reject writes above, and administration
             // commands target `neo4j`. `write_route` (computed in

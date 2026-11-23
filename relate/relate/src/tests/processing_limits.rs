@@ -453,3 +453,17 @@ fn an_original_plan_is_reserved_and_refused_when_it_does_not_fit() {
     );
     assert_eq!(cache_len(&tight), 0);
 }
+
+/// ADR-0642: a statement that cannot join the pipelined batch ends it and
+/// runs as the auto-commit write it then is — so its result rows are charged
+/// before its WAL boundary, and the result charge must not run a second time
+/// on the state the connection had *before* the batch transition.
+#[test]
+fn a_statement_that_ends_a_pipelined_batch_is_charged_once() {
+    let db = open_tokens(3 * Q);
+    let mut conn = db.connect().unwrap();
+    conn.begin_write_batch();
+    conn.query("CREATE (:N)").unwrap();
+    conn.query("CREATE (:M) RETURN range(1, 128) AS rows")
+        .unwrap();
+}

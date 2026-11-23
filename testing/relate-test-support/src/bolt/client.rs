@@ -21,5 +21,6 @@ mod messages;
 mod session;
 mod version;
 
+pub use messages::{bookmark_sequence, int_params};
 pub use session::{BatchDrain, Session};
 pub use version::BoltVersion;

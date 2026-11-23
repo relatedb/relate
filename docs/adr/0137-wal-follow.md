@@ -91,3 +91,7 @@ its writer rewrites pages ([ADR-0136](./0136-read-only-open.md)).
 - [ADR-0441](./0441-follower-gap-yield.md): a host may select `FollowGapPolicy::Yield` so a gap latches
   `follow-gap` instead of loading a second graph. The default remains the
   reload described here.
+- [ADR-0643](./0643-checkpoint-cuts-before-the-dump.md): a checkpoint's dump now holds a snapshot
+  pin for its length, so a reload that overlaps one waits on the pin (and
+  can latch the stall error above) — a case that the removed checkpoint
+  drain used to serialize.

@@ -6,7 +6,10 @@ use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 
 use relate_core::Result;
-use relate_engine_api::{GraphExport, GraphImport, QueryEngine, ReadRequest, WriteRequest};
+use relate_engine_api::{
+    CheckpointDirty, CheckpointDirtyMarks, GraphExport, GraphImport, QueryEngine, ReadRequest,
+    WriteRequest,
+};
 use relate_planner::PatternStats;
 
 use crate::exec::{execute, execute_read_at, ExecRequest, QueryResult, ReadAdmission};
@@ -139,11 +142,11 @@ impl GraphExport for InMemoryQueryEngine {
     fn live_node_count(&self) -> usize {
         Graph::live_node_count(&self.graph)
     }
-    fn dirty_node_ids(&self) -> std::collections::HashSet<relate_core::NodeId> {
-        Graph::dirty_node_ids(&self.graph)
-    }
-    fn dirty_rel_ids(&self) -> std::collections::HashSet<relate_core::RelId> {
-        Graph::dirty_rel_ids(&self.graph)
+    fn checkpoint_dirty(&self) -> CheckpointDirty {
+        CheckpointDirty {
+            nodes: Graph::dirty_node_ids(&self.graph),
+            rels: Graph::dirty_rel_ids(&self.graph),
+        }
     }
     fn all_node_ids_at(&self, ts: u64) -> Vec<relate_core::NodeId> {
         Graph::all_node_ids_at(&self.graph, ts)
@@ -175,11 +178,17 @@ impl GraphExport for InMemoryQueryEngine {
     fn graph_type_spec(&self) -> Result<Option<String>> {
         Graph::graph_type_spec(&self.graph)
     }
-    fn clear_checkpoint_dirty(&self) {
-        Graph::clear_checkpoint_dirty(&self.graph)
-    }
     fn catalog_ddl(&self) -> Vec<String> {
         crate::catalog_create_statements(&self.graph)
+    }
+}
+
+impl CheckpointDirtyMarks for InMemoryQueryEngine {
+    fn take_checkpoint_dirty(&self) -> CheckpointDirty {
+        Graph::take_checkpoint_dirty(&self.graph)
+    }
+    fn merge_checkpoint_dirty(&self, dirty: &CheckpointDirty) {
+        Graph::merge_checkpoint_dirty(&self.graph, dirty)
     }
 }
 
