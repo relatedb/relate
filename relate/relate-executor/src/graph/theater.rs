@@ -148,13 +148,16 @@ pub(crate) fn apply_show_overlay<'o>(
     Ok(())
 }
 
-/// Install `spec` as the current graph type and re-derive its constraint index.
+/// Install `spec` as the current graph type, deriving its constraint
+/// index — the one entry for the two paths that carry no migration (the
+/// scratch overlay and the persisted-spec restore). The replay path,
+/// which plans against the derivation before writing anything, writes
+/// the theater through [`DerivedMigration::apply_to_theater`] instead.
 pub(crate) fn set_current_graph_type(
     data: &mut TheaterData,
     spec: &crate::graph_type::GraphTypeSpec,
 ) -> Result<()> {
-    let derived = crate::graph_type::derived_constraints_map(&spec.to_body())
-        .map_err(crate::graph_type::persisted_derive_error)?;
+    let derived = crate::graph_type::persisted_derived_map(spec)?;
     data.current_graph_type = spec.clone();
     data.derived_constraints = derived;
     Ok(())

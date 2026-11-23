@@ -81,8 +81,7 @@ impl RedoPreflight<'_> {
             }
             RedoOp::SetCurrentGraphType { body } => {
                 self.reset_derived = true;
-                self.derived = crate::graph_type::derived_constraints_map(&body.to_body())
-                    .map_err(crate::graph_type::persisted_derive_error)?
+                self.derived = crate::graph_type::persisted_derived_map(body)?
                     .into_iter()
                     .map(|(name, constraint)| (name, Some(constraint)))
                     .collect();

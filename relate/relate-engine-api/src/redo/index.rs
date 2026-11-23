@@ -251,6 +251,48 @@ pub fn legacy_property_encoding(property: &str, kind: IndexKindSpec, name: &str)
     format!("{property}#{}#{name}", kind.display_name())
 }
 
+/// The backing pair an index-backed constraint owns under its own name:
+/// the catalog index row (the legacy-encoded first property, so a
+/// constraint's backing index and a user index on the same pair coexist
+/// as distinct rows) and the theater detail that materializes the row's
+/// seek postings. `None` for every kind that owns no backing index. The
+/// pair's one construction — the `CREATE CONSTRAINT` path and the
+/// derived-migration install both build it here, so the backing rule
+/// lives beside its encoding. The composite detail carries the
+/// constraint's full property list (CIP-11/46/62), so an equality seek
+/// on any constrained property is served; only the legacy row stays
+/// first-property-only.
+///
+/// # Errors
+///
+/// [`relate_core::Error::storage`] for an index-backed definition whose
+/// property list is empty — a malformed backing row no encoder can
+/// spell, never a silent default.
+pub fn constraint_backing_pair(
+    def: &relate_catalog::ConstraintDef,
+) -> relate_core::Result<Option<(relate_catalog::IndexDef, IndexDetailSpec)>> {
+    if !def.is_index_backed() {
+        return Ok(None);
+    }
+    let property = def.properties.first().ok_or_else(|| {
+        relate_core::Error::storage("index-backed constraint has no property for its backing index")
+    })?;
+    Ok(Some((
+        relate_catalog::IndexDef {
+            name: def.name.clone(),
+            label: def.label.clone(),
+            property: legacy_property_encoding(property, IndexKindSpec::Range, &def.name),
+        },
+        IndexDetailSpec {
+            kind: IndexKindSpec::Range,
+            relationship: def.relationship,
+            labels: vec![def.label.clone()],
+            properties: def.properties.clone(),
+            with_properties: Vec::new(),
+        },
+    )))
+}
+
 /// Decode a legacy `IndexDef.property` string into its property-name
 /// list: the comma-join head of [`split_legacy_property_encoding`]
 /// split back into names (a bare single property name is its own

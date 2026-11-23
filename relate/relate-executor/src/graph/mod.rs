@@ -475,6 +475,22 @@ fn matching_enforced_label(def: &ConstraintDef, c: &relate_model::Constraint) ->
             .is_some_and(|label| !label.is_empty())
 }
 
+/// ADR-0450's one legacy-resolution rule, one row at a time: a field-less
+/// catalog row resolves its enforced label from its current-shape twin —
+/// the derived record under its own name, whose label the caller holds.
+/// A row that already carries the label keeps it, and a field-less row
+/// resolves to the same identity its twin would have, so an upgraded
+/// store keeps its old skip behavior.
+/// [`crate::overlay::catalog::resolve_enforced_labels`] maps this rule
+/// over a whole set (the twin's label looked up by name in the derived
+/// index); the replay plan's held-row comparison applies it to the one
+/// row under a derived name.
+pub(crate) fn resolve_enforced_label(def: &mut ConstraintDef, twin_label: Option<&str>) {
+    if def.enforced_label.is_none() {
+        def.enforced_label = twin_label.map(str::to_string);
+    }
+}
+
 /// Whether a derived record names an enforced label at all: its kind
 /// requires one and the label is present and non-empty. The per-entry core
 /// both checkpoint gates share (each keeps its own error mapping).

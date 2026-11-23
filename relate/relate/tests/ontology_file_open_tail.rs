@@ -13,6 +13,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::ontology::preview_ontology;
+use common::{err_text, list, rows, scalar_one, string};
 use relate::{Database, OpenOptions, SnapshotCodecKind, Value};
 
 /// One node, one label directory — the minimal vault that carries a
@@ -29,7 +30,9 @@ fn vault_with_ontology(dir: &std::path::Path) {
 
 /// The committed ontology: Person keyed by `title`, one RANGE index on
 /// it, one VECTOR index with options on `embedding`, and a `summary`
-/// property the file-edit test's extra index uses.
+/// property the file-edit test's extra index uses. `embedding` is
+/// `LIST<FLOAT>` — the vector index stores 3-float lists, and the
+/// declared property type binds (the derived constraint is enforced).
 const ONTOLOGY: &str = r#"schema: https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json
 id: vault-schema
 version: "1"
@@ -38,7 +41,7 @@ nodes:
     label: Person
     properties:
       title: { type: STRING, key: true }
-      embedding: { type: FLOAT }
+      embedding: { type: LIST<FLOAT> }
       summary: { type: STRING }
     extensions:
       indexes:
@@ -229,6 +232,109 @@ fn the_committed_graph_type_is_current() {
             .is_some_and(|spec| spec.contains("KNOWS")),
         "the file's converted graph type is the store's current one, \
          carrying the declared relationship type"
+    );
+}
+
+#[test]
+fn the_declared_key_pin_installs_enforces_and_checkpoints() {
+    // The open tail carries no `CreateConstraint` rows — the graph type's
+    // derived constraints reach the catalog through the bare
+    // `SetCurrentGraphType` record itself. Without them the enforced-label
+    // endpoint records hit the checkpoint write's identity checks with no
+    // catalog row, and the first write checkpoint refused (REL8-2022).
+    // `drop(db)` runs its exit checkpoint on a background thread that
+    // cannot surface the refusal, so this test checkpoints explicitly.
+    let dir = tempfile::tempdir().unwrap();
+    vault_with_ontology(dir.path());
+    std::fs::write(dir.path().join("ontology.yaml"), ONTOLOGY).unwrap();
+
+    let db = open(dir.path());
+    let mut conn = db.connect().unwrap();
+
+    // The pin is the schema: the declared key constraint and the KNOWS
+    // endpoint records are catalog rows (an endpoint row's empty property
+    // list renders Null, the SHOW row's own authored spelling).
+    assert_eq!(
+        rows(
+            &mut conn,
+            "SHOW CONSTRAINTS YIELD type, labelsOrTypes, properties \
+             WHERE type IN ['NODE_KEY', 'RELATIONSHIP_SOURCE_LABEL', 'RELATIONSHIP_TARGET_LABEL'] \
+             RETURN type, labelsOrTypes, properties ORDER BY type"
+        ),
+        vec![
+            vec![
+                string("NODE_KEY"),
+                list(vec![string("Person")]),
+                list(vec![string("title")]),
+            ],
+            vec![
+                string("RELATIONSHIP_SOURCE_LABEL"),
+                list(vec![string("KNOWS")]),
+                Value::Null,
+            ],
+            vec![
+                string("RELATIONSHIP_TARGET_LABEL"),
+                list(vec![string("KNOWS")]),
+                Value::Null,
+            ],
+        ]
+    );
+    // The three declared property types are rows too.
+    assert_eq!(
+        scalar_one(
+            &mut conn,
+            "SHOW CONSTRAINTS YIELD type WHERE type = 'NODE_PROPERTY_TYPE' RETURN count(*)"
+        ),
+        Value::Int(3)
+    );
+
+    // The declared key enforces: a second Person with Ada's title
+    // refuses at commit.
+    let refused = err_text(conn.query("CREATE (:Person {title: 'Ada'})"));
+    assert!(
+        refused.contains("ConstraintValidationFailed"),
+        "the duplicate key refuses: {refused}"
+    );
+
+    // A write session checkpoints cleanly — the explicit checkpoint the
+    // background exit thread cannot refuse loudly.
+    conn.query("CREATE (:Person {title: 'Grace'})").unwrap();
+    db.checkpoint()
+        .expect("the derived rows pass the checkpoint's identity checks");
+
+    // Reopen: the pin survives the round-trip and still enforces.
+    drop(conn);
+    drop(db);
+    let db = open(dir.path());
+    let mut conn = db.connect().unwrap();
+    assert_eq!(
+        scalar_one(&mut conn, "MATCH (p:Person) RETURN count(p)"),
+        Value::Int(2)
+    );
+    // The key's backing index survives the reopen: the committed file
+    // index on the same (Person, title) pair retires pair-keyed rows
+    // (ADR-0649 §6), so the open tail's install decision must treat the
+    // row pair as held only when both halves are and heal the backing
+    // half (REL8-2022's rust-review round).
+    let owned = scalar_one(
+        &mut conn,
+        "SHOW CONSTRAINTS YIELD type, ownedIndex WHERE type = 'NODE_KEY' RETURN ownedIndex",
+    );
+    let Value::String(owned) = owned else {
+        panic!("the key constraint owns its backing index: {owned:?}")
+    };
+    assert_eq!(
+        scalar_one(
+            &mut conn,
+            &format!("SHOW INDEXES YIELD name WHERE name = '{owned}' RETURN count(*)")
+        ),
+        Value::Int(1),
+        "the key's backing index row survives the reopen"
+    );
+    let refused = err_text(conn.query("CREATE (:Person {title: 'Ada'})"));
+    assert!(
+        refused.contains("ConstraintValidationFailed"),
+        "the reopened pin refuses: {refused}"
     );
 }
 
