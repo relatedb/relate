@@ -83,16 +83,23 @@ mechanism is introduced together with the new store. The store's shape:
 3. **A sorted (key, row) side-file** for equality seeks and allocation-free
    sort-merge joins — the natural replacement for the
    [ADR-0614](./0614-equality-match-lazy-postings-serve.md) postings.
-4. **Immutable files are the checkpoints.** The WAL stays the append log;
-   the live tier stays the in-memory overlay
-   ([ADR-0016](./0016-write-overlay.md)'s shape); the checkpoint fold
-   rewrites only the column files whose keys changed. Per-column files
-   make add-a-column and compaction incremental, at a measured cost: each
-   file's footer parse is ~1.7k allocations, so a per-column layout opens
-   lazily per touched column. Where mapping is eventually permitted,
-   untouched segments never fault — a one-column-of-six read resident-grows
-   42× less than the whole file — so per-query memory tracks touched
-   segments, not the store.
+4. **Immutable files are the checkpoints, sharded by row range — not by
+   column.** The WAL stays the append log; the live tier stays the
+   in-memory overlay ([ADR-0016](./0016-write-overlay.md)'s shape); the
+   checkpoint fold rewrites only the **dirty row-range shards** —
+   column-complete struct files per node-id window, the same shape as the
+   Parquet checkpoint's id-window shards
+   ([ADR-0022](./0022-id-window-checkpoint-shards.md)) and its coalescing planner, so
+   incremental compaction keys on the dirty-node ids the engine already
+   exports. File-per-column was prototyped and rejected: reads are
+   layout-neutral (within 5% of allocations either way) while every
+   per-column file pays its own footer parse (~1.7k allocations each) —
+   per-column buys nothing on the read path and costs N footers at open.
+   Add-a-column lands in the live overlay and materializes at the next
+   seal, riding the existing wide-schema re-derivation. Where mapping is
+   eventually permitted, untouched segments never fault — a
+   one-column-of-six read resident-grows 42× less than the whole file —
+   so per-query memory tracks touched segments, not the store.
 5. **Store additions are shaped like the upstream proposed APIs** (a
    probe-shaped morsel seam carrying a density hint; a membership-mask
    batched key check; a limit-shaped exists terminal), so landing upstream

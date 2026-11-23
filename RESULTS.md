@@ -363,13 +363,18 @@ Post-measurement discussion with the round-1 owner; these shape round 2.
    rewrites/compacts the touched column files, reads mmap the sealed
    files. Vortex 0.93 needs no append API because the engine never asked
    the snapshot format for one.
-3. **File-per-column vs file-per-table is a real trade, now measured**
-   (VFS prototype below): per-column files make add-a-column and
-   per-column compaction free across seals, but each file costs its own
-   footer parse at open (~1.7k allocs per file, V1) — so a per-column
-   layout requires **lazy open per touched column**, not eager
-   all-files-open. File-per-table avoids the tax but rewrites the table at
-   every seal that adds a column.
+3. **Layout decided: row-range shards, not per-column files** (2026-11-23,
+   with the round-1 owner). File-per-column was prototyped and rejected —
+   reads are layout-neutral (VFS prototype: within 5% of allocations
+   either way) while every per-column file pays its own footer parse
+   (~1.7k allocs, V1), so it buys nothing on the read path and costs N
+   footers at open. The store shards like the Parquet checkpoint already
+   does (ADR-0022 id-window shards): column-complete struct files per
+   node-id window, the checkpoint fold rewrites only dirty shards, and the
+   dirty-node ids the engine already exports are sufficient — **no
+   per-key dirty statistics extension needed**. Add-a-column lands in the
+   live overlay and materializes at the next seal via the existing
+   wide-schema re-derivation (ADR-0534).
 4. **Engine integration goes through the existing seams only.** The
    experimental store loads through the regular VFS APIs (ADR-0072) — no
    new I/O mechanism introduced together with the new store — and slots in
@@ -414,7 +419,7 @@ file (47,312 B) and as 6 column files (55,056 B).
 | Seam | Verdict |
 |---|---|
 | VFS (ADR-0072) | **Fits** — a new backend is a new `Vfs` impl, no trait change; caveat: `VfsFile` is byte-copy, no borrowed-slice arm, so zero-copy decode mmaps outside the trait or the trait gains one optional method |
-| Snapshot codec (ADR-0050/0105) | **Fits** — a `SnapshotCodecKind::Vortex` + `CodecOps` + evidence row is additive; the Parquet codec already publishes many immutable per-column files with add-column-at-checkpoint (ADR-0022/0089/0534). Extends: `dump` sees the graph only as `GraphImport` *rows* (no columnar export), dirtiness exported as ids only (no per-key stats for per-column compaction) |
+| Snapshot codec (ADR-0050/0105) | **Fits** — a `SnapshotCodecKind::Vortex` + `CodecOps` + evidence row is additive; the Parquet codec already publishes many immutable shard files with add-column-at-checkpoint and dirty-shard incremental rewrites (ADR-0022/0089/0534). Extends: `dump` sees the graph only as `GraphImport` *rows* (no columnar export). Per-key dirtiness is **not** needed — row-range shards compact on the exported dirty ids |
 | Property read path (ADR-0033/0016/0614) | **New seam needed** — `CompactProps` (pub(crate)) inside `LiveNode` inside `Graph` MVCC chains; zero traits between executor and property storage. A property-read trait at the `node_prop_id_at` / scan-predicate boundary (plus the overlay `base`, the restore path, and the ADR-0614 postings — the sorted (key,row) side-file is their natural replacement) is the one hard-wired seam |
 | Checkpoint lifecycle (ADR-0012/0014/0022/0089/0183) | **Fits** — immutable publication, dirty-id incremental rewrite, orphan sweep, follow reload all exist; per-key dirty tracking is the extension |
 | Memory metering (ADR-0042/0463) | **Extends** — charge logical (uncompressed-size-style) bytes to the ADR-0042 `used` counter; mmap resident-page accounting is undecided and needs its own decision record |

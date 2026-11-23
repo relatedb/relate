@@ -51,3 +51,13 @@ Scope: /Users/mh/d/rust/relate @ main, read-only. Lab context: node-major table,
 1. Property-read trait (biggest, unlocks O1/O4)
 2. `GraphImport` per-key stats (per-column compaction)
 3. mmap-accounting ADR
+
+## Decision note (2026-11-23, after the research)
+
+The layout decision landed after this research was written: **row-range
+shards, not per-column files** — the per-column option this document
+analyzed (and the per-key dirty-statistics extension §4 describes as its
+input) is rejected. With column-complete struct files per node-id window
+(ADR-0022's shape), the dirty-node ids `GraphImport` already exports are
+sufficient for incremental compaction, and the codec-seam extension list
+shrinks to one item: the columnar (non-row) export path for `dump`.
