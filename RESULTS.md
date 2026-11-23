@@ -424,6 +424,60 @@ file (47,312 B) and as 6 column files (55,056 B).
 | Checkpoint lifecycle (ADR-0012/0014/0022/0089/0183) | **Fits** — immutable publication, dirty-id incremental rewrite, orphan sweep, follow reload all exist; per-key dirty tracking is the extension |
 | Memory metering (ADR-0042/0463) | **Extends** — charge logical (uncompressed-size-style) bytes to the ADR-0042 `used` counter; mmap resident-page accounting is undecided and needs its own decision record |
 
+## Impact vs the engine today (2026-11-23, quiet box load 5.3–6.0)
+
+Baseline anchors re-measured this session on current main (`a3eaa5a2`),
+reused SF0.1 store, same box as the prototype runs:
+
+- **plan_bench**: 928.2 allocs/stmt, 143.5 KiB/stmt requested — matches the
+  d98aee8f anchor (927.6 / ~143 KiB): the engine's property paths are
+  unchanged, so cross-comparison is valid.
+- **query-latency 30/30 ok**: fast band (14 queries ≤ 0.04 ms p50 —
+  fixed-cost dominated), slow band q11 3.25 / q19 3.80 / q27 2.86 /
+  q5 0.56 / q17 0.58 ms. (The earlier noisy-box run's slow-band p50s were
+  ~1.5–2× lower; wall-clock p50s move between runs — the allocation anchor
+  is the stable one.)
+
+**What can be determined today, and what cannot:**
+
+1. **End-to-end impact is not yet measurable.** The prototype is not wired
+   into the engine (step 85, the property-read trait, gates it); the load
+   and performance suites exercise `CompactProps` + postings, which this
+   branch does not touch. Everything below is a per-operator projection
+   from measured numbers on both sides — labeled as such.
+2. **Memory is the strong claim.** Whole property tables at 32–54% of raw
+   value bytes (dictionary columns 0.05–0.38 B/value) vs the per-node
+   compact-list layout's Vec + Value boxing; traversal state 21.6×
+   smaller as bitsets; the sorted (key,row) side-file replaces the
+   postings' resident buckets (post-#672 comparison pending — step 85).
+   The suite does not measure resident bytes, so this win is invisible to
+   the current gates and needs the container-harness run (step 70).
+3. **Latency: neutral-to-negative on the fast band.** 14 of 30 queries sit
+   at ≤ 0.04 ms p50, dominated by fixed statement costs — a columnar read
+   path can only add decode overhead there (per-value probe on compressed
+   arrays is 32.7 µs/row unless chunks are decoded once and cached —
+   63 ns/row after decode; the store design makes the decoded-chunk cache
+   mandatory).
+4. **Latency: real wins on specific slow shapes, bounded by the property
+   share.** Dict-served group-by/countDistinct are 12–27× the decode+hash
+   path (95.7 µs vs 1.19 ms group-count; 1.2 µs vs 27 ms countDistinct);
+   conjunctive single-scan 1.9× and 8× less memory traffic than
+   sequential re-filter; zone-pruned ranges 1.85× on clustered data. But
+   the measured profile of the slow queries puts property access at
+   ~1–3% of their time (q20: `node_prop_resolved` 0.3%, `prop_read`
+   0.3%) — traversal and adjacency dominate. So on THIS suite the
+   projected p50 movement is small; the wins need property-dominated
+   workloads (BI-style distinct/group-by, larger SF, conjunctive
+   filters). The suite is the wrong instrument to demo the read-path
+   win; it is the right instrument to prove no regression.
+5. **Where the store does not help**: CONTAINS (6/30 queries — text index
+   territory, unchanged), adjacency-dominated plans, and the load path
+   (WAL + overlay unchanged; only the checkpoint codec changes).
+6. **No impact on current tests until wired**: the branch changes no
+   engine code; the property-read trait keeps `CompactProps` as the
+   default, so the eventual A/B is opt-in and the existing gates stay
+   green by construction.
+
 ## Open
 
 - The engine-side A/B (CompactProps + postings) — needs the container
