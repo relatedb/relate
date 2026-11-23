@@ -47,7 +47,7 @@ pub fn run(shape: &str, n: usize, attrs: usize, out_dir: &Path, iters: u64) -> R
     let rows = root.len();
 
     // The key column, decoded once (what any seek pays to touch the column).
-    let decode = measure("O3 key column decode (mmap + read_all)", 1, |_| {
+    let decode = measure("O3 read_all (COMPRESSED arrays, not decoded)", 1, |_| {
         let a = rt
             .block_on(async { vfile.scan().unwrap().into_array_stream().unwrap().read_all().await })
             .unwrap();

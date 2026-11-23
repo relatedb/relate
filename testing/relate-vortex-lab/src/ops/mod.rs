@@ -4,5 +4,6 @@ pub mod agg;
 pub mod filter;
 pub mod join;
 pub mod point;
+pub mod probe;
 pub mod seek;
 pub mod sets;

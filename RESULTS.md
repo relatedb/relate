@@ -216,6 +216,105 @@ Prune unit: `vfile.splits()` on the 150k synthetic store returns **5 ranges of
 7. No count-without-materialization: the scan builder has no popcount/mask
    terminal, so counts include materializing the projected column at survivors.
 
+## Probe: the two anomalies, resolved (measured, load 8.5 -> 8.1)
+
+**O2 was column mix, not superlinearity.** `read_all` returns *compressed*
+arrays (dict / onpair / fastlanes.bitpacked), not decoded ones — the old
+"column decode" label was wrong. Per-read cost is encoding-dependent:
+`firstName` 16 allocs/read (its codes child is `fastlanes.bitpacked.v2`, so
+each value probe decompresses a 2848-code child), `lastName` 6.5, `birthday`
+6.0, `gender` 3.0 (dict over FSST, 2 values). O1's 2.1 µs / 3 allocs was the
+*cheapest* column. O2's 28.5 allocs = 16.0 + 6.5 + 6.0 exactly. `repeated_probe`
+does not help — Dict/OnPair/BitPacked all declare `ProbeState = ()`.
+
+The honest morsel read path, measured:
+
+| path | ns/row | allocs/row |
+|---|---|---|
+| per-value `execute_scalar` on compressed arrays | 32,737 | 35.5 |
+| `take` per column (4 cols, compressed) | 805 | 0.11 |
+| decode column once (`execute::<Canonical>`) | 305 (119 on the key col) | 0.04 |
+| canonical per-value reads after decode | 63 (44.5) | 0 |
+| prepared contiguous `with_row_range` (1024) | 181 | 0.22 |
+| prepared sparse `with_row_indices` (1024 of 150k) | 699 | 0.93 |
+
+**O10b is a decode-and-mask, not a gather.** `with_row_indices` becomes
+`Selection::IncludeByIndex`; `sparse_ranges` bails when a range span reaches
+`MAX_RANGE_SIZE = 4000` rows with gaps below `MIN_GAP_BETWEEN_RANGES = 50_000`
+(the lab's ids were ~7,919 apart), so it falls back to natural splits + a row
+mask — **the whole file is decoded**. A 1-row read costs ~0.37 ms = one chunk
+decode. `take` is a real gather only on already-canonical columns (on a
+compressed Chunked column it is slower than a full scan).
+
+**Verdict: the arbitrary-id batched gather does not exist in vortex 0.93.**
+What does: (a) decode a column once per morsel and read canonically
+(119 + 44.5 ns/row), (b) a *prepared* `RepeatedScan` with a **contiguous**
+1024-row `with_row_range` (181 ns/row, chunk-granular), (c) `take` on
+canonical arrays. Design consequence: **a store-side morsel push must carry
+contiguous 1024-row ranges and cache decoded chunks** — which the node-major
+row==node-id layout provides naturally for id-ordered morsels.
+
+## O6/O13/O14/O15/O20 aggregates (measured, load 10.4–18.3)
+
+Encodings the default compressor chose on the synthetic store: `id` →
+`vortex.sequence`, `key` → `vortex.onpair`, `attr0`/`attr3` →
+`fastlanes.bitpacked.v2`, `attr1`/`attr2` → `vortex.dict`; every column
+`vortex.zoned` (zone = 8192 rows → 19 zones); chunks 40,960 rows sharing ONE
+values array (`ArrayRef::ptr_eq` across chunks → column-global dict codes).
+
+| kernel | path | cost |
+|---|---|---|
+| O13 countDistinct | footer layout walk (`zoned > dict` values child count) | **1.2 µs, 0 allocs** |
+| O13 | scan + union chunk dict values | 0.23 ms |
+| O13 | decode + HashSet | 27.2 ms |
+| O14 histogram | count dict codes (no value decode) | 2.48 ms |
+| O14 | decode + HashMap | 27.6 ms |
+| O14 zone read | `dyn_slot` + `dyn_new_reader` + `projection_evaluation` → 19 Min/Max pairs | 35 µs |
+| O14 quantile | position read on the sorted `sequence` column | **378 ns, 0 allocs** |
+| O14 quantile | decode + full sort | 0.65 ms |
+| O15 limit | `.with_limit(100)` scan vs full scan | 0.40 vs 0.82 ms |
+| O15 top-k | `select_nth_unstable` vs full sort | 5.6 vs 31.5 ms |
+| O6 group-by | per-code counts on a dict column | 2.48 ms |
+| O6 | decode + HashMap | 26.6 ms |
+| O20 distinct pairs | packed u32 code-pair HashSet | 28.5 ms, 1.28 MB |
+| O20 | decoded tuple HashSet | 37.3 ms, 5.5 MB |
+
+### Findings
+
+1. **The dictionary is the cheap aggregate path — but only when the
+   compressor chose it.** `countDistinct` is a 1.2 µs layout-tree walk for a
+   dict column (no segment reads), 0.23 ms via chunk dict values, 27 ms by
+   decode+hash. `attr0` got *bitpacked* instead → no encoded distinct path at
+   all. The compressor's dict-vs-bitpack choice is not controllable through
+   the default write options the lab uses — a knob to find before promising
+   these wins.
+2. **The exactness flag is unusable**: the layout's `all_values_referenced`
+   is not exported, and `DictArray::has_all_values_referenced()` reads false
+   (unknown) even when the count is right — so a reader cannot validate that
+   no dictionary value is unreferenced. You trust the writer's dedup.
+3. **Zone statistics give a column-wide bound, not a histogram.** The
+   zone-table read works without decoding (35 µs, 19 Min/Max pairs) but 0/19
+   zones fall inside a single equi-width bin — the zone length (8192) exceeds
+   the value period (1000), the same distribution flaw the filter kernel
+   found. Exact bins need a decode.
+4. **Sortedness is not discoverable from the file.** The quantile position
+   read (378 ns) works on the `sequence`-encoded column, but `IsSorted` is
+   not persisted in `file_stats` (only commutative stats are) — it appears
+   only because the encoding supplies it on the decoded chunk. A reader would
+   have to know the layout.
+5. **Decoded chunks carry no statistics.** The decoder does not populate
+   Min/Max/Sum/NullCount on decoded arrays — stats are footer-only at file
+   level and zone-only at chunk level. Any aggregate-from-stats design must
+   read the footer/zone tables, not the decoded array.
+6. **No top-k operator** (5.6× for `select_nth_unstable` over a full sort, but
+   that is a client-side kernel), and `with_limit` buys only ~2× because the
+   first row-group of every projected column is read regardless — consistent
+   with the filter kernel's "no exists early-exit".
+7. **Code-pair distinct works and is a memory win**: 4.3× less memory
+   (1.28 vs 5.5 MB) and 1.3× faster, valid only because the dicts are
+   column-global and shared; it correctly reports "not available" when chunks
+   do not share one values array.
+
 ## Open
 
 - O4–O20 kernel results (fan-out in progress).

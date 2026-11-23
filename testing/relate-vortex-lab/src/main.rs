@@ -73,6 +73,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ops::point::size(&base.join(file), &cols, &out_dir)?;
             }
         }
+        "probe" => {
+            ops::probe::run(&out_dir, 2_000)?;
+        }
         "point" => {
             ops::point::run(&csv, &out_dir, 100_000)?;
         }
@@ -104,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ops::sets::run(&out_dir, 20_000)?;
         }
         other => {
-            eprintln!("unknown command {other}: point | seek | filter | agg | join | sets | all");
+            eprintln!("unknown command {other}: point | seek | filter | agg | join | sets | probe | all");
             std::process::exit(2);
         }
     }

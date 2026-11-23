@@ -89,7 +89,7 @@ pub fn run(csv: &Path, out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<
     // Open through the mmap and decode the table once: the column decode a
     // point read pays per touched chunk.
     let (session, rt, vfile) = store::open_mmap(&path)?;
-    let decode = measure("O1 column decode (mmap scan + read_all)", 1, |_| {
+    let decode = measure("O1 read_all (COMPRESSED arrays, not decoded)", 1, |_| {
         let arr = rt
             .block_on(async { vfile.scan().unwrap().into_array_stream().unwrap().read_all().await })
             .unwrap();
