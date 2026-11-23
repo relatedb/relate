@@ -339,6 +339,87 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::err
     // ---- O16: presence / IS NULL ----
     run_o16(out_dir, cheap_iters, &mut results)?;
 
+    // ---- Monotone store: the honest range-pruning shape ----
+    // The flat store's attrs repeat every ~1000 values, so every zone spans
+    // the full range and zone-map pruning cannot fire (its numbers above are
+    // the anti-shape baseline). This store's attr values grow with position
+    // (date-like, with jitter): the shape range-pruning claims must come from.
+    let mono = store::synthetic("mono", n, 4);
+    let mono_path = out_dir.join("filter-mono.vortex");
+    let (mono_written, mono_per_col) = store::write(&mono_path, &mono)?;
+    println!(
+        "monotone store: {} rows, {} B raw -> {} B vortex, file {} B",
+        mono.rows(),
+        mono.raw_bytes(),
+        mono_per_col.iter().sum::<u64>(),
+        mono_written
+    );
+    let (_mono_session, mono_rt, mono_vfile) = store::open_mmap(&mono_path)?;
+    let mono_splits = mono_vfile.splits()?;
+    print_splits("monotone", &mono_splits);
+
+    let m0 = ints(&mono, "attr0");
+    let m1 = ints(&mono, "attr1");
+    // A one-third-of-range bound: selective (first ~n/3 rows match) but not
+    // degenerate, so surviving zones remain to pay for.
+    let (lo0, hi0) = (m0.iter().copied().min().unwrap(), m0.iter().copied().max().unwrap());
+    let (lo1, hi1) = (m1.iter().copied().min().unwrap(), m1.iter().copied().max().unwrap());
+    let third0 = lo0 + (hi0 - lo0) / 3;
+    let third1 = lo1 + (hi1 - lo1) / 3;
+
+    let p_m0 = bind(&mono_vfile, col("attr0"))?;
+    let f_m0_lt = bind(&mono_vfile, lt(col("attr0"), lit(third0)))?;
+    let expect_lt = m0.iter().filter(|&&v| v < third0).count();
+    let got = run_scan(&mono_vfile, &mono_rt, Some(&f_m0_lt), Some(&p_m0), None, None)?.len();
+    assert_eq!(got, expect_lt);
+    println!("  O4m range scan+count attr0<{third0} survives {got} of {n} rows (in-memory agrees)");
+    let m = measure(
+        &format!("O4m range scan+count attr0<{third0} (monotone, zone-pruned)"),
+        scan_iters,
+        |_| {
+            let len = run_scan(&mono_vfile, &mono_rt, Some(&f_m0_lt), Some(&p_m0), None, None)
+                .unwrap()
+                .len();
+            std::hint::black_box(len);
+        },
+    );
+    m.report();
+    results.push(m);
+
+    // No-match range: the file-level prune fires and the scan is cheap.
+    let e_m0_none = gt(col("attr0"), lit(hi0 + 1));
+    assert!(mono_vfile.can_prune(&e_m0_none)?);
+    let f_m0_none = bind(&mono_vfile, e_m0_none)?;
+    let m = measure("O4m scan attr0>max (monotone, file prunes)", scan_iters, |_| {
+        let len = run_scan(&mono_vfile, &mono_rt, Some(&f_m0_none), Some(&p_m0), None, None)
+            .unwrap()
+            .len();
+        std::hint::black_box(len);
+    });
+    m.report();
+    results.push(m);
+
+    // Per-split prune counts, and the two-direction conjunction. Pruned
+    // zones are the UNION of the conjuncts' pruned sets (a zone survives
+    // iff every conjunct keeps it), so opposite-direction range conjuncts
+    // prune both ends — more than either conjunct alone.
+    let mono_reader = mono_vfile.layout_reader()?;
+    let f_m1_gt = bind(&mono_vfile, gt(col("attr1"), lit(third1)))?;
+    let pruned_lt = pruned_splits(mono_reader.as_ref(), &mono_rt, &mono_splits, &f_m0_lt)?;
+    let pruned_gt = pruned_splits(mono_reader.as_ref(), &mono_rt, &mono_splits, &f_m1_gt)?;
+    let f_m_conj = bind(
+        &mono_vfile,
+        and(lt(col("attr0"), lit(third0)), gt(col("attr1"), lit(third1))),
+    )?;
+    let pruned_conj = pruned_splits(mono_reader.as_ref(), &mono_rt, &mono_splits, &f_m_conj)?;
+    println!(
+        "  O4m splits pruned: attr0<{third0} {pruned_lt}/{}, attr1>{third1} {pruned_gt}/{}, \
+         conjunction {pruned_conj}/{} — the union of the conjuncts' pruned sets, not the minimum",
+        mono_splits.len(),
+        mono_splits.len(),
+        mono_splits.len()
+    );
+
     Ok(results)
 }
 

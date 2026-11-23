@@ -13,7 +13,7 @@ allocs, ns) — the operator, not the query, is the unit.
 | O2 | Multi-column point read, same rows | q3 (firstName+lastName+org.name), q9, fraud `[n.id]` | struct take: one row-id list, k column gathers | one gather plan over k columns, shared row mask, no per-column search |
 | O3 | Equality seek by business key | 16 LDBC queries, fraud `{id:}`, pathdb `$seed`, bi-07 `$tag` | arm A (key, node_id) sorted index, IsStrictSorted stat; or arm B dictionary | seek-not-scan; dict lookup O(log dict) |
 | O4 | Range filter -> count/exists | q4, q8, q20 + the 8 `COUNT(..)>0` existence queries (q21-q28) | MEASURED (filter.rs): zone-map prune exists at FILE level via `can_prune` (22.7 us, decode-free); per-split prune needs `LayoutReader::pruning_evaluation` (36 us/5 splits) — no public "which splits prune" call (API gap). **No exists early-exit**: `.with_limit(1)` costs 98% of the full count (2.71 vs 2.77 ms) — the limit truncates output, not decoding. Cheap negatives come only from the file-level prune. No popcount/mask terminal either, so counts materialize the projected column at survivors |
-| O5 | Conjunctive filter | q24 `l.name=X AND t.name=Y` shape (16/30) | MEASURED (filter.rs): pruning IS per-column (struct reader splits And/Or into per-column masks and ANDs them) but **a zone survives iff EVERY conjunct keeps it** — a conjunction never prunes more than its most selective conjunct. The real win: one scan beats executor-side sequential re-filter by **1.9x time and 8x memory traffic** (8.14 ms/515 KB vs 15.6 ms/4.19 MB), because the sequential path materializes survivor ids and gathers them |
+| O5 | Conjunctive filter | q24 `l.name=X AND t.name=Y` shape (16/30) | MEASURED (filter.rs): pruning IS per-column (struct reader splits And/Or into per-column masks and ANDs them) and **pruned zones are the UNION of the conjuncts' pruned sets** (a zone survives iff EVERY conjunct keeps it) — measured 3/5 ∪ 1/5 → 4/5 on the monotone store (corrected 2026-11-23; the earlier "never more than the most selective conjunct" was the wrong direction, derived from flat-store 0/5-everything numbers). The real win: one scan beats executor-side sequential re-filter by **1.9x time and 8x memory traffic** (8.14 ms/515 KB vs 15.6 ms/4.19 MB), because the sequential path materializes survivor ids and gathers them |
 | O6 | Group-by + aggregate + top-k | q11, q17, q19, bi-07, bi-02, bi-13 | dictionary = the group universe; Min/Max/Sum chunk stats (Sum confirmed mergeable via merge_sum; RowCount scalar fn exists) | group over dict codes (cardinality = dict size, not row count); stats-served partials; top-k over dictionary; **stats-only aggregates**: COUNT = len - NullCount, SUM = sum of chunk Sums, AVG = sum Sums / sum (len - NullCount) with zero decode — exact when unfiltered OR when min/max proves a chunk all-matching (partial-match chunks still decode); bench float NaN awareness (NaNCount exists) and integer Sum overflow width |
 | O7 | Join on property key | equi-join e01-e03 (`a.birthday = b.birthday`), q9 | key-sorted index on both sides | sort-merge join instead of hash — no build side, no hash table |
 | O8 | Intra-row property compare | fraud f05 `ti.date < tj.date` | two aligned gathers from the node-major store | batched two-column compare kernel, not per-row point reads |
@@ -69,9 +69,11 @@ splits are 8k-40k rows (the prune unit, coarser than a morsel); a string
 range predicate IS expressible (`gt_eq/lt_eq` on a Utf8 column with
 `upper = prefix + "\u{10FFFF}"`) and prunes 4/5 splits, but is a loss
 (10.7 ms) against decoding + in-memory compare (0.71 ms) or a binary search
-(624 ns); and presence is not expressible for promoted columns (NonNullable
-→ `NullCount = Exact(0)` always) — lenient presence needs the residual or
-per-label sparse columns.
+(624 ns); and the presence finding was a lab write-shape artifact, not a
+vortex limit (corrected 2026-11-23): nullable promoted columns express
+absent-as-null directly (null = absent, no sentinel values), costing a
+validity bitmap where nulls exist and giving `NullCount`-based IS NULL /
+IS NOT NULL pruning — to be re-measured on a nullable table.
 
 Cross-cutting vortex features newly mapped: page-level row-group skipping on
 the mmap path (untouched segments never fault: per-query RSS == segments

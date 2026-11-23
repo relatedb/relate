@@ -182,12 +182,17 @@ pub fn load_csv(
 
 /// Synthetic shapes for the size and seek benches: a unique `id` column
 /// (dense node id), a unique string `key` (the business key a seek targets),
-/// and `attrs` integer property columns with a repeating distribution.
+/// and `attrs` integer property columns. Two attr distributions:
+/// - `flat`: repeating (`(i*(a+3))%1000`) — every zone spans the full value
+///   range, so zone-map pruning can never fire (the anti-shape; kept for the
+///   dict-encoded aggregate/join kernels that want low cardinality)
+/// - `mono`: clustered, values grow with position plus sub-stride jitter
+///   (date-like) — the shape under which range-pruning numbers are quotable
 pub fn synthetic(kind: &str, n: usize, attrs: usize) -> Table {
     let ids: Vec<i64> = (0..n as i64).collect();
     let keys: Vec<String> = match kind {
         // a key that sorts in the same order as the node id (cheapest case)
-        "flat" => (0..n).map(|i| format!("node-{i:08}")).collect(),
+        "flat" | "mono" => (0..n).map(|i| format!("node-{i:08}")).collect(),
         // a key whose sort order is a permutation of the node order
         "ring" => (0..n).map(|i| format!("node-{:08}", (i * 7919) % n)).collect(),
         other => panic!("unknown synthetic shape {other}"),
@@ -197,7 +202,10 @@ pub fn synthetic(kind: &str, n: usize, attrs: usize) -> Table {
         ("key".into(), Ty::Str, Col::Str(keys)),
     ];
     for a in 0..attrs {
-        let v: Vec<i64> = (0..n).map(|i| ((i * (a + 3)) % 1000) as i64).collect();
+        let v: Vec<i64> = match kind {
+            "mono" => (0..n).map(|i| (i * (a + 3) + (i % 7)) as i64).collect(),
+            _ => (0..n).map(|i| ((i * (a + 3)) % 1000) as i64).collect(),
+        };
         columns.push((format!("attr{a}"), Ty::Int, Col::Int(v)));
     }
     Table {

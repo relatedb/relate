@@ -173,6 +173,27 @@ Prune unit: `vfile.splits()` on the 150k synthetic store returns **5 ranges of
 | O12a prefix range `node-0001` | 10.7 ms | 986 | 1.74 MB |
 | O12c prefix binary search (in-memory) | 624 ns | 0 | 0 |
 
+### Monotone re-run (2026-11-23, load 6.4 — the honest range-pruning shape)
+
+The `mono` synthetic shape (attr values grow with position, date-like, with
+jitter; added to `store.rs` after the methodology correction). Same session,
+same code, same load as the flat rows beside it — the honest A/B:
+
+| kernel | ns/op | allocs | B/op |
+|---|---|---|---|
+| O4m range scan `attr0<⅓range` — **3/5 splits pruned** | 39.0 µs | 572 | 97 KB |
+| same-session flat anti-shape `attr0<500` — 0/5 pruned | 72.2 µs | 706 | 122 KB |
+| O4m no-match range `attr0>max` (file prunes) | 10.3 µs | 292 | 37 KB |
+
+- **1.85x faster, −19% allocs, −21% bytes** with 3/5 splits pruned — and the
+  selectivity differs (33% vs 50% survivors), so if anything the prune gain
+  is understated.
+- **Conjunction pruning is a UNION**: `attr0<⅓` prunes 3/5, `attr1>⅓`
+  (opposite end) 1/5, conjunction **4/5** — the union of the two pruned sets.
+  A zone survives iff every conjunct keeps it, so the pruned set is the
+  union, *at least* the most selective conjunct and more when conjuncts
+  prune different zones.
+
 ### Findings
 
 1. **`with_limit(1)` is not an exists short-circuit** (2.71 vs 2.77 ms — 98% of
@@ -183,20 +204,25 @@ Prune unit: `vfile.splits()` on the 150k synthetic store returns **5 ranges of
    pruning requires `LayoutReader::pruning_evaluation(split, &bound,
    Mask::new_true(len))` — a real API gap: no public "which splits does this
    filter prune". The stats-only pass over 5 splits costs 36 µs / 35 allocs.
-3. **Conjunction prunes per column, but a zone survives iff *every* conjunct
-   keeps it** — so a conjunction never prunes more than its most selective
-   conjunct (`attr0<500` 0/5, `attr1>100` 0/5, conjunction 0/5; `id<75000` 3/5,
-   conjunction 3/5). The measured win is elsewhere: **one scan with per-column
-   zone masks beats executor-side sequential re-filter by 1.9x in time and 8x
-   in memory traffic** (8.14 ms/515 KB vs 15.6 ms/4.19 MB), because the
-   sequential path materializes 75k survivor ids and gathers them.
-4. **My synthetic `attr0` distribution silently defeats zone-map pruning.**
-   `attr0 = (i*3)%1000` means every 8k–40k-row zone spans the full 0..999
-   range, so a range predicate can never prune. `attr0<500` prunes 0/5 splits;
-   the honest demonstration needs a monotone column — `id<75000` prunes 3/5
-   and is 4.8x faster (583 µs vs 2.78 ms). **Any range-pruning claim must use
-   a monotone or clustered column**; the synthetic shapes in `store.rs` need a
-   monotone variant before the next campaign.
+3. **Conjunction prunes per column, and pruned zones are the UNION of the
+   conjuncts' pruned sets** — a zone survives iff *every* conjunct keeps it,
+   so the pruned set is the union: at least the most selective conjunct, and
+   more when conjuncts prune different zones (measured on the monotone store:
+   3/5 ∪ 1/5 → **4/5**; corrected 2026-11-23 — this section earlier claimed
+   the opposite direction, derived from flat-store 0/5-everything numbers
+   that could not distinguish). The executor-side win stands: **one scan
+   with per-column zone masks beats executor-side sequential re-filter by
+   1.9x in time and 8x in memory traffic** (8.14 ms/515 KB vs
+   15.6 ms/4.19 MB), because the sequential path materializes 75k survivor
+   ids and gathers them.
+4. **The flat store's `attr0` distribution defeats zone-map pruning — the
+   monotone shape replaces it for range claims.** `attr0 = (i*3)%1000` means
+   every 8k–40k-row zone spans the full 0..999 range, so a range predicate
+   can never prune (0/5). `store.rs` now carries a `mono` shape (values grow
+   with position, plus jitter); the monotone re-run table above is the
+   quotable range-pruning result, and **any range-pruning claim must come
+   from that shape or a real clustered column** (`id<75000`: 3/5 pruned,
+   4.8x).
 5. **A string range predicate is expressible** —
    `and(gt_eq(col("key"), lit(lower)), lt_eq(col("key"), lit(upper)))` with
    `upper = prefix + "\u{10FFFF}"` binds and runs, and prunes 4/5 splits — **but
@@ -204,15 +230,19 @@ Prune unit: `vfile.splits()` on the 150k synthetic store returns **5 ranges of
    column plus 1.5 ms to `starts_with` it in memory (binary search: 624 ns). The
    Utf8 comparison path dominates. So STARTS WITH via range is *expressible and
    prune-friendly, not a win* at this size.
-6. **Presence: a property some nodes lack is not representable as a null.**
-   The store writes NonNullable columns, so the footer records
-   `NullCount = Exact(0)` for every promoted column, `can_prune(IS NULL)` is
-   always true and `can_prune(IS NOT NULL)` always false. `arr.statistics()` on
-   the *decoded* array reports `NullCount = Absent` (stats are not carried
-   footer → canonical; `compute_null_count` recomputes in 98 ns). Consequence
-   for our lenient-presence semantics: per-key presence needs the residual
-   column or per-label sparse columns — a promoted non-null column cannot
-   express "absent".
+6. **Presence was a lab write-shape artifact, not a vortex limit (corrected
+   2026-11-23).** The store wrote NonNullable columns, so the footer recorded
+   `NullCount = Exact(0)` for every promoted column — that measured our
+   write shape, not vortex. Written **nullable**, promoted columns express
+   the engine's lenient semantics directly: **null = absent, no sentinel
+   values needed**. Cost: a validity bitmap where nulls exist (~1 bit/row;
+   all-present columns do not pay), and `NullCount` then serves IS NULL /
+   IS NOT NULL pruning per zone (the O16 mechanism, now expressible).
+   Mostly-absent keys compress to ~the validity bits, so promotion stays
+   cheap; the promotion threshold still prefers keys present on most rows.
+   To re-measure: write the table nullable and confirm the per-zone
+   IS NULL prune fires. (Decode-side stats stay absent either way — see
+   the aggregates section, finding 5.)
 7. No count-without-materialization: the scan builder has no popcount/mask
    terminal, so counts include materializing the projected column at survivors.
 
@@ -317,10 +347,51 @@ values array (`ArrayRef::ptr_eq` across chunks → column-global dict codes).
 
 ## Open
 
-- O4–O20 kernel results (fan-out in progress).
-- The two anomalies above (O2 cost scaling, O10b gather behaving like a
-  re-scan).
 - The engine-side A/B (CompactProps + postings) — needs the container
   harness or the `research`-feature read path; `CompactProps` is `pub(crate)`.
 - `Ty::Temporal` column for date properties.
 - The VFS mmap prototype (round-1 deliverable, step 60).
+- Monotone synthetic shape in `store.rs` + re-run of the range-pruning
+  kernels (methodology correction, filter section finding 4).
+- Nullable-column re-measure for presence (filter section finding 6).
+
+### Upstream tracking (checked 2026-11-23, vortex-data/vortex)
+
+- **Morsel gather — designed, not landed.** #8694 (open, 2026-07-09):
+  "Probe API: encoding-owned repeated random access with density-hinted
+  canonicalization caching" — names the exact failure modes measured here
+  (per-value probe on compressed arrays, small takes over one encoded
+  column), proposes decode-once / per-block-cache policies (prior art:
+  Velox `DecodedVector`, DuckDB `UnifiedVectorFormat`). #9551 (open):
+  vectorized membership masks for sorted arrays — the batched key check.
+  #8948 (open epic): first-class index layout (`vortex.indexed`). The
+  2024-era row-selection pushdown (#1202, #1938) shipped as the
+  `with_row_indices` measured above, including its sparse fallback.
+  Use-case comments + update request posted on all three (2026-11-23).
+- **Exists early-exit filed**: vortex-data/vortex#11808 (2026-11-23) —
+  `with_limit(n)` truncates output without stopping decoding; no cheap
+  exists over a scan unless the file-level prune fires.
+- **Stats layer mid-rework**: #4581 (file stats + zone maps computed
+  twice), #11177 (retire legacy statistics APIs), #7939 (multi-resolution
+  zone maps). Persisting `IsSorted` is AND-mergeable and fits their
+  mergeable-stats rule — small after #11177. Store-side workaround for
+  round 1: record per-column sortedness in our own metadata at seal time
+  (the sorted-key arm is sorted by construction regardless).
+
+### Store-side rule: shape our additions like their proposed APIs (adopted 2026-11-23)
+
+Round-1 store additions are written against seams that mirror the upstream
+proposals, so flipping to the real APIs when they land is a delegation
+change, not a redesign:
+
+- **Sidecar sortedness** flags mirror the `Stat` names (`IsSorted`,
+  `IsStrictSorted`) behind one stats-shaped accessor — when the footer
+  persists them, the accessor reads the file instead.
+- **Morsel read path** goes through a single probe-shaped seam carrying a
+  density hint (contiguous range / scattered ids / per-value) — the
+  #8694 Probe API's shape; when it lands, the seam delegates to
+  `ArrayRef::probe`.
+- **Batched key check** is a sorted-values × sorted-members → mask
+  function, matching #9551's proposed op.
+- **Exists** is written against a limit-shaped terminal that assumes
+  short-circuit — #11808 landing changes performance, not the operator.
