@@ -7,7 +7,50 @@ use relate_core::{NodeId, RelId, Value};
 use super::super::accounting::adjacency::AdjDelta;
 use super::super::Graph;
 use super::chain::{props, step_matches_charge};
+use crate::adjacency::{with_arena_wall, Hop, SealedArena, SealedStream, RESTORE_SEAL_HOPS};
 use crate::redo::RedoOp;
+
+/// A wholesale install reserves every buffer at the size the closing fit
+/// lands it at: the byte buffer's capacity is its length, and `fit` moves
+/// none of the four buffers — no reallocation copy, so the build's peak
+/// never holds a buffer twice. The streams come from two shards, nodes
+/// interleaved, types pushed out of order: the install rebases the second
+/// shard's offsets and the entries read back type-sorted.
+#[test]
+fn a_wholesale_install_leaves_fit_nothing_to_copy() {
+    let hops: Vec<Hop> = (0..9).rev().map(|id| Hop { ts: Some(id), id }).collect();
+    let arena = SealedArena::default();
+    let mut streams = vec![SealedStream::default(), SealedStream::default()];
+    for node in 0..40 {
+        let stream = &mut streams[node as usize % 2];
+        for type_id in [3, 1, 2] {
+            assert!(stream.seal_chunk(node, type_id, &hops));
+        }
+        stream.end_node();
+    }
+
+    arena.install(streams);
+    let (buffers, capacity, len) = arena.buffer_probe();
+    assert_eq!(
+        capacity, len,
+        "the byte buffer is exactly its encoded length"
+    );
+    arena.fit();
+    assert_eq!(
+        arena.buffer_probe(),
+        (buffers, capacity, len),
+        "fit copied nothing"
+    );
+    assert_eq!(arena.assert_fit(), 0);
+
+    for node in [0, 7, 39] {
+        let region = arena.region(node).expect("every node sealed");
+        assert_eq!(region.type_ids(), vec![1, 2, 3]);
+        for type_id in 1..=3 {
+            assert_eq!(region.decoded(type_id), hops, "node {node} type {type_id}");
+        }
+    }
+}
 
 /// The reposition's sealed charge follows price_side's arms — the one
 /// formula the admission estimate prices delete batches with: a second
@@ -243,4 +286,90 @@ fn sealed_delete_founding_at_a_side_map_id_refuses_nothing() {
         "its side-map entry is reclaimed, so spill"
     );
     step_matches_charge(&g, doomed_ops, true);
+}
+
+/// Three types of sealable runs from `from` to `to`, committed in one write:
+/// each run is `RESTORE_SEAL_HOPS` hops or more, so the build's seal gate
+/// takes it on its own.
+fn three_sealable_runs(g: &Graph, from: NodeId, to: NodeId) {
+    g.begin_write().unwrap();
+    for type_name in ["T0", "T1", "T2"] {
+        for _ in 0..RESTORE_SEAL_HOPS + 2 {
+            g.create_rel(
+                from,
+                to,
+                type_name.into(),
+                std::collections::BTreeMap::new(),
+            )
+            .unwrap();
+        }
+    }
+    g.commit_write();
+}
+
+/// How many sealed chunks `node` holds on the out side.
+fn sealed_chunks(g: &Graph, node: NodeId) -> usize {
+    g.out_side()
+        .sealed()
+        .region(node)
+        .map_or(0, |region| region.chunk_count())
+}
+
+/// A wholesale build whose streams would cross the arena's 4 GiB wall keeps
+/// the run that does not fit in the delta tier and returns: the open never
+/// panics on the wall (ADR-0599). The wall is pinned lower through
+/// [`with_arena_wall`] — a real 4 GiB build is not a unit test — and one
+/// shard runs inline, so the single stream is the whole build.
+#[test]
+fn a_wholesale_build_past_the_wall_keeps_the_overflow_in_delta() {
+    let g = Graph::default();
+    let (a, b) = crate::graph::test_support::endpoints(&g);
+    three_sealable_runs(&g, a, b);
+
+    g.rebuild_adj();
+    assert_eq!(sealed_chunks(&g, a), 3);
+    let whole = g.out_side().sealed().arena_bytes();
+    let degree = g.degree_out(a);
+
+    // One byte short of the whole build: the last run's stream crosses it.
+    let wall = whole - 1;
+    with_arena_wall(wall, || g.rebuild_adj());
+    assert!(g.out_side().sealed().arena_bytes() <= wall);
+    assert_eq!(
+        sealed_chunks(&g, a),
+        2,
+        "the overflowing run stays in the delta tier"
+    );
+    assert_eq!(
+        g.degree_out(a),
+        degree,
+        "the build reads back the same rels"
+    );
+}
+
+/// Two shards that each fit the wall alone but not together: no shard sees
+/// the sum, so the side is built again with every run in the delta tier
+/// (ADR-0599) and the build still returns.
+#[test]
+fn shards_that_overflow_the_wall_together_build_all_delta() {
+    let g = Graph::default();
+    // Sequential ids, so the two starts take different shards (`id % 2`).
+    let (a, b) = crate::graph::test_support::endpoints(&g);
+    let (c, d) = crate::graph::test_support::endpoints(&g);
+    assert_ne!(a % 2, d % 2, "the two starts land in different shards");
+    three_sealable_runs(&g, a, b);
+    three_sealable_runs(&g, d, c);
+
+    let whole = crate::graph::shard::with_workers(2, || {
+        g.rebuild_adj();
+        g.out_side().sealed().arena_bytes()
+    });
+    let degree = (g.degree_out(a), g.degree_out(d));
+
+    crate::graph::shard::with_workers(2, || {
+        with_arena_wall(whole - 1, || g.rebuild_adj());
+    });
+    assert_eq!(g.out_side().sealed().arena_bytes(), 0, "all delta");
+    assert_eq!(sealed_chunks(&g, a), 0);
+    assert_eq!((g.degree_out(a), g.degree_out(d)), degree);
 }

@@ -21,7 +21,7 @@ use relate_planner::DegreeMoments;
 
 use super::count_state::{CountDelta, LabelMutation};
 use super::rebuild::{LabelCache, RelRow};
-use super::shard;
+use super::shard::{self, ShardPartition};
 use super::Graph;
 
 /// The histogram family's map: per-(label, rel-type) out-degree bucket
@@ -425,7 +425,7 @@ impl Graph {
         &self,
         rows: &[RelRow],
         labels: &LabelCache,
-        shards: &[Vec<usize>],
+        shards: &mut ShardPartition,
     ) {
         let parts = shard::run_shards(shards, |shard| {
             Self::degree_histogram_part(rows, labels, shard)

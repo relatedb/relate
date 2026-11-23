@@ -416,6 +416,9 @@ fn main() {
             markdown_body_properties,
             load_csv_dir,
             load_csv_max_bytes: None,
+            // The load thread count resolves through RELATE_LOAD_THREADS
+            // (the open preflight); the CLI carries no flag of its own.
+            load_threads: None,
             mode: open_mode,
             concurrent_logical_workspace_limit,
             // The per-commit WAL payload cap resolves through

@@ -80,9 +80,11 @@ pub(crate) const PHYSICAL_READ_TS: u64 = 0;
 mod arena;
 mod span_table;
 
+#[cfg(test)]
+pub(crate) use self::arena::with_arena_wall;
 pub(crate) use self::arena::{
-    arena_admits, hop_count, tombstone_stride, Entry, SealedArena, SealedRegion, Supersede,
-    Tombstone,
+    arena_admits, hop_count, streams_admit, tombstone_stride, Entry, SealedArena, SealedRegion,
+    SealedStream, Supersede, Tombstone,
 };
 pub(crate) use self::span_table::{span_stride, MAX_SPAN_TYPES};
 

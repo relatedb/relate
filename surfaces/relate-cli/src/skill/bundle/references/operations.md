@@ -83,6 +83,25 @@ silent default. Embedded callers set the same knobs as
 `OpenOptions::wal_payload_limit` and
 `OpenOptions::concurrent_logical_workspace_limit`.
 
+## Opening a large store: the load thread count
+
+Opening a checkpointed store decodes the snapshot and rebuilds the
+adjacency structures on a shared pool of load threads, and the temporary
+memory of that load scales with the thread count. `RELATE_LOAD_THREADS`
+caps the threads (default: the machine's available parallelism):
+
+```sh
+RELATE_LOAD_THREADS=2 relate --database ./mydata
+```
+
+A zero, non-integer, or non-UTF-8 value fails the open naming the variable,
+before the store is leased; a still-set `CYPHERLITE_LOAD_THREADS` fails the
+open naming `RELATE_LOAD_THREADS` (ADR-0664). Embedded callers set
+`OpenOptions::load_threads` and read what the open actually used from
+`Database::open_peak_transient_bytes()` — the peak temporary bytes of the
+latest load (`0` for an empty `:memory:` store; a follower's gap reload
+refreshes it). It is a measurement, not a limit.
+
 ## Ontology as a query-steering source
 
 Before generating Cypher from a natural-language request, load the ontology

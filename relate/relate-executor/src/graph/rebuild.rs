@@ -9,11 +9,15 @@
 //! [`Graph::rebuild_adj`] computes the start-keyed partition once and
 //! hands it to every start-keyed consumer (the start-side build, both
 //! folds); the end-side build keys on the other endpoint and partitions
-//! inside `adjacency::adj_build`.
+//! inside `adjacency::adj_build`. Each temporary buffer is charged to the
+//! open's transient tracker for exactly as long as it lives: the label
+//! cache is built only after the adjacency build has returned, so it
+//! never coexists with the end partition or the build's shard parts, and
+//! everything is dropped before the closing `recompute_used`.
 
 use std::collections::HashMap;
 
-use relate_core::{NodeId, RelId};
+use relate_core::{record_transient_lease, NodeId, RelId};
 
 use super::adjacency::adj_build;
 #[cfg(test)]
@@ -75,6 +79,13 @@ impl LabelCache {
             .expect("the fold cached every endpoint's labels")
             .as_slice()
     }
+
+    /// The bytes the cache holds: its table slots and each node's label ids.
+    pub(in crate::graph) fn bytes(&self) -> u64 {
+        let slots = self.0.capacity() * std::mem::size_of::<(NodeId, Vec<u32>)>();
+        let ids: usize = self.0.values().map(Vec::capacity).sum();
+        (slots + ids * std::mem::size_of::<u32>()) as u64
+    }
 }
 
 #[cfg(test)]
@@ -103,16 +114,25 @@ impl Graph {
         #[cfg(test)]
         ADJ_BUILDS.with(BuildCounter::bump);
         let rows = self.materialize_rel_rows();
-        let labels = self.endpoint_labels(&rows);
+        let rows_lease =
+            record_transient_lease((rows.capacity() * std::mem::size_of::<RelRow>()) as u64);
         // The one start-keyed partition: every row of a node lands in one
         // shard, so the start-side build and both folds read whole nodes
         // and their outputs merge without coordination. The three read the
-        // one materialization in materialize order — no fold's result
-        // depends on row order.
-        let start_shards = shard_rows(&rows, |row| row.start);
-        adj_build(self, &rows, &start_shards);
-        self.rebuild_degree_stats(&rows, &labels, &start_shards);
-        self.rebuild_count_stats(&rows, &labels, &start_shards);
+        // one materialization — no fold's result depends on row order (the
+        // build sorts each shard's indices in place).
+        let mut start_shards = shard_rows(&rows, |row| row.start);
+        let start_lease = start_shards.lease();
+        adj_build(self, &rows, &mut start_shards);
+        // Only now, with the end partition and the build's buffers gone,
+        // does the folds' label cache come into being.
+        let labels = self.endpoint_labels(&rows);
+        let labels_lease = record_transient_lease(labels.bytes());
+        self.rebuild_degree_stats(&rows, &labels, &mut start_shards);
+        self.rebuild_count_stats(&rows, &labels, &mut start_shards);
+        drop((labels, labels_lease));
+        drop((start_shards, start_lease));
+        drop((rows, rows_lease));
         // The wholesale rebuild replaces the histogram map: recompute the
         // incremental `used_bytes` so it tracks the new entry count (the
         // recount oracle includes the histogram term).
@@ -122,8 +142,13 @@ impl Graph {
     /// The rebuild's one materialization of the live rel rows — the seam
     /// `adj_build` and both folds consume, so the three read one pass over
     /// the rel store rather than three.
-    fn materialize_rel_rows(&self) -> Vec<RelRow> {
-        let mut rows: Vec<RelRow> = Vec::new();
+    pub(super) fn materialize_rel_rows(&self) -> Vec<RelRow> {
+        // Count the live rows first so the buffer is allocated once, at its
+        // final size, instead of doubling past it.
+        let mut live_rows = 0;
+        self.rels
+            .for_each(|_, vers| live_rows += usize::from(live_version(vers).is_some()));
+        let mut rows: Vec<RelRow> = Vec::with_capacity(live_rows);
         self.rels.for_each(|id, vers| {
             let Some(ver) = live_version(vers) else {
                 return;
@@ -147,7 +172,7 @@ impl Graph {
     /// an end node is re-read by every shard holding a rel that points at
     /// it — label reads would scale with the shard count instead of the
     /// node count, which is what the folds spend most of their time on.
-    fn endpoint_labels(&self, rows: &[RelRow]) -> LabelCache {
+    pub(super) fn endpoint_labels(&self, rows: &[RelRow]) -> LabelCache {
         let mut labels = LabelCache::default();
         for row in rows {
             labels.ensure(self, row.start);

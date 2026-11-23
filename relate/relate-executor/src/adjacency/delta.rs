@@ -246,8 +246,8 @@ enum FoldAction {
 }
 
 /// One chunk a fold pass takes: its type, and the action the fold takes on
-/// it — the pair [`TypedAdj::due_chunks`] and [`TypedAdj::seal_whole`]
-/// hand to [`TypedAdj::fold_due`]. The fields are private: a candidate is a
+/// it — the pair [`TypedAdj::due_chunks`] hands to
+/// [`TypedAdj::fold_due`]. The fields are private: a candidate is a
 /// decision token, read only by the selection that builds it and the fold
 /// that consumes it.
 #[derive(Clone, Copy, Debug)]
@@ -388,6 +388,11 @@ impl TypedAdj {
             ..DeltaChunk::default()
         };
         chunk.set_hops(hops);
+        self.install_chunk(chunk);
+    }
+
+    /// Append `chunk`, fitting the chunk vector to its reserved capacity.
+    fn install_chunk(&mut self, chunk: DeltaChunk) {
         self.chunks.push(chunk);
         crate::memory::fit_reserved(&mut self.chunks);
     }
@@ -401,7 +406,17 @@ impl TypedAdj {
     /// the shape the incremental [`Self::insert`] path leaves for the same
     /// hops, so a graph rebuilt wholesale and one built by inserts are the
     /// same adjacency.
-    pub(crate) fn from_runs(runs: impl IntoIterator<Item = (u32, Vec<Hop>)>) -> Self {
+    ///
+    /// The build's own seal gate (ADR-0599 / ADR-0608), horizon 0: a run
+    /// of at least [`RESTORE_SEAL_HOPS`] hops is handed sorted to `seal`
+    /// in chunk order, and when `seal` took it (`true`) the hops live in
+    /// the sealed stream and the chunk stays as an empty slot, keeping
+    /// the type's iteration position. A shorter run, or one `seal`
+    /// refuses at a tier wall, stays delta.
+    pub(crate) fn from_runs(
+        runs: impl IntoIterator<Item = (u32, Vec<Hop>)>,
+        mut seal: impl FnMut(u32, &[Hop]) -> bool,
+    ) -> Self {
         let mut runs: Vec<(RelId, u32, Vec<Hop>)> = runs
             .into_iter()
             .map(|(type_id, hops)| {
@@ -417,7 +432,14 @@ impl TypedAdj {
                 "one run per type"
             );
             hops.sort_unstable_by(cmp_ts_desc);
-            typed.push_chunk(type_id, hops);
+            if hops.len() >= RESTORE_SEAL_HOPS && seal(type_id, &hops) {
+                typed.install_chunk(DeltaChunk {
+                    type_id,
+                    ..DeltaChunk::default()
+                });
+            } else {
+                typed.push_chunk(type_id, hops);
+            }
         }
         typed
     }
@@ -568,27 +590,6 @@ impl TypedAdj {
                 chunk.set_baseline(chunk.hops.len());
             }
         }
-    }
-
-    /// Seal a wholesale build's node in its one pass (ADR-0599 / ADR-0608)
-    /// — the build's own gate, whose horizon is 0: a rebuild reclaims no
-    /// tombstone the write path's horizon would have freed. The selection
-    /// is the build's own: every chunk whose delta reaches
-    /// [`RESTORE_SEAL_HOPS`], and all of them fold — a fresh build is
-    /// all-delta, so the threshold alone decides, with no sealed-length
-    /// ratio, tombstone horizon, or stability baseline, the write path's
-    /// other gates.
-    pub(crate) fn seal_whole(&mut self, sealed: SealedRegion<'_>) {
-        let candidates: Vec<FoldCandidate> = self
-            .chunks
-            .iter()
-            .filter(|c| c.hops.len() >= RESTORE_SEAL_HOPS)
-            .map(|c| FoldCandidate {
-                type_id: c.type_id,
-                action: FoldAction::Fold,
-            })
-            .collect();
-        self.fold_due(sealed, &candidates, 0);
     }
 
     /// Whether this node has anything to do at `horizon`: chunks the fold

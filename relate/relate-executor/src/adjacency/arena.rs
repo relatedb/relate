@@ -14,10 +14,10 @@ use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use relate_core::{NodeId, RelId};
 
-use crate::memory::{fit_exact, fit_reserved, vec_growth, vec_heap, vec_heap_exact};
+use crate::memory::{fit_exact, fit_reserved, reserved_len, vec_growth, vec_heap, vec_heap_exact};
 
 use super::codec;
-use super::span_table::SpanTable;
+use super::span_table::{SpanTable, MAX_SPAN_TYPES};
 use super::Hop;
 
 /// What superseded a sealed position. The fold needs it: a deleted row has
@@ -125,6 +125,59 @@ pub(crate) struct SealedTierBytes {
     pub dead: u64,
 }
 
+/// One shard's sealed output of a wholesale build (ADR-0608): the encoded
+/// streams in a buffer of its own and the entries addressing them, built
+/// off the arena's lock and laid in by [`SealedArena::install`]. Offsets are
+/// local to the shard's buffer until the install rebases them.
+#[derive(Default)]
+pub(crate) struct SealedStream {
+    bytes: Vec<u8>,
+    /// `(node, entry)`, a node's entries contiguous and — once
+    /// [`Self::end_node`] runs — type-sorted, as the arena's span wants.
+    entries: Vec<(NodeId, Entry)>,
+    /// Where the node being built starts in `entries`.
+    node_start: usize,
+}
+
+impl SealedStream {
+    /// Encode `hops` (in `cmp_ts_desc` order) straight into this stream as
+    /// `node`'s `type_id` chunk. `false` leaves the stream as it was: the
+    /// node's span is at its `u16` length wall, or the stream's bytes plus
+    /// the encoded chunk would cross the arena's 4 GiB wall, and the chunk
+    /// stays delta (ADR-0599).
+    pub(crate) fn seal_chunk(&mut self, node: NodeId, type_id: u32, hops: &[Hop]) -> bool {
+        if self.entries.len() - self.node_start >= MAX_SPAN_TYPES {
+            return false;
+        }
+        let encoded = codec::encode_chunk(hops);
+        if !arena_admits(self.bytes.len() as u64, encoded.len() as u64) {
+            return false;
+        }
+        let entry = Entry {
+            type_id,
+            off: arena_offset(self.bytes.len()),
+            hops: hop_count(hops.len()),
+        };
+        self.bytes.extend_from_slice(&encoded);
+        self.entries.push((node, entry));
+        true
+    }
+
+    /// Close the node being built: type-sort its entries, the order its
+    /// span binary-searches.
+    pub(crate) fn end_node(&mut self) {
+        self.entries[self.node_start..].sort_unstable_by_key(|(_, entry)| entry.type_id);
+        self.node_start = self.entries.len();
+    }
+
+    /// Release the buffer's slack, so the shard parts that coexist with
+    /// the arena at peak hold the encoded length and no more.
+    pub(crate) fn shrink(&mut self) {
+        self.bytes.shrink_to_fit();
+        self.entries.shrink_to_fit();
+    }
+}
+
 /// The arena's inner state, behind [`SealedArena`]'s lock.
 #[derive(Default)]
 struct ArenaStore {
@@ -150,7 +203,48 @@ struct ArenaStore {
 /// predicate the under-lock recheck and the admission pre-check both
 /// consult.
 pub(crate) fn arena_admits(arena_bytes: u64, growth: u64) -> bool {
-    arena_bytes.saturating_add(growth) <= u32::MAX as u64
+    arena_bytes.saturating_add(growth) <= arena_wall()
+}
+
+/// The wall's bound: the `u32` offset space, or a lower one a test pins.
+fn arena_wall() -> u64 {
+    #[cfg(test)]
+    {
+        if let Some(wall) = WALL_OVERRIDE.with(std::cell::Cell::get) {
+            return wall;
+        }
+    }
+    u32::MAX as u64
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The wall a test pins on this thread (see [`with_arena_wall`]).
+    static WALL_OVERRIDE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with the arena wall lowered to `wall` on this thread, restoring
+/// the previous one afterwards. A real 4 GiB build is not a unit test, so a
+/// wholesale build past the wall is driven through this seam; the override
+/// is per-thread, so it holds for every shard that runs inline on it.
+#[cfg(test)]
+pub(crate) fn with_arena_wall<R>(wall: u64, f: impl FnOnce() -> R) -> R {
+    struct Reset(Option<u64>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            WALL_OVERRIDE.with(|w| w.set(self.0));
+        }
+    }
+    let _reset = Reset(WALL_OVERRIDE.with(|w| w.replace(Some(wall))));
+    f()
+}
+
+/// Whether the given shard streams, laid end to end, keep the arena under
+/// the wall. Each stream checks only its own bytes as it seals, so this is
+/// the wholesale build's admission for their sum.
+pub(crate) fn streams_admit<'a>(streams: impl IntoIterator<Item = &'a SealedStream>) -> bool {
+    let total: u64 = streams.into_iter().map(|s| s.bytes.len() as u64).sum();
+    arena_admits(0, total)
 }
 
 /// An arena byte length at the `u32` offset field's structural boundary —
@@ -428,10 +522,55 @@ impl ArenaStore {
         self.fit();
     }
 
+    /// Lay a wholesale build's shard streams into this cleared arena, shard
+    /// after shard (ADR-0599 / ADR-0608). Every buffer is reserved once, at
+    /// the size [`Self::fit`] lands it at — the byte buffer exact, the entry
+    /// and tombstone columns at their reservation, the span table's dense
+    /// array on its ladder — so the fit that follows copies nothing.
+    fn install(&mut self, streams: Vec<SealedStream>) {
+        debug_assert!(
+            self.bytes.is_empty() && self.entries.is_empty(),
+            "a wholesale install lands in a cleared arena"
+        );
+        let total_bytes: usize = streams.iter().map(|s| s.bytes.len()).sum();
+        let total_entries: usize = streams.iter().map(|s| s.entries.len()).sum();
+        // The wall the build's caller checks before it installs (see
+        // `streams_admit`): an over-wall build never reaches this lay-out.
+        debug_assert!(
+            arena_admits(0, total_bytes as u64),
+            "the arena stays under 4 GiB"
+        );
+        self.bytes.reserve_exact(total_bytes);
+        self.entries.reserve_exact(reserved_len(total_entries));
+        self.tombstones.reserve_exact(reserved_len(total_entries));
+        let widest = streams
+            .iter()
+            .flat_map(|s| &s.entries)
+            .map(|&(node, _)| node)
+            .max();
+        if let Some(node) = widest {
+            self.spans.reserve_for(node);
+        }
+        for stream in streams {
+            let base = arena_offset(self.bytes.len());
+            self.bytes.extend_from_slice(&stream.bytes);
+            for node_entries in stream.entries.chunk_by(|a, b| a.0 == b.0) {
+                let start = self.entries.len();
+                self.entries
+                    .extend(node_entries.iter().map(|&(_, entry)| Entry {
+                        off: base + entry.off,
+                        ..entry
+                    }));
+                self.spans.set(node_entries[0].0, start, node_entries.len());
+            }
+        }
+        self.tombstones.resize_with(self.entries.len(), Vec::new);
+    }
+
     /// Re-fit every buffer to the size its floor charges: the arena's byte
     /// buffer exact ([`vec_heap_exact`]), the push-grown vectors at their
     /// reservation. After a compaction, and after a wholesale build's
-    /// emission, which push-grows the byte buffer (ADR-0599 / ADR-0608).
+    /// install, which reserves them exactly (ADR-0599 / ADR-0608).
     fn fit(&mut self) {
         fit_exact(&mut self.bytes);
         fit_reserved(&mut self.entries);
@@ -582,10 +721,29 @@ impl SealedArena {
         self.write().compact();
     }
 
-    /// Fit the arena's buffers to the exact sizes its floor charges — the
-    /// wholesale build's emission push-grows them (ADR-0608).
+    /// Lay a wholesale build's shard streams into the cleared arena under
+    /// one write lock, the build's only touch of it (ADR-0608).
+    pub(crate) fn install(&self, streams: Vec<SealedStream>) {
+        self.write().install(streams);
+    }
+
+    /// Fit the arena's buffers to the exact sizes its floor charges.
     pub(crate) fn fit(&self) {
         self.write().fit();
+    }
+
+    /// The four buffers' addresses, and the byte buffer's capacity and
+    /// length — what a fit that copies nothing leaves unchanged.
+    #[cfg(test)]
+    pub(crate) fn buffer_probe(&self) -> ([usize; 4], usize, usize) {
+        let s = self.read();
+        let ptrs = [
+            s.bytes.as_ptr() as usize,
+            s.entries.as_ptr() as usize,
+            s.tombstones.as_ptr() as usize,
+            s.spans.as_ptr() as usize,
+        ];
+        (ptrs, s.bytes.capacity(), s.bytes.len())
     }
 
     /// Assert every buffer holds exactly the capacity its floor charges — the
@@ -594,7 +752,6 @@ impl SealedArena {
     /// non-empty tombstone list.
     #[cfg(test)]
     pub(crate) fn assert_fit(&self) -> usize {
-        use crate::memory::reserved_len;
         fn assert_capacity<T>(v: &Vec<T>, want: usize, what: &str) {
             assert_eq!(v.capacity(), want, "{what} holds its reservation");
         }

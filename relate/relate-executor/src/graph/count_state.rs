@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use relate_core::NodeId;
 
 use super::rebuild::{LabelCache, RelRow};
-use super::shard;
+use super::shard::{self, ShardPartition};
 use super::Graph;
 
 /// One count-map mutation's direction: every caller
@@ -576,7 +576,7 @@ impl Graph {
         &self,
         rows: &[RelRow],
         labels: &LabelCache,
-        shards: &[Vec<usize>],
+        shards: &mut ShardPartition,
     ) {
         // Built whole outside the guard, published in one store: the
         // bundle's wholesale rebuild owns all four fields — one

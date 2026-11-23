@@ -210,6 +210,9 @@ web-time = "1"
 # Testing
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
+# The default-allocator peak-RSS gate (relate/relate/tests/open_peak_rss.rs):
+# test-only, so no shipped crate links it.
+mimalloc = "0.1"
 
 # Every released native artifact (the CLI binary, the FFI cdylib behind the
 # Java/JS jars, the bolt/http/mcp servers) inherits this. Thin LTO + one

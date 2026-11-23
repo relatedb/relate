@@ -52,7 +52,7 @@ fn from_runs_matches_an_id_ordered_insert_load() {
             )
         })
         .collect();
-    let built = TypedAdj::from_runs(runs);
+    let built = TypedAdj::from_runs(runs, |_, _| false);
     // Chunks in first-rel-id order (type 2's id 2 before type 1's id 7),
     // not type-id order.
     assert_eq!(

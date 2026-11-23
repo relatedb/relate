@@ -10,6 +10,8 @@ mod follow;
 mod label_stats;
 mod memory;
 mod namespace;
+#[cfg(feature = "parquet")]
+mod open_peak;
 mod persist;
 mod persisted_sentinel;
 mod plan_cache;

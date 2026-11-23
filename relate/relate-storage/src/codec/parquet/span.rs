@@ -1,13 +1,13 @@
-//! Row-group spans: the decode-and-install units a concurrent open cuts a
-//! shard file into (design: parallel checkpoint load). A shard file's row
-//! groups are independently decodable, so every span reads through its own
-//! reader; the loader cuts the file into one span per worker — balanced by
-//! row-group count, never splitting a group. A file that cuts into one span
-//! keeps its one reader, on the current thread.
+//! Row-group spans: the decode units a concurrent open cuts a shard file
+//! into (design: parallel checkpoint load). A shard file's row groups are
+//! independently decodable, so every span reads through its own reader; the
+//! loader cuts the file into at most one span per load thread of the current
+//! load scope — balanced by row-group count, never splitting a group. A file
+//! that cuts into one span keeps its one reader, on the current thread.
 //!
-//! The module owns the whole walk: [`SpanReaders`], the per-reader decode
-//! ([`load_reader`]) and the fold in [`load`] that holds the file's id order
-//! across the spans.
+//! The module owns the whole walk: [`SpanReaders`], the per-span decode and
+//! install ([`load_reader`]) on the shared load pool, and the fold in
+//! [`load`] that holds the file's id order across the spans after the join.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -18,12 +18,13 @@ use parquet::arrow::arrow_reader::{
     ParquetRecordBatchReaderBuilder,
 };
 use parquet::file::metadata::ParquetMetaData;
+use relate_core::{record_transient_lease, run_load_tasks};
 
-use super::rules::{ascending, id_column, IdWindow, ShardRules};
-use super::{ColumnType, Decoded, Error, Origin, Result, RowLoader, DECODE_BATCH_ROWS};
+use super::rules::{ascending, id_column, ShardRules};
+use super::{Decoded, Error, Origin, Result, RowLoader, DECODE_BATCH_ROWS};
 
 /// A shard file cut into decode spans: consecutive row groups, one span per
-/// load worker. Holds the file and its footer metadata — both cheap to
+/// load thread. Holds the file and its footer metadata — both cheap to
 /// clone — so every span builds its own reader without re-reading the
 /// footer or re-walking the page preflight.
 pub(crate) struct SpanReaders {
@@ -82,9 +83,9 @@ fn cut(groups: usize, spans: usize) -> Vec<Range<usize>> {
     ranges
 }
 
-/// The first and last id one worker's span decoded, kept so a file split
-/// across workers still proves its ids ascend across the split. `None` is a
-/// span that decoded no rows.
+/// The first and last id one span decoded, kept so a file split into spans
+/// still proves its ids ascend across the split. `None` is a span that
+/// decoded no rows.
 type IdBounds = Option<FirstLast>;
 
 /// The first and last id of one span's rows, in file order.
@@ -94,22 +95,29 @@ struct FirstLast {
     last: i64,
 }
 
-/// Decode one reader's batches into `load`, holding each batch's ids to
-/// the shard rules' id window and the rows to the decoded envelope.
+/// Decode one span's batches and install each as it goes, holding each
+/// batch's ids to the shard rules' id window and the rows to the decoded
+/// envelope. Every batch holds a transient lease only while it is
+/// installed, so a span never accumulates its batches' memory.
 fn load_reader(
     reader: ParquetRecordBatchReader,
-    window: &mut Option<IdWindow>,
+    rules: Option<&ShardRules>,
     decoded: &Decoded,
-    columns: &[(String, ColumnType)],
     graph: &dyn relate_engine_api::GraphImport,
     origin: &Origin,
     load: RowLoader,
 ) -> Result<IdBounds> {
+    // The columns and this span's id window come from the one `ShardRules`
+    // — a monolith is handed none, so it reads no columns and checks no
+    // window.
+    let columns = rules.map_or(&[][..], ShardRules::columns);
+    let mut window = rules.map(ShardRules::restart);
     let mut bounds: IdBounds = None;
     for batch in reader {
         let batch = batch.map_err(|e| Error::storage(e.to_string()))?;
+        let _lease = record_transient_lease(batch.get_array_memory_size() as u64);
         decoded.batch(batch.num_rows())?;
-        let ids = match window {
+        let ids = match &mut window {
             Some(window) => window.ids(&batch)?,
             None => id_column(&batch).ok_or_else(|| Error::storage("id column"))?,
         };
@@ -120,17 +128,18 @@ fn load_reader(
             });
         }
         load(graph, origin, &batch, &ids, decoded, columns)?;
+        drop(batch);
     }
     Ok(bounds)
 }
 
-/// One loaded file ([`super::load_batches`]): the file's spans decode on one
-/// worker each, every worker installing its batches as it goes, and after
-/// the join the file's id order holds across the span boundaries too. A file
-/// that cuts into one span runs its one reader on the current thread. The
-/// file's row and decoded accounting is one [`Decoded`] every reader charges
-/// as it decodes, so a file over an envelope refuses the batch that crosses
-/// it before that batch installs.
+/// One loaded file ([`super::load_batches`]): the file's spans decode and
+/// install on the shared load pool, one task per span, and after the join
+/// the file's id order holds across the span boundaries too. A file that
+/// cuts into one span runs its one reader on the current thread. The file's
+/// row and decoded accounting is one [`Decoded`] every reader charges as it
+/// decodes, so a file over an envelope refuses the batch that crosses it
+/// before that batch installs.
 pub(super) fn load(
     spans: SpanReaders,
     rules: Option<&ShardRules>,
@@ -139,89 +148,29 @@ pub(super) fn load(
     load: RowLoader,
 ) -> Result<()> {
     let decoded = Decoded::new();
-    // The one walk every reader runs: the columns and its own id window
-    // come from the one `ShardRules` it is handed — a monolith is handed
-    // none, so it reads no columns and checks no window — and the file's
-    // ledger is shared, so the boundary between two spans is checked after
-    // the join.
-    let run = |reader: ParquetRecordBatchReader| {
-        let columns = rules.map_or(&[][..], ShardRules::columns);
-        let mut window = rules.map(ShardRules::restart);
-        load_reader(reader, &mut window, &decoded, columns, graph, origin, load)
-    };
-    let mut readers: Vec<ParquetRecordBatchReader> = (0..spans.span_count())
+    let tasks: Vec<_> = (0..spans.span_count())
         .map(|span| spans.reader(span))
-        .collect::<Result<_>>()?;
-    if readers.len() == 1 {
-        // Too small to shard: the one reader walks the file from its start,
-        // on the current thread.
-        return run(readers.remove(0)).map(|_| ());
-    }
-    #[cfg(test)]
-    WORKERS_RUN.with(|spawned| spawned.set(spawned.get() + readers.len()));
-    let results = std::thread::scope(|scope| {
-        let handles: Vec<_> = readers
-            .into_iter()
-            .map(|reader| scope.spawn(move || run(reader)))
-            .collect();
-        handles
-            .into_iter()
-            .map(crate::codec::join_or_resume)
-            .collect::<Result<Vec<_>>>()
-    })?;
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .map(|reader| {
+            let decoded = &decoded;
+            move || load_reader(reader, rules, decoded, graph, origin, load)
+        })
+        .collect();
+    let results = run_load_tasks(tasks)
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
     // The spans tile the file's row groups in file order, so folding their
     // bounds in span order is the one ascending run the serial reader
     // checked batch by batch.
     let mut last: Option<i64> = None;
-    for bounds in results {
-        let Some(span) = bounds else { continue };
+    for bounds in results.into_iter().flatten() {
         if rules.is_some() {
-            ascending(last, span.first)?;
+            ascending(last, bounds.first)?;
         }
-        last = Some(span.last);
+        last = Some(bounds.last);
     }
     Ok(())
-}
-
-/// The concurrent open's worker count: one decode-and-install worker per
-/// available core. The load cuts each shard file into that many spans.
-pub(super) fn load_workers() -> usize {
-    #[cfg(test)]
-    if let Some(forced) = forced_workers() {
-        return forced;
-    }
-    std::thread::available_parallelism().map_or(1, |n| n.get())
-}
-
-#[cfg(test)]
-thread_local! {
-    /// The worker count a test pins. The only way a unit test reaches the
-    /// parallel path's count: the natural count is the machine's cores.
-    static FORCED_WORKERS: std::cell::Cell<Option<usize>> =
-        const { std::cell::Cell::new(None) };
-
-    /// Workers every parallel load on this thread has spawned since the
-    /// last take.
-    static WORKERS_RUN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-fn forced_workers() -> Option<usize> {
-    FORCED_WORKERS.with(std::cell::Cell::get)
-}
-
-/// Run `f` with the restore pinned to `workers` decode-and-install workers,
-/// restoring the previous pin afterwards.
-#[cfg(test)]
-fn with_workers<R>(workers: usize, f: impl FnOnce() -> R) -> R {
-    assert!(workers > 0, "a worker count is non-zero");
-    crate::codec::with_test_override(&FORCED_WORKERS, workers, f)
-}
-
-/// Take this thread's accumulated spawned-worker count, resetting it.
-#[cfg(test)]
-fn take_workers_run() -> usize {
-    WORKERS_RUN.with(|run| run.replace(0))
 }
 
 #[cfg(test)]
@@ -231,12 +180,22 @@ mod tests {
     };
     use crate::codec::parquet::{
         encode_wide_rows, file_ceiling, load_nodes, load_rels, preflight, with_test_envelope,
-        with_wide_shard_writer, MAX_PAGE, MAX_ROW_BYTES, ROW_GROUP_CAP,
+        with_wide_shard_writer, ColumnType, MAX_PAGE, MAX_ROW_BYTES, ROW_GROUP_CAP,
     };
     use crate::snapshot::Kind;
+    use relate_core::{resolve_load_threads, with_load_scope, OpenTransientTracker};
     use relate_executor::Graph;
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    use std::thread::{self, ThreadId};
 
     use super::*;
+
+    /// Run `f` as a load scope of `threads` load threads.
+    fn with_workers<R>(threads: usize, f: impl FnOnce() -> R) -> R {
+        let threads = resolve_load_threads(Some(threads)).unwrap();
+        with_load_scope(threads, Arc::default(), f)
+    }
 
     /// The ids among the first `n` a loaded graph holds, in order.
     fn loaded_ids(graph: &Graph, n: i64) -> Vec<i64> {
@@ -330,7 +289,6 @@ mod tests {
             })
             .unwrap_err()
         });
-        assert_eq!(take_workers_run(), 2, "the file loaded as two spans");
         assert!(
             error.to_string().contains("actual decoded bytes"),
             "{error}"
@@ -370,9 +328,8 @@ mod tests {
         assert_eq!(decoded, expected);
     }
 
-    /// Carries the forced-worker item (a-3): the restore pinned to one
-    /// worker and pinned to four builds the same graph as the serial path,
-    /// nodes and relationships alike.
+    /// The restore under a load scope of one thread and of four builds the
+    /// same graph, nodes and relationships alike.
     #[test]
     fn forced_worker_counts_restore_the_same_graph_as_the_serial_path() {
         let rows = 4 * ROW_GROUP_CAP as i64;
@@ -390,14 +347,12 @@ mod tests {
             with_workers(workers, || {
                 load_part(load_nodes, graph, &nodes).unwrap();
                 load_part(load_rels, graph, &rels).unwrap();
-                take_workers_run()
             })
         };
         let serial = Graph::default();
         restore(1, &serial);
         let many = Graph::default();
-        let workers = restore(4, &many);
-        assert_eq!(workers, 8, "each load spawned one worker per span");
+        restore(4, &many);
         assert_eq!(loaded_ids(&serial, rows), ids);
         assert_eq!(loaded_ids(&many, rows), ids);
         for id in &ids {
@@ -414,10 +369,79 @@ mod tests {
         }
     }
 
+    /// The load thread that loaded a batch, recorded by [`record_thread`].
+    static PREPARED_ON: Mutex<Vec<(ThreadId, String)>> = Mutex::new(Vec::new());
+
+    /// The node loader, noting the thread that runs it.
+    fn record_thread(
+        graph: &dyn relate_engine_api::GraphImport,
+        origin: &Origin,
+        batch: &arrow::record_batch::RecordBatch,
+        ids: &arrow::array::Int64Array,
+        decoded: &Decoded,
+        columns: &[(String, ColumnType)],
+    ) -> Result<()> {
+        let current = thread::current();
+        PREPARED_ON
+            .lock()
+            .unwrap()
+            .push((current.id(), current.name().unwrap_or_default().to_owned()));
+        crate::codec::parquet::wide_node_rows(graph, origin, batch, ids, decoded, columns)
+    }
+
     #[test]
-    fn the_loader_runs_one_worker_per_core() {
-        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-        assert_eq!(load_workers(), cores);
+    fn spans_decode_on_shared_pool_threads_reused_across_parts_and_loads() {
+        let rows = 4 * ROW_GROUP_CAP as i64;
+        let ids: Vec<i64> = (0..rows).collect();
+        let bytes = write_bare_table(ids.clone()).unwrap();
+        let tracker = Arc::new(OpenTransientTracker::new());
+        let threads = resolve_load_threads(Some(4)).unwrap();
+        let mut per_load = Vec::new();
+        with_load_scope(threads, Arc::clone(&tracker), || {
+            // Two parts of one open, then a second load: every load's four
+            // spans run on the pool's four slots.
+            for _ in 0..3 {
+                let file = Bytes::from(bytes.clone());
+                let builder = preflight(file.clone()).unwrap();
+                let rules = ShardRules::open(&builder, Kind::Node, 0..i64::MAX).unwrap();
+                let spans = SpanReaders::open(file, builder.metadata(), 4).unwrap();
+                let graph = Graph::default();
+                PREPARED_ON.lock().unwrap().clear();
+                load(
+                    spans,
+                    Some(&rules),
+                    &graph,
+                    &Origin::Part(0..i64::MAX),
+                    record_thread,
+                )
+                .unwrap();
+                assert_eq!(loaded_ids(&graph, rows), ids);
+                let seen: HashSet<_> = PREPARED_ON.lock().unwrap().drain(..).collect();
+                per_load.push(seen);
+            }
+        });
+        assert_eq!(per_load[0].len(), 4, "{:?}", per_load[0]);
+        assert!(per_load[0]
+            .iter()
+            .all(|(id, name)| *id != thread::current().id() && name.starts_with("relate-load-")));
+        assert!(per_load.iter().all(|seen| *seen == per_load[0]));
+        assert!(tracker.peak_bytes() > 0);
+    }
+
+    #[test]
+    fn a_load_scope_records_the_transient_peak_of_a_load() {
+        let ids: Vec<i64> = (0..2 * ROW_GROUP_CAP as i64 + 5).collect();
+        let bytes = write_bare_table(ids.clone()).unwrap();
+        for k in [1, 4] {
+            let tracker = Arc::new(OpenTransientTracker::new());
+            let threads = resolve_load_threads(Some(k)).unwrap();
+            let graph = Graph::default();
+            with_load_scope(threads, Arc::clone(&tracker), || {
+                load_part(load_nodes, &graph, &bytes).unwrap();
+            });
+            assert_eq!(loaded_ids(&graph, ids.len() as i64), ids);
+            assert!(tracker.peak_bytes() > 0, "k = {k}");
+        }
     }
 
     #[test]

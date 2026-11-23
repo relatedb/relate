@@ -132,6 +132,21 @@ impl SpanTable {
         self.max_start = self.max_start.max(start as usize);
     }
 
+    /// Grow the dense array once to cover `node` — a wholesale install's
+    /// widest id — so the spans it then sets never grow it again. A wide id
+    /// the array cannot hold is a side-map entry and reserves nothing.
+    pub(super) fn reserve_for(&mut self, node: NodeId) {
+        let idx = usize::try_from(node).expect("a node id indexes the span table");
+        dense_or_side(&mut self.spans, idx, span_stride(), Span::default);
+    }
+
+    /// The dense array's address, for the test that pins a fit copying
+    /// nothing.
+    #[cfg(test)]
+    pub(super) fn as_ptr(&self) -> *const Span {
+        self.spans.as_ptr()
+    }
+
     /// Shift every span starting at or after `end` — the inserting or
     /// removing node's own span end — by `delta` (+1 on an insert, -1 on a
     /// remove). Spans are disjoint, so the immediate successor, the span

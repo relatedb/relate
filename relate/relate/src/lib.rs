@@ -370,6 +370,13 @@ pub struct OpenOptions {
     /// Maximum bytes read per CSV source. `None` defaults to 8 MiB; valid
     /// overrides are 1 through 64 MiB. Does not enable file access by itself.
     pub load_csv_max_bytes: Option<u64>,
+    /// How many threads the open's load phase may use: the snapshot decode,
+    /// the adjacency rebuild, and a follower's gap reload. `None` uses
+    /// `RELATE_LOAD_THREADS`, then the machine's available parallelism.
+    /// `Some(0)`, and a zero, non-integer or non-UTF-8 environment value,
+    /// fail open with `Error::Semantic` before the store is leased; a set
+    /// `CYPHERLITE_LOAD_THREADS` fails open like every retired name.
+    pub load_threads: Option<usize>,
     /// Writable, frozen read-only, a read-only WAL follower, or the
     /// ephemeral turn-into (ADR-0136, ADR-0137, ADR-0500).
     /// [`OpenMode::Follow`] and [`OpenMode::Ephemeral`] are read-only.
