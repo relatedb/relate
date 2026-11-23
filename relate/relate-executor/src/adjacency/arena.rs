@@ -142,9 +142,15 @@ pub(crate) struct SealedStream {
 impl SealedStream {
     /// Encode `hops` (in `cmp_ts_desc` order) straight into this stream as
     /// `node`'s `type_id` chunk. `false` leaves the stream as it was: the
-    /// node's span is at its `u16` length wall, and the chunk stays delta.
+    /// node's span is at its `u16` length wall, or the stream's bytes plus
+    /// the encoded chunk would cross the arena's 4 GiB wall, and the chunk
+    /// stays delta (ADR-0599).
     pub(crate) fn seal_chunk(&mut self, node: NodeId, type_id: u32, hops: &[Hop]) -> bool {
         if self.entries.len() - self.node_start >= MAX_SPAN_TYPES {
+            return false;
+        }
+        let encoded = codec::encode_chunk(hops);
+        if !arena_admits(self.bytes.len() as u64, encoded.len() as u64) {
             return false;
         }
         let entry = Entry {
@@ -152,7 +158,7 @@ impl SealedStream {
             off: arena_offset(self.bytes.len()),
             hops: hop_count(hops.len()),
         };
-        self.bytes.extend_from_slice(&codec::encode_chunk(hops));
+        self.bytes.extend_from_slice(&encoded);
         self.entries.push((node, entry));
         true
     }
@@ -197,7 +203,48 @@ struct ArenaStore {
 /// predicate the under-lock recheck and the admission pre-check both
 /// consult.
 pub(crate) fn arena_admits(arena_bytes: u64, growth: u64) -> bool {
-    arena_bytes.saturating_add(growth) <= u32::MAX as u64
+    arena_bytes.saturating_add(growth) <= arena_wall()
+}
+
+/// The wall's bound: the `u32` offset space, or a lower one a test pins.
+fn arena_wall() -> u64 {
+    #[cfg(test)]
+    {
+        if let Some(wall) = WALL_OVERRIDE.with(std::cell::Cell::get) {
+            return wall;
+        }
+    }
+    u32::MAX as u64
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The wall a test pins on this thread (see [`with_arena_wall`]).
+    static WALL_OVERRIDE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with the arena wall lowered to `wall` on this thread, restoring
+/// the previous one afterwards. A real 4 GiB build is not a unit test, so a
+/// wholesale build past the wall is driven through this seam; the override
+/// is per-thread, so it holds for every shard that runs inline on it.
+#[cfg(test)]
+pub(crate) fn with_arena_wall<R>(wall: u64, f: impl FnOnce() -> R) -> R {
+    struct Reset(Option<u64>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            WALL_OVERRIDE.with(|w| w.set(self.0));
+        }
+    }
+    let _reset = Reset(WALL_OVERRIDE.with(|w| w.replace(Some(wall))));
+    f()
+}
+
+/// Whether the given shard streams, laid end to end, keep the arena under
+/// the wall. Each stream checks only its own bytes as it seals, so this is
+/// the wholesale build's admission for their sum.
+pub(crate) fn streams_admit<'a>(streams: impl IntoIterator<Item = &'a SealedStream>) -> bool {
+    let total: u64 = streams.into_iter().map(|s| s.bytes.len() as u64).sum();
+    arena_admits(0, total)
 }
 
 /// An arena byte length at the `u32` offset field's structural boundary —
@@ -487,9 +534,9 @@ impl ArenaStore {
         );
         let total_bytes: usize = streams.iter().map(|s| s.bytes.len()).sum();
         let total_entries: usize = streams.iter().map(|s| s.entries.len()).sum();
-        // The wall the write path's admission keeps: the shards' streams
-        // came from rows that admission already bounded.
-        assert!(
+        // The wall the build's caller checks before it installs (see
+        // `streams_admit`): an over-wall build never reaches this lay-out.
+        debug_assert!(
             arena_admits(0, total_bytes as u64),
             "the arena stays under 4 GiB"
         );

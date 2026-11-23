@@ -16,6 +16,7 @@ REFERENCES:
   - "[[adr/0137-wal-follow]]"
   - "[[adr/0463-expression-allocation-budget]]"
   - "[[adr/0517-rename-to-relate]]"
+  - "[[adr/0599-adjacency-floor-arena]]"
 ---
 
 # 0664: A load thread setting and a reported peak for opening a store
@@ -72,6 +73,14 @@ way to read the peak the tracker saw.
 7. **A measurement, not a limit.** The peak is reported, never enforced:
    the live graph cap ([ADR-0042](./0042-graph-memory-limit.md)) is
    unchanged and does not count transient bytes.
+8. **An over-wall build stays in the delta tier.** The sealed arena's byte
+   offsets are `u32`, so its streams stop at 4 GiB ([ADR-0599](./0599-adjacency-floor-arena.md)).
+   A wholesale build that would cross that wall keeps each run that does
+   not fit in the delta tier, the same as a run at the span-length wall,
+   and the open returns normally: it never panics on the wall. Each shard's
+   stream checks the wall on its own bytes; when the shards fit alone but
+   their sum does not, the side is built again with every run in the delta
+   tier. The graph reads back the same either way.
 
 ## Alternatives considered
 
