@@ -1,5 +1,77 @@
 # Workload mapping for the vortex property store (REL8-1982 scope 3)
 
+## Operator kernels (the bench's unit of measurement, 2026-11-23)
+
+Derived from the whole corpus: 30 LDBC + fraud-qpp (f01-f06) + pathdb
+(p001-p012) + snb-bi (bi-01..13) + equi-join (e01-e03) + ukrailway (r02-r03).
+Each kernel is what the bench implements and reports (bytes read/decoded,
+allocs, ns) — the operator, not the query, is the unit.
+
+| # | Operator | Exercised by | Vortex mechanism | Optimize for |
+|---|---|---|---|---|
+| O1 | Point property read by node-id | every projection; pathdb seeds; fraud ring return | node-major store, row index == node-id, one column's segment slice | decode ONE cell, not the chunk (scalar-at-row); mmap segment cache |
+| O2 | Multi-column point read, same rows | q3 (firstName+lastName+org.name), q9, fraud `[n.id]` | struct take: one row-id list, k column gathers | one gather plan over k columns, shared row mask, no per-column search |
+| O3 | Equality seek by business key | 16 LDBC queries, fraud `{id:}`, pathdb `$seed`, bi-07 `$tag` | arm A (key, node_id) sorted index, IsStrictSorted stat; or arm B dictionary | seek-not-scan; dict lookup O(log dict) |
+| O4 | Range filter -> count/exists | q4, q8, q20 + the 8 `COUNT(..)>0` existence queries (q21-q28) | zone-map prune per chunk, compute-on-compressed compare | exists early-exit; stats-only answer when every chunk prunes; count = mask popcount |
+| O5 | Conjunctive filter | q24 `l.name=X AND t.name=Y` shape (16/30) | per-column prune, intersect, late materialization | filter key columns first, decode property columns only for survivors |
+| O6 | Group-by + aggregate + top-k | q11, q17, q19, bi-07, bi-02, bi-13 | dictionary = the group universe; Min/Max/Sum chunk stats (Sum confirmed mergeable via merge_sum; RowCount scalar fn exists) | group over dict codes (cardinality = dict size, not row count); stats-served partials; top-k over dictionary; **stats-only aggregates**: COUNT = len - NullCount, SUM = sum of chunk Sums, AVG = sum Sums / sum (len - NullCount) with zero decode — exact when unfiltered OR when min/max proves a chunk all-matching (partial-match chunks still decode); bench float NaN awareness (NaNCount exists) and integer Sum overflow width |
+| O7 | Join on property key | equi-join e01-e03 (`a.birthday = b.birthday`), q9 | key-sorted index on both sides | sort-merge join instead of hash — no build side, no hash table |
+| O8 | Intra-row property compare | fraud f05 `ti.date < tj.date` | two aligned gathers from the node-major store | batched two-column compare kernel, not per-row point reads |
+| O9 | Property reads mid-traversal | fraud per-hop `{test: true}`, pathdb expansions, ukrailway | O1 in traversal order | locality: node-major rows put id-adjacent nodes row-adjacent; measure whether traversal order benefits |
+| O10 | Batched key check from a morsel (1024 keys at once) + batched predicate multi-check | every operator that today loops per-row: q20's per-row `lookup_range_seek` closures, `node_prop_resolved` per row; the ADR-0555 morsel boundary is the natural pushdown seam | the batch is itself a vortex array: keys-in -> is_in-style kernel against the key column / dictionary; rows-in -> take-gather exactly those rows from compressed columns, compare over the gathered slice, return a 1024-bit mask | amortized decode (one kernel call, not 1024); two seek strategies to bench: 1024 binary seeks (order-preserving) vs sort-batch + one merge pass (cheaper on compressed data but needs a scatter to restore input order); output = mask or node-id vector aligned to the morsel's row order |
+| O11 | Row-position-carrying operators (user 2026-11-23): keep the store row position of a node's attributes from the lookup onward, use position sets for later filter/merge/compare | `n.age < m.age` (aligned two-column compare at two bound row sets), `n.id = m.id` (row equality), `m.age > min(n.age)` (aggregate over a row set as a compare bound), conjunctive filters as position-set algebra | identity: in the node-major store row position == node-id, so the executor's existing node-id binding IS the row handle — no new handle type; gathers/compares/intersections at positions, values decoded only where an operator's output needs them; stats fast path when a position set is chunk-aligned (Min/Max served free) | measure: compare-at-positions vs materialize-then-compare; the identity breaks if rows are ever reordered (O9 locality tension — bench both); position stability under MVCC overlay/seals = the round-2 translation problem, stakes raised; cross-label compares require ONE global row space (single node-major table, sparse per-label columns) — pinned design decision |
+
+Cross-cutting wins the store enables (what "optimized" means here):
+1. **Late materialization** — properties decoded only for surviving rows;
+   attacks the 927-allocs/stmt materialization on the projection side.
+2. **Stats-served short-circuits** — exists/count/aggregate answered from
+   chunk stats alone when pruning is total.
+3. **Seek-not-scan** — sorted/dict keys turn filters into binary seeks.
+Out of scope for the store: CONTAINS (text index), DISTINCT over un-pruned
+rows (q12/q13 count-distinct still reads survivors).
+
+Stats pushdown framing (user 2026-11-23): every PROMOTED column gets
+min/max/counts/pruning — the residual column's lack of per-key stats is the
+exception, not the story. The promotion threshold is the dial for how much
+of the property space is prunable; the bench measures where it should sit
+(promote-more = more columns but per-key pruning everywhere) and the
+seal-time per-key aggregates over the residual are an optional probe, not a
+prerequisite.
+
+## Second sweep (2026-11-23): forwards from query languages + backwards from vortex
+
+Confirmed 0.93 Stat set: IsConstant, IsSorted, IsStrictSorted, Max, Min,
+Sum, NullCount, UncompressedSizeInBytes, NaNCount (NO TrueCount; bytebool
+gives 1-bit booleans instead). UncompressedSizeInBytes = store-side
+per-chunk size accounting, cross-check for the container-harness smaps.
+
+New kernels:
+
+| # | Operator | Exercised by | Mechanism |
+|---|---|---|---|
+| O12 | STARTS WITH prefix range | string-key queries | prefix = range predicate on a sorted string column: binary seek; ENDS WITH only via optional reversed-sort variant |
+| O13 | countDistinct | q12, q13, bi-07 | dictionary IS the distinct set: unfiltered = dict size (no decode); filtered = per-code popcount after mask |
+| O14 | Histogram / quantiles | pokec age/gender analyses; percentileCont/Disc (an ADR-0555 breaker today) | (a) dict+runend frequency, (b) equi-width bins from chunk Min/Max, (c) approx quantiles from per-chunk min/max; exact quantile = position seek on IsStrictSorted |
+| O15 | ORDER BY / top-k / SKIP-LIMIT | q11/q17/q19, bi-07 | order free on the sorted key column (IsSorted); per-chunk top-k merge otherwise; scan selection for LIMIT |
+| O16 | Presence / IS NULL / label prune | lenient property presence; fraud per-hop; label scans | NullCount prunes all-null chunks; sparse encoding = presence-bits for rare keys; label-presence per chunk = our own metadata |
+| O17 | Anti-join (position-set complement) | bi-07 NOT pattern | complement over the dense global row space, composes with O11 algebra |
+| O18 | IN-list as query operator | seed lists, parameter sets | same is_in kernel as O10a, operator-level shape |
+| O19 | Traversal set state: seen/frontier as row-sets (QPP, shortest path, varlen) | every expansion loop: new = next - seen, seen += new, frontier filter = O10b over a row-set; shortest-path frontiers; DISTINCT-node path semantics (per-path sets stay executor-side) | MEASURED (sets.rs): HashSet<u64> **18.9 B/node** at 1M visited (the spec's "48+ B" was wrong — hashbrown is 18.9, and 11.8 at 100k from power-of-two rounding), HashSet<u32> 10.5, dense bitset 0.875 B/node at 7-bit spacing / **0.125 B/node at 1 bit/node** — 21.6x smaller. Frontier algebra (100 levels, 10k new/level): bitset 42-49 us/level, **0 allocs**, vs HashSet 151-171 us, 13 allocs, 262 KB/level — 3.4-3.7x faster, alloc-free. Order: arrival-order parallel Vec +9 us/level (+29%), sort-at-end 58 us, ascending bitset materialization 86 us (space scan) — keep the Vec. frontier ∩ predicate: bitset probe 6.6 us vs HashSet 65-76 us (10x). Crossover: bitset wins memory below ~1% density of the id space, time crossover ~12-15M bits for a 10k frontier; LDBC/Pokec reachability (~14% density) is deep in the win region |
+| O20 | Distinct over multi-column projections | q5 DISTINCT firstName+lastName, snb-bi distincts | packed dictionary code pairs (u32+u32) — hash/compare codes, never decode strings; generalizes to k dict-encoded columns |
+
+Cross-cutting vortex features newly mapped: page-level row-group skipping on
+the mmap path (untouched segments never fault: per-query RSS == segments
+touched — a measured bench effect, not an assumption); encodings ALP
+(floats), FSST (strings — hottest keys), FastLanes, Pco, RunEnd, Sequence
+(defaulted column ~0 bytes), Sparse (mostly-null), datetime_parts (q8
+temporal range); roaring in the dep tree — whether 0.93 exposes roaring
+arrays for masks/position-sets = bench-time check.
+
+Low priority: window frames as position ranges (via O11), chunk-level
+sampling for approx queries, dictionary as bloom pre-probe. Out: CONTAINS/
+regex/fulltext (text index), vector (own index), spatial (plain range),
+collect() (needs rows), adjacency-side (separate store).
+
 Static classification of the 30 graph-benchmark-ldbc SF0.1 queries
 (`testing/relate-query-latency/workloads/graph-benchmark-ldbc/queries/`),
 2026-11-22. Measured time shares pending the profiled runs.

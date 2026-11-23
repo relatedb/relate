@@ -70,6 +70,42 @@ allocation counts are the load-robust signal**.
 - O10b `with_row_indices` 1024-row gather: 899 µs = 878 ns/row, 1.4
   allocs/row — suspicious (see probe investigation).
 
+## O19 traversal set state (measured, load 27–36; ratios stable across 3 runs)
+
+Seen-set, 1M visited ids:
+
+| representation | bytes/set | B/node |
+|---|---|---|
+| HashSet<u64> | 18,874,376 | 18.9 |
+| HashSet<u32> | 10,485,768 | 10.5 |
+| dense bitset (7-bit spacing) | 875,000 | 0.875 |
+| dense bitset (compact 0..N space) | 125,000 | **0.125** |
+
+21.6x smaller than HashSet<u64>. **Corrects the spec's "~48+ B/node"** — that
+figure came from a different structure (the lazy postings' per-bucket cost),
+not from a visited HashSet; hashbrown at 1M entries is 18.9 B/node (11.8 at
+100k, power-of-two bucket rounding).
+
+Frontier algebra, 100 BFS levels of 10k new ids:
+- bitset `new = next & !seen; seen |= new`: 42–49 µs/level, **0 allocs**
+- HashSet (`difference().collect()` + extend): 151–171 µs/level, 13 allocs,
+  262 KB/level
+- 3.4–3.7x faster, alloc-free.
+
+Order preservation: arrival-order parallel `Vec` costs **+9 µs/level (+29%)**;
+sort-at-end 58 µs/level; ascending materialization from the bitset 86 µs/level
+(the mandatory space scan, not the ordering). Keeping the Vec is the cheap
+ordered frontier.
+
+frontier ∩ predicate (10k frontier, ~50% selective): bitset probe **6.6 µs**
+vs HashSet probe 65–76 µs (10x); bitset AND-scan 23–25 µs.
+
+Crossover (the surprise): the bitset wins memory while reachability density
+exceeds ~1% of the id space (space ≲ 9.4M bits), and wins time up to ~12–15M
+bits for a 10k frontier — beyond that the space scan dominates and the
+HashSet wins. LDBC/Pokec BFS-like reachability (14% density in this kernel)
+sits deep in the bitset's win region.
+
 ## Open
 
 - O4–O20 kernel results (fan-out in progress).
