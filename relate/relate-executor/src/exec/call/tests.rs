@@ -67,7 +67,7 @@ mod shared_subquery {
             ("i".to_string(), Value::Int(1)),
             ("p".to_string(), Value::Int(1)),
         ])];
-        let plan = shared_execution_plan(&graph, &scope, &rows)
+        let plan = shared_execution_plan(&graph, &body, &scope, &rows)
             .expect("the fixture's imports are all in the outer row");
         let Some(plan) = plan else {
             panic!("fixture must admit the fast path: {cypher}");
@@ -117,16 +117,22 @@ mod shared_subquery {
         assert!(!invariant(
             "MATCH (p) CALL (p) { MATCH (p)-[:FRIEND]->(f) RETURN count(f) AS d } RETURN d"
         ));
+        // The same under the legacy importing WITH. Without the import the
+        // naked body's `i` is a *fresh* relationship variable (the naked
+        // form imports nothing, REL8-2023 issue 50), so that spelling is
+        // import-invariant — the leading WITH is what makes it correlated.
         assert!(!invariant(
-            "UNWIND range(1,5) AS i CALL { MATCH (n)-[i]->(m) RETURN count(*) AS c } RETURN c"
+            "UNWIND range(1,5) AS i CALL { WITH i MATCH (n)-[i]->(m) RETURN count(*) AS c } \
+             RETURN c"
         ));
         // Import inside an aggregate argument.
         assert!(!invariant(
             "UNWIND range(1,5) AS i CALL { WITH i MATCH (n) RETURN sum(i) AS s } RETURN s"
         ));
-        // Renamed pass-through would need per-row value patching.
+        // Renamed pass-through would need per-row value patching (the
+        // scope-clause form: a naked importing WITH cannot rename, 42I28).
         assert!(!invariant(
-            "UNWIND range(1,5) AS i CALL { WITH i AS j RETURN j } RETURN j"
+            "UNWIND range(1,5) AS i CALL (i) { WITH i AS j RETURN j } RETURN j"
         ));
         // Nondeterministic functions sample once under sharing — at any
         // spelling: the IR keeps the user's case and the temporal suffixes

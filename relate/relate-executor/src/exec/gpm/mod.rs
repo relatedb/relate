@@ -315,20 +315,23 @@ impl<'c> WalkState<'c> {
 /// name — the pinned-or-fresh policy every GPM rebinding site reads:
 /// absent, or `null`, is [`Prebound::Fresh`] (the variable rebinds); any
 /// other value is [`Prebound::Pinned`] (the site reconciles its new
-/// binding against it). A `null` pre-binding is the walker's unbound,
-/// not a pin to compare against: a failed OPTIONAL MATCH pre-binds its
-/// variables to null, a CIP-28 non-local singleton is pre-bound to null
-/// and rebound at its own site (ADR-0335) — `Value::eq_non_null` is
-/// false for any null operand, so a site that compared its new binding
-/// against a null pre-binding would silently reject the row instead of
-/// rebinding (the node binding, the walk's rel-variable binding, and
-/// the quantified group's exact-trail pins all read this one spelling;
-/// the frontier start selection spells the same classification at
+/// binding against it). The `null` here is the engine's own mid-walk
+/// placeholder, never a binding a clause made: a CIP-28 non-local
+/// singleton is pre-bound to null on the walk's base row and rebound at
+/// its own site (ADR-0335) — `Value::eq_non_null` is false for any null
+/// operand, so a site that compared its new binding against the
+/// placeholder would silently reject the row instead of rebinding (the
+/// node binding, the walk's rel-variable binding, and the quantified
+/// group's exact-trail pins all read this one spelling; the frontier
+/// start selection spells the same classification at
 /// exec/kernels/frontier_run.rs — this home becomes the family's when a
 /// second family reads the classification instead of spelling its own).
+/// A null a *clause* bound (a failed OPTIONAL MATCH, `WITH null AS x`)
+/// never reaches a walk: the per-path row rule answers that row empty
+/// ahead of the engine (`binds_a_null`, REL8-2023 issue 34).
 enum Prebound<'a> {
-    /// Absent or null — the name is unbound as far as this rebinding is
-    /// concerned; the site binds it.
+    /// Absent or engine-placeholder null — the name is unbound as far as
+    /// this rebinding is concerned; the site binds it.
     Fresh,
     /// A value the site must reconcile its new binding against (a node
     /// or rel by identity, a var-length trail as the same list).
@@ -370,13 +373,12 @@ fn gpm_bind_node(graph: &ExecGraph<'_>, node: &NodePattern, id: NodeId, row: &mu
 
 /// The rel variable's binding, the twin of [`gpm_bind_node`] — the
 /// pinned-or-fresh policy over the walked segment: a fresh name (absent,
-/// or null — a failed OPTIONAL MATCH pre-binds its variables to null)
-/// binds here, exactly as `gpm_bind_node` rebinds a null-bound node and
-/// the classic walker's `bind_trail` rebinds a null-bound rel; a pinned
-/// value must name the same binding (a single rel by identity, a
-/// var-length trail as the same list — the LABS-661 exact-trail pin).
-/// The row carries stubs (`bind_rel_stub` / `bind_rel_stub_list`),
-/// inflated where a value leaves the engine.
+/// or the walk's own null placeholder) binds here, exactly as
+/// `gpm_bind_node` rebinds a null-placeholder node; a pinned value must
+/// name the same binding (a single rel by identity, a var-length trail as
+/// the same list — the LABS-661 exact-trail pin). The row carries stubs
+/// (`bind_rel_stub` / `bind_rel_stub_list`), inflated where a value leaves
+/// the engine.
 fn gpm_bind_rel(graph: &ExecGraph<'_>, row: &mut Row, rel: &RelPattern, segment: &[RelId]) -> bool {
     let Some(name) = &rel.variable else {
         return true;

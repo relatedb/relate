@@ -5,7 +5,7 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{Error, Result, Value};
-use relate_ir::{Clause, Projection};
+use relate_ir::{expr_row_vars, Clause, Projection};
 
 use crate::ctx::ExecCtx;
 use crate::eval::{eval, expr_vars, is_agg_expr};
@@ -571,12 +571,26 @@ fn plain_rows(
 /// not produce them. The one derivation, read by [`plain_rows`] and the
 /// pass-through page fold ([`land_feed`]).
 fn keep_bindings(class: &ProjectionClass<'_>) -> HashSet<String> {
+    // Which names the WHERE / `ORDER BY` keys read from the *input* row —
+    // one walker for the whole clause. A plain projection keeps its input
+    // names in scope for them (`WITH n.g AS g WHERE n.v > 4` still reads
+    // `n`); a `DISTINCT` projection ends them, so a subquery body in the
+    // WHERE that re-uses a dropped name binds it fresh (Neo4j-verified;
+    // REL8-2023 issue 64) and only the subclause's own row-scope reads are
+    // carried into the built row. The aggregating shapes take their own
+    // seed derivation ([`super::aggregate::SeedStore`]), narrowed the same
+    // way.
+    let input_names: fn(&relate_ir::Expr, &mut HashSet<String>) = if class.fields.distinct {
+        expr_row_vars
+    } else {
+        expr_vars
+    };
     let mut keep = HashSet::new();
     if let Some(w) = class.plain_where() {
-        expr_vars(w, &mut keep);
+        input_names(w, &mut keep);
     }
     for expr in class.order_keys.exprs() {
-        expr_vars(expr, &mut keep);
+        input_names(expr, &mut keep);
     }
     keep
 }

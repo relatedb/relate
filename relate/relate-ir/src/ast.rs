@@ -116,21 +116,33 @@ impl SingleQuery {
         })
     }
 
-    /// The names this part's importing WITH pulls in from `outer`. The one
-    /// home for the import policy: a bare item imports its variable
-    /// ([`Projection::imported_name`]), a `*` imports the whole outer
-    /// scope, and anything else (the aliased forms 42I28 rejects) imports
-    /// nothing. Returns an empty set when the part has no importing WITH.
+    /// The names this part's importing WITH pulls in from `outer` — the
+    /// plain-`WITH` half of [`LeadingWith::imports`], `BTreeSet::new` when
+    /// the part has none. One import policy ([`LeadingWith::imports`]), one
+    /// spelling of "this part has an importing WITH at all".
     pub fn leading_imports(
         &self,
         outer: &std::collections::BTreeSet<String>,
     ) -> std::collections::BTreeSet<String> {
+        self.leading_importing_with()
+            .map_or_else(Default::default, |with| with.imports(outer))
+    }
+}
+
+impl LeadingWith<'_> {
+    /// The names this importing `WITH` pulls in from `outer` — the one home
+    /// for the import policy: a bare item imports its variable
+    /// ([`Projection::imported_name`]), a `*` imports the whole outer
+    /// scope, and anything else (the aliased forms 42I28 rejects) imports
+    /// nothing. A consumer already holding the payload ([`SingleQuery::leading_importing_with`])
+    /// reads the names off it instead of classifying the clause twice.
+    pub fn imports(
+        &self,
+        outer: &std::collections::BTreeSet<String>,
+    ) -> std::collections::BTreeSet<String> {
         use std::collections::BTreeSet;
-        let Some(with) = self.leading_importing_with() else {
-            return BTreeSet::new();
-        };
         let mut imports = BTreeSet::new();
-        for item in with.items {
+        for item in self.items {
             if matches!(item.expr, Expr::Star) {
                 imports.extend(outer.iter().cloned());
             } else if let Some(name) = item.imported_name() {

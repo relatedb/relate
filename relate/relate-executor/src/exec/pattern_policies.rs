@@ -14,6 +14,9 @@
 //!   of one path pattern, the repeated-variable fact (REL8-2023 issue
 //!   21) the walk compiler's scan-gate rule and the count-only
 //!   recognizer's shape guard both read;
+//! - [`binds_a_null`] — whether the entering row pre-binds a pattern name
+//!   to null, which makes the pattern match nothing (REL8-2023 issue 34),
+//!   asked once per input row by the per-path engine fork;
 //! - [`gpm_path_mode_allows`] and [`path_mode_requires_unique_rels`] —
 //!   the per-path mode check table and its uniqueness half;
 //! - [`inlined_all_reduces`] and [`InlinedAllReduce`] — the MATCH-WHERE
@@ -59,9 +62,12 @@ use super::aggregate::Aggregation;
 use super::match_cap::MatchCap;
 use super::sink::{finish_match_row, SinkProjection};
 
-/// The names a quantified group's inner elements bind: the variables of
-/// its inner node and rel elements plus the nested groups' subpath
-/// variables — the element-level half of the rebinding-name vocabulary.
+/// The names a quantified group's inner elements bind *as elements*: the
+/// variables of its inner node and rel elements plus the nested groups'
+/// subpath variables — the element-level half of the rebinding-name
+/// vocabulary, whose whole-element form is
+/// [`each_element_binding_name`] (it also walks a nested group's inner
+/// names, which element (`gpm_group_names`) is not the spelling of).
 /// The consumers whose vocabulary ends there read this spelling directly,
 /// each for a stated reason: the allReduce inliner's group lists (the
 /// group's own subpath variable is a constructed path, not an iteration
@@ -95,10 +101,7 @@ pub(crate) fn gpm_group_names(elements: &[PatternElement], out: &mut Vec<String>
 /// this is the one home of that append, so no consumer hand-rolls a
 /// second one beside it.
 pub(crate) fn gpm_group_vocabulary(qpp: &QuantifiedPathPattern, out: &mut Vec<String>) {
-    gpm_group_names(&qpp.elements, out);
-    if let Some(name) = &qpp.subpath_variable {
-        push_new(out, name);
-    }
+    each_group_binding_name(qpp, &mut |name| push_new(out, name));
 }
 
 /// The vocabulary helpers' dedupe policy: a name already accumulated
@@ -393,20 +396,75 @@ fn initial_refs_only_bound_names(
     vars.iter().all(|name| bound.contains(name))
 }
 
-/// The names one pattern element binds: a node or relationship variable,
-/// or a quantified element's subpath variable and group variables — the
-/// per-element spelling [`gpm_group_names`] owns for the plain kinds (a
-/// single-element slice: that helper walks elements, and this element is
-/// one), [`gpm_group_vocabulary`] for a quantified one.
-fn element_binding_names(element: &PatternElement, out: &mut HashSet<String>) {
-    let mut names = Vec::new();
-    match element {
-        PatternElement::Node(_) | PatternElement::Relationship(_) => {
-            gpm_group_names(std::slice::from_ref(element), &mut names);
-        }
-        PatternElement::Quantified(qpp) => gpm_group_vocabulary(qpp, &mut names),
+/// Whether the entering row pre-binds a name this pattern binds to `null`
+/// — such a row matches nothing. A `null` in the row is a *binding* (a
+/// failed `OPTIONAL MATCH`, a `WITH null AS x`, a null list element), and
+/// no node, relationship or trail is null, so no binding the pattern makes
+/// can reconcile with it: the classic walker's `Binding::Mismatch`, and
+/// the Neo4j-verified answer for every spelling (REL8-2023 issue 34, where
+/// the GPM engine rebound the name instead). The engine's own null
+/// placeholders are inserted mid-walk — a later-declared non-local singleton
+/// is pre-bound on the walk's own base row, never the entering one
+/// (ADR-0335, ADR-0674) — so the row rule cannot see one. One clause-level
+/// reader ([`binds_a_null_in_any`]), on a clause-produced row, never in the
+/// per-path fork: an enclosing quantification's predicate hands that fork a
+/// row that already carries its own element names as null placeholders
+/// (ADR-0335 §5), which are not clause bindings — the `EXISTS { }` probe's
+/// own path is that residual.
+pub(crate) fn binds_a_null(row: &Row, path: &PathPattern) -> bool {
+    let mut found = false;
+    for element in &path.elements {
+        each_element_binding_name(element, &mut |name| {
+            found |= matches!(row.get_name(name), Some(Value::Null));
+        });
     }
-    out.extend(names);
+    found
+}
+
+/// [`binds_a_null`] over every pattern of one clause — the clause-level
+/// admission rule both of its readers call: the `MATCH` ladder (which drops
+/// such a row from the clause's input, so every rung answers the same row)
+/// and the walker's per-row entry (which answers it with no match, so an
+/// `OPTIONAL MATCH` pads its null-extended row).
+pub(crate) fn binds_a_null_in_any(patterns: &[PathPattern], row: &Row) -> bool {
+    patterns.iter().any(|pattern| binds_a_null(row, pattern))
+}
+
+/// The names one pattern element binds, in binding order — the one
+/// enumeration of the whole element-binding vocabulary: a node or
+/// relationship variable, or a quantified group's names (its inner
+/// elements', nested groups' included) and its own subpath variable.
+/// Every per-element consumer reads this: [`element_binding_names`]
+/// collects the set, [`gpm_group_vocabulary`] dedupes it into its list, and
+/// [`binds_a_null`] tests each name against the entering row — so a
+/// consumer can hold a name without building the `Vec`.
+fn each_element_binding_name(element: &PatternElement, f: &mut impl FnMut(&SmallName)) {
+    match element {
+        PatternElement::Node(np) => np.variable.iter().for_each(f),
+        PatternElement::Relationship(rp) => rp.variable.iter().for_each(f),
+        PatternElement::Quantified(qpp) => each_group_binding_name(qpp, f),
+    }
+}
+
+/// A quantified group's whole binding vocabulary — its inner elements'
+/// names (nested groups included) then its own subpath variable: the one
+/// spelling both [`each_element_binding_name`]'s `Quantified` arm and
+/// [`gpm_group_vocabulary`] read.
+fn each_group_binding_name(qpp: &QuantifiedPathPattern, f: &mut impl FnMut(&SmallName)) {
+    for inner in &qpp.elements {
+        each_element_binding_name(inner, f);
+    }
+    if let Some(name) = &qpp.subpath_variable {
+        f(name);
+    }
+}
+
+/// The names one pattern element binds, as a set — [`each_element_binding_name`]
+/// collected, the spelling the mid-path inliner's binding walk reads.
+fn element_binding_names(element: &PatternElement, out: &mut HashSet<String>) {
+    each_element_binding_name(element, &mut |name| {
+        out.insert(name.to_string());
+    });
 }
 
 /// What a row that passed the reduce's checks becomes.

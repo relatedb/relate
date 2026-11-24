@@ -346,24 +346,17 @@ fn any_selects_the_same_paths_as_shortest() {
 // ---- The pinned-or-fresh rebinding policy (LABS-668) ----
 
 /// A rel variable pre-bound to null by a FAILED `OPTIONAL MATCH` is a
-/// binding to compare against, not a fresh slot: the later `MATCH`
-/// matches nothing. The two engines disagree today — this test pins the
-/// disagreement so it is visible rather than silent.
-///
-/// The classic walker treats any bound non-relationship — null included —
-/// as a `Binding::Mismatch` (LABS-711): verified against a live Neo4j 5,
-/// this shape returns zero rows with the rel present in the graph (the
-/// positive control without the failing `OPTIONAL MATCH` returns the row).
-///
-/// The GPM engine still reads a null pre-binding as `Prebound::Fresh` and
-/// rebinds (ADR-0335's rule for a CIP-28 non-local singleton, which is
-/// pre-bound to null and rebound at its own site). Whether that rule should
-/// keep covering a null produced by a failed `OPTIONAL MATCH` is an ADR
-/// decision — aligning GPM with the Neo4j-verified result needs a new ADR
-/// superseding ADR-0335's null arm, so the behavior is left as-is and
-/// ticketed rather than flipped here.
+/// binding to compare against, not a fresh slot: the later `MATCH` matches
+/// nothing, in both engines. The classic walker treats any bound
+/// non-relationship — null included — as a `Binding::Mismatch` (LABS-711);
+/// the GPM engine's spelling of the same query (the rel's inline `WHERE`
+/// routes the pattern to it) used to rebind, and now takes the per-path
+/// row rule (`pattern_policies::binds_a_null`) ahead of the walk
+/// (REL8-2023 issue 34). Neo4j-verified: zero rows with the rel present in
+/// the graph (the positive control without the failing `OPTIONAL MATCH`
+/// returns the row).
 #[test]
-fn a_null_prebound_rel_variable_is_not_rebound_by_the_classic_walker() {
+fn a_null_prebound_rel_variable_matches_nothing_in_either_engine() {
     let graph = build(&[&["A"], &["B"], &["C"]], &[(0, 1, "R"), (0, 2, "R")]).graph;
     // A failed OPTIONAL MATCH pre-binds its rel variable to null; the
     // following MATCH reuses the name (a join on the existing binding).
@@ -379,40 +372,26 @@ fn a_null_prebound_rel_variable_is_not_rebound_by_the_classic_walker() {
         ids.sort_unstable();
         ids
     };
-    // The classic walker's spelling: the null pre-bound `r` is a binding
-    // to compare against, so nothing matches (Neo4j-verified).
+    // The classic walker's spelling.
     assert_eq!(targets("r:R"), Vec::<i64>::new());
-    // The GPM engine's spelling of the same query (the rel's inline WHERE
-    // routes the pattern to the GPM engine): ADR-0335's null-is-fresh rule
-    // still rebinds here. Pinned so the divergence is explicit — see the
-    // doc comment and the ADR ticket.
-    assert_eq!(targets("r WHERE r.k >= 0"), vec![1, 2]);
+    // The GPM engine's spelling of the same query.
+    assert_eq!(targets("r WHERE r.k >= 0"), Vec::<i64>::new());
 }
 
-/// An END variable pre-bound to null by a FAILED `OPTIONAL MATCH` is a
-/// fresh slot to the GPM engine, not a binding to compare against — the
-/// end-side twin of the rel-side divergence the test above pins. The two
-/// engines disagree today; this test pins the disagreement so it is
-/// visible rather than silent.
-///
+/// An END variable pre-bound to null by a FAILED `OPTIONAL MATCH` matches
+/// nothing in both engines — the end-side twin of the rel-side test above.
 /// The classic family treats any bound non-node — null included — as a
-/// `Binding::Mismatch` that matches nothing (LABS-711, Neo4j-verified;
-/// PR #644 aligned the shortest-expression engines to the same rule).
-/// The GPM engine reads a null pre-binding as `Prebound::Fresh`
-/// (`gpm_bind_node`, ADR-0335's null arm) and rebinds. The BFS route
-/// never answers the row: `route_shape` declines an endpoint variable
-/// that is neither absent nor node-bound (pinned in shortest_route's
-/// reject tests), so the GPM enumeration answers, and its target accept
-/// rebinds.
-///
-/// Whether ADR-0335's null arm should keep covering a null pre-bound END
-/// variable is the open LABS-863 decision — aligning GPM with the family
-/// rule needs a new ADR superseding that arm, and the change is wider
-/// than the route: the one `prebound` spelling every GPM node binding
-/// site and the frontier family's seeds read. The behavior is left as-is
-/// and pinned rather than flipped here.
+/// `Binding::Mismatch` (LABS-711, Neo4j-verified; PR #644 aligned the
+/// shortest-expression engines to the same rule). The GPM engine's
+/// spelling used to rebind `y` to every reachable end — the BFS route
+/// declines a null endpoint (`route_shape`), so the enumeration answered —
+/// and now takes the per-path row rule
+/// (`pattern_policies::binds_a_null`) ahead of the walk: the row is
+/// answered empty before any trail is enumerated, so a null end costs
+/// nothing (REL8-2023 issue 34's uncapped-`shortestPath` cost rode the
+/// same rebinding).
 #[test]
-fn a_null_prebound_end_variable_is_rebound_by_the_gpm_engine() {
+fn a_null_prebound_end_variable_matches_nothing_in_either_engine() {
     let graph = build(&[&["A"], &["B"], &["C"]], &[(0, 1, "R"), (0, 2, "R")]).graph;
     // A failed OPTIONAL MATCH pre-binds its end variable to null; the
     // following MATCH reuses the name (a join on the existing binding).
@@ -429,14 +408,11 @@ fn a_null_prebound_end_variable_is_rebound_by_the_gpm_engine() {
         ids
     };
     // The classic walker's spelling (a fresh rel variable, so the null
-    // end is the only pre-bound reading): the null pre-bound `y` is a
-    // binding to compare against, so nothing matches — the family rule.
+    // end is the only pre-bound reading).
     assert_eq!(targets("(x)-[r2:R]->(y)"), Vec::<i64>::new());
     // The GPM engine's spelling of the same row (the selector routes the
-    // pattern to the GPM engine): ADR-0335's null-is-fresh arm rebinds
-    // `y` to every reachable end. Pinned so the divergence is explicit —
-    // see the doc comment and the LABS-863 ADR ticket.
-    assert_eq!(targets("p = shortestPath((x)-[*]->(y))"), vec![1, 2]);
+    // pattern to the GPM engine).
+    assert_eq!(targets("p = shortestPath((x)-[*]->(y))"), Vec::<i64>::new());
 }
 
 /// The GPM walk ticks the traversed-rel counter (`neighbor_walks`, the

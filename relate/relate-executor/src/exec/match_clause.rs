@@ -26,6 +26,7 @@ use super::hub_join::hub_join_answer;
 use super::kernels;
 use super::kernels::frontier_run::FrontierRows;
 use super::one_path::{match_one_path, ResolvedPatterns};
+use super::pattern_policies::binds_a_null_in_any;
 use super::pattern_policies::{MatchReduce, MatchTail, ReduceSink, RowFold};
 use super::pushdown::{flatten_and_owned, match_scope, MatchCap, Residual};
 use super::rider::Rider;
@@ -142,7 +143,7 @@ impl MatchOperator {
 /// declines keeps the cap at the walker, whose sink applies it.
 pub(crate) fn run_match_operator_ladder(
     ctx: ExecCtx<'_>,
-    rows: Vec<Row>,
+    mut rows: Vec<Row>,
     clause: MatchClauseInputs<'_>,
     mut cap: Option<MatchCap<'_>>,
     projection: Option<&SinkProjection<'_>>,
@@ -155,6 +156,15 @@ pub(crate) fn run_match_operator_ladder(
         patterns,
         where_clause,
     } = clause;
+    // A name an earlier clause bound to null matches nothing in any pattern
+    // of this clause (REL8-2023 issue 34; `pattern_policies::binds_a_null`),
+    // so a plain `MATCH` loses such a row here, before any rung — the
+    // frontier rung runs ahead of the per-row walker, and its own `optional`
+    // gate keeps the optional form out of every specialized rung, where the
+    // walker's per-row pad emits the null-extended row.
+    if !optional {
+        rows.retain(|row| !binds_a_null_in_any(patterns, row));
+    }
     // The frontier family's rung (ADR-0478): the quantified-path shapes
     // with a pair-shaped answer contract — the capped emission, the
     // distinct-endpoint answer — over the BFS that collapses the trail
@@ -332,15 +342,28 @@ pub(crate) fn match_clause(
             conjuncts: &conjuncts,
             scope: &scope,
         };
-        let mut matched = match_paths(
-            ctx,
-            &resolved,
-            match_mode,
-            row.clone(),
-            &residual,
-            cap.as_deref_mut(),
-            reduce.as_ref(),
-        )?;
+        // A name an earlier clause bound to null matches nothing
+        // (REL8-2023 issue 34; `pattern_policies::binds_a_null`): the row is
+        // answered with no match here, at the walker's own per-row entry —
+        // where a clause-produced row is the only thing in hand — so the
+        // `OPTIONAL` pad below emits its null-extended row and a plain
+        // clause drops it. Deliberately not in the per-path fork: an
+        // enclosing quantification's predicate hands that fork a row that
+        // already carries its own element names as null placeholders
+        // (ADR-0335 §5), which are not clause bindings.
+        let mut matched = if binds_a_null_in_any(patterns, &row) {
+            Vec::new()
+        } else {
+            match_paths(
+                ctx,
+                &resolved,
+                match_mode,
+                row.clone(),
+                &residual,
+                cap.as_deref_mut(),
+                reduce.as_ref(),
+            )?
+        };
         // A reduce already applied the inline predicates, the WHERE, and
         // any projection in the sink.
         if reduce.is_none() {

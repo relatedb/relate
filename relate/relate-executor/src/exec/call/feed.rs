@@ -120,13 +120,15 @@ impl SharedBody {
             Some(existing) => existing,
             None => {
                 count_shared_body_run();
-                let imports = super::scope_imports(scope, &self.plan.seed);
+                // The set the plan reduced at construction is the one the
+                // body form and the arm strip both read.
+                let body = super::call_body(scope.has_scope_clause().then_some(&self.check));
                 let executed = super::execute_query_scoped(
                     ctx.graph,
                     query,
                     ctx.params,
                     self.plan.seed.clone(),
-                    imports.as_ref(),
+                    body,
                     qctx,
                 )?;
                 self.body.insert(Box::new(executed))
@@ -151,7 +153,7 @@ impl<'a> SubquerySource<'a> {
         rows: &[Row],
         qctx: QueryCtx<'a>,
     ) -> Result<Self> {
-        let mode = match shared_execution_plan(graph, spec.scope, rows)? {
+        let mode = match shared_execution_plan(graph, spec.query, spec.scope, rows)? {
             Some(plan) => {
                 let check = plan.check();
                 if import_invariant_body(spec.query, &check) {

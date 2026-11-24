@@ -48,37 +48,93 @@ fn import_seed(vars: &[SmallName], outer: &Row) -> Result<Row> {
     vars.iter()
         .map(|name| {
             // Row reads and the seed row's String keys bridge here.
-            let value = outer.get_name(name).cloned().ok_or_else(|| {
-                Error::internal(format!(
-                    "planner-scope invariant: imported variable `{name}` must be in the outer row"
-                ))
-            })?;
+            let value = name
+                .with_str(|text| import_value(text, "imported variable", outer.get_name(name)))?;
             Ok((name.to_string(), value))
         })
         .collect()
 }
 
+/// One import's value out of the row that seeds the body — the one
+/// read-and-report of the planner's import invariant: a name the clause's
+/// scope promises must survive every row-shape pass (the `UNWIND` source
+/// strip, the liveness trim, the `OPTIONAL CALL` null-pad), so a miss is an
+/// internal error naming the import, reported rather than turned into a
+/// panic.
+fn import_value(name: &str, site: &str, value: Option<&Value>) -> Result<Value> {
+    value.cloned().ok_or_else(|| {
+        Error::internal(format!(
+            "planner-scope invariant: {site} `{name}` must be in the outer row"
+        ))
+    })
+}
+
 /// The seed row one outer row gives a `CALL { … }` body — the one
-/// `CallScope` → seed-row policy. The naked and `(*)` scopes hand the body
-/// the outer row minus the enclosing clause engine's internal columns
+/// `CallScope` → seed-row policy. The `(*)` scope hands the body the outer
+/// row minus the enclosing clause engine's internal columns
 /// ([`nested_seed_row`]): a parked `__ord*`/`__agg_*` slot is the enclosing
-/// clause's state, never a binding the body may read as its own. A `(vars)`
-/// import list names its bindings explicitly, so it needs no strip
-/// ([`import_seed`]).
-fn scope_seed(graph: &ExecGraph<'_>, scope: &relate_ir::CallScope, outer: &Row) -> Result<Row> {
+/// clause's state, never a binding the body may read as its own. The naked
+/// scope imports only the names its leading importing `WITH` pulls in
+/// ([`naked_import_row`]); a `(vars)` import list names its bindings explicitly,
+/// so it needs no strip ([`import_seed`]).
+fn scope_seed(
+    graph: &ExecGraph<'_>,
+    query: &Query,
+    scope: &relate_ir::CallScope,
+    outer: &Row,
+) -> Result<Row> {
     match scope {
-        relate_ir::CallScope::None | relate_ir::CallScope::Wildcard => {
-            Ok(nested_seed_row(graph, outer))
+        relate_ir::CallScope::None => {
+            naked_import_row(query.parts.iter(), &nested_seed_row(graph, outer))
         }
+        relate_ir::CallScope::Wildcard => Ok(nested_seed_row(graph, outer)),
         relate_ir::CallScope::Vars(vars) => import_seed(vars, outer),
     }
 }
 
+/// The naked `CALL { … }` seed: exactly the names the given UNION arms'
+/// leading importing `WITH`s pull in from `source` (CIP-141's legacy
+/// import form — the front end's own rule,
+/// [`relate_ir::SingleQuery::leading_imports`]) and nothing at all for an
+/// arm without one. Seeding the whole outer row instead correlated the body
+/// silently: a name the body rebinds (`MATCH (n)`) met the outer row's
+/// binding and was evaluated as a pre-bound join, so counts, filters and
+/// writes covered the outer row's node only (REL8-2023 issue 50).
+///
+/// One read for both consumers — the stage seed (every arm, over the
+/// stripped outer row) and the per-arm restriction
+/// ([`execute_query_seeded_in_scope`], one arm, over the stage seed), which
+/// is what keeps one arm's imports out of an arm that imports none.
+fn naked_import_row<'q>(
+    parts: impl IntoIterator<Item = &'q relate_ir::SingleQuery>,
+    source: &Row,
+) -> Result<Row> {
+    // `visible` is the key set of whatever row seeds this call — the stage
+    // seed's caller passes the stripped outer row, the per-arm restriction
+    // passes the stage seed — i.e. exactly the names an import may name at
+    // that site.
+    let visible: std::collections::BTreeSet<String> = source.keys().cloned().collect();
+    let mut seed = Row::new();
+    // The one classification of "this arm imports": the typed payload the
+    // names are then read off. An arm without one contributes nothing.
+    for with in parts
+        .into_iter()
+        .filter_map(|part| part.leading_importing_with())
+    {
+        for name in with.imports(&visible) {
+            let value = import_value(&name, "the naked CALL import", source.get(&name))?;
+            seed.insert(name, value);
+        }
+    }
+    Ok(seed)
+}
+
 /// The import set a body run excludes from its merge: the seed's own
-/// keys, only under a scope clause — the one derivation both execution
-/// paths pass to [`execute_query_scoped`] (the per-row path from its
-/// fresh seed, the shared fast path from the plan's).
-pub(crate) fn scope_imports(scope: &relate_ir::CallScope, seed: &Row) -> Option<HashSet<String>> {
+/// keys, only under a scope clause. `None` therefore means the naked form,
+/// which is what [`call_body`] turns into the body's form; the per-row path
+/// derives the set from its fresh seed, the shared fast path passes the
+/// check set it already reduced at construction.
+fn scope_imports(scope: &relate_ir::CallScope, seed: &Row) -> Option<HashSet<String>> {
     scope
         .has_scope_clause()
         .then(|| seed.keys().cloned().collect())
@@ -86,10 +142,10 @@ pub(crate) fn scope_imports(scope: &relate_ir::CallScope, seed: &Row) -> Option<
 
 /// The one row-merge policy of both subquery paths: the body's export
 /// overlays the outer row except for the `excluded` column names, which
-/// always keep the outer row's own value. Callers pass the scope's
-/// imported names (per-row path) or the shared plan's check set (the same
-/// names for `CALL (vars)`; every outer key for the naked form, where a
-/// colliding export is provably a same-name pass-through).
+/// always keep the outer row's own value. Callers pass the scope clause's
+/// imported names (both the per-row path and the shared plan's check set);
+/// the naked form excludes nothing — its imports are per arm and its
+/// exports are never pass-throughs.
 fn merge_body_export(
     outer: &Row,
     columns: &[String],
@@ -179,7 +235,7 @@ pub(crate) fn call_subquery_row(
 ) -> Result<Vec<Row>> {
     // The seed row is the imported bindings — the one CallScope → seed
     // policy lives in [`scope_seed`].
-    let seed = scope_seed(graph, scope, outer)?;
+    let seed = scope_seed(graph, query, scope, outer)?;
     // The seed is the body's importing scope: every binding it carries stays
     // visible to the whole body, even across a `WITH` that does not project
     // it (`run_nested_clauses_scoped` re-attaches a dropped binding after
@@ -190,12 +246,15 @@ pub(crate) fn call_subquery_row(
     // body's `WITH` items.
     //
     // The seed's own keys ARE the scope clause's import set (the `(vars)`
-    // list it was built from, or the outer row's visible names the naked and
-    // `(*)` forms bind) — one derivation, not a parallel walk. A naked
-    // `CALL { … }` keeps the legacy whole-row star expansion, so only a
-    // scope clause has a set.
+    // list it was built from, or the `(*)` form's visible outer names) —
+    // one derivation, not a parallel walk. The naked form's seed carries
+    // only its arms' leading imports, so it has no exclusion set either
+    // (its arms' exports are never pass-throughs).
     let imported = scope_imports(scope, &seed);
-    let result = execute_query_scoped(graph, query, params, seed, imported.as_ref(), qctx)?;
+    // The one CALL-body scope construction — the shared fast path
+    // (`call/feed.rs`) and the null-pad path take the same one.
+    let body = call_body(imported.as_ref());
+    let result = execute_query_scoped(graph, query, params, seed, body, qctx)?;
     // A part merges its rows back only when the body's FINAL stage projects
     // a statement result (`super::part_projects_rows`, read through
     // `stage_projects_rows` — the same trailing-clause classification the
@@ -255,9 +314,15 @@ enum BodyScope<'a> {
     /// No importing scope: the statement's own rows ([`execute_query_seeded`]).
     Unscoped,
     /// The driving row is the body's importing scope but there is no import
-    /// exclusion: a `WHEN` branch body, and the naked `CALL { … }`
-    /// form (which keeps the legacy whole-row star expansion).
+    /// exclusion: a `WHEN` branch body (CIP-213's by-table semantics: the
+    /// branch sees the whole driving row).
     RowScope(&'a Row),
+    /// The naked `CALL { … }` body: each UNION arm sees only the names its
+    /// own leading importing `WITH` pulls in ([`naked_import_row`]), so the arm
+    /// loop restricts the seed per arm
+    /// ([`execute_query_seeded_in_scope`]) instead of handing every arm
+    /// the stage's union.
+    NakedCall(&'a Row),
     /// A scope-clause `CALL (vars) { … }` / `CALL (*) { … }` body: the
     /// importing scope plus the import set its UNION arms drop
     /// before they are compared.
@@ -267,12 +332,49 @@ enum BodyScope<'a> {
     },
 }
 
-impl BodyScope<'_> {
+/// Which `CALL { … }` body form runs: a scope clause is exactly the form
+/// that carries an import set (`scope_imports`/`has_scope_clause`), so the
+/// presence of that set *is* the form ([`call_body`]), and one construction
+/// of the body's scope ([`BodyScope::for_call`]) turns it into the run.
+#[derive(Clone, Copy)]
+enum CallBody<'a> {
+    /// The naked `CALL { … }` form: imports only its arms' leading
+    /// importing `WITH` names.
+    Naked,
+    /// A scope clause (`CALL (…) { … }` / `CALL (*) { … }`): its imports,
+    /// which the UNION arms also drop before they are compared.
+    Scoped(&'a HashSet<String>),
+}
+
+/// The body form of one CALL clause, total over [`scope_imports`]'s own
+/// fact: a scope clause is exactly the form that carries an import set
+/// (`has_scope_clause`), so `None` can only be the naked form.
+fn call_body(imports: Option<&HashSet<String>>) -> CallBody<'_> {
+    match imports {
+        Some(imports) => CallBody::Scoped(imports),
+        None => CallBody::Naked,
+    }
+}
+
+impl<'a> BodyScope<'a> {
+    /// The one construction of a CALL body's scope from its form.
+    fn for_call(seed: &'a Row, body: CallBody<'a>) -> Self {
+        match body {
+            CallBody::Scoped(imports) => BodyScope::Call {
+                scope: seed,
+                imports,
+            },
+            CallBody::Naked => BodyScope::NakedCall(seed),
+        }
+    }
+
     /// The row the body's bindings stay visible from, when it has one.
     fn scope_row(&self) -> Option<&Row> {
         match self {
             BodyScope::Unscoped => None,
-            BodyScope::RowScope(scope) | BodyScope::Call { scope, .. } => Some(scope),
+            BodyScope::RowScope(scope)
+            | BodyScope::NakedCall(scope)
+            | BodyScope::Call { scope, .. } => Some(scope),
         }
     }
 
@@ -280,7 +382,7 @@ impl BodyScope<'_> {
     fn imports(&self) -> Option<&HashSet<String>> {
         match self {
             BodyScope::Call { imports, .. } => Some(imports),
-            BodyScope::Unscoped | BodyScope::RowScope(_) => None,
+            BodyScope::Unscoped | BodyScope::RowScope(_) | BodyScope::NakedCall(_) => None,
         }
     }
 }
@@ -302,28 +404,20 @@ pub(crate) fn execute_query_seeded(
 /// private because only the internal NEXT-stage recursion derives seeds
 /// that legitimately diverge from the scope.
 ///
-/// `imports` is the scope-clause body's import set (`None`
-/// for the naked `CALL { … }` form). Each stage's UNION arms drop those
-/// import columns before they are compared, since a row-derived arm result
-/// carries the whole row (imports included) while the planner's agreement is
-/// over the exported names.
-pub(crate) fn execute_query_scoped(
+/// `body` is the clause's form ([`call_body`]); a scope clause's UNION arms
+/// also drop its import columns before they are compared, since a
+/// row-derived arm result carries the whole row (imports included) while the
+/// planner's agreement is over the exported names.
+fn execute_query_scoped(
     graph: &ExecGraph<'_>,
     query: &Query,
     params: &BTreeMap<String, Value>,
     seed: Row,
-    imports: Option<&HashSet<String>>,
+    body: CallBody<'_>,
     qctx: QueryCtx<'_>,
 ) -> Result<QueryResult> {
-    // The seed is both the input row and the importing scope; only a scope
-    // clause adds the import exclusion on top of it.
-    let scope = match imports {
-        Some(imports) => BodyScope::Call {
-            scope: &seed,
-            imports,
-        },
-        None => BodyScope::RowScope(&seed),
-    };
+    // The seed is both the input row and the importing scope.
+    let scope = BodyScope::for_call(&seed, body);
     execute_query_seeded_in_scope(graph, query, params, vec![seed.clone()], qctx, scope)
 }
 
@@ -398,12 +492,23 @@ fn execute_query_seeded_in_scope(
         Some(_) => UnionArmPolicy::Uncompared,
     };
     for (part_index, part) in query.parts.iter().enumerate() {
-        // The last part takes the seeds; earlier UNION parts clone them.
-        let part_seeds = if part_index + 1 == part_count {
-            std::mem::take(&mut seeds)
-        } else {
-            seeds.clone()
+        // A naked body's imports are per arm (issue 50): the stage seed is
+        // the arms' union, so each arm keeps only the names its own leading
+        // importing `WITH` pulls in and an arm without one starts empty.
+        // The restricted row is both the arm's seed and its always-visible
+        // scope, so a name it does not import is neither seeded nor
+        // re-attached after a body `WITH`.
+        let naked_part = match scope {
+            BodyScope::NakedCall(seed) => Some(naked_import_row(std::iter::once(part), seed)?),
+            _ => None,
         };
+        // The last part takes the seeds; earlier UNION parts clone them.
+        let part_seeds = match &naked_part {
+            Some(row) => vec![row.clone()],
+            None if part_index + 1 == part_count => std::mem::take(&mut seeds),
+            None => seeds.clone(),
+        };
+        let part_scope = naked_part.as_ref().or_else(|| scope.scope_row());
         // ADR-0395: one nested clause-engine part pass — every UNION part
         // of this body crosses the one nested boundary
         // (`run_nested_clauses`: the budget tick, then the clause engine
@@ -411,7 +516,7 @@ fn execute_query_seeded_in_scope(
         // part count on the statement's budget instead of hiding its
         // width inside one invocation tick. The top-level statement
         // driver (exec/mod.rs) never enters here.
-        let (rows, last) = match scope.scope_row() {
+        let (rows, last) = match part_scope {
             Some(scope) => {
                 run_nested_clauses_scoped(graph, &part.clauses, params, part_seeds, qctx, scope)?
             }
@@ -440,7 +545,15 @@ fn execute_query_seeded_in_scope(
         if let Some(scope) = scope.scope_row() {
             carry_scope_bindings(&mut seeds, scope);
         }
-        execute_query_seeded_in_scope(graph, next, params, seeds, qctx, scope)
+        // A NEXT stage is seeded from the stage's result rows, never from a
+        // per-arm import restriction: the naked form's per-arm rule
+        // (the arm loop's `naked_import_row`) is its first stage's, and applying it here
+        // would replace the carried result with an import row.
+        let next_scope = match scope {
+            BodyScope::NakedCall(seed) => BodyScope::RowScope(seed),
+            other => other,
+        };
+        execute_query_seeded_in_scope(graph, next, params, seeds, qctx, next_scope)
     } else {
         Ok(result)
     }

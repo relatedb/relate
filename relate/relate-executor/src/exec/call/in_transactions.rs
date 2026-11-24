@@ -461,7 +461,7 @@ fn failed_batch_row(
     // The imports plus, for every other name the body declares before its
     // RETURN, an explicit null: a row miss is an undefined variable, and
     // the failing iteration's bindings are gone with its rolled-back row.
-    let mut seed = scope_seed(graph, scope, outer)?;
+    let mut seed = scope_seed(graph, query, scope, outer)?;
     for name in star_scope_names(clauses) {
         seed.entry(name).or_insert(Value::Null);
     }

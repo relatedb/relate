@@ -10,8 +10,9 @@
 //! columns, whose values the merge takes from the outer row (the per-row
 //! path's imported-name exclusion rule). The analysis lives in the
 //! executor rather than the planner because the check set is not static:
-//! for the naked `CALL { }` form it is the outer rows' runtime key set
-//! (plus its homogeneity), known only at execution.
+//! for the naked `CALL { }` form it is the arms' leading importing `WITH`
+//! names, read off the runtime outer rows (plus their homogeneity), known
+//! only at execution.
 
 use std::collections::HashSet;
 
@@ -38,11 +39,11 @@ impl SharedExecution {
     /// row-equivalent; the merge also excludes these columns, mirroring the
     /// per-row path's imported-name exclusion. Exactly the seed's keys: for
     /// a `(vars)` scope the seed is built from exactly those names, and for
-    /// the naked form it is every outer key — rebinding an outer name
-    /// inside the body is a compile error (`VariableAlreadyBound`), so a
-    /// body-exported column colliding with an outer name is always a
-    /// same-name pass-through and keeping the outer row's own value matches
-    /// the per-row merge.
+    /// the naked form from its arms' leading importing `WITH` names
+    /// ([`super::naked_import_row`]) — a body-exported column colliding with an
+    /// import is a same-name pass-through (a body that rebinds the name is
+    /// declined as not import-invariant), so keeping the outer row's own
+    /// value matches the per-row merge.
     pub(super) fn check(&self) -> HashSet<String> {
         self.seed.keys().cloned().collect()
     }
@@ -54,10 +55,12 @@ impl SharedExecution {
 /// (per-row key sets may differ), or a naked body over heterogeneous outer
 /// schemas (a pass-through name missing from some outer row would gain a
 /// null export per row that the shared merge's exclusion would instead
-/// keep absent). The seed comes from the same `import_seed` as the per-row
-/// path, so a missing import is its internal error here too.
+/// keep absent). The seed comes from the same per-row derivations
+/// (`import_seed` / [`super::naked_import_row`]) as the per-row path, so a
+/// missing import is its internal error here too.
 pub(super) fn shared_execution_plan(
     graph: &ExecGraph<'_>,
+    query: &relate_ir::Query,
     scope: &relate_ir::CallScope,
     rows: &[Row],
 ) -> Result<Option<SharedExecution>> {
@@ -77,13 +80,20 @@ pub(super) fn shared_execution_plan(
             {
                 return Ok(None);
             }
-            // The naked scope seeds the body from the outer row minus the
-            // enclosing clause engine's internal columns, exactly like the
-            // per-row path (`call_subquery_row`); the check set follows the
-            // stripped seed, since an internal slot is never a binding the
-            // body could compute from.
-            let seed = nested_seed_row(graph, first);
-            (!seed.is_empty()).then_some(SharedExecution { seed })
+            // The naked scope seeds the body from its arms' leading
+            // importing `WITH` names, exactly like the per-row path
+            // (`call_subquery_row`) — the one derivation
+            // ([`super::naked_import_row`]). A single-arm body needs no
+            // per-arm restriction (its imports *are* the seed); a UNION
+            // body's arms can import different sets, which one shared
+            // execution cannot express, so it runs per row instead.
+            // Eligibility first: a UNION body never shares, so its seed (an
+            // allocating, fallible walk) is not built for it.
+            if query.parts.len() != 1 {
+                return Ok(None);
+            }
+            let seed = super::naked_import_row(query.parts.iter(), &nested_seed_row(graph, first))?;
+            Some(SharedExecution { seed })
         }
         _ => None,
     })

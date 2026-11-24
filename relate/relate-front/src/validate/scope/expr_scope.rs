@@ -40,12 +40,31 @@ pub(crate) struct ExprScope {
     /// ([`Self::bind_clause`]) writes names and kinds together, from the
     /// one pattern walk.
     kinds: IdentHashMap<SmallName, VarType>,
-    /// The enclosing statement's names, set only inside a CALL-subquery
-    /// body (the import boundary the leak rule reads through
-    /// [`Self::reject_unimported_outer_refs`]); empty at the top level
-    /// and inside an expression subquery, which sees the enclosing row
-    /// with no boundary to enforce.
-    outer: IdentHashSet<SmallName>,
+    /// What the body's enclosing statement means to it — the one
+    /// three-state mode, never two name sets that could both be populated.
+    enclosing: Enclosing,
+}
+
+/// How a subquery body stands to its enclosing statement — the one home of
+/// the three cases the carrier's two old sets spelled:
+#[derive(Clone, Default)]
+enum Enclosing {
+    /// No enclosing statement: the top level.
+    #[default]
+    None,
+    /// A naked `CALL { … }` arm: these outer names are the import boundary —
+    /// a read of one is a leak ([`ExprScope::reject_unimported_outer_refs`]),
+    /// and nothing stays visible past a body `WITH` (its leading importing
+    /// `WITH` is an ordinary projection).
+    Boundary(IdentHashSet<SmallName>),
+    /// Names the body sees for its *whole* length, past any `WITH` that
+    /// does not project them: a scope clause's imports (`CALL (k) { … }` /
+    /// `CALL (*) { … }`) and an expression subquery's enclosing scope
+    /// (`COUNT` / `COLLECT` / `EXISTS`). [`ExprScope::projected`] re-adds
+    /// them, so a later `MATCH … WHERE` / `SET` / `CREATE` that reads one
+    /// is not rejected (REL8-2023 issue 51 — the executor already keeps
+    /// them visible through `run_nested_clauses_scoped`).
+    Visible(IdentHashSet<SmallName>),
 }
 
 impl ExprScope {
@@ -105,7 +124,10 @@ impl ExprScope {
     /// seeds ([`Self::seeded`]) carry the boundary instead.
     pub(crate) fn subquery_body_seed(&self, clause: &Clause) -> ExprScope {
         let mut view = self.expression_view(clause);
-        view.outer = IdentHashSet::default();
+        // An expression subquery sees the enclosing row for its whole
+        // length: a body `WITH` does not narrow it, and there is no leak
+        // boundary to enforce (REL8-2023 issue 51).
+        view.keep_visible();
         view
     }
 
@@ -117,7 +139,7 @@ impl ExprScope {
     /// own).
     pub(crate) fn subquery_item_seed(&self) -> ExprScope {
         let mut input = self.clone();
-        input.outer = IdentHashSet::default();
+        input.keep_visible();
         input
     }
 
@@ -139,7 +161,7 @@ impl ExprScope {
         ExprScope {
             names,
             kinds,
-            outer: IdentHashSet::default(),
+            enclosing: Enclosing::None,
         }
     }
 
@@ -152,7 +174,16 @@ impl ExprScope {
     /// the whole body, so those arms carry none (the planner's binder
     /// owns unimported names there).
     pub(crate) fn carry_outer_boundary(&mut self, outer: IdentHashSet<SmallName>) {
-        self.outer = outer;
+        self.enclosing = Enclosing::Boundary(outer);
+    }
+
+    /// Make the scope's names always visible for the body — the scope
+    /// clause's imports, or an expression subquery's enclosing scope:
+    /// [`Self::projected`] re-adds them after every `WITH`. The naked
+    /// `CALL { … }` arm does not call this: its leading importing `WITH`
+    /// is an ordinary projection whose imports end at the next `WITH`.
+    pub(crate) fn keep_visible(&mut self) {
+        self.enclosing = Enclosing::Visible(self.names.clone());
     }
 
     /// The WITH/RETURN projection of the whole carrier — one derivation:
@@ -162,10 +193,26 @@ impl ExprScope {
     /// following clauses see can never disagree on what the clause
     /// projected.
     pub(crate) fn projected(&self, items: &[ReturnItem]) -> ExprScope {
+        let mut names = projected_names(items, &self.names);
+        let mut kinds = projected_var_types(items, &self.kinds);
+        // The always-visible names survive a `WITH` that does not project
+        // them (see `Enclosing::Visible`). A name the projection re-emits
+        // keeps the projection's classification.
+        if let Enclosing::Visible(visible) = &self.enclosing {
+            for name in visible {
+                if names.contains(name) {
+                    continue;
+                }
+                names.insert(name.clone());
+                if let Some(kind) = self.kinds.get(name) {
+                    kinds.insert(name.clone(), *kind);
+                }
+            }
+        }
         ExprScope {
-            names: projected_names(items, &self.names),
-            kinds: projected_var_types(items, &self.kinds),
-            outer: self.outer.clone(),
+            names,
+            kinds,
+            enclosing: self.enclosing.clone(),
         }
     }
 
@@ -191,7 +238,7 @@ impl ExprScope {
         ExprScope {
             names,
             kinds,
-            outer: self.outer.clone(),
+            enclosing: self.enclosing.clone(),
         }
     }
 
@@ -204,14 +251,14 @@ impl ExprScope {
     /// there is no boundary ([`Self::subquery_body_seed`] clears it) —
     /// the body sees the enclosing row.
     pub(crate) fn reject_unimported_outer_refs(&self, expr: &Expr) -> Result<(), EngineError> {
-        if self.outer.is_empty() {
+        let Enclosing::Boundary(outer) = &self.enclosing else {
             return Ok(());
-        }
+        };
         let mut vars = IdentHashSet::default();
         collect_expr_variables(expr, &mut vars);
         let mut leaked: Vec<&SmallName> = vars
             .iter()
-            .filter(|name| !self.names.contains(*name) && self.outer.contains(*name))
+            .filter(|name| !self.names.contains(*name) && outer.contains(*name))
             .collect();
         leaked.sort();
         match leaked.first() {

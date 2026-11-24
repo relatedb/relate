@@ -213,12 +213,17 @@ fn validate_call_body(
 ) -> Result<(), EngineError> {
     use relate_parser::CallScope;
     for arm in union_chain(&csq.statement) {
-        let seed_names: IdentHashSet<SmallName> = match &csq.scope {
+        // The scope clause decides the arm's whole visibility mode in one
+        // match: which names it starts from, and whether they stay visible
+        // past a body `WITH` (a scope clause's imports do, REL8-2023 issue
+        // 51; the naked form's importing `WITH` is an ordinary projection,
+        // so its imports end at the next `WITH`).
+        let (seed_names, keep_visible): (IdentHashSet<SmallName>, bool) = match &csq.scope {
             // A scope clause's imports stay visible for the whole body,
             // so a later WITH dropping one is not a leak; the planner's
             // binder owns unimported names there.
-            CallScope::Vars(vars) => vars.iter().cloned().collect(),
-            CallScope::Wildcard => caller.names().clone(),
+            CallScope::Vars(vars) => (vars.iter().cloned().collect(), true),
+            CallScope::Wildcard => (caller.names().clone(), true),
             // The importing WITH is evaluated against the outer row and
             // then replaces the scope; an arm without one imports
             // nothing, and an outer name read past either boundary is
@@ -227,11 +232,12 @@ fn validate_call_body(
             // ([`leading_import_form`]), the same value the CIP-218
             // collision check reads.
             CallScope::None => {
-                if leading_import_form(&arm.clauses).is_some() {
+                let names = if leading_import_form(&arm.clauses).is_some() {
                     caller.names().clone()
                 } else {
                     IdentHashSet::default()
-                }
+                };
+                (names, false)
             }
         };
         // One carrier for the whole arm: the stage chain (`NEXT` stages)
@@ -244,7 +250,9 @@ fn validate_call_body(
         // the whole body; the planner's binder owns unimported names
         // there).
         let mut scope = ExprScope::seeded(seed_names, caller);
-        if matches!(&csq.scope, CallScope::None) {
+        if keep_visible {
+            scope.keep_visible();
+        } else {
             scope.carry_outer_boundary(caller.names().clone());
         }
         let mut stage = arm;

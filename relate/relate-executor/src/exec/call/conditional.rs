@@ -9,7 +9,7 @@ use relate_ir::{Expr, Query};
 
 use crate::ctx::QueryCtx;
 
-use super::{execute_query_scoped, project_row};
+use super::{execute_query_seeded_in_scope, project_row, BodyScope};
 use crate::eval::{bool_or_null, eval};
 use crate::exec::scope::refresh_rows;
 use crate::exec::{materialize_rows_strict, QueryResult};
@@ -59,9 +59,17 @@ pub(crate) fn exec_conditional(
         // stay visible through the body's whole NEXT chain (CIP-213), exactly
         // as a `CALL (…) { … }` body's imports do
         // (`NextStatementAcceptance` "By-table semantics: CALL and WHEN no
-        // special behavior"). No star exclusion applies, so this is the
-        // public scoped entry with no import set.
-        let result = execute_query_scoped(graph, query, params, row, None, qctx)?;
+        // special behavior"). No star exclusion applies, so the branch runs
+        // the body-scope core directly under `RowScope` — never the CALL
+        // clause's form ([`super::call_body`]).
+        let result = execute_query_seeded_in_scope(
+            graph,
+            query,
+            params,
+            vec![row.clone()],
+            qctx,
+            BodyScope::RowScope(&row),
+        )?;
         // A body that projects no statement result (a write-only / `FINISH`
         // / DDL body) contributes no rows: its surviving seed row is a
         // pass-through, never a result. The branch still ran, so its writes

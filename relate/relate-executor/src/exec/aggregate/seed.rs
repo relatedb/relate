@@ -12,14 +12,17 @@
 //!
 //! The analysis is exact for expressions it can see through. It declines —
 //! [`SeedPlan::Whole`], an explicit typed mode, never a silent fallback —
-//! and keeps the whole first row for the two shapes whose reads it cannot
-//! enumerate:
+//! and keeps the whole first row for the one shape whose reads it cannot
+//! enumerate: a `*` projection item (or key), which carries every in-scope
+//! variable through to the output row.
 //!
-//! * a `*` projection item (or key), which carries every in-scope variable
-//!   through to the output row;
-//! * a pattern predicate, pattern comprehension, `shortestPath`, or
-//!   `EXISTS`/`COUNT`/`COLLECT` subquery in any finish-time expression: it
-//!   opens its own scope that can capture outer variables by name.
+//! A nested scope in a finish-time expression narrows instead of declining:
+//! an `EXISTS`/`COUNT`/`COLLECT` body keeps its *correlated* reads — the
+//! names it reads and does not bind ([`relate_ir::correlated_reads`]) — so a
+//! body that re-uses a projection-dropped name binds it fresh (REL8-2023
+//! issue 64) while one that reads an enclosing name still finds it in the
+//! seed row; a pattern-led scope (pattern predicate, pattern comprehension,
+//! `shortestPath`) keeps the whole row, its reads not being enumerated.
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -147,22 +150,40 @@ impl Reads {
             Expr::Variable(name) => {
                 self.names.insert(name.to_string());
             }
-            Expr::MapProjection { expr, items } => {
+            // The shorthand items are reads no child holds; the base
+            // expression and every `KeyValue` value ride the one child walk.
+            mp @ Expr::MapProjection { items, .. } => {
                 for item in items {
                     if let MapProjectionItem::Variable { name } = item {
                         self.names.insert(name.to_string());
                     }
                 }
-                self.leaves(expr);
-                for item in items {
-                    if let MapProjectionItem::KeyValue { value, .. } = item {
-                        self.leaves(value);
-                    }
+                mp.each_child(&mut |child| self.leaves(child));
+            }
+            // A nested scope's *correlated* reads are this row's: an
+            // aggregating projection ends its input names' scope, and the
+            // body of a subquery expression is executed against the emitted
+            // row, so it needs the enclosing names it reads seeded. A name
+            // the body's own patterns bind is not seeded — the body binds it
+            // fresh instead of matching the group's first-row value
+            // (Neo4j-verified, REL8-2023 issue 64), which a seeded column
+            // would turn into a pre-bound match. The pattern-less scopes
+            // (a pattern predicate, a pattern comprehension, a shortest
+            // path) keep the whole row: their reads are not enumerated here.
+            scoped if scoped.is_scope_bearing() => match scoped.subquery_body() {
+                Some(query) => {
+                    // The one IR derivation: the body's reads minus the
+                    // names its own patterns bind, so a body that re-uses a
+                    // projection-dropped name binds it fresh (issue 64)
+                    // while one that reads an enclosing name still finds it.
+                    let mut reads = HashSet::new();
+                    relate_ir::correlated_reads(query, &mut reads);
+                    self.names.extend(reads);
                 }
-            }
-            scoped if scoped.is_scope_bearing() => {
-                self.whole = true;
-            }
+                // The pattern-led scopes keep the whole row: their reads are
+                // not enumerated.
+                _ => self.whole = true,
+            },
             other => other.each_child(&mut |child| self.leaves(child)),
         }
     }
@@ -285,7 +306,7 @@ impl SeedStore {
                 .filter(|expr| key_position(key_exprs, expr).is_none())
                 .chain(consumers),
         );
-        let SeedPlan::Columns(wanted) = plan else {
+        let SeedPlan::Columns(mut wanted) = plan else {
             // The whole row answers: no item reads a kept key value, so no
             // item is answered by one.
             let roles = items
@@ -294,6 +315,19 @@ impl SeedStore {
                 .collect();
             return (Self::Whole(Vec::new()), roles);
         };
+        // A bare-variable grouping key is in scope *by its own name* inside a
+        // nested body of the projection's expressions (`RETURN a, COUNT {
+        // RETURN a.p + 1 + count(a) }` — GroupByAcceptance 696), which the
+        // item's own evaluation scope supplies and a sibling item's does not,
+        // so the group keeps it whatever the consumers read. A property key
+        // (`WITH n.g AS g, count(*)`) exposes no such name: `n` is out of
+        // scope there, and a body that re-uses it binds it fresh
+        // (REL8-2023 issue 64).
+        for key in key_exprs {
+            if let Expr::Variable(name) = &**key {
+                wanted.insert(name.to_string());
+            }
+        }
         // Two items restating one key share its kept slot; the slot is
         // assigned here, in the classification, and read nowhere else.
         let mut key_slots: Vec<usize> = Vec::new();
@@ -474,16 +508,32 @@ mod tests {
         assert_eq!(columns(SeedPlan::plan([&mixed])), ["tax"]);
     }
 
-    /// The two shapes the analysis declines.
+    /// The `*` item declines the narrowing; a subquery expression keeps its
+    /// *correlated* reads and drops the names its own patterns bind (a body
+    /// that re-uses a projection-dropped name binds it fresh, REL8-2023
+    /// issue 64); a pattern-only scope keeps the whole row.
     #[test]
-    fn star_and_captured_scopes_decline() {
+    fn star_declines_and_captured_scopes_narrow_to_their_row_reads() {
         assert!(matches!(SeedPlan::plan([&Expr::Star]), SeedPlan::Whole));
+        // A body whose only names are its own pattern's binds nothing from
+        // the row: `a` must bind fresh, not match the first row's value.
         let query =
             relate_front::parse_and_lower("RETURN EXISTS { (a)-[:E]->() } AS x").expect("parses");
         let Some(relate_ir::Clause::Return { items, .. }) = query.parts[0].clauses.last() else {
             panic!("a RETURN")
         };
-        assert!(matches!(SeedPlan::plan([&items[0].expr]), SeedPlan::Whole));
+        assert!(columns(SeedPlan::plan([&items[0].expr])).is_empty());
+        // The subquery body's correlated read `k` is the group row's; the
+        // name its own pattern binds (`a`) is not seeded, so the body binds
+        // it fresh instead of matching the first row's value.
+        let query = relate_front::parse_and_lower(
+            "WITH 1 AS k RETURN COUNT { MATCH (a) WHERE a.p = k RETURN a } AS x",
+        )
+        .expect("parses");
+        let Some(relate_ir::Clause::Return { items, .. }) = query.parts[0].clauses.last() else {
+            panic!("a RETURN")
+        };
+        assert_eq!(columns(SeedPlan::plan([&items[0].expr])), ["k"]);
     }
 
     /// The one partition: a value is billed a box exactly when it is kept

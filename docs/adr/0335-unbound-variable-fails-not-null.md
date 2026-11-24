@@ -113,3 +113,12 @@ undefined-variable error, never a `null` value.
   `cypherlite/tests/undefined_variable.rs` pins `SHOW INDEXES WHERE nosuch
   = 1`, the void optional-call unit row and the later-declared-singleton
   read; the TCK (3892 of 3892) and CIP-eval keep their gates.
+
+## Later references
+
+[ADR-0674](./0674-a-clause-bound-null-matches-nothing.md) states the other
+half of the `null` vocabulary this ADR's §5 placeholders belong to: a
+`null` an *earlier clause* bound is a binding that matches nothing in a
+later pattern, decided on the entering row. §5 is unchanged — the
+quantification's placeholder and the void `OPTIONAL CALL` unit row are the
+engine's own row construction, not a clause binding.

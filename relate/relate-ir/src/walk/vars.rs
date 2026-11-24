@@ -10,7 +10,10 @@ use std::collections::HashSet;
 use relate_names::SmallName;
 
 use super::{each_label_expr_child, reads, walk_scope_children, ChildScope};
-use crate::walk_query::{clause_patterns, path_pattern_mentions, walk_query_with_roles, ExprRole};
+use crate::walk_query::{
+    clause_patterns, path_pattern_mentions, pattern_anchor_variables, walk_query_with_roles,
+    ExprRole,
+};
 use crate::{CallScope, Clause, Expr, LabelExpr, MapProjectionItem, PathPattern, Query};
 
 /// The names a map projection's shorthand items read (`{n, .name, k: v}` reads
@@ -150,6 +153,47 @@ pub fn expr_vars(expr: &Expr, out: &mut HashSet<String>) {
     go(expr, &mut Vec::new(), out);
 }
 
+/// Collect the variable names an expression reads from the **current row**
+/// — [`expr_vars`] with every nested scope's reads left out: a subquery
+/// expression's body (`EXISTS` / `COUNT` / `COLLECT`), a pattern predicate
+/// or path expression, and a comprehension's / quantifier's / reduce's
+/// per-element bodies read names of their own scope, never this row.
+///
+/// The consumers are the projections that end an input name's scope: after
+/// a `DISTINCT` or aggregating `WITH`/`RETURN`, its `WHERE` / `ORDER BY`
+/// may only read what the projection exposes, so a subquery body there
+/// that re-uses a dropped name binds it fresh (Neo4j-verified; REL8-2023
+/// issue 64) — seeding the body from the row would pin it to the dropped
+/// value. A name the projection does expose is in the emitted row anyway,
+/// so a body's correlation on it needs no seed either.
+pub fn expr_row_vars(expr: &Expr, out: &mut HashSet<String>) {
+    // A scope-bearing variant (`is_scope_bearing`) opens a nested scope;
+    // an identifier-binding one's per-element bodies do — the one
+    // classification [`walk_scope_children`] applies below.
+    if expr.is_scope_bearing() {
+        return;
+    }
+    match expr {
+        Expr::Variable(v) => {
+            out.insert(v.to_string());
+        }
+        // The shorthand items are reads no child holds (the same accessor
+        // [`expr_vars`] reads); the base expression and every `KeyValue`
+        // value are its children, so they ride the one child walk.
+        mp @ Expr::MapProjection { items, .. } => {
+            for name in map_projection_shorthand_names(items) {
+                out.insert(name.to_string());
+            }
+            mp.each_child(&mut |child| expr_row_vars(child, out));
+        }
+        other => walk_scope_children(other, &mut |child, scope| {
+            if matches!(scope, ChildScope::Enclosing) {
+                expr_row_vars(child, out);
+            }
+        }),
+    }
+}
+
 /// Variables referenced by the dynamic (`$(…)`) parts of a label
 /// expression: a fold over `each_label_expr_child`, the one enumeration
 /// of the `LabelExpr` structure. The variant vocabulary is matched in
@@ -210,4 +254,30 @@ pub fn exists_outer_vars(query: &Query, out: &mut HashSet<String>) {
         },
     );
     out.extend(pattern_names);
+}
+
+/// The names a subquery body **correlates** on: every name it reads or
+/// mentions ([`exists_outer_vars`]) minus the names its own patterns bind
+/// ([`pattern_anchor_variables`] per [`clause_patterns`]) — the one IR fact
+/// behind a caller that must hand a body's enclosing row the columns it
+/// reads without pre-binding what it binds for itself (an aggregating
+/// projection's seed; REL8-2023 issue 64).
+pub fn correlated_reads(query: &Query, out: &mut HashSet<String>) {
+    let mut reads = HashSet::new();
+    exists_outer_vars(query, &mut reads);
+    let mut bound = HashSet::new();
+    walk_query_with_roles(
+        query,
+        &mut |clause| {
+            for path in clause_patterns(clause) {
+                bound.extend(
+                    pattern_anchor_variables(path)
+                        .into_iter()
+                        .map(|n| n.to_string()),
+                );
+            }
+        },
+        &mut |_, _| {},
+    );
+    out.extend(reads.into_iter().filter(|name| !bound.contains(name)));
 }
