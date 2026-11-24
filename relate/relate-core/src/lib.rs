@@ -21,6 +21,7 @@ mod error;
 mod error_kinds;
 pub mod file_identity;
 pub mod integer_args;
+mod literal;
 mod load_pool;
 mod memory_limit;
 mod namespace;
@@ -52,6 +53,9 @@ pub use error::{
 pub use error_kinds::{
     duplicate_variable_detail, undefined_variable_detail, unknown_function_detail, ErrorKind,
     TckErrorClass,
+};
+pub use literal::{
+    homogeneous_element_class, LiteralElementClass, LiteralValueKind, TOSTRING_TYPE_ERROR_DETAIL,
 };
 pub use load_pool::{
     current_load_threads, record_transient_lease, resolve_load_threads, run_load_tasks,

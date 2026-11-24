@@ -42,40 +42,16 @@ fn to_boolean_or_null_and_to_string_or_null_match_neo4j() {
         Value::String("7".into())
     );
     assert_eq!(call("toStringOrNull", Expr::Null), Value::Null);
-    // The dispatcher carries no static type gate: CIP-271's homogeneous
-    // `LIST<T>` rejection lives in the front's validation layer, so at the
-    // value level every list renders in display form — for `toString` and
-    // `toStringOrNull` alike.
-    let homogeneous = Expr::List(vec![Expr::Int(1), Expr::Int(2)]);
-    assert_eq!(
-        call("toString", homogeneous.clone()),
-        Value::String("[1, 2]".into())
-    );
-    assert_eq!(
-        call("toStringOrNull", homogeneous),
-        Value::String("[1, 2]".into())
-    );
-    // A heterogeneous literal, or one with a null, is `LIST<ANY>`: it
-    // renders.
-    let mixed = Expr::List(vec![Expr::Int(1), Expr::String("a".into())]);
-    assert_eq!(
-        call("toString", mixed.clone()),
-        Value::String("[1, a]".into())
-    );
-    assert_eq!(
-        call(
-            "toString",
-            Expr::List(vec![Expr::Int(1), Expr::Null, Expr::Int(2)])
-        ),
-        Value::String("[1, null, 2]".into())
-    );
 }
 
-/// The dispatcher converts by value: a list read from a variable renders,
-/// whatever its element types. The static `LIST<T>` rejection is the
-/// front's job (it sees the argument expression); the executor does not.
+/// The value-level rendering contract, one table: every list value renders —
+/// whatever its element classes, and through a literal or a variable alike —
+/// for `toString` and `toStringOrNull`. Neo4j draws the homogeneous-`LIST<T>`
+/// boundary at the static type, so a property or parameter list renders
+/// (probed live); the rule is the front end's, over the literal expressions
+/// it can decide. Only a byte array has no string form.
 #[test]
-fn tostring_of_a_list_read_from_a_variable_renders() {
+fn tostring_renders_every_list_value() {
     let g = Graph::default();
     let graph = ExecGraph::read(&g);
     let params = BTreeMap::new();
@@ -84,51 +60,92 @@ fn tostring_of_a_list_read_from_a_variable_renders() {
         "xs".into(),
         Value::List(vec![Value::Int(1), Value::Int(2)].into()),
     );
-    assert_eq!(
+    row.insert("bytes".into(), Value::Bytes(vec![1, 2].into()));
+    let call = |name: &str, arg: &Expr| {
         function(
             &graph,
             &row,
             &params,
-            "toString",
+            name,
             false,
-            &[Expr::Variable("xs".into())],
+            std::slice::from_ref(arg),
         )
-        .unwrap(),
-        Value::String("[1, 2]".into())
-    );
+    };
+
+    // The two spellings differ only on the one non-convertible kind, so the
+    // expectation carries that distinction rather than repeating one
+    // assertion per row.
+    enum Want {
+        Renders(&'static str),
+        /// No string form: `toString` raises, `toStringOrNull` is null.
+        Refused,
+    }
+
+    for (what, arg, want) in [
+        (
+            "mixed",
+            Expr::List(vec![Expr::Int(1), Expr::String("a".into())]),
+            Want::Renders("[1, a]"),
+        ),
+        ("empty", Expr::List(Vec::new()), Want::Renders("[]")),
+        (
+            "with null",
+            Expr::List(vec![Expr::Int(1), Expr::Null, Expr::Int(2)]),
+            Want::Renders("[1, null, 2]"),
+        ),
+        // INTEGER and FLOAT are one numeric class, and it renders here too.
+        (
+            "numeric classes",
+            Expr::List(vec![Expr::Int(1), Expr::Float(2.0)]),
+            Want::Renders("[1, 2.0]"),
+        ),
+        (
+            "variable",
+            Expr::Variable("xs".into()),
+            Want::Renders("[1, 2]"),
+        ),
+        ("byte array", Expr::Variable("bytes".into()), Want::Refused),
+    ] {
+        match want {
+            Want::Renders(expected) => {
+                for name in ["toString", "toStringOrNull"] {
+                    assert_eq!(
+                        call(name, &arg).unwrap(),
+                        Value::String(expected.into()),
+                        "{name} of {what}"
+                    );
+                }
+            }
+            Want::Refused => {
+                assert!(
+                    call("toString", &arg).is_err(),
+                    "toString of {what} must be a type error"
+                );
+                assert_eq!(
+                    call("toStringOrNull", &arg).unwrap(),
+                    Value::Null,
+                    "toStringOrNull of {what}"
+                );
+            }
+        }
+    }
 }
 
-/// The value-level container contract (CIP-271): `toString()` renders every
-/// container and graph value in display form and `toStringOrNull()` maps to
-/// the same rendering — the one behavior, with no dialect arm left to
-/// select another. CIP-271's homogeneous-list rejection stays a front-end
-/// static check, never a value-level one.
+/// The non-list container and scalar rendering, through the one display
+/// policy (CIP-271): a map renders, and a scalar renders through the same
+/// policy. Lists are the table test above.
 #[test]
-fn tostring_container_semantics_render_in_display_form() {
+fn tostring_map_and_scalar_render_in_display_form() {
     let g = Graph::default();
     let graph = ExecGraph::read(&g);
     let row = Row::new();
     let params = BTreeMap::new();
     let call = |name: &str, arg: Expr| function(&graph, &row, &params, name, false, &[arg]);
-    let mixed = Expr::List(vec![Expr::Int(1), Expr::String("a".into())]);
-    let homogeneous = Expr::List(vec![Expr::Int(1), Expr::Int(2)]);
     let map = Expr::Map(vec![("a".into(), Expr::Int(1))]);
 
     assert_eq!(
-        call("toString", mixed.clone()).unwrap(),
-        Value::String("[1, a]".into())
-    );
-    assert_eq!(
-        call("toStringOrNull", map.clone()).unwrap(),
+        call("toStringOrNull", map).unwrap(),
         Value::String("{a: 1}".into())
-    );
-    assert_eq!(
-        call("toString", homogeneous.clone()).unwrap(),
-        Value::String("[1, 2]".into())
-    );
-    assert_eq!(
-        call("toStringOrNull", homogeneous).unwrap(),
-        Value::String("[1, 2]".into())
     );
 
     // Scalars render through the same one display policy.

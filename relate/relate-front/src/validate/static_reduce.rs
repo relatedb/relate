@@ -9,13 +9,14 @@
 //! Only the statically decidable shape qualifies; every other operand type
 //! stays runtime-decided.
 
+use relate_core::LiteralValueKind;
 use relate_error::{EngineError, ErrorKind};
 use relate_parser::{Expr, ReduceExpr};
 
 use crate::ast::tree::unparen;
 
 use super::static_arithmetic::applies_arithmetic_to_var;
-use super::static_literal::{is_arithmetic_op, static_literal_type, StaticLitType};
+use super::static_literal::{is_arithmetic_op, static_literal_type};
 
 /// Whether `list` is a non-empty list *literal* whose every element is a call
 /// to a temporal constructor (`date`, `datetime`, `localtime`, `localdatetime`,
@@ -40,7 +41,7 @@ fn list_literal_all_temporal(list: &Expr) -> bool {
 /// [`applies_arithmetic_to_var`] over the arithmetic vocabulary (the binder-
 /// shadowing walk defers a rebinding nested scope to the runtime backstop).
 pub(super) fn check_reduce_temporal_arithmetic(r: &ReduceExpr) -> Result<(), EngineError> {
-    if !static_literal_type(&r.init_expr).is_some_and(StaticLitType::is_numeric) {
+    if !static_literal_type(&r.init_expr).is_some_and(LiteralValueKind::is_numeric) {
         return Ok(());
     }
     if !list_literal_all_temporal(&r.list_expr) {

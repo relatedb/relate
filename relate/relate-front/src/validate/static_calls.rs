@@ -14,7 +14,10 @@
 //! them. Every rejection here rides the front-end boundary, which reports the
 //! SyntaxError class.
 
-use relate_core::{builtin_arity, Value};
+use relate_core::{
+    builtin_arity, homogeneous_element_class, LiteralElementClass, LiteralValueKind, Value,
+    TOSTRING_TYPE_ERROR_DETAIL,
+};
 use relate_error::{EngineError, ErrorKind};
 use relate_model::VectorCoordToken;
 use relate_parser::{Clause, Concurrency, Expr, FunctionCallExpr, PathCount, PathSelector};
@@ -24,7 +27,8 @@ use crate::ast::tree::{unparen, walk_clause_list_tree, SubqueryDescent};
 use super::static_arithmetic::expr_is_bare_var;
 use super::static_literal::{
     non_numeric_leaf_class, require_integer_argument, require_static_type, static_int_value,
-    static_literal_type, static_string_value, StaticLitType, INTEGER_ONLY, INTEGER_OR_NULL,
+    static_list_element_kinds, static_literal_type, static_string_value, INTEGER_ONLY,
+    INTEGER_OR_NULL, LIST_OR_NULL, MAP_OR_NULL, STRING_OR_NULL,
 };
 use super::static_types::is_statically_non_boolean;
 
@@ -115,12 +119,67 @@ fn check_static_function_call(fc: &FunctionCallExpr) -> Result<(), EngineError> 
             require_vector_operand(&fc.args[1], &name)
         }
         "char_length" | "character_length" => check_string_argument(&fc.args, &format!("{name}()")),
+        // CIP-271's static half. `toStringOrNull()` is deliberately not
+        // matched: it maps the rule's type error to null at the value level
+        // and must not raise.
+        "tostring" => check_tostring_argument(&fc.args),
+        "properties" => check_properties_argument(&fc.args),
         // Arity alone: the contract above owns the count and its message.
         "nullif" | "format" => Ok(()),
         "replace" => check_replace_limit(&fc.args),
         n if relate_core::temporal::is_constructor(n) => check_temporal_call(&fc.args),
         _ => Ok(()),
     }
+}
+
+/// CIP-271's static half: `toString()` rejects a `LIST<T>` with a concrete
+/// `T` — a list literal whose elements all share one known class. The rule
+/// is implemented once (`homogeneous_element_class`) and the executor
+/// applies the same one to a runtime value, so a list is refused whatever
+/// spelling produced it. The static check still owns the compile-time phase
+/// for the shapes it can type; `EXPLAIN` and a zero-row CASE arm fail with
+/// the rest of semantic analysis.
+fn check_tostring_argument(args: &[Expr]) -> Result<(), EngineError> {
+    let [arg] = args else {
+        return Ok(());
+    };
+    if is_homogeneous_list_literal(arg) {
+        return Err(EngineError::semantic(
+            ErrorKind::InvalidArgumentValue,
+            TOSTRING_TYPE_ERROR_DETAIL,
+        ));
+    }
+    Ok(())
+}
+
+/// `properties(x)` requires a node, relationship or map; a statically known
+/// literal of another kind is the compile-time rejection (Graph9 5-7).
+fn check_properties_argument(args: &[Expr]) -> Result<(), EngineError> {
+    let [arg] = args else {
+        return Ok(());
+    };
+    require_static_type(arg, MAP_OR_NULL, |ty| {
+        format!(
+            "properties() requires a node, relationship, or map, got {}",
+            ty.name()
+        )
+    })
+}
+
+/// Whether `list` is a list *literal* (or the plan-cache placeholder that
+/// replaced one) whose elements all share one known element class — the
+/// `LIST<T>` CIP-271 rejects for `toString()`. The element derivation is the
+/// one shared [`static_list_element_kinds`]; the equality rule (the
+/// empty-list case included) is the one core [`homogeneous_element_class`].
+fn is_homogeneous_list_literal(list: &Expr) -> bool {
+    static_list_element_kinds(list).is_some_and(|kinds| {
+        homogeneous_element_class(
+            kinds
+                .into_iter()
+                .map(|kind| kind.and_then(LiteralElementClass::of_kind)),
+        )
+        .is_some()
+    })
 }
 
 /// The cross-layer arity contract `relate-core` owns for `name`: a call with
@@ -172,7 +231,7 @@ fn check_vector_call(args: &[Expr]) -> Result<(), EngineError> {
         }
     }
     match static_literal_type(list) {
-        Some(StaticLitType::String) => {
+        Some(LiteralValueKind::String) => {
             if let Some(text) = static_string_value(list) {
                 if coordinate_text_is_malformed(&text) {
                     return Err(EngineError::semantic(
@@ -183,8 +242,8 @@ fn check_vector_call(args: &[Expr]) -> Result<(), EngineError> {
             }
             Ok(())
         }
-        Some(StaticLitType::List) => require_numeric_list_elements(list, "vector()"),
-        None | Some(StaticLitType::Null) => Ok(()),
+        Some(LiteralValueKind::List) => require_numeric_list_elements(list, "vector()"),
+        None | Some(LiteralValueKind::Null) => Ok(()),
         Some(ty) => Err(EngineError::semantic(
             ErrorKind::InvalidArgumentType,
             format!("vector() requires a numeric list, got {}", ty.name()),
@@ -213,7 +272,7 @@ fn coordinate_text_is_malformed(text: &str) -> bool {
 fn require_vector_operand(arg: &Expr, what: &str) -> Result<(), EngineError> {
     // A no-op for a non-list; a list literal passes the type gate below.
     require_numeric_list_elements(arg, what)?;
-    require_static_type(arg, &[StaticLitType::List, StaticLitType::Null], |ty| {
+    require_static_type(arg, LIST_OR_NULL, |ty| {
         format!(
             "Type mismatch: expected Vector, List<Float>, List<Integer> or \
                  List<Number> but was {}",
@@ -245,7 +304,7 @@ fn check_string_argument(args: &[Expr], what: &str) -> Result<(), EngineError> {
     let Some(arg) = args.first() else {
         return Ok(());
     };
-    require_static_type(arg, &[StaticLitType::String, StaticLitType::Null], |ty| {
+    require_static_type(arg, STRING_OR_NULL, |ty| {
         format!("{what} needs a string but was {}", ty.name())
     })
 }
@@ -283,11 +342,9 @@ fn check_temporal_call(args: &[Expr]) -> Result<(), EngineError> {
     let Some(pattern) = args.get(1) else {
         return Ok(());
     };
-    require_static_type(
-        pattern,
-        &[StaticLitType::String, StaticLitType::Null],
-        |ty| format!("Type mismatch: expected String but was {}", ty.name()),
-    )
+    require_static_type(pattern, STRING_OR_NULL, |ty| {
+        format!("Type mismatch: expected String but was {}", ty.name())
+    })
 }
 
 /// `allReduce(acc = <init>, x IN <list> | <expr>, <predicate>)`: a static
@@ -314,7 +371,7 @@ fn check_all_reduce(r: &relate_parser::AllReduceExpr) -> Result<(), EngineError>
 }
 
 fn require_list_operand(expr: &Expr, what: &str) -> Result<(), EngineError> {
-    require_static_type(expr, &[StaticLitType::List, StaticLitType::Null], |ty| {
+    require_static_type(expr, LIST_OR_NULL, |ty| {
         format!("{what} needs a list, got {}", ty.name())
     })
 }
@@ -496,5 +553,57 @@ mod tests {
     fn in_transactions_concurrency_is_statically_typed() {
         assert_rejected(&["CALL { CREATE (n) } IN null CONCURRENT TRANSACTIONS"]);
         assert_accepted(&["CALL { CREATE (n) } IN 2 CONCURRENT TRANSACTIONS"]);
+    }
+
+    // ---- CIP-271: toString() rejects a homogeneous LIST<T> ----
+
+    #[test]
+    fn tostring_rejects_a_homogeneous_list_literal_at_compile_time() {
+        // The four shapes Neo4j's checker rejects: homogeneous INTEGER,
+        // STRING and nested-LIST literals, plus the mixed number list
+        // (INTEGER and FLOAT are one class). The error is the
+        // InvalidArgumentValue detail CIP-271 pins.
+        for query in [
+            "RETURN toString([1, 2]) AS result",
+            "RETURN toString(['a', 'b']) AS result",
+            "RETURN toString([1, 2.0]) AS result",
+            "RETURN toString([[1]]) AS result",
+            "RETURN toString([1 + 1, 2]) AS result",
+            "CYPHER 25 RETURN toString([1, 2]) AS result",
+        ] {
+            let err = parse_and_check_static_calls(query)
+                .expect_err(&format!("`{query}` must be rejected statically"));
+            assert!(
+                matches!(err, EngineError::Semantic { .. }),
+                "`{query}` must fail at compile time (Semantic), got {err:?}"
+            );
+            assert_eq!(
+                err.kind(),
+                ErrorKind::InvalidArgumentValue,
+                "`{query}` must carry the InvalidArgumentValue detail"
+            );
+            assert_eq!(err.tck_class(), relate_error::TckErrorClass::TypeError);
+        }
+    }
+
+    #[test]
+    fn tostring_accepts_a_dynamic_or_mixed_list_and_the_ornull_spelling() {
+        // `LIST<ANY>` (or a non-list) falls through to the runtime, which
+        // applies the same homogeneous-list rule to the value it sees.
+        // `toStringOrNull()` is never rejected here: it maps that rule's
+        // type error to null at the value level and must not raise.
+        assert_accepted(&[
+            "RETURN toString([]) AS result",
+            "RETURN toString([1, 'a']) AS result",
+            "RETURN toString([1, null, 'a']) AS result",
+            "RETURN toString([true, null]) AS result",
+            "RETURN toString($p) AS result",
+            "UNWIND [[1, 2]] AS xs RETURN toString(xs) AS result",
+            "MATCH (n) RETURN toString(n.ids) AS result",
+            "RETURN toString(1) AS result",
+            "RETURN toString({a: 1}) AS result",
+            "RETURN toStringOrNull([1, 2]) AS result",
+            "RETURN toStringOrNull(['a', 'b']) AS result",
+        ]);
     }
 }

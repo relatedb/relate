@@ -298,12 +298,16 @@ plain identifier shape, node labels sorted and quoted the same way, relationship
 types backticked, and temporals in their canonical `HH:MM:SS` form
 (`toString(localtime('10:00'))` → `'10:00:00'`).
 
-A list *literal* whose elements all share one statically known type
-(`[1, 2]`, `['a', 'b']`, `[1, 2.0]`, `[[1]]`) is a `LIST<T>`, not the
-`LIST<ANY>` these functions accept, so `toString()`/`toStringOrNull()`
-reject it during semantic analysis (a compile-time `TypeError`). A
-dynamically typed list — a property, parameter or variable read — has no
-statically known element type and renders normally.
+A homogeneous list *literal* — a statically typed `LIST<T>` whose elements all
+share one type (`[1, 2]`, `['a', 'b']`, `[1, 2.0]`, `[[1]]`) — is not the
+`LIST<ANY>` `toString()` accepts, so `toString()` reports a type error during
+semantic analysis (a compile-time `TypeError`), as Neo4j's type checker does.
+The rule is a static-type one, as in Neo4j: a value read from a property or a
+parameter has no statically known element type and renders. `toStringOrNull()`
+renders the homogeneous list instead of raising, for a literal and a dynamic
+value alike. A heterogeneous list, an empty list, or one holding a `null`
+element is `LIST<ANY>` and renders; so does a list of graph values or
+temporals, whose elements are outside the literal type vocabulary.
 
 CIP-271 applies to every statement: with `CYPHER 25` the only Cypher
 version — its preamble an accepted no-op

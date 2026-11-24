@@ -1,64 +1,16 @@
 //! The literal-type and constant vocabulary the static validation rules
-//! share: [`StaticLitType`], the statically-known type and value of a
-//! literal expression, the arithmetic-operator set, and the constant fold.
-//! The one lower home both [`super::static_types`] (the operator gate) and
-//! [`super::static_arithmetic`] (the quantifier/`reduce()` arithmetic
-//! rules) build on, so neither module imports the other's vocabulary.
+//! share: the statically-known kind and value of a literal expression (the
+//! core [`LiteralValueKind`] table), the arithmetic-operator set, and the
+//! constant fold. The one lower home both [`super::static_types`] (the
+//! operator gate) and [`super::static_arithmetic`] (the quantifier/
+//! `reduce()` arithmetic rules) build on, so neither module imports the
+//! other's vocabulary.
 
-use relate_core::Value;
+use relate_core::{LiteralValueKind, Value};
 use relate_error::{EngineError, ErrorKind};
 use relate_parser::{Expr, LiteralValue};
 
 use crate::ast::tree::unparen;
-
-/// The statically-known type of an expression Relate can decide without
-/// evaluating it: a literal (list and map literals included), arithmetic and
-/// unary operators over such operands, comparisons, and boolean operators.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum StaticLitType {
-    Null,
-    Boolean,
-    Integer,
-    Float,
-    String,
-    List,
-    Map,
-}
-
-impl StaticLitType {
-    pub(super) fn name(self) -> &'static str {
-        match self {
-            StaticLitType::Null => "NULL",
-            StaticLitType::Boolean => "BOOLEAN",
-            StaticLitType::Integer => "INTEGER",
-            StaticLitType::Float => "FLOAT",
-            StaticLitType::String => "STRING",
-            StaticLitType::List => "LIST",
-            StaticLitType::Map => "MAP",
-        }
-    }
-
-    pub(super) fn is_numeric(self) -> bool {
-        matches!(self, StaticLitType::Integer | StaticLitType::Float)
-    }
-
-    /// The static type of a statically-known [`Value`], or `None` for a value
-    /// no literal spelling produces (an entity, a path, a temporal). The one
-    /// value→type table; the parameter/placeholder arm of
-    /// [`static_literal_type`] reads it.
-    pub(super) fn of_value(value: &Value) -> Option<StaticLitType> {
-        Some(match value {
-            Value::Null => StaticLitType::Null,
-            Value::Bool(_) => StaticLitType::Boolean,
-            Value::Int(_) => StaticLitType::Integer,
-            Value::Float(_) => StaticLitType::Float,
-            Value::String(_) => StaticLitType::String,
-            Value::List(_) => StaticLitType::List,
-            Value::Map(_) => StaticLitType::Map,
-            _ => return None,
-        })
-    }
-}
 
 /// The static type of an expression, or `None` when the type cannot be
 /// determined without evaluation (variables, parameters, property access,
@@ -72,23 +24,45 @@ impl StaticLitType {
 /// arithmetic over numerics, comparisons and boolean operators), and returns
 /// `None` everywhere else (`+` on a string/list mix may be concatenation or
 /// append, so it stays runtime-decided).
-pub(super) fn static_literal_type(expr: &Expr) -> Option<StaticLitType> {
+pub(super) fn static_literal_type(expr: &Expr) -> Option<LiteralValueKind> {
     match unparen(expr) {
         // A literal, or a plan-cache placeholder for one (ADR-0503): the
         // value fold decides the type. A caller's own parameter is `None`
         // and is checked at runtime.
-        Expr::Literal(_) | Expr::Parameter(_) => {
-            static_value(expr).and_then(|value| StaticLitType::of_value(&value))
-        }
-        Expr::List(_) => Some(StaticLitType::List),
-        Expr::Map(_) => Some(StaticLitType::Map),
+        Expr::Literal(_) | Expr::Parameter(_) => static_value_kind(expr),
+        Expr::List(_) => Some(LiteralValueKind::List),
+        Expr::Map(_) => Some(LiteralValueKind::Map),
         Expr::Unary(unary) => match unary.op {
-            "NOT" => Some(StaticLitType::Boolean),
+            "NOT" => Some(LiteralValueKind::Boolean),
             "-" | "+" => static_literal_type(&unary.expr).filter(|ty| ty.is_numeric()),
             _ => None,
         },
         Expr::Binary(binary) => static_binary_type(binary.op, &binary.left, &binary.right),
-        Expr::Comparison(_) => Some(StaticLitType::Boolean),
+        Expr::Comparison(_) => Some(LiteralValueKind::Boolean),
+        _ => None,
+    }
+}
+
+/// The literal kind of the statically-known *value* `expr` spells — the one
+/// "folded value's kind" derivation, read by [`static_literal_type`]'s
+/// literal/placeholder arm and by [`require_integer_argument`].
+pub(super) fn static_value_kind(expr: &Expr) -> Option<LiteralValueKind> {
+    static_value(expr).and_then(|value| LiteralValueKind::of_value(&value))
+}
+
+/// The element literal kinds of a list *literal*, or of the plan-cache
+/// placeholder that replaced one (ADR-0503); `None` for any other spelling.
+/// The one list-source derivation both list predicates read, so the
+/// placeholder rule lives once.
+pub(super) fn static_list_element_kinds(list: &Expr) -> Option<Vec<Option<LiteralValueKind>>> {
+    match unparen(list) {
+        Expr::List(items) => Some(items.iter().map(static_literal_type).collect()),
+        Expr::Parameter(name) => match relate_core::auto_literal(name) {
+            Some(Value::List(items)) => {
+                Some(items.iter().map(LiteralValueKind::of_value).collect())
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -136,32 +110,61 @@ pub(super) fn static_string_value(expr: &Expr) -> Option<String> {
     }
 }
 
+/// The one membership predicate: `Some(ty)` when `ty` is known and outside
+/// `allowed`; an undecided type is deferred to the runtime.
+fn outside(ty: Option<LiteralValueKind>, allowed: &[LiteralValueKind]) -> Option<LiteralValueKind> {
+    ty.filter(|ty| !allowed.contains(ty))
+}
+
 /// The statically-known type of `expr` when it is outside `allowed` — the one
-/// gate every static argument-type check spells: an undecided type is
+/// view of [`outside`] the operator checks read: an undecided type is
 /// deferred to the runtime, and so is any type the site admits (`Null` is
 /// listed by each site that accepts it). The caller authors the rejection.
-pub(super) fn static_type_outside(expr: &Expr, allowed: &[StaticLitType]) -> Option<StaticLitType> {
-    match static_literal_type(expr) {
-        Some(ty) if !allowed.contains(&ty) => Some(ty),
-        _ => None,
+pub(super) fn static_type_outside(
+    expr: &Expr,
+    allowed: &[LiteralValueKind],
+) -> Option<LiteralValueKind> {
+    outside(static_literal_type(expr), allowed)
+}
+
+/// The one static-argument rejection decision every gate below spells: an
+/// undecided type is deferred to the runtime, a known type inside `allowed`
+/// passes, and anything else is the caller's authored sentence under the
+/// caller's error class.
+fn reject_static_type(
+    ty: Option<LiteralValueKind>,
+    allowed: &[LiteralValueKind],
+    kind: ErrorKind,
+    detail: impl FnOnce(&LiteralValueKind) -> String,
+) -> Result<(), EngineError> {
+    match outside(ty, allowed) {
+        Some(ty) => Err(EngineError::semantic(kind, detail(&ty))),
+        None => Ok(()),
     }
 }
 
 /// Reject `expr` when its static type is outside `allowed`, with the
-/// caller's authored sentence. An undecided type is deferred to the runtime.
-/// The one gate every static argument-type check spells.
+/// caller's authored sentence, under the `InvalidArgumentType` class. An
+/// undecided type is deferred to the runtime. The one gate most static
+/// checks spell.
 pub(super) fn require_static_type(
     expr: &Expr,
-    allowed: &[StaticLitType],
-    detail: impl FnOnce(&StaticLitType) -> String,
+    allowed: &[LiteralValueKind],
+    detail: impl FnOnce(&LiteralValueKind) -> String,
 ) -> Result<(), EngineError> {
-    match static_type_outside(expr, allowed) {
-        Some(ty) => Err(EngineError::semantic(
-            ErrorKind::InvalidArgumentType,
-            detail(&ty),
-        )),
-        None => Ok(()),
-    }
+    require_static_type_kind(expr, allowed, ErrorKind::InvalidArgumentType, detail)
+}
+
+/// [`require_static_type`] under a caller-chosen error class — the
+/// operand-mismatch sites Neo4j reports as `UnexpectedSyntax` or
+/// `InvalidConcatenationOperand` rather than `InvalidArgumentType`.
+pub(super) fn require_static_type_kind(
+    expr: &Expr,
+    allowed: &[LiteralValueKind],
+    kind: ErrorKind,
+    detail: impl FnOnce(&LiteralValueKind) -> String,
+) -> Result<(), EngineError> {
+    reject_static_type(static_literal_type(expr), allowed, kind, detail)
 }
 
 /// The class a list element must not have for quantifier arithmetic: a
@@ -169,16 +172,36 @@ pub(super) fn require_static_type(
 /// BOOLEAN, a nested LIST, a MAP). Shared by the AST arm and the plan-cache
 /// `Value` arm of [`list_literal_all_non_numeric`], and by
 /// `static_calls`' numeric-list gate.
-pub(super) fn non_numeric_leaf_class(ty: StaticLitType) -> bool {
-    !ty.is_numeric() && ty != StaticLitType::Null
+pub(super) fn non_numeric_leaf_class(ty: LiteralValueKind) -> bool {
+    !ty.is_numeric() && ty != LiteralValueKind::Null
 }
 
 /// The types an integer argument site admits as a statically-known literal:
 /// the integer itself.
-pub(super) const INTEGER_ONLY: &[StaticLitType] = &[StaticLitType::Integer];
+pub(super) const INTEGER_ONLY: &[LiteralValueKind] = &[LiteralValueKind::Integer];
 
 /// [`INTEGER_ONLY`] plus a literal NULL, which the runtime owns per row.
-pub(super) const INTEGER_OR_NULL: &[StaticLitType] = &[StaticLitType::Integer, StaticLitType::Null];
+pub(super) const INTEGER_OR_NULL: &[LiteralValueKind] =
+    &[LiteralValueKind::Integer, LiteralValueKind::Null];
+
+/// A STRING operand, plus NULL (which propagates).
+pub(super) const STRING_OR_NULL: &[LiteralValueKind] =
+    &[LiteralValueKind::String, LiteralValueKind::Null];
+
+/// A LIST operand, plus NULL (which propagates).
+pub(super) const LIST_OR_NULL: &[LiteralValueKind] =
+    &[LiteralValueKind::List, LiteralValueKind::Null];
+
+/// A MAP operand, plus NULL (which propagates).
+pub(super) const MAP_OR_NULL: &[LiteralValueKind] =
+    &[LiteralValueKind::Map, LiteralValueKind::Null];
+
+/// `||`'s operand set: a STRING or a LIST, plus NULL.
+pub(super) const STRING_OR_LIST_OR_NULL: &[LiteralValueKind] = &[
+    LiteralValueKind::String,
+    LiteralValueKind::List,
+    LiteralValueKind::Null,
+];
 
 /// The one spelling of "this argument must be an integer": reject a
 /// statically-known *literal* (or plan-cache placeholder) whose type is
@@ -191,58 +214,14 @@ pub(super) const INTEGER_OR_NULL: &[StaticLitType] = &[StaticLitType::Integer, S
 pub(super) fn require_integer_argument(
     expr: &Expr,
     what: &str,
-    allowed: &[StaticLitType],
+    allowed: &[LiteralValueKind],
 ) -> Result<(), EngineError> {
-    let Some(ty) = static_value(expr).and_then(|value| StaticLitType::of_value(&value)) else {
-        return Ok(());
-    };
-    if allowed.contains(&ty) {
-        return Ok(());
-    }
-    Err(EngineError::semantic(
+    reject_static_type(
+        static_value_kind(expr),
+        allowed,
         ErrorKind::InvalidArgumentType,
-        format!("{what} requires an integer value, got {}", ty.name()),
-    ))
-}
-
-/// The element class of CIP-271's list gate: INTEGER and FLOAT unify into one
-/// numeric class (`[1, 2.0]` is a homogeneous `LIST<NUMBER>`), every other
-/// statically known type keeps its own.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ElementClass {
-    Numeric,
-    Of(StaticLitType),
-}
-
-/// The [`ElementClass`] of an expression whose type is statically known.
-/// `None` means the type is not statically known (a variable, parameter,
-/// property read, function result) or is null — both make the list
-/// `LIST<ANY>`.
-fn static_element_class(expr: &Expr) -> Option<ElementClass> {
-    match static_literal_type(expr)? {
-        StaticLitType::Integer | StaticLitType::Float => Some(ElementClass::Numeric),
-        StaticLitType::Null => None,
-        other => Some(ElementClass::Of(other)),
-    }
-}
-
-/// Whether `list` is a list *literal* whose elements are all statically known
-/// and share one [`ElementClass`] — the `LIST<T>` CIP-271 rejects for
-/// `toString()`. `false` for anything else: an empty list, a null or
-/// dynamically typed element, elements of more than one class, or a
-/// non-literal expression. All of those are `LIST<ANY>` (or not a list at
-/// all) and are left to the runtime.
-pub(super) fn is_homogeneous_list_literal(list: &Expr) -> bool {
-    match unparen(list) {
-        Expr::List(items) if !items.is_empty() => {
-            let mut classes = items.iter().map(static_element_class);
-            let Some(Some(first)) = classes.next() else {
-                return false;
-            };
-            classes.all(|class| class == Some(first))
-        }
-        _ => false,
-    }
+        |ty| format!("{what} requires an integer value, got {}", ty.name()),
+    )
 }
 
 /// The arithmetic-operator vocabulary: the six binary operators whose result
@@ -260,9 +239,9 @@ pub(super) fn is_arithmetic_op(op: &str) -> bool {
 /// The result type of a binary operator over statically-typed operands, or
 /// `None` when it is not decided (a non-numeric operand of an arithmetic
 /// operator, an unknown operator, an operand of unknown type).
-fn static_binary_type(op: &str, left: &Expr, right: &Expr) -> Option<StaticLitType> {
+fn static_binary_type(op: &str, left: &Expr, right: &Expr) -> Option<LiteralValueKind> {
     match op {
-        "AND" | "OR" | "XOR" => Some(StaticLitType::Boolean),
+        "AND" | "OR" | "XOR" => Some(LiteralValueKind::Boolean),
         _ if is_arithmetic_op(op) => {
             let left = static_literal_type(left)?;
             let right = static_literal_type(right)?;
@@ -271,10 +250,11 @@ fn static_binary_type(op: &str, left: &Expr, right: &Expr) -> Option<StaticLitTy
             }
             // Mixed Int/Float arithmetic yields FLOAT; `^` always does.
             Some(
-                if op == "^" || left == StaticLitType::Float || right == StaticLitType::Float {
-                    StaticLitType::Float
+                if op == "^" || left == LiteralValueKind::Float || right == LiteralValueKind::Float
+                {
+                    LiteralValueKind::Float
                 } else {
-                    StaticLitType::Integer
+                    LiteralValueKind::Integer
                 },
             )
         }

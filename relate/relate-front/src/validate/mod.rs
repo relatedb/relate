@@ -31,7 +31,7 @@
 //!   the ADR-0497 preview-name admission gate
 //!   (`validate_function_admission`).
 //! - [`static_literal`]: the literal-type/constant vocabulary the static
-//!   rules share (`StaticLitType`, the constant fold, the arithmetic-operator
+//!   rules share (`LiteralValueKind`, the constant fold, the arithmetic-operator
 //!   set).
 //! - [`static_types`]: the operator rules decidable from *literal* operand
 //!   types (boolean-operator operands, `IN` lists, `properties()`,

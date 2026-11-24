@@ -11,6 +11,7 @@
 
 use std::collections::HashSet;
 
+use crate::literal::LiteralValueKind;
 use crate::temporal;
 use crate::Value;
 
@@ -25,15 +26,17 @@ fn suffixed(name: &str) -> String {
 }
 
 /// The Cypher type name of `value`, including the ` NOT NULL` suffix the
-/// `valueType()` surface renders.
+/// `valueType()` surface renders. The literal vocabulary's names come from
+/// the one literal-kind table ([`LiteralValueKind::name`]), so the static
+/// rules' rejection details and this surface can never diverge.
 pub fn value_type_name(value: &Value) -> String {
     match value {
-        Value::Null => "NULL".into(),
-        Value::Bool(_) => suffixed("BOOLEAN"),
-        Value::Int(_) => suffixed("INTEGER"),
-        Value::Float(_) => suffixed("FLOAT"),
-        Value::String(_) => suffixed("STRING"),
-        Value::Map(_) => suffixed("MAP"),
+        Value::Null => LiteralValueKind::Null.name().into(),
+        Value::Bool(_) => suffixed(LiteralValueKind::Boolean.name()),
+        Value::Int(_) => suffixed(LiteralValueKind::Integer.name()),
+        Value::Float(_) => suffixed(LiteralValueKind::Float.name()),
+        Value::String(_) => suffixed(LiteralValueKind::String.name()),
+        Value::Map(_) => suffixed(LiteralValueKind::Map.name()),
         Value::Node(_) => suffixed("NODE"),
         Value::Relationship(_) => suffixed("RELATIONSHIP"),
         Value::Path(_) => suffixed("PATH"),

@@ -699,17 +699,16 @@ fn uuid_wal_roundtrip() {
     assert_eq!(Value::from_json_tagged(&tagged).unwrap(), v);
 }
 
-// A homogeneous list literal is a static `LIST<T>`, not the `LIST<ANY>`
-// the `toString` family accepts. The rejection is a compile-time one —
-// it fires under EXPLAIN and in a CASE arm that never evaluates — while
-// a dynamically typed list renders.
+// A homogeneous list *literal* is a statically typed `LIST<T>`, not the
+// `LIST<ANY>` `toString` accepts, so it is refused at compile time — under
+// EXPLAIN and in a CASE arm that never evaluates. The rule is one shared
+// implementation (relate_core::homogeneous_element_class) and stays a
+// static-type rule, live Neo4j's boundary (probed 2026.11.24).
 #[test]
-fn tostring_rejects_a_static_list_at_compile_time() {
+fn tostring_rejects_a_homogeneous_list_literal_at_compile_time() {
     let mut c = connection();
-
     for query in [
         "RETURN toString([4, 6]) AS r",
-        "RETURN toStringOrNull([4, 6]) AS r",
         "EXPLAIN RETURN toString([4, 6]) AS r",
         "RETURN CASE WHEN false THEN toString([4, 6]) ELSE 'x' END AS r",
     ] {
@@ -719,16 +718,48 @@ fn tostring_rejects_a_static_list_at_compile_time() {
             "`{query}` should be a compile-time type error, got {err}"
         );
     }
+}
 
-    // A list read from a variable has no statically known element type.
-    let r = c
-        .query("UNWIND [[4, 6]] AS xs RETURN toString(xs) AS r")
-        .unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("[4, 6]".into())]]);
+// A property or parameter read has no statically known element type, so its
+// value renders — live-verified — and `toStringOrNull` renders every list.
+// On unpatched main the `toStringOrNull` literal raised a compile-time error;
+// that is the regression this asserts away (issue 28). A `WITH`/`UNWIND`-bound
+// literal variable also renders: Relate has no static type for it, where live's
+// checker would refuse — the recorded residual divergence.
+#[test]
+fn tostring_or_null_and_property_lists_render() {
+    let mut c = connection();
 
-    // Mixed classes (and a null element) are `LIST<ANY>`.
-    let r = c.query("RETURN toString([4, 'k']) AS r").unwrap();
+    for query in [
+        "CREATE (n:T {l: [4, 6]}) RETURN toString(n.l) AS r",
+        "UNWIND [[4, 6]] AS xs RETURN toString(xs) AS r",
+    ] {
+        let r = c.query(query).expect(query);
+        assert_eq!(
+            r.rows,
+            vec![vec![Value::String("[4, 6]".into())]],
+            "`{query}`"
+        );
+    }
+
+    // `toStringOrNull` renders the homogeneous list instead of raising.
+    for query in [
+        "RETURN toStringOrNull([4, 6]) AS r",
+        "UNWIND [[4, 6]] AS xs RETURN toStringOrNull(xs) AS r",
+    ] {
+        let r = c.query(query).expect(query);
+        assert_eq!(
+            r.rows,
+            vec![vec![Value::String("[4, 6]".into())]],
+            "`{query}`"
+        );
+    }
+
+    // Mixed classes (and a null element) are `LIST<ANY>` and render.
+    let r = c.query("RETURN toString([4, 'k']) AS r").expect("mixed");
     assert_eq!(r.rows, vec![vec![Value::String("[4, k]".into())]]);
-    let r = c.query("RETURN toString([4, null, 6]) AS r").unwrap();
+    let r = c
+        .query("RETURN toString([4, null, 6]) AS r")
+        .expect("with null");
     assert_eq!(r.rows, vec![vec![Value::String("[4, null, 6]".into())]]);
 }

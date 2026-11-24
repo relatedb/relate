@@ -1,21 +1,22 @@
 //! Compile-time checks decidable from *literal* operand types, and the
-//! literal-type vocabulary ([`super::static_literal`]) they share: boolean-operator operands, `IN` list
-//! operands, `properties()` argument types, CIP-271's `toString()`
-//! argument-type rejection, and quantifier-variable arithmetic over a
-//! statically non-numeric list literal. Page bounds live in
-//! [`super::page_bounds`]; the builtin-call families live in
-//! [`super::static_calls`], the `reduce()` accumulator rule in
-//! [`super::static_reduce`]. Everything whose type depends on runtime data is
-//! deliberately left to the runtime evaluator.
+//! literal-type vocabulary ([`super::static_literal`]) they share:
+//! boolean-operator operands, `IN` list operands, and quantifier-variable
+//! arithmetic over a statically non-numeric list literal. The builtin-call
+//! argument rules — `properties()`, CIP-271's `toString()` — live in
+//! [`super::static_calls`]; page bounds live in [`super::page_bounds`], the
+//! `reduce()` accumulator rule in [`super::static_reduce`]. Everything whose
+//! type depends on runtime data is deliberately left to the runtime evaluator.
 
+use relate_core::LiteralValueKind;
 use relate_error::{EngineError, ErrorKind};
 use relate_parser::{Clause, Expr};
 
 use crate::ast::tree::{is_boolean_operator, walk_clause_list_tree, SubqueryDescent};
 
-use super::static_arithmetic::{list_literal_all_non_numeric, predicate_applies_arithmetic_to_var};
+use super::static_arithmetic::check_quantifier_arithmetic;
 use super::static_literal::{
-    is_homogeneous_list_literal, require_static_type, static_type_outside, StaticLitType,
+    require_static_type, require_static_type_kind, static_type_outside, LIST_OR_NULL,
+    STRING_OR_LIST_OR_NULL, STRING_OR_NULL,
 };
 use super::static_reduce::check_reduce_temporal_arithmetic;
 
@@ -30,29 +31,32 @@ pub(super) fn is_statically_non_boolean(expr: &Expr) -> bool {
 /// `TypeError` class Neo4j reports for the concatenation mismatch (CIP-144),
 /// not the `SyntaxError` the other static operand checks use.
 fn require_string_or_list_literal_operand(operand: &Expr) -> Result<(), EngineError> {
-    if let Some(ty) = static_type_outside(
+    require_static_type_kind(
         operand,
-        &[
-            StaticLitType::String,
-            StaticLitType::List,
-            StaticLitType::Null,
-        ],
-    ) {
-        return Err(EngineError::semantic(
-            ErrorKind::InvalidConcatenationOperand,
+        STRING_OR_LIST_OR_NULL,
+        ErrorKind::InvalidConcatenationOperand,
+        |ty| {
             format!(
                 "Type mismatch: expected String or List but was {}",
                 ty.name()
-            ),
-        ));
-    }
-    Ok(())
+            )
+        },
+    )
+}
+
+/// `=~` compares strings; a statically-known non-string operand is the
+/// compile-time 42001 live Neo4j reports (`WHERE a.age =~ 13`, cause 22NB1).
+fn require_string_literal_operand(operand: &Expr) -> Result<(), EngineError> {
+    require_static_type_kind(operand, STRING_OR_NULL, ErrorKind::UnexpectedSyntax, |ty| {
+        format!("Type mismatch: expected String but was {}", ty.name())
+    })
 }
 
 /// The types a boolean operand admits: BOOLEAN, plus NULL (three-valued
 /// logic). One list, consulted by the operator gate and
 /// [`is_statically_non_boolean`].
-const BOOLEAN_OPERAND_TYPES: &[StaticLitType] = &[StaticLitType::Boolean, StaticLitType::Null];
+const BOOLEAN_OPERAND_TYPES: &[LiteralValueKind] =
+    &[LiteralValueKind::Boolean, LiteralValueKind::Null];
 
 /// Reject a boolean-operator operand whose *literal* type is neither Boolean nor
 /// Null. A `null` operand is always allowed (three-valued logic); a non-literal
@@ -83,8 +87,6 @@ fn require_boolean_literal_operand(operand: &Expr) -> Result<(), EngineError> {
 /// Covered (all `expressions/…` TCK features):
 /// - `NOT` / `AND` / `OR` / `XOR` require boolean operands (Boolean1-4).
 /// - `x IN <list>` requires a list right operand (List5 scenario 42).
-/// - `properties(x)` requires a node/relationship/map (Graph9 scenarios 5-7).
-/// - `toString()`/`toStringOrNull()` reject a `LIST<T>` literal (CIP-271).
 pub fn validate_static_operator_types(clauses: &[Clause]) -> Result<(), EngineError> {
     walk_clause_list_tree(
         clauses,
@@ -113,88 +115,17 @@ fn check_static_operator_types(e: &Expr) -> Result<(), EngineError> {
         // the compile-time 42001 live Neo4j reports
         // (`WHERE a.age =~ 13`, cause 22NB1).
         Expr::Comparison(c) if c.op == "=~" => {
-            for operand in [&c.left, &c.right] {
-                if let Some(ty) =
-                    static_type_outside(operand, &[StaticLitType::String, StaticLitType::Null])
-                {
-                    return Err(EngineError::semantic(
-                        ErrorKind::UnexpectedSyntax,
-                        format!("Type mismatch: expected String but was {}", ty.name()),
-                    ));
-                }
-            }
+            require_string_literal_operand(&c.left)?;
+            require_string_literal_operand(&c.right)?;
         }
         Expr::In(ie) => {
-            require_static_type(
-                &ie.list,
-                &[StaticLitType::List, StaticLitType::Null],
-                |ty| format!("IN requires a list, got {}", ty.name()),
-            )?;
+            require_static_type(&ie.list, LIST_OR_NULL, |ty| {
+                format!("IN requires a list, got {}", ty.name())
+            })?;
         }
-        Expr::FunctionCall(fc)
-            if fc.name.with_str(|n| n.eq_ignore_ascii_case("properties")) && fc.args.len() == 1 =>
-        {
-            require_static_type(
-                &fc.args[0],
-                &[StaticLitType::Map, StaticLitType::Null],
-                |ty| {
-                    format!(
-                        "properties() requires a node, relationship, or map, got {}",
-                        ty.name()
-                    )
-                },
-            )?;
-        }
-        // CIP-271's static half: Neo4j's type checker rejects the `toString`
-        // family on a `LIST<T>` with a concrete `T` — a list literal whose
-        // elements all share one known class — while a dynamically typed list
-        // (a property/parameter read, statically `LIST<ANY>`) is accepted and
-        // renders in display form. The value-level converter cannot see the
-        // argument expression, so the shape decision lives here, beside the
-        // other static-literal gates; `EXPLAIN` and a zero-row CASE arm fail
-        // with the rest of semantic analysis.
-        Expr::FunctionCall(fc)
-            if fc.args.len() == 1
-                && fc.name.with_str(|n| {
-                    n.eq_ignore_ascii_case("tostring") || n.eq_ignore_ascii_case("tostringornull")
-                }) =>
-        {
-            if is_homogeneous_list_literal(&fc.args[0]) {
-                return Err(EngineError::semantic(
-                    ErrorKind::InvalidArgumentValue,
-                    "toString()",
-                ));
-            }
-        }
-        // A list quantifier (`all`/`any`/`none`/`single`) whose loop variable
-        // ranges over a list *literal* of statically non-numeric elements, and
-        // whose predicate applies an arithmetic operator directly to that loop
-        // variable, is a compile-time type error in openCypher — e.g.
-        // `all(x IN ['Clara'] WHERE x % 2 = 0)`
-        // (expressions/quantifier/Quantifier1-4 scenario "[15]/[16] Fail …
-        // quantifier on type mismatch between list elements and predicate",
-        // `SyntaxError … : InvalidArgumentType` at compile time). Relate
-        // otherwise catches it at runtime in `eval::binary`; this narrow static
-        // pass moves the statically-decidable case to compile time. Only literal
-        // lists with fully-known non-numeric element types qualify, so every
-        // query whose element type depends on runtime data is untouched.
-        Expr::Quantifier(q) => {
-            if let Some(pred) = &q.predicate {
-                if list_literal_all_non_numeric(&q.list)
-                    && q.variable
-                        .with_str(|text| predicate_applies_arithmetic_to_var(pred, text))
-                {
-                    return Err(EngineError::semantic(
-                        ErrorKind::InvalidArgumentType,
-                        format!(
-                            "Type mismatch: the quantifier variable '{}' ranges over a list of \
-                             non-numeric elements and cannot be used in arithmetic",
-                            q.variable
-                        ),
-                    ));
-                }
-            }
-        }
+        // A list quantifier's arithmetic rule: its decision lives in
+        // `static_arithmetic` beside every piece it reads.
+        Expr::Quantifier(q) => check_quantifier_arithmetic(q)?,
         // The `reduce` analogue: a numerically-initialised accumulator
         // combined by an arithmetic operator with an element of a list
         // *literal* of temporal constructor calls is the front-end type fault
@@ -221,30 +152,10 @@ pub(super) fn parse_and_check_static_ops(query: &str) -> Result<(), EngineError>
 mod tests {
     use super::*;
     use crate::ast::tree::tests::return_expr_of;
-    use relate_core::Value;
 
-    /// The 22N27/22NB1 detail text renders a folded operand's type through
-    /// core's `bare_type_name` and a declined-but-typed one through
-    /// [`StaticLitType::name`]: one vocabulary, two call sites. A spelling
-    /// change on either side must fail here. `List` sits outside the overlap
-    /// by design — the front renders the *kind* (`LIST`), core renders a
-    /// list value's element union (`LIST<INTEGER>`), and a folded list always
-    /// takes the core path.
-    #[test]
-    fn static_type_names_match_the_core_vocabulary() {
-        use relate_core::bare_type_name;
-
-        for (front, core) in [
-            (StaticLitType::Null, Value::Null),
-            (StaticLitType::Boolean, Value::Bool(true)),
-            (StaticLitType::Integer, Value::Int(0)),
-            (StaticLitType::Float, Value::Float(0.0)),
-            (StaticLitType::String, Value::String("".into())),
-            (StaticLitType::Map, Value::Map(Default::default())),
-        ] {
-            assert_eq!(front.name(), bare_type_name(&core), "{front:?}");
-        }
-    }
+    use super::super::static_arithmetic::{
+        list_literal_all_non_numeric, predicate_applies_arithmetic_to_var,
+    };
 
     // ---- Quantifier over a non-numeric list literal: compile-time TypeError ----
     //
@@ -442,81 +353,6 @@ mod tests {
             assert!(
                 matches!(err, EngineError::Semantic { .. }),
                 "`{query}` must fail at compile time (Semantic), got {err:?}"
-            );
-        }
-    }
-
-    // ---- CIP-271: toString()/toStringOrNull() reject a homogeneous LIST<T> ----
-
-    #[test]
-    fn tostring_rejects_a_homogeneous_list_literal_at_compile_time() {
-        // The four shapes Neo4j's checker rejects: homogeneous INTEGER,
-        // STRING and nested-LIST literals, plus the mixed number list (INTEGER
-        // and FLOAT are one class). Both spellings of the function share the
-        // rule; the error is the InvalidArgumentValue detail CIP-271 pins.
-        for query in [
-            "RETURN toString([1, 2]) AS result",
-            "RETURN toString(['a', 'b']) AS result",
-            "RETURN toString([1, 2.0]) AS result",
-            "RETURN toString([[1]]) AS result",
-            "RETURN toString([1 + 1, 2]) AS result",
-            "RETURN toStringOrNull([1, 2]) AS result",
-            "RETURN toStringOrNull(['a', 'b']) AS result",
-        ] {
-            let err = parse_and_check_static_ops(query)
-                .expect_err(&format!("`{query}` must be rejected statically"));
-            assert!(
-                matches!(err, EngineError::Semantic { .. }),
-                "`{query}` must fail at compile time (Semantic), got {err:?}"
-            );
-            assert_eq!(
-                err.kind(),
-                ErrorKind::InvalidArgumentValue,
-                "`{query}` must carry the InvalidArgumentValue detail"
-            );
-            assert_eq!(err.tck_class(), relate_error::TckErrorClass::TypeError);
-        }
-    }
-
-    #[test]
-    fn tostring_accepts_a_dynamic_or_mixed_list() {
-        // `LIST<ANY>` (or a non-list): empty, mixed classes, a null element, a
-        // variable/property read, and a list whose elements the static pass
-        // cannot classify all fall through to the runtime display renderer.
-        for query in [
-            "RETURN toString([]) AS result",
-            "RETURN toString([1, 'a']) AS result",
-            "RETURN toString([1, null, 'a']) AS result",
-            "RETURN toString([true, null]) AS result",
-            "RETURN toString($p) AS result",
-            "UNWIND [[1, 2]] AS xs RETURN toString(xs) AS result",
-            "MATCH (n) RETURN toString(n.ids) AS result",
-            "RETURN toString(1) AS result",
-            "RETURN toString({a: 1}) AS result",
-        ] {
-            assert!(
-                parse_and_check_static_ops(query).is_ok(),
-                "`{query}` must not be rejected by the static pass"
-            );
-        }
-    }
-
-    #[test]
-    fn tostring_static_gate_applies_under_every_preamble_spelling() {
-        // The static `LIST<T>` rejection (CIP-271) is the one rule under every
-        // spelling: the homogeneous list literal is rejected exactly like
-        // the unprefixed form under the one admitted `CYPHER 25` preamble.
-        for query in [
-            "CYPHER 25 RETURN toString([1, 2]) AS result",
-            "RETURN toString([1, 2]) AS result",
-            "CYPHER 25 RETURN toStringOrNull([1, 2]) AS result",
-            "RETURN toStringOrNull([1, 2]) AS result",
-        ] {
-            let error = parse_and_check_static_ops(query)
-                .expect_err(&format!("`{query}` must be rejected"));
-            assert!(
-                error.to_string().contains("toString()"),
-                "`{query}`: {error}"
             );
         }
     }

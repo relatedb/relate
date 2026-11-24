@@ -47,14 +47,14 @@
 use crate::ident_hash::{IdentHashMap, IdentHashSet};
 use std::collections::BTreeMap;
 
-use relate_core::{bare_type_name, DynamicAccessError, DynamicNameToken, Value};
+use relate_core::{bare_type_name, DynamicAccessError, DynamicNameToken, LiteralValueKind, Value};
 use relate_error::EngineError;
 use relate_names::SmallName;
 use relate_parser::{
     Clause, Expr, LabelExpr, PatternElement, PatternPath, PropertyAccess, SetItem, Statement,
 };
 
-use super::static_literal::{constant_value, static_literal_type, FoldedConstant, StaticLitType};
+use super::static_literal::{constant_value, static_literal_type, FoldedConstant};
 use crate::ast::collect::bind_pattern_vars;
 use crate::ast::naming::effective_name;
 use crate::ast::tree::walk_label_expr;
@@ -216,16 +216,16 @@ fn check_operand(
 /// ([`DynamicNameToken::accepts_type`]); only the value's class and the
 /// content deferral live here.
 fn check_bound_operand(token: DynamicNameToken, value: &Value) -> Result<(), EngineError> {
-    let accepted = match value {
-        // NULL is statically assignable to the accepted classes, so only the
-        // executor can reject it (`SET n[c]` with a null key / label).
-        Value::Null => return Ok(()),
-        // A bound STRING's content (empty / NUL) and a bound list's elements
-        // are per-row facts; only the type class is decided here.
-        Value::String(_) => token.accepts_type(StaticLitType::String.name()),
-        Value::List(_) => token.accepts_type(StaticLitType::List.name()),
-        _ => false,
-    };
+    // NULL is statically assignable to the accepted classes, so only the
+    // executor can reject it (`SET n[c]` with a null key / label).
+    if value.is_null() {
+        return Ok(());
+    }
+    // A bound STRING's content (empty / NUL) and a bound list's elements are
+    // per-row facts; only the type class is decided here, read from the one
+    // literal-kind table so a new literal kind needs no arm of its own.
+    let accepted =
+        LiteralValueKind::of_value(value).is_some_and(|kind| token.accepts_type(kind.name()));
     if accepted {
         Ok(())
     } else {
@@ -249,7 +249,7 @@ fn static_operand(expr: &Expr, env: &OperandEnv<'_>) -> Option<StaticOperand> {
             .map(|value| StaticOperand::Bound(value.clone())),
         _ => match constant_value(expr) {
             Some(FoldedConstant::Value(value)) => Some(StaticOperand::Literal(value)),
-            Some(FoldedConstant::Map) => Some(StaticOperand::Named(StaticLitType::Map.name())),
+            Some(FoldedConstant::Map) => Some(StaticOperand::Named(LiteralValueKind::Map.name())),
             None => static_literal_type(expr)
                 .map(|ty| StaticOperand::Named(ty.name()))
                 .or_else(|| constant_function_type_name(expr).map(StaticOperand::Named)),
