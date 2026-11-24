@@ -63,13 +63,14 @@ REAL_SKIPS = {
 }
 
 
-def summary(totals=None, categories=None, skips=None):
+def summary(totals=None, categories=None, skips=None, suites=None):
     """A summary.json in the harness's shape. The totals vocabulary is the
     module's own [`TOTALS_KEYS`] (every bucket present, zero unless
     overridden), so a new bucket is exercised by default and the fixture
     cannot drift from the vocabulary. Categories default to the
     genuine-failure breakdown that sums to `failed`; `skips` defaults to
-    the empty rollup an older harness emits."""
+    the empty rollup an older harness emits; `suites` defaults to empty
+    (no per-suite buckets)."""
     values = {key: 0 for key, _ in coverage_script.TOTALS_KEYS}
     values.update(totals or {})
     if categories is None:
@@ -79,7 +80,7 @@ def summary(totals=None, categories=None, skips=None):
         "generated": "2026-11-02T00:00:00+00:00",
         "command": "behave",
         "totals": values,
-        "suites": {},
+        "suites": {} if suites is None else suites,
         "failure_categories": categories,
         "skip_categories": {} if skips is None else skips,
         "features": {},
@@ -349,6 +350,57 @@ class Rendering(unittest.TestCase):
             parse(summary({"passed": 10, "failed": 2})), harness_sha=None
         )
         self.assertNotIn("errored", clean)
+
+    def test_the_preview_corpus_line_renders_from_its_suite_bucket(self):
+        # The preview-gated suite is outside the totals by contract; its
+        # per-suite bucket renders as its own not-counted line.
+        text = coverage_script.render_markdown(
+            parse(summary(
+                {"passed": 10, "failed": 2},
+                suites={"cip-preview": {"passed": 90, "failed": 5}},
+            )),
+            harness_sha=None,
+            preview={"passed": 90, "failed": 5},
+        )
+        self.assertIn(
+            "preview corpus (not counted): **95** run (passed 90, failed 5)",
+            text,
+        )
+
+    def test_the_preview_line_counts_errored_scenarios(self):
+        text = coverage_script.render_markdown(
+            parse(summary({"passed": 10})),
+            harness_sha=None,
+            preview={"passed": 8, "failed": 1, "error": 1},
+        )
+        self.assertIn(
+            "preview corpus (not counted): **10** run "
+            "(passed 8, failed 1, errored 1)",
+            text,
+        )
+
+    def test_no_preview_bucket_renders_no_preview_line(self):
+        text = coverage_script.render_markdown(
+            parse(summary({"passed": 10})), harness_sha=None
+        )
+        self.assertNotIn("preview corpus", text)
+
+    def test_preview_counts_reads_only_a_well_shaped_bucket(self):
+        read = coverage_script.preview_counts
+        self.assertIsNone(read({}))
+        self.assertIsNone(read({"suites": {}}))
+        self.assertIsNone(read({"suites": {"cip-preview": {}}}))
+        self.assertIsNone(read({"suites": {"cip-preview": "nope"}}))
+        self.assertIsNone(
+            read({"suites": {"cip-preview": {"passed": "90"}}})
+        )
+        self.assertIsNone(
+            read({"suites": {"cip-preview": {"passed": True}}})
+        )
+        self.assertEqual(
+            read({"suites": {"cip-preview": {"passed": 90, "failed": 5}}}),
+            {"passed": 90, "failed": 5},
+        )
 
     def test_the_runtime_row_appears_only_when_measured(self):
         parsed = parse(summary({"passed": 10, "failed": 2}))

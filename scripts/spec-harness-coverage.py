@@ -70,6 +70,34 @@ from spec_harness_common import (  # noqa: E402
 )
 
 
+# The harness's preview-gated suite keeps its own per-suite bucket in
+# `suites` and is deliberately outside the totals: reported here for
+# visibility, never counted in the coverage number.
+PREVIEW_SUITE = "cip-preview"
+
+
+def preview_counts(raw: object) -> dict[str, int] | None:
+    """The preview suite's per-suite counters, or None when the summary
+    carries none (an older harness) or the bucket is not one
+    name -> count shape. Visibility only: a malformed bucket is skipped,
+    never a shape failure — the totals contract owns the fail-closed
+    read."""
+    if not isinstance(raw, dict):
+        return None
+    suites = raw.get("suites")
+    bucket = suites.get(PREVIEW_SUITE) if isinstance(suites, dict) else None
+    if not isinstance(bucket, dict) or not bucket:
+        return None
+    if any(
+        not isinstance(name, str)
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        for name, count in bucket.items()
+    ):
+        return None
+    return dict(bucket)
+
+
 def _non_negative_seconds(text: str) -> int:
     """The `--run-seconds` argparse type: an int of at least zero, or the
     parser's own usage error (exit 2, the one path every bad flag takes)."""
@@ -119,6 +147,7 @@ def render_markdown(
     summary: Summary,
     harness_sha: str | None,
     run_seconds: int | None = None,
+    preview: dict[str, int] | None = None,
 ) -> str:
     """The step-summary table: the traffic-light verdict, the not-counted
     context buckets, the per-reason skip breakdown behind the `skipped`
@@ -142,6 +171,18 @@ def render_markdown(
         f"- {key} (not counted): {count}"
         for key, count in summary.context.items()
     ]
+    if preview:
+        run = (
+            preview.get("passed", 0)
+            + preview.get("failed", 0)
+            + preview.get("error", 0)
+        )
+        lines.append(
+            f"- preview corpus (not counted): **{run}** run "
+            f"(passed {preview.get('passed', 0)}, failed {preview.get('failed', 0)}"
+            + (f", errored {preview['error']}" if preview.get("error") else "")
+            + ")"
+        )
     if harness_sha:
         lines.append(f"- harness ref: `{short_sha(harness_sha)}`")
     if summary.skip_categories:
@@ -185,7 +226,9 @@ def main() -> int:
     if summary is None:
         return _report_diags(diags)
 
-    table = render_markdown(summary, args.harness_sha, args.run_seconds)
+    table = render_markdown(
+        summary, args.harness_sha, args.run_seconds, preview_counts(raw)
+    )
     print(table)
     append_step_summary(table)
 
