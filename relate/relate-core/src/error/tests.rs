@@ -181,9 +181,8 @@ fn typed_detail_variants_display_matches_the_legacy_renderings() {
     assert!(matches!(
         &typed,
         Error::ArgumentValue {
-            kind: ErrorKind::NumberOutOfRange,
+            fault: ArgumentFault::General(ErrorKind::NumberOutOfRange),
             detail,
-            fault: None,
         } if detail == "percentile"
     ));
 }

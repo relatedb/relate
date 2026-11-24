@@ -38,7 +38,22 @@ const CACHED_PATTERNS: usize = 8;
 /// front is the eviction victim. A hit refreshes its entry to the back;
 /// an insert into a full table first drops the front. Recency and
 /// eviction live here, never at a call site.
-struct PatternCache(Vec<(Box<str>, Mode, Entry)>);
+struct PatternCache(Vec<Slot>);
+
+/// One cached pattern: the key (pattern text and mode) and what the table
+/// knows about it.
+struct Slot {
+    pattern: Box<str>,
+    mode: Mode,
+    entry: Entry,
+}
+
+impl Slot {
+    /// Whether this slot is the one for `pattern` compiled under `mode`.
+    fn matches(&self, pattern: &str, mode: Mode) -> bool {
+        self.mode == mode && &*self.pattern == pattern
+    }
+}
 
 /// How a cached pattern is spelled to the regex crate: the same pattern
 /// text compiles to two different programs, so the mode is part of the key.
@@ -65,13 +80,10 @@ impl PatternCache {
     /// or `None` when the table holds no such pattern. The caller owns the
     /// match, so this API never takes the subject text.
     fn hit(&mut self, pattern: &str, mode: Mode) -> Option<&Entry> {
-        let pos = self
-            .0
-            .iter()
-            .position(|(known, known_mode, _)| *known_mode == mode && &**known == pattern)?;
-        let entry = self.0.remove(pos);
-        self.0.push(entry);
-        self.0.last().map(|(_, _, entry)| entry)
+        let pos = self.0.iter().position(|slot| slot.matches(pattern, mode))?;
+        let slot = self.0.remove(pos);
+        self.0.push(slot);
+        self.0.last().map(|slot| &slot.entry)
     }
 
     /// A newly classified pattern takes the back; a full table first drops
@@ -80,7 +92,11 @@ impl PatternCache {
         if self.0.len() == CACHED_PATTERNS {
             self.0.remove(0);
         }
-        self.0.push((pattern.into(), mode, entry));
+        self.0.push(Slot {
+            pattern: pattern.into(),
+            mode,
+            entry,
+        });
     }
 }
 
@@ -195,7 +211,10 @@ mod tests {
         assert!(!regex_is_match("xabcx", "abc").unwrap());
         COMPILED.with(|c| {
             let table = &c.borrow().0;
-            assert_eq!(table.iter().filter(|(p, _, _)| &**p == "abc").count(), 2);
+            assert_eq!(
+                table.iter().filter(|slot| &*slot.pattern == "abc").count(),
+                2
+            );
         });
     }
 
@@ -212,7 +231,7 @@ mod tests {
         for _ in 0..3 {
             assert!(regex_is_match("x", "(").is_err());
         }
-        COMPILED.with(|c| assert!(c.borrow().0.iter().all(|(p, _, _)| &**p != "(")));
+        COMPILED.with(|c| assert!(c.borrow().0.iter().all(|slot| &*slot.pattern != "(")));
     }
 
     #[test]
@@ -229,9 +248,15 @@ mod tests {
             let table = &c.borrow().0;
             assert!(table
                 .iter()
-                .filter(|(p, _, _)| &**p == pattern)
-                .all(|(_, _, entry)| matches!(entry, Entry::OverBudget)));
-            assert_eq!(table.iter().filter(|(p, _, _)| &**p == pattern).count(), 1);
+                .filter(|slot| &*slot.pattern == pattern)
+                .all(|slot| matches!(slot.entry, Entry::OverBudget)));
+            assert_eq!(
+                table
+                    .iter()
+                    .filter(|slot| &*slot.pattern == pattern)
+                    .count(),
+                1
+            );
         });
     }
 
@@ -247,7 +272,7 @@ mod tests {
                 .borrow()
                 .0
                 .iter()
-                .all(|(p, _, _)| p.len() <= MAX_CACHED_PATTERN_BYTES))
+                .all(|slot| slot.pattern.len() <= MAX_CACHED_PATTERN_BYTES))
         });
     }
 
@@ -265,8 +290,8 @@ mod tests {
         assert!(regex_is_match("a", "a|q").unwrap());
         COMPILED.with(|c| {
             let table = &c.borrow().0;
-            assert!(table.iter().any(|(p, _, _)| &**p == "a|b"));
-            assert!(table.iter().all(|(p, _, _)| &**p != "a|p0"));
+            assert!(table.iter().any(|slot| &*slot.pattern == "a|b"));
+            assert!(table.iter().all(|slot| &*slot.pattern != "a|p0"));
             assert_eq!(table.len(), CACHED_PATTERNS);
         });
     }

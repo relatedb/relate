@@ -144,13 +144,14 @@ pub(super) fn bi_db_namefromelementid(
     Ok(match vals.first() {
         Some(Value::Null) | None => Value::Null,
         Some(Value::String(id)) => {
-            let parsed = ElementIdRef::parse(id);
-            if !parsed.is_some_and(|p| p.has_known_kind() && !p.id.is_empty()) {
+            let Some(parsed) =
+                ElementIdRef::parse(id).filter(|p| p.has_known_kind() && !p.id.is_empty())
+            else {
                 return Err(Error::execution(format!(
                     "ElementIdUnexpectedFormat: Element ID {id} has an unexpected format."
                 )));
-            }
-            let Some(namespace) = parsed.and_then(|p| p.namespace()) else {
+            };
+            let Some(namespace) = parsed.namespace() else {
                 // A well-formed id naming no database is live's
                 // `EntityNotFound`, not the malformed-id condition above.
                 return Err(Error::execution(format!(

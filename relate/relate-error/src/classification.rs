@@ -75,6 +75,7 @@ fn argument_fault_gql_status(fault: ArgumentFault) -> &'static str {
         ArgumentFault::InvalidLatitude => "22N23",
         ArgumentFault::NonFiniteCoordinate => "22N24",
         ArgumentFault::WrongType => GQLSTATUS_TYPE,
+        ArgumentFault::General(_) => GQLSTATUS_GENERAL,
     }
 }
 
@@ -297,7 +298,7 @@ pub fn error_info(e: &Error) -> ErrorInfo {
         // fails the PULL — its own code and stage, not the DDL one's.
         Error::ArgumentValue { fault, .. } => ErrorInfo {
             neo4j_code: ARGUMENT_VALUE_ERROR_CODE,
-            gql_status: fault.map_or(GQLSTATUS_GENERAL, argument_fault_gql_status),
+            gql_status: argument_fault_gql_status(*fault),
             stage: Runtime,
             retryable: false,
         },

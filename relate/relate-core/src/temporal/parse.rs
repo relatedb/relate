@@ -309,26 +309,17 @@ fn parse_naive_dt(s: &str) -> Result<NaiveDateTime> {
             "%Y-%m-%dT%H:%M:%S",
             "%Y-%m-%dT%H:%M",
             "%Y-%m-%dT%H",
-            "%Y-%m-%d",
         ] {
             if let Ok(dt) = NaiveDateTime::parse_from_str(candidate, fmt) {
                 return Ok(dt);
             }
-            if fmt == "%Y-%m-%d" {
-                if let Ok(d) = NaiveDate::parse_from_str(candidate, fmt) {
-                    return Ok(d.and_time(NaiveTime::MIN));
-                }
-            }
+        }
+        if let Ok(d) = NaiveDate::parse_from_str(candidate, "%Y-%m-%d") {
+            return Ok(d.and_time(NaiveTime::MIN));
         }
     }
-    let (date_s, time_s) = match unsigned.split_once('T') {
-        Some((d, t)) => (d, t),
-        None => {
-            return parse_date_flexible(unsigned)
-                .map(|d| d.and_time(NaiveTime::MIN))
-                .ok_or_else(|| Error::ty(format!("cannot parse localdatetime '{s}'")));
-        }
-    };
+    // A text with no `T` is a date alone; an empty time part is midnight.
+    let (date_s, time_s) = unsigned.split_once('T').unwrap_or((unsigned, ""));
     let date = parse_date_flexible(date_s)
         .ok_or_else(|| Error::ty(format!("cannot parse localdatetime '{s}'")))?;
     let time = if time_s.is_empty() {

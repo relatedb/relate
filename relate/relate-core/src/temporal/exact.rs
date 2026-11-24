@@ -199,11 +199,7 @@ impl DurationTiers {
             let second_nanos = NANOS_PER_SECOND as f64 * (seconds - seconds_whole);
             let nanos =
                 whole_nanos as f64 + (self.seconds.frac + self.sub_second.frac) + second_nanos;
-            let nanos_whole = f64_to_i128_range(nanos.trunc())?;
-            f64_to_i128_range(seconds_whole)?
-                .checked_mul(NANOS_PER_SECOND)
-                .and_then(|total| total.checked_add(nanos_whole))
-                .ok_or_else(range_err)?
+            join_seconds_and_nanos(f64_to_i128_range(seconds_whole)?, nanos)?
         };
         Ok((
             f64_to_i64_range(months_whole)?,
@@ -231,11 +227,20 @@ impl DurationTiers {
         } else {
             f64_to_i128_range(seconds_whole)?
         };
-        seconds_whole
-            .checked_mul(NANOS_PER_SECOND)
-            .and_then(|total| total.checked_add(f64_to_i128_range(nanos.trunc()).ok()?))
-            .ok_or_else(range_err)
+        join_seconds_and_nanos(seconds_whole, nanos)
     }
+}
+
+/// The total nanoseconds of `seconds_whole` whole seconds plus `nanos`
+/// (truncated toward zero, the way Neo4j's `(long)` cast drops the
+/// sub-nanosecond remainder), a typed range error when either the
+/// truncation or the sum leaves the representable range.
+fn join_seconds_and_nanos(seconds_whole: i128, nanos: f64) -> Result<i128> {
+    let nanos_whole = f64_to_i128_range(nanos.trunc())?;
+    seconds_whole
+        .checked_mul(NANOS_PER_SECOND)
+        .and_then(|total| total.checked_add(nanos_whole))
+        .ok_or_else(range_err)
 }
 
 #[cfg(test)]

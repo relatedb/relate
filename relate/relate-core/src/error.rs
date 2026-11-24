@@ -8,13 +8,14 @@ use thiserror::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// The per-site fault of a run-time argument rejection
-/// ([`Error::ArgumentValue`]) whose live GQLSTATUS is its own rather than
+/// ([`Error::ArgumentValue`]): either one of the sites whose live GQLSTATUS
+/// is its own, or [`Self::General`] for the kind-carrying sites that keep
 /// the general one. Live Neo4j (2026.09/2026.10) reports `point()`'s in-map
 /// rejections under one `ArgumentError` class but a code per rejection
 /// site; the classifier maps each variant to that code, so the code is
 /// data the site names, never recovered from the message text. The fault
 /// also fixes the detail token's [`ErrorKind`] ([`Self::kind`]), so the
-/// two cannot disagree.
+/// two cannot disagree, and the variant carries no second copy of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgumentFault {
     /// The srid does not match the coordinate dimension (22N20).
@@ -28,6 +29,9 @@ pub enum ArgumentFault {
     /// A wrong-typed argument (22N27, classified under the type family's
     /// 22G03).
     WrongType,
+    /// A site with no GQLSTATUS of its own: the detail token names `kind`
+    /// and the classifier keeps the general status.
+    General(ErrorKind),
 }
 
 impl ArgumentFault {
@@ -39,6 +43,7 @@ impl ArgumentFault {
             | Self::UnknownCrs
             | Self::InvalidLatitude
             | Self::NonFiniteCoordinate => ErrorKind::InvalidArgumentValue,
+            Self::General(kind) => kind,
         }
     }
 }
@@ -191,13 +196,12 @@ pub enum Error {
     /// analyzer option) are not migrated here: they carry ADR-0489's
     /// `InvalidArguments` class today, and moving them would change the
     /// Neo4j code they report. They stay a separate decision (ADR-0559).
-    #[error("semantic error: {}", kind_prefixed(*kind, detail.as_str()))]
+    #[error("semantic error: {}", kind_prefixed(fault.kind(), detail.as_str()))]
     ArgumentValue {
-        kind: ErrorKind,
+        /// The site's fault: it fixes the detail token's kind
+        /// ([`ArgumentFault::kind`]) and the GQLSTATUS the classifier sends.
+        fault: ArgumentFault,
         detail: String,
-        /// The per-site fault whose own GQLSTATUS the classifier sends;
-        /// `None` keeps the general one.
-        fault: Option<ArgumentFault>,
     },
     /// A uniqueness-constraint violation raised by constraint validation,
     /// carrying the violated constraint's name typed, so consumers match the
@@ -376,11 +380,7 @@ impl Error {
     /// with. Distinct from [`Self::argument_error`] by *stage*: this one is
     /// discovered while producing rows.
     pub fn argument_value_kind(kind: ErrorKind, detail: impl Into<String>) -> Self {
-        Self::ArgumentValue {
-            kind,
-            detail: detail.into(),
-            fault: None,
-        }
+        Self::argument_value_fault(ArgumentFault::General(kind), detail)
     }
 
     /// A run-time argument rejection at a site with its own live GQLSTATUS
@@ -390,9 +390,8 @@ impl Error {
     /// [`Self::argument_value_kind`].
     pub fn argument_value_fault(fault: ArgumentFault, detail: impl Into<String>) -> Self {
         Self::ArgumentValue {
-            kind: fault.kind(),
+            fault,
             detail: detail.into(),
-            fault: Some(fault),
         }
     }
 
@@ -739,8 +738,8 @@ impl Error {
                 CONSTRAINT_VALIDATION_FAILED,
                 Cow::Owned(uniqueness_detail(name)),
             )),
-            Error::ArgumentValue { kind, detail, .. } => {
-                Some((kind.as_str(), Cow::Borrowed(detail.as_str())))
+            Error::ArgumentValue { fault, detail } => {
+                Some((fault.kind().as_str(), Cow::Borrowed(detail.as_str())))
             }
             Error::DatabaseNotFound { name } => Some((
                 ErrorKind::DatabaseNotFound.as_str(),
