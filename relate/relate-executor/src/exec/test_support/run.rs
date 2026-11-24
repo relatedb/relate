@@ -300,15 +300,16 @@ pub(crate) fn walk_only(mut graph: Graph) -> Graph {
 /// clause defeating the stream, but any statement answering the same
 /// rows serves) on a graph from `fixture`, and on the walker-only twin
 /// of it. `side` names what `written` exercised in the failure message.
-/// The answer set may be empty — [`same_rows`] compares unconditionally;
-/// a caller that needs the fixture-matches guard asserts it at its own
-/// call site.
+/// The answer set may be empty — [`same_rows`] compares unconditionally.
+/// The oracle's result is returned, so a guarded caller
+/// ([`assert_agrees_with_held`]) asserts the fixture matched without
+/// re-running `expected`.
 pub(crate) fn assert_written_agrees_with_held(
     fixture: impl Fn() -> Graph,
     side: &str,
     written: &str,
     expected: &str,
-) {
+) -> QueryResult {
     let auto = fixture();
     let walk = walk_only(fixture());
     let oracle = exec_cypher(&auto, expected);
@@ -316,6 +317,24 @@ pub(crate) fn assert_written_agrees_with_held(
     assert!(same_rows(&got, &oracle), "{written}: {side} vs expected");
     let walked = exec_cypher(&walk, written);
     assert!(same_rows(&walked, &oracle), "{written}: walk vs expected");
+    oracle
+}
+
+/// [`assert_written_agrees_with_held`] with the fixture-matches guard
+/// folded in: the three ways must agree and the oracle's answer set is
+/// non-empty, so an empty differential is a broken fixture, not a pass.
+/// `side` names what `written` exercised in the failure message. A suite
+/// whose fixture legitimately answers empty reads the unguarded
+/// [`assert_written_agrees_with_held`] directly (its comparison admits an
+/// empty answer set).
+pub(crate) fn assert_agrees_with_held(
+    fixture: impl Fn() -> Graph,
+    side: &str,
+    written: &str,
+    expected: &str,
+) {
+    let oracle = assert_written_agrees_with_held(fixture, side, written, expected);
+    assert!(!oracle.rows.is_empty(), "{written}: the fixture matches");
 }
 
 /// Run `cypher` under a workspace ledger; the result's rows and the peak

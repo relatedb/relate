@@ -10,8 +10,8 @@ use relate_core::Value;
 use crate::pattern_engine::PatternEngine;
 
 use super::test_support::{
-    assert_written_agrees_with_held, build, exec_cypher, profiled, record_for, same_rows,
-    sort_rows, written_and_held, Built,
+    assert_agrees_with_held, build, exec_cypher, profiled, record_for, same_rows, sort_rows,
+    written_and_held, Built,
 };
 
 /// A hub (node 0) over `fan` children, each with two grandchildren, plus a
@@ -32,16 +32,11 @@ fn hub(fan: usize) -> Built {
 }
 
 /// `matched` is the `MATCH` text, `rest` the aggregating `RETURN`: folded
-/// as written, held with a `WITH *` between them, and the fixture matches
-/// (the shared differential admits an empty answer set, so the guard is
-/// the caller's).
+/// as written, held with a `WITH *` between them, and walked, with the
+/// shared fixture-matches guard (the hub always matches).
 fn assert_agrees(matched: &str, rest: &str) {
     let (written, held) = written_and_held(matched, rest);
-    assert!(
-        !exec_cypher(&hub(6).graph, &held).rows.is_empty(),
-        "{written}: the fixture matches"
-    );
-    assert_written_agrees_with_held(|| hub(6).graph, "folded", &written, &held);
+    assert_agrees_with_held(|| hub(6).graph, "folded", &written, &held);
 }
 
 #[test]

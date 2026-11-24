@@ -22,8 +22,8 @@ use super::match_clause::{
 };
 use super::pattern_policies::RowFold;
 use super::test_support::{
-    assert_written_agrees_with_held, build, error_of, exec_cypher, profiled, record_for,
-    run_metered, same_rows, try_exec_cypher, Built,
+    assert_agrees_with_held, build, error_of, exec_cypher, profiled, record_for, run_metered,
+    same_rows, try_exec_cypher, Built,
 };
 use crate::ctx::ExecCtx;
 use crate::overlay::ExecGraph;
@@ -55,16 +55,11 @@ fn chained_and_held(first: &str, second: &str, rest: &str) -> (String, String) {
 }
 
 /// `first` and `second` are the two `MATCH` clauses, `rest` what follows.
-/// Chained as written, held with a barrier between them, and walked. The
-/// fixture matches (the shared differential admits an empty answer set,
-/// so the guard is the caller's).
+/// Chained as written, held with a barrier between them, and walked, with
+/// the shared fixture-matches guard (the ring always matches).
 fn assert_agrees(first: &str, second: &str, rest: &str) {
     let (chained, held) = chained_and_held(first, second, rest);
-    assert!(
-        !exec_cypher(&ring(40).graph, &held).rows.is_empty(),
-        "{chained}: the fixture matches"
-    );
-    assert_written_agrees_with_held(|| ring(40).graph, "chained", &chained, &held);
+    assert_agrees_with_held(|| ring(40).graph, "chained", &chained, &held);
 }
 
 /// The same three-way agreement for a result whose row order is part of

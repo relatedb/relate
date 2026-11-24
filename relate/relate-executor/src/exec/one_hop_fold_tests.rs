@@ -14,8 +14,11 @@
 //! Answer-set parity runs through the shared three-way differential
 //! (`assert_written_agrees_with_held`, its statement pair from
 //! `written_and_held`) behind this suite's one [`assert_agrees`]
-//! wrapper; the walks probe runs once per test through the suite's
-//! [`walked`] helper.
+//! wrapper; the streaming-fold suites wrap the same differential with
+//! the fixture-matches guard (`assert_agrees_with_held`), which this
+//! suite cannot use — its empty-seek test answers empty by design — so
+//! it reads the unguarded core directly. The walks probe runs once per
+//! test through the suite's [`walked`] helper.
 
 use super::test_support::{
     assert_written_agrees_with_held, exec_cypher, written, written_and_held, Builder,
@@ -70,10 +73,12 @@ fn grouped(ent: &str, method: &str, n: i64) -> Vec<Value> {
 
 /// The suite's one differential call: over the shared fixture, the folded
 /// statement, its held twin, and the walk-only engine must answer the
-/// same rows — the `assert_agrees` spelling the streaming-fold suites
-/// model. The answer set may be empty (the shared helper compares
-/// unconditionally); the non-empty tests' golden rows carry the
-/// fixture-matches fact.
+/// same rows — the shared unguarded three-way differential the
+/// streaming-fold suites' guarded `assert_agrees_with_held` wraps. This
+/// suite reads the core directly because its empty-seek test answers
+/// empty by design (the guard would reject it). The answer set may be
+/// empty (the shared helper compares unconditionally); the non-empty
+/// tests' golden rows carry the fixture-matches fact.
 fn assert_agrees(written: &str, held: &str) {
     assert_written_agrees_with_held(provenance, "folded", written, held);
 }
