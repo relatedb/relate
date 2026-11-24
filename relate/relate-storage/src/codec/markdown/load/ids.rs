@@ -545,16 +545,13 @@ pub(super) fn resolve_links_and_stubs(
                 // An empty property map decodes to the empty map (the
                 // codec's converter iterates nothing) — no special
                 // case, same as the checkpoint side.
-                let properties = props_from_cypher_json(
-                    &entry.properties.clone().into_iter().collect(),
-                    value_encoding,
-                )
-                .map_err(|e| {
-                    Error::storage(format!(
-                        "{path}: relationship {rel_type}: {e}",
-                        path = file.path
-                    ))
-                })?;
+                let properties = props_from_cypher_json(&entry.properties, value_encoding)
+                    .map_err(|e| {
+                        Error::storage(format!(
+                            "{path}: relationship {rel_type}: {e}",
+                            path = file.path
+                        ))
+                    })?;
                 let identity = rel_identity(&file.key, rel_type, &target_key, &entry.properties);
                 // The manifest invariant's rel half rides the one home
                 // (`restored_id`), completed by the allocator's own

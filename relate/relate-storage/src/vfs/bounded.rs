@@ -212,8 +212,7 @@ struct ChargedGrowth<'a> {
     /// policy with nothing accounted (a throwaway capture).
     charge: Option<&'a mut WorkspaceCharge>,
     /// Bytes the charge held before the capture: the buffer's own share is
-    /// charged on top of it. Supplied once by the caller, who also settles
-    /// the charge against it.
+    /// charged on top of it, and the sink's trim settles against it.
     base: u64,
     /// The sink's bound in allocation space, narrowed once at construction.
     limit: usize,
@@ -309,8 +308,9 @@ impl<'a> BoundedSink<'a> {
     /// charge aborts the serialization at once with its typed error
     /// ([`Self::finish`]). The byte bound is admitted first, so the bound's
     /// refusal and its figures fire at the same write as without a charge.
-    /// `base` is what `charge` held before the capture; the buffer's share
-    /// is charged on top of it. With no `charge` the buffer grows by the
+    /// The sink reads what `charge` holds at this call as its base: the
+    /// buffer's share is charged on top of it, and [`Self::finish_trimmed`]
+    /// settles against the same base. With no `charge` the buffer grows by the
     /// same steps and nothing is accounted. A `limit` beyond allocation space is a
     /// typed error: it could bound no buffer.
     pub(crate) fn capture_charged(
@@ -318,13 +318,13 @@ impl<'a> BoundedSink<'a> {
         limit: u64,
         refusal: Refusal,
         charge: Option<&'a mut WorkspaceCharge>,
-        base: u64,
     ) -> Result<Self> {
         let limit_bytes = usize::try_from(limit).map_err(|_| {
             Error::storage(format!(
                 "a charged capture bound of {limit} bytes exceeds the allocation space"
             ))
         })?;
+        let base = charge.as_deref().map_or(0, WorkspaceCharge::bytes);
         let mut sink = Self::capture(output, limit, refusal);
         sink.growth = Some(ChargedGrowth {
             charge,
@@ -341,20 +341,65 @@ impl<'a> BoundedSink<'a> {
     /// `allocation_error(bytes)` when the allocator declined granted bytes;
     /// otherwise the serializer's own failure mapped by `serde_error`. The
     /// sink mints no subsystem-named error: the caller words what it owns.
+    ///
+    /// Only the Parquet snapshot's manifest encode concludes an uncharged,
+    /// untrimmed capture; [`Self::finish_trimmed`] is the other entry.
+    #[cfg(parquet_codec)]
     pub(crate) fn finish<E>(
         self,
         result: std::result::Result<(), E>,
         serde_error: impl FnOnce(E) -> Error,
         allocation_error: impl FnOnce(usize) -> Error,
     ) -> Result<u64> {
-        if let Some(error) = self.core.crossed_refusal() {
+        Self::conclude(self.core, result, serde_error, allocation_error)
+    }
+
+    /// [`Self::finish`] that also owns the end of a charged capture's
+    /// lifecycle: when the buffer's capacity stayed within `trim_at` bytes
+    /// it is trimmed to its length and the sink's own charge is settled at
+    /// base plus the trimmed capacity; a larger buffer keeps its capacity
+    /// and its charge, never copied again. An uncharged capture is trimmed
+    /// the same way with nothing to settle. Nothing is trimmed when the
+    /// serialization was refused.
+    pub(crate) fn finish_trimmed<E>(
+        self,
+        result: std::result::Result<(), E>,
+        serde_error: impl FnOnce(E) -> Error,
+        allocation_error: impl FnOnce(usize) -> Error,
+        trim_at: usize,
+    ) -> Result<u64> {
+        let Self {
+            core,
+            output,
+            growth,
+        } = self;
+        let bytes = Self::conclude(core, result, serde_error, allocation_error)?;
+        if output.capacity() <= trim_at {
+            output.shrink_to_fit();
+            if let Some(ChargedGrowth {
+                charge: Some(charge),
+                base,
+                ..
+            }) = growth
+            {
+                charge.resize(base.saturating_add(output.capacity() as u64))?;
+            }
+        }
+        Ok(bytes)
+    }
+
+    fn conclude<E>(
+        core: BoundCore,
+        result: std::result::Result<(), E>,
+        serde_error: impl FnOnce(E) -> Error,
+        allocation_error: impl FnOnce(usize) -> Error,
+    ) -> Result<u64> {
+        if let Some(error) = core.crossed_refusal() {
             return Err(error);
         }
-        match self.core.refused {
+        match core.refused {
             // Handled above; kept so the match stays exhaustive.
-            Some(Refused::Crossed(_)) | None => {
-                result.map_err(serde_error).map(|()| self.core.bytes)
-            }
+            Some(Refused::Crossed(_)) | None => result.map_err(serde_error).map(|()| core.bytes),
             Some(Refused::Growth(GrowthFailure::Charge(error))) => Err(error),
             Some(Refused::Growth(GrowthFailure::Allocation { bytes })) => {
                 Err(allocation_error(bytes))

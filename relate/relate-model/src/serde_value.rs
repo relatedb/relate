@@ -773,11 +773,27 @@ pub fn try_json_to_props_legacy(
     decode_props(obj, DecodeMode::Legacy)
 }
 
-fn decode_props(
-    obj: &JsonMap<String, JsonValue>,
+/// Decode version-2 properties from borrowed `(key, value)` entries, so a
+/// caller holding any keyed collection decodes without rebuilding a map.
+pub fn try_json_entries_to_props_v2<'a>(
+    entries: impl IntoIterator<Item = (&'a String, &'a JsonValue)>,
+) -> Result<IndexMap<String, CypherValue>, DecodeError> {
+    decode_props(entries, DecodeMode::V2)
+}
+
+/// [`try_json_entries_to_props_v2`] for version-1 properties.
+pub fn try_json_entries_to_props_legacy<'a>(
+    entries: impl IntoIterator<Item = (&'a String, &'a JsonValue)>,
+) -> Result<IndexMap<String, CypherValue>, DecodeError> {
+    decode_props(entries, DecodeMode::Legacy)
+}
+
+fn decode_props<'a>(
+    entries: impl IntoIterator<Item = (&'a String, &'a JsonValue)>,
     mode: DecodeMode,
 ) -> Result<IndexMap<String, CypherValue>, DecodeError> {
-    obj.iter()
+    entries
+        .into_iter()
         .map(|(key, value)| Ok((key.clone(), decode(value, &format!("$.{key}"), mode)?)))
         .collect()
 }

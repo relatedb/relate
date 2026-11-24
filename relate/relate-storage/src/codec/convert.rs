@@ -6,7 +6,9 @@
 use std::collections::BTreeMap;
 
 use relate_core::{cypher_to_value, value_to_cypher, Error, PropertyMap, Result, Temporal, Value};
-use relate_model::serde_value::{props_to_json, try_json_to_props_legacy, try_json_to_props_v2};
+use relate_model::serde_value::{
+    props_to_json, try_json_entries_to_props_legacy, try_json_entries_to_props_v2,
+};
 use relate_model::CypherValue;
 use serde_json::Value as JsonValue;
 
@@ -65,15 +67,19 @@ fn validate_persistable(value: &Value, path: &str) -> Result<()> {
     }
 }
 
-pub fn props_from_cypher_json(
-    props: &serde_json::Map<String, JsonValue>,
+/// Decode a property map's JSON entries through the store's value encoding.
+/// Takes the entries by reference (`&Map`, `&BTreeMap` or any iterator of
+/// borrowed pairs), so no caller rebuilds an owned map to call it. A decode
+/// failure names the property key path (`$.key...`) like the map decoders.
+pub fn props_from_cypher_json<'a>(
+    props: impl IntoIterator<Item = (&'a String, &'a JsonValue)>,
     value_encoding: u64,
 ) -> Result<BTreeMap<String, Value>> {
     let decoded = match value_encoding {
-        1 => try_json_to_props_legacy(props),
+        1 => try_json_entries_to_props_legacy(props),
         // Encoding 3 is value encoding 2 plus the inline ontology field
         // (ADR-0120 §6); the property encoding is identical.
-        2 | 3 => try_json_to_props_v2(props),
+        2 | 3 => try_json_entries_to_props_v2(props),
         _ => return Err(Error::storage("unsupported graph value encoding")),
     }
     .map_err(|e| Error::storage(format!("invalid graph property {e}")))?;
@@ -106,5 +112,28 @@ fn reject_geometry(value: &CypherValue, path: &str) -> Result<()> {
             Ok(())
         }
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn borrowed_entries_decode_like_a_map_and_name_the_key_path() {
+        let ok: BTreeMap<String, JsonValue> =
+            BTreeMap::from([("a".to_owned(), json!(1)), ("b".to_owned(), json!("x"))]);
+        let decoded = props_from_cypher_json(&ok, 2).unwrap();
+        assert_eq!(decoded.len(), 2);
+
+        let key = "p".to_owned();
+        let bad = json!({"__type": "point", "srid": 4326, "x": 1.5});
+        let err = props_from_cypher_json([(&key, &bad)], 2).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid graph property $.p.y"),
+            "{err}"
+        );
+        assert!(props_from_cypher_json(&ok, 9).is_err());
     }
 }

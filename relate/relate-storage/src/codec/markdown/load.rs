@@ -442,7 +442,7 @@ fn node_row(
         }
     }
     properties.insert(key_name.clone(), Json::String(name_path));
-    let decoded = props_from_cypher_json(&properties.into_iter().collect(), value_encoding)
+    let decoded = props_from_cypher_json(&properties, value_encoding)
         .map_err(|e| Error::storage(format!("{path}: {e}", path = file.path)))?;
     let mut labels = vec![file.label.clone()];
     labels.extend(file.doc.extra_labels.iter().cloned());
@@ -534,12 +534,10 @@ fn restore_embeddings(
             // decode below) fails closed like the rest of the load.
             continue;
         };
-        let mut single = serde_json::Map::new();
-        single.insert(property.to_string(), value.clone());
         // The embeddings map is engine-authored sidecar data: a value
         // that fails to decode is corruption, not tolerance — every
         // other decode failure on this load path already fails closed.
-        let decoded = props_from_cypher_json(&single, value_encoding)
+        let decoded = props_from_cypher_json([(&property.to_string(), value)], value_encoding)
             .map_err(|e| md::vault_error(format!("restoring embedding '{embedding_key}': {e}")))?;
         // `ids_by_key` only ever holds ids this load placed in the
         // graph — a miss here is a broken invariant, not a tolerance

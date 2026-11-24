@@ -78,11 +78,7 @@ impl EncodedOps {
         Self::encode_with(ops, None, cap)
     }
 
-    fn encode_with(
-        ops: &[RedoOp],
-        mut meter: Option<&mut WorkspaceCharge>,
-        cap: u64,
-    ) -> Result<Self> {
+    fn encode_with(ops: &[RedoOp], meter: Option<&mut WorkspaceCharge>, cap: u64) -> Result<Self> {
         // The frame-bound admission lives in the one core every encoding
         // funnels through, so no entry point can bypass it (ADR-0650).
         super::check_payload_cap(cap, "WAL payload cap")?;
@@ -98,29 +94,24 @@ impl EncodedOps {
         // (ADR-0494), spelled together here — the one bounded pass over a
         // commit record.
         let refusal = Refusal::Capacity(CapacityKind::WalPayload);
-        // What the charge held before this encoding, read once: the sink
-        // charges the buffer on top of it and the trim settles against it.
-        let held = meter.as_deref().map_or(0, WorkspaceCharge::bytes);
-        let mut sink =
-            BoundedSink::capture_charged(&mut buf, cap, refusal, meter.as_deref_mut(), held)?;
+        let mut sink = BoundedSink::capture_charged(&mut buf, cap, refusal, meter)?;
         let result: io::Result<()> = serde_json::to_writer(&mut sink, ops)
             .map_err(io::Error::from)
             .and_then(|()| sink.write_all(b"}"));
-        sink.finish(result, wal_serialization_error, |bytes| {
-            Error::storage(format!(
-                "WAL encode buffer allocation of {bytes} bytes failed"
-            ))
-        })?;
-        // A record within 64 KiB is small enough that
-        // trimming its slack is a cheap copy: hand the slack back. A
-        // larger buffer keeps its capacity (and its charge) — it is never
-        // copied again.
-        if buf.capacity() <= SMALL_RECORD_BYTES {
-            buf.shrink_to_fit();
-            if let Some(charge) = meter {
-                charge.resize(held.saturating_add(buf.capacity() as u64))?;
-            }
-        }
+        // A record within 64 KiB is small enough that trimming its slack
+        // is a cheap copy: the sink hands the slack back and settles its
+        // charge. A larger buffer keeps its capacity (and its charge) — it
+        // is never copied again.
+        sink.finish_trimmed(
+            result,
+            wal_serialization_error,
+            |bytes| {
+                Error::storage(format!(
+                    "WAL encode buffer allocation of {bytes} bytes failed"
+                ))
+            },
+            SMALL_RECORD_BYTES,
+        )?;
         Ok(Self {
             buf,
             start: HEADER_MAX,
