@@ -1,0 +1,107 @@
+name: load-perf
+
+# The REL8-211 load ground truth as a per-PR lane: every in-review PR
+# builds the release CLI from its own head and runs the 1M-node +
+# 1M-relationship `UNWIND ... CREATE` statement three times on a fresh
+# store, reporting execute/wall/user/RSS per round in the job summary.
+#
+# Reporting, not gating — the spec-harness precedent (ADR-0482 §4), the
+# sqlite-gate lane's rule: a number never fails the build, only a run the
+# script cannot read back does. No envelope, no bands; comparisons are
+# run-to-run on this runner class, read by a human on the PR.
+#
+# Why CI at all: the same reason as sqlite-gate — a developer box is not a
+# measurement host. The 2026-11-23 REL8-211 re-measure needed a load
+# average under 4 on every window for 4.75 hours and never got one: the
+# box is shared with sibling builds and the standing daemon load, and a
+# user-CPU reading taken above the bar is provisional at best
+# (six quiet repeats once falsified an apparent doubling that was pure
+# contention). A runner is quiet by construction.
+#
+# Numbers on a draft PR without flipping it: workflow_dispatch this
+# workflow on the draft's head branch.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# contents: read only. The report rides the job summary and the artifact;
+# no PR-comment step, so no pull-requests grant.
+permissions:
+  contents: read
+
+concurrency:
+  group: load-perf-${{ github.head_ref || github.ref }}${{ github.event.pull_request.draft && '-draft' || '' }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    name: Load perf (REL8-211 ground truth)
+    # Drafts run the light fast gate only (AGENTS.md); this lane waits for
+    # ready-for-review. A dispatch or push run has no pull_request context
+    # and passes the guard.
+    if: ${{ !github.event.pull_request.draft }}
+    # The loadtest runner class (`vars.LOADTEST_RUNNER`, the query-latency
+    # lane's variable — one place a class change lands). Not the free tier:
+    # the lane is a timing measurement, and the quieter 4-core host
+    # steadies the rounds (the LABS-310 rationale).
+    runs-on: ${{ vars.LOADTEST_RUNNER }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # The canonical Rust preamble (sccache, pinned toolchain, mold,
+      # rust-cache) — setup-rust-ci, not a hand-copied block.
+      - uses: ./.github/actions/setup-rust-ci
+
+      - name: Build the release CLI
+        run: cargo build --release -p relate-cli --bin relate
+
+      - name: Run the ground truth (3 rounds, fresh store each)
+        env:
+          RELATE_TELEMETRY: "off"
+        # Rounds and out-dir are the script's own defaults (3,
+        # target/load-perf) — the lane takes them, never re-spells them.
+        run: scripts/load-perf.sh target/release/relate
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: load-perf-report
+          path: target/load-perf/
+          if-no-files-found: warn
+
+      - name: Job summary — the numbers
+        if: always()
+        run: |
+          {
+            echo "## Load perf — REL8-211 ground truth"
+            echo
+            echo "1M nodes + 1M rels through one \`UNWIND ... CREATE\`, 3 rounds, fresh store per round, release CLI from this PR's head."
+            echo
+            if [ -f target/load-perf/REPORT.md ]; then
+              # Everything past the report's own title line: its header row
+              # carries binary and date; the commit and runner class are
+              # this run's facts.
+              tail -n +2 target/load-perf/REPORT.md
+            else
+              echo "_No REPORT.md — see the job log._"
+            fi
+            echo
+            echo "- **Run-to-run only.** Rows compare against other rows from this runner class, never against a local box or a different class."
+            echo "- **Load stamps.** Each row's before → after pair is its quietness record; a row whose stamps moved is contaminated, whatever its numbers say."
+            echo "- **Reporting lane.** No gate, no baseline. The workload and the per-item create/install mechanism it measures are REL8-211."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Disk headroom (telemetry)
+        if: always() && runner.os == 'Linux'
+        run: scripts/report-disk.sh

@@ -1,0 +1,3 @@
+### Notes
+
+- New report-only CI lane: the REL8-211 load ground truth (1M nodes + 1M rels through one `UNWIND ... CREATE`, 3 rounds on a fresh store) now runs on the loadtest runner class for every ready PR, every `main` push, and on-demand dispatch, reporting execute/wall/user/RSS per round in the job summary (`scripts/load-perf.sh`; `make load-perf` runs the identical measurement locally). Reporting only, never a merge gate (the sqlite-gate rule, ADR-0482 §4): the point is a clean-host number on every PR instead of one-off readings from a shared dev box — the 2026-11-23 re-measure never found a load window under 4 in 4.75 hours.

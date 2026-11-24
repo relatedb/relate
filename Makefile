@@ -549,6 +549,17 @@ query-latency-profile:
 	@test -n "$(QID)" || { echo "query-latency-profile: set QID (1-30), e.g. make query-latency-profile QID=19"; exit 2; }
 	cargo run --profile profiling -p relate-query-latency -- profile --sf $(SF) --qid $(QID) --seconds $(SECONDS) $(QUERY_LATENCY_PROFILE_ARGS)
 
+## load-perf: The REL8-211 load ground truth — 1M nodes + 1M rels through one
+##   UNWIND ... CREATE, three rounds on a fresh store, execute/wall/user/RSS
+##   per round with load stamps. Report-only: no envelope, no bands, nothing
+##   fails on a number (docs/testing/load-perf.md; the CI lane runs the same
+##   script on a quiet runner). The defaults (range, rounds, out-dir) are the
+##   script's own, spelled once there — overrides ride the script's own env
+##   names, which make passes through: LOAD_PERF_RANGE=… LOAD_PERF_ROUNDS=…
+##   make load-perf.
+load-perf: build
+	sh $(CURDIR)/scripts/load-perf.sh target/release/relate
+
 ## bulk-loadtest: Bulk create/merge/update/delete per batch size (ADR-0070 Docker env)
 bulk-loadtest:
 ifeq ($(BASELINE_ENV),host)
@@ -695,6 +706,12 @@ test-stamp-swift-package:
 test-build-xcframework:
 	sh $(CURDIR)/scripts/tests/test_build_xcframework.sh
 
+## test-load-perf-scripts: The load-perf measurement script's parse suite —
+##   GNU and BSD time(1) shapes behind engine stubs, plus the failure
+##   rules; a real 1M round is the CI lane's job, not a test's
+test-load-perf-scripts:
+	sh $(CURDIR)/scripts/tests/test_load_perf.sh
+
 ## test-scripts: Every scripts/tests suite through one owner — the CI lanes
 ##   run this aggregate; membership is enforced by test_makefile_targets.sh
 test-scripts: test-compare-loadtest test-install-sh test-sign-repo-metadata \
@@ -703,7 +720,8 @@ test-scripts: test-compare-loadtest test-install-sh test-sign-repo-metadata \
 	test-baseline-scripts test-bolt-compat-scripts test-adr-scripts \
 	test-release-scripts test-front-bench-scripts test-opencode-review-post \
 	test-stamp-swift-package \
-	test-build-xcframework test-rename-residuals test-makefile-targets test-premerge-check
+	test-build-xcframework test-rename-residuals test-makefile-targets test-premerge-check \
+	test-load-perf-scripts
 
 VERSION ?= $(shell sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
 
