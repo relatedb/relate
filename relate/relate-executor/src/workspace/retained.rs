@@ -238,7 +238,7 @@ impl<'a> RowWalk<'a> {
                     }
                 }
                 Expandable::Entries(entries) => {
-                    for (_, value) in entries.iter() {
+                    for value in entries.values() {
                         self.note_value(value);
                     }
                 }

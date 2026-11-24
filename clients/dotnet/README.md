@@ -9,7 +9,7 @@ is preserved in [third-party notices](THIRD-PARTY-NOTICES.md).
 
 ## Build and test
 
-From the repository root, with Rust 1.88 and the .NET 10 SDK plus .NET 8 runtime
+From the repository root, with Rust 1.99 and the .NET 10 SDK plus .NET 8 runtime
 (the F# tests use the SDK's newer compiler):
 
 ```sh

@@ -32,6 +32,17 @@ environment_from = _env.environment_from
 runner_label = _env.runner_label
 
 
+def pinned_reference(image: str, inspected: str) -> str:
+    """`name@digest` for `image`, from a docker inspect's RepoDigest/Id.
+
+    The caller's own digest, if it carries one (the env pins do), is
+    replaced by the inspected one rather than appended — re-pinning an
+    already-pinned reference is a no-op, and `name@a@b` is not a reference.
+    """
+    digest = inspected.split("@", 1)[1] if "@" in inspected else inspected
+    return f"{image.split('@', 1)[0]}@{digest}"
+
+
 def docker_image_pin(image: str) -> str:
     """Return name@sha256:... (or name@Id when RepoDigests is empty)."""
     fmt = (
@@ -51,8 +62,7 @@ def docker_image_pin(image: str) -> str:
     pin = result.stdout.strip()
     if not pin:
         raise SystemExit(f"baseline-fingerprint: empty inspect for {image!r}")
-    digest = pin.split("@", 1)[1] if "@" in pin else pin
-    return f"{image}@{digest}"
+    return pinned_reference(image, pin)
 
 
 def container_uname_m(run_image: str) -> str:
@@ -87,7 +97,7 @@ def config_int(report: dict[str, Any], key: str) -> int | None:
 
 
 def discover_environment(report: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
-    build_image = args.build_image or os.environ.get("BASELINE_BUILD_IMAGE", "rust:1.88-bookworm")
+    build_image = args.build_image or os.environ.get("BASELINE_BUILD_IMAGE", "rust:1.99-bookworm")
     run_image = args.run_image or os.environ.get("BASELINE_RUN_IMAGE", "debian:bookworm-slim")
     cpus = args.cpus if args.cpus is not None else int(os.environ.get("BASELINE_CPUS", "2"))
     period = (

@@ -142,18 +142,8 @@ pub fn default_store_uri() -> PathBuf {
 }
 
 pub fn run(cfg: &MemoryShapeConfig) -> Result<MemoryShapeReport, String> {
-    if process_status(std::process::id()).is_none() {
-        return Err(
-            "memory-shape RSS sampling needs Linux /proc/<pid>/status (VmRSS and VmHWM)".into(),
-        );
-    }
+    crate::memory::require_loadtest_preflight("memory-shape", "relate serve", &cfg.bolt_bin)?;
     let store_root = store_root(&cfg.store)?;
-    if !cfg.bolt_bin.is_file() {
-        return Err(format!(
-            "relate serve binary not found at {} — build it before this loadtest",
-            cfg.bolt_bin.display()
-        ));
-    }
     let scale = ShapeScale::Large {
         logical_bytes: cfg.logical_target_bytes,
     };
@@ -606,10 +596,7 @@ fn fill_until_capacity(
     begin_phase(live, phase)?;
     let mut cursor = FillCursor::new(shape, attributes, indexes);
     let mut n = 0usize;
-    loop {
-        let Some(statement) = cursor.next_statement()? else {
-            break;
-        };
+    while let Some(statement) = cursor.next_statement()? {
         n += 1;
         match run_statement(&mut cursor, live, phase, n, &statement, &mut run_one)? {
             StatementOutcome::Acked => {
@@ -648,7 +635,10 @@ fn fill_until_capacity(
     if n == 0 {
         progress(&format!("      {phase:<5} no statements"));
     }
-    if shape != GraphShape::Base {
+    // `max_nodes` is the one carrier of "this shape is bounded" (decided
+    // once at construction): a bounded shape that stops before its census
+    // target is a fill failure, the unbounded probe shape is done.
+    if max_nodes.is_some() {
         return Err(format!(
             "{} produced no further statements before the {limit} byte memory limit",
             shape.as_str()

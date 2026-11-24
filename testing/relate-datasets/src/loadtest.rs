@@ -403,10 +403,7 @@ fn run_workers<D: LoadtestDataset>(
         handles.push(std::thread::spawn(move || -> Result<Vec<OpRecord>> {
             let mut conn = db.connect()?;
             let mut records = Vec::new();
-            loop {
-                let Some((seq, phase)) = claim_next_op(&next, total, warmup as u64) else {
-                    break;
-                };
+            while let Some((seq, phase)) = claim_next_op(&next, total, warmup as u64) {
                 records.push(exec_one(dataset, &mut conn, &work, seq, phase, wid as u32)?);
             }
             Ok(records)

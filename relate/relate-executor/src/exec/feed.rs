@@ -24,6 +24,12 @@ use crate::row::Row;
 use super::batch_tail::BATCH_ROWS;
 use super::profile_tick::{ParkedFacts, StreamedStats};
 
+/// The batch-construction stride between `retained_rows_of` repricings: the
+/// walk is O(batch), so it is amortized over this many rows instead of per
+/// row or once per batch (the tail past the last stride is priced at the
+/// end of the loop).
+const PRICE_CHECK_ROWS: usize = 64;
+
 /// One batch of rows off a [`RowStream`] (ADR-0660), never more than
 /// [`BATCH_ROWS`] — the ADR-0555 batch bound.
 pub(crate) struct RowBatch(Vec<Row>);
@@ -202,7 +208,7 @@ impl<'a> RowStream<'a> {
             match self.next_row()? {
                 Some(row) => {
                     batch.push(row);
-                    if batch.len() % 64 == 0 {
+                    if batch.len().is_multiple_of(PRICE_CHECK_ROWS) {
                         charge.resize_with(|| crate::workspace::retained_rows_of(&batch))?;
                     }
                 }

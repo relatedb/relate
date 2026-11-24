@@ -7,8 +7,8 @@
     "class": "relate-loadtest-baseline/v1",
     "arch": "x86_64",
     "os": "linux",
-    "build_image": "rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0",
-    "run_image": "debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc",
+    "build_image": "rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c",
+    "run_image": "debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e",
     "cpus": 2,
     "cpu_period_us": 10000,
     "cpu_quota_us": 20000,
@@ -49,34 +49,34 @@
   "cases": {
     "connection-cap": {
       "graph_rss_bytes": {
-        "min": 51134464,
-        "max": 52158464
+        "min": 51015680,
+        "max": 57057280
       },
       "processing_rss_min_bytes": {
-        "min": 196608,
-        "max": 675840
+        "min": 0,
+        "max": 397312
       },
       "processing_rss_max_bytes": {
-        "min": 225280,
-        "max": 741376
+        "min": 0,
+        "max": 528384
       },
       "session_cost_bytes": {
         "min": 0,
-        "max": 49152
+        "max": 0
       }
     },
     "unlimited-connections": {
       "graph_rss_bytes": {
-        "min": 50581504,
-        "max": 51867648
+        "min": 56565760,
+        "max": 56745984
       },
       "processing_rss_min_bytes": {
         "min": 0,
-        "max": 7221248
+        "max": 7667712
       },
       "processing_rss_max_bytes": {
-        "min": 688128,
-        "max": 11042816
+        "min": 880640,
+        "max": 10964992
       },
       "session_cost_bytes": {
         "min": 0,
@@ -85,19 +85,19 @@
     },
     "concurrent-logical-workspace-limit": {
       "graph_rss_bytes": {
-        "min": 18735104,
-        "max": 19247104
+        "min": 20090880,
+        "max": 20709376
       },
       "processing_rss_min_bytes": {
-        "min": 4825088,
-        "max": 4997120
+        "min": 4661248,
+        "max": 5091328
       },
       "processing_rss_max_bytes": {
-        "min": 5001216,
-        "max": 5128192
+        "min": 4841472,
+        "max": 5275648
       },
       "session_cost_bytes": {
-        "min": 188416,
+        "min": 212992,
         "max": 278528
       }
     }
@@ -105,20 +105,20 @@
   "workloads": {
     "workload-indexed": {
       "graph_rss_bytes": {
-        "min": 18870272,
-        "max": 19275776
+        "min": 20172800,
+        "max": 20426752
       },
       "processing_rss_min_bytes": {
-        "min": 15519744,
-        "max": 21143552
+        "min": 31432704,
+        "max": 49586176
       },
       "processing_rss_max_bytes": {
-        "min": 121503744,
-        "max": 128462848
+        "min": 137764864,
+        "max": 140730368
       },
       "session_cost_bytes": {
-        "min": 3436544,
-        "max": 3538944
+        "min": 3252224,
+        "max": 3608576
       },
       "reads_succeeded": {
         "min": 32,
@@ -139,20 +139,20 @@
     },
     "workload-scan": {
       "graph_rss_bytes": {
-        "min": 17657856,
-        "max": 18137088
+        "min": 19062784,
+        "max": 19927040
       },
       "processing_rss_min_bytes": {
-        "min": 13524992,
-        "max": 26980352
+        "min": 33202176,
+        "max": 33574912
       },
       "processing_rss_max_bytes": {
-        "min": 120619008,
-        "max": 127426560
+        "min": 139399168,
+        "max": 142155776
       },
       "session_cost_bytes": {
-        "min": 3317760,
-        "max": 3645440
+        "min": 3366912,
+        "max": 3670016
       },
       "reads_succeeded": {
         "min": 32,
@@ -175,52 +175,52 @@
   "calibration": {
     "sort": {
       "max_rss_to_logical_ratio": {
-        "min": 1.0773598296664302,
-        "max": 1.4022662889518414
+        "min": 1.1841359773371105,
+        "max": 1.226628895184136
       },
       "max_cgroup_to_logical_ratio": {
-        "min": 0.9994674241079354,
-        "max": 1.0821529745042493
+        "min": 0.9065155807365439,
+        "max": 0.9065155807365439
       }
     },
     "expand": {
       "max_rss_to_logical_ratio": {
-        "min": 2.0990825688073396,
-        "max": 2.146788990825688
+        "min": 0.956247129076711,
+        "max": 1.0010338885697876
       },
       "max_cgroup_to_logical_ratio": {
-        "min": 2.0721175930179148,
-        "max": 2.214678899082569
+        "min": 0.9627928341754708,
+        "max": 1.0568807339449542
       }
     },
     "aggregation": {
       "max_rss_to_logical_ratio": {
-        "min": 1.3174603174603174,
-        "max": 1.3945578231292517
+        "min": 1.6547945205479453,
+        "max": 2.0821917808219177
       },
       "max_cgroup_to_logical_ratio": {
-        "min": 1.1315192743764173,
-        "max": 1.1564625850340136
+        "min": 1.5350034317089911,
+        "max": 1.9287671232876713
       }
     },
     "distinct": {
       "max_rss_to_logical_ratio": {
-        "min": 1.256235827664399,
-        "max": 1.3219954648526078
+        "min": 1.1118682566723452,
+        "max": 1.4285714285714286
       },
       "max_cgroup_to_logical_ratio": {
-        "min": 1.0979557069846677,
-        "max": 1.1519274376417235
+        "min": 1.1141396933560477,
+        "max": 1.3061224489795917
       }
     },
     "create": {
       "max_rss_to_logical_ratio": {
-        "min": 1.2897560975609756,
-        "max": 1.6186770428015564
+        "min": 1.2495121951219512,
+        "max": 1.509727626459144
       },
       "max_cgroup_to_logical_ratio": {
-        "min": 1.248780487804878,
-        "max": 1.311219512195122
+        "min": 1.233170731707317,
+        "max": 1.482490272373541
       }
     }
   }

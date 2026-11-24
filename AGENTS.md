@@ -397,11 +397,11 @@ Process, not code shape:
 
 ## Toolchain
 
-- MSRV: Rust 1.88. With a local toolchain newer than the CI pin, run
-  clippy as `rustup run 1.88 cargo clippy …` — different versions fire
-  different lints. Sanctioned `-A` allowances (`-A deprecated -A
-  clippy::chunks_exact_to_as_chunks`) cover pre-existing lints in
-  untouched files only, never findings in the push's own files
+- MSRV: Rust 1.99, pinned 1.99.1 (ADR-0671). With a local toolchain
+  newer than the CI pin, run clippy as `rustup run 1.99.1 cargo clippy …`
+  — different versions fire different lints. Sanctioned `-A` allowance
+  (`-A deprecated`) covers pre-existing lints in untouched files only,
+  never findings in the push's own files
 - Edition: 2021
 - License: Apache-2.0 (ADR-0055)
 
@@ -694,7 +694,7 @@ Loadtests frozen under `baselines/` = merge gate (ADR-0046). All baseline
 fraud, identity, checkpoint and memory-shape runs use the predefined
 baseline environment (ADR-0070): `make fraud-loadtest`, `make
 identity-loadtest`, `make fraud-checkpoint`, `make memory-shape-loadtest`,
-or `make baseline-loadtests` — compiled in `rust:1.88-bookworm`, run in
+or `make baseline-loadtests` — compiled in `rust:1.99-bookworm`, run in
 `debian:bookworm-slim`, 2 vCPUs, 2 GB RAM (`memory-shape` same caps,
 `MEMORY_SHAPE_MEMORY` default `2g`, ADR-0289). Every image-built lane
 builds from the one `Dockerfile.baseline`, parameterised by its bin list,

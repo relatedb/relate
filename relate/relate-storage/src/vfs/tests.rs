@@ -549,25 +549,37 @@ fn hex_16_is_lowercase_fixed_width_and_deterministic() {
 }
 
 #[test]
+fn decode_hex_16_roundtrips_and_rejects_other_shapes() {
+    for bytes in [[0xab; 16], [0x00; 16], [0x0f; 16], [u8::MAX; 16]] {
+        assert_eq!(decode_hex_16(&hex_16(bytes)), Some(bytes));
+    }
+    // One table for the 32-lowercase-hex rule, whichever entry point asks:
+    // `is_lower_hex_32` reads the decoder's rule, so both accept and refuse
+    // exactly these shapes.
+    let canonical = "0123456789abcdef0123456789abcdef";
+    assert_eq!(
+        decode_hex_16(canonical).map(hex_16).as_deref(),
+        Some(canonical)
+    );
+    assert!(is_lower_hex_32(canonical));
+    for bad in [
+        "AB".repeat(16), // uppercase
+        "0g".repeat(16), // non-hex
+        "ab".repeat(15), // 31 chars
+        "ab".repeat(17), // 33 chars
+        String::new(),   // empty
+    ] {
+        assert_eq!(decode_hex_16(&bad), None, "{bad}");
+        assert!(!is_lower_hex_32(&bad), "{bad}");
+    }
+}
+
+#[test]
 fn random_hex_16_is_unique_canonical_token() {
     let first = random_hex_16().unwrap();
     let second = random_hex_16().unwrap();
     assert!(is_lower_hex_32(&first));
     assert_ne!(first, second);
-}
-
-#[test]
-fn is_lower_hex_32_rejects_noncanonical_tokens() {
-    assert!(is_lower_hex_32("0123456789abcdef0123456789abcdef"));
-    for bad in [
-        "0123456789abcdef0123456789abcde",   // 31 chars
-        "0123456789abcdef0123456789abcdef0", // 33 chars
-        "0123456789abcdef0123456789ABCDEF",  // uppercase
-        "0123456789abcdef0123456789abcdeg",  // non-hex
-        "",
-    ] {
-        assert!(!is_lower_hex_32(bad), "{bad}");
-    }
 }
 
 /// `exists` fails closed: a path whose stat is denied is an `Err`, not

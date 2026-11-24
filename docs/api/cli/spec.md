@@ -17,7 +17,7 @@ arm64) and Windows (x86-64).
 (Debian 12+, Ubuntu 22.04+, Fedora 36+) and kernel 3.2 or newer — the glibc
 floor is whatever the artifact's symbol versions require, never above the
 `GLIBC_2.35` cap, and the kernel its ELF ABI tag names. It is built in the
-pinned `rust:1.88-bookworm`
+pinned `rust:1.99-bookworm`
 container (Debian 12 with glibc 2.36) for the x86-64 baseline ISA:
 `readelf -n` lists `x86 ISA needed: x86-64-baseline` only, so it needs no
 x86-64-v2/v3 CPU feature. `scripts/check-linux-isa.sh relate-linux-amd64`

@@ -182,7 +182,7 @@ fn oversized_ontology_document_fails_preflight_before_writing() {
         spec: "x".repeat(relate_executor::MAX_ONTOLOGY_SPEC_BYTES + 1),
     };
     let err = wal
-        .preflight_record(2, 2, &[too_big.clone()])
+        .preflight_record(2, 2, std::slice::from_ref(&too_big))
         .err()
         .unwrap();
     assert!(matches!(err, Error::Storage(_)), "{err}");

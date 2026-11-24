@@ -11,11 +11,14 @@
 //! calls [`require_sampling_available`] before sampling, so an unsupported
 //! platform fails with one explicit error instead of a fabricated zero-byte
 //! report. The memory-shape runner is the exception: it samples the
-//! `relate-bolt` child's pid through the canonical `process_status`, so
-//! it keeps its own Linux-only guard in `memory_shape::run` instead of
-//! calling this process-sampling check.
+//! `relate-bolt` child's pid through the canonical `process_status`, so the
+//! two memory loadtest lanes call [`require_loadtest_preflight`] — the
+//! child-sampling capability and the binary they spawn — instead of this
+//! process-sampling check.
 
-use relate_test_support::sampling::{process_peak_rss_bytes, process_rss_bytes};
+use std::path::Path;
+
+use relate_test_support::sampling::{process_peak_rss_bytes, process_rss_bytes, process_status};
 
 /// Refuse to run a memory-reporting harness without RSS sampling.
 ///
@@ -29,6 +32,31 @@ pub fn require_sampling_available() -> relate::Result<()> {
     Err(relate::Error::semantic(
         "memory reporting needs process RSS sampling (Linux /proc/<pid>/status or macOS task_info); RSS sampling is unavailable on this platform",
     ))
+}
+
+/// The preflight both memory loadtest lanes open with: the Linux `/proc`
+/// capability their child-pid RSS sampling needs, then the product binary
+/// the lane spawns. One home for both checks — `lane` and `bin_noun` name
+/// the lane and its binary in the messages (`memory-shape` spawns
+/// `relate serve`, `memory-controls` spawns `relate`), so neither lane's
+/// diagnostics are a second spelling.
+pub(crate) fn require_loadtest_preflight(
+    lane: &str,
+    bin_noun: &str,
+    bin: &Path,
+) -> Result<(), String> {
+    if process_status(std::process::id()).is_none() {
+        return Err(format!(
+            "{lane} RSS sampling needs Linux /proc/<pid>/status (VmRSS and VmHWM)"
+        ));
+    }
+    if !bin.is_file() {
+        return Err(format!(
+            "{bin_noun} binary not found at {} — build it before this loadtest",
+            bin.display()
+        ));
+    }
+    Ok(())
 }
 
 /// `used / limit` for CLI lines. `limit` `None` is unlimited; `used` `None` is

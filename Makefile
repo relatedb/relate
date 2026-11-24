@@ -274,8 +274,10 @@ gate:
 BASELINE_ENV ?= docker
 BASELINE_CPUS ?= 2
 BASELINE_MEMORY ?= 2g
-BASELINE_BUILD_IMAGE ?= rust:1.88-bookworm
-BASELINE_RUN_IMAGE ?= debian:bookworm-slim
+# The ADR-0070 images are NOT spelled here: baseline-env.sh owns the
+# digest-pinned values (LABS-1039) and exports them, so a make-driven
+# lane cannot override the pins with mutable tags. Override via the env
+# (BASELINE_BUILD_IMAGE=… make …), which env.sh still honors.
 BASELINE_ENV_SH := $(CURDIR)/scripts/baseline-env.sh
 
 SCALE ?= 0.10
@@ -368,7 +370,7 @@ TEXT_INDEXES ?= 0
 POINT_INDEXES ?= 0
 RANGE_INDEXES ?= 0
 
-export BASELINE_CPUS BASELINE_MEMORY BASELINE_BUILD_IMAGE BASELINE_RUN_IMAGE CARGO_PROFILE
+export BASELINE_CPUS BASELINE_MEMORY CARGO_PROFILE
 
 ## fraud-loadtest: In-tree fraud mixed-payments loadtest (ADR-0070 Docker env)
 fraud-loadtest:
@@ -573,8 +575,8 @@ endif
 
 ## test-compare-loadtest: Unit-test the loadtest baseline comparator, the
 ##   comparison-document aggregator, the self-updating PR comment, the
-##   worst-of-N freeze envelope, and the ADR-0245 query-latency gate
-##   (freeze + compare)
+##   worst-of-N freeze envelope, the environment-class stamp, and the
+##   ADR-0245 query-latency gate (freeze + compare)
 test-compare-loadtest:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_compare_loadtest.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_compare_baselines.py
@@ -584,6 +586,7 @@ test-compare-loadtest:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_query_latency_gate.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_compare_memory_controls.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_compare_memory_shape.py
+	$(PYTHON) $(CURDIR)/scripts/tests/test_baseline_fingerprint.py
 
 ## test-adr-scripts: Unit-test the ADR number mint and the PR conflict
 ##   checker (scripts/adr_mint.py, scripts/check_adr_numbers.py)

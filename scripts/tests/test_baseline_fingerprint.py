@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,9 +10,61 @@ from script_loader import ROOT, load
 # The shared environment-class model (scripts/loadtest_env.py), consumed by
 # both compare-loadtest.py and baseline-fingerprint.py.
 env_mod = load("loadtest_env", ROOT / "scripts" / "loadtest_env.py")
+fp_mod = load("baseline_fingerprint", ROOT / "scripts" / "baseline-fingerprint.py")
+
+
+def run_stamp(path: Path) -> subprocess.CompletedProcess[str]:
+    """The one `stamp` invocation the tests pin — the CLI name, the argv
+    shape and the class fields in one place, so a new stamp flag is added
+    once and the two cases cannot drift on the contract they assert."""
+    return subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "baseline-fingerprint.py"),
+            "stamp",
+            str(path),
+            "--arch",
+            "x86_64",
+            "--build-image-pin",
+            "rust:1.88-bookworm@sha256:aaa",
+            "--run-image-pin",
+            "debian:bookworm-slim@sha256:bbb",
+            "--cpus",
+            "2",
+            "--cpu-period-us",
+            "10000",
+            "--cpu-quota-us",
+            "20000",
+            "--memory",
+            "2g",
+            "--runner",
+            "github-actions:ubuntu-24.04",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 class BaselineFingerprintTests(unittest.TestCase):
+    def test_pinned_reference_replaces_the_callers_own_digest(self) -> None:
+        """The env pins arrive already digested; appending a second
+        `@sha256:...` would stamp `name@a@b`, which is not a reference."""
+        digest = "sha256:" + "e6" * 32
+        self.assertEqual(
+            fp_mod.pinned_reference(f"rust:1.99-bookworm@{digest}", f"rust:1.99-bookworm@{digest}"),
+            f"rust:1.99-bookworm@{digest}",
+        )
+        self.assertEqual(
+            fp_mod.pinned_reference("rust:1.99-bookworm", f"rust:1.99-bookworm@{digest}"),
+            f"rust:1.99-bookworm@{digest}",
+        )
+        # A local-only image inspects to its Id, which has no `@` at all.
+        self.assertEqual(
+            fp_mod.pinned_reference("relate:local", "sha256:abc"),
+            "relate:local@sha256:abc",
+        )
+
     def test_stamp_writes_environment_from_report_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "report.json"
@@ -22,36 +76,7 @@ class BaselineFingerprintTests(unittest.TestCase):
                     }
                 )
             )
-            import subprocess
-            import sys
-
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(ROOT / "scripts" / "baseline-fingerprint.py"),
-                    "stamp",
-                    str(path),
-                    "--arch",
-                    "x86_64",
-                    "--build-image-pin",
-                    "rust:1.88-bookworm@sha256:aaa",
-                    "--run-image-pin",
-                    "debian:bookworm-slim@sha256:bbb",
-                    "--cpus",
-                    "2",
-                    "--cpu-period-us",
-                    "10000",
-                    "--cpu-quota-us",
-                    "20000",
-                    "--memory",
-                    "2g",
-                    "--runner",
-                    "github-actions:ubuntu-24.04",
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+            result = run_stamp(path)
             self.assertEqual(result.returncode, 0, result.stderr)
             stamped = json.loads(path.read_text())
             self.assertEqual(stamped["environment"]["workers"], 4)
@@ -75,36 +100,7 @@ class BaselineFingerprintTests(unittest.TestCase):
                     }
                 )
             )
-            import subprocess
-            import sys
-
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(ROOT / "scripts" / "baseline-fingerprint.py"),
-                    "stamp",
-                    str(path),
-                    "--arch",
-                    "x86_64",
-                    "--build-image-pin",
-                    "rust:1.88-bookworm@sha256:aaa",
-                    "--run-image-pin",
-                    "debian:bookworm-slim@sha256:bbb",
-                    "--cpus",
-                    "2",
-                    "--cpu-period-us",
-                    "10000",
-                    "--cpu-quota-us",
-                    "20000",
-                    "--memory",
-                    "2g",
-                    "--runner",
-                    "github-actions:ubuntu-24.04",
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+            result = run_stamp(path)
             self.assertEqual(result.returncode, 0, result.stderr)
             stamped = json.loads(path.read_text())
             self.assertIsNone(stamped["environment"]["ops"])

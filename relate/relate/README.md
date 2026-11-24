@@ -13,7 +13,7 @@ a fsync'd write-ahead log and Parquet checkpoints.
 cargo add relate
 ```
 
-Rust 1.88+. The default features include the Parquet snapshot codec;
+Rust 1.99+. The default features include the Parquet snapshot codec;
 `default-features = false` builds without Arrow and Parquet (JSON stores,
 and a typed refusal when opening a Parquet store — never a silent fallback).
 

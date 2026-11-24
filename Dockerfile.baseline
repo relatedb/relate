@@ -8,7 +8,14 @@
 # re-download dependencies -- but cargo still rebuild-verifies the unchanged
 # crates (the measured CI finding the main Dockerfile records: restored
 # cache, full rebuild).
-ARG BASELINE_BUILD_IMAGE=rust:1.88-bookworm
+# The one toolchain fact this file carries: the target-cache id keys on it,
+# so a bump (or a --build-arg override pinning a different Rust) moves the
+# image and the cache suffix together. The build image has no default on
+# purpose — its only builder (baseline-container.sh) always passes the
+# pinned BASELINE_BUILD_IMAGE, so a standalone build without it fails
+# loudly instead of resolving whatever `rust:…` tag a default would spell.
+ARG BASELINE_TOOLCHAIN=1.99
+ARG BASELINE_BUILD_IMAGE
 ARG BASELINE_RUN_IMAGE=debian:bookworm-slim
 FROM ${BASELINE_BUILD_IMAGE} AS build
 # The eMudhra CA break (2026-10): the crates.io TLS fetches ride this
@@ -18,17 +25,23 @@ FROM ${BASELINE_BUILD_IMAGE} AS build
 RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80retries
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates
+# Re-declared in the stage: an ARG before FROM is global and BuildKit does
+# not substitute it (or any build-arg without a stage declaration) into a
+# stage's RUN — the cache id and the guard below would carry the literal
+# `${…}` text. The re-declaration inherits the global default / build-arg.
+ARG BASELINE_TOOLCHAIN
 ARG TARGETARCH
 ARG LANE_BINS
 ARG LANE_CACHE_ID
+ARG LANE_ENTRYPOINT
 WORKDIR /src
 COPY . /src
 RUN --mount=type=cache,id=relate-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=relate-cargo-git-${TARGETARCH},target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,id=relate-${LANE_CACHE_ID}-target-1.88-${TARGETARCH},target=/src/target,sharing=locked \
+    --mount=type=cache,id=relate-${LANE_CACHE_ID}-target-${BASELINE_TOOLCHAIN}-${TARGETARCH},target=/src/target,sharing=locked \
     set -eu; \
-    if [ -z "${LANE_BINS}" ] || [ -z "${LANE_CACHE_ID}" ]; then \
-      echo "LANE_BINS and LANE_CACHE_ID are required (see the header)" >&2; \
+    if [ -z "${LANE_BINS}" ] || [ -z "${LANE_CACHE_ID}" ] || [ -z "${LANE_ENTRYPOINT}" ]; then \
+      echo "LANE_BINS, LANE_CACHE_ID and LANE_ENTRYPOINT are required (see the header)" >&2; \
       exit 1; \
     fi; \
     bins=""; \
@@ -39,6 +52,10 @@ RUN --mount=type=cache,id=relate-cargo-registry-${TARGETARCH},target=/usr/local/
 
 FROM ${BASELINE_RUN_IMAGE}
 ARG LANE_ENTRYPOINT
+# The same three-name refusal as the build stage: a stage-only rebuild
+# bypasses it, and an empty entrypoint would exec the empty string — a
+# container exit 127 at run time instead of a build-time refusal.
+RUN [ -n "${LANE_ENTRYPOINT}" ] || { echo "LANE_BINS, LANE_CACHE_ID and LANE_ENTRYPOINT are required (see the header)" >&2; exit 1; }
 COPY --from=build /out/ /usr/local/bin/
 RUN mkdir -p /report
 # The entrypoint is a build arg, so the exec form cannot carry it; the one

@@ -5,7 +5,7 @@
 //! zero-padded past the end of the input) and classified through a
 //! 256-byte class table combined into a per-lane bitmask — the gigatoken
 //! `pretokenize/fast/mask.rs` technique implemented inline, safe `u64`
-//! arithmetic only (MSRV 1.88, no `std::arch`, no new dependency). Each
+//! arithmetic only (MSRV 1.99, no `std::arch`, no new dependency). Each
 //! classification step therefore covers eight bytes and never decodes a
 //! character per byte.
 //!

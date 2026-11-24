@@ -18,7 +18,9 @@
 #
 # - the Sonic image tag has one derivation: every `relate-sonic-*:<tag>`
 #   spelling in .sonic/ci.yml and the Dockerfiles agrees, and it is the
-#   Rust toolchain's major.minor the rust image installs
+#   Rust toolchain's major.minor the rust image installs. Every image is
+#   spelled at one definition site — ci.yml's anchored node, and the
+#   polyglot Dockerfile's build-arg — never per use
 #
 # Assertions use the shared TAP harness (scripts/tests/lib/tap.sh).
 
@@ -116,8 +118,8 @@ for spec in \
   '.sonic/ci.yml:source scripts/ffi-lib.sh:1' \
   '.sonic/ci.yml:bash /workspace/scripts:0' \
   '.sonic/ci.yml:source scripts/install-wasm-toolchain.sh:1' \
-  '.sonic/ci.yml:relate-sonic-:4' \
-  '.sonic/docker/sonic-polyglot.Dockerfile:relate-sonic-rust:1' \
+  '.sonic/ci.yml:relate-sonic-:2' \
+  '.sonic/docker/sonic-polyglot.Dockerfile:FROM ${RUST_IMAGE}:1' \
   '.sonic/docker/sonic-rust.Dockerfile:default-toolchain:1' \
   '.github/workflows/ci.yml:^ *crates::0' \
   '.github/workflows/ci.yml:LIB_SHARDS:0' \
@@ -169,9 +171,11 @@ tap_check "lib-shard count: $lib_cells axis cells == partition denominator $deno
 
 # --- .sonic: the image tag has one derivation -------------------------------
 
-# The Sonic image reference is spelled five times — both runner images and
-# both `docker build -t` commands in .sonic/ci.yml, plus the polyglot
-# Dockerfile's FROM; the site counts above pin how many each file carries.
+# The Sonic image reference is spelled twice in .sonic/ci.yml — one
+# anchored node per image — because both `docker build -t` commands read
+# their node through the environment (RUST_IMAGE / POLYGLOT_IMAGE), and the
+# polyglot Dockerfile takes its base as the RUST_IMAGE build-arg; the site
+# counts above pin how many each file carries.
 # What the counts cannot see is the derivation itself: every spelling must
 # carry the same tag, and that tag must be the major.minor of the
 # toolchain the rust image installs (its `--default-toolchain`, which

@@ -161,11 +161,11 @@ mod tests {
         let meter = Charged::default();
         let (a, b) = (text("2024-05-05T10:00:00Z"), text("2023-01-01T09:00:00Z"));
         for i in 0..rows {
-            let arg = if i % 2 == 0 { &a } else { &b };
+            let arg = if i.is_multiple_of(2) { &a } else { &b };
             let got = call(&memos, &meter, "datetime", arg).unwrap();
             assert_eq!(
                 got,
-                temporal::construct_named("datetime", &[arg.clone()]).unwrap()
+                temporal::construct_named("datetime", std::slice::from_ref(arg)).unwrap()
             );
         }
         let bytes = memos.datetime.borrow().stats().bytes;
@@ -196,7 +196,7 @@ mod tests {
             let dt = call(&memos, &meter, "datetime", &s).unwrap();
             assert_eq!(
                 dt,
-                temporal::construct_named("datetime", &[s.clone()]).unwrap()
+                temporal::construct_named("datetime", std::slice::from_ref(&s)).unwrap()
             );
         }
         assert!(memos.datetime.borrow().stats().hits > 0);
@@ -309,7 +309,7 @@ mod tests {
             let got = call(&memos, &meter, "datetime", &arg).unwrap();
             assert_eq!(
                 got,
-                temporal::construct_named("datetime", &[arg.clone()]).unwrap()
+                temporal::construct_named("datetime", std::slice::from_ref(&arg)).unwrap()
             );
         }
         assert_eq!(hashes(), before);

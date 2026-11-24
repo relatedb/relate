@@ -7,7 +7,7 @@ jar packaging of ADR-0490. API contract: [`docs/api/java/spec.md`](../../docs/ap
 ## Prerequisites
 
 - JDK 17+ and Maven
-- The Rust toolchain (1.88) to build the native library
+- The Rust toolchain (1.99) to build the native library
 
 ## Build the native library
 

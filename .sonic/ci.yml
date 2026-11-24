@@ -14,8 +14,12 @@ audit:
 
 runners:
   docker-cli: docker.io/library/docker:27-cli
-  sonic-rust: localhost/relate-sonic-rust:1.88
-  sonic-polyglot: localhost/relate-sonic-polyglot:1.88
+  # Both image tags are anchored here at their first use so the whole file
+  # spells each once: the runner image, the rust build's -t and the
+  # polyglot build's RUST_IMAGE resolve to the rust node, and the polyglot
+  # build's -t resolves to the polyglot node.
+  sonic-rust: &sonic-rust-image localhost/relate-sonic-rust:1.99
+  sonic-polyglot: &sonic-polyglot-image localhost/relate-sonic-polyglot:1.99
 
 matrix:
   shard:
@@ -71,10 +75,11 @@ actions:
     # Point the docker CLI config at a writable path.
     environment:
       DOCKER_CONFIG: /tmp/docker-config
+      RUST_IMAGE: *sonic-rust-image
     commands:
       - |
         set -eu
-        set -- build -t localhost/relate-sonic-rust:1.88 -f .sonic/docker/sonic-rust.Dockerfile --build-context scripts=scripts
+        set -- build -t "${RUST_IMAGE}" -f .sonic/docker/sonic-rust.Dockerfile --build-context scripts=scripts
         if [ -n "${GITHUB_TOKEN:-}" ] && [ "$GITHUB_TOKEN" != "GITHUB_TOKEN" ]; then
           set -- "$@" --secret id=GITHUB_TOKEN,env=GITHUB_TOKEN
         fi
@@ -92,8 +97,15 @@ actions:
     once: true
     environment:
       DOCKER_CONFIG: /tmp/docker-config
+      RUST_IMAGE: *sonic-rust-image
+      POLYGLOT_IMAGE: *sonic-polyglot-image
     commands:
-      - docker build --pull=false -t localhost/relate-sonic-polyglot:1.88 -f .sonic/docker/sonic-polyglot.Dockerfile .sonic/docker
+      # A block, like the rust build above: the Sonic runner gives a block
+      # command a shell, so the environment's ${…} expand; a single-line
+      # command runs without one and the tag would reach docker literally.
+      - |
+        set -eu
+        docker build --pull=false -t "${POLYGLOT_IMAGE}" --build-arg "RUST_IMAGE=${RUST_IMAGE}" -f .sonic/docker/sonic-polyglot.Dockerfile .sonic/docker
 
 suites:
   smoke-test:

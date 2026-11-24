@@ -15,8 +15,8 @@ use super::guards::{
     ChainEdges, InteriorGuard, TransitionPredicate,
 };
 use super::{
-    epsilon_closure, epsilon_index, plain_rel, quantified_admissible, var_length_quantified,
-    FrontierNfa, NfaTransition, STATE_CEILING,
+    alternating_chain, epsilon_closure, epsilon_index, plain_rel, quantified_admissible,
+    var_length_quantified, FrontierNfa, NfaTransition, STATE_CEILING,
 };
 
 /// The hop-length range of a compiled segment: fixed iff
@@ -431,7 +431,7 @@ impl<'a> Builder<'a> {
         close: Option<u32>,
         edges: ChainEdges<'_>,
     ) -> Option<(u32, Len)> {
-        if elements.len() < 3 || elements.len() % 2 == 0 {
+        if !alternating_chain(elements) {
             return None;
         }
         // Guards and the group predicate ride only a plain one-hop-rel
@@ -462,7 +462,7 @@ impl<'a> Builder<'a> {
             let last_hop = i + 2 == elements.len();
             let exit = if last_hop { last_target } else { None };
             match element {
-                PatternElement::Node(node) if i % 2 == 0 => {
+                PatternElement::Node(node) if i.is_multiple_of(2) => {
                     // Under the forced rung the boundary positions' guards
                     // were attached by the split above (or carry none);
                     // under the auto rung every chain node is an inner
@@ -475,7 +475,7 @@ impl<'a> Builder<'a> {
                     }
                     node_states.push((node.variable.clone(), current));
                 }
-                PatternElement::Relationship(rel) if i % 2 == 1 => {
+                PatternElement::Relationship(rel) if !i.is_multiple_of(2) => {
                     if rel.var_length {
                         // The nested var-length rel: predicates on the
                         // traversed edges decline before the
@@ -504,7 +504,7 @@ impl<'a> Builder<'a> {
                         })?;
                     }
                 }
-                PatternElement::Quantified(quantified) if i % 2 == 1 => {
+                PatternElement::Quantified(quantified) if !i.is_multiple_of(2) => {
                     // A nested quantified group — unconstructible by the
                     // parser (the `NestedQuantification` rule), but the IR
                     // shape exists; the same nested rules apply, its own

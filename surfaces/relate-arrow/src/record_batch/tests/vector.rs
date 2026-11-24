@@ -133,7 +133,7 @@ fn malformed_vectors_return_arrow_errors_before_building_or_chunking() {
                 "v",
                 VectorCoordKind::Int8,
                 i32::MAX as usize + 1,
-                &[bad.clone()],
+                std::slice::from_ref(&bad),
                 0,
             )
             .unwrap_err();

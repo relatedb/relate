@@ -273,15 +273,23 @@ impl Graph {
     }
 
     pub(super) fn charge(&self, delta: i64) {
+        // One policy in three stated cases: nothing to apply (routine —
+        // `charge(0)` is the no-constrained-tuple-moved call), a plain
+        // growth, and a release that is the saturation itself
+        // (`saturating_add_signed` floors at zero and takes the delta's
+        // sign, so no negation that overflows at `i64::MIN`).
+        if delta == 0 {
+            return;
+        }
         if delta > 0 {
             self.used_bytes.fetch_add(delta as u64, Ordering::Relaxed);
-        } else if delta < 0 {
-            let sub = (-delta) as u64;
-            atomic_fetch_update!(self.used_bytes, Ordering::Relaxed, Ordering::Relaxed, |u| {
-                Some(u.saturating_sub(sub))
-            })
-            .expect("the saturating-sub closure never rejects");
+            return;
         }
+        self.used_bytes
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |u| {
+                Some(u.saturating_add_signed(delta))
+            })
+            .expect("the saturating-add closure never rejects");
     }
 
     pub(super) fn charge_node_swap(&self, before: Option<&Node>, after: Option<&Node>) {

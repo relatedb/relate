@@ -91,7 +91,7 @@ make memory-shape-loadtest
 ```
 
 That builds the lane's binaries with `Dockerfile.baseline` (release binaries
-in `rust:1.88-bookworm`), runs them on `debian:bookworm-slim`, and writes
+in `rust:1.99-bookworm`), runs them on `debian:bookworm-slim`, and writes
 `target/memory-shape-loadtest.json`. Ctrl+C kills the container. A
 different logical size, or indexes on every filled shape:
 
@@ -130,7 +130,7 @@ Where the run happens, and where the report goes.
 | `OUT_MEMORY_SHAPE` | `target/memory-shape-loadtest.json` | Host path of the report. The container writes `/report/memory-shape-loadtest.json` and the script copies it out. |
 | `MEMORY_SHAPE_RUN` | UTC timestamp `YYYYMMDDTHHMMSS` | Suffix of the default database directory. |
 | `URI_MEMORY_SHAPE` | `/tmp/memory-shape-loadtest-$(MEMORY_SHAPE_RUN)` | Run directory. Each shape is stored at `<uri>/<shape>`, and disk MB is the full size of that directory after checkpoint, including the WAL. Docker bind-mounts this path into the container. Override the whole path with `URI_MEMORY_SHAPE=/path make memory-shape-loadtest`. |
-| `BASELINE_BUILD_IMAGE` | `rust:1.88-bookworm` | Image that compiles the two binaries. |
+| `BASELINE_BUILD_IMAGE` | `rust:1.99-bookworm` | Image that compiles the two binaries. |
 | `BASELINE_RUN_IMAGE` | `debian:bookworm-slim` | Image that runs them. |
 | `MEMORY_SHAPE_IMAGE` | `relate-memory-shape:local` | Tag of the built image. |
 | `MEMORY_SHAPE_CONTAINER` | `relate-memory-shape` | Container name. A new run removes the previous one. |
@@ -228,7 +228,7 @@ bytes per filled shape), `ATTRIBUTES=1`, and `TEXT_INDEXES`,
 `MEMORY_SHAPE_MEMORY=2g`. Unindexed dense-ring RSS at that size is about
 1.3 GB. A larger logical target needs a higher cap. Fraud, identity,
 and checkpoint stay on the same 2 GB cap. The shared `Dockerfile.baseline`
-compiles the lane's two binaries in `rust:1.88-bookworm` and runs them on
+compiles the lane's two binaries in `rust:1.99-bookworm` and runs them on
 `debian:bookworm-slim`. `BASELINE_ENV=host` is a debug escape. Do not
 freeze a host report.
 

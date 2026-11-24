@@ -133,7 +133,7 @@ message-schema version rather than a compiler version.
 | No stable Rust ABI; `abi_stable` stale, `stabby` niche, crABI unmerged | T1 must be a C ABI; a "Rust-native" plugin ABI would mean exact-toolchain coupling (Zenoh's cautionary tale) |
 | Single-writer store; WAL + Parquet/JSON codecs are a pinned contract | A third-party *storage* backend makes the format a public promise. SQLite promises it to 2050; Postgres refuses to. Decide only with that weight in view |
 | TCK floor = 3892 pinned scenarios | Closed parser; extensions add functions/procedures, never grammar |
-| MSRV 1.88, pinned clippy, feature bundles | Any new tier ships feature-gated with matching `--help`/bundle tables |
+| MSRV 1.99, pinned clippy, feature bundles | Any new tier ships feature-gated with matching `--help`/bundle tables |
 | ADR-0434 R7: extension children never link engine or surfaces | A T1 in-process tier deliberately inverts R7 for a *new* group; that needs its own ADR and boundary rules |
 | `full`/`agent`/`minimal` bundles already exist | T0 is an extension of shipped machinery, not a new concept |
 

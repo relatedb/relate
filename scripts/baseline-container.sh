@@ -135,7 +135,7 @@ BASELINE_CPUS="${BASELINE_CPUS:-2}"
 BASELINE_MEMORY="${BASELINE_MEMORY:-${memory}}"
 BASELINE_CPU_PERIOD_US="${BASELINE_CPU_PERIOD_US:-10000}"
 BASELINE_CPU_QUOTA_US="${BASELINE_CPU_QUOTA_US:-$((BASELINE_CPU_PERIOD_US * BASELINE_CPUS))}"
-BASELINE_BUILD_IMAGE="${BASELINE_BUILD_IMAGE:-rust:1.88-bookworm}"
+BASELINE_BUILD_IMAGE="${BASELINE_BUILD_IMAGE:-rust:1.99-bookworm}"
 BASELINE_RUN_IMAGE="${BASELINE_RUN_IMAGE:-debian:bookworm-slim}"
 export BASELINE_CPUS BASELINE_MEMORY BASELINE_CPU_PERIOD_US BASELINE_CPU_QUOTA_US
 export BASELINE_BUILD_IMAGE BASELINE_RUN_IMAGE
@@ -150,10 +150,17 @@ if ! docker image inspect "${BASELINE_BUILD_IMAGE}" >/dev/null 2>&1 \
 fi
 
 echo "${label}  image ${image}  container ${BASELINE_MEMORY}"
+# The target-cache suffix follows the resolved build image's toolchain, so
+# an env override pinning a different Rust moves the cache with it (a
+# non-`rust:<version>-…` image keys the cache on its whole reference).
+BASELINE_TOOLCHAIN="${BASELINE_TOOLCHAIN:-$(printf '%s' "${BASELINE_BUILD_IMAGE}" | sed -n 's/^rust:\([0-9][0-9.]*\)-.*/\1/p')}"
+[ -n "${BASELINE_TOOLCHAIN}" ] || BASELINE_TOOLCHAIN="${BASELINE_BUILD_IMAGE}"
 # The image knobs ride the exported BASELINE_BUILD_IMAGE /
-# BASELINE_RUN_IMAGE (ADR-0070's env contract; defaults in the Dockerfile);
+# BASELINE_RUN_IMAGE (ADR-0070's env contract; the run image's default is
+# in the Dockerfile, the build image has none — this is its one builder);
 # the lane knobs are the three parameters Dockerfile.baseline is built for.
 DOCKER_BUILDKIT=1 docker build \
+    --build-arg BASELINE_TOOLCHAIN="$BASELINE_TOOLCHAIN" \
     --build-arg BASELINE_BUILD_IMAGE="$BASELINE_BUILD_IMAGE" \
     --build-arg BASELINE_RUN_IMAGE="$BASELINE_RUN_IMAGE" \
     --build-arg LANE_BINS="$bins" \

@@ -155,19 +155,7 @@ pub fn run(
     mut on_case: impl FnMut(&CaseReport),
     on_workload: impl FnMut(&crate::memory_controls::workload::WorkloadReport),
 ) -> Result<Report, String> {
-    if process_status(std::process::id()).is_none() {
-        return Err(
-            "memory-controls RSS sampling needs Linux /proc/<pid>/status (VmRSS and VmHWM)".into(),
-        );
-    }
-    for (label, path) in [("relate", &cfg.serve_bin)] {
-        if !path.is_file() {
-            return Err(format!(
-                "{label} binary not found at {} — build it before this loadtest",
-                path.display()
-            ));
-        }
-    }
+    crate::memory::require_loadtest_preflight("memory-controls", "relate", &cfg.serve_bin)?;
     cfg.controls.validate()?;
     let started = stamp();
     let mut cases = Vec::new();

@@ -15,7 +15,7 @@
 # `node_modules`, and `target` directories inside the re-included
 # trees are excluded after that.
 # .cargo/config.toml only sets wasm32 rustflags and rust-toolchain.toml
-# is only honored by rustup (absent from rust:1.88-alpine), so neither
+# is only honored by rustup (absent from rust:1.99-alpine), so neither
 # is re-included.
 #
 # One docs file is compile-time input, not documentation for the reader:

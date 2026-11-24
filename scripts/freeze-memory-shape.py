@@ -18,13 +18,16 @@ import sys
 from pathlib import Path
 
 # The fixed graphs in testing/relate-datasets/src/memory_shape.rs.
+# Mid degree catches up to the sealed ladder of REL8-280 (#595): 77 whole
+# groups of the 1456-hop ladder (memory_shape.rs's MID_DEGREE_LARGE_NODES),
+# where #365's original 32–512 ladder froze at 74 groups summing 1536 hops.
 TARGETS = {
     "base": (0, 0),
     "flat": (120_000, 0),
     "fanout": (52_016, 52_000),
     "ring": (46_000, 46_000),
     "dense ring": (5_000, 100_000),
-    "mid degree": (1_184, 113_664),
+    "mid degree": (1_232, 112_112),
 }
 METRICS = ("logical_bytes", "disk_bytes", "attributed_rss_bytes", "ratio")
 KNOBS = (

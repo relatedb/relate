@@ -356,12 +356,17 @@ impl Graph {
                     .fold(0u128, |acc, &s| acc.saturating_add(s.saturating_mul(s))),
             );
             moments.sum = moments.sum.saturating_add(sum);
+            // A label with no live node left only has high-water buckets:
+            // nothing is there to cross, so its term is zero. `checked_div`
+            // is `None` for exactly that one case (clippy's
+            // `manual_checked_div` requires this spelling over an
+            // `if nodes == 0` branch, which the gate rejects), so the zero
+            // is the degenerate case itself rather than a default over it.
+            let cross_mean = cross_pairs.checked_div(nodes).unwrap_or(0);
             moments.sum_sq = moments
                 .sum_sq
                 .saturating_add(sum_sq)
-                .saturating_add(if nodes == 0 { 0 } else { cross_pairs / nodes });
-            // (A label with no live node left only has high-water
-            // buckets: nothing is there to cross, so its term is zero.)
+                .saturating_add(cross_mean);
         }
         moments
     }

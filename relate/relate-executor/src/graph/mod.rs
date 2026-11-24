@@ -31,22 +31,6 @@ pub(crate) enum EntityId {
     Rel(RelId),
 }
 
-/// `Atomic*::fetch_update` was renamed to `try_update` in Rust 1.95 and
-/// deprecated in 1.99. MSRV is 1.88, where `try_update` does not exist, so
-/// the call keeps the old name. `#[expect(deprecated)]` is wrong here: on
-/// 1.88 the lint does not fire and the build would fail.
-macro_rules! atomic_fetch_update {
-    ($atom:expr, $set:expr, $fetch:expr, $f:expr) => {{
-        #[allow(
-            deprecated,
-            reason = "fetch_update renamed to try_update in 1.99; try_update needs 1.95, MSRV is 1.88"
-        )]
-        {
-            $atom.fetch_update($set, $fetch, $f)
-        }
-    }};
-}
-
 mod access;
 mod accounting;
 #[cfg(any(test, feature = "test-hooks"))]
@@ -178,28 +162,33 @@ pub use theater::{CheckpointTheater, DatabaseEntry, SchemaSnapshot};
 /// both must fail rather than wrap once `i64::MAX` is reached. The two atomic
 /// widths exist because the overlay seeds its counters from the graph's.
 pub(crate) trait ExhaustibleIdCounter {
-    fn try_alloc_id(&self) -> std::result::Result<i64, i64>;
+    fn try_alloc_id(&self) -> Option<i64>;
 }
 
 impl ExhaustibleIdCounter for AtomicI64 {
-    fn try_alloc_id(&self) -> std::result::Result<i64, i64> {
-        atomic_fetch_update!(self, Ordering::Relaxed, Ordering::Relaxed, |id| {
+    fn try_alloc_id(&self) -> Option<i64> {
+        // `try_update` is `fetch_update`'s name since Rust 1.95 (the old
+        // name is deprecated in 1.99). It retries a lost race itself and
+        // returns `Err` only for the closure's `None` — the counter at
+        // its ceiling — so `.ok()` is "not allocated".
+        self.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| {
             if (0..i64::MAX).contains(&id) {
                 Some(id + 1)
             } else {
                 None
             }
         })
+        .ok()
     }
 }
 
 impl ExhaustibleIdCounter for AtomicU64 {
-    fn try_alloc_id(&self) -> std::result::Result<i64, i64> {
-        atomic_fetch_update!(self, Ordering::Relaxed, Ordering::Relaxed, |id| {
+    fn try_alloc_id(&self) -> Option<i64> {
+        self.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| {
             (id < i64::MAX as u64).then_some(id + 1)
         })
+        .ok()
         .map(|id| id as i64)
-        .map_err(|id| id as i64)
     }
 }
 
@@ -229,7 +218,7 @@ pub(crate) fn missing_rel_endpoint_error() -> relate_core::Error {
 pub(crate) fn alloc_exhaustible_id(counter: &impl ExhaustibleIdCounter, what: &str) -> Result<i64> {
     counter
         .try_alloc_id()
-        .map_err(|_| relate_core::Error::execution(format!("{what} ID exhausted")))
+        .ok_or_else(|| relate_core::Error::execution(format!("{what} ID exhausted")))
 }
 
 #[derive(Debug, Clone, Default)]

@@ -67,7 +67,7 @@ jobs:
         run: docker compose config --quiet
 
       # Same rate-limit relief as the docker-smoke lane (LABS-248): the
-      # product image build pulls rust:1.88-alpine, the control image
+      # product image build pulls rust:1.99-alpine, the control image
       # pulls clojure:temurin-21-bookworm, and the first harness run
       # downloads the Clojure/Maven deps.
       - name: Log in to Docker Hub
