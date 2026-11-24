@@ -158,6 +158,10 @@ pub(super) fn run(
             // open star) and whose rels it does not reuse — the cross-side
             // relationship-uniqueness rule, per pair.
             for a in &side_a {
+                // The pairing loop is the run's quadratic phase; sample the
+                // token per pair so a cancelled statement stops here, not
+                // after the whole hub has paired.
+                graph.cancel_tick()?;
                 if (!star.shared_terminal || a.terminal() == b.terminal()) && !a.rels_overlap(&b) {
                     let binding = Binding {
                         hub,
@@ -325,6 +329,10 @@ fn step_hop<P: NodePred>(
     // neighbor never evaluates it, the per-row path's behavior.
     let mut prepared: Option<P::Prepared> = None;
     let stream = graph.try_for_each_hop_resolved(from, hop.traverse, types, |rid, arrival| {
+        // Sample the token per candidate: one hop step can walk a whole
+        // adjacency list, and the recursive side walk beneath it ticks at
+        // its own candidates.
+        graph.cancel_tick()?;
         // The different-relationships rule inside the side: this hop's rel
         // differs from the rels the binding already took.
         if rels[..index].contains(&rid) {

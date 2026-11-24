@@ -151,7 +151,7 @@ pub(super) fn run(
     // short-circuited.
     stage = hop_stage(ctx, &stage, last, halt)?;
     match mode {
-        KernelMode::Rows { .. } => Ok(KernelOutput::Rows(emit_rows(ctx, chain, &stage))),
+        KernelMode::Rows { .. } => Ok(KernelOutput::Rows(emit_rows(ctx, chain, &stage)?)),
         KernelMode::Exists { counted } => {
             Ok(KernelOutput::Exists(exists(ctx, chain, &stage, counted)?))
         }
@@ -290,6 +290,10 @@ fn expand_hop<P: NodePred>(
         let from = prev.current(r);
         let tallies = &tallies;
         graph.try_for_each_hop_resolved(from, hop.traverse, &types, |rid, arrival| {
+            // One predecessor row can land thousands of successors; sample
+            // the token per candidate so a cancelled statement stops in one
+            // sampling window of edge visits, as the walker does.
+            graph.cancel_tick()?;
             if next.full() {
                 return Ok::<(), Error>(());
             }
@@ -359,22 +363,32 @@ fn binding_values(ctx: ExecCtx<'_>, chain: &Chain<'_>, stage: &Stage<'_>, r: usi
 /// count is its first column's length, so the zero-name shape routed
 /// through the chunk layer would carry zero columns and answer zero
 /// rows, the hole this arm closes.
-fn emit_rows(ctx: ExecCtx<'_>, chain: &Chain<'_>, stage: &Stage<'_>) -> Vec<Row> {
+fn emit_rows(ctx: ExecCtx<'_>, chain: &Chain<'_>, stage: &Stage<'_>) -> Result<Vec<Row>> {
     if stage.rows() == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let names = binding_names(chain);
     if names.is_empty() {
-        return vec![Row::new(); stage.rows()];
+        // One empty row per complete binding, sampled like the named path:
+        // building the whole answer set is still work a cancel must stop.
+        let mut rows = Vec::with_capacity(stage.rows());
+        for _ in 0..stage.rows() {
+            ctx.graph.cancel_tick()?;
+            rows.push(Row::new());
+        }
+        return Ok(rows);
     }
     let mut columns: Vec<Vec<Value>> = vec![Vec::with_capacity(stage.rows()); names.len()];
     for r in 0..stage.rows() {
+        // The conversion phase is one pass over the whole stage; sample the
+        // token per row so a cancel lands inside it too.
+        ctx.graph.cancel_tick()?;
         for (slot, value) in columns.iter_mut().zip(binding_values(ctx, chain, stage, r)) {
             slot.push(value);
         }
     }
     let columns: Vec<Column> = columns.iter().map(|c| Column::from_values(c)).collect();
-    Chunk::from_columns(&names, columns).to_rows()
+    Ok(Chunk::from_columns(&names, columns).to_rows())
 }
 
 /// Existence: the first complete binding whose counted expression is
@@ -389,21 +403,24 @@ fn exists(
     stage: &Stage<'_>,
     counted: Option<&Expr>,
 ) -> Result<bool> {
+    // The counted read's variable and key are row-invariant, so they resolve
+    // once here rather than per row of a stage that can hold millions.
+    let Some(expr) = counted else {
+        return Ok(stage.rows() > 0);
+    };
+    let (var, key) = var_prop_named(expr)
+        .expect("the engagement proof admits only var.prop counted expressions");
     for r in 0..stage.rows() {
-        match counted {
-            None => return Ok(true),
-            Some(expr) => {
-                let (var, key) = var_prop_named(expr)
-                    .expect("the engagement proof admits only var.prop counted expressions");
-                let node = node_of_var(chain, stage, r, var)
-                    .expect("the engagement proof checked the counted variable is bound");
-                if matches!(
-                    ctx.graph.node_prop_resolved(node, &key),
-                    Some(v) if !v.is_null()
-                ) {
-                    return Ok(true);
-                }
-            }
+        // A long stage's existence scan samples the token too: the answer may
+        // arrive on any row, so a cancelled statement must stop here.
+        ctx.graph.cancel_tick()?;
+        let node = node_of_var(chain, stage, r, var)
+            .expect("the engagement proof checked the counted variable is bound");
+        if matches!(
+            ctx.graph.node_prop_resolved(node, &key),
+            Some(v) if !v.is_null()
+        ) {
+            return Ok(true);
         }
     }
     Ok(false)

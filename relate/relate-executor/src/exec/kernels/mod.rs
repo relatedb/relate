@@ -154,6 +154,8 @@ mod rung_tests;
 #[cfg(test)]
 mod ratio_guard_tests;
 
+#[cfg(test)]
+mod cancel_tests;
 mod chain;
 mod chain_count;
 mod hub_star;
