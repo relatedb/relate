@@ -1,15 +1,15 @@
 {
   "schema_version": 6,
   "name": "fraud-mixed-payments",
-  "started_at": "2026-11-08T23:10:57.150Z",
-  "finished_at": "2026-11-08T23:11:02.728Z",
-  "started_at_unix_ms": 1794179457150,
-  "finished_at_unix_ms": 1794179462728,
-  "duration_ms": 5577,
-  "load_duration_ms": 589,
-  "worker_duration_ms": 4987,
+  "started_at": "2026-11-24T05:33:05.608Z",
+  "finished_at": "2026-11-24T05:33:10.979Z",
+  "started_at_unix_ms": 1795498385608,
+  "finished_at_unix_ms": 1795498390979,
+  "duration_ms": 5370,
+  "load_duration_ms": 574,
+  "worker_duration_ms": 4796,
   "engine": "relate",
-  "engine_version": "0.16.1",
+  "engine_version": "1.2.1",
   "config": {
     "uri": "/tmp/fraud-lt",
     "scale": 0.1,
@@ -25,18 +25,18 @@
     "kind": "fraud",
     "unit": "accounts",
     "config": {
-      "cycle_len": 4,
-      "fanout_k": 12
+      "fanout_k": 12,
+      "cycle_len": 4
     },
     "planted": {
+      "fanout_source": "fanout-src",
+      "fanout_k": 12,
       "cycle_accounts": [
         "cycle-0",
         "cycle-1",
         "cycle-2",
         "cycle-3"
-      ],
-      "fanout_k": 12,
-      "fanout_source": "fanout-src"
+      ]
     },
     "dataset": {
       "start": {
@@ -47,61 +47,61 @@
         "transfers": 24341
       },
       "finish": {
-        "nodes": 3068,
-        "relationships": 38913,
-        "accounts": 1784,
-        "customers": 1284,
-        "transfers": 37129
+        "nodes": 3092,
+        "relationships": 38835,
+        "accounts": 1796,
+        "customers": 1296,
+        "transfers": 37039
       }
     }
   },
   "throughput": {
-    "ops_per_sec": 3938.5584875935406,
-    "reads_per_sec": 2237.0162422297976,
-    "writes_per_sec": 1773.4108682574695,
-    "read_ops": 11156,
-    "write_ops": 8844
+    "ops_per_sec": 3970.617431010522,
+    "reads_per_sec": 2317.764804003336,
+    "writes_per_sec": 1852.3769808173477,
+    "read_ops": 11116,
+    "write_ops": 8884
   },
   "memory": {
     "after_open": {
-      "rss_bytes": 15515648,
-      "peak_rss_bytes": 15306752,
+      "rss_bytes": 16506880,
+      "peak_rss_bytes": 16400384,
       "rss_per_node": 0.0,
       "rss_per_relationship": 0.0,
       "rss_per_entity": 0.0,
       "rss_per_unit": 0.0
     },
     "start": {
-      "rss_bytes": 58974208,
-      "peak_rss_bytes": 59994112,
-      "rss_per_node": 39055.766887417216,
-      "rss_per_relationship": 2326.7658802177857,
-      "rss_per_entity": 2195.9416145367886,
-      "rss_per_unit": 58680.8039800995
+      "rss_bytes": 59772928,
+      "peak_rss_bytes": 60477440,
+      "rss_per_node": 39584.72052980132,
+      "rss_per_relationship": 2358.278544938057,
+      "rss_per_entity": 2225.682454572535,
+      "rss_per_unit": 59475.55024875622
     },
     "finish": {
-      "rss_bytes": 86515712,
-      "peak_rss_bytes": 87011328,
-      "rss_per_node": 28199.384615384617,
-      "rss_per_relationship": 2223.3112841466864,
-      "rss_per_entity": 2060.8301850837283,
-      "rss_per_unit": 48495.35426008968
+      "rss_bytes": 81006592,
+      "peak_rss_bytes": 81641472,
+      "rss_per_node": 26198.768434670117,
+      "rss_per_relationship": 2085.9171366035794,
+      "rss_per_entity": 1932.086531352112,
+      "rss_per_unit": 45103.89309576838
     },
     "graph": {
-      "rss_bytes": 43458560,
-      "bytes_per_node": 28780.50331125828,
-      "bytes_per_relationship": 1714.6121676004104,
-      "bytes_per_entity": 1618.2067322013702,
-      "bytes_per_unit": 43242.348258706465
+      "rss_bytes": 43266048,
+      "bytes_per_node": 28653.0119205298,
+      "bytes_per_relationship": 1707.0168073857808,
+      "bytes_per_entity": 1611.0384271671135,
+      "bytes_per_unit": 43050.794029850746
     },
     "workload_delta": {
-      "rss_bytes": 27541504,
-      "nodes": 1558,
-      "relationships": 13567,
-      "rss_bytes_per_new_entity": 1820.9258842975207
+      "rss_bytes": 21233664,
+      "nodes": 1582,
+      "relationships": 13489,
+      "rss_bytes_per_new_entity": 1408.9087651781567
     },
-    "logical_used_start_bytes": 9276582,
-    "logical_used_bytes": 17344481,
+    "logical_used_start_bytes": 7903798,
+    "logical_used_bytes": 12244622,
     "logical_limit_bytes": 20971520
   },
   "usecases": [
@@ -110,16 +110,16 @@
       "kind": "write",
       "related": false,
       "description": "Ordinary customer payment: CREATE one TRANSFER between two accounts",
-      "ops": 3955,
+      "ops": 3922,
       "errors": 0,
-      "statements": 3955,
+      "statements": 3922,
       "latency_ns": {
-        "min": 117674,
-        "max": 106584667,
-        "mean": 1642977.4123975409,
-        "p50": 758948,
-        "p95": 6499195,
-        "p99": 8041782
+        "min": 209350,
+        "max": 79009292,
+        "mean": 1849491.671630094,
+        "p50": 979724,
+        "p95": 6462308,
+        "p99": 7951826
       }
     },
     {
@@ -127,16 +127,16 @@
       "kind": "write",
       "related": false,
       "description": "Payroll-like scatter: one source pays several distinct destinations",
-      "ops": 1120,
+      "ops": 1081,
       "errors": 0,
-      "statements": 4480,
+      "statements": 4324,
       "latency_ns": {
-        "min": 522825,
-        "max": 111527968,
-        "mean": 6032429.783710407,
-        "p50": 6320501,
-        "p95": 10827856,
-        "p99": 17850389
+        "min": 857386,
+        "max": 81890062,
+        "mean": 7217796.369467028,
+        "p50": 7825799,
+        "p95": 12132069,
+        "p99": 17109646
       }
     },
     {
@@ -144,16 +144,16 @@
       "kind": "write",
       "related": false,
       "description": "KYC onboard: new Customer, Account, and OWNED_BY",
-      "ops": 779,
+      "ops": 791,
       "errors": 0,
-      "statements": 779,
+      "statements": 791,
       "latency_ns": {
-        "min": 136274,
-        "max": 105592636,
-        "mean": 1658458.0746268656,
-        "p50": 727088,
-        "p95": 6736674,
-        "p99": 8533171
+        "min": 182379,
+        "max": 69462069,
+        "mean": 1762805.9911504425,
+        "p50": 903910,
+        "p95": 6189172,
+        "p99": 7855715
       }
     },
     {
@@ -161,16 +161,16 @@
       "kind": "write",
       "related": true,
       "description": "Fraud continuation: extra scatter from planted fan-out mule",
-      "ops": 817,
+      "ops": 820,
       "errors": 0,
-      "statements": 2451,
+      "statements": 2460,
       "latency_ns": {
-        "min": 402997,
-        "max": 106032690,
-        "mean": 4717164.361519608,
-        "p50": 2835137,
-        "p95": 9843741,
-        "p99": 14801294
+        "min": 632267,
+        "max": 80677146,
+        "mean": 5460863.2823803965,
+        "p50": 4685310,
+        "p95": 9882129,
+        "p99": 15602948
       }
     },
     {
@@ -178,16 +178,16 @@
       "kind": "write",
       "related": true,
       "description": "Layering: directed cycle of TRANSFERs among 3 accounts",
-      "ops": 841,
+      "ops": 872,
       "errors": 0,
-      "statements": 2523,
+      "statements": 2616,
       "latency_ns": {
-        "min": 401774,
-        "max": 108667853,
-        "mean": 4748577.207776427,
-        "p50": 2893998,
-        "p95": 9684441,
-        "p99": 15099660
+        "min": 642326,
+        "max": 79785957,
+        "mean": 5471524.411622276,
+        "p50": 5662214,
+        "p95": 9789727,
+        "p99": 14814801
       }
     },
     {
@@ -195,16 +195,16 @@
       "kind": "read",
       "related": false,
       "description": "Account activity: last transfers out, ORDER BY ts DESC",
-      "ops": 2249,
+      "ops": 2174,
       "errors": 0,
-      "statements": 2249,
+      "statements": 2174,
       "latency_ns": {
-        "min": 88816,
-        "max": 106772721,
-        "mean": 1040060.151596941,
-        "p50": 438449,
-        "p95": 5786414,
-        "p99": 7654123
+        "min": 76503,
+        "max": 74971603,
+        "mean": 1072869.7135036497,
+        "p50": 482568,
+        "p95": 5568075,
+        "p99": 7143900
       }
     },
     {
@@ -212,16 +212,16 @@
       "kind": "read",
       "related": false,
       "description": "Customer view: accounts owned by a customer",
-      "ops": 1394,
+      "ops": 1405,
       "errors": 0,
-      "statements": 1394,
+      "statements": 1405,
       "latency_ns": {
-        "min": 68118,
-        "max": 104914031,
-        "mean": 831834.5045170257,
-        "p50": 321812,
-        "p95": 5232604,
-        "p99": 7374913
+        "min": 31248,
+        "max": 7768814,
+        "mean": 289292.68253968254,
+        "p50": 118561,
+        "p95": 645101,
+        "p99": 5406806
       }
     },
     {
@@ -229,16 +229,16 @@
       "kind": "read",
       "related": false,
       "description": "Statement: sum of outgoing TRANSFER amounts",
-      "ops": 1076,
+      "ops": 1114,
       "errors": 0,
-      "statements": 1076,
+      "statements": 1114,
       "latency_ns": {
-        "min": 81484,
-        "max": 105455373,
-        "mean": 954054.0163043478,
-        "p50": 358028,
-        "p95": 5657026,
-        "p99": 7479097
+        "min": 30677,
+        "max": 68502766,
+        "mean": 313956.802513465,
+        "p50": 152393,
+        "p95": 676510,
+        "p99": 5188801
       }
     },
     {
@@ -246,16 +246,16 @@
       "kind": "read",
       "related": true,
       "description": "AML: out-degree of a given account vs threshold",
-      "ops": 842,
+      "ops": 827,
       "errors": 0,
-      "statements": 842,
+      "statements": 827,
       "latency_ns": {
-        "min": 268000,
-        "max": 40678532,
-        "mean": 8182638.176949942,
-        "p50": 7735630,
-        "p95": 18855623,
-        "p99": 25776639
+        "min": 179364,
+        "max": 19019216,
+        "mean": 3485978.978922717,
+        "p50": 2673077,
+        "p95": 9410519,
+        "p99": 11349176
       }
     },
     {
@@ -263,16 +263,16 @@
       "kind": "read",
       "related": true,
       "description": "AML: directed TRANSFER cycles of length 2\u20136",
-      "ops": 800,
+      "ops": 843,
       "errors": 0,
-      "statements": 800,
+      "statements": 843,
       "latency_ns": {
-        "min": 114523,
-        "max": 105962368,
-        "mean": 1017557.7520372526,
-        "p50": 406602,
-        "p95": 5645521,
-        "p99": 7551607
+        "min": 86781,
+        "max": 73510140,
+        "mean": 1008048.7652474109,
+        "p50": 422323,
+        "p95": 5254463,
+        "p99": 7039293
       }
     },
     {
@@ -280,16 +280,16 @@
       "kind": "read",
       "related": false,
       "description": "Paginated activity: ORDER BY ts DESC SKIP/LIMIT",
-      "ops": 1129,
+      "ops": 1117,
       "errors": 0,
-      "statements": 1129,
+      "statements": 1117,
       "latency_ns": {
-        "min": 96125,
-        "max": 103193159,
-        "mean": 1050413.1116031886,
-        "p50": 448041,
-        "p95": 5832911,
-        "p99": 7483029
+        "min": 88435,
+        "max": 74562972,
+        "mean": 994875.7781721384,
+        "p50": 458343,
+        "p95": 5370368,
+        "p99": 6948524
       }
     },
     {
@@ -297,16 +297,16 @@
       "kind": "read",
       "related": false,
       "description": "Directory search: Customer.name CONTAINS a customer number",
-      "ops": 816,
+      "ops": 854,
       "errors": 0,
-      "statements": 816,
+      "statements": 854,
       "latency_ns": {
-        "min": 87724,
-        "max": 102149383,
-        "mean": 1235712.8808172531,
-        "p50": 467954,
-        "p95": 5983211,
-        "p99": 7842544
+        "min": 76463,
+        "max": 15318248,
+        "mean": 1207403.1488636364,
+        "p50": 473752,
+        "p95": 6013434,
+        "p99": 7818819
       }
     },
     {
@@ -314,16 +314,16 @@
       "kind": "read",
       "related": false,
       "description": "Undirected TRANSFER neighbors of an account",
-      "ops": 1136,
+      "ops": 1121,
       "errors": 0,
-      "statements": 1136,
+      "statements": 1121,
       "latency_ns": {
-        "min": 88200,
-        "max": 10764094,
-        "mean": 970792.5677816902,
-        "p50": 396859,
-        "p95": 5692159,
-        "p99": 7448831
+        "min": 76473,
+        "max": 73314755,
+        "mean": 1065533.5616045846,
+        "p50": 434466,
+        "p95": 5422211,
+        "p99": 7338893
       }
     },
     {
@@ -331,16 +331,16 @@
       "kind": "read",
       "related": false,
       "description": "shortestPath along outgoing TRANSFER (directed, short)",
-      "ops": 889,
+      "ops": 818,
       "errors": 0,
-      "statements": 889,
+      "statements": 818,
       "latency_ns": {
-        "min": 105209,
-        "max": 15773827,
-        "mean": 1061640.3772378517,
-        "p50": 395749,
-        "p95": 6003545,
-        "p99": 7470169
+        "min": 86050,
+        "max": 9688328,
+        "mean": 1002014.1107099879,
+        "p50": 430201,
+        "p95": 5577323,
+        "p99": 6934703
       }
     },
     {
@@ -348,16 +348,16 @@
       "kind": "read",
       "related": false,
       "description": "Statement: CASE amount band plus count",
-      "ops": 825,
+      "ops": 843,
       "errors": 0,
-      "statements": 825,
+      "statements": 843,
       "latency_ns": {
-        "min": 90995,
-        "max": 13730708,
-        "mean": 939697.906097561,
-        "p50": 380414,
-        "p95": 5495810,
-        "p99": 7301588
+        "min": 81962,
+        "max": 74174289,
+        "mean": 938723.5248554914,
+        "p50": 408270,
+        "p95": 5338108,
+        "p99": 6857838
       }
     },
     {
@@ -365,16 +365,16 @@
       "kind": "write",
       "related": false,
       "description": "Compliance hold: SET Account.frozen",
-      "ops": 656,
+      "ops": 704,
       "errors": 0,
-      "statements": 656,
+      "statements": 704,
       "latency_ns": {
-        "min": 106752,
-        "max": 103644887,
-        "mean": 1557337.183076923,
-        "p50": 646372,
-        "p95": 6609303,
-        "p99": 8207718
+        "min": 158365,
+        "max": 16687076,
+        "mean": 1506194.1294642857,
+        "p50": 807233,
+        "p95": 6106024,
+        "p99": 7545739
       }
     },
     {
@@ -382,16 +382,16 @@
       "kind": "write",
       "related": false,
       "description": "Reversal: DELETE the latest outgoing TRANSFER",
-      "ops": 676,
+      "ops": 694,
       "errors": 0,
-      "statements": 676,
+      "statements": 694,
       "latency_ns": {
-        "min": 129595,
-        "max": 99723852,
-        "mean": 1845398.8106508877,
-        "p50": 813029,
-        "p95": 6757421,
-        "p99": 8042114
+        "min": 191216,
+        "max": 10716208,
+        "mean": 1830798.5951008645,
+        "p50": 1004492,
+        "p95": 6603036,
+        "p99": 8104799
       }
     }
   ],
@@ -399,8 +399,8 @@
     "class": "relate-loadtest-baseline/v1",
     "arch": "x86_64",
     "os": "linux",
-    "build_image": "rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0",
-    "run_image": "debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc",
+    "build_image": "rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c",
+    "run_image": "debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc",
     "cpus": 2,
     "cpu_period_us": 10000,
     "cpu_quota_us": 20000,

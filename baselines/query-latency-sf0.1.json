@@ -2,13 +2,13 @@
   "schema_version": 1,
   "suite": "query-latency",
   "sf": "0.1",
-  "engine_version": "0.16.1",
+  "engine_version": "1.2.1",
   "environment": {
     "class": "relate-loadtest-baseline/v1",
     "arch": "x86_64",
     "os": "linux",
-    "build_image": "rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0",
-    "run_image": "debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc",
+    "build_image": "rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c",
+    "run_image": "debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc",
     "cpus": 2,
     "cpu_period_us": 10000,
     "cpu_quota_us": 20000,
@@ -19,223 +19,223 @@
     "runner": "github-actions:linux-4-core-x86"
   },
   "load_seconds": [
-    64.885343857,
-    67.985880678,
-    72.182848689,
-    63.958850167,
-    59.251819052
+    70.63975246,
+    71.243482787,
+    71.673831456,
+    69.739953308,
+    69.993378447
   ],
   "queries": [
     {
       "qid": 1,
       "index_profile": null,
-      "p50_ms": 0.093235,
-      "mean_ms": 0.096022,
+      "p50_ms": 0.065993,
+      "mean_ms": 0.067302,
       "rows": 1
     },
     {
       "qid": 2,
       "index_profile": null,
-      "p50_ms": 0.138459,
-      "mean_ms": 0.14959,
+      "p50_ms": 0.116076,
+      "mean_ms": 0.119027,
       "rows": 2
     },
     {
       "qid": 3,
       "index_profile": null,
-      "p50_ms": 0.068757,
-      "mean_ms": 0.072473,
+      "p50_ms": 0.050724,
+      "mean_ms": 0.05152,
       "rows": 1
     },
     {
       "qid": 4,
       "index_profile": null,
-      "p50_ms": 0.072018,
-      "mean_ms": 0.074755,
+      "p50_ms": 0.055373,
+      "mean_ms": 0.056545,
       "rows": 1
     },
     {
       "qid": 5,
       "index_profile": null,
-      "p50_ms": 0.651435,
-      "mean_ms": 0.661156,
+      "p50_ms": 0.621978,
+      "mean_ms": 0.624441,
       "rows": 1
     },
     {
       "qid": 6,
       "index_profile": null,
-      "p50_ms": 0.063736,
-      "mean_ms": 0.065879,
+      "p50_ms": 0.052257,
+      "mean_ms": 0.053539,
       "rows": 2
     },
     {
       "qid": 7,
       "index_profile": null,
-      "p50_ms": 0.065256,
-      "mean_ms": 0.067798,
+      "p50_ms": 0.039193,
+      "mean_ms": 0.039689,
       "rows": 0
     },
     {
       "qid": 8,
       "index_profile": null,
-      "p50_ms": 0.374615,
-      "mean_ms": 0.385995,
+      "p50_ms": 0.389365,
+      "mean_ms": 0.395844,
       "rows": 1
     },
     {
       "qid": 9,
       "index_profile": null,
-      "p50_ms": 0.099389,
-      "mean_ms": 0.101575,
+      "p50_ms": 0.068087,
+      "mean_ms": 0.069428,
       "rows": 1
     },
     {
       "qid": 10,
       "index_profile": null,
-      "p50_ms": 0.10519,
-      "mean_ms": 0.107404,
+      "p50_ms": 0.081682,
+      "mean_ms": 0.083226,
       "rows": 3
     },
     {
       "qid": 11,
       "index_profile": null,
-      "p50_ms": 4.585447,
-      "mean_ms": 4.595461,
+      "p50_ms": 5.169313,
+      "mean_ms": 5.135246,
       "rows": 1
     },
     {
       "qid": 12,
       "index_profile": null,
-      "p50_ms": 0.42853,
-      "mean_ms": 0.43025,
+      "p50_ms": 0.39229,
+      "mean_ms": 0.399167,
       "rows": 1
     },
     {
       "qid": 13,
       "index_profile": null,
-      "p50_ms": 0.513886,
-      "mean_ms": 0.516047,
+      "p50_ms": 0.488049,
+      "mean_ms": 0.541116,
       "rows": 1
     },
     {
       "qid": 14,
       "index_profile": null,
-      "p50_ms": 0.051919,
-      "mean_ms": 0.054862,
+      "p50_ms": 0.037149,
+      "mean_ms": 0.040175,
       "rows": 1
     },
     {
       "qid": 15,
       "index_profile": null,
-      "p50_ms": 0.060859,
-      "mean_ms": 0.064302,
+      "p50_ms": 0.041717,
+      "mean_ms": 0.042427,
       "rows": 1
     },
     {
       "qid": 16,
       "index_profile": null,
-      "p50_ms": 0.093119,
-      "mean_ms": 0.096919,
+      "p50_ms": 0.061054,
+      "mean_ms": 0.062725,
       "rows": 1
     },
     {
       "qid": 17,
       "index_profile": null,
-      "p50_ms": 0.992971,
-      "mean_ms": 1.005048,
+      "p50_ms": 0.915665,
+      "mean_ms": 0.924323,
       "rows": 1
     },
     {
       "qid": 18,
       "index_profile": null,
-      "p50_ms": 0.266999,
-      "mean_ms": 0.270708,
+      "p50_ms": 0.23658,
+      "mean_ms": 0.241954,
       "rows": 1
     },
     {
       "qid": 19,
       "index_profile": null,
-      "p50_ms": 5.53146,
-      "mean_ms": 5.518146,
+      "p50_ms": 9.491708,
+      "mean_ms": 9.457952,
       "rows": 1
     },
     {
       "qid": 20,
       "index_profile": null,
-      "p50_ms": 0.911636,
-      "mean_ms": 0.912691,
+      "p50_ms": 0.791374,
+      "mean_ms": 0.7918,
       "rows": 1
     },
     {
       "qid": 21,
       "index_profile": null,
-      "p50_ms": 0.097002,
-      "mean_ms": 0.098977,
+      "p50_ms": 0.070461,
+      "mean_ms": 0.07195,
       "rows": 1
     },
     {
       "qid": 22,
       "index_profile": null,
-      "p50_ms": 0.075542,
-      "mean_ms": 0.077859,
+      "p50_ms": 0.050013,
+      "mean_ms": 0.051048,
       "rows": 1
     },
     {
       "qid": 23,
       "index_profile": null,
-      "p50_ms": 0.069687,
-      "mean_ms": 0.072211,
+      "p50_ms": 0.040445,
+      "mean_ms": 0.041207,
       "rows": 1
     },
     {
       "qid": 24,
       "index_profile": null,
-      "p50_ms": 0.067928,
-      "mean_ms": 0.069865,
+      "p50_ms": 0.041487,
+      "mean_ms": 0.042124,
       "rows": 1
     },
     {
       "qid": 25,
       "index_profile": null,
-      "p50_ms": 0.068658,
-      "mean_ms": 0.070754,
+      "p50_ms": 0.039213,
+      "mean_ms": 0.039723,
       "rows": 1
     },
     {
       "qid": 26,
       "index_profile": null,
-      "p50_ms": 0.064399,
-      "mean_ms": 0.066715,
+      "p50_ms": 0.035256,
+      "mean_ms": 0.035753,
       "rows": 1
     },
     {
       "qid": 27,
       "index_profile": null,
-      "p50_ms": 3.091871,
-      "mean_ms": 3.096613,
+      "p50_ms": 2.966393,
+      "mean_ms": 2.998953,
       "rows": 1
     },
     {
       "qid": 28,
       "index_profile": null,
-      "p50_ms": 0.107885,
-      "mean_ms": 0.111164,
+      "p50_ms": 0.077765,
+      "mean_ms": 0.081231,
       "rows": 1
     },
     {
       "qid": 29,
       "index_profile": null,
-      "p50_ms": 0.069597,
-      "mean_ms": 0.072288,
+      "p50_ms": 0.050885,
+      "mean_ms": 0.054221,
       "rows": 1
     },
     {
       "qid": 30,
       "index_profile": null,
-      "p50_ms": 0.20192,
-      "mean_ms": 0.206874,
+      "p50_ms": 0.156681,
+      "mean_ms": 0.173353,
       "rows": 1
     }
   ],
-  "peak_rss_bytes": 883048448
+  "peak_rss_bytes": 862273536
 }
