@@ -22,7 +22,8 @@
 # overrides the 2g default today — re-add a cap knob with the first lane
 # that needs one),
 # BASELINE_CPU_PERIOD_US (10000), BASELINE_CPU_QUOTA_US (period x cpus),
-# BASELINE_BUILD_IMAGE / BASELINE_RUN_IMAGE (the Dockerfile's defaults),
+# BASELINE_BUILD_IMAGE / BASELINE_RUN_IMAGE (pin defaults:
+# scripts/baseline-env.sh, the one home, read via its --print-image mode),
 # PYTHON (python3).
 set -euo pipefail
 
@@ -135,8 +136,18 @@ BASELINE_CPUS="${BASELINE_CPUS:-2}"
 BASELINE_MEMORY="${BASELINE_MEMORY:-${memory}}"
 BASELINE_CPU_PERIOD_US="${BASELINE_CPU_PERIOD_US:-10000}"
 BASELINE_CPU_QUOTA_US="${BASELINE_CPU_QUOTA_US:-$((BASELINE_CPU_PERIOD_US * BASELINE_CPUS))}"
-BASELINE_BUILD_IMAGE="${BASELINE_BUILD_IMAGE:-rust:1.99-bookworm}"
-BASELINE_RUN_IMAGE="${BASELINE_RUN_IMAGE:-debian:bookworm-slim}"
+# The images' digest pins come from their one home, baseline-env.sh
+# (REL8-2081): a floating default here re-resolved the tag on every pull,
+# which is how the memory lanes drifted off the pinned class while the
+# make-driven lanes stayed on it. Read the home only when the caller has
+# not supplied the pair; a home that cannot be read is fatal, not a
+# fallback.
+if [ -z "${BASELINE_BUILD_IMAGE:-}" ]; then
+  BASELINE_BUILD_IMAGE=$(bash "${ROOT}/scripts/baseline-env.sh" --print-image build)
+fi
+if [ -z "${BASELINE_RUN_IMAGE:-}" ]; then
+  BASELINE_RUN_IMAGE=$(bash "${ROOT}/scripts/baseline-env.sh" --print-image run)
+fi
 export BASELINE_CPUS BASELINE_MEMORY BASELINE_CPU_PERIOD_US BASELINE_CPU_QUOTA_US
 export BASELINE_BUILD_IMAGE BASELINE_RUN_IMAGE
 

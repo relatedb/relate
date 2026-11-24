@@ -13,22 +13,36 @@ env_mod = load("loadtest_env", ROOT / "scripts" / "loadtest_env.py")
 fp_mod = load("baseline_fingerprint", ROOT / "scripts" / "baseline-fingerprint.py")
 
 
-def run_stamp(path: Path) -> subprocess.CompletedProcess[str]:
+def run_stamp(
+    path: Path,
+    *extra: str,
+    pins: bool = True,
+    arch: str | None = "x86_64",
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """The one `stamp` invocation the tests pin — the CLI name, the argv
     shape and the class fields in one place, so a new stamp flag is added
-    once and the two cases cannot drift on the contract they assert."""
+    once and the cases cannot drift on the contract they assert. `extra`
+    appends case-specific flags; `env` replaces the environment."""
     return subprocess.run(
         [
             sys.executable,
             str(ROOT / "scripts" / "baseline-fingerprint.py"),
             "stamp",
             str(path),
-            "--arch",
-            "x86_64",
-            "--build-image-pin",
-            "rust:1.88-bookworm@sha256:aaa",
-            "--run-image-pin",
-            "debian:bookworm-slim@sha256:bbb",
+            # `arch=None` omits --arch, which makes the run image the
+            # reference the stamp must resolve.
+            *(("--arch", arch) if arch else ()),
+            # The -pin flags are what the class actually records; with both
+            # present and --arch given, no image reference is required
+            # (REL8-2081). `pins=False` omits them for the case that must
+            # resolve a reference.
+            *((
+                "--build-image-pin",
+                "rust:1.88-bookworm@sha256:aaa",
+                "--run-image-pin",
+                "debian:bookworm-slim@sha256:bbb",
+            ) if pins else ()),
             "--cpus",
             "2",
             "--cpu-period-us",
@@ -39,14 +53,42 @@ def run_stamp(path: Path) -> subprocess.CompletedProcess[str]:
             "2g",
             "--runner",
             "github-actions:ubuntu-24.04",
+            *extra,
         ],
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
 
 
 class BaselineFingerprintTests(unittest.TestCase):
+    def _no_baseline_env(self) -> dict[str, str]:
+        import os
+
+        return {k: v for k, v in os.environ.items() if not k.startswith("BASELINE_")}
+
+    def test_a_missing_build_image_is_a_loud_stop(self) -> None:
+        """REL8-2081: no fabricated floating default — a stamp whose build pin
+        is absent and whose reference is neither flagged nor in the
+        environment (the pins home exports it) stops."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            path.write_text(json.dumps({"config": {"ops": 1}}))
+            result = run_stamp(path, pins=False, env=self._no_baseline_env())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("BASELINE_BUILD_IMAGE is not set", result.stderr)
+
+    def test_a_missing_run_image_is_a_loud_stop(self) -> None:
+        """The run reference is required when --arch is absent (the arch is
+        read out of the run image), even with both pins given."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            path.write_text(json.dumps({"config": {"ops": 1}}))
+            result = run_stamp(path, arch=None, env=self._no_baseline_env())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("BASELINE_RUN_IMAGE is not set", result.stderr)
+
     def test_pinned_reference_replaces_the_callers_own_digest(self) -> None:
         """The env pins arrive already digested; appending a second
         `@sha256:...` would stamp `name@a@b`, which is not a reference."""

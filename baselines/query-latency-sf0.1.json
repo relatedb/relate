@@ -8,7 +8,7 @@
     "arch": "x86_64",
     "os": "linux",
     "build_image": "rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c",
-    "run_image": "debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc",
+    "run_image": "debian:bookworm-20261123-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e",
     "cpus": 2,
     "cpu_period_us": 10000,
     "cpu_quota_us": 20000,
@@ -19,223 +19,223 @@
     "runner": "github-actions:linux-4-core-x86"
   },
   "load_seconds": [
-    69.052485898,
-    76.101085562,
-    64.697137567,
-    63.300582209,
-    70.358891098
+    46.283920207,
+    47.013285072,
+    48.195296342,
+    47.942210515,
+    46.75338307
   ],
   "queries": [
     {
       "qid": 1,
       "index_profile": null,
-      "p50_ms": 0.066935,
-      "mean_ms": 0.068912,
+      "p50_ms": 0.042133,
+      "mean_ms": 0.043739,
       "rows": 1
     },
     {
       "qid": 2,
       "index_profile": null,
-      "p50_ms": 0.116599,
-      "mean_ms": 0.119773,
+      "p50_ms": 0.083045,
+      "mean_ms": 0.084451,
       "rows": 2
     },
     {
       "qid": 3,
       "index_profile": null,
-      "p50_ms": 0.051046,
-      "mean_ms": 0.052118,
+      "p50_ms": 0.030516,
+      "mean_ms": 0.030642,
       "rows": 1
     },
     {
       "qid": 4,
       "index_profile": null,
-      "p50_ms": 0.055413,
-      "mean_ms": 0.056833,
+      "p50_ms": 0.034192,
+      "mean_ms": 0.034324,
       "rows": 1
     },
     {
       "qid": 5,
       "index_profile": null,
-      "p50_ms": 0.627887,
-      "mean_ms": 0.628976,
+      "p50_ms": 0.453421,
+      "mean_ms": 0.46295,
       "rows": 1
     },
     {
       "qid": 6,
       "index_profile": null,
-      "p50_ms": 0.051837,
-      "mean_ms": 0.052751,
+      "p50_ms": 0.030035,
+      "mean_ms": 0.030078,
       "rows": 2
     },
     {
       "qid": 7,
       "index_profile": null,
-      "p50_ms": 0.039394,
-      "mean_ms": 0.039828,
+      "p50_ms": 0.022835,
+      "mean_ms": 0.022938,
       "rows": 0
     },
     {
       "qid": 8,
       "index_profile": null,
-      "p50_ms": 0.410189,
-      "mean_ms": 0.426676,
+      "p50_ms": 0.286941,
+      "mean_ms": 0.290851,
       "rows": 1
     },
     {
       "qid": 9,
       "index_profile": null,
-      "p50_ms": 0.068097,
-      "mean_ms": 0.071212,
+      "p50_ms": 0.044557,
+      "mean_ms": 0.04536,
       "rows": 1
     },
     {
       "qid": 10,
       "index_profile": null,
-      "p50_ms": 0.082936,
-      "mean_ms": 0.085367,
+      "p50_ms": 0.05985,
+      "mean_ms": 0.060753,
       "rows": 3
     },
     {
       "qid": 11,
       "index_profile": null,
-      "p50_ms": 4.936033,
-      "mean_ms": 4.943616,
+      "p50_ms": 3.336774,
+      "mean_ms": 3.38519,
       "rows": 1
     },
     {
       "qid": 12,
       "index_profile": null,
-      "p50_ms": 0.393988,
-      "mean_ms": 0.402551,
+      "p50_ms": 0.30624,
+      "mean_ms": 0.309582,
       "rows": 1
     },
     {
       "qid": 13,
       "index_profile": null,
-      "p50_ms": 0.478748,
-      "mean_ms": 0.480297,
+      "p50_ms": 0.374473,
+      "mean_ms": 0.378293,
       "rows": 1
     },
     {
       "qid": 14,
       "index_profile": null,
-      "p50_ms": 0.03717,
-      "mean_ms": 0.037995,
+      "p50_ms": 0.021392,
+      "mean_ms": 0.021414,
       "rows": 1
     },
     {
       "qid": 15,
       "index_profile": null,
-      "p50_ms": 0.042339,
-      "mean_ms": 0.043691,
+      "p50_ms": 0.025498,
+      "mean_ms": 0.025974,
       "rows": 1
     },
     {
       "qid": 16,
       "index_profile": null,
-      "p50_ms": 0.062167,
-      "mean_ms": 0.063619,
+      "p50_ms": 0.041242,
+      "mean_ms": 0.044617,
       "rows": 1
     },
     {
       "qid": 17,
       "index_profile": null,
-      "p50_ms": 0.910235,
-      "mean_ms": 0.914326,
+      "p50_ms": 0.719932,
+      "mean_ms": 0.718394,
       "rows": 1
     },
     {
       "qid": 18,
       "index_profile": null,
-      "p50_ms": 0.238146,
-      "mean_ms": 0.243456,
+      "p50_ms": 0.187582,
+      "mean_ms": 0.189826,
       "rows": 1
     },
     {
       "qid": 19,
       "index_profile": null,
-      "p50_ms": 7.295909,
-      "mean_ms": 6.943878,
+      "p50_ms": 4.140552,
+      "mean_ms": 4.183775,
       "rows": 1
     },
     {
       "qid": 20,
       "index_profile": null,
-      "p50_ms": 0.788437,
-      "mean_ms": 0.793011,
+      "p50_ms": 0.597519,
+      "mean_ms": 0.595892,
       "rows": 1
     },
     {
       "qid": 21,
       "index_profile": null,
-      "p50_ms": 0.070843,
-      "mean_ms": 0.072923,
+      "p50_ms": 0.044107,
+      "mean_ms": 0.044793,
       "rows": 1
     },
     {
       "qid": 22,
       "index_profile": null,
-      "p50_ms": 0.050495,
-      "mean_ms": 0.05132,
+      "p50_ms": 0.028854,
+      "mean_ms": 0.029084,
       "rows": 1
     },
     {
       "qid": 23,
       "index_profile": null,
-      "p50_ms": 0.041077,
-      "mean_ms": 0.041556,
+      "p50_ms": 0.022314,
+      "mean_ms": 0.022479,
       "rows": 1
     },
     {
       "qid": 24,
       "index_profile": null,
-      "p50_ms": 0.040907,
-      "mean_ms": 0.041674,
+      "p50_ms": 0.023025,
+      "mean_ms": 0.023394,
       "rows": 1
     },
     {
       "qid": 25,
       "index_profile": null,
-      "p50_ms": 0.039263,
-      "mean_ms": 0.040114,
+      "p50_ms": 0.022283,
+      "mean_ms": 0.022337,
       "rows": 1
     },
     {
       "qid": 26,
       "index_profile": null,
-      "p50_ms": 0.035317,
-      "mean_ms": 0.03571,
+      "p50_ms": 0.019319,
+      "mean_ms": 0.019717,
       "rows": 1
     },
     {
       "qid": 27,
       "index_profile": null,
-      "p50_ms": 2.918091,
-      "mean_ms": 2.935242,
+      "p50_ms": 2.371223,
+      "mean_ms": 2.383902,
       "rows": 1
     },
     {
       "qid": 28,
       "index_profile": null,
-      "p50_ms": 0.077606,
-      "mean_ms": 0.079815,
+      "p50_ms": 0.049875,
+      "mean_ms": 0.051158,
       "rows": 1
     },
     {
       "qid": 29,
       "index_profile": null,
-      "p50_ms": 0.051878,
-      "mean_ms": 0.054783,
+      "p50_ms": 0.029675,
+      "mean_ms": 0.030784,
       "rows": 1
     },
     {
       "qid": 30,
       "index_profile": null,
-      "p50_ms": 0.157235,
-      "mean_ms": 0.175342,
+      "p50_ms": 0.102494,
+      "mean_ms": 0.104873,
       "rows": 1
     }
   ],
-  "peak_rss_bytes": 862134272
+  "peak_rss_bytes": 844095488
 }

@@ -682,11 +682,13 @@ test-stage-setup-scripts:
 test-premerge-check:
 	sh $(CURDIR)/scripts/tests/test_premerge_check_cli.sh
 
-## test-baseline-scripts: The shared baseline container ceremony's rules
-##   (scripts/baseline-container.sh: the --clear guard's authored refusals,
-##   asserted without a Docker daemon)
+## test-baseline-scripts: The baseline environment's own rules, without a
+##   Docker daemon or network: the container ceremony's flag refusals
+##   (scripts/baseline-container.sh) and the image pins' one-home and shape
+##   guards (scripts/baseline-env.sh)
 test-baseline-scripts:
 	sh $(CURDIR)/scripts/tests/test_baseline_container.sh
+	sh $(CURDIR)/scripts/tests/test_baseline_image_pins.sh
 
 ## test-makefile-targets: The Makefile's own inventory drift guards
 ##   (scripts/tests/test_makefile_targets.sh): every task target carries
