@@ -31,6 +31,14 @@ silently turned into a point; pass `relate.Point(srid, x, y)` or use
 `relate.ProgrammingError`, and so does a statement that references a
 parameter missing from the dict (`ParameterMissing: Expected
 parameter(s): <names>`) — pass `None` for null, never omit the key.
+Attach the "why" to a write with the keyword-only `tx_metadata` dict
+(`conn.execute(write, params, tx_metadata={"by": "app"})`, ADR-0610):
+values convert like parameters, seeds merge in call order with
+`CALL tx.setMetaData` (later keys win) into the transaction's metadata
+map, serialized into the commit's record at the next boundary, then
+cleared. Gated: the `value-provenance` preview opt-in
+(`RELATE_PREVIEW=value-provenance`, set before connecting — without it
+the call fails with the authored preview error, never a silent drop).
 Transactions:
 `db.autocommit = False`, then `db.commit()` / `db.rollback()` — closing
 with an open transaction rolls back. `db.commit()` returns the

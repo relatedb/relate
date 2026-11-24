@@ -78,11 +78,11 @@ fn explain_create_reports_write_type_without_executing() {
         let db = new_database(":memory:");
         // EXPLAIN reports the wrapped statement's plan-time query type
         // (ADR-0162) without running it.
-        let explained = db.execute(py, "EXPLAIN CREATE (n)", None).unwrap();
+        let explained = db.execute(py, "EXPLAIN CREATE (n)", None, None).unwrap();
         assert_eq!(explained.query_type, "w");
         assert_eq!(explained.namespace, "neo4j");
         // The CREATE never executed: the graph is still empty.
-        let after = db.execute(py, "MATCH (n) RETURN n", None).unwrap();
+        let after = db.execute(py, "MATCH (n) RETURN n", None, None).unwrap();
         assert!(after.data.is_empty());
         assert_eq!(after.query_type, "r");
         assert_eq!(db.node_count(py).unwrap(), 0);
@@ -96,12 +96,17 @@ fn use_routed_statement_reports_resolved_namespace() {
         // A USE-carrying statement resolves to its USE target (ADR-0117
         // §7)…
         let routed = db
-            .execute(py, "USE system SHOW DATABASES YIELD name RETURN name", None)
+            .execute(
+                py,
+                "USE system SHOW DATABASES YIELD name RETURN name",
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(routed.namespace, "system");
         // …while the session namespace is unchanged: a following unrouted
         // statement still resolves to neo4j.
-        let unrouted = db.execute(py, "RETURN 1 AS n", None).unwrap();
+        let unrouted = db.execute(py, "RETURN 1 AS n", None, None).unwrap();
         assert_eq!(unrouted.namespace, "neo4j");
         assert_eq!(db.namespace(py).unwrap(), "neo4j");
     });

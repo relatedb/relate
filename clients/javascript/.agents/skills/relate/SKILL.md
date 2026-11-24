@@ -38,6 +38,16 @@ returns the transaction's bookmark, `string | null`) /
 true })` — the store must exist; any number of readers, no writes or
 checkpoints.
 
+`conn.query(cypher, params?, txMetadata?)` takes a third argument
+(ADR-0610): the per-transaction metadata map, a plain object through the
+same builder, merged with every earlier seed (later keys win) and
+serialized into the commit's record at the next transaction boundary —
+where the value-provenance audit surface (`provenance()`, `history()`,
+`CALL db.transactions`) reads it. Gated by
+`RELATE_PREVIEW=value-provenance` (read once, at open): without the
+opt-in a call carrying it throws the authored preview error instead of
+silently dropping the map; a call without it is unchanged.
+
 `conn.query` also doubles as a template tag — interpolated values become
 auto-named `$p0, $p1, …` parameters (injection-safe by construction;
 never concatenate values into statement text):
@@ -112,9 +122,10 @@ try {
 }
 ```
 
-`conn.queryAsync(cypher, params?)` (and the tag form) runs the call on
-koffi's worker thread; the error rides the result handle back, so the
-rejected promise is fully classified. Overlapping calls on one
+`conn.queryAsync(cypher, params?, txMetadata?)` (and the tag form) runs
+the call on koffi's worker thread; the error rides the result handle
+back, so the rejected promise is fully classified. The metadata seed
+runs inside the serialized task, in call order. Overlapping calls on one
 connection are serialized; any sync call (`query`, `begin`, `commit`,
 `rollback`, `setNamespace`) while an async query is in flight on the
 same connection refuses.

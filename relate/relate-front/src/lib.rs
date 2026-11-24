@@ -44,6 +44,16 @@ pub struct LoweredStatement {
     /// the entry that lowered the statement. Zero on every field only when
     /// nothing ran there — there is no second spelling of the windows.
     pub stages: ParseStages,
+    /// The statement's captured `@txMetadata` annotations (ADR-0610), in
+    /// clause order — the in-statement metadata channel's payload, gated
+    /// here: carried only when the store's preview set enables
+    /// `value-provenance`; otherwise the capture is dropped by the gated
+    /// entry before lowering, exactly as if the annotation had been any
+    /// unrecognized CIP-281 name (no error, no record). The engine's
+    /// connection interprets and funnels what is carried; lowering itself
+    /// never reads it — an annotated statement lowers to the same plan as
+    /// its plain form.
+    pub tx_metadata: Vec<relate_parser::TxMetadataAnnotation>,
 }
 
 /// The PARSE stage's always-on fine sub-split (LABS-1120): three sub-windows
@@ -122,7 +132,11 @@ pub fn parse_and_lower(src: &str) -> Result<Query> {
 /// remains, keeping the statement's own `EXPLAIN`/`PROFILE` preamble
 /// mode. `params` are the statement's bound parameters, which the
 /// dynamic-operand admission rule treats as compile-time constants
-/// (LABS-709).
+/// (LABS-709). `tx_metadata` is the statement's captured `@txMetadata`
+/// annotations (ADR-0610), carried into the lowered statement unchanged:
+/// the gated entry passes what its preview gate kept, the dialect-floor
+/// entry `Vec::new()` — lowering itself never reads the captures, and
+/// the lowered statement is built once, with its final value.
 /// `lex_parse` is the caller's already-closed parse window (tokenize plus
 /// the AST build — the one meaning, measured at the parse call in every
 /// entry, never re-closed here), so the PARSE stage's fine sub-split
@@ -134,6 +148,7 @@ fn resolve_and_lower(
     options: validate::ValidateOptions,
     policy: StatementPolicy,
     params: &std::collections::BTreeMap<String, relate_core::Value>,
+    tx_metadata: Vec<relate_parser::TxMetadataAnnotation>,
 ) -> Result<LoweredStatement> {
     let rewrite_started = Instant::now();
     crate::validate::validate_nesting_depth(&stmt)
@@ -151,6 +166,7 @@ fn resolve_and_lower(
             rewrite,
             lower,
         },
+        tx_metadata,
     })
 }
 
@@ -171,6 +187,9 @@ pub fn parse_and_lower_statement(src: &str) -> Result<LoweredStatement> {
         validate::ValidateOptions::default(),
         StatementPolicy::default(),
         &std::collections::BTreeMap::new(),
+        // The dialect floor: no preview gate ran, so no `@txMetadata`
+        // capture was kept (ADR-0610) — the statement lowers with none.
+        Vec::new(),
     )
 }
 
@@ -247,7 +266,7 @@ pub fn parse_and_lower_statement_with_policy_and_params(
     // floor's CIP-40/CIP-14 mixing rejections lift), so it threads into
     // the parse itself as `ParseOptions` -- unlike the AST-detector gates
     // below, there is no floor AST to detect the construct in.
-    let stmt = parse_sized_with_options(src, parse_options(preview))?;
+    let mut stmt = parse_sized_with_options(src, parse_options(preview))?;
     let lex_parse = parse_started.elapsed();
     // The one gate loop, derived from the registry itself: every row's
     // detector is consulted here, so a detector-less registry row is a
@@ -265,12 +284,23 @@ pub fn parse_and_lower_statement_with_policy_and_params(
     // The constructs that only materialize against stored graph-type state
     // fail closed in the executor's graph-type layer with the same authored
     // error.
+    // ADR-0610: the `@txMetadata` captures ride out only behind the
+    // channel's own opt-in. With `cypher-annotations` on and
+    // `value-provenance` off, the drop below is the whole story — the
+    // annotation parsed (its CIP-281 checks ran) and was discarded
+    // exactly like any unrecognized name: no error, no record.
+    let tx_metadata = if preview.enabled(relate_core::PreviewFeature::ValueProvenance) {
+        std::mem::take(&mut stmt.tx_metadata)
+    } else {
+        Vec::new()
+    };
     resolve_and_lower(
         stmt,
         lex_parse,
         validate::ValidateOptions { preview },
         policy,
         params,
+        tx_metadata,
     )
 }
 
@@ -334,6 +364,14 @@ fn statement_uses_feature(
             // evaluated; the disabled form is the ordinary operand-type
             // rejection), never at lowering, so it has no detector here.
             | relate_core::PreviewFeature::PathConcatenation => Ok(false),
+            // ADR-0610: `value-provenance` gates a persistence machinery
+            // (metadata channels, the record's optional fields, version
+            // retention), never a syntax — its channels check the gate
+            // themselves, and its `provenance()`/`history()` function
+            // names ride the same ADR-0497 admission walk as the gated
+            // collection names above, so they have no AST detector here
+            // either.
+            | relate_core::PreviewFeature::ValueProvenance => Ok(false),
     }
 }
 

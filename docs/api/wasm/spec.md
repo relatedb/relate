@@ -116,10 +116,10 @@ the worker skips Rust destructors. A second agent that still holds the
 catalog handle fails with `storage locked: opfs://<name>`. An exhausted
 slot pool throws a storage error. Any other `uri` throws.
 
-`execute(query: string, paramsJson: string | null): string` — runs one
-Cypher statement and returns the `relate_model::wire` JSON
-envelope as a string (same envelope as every other Relate
-surface); it is `relate::execute_wire`, the statement step of
+`execute(query: string, paramsJson: string | null, metadataJson: string |
+null): string` — runs one Cypher statement and returns the
+`relate_model::wire` JSON envelope as a string (same envelope as every
+other Relate surface); it is `relate::execute_wire`, the statement step of
 `executeScript`. `paramsJson` is a JSON object string, or `null` or blank
 for none, decoded as every binding decodes parameters
 (`relate::params_from_json`): each
@@ -131,6 +131,25 @@ is the wasm target default), which JS observes as a
 `WebAssembly.RuntimeError`; the instance is unusable after that and
 must be replaced (a new worker, or a page reload). Test for it with
 `isWasmTrap` below.
+
+`metadataJson` (ADR-0610) is the per-transaction metadata map — the
+embedded channel's spelling, beside `paramsJson`: a JSON object string
+decoded exactly as parameters, seeded before the statement runs so the
+next transaction boundary (this statement's auto-commit write, or the
+explicit transaction's commit) serializes it into that commit's record,
+then clears; `null` or blank seeds nothing, so two-argument calls are
+byte-for-byte today's. On a store opened without the
+`value-provenance` opt-in the seed is the authored preview error —
+`preview feature 'value-provenance' is not enabled: set
+RELATE_PREVIEW=value-provenance` — riding the envelope's `error`, and
+the statement does not run. **The wasm build can never opt in**:
+`RELATE_PREVIEW` is read once, at open, from the process environment,
+and a wasm host has none — the module's environment is always unset,
+whatever the host process (a browser, a worker, a Node host loading the
+bundle) carries — so on this surface every present `metadataJson` is
+that refusal; the argument documents the channel and its gate for
+hosts that can set the variable. The envelope and `renderResult` are
+unchanged by the argument.
 
 `reset(): void` — drops the current database and connection. An
 in-memory handle opens a fresh `:memory:` database. An OPFS handle
@@ -190,8 +209,9 @@ usable. The relate-web playground and cookbook pages use it.
 
 Runnable examples live in [`examples/`](examples/): `return_one.js`
 (one round-trip), `execute_script.js` (a multi-statement script and a
-failing one), and `render_result.js` (a recording). CI runs them against
-the release bundle (the `wasm` job):
+failing one), `render_result.js` (a recording), and `tx_metadata.js`
+(the metadata argument and its gate). CI runs them against the
+release bundle (the `wasm` job):
 
 ```sh
 bash scripts/build-wasm.sh --mode dev

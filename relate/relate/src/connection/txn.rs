@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use relate_core::{Error, Result, TransactionClock};
+use relate_engine_api::TxChannelState;
 use relate_executor::{
     ExecRequest, QueryResult as ExecResult, RedoOp, SchemaSnapshot, WriteScratch,
 };
@@ -109,6 +110,12 @@ pub(super) struct PreparedRedo {
     snapshot_ts: u64,
     txn_id: u64,
     ops: Vec<RedoOp>,
+    /// The transaction's metadata cell (ADR-0610), taken with the redo:
+    /// the merged map and the record's type, which serialized into
+    /// nothing when the transaction committed nothing, and ride the flush
+    /// into the record's tail — cleared after, as the commit contract
+    /// says.
+    tx_metadata: TxChannelState,
 }
 
 /// The open transaction plus the dispatch decisions already made from it,
@@ -212,10 +219,15 @@ impl Connection {
         let pin_slot = txn.pin_slot;
         let ops = txn.scratch.into_inner().take_redo();
         self.inner.graph.unpin_slot(pin_slot);
+        // ADR-0610: the transaction's metadata cell leaves with its redo —
+        // a commit that commits nothing serialized it into nothing, and
+        // the cell is the transaction's, not the connection's next one.
+        let tx_metadata = std::mem::take(self.tx_metadata.get_mut());
         Ok((!ops.is_empty()).then_some(PreparedRedo {
             snapshot_ts,
             txn_id,
             ops,
+            tx_metadata,
         }))
     }
 
@@ -233,8 +245,15 @@ impl Connection {
         // `execute_ns`) a whole-transaction commit never attributes —
         // named at the batch-commit call site in `commit.rs`. ADR-0502
         // §7: the timestamp is the commit's bookmark, threaded out
-        // instead of dropped.
-        let commit_ts = try_wal_commit(&self.inner, redo.snapshot_ts, redo.txn_id, redo.ops, 0, 0)?;
+        // instead of dropped. ADR-0610: the transaction's metadata cell
+        // rides the record; the WAL boundary owns the empty-map form.
+        let PreparedRedo {
+            snapshot_ts,
+            txn_id,
+            ops,
+            tx_metadata,
+        } = redo;
+        let commit_ts = try_wal_commit(&self.inner, snapshot_ts, txn_id, ops, 0, 0, tx_metadata)?;
         Ok(crate::commit::bookmark_string(commit_ts))
     }
 
@@ -244,6 +263,10 @@ impl Connection {
             return Err(Error::semantic("no transaction"));
         };
         self.inner.graph.unpin_slot(txn.pin_slot);
+        // ADR-0610: the transaction's metadata cell is discarded with its
+        // writes — a rolled-back transaction's metadata and record type
+        // never ride a later one's commit.
+        *self.tx_metadata.get_mut() = TxChannelState::default();
         Ok(())
     }
 
@@ -280,7 +303,8 @@ impl Connection {
                 .with_schema(run.schema)
                 .with_cancel(Some(token))
                 .with_ontology_document(txn.ontology_document.as_deref())
-                .with_transaction_clock(txn.clock);
+                .with_transaction_clock(txn.clock)
+                .with_tx_metadata(Some(&self.tx_metadata));
             run.target.execute(
                 &view,
                 &ExecRequest {

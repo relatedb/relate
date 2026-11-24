@@ -119,8 +119,10 @@ pub const TOOL_TABLE: &[ToolSpec] = &[
         title: "Write Cypher",
         description: "Execute one writing Cypher statement (CREATE, MERGE, SET, DELETE, …). \
              `parameters` is passed as the statement's parameters; an object with a `rows` \
-             array feeds the statement's `$rows` parameter. Returns the mutation counters.",
-        input_schema: cypher_input_schema,
+             array feeds the statement's `$rows` parameter. An optional `tx_metadata` object \
+             (ADR-0610, the `value-provenance` opt-in) is serialized into the commit's \
+             transaction record. Returns the mutation counters.",
+        input_schema: write_cypher_input_schema,
         read_only: false,
         destructive: true,
         served: Served::Both,
@@ -161,7 +163,9 @@ pub const TOOL_TABLE: &[ToolSpec] = &[
         name: BATCH_CYPHER,
         title: "Batch Cypher",
         description: "Execute several writing statements in one transaction and return \
-             their mutation counters in order. Under `whole-import` a failing statement \
+             their mutation counters in order. An optional call-level `tx_metadata` object \
+             (ADR-0610, the `value-provenance` opt-in) is serialized into the commit's \
+             transaction record. Under `whole-import` a failing statement \
              fails the run (the session's one transaction cannot roll back a single call); \
              under `per-batch` the call alone rolls back.",
         input_schema: batch_cypher_input_schema,
@@ -218,8 +222,9 @@ pub fn extension_tools_list() -> Value {
 }
 
 /// The one statement-argument schema: a `statement` string and an optional
-/// `parameters` object — the shape both cypher tools take, the extension
-/// mount's writing/reading calls and the product server's alike.
+/// `parameters` object — the shape the read cypher tool takes on both
+/// mounts (the extension mount's reading calls and the product server's
+/// alike).
 fn cypher_input_schema() -> Value {
     json!({
         "type": "object",
@@ -235,6 +240,27 @@ fn cypher_input_schema() -> Value {
             },
         },
         "required": ["statement"],
+    })
+}
+
+/// The `write_cypher` argument schema: the read tool's statement shape
+/// plus the writing call's own `tx_metadata` argument (ADR-0610) — the
+/// per-call transaction metadata serialized into the commit's record
+/// under the `value-provenance` opt-in.
+fn write_cypher_input_schema() -> Value {
+    let mut schema = cypher_input_schema();
+    schema["properties"]["tx_metadata"] = tx_metadata_property();
+    schema
+}
+
+/// The one `tx_metadata` property object — the ADR's driver-channel
+/// spelling, one definition for the two writing tools' schemas.
+fn tx_metadata_property() -> Value {
+    json!({
+        "type": "object",
+        "description": "Transaction metadata (ADR-0610) serialized into the commit's \
+                        transaction record; requires the value-provenance opt-in \
+                        (RELATE_PREVIEW).",
     })
 }
 
@@ -266,7 +292,8 @@ fn statement_only_schema() -> Value {
 }
 
 /// The `batch_cypher` argument schema: the statements, each with its
-/// optional parameters.
+/// optional parameters, and the call-level `tx_metadata` (ADR-0610) the
+/// whole batch's commit serializes.
 fn batch_cypher_input_schema() -> Value {
     json!({
         "type": "object",
@@ -283,6 +310,7 @@ fn batch_cypher_input_schema() -> Value {
                     "required": ["statement"],
                 },
             },
+            "tx_metadata": tx_metadata_property(),
         },
         "required": ["statements"],
     })
@@ -490,6 +518,28 @@ mod tests {
             (table_row(REPORT_OUTPUT).input_schema)()["required"],
             json!(["text"])
         );
+    }
+
+    /// ADR-0610's `tx_metadata` argument rides the two writing tools'
+    /// schemas — call-level on `batch_cypher`, never on the read tool —
+    /// under the one spelling the ADR records for the driver channel.
+    #[test]
+    fn the_writing_tools_take_the_tx_metadata_argument() {
+        let write = (table_row(WRITE_CYPHER).input_schema)();
+        assert_eq!(write["properties"]["tx_metadata"]["type"], "object");
+        assert_eq!(write["required"], json!(["statement"]));
+        let batch = (table_row(BATCH_CYPHER).input_schema)();
+        assert_eq!(batch["properties"]["tx_metadata"]["type"], "object");
+        // The batch argument is call-level: the per-statement items keep
+        // the bare statement shape.
+        assert!(
+            batch["properties"]["statements"]["items"]["properties"]
+                .get("tx_metadata")
+                .is_none(),
+            "{batch}"
+        );
+        let read = (table_row(READ_CYPHER).input_schema)();
+        assert!(read["properties"].get("tx_metadata").is_none(), "{read}");
     }
 
     /// The one renderer honours a prefix, which is all a serving mount adds

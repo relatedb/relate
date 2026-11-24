@@ -75,3 +75,7 @@ checked when the WAL assigns `commit_ts`.
 
 [ADR-0018](./0018-concurrent-snapshot-reads.md): `apply_redo` no longer needs the exclusive graph lock.
 Snapshot queries and apply overlap; visibility is still `xmin`/`xmax`.
+
+ADR-0610: while the value-provenance opt-in stands, the checkpoint
+persists retained version chains, not only visible rows, and GC exempts
+them; the visible-row rule holds for every store that never opts in.

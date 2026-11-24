@@ -6,11 +6,12 @@
 //! the record the single-pass serde encoder produced before — without a
 //! second or third serialization of the ops.
 
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 use relate_core::tokens::WorkspaceCharge;
-use relate_core::{CapacityKind, Error, Result};
-use relate_engine_api::{CommitRecord, RedoOp};
+use relate_core::{CapacityKind, Error, Result, Value};
+use relate_engine_api::{ChangedKey, CommitRecord, RedoOp};
 use web_time::Instant;
 
 use crate::vfs::{BoundedSink, Refusal};
@@ -26,6 +27,35 @@ const SMALL_RECORD_BYTES: usize = 64 * 1024;
 /// closing brace) is a safe upper bound of the final payload. The spellings
 /// and width belong to the record type, [`CommitRecord`].
 const HEADER_MAX: usize = CommitRecord::HEADER_MAX;
+
+/// The optional provenance tail of a record (ADR-0610): the transaction's
+/// merged metadata map, the derived changed keys, and the record's family
+/// type, serialized after the `ops` array and before the closing brace —
+/// in the field order and with the key spellings [`CommitRecord`]'s serde
+/// form uses, so the hand-built payload is byte-identical to what a
+/// derived [`Serialize`](serde::Serialize) would emit. Every field is
+/// `None` while the `value-provenance` feature is off or the commit
+/// carries no tail, and the empty tail ([`RecordTail::NONE`]) encodes
+/// exactly the pre-feature record bytes.
+#[derive(Debug, Clone, Copy)]
+pub struct RecordTail<'a> {
+    pub metadata: Option<&'a BTreeMap<String, Value>>,
+    pub changed_keys: Option<&'a [ChangedKey]>,
+    pub record_type: Option<&'a str>,
+}
+
+impl RecordTail<'_> {
+    /// The tail's empty form: no metadata, no changed keys, no family
+    /// type — the one spelling of "no tail" (the type's own empty form,
+    /// never an `Option` beside it), which writes nothing at all and so
+    /// encodes exactly the pre-feature record bytes. The one nullable
+    /// axis an encoding carries is the meter alone.
+    pub const NONE: Self = Self {
+        metadata: None,
+        changed_keys: None,
+        record_type: None,
+    };
+}
 
 /// A commit's redo ops, encoded once, with room for the record header in
 /// front. Owned by the commit slot from admission to append, then by the
@@ -66,7 +96,22 @@ impl EncodedOps {
     /// as the encoding lives. A commit whose buffer stayed within 64 KiB
     /// is trimmed to its length and charged for that.
     pub fn encode(ops: &[RedoOp], charge: &mut WorkspaceCharge, cap: u64) -> Result<Self> {
-        Self::encode_with(ops, Some(charge), cap)
+        Self::encode_with(ops, RecordTail::NONE, Some(charge), cap)
+    }
+
+    /// [`Self::encode`] with the record's optional provenance tail
+    /// (ADR-0610): the metadata map and changed keys serialize into the
+    /// same single pass, under the same payload cap and workspace charge —
+    /// the tail is part of the record's bytes, so an oversized
+    /// metadata-plus-ops record is refused exactly where an oversized
+    /// ops-only one always was.
+    pub fn encode_tail(
+        ops: &[RedoOp],
+        tail: RecordTail<'_>,
+        charge: &mut WorkspaceCharge,
+        cap: u64,
+    ) -> Result<Self> {
+        Self::encode_with(ops, tail, Some(charge), cap)
     }
 
     /// [`Self::encode`] with no workspace charge at all, for a throwaway
@@ -75,10 +120,15 @@ impl EncodedOps {
     /// it covered is still alive. The payload, the cap and its refusal are
     /// exactly those of [`Self::encode`].
     pub fn encode_unmetered(ops: &[RedoOp], cap: u64) -> Result<Self> {
-        Self::encode_with(ops, None, cap)
+        Self::encode_with(ops, RecordTail::NONE, None, cap)
     }
 
-    fn encode_with(ops: &[RedoOp], meter: Option<&mut WorkspaceCharge>, cap: u64) -> Result<Self> {
+    fn encode_with(
+        ops: &[RedoOp],
+        tail: RecordTail<'_>,
+        meter: Option<&mut WorkspaceCharge>,
+        cap: u64,
+    ) -> Result<Self> {
         // The frame-bound admission lives in the one core every encoding
         // funnels through, so no entry point can bypass it (ADR-0650).
         super::check_payload_cap(cap, "WAL payload cap")?;
@@ -97,6 +147,7 @@ impl EncodedOps {
         let mut sink = BoundedSink::capture_charged(&mut buf, cap, refusal, meter)?;
         let result: io::Result<()> = serde_json::to_writer(&mut sink, ops)
             .map_err(io::Error::from)
+            .and_then(|()| write_tail(&mut sink, tail))
             .and_then(|()| sink.write_all(b"}"));
         // A record within 64 KiB is small enough that trimming its slack
         // is a cheap copy: the sink hands the slack back and settles its
@@ -238,4 +289,27 @@ impl PayloadTally {
     pub fn bytes(&self) -> u64 {
         HEADER_MAX as u64 + 2 + self.elements + self.ops.saturating_sub(1) + 1
     }
+}
+
+/// Write the record's optional provenance tail (ADR-0610) after the ops
+/// array: each present field's key spelling ([`CommitRecord`]'s, so the
+/// hand-built bytes match the derived serde form) followed by its JSON —
+/// `metadata` first, then `changed_keys`, then the record's `type`, the
+/// declaration order. A field that is `None` writes nothing at all, which
+/// is what makes a tail-less record byte-identical to the pre-feature
+/// encoding.
+fn write_tail(sink: &mut BoundedSink<'_>, tail: RecordTail<'_>) -> io::Result<()> {
+    if let Some(metadata) = tail.metadata {
+        sink.write_all(CommitRecord::METADATA_KEY.as_bytes())?;
+        serde_json::to_writer(&mut *sink, metadata).map_err(io::Error::from)?;
+    }
+    if let Some(changed_keys) = tail.changed_keys {
+        sink.write_all(CommitRecord::CHANGED_KEYS_KEY.as_bytes())?;
+        serde_json::to_writer(&mut *sink, changed_keys).map_err(io::Error::from)?;
+    }
+    if let Some(record_type) = tail.record_type {
+        sink.write_all(CommitRecord::TYPE_KEY.as_bytes())?;
+        serde_json::to_writer(&mut *sink, record_type).map_err(io::Error::from)?;
+    }
+    Ok(())
 }

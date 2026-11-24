@@ -433,6 +433,52 @@ The native `Database.commit_transaction()` returns the same value. An
 auto-commit write's bookmark is on its result (`QueryResult.bookmark`,
 `cursor.consume().bookmark`).
 
+## Transaction metadata (`tx_metadata`, ADR-0610)
+
+`Connection.execute`, `Cursor.execute` and the native
+`Database.execute` take a keyword-only `tx_metadata` argument (default
+`None`) — the Python surface's embedded channel of the three metadata
+inputs (ADR-0610): it seeds the connection's per-transaction metadata map
+before the statement runs.
+
+```python
+conn = relate.connect("./mydata")
+conn.execute(
+    "CREATE (p:Person {name: $name})",
+    {"name": "Ada"},
+    tx_metadata={"by": "app", "run": 42},
+)
+```
+
+The value is a `dict` with string keys; values convert exactly like
+query parameters (the ADR-0219 table above), so temporals, lists and
+nested maps cross at full fidelity. Shape mistakes raise
+`relate.ProgrammingError` worded for the argument ("transaction metadata
+must be a dict …", "transaction metadata keys must be strings …").
+
+Semantics (ADR-0610): the map merges into the connection's per-transaction
+map in call order — later keys win, including against
+`CALL tx.setMetaData(map)`, the statement channel — under the 16 MiB
+per-object bound (an over-bound map is the seed's typed error). The merged
+map is serialized into the commit's record at the next transaction
+boundary — an auto-commit write's, or an explicit transaction's
+`Connection.commit()` — then cleared; a `rollback` discards it. The
+record's metadata is what the value-provenance audit surface reads
+(ADR-0610); while the transaction is open, `CALL tx.getMetaData()` returns
+the live map (an empty map when nothing was set).
+
+The whole machinery is the `value-provenance` preview feature's
+(ADR-0371): `RELATE_PREVIEW` is read once, at open, so the opt-in must be
+set before connecting. On a store opened without it, a call carrying
+`tx_metadata` fails with the authored preview error
+(`preview feature 'value-provenance' is not enabled: set
+RELATE_PREVIEW=value-provenance`) instead of silently dropping the map —
+the embedded caller's contract. The error is a `SemanticError`, so the
+DB-API class is `relate.OperationalError`; the statement never runs,
+leaving the connection usable.
+
+See [`examples/tx_metadata.py`](examples/tx_metadata.py).
+
 ## Error classification (ADR-0502 §2)
 
 Every engine failure carries the engine's own classification, from the one
@@ -512,6 +558,8 @@ Runnable examples live in [`examples/`](examples/):
 [`parameters.py`](examples/parameters.py) (uuid, bytes, tuple, explicit
 points, parameter errors),
 [`transaction.py`](examples/transaction.py),
+[`tx_metadata.py`](examples/tx_metadata.py) (the `tx_metadata` kwarg under
+the `value-provenance` opt-in),
 [`snapshot_json.py`](examples/snapshot_json.py),
 [`namespace.py`](examples/namespace.py) (session namespace selection),
 [`thread_affinity.py`](examples/thread_affinity.py) (thread affinity: the

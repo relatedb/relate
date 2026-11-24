@@ -50,7 +50,7 @@ const result = conn.query("RETURN 1 AS n");
 //                            elapsedMs (ADR-0491); sum never exceeds the total
 ```
 
-`conn.query(cypher, params?)` — `params` is a plain object lowered into the
+`conn.query(cypher, params?, txMetadata?)` — `params` is a plain object lowered into the
 typed params builder: every `$name` the statement references must be in it
 (`null` is a value), or the query throws the engine's parameter-missing
 error. Values: `null`, booleans, strings, numbers (integer-valued binds
@@ -62,6 +62,16 @@ a decoded value binds back unchanged. `float(1)` binds a FLOAT-typed 1.0.
 Auto-commit unless `begin()` is open; `begin()` / `commit()` /
 `rollback()` are an explicit transaction and `commit()` returns the
 transaction's bookmark (`string | null`).
+
+`txMetadata` (ADR-0610, default none) is the per-transaction metadata
+seed — a plain object through the same builder — whose map merges with
+every earlier seed (later keys win) and rides the next transaction
+boundary into the commit's record, where the value-provenance audit
+surface (`provenance()`, `history()`, `CALL db.transactions`) reads it;
+the boundary clears it, a rollback discards it. Gated by
+`RELATE_PREVIEW=value-provenance` (read once, at open): without the
+opt-in a call carrying it throws the authored preview error instead of
+silently dropping the map. The template-tag form has no metadata slot.
 
 `conn.query` also works as a template tag (ADR-0222):
 ``conn.query`MATCH (p {name: ${name}}) RETURN p` `` — each interpolated
@@ -99,11 +109,13 @@ shared (acyclic) reference binds at each place it appears.
 - **Int64 beyond 2^53 is a bigint** — `RETURN 9007199254740993` is exactly
   `9007199254740993n`; pass big integers as `bigint` parameters, never
   through `Number` (LABS-901).
-- **Async queries** — `conn.queryAsync(cypher, params?)` (and the tag
-  form) runs the call on koffi's worker thread and rejects with the same
-  typed `RelateError`. Overlapping calls on one connection are serialized;
-  any sync call (`query`, `begin`, `commit`, `rollback`, `setNamespace`)
-  while an async query is in flight on the same connection refuses.
+- **Async queries** — `conn.queryAsync(cypher, params?, txMetadata?)` (and
+  the tag form) runs the call on koffi's worker thread and rejects with
+  the same typed `RelateError`. Overlapping calls on one connection are
+  serialized; any sync call (`query`, `begin`, `commit`, `rollback`,
+  `setNamespace`) while an async query is in flight on the same
+  connection refuses. The metadata seed runs inside the serialized task,
+  in call order, so its map attaches to that call's commit.
 - **Result ergonomics (ADR-0216)** — rows are column-keyed objects;
   `result.stats` carries the 11 mutation counters (snake_case, zeros
   included; Neo4j's counting: labels per node, every property write); `single()` throws `ResultNotSingleError` on zero or >1 rows;

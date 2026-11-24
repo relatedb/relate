@@ -47,6 +47,7 @@ pub(crate) enum RowProducer {
     DbmsListCapabilities,
     FulltextAnalyzers,
     DbStatsRetrieve,
+    DbTransactions,
     SchemaNodeTypeProperties,
     SchemaRelTypeProperties,
     SchemaVisualization,

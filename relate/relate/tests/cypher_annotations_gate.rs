@@ -29,6 +29,27 @@ fn an_annotated_query_answers_as_the_plain_one_does() {
 }
 
 #[test]
+fn tx_metadata_is_discarded_while_the_channel_gate_is_off() {
+    // ADR-0610's layering: with `cypher-annotations` on and
+    // `value-provenance` off, the reserved name is discarded exactly like
+    // any unrecognized annotation — its CIP-281 checks ran, the query
+    // answers as its plain form does, and no record is retained (the
+    // transaction-record machinery is the other gate's).
+    set_preview_once("cypher-annotations");
+    let db = relate::Database::open(":memory:").unwrap();
+    let mut c = db.connect().unwrap();
+    c.query("@txMetadata({agent: 'a', n: 2}) CREATE (n:P {k: 1})")
+        .unwrap();
+    c.query("@txMetadata(agent: 'a') CREATE (m:P {k: 1})")
+        .unwrap();
+    // Two nodes, both spellings of the map parsed fine — and no record
+    // retained: the transaction-record machinery is the other gate's.
+    let count = c.query("MATCH (n) RETURN count(n) AS n").unwrap();
+    assert_eq!(count.rows[0][0], Value::Int(2));
+    assert!(db.transaction_records().unwrap().is_empty());
+}
+
+#[test]
 fn an_invalid_annotation_is_rejected() {
     set_preview_once("cypher-annotations");
     let mut c = connection();

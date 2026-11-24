@@ -66,3 +66,16 @@ never exceeds the total).
 run, populated by `EXPLAIN` and `PROFILE` with entries carrying
 the notification code, GQLSTATUS, severity, category, diagnosis and
 remedy. `result.consume().notifications` carries the same list.
+
+`conn.query(cypher, params?, txMetadata?)` carries per-transaction
+metadata (ADR-0610): the third argument seeds the connection's
+metadata map — lowered through the same typed params builder parameters
+use — and the next transaction boundary serializes it into the commit's
+record, where the value-provenance audit surface (`provenance()`,
+`history()`, `CALL db.transactions`) reads it. Later seeds and
+`CALL tx.setMetaData` merge in call order; the boundary clears the map
+and a rollback discards it. The machinery is the `value-provenance`
+preview opt-in's (`RELATE_PREVIEW`, read once at open): a call carrying
+the argument on a store opened without it throws the authored preview
+error rather than silently dropping the map, and calls without it are
+byte-for-byte today's.

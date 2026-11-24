@@ -174,6 +174,97 @@ fn stamped_payload_is_byte_identical_to_the_single_pass_record() {
     }
 }
 
+/// ADR-0610: a record's optional provenance tail. The hand-built encode —
+/// ops plus [`RecordTail`], header stamped in place — is byte-identical
+/// to the derived serde of the equivalent full record with the fields
+/// present (a typed record of another family included) and, the
+/// pre-feature form, with them absent.
+#[test]
+fn tail_bearing_payload_is_byte_identical_to_the_derived_record() {
+    use relate_engine_api::{ChangedKey, ChangedKeyKind};
+    use std::collections::BTreeMap;
+
+    let ops = vec![create_node(1)];
+    let mut metadata = BTreeMap::new();
+    metadata.insert("by".to_string(), Value::String("app".into()));
+    let changed_keys = vec![ChangedKey {
+        kind: ChangedKeyKind::Node,
+        id: 1,
+        key: "bio".to_string(),
+    }];
+    let tail = RecordTail {
+        metadata: Some(&metadata),
+        changed_keys: Some(&changed_keys),
+        record_type: Some("provenance"),
+    };
+    for (lsn, ts) in HEADERS {
+        // Fields present: the tail lands after the ops array in the
+        // declaration order the derived form writes.
+        let record = WalRecord {
+            lsn,
+            commit_ts: ts,
+            ops: ops.clone(),
+            metadata: Some(metadata.clone()),
+            changed_keys: Some(changed_keys.clone()),
+            record_type: Some("provenance".to_string()),
+        };
+        // The throwaway charge the metered entry point requires: the
+        // test holds no budget, so the charge is created empty and
+        // dropped with the encoding — the one metered form the engine
+        // itself uses.
+        let mut charge = WorkspaceCharge::empty();
+        let mut encoded =
+            EncodedOps::encode_tail(&ops, tail, &mut charge, Error::WAL_PAYLOAD_CAP_BYTES).unwrap();
+        encoded.stamp(lsn, ts);
+        assert_eq!(
+            encoded.payload(),
+            serde_json::to_vec(&record).unwrap().as_slice(),
+            "lsn {lsn} ts {ts}"
+        );
+        // A record of another family carries its type with no derived
+        // keys — the typed channel's shape.
+        let typed_tail = RecordTail {
+            metadata: Some(&metadata),
+            changed_keys: None,
+            record_type: Some("audit-trail"),
+        };
+        let typed = WalRecord {
+            lsn,
+            commit_ts: ts,
+            ops: ops.clone(),
+            metadata: Some(metadata.clone()),
+            changed_keys: None,
+            record_type: Some("audit-trail".to_string()),
+        };
+        let mut charge = WorkspaceCharge::empty();
+        let mut encoded =
+            EncodedOps::encode_tail(&ops, typed_tail, &mut charge, Error::WAL_PAYLOAD_CAP_BYTES)
+                .unwrap();
+        encoded.stamp(lsn, ts);
+        assert_eq!(
+            encoded.payload(),
+            serde_json::to_vec(&typed).unwrap().as_slice(),
+            "lsn {lsn} ts {ts}"
+        );
+        // Fields absent: the empty tail keeps the pre-feature bytes.
+        let bare = WalRecord {
+            lsn,
+            commit_ts: ts,
+            ops: ops.clone(),
+            metadata: None,
+            changed_keys: None,
+            record_type: None,
+        };
+        let mut plain = encode(&ops).unwrap();
+        plain.stamp(lsn, ts);
+        assert_eq!(
+            plain.payload(),
+            serde_json::to_vec(&bare).unwrap().as_slice(),
+            "lsn {lsn} ts {ts}"
+        );
+    }
+}
+
 #[test]
 fn reservation_is_the_buffer_and_covers_the_maximum_width_record() {
     for (name, ops) in op_mixes() {

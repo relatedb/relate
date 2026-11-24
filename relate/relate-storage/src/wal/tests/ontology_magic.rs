@@ -114,6 +114,9 @@ fn ontology_op_in_mdbwal01_segment_is_corruption_at_open_replay_and_record_read(
             lsn,
             commit_ts: ts,
             ops: vec![ontology_set()],
+            metadata: None,
+            changed_keys: None,
+            record_type: None,
         })
         .unwrap()
     };

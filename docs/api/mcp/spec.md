@@ -80,7 +80,7 @@ in the MCP parameter path.
 | --- | --- | --- |
 | `get_schema` | `{sample_size?: integer}` (default 1000, `-1` = full scan) | Schema map keyed by label: `{"Person": {"type": "node", "count": 2, "properties": {"name": {"type": "String"}}, "relationships": {"KNOWS": {"direction": "out", "labels": ["Person"], "properties": {"since": {"type": "Integer"}}}}}}`. Counts are exact; property types are inferred from the sampled scan and mixed types keep the first type seen. |
 | `read_cypher` | `{statement: string, parameters?: object}` | The canonical wire envelope (`{"columns": ["name"], "columnTypes": ["STRING"], "rows": [{"name": "Ada"}, …], "stats": {…}, "notifications": […], "plan": {…}|null, "elapsed_ms": <f64>, "parse_ms": <f64>, "plan_ms": <f64>, "execute_ms": <f64>, "lex_parse_ms": <f64>, "rewrite_ms": <f64>, "lower_ms": <f64>, "result_generation_ms": <f64>, "plan_cache": "<outcome>", "error": null}`): rows as objects under `rows`, values in the ADR-0223 wire JSON; `columnTypes` is the engine-stamped per-column type name of ADR-0224, `elapsed_ms` the engine-reported statement elapsed of ADR-0221 with its ADR-0491 phase split beside it — `parse_ms`/`plan_ms`/`execute_ms`, the PARSE / PLAN / EXECUTE partition of the same window, non-negative milliseconds whose sum never exceeds `elapsed_ms` — the LABS-1120 fine sub-split (`lex_parse_ms`/`rewrite_ms`/`lower_ms` partitioning `parse_ms`; `result_generation_ms` inside `execute_ms`; the PARSE fine sub-windows `0` on a plan-cache hit (a hit still builds its result, so `result_generation_ms` is non-zero)) and the `plan_cache` outcome string explaining it — and `notifications` the always-present ADR-0363 native list — the classification `EXPLAIN`'s plan-time notifications (see below), empty when it raises none. The same result-metadata contract as the CLI/FFI envelope (cross-surface alignment). Only a pure read (plan-derived query type `r`) passes — an `OPTIONAL MATCH` read included: the pattern's optionality never changes the class, so `MATCH (a:Room) OPTIONAL MATCH (a)-[:NORTH]->(b) RETURN a.name, b.name` is served, its unmatched arm returning null (LABS-888; the `Only MATCH queries` refusal text below is the reference server's pinned wording, not a MATCH-only rule). Writes (`w`/`rw`) AND schema DDL (`s` — `CREATE/DROP INDEX`, `CREATE/DROP CONSTRAINT`) are rejected with `Only MATCH queries are allowed for read-query`. Hosts auto-approve `readOnlyHint` tools, so nothing that mutates the graph or the catalog passes this guard. |
-| `write_cypher` | `{statement: string, parameters?: object}` | The same wire envelope with empty `columns`/`columnTypes`/`rows`; the mutation counters in the snake_case wire vocabulary sit under `stats` (`{"nodes_created": 1, …}`), with the same always-present `notifications`, `plan` (the `relate.plan/v1` document, ADR-0381 — always present, because every MCP call classifies through EXPLAIN first) and `elapsed_ms` with its ADR-0491 phase split (`parse_ms`/`plan_ms`/`execute_ms`). A read-only statement is rejected with `Only write queries are allowed for write-query`. Absent entirely under `--read-only` (either freshness), on `relate serve` (ADR-0306 — the fence follows the opened handle, so a read-only or following open does not list the tool). |
+| `write_cypher` | `{statement: string, parameters?: object, tx_metadata?: object}` | The same wire envelope with empty `columns`/`columnTypes`/`rows`; the mutation counters in the snake_case wire vocabulary sit under `stats` (`{"nodes_created": 1, …}`), with the same always-present `notifications`, `plan` (the `relate.plan/v1` document, ADR-0381 — always present, because every MCP call classifies through EXPLAIN first) and `elapsed_ms` with its ADR-0491 phase split (`parse_ms`/`plan_ms`/`execute_ms`). A read-only statement is rejected with `Only write queries are allowed for write-query`. Absent entirely under `--read-only` (either freshness), on `relate serve` (ADR-0306 — the fence follows the opened handle, so a read-only or following open does not list the tool). |
 
 **Byte arrays (ADR-0327).** The engine's statement-scoped byte array enters only through Bolt or a Rust `Value::Bytes` parameter, never through this surface's own parameters. A result value holding one renders as a list of integers 0–255 (the `value_to_cypher` crossing) and its column stamps `BINARY`; byte arrays cannot be stored as properties.
 
@@ -88,6 +88,21 @@ The wire plan tree (the `plan` args form every other surface carries) nests disp
 
 Write detection mirrors the reference server: `EXPLAIN <statement>`
 classifies the plan (ADR-0162 `query_type`) before execution.
+
+**Transaction metadata (ADR-0610).** The writing tools — `write_cypher`
+here, and the extension mount's `batch_cypher` beside it, whose
+`tx_metadata` argument is call-level (the whole batch's commit
+serializes it) — take the optional `tx_metadata` object, the spelling
+the ADR records for the driver channel. On a store opened with
+`RELATE_PREVIEW=value-provenance` the map seeds the transaction the call
+runs in and the commit's transaction record serializes it, where the
+provenance queries (`provenance()`, `history()`, `CALL
+db.transactions`) read it; the extension mount's commit framing rolls a
+failed call's seed back with it. On a store without the opt-in a call
+carrying the argument answers the engine's authored preview error as an
+`isError` tool result (the field is never silently dropped), and a call
+that carries none is byte-for-byte today's. Values are plain JSON — the
+same fold as `parameters`.
 
 That classification `EXPLAIN` is also the notification source (ADR-0363
 decision 10): both cypher tools put its `notifications` list into the

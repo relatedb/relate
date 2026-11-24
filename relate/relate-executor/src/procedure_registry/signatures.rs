@@ -324,6 +324,53 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
             ProcArgMeta::described("data", "The requested section's statistics.", "MAP"),
         ])
         .rows(RowProducer::DbStatsRetrieve),
+    // ADR-0610: the value-provenance audit surface's procedure — the
+    // retained transaction records, one row per commit the feature
+    // recorded. Preview-gated with the whole machinery (the
+    // procedure-to-feature mapping's `value-provenance` row), so while
+    // the opt-in is off `SHOW PROCEDURES` lists no row and a call fails
+    // the authored preview error. A READ procedure on the user database
+    // (`works_on_system` off); `since` is the one production-bounding
+    // filter — further filtering goes through YIELD/WHERE.
+    ProcSignature::read("db.transactions")
+        .described(
+            "List the retained transaction records (the value-provenance audit surface): \
+             one row per committed transaction, ascending by lsn, with its type, its \
+             metadata map and its changed property keys — deleted elements included.",
+        )
+        .args(&[ProcArgMeta::with_default(
+            "since",
+            "The inclusive commitTs lower bound: only transactions committed at or after \
+             this commit timestamp are returned. 0 (the default) returns every retained \
+             record.",
+            "INTEGER",
+            "0",
+        )])
+        .returns(&[
+            ProcArgMeta::described("lsn", "The commit's log sequence number.", "INTEGER"),
+            ProcArgMeta::described(
+                "commitTs",
+                "The commit's timestamp — the sequence a bookmark's relate:<n> names.",
+                "INTEGER",
+            ),
+            ProcArgMeta::described(
+                "type",
+                "The record's type: the provenance family's own, or the typed channel's name.",
+                "STRING",
+            ),
+            ProcArgMeta::described(
+                "metadata",
+                "The transaction's metadata map; an empty map when none was set.",
+                "MAP",
+            ),
+            ProcArgMeta::described(
+                "changedKeys",
+                "The commit's changed property keys, each {elementId, key}; null for a record \
+                 of another type (changed keys derive only for provenance records).",
+                "LIST<MAP>",
+            ),
+        ])
+        .rows(RowProducer::DbTransactions),
     // ADR-0143: `dbms.clientConfig` and `dbms.listConfig` share the Neo4j
     // 5.x+ `ConfigResult` shape (`CONFIG_RESULT_RETURNS`) by design.
     // ADR-0497 §6: `dbms.clientConfig` stays callable but unlisted -- the

@@ -126,9 +126,9 @@ each):
 | Tool | Arguments | Result |
 | --- | --- | --- |
 | `update_schema` | `{statement}` | `{created}` — the index/constraint names the call added |
-| `write_cypher` | `{statement, parameters}` | `{counts, storeRemainingBytes}`; a `rows` array feeds `$rows` |
+| `write_cypher` | `{statement, parameters, tx_metadata?}` | `{counts, storeRemainingBytes}`; a `rows` array feeds `$rows`; `tx_metadata` (ADR-0610) serializes into the commit's record under the `value-provenance` opt-in |
 | `read_cypher` | `{statement, parameters}` | `{columns, rows}` — only a statement the plan classifies as a read passes |
-| `batch_cypher` | `{statements: [{statement, parameters}]}` | `{results, storeRemainingBytes}` — one transaction per call |
+| `batch_cypher` | `{statements: [{statement, parameters}], tx_metadata?}` | `{results, storeRemainingBytes}` — one transaction per call; the call-level `tx_metadata` rides its commit |
 | `report_output` | `{text, starters?}` | `{}` — the run summary, printed and handed to the shell |
 
 `read_cypher`'s guard is the plan's own type (`EXPLAIN`), not a keyword

@@ -207,6 +207,32 @@ pub(crate) fn run_on(
     }
 }
 
+/// Seed a request's optional `tx_metadata` member (ADR-0610) onto the
+/// connection before its statement runs — the one seed step both request
+/// bodies (the auto-commit `StatementRequest` and the managed-transaction
+/// `TxRequest`) call, so the field name, the dialect fold and the error
+/// mapping are stated once. The map folds through the request's own
+/// parameter dialect ([`request_params`], ADR-0425) — a typed-envelope
+/// request's metadata decodes typed, a plain one plain — and the seed runs
+/// the embedded channel `Connection::set_tx_metadata`: a store opened
+/// without the `value-provenance` opt-in answers a request that carries
+/// the field with the authored preview error instead of silently dropping
+/// it, while an absent member seeds nothing (zero cost while off, ADR-0610
+/// §Zero cost). The seed is serialized into the commit's record at the
+/// next transaction boundary — this route's auto-commit write, or the
+/// managed transaction's commit — and a rollback discards it.
+pub(crate) fn seed_tx_metadata(
+    conn: &mut relate::Connection,
+    metadata: Option<&Map<String, Json>>,
+    dialect: RequestDialect,
+) -> Result<(), Reply> {
+    let Some(metadata) = metadata else {
+        return Ok(());
+    };
+    let map = request_params(dialect, Some(metadata)).map_err(|message| bad_request(&message))?;
+    conn.set_tx_metadata(map).map_err(|e| run_error(&e))
+}
+
 /// An engine error as an error-envelope Reply. The classification is
 /// consulted once: the code and the message are the engine's
 /// (ADR-0502 §2 — `gql_status`, and [`logged_client_message`], which

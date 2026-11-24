@@ -262,6 +262,9 @@ fn invalid_replicated_ids_are_refused_under_a_size_limit() {
                 lsn: 999, // The destination assigns its own LSN.
                 commit_ts: 1,
                 ops: vec![node(0), invalid],
+                metadata: None,
+                changed_keys: None,
+                record_type: None,
             })
             .unwrap_err();
         assert!(matches!(err, Error::Storage(_)), "{name}: {err}");

@@ -13,6 +13,10 @@ structures carry element ids and the fixed DateTime structures. Dialect
 is OpenCypher
 (ADR-0056), not Neo4j Cypher. `BEGIN` / `COMMIT` / `ROLLBACK` are real
 session transactions (ADR-0028); `RUN` without `BEGIN` stays auto-commit.
+A `BEGIN`'s `tx_metadata` extra seeds the transaction's metadata map —
+serialized into the commit's record while the store opts into
+`RELATE_PREVIEW=value-provenance` (ADR-0610), ignored otherwise — so
+drivers' session-metadata config lands in the audit trail.
 See the [LOGON example](examples/logon.md) for a driver-visible 5.4
 connection.
 

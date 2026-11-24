@@ -109,7 +109,7 @@ checkpoint.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `execute` | `(query, params=None) -> Cursor` | Execute a Cypher query |
+| `execute` | `(query, params=None, *, tx_metadata=None) -> Cursor` | Execute a Cypher query; the keyword-only `tx_metadata` dict (ADR-0610, preview-gated by `RELATE_PREVIEW=value-provenance`) seeds the transaction's metadata record |
 | `executemany` | `(query, params_list) -> Cursor` | Execute a query for each parameter set |
 | `commit` | `() -> None` | Commit the open transaction (a no-op in autocommit mode) |
 | `rollback` | `() -> None` | Discard the open transaction (a no-op in autocommit mode) |

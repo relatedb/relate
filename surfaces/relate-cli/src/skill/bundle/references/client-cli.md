@@ -60,6 +60,26 @@ exist, and a piped `enable` is refused.
 Agent-mode error output also points here: an agent run's diagnostics carry a
 one-line hint to this flow, exactly once per run.
 
+## Writing with transaction metadata
+
+When you script a write into a store the person opened under the
+`value-provenance` opt-in, attach `--tx-meta KEY=VALUE` pairs (repeatable,
+later keys win) so the audit trail records who made the write:
+
+```bash
+RELATE_PREVIEW=value-provenance relate query \
+  --database ./store \
+  --tx-meta app=my-agent --tx-meta run=4711 \
+  'CREATE (:Person {name: "ada"})'
+```
+
+The map rides the session's next committed transaction and is cleared
+after it. The opt-in is the person's, not yours — it changes what the
+store retains — so without it already set, drop the flag rather than
+exporting the variable: a run that passes `--tx-meta` without the
+opt-in fails with `preview feature 'value-provenance' is not enabled`
+(exit 6) instead of silently dropping the metadata.
+
 ## Gotchas
 
 - **Ask before every send.** The recorded grant is consent for the channel,

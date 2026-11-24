@@ -19,8 +19,11 @@ fn ffi_connect_namespace_selects_fixed_namespace() {
     // The `system_ontologies` connect needs the `ontology` opt-in
     // (ADR-0593): without it the namespace is invisible and the connect
     // fails as an unknown name (the closed pins live in the engine's
-    // preview-gate suite).
-    relate_test_support::preview::preview_ontology();
+    // preview-gate suite). The union spelling — `ontology` beside the
+    // tx-metadata suite's `value-provenance` — because the fixture is
+    // first-call-wins per process: one test binary, one set, every gated
+    // open in it sees both features.
+    crate::support::preview_union_for_this_binary();
     let sys = CString::new("system_ontologies").unwrap();
     let unknown = CString::new("movies").unwrap();
     let mut conn: *mut relate_connection = ptr::null_mut();

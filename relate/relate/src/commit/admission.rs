@@ -127,10 +127,12 @@ fn admit_slot(
         record: Accepted {
             ops: slot.ops,
             commit_ts,
+            lsn: 0,
             encode_write_ns: 0,
             wal_lock_ns,
             parse_plan_ns: slot.parse_plan_ns,
             execute_ns: slot.execute_ns,
+            provenance: slot.provenance,
         },
         encoded: slot.encoded,
     })

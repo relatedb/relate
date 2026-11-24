@@ -145,7 +145,17 @@ impl Database {
         // commit pipeline itself runs under that write-side publication
         // boundary.
         let snapshot_ts = shared.commit_ts()?;
-        try_wal_commit(shared, snapshot_ts, txn_id, vec![op], 0, 0)?;
+        // The ontology facade carries no transaction metadata (ADR-0610):
+        // the store-level ops are not a connection's transaction.
+        try_wal_commit(
+            shared,
+            snapshot_ts,
+            txn_id,
+            vec![op],
+            0,
+            0,
+            relate_engine_api::TxChannelState::default(),
+        )?;
         Ok(())
     }
 }

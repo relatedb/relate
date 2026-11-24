@@ -12,6 +12,20 @@ use crate::result::*;
 use crate::tabular::*;
 use crate::value::*;
 
+/// This test binary's process-wide preview opt-in, spelled once for its
+/// gated suites: the lib-test binary compiles the namespaces suite's
+/// `ontology` gate and the tx-metadata suite's `value-provenance` gate
+/// into one process (the C ABI's modules are private — no integration
+/// binary can drive them — so every FFI suite is a `#[path]` module
+/// here), and the opt-in is first-call-wins per process, so the two
+/// suites share one spelling: the union, called before the first gated
+/// open. The shared fixture module stays feature-atomic
+/// (`preview_ontology`, `preview_value_provenance`); this union is this
+/// one binary's own fact, never a general-purpose fixture.
+pub(crate) fn preview_union_for_this_binary() {
+    relate_test_support::preview::set_preview_once("ontology,value-provenance");
+}
+
 /// Open a `:memory:` database with no connection, asserting success.
 ///
 /// # Safety

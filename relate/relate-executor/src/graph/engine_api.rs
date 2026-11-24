@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use relate_catalog::{ConstraintDef, IndexDef};
 use relate_core::{Node, NodeId, RelId, Relationship, Result};
-use relate_engine_api::{CheckpointTheater, GraphExport, GraphImport, RedoOp};
+use relate_engine_api::{CheckpointTheater, GraphExport, GraphImport, RedoOp, TransactionRecord};
 use relate_model::Constraint;
 
 use super::Graph;
@@ -64,6 +64,30 @@ impl GraphExport for Graph {
     fn catalog_ddl(&self) -> Vec<String> {
         crate::catalog_create_statements(self)
     }
+    fn retained_transactions(&self) -> Vec<TransactionRecord> {
+        Graph::retained_transactions(self)
+    }
+    fn retained_transactions_into(
+        &self,
+        sink: &mut dyn FnMut(&TransactionRecord) -> Result<()>,
+    ) -> Result<()> {
+        Graph::retained_transactions_into(self, sink)
+    }
+    fn value_provenance_retention(&self) -> bool {
+        Graph::value_provenance_retention(self)
+    }
+    fn retained_node_chains_into(
+        &self,
+        sink: &mut dyn FnMut(&relate_engine_api::RetainedNodeChain) -> Result<()>,
+    ) -> Result<()> {
+        Graph::retained_node_chains_into(self, sink)
+    }
+    fn retained_rel_chains_into(
+        &self,
+        sink: &mut dyn FnMut(&relate_engine_api::RetainedRelChain) -> Result<()>,
+    ) -> Result<()> {
+        Graph::retained_rel_chains_into(self, sink)
+    }
 }
 
 impl GraphImport for Graph {
@@ -108,5 +132,23 @@ impl GraphImport for Graph {
     }
     fn restore_legacy_enforced_constraints(&self, constraints: Vec<Constraint>) -> Result<()> {
         Graph::restore_legacy_enforced_constraints(self, constraints)
+    }
+    fn record_retained_transaction(&self, record: TransactionRecord) {
+        Graph::record_transaction(self, record)
+    }
+    fn clear_retained_transactions(&self) {
+        Graph::clear_transactions(self)
+    }
+    fn restore_retained_node_chain(
+        &self,
+        chain: relate_engine_api::RetainedNodeChain,
+    ) -> Result<()> {
+        Graph::restore_retained_node_chain(self, chain)
+    }
+    fn restore_retained_rel_chain(&self, chain: relate_engine_api::RetainedRelChain) -> Result<()> {
+        Graph::restore_retained_rel_chain(self, chain)
+    }
+    fn retained_families_restore_step(&self, load: &mut dyn FnMut() -> Result<()>) -> Result<()> {
+        Graph::retained_families_restore_step(self, load)
     }
 }

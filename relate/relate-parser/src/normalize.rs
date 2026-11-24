@@ -239,6 +239,17 @@ impl<'a, 't> Pass<'a, 't> {
                 // A lexer error token fails the real parse; there is
                 // nothing to cache.
                 TokenType::Error => return None,
+                // A CIP-281 annotation (`cypher-annotations` gate): the
+                // whole statement bails. The reserved `@txMetadata`
+                // (ADR-0610) seeds the transaction record from the
+                // statement's own text, so neither a template hit nor a
+                // rewritten compile may bypass the parse that carries the
+                // channel's payload -- and both would: the annotation's
+                // map lexes like a call's arguments (its strings are
+                // guarded, not parameterized), so the rewritten text
+                // keeps the annotation verbatim and parses. Costs every
+                // annotated statement a miss, never a wrong plan.
+                TokenType::At => return None,
                 TokenType::Parameter => {
                     if name_is_auto_parameter(&tok.literal) {
                         return None;

@@ -189,6 +189,64 @@ fn show_procedures_hides_the_ontology_family_while_the_preview_is_disabled() {
     }
 }
 
+#[test]
+fn show_procedures_hides_db_transactions_while_value_provenance_is_disabled() {
+    // ADR-0610: the `value-provenance` machinery's one procedure gates
+    // with its whole feature (the procedure-to-feature mapping's second
+    // row), so a default executor graph — the empty preview set — lists
+    // no `db.transactions` row.
+    let disabled = procedure_catalog_rows(Graph::default().preview());
+    assert!(
+        disabled.iter().all(|row| name_of(row) != "db.transactions"),
+        "a disabled store lists no db.transactions row"
+    );
+
+    let mut enabled = Graph::default();
+    enabled.configure_preview(PreviewFeatures::parse("value-provenance").unwrap());
+    let listed = procedure_catalog_rows(enabled.preview());
+    // Enabling the gate adds exactly the one gated row and leaves every
+    // other row identical and in order.
+    assert_eq!(listed.len(), disabled.len() + 1);
+    let other_rows: Vec<Row> = listed
+        .iter()
+        .filter(|row| name_of(row) != "db.transactions")
+        .cloned()
+        .collect();
+    assert_eq!(other_rows, disabled);
+
+    // The listed row carries the registry's own mode, description and
+    // rendered signature — the gate changes availability only — and the
+    // signature is the contract's: `since` defaulted, the five yield
+    // columns in order.
+    let row = listed
+        .iter()
+        .find(|row| name_of(row) == "db.transactions")
+        .expect("db.transactions must be listed while enabled");
+    let signature = crate::procedure_registry::builtin_procedure_signature("db.transactions")
+        .expect("db.transactions is registered");
+    assert_eq!(row["mode"], CypherValue::Str(signature.mode.to_string()));
+    assert_eq!(
+        row["description"],
+        CypherValue::Str(signature.description.to_string())
+    );
+    assert_eq!(
+        row["signature"],
+        CypherValue::Str(render_procedure_signature(
+            signature.name,
+            signature.args,
+            signature.returns,
+        ))
+    );
+    assert_eq!(
+        row["signature"],
+        CypherValue::Str(
+            "db.transactions(since = 0 :: INTEGER) :: (lsn :: INTEGER, commitTs :: INTEGER, \
+             type :: STRING, metadata :: MAP, changedKeys :: LIST<MAP>)"
+                .into()
+        )
+    );
+}
+
 /// ADR-0497 §6: every `SHOW PROCEDURES` row the catalog lists renders a
 /// non-empty description and the CIP-113 signature of its own name —
 /// the catalog is the whole inventory, so a row with a placeholder or a

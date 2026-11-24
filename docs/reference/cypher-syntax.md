@@ -1131,6 +1131,24 @@ inside a clause or a pattern; one followed by `ORDER BY`, `SKIP`, `OFFSET`,
 Without the opt-in `@` is the ordinary
 `unexpected character: @` syntax error.
 
+`@txMetadata` is the one reserved name (ADR-0610): the in-statement
+transaction-metadata channel. Its parameters spell one map — a single
+positional map literal (`@txMetadata({agent: "app"})`) or all-named
+parameters (`@txMetadata(agent: "app", n: 2)`) — with an optional string
+`type` key naming the commit's record type (absent or `"provenance"`: the
+home type; another name: the typed channel's kebab-case validation). The
+annotations merge in clause order with every other metadata channel —
+`CALL tx.setMetaData`, a Bolt `BEGIN`'s `tx_metadata` extra, the embedded
+`Connection::set_tx_metadata` — later keys winning, and seed before the
+first clause runs; `EXPLAIN` never seeds. The channel needs both gates:
+`cypher-annotations` to parse and `value-provenance`
+(`RELATE_PREVIEW=cypher-annotations,value-provenance`) to seed. With only
+`cypher-annotations` on, `@txMetadata` is checked and discarded exactly
+like any unrecognized name — no error, no record; with `value-provenance`
+on but `cypher-annotations` off, `@` stays the unexpected-character error.
+Every other annotation name keeps CIP-281's discard: never captured, no
+runtime effect.
+
 ### Local callables (DEFINE, preview)
 
 `DEFINE PROCEDURE` / `DEFINE FUNCTION` name a query-local callable and
@@ -1319,7 +1337,7 @@ narrowed by ADR-0584).
 
 Beyond the openCypher function set, Relate adds GQL string functions (`trim(BOTH/LEADING/TRAILING x FROM s)`, `normalize(s, NFC)`, `char_length`), IEEE-conformant and hyperbolic math, the `||` string/list concatenation operator, `NULLIF`, `allReduce()`, `elementId()`, `valueType()`, aggregate set-quantifiers (`count(DISTINCT x)`), and many GQL function aliases. See the [Functions reference](./functions.md).
 
-Three function names accepted into a CIP that no reference release ships sit behind `RELATE_PREVIEW` *name* gates (ADR-0497): `coll.zip` (`coll-zip`), the `coll.hasAnyOf`/`coll.hasAllOf`/`coll.hasNoneOf` family (`coll-has`) and the GQL `stddev_samp`/`stddev_pop` aliases (`gql-stddev-aliases`). They hide a name rather than a syntax, so a gated call while off is the ordinary unknown-function error, and the default dialect lists none of them in `SHOW FUNCTIONS`.
+Five function names sit behind `RELATE_PREVIEW` *name* gates (ADR-0497): `coll.zip` (`coll-zip`), the `coll.hasAnyOf`/`coll.hasAllOf`/`coll.hasNoneOf` family (`coll-has`), the GQL `stddev_samp`/`stddev_pop` aliases (`gql-stddev-aliases`), and ADR-0610's `provenance(element, key)` and `history(element, key [, maxNum])` — the per-property provenance reads, gated with their whole `value-provenance` machinery. They hide a name rather than a syntax, so a gated call while off is the ordinary unknown-function error, and the default dialect lists none of them in `SHOW FUNCTIONS`.
 
 ### Path construction and concatenation (preview)
 

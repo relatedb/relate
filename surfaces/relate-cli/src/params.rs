@@ -124,6 +124,16 @@ pub(crate) fn parse_param_pair(s: &str) -> Result<(String, CypherValue), String>
     Ok((name.to_string(), parsed))
 }
 
+/// Decode a `--tx-meta KEY=VALUE` assignment (ADR-0610): the same
+/// name=value split and JSON-or-bare-string decode as
+/// [`parse_param_pair`] — the two flags share one value grammar, never
+/// one error noun.
+pub(crate) fn parse_tx_meta_pair(s: &str) -> Result<(String, CypherValue), String> {
+    let (name, value) = split_param_assignment(s)?;
+    let parsed = parse_param_value(value).map_err(|e| format!("metadata {name}: {e}"))?;
+    Ok((name.to_string(), parsed))
+}
+
 fn parse_param_value(s: &str) -> Result<CypherValue, String> {
     let trimmed = s.trim();
     match serde_json::from_str::<serde_json::Value>(trimmed) {
@@ -168,6 +178,27 @@ mod param_decoder_tests {
         assert_eq!(
             parse_param_pair("p=bare").unwrap().1,
             CypherValue::Str("bare".into())
+        );
+    }
+
+    #[test]
+    fn tx_meta_pairs_share_the_param_decode_with_their_own_noun() {
+        // ADR-0610: `--tx-meta` rides `--param`'s split and decode — a
+        // bare word is a string, a JSON value stays typed — but its
+        // error names the metadata channel, not the parameter.
+        let (k, v) = parse_tx_meta_pair("app=loader").unwrap();
+        assert_eq!(k, "app");
+        assert_eq!(v, CypherValue::Str("loader".into()));
+        let (_, n) = parse_tx_meta_pair("run=4711").unwrap();
+        assert_eq!(n, CypherValue::Int(4711));
+        assert!(parse_tx_meta_pair("novalue")
+            .unwrap_err()
+            .contains("expected name=value"));
+        assert!(
+            parse_tx_meta_pair("app=1e400")
+                .unwrap_err()
+                .contains("metadata app:"),
+            "the error names the metadata key, not a parameter"
         );
     }
 }

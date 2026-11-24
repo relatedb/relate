@@ -179,6 +179,35 @@ fn query_accepts_command_flag_and_session_flags() {
 }
 
 #[test]
+fn tx_meta_flag_parses_repeatable_pairs_with_later_keys_winning() {
+    // ADR-0610: the CLI's metadata channel — `--param`'s split and
+    // decode, merged in argv order (later keys win). The preview gate
+    // is the engine's at the seed, not the parser's; parsing is pinned
+    // here, the gated run end-to-end by the e2e suite.
+    let flags = parse(&argv(&[
+        "query",
+        "--tx-meta",
+        "app=loader",
+        "--tx-meta",
+        "run=4711",
+        "--tx-meta",
+        "app=etl",
+        "RETURN 1",
+    ]));
+    use relate_model::CypherValue;
+    assert_eq!(
+        flags.tx_meta.get("app"),
+        Some(&CypherValue::Str("etl".into())),
+        "a repeated key keeps the later value"
+    );
+    assert_eq!(flags.tx_meta.get("run"), Some(&CypherValue::Int(4711)));
+    assert_eq!(flags.tx_meta.len(), 2);
+
+    let bare = parse(&argv(&["RETURN 1"]));
+    assert!(bare.tx_meta.is_empty(), "no flag, no metadata");
+}
+
+#[test]
 fn markdown_body_properties_flag_parses_the_one_grammar() {
     // ADR-0460: the same SPEC grammar the env variable and the clone
     // flag use — bare entries as the ordered default, Label= overrides.

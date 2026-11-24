@@ -248,6 +248,19 @@ fn checkpoint_pinned(shared: &Shared, trigger: Trigger, pin: CheckpointPin) -> R
     // can only exceed the pin by a snapshot-synthesized ts that has no WAL
     // records the cut at `lsn` could lose.
     let snapshot_ts = pin.pin_ts.max(shared.graph.commit_ts());
+    // ADR-0610: provenance is bounded by the last provenance-enabled open
+    // — an open without the opt-in collapses retained history at its
+    // checkpoint. The boundary's one rule is the graph's own
+    // (`collapse_retained_if_disabled`, the retention module): the
+    // records' in-memory half is its clear; the durable half is the
+    // family publish's answer to the now-empty table inside
+    // `checkpoint_at` (it writes no new part and drops the family), and
+    // the retained version chains' halves ride the same publish — it
+    // drops the `chains/` family outright, and the GC pass below (running
+    // unexempted while off) collapses the in-memory chains. The GC
+    // exemption's gate and the chains' publish consult the same switch
+    // through `value_provenance_retention`, never a re-derived flag.
+    shared.graph.collapse_retained_if_disabled();
     if dumps(shared, trigger) {
         if trigger != Trigger::Explicit && nothing_to_publish(shared, pin.pending)? {
             // A WAL with nothing uncheckpointed over a published snapshot

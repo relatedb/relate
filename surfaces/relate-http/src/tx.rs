@@ -38,7 +38,11 @@ use relate_error::GQLSTATUS_GENERAL;
 /// A tx-route body: the statement fields are the same as
 /// [`StatementRequest`], but `statement` is optional (a pure BEGIN or COMMIT
 /// carries only `accessMode`), and `accessMode` is honored: a `READ`
-/// transaction rejects write and schema statements.
+/// transaction rejects write and schema statements. `tx_metadata`
+/// (ADR-0610, the ADR's snake_case spelling, renamed explicitly) rides a
+/// BEGIN, a run, or a COMMIT alike: it seeds the open transaction's
+/// per-call metadata map and merges in call order (later keys win) until
+/// the commit serializes it or a rollback discards it.
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TxRequest {
@@ -50,6 +54,8 @@ struct TxRequest {
     include_counters: bool,
     #[serde(default)]
     access_mode: AccessMode,
+    #[serde(default, rename = "tx_metadata")]
+    tx_metadata: Option<Map<String, Json>>,
 }
 
 /// The statement-less transaction answer: `{"bookmarks": []}` (ADR-0237) —
@@ -111,6 +117,12 @@ fn expires_at(last_activity: Instant, idle_timeout: Duration) -> String {
 /// the transaction stays open for the client to roll back. The outcome is
 /// `run_on`'s own `Ok`/`Err` — the success/failure fact is never
 /// re-derived from a wire status by a consumer.
+///
+/// The body's optional `tx_metadata` (ADR-0610) seeds after the guard and
+/// before the run — the statement-less pure BEGIN/COMMIT included, so a
+/// metadata-only commit body reaches the commit too. This is the one
+/// place a `TxRequest` meets its connection, so the seed is stated once
+/// for all three routes; a refused request seeds nothing.
 fn run_tx_statement(
     entry: &mut TxEntry,
     body: TxRequest,
@@ -124,24 +136,36 @@ fn run_tx_statement(
         statement,
         parameters,
         include_counters,
+        tx_metadata,
         ..
     } = body;
+    // The access-mode guard runs before the seed: a refused request (a
+    // write in a READ transaction) contributes no metadata to a later
+    // commit of the still-open transaction.
+    if matches!(entry.mode, AccessMode::Read) {
+        if let Some(statement) = statement.as_deref() {
+            let explained = match entry.conn.query(&format!("EXPLAIN {statement}")) {
+                Ok(explained) => explained,
+                Err(e) => return Err(run_error(&e)),
+            };
+            if explained.header.query_type != relate::QueryType::Read {
+                return Err(crate::reply::bad_request(
+                    "writing is not allowed in a READ transaction",
+                ));
+            }
+        }
+    }
+    // The optional `tx_metadata` (ADR-0610) seeds after the guards and
+    // before the run — the one site for all three tx routes, reached by
+    // the statement-less pure BEGIN/COMMIT too. The seed merges into the
+    // open transaction's map in call order and the commit serializes it;
+    // a rollback (this route's failure exits included) discards it.
+    crate::reply::seed_tx_metadata(&mut entry.conn, tx_metadata.as_ref(), dialect)?;
     let Some(statement) = statement else {
         // No statement: the bookmarks-only reply, born with the route's
         // own success status.
         return Ok(bookmarks_only_reply(success_status, media_type));
     };
-    if matches!(entry.mode, AccessMode::Read) {
-        let explained = match entry.conn.query(&format!("EXPLAIN {statement}")) {
-            Ok(explained) => explained,
-            Err(e) => return Err(run_error(&e)),
-        };
-        if explained.header.query_type != relate::QueryType::Read {
-            return Err(crate::reply::bad_request(
-                "writing is not allowed in a READ transaction",
-            ));
-        }
-    }
     run_on(
         &mut entry.conn,
         &statement,

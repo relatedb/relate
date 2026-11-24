@@ -58,8 +58,19 @@ class Cursor:
         self._summary = summary
         self._position = 0
 
-    def execute(self, query: str, params: Optional[Dict[str, Any]] = None) -> "Cursor":
+    def execute(
+        self,
+        query: str,
+        params: Optional[Dict[str, Any]] = None,
+        *,
+        tx_metadata: Optional[Dict[str, Any]] = None,
+    ) -> "Cursor":
         """Execute a Cypher query, replacing this cursor's result set.
+
+        ``tx_metadata`` (keyword-only, ADR-0610) seeds the connection's
+        per-transaction metadata map before the statement — see
+        :meth:`relate.connection.Connection.execute` for the channel's
+        contract (merge order, the commit boundary, the preview gate).
 
         Returns ``self`` so calls can be chained (``cur.execute(q).fetchall()``).
         """
@@ -67,7 +78,9 @@ class Cursor:
             raise ProgrammingError(
                 "cursor is not bound to a connection; use connection.cursor()"
             )
-        columns, column_types, rows, summary = self._connection._raw_execute(query, params)
+        columns, column_types, rows, summary = self._connection._raw_execute(
+            query, params, tx_metadata
+        )
         self._apply_result(columns, column_types, rows, summary)
         return self
 

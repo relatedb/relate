@@ -25,6 +25,7 @@ use std::collections::BTreeMap;
 /// A statement request's parameter dialect, resolved from its
 /// Content-Type (ADR-0425): the Query API family, including the unversioned
 /// v1.0 alias, carries typed envelopes; `application/json` carries plain values.
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum RequestDialect {
     /// Query API envelope parameters decode via [`typed_request_params`].
     Typed,

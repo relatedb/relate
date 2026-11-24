@@ -84,9 +84,21 @@ pub struct Statement {
     /// the derived and hand-written constructors of un-gated statements
     /// are unchanged.
     pub definitions: Vec<LocalDefinition>,
+    /// ADR-0610's in-statement metadata channel: the statement's captured
+    /// `@txMetadata` annotations, in clause order (the whole parse's
+    /// source order -- subquery bodies and UNION arms included), attached
+    /// to the top-level statement alone by the parse entry. Like
+    /// `brace_wrapped`, out-of-band provenance rather than observable
+    /// content: `Default`-empty (every un-annotated statement, and every
+    /// nested stage), consumed by the front before lowering, and excluded
+    /// from `PartialEq` below -- the channel payload rides the statement,
+    /// it is not part of the AST the unwrap rules compare.
+    pub tx_metadata: Vec<TxMetadataAnnotation>,
 }
 
-/// Manual `PartialEq`: deliberately ignores `brace_wrapped`. The unwrap
+/// Manual `PartialEq`: deliberately ignores `brace_wrapped` and
+/// `tx_metadata` (both out-of-band provenance rather than observable
+/// content -- see each field's doc). The unwrap
 /// rule -- and the parser tests pinning it (`test_brace_enclosed_top_level_query_is_transparent` and friends) --
 /// treat a brace-wrapped `SingleQuery` as producing an AST indistinguishable
 /// from its unbraced spelling; `brace_wrapped` is out-of-band provenance a
@@ -158,6 +170,24 @@ impl PartialEq for Statement {
             && self.next == other.next
             && self.definitions == other.definitions
     }
+}
+
+/// One captured `@txMetadata(...)` annotation (ADR-0610's in-statement
+/// metadata channel): its parameters exactly as parsed -- one of the two
+/// spellings of one map. Only the reserved channel name is ever captured;
+/// every other annotation is checked and discarded at the parse point
+/// (CIP-281: no AST node, no runtime effect), and this capture is not an
+/// AST node either -- no clause, no expression -- but the statement-level
+/// side channel the front reads before lowering, so the discard never
+/// reaches it. Whether the capture seeds anything is the front's gate
+/// decision (`value-provenance`), never the parser's.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TxMetadataAnnotation {
+    /// `@txMetadata(<map>)` -- one positional parameter, a map literal.
+    Positional(Expr),
+    /// `@txMetadata(k: v, ...)` -- all-named parameters (zero or more),
+    /// spelling one map: one entry per name.
+    Named(Vec<(SmallName, Expr)>),
 }
 
 /// CIP-231 `DEFINE` block entry: one local callable definition, parsed at

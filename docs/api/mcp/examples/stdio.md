@@ -57,3 +57,26 @@ error:
 ```json
 {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"Only MATCH queries are allowed for read-query"}],"isError":true}}
 ```
+
+A write may carry transaction metadata (ADR-0610): the `tx_metadata`
+argument rides `write_cypher` (call-level on the extension mount's
+`batch_cypher` too) and serializes into the commit's transaction record on
+a store the server opened with `RELATE_PREVIEW=value-provenance` — the
+assertion is what the crate's `tests/tx_metadata.rs` integration test
+checks against the same stdio transport. Without the opt-in this call is
+an `isError` tool result carrying the authored preview error:
+
+```bash
+{
+  echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"demo","version":"0"}}}'
+  echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+  echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"write_cypher","arguments":{"statement":"CREATE (:Person {name: '"'"'Ada'"'"'})","tx_metadata":{"by":"seed-script","run":42}}}}'
+} | RELATE_PREVIEW=value-provenance cargo run -p relate-cli -- serve --mcp stdio --database :memory: 2>/dev/null
+```
+
+Expected output, the write answering as usual (the metadata rides the
+commit, not the reply):
+
+```json
+{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"columns\":[],\"columnTypes\":[],\"rows\":[],\"stats\":{\"nodes_created\":1,…},\"notifications\":[],\"elapsed_ms\":0.12,\"parse_ms\":0.03,\"plan_ms\":0.05,\"execute_ms\":0.04,\"error\":null}"}],"isError":false}}
+```

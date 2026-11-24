@@ -138,5 +138,9 @@ mod value_walker_tests;
 mod params_builder_tests;
 
 #[cfg(test)]
+#[path = "tests/tx_metadata.rs"]
+mod tx_metadata_tests;
+
+#[cfg(test)]
 #[path = "tests/fuzz_decls.rs"]
 mod fuzz_decls_tests;

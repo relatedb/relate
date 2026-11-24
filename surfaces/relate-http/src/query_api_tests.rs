@@ -264,6 +264,129 @@ fn parameters_bind_into_the_statement() {
     assert_eq!(body_json(&reply)["data"]["values"], json!([[42]]));
 }
 
+/// ADR-0610's `tx_metadata` request field (the spelling the ADR records
+/// for the driver channel) parses on the auto-commit route — and on a
+/// store opened without the `value-provenance` opt-in the request answers
+/// the authored preview error, never a silent drop. The open side — the
+/// map reaching the commit's transaction record — is the gated binary
+/// `tests/tx_metadata.rs`.
+#[test]
+fn tx_metadata_on_the_auto_commit_route_is_the_authored_preview_error_while_off() {
+    relate::test_opts::assert_preview_unset();
+    let db = db();
+    let reply = dispatch(
+        &db,
+        &post(
+            "neo4j",
+            r#"{"statement": "CREATE (:City {name: 'Oslo'})",
+                "tx_metadata": {"by": "app"}}"#,
+        ),
+        OPEN,
+        &txs(),
+    );
+    assert_eq!(reply.status, 400, "{}", body_json(&reply));
+    let body = body_json(&reply);
+    // The route's general caller-facing code (the preview gate is not a
+    // statement parse failure) with the engine's authored message.
+    assert_eq!(body["errors"][0]["code"], "42000");
+    let message = body["errors"][0]["message"].as_str().unwrap();
+    assert!(
+        message.contains(
+            "preview feature 'value-provenance' is not enabled: \
+             set RELATE_PREVIEW=value-provenance"
+        ),
+        "{message}"
+    );
+}
+
+/// The same authored refusal on the managed-transaction routes: a BEGIN
+/// carrying `tx_metadata` fails before the transaction registers, so the
+/// fresh transaction is rolled back, not leaked with the request's map.
+#[test]
+fn tx_metadata_on_a_tx_begin_is_the_authored_preview_error_while_off() {
+    relate::test_opts::assert_preview_unset();
+    let db = db();
+    let txs = txs();
+    let reply = dispatch(
+        &db,
+        &tx_post(
+            "/db/neo4j/query/v2/tx",
+            r#"{"statement": "CREATE (:City {name: 'Oslo'})",
+                "tx_metadata": {"by": "app"}}"#,
+        ),
+        OPEN,
+        &txs,
+    );
+    assert_eq!(reply.status, 400, "{}", body_json(&reply));
+    let body = body_json(&reply);
+    let message = body["errors"][0]["message"].as_str().unwrap();
+    assert!(
+        message.contains("preview feature 'value-provenance' is not enabled"),
+        "{message}"
+    );
+    // The failed begin registered nothing: the next begin still admits.
+    let retry = dispatch(
+        &db,
+        &tx_post("/db/neo4j/query/v2/tx", r#"{"statement": "RETURN 1"}"#),
+        OPEN,
+        &txs,
+    );
+    assert_eq!(retry.status, 201, "{}", body_json(&retry));
+}
+
+/// A `tx_metadata` that is not an object is a malformed body — the same
+/// 400/`42N06` the statement fields answer, not a silent skip.
+#[test]
+fn a_non_object_tx_metadata_is_an_invalid_request_body() {
+    relate::test_opts::assert_preview_unset();
+    let db = db();
+    let reply = dispatch(
+        &db,
+        &post(
+            "neo4j",
+            r#"{"statement": "RETURN 1", "tx_metadata": "by=app"}"#,
+        ),
+        OPEN,
+        &txs(),
+    );
+    assert_eq!(reply.status, 400);
+    assert_eq!(body_json(&reply)["errors"][0]["code"], "42N06");
+}
+
+/// Adding the metadata field kept the body decode lenient: the reference
+/// API's out-of-charter fields — and the camelCase spelling of the
+/// metadata field itself, which is not this API's name for it — stay
+/// ignored, exactly as before.
+#[test]
+fn unrelated_unknown_fields_stay_ignored() {
+    let db = db();
+    let reply = dispatch(
+        &db,
+        &post(
+            "neo4j",
+            r#"{"statement": "RETURN 1 AS n", "impersonatedUser": "x",
+                "maxExecutionTime": 10, "txConfig": {}, "txMetadata": {}}"#,
+        ),
+        OPEN,
+        &txs(),
+    );
+    assert_eq!(reply.status, 200, "{}", body_json(&reply));
+    assert_eq!(body_json(&reply)["data"]["values"], json!([[1]]));
+    // The tx routes stay lenient too: a BEGIN body with the same foreign
+    // fields opens the transaction.
+    let txs = txs();
+    let begin = dispatch(
+        &db,
+        &tx_post(
+            "/db/neo4j/query/v2/tx",
+            r#"{"accessMode": "READ", "impersonatedUser": "x"}"#,
+        ),
+        OPEN,
+        &txs,
+    );
+    assert_eq!(begin.status, 201, "{}", body_json(&begin));
+}
+
 #[test]
 fn write_statement_carries_counters_without_the_flag() {
     let db = db();

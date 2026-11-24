@@ -59,6 +59,8 @@ or infinity.
 | `relationships(path)` | List of relationships in path | `RETURN relationships(p)` |
 | `length(path)` | Number of relationships in path | `RETURN length(p)` |
 | `property_exists(entity, key)` | True if the property exists (Cypher 25; the removed `exists(n.age)` property form is rejected) | `WHERE property_exists(n, 'age')` |
+| `provenance(node/rel, key)` | Newest retained provenance event of a property's current value, as the `MAP {commitTs, lsn, metadata, value}` of the commit that installed it — `value` is `null` for a removal event, and the call answers `NULL` when no retained event exists. Gated by `RELATE_PREVIEW=value-provenance` (ADR-0610): without the opt-in the name is the ordinary unknown-function error (42N48) and `SHOW FUNCTIONS` lists no row | `RETURN provenance(n, 'price')` |
+| `history(node/rel, key [, maxNum])` | The retained provenance events of a property, ascending `commitTs`, as a `LIST<MAP>` of the same `{commitTs, lsn, metadata, value}` events — the retained events only, so the oldest need not be the birth; an empty list when no retained event exists, `NULL` on null arguments. An omitted or `null` `maxNum` returns every retained event; a non-negative integer the last `maxNum` (0 = the empty list), the bound applied on the walk so the tail answers without materializing the whole list; any other third argument is the ordinary argument-type error. Gated by `RELATE_PREVIEW=value-provenance` (ADR-0610) like `provenance()` | `RETURN history(n, 'price', 2)` |
 
 ### String functions
 

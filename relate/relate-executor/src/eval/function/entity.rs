@@ -1,14 +1,16 @@
 //! Graph-entity and identity builtins: `id`/`elementId`, `labels`/`type`,
-//! `properties`/`keys`, `nodes`/`relationships`, `startNode`/`endNode`, and
-//! the uuid family. Node materialization for `startNode`/`endNode` on
-//! virtual graph-type nodes lives behind the graph layer
-//! (`ExecGraph::node_value`).
+//! `properties`/`keys`, `nodes`/`relationships`, `startNode`/`endNode`,
+//! the uuid family, and ADR-0610's `provenance()` — the per-property
+//! provenance read over the retained version chains. Node materialization
+//! for `startNode`/`endNode` on virtual graph-type nodes lives behind the
+//! graph layer (`ExecGraph::node_value`).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use relate_core::{is_virtual_id, ElementIdRef, Error, PropertyMap, Result, Value};
 
+use crate::graph::{audit_integer, PropertyEvent};
 use crate::overlay::ExecGraph;
 
 use super::super::expr::reject_deleted_access;
@@ -295,6 +297,140 @@ pub(super) fn bi_relationships(
         Some(Value::Null) | None => Value::Null,
         _ => return Err(Error::ty("relationships() needs a path")),
     })
+}
+
+/// The ADR-0610 event map of one retained per-property event:
+/// `{commitTs, lsn, metadata, value}` — `metadata` is the commit's own
+/// map (an empty `MAP` when it carried none) and `value` the value that
+/// commit installed (`Null` marks a removal). Spelled once for the
+/// function and any later audit surface that renders the same event —
+/// the INTEGER cells come from the one shared conversion
+/// ([`crate::graph::audit_integer`], the retained table's own).
+pub(super) fn provenance_event_map(event: &crate::graph::PropertyEvent) -> Result<Value> {
+    let mut map = BTreeMap::new();
+    map.insert(
+        "commitTs".to_string(),
+        audit_integer(event.record.commit_ts, "commitTs")?,
+    );
+    map.insert("lsn".to_string(), audit_integer(event.record.lsn, "lsn")?);
+    map.insert(
+        "metadata".to_string(),
+        Value::Map(Arc::new(event.record.metadata.clone().unwrap_or_default())),
+    );
+    map.insert("value".to_string(), event.value.clone());
+    Ok(Value::Map(Arc::new(map)))
+}
+
+/// The two provenance functions' shared argument walk (ADR-0610): the
+/// element and its property key, decoded once — Cypher's null
+/// propagation (`None`), the STRING key check spelled ahead of the
+/// element's chain read, the deleted-element rejection, and the
+/// node-or-relationship chain read from the store's retained chains, not
+/// this statement's scratch — so `provenance()` and `history()` cannot
+/// drift in what they accept. `history()`'s optional third argument
+/// (its `maxNum`) decodes here too, after the key and in left-to-right
+/// argument order: omitted or `null` keeps every retained event, a
+/// non-negative `INTEGER` bounds the walk's tail to the last `maxNum`
+/// events (0 = the empty list), a non-negative bound past this
+/// platform's `usize` width (wasm32's 2^32) is the same typed rejection
+/// — a truncating cast would silently answer an empty list — and any
+/// other value is the ordinary argument-type rejection.
+/// `provenance()`'s exactly-two arity leaves the tail empty, so the
+/// decode is a no-op for it.
+fn retained_property_events(
+    graph: &ExecGraph<'_>,
+    vals: Vec<Value>,
+    name: &str,
+) -> Result<Option<Vec<PropertyEvent>>> {
+    let [element, key, tail @ ..] = vals.as_slice() else {
+        // The row's arity gate fires before dispatch; both functions'
+        // floors are the element and the key.
+        unreachable!("{name}() is registered with an at-least-two-arguments arity");
+    };
+    // Cypher's null propagation: a null element or key answers null.
+    if element.is_null() || key.is_null() {
+        return Ok(None);
+    }
+    // The key check is spelled once, before the element's chain read; for
+    // a call wrong in both arguments it is the key's rejection that
+    // reports, the one ordering a single spelling admits.
+    let Value::String(key) = key else {
+        return Err(Error::invalid_argument_type(format!(
+            "{name}() requires a STRING property key"
+        )));
+    };
+    let max_events = match tail {
+        [] | [Value::Null] => None,
+        [Value::Int(max)] if *max >= 0 => Some(usize::try_from(*max).map_err(|_| {
+            Error::invalid_argument_type(format!("{name}() event count is out of range"))
+        })?),
+        _ => {
+            return Err(Error::invalid_argument_type(format!(
+                "{name}() requires a non-negative INTEGER event count"
+            )))
+        }
+    };
+    reject_deleted_access(graph, element)?;
+    // The events are committed history — the store's retained chains, not
+    // this statement's scratch: an uncommitted write has no commit to
+    // attribute yet, so a property written earlier in the same statement
+    // answers from the chain as it stood at admission. The tail bound
+    // rides the walk (`retained_events`' sliding window), so the bounded
+    // call never materializes the full event list.
+    let events = match element {
+        Value::Node(node) => graph.base().node_property_events(node.id, key, max_events),
+        Value::Relationship(rel) => graph.base().rel_property_events(rel.id, key, max_events),
+        _ => {
+            return Err(Error::invalid_argument_type(format!(
+                "{name}() requires a node or relationship"
+            )))
+        }
+    };
+    Ok(Some(events))
+}
+
+/// `provenance(element, key)` (ADR-0610): the newest retained per-property
+/// event of `key` on a node or relationship, as the event map
+/// [`provenance_event_map`] renders — `NULL` when no retained event
+/// exists. The name is gated by the `value-provenance` preview feature at
+/// admission (ADR-0497 §4), so the store this runs on opted in and its
+/// version chains carry the retained history the graph layer walks.
+pub(super) fn bi_provenance(graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
+    // provenance() is the walk's newest event; the whole ascending list
+    // is history()'s (ADR-0610's one diff helper serves both).
+    match retained_property_events(graph, vals, "provenance")? {
+        Some(events) => match events.last() {
+            Some(newest) => provenance_event_map(newest),
+            None => Ok(Value::Null),
+        },
+        None => Ok(Value::Null),
+    }
+}
+
+/// `history(element, key [, maxNum])` (ADR-0610): the retained
+/// per-property events of `key` on a node or relationship, ascending
+/// `commitTs` — each rendered by [`provenance_event_map`] (retained
+/// events only, so the oldest need not be the birth). An omitted or
+/// `null` third argument (the two-argument form) returns every retained
+/// event; a non-negative integer returns the last `maxNum` events (0 =
+/// the empty list), the bound applied on the graph walk so the tail is
+/// yielded without materializing the whole list; a non-negative bound
+/// past the platform's `usize` width (wasm32's 2^32) and any other third
+/// argument are the ordinary function argument errors — never a
+/// truncating cast that silently answers an empty list. An empty `LIST`
+/// when no retained event exists, and `NULL` on Cypher's null
+/// propagation. The name is gated by the `value-provenance` preview
+/// feature at admission (ADR-0497 §4), like `provenance()`'s.
+pub(super) fn bi_history(graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
+    match retained_property_events(graph, vals, "history")? {
+        Some(events) => Ok(Value::List(Arc::new(
+            events
+                .iter()
+                .map(provenance_event_map)
+                .collect::<Result<Vec<_>>>()?,
+        ))),
+        None => Ok(Value::Null),
+    }
 }
 
 /// A fresh 64-bit entropy sample, drawn anew on every call from the
@@ -590,5 +726,57 @@ mod tests {
         )
         .unwrap();
         assert_eq!(name, Value::String("neo4j".into()));
+    }
+
+    /// `history()`'s `maxNum` width conversion (ADR-0610): a non-negative
+    /// bound that fits this platform's `usize` converts losslessly —
+    /// 2^32, the wasm32 edge below, here answers like any bound over the
+    /// event count (an empty list on an element with no chain).
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn historys_maxnum_at_the_wasm32_edge_converts_losslessly() {
+        let g = Graph::default();
+        let graph = ExecGraph::read(&g);
+        let element = Value::from_node(relate_core::Node {
+            id: 0,
+            labels: Arc::new(Vec::new()),
+            properties: Arc::new(PropertyMap::default()),
+        });
+        assert_eq!(
+            bi_history(
+                &graph,
+                "history",
+                vec![element, Value::String("k".into()), Value::Int(1 << 32)],
+            )
+            .unwrap(),
+            Value::List(Vec::new().into())
+        );
+    }
+
+    /// The out-of-range branch exists only where `usize` is narrower
+    /// than `i64` (wasm32): 2^32 there is the typed argument rejection —
+    /// never a truncating cast that would silently answer an empty list.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn historys_maxnum_beyond_usize_is_the_typed_error() {
+        let g = Graph::default();
+        let graph = ExecGraph::read(&g);
+        let element = Value::from_node(relate_core::Node {
+            id: 0,
+            labels: Arc::new(Vec::new()),
+            properties: Arc::new(PropertyMap::default()),
+        });
+        let error = bi_history(
+            &graph,
+            "history",
+            vec![element, Value::String("k".into()), Value::Int(1 << 32)],
+        )
+        .expect_err("a bound past the usize width is rejected");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("InvalidArgumentType")
+                && rendered.contains("history() event count is out of range"),
+            "{rendered}"
+        );
     }
 }

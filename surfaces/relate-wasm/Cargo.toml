@@ -14,8 +14,10 @@ crate-type = ["cdylib", "rlib"]
 # ships to every browser page.
 [dependencies]
 relate = { workspace = true }
-# The recording renderer (`renderResult`, ADR-0131).
+# The recording renderer (`renderResult`, ADR-0131), and the wire
+# envelope's error shape (`execute`'s metadata argument, ADR-0610).
 relate-formatter = { workspace = true }
+relate-model = { workspace = true }
 serde_json = { workspace = true }
 # The OPFS virtual directory's plain-Rust core: the `Vfs` impl and the
 # slot catalog. Ungated so the crate's own unit tests run natively —

@@ -354,6 +354,7 @@ impl Connection {
             effective,
             memory,
             preview,
+            tx_metadata,
         } = admission;
         let params = effective.as_ref().unwrap_or(budget_params);
         // LABS-1120: the admission's timing facts ride as the one carrier
@@ -375,6 +376,25 @@ impl Connection {
         };
         if let Err(error) = self.charge_plan(memory, &mut reservation) {
             return QueryOutcome::not_admitted(Err(error));
+        }
+        // ADR-0610's in-statement metadata channel: the statement's
+        // `@txMetadata` annotations seed the per-transaction cell before
+        // any clause runs — clause order, later keys winning, the same
+        // funnel every channel merges through (`apply_tx_metadata_annotations`
+        // in the connection module). This sits after the EXPLAIN early
+        // return, so a plan-only statement never seeds, and after the
+        // admission gates, reservation and charge — the last point where
+        // the statement is guaranteed to run — so a refused statement
+        // seeds nothing and cannot leave its annotations riding the next
+        // commit; a refused seed (the over-bound map) still fails the
+        // statement like any other admission refusal, and the dropped
+        // reservation releases like the charge failures above. Empty on
+        // every un-annotated statement — the common case costs one
+        // `is_empty` check.
+        if !tx_metadata.is_empty() {
+            if let Err(e) = self.apply_tx_metadata_annotations(&tx_metadata) {
+                return QueryOutcome::not_admitted(Err(e));
+            }
         }
         // The admission guard: installs the reserved ledger on this thread
         // for the statement's execution — a local (and the engaged check
@@ -569,6 +589,12 @@ impl Connection {
             // same group-commit pipeline (ADR-0120 §3).
             // ADR-0209 batched-vs-single commit strategy selection lives in
             // commit.rs (`commit_write`).
+            // ADR-0610: the auto-commit write statement takes the
+            // connection's metadata map with it — the statement is this
+            // implicit transaction's whole life, so its record carries the
+            // map and nothing later does; a failed or write-less statement
+            // drops it with the transaction.
+            let tx_metadata = std::mem::take(self.tx_metadata.get_mut());
             ArmRun::NotAdmitted(
                 commit_write(
                     &self.inner,
@@ -584,6 +610,7 @@ impl Connection {
                     },
                     parse_plan_ns,
                     token,
+                    tx_metadata,
                 )
                 .map(ArmOutput::committed),
             )
@@ -708,6 +735,11 @@ impl Connection {
                 },
                 cancel: Some(token),
                 ontology_document: ontology_document.as_deref(),
+                // ADR-0610: a read statement carries the connection's
+                // metadata cell so `tx.setMetaData`/`tx.getMetaData` see
+                // it; a read commits nothing, so the map stays for the
+                // next write's boundary.
+                tx_metadata: Some(&self.tx_metadata),
             })
             .map(ArmOutput::read),
         )

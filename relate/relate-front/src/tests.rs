@@ -37,7 +37,8 @@ fn recorded_gate_sites_agree_with_the_front() {
             | PreviewFeature::CollectionHas
             | PreviewFeature::CypherAnnotations
             | PreviewFeature::GqlStddevAliases
-            | PreviewFeature::PathConcatenation => None,
+            | PreviewFeature::PathConcatenation
+            | PreviewFeature::ValueProvenance => None,
         }
     }
     for feature in PREVIEW_FEATURES {
@@ -71,6 +72,38 @@ fn recorded_gate_sites_agree_with_the_front() {
 }
 
 use relate_ir::{Clause, Expr};
+
+#[test]
+fn tx_metadata_captures_ride_only_behind_the_channel_gate() {
+    // ADR-0610: the capture is carried when the channel's opt-in is
+    // resolved on, dropped when it is not -- and the annotation only
+    // parses at all behind `cypher-annotations` (the lexer gate).
+    let both = parse_and_lower_statement_with_preview(
+        "@txMetadata({by: 'app'}) CREATE (n:Person {name: 'Ada'})",
+        relate_core::PreviewFeatures::parse("cypher-annotations,value-provenance").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(both.tx_metadata.len(), 1);
+
+    let annotations_only = parse_and_lower_statement_with_preview(
+        "@txMetadata({by: 'app'}) CREATE (n:Person {name: 'Ada'})",
+        relate_core::PreviewFeatures::parse("cypher-annotations").unwrap(),
+    )
+    .unwrap();
+    assert!(
+        annotations_only.tx_metadata.is_empty(),
+        "the capture must be dropped while value-provenance is off"
+    );
+
+    let floor = match parse_and_lower_statement_with_preview(
+        "@txMetadata({by: 'app'}) CREATE (n:Person {name: 'Ada'})",
+        relate_core::PreviewFeatures::none(),
+    ) {
+        Ok(_) => panic!("the lexer gate must keep the @ introducer out"),
+        Err(error) => error.to_string(),
+    };
+    assert!(floor.contains("unexpected character: @"), "{floor}");
+}
 
 #[test]
 fn oversized_query_is_rejected() {

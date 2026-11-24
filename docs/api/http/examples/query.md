@@ -19,6 +19,18 @@ curl -u neo4j:s3cret -X POST http://127.0.0.1:7474/db/neo4j/query/v2 \
        "parameters": {"name": "Oslo"}, "includeCounters": true}'
 # {"data":{"fields":["name"],"values":[["Oslo"]]},"counters":{…},"bookmarks":[]}
 
+# A write carrying transaction metadata (ADR-0610): on a store started with
+# RELATE_PREVIEW=value-provenance the map serializes into the commit's
+# transaction record, where the provenance queries read it. Without the
+# opt-in this request answers 400 with the authored preview error — the
+# field is never silently dropped. The tx-route bodies take the same field
+# (BEGIN / run / COMMIT alike, merged in call order).
+curl -u neo4j:s3cret -X POST http://127.0.0.1:7474/db/neo4j/query/v2 \
+  -H 'content-type: application/json' \
+  -d '{"statement": "CREATE (:City {name: $name})",
+       "parameters": {"name": "Bergen"}, "tx_metadata": {"by": "seed-script", "run": 42}}'
+# {"data":{"fields":[],"values":[]},"counters":{"nodes_created":1,…},"bookmarks":[]}
+
 # A Cypher error: HTTP 400 with the error envelope.
 curl -u neo4j:s3cret -X POST http://127.0.0.1:7474/db/neo4j/query/v2 \
   -d '{"statement": "RETURN"}'

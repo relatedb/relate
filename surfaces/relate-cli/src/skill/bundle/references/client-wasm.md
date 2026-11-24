@@ -28,10 +28,14 @@ const result = JSON.parse(db.execute("RETURN 1 AS n", null));
 // result.error: string | null                 // null on success
 ```
 
-`execute(query, paramsJson)` runs one statement; `paramsJson` is a JSON
+`execute(query, paramsJson, metadataJson?)` runs one statement; `paramsJson` is a JSON
 object string, or `null`/blank for none. A statement that references a
 parameter missing from it fails with `ParameterMissing: Expected
-parameter(s): <names>` (no `null` binding). `executeScript(script, paramsJson)`
+parameter(s): <names>` (no `null` binding). `metadataJson` (ADR-0610)
+is the per-transaction metadata map, a JSON object string decoded
+exactly as params and seeded before the statement — but see the
+metadata gotcha below: on the wasm build it is always the authored
+preview refusal. `executeScript(script, paramsJson)`
 runs several and returns one envelope per statement.
 
 ## Gotchas
@@ -67,6 +71,16 @@ runs several and returns one envelope per statement.
   it (new worker or page reload). Classify with `isWasmTrap` from
   `@relate/relate-wasm/trap.js`; false means the instance is still
   usable.
+- **The metadata argument is always refused on wasm** — `execute`'s
+  third argument (ADR-0610) seeds the per-transaction metadata map, but
+  the machinery is the `value-provenance` preview opt-in's and
+  `RELATE_PREVIEW` is read once, at open, from the process environment —
+  which a wasm host does not have. Every present map answers the
+  envelope's `error` with the authored
+  `preview feature 'value-provenance' is not enabled: set
+  RELATE_PREVIEW=value-provenance` and the statement never runs; omit
+  the argument (or pass `null`/blank) for today's behavior. A map that
+  is not a JSON object refuses with `metadata must be a JSON object`.
 - **No byte arrays** — the engine's byte array (ADR-0327) is Bolt-only and
   statement-scoped; were one in a result it would arrive as a list of
   integers 0–255 with column type `BINARY`, and it can never be stored as a

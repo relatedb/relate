@@ -73,3 +73,6 @@ remains a superset.
 [ADR-0038](./0038-lock-free-snapshot-pins.md): the pin table is a lock-free atomic slot array (claim, then
 load `published_ts`). The horizon rule is unchanged. Epoch reclaim
 without a pin table stays rejected.
+
+ADR-0610: a provenance-enabled open exempts every version from the
+horizon drop; the drop rule stands for every store that never opts in.

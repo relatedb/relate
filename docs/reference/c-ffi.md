@@ -96,7 +96,9 @@ refusal conventions is
   `relate_connect_namespace`, `relate_conn_set_namespace`,
   `relate_disconnect`, `relate_checkpoint`
 - **Statement / transaction** — `relate_query_params`,
-  `relate_conn_begin`, `relate_conn_commit` (the bookmark rides its
+  `relate_conn_set_tx_metadata` (the preview-gated per-transaction
+  metadata input, ADR-0610), `relate_conn_begin`,
+  `relate_conn_commit` (the bookmark rides its
   `bookmark_out` out-param), `relate_conn_rollback`,
   `relate_destroy_result`
 - **Result shape / metadata** — `relate_column_count`,

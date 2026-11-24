@@ -425,12 +425,17 @@ fn native_plain_dir(root: &std::path::Path, rel: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether the `root`-relative `rel` resolves to a plain file, never an
-/// alias: the orphan sweeps' delete condition.
-fn native_plain_file(root: &std::path::Path, rel: &str) -> bool {
-    std::fs::symlink_metadata(root.join(rel))
-        .map(|m| m.file_type().is_file())
-        .unwrap_or(false)
+/// Whether the sweep can list `dir` on this target — the native-root
+/// Option spelled once here instead of at the call: a store with no
+/// native root lists through the VFS as always, a native directory
+/// lists only one that resolves to a real directory
+/// ([`native_plain_dir`]). The directory twin of
+/// [`crate::family::plain_candidate`]'s per-entry guard.
+fn plain_dir(target: &StoreTarget, dir: &str) -> bool {
+    match &target.native_root {
+        Some(root) => native_plain_dir(root, dir),
+        None => true,
+    }
 }
 
 /// The native-side proof that a valid-looking object name does not alias
@@ -742,10 +747,8 @@ fn sweep_dir_orphans(
     if !matches!(target.vfs.exists(dir), Ok(true)) {
         return;
     }
-    if let Some(root) = &target.native_root {
-        if !native_plain_dir(root, dir) {
-            return;
-        }
+    if !plain_dir(target, dir) {
+        return;
     }
     let Ok(names) = target.vfs.list_dir(dir) else {
         return;
@@ -755,10 +758,8 @@ fn sweep_dir_orphans(
         if !is_candidate(&path) || keep(&path) {
             continue;
         }
-        if let Some(root) = &target.native_root {
-            if !native_plain_file(root, &path) {
-                continue;
-            }
+        if !crate::family::plain_candidate(target, &path) {
+            continue;
         }
         let _ = delete_object(target, &path);
     }

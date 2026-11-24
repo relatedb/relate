@@ -208,6 +208,15 @@ pub(crate) enum ObjectName {
     /// through the schema-mirror size class of
     /// [`bounded_read_for`].
     SchemaMirror,
+    /// A retained-history family's lsn-windowed part (ADR-0610): the
+    /// `transactions/` records and `chains/` version chains — written
+    /// only by the checkpoint's family step, read only by the load's,
+    /// bounded by the families' shared size class of
+    /// [`bounded_read_for`]. The carried
+    /// [`PartKind`](crate::family::PartKind) is the family's identity,
+    /// so the class and every other consumer derive the family instead
+    /// of enumerating both by hand.
+    RetainedPart(crate::family::PartKind),
     /// A retired pre-shard monolith object (`nodes.parquet`, …).
     LegacyShard,
     /// A v3 shard object, parsed.
@@ -227,6 +236,11 @@ pub(crate) fn object_name(name: &str) -> Option<ObjectName> {
     }
     if crate::schema_files::MirrorFile::is_contract_path(name) {
         return Some(ObjectName::SchemaMirror);
+    }
+    for kind in crate::family::PartKind::ALL {
+        if kind.family().parse_part_name(name).is_some() {
+            return Some(ObjectName::RetainedPart(kind));
+        }
     }
     if Kind::ALL
         .into_iter()
@@ -353,10 +367,46 @@ const SCHEMA_MIRROR: BoundedRead = BoundedRead {
     changed: |_name| Error::storage("changed length during read"),
 };
 
+/// A retained-history family's part (ADR-0610): one size class for both
+/// families — a data object, not catalog metadata — bounded by the
+/// families' shared [`crate::FAMILY_PART_BYTES`] (the per-record WAL
+/// payload cap's figure, which already bounds every record a part can
+/// hold), so a planted part past the bound fails the open before any
+/// allocation, exactly like the metadata objects above. The refusal
+/// names the family the object classified into
+/// ([`retained_part_noun`]), so each family keeps its own diagnostic
+/// while the policy is one.
+const RETAINED_PART: BoundedRead = BoundedRead {
+    max_len: crate::FAMILY_PART_BYTES,
+    too_large: |name| {
+        Error::storage(format!(
+            "{name} exceeds the 64 MiB (67108864 bytes) {} part limit",
+            retained_part_noun(name)
+        ))
+    },
+    changed: |name| Error::storage(format!("{name} changed length during read")),
+};
+
+/// The family a retained-history part's over-bound refusal names itself
+/// by — derived through the one classification ([`object_name`]), so
+/// the families' shared size class gives each family its own diagnostic
+/// without a second class per family. A name that did not classify into
+/// a retained family never reaches the class's refusal (the class is
+/// only returned for names that did); the group's noun keeps that
+/// impossible message honest instead of wrong.
+fn retained_part_noun(name: &str) -> &'static str {
+    match object_name(name) {
+        Some(ObjectName::RetainedPart(kind)) => kind.part_noun(),
+        _ => "retained-history",
+    }
+}
+
 /// The size class of an object name: the manifest is bounded JSON metadata
 /// (ADR-0086), an `ontology/<128-bit-hex>.json` object is a bounded
 /// ontology document (ADR-0120 §5), a `.relate/schema/` mirror file
-/// is bounded by the schema-mirror class (ADR-0481); every other object
+/// is bounded by the schema-mirror class (ADR-0481), a retained-history
+/// family's part (`transactions/`, `chains/`, ADR-0610) is bounded by the
+/// families' shared class; every other object
 /// is unbounded payload. The one lookup the read, write, and
 /// byte-accounting paths all consult.
 pub(crate) fn bounded_read_for(name: &str) -> Option<&'static BoundedRead> {
@@ -364,6 +414,7 @@ pub(crate) fn bounded_read_for(name: &str) -> Option<&'static BoundedRead> {
         Some(ObjectName::Manifest) => Some(&JSON_META),
         Some(ObjectName::Ontology) => Some(&ONTOLOGY_DOC),
         Some(ObjectName::SchemaMirror) => Some(&SCHEMA_MIRROR),
+        Some(ObjectName::RetainedPart(_)) => Some(&RETAINED_PART),
         Some(ObjectName::LegacyShard) | None => None,
         #[cfg(parquet_codec)]
         Some(ObjectName::Shard(_)) => None,

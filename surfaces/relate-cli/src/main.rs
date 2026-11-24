@@ -186,6 +186,7 @@ fn main() {
         show_help,
         lifecycle,
         assignments,
+        tx_meta,
         snapshot_format,
         markdown_body_properties,
         wal_dir,
@@ -392,6 +393,7 @@ fn main() {
         db_path: &db_path,
         session,
         params: &params,
+        tx_meta,
         mode: output_mode_choice,
         no_header,
         // ADR-0240: indented JSON is a terminal courtesy; piped or

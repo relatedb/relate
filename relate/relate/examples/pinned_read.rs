@@ -52,6 +52,7 @@ fn main() -> Result<()> {
         request: ExecRequest::new(&logical, &BTreeMap::new(), query),
         cancel: None,
         ontology_document: None,
+        tx_metadata: None,
     })?;
     assert_eq!(result.rows, vec![vec![Value::Int(1)]]);
     let query = "SHOW INDEXES YIELD name RETURN name ORDER BY name";
@@ -63,6 +64,7 @@ fn main() -> Result<()> {
         request: ExecRequest::new(&logical, &BTreeMap::new(), query),
         cancel: None,
         ontology_document: None,
+        tx_metadata: None,
     })?;
     // The two default lookup indexes are synthesized SHOW-only rows, so
     // they list beside the redo-published user index (name order).
@@ -146,6 +148,7 @@ fn main() -> Result<()> {
         request: ExecRequest::new(&logical, &BTreeMap::new(), query),
         cancel: None,
         ontology_document: None,
+        tx_metadata: None,
     })?;
     assert_eq!(
         result.rows,

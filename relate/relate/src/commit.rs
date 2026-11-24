@@ -1,12 +1,17 @@
 //! Optimistic write commits: private-overlay execution and the group-commit
-//! WAL append (independent waiters share one `sync_all`, ADR-0019). Timing
+//! WAL append (independent waiters share one `sync_all`, ADR-0019). The
+//! group machinery — the admission queue, its slots and waiters, the
+//! leader's per-slot admission and flush — lives in [`group`]; timing
 //! histograms live in [`commit_timing`].
 
 use std::cell::RefCell;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, MutexGuard};
 use web_time::Instant;
 
+use relate_core::tokens::WorkspaceCharge;
+use relate_core::PreviewFeature;
+use relate_engine_api::{TransactionRecord, TxChannelState};
 use relate_executor::{
     result_rows_bytes, ExecGraph, ExecRequest, Graph, QueryResult as ExecResult, RedoOp,
     SnapshotPin, WriteScratch,
@@ -14,78 +19,27 @@ use relate_executor::{
 use relate_storage::{EncodedOps, Wal, WalRecord};
 
 use crate::checkpoint::{begin_publication, lock_wal_checked, Publication};
-use crate::{CancelToken, DurabilityMode, Error, Result, Shared};
-use relate_core::tokens::WorkspaceCharge;
+use crate::{CancelToken, DurabilityMode, Result, Shared};
+use record_provenance::ProvenanceFields;
+// The injected-failure hooks (and through them the tests submodule's
+// glob of this module) spell `Error` bare; no production path here does
+// since the group machinery moved to `group`.
+#[cfg(test)]
+use crate::Error;
 
 mod admission;
 mod bulk_batch;
+mod group;
+mod record_provenance;
 
 use bulk_batch::{BulkBatchPlan, GroupBatchCommit};
+pub(crate) use group::GroupCommit;
+use group::{flush_group, CommitSlot, CommitWaiter, Waiters};
 
 use crate::commit_timing::TimingSample;
 pub(crate) use crate::commit_timing::{
     commit_timing_env, elapsed_nanos, format_commit_timing, CommitTimingBuf,
 };
-
-#[derive(Default)]
-pub(crate) struct GroupCommit {
-    queue: Vec<CommitSlot>,
-    has_leader: bool,
-}
-
-impl GroupCommit {
-    /// No leader flushing a batch and nothing waiting to join one —
-    /// the drain target [`Database::demote`] (ADR-0440) polls for once
-    /// `ensure_writable` has refused every new admission, so this can
-    /// only become true and stay true.
-    pub(crate) fn is_quiescent(&self) -> bool {
-        !self.has_leader && self.queue.is_empty()
-    }
-}
-
-struct CommitSlot {
-    snapshot_ts: u64,
-    txn_id: u64,
-    ops: Vec<RedoOp>,
-    /// The ops' one JSON encoding, made at admission on the caller's thread.
-    encoded: EncodedOps,
-    parse_plan_ns: u64,
-    execute_ns: u64,
-    enqueued: Instant,
-    waiter: Arc<CommitWaiter>,
-}
-
-#[cfg(test)]
-impl CommitSlot {
-    /// A slot with no timing facts whose ops are encoded here, as
-    /// admission does.
-    fn for_test(
-        snapshot_ts: u64,
-        txn_id: u64,
-        ops: Vec<RedoOp>,
-        waiter: Arc<CommitWaiter>,
-    ) -> Self {
-        Self {
-            snapshot_ts,
-            txn_id,
-            encoded: EncodedOps::encode_unmetered(&ops, Error::WAL_PAYLOAD_CAP_BYTES)
-                .expect("test ops encode"),
-            ops,
-            parse_plan_ns: 0,
-            execute_ns: 0,
-            enqueued: Instant::now(),
-            waiter,
-        }
-    }
-}
-
-struct CommitWaiter {
-    /// The slot's outcome: on success the commit timestamp the group
-    /// assigned it, so the caller rebases onto *its own* commit rather
-    /// than re-reading a live clock a foreign commit may have advanced.
-    result: Mutex<Option<Result<u64>>>,
-    cv: Condvar,
-}
 
 /// A record accepted into a commit batch: the redo to append/apply, the
 /// commit timestamp assigned at admission, and the timing fields recorded by
@@ -95,11 +49,19 @@ struct CommitWaiter {
 pub(crate) struct Accepted {
     ops: Vec<RedoOp>,
     commit_ts: u64,
+    /// The LSN the append assigned, stamped between the append and the
+    /// apply loop (0 until then) — the retained record's `lsn` (ADR-0610).
+    lsn: u64,
     /// Recorded by the fused preflight/append loop in [`commit_preflighted`].
     encode_write_ns: u64,
     wal_lock_ns: u64,
     parse_plan_ns: u64,
     execute_ns: u64,
+    /// The transaction's provenance half (ADR-0610) — the one declared
+    /// shape ([`ProvenanceFields`]) threaded from admission to the
+    /// retained-table insert after the apply: the metadata map, the
+    /// derived changed keys, and the record's family.
+    provenance: ProvenanceFields,
 }
 
 /// An [`Accepted`] record with the one encoding its append consumes.
@@ -109,16 +71,26 @@ pub(crate) struct Admitted {
 }
 
 impl Admitted {
-    /// A single replicated record: no group-commit timing fields.
-    pub(crate) fn replicated(ops: Vec<RedoOp>, encoded: EncodedOps, commit_ts: u64) -> Self {
+    /// A single replicated record: no group-commit timing fields. The
+    /// provenance fields (ADR-0610) are the caller's — a replica keeps
+    /// its source's provenance while it has the opt-in, and serializes
+    /// none without it.
+    pub(crate) fn replicated(
+        ops: Vec<RedoOp>,
+        encoded: EncodedOps,
+        commit_ts: u64,
+        provenance: ProvenanceFields,
+    ) -> Self {
         Self {
             record: Accepted {
                 ops,
                 commit_ts,
+                lsn: 0,
                 encode_write_ns: 0,
                 wal_lock_ns: 0,
                 parse_plan_ns: 0,
                 execute_ns: 0,
+                provenance,
             },
             encoded,
         }
@@ -148,9 +120,10 @@ const BOOKMARK_PREFIX: &str = "relate:";
 /// The commit sequence `n` of an ADR-0310 bookmark string — the decoder
 /// beside [`bookmark_string`]'s one encoder; `None` for anything that is not
 /// exactly `relate:<n>`. Tests compare the parsed sequences, never the
-/// strings (`relate:10` sorts before `relate:9`).
-#[cfg(test)]
-pub(crate) fn bookmark_sequence(bookmark: &str) -> Option<u64> {
+/// strings (`relate:10` sorts before `relate:9`), and the crate's
+/// provenance examples reach it through the crate root's doc-hidden
+/// re-export — the one decoder, never re-inlined beside a bookmark read.
+pub fn bookmark_sequence(bookmark: &str) -> Option<u64> {
     bookmark.strip_prefix(BOOKMARK_PREFIX)?.parse().ok()
 }
 
@@ -159,7 +132,11 @@ pub(crate) fn bookmark_sequence(bookmark: &str) -> Option<u64> {
 /// bounded batches, one WAL commit per batch; everything else takes the
 /// single commit path. The statement's execution facts ride the
 /// `ExecRequest` (plan, params, query text, principal, PROFILE sink) —
-/// the same bundle `commit_optimistic` executes.
+/// the same bundle `commit_optimistic` executes. `tx_metadata` is the
+/// connection's per-transaction metadata cell (ADR-0610), taken by the
+/// dispatch arm: this implicit transaction's whole life is the statement,
+/// so its record carries the cell's map and record type (and a failed or
+/// write-less statement drops both with the transaction).
 ///
 /// Returns the executor result beside the statement's commit sequence
 /// (ADR-0502 §7): the commit timestamp the WAL boundary assigned the
@@ -170,6 +147,7 @@ pub(crate) fn commit_write(
     request: &ExecRequest<'_>,
     parse_plan_ns: u64,
     cancel: &CancelToken,
+    tx_metadata: TxChannelState,
 ) -> Result<(ExecResult, Option<u64>)> {
     match BulkBatchPlan::prepare(shared, request.plan)? {
         // ADR-0209 bulk batches run their own clause loop (the batched
@@ -177,8 +155,8 @@ pub(crate) fn commit_write(
         // applies — the bulk loop records no PROFILE metrics, and its
         // redo ops carry no principal (they are already validated
         // statement output).
-        Some(plan) => plan.run(shared, request.params, parse_plan_ns, cancel),
-        None => commit_optimistic(shared, request, parse_plan_ns, cancel),
+        Some(plan) => plan.run(shared, request.params, parse_plan_ns, cancel, tx_metadata),
+        None => commit_optimistic(shared, request, parse_plan_ns, cancel, tx_metadata),
     }
 }
 
@@ -209,11 +187,16 @@ fn acquire_guarded_pin(
 /// then `f`'s output, the scratch's redo, and the reservation that keeps
 /// that write workspace admitted through its WAL boundary. The caller holds
 /// the guard/pin its lock protocol requires; this step touches neither.
+/// `tx_metadata` is the statement's per-transaction metadata cell
+/// (ADR-0610) — attached to the view so an in-statement
+/// `CALL tx.setMetaData` merges into it, and drained by the commit that
+/// follows on this thread.
 fn run_on_scratch<T>(
     shared: &Arc<Shared>,
     snapshot_ts: u64,
     cancel: &CancelToken,
     ontology_document: Option<&str>,
+    tx_metadata: &RefCell<TxChannelState>,
     f: impl FnOnce(&ExecGraph<'_>) -> Result<T>,
 ) -> Result<(u64, T, Vec<RedoOp>, WorkspaceCharge)> {
     let scratch = RefCell::new(WriteScratch::new(
@@ -224,7 +207,8 @@ fn run_on_scratch<T>(
     let out = {
         let view = ExecGraph::write(&shared.graph, &scratch)
             .with_cancel(Some(cancel))
-            .with_ontology_document(ontology_document);
+            .with_ontology_document(ontology_document)
+            .with_tx_metadata(Some(tx_metadata));
         f(&view)?
     };
     let mut scratch = scratch.into_inner();
@@ -258,9 +242,15 @@ fn commit_optimistic(
     request: &ExecRequest<'_>,
     parse_plan_ns: u64,
     cancel: &CancelToken,
+    tx_metadata: TxChannelState,
 ) -> Result<(ExecResult, Option<u64>)> {
     let txn_id = shared.next_txn_id.fetch_add(1, Ordering::SeqCst);
     let timing = shared.timing_on.load(Ordering::Relaxed);
+    // The statement's per-transaction metadata cell (ADR-0610): the state
+    // the dispatch arm took from the connection, live through execution
+    // (an in-statement `CALL tx.setMetaData` merges into it) and drained
+    // by this statement's own commit below.
+    let tx_metadata = RefCell::new(tx_metadata);
     // ADR-0210: a statement carrying `CALL { … } IN TRANSACTIONS` commits
     // each batch through the group-commit pipeline from inside execution,
     // which needs the publication WRITE lock — so it must not hold the
@@ -277,7 +267,7 @@ fn commit_optimistic(
     // §7) stays readable after execution: a batched statement whose final
     // redo is empty committed through the sink alone, and its bookmark is
     // the last batch's commit timestamp.
-    let sink = batched.then(|| GroupBatchCommit::new(Arc::clone(shared)));
+    let sink = batched.then(|| GroupBatchCommit::new(Arc::clone(shared), &tx_metadata));
     let (result, commit_base_ts, ops, execute_ns, write_workspace) = {
         let (read_guard, pin) = acquire_guarded_pin(shared)?;
         // The ontology document the statement reads (ADR-0121 §3), captured
@@ -303,6 +293,7 @@ fn commit_optimistic(
             pin.ts(),
             cancel,
             ontology_document.as_deref(),
+            &tx_metadata,
             |view| {
                 let t_exec = timing.then(Instant::now);
                 // The request's own facts ride through; the batch-commit
@@ -339,6 +330,7 @@ fn commit_optimistic(
             ops,
             parse_plan_ns,
             execute_ns,
+            tx_metadata.into_inner(),
         )?)
     };
     // The one tail: release the write workspace, hand the result
@@ -353,7 +345,14 @@ fn commit_optimistic(
 /// (ADR-0019). Conflict is returned to the client (ADR-0017). On success
 /// returns the commit timestamp this record was assigned at admission —
 /// the value the per-batch sink (`GroupBatchCommit`) must rebase onto,
-/// not a re-read of the live commit clock.
+/// not a re-read of the live commit clock. `tx_metadata` is the
+/// transaction's metadata cell (ADR-0610), already taken from its cell by
+/// the caller: this pipeline owns the record's provenance half — while
+/// the `value-provenance` feature is off (or the cell is empty) every
+/// tail field is omitted and the record's bytes are exactly the
+/// pre-feature form, and while it is on the commit's changed keys are
+/// derived here, once, from the redo and the pre-state at the statement's
+/// `snapshot_ts`, and the record carries its family type.
 pub(super) fn try_wal_commit(
     shared: &Arc<Shared>,
     snapshot_ts: u64,
@@ -361,9 +360,16 @@ pub(super) fn try_wal_commit(
     ops: Vec<RedoOp>,
     parse_plan_ns: u64,
     execute_ns: u64,
+    tx_metadata: TxChannelState,
 ) -> Result<u64> {
     shared.check_healthy()?;
     crate::ensure_writable(shared)?;
+    // ADR-0610: the record's provenance half, derived once here at
+    // admission (the one construction home, with the replicated path's,
+    // in `record_provenance`). Every tail field is omitted while the
+    // feature is off or when the commit carries nothing: the record's
+    // bytes are exactly the pre-feature form.
+    let provenance = record_provenance::derive(shared, &ops, snapshot_ts, tx_metadata)?;
     // The ops are JSON-encoded exactly once, here, on the caller's thread
     // and off the serial group path (ADR-0094 as amended): the leader only
     // stamps the record header into this buffer. The WAL payload cap refuses
@@ -378,7 +384,12 @@ pub(super) fn try_wal_commit(
     // admission instead of evicting a write that has already crossed the
     // WAL boundary.
     let mut wal_workspace = WorkspaceCharge::empty();
-    let encoded = EncodedOps::encode(&ops, &mut wal_workspace, shared.resolved.wal_payload_limit)?;
+    let encoded = EncodedOps::encode_tail(
+        &ops,
+        provenance.tail(),
+        &mut wal_workspace,
+        shared.resolved.wal_payload_limit,
+    )?;
     let waiter = CommitWaiter::new();
     let slot = CommitSlot {
         snapshot_ts,
@@ -389,6 +400,7 @@ pub(super) fn try_wal_commit(
         execute_ns,
         enqueued: Instant::now(),
         waiter: Arc::clone(&waiter),
+        provenance,
     };
     let is_leader = {
         let mut gc = shared.group.lock()?;
@@ -434,111 +446,6 @@ pub(super) fn try_wal_commit(
     Ok(ts)
 }
 
-impl CommitWaiter {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            result: Mutex::new(None),
-            cv: Condvar::new(),
-        })
-    }
-
-    fn complete(&self, r: Result<u64>) {
-        if let Ok(mut g) = self.result.lock() {
-            *g = Some(r);
-            self.cv.notify_one();
-        }
-    }
-
-    fn wait(&self) -> Result<u64> {
-        let mut g = self.result.lock()?;
-        while g.is_none() {
-            g = self.cv.wait(g)?;
-        }
-        g.take()
-            .expect("commit waiter result set after condvar wake")
-    }
-}
-
-/// Owns the waiters of one group flush. `Drop` fails every waiter that has
-/// not been completed yet — with the stored error when one was recorded, and
-/// with an internal error otherwise — so every early return has exactly one
-/// fail-all path and success only ever comes from the explicit
-/// `complete_ok()`.
-struct Waiters {
-    pending: Vec<(usize, Arc<CommitWaiter>)>,
-    error: Option<Error>,
-}
-
-impl Waiters {
-    fn new(batch: &[CommitSlot]) -> Self {
-        Self {
-            pending: batch
-                .iter()
-                .enumerate()
-                .map(|(i, slot)| (i, Arc::clone(&slot.waiter)))
-                .collect(),
-            error: None,
-        }
-    }
-
-    /// Complete a pre-acceptance rejection (conflict / capacity) immediately
-    /// and drop it from the pending set so `Drop` never completes it twice.
-    fn reject(&mut self, index: usize, error: Error) {
-        self.pending.retain(|(i, waiter)| {
-            if *i == index {
-                waiter.complete(Err(error.clone()));
-                false
-            } else {
-                true
-            }
-        });
-    }
-
-    fn fail(&mut self, error: Error) {
-        self.error = Some(error);
-    }
-
-    /// Complete every still-pending (i.e. accepted) waiter with the
-    /// commit timestamp its slot was assigned at admission. `assigned`
-    /// holds one `(batch index, commit_ts)` pair per accepted slot; a
-    /// pending waiter with no pair was never accepted, which the caller's
-    /// control flow excludes — fail it loudly rather than acknowledge.
-    fn complete_ok(&mut self, assigned: &[(usize, u64)]) {
-        for (i, waiter) in self.pending.drain(..) {
-            match assigned.iter().find(|(j, _)| *j == i) {
-                Some((_, ts)) => waiter.complete(Ok(*ts)),
-                None => waiter.complete(Err(Error::internal(
-                    "committed slot missing its assigned commit timestamp",
-                ))),
-            }
-        }
-    }
-}
-
-impl Drop for Waiters {
-    fn drop(&mut self) {
-        for (_, waiter) in self.pending.drain(..) {
-            match &self.error {
-                Some(error) => waiter.complete(Err(error.clone())),
-                // Success is only ever signalled by `complete_ok`: a guard
-                // dropped without a recorded outcome must not acknowledge
-                // the write.
-                None => waiter.complete(Err(Error::internal(
-                    "commit group dropped without a result",
-                ))),
-            }
-        }
-    }
-}
-
-/// One group flush's successful outcome: the `(batch index, commit_ts)`
-/// pair of every accepted slot (each waiter's success value) plus the
-/// group's timing, when measured.
-struct FlushOutcome {
-    assigned: Vec<(usize, u64)>,
-    timing: Option<GroupTiming>,
-}
-
 /// Apply one replicated record through the shared commit core — the replica
 /// write path's whole choreography, every step delegated to its named
 /// canonical helper (`ensure_writable`, `begin_publication`,
@@ -556,12 +463,25 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
     // The canonical capacity admission and durability-fenced WAL acquire:
     // this path spells neither policy itself.
     shared.admit_redo_capacity(&record.ops)?;
+    // ADR-0610: a replica keeps its source's provenance while the local
+    // opt-in is set — the record's own fields pass through, derived at
+    // the source against the source's pre-state — and serialize none
+    // without it (a replica that never opted in is indistinguishable).
+    // The gate read derefs the GraphCell under the publication write
+    // guard `begin_publication` above already holds — the same guard the
+    // rest of this path's graph derefs run under.
+    let enabled = shared
+        .graph
+        .preview()
+        .enabled(PreviewFeature::ValueProvenance);
+    let provenance = record_provenance::passthrough(enabled, record);
     // The record's one encoding, before the WAL lock is taken.
     // Charged to this thread's workspace like an admitted commit's, and held
     // until the record is appended.
     let mut wal_workspace = WorkspaceCharge::empty();
-    let encoded = EncodedOps::encode(
+    let encoded = EncodedOps::encode_tail(
         &record.ops,
+        provenance.tail(),
         &mut wal_workspace,
         shared.resolved.wal_payload_limit,
     )?;
@@ -576,70 +496,13 @@ pub(crate) fn commit_replicated(shared: &Arc<Shared>, record: &WalRecord) -> Res
             record.ops.clone(),
             encoded,
             record.commit_ts,
+            provenance,
         )],
         publication,
         false,
     )?;
     shared.check_healthy()?;
     Ok(committed.last_lsn)
-}
-
-fn flush_group(shared: &Arc<Shared>, batch: Vec<CommitSlot>) -> Result<()> {
-    let mut waiters = Waiters::new(&batch);
-    // Acquire the publication and WAL guards and run the commit core inside
-    // one closure, so the guards release exactly when the group's outcome is
-    // known; the single terminal `match` is the only place that completes or
-    // fails every waiter.
-    let result = (|| -> Result<FlushOutcome> {
-        let publication = begin_publication(shared)?;
-        let wal = lock_wal_checked(shared)?;
-        let batch_start = Instant::now();
-        let accepted = admission::admit_group(shared, batch, &mut waiters, batch_start);
-
-        // Strip the batch indices the records traveled with — the commit
-        // core is shared with the replicated path, which never sees them —
-        // deriving each accepted waiter's success value from the same
-        // records, just before the move.
-        let (assigned, records): (Vec<(usize, u64)>, Vec<Admitted>) = accepted
-            .into_iter()
-            .map(|(index, a)| ((index, a.record.commit_ts), a))
-            .unzip();
-
-        if records.is_empty() {
-            return Ok(FlushOutcome {
-                assigned,
-                timing: None,
-            });
-        }
-
-        commit_preflighted(
-            shared,
-            wal,
-            records,
-            publication,
-            shared.timing_on.load(Ordering::Relaxed),
-        )
-        .map(|committed| FlushOutcome {
-            assigned,
-            timing: committed.timing,
-        })
-    })();
-    match result {
-        Ok(outcome) => {
-            // One flat record under a single lock: the group's samples plus
-            // its one Full-durability-barrier count (ADR-0019).
-            if let (Some(t), Ok(mut buf)) = (outcome.timing, shared.timing.lock()) {
-                buf.sync_calls += u64::from(t.synced);
-                buf.samples.extend(t.samples);
-            }
-            waiters.complete_ok(&outcome.assigned);
-            Ok(())
-        }
-        Err(e) => {
-            waiters.fail(e.clone());
-            Err(e)
-        }
-    }
 }
 
 /// What one preflighted commit group produced: the timing samples (only
@@ -716,6 +579,9 @@ pub(crate) fn commit_preflighted(
             "the append reports records in group order"
         );
         a.encode_write_ns = written.encode_write_ns;
+        // ADR-0610: the LSN the append assigned — the retained record's
+        // own `lsn`, read by the apply loop's table insert below.
+        a.lsn = written.lsn;
     }
     #[cfg(test)]
     if shared.fail_after_append.swap(false, Ordering::SeqCst) {
@@ -754,6 +620,22 @@ pub(crate) fn commit_preflighted(
         if let Err(e) = shared.graph.apply_redo(ops, commit_ts) {
             return Err(shared.poison(&e));
         }
+        // ADR-0610: the durable, applied record joins the retained table —
+        // the live pipeline's one insert. The table itself decides which
+        // records retain (a record with no type and neither provenance
+        // field — the only form a store that never opted in produces —
+        // joins nothing), and the fields were consumed by the WAL encode
+        // above, so this is their second and last home. The tail-less
+        // form's family is the provenance default
+        // (`RecordType::default`).
+        let provenance = std::mem::take(&mut a.provenance);
+        shared.graph.record_transaction(TransactionRecord {
+            lsn: a.lsn,
+            commit_ts,
+            metadata: provenance.metadata,
+            changed_keys: provenance.changed_keys,
+            record_type: provenance.record_type.unwrap_or_default(),
+        });
         let apply_ns = elapsed_nanos(t_apply);
         if let Some(samples) = samples.as_mut() {
             samples.push(TimingSample {

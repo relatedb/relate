@@ -33,6 +33,9 @@ fn uncertain_sync_apply_or_rotate_freezes_both_paths_before_checkpoint() {
                     lsn: 99,
                     commit_ts: 2,
                     ops: vec![node_op(1)],
+                    metadata: None,
+                    changed_keys: None,
+                    record_type: None,
                 })
                 .unwrap_err()
             } else {
@@ -104,6 +107,9 @@ fn admitted_read_finishes_while_replica_rotation_poison_is_published() {
                 lsn: 0,
                 commit_ts: 2,
                 ops: vec![node_op(1)],
+                metadata: None,
+                changed_keys: None,
+                record_type: None,
             }))
             .unwrap();
         })
@@ -166,7 +172,10 @@ fn physical_uncertainty_fences_waiters_reads_checkpoint_and_drop() {
             .apply_replicated(&crate::WalRecord {
                 lsn: 0,
                 commit_ts: 4,
-                ops: vec![]
+                ops: vec![],
+                metadata: None,
+                changed_keys: None,
+                record_type: None,
             })
             .is_err());
         let mut c = raw_connection(&shared);

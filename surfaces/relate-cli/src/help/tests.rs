@@ -344,6 +344,7 @@ fn top_level_keeps_the_query_run_options() {
         "--noheader",
         "--mode MODE",
         "--param N=V",
+        "--tx-meta K=V",
         "--snapshot-format F",
         "--markdown-body-properties LIST",
         "--wal-dir DIR",

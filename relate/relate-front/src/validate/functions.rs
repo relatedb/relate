@@ -6,7 +6,7 @@
 //! longer be rejected by the binder (and vice versa). Unknown calls are
 //! rejected by the planner on the lowered IR (`UnknownFunction`).
 //!
-//! Six registry names are additionally gated behind an ADR-0371 preview
+//! Seven registry names are additionally gated behind an ADR-0371 preview
 //! feature ([`PREVIEW_FUNCTIONS`], ADR-0497): they stay in the registry so
 //! an admitted call binds, but [`validate_function_admission`] rejects them
 //! — as ordinary unknown functions — unless the store enabled their flag,
@@ -102,6 +102,12 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
     // are preview-gated (`gql-stddev-aliases`, ADR-0497).
     "stddev_samp",
     "stddev_pop",
+    // ADR-0610's provenance functions: preview-gated
+    // (`value-provenance`) — callable and `SHOW`-listed only under the
+    // opt-in, the same name-admission shape as the gated collection
+    // names above (ADR-0497 §4).
+    "provenance",
+    "history",
     "percentile_cont",
     "percentile_disc",
     "nodes",
@@ -313,6 +319,14 @@ const PREVIEW_FUNCTIONS: &[PreviewFunction] = &[
         feature: PreviewFeature::GqlStddevAliases,
         name: "stddev_pop",
     },
+    PreviewFunction {
+        feature: PreviewFeature::ValueProvenance,
+        name: "provenance",
+    },
+    PreviewFunction {
+        feature: PreviewFeature::ValueProvenance,
+        name: "history",
+    },
 ];
 
 /// The gated name's row, if `name` is preview-gated (case-insensitive, like
@@ -521,10 +535,11 @@ mod tests {
                 gated.name
             );
         }
-        // The gated set is exactly the three features' six names: a
-        // registry row added or dropped without the matching table change
-        // fails here.
-        assert_eq!(PREVIEW_FUNCTIONS.len(), 6);
+        // The gated set is exactly the four features' eight names (the
+        // three ADR-0497 catalogue features' six, plus ADR-0610's
+        // `provenance` and `history`): a registry row added or dropped
+        // without the matching table change fails here.
+        assert_eq!(PREVIEW_FUNCTIONS.len(), 8);
         let derived: Vec<&str> = gated_function_names().collect();
         let table: Vec<&str> = PREVIEW_FUNCTIONS.iter().map(|gated| gated.name).collect();
         assert_eq!(derived, table, "the accessor must expose every gated name");
@@ -557,6 +572,8 @@ mod tests {
             ("RETURN coll.hasNoneOf([1], [2])", true, true),
             ("RETURN stddev_samp(1.0)", true, true),
             ("RETURN stddev_pop(1.0)", true, true),
+            ("RETURN provenance(n, 'k')", true, true),
+            ("RETURN history(n, 'k')", true, true),
             (
                 "CALL { RETURN coll.zip([1], [2]) AS z } RETURN z",
                 true,

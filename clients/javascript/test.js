@@ -1,8 +1,11 @@
 // ADR-0593: the system_ontologies legs below need the `ontology` preview
 // opt-in — without it the namespace is invisible and connect/setNamespace
-// fail as unknown names. Set before the first Database.open (the variable
-// is read once, at open).
-process.env.RELATE_PREVIEW = "ontology";
+// fail as unknown names. ADR-0610: the transaction-metadata legs need
+// `value-provenance`. One process, one environment, first open wins —
+// the union opt-in (the same shape the relate-ffi test suite's
+// preview_ontology_and_value_provenance fixture has). Set before the
+// first Database.open (the variable is read once, at open).
+process.env.RELATE_PREVIEW = "ontology,value-provenance";
 
 const { Database } = require("./index");
 const assert = require("assert");
@@ -586,7 +589,7 @@ assert.throws(() => tag.query`RETURN ${undefined} AS v`, TypeError);
 assert.throws(() => tag.query`RETURN ${(() => {})()} AS v`, TypeError); // undefined
 assert.throws(() => tag.query`RETURN ${Symbol("s")} AS v`, TypeError);
 assert.throws(() => tag.query`RETURN ${(() => 1)} AS v`, TypeError);
-assert.throws(() => tag.query("RETURN 1", {}, {}), TypeError);
+assert.throws(() => tag.query("RETURN 1", {}, {}, {}), TypeError);
 // The string form applies the same value policy: unsupported param values
 // and non-object params reject loudly instead of being silently dropped.
 assert.throws(() => tag.query("RETURN $v AS v", { v: undefined }), TypeError);
@@ -756,6 +759,91 @@ assert.throws(
 );
 bmConn.rollback();
 
+// --- Transaction metadata (ADR-0610) --------------------------------------
+//
+// query's third argument is the embedded channel's client spelling: the
+// map seeds the connection's per-transaction state through the C ABI's
+// relate_conn_set_tx_metadata, and the next transaction boundary
+// serializes it into the commit's record. The union opt-in at the top of
+// this file turned the machinery on for every open in this process.
+
+const tmDb = Database.open(":memory:");
+const tm = tmDb.connect();
+
+// An auto-commit write carrying the map: the commit's record keeps it,
+// and db.transactions reads it back with the commit's changed keys.
+tm.query("CREATE (p:Person {name: 'Ada'})", null, { by: "app", run: 7 });
+const first = tm
+  .query("CALL db.transactions() YIELD commitTs, metadata, changedKeys RETURN commitTs, metadata, changedKeys")
+  .single();
+assert.deepStrictEqual(first.metadata, { by: "app", run: 7 });
+assert.strictEqual(first.changedKeys.length, 1);
+assert.strictEqual(first.changedKeys[0].key, "name");
+assert.strictEqual(typeof first.changedKeys[0].elementId, "string");
+
+// Seeds merge in call order — later keys win — and a read seeds without
+// a boundary: both maps ride the next write's commit, one record.
+tm.query("RETURN 1 AS n", null, { by: "loader" });
+tm.query("RETURN 1 AS n", null, { run: 9 });
+tm.query("CREATE (:Merge)");
+const merged = tm.query("CALL db.transactions() YIELD metadata RETURN metadata").rows.at(-1);
+assert.deepStrictEqual(merged.metadata, { by: "loader", run: 9 });
+
+// Inside an explicit transaction the live map is readable
+// (tx.getMetaData), and the commit's boundary clears it.
+tm.begin();
+tm.query("CREATE (:T)", null, { step: "in-tx" });
+const live = tm.query("CALL tx.getMetaData() YIELD metadata RETURN metadata").single();
+assert.deepStrictEqual(live.metadata, { step: "in-tx" });
+tm.commit();
+const cleared = tm.query("CALL tx.getMetaData() YIELD metadata RETURN metadata").single();
+assert.deepStrictEqual(cleared.metadata, {});
+
+// A rollback discards the seeded map: the next commit's record carries
+// the honest empty map. The probe write sets a property, so its record
+// is retained — a record with neither metadata nor changed keys is not
+// kept (ADR-0610's retention policy).
+tm.begin();
+tm.query("CREATE (:Rb)", null, { gone: true });
+tm.rollback();
+tm.query("CREATE (:After {kept: true})");
+const afterRb = tm.query("CALL db.transactions() YIELD metadata RETURN metadata").rows.at(-1);
+assert.deepStrictEqual(afterRb.metadata, {});
+
+// The map's values cross through the same builder as parameters —
+// temporals, bigints and nested maps at full fidelity — and read back
+// through the same walker.
+tm.query("CREATE (:Typed)", null, {
+  at: new CypherDate(2026, 11, 16),
+  big: 9007199254740993n,
+  nested: { keep: true },
+});
+const typed = tm.query("CALL db.transactions() YIELD metadata RETURN metadata").rows.at(-1);
+assert.ok(typed.metadata.at instanceof CypherDate);
+assert.deepStrictEqual(
+  [typed.metadata.at.year, typed.metadata.at.month, typed.metadata.at.day],
+  [2026, 11, 16]
+);
+assert.strictEqual(typed.metadata.big, 9007199254740993n);
+assert.deepStrictEqual(typed.metadata.nested, { keep: true });
+
+// The argument's shape policy: a plain object, its values the params
+// policy worded for the argument — a bad leaf names its path.
+assert.throws(() => tm.query("RETURN 1 AS n", null, ["not", "an", "object"]), TypeError);
+assert.throws(() => tm.query("RETURN 1 AS n", null, "nope"), TypeError);
+assert.throws(() => tm.query("RETURN 1 AS n", null, 42), TypeError);
+assert.throws(
+  () => tm.query("RETURN 1 AS n", null, { v: undefined }),
+  /query txMetadata: "v" cannot be a Cypher parameter/
+);
+// A call without the argument is today's call: reads and writes unchanged.
+assert.strictEqual(tm.query("RETURN 1 AS n").single().n, 1);
+
+// Doc example for the transaction-metadata argument.
+require("../../docs/api/javascript/examples/tx_metadata.js");
+
+console.log("transaction metadata ok");
+
 // --- Async queries (the koffi async form, ADR-0502) ----------------------
 
 async function asyncSuite() {
@@ -834,6 +922,15 @@ async function asyncSuite() {
   const tx = await conn.queryAsync("MATCH (n:Async) RETURN count(n) AS n");
   assert.strictEqual(tx.single().n, 2);
   assert.ok(/^relate:\d+$/.test(conn.commit()));
+
+  // The metadata argument rides the async form (ADR-0610): the seed runs
+  // inside the serialized task, in call order, so the map attaches to
+  // this call's commit — the record db.transactions reads back.
+  await conn.queryAsync("CREATE (:Async {n: 3})", null, { by: "async" });
+  const asyncMeta = conn
+    .query("CALL db.transactions() YIELD metadata RETURN metadata")
+    .rows.at(-1);
+  assert.deepStrictEqual(asyncMeta.metadata, { by: "async" });
 }
 
 asyncSuite()

@@ -26,7 +26,10 @@ arguments (keyword-only `read_only`). It also exposes what the DB-API hides:
 
 ## `QueryResult`
 
-`Database.execute(query, params)` returns a `QueryResult`:
+`Database.execute(query, params=None, *, tx_metadata=None)` returns a
+`QueryResult` (`tx_metadata` is ADR-0610's embedded metadata seed — a dict
+converting like parameters; without the `RELATE_PREVIEW=value-provenance`
+opt-in, set before opening, the call fails the authored preview error):
 
 | Field | Meaning |
 | --- | --- |

@@ -65,6 +65,10 @@ mod label_probe;
 mod pair_postings;
 mod pin;
 mod prop_read;
+// One public path per item (the `declared` precedent): the walk lives in
+// a private module, its event type re-exported once for the eval layer.
+mod provenance;
+pub(crate) use provenance::PropertyEvent;
 mod query_stats;
 pub use pin::SnapshotPin;
 #[cfg(test)]
@@ -74,11 +78,21 @@ use pin::PIN_CLAIMING;
 use pin::{PIN_FREE, PIN_SLOTS};
 mod rebuild;
 mod redo_preflight;
+// ADR-0610's retention: the dirty-delta chain export the checkpoint's
+// retained-chain family publishes, and the restore that replaces the
+// image's collapsed rows with the real chains.
 mod rel_postings;
 mod restore;
+mod retention;
 mod schema_api;
 mod services;
 mod shard;
+mod transactions;
+// One public path per item (the `provenance` precedent): the retained
+// table lives in a private module, its audit-INTEGER cell conversion
+// re-exported once for the eval and exec audit surfaces that render the
+// records' fields.
+pub(crate) use transactions::audit_integer;
 // Research-only (speed-of-light kernels), quarantined behind the
 // non-default `research` cargo feature (ADR-0476): absent from every
 // default build and every bundle.
@@ -310,14 +324,25 @@ pub struct Graph {
     published_ts: AtomicU64,
     write_ts: AtomicU64,
     in_write: AtomicBool,
-    /// The graph's restore phase: one latch, born open and closed once by
+    /// The graph's restore phase: one latch, born open and closed by
     /// `graph/restore.rs::close_restoring` (`finish_restore`, a published
-    /// commit, a redo apply). Checkpoint rows install only while it is open
+    /// commit, a redo apply), with the one sanctioned re-take of the open
+    /// path's retained-family window
+    /// (`graph/restore.rs::retained_families_restore_step`, ADR-0610).
+    /// Checkpoint rows install only while it is open
     /// (`graph/restore.rs::check_restoring`). The phase is the refusal's
     /// evidence, never a slot's version-chain shape: a committed
     /// single-version write leaves an `Inline` chain, indistinguishable
     /// from an earlier row of an overlapping legacy part (ADR-0183).
     restoring: AtomicBool,
+    /// The retained-family window's one-shot (ADR-0610):
+    /// `retained_families_restore_step` is the open path's construction
+    /// step, taken once per graph — the first re-take sets it, and a
+    /// second call is refused — so the window cannot re-open the latch on
+    /// a graph that already left the open path's construction (the WAL
+    /// replay or any write published). The in-write guard alone cannot
+    /// prove that: a published commit leaves `in_write` false.
+    retained_window_taken: AtomicBool,
     record_redo: AtomicBool,
     nodes: IdVec<Chain<LiveNode>>,
     rels: IdVec<Chain<LiveRel>>,
@@ -385,6 +410,11 @@ pub struct Graph {
     pending_redo: Mutex<Vec<RedoOp>>,
     /// Source-scoped pull identity (ADR-0080).
     pull_identity: PullIdentityIndex,
+    /// The retained transaction-record table (ADR-0610): retained records
+    /// keyed by `commit_ts`, populated by the commit pipeline, the WAL
+    /// replay and the checkpoint family load, published by the checkpoint
+    /// family. Empty — and free — on a store that never opted in.
+    transactions: transactions::TransactionTable,
     /// Ids mutated since the last successful checkpoint (ADR-0022).
     dirty_nodes: Mutex<HashSet<NodeId>>,
     dirty_rels: Mutex<HashSet<RelId>>,
@@ -408,6 +438,7 @@ impl Default for Graph {
             write_ts: AtomicU64::new(0),
             in_write: AtomicBool::new(false),
             restoring: AtomicBool::new(true),
+            retained_window_taken: AtomicBool::new(false),
             record_redo: AtomicBool::new(true),
             nodes: IdVec::default(),
             rels: IdVec::default(),
@@ -427,6 +458,7 @@ impl Default for Graph {
             stats: Mutex::new(QueryStats::default()),
             pending_redo: Mutex::new(Vec::new()),
             pull_identity: PullIdentityIndex::default(),
+            transactions: transactions::TransactionTable::default(),
             dirty_nodes: Mutex::new(HashSet::new()),
             dirty_rels: Mutex::new(HashSet::new()),
             pins: (0..PIN_SLOTS).map(|_| AtomicU64::new(PIN_FREE)).collect(),

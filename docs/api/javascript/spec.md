@@ -48,8 +48,10 @@ const result = conn.query("RETURN 1 AS n");
 and checkpoints (ADR-0136) — a missing store is an error. Omitting the
 options keeps the writable open, which creates a missing store at open.
 
-`query(cypher, params?)` — `params` is a plain object lowered into the
-typed params builder (the parameters section below). Auto-commit unless
+`query(cypher, params?, txMetadata?)` — `params` is a plain object lowered into the
+typed params builder (the parameters section below). `txMetadata`
+(default none) is the per-transaction metadata seed (ADR-0610 — the
+transaction metadata section below). Auto-commit unless
 `begin()` is open. `begin()` / `commit()` / `rollback()` are an explicit
 transaction (ADR-0028); `commit()` returns the transaction's bookmark
 (bookmarks section below). Failing calls throw `RelateError`
@@ -202,10 +204,10 @@ See [`examples/typed_values.js`](examples/typed_values.js).
 
 ## Async queries
 
-`queryAsync(cypher, params?)` (and the template-tag form) is the
-Promise-returning twin of `query`: the FFI call runs on koffi's worker
-thread, the walker decode runs on the main thread when the callback
-lands, and the resolved value is the same `Result`.
+`queryAsync(cypher, params?, txMetadata?)` (and the template-tag form)
+is the Promise-returning twin of `query`: the FFI call runs on koffi's
+worker thread, the walker decode runs on the main thread when the
+callback lands, and the resolved value is the same `Result`.
 
 - **Errors survive the worker thread.** A statement failure rides the
   result handle and a connection failure the call's error out-param; both
@@ -234,6 +236,58 @@ string).
   throws `RelateError` through the same status/error channel as every
   other call (ADR-0510): the ABI status alone tells a failure from an
   empty commit, so a failure never surfaces as `null`.
+
+## Transaction metadata (ADR-0610)
+
+`query` and `queryAsync` (the string form — the template tag has no
+metadata slot) take a third argument, `txMetadata`: a plain object that
+seeds the connection's per-transaction metadata map — the client's
+spelling of the embedded channel, lowered through the C ABI's
+`relate_conn_set_tx_metadata` with the same typed params builder
+parameters use.
+
+```js
+conn.query(
+  "CREATE (p:Person {name: $name})",
+  { name: "Ada" },
+  { by: "app", run: 42 },
+);
+```
+
+The values follow the parameters section's policy exactly (temporals,
+lists and nested maps at full fidelity; a bad leaf rejects with a
+`TypeError` naming its path, `query txMetadata: "v".nested …`); the
+argument itself must be a plain object (`query txMetadata must be a
+plain object`).
+
+Semantics (ADR-0610): the map merges into the connection's per-transaction
+map in call order — later keys win, including against
+`CALL tx.setMetaData(map)`, the statement channel — under the 16 MiB
+per-object bound (an over-bound map is the engine's storage refusal,
+thrown as a `RelateError`). The merged map is serialized into the
+commit's record at the next transaction boundary — an auto-commit
+write's, or an explicit transaction's `commit()` — then cleared; a
+`rollback` discards it. `CALL tx.getMetaData()` reads the live map back
+inside a transaction (an empty map when nothing was set). The record's
+metadata is what the value-provenance audit surface reads:
+`provenance(element, key)`, `history(element, key [, maxNum])` and
+`CALL db.transactions(since)`.
+
+The whole machinery is the `value-provenance` preview feature's
+(ADR-0371): `RELATE_PREVIEW` is read once, at open — set it in the
+process before the first `Database.open`. On a store opened without the
+opt-in, a call carrying `txMetadata` throws the authored preview error
+(`preview feature 'value-provenance' is not enabled: set
+RELATE_PREVIEW=value-provenance`) as a `RelateError` instead of silently
+dropping the map — the embedded caller's contract. The statement never
+runs, leaving the connection usable. A call without the argument is
+byte-for-byte today's, so existing code is unaffected.
+
+In `queryAsync` the seed runs inside the serialized task, in call order:
+the map attaches to that call's commit, never an overlapping earlier
+one.
+
+See [`examples/tx_metadata.js`](examples/tx_metadata.js).
 
 ## Namespaces (ADR-0117)
 

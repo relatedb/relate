@@ -435,8 +435,9 @@ fn line_diff<'a>(old: &[&'a str], new: &[&'a str]) -> (Vec<&'a str>, Vec<&'a str
 /// the `--durability-mode` row to carry its `RELATE_DURABILITY_MODE`
 /// default (ADR-0470), gaining the `--database` target-axis
 /// continuation and the `--load` entry (LABS-903, ADR-0500 — LABS-872's
-/// remote fetch folded into `--load`), and gaining the `--timings` row
-/// (ADR-0581) — every other line, byte for byte,
+/// remote fetch folded into `--load`), gaining the `--timings` row
+/// (ADR-0581), and gaining the `--tx-meta` rows (ADR-0610) — every other
+/// line, byte for byte,
 /// is the
 /// feature's untouched inheritance, so any other help change this
 /// feature made fails here. The full bundle only (the
@@ -479,6 +480,10 @@ fn the_top_level_help_differs_from_pre_feature_main_by_exactly_the_feature_rows(
             "                       The store to open — never a URL: a remote store is a --load",
             "                       source",
             "  --timings     Append the per-statement timing line to --jsonl output (default off)",
+            "  --tx-meta K=V        Attach transaction metadata to the session's next committed",
+            "                       transaction (repeatable; V a JSON value or a bare word, later",
+            "                       keys win). Requires RELATE_PREVIEW=value-provenance: without",
+            "                       the opt-in the run fails with the preview error (exit 6)",
             gained_codec_row.as_str(),
             "  --markdown-body-properties LIST  Markdown vault body properties (LIST or",
             "                       Label=LIST; entries separated by ';'; first bare, rest as",

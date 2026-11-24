@@ -151,6 +151,15 @@ pub(crate) const OPTION_ENTRIES: &[OptionEntry] = &[
         flags: &["--fetch-params"],
     },
     OptionEntry {
+        headline: "  --tx-meta K=V        Attach transaction metadata to the session's next committed",
+        continuation: &[
+            "                       transaction (repeatable; V a JSON value or a bare word, later",
+            "                       keys win). Requires RELATE_PREVIEW=value-provenance: without",
+            "                       the opt-in the run fails with the preview error (exit 6)",
+        ],
+        flags: &["--tx-meta"],
+    },
+    OptionEntry {
         headline: "  --snapshot-format F  Snapshot codec ({formats}); empty directory only",
         continuation: &[],
         flags: &["--snapshot-format"],

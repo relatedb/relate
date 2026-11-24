@@ -581,6 +581,9 @@ fn streaming_recovery_trims_corrupt_active_tail_and_fails_without_publishing_int
             lsn: 3,
             commit_ts: 3,
             ops: vec![],
+            metadata: None,
+            changed_keys: None,
+            record_type: None,
         })
         .unwrap();
         let mut file = vfs.open(path, vfs::VfsOpen::append_create()).unwrap();

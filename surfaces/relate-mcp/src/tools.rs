@@ -293,14 +293,20 @@ impl<'a> Tools<'a> {
     }
 
     /// `write_cypher`: one writing statement with its parameters (a `rows`
-    /// array feeds `$rows`). A pure read is refused — the write tool is for
+    /// array feeds `$rows`) and the optional `tx_metadata` map (ADR-0610)
+    /// seeded between the gate and the run — the embedded channel: a
+    /// store without the `value-provenance` opt-in answers the call with
+    /// the authored preview error instead of silently dropping the map,
+    /// and a call the gate refuses (a pure read handed to the write tool)
+    /// seeds nothing. A pure read is refused — the write tool is for
     /// writes on both surfaces.
     pub fn write_cypher(
         &mut self,
         arguments: &Map<String, Json>,
     ) -> Result<QueryOutcome, ToolError> {
         let (statement, params) = self.cypher_call(arguments)?;
-        self.run(statement, params, Gate::Write)
+        let metadata = self.tx_metadata_of(arguments)?;
+        self.run(statement, params, Gate::Write, metadata)
     }
 
     /// `read_cypher`: one read-only statement. A writing or schema statement
@@ -310,7 +316,7 @@ impl<'a> Tools<'a> {
         arguments: &Map<String, Json>,
     ) -> Result<QueryOutcome, ToolError> {
         let (statement, params) = self.cypher_call(arguments)?;
-        self.run(statement, params, Gate::Read)
+        self.run(statement, params, Gate::Read, None)
     }
 
     /// `update_schema`: one DDL statement. Returns the schema object names it
@@ -329,10 +335,13 @@ impl<'a> Tools<'a> {
         Ok(after.difference(&before).cloned().collect())
     }
 
-    /// `batch_cypher`: several statements, each gated as a write. The
+    /// `batch_cypher`: several statements, each gated as a write, plus the
+    /// optional call-level `tx_metadata` map (ADR-0610) seeded once, after
+    /// the whole call is prepared and before the first statement runs. The
     /// transaction around them is the caller's framing (the extension
-    /// mount's commit policy; the product server runs them as it receives
-    /// them).
+    /// mount's commit policy, which rolls the seed back with the batch on
+    /// a mid-call failure; the product server runs them as it receives
+    /// them) — whichever boundary commits first serializes the seeded map.
     pub fn batch_cypher(
         &mut self,
         arguments: &Map<String, Json>,
@@ -354,7 +363,9 @@ impl<'a> Tools<'a> {
             });
         }
         // Prepare every statement before running one: a malformed call is
-        // refused whole, never half-executed.
+        // refused whole, never half-executed — and never half-seeded: the
+        // metadata argument is read here too, so a refused call leaves no
+        // map on the connection.
         let mut prepared = Vec::with_capacity(statements.len());
         for (index, item) in statements.iter().enumerate() {
             let Some(item) = item.as_object() else {
@@ -366,9 +377,14 @@ impl<'a> Tools<'a> {
             let parameters = self.parameters(item, &EMPTY_OBJECT)?;
             prepared.push((statement, params_map(parameters)?));
         }
+        if let Some(metadata) = self.tx_metadata_of(arguments)? {
+            self.conn
+                .set_tx_metadata(metadata)
+                .map_err(|e| engine_error(&e))?;
+        }
         let mut results = Vec::with_capacity(prepared.len());
         for (statement, params) in prepared {
-            results.push(self.run(&statement, params, Gate::Write)?.result);
+            results.push(self.run(&statement, params, Gate::Write, None)?.result);
         }
         Ok(results)
     }
@@ -384,16 +400,44 @@ impl<'a> Tools<'a> {
         Ok((statement, params_map(parameters)?))
     }
 
+    /// The optional `tx_metadata` object (ADR-0610), folded through the
+    /// engine's canonical JSON→parameter fold like `parameters`: absent or
+    /// null is `None`, an object is the engine's owned map, anything else
+    /// the pinned refusal naming the member.
+    fn tx_metadata_of(
+        &self,
+        arguments: &Map<String, Json>,
+    ) -> Result<Option<BTreeMap<String, Value>>, ToolError> {
+        let Some(metadata) = mcp::object_member("tx_metadata", arguments.get("tx_metadata"))
+            .map_err(invalid_params)?
+        else {
+            return Ok(None);
+        };
+        value_map("tx_metadata", metadata).map(Some)
+    }
+
     /// The one gated execution: classify through `EXPLAIN` (bound with the
     /// call's own parameters, so the plan is exactly the run's), apply the
-    /// gate, then run.
+    /// gate, seed the admitted call's `tx_metadata` (ADR-0610 — the
+    /// embedded channel, so a store without the `value-provenance` opt-in
+    /// answers the authored preview error instead of silently dropping the
+    /// map; a refused call has not reached this point, so it seeds
+    /// nothing), then run. The map serializes into the commit's record at
+    /// this execution's transaction boundary — an auto-commit write's, or
+    /// the framing transaction's — and a rollback discards it.
     fn run(
         &mut self,
         statement: &str,
         params: BTreeMap<String, Value>,
         gate: Gate,
+        metadata: Option<BTreeMap<String, Value>>,
     ) -> Result<QueryOutcome, ToolError> {
         let explained = self.gate(statement, params.clone(), gate)?;
+        if let Some(metadata) = metadata {
+            self.conn
+                .set_tx_metadata(metadata)
+                .map_err(|e| engine_error(&e))?;
+        }
         let result = self
             .conn
             .query_with_params(statement, params)
@@ -514,14 +558,21 @@ impl From<relate::Error> for ToolError {
     }
 }
 
-/// Decode an arguments object into the engine's parameters through the
+/// Decode an arguments-object member into the engine's map through the
 /// engine's canonical JSON→parameter fold (plain maps; typed values need
-/// the statement's own constructors). A `rows` array becomes the `$rows`
-/// list.
-fn params_map(parameters: &Map<String, Json>) -> Result<BTreeMap<String, Value>, ToolError> {
-    relate::params_from_map(parameters).map_err(|detail| ToolError::InvalidParams {
-        detail: format!("parameters: {detail}"),
+/// the statement's own constructors) — one helper for every map-shaped
+/// tool argument (`parameters`, `tx_metadata`), so the refusal names the
+/// member it read. A `rows` array becomes the `$rows` list.
+fn value_map(member: &str, map: &Map<String, Json>) -> Result<BTreeMap<String, Value>, ToolError> {
+    relate::params_from_map(map).map_err(|detail| ToolError::InvalidParams {
+        detail: format!("{member}: {detail}"),
     })
+}
+
+/// `parameters` through [`value_map`] — the member-named fold with this
+/// argument's own name, the one spelling both cypher tools' calls use.
+fn params_map(parameters: &Map<String, Json>) -> Result<BTreeMap<String, Value>, ToolError> {
+    value_map("parameters", parameters)
 }
 
 // ---------------------------------------------------------------------

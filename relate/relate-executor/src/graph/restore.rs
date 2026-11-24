@@ -6,7 +6,7 @@ use super::*;
 use crate::store::NameCache;
 
 /// Every checkpoint row is restored as a version born at ts 1.
-const RESTORED_XMIN: u64 = 1;
+pub(super) const RESTORED_XMIN: u64 = 1;
 
 /// Install a slice's checkpoint rows as each id's only version, inline,
 /// under one store lock. Before any write a slot holds at most an earlier
@@ -187,10 +187,12 @@ impl Graph {
     }
 
     /// A checkpoint load's entry: take the graph's restore phase for a
-    /// slice. The phase is one latch — born open, closed once by
+    /// slice. The phase is one latch — born open, closed by
     /// [`Self::close_restoring`] — so every later slice of the same load
     /// takes the same open latch; a graph that left it is refused in
-    /// [`Self::check_restoring`].
+    /// [`Self::check_restoring`]. The one sanctioned re-take is the open
+    /// path's retained-family window,
+    /// [`Self::retained_families_restore_step`], below.
     fn begin_restoring(&self) -> Result<()> {
         if self.in_write.load(Ordering::Acquire) {
             return Err(relate_core::Error::storage(
@@ -200,12 +202,47 @@ impl Graph {
         self.check_restoring()
     }
 
+    /// The open path's retained-family window (ADR-0610): the codec
+    /// tail's [`Self::finish_restore`] closed the phase its rows opened,
+    /// and the retained `transactions/` and `chains/` families are the
+    /// same open's later restore slices — this re-takes the phase for
+    /// the load step and closes it after, whatever the step returns.
+    /// [`Self::begin_restoring`]'s write guard applies, so the window is
+    /// the open path's construction only (after the codec load, before
+    /// the WAL replay or any write), and the re-take is **one-shot**
+    /// (`retained_window_taken`): a second call — a caller reaching the
+    /// step after the open completed, when the in-write guard alone
+    /// would pass and a published commit already left the graph with
+    /// committed writes — is refused, so the latch cannot re-open and
+    /// let a load overwrite live rows. Adjacency is never rebuilt here:
+    /// each family chain replaces the image's row slot-for-slot (its
+    /// newest version is that row), so the codec tail's build stands.
+    pub fn retained_families_restore_step(
+        &self,
+        load: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<()> {
+        if self.in_write.load(Ordering::Acquire) {
+            return Err(relate_core::Error::storage(
+                "retained-family restore while a write is open",
+            ));
+        }
+        if self.retained_window_taken.swap(true, Ordering::AcqRel) {
+            return Err(relate_core::Error::storage(
+                "retained-family restore window re-entered after the open's construction",
+            ));
+        }
+        self.restoring.store(true, Ordering::Release);
+        let loaded = load();
+        self.close_restoring();
+        loaded
+    }
+
     /// The latch's read half: refuse a load the graph no longer accepts —
     /// the restore phase closed by `finish_restore` or a published commit.
     /// The phase, never a slot's version-chain shape, is the evidence: a
     /// committed single-version write leaves the `Inline` chain a restored
     /// row itself holds, and shape cannot tell the two apart.
-    fn check_restoring(&self) -> Result<()> {
+    pub(super) fn check_restoring(&self) -> Result<()> {
         if !self.restoring.load(Ordering::Acquire) {
             return Err(relate_core::Error::storage(
                 "checkpoint restore into a graph with committed writes",
@@ -214,9 +251,11 @@ impl Graph {
         Ok(())
     }
 
-    /// The latch's one transition: open -> closed, final. Every entry that
-    /// ends the restore phase — [`Self::finish_restore`], a published
-    /// commit, a redo apply — closes through here.
+    /// The latch's closing transition. Every entry that ends the restore
+    /// phase — [`Self::finish_restore`], a published commit, a redo
+    /// apply — closes through here; the open path's retained-family
+    /// window ([`Self::retained_families_restore_step`]) is the one
+    /// re-take, and no phase re-opens after a commit.
     pub(super) fn close_restoring(&self) {
         self.restoring.store(false, Ordering::Release);
     }

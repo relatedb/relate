@@ -151,6 +151,12 @@ fn catch_up(shared: &Shared) -> Result<bool> {
             // apply is what clears it, so it must not be refused by it.
             let read = shared.follow_apply_guard()?;
             for (index, record) in records.into_iter().enumerate() {
+                // ADR-0610: a caught-up record that carries provenance
+                // fields joins the retained table as it is applied — the
+                // graph's record method decides which records retain, so
+                // this site never re-derives that policy. Recorded before
+                // the ops are consumed by the apply.
+                shared.graph.record_transaction(record.retained());
                 // The injected failure and a real apply error share one
                 // recovery: the injection arm never applies (the `||`
                 // short-circuits), exactly as before the merge.

@@ -22,6 +22,9 @@ fn write_wal(uri: &std::path::Path, ops: Vec<RedoOp>) {
         lsn: 1,
         commit_ts: 1,
         ops,
+        metadata: None,
+        changed_keys: None,
+        record_type: None,
     })
     .unwrap();
     let mut file = std::fs::File::create(wal_dir.join("00000001.log")).unwrap();
@@ -114,6 +117,9 @@ fn invalid_replicated_ids_leave_existing_wal_and_graph_reopenable() {
                 lsn: 999, // The destination assigns its own LSN.
                 commit_ts: 2,
                 ops: vec![node(1), invalid],
+                metadata: None,
+                changed_keys: None,
+                record_type: None,
             })
             .unwrap_err();
         assert!(matches!(err, Error::Storage(_)), "{name}: {err}");
@@ -167,6 +173,9 @@ fn valid_replicated_create_survives_reopen_but_not_the_identity_map() {
             lsn: 42,
             commit_ts: 7,
             ops: ops.clone(),
+            metadata: None,
+            changed_keys: None,
+            record_type: None,
         })
         .unwrap(),
         1
@@ -211,6 +220,9 @@ fn replicated_missing_or_previously_deleted_endpoint_does_not_append() {
                 lsn: 999,
                 commit_ts: 2,
                 ops,
+                metadata: None,
+                changed_keys: None,
+                record_type: None,
             })
             .unwrap_err();
         assert!(matches!(error, Error::Semantic(_)), "{error}");
@@ -261,6 +273,9 @@ fn replicated_incomplete_label_constraint_does_not_append() {
                 lsn: 90,
                 commit_ts: 2,
                 ops,
+                metadata: None,
+                changed_keys: None,
+                record_type: None,
             })
             .unwrap_err();
         assert!(matches!(error, Error::Storage(_)), "{error}");
@@ -285,6 +300,9 @@ fn replicated_post_sync_apply_failure_fences_and_replays_on_reopen() {
             lsn: 999,
             commit_ts: 1,
             ops: vec![node(0)],
+            metadata: None,
+            changed_keys: None,
+            record_type: None,
         })
         .unwrap_err();
     assert!(err.to_string().contains("uncertain WAL outcome"), "{err}");

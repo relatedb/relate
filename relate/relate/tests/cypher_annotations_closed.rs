@@ -27,6 +27,24 @@ fn an_annotation_needs_the_opt_in() {
 }
 
 #[test]
+fn the_reserved_channel_name_needs_the_annotation_gate_too() {
+    // ADR-0610: `@txMetadata` is an annotation first — without
+    // `cypher-annotations` the lexer keeps today's unexpected-character
+    // error, the channel's own gate never entered.
+    let mut c = connection();
+    for query in [
+        "@txMetadata({agent: 'a'}) CREATE (n {k: 1})",
+        "@txMetadata(agent: 'a') RETURN 1",
+    ] {
+        let error = c.query(query).expect_err(query).to_string();
+        assert!(
+            error.contains("unexpected character: @"),
+            "{query}: {error}"
+        );
+    }
+}
+
+#[test]
 fn an_unannotated_query_is_unchanged() {
     let mut c = connection();
     c.query("RETURN 1 AS x").unwrap();

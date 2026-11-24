@@ -71,6 +71,11 @@ memo tables' allocation, never part of `memory_bytes`.
   unlimited. `:memory:` vanishes on close.
 - **Dicts are always maps** — pass `relate.Point(srid, x, y)` for a
   point; a missing `$param` fails the statement, never binds `null`.
+- **`tx_metadata=` attaches the "why" to a write** (keyword-only on
+  `execute`, ADR-0610) — a dict of metadata merged into the transaction's
+  record at commit. Preview-gated: needs
+  `RELATE_PREVIEW=value-provenance` set before connecting, else the call
+  fails with the authored preview error.
 - **Library skill in the wheel** — `relate/.agents/skills/relate/SKILL.md`
   ships in the package; `uvx library-skills` links it for agents.
 

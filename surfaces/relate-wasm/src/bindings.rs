@@ -3,9 +3,12 @@
 //! crate root. The OPFS core it opens through lives in `super::opfs`,
 //! which compiles on every target for its native unit tests.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use relate::{execute_wire, run_script_wire, Connection, Database, OpenMode, OpenOptions};
+use relate::{
+    execute_wire, params_from_map, run_script_wire, Connection, Database, OpenMode, OpenOptions,
+};
 use relate_formatter::recording;
 use relate_storage::Vfs;
 use wasm_bindgen::prelude::*;
@@ -82,7 +85,26 @@ impl RelateDb {
     }
 
     /// Run one statement (`relate::execute_wire`): its wire envelope.
-    pub fn execute(&mut self, query: &str, params_json: Option<String>) -> String {
+    ///
+    /// `metadata_json` is the per-transaction metadata map (ADR-0610) —
+    /// the embedded channel's spelling, beside `params_json`: a JSON
+    /// object string decoded exactly as parameters, seeded before the
+    /// statement runs so the next transaction boundary (this statement's
+    /// auto-commit write, or the explicit transaction's commit)
+    /// serializes it into that commit's record, then clears. `None` or
+    /// blank seeds nothing. A present map that does not decode, or the
+    /// seed's failure — a store opened without the `value-provenance`
+    /// opt-in (`RELATE_PREVIEW`, read once, at open), an over-bound map —
+    /// is the envelope's `error`, and the statement does not run.
+    pub fn execute(
+        &mut self,
+        query: &str,
+        params_json: Option<String>,
+        metadata_json: Option<String>,
+    ) -> String {
+        if let Some(envelope) = seed_tx_metadata(&mut self.conn, metadata_json.as_deref()) {
+            return envelope.to_string();
+        }
         execute_wire(&mut self.conn, query, params_json.as_deref()).to_string()
     }
 
@@ -274,4 +296,40 @@ mod tests {
         let found = handle.execute("MATCH (n:Landed) RETURN count(n) AS c", None);
         assert!(found.contains("\"c\""), "the write landed: {found}");
     }
+}
+
+/// Seed the connection's per-transaction metadata map (ADR-0610) — the
+/// embedded `Connection::set_tx_metadata` channel behind `execute`'s
+/// `metadata_json` argument. `None` or blank means no seed. Any failure —
+/// a present text that does not decode ([`tx_metadata_from_json`]), a
+/// store opened without the `value-provenance` opt-in, an over-bound map
+/// — is the statement's error envelope (the canonical
+/// [`relate_model::wire::error_envelope`], the same `error` field every
+/// engine failure rides), so the statement never runs.
+fn seed_tx_metadata(
+    conn: &mut Connection,
+    metadata_json: Option<&str>,
+) -> Option<serde_json::Value> {
+    let text = metadata_json.filter(|text| !text.trim().is_empty())?;
+    let map = match tx_metadata_from_json(text) {
+        Ok(map) => map,
+        Err(message) => return Some(relate_model::wire::error_envelope(&message)),
+    };
+    match conn.set_tx_metadata(map) {
+        Ok(()) => None,
+        Err(err) => Some(relate_model::wire::error_envelope(&err.to_string())),
+    }
+}
+
+/// Decode `execute`'s metadata argument: a JSON object through the
+/// engine's canonical parameter fold (`params_from_map` — the same
+/// conversion as `params_json`, every nested object an ordinary map),
+/// with this argument's noun on every refusal.
+fn tx_metadata_from_json(text: &str) -> Result<BTreeMap<String, relate::Value>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|err| format!("invalid metadata JSON: {err}"))?;
+    let map = value
+        .as_object()
+        .ok_or_else(|| "metadata must be a JSON object".to_string())?;
+    params_from_map(map).map_err(|detail| format!("metadata: {detail}"))
 }

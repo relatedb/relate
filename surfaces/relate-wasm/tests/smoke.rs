@@ -17,7 +17,7 @@ wasm_bindgen_test_configure!(run_in_browser);
 #[wasm_bindgen_test]
 fn return_one_round_trip() {
     let mut db = RelateDb::new(None).expect("open :memory:");
-    let raw = db.execute("RETURN 1 AS n", None);
+    let raw = db.execute("RETURN 1 AS n", None, None);
     let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
     assert_eq!(v["columns"], serde_json::json!(["n"]));
     assert_eq!(v["rows"], serde_json::json!([{"n": 1}]));
@@ -27,10 +27,10 @@ fn return_one_round_trip() {
 #[wasm_bindgen_test]
 fn read_only_rejects_writes() {
     let mut db = RelateDb::new(Some(true)).expect("open :memory:");
-    let raw = db.execute("RETURN 1 AS n", None);
+    let raw = db.execute("RETURN 1 AS n", None, None);
     let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
     assert!(v["error"].is_null(), "{raw}");
-    let raw = db.execute("CREATE ()", None);
+    let raw = db.execute("CREATE ()", None, None);
     let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
     let err = v["error"].as_str().unwrap_or("");
     assert!(err.contains("read-only"), "{raw}");
@@ -41,7 +41,7 @@ fn read_only_rejects_writes() {
     );
 
     let mut writable = RelateDb::new(None).expect("open :memory:");
-    let raw = writable.execute("CREATE ()", None);
+    let raw = writable.execute("CREATE ()", None, None);
     let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
     assert!(v["error"].is_null(), "{raw}");
 }
@@ -49,13 +49,13 @@ fn read_only_rejects_writes() {
 #[wasm_bindgen_test]
 fn syntax_error_is_wire_envelope_not_panic() {
     let mut db = RelateDb::new(None).expect("open :memory:");
-    let raw = db.execute("NOT CYPHER", None);
+    let raw = db.execute("NOT CYPHER", None, None);
     let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
     assert!(v["error"].is_string(), "expected error envelope, got {raw}");
     // A typed engine error returns normally; the wasm-bindgen `&mut self`
     // RefCell guard drops with the call, so a follow-up call must not trip
     // "recursive use of an object detected".
-    let raw2 = db.execute("RETURN 2 AS n", None);
+    let raw2 = db.execute("RETURN 2 AS n", None, None);
     let v2: serde_json::Value = serde_json::from_str(&raw2).expect("wire envelope");
     assert_eq!(v2["rows"], serde_json::json!([{"n": 2}]));
 }
@@ -63,9 +63,9 @@ fn syntax_error_is_wire_envelope_not_panic() {
 #[wasm_bindgen_test]
 fn reset_discards_data() {
     let mut db = RelateDb::new(None).expect("open :memory:");
-    db.execute("CREATE (:N)", None);
+    db.execute("CREATE (:N)", None, None);
     db.reset().expect("reset opens a fresh :memory:");
-    let raw = db.execute("MATCH (n) RETURN count(n) AS c", None);
+    let raw = db.execute("MATCH (n) RETURN count(n) AS c", None, None);
     let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
     assert_eq!(v["rows"], serde_json::json!([{"c": 0}]));
 }
@@ -78,7 +78,7 @@ fn execute_script_runs_each_statement() {
         None,
     );
     assert_eq!(envelopes.len(), 2, "got {envelopes:?}");
-    let raw = db.execute("MATCH (n:N) RETURN count(n) AS c", None);
+    let raw = db.execute("MATCH (n:N) RETURN count(n) AS c", None, None);
     let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
     assert_eq!(v["rows"], serde_json::json!([{"c": 2}]));
     assert!(db.execute_script("  // only a comment ", None).is_empty());
@@ -98,12 +98,12 @@ fn execute_script_runs_each_statement() {
 #[wasm_bindgen_test]
 fn wire_envelope_carries_notifications() {
     let mut db = RelateDb::new(None).expect("open :memory:");
-    let raw = db.execute("RETURN 1 AS n", None);
+    let raw = db.execute("RETURN 1 AS n", None, None);
     let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
     assert_eq!(v["notifications"], serde_json::json!([]), "{raw}");
 
-    db.execute("CREATE (:Person), (:City)", None);
-    let raw = db.execute("EXPLAIN MATCH (a:Person), (b:City) RETURN a, b", None);
+    db.execute("CREATE (:Person), (:City)", None, None);
+    let raw = db.execute("EXPLAIN MATCH (a:Person), (b:City) RETURN a, b", None, None);
     let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
     assert!(v["error"].is_null(), "query error: {raw}");
     let notifications = v["notifications"]
@@ -142,6 +142,72 @@ fn render_result_renders_a_recording() {
         "| n |\n|---|\n| 1 |\n1 row · nodes created: 1, labels added: 1"
     );
     assert_eq!(r["table"]["rows"], serde_json::json!([["1"]]));
+}
+
+/// `execute`'s metadata argument (ADR-0610) — the embedded channel's
+/// wasm spelling, beside `params_json`. A wasm host has no process
+/// environment, and `RELATE_PREVIEW` is read from it once, at open, so
+/// this build can never opt into `value-provenance`: a present map is
+/// always the seed's authored preview error, an envelope `error` (never
+/// a trap), and the statement never runs — the gate behavior the channel
+/// records, pinned exactly as the engine spells it.
+#[wasm_bindgen_test]
+fn execute_metadata_argument_is_the_gated_seed() {
+    let mut db = RelateDb::new(None).expect("open :memory:");
+    // An absent metadata argument is today's call exactly.
+    let raw = db.execute("RETURN 1 AS n", None, None);
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
+    assert_eq!(v["rows"], serde_json::json!([{ "n": 1 }]));
+    assert!(v["error"].is_null(), "{raw}");
+    // A present map is the authored preview error envelope ...
+    let raw = db.execute("CREATE (:M)", None, Some(r#"{"by": "app"}"#.to_string()));
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
+    let err = v["error"].as_str().unwrap_or_default();
+    assert!(
+        err.contains("preview feature 'value-provenance' is not enabled"),
+        "the authored preview error: {raw}"
+    );
+    // ... the statement never ran, and the connection stays usable.
+    let raw = db.execute("MATCH (n:M) RETURN count(n) AS c", None, None);
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
+    assert_eq!(v["rows"], serde_json::json!([{ "c": 0 }]));
+    // An explicitly empty map is a seed call too — the same gate.
+    let raw = db.execute("CREATE (:M)", None, Some("{}".to_string()));
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
+    let err = v["error"].as_str().unwrap_or_default();
+    assert!(
+        err.contains("preview feature 'value-provenance' is not enabled"),
+        "an empty map is still a seed: {raw}"
+    );
+}
+
+/// The metadata argument's decode refusals name the argument, and blank
+/// text is no seed — the `params_json` rules, carried over.
+#[wasm_bindgen_test]
+fn execute_metadata_argument_names_its_decode_refusals() {
+    let mut db = RelateDb::new(None).expect("open :memory:");
+    let raw = db.execute("RETURN 1 AS n", None, Some("{not json".to_string()));
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("invalid metadata JSON"),
+        "{raw}"
+    );
+    let raw = db.execute("RETURN 1 AS n", None, Some("[1]".to_string()));
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("metadata must be a JSON object"),
+        "{raw}"
+    );
+    // Blank means no seed: the statement runs normally.
+    let raw = db.execute("RETURN 3 AS n", None, Some("   ".to_string()));
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("wire envelope");
+    assert_eq!(v["rows"], serde_json::json!([{ "n": 3 }]));
 }
 
 fn js_error_message(err: JsError) -> String {

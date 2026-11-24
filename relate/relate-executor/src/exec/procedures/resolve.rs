@@ -82,6 +82,25 @@ impl<'a> CallBinding<'a> {
         })
     }
 
+    /// The signature-driven construction — the one spelling of the
+    /// metadata/arity pair the generic path's built-in branch and a
+    /// diverted executor's own arm share (`tx.setMetaData`, ADR-0610):
+    /// the binding policy ([`Self::bind_row`]) is the one policy; this is
+    /// its one construction from a registry signature, so no diverted
+    /// arm re-derives the pair.
+    pub(crate) fn for_signature(
+        source: &'a CallArgs,
+        signature: &'static ProcSignature,
+        ctx: ExecCtx<'a>,
+    ) -> Result<Self> {
+        Self::new(
+            source,
+            procedure_metadata(signature),
+            signature.required_args(),
+            ctx,
+        )
+    }
+
     /// Bind one driving row's arguments and type-check them against the
     /// resolved metadata — the one binding policy the row loop and the
     /// resolved call share, so a void procedure's arguments are validated
@@ -176,12 +195,7 @@ pub(crate) fn resolve_registry<'a>(
                 executable_signature(name).ok_or_else(|| Error::procedure_not_found(name))
             })?;
             (
-                CallBinding::new(
-                    source,
-                    procedure_metadata(signature),
-                    signature.required_args(),
-                    ctx,
-                )?,
+                CallBinding::for_signature(source, signature, ctx)?,
                 Some(signature),
             )
         }

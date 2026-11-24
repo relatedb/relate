@@ -126,6 +126,7 @@ fn exec_org_seed(g: &Graph, cypher: &str) -> QueryResult {
         request: ExecRequest::new(&plan, &BTreeMap::new(), cypher),
         cancel: None,
         ontology_document: None,
+        tx_metadata: None,
     })
     .unwrap()
 }

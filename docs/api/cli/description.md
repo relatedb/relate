@@ -34,6 +34,14 @@ timer, not threshold, explicit, or clean-close checkpoints.
 `__type` key; queries create typed values explicitly with `point($coords)`
 or `date($iso)`. See the [parameter example](examples/params.md).
 
+`--tx-meta K=V` attaches transaction metadata to the session's next
+committed transaction — the "why" of a write, queryable beside the values
+(ADR-0610, behind the `RELATE_PREVIEW=value-provenance` opt-in):
+`provenance(element, key)` returns the committing transaction's
+`{commitTs, lsn, metadata, value}`, and `CALL db.transactions()` lists the
+retained records, so one statement can retract everything a given agent
+wrote. See the [value-provenance example](examples/value_provenance.md).
+
 `--fetch-params N=SRC` fetches an `http(s)` URL or reads a file, parses it
 as JSON, and binds the document as the parameter `N` — a CLI-process fetch
 (the same trust as piping through `--param`), so the engine's `LOAD CSV`

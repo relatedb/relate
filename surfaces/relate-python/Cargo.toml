@@ -32,3 +32,7 @@ arrow-ipc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The process-wide RELATE_PREVIEW opt-in fixture (`preview::set_preview_once`):
+# the tx_metadata tests' gate is set once per test binary, exactly as every
+# other gated suite does it (R3: a surface's dev-dep on the shared kit).
+relate-test-support = { workspace = true }

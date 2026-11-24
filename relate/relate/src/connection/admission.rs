@@ -91,6 +91,15 @@ pub(super) struct Admission {
     /// run under the same derived options — reads this copy instead of
     /// re-opening the guard (ADR-0663).
     pub(super) preview: relate_core::PreviewFeatures,
+    /// The statement's captured `@txMetadata` annotations (ADR-0610's
+    /// in-statement metadata channel), in clause order — carried out only
+    /// by the uncached tail's parse: an annotated statement never enters
+    /// the plan cache (the normalizer declines the `@` introducer, so the
+    /// channel's payload can never ride past the parse that carries it),
+    /// and every other path lowers with none. The dispatch applies them
+    /// after the EXPLAIN early return, so a plan-only statement seeds
+    /// nothing.
+    pub(super) tx_metadata: Vec<relate_parser::TxMetadataAnnotation>,
 }
 
 impl Connection {
@@ -309,6 +318,10 @@ impl Connection {
                 logical: plan,
                 stamp,
                 preview,
+                // A hit cannot carry captures: an annotated statement
+                // never enters the plan cache (the normalizer declines
+                // the `@` introducer), so the entry lowers with none.
+                tx_metadata: Vec::new(),
             },
             crate::phase_timing::AdmissionTiming {
                 parse,
@@ -374,6 +387,10 @@ impl Connection {
                         logical: Arc::clone(&compiled.logical),
                         stamp: compiled.stamp,
                         preview,
+                        // The compiled-miss path compiles a rewritten
+                        // text no annotated statement ever produces, so
+                        // no captures exist to carry (ADR-0610).
+                        tx_metadata: Vec::new(),
                     },
                     crate::phase_timing::AdmissionTiming {
                         parse: compiled.parse,
@@ -404,6 +421,11 @@ impl Connection {
         let plan = plan_started.elapsed();
         let logical = Arc::new(logical);
         let bytes = plan_bytes(&logical);
+        // ADR-0610: the in-statement channel's captures leave with the
+        // staged plan — the parse above is the only one that read the
+        // statement's own text (an annotated statement is never a cache
+        // hit, so no other path can carry them) — and ride into the
+        // admission through its one constructor below.
         Ok(stage_admission(
             clocks,
             StagedPlan {
@@ -411,6 +433,7 @@ impl Connection {
                 logical,
                 stamp,
                 preview,
+                tx_metadata: parsed.tx_metadata,
             },
             crate::phase_timing::AdmissionTiming {
                 parse,
@@ -515,20 +538,25 @@ fn stage_admission(
         effective,
         memory,
         preview: staged.preview,
+        tx_metadata: staged.tx_metadata,
     }
 }
 
 /// The staged plan's facts `stage_admission` carries beside its clocks
 /// and timing — the resolved preamble mode, the plan itself, its result
-/// stamp, and the preview set the admission read — bundled so the
-/// constructor stays under `clippy::too_many_arguments` (the
-/// `DispatchCtx` convention). The same facts `Admission` records, under
-/// the names it records them by.
+/// stamp, the preview set the admission read, and the statement's
+/// `@txMetadata` captures (ADR-0610) — bundled so the constructor stays
+/// under `clippy::too_many_arguments` (the `DispatchCtx` convention).
+/// The same facts `Admission` records, under the names it records them
+/// by; both call sites spell the captures (`Vec::new()` on the hit and
+/// compiled-miss paths, the parse's on the uncached path), so
+/// `stage_admission` remains the only writer of the `Admission` bundle.
 struct StagedPlan {
     preamble: PreambleMode,
     logical: Arc<LogicalPlan>,
     stamp: ResultStamp,
     preview: relate_core::PreviewFeatures,
+    tx_metadata: Vec<relate_parser::TxMetadataAnnotation>,
 }
 
 /// ADR-0503's insert eligibility, read from the finished admission — the

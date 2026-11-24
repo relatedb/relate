@@ -41,12 +41,25 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+// The ADR-0310 bookmark string's sequence decoder, doc-hidden beside the
+// record-type re-exports and the `WalRecord` re-export below: the crate's
+// provenance examples read bookmarks through it (the one decoder
+// `crate::commit` owns), and no documented surface needs it —
+// `bookmark_string`'s encoder is the public spelling via
+// `Connection::commit`'s return.
+#[doc(hidden)]
+pub use commit::bookmark_sequence;
 pub use plan_node::{
     ClauseMetrics, FusedChild, FusedChildMetrics, PlanArtifacts, PlanNode, PlanWarning,
 };
+// ADR-0610's retained-transaction record types: re-exported beside the
+// `WalRecord` re-export below (the record's retained projection), for the
+// `Connection::set_tx_metadata` channel and the doc-hidden
+// `Database::transaction_records` observation surface.
 pub use relate_core::{
     node_element_id, parse_node_element_id, parse_rel_element_id, rel_element_id,
 };
+pub use relate_engine_api::{ChangedKey, ChangedKeyKind, RecordType, TransactionRecord};
 pub use relate_storage::{
     cypher_to_value, plan_value_to_cypher, value_to_cypher, MarkdownBodyProperties,
     SnapshotCodecKind, WalRecord, MAX_PLAN_WIRE_DEPTH,
@@ -679,5 +692,23 @@ impl Database {
     /// without appending.
     pub fn apply_replicated(&self, record: &WalRecord) -> Result<u64> {
         commit::commit_replicated(&self.inner, record)
+    }
+
+    /// The store's retained transaction records (ADR-0610), ascending
+    /// `commit_ts` — the retained projection of the commits the
+    /// `value-provenance` feature recorded (their metadata maps and
+    /// changed keys), loaded from the `transactions/` checkpoint objects
+    /// and the surviving WAL at open, and grown by every retained commit.
+    /// Empty on a store that never opted in. Store state shared by every
+    /// connection; read under the publication guard.
+    ///
+    /// Doc-hidden like [`Self::ontology_document`]: an observation surface
+    /// for tooling and tests — the query surface for these records is the
+    /// `db.transactions` procedure's, which ships with the query-surface
+    /// change (ADR-0610's consequences).
+    #[doc(hidden)]
+    pub fn transaction_records(&self) -> Result<Vec<TransactionRecord>> {
+        let _read = self.inner.read_guard()?;
+        Ok(self.inner.graph.retained_transactions())
     }
 }

@@ -188,6 +188,10 @@ pub(crate) struct RunOpts<'a> {
     pub(crate) db_path: &'a str,
     pub(crate) session: Session<'a>,
     pub(crate) params: &'a HashMap<String, CypherValue>,
+    /// `--tx-meta` (ADR-0610): the session's next-transaction metadata
+    /// map, seeded through the embedded channel after the connect.
+    /// Empty when the flag was not given.
+    pub(crate) tx_meta: std::collections::BTreeMap<String, CypherValue>,
     pub(crate) mode: Mode,
     pub(crate) no_header: bool,
     pub(crate) pretty: bool,
@@ -324,13 +328,34 @@ pub(crate) fn run_relate(opts: RunOpts<'_>) -> ! {
     // site uses.
     crate::load::release_source_after_open(open_mode);
     let namespace = opts.namespace.unwrap_or(relate::Namespace::Neo4j);
-    let conn = match db.connect_typed(namespace) {
+    let mut conn = match db.connect_typed(namespace) {
         Ok(c) => c,
         Err(e) => {
             let code = errors::report_query_error("", &e, &opts.mode, errors::ReportCtx::NONE);
             exit_flushed(telemetry, code);
         }
     };
+    // ADR-0610: `--tx-meta` seeds the connection's per-transaction
+    // metadata map — the embedded `Connection::set_tx_metadata`
+    // channel — before the session's first statement, so the next
+    // transaction boundary (an auto-commit write's, or an explicit
+    // transaction's commit) serializes it into that commit's record.
+    // The engine owns the `value-provenance` gate: on a store opened
+    // without the opt-in the seed fails with the authored preview error
+    // instead of silently dropping the map — the loud refusal the
+    // embedded channel's contract records, reported like every other
+    // statement-time engine error.
+    if !opts.tx_meta.is_empty() {
+        let tx_meta: std::collections::BTreeMap<String, relate::Value> = opts
+            .tx_meta
+            .iter()
+            .map(|(k, v)| (k.clone(), relate::cypher_to_value(v)))
+            .collect();
+        if let Err(e) = conn.set_tx_metadata(tx_meta) {
+            let code = errors::report_query_error("", &e, &opts.mode, errors::ReportCtx::NONE);
+            exit_flushed(telemetry, code);
+        }
+    }
     let mapped: std::collections::BTreeMap<String, relate::Value> = opts
         .params
         .iter()

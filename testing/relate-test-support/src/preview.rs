@@ -7,6 +7,15 @@
 //! `preview_ontology` is the pattern's origin; this module is the one
 //! shared home every crate's test fixture calls, so no surface grows a
 //! bespoke copy.
+//!
+//! The fixtures are feature-atomic — one per preview feature, never a
+//! union: a binary needing two features at once is a binary whose suites
+//! must not share a process (the first-call-wins `Once` couples them),
+//! and the fix is splitting the binary, not widening the fixture. A
+//! suite's own binary-local opt-in naming more than one feature (the
+//! relate-ffi lib-test binary's, whose private ABI modules keep every
+//! suite in one process) is that crate's own fact, spelled beside its
+//! tests — never this module's export.
 
 /// Set `RELATE_PREVIEW` to `features` for this test process, at most
 /// once — the first call wins and later calls are no-ops, so a binary
@@ -23,4 +32,13 @@ pub fn set_preview_once(features: &str) {
 /// procedures and the `system_ontologies` namespace visibility.
 pub fn preview_ontology() {
     set_preview_once("ontology");
+}
+
+/// Opt this test process into the `value-provenance` preview feature
+/// (ADR-0378, ADR-0610): the fixed-argument spelling of
+/// [`set_preview_once`], for the feature row gating the transaction
+/// metadata channels, the retained record table and the
+/// `provenance()`/`history()` queries.
+pub fn preview_value_provenance() {
+    set_preview_once("value-provenance");
 }

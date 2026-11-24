@@ -106,6 +106,10 @@ what the graph actually holds.
   in `columnTypes`, ADR-0224;
   `--mode toon` for the compact TOON tabular form),
   `--param N=V` (repeatable),
+  `--tx-meta K=V` (repeatable, later keys win; attaches transaction
+  metadata to the session's next committed transaction — requires
+  `RELATE_PREVIEW=value-provenance`, and without that opt-in the run
+  fails with the authored preview error instead of dropping the map),
   `--snapshot-format json` (empty dir only; `parquet` — whose checkpoints
   are ADR-0553's wide-column parts — too in builds with that codec, as
   `--help` lists),

@@ -66,6 +66,13 @@ pub(crate) struct Flags {
     pub show_help: bool,
     pub lifecycle: Option<LifecycleCommand>,
     pub assignments: IndexMap<String, params::Assignment>,
+    /// `--tx-meta KEY=VALUE` (ADR-0610): the session's next-transaction
+    /// metadata map, merged in argv order (later keys win) through the
+    /// same split and decode as `--param`. Seeded into the connection
+    /// after the open — the embedded `Connection::set_tx_metadata`
+    /// channel — where the engine's `value-provenance` preview gate
+    /// answers an opted-out store with the authored preview error.
+    pub tx_meta: std::collections::BTreeMap<String, relate_model::CypherValue>,
     /// `--snapshot-format` (ADR-0163): a codec name. `None` defers to
     /// `RELATE_SNAPSHOT_FORMAT`, then the build default.
     pub snapshot_format: Option<relate::SnapshotCodecKind>,
@@ -147,6 +154,7 @@ impl Default for Flags {
             show_help: false,
             lifecycle: None,
             assignments: IndexMap::new(),
+            tx_meta: std::collections::BTreeMap::new(),
             snapshot_format: None,
             markdown_body_properties: None,
             wal_dir: None,
@@ -705,6 +713,26 @@ fn apply_session_flag(
                 }
                 Err(e) => {
                     print_error(format!("Error: invalid --fetch-params value: {e}"));
+                    std::process::exit(2);
+                }
+            }
+            true
+        }
+        "--tx-meta" => {
+            // ADR-0610: one KEY=VALUE of the session's next-transaction
+            // metadata map — the CLI's metadata channel, seeded through
+            // the embedded `Connection::set_tx_metadata` after the open.
+            // The `value-provenance` preview gate is the engine's, at
+            // the seed; parsing itself is ungated in every build
+            // (ADR-0104), like `--param`, whose split and decode this
+            // flag shares.
+            let value = take_value(args, i, arg, scope, "a value (key=value)");
+            match params::parse_tx_meta_pair(value) {
+                Ok((k, v)) => {
+                    state.tx_meta.insert(k, v);
+                }
+                Err(e) => {
+                    print_error(format!("Error: invalid --tx-meta value: {e}"));
                     std::process::exit(2);
                 }
             }

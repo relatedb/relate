@@ -40,6 +40,9 @@ fn crc_valid_max_commit_timestamp_is_a_storage_error_and_previous_value_replays(
             lsn: 1,
             commit_ts: ts,
             ops: vec![],
+            metadata: None,
+            changed_keys: None,
+            record_type: None,
         })
         .unwrap();
         write_frame(&*vfs, "00000001.log", &bytes);
@@ -107,6 +110,9 @@ fn scan_rejects_zero_or_nonforward_commits_even_below_checkpoint_and_across_segm
             lsn: 2,
             commit_ts: bad_ts,
             ops: vec![],
+            metadata: None,
+            changed_keys: None,
+            record_type: None,
         })
         .unwrap();
         write_frame(&*vfs, path, &bytes);
@@ -134,6 +140,9 @@ fn read_cursor_rejects_nonforward_timestamp_in_later_frame() {
         lsn: 2,
         commit_ts: 2,
         ops: vec![],
+        metadata: None,
+        changed_keys: None,
+        record_type: None,
     })
     .unwrap();
     write_frame(&*vfs, "00000001.log", &bytes);
@@ -233,6 +242,9 @@ fn every_invalid_redo_id_is_rejected_on_read_and_direct_append() {
             lsn: 2,
             commit_ts: 2,
             ops: vec![node(1), op],
+            metadata: None,
+            changed_keys: None,
+            record_type: None,
         })
         .unwrap();
         write_frame(&*vfs, "00000001.log", &bytes);

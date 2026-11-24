@@ -52,12 +52,17 @@ fn test_execute_exposes_engine_column_types() {
         let mut db = new_database(":memory:");
         raw_query(&mut db, "CREATE (:P)");
         let typed = db
-            .execute(py, "MATCH (n:P) RETURN n, n.name AS name, 1 AS i", None)
+            .execute(
+                py,
+                "MATCH (n:P) RETURN n, n.name AS name, 1 AS i",
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(typed.columns, ["n", "name", "i"]);
         assert_eq!(typed.column_types, ["NODE", "ANY", "INTEGER"]);
         let empty = db
-            .execute(py, "MATCH (n:Missing) RETURN n.name AS name", None)
+            .execute(py, "MATCH (n:Missing) RETURN n.name AS name", None, None)
             .unwrap();
         assert_eq!(empty.column_types, ["ANY"]);
     });
@@ -103,7 +108,7 @@ fn database_execute_and_introspection() {
     with_py(|py| {
         let db = new_database(":memory:");
         let created = db
-            .execute(py, "CREATE (:Person)-[:KNOWS]->(:Person)", None)
+            .execute(py, "CREATE (:Person)-[:KNOWS]->(:Person)", None, None)
             .unwrap();
         assert_eq!(created.stats["nodes_created"], 2);
         assert_eq!(created.stats.len(), 11);

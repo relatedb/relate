@@ -88,6 +88,14 @@ explicit transaction — `"relate:<n>"`, the engine's commit sequence.
 - **One connection, one thread at a time** — a `relate_database` may be
   shared across threads; a `relate_connection` (and a params builder)
   must not. A caught panic poisons the handle: close it and open a new one.
+- **`relate_conn_set_tx_metadata` is the preview-gated metadata input**
+  (ADR-0610) — the map is a params builder (root or `put_map` child,
+  NULL = empty), merges later-keys-win under the 16 MiB per-object bound,
+  and rides the next commit's WAL record, then clears (`CALL
+  tx.setMetaData` merges into the same map; `CALL tx.getMetaData()`
+  reads it back live). Needs `RELATE_PREVIEW=value-provenance` at open —
+  without the opt-in the call fails the authored preview error instead
+  of silently dropping the map.
 - **`system_ontologies` is visible only under `RELATE_PREVIEW=ontology`
   (ADR-0593)** — without the opt-in the connect fails "Graph not found:
   system_ontologies" and `SHOW DATABASES` lists two rows; with it, statements

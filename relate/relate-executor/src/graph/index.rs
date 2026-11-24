@@ -420,6 +420,16 @@ impl Graph {
         // ADR-0551: the checkpoint's GC pass is the one moment the store may
         // pay the O(chunk) re-encode; a chunk below the watermark stays delta.
         self.compact_adjacency_at_watermark(horizon);
+        // ADR-0610: while value-provenance retention is on, the horizon
+        // drop exempts every version — tombstoned chains included, so
+        // deleted elements stay auditable. The adjacency watermark fold
+        // above (an encode change, never a drop) and the accounting below
+        // still run; only the version drop stands down, and an open
+        // without the opt-in collects exactly as before.
+        if self.value_provenance_retention() {
+            self.recompute_used();
+            return;
+        }
         let nids: Vec<NodeId> = self.nodes.keys();
         for id in nids {
             self.gc_node_chain(id, horizon);

@@ -22,6 +22,8 @@ fn gated_function_names_are_unknown_without_their_opt_in() {
         "RETURN coll.hasNoneOf([1], [2]) AS x",
         "RETURN stddev_samp(1.0) AS x",
         "RETURN stddev_pop(1.0) AS x",
+        "RETURN provenance(1, 'k') AS x",
+        "RETURN history(1, 'k') AS x",
         // Nested positions cannot hide a gated call.
         "CALL { RETURN coll.zip([1], [2]) AS x } RETURN x",
         "RETURN EXISTS { RETURN stddev_samp(1.0) AS x } AS e",

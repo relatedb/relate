@@ -45,6 +45,14 @@ transport detail no client may depend on. Gzip composes above the chunk
 writer, and clients that decode both (`curl`, `ureq`, the Neo4j drivers) see
 the same JSON envelope as a small one-shot reply.
 
+A write may carry the **why** beside the what: the optional `tx_metadata`
+object on a statement or transaction body (ADR-0610, the spelling the ADR
+records for the driver channel) is the transaction's audit map — on a store
+opened with `RELATE_PREVIEW=value-provenance` it serializes into the commit's
+transaction record, where the provenance queries read who set a value and
+why; on a store without the opt-in a request carrying it fails loudly with
+the authored preview error rather than silently losing the audit fact.
+
 The server is minimal HTTP/1.1 (no hyper/axum; request-head parsing via
 `httparse`, ADR-0234) in `surfaces/relate-http`, exported as `serve` /
 `serve_handler` so the `relate serve --http PORT` CLI node (ADR-0232

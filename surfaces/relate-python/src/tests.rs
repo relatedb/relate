@@ -1,7 +1,7 @@
 use super::*;
 use crate::convert::{
-    cypher_value_to_py, date_to_py, duration_to_py, py_params_to_cypher, py_to_cypher_value,
-    py_type_name,
+    cypher_value_to_py, date_to_py, duration_to_py, optional_tx_metadata_to_cypher,
+    py_params_to_cypher, py_to_cypher_value, py_type_name,
 };
 use crate::walk::PY_VALUE_DEPTH_CAP;
 use indexmap::IndexMap;
@@ -147,3 +147,4 @@ mod namespace_tests;
 mod params_tests;
 mod result_tests;
 mod temporal_tests;
+mod tx_metadata_tests;

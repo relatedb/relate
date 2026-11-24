@@ -169,5 +169,12 @@ fn commit_record(record: WalRecord) -> relate_engine_api::CommitRecord {
         lsn: record.lsn,
         commit_ts: record.commit_ts,
         ops: record.ops,
+        // ADR-0610: the follower's catch-up carries the record's provenance
+        // half unchanged — the fields the writer's store serialized (None
+        // on a store that never opted in), the record's family type
+        // included.
+        metadata: record.metadata,
+        changed_keys: record.changed_keys,
+        record_type: record.record_type,
     }
 }

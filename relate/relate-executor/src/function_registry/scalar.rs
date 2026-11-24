@@ -56,6 +56,53 @@ pub(super) const ENTRIES: &[FunctionMeta] = &[
         "MAP",
     ),
     FunctionMeta::described(
+        "provenance",
+        FunctionCategory::Scalar,
+        "Returns the provenance of a property's current value on a `NODE` or `RELATIONSHIP`: \
+         the newest retained event as a `MAP` of `commitTs`, `lsn`, `metadata` and `value`.",
+        &[
+            ProcArgMeta::described(
+                "element",
+                "A node or a relationship.",
+                "NODE | RELATIONSHIP",
+            ),
+            ProcArgMeta::described(
+                "key",
+                "The property key whose provenance is returned.",
+                "STRING",
+            ),
+        ],
+        "MAP",
+    ),
+    FunctionMeta::described(
+        "history",
+        FunctionCategory::Scalar,
+        "Returns the retained events of a property on a `NODE` or `RELATIONSHIP`, ascending \
+         `commitTs`, as a `LIST<MAP>` of `commitTs`, `lsn`, `metadata` and `value` — the \
+         retained events only, so the oldest need not be the birth. An omitted or `null` \
+         `maxNum` returns every retained event; a non-negative integer the last `maxNum`.",
+        &[
+            ProcArgMeta::described(
+                "element",
+                "A node or a relationship.",
+                "NODE | RELATIONSHIP",
+            ),
+            ProcArgMeta::described(
+                "key",
+                "The property key whose event history is returned.",
+                "STRING",
+            ),
+            ProcArgMeta::with_default(
+                "maxNum",
+                "The number of newest events returned: every retained event when omitted or \
+                 `null`, the last `maxNum` when a non-negative integer (0 = none).",
+                "INTEGER",
+                "null",
+            ),
+        ],
+        "LIST<MAP>",
+    ),
+    FunctionMeta::described(
         "size",
         FunctionCategory::Scalar,
         "Returns the number of items in a `LIST<ANY>`, the number of Unicode characters in a `STRING` or the dimension of a `VECTOR`.",

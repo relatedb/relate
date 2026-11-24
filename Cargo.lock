@@ -2544,6 +2544,7 @@ dependencies = [
  "relate-arrow",
  "relate-core",
  "relate-model",
+ "relate-test-support",
  "serde_json",
  "tempfile",
 ]
@@ -2646,6 +2647,7 @@ dependencies = [
  "js-sys",
  "relate",
  "relate-formatter",
+ "relate-model",
  "relate-storage",
  "serde_json",
  "wasm-bindgen",

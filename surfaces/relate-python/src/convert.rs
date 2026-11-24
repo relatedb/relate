@@ -20,7 +20,7 @@ use pyo3::types::{
 use relate::{node_element_id, rel_element_id, Namespace};
 use relate_model::value::{IsoDuration, PointValue};
 use relate_model::CypherValue;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 // ============================================================
 // CypherValue -> Python
@@ -425,16 +425,21 @@ pub(super) fn py_type_name(obj: &Bound<'_, PyAny>) -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-/// Validate and convert the `params` argument of `execute` /
-/// `execute_arrow` (ADR-0219): it must be a dict with string keys. Errors
-/// are worded for DB-API callers (the Python layer maps `TypeError` to
-/// `ProgrammingError`), not in pyo3's internal conversion terms.
-pub(super) fn py_params_to_cypher(
+/// Validate and convert a Python dict with string keys — the one policy
+/// the two execute-argument maps share: query `params` (ADR-0219) and the
+/// `tx_metadata` map (ADR-0610). Errors are worded for DB-API callers (the
+/// Python layer maps `TypeError` to `ProgrammingError`), not in pyo3's
+/// internal conversion terms; `noun` and `key_noun` name the argument in
+/// them ("query parameters" / "query parameter", "transaction metadata" /
+/// "transaction metadata"), so each caller keeps its own wording.
+fn string_keyed_dict_to_cypher(
     obj: &Bound<'_, PyAny>,
+    noun: &str,
+    key_noun: &str,
 ) -> PyResult<HashMap<String, CypherValue>> {
     let dict = obj.downcast::<PyDict>().map_err(|_| {
         PyTypeError::new_err(format!(
-            "query parameters must be a dict mapping string keys to values, got '{}'",
+            "{noun} must be a dict mapping string keys to values, got '{}'",
             py_type_name(obj)
         ))
     })?;
@@ -442,7 +447,7 @@ pub(super) fn py_params_to_cypher(
     for (key, value) in dict.iter() {
         let k: String = key.extract().map_err(|_| {
             PyTypeError::new_err(format!(
-                "query parameter keys must be strings, got a key of type '{}'",
+                "{key_noun} keys must be strings, got a key of type '{}'",
                 py_type_name(&key)
             ))
         })?;
@@ -450,6 +455,16 @@ pub(super) fn py_params_to_cypher(
         params.insert(k, v);
     }
     Ok(params)
+}
+
+/// Validate and convert the `params` argument of `execute` /
+/// `execute_arrow` (ADR-0219): it must be a dict with string keys. Errors
+/// are worded for DB-API callers (the Python layer maps `TypeError` to
+/// `ProgrammingError`), not in pyo3's internal conversion terms.
+pub(super) fn py_params_to_cypher(
+    obj: &Bound<'_, PyAny>,
+) -> PyResult<HashMap<String, CypherValue>> {
+    string_keyed_dict_to_cypher(obj, "query parameters", "query parameter")
 }
 
 /// Recognize a Python `datetime` / `date` / `time` / `timedelta` and convert it
@@ -590,6 +605,26 @@ pub(super) fn optional_params_to_cypher(
     match params {
         Some(obj) => py_params_to_cypher(obj),
         None => Ok(HashMap::new()),
+    }
+}
+
+/// The `tx_metadata` argument of `execute` (ADR-0610): `None` means no
+/// metadata seed; anything else must be a valid dict — the same shape
+/// policy as `params` — collected into the ordered map the embedded
+/// channel takes. The seed itself is the engine's call
+/// (`Connection::set_tx_metadata`), including its authored preview-error
+/// refusal on a store that never opted in; this conversion only shapes
+/// the map.
+pub(super) fn optional_tx_metadata_to_cypher(
+    metadata: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<BTreeMap<String, CypherValue>>> {
+    match metadata {
+        Some(obj) => Ok(Some(
+            string_keyed_dict_to_cypher(obj, "transaction metadata", "transaction metadata")?
+                .into_iter()
+                .collect(),
+        )),
+        None => Ok(None),
     }
 }
 

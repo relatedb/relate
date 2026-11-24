@@ -1,9 +1,11 @@
 //! Query execution entry points, plan folding, and the `exec/` submodule
 //! wiring.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use relate_core::{CancelToken, Error, QueryClockGuard, Result, Value};
+use relate_engine_api::TxChannelState;
 use relate_ir::{Clause, LabelExpr};
 use relate_names::{SmallName, Token};
 use relate_planner::{clause_mutates_store, clause_projects_rows, plan_any_clause, LogicalPlan};
@@ -104,6 +106,7 @@ pub(crate) mod sink;
 mod stats_short_circuit;
 pub(crate) mod subquery_eval;
 pub(crate) mod top_k;
+pub(crate) mod tx_metadata;
 pub(crate) mod union;
 pub(crate) mod unwind;
 pub(crate) mod vector;
@@ -367,6 +370,12 @@ pub struct ReadAdmission<'a> {
     /// and read by `db.ontology.get` / `db.ontology.apply`; `None` when
     /// the store holds no ontology.
     pub ontology_document: Option<&'a str>,
+    /// The connection's per-transaction metadata cell (ADR-0610), attached
+    /// to the read view like `ontology_document` and read by the
+    /// `tx.setMetaData` / `tx.getMetaData` arms while the
+    /// `value-provenance` feature is on; `None` on every view with no
+    /// transaction behind it (tests, diagnostics).
+    pub tx_metadata: Option<&'a RefCell<TxChannelState>>,
 }
 
 /// The write boundary a batch of writes closes with, in order: the graph
@@ -456,7 +465,8 @@ pub fn execute_read_at(admission: &ReadAdmission<'_>) -> Result<QueryResult> {
     let view = ExecGraph::read_at(admission.graph, admission.snapshot_ts)
         .with_schema(admission.schema)
         .with_cancel(admission.cancel)
-        .with_ontology_document(admission.ontology_document);
+        .with_ontology_document(admission.ontology_document)
+        .with_tx_metadata(admission.tx_metadata);
     view.check_cancelled()?;
     // A read view carries no scratch, so the resets are vacuous and this
     // call is the declared-name seeding — kept through the same one

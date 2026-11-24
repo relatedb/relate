@@ -23,6 +23,17 @@ wherever it is rendered. `isWasmTrap`
 (in `trap.js`, shipped with the bundle) tells hosts when a call trapped
 the instance.
 
+`execute` also takes a third argument — the per-transaction metadata
+map (ADR-0610), a JSON object string beside `paramsJson`, seeded before
+the statement so the next transaction boundary serializes it into the
+commit's record. The machinery is the `value-provenance` preview
+opt-in's (`RELATE_PREVIEW`, read once, at open, from the process
+environment) — and a wasm host has no process environment, so on this
+surface every present map is the authored preview error riding the
+envelope's `error`, with the statement never run; the argument
+documents the channel and its gate for hosts that can set the
+variable.
+
 Beyond the snippets in `examples/`, nothing in this repository consumes
 the bundle. The relate-web repository copies the built bundle (`surfaces/relate-wasm/pkg/`) and serves
 it to its home page console, its cookbook pages (ADR-0528), and the

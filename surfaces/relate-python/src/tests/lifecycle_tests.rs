@@ -73,7 +73,7 @@ fn reset_reopens_persistent_directory() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("database");
         let mut db = new_database(&path.to_string_lossy());
-        db.execute(py, "CREATE (:Person {name: 'Alice'})", None)
+        db.execute(py, "CREATE (:Person {name: 'Alice'})", None, None)
             .unwrap();
         db.reset(py).unwrap();
         assert_eq!(db.node_count(py).unwrap(), 1);
@@ -87,7 +87,7 @@ fn rollback_discards_transaction() {
     with_py(|py| {
         let db = new_database(":memory:");
         db.begin_transaction(py).unwrap();
-        db.execute(py, "CREATE (:Transient)", None).unwrap();
+        db.execute(py, "CREATE (:Transient)", None, None).unwrap();
         assert!(db.transaction_active(py).unwrap());
         db.rollback_transaction(py).unwrap();
         assert_eq!(db.node_count(py).unwrap(), 0);
@@ -98,7 +98,7 @@ fn rollback_discards_transaction() {
 fn relate_error_carries_binding_metadata() {
     with_py(|py| {
         let db = new_database(":memory:");
-        let err = db.execute(py, "INVALID SYNTAX", None).unwrap_err();
+        let err = db.execute(py, "INVALID SYNTAX", None, None).unwrap_err();
         let kind = err_attr(&err, py, "kind");
         let tck_class = err_attr(&err, py, "tck_class");
         assert_eq!(kind, "SyntaxError");
@@ -132,7 +132,9 @@ fn foreign_thread_engine_use_raises_typed_error_not_panic() {
         assert_eq!(err_attr(&refusal, py, "kind"), "WrongThread");
         assert!(refusal.is_instance_of::<RelateNativeError>(py));
         let bound = db_keep.borrow_mut(py);
-        bound.execute(py, "CREATE (:T {id: 1})", None).unwrap();
+        bound
+            .execute(py, "CREATE (:T {id: 1})", None, None)
+            .unwrap();
         assert_eq!(bound.node_count(py).unwrap(), 1);
     });
 }
@@ -165,18 +167,18 @@ fn foreign_thread_drop_runs_deferred_cleanup_and_persists() {
 fn read_only_rejects_writes_and_skips_checkpoint() {
     with_py(|py| {
         let mut db = Database::new(py, ":memory:".to_string(), "neo4j".to_string(), true).unwrap();
-        db.execute(py, "RETURN 1 AS n", None).unwrap();
-        let err = db.execute(py, "CREATE ()", None).unwrap_err();
+        db.execute(py, "RETURN 1 AS n", None, None).unwrap();
+        let err = db.execute(py, "CREATE ()", None, None).unwrap_err();
         assert_eq!(err_attr(&err, py, "kind"), "WriteOnReadOnlyAccessDatabase");
         db.flush(py).unwrap();
         db.reset(py).unwrap();
-        let err = db.execute(py, "CREATE ()", None).unwrap_err();
+        let err = db.execute(py, "CREATE ()", None, None).unwrap_err();
         assert_eq!(err_attr(&err, py, "kind"), "WriteOnReadOnlyAccessDatabase");
         db.close(py).unwrap();
 
         let writable =
             Database::new(py, ":memory:".to_string(), "neo4j".to_string(), false).unwrap();
-        writable.execute(py, "CREATE ()", None).unwrap();
+        writable.execute(py, "CREATE ()", None, None).unwrap();
     });
 }
 

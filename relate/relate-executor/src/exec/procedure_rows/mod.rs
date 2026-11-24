@@ -19,6 +19,7 @@ mod schema;
 mod stats;
 #[cfg(test)]
 mod test_helpers;
+mod transactions;
 
 use schema::{schema_node_type_rows, schema_rel_type_rows, schema_visualization_rows};
 
@@ -123,7 +124,7 @@ impl crate::procedure_registry::RowProducer {
         // and the single trailing `Ok` wraps them. A per-arm `Ok` would hide
         // which arm is the fallible one.
         let rows = match self {
-            Self::TxGetMetaData => tx_get_metadata_rows(),
+            Self::TxGetMetaData => tx_get_metadata_rows(graph),
             Self::DbmsComponents => dbms_components_rows(),
             Self::DbPing => ping_rows(),
             Self::DbLabels => label_rows(graph),
@@ -142,6 +143,7 @@ impl crate::procedure_registry::RowProducer {
                     .expect("db.stats.retrieve binds its required section before its rows")
                     .as_string(),
             )?,
+            Self::DbTransactions => transactions::transactions_rows(graph, args.get("since"))?,
             Self::SchemaNodeTypeProperties => schema_node_type_rows(graph),
             Self::SchemaRelTypeProperties => schema_rel_type_rows(graph),
             Self::SchemaVisualization => schema_visualization_rows(graph, args.get("options")),
@@ -150,13 +152,22 @@ impl crate::procedure_registry::RowProducer {
     }
 }
 
-/// Row for `tx.getMetaData` (CIP-230): the fixed `source: 'cip230'`
-/// metadata map.
-fn tx_get_metadata_rows() -> Vec<BTreeMap<String, Value>> {
-    vec![BTreeMap::from([(
-        "metadata".into(),
-        Value::Map(BTreeMap::from([("source".into(), Value::String("cip230".into()))]).into()),
-    )])]
+/// Rows for `tx.getMetaData` (CIP-230, ADR-0610): while the
+/// `value-provenance` feature is on, the live per-transaction metadata
+/// map the `tx.setMetaData` channel and the surface channels seed (an
+/// empty map when nothing was set — the transaction's honest answer);
+/// while the feature is off, the fixed `source: 'cip230'` placeholder row
+/// the corpus pins — exactly today's compat form.
+fn tx_get_metadata_rows(graph: &ExecGraph<'_>) -> Vec<BTreeMap<String, Value>> {
+    let metadata = if graph
+        .preview()
+        .enabled(relate_core::PreviewFeature::ValueProvenance)
+    {
+        Value::Map(graph.tx_metadata().into())
+    } else {
+        Value::Map(BTreeMap::from([("source".into(), Value::String("cip230".into()))]).into())
+    };
+    vec![BTreeMap::from([("metadata".into(), metadata)])]
 }
 
 /// Shared producer for the single-column distinct-string procedures

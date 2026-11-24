@@ -25,7 +25,39 @@ nothing committed. A connection may carry an optional authenticated **principal*
 identity a surface sets after verifying it (the Bolt server sets it after a
 validated HELLO); `dbms.showCurrentUser()` reports it as `username`, and it
 confers no authorization. Connections whose surface never sets a principal
-see the documented placeholder `'relate'`. A network transport that
+see the documented placeholder `'relate'`. A connection also carries an
+optional **per-transaction metadata map** (ADR-0610, the `value-provenance`
+preview feature): `Connection::set_tx_metadata` is the embedded channel
+(the others are `CALL tx.setMetaData` and a Bolt `BEGIN`'s `tx_metadata`
+extra), the merged map (later keys win, bounded by the 16 MiB per-object
+envelope) serializes into the commit's WAL record at the next transaction
+boundary and is cleared after, and a `rollback` discards it. Every
+channel hard-sets the **provenance** record type; the typed twin
+`Connection::set_tx_metadata_of_type` seeds a record of another family
+(a non-empty kebab-case name, `"provenance"` reserved). The commit's
+derived changed property keys ride the same record — provenance-family
+commits only — and the retained records, every family's, survive WAL
+replay and checkpoint restore as the store's `transactions/` object
+family. The
+`provenance(element, key)` Cypher function reads the same machinery: the
+newest retained event of a property's current value as the
+`{commitTs, lsn, metadata, value}` map (ADR-0610), name-gated behind the
+same opt-in, and `history(element, key [, maxNum])` answers the whole
+ascending
+event list of a property's retained past, or its `maxNum`-bounded tail —
+both joining only provenance-family records, so a mixed-type store's
+provenance timeline holds only its own commits. While the opt-in is set the
+store also retains what the checkpoint used to collapse: the GC horizon
+drop exempts every version (tombstoned chains included) and the
+checkpoint persists the retained version chains as `chains/` objects,
+so both functions answer the same events after a reopen with the real
+`xmin` of every version. An open without the opt-in collapses retained
+history at its next checkpoint — retention is per-open, never a durable
+store property, and a store that never
+opts in is byte-for-byte unchanged. See the
+[runnable transaction-metadata example](examples/tx_metadata.md) and the
+[runnable provenance-function example](examples/provenance.md).
+A network transport that
 reports planning failures and execution failures at different points (Bolt
 answers the first at RUN and the second at PULL) runs statements through
 `Connection::query_staged`, which tells the two phases apart, and passes a

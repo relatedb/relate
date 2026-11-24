@@ -3,10 +3,12 @@
 //! the repository's file-size budget; the query-worker cluster lives in
 //! [`worker`] and the transaction cluster in [`txn`], both under the budget.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use relate_core::{ce_messages, Namespace};
+use relate_engine_api::{RecordType, TxChannelState};
 use relate_executor::ExecGraph;
 
 use crate::query_worker::Heartbeat;
@@ -60,6 +62,19 @@ fn log_logical_bytes(shared: &Shared) {
 pub struct Connection {
     pub(crate) inner: Arc<Shared>,
     pub(crate) txn: Option<OpenTxn>,
+    /// The connection's per-transaction metadata cell (ADR-0610): the one
+    /// state every metadata channel writes — the three untyped channels
+    /// (`CALL tx.setMetaData`, a Bolt BEGIN's `tx_metadata` extra, and
+    /// [`Self::set_tx_metadata`]), which hard-set the provenance record
+    /// family as they merge, and the typed [`Self::set_tx_metadata_of_type`],
+    /// which names another family. A `RefCell` because the executor's
+    /// statement views hold it as shared per-admission state and the
+    /// procedure arm merges through it mid-statement (the connection is
+    /// `!Sync`, so the cell is single-threaded). Taken whole — map and
+    /// record family together — into the commit's record at the next WAL
+    /// boundary; a rollback discards it. Empty — and never written — on a
+    /// store that never opted in.
+    pub(crate) tx_metadata: RefCell<TxChannelState>,
     /// ADR-0273: the authenticated principal a surface verified for this
     /// connection (the Bolt server sets it after a validated HELLO).
     /// Display-only: read by `dbms.showCurrentUser`; it confers no
@@ -100,6 +115,7 @@ pub(crate) fn fresh(inner: Arc<Shared>, namespace: Namespace) -> Connection {
     Connection {
         inner,
         txn: None,
+        tx_metadata: RefCell::new(TxChannelState::default()),
         principal: None,
         namespace,
         #[cfg(not(target_arch = "wasm32"))]
@@ -119,6 +135,143 @@ pub(crate) fn fresh(inner: Arc<Shared>, namespace: Namespace) -> Connection {
 /// `Database::connect_namespace` and `Connection::set_namespace` use.
 pub(crate) fn parse_session_namespace(name: &str) -> Result<Namespace> {
     Namespace::parse(name).ok_or_else(|| ce_messages::database_does_not_exist(name))
+}
+
+/// One interpreted `@txMetadata` annotation (ADR-0610): the metadata map
+/// with the optional `type` key consumed, beside the record family it
+/// named ([`RecordType::Provenance`] — the home family — when the key is
+/// absent or spells the home name).
+struct InterpretedAnnotation {
+    record_type: RecordType,
+    map: BTreeMap<String, Value>,
+}
+
+/// The `type` key's spelling (ADR-0610): consumed from the spelled map
+/// into the record type, never merged into the metadata itself.
+const TX_METADATA_TYPE_KEY: &str = "type";
+
+/// Interpret one captured `@txMetadata` annotation (ADR-0610): spell its
+/// parameters as one map — a single positional map literal, or
+/// all-named parameters — then consume the `type` key into the record
+/// family, its serialized spelling decoded by the one rule
+/// ([`RecordType::of`]: the home name is the home family). The
+/// rejections are the channel's value-domain errors
+/// (`InvalidArgumentValue`): a positional parameter that is not a map
+/// literal, and a `type` value that is not a string; the type *name*'s
+/// kebab-case policy is the canonical `validate_record_type`, applied
+/// where the channel applies the record family
+/// ([`Connection::apply_tx_metadata_annotations`]).
+fn interpret_tx_metadata_annotation(
+    capture: &relate_parser::TxMetadataAnnotation,
+) -> Result<InterpretedAnnotation> {
+    let pairs: Vec<(String, &relate_parser::Expr)> = match capture {
+        relate_parser::TxMetadataAnnotation::Positional(expr) => match expr {
+            relate_parser::Expr::Map(pairs) => pairs
+                .iter()
+                .map(|pair| (pair.key.to_string(), &pair.value))
+                .collect(),
+            _ => {
+                return Err(crate::Error::invalid_argument_value(
+                    "@txMetadata's positional parameter must be a map literal \
+                     (or spell the map as all-named parameters)",
+                ));
+            }
+        },
+        relate_parser::TxMetadataAnnotation::Named(pairs) => pairs
+            .iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect(),
+    };
+    let mut map = BTreeMap::new();
+    for (key, value) in pairs {
+        map.insert(key, annotation_literal_value(value)?);
+    }
+    // The optional type key names the record family; it is consumed from
+    // the map, never merged into the metadata.
+    let record_type = match map.remove(TX_METADATA_TYPE_KEY) {
+        Some(Value::String(name)) => RecordType::of(&name),
+        Some(other) => {
+            return Err(crate::Error::invalid_argument_value(format!(
+                "@txMetadata's type key must be a string, not {}",
+                relate_core::value_type_name(&other)
+            )));
+        }
+        None => RecordType::Provenance,
+    };
+    Ok(InterpretedAnnotation { record_type, map })
+}
+
+/// The CIP-281 annotation-parameter literal vocabulary (ADR-0610's
+/// channel rides it): a boolean, integer, float or string literal, a
+/// signed integer or float, a list of those, or a map of those — the
+/// closed set the parser's annotation checks already guarantee, so the
+/// unreachable arm is a stated invariant, not a fabricated default. A
+/// conversion of its own rather than the front's
+/// `static_value` (constant folding's policy: query parameters are
+/// values, map literals are not) — different vocabulary, one purpose.
+fn annotation_literal_value(expr: &relate_parser::Expr) -> Result<Value> {
+    use relate_parser::{Expr, LiteralValue};
+    match expr {
+        Expr::Literal(LiteralValue::Bool(value)) => Ok(Value::Bool(*value)),
+        Expr::Literal(LiteralValue::Integer(value)) => Ok(Value::Int(*value)),
+        Expr::Literal(LiteralValue::Float(value)) => Ok(Value::Float(*value)),
+        Expr::Literal(LiteralValue::String(value)) => Ok(Value::String(value.as_str().into())),
+        // A sign over an integer or float literal: the parser's
+        // annotation checks admit exactly that unary shape, so the
+        // fall-through arm is the stated escape invariant, not a
+        // fabricated default. The negation guard covers the one literal
+        // the parser's own i64 parse cannot build, so it is the same
+        // invariant in guarded form.
+        Expr::Unary(unary) => {
+            let literal = match &unary.expr {
+                Expr::Literal(LiteralValue::Integer(value)) => Value::Int(*value),
+                Expr::Literal(LiteralValue::Float(value)) => Value::Float(*value),
+                _ => return escaped_annotation_literal(),
+            };
+            match unary.op {
+                "-" => match literal {
+                    Value::Int(value) => value.checked_neg().map(Value::Int).ok_or_else(|| {
+                        crate::Error::internal(
+                            "a captured @txMetadata parameter escaped the annotation literal checks",
+                        )
+                    }),
+                    Value::Float(value) => Ok(Value::Float(-value)),
+                    _ => escaped_annotation_literal(),
+                },
+                "+" => Ok(literal),
+                _ => escaped_annotation_literal(),
+            }
+        }
+        Expr::List(items) => {
+            let values = items
+                .iter()
+                .map(annotation_literal_value)
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Value::List(values.into()))
+        }
+        Expr::Map(pairs) => {
+            let mut map = BTreeMap::new();
+            for pair in pairs {
+                map.insert(pair.key.to_string(), annotation_literal_value(&pair.value)?);
+            }
+            Ok(Value::Map(map.into()))
+        }
+        // Same invariant as the unary arm: the parser's annotation checks
+        // admit exactly the literal vocabulary above, so a capture
+        // carrying anything else escaped them — loud, never a default.
+        _ => escaped_annotation_literal(),
+    }
+}
+
+/// The annotation-literal escape invariant (ADR-0610): the parser's
+/// CIP-281 checks guarantee every captured `@txMetadata` parameter is one
+/// of the literal forms [`annotation_literal_value`] matches, so any other
+/// shape reaching the conversion means a capture escaped those checks —
+/// a loud internal error, never a fabricated default.
+fn escaped_annotation_literal() -> Result<Value> {
+    Err(crate::Error::internal(
+        "a captured @txMetadata parameter escaped the annotation literal checks",
+    ))
 }
 
 impl Connection {
@@ -153,6 +306,233 @@ impl Connection {
     /// ```
     pub fn set_principal(&mut self, principal: Option<&str>) {
         self.principal = principal.map(str::to_string);
+    }
+
+    /// Seed this connection's per-transaction metadata map (ADR-0610) —
+    /// the embedded Rust channel of the metadata inputs, the others
+    /// being `CALL tx.setMetaData` and a Bolt `BEGIN`'s `tx_metadata`
+    /// extra. The map merges with every earlier seed (later keys win) and
+    /// is serialized into the commit's WAL record at the next transaction
+    /// boundary — an auto-commit write's, or an explicit transaction's
+    /// `commit` — then cleared; a `rollback` discards it. The merged map
+    /// is bounded by the per-object envelope (16 MiB): an over-bound seed
+    /// is `Error::Storage` and leaves the current map unchanged. The
+    /// channel hard-sets the **provenance** record type: the transaction's
+    /// record belongs to the provenance family, and any earlier typed
+    /// seed's family ([`Self::set_tx_metadata_of_type`]) returns to it —
+    /// the last channel call owns the transaction's type.
+    ///
+    /// The whole machinery is the `value-provenance` preview feature's
+    /// (ADR-0371/ADR-0610): on a store opened without the opt-in the call
+    /// fails with the authored preview error instead of silently dropping
+    /// the map — the embedded caller's contract, where the quiet-ignore of
+    /// the transport channel would hide a mistake. The variable is read
+    /// once, at open.
+    ///
+    /// ```
+    /// # use relate::{Database, Value};
+    /// # relate::test_opts::assert_preview_unset();
+    /// use std::collections::BTreeMap;
+    ///
+    /// let db = Database::open(":memory:").unwrap();
+    /// let mut conn = db.connect().unwrap();
+    /// let mut metadata = BTreeMap::new();
+    /// metadata.insert("by".to_string(), Value::String("app".into()));
+    /// // Without the opt-in the seed is the authored preview error.
+    /// let error = conn.set_tx_metadata(metadata).expect_err("gated");
+    /// assert_eq!(
+    ///     error.to_string(),
+    ///     "semantic error: SemanticError: preview feature 'value-provenance' is not enabled: \
+    ///      set RELATE_PREVIEW=value-provenance"
+    /// );
+    /// # Ok::<(), relate::Error>(())
+    /// ```
+    pub fn set_tx_metadata(&mut self, metadata: BTreeMap<String, Value>) -> Result<()> {
+        // The `GraphCell` deref contract: the preview read is under
+        // `read_guard`, so a Follow-mode reload's `replace` cannot swap
+        // the graph out from under the deref. The guard is scoped to
+        // the read — the cell mutation below needs `&mut self`.
+        {
+            let _read = self.inner.read_guard()?;
+            self.inner
+                .graph
+                .preview()
+                .require(relate_core::PreviewFeature::ValueProvenance)?;
+        }
+        // ADR-0610: the untyped channel hard-sets the provenance family
+        // as it merges — the last channel call owns the transaction's
+        // family. The merge runs first: a refused seed (the over-bound
+        // map) leaves the whole cell untouched, family included.
+        self.merge_tx_metadata(metadata)?;
+        self.tx_metadata.get_mut().record_type = RecordType::Provenance;
+        Ok(())
+    }
+
+    /// Seed this connection's per-transaction metadata map with an
+    /// explicit **record type** (ADR-0610) — [`Self::set_tx_metadata`]'s
+    /// typed twin: the map merges exactly the same way (later keys win,
+    /// the 16 MiB envelope, taken at the next transaction boundary and
+    /// cleared after), and the transaction's record carries `record_type`
+    /// instead of the provenance family's own. The commit joins the
+    /// retained table as a record of its own family: `db.transactions`
+    /// lists it with its `type` and **null** `changedKeys` (changed keys
+    /// derive only for provenance records), and the provenance queries
+    /// (`provenance()`, `history()`) never read it — a mixed-type store's
+    /// provenance timeline holds only its own family's commits.
+    ///
+    /// The name must be a non-empty kebab-case name (lowercase segments
+    /// of ASCII letters and digits joined by single hyphens), and the
+    /// provenance family's own `"provenance"` is reserved — the untyped
+    /// channels seed it, so a typed seed naming it is the typed
+    /// `InvalidArgumentValue` rejection, never a silently-accepted
+    /// provenance record. An empty map seeds nothing (the boundary then
+    /// writes no record of the type), exactly like the untyped channel's.
+    /// Gated like the untyped channel: the authored preview error on a
+    /// store without the opt-in.
+    ///
+    /// ```
+    /// # use relate::{Database, Value};
+    /// # relate::test_opts::assert_preview_unset();
+    /// # use std::collections::BTreeMap;
+    /// let db = Database::open(":memory:").unwrap();
+    /// let mut conn = db.connect().unwrap();
+    /// let error = conn
+    ///     .set_tx_metadata_of_type("audit-trail", BTreeMap::new())
+    ///     .expect_err("the typed channel is gated like the untyped one");
+    /// assert_eq!(
+    ///     error.to_string(),
+    ///     "semantic error: SemanticError: preview feature 'value-provenance' is not enabled: \
+    ///      set RELATE_PREVIEW=value-provenance"
+    /// );
+    /// # Ok::<(), relate::Error>(())
+    /// ```
+    pub fn set_tx_metadata_of_type(
+        &mut self,
+        record_type: &str,
+        metadata: BTreeMap<String, Value>,
+    ) -> Result<()> {
+        // The `GraphCell` deref contract: the preview read is under
+        // `read_guard`, so a Follow-mode reload's `replace` cannot swap
+        // the graph out from under the deref. The guard is scoped to
+        // the read — the cell mutation below needs `&mut self`.
+        {
+            let _read = self.inner.read_guard()?;
+            self.inner
+                .graph
+                .preview()
+                .require(relate_core::PreviewFeature::ValueProvenance)?;
+        }
+        relate_engine_api::validate_record_type(record_type)?;
+        // ADR-0610: the typed twin names the family — the merge runs
+        // first, so a refused seed (the over-bound map) leaves the whole
+        // cell untouched, family included.
+        self.merge_tx_metadata(metadata)?;
+        self.tx_metadata.get_mut().record_type = RecordType::Typed(record_type.to_owned());
+        Ok(())
+    }
+
+    /// The transport channel's seed (ADR-0610): a Bolt `BEGIN`'s
+    /// `tx_metadata` extra, applied at transaction open. Quiet where
+    /// [`Self::set_tx_metadata`] is loud: a transport's extra is compat
+    /// traffic, so on a store without the opt-in the map is ignored —
+    /// exactly the pre-feature behavior a driver never notices — rather
+    /// than failing the BEGIN. While the feature is on the map seeds the
+    /// same per-transaction map (an over-bound map is the merge's typed
+    /// `Error`, which the BEGIN surfaces as its failure); the channel
+    /// hard-sets the provenance record type like every untyped channel,
+    /// and a driver that sends both a BEGIN extra and `CALL
+    /// tx.setMetaData` merges the two in call order.
+    #[doc(hidden)]
+    pub fn seed_tx_metadata(&mut self, metadata: BTreeMap<String, Value>) -> Result<()> {
+        // The `GraphCell` deref contract: the preview read is under
+        // `read_guard`, so a Follow-mode reload's `replace` cannot swap
+        // the graph out from under the deref. The guard is scoped to
+        // the read — the cell mutation below needs `&mut self`.
+        {
+            let _read = self.inner.read_guard()?;
+            if !self
+                .inner
+                .graph
+                .preview()
+                .enabled(relate_core::PreviewFeature::ValueProvenance)
+            {
+                return Ok(());
+            }
+        }
+        // ADR-0610: the transport channel hard-sets the provenance family
+        // like every untyped channel — the merge runs first, so a refused
+        // seed (the over-bound map) leaves the whole cell untouched,
+        // family included.
+        self.merge_tx_metadata(metadata)?;
+        self.tx_metadata.get_mut().record_type = RecordType::Provenance;
+        Ok(())
+    }
+
+    /// The one merge core both channels share (ADR-0610) — the canonical
+    /// [`relate_engine_api::merge_tx_metadata`]: later keys win, the
+    /// merged map bounded by the per-object envelope, the merge atomic.
+    fn merge_tx_metadata(&mut self, metadata: BTreeMap<String, Value>) -> Result<()> {
+        if metadata.is_empty() {
+            return Ok(());
+        }
+        relate_engine_api::merge_tx_metadata(&mut self.tx_metadata.get_mut().map, metadata)
+    }
+
+    /// The in-statement channel (ADR-0610): apply a statement's captured
+    /// `@txMetadata` annotations to the per-transaction cell, in the
+    /// clause order the parser captured them — the fourth metadata input,
+    /// seeded from the statement's own text before its first clause runs
+    /// (the dispatch site calls this after the EXPLAIN early return and
+    /// the admission gates, so a plan-only or refused statement seeds
+    /// nothing). The seeding is one atomic step: every capture is
+    /// interpreted, typed and merged into a local [`TxChannelState`]
+    /// seeded from the cell, and the cell is assigned once, after the
+    /// whole list is proven — a list whose second annotation refuses
+    /// leaves the connection exactly as though none ran, so nothing from
+    /// a refused statement rides the next commit. Each annotation is
+    /// otherwise one channel call exactly like the others: its
+    /// parameters spell one map — a single positional map literal, or
+    /// all-named parameters — with an optional `type` string key
+    /// consumed from that map into the record family (absent, the
+    /// channel's home family: `provenance`, the default every untyped
+    /// channel hard-sets; the home name spelled explicitly is admitted
+    /// as the default, where the embedded typed twin reserves it —
+    /// naming another family is that twin's whole contract; any other
+    /// name goes through the canonical
+    /// [`validate_record_type`](relate_engine_api::validate_record_type)),
+    /// and the map itself merges through the canonical
+    /// [`merge_tx_metadata`](relate_engine_api::merge_tx_metadata) with
+    /// every earlier channel call — later keys winning, so the last
+    /// annotation owns any shared key and the transaction's family.
+    ///
+    /// The captures arrive already gated (the front drops them while
+    /// `value-provenance` is off, exactly as if the annotation had been
+    /// any unrecognized CIP-281 name): this method runs only behind the
+    /// opt-in, and its rejections are the channel's value-domain errors,
+    /// never a silent drop.
+    pub(super) fn apply_tx_metadata_annotations(
+        &mut self,
+        captures: &[relate_parser::TxMetadataAnnotation],
+    ) -> Result<()> {
+        // The local state the whole list is proven against before the
+        // cell is touched — seeded from the cell so the merges compose
+        // with every earlier channel call.
+        let mut seeded = self.tx_metadata.get_mut().clone();
+        for capture in captures {
+            let seed = interpret_tx_metadata_annotation(capture)?;
+            match &seed.record_type {
+                // The home family: the default, spelled or not — the same
+                // hard-set every untyped channel performs.
+                RecordType::Provenance => seeded.record_type = RecordType::Provenance,
+                RecordType::Typed(name) => {
+                    relate_engine_api::validate_record_type(name)?;
+                    seeded.record_type = RecordType::Typed(name.clone());
+                }
+            }
+            relate_engine_api::merge_tx_metadata(&mut seeded.map, seed.map)?;
+        }
+        *self.tx_metadata.get_mut() = seeded;
+        Ok(())
     }
 
     /// The principal set on this connection, if any (ADR-0273). See

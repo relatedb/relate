@@ -1,9 +1,10 @@
 //! Private write overlay for optimistic execute (ADR-0016).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{CancelToken, Namespace, NodeId, RelId, Result, TransactionClock, Value};
+use relate_engine_api::TxChannelState;
 use relate_planner::LogicalPlan;
 
 use crate::csv::CsvReader;
@@ -89,6 +90,14 @@ pub struct ExecGraph<'a> {
     /// statement's clock pin reads one `<kind>.transaction()` instant
     /// ([`Self::with_transaction_clock`]); `None` = autocommit.
     transaction_clock: Option<TransactionClock>,
+    /// The connection's per-transaction metadata cell (ADR-0610), attached
+    /// like [`Self::ontology_document`]: the live state the
+    /// `tx.setMetaData` / `tx.getMetaData` arms merge into and read while
+    /// the `value-provenance` feature is on — the merged map beside the
+    /// record type the last channel call set. `None` on every view that
+    /// carries no transaction (tests, diagnostics) — those views see an
+    /// empty map, never an error.
+    tx_metadata: Option<&'a RefCell<TxChannelState>>,
     pub(crate) csv: CsvReader<'a>,
     /// The `__`-prefixed names this statement declares itself, so the
     /// executor's synthetic columns can be told from a user's binding
@@ -226,6 +235,7 @@ impl<'a> ExecGraph<'a> {
             memo_live,
             ontology_document: None,
             transaction_clock: None,
+            tx_metadata: None,
             csv: CsvReader::new(base.csv_policy()),
             spelled: SpelledNames::default(),
         }
@@ -271,9 +281,55 @@ impl<'a> ExecGraph<'a> {
         self.transaction_clock
     }
 
+    /// Attach the connection's per-transaction metadata cell (ADR-0610) —
+    /// the live state `tx.setMetaData` merges into and `tx.getMetaData`
+    /// reads while the `value-provenance` feature is on. Per-admission
+    /// state on the view, like [`Self::with_ontology_document`]; a view
+    /// without one ([`Self::tx_metadata`]) reads an empty map and merges
+    /// nowhere, which preserves test/diagnostic behavior.
+    pub fn with_tx_metadata(mut self, metadata: Option<&'a RefCell<TxChannelState>>) -> Self {
+        self.tx_metadata = metadata;
+        self
+    }
+
     /// The ontology document attached by [`Self::with_ontology_document`].
     pub(crate) fn ontology_document(&self) -> Option<&'a str> {
         self.ontology_document
+    }
+
+    /// Merge `incoming` into the attached per-transaction metadata map
+    /// (ADR-0610) — the `tx.setMetaData` arm's one write, through the
+    /// canonical [`merge_tx_metadata`](relate_engine_api::merge_tx_metadata)
+    /// (later keys win, the merged map bounded by the per-object
+    /// envelope). The untyped channel hard-sets the provenance family on
+    /// the merge's success, so the last channel call owns the
+    /// transaction's family and a refused merge (the over-bound map)
+    /// leaves the whole cell untouched, family included (a view with no
+    /// cell — a diagnostic or test view with no transaction behind it —
+    /// is a typed internal error, never a silent drop: the procedure ran
+    /// on a graph that cannot hold transaction state).
+    pub(crate) fn merge_tx_metadata(
+        &self,
+        incoming: BTreeMap<String, Value>,
+    ) -> relate_core::Result<()> {
+        let Some(cell) = self.tx_metadata else {
+            return Err(relate_core::Error::internal(
+                "tx.setMetaData executed on a view with no transaction metadata cell",
+            ));
+        };
+        let mut state = cell.borrow_mut();
+        relate_engine_api::merge_tx_metadata(&mut state.map, incoming)?;
+        state.record_type = relate_engine_api::RecordType::Provenance;
+        Ok(())
+    }
+
+    /// A snapshot of the attached per-transaction metadata map (ADR-0610)
+    /// — the `tx.getMetaData` arm's one read. A view with no cell reads
+    /// as an empty map: no transaction, no metadata.
+    pub(crate) fn tx_metadata(&self) -> BTreeMap<String, Value> {
+        self.tx_metadata
+            .map(|cell| cell.borrow().map.clone())
+            .unwrap_or_default()
     }
 
     /// Check the attached [`CancelToken`], returning

@@ -4,7 +4,12 @@
 //! [`TokenType::At`]; this module parses each annotation that precedes a
 //! clause, checks it, and discards it -- an annotation has no runtime effect
 //! and no AST node. Disabled, the lexer never emits `At`, so none of this
-//! runs and `@` is the ordinary unexpected-character error.
+//! runs and `@` is the ordinary unexpected-character error. The one
+//! exception is ADR-0610's reserved `@txMetadata` (the in-statement
+//! metadata channel): its payload is *captured* onto the statement
+//! ([`ast::TxMetadataAnnotation`]) instead of discarded -- still no AST
+//! node -- and what the capture then seeds is the front's gate decision
+//! (`value-provenance`), never this module's.
 //!
 //! The checks, all rejections raised as `InvalidAnnotation`:
 //! - the parameters are literals only: a boolean, string, integer or float
@@ -18,6 +23,12 @@
 
 use super::*;
 use std::collections::HashSet;
+
+/// ADR-0610's reserved annotation name: the in-statement metadata
+/// channel, and the one name whose payload is captured rather than
+/// discarded (see the module doc). Spelled exactly -- annotation names
+/// are schema names, case-sensitive.
+pub(crate) const TX_METADATA_ANNOTATION: &str = "txMetadata";
 
 impl<'a> Parser<'a> {
     /// Consumes every annotation at the current position (none when the
@@ -42,15 +53,24 @@ impl<'a> Parser<'a> {
 
     fn parse_annotation(&mut self) -> ParseResult<()> {
         self.next_token(); // consume @
-        self.parse_schema_name("annotation name")?;
+        let name = self.parse_schema_name("annotation name")?;
+        // ADR-0610: the reserved channel name is captured rather than
+        // discarded -- its payload survives for the front to gate and the
+        // connection to funnel; every other name is checked and dropped
+        // exactly as CIP-281 specifies.
+        let reserved = name.with_str(|n| n == TX_METADATA_ANNOTATION);
         self.expect(TokenType::LeftParen)?;
+        // One parameter list (a positional entry carries `None`) plus the
+        // name set for the duplicate-name rule: the grammar check below
+        // and the reserved name's capture read the same accumulation,
+        // never parallel tallies recombined at each use.
         let mut named: HashSet<SmallName> = HashSet::new();
-        let mut positional = 0usize;
+        let mut params: Vec<(Option<SmallName>, Expr)> = Vec::new();
         if self.peek_type() != TokenType::RightParen {
             loop {
                 let is_named =
                     self.peek().ty.is_schema_name() && self.peek_at(1).ty == TokenType::Colon;
-                if is_named {
+                let name = if is_named {
                     let name = self.parse_schema_name("annotation parameter name")?;
                     if !named.insert(name.clone()) {
                         return Err(self.error(format!(
@@ -58,9 +78,10 @@ impl<'a> Parser<'a> {
                         )));
                     }
                     self.expect(TokenType::Colon)?;
+                    Some(name)
                 } else {
-                    positional += 1;
-                }
+                    None
+                };
                 let value_tok = self.peek().clone();
                 let value = self.parse_expression()?;
                 if !is_annotation_value(&value) {
@@ -71,6 +92,7 @@ impl<'a> Parser<'a> {
                          no nested maps, expressions or variables)",
                     ));
                 }
+                params.push((name, value));
                 if self.peek_type() == TokenType::Comma {
                     self.next_token();
                     continue;
@@ -78,12 +100,34 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        if positional > 0 && positional + named.len() > 1 {
+        if params.len() > 1 && params.iter().any(|(name, _)| name.is_none()) {
             return Err(self.error(
                 "InvalidAnnotation: an annotation with two or more parameters must name all of them",
             ));
         }
         self.expect(TokenType::RightParen)?;
+        if reserved {
+            // The capture is the payload as parsed -- the two spellings of
+            // one map ([`ast::TxMetadataAnnotation`]), split from the one
+            // list: the grammar check above leaves a positional entry only
+            // alone, so the list folds into exactly one spelling and no
+            // overwrite is observable. Interpreting it (spelling the map,
+            // consuming the type key) is the channel's job, at the
+            // engine's connection, never the parser's.
+            let mut named_pairs: Vec<(SmallName, Expr)> = Vec::new();
+            let mut positional: Option<Expr> = None;
+            for (name, value) in params {
+                match name {
+                    Some(name) => named_pairs.push((name, value)),
+                    None => positional = Some(value),
+                }
+            }
+            let payload = match positional {
+                Some(expr) => TxMetadataAnnotation::Positional(expr),
+                None => TxMetadataAnnotation::Named(named_pairs),
+            };
+            self.tx_metadata.push(payload);
+        }
         Ok(())
     }
 }

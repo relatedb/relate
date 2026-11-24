@@ -402,6 +402,43 @@ pub unsafe extern "C" fn relate_query_params(
     unsafe { report(result, error_json) }
 }
 
+/// Seed the connection's per-transaction metadata map (ADR-0610) — the
+/// embedded channel's C spelling, beside `CALL tx.setMetaData` and a
+/// Bolt `BEGIN`'s `tx_metadata` extra. `metadata` is a typed params
+/// builder (a root or a `put_map` child, the same rule as
+/// [`relate_query_params`]' params), read and not modified; a NULL
+/// builder is an empty map; a list builder is a boundary refusal. The
+/// map merges with every earlier seed (later keys win), rides the next
+/// transaction boundary into the commit's WAL record, then clears. On a
+/// store opened without the `value-provenance` opt-in the call fails
+/// with the engine's authored preview error; an over-bound merged map
+/// fails with the storage classification.
+///
+/// # Safety
+/// Pointer arguments must be null or valid for this call, matching the C header.
+#[no_mangle]
+pub unsafe extern "C" fn relate_conn_set_tx_metadata(
+    conn: *mut relate_connection,
+    metadata: *const relate_params,
+    error_json: *mut *mut c_char,
+) -> relate_status {
+    // The params lowering runs inside the guarded closure, like
+    // `relate_query_params`'s, so a decode panic cannot unwind across
+    // the boundary.
+    let result = unsafe {
+        guard_conn(conn, |c| {
+            // SAFETY: `metadata` is null or a live builder per the caller
+            // contract; the one shared builder→map lowering.
+            let metadata =
+                params::statement_params(metadata).map_err(|m| boundary_error_json(&m))?;
+            c.set_tx_metadata(metadata)
+                .map_err(|e| engine_error_json(&e))
+        })
+    };
+    // SAFETY: `error_json` is null or a writable out-param per the caller contract.
+    unsafe { report(result, error_json) }
+}
+
 /// # Safety
 /// Pointer arguments must be null or valid for this call, matching the C header.
 #[no_mangle]

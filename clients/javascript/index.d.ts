@@ -409,27 +409,48 @@ export type ParamValue =
 export class Connection {
   /**
    * Run one statement synchronously. `params` is a plain object; Cypher
-   * references the values as `$name`. Returns the materialized result.
-   * Throws `RelateError` if an async query is in flight on this
-   * connection (one call at a time is the connection contract).
+   * references the values as `$name`. `txMetadata` (ADR-0610, default
+   * none) seeds the connection's per-transaction metadata map — the
+   * embedded channel — lowering through the same params builder; its map
+   * merges with every earlier seed (later keys win) and rides the next
+   * transaction boundary into that commit's record, where the
+   * value-provenance audit surface (`provenance()`, `history()`,
+   * `CALL db.transactions`) reads it. Requires the store to be opened
+   * with `RELATE_PREVIEW=value-provenance`: without the opt-in a call
+   * carrying it throws the authored preview error instead of silently
+   * dropping the map. Throws `RelateError` if an async query is in
+   * flight on this connection (one call at a time is the connection
+   * contract).
    */
-  query(cypher: string, params?: { [name: string]: ParamValue }): Result;
+  query(
+    cypher: string,
+    params?: { [name: string]: ParamValue },
+    txMetadata?: { [name: string]: ParamValue }
+  ): Result;
   /**
    * Tagged-template form (ADR-0222): conn.query`MATCH (p {name: ${name}})
    * RETURN p`. Each interpolated value becomes an auto-named `$p0, $p1, …`
    * parameter — injection-safe by construction. The same primitive value
    * twice maps to one parameter (objects by identity); `undefined`,
-   * functions and symbols throw `TypeError`.
+   * functions and symbols throw `TypeError`. The tag form has no
+   * `txMetadata` slot — the string form above carries it.
    */
   query(strings: TemplateStringsArray, ...values: unknown[]): Result;
   /**
-   * The Promise-returning form of query (same two call shapes). The call
-   * runs on koffi's worker thread; a failing statement's error rides the
-   * result handle back, so the rejected promise carries the Neo4j code.
-   * Overlapping calls on one connection are serialized; a synchronous
-   * query during an in-flight async query refuses.
+   * The Promise-returning form of query (same string call shape, `txMetadata`
+   * included; the template tag has no metadata slot). The call runs on
+   * koffi's worker thread; a failing statement's error rides the result
+   * handle back, so the rejected promise carries the Neo4j code. The
+   * metadata seed runs inside the serialized task, in call order, so the
+   * map attaches to this call's commit — never an overlapping earlier
+   * one. Overlapping calls on one connection are serialized; a
+   * synchronous query during an in-flight async query refuses.
    */
-  queryAsync(cypher: string, params?: { [name: string]: ParamValue }): Promise<Result>;
+  queryAsync(
+    cypher: string,
+    params?: { [name: string]: ParamValue },
+    txMetadata?: { [name: string]: ParamValue }
+  ): Promise<Result>;
   /** The async tagged-template form, same lowering as query's. */
   queryAsync(strings: TemplateStringsArray, ...values: unknown[]): Promise<Result>;
   /**

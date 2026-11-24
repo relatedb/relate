@@ -67,6 +67,12 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(LibraryName, StringMarshalling = StringMarshalling.Utf8)]
     internal static partial RelateStatus relate_conn_set_namespace(ConnectionHandle conn, string name, nint* errorJson);
 
+    // Seed the connection's per-transaction metadata map (ADR-0610, the
+    // value-provenance preview feature's embedded channel): metadata is a
+    // built parameters object — a root or a put_map child.
+    [LibraryImport(LibraryName)]
+    internal static partial RelateStatus relate_conn_set_tx_metadata(ConnectionHandle conn, ParametersHandle metadata, nint* errorJson);
+
     [LibraryImport(LibraryName)]
     internal static partial RelateStatus relate_disconnect(nint conn);
 

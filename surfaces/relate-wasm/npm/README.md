@@ -23,10 +23,17 @@ const result = JSON.parse(wireJson);
 // result.error: string | null               // null on success
 ```
 
-`execute(query, paramsJson)` runs one Cypher statement and returns the
-standard Relate wire envelope as a JSON string. `paramsJson` is a JSON
-object string, or `null`/blank for none. Engine errors (parse, planning,
-execution) flow through `error` in the envelope; they do not throw.
+`execute(query, paramsJson, metadataJson?)` runs one Cypher statement and
+returns the standard Relate wire envelope as a JSON string. `paramsJson`
+is a JSON object string, or `null`/blank for none. `metadataJson`
+(ADR-0610) is the per-transaction metadata map, a JSON object string
+decoded exactly as params — but the machinery is the `value-provenance`
+preview opt-in's (`RELATE_PREVIEW`, read once, at open, from the process
+environment), and a wasm host has no process environment, so on this
+surface every present map answers the envelope's `error` with the
+authored preview error and the statement never runs; omit it for
+today's behavior. Engine errors (parse, planning, execution) flow
+through `error` in the envelope; they do not throw.
 
 ### TypeScript
 

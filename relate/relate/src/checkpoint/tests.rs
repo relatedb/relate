@@ -190,6 +190,9 @@ fn publication_drains_admitted_checkpoint_before_any_wal_frame() {
                     labels: Arc::new(vec![]),
                     properties: std::sync::Arc::new(relate_core::PropertyMap::new()),
                 }],
+                metadata: None,
+                changed_keys: None,
+                record_type: None,
             })
             .unwrap();
             finished.store(true, Ordering::Release);
@@ -261,6 +264,9 @@ fn failed_admitted_checkpoint_prevents_append() {
             lsn: 0,
             commit_ts: 1,
             ops: vec![],
+            metadata: None,
+            changed_keys: None,
+            record_type: None,
         })
         .unwrap_err();
     assert!(err.to_string().contains("checkpoint failed"));
@@ -507,6 +513,9 @@ fn memory_rotation_checkpoint_recycles_without_snapshot() {
             lsn: 0,
             commit_ts,
             ops: vec![],
+            metadata: None,
+            changed_keys: None,
+            record_type: None,
         })
         .unwrap();
         memory_wal_segments(&db).iter().any(|n| n == "00000002.log")

@@ -1,4 +1,6 @@
+mod chains;
 mod codec;
+mod family;
 #[cfg(not(target_arch = "wasm32"))]
 mod info;
 mod manifest;
@@ -7,6 +9,7 @@ mod native_ownership;
 mod open;
 mod schema_files;
 mod snapshot;
+mod transactions;
 mod version;
 mod vfs;
 mod wal;
@@ -53,8 +56,8 @@ pub use vfs::{BundleVfs, NativeVfs};
 #[doc(hidden)]
 pub use wal::{check_payload_cap, MAGIC, MAX_RECORD_PAYLOAD};
 pub use wal::{
-    AppendCommitStats, EncodedOps, PayloadTally, TrimmedTail, Wal, WalCatchUp, WalPreflight,
-    WalRecord,
+    AppendCommitStats, EncodedOps, PayloadTally, RecordTail, TrimmedTail, Wal, WalCatchUp,
+    WalPreflight, WalRecord,
 };
 
 /// Parquet snapshot + WAL on a [`Vfs`] (ADR-0072). `:memory:` is `MemoryVfs`.
@@ -722,6 +725,34 @@ pub fn checkpoint_with_lsn(
     checkpoint_at(target, graph, checkpoint_lsn, graph.commit_ts(), ontology)
 }
 
+/// The retained-history families' per-part byte bound (ADR-0610): the
+/// same figure as the per-record WAL payload cap
+/// ([`Error::WAL_PAYLOAD_CAP_BYTES`]), which already bounds one
+/// record's whole serialized form. The `transactions/` parts hold
+/// only the records' retained projection (no ops, always smaller), so a
+/// batch split at the publish's far smaller
+/// [`FAMILY_PUBLISH_BATCH_BYTES`] never holds more than one maximum
+/// record past the budget, and a part never has to; a `chains/` part
+/// holds one checkpoint interval's whole dirty delta, so the bound is
+/// that family's own loud ceiling (the recorded growth cost of opting
+/// in has a typed refusal, never a silent drop). The families' shared
+/// size class in `snapshot::bounded_read_for` reads this one figure, so
+/// the write side's `put_object` refusal and the streaming writer's
+/// `check_bounded_len` are the reader's by construction.
+pub(crate) const FAMILY_PART_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The family publish's batch budget (ADR-0555): the `transactions/`
+/// and `chains/` checkpoint steps serialize their rows one at a time
+/// into a buffer at most this large before flushing it — the
+/// transactions family as a whole part of its own, the chains family
+/// as an append into the interval's one part — so a publish's peak
+/// memory is one batch whatever the interval's dirty delta, and both
+/// families' batches sit far below the per-part bound
+/// [`FAMILY_PART_BYTES`] their classes refuse at. One MiB keeps a
+/// fraud-shaped interval's delta in a handful of parts while
+/// amortizing every part's write.
+pub(crate) const FAMILY_PUBLISH_BATCH_BYTES: usize = 1024 * 1024;
+
 /// Snapshot of rows visible at `snapshot_ts` (ADR-0020 / ADR-0022 / ADR-0050).
 ///
 /// `ontology` is the store's current ontology document (ADR-0120), opaque
@@ -736,6 +767,17 @@ pub fn checkpoint_at(
     snapshot_ts: u64,
     ontology: Option<&str>,
 ) -> Result<()> {
+    // The retained transaction-record family (ADR-0610) publishes before
+    // the codec's own image, the same publish-before-manifest rule the
+    // ontology object follows: a crash between the two leaves at most a
+    // part the manifest does not yet cover and the WAL still does. The
+    // step is codec-agnostic — every codec's checkpoint crosses here.
+    transactions::publish_checkpoint(target, graph)?;
+    // The retained version-chain family (ADR-0610) publishes on the same
+    // seam and the same rule: one part per checkpoint interval while
+    // retention is on, the whole family dropped while it is off — the
+    // durable half of the collapse.
+    chains::publish_checkpoint(target, graph, checkpoint_lsn)?;
     // The codec vocabulary's one behavioral surface (see `open::codec_ops`):
     // a codec's writer is one table entry, not an arm here.
     (crate::open::codec_ops(target.codec).dump)(

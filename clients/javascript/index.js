@@ -154,6 +154,13 @@ const conn_commit = lib.func(
   "int relate_conn_commit(void *conn, _Out_ void **bm, _Out_ void **err)"
 );
 const conn_rollback = lib.func("int relate_conn_rollback(void *conn, _Out_ void **err)");
+// ADR-0610's per-transaction metadata seed — the embedded channel's C
+// entry (the other two channels are CALL tx.setMetaData and a Bolt
+// BEGIN's tx_metadata extra). `metadata` is a typed params builder root
+// (the same builder query parameters lower into), read and not modified.
+const conn_set_tx_metadata = lib.func(
+  "int relate_conn_set_tx_metadata(void *conn, void *metadata, _Out_ void **err)"
+);
 const value_at = lib.func("void *relate_value_at(void *r, int64 row, int64 col)");
 
 // The two directions of the typed value channel (values.js): the walker
@@ -461,26 +468,32 @@ function buildTemplate(strings, values) {
   return { text, params };
 }
 
-/// Validate the two call shapes — the string form query(cypher, params?)
-/// and the tagged-template form (ADR-0222) — down to one total
-/// {text, params} record (params is always an object), so query() itself is
-/// one linear path. The deep value policy is the params builder's
-/// (values.js putValue): binding is validation.
+/// Validate the two call shapes — the string form query(cypher, params?,
+/// txMetadata?) and the tagged-template form (ADR-0222) — down to one
+/// total {text, params, txMetadata} record (params is always an object;
+/// txMetadata null means no metadata seed), so query() itself is one
+/// linear path. The deep value policy is the params builder's
+/// (values.js putValue): binding is validation. The template tag has no
+/// metadata slot — its rest arguments are the interpolated values.
 function resolveQueryArgs(cypher, rest) {
   if (typeof cypher === "string") {
-    if (rest.length > 1) {
-      throw new TypeError("query takes (cypher, params?) — extra arguments");
+    if (rest.length > 2) {
+      throw new TypeError("query takes (cypher, params?, txMetadata?) — extra arguments");
     }
     const params = rest[0] ?? {};
     if (!isPlainParamsObject(params)) {
       throw new TypeError("query params must be a plain object");
     }
-    return { text: cypher, params };
+    const txMetadata = rest[1] ?? null;
+    if (txMetadata !== null && !isPlainParamsObject(txMetadata)) {
+      throw new TypeError("query txMetadata must be a plain object");
+    }
+    return { text: cypher, params, txMetadata };
   }
   if (!Array.isArray(cypher) || !Array.isArray(cypher.raw)) {
     throw new TypeError("query expects a Cypher string or a tagged template");
   }
-  return buildTemplate(cypher, rest);
+  return { ...buildTemplate(cypher, rest), txMetadata: null };
 }
 
 /// The one finish for a query call, both forms: the status check (a
@@ -562,27 +575,64 @@ class Connection {
     }
   }
 
-  // query(cypher, params?) — the documented primary form — or the
-  // tagged-template form (ADR-0222): conn.query`MATCH (p {name: ${name}})
-  // RETURN p`. The tag lowers to the params path before the C ABI boundary.
+  // query(cypher, params?, txMetadata?) — the documented primary form —
+  // or the tagged-template form (ADR-0222): conn.query`MATCH (p {name:
+  // ${name}}) RETURN p`. The tag lowers to the params path before the C
+  // ABI boundary. txMetadata (ADR-0610, the string form's third
+  // argument) is the per-transaction metadata seed — _seedTxMetadata
+  // below.
   query(cypher, ...rest) {
-    const { text, params } = resolveQueryArgs(cypher, rest);
+    const { text, params, txMetadata } = resolveQueryArgs(cypher, rest);
     this._refuseWhileAsyncInFlight("query");
-    return this._querySync(text, params);
+    return this._querySync(text, params, txMetadata);
   }
 
-  /// The Promise-returning form of query (same two call shapes). The call
-  /// runs on koffi's worker thread; the statement error rides the result
-  /// handle and a connection failure the error out-array, so both come back
-  /// with the callback and reject the promise — the v1 thread-local error
-  /// slot lost exactly these. Overlapping calls on one connection are
-  /// serialized (one call at a time is the ABI's connection contract).
+  /// The Promise-returning form of query (same two call shapes; the
+  /// template tag has no metadata slot). The call runs on koffi's worker
+  /// thread; the statement error rides the result handle and a
+  /// connection failure the error out-array, so both come back with the
+  /// callback and reject the promise. Overlapping calls on one
+  /// connection are serialized (one call at a time is the ABI's
+  /// connection contract).
   queryAsync(cypher, ...rest) {
-    const { text, params } = resolveQueryArgs(cypher, rest);
-    return this._serial.run(() => this._queryAsync(text, params));
+    const { text, params, txMetadata } = resolveQueryArgs(cypher, rest);
+    return this._serial.run(() => this._queryAsync(text, params, txMetadata));
   }
 
-  _querySync(text, params) {
+  /// Seed the connection's per-transaction metadata map (ADR-0610) —
+  /// `query`/`queryAsync`'s txMetadata argument through the C ABI's
+  /// `relate_conn_set_tx_metadata`: the map lowers into the same typed
+  /// params builder query parameters use, then merges with every earlier
+  /// seed (later keys win) and rides the next transaction boundary —
+  /// this call's auto-commit write, or the open explicit transaction's
+  /// commit — into that commit's record, where the value-provenance
+  /// audit surface (`provenance()`, `history()`, `CALL db.transactions`)
+  /// reads it; a rollback discards it. `null` (the default) seeds
+  /// nothing, so calls without the argument are byte-for-byte today's.
+  /// On a store opened without the `value-provenance` opt-in
+  /// (`RELATE_PREVIEW`, read once, at open) the seed throws the engine's
+  /// authored preview error as a RelateError — the statement never runs
+  /// and the connection stays usable; an over-bound map (16 MiB) is the
+  /// engine's storage refusal.
+  _seedTxMetadata(txMetadata) {
+    if (txMetadata == null) return;
+    // The params builder is the one map lowering: the same walk, this
+    // argument's own noun on its refusals (values.js buildParams).
+    const root = buildParams(txMetadata, putterRefusal, "query txMetadata");
+    const err = [null];
+    let rc;
+    try {
+      rc = conn_set_tx_metadata(this.handle, root, err);
+    } finally {
+      // The builder was read, not consumed; either way it is done now.
+      // paramsFree takes the null empty-map root too.
+      paramsFree(root);
+    }
+    if (rc !== 0) throw takeError("conn_set_tx_metadata", err);
+  }
+
+  _querySync(text, params, txMetadata) {
+    this._seedTxMetadata(txMetadata);
     const root = buildParams(params, putterRefusal);
     const out = [null];
     const err = [null];
@@ -597,7 +647,11 @@ class Connection {
     return queryResult(out, err, rc);
   }
 
-  _queryAsync(text, params) {
+  _queryAsync(text, params, txMetadata) {
+    // The metadata seed runs inside the queued task, in call order — its
+    // map rides the next transaction boundary, so seeding before this
+    // task's turn would attach it to an earlier queued call's commit.
+    this._seedTxMetadata(txMetadata);
     // Fresh out-arrays per call: sharing them between concurrent calls races.
     const out = [null];
     const err = [null];

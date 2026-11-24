@@ -3,6 +3,7 @@
 use super::super::*;
 use super::harness::*;
 use crate::{Database, Value, WalRecord};
+use relate_engine_api::TxChannelState;
 use relate_executor::BatchCommit;
 use std::collections::BTreeMap;
 
@@ -123,8 +124,7 @@ fn applicability_preflight_completes_all_waiters_in_batch() {
 
     // Every waiter's result slot must be filled (no hang on `wait()`).
     for (i, w) in waiters.iter().enumerate() {
-        let filled = w.result.lock().unwrap().is_some();
-        assert!(filled, "waiter {i} was not completed — would hang");
+        assert!(w.completed(), "waiter {i} was not completed — would hang");
     }
 }
 
@@ -146,7 +146,16 @@ fn oversized_commit_is_refused_at_admission_and_leaves_wal_and_graph_intact_afte
     // The ops are encoded once at admission, so the payload cap refuses an
     // oversized commit before it joins the queue: nothing reaches the WAL
     // and the commit before it stays durable.
-    try_wal_commit(&shared, 0, 1, vec![node_op(0)], 0, 0).unwrap();
+    try_wal_commit(
+        &shared,
+        0,
+        1,
+        vec![node_op(0)],
+        0,
+        0,
+        TxChannelState::default(),
+    )
+    .unwrap();
     let wal_file = path.join("wal/00000001.log");
     let before = std::fs::read(&wal_file).unwrap();
     let big = RedoOp::CreateNode {
@@ -157,7 +166,8 @@ fn oversized_commit_is_refused_at_admission_and_leaves_wal_and_graph_intact_afte
             Value::String("x".repeat(1 << 20).into()),
         )])),
     };
-    let error = try_wal_commit(&shared, 0, 2, vec![big], 0, 0).unwrap_err();
+    let error =
+        try_wal_commit(&shared, 0, 2, vec![big], 0, 0, TxChannelState::default()).unwrap_err();
     // ADR-0494: the refusal is the capacity family's WalPayload kind, its
     // communicative line naming the WAL record and the cap (both figures
     // in MiB).
@@ -240,6 +250,9 @@ fn group_and_replica_share_safe_horizon_allocators_and_checkpoint_pin() {
                     lsn: 99,
                     commit_ts: 7,
                     ops,
+                    metadata: None,
+                    changed_keys: None,
+                    record_type: None,
                 })
                 .unwrap(),
                 1
@@ -289,7 +302,10 @@ fn batch_commit_returns_its_own_assigned_commit_ts() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open(dir.path().to_str().unwrap()).unwrap();
     let shared = db.shared();
-    let sink = GroupBatchCommit::new(Arc::clone(&shared));
+    // ADR-0610: the sink borrows the statement's metadata cell; this test
+    // commits no metadata, so an empty local cell stands in for it.
+    let tx_metadata = std::cell::RefCell::new(TxChannelState::default());
+    let sink = GroupBatchCommit::new(Arc::clone(&shared), &tx_metadata);
     let ts1 = sink.commit_batch(vec![node_op(0)], 0).unwrap();
     assert_eq!(ts1, shared.graph.commit_ts());
     // A foreign commit in between must not leak into the next batch's

@@ -138,6 +138,22 @@ try {
 }
 ```
 
+A statement can carry per-transaction metadata (ADR-0610) — the audit
+"why" the value-provenance surface reads back:
+
+```js
+conn.query("CREATE (:Person {name: 'Grace'})", null, { by: "app", run: 42 });
+// ... later: CALL db.transactions() lists the commit with its metadata
+```
+
+The third argument (`txMetadata`, a plain object through the same builder
+as parameters) seeds the connection's map; the next transaction boundary
+serializes it into the commit's record, then clears it (a rollback
+discards it). The machinery is the `value-provenance` preview opt-in's
+(`RELATE_PREVIEW`, read once, at open): a call carrying it on a store
+opened without the opt-in throws the authored preview error instead of
+silently dropping the map.
+
 ## Errors
 
 Every failure throws a `RelateError` carrying the engine's own

@@ -223,7 +223,7 @@ mod tests {
     use super::convert::{bi_tostring, bi_tostringornull};
     use super::registry::{
         builtins, is_nondeterministic, Arity, ARITY_AT_LEAST_ONE, ARITY_AT_MOST_ONE,
-        ARITY_EXACTLY_FOUR_ENGINE_ONLY,
+        ARITY_EXACTLY_FOUR_ENGINE_ONLY, ARITY_HISTORY, ARITY_PROVENANCE,
     };
     use super::string::bi_string_interp;
     use super::*;
@@ -241,7 +241,7 @@ mod tests {
     /// table must carry exactly the names its constant's verified set
     /// declares (the spec verified against live Neo4j 2026.09, riding the
     /// constant the way its requirement does) -- the independent fact the
-    /// behavior test alone cannot supply. The three arities with an empty
+    /// behavior test alone cannot supply. The four arities with an empty
     /// `verified` set are the one typed table below.
     #[test]
     fn special_arity_rows_match_the_verified_sets() {
@@ -251,7 +251,8 @@ mod tests {
             Floor,
             /// Rows generated from the spelling registry, pinned to it.
             Clock,
-            /// Engine-only: no live spec exists, so the one name is pinned.
+            /// Engine-authored with no live spec (an every-build engine-only
+            /// name or a preview-gated one): the one name is pinned.
             EngineOnly(&'static str),
         }
         let specless = |arity: &Arity| {
@@ -261,6 +262,10 @@ mod tests {
                 Some(Specless::Clock)
             } else if *arity == ARITY_EXACTLY_FOUR_ENGINE_ONLY {
                 Some(Specless::EngineOnly("bar"))
+            } else if *arity == ARITY_PROVENANCE {
+                Some(Specless::EngineOnly("provenance"))
+            } else if *arity == ARITY_HISTORY {
+                Some(Specless::EngineOnly("history"))
             } else {
                 None
             }
@@ -278,7 +283,8 @@ mod tests {
                 None => {
                     assert!(
                         !arity.verified.is_empty(),
-                        "{arity:?}: only the floor, the clock arity and the engine-only bar arity may carry an empty verified set"
+                        "{arity:?}: only the floor, the clock arity and the engine-authored \
+                         bar/provenance/history arities may carry an empty verified set"
                     );
                     arity.verified.to_vec()
                 }

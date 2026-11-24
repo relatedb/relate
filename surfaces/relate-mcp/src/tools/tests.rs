@@ -149,6 +149,72 @@ fn an_unknown_tool_is_the_pinned_refusal() {
     ));
 }
 
+/// ADR-0610's `tx_metadata` argument on the two writing tools: on a store
+/// opened without the `value-provenance` opt-in a call carrying it answers
+/// the authored preview error through the shared engine vocabulary —
+/// never a silent drop. The open side — the map reaching the commit's
+/// transaction record — is the gated binary `tests/tx_metadata.rs`.
+#[test]
+fn the_writing_tools_tx_metadata_is_the_authored_preview_error_while_off() {
+    relate::test_opts::assert_preview_unset();
+    for name in [WRITE_CYPHER, BATCH_CYPHER] {
+        let arguments = if name == WRITE_CYPHER {
+            serde_json::json!({"statement": "CREATE (n:N)", "tx_metadata": {"by": "app"}})
+        } else {
+            serde_json::json!({"statements": [{"statement": "CREATE (n:N)"}],
+                               "tx_metadata": {"by": "app"}})
+        };
+        let error = run(name, arguments).unwrap_err();
+        assert!(
+            matches!(error, ToolError::Engine { .. }),
+            "{name}: an engine refusal, got {error:?}"
+        );
+        assert!(
+            error.to_string().contains(
+                "preview feature 'value-provenance' is not enabled: \
+                 set RELATE_PREVIEW=value-provenance"
+            ),
+            "{name}: {error}"
+        );
+    }
+    // A call that carries no metadata is byte-for-byte today's: the two
+    // tools run their writes with no channel cost while off.
+    assert_eq!(
+        run(
+            WRITE_CYPHER,
+            serde_json::json!({"statement": "CREATE (n:N)"}),
+        )
+        .map(|outcome| created(&outcome)),
+        Ok(1)
+    );
+}
+
+/// A `tx_metadata` that is not an object is the pinned invalid-params
+/// refusal naming the member — the same vocabulary the `parameters`
+/// argument answers.
+#[test]
+fn a_non_object_tx_metadata_is_the_invalid_params_refusal() {
+    for name in [WRITE_CYPHER, BATCH_CYPHER] {
+        let arguments = if name == WRITE_CYPHER {
+            serde_json::json!({"statement": "CREATE (n:N)", "tx_metadata": "by=app"})
+        } else {
+            serde_json::json!({"statements": [{"statement": "CREATE (n:N)"}],
+                               "tx_metadata": "by=app"})
+        };
+        let error = run(name, arguments).unwrap_err();
+        assert!(
+            matches!(error, ToolError::InvalidParams { .. }),
+            "{name}: {error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("\"tx_metadata\" must be an object"),
+            "{name}: {error}"
+        );
+    }
+}
+
 #[test]
 fn the_caps_refuse_before_the_engine() {
     let (_db, mut conn) = store();

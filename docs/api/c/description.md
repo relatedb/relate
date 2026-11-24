@@ -31,6 +31,15 @@ The v2 shape (ADR-0502):
 - **Bookmarks are the engine's commit sequence** (`"relate:<n>"`,
   ADR-0310): `relate_result_bookmark` after an auto-commit write,
   `relate_conn_commit`'s `bookmark_out` for an explicit transaction.
+- **Transaction metadata rides the commit record** (ADR-0610, preview):
+  `relate_conn_set_tx_metadata(conn, builder, &err)` seeds the
+  connection's per-transaction map through the same params builder;
+  `CALL tx.setMetaData(map)` merges into it inside a transaction and
+  `CALL tx.getMetaData()` reads the live map back. The machinery is the
+  `value-provenance` opt-in (`RELATE_PREVIEW`, read once at open):
+  without it the call fails the authored preview error instead of
+  silently dropping the map. See the
+  [compiled transaction-metadata example](examples/tx_metadata.c).
 
 Every store has the fixed namespaces `neo4j`, `system` and
 `system_ontologies` (ADR-0116). A connection's session namespace — `neo4j`
@@ -64,6 +73,6 @@ carries `[]` — `relate_result_notifications` returns it. See the
 
 Compiled, runnable samples for every part of the contract — the two error
 channels, a complete recursive walker, the params builder, bookmarks,
-transactions, namespaces, metadata, notifications, plans — live in
-[`examples/`](examples/); CI compiles and runs each one. The precise
-contract is [`spec.md`](spec.md).
+transactions, transaction metadata, namespaces, metadata, notifications,
+plans — live in [`examples/`](examples/); CI compiles and runs each one.
+The precise contract is [`spec.md`](spec.md).

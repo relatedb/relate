@@ -6,6 +6,12 @@ impl<'a> Parser<'a> {
 
         let mut stmt = self.parse_statement_block()?;
         stmt.preamble = preamble;
+        // ADR-0610: the whole parse's captured `@txMetadata` annotations
+        // (source order -- subquery bodies and UNION arms included, pushed
+        // by `annotations.rs` as each was parsed) leave with the top-level
+        // statement; every nested stage's own construction stays
+        // `Default`-empty.
+        stmt.tx_metadata = std::mem::take(&mut self.tx_metadata);
 
         if self.peek_type() == TokenType::Semicolon {
             self.next_token();
@@ -442,6 +448,7 @@ impl<'a> Parser<'a> {
             next: None,
             brace_wrapped: false,
             definitions: Vec::new(),
+            tx_metadata: Vec::new(),
         }
     }
 

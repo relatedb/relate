@@ -16,10 +16,13 @@ use crate::v2_envelope::ReplyBody;
 use relate_error::{GQLSTATUS_DATABASE_NOT_FOUND, GQLSTATUS_GENERAL};
 
 /// The request body: `statement` (required), `parameters` (optional object of
-/// `$name` bindings), `includeCounters` (optional, default false). Everything
-/// else the reference API carries (`accessMode`, `impersonatedUser`,
-/// `maxExecutionTime`, `txConfig`) is out of the charter subset and ignored
-/// by serde.
+/// `$name` bindings), `includeCounters` (optional, default false), and
+/// `tx_metadata` (optional object, ADR-0610 — the one field spelled in the
+/// ADR's own snake_case, not the body's camelCase family, because it is
+/// the driver channel's recorded name; renamed explicitly so serde keeps
+/// it). Everything else the reference API carries (`accessMode`,
+/// `impersonatedUser`, `maxExecutionTime`, `txConfig`) is out of the
+/// charter subset and ignored by serde.
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatementRequest {
@@ -28,6 +31,8 @@ pub struct StatementRequest {
     pub parameters: Option<Map<String, Json>>,
     #[serde(default)]
     pub include_counters: bool,
+    #[serde(default, rename = "tx_metadata")]
+    pub tx_metadata: Option<Map<String, Json>>,
 }
 
 /// Whether `handle` still has to call `check_authorization`.
@@ -149,6 +154,10 @@ fn route(
             let mut conn = db
                 .connect_namespace(database)
                 .map_err(|e| crate::reply::namespace_connect_failure(&e))?;
+            // The optional `tx_metadata` (ADR-0610) seeds before the run,
+            // so this request's auto-commit write is the boundary that
+            // serializes it.
+            crate::reply::seed_tx_metadata(&mut conn, body.tx_metadata.as_ref(), dialect)?;
             run_on(
                 &mut conn,
                 &body.statement,

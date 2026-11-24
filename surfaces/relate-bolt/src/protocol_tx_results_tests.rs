@@ -1,4 +1,10 @@
 //! Open results addressed by qid in explicit transactions (ADR-0311).
+//!
+//! ADR-0610's transport channel — a BEGIN's `tx_metadata` extra — is
+//! tested in its own integration-test binary (`tests/tx_metadata.rs`):
+//! that suite's stores open under the `value-provenance` opt-in alone,
+//! which this binary's ontology-gated suites must not share a process
+//! with (the opt-in is first-call-wins per process).
 
 use std::net::TcpStream;
 use std::sync::Arc;

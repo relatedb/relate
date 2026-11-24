@@ -20,7 +20,7 @@ use crate::failures::{
     FAILED_HELLO_DELAY_MS, REQUEST_INVALID_CODE, UNAUTHORIZED_CODE,
 };
 use crate::fields::{
-    bolt_agent_is_string_map, db_name, extra_str, illegal_value_for_field,
+    begin_tx_metadata, bolt_agent_is_string_map, db_name, extra_str, illegal_value_for_field,
     metadata_notifications_failure, patch_names, ConsumeRequest, NotificationConfig, RunRequest,
 };
 use crate::keepalive::{run_statement, with_keep_alive};
@@ -498,85 +498,6 @@ impl Session {
             .map(|statement| NotificationConfig::overlay(statement, base))
     }
 
-    /// BEGIN (0x11). ADR-0117 §7: BEGIN selects the transaction's namespace
-    /// from its extra's `db`, applied before `begin()` because
-    /// `set_namespace` fails while a transaction is open (a BEGIN inside
-    /// one is a breach and never reaches here, ADR-0314). The extra's
-    /// `bookmarks` are accepted and ignored (ADR-0310). At 5.4 the extra's
-    /// notifications keys (ADR-0484 decision 8) overlay the HELLO config
-    /// for the transaction's statements — an invalid value fails the
-    /// BEGIN before anything starts; at 4.4 the keys are ignored and the
-    /// connection config stands. The transaction starts with no open
-    /// results and qids from 0 (ADR-0311).
-    fn begin<W: Write>(&mut self, stream: &mut W, fields: &[Pack]) -> std::io::Result<Flow> {
-        let tx_notifications = match self.overlay_notifications(fields, 0, &self.notifications) {
-            Ok(config) => config,
-            Err(parse_failure) => return self.fail_metadata_notifications(stream, &parse_failure),
-        };
-        if let Err(e) = apply_extra_db(&mut self.conn, fields, 0) {
-            return self.fail_engine(stream, &e);
-        }
-        if let Err(e) = self.conn.begin() {
-            return self.fail_engine(stream, &e);
-        }
-        self.begin_tx(tx_notifications);
-        send_success(stream, vec![])?;
-        Ok(Flow::Continue)
-    }
-
-    /// Open the transaction-scoped session state (ADR-0311, ADR-0484
-    /// decision 8): the notifications config the transaction's
-    /// statements read — the BEGIN keys' selection, the connection
-    /// config itself at 4.4, where the keys are ignored — and the empty
-    /// result store a transaction starts with. [`Self::end_tx`] is the
-    /// mirrored end every transaction-ending path shares.
-    fn begin_tx(&mut self, notifications: NotificationConfig) {
-        self.tx_notifications = notifications;
-        self.results.clear();
-    }
-
-    /// End the transaction-scoped session state together: every open
-    /// result (ADR-0311) and the notifications selection (ADR-0484
-    /// decision 8), restored to the connection config — the one end
-    /// COMMIT, ROLLBACK and RESET call, so a transaction-ending path
-    /// cannot drift.
-    fn end_tx(&mut self) {
-        self.results.clear();
-        self.tx_notifications = self.notifications.clone();
-    }
-
-    /// COMMIT (0x12): one WAL commit under the NOOP keep-alive (ADR-0312);
-    /// SUCCESS carries the bookmark the engine's commit returned — the
-    /// store's commit sequence (ADR-0310, ADR-0502 §7) — or is `{}` when
-    /// the transaction committed nothing. Every open result is dropped
-    /// (ADR-0311), and the transaction's notifications selection ends
-    /// with it (ADR-0484 decision 8).
-    fn commit<W: Write>(&mut self, stream: &mut W, config: &ConnConfig) -> std::io::Result<Flow> {
-        self.end_tx();
-        let conn = &mut self.conn;
-        let committed = with_keep_alive(stream, config.limits.keep_alive_interval, |heartbeat| {
-            conn.commit_with_heartbeat(heartbeat)
-        })?;
-        let bookmark = match committed {
-            Ok(bookmark) => bookmark,
-            Err(e) => return self.fail_engine(stream, &e),
-        };
-        send_success(stream, summary::commit(bookmark))?;
-        Ok(Flow::Continue)
-    }
-
-    /// ROLLBACK (0x13): discard the transaction's writes and every open
-    /// result (ADR-0311), and the transaction's notifications selection
-    /// with them (ADR-0484 decision 8).
-    fn rollback<W: Write>(&mut self, stream: &mut W) -> std::io::Result<Flow> {
-        self.end_tx();
-        if let Err(e) = self.conn.rollback() {
-            return self.fail_engine(stream, &e);
-        }
-        send_success(stream, vec![])?;
-        Ok(Flow::Continue)
-    }
-
     /// ROUTE (0x66, ADR-0269; self address per ADR-0140; home database and
     /// role order per ADR-0318): a single-server self routing table.
     fn route<W: Write>(
@@ -990,3 +911,11 @@ mod session_5x;
 /// rule like the 5.x leg. A child of this module.
 #[path = "session_pages.rs"]
 mod session_pages;
+
+/// The transaction-lifecycle leg (ADR-0028's protocol shape): BEGIN,
+/// COMMIT and ROLLBACK beside the transaction-scoped session state they
+/// open and end (ADR-0311, ADR-0484 decision 8) — split from this file
+/// at the thousand-line rule like its siblings. A child of this module,
+/// so the handlers keep touching the session's private state.
+#[path = "session_txn.rs"]
+mod session_txn;

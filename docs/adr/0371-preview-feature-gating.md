@@ -140,3 +140,9 @@ knobs, fail-closed on a bad value).
   name cannot name it in an error without advertising it. Syntax-only remains
   the default; three rows carry the class (`coll-zip`, `coll-has`,
   `gql-stddev-aliases`), each removed with its CIP's release.
+- ADR-0610 records a fourth gate class: a whole machinery (value
+  provenance — retention, record format, checkpoint shape and its three
+  query names) gates as one registry row, because its storage behavior
+  cannot be partially on. The names take the recorded forms: the two
+  functions the name gate above (42N48 while off), the procedure the
+  ADR-0378 dispatch form.

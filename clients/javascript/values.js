@@ -639,15 +639,17 @@ module.exports = function createValueCodec(lib) {
   }
 
   /// Build a params root from a JS params object; null for the empty object
-  /// (the ABI's no-params form — the JSON era's "{}" is gone).
-  function buildParams(params, onRefusal) {
+  /// (the ABI's no-params form — the JSON era's "{}" is gone). `label`
+  /// names the argument in putValue's refusals ("query params",
+  /// "query txMetadata" — one walk, each argument's own noun).
+  function buildParams(params, onRefusal, label = "query params") {
     const keys = Object.keys(params);
     if (keys.length === 0) return null;
     const root = params_new();
     try {
       const seen = new Set();
       for (const key of keys) {
-        putValue(root, key, params[key], `query params: "${key}"`, onRefusal, seen);
+        putValue(root, key, params[key], `${label}: "${key}"`, onRefusal, seen);
       }
     } catch (e) {
       params_free(root);

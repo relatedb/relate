@@ -259,6 +259,36 @@ pub(super) const ARITY_EXACTLY_FOUR_ENGINE_ONLY: Arity = Arity {
 
     verified: &[],
 };
+/// `provenance()` (ADR-0610): the element and its property key, exactly
+/// two. The name is engine-authored behind the `value-provenance` preview
+/// gate — no reference release ships it, so there is no live-Neo4j spec:
+/// `verified` stays empty and the lockstep test pins the one registered
+/// name instead, like `bar`'s. The requirement text is deliberately not
+/// [`ARITY_EXACTLY_TWO`]'s, so the two contracts stay distinguishable
+/// where the lockstep test reads them.
+pub(super) const ARITY_PROVENANCE: Arity = Arity {
+    min: 2,
+    max: Some(2),
+    requirement: "requires an element and a property key",
+
+    verified: &[],
+};
+/// `history()` (ADR-0610): the element and its property key, with an
+/// optional third argument — the `maxNum` tail bound. The name is
+/// engine-authored behind the `value-provenance` preview gate, like
+/// `provenance()`'s — no reference release ships it, so `verified`
+/// stays empty and the lockstep test pins the one registered name
+/// instead. The bounds and the requirement text are deliberately not
+/// [`ARITY_PROVENANCE`]'s or [`ARITY_TWO_TO_THREE`]'s (the lockstep
+/// test dedups arities by `PartialEq`, so each contract must stay
+/// distinguishable where it reads them).
+pub(super) const ARITY_HISTORY: Arity = Arity {
+    min: 2,
+    max: Some(3),
+    requirement: "requires an element and its property key, optionally an event count",
+
+    verified: &[],
+};
 /// `property_exists` (CIP-247) and `vector_norm` (CIP-214): exactly two
 /// arguments, the second of which is the literal the form lowers itself
 /// (the property-name identifier, the distance metric).
@@ -525,6 +555,7 @@ pub(super) const BUILTINS: &[BuiltinRow] = &[
     row("format", temporal::bi_format, false, ARITY_FORMAT),
     row("haversin", math::bi_haversin, false, ARITY_AT_LEAST_ONE),
     row("head", list::bi_head, false, ARITY_AT_LEAST_ONE),
+    row("history", entity::bi_history, false, ARITY_HISTORY),
     row("id", entity::bi_id, false, ARITY_AT_LEAST_ONE),
     row("isempty", list::bi_isempty, false, ARITY_AT_LEAST_ONE),
     row("isnan", math::bi_isnan, false, ARITY_EXACTLY_ONE),
@@ -604,6 +635,7 @@ pub(super) const BUILTINS: &[BuiltinRow] = &[
         property::property_exists,
         ARITY_EXACTLY_TWO_FORMS,
     ),
+    row("provenance", entity::bi_provenance, false, ARITY_PROVENANCE),
     row("radians", math::bi_radians, false, ARITY_AT_LEAST_ONE),
     row("rand", math::bi_rand, true, ARITY_EXACT_ZERO),
     row("randomuuid", entity::bi_randomuuid, true, ARITY_EXACT_ZERO),

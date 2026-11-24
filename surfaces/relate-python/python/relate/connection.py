@@ -194,7 +194,10 @@ class Connection:
     # --- Query execution -------------------------------------------------
 
     def _raw_execute(
-        self, query: str, params: Optional[Dict[str, Any]] = None
+        self,
+        query: str,
+        params: Optional[Dict[str, Any]] = None,
+        tx_metadata: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[str], List[str], List[Dict[str, Any]], ResultSummary]:
         """Run a query, opening a transaction first if needed, and return
         ``(columns, column_types, rows, summary)`` — the column types are the
@@ -202,7 +205,11 @@ class Connection:
         ``Cursor.description``; the summary feeds
         ``Cursor.consume()`` (ADR-0215; its ``elapsed_ms`` is the
         engine-reported value, ADR-0221, and ``parse_ms``/``plan_ms``/
-        ``execute_ms`` its phase split, ADR-0491). Native errors are mapped
+        ``execute_ms`` its phase split, ADR-0491). ``tx_metadata`` (the
+        ``tx_metadata=`` kwarg of ``execute``, ADR-0610) seeds the
+        connection's per-transaction metadata map before the statement —
+        the embedded channel's semantics, including its authored preview
+        error on a store that never opted in. Native errors are mapped
         to the DB-API exception tree. Internal; used by :class:`Cursor`."""
         self._check_closed()
         # Whether a transaction is open is the engine's own fact (read
@@ -213,7 +220,7 @@ class Connection:
         if not self._autocommit and not self._transaction_open():
             _native(lambda: self._db.begin_transaction())
         try:
-            result = _native(lambda: self._db.execute(query, params))
+            result = _native(lambda: self._db.execute(query, params, tx_metadata=tx_metadata))
         except OverflowError as e:
             # A parameter integer out of 64-bit range.
             raise DataError(str(e)) from None
@@ -251,12 +258,28 @@ class Connection:
         )
 
     def execute(
-        self, query: str, params: Optional[Dict[str, Any]] = None
+        self,
+        query: str,
+        params: Optional[Dict[str, Any]] = None,
+        *,
+        tx_metadata: Optional[Dict[str, Any]] = None,
     ) -> Cursor:
         """Execute a Cypher query and return a result-bearing cursor
-        (sqlite3-style convenience)."""
+        (sqlite3-style convenience).
+
+        ``tx_metadata`` (keyword-only, ADR-0610) seeds this connection's
+        per-transaction metadata map before the statement runs: a ``dict``
+        with string keys (values converting like parameters, ADR-0219),
+        merged with every earlier seed — later keys win — and serialized
+        into the commit's record at the next transaction boundary (this
+        statement's auto-commit, or the open transaction's
+        :meth:`commit`), then cleared; :meth:`rollback` discards it. The
+        whole machinery is the ``value-provenance`` preview feature's
+        (``RELATE_PREVIEW``, read once at open): on a store opened without
+        the opt-in the call fails instead of silently dropping the map.
+        """
         cursor = self.cursor()
-        cursor.execute(query, params)
+        cursor.execute(query, params, tx_metadata=tx_metadata)
         return cursor
 
     def executemany(

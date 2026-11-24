@@ -8,7 +8,7 @@
 //! error naming the known names — never a silent ignore.
 //!
 //! Only syntax-extending features gate: a purely additive function name
-//! never needs the opt-in, so it never lands in this registry. Three
+//! never needs the opt-in, so it never lands in this registry. Four
 //! gate classes are recorded exceptions. (a) ADR-0378, widened by
 //! ADR-0593: a built-in surface whose contract tracks a non-final
 //! external spec — the `ontology` row gates the `db.ontology.*`
@@ -25,10 +25,17 @@
 //! the name-gate rule in namespace form, so a hidden database is
 //! indistinguishable from an unknown one at every resolution site: listed
 //! by no catalog, rejected by the site's own unknown-database path, never
-//! the authored error. None of the exceptions is general — additive
+//! the authored error. (d) ADR-0610: a whole machinery that is one
+//! opt-in — the value-provenance row gates the transaction-record
+//! persistence (per-transaction metadata channels, the record's optional
+//! `metadata`/`changed_keys` fields, retained-record checkpoint objects)
+//! because retention changes what a store persists and how memory grows,
+//! and no part can be on alone. It gates at its input channels and the
+//! commit path rather than at a syntax, and its disabled form is
+//! byte-for-byte today's behavior. None of the exceptions is general — additive
 //! function names and surfaces on our own pinned contract still never
 //! gate. Each gated feature checks the gate where it would otherwise be
-//! parsed or dispatched; while disabled a syntax or procedure-family check
+//! parsed, dispatched or admitted; while disabled a syntax or procedure-family check
 //! fails with [`preview_feature_disabled`]'s authored error.
 //!
 //! The registry macro is the single source: variant, doc, and name are
@@ -250,6 +257,19 @@ preview_feature_registry! {
          node. Gates the `||` operator over path operands at evaluation; the disabled \
          form is the existing `||` operand type error, not the authored error.",
         "path-concatenation",
+        &[]
+    ),
+    (
+        ValueProvenance,
+        "ADR-0610's per-property value provenance: the transaction-record machinery \
+         (per-transaction metadata channels, `CommitRecord.metadata`/`changed_keys`, retained \
+         record persistence) and history retention (the GC horizon drop exempts every \
+         version, the checkpoint persists the retained version chains, and the \
+         `provenance()`/`history()` names answer them) are one opt-in, so a store that never \
+         sets it is byte-for-byte today's. The record fields are optional and \
+         skip-compatible: old readers decode new records unchanged, and a store that never \
+         opts in writes byte-identical records.",
+        "value-provenance",
         &[]
     ),
 }

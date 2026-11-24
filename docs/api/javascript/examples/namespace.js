@@ -2,8 +2,9 @@ const { Database } = require("@relate/relate");
 
 // ADR-0593: system_ontologies is visible only under the `ontology`
 // preview opt-in; set RELATE_PREVIEW before the open (it is read once,
-// at open).
-process.env.RELATE_PREVIEW = "ontology";
+// at open). An existing setting wins — a process that already opted in
+// (a test run's union opt-in) keeps its features.
+process.env.RELATE_PREVIEW ??= "ontology";
 
 const db = Database.open(":memory:");
 

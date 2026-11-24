@@ -325,6 +325,37 @@ fn auto_param_prefix_in_statement_bails() {
     ));
 }
 
+/// A CIP-281 annotation bails the statement (ADR-0610): the reserved
+/// `@txMetadata` seeds the transaction record from the statement's own
+/// text, so a template hit must never bypass the parse that carries the
+/// channel's payload — and no annotation survives normalization into a
+/// rewritten `$__AUTO_*__` form anyway. Costs a miss, never a wrong plan.
+/// Without the `cypher-annotations` gate the `@` is a lexer error token,
+/// so the closed form bails through that arm.
+#[test]
+fn annotations_bail_the_statement() {
+    let gated = ParseOptions {
+        cypher_annotations: true,
+        ..ParseOptions::default()
+    };
+    for src in [
+        "@txMetadata({by: 'app'}) CREATE (n {k: 1})",
+        "@a() RETURN 1",
+    ] {
+        assert!(
+            matches!(
+                normalize_statement(src, gated),
+                NormalizeOutcome::NotCacheable
+            ),
+            "{src}"
+        );
+    }
+    assert!(matches!(
+        norm("@a() RETURN 1"),
+        NormalizeOutcome::NotCacheable
+    ));
+}
+
 /// A lexer error token (the statement will not parse) and oversize input
 /// bail — nothing to cache, never an error.
 #[test]

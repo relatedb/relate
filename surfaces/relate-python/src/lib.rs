@@ -69,7 +69,7 @@ mod temporal_values;
 mod vector_values;
 mod walk;
 
-use convert::optional_params_to_cypher;
+use convert::{optional_params_to_cypher, optional_tx_metadata_to_cypher};
 use graph_values::{Node, Path, Point, Relationship};
 use result::QueryResult;
 use temporal_values::{Duration, Temporal};
@@ -349,34 +349,29 @@ impl Database {
     }
 
     /// The one off-GIL engine hand-off behind `execute` and
-    /// `execute_arrow`: convert the Python params, release the GIL, run the
-    /// query, and feed the result to `tail` — all in one GIL-release
-    /// window, with the `ExecError` mapped to a `PyErr` once the GIL is
-    /// back. The connection guard stays on this thread for the window's
-    /// whole duration; the closure captures a `&mut` reborrow of it, which
-    /// is `Send` (pyo3's `allow_threads` takes any `Send` capture — the
-    /// engine connection carries no Python/GIL-bound state), so no unsafe
-    /// pointer is needed to cross the GIL-release boundary.
+    /// `execute_arrow`: the affinity and closed checks, the connection
+    /// guard, one GIL-release window running the caller's whole
+    /// engine-side `body` against the live connection, and the
+    /// `ExecError` mapped to a `PyErr` once the GIL is back. The body
+    /// owns everything engine-side — the parameter conversion's value
+    /// half, `execute`'s metadata seed (the embedded channel, ADR-0610:
+    /// before the statement, the authored preview error on a store
+    /// without the opt-in, never when `tx_metadata` is absent) and the
+    /// query, `execute_arrow`'s Arrow IPC serialization — so the helper
+    /// carries only the window and the error mapping, no per-caller
+    /// mode. The connection guard stays on this thread for the window's
+    /// whole duration; the closure captures a `&mut` reborrow of it,
+    /// which is `Send` (pyo3's `allow_threads` takes any `Send` capture
+    /// — the engine connection carries no Python/GIL-bound state), so
+    /// no unsafe pointer is needed to cross the GIL-release boundary.
     fn run_engine_off_gil<T: Send>(
         &self,
         py: Python<'_>,
-        query: &str,
-        params: Option<&Bound<'_, PyAny>>,
-        tail: impl FnOnce(relate::QueryResult) -> Result<T, ExecError> + Send,
+        body: impl FnOnce(&mut RelateConnection) -> Result<T, ExecError> + Send,
     ) -> PyResult<T> {
-        let rust_params = optional_params_to_cypher(params)?;
         let mut conn = self.lock_conn(py)?;
         let connection: &mut RelateConnection = &mut conn;
-        let out = py.allow_threads(move || {
-            let params = rust_params
-                .into_iter()
-                .map(|(key, value)| (key, cypher_to_value(&value)))
-                .collect();
-            let result = connection
-                .query_with_params(query, params)
-                .map_err(ExecError::Relate)?;
-            tail(result)
-        });
+        let out = py.allow_threads(move || body(connection));
         // Binding-level failures (the Arrow conversion path) carry the
         // `InternalError` kind so the Python package maps them onto the DB-API
         // tree instead of degrading to the generic `DatabaseError` fallback.
@@ -460,14 +455,52 @@ impl Database {
     }
 
     /// Execute a Cypher query and return the result.
-    #[pyo3(signature = (query, params=None))]
+    ///
+    /// `tx_metadata` (keyword-only, ADR-0610) seeds the connection's
+    /// per-transaction metadata map — the embedded channel of the three
+    /// metadata inputs — before the statement runs. A `dict` with string
+    /// keys (values converting like parameters, ADR-0219); `None`, the
+    /// default, seeds nothing. The map merges with every earlier seed
+    /// (later keys win) under the 16 MiB per-object bound and is
+    /// serialized into the commit's record at the next transaction
+    /// boundary — an auto-commit write's, or an explicit transaction's
+    /// `commit` — then cleared; a `rollback` discards it. The whole
+    /// machinery is the `value-provenance` preview feature's
+    /// (ADR-0371/ADR-0610), read once at open: on a store opened without
+    /// the opt-in the call fails with the authored preview error instead
+    /// of silently dropping the map.
+    #[pyo3(signature = (query, params=None, *, tx_metadata=None))]
     fn execute(
         &self,
         py: Python<'_>,
         query: &str,
         params: Option<&Bound<'_, PyAny>>,
+        tx_metadata: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<QueryResult> {
-        let result = self.run_engine_off_gil(py, query, params, Ok)?;
+        let rust_params = optional_params_to_cypher(params)?;
+        let rust_tx_metadata = optional_tx_metadata_to_cypher(tx_metadata)?;
+        // The whole engine-side half in one GIL-release window: the
+        // metadata seed first (the embedded channel, ADR-0610 — before
+        // the statement, never when `tx_metadata` is absent), then the
+        // parameter conversion's value half and the query.
+        let result = self.run_engine_off_gil(py, move |connection| {
+            if let Some(metadata) = rust_tx_metadata {
+                let metadata = metadata
+                    .into_iter()
+                    .map(|(key, value)| (key, cypher_to_value(&value)))
+                    .collect();
+                connection
+                    .set_tx_metadata(metadata)
+                    .map_err(ExecError::Relate)?;
+            }
+            let params = rust_params
+                .into_iter()
+                .map(|(key, value)| (key, cypher_to_value(&value)))
+                .collect();
+            connection
+                .query_with_params(query, params)
+                .map_err(ExecError::Relate)
+        })?;
         QueryResult::from_engine(py, result)
     }
 
@@ -488,9 +521,18 @@ impl Database {
         query: &str,
         params: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyObject> {
+        let rust_params = optional_params_to_cypher(params)?;
         // Serialize the engine result to Arrow IPC in the same GIL-release
-        // window the query ran in.
-        let buf = self.run_engine_off_gil(py, query, params, |result| {
+        // window the query ran in. The bulk-read path carries no metadata
+        // seed: `execute` is the one entry point with `tx_metadata`.
+        let buf = self.run_engine_off_gil(py, move |connection| {
+            let params = rust_params
+                .into_iter()
+                .map(|(key, value)| (key, cypher_to_value(&value)))
+                .collect();
+            let result = connection
+                .query_with_params(query, params)
+                .map_err(ExecError::Relate)?;
             let rows = query_result_to_cypher_rows(&result);
             let batch = result_to_record_batch(&result.header.columns, &rows)
                 .map_err(|e| ExecError::Other(format!("Arrow conversion error: {e}")))?;

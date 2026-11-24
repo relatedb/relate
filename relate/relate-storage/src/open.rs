@@ -129,12 +129,31 @@ pub fn load<G: SnapshotGraph>(target: &StoreTarget) -> Result<G> {
 /// the ontology document the snapshot carries (ADR-0120; `None` when the
 /// store holds none).
 fn load_with_checkpoint_lsn<G: SnapshotGraph>(target: &StoreTarget) -> Result<LoadedSnapshot<G>> {
-    match target.codec {
-        SnapshotCodecKind::Parquet => snapshot::load_with_checkpoint_lsn::<G>(target),
-        SnapshotCodecKind::Json => codec::json::load_with_checkpoint_lsn::<G>(target),
-        SnapshotCodecKind::Markdown => codec::markdown::load_with_checkpoint_lsn::<G>(target),
-        SnapshotCodecKind::Rkyv => codec::rkyv::load_with_checkpoint_lsn::<G>(target),
-    }
+    let loaded = match target.codec {
+        SnapshotCodecKind::Parquet => snapshot::load_with_checkpoint_lsn::<G>(target)?,
+        SnapshotCodecKind::Json => codec::json::load_with_checkpoint_lsn::<G>(target)?,
+        SnapshotCodecKind::Markdown => codec::markdown::load_with_checkpoint_lsn::<G>(target)?,
+        SnapshotCodecKind::Rkyv => codec::rkyv::load_with_checkpoint_lsn::<G>(target)?,
+    };
+    // The retained families (ADR-0610) are the same open's later restore
+    // slices, so they load inside the retained-family window: the codec
+    // tail already closed the restore phase its rows opened, and the
+    // window re-takes it for these loads and closes it after — never
+    // rebuilding adjacency, which the codec's own finish_restore built
+    // from the image rows the family chains replace slot-for-slot. The
+    // retained transaction-record family's parts carry what the
+    // checkpoints persisted and the WAL replay below adds what the
+    // surviving segments hold — the table dedups by `commit_ts`, so a
+    // record read from both is retained once. The retained version-chain
+    // family: every part the published manifest covers folds into the
+    // graph's chains (the latest part wins per element), and the replay
+    // below stacks the WAL's tail on top — a part past the manifest is
+    // skipped, so no version is applied twice.
+    loaded.graph.retained_families_restore_step(&mut || {
+        crate::transactions::load_retained(&loaded.graph, target)?;
+        crate::chains::load_retained(&loaded.graph, target, loaded.checkpoint_lsn)
+    })?;
+    Ok(loaded)
 }
 
 /// The guarded open preamble every fresh snapshot load shares — the two
@@ -506,6 +525,12 @@ fn replay_after_ontology(
                 None => {}
             }
         }
+        // ADR-0610: a replayed record that carries provenance fields joins
+        // the retained table — the graph's record method decides which
+        // records retain (a record the feature never touched does not),
+        // so this site never re-derives that policy. Recorded before the
+        // ops are consumed by the apply below.
+        graph.record_retained_transaction(rec.retained());
         graph.apply_replayed_redo(rec.ops, rec.commit_ts)
     })?;
     // The one wholesale index rebuild of a replaying open, after the graph

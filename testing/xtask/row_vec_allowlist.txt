@@ -86,6 +86,7 @@ exec/feed.rs::into_held # the held stream's container read for the sink-projecte
 show_catalog.rs::function_catalog_rows # bounded catalog/admin/procedure result, not graph-sized
 show_catalog.rs::procedure_catalog_rows # bounded catalog/admin/procedure result, not graph-sized
 exec/top_k.rs::finish # returns the ordered window's own rows — at most `skip + limit`, the bounded top-k container itself (ADR-0555 §3)
+exec/tx_metadata.rs::exec_tx_set_metadata_call # bounded catalog/admin/procedure result, not graph-sized
 exec/post_merge.rs::finish # the landing sink: the window's bounded rows on the ordered-LIMIT shape, the pass-through's answered page, the retaining Vec otherwise
 exec/post_merge.rs::adopt # the same landing's container method, the body of that one entry point
 exec/call/feed.rs::rows_for # the shared body's merged view of ONE outer row — bounded by the single body result (ADR-0555)

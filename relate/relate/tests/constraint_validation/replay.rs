@@ -39,6 +39,9 @@ fn seed_replay_duplicate(root: &Path) {
         commit_ts: 4,
         // Above the checkpointed `:T` node (id 0) and the WAL-tailed one (id 1).
         ops: vec![duplicate(2), duplicate(3)],
+        metadata: None,
+        changed_keys: None,
+        record_type: None,
     };
     let frame = wal_frame(&serde_json::to_vec(&record).unwrap());
     let vfs = store_vfs(root);

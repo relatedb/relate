@@ -321,6 +321,12 @@ struct Parser<'a> {
     /// [`LabelMixTarget`]). Saved and restored around each clause so a
     /// nested subquery body's clauses choose their own side.
     label_mix_target: LabelMixTarget,
+    /// ADR-0610's reserved `@txMetadata` annotations captured so far, in
+    /// source order (`annotations.rs` -- the one place annotations are
+    /// consumed). Only the reserved name is ever pushed; every other
+    /// annotation is checked and discarded there. Taken by the top-level
+    /// parse onto the [`Statement`] it returns.
+    tx_metadata: Vec<TxMetadataAnnotation>,
 }
 
 /// A single postfix accessor (`.prop` or CIP-131's `[<expr>]`) parsed after
@@ -453,6 +459,7 @@ impl<'a> Parser<'a> {
             comprehension_where: None,
             comprehension_pipe_scan: None,
             exists_subquery_depth: 0,
+            tx_metadata: Vec::new(),
             speculation: Speculation::default(),
             pattern_element_depth: 0,
             options,

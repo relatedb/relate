@@ -17,11 +17,18 @@ mod write;
 pub use catalog_image::{
     map_put_database, CheckpointTheater, DatabaseEntry, SchemaSnapshot, ShowSchema, TheaterData,
 };
-pub use commit::CommitRecord;
+pub use commit::{
+    derive_changed_keys, merge_tx_metadata, validate_record_type, ChangedKey, ChangedKeyKind,
+    CommitRecord, RecordType, TransactionRecord, TxChannelState, MAX_TX_METADATA_BYTES,
+    PROVENANCE_RECORD_TYPE,
+};
 pub use engines::{
     EngineIds, QueryEngineId, WriteEngineId, LOCAL_WRITE_ENGINE, MEMORY_QUERY_ENGINE,
 };
-pub use export::{GraphExport, GraphImport, SnapshotGraph};
+pub use export::{
+    GraphExport, GraphImport, RetainedNodeChain, RetainedNodeVersion, RetainedRelChain,
+    RetainedRelVersion, SnapshotGraph,
+};
 pub use graph_type::{canonical_default_clause, DefaultValue, GraphTypeSpec};
 pub use query::{QueryEngine, ReadRequest, WriteRequest};
 pub use redo::{

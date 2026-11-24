@@ -241,7 +241,16 @@ pub(super) fn bounded_crossing_store(
 ) -> (Database, Arc<Shared>) {
     let probe = Database::open(":memory:").unwrap();
     let probe_shared = probe.shared();
-    try_wal_commit(&probe_shared, 0, 1, base_ops.clone(), 0, 0).unwrap();
+    try_wal_commit(
+        &probe_shared,
+        0,
+        1,
+        base_ops.clone(),
+        0,
+        0,
+        TxChannelState::default(),
+    )
+    .unwrap();
     let base = probe.memory_usage().unwrap().0;
     let waiter = CommitWaiter::new();
     flush_group(
@@ -263,7 +272,7 @@ pub(super) fn bounded_crossing_store(
     )
     .unwrap();
     let shared = db.shared();
-    try_wal_commit(&shared, 0, 1, base_ops, 0, 0).unwrap();
+    try_wal_commit(&shared, 0, 1, base_ops, 0, 0, TxChannelState::default()).unwrap();
     (db, shared)
 }
 

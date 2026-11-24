@@ -319,6 +319,29 @@ pub(crate) fn illegal_value_for_field(name: &str) -> String {
     format!("Illegal value for field \"{name}\"")
 }
 
+/// The `tx_metadata` of a BEGIN extra map (ADR-0610): the transaction
+/// metadata a driver attaches at transaction open, converted to engine
+/// values through the same parameter conversion RUN's params use. Absent
+/// or `null` stays unset; a present non-map value is the `Err` the BEGIN
+/// fails with before anything starts (the same fail-before-start rule the
+/// notifications keys follow), and so is any value the engine cannot
+/// represent (the parameter-path message, verbatim).
+pub(crate) fn begin_tx_metadata(
+    fields: &[Pack],
+    index: usize,
+    dialect: Dialect,
+) -> Result<Option<BTreeMap<String, Value>>, String> {
+    match extra(fields, index, TX_METADATA) {
+        None | Some(Pack::Null) => Ok(None),
+        Some(map @ Pack::Map(_)) => params_to_map(map, dialect).map(Some),
+        Some(_) => Err(illegal_value_for_field(TX_METADATA)),
+    }
+}
+
+/// The BEGIN extra's transaction-metadata key (ADR-0610) — Bolt 5's
+/// spelling of the metadata a driver attaches to the transaction.
+pub(crate) const TX_METADATA: &str = "tx_metadata";
+
 /// The same rejection in a RUN or BEGIN extra (probed for RUN): nested
 /// under the extra's `metadata` field name.
 pub(crate) fn metadata_notifications_failure(parse_failure: &str) -> String {

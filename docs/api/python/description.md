@@ -87,3 +87,13 @@ with `srid` and coordinate keys is an ordinary map, never silently
 reinterpreted; build a point with `relate.Point(...)` or `point($coords)`.
 Parameter-shape mistakes (a non-dict `params`, a non-string key) raise
 `relate.ProgrammingError` with wording that says so.
+
+Writes can carry the "why" with them: `Connection.execute`,
+`Cursor.execute` and the native `Database.execute` take a keyword-only
+`tx_metadata` dict (ADR-0610) that seeds the transaction's metadata map
+before the statement — merged in call order with `CALL tx.setMetaData`,
+serialized into the commit's transaction record at the next boundary, then
+cleared. The whole machinery is the `value-provenance` preview opt-in's
+(`RELATE_PREVIEW`, read once at open): without it a call carrying
+`tx_metadata` fails with the authored preview error instead of silently
+dropping the map.

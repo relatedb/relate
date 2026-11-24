@@ -298,6 +298,16 @@ transaction stays open for the client to close; it is still ignored on
 the auto-commit route (a documented charter exclusion). A failing begin
 statement rolls the fresh transaction back instead of leaking it.
 
+`tx_metadata` (ADR-0610) rides the tx-route bodies like the statement
+fields: a BEGIN, a run, or a COMMIT — statement-less included — may each
+carry the object, and the seeds merge into the open transaction's map in
+call order (later keys win) until the COMMIT serializes the merged map
+into the commit's transaction record or a rollback discards it. The seed
+runs after the access-mode guard, so a refused request (a write in a
+READ transaction) contributes no metadata; the authored preview error
+and the opt-in story are the auto-commit route's (the request-body table
+above).
+
 ### Idle expiry and the registry cap (ADR-0435)
 
 Two enforced limits bound an open transaction: an idle timeout and a cap
@@ -400,6 +410,7 @@ a server error. No server-side flag silences it.
 | `statement` | string | required | One Cypher statement |
 | `parameters` | object | none | `$name` bindings. The request's **Content-Type selects the parameter dialect** (ADR-0425): under `application/vnd.neo4j.query` (the legacy v1.0 alias) or its versioned family, including `.v1.0` and `.v1.2`, values may be plain JSON **or** the typed form `{"$type": …, "_value": …}` the official clients send (decoded per ADR-0236's encoding, recursively; an object is typed only when its keys are exactly `$type` and `_value` — a user map with a `$type` key among others stays a map); under plain `application/json` values are plain JSON — an envelope-shaped object stays a user **map**, byte-for-byte what a real server delivers. Temporal payloads decode to their ISO strings (build typed values in Cypher, e.g. `date($p)`), a Point's EWKT string to an engine point (the legacy `{coordinates, crs}` object still decodes to a user map), a Vector to its number list, a non-finite Float (`Infinity`/`-Infinity`/`NaN`) to that float value; graph entities, `Base64`, `Unsupported` and unknown `$type`s are a 400. Other non-simple request Content-Types receive a **400** naming the accepted spellings; browser-simple or missing types are rejected by the guard described above |
 | `includeCounters` | boolean | `false` | Force the `counters` object onto the response |
+| `tx_metadata` | object | none | Transaction metadata (ADR-0610) — the field name is the ADR's own snake_case spelling for the driver channel, not this body's camelCase family. The object's values decode through the request's parameter dialect exactly like `parameters`. On a store opened with `RELATE_PREVIEW=value-provenance` the map seeds the transaction's per-call metadata and is serialized into the commit's transaction record at the next transaction boundary — this route's auto-commit write — where the audit surface (`provenance()`, `history()`, `CALL db.transactions`) reads it; a rollback discards it. On a store opened without the opt-in a request carrying the field answers the authored preview error (**400**, `42000`, `preview feature 'value-provenance' is not enabled: set RELATE_PREVIEW=value-provenance`) instead of silently dropping the map; an absent member seeds nothing, so requests that carry no metadata are byte-for-byte unchanged. Over the 16 MiB per-object bound (ADR-0086) the seed is the engine's typed storage refusal |
 
 A malformed body (not JSON, or missing `statement`) is **400** with code
 `42N06`; parameters that do not decode — an unknown `$type` under the
@@ -755,6 +766,7 @@ HTTP status and `code` by failure:
 | 405 | `42000` | wrong method on the route |
 | 400 | `42N06` | malformed request body / Cypher syntax error |
 | 400 | `42000` | undecodable `parameters` (an unknown `$type`, an unrepresentable number — the request dialect's folds) |
+| 400 | `42000` | a `tx_metadata`-carrying request on a store opened without `RELATE_PREVIEW=value-provenance` — the authored preview-gate error (ADR-0610; the field is never silently dropped) |
 | 400 | `42N02` | a statement references a parameter missing from `parameters` |
 | 400 | `22G03` | type error |
 | 400 | `51N27` | unsupported database-administration command (ADR-0116) |

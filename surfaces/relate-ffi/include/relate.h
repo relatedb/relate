@@ -26,9 +26,9 @@
  *     relate_result_is_error(r) is 1 and
  *     relate_result_error_json(r) returns the shape.
  *   - Every other fallible status call — open, connect,
- *     conn_set_namespace, conn_begin/commit/rollback, checkpoint, the
- *     params builder's putters, and query_params' own connection-level
- *     failures — returns
+ *     conn_set_namespace, conn_set_tx_metadata, conn_begin/commit/
+ *     rollback, checkpoint, the params builder's putters, and
+ *     query_params' own connection-level failures — returns
  *     RELATE_ERROR and fills its trailing `char **error_json`
  *     out-param with the same shape. Passing NULL for the out-param opts
  *     out of the detail; the status code alone then reports the failure.
@@ -191,6 +191,31 @@ relate_status relate_disconnect(relate_connection conn);
  * on RELATE_ERROR, *out is NULL.
  */
 relate_status relate_query_params(relate_connection conn, const char *cypher, const relate_params params, relate_query_result *out, char **error_json);
+
+/*
+ * Seed the connection's per-transaction metadata map (ADR-0610) — the
+ * embedded channel of the three metadata inputs, the other two being
+ * CALL tx.setMetaData and a Bolt BEGIN's tx_metadata extra. metadata is
+ * a typed params builder holding the map — a root or a put_map child,
+ * the same rule as relate_query_params's params: read and not modified,
+ * reusable afterwards. NULL is an empty map; a list builder is refused
+ * (RELATE_ERROR, the error shape in *error_json).
+ *
+ * The map merges with every earlier seed (later keys win) and rides the
+ * next transaction boundary — an auto-commit write's, or an explicit
+ * transaction's relate_conn_commit — into that commit's WAL record,
+ * then clears; a rollback discards it. The merged map is bounded by the
+ * engine's per-object envelope (16 MiB): an over-bound seed fails with
+ * the storage classification and leaves the current map unchanged.
+ * CALL tx.getMetaData reads the live map back inside the transaction.
+ *
+ * The whole machinery is the `value-provenance` preview feature's
+ * (ADR-0371/ADR-0610; the variable is read once, at database open): on
+ * a store opened without RELATE_PREVIEW=value-provenance the call fails
+ * with the authored preview error instead of silently dropping the map
+ * — the embedded caller's contract.
+ */
+relate_status relate_conn_set_tx_metadata(relate_connection conn, const relate_params metadata, char **error_json);
 
 relate_status relate_conn_begin(relate_connection conn, char **error_json);
 relate_status relate_conn_rollback(relate_connection conn, char **error_json);

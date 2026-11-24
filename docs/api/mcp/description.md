@@ -30,3 +30,11 @@ runs the same way — so any HTTP client that can POST JSON can drive the
 server; no session handshake bookkeeping is required.
 
 Plan trees an agent reads through this surface describe a seek-started `MATCH` with display-only fused children (ADR-0622); they are narration, never executed operators, and carry no per-step rows, time or memory.
+A write may carry the **why** beside the what: `write_cypher` (and the
+extension mount's `batch_cypher`) take the optional `tx_metadata` object
+(ADR-0610, the spelling the ADR records for the driver channel) — the
+transaction's audit map, serialized into the commit's transaction record on
+a store opened with `RELATE_PREVIEW=value-provenance`, where the provenance
+queries read who set a value and why. Without the opt-in a call carrying it
+fails loudly with the authored preview error rather than silently losing the
+audit fact.

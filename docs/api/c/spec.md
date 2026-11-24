@@ -154,6 +154,7 @@ Every function the header declares. `relate_status` is
 | Function | Returns | Notes |
 | --- | --- | --- |
 | `relate_query_params(relate_connection conn, const char *cypher, const relate_params params, relate_query_result *out, char **error_json)` | status | the one query entry point (ADR-0220). `params` is a builder root or a `put_map` child (read, not modified, reusable) or NULL for no parameters; a list builder is refused. A statement failure returns `RELATE_OK` with an error result; `RELATE_ERROR` is connection-level only, with `*out` NULL |
+| `relate_conn_set_tx_metadata(relate_connection conn, const relate_params metadata, char **error_json)` | status | seeds the connection's per-transaction metadata map (ADR-0610). `metadata` is a builder root or a `put_map` child (read, not modified, reusable) — the same rule as `relate_query_params`' params; NULL is an empty map, a list builder is refused. Gated by `RELATE_PREVIEW=value-provenance`: without the opt-in the call fails with the authored preview error. See Transaction metadata |
 | `relate_conn_begin(relate_connection conn, char **error_json)` | status | explicit transaction (ADR-0028); single-level, one active per connection |
 | `relate_conn_commit(relate_connection conn, char **bookmark_out, char **error_json)` | status | commits the explicit transaction. `RELATE_OK`: `*bookmark_out` is the bookmark — caller-owned, free with `relate_free_string` — or NULL when the transaction committed nothing. `RELATE_ERROR`: the commit failed, `*bookmark_out` is NULL and `*error_json` carries the shape. A NULL `bookmark_out` is a refused call (the transaction is **not** committed) — see Bookmarks |
 | `relate_conn_rollback(relate_connection conn, char **error_json)` | status | rolls back |
@@ -378,6 +379,37 @@ from a local counter.
 
 See [`examples/bookmarks.c`](examples/bookmarks.c).
 
+### Transaction metadata (ADR-0610)
+
+`relate_conn_set_tx_metadata(conn, metadata, &err)` seeds the
+connection's per-transaction metadata map — the embedded channel of
+ADR-0610's three metadata inputs, the other two being
+`CALL tx.setMetaData(map)`, which merges into the same map inside a
+transaction, and a Bolt `BEGIN`'s `tx_metadata` extra. The whole
+machinery is the `value-provenance` preview feature's (ADR-0371):
+`RELATE_PREVIEW` is read once, at database open.
+
+- **Types.** `metadata` is a typed params builder holding the map — a
+  root or a `put_map` child, the same rule as `relate_query_params`'s
+  `params`: read and not modified, reusable afterwards. NULL is an empty
+  map (a no-op seed); a list builder is a defined refusal (`RELATE_ERROR`
+  with the error shape, internal stage).
+- **Semantics.** The map merges with every earlier seed — later keys win
+  — and rides the next transaction boundary (an auto-commit write's, or
+  an explicit transaction's `relate_conn_commit`) into that commit's WAL
+  record, then clears; `relate_conn_rollback` discards it. `CALL
+  tx.getMetaData()` reads the live map back inside the transaction (an
+  empty map when nothing is set).
+- **Error cases.** On a store opened without the opt-in the call fails
+  with the engine's authored preview error — the message ends `preview
+  feature 'value-provenance' is not enabled: set
+  RELATE_PREVIEW=value-provenance` — instead of silently dropping the
+  map. The merged map is bounded by the engine's per-object envelope
+  (16 MiB): an over-bound seed fails with the storage classification and
+  leaves the current map unchanged.
+
+See [`examples/tx_metadata.c`](examples/tx_metadata.c).
+
 ## Namespaces (ADR-0117)
 
 Every store has the fixed namespaces `neo4j`, `system` and
@@ -443,6 +475,8 @@ CI compiles and runs every `.c` file in
   nested list/map children, temporals, point, vector; reuse of one root.
 - [`transaction.c`](examples/transaction.c) — an explicit multi-statement
   transaction.
+- [`tx_metadata.c`](examples/tx_metadata.c) — the per-transaction
+  metadata input and its live read-back through `CALL tx.getMetaData`.
 - [`bookmarks.c`](examples/bookmarks.c) — the auto-commit and
   explicit-commit bookmarks, and the commit that committed nothing.
 - [`namespace.c`](examples/namespace.c) — namespaces and the
