@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use relate_catalog::ConstraintDef;
 use relate_core::{PropertyMap, Value};
 use relate_model::ConstraintType;
 
@@ -58,7 +59,7 @@ pub(super) fn constraint(
     target: &str,
     properties: &[&str],
 ) -> RedoOp {
-    RedoOp::CreateConstraint {
+    RedoOp::create_constraint(ConstraintDef {
         name: name.to_string(),
         relationship,
         label: target.to_string(),
@@ -66,7 +67,7 @@ pub(super) fn constraint(
         kind: ConstraintType::Unique.as_str().to_string(),
         property_type: None,
         enforced_label: None,
-    }
+    })
 }
 
 pub(super) fn unique(name: &str, label: &str, properties: &[&str]) -> RedoOp {

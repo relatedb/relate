@@ -14,7 +14,7 @@ use std::str::FromStr;
 use relate_catalog::ConstraintDef;
 use relate_core::{Error, NodeId, RelId, Result, Value};
 use relate_ir::{Direction, TypeExpr};
-use relate_model::{ConstraintType, EnforcedLabelSite};
+use relate_model::{ConstraintType, EnforcedLabelSite, EntityKind};
 
 use crate::group_key::GroupKey;
 use crate::overlay::{ExecGraph, ValidatedCatalog};
@@ -241,22 +241,41 @@ enum Target {
 }
 
 impl Target {
+    /// Dispatch once on `(entity, site)`: the catalog's `relationship` flag
+    /// and the kind's enforced-label site are two encodings of one fact, so
+    /// a disagreement is a typed rejection naming the constraint.
     fn new(
-        relationship: bool,
+        name: &str,
+        entity: EntityKind,
         site: Option<EnforcedLabelSite>,
         enforced_label: Option<String>,
-    ) -> Self {
-        match (relationship, site, enforced_label) {
-            (false, Some(EnforcedLabelSite::Node), enforced) => Target::Node { enforced },
-            (false, _, _) => Target::Node { enforced: None },
-            (true, Some(EnforcedLabelSite::Start), Some(label)) => Target::Rel {
-                endpoint: Some((Endpoint::Start, label)),
-            },
-            (true, Some(EnforcedLabelSite::End), Some(label)) => Target::Rel {
+    ) -> Result<Self> {
+        Ok(match (entity, site, enforced_label) {
+            (EntityKind::Node, Some(EnforcedLabelSite::Node), enforced) => {
+                Target::Node { enforced }
+            }
+            (EntityKind::Node, None, _) => Target::Node { enforced: None },
+            (EntityKind::Relationship, Some(EnforcedLabelSite::Start), Some(label)) => {
+                Target::Rel {
+                    endpoint: Some((Endpoint::Start, label)),
+                }
+            }
+            (EntityKind::Relationship, Some(EnforcedLabelSite::End), Some(label)) => Target::Rel {
                 endpoint: Some((Endpoint::End, label)),
             },
-            (true, _, _) => Target::Rel { endpoint: None },
-        }
+            (
+                EntityKind::Relationship,
+                Some(EnforcedLabelSite::Start | EnforcedLabelSite::End),
+                None,
+            )
+            | (EntityKind::Relationship, None, _) => Target::Rel { endpoint: None },
+            (EntityKind::Node, Some(EnforcedLabelSite::Start | EnforcedLabelSite::End), _)
+            | (EntityKind::Relationship, Some(EnforcedLabelSite::Node), _) => {
+                return Err(Error::storage(format!(
+                    "constraint '{name}' enforced-label entity type mismatch"
+                )))
+            }
+        })
     }
 }
 
@@ -361,10 +380,11 @@ impl<'c> ConstraintCheck<'c> {
             kind,
             property_type,
             target: Target::new(
-                def.relationship,
+                &def.name,
+                EntityKind::from_relationship_flag(def.relationship),
                 kind.enforced_label_site(),
                 def.enforced_label.clone(),
-            ),
+            )?,
         })
     }
 

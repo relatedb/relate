@@ -30,7 +30,10 @@ pub(in crate::graph) enum TrackedNodeEdit {
     /// The edit can change a constrained tuple; `before` is the committed
     /// view captured before the edit landed (`None` = the entity did not
     /// exist then).
-    Tracked { before: Option<LiveNode> },
+    Tracked {
+        id: NodeId,
+        before: Option<LiveNode>,
+    },
 }
 
 /// The relationship twin of [`TrackedNodeEdit`].
@@ -40,7 +43,7 @@ pub(in crate::graph) enum TrackedRelEdit {
     /// The edit can change a constrained tuple; `before` is the committed
     /// view captured before the edit landed (`None` = the entity did not
     /// exist then).
-    Tracked { before: Option<LiveRel> },
+    Tracked { id: RelId, before: Option<LiveRel> },
 }
 
 impl Graph {
@@ -56,6 +59,7 @@ impl Graph {
             return TrackedNodeEdit::Untracked;
         }
         TrackedNodeEdit::Tracked {
+            id,
             before: self.live_node_snapshot(id),
         }
     }
@@ -70,6 +74,7 @@ impl Graph {
             return TrackedRelEdit::Untracked;
         }
         TrackedRelEdit::Tracked {
+            id,
             before: self.live_rel_snapshot(id),
         }
     }
@@ -97,14 +102,17 @@ impl Graph {
 
 impl Graph {
     /// Finish a tracked node edit whose new live view is in hand: the token
-    /// carries no graph, so the receiver binds it by construction.
+    /// carries no graph, so the receiver binds it by construction, and the
+    /// entity id it carries must be the one being completed (a token opened
+    /// for another entity would charge the wrong before-image).
     pub(in crate::graph) fn finish_node_edit(
         &self,
         edit: TrackedNodeEdit,
         id: NodeId,
         after: Option<&LiveNode>,
     ) {
-        if let TrackedNodeEdit::Tracked { before } = edit {
+        if let TrackedNodeEdit::Tracked { id: opened, before } = edit {
+            assert_eq!(opened, id, "node edit token completed for another node");
             self.constraint_keys_node(id, before.as_ref(), after);
         }
     }
@@ -116,7 +124,8 @@ impl Graph {
         id: RelId,
         after: Option<&LiveRel>,
     ) {
-        if let TrackedRelEdit::Tracked { before } = edit {
+        if let TrackedRelEdit::Tracked { id: opened, before } = edit {
+            assert_eq!(opened, id, "rel edit token completed for another rel");
             self.constraint_keys_rel(id, before.as_ref(), after);
         }
     }

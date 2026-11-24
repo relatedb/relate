@@ -338,3 +338,31 @@ fn unparseable_type_strings_fail_closed() {
     assert!(parse_constraint_type("LIST<INTEGER | STRING>").is_none());
     assert!(parse_constraint_type("NOT A TYPE").is_none());
 }
+
+/// REL8-2046: the catalog's `relationship` flag and the kind's enforced-label
+/// site are one fact; a disagreement is a typed rejection at construction.
+#[test]
+fn an_entity_flag_disagreeing_with_the_enforced_label_site_is_rejected() {
+    for (kind, relationship) in [
+        ("labelExistence", true),
+        ("sourceLabel", false),
+        ("targetLabelExistence", false),
+    ] {
+        let def = ConstraintDef {
+            name: "c".into(),
+            relationship,
+            label: "L".into(),
+            properties: vec!["p".into()],
+            kind: kind.into(),
+            property_type: None,
+            enforced_label: Some("E".into()),
+        };
+        let Err(error) = ConstraintCheck::new(&def) else {
+            panic!("{kind} with relationship={relationship} must be rejected");
+        };
+        assert!(
+            error.to_string().contains("entity type mismatch"),
+            "{kind}: {error}"
+        );
+    }
+}

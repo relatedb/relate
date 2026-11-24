@@ -465,8 +465,9 @@ impl<'g> SlotSimulation<'g> {
     }
 
     /// Apply one already-classified tuple op. The scope guard lives in each
-    /// arm (a create/delete registers unconditionally; a property or label
-    /// edit returns before touching state when out of scope), so the op is
+    /// arm (a create/delete registers unconditionally; a property edit is
+    /// guarded once in [`Self::edit_tracked_props`], a label edit returns
+    /// before touching state when out of scope), so the op is
     /// classified once and applied once.
     pub(super) fn apply_tuple(&mut self, op: TupleOp<'_>) {
         self.apply_tuple_inner(op);
@@ -502,21 +503,9 @@ impl<'g> SlotSimulation<'g> {
         &mut self.track(entity).1
     }
 
-    /// Whether `key` resolves to an interned id this map's side constrains.
-    /// The one scope predicate the four property arms consult.
-    fn key_in_scope(&self, key: &str, relationship: bool) -> bool {
-        let Some(kid) = self.graph.interner.get_id(key) else {
-            return false;
-        };
-        if relationship {
-            self.scope.touches_rel_key(kid)
-        } else {
-            self.scope.touches_node_key(kid)
-        }
-    }
-
     /// Apply one property edit to the entity's tracked after-view: resolve
-    /// the key once (an uninterned key is outside every constraint), then
+    /// the key once (an uninterned key is outside every constraint), apply
+    /// the one scope guard (does this map's side constrain the key?), then
     /// match the view variant the entity kind fixes.
     fn edit_tracked_props(
         &mut self,
@@ -527,6 +516,13 @@ impl<'g> SlotSimulation<'g> {
         let Some(kid) = self.graph.interner.get_id(key) else {
             return;
         };
+        let in_scope = match entity {
+            EntityId::Node(_) => self.scope.touches_node_key(kid),
+            EntityId::Rel(_) => self.scope.touches_rel_key(kid),
+        };
+        if !in_scope {
+            return;
+        }
         match (entity, self.state(entity).as_mut()) {
             (EntityId::Node(_), Some(KeyView::Node { props, .. }))
             | (EntityId::Rel(_), Some(KeyView::Rel { props, .. })) => edit(props, kid),
@@ -564,31 +560,19 @@ impl<'g> SlotSimulation<'g> {
             TupleOp::DeleteNode { id } => self.delete(EntityId::Node(id)),
             TupleOp::DeleteRel { id } => self.delete(EntityId::Rel(id)),
             TupleOp::SetNodeProp { id, key, value } => {
-                if !self.key_in_scope(key, false) {
-                    return;
-                }
                 self.edit_tracked_props(EntityId::Node(id), key, |props, kid| {
                     props.set(kid, value.clone());
                 });
             }
             TupleOp::RemoveNodeProp { id, key } => {
-                if !self.key_in_scope(key, false) {
-                    return;
-                }
                 self.edit_tracked_props(EntityId::Node(id), key, |props, kid| props.remove(kid));
             }
             TupleOp::SetRelProp { id, key, value } => {
-                if !self.key_in_scope(key, true) {
-                    return;
-                }
                 self.edit_tracked_props(EntityId::Rel(id), key, |props, kid| {
                     props.set(kid, value.clone());
                 });
             }
             TupleOp::RemoveRelProp { id, key } => {
-                if !self.key_in_scope(key, true) {
-                    return;
-                }
                 self.edit_tracked_props(EntityId::Rel(id), key, |props, kid| props.remove(kid));
             }
             TupleOp::AddLabels { id, labels } => {
