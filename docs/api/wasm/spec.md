@@ -184,13 +184,23 @@ Throws on an envelope that is not wire JSON.
 `scripts/build-wasm.sh` ships next to `relate.js`. True when `err`,
 thrown by a call into the bundle, means the instance trapped and must be
 replaced; false for any other error, after which the instance is still
-usable. The relate-web playground and cookbook pages use it.
+usable. A Rust panic arrives as a `WebAssembly.RuntimeError`; stack
+exhaustion arrives as each engine words it (Chromium/WebKit `Maximum
+call stack size exceeded`, Firefox `too much recursion`), and an
+overflowed instance throws `recursive use of an object detected…` on the
+next call — that instance is just as dead. Only Error values are
+classified: a trap always crosses the boundary as a `WebAssembly.RuntimeError`
+or a plain Error carrying its message (a RuntimeError cannot be
+structured-cloned out of a worker), and anything that is not an Error never
+came from the bundle. The relate-web playground and
+cookbook pages use it.
 
 ## Examples
 
 Runnable examples live in [`examples/`](examples/): `return_one.js`
 (one round-trip), `execute_script.js` (a multi-statement script and a
-failing one), and `render_result.js` (a recording). CI runs them against
+failing one), `render_result.js` (a recording), and `is_wasm_trap.js`
+(trap classification, per-engine wording). CI runs them against
 the release bundle (the `wasm` job):
 
 ```sh

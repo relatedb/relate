@@ -53,9 +53,12 @@ await init(wasmUrl);
 ### Traps: isWasmTrap
 
 A Rust panic on wasm32 traps the module, which JS observes as a
-`WebAssembly.RuntimeError`. The instance is unusable after that and must be
-replaced (a new worker, or a page reload). The shipped `trap.js` exports the
-classifier:
+`WebAssembly.RuntimeError`. Stack exhaustion traps it too, worded per engine
+(`Maximum call stack size exceeded` in Chromium/WebKit, `too much recursion`
+in Firefox), and the overflowed instance throws `recursive use of an object
+detected…` on the next call. The instance is unusable after any of these and
+must be replaced (a new worker, or a page reload). The shipped `trap.js`
+exports the classifier:
 
 ```js
 import { isWasmTrap } from "@relate/relate-wasm/trap.js";

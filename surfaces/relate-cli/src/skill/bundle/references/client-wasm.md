@@ -63,8 +63,11 @@ runs several and returns one envelope per statement.
   (`FileSystemSyncAccessHandle`); on the page thread it throws.
   `new RelateDb()` (`:memory:`) may run on the page thread.
 - **`isWasmTrap` for poisoned instances** — a Rust panic traps the module
-  (JS sees a `WebAssembly.RuntimeError`) and the instance is dead: replace
-  it (new worker or page reload). Classify with `isWasmTrap` from
+  (JS sees a `WebAssembly.RuntimeError`), and so does stack exhaustion
+  (`Maximum call stack size exceeded` in Chromium/WebKit, `too much
+  recursion` in Firefox; an overflowed instance then throws `recursive
+  use of an object detected…` on the next call). The instance is dead:
+  replace it (new worker or page reload). Classify with `isWasmTrap` from
   `@relate/relate-wasm/trap.js`; false means the instance is still
   usable.
 - **No byte arrays** — the engine's byte array (ADR-0327) is Bolt-only and
