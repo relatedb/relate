@@ -7,8 +7,8 @@
     "class": "relate-loadtest-baseline/v1",
     "arch": "x86_64",
     "os": "linux",
-    "build_image": "rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0",
-    "run_image": "debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc",
+    "build_image": "rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c",
+    "run_image": "debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e",
     "cpus": 2,
     "cpu_period_us": 10000,
     "cpu_quota_us": 20000,
@@ -34,8 +34,8 @@
         "max": 258
       },
       "disk_bytes": {
-        "min": 769,
-        "max": 769
+        "min": 827,
+        "max": 827
       },
       "attributed_rss_bytes": {
         "min": 0,
@@ -50,80 +50,100 @@
       "nodes": 120000,
       "relationships": 0,
       "logical_bytes": {
-        "min": 27286276,
-        "max": 27286276
+        "min": 27286424,
+        "max": 27286424
       },
       "disk_bytes": {
-        "min": 2041295,
-        "max": 2041295
+        "min": 1329242,
+        "max": 1329242
       },
       "attributed_rss_bytes": {
-        "min": 38260736,
-        "max": 38723584
+        "min": 38969344,
+        "max": 39346176
       },
       "ratio": {
-        "min": 1.402197060529623,
-        "max": 1.4191597270364047
+        "min": 1.4281587063222356,
+        "max": 1.4419689439700856
       }
     },
     "fanout": {
       "nodes": 52016,
       "relationships": 52000,
       "logical_bytes": {
-        "min": 30015298,
-        "max": 30015298
+        "min": 27739024,
+        "max": 27739024
       },
       "disk_bytes": {
-        "min": 1837437,
-        "max": 1837437
+        "min": 1158114,
+        "max": 1158114
       },
       "attributed_rss_bytes": {
-        "min": 36622336,
-        "max": 38383616
+        "min": 36610048,
+        "max": 37543936
       },
       "ratio": {
-        "min": 1.2201223522751632,
-        "max": 1.278801763020977
+        "min": 1.3198030327238623,
+        "max": 1.353469970681016
       }
     },
     "ring": {
       "nodes": 46000,
       "relationships": 46000,
       "logical_bytes": {
-        "min": 31442900,
-        "max": 31442900
+        "min": 30330296,
+        "max": 30330296
       },
       "disk_bytes": {
-        "min": 1850979,
-        "max": 1850979
+        "min": 1266765,
+        "max": 1266765
       },
       "attributed_rss_bytes": {
-        "min": 37019648,
-        "max": 37629952
+        "min": 39665664,
+        "max": 41664512
       },
       "ratio": {
-        "min": 1.1773611212706208,
-        "max": 1.1967710357505192
+        "min": 1.307790204223526,
+        "max": 1.3736928910947654
       }
     },
     "dense ring": {
       "nodes": 5000,
       "relationships": 100000,
       "logical_bytes": {
-        "min": 32931406,
-        "max": 32931406
+        "min": 29925295,
+        "max": 29925295
       },
       "disk_bytes": {
-        "min": 1699957,
-        "max": 1699957
+        "min": 778667,
+        "max": 778667
       },
       "attributed_rss_bytes": {
-        "min": 32788480,
-        "max": 34041856
+        "min": 31154176,
+        "max": 31526912
       },
       "ratio": {
-        "min": 0.9956598877071936,
-        "max": 1.03372009078507
+        "min": 1.0410649585910514,
+        "max": 1.0535205083191328
+      }
+    },
+    "mid degree": {
+      "nodes": 1232,
+      "relationships": 112112,
+      "logical_bytes": {
+        "min": 24723715,
+        "max": 24723715
+      },
+      "disk_bytes": {
+        "min": 951421,
+        "max": 951421
+      },
+      "attributed_rss_bytes": {
+        "min": 30724096,
+        "max": 31408128
+      },
+      "ratio": {
+        "min": 1.2426973858904296,
+        "max": 1.270364425410987
       }
     }
   }
