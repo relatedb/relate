@@ -12,10 +12,15 @@ mod values;
 fn row_json(v: Json) -> Vec<Json> {
     vec![serde_json::json!({ "c": v })]
 }
+
+/// One relate map value from `(key, value)` entries — the one spelling of
+/// the `CypherValue::Map` fixtures the row tests build by hand.
+fn cypher_map(entries: impl IntoIterator<Item = (String, CypherValue)>) -> CypherValue {
+    CypherValue::Map(entries.into_iter().collect())
+}
+
 fn row_cypher(v: CypherValue) -> Vec<CypherValue> {
-    vec![CypherValue::Map(
-        [("c".to_string(), v)].into_iter().collect(),
-    )]
+    vec![cypher_map([("c".to_string(), v)])]
 }
 /// Several reference rows, one per value — the multi-row form of
 /// [`row_json`].
@@ -43,13 +48,7 @@ fn expect_different(left: &[Json], right: &[CypherValue], order: StatementOrder)
 /// Rows `{n: 1}, {n: 2}` on the reference side and the same two rows swapped
 /// on the relate side: equal as a bag, different positionally.
 fn swapped_rows() -> (Vec<Json>, Vec<CypherValue>) {
-    let row = |n: i64| {
-        CypherValue::Map(
-            [("n".to_string(), CypherValue::Int(n))]
-                .into_iter()
-                .collect(),
-        )
-    };
+    let row = |n: i64| cypher_map([("n".to_string(), CypherValue::Int(n))]);
     (
         vec![serde_json::json!({"n": 1}), serde_json::json!({"n": 2})],
         vec![row(2), row(1)],

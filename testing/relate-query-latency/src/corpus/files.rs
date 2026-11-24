@@ -139,24 +139,14 @@ pub(super) type Oracle = BTreeMap<String, OracleEntry>;
 /// oracle-owning lane resolves rows through [`OracleFile::row`].
 #[derive(Debug)]
 pub(super) struct OracleFile<V = OracleEntry> {
-    table: BTreeMap<String, V>,
-    path: PathBuf,
+    pub(super) table: BTreeMap<String, V>,
+    pub(super) path: PathBuf,
 }
 
 impl<V> OracleFile<V> {
     /// Pair a table with the file it came from.
     pub(super) fn new(table: BTreeMap<String, V>, path: PathBuf) -> Self {
         Self { table, path }
-    }
-
-    /// The table's rows, keyed by query id.
-    pub(super) fn table(&self) -> &BTreeMap<String, V> {
-        &self.table
-    }
-
-    /// The file the table was read from.
-    pub(super) fn path(&self) -> &Path {
-        &self.path
     }
 
     /// One row of the table, looked up by query id — the ONE lookup and
@@ -248,6 +238,17 @@ pub(super) fn refuse_stale_ids<'a>(
     Ok(())
 }
 
+/// Whether an entry of this classification carries a machine-readable
+/// answer check in its oracle: the executable (`ok`) entries do — they
+/// run and are answer-checked — while the non-executing ones (`kept`,
+/// `error-pin`) carry none. The ONE statement of the
+/// oracle↔classification bijection, read by [`validate_rows_oracle`] and
+/// the fraud lane's build check alike, so the rule is never restated per
+/// lane.
+pub(super) fn oracle_carries_check(classification: &Classification) -> bool {
+    matches!(classification, Classification::Ok)
+}
+
 /// A rows oracle's contract with its workload's query files, both
 /// directions, stated ONCE for every rows-oracle lane (ukrailway,
 /// agg-stress): every oracle row names a query file (the shared
@@ -256,40 +257,36 @@ pub(super) fn refuse_stale_ids<'a>(
 /// one lookup, [`OracleFile::row`]), and no kept or pin entry carries one (neither
 /// ever executes, so a row for it is stale data riding along unvalidated
 /// — the presence probe is the table's own `contains_key`, never the
-/// lookup's miss error constructed and discarded).
+/// lookup's miss error constructed and discarded). The
+/// executable-carries-a-check half is [`oracle_carries_check`]'s rule.
 pub(super) fn validate_rows_oracle(oracle: &OracleFile, queries: &[CorpusQuery]) -> Result<()> {
-    let path = oracle.path();
+    let path = &oracle.path;
     refuse_stale_ids(
-        oracle.table().keys().map(String::as_str),
+        oracle.table.keys().map(String::as_str),
         queries,
         "an oracle entry",
     )?;
     for q in queries {
-        match &q.classification {
-            Classification::Ok => {
-                let entry = oracle.row(&q.id)?;
-                // The text-freshness comparison, where the entry and its
-                // query are already paired: an edited query must not
-                // ride a stale answer (the graph-benchmark-ldbc lane's guard).
-                if entry.query_sha256 != q.sha256 {
-                    return Err(format!(
-                        "{}: {}'s oracle was generated for a different text (recorded {}, file is {}); \
-                         regenerate the oracle for the edited query",
-                        path.display(),
-                        q.id,
-                        entry.query_sha256,
-                        q.sha256
-                    ));
-                }
+        if oracle_carries_check(&q.classification) {
+            let entry = oracle.row(&q.id)?;
+            // The text-freshness comparison, where the entry and its
+            // query are already paired: an edited query must not
+            // ride a stale answer (the graph-benchmark-ldbc lane's guard).
+            if entry.query_sha256 != q.sha256 {
+                return Err(format!(
+                    "{}: {}'s oracle was generated for a different text (recorded {}, file is {}); \
+                     regenerate the oracle for the edited query",
+                    path.display(),
+                    q.id,
+                    entry.query_sha256,
+                    q.sha256
+                ));
             }
-            Classification::Kept | Classification::ErrorPin { .. } => {
-                if oracle.table().contains_key(&q.id) {
-                    return Err(format!(
-                        "{}: a kept or pin entry never executes; its oracle row is stale data",
-                        q.id
-                    ));
-                }
-            }
+        } else if oracle.table.contains_key(&q.id) {
+            return Err(format!(
+                "{}: a kept or pin entry never executes; its oracle row is stale data",
+                q.id
+            ));
         }
     }
     Ok(())
@@ -390,11 +387,11 @@ mod tests {
         )
         .unwrap();
         let oracle = load_rows_oracle(&oracle_file).unwrap();
-        assert_eq!(oracle.table().len(), 2, "the _source block is not an entry");
-        assert_eq!(oracle.path(), oracle_file, "the file the table came from");
-        assert_eq!(oracle.table()["q1"].expected.rows.len(), 1);
-        assert!(!oracle.table()["q1"].expected.order_sensitive);
-        assert!(oracle.table()["q2"].expected.order_sensitive);
+        assert_eq!(oracle.table.len(), 2, "the _source block is not an entry");
+        assert_eq!(oracle.path, oracle_file, "the file the table came from");
+        assert_eq!(oracle.table["q1"].expected.rows.len(), 1);
+        assert!(!oracle.table["q1"].expected.order_sensitive);
+        assert!(oracle.table["q2"].expected.order_sensitive);
         let malformed = dir.path().join("malformed.json");
         std::fs::write(
             &malformed,

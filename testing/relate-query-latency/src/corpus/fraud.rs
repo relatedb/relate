@@ -23,7 +23,9 @@ use relate::Value;
 use relate_datasets::fraud::{generate, FraudConfig};
 use relate_datasets::load::load_fraud;
 
-use super::files::{parse_rows_check, read_query_entries, refuse_stale_ids, OracleFile};
+use super::files::{
+    oracle_carries_check, parse_rows_check, read_query_entries, refuse_stale_ids, OracleFile,
+};
 use super::graph::{CorpusLane, GraphHandle, Routed, Target};
 use super::report::FraudReport;
 use super::{Classification, CorpusQuery, Workload};
@@ -214,41 +216,36 @@ impl FraudGraphs {
     pub(super) fn new(config: FraudConfig, queries: &[CorpusQuery]) -> Result<Self> {
         let oracle = OracleFile::new(fraud_oracle()?, oracle_path());
         for q in queries {
-            let check = oracle.row(&q.id)?;
-            match (&q.classification, check) {
-                (Classification::Ok, FraudCheck::None) => {
-                    return Err(format!(
-                        "{}: an executable entry with no machine-readable check",
-                        q.id
-                    ));
-                }
-                (Classification::Kept, FraudCheck::PlantedRing | FraudCheck::Rows(_)) => {
-                    return Err(format!(
+            let carries = !matches!(oracle.row(&q.id)?, FraudCheck::None);
+            // The oracle↔classification bijection, one home in `files`:
+            // an executable (`ok`) entry carries a machine-readable
+            // check, a non-executing one (`kept`, `error-pin`) carries
+            // none. A mismatch is refused in the entry's own words.
+            if carries == oracle_carries_check(&q.classification) {
+                continue;
+            }
+            return Err(match &q.classification {
+                Classification::Ok => format!(
+                    "{}: an executable entry with no machine-readable check",
+                    q.id
+                ),
+                Classification::Kept => {
+                    format!(
                         "{}: a kept entry carries no check (it never executes)",
                         q.id
-                    ));
+                    )
                 }
-                (
-                    Classification::ErrorPin { .. },
-                    FraudCheck::PlantedRing | FraudCheck::Rows(_),
-                ) => {
-                    return Err(format!(
-                        "{}: a pin entry's authored failure is its check; its oracle row \
-                         carries none",
-                        q.id
-                    ));
-                }
-                // The valid pairs: an executable entry's real check, and
-                // a non-executing entry's `none`.
-                (Classification::Ok, FraudCheck::PlantedRing | FraudCheck::Rows(_))
-                | (Classification::Kept, FraudCheck::None)
-                | (Classification::ErrorPin { .. }, FraudCheck::None) => {}
-            }
+                Classification::ErrorPin { .. } => format!(
+                    "{}: a pin entry's authored failure is its check; its oracle row \
+                     carries none",
+                    q.id
+                ),
+            });
         }
         // No oracle row is without a query file — the shared stale-id
         // refusal, over this lane's own table.
         refuse_stale_ids(
-            oracle.table().keys().map(String::as_str),
+            oracle.table.keys().map(String::as_str),
             queries,
             "an oracle entry",
         )?;

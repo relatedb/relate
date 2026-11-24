@@ -183,14 +183,10 @@ fn non_path_rows_compare_as_before() {
     );
     // Scalars and maps are untouched by the path canonicalization.
     let left = row_json(serde_json::json!({"a": 1, "b": "x"}));
-    let right = row_cypher(CypherValue::Map(
-        [
-            ("a".to_string(), CypherValue::Int(1)),
-            ("b".to_string(), CypherValue::Str("x".into())),
-        ]
-        .into_iter()
-        .collect(),
-    ));
+    let right = row_cypher(cypher_map([
+        ("a".to_string(), CypherValue::Int(1)),
+        ("b".to_string(), CypherValue::Str("x".into())),
+    ]));
     assert_eq!(
         compare_rows(&left, &right, StatementOrder::Unordered),
         Relation::Exact

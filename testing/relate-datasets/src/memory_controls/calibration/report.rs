@@ -120,6 +120,40 @@ impl Scope {
             Self::Family(spec) => row.family == spec.name,
         }
     }
+
+    /// Bytes per extra holder for this scope's rows: a family's holder
+    /// cost from the equal-total shapes, or `None` for `overall`, which
+    /// mixes families so a holder term is not meaningful. The one home of
+    /// the per-family rule. Each delta is rescaled to 16,777,216 logical
+    /// bytes first, so a few bytes of hold noise are not read as holder
+    /// cost.
+    fn per_holder_bytes(
+        self,
+        rows: &[&PeakCalibrationObservation],
+        delta: impl Fn(&PeakCalibrationObservation) -> Option<u64>,
+    ) -> Option<f64> {
+        let Self::Family(_) = self else {
+            return None;
+        };
+        let points = rows
+            .iter()
+            .filter(|row| {
+                equal_total_shapes().any(|shape| shape == (row.target_logical_bytes, row.holders))
+            })
+            .filter_map(|row| {
+                let bytes = delta(row)? as f64;
+                let scale = EQUAL_TOTAL_LOGICAL_BYTES as f64 / row.held_logical_bytes.max(1) as f64;
+                Some((row.holders as f64, bytes * scale))
+            })
+            .collect::<Vec<_>>();
+        let holder_counts = points
+            .iter()
+            .map(|point| point.0 as usize)
+            .collect::<std::collections::BTreeSet<_>>();
+        (holder_counts.len() >= 2)
+            .then(|| linear_fit(&points).map(|fit| fit.slope))
+            .flatten()
+    }
 }
 
 /// Summarize one scope's observations. The summary's `family` field
@@ -135,17 +169,8 @@ pub(super) fn summarize_family(
         .iter()
         .filter(|row| scope.covers(row))
         .collect::<Vec<_>>();
-    let rss_points = rows
-        .iter()
-        .map(|row| (row.held_logical_bytes as f64, row.rss_delta_bytes as f64))
-        .collect::<Vec<_>>();
-    let cgroup_points = rows
-        .iter()
-        .filter_map(|row| {
-            row.cgroup_delta_bytes
-                .map(|delta| (row.held_logical_bytes as f64, delta as f64))
-        })
-        .collect::<Vec<_>>();
+    let rss_points = logical_byte_points(&rows, |row| Some(row.rss_delta_bytes));
+    let cgroup_points = logical_byte_points(&rows, |row| row.cgroup_delta_bytes);
     let rss_fit = linear_fit(&rss_points)
         .ok_or_else(|| format!("calibration scope {name} has no observations"))?;
     let cgroup_fit = linear_fit(&cgroup_points);
@@ -162,7 +187,6 @@ pub(super) fn summarize_family(
     .ok_or_else(|| format!("calibration scope {name} has no one-holder observations"))?;
     let cgroup_single_points = logical_byte_points(&single, |row| row.cgroup_delta_bytes);
     let cgroup_single = linear_fit(&cgroup_single_points);
-    let per_family = matches!(scope, Scope::Family(_));
     Ok(PeakCalibrationSummary {
         family: name.to_string(),
         observations: rows.len(),
@@ -182,15 +206,11 @@ pub(super) fn summarize_family(
         .unwrap_or(0.0),
         rss_single_holder_slope: rss_single.slope,
         rss_single_holder_r_squared: rss_single.r_squared,
-        rss_per_holder_bytes: per_family
-            .then(|| per_holder_bytes(&rows, |row| Some(row.rss_delta_bytes)))
-            .flatten(),
+        rss_per_holder_bytes: scope.per_holder_bytes(&rows, |row| Some(row.rss_delta_bytes)),
         cgroup_slope: cgroup_fit.map(|fit| fit.slope),
         cgroup_single_holder_slope: cgroup_single.map(|fit| fit.slope),
         cgroup_single_holder_r_squared: cgroup_single.map(|fit| fit.r_squared),
-        cgroup_per_holder_bytes: per_family
-            .then(|| per_holder_bytes(&rows, |row| row.cgroup_delta_bytes))
-            .flatten(),
+        cgroup_per_holder_bytes: scope.per_holder_bytes(&rows, |row| row.cgroup_delta_bytes),
         cgroup_intercept_bytes: cgroup_fit.map(|fit| fit.intercept),
         cgroup_r_squared: cgroup_fit.map(|fit| fit.r_squared),
         cgroup_max_abs_residual_bytes,
@@ -212,33 +232,6 @@ fn logical_byte_points(
     rows.iter()
         .filter_map(|row| delta(row).map(|bytes| (row.held_logical_bytes as f64, bytes as f64)))
         .collect()
-}
-
-/// Bytes per extra holder from the equal-total shapes. Each delta is
-/// rescaled to 16,777,216 logical bytes first, so a few bytes of hold
-/// noise are not read as holder cost.
-fn per_holder_bytes(
-    rows: &[&PeakCalibrationObservation],
-    delta: impl Fn(&PeakCalibrationObservation) -> Option<u64>,
-) -> Option<f64> {
-    let points = rows
-        .iter()
-        .filter(|row| {
-            equal_total_shapes().any(|shape| shape == (row.target_logical_bytes, row.holders))
-        })
-        .filter_map(|row| {
-            let bytes = delta(row)? as f64;
-            let scale = EQUAL_TOTAL_LOGICAL_BYTES as f64 / row.held_logical_bytes.max(1) as f64;
-            Some((row.holders as f64, bytes * scale))
-        })
-        .collect::<Vec<_>>();
-    let holder_counts = points
-        .iter()
-        .map(|point| point.0 as usize)
-        .collect::<std::collections::BTreeSet<_>>();
-    (holder_counts.len() >= 2)
-        .then(|| linear_fit(&points).map(|fit| fit.slope))
-        .flatten()
 }
 
 fn max_abs_residual(points: &[(f64, f64)], fit: Fit) -> f64 {

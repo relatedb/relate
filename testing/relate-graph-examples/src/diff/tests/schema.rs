@@ -14,16 +14,12 @@ fn str_list(ss: &[&str]) -> CypherValue {
 
 /// A relate schema-entry map for the fixtures below.
 fn entry(label: &str, constraints: &[&str], indexes: &[&str]) -> CypherValue {
-    CypherValue::Map(
-        [
-            (":LABELS".into(), str_list(&[label])),
-            ("constraints".into(), str_list(constraints)),
-            ("indexes".into(), str_list(indexes)),
-            ("name".into(), CypherValue::Str(label.into())),
-        ]
-        .into_iter()
-        .collect(),
-    )
+    cypher_map([
+        (":LABELS".into(), str_list(&[label])),
+        ("constraints".into(), str_list(constraints)),
+        ("indexes".into(), str_list(indexes)),
+        ("name".into(), CypherValue::Str(label.into())),
+    ])
 }
 
 const NEO_CONSTRAINT: &str = "Constraint( id=30, name='constraint_2876b1c0', type='NODE_PROPERTY_UNIQUENESS', schema=(:_Bloom_Perspective_ {id}), ownedIndex=31, graphTypeDependence='UNDESIGNATED' )";
@@ -72,22 +68,14 @@ fn schema_visualization_rows_normalize_to_content() {
 fn plain_rows_with_name_keys_keep_their_order() {
     let neo4j = serde_json::json!([{"name": "b", "n": 2}, {"name": "a", "n": 1}]);
     let cypher = vec![
-        CypherValue::Map(
-            [
-                ("name".into(), CypherValue::Str("b".into())),
-                ("n".into(), CypherValue::Int(2)),
-            ]
-            .into_iter()
-            .collect(),
-        ),
-        CypherValue::Map(
-            [
-                ("name".into(), CypherValue::Str("a".into())),
-                ("n".into(), CypherValue::Int(1)),
-            ]
-            .into_iter()
-            .collect(),
-        ),
+        cypher_map([
+            ("name".into(), CypherValue::Str("b".into())),
+            ("n".into(), CypherValue::Int(2)),
+        ]),
+        cypher_map([
+            ("name".into(), CypherValue::Str("a".into())),
+            ("n".into(), CypherValue::Int(1)),
+        ]),
     ];
     assert_eq!(
         compare_rows(neo4j.as_array().unwrap(), &cypher, StatementOrder::Ordered),
