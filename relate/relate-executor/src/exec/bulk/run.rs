@@ -23,7 +23,7 @@ const CANCEL_CHECK_STRIDE: u64 = 1024;
 /// is the variant, keeping the two id namespaces apart; a node's `work`
 /// estimate is 1 + incident-degree, a relationship's is uniformly 1.
 #[derive(Debug, Clone, Copy)]
-enum BulkEntity {
+pub(super) enum BulkEntity {
     Node { id: NodeId, work: u64 },
     Rel { id: RelId },
 }
@@ -41,7 +41,7 @@ impl BulkEntity {
 /// variant carries everything its execution arm needs, so there is no
 /// kind/targets pairing to get wrong.
 #[derive(Debug)]
-enum TargetsInner {
+pub(super) enum TargetsInner {
     /// `DELETE`: deduplicated entities in id order (nodes first).
     Delete {
         detach: bool,
@@ -205,7 +205,7 @@ impl BulkWrite {
     /// row space — deleting an entity is idempotent, so each id is
     /// processed once), preflight `DeleteConnectedNode` for a
     /// non-`DETACH` delete, and estimate each entity's work.
-    fn collect_delete_targets(
+    pub(super) fn collect_delete_targets(
         &self,
         view: &ExecGraph<'_>,
         detach: bool,
@@ -226,6 +226,17 @@ impl BulkWrite {
                 entities: Vec::new(),
             });
         }
+        // The ids are positional, one list per factor in `self.factors`
+        // order (built by `collect_targets`); state the pairing once so
+        // a disagreeing caller fails loudly instead of `zip` truncating
+        // to the shorter side.
+        assert_eq!(
+            self.factors.len(),
+            factor_ids.len(),
+            "bulk DELETE pairs each factor with exactly one id list: {} factors, {} id lists",
+            self.factors.len(),
+            factor_ids.len(),
+        );
         for (factor, ids) in self.factors.iter().zip(factor_ids) {
             if !targets.contains(&factor.var) {
                 continue;

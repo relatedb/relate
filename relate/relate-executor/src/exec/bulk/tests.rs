@@ -283,3 +283,17 @@ mod execution {
         assert!(bulk.collect_targets(&g, pin.ts()).unwrap().is_none());
     }
 }
+
+mod delete_pairing {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "pairs each factor with exactly one id list")]
+    fn a_factor_id_count_mismatch_fails_loudly() {
+        let g = Graph::default();
+        let bulk = analyze("MATCH (n:A) DETACH DELETE n").expect("eligible bulk write");
+        let view = ExecGraph::read_at(&g, 0);
+        let targets: HashSet<String> = bulk.factors.iter().map(|f| f.var.clone()).collect();
+        let _ = bulk.collect_delete_targets(&view, true, &targets, &[]);
+    }
+}
