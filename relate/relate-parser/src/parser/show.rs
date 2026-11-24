@@ -475,7 +475,7 @@ impl<'a> Parser<'a> {
     /// words: consumes both tokens only when `AS` is followed by an
     /// identifier spelled `word`.
     fn eat_as_word(&mut self, word: &str) -> bool {
-        if self.peek_type() == TokenType::AS && self.peek_at_is_ident(1, word) {
+        if self.peek_keyword_word(TokenType::AS, word) {
             self.next_token(); // AS
             self.next_token(); // the word
             true
@@ -489,13 +489,12 @@ impl<'a> Parser<'a> {
     /// `AS` names a variant, so `AS GRAPH` and anything else stay for the
     /// caller.
     fn parse_show_graph_type_variant(&mut self) -> Option<GraphTypeShowVariant> {
-        let variant = [
+        [
             ("consolidated", GraphTypeShowVariant::Consolidated),
             ("flattened", GraphTypeShowVariant::Flattened),
         ]
         .into_iter()
-        .find_map(|(word, variant)| self.eat_as_word(word).then_some(variant))?;
-        Some(variant)
+        .find_map(|(word, variant)| self.eat_as_word(word).then_some(variant))
     }
 
     /// `SHOW DATABASE[S] [<name>] [YIELD ...] [WHERE ...]` / `SHOW DEFAULT

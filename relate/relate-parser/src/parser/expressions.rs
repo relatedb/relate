@@ -611,11 +611,7 @@ impl<'a> Parser<'a> {
                 if self.peek_type() == TokenType::LeftParen {
                     self.next_token(); // consume (
                     let args = self.parse_arg_list()?;
-                    return Ok(Expr::FunctionCall(FunctionCallExpr {
-                        name: SmallName::from_name(&tok.literal),
-                        args,
-                        distinct: false,
-                    }));
+                    return Ok(Expr::call(&tok.literal, args));
                 }
                 Ok(Expr::Variable(SmallName::from_name(&tok.literal)))
             }
@@ -628,11 +624,7 @@ impl<'a> Parser<'a> {
                 if self.peek_type() == TokenType::LeftParen {
                     self.next_token();
                     let args = self.parse_arg_list()?;
-                    return Ok(Expr::FunctionCall(FunctionCallExpr {
-                        name: SmallName::from_name("exists"),
-                        args,
-                        distinct: false,
-                    }));
+                    return Ok(Expr::call("exists", args));
                 }
                 Ok(Expr::Variable(SmallName::from_name(&tok.literal)))
             }

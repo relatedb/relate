@@ -316,7 +316,8 @@ struct Undesignated {
 }
 
 /// The verb of an undesignated constraint kind (key or unique), `None`
-/// for every other kind -- the one place the vocabulary is spelled.
+/// for every other kind; the kind vocabulary itself is spelled once, in
+/// `constraint_category`.
 fn undesignated_verb(kind: ConstraintType) -> Option<GraphTypeConstraintVerb> {
     match constraint_category(kind) {
         ConstraintCategory::Undesignated(verb) => Some(verb),

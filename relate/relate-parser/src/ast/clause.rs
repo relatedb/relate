@@ -42,7 +42,7 @@ pub enum BranchShape<'a> {
 /// The conditional a clause list consists of alone (`{ WHEN ... }`), if
 /// it is one: such an arm has no `RETURN` of its own, so its shape is its
 /// branches' ([`ConditionalClause::representative_body`]).
-pub fn sole_conditional(clauses: &[Clause]) -> Option<&ConditionalClause> {
+pub(crate) fn sole_conditional(clauses: &[Clause]) -> Option<&ConditionalClause> {
     match clauses {
         [Clause::Conditional(cc)] => Some(cc),
         _ => None,

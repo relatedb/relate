@@ -451,20 +451,7 @@ fn multiple_defaults(label: &str, property: &str) -> EngineError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use relate_parser::parse;
-
-    fn body_of(query: &str) -> GraphTypeBody {
-        let stmt = parse(query).expect("should parse");
-        match stmt.clauses.into_iter().next().unwrap() {
-            relate_parser::Clause::AlterCurrentGraphType(c) => match c.target {
-                relate_parser::AlterCurrentGraphTypeTarget::Body(body) => body,
-                relate_parser::AlterCurrentGraphTypeTarget::Named(name) => {
-                    panic!("expected an inline body, got named type {name}")
-                }
-            },
-            other => panic!("expected a graph-type clause, got {other:?}"),
-        }
-    }
+    use crate::graph_type::tests::body_of;
 
     #[test]
     fn inheritance_edges_follow_identifying_implied_labels() {

@@ -75,16 +75,6 @@ impl<'a> Parser<'a> {
     /// clause>`. `COMBINE` is a new non-reserved word (never added to
     /// `token.rs`'s keyword table), recognized by spelling like `SEARCH`
     /// above.
-    /// `<keyword> <non-reserved word>` lookahead: `WITH` is the keyword
-    /// token, the second word an ident-like non-reserved one (`ANALYZER`,
-    /// `CONSTANT` -- the set grows with the grammar, so the shape lives
-    /// once).
-    fn peek_with_word(&self, word: &str) -> bool {
-        self.peek_type() == TokenType::WITH
-            && self.peek_at(1).ty.is_ident_like()
-            && self.peek_at(1).literal.eq_ignore_ascii_case(word)
-    }
-
     fn parse_search_spec(&mut self) -> ParseResult<SearchSpec> {
         // The nested-COMBINE cycle is a recursion family like the label
         // and expression cycles: bound it with the shared depth budget
@@ -142,7 +132,7 @@ impl<'a> Parser<'a> {
         // CIP-225: the optional `WITH ANALYZER <value expression>` after
         // the FOR clause (fulltext only). ANALYZER is a new non-reserved
         // word; WITH is the keyword token.
-        let analyzer = if self.peek_with_word("analyzer") {
+        let analyzer = if self.peek_keyword_word(TokenType::WITH, "analyzer") {
             self.next_token();
             self.next_token();
             Some(self.parse_expression()?)
@@ -155,12 +145,7 @@ impl<'a> Parser<'a> {
         // enforced by the engine, not here -- the grammar
         // slot accepts any general expression, exactly like the ordinary
         // `<graph pattern where clause>` above.
-        let inner_where = if self.peek_type() == TokenType::WHERE {
-            self.next_token();
-            Some(self.parse_expression()?)
-        } else {
-            None
-        };
+        let inner_where = self.parse_optional_keyword_expr(self.peek_type() == TokenType::WHERE)?;
 
         // CIP-225: the optional `<offset clause>` (`SKIP` or `OFFSET`)
         // before the mandatory LIMIT, shared by both index kinds.
@@ -215,7 +200,7 @@ impl<'a> Parser<'a> {
         self.next_token(); // consume WRRF
                            // `<constant specification clause>`: `WITH CONSTANT <expr>`
                            // (CONSTANT is a non-reserved word; WITH the keyword token).
-        let constant_expr = if self.peek_with_word("CONSTANT") {
+        let constant_expr = if self.peek_keyword_word(TokenType::WITH, "CONSTANT") {
             self.next_token();
             self.next_token();
             Some(self.parse_expression()?)

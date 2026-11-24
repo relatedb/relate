@@ -108,23 +108,35 @@ impl<'a> Parser<'a> {
         // at this trim call's own paren depth. If none exists this is
         // necessarily the plain `trim(input)` form — parse it directly with
         // no speculation (this is what keeps deeply nested trim() linear).
-        if !self.trim_args_have_top_level_from() {
-            let first = self.parse_expression()?;
-            if self.peek_type() != TokenType::Comma {
-                self.expect(TokenType::RightParen)?;
-                return Ok(Self::build_trim_call(TrimSpec::Both, vec![first]));
-            }
-            self.next_token(); // consume ,
-            let second = self.parse_expression()?;
-            let mut args = vec![first, second];
-            if self.peek_type() == TokenType::Comma {
-                self.next_token();
-                args.push(self.parse_expression()?);
-            }
-            self.expect(TokenType::RightParen)?;
-            return Ok(Self::build_trim_spec_call(args));
+        if self.trim_args_have_top_level_from() {
+            self.parse_trim_from_forms()
+        } else {
+            self.parse_plain_trim_call()
         }
+    }
 
+    /// The plain `trim(input)` / `trim(spec, input[, chars])` argument
+    /// lists, after the opening paren, when no top-level `FROM` exists.
+    fn parse_plain_trim_call(&mut self) -> ParseResult<Expr> {
+        let first = self.parse_expression()?;
+        if self.peek_type() != TokenType::Comma {
+            self.expect(TokenType::RightParen)?;
+            return Ok(Self::build_trim_call(TrimSpec::Both, vec![first]));
+        }
+        self.next_token(); // consume ,
+        let second = self.parse_expression()?;
+        let mut args = vec![first, second];
+        if self.peek_type() == TokenType::Comma {
+            self.next_token();
+            args.push(self.parse_expression()?);
+        }
+        self.expect(TokenType::RightParen)?;
+        Ok(Self::build_trim_spec_call(args))
+    }
+
+    /// The `[spec] [chars] FROM input` forms, after the opening paren,
+    /// reached only when a top-level `FROM` exists.
+    fn parse_trim_from_forms(&mut self) -> ParseResult<Expr> {
         let start = self.save_pos();
 
         let spec_word = {
@@ -156,18 +168,15 @@ impl<'a> Parser<'a> {
                 self.expect(TokenType::RightParen)?;
                 Ok(Self::build_trim_call(spec, vec![input, chars_expr]))
             }
-            Ok(chars_expr) if spec_word.is_none() => {
-                // No spec word was consumed, so the already-parsed expression
-                // *is* the plain trim(input) argument: a re-parse from
-                // `start` would see the identical token stream, so reuse the
-                // result instead of backtracking.
+            parsed if spec_word.is_none() => {
+                // No spec word was consumed, so the already-parsed
+                // expression *is* the plain trim(input) argument and a
+                // failure would repeat identically: a re-parse from `start`
+                // would see the identical token stream, so reuse the result
+                // instead of backtracking.
+                let chars_expr = parsed?;
                 self.expect(TokenType::RightParen)?;
                 Ok(Self::build_trim_call(TrimSpec::Both, vec![chars_expr]))
-            }
-            Err(e) if spec_word.is_none() => {
-                // Same reasoning: with nothing consumed since `start`, a
-                // re-parse would fail identically — propagate directly.
-                Err(e)
             }
             Ok(_) | Err(_) => {
                 // A spec word (BOTH/LEADING/TRAILING) was tentatively

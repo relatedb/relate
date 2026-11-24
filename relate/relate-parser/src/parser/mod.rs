@@ -503,6 +503,16 @@ impl<'a> Parser<'a> {
         Self::token_is_ident(self.peek_at(offset), word)
     }
 
+    /// `<keyword> <non-reserved word>` lookahead: `lead` is the keyword
+    /// token (`AS`, `WITH`), the second token an ident-like non-reserved
+    /// word spelled `word` (`ANALYZER`, `CONSTANT`, `CONSOLIDATED` -- the
+    /// set grows with the grammar, so the shape lives once).
+    pub(super) fn peek_keyword_word(&self, lead: TokenType, word: &str) -> bool {
+        self.peek_type() == lead
+            && self.peek_at(1).ty.is_ident_like()
+            && self.peek_at(1).literal.eq_ignore_ascii_case(word)
+    }
+
     /// True if `tok` is a case-insensitive identifier matching `word` — the
     /// token-level core of [`Self::peek_at_is_ident`], for call sites that
     /// already hold the token.

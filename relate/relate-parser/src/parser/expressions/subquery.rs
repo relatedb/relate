@@ -178,21 +178,23 @@ impl<'a> Parser<'a> {
             ));
         }
         if !any_missing {
-            let mut reference: Option<Vec<String>> = None;
-            for shape in &shapes {
-                if let BranchShape::Items(items) = shape {
-                    let cols = items
-                        .iter()
-                        .map(|item| self.column_name(item))
-                        .collect::<ParseResult<Vec<String>>>()?;
-                    match &reference {
-                        None => reference = Some(cols),
-                        Some(r) if !same_name_multiset(r, &cols) => {
-                            return Err(self.error(
-                                "DifferentColumnsInUnion: all UNION branches must have the same column names",
-                            ));
-                        }
-                        Some(_) => {}
+            let mut arms = shapes.iter().filter_map(|shape| match shape {
+                BranchShape::Items(items) => Some(*items),
+                BranchShape::Wildcard | BranchShape::Omitted => None,
+            });
+            let columns_of = |items: &[ReturnItem]| {
+                items
+                    .iter()
+                    .map(|item| self.column_name(item))
+                    .collect::<ParseResult<Vec<String>>>()
+            };
+            if let Some(first) = arms.next() {
+                let reference = columns_of(first)?;
+                for items in arms {
+                    if !same_name_multiset(&reference, &columns_of(items)?) {
+                        return Err(self.error(
+                            "DifferentColumnsInUnion: all UNION branches must have the same column names",
+                        ));
                     }
                 }
             }

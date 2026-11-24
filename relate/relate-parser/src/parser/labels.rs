@@ -306,10 +306,9 @@ impl<'a> Parser<'a> {
             saw_legacy_pipe_colon |= legacy_pipe_colon;
             parts.push(chain);
         }
-        let expr = if parts.len() == 1 {
-            parts.pop().unwrap()
-        } else {
-            LabelExpr::Or(parts)
+        let expr = match <[LabelExpr; 1]>::try_from(parts) {
+            Ok([only]) => only,
+            Err(parts) => LabelExpr::Or(parts),
         };
         Ok(LabelSpec {
             expr,
@@ -387,11 +386,10 @@ impl<'a> Parser<'a> {
             }
             parts.push(self.parse_label_unary()?);
         }
-        if parts.len() == 1 {
-            Ok(parts.pop().unwrap())
-        } else {
-            Ok(LabelExpr::And(parts))
-        }
+        Ok(match <[LabelExpr; 1]>::try_from(parts) {
+            Ok([only]) => only,
+            Err(parts) => LabelExpr::And(parts),
+        })
     }
 
     pub(super) fn parse_label_unary(&mut self) -> ParseResult<LabelExpr> {
