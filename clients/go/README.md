@@ -19,7 +19,7 @@ this repository.
 ## Prerequisites
 
 - Go 1.22+
-- The Rust toolchain (1.88) and a C linker (clang/gcc; mingw on Windows)
+- The Rust toolchain (1.99) and a C linker (clang/gcc; mingw on Windows)
 
 ## Build the native library
 

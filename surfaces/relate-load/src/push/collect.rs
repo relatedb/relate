@@ -182,7 +182,7 @@ fn read_types_scope(conn: &mut Connection, types: &[String]) -> Result<ScopeGrap
 /// the dangling rest (counted, never silently dropped).
 fn finish_graph(nodes: HashMap<NodeId, LocalNode>, rels: Vec<LocalRel>) -> ScopeGraph {
     let mut nodes: Vec<LocalNode> = nodes.into_values().collect();
-    nodes.sort_by(|a, b| a.id.cmp(&b.id));
+    nodes.sort_by_key(|a| a.id);
     let present: HashSet<NodeId> = nodes.iter().map(|n| n.id).collect();
     let (rels, dangling): (Vec<LocalRel>, Vec<LocalRel>) = rels
         .into_iter()

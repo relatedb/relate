@@ -201,7 +201,7 @@ fn malformed_envelopes_are_errors() {
         json!({"columns": [], "rows": [], "error": null}),
     ];
     for env in bad {
-        assert!(render(&[env.clone()]).is_err(), "{env}");
+        assert!(render(std::slice::from_ref(&env)).is_err(), "{env}");
     }
 }
 

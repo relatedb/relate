@@ -8,9 +8,28 @@ from script_loader import ROOT, load
 # The shared environment-class model (scripts/loadtest_env.py), consumed by
 # both compare-loadtest.py and baseline-fingerprint.py.
 env_mod = load("loadtest_env", ROOT / "scripts" / "loadtest_env.py")
+fp_mod = load("baseline_fingerprint", ROOT / "scripts" / "baseline-fingerprint.py")
 
 
 class BaselineFingerprintTests(unittest.TestCase):
+    def test_pinned_reference_replaces_the_callers_own_digest(self) -> None:
+        """The env pins arrive already digested; appending a second
+        `@sha256:...` would stamp `name@a@b`, which is not a reference."""
+        digest = "sha256:" + "e6" * 32
+        self.assertEqual(
+            fp_mod.pinned_reference(f"rust:1.99-bookworm@{digest}", f"rust:1.99-bookworm@{digest}"),
+            f"rust:1.99-bookworm@{digest}",
+        )
+        self.assertEqual(
+            fp_mod.pinned_reference("rust:1.99-bookworm", f"rust:1.99-bookworm@{digest}"),
+            f"rust:1.99-bookworm@{digest}",
+        )
+        # A local-only image inspects to its Id, which has no `@` at all.
+        self.assertEqual(
+            fp_mod.pinned_reference("relate:local", "sha256:abc"),
+            "relate:local@sha256:abc",
+        )
+
     def test_stamp_writes_environment_from_report_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "report.json"

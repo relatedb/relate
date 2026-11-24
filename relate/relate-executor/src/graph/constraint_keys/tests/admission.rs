@@ -442,13 +442,18 @@ fn corrupt_derived_entity_type_is_unpriceable_before_preflight_and_rejected_by_i
         },
     };
     assert!(graph.estimate_redo_delta(&[classifiable]).total > 0);
-    assert_eq!(graph.estimate_redo_delta(&[corrupt.clone()]).total, 0);
+    assert_eq!(
+        graph
+            .estimate_redo_delta(std::slice::from_ref(&corrupt))
+            .total,
+        0
+    );
     assert!(graph.constraint_key_spec("c").is_none());
 
     // Seam 2: the admission probe. It checks the slot, finds no key to
     // install, and does not panic.
     let mut admission = graph.begin_constraint_admission();
-    admission.admit(&[corrupt.clone()]).unwrap();
+    admission.admit(std::slice::from_ref(&corrupt)).unwrap();
 
     // The preflight rejects the same record with its typed storage error
     // before apply can reach the classification.

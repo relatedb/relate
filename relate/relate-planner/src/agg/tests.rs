@@ -144,7 +144,7 @@ fn keys_are_recognized_verbatim_or_through_a_bare_variable() {
     let key = plus(var("b"), Expr::Int(1));
     let err = check_agg_projections(
         &complex(),
-        Some(&[key.clone()]),
+        Some(std::slice::from_ref(&key)),
         &Imports::new(),
         &Default::default(),
     )
@@ -153,7 +153,7 @@ fn keys_are_recognized_verbatim_or_through_a_bare_variable() {
     // Verbatim the key is fine.
     check_agg_projections(
         &[item(key.clone())],
-        Some(&[key.clone()]),
+        Some(std::slice::from_ref(&key)),
         &Imports::new(),
         &Default::default(),
     )
@@ -476,7 +476,7 @@ fn a_chained_dynamic_target_descends_to_its_resolving_base_leaf() {
                 item(dyn_prop(prop("a", "meta"), Expr::Parameter("k".into()))),
                 item(collect(var("c"))),
             ],
-            Some(&[keys.clone()]),
+            Some(std::slice::from_ref(&keys)),
             &Imports::new(),
             &Default::default(),
         )

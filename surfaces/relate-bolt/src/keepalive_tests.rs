@@ -38,7 +38,7 @@ fn keep_alive_ticks_write_noops_and_report_a_failed_write() {
     .unwrap();
     assert!(matches!(staged, relate::Executed::Rows(_)));
     assert!(
-        !out.is_empty() && out.iter().all(|&b| b == 0) && out.len() % 2 == 0,
+        !out.is_empty() && out.iter().all(|&b| b == 0) && out.len().is_multiple_of(2),
         "each tick writes one NOOP chunk: {out:?}"
     );
 

@@ -69,7 +69,7 @@ directory the glue imports from `pkg/`.
 Local prerequisites (CI installs these automatically):
 
 - `wasm-bindgen-cli` matching the crate version in `Cargo.lock`
-  (currently 0.2.128): `cargo install wasm-bindgen-cli --version 0.2.128 --locked`
+  (currently 0.2.130): `cargo install wasm-bindgen-cli --version 0.2.130 --locked`
 - `binaryen` 110 or newer (provides `wasm-opt`): `brew install binaryen`
   (macOS) or `bash scripts/install-binaryen.sh DIR` (Linux x86_64 and aarch64; unpacks
   the release CI pins into `DIR`, then add `DIR/bin` to `PATH`). Ubuntu

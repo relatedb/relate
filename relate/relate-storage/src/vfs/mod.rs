@@ -370,19 +370,44 @@ pub(crate) fn hex_16(bytes: [u8; 16]) -> String {
     out
 }
 
+/// The inverse of [`hex_16`]: 32 lowercase hex characters back to the 16
+/// bytes they spell, `None` on any other shape (wrong length, non-hex,
+/// uppercase). Validation and decoding are one pass, so a caller consumes
+/// the validity fact instead of re-deriving it at the decode site; the
+/// shape-only caller is [`is_lower_hex_32`], which reads the same rule
+/// rather than re-spelling it. Only the Parquet codec's shard names decode
+/// (the JSON codec inlines its document), so the decode is dead without it.
+#[cfg_attr(not(parquet_codec), allow(dead_code))]
+pub(crate) fn decode_hex_16(text: &str) -> Option<[u8; 16]> {
+    fn nibble(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        }
+    }
+    if text.len() != 32 {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    for (byte, pair) in bytes.iter_mut().zip(text.as_bytes().as_chunks::<2>().0) {
+        *byte = (nibble(pair[0])? << 4) | nibble(pair[1])?;
+    }
+    Some(bytes)
+}
+
 /// 128-bit OS-random token as lowercase hex.
 pub(crate) fn random_hex_16() -> Result<String> {
     Ok(hex_16(random_bytes_16()?))
 }
 
 /// Exactly 32 lowercase hexadecimal characters, the token shape that
-/// [`hex_16`] and [`random_hex_16`] produce.
+/// [`hex_16`] and [`random_hex_16`] produce. The acceptance rule lives in
+/// [`decode_hex_16`]; this is its shape-only reading, so the two cannot
+/// drift.
 #[cfg_attr(not(parquet_codec), allow(dead_code))]
 pub(crate) fn is_lower_hex_32(text: &str) -> bool {
-    text.len() == 32
-        && text
-            .bytes()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    decode_hex_16(text).is_some()
 }
 
 const TEMP_ATTEMPTS: usize = 8;

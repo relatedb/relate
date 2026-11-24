@@ -56,7 +56,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The tools are built with the runner's stable cargo, not the repo's
-      # 1.88 MSRV pin; the pinned toolchain still resolves the workspace
+      # 1.99 MSRV pin; the pinned toolchain still resolves the workspace
       # metadata they read.
       - name: Install cargo-about and cargo-deny
         run: |

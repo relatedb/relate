@@ -463,10 +463,9 @@ pub(crate) fn id_fn_conversion(
 ) -> Option<IdConversion> {
     let (args, conversion) = if let Some(args) = named_call(left, "id", 1) {
         (args, IdConversion::Int)
-    } else if let Some(args) = named_call(left, "elementid", 1) {
-        (args, IdConversion::ElementId(parse_element_id))
     } else {
-        return None;
+        let args = named_call(left, "elementid", 1)?;
+        (args, IdConversion::ElementId(parse_element_id))
     };
     let Expr::Variable(v) = &args[0] else {
         return None;

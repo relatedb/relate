@@ -93,7 +93,7 @@ fn has_git_author_date_shape(value: &str) -> bool {
         && digits(14)
         && bytes[16] == b':'
         && digits(17)
-        && bytes[17..19] != [b'6', b'0']
+        && bytes[17..19] != *b"60"
         && match bytes[19] {
             b'Z' => bytes.len() == 20,
             b'+' | b'-' => {

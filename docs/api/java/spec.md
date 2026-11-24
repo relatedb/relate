@@ -314,7 +314,7 @@ against linux-arm64, Temurin 17):
 ```sh
 # 1. the engine library for the container's platform
 docker run --rm -v "$PWD":/workspace -w /workspace \
-  rust:1.88-bookworm cargo build --release -p relate-ffi
+  rust:1.99-bookworm cargo build --release -p relate-ffi
 # 2. the jar, installed into a container-local Maven repository
 docker run --rm -v "$PWD":/workspace -v "$HOME/.m2-docker":/root/.m2 \
   -w /workspace/clients/java \

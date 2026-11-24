@@ -97,7 +97,7 @@ await db.run("CREATE (c:Customer {region: $region})", {region: ""});
 ## Verification
 - [x] `cargo test -p relate-ffi` — 48/48, including the new `(NULL, 0)`
       round-trip test (fails pre-fix, passes post-fix)
-- [x] workspace clippy @1.88 `-D warnings` + fmt clean
+- [x] workspace clippy @1.99 `-D warnings` + fmt clean
 - [ ] Bolt driver smoke against the built dylib (ready-gate CI)
 
 Fixes LABS-1198.

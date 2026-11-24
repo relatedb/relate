@@ -1,5 +1,11 @@
 # Rust image plus the language toolchains used by the polyglot CI lanes.
-FROM localhost/relate-sonic-rust:1.88
+# The base has no default on purpose: it comes only from the build-arg of
+# the one command that builds it (`.sonic/ci.yml`'s build-sonic-polyglot),
+# so the polyglot image always compiles on the sonic-rust that build just
+# produced — a build that does not pass it fails loudly instead of
+# resolving a stale same-tag image from the local store.
+ARG RUST_IMAGE
+FROM ${RUST_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/usr/local/go/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \

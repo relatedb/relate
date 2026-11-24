@@ -204,6 +204,24 @@ pub(crate) fn exactly_one_quantified(elements: &[PatternElement]) -> bool {
         == 1
 }
 
+/// The alternating-chain shape fact both NFA walks require: a strictly
+/// alternating element chain that starts and ends with a node — nodes at
+/// the even positions, hops (plain rels and quantified groups) at the odd
+/// ones. `compile` and `Builder::chain` decline on the same fact through
+/// this one predicate.
+pub(crate) fn alternating_chain(elements: &[PatternElement]) -> bool {
+    if elements.len() < 3 || elements.len().is_multiple_of(2) {
+        return false;
+    }
+    elements
+        .iter()
+        .enumerate()
+        .all(|(i, element)| match element {
+            PatternElement::Node(_) => i.is_multiple_of(2),
+            PatternElement::Relationship(_) | PatternElement::Quantified(_) => !i.is_multiple_of(2),
+        })
+}
+
 /// Compile `pattern` into the frontier NFA, or `None` on any shape out
 /// of the vocabulary above — the decline the caller turns into "keep the
 /// per-row DFS". `engine` is the rung the caller resolved
@@ -234,15 +252,12 @@ pub(crate) fn compile(
     // parser allows `(x)((a)-->(b))*((c)-->(d))*`) would be a second
     // cycle: decline.
     let elements = &pattern.elements;
-    if elements.len() < 3 || elements.len() % 2 == 0 {
+    if !alternating_chain(elements) {
         return None;
     }
-    let spine = elements
-        .iter()
-        .position(|element| matches!(element, PatternElement::Quantified(_)))?;
-    if spine % 2 == 0 {
-        return None;
-    }
+    // The Quantified group (exactly one, by the gate below) sits at an
+    // odd position — `alternating_chain` already establishes that, so it
+    // needs no separate spine parity check.
     if !exactly_one_quantified(elements) {
         return None;
     }
@@ -256,7 +271,7 @@ pub(crate) fn compile(
     let mut spine_len = None;
     for (i, element) in elements.iter().enumerate() {
         match element {
-            PatternElement::Node(node) if i % 2 == 0 => {
+            PatternElement::Node(node) if i.is_multiple_of(2) => {
                 // The first and last nodes are the pattern's boundary —
                 // their admission (labels, properties, predicates) is the
                 // caller's, through the kernel layer's `NodeTarget`
@@ -271,7 +286,7 @@ pub(crate) fn compile(
                     builder.admit_interior(node, current)?;
                 }
             }
-            PatternElement::Relationship(rel) if i % 2 == 1 => {
+            PatternElement::Relationship(rel) if !i.is_multiple_of(2) => {
                 // A plain one-hop context rel (a top-level var-length rel
                 // is out of vocabulary: the front end quantifies every
                 // top-level var-length spelling, so one here is not
@@ -285,7 +300,7 @@ pub(crate) fn compile(
                 context += 1;
                 current = to;
             }
-            PatternElement::Quantified(quantified) if i % 2 == 1 => {
+            PatternElement::Quantified(quantified) if !i.is_multiple_of(2) => {
                 // The node after the group carries the caller's guard on
                 // the spine's exit state (the loop attaches it there) —
                 // the spine only needs the presence fact, to allocate

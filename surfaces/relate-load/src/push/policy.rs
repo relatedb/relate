@@ -8,10 +8,12 @@ use std::collections::BTreeMap;
 use relate::Value;
 
 /// One entity's update policy (ADR-0401 §3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UpdatePolicy {
     /// `SET +=` — local properties land, remote-only properties survive
-    /// (the default).
+    /// (the default, ADR-0401 §3: one carrier for both of its homes — a
+    /// push with no flag and a policy list with no bare global word).
+    #[default]
     Add,
     /// `SET =` — local truth overwrites the property map; remote-only
     /// properties on that entity are removed.
@@ -73,7 +75,7 @@ impl PolicySpec {
     /// The all-`add` default (ADR-0401 §3).
     pub fn default_spec() -> Self {
         Self {
-            global: UpdatePolicy::Add,
+            global: UpdatePolicy::default(),
             per_entity: BTreeMap::new(),
         }
     }
@@ -93,10 +95,10 @@ impl PolicySpec {
             match item.split_once('=') {
                 None => {
                     let policy = UpdatePolicy::parse_word(item)?;
-                    if global.is_some() {
+                    if let Some(existing) = global.as_ref() {
                         return Err(format!(
                             "policy list has two global policies ({:?} twice)",
-                            global.expect("checked").as_str()
+                            existing.as_str()
                         ));
                     }
                     global = Some(policy);
@@ -117,7 +119,7 @@ impl PolicySpec {
         }
         Ok(Self {
             // The ADR's default when no bare global was named.
-            global: global.unwrap_or(UpdatePolicy::Add),
+            global: global.unwrap_or_default(),
             per_entity,
         })
     }

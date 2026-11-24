@@ -606,10 +606,7 @@ fn fill_until_capacity(
     begin_phase(live, phase)?;
     let mut cursor = FillCursor::new(shape, attributes, indexes);
     let mut n = 0usize;
-    loop {
-        let Some(statement) = cursor.next_statement()? else {
-            break;
-        };
+    while let Some(statement) = cursor.next_statement()? {
         n += 1;
         match run_statement(&mut cursor, live, phase, n, &statement, &mut run_one)? {
             StatementOutcome::Acked => {
@@ -648,7 +645,10 @@ fn fill_until_capacity(
     if n == 0 {
         progress(&format!("      {phase:<5} no statements"));
     }
-    if shape != GraphShape::Base {
+    // `max_nodes` is the one carrier of "this shape is bounded" (decided
+    // once at construction): a bounded shape that stops before its census
+    // target is a fill failure, the unbounded probe shape is done.
+    if max_nodes.is_some() {
         return Err(format!(
             "{} produced no further statements before the {limit} byte memory limit",
             shape.as_str()

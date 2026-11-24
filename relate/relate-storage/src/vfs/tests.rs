@@ -549,6 +549,19 @@ fn hex_16_is_lowercase_fixed_width_and_deterministic() {
 }
 
 #[test]
+fn decode_hex_16_roundtrips_and_rejects_other_shapes() {
+    for bytes in [[0xab; 16], [0x00; 16], [0x0f; 16], [u8::MAX; 16]] {
+        assert_eq!(decode_hex_16(&hex_16(bytes)), Some(bytes));
+    }
+    // Uppercase, non-hex, and wrong lengths are all refused.
+    assert_eq!(decode_hex_16(&"AB".repeat(16)), None);
+    assert_eq!(decode_hex_16(&"0g".repeat(16)), None);
+    assert_eq!(decode_hex_16(&"ab".repeat(15)), None);
+    assert_eq!(decode_hex_16(&"ab".repeat(17)), None);
+    assert_eq!(decode_hex_16(""), None);
+}
+
+#[test]
 fn random_hex_16_is_unique_canonical_token() {
     let first = random_hex_16().unwrap();
     let second = random_hex_16().unwrap();

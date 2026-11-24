@@ -74,19 +74,26 @@ pub struct ShapeCensus {
 /// Rows per statement batch for every filled shape.
 const BATCH: u32 = 2_000;
 
-/// `(start, last)` inclusive id windows of at most [`BATCH`].
-fn batch_ranges(total: u32) -> impl Iterator<Item = (u32, u32)> {
+/// `(start, last)` inclusive id windows of at most `width` rows — the one
+/// windowing contract every statement shape reads (short final window).
+/// `batch_ranges` is the [`BATCH`]-width spelling.
+fn batch_ranges_of(total: u32, width: u32) -> impl Iterator<Item = (u32, u32)> {
     let mut start = 0u32;
     std::iter::from_fn(move || {
         if start >= total {
             return None;
         }
-        let end = (start + BATCH).min(total);
+        let end = (start + width).min(total);
         let last = end - 1;
         let window = (start, last);
         start = end;
         Some(window)
     })
+}
+
+/// `(start, last)` inclusive id windows of at most [`BATCH`].
+fn batch_ranges(total: u32) -> impl Iterator<Item = (u32, u32)> {
+    batch_ranges_of(total, BATCH)
 }
 /// Integer properties on every node. The first is `id`. Default is one.
 pub const DEFAULT_NODE_ATTRIBUTES: u32 = 1;
@@ -398,24 +405,20 @@ fn dense_statements(nodes: u32, degree: u32, attributes: u32, indexes: IndexCoun
         })
         .collect();
     // Source windows of `BATCH / degree` keep each statement at or under
-    // BATCH relationship rows, the same cap as a ring batch.
-    let width = if degree == 0 {
-        nodes
-    } else {
-        (BATCH / degree).max(1)
-    };
-    let mut start = 0u32;
-    while start < nodes {
-        let last = (start + width).min(nodes) - 1;
-        out.push(format!(
+    // BATCH relationship rows, the same cap as a ring batch. `degree` is
+    // dense_counts' 8 or 20, so the window is never empty — the assert is
+    // the one carrier of that, and the division stays straight.
+    debug_assert!(degree > 0 && degree <= BATCH);
+    let width = BATCH / degree;
+    out.extend(batch_ranges_of(nodes, width).map(|(start, last)| {
+        format!(
             "UNWIND range({start}, {last}) AS i \
              UNWIND range(1, {degree}) AS d \
              WITH i, (i + d) % {nodes} AS j \
              MATCH (a:DenseRing {{id: i}}), (b:DenseRing {{id: j}}) \
              CREATE (a)-[:LINK]->(b)"
-        ));
-        start = last + 1;
-    }
+        )
+    }));
     out
 }
 

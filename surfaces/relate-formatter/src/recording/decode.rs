@@ -198,7 +198,7 @@ impl<'a> Path<'a> {
     /// A wire array is a path when it alternates node, relationship, node, …
     /// (odd length ≥ 3) and each relationship joins its neighbours.
     fn decode(items: &'a [Value]) -> Option<Path<'a>> {
-        if items.len() < 3 || items.len() % 2 == 0 {
+        if items.len() < 3 || items.len().is_multiple_of(2) {
             return None;
         }
         let first = Node::decode(&items[0])?;

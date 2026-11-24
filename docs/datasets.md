@@ -845,7 +845,7 @@ GH_TOKEN="$TOKEN" bash scripts/update-pr-comment.sh "$PR_NUMBER"
 Fraud, identity, and checkpoint reports that are frozen or compared **must**
 come from the ADR-0070 Docker baseline environment (`make fraud-loadtest`,
 `make identity-loadtest`, `make fraud-checkpoint`, `make baseline-loadtests`:
-compile in `rust:1.88-bookworm`, run in `debian:bookworm-slim` with two CPUs
+compile in `rust:1.99-bookworm`, run in `debian:bookworm-slim` with two CPUs
 of CFS bandwidth on a 10 ms period and a 2 GB cap, stores on tmpfs). The
 freeze is a worst-of-`BASELINE_RUNS` (default 5) envelope, not a single run.
 Repo-root `baselines/` is the only comparison set; committed envelopes come
@@ -903,7 +903,7 @@ Env vars the compare path honors:
 Baseline-environment Make knobs (ADR-0070 / ADR-0071): `BASELINE_ENV` (`docker` /
 `host`), `BASELINE_CPUS` (`2`), `BASELINE_CPU_PERIOD_US` (`10000`),
 `BASELINE_CPU_QUOTA_US` (period x CPUs), `BASELINE_MEMORY` (`2g`),
-`BASELINE_RUNS` (`5`), `BASELINE_BUILD_IMAGE` (`rust:1.88-bookworm`),
+`BASELINE_RUNS` (`5`), `BASELINE_BUILD_IMAGE` (`rust:1.99-bookworm`),
 `BASELINE_RUN_IMAGE` (`debian:bookworm-slim`), `BASELINE_RUNNER`
 (`github-actions:ubuntu-24.04` in CI, else `local`),
 `BASELINE_FREEZE_SOURCE` (empty locally; `ci` writes repo `baselines/`).

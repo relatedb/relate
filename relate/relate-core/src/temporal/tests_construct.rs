@@ -23,7 +23,7 @@ fn construct_named_rejects_more_than_two_arguments() {
         );
     }
     assert!(construct_named("date", &[]).is_ok(), "the clock form");
-    assert!(construct_named("date", &[value.clone()]).is_ok());
+    assert!(construct_named("date", std::slice::from_ref(&value)).is_ok());
     assert!(construct_named("date", &[value, pattern]).is_ok());
 }
 

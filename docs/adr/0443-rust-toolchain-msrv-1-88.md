@@ -3,8 +3,8 @@ type: adr
 area: infra
 claim: 9bfa8230a7acb15ea5b205056c60224c7beb27a5
 name: 0443-rust-toolchain-msrv-1-88
-status: accepted
-status_note: 2026-10-29
+status: superseded
+status_note: 2026-10-29 accepted; 2026-11-24 superseded by ADR-0671
 tags:
   - workspace
 title: Rust toolchain stays on MSRV 1.88
@@ -65,3 +65,12 @@ its own ADR with a **Later references** note on this one.
   `rust-toolchain.toml`, the `ci.yml` pin, the loadtest Dockerfiles,
   `Makefile`, the AGENTS.md Toolchain section, and a baseline re-freeze
   via the dispatch workflow — plus a **Later references** note here.
+
+## Later references
+
+- [ADR-0671](./0671-rust-toolchain-msrv-1-99.md) (2026-11-24) bumps the
+  floor to 1.99, pinned 1.99.1, and supersedes this decision: the
+  compatibility-contract rationale no longer binds (no external
+  source-builders; every consumer ships a prebuilt artifact), and the
+  Vortex evaluation is blocked behind 1.95. The coordinated-change
+  checklist in Consequences carried over to ADR-0671 unchanged.

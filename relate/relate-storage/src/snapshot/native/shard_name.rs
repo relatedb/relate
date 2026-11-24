@@ -1,7 +1,7 @@
 //! Canonical v3 shard object names (ADR-0086, ADR-0089).
 
 use crate::snapshot::Kind;
-use crate::vfs::{hex_16, is_lower_hex_32, random_bytes_16};
+use crate::vfs::{decode_hex_16, hex_16, random_bytes_16};
 use relate_core::Result;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,17 +52,11 @@ impl ShardName {
         if hi <= lo {
             return None;
         }
+        // `decode_hex_16` validates and decodes in one pass: a generation
+        // part is 32 lowercase hex chars or the whole name does not parse
+        // (`?` — a malformed generation is never "no generation").
         let generation = match parts.next() {
-            Some(hex) => {
-                if !is_lower_hex_32(hex) {
-                    return None;
-                }
-                let mut bytes = [0u8; 16];
-                for (byte, pair) in bytes.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
-                    *byte = (lower_hex(pair[0])? << 4) | lower_hex(pair[1])?;
-                }
-                Some(bytes)
-            }
+            Some(hex) => Some(decode_hex_16(hex)?),
             None => None,
         };
         if parts.next().is_some() {
@@ -95,14 +89,6 @@ fn canonical_id(text: &str) -> Option<i64> {
         return None;
     }
     text.parse().ok()
-}
-
-fn lower_hex(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

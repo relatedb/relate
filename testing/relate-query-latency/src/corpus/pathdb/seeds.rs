@@ -262,7 +262,7 @@ pub(super) fn resolve_seed(
     if pairs.is_empty() {
         return Ok(None);
     }
-    pairs.sort_by(|a, b| (a.1, a.0).cmp(&(b.1, b.0)));
+    pairs.sort_by_key(|a| (a.1, a.0));
     let (id, degree, label) = pairs[pairs.len() / 2].clone();
     Ok(Some(ResolvedSeed { id, degree, label }))
 }

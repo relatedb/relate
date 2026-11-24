@@ -160,13 +160,11 @@ pub fn run(
             "memory-controls RSS sampling needs Linux /proc/<pid>/status (VmRSS and VmHWM)".into(),
         );
     }
-    for (label, path) in [("relate", &cfg.serve_bin)] {
-        if !path.is_file() {
-            return Err(format!(
-                "{label} binary not found at {} — build it before this loadtest",
-                path.display()
-            ));
-        }
+    if !cfg.serve_bin.is_file() {
+        return Err(format!(
+            "relate binary not found at {} — build it before this loadtest",
+            cfg.serve_bin.display()
+        ));
     }
     cfg.controls.validate()?;
     let started = stamp();
