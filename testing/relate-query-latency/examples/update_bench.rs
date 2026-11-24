@@ -269,6 +269,16 @@ fn rss(tag: &str) -> BenchResult<()> {
     Ok(())
 }
 
+/// The peak-RSS line, one spelling for every scenario that reports one:
+/// `tag` names the scenario in both the metric and the sampler's error.
+fn peak_rss(tag: &str) -> BenchResult<()> {
+    println!(
+        "metric {tag}_peak_rss_mb {:.1}",
+        mib(measured(process_peak_rss_bytes(), &format!("{tag}: peak"))?)
+    );
+    Ok(())
+}
+
 // ------------------------------------------------------------------ build
 
 fn build(store: &Path) -> BenchResult<()> {
@@ -402,23 +412,24 @@ fn big_tx(store: &Path, mode: BigTxMode) -> BenchResult<()> {
         );
     }
     rss("big_tx_end")?;
-    println!(
-        "metric big_tx_peak_rss_mb {:.1}",
-        mib(measured(process_peak_rss_bytes(), "big_tx: peak")?)
-    );
+    peak_rss("big_tx")?;
     Ok(())
 }
 
 // ---------------------------------------------------------------- small-tx
 
-/// The concurrent writers' shared counters.
-#[derive(Clone, Default)]
-struct Tally {
-    done: Arc<AtomicU64>,
-    retries: Arc<AtomicU64>,
-    exhausted: Arc<AtomicU64>,
-    errors: Arc<AtomicU64>,
+/// The concurrent writers' shared counters — one allocation every writer
+/// reaches through a cloned handle, never a field per counter.
+#[derive(Default)]
+struct Counters {
+    done: AtomicU64,
+    retries: AtomicU64,
+    exhausted: AtomicU64,
+    errors: AtomicU64,
 }
+
+/// The writers' shared handle on [`Counters`]: cloning it is one `Arc` bump.
+type Tally = Arc<Counters>;
 
 /// One writer: from its own source span, `per_thread` CREATEs into a shared
 /// destination range, retrying `Conflict`s (the engine's optimistic
@@ -534,10 +545,7 @@ fn small_tx(store: &Path, threads: usize, per_thread: usize) -> BenchResult<()> 
     println!("metric small_tx_fold_s {:.2}", t.elapsed().as_secs_f64());
     census_lines("smalltx_folded", &db.sol_graph().heap_census());
     timed_reads(&mut rc, 20, "postfold")?;
-    println!(
-        "metric small_tx_peak_rss_mb {:.1}",
-        mib(measured(process_peak_rss_bytes(), "small_tx: peak")?)
-    );
+    peak_rss("small_tx")?;
     Ok(())
 }
 
@@ -565,10 +573,7 @@ fn mixed(store: &Path, stmts: usize, range: u64) -> BenchResult<()> {
     census_lines("mixed_unfolded", &db.sol_graph().heap_census());
     db.checkpoint()?;
     census_lines("mixed_folded", &db.sol_graph().heap_census());
-    println!(
-        "metric mixed_peak_rss_mb {:.1}",
-        mib(measured(process_peak_rss_bytes(), "mixed: peak")?)
-    );
+    peak_rss("mixed")?;
     Ok(())
 }
 
@@ -614,10 +619,7 @@ fn pinned(store: &Path) -> BenchResult<()> {
     reader.commit()?;
     db.checkpoint()?;
     census_lines("pinned_released", &db.sol_graph().heap_census());
-    println!(
-        "metric pinned_peak_rss_mb {:.1}",
-        mib(measured(process_peak_rss_bytes(), "pinned: peak")?)
-    );
+    peak_rss("pinned")?;
     Ok(())
 }
 
@@ -642,10 +644,7 @@ fn reopen(store: &Path) -> BenchResult<()> {
     let open_s = t.elapsed().as_secs_f64();
     println!("metric reopen_s {open_s:.3}");
     rss("reopen")?;
-    println!(
-        "metric reopen_peak_rss_mb {:.1}",
-        mib(measured(process_peak_rss_bytes(), "reopen: peak")?)
-    );
+    peak_rss("reopen")?;
     println!("metric reopen_base_rss_mb {:.1}", mib(base));
     census_lines("reopened", &db.sol_graph().heap_census());
     Ok(())
