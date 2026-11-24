@@ -1838,9 +1838,14 @@ Auto-commit write statements whose plan is a *global bulk* shape — bare
 pure-rename `WITH`s, and exactly one terminal write clause
 (`DELETE`/`DETACH DELETE` of the matched variables, per-entity
 `SET`/`REMOVE`, or `CREATE` without graph-sensitive expressions) — do not
-run as one giant transaction. When the estimated touched-entity count
-reaches the batching threshold, the engine snapshots the matched entity
-id set and applies the write in bounded batches, each batch its own WAL
+run as one giant transaction. Relationship patterns must be directed
+(`()-[r:T]->()`), and two of them in one `MATCH` clause must have
+disjoint types: the batched cross product cannot reproduce an
+undirected pattern's two orientations or the clause's relationship
+uniqueness, so those shapes stay on the unbatched path. When the
+estimated touched-entity count reaches the batching threshold, the
+engine snapshots the matched entity id set and applies the write in
+bounded batches, each batch its own WAL
 commit (the same trade-off `CALL { } IN TRANSACTIONS` makes explicit).
 
 Consequences:

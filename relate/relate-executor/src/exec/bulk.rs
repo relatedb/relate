@@ -31,16 +31,20 @@
 //! mid-run error with earlier batches committed, like any other
 //! mid-statement failure.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use relate_ir::{Clause, Expr, PathPattern, RemoveItem, SetItem};
+use relate_ir::{Clause, Direction, Expr, PathPattern, RemoveItem, SetItem};
 use relate_names::SmallName;
 
 use crate::graph::Graph;
 use relate_planner::LogicalPlan;
 
-use super::create_admission::{create_patterns_eligible, refs_within};
+use super::create_admission::{
+    compact_pattern, create_patterns_eligible, node_is_bare_endpoint, refs_within,
+    rel_has_static_edge_shape,
+};
 use super::label_expr_ok;
+use super::scope::is_star_item;
 
 mod run;
 
@@ -104,11 +108,7 @@ pub struct BulkWrite {
 /// no relationship, no properties, no predicates anywhere, no label
 /// expression, no path variable, no GPM-only features.
 fn bare_node_factor(pattern: &PathPattern) -> Option<Factor> {
-    if pattern.has_path_name()
-        || !pattern.rels.is_empty()
-        || pattern.nodes.len() != 1
-        || pattern.needs_gpm()
-    {
+    if !compact_pattern(pattern) || !pattern.rels.is_empty() || pattern.nodes.len() != 1 {
         return None;
     }
     let node = &pattern.nodes[0];
@@ -128,33 +128,29 @@ fn bare_node_factor(pattern: &PathPattern) -> Option<Factor> {
     })
 }
 
-/// Whether `pattern` is a bare relationship pattern
+/// Whether `pattern` is a bare directed relationship pattern
 /// `()-[<var> [:types…]]->()`: both endpoints anonymous and bare, the
 /// relationship named, fixed length, no properties or predicates.
 fn bare_rel_factor(pattern: &PathPattern) -> Option<Factor> {
-    if pattern.has_path_name()
-        || pattern.nodes.len() != 2
-        || pattern.rels.len() != 1
-        || pattern.needs_gpm()
-    {
+    if !compact_pattern(pattern) || pattern.nodes.len() != 2 || pattern.rels.len() != 1 {
         return None;
     }
     for node in &pattern.nodes {
-        if node.variable.is_some()
-            || !node.labels.is_empty()
-            || node.label_expr.is_some()
-            || node.properties.is_some()
-            || node.where_clause.is_some()
-        {
+        // Anonymous endpoints only, each bare (no labels, properties or
+        // predicate of its own).
+        if node.variable.is_some() || !node_is_bare_endpoint(node) {
             return None;
         }
     }
     let rel = &pattern.rels[0];
-    if rel.var_length
-        || rel.quantified
-        || !label_expr_ok(&rel.type_expr, &rel.types)
+    // An undirected pattern matches every non-loop relationship once per
+    // orientation; the factor's target set holds each id once (issue 70),
+    // so the shape stays on the unbatched path. A property map would make
+    // the row's effect depend on a per-element value the factor target
+    // space does not carry.
+    if rel.direction == Direction::Both
+        || !rel_has_static_edge_shape(rel)
         || rel.properties.is_some()
-        || rel.where_clause.is_some()
     {
         return None;
     }
@@ -307,16 +303,21 @@ fn delete_kind(detach: bool, expressions: &[Expr], factors: &[Factor]) -> Option
     })
 }
 
-/// A pure-rename `WITH` clause: whether it carries `*`, plus the
-/// old → new name pair of each explicit variable item.
-struct RenameProjection {
-    star: bool,
-    renames: Vec<(String, String)>,
+/// A pure-rename `WITH` clause's shape: `*` (every factor survives, its
+/// aliases identity only — a real rename would bind two names to one
+/// entity) or the old → new map of its explicit variable items (the
+/// decoder declines a second target for one source, and two sources
+/// sharing a target — either would shadow a surviving factor).
+enum RenameProjection {
+    Star,
+    Renamed(HashMap<String, String>),
 }
 
 /// Whether a `WITH` clause is a pure rename projection: no aggregation,
-/// distinct, ordering, paging, or filter, and every item a variable or
-/// `*`. `None` when the clause is not a pure rename.
+/// distinct, ordering, paging, or filter, every item a variable or `*`,
+/// and no source variable renamed twice (two names for one entity, which
+/// the one-entry-per-variable factor list cannot carry). `None` when the
+/// clause is not a pure rename.
 fn with_rename_projection(clause: &Clause) -> Option<RenameProjection> {
     let Clause::With {
         distinct,
@@ -341,62 +342,61 @@ fn with_rename_projection(clause: &Clause) -> Option<RenameProjection> {
         return None;
     }
     let mut star = false;
-    let mut renames = Vec::new();
-    for item in items {
-        match &item.expr {
-            Expr::Star => star = true,
-            Expr::Variable(name) => {
-                // Text render: the rename list is the projection's
-                // String column domain.
-                renames.push((
-                    name.to_string(),
-                    item.alias
-                        .as_ref()
-                        .map(|alias| alias.to_string())
-                        .unwrap_or_else(|| name.to_string()),
-                ));
-            }
-            _ => return None,
+    let mut renames = HashMap::with_capacity(items.len());
+    let mut targets = HashSet::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        if is_star_item(item) {
+            star = true;
+            continue;
+        }
+        let Expr::Variable(name) = &item.expr else {
+            return None;
+        };
+        // Text render: the rename map is the projection's String column
+        // domain. A source named twice, or a target two sources share, is
+        // declined: the first binds two names to one entity, the second
+        // shadows one of them.
+        let old = name.to_string();
+        let new = item.output_name(index);
+        if renames.insert(old, new.clone()).is_some() || !targets.insert(new) {
+            return None;
         }
     }
-    Some(RenameProjection { star, renames })
+    // Under `*` every factor survives, so only identity aliases are a pure
+    // rename — a real one would bind two names to one entity.
+    if star && renames.iter().any(|(old, new)| old != new) {
+        return None;
+    }
+    Some(if star {
+        RenameProjection::Star
+    } else {
+        RenameProjection::Renamed(renames)
+    })
 }
 
-/// Rewrite the factors through one pure-rename `WITH`, following the
-/// clause's simultaneous-assignment semantics: every item reads the
-/// incoming scope, so each factor's name is rewritten by at most one
-/// item (its first match). The projection must cover the factors
-/// exactly: under `*` every factor survives unchanged (identity
-/// renames only — a real rename would bind two names to one entity),
-/// and without `*` every factor must be renamed — a factor no item
-/// mentions is dropped, and a dropped factor still multiplies the row
-/// space (its emptiness empties the write, its multiplicity scales it
-/// — REL8-2023 issues 72 and 77's WITH shape), which the batched
-/// path, targeting the surviving factors' entities once each, can see
-/// neither. `None` also when an alias collides with another surviving
-/// factor's name (it would shadow it). The input is consumed whole, so
-/// a decline never leaves a half-rewritten scope behind.
+/// Rewrite the factors through one pure-rename `WITH`. The projection
+/// must cover the factors exactly: under `*` every factor survives
+/// unchanged, and without `*` every factor must be renamed — a factor no
+/// item mentions is dropped, and a dropped factor still multiplies the row
+/// space (its emptiness empties the write, its multiplicity scales it —
+/// REL8-2023 issues 72 and 77's WITH shape), which the batched path,
+/// targeting the surviving factors' entities once each, can see neither.
+/// The input is consumed whole, so a decline never leaves a half-rewritten
+/// scope behind.
 fn apply_rename_projection(
     factors: Vec<Factor>,
     projection: &RenameProjection,
 ) -> Option<Vec<Factor>> {
-    if projection.star {
-        if projection.renames.iter().any(|(old, new)| old != new) {
-            return None;
-        }
-        return Some(factors);
-    }
+    let renames = match projection {
+        RenameProjection::Star => return Some(factors),
+        RenameProjection::Renamed(renames) => renames,
+    };
     let mut kept = Vec::with_capacity(factors.len());
     for mut factor in factors {
-        let (_, new) = projection
-            .renames
-            .iter()
-            .find(|(old, _)| *old == factor.var)?;
-        factor.var = new.clone();
+        factor.var = renames.get(factor.var.as_str())?.clone();
         kept.push(factor);
     }
-    let names: HashSet<&str> = kept.iter().map(|f| f.var.as_str()).collect();
-    (names.len() == kept.len()).then_some(kept)
+    Some(kept)
 }
 
 /// Plan-time detection of a batchable global bulk write (ADR-0209 §1).
@@ -446,6 +446,43 @@ impl BulkWrite {
     }
 }
 
+/// Whether two relationship factors of one `MATCH` clause can bind the
+/// same relationship: an empty type list means "any type", and two
+/// non-empty disjoint lists never collide (a relationship carries one
+/// type).
+fn rel_types_overlap(a: &[String], b: &[String]) -> bool {
+    a.is_empty() || b.is_empty() || a.iter().any(|ty| b.contains(ty))
+}
+
+/// Whether any two relationship factors of one `MATCH` clause can bind the
+/// same relationship. Cypher relationship uniqueness forbids it, and the
+/// batched cross product has no such filter (issue 71), so any overlapping
+/// pair declines batching.
+fn breaks_relationship_uniqueness(factors: &[Factor]) -> bool {
+    let mut seen: Vec<&[String]> = Vec::new();
+    for types in factors.iter().filter_map(|factor| match &factor.source {
+        FactorSource::Rels { types } => Some(types.as_slice()),
+        FactorSource::Nodes { .. } => None,
+    }) {
+        if seen.iter().any(|other| rel_types_overlap(other, types)) {
+            return true;
+        }
+        seen.push(types);
+    }
+    false
+}
+
+/// Whether every factor's variable is distinct — a repeated variable is a
+/// self-join, not a cross product of independent factors.
+fn factor_vars_are_distinct(factors: &[Factor]) -> bool {
+    factors
+        .iter()
+        .map(|factor| factor.var.as_str())
+        .collect::<HashSet<_>>()
+        .len()
+        == factors.len()
+}
+
 pub fn analyze_bulk_write(plan: &LogicalPlan) -> Option<BulkWrite> {
     if plan.parts.len() != 1 || !plan.union_all.is_empty() || plan.next.is_some() {
         return None;
@@ -464,9 +501,14 @@ pub fn analyze_bulk_write(plan: &LogicalPlan) -> Option<BulkWrite> {
         if *optional || where_clause.is_some() || search.is_some() || patterns.is_empty() {
             return None;
         }
+        let mut clause_factors: Vec<Factor> = Vec::with_capacity(patterns.len());
         for pattern in patterns {
-            factors.push(bare_node_factor(pattern).or_else(|| bare_rel_factor(pattern))?);
+            clause_factors.push(bare_node_factor(pattern).or_else(|| bare_rel_factor(pattern))?);
         }
+        if breaks_relationship_uniqueness(&clause_factors) {
+            return None;
+        }
+        factors.extend(clause_factors);
         i += 1;
     }
     if factors.is_empty() {
@@ -474,7 +516,7 @@ pub fn analyze_bulk_write(plan: &LogicalPlan) -> Option<BulkWrite> {
     }
     // A repeated variable across patterns is a self-join in the
     // unbatched engine, not a cross product of independent factors.
-    if factors.iter().map(|f| &f.var).collect::<HashSet<_>>().len() != factors.len() {
+    if !factor_vars_are_distinct(&factors) {
         return None;
     }
     // Pure-rename WITHs only; the write clause references the final

@@ -19,6 +19,12 @@ pub(super) fn refs_within(expr: &Expr, allowed: &HashSet<String>) -> bool {
     vars.is_subset(allowed)
 }
 
+/// Whether a pattern element's properties map references no variable outside
+/// `allowed` — the one spelling of the property-scope policy.
+fn props_within(props: Option<&Expr>, allowed: &HashSet<String>) -> bool {
+    props.is_none_or(|props| refs_within(props, allowed))
+}
+
 /// Whether a pattern uses the compact (non-GPM) representation and binds no
 /// path value — the shape both the CREATE admission and the batch-tail read
 /// gate require, spelled once.
@@ -68,32 +74,44 @@ pub(super) fn create_patterns_eligible(
         })
 }
 
-/// A `CREATE` node pattern's per-row-independence rule: the
-/// freshness-independent conjunct first, then the arm that follows from the
-/// classification.
-fn node_eligible(node: &NodePattern, bound_by_reads: &HashSet<String>) -> bool {
-    node.where_clause.is_none()
-        && if create_endpoint_is_fresh(node, bound_by_reads) {
-            // A fresh (or anonymous) variable: created here.
-            node.properties
-                .as_ref()
-                .is_none_or(|p| refs_within(p, bound_by_reads))
-                && label_expr_ok(&node.label_expr, &node.labels)
-        } else {
-            // A matched variable is a bare endpoint: no labels, properties,
-            // or predicates of its own.
-            node.labels.is_empty() && node.label_expr.is_none() && node.properties.is_none()
-        }
+/// Whether a node pattern is a *bare endpoint*: no labels, label
+/// expression, properties, or predicate of its own. The one spelling the
+/// `CREATE` admission's reuse arm and the bulk factor's endpoint rule
+/// ([`super::bulk`]) both read.
+pub(super) fn node_is_bare_endpoint(node: &NodePattern) -> bool {
+    node.labels.is_empty()
+        && node.label_expr.is_none()
+        && node.properties.is_none()
+        && node.where_clause.is_none()
 }
 
-/// A `CREATE` relationship pattern's per-row-independence rule.
-fn rel_eligible(rel: &RelPattern, bound_by_reads: &HashSet<String>) -> bool {
+/// A `CREATE` node pattern's per-row-independence rule: the arm that follows
+/// from the freshness classification.
+fn node_eligible(node: &NodePattern, bound_by_reads: &HashSet<String>) -> bool {
+    if create_endpoint_is_fresh(node, bound_by_reads) {
+        // A fresh (or anonymous) variable: created here.
+        node.where_clause.is_none()
+            && props_within(node.properties.as_ref(), bound_by_reads)
+            && label_expr_ok(&node.label_expr, &node.labels)
+    } else {
+        // A matched variable is a bare endpoint.
+        node_is_bare_endpoint(node)
+    }
+}
+
+/// Whether a relationship pattern has the static edge shape: fixed length,
+/// unquantified, a complete type filter, and no predicate of its own (its
+/// properties map is the caller's separate question). The one spelling the
+/// `CREATE` admission's arm and the bulk relationship factor
+/// ([`super::bulk`]) both read.
+pub(super) fn rel_has_static_edge_shape(rel: &RelPattern) -> bool {
     !rel.var_length
         && !rel.quantified
         && label_expr_ok(&rel.type_expr, &rel.types)
         && rel.where_clause.is_none()
-        && rel
-            .properties
-            .as_ref()
-            .is_none_or(|p| refs_within(p, bound_by_reads))
+}
+
+/// A `CREATE` relationship pattern's per-row-independence rule.
+fn rel_eligible(rel: &RelPattern, bound_by_reads: &HashSet<String>) -> bool {
+    rel_has_static_edge_shape(rel) && props_within(rel.properties.as_ref(), bound_by_reads)
 }

@@ -154,3 +154,52 @@ fn below_threshold_writes_keep_a_single_commit() {
     run(&mut conn, "MATCH (n) DETACH DELETE n");
     assert_eq!(committed_records(&db) - before, 1);
 }
+
+#[test]
+fn an_undirected_relationship_pattern_visits_both_orientations() {
+    let _env = BatchEnv::forced();
+    let db = common::env_seam::open(":memory:", relate::OpenOptions::default());
+    let mut conn = db.connect().unwrap();
+    run(
+        &mut conn,
+        "UNWIND range(1, 60) AS i CREATE (:A {id: i})-[:T {x: 0}]->(:B {id: i})",
+    );
+    // 60 relationships clear the forced threshold as work units, but an
+    // undirected pattern must stay on the unbatched path: every
+    // relationship is written once per orientation (REL8-2023 issue 70).
+    let before = committed_records(&db);
+    let result = run(&mut conn, "MATCH ()-[r:T]-() SET r.x = r.x + 1");
+    assert_eq!(committed_records(&db) - before, 1, "shape must not batch");
+    assert_eq!(result.stats.properties_set, 120);
+    assert_eq!(
+        scalar_one(&mut conn, "MATCH ()-[r:T]->() RETURN sum(r.x)"),
+        relate::Value::Int(120)
+    );
+    let result = run(&mut conn, "MATCH ()-[r:T]-() CREATE (:C)");
+    assert_eq!(result.stats.nodes_created, 120);
+}
+
+#[test]
+fn relationship_uniqueness_holds_across_one_match_when_batching_is_forced() {
+    let _env = BatchEnv::forced();
+    let db = common::env_seam::open(":memory:", relate::OpenOptions::default());
+    let mut conn = db.connect().unwrap();
+    run(
+        &mut conn,
+        "UNWIND range(1, 60) AS i CREATE (:A {id: i})-[:T {v: 0}]->(:B {id: i})",
+    );
+    // Two relationship variables of one `MATCH` clause never bind the
+    // same relationship: 60 x 59 rows, not the full 60 x 60 product
+    // (REL8-2023 issue 71).
+    let result = run(&mut conn, "MATCH ()-[r:T]->(), ()-[s:T]->() CREATE (:D)");
+    assert_eq!(result.stats.nodes_created, 60 * 59);
+    let result = run(
+        &mut conn,
+        "MATCH ()-[r:T]->(), ()-[s:T]->() SET r.v = r.v + 1",
+    );
+    assert_eq!(result.stats.properties_set, 60 * 59);
+    assert_eq!(
+        scalar_one(&mut conn, "MATCH ()-[r:T]->() RETURN sum(r.v)"),
+        relate::Value::Int(60 * 59)
+    );
+}

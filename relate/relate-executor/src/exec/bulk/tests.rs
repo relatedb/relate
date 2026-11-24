@@ -114,6 +114,31 @@ mod detection {
     }
 
     #[test]
+    fn declines_an_undirected_relationship_factor() {
+        // An undirected pattern matches every non-loop relationship once
+        // per orientation; the factor's id set holds each once (issue 70).
+        assert!(analyze("MATCH ()-[r]-() SET r.x = 1").is_none());
+        assert!(analyze("MATCH ()-[r:T]-() CREATE (:C)").is_none());
+        assert!(analyze("MATCH ()-[r]-() DELETE r").is_none());
+    }
+
+    #[test]
+    fn declines_two_relationship_patterns_whose_types_can_overlap() {
+        // Cypher relationship uniqueness: two relationship variables of
+        // one `MATCH` clause never bind the same relationship, a filter
+        // the batched cross product lacks (issue 71).
+        assert!(analyze("MATCH ()-[r:T]->(), ()-[s:T]->() CREATE (:D)").is_none());
+        assert!(analyze("MATCH ()-[r]->(), ()-[s]->() SET r.v = 1").is_none());
+        // A typed and an untyped pattern can overlap on the typed one.
+        assert!(analyze("MATCH ()-[r:T]->(), ()-[s]->() SET r.v = 1").is_none());
+        // Disjoint types cannot bind the same relationship; still batchable.
+        assert!(analyze("MATCH ()-[r:T]->(), ()-[s:U]->() CREATE (:D)").is_some());
+        // Uniqueness is per `MATCH` clause: a second clause is a plain
+        // cross product, which the batched path reproduces.
+        assert!(analyze("MATCH ()-[r:T]->() MATCH ()-[s:T]->() CREATE (:D)").is_some());
+    }
+
+    #[test]
     fn rename_swap_renames_each_factor_once() {
         // `WITH n AS m, m AS n` is a simultaneous swap; it must not
         // re-rename an already-renamed factor back to its old name.
@@ -121,6 +146,16 @@ mod detection {
         let mut vars: Vec<&str> = bulk.factors.iter().map(|f| f.var.as_str()).collect();
         vars.sort_unstable();
         assert_eq!(vars, ["m", "n"]);
+    }
+
+    #[test]
+    fn two_renames_of_one_factor_decline() {
+        // `WITH n AS a, n AS b` binds two names to one entity; the factor
+        // list holds one entry per variable, so the shape is declined
+        // rather than silently keeping the first name.
+        assert!(analyze("MATCH (n:A) WITH n AS a, n AS b SET a.x = 1").is_none());
+        // One rename of the same factor stays eligible.
+        assert!(analyze("MATCH (n:A) WITH n AS a SET a.x = 1").is_some());
     }
 
     #[test]
