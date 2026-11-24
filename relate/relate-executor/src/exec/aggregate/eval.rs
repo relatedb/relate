@@ -197,23 +197,6 @@ pub(crate) fn agg_eval<'e>(
             }
             scope.aggregate_call(expr)
         }
-        Expr::Map(es) => {
-            let mut m = BTreeMap::new();
-            for (k, e) in es {
-                m.insert(k.clone(), agg_eval(graph, scope, e, params)?);
-            }
-            // The aggregate evaluator has its own Map/List arms; the
-            // checked constructors here are what make the ADR-0462 cap hold
-            // on this second evaluation path too.
-            Value::checked_map(m)
-        }
-        Expr::List(xs) => {
-            let mut out = Vec::new();
-            for e in xs {
-                out.push(agg_eval(graph, scope, e, params)?);
-            }
-            Value::checked_list(out)
-        }
         // ADR-0198 ruling 2: an aggregate call in any CASE arm belongs to
         // this enclosing projection, so the discovery pass walks every
         // WHEN condition, THEN result and ELSE — which arm a group takes
@@ -254,7 +237,13 @@ pub(crate) fn agg_eval<'e>(
         // arm above for the folded pass only — its arms must select
         // before they evaluate; its discovery rides this shared walk
         // with every other compound (ADR-0198 ruling 2).
-        Expr::ListComp { .. }
+        // List and map literals ride the canonical walk too: the rebuilt
+        // literal goes through scalar `eval`'s own arms, whose
+        // per-allocation charge (REL8-1372) therefore holds on this second
+        // evaluation path with no second mechanism here.
+        Expr::List(_)
+        | Expr::Map(_)
+        | Expr::ListComp { .. }
         | Expr::MapComp { .. }
         | Expr::Quantifier { .. }
         | Expr::Reduce { .. }

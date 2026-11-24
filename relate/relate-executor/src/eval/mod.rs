@@ -2,7 +2,6 @@
 //! submodule wiring.
 
 use std::collections::{BTreeMap, HashSet};
-use std::sync::Arc;
 
 use relate_core::{Error, Result, Value};
 use relate_ir::{Expr, MapProjectionItem};
@@ -18,7 +17,7 @@ use crate::ctx::EvalCtx;
 // pattern policy that walker reads lives at the shared tier
 // (`crate::pattern_walk`, LABS-811) — one public path per item, no
 // re-export here.
-use crate::eval_walk::{collect_pattern_rows, pattern_exists};
+use crate::eval_walk::pattern_exists;
 use crate::exec::{eval_shortest, ShortestWant};
 use crate::overlay::ExecGraph;
 use crate::row::{row_bound, Row};
@@ -26,7 +25,9 @@ use crate::row::{row_bound, Row};
 mod aggregate;
 mod arithmetic;
 mod collection;
+mod comprehension;
 mod expr;
+use comprehension::{eval_list_comp, eval_map_comp, eval_pattern_comp};
 mod fold;
 mod function;
 mod items;
@@ -49,7 +50,7 @@ pub(crate) use aggregate::{
     PercentileSample, StreamFold, SumAcc,
 };
 pub(crate) use fold::{extreme_offer, fold_extreme, fold_quantifier, Extreme};
-pub(crate) use items::{into_items, iterated, Items};
+pub(crate) use items::{into_items, iterated, open_source, Elements};
 pub(crate) use labels::{
     dynamic_label_names, dynamic_property_key, label_expr_matches, resolve_write_labels,
 };
@@ -126,15 +127,14 @@ pub(crate) fn eval_bound(
 
 pub(crate) use function::is_row_unstable_node;
 use function::{entity_backing_map, function};
-pub(crate) use function::{lazy_range, RangeValues};
-use predicates::comprehension_where_holds;
+pub(in crate::eval) use predicates::comprehension_where_holds;
 #[cfg(test)]
 pub(crate) use predicates::take_candidate_passes;
 pub(crate) use predicates::{
     candidate_passes, filter_rows_where, filter_rows_where_clause, inline_predicates_ok,
     predicate_holds, where_clause_holds, where_holds,
 };
-use quantifier::{eval_all_reduce, eval_quantifier, eval_reduce, list_argument};
+use quantifier::{eval_all_reduce, eval_quantifier, eval_reduce};
 pub(crate) use quantifier::{AllReduceFold, AllReduceStep};
 use string::is_normalized;
 pub(crate) use typematch::value_matches_type;
@@ -222,6 +222,47 @@ pub(crate) fn rows_logical_bytes(rows: &[Row]) -> u64 {
         .flat_map(|row| row.iter())
         .map(|(key, value)| relate_core::str_logical_bytes(key) + value.logical_bytes())
         .sum()
+}
+
+/// The one retaining value collector (ADR-0463): charge the output
+/// container's slot buffer, then land each value with its owned payload.
+/// Every charged list-building site — the two comprehension projections
+/// and the list literal — routes through it, so the charge protocol has
+/// one spelling; the aggregate evaluator reaches it through the rebuilt
+/// literal's scalar `eval` arm.
+pub(crate) fn retain_values(
+    graph: &ExecGraph<'_>,
+    bound: usize,
+    values: impl Iterator<Item = Result<Value>>,
+) -> Result<Value> {
+    let mut retained = graph.retain_slots(bound)?;
+    let mut out = Vec::with_capacity(bound);
+    for value in values {
+        let value = value?;
+        retained.add_owned(graph, &value)?;
+        out.push(value);
+    }
+    Value::checked_list(out)
+}
+
+/// The one retaining map collector — the map twin of [`retain_values`]:
+/// charge the map entry-storage figure, then land each entry's key bytes
+/// and value payload. The map literal and the map comprehension's
+/// projections route through it; the aggregate evaluator reaches it
+/// through the rebuilt literal's scalar `eval` arm.
+pub(crate) fn retain_map(
+    graph: &ExecGraph<'_>,
+    bound: usize,
+    entries: impl Iterator<Item = Result<(String, Value)>>,
+) -> Result<Value> {
+    let mut retained = graph.retain_map_entries(bound)?;
+    let mut out: BTreeMap<String, Value> = BTreeMap::new();
+    for entry in entries {
+        let (key, value) = entry?;
+        retained.add_map_entry(graph, &key, &value)?;
+        out.insert(key, value);
+    }
+    Value::checked_map(out)
 }
 
 /// The one call-shape test: `expr` is a call to `name` (case-insensitive)
@@ -318,18 +359,28 @@ pub fn eval(
             })
         }
         Expr::Map(entries) => {
-            let mut m = BTreeMap::new();
-            for (k, e) in entries {
-                m.insert(k.clone(), eval(graph, row, e, params)?);
-            }
-            Value::checked_map(m)
+            // The map literal is the list literal's twin (REL8-1372): the
+            // same query-text-bounded container, collected — charged —
+            // through the one map collector its comprehension forms use.
+            retain_map(
+                graph,
+                entries.len(),
+                entries
+                    .iter()
+                    .map(|(k, e)| eval(graph, row, e, params).map(|v| (k.clone(), v))),
+            )
         }
         Expr::List(xs) => {
-            let mut out = Vec::new();
-            for e in xs {
-                out.push(eval(graph, row, e, params)?);
-            }
-            Value::checked_list(out)
+            // REL8-1372: the literal's own materialization is charged —
+            // its length is bounded by the query-text cap, so this is a
+            // bound check rather than a length guard, but an uncharged
+            // build let a query-sized literal allocate hundreds of MB
+            // under a small expression cap.
+            retain_values(
+                graph,
+                xs.len(),
+                xs.iter().map(|e| eval(graph, row, e, params)),
+            )
         }
         Expr::Unary { op, expr } => {
             let v = eval(graph, row, expr, params)?;
@@ -494,194 +545,6 @@ pub fn eval(
             crate::exec::eval_collect_query(graph, row, params, query)
         }
     }
-}
-
-/// The one retaining-projection loop: charge the output container's slot
-/// buffer, then for each bound row apply the optional WHERE (the
-/// comprehension WHERE gate, [`comprehension_where_holds`]), project, and
-/// grow the container's retained total with the payload. Shared by the
-/// list and pattern comprehensions so the charge protocol has one
-/// spelling.
-fn retain_projected(
-    graph: &ExecGraph<'_>,
-    params: &BTreeMap<String, Value>,
-    bound: usize,
-    rows: impl Iterator<Item = Row>,
-    predicate: Option<&Expr>,
-    projection: &Expr,
-) -> Result<Value> {
-    let mut retained = graph.retain_slots(bound)?;
-    let mut out = Vec::with_capacity(bound);
-    for r in rows {
-        graph.cancel_tick()?;
-        if !comprehension_where_holds(graph, &r, predicate, params)? {
-            continue;
-        }
-        let value = eval(graph, &r, projection, params)?;
-        retained.add_owned(graph, &value)?;
-        out.push(value);
-    }
-    Value::checked_list(out)
-}
-
-/// CIP list comprehension: bind one item per source element, filter with the
-/// optional WHERE, project, and build one retaining output container.
-fn eval_list_comp(
-    ctx: EvalCtx<'_>,
-    ident: &SmallName,
-    list: &Expr,
-    predicate: Option<&Expr>,
-    projection: &Expr,
-) -> Result<Value> {
-    let EvalCtx { graph, row, params } = ctx;
-    let Some(items) = list_argument(
-        eval(graph, row, list, params)?,
-        "list comprehension needs a list",
-    )?
-    else {
-        return Ok(Value::Null);
-    };
-    let bound = items.len();
-    let rows = into_items(items).map(move |item| {
-        let mut r = row.clone();
-        r.insert(ident.to_string(), item);
-        r
-    });
-    retain_projected(graph, params, bound, rows, predicate, projection)
-}
-
-/// Pattern comprehension: collect the pattern matches, filter with the
-/// optional WHERE, project, and build one retaining output container.
-fn eval_pattern_comp(
-    ctx: EvalCtx<'_>,
-    path: &relate_ir::PathPattern,
-    predicate: Option<&Expr>,
-    projection: &Expr,
-) -> Result<Value> {
-    let EvalCtx { graph, row, params } = ctx;
-    let matches = collect_pattern_rows(graph, row, path, params)?;
-    let bound = matches.len();
-    retain_projected(
-        graph,
-        params,
-        bound,
-        matches.into_iter(),
-        predicate,
-        projection,
-    )
-}
-
-/// CIP-272 map comprehension: the source-shape triage, owned beside the
-/// loop it feeds. The evaluated source and the comprehension's binding
-/// shape must agree — a MAP source with (key, value) bindings and a LIST
-/// source with the item binding alone are the two productive pairings; a
-/// null source is null; every other pairing is the typed shape error.
-fn eval_map_comp(
-    ctx: EvalCtx<'_>,
-    key_ident: Option<&SmallName>,
-    value_ident: &SmallName,
-    source: &Expr,
-    predicate: Option<&Expr>,
-    key_expr: &Expr,
-    value_expr: &Expr,
-) -> Result<Value> {
-    let EvalCtx { graph, row, params } = ctx;
-    match (eval(graph, row, source, params)?, key_ident) {
-        (Value::Map(m), Some(k)) => retain_projected_map(
-            ctx,
-            Some(k),
-            value_ident,
-            predicate,
-            key_expr,
-            value_expr,
-            Arc::unwrap_or_clone(m)
-                .into_iter()
-                .map(|(k, v)| (Some(Value::String(k.into())), v)),
-        ),
-        (Value::List(xs), None) => retain_projected_map(
-            ctx,
-            None,
-            value_ident,
-            predicate,
-            key_expr,
-            value_expr,
-            into_items(xs).map(|x| (None, x)),
-        ),
-        (Value::Null, _) => Ok(Value::Null),
-        (Value::Map(_), None) => Err(Error::ty(
-            "map comprehension with a list binding needs a LIST source",
-        )),
-        (Value::List(_), Some(_)) => Err(Error::ty(
-            "map comprehension with key/value bindings needs a MAP source",
-        )),
-        _ => Err(Error::ty("map comprehension needs a MAP or LIST source")),
-    }
-}
-
-/// The map comprehension's retaining-projection loop — the map twin of
-/// [`retain_projected`]: bind (key, value) — or just (item), with no key
-/// binding, for a list source — per element, filter with the optional
-/// WHERE (the comprehension WHERE gate,
-/// [`comprehension_where_holds`]), and project `keyExpr : valueExpr`
-/// into a map. A non-string key is a type error; duplicate keys take the
-/// last write (BTreeMap insert). Generic over the bindings iterator so
-/// the map-source and list-source arms each keep their concrete iterator
-/// type.
-fn retain_projected_map(
-    ctx: EvalCtx<'_>,
-    key_ident: Option<&SmallName>,
-    value_ident: &SmallName,
-    predicate: Option<&Expr>,
-    key_expr: &Expr,
-    value_expr: &Expr,
-    bindings: impl ExactSizeIterator<Item = (Option<Value>, Value)>,
-) -> Result<Value> {
-    let EvalCtx { graph, row, params } = ctx;
-    // ADR-0463: a BTreeMap is not a Vec, so seed the container with the map
-    // entry-storage figure (not the value-slot model), then add each key's
-    // bytes and payload as it is produced. The bindings iterator is
-    // exact-size, so its len is the source bound.
-    let mut retained = graph.retain_bytes(crate::workspace::map_entries_bytes(bindings.len()))?;
-    let mut out: BTreeMap<String, Value> = BTreeMap::new();
-    for (k, v) in bindings {
-        graph.cancel_tick()?;
-        let mut r = row.clone();
-        if let (Some(kvar), Some(kv)) = (key_ident, k) {
-            r.insert(kvar.to_string(), kv);
-        }
-        r.insert(value_ident.to_string(), v);
-        if !comprehension_where_holds(graph, &r, predicate, params)? {
-            continue;
-        }
-        let key_v = eval(graph, &r, key_expr, params)?;
-        let key = match key_v {
-            Value::String(s) => String::from(&*s),
-            // CIP-272: a map key must be a non-null string. Live Neo4j
-            // 2026.10.1 rejects a null key (22G03/22N01), it does not
-            // drop the entry.
-            Value::Null => {
-                return Err(Error::ty(
-                    "map comprehension key expression must not be NULL",
-                ))
-            }
-            _ => {
-                return Err(Error::ty(
-                    "map comprehension key expression must be a STRING",
-                ))
-            }
-        };
-        let value_v = eval(graph, &r, value_expr, params)?;
-        // The key is a new String allocation, the map entry is new node
-        // storage, and the container retains the value's payload: the
-        // running retained total of this one growing map is what is enforced.
-        retained.add_bytes(
-            graph,
-            relate_core::str_logical_bytes(&key)
-                .saturating_add(crate::workspace::owned_heap(&value_v)),
-        )?;
-        out.insert(key, value_v);
-    }
-    Value::checked_map(out)
 }
 
 /// A map projection `n { .k, v: expr, name, .* }`: evaluate the target,

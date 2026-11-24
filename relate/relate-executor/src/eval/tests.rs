@@ -7,6 +7,7 @@
 use super::*;
 use crate::graph::Graph;
 use relate_core::VectorCoordKind;
+use std::sync::Arc;
 
 /// CIP-272: a map comprehension's key must be a non-null string. Live
 /// Neo4j 2026.10.1 rejects a null key with 22G03/22N01; it does not drop
