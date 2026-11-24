@@ -13,6 +13,7 @@
 mod common;
 
 use common::connection;
+use common::first_column;
 use common::first_column_strings as titles;
 use common::fulltext::assert_syntax_error_on_both_paths;
 use common::fulltext::fulltext_agree;
@@ -589,4 +590,96 @@ fn fuzzy_matches_the_live_probe_values() {
     let plain = hits(&mut c, "anna");
     let scaled = hits(&mut c, "anna^1.5");
     assert!((scaled[0].1 - 1.5 * plain[0].1).abs() < 1e-9);
+}
+
+/// The small store the `options`-map test ranks: four documents whose
+/// `apple` term frequencies order them 1, 3, 2, and two relationships.
+fn options_store() -> relate::Connection {
+    let mut c = connection();
+    run(
+        &mut c,
+        "CREATE (:Opt {id: 1, t: 'apple apple apple'}), (:Opt {id: 2, t: 'apple pear plum'}), \
+         (:Opt {id: 3, t: 'apple'}), (:Opt {id: 4, t: 'pear'}), (:Opt {id: 5, t: 'the lamp'})",
+    );
+    run(
+        &mut c,
+        "CREATE (a:Rel {id: 1}), (b:Rel {id: 2}), \
+         (a)-[:R {note: 'apple'}]->(b), (b)-[:R {note: 'apple road'}]->(a)",
+    );
+    run(
+        &mut c,
+        "CREATE FULLTEXT INDEX optFt FOR (n:Opt) ON EACH [n.t]",
+    );
+    run(
+        &mut c,
+        "CREATE FULLTEXT INDEX optFr FOR ()-[r:R]-() ON EACH [r.note]",
+    );
+    run(&mut c, "CALL db.awaitIndexes()");
+    c
+}
+
+/// The `options` map both fulltext procedures document (REL8-2031 #75):
+/// `skip`/`limit` page the ranking exactly as Neo4j's do — the issue's
+/// `{limit: 2}` → `[1, 3]`, `{skip: 1, limit: 1}` → `[3]`, `{}` → the whole
+/// `[1, 3, 2]` — and `analyzer` selects the query-side analyzer exactly as
+/// `SEARCH ... WITH ANALYZER` does (ADR-0672 §4). An unknown key, a bad value
+/// and an unknown analyzer name are typed rejections, never silently ignored
+/// options.
+#[test]
+fn the_procedure_options_map_pages_the_ranking() {
+    let mut c = options_store();
+    let ranked = |c: &mut relate::Connection, options: &str| {
+        first_column(&run(
+            c,
+            &format!(
+                "CALL db.index.fulltext.queryNodes('optFt', 'apple'{options}) \
+                 YIELD node RETURN node.id AS id"
+            ),
+        ))
+    };
+    let ids = |values: &[i64]| values.iter().copied().map(Value::Int).collect::<Vec<_>>();
+    assert_eq!(ranked(&mut c, ""), ids(&[1, 3, 2]));
+    assert_eq!(ranked(&mut c, ", {}"), ids(&[1, 3, 2]));
+    assert_eq!(ranked(&mut c, ", {limit: 2}"), ids(&[1, 3]));
+    assert_eq!(ranked(&mut c, ", {skip: 1, limit: 1}"), ids(&[3]));
+    assert_eq!(ranked(&mut c, ", {skip: 2}"), ids(&[2]));
+
+    // The relationship side: two `apple` notes, one under `{limit: 1}`.
+    let result = run(
+        &mut c,
+        "CALL db.index.fulltext.queryRelationships('optFr', 'apple', {limit: 1}) \
+         YIELD relationship RETURN count(*) AS hits",
+    );
+    assert_eq!(first_column(&result), [Value::Int(1)]);
+
+    // The `analyzer` key runs the query side's analyzer, exactly as SEARCH's
+    // WITH ANALYZER does: `the` is a stop word under `english` and a term
+    // under the index's default analyzer.
+    let the = |c: &mut relate::Connection, options: &str| {
+        first_column(&run(
+            c,
+            &format!(
+                "CALL db.index.fulltext.queryNodes('optFt', 'the'{options}) \
+                 YIELD node RETURN node.id AS id"
+            ),
+        ))
+    };
+    assert_eq!(the(&mut c, ""), ids(&[5]));
+    assert_eq!(the(&mut c, ", {analyzer: 'english'}"), Vec::<Value>::new());
+    // An unknown analyzer name is the analyzer reader's own rejection.
+    let error = common::refused_literal(
+        &mut c,
+        "CALL db.index.fulltext.queryNodes('optFt', 'apple', {analyzer: 'nope'}) \
+         YIELD node RETURN node.id",
+    );
+    assert!(error.to_string().contains("analyzer name"), "{error}");
+
+    for options in [", {count: 1}", ", {limit: -1}", ", {limit: 'two'}"] {
+        let statement = format!(
+            "CALL db.index.fulltext.queryNodes('optFt', 'apple'{options}) \
+             YIELD node RETURN node.id"
+        );
+        let error = common::refused_literal(&mut c, &statement);
+        assert!(error.to_string().contains("option"), "{options}: {error}");
+    }
 }

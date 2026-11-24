@@ -634,13 +634,20 @@ YIELD node, score
 RETURN node.title, score;
 ```
 
-`db.index.fulltext.queryNodes(indexName, query)` and
-`db.index.fulltext.queryRelationships(indexName, query)` query a FULLTEXT
-index, yielding `(node, score)` or `(relationship, score)` respectively.
+`db.index.fulltext.queryNodes(indexName, query [, options])` and
+`db.index.fulltext.queryRelationships(indexName, query [, options])` query
+a FULLTEXT index, yielding `(node, score)` or `(relationship, score)`
+respectively.
 `queryNodes` matches the labels of a node index, `queryRelationships` the
 types of a relationship index; both take the index name and the query
-string in the Lucene-style query syntax below. The `SEARCH` clause (see
-SEARCH) is the current-search replacement and takes the same syntax.
+string in the Lucene-style query syntax below. The optional third
+argument is the options map: `{skip: N, limit: M}` pages the ranked hits
+(the whole ranking without it), `{}` is the whole ranking, and
+`analyzer` names the query-side analyzer exactly as
+`SEARCH ... WITH ANALYZER` does (an unknown name is rejected with the
+analyzer reader's own error; null is no override). Any other key is
+rejected with an argument error. The `SEARCH` clause
+(see SEARCH) is the current-search replacement and takes the same syntax.
 
 Fulltext query syntax (shared by `SEARCH ... FULLTEXT INDEX` and the
 procedures):
@@ -660,9 +667,16 @@ and — without `WITH ANALYZER` — its query terms: `standard-folding` folds La
 diacritics and ligatures (`é` to `e`, `ß` to `ss`, `æ` to `ae`) in both, so
 `eifrem` finds `Eifrém` (Greek and Cyrillic are not folded), and `english`
 drops English stop words and Porter-stems both, so `refunds` finds `refund`
-and `charge` finds `charged` while `the` matches nothing; every other
+and `charge` finds `charged` while `the` matches nothing; `cjk` emits
+overlapping bigrams over Han, Hiragana and Katakana runs, so `中文` finds
+`中文搜索引擎` (a one-character run yields no bigram and is not searchable
+under `cjk`); every other
 admitted name keeps the plain tokenizer (no stemming, no stop-word filtering —
-the default analyzer is `standard-no-stop-words`). Wildcard terms are folded too on a folding index, so `Müll*`,
+the default analyzer is `standard-no-stop-words`). The tokenizer itself
+splits the scripts written without spaces between words the way UAX #29
+has it — one term per Han ideograph and per Hiragana character, a whole
+Katakana run as one term — so `搜索` finds `中文搜索引擎` under the default
+analyzer too (ADR-0672). Wildcard terms are folded too on a folding index, so `Müll*`,
 `mull*` and `MÜLL*` all find `Müller` (a deliberate deviation from Neo4j, which
 leaves wildcards unfolded; ADR-0583); wildcard and fuzzy terms are never
 stemmed. Fuzzy terms are lowercased only, as in
@@ -670,10 +684,22 @@ Neo4j: `eifrém~0` misses on a folding index. `WITH ANALYZER` changes the query
 side only; `WITH ANALYZER null` is no override.
 
 A malformed suffix (`term^x`, `term^`, `term^-1`, `term~1.5`, a suffix with no term) is a
-syntax error rather than a stray term. Phrase quotes add no adjacency
-constraint and `+`/`-` clause modifiers are not read. Fuzzy and boost
+syntax error rather than a stray term. So is every Lucene construct this
+query syntax does not implement — grouping parentheses and field groups
+(`(a OR b) AND c`, `body:(a OR b)`), ranges (`[a TO b]`, `{a TO b}`),
+regular expressions (`/re/`, also after a field prefix), the
+`+`/`-`/`!` clause modifiers (also after a field prefix), a literal term the
+analyzer reads as more than one term (a quoted phrase, an escaped space, a
+quoted `a.b`), an operator with no term
+on both sides
+(`a AND`, `AND a`, `a OR OR b`), and an empty query. Quotes make one term
+literal (`"tok1*"` is the term `tok1`, also after a field prefix as in
+`title:"alpha"`), so a quoted operator or modifier (`"AND"`, `"+alpha"`,
+`"/re/"`) is that text and nothing more; quotes add no adjacency
+constraint.
+Fuzzy and boost
 behaviour follows Lucene's classic query parser and is calibrated against
-Neo4j 2026.09-enterprise (ADR-0578, ADR-0583).
+Neo4j 2026.09-enterprise (ADR-0578, ADR-0583, ADR-0672).
 
 ```cypher
 CREATE FULLTEXT INDEX relNotes FOR ()-[r:RELATED_TO]-() ON EACH [r.note];

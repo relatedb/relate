@@ -112,6 +112,103 @@ fn scan_call_source<'a>(
     ))
 }
 
+/// The whole-ranking window — no skip, no cap: the `db.index.fulltext.query*`
+/// procedures' answer when their `options` map omits `skip` and `limit`.
+const RANKING_ALL: (usize, usize) = (0, usize::MAX);
+
+/// The `options` keys the fulltext query procedures read — the one
+/// vocabulary the dispatch and the rejection text's list share.
+#[derive(Clone, Copy)]
+enum OptionKey {
+    Skip,
+    Limit,
+    /// The query-side analyzer: its value is validated by
+    /// [`fulltext::Analyzer::from_value`], the same reader `SEARCH`'s
+    /// `WITH ANALYZER` uses.
+    Analyzer,
+}
+
+impl OptionKey {
+    const ALL: [Self; 3] = [Self::Skip, Self::Limit, Self::Analyzer];
+
+    fn parse(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|option| option.name() == key)
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Skip => "skip",
+            Self::Limit => "limit",
+            Self::Analyzer => "analyzer",
+        }
+    }
+
+    /// The admitted names, for the rejection text.
+    fn names() -> String {
+        let names: Vec<&str> = Self::ALL.iter().map(|option| option.name()).collect();
+        names.join(", ")
+    }
+
+    /// Read this key's value: a ranking key assigns its window slot, the
+    /// analyzer key its query-side override.
+    fn read(
+        self,
+        value: &Value,
+        window: &mut (usize, usize),
+        analyzer: &mut Option<fulltext::Analyzer>,
+        procedure: &str,
+    ) -> Result<()> {
+        let slot = match self {
+            Self::Skip => &mut window.0,
+            Self::Limit => &mut window.1,
+            Self::Analyzer => {
+                *analyzer = fulltext::Analyzer::from_value(value)?;
+                return Ok(());
+            }
+        };
+        let invalid = || {
+            Error::argument_error(format!(
+                "{procedure} option `{}` expects a non-negative INTEGER",
+                self.name()
+            ))
+        };
+        let Value::Int(count) = value else {
+            return Err(invalid());
+        };
+        *slot = usize::try_from(*count).map_err(|_| invalid())?;
+        Ok(())
+    }
+}
+
+/// One `db.index.fulltext.query*` call's `options` map, read into the scan's
+/// whole ranking window and query-side analyzer: `skip` and `limit` are
+/// non-negative integers, absent meaning no skip and no cap; `analyzer` names
+/// the query-side analyzer exactly as `SEARCH`'s `WITH ANALYZER` does (NULL is
+/// no override). A key outside that vocabulary and a bad value are typed
+/// rejections, never options accepted and ignored.
+fn query_options(
+    value: &Value,
+    procedure: &str,
+) -> Result<((usize, usize), Option<fulltext::Analyzer>)> {
+    let Value::Map(options) = value else {
+        return Err(Error::invalid_argument_type(format!(
+            "{procedure} argument `options` expects MAP"
+        )));
+    };
+    let mut window = RANKING_ALL;
+    let mut analyzer = None;
+    for (key, value) in options.iter() {
+        let Some(option) = OptionKey::parse(key) else {
+            return Err(Error::argument_error(format!(
+                "{procedure} does not accept the `{key}` option (valid: {})",
+                OptionKey::names()
+            )));
+        };
+        option.read(value, &mut window, &mut analyzer, procedure)?;
+    }
+    Ok((window, analyzer))
+}
+
 /// The one fulltext scan for both `db.index.fulltext.query*` procedures:
 /// `kind` selects the entity kind (relationship indexes match on
 /// relationship types, node indexes on labels) and the yielded column
@@ -148,15 +245,25 @@ pub(crate) fn fulltext_call_source<'a>(
             EntityKind::from_relationship_flag(detail.relationship),
             "fulltext",
         )?;
+        // The optional `options` map: `skip`/`limit` page the ranking (the
+        // whole ranking without them) and `analyzer` overrides the query side
+        // exactly as `SEARCH`'s `WITH ANALYZER` does.
+        let (window, query_analyzer) = match s.args.get(2) {
+            Some(expr) => query_options(
+                &eval(s.ctx.graph, input, expr, s.ctx.params)?,
+                signature.name,
+            )?,
+            None => (RANKING_ALL, None),
+        };
         // The one CIP-225 scan: the Lucene-style query parser (terms
         // OR'd, `AND`/`OR`/`NOT`, `property:term` field filters) and the
-        // live-fitted BM25 score, ranked best-first, no window.
+        // live-fitted BM25 score, ranked best-first.
         let analyzers = fulltext::Analyzers::new(
             crate::exec::ddl_options::index_analyzer(&options, &s.index_name)?,
-            None,
+            query_analyzer,
         );
         Ok(
-            fulltext::search_all(&corpora, s.ctx.graph, &detail, query, analyzers)?
+            fulltext::search(&corpora, s.ctx.graph, &detail, query, analyzers, window)?
                 .into_iter()
                 .map(|(id, score)| (materialize_candidate(s.ctx.graph, s.kind, id), score))
                 .collect(),
@@ -201,4 +308,63 @@ pub(crate) fn vector_call_source<'a>(
         entity_kind_mismatch(s.kind, index_kind, "vector")?;
         Ok(candidates)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_options_map_reads_skip_limit_and_the_query_analyzer() {
+        use crate::test_support::value_map;
+        let procedure = "db.index.fulltext.queryNodes";
+        let read = |options: &[(&str, Value)]| query_options(&value_map(options), procedure);
+        assert_eq!(read(&[]).unwrap(), (RANKING_ALL, None));
+        assert_eq!(read(&[("limit", Value::Int(2))]).unwrap(), ((0, 2), None));
+        assert_eq!(
+            read(&[("skip", Value::Int(1)), ("limit", Value::Int(2))]).unwrap(),
+            ((1, 2), None)
+        );
+        assert_eq!(
+            read(&[("skip", Value::Int(2))]).unwrap(),
+            ((2, usize::MAX), None)
+        );
+        // `analyzer` runs the same validation as SEARCH's WITH ANALYZER; a
+        // NULL value is no override.
+        assert_eq!(
+            read(&[("analyzer", Value::String("ENGLISH".into()))]).unwrap(),
+            (RANKING_ALL, Some(fulltext::Analyzer::English))
+        );
+        assert_eq!(
+            read(&[("analyzer", Value::Null)]).unwrap(),
+            (RANKING_ALL, None)
+        );
+        // Every admitted key is one of the table's rows: the ranking keys
+        // read an integer, the analyzer its own value form.
+        for option in OptionKey::ALL {
+            let value = match option {
+                OptionKey::Skip | OptionKey::Limit => Value::Int(1),
+                OptionKey::Analyzer => Value::Null,
+            };
+            assert!(read(&[(option.name(), value)]).is_ok(), "{}", option.name());
+        }
+        // A non-map argument, an unknown key and a bad value are rejections,
+        // never options accepted and ignored.
+        for bad in [
+            Value::Int(1),
+            value_map(&[("limit", Value::Int(-1))]),
+            value_map(&[("limit", Value::String("two".into()))]),
+            value_map(&[("count", Value::Int(1))]),
+        ] {
+            let error = query_options(&bad, procedure).expect_err("rejected");
+            assert!(error.to_string().contains("option"), "{bad:?}: {error}");
+        }
+        // An unknown analyzer name is the analyzer reader's own rejection.
+        let error = query_options(
+            &value_map(&[("analyzer", Value::String("not-a-real-analyzer".into()))]),
+            procedure,
+        )
+        .expect_err("rejected");
+        assert!(error.to_string().contains("analyzer name"), "{error}");
+    }
 }

@@ -123,3 +123,9 @@ same analyzer, so the folding-but-not-stemming asymmetry and the
 `runn*` divergence it named are gone. Decision 2's `WITH ANALYZER`
 query-side-only rule, and the fuzzy and wildcard decisions, stand.
 
+
+[ADR-0672](./0672-fulltext-cjk-tokenization-and-strict-query-syntax.md)
+removes the query-syntax shortcuts recorded above — a quoted multi-term
+phrase and the `+`/`-`/`!` modifiers are now syntax errors rather than a
+flat OR — and closes the procedures' `analyzer` divergence: the option is
+applied as the query-side override (ADR-0636's mechanism), not ignored.

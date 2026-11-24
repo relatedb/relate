@@ -314,14 +314,6 @@ impl TopWindow {
         }
     }
 
-    /// The whole ranking, unbounded — the `db.index.fulltext.query*`
-    /// procedures' scan, which wants every hit rather than a page. Keeping
-    /// this beside [`Self::new`] means the unbounded intent is stated here,
-    /// not as a `usize::MAX` sentinel at the call site.
-    pub(crate) fn ranking_all() -> Self {
-        Self::new(0, usize::MAX)
-    }
-
     /// Retain `candidate` if it beats the current worst retained entry.
     /// Equal (score, id) pairs never displace each other; ids are unique per
     /// candidate so an equal-ranked push is always the same candidate.

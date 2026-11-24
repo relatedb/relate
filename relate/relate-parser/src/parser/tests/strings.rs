@@ -222,6 +222,11 @@ fn test_interp_escaped_backslash_before_embed() {
     let parts = interp_parts(r"RETURN s'a\nb' AS r");
     assert_eq!(parts.len(), 1);
     assert!(matches!(&parts[0], InterpPart::Text(t) if t == "a\nb"));
+
+    // The control escapes decode here exactly as in a plain string literal.
+    let parts = interp_parts(r"RETURN s'a\r\b\f' AS r");
+    assert_eq!(parts.len(), 1);
+    assert!(matches!(&parts[0], InterpPart::Text(t) if t == "a\r\u{8}\u{c}"));
 }
 
 #[test]

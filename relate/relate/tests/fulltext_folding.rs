@@ -241,7 +241,7 @@ fn wildcards_obey_and_not_and_clause_groups() {
         ("kolleg* AND eifrem", vec![]),
         ("NOT kolleg*", vec![]),
         ("kollegg* AND NOT kolleggers", vec!["Kollegger"]),
-        ("(kollegg*) OR zoë", vec!["Kollegger", "Kolleggers", "Zoë"]),
+        ("kollegg* OR zoë", vec!["Kollegger", "Kolleggers", "Zoë"]),
     ] {
         assert_eq!(speakers(&mut c, "Plain", query), expected, "{query}");
     }

@@ -53,6 +53,25 @@ pub(crate) fn unicode_surrogate_pair(hi: u32, lo: u32) -> Option<char> {
     char::from_u32(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00))
 }
 
+/// The one-character escapes the Cypher string grammar decodes — the
+/// plain-string lexer ([`Lexer::push_escape`]) and the interpolated-literal
+/// resolver (`parser::interp`) both read this table, so an escape letter is
+/// added in one place. `\u` and the interpolation-only `\{`/`\}` are not
+/// part of it.
+pub(crate) fn decode_escape_char(c: char) -> Option<char> {
+    Some(match c {
+        'n' => '\n',
+        't' => '\t',
+        'r' => '\r',
+        'b' => '\u{8}',
+        'f' => '\u{c}',
+        '\\' => '\\',
+        '\'' => '\'',
+        '"' => '"',
+        _ => return None,
+    })
+}
+
 /// The code point named by the `\uXXXX` window starting at `bytes`'
 /// cursor — backslash, `u`, four ASCII hex digits — or `None` when the
 /// window is not well-formed. The one window decoder for every form the
@@ -131,19 +150,25 @@ impl<'a> Lexer<'a> {
         line: usize,
         col: usize,
     ) -> Result<(), ()> {
-        match escaped {
-            b'n' => s.push('\n'),
-            b't' => s.push('\t'),
-            b'\\' => s.push('\\'),
-            b'\'' => s.push('\''),
-            b'"' => s.push('"'),
-            b'u' => return self.push_unicode_escape(s, line, col),
-            other => {
+        if escaped == b'u' {
+            return self.push_unicode_escape(s, line, col);
+        }
+        // The one-character table is [`decode_escape_char`]'s; an unknown
+        // escape keeps its backslash and its (possibly non-ASCII) byte. The
+        // lookup is ASCII-gated so a UTF-8 continuation byte is never
+        // reinterpreted as a Latin-1 scalar.
+        let decoded = escaped
+            .is_ascii()
+            .then(|| decode_escape_char(char::from(escaped)))
+            .flatten();
+        match decoded {
+            Some(decoded) => s.push(decoded),
+            None => {
                 s.push('\\');
                 // An escaped non-ASCII byte must survive byte-identically,
                 // not be byte-widened into mojibake (decode the UTF-8
                 // sequence like read_string's fallback did).
-                push_utf8(self, s, other);
+                push_utf8(self, s, escaped);
             }
         }
         Ok(())

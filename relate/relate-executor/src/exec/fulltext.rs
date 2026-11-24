@@ -17,18 +17,23 @@
 //! numerator of textbook BM25 is absent (live-vs-model fit: a constant
 //! 1/2.2 scale across every probe corpus).
 //!
-//! Shortcuts, all live-documented and outside the merged corpora's shapes:
-//! a quoted phrase adds no adjacency constraint (its words stay separate
-//! terms) and `+`/`-` clause modifiers are not read. The index's own
+//! The query syntax accepts the forms `docs/reference/cypher-syntax.md`
+//! documents and rejects the rest with an authored syntax error — grouping
+//! parentheses, field groups, ranges, regular expressions and
+//! `+`/`-`/`!` clause modifiers are never silently read as a flat OR (see
+//! [`query`]). The index's own
 //! `fulltext.analyzer` config runs its full analysis on the stored tokens —
 //! accent folding for `standard-folding`, stop-word filtering and Porter
-//! stemming for `english` — and a query without `WITH ANALYZER` is analyzed
+//! stemming for `english`, CJK bigrams for `cjk` — and a query without
+//! `WITH ANALYZER` is analyzed
 //! by that same index analyzer; `WITH ANALYZER` overrides the query side
 //! only (ADR-0636). Every live-admitted analyzer
 //! name is accepted (the one [`analyzer::ANALYZERS`] table below — the same table
 //! `exec::ddl_options`' config validation reads); the names other than
-//! `english` and `standard-folding` share the standard tokenizer, so their
-//! stored tokens and queries are unstemmed.
+//! `english`, `standard-folding` and `cjk` share the standard tokenizer, so
+//! their stored tokens and queries are unstemmed. The standard tokenizer
+//! splits the scripts written without spaces (Han, Hiragana, Katakana) the
+//! way UAX #29 has it, so CJK text is searchable by its words (ADR-0672).
 //! `standard-folding` ASCII-folds Latin diacritics and ligatures (see
 //! [`fold`]) in the index's stored tokens and in analyzed query terms.
 //!
@@ -71,20 +76,6 @@ use wildcard::Pattern;
 /// enterprise, see the module docs).
 const K1: f64 = 1.2;
 const B: f64 = 0.75;
-
-/// Lowercase, split on any run of non-alphanumeric characters except `_` —
-/// the standard tokenizer's shape on this engine's corpora. Live-fitted:
-/// the default analyzer keeps stop words and underscores (`foo_bar` is one
-/// token; `foo` alone matches nothing) and splits hyphenated words
-/// (`wish-granting` is two tokens), which is what the length statistics of
-/// the calibrated scores require.
-fn tokenize(text: &str) -> Vec<String> {
-    text.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|token| !token.is_empty())
-        .map(str::to_string)
-        .collect()
-}
 
 /// One indexed property's tokens for one document. The property travels
 /// with its tokens, so a clause's `property:` filter reads fields directly
@@ -420,25 +411,6 @@ pub(crate) fn search(
     )
 }
 
-/// The same scan over the whole ranking — the `db.index.fulltext.query*`
-/// procedures return every hit, not a page.
-pub(crate) fn search_all(
-    memo: &CorpusMemo,
-    graph: &ExecGraph<'_>,
-    detail: &IndexDetailSpec,
-    query: &str,
-    analyzers: Analyzers,
-) -> Result<Vec<(i64, f64)>> {
-    rank(
-        memo,
-        graph,
-        detail,
-        query,
-        analyzers,
-        TopWindow::ranking_all(),
-    )
-}
-
 /// One index's tokenized documents and per-field statistics: a pure
 /// function of the graph and the index's detail and analyzer, so it is
 /// built once and read by every scan over the same index.
@@ -611,17 +583,6 @@ mod tests {
             &other,
             &memo.corpus(&graph, &detail("b"), Analyzer::Standard)
         ));
-    }
-
-    #[test]
-    fn tokenizer_splits_hyphens_and_lowercases() {
-        assert_eq!(
-            tokenize("A wish-granting GENIE."),
-            ["a", "wish", "granting", "genie"]
-        );
-        // Live 2026.10.1: `foo_bar` is one token, and `foo` alone does not
-        // match a document holding it.
-        assert_eq!(tokenize("foo_bar baz"), ["foo_bar", "baz"]);
     }
 
     fn stat_of(terms: &[(&str, usize)]) -> FieldStats {

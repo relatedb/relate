@@ -5,7 +5,6 @@ use relate_core::{bare_type_name, Error, Result, Value};
 
 use super::fold::fold;
 use super::stemmer::porter_stem;
-use super::tokenize;
 
 /// EnglishAnalyzer's default stop set (Lucene `DefaultEnglishStopWordSet`)
 /// — live-verified: `FOR 'the' WITH ANALYZER 'english'` matches nothing
@@ -23,6 +22,8 @@ pub(crate) enum Analyzer {
     /// `standard-folding`: the standard tokenizer plus ASCII folding.
     StandardFolding,
     English,
+    /// `cjk`: overlapping bigrams over Han, Hiragana and Katakana runs.
+    Cjk,
 }
 
 /// The one analyzer vocabulary: every fulltext analyzer name live Neo4j
@@ -30,8 +31,9 @@ pub(crate) enum Analyzer {
 /// behaviour it selects and the description live's
 /// `db.index.fulltext.listAvailableAnalyzers` reports for it (live-verified
 /// 2026-11-16 on neo4j:2026.10-enterprise) — `english` drops English stop
-/// words and Porter-stems, `standard-folding` folds Latin diacritics, every
-/// other admitted name shares the standard tokenizer. The name admission,
+/// words and Porter-stems, `standard-folding` folds Latin diacritics, `cjk`
+/// bigrams its CJK runs, every other admitted name shares the standard
+/// tokenizer. The name admission,
 /// the rejection sentence's list, `exec::ddl_options`' `fulltext.analyzer`
 /// config validation and the `listAvailableAnalyzers` rows all read these
 /// rows; the name list, the name→behaviour and the name→description
@@ -57,7 +59,7 @@ const ANALYZERS: [(&str, Analyzer, &str); 45] = [
     ("catalan", Analyzer::Standard, "Catalan analyzer with stemming and stop word filtering."),
     (
         "cjk",
-        Analyzer::Standard,
+        Analyzer::Cjk,
         "CJK - Chinese/Japanese/Korean - analyzer. Terms are normalised and case-folded. Produces bi-grams, and filters out stop words.",
     ),
     (
@@ -193,20 +195,147 @@ impl Analyzer {
             .find(|(admitted, _, _)| *admitted == name.as_str())
             .map(|(_, behavior, _)| *behavior)
     }
+}
 
+/// The kind of one tokenizer segment — the runs [`tokenize`] and
+/// [`cjk_bigrams`] classify a text into.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    /// A run of ordinary word characters (alphanumerics and `_`).
+    Word,
+    /// A run of Katakana characters.
+    Katakana,
+    /// A run of Han ideographs and Hiragana characters — the scripts written
+    /// without spaces between words.
+    Ideographic,
+}
+
+impl Kind {
+    /// The run kind `c` continues, or `None` where `c` is a separator.
+    fn of(c: char) -> Option<Self> {
+        if is_han(c) || is_hiragana(c) {
+            Some(Self::Ideographic)
+        } else if is_katakana(c) {
+            Some(Self::Katakana)
+        } else if c.is_alphanumeric() || c == '_' {
+            Some(Self::Word)
+        } else {
+            None
+        }
+    }
+}
+
+/// A Han ideograph: the blocks the reference tokenizer emits one character
+/// at a time, since Han text is written without spaces between words.
+fn is_han(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x3400..=0x4DBF        // Extension A
+        | 0x4E00..=0x9FFF      // Unified Ideographs
+        | 0xF900..=0xFAFF      // Compatibility Ideographs
+        | 0x20000..=0x2A6DF    // Extension B
+        | 0x2A700..=0x2EBEF    // Extensions C–F
+        | 0x2EBF0..=0x2EE5F    // Extension I
+        | 0x2F800..=0x2FA1F    // Compatibility Ideographs Supplement
+        | 0x30000..=0x3134F    // Extension G
+        | 0x31350..=0x323AF    // Extension H
+    )
+}
+
+/// Hiragana: one token per character, like Han.
+fn is_hiragana(c: char) -> bool {
+    matches!(c as u32, 0x3041..=0x3096 | 0x309D..=0x309F)
+}
+
+/// Katakana: a run of these stays one token (UAX #29's Katakana rule). The
+/// range includes the prolonged sound mark (U+30FC) and the iteration
+/// marks, so `データベース` stays one run.
+fn is_katakana(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x30A1..=0x30FA | 0x30FC..=0x30FF | 0x31F0..=0x31FF | 0x32D0..=0x32FE
+    )
+}
+
+/// Walk `text`, lowercased, as its tokenizer segments: the runs of word
+/// characters, Katakana, and Han/Hiragana; every other character separates.
+fn for_each_segment(text: &str, mut each: impl FnMut(Kind, &str)) {
+    let lower = text.to_lowercase();
+    let mut open: Option<Kind> = None;
+    let mut start = 0;
+    for (at, c) in lower.char_indices() {
+        let kind = Kind::of(c);
+        if kind == open {
+            continue;
+        }
+        if let Some(previous) = open {
+            each(previous, &lower[start..at]);
+        }
+        open = kind;
+        start = at;
+    }
+    if let Some(previous) = open {
+        each(previous, &lower[start..]);
+    }
+}
+
+/// Lowercase and split the way the reference tokenizer does. Latin text
+/// splits on any run of non-alphanumeric characters except `_` — live-fitted:
+/// the default analyzer keeps stop words and underscores (`foo_bar` is one
+/// token; `foo` alone matches nothing) and splits hyphenated words
+/// (`wish-granting` is two tokens), which is what the length statistics of
+/// the calibrated scores require. The scripts written without spaces between
+/// words split as UAX #29 has it: one token per Han ideograph and per
+/// Hiragana character, a whole Katakana run as one token — so `中文` is
+/// searchable inside `中文搜索引擎`.
+pub(super) fn tokenize(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for_each_segment(text, |kind, run| match kind {
+        Kind::Word | Kind::Katakana => tokens.push(run.to_string()),
+        Kind::Ideographic => tokens.extend(run.chars().map(String::from)),
+    });
+    tokens
+}
+
+/// Whether `text` holds at least one term [`tokenize`] would emit — the
+/// lexical question the suffix grammar asks, without building the terms.
+pub(super) fn has_token(text: &str) -> bool {
+    let mut found = false;
+    for_each_segment(text, |_, _| found = true);
+    found
+}
+
+/// The `cjk` analyzer's terms: the overlapping character bigrams of every run
+/// of Han, Hiragana or Katakana characters, and [`tokenize`]'s terms
+/// elsewhere. A one-character run contributes no bigram — the reference
+/// analyzer's output is the same, so a lone ideograph is not searchable
+/// under `cjk`.
+fn cjk_bigrams(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for_each_segment(text, |kind, run| match kind {
+        Kind::Word => tokens.push(run.to_string()),
+        Kind::Katakana | Kind::Ideographic => {
+            let chars: Vec<char> = run.chars().collect();
+            tokens.extend(chars.windows(2).map(|pair| pair.iter().collect()));
+        }
+    });
+    tokens
+}
+
+impl Analyzer {
     /// The analyzer's tokens: `standard` is the tokenizer alone (the
     /// default `standard-no-stop-words` index analyzer), `english` drops
     /// English stop words and Porter-stems what remains, `standard-folding`
-    /// folds. Both sides of one scan run this one analysis (ADR-0636): the
-    /// index's stored tokens at corpus build, and the query's terms when no
-    /// `WITH ANALYZER` overrides — the stored/query distinction lives in
-    /// the [`Analyzers`] pair alone.
+    /// folds, `cjk` bigrams the CJK runs. Both sides of one scan run this
+    /// one analysis (ADR-0636): the index's stored tokens at corpus build,
+    /// and the query's terms when no `WITH ANALYZER` overrides — the
+    /// stored/query distinction lives in the [`Analyzers`] pair alone.
     pub(super) fn analyze(self, text: &str) -> Vec<String> {
-        let tokens = tokenize(text);
         match self {
-            Self::Standard => tokens,
-            Self::StandardFolding => tokens.iter().map(|token| fold(token)).collect(),
-            Self::English => tokens
+            Self::Cjk => cjk_bigrams(text),
+            Self::Standard => tokenize(text),
+            Self::StandardFolding => tokenize(text).iter().map(|token| fold(token)).collect(),
+            Self::English => tokenize(text)
                 .into_iter()
                 .filter(|token| !self.stop_words().contains(&token.as_str()))
                 .map(|token| porter_stem(&token))
@@ -229,7 +358,7 @@ impl Analyzer {
     pub(crate) fn stop_words(self) -> &'static [&'static str] {
         match self {
             Self::English => &ENGLISH_STOP_WORDS,
-            Self::Standard | Self::StandardFolding => &[],
+            Self::Standard | Self::StandardFolding | Self::Cjk => &[],
         }
     }
 }
@@ -286,6 +415,51 @@ pub(crate) fn analyzer_catalog() -> impl Iterator<Item = AnalyzerCatalogEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tokenizer_splits_hyphens_and_lowercases() {
+        assert_eq!(
+            tokenize("A wish-granting GENIE."),
+            ["a", "wish", "granting", "genie"]
+        );
+        // Live 2026.10.1: `foo_bar` is one token, and `foo` alone does not
+        // match a document holding it.
+        assert_eq!(tokenize("foo_bar baz"), ["foo_bar", "baz"]);
+    }
+
+    #[test]
+    fn tokenizer_splits_the_scripts_written_without_spaces() {
+        // One token per Han ideograph and per Hiragana character, a whole
+        // Katakana run as one token (live's UAX #29 shape) — the prolonged
+        // sound mark included, so `データベース` is one run.
+        assert_eq!(
+            tokenize("中文搜索引擎"),
+            ["中", "文", "搜", "索", "引", "擎"]
+        );
+        assert_eq!(
+            tokenize("日本語のテキスト"),
+            ["日", "本", "語", "の", "テキスト"]
+        );
+        assert_eq!(tokenize("graph データベース"), ["graph", "データベース"]);
+        // The prolonged sound mark (U+30FC) belongs to the run, not a
+        // separator: `データベース` is one token, never `デ` + `タベ` + `ス`.
+        assert_eq!(tokenize("データベース"), ["データベース"]);
+        assert_eq!(tokenize("テ\u{30FC}"), ["テ\u{30FC}"]);
+        // Space-separated Korean stays one token per word.
+        assert_eq!(tokenize("한국어 검색"), ["한국어", "검색"]);
+        // The cjk analyzer bigrams each run and yields nothing for a
+        // one-character run.
+        assert_eq!(
+            cjk_bigrams("中文搜索引擎"),
+            ["中文", "文搜", "搜索", "索引", "引擎"]
+        );
+        assert_eq!(
+            cjk_bigrams("graph データベース"),
+            ["graph", "デー", "ータ", "タベ", "ベー", "ース"]
+        );
+        assert_eq!(cjk_bigrams("图"), Vec::<String>::new());
+        assert_eq!(cjk_bigrams("한국어"), ["한국어"]);
+    }
 
     #[test]
     fn a_folding_analyzer_folds_diacritics_and_ligatures() {

@@ -79,3 +79,10 @@ index could not.
   tokens. Default-analyzer indexes are unchanged.
 - Wildcard and fuzzy clauses match stems, so a wildcard no longer needs
   to spell an inflection live's stemmer would remove.
+
+## Later references
+
+[ADR-0672](./0672-fulltext-cjk-tokenization-and-strict-query-syntax.md)
+extends decision 4: `cjk` carries behaviour of its own (overlapping
+bigrams), and the shared tokenizer splits Han, Hiragana and Katakana the
+way UAX #29 has it. Decisions 1–3 stand.

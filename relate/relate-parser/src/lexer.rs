@@ -7,9 +7,12 @@ mod ascii;
 mod number;
 mod string;
 // The interpolation pattern's escape resolution shares the lexer's one
-// `\uXXXX` window reader (ADR-0619's consolidation), so that one name —
-// not the whole `string` module — crosses the sibling module boundary.
-pub(crate) use string::{unicode_escape_window, unicode_surrogate_pair, UNICODE_ESCAPE_SPAN};
+// `\uXXXX` window reader (ADR-0619's consolidation) and the string
+// grammar's one-character escape table, so those names — not the whole
+// `string` module — cross the sibling module boundary.
+pub(crate) use string::{
+    decode_escape_char, unicode_escape_window, unicode_surrogate_pair, UNICODE_ESCAPE_SPAN,
+};
 
 /// Parse-affecting preview options: the ADR-0371 preview gates that widen
 /// what the parser accepts (the lexer's token stream and the parser's own

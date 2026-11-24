@@ -32,6 +32,22 @@ const CONFIG_RESULT_RETURNS: &[ProcArgMeta] = &[
 const VECTOR_QUERY_SCORE: ProcArgMeta =
     ProcArgMeta::described("score", "The similarity score.", "FLOAT");
 
+/// The argument list both fulltext-index query procedures share: the index
+/// name, the Lucene-style query, and the optional `options` map. Its
+/// `skip`/`limit` keys page the ranking and its `analyzer` key selects the
+/// query-side analyzer, exactly as `SEARCH ... WITH ANALYZER` does
+/// (ADR-0672 §4); an unknown key is an argument error.
+const FULLTEXT_QUERY_ARGS: &[ProcArgMeta] = &[
+    ProcArgMeta::new("indexName", "STRING"),
+    ProcArgMeta::new("query", "STRING"),
+    ProcArgMeta::with_default(
+        "options",
+        "The options map: `skip`, `limit` and `analyzer`.",
+        "MAP",
+        "{}",
+    ),
+];
+
 /// The argument list both vector-index query procedures share.
 const VECTOR_QUERY_ARGS: &[ProcArgMeta] = &[
     ProcArgMeta::described("indexName", "The name of the vector index.", "STRING"),
@@ -136,10 +152,7 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
              The `options` map and any of the keys are optional.\n\
              An example of the `options` map: `{skip: 30, limit: 10, analyzer: 'whitespace'}`\n",
         )
-        .args(&[
-            ProcArgMeta::new("indexName", "STRING"),
-            ProcArgMeta::new("query", "STRING"),
-        ])
+        .args(FULLTEXT_QUERY_ARGS)
         .returns(&[
             ProcArgMeta::new("node", "NODE"),
             ProcArgMeta::new("score", "FLOAT"),
@@ -158,10 +171,7 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
              The `options` map and any of the keys are optional.\n\
              An example of the `options` map: `{skip: 30, limit: 10, analyzer: 'whitespace'}`\n",
         )
-        .args(&[
-            ProcArgMeta::new("indexName", "STRING"),
-            ProcArgMeta::new("query", "STRING"),
-        ])
+        .args(FULLTEXT_QUERY_ARGS)
         .returns(&[
             ProcArgMeta::new("relationship", "RELATIONSHIP"),
             ProcArgMeta::new("score", "FLOAT"),

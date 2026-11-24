@@ -6,6 +6,21 @@
 use super::*;
 
 #[test]
+fn test_control_character_escapes_decode() {
+    // The Cypher escape table's control characters: `\r`, `\b` and `\f` are
+    // one character each, like `\n` and `\t` — never the two-character
+    // backslash-letter form an unknown escape keeps.
+    let tokens = tokenize(r"'\r\b\f\n\t'");
+    assert_eq!(tokens[0].ty, TokenType::String);
+    assert_eq!(tokens[0].literal, "\r\u{8}\u{c}\n\t");
+    for (input, expected) in [(r"'\r'", "\u{d}"), (r"'\b'", "\u{8}"), (r"'\f'", "\u{c}")] {
+        assert_eq!(tokenize(input)[0].literal, expected, "{input}");
+    }
+    // An unknown escape still keeps its literal two-character form.
+    assert_eq!(tokenize(r"'\z'")[0].literal, "\\z");
+}
+
+#[test]
 fn test_unicode_escape() {
     let tokens = tokenize(r"'\u0041'");
     assert_eq!(tokens[0].literal, "A");

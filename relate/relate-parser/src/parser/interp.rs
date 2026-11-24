@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::lexer::decode_escape_char;
+
 /// The options an embedded fragment is parsed under: the enclosing parse's
 /// dialect gates, minus every fact that needs the whole statement. A
 /// fragment's own token stream cannot see the enclosing statement's
@@ -124,25 +126,24 @@ pub(super) fn parse_interp_body(
 /// again. `\{`/`\}` become the literal brace, known escapes decode, and an
 /// unknown escape keeps its two-character form.
 fn push_interp_escape(text: &mut String, chars: &[char], i: usize) -> Result<usize, String> {
-    let next = chars[i + 1]; // caller guarantees `i + 1 < chars.len()`
+    // The caller guarantees `i + 1 < chars.len()`.
+    let next = chars[i + 1];
+    // The one-character escapes: the escape grammar's flat half — one push,
+    // one `Ok(2)` for all of them — over the string grammar's one table
+    // ([`decode_escape_char`]) plus the interpolation-only literal braces.
     let decoded = match next {
         'u' => return push_interp_unicode_escape(text, chars, i),
-        // The one-character escapes: the escape grammar's flat half —
-        // one push, one `Ok(2)` for all of them.
-        '\\' => '\\',
-        '{' => '{',
-        '}' => '}',
-        'n' => '\n',
-        't' => '\t',
-        '\'' => '\'',
-        '"' => '"',
-        other => {
-            text.push('\\');
-            text.push(other);
-            return Ok(2);
-        }
+        '{' => Some('{'),
+        '}' => Some('}'),
+        other => decode_escape_char(other),
     };
-    text.push(decoded);
+    match decoded {
+        Some(decoded) => text.push(decoded),
+        None => {
+            text.push('\\');
+            text.push(next);
+        }
+    }
     Ok(2)
 }
 
