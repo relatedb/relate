@@ -65,6 +65,10 @@ const GQLSTATUS_INDEX_DUPLICATED_NAME: &str = "22N71";
 /// The index a query names does not exist.
 const GQLSTATUS_INDEX_NOT_FOUND: &str = "22N69";
 
+/// A SEARCH over an index created inside the current transaction: the
+/// index is populating until the transaction commits.
+const GQLSTATUS_INDEX_STILL_POPULATING: &str = "51N63";
+
 /// A constraint's graph-type dependence is incompatible with an existing
 /// constraint.
 const GQLSTATUS_INCOMPATIBLE_GRAPH_TYPE_DEPENDENCE: &str = "22NB2";
@@ -173,6 +177,10 @@ nested_error_classes! {
     IncompatibleGraphTypeDependence,
     /// The index a query names does not exist (`22N69`).
     IndexDoesNotExist,
+    /// A SEARCH over an index created inside the current transaction
+    /// (`51N63`): the index is populating until the transaction commits
+    /// (ADR-0678).
+    IndexStillPopulating,
     /// An administration command that needs the system database (`51N28`).
     SystemDatabaseRequired,
     /// An element id whose format cannot be resolved (`50N00`).
@@ -207,6 +215,7 @@ impl NestedErrorClass {
             | NestedErrorClass::EquivalentSchemaRuleAlreadyExists
             | NestedErrorClass::IncompatibleGraphTypeDependence
             | NestedErrorClass::IndexDoesNotExist
+            | NestedErrorClass::IndexStillPopulating
             | NestedErrorClass::SystemDatabaseRequired
             | NestedErrorClass::ElementIdUnexpectedFormat => None,
         }
@@ -283,6 +292,7 @@ pub(crate) fn stringly_gql_status(
         }
         Some(NestedErrorClass::EquivalentSchemaRuleAlreadyExists) => GQLSTATUS_INDEX_EQUIVALENT,
         Some(NestedErrorClass::IndexDoesNotExist) => GQLSTATUS_INDEX_NOT_FOUND,
+        Some(NestedErrorClass::IndexStillPopulating) => GQLSTATUS_INDEX_STILL_POPULATING,
         Some(NestedErrorClass::IncompatibleGraphTypeDependence) => {
             GQLSTATUS_INCOMPATIBLE_GRAPH_TYPE_DEPENDENCE
         }

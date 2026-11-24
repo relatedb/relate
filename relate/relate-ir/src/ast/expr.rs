@@ -235,6 +235,22 @@ impl Expr {
         }
     }
 
+    /// One boolean expression folded from `parts` as a left-associative
+    /// `AND` chain — the one constructor every conjunct-list folder calls
+    /// (the planner's WHERE conjunct folding, the SEARCH window split's
+    /// score half), nesting exactly the way the planner's original fold
+    /// did so plans are unchanged. `None` when `parts` is empty: no
+    /// conjuncts are no expression, never a fabricated `true`.
+    pub fn conjunction(parts: impl IntoIterator<Item = Expr>) -> Option<Expr> {
+        let mut parts = parts.into_iter();
+        let first = parts.next()?;
+        Some(parts.fold(first, |combined, next| Expr::Binary {
+            op: BinaryOp::And,
+            left: Box::new(combined),
+            right: Box::new(next),
+        }))
+    }
+
     /// Fold a seek predicate into a value. Literals fold directly.
     /// Parameters resolve through `params`. `RuntimeValue` is already a
     /// value. `None` means the expression is not a seek constant.

@@ -58,6 +58,22 @@ pub(crate) fn where_holds(
     super::predicate_value_holds(&eval(graph, row, predicate, params)?)
 }
 
+/// [`filter_rows_where`] for the optional-WHERE shape: `None` is no
+/// predicate and the rows pass through unchanged. The one spelling every
+/// optional-WHERE row filter calls (the SEARCH clause's post-filter
+/// included, ADR-0678) — a driver module never hand-rolls its own.
+pub(crate) fn filter_rows_where_clause(
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+    where_clause: Option<&Expr>,
+    rows: Vec<Row>,
+) -> Result<Vec<Row>> {
+    match where_clause {
+        None => Ok(rows),
+        Some(predicate) => filter_rows_where(graph, params, predicate, rows),
+    }
+}
+
 /// Keep the rows whose bare-evaluated predicate holds — the post-merge
 /// WHERE stage of the projection and of a catalog `YIELD ... WHERE`: a
 /// failing filter expression propagates, a null does not hold, and any

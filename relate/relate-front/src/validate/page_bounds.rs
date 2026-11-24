@@ -24,9 +24,12 @@ use super::static_literal::{require_integer_argument, static_int_value, INTEGER_
 /// `CASE`, `IN`, `IS NULL`, `HAS LABEL`, or map literal counts exactly as it
 /// does for every other scope-reach check.
 fn expr_references_variables(expr: &Expr) -> Result<bool, EngineError> {
-    try_expr_contains(expr, expr_child_reaches_scope, |candidate| {
-        matches!(candidate, Expr::Variable(_))
-    })
+    try_expr_contains(
+        expr,
+        expr_child_reaches_scope,
+        |candidate| matches!(candidate, Expr::Variable(_)),
+        crate::ast::tree::SubqueryDescent::Opaque,
+    )
 }
 
 /// Whether an expression contains a graph pattern (a pattern comprehension,
@@ -42,6 +45,7 @@ fn expr_contains_graph_pattern(expr: &Expr) -> Result<bool, EngineError> {
                 Expr::PatternComprehension(_) | Expr::PatternPredicate(_) | Expr::ShortestPath(_)
             )
         },
+        crate::ast::tree::SubqueryDescent::Opaque,
     )
 }
 

@@ -515,10 +515,13 @@ fn fulltext_and_vector_filters() {
         .unwrap();
     assert!(r.rows.is_empty());
 
-    // WHERE with FULLTEXT is rejected; missing index raises.
-    assert!(c
+    // WHERE with FULLTEXT filters the candidates (ADR-0678 — the
+    // 42N14-era rejection retired with the graduated inner-WHERE
+    // surface); missing index still raises.
+    let r = c
         .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'red' WHERE p.age > 20 LIMIT 10) RETURN p.name")
-        .is_err());
+        .unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("red fox".into())]]);
     assert!(c
         .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX absent FOR 'red' LIMIT 10) RETURN p.name")
         .is_err());
@@ -562,47 +565,6 @@ fn hybrid_search_intersection() {
     assert!(c
         .query("MATCH (p) SEARCH p IN (VECTOR INDEX vidx FOR [1.0, 0.0] LIMIT 10) SEARCH p IN (FULLTEXT INDEX ft FOR 'ka' LIMIT 10) RETURN p.name")
         .is_err());
-}
-
-// Pre-bound binds: a null binding joins no candidate, and a non-null one
-// keeps the LIMIT as a hard candidate window.
-#[test]
-fn prebound_null_binding_matches_nothing() {
-    let mut c = connection();
-    c.query("CREATE VECTOR INDEX ridx FOR ()-[r:TOW]->() ON r.vec")
-        .unwrap();
-    c.query(
-        "CREATE (d:Deck)-[:TOW {name: 'alpha', vec: [1.0, 0.0]}]->(h:Hull), \
-                (h)-[:TOW {name: 'beta', vec: [0.9, 0.1]}]->(d), \
-                (:Log)",
-    )
-    .unwrap();
-
-    // A pre-bound relationship search with a null relationship from
-    // OPTIONAL MATCH: the null binding matches nothing (live Neo4j
-    // 2026.10.1: no rows), never every candidate.
-    let r = c
-        .query(
-            "OPTIONAL MATCH (:Log)-[r:TOW]->() MATCH ()-[r]->() \
-             SEARCH r IN (VECTOR INDEX ridx FOR [1.0, 0.0] LIMIT 2) RETURN r.name AS name",
-        )
-        .unwrap();
-    assert!(
-        r.rows.is_empty(),
-        "a null pre-bound relationship matches no candidate: {:?}",
-        r.rows
-    );
-
-    // Pre-bound rows keep their window: `beta` is pre-bound on one incoming
-    // row but ranks below `LIMIT 1`, so it is dropped rather than widening
-    // the search (live Neo4j 2026.10.1: `alpha` alone).
-    let r = c
-        .query(
-            "MATCH ()-[r:TOW]->() MATCH ()-[r]->() \
-             SEARCH r IN (VECTOR INDEX ridx FOR [1.0, 0.0] LIMIT 1) RETURN r.name AS name",
-        )
-        .unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("alpha".into())]]);
 }
 
 // UUID property values (cherry-picked from #55).

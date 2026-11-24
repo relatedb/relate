@@ -137,34 +137,28 @@ fn a_non_deterministic_disjoint_by_key_is_rejected() {
     .expect("a deterministic DISJOINT BY key stays legal");
 }
 
-/// The pattern-shape restriction covers a FULLTEXT source, not only a
-/// vector one: multiple bound variables, predicates on another element,
-/// and multiple pattern parts are all rejected. No index is created
-/// here — the rejection is a compile-time rule.
+/// The graduated SEARCH surface covers a FULLTEXT source exactly as a
+/// vector one (ADR-0678): multiple bound variables, predicates on
+/// another element, and multiple pattern parts all plan and run — the
+/// shape rejections are retired with the graduation. No index is
+/// created here, so each statement reaches index resolution and fails
+/// there: proof the compile-time rule no longer fires first.
 #[test]
-fn fulltext_search_clauses_keep_the_rule_0_pattern_shape() {
+fn fulltext_search_clauses_accept_the_complex_pattern_shapes() {
     let mut c = connection();
-    for (query, detail) in [
-        (
-            "MATCH (m:Movie)-[r]->() SEARCH m IN (FULLTEXT INDEX moviePlots \
-             FOR 'magic genie' LIMIT 5) RETURN m.title AS title",
-            "SearchClauseMultipleBoundVariables",
-        ),
-        (
-            "MATCH (m:Movie)-[]->(:Book) SEARCH m IN (FULLTEXT INDEX moviePlots \
-             FOR 'magic genie' LIMIT 5) RETURN m.title AS title",
-            "SearchClauseInvalidPredicates",
-        ),
-        (
-            "MATCH (m:Movie), () SEARCH m IN (FULLTEXT INDEX moviePlots \
-             FOR 'magic genie' LIMIT 5) RETURN m.title AS title",
-            "SearchClauseTooComplexPattern",
-        ),
+    for query in [
+        "MATCH (m:Movie)-[r]->() SEARCH m IN (FULLTEXT INDEX moviePlots \
+         FOR 'magic genie' LIMIT 5) RETURN m.title AS title",
+        "MATCH (m:Movie)-[]->(:Book) SEARCH m IN (FULLTEXT INDEX moviePlots \
+         FOR 'magic genie' LIMIT 5) RETURN m.title AS title",
+        "MATCH (m:Movie), () SEARCH m IN (FULLTEXT INDEX moviePlots \
+         FOR 'magic genie' LIMIT 5) RETURN m.title AS title",
     ] {
         let error = err_text(c.query(query));
         assert!(
-            error.contains(detail),
-            "{query}\n  expected {detail}, got: {error}"
+            error.contains("IndexDoesNotExist"),
+            "{query}\n  expected the missing-index rejection (the shape is \
+             accepted), got: {error}"
         );
     }
 }

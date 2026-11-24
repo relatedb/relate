@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use relate_catalog::{ConstraintDef, IndexDef};
 use relate_core::Value;
+use relate_model::EntityKind;
 use serde::{Deserialize, Serialize};
 
 use super::RedoOp;
@@ -430,6 +431,14 @@ pub struct IndexDetailSpec {
 }
 
 impl IndexDetailSpec {
+    /// The entity kind this index covers — the one derivation of the
+    /// `relationship` flag, consulted by every scan, filter preparation,
+    /// and procedure classification that needs it; no caller re-spells
+    /// the flag's decoding beside it.
+    pub fn entity_kind(&self) -> EntityKind {
+        EntityKind::from_relationship_flag(self.relationship)
+    }
+
     /// Node `(label, property)` pairs this detail materializes and charges.
     /// Relationship indexes, multi-label indexes, and kinds other than
     /// single-property TEXT or POINT, or RANGE, contribute nothing.

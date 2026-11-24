@@ -151,10 +151,11 @@ pub(crate) fn expect_enumerated_candidate<T>(candidate: Option<T>, id: i64) -> T
 }
 
 /// The one SEARCH index resolution (stellar round 3, std-6): the schema
-/// read, the missing-index policy, and the wrong-kind rejection — one
-/// spelling both SEARCH paths (vector, fulltext) call instead of
-/// hand-building the errors a second time. The two catalog maps are
-/// installed by the same redo op under the same name (apply_redo.rs,
+/// read, the missing-index policy, the wrong-kind rejection, and the
+/// still-populating rejection of an index the current transaction created
+/// (ADR-0678) — one spelling both SEARCH paths (vector, fulltext) call
+/// instead of hand-building the errors a second time. The two catalog maps
+/// are installed by the same redo op under the same name (apply_redo.rs,
 /// theater.rs; drops remove both), so either miss is a missing index.
 pub(crate) fn resolve_search_index(
     graph: &ExecGraph<'_>,
@@ -172,6 +173,15 @@ pub(crate) fn resolve_search_index(
     if detail.kind != expected_kind {
         return Err(Error::execution(format!("WrongIndexType: {index_name}")));
     }
+    // An index created inside the current transaction is populating until
+    // the transaction commits — a transient rejection, not a scan over a
+    // half-installed catalog entry.
+    if graph.index_created_in_scratch(index_name) {
+        return Err(Error::execution(format!(
+            "IndexStillPopulating: Index `{index_name}` is not ready yet. \
+             Wait until it finishes populating and retry the transaction."
+        )));
+    }
     Ok((detail, options))
 }
 
@@ -188,6 +198,23 @@ pub(crate) fn materialize_candidate(graph: &ExecGraph<'_>, kind: EntityKind, id:
         graph.node(id).map(Value::from_node)
     };
     expect_enumerated_candidate(candidate, id)
+}
+
+/// The survivor materialization every ranked scan ends with: windowed
+/// `(id, score)` rows — order already decided, best-first under
+/// [`ranked_better_cmp`] — become `(entity, score)` candidates. One
+/// composition over [`materialize_candidate`]: the vector scan, the
+/// fulltext orchestration, and the fulltext procedure all end here,
+/// never each re-spelling the loop.
+pub(crate) fn ranked_candidates(
+    graph: &ExecGraph<'_>,
+    kind: EntityKind,
+    ranked: impl IntoIterator<Item = (i64, f64)>,
+) -> Vec<(Value, f64)> {
+    ranked
+        .into_iter()
+        .map(|(id, score)| (materialize_candidate(graph, kind, id), score))
+        .collect()
 }
 
 /// One FULLTEXT/VECTOR index's entity population: every live entity the

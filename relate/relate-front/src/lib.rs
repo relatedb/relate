@@ -306,9 +306,8 @@ fn statement_uses_feature(
             relate_core::PreviewFeature::ObfuscatedLiterals
             | relate_core::PreviewFeature::CypherAnnotations => Ok(false),
             // `mixed-label-syntax` gates at parse (the `ParseOptions`
-            // threading above) and `complex-search-patterns` at validation
-            // (the `ValidateOptions` threading below), never post-parse, so
-            // neither is an AST detector here. ADR-0378: `ontology` gates
+            // threading above), never post-parse, so it is not an AST
+            // detector here. ADR-0378: `ontology` gates
             // at procedure dispatch (`procedure_gate.rs`), never at parse,
             // so it has no AST detector here either. The three ADR-0497
             // name-gate features (six gated names) gate a function *name*,
@@ -324,7 +323,6 @@ fn statement_uses_feature(
                 Ok(graph_type_gates.contains(&feature))
             }
             relate_core::PreviewFeature::MixedLabelSyntax
-            | relate_core::PreviewFeature::ComplexSearchPatterns
             | relate_core::PreviewFeature::Ontology
             | relate_core::PreviewFeature::CollectionZip
             | relate_core::PreviewFeature::CollectionHas

@@ -10,7 +10,7 @@
 
 pub use relate_ir::{AGGREGATES, SINGLE_INPUT_AGGREGATES};
 
-use crate::ast::tree::expr_contains;
+use crate::ast::tree::{expr_contains, SubqueryDescent};
 use relate_parser::{Expr, GroupBySpec, ReturnItem};
 
 mod alias;
@@ -126,8 +126,10 @@ enum Reach {
 /// ([`expr_contains`]): the two reaches differ only in their edge filter.
 fn contains_where(expr: &Expr, reach: Reach, admit: impl Fn(&Expr) -> bool) -> bool {
     match reach {
-        Reach::Historical => expr_contains(expr, historical_enter_child, admit),
-        Reach::Full => expr_contains(expr, |_, _| true, admit),
+        Reach::Historical => {
+            expr_contains(expr, historical_enter_child, admit, SubqueryDescent::Opaque)
+        }
+        Reach::Full => expr_contains(expr, |_, _| true, admit, SubqueryDescent::Opaque),
     }
 }
 

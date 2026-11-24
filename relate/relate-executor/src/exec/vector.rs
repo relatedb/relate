@@ -4,20 +4,22 @@
 //! similarity kernels ([`crate::vector_similarity`]) and the shared scan
 //! contract — the index population, ranked ordering and bounded top-k
 //! window — in [`crate::exec::candidates`]. The CIP-240 filter subsystem
-//! lives in [`super::vector_filters`].
+//! lives in [`super::search_filters`].
 
 use std::collections::BTreeMap;
 
 use relate_core::{Error, PropertyMap, Result, Value};
-use relate_ir::SearchFilterPred;
+use relate_ir::SearchIndexSpec;
 use relate_model::EntityKind;
 
 use crate::ctx::ExecCtx;
 use crate::exec::candidates::{
-    index_population, materialize_candidate, resolve_search_index, TopWindow,
+    index_population, ranked_candidates, resolve_search_index, TopWindow,
 };
 use crate::exec::ddl_options::index_config;
-use crate::exec::vector_filters::{prepare_vector_filters, vector_filter_passes};
+use crate::exec::search_filters::{
+    prepare_search_filters, search_filter_passes, PreparedSearchFilter,
+};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 use crate::vector_config::{StorableMetric, StoredVectorConfig};
@@ -82,11 +84,11 @@ fn stored_config(
 /// validate the kind and `indexConfig` leaves, and parse the metric and
 /// the one indexed property — everything the scan needs before a
 /// candidate is ever scored.
-fn resolve_vector_index(
+pub(crate) fn resolve_vector_index(
     graph: &ExecGraph<'_>,
     index_name: &str,
     query: &[f64],
-) -> Result<(crate::redo::IndexDetailSpec, String, StorableMetric)> {
+) -> Result<VectorScan> {
     // The shared SEARCH index resolution (stellar round 3, std-6): the
     // schema read, the missing-index policy, and the wrong-kind
     // rejection are the one spelling in `exec::candidates`, shared with
@@ -111,78 +113,111 @@ fn resolve_vector_index(
         )));
     }
     let property = detail.properties[0].clone();
-    Ok((detail, property, metric))
+    Ok(VectorScan {
+        detail,
+        property,
+        metric,
+    })
 }
 
-/// Bundled CIP-240 vector-search inputs: the decomposed filter
-/// predicates (attached at lowering, the binding-variable and RHS-shape checks already enforced there)
-/// and the row their RHS expressions are evaluated against. (Bundled to
-/// avoid `clippy::too_many_arguments`.)
-pub(crate) struct VectorSearchFilter<'a> {
-    pub(crate) filters: &'a [SearchFilterPred],
-    pub(crate) input: &'a Row,
+/// The resolved facts one vector scan needs, from the one canonical
+/// resolver ([`resolve_vector_index`]): the catalog detail (whose
+/// relationship flag is the entity kind's fact — one derivation,
+/// [`crate::redo::IndexDetailSpec::entity_kind`] — and whose labels gate
+/// the population), the single indexed property, and the stored
+/// similarity metric.
+pub(crate) struct VectorScan {
+    pub(crate) detail: crate::redo::IndexDetailSpec,
+    pub(crate) property: String,
+    pub(crate) metric: StorableMetric,
 }
 
-pub(crate) fn vector_index_candidates(
+/// The SEARCH clause's vector candidate generation — the fulltext
+/// orchestration's twin ([`super::fulltext::index_candidates`]): index
+/// resolution, the CIP-240 decomposed predicates prepared against the
+/// input row, the similarity scan, survivor materialization. The
+/// preparation returns the entity kind with the prepared predicates —
+/// the one derivation — and the returned candidates materialize with
+/// that kind.
+pub(crate) fn index_candidates(
     ctx: ExecCtx<'_>,
-    index_name: &str,
+    index: &SearchIndexSpec,
+    input: &Row,
     query: &[f64],
-    offset: usize,
-    limit: usize,
-    filter: VectorSearchFilter<'_>,
+    window: usize,
 ) -> Result<(EntityKind, Vec<(Value, f64)>)> {
     let ExecCtx { graph, params, .. } = ctx;
-    let VectorSearchFilter { filters, input } = filter;
-    let (detail, property, metric) = resolve_vector_index(graph, index_name, query)?;
+    let scan = resolve_vector_index(graph, &index.index_name, query)?;
+    let (kind, prepared) =
+        prepare_search_filters(&index.filters, &scan.detail, graph, input, params)?;
+    let candidates = scan_candidates(ctx, &scan, query, window, kind, &prepared)?;
+    Ok((kind, candidates))
+}
+
+/// The bare similarity scan over resolved facts: every live entity the
+/// index's population covers, scored per candidate and gated by the
+/// prepared filters, the best `limit` survivors materialized through the
+/// one ranked composition. The kind is the caller's — the SEARCH
+/// orchestration passes the preparation's returned value, a procedure
+/// caller the detail's own.
+pub(crate) fn scan_candidates(
+    ctx: ExecCtx<'_>,
+    scan: &VectorScan,
+    query: &[f64],
+    limit: usize,
+    kind: EntityKind,
+    filters: &[PreparedSearchFilter<'_>],
+) -> Result<Vec<(Value, f64)>> {
+    let ExecCtx { graph, .. } = ctx;
+    let VectorScan {
+        detail,
+        property,
+        metric,
+    } = scan;
     // The per-search query facts (ADR-0256 hoist, stellar round 2 bundle):
     // norm and zero-guard are shared by every candidate's cosine.
     let prepared = PreparedQuery::prepare(query);
-    let kind = EntityKind::from_relationship_flag(detail.relationship);
-    let evaluated_filters = prepare_vector_filters(filters, &detail, kind, graph, input, params)?;
     // ADR-0256: the unfiltered path never materializes a `Value` per scored
-    // candidate — only the ≤ offset+limit survivors become entities below.
+    // candidate — only the ≤ limit survivors become entities below.
     // Filtered (CIP-235 `WITH`) searches still evaluate properties per
     // scored candidate and take the same flat path.
     // The one per-candidate scan body: indexed-property read, coordinate
-    // parse, score, filter gate. The entity-kind arms below gate on
-    // labels themselves (the rel arm via rel_type, the node arm beside
-    // its computation) and drive this once.
+    // parse, score, filter gate. The label and type gating is
+    // [`index_population`]'s own contract — this scan drives the body
+    // once per enumerated member and knows no per-kind arms.
     let candidate_score = |id: i64, properties: &PropertyMap| -> Result<Option<f64>> {
-        let Some(value) = properties.get(&property) else {
+        let Some(value) = properties.get(property) else {
             return Ok(None);
         };
         let Some(coords) = value_coords(value) else {
             return Ok(None);
         };
-        let Some(score) = similarity_values(metric, &prepared, coords) else {
+        let Some(score) = similarity_values(*metric, &prepared, coords) else {
             return Ok(None);
         };
-        if !vector_filter_passes(graph, id, properties, &evaluated_filters)? {
+        if !search_filter_passes(graph, id, properties, filters)? {
             return Ok(None);
         }
         Ok(Some(score))
     };
-    let mut top = TopWindow::new(offset, limit);
-    // The one fetch-gate-push tail both enumeration arms drive.
-    let mut keep = |id: i64, properties: &PropertyMap| -> Result<()> {
-        if let Some(score) = candidate_score(id, properties)? {
+    // The scan ranks from the top: a VECTOR source admits no SKIP (the
+    // front's 42N14), so its window is the LIMIT alone — the caller's
+    // growth loop pages the survivors (ADR-0678).
+    let mut top = TopWindow::new(0, limit);
+    // The one fetch-gate-push sweep, spelled directly over the shared
+    // index population (exec::candidates): every live entity the index
+    // covers, already gated by the population's own per-kind label/type
+    // policies — the indexed-property read, coordinate parse, score and
+    // filter gate live in `candidate_score`, the window push here.
+    for (id, properties) in index_population(graph, detail) {
+        if let Some(score) = candidate_score(id, &properties)? {
             top.push(score, id);
         }
-        Ok(())
-    };
-    // The shared index population (exec::candidates): the node arm rides
-    // the exact per-label enumeration, the relationship arm the type-first
-    // sweep — both already enumerated, so a materialization miss there is
-    // that contract's invariant.
-    for (id, properties) in index_population(graph, &detail) {
-        keep(id, &properties)?;
     }
-    let rows = top.into_sorted_rows();
-    let mut candidates = Vec::with_capacity(rows.len());
-    for (id, score) in rows {
-        candidates.push((materialize_candidate(graph, kind, id), score));
-    }
-    Ok((kind, candidates))
+    // The survivors materialize through the one ranked composition
+    // (exec::candidates), with the kind the caller passed.
+    let candidates = ranked_candidates(graph, kind, top.into_sorted_rows());
+    Ok(candidates)
 }
 
 #[cfg(test)]

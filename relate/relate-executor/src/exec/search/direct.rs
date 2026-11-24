@@ -6,8 +6,10 @@ use relate_core::{Result, Value};
 use relate_ir::{Expr, MatchMode, PathPattern, SearchClause};
 use relate_model::EntityKind;
 
-use super::growth::{top_k_complete, top_k_grows, widen_extra};
-use super::{attach_score, check_binding_kind, search_spec_candidates, SearchEnv};
+use super::growth::{top_k_complete, widen_extra};
+use super::{
+    attach_score, check_binding_kind, search_spec_candidates, spec_window, Growth, SearchEnv,
+};
 use crate::exec::match_clause::match_clause;
 use crate::row::Row;
 
@@ -15,26 +17,22 @@ use crate::row::Row;
 /// MATCH's pattern variables, so a candidate seeds the binding variable
 /// and the pattern matches per candidate.
 ///
-/// A *complex* pattern's LIMIT counts candidates that produce at least one
-/// row, not fetched candidates (CIP-224's top-K guarantee): a window whose
-/// candidates the pattern or the MATCH's outer WHERE rejected is widened
-/// until the LIMIT is met or the index is exhausted, and the deeper
-/// candidates are matched too. Verified on Neo4j 2026.10.1:
-/// `MATCH (movie:Movie)<-[:ACTED_IN]-({name: 'Al Pacino'}) SEARCH movie IN
-/// (... LIMIT 5)` returns the five best-scoring Pacino films, skipping four
-/// better-scoring films the pattern rejects.
+/// The window rule (ADR-0678, one rule for every pattern shape): SKIP and
+/// LIMIT page over the *entities* that satisfy the whole MATCH statement —
+/// the pattern, the outer WHERE, and a pre-bound binding value. The loop
+/// widens the fetched window (geometrically, until the index is
+/// exhausted) while too few entities have survived, so a WHERE-passing
+/// candidate ranked below the raw top-K is returned, and the K counts
+/// survivors, never raw hits. A constraint the index definition already
+/// implies filters no index member, so for such patterns the first window
+/// already carries LIMIT survivors and nothing widens.
 ///
-/// A *plain* pattern (the search element alone) keeps the LIMIT as a hard
-/// candidate window: its outer WHERE, label or score predicate post-filters
-/// the window without freeing slots (verified on Neo4j 2026.10.1:
-/// `MATCH (x:Film) SEARCH x IN (... LIMIT 4) WHERE x.year < 2000` returns
-/// the WHERE-passing rows *inside* the top four, not four passing rows).
-///
-/// A pre-bound binding variable follows the same rule — it widens under a
-/// complex pattern until the pre-bound candidate appears (live 2026.10.1:
-/// one row per incoming row), keeps the window under a plain one, and a
-/// pre-bound null (an OPTIONAL MATCH that matched nothing) joins with no
-/// candidate at all.
+/// Every pattern row of a kept entity rides along: the LIMIT counts
+/// entities, not rows. A pre-bound binding keeps the same rule with a
+/// window of one — the pre-bound value is the only entity that can
+/// survive, however deep it sits (live 2026.10.1: one row per incoming
+/// row), and a pre-bound null (an OPTIONAL MATCH that matched nothing)
+/// joins with no candidate at all.
 pub(super) fn direct_search_rows(
     env: &SearchEnv<'_>,
     input: &Row,
@@ -51,39 +49,62 @@ pub(super) fn direct_search_rows(
     if prebound.is_some_and(Value::is_null) {
         return Ok(Vec::new());
     }
-    // The binding is seeded per candidate, so a pre-bound binding's
-    // partner may sit arbitrarily deep: a wider window always reaches
-    // further (see [`top_k_grows`]).
-    let grows = top_k_grows(search, true);
+    // The clause's window, stated once for this input row (the window
+    // expressions never read a pattern binding — the front rejects that
+    // — so one statement serves every growth round; see `spec_window`).
+    let window = spec_window(env, input, &search.spec)?;
+    // The needed survivor count, stated once above the loop: the clause
+    // LIMIT, or the single join partner a pre-bound binding can ever
+    // reach (capped by the LIMIT — a LIMIT-0 clause keeps nothing, a
+    // pre-bound binding included). Tested at the candidate loop's head,
+    // so a satisfied window — LIMIT 0 the loudest case — completes
+    // before any candidate is processed.
+    let needed = if prebound.is_some() {
+        1.min(window.limit)
+    } else {
+        window.limit
+    };
+    // The binding is seeded per candidate, so a wider window always
+    // reaches candidates the current one cannot — a pre-bound binding's
+    // partner may sit arbitrarily deep in the ranking: the direct scan
+    // always grows, so its completion test needs no grows guard.
     let mut out = Vec::new();
+    // For a pre-bound row: its binding's own candidate was processed
+    // without surviving — consumed by the SKIP window or rejected by the
+    // MATCH. An entity appears once in its own ranking (a wider window
+    // only appends lower-ranked entities), so that verdict is the row's
+    // final one: set, the growth loop is done for this row instead of
+    // widening to exhaustion.
+    let mut binding_spent = false;
     let mut extra = 0usize;
     // Candidates already matched in an earlier (narrower, hence identical
     // prefix of the same ranking) round.
     let mut processed = 0usize;
+    // The SKIP window's consumed survivors, and the kept ones — both
+    // cumulative across growth rounds.
+    let mut skipped = 0usize;
     let mut survivors = 0usize;
-    while let Some(fetched) = search_spec_candidates(env, input, &search.spec, extra)? {
+    while let Some(fetched) =
+        search_spec_candidates(env, input, &search.spec, window, Growth::Widen(extra))?
+    {
         check_binding_kind(binding_kind, fetched.kind)?;
-        // A LIMIT-0 clause keeps no candidate at all: terminate before
-        // any growth round -- with a zero base the widen step could
-        // otherwise never leave `extra` at 0 and the loop would spin
-        // forever (round-2 High: a pre-bound binding under a complex
-        // pattern stays non-terminal while the window stays empty).
-        if fetched.limit == 0 {
+        // A satisfied window completes before any candidate is processed
+        // (LIMIT 0 is the loudest case: needed is 0 on the first test).
+        if survivors >= needed {
             break;
         }
-        // The needed survivor count, stated once: the clause LIMIT, or
-        // the single join partner a pre-bound binding can ever reach.
-        let needed = if prebound.is_some() { 1 } else { fetched.limit };
         for (candidate, score) in fetched.candidates.into_iter().skip(processed) {
             processed += 1;
-            if let Some(existing) = prebound {
+            // The binding's own candidate — the only one a pre-bound row
+            // can ever keep; every other candidate is dropped below.
+            let binding_candidate =
+                prebound.is_some_and(|existing| existing.eq_non_null(&candidate));
+            if prebound.is_some() && !binding_candidate {
                 // A different non-null binding is dropped rather than
                 // overwritten (live Neo4j 2026.09.0: `MATCH (p) SEARCH p IN
                 // (VECTOR ...) WITH p MATCH (p) SEARCH p IN (FULLTEXT ...)`
                 // intersects the two result sets).
-                if !existing.eq_non_null(&candidate) {
-                    continue;
-                }
+                continue;
             }
             let mut seeded = input.clone();
             seeded.insert(search.binding_var.to_string(), candidate);
@@ -100,6 +121,14 @@ pub(super) fn direct_search_rows(
                 None,
             )?;
             if matched.is_empty() {
+                binding_spent |= binding_candidate;
+                continue;
+            }
+            // The candidate survives the whole MATCH: the SKIP window
+            // consumes its leading survivors, the LIMIT keeps the rest.
+            if skipped < window.skip {
+                skipped += 1;
+                binding_spent |= binding_candidate;
                 continue;
             }
             out.extend(matched);
@@ -108,10 +137,10 @@ pub(super) fn direct_search_rows(
                 break;
             }
         }
-        if top_k_complete(grows, fetched.may_widen, survivors, needed) {
+        if binding_spent || top_k_complete(fetched.may_widen, survivors, needed) {
             break;
         }
-        extra = widen_extra(extra, fetched.limit);
+        extra = widen_extra(extra, window.limit);
     }
     Ok(out)
 }

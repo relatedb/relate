@@ -15,13 +15,13 @@ use relate_model::EntityKind;
 
 use crate::ctx::ExecCtx;
 use crate::eval::eval;
-use crate::exec::candidates::{materialize_candidate, resolve_search_index};
+use crate::exec::candidates::ranked_candidates;
 use crate::procedure_registry::ProcSignature;
 use crate::row::Row;
 
 use super::super::compose::{ComposeSource, Produced};
 use super::super::fulltext;
-use super::super::vector::{vector_index_candidates, vector_operand, VectorSearchFilter};
+use super::super::vector::{resolve_vector_index, scan_candidates, vector_operand};
 use super::contract::CallSpec;
 
 /// The entity-kind mismatch rejection both scan bodies call —
@@ -231,20 +231,6 @@ pub(crate) fn fulltext_call_source<'a>(
         let Some(query) = fulltext::operand(&query_value)? else {
             return Ok(Vec::new());
         };
-        // The shared SEARCH index resolution (the vector procedure's one
-        // spelling): a missing or non-fulltext index is that helper's
-        // typed error; only the entity-kind disagreement is this
-        // procedure's own.
-        let (detail, options) = resolve_search_index(
-            s.ctx.graph,
-            &s.index_name,
-            crate::redo::IndexKindSpec::Fulltext,
-        )?;
-        entity_kind_mismatch(
-            s.kind,
-            EntityKind::from_relationship_flag(detail.relationship),
-            "fulltext",
-        )?;
         // The optional `options` map: `skip`/`limit` page the ranking (the
         // whole ranking without them) and `analyzer` overrides the query side
         // exactly as `SEARCH`'s `WITH ANALYZER` does.
@@ -255,18 +241,24 @@ pub(crate) fn fulltext_call_source<'a>(
             )?,
             None => (RANKING_ALL, None),
         };
-        // The one CIP-225 scan: the Lucene-style query parser (terms
-        // OR'd, `AND`/`OR`/`NOT`, `property:term` field filters) and the
-        // live-fitted BM25 score, ranked best-first.
-        let analyzers = fulltext::Analyzers::new(
-            crate::exec::ddl_options::index_analyzer(&options, &s.index_name)?,
-            query_analyzer,
-        );
+        // The shared catalog-descriptor phase (the SEARCH orchestration's
+        // one spelling, `fulltext::resolve_analyzers`): index resolution,
+        // stored analyzer options, the two-sided analyzers with the
+        // query-side override. Only the entity-kind disagreement is this
+        // procedure's own, classified before scanning.
+        let scan = fulltext::resolve_analyzers(s.ctx.graph, &s.index_name, query_analyzer)?;
+        entity_kind_mismatch(s.kind, scan.detail.entity_kind(), "fulltext")?;
         Ok(
-            fulltext::search(&corpora, s.ctx.graph, &detail, query, analyzers, window)?
-                .into_iter()
-                .map(|(id, score)| (materialize_candidate(s.ctx.graph, s.kind, id), score))
-                .collect(),
+            // The procedure scans carry no SEARCH clause, so no
+            // inner-WHERE filters ride the ranking (ADR-0678's gate is
+            // the clause's); the survivors materialize through the one
+            // ranked composition (exec::candidates) with the procedure's
+            // own kind, already checked against the index's.
+            ranked_candidates(
+                s.ctx.graph,
+                s.kind,
+                fulltext::search(&corpora, s.ctx.graph, scan, query, window.0, window.1, &[])?,
+            ),
         )
     })
 }
@@ -294,18 +286,14 @@ pub(crate) fn vector_call_source<'a>(
         let Some(query) = vector_operand(&query)? else {
             return Ok(Vec::new());
         };
-        let (index_kind, candidates) = vector_index_candidates(
-            s.ctx,
-            &s.index_name,
-            &query,
-            0,
-            limit,
-            VectorSearchFilter {
-                filters: &[],
-                input,
-            },
-        )?;
-        entity_kind_mismatch(s.kind, index_kind, "vector")?;
+        // The procedure path carries no SEARCH clause: it resolves the
+        // index, classifies it against the procedure's own kind before
+        // scanning, and scans with no prepared filters — its fulltext
+        // counterpart's exact shape.
+        let scan = resolve_vector_index(s.ctx.graph, &s.index_name, &query)?;
+        let kind = scan.detail.entity_kind();
+        entity_kind_mismatch(s.kind, kind, "vector")?;
+        let candidates = scan_candidates(s.ctx, &scan, &query, limit, kind, &[])?;
         Ok(candidates)
     })
 }

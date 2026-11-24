@@ -76,6 +76,7 @@ pub(super) fn validate_expr_in_where(expr: &Expr, scope: &ExprScope) -> Result<(
                 || is_exists_pattern_arg(parent, child)
                 || matches!(parent, Expr::Paren(_))
         },
+        crate::ast::tree::SubqueryDescent::Opaque,
     )
 }
 
@@ -163,6 +164,7 @@ pub(super) fn check_no_pattern_in_value_position(
             }
         },
         |parent, child| !pattern_home(parent, child),
+        crate::ast::tree::SubqueryDescent::Opaque,
     )
 }
 

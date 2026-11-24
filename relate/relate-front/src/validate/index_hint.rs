@@ -184,6 +184,7 @@ fn where_has_label(expr: Option<&Expr>, variable: &SmallName, label: &SmallName)
             }
             _ => false,
         },
+        crate::ast::tree::SubqueryDescent::Opaque,
     )
 }
 
@@ -223,6 +224,7 @@ fn where_has_index_predicate(expr: Option<&Expr>, hint: &IndexHint) -> bool {
             Expr::StringMatch(m) => target(&m.left),
             _ => false,
         },
+        crate::ast::tree::SubqueryDescent::Opaque,
     )
 }
 

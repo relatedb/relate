@@ -219,7 +219,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// The CIP-51/CIP-60 match mode whose two-word phrase
+    /// The CIP-51/CIP-60 match mode whose keyword phrase
     /// (`REPEATABLE ELEMENTS` / `DIFFERENT RELATIONSHIPS`) starts at the
     /// token `offset` ahead, or `None` when no match-mode phrase starts
     /// there. The single spelling table for every reader of the phrase:
@@ -233,23 +233,57 @@ impl<'a> Parser<'a> {
     /// else in the grammar -- and both are admitted in the singular too
     /// (`DIFFERENT RELATIONSHIP` per MatchModes [1.2]; `REPEATABLE
     /// ELEMENT` verified against live Neo4j 2026.10, which parses and
-    /// executes it exactly like the plural).
+    /// executes it exactly like the plural). The optional third word
+    /// `BINDINGS` (ADR-0679) extends either spelling: the phrase maps onto
+    /// its element twin's mode, which is the semantics the match-mode
+    /// corpus pins for it.
+    /// The match-mode phrase's mode at the token `offset` ahead — the
+    /// mode half of [`Self::peek_match_mode_phrase_at`], the recognizer
+    /// that owns the phrase's whole contract.
     pub(in crate::parser) fn peek_match_mode_at(&self, offset: usize) -> Option<MatchMode> {
+        self.peek_match_mode_phrase_at(offset).map(|(mode, _)| mode)
+    }
+
+    /// The match-mode phrase starting at the token `offset` ahead: its
+    /// mode and its word count. Both keyword pairs
+    /// (`REPEATABLE ELEMENT[S]` / `DIFFERENT RELATIONSHIP[S]`) are
+    /// contextual — plain identifiers everywhere else in the grammar —
+    /// and both are admitted in the singular too; the phrase extends to
+    /// a third word when the optional `BINDINGS` follows (ADR-0679).
+    /// This is the one statement of the phrase's extent: the
+    /// legal-position consumer advances exactly the words it reports,
+    /// and the pattern-body rejection recognizes the phrase through
+    /// [`Self::peek_match_mode_at`].
+    fn peek_match_mode_phrase_at(&self, offset: usize) -> Option<(MatchMode, usize)> {
         // The first keyword is an identifier by construction; the second is
         // matched on its literal alone (it may lex as a keyword token).
         let second = &self.peek_at(offset + 1).literal;
-        if self.peek_at_is_ident(offset, "repeatable")
+        let mode = if self.peek_at_is_ident(offset, "repeatable")
             && (second.eq_ignore_ascii_case("element") || second.eq_ignore_ascii_case("elements"))
         {
-            Some(MatchMode::RepeatableElements)
+            MatchMode::RepeatableElements
         } else if self.peek_at_is_ident(offset, "different")
             && (second.eq_ignore_ascii_case("relationship")
                 || second.eq_ignore_ascii_case("relationships"))
         {
-            Some(MatchMode::DifferentRelationships)
+            MatchMode::DifferentRelationships
         } else {
-            None
-        }
+            return None;
+        };
+        // The optional `BINDINGS` third word. A pattern that starts with
+        // an identifier can only be a path-variable declaration —
+        // `p = (…)` — so an identifier followed by `=` here is that
+        // pattern start (a path variable may be named `bindings`), and
+        // any other identifier can only extend the phrase. The twin
+        // mapping is this function's, stated once.
+        let words = if self.peek_at_is_ident(offset + 2, "bindings")
+            && !self.peek_at(offset + 3).literal.eq_ignore_ascii_case("=")
+        {
+            3
+        } else {
+            2
+        };
+        Some((mode, words))
     }
 
     /// Parses the optional CIP-51/CIP-60 match-mode prefix
@@ -263,9 +297,13 @@ impl<'a> Parser<'a> {
     /// the identical-valued implicit default (needed for the
     /// explicit-match-mode-vs-shortestPath-function mixing check).
     pub(in crate::parser) fn parse_match_mode_prefix(&mut self) -> Option<MatchMode> {
-        let mode = self.peek_match_mode_at(0)?;
-        self.next_token();
-        self.next_token();
+        // The recognizer states the phrase's extent (two words, or three
+        // with the optional `BINDINGS`); the consumer advances exactly
+        // that — the phrase's shape is spelled once.
+        let (mode, words) = self.peek_match_mode_phrase_at(0)?;
+        for _ in 0..words {
+            self.next_token();
+        }
         Some(mode)
     }
 

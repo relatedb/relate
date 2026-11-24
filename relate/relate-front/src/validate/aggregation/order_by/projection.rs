@@ -19,7 +19,7 @@ use crate::ast::collect::{
     check_names_allowed, clause_introduced_names, collect_expr_variables, expr_child_reaches_scope,
 };
 use crate::ast::stmt_ref::StmtRef;
-use crate::ast::tree::{unparen, walk_expr_with, walk_statement_tree};
+use crate::ast::tree::{unparen, walk_expr_with, walk_statement_tree, SubqueryDescent};
 
 /// The post-projection subclause driver (LABS-665): one entry for a
 /// `RETURN`/`WITH` projection's ORDER BY and a WITH's `WHERE`, so the
@@ -183,7 +183,7 @@ fn check_post_projection_expr(expr: &Expr, restatable: &Restatable<'_>) -> Resul
             && !is_direct_aggregation(parent)
             && !restatable.restates_child(child)
     };
-    walk_expr_with(expr, &mut visit, enter_child)
+    walk_expr_with(expr, &mut visit, enter_child, SubqueryDescent::Opaque)
 }
 
 impl Restatable<'_> {

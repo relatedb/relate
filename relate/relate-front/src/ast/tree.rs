@@ -795,7 +795,7 @@ pub(crate) fn walk_expr<F>(expr: &Expr, visit: &mut F) -> Result<(), EngineError
 where
     F: FnMut(&Expr) -> Result<(), EngineError>,
 {
-    walk_expr_with(expr, visit, |_, _| true)
+    walk_expr_with(expr, visit, |_, _| true, SubqueryDescent::Opaque)
 }
 
 /// Whether any node of `expr` satisfies `admit`, searching the edges
@@ -813,8 +813,9 @@ pub(crate) fn expr_contains(
     expr: &Expr,
     enter_child: impl Fn(&Expr, &Expr) -> bool,
     admit: impl Fn(&Expr) -> bool,
+    descend: SubqueryDescent,
 ) -> bool {
-    try_expr_contains(expr, enter_child, admit)
+    try_expr_contains(expr, enter_child, admit, descend)
         .expect("the depth cap is rejected before validation")
 }
 
@@ -826,6 +827,7 @@ pub(crate) fn try_expr_contains(
     expr: &Expr,
     enter_child: impl Fn(&Expr, &Expr) -> bool,
     admit: impl Fn(&Expr) -> bool,
+    descend: SubqueryDescent,
 ) -> Result<bool, EngineError> {
     let mut found = false;
     let mut visit = |node: &Expr| {
@@ -834,7 +836,7 @@ pub(crate) fn try_expr_contains(
         }
         Ok(())
     };
-    walk_expr_with(expr, &mut visit, enter_child)?;
+    walk_expr_with(expr, &mut visit, enter_child, descend)?;
     Ok(found)
 }
 
@@ -852,6 +854,7 @@ pub(crate) fn walk_expr_with<F, G>(
     expr: &Expr,
     visit: &mut F,
     enter_child: G,
+    descend: SubqueryDescent,
 ) -> Result<(), EngineError>
 where
     F: FnMut(&Expr) -> Result<(), EngineError>,
@@ -865,7 +868,7 @@ where
         clause: &mut skip_clause,
         expr: visit,
         operand: &mut skip_operand,
-        descend: SubqueryDescent::Opaque,
+        descend,
         enter_expr_child: &enter_child,
     };
     walk_expr_at(expr, Depths::ZERO, &mut walk)

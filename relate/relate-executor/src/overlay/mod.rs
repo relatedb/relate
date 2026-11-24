@@ -149,6 +149,24 @@ impl<'a> ExecGraph<'a> {
         self.base.preview()
     }
 
+    /// Whether `name`'s index was created inside the current write
+    /// scratch — an explicit transaction's or a write statement's own
+    /// uncommitted `CREATE INDEX`. A SEARCH over such an index is the
+    /// still-populating rejection (ADR-0678): the index becomes part of a
+    /// committed, scannable state only when the transaction commits. An
+    /// `IF NOT EXISTS` create over an already-committed index records no
+    /// create op, so it stays searchable.
+    pub(crate) fn index_created_in_scratch(&self, name: &str) -> bool {
+        self.scratch.is_some_and(|scratch| {
+            scratch.borrow().redo.catalog_ops().any(|op| {
+                matches!(
+                    op,
+                    crate::redo::RedoOp::CreateIndex { name: created, .. } if created == name
+                )
+            })
+        })
+    }
+
     /// The scratch-aware property-defaults gate (CIP-262, ADR-0388
     /// review F-2-2): the committed theater's cheap answer
     /// (`Graph::has_property_defaults`), or a `SetCurrentGraphType` in

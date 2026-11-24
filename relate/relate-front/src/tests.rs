@@ -32,7 +32,6 @@ fn recorded_gate_sites_agree_with_the_front() {
             PreviewFeature::Ontology
             | PreviewFeature::ObfuscatedLiterals
             | PreviewFeature::MixedLabelSyntax
-            | PreviewFeature::ComplexSearchPatterns
             | PreviewFeature::CollectionZip
             | PreviewFeature::CollectionHas
             | PreviewFeature::CypherAnnotations
@@ -341,32 +340,25 @@ const COMPLEX_SEARCH_QUERY: &str = "MATCH (seed:Person {name: 'Alice'}), (p:Pers
     SEARCH p IN (FULLTEXT INDEX personBios FOR 'brave' LIMIT 5) \
     RETURN p.name AS person";
 
+/// ADR-0678: the complex-pattern mode graduated — every pattern shape the
+/// general MATCH machinery accepts lowers under the default dialect, and
+/// the `complex-search-patterns` opt-in is gone with the gate it widened.
 #[test]
-fn complex_search_patterns_gate_keeps_rule_0_without_the_opt_in() {
-    // The gate widens validation instead of detecting a construct: with
-    // the row off, the plain-shape rejection is what a complex
-    // SEARCH pattern gets.
-    let error = match parse_and_lower_statement_with_preview(
-        COMPLEX_SEARCH_QUERY,
-        relate_core::PreviewFeatures::none(),
-    ) {
-        Ok(_) => panic!("a complex SEARCH pattern unexpectedly lowered without the opt-in"),
-        Err(error) => error.to_string(),
-    };
-    assert!(error.contains("SearchClauseTooComplexPattern"), "{error}");
-}
-
-#[test]
-fn complex_search_patterns_gate_admits_the_opt_in() {
-    let enabled = relate_core::PreviewFeatures::parse("complex-search-patterns").unwrap();
-    let lowered = parse_and_lower_statement_with_preview(COMPLEX_SEARCH_QUERY, enabled)
-        .expect("the gated entry lowers a complex SEARCH pattern under the opt-in");
+fn complex_search_patterns_lower_under_the_default_dialect() {
+    let lowered = parse_and_lower(COMPLEX_SEARCH_QUERY)
+        .expect("a complex SEARCH pattern lowers without any opt-in");
     let Clause::Match {
         search: Some(_), ..
-    } = &lowered.query.parts[0].clauses[0]
+    } = &lowered.parts[0].clauses[0]
     else {
         panic!("expected a MATCH with a SEARCH clause");
     };
+    let graduated = relate_core::PreviewFeatures::parse("complex-search-patterns")
+        .expect_err("the graduated preview name is gone from the registry");
+    assert!(
+        graduated.to_string().contains("unknown preview feature"),
+        "{graduated}"
+    );
 }
 
 #[test]

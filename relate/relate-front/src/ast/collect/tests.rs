@@ -95,3 +95,38 @@ fn contains_aggregation_matches_historical_reach() {
     }));
     assert!(!contains_aggregation(&e));
 }
+
+#[test]
+fn expr_mentions_variable_sees_reads_through_bodies() {
+    // The whole-tree reach: a correlated read inside a subquery or
+    // comprehension body is a mention (the score-half classification
+    // reads it that way), while the scope collector's lexical-identity
+    // exclusions stay excluded.
+    let mentions = |query: &str, name: &str| {
+        let e = return_expr_of(query);
+        expr_mentions_variable(&e, &SmallName::from(name))
+    };
+    // A read inside an EXISTS body is a mention.
+    assert!(mentions(
+        "RETURN EXISTS { MATCH (q) WHERE q.rank < score }",
+        "score"
+    ));
+    // A read inside a comprehension's filter and projection is a mention.
+    assert!(mentions(
+        "RETURN [x IN n.list WHERE score > 5 | x]",
+        "score"
+    ));
+    assert!(mentions("RETURN [x IN n.list | x + score]", "score"));
+    // A plain scope read is a mention (unchanged from the scope reach).
+    assert!(mentions("RETURN a.prop + score", "score"));
+    // No mention: a body that never reads the name.
+    assert!(!mentions(
+        "RETURN EXISTS { MATCH (q) WHERE q.rank < 5 }",
+        "score"
+    ));
+    // CIP-214: the bare distance-metric keyword is not a variable read.
+    assert!(!mentions(
+        "RETURN vector_distance(v1, v2, EUCLIDEAN)",
+        "EUCLIDEAN"
+    ));
+}
