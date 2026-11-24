@@ -19,9 +19,14 @@ use crate::{
 
 mod pattern;
 
+mod clause;
+
+pub(crate) use clause::clause_patterns;
+pub use clause::clause_read_vars;
+use pattern::for_each_payload_field;
 pub use pattern::{
     any_pattern_payload, pattern_anchor_variables, pattern_node_anchor_variables,
-    walk_pattern_payloads, PatternPayload,
+    walk_pattern_elements, walk_pattern_payloads, PatternPayload,
 };
 
 /// The syntactic role an expression occupies for a consumer that must tell
@@ -403,70 +408,20 @@ fn walk_pattern_full<'a>(
     on_expr: &mut impl FnMut(&'a Expr, ExprRole),
     on_binding: &mut impl FnMut(&'a SmallName),
 ) {
-    if let Some(variable) = &pattern.variable {
-        on_binding(variable);
+    // The pattern's own names: the path variable and a named subpath — the
+    // one enumeration (`path_names`), the same the executor's bound-name
+    // walk reads.
+    for name in pattern.path_names() {
+        on_binding(name);
     }
-    walk_pattern_payloads(pattern, &mut |payload| match payload {
-        PatternPayload::Node(node) => walk_node_pattern(node, role, on_clause, on_expr, on_binding),
-        PatternPayload::Relationship(rel) => {
-            walk_rel_pattern(rel, role, on_clause, on_expr, on_binding)
-        }
-        PatternPayload::Quantified(quantified) => {
-            if let Some(variable) = &quantified.subpath_variable {
-                on_binding(variable);
-            }
-            if let Some(where_clause) = &quantified.where_clause {
-                walk_expr(where_clause, role, on_clause, on_expr);
-            }
-        }
+    walk_pattern_payloads(pattern, &mut |payload| {
+        for_each_payload_field(
+            payload,
+            &mut |expr| walk_expr(expr, role, on_clause, on_expr),
+            on_binding,
+        );
     });
     if let Some(where_clause) = pattern.where_clause.as_deref() {
-        walk_expr(where_clause, role, on_clause, on_expr);
-    }
-}
-
-/// The one enumeration of a node pattern's payload — binding, label
-/// expression, property map, element predicate — consulted by both the
-/// compact view and the elements sequence.
-fn walk_node_pattern<'a>(
-    node: &'a crate::NodePattern,
-    role: ExprRole,
-    on_clause: &mut impl FnMut(&'a Clause, bool),
-    on_expr: &mut impl FnMut(&'a Expr, ExprRole),
-    on_binding: &mut impl FnMut(&'a SmallName),
-) {
-    if let Some(variable) = &node.variable {
-        on_binding(variable);
-    }
-    if let Some(label_expr) = &node.label_expr {
-        walk_label_expr(label_expr, role, on_clause, on_expr);
-    }
-    if let Some(properties) = &node.properties {
-        walk_expr(properties, role, on_clause, on_expr);
-    }
-    if let Some(where_clause) = &node.where_clause {
-        walk_expr(where_clause, role, on_clause, on_expr);
-    }
-}
-
-/// The relationship counterpart of [`walk_node_pattern`].
-fn walk_rel_pattern<'a>(
-    rel: &'a crate::RelPattern,
-    role: ExprRole,
-    on_clause: &mut impl FnMut(&'a Clause, bool),
-    on_expr: &mut impl FnMut(&'a Expr, ExprRole),
-    on_binding: &mut impl FnMut(&'a SmallName),
-) {
-    if let Some(variable) = &rel.variable {
-        on_binding(variable);
-    }
-    if let Some(type_expr) = &rel.type_expr {
-        walk_label_expr(type_expr, role, on_clause, on_expr);
-    }
-    if let Some(properties) = &rel.properties {
-        walk_expr(properties, role, on_clause, on_expr);
-    }
-    if let Some(where_clause) = &rel.where_clause {
         walk_expr(where_clause, role, on_clause, on_expr);
     }
 }

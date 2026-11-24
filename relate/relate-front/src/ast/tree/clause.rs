@@ -73,6 +73,7 @@ pub(super) fn walk_clause_exprs_tree(
         Clause::Return(rc) => {
             walk_projection_exprs_tree(
                 &rc.items,
+                rc.group_by.as_ref(),
                 &rc.order_by,
                 rc.skip.as_ref(),
                 rc.limit.as_ref(),
@@ -83,6 +84,7 @@ pub(super) fn walk_clause_exprs_tree(
         Clause::With(wc) => {
             walk_projection_exprs_tree(
                 &wc.items,
+                wc.group_by.as_ref(),
                 &wc.order_by,
                 wc.skip.as_ref(),
                 wc.limit.as_ref(),

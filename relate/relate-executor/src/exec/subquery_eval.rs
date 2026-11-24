@@ -103,18 +103,23 @@ pub(crate) fn eval_exists_query(
     // here even though the read dispatcher admits their clause shapes.
     // One static admission check for the whole body, before the probe and
     // the per-part loop: the rule is a composition fact of the statement,
-    // not a per-part decision the loop's short-circuits can skip.
-    if query
-        .parts
-        .iter()
-        .any(|part| part.clauses.iter().any(mutates_store))
-    {
+    // not a per-part decision the loop's short-circuits can skip. The
+    // canonical query walk covers every `NEXT` stage too.
+    if relate_planner::query_any_clause(&query, &mut mutates_store) {
         return Err(Error::syntax(
             "InvalidClauseComposition: writes are not allowed in EXISTS { }",
         ));
     }
     if let Some(hit) = exists_pattern_probe(graph, &seed, &query, params)? {
         return Ok(Value::Bool(hit));
+    }
+    // A `NEXT` chain is one pipeline: existence is decided on its final
+    // stage's rows, so hand the whole query to the seeded statement engine
+    // (the COUNT path's entry) instead of testing the first stage's parts
+    // (REL8-2028).
+    if query.next.is_some() {
+        let result = execute_query_seeded(graph, &query, params, vec![seed], qctx)?;
+        return Ok(Value::Bool(!result.rows.is_empty()));
     }
     for part in &query.parts {
         // The subquery's ctx (subquery_qctx) is the canonical nested
@@ -189,16 +194,21 @@ pub(crate) fn eval_count_query(
                 ErrorKind::DifferentColumnsInUnion.as_str()
             )));
         }
-        let mut count = 0i64;
-        for part in &query.parts {
-            // ADR-0395: the omitted-RETURN path runs the clause engine
-            // directly — one pass per part per outer row (the RETURN path
-            // below ticks inside its seeded statement entry).
-            let (rows, last) =
-                run_nested_clauses(graph, &part.clauses, params, vec![seed.clone()], qctx)?;
-            count += nested_row_count(&rows, &last) as i64;
+        // A `NEXT` chain (REL8-2028): the omitted-RETURN count is the FINAL
+        // stage's row count, so a chained body takes the seeded engine
+        // below instead of the first stage's per-part pass.
+        if query.next.is_none() {
+            let mut count = 0i64;
+            for part in &query.parts {
+                // ADR-0395: the omitted-RETURN path runs the clause engine
+                // directly — one pass per part per outer row (the RETURN path
+                // below ticks inside its seeded statement entry).
+                let (rows, last) =
+                    run_nested_clauses(graph, &part.clauses, params, vec![seed.clone()], qctx)?;
+                count += nested_row_count(&rows, &last) as i64;
+            }
+            return Ok(Value::Int(count));
         }
-        return Ok(Value::Int(count));
     }
     let result = execute_query_seeded(graph, &query, params, vec![seed], qctx)?;
     Ok(Value::Int(result.rows.len() as i64))

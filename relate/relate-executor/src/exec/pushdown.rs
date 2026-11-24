@@ -5,18 +5,17 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use relate_core::{Result, Value};
-use relate_ir::{BinaryOp, Clause, Expr, PathPattern, RemoveItem, SetItem};
+use relate_ir::{clause_read_vars, BinaryOp, Clause, Expr, PathPattern};
 use relate_names::SmallName;
 
-use crate::eval::{expr_vars, label_expr_vars, predicate_holds};
+use crate::eval::{expr_vars, predicate_holds};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 pub(crate) use super::agg_fold::FoldedReturn;
 pub(crate) use super::match_cap::{match_limit_cap, MatchCap};
 use super::scope::{
-    add_gpm_element_names, call_scope_reads, for_each_pattern_bound_name, has_star_item,
-    ProjectionFields,
+    call_scope_reads, for_each_pattern_bound_name, has_star_item, ProjectionFields,
 };
 
 static ANON: AtomicU64 = AtomicU64::new(1);
@@ -230,166 +229,39 @@ fn projection_has_scope_bearing_expr(fields: &ProjectionFields<'_>) -> bool {
         || fields.where_clause.is_some_and(scope_bearing)
 }
 
+/// The one give-up policy of the MATCH trim: a catalog command, a
+/// conditional or `FOREACH` body, or a whole-row `CALL { }` scope (which
+/// imports every column) leaves the trim undecided, so the caller keeps the
+/// whole row.
+fn abandons_trim(clause: &Clause) -> bool {
+    match clause {
+        Clause::Catalog(_) | Clause::Conditional { .. } | Clause::Foreach { .. } => true,
+        Clause::CallSubquery { scope, .. } => call_scope_reads(scope).is_none(),
+        _ => false,
+    }
+}
+
 pub(crate) fn live_from(suffix: &[Clause]) -> Option<HashSet<String>> {
     let mut needed = HashSet::new();
     for c in suffix {
+        // The one give-up policy, consulted once before any clause's reads.
+        if abandons_trim(c) {
+            return None;
+        }
         match c {
-            Clause::Catalog(_) => return None,
-            Clause::Match {
-                patterns,
-                where_clause,
-                search,
-                ..
-            } => {
-                add_pattern_names(patterns, &mut needed);
-                if let Some(w) = where_clause {
-                    expr_vars(w, &mut needed);
-                }
-                if let Some(search) = search {
-                    for expr in search.spec.exprs() {
-                        expr_vars(expr, &mut needed);
-                    }
-                }
-            }
-            Clause::Create { patterns } => add_pattern_names(patterns, &mut needed),
-            Clause::CreateIndex { .. }
-            | Clause::DropIndex { .. }
-            | Clause::ShowIndexes
-            | Clause::Finish => {}
-            Clause::LoadCsv { url, .. } => expr_vars(url, &mut needed),
-            Clause::CallSubquery {
-                in_transactions,
-                scope,
-                ..
-            } => {
-                // A whole-row scope keeps everything live; an import list
-                // keeps the names it names (the one `call_scope_reads` rule).
-                let vars = call_scope_reads(scope)?;
-                needed.extend(vars.iter().map(|name| name.to_string()));
-                if let Some(tx) = in_transactions {
-                    if let Some(n) = &tx.batch_size {
-                        expr_vars(n, &mut needed);
-                    }
-                }
-            }
-            Clause::Merge {
-                pattern,
-                on_create,
-                on_match,
-            } => {
-                add_pattern_names(std::slice::from_ref(pattern), &mut needed);
-                for s in on_create.iter().chain(on_match.iter()) {
-                    set_item_vars(s, &mut needed);
-                }
-            }
-            Clause::Delete { expressions, .. } => {
-                for e in expressions {
-                    expr_vars(e, &mut needed);
-                }
-            }
-            Clause::Set { items } => {
-                for i in items {
-                    set_item_vars(i, &mut needed);
-                }
-            }
-            Clause::Remove { items } => {
-                for i in items {
-                    remove_item_vars(i, &mut needed);
-                }
-            }
-            Clause::Unwind { expression, .. } => expr_vars(expression, &mut needed),
-            Clause::Call { args, .. } => {
-                for a in args.args() {
-                    expr_vars(a, &mut needed);
-                }
-            }
-            Clause::Conditional { branches, .. } => {
-                for (predicate, _) in branches {
-                    expr_vars(predicate, &mut needed);
-                }
-                return None;
-            }
-            Clause::Foreach { list, .. } => {
-                expr_vars(list, &mut needed);
-                return None;
-            }
-            // A bare USE graph name is a catalog identifier, not a row variable.
-            Clause::Use { .. } => {}
+            // A projection's live set is its own position policy.
             Clause::Return { .. } | Clause::With { .. } => {
                 let fields = ProjectionFields::from_clause(c)
                     .expect("Return/With always extract to ProjectionFields");
                 return projection_live(&fields, &mut needed);
             }
+            // Every other clause's read set is the canonical per-clause
+            // enumeration (an import list's names included), so no slot list
+            // lives here.
+            other => clause_read_vars(other, &mut needed),
         }
     }
     None
-}
-
-pub(crate) fn add_pattern_names(patterns: &[PathPattern], out: &mut HashSet<String>) {
-    for p in patterns {
-        if let Some(v) = &p.variable {
-            out.insert(v.to_string());
-        }
-        if let Some(predicate) = p.where_clause.as_deref() {
-            expr_vars(predicate, out);
-        }
-        for n in &p.nodes {
-            if let Some(v) = &n.variable {
-                out.insert(v.to_string());
-            }
-            if let Some(props) = &n.properties {
-                expr_vars(props, out);
-            }
-            if let Some(expr) = &n.label_expr {
-                label_expr_vars(expr, out);
-            }
-        }
-        for r in &p.rels {
-            if let Some(v) = &r.variable {
-                out.insert(v.to_string());
-            }
-            if let Some(props) = &r.properties {
-                expr_vars(props, out);
-            }
-            if let Some(expr) = &r.type_expr {
-                label_expr_vars(expr, out);
-            }
-        }
-        add_gpm_element_names(&p.elements, out);
-    }
-}
-
-pub(crate) fn set_item_vars(item: &SetItem, out: &mut HashSet<String>) {
-    match item {
-        SetItem::Property { target, value }
-        | SetItem::ReplaceAll { target, value }
-        | SetItem::MergeMap { target, value } => {
-            expr_vars(target, out);
-            expr_vars(value, out);
-        }
-        SetItem::Labels { target, labels } => {
-            expr_vars(target, out);
-            for label in labels {
-                label_expr_vars(label, out);
-            }
-        }
-        SetItem::LabelsFunction { target, value, .. } => {
-            expr_vars(target, out);
-            expr_vars(value, out);
-        }
-    }
-}
-
-pub(crate) fn remove_item_vars(item: &RemoveItem, out: &mut HashSet<String>) {
-    match item {
-        RemoveItem::Property { target } => expr_vars(target, out),
-        RemoveItem::Labels { target, labels } => {
-            expr_vars(target, out);
-            for label in labels {
-                label_expr_vars(label, out);
-            }
-        }
-    }
 }
 
 pub(crate) fn trim_rows(graph: &ExecGraph<'_>, rows: &mut [Row], live: &HashSet<String>) {

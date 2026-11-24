@@ -9,7 +9,8 @@
 
 use relate_names::SmallName;
 
-use crate::{NodePattern, PathPattern, PatternElement, QuantifiedPathPattern, RelPattern};
+use crate::walk::each_label_expr_child;
+use crate::{Expr, NodePattern, PathPattern, PatternElement, QuantifiedPathPattern, RelPattern};
 
 /// One node, relationship or quantified-group payload of a path pattern, as
 /// [`walk_pattern_payloads`] visits it.
@@ -18,6 +19,30 @@ pub enum PatternPayload<'a> {
     Node(&'a NodePattern),
     Relationship(&'a RelPattern),
     Quantified(&'a QuantifiedPathPattern),
+}
+
+impl<'a> PatternPayload<'a> {
+    /// The payload one element carries — the element view's entry to the
+    /// same payload vocabulary the path walk visits, so a consumer that
+    /// already holds `elements` need not re-spell the three-variant match.
+    pub fn of(element: &'a PatternElement) -> Self {
+        match element {
+            PatternElement::Node(node) => PatternPayload::Node(node),
+            PatternElement::Relationship(rel) => PatternPayload::Relationship(rel),
+            PatternElement::Quantified(qpp) => PatternPayload::Quantified(qpp),
+        }
+    }
+
+    /// The variable this payload binds: a node's or relationship's own
+    /// name, a quantified group's subpath name — the one three-variant
+    /// variable read every payload consumer shares.
+    pub fn variable(&self) -> Option<&'a SmallName> {
+        match self {
+            PatternPayload::Node(node) => node.variable.as_ref(),
+            PatternPayload::Relationship(rel) => rel.variable.as_ref(),
+            PatternPayload::Quantified(qpp) => qpp.subpath_variable.as_ref(),
+        }
+    }
 }
 
 /// Visit every node and relationship payload of `pattern` exactly once,
@@ -49,6 +74,49 @@ pub fn walk_pattern_payloads<'a>(
     }
 }
 
+/// One payload's field enumeration — its binding, the dynamic operands of
+/// its label/type expression, its property map and its inline predicate.
+/// The one payload field list: the clause-tree walk and the read-set
+/// collector both build on it, so a new payload field is handled here once.
+pub(crate) fn for_each_payload_field<'a>(
+    payload: PatternPayload<'a>,
+    on_expr: &mut impl FnMut(&'a Expr),
+    on_binding: &mut impl FnMut(&'a SmallName),
+) {
+    if let Some(variable) = payload.variable() {
+        on_binding(variable);
+    }
+    match payload {
+        PatternPayload::Node(node) => {
+            if let Some(labels) = &node.label_expr {
+                each_label_expr_child(labels, on_expr);
+            }
+            if let Some(properties) = &node.properties {
+                on_expr(properties);
+            }
+            if let Some(where_clause) = &node.where_clause {
+                on_expr(where_clause);
+            }
+        }
+        PatternPayload::Relationship(rel) => {
+            if let Some(types) = &rel.type_expr {
+                each_label_expr_child(types, on_expr);
+            }
+            if let Some(properties) = &rel.properties {
+                on_expr(properties);
+            }
+            if let Some(where_clause) = &rel.where_clause {
+                on_expr(where_clause);
+            }
+        }
+        PatternPayload::Quantified(quantified) => {
+            if let Some(where_clause) = &quantified.where_clause {
+                on_expr(where_clause);
+            }
+        }
+    }
+}
+
 /// [`walk_pattern_payloads`]' one-shot boolean twin: whether any payload
 /// of `pattern` satisfies `pred`. The walk owns the accumulator, so a
 /// payload predicate stays one call instead of a hand-rolled
@@ -63,19 +131,18 @@ pub fn any_pattern_payload<'a>(
     found
 }
 
-/// The [`PatternElement`] recursion behind [`walk_pattern_payloads`].
-fn walk_pattern_elements<'a>(
+/// The [`PatternElement`] recursion behind [`walk_pattern_payloads`], and
+/// the one element-granular walk for a consumer that already holds an
+/// `elements` list: the element→payload mapping lives in
+/// [`PatternPayload::of`]; only the quantified descent is element-specific.
+pub fn walk_pattern_elements<'a>(
     elements: &'a [PatternElement],
     on_payload: &mut impl FnMut(PatternPayload<'a>),
 ) {
     for element in elements {
-        match element {
-            PatternElement::Node(node) => on_payload(PatternPayload::Node(node)),
-            PatternElement::Relationship(rel) => on_payload(PatternPayload::Relationship(rel)),
-            PatternElement::Quantified(quantified) => {
-                on_payload(PatternPayload::Quantified(quantified));
-                walk_pattern_elements(&quantified.elements, on_payload);
-            }
+        on_payload(PatternPayload::of(element));
+        if let PatternElement::Quantified(quantified) = element {
+            walk_pattern_elements(&quantified.elements, on_payload);
         }
     }
 }
@@ -110,12 +177,7 @@ pub fn pattern_node_anchor_variables(pattern: &PathPattern) -> Vec<SmallName> {
 pub fn pattern_anchor_variables(pattern: &PathPattern) -> Vec<SmallName> {
     let mut variables: Vec<SmallName> = pattern.path_names().cloned().collect();
     walk_pattern_payloads(pattern, &mut |payload| {
-        let variable = match payload {
-            PatternPayload::Node(node) => node.variable.as_ref(),
-            PatternPayload::Relationship(rel) => rel.variable.as_ref(),
-            PatternPayload::Quantified(quantified) => quantified.subpath_variable.as_ref(),
-        };
-        if let Some(name) = variable {
+        if let Some(name) = payload.variable() {
             variables.push(name.clone());
         }
     });

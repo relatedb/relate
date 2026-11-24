@@ -18,9 +18,9 @@ use super::writes::{walk_write_elements, WriteClause};
 use crate::agg::contains_aggregation;
 use crate::ast::collect::{
     check_expr_vars_defined, check_name_defined, clause_introduced_names, interp_embeds,
-    union_chain, walk_expr_scoped, ScopedExprVisitor,
+    union_chain, walk_expr_scoped, BinderStack, ScopedExprVisitor,
 };
-use crate::ast::tree::{walk_clause_expr_roots, walk_expr};
+use crate::ast::tree::{walk_clause_expr_roots, walk_expr, walk_with_expr_positions};
 
 /// Validate expression-position constraints:
 /// - Pattern predicates in WHERE must not introduce new (unbound) variables for relationships
@@ -120,74 +120,82 @@ fn validate_expression_constraints_in_clauses(
 }
 
 /// The scope-aware expression visitor behind [`validate_subquery_expressions`]:
-/// it collects the subquery bodies to recurse into. The binder events carry
-/// no rule here, so they are no-ops.
+/// it validates each subquery body inline, against the seed scope its
+/// expression position actually has plus the comprehension/quantifier/
+/// `reduce` binders open where it sits (REL8-2028). The binder events carry
+/// no rule of their own, so the shared [`BinderStack`] only records them.
 struct SubqueryExprVisitor {
-    bodies: Vec<Statement>,
+    seed: ExprScope,
+    binders: BinderStack,
+}
+
+impl SubqueryExprVisitor {
+    fn new(seed: ExprScope) -> Self {
+        Self {
+            seed,
+            binders: BinderStack::default(),
+        }
+    }
 }
 
 impl ScopedExprVisitor for SubqueryExprVisitor {
     // `enter_expr` is the one required event; this consumer's rule has no
-    // shape inside an expression, only the bodies it collects.
+    // shape inside an expression, only the bodies it validates.
     fn enter_expr(&mut self, _expr: &Expr) -> Result<(), EngineError> {
         Ok(())
     }
 
-    fn subquery_body(&mut self, statement: &Statement) -> Result<(), EngineError> {
-        self.bodies.push(statement.clone());
+    fn bind_name(&mut self, name: &SmallName) -> Result<(), EngineError> {
+        self.binders.bind(name);
         Ok(())
+    }
+
+    fn unbind_name(&mut self) -> Result<(), EngineError> {
+        self.binders.unbind();
+        Ok(())
+    }
+
+    fn subquery_body(&mut self, statement: &Statement) -> Result<(), EngineError> {
+        let mut inner = self.seed.clone();
+        // The binders open at the body (a comprehension's element, a
+        // quantifier's or `reduce`'s variables) are in scope for it.
+        inner
+            .names_mut()
+            .extend(self.binders.names().iter().cloned());
+        validate_expression_constraints_in_clauses(&statement.clauses, &mut inner)
     }
 }
 
-/// Walk one clause's expression roots with the scope-aware visitor and
-/// recurse into every subquery body, seeded from the scope its
-/// expression position actually sees: the clause's expression view (the
-/// input plus the clause's own bindings, plus a WITH's projection for
-/// its WHERE and ORDER BY) — except the one input-sensitive position, a
-/// WITH's projection items, whose bodies seed from the clause's input
-/// (the items evaluate against it, never against the projection their
-/// sibling items define). The CALL boundary is cleared either way: an
-/// expression subquery sees the enclosing row, no boundary to enforce.
+/// Walk one clause's expression roots with the scope-aware visitor, which
+/// validates every subquery body it meets from the scope that expression
+/// position actually sees: the clause's expression view (the input plus the
+/// clause's own bindings, plus a WITH's projection for its WHERE and ORDER
+/// BY) — except the one input-sensitive position, a WITH's projection items,
+/// whose bodies seed from the clause's input (the items evaluate against it,
+/// never against the projection their sibling items define). The CALL
+/// boundary is cleared either way: an expression subquery sees the enclosing
+/// row, no boundary to enforce.
 fn validate_subquery_expressions(clause: &Clause, scope: &ExprScope) -> Result<(), EngineError> {
-    let recurse = |visitor: SubqueryExprVisitor, seed: &ExprScope| -> Result<(), EngineError> {
-        for body in visitor.bodies {
-            let mut inner = seed.clone();
-            validate_expression_constraints_in_clauses(&body.clauses, &mut inner)?;
-        }
-        Ok(())
-    };
     match clause {
         // The position-sensitive clause: the projection items under the
         // input, the WHERE/ORDER BY/SKIP/LIMIT expressions under the
         // projection view.
         Clause::With(wc) => {
-            let mut items = SubqueryExprVisitor { bodies: Vec::new() };
-            for item in &wc.items {
-                if !item.all {
-                    walk_expr_scoped(&item.expr, &mut items)?;
-                }
-            }
-            recurse(items, &scope.subquery_item_seed())?;
-            let mut rest = SubqueryExprVisitor { bodies: Vec::new() };
-            if let Some(where_expr) = &wc.where_expr {
-                walk_expr_scoped(where_expr, &mut rest)?;
-            }
-            for order in &wc.order_by {
-                walk_expr_scoped(&order.expr, &mut rest)?;
-            }
-            for bound in [wc.skip.as_ref(), wc.limit.as_ref()].into_iter().flatten() {
-                walk_expr_scoped(bound, &mut rest)?;
-            }
-            recurse(rest, &scope.subquery_body_seed(clause))?;
+            let mut items = SubqueryExprVisitor::new(scope.subquery_item_seed());
+            let mut rest = SubqueryExprVisitor::new(scope.subquery_body_seed(clause));
+            walk_with_expr_positions(
+                wc,
+                &mut |expr| walk_expr_scoped(expr, &mut items),
+                &mut |expr| walk_expr_scoped(expr, &mut rest),
+            )?;
         }
         // Every other clause's expressions all read one scope: the
         // post-bind carrier (its expression view).
         _ => {
-            let mut visitor = SubqueryExprVisitor { bodies: Vec::new() };
+            let mut visitor = SubqueryExprVisitor::new(scope.subquery_body_seed(clause));
             let mut roots =
                 |expr: &Expr| -> Result<(), EngineError> { walk_expr_scoped(expr, &mut visitor) };
             walk_clause_expr_roots(clause, &mut roots)?;
-            recurse(visitor, &scope.subquery_body_seed(clause))?;
         }
     }
     Ok(())

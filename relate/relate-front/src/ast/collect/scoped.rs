@@ -110,6 +110,13 @@ impl BinderStack {
         self.shadowed.len()
     }
 
+    /// The binder names in scope, innermost last — the ordered view a
+    /// consumer carries into a nested scope (a subquery body's seed,
+    /// REL8-2028).
+    pub(crate) fn names(&self) -> &[SmallName] {
+        &self.shadowed
+    }
+
     /// Whether a binder in scope shadows `name`.
     pub(crate) fn shadows(&self, name: &SmallName) -> bool {
         self.live.contains_key(name)

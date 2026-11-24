@@ -522,7 +522,10 @@ pub(crate) fn clause_is_write(
                 || else_query.as_deref().is_some_and(|q| query_contains_write(q, is_write_procedure)))
 }
 
-fn query_contains_write(query: &Query, is_write_procedure: &mut impl FnMut(&str) -> bool) -> bool {
+pub(crate) fn query_contains_write(
+    query: &Query,
+    is_write_procedure: &mut impl FnMut(&str) -> bool,
+) -> bool {
     crate::query_any_clause(query, &mut |c| clause_is_write(c, is_write_procedure))
 }
 

@@ -10,8 +10,8 @@ use std::collections::HashSet;
 use relate_names::SmallName;
 
 use super::{each_label_expr_child, reads, walk_scope_children, ChildScope};
-use crate::walk_query::{path_pattern_mentions, walk_query_with_roles, ExprRole};
-use crate::{Clause, Expr, LabelExpr, MapProjectionItem, PathPattern, Query};
+use crate::walk_query::{clause_patterns, path_pattern_mentions, walk_query_with_roles, ExprRole};
+use crate::{CallScope, Clause, Expr, LabelExpr, MapProjectionItem, PathPattern, Query};
 
 /// The names a map projection's shorthand items read (`{n, .name, k: v}` reads
 /// `n`; `k: v` reads only what `v` reads). One policy both free-variable
@@ -110,14 +110,14 @@ pub fn expr_vars(expr: &Expr, out: &mut HashSet<String>) {
                 }
             }
             Expr::PatternPred { path } | Expr::ShortestPath { path, .. } => {
-                path_var_names(path, out);
+                path_pattern_mentions(path, out);
             }
             Expr::PatternComp {
                 path,
                 predicate,
                 projection,
             } => {
-                path_var_names(path, out);
+                path_pattern_mentions(path, out);
                 if let Some(predicate) = predicate {
                     go(predicate, bound, out);
                 }
@@ -170,34 +170,6 @@ pub fn path_pattern_vars(path: &PathPattern) -> impl Iterator<Item = &SmallName>
         .chain(path.rels.iter().filter_map(|r| r.variable.as_ref()))
 }
 
-fn path_var_names(path: &PathPattern, out: &mut HashSet<String>) {
-    // Map-bridge: the String-keyed variable sink stays until the typed
-    // expr_vars sink (LABS-936) lands; one text render per bound name.
-    for name in path.path_names() {
-        out.insert(name.to_string());
-    }
-    // Node and rel variables both come from the shared compact-view
-    // iterator above; the payload loops below carry only the property
-    // maps and the label/type expressions.
-    out.extend(path_pattern_vars(path).map(SmallName::to_string));
-    for n in &path.nodes {
-        if let Some(p) = &n.properties {
-            expr_vars(p, out);
-        }
-        if let Some(e) = &n.label_expr {
-            label_expr_vars(e, out);
-        }
-    }
-    for r in &path.rels {
-        if let Some(p) = &r.properties {
-            expr_vars(p, out);
-        }
-        if let Some(e) = &r.type_expr {
-            label_expr_vars(e, out);
-        }
-    }
-}
-
 /// Every name a subquery body mentions — the over-approximation
 /// documented on [`expr_vars`]. The scan is the canonical clause walk,
 /// not a slot list: every Read-role expression ([`walk_query_with_roles`]
@@ -215,13 +187,20 @@ pub fn exists_outer_vars(query: &Query, out: &mut HashSet<String>) {
     walk_query_with_roles(
         query,
         &mut |clause| {
-            let patterns = match clause {
-                Clause::Match { patterns, .. } | Clause::Create { patterns } => patterns.as_slice(),
-                Clause::Merge { pattern, .. } => std::slice::from_ref(pattern),
-                _ => &[],
-            };
-            for path in patterns {
+            // The patterns the clause carries (the one clause→patterns
+            // selection) and a `CALL (vars) { }` scope clause's import list —
+            // a read of the enclosing row the body may reach only through
+            // the import (`COUNT { CALL (n) { RETURN 1 AS q } RETURN q }`
+            // mentions `n` nowhere else, REL8-2028).
+            for path in clause_patterns(clause) {
                 path_pattern_mentions(path, &mut pattern_names);
+            }
+            if let Clause::CallSubquery {
+                scope: CallScope::Vars(vars),
+                ..
+            } = clause
+            {
+                pattern_names.extend(vars.iter().map(SmallName::to_string));
             }
         },
         &mut |expr, role| {

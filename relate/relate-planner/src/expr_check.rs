@@ -18,7 +18,7 @@ use crate::expr_text::graph_call_text;
 use crate::names::query_output_names_with_seed;
 use crate::names::query_with_persistent_imports;
 use crate::pattern::{check_path_exprs, check_pattern_pred_vars};
-use crate::validate::{clause_is_write, validate_part_with_env};
+use crate::validate::validate_part_with_env;
 
 mod function_meta;
 pub(crate) mod shadowing;
@@ -232,13 +232,19 @@ fn check_subquery_expression(
     // clauses, so the loop sees the same clauses either way.
     reject_binding_shadowing(query, env)?;
     let scoped_query = query_with_persistent_imports(query, &imported);
-    if query
-        .parts
-        .iter()
-        .any(|part| matches!(part.clauses.last(), Some(Clause::Finish)))
-    {
+    // One chain-composition gate: the body is the whole statement chain, so
+    // a `NEXT` stage's FINISH or write is the same violation as the first
+    // stage's. The first violation reports its authored error.
+    if crate::query_any_clause(&scoped_query, &mut |clause| {
+        matches!(clause, Clause::Finish)
+    }) {
         return Err(Error::syntax(
             "InvalidClauseComposition: FINISH is not allowed in a subquery expression",
+        ));
+    }
+    if crate::validate::query_contains_write(&scoped_query, is_write_procedure) {
+        return Err(Error::syntax(
+            "InvalidClauseComposition: writes are not allowed in subquery expressions",
         ));
     }
     // Non-entity imports are shadowable by this body's own pattern
@@ -252,15 +258,6 @@ fn check_subquery_expression(
     // name — per-row constants the body may reference without grouping by
     // them, ADR-0453) and the shadowable non-entity subset from `env`.
     for part in &scoped_query.parts {
-        if part
-            .clauses
-            .iter()
-            .any(|clause| clause_is_write(clause, is_write_procedure))
-        {
-            return Err(Error::syntax(
-                "InvalidClauseComposition: writes are not allowed in subquery expressions",
-            ));
-        }
         validate_part_with_env(
             part,
             crate::validate::Scope::expression_body(env.clone()),

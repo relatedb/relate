@@ -77,21 +77,48 @@ pub fn query_with_persistent_imports(query: &Query, imported: &[String]) -> Quer
     // decide it once outside the part walk.
     let has_next = query.next.is_some();
     for part in &mut query.parts {
-        for clause in &mut part.clauses {
-            if let Clause::With { items, .. } = clause {
-                push_missing_imports(items, imported);
-            }
-        }
-        if has_next {
-            if let Some(Clause::Return { items, .. }) = part.clauses.last_mut() {
-                push_missing_imports(items, imported);
-            }
-        }
+        push_imports_through_stage(part, imported, has_next);
     }
     if let Some(next) = &mut query.next {
         **next = query_with_persistent_imports(next, imported);
     }
     query
+}
+
+/// Push the imported names through one stage's projections: every `WITH`
+/// keeps them (so a later clause still reads an import), and — when the
+/// stage feeds a `NEXT` — its terminal projection exports them so the next
+/// stage's seed carries them. A stage's terminal projection may be a
+/// conditional part rather than a `RETURN` (CIP-135), so the export side
+/// recurses into each branch body's own stage (REL8-2028: `EXISTS { WHEN …
+/// THEN … NEXT RETURN <import> … }`).
+fn push_imports_through_stage(part: &mut SingleQuery, imported: &[String], exports: bool) {
+    for clause in &mut part.clauses {
+        if let Clause::With { items, .. } = clause {
+            push_missing_imports(items, imported);
+        }
+    }
+    if !exports {
+        return;
+    }
+    match part.clauses.last_mut() {
+        Some(Clause::Return { items, .. }) => push_missing_imports(items, imported),
+        Some(Clause::Conditional {
+            branches,
+            else_query,
+        }) => {
+            let bodies = branches
+                .iter_mut()
+                .map(|(_, body)| body)
+                .chain(else_query.iter_mut().map(|body| &mut **body));
+            for body in bodies {
+                for part in &mut body.parts {
+                    push_imports_through_stage(part, imported, true);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The `excluded_imports` argument of a stage with no CIP-218 star

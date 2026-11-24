@@ -21,7 +21,7 @@ pub use walk::{
     root_variable, walk_scope_children, ChildScope,
 };
 pub use walk_query::{
-    any_pattern_payload, path_pattern_mentions, pattern_anchor_variables,
-    pattern_node_anchor_variables, walk_clauses, walk_clauses_with_roles, walk_pattern_payloads,
-    walk_query, ExprRole, PatternPayload,
+    any_pattern_payload, clause_read_vars, path_pattern_mentions, pattern_anchor_variables,
+    pattern_node_anchor_variables, walk_clauses, walk_clauses_with_roles, walk_pattern_elements,
+    walk_pattern_payloads, walk_query, ExprRole, PatternPayload,
 };

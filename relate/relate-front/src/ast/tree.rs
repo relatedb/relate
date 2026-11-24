@@ -23,6 +23,74 @@ pub(crate) type StmtVisit<'v> = dyn FnMut(StmtRef<'_>) -> Result<(), EngineError
 pub(crate) type ClauseVisit<'v> = dyn FnMut(&Clause) -> Result<(), EngineError> + 'v;
 pub(crate) type ExprVisit<'v> = dyn FnMut(&Expr) -> Result<(), EngineError> + 'v;
 
+/// A projection's expression slot, by evaluation position: the projection
+/// items evaluate against the clause's input; `ORDER BY`, `SKIP` and
+/// `LIMIT` against the projection view.
+enum ProjectionSlot<'a> {
+    Item(&'a Expr),
+    Tail(&'a Expr),
+}
+
+/// The one enumeration of a projection's expression slots — star-filtered
+/// items, `ORDER BY`, `SKIP`, `LIMIT` — beside their evaluation position.
+/// Both the whole-tree projection walk and the positional consumer read it,
+/// so a new projection slot is added here once.
+fn for_each_projection_slot<'a>(
+    items: &'a [relate_parser::ReturnItem],
+    group_by: Option<&'a relate_parser::GroupBySpec>,
+    order_by: &'a [relate_parser::OrderByItem],
+    skip: Option<&'a Expr>,
+    limit: Option<&'a Expr>,
+    on_slot: &mut impl FnMut(ProjectionSlot<'a>) -> Result<(), EngineError>,
+) -> Result<(), EngineError> {
+    for item in items {
+        if !item.all {
+            on_slot(ProjectionSlot::Item(&item.expr))?;
+        }
+    }
+    // `GROUP BY` keys reference the projection's own aliases, so they join
+    // the tail slots; `GROUP BY ALL` / `GROUP BY ()` carry no expression.
+    if let Some(relate_parser::GroupBySpec::Keys(keys)) = group_by {
+        for key in keys {
+            on_slot(ProjectionSlot::Tail(key))?;
+        }
+    }
+    for ob in order_by {
+        on_slot(ProjectionSlot::Tail(&ob.expr))?;
+    }
+    for bound in [skip, limit].into_iter().flatten() {
+        on_slot(ProjectionSlot::Tail(bound))?;
+    }
+    Ok(())
+}
+
+/// Visit a `WITH` clause's expression roots by evaluation position: the
+/// projection items evaluate against the clause's input, every later slot
+/// (`WHERE`, `ORDER BY`, `SKIP`, `LIMIT`) against the projection view. The
+/// slot enumeration itself is [`for_each_projection_slot`]; the `WHERE`
+/// is the one WITH-only tail slot.
+pub(crate) fn walk_with_expr_positions(
+    wc: &relate_parser::WithClause,
+    on_item: &mut ExprVisit<'_>,
+    on_tail: &mut ExprVisit<'_>,
+) -> Result<(), EngineError> {
+    for_each_projection_slot(
+        &wc.items,
+        wc.group_by.as_ref(),
+        &wc.order_by,
+        wc.skip.as_ref(),
+        wc.limit.as_ref(),
+        &mut |slot| match slot {
+            ProjectionSlot::Item(expr) => on_item(expr),
+            ProjectionSlot::Tail(expr) => on_tail(expr),
+        },
+    )?;
+    if let Some(where_expr) = &wc.where_expr {
+        on_tail(where_expr)?;
+    }
+    Ok(())
+}
+
 /// A visit for one dynamic name operand and the token namespace its position
 /// implies: the inner expression of a dynamic label/type atom (`Label`), or a
 /// write site's dynamic property key / `labels()` assignment value
@@ -372,27 +440,19 @@ fn walk_clauses_tree(
 
 fn walk_projection_exprs_tree(
     items: &[relate_parser::ReturnItem],
+    group_by: Option<&relate_parser::GroupBySpec>,
     order_by: &[relate_parser::OrderByItem],
     skip: Option<&Expr>,
     limit: Option<&Expr>,
     depths: Depths,
     walk: &mut TreeWalk<'_, '_>,
 ) -> Result<(), EngineError> {
-    for item in items {
-        if !item.all {
-            walk_expr_at(&item.expr, depths, walk)?;
-        }
-    }
-    for ob in order_by {
-        walk_expr_at(&ob.expr, depths, walk)?;
-    }
-    if let Some(s) = skip {
-        walk_expr_at(s, depths, walk)?;
-    }
-    if let Some(l) = limit {
-        walk_expr_at(l, depths, walk)?;
-    }
-    Ok(())
+    for_each_projection_slot(items, group_by, order_by, skip, limit, &mut |slot| {
+        let expr = match slot {
+            ProjectionSlot::Item(expr) | ProjectionSlot::Tail(expr) => expr,
+        };
+        walk_expr_at(expr, depths, walk)
+    })
 }
 
 fn walk_page_stages_tree(

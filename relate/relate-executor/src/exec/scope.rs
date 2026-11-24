@@ -6,11 +6,12 @@ use std::sync::Arc;
 
 use relate_core::{Error, Result, Value};
 use relate_ir::{
-    CallScope, Clause, Expr, OrderItem, PathPattern, PatternElement, Projection, SingleQuery,
+    walk_pattern_elements, CallScope, Clause, Expr, OrderItem, PathPattern, PatternElement,
+    Projection, SingleQuery,
 };
 use relate_names::SmallName;
 
-use crate::eval::{expr_vars, is_agg_expr};
+use crate::eval::is_agg_expr;
 use crate::overlay::is_internal_column;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -146,12 +147,13 @@ pub(crate) fn push_scope_name(names: &mut Vec<String>, name: impl Into<String>) 
     }
 }
 
-/// The one walk of the names a path pattern binds: its path names (the outer
+/// The one walk of the names a path pattern BINDS: its path names (the outer
 /// path variable and a named parenthesized subpath), every declared node and
-/// relationship variable, then the element names sunk in document order
-/// through the canonical [`for_each_gpm_element_name`] walk (which includes
-/// inline-predicate variables, sorted, and recurses into quantified
-/// sub-paths).
+/// relationship variable, then the element variables sunk in document order
+/// through the canonical [`for_each_gpm_element_name`] walk (recursing into
+/// quantified sub-paths). The names an element *reads* (its predicate,
+/// property map, label expression) are not bindings — they reach the trim
+/// through the IR's `clause_read_vars`, not this sink.
 /// Every sink — null-binding, scope-set insertion, ordered column push —
 /// differs only in what it does with the name.
 pub(crate) fn for_each_pattern_bound_name(pattern: &PathPattern, sink: &mut impl FnMut(&str)) {
@@ -182,55 +184,14 @@ pub(crate) fn for_each_pattern_bound_name(pattern: &PathPattern, sink: &mut impl
     });
 }
 
-/// The one walk of the element-bound names: each element's own variable,
-/// then its inline-predicate variables (sorted — their source is a set with
-/// no document order), recursing into quantified sub-paths. Every consumer
-/// (the ordered bound-name sink above, the scope-set inserter below) differs
-/// only in what it does with the name.
-pub(crate) fn for_each_gpm_element_name(elements: &[PatternElement], sink: &mut impl FnMut(&str)) {
-    fn predicate_vars(predicate: &Expr, sink: &mut impl FnMut(&str)) {
-        let mut vars = HashSet::new();
-        expr_vars(predicate, &mut vars);
-        let mut ordered: Vec<&String> = vars.iter().collect();
-        ordered.sort();
-        for name in ordered {
-            sink(name);
+/// The one walk of the names a pattern element BINDS: each element's own
+/// variable, recursing into quantified sub-paths, through the canonical
+/// element walk.
+fn for_each_gpm_element_name(elements: &[PatternElement], sink: &mut impl FnMut(&str)) {
+    walk_pattern_elements(elements, &mut |payload| {
+        if let Some(name) = payload.variable() {
+            name.with_str(|text| sink(text));
         }
-    }
-    for element in elements {
-        match element {
-            PatternElement::Node(node) => {
-                if let Some(name) = &node.variable {
-                    name.with_str(|text| sink(text));
-                }
-                if let Some(predicate) = &node.where_clause {
-                    predicate_vars(predicate, sink);
-                }
-            }
-            PatternElement::Relationship(rel) => {
-                if let Some(name) = &rel.variable {
-                    name.with_str(|text| sink(text));
-                }
-                if let Some(predicate) = &rel.where_clause {
-                    predicate_vars(predicate, sink);
-                }
-            }
-            PatternElement::Quantified(qpp) => {
-                if let Some(name) = &qpp.subpath_variable {
-                    name.with_str(|text| sink(text));
-                }
-                if let Some(predicate) = &qpp.where_clause {
-                    predicate_vars(predicate, sink);
-                }
-                for_each_gpm_element_name(&qpp.elements, sink);
-            }
-        }
-    }
-}
-
-pub(crate) fn add_gpm_element_names(elements: &[PatternElement], out: &mut HashSet<String>) {
-    for_each_gpm_element_name(elements, &mut |name| {
-        out.insert(name.to_string());
     });
 }
 
