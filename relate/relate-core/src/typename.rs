@@ -136,23 +136,10 @@ fn list_type_name(values: &[Value]) -> String {
     format!("LIST<{element}>{NOT_NULL_SUFFIX}")
 }
 
-/// The union's CIP-100 order — one total order: the type sort key's rank
-/// and member count, then the element's flatness (a flat `LIST<…>` name
-/// sorts after a nested one), then the name — descending between two
-/// flat lists (live Neo4j's rendering order), ascending otherwise. Every
-/// level is a per-element key, so no comparison can mix directions and
-/// the order can never cycle.
+/// Sort the union's members by [`ElementType::union_order`], the one
+/// statement of the CIP-100 order.
 fn sort_union_members(types: &mut [ElementType]) {
-    types.sort_by(|a, b| {
-        let ak = value_type_sort_key(&a.name);
-        let bk = value_type_sort_key(&b.name);
-        (ak.0, ak.1, a.flat())
-            .cmp(&(bk.0, bk.1, b.flat()))
-            .then_with(|| match (a.flat(), b.flat()) {
-                (true, true) => b.name.cmp(&a.name),
-                _ => a.name.cmp(&b.name),
-            })
-    });
+    types.sort_by(ElementType::union_order);
 }
 
 /// Drop every element whose flat-list member set another element
@@ -186,15 +173,32 @@ fn retain_not_subsumed(types: Vec<ElementType>) -> Vec<ElementType> {
 }
 
 /// One element's type as the CIP-100 union merge reads it — the rendered
-/// name and, for a flat list union, the member rows the subsumption
-/// merge consumes, classified once from the value (never re-parsed from
-/// a rendered name).
+/// name, the member rows a flat list union feeds the subsumption merge,
+/// and the CIP-100 rank/member-count pair the union order compares, all
+/// classified once from the value (never re-derived from a rendered
+/// name at comparison time).
 struct ElementType {
     name: String,
     members: Option<HashSet<(String, bool)>>,
+    /// The CIP-100 rank and member count of `name`, read once from the
+    /// one rank table ([`value_type_sort_key`]) at classification.
+    rank: u8,
+    member_count: usize,
 }
 
 impl ElementType {
+    /// The one construction path: classify the rank/member-count pair
+    /// from the rendered name once, beside the member rows.
+    fn classified(name: String, members: Option<HashSet<(String, bool)>>) -> ElementType {
+        let (rank, member_count) = value_type_sort_key(&name);
+        ElementType {
+            name,
+            members,
+            rank,
+            member_count,
+        }
+    }
+
     /// One element's typed representation, classified once from the
     /// value in this pure constructor: the rendered name (the union's
     /// join applies the outer null-sibling strip, where the parent's
@@ -225,34 +229,30 @@ impl ElementType {
                 let non_null: Vec<&Value> = items.iter().filter(|it| !it.is_null()).collect();
                 let not_null = non_null.len() == items.len();
                 if non_null.is_empty() {
-                    return match items.is_empty() {
-                        true => ElementType {
-                            name,
-                            members: Some(HashSet::new()),
-                        },
-                        false => ElementType {
-                            name,
-                            members: Some([("NULL".to_string(), false)].into()),
-                        },
-                    };
-                }
-                // One walk builds the rows and answers the nested-list
-                // question: a list/byte-array member yields `None` and
-                // `collect` short-circuits on the first one.
-                non_null
-                    .into_iter()
-                    .map(|it| match it {
-                        Value::List(_) | Value::Bytes(_) => None,
-                        _ => Some((
-                            strip_outer_not_null(&value_type_name(it)).to_string(),
-                            not_null,
-                        )),
+                    Some(if items.is_empty() {
+                        HashSet::new()
+                    } else {
+                        [("NULL".to_string(), false)].into()
                     })
-                    .collect()
+                } else {
+                    // One walk builds the rows and answers the nested-list
+                    // question: a list/byte-array member yields `None` and
+                    // `collect` short-circuits on the first one.
+                    non_null
+                        .into_iter()
+                        .map(|it| match it {
+                            Value::List(_) | Value::Bytes(_) => None,
+                            _ => Some((
+                                strip_outer_not_null(&value_type_name(it)).to_string(),
+                                not_null,
+                            )),
+                        })
+                        .collect()
+                }
             }
             _ => None,
         };
-        ElementType { name, members }
+        ElementType::classified(name, members)
     }
 
     /// The non-empty member rows a subsumption candidate carries —
@@ -270,6 +270,33 @@ impl ElementType {
     /// classifier and names stay render-only.
     fn flat(&self) -> bool {
         self.members.is_some()
+    }
+
+    /// The union's CIP-100 order, stated once as the element's own
+    /// ordering over its classified fields: the rank and member count,
+    /// then flatness (a flat `LIST<…>` sorts before a nested one — live
+    /// 2026.10.1 renders the flat `LIST<INTEGER | FLOAT>` ahead of the
+    /// nested `LIST<INTEGER | LIST<NULL>>` in
+    /// `valueType([1, [], [2, [null]], [2.0, 2]])`, in either input
+    /// order), then the name — descending between two flat lists (live's
+    /// rendering order for the measured pairs), ascending between two
+    /// nested ones, the direction one explicit reversal of the level's
+    /// one comparison. A lexicographic total order: each level runs only
+    /// while every earlier level ties, and flatness is one of those
+    /// earlier levels — so by the time the name level runs the two
+    /// elements share one flatness class; a mixed pair can never reach
+    /// the name level.
+    fn union_order(&self, other: &ElementType) -> std::cmp::Ordering {
+        (self.rank, self.member_count, !self.flat())
+            .cmp(&(other.rank, other.member_count, !other.flat()))
+            .then_with(|| {
+                let by_name = self.name.cmp(&other.name);
+                if self.flat() {
+                    by_name.reverse()
+                } else {
+                    by_name
+                }
+            })
     }
 
     /// An empty sequence element — empty bytes or an empty list — the
@@ -299,8 +326,10 @@ fn subsumes(wide: &HashSet<(String, bool)>, narrow: &HashSet<(String, bool)>) ->
 }
 
 /// CIP-100 "General order of types" rank for a rendered type name, with the
-/// member count as tiebreaker so a union sorts after its members.
-fn value_type_sort_key(name: &str) -> (u8, usize, &str) {
+/// member count as tiebreaker so a union sorts after its members. The
+/// name-derived tiebreak below [`ElementType::union_order`]'s flatness
+/// level owns everything past these two components.
+fn value_type_sort_key(name: &str) -> (u8, usize) {
     // CIP-100 order (matching type_normalize::rank so a dynamic union
     // normalizes identically wherever it is sorted): UUID sits between
     // STRING and the numerics per the CIP-246 amendment.
@@ -347,7 +376,7 @@ fn value_type_sort_key(name: &str) -> (u8, usize, &str) {
     // zero separators and yield 1 -- no rank gate needed (the old
     // rank-based gate silently widened with every renumbering).
     let members = name.matches(" | ").count() + 1;
-    (rank, members, name)
+    (rank, members)
 }
 
 #[cfg(test)]
@@ -471,6 +500,38 @@ mod tests {
                 Value::Null,
             ])),
             "LIST<LIST<INTEGER NOT NULL>> NOT NULL"
+        );
+    }
+
+    /// A flat list union member sorts before a nested one when rank and
+    /// member count tie. Every expectation is live Neo4j 2026.10.1,
+    /// verified in both input orders (the order is canonical, not
+    /// first-seen).
+    #[test]
+    fn a_flat_list_union_member_sorts_before_a_nested_one() {
+        // The corpus shape (valueType acceptance + CIP-90): INTEGER, then
+        // the flat LIST<INTEGER | FLOAT>, then the nested
+        // LIST<INTEGER | LIST<NULL>> — the flat member must not fall
+        // behind the nested one on the flatness key. Both input orders
+        // render the one pinned string.
+        let corpus_shape = |third: Value, fourth: Value| {
+            list(vec![Value::Int(1), list(Vec::new()), third, fourth])
+        };
+        let flat = || list(vec![Value::Float(2.0), Value::Int(2)]);
+        let nested = || list(vec![Value::Int(2), list(vec![Value::Null])]);
+        let rendered = "LIST<INTEGER NOT NULL | LIST<INTEGER NOT NULL | FLOAT NOT NULL> NOT NULL \
+             | LIST<INTEGER NOT NULL | LIST<NULL> NOT NULL> NOT NULL> NOT NULL";
+        assert_eq!(value_type_name(&corpus_shape(nested(), flat())), rendered);
+        assert_eq!(value_type_name(&corpus_shape(flat(), nested())), rendered);
+        // Single-member lists, same tie: the flat LIST<FLOAT> stays ahead
+        // of the nested LIST<LIST<INTEGER>>.
+        assert_eq!(
+            value_type_name(&list(vec![
+                list(vec![list(vec![Value::Int(1)])]),
+                list(vec![Value::Float(2.5)]),
+            ])),
+            "LIST<LIST<FLOAT NOT NULL> NOT NULL | LIST<LIST<INTEGER NOT NULL> NOT NULL> NOT NULL> \
+             NOT NULL"
         );
     }
 
