@@ -355,6 +355,14 @@ Process, not code shape:
   or a watcher on `gh pr checks`) before ending the turn, so the work
   resumes without a human prompt. Check conflicts early with
   `scripts/premerge-check.sh --pr <PR>`, not after the matrix finishes
+- **Every long-running command runs in a timebox.** A gate, test suite,
+  bench run, or watcher loop gets an explicit abort budget sized before
+  launch — `timeout <N>` around the command, or a deadline check inside
+  the loop. A budget that fires (exit 124, a `CUTOFF` stamp) is a red
+  result to investigate — a deadlock, a hang, or a wrong-sized run —
+  never something to wait out: a suite that can block forever holds a
+  runner and a shared box hostage instead of failing, and the budget is
+  how a deadlock surfaces as a finding
 - **Re-squash via `scripts/re-squash.sh <old-commit> -F <message-file>
   <file>...` only.** Bare `git reset --soft origin/main` is BANNED: it
   keeps the stale *index* (fix rounds silently drop), and when main moved
