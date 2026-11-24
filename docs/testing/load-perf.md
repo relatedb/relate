@@ -22,8 +22,10 @@ create (p:Person {name:"Tomas "+id, id:id, age:id%100})-[:KNOWS]->(p);
   environment, which `make` passes through.
 - In CI: the `load-perf` workflow ([ci-lanes.md](ci-lanes.md)) runs the
   same script on the loadtest runner class for every ready PR, on every
-  push to `main`, and on demand (`workflow_dispatch` on any branch —
-  that is how a draft PR gets its numbers without flipping).
+  push to `main`, and on demand (`workflow_dispatch` on any ref that
+  carries the workflow file — `main` and branches based on it; a PR head
+  predating the workflow cannot be dispatched and gets its numbers at
+  ready-for-review, on the PR's merge ref).
 
 Each round runs on a fresh store and records **execute** (the engine's
 own `--timings` number — the same metric the tickets' local measurements

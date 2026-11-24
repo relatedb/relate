@@ -18,8 +18,13 @@ name: load-perf
 # (six quiet repeats once falsified an apparent doubling that was pure
 # contention). A runner is quiet by construction.
 #
-# Numbers on a draft PR without flipping it: workflow_dispatch this
-# workflow on the draft's head branch.
+# On-demand numbers: workflow_dispatch works on any ref that carries this
+# workflow file — `main` and every branch based on it. A PR head that
+# predates this workflow's merge cannot be dispatched (GitHub resolves the
+# workflow file from the target ref; observed 2026-11-24 as a 422 on
+# perf/load-path-throughput). Such a PR gets its numbers at
+# ready-for-review, when the pull_request event runs this lane on the PR's
+# merge ref.
 on:
   pull_request:
     branches: [main]
