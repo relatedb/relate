@@ -684,11 +684,15 @@ test-premerge-check:
 
 ## test-baseline-scripts: The baseline environment's own rules, without a
 ##   Docker daemon or network: the container ceremony's flag refusals
-##   (scripts/baseline-container.sh) and the image pins' one-home and shape
-##   guards (scripts/baseline-env.sh)
+##   (scripts/baseline-container.sh), the image pins' one-home and shape
+##   guards (scripts/baseline-env.sh), the pin grammar's contract
+##   (scripts/baseline-pin.sh), and the drift check's file-vs-update rules
+##   (scripts/baseline-image-drift.sh, curl and gh stubbed)
 test-baseline-scripts:
 	sh $(CURDIR)/scripts/tests/test_baseline_container.sh
 	sh $(CURDIR)/scripts/tests/test_baseline_image_pins.sh
+	sh $(CURDIR)/scripts/tests/test_baseline_image_drift.sh
+	sh $(CURDIR)/scripts/tests/test_baseline_pin.sh
 
 ## test-makefile-targets: The Makefile's own inventory drift guards
 ##   (scripts/tests/test_makefile_targets.sh): every task target carries

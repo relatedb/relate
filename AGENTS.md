@@ -728,7 +728,9 @@ carries its dated tag beside the digest so a stale pin is visible on
 read. Pinning the *pair* matters — the class compares `build_image` and
 `run_image`, so a floating spelling on either side drifts it. Debian
 republishes `bookworm-slim` every 1–3 weeks, security-driven, so a drift
-is a re-pin candidate, not a failure: edit the home (keep the dated-tag
+is a re-pin candidate, not a failure: the nightly `baseline-image-drift`
+job compares the pins with Docker Hub and files, or comments on, one issue
+per image, and a re-pin is deliberate — edit the home (keep the dated-tag
 form), dispatch `create-loadtest-baselines`, and land the re-pin and the
 re-frozen envelopes together — a pin without its re-freeze leaves every
 compare lane `INCOMPATIBLE`, and a re-freeze without the pin freezes the

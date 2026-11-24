@@ -19,33 +19,27 @@ set -u
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 
 . "$ROOT/scripts/tests/lib/tap.sh"
+# The pin grammar's one home (scripts/lib/baseline-pin.sh), shared with the drift
+# check and its test.
+. "$ROOT/scripts/lib/baseline-pin.sh"
 
 # Read the *declared* pin, validated: a caller's own BASELINE_*_IMAGE override
 # must not change what this guard certifies, a read that fails is its own
 # failure naming the pin, and only a name:tag@sha256:<64 hex> reference ever
 # reaches the one-home scan (whose predicate is derived from the pair).
-read_pin() { # $1 = build|run; prints the validated reference or fails
-	ref=$(env -u BASELINE_BUILD_IMAGE -u BASELINE_RUN_IMAGE \
-		bash "$ROOT/scripts/baseline-env.sh" --print-image "$1") || return 1
-	case "$ref" in
-		""|*[[:space:]]*)
-			printf 'baseline-image-pins: the %s pin is not one reference: %s\n' "$1" "$ref" >&2
-			return 1
-			;;
-	esac
-	if printf '%s\n' "$ref" | grep -Eq '^[^@:]+:[^@]+@sha256:[0-9a-f]{64}$'; then
-		printf '%s\n' "$ref"
-	else
-		printf 'baseline-image-pins: the %s pin is not name:tag@sha256:<64 hex>: %s\n' \
-			"$1" "$ref" >&2
-		return 1
-	fi
+# The declared pin: the lib's read_pin (the one reader) inside an environment
+# with the caller's own overrides unset, so this guard certifies what the home
+# declares rather than whatever a local override resolved.
+read_declared_pin() { # $1 = build|run
+	env -u BASELINE_BUILD_IMAGE -u BASELINE_RUN_IMAGE \
+		bash -c '. "$1/scripts/lib/baseline-pin.sh"; read_pin "$1/scripts/baseline-env.sh" "$2"' \
+		_ "$ROOT" "$1"
 }
 
-build_ref=$(read_pin build) || build_ref=""
-run_ref=$(read_pin run) || run_ref=""
-tap_check "the build pin reads and validates" "$([ -n "$build_ref" ] && echo 0 || echo 1)"
-tap_check "the run pin reads and validates" "$([ -n "$run_ref" ] && echo 0 || echo 1)"
+build_ref=$(read_declared_pin build)
+tap_check "the build pin reads and validates" $?
+run_ref=$(read_declared_pin run)
+tap_check "the run pin reads and validates" $?
 
 # The one-home scan: no other tracked file may *spell* an image reference — a
 # second literal is the drift source, whatever shape carries it (a bare shell
@@ -59,8 +53,8 @@ tap_check "the run pin reads and validates" "$([ -n "$run_ref" ] && echo 0 || ec
 # match (1) passes, any other non-zero means the search could not run.
 check_one_home() { # $1/$2 = the validated build/run pins
 	err_file="${TMPDIR:-/tmp}/baseline-image-pins-grep.err"
-	repos=$(printf '%s\n%s\n' "$1" "$2" | sed 's/:.*//' | sort -u \
-		| sed 's/[][\.*^$+?(){}|]/\\&/g' | paste -sd'|' -)
+	repos=$(printf '%s\n%s\n' "$(pin_part "$1" repo)" "$(pin_part "$2" repo)" \
+		| sort -u | sed 's/[][\.*^$+?(){}|]/\\&/g' | paste -sd'|' -)
 	bindings=$(git -C "$ROOT" grep -n -E "^[[:space:]]*(export[[:space:]]+|ARG[[:space:]]+)?(BASELINE_BUILD_IMAGE|BASELINE_RUN_IMAGE)[[:space:]]*[:?]?=[[:space:]]*[\"']?(\$\{[A-Za-z_]+:-)?(${repos}):" -- \
 		':!scripts/baseline-env.sh' 2>"$err_file")
 	status=$?

@@ -23,6 +23,7 @@ merge.
 | --- | --- | --- | --- |
 | TCK | — (retired with the in-repo harness, ADR-0520; language coverage is the spec-harness lane, ADR-0482, with the ADR-0661 regression gate as its own required check) | — | — |
 | Loadtest baselines | `loadtest-baselines` job: fraud + identity in the pinned ADR-0070 Docker env | — (stays continuous, see below) | continuous |
+| Baseline image pins (REL8-2081) | `test-baseline-scripts`: the pins' one-home and shape guards | `baseline-image-drift`: Docker Hub vs the pinned pair; files, or comments on, one issue per moved image | nightly 03:30 UTC |
 | Loadtest / large fixtures | `loadtest-smoke`: dataset suites at `ci()` scale (0.05), comparator + install.sh harness tests | `large-fixtures`: full-scale (scale=1.0) fraud + identity fixtures (`RELATE_FULL_DATA=1`, release profile) | nightly 03:30 UTC |
 | LDBC query latency (ADR-0243/ADR-0244) | `corpus` job step: SF0.1 answer gate (`RELATE_QUERY_LATENCY=1`, answers only, no latency judgement) | `ldbc-sf01`: all 30 queries, `--min-time 5`, p50/mean/p99 report uploaded as an artifact | nightly 03:30 UTC |
 | Docker image smoke (ADR-0128) | — (the smoke itself moved fully off the merge path, LABS-310; the `relate-bolt` job keeps the driver smokes, which run against the crate's in-process `serve(&Args)` listener, ADR-0368. The `jepsen` lane does build the stock image per ready PR — see below) | `docker-smoke`: full in-container `make docker` musl build + `docker_smoke.py` | nightly 03:30 UTC |
@@ -77,6 +78,19 @@ out (recorded as a Later-references note on ADR-0251, which is immutable):
   would let a regression land and be discovered a night later, after merge.
   ADR-0070's pinned environment and ADR-0071's freeze workflow are
   untouched.
+- **The image pins are checked on a cadence, not gated (REL8-2081).** The
+  pins in `scripts/baseline-env.sh` keep the ADR-0071 class stable, so a
+  moved upstream tag is not a build failure — the lanes still resolve the
+  pinned bytes. It is a security signal: Debian republishes
+  `bookworm-slim` every 1-3 weeks (8 repushes in the 16 weeks to
+  2026-11-24, security-driven), and a pin left alone accumulates CVEs. The
+  nightly `baseline-image-drift` job compares the pinned pair with Docker
+  Hub and files, or comments on, one issue per image (the title names the
+  image, not the digest that moved); the re-pin is deliberate — edit the
+  home, keep the dated-tag form, dispatch `create-loadtest-baselines`, and
+  land both together so the envelopes and the pins describe one
+  environment.
+
 ## Runtime notes (the ≤ 60 s ambition)
 
 ADR-0251 Consequences sets ≤ 60 s per continuous suite as a design
