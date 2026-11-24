@@ -655,12 +655,24 @@ mod tests {
     fn non_scalar_function_bodies_are_rejected() {
         let error = err("DEFINE FUNCTION f() { RETURN 1 AS a, 2 AS b } RETURN f()");
         assert!(
-            error.contains("Non-scalar query result not supported"),
+            error.contains("More than one projection item in the query function definition body"),
             "{error}"
         );
         let error = err("DEFINE FUNCTION f() { MATCH (n) RETURN n.name } RETURN f()");
         assert!(
-            error.contains("Non-scalar query result not supported"),
+            error.contains("No LIMIT 1 or total aggregation in the query function definition body"),
+            "{error}"
+        );
+        // A body with no RETURN at all names its own shape.
+        let error = err("DEFINE FUNCTION f() { MATCH (n:Person) } RETURN f()");
+        assert!(
+            error.contains("No RETURN clause in the query function definition body"),
+            "{error}"
+        );
+        // `RETURN *` is its own rejection shape, not the multi-item one.
+        let error = err("DEFINE FUNCTION f() { MATCH (n:Person) RETURN * } RETURN f()");
+        assert!(
+            error.contains("A star projection in the query function definition body"),
             "{error}"
         );
         // LIMIT 1 and aggregation bodies are the two scalar shapes.
@@ -674,6 +686,52 @@ mod tests {
         // canonical aggregate predicate accepts it without a LIMIT.
         parse_and_lower("DEFINE FUNCTION f() { MATCH (n:Person) RETURN count(*) } RETURN f()")
             .unwrap();
+    }
+
+    #[test]
+    fn union_function_bodies_are_rejected() {
+        // A UNION body never guarantees a single row, per-arm scalar shapes
+        // notwithstanding.
+        let error = err(
+            "DEFINE FUNCTION f() { RETURN 1 AS a LIMIT 1 UNION RETURN 2 AS a LIMIT 1 } \
+             RETURN f()",
+        );
+        assert!(
+            error.contains("UNION over LIMIT 1s does not guarantee a single row result"),
+            "{error}"
+        );
+        let error = err(
+            "DEFINE FUNCTION f() { MATCH (n) RETURN count(n) AS a UNION ALL MATCH (n) \
+             RETURN sum(n.x) AS a } RETURN f()",
+        );
+        assert!(
+            error.contains("UNION over total aggregations does not guarantee a single row result"),
+            "{error}"
+        );
+        // A non-scalar arm or a mix of scalar shapes takes the generic
+        // reason.
+        let error = err(
+            "DEFINE FUNCTION f() { MATCH (n) RETURN n.name, n.age UNION MATCH (n) \
+             RETURN n.name, n.age } RETURN f()",
+        );
+        assert!(
+            error.contains("UNION does not guarantee a single row result"),
+            "{error}"
+        );
+        let error = err(
+            "DEFINE FUNCTION f() { MATCH (n) RETURN n.name LIMIT 1 UNION MATCH (n) \
+             RETURN count(n) AS a } RETURN f()",
+        );
+        assert!(
+            error.contains("UNION does not guarantee a single row result"),
+            "{error}"
+        );
+        // The restriction is the function body's scalar shape: procedure
+        // bodies keep UNION.
+        parse_and_lower(
+            "DEFINE PROCEDURE p() { RETURN 1 AS a UNION RETURN 2 AS a } CALL p() YIELD a RETURN a",
+        )
+        .unwrap();
     }
 
     #[test]

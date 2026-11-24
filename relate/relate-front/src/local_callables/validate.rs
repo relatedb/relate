@@ -322,9 +322,100 @@ fn check_output_signature(
     Ok(())
 }
 
+/// One UNION-chain link's scalar shape for the local-function body
+/// rule. The scalar/non-scalar partition is the type itself: a link
+/// either satisfies the rule alone (`Scalar`) or names its rejection
+/// shape (`NonScalar`) — one home for the partition, the classifier.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LinkShape {
+    /// A shape that alone satisfies the scalar rule.
+    Scalar(ScalarShape),
+    /// A shape that alone violates it.
+    NonScalar(NonScalarShape),
+}
+
+/// The two shapes that alone satisfy the scalar rule.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScalarShape {
+    /// One projection item and a literal LIMIT 1.
+    LimitOne,
+    /// One projection item containing a total aggregation.
+    TotalAggregation,
+}
+
+/// The rejection shapes: how a single link violates the rule.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NonScalarShape {
+    /// No terminal RETURN at all.
+    NoReturn,
+    /// A terminal RETURN with more than one projection item.
+    NotSingleItem,
+    /// A terminal RETURN of `*`.
+    Star,
+    /// One projection item, neither LIMIT 1 nor aggregating.
+    Neither,
+}
+
+impl ScalarShape {
+    /// Why a UNION whose every arm has this shape still cannot
+    /// guarantee a single row.
+    fn uniform_union_reason(self) -> &'static str {
+        match self {
+            ScalarShape::LimitOne => "UNION over LIMIT 1s does not guarantee a single row result",
+            ScalarShape::TotalAggregation => {
+                "UNION over total aggregations does not guarantee a single row result"
+            }
+        }
+    }
+}
+
+impl NonScalarShape {
+    /// The complete Because-sentence for a single-link body of this
+    /// shape.
+    fn single_link_reason(self) -> &'static str {
+        match self {
+            NonScalarShape::NoReturn => "No RETURN clause in the query function definition body",
+            NonScalarShape::NotSingleItem => {
+                "More than one projection item in the query function definition body"
+            }
+            NonScalarShape::Star => "A star projection in the query function definition body",
+            NonScalarShape::Neither => {
+                "No LIMIT 1 or total aggregation in the query function definition body"
+            }
+        }
+    }
+}
+
+/// The link's terminal RETURN decides it. The canonical aggregate
+/// predicate (`crate::agg`) covers `count(*)` and aggregate function
+/// calls, anywhere in the item's own scope.
+fn link_shape(link: &Statement) -> LinkShape {
+    let Some(ret) = terminal_return(link) else {
+        return LinkShape::NonScalar(NonScalarShape::NoReturn);
+    };
+    if ret.items.len() != 1 {
+        return LinkShape::NonScalar(NonScalarShape::NotSingleItem);
+    }
+    if ret.items[0].all {
+        return LinkShape::NonScalar(NonScalarShape::Star);
+    }
+    if matches!(
+        &ret.limit,
+        Some(Expr::Literal(relate_parser::LiteralValue::Integer(1)))
+    ) {
+        return LinkShape::Scalar(ScalarShape::LimitOne);
+    }
+    if crate::agg::contains_aggregation_anywhere(&ret.items[0].expr) {
+        return LinkShape::Scalar(ScalarShape::TotalAggregation);
+    }
+    LinkShape::NonScalar(NonScalarShape::Neither)
+}
+
 /// The 42NAM scalar-shape rule: every emitting RETURN of a function's
 /// query body has exactly one non-`*` item and either `LIMIT 1` or a
-/// total aggregation in that item.
+/// total aggregation in that item. A multi-link (UNION) body can never
+/// satisfy it -- however scalar each arm, every arm can emit its own
+/// row -- so the multi-link check decides before any per-arm shape.
 fn check_scalar_shape(body: &Statement, name: &SmallName) -> Result<()> {
     if matches!(body.clauses.as_slice(), [Clause::Conditional(_)]) {
         return Err(Error::syntax(format!(
@@ -332,45 +423,60 @@ fn check_scalar_shape(body: &Statement, name: &SmallName) -> Result<()> {
              function {name}()."
         )));
     }
-    for link in chain_links(body) {
-        let Some(ret) = terminal_return(link) else {
-            return Err(Error::syntax(non_scalar_message(
-                name,
-                "No RETURN clause in",
-            )));
-        };
-        let single = ret.items.len() == 1 && !ret.items[0].all;
-        if !single {
-            return Err(Error::syntax(non_scalar_message(
-                name,
-                "More than one projection item in",
-            )));
-        }
-        let limit_one = matches!(
-            &ret.limit,
-            Some(Expr::Literal(relate_parser::LiteralValue::Integer(1)))
-        );
-        // The canonical aggregate predicate (`crate::agg`): `count(*)` and
-        // aggregate function calls, anywhere in the item's own scope --
-        // one definition, not a second spelling of the aggregate test.
-        let aggregating = crate::agg::contains_aggregation_anywhere(&ret.items[0].expr);
-        if !limit_one && !aggregating {
-            return Err(Error::syntax(non_scalar_message(
-                name,
-                "No LIMIT 1 or total aggregation in",
-            )));
-        }
+    let links = chain_links(body);
+    // One reason per body shape: a UNION body's reason (every arm can
+    // emit its own row), or the single link's own rejection shape --
+    // `None` when the body satisfies the rule.
+    let reason = if links.len() > 1 {
+        // chain_links order: the head link first, then each UNION arm.
+        Some(union_body_reason(links[0], &links[1..]))
+    } else if let LinkShape::NonScalar(shape) = link_shape(body) {
+        // No UNION: the body itself is the one link, and its own shape
+        // decides.
+        Some(shape.single_link_reason())
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        return Err(Error::syntax(non_scalar_message(name, reason)));
     }
     Ok(())
 }
 
-fn non_scalar_message(name: &SmallName, because: &str) -> String {
+/// A UNION body's Because-sentence (CIP-231's multi-link rule): every
+/// arm can emit its own row, so no per-arm scalar shape can save it.
+/// Uniform scalar arms name their shape in the reason; a non-scalar arm
+/// or a mix takes the generic reason. The head/arms split carries the
+/// multi-link contract -- `head` is the chain's head link, `arms` its
+/// UNION arms -- and the arm shapes come from the one classifier
+/// ([`link_shape`]), compared by variant -- never re-matched here.
+fn union_body_reason(head: &Statement, arms: &[&Statement]) -> &'static str {
+    const GENERIC: &str = "UNION does not guarantee a single row result";
+    let first = link_shape(head);
+    // Only a scalar head can name a uniform union reason; a non-scalar
+    // head takes the generic reason whether its arms match it or not.
+    let LinkShape::Scalar(shape) = first else {
+        return GENERIC;
+    };
+    if !arms.iter().copied().all(|link| link_shape(link) == first) {
+        return GENERIC;
+    }
+    shape.uniform_union_reason()
+}
+
+/// The non-scalar diagnostic's first sentence; both rejection paths share it.
+fn non_scalar_message_base(name: &SmallName) -> String {
     format!(
         "Non-scalar query result not supported in local function definitions. Query in \
          local function definition {name} requires a RETURN clause with a single column \
-         and either a total aggregation or LIMIT 1. Because: {because} the query function \
-         definition body"
+         and either a total aggregation or LIMIT 1."
     )
+}
+
+/// The non-scalar diagnostic: the shared first sentence plus the
+/// complete Because-sentence naming the violated shape.
+fn non_scalar_message(name: &SmallName, reason: &str) -> String {
+    format!("{} Because: {reason}", non_scalar_message_base(name))
 }
 
 /// Whether a conditional (`WHEN`/`ELSE`) tail of `body` has an arm that
