@@ -36,19 +36,24 @@ import briefs as briefs_mod  # noqa: E402
 import facts as facts_mod  # noqa: E402
 import ledger as ledger_mod  # noqa: E402
 from fileout import ensure_parent  # noqa: E402
-# The summary comment's renderer, the ledger blob it carries, and the
-# rendering vocabulary the poster and the renderer share — one module
-# (summary.py), imported here so post.py stays the gh client + findings
-# policy + commands (REL8-1769). The per-kind posters read verdict_comment
+# The summary comment's renderer and the rendering vocabulary the poster
+# and the renderer share — summary.py, imported here so post.py stays the
+# gh client + findings policy + commands (REL8-1769); the ledger blob
+# codec and the split helper live in ledger.py. The per-kind posters read verdict_comment
 # through this module's namespace (their `import post`).
-from summary import (  # noqa: E402
+from ledger import (  # noqa: E402
     LEDGER_RE,
-    SEVERITY_TO_GH,
-    SUMMARY_MARKER,
-    build_summary,
     decode_ledger,
     encode_ledger,
+    end_line,
     partition,
+)
+from summary import (  # noqa: E402
+    SEVERITY_TO_GH,
+    SUMMARY_MARKER,
+    Disposition,
+    build_summary,
+    round_outcome,
     verdict_comment,
 )
 
@@ -124,7 +129,7 @@ def extract_ledger_from_comment(body: str) -> dict:
         print(f"post: warning: stellar-ledger version {led.get('version')} != "
               f"{ledger_mod.VERSION} — gate state resets to a full round", file=sys.stderr)
         return ledger_mod.empty_ledger()
-    return led
+    return ledger_mod.normalize_ledger(led)
 
 
 # ---------------------------------------------------------------------------
@@ -307,8 +312,8 @@ def finding_span(f: dict) -> tuple[int, int]:
 def finding_doc(entry: dict) -> dict:
     """Ledger entry → finding-doc shape (the one adapter — anchoring and
     comment rendering both consume this)."""
-    end = entry["lines"][1] or entry["lines"][0]
-    return {"path": entry["path"], "start_line": entry["lines"][0], "end_line": end,
+    return {"path": entry["path"], "start_line": entry["lines"][0],
+            "end_line": end_line(entry["lines"]),
             "severity": entry["severity"], "area": entry["area"],
             "checklist_id": entry["checklist_id"], "why": entry["summary"],
             "remedy": entry.get("remedy", "")}
@@ -439,7 +444,8 @@ def cmd_post(args: argparse.Namespace) -> None:
     # summary) so the killed round's work is not lost — but a partial
     # review can never green the gate: the uncovered passes might have
     # found blockers.
-    verdict = "fail" if failing or args.timeout_partial else "pass"
+    outcome = round_outcome(bool(failing), args.timeout_partial)
+    verdict = outcome.verdict
 
     # inline comments: the fail-severity half of the ADR-0354 split above;
     # context findings ride in the summary deterministically (once —
@@ -464,14 +470,12 @@ def cmd_post(args: argparse.Namespace) -> None:
     degraded = False
     if comments and not args.dry_run:
         degraded = post_review(args.repo, args.pr, review_doc)
-    summary = build_summary(facts, scope_stats, round_no, args.head_sha, verdict, led,
-                            {**disp, "fail_new": fail_new, "low_new": low_new,
-                             "unanchored": unanchored,
-                             "anchored_carried": anchored_carried,
-                             "dropped_nits": dropped_nits,
-                             "dropped_scope": len(dropped_scope),
-                             "rejected": attempted if degraded else set(),
-                             "timeout_partial": args.timeout_partial})
+    summary = build_summary(
+        facts, scope_stats, round_no, args.head_sha, outcome, led,
+        Disposition(**disp, fail_new=fail_new, low_new=low_new,
+                    unanchored=unanchored, anchored_carried=anchored_carried,
+                    dropped_nits=dropped_nits, dropped_scope=len(dropped_scope),
+                    rejected=attempted if degraded else set()))
 
     if args.dry_run:
         dry_run_dump(review_doc, verdict, summary)

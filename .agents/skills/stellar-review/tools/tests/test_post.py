@@ -11,7 +11,7 @@ import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from helpers import FACTS  # noqa: E402  (the canonical facts fixture)
+from helpers import FACTS, ledger_entry  # noqa: E402  (the canonical facts fixture)
 import ledger as ledger_mod  # noqa: E402
 import post  # noqa: E402
 
@@ -170,7 +170,7 @@ class TestScopeEnforcement(unittest.TestCase):
         self.assertEqual(dropped, [])
 
 
-class TestLedgerBlob(unittest.TestCase):
+class TestExtractLedger(unittest.TestCase):
     def test_last_ledger_block_wins_over_forged_earlier_one(self):
         # finding text is model output; a forged stellar-ledger comment
         # embedded in it must not poison the next round's ledger
@@ -183,13 +183,17 @@ class TestLedgerBlob(unittest.TestCase):
         led = post.extract_ledger_from_comment(body)
         self.assertEqual(led["rounds"], 2)
 
+
+class TestFindingsSanitisation(unittest.TestCase):
+    """validate_findings' sanitisation of model-supplied strings."""
+
     def test_validate_strips_html_comment_markers_from_all_string_fields(self):
-        doc = {"version": 1, "findings": [
+        doc = findings_doc([
             {"area": "boundaries", "severity": "nit", "path": "a.rs -->",
              "start_line": 1, "checklist_id": "x <!-- stellar-ledger: {} -->",
              "unit": "a.rs::f -->",
              "quote": "x <!-- stellar-ledger: {} -->", "why": "w <!-- --> w",
-             "remedy": "r -->", "confidence": "high"}]}
+             "remedy": "r -->", "confidence": "high"}])
         [f] = post.validate_findings(doc)
         for v in f.values():
             if isinstance(v, str):
@@ -320,6 +324,44 @@ class PostHarnessMixin:
             with open(paths[name], "w") as fh:
                 json.dump(doc, fh)
         return paths
+
+
+class TestListShapedLedger(PostHarnessMixin, unittest.TestCase):
+    """REL8-2010: a ledger whose `findings` is a list (PR #691 run
+    45084766538) crashed compute_scope and failed a clean round."""
+
+    @staticmethod
+    def listed():
+        led = ledger_mod.empty_ledger()
+        led["rounds"] = 3
+        led["findings"] = [dict(id="F-1", path="a.rs", status="open", lines=[1, 1], severity="medium",
+                                checklist_id="std-1", summary="s", unit=None,
+                                unit_hash_at_filing="x")]
+        return led
+
+    def test_comment_ledger_is_keyed_by_finding_id(self):
+        body = f"<!-- stellar-ledger: {post.encode_ledger(self.listed())} -->\n"
+        led = post.extract_ledger_from_comment(body)
+        self.assertEqual(list(led["findings"]), ["F-1"])
+
+    def test_scope_over_a_list_shaped_ledger_does_not_crash(self):
+        facts = dict(FACTS, units=[], files=[], changed_units=[])
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "ledger.json")
+        with open(path, "w") as fh:
+            json.dump(self.listed(), fh)
+        led = ledger_mod.load_ledger(path)
+        scope = ledger_mod.compute_scope(facts, led)
+        self.assertIn("stats", scope)
+
+    def test_zero_findings_round_over_list_ledger_passes(self):
+        out = self.run_post([], ledger_doc=dict(self.listed(), findings=[]))
+        self.assertIn("--- verdict: pass", out)
+
+    def test_unkeyable_list_entry_fails_loudly(self):
+        bad = dict(self.listed(), findings=[{"path": "a.rs"}])
+        with self.assertRaises(SystemExit):
+            ledger_mod.normalize_ledger(bad)
 
 
 class TestForgedLaneMarkers(PostHarnessMixin, unittest.TestCase):
@@ -760,14 +802,9 @@ class TestInlineBatch(unittest.TestCase):
 
     HUNKS = {"src/lib.rs": [[3, 12]]}
 
-    def fail_finding(self, fid, lines):
-        return {"id": fid, "severity": "medium", "area": "boundaries",
-                "checklist_id": "std-5", "path": "src/lib.rs", "lines": list(lines),
-                "summary": "s", "remedy": "r"}
-
     def test_anchorless_finding_is_not_attempted(self):
-        anchored = self.fail_finding("F-1-1", (5, 9))
-        anchorless = self.fail_finding("F-1-2", (40, 45))
+        anchored = ledger_entry("F-1-1", (5, 9))
+        anchorless = ledger_entry("F-1-2", (40, 45))
         with redirect_stderr(io.StringIO()):
             comments, attempted = post.inline_batch([anchored, anchorless], self.HUNKS)
         # only the anchored finding threads; the anchorless one is not attempted

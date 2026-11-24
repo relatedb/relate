@@ -74,6 +74,14 @@ def f(fid, path, sev="medium", status="open", q=None):
             "checklist_id": "std-1", "quote_hash": q or fid, "summary": "s", "remedy": "r"}
 
 
+def ledger_entry(fid, lines=(5, 9), severity="medium"):
+    """One round-filed ledger entry as the renderer and the inline
+    batcher read it (the one builder; `f` above is the nightshift shape)."""
+    return {"id": fid, "severity": severity, "area": "boundaries",
+            "checklist_id": "std-5", "path": "src/lib.rs", "lines": list(lines),
+            "summary": "s", "remedy": "r"}
+
+
 def led(*fs):
     """One ledger document from its findings."""
     return {"findings": {x["id"]: x for x in fs}}

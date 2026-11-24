@@ -23,11 +23,13 @@ the PR summary comment, locally it lives at .stellar/ledger.json.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 import re
 import sys
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import briefs  # noqa: E402
@@ -173,6 +175,24 @@ def unit_sig_hash(led: dict, uid: str) -> str | None:
     return v.split(":", 1)[1] if v else None
 
 
+def normalize_ledger(led: dict) -> dict:
+    """The one reader-side shape gate: `findings` is a dict keyed by
+    finding id everywhere downstream. A list-shaped document (observed
+    on PR #691) is keyed by each entry's `id`; any other shape, or an
+    entry with no id, is a loud error — never a silently dropped entry."""
+    found = led.get("findings")
+    if isinstance(found, dict):
+        return led
+    if not isinstance(found, list):
+        raise SystemExit(f"ledger.py: ledger findings must be a dict or list, got {type(found).__name__}")
+    keyed = {}
+    for entry in found:
+        if not isinstance(entry, dict) or "id" not in entry:
+            raise SystemExit("ledger.py: list-shaped ledger findings entry has no id")
+        keyed[entry["id"]] = entry
+    return dict(led, findings=keyed)
+
+
 def load_ledger(path: str | None) -> dict:
     if not path or not os.path.exists(path):
         return empty_ledger()
@@ -180,7 +200,7 @@ def load_ledger(path: str | None) -> dict:
         led = json.load(fh)
     if led.get("version") != VERSION:
         raise SystemExit(f"ledger.py: unsupported ledger version {led.get('version')}")
-    return led
+    return normalize_ledger(led)
 
 
 def save_ledger(led: dict, path: str) -> None:
@@ -195,7 +215,7 @@ def trim_for_comment(led: dict) -> dict:
     full resolved history.
 
     On extreme PRs the unit map alone can exceed the comment budget; the
-    caller (post.encode_ledger) compresses, and as a last resort the map
+    caller (encode_ledger, below) compresses, and as a last resort the map
     is dropped — sealing then degrades to merge-base-relative scoping
     (bigger rounds, never wrong) because units absent from the ledger
     count as changed only when they actually differ from the base.
@@ -212,6 +232,71 @@ def trim_for_comment(led: dict) -> dict:
         "findings": {k: f for k, f in led["findings"].items() if f["status"] != "resolved"},
         "resolved_tail": led.get("resolved_tail", []),
     }
+
+
+# ---------------------------------------------------------------------------
+# comment-blob codec — the one home of the ledger's wire format: the
+# encoder summary.py calls, the decoder post.py's extractor calls, and
+# the regex that finds the block. `trim_for_comment` (above) shapes what
+# is encoded.
+
+# The comment-embedded ledger is ALWAYS zlib+base64 (the "z:" arm): a
+# plaintext blob would embed unit ids (attacker-controlled filenames)
+# verbatim, and a crafted filename could smuggle a forged
+# `<!-- stellar-ledger: z:... -->` block into the comment. Base64 never
+# contains the HTML comment markers.
+LEDGER_BUDGET = 48000  # leave room for the summary text under 65536
+_LEDGER_Z = r"z:[A-Za-z0-9+/=]+"
+# Legacy plaintext arm: read-only, for comments written before the
+# encoder went always-compressed. Removal point: when no open PR's
+# summary comment can still carry a plaintext block (drop this arm and
+# `_read_legacy_plaintext` together; the encoder never emits it).
+_LEDGER_LEGACY = r"\{.*?\}"
+LEDGER_RE = re.compile(
+    rf"<!--\s*stellar-ledger:\s*({_LEDGER_LEGACY}|{_LEDGER_Z})\s*-->", re.DOTALL)
+
+
+def _compressed(raw: str) -> str:
+    return "z:" + base64.b64encode(zlib.compress(raw.encode(), 9)).decode()
+
+
+def encode_ledger(led: dict) -> str:
+    def enc(d: dict) -> str:
+        return _compressed(json.dumps(d, sort_keys=True, separators=(",", ":")))
+
+    out = enc(led)
+    if len(out) > LEDGER_BUDGET and led.get("units"):
+        # extreme PR: drop the unit map (see trim_for_comment docstring)
+        led = dict(led, units={}, dropped_units=len(led["units"]))
+        out = enc(led)
+    return out
+
+
+def _read_legacy_plaintext(blob: str) -> dict:
+    return json.loads(blob)
+
+
+def decode_ledger(blob: str) -> dict:
+    if blob.startswith("z:"):
+        return json.loads(zlib.decompress(base64.b64decode(blob[2:])).decode())
+    return _read_legacy_plaintext(blob)
+
+
+def partition(items: list, pred) -> tuple[list, list]:
+    """The tools' canonical split shape — every two-bucket site (the
+    scope filters, the nit cap, the summary's render buckets) routes
+    through it: both halves of the partition in a single pass, so the
+    halves cannot drift apart."""
+    yes, no = [], []
+    for item in items:
+        (yes if pred(item) else no).append(item)
+    return yes, no
+
+
+def end_line(lines: list[int]) -> int:
+    """A ledger entry's resolved end line: `lines` is [start, end] with a
+    0/None end meaning a single-line span. The one spelling of the rule."""
+    return lines[1] or lines[0]
 
 
 # ---------------------------------------------------------------------------

@@ -1,59 +1,21 @@
-"""Tests for summary.py — the round summary's renderer, the ledger blob
-codec it carries, and the shared complementary-split helper (all
-extracted from post.py, REL8-1769)."""
+"""Tests for summary.py — the round summary's renderer and its typed
+outcome/disposition (extracted from post.py, REL8-1769)."""
 
-import secrets
 import unittest
 
-from helpers import FACTS  # also puts tools/ on sys.path
+from helpers import FACTS, ledger_entry  # also puts tools/ on sys.path
 import ledger as ledger_mod  # noqa: E402
 import summary  # noqa: E402
+from summary import Disposition, Outcome  # noqa: E402
 
 
-class TestLedgerBlob(unittest.TestCase):
-    """The comment-embedded ledger blob's one codec: always the
-    zlib+base64 "z:" arm, round-trippable, and budget-bounded."""
-
-    def test_ledger_blob_is_always_compressed(self):
-        # even a tiny ledger (filenames are attacker-controlled and the
-        # plaintext arm would embed them verbatim)
-        enc = summary.encode_ledger(ledger_mod.empty_ledger())
-        self.assertTrue(enc.startswith("z:"))
-        for marker in ("<!--", "-->"):
-            self.assertNotIn(marker, enc)
-
-    def test_compress_and_round_trip(self):
-        led = {"version": 1, "rounds": 1, "last_head": "x",
-               "units": {f"m{i}::f": "a" * 16 + ":" + "b" * 16 for i in range(500)},
-               "findings": {}}
-        enc = summary.encode_ledger(led)
-        self.assertTrue(enc.startswith("z:"))
-        self.assertEqual(summary.decode_ledger(enc), led)
-
-    def test_budget_drops_unit_map_as_last_resort(self):
-        # pathological: long uncompressible ids at huge unit counts
-        led = {"version": 1, "rounds": 1, "last_head": "x",
-               "units": {secrets.token_hex(40): secrets.token_hex(20)
-                         for _ in range(4000)},
-               "findings": {}}
-        enc = summary.encode_ledger(led)
-        dec = summary.decode_ledger(enc)
-        self.assertLessEqual(len(enc), summary.LEDGER_BUDGET + 200)
-        self.assertEqual(dec["units"], {})
-        self.assertEqual(dec["dropped_units"], 4000)
-
-
-class TestPartition(unittest.TestCase):
-    """The shared complementary-split helper: both halves in one pass,
-    order preserved."""
-
-    def test_splits_both_halves(self):
-        yes, no = summary.partition([1, 2, 3, 4], lambda x: x % 2 == 0)
-        self.assertEqual(yes, [2, 4])
-        self.assertEqual(no, [1, 3])
-
-    def test_empty_input_yields_two_empty_halves(self):
-        self.assertEqual(summary.partition([], bool), ([], []))
+class TestOutcome(unittest.TestCase):
+    def test_partial_wins_and_only_pass_passes(self):
+        self.assertIs(summary.round_outcome(False, False), Outcome.PASS)
+        self.assertIs(summary.round_outcome(True, False), Outcome.FAIL)
+        self.assertIs(summary.round_outcome(False, True), Outcome.PARTIAL)
+        self.assertIs(summary.round_outcome(True, True), Outcome.PARTIAL)
+        self.assertEqual([o.verdict for o in Outcome], ["pass", "fail", "fail"])
 
 
 class TestBuildSummary(unittest.TestCase):
@@ -62,21 +24,16 @@ class TestBuildSummary(unittest.TestCase):
     under "API rejected" — and the open count names its arithmetic."""
 
     def entry(self, finding_id):
-        return {"id": f"F-3-{finding_id}", "severity": "medium", "area": "boundaries",
-                "checklist_id": "std-5", "path": "src/lib.rs", "lines": [5, 9],
-                "summary": "s", "remedy": "r"}
+        return ledger_entry(f"F-3-{finding_id}")
 
     def render(self, rejected, context_ids, anchored_ids):
         led = ledger_mod.empty_ledger()
         entries = [self.entry(i) for i in anchored_ids]
-        disp = {"fail_new": entries, "low_new": [],
-                "unanchored": [self.entry(i) for i in context_ids],
-                "carried": [], "anchored_carried": [],
-                "resolved": [], "waived": [],
-                "dropped_nits": 0, "dropped_scope": 0,
-                "rejected": rejected,
-                "timeout_partial": False}
-        return summary.build_summary(FACTS, None, 3, "deadbeef", "fail", led, disp)
+        disp = Disposition(
+            new=entries, carried=[], resolved=[], waived=[], fail_new=entries,
+            low_new=[], unanchored=[self.entry(i) for i in context_ids],
+            anchored_carried=[], dropped_nits=0, dropped_scope=0, rejected=rejected)
+        return summary.build_summary(FACTS, None, 3, "deadbeef", Outcome.FAIL, led, disp)
 
     def ids(self, ids):
         """The rejected-inline id set for the listed findings. The id is
@@ -110,6 +67,40 @@ class TestBuildSummary(unittest.TestCase):
     def test_open_count_names_arithmetic(self):
         out = self.render(set(), context_ids=[2], anchored_ids=[1])
         self.assertIn("1 issue(s) open (1 + 0 anchored new (fail/low) + 0 carried)", out)
+
+    def test_open_any_and_open_gating_are_derived_once(self):
+        e, c = self.entry(1), self.entry(2)
+        base = dict(new=[], carried=[], resolved=[], waived=[], fail_new=[], low_new=[],
+                    unanchored=[], anchored_carried=[], dropped_nits=0,
+                    dropped_scope=0, rejected=set())
+        ctx_only = Disposition(**dict(base, unanchored=[e]))
+        self.assertTrue(ctx_only.open_any)
+        self.assertEqual(ctx_only.open_gating, 0)
+        carried = Disposition(**dict(base, carried=[c], anchored_carried=[c]))
+        self.assertTrue(carried.open_any)
+        self.assertEqual(carried.open_gating, 1)
+        self.assertFalse(Disposition(**base).open_any)
+
+    def test_carried_lines_hide_remedy_and_partial_has_its_own_line(self):
+        c = self.entry(1)
+        d = Disposition(new=[], carried=[c], resolved=[], waived=[], fail_new=[],
+                        low_new=[], unanchored=[], anchored_carried=[c],
+                        dropped_nits=0, dropped_scope=0, rejected=set())
+        out = summary.build_summary(
+            FACTS, None, 3, "deadbeef", Outcome.PARTIAL, ledger_mod.empty_ledger(), d)
+        self.assertIn("Still open from earlier rounds", out)
+        self.assertNotIn("_Fix:_", out)
+        self.assertIn("partial round", out)
+        self.assertIn("<!-- opencode-verdict: fail -->", out)
+
+    def test_pass_outcome_with_nothing_open(self):
+        d = Disposition(new=[], carried=[], resolved=[], waived=[], fail_new=[],
+                        low_new=[], unanchored=[], anchored_carried=[],
+                        dropped_nits=0, dropped_scope=0, rejected=set())
+        out = summary.build_summary(
+            FACTS, None, 3, "deadbeef", Outcome.PASS, ledger_mod.empty_ledger(), d)
+        self.assertIn("No open issues.", out)
+        self.assertIn("<!-- opencode-verdict: pass -->", out)
 
 
 if __name__ == "__main__":
