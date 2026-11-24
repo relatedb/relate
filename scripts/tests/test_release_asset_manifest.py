@@ -22,6 +22,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Callable
 
 from script_loader import ROOT, capture_stderr, load
 
@@ -64,6 +65,21 @@ def generate(release_dir: Path) -> Path:
         code, _ = capture_stderr(manifest_mod.main, ["generate", str(release_dir)])
     assert code == 0
     return release_dir / "assets.json"
+
+
+def stage_generated(tmp: str, name: str = "release") -> tuple[Path, Path]:
+    """A staged release with its manifest generated: (release dir, manifest
+    path). The one fixture-plus-generate sequence the verb cases start from."""
+    release_dir = stage_release(tmp, name)
+    return release_dir, generate(release_dir)
+
+
+def edit_manifest(manifest_path: Path, mutate: Callable[[dict], None]) -> None:
+    """Load the generated manifest, apply `mutate` to it and write it back in
+    the generator's own format."""
+    manifest = json.loads(manifest_path.read_text())
+    mutate(manifest)
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
 
 
 def run_verb(verb: str, release_dir: Path, manifest_path: Path) -> tuple[int, str]:
@@ -140,59 +156,45 @@ class Check(unittest.TestCase):
 
     def test_complete_fixture_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            release_dir = stage_release(tmp)
-            generate(release_dir)
-            code, err = run_verb("check", release_dir, release_dir / "assets.json")
+            release_dir, manifest_path = stage_generated(tmp)
+            code, err = run_verb("check", release_dir, manifest_path)
             self.assertEqual(code, 0)
             self.assertEqual(err, "")
 
     def test_manifest_lacking_one_entry_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            release_dir = stage_release(tmp)
-            generate(release_dir)
-            manifest_path = release_dir / "assets.json"
-            manifest = json.loads(manifest_path.read_text())
-            del manifest["relate-linux-x64"]
-            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+            release_dir, manifest_path = stage_generated(tmp)
+            edit_manifest(manifest_path, lambda m: m.pop("relate-linux-x64"))
             code, err = run_verb("check", release_dir, manifest_path)
             self.assertEqual(code, 1)
             self.assertIn("relate-linux-x64: no manifest entry", err)
 
     def test_entry_not_matching_the_asset_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            release_dir = stage_release(tmp)
-            generate(release_dir)
+            release_dir, manifest_path = stage_generated(tmp)
             # An asset swapped after the manifest was written.
             (release_dir / "relate-linux-x64").write_bytes(b"swapped bytes")
-            code, err = run_verb("check", release_dir, release_dir / "assets.json")
+            code, err = run_verb("check", release_dir, manifest_path)
             self.assertEqual(code, 1)
             self.assertIn("relate-linux-x64: manifest sha256/size", err)
 
     def test_entry_for_an_unstaged_asset_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            release_dir = stage_release(tmp)
-            generate(release_dir)
-            manifest_path = release_dir / "assets.json"
-            manifest = json.loads(manifest_path.read_text())
-            manifest["relate-windows-x64.exe"] = {
-                "sha256": "0" * 64,
-                "size": 1,
-            }
-            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+            release_dir, manifest_path = stage_generated(tmp)
+            edit_manifest(
+                manifest_path,
+                lambda m: m.update({"relate-windows-x64.exe": {"sha256": "0" * 64, "size": 1}}),
+            )
             code, err = run_verb("check", release_dir, manifest_path)
             self.assertEqual(code, 1)
             self.assertIn("relate-windows-x64.exe: manifest entry", err)
 
     def test_entry_of_the_wrong_type_is_a_distinct_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            release_dir = stage_release(tmp)
-            generate(release_dir)
-            manifest_path = release_dir / "assets.json"
-            manifest = json.loads(manifest_path.read_text())
+            release_dir, manifest_path = stage_generated(tmp)
             # A present key of the wrong type is a malformed entry, never a
             # missing one: JSON null reads as no entry under a `.get()`.
-            manifest["relate-linux-x64"] = None
-            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+            edit_manifest(manifest_path, lambda m: m.update({"relate-linux-x64": None}))
             code, err = run_verb("check", release_dir, manifest_path)
             self.assertEqual(code, 1)
             self.assertIn("relate-linux-x64: manifest entry is malformed", err)
@@ -209,14 +211,10 @@ class Check(unittest.TestCase):
             "size a bool": {"sha256": "0" * 64, "size": True},
         }
         with tempfile.TemporaryDirectory() as tmp:
-            release_dir = stage_release(tmp)
-            generate(release_dir)
-            manifest_path = release_dir / "assets.json"
+            release_dir, manifest_path = stage_generated(tmp)
             for label, entry in wrong.items():
                 with self.subTest(label):
-                    manifest = json.loads(manifest_path.read_text())
-                    manifest["relate-linux-x64"] = entry
-                    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+                    edit_manifest(manifest_path, lambda m, e=entry: m.update({"relate-linux-x64": e}))
                     code, err = run_verb("check", release_dir, manifest_path)
                     self.assertEqual(code, 1)
                     self.assertIn("relate-linux-x64: manifest entry is malformed", err)
@@ -237,8 +235,8 @@ class Check(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             release_dir = stage_release(tmp)
             drop_checksum_set(release_dir)
-            generate(release_dir)
-            code, err = run_verb("check", release_dir, release_dir / "assets.json")
+            manifest_path = generate(release_dir)
+            code, err = run_verb("check", release_dir, manifest_path)
             self.assertEqual((code, err), (0, ""))
 
 
@@ -248,15 +246,13 @@ class Anchor(unittest.TestCase):
 
     def test_matching_digest_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            release_dir = stage_release(tmp)
-            generate(release_dir)
+            release_dir, _ = stage_generated(tmp)
             manifest_path = write_anchor(release_dir)
             self.assertEqual(run_verb("anchor", release_dir, manifest_path), (0, ""))
 
     def test_other_digest_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            release_dir = stage_release(tmp)
-            generate(release_dir)
+            release_dir, _ = stage_generated(tmp)
             manifest_path = write_anchor(release_dir, "0" * 64)
             code, err = run_verb("anchor", release_dir, manifest_path)
             self.assertEqual(code, 1)
@@ -265,8 +261,7 @@ class Anchor(unittest.TestCase):
 
     def test_missing_line_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            release_dir = stage_release(tmp)
-            generate(release_dir)
+            release_dir, _ = stage_generated(tmp)
             manifest_path = write_anchor(release_dir, include_manifest=False)
             code, err = run_verb("anchor", release_dir, manifest_path)
             self.assertEqual(code, 1)
@@ -274,10 +269,9 @@ class Anchor(unittest.TestCase):
 
     def test_missing_checksum_set_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            release_dir = stage_release(tmp)
-            generate(release_dir)
+            release_dir, manifest_path = stage_generated(tmp)
             drop_checksum_set(release_dir)
-            code, err = run_verb("anchor", release_dir, release_dir / "assets.json")
+            code, err = run_verb("anchor", release_dir, manifest_path)
             self.assertEqual(code, 1)
             self.assertIn("checksum set", err)
             self.assertIn("does not exist", err)
@@ -289,14 +283,13 @@ class RequiredInputs(unittest.TestCase):
 
     def test_missing_manifest_and_checksum_set_share_one_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            release_dir = stage_release(tmp)
-            generate(release_dir)
+            release_dir, manifest_path = stage_generated(tmp)
             code, err = run_verb("check", release_dir, Path(tmp) / "absent.json")
             self.assertEqual(code, 1)
             self.assertIn("manifest '", err)
             self.assertIn("' does not exist", err)
             drop_checksum_set(release_dir)
-            code, err = run_verb("anchor", release_dir, release_dir / "assets.json")
+            code, err = run_verb("anchor", release_dir, manifest_path)
             self.assertEqual(code, 1)
             self.assertIn("checksum set '", err)
             self.assertIn("' does not exist", err)
@@ -322,16 +315,11 @@ class WorkflowStep(unittest.TestCase):
 
     def test_gate_step_exit_status_on_both_fixtures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            complete = stage_release(tmp)
-            generate(complete)
+            complete, _ = stage_generated(tmp)
             self.assertEqual(self.run_step(complete).returncode, 0)
 
-            incomplete = stage_release(tmp, "incomplete")
-            generate(incomplete)
-            manifest_path = incomplete / "assets.json"
-            manifest = json.loads(manifest_path.read_text())
-            del manifest["relate-linux-x64"]
-            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+            incomplete, manifest_path = stage_generated(tmp, "incomplete")
+            edit_manifest(manifest_path, lambda m: m.pop("relate-linux-x64"))
             failed = self.run_step(incomplete)
             self.assertNotEqual(failed.returncode, 0)
             self.assertIn("relate-linux-x64: no manifest entry", failed.stderr)

@@ -34,13 +34,9 @@ smoke = load("install_smoke", SCRIPT)
 
 # Every channel of the lane, its command swapped for the fixture run: one
 # channel is deliberately broken, the rest install nothing.
+BROKEN_CHANNEL = "scoop"
 FIXTURE_CHANNELS = {
-    "homebrew": "true",
-    "apt": "true",
-    "rpm": "true",
-    "winget": "true",
-    "scoop": "false",
-    "chocolatey": "true",
+    channel: "false" if channel == BROKEN_CHANNEL else "true" for channel in smoke.CHANNELS
 }
 
 # The installed binary the fixture commands "install": FAKE_VERSION moves the
@@ -82,9 +78,9 @@ class FixtureRun(unittest.TestCase):
     def test_a_broken_channel_fails_alone(self) -> None:
         code, out, err = run_lane(["--tag", TAG], FIXTURE_CHANNELS)
         self.assertEqual(code, 1)
-        self.assertIn("install-smoke: scoop FAILED: install command exited 1", err)
-        self.assertNotIn("install-smoke: scoop ok", out)
-        for channel in ("homebrew", "apt", "rpm", "winget", "chocolatey"):
+        self.assertIn(f"install-smoke: {BROKEN_CHANNEL} FAILED: install command exited 1", err)
+        self.assertNotIn(f"install-smoke: {BROKEN_CHANNEL} ok", out)
+        for channel in FIXTURE_CHANNELS.keys() - {BROKEN_CHANNEL}:
             self.assertIn(f"install-smoke: {channel} ok {TAG}", out)
 
     def test_every_channel_passing_prints_one_ok_line_in_table_order(self) -> None:

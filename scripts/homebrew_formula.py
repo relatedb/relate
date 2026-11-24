@@ -23,21 +23,17 @@ Run: python3 scripts/homebrew_formula.py release/assets.json v1.2.0 --tap-dir ta
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from string import Template
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 
-from release_assets import asset_sha256
+from release_assets import asset_sha256, load_json_object, release_download_url
 from release_version import release_version
 
 # The tap's formula path, relative to the tap checkout root.
 FORMULA_PATH = Path("Formula") / "relate.rb"
-
-# The release download route every platform's URL rides (ADR-0585).
-RELEASE_URL = Template("https://github.com/relatedb/relate/releases/download/$tag/$asset")
 
 # (os block, cpu block, release asset), in formula order. Each asset is a
 # bare executable attached to the release.
@@ -87,39 +83,22 @@ class FormulaError(Exception):
 def _platform_blocks(manifest: dict[str, object], tag: str) -> str:
     """The `on_macos`/`on_linux` blocks, one `url`+`sha256` pair per CPU."""
     lines: list[str] = []
-    current_os: str | None = None
-    for os_name, cpu, asset in PLATFORMS:
-        if os_name != current_os:
-            if current_os is not None:
-                lines.append("  end")
-                lines.append("")
-            lines.append(f"  on_{os_name} do")
-            current_os = os_name
-        lines.append(f"    on_{cpu} do")
-        lines.append(f'      url "{RELEASE_URL.substitute(tag=tag, asset=asset)}"')
-        lines.append(f'      sha256 "{asset_sha256(manifest, asset, FormulaError)}"')
-        lines.append("    end")
-    lines.append("  end")
-    return "\n".join(lines)
+    for os_name in dict.fromkeys(os_name for os_name, _, _ in PLATFORMS):
+        lines.append(f"  on_{os_name} do")
+        for _, cpu, asset in (row for row in PLATFORMS if row[0] == os_name):
+            lines.append(f"    on_{cpu} do")
+            lines.append(f'      url "{release_download_url(tag, asset)}"')
+            lines.append(f'      sha256 "{asset_sha256(manifest, asset, FormulaError)}"')
+            lines.append("    end")
+        lines.append("  end")
+        lines.append("")
+    return "\n".join(lines[:-1])
 
 
 def render(manifest: dict[str, object], tag: str) -> str:
     """The complete formula for one release tag and manifest."""
     release_version(tag, FormulaError)  # Homebrew scans the version from the tag in each URL
     return FORMULA.substitute(platforms=_platform_blocks(manifest, tag))
-
-
-def load_manifest(path: Path) -> dict[str, object]:
-    """The manifest object, or FormulaError naming what is wrong with it."""
-    if not path.is_file():
-        raise FormulaError(f"manifest '{path}' does not exist")
-    try:
-        manifest = json.loads(path.read_text())
-    except json.JSONDecodeError as err:
-        raise FormulaError(f"manifest '{path}' is not valid JSON: {err}") from err
-    if not isinstance(manifest, dict):
-        raise FormulaError(f"manifest '{path}' is not a JSON object")
-    return manifest
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -142,19 +121,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        formula = render(load_manifest(args.manifest), args.tag)
+        formula = render(load_json_object(args.manifest, "manifest", FormulaError), args.tag)
     except FormulaError as err:
         print(err, file=sys.stderr)
         return 1
 
     target = args.tap_dir / FORMULA_PATH
+    summary = f"{target} (relate {release_version(args.tag, FormulaError)})"
     if args.dry_run:
-        print(f"would write {target} (relate {release_version(args.tag, FormulaError)})")
+        print(f"would write {summary}")
         print(formula, end="")
         return 0
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(formula)
-    print(f"wrote {target} (relate {release_version(args.tag, FormulaError)})")
+    print(f"wrote {summary}")
     return 0
 
 

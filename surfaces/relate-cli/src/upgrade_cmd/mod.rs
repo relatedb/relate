@@ -172,21 +172,23 @@ fn run_inner(opts: &UpgradeOpts) -> Result<(), UpgradeError> {
     }
 
     let asset = asset_name(&platform);
-    release.require_asset(&asset)?;
-    release.require_asset(SUMS_ASSET)?;
-    release.require_asset(SUMS_SIG_ASSET)?;
+    // The three upgrade downloads, probe asset (SUMS_ASSET) included: the
+    // one spelling of the needed set, checked against releases.json here
+    // and handed to the route probe below.
+    let needed = [asset.as_str(), SUMS_ASSET, SUMS_SIG_ASSET];
+    for name in needed {
+        release.require_asset(name)?;
+    }
 
     println!("upgrading relate {VERSION} -> {latest} ({asset})");
     // Cheap first: the manifest and its signature are small; the binary is
     // the 512 MiB-capped download and must not start until the manifest is
     // authenticated. That one manifest request doubles as the route probe
-    // (ADR-0358 §1): the route it selects serves all three assets. The
-    // needed set is the three upgrade downloads, probe asset included.
+    // (ADR-0358 §1): the route it selects serves all three assets.
     // The direct-route base is resolved here (the env seam, ADR-0358 §8)
     // and threaded into the probe — the one entry point both channel
     // flows share.
     let direct_base = release_download_base()?;
-    let needed = [SUMS_ASSET, SUMS_SIG_ASSET, asset.as_str()];
     let probe = probe_route_at(
         crate::release_channel::REPO,
         &direct_base,

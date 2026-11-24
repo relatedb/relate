@@ -159,7 +159,14 @@ const TELEMETRY_AXES: [&str; 8] = [
 /// still spawns a drain — the forced-off default keeps every other
 /// test's fake `$HOME` free of both and the drain offline.
 pub fn cli_command() -> Command {
-    let mut cmd = Command::new(binary_path());
+    scrubbed_command(binary_path())
+}
+
+/// A `Command` for the binary at `bin` with [`cli_command`]'s scrub and
+/// forced-off telemetry: the one place that policy is applied, whichever
+/// copy of the binary is spawned.
+fn scrubbed_command(bin: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(bin);
     scrub_ambient(&mut cmd);
     cmd.env("RELATE_TELEMETRY", "off");
     cmd
@@ -400,10 +407,7 @@ pub fn run_cli(options: CliRunOptions<'_>) -> (ExitStatus, String, String) {
 /// running file) and runs that copy.
 #[allow(dead_code)] // Only the upgrade suite stages its own binary.
 pub fn run_cli_bin(bin: &Path, options: CliRunOptions<'_>) -> (ExitStatus, String, String) {
-    let mut cmd = Command::new(bin);
-    scrub_ambient(&mut cmd);
-    cmd.env("RELATE_TELEMETRY", "off");
-    run_command(cmd, options)
+    run_command(scrubbed_command(bin), options)
 }
 
 fn run_command(mut cmd: Command, options: CliRunOptions<'_>) -> (ExitStatus, String, String) {

@@ -81,30 +81,29 @@ class Rendering(unittest.TestCase):
 
 
 class Refusals(unittest.TestCase):
-    def test_an_empty_signing_secret_is_refused_before_building(self) -> None:
+    def assert_build_refused(
+        self, pattern: str, version: str = "1.2.0", secret: str = "x", **patches: object
+    ) -> None:
+        """`build` of a staged binary raises ValueError matching `pattern`
+        under `REPO_GPG_KEY=secret`; `patches` are `shutil.which` overrides."""
         with tempfile.TemporaryDirectory() as tmp:
             binary = Path(tmp) / "relate-linux-amd64"
             binary.write_bytes(b"#!/bin/sh\n")
-            with mock.patch.dict(os.environ, {"REPO_GPG_KEY": ""}):
-                with self.assertRaisesRegex(ValueError, "REPO_GPG_KEY"):
-                    build_mod.build(binary, "1.2.0", "GLIBC_2.35", Path(tmp) / "out", "u")
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.dict(os.environ, {"REPO_GPG_KEY": secret}))
+                for name, value in patches.items():
+                    stack.enter_context(mock.patch.object(build_mod.shutil, name, value))
+                with self.assertRaisesRegex(ValueError, pattern):
+                    build_mod.build(binary, version, "GLIBC_2.35", Path(tmp) / "out", "u")
+
+    def test_an_empty_signing_secret_is_refused_before_building(self) -> None:
+        self.assert_build_refused("REPO_GPG_KEY", secret="")
 
     def test_a_version_that_is_not_xyz_is_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            binary = Path(tmp) / "relate-linux-amd64"
-            binary.write_bytes(b"#!/bin/sh\n")
-            with mock.patch.dict(os.environ, {"REPO_GPG_KEY": "x"}):
-                with self.assertRaisesRegex(ValueError, "X.Y.Z"):
-                    build_mod.build(binary, "v1.2.0", "GLIBC_2.35", Path(tmp) / "out", "u")
+        self.assert_build_refused("X.Y.Z", version="v1.2.0")
 
     def test_a_missing_build_tool_is_named(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            binary = Path(tmp) / "relate-linux-amd64"
-            binary.write_bytes(b"#!/bin/sh\n")
-            with mock.patch.object(build_mod.shutil, "which", return_value=None), \
-                    mock.patch.dict(os.environ, {"REPO_GPG_KEY": "x"}):
-                with self.assertRaisesRegex(ValueError, "rpmbuild"):
-                    build_mod.build(binary, "1.2.0", "GLIBC_2.35", Path(tmp) / "out", "u")
+        self.assert_build_refused("rpmbuild", which=lambda _tool: None)
 
     def test_a_missing_binary_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

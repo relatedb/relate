@@ -31,7 +31,6 @@ Run: python3 scripts/winget_manifests.py generate release/assets.json \\
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import subprocess
 import sys
@@ -39,7 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 
-from release_assets import asset_sha256
+from release_assets import asset_sha256, load_json_object, release_download_url
 from release_version import release_tag
 
 # The winget identity of the CLI. The identifier is <Publisher>.<PackageName>
@@ -49,10 +48,8 @@ PUBLISHER = "Relate"
 PACKAGE_NAME = "Relate"
 
 # The Windows CLI release asset (the CLI job's `relate-windows-amd64`
-# artifact, renamed with its .exe extension) and the release download route
-# the installers already use (ADR-0585).
+# artifact, renamed with its .exe extension).
 ASSET_NAME = "relate-windows-amd64.exe"
-RELEASE_BASE_URL = "https://github.com/relatedb/relate/releases/download"
 
 # The winget manifest schema the generated files declare.
 MANIFEST_VERSION = "1.10.0"
@@ -71,7 +68,7 @@ class ManifestError(Exception):
 def installer_url(version: str) -> str:
     """The release asset URL the manifest points at: the tagged asset on
     the release download route, never a mirror or a latest alias."""
-    return f"{RELEASE_BASE_URL}/{release_tag(version)}/{ASSET_NAME}"
+    return release_download_url(release_tag(version), ASSET_NAME)
 
 
 def manifest_files(version: str, sha256: str) -> dict[str, str]:
@@ -134,17 +131,10 @@ ManifestVersion: {MANIFEST_VERSION}
 
 def cmd_generate(manifest_path: Path, version: str, output: Path) -> int:
     try:
-        manifest = json.loads(manifest_path.read_text())
-    except OSError as err:
-        print(f"cannot read '{manifest_path}': {err}", file=sys.stderr)
-        return 1
-    except json.JSONDecodeError as err:
-        print(f"'{manifest_path}' is not valid JSON: {err}", file=sys.stderr)
-        return 1
-    try:
+        manifest = load_json_object(manifest_path, "release asset manifest", ManifestError)
         sha256 = asset_sha256(manifest, ASSET_NAME, ManifestError)
     except ManifestError as err:
-        print(f"{manifest_path}: {err}", file=sys.stderr)
+        print(err, file=sys.stderr)
         return 1
 
     output.mkdir(parents=True, exist_ok=True)
@@ -165,10 +155,8 @@ def cmd_submit(manifest_dir: Path, token: str, dry_run: bool) -> int:
         print(f"manifest directory '{manifest_dir}' does not exist", file=sys.stderr)
         return 1
     if dry_run:
-        print(
-            f"dry run: would submit {manifest_dir} with "
-            f"'{SUBMITTER} submit --token <{TOKEN_ENV}> {manifest_dir}'"
-        )
+        shown = " ".join(submit_command(manifest_dir, f"<{TOKEN_ENV}>"))
+        print(f"dry run: would submit {manifest_dir} with '{shown}'")
         return 0
     if not token:
         print(

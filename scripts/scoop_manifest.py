@@ -35,10 +35,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 
-from release_assets import asset_sha256
+from release_assets import asset_sha256, load_json_object, release_download_url
 from release_version import release_version
-
-REPO_URL = "https://github.com/relatedb/relate"
 
 # checkver reads the CLI's own release-discovery document (ADR-0546), not
 # GitHub's `releases/latest`: extension-channel releases
@@ -67,7 +65,7 @@ VERSION_TEMPLATE = "v$version"
 def asset_url(tag: str) -> str:
     """The release asset URL for the tag (`$version` is a valid tag here:
     autoupdate substitutes it into the URL it renders)."""
-    return f"{REPO_URL}/releases/download/{tag}/{WINDOWS_ASSET}"
+    return release_download_url(tag, WINDOWS_ASSET)
 
 
 def stored_hash(hash_value: str) -> str:
@@ -117,70 +115,67 @@ def build_manifest(tag: str, sha256: str) -> dict[str, object]:
     }
 
 
+def _member(parent: object, key: str) -> object:
+    """`parent[key]` when `parent` is an object, else None: a missing level
+    reads as absent so the check reports it once instead of crashing."""
+    return parent.get(key) if isinstance(parent, dict) else None
+
+
 def check(manifest: dict[str, object], assets: dict[str, object], tag: str) -> list[str]:
     """Every way the manifest disagrees with the release and its asset
     manifest, or its own checkver/autoupdate contract."""
     errors: list[str] = []
-    expected_version = release_version(tag)
-    wanted_url = asset_url(tag)
-
     try:
         expected_hash = stored_hash(asset_sha256(assets, WINDOWS_ASSET, KeyError))
     except KeyError as err:
         return [str(err.args[0])]
+    # The expected manifest is the one `generate` renders: every contract
+    # below is read from it, never re-spelled.
+    expected = build_manifest(tag, expected_hash)
+    expected_version = expected["version"]
+    wanted_arch = expected["architecture"]["64bit"]
+    wanted_update = expected["autoupdate"]["architecture"]["64bit"]
 
     if manifest.get("version") != expected_version:
         errors.append(f"version: {manifest.get('version')!r} != {expected_version!r}")
 
-    architecture = manifest.get("architecture")
-    arch = architecture.get("64bit") if isinstance(architecture, dict) else None
+    arch = _member(manifest.get("architecture"), "64bit")
     if not isinstance(arch, dict):
-        return errors + ["architecture.64bit: missing"]
-    if arch.get("url") != wanted_url:
-        errors.append(f"url: {arch.get('url')!r} != {wanted_url!r}")
-    if not isinstance(arch.get("hash"), str) or stored_hash(arch["hash"]) != expected_hash:
-        errors.append(f"hash: {arch.get('hash')!r} != sha256:{expected_hash}")
+        errors.append("architecture.64bit: missing")
+    else:
+        if arch.get("url") != wanted_arch["url"]:
+            errors.append(f"url: {arch.get('url')!r} != {wanted_arch['url']!r}")
+        if not isinstance(arch.get("hash"), str) or stored_hash(arch["hash"]) != expected_hash:
+            errors.append(f"hash: {arch.get('hash')!r} != sha256:{expected_hash}")
 
-    if manifest.get("bin") != [[WINDOWS_ASSET, SHIM]]:
+    if manifest.get("bin") != expected["bin"]:
         errors.append(f"bin: {manifest.get('bin')!r} != [[{WINDOWS_ASSET!r}, {SHIM!r}]]")
 
-    checkver = manifest.get("checkver")
-    expected_checkver = {
-        "url": CHECKVER_URL,
-        "jsonpath": CHECKVER_JSONPATH,
-        "regex": CHECKVER_REGEX,
-    }
-    if checkver != expected_checkver:
-        errors.append(f"checkver: {checkver!r} != {expected_checkver!r}")
+    if manifest.get("checkver") != expected["checkver"]:
+        errors.append(f"checkver: {manifest.get('checkver')!r} != {expected['checkver']!r}")
 
-    autoupdate = manifest.get("autoupdate")
-    update_arch = None
-    if isinstance(autoupdate, dict) and isinstance(autoupdate.get("architecture"), dict):
-        update_arch = autoupdate["architecture"].get("64bit")
+    update_arch = _member(_member(manifest.get("autoupdate"), "architecture"), "64bit")
     if not isinstance(update_arch, dict):
-        return errors + ["autoupdate.architecture.64bit: missing"]
-    if update_arch.get("url") != asset_url(VERSION_TEMPLATE):
-        errors.append(
-            f"autoupdate url: {update_arch.get('url')!r} != {asset_url(VERSION_TEMPLATE)!r}"
-        )
-    update_hash = update_arch.get("hash")
-    if not isinstance(update_hash, dict) or update_hash.get("url") != AUTOUPDATE_HASH_URL:
-        errors.append(f"autoupdate hash url: {update_hash!r} != {AUTOUPDATE_HASH_URL!r}")
-    elif update_hash.get("jsonpath") != AUTOUPDATE_JSONPATH:
-        errors.append(
-            f"autoupdate hash jsonpath: {update_hash.get('jsonpath')!r} != {AUTOUPDATE_JSONPATH!r}"
-        )
+        errors.append("autoupdate.architecture.64bit: missing")
+    else:
+        if update_arch.get("url") != wanted_update["url"]:
+            errors.append(
+                f"autoupdate url: {update_arch.get('url')!r} != {wanted_update['url']!r}"
+            )
+        update_hash = update_arch.get("hash")
+        wanted_hash = wanted_update["hash"]
+        if not isinstance(update_hash, dict) or update_hash.get("url") != wanted_hash["url"]:
+            errors.append(f"autoupdate hash url: {update_hash!r} != {wanted_hash['url']!r}")
+        elif update_hash.get("jsonpath") != wanted_hash["jsonpath"]:
+            errors.append(
+                f"autoupdate hash jsonpath: {update_hash.get('jsonpath')!r}"
+                f" != {wanted_hash['jsonpath']!r}"
+            )
     return errors
 
 
 def _load(path: Path, what: str) -> dict[str, object]:
-    try:
-        loaded = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as err:
-        raise SystemExit(f"{what} '{path}' is not readable JSON: {err}")
-    if not isinstance(loaded, dict):
-        raise SystemExit(f"{what} '{path}' is not a JSON object")
-    return loaded
+    return load_json_object(path, what, SystemExit)
 
 
 def _tag(value: str) -> str:

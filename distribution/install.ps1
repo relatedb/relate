@@ -109,7 +109,7 @@ function Get-RelatePackageManagedRefusal {
     if (-not $declared.manager -or -not $declared.upgrade) {
         return "relate is package-managed; marker $Marker is unreadable/invalid: manager and upgrade must be non-empty strings"
     }
-    return "relate was installed by $($declared.manager); upgrade it with: $($declared.upgrade)"
+    return "relate was installed by $(Format-RelateShown $declared.manager); upgrade it with: $(Format-RelateShown $declared.upgrade)"
 }
 
 # Refuse when the install target is owned by a package manager: the real

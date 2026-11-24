@@ -55,18 +55,16 @@ if [ ! -f "$binary" ]; then
 	echo "build-apt-repo: $binary: no such file" >&2
 	exit 1
 fi
-if ! printf '%s' "$arch" | grep -Eq '^[a-z0-9]+$'; then
-	echo "build-apt-repo: architecture '$arch' is not a Debian architecture name" >&2
-	exit 1
-fi
-if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-	echo "build-apt-repo: version '$version' is not MAJOR.MINOR.PATCH" >&2
-	exit 1
-fi
-if ! printf '%s' "$glibc_floor" | grep -Eq '^GLIBC_[0-9]+\.[0-9]+$'; then
-	echo "build-apt-repo: glibc floor '$glibc_floor' is not GLIBC_MAJOR.MINOR" >&2
-	exit 1
-fi
+# Refuse $1 unless it matches the extended regex $2; $3 names what it should be.
+require_match() {
+	if ! printf '%s' "$1" | grep -Eq "$2"; then
+		echo "build-apt-repo: $3" >&2
+		exit 1
+	fi
+}
+require_match "$arch" '^[a-z0-9]+$' "architecture '$arch' is not a Debian architecture name"
+require_match "$version" '^[0-9]+\.[0-9]+\.[0-9]+$' "version '$version' is not MAJOR.MINOR.PATCH"
+require_match "$glibc_floor" '^GLIBC_[0-9]+\.[0-9]+$' "glibc floor '$glibc_floor' is not GLIBC_MAJOR.MINOR"
 # A pre-existing tree would let yesterday's index ride today's Release.
 if [ -d "$out" ] && [ -n "$(ls -A "$out")" ]; then
 	echo "build-apt-repo: $out is not empty" >&2

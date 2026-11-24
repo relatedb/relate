@@ -36,6 +36,7 @@ architecture. Requires `rpmbuild`, `createrepo_c` and `gpg` on PATH.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
@@ -84,7 +85,7 @@ def parse_glibc_floor(value: str) -> str:
 
 def marker_json() -> str:
     """The provenance marker's content, written beside the real binary."""
-    return f'{{"manager": "rpm", "upgrade": "{UPGRADE_COMMAND}"}}'
+    return json.dumps({"manager": "rpm", "upgrade": UPGRADE_COMMAND})
 
 
 def render_spec(version: str, glibc_floor: str, binary: Path) -> str:
@@ -140,8 +141,8 @@ gpgkey={base_url}/repo-signing-key.asc
 """
 
 
-def _run(argv: list[str], **kwargs: object) -> None:
-    subprocess.run(argv, check=True, **kwargs)  # noqa: S603 — fixed argv
+def _run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, check=True, **kwargs)  # noqa: S603 — fixed argv
 
 
 def build(binary: Path, version: str, glibc_floor: str, output: Path, base_url: str) -> Path:
@@ -160,12 +161,7 @@ def build(binary: Path, version: str, glibc_floor: str, output: Path, base_url: 
         raise ValueError(f"output directory '{output}' is not empty")
 
     _require_tools()
-    arch = subprocess.run(
-        ["rpm", "--eval", "%{_arch}"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    arch = _run(["rpm", "--eval", "%{_arch}"], capture_output=True, text=True).stdout.strip()
     if not arch:
         raise ValueError("rpm --eval %{_arch} reported no architecture")
 

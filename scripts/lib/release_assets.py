@@ -17,7 +17,13 @@ script keeps its user-facing error type and message.
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
+
+# The repository every channel's installer URL points into, and the one
+# release download route (ADR-0585) its assets ride.
+REPO_URL = "https://github.com/relatedb/relate"
 
 SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -35,3 +41,27 @@ def asset_sha256(manifest: object, asset: str, error: type[Exception]) -> str:
             f"the release asset manifest sha256 for '{asset}' is not 64 hex digits"
         )
     return sha256
+
+
+def release_download_url(tag: str, asset: str) -> str:
+    """The release download URL for `asset` under `tag` (ADR-0585). The tag
+    may be a template token (`v$version`) a channel's autoupdate fills in."""
+    return f"{REPO_URL}/releases/download/{tag}/{asset}"
+
+
+def load_json_object(path: Path, what: str, error: type[BaseException]) -> dict[str, object]:
+    """The JSON object at `path`, or `error` naming what is wrong with it.
+
+    The one load-parse-require-object policy every channel generator reads
+    its release asset manifest (and Scoop its bucket manifest) through."""
+    if not path.is_file():
+        raise error(f"{what} '{path}' does not exist")
+    try:
+        loaded = json.loads(path.read_text())
+    except OSError as err:
+        raise error(f"cannot read {what} '{path}': {err}") from err
+    except json.JSONDecodeError as err:
+        raise error(f"{what} '{path}' is not valid JSON: {err}") from err
+    if not isinstance(loaded, dict):
+        raise error(f"{what} '{path}' is not a JSON object")
+    return loaded

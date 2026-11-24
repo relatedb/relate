@@ -178,16 +178,23 @@ class GenerateTests(unittest.TestCase):
             self.assertEqual(len(list(output.iterdir())), 3)
 
 
+def recording_subprocess(calls: list[list[str]]) -> SimpleNamespace:
+    """A stand-in for the script's `subprocess` module whose `run` records
+    each argv in `calls` and succeeds."""
+
+    def fake_run(argv: list[str], check: bool) -> SimpleNamespace:
+        calls.append(argv)
+        return SimpleNamespace(returncode=0)
+
+    return SimpleNamespace(run=fake_run)
+
+
 class SubmitTests(unittest.TestCase):
     def test_dry_run_stops_before_submitting(self) -> None:
         calls: list[list[str]] = []
 
-        def fake_run(argv: list[str], check: bool) -> SimpleNamespace:
-            calls.append(argv)
-            return SimpleNamespace(returncode=0)
-
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
-            winget_mod, "subprocess", SimpleNamespace(run=fake_run)
+            winget_mod, "subprocess", recording_subprocess(calls)
         ):
             code, out, _ = run_main(["submit", tmp, "--dry-run"])
 
@@ -201,9 +208,7 @@ class SubmitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ, {winget_mod.TOKEN_ENV: ""}
         ), mock.patch.object(
-            winget_mod,
-            "subprocess",
-            SimpleNamespace(run=lambda argv, check: calls.append(argv)),
+            winget_mod, "subprocess", recording_subprocess(calls)
         ):
             code, _, err = run_main(["submit", tmp])
 
@@ -214,12 +219,8 @@ class SubmitTests(unittest.TestCase):
     def test_submits_the_generated_manifests(self) -> None:
         calls: list[list[str]] = []
 
-        def fake_run(argv: list[str], check: bool) -> SimpleNamespace:
-            calls.append(argv)
-            return SimpleNamespace(returncode=0)
-
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
-            winget_mod, "subprocess", SimpleNamespace(run=fake_run)
+            winget_mod, "subprocess", recording_subprocess(calls)
         ):
             code, _, _ = run_main(["submit", tmp, "--token", "ghp_test"])
 
