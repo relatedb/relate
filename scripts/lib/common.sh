@@ -33,6 +33,37 @@ python_interpreter() {
   fi
 }
 
+# host_key — the host as `OS-ARCH`, from `uname -s -m` (the one spelling
+# of that vocabulary the installers share): OS is linux, darwin or
+# windows (MINGW*/MSYS*/CYGWIN*), ARCH is x86_64, aarch64 or armv7
+# (amd64 -> x86_64, arm64 -> aarch64, armv7l -> armv7). A host outside
+# that vocabulary prints nothing and returns 1; each installer keeps only
+# its per-project asset map over the key and owns its own refusal text
+# (host_refuse names the common one).
+host_key() {
+  local os arch
+  case "$(uname -s)" in
+    Linux) os=linux ;;
+    Darwin) os=darwin ;;
+    MINGW* | MSYS* | CYGWIN*) os=windows ;;
+    *) return 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64 | amd64) arch=x86_64 ;;
+    aarch64 | arm64) arch=aarch64 ;;
+    armv7l | armv7) arch=armv7 ;;
+    *) return 1 ;;
+  esac
+  printf '%s-%s\n' "$os" "$arch"
+}
+
+# host_refuse NAME — the unsupported-host refusal on stderr, naming the
+# installer NAME and the raw `uname -s`-`uname -m`; returns 1.
+host_refuse() {
+  echo "${1}: unsupported platform $(uname -s)-$(uname -m)" >&2
+  return 1
+}
+
 # download_verified GITHUB_DOWNLOAD REPO TAG ASSET DEST SIDECAR — download
 # the GitHub release asset ASSET of REPO@TAG to DEST through the
 # downloader script GITHUB_DOWNLOAD (scripts/github-download.sh; its path

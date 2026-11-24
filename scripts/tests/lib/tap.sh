@@ -37,24 +37,32 @@ tap_check() { # $1 = description, $2 = status (0 = pass, like $?)
 	fi
 }
 
+tap_run_status() { # $1 = description, $2 = expected outcome (success|failure); rest = the command
+	tap_desc="$1"
+	tap_expect="$2"
+	shift 2
+	if "$@" >/dev/null 2>&1; then
+		tap_got=success
+	else
+		tap_got=failure
+	fi
+	if [ "$tap_got" = "$tap_expect" ]; then
+		tap_check "$tap_desc" 0
+	else
+		tap_check "$tap_desc" 1
+	fi
+}
+
 tap_run_success() { # $1 = description; rest = the command that must exit 0
 	tap_desc="$1"
 	shift
-	if "$@" >/dev/null 2>&1; then
-		tap_ok "$tap_desc"
-	else
-		tap_not_ok "$tap_desc"
-	fi
+	tap_run_status "$tap_desc" success "$@"
 }
 
 tap_run_failure() { # $1 = description; rest = the command that must exit non-zero
 	tap_desc="$1"
 	shift
-	if "$@" >/dev/null 2>&1; then
-		tap_not_ok "$tap_desc"
-	else
-		tap_ok "$tap_desc"
-	fi
+	tap_run_status "$tap_desc" failure "$@"
 }
 
 assert_failed_empty() { # $1 = description; rest = the command that must print nothing and fail

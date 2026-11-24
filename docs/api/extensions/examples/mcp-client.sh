@@ -141,6 +141,19 @@ _mcp_decode_string() {
     return 1
 }
 
+# _mcp_decode_refuse WHO STATUS RAW — the one refusal for a failed
+# `_mcp_decode_string` (STATUS is its return status): WHO is the subject
+# ("flag 'tag'", "flag 'tag' entry"), RAW the text the decoder read. A
+# value that is not a string at all reads differently from an unterminated
+# one; both flag readers (the scalar string and the list walker) ask this
+# one mapping.
+_mcp_decode_refuse() {
+    case $2 in
+        2) mcp_fail "$1 is not a string: $(_mcp_scalar_token "$3")" ;;
+        *) mcp_fail "$1 is not a terminated JSON string: $3" ;;
+    esac
+}
+
 # mcp_flag_string NAME — a string flag's value, unquoted and unescaped.
 # The raw slice is decoded exactly once (the value ends at the first
 # quote no backslash escapes, so a quote inside it decodes rather than
@@ -151,11 +164,8 @@ mcp_flag_string() {
     local value decoded
     _mcp_flag_required "$1" value
     _mcp_decode_string "$value" decoded
-    case $? in
-        0) ;;
-        2) mcp_fail "flag '$1' is not a string: $(_mcp_scalar_token "$value")" ;;
-        *) mcp_fail "flag '$1' is not a terminated JSON string: $value" ;;
-    esac
+    local status=$?
+    [ "$status" -eq 0 ] || _mcp_decode_refuse "flag '$1'" "$status" "$value"
     printf '%s' "$decoded"
 }
 
@@ -202,7 +212,7 @@ mcp_flag_list() {
     rest=$value
     while :; do
         _mcp_decode_string "$rest" entry tail ||
-            mcp_fail "flag '$1' holds an unterminated entry: $rest"
+            _mcp_decode_refuse "flag '$1' entry" "$?" "$rest"
         printf '%s\n' "$entry"
         case $tail in
             '') return 0 ;;
@@ -210,6 +220,16 @@ mcp_flag_list() {
             *) mcp_fail "flag '$1' holds a non-string entry: $tail" ;;
         esac
     done
+}
+
+# mcp_refused RESPONSE — true when the JSON-RPC response RESPONSE carries
+# an `error` member: the one refusal predicate the kit and its callers
+# share.
+mcp_refused() {
+    case $1 in
+        *'"error":'*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # mcp_init [NAME] [VERSION] — read the host's envelope, complete the
@@ -227,8 +247,8 @@ mcp_init() {
         "$MCP_PROTOCOL_VERSION" "$name" "$version" >&3
     IFS= read -r MCP_INIT_RESULT ||
         mcp_fail "the host closed the session before the initialize response"
+    mcp_refused "$MCP_INIT_RESULT" && mcp_fail "initialize refused: $MCP_INIT_RESULT"
     case $MCP_INIT_RESULT in
-        *'"error":'*) mcp_fail "initialize refused: $MCP_INIT_RESULT" ;;
         *'"result":'*) ;;
         *) mcp_fail "initialize answered no result: $MCP_INIT_RESULT" ;;
     esac
@@ -273,8 +293,8 @@ mcp_call() {
     [ -n "$MCP_FD" ] || mcp_fail "mcp_call '$tool' before mcp_init"
     mcp_request "$tool" "$arguments"
     response=$MCP_RESPONSE
+    mcp_refused "$response" && mcp_fail "'$tool' refused: $response"
     case $response in
-        *'"error":'*) mcp_fail "'$tool' refused: $response" ;;
         *'"content":'*) ;;
         *) mcp_fail "'$tool' answered no tool content: $response" ;;
     esac

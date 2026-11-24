@@ -44,6 +44,13 @@ exists to end).
 the shape `test_freeze_baseline_envelope.py`, `test_query_latency_gate.py`
 and the two memory suites each carried near-verbatim.
 
+`MemoryComparatorCases` is the two memory suites' shared scaffolding: the
+`run_compare`/`freeze`/`frozen` wrappers, the no-baseline case and the
+incompatible-policy case, each parametrized by the suite's script, envelope
+name, report builder and incompatible-fixture mutation, so a suite keeps
+only its assertions on its own rendered document. `ENV`/`LOCAL_ENV` are the
+two suites' identical environment fixtures.
+
 Imported as a plain sibling module: the Makefile runs each test file
 directly with `python3`, so `sys.path[0]` is `scripts/tests/`.
 """
@@ -53,6 +60,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
@@ -320,3 +328,75 @@ def run_memory_comparator(
     assert document is not None, "the comparator wrote no --doc document"
     assert verdict is not None, "the comparator wrote no --verdict payload"
     return MemoryCompare(result, document, json.loads(verdict))
+
+
+# The memory suites' baseline environment fixture (identical in both) and
+# the mismatched-environment fixture: ENV under a `local` runner, derived
+# beside ENV so the mismatch's shape is one edit.
+ENV = {
+    "class": "relate-loadtest-baseline/v1",
+    "arch": "aarch64",
+    "os": "linux",
+    "build_image": "rust:1.88-bookworm@sha256:abc",
+    "run_image": "debian:bookworm-slim@sha256:def",
+    "cpus": 2,
+    "cpu_period_us": 10000,
+    "cpu_quota_us": 20000,
+    "memory": "2g",
+    "ops": 40,
+    "warmup": 8,
+    "workers": 16,
+    "runner": "github-actions:linux-4-core-x86",
+}
+LOCAL_ENV = dict(ENV, runner="local")
+
+
+class MemoryComparatorCases:
+    """Mixin for a memory-comparator suite (`class T(MemoryComparatorCases,
+    unittest.TestCase)`): the shared wrappers and the two cases both suites
+    carried verbatim. A suite sets COMPARE, FREEZE and ENVELOPE_NAME,
+    provides `build_report()` and `degrade_for_incompatible(current)` (the
+    mutation that would trip a band if the environment were comparable),
+    and keeps its own document assertions.
+    """
+
+    COMPARE: Path
+    FREEZE: Path
+    ENVELOPE_NAME: str
+
+    def build_report(self) -> dict:
+        raise NotImplementedError
+
+    def degrade_for_incompatible(self, current: dict) -> None:
+        raise NotImplementedError
+
+    def run_compare(self, baseline, current, env=None):
+        return run_memory_comparator(self.COMPARE, baseline, current, extra_env=env)
+
+    def freeze(self, rounds):
+        return run_freeze(self.FREEZE, rounds)
+
+    def frozen(self, rounds):
+        return frozen_envelope(self.freeze(rounds))
+
+    def test_incompatible_is_local_skip_and_ci_failure(self):
+        payload = self.frozen([self.build_report(), self.build_report()])
+        current = self.build_report()
+        current["environment"] = LOCAL_ENV
+        self.degrade_for_incompatible(current)
+        # The one parametrized policy case: a local run (CI_COMPARE=0)
+        # skips the bands and exits 0, a CI run (CI_COMPARE=1) hard-fails.
+        for env, code in (({"CI_COMPARE": "0", "GITHUB_ACTIONS": ""}, 0), ({"CI_COMPARE": "1"}, 1)):
+            with self.subTest(env=env):
+                result = self.run_compare(payload, current, env=env)
+                self.assertEqual(result.process.returncode, code, result.process.stderr)
+                self.assertEqual(result.verdict["status"], "incompatible")
+
+    def test_no_baseline(self):
+        result = self.run_compare(
+            {"schema_version": 1, "name": self.ENVELOPE_NAME, "frozen": False},
+            self.build_report(),
+        )
+        self.assertEqual(result.process.returncode, 0, result.process.stderr)
+        self.assertEqual(result.verdict["status"], "no-baseline")
+        self.assertIn("**Status:** no-baseline", result.document)

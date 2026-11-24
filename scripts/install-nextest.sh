@@ -10,11 +10,15 @@ set -euo pipefail
 VERSION=0.9.151
 here="$(cd "$(dirname "$0")" && pwd)"
 
-case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64|Linux-amd64) triple=x86_64-unknown-linux-gnu ;;
-  Linux-aarch64|Linux-arm64) triple=aarch64-unknown-linux-gnu ;;
-  Darwin-arm64|Darwin-x86_64) triple=universal-apple-darwin ;;
-  *) echo "install-nextest: unsupported platform $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+
+# shellcheck source=lib/common.sh
+. "$here/lib/common.sh"
+# The host key is common.sh's; this installer keeps only its asset map.
+case "$(host_key || true)" in
+  linux-x86_64) triple=x86_64-unknown-linux-gnu ;;
+  linux-aarch64) triple=aarch64-unknown-linux-gnu ;;
+  darwin-aarch64 | darwin-x86_64) triple=universal-apple-darwin ;;
+  *) host_refuse install-nextest || exit 1 ;;
 esac
 
 asset="cargo-nextest-${VERSION}-${triple}.tar.gz"
@@ -24,8 +28,6 @@ trap 'rm -rf "$work"' EXIT
 # common.sh, download_verified): it downloads the tarball and its .sha256
 # sidecar and refuses a mismatch, so this installer keeps only its unpack
 # arm.
-# shellcheck source=lib/common.sh
-. "$here/lib/common.sh"
 download_verified "$here/github-download.sh" \
   nextest-rs/nextest "cargo-nextest-${VERSION}" \
   "$asset" "$work/$asset" "${asset%.tar.gz}.sha256"

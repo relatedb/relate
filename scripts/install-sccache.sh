@@ -14,18 +14,19 @@ set -euo pipefail
 VERSION=v0.19.0
 here="$(cd "$(dirname "$0")" && pwd)"
 
-# The host to a release triple and archive extension, the sibling
-# installers' one shape (uname's own vocabulary): `uname -s -m` straight
-# to the asset name the release publishes.
-case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64 | Linux-amd64) triple=x86_64-unknown-linux-musl; ext=tar.gz ;;
-  Linux-aarch64 | Linux-arm64) triple=aarch64-unknown-linux-musl; ext=tar.gz ;;
-  Linux-armv7l | Linux-armv7) triple=armv7-unknown-linux-musleabi; ext=tar.gz ;;
-  Darwin-x86_64) triple=x86_64-apple-darwin; ext=tar.gz ;;
-  Darwin-arm64) triple=aarch64-apple-darwin; ext=tar.gz ;;
-  MINGW*-x86_64 | MSYS*-x86_64 | CYGWIN*-x86_64) triple=x86_64-pc-windows-msvc; ext=zip ;;
-  MINGW*-aarch64 | MSYS*-aarch64 | CYGWIN*-aarch64) triple=aarch64-pc-windows-msvc; ext=zip ;;
-  *) echo "install-sccache: unsupported platform $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+# The host key is common.sh's; this installer keeps only its release
+# triple and archive extension map.
+# shellcheck source=lib/common.sh
+. "$here/lib/common.sh"
+case "$(host_key || true)" in
+  linux-x86_64) triple=x86_64-unknown-linux-musl; ext=tar.gz ;;
+  linux-aarch64) triple=aarch64-unknown-linux-musl; ext=tar.gz ;;
+  linux-armv7) triple=armv7-unknown-linux-musleabi; ext=tar.gz ;;
+  darwin-x86_64) triple=x86_64-apple-darwin; ext=tar.gz ;;
+  darwin-aarch64) triple=aarch64-apple-darwin; ext=tar.gz ;;
+  windows-x86_64) triple=x86_64-pc-windows-msvc; ext=zip ;;
+  windows-aarch64) triple=aarch64-pc-windows-msvc; ext=zip ;;
+  *) host_refuse install-sccache || exit 1 ;;
 esac
 
 asset="sccache-${VERSION}-${triple}.${ext}"
@@ -36,8 +37,6 @@ trap 'rm -rf "$work"' EXIT
 # common.sh, download_verified): it downloads the tarball and its .sha256
 # sidecar and refuses a mismatch, so this installer keeps only its unpack
 # arm.
-# shellcheck source=lib/common.sh
-. "$here/lib/common.sh"
 download_verified "$here/github-download.sh" \
   mozilla/sccache "$VERSION" "$asset" "$work/$asset" "${asset}.sha256"
 

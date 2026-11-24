@@ -34,11 +34,11 @@ mkdir -p "$BIN_DIR"
 # reason goes to stderr, so the caller's one message can stay a plain
 # "compiling from source".
 prebuilt_target() {
-  case "$(uname -s)-$(uname -m)" in
-    Linux-x86_64 | Linux-amd64) echo x86_64-unknown-linux-musl ;;
-    Linux-aarch64 | Linux-arm64) echo aarch64-unknown-linux-musl ;;
-    Darwin-arm64) echo aarch64-apple-darwin ;;
-    Darwin-x86_64) echo x86_64-apple-darwin ;;
+  case "$(host_key || true)" in
+    linux-x86_64) echo x86_64-unknown-linux-musl ;;
+    linux-aarch64) echo aarch64-unknown-linux-musl ;;
+    darwin-aarch64) echo aarch64-apple-darwin ;;
+    darwin-x86_64) echo x86_64-apple-darwin ;;
     *)
       echo "install-wasm-bindgen: no prebuilt for this host" >&2
       return 1

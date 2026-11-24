@@ -133,4 +133,31 @@ assert_failed_empty \
 	"no digest tool -> no output, failed status" \
 	sha256_of_under "$sh_bin" "$no_tools" "$sandbox/plain.zip"
 
+# --- 5. host_key ----------------------------------------------------------------
+
+# host_key maps `uname -s -m` to OS-ARCH, the installers' one host
+# vocabulary; a stub uname on PATH stands in for each host.
+host_key_for() { # $1 = uname -s, $2 = uname -m
+	stub="$sandbox/uname-$1-$2"
+	mkdir -p "$stub"
+	cat >"$stub/uname" <<STUB
+#!/bin/sh
+case "\$1" in
+-s) echo '$1' ;;
+-m) echo '$2' ;;
+esac
+STUB
+	chmod +x "$stub/uname"
+	PATH="$stub:$PATH" host_key
+}
+
+assert_same "host_key: Linux x86_64" "linux-x86_64" "$(host_key_for Linux x86_64)"
+assert_same "host_key: Linux amd64 spells x86_64" "linux-x86_64" "$(host_key_for Linux amd64)"
+assert_same "host_key: Linux arm64 spells aarch64" "linux-aarch64" "$(host_key_for Linux arm64)"
+assert_same "host_key: Linux armv7l" "linux-armv7" "$(host_key_for Linux armv7l)"
+assert_same "host_key: Darwin arm64" "darwin-aarch64" "$(host_key_for Darwin arm64)"
+assert_same "host_key: MINGW64 x86_64" "windows-x86_64" "$(host_key_for MINGW64_NT-10.0 x86_64)"
+assert_failed_empty "host_key: an unknown OS prints nothing and fails" host_key_for FreeBSD x86_64
+assert_failed_empty "host_key: an unknown arch prints nothing and fails" host_key_for Linux riscv64
+
 tap_done

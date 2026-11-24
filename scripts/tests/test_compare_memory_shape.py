@@ -3,31 +3,11 @@
 import unittest
 from pathlib import Path
 
-from comparator_runner import frozen_envelope, run_freeze, run_memory_comparator
+from comparator_runner import ENV, MemoryComparatorCases
 
 ROOT = Path(__file__).resolve().parents[2]
 FREEZE = ROOT / "scripts" / "freeze-memory-shape.py"
 COMPARE = ROOT / "scripts" / "compare-memory-shape.py"
-
-ENV = {
-    "class": "relate-loadtest-baseline/v1",
-    "arch": "aarch64",
-    "os": "linux",
-    "build_image": "rust:1.88-bookworm@sha256:abc",
-    "run_image": "debian:bookworm-slim@sha256:def",
-    "cpus": 2,
-    "cpu_period_us": 10000,
-    "cpu_quota_us": 20000,
-    "memory": "2g",
-    "ops": 40,
-    "warmup": 8,
-    "workers": 16,
-    "runner": "github-actions:linux-4-core-x86",
-}
-
-# The mismatched-environment fixture: ENV under a `local` runner,
-# derived beside ENV so the mismatch's shape is one edit.
-LOCAL_ENV = dict(ENV, runner="local")
 
 KNOBS = {
     "logical_target_bytes": 33_554_432,
@@ -83,17 +63,16 @@ def report(**overrides):
     return body
 
 
-class CompareMemoryShapeTests(unittest.TestCase):
-    def run_compare(self, baseline, current, env=None):
-        return run_memory_comparator(
-            COMPARE, baseline, current, extra_env=env
-        )
+class CompareMemoryShapeTests(MemoryComparatorCases, unittest.TestCase):
+    COMPARE = COMPARE
+    FREEZE = FREEZE
+    ENVELOPE_NAME = "memory-shape"
 
-    def freeze(self, rounds):
-        return run_freeze(FREEZE, rounds)
+    def build_report(self):
+        return report()
 
-    def frozen(self, rounds):
-        return frozen_envelope(self.freeze(rounds))
+    def degrade_for_incompatible(self, current):
+        current["shapes"][1]["attributed_rss_bytes"] = 60_000_000
 
     def test_ok_states_baseline_validated_and_report(self):
         result = self.run_compare(self.frozen([report(), report()]), report())
@@ -152,25 +131,6 @@ class CompareMemoryShapeTests(unittest.TestCase):
         self.assertEqual(result.verdict["status"], "regression")
         self.assertIn("130000 nodes", result.document)
         self.assertIn("120000 nodes", result.document)
-
-    def test_incompatible_is_local_skip_and_ci_failure(self):
-        payload = self.frozen([report(), report()])
-        current = report()
-        current["environment"] = LOCAL_ENV
-        current["shapes"][1]["attributed_rss_bytes"] = 60_000_000
-        # The one parametrized policy case: a local run (CI_COMPARE=0)
-        # skips the bands and exits 0, a CI run (CI_COMPARE=1) hard-fails.
-        for env, code in (({"CI_COMPARE": "0", "GITHUB_ACTIONS": ""}, 0), ({"CI_COMPARE": "1"}, 1)):
-            with self.subTest(env=env):
-                result = self.run_compare(payload, current, env=env)
-                self.assertEqual(result.process.returncode, code, result.process.stderr)
-                self.assertEqual(result.verdict["status"], "incompatible")
-
-    def test_no_baseline(self):
-        result = self.run_compare({"schema_version": 1, "name": "memory-shape", "frozen": False}, report())
-        self.assertEqual(result.process.returncode, 0, result.process.stderr)
-        self.assertEqual(result.verdict["status"], "no-baseline")
-        self.assertIn("**Status:** no-baseline", result.document)
 
     def test_freeze_refuses_a_different_count(self):
         drifted = report()
