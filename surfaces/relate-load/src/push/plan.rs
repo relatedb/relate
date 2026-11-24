@@ -4,13 +4,15 @@
 
 use std::collections::BTreeMap;
 
-use relate::Value;
-
 use super::collect::ScopeGraph;
 use super::keys::MergeKeys;
 use super::policy::{RelMode, UnkeyedAction, UpdatePolicy};
 use super::statement::{node_create_statement, node_merge_statement, rel_statement, RelWrite};
 use crate::LoadError;
+
+mod rows;
+use rows::{keyed_props, IdentityRun};
+pub(crate) use rows::{IdentityField, IdentityLayout, PlanRow};
 
 /// The push plan: one entry per entity group, nodes first, then rels, both
 /// deterministically ordered. Dry-run renders it directly; execution
@@ -56,7 +58,7 @@ pub(crate) enum EntityKind {
         policy: UpdatePolicy,
         /// The statement shape: one text for every batch of this group.
         statement: String,
-        rows: Vec<KeyedNodeRow>,
+        rows: Vec<PlanRow>,
     },
     /// An unkeyed label set switched to `CREATE` rows by
     /// `--unkeyed-labels create` (non-idempotent, documented).
@@ -65,7 +67,7 @@ pub(crate) enum EntityKind {
         policy: UpdatePolicy,
         /// The statement shape: one text for every batch of this group.
         statement: String,
-        rows: Vec<CreateNodeRow>,
+        rows: Vec<PlanRow>,
     },
     /// A label set skipped entirely (`--unkeyed-labels skip`, the
     /// default): counted, never written.
@@ -96,7 +98,7 @@ pub(crate) enum EntityKind {
         policy: UpdatePolicy,
         /// The statement shape: one text for every batch of this group.
         statement: String,
-        rows: RelRows,
+        rows: Vec<PlanRow>,
     },
 }
 
@@ -191,169 +193,22 @@ impl EntityKind {
     }
 }
 
-/// A keyed node row, pre-classification (ADR-0401 §2): the merge-key
-/// properties the remote row is matched by, plus the payload.
-#[derive(Debug, Clone)]
-pub(crate) struct KeyedNodeRow {
-    pub key: BTreeMap<String, Value>,
-    pub props: BTreeMap<String, Value>,
-}
-
-/// An unkeyed `CREATE` node row: payload only — it has no identity to
-/// match a remote row by.
-#[derive(Debug, Clone)]
-pub(crate) struct CreateNodeRow {
-    pub props: BTreeMap<String, Value>,
-}
-
-/// A rel row written under a resolved relationship key: the key map is
-/// present by construction.
-#[derive(Debug, Clone)]
-pub(crate) struct KeyedRelRow {
-    pub start: BTreeMap<String, Value>,
-    pub end: BTreeMap<String, Value>,
-    pub key: BTreeMap<String, Value>,
-    pub props: BTreeMap<String, Value>,
-}
-
-/// A rel row in every other mode (structural, CREATE, or the keyed mode
-/// with no resolved key): matched by endpoints only, no key map.
-#[derive(Debug, Clone)]
-pub(crate) struct PairRelRow {
-    pub start: BTreeMap<String, Value>,
-    pub end: BTreeMap<String, Value>,
-    pub props: BTreeMap<String, Value>,
-}
-
-/// A rel group's rows: the variant is the write mode's key decision, so
-/// a group never mixes keyed and pair rows.
-#[derive(Debug, Clone)]
-pub(crate) enum RelRows {
-    Keyed(Vec<KeyedRelRow>),
-    Pair(Vec<PairRelRow>),
-}
-
-/// One row of a group, borrowed: the single level execution matches on —
-/// the statement's parameter body ([`super::statement::write_row`]) and
-/// the identity encoder both read it.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum RowRef<'a> {
-    Node(&'a KeyedNodeRow),
-    Create(&'a CreateNodeRow),
-    Rel(&'a KeyedRelRow),
-    Pair(&'a PairRelRow),
-}
-
-impl<'a> RowRef<'a> {
-    /// The row's property payload (the `row.props` the statement sets).
-    pub(crate) fn props(self) -> &'a BTreeMap<String, Value> {
-        match self {
-            RowRef::Node(row) => &row.props,
-            RowRef::Create(row) => &row.props,
-            RowRef::Rel(row) => &row.props,
-            RowRef::Pair(row) => &row.props,
-        }
-    }
-
-    /// The row's key-carrying map for one identity field, when its shape
-    /// has that field.
-    fn identity_map(self, field: IdentityField) -> Option<&'a BTreeMap<String, Value>> {
-        match (self, field) {
-            (RowRef::Node(row), IdentityField::Key) => Some(&row.key),
-            (RowRef::Rel(row), IdentityField::Key) => Some(&row.key),
-            (RowRef::Rel(row), IdentityField::Start) => Some(&row.start),
-            (RowRef::Rel(row), IdentityField::End) => Some(&row.end),
-            (RowRef::Pair(row), IdentityField::Start) => Some(&row.start),
-            (RowRef::Pair(row), IdentityField::End) => Some(&row.end),
-            (RowRef::Node(_), IdentityField::Start | IdentityField::End)
-            | (RowRef::Pair(_), IdentityField::Key)
-            | (RowRef::Create(_), _) => None,
-        }
-    }
-}
-
-/// Which key-carrying map of a row an identity column reads.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum IdentityField {
-    Key,
-    Start,
-    End,
-}
-
-/// One run of identity columns: every property of `props`, read from one
-/// row field and selected under one pre-read variable and alias prefix.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct IdentityRun<'a> {
-    pub field: IdentityField,
-    pub var: &'static str,
-    pub alias: &'static str,
-    pub props: &'a [String],
-}
-
-/// A keyed group's identity-column derivation (start keys, end keys, rel
-/// keys, in that order) — the ONE source of the pre-read's RETURN items,
-/// its cell boundary, and the row identity encoder, so the remote side
-/// and the local side cannot disagree. Unkeyed kinds have none.
-#[derive(Debug, Clone)]
-pub(crate) struct IdentityLayout<'a> {
-    pub runs: Vec<IdentityRun<'a>>,
-    /// The pre-read variable the `--updated-at` candidate columns read.
-    pub candidate_var: &'static str,
-}
-
-impl IdentityLayout<'_> {
-    /// The number of identity columns.
-    pub(crate) fn column_count(&self) -> usize {
-        self.runs.iter().map(|run| run.props.len()).sum()
-    }
-
-    /// The identity values of one row, in column order, read through the
-    /// canonical keyed extraction.
-    pub(crate) fn row_values<'r>(
-        &self,
-        entity: &str,
-        row: RowRef<'r>,
-    ) -> Result<Vec<&'r Value>, LoadError> {
-        let mut values = Vec::with_capacity(self.column_count());
-        for run in &self.runs {
-            if run.props.is_empty() {
-                continue;
-            }
-            let map = row.identity_map(run.field).ok_or_else(|| {
-                LoadError::Push(format!(
-                    "entity {entity}: a row shape without the {:?} identity field",
-                    run.field
-                ))
-            })?;
-            values.extend(keyed_values(entity, map, run.props)?);
-        }
-        Ok(values)
-    }
-}
-
 impl PlannedEntity {
     /// The group's rows, borrowed, in plan order.
-    pub(crate) fn rows(&self) -> Box<dyn Iterator<Item = RowRef<'_>> + '_> {
+    pub(crate) fn rows(&self) -> &[PlanRow] {
         match &self.kind {
-            EntityKind::NodeLabel { rows, .. } => Box::new(rows.iter().map(RowRef::Node)),
-            EntityKind::NodeCreate { rows, .. } => Box::new(rows.iter().map(RowRef::Create)),
-            EntityKind::Rel {
-                rows: RelRows::Keyed(rows),
-                ..
-            } => Box::new(rows.iter().map(RowRef::Rel)),
-            EntityKind::Rel {
-                rows: RelRows::Pair(rows),
-                ..
-            } => Box::new(rows.iter().map(RowRef::Pair)),
+            EntityKind::NodeLabel { rows, .. }
+            | EntityKind::NodeCreate { rows, .. }
+            | EntityKind::Rel { rows, .. } => rows,
             EntityKind::NodeSkipped { .. }
             | EntityKind::RelSkipped { .. }
-            | EntityKind::Dangling => Box::new(std::iter::empty()),
+            | EntityKind::Dangling => &[],
         }
     }
 
     /// How many rows the group writes (counted buckets: none).
     pub(crate) fn row_count(&self) -> usize {
-        self.rows().count()
+        self.rows().len()
     }
 
     /// The identity-column derivation of a keyed group; `None` for the
@@ -407,10 +262,10 @@ enum NodeDraft {
     Keyed {
         label: String,
         merge_key: Vec<String>,
-        rows: Vec<KeyedNodeRow>,
+        rows: Vec<PlanRow>,
     },
     /// `--unkeyed-labels create`: rows without identity.
-    Created { rows: Vec<CreateNodeRow> },
+    Created { rows: Vec<PlanRow> },
     /// `--unkeyed-labels skip`: the counter, never a row.
     Skipped { count: usize },
 }
@@ -528,14 +383,11 @@ fn plan_nodes<'a>(
                 // label (one label with a key): the write created the
                 // node carrying it, so the endpoint MATCH finds it.
                 let row_key = keyed_props(label, &node.properties, merge_key)?;
-                rows.push(KeyedNodeRow {
-                    key: row_key,
-                    props: node.properties.clone(),
-                });
+                rows.push(PlanRow::keyed_node(row_key, node.properties.clone()));
             }
-            NodeDraft::Created { rows } => rows.push(CreateNodeRow {
-                props: node.properties.clone(),
-            }),
+            NodeDraft::Created { rows } => {
+                rows.push(PlanRow::created_node(node.properties.clone()))
+            }
             NodeDraft::Skipped { count } => *count += 1,
         }
     }
@@ -650,9 +502,9 @@ impl<'k> RelDraft<'k> {
 /// cannot disagree.
 enum DraftRows<'k> {
     /// `MERGE` on the type's key properties.
-    OnKey(&'k [String], Vec<KeyedRelRow>),
+    OnKey(&'k [String], Vec<PlanRow>),
     /// `CREATE`, or `MERGE` on the endpoint pair alone.
-    Pair(RelWrite<'k>, Vec<PairRelRow>),
+    Pair(RelWrite<'k>, Vec<PlanRow>),
 }
 
 impl<'k> DraftRows<'k> {
@@ -671,10 +523,9 @@ impl<'k> DraftRows<'k> {
         }
     }
 
-    fn into_rows(self) -> RelRows {
+    fn into_rows(self) -> Vec<PlanRow> {
         match self {
-            DraftRows::OnKey(_, rows) => RelRows::Keyed(rows),
-            DraftRows::Pair(_, rows) => RelRows::Pair(rows),
+            DraftRows::OnKey(_, rows) | DraftRows::Pair(_, rows) => rows,
         }
     }
 }
@@ -723,17 +574,17 @@ fn plan_rels(
                 // relationship constraint — and fall back to structural
                 // when neither does.
                 match rows {
-                    DraftRows::OnKey(props, rows) => rows.push(KeyedRelRow {
-                        start: start_key,
-                        end: end_key,
-                        key: keyed_props(&rel.rel_type, &rel.properties, props)?,
-                        props: rel.properties.clone(),
-                    }),
-                    DraftRows::Pair(_, rows) => rows.push(PairRelRow {
-                        start: start_key,
-                        end: end_key,
-                        props: rel.properties.clone(),
-                    }),
+                    DraftRows::OnKey(props, rows) => rows.push(PlanRow::keyed_rel(
+                        start_key,
+                        end_key,
+                        keyed_props(&rel.rel_type, &rel.properties, props)?,
+                        rel.properties.clone(),
+                    )),
+                    DraftRows::Pair(_, rows) => rows.push(PlanRow::pair_rel(
+                        start_key,
+                        end_key,
+                        rel.properties.clone(),
+                    )),
                 }
             }
             RelDraft::Unkeyed { skipped, .. } => *skipped += 1,
@@ -824,47 +675,6 @@ fn rel_write<'a>(keys: &'a MergeKeys, opts: &PlanOpts, rel_type: &str) -> RelWri
             .rel_key(rel_type)
             .map_or(RelWrite::MergeOnPair, RelWrite::MergeOnKey),
     }
-}
-
-/// The values of one element's key properties, read in the merge key's
-/// order — the one keyed extraction: [`keyed_props`] (the row's key map)
-/// and the identity encoder both consume it. A missing key property
-/// fails closed naming the entity and the property (a merge key the data
-/// does not satisfy is a local integrity error, not a silent partial
-/// push).
-pub(crate) fn keyed_values<'a>(
-    entity: &str,
-    props: &'a BTreeMap<String, Value>,
-    key: &[String],
-) -> Result<Vec<&'a Value>, LoadError> {
-    key.iter()
-        .map(|prop| {
-            props
-                .get(prop)
-                .ok_or_else(|| missing_key_prop(entity, prop))
-        })
-        .collect()
-}
-
-/// The keyed properties of one element as a map, in the merge key's order.
-fn keyed_props(
-    entity: &str,
-    props: &BTreeMap<String, Value>,
-    key: &[String],
-) -> Result<BTreeMap<String, Value>, LoadError> {
-    let values = keyed_values(entity, props, key)?;
-    Ok(key
-        .iter()
-        .cloned()
-        .zip(values.into_iter().cloned())
-        .collect())
-}
-
-/// The merge-key-missing refusal, naming the entity and the property.
-fn missing_key_prop(entity: &str, prop: &str) -> LoadError {
-    LoadError::Push(format!(
-        "merge-key property {prop:?} is missing on a {entity} entity in the local scope"
-    ))
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use relate::Value;
 
-use super::plan::{KeyedNodeRow, KeyedRelRow, PairRelRow, RowRef};
+use super::plan::{IdentityField, PlanRow};
 use super::policy::UpdatePolicy;
 use super::wire::{encode_props, quote_ident};
 use serde_json::Value as Json;
@@ -215,7 +215,7 @@ pub(crate) fn rel_statement(
 /// value a typed parameter envelope; keys, endpoints, and the payload in
 /// the maps the statement reads. `name` is the entity's display name,
 /// carried into encoding errors.
-pub(crate) fn write_row(name: &str, row: RowRef<'_>) -> Result<Json, LoadError> {
+pub(crate) fn write_row(name: &str, row: &PlanRow) -> Result<Json, LoadError> {
     // Every container in a typed request body is itself an envelope: the
     // row's inner maps (key, props, start, end) travel as `Map` envelopes,
     // their values as typed envelopes (verified on Aura — a plain JSON
@@ -224,33 +224,21 @@ pub(crate) fn write_row(name: &str, row: RowRef<'_>) -> Result<Json, LoadError> 
     let enc = |props: &BTreeMap<String, Value>| {
         encode_props(props).map_err(|e| e.with_context(&format!("entity {name}: ")))
     };
-    let props = enc(row.props())?;
-    Ok(match row {
-        RowRef::Node(KeyedNodeRow { key, .. }) => serde_json::json!({
-            "key": enc(key)?,
-            "props": props,
-        }),
-        RowRef::Create(_) => serde_json::json!({ "props": props }),
-        RowRef::Rel(KeyedRelRow {
-            start, end, key, ..
-        }) => {
-            let mut body = serde_json::Map::new();
-            body.insert("start".into(), enc(start)?);
-            body.insert("end".into(), enc(end)?);
-            // The keyed mode resolved a key — the only statement shape
-            // reading row.key.
-            body.insert("key".into(), enc(key)?);
-            body.insert("props".into(), props);
-            Json::Object(body)
+    let mut body = serde_json::Map::new();
+    // Each map the row's shape carries is a field the statement reads:
+    // the endpoints of a rel, then the merge key (a keyed node, or the
+    // keyed mode's resolved rel key — the only shapes reading row.key).
+    for (field, identity) in [
+        ("start", IdentityField::Start),
+        ("end", IdentityField::End),
+        ("key", IdentityField::Key),
+    ] {
+        if let Some(map) = row.identity_map(identity) {
+            body.insert(field.into(), enc(map)?);
         }
-        RowRef::Pair(PairRelRow { start, end, .. }) => {
-            let mut body = serde_json::Map::new();
-            body.insert("start".into(), enc(start)?);
-            body.insert("end".into(), enc(end)?);
-            body.insert("props".into(), props);
-            Json::Object(body)
-        }
-    })
+    }
+    body.insert("props".into(), enc(&row.props)?);
+    Ok(Json::Object(body))
 }
 
 #[cfg(test)]
@@ -402,6 +390,35 @@ mod tests {
             )
             .unwrap(),
             "UNWIND $rows AS row MATCH (a:`Person` {`name`: row.start.`name`}) MATCH (b:`Event` {`tenant`: row.end.`tenant`, `code`: row.end.`code`}) CREATE (a)-[r:`SPOKE_AT`]->(b) SET r = row.props"
+        );
+    }
+
+    /// A row body carries exactly the maps its shape has: a keyed node
+    /// `key` + `props`, a created node `props`, a pair rel `start` + `end`
+    /// + `props`, a keyed rel all four.
+    #[test]
+    fn write_row_carries_the_maps_of_the_row_shape() {
+        let map = |k: &str| BTreeMap::from([(k.to_string(), Value::Int(1))]);
+        let fields = |row: PlanRow| -> Vec<String> {
+            let Json::Object(body) = write_row("e", &row).unwrap() else {
+                panic!("a row body is an object");
+            };
+            let mut names: Vec<String> = body.keys().cloned().collect();
+            names.sort();
+            names
+        };
+        assert_eq!(
+            fields(PlanRow::keyed_node(map("k"), map("p"))),
+            ["key", "props"]
+        );
+        assert_eq!(fields(PlanRow::created_node(map("p"))), ["props"]);
+        assert_eq!(
+            fields(PlanRow::pair_rel(map("a"), map("b"), map("p"))),
+            ["end", "props", "start"]
+        );
+        assert_eq!(
+            fields(PlanRow::keyed_rel(map("a"), map("b"), map("k"), map("p"))),
+            ["end", "key", "props", "start"]
         );
     }
 }

@@ -13,7 +13,7 @@ use std::time::Instant;
 use relate::Value;
 use serde_json::Value as Json;
 
-use super::plan::{EntityKind, IdentityLayout, PlannedEntity, PushPlan, RowRef};
+use super::plan::{EntityKind, IdentityLayout, PlanRow, PlannedEntity, PushPlan};
 use super::policy::{resolve_candidate, updated_at_decision, ConflictDecision, UpdatePolicy};
 use super::report::{BatchSize, EntityReport, Outcome, PushReport, Totals};
 use super::statement::write_row;
@@ -102,9 +102,13 @@ fn classify<'a>(
     opts: &PushOpts,
     entity: &'a PlannedEntity,
     report: &mut EntityReport,
-) -> Result<Vec<(RowRef<'a>, Outcome)>, LoadError> {
+) -> Result<Vec<(&'a PlanRow, Outcome)>, LoadError> {
     let Some(policy) = entity.kind.keyed_policy() else {
-        return Ok(entity.rows().map(|row| (row, Outcome::Created)).collect());
+        return Ok(entity
+            .rows()
+            .iter()
+            .map(|row| (row, Outcome::Created))
+            .collect());
     };
     let remote = pre_read(opts, entity)?;
     classify_keyed(opts, entity, policy, &remote, report)
@@ -118,8 +122,8 @@ fn classify_keyed<'a>(
     policy: UpdatePolicy,
     remote: &BTreeMap<String, Option<Value>>,
     report: &mut EntityReport,
-) -> Result<Vec<(RowRef<'a>, Outcome)>, LoadError> {
-    let mut apply: Vec<(RowRef<'a>, Outcome)> = Vec::new();
+) -> Result<Vec<(&'a PlanRow, Outcome)>, LoadError> {
+    let mut apply: Vec<(&'a PlanRow, Outcome)> = Vec::new();
     for row in entity.rows() {
         let identity = row_identity(entity, row)?;
         // One lookup decides the three-way fact: absent on the remote
@@ -135,7 +139,7 @@ fn classify_keyed<'a>(
             report.skipped_policy += 1;
             continue;
         }
-        let local = resolve_candidate(row.props(), &opts.updated_at);
+        let local = resolve_candidate(&row.props, &opts.updated_at);
         let decision = match (local, remote_value) {
             (Some(local), Some(remote)) => updated_at_decision(local, remote),
             // No candidate named, or a candidate missing on either side:
@@ -163,7 +167,7 @@ fn send_batches(
     batch_size: BatchSize,
     entity: &PlannedEntity,
     statement: &str,
-    writes: &[(RowRef<'_>, Outcome)],
+    writes: &[(&PlanRow, Outcome)],
     report: &mut EntityReport,
     sent: &mut Totals,
 ) -> Result<(), LoadError> {
@@ -361,7 +365,7 @@ fn canonical_key(encoded: &[Json]) -> String {
 /// The identity of one planned row, encoded through the same identity
 /// layout the pre-read selects by: node keys; rel start keys, end keys,
 /// then rel keys.
-fn row_identity(entity: &PlannedEntity, row: RowRef<'_>) -> Result<String, LoadError> {
+fn row_identity(entity: &PlannedEntity, row: &PlanRow) -> Result<String, LoadError> {
     let name = entity.kind.display_name();
     let layout = entity.identity_layout().ok_or_else(|| {
         LoadError::Push(format!(

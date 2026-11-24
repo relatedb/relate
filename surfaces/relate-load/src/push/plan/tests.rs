@@ -1,6 +1,7 @@
 use super::*;
 use crate::push::collect::{LocalNode, LocalRel};
 use crate::push::policy::PolicySpec;
+use relate::Value;
 
 fn keys() -> MergeKeys {
     let mut nodes = BTreeMap::new();
@@ -153,17 +154,14 @@ fn plan_groups_nodes_then_rels_with_resolved_keys() {
     // The first rel row carries locally resolved endpoint keys, and —
     // under the keyed default with the type's key resolved — the rel
     // key properties too.
-    let first_row = rel.rows().next().expect("a rel row");
-    match first_row {
-        RowRef::Rel(KeyedRelRow {
-            start, end, key, ..
-        }) => {
-            assert_eq!(start["name"], Value::String("Ada".into()));
-            assert_eq!(end["code"], Value::String("gql".into()));
-            assert_eq!(key["slot"], Value::Int(3));
-        }
-        other => panic!("a keyed rel row, got {other:?}"),
-    }
+    let first_row = rel.rows().first().expect("a rel row");
+    let map = |field| first_row.identity_map(field).expect("a keyed rel row");
+    assert_eq!(
+        map(IdentityField::Start)["name"],
+        Value::String("Ada".into())
+    );
+    assert_eq!(map(IdentityField::End)["code"], Value::String("gql".into()));
+    assert_eq!(map(IdentityField::Key)["slot"], Value::Int(3));
 }
 
 /// Secondary labels survive the push (LABS-907): the group is the
@@ -339,11 +337,11 @@ fn keyed_mode_uses_the_relationship_key_and_falls_back() {
     let rel = &plan.entities[2];
     assert_eq!(rel.merge_key, ["slot".to_string()]);
     assert!(statement_of(rel).contains("MERGE (a)-[r:`SPOKE_AT` {`slot`: row.key.`slot`}]->(b)"));
-    let first_row = rel.rows().next().expect("a rel row");
-    match first_row {
-        RowRef::Rel(KeyedRelRow { key, .. }) => assert_eq!(key["slot"], Value::Int(3)),
-        other => panic!("a keyed rel row, got {other:?}"),
-    }
+    let first_row = rel.rows().first().expect("a rel row");
+    let key = first_row
+        .identity_map(IdentityField::Key)
+        .expect("a keyed rel row");
+    assert_eq!(key["slot"], Value::Int(3));
     // A type with no resolved key falls back to structural (no error).
     let mut rel = spoke_at(1, 3);
     rel.rel_type = "WROTE_ABT".into();
@@ -352,7 +350,9 @@ fn keyed_mode_uses_the_relationship_key_and_falls_back() {
     let rel2 = &plan2.entities[2];
     assert_eq!(rel2.merge_key, Vec::<String>::new());
     assert!(
-        matches!(rel2.rows().next(), Some(RowRef::Pair(_))),
+        rel2.rows()
+            .first()
+            .is_some_and(|row| row.identity_map(IdentityField::Key).is_none()),
         "the structural fallback writes pair rows"
     );
     assert!(statement_of(rel2).contains("MERGE (a)-[r:`WROTE_ABT`]->(b)"));
@@ -555,7 +555,7 @@ fn display_names_cover_every_kind() {
             end_key: vec!["title".into()],
             policy: UpdatePolicy::Add,
             statement: String::new(),
-            rows: RelRows::Pair(Vec::new()),
+            rows: Vec::new(),
         }),
         "(Person)-[:ACTED_IN]->(Movie)"
     );
@@ -585,7 +585,7 @@ fn identity_layout_is_one_derivation_for_pre_read_and_row_identity() {
     let layout = rel.identity_layout().expect("a keyed rel group");
     assert_eq!(layout.column_count(), 1 + 2 + 1);
     assert_eq!(layout.candidate_var, "r");
-    let row = rel.rows().next().unwrap();
+    let row = rel.rows().first().unwrap();
     let values = layout.row_values("rel", row).unwrap();
     assert_eq!(
         values,
@@ -607,7 +607,7 @@ fn identity_layout_is_one_derivation_for_pre_read_and_row_identity() {
     assert_eq!(pair_layout.column_count(), 3);
     assert_eq!(
         pair_layout
-            .row_values("rel", pair.rows().next().unwrap())
+            .row_values("rel", pair.rows().first().unwrap())
             .unwrap()
             .len(),
         3

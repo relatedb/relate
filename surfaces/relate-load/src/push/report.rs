@@ -252,7 +252,7 @@ impl EntityReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::push::plan::{EntityKind, KeyedNodeRow};
+    use crate::push::plan::{EntityKind, PlanRow};
     use std::collections::BTreeMap;
 
     /// A keyed `Person` node group of `rows` placeholder rows.
@@ -264,10 +264,7 @@ mod tests {
                 policy: UpdatePolicy::Add,
                 statement: "UNWIND $rows AS row MERGE (n) SET n += row.props".to_string(),
                 rows: (0..rows)
-                    .map(|_| KeyedNodeRow {
-                        key: BTreeMap::new(),
-                        props: BTreeMap::new(),
-                    })
+                    .map(|_| PlanRow::keyed_node(BTreeMap::new(), BTreeMap::new()))
                     .collect(),
             },
             merge_key: vec!["name".to_string()],
