@@ -61,7 +61,7 @@ pub(crate) use relate_ir::{
 };
 
 pub(crate) use expr::{
-    binary, binary_pure, cmp_bool, eval_case_with, in_op, in_rhs, ordering_operator,
+    binary, binary_pure, cmp_bool, eval_case_with, in_op, in_rhs, ordering_operator, OrderingSide,
 };
 use expr::{eval_case, prop, reject_deleted_access, slice, subscript, unary};
 /// Whether every variable `expr` reads is in `allowed`.

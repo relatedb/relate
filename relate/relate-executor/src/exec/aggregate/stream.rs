@@ -12,9 +12,10 @@
 //! seen-set) and never an operand value; only `collect` and the
 //! percentiles retain their operands, charged to the expression budget
 //! and, when admission is on, to the workspace ledger as one retaining
-//! container. The plain percentile calls of one group over the same
+//! container. The plain `percentileCont` calls of one group over the same
 //! operand share one `f64` buffer (`pool`) rather than each keeping its
-//! own `Value`s. [`AccTable::finish_group`] resolves every site of a group
+//! own `Value`s; `percentileDisc` retains its operands because it answers
+//! one of them. [`AccTable::finish_group`] resolves every site of a group
 //! once, and the evaluator reads the results back from the `FoldedGroup`
 //! it resolves.
 

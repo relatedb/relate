@@ -14,15 +14,14 @@
 use std::collections::BTreeMap;
 
 use super::test_support::{
-    agg_eval_rows, agg_fn, agg_fn_over, assert_crossing_element, assert_crossing_row,
-    assert_expression_cap, group_with_vals, group_with_xs, try_exec_cypher,
+    agg_eval_rows, agg_fn, agg_fn_over, assert_charge_partition, assert_crossing_element,
+    assert_crossing_row, assert_expression_cap, distinct_fn, group_with_vals, group_with_xs,
+    try_exec_cypher,
 };
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
 use relate_core::Value;
-use relate_ir::{classify_aggregate, Expr, SINGLE_INPUT_AGGREGATES};
-
-use crate::eval::StreamFold;
+use relate_ir::Expr;
 
 /// A non-retaining aggregate keeps constant-size state: the group's row
 /// count never reaches the expression budget. Every kind in the canonical
@@ -35,23 +34,7 @@ use crate::eval::StreamFold;
 /// allocator's lap.
 #[test]
 fn only_retaining_aggregates_charge_per_row() {
-    let cap = 1_024;
-    let mut g = Graph::default();
-    g.configure_expression_memory_limit(Some(cap));
-    let graph = ExecGraph::read(&g);
-    let group = group_with_xs(&(0..100_000).collect::<Vec<_>>());
-    let names = ["count"]
-        .into_iter()
-        .chain(SINGLE_INPUT_AGGREGATES.iter().copied());
-    for name in names {
-        let kind = classify_aggregate(name).expect("the table names aggregate kinds");
-        let result = agg_eval_rows(&graph, &group, &agg_fn(name), &BTreeMap::new());
-        if StreamFold::for_kind(kind).is_some() {
-            result.unwrap_or_else(|error| panic!("{name} streams, yet refused: {error}"));
-        } else {
-            assert_expression_cap(&result.unwrap_err(), cap);
-        }
-    }
+    assert_charge_partition("plain", 1_024, agg_fn);
 }
 
 /// A DISTINCT call that has a streaming accumulator keeps no operand per
@@ -60,22 +43,10 @@ fn only_retaining_aggregates_charge_per_row() {
 /// (which retains its operands) crosses.
 #[test]
 fn distinct_streaming_aggregates_retain_no_operands() {
-    let cap = 64 * 1_024;
-    let mut g = Graph::default();
-    g.configure_expression_memory_limit(Some(cap));
-    let graph = ExecGraph::read(&g);
-    let group = group_with_xs(&(0..100_000).collect::<Vec<_>>());
-    let distinct = |name: &str| Expr::Function {
-        name: name.into(),
-        distinct: true,
-        args: vec![Expr::Variable("x".into())],
-    };
-    for name in ["count", "sum", "avg", "stDev", "min", "max"] {
-        agg_eval_rows(&graph, &group, &distinct(name), &BTreeMap::new())
-            .unwrap_or_else(|error| panic!("{name}(DISTINCT) streams, yet refused: {error}"));
-    }
-    let error = agg_eval_rows(&graph, &group, &distinct("collect"), &BTreeMap::new()).unwrap_err();
-    assert_expression_cap(&error, cap);
+    // Both halves of the partition: a stream-folding kind keeps only its
+    // seen-set under DISTINCT, while a retaining kind (`collect`) keeps its
+    // distinct operands and refuses.
+    assert_charge_partition("DISTINCT", 64 * 1_024, distinct_fn);
 }
 
 /// A DISTINCT call folds only first-seen operands through its seen-set, so
@@ -90,21 +61,17 @@ fn distinct_state_is_proportional_to_distinct_values() {
     g.configure_expression_memory_limit(Some(cap));
     let graph = ExecGraph::read(&g);
     let few = group_with_xs(&(0..200_000).map(|i| i % 10).collect::<Vec<_>>());
-    let distinct = |name: &str| Expr::Function {
-        name: name.into(),
-        distinct: true,
-        args: vec![Expr::Variable("x".into())],
-    };
-    let counted = agg_eval_rows(&graph, &few, &distinct("count"), &BTreeMap::new())
+    let counted = agg_eval_rows(&graph, &few, &distinct_fn("count"), &BTreeMap::new())
         .expect("ten distinct values fit the cap");
     assert_eq!(counted, Value::Int(10));
-    let collected = agg_eval_rows(&graph, &few, &distinct("collect"), &BTreeMap::new())
+    let collected = agg_eval_rows(&graph, &few, &distinct_fn("collect"), &BTreeMap::new())
         .expect("ten distinct values fit the cap");
     assert!(matches!(collected, Value::List(items) if items.len() == 10));
     let error = agg_eval_rows(&graph, &few, &agg_fn("collect"), &BTreeMap::new()).unwrap_err();
     assert_expression_cap(&error, cap);
     let many = group_with_xs(&(0..200_000).collect::<Vec<_>>());
-    let error = agg_eval_rows(&graph, &many, &distinct("collect"), &BTreeMap::new()).unwrap_err();
+    let error =
+        agg_eval_rows(&graph, &many, &distinct_fn("collect"), &BTreeMap::new()).unwrap_err();
     assert_expression_cap(&error, cap);
 }
 

@@ -162,19 +162,21 @@ fn range_count_sums_posting_lengths() {
     for id in [5, 6] {
         insert_order(&mut st, &Value::Int(250), id);
     }
+    // Node 2 holds two in-range keys, so the count sums its posting twice
+    // while the id set holds it once — the distinction the docs claim.
+    insert_order(&mut st, &Value::Int(250), 2);
     let bound = Value::Int(100);
     let count = range_count(&st.order, BinaryOp::Gt, &bound);
-    let summed: usize = st
-        .order
-        .range((
-            Bound::Excluded(OrderKey::Int(100)),
-            Bound::Excluded(variant_upper(&OrderKey::Int(100))),
-        ))
-        .map(|(_, postings)| postings.len())
-        .sum();
-    assert_eq!(count, 5);
+    // The reference walk takes the seek's own boundary, so a change to the
+    // rule cannot leave the two spellings disagreeing.
+    let seek = scan::seek_ranges(BinaryOp::Gt, &bound).expect("a comparison");
+    let mut summed = 0usize;
+    for (start, end) in seek.ranges() {
+        scan::visit_range(&st.order, start, end, |postings| summed += postings.len());
+    }
+    assert_eq!(count, 6, "node 2's two in-range postings both count");
     assert_eq!(count, summed);
-    assert_eq!(range_ids(&st.order, BinaryOp::Gt, &bound).len(), count);
+    assert_eq!(range_ids(&st.order, BinaryOp::Gt, &bound).len(), 5);
     assert_eq!(equality_count(&st, &Value::Int(150)), 3);
 }
 
@@ -304,4 +306,55 @@ fn the_seek_gate_keeps_its_superset_while_the_mark_clears() {
     st.reconcile_live(9, None);
     assert!(!st.unposted.contains(&9), "the clear is the reconcile's");
     assert!(!st.unbounded.contains(&9));
+}
+
+/// REL8-2030 (corpus 26): DATE's two representations share one order, but
+/// the key map orders by variant, which cannot express it — a negative
+/// civil year sorts below every in-range date while its variant sits after
+/// them. A civil date therefore has no key: it marks its node unbounded, so
+/// a comparison seek declines instead of answering the Date variant alone
+/// and silently dropping the far-year row.
+#[test]
+fn a_far_year_date_has_no_order_key_and_declines_the_seek() {
+    let mut st = RangeIndex::default();
+    let in_range = Value::Temporal(Temporal::Date(
+        chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),
+    ));
+    let far = Value::Temporal(Temporal::CivilDate {
+        year: 300_000,
+        month: 6,
+        day: 15,
+    });
+    insert_order(&mut st, &in_range, 10);
+    insert_order(&mut st, &far, 11);
+    assert!(order_key(&in_range).is_some());
+    assert!(order_key(&far).is_none());
+    // `unbounded` is the comparison seek's gate: it must carry the node.
+    assert!(st.unbounded.contains(&11));
+    // The key scan alone would miss the row (the bound has no key either);
+    // the unbounded mark is what makes the production seek scan instead.
+    assert!(range_ids(&st.order, BinaryOp::Lt, &far).is_empty());
+}
+
+/// An infinite float bound's cross sweep stays total: `< Infinity` and
+/// `> -Infinity` admit every integer, so the seek must scan the integer
+/// variant too (the predicate re-checks the superset). The old numeric gate
+/// dropped a non-finite bound's cross sweep entirely, silently losing every
+/// integer row.
+#[test]
+fn an_infinite_float_bound_scans_the_integer_side() {
+    let mut st = RangeIndex::default();
+    insert_order(&mut st, &Value::Int(1), 1);
+    insert_order(&mut st, &Value::Int(2), 2);
+    insert_order(&mut st, &Value::Float(1.5), 3);
+    let less = range_ids(&st.order, BinaryOp::Lt, &Value::Float(f64::INFINITY));
+    assert!(
+        less.is_superset(&HashSet::from([1, 2, 3])),
+        "the int rows are swept too: {less:?}"
+    );
+    let greater = range_ids(&st.order, BinaryOp::Gt, &Value::Float(f64::NEG_INFINITY));
+    assert!(
+        greater.is_superset(&HashSet::from([1, 2, 3])),
+        "the int rows are swept too: {greater:?}"
+    );
 }

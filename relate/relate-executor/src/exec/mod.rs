@@ -862,6 +862,8 @@ mod aggregate_charge_tests;
 #[cfg(test)]
 mod aggregate_footprint_tests;
 #[cfg(test)]
+mod aggregate_percentile_tests;
+#[cfg(test)]
 mod aggregate_pool_tests;
 #[cfg(test)]
 mod aggregate_tests;

@@ -2,7 +2,7 @@
 use std::collections::BTreeMap;
 
 use relate_core::Value;
-use relate_ir::Expr;
+use relate_ir::{classify_aggregate, AggregateKind, Expr, SINGLE_INPUT_AGGREGATES};
 
 use crate::exec::aggregate::{agg_eval, discover, AggScope, FoldedGroup, GroupAccs};
 use crate::overlay::ExecGraph;
@@ -23,9 +23,15 @@ pub(crate) fn node_value(id: i64) -> Value {
 /// the horizontal rewrite's tests, and the match-predicate test all build.
 /// One definition, so the spelling cannot drift between them.
 pub(crate) fn agg_fn_over(name: &str, arg: Expr) -> Expr {
+    agg_call(name, arg, false)
+}
+
+/// The one plain aggregate-call construction the plain and DISTINCT
+/// fixtures share.
+fn agg_call(name: &str, arg: Expr, distinct: bool) -> Expr {
     Expr::Function {
         name: name.into(),
-        distinct: false,
+        distinct,
         args: vec![arg],
     }
 }
@@ -103,14 +109,69 @@ pub(crate) fn percentile_fn(name: &str, p: f64) -> Expr {
     percentile_fn_over(name, Expr::Variable(OPERAND_COLUMN.into()), p)
 }
 
+/// [`percentile_fn`] with `DISTINCT`: the call keeps its own seen-set and
+/// operand values (the retained path) instead of sharing the pool.
+pub(crate) fn distinct_percentile(name: &str, p: f64) -> Expr {
+    percentile_call(name, Expr::Variable(OPERAND_COLUMN.into()), p, true)
+}
+
+/// The canonical single-input aggregate vocabulary with its kinds: `count`
+/// (whose keyword path the table omits by contract) plus
+/// [`SINGLE_INPUT_AGGREGATES`], classified once. The charge pins iterate
+/// this, so a kind added to the vocabulary is covered by construction.
+pub(crate) fn single_input_calls() -> impl Iterator<Item = (&'static str, AggregateKind)> {
+    ["count"]
+        .into_iter()
+        .chain(SINGLE_INPUT_AGGREGATES.iter().copied())
+        .map(|name| {
+            let kind = classify_aggregate(name).expect("the table names aggregate kinds");
+            (name, kind)
+        })
+}
+
+/// [`agg_fn`] with `DISTINCT`: the call folds each first-seen operand
+/// through its seen-set.
+pub(crate) fn distinct_fn(name: &str) -> Expr {
+    agg_call(name, Expr::Variable(OPERAND_COLUMN.into()), true)
+}
+
 /// The two-argument percentile call over a caller-chosen operand, with the
 /// literal percentile `p` — the parameterized form, so the parked-failure
 /// and pool fixtures build it over a `p`-property row with one spelling.
 pub(crate) fn percentile_fn_over(name: &str, arg: Expr, p: f64) -> Expr {
+    percentile_call(name, arg, p, false)
+}
+
+/// The one percentile-call construction the plain and DISTINCT fixtures
+/// share.
+fn percentile_call(name: &str, arg: Expr, p: f64, distinct: bool) -> Expr {
     Expr::Function {
         name: name.into(),
-        distinct: false,
+        distinct,
         args: vec![arg, Expr::Float(p)],
+    }
+}
+
+/// Assert the charge partition once over a 100,000-row group: a
+/// stream-folding single-input kind under `build` stays under `cap`, a
+/// retaining kind refuses at it. Both charge pins call this with their own
+/// builder and cap, so the partition rule has one home.
+pub(crate) fn assert_charge_partition(label: &str, cap: u64, build: fn(&str) -> Expr) {
+    let mut g = crate::graph::Graph::default();
+    g.configure_expression_memory_limit(Some(cap));
+    let graph = ExecGraph::read(&g);
+    let group = group_with_xs(&(0..100_000).collect::<Vec<_>>());
+    for (name, kind) in single_input_calls() {
+        let call = format!("{label} {name}");
+        let result = agg_eval_rows(&graph, &group, &build(name), &BTreeMap::new());
+        if crate::eval::StreamFold::for_kind(kind).is_some() {
+            result.unwrap_or_else(|error| panic!("{call} streams, yet refused: {error}"));
+        } else {
+            let error = result
+                .err()
+                .unwrap_or_else(|| panic!("{call} retains, yet answered a value"));
+            assert_expression_cap(&error, cap);
+        }
     }
 }
 

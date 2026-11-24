@@ -573,5 +573,5 @@ pub(super) fn finish_pooled(
         SampleEnding::NonNumeric => return Err(call.name.with_str(needs_numbers)),
         SampleEnding::Open => {}
     }
-    Ok(percentile.rank_in_sorted(&pool.vals))
+    percentile.rank_pooled(&pool.vals)
 }

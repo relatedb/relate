@@ -1,12 +1,13 @@
 //! The percentile operand pool: one retained `f64` buffer per (group,
-//! operand expression), shared by every plain percentile call in that group
-//! that reads the same operand.
+//! operand expression), shared by every plain `percentileCont` call in that
+//! group that reads the same operand.
 //!
-//! A percentile only needs its operands as numbers, and every call over one
-//! operand sees the same sample, so k calls keep one 8-byte-per-row buffer
-//! instead of k `Value` buffers. The pool lives in the group's slot of its
-//! [`super::columns::AccTable`] column, so it is opened with the group and
-//! is never visible to another group key.
+//! A continuous percentile only needs its operands as numbers, and every
+//! call over one operand sees the same sample, so k calls keep one
+//! 8-byte-per-row buffer instead of k `Value` buffers. (`percentileDisc`
+//! answers an operand value, so it declines the pool.) The pool lives in
+//! the group's slot of its [`super::columns::AccTable`] column, so it is
+//! opened with the group and is never visible to another group key.
 
 use std::collections::BTreeMap;
 

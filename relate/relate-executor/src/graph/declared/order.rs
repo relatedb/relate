@@ -272,13 +272,11 @@ pub(super) enum OrderKey {
     Float(u64),
     String(Arc<str>),
     Date(i32),
-    CivilDate(i64, u32, u32),
     LocalTime(i64),
     Time(i64),
     LocalDateTime(i64),
     DateTime(i64),
     Duration(i64, i64, i128),
-    End,
 }
 
 #[cfg(test)]
@@ -330,6 +328,15 @@ pub(super) fn dt_nanos(dt: NaiveDateTime) -> Option<i64> {
     dt.and_utc().timestamp_nanos_opt()
 }
 
+/// A value's order key, or `None` when it has none — a NaN, an entity, and
+/// a temporal outside the order window ([`Temporal::CivilDate`] /
+/// [`Temporal::CivilDateTime`], whose calendar lies outside chrono's range).
+/// A civil date could be keyed by its calendar parts, but that widens every
+/// DATE key in the index for a value class no store can hold: the storage
+/// codecs refuse to persist a civil date, so only an in-memory store has
+/// one. Declining the key instead makes its presence mark the node
+/// `unbounded`, and a comparison seek scans rather than answering the Date
+/// variant alone.
 pub(super) fn order_key(v: &Value) -> Option<OrderKey> {
     match v {
         Value::Bool(b) => Some(OrderKey::Bool(*b)),
@@ -343,9 +350,6 @@ pub(super) fn order_key(v: &Value) -> Option<OrderKey> {
         }),
         Value::String(s) => Some(OrderKey::String(Arc::clone(s))),
         Value::Temporal(Temporal::Date(d)) => Some(OrderKey::Date(d.num_days_from_ce())),
-        Value::Temporal(Temporal::CivilDate { year, month, day }) => {
-            Some(OrderKey::CivilDate(*year, *month, *day))
-        }
         Value::Temporal(Temporal::LocalTime(t)) => Some(OrderKey::LocalTime(time_nanos(*t))),
         Value::Temporal(Temporal::Time { time, offset }) => Some(OrderKey::Time(
             time_nanos(*time) - i64::from(*offset) * 1_000_000_000,
@@ -385,10 +389,6 @@ fn date_lower() -> OrderKey {
     OrderKey::Date(i32::MIN)
 }
 
-fn civil_date_lower() -> OrderKey {
-    OrderKey::CivilDate(i64::MIN, 0, 0)
-}
-
 fn local_time_lower() -> OrderKey {
     OrderKey::LocalTime(i64::MIN)
 }
@@ -409,6 +409,7 @@ fn duration_lower() -> OrderKey {
     OrderKey::Duration(i64::MIN, i64::MIN, i128::MIN)
 }
 
+/// `k`'s variant lower bound: the payload-free sentinel of its own variant.
 pub(super) fn variant_lower(k: &OrderKey) -> OrderKey {
     match k {
         OrderKey::Bool(_) => bool_lower(),
@@ -416,31 +417,40 @@ pub(super) fn variant_lower(k: &OrderKey) -> OrderKey {
         OrderKey::Float(_) => float_lower(),
         OrderKey::String(_) => string_lower(),
         OrderKey::Date(_) => date_lower(),
-        OrderKey::CivilDate(_, _, _) => civil_date_lower(),
         OrderKey::LocalTime(_) => local_time_lower(),
         OrderKey::Time(_) => time_lower(),
         OrderKey::LocalDateTime(_) => local_date_time_lower(),
         OrderKey::DateTime(_) => date_time_lower(),
         OrderKey::Duration(_, _, _) => duration_lower(),
-        OrderKey::End => OrderKey::End,
     }
 }
 
-/// First key past `k`'s variant: the next variant's lower bound.
-pub(super) fn variant_upper(k: &OrderKey) -> OrderKey {
-    match k {
+/// The variant ladder, stated once: each variant's successor in the
+/// cross-type order, or `None` past the last one (a duration). Every arm
+/// returns the successor variant's **lower-bound sentinel** — the first key
+/// past `k`'s variant. The `OrderKey` declaration order is the same
+/// sequence (the `Ord` derive is the contract), and [`variant_upper`] reads
+/// this ladder, so a variant inserted or reordered needs its arm here and
+/// its sentinel in [`variant_lower`], never a hand-shifted second copy.
+fn successor(k: &OrderKey) -> Option<OrderKey> {
+    Some(match k {
         OrderKey::Bool(_) => int_lower(),
         OrderKey::Int(_) => float_lower(),
         OrderKey::Float(_) => string_lower(),
         OrderKey::String(_) => date_lower(),
-        OrderKey::Date(_) => civil_date_lower(),
-        OrderKey::CivilDate(_, _, _) => local_time_lower(),
+        OrderKey::Date(_) => local_time_lower(),
         OrderKey::LocalTime(_) => time_lower(),
         OrderKey::Time(_) => local_date_time_lower(),
         OrderKey::LocalDateTime(_) => date_time_lower(),
         OrderKey::DateTime(_) => duration_lower(),
-        OrderKey::Duration(_, _, _) | OrderKey::End => OrderKey::End,
-    }
+        OrderKey::Duration(_, _, _) => return None,
+    })
+}
+
+/// The exclusive upper bound of `k`'s variant: the successor's lower bound,
+/// or unbounded past the last variant.
+pub(super) fn variant_upper(k: &OrderKey) -> Bound<OrderKey> {
+    successor(k).map_or(Bound::Unbounded, Bound::Excluded)
 }
 
 pub(super) fn prefix_successor(prefix: &str) -> Option<String> {
@@ -654,18 +664,7 @@ pub(super) fn collect_range(
     end: Bound<OrderKey>,
     out: &mut HashSet<NodeId>,
 ) {
-    for (_, ids) in order.range((start, end)) {
-        ids.extend_into(out);
-    }
-}
-
-pub(super) fn numeric_cross_start(bound: f64, greater: bool) -> OrderKey {
-    let edge = if greater {
-        bound.next_down()
-    } else {
-        bound.next_up()
-    };
-    OrderKey::Float(ord_f64(if edge.is_finite() { edge } else { bound }))
+    scan::visit_range(order, start, end, |ids| ids.extend_into(out));
 }
 
 /// Superset of values on the far side of a bound, covering both ints and
@@ -677,7 +676,7 @@ pub(super) fn range_ids(
     bound: &Value,
 ) -> HashSet<NodeId> {
     let mut out = HashSet::new();
-    visit_range_postings(order, op, bound, |ids| ids.extend_into(&mut out));
+    scan::visit_range_postings(order, op, bound, |ids| ids.extend_into(&mut out));
     out
 }
 
@@ -689,102 +688,10 @@ pub(super) fn range_count(
     bound: &Value,
 ) -> usize {
     let mut count = 0usize;
-    visit_range_postings(order, op, bound, |ids| {
+    scan::visit_range_postings(order, op, bound, |ids| {
         count = count.saturating_add(ids.len());
     });
     count
-}
-
-fn visit_range_postings(
-    order: &BTreeMap<OrderKey, Postings>,
-    op: BinaryOp,
-    bound: &Value,
-    mut visit: impl FnMut(&Postings),
-) {
-    let Some(key) = order_key(bound) else {
-        return;
-    };
-    // A zoned `Time`/`DateTime` bound's key order is coarser than the
-    // predicate's ordering: the key carries the instant (or UTC nanos) alone,
-    // while `Temporal::compare` breaks the tie on the Time offset and the
-    // DateTime zone region (ADR-0446). A key-tie group can therefore still
-    // hold values the strict predicate accepts, so for those two kinds the
-    // boundary is scanned inclusively and `cmp_holds` rejects the rest. Every
-    // other kind's key order is its predicate's order, and keeps the exact
-    // exclusive boundary.
-    let coarse_key = matches!(
-        bound,
-        Value::Temporal(Temporal::Time { .. } | Temporal::DateTime { .. })
-    );
-    let (greater, start, end) = match (op, coarse_key) {
-        (BinaryOp::Gt, false) => (
-            true,
-            Bound::Excluded(key.clone()),
-            Bound::Excluded(variant_upper(&key)),
-        ),
-        (BinaryOp::Gt, true) => (
-            true,
-            Bound::Included(key.clone()),
-            Bound::Excluded(variant_upper(&key)),
-        ),
-        (BinaryOp::Gte, _) => (
-            true,
-            Bound::Included(key.clone()),
-            Bound::Excluded(variant_upper(&key)),
-        ),
-        (BinaryOp::Lt, false) => (
-            false,
-            Bound::Included(variant_lower(&key)),
-            Bound::Excluded(key.clone()),
-        ),
-        (BinaryOp::Lt, true) => (
-            false,
-            Bound::Included(variant_lower(&key)),
-            Bound::Included(key.clone()),
-        ),
-        (BinaryOp::Lte, _) => (
-            false,
-            Bound::Included(variant_lower(&key)),
-            Bound::Included(key.clone()),
-        ),
-        _ => return,
-    };
-    let mut scan = |start, end| {
-        for (_, ids) in order.range((start, end)) {
-            visit(ids);
-        }
-    };
-    scan(start, end);
-
-    let as_f = match bound {
-        Value::Int(i) => Some(*i as f64),
-        Value::Float(f) if f.is_finite() => Some(*f),
-        _ => None,
-    };
-    if let Some(f) = as_f {
-        if greater {
-            let cross_start = numeric_cross_start(f, true);
-            let float_end = Bound::Excluded(variant_upper(&cross_start));
-            scan(Bound::Included(cross_start), float_end);
-        } else {
-            let cross_end = numeric_cross_start(f, false);
-            let float_min = Bound::Included(variant_lower(&cross_end));
-            scan(float_min, Bound::Included(cross_end));
-        }
-        if matches!(bound, Value::Float(_)) {
-            if greater {
-                let start_i = (f.floor() as i64).saturating_sub(1);
-                let int_start = OrderKey::Int(start_i);
-                let int_end = Bound::Excluded(variant_upper(&int_start));
-                scan(Bound::Included(int_start), int_end);
-            } else {
-                let end_i = (f.ceil() as i64).saturating_add(1);
-                let int_end = OrderKey::Int(end_i);
-                let int_min = Bound::Included(variant_lower(&int_end));
-                scan(int_min, Bound::Included(int_end));
-            }
-        }
-    }
 }
 
 pub(super) fn prefix_ids(order: &BTreeMap<OrderKey, Postings>, prefix: &str) -> HashSet<NodeId> {
@@ -793,7 +700,7 @@ pub(super) fn prefix_ids(order: &BTreeMap<OrderKey, Postings>, prefix: &str) -> 
     let end = match prefix_successor(prefix) {
         Some(s) => Bound::Excluded(OrderKey::String(Arc::from(s))),
         // No successor prefix: scan to the end of the String variant.
-        None => Bound::Excluded(variant_upper(&start)),
+        None => variant_upper(&start),
     };
     collect_range(order, Bound::Included(start), end, &mut out);
     out
@@ -804,14 +711,16 @@ pub(super) fn cmp_holds(v: &Value, op: BinaryOp, bound: &Value) -> bool {
     // evaluator uses, and the value side from its `cmp_bool`, so an indexed
     // range predicate can never answer differently from a residual one
     // (`duration(...) <= duration(...)` holds without being orderable).
-    let Some((equality_allowed, pred)) = eval::ordering_operator(op) else {
+    let Some(ordering) = eval::ordering_operator(op) else {
         return false;
     };
     matches!(
-        eval::cmp_bool(v, bound, equality_allowed, pred),
+        eval::cmp_bool(v, bound, ordering.equality_allowed, ordering.pred),
         Value::Bool(true)
     )
 }
 
 #[cfg(test)]
 mod tests;
+
+mod scan;

@@ -65,28 +65,37 @@ fn elementwise_eq(a: &[Value], b: &[Value], depth: u32) -> bool {
             .all(|(x, y)| x.eq_non_null_at(y, depth))
 }
 
-/// The map half of [`Value::compare`]: size first, then the sorted key lists
-/// element by element, then the values under those keys. Both operands are
-/// `BTreeMap`s, so iteration is already key order and equal lengths plus
-/// equal key lists mean the same key set.
+/// The size-then-keys prefix both map comparators share: size first, then
+/// the sorted key lists element by element. Both operands are `BTreeMap`s,
+/// so iteration is already key order and equal lengths plus equal key lists
+/// mean the same key set — only the values are left to the caller, and the
+/// three-valued [`compare_maps`] and the total [`order_maps`] differ in
+/// exactly that comparison.
+fn map_size_then_keys(
+    a: &std::collections::BTreeMap<String, Value>,
+    b: &std::collections::BTreeMap<String, Value>,
+) -> Ordering {
+    a.len().cmp(&b.len()).then_with(|| {
+        lexicographic(
+            a.keys(),
+            b.keys(),
+            Ordering::Equal,
+            Ordering::Equal,
+            |ka: &String, kb: &String| ka.cmp(kb),
+        )
+    })
+}
+
+/// The map half of [`Value::compare`]: the shared size-then-keys prefix,
+/// then the values under those keys, three-valued.
 fn compare_maps(
     a: &std::collections::BTreeMap<String, Value>,
     b: &std::collections::BTreeMap<String, Value>,
     depth: u32,
 ) -> Option<Ordering> {
-    match a.len().cmp(&b.len()) {
-        Ordering::Equal => {}
-        other => return Some(other),
-    }
-    let by_key = lexicographic(
-        a.keys(),
-        b.keys(),
-        Ordering::Equal,
-        Ordering::Equal,
-        |ka: &String, kb: &String| ka.cmp(kb),
-    );
-    if by_key != Ordering::Equal {
-        return Some(by_key);
+    let by_shape = map_size_then_keys(a, b);
+    if by_shape != Ordering::Equal {
+        return Some(by_shape);
     }
     lexicographic(
         a.values(),
@@ -95,6 +104,60 @@ fn compare_maps(
         Some(Ordering::Equal),
         |x, y| x.compare_at(y, depth),
     )
+}
+
+/// A point's total order: SRID (the CRS) first, then x, y and z, so every
+/// distinct point orders. `f64::total_cmp` keeps a NaN coordinate ordered
+/// instead of collapsing the pair; an absent z sorts before a present one
+/// (a decoder can produce a 2D point carrying a 3D SRID, `point()` cannot).
+fn point_order(a: &PointValue, b: &PointValue) -> Ordering {
+    a.srid
+        .cmp(&b.srid)
+        .then_with(|| a.x.total_cmp(&b.x))
+        .then_with(|| a.y.total_cmp(&b.y))
+        .then_with(|| match (a.z, b.z) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Less,
+            (Some(_), None) => Ordering::Greater,
+            (Some(x), Some(y)) => x.total_cmp(&y),
+        })
+}
+
+/// The map arm of the total order: the shared size-then-keys prefix, then
+/// the values under those keys — the shape [`compare_maps`] states, but
+/// every step recursive through the total order, so a null, a cross-type
+/// pair, a point or a NaN under a key orders instead of deciding equality.
+/// `depth` is the values' container level (the caller's + 1).
+fn order_maps(
+    a: &std::collections::BTreeMap<String, Value>,
+    b: &std::collections::BTreeMap<String, Value>,
+    depth: u32,
+) -> Ordering {
+    map_size_then_keys(a, b).then_with(|| {
+        lexicographic(
+            a.values(),
+            b.values(),
+            Ordering::Equal,
+            Ordering::Equal,
+            |x, y| x.order_by_cmp_at(y, depth),
+        )
+    })
+}
+
+/// A path's total order (Neo4j's `PathValue.compareTo`): length, then the
+/// node sequence, then the relationship sequence — both by entity id, the
+/// same key a lone node or relationship orders by.
+fn path_order(a: &Path, b: &Path) -> Ordering {
+    a.nodes
+        .len()
+        .cmp(&b.nodes.len())
+        .then_with(|| {
+            a.nodes
+                .iter()
+                .map(|n| n.id)
+                .cmp(b.nodes.iter().map(|n| n.id))
+        })
+        .then_with(|| a.rels.iter().map(|r| r.id).cmp(b.rels.iter().map(|r| r.id)))
 }
 
 impl Value {
@@ -255,6 +318,12 @@ impl Value {
 
     /// Total order for ORDER BY / min / max. Comparison operators still use
     /// `compare`, which is three-valued and incomparable across types.
+    ///
+    /// Every value kind has an arm, so the relation is a total order:
+    /// antisymmetric, transitive, and `Equal` only for two values of one
+    /// kind. The kind rank decides cross-kind pairs; the same-kind arms
+    /// decide the rest. A new kind with a rank of its own needs its arm
+    /// here — the last arm's `Equal` is the wrong answer for it.
     pub fn order_by_cmp(&self, other: &Value) -> Ordering {
         self.order_by_cmp_at(other, 0)
     }
@@ -275,6 +344,11 @@ impl Value {
             // ORDER BY / min / max still rank them.
             (Value::Uuid(a), Value::Uuid(b)) => a.cmp(b),
             (Value::Temporal(a), Value::Temporal(b)) => a.total_cmp(b),
+            (Value::Point(a), Value::Point(b)) => point_order(a, b),
+            (Value::Node(a), Value::Node(b)) => a.id.cmp(&b.id),
+            (Value::Relationship(a), Value::Relationship(b)) => a.id.cmp(&b.id),
+            (Value::Path(a), Value::Path(b)) => path_order(a, b),
+            (Value::Map(a), Value::Map(b)) if descends(depth) => order_maps(a, b, depth + 1),
             (Value::List(a), Value::List(b)) if descends(depth) => lexicographic(
                 a.iter(),
                 b.iter(),
@@ -307,6 +381,10 @@ impl Value {
                     |x, y| x.order_by_cmp_at(y, depth + 1),
                 )
             }
+            // The same-rank scalars (numbers across int/float, strings,
+            // booleans, bytes), and the over-depth containers saturating as
+            // ADR-0462 states. A scalar pair's three-valued comparison is
+            // already total here.
             _ => self.compare_at(other, depth).unwrap_or(Ordering::Equal),
         }
     }
@@ -350,3 +428,7 @@ impl Value {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "ordering_tests.rs"]
+mod total_order_tests;

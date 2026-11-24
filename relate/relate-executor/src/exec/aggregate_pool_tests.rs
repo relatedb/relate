@@ -7,7 +7,8 @@
 use std::collections::BTreeMap;
 
 use super::test_support::{
-    assert_expression_cap, fold_group_rows, group_with_xs, percentile_fn, try_exec_cypher,
+    agg_eval_rows, assert_expression_cap, distinct_percentile, fold_group_rows, group_with_xs,
+    percentile_fn, try_exec_cypher,
 };
 use crate::graph::Graph;
 use crate::overlay::ExecGraph;
@@ -135,9 +136,12 @@ fn different_operands_stay_separate_and_mixed_numbers_fold() {
     a.sort_by(f64::total_cmp);
     let b: Vec<f64> = (1..=9).map(|i| i as f64 * 100.0).collect();
     let row = &result.rows[0];
-    assert_percentile(float(&row[0]), oracle(&a, 0.5, false), "column 0");
+    // The discrete columns answer an operand value, so read them as numbers
+    // rather than asserting the FLOAT the continuous kind produces.
+    let number = |value: &Value| value.as_number().expect("a percentile over numbers");
+    assert_percentile(Some(number(&row[0])), oracle(&a, 0.5, false), "column 0");
     assert_percentile(float(&row[1]), oracle(&a, 0.5, true), "column 1");
-    assert_percentile(float(&row[2]), oracle(&b, 0.5, false), "column 2");
+    assert_percentile(Some(number(&row[2])), oracle(&b, 0.5, false), "column 2");
     assert_percentile(float(&row[3]), oracle(&b, 0.25, true), "column 3");
 }
 
@@ -154,8 +158,10 @@ fn a_distinct_percentile_beside_a_plain_one_is_correct() {
     )
     .expect("the percentiles run");
     let row = &result.rows[0];
-    assert_eq!(float(&row[0]), Some(1.0));
-    assert_eq!(float(&row[1]), Some(2.0));
+    // The discrete picks are the INTEGER operands themselves; the continuous
+    // sample answers an f64.
+    assert_eq!(row[0], Value::Int(1));
+    assert_eq!(row[1], Value::Int(2));
     assert_eq!(float(&row[2]), Some(1.0));
 }
 
@@ -251,29 +257,24 @@ fn many_percentiles_fit_a_cap_one_buffer_fits() {
     g.configure_expression_memory_limit(Some(cap));
     let graph = ExecGraph::read(&g);
     let group = group_with_xs(&(0..rows).collect::<Vec<_>>());
-    let call = |p: f64| percentile_fn("percentileCont", p);
-    let all = Expr::List(vec![call(0.5), call(0.6), call(0.7), call(0.8)]);
-    let value = super::test_support::agg_eval_rows(&graph, &group, &all, &BTreeMap::new())
+    // One position list, so the shared and the DISTINCT run name the same
+    // percentiles.
+    let ps = [0.5, 0.6, 0.7, 0.8];
+    let all = Expr::List(
+        ps.iter()
+            .map(|&p| percentile_fn("percentileCont", p))
+            .collect(),
+    );
+    let value = agg_eval_rows(&graph, &group, &all, &BTreeMap::new())
         .expect("four percentiles share one buffer");
     assert!(matches!(value, Value::List(items) if items.len() == 4));
     // Non-shareable (DISTINCT) calls still retain Values and still refuse.
-    let distinct = |p: f64| {
-        let Expr::Function { name, args, .. } = percentile_fn("percentileCont", p) else {
-            panic!("percentile_fn builds a function call")
-        };
-        Expr::Function {
-            name,
-            distinct: true,
-            args,
-        }
-    };
-    let all = Expr::List(vec![
-        distinct(0.5),
-        distinct(0.6),
-        distinct(0.7),
-        distinct(0.8),
-    ]);
-    let error = super::test_support::agg_eval_rows(&graph, &group, &all, &BTreeMap::new())
-        .expect_err("the call is refused");
+    let all = Expr::List(
+        ps.iter()
+            .map(|&p| distinct_percentile("percentileCont", p))
+            .collect(),
+    );
+    let error =
+        agg_eval_rows(&graph, &group, &all, &BTreeMap::new()).expect_err("the call is refused");
     assert_expression_cap(&error, cap);
 }

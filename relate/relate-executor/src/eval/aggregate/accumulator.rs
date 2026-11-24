@@ -243,11 +243,23 @@ fn mean_offer(mean: &mut f64, value: f64, n: usize) {
 /// ([`needs_numbers`]).
 pub(crate) struct NotNumeric;
 
-/// A percentile's operand sample: the one strict numeric extraction (nulls
-/// skipped, every other non-number rejected, never silently dropped) and the
-/// one ascending sort. The fold over a list ([`fold_aggregate`]) and the
-/// grouped path's shared operand pool both build their sample here, so the
-/// two cannot drift into separate percentile pipelines.
+/// The one strict numeric extraction over an aggregate operand: `None` for
+/// a null (skipped, as every aggregate skips nulls), the number otherwise,
+/// or [`NotNumeric`] — never a silently dropped value. The f64 sample and
+/// the value-retaining percentile path both extract through it.
+fn operand_number(value: &Value) -> std::result::Result<Option<f64>, NotNumeric> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    value.as_number().map(Some).ok_or(NotNumeric)
+}
+
+/// The shared percentile pool's operand sample: the strict numeric
+/// extraction ([`operand_number`]: nulls skipped, every other non-number
+/// rejected, never silently dropped) into the eight-byte keys the pool keeps
+/// and the one ascending sort over them. The pooled path is
+/// `percentileCont`-only; a retained percentile keeps its values instead
+/// ([`Percentile::rank_values`]).
 #[derive(Default)]
 pub(crate) struct PercentileSample {
     nums: Vec<f64>,
@@ -256,10 +268,9 @@ pub(crate) struct PercentileSample {
 impl PercentileSample {
     /// Keep one operand: nothing for a null, the number otherwise.
     pub(crate) fn offer(&mut self, value: &Value) -> std::result::Result<(), NotNumeric> {
-        if value.is_null() {
-            return Ok(());
+        if let Some(number) = operand_number(value)? {
+            self.nums.push(number);
         }
-        self.nums.push(value.as_number().ok_or(NotNumeric)?);
         Ok(())
     }
 
@@ -268,14 +279,13 @@ impl PercentileSample {
         self.nums.len()
     }
 
-    /// The sample in ascending order. The sort is `f64::total_cmp`, matching
-    /// the engine's total order — NaN sorts after every number, and the
-    /// comparator never fabricates a position for it via
-    /// `partial_cmp(...).unwrap_or(Equal)` (which the standard library
-    /// documents as an unspecified order and a possible panic for a
-    /// non-total comparator).
+    /// The sample in ascending order, through the engine's one total order
+    /// ([`Value::order_by_cmp`], whose NaN rank sorts every NaN — either
+    /// sign bit — after every number), so the pooled and retained
+    /// percentile samples cannot disagree on a position.
     pub(crate) fn into_sorted(mut self) -> Vec<f64> {
-        self.nums.sort_by(f64::total_cmp);
+        self.nums
+            .sort_by(|a, b| Value::Float(*a).order_by_cmp(&Value::Float(*b)));
         self.nums
     }
 }
@@ -329,27 +339,58 @@ impl Percentile {
         }
     }
 
-    /// The percentile over an ascending sample
-    /// ([`PercentileSample::into_sorted`]); the one rank pick every
-    /// percentile path ends in, so a sample sorted once serves any number of
-    /// calls. An empty sample has no percentile to report (null). The [0, 1]
-    /// safety rests on the caller's validation; it is asserted here, at the
-    /// boundary both kinds cross, so a caller that skips the check fails
-    /// loudly in debug rather than folding an out-of-range position.
-    pub(crate) fn rank_in_sorted(self, sorted: &[f64]) -> Value {
-        let (Self::Cont(p) | Self::Disc(p)) = self;
-        debug_assert!(
-            (0.0..=1.0).contains(&p),
-            "percentile must be validated before the fold: {p}"
-        );
+    /// The percentile over the pooled ascending `f64` sample
+    /// ([`PercentileSample::into_sorted`]), shared by every call reading the
+    /// pool. Only `percentileCont` is pooled: a discrete percentile answers
+    /// an input value, which an f64 image cannot reproduce above 2^53, so
+    /// `percentileDisc` stays on the retained path
+    /// ([`Self::rank_values`]). An empty sample has no percentile to report
+    /// (null); the [0, 1] argument was validated before the fold.
+    pub(crate) fn rank_pooled(self, sorted: &[f64]) -> Result<Value> {
         if sorted.is_empty() {
-            return Value::Null;
+            return Ok(Value::Null);
         }
         match self {
-            Self::Cont(p) => rank_cont(sorted, p),
-            Self::Disc(p) => rank_disc(sorted, p),
+            Self::Cont(p) => Ok(rank_cont(sorted.len(), p, |i| sorted[i])),
+            Self::Disc(_) => Err(Error::internal(
+                "percentileDisc is not pooled: its answer is an operand value",
+            )),
         }
     }
+
+    /// The percentile over the retained operand values — the path for
+    /// DISTINCT calls and every `percentileDisc`. The retained vector is
+    /// filtered and sorted **in place**, through the one ORDER BY total
+    /// order ([`Value::order_by_cmp`]): the retaining site already charged
+    /// exactly these operands, and a mirrored `(number, value)` copy would
+    /// hold them twice while charging once. The continuous kind reads the
+    /// bracketing numbers, and the discrete pick answers an input value: an
+    /// INTEGER keeps its identity above 2^53 instead of coming back through
+    /// an f64 image. An empty sample is null.
+    fn rank_values(self, name: &str, mut vals: Vec<Value>) -> Result<Value> {
+        // Validation first, so the typed rejection propagates before any
+        // compaction; then `retain` drops the nulls in place.
+        for value in &vals {
+            operand_number(value).map_err(|NotNumeric| needs_numbers(name))?;
+        }
+        vals.retain(|value| !value.is_null());
+        if vals.is_empty() {
+            return Ok(Value::Null);
+        }
+        vals.sort_by(Value::order_by_cmp);
+        match self {
+            Self::Cont(p) => Ok(rank_cont(vals.len(), p, |i| value_number(&vals[i]))),
+            Self::Disc(p) => Ok(rank_disc(&vals, p)),
+        }
+    }
+}
+
+/// The numeric value of one retained percentile operand, whose `as_number`
+/// the pre-pass already accepted.
+fn value_number(value: &Value) -> f64 {
+    value
+        .as_number()
+        .expect("the percentile sample holds numbers only")
 }
 
 /// The one per-kind fold over an aggregate call's already-evaluated operand
@@ -386,15 +427,7 @@ pub(crate) fn fold_aggregate(input: FoldInput, name: &str, vals: Vec<Value>) -> 
             }
             fold.finish()
         }
-        FoldInput::Percentile(percentile) => {
-            let mut sample = PercentileSample::default();
-            for value in &vals {
-                sample
-                    .offer(value)
-                    .map_err(|NotNumeric| needs_numbers(name))?;
-            }
-            Ok(percentile.rank_in_sorted(&sample.into_sorted()))
-        }
+        FoldInput::Percentile(percentile) => percentile.rank_values(name, vals),
     }
 }
 
@@ -543,38 +576,43 @@ impl StreamFold {
     }
 }
 
-/// `percentileCont` over the non-empty sorted numeric operand values; `p` is
-/// the already-validated percentile in [0, 1]. Linear interpolation between
-/// the two nearest ranks.
+/// `percentileCont` over `len` non-empty ascending operand values, whose
+/// number at index `i` is `num_at(i)` — the pooled sample's `f64` buffer and
+/// the retained sample's number-beside-value pairs each answer through the
+/// one accessor, so the rank arithmetic is stated once. `p` is the
+/// already-validated percentile in [0, 1]. Linear interpolation between the
+/// two nearest ranks.
 ///
 /// A degenerate interpolation weight selects its endpoint instead of
 /// multiplying it in: `f == 0.0` makes `lo == hi` (the single-sample case
 /// included), so the formula's other term is `sample * 0.0` — NaN for
 /// ±Infinity, which would turn `[inf]` and `[1.0, 2.0, inf]` at `p == 1.0`
 /// into NaN rather than ±Infinity.
-fn rank_cont(nums: &[f64], p: f64) -> Value {
-    let h = p * (nums.len() - 1) as f64;
+fn rank_cont(len: usize, p: f64, num_at: impl Fn(usize) -> f64) -> Value {
+    let h = p * (len - 1) as f64;
     let lo = h.floor() as usize;
     let hi = h.ceil() as usize;
     let f = h - lo as f64;
     let value = if f == 0.0 {
-        nums[lo]
+        num_at(lo)
     } else {
-        nums[lo] * (1.0 - f) + nums[hi] * f
+        num_at(lo) * (1.0 - f) + num_at(hi) * f
     };
     Value::Float(value)
 }
 
-/// `percentileDisc` over the non-empty sorted numeric operand values; `p` is
-/// the already-validated percentile in [0, 1]. The nearest rank at or below
-/// the percentile position.
+/// `percentileDisc` over the non-empty ascending operand values; `p` is the
+/// already-validated percentile in [0, 1]. The
+/// nearest rank at or below the percentile position, answered as the picked
+/// input value itself (the discrete percentile returns one of its operands,
+/// type included).
 ///
 /// The rank arithmetic is total: `saturating_sub(1)` yields index 0 at
 /// `p == 0.0` (where `(0.0f64).ceil() as usize` is 0 and would otherwise
 /// underflow the subtraction, wrapping to the last element in release), and
 /// the same index as before for every other `p` in [0, 1]. With `p <= 1.0`
-/// the ceiling never exceeds `nums.len()`, so no further clamp is needed.
-fn rank_disc(nums: &[f64], p: f64) -> Value {
-    let idx = (((nums.len() as f64) * p).ceil() as usize).saturating_sub(1);
-    Value::Float(nums[idx])
+/// the ceiling never exceeds `values.len()`, so no further clamp is needed.
+fn rank_disc(values: &[Value], p: f64) -> Value {
+    let idx = (((values.len() as f64) * p).ceil() as usize).saturating_sub(1);
+    values[idx].clone()
 }

@@ -127,9 +127,9 @@ fn binary_inner(charge: Option<&ExecGraph<'_>>, op: BinaryOp, l: Value, r: Value
         // ordering arm in `Value::compare`, so `<=`/`>=` keep working for
         // equal vectors through the equality fallback.
         BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Lte | BinaryOp::Gte => {
-            let (equality_allowed, pred) =
+            let ordering =
                 ordering_operator(op).expect("`op` matched one of the four ordering operators");
-            cmp_bool(&l, &r, equality_allowed, pred)
+            cmp_bool(&l, &r, ordering.equality_allowed, ordering.pred)
         }
         // The boolean connectives name their operand contexts with the
         // operator's own token — the one spelling `BinaryOp::as_str` owns,
@@ -198,22 +198,61 @@ fn binary_inner(charge: Option<&ExecGraph<'_>>, op: BinaryOp, l: Value, r: Value
     })
 }
 
-/// One ordering operator: whether an incomparable-but-equal pair satisfies it
-/// (the `<=`/`>=` disjunct `a = b`), and the predicate over `Value::compare`.
-pub(crate) type OrderingOperator = (bool, fn(Ordering) -> bool);
+/// The side a comparison operator orders its operands on — the direction
+/// the expression evaluator and the index range seek both read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OrderingSide {
+    Greater,
+    Less,
+}
+
+impl OrderingSide {
+    /// Whether this side is the greater-than direction.
+    pub(crate) fn is_greater(self) -> bool {
+        self == OrderingSide::Greater
+    }
+}
+
+/// One ordering operator: the direction it orders on, whether an
+/// incomparable-but-equal pair satisfies it (the `<=`/`>=` disjunct
+/// `a = b`), and the predicate over `Value::compare` that pair determines.
+pub(crate) struct OrderingOperator {
+    pub(crate) side: OrderingSide,
+    pub(crate) equality_allowed: bool,
+    pub(crate) pred: fn(Ordering) -> bool,
+}
+
+impl OrderingOperator {
+    /// The one construction: the predicate follows from the side and the
+    /// equality tolerance, so a row cannot name a combination the two
+    /// fields do not determine.
+    const fn new(side: OrderingSide, equality_allowed: bool) -> Self {
+        let pred: fn(Ordering) -> bool = match (side, equality_allowed) {
+            (OrderingSide::Less, false) => Ordering::is_lt,
+            (OrderingSide::Less, true) => Ordering::is_le,
+            (OrderingSide::Greater, false) => Ordering::is_gt,
+            (OrderingSide::Greater, true) => Ordering::is_ge,
+        };
+        Self {
+            side,
+            equality_allowed,
+            pred,
+        }
+    }
+}
 
 /// The four ordering operators' [`OrderingOperator`]s: `<=`/`>=` also hold
 /// when the operands are equal, which is what makes them true for values
 /// `Value::compare` cannot order (durations, UUIDs, points) where `<`/`>` are
-/// null. The shared table keeps `binary`'s evaluation and the index range
-/// filter (`graph::declared::order::cmp_holds`) on one definition; `None` for
-/// every other operator.
+/// null. One row per operator keeps `binary`'s evaluation and the index
+/// range seek (`graph::declared::order`) on one definition; `None` for every
+/// other operator.
 pub(crate) fn ordering_operator(op: BinaryOp) -> Option<OrderingOperator> {
     Some(match op {
-        BinaryOp::Lt => (false, Ordering::is_lt),
-        BinaryOp::Gt => (false, Ordering::is_gt),
-        BinaryOp::Lte => (true, Ordering::is_le),
-        BinaryOp::Gte => (true, Ordering::is_ge),
+        BinaryOp::Lt => OrderingOperator::new(OrderingSide::Less, false),
+        BinaryOp::Gt => OrderingOperator::new(OrderingSide::Greater, false),
+        BinaryOp::Lte => OrderingOperator::new(OrderingSide::Less, true),
+        BinaryOp::Gte => OrderingOperator::new(OrderingSide::Greater, true),
         _ => return None,
     })
 }

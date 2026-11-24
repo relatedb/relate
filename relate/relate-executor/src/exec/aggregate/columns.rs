@@ -23,7 +23,7 @@ use relate_core::{Error, Result, Value};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 use crate::workspace::buffer_growth;
-use relate_ir::Expr;
+use relate_ir::{AggregateKind, Expr};
 
 use super::bill::GroupBill;
 use super::eval::FoldedGroup;
@@ -56,12 +56,14 @@ pub(crate) struct AccTable<'e> {
 impl<'e> AccTable<'e> {
     /// Build the table over the discovered sites: one column per site, and
     /// the percentile pools with the sites that read them. The routing is
-    /// the table's own construction — every plain percentile call over a
-    /// shareable operand goes to one pool per distinct operand expression,
+    /// the table's own construction — every plain `percentileCont` call over
+    /// a shareable operand goes to one pool per distinct operand expression,
     /// and the pool carries its readers — so a site's `Pooled` state and
     /// the pool backing it are made in one place, where both columns live.
-    /// A DISTINCT call keeps its own seen-set and values, and `collect`
-    /// keeps `Value`s: neither is pooled.
+    /// `percentileDisc` answers an operand value, which the pool's f64
+    /// buffer cannot reproduce, so it declines the pool and keeps its
+    /// values. A DISTINCT call keeps its own seen-set and values, and
+    /// `collect` keeps `Value`s: neither is pooled.
     pub(super) fn new(mut sites: Vec<SiteColumn<'e>>) -> Self {
         let mut pools: Vec<PoolSite<'e>> = Vec::new();
         for (site_index, site) in sites.iter_mut().enumerate() {
@@ -73,7 +75,10 @@ impl<'e> AccTable<'e> {
                 continue;
             };
             let operand = percentile_call.operand;
-            if site.seen.is_some() || !shareable(operand) {
+            if percentile_call.kind != AggregateKind::PercentileCont
+                || site.seen.is_some()
+                || !shareable(operand)
+            {
                 continue;
             }
             let index = match pools.iter().position(|pool| pool.reads(operand)) {

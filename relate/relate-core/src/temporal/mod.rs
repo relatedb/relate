@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 use std::fmt;
 
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Timelike, Weekday};
+use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Weekday};
 
 use crate::{Error, Value};
 
@@ -383,6 +383,12 @@ impl Temporal {
     /// * `DateTime` — instant (nanos included), then offset, then a plain
     ///   offset before a named zone, then the zone name.
     /// * `Duration` — not orderable at all; only `=` is defined for it.
+    ///
+    /// A far-year value is the same Cypher type as its in-range sibling —
+    /// DATE and LOCAL DATETIME each have two internal representations
+    /// (chrono's, and the proleptic [`Temporal::CivilDate`] /
+    /// [`Temporal::CivilDateTime`]) — so a pair spanning the two orders by
+    /// its calendar fields instead of answering null.
     pub fn compare(&self, other: &Temporal) -> Option<Ordering> {
         match (self, other) {
             (Temporal::Date(a), Temporal::Date(b)) => Some(a.cmp(b)),
@@ -398,8 +404,32 @@ impl Temporal {
                     day: db,
                 },
             ) => Some((ya, ma, da).cmp(&(yb, mb, db))),
+            (Temporal::Date(a), Temporal::CivilDate { year, month, day }) => {
+                Some(date_parts(*a).cmp(&(*year, *month, *day)))
+            }
+            (Temporal::CivilDate { year, month, day }, Temporal::Date(b)) => {
+                Some((*year, *month, *day).cmp(&date_parts(*b)))
+            }
             (Temporal::LocalTime(a), Temporal::LocalTime(b)) => Some(a.cmp(b)),
             (Temporal::LocalDateTime(a), Temporal::LocalDateTime(b)) => Some(a.cmp(b)),
+            (
+                Temporal::LocalDateTime(a),
+                Temporal::CivilDateTime {
+                    year,
+                    month,
+                    day,
+                    time,
+                },
+            ) => Some(local_datetime_parts(*a).cmp(&(*year, *month, *day, *time))),
+            (
+                Temporal::CivilDateTime {
+                    year,
+                    month,
+                    day,
+                    time,
+                },
+                Temporal::LocalDateTime(b),
+            ) => Some((*year, *month, *day, *time).cmp(&local_datetime_parts(*b))),
             (
                 Temporal::Time {
                     time: a,
@@ -515,6 +545,20 @@ impl fmt::Display for Temporal {
 
 fn time_to_nanos(t: NaiveTime) -> i64 {
     t.num_seconds_from_midnight() as i64 * 1_000_000_000 + t.nanosecond() as i64
+}
+
+/// The calendar ordering key of a representable date — the same triple a
+/// [`Temporal::CivilDate`] carries, so DATE's two representations share one
+/// order.
+fn date_parts(d: NaiveDate) -> (i64, u32, u32) {
+    (i64::from(d.year()), d.month(), d.day())
+}
+
+/// The ordering key of a representable local date-time, in the shape a
+/// [`Temporal::CivilDateTime`] carries.
+fn local_datetime_parts(dt: NaiveDateTime) -> (i64, u32, u32, NaiveTime) {
+    let (year, month, day) = date_parts(dt.date());
+    (year, month, day, dt.time())
 }
 
 /// Nanoseconds of the UTC clock time a `Time` denotes. Deliberately *not*
