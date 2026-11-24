@@ -45,6 +45,10 @@ jobs:
   in-memory:
     name: proptest in-memory (PROPTEST_CASES=10000)
     runs-on: ubuntu-latest
+    # Checkout is the only token use; the regression-file artifacts
+    # upload on the runtime token.
+    permissions:
+      contents: read
     env:
       PROPTEST_CASES: "10000"
     steps:
@@ -92,6 +96,10 @@ jobs:
   recovery:
     name: proptest recovery, fsync-bound (PROPTEST_CASES=1024)
     runs-on: ubuntu-latest
+    # Checkout is the only token use; the regression-file artifacts
+    # upload on the runtime token.
+    permissions:
+      contents: read
     env:
       PROPTEST_CASES: "1024"
     steps:

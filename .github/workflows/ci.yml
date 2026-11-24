@@ -59,6 +59,10 @@ jobs:
   sonic-init:
     name: Sonic init
     runs-on: ubuntu-latest
+    # The job reads nothing from this repository: the gosonic checkout is
+    # a pinned public third-party repo and the artifact upload rides the
+    # runtime token, not GITHUB_TOKEN. No scopes.
+    permissions: {}
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
         if: runner.os == 'Linux'
@@ -104,6 +108,9 @@ jobs:
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
+    # The full-history checkout behind the diff is the only token use.
+    permissions:
+      contents: read
     outputs:
       code: ${{ steps.detect.outputs.code }}
       full_ci: ${{ steps.full.outputs.full }}
@@ -295,6 +302,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    # Checkout plus the previous run's job list that
+    # scripts/prev-failed-jobs.sh reads through the Actions API.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
         if: runner.os == 'Linux'
@@ -363,6 +375,11 @@ jobs:
     # draft-smoke runs fmt and light-crate clippy.
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -389,6 +406,11 @@ jobs:
     needs: [changes, sonic-init]
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       # Runner pilot (LABS-310): the 19-minute critical path moved to the
@@ -437,6 +459,10 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full_ci == 'false'
     runs-on: linux-4-core-x86
+    # Checkout plus the sccache and nextest release downloads through the
+    # API with the job token.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -489,6 +515,10 @@ jobs:
     # A gate that inherits that filter would skip the very case it is for.
     if: github.event_name == 'pull_request' && needs.changes.outputs.full_ci == 'true'
     runs-on: linux-4-core-x86
+    # Checkout with full history plus the sccache release download; the
+    # premerge fetch uses the checkout's own persisted credentials.
+    permissions:
+      contents: read
     steps:
       # Full history: the merge needs its merge base, and a depth-1
       # checkout does not have one.
@@ -525,6 +555,9 @@ jobs:
     needs: [changes]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: linux-4-core-x86
+    # Checkout plus the sccache release download through the API.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -549,6 +582,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
+    # Checkout is the only token use — the language toolchains and the
+    # client package registries are public downloads.
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
@@ -677,6 +714,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: macos-5-core-arm64
+    # Checkout plus the sccache release download; the cache-service step
+    # reads runner environment variables, not the API.
+    permissions:
+      contents: read
     steps:
       # Pin the head like os-smoke: pull_request otherwise checks out the
       # merge with main.
@@ -781,6 +822,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: windows-16-core
+    # Checkout is the only token use.
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
@@ -836,6 +880,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: windows-16-core
+    # Checkout is the only token use.
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
@@ -961,6 +1008,11 @@ jobs:
     needs: [changes, sonic-init]
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -1008,6 +1060,11 @@ jobs:
     # disk headroom, and the 150 GB-SSD group skips the free-disk clean via
     # the MIN_FREE_MB early-exit.
     runs-on: linux-4-core-x86
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -1035,6 +1092,11 @@ jobs:
     # The debug-info trim the `dev` shared-key (ADR-0251 §5) jobs must
     # agree on is workflow-level env now (top of file, ADR-0255).
     runs-on: ${{ matrix.os }}
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -1059,6 +1121,11 @@ jobs:
     name: Link check (README + docs)
     needs: sonic-init
     runs-on: ubuntu-latest
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -1136,6 +1203,11 @@ jobs:
     # LABS-310 runner pilot: release-profile lane on the 4-core group
     # (see stack-release).
     runs-on: linux-4-core-x86
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -1159,6 +1231,11 @@ jobs:
     # LABS-310 runner pilot: release-profile lane on the 4-core group
     # (see stack-release).
     runs-on: linux-4-core-x86
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -1185,6 +1262,11 @@ jobs:
     # corpus job is the one lane piloted on the 4-core runner; every other
     # free-tier lane is unchanged. Success bar is a 2x wall drop.
     runs-on: linux-4-core-x86
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -1217,6 +1299,11 @@ jobs:
     # script's MIN_FREE_MB early-exit would only pay its ~1 min tree scan
     # to then skip.
     runs-on: ${{ matrix.leg == 'e2e' && 'linux-4-core-x86' || 'ubuntu-latest' }}
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -1263,6 +1350,11 @@ jobs:
     needs: [changes, sonic-init]
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -1343,6 +1435,11 @@ jobs:
     needs: [changes, sonic-init]
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -1365,6 +1462,11 @@ jobs:
     needs: [changes, sonic-init]
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -1389,6 +1491,11 @@ jobs:
     needs: [changes, sonic-init]
     if: needs.changes.outputs.full_ci == 'true' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -1637,6 +1744,10 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full_ci == 'false'
     runs-on: ubuntu-latest
+    # The checkout that `docker compose config` validates is the only
+    # token use.
+    permissions:
+      contents: read
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
         if: runner.os == 'Linux'
@@ -1675,6 +1786,11 @@ jobs:
     needs: [changes, sonic-init]
     if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
     runs-on: linux-8-core-x86
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -1702,6 +1818,11 @@ jobs:
     needs: [changes, sonic-init]
     if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.code == 'true'
     runs-on: linux-8-core-x86
+    # Checkout, the gosonic artifact download, and the Sonic stage's
+    # token-authenticated release downloads.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 

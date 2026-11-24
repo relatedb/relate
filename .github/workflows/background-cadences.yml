@@ -56,6 +56,10 @@ jobs:
     name: LDBC SF0.1 full latency suite
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 3 * * *'
     runs-on: ubuntu-latest
+    # Checkout is the only token use; the SF0.1 extract fetch and the
+    # report upload need no scopes.
+    permissions:
+      contents: read
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
         if: runner.os == 'Linux'
@@ -247,6 +251,10 @@ jobs:
     name: Docker image build + smoke (ADR-0128)
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 3 * * *'
     runs-on: ubuntu-latest
+    # Checkout plus `make docker`'s pinned sccache-release fetch through
+    # the API with the job token.
+    permissions:
+      contents: read
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
         if: runner.os == 'Linux'
@@ -301,6 +309,9 @@ jobs:
     name: Full-scale dataset fixtures (RELATE_FULL_DATA=1)
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 3 * * *'
     runs-on: ubuntu-latest
+    # Checkout is the only token use.
+    permissions:
+      contents: read
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
         if: runner.os == 'Linux'
@@ -340,6 +351,10 @@ jobs:
     name: WASM full (browser smokes + release bundle)
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 */6 * * *'
     runs-on: ubuntu-latest
+    # Checkout plus the wasm-toolchain release downloads the install
+    # scripts fetch through the API with the job token.
+    permissions:
+      contents: read
     steps:
       - name: Patch CVE-2026-111943 (eMudhra CA compromise)
         if: runner.os == 'Linux'
@@ -399,6 +414,9 @@ jobs:
     name: OS sweep (${{ matrix.os }})
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 */6 * * *'
     runs-on: ${{ matrix.os }}
+    # Checkout is the only token use.
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash

@@ -35,6 +35,11 @@ jobs:
   jepsen:
     name: Jepsen (set + kill -9 crash durability)
     runs-on: ubuntu-latest
+    # Checkout of the certified ref plus `make docker`'s pinned
+    # sccache-release fetch through the API with the job token (the
+    # workflow-level GITHUB_TOKEN env).
+    permissions:
+      contents: read
     # Cold image build (~18 min) + first-run Clojure/Maven deps into the
     # m2 volume + the 90 s run: bounded so a wedged `docker compose run`
     # cannot hold a runner for the default 6 h.

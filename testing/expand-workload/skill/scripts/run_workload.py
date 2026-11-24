@@ -32,6 +32,20 @@ class _Section(NamedTuple):
     tier: Optional[str]
     area: Optional[str]
 
+
+class _Heading(NamedTuple):
+    """A section heading — its level (2 kind, 3 tier, 4 area) and title."""
+
+    level: int
+    title: str
+
+
+class _Block(NamedTuple):
+    """A cypher block — its attribute string and its query text."""
+
+    attrs: str
+    query: str
+
 TIMEOUT_S = 10.0  # soft budget per execution; overruns are reported as timeouts
 
 
@@ -258,10 +272,83 @@ def _split_statements(text):
     return [s.strip() for s in out if s.strip()]
 
 
-# attr values may be quoted ('...' or "...") and quoted values may contain ]
-ADOC_BLOCK = re.compile(
-    r'(?ms)^\[source,cypher((?:[^\]\x27\x22]*|\x22[^\x22]*\x22|\x27[^\x27]*\x27)*)\]\s*\n----\s*\n(.*?)\n----\s*$'
-)
+# The adoc cypher-block matcher is scanner-only: a quote-aware walk of
+# the header, plus one tail regex for the fences and the query. The
+# header language (attr values may be quoted with '...' or "...", and
+# quoted values may contain `]`) has no single-regex spelling that is
+# both backtracking-free (the ambiguous alternation was the ReDoS this
+# rewrite cleared) and safe on the 3.9 floor (the possessive quantifier
+# that would disambiguate it is Python 3.11+ only, and failed the module
+# import on 3.9/3.10) — so the header is not regexed at all:
+# `_header_closer` tracks the active quote and returns the first `]`
+# outside quotes in one O(n) pass, and the tail regex takes the fence
+# pair and the query past that closer.
+_BLOCK_OPEN = "[source,cypher"
+# The one source for the block tail — the fence pair around the query —
+# so no second spelling of the tail can drift.
+_TAIL_SRC = r"\s*\n----\s*\n(.*?)\n----\s*$"
+_ADOC_TAIL = re.compile(f"(?ms){_TAIL_SRC}")
+
+
+def _block_starts(text):
+    """Index of every line-start block open (position 0 or right after a
+    newline), located at C speed so long documents never walk engine
+    positions."""
+    starts = []
+    pos = text.find(_BLOCK_OPEN)
+    while pos != -1:
+        if pos == 0 or text[pos - 1] == "\n":
+            starts.append(pos)
+        pos = text.find(_BLOCK_OPEN, pos + 1)
+    return starts
+
+
+def _header_closer(text, start):
+    """Index of the `]` that closes the header attrs beginning at `start`
+    — the first `]` outside quotes — or None when there is none: either
+    no `]` exists past `start`, or a quote opened and never closes, so
+    every `]` past it is attribute text."""
+    quote = None
+    i = start
+    while True:
+        if quote is not None:
+            close = text.find(quote, i)
+            if close == -1:
+                return None
+            quote = None
+            i = close + 1
+            continue
+        # outside quotes, the earliest of ] ' " decides — each located at
+        # C speed, so long attr spans never walk character by character
+        found = (text.find("]", i), text.find("'", i), text.find('"', i))
+        nxt = min((p for p in found if p != -1), default=-1)
+        if nxt == -1:
+            return None  # neither a quote nor a closer remains
+        if text[nxt] == "]":
+            return nxt
+        quote, i = text[nxt], nxt + 1
+
+
+def _adoc_blocks(text):
+    """(position, _Block) per cypher block, in document order: the
+    scanner finds each candidate's header closer, the tail regex takes
+    the fence pair and the query past it. A block already taken is never
+    entered again, so blocks never overlap."""
+    blocks = []
+    consumed = 0
+    for start in _block_starts(text):
+        if start < consumed:
+            continue  # inside a block already taken
+        attrs_start = start + len(_BLOCK_OPEN)
+        closer = _header_closer(text, attrs_start)
+        if closer is None:
+            continue  # no header closer — not a block
+        tail = _ADOC_TAIL.match(text, closer + 1)
+        if tail is None:
+            continue  # no fence pair past the closer — no block
+        blocks.append((start, _Block(text[attrs_start:closer], tail.group(1))))
+        consumed = tail.end()
+    return blocks
 
 
 def load_workload(path: Path):
@@ -283,16 +370,19 @@ def load_workload(path: Path):
     # enclosing section's kind/tier/area (two passes merged by position:
     # one alternation with DOTALL lets the header branch eat whole blocks)
     tokens = sorted(
-        [("header", m.start(), m) for m in re.finditer(r"(?m)^(=+) (.+)$", text)]
-        + [("block", m.start(), m) for m in ADOC_BLOCK.finditer(text)],
-        key=lambda t: t[1],
+        [
+            (m.start(), _Heading(len(m.group(1)), m.group(2).strip()))
+            for m in re.finditer(r"(?m)^(=+) (.+)$", text)
+        ]
+        + _adoc_blocks(text),
+        key=lambda t: t[0],
     )
-    for tok, _, m in tokens:
-        if tok == "header":
-            # dispatch on the captured heading level — == kind, === tier,
+    for _, event in tokens:
+        if isinstance(event, _Heading):
+            # dispatch on the heading level — == kind, === tier,
             # ==== area — the title only picks the value within its level,
             # so a narrative `== Round 2 — paging` header cannot clobber area
-            level, title = len(m.group(1)), m.group(2).strip()
+            level, title = event.level, event.title
             low = title.lower()
             if level == 2:
                 for k in ("read", "write"):
@@ -307,8 +397,8 @@ def load_workload(path: Path):
             continue
         entries.append(
             _entry_from_block(
-                m.group(1),
-                m.group(2),
+                event.attrs,
+                event.query,
                 _Section(kind, tier, area),
                 fallback_id=f"adoc.{len(entries):04d}",
                 source_name=path.name,

@@ -11,7 +11,11 @@ fn test_datetime_param_naive_is_localdatetime() {
             .call_method1("datetime", (2024, 3, 14, 12, 30, 45))
             .unwrap();
         let cv = py_to_cypher_value(&dt).unwrap();
-        assert!(matches!(cv, CypherValue::LocalDateTime(_)), "{cv:?}");
+        assert!(
+            matches!(cv, CypherValue::LocalDateTime(_)),
+            "expected LocalDateTime, got {}",
+            cv.type_name()
+        );
     });
 }
 

@@ -57,7 +57,13 @@ UNIT_PATTERNS = {
         ("fn", re.compile(r"^\s*(?:public|private|protected|static|final|synchronized|abstract|\s)+[\w<>\[\],.?]+\s+(?P<name>[a-zA-Z_]\w*)\s*\([^;]*$")),
     ],
     "c": [
-        ("fn", re.compile(r"^(?:static\s+|inline\s+|[A-Za-z_][\w\s\*]*\s)+(?P<name>[A-Za-z_]\w*)\s*\([^;]*$")),
+        # One unambiguous prefix token run — a letter, a body of word /
+        # whitespace / `*` characters, one trailing whitespace — instead of
+        # the alternation-plus-star it replaces: any concatenation of
+        # `static `, `inline `, and type-token units is itself exactly one
+        # such run, so the matched language is identical, while the single
+        # greedy quantifier cannot backtrack catastrophically.
+        ("fn", re.compile(r"^[A-Za-z_][\w\s\*]*\s(?P<name>[A-Za-z_]\w*)\s*\([^;]*$")),
     ],
 }
 UNIT_PATTERNS["typescript"] = UNIT_PATTERNS["javascript"] + [

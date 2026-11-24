@@ -36,13 +36,14 @@ fn try_new_database_ns(path: &str, namespace: &str) -> PyResult<Database> {
 }
 
 /// The `match cv { Variant(x) => x, other => panic!(…) }` extraction,
-/// written once per variant used in this suite (F-1-15): the panic keeps
-/// the `{other:?}` payload, `#[track_caller]` keeps the call-site location.
+/// written once per variant used in this suite (F-1-15): the panic names
+/// the expected variant and the payload's type — never the payload — and
+/// `#[track_caller]` keeps the call-site location.
 #[track_caller]
 fn expect_list(v: CypherValue) -> Vec<CypherValue> {
     match v {
         CypherValue::List(items) => items,
-        other => panic!("expected List, got {other:?}"),
+        other => panic!("expected List, got {}", other.type_name()),
     }
 }
 
@@ -51,7 +52,7 @@ fn expect_list(v: CypherValue) -> Vec<CypherValue> {
 fn expect_str(v: CypherValue) -> String {
     match v {
         CypherValue::Str(s) => s,
-        other => panic!("expected Str, got {other:?}"),
+        other => panic!("expected Str, got {}", other.type_name()),
     }
 }
 
@@ -60,7 +61,7 @@ fn expect_str(v: CypherValue) -> String {
 fn expect_map(v: CypherValue) -> IndexMap<String, CypherValue> {
     match v {
         CypherValue::Map(map) => map,
-        other => panic!("expected Map, got {other:?}"),
+        other => panic!("expected Map, got {}", other.type_name()),
     }
 }
 
@@ -69,7 +70,7 @@ fn expect_map(v: CypherValue) -> IndexMap<String, CypherValue> {
 fn expect_date(v: CypherValue) -> chrono::NaiveDate {
     match v {
         CypherValue::Date(d) => d,
-        _ => panic!("expected a Date value"),
+        other => panic!("expected Date, got {}", other.type_name()),
     }
 }
 
@@ -78,7 +79,7 @@ fn expect_date(v: CypherValue) -> chrono::NaiveDate {
 fn expect_point(v: CypherValue) -> relate_model::value::PointValue {
     match v {
         CypherValue::Point(p) => p,
-        _ => panic!("expected a Point value"),
+        other => panic!("expected Point, got {}", other.type_name()),
     }
 }
 

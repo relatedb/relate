@@ -18,6 +18,7 @@ use pyo3::types::{
     PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyInt, PyList, PyModule, PyString, PyTuple,
 };
 use relate::{node_element_id, rel_element_id, Namespace};
+use relate_core::temporal::zone_region;
 use relate_model::value::{IsoDuration, PointValue};
 use relate_model::CypherValue;
 use std::collections::HashMap;
@@ -204,16 +205,10 @@ pub(super) fn localdatetime_to_py(
         .unbind())
 }
 
-/// Whether a stdlib temporal carries the value without loss: `datetime` and
-/// `time` hold whole microseconds, and a stdlib `datetime.datetime` has a
-/// fixed offset but no place for an IANA zone name. The zone half is the
-/// engine's own classifier — `zone_region` answers `Some` only for an IANA
-/// region, so the offset-only spellings the engine also stores (`Z`, `UTC`,
-/// `+01:00`, and nothing at all) stay lossless, exactly as the engine's
-/// renderer treats them. The decision is read off the value's own fields,
-/// never off its rendered text.
-fn stdlib_lossless(nanos: u32, zone: Option<&str>) -> bool {
-    nanos % 1_000 == 0 && relate_core::temporal::zone_region(zone).is_none()
+/// Whether a stdlib temporal carries the value without loss on the
+/// sub-second axis: `datetime` and `time` hold whole microseconds.
+fn stdlib_lossless(nanos: u32) -> bool {
+    nanos.is_multiple_of(1_000)
 }
 
 /// The engine's canonical ISO-8601 text for a temporal value, plus the
@@ -243,7 +238,7 @@ fn temporal_to_py(py: Python<'_>, val: &CypherValue) -> PyResult<PyObject> {
     match val {
         CypherValue::Date(d) => date_to_py(py, d),
         CypherValue::Time(t, off) => {
-            if stdlib_lossless(t.nanosecond(), None) {
+            if stdlib_lossless(t.nanosecond()) {
                 time_to_py(py, t, off)
             } else {
                 rich_temporal(
@@ -256,8 +251,15 @@ fn temporal_to_py(py: Python<'_>, val: &CypherValue) -> PyResult<PyObject> {
                 )
             }
         }
+        // A stdlib `datetime.datetime` has a fixed offset but no place for
+        // an IANA zone name — the engine's own classifier decides: `zone_region`
+        // answers `Some` only for an IANA region, so the offset-only spellings
+        // the engine also stores (`Z`, `UTC`, `+01:00`, and nothing at all)
+        // stay lossless, exactly as the engine's renderer treats them. The
+        // decision is read off the value's own fields, never off its rendered
+        // text.
         CypherValue::DateTime(dt, zone) => {
-            if stdlib_lossless(dt.nanosecond(), zone.as_deref()) {
+            if stdlib_lossless(dt.nanosecond()) && zone_region(zone.as_deref()).is_none() {
                 datetime_to_py(py, dt)
             } else {
                 rich_temporal(
@@ -271,7 +273,7 @@ fn temporal_to_py(py: Python<'_>, val: &CypherValue) -> PyResult<PyObject> {
             }
         }
         CypherValue::LocalDateTime(ndt) => {
-            if stdlib_lossless(ndt.nanosecond(), None) {
+            if stdlib_lossless(ndt.nanosecond()) {
                 localdatetime_to_py(py, ndt)
             } else {
                 rich_temporal(py, TemporalParts::LocalDateTime(*ndt), val)
