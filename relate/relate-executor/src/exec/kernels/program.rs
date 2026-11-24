@@ -26,7 +26,7 @@ use relate_ir::{var_prop_named, BinaryOp, Expr, NodePattern, UnaryOp};
 use relate_names::{NamedToken, SmallName, Token};
 
 use crate::ctx::ExecCtx;
-use crate::eval::{binary_pure, eval, expr_vars, is_row_unstable_node, orient};
+use crate::eval::{binary_pure, eval, expr_vars, orient};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -426,13 +426,17 @@ pub(crate) fn decode_conjunct(expr: &Expr) -> Option<(String, Prog)> {
 }
 
 /// Whether the bound expression may evaluate once per clause instead of
-/// per row: no variables at all (so no row can change it), no
-/// nondeterministic call (`rand()` may differ per row), and no
-/// scope-bearing variant (a subquery hides its internals from the walk).
+/// per row: no variables at all (so no row can change it) and no
+/// row-unstable form (a nondeterministic call `rand()` may differ per
+/// row; a scope-bearing variant hides its internals from the walk). The
+/// row-invariance policy's own name condition — no read names — over the
+/// shared stability fact ([`crate::eval::row_stable`]); the seek
+/// recognizers' readiness ([`crate::eval::bound_ready`]) asks instead
+/// that every read name be bound in the row.
 pub(crate) fn bound_is_row_invariant(bound: &Expr) -> bool {
     let mut named = std::collections::HashSet::new();
     expr_vars(bound, &mut named);
-    named.is_empty() && !bound.any(&mut is_row_unstable_node)
+    named.is_empty() && crate::eval::row_stable(bound)
 }
 
 #[cfg(test)]

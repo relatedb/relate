@@ -31,8 +31,9 @@ use std::collections::HashSet;
 
 use relate_core::{NodeId, Result};
 use relate_ir::{Expr, NodePattern};
+use relate_names::SmallName;
 
-use crate::eval::{expr_vars, is_row_unstable_node};
+use crate::eval::expr_vars;
 use crate::exec::pushdown::conjuncts_hold;
 use crate::pattern_walk::{node_candidates, Binding, NodeBinding};
 
@@ -111,12 +112,11 @@ impl Route<'_> {
         if np.properties.is_some() || np.where_clause.is_some() {
             return Ok(None);
         }
-        let name = v.to_string();
         let usable: Vec<&Expr> = self
             .filters
             .endpoint
             .iter()
-            .filter(|conjunct| self.reads_only(conjunct, &name))
+            .filter(|conjunct| self.reads_only(conjunct, v))
             .collect();
         if usable.is_empty() {
             return Ok(None);
@@ -129,12 +129,16 @@ impl Route<'_> {
     /// Whether `conjunct` is a filter over `name` alone: it reads that
     /// variable and no other bound name, and is row-stable (no
     /// nondeterministic call, no subquery whose interior reads its own
-    /// scope).
-    fn reads_only(&self, conjunct: &Expr, name: &str) -> bool {
+    /// scope — the one stability fact, `crate::eval::row_stable`).
+    fn reads_only(&self, conjunct: &Expr, name: &SmallName) -> bool {
         let mut vars = HashSet::new();
         expr_vars(conjunct, &mut vars);
         vars.retain(|var| self.filters.scope.contains(var));
-        vars.len() == 1 && vars.contains(name) && !conjunct.any(&mut is_row_unstable_node)
+        // The endpoint's variable compares through `with_str` — no owned
+        // String per call; `filtered_side` holds it as a `&SmallName`.
+        vars.len() == 1
+            && name.with_str(|text| vars.contains(text))
+            && crate::eval::row_stable(conjunct)
     }
 
     /// The candidates of `np` that hold every `usable` conjunct, ascending,

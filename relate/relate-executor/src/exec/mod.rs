@@ -936,6 +936,8 @@ mod range_start_tests;
 mod rel_list_binding_tests;
 #[cfg(test)]
 mod rel_seek_tests;
+#[cfg(test)]
+mod seek_readiness_tests;
 mod shortcut_common;
 #[cfg(test)]
 mod shortest_expression_tests;

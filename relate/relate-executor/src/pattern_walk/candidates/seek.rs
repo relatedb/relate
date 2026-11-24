@@ -11,7 +11,7 @@ use relate_core::{NodeId, Result, Value};
 use relate_ir::{BinaryOp, Expr};
 use relate_names::SmallName;
 
-use crate::eval::{eval, named_call, orient};
+use crate::eval::{eval_bound, named_call, orient};
 use crate::graph::{RangeSeek, SpatialSeek};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -308,7 +308,7 @@ fn string_seek_expr(
     };
     // The var's property on the left — the one canonical recognizer.
     let key = prop_key(left, var)?;
-    let val = eval(graph, row, right, params).ok()?;
+    let val = eval_bound(right, graph, row, params)?;
     let s = val.as_string()?.to_string();
     // Servability has one owner: the gram index itself declines an empty
     // needle (lookup_string_contains returns None), and node_candidates
@@ -327,17 +327,17 @@ fn range_seek_expr(
         return None;
     };
     let (key, bound_expr, op) = orient(|e| prop_key(e, var), left, right, *op)?;
-    let bound = eval(graph, row, bound_expr, params).ok()?;
-    // A null bound is never servable. A bound that references the pattern
-    // variable itself (`c.key = c.cluster`) or a variable bound later in
-    // the pattern evaluates against a row where that variable is unbound —
-    // null — and a served seek silently renders the whole pattern empty
-    // instead of declining (the LABS-328 regression: the entity-resolution
-    // report cell's `WHERE c.key = c.cluster` returned 0 rows once the
-    // constraint's backing index materialized). Null never satisfies an
-    // equality or a comparison, so declining to the scan tail plus the
-    // residual re-applying the predicate per candidate row is the same
-    // answer, correctly reached.
+    // The bound side is served only through the readiness proof
+    // (`crate::eval::bound_ready`) — this recognizer is where the
+    // LABS-328 regression was caught the first time (the
+    // entity-resolution report cell's `WHERE c.key = c.cluster` returned
+    // 0 rows once the constraint's backing index materialized) and the
+    // null check below caught only the null-evaluating subset of that
+    // class. Null never satisfies an equality or a comparison, so
+    // declining to the scan tail plus the residual re-applying the
+    // predicate per candidate row is the same answer, correctly reached.
+    let bound = eval_bound(bound_expr, graph, row, params)?;
+    // A null bound is never servable.
     if bound.is_null() {
         return None;
     }
@@ -372,8 +372,8 @@ fn point_seek_expr(
 ) -> Option<(String, SpatialSeek)> {
     if let Some(args) = named_call(expr, "point.withinbbox", 3) {
         let key = prop_key(&args[0], var)?;
-        let lo = eval(graph, row, &args[1], params).ok()?;
-        let hi = eval(graph, row, &args[2], params).ok()?;
+        let lo = eval_bound(&args[1], graph, row, params)?;
+        let hi = eval_bound(&args[2], graph, row, params)?;
         return Some((key, SpatialSeek::BBox { lo, hi }));
     }
     let Expr::Binary { op, left, right } = expr else {
@@ -382,7 +382,7 @@ fn point_seek_expr(
     let (func, bound_expr, inclusive) = distance_cmp(left, right, *op)?;
     let args = named_call(func, "point.distance", 2)?;
     let (key, origin) = point_prop_and_origin(var, &args[0], &args[1], graph, row, params)?;
-    let max = eval(graph, row, bound_expr, params).ok()?.as_number()?;
+    let max = eval_bound(bound_expr, graph, row, params)?.as_number()?;
     Some((
         key,
         SpatialSeek::Distance {
@@ -419,7 +419,7 @@ fn point_prop_and_origin(
     // only the side-selection core applies: the side carrying the var's
     // property decides, the other side is the origin.
     let (key, origin_expr) = crate::eval::var_key_side(var, a, b)?;
-    let origin = eval(graph, row, origin_expr, params).ok()?;
+    let origin = eval_bound(origin_expr, graph, row, params)?;
     Some((key.to_string(), origin))
 }
 
@@ -522,7 +522,9 @@ fn ids_seek_expr(
         Expr::Variable(v) if v == var => IdConversion::NodeValue,
         _ => id_fn_conversion(var, left, relate_core::parse_node_element_id)?,
     };
-    let val = eval(graph, row, right, params).ok()?;
+    // The id (or id list) evaluates on the entry row — the readiness
+    // proof applies like every other bound side.
+    let val = eval_bound(right, graph, row, params)?;
     match cmp {
         IdsCmp::Eq => to_id.apply(&val).map(|id| vec![id]),
         IdsCmp::In => in_list_ids(&val, &to_id),

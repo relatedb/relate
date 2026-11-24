@@ -21,7 +21,7 @@ use relate_ir::{BinaryOp, Direction, Expr, NodePattern, RelPattern};
 use relate_model::EntityKind;
 use relate_names::{NamedToken, SmallName, Token};
 
-use crate::eval::{eval, label_expr_matches};
+use crate::eval::{eval_bound, label_expr_matches};
 use crate::overlay::ExecGraph;
 use crate::pattern_walk::{
     id_fn_conversion, pattern_match_props, static_rel_type_ok, IdConversion,
@@ -53,7 +53,9 @@ pub(crate) fn rel_seek_expr(
         return None;
     }
     let to_id: IdConversion = id_fn_conversion(var, left, relate_core::parse_rel_element_id)?;
-    let val = eval(graph, row, right, params).ok()?;
+    // The id evaluates on the entry row — the same readiness-proof
+    // pairing the node-side seek recognizers read (`crate::eval::eval_bound`).
+    let val = eval_bound(right, graph, row, params)?;
     to_id.apply(&val)
 }
 

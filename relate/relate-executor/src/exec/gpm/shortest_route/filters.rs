@@ -71,7 +71,7 @@ impl<'a> PathFilter<'a> {
     /// name the finished trail row will (see `Route::predicates_decidable`).
     pub(super) fn decidable_on(&self, probe: &Row) -> bool {
         self.predicates()
-            .all(|predicate| conjunct_ready(predicate, probe, self.scope))
+            .all(|predicate| conjunct_ready(predicate, probe, self.scope, None))
     }
 
     /// Whether one bound trail row satisfies every predicate. Each is

@@ -10,7 +10,7 @@ use relate_names::SmallName;
 
 use crate::eval::{expr_vars, label_expr_vars, predicate_holds};
 use crate::overlay::ExecGraph;
-use crate::row::Row;
+use crate::row::{row_bound, Row};
 
 pub(crate) use super::agg_fold::FoldedReturn;
 pub(crate) use super::match_cap::{match_limit_cap, MatchCap};
@@ -40,22 +40,36 @@ impl Residual<'_> {
 
 /// The unscoped readiness kernel: every variable the expression names is
 /// bound in `row`. [`conjunct_ready`] narrows it to a residual's scope.
+/// The names-bound walk is the eval tier's one kernel
+/// ([`crate::eval::names_all_bound`]) with the row tier's one membership
+/// predicate ([`crate::row::row_bound`]) — the same spelling the seek
+/// recognizers' readiness reads, never re-spelled here.
 pub(crate) fn expr_ready(expr: &Expr, row: &Row) -> bool {
-    let mut vars = HashSet::new();
-    expr_vars(expr, &mut vars);
-    vars.iter().all(|name| row.contains_key(name))
+    crate::eval::names_all_bound(expr, crate::row::row_bound(row))
 }
 
 /// Whether `expr` can be evaluated against `row`: every variable it names
-/// that `scope` can bind is present. Names outside the scope are
+/// that `scope` can bind is present, the loop's optional `binding` (the
+/// element's own variable, bound on every candidate before the residual
+/// runs) counting as present. Names outside the scope are
 /// subquery-local — `EXISTS { MATCH (z) … }` names `z`, which the
 /// subquery itself binds — so they never gate readiness; the caller's
 /// later predicate pass covers an expression that is not ready here.
-pub(crate) fn conjunct_ready(expr: &Expr, row: &Row, scope: &HashSet<String>) -> bool {
-    let mut vars = HashSet::new();
-    expr_vars(expr, &mut vars);
-    vars.retain(|v| scope.contains(v));
-    vars.iter().all(|v| row.contains_key(v))
+/// The kernel ([`crate::eval::names_all_bound`]) with the scope's
+/// narrowing folded into the membership — the one spelling of it, read
+/// by both this predicate and [`ready_conjuncts`]'s filter: a name gates
+/// readiness only when the scope can bind it and neither the row nor
+/// the loop's binding has it.
+pub(crate) fn conjunct_ready(
+    expr: &Expr,
+    row: &Row,
+    scope: &HashSet<String>,
+    binding: Option<&SmallName>,
+) -> bool {
+    let bound = row_bound(row);
+    crate::eval::names_all_bound(expr, |v| {
+        !scope.contains(v) || binding.is_some_and(|b| b.with_str(|t| t == v)) || bound(v)
+    })
 }
 
 /// The degenerate residual pass — no settled conjuncts — the one-line
@@ -99,18 +113,10 @@ pub(crate) fn ready_conjuncts<'a>(
         .iter()
         .enumerate()
         .filter(|(index, c)| {
-            if settled.contains(index) {
-                return false;
-            }
-            let mut vars = HashSet::new();
-            expr_vars(c, &mut vars);
-            vars.retain(|v| residual.scope.contains(v));
-            if let Some(bound) = binding {
-                bound.with_str(|text| {
-                    vars.remove(text);
-                });
-            }
-            vars.iter().all(|v| row.contains_key(v))
+            // The binding name compares through `with_str` inside the one
+            // readiness predicate — no owned String per call (this
+            // derivation runs once per candidate loop's entry row).
+            !settled.contains(index) && conjunct_ready(c, row, residual.scope, binding)
         })
         .map(|(_, c)| c)
         .collect()
