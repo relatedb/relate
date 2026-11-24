@@ -143,6 +143,14 @@ fn walk_clauses_at<'a>(
                     walk_expr(where_clause, ExprRole::Read, on_clause, on_expr);
                 }
                 if let Some(search) = search {
+                    // The window split's score half rides the SEARCH
+                    // clause and reads exactly like the entity half
+                    // (ADR-0678): every whole-tree walk — traversal
+                    // bounds, variable collection, notifications — sees
+                    // both, never the entity side alone.
+                    if let Some(post_where) = &search.post_where {
+                        walk_expr(post_where, ExprRole::Read, on_clause, on_expr);
+                    }
                     walk_search_spec(&search.spec, on_clause, on_expr);
                 }
             }

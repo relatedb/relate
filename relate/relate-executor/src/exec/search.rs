@@ -10,31 +10,31 @@
 //! [`crate::exec::candidates`]; this module owns the SEARCH clause
 //! semantics layered over them.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
-use relate_core::{expected_type_detail, value_type_name, Error, Result, Value};
+use relate_core::{Error, Result, Value};
 use relate_ir::{
-    Expr, PathPattern, PatternPayload, SearchClause, SearchCombineSpec, SearchIndexSpec,
-    SearchKind, SearchSpec,
+    Expr, PathPattern, PatternPayload, SearchClause, SearchIndexSpec, SearchKind, SearchSpec,
 };
 use relate_model::EntityKind;
 use relate_names::SmallName;
 
 use crate::ctx::ExecCtx;
-use crate::eval::eval;
-use crate::exec::candidates::{materialize_candidate, ranked_better_cmp, resolve_search_index};
+use crate::eval::{eval, filter_rows_where_clause};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::fulltext;
 use super::match_clause::{bind_pattern_nulls, MatchClauseInputs};
 use super::pattern_policies::RowFold;
-use super::vector::{vector_index_candidates, vector_operand, VectorSearchFilter};
+use super::vector::{self, vector_operand};
 
+mod combine;
 mod deferred;
 mod direct;
 mod growth;
 
+use combine::combine_candidates;
 use deferred::deferred_search_rows;
 use direct::direct_search_rows;
 
@@ -90,78 +90,29 @@ fn eval_window_int(
     }
 }
 
-/// CIP-225 fulltext candidate generation: the shared [`super::fulltext`]
-/// scan over the named FULLTEXT index ranks the matches by its live-fitted
-/// BM25 score, then the CIP-225 offset window and LIMIT page them.
-///
-/// WHERE is rejected for FULLTEXT SEARCH by the front-end validator (Neo4j
-/// error 42N14), so there is no inner filter here.
-fn fulltext_index_candidates(
-    env: &SearchEnv<'_>,
-    input: &Row,
-    index: &SearchIndexSpec,
-    query: &str,
-    offset: usize,
-    limit: usize,
-) -> Result<(EntityKind, Vec<(Value, f64)>)> {
-    let ExecCtx { graph, params, .. } = env.ctx;
-    // The shared SEARCH index resolution (stellar round 3, std-6): the
-    // schema read, the missing-index policy, and the wrong-kind
-    // rejection are the one spelling in `exec::candidates`, shared with
-    // the vector path. The options carry the index's analyzer.
-    let (detail, options) = resolve_search_index(
-        graph,
-        &index.index_name,
-        crate::redo::IndexKindSpec::Fulltext,
-    )?;
-    // The per-row `WITH ANALYZER` expression
-    // (FulltextSearchAcceptance); an absent slot — or a NULL value — is
-    // no override, so the query follows the index's analyzer
-    // (ADR-0636), and the value's own unknown-name/type rejections are
-    // `Analyzer::from_value`'s.
-    let query_override = match &index.analyzer {
-        None => None,
-        Some(expr) => fulltext::Analyzer::from_value(&eval(graph, input, expr, params)?)?,
-    };
-    let analyzers = fulltext::Analyzers::new(
-        crate::exec::ddl_options::index_analyzer(&options, &index.index_name)?,
-        query_override,
-    );
-    let kind = EntityKind::from_relationship_flag(detail.relationship);
-    let candidates = fulltext::search(
-        &env.corpora,
-        graph,
-        &detail,
-        query,
-        analyzers,
-        (offset, limit),
-    )?
-    .into_iter()
-    .map(|(id, score)| (materialize_candidate(graph, kind, id), score))
-    .collect();
-    Ok((kind, candidates))
-}
-
 /// What one SEARCH clause's scans share: the execution context and the
 /// fulltext corpora, built on the first scan of an index and reused by every
 /// later row and growth round of the clause.
-struct SearchEnv<'a> {
+pub(super) struct SearchEnv<'a> {
     ctx: ExecCtx<'a>,
     corpora: fulltext::CorpusMemo,
 }
 
-/// One source specification's ranked candidate list: the entity kind of
-/// the source's index(es), the materialized `(entity, score)` rows,
-/// best-first, the source's own LIMIT, and whether a wider window could
-/// yield deeper candidates.
-struct SpecCandidates {
+/// What one fetch answers, from either producer — an index scan's ranked
+/// candidate list or a fused rank list: the entity kind the source
+/// served, the `(entity, score)` rows best-first, and whether a wider
+/// fetched window could reach a candidate the current one cannot. The
+/// caller's window is deliberately absent — every caller holds the
+/// [`SearchWindow`] it stated for the row, so a fetch result never
+/// echoes it back.
+pub(super) struct SpecCandidates {
     kind: EntityKind,
     candidates: Vec<(Value, f64)>,
-    /// The source's own LIMIT: how many candidates the SEARCH clause
-    /// keeps, counted over the ones that survive the pattern and WHERE.
-    limit: usize,
-    /// The candidate list came back as deep as the index goes (or the
-    /// source cannot widen): the caller's growth loop stops.
+    /// For an index fetch: `true` when the fetch filled its depth, so a
+    /// wider fetch may reach deeper candidates and the growth loop
+    /// continues; `false` when the scan is exhausted or the source
+    /// cannot widen, and the loop stops. A fused rank list is a fixed
+    /// window, so the fusion always answers `false`.
     may_widen: bool,
 }
 
@@ -174,49 +125,136 @@ fn optional_null_row(mut row: Row, patterns: &[PathPattern], score_var: Option<&
     row
 }
 
+/// The growth demand one fetch carries: the growth loops widen an index
+/// source's fetched depth by the widening so far ([`Growth::Widen`]) so a
+/// value the pattern filtered out can be replaced by the next-ranked one;
+/// the fusion's source fetches are fixed-window ([`Growth::Fixed`]) — a
+/// fused list never widens, so the growth demand lives on the index arm
+/// alone, never dropped by the combine arm.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Growth {
+    /// A fixed-window fetch: no widening (the fusion's source fetches).
+    Fixed,
+    /// The growth loops' demand: widen the index fetch by this many
+    /// entries past the window.
+    Widen(usize),
+}
+
+impl Growth {
+    /// The extra-candidate budget this demand adds to an index fetch.
+    fn extra_candidates(self) -> usize {
+        match self {
+            Growth::Fixed => 0,
+            Growth::Widen(extra) => extra,
+        }
+    }
+}
+
 /// The candidates one `<source specification clause>` yields for
 /// one incoming row of the driving table, ranked best-first
-/// ([`ranked_better_cmp`]'s order: score descending, entity id ascending).
-/// `None`: the source's query evaluated absent (a NULL or non-list VECTOR
-/// query), so the source contributes no rows -- the caller applies the
-/// OPTIONAL rule, exactly as the pre-CIP-278 top-level index path did.
-///
-/// `extra_candidates` is the caller's top-K growth demand: the window is
-/// widened by that many entries so a value the pattern filtered out can
-/// be replaced by the next-ranked one. Only an index source widens -- a
-/// COMBINE's source LIMITs are fusion inputs (they fix each source's
-/// ranks), so its fused list keeps its own window.
+/// ([`crate::exec::candidates::ranked_better_cmp`]'s order: score
+/// descending, entity id ascending). `None`: the source's query
+/// evaluated absent (a NULL or non-list VECTOR query), so the source
+/// contributes no rows -- the caller applies the OPTIONAL rule, exactly
+/// as the pre-CIP-278 top-level index path did.
 fn search_spec_candidates(
     env: &SearchEnv<'_>,
     input: &Row,
     spec: &SearchSpec,
-    extra_candidates: usize,
+    window: SearchWindow,
+    growth: Growth,
 ) -> Result<Option<SpecCandidates>> {
     match spec {
-        SearchSpec::Index(index) => search_index_candidates(env, input, index, extra_candidates),
-        SearchSpec::Combine(combine) => search_combine_candidates(env, input, combine),
+        SearchSpec::Index(index) => {
+            search_index_candidates(env, input, index, window, growth.extra_candidates())
+        }
+        // A combined specification's fused list is a fixed window: its
+        // sources' LIMITs are fusion inputs that fix each source's ranks,
+        // and its fused results never widen — no growth reaches it.
+        SearchSpec::Combine(combine) => combine_candidates(env, input, combine, window),
+    }
+}
+
+/// The clause's own window as a named pair — `skip` before `limit`,
+/// never a positional tuple at a call site. The `limit` field's one
+/// sentinel: `usize::MAX` is an absent fused LIMIT ("keep every fused
+/// result"), built only by [`SearchWindow::unbounded`] and documented
+/// there — an index source's LIMIT is mandatory, so every other
+/// `SearchWindow` carries a real bound.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SearchWindow {
+    pub(super) skip: usize,
+    pub(super) limit: usize,
+}
+
+impl SearchWindow {
+    /// The absent fused LIMIT: keep every fused result. The one
+    /// constructor of the `usize::MAX` sentinel.
+    fn unbounded() -> Self {
+        Self {
+            skip: 0,
+            limit: usize::MAX,
+        }
+    }
+}
+
+/// The clause's own window — the SKIP and LIMIT a source specification
+/// states, evaluated against the input row (never a pattern binding: the
+/// front rejects window expressions that read one). The one spelling of
+/// the window statement: every fetch is handed the window its caller
+/// stated once for that row, so no path re-derives it per growth round.
+/// An index source's window is its optional SKIP (fulltext-only; the
+/// front rejects SKIP on a VECTOR source — the scan never applies it,
+/// the SKIP window pages over the entities the whole MATCH keeps in the
+/// caller's loop) beside its mandatory LIMIT; a combined specification's
+/// own window is its optional LIMIT with no SKIP (its sources' SKIP
+/// pages their own ranked lists before the fusion).
+fn spec_window(env: &SearchEnv<'_>, input: &Row, spec: &SearchSpec) -> Result<SearchWindow> {
+    let ExecCtx { graph, params, .. } = env.ctx;
+    match spec {
+        SearchSpec::Index(index) => {
+            let limit = eval_window_int(graph, input, &index.limit_expr, params, "LIMIT")?;
+            let skip = match &index.offset_expr {
+                Some(expr) => eval_window_int(graph, input, expr.as_ref(), params, "SKIP/OFFSET")?,
+                None => 0,
+            };
+            Ok(SearchWindow { skip, limit })
+        }
+        SearchSpec::Combine(combine) => {
+            let limit = match &combine.limit_expr {
+                Some(expr) => eval_window_int(graph, input, expr, params, "LIMIT")?,
+                None => return Ok(SearchWindow::unbounded()),
+            };
+            Ok(SearchWindow { skip: 0, limit })
+        }
     }
 }
 
 /// One `<index specification clause>`'s candidates for one
 /// incoming row -- the pre-CIP-278 top-level index behavior, unchanged,
-/// now also serving as a weighted source inside a COMBINE.
+/// now also serving as a weighted source inside a COMBINE. The window is
+/// the caller's once-stated [`SearchWindow`] for this row (see
+/// [`spec_window`]).
 fn search_index_candidates(
     env: &SearchEnv<'_>,
     input: &Row,
     index: &SearchIndexSpec,
+    window: SearchWindow,
     extra_candidates: usize,
 ) -> Result<Option<SpecCandidates>> {
     let ExecCtx { graph, params, .. } = env.ctx;
-    let limit = eval_window_int(graph, input, &index.limit_expr, params, "LIMIT")?;
-    // The caller's growth demand widens the fetched window only; the
-    // clause's LIMIT stays the number of survivors it keeps.
-    let window = limit.saturating_add(extra_candidates);
-    // The `<offset clause>`, shared by both kinds.
-    let offset = match &index.offset_expr {
-        Some(expr) => eval_window_int(graph, input, expr.as_ref(), params, "SKIP/OFFSET")?,
-        None => 0,
-    };
+    // The fetch depth spans the source's own SKIP and LIMIT plus the
+    // caller's growth demand: the growth loops need skip+limit survivors
+    // from the fetched list, and a COMBINE source's list is paged raw
+    // (its SKIP drops the fetched prefix, so the fetch must reach
+    // skip+limit deep to keep `limit` entries — the rank semantics the
+    // fusion counts on). The clause's LIMIT stays the number of survivors
+    // it keeps. The window stays in its named shape — `skip` and `limit`
+    // read as fields at their use sites, the family's one policy.
+    let fetch_depth = window
+        .skip
+        .saturating_add(window.limit)
+        .saturating_add(extra_candidates);
     // The FOR expression is the query for both kinds — evaluated once,
     // each arm only interprets the resulting value.
     let query = eval(graph, input, &index.for_expr, params)?;
@@ -225,17 +263,11 @@ fn search_index_candidates(
             let Some(query) = vector_operand(&query)? else {
                 return Ok(None);
             };
-            vector_index_candidates(
-                env.ctx,
-                &index.index_name,
-                &query,
-                offset,
-                window,
-                VectorSearchFilter {
-                    filters: &index.filters,
-                    input,
-                },
-            )?
+            // The scan orchestration (index resolution, per-row filter
+            // preparation, the similarity scan, survivor materialization)
+            // lives in `exec/vector.rs` — the fulltext arm's twin; this
+            // arm states only the growth-loop depth it asks for.
+            vector::index_candidates(env.ctx, index, input, &query, fetch_depth)?
         }
         SearchKind::Fulltext => {
             // CIP-225: the fulltext query is a STRING (the per-index
@@ -244,144 +276,23 @@ fn search_index_candidates(
             let Some(query) = fulltext::operand(&query)? else {
                 return Ok(None);
             };
-            // #61's scan machinery (analyzers, live BM25) at this
-            // branch's growth-loop depth: the window widens past the
-            // source's own LIMIT, which SpecCandidates carries for the
-            // survivor count.
-            fulltext_index_candidates(env, input, index, query, offset, window)?
+            // The fulltext scan orchestration (index resolution,
+            // analyzers, live BM25, the inner WHERE's single-stage gate)
+            // lives beside `fulltext::search` in `exec/fulltext.rs`;
+            // this arm states only the growth-loop depth it asks for.
+            fulltext::index_candidates(env.ctx, &env.corpora, input, index, query, fetch_depth)?
         }
     };
-    // A full window means the scan may hold deeper candidates (the scan
-    // reports every passing candidate up to the offset+window it kept).
-    let may_widen = candidates.len() == window;
+    // `true` when the fetch filled its depth, so a wider fetch may reach
+    // deeper candidates and the growth loop continues; `false` when the
+    // scan is exhausted (fewer passing candidates than the depth) or the
+    // source cannot widen, and the loop stops.
+    let may_widen = candidates.len() == fetch_depth;
     Ok(Some(SpecCandidates {
         kind,
         candidates,
-        limit,
         may_widen,
     }))
-}
-
-/// One `<combined specification clause>`'s fused candidates for
-/// one incoming row: weighted reciprocal rank fusion (WRRF) over the
-/// ranked lists of its weighted sources (which may themselves be nested
-/// combined specifications, Example P3). Each source's own list is ranked
-/// after its own SKIP/OFFSET/LIMIT window; a source's rank-`i` entry
-/// (0-based) contributes `weight / (constant + i + 1)` (the CIP's
-/// `weight / (rrfConstant + rankIndex + 1)`), and an entity missing from a
-/// source contributes nothing from that source. The fused list is ordered
-/// by the fused score (the CIP's documented tie-breaker was removed --
-/// implementation-dependent; this engine ties on the entity id,
-/// ascending, via [`ranked_better_cmp`]) and windowed by the combined
-/// specification's own optional LIMIT (the n best fused results).
-/// `None`: every source's query evaluated absent.
-fn search_combine_candidates(
-    env: &SearchEnv<'_>,
-    input: &Row,
-    combine: &SearchCombineSpec,
-) -> Result<Option<SpecCandidates>> {
-    // Rules 3/4: the dampening constant, default 60.
-    let constant = match &combine.constant_expr {
-        Some(expr) => eval_wrrf_number(env.ctx, input, expr, "CONSTANT")?,
-        None => 60.0,
-    };
-    let mut kind: Option<EntityKind> = None;
-    // The fused scores keyed by entity id, so a later source adds its
-    // contribution to the same entity instead of duplicating it; the
-    // final order comes from the total sort below.
-    let mut fused: HashMap<i64, (f64, Value)> = HashMap::new();
-    for source in &combine.sources {
-        // An absent source query contributes no ranks -- the CIP's
-        // "missing from a source" rule (zero contribution).
-        let Some(fetched) = search_spec_candidates(env, input, &source.spec, 0)? else {
-            continue;
-        };
-        let source_kind = fetched.kind;
-        // "Compatibility of indexes": every source must index
-        // the same entity kind as the first.
-        match kind {
-            Some(kind) => {
-                if kind != source_kind {
-                    return Err(invalid_value_type(expected_type_detail(
-                        kind.display_name(),
-                        source_kind.display_name(),
-                    )));
-                }
-            }
-            None => kind = Some(source_kind),
-        }
-        // Rules 1/2: the source weight, default 1 (not normalized).
-        let weight = match &source.weight_expr {
-            Some(expr) => eval_wrrf_number(env.ctx, input, expr, "WEIGHT")?,
-            None => 1.0,
-        };
-        for (rank, (candidate, _score)) in fetched.candidates.into_iter().enumerate() {
-            let id = candidate_entity_id(&candidate)?;
-            let contribution = weight / (constant + rank as f64 + 1.0);
-            fused
-                .entry(id)
-                .and_modify(|(score, _)| *score += contribution)
-                .or_insert((contribution, candidate));
-        }
-    }
-    let Some(kind) = kind else {
-        return Ok(None);
-    };
-    // The accumulate phase ends and the rank/window phase begins —
-    // the binding name says so.
-    let mut ranked: Vec<(i64, f64, Value)> = fused
-        .into_iter()
-        .map(|(id, (score, candidate))| (id, score, candidate))
-        .collect();
-    ranked.sort_by(|a, b| ranked_better_cmp(b.1, b.0, a.1, a.0));
-    // The combined specification's own optional LIMIT keeps the n
-    // highest-scoring fused results.
-    let ExecCtx { graph, params, .. } = env.ctx;
-    let limit = match &combine.limit_expr {
-        Some(expr) => eval_window_int(graph, input, expr, params, "LIMIT")?,
-        None => usize::MAX,
-    };
-    let candidates = ranked
-        .into_iter()
-        .take(limit)
-        .map(|(_id, score, candidate)| (candidate, score))
-        .collect();
-    Ok(Some(SpecCandidates {
-        kind,
-        candidates,
-        limit,
-        // The fused window is a user constraint (keep the n best
-        // fused results), not a fetched slice, so it never widens.
-        may_widen: false,
-    }))
-}
-
-/// Evaluates a combined specification's control expression (a WEIGHT or the
-/// WRRF WITH CONSTANT): INTEGER NOT NULL or FLOAT NOT NULL, at least 0 and
-/// at most Java's `Integer.MAX_VALUE` (2147483647). Any other value (NULL
-/// included) is the authored invalid-type error.
-fn eval_wrrf_number(ctx: ExecCtx<'_>, input: &Row, expr: &Expr, clause: &str) -> Result<f64> {
-    let ExecCtx { graph, params, .. } = ctx;
-    let value = eval(graph, input, expr, params)?;
-    let number = match &value {
-        Value::Int(number) => *number as f64,
-        Value::Float(number) => *number,
-        _ => {
-            return Err(invalid_value_type(format!(
-                "{} (SEARCH {clause})",
-                expected_type_detail(
-                    "INTEGER NOT NULL or FLOAT NOT NULL",
-                    &value_type_name(&value),
-                )
-            )))
-        }
-    };
-    if !(0.0..=f64::from(i32::MAX)).contains(&number) {
-        return Err(Error::syntax(format!(
-            "NumberOutOfRange: SEARCH {clause} must be between 0 and 2147483647"
-        )));
-    }
-    Ok(number)
 }
 
 /// The entity id of one search candidate -- the WRRF fusion key. A
@@ -459,37 +370,41 @@ pub(crate) fn search_match_clause(
     let binding_kind = search
         .binding_var
         .with_str(|text| path_pattern_binding_kind(patterns, text));
-    let deferred = search_reads_pattern(search, patterns);
+    // The row source is a clause-invariant fact, resolved once beside
+    // `binding_kind` rather than re-decided per input row: the source
+    // reads a variable this MATCH's own pattern binds (`deferred` — the
+    // pattern matches first and each row's binding is filtered against
+    // its own candidate list) or it does not (`direct` — each candidate
+    // seeds the binding and the pattern matches per candidate).
+    let source = if search_reads_pattern(search, patterns) {
+        deferred_search_rows
+    } else {
+        direct_search_rows
+    };
     let env = SearchEnv {
         ctx,
         corpora: fulltext::CorpusMemo::default(),
     };
     let mut out = Vec::new();
     for input in rows {
-        let matched = if deferred {
-            // The source reads a variable bound by this same MATCH, so match
-            // the pattern first (binding the search variable freely) and keep
-            // the rows whose binding is among the row's own candidates.
-            deferred_search_rows(
-                &env,
-                &input,
-                binding_kind,
-                match_mode,
-                patterns,
-                where_clause,
-                search,
-            )?
-        } else {
-            direct_search_rows(
-                &env,
-                &input,
-                binding_kind,
-                match_mode,
-                patterns,
-                where_clause,
-                search,
-            )?
-        };
+        let mut matched = source(
+            &env,
+            &input,
+            binding_kind,
+            match_mode,
+            patterns,
+            where_clause,
+            search,
+        )?;
+        // The outer WHERE's score-referencing half post-filters the kept
+        // rows (ADR-0678's window split): it rides the SEARCH clause, the
+        // score is on each row the paths attached, and the entity-side
+        // conjuncts already ran inside them as the window's candidate
+        // restriction. The canonical optional-WHERE row filter owns the
+        // whole policy (a non-boolean predicate is the typed rejection,
+        // never a silent drop; the empty half passes through).
+        matched =
+            filter_rows_where_clause(ctx.graph, ctx.params, search.post_where.as_ref(), matched)?;
         // The OPTIONAL null-row rule, stated once (stellar round 3): no
         // source match and no produced row both mean the input row rides
         // through with the score null.

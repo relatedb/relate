@@ -212,24 +212,36 @@ Rules, matching Neo4j:
 - the binding variable (the `n` after `SEARCH`) must be declared by the same
   `MATCH` pattern the SEARCH annotates, and the search query cannot reference it
 - the index must exist and be of the matching kind (a full-text search over a
-  vector index raises `WrongIndexType`)
-- `WHERE` inside the search is **vector-search only**; it may reference only the
-  index's `WITH [...]`-declared properties, with simple comparisons joined by
-  `AND`. A full-text search with `WHERE` is rejected
+  vector index raises `WrongIndexType`); an index created inside the open
+  transaction is still populating — searching it raises the transient
+  `IndexStillPopulating` rejection until the transaction ends
+- `WHERE` inside the search serves both index kinds; its predicates name the
+  binding variable and may read the index's `WITH [...]`-declared properties
+  (a vector source's declared set — a full-text source's inner WHERE reads
+  the entity's own properties, whatever they are), test the entity itself
+  (`n IN <expr>`, the match filter), or test its id (`id(n) IN <expr>`). A
+  right-hand side may be any expression over the incoming row, a correlated
+  `COLLECT` subquery included
 - `SKIP`/`OFFSET` is **full-text only**; on a vector search it is rejected
 - `WITH ANALYZER <expr>` is accepted on full-text searches: a STRING names
   one of the admitted analyzers (`db.index.fulltext.listAvailableAnalyzers`
   lists them) and overrides the query side only; null is no override, so
   the index's own analyzer runs
-- the searched `MATCH` pattern is a single node or single-hop
-  relationship, binding one variable, with predicates only on it. The
-  `RELATE_PREVIEW=complex-search-patterns` preview gate (ADR-0371 /
-  ADR-0467; mirrors
-  Neo4j's own mode) lifts that
-  shape restriction, admitting multi-component, multi-hop, variable-length,
-  quantified, selected and multi-variable patterns; without the opt-in the
-  base-shape rejections stay (`SearchClauseTooComplexPattern`,
-  `SearchClauseMultipleBoundVariables`, `SearchClauseInvalidPredicates`)
+- the searched `MATCH` pattern may be any pattern the general `MATCH`
+  machinery accepts: multi-component, multi-hop, variable-length,
+  quantified, selected and multi-variable patterns all carry a SEARCH
+  clause (the shape restriction and its preview gate were retired with
+  the reference implementation's own graduation, ADR-0678)
+
+The window — `SKIP` and `LIMIT` — pages over the entities the whole
+`MATCH` statement keeps: the pattern's own labels and predicates, the
+outer `WHERE` (written before or after the SEARCH), and a binding the
+earlier clauses already bound all restrict the candidate set before the
+window, so the `LIMIT` counts surviving entities rather than raw hits and
+a WHERE-passing entity ranked below the raw top-k still enters. A
+constraint the index definition already implies (its own labels or types)
+restricts nothing, so such patterns keep the unrestricted window. Every
+row of a kept entity rides along: the window counts entities, not rows.
 
 #### Hybrid search (COMBINE, preview)
 

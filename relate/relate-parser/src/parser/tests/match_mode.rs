@@ -75,6 +75,25 @@ fn test_match_mode_spellings_resolve_to_their_mode() {
             "MATCH (a)-[r]->(b) RETURN a",
             MatchMode::DifferentRelationships,
         ),
+        // The BINDINGS third word (ADR-0679): either spelling's phrase
+        // extended maps onto its element twin's mode — the semantics the
+        // match-mode corpus pins for the two spellings.
+        (
+            "MATCH REPEATABLE ELEMENT BINDINGS (a)-[r]->(b) RETURN a",
+            MatchMode::RepeatableElements,
+        ),
+        (
+            "MATCH REPEATABLE ELEMENTS BINDINGS (a)-[r]->(b) RETURN a",
+            MatchMode::RepeatableElements,
+        ),
+        (
+            "MATCH DIFFERENT RELATIONSHIP BINDINGS (a)-[r]->(b) RETURN a",
+            MatchMode::DifferentRelationships,
+        ),
+        (
+            "MATCH DIFFERENT RELATIONSHIPS BINDINGS p = (a)-[r]->(b) RETURN p",
+            MatchMode::DifferentRelationships,
+        ),
     ] {
         let stmt = parse_ok(q);
         assert_eq!(match_clause(&stmt).match_mode, want_mode, "{q}");
@@ -110,6 +129,10 @@ fn test_match_mode_phrase_after_a_path_variable_is_rejected() {
         "MATCH p = REPEATABLE ELEMENT (a)-[r]->(b) RETURN p",
         "MATCH p = DIFFERENT RELATIONSHIPS (a)-[r]->(b) RETURN p",
         "MATCH p = DIFFERENT RELATIONSHIP (a)-[r]->(b) RETURN p",
+        // The BINDINGS third word is part of the phrase (ADR-0679), so
+        // the extended spellings are rejected in the same positions.
+        "MATCH p = REPEATABLE ELEMENT BINDINGS (a)-[r]->(b) RETURN p",
+        "MATCH p = DIFFERENT RELATIONSHIP BINDINGS (a)-[r]->(b) RETURN p",
         // The later paths of a comma list get the same rule.
         "MATCH (a), p = REPEATABLE ELEMENTS (b)-[r2]->(c) RETURN p",
         "MATCH (a), REPEATABLE ELEMENTS (b)-[r2]->(c) RETURN a",
@@ -216,4 +239,20 @@ fn test_path_mode_keywords_set_the_path_mode() {
     // resolved at validation.
     let stmt = parse_ok("MATCH (a)-[r]->(b) RETURN a");
     assert_eq!(match_clause(&stmt).pattern[0].mode, None);
+}
+
+/// A path variable named `bindings` after an explicit match mode is a
+/// pattern start, not the BINDINGS extension (ADR-0679): the `=` that
+/// follows a path-variable declaration is the discriminator.
+#[test]
+fn test_a_path_variable_named_bindings_after_a_match_mode_binds_the_path() {
+    let stmt = parse_ok("MATCH REPEATABLE ELEMENTS bindings = (a)-[r]->(b) RETURN bindings");
+    assert_eq!(
+        match_clause(&stmt).match_mode,
+        MatchMode::RepeatableElements
+    );
+    assert_eq!(
+        match_clause(&stmt).pattern[0].variable.as_ref(),
+        Some(&SmallName::from_name("bindings"))
+    );
 }

@@ -55,10 +55,19 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use relate_core::{Error, PropertyMap, Result, Value};
+use relate_ir::SearchIndexSpec;
+use relate_model::EntityKind;
 
-use crate::exec::candidates::{index_population, TopWindow};
+use crate::ctx::ExecCtx;
+use crate::eval::eval;
+use crate::exec::candidates::{
+    index_population, ranked_candidates, resolve_search_index, TopWindow,
+};
+use crate::exec::ddl_options::index_analyzer;
+use crate::exec::search_filters::prepare_search_filters;
 use crate::overlay::ExecGraph;
-use crate::redo::IndexDetailSpec;
+use crate::redo::{IndexDetailSpec, IndexKindSpec};
+use crate::row::Row;
 
 mod analyzer;
 mod distance;
@@ -114,14 +123,25 @@ fn value_tokens(value: &Value, index: Analyzer) -> Vec<String> {
 }
 
 fn doc_fields(properties: &[Arc<str>], values: &PropertyMap, index: Analyzer) -> Vec<DocField> {
+    // A field is emitted only when it carries tokens: the property's
+    // value is present AND tokenizes to at least one term. An absent
+    // property, a non-string value, or a string the analyzer strips bare
+    // all yield no tokens to match — a `DocField` for them would only be
+    // filtered back out by every reader downstream, and the BM25
+    // statistics pass counts documents per carried field, so a zero-term
+    // field must not reach it either (Lucene's own document count counts
+    // only documents with terms in the field).
     properties
         .iter()
-        .map(|property| DocField {
-            property: Arc::clone(property),
-            tokens: values
+        .filter_map(|property| {
+            let tokens = values
                 .get(property)
                 .map(|value| value_tokens(value, index))
-                .unwrap_or_default(),
+                .unwrap_or_default();
+            (!tokens.is_empty()).then(|| DocField {
+                property: Arc::clone(property),
+                tokens,
+            })
         })
         .collect()
 }
@@ -129,21 +149,16 @@ fn doc_fields(properties: &[Arc<str>], values: &PropertyMap, index: Analyzer) ->
 /// The corpus statistics pass over the scan's documents: how many
 /// documents carry each indexed property, each field's total token count
 /// (for `avgdl`), and every carried term's document frequency. Every
-/// indexed property gets an entry — empty fields included — so the score
-/// read is an invariant, not a lookup that can miss.
-fn field_stats(
-    docs: &[(i64, Vec<DocField>)],
-    properties: &[Arc<str>],
-) -> HashMap<Arc<str>, FieldStats> {
+/// indexed property gets an entry from the property list itself — a
+/// property no document carries keeps its zero entry — so the score read
+/// is an invariant, not a lookup that can miss.
+fn field_stats(docs: &[CorpusDoc], properties: &[Arc<str>]) -> HashMap<Arc<str>, FieldStats> {
     let mut stats: HashMap<Arc<str>, FieldStats> = properties
         .iter()
         .map(|property| (Arc::clone(property), FieldStats::default()))
         .collect();
-    for (_, doc) in docs {
-        for field in doc {
-            if field.tokens.is_empty() {
-                continue;
-            }
+    for doc in docs {
+        for field in &doc.fields {
             let stat = stats
                 .get_mut(&*field.property)
                 .expect("statistics exist for every indexed property");
@@ -387,35 +402,121 @@ fn field_score(
     sum_matches(scores)
 }
 
+/// The SEARCH clause's fulltext candidate generation — the vector
+/// orchestration's twin ([`crate::exec::vector::index_candidates`]):
+/// the shared catalog-descriptor phase (index resolution, the per-row
+/// `WITH ANALYZER` override), the inner WHERE's single-stage gate
+/// prepared per input row, the live BM25 scan, survivor materialization
+/// — living beside [`search`] (the scan it orchestrates).
+pub(crate) fn index_candidates(
+    ctx: ExecCtx<'_>,
+    corpora: &CorpusMemo,
+    input: &Row,
+    index: &SearchIndexSpec,
+    query: &str,
+    window: usize,
+) -> Result<(EntityKind, Vec<(Value, f64)>)> {
+    let ExecCtx { graph, params, .. } = ctx;
+    // The per-row `WITH ANALYZER` expression; an absent slot — or a NULL
+    // value — is no override, so the query follows the index's analyzer
+    // (ADR-0636), and the value's own unknown-name/type rejections are
+    // `Analyzer::from_value`'s.
+    let query_override = match &index.analyzer {
+        None => None,
+        Some(expr) => Analyzer::from_value(&eval(graph, input, expr, params)?)?,
+    };
+    // The shared catalog-descriptor phase (the procedures' one spelling,
+    // [`resolve_analyzers`]): index resolution, stored analyzer options,
+    // the two-sided analyzers with the query-side override.
+    let scan = resolve_analyzers(graph, &index.index_name, query_override)?;
+    // The inner WHERE's single-stage gate, prepared per input row (the
+    // RHS of every predicate is row-correlated) and applied to each
+    // matching document before the window — the same placement the
+    // vector scan gives its filters. The preparation returns the entity
+    // kind with the prepared predicates — the one derivation — and the
+    // survivor materialization below uses that returned kind.
+    let (kind, prepared) =
+        prepare_search_filters(&index.filters, &scan.detail, graph, input, params)?;
+    let candidates = ranked_candidates(
+        graph,
+        kind,
+        search(corpora, graph, scan, query, 0, window, &prepared)?,
+    );
+    Ok((kind, candidates))
+}
+
+/// The resolved facts one fulltext scan needs, from the one canonical
+/// descriptor phase ([`resolve_analyzers`]) — `exec/vector.rs`'s
+/// [`crate::exec::vector::VectorScan`] twin: the catalog detail (whose
+/// relationship flag is the entity kind's fact, one derivation in
+/// [`crate::redo::IndexDetailSpec::entity_kind`], and whose labels gate
+/// the corpus population) and the two-sided [`Analyzers`] with the
+/// query-side override applied.
+pub(crate) struct FulltextScan {
+    pub(crate) detail: IndexDetailSpec,
+    pub(crate) analyzers: Analyzers,
+}
+
+/// The fulltext catalog-descriptor phase both call kinds share — the
+/// SEARCH clause's orchestration ([`index_candidates`]) and the
+/// `db.index.fulltext.query*` procedures: resolve the index (the one
+/// shared spelling, missing-index and wrong-kind policies included),
+/// read the stored analyzer options, and build the two-sided
+/// [`Analyzers`] with the caller's query-side override (an absent
+/// override follows the index's own analyzer, ADR-0636).
+pub(crate) fn resolve_analyzers(
+    graph: &ExecGraph<'_>,
+    index_name: &str,
+    query_analyzer: Option<Analyzer>,
+) -> Result<FulltextScan> {
+    let (detail, options) = resolve_search_index(graph, index_name, IndexKindSpec::Fulltext)?;
+    let analyzers = Analyzers::new(index_analyzer(&options, index_name)?, query_analyzer);
+    Ok(FulltextScan { detail, analyzers })
+}
+
 /// The one fulltext scan, windowed: rank the index's matching entities by
 /// the calibrated BM25 score, best-first under
-/// [`crate::exec::candidates::ranked_better_cmp`] (score descending, element
-/// id ascending), through the shared CIP-225 [`TopWindow`] — the SEARCH
-/// clause's `SKIP`/`OFFSET`/`LIMIT` page.
+/// [`crate::exec::candidates::ranked_better_cmp`] (score descending,
+/// element id ascending), through the shared CIP-225 [`TopWindow`] — the
+/// SEARCH clause's `SKIP`/`OFFSET`/`LIMIT` page, in the family's named
+/// window (`offset` before `limit`, never a positional pair).
 pub(crate) fn search(
     memo: &CorpusMemo,
     graph: &ExecGraph<'_>,
-    detail: &IndexDetailSpec,
+    scan: FulltextScan,
     query: &str,
-    analyzers: Analyzers,
-    window: (usize, usize),
+    offset: usize,
+    limit: usize,
+    filters: &[crate::exec::search_filters::PreparedSearchFilter<'_>],
 ) -> Result<Vec<(i64, f64)>> {
-    let (offset, limit) = window;
+    let FulltextScan { detail, analyzers } = scan;
     rank(
         memo,
         graph,
-        detail,
+        &detail,
         query,
         analyzers,
         TopWindow::new(offset, limit),
+        filters,
     )
+}
+
+/// One indexed document: its id, its entity's own properties (the same
+/// `Arc` the read snapshot holds — no copy, no extra fetch, so the SEARCH
+/// inner-WHERE gate filters a matching document without re-reading the
+/// record or re-deriving its entity kind, ADR-0678), and its tokenized
+/// fields.
+struct CorpusDoc {
+    id: i64,
+    properties: Arc<PropertyMap>,
+    fields: Vec<DocField>,
 }
 
 /// One index's tokenized documents and per-field statistics: a pure
 /// function of the graph and the index's detail and analyzer, so it is
 /// built once and read by every scan over the same index.
 struct Corpus {
-    docs: Vec<(i64, Vec<DocField>)>,
+    docs: Vec<CorpusDoc>,
     stats: HashMap<Arc<str>, FieldStats>,
 }
 
@@ -424,9 +525,13 @@ impl Corpus {
         let properties: Vec<Arc<str>> = detail.properties.iter().map(|p| Arc::from(&**p)).collect();
         // The shared index population (exec::candidates); the document
         // build and the corpus statistics are this scan's own.
-        let docs: Vec<(i64, Vec<DocField>)> = index_population(graph, detail)
+        let docs: Vec<CorpusDoc> = index_population(graph, detail)
             .iter()
-            .map(|(id, values)| (*id, doc_fields(&properties, values, index)))
+            .map(|(id, values)| CorpusDoc {
+                id: *id,
+                properties: Arc::clone(values),
+                fields: doc_fields(&properties, values, index),
+            })
             .collect();
         let stats = field_stats(&docs, &properties);
         Self { docs, stats }
@@ -488,6 +593,7 @@ fn rank(
     query: &str,
     analyzers: Analyzers,
     mut window: TopWindow,
+    filters: &[crate::exec::search_filters::PreparedSearchFilter<'_>],
 ) -> Result<Vec<(i64, f64)>> {
     let clauses = parse(query, analyzers.query)?;
     if clauses.is_empty() {
@@ -503,13 +609,18 @@ fn rank(
     // A query with a MUST clause needs no SHOULD to match; a should-only
     // query needs one (Lucene's BooleanQuery contract).
     let needs_should = !clauses.iter().any(|clause| clause.occur == Occur::Must);
-    for (id, doc) in docs {
+    for CorpusDoc {
+        id,
+        properties,
+        fields,
+    } in docs
+    {
         let mut musts_hold = true;
         let mut should_holds = false;
         let mut prohibited = false;
         let mut score = 0.0;
         for clause in &clauses {
-            let contribution = clause_score(clause, doc, stats);
+            let contribution = clause_score(clause, fields, stats);
             if let Some(contribution) = contribution {
                 score += contribution;
             }
@@ -519,7 +630,17 @@ fn rank(
                 Occur::Should => should_holds |= contribution.is_some(),
             }
         }
-        if musts_hold && !prohibited && (should_holds || !needs_should) {
+        // One acceptance statement: the query's clause semantics hold and
+        // the SEARCH clause's inner WHERE passes — the gate reads the
+        // document's own properties as the corpus carries them, and an
+        // empty filter list (the procedure callers carry no SEARCH
+        // clause) is the callee's own ungated answer, so the loop states
+        // no guard of its own (ADR-0678).
+        if musts_hold
+            && !prohibited
+            && (should_holds || !needs_should)
+            && crate::exec::search_filters::search_filter_passes(graph, *id, properties, filters)?
+        {
             window.push(score, *id);
         }
     }

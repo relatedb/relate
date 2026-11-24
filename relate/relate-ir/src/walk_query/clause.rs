@@ -66,6 +66,11 @@ pub fn clause_read_vars(clause: &Clause, out: &mut HashSet<String>) {
                 for expr in search.spec.exprs() {
                     crate::expr_vars(expr, out);
                 }
+                // The window split's score half rides the SEARCH clause
+                // (ADR-0678): its reads join every other expression's
+                // here, so a variable the score predicate names is as
+                // visible as one the entity half names.
+                read_item(search.post_where.as_ref(), out);
             }
         }
         Clause::Merge {

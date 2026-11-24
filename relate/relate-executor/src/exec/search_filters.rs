@@ -1,7 +1,9 @@
-//! The CIP-240 vector-search filter subsystem: the RHS value-type gates,
-//! the per-search preparation of the lowered [`SearchFilterPred`]s against
-//! the input row (`prepare_vector_filters`), and the per-candidate gate
-//! (`vector_filter_passes`) the scan in `super::vector` drives.
+//! The single-stage SEARCH filter subsystem (the inner `WHERE` of a
+//! `<source specification clause>`): the RHS value-type gates, the
+//! per-search preparation of the lowered [`SearchFilterPred`]s against
+//! the input row (`prepare_search_filters`), and the per-candidate gate
+//! (`search_filter_passes`) both scans — the vector and the fulltext —
+//! drive.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -13,7 +15,7 @@ use crate::eval::{binary, eval, in_op, in_rhs};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-fn vector_filter_rhs_allowed(value: &Value) -> bool {
+fn search_filter_rhs_allowed(value: &Value) -> bool {
     matches!(
         value,
         Value::Null
@@ -30,10 +32,10 @@ fn vector_filter_rhs_allowed(value: &Value) -> bool {
 /// scalar (a null member leaves membership unknown, exactly like `IN`'s
 /// own fold). A non-list or nested container is rejected, matching Neo4j's
 /// list/element type rule.
-fn vector_in_set_rhs_allowed(value: &Value) -> bool {
+fn search_in_set_rhs_allowed(value: &Value) -> bool {
     match in_rhs(value) {
         Ok(None) => true,
-        Ok(Some(items)) => items.iter().all(vector_filter_rhs_allowed),
+        Ok(Some(items)) => items.iter().all(search_filter_rhs_allowed),
         Err(_) => false,
     }
 }
@@ -54,7 +56,7 @@ fn property_or_null(properties: &PropertyMap, property: &str) -> Value {
 /// One CIP-240 filter with its RHS evaluated against the current input
 /// row. [`SearchFilterPred`] is the lowered grammar shape; this is the
 /// per-search, per-row executable shape.
-pub(super) enum PreparedVectorFilter<'a> {
+pub(crate) enum PreparedSearchFilter<'a> {
     Comparison {
         property: &'a str,
         op: SearchOp,
@@ -70,23 +72,26 @@ pub(super) enum PreparedVectorFilter<'a> {
         property: &'a str,
         rhs: Value,
     },
-    /// The candidate entity's id must be a member of the evaluated set.
-    /// Non-entity members can never equal the candidate and null members
-    /// leave membership unknown, so neither contributes an id.
-    EntityInSet {
+    /// The candidate's id must be a member of the evaluated id set — the
+    /// one prepared form of both `IN` grammar shapes (the entity-set
+    /// match filter and its id-spelled twin): the extraction differs
+    /// ([`entity_set_ids`] vs [`id_set_ids`]) at preparation, and once
+    /// prepared the two forms evaluate identically, so the runtime
+    /// carries one variant.
+    Ids {
         ids: HashSet<i64>,
     },
 }
 
-pub(super) fn vector_filter_passes(
+pub(crate) fn search_filter_passes(
     graph: &ExecGraph<'_>,
     id: i64,
     properties: &PropertyMap,
-    filters: &[PreparedVectorFilter<'_>],
+    filters: &[PreparedSearchFilter<'_>],
 ) -> Result<bool> {
     for filter in filters {
         let passes = match filter {
-            PreparedVectorFilter::Comparison { property, op, rhs } => {
+            PreparedSearchFilter::Comparison { property, op, rhs } => {
                 // The canonical binary comparison (stellar round 1, std-4):
                 // no ad-hoc Expr tree for two already-evaluated values. It
                 // owns the value-type rules, including durations (no total
@@ -95,17 +100,17 @@ pub(super) fn vector_filter_passes(
                 let left = property_or_null(properties, property);
                 binary(graph, (*op).into(), left, rhs.clone())?.truthy() == Some(true)
             }
-            PreparedVectorFilter::Exists { property } => properties
+            PreparedSearchFilter::Exists { property } => properties
                 .get(property)
                 .is_some_and(|value| !value.is_null()),
-            PreparedVectorFilter::NotExists { property } => {
+            PreparedSearchFilter::NotExists { property } => {
                 properties.get(property).is_none_or(Value::is_null)
             }
-            PreparedVectorFilter::InSet { property, rhs } => {
+            PreparedSearchFilter::InSet { property, rhs } => {
                 let left = property_or_null(properties, property);
                 in_op(left, rhs.clone())?.truthy() == Some(true)
             }
-            PreparedVectorFilter::EntityInSet { ids } => ids.contains(&id),
+            PreparedSearchFilter::Ids { ids } => ids.contains(&id),
         };
         if !passes {
             return Ok(false);
@@ -114,57 +119,93 @@ pub(super) fn vector_filter_passes(
     Ok(true)
 }
 
-/// The entity-set members of an `EntityInSet` filter, as candidate ids of
-/// the index's own entity kind. `in_rhs` supplies `IN`'s one operand
-/// policy: a null operand matches nothing (`x IN null` is null, so an empty
-/// set carries the same outcome), and members of the other entity kind can
-/// never equal a candidate. A member that is neither an entity nor an
-/// allowed scalar (a nested list or map) is rejected like the property
-/// form's [`vector_in_set_rhs_allowed`], so both `IN` forms share one
-/// member-type policy.
-fn entity_set_ids(value: &Value, kind: EntityKind) -> Result<HashSet<i64>> {
+/// The one membership walk both `IN`-form extractions share: `in_rhs`'s
+/// operand policy (a null operand matches nothing — `x IN null` is null,
+/// so an empty set carries the same outcome), the per-member loop, the
+/// allowed-scalar skip, and the container rejection — the forms differ
+/// only in which members contribute an id, the `id_of` policy.
+fn set_ids(value: &Value, id_of: impl Fn(&Value) -> Result<Option<i64>>) -> Result<HashSet<i64>> {
     let Some(members) = in_rhs(value).map_err(|_| invalid_filter_rhs())? else {
         return Ok(HashSet::new());
     };
     let mut ids = HashSet::new();
     for item in members.iter() {
-        match (item, kind) {
-            (Value::Node(node), EntityKind::Node) => {
-                ids.insert(node.id);
-            }
-            (Value::Relationship(rel), EntityKind::Relationship) => {
-                ids.insert(rel.id);
-            }
-            (Value::Node(_) | Value::Relationship(_), _) => {}
-            (item, _) if vector_filter_rhs_allowed(item) => {}
-            _ => return Err(invalid_filter_rhs()),
+        if let Some(id) = id_of(item)? {
+            ids.insert(id);
         }
     }
     Ok(ids)
 }
 
-/// The vector filter preparation: the index property membership check
-/// (the one catalog-dependent check), the RHS value-type gate, and the
-/// per-search RHS evaluation. The binding-variable and RHS-shape checks
-/// fired at lowering, the per-property combination limits and the
-/// comparison-operator ban at the grammar walk.
-pub(super) fn prepare_vector_filters<'a>(
+/// The entity-member policy both `IN`-form extractions share: an entity
+/// member contributes its id only when it is the index's own kind (node
+/// and relationship ids share one numeric space, so a cross-kind member
+/// is a false positive, not a harmless never-match); an allowed scalar
+/// member never matches; a container member is the one typed rejection.
+fn entity_member_id(item: &Value, kind: EntityKind) -> Result<Option<i64>> {
+    match (item, kind) {
+        (Value::Node(node), EntityKind::Node) => Ok(Some(node.id)),
+        (Value::Relationship(rel), EntityKind::Relationship) => Ok(Some(rel.id)),
+        (Value::Node(_) | Value::Relationship(_), _) => Ok(None),
+        (item, _) if search_filter_rhs_allowed(item) => Ok(None),
+        _ => Err(invalid_filter_rhs()),
+    }
+}
+
+/// The entity-set members of an `EntityInSet` filter, as candidate ids of
+/// the index's own entity kind: the shared entity-member policy, with no
+/// id rule of its own. `in_rhs` supplies `IN`'s one operand policy — a
+/// null operand matches nothing (`x IN null` is null, so an empty set
+/// carries the same outcome).
+fn entity_set_ids(value: &Value, kind: EntityKind) -> Result<HashSet<i64>> {
+    set_ids(value, |item| entity_member_id(item, kind))
+}
+
+/// The id-set members of an `IdInSet` filter: the shared entity-member
+/// policy plus the one id rule of its own — an integer member is an id
+/// (the predicate compares ids, not entities, so an explicit integer is
+/// kind-agnostic).
+fn id_set_ids(value: &Value, kind: EntityKind) -> Result<HashSet<i64>> {
+    set_ids(value, |item| match item {
+        Value::Int(id) => Ok(Some(*id)),
+        item => entity_member_id(item, kind),
+    })
+}
+
+/// The single-stage filter preparation: the index property membership
+/// check (the one catalog-dependent check — a VECTOR source's additional
+/// `WITH [...]` set is the single-stage filter's declared properties, so
+/// a property outside it is the wrong-property rejection; a FULLTEXT
+/// source's DDL declares no additional set, so its inner WHERE reads the
+/// entity's own properties, whatever they are), the RHS value-type
+/// gate, and the per-search RHS evaluation. The binding-variable and
+/// RHS-shape checks fired at lowering, the per-property combination
+/// limits and the comparison-operator ban at the grammar walk.
+pub(crate) fn prepare_search_filters<'a>(
     filters: &'a [SearchFilterPred],
     detail: &crate::redo::IndexDetailSpec,
-    kind: EntityKind,
     graph: &ExecGraph<'_>,
     input: &Row,
     params: &BTreeMap<String, Value>,
-) -> Result<Vec<PreparedVectorFilter<'a>>> {
+) -> Result<(EntityKind, Vec<PreparedSearchFilter<'a>>)> {
+    // The entity kind is the detail's own fact, derived once here and
+    // returned with the prepared predicates: every caller materializes
+    // with the returned kind, no site re-derives it beside the same read.
+    let kind = detail.entity_kind();
     let additional: HashSet<_> = detail.with_properties.iter().map(String::as_str).collect();
+    let vector_source = detail.kind == crate::redo::IndexKindSpec::Vector;
     let mut evaluated = Vec::with_capacity(filters.len());
     for filter in filters {
         // The catalog-dependent property check runs first: it keeps its
-        // error precedence over RHS evaluation.
-        if let Some(property) = filter.property_name() {
-            if !additional.contains(property) {
-                return Err(Error::execution("WrongPropertyForVectorSearchFilter"));
-            }
+        // error precedence over RHS evaluation, and only a VECTOR source
+        // pays it — the additional-properties set is the vector index's
+        // own declaration, one stated guard.
+        if vector_source
+            && filter
+                .property_name()
+                .is_some_and(|property| !additional.contains(property))
+        {
+            return Err(Error::execution("WrongPropertyForVectorSearchFilter"));
         }
         // Each arm destructures its own variant's rhs and evaluates it
         // there (stellar round 2, F-2-27): the variant's shape is the
@@ -173,36 +214,39 @@ pub(super) fn prepare_vector_filters<'a>(
         let prepared = match filter {
             SearchFilterPred::Comparison { property, op, rhs } => {
                 let value = eval(graph, input, rhs, params)?;
-                if !vector_filter_rhs_allowed(&value) {
+                if !search_filter_rhs_allowed(&value) {
                     return Err(invalid_filter_rhs());
                 }
-                PreparedVectorFilter::Comparison {
+                PreparedSearchFilter::Comparison {
                     property,
                     op: *op,
                     rhs: value,
                 }
             }
-            SearchFilterPred::Exists { property } => PreparedVectorFilter::Exists { property },
+            SearchFilterPred::Exists { property } => PreparedSearchFilter::Exists { property },
             SearchFilterPred::NotExists { property } => {
-                PreparedVectorFilter::NotExists { property }
+                PreparedSearchFilter::NotExists { property }
             }
             SearchFilterPred::InSet { property, rhs } => {
                 let value = eval(graph, input, rhs, params)?;
-                if !vector_in_set_rhs_allowed(&value) {
+                if !search_in_set_rhs_allowed(&value) {
                     return Err(invalid_filter_rhs());
                 }
-                PreparedVectorFilter::InSet {
+                PreparedSearchFilter::InSet {
                     property,
                     rhs: value,
                 }
             }
-            SearchFilterPred::EntityInSet { rhs } => PreparedVectorFilter::EntityInSet {
+            SearchFilterPred::EntityInSet { rhs } => PreparedSearchFilter::Ids {
                 ids: entity_set_ids(&eval(graph, input, rhs, params)?, kind)?,
+            },
+            SearchFilterPred::IdInSet { rhs } => PreparedSearchFilter::Ids {
+                ids: id_set_ids(&eval(graph, input, rhs, params)?, kind)?,
             },
         };
         evaluated.push(prepared);
     }
-    Ok(evaluated)
+    Ok((kind, evaluated))
 }
 
 #[cfg(test)]
@@ -211,7 +255,7 @@ mod tests {
 
     /// A duration has no total order, so a range filter over one excludes
     /// the candidate while an equality still compares (CIP-240 value-type
-    /// rules) — pinning the guard vector_filter_passes carries.
+    /// rules) — pinning the guard search_filter_passes carries.
     #[test]
     fn duration_range_filter_excludes_the_candidate() {
         use relate_core::Temporal;
@@ -226,21 +270,21 @@ mod tests {
         properties.insert("ttl".into(), duration());
         let g = crate::graph::Graph::default();
         let graph = ExecGraph::read(&g);
-        let range = vec![PreparedVectorFilter::Comparison {
+        let range = vec![PreparedSearchFilter::Comparison {
             property: "ttl",
             op: SearchOp::Gt,
             rhs: duration(),
         }];
         assert!(
-            !vector_filter_passes(&graph, 1, &properties, &range).unwrap(),
+            !search_filter_passes(&graph, 1, &properties, &range).unwrap(),
             "a range over a duration filters the candidate out"
         );
-        let equality = vec![PreparedVectorFilter::Comparison {
+        let equality = vec![PreparedSearchFilter::Comparison {
             property: "ttl",
             op: SearchOp::Eq,
             rhs: duration(),
         }];
-        assert!(vector_filter_passes(&graph, 1, &properties, &equality).unwrap());
+        assert!(search_filter_passes(&graph, 1, &properties, &equality).unwrap());
     }
 
     /// The four non-comparison filter shapes: existence checks the
@@ -254,36 +298,36 @@ mod tests {
         properties.insert("nulls".into(), Value::Null);
         let g = crate::graph::Graph::default();
         let graph = ExecGraph::read(&g);
-        let passes = |filter: PreparedVectorFilter<'_>| {
-            vector_filter_passes(&graph, 42, &properties, &[filter]).unwrap()
+        let passes = |filter: PreparedSearchFilter<'_>| {
+            search_filter_passes(&graph, 42, &properties, &[filter]).unwrap()
         };
 
-        assert!(passes(PreparedVectorFilter::Exists { property: "rating" }));
-        assert!(!passes(PreparedVectorFilter::Exists {
+        assert!(passes(PreparedSearchFilter::Exists { property: "rating" }));
+        assert!(!passes(PreparedSearchFilter::Exists {
             property: "missing"
         }));
-        assert!(!passes(PreparedVectorFilter::Exists { property: "nulls" }));
-        assert!(passes(PreparedVectorFilter::NotExists {
+        assert!(!passes(PreparedSearchFilter::Exists { property: "nulls" }));
+        assert!(passes(PreparedSearchFilter::NotExists {
             property: "missing"
         }));
-        assert!(passes(PreparedVectorFilter::NotExists {
+        assert!(passes(PreparedSearchFilter::NotExists {
             property: "nulls"
         }));
-        assert!(!passes(PreparedVectorFilter::NotExists {
+        assert!(!passes(PreparedSearchFilter::NotExists {
             property: "rating"
         }));
 
-        let in_set = |members: Vec<Value>| PreparedVectorFilter::InSet {
+        let in_set = |members: Vec<Value>| PreparedSearchFilter::InSet {
             property: "rating",
             rhs: Value::List(members.into()),
         };
         assert!(passes(in_set(vec![Value::Float(7.5), Value::Null])));
         assert!(!passes(in_set(vec![Value::Float(7.6)])));
 
-        assert!(passes(PreparedVectorFilter::EntityInSet {
+        assert!(passes(PreparedSearchFilter::Ids {
             ids: HashSet::from([1, 42])
         }));
-        assert!(!passes(PreparedVectorFilter::EntityInSet {
+        assert!(!passes(PreparedSearchFilter::Ids {
             ids: HashSet::from([1, 2])
         }));
     }
@@ -319,7 +363,7 @@ mod tests {
     fn container_in_member_is_rejected_on_both_forms() {
         let nested =
             || Value::List(vec![Value::Int(1), Value::List(vec![Value::Int(2)].into())].into());
-        assert!(!vector_in_set_rhs_allowed(&nested()));
+        assert!(!search_in_set_rhs_allowed(&nested()));
         let err = entity_set_ids(&nested(), EntityKind::Node).unwrap_err();
         assert_eq!(err.to_string(), invalid_filter_rhs().to_string());
     }
@@ -348,10 +392,9 @@ mod tests {
             property: "p".into(),
             rhs: relate_ir::Expr::Int(3),
         }];
-        let err =
-            prepare_vector_filters(&filters, &detail, EntityKind::Node, &graph, &row, &params)
-                .err()
-                .expect("a non-list property IN operand is rejected");
+        let err = prepare_search_filters(&filters, &detail, &graph, &row, &params)
+            .err()
+            .expect("a non-list property IN operand is rejected");
         assert_eq!(err.to_string(), expected);
     }
 }

@@ -99,6 +99,7 @@ pub(crate) mod rel_seek;
 pub(crate) mod rider;
 pub(crate) mod scope;
 pub(crate) mod search;
+pub(crate) mod search_filters;
 pub(crate) mod shortest_eval;
 pub(crate) mod sink;
 mod stats_short_circuit;
@@ -107,7 +108,6 @@ pub(crate) mod top_k;
 pub(crate) mod union;
 pub(crate) mod unwind;
 pub(crate) mod vector;
-pub(crate) mod vector_filters;
 pub(crate) mod write;
 
 pub use catalog_show::catalog_create_statements;

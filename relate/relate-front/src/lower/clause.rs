@@ -5,26 +5,32 @@ use relate_names::SmallName;
 
 pub(super) fn lower_clause(c: &cl::Clause) -> Result<mdb::Clause> {
     Ok(match c {
-        cl::Clause::Match(m) => mdb::Clause::Match {
-            optional: m.optional,
-            match_mode: match m.match_mode {
-                cl::MatchMode::DifferentRelationships => mdb::MatchMode::DifferentRelationships,
-                cl::MatchMode::RepeatableElements => mdb::MatchMode::RepeatableElements,
-            },
-            patterns: {
-                let mut patterns = lower_paths(&m.pattern)?;
-                apply_scan_hints(&mut patterns, &m.using_scan);
-                patterns
-            },
-            where_clause: m.where_expr.as_ref().map(lower_expr).transpose()?,
-            // Carried for the plan-time hint notifications (ADR-0363); the
-            // planner steers nothing by them.
-            using_index: m.using_index.clone(),
-            using_join: m.using_join.clone(),
-            search: lower_boxed(m.search.as_ref(), |search| {
-                lower_search_clause(search, &m.pattern)
-            })?,
-        },
+        cl::Clause::Match(m) => {
+            // ADR-0678's window split runs before the clause is built, so
+            // the SEARCH clause carries its own score half (the entity
+            // half stays the MATCH's `where_clause`).
+            let halves = split_match_where(m)?;
+            mdb::Clause::Match {
+                optional: m.optional,
+                match_mode: match m.match_mode {
+                    cl::MatchMode::DifferentRelationships => mdb::MatchMode::DifferentRelationships,
+                    cl::MatchMode::RepeatableElements => mdb::MatchMode::RepeatableElements,
+                },
+                patterns: {
+                    let mut patterns = lower_paths(&m.pattern)?;
+                    apply_scan_hints(&mut patterns, &m.using_scan);
+                    patterns
+                },
+                where_clause: halves.entity,
+                // Carried for the plan-time hint notifications (ADR-0363); the
+                // planner steers nothing by them.
+                using_index: m.using_index.clone(),
+                using_join: m.using_join.clone(),
+                search: lower_boxed(m.search.as_ref(), |search| {
+                    lower_search_clause(search, halves.score)
+                })?,
+            }
+        }
         cl::Clause::Create(cr) => mdb::Clause::Create {
             patterns: lower_paths(&cr.pattern)?,
         },
@@ -472,18 +478,81 @@ pub(super) fn lower_remove_items(items: &[cl::RemoveItem]) -> Result<Vec<mdb::Re
         .collect()
 }
 
+/// The two halves of a searching MATCH's outer WHERE (ADR-0678's window
+/// split), each a folded `AND` chain. Which half a conjunct belongs to,
+/// and why, is [`split_match_where`]'s one statement of the rule.
+struct MatchWhereHalves {
+    entity: Option<mdb::Expr>,
+    score: Option<mdb::Expr>,
+}
+
+/// ADR-0678's window split, one lowering for both halves: a searching
+/// MATCH's outer WHERE splits at its top-level `AND` conjuncts (the one
+/// canonical [`flatten_and`](super::expr::flatten_and), paren-transparent
+/// so `(a AND s)` splits like its paren-free spelling) — the conjuncts
+/// that never mention the `SCORE AS` variable stay the MATCH's
+/// `where_clause`, the mentioning ones become the SEARCH clause's
+/// `post_where`. Which half carries which conjunct, and why the score
+/// cannot join the window's count, is `SearchClause::post_where`'s
+/// contract — the one statement of the rule (ADR-0678). A MATCH with no
+/// SEARCH, no score variable, or a WHERE that never
+/// reads it lowers exactly as before — the whole WHERE restricts, no
+/// post-filter.
+fn split_match_where(m: &cl::MatchClause) -> Result<MatchWhereHalves> {
+    let Some(where_expr) = &m.where_expr else {
+        return Ok(MatchWhereHalves {
+            entity: None,
+            score: None,
+        });
+    };
+    let Some(score_var) = crate::ast::collect::search_score_var(m) else {
+        return Ok(MatchWhereHalves {
+            entity: Some(lower_expr(where_expr)?),
+            score: None,
+        });
+    };
+    let mut conjuncts = Vec::new();
+    super::expr::flatten_and(where_expr, &mut conjuncts);
+    // The score half is the whole-tree mention test (ADR-0678's split):
+    // a score reference inside a correlated subquery or comprehension
+    // body is still a score conjunct — the scope collector would miss
+    // it, and the pattern-side probe would then evaluate the conjunct
+    // with no score binding at all.
+    let (score_side, entity_side): (Vec<&cl::Expr>, Vec<&cl::Expr>) = conjuncts
+        .into_iter()
+        .partition(|conjunct| crate::ast::collect::expr_mentions_variable(conjunct, score_var));
+    // Each side folds back through the IR's one conjunction constructor
+    // (left-associative `AND`: each conjunct becomes the right child of
+    // the chain built so far); the folding never hits the
+    // absorbing-constant special case the canonical `binary_expr`
+    // carries — each part is a user conjunct, and the constants that
+    // case folds were single conjuncts before the split.
+    let lowered = |side: Vec<&cl::Expr>| -> Result<Option<mdb::Expr>> {
+        Ok(mdb::Expr::conjunction(
+            side.into_iter()
+                .map(lower_expr)
+                .collect::<Result<Vec<_>>>()?,
+        ))
+    };
+    Ok(MatchWhereHalves {
+        entity: lowered(entity_side)?,
+        score: lowered(score_side)?,
+    })
+}
+
 /// Lowers a CIP-278 `SEARCH` clause: the bound variable, its source
-/// specification, the score variable, and whether the MATCH's pattern is
-/// the gated complex shape (the executor's top-K rule keys on it).
+/// specification, the score variable, and the outer WHERE's
+/// score-referencing half (ADR-0678's window split — see
+/// [`split_match_where`]).
 fn lower_search_clause(
     search: &cl::SearchClause,
-    pattern: &[cl::PatternPath],
+    post_where: Option<mdb::Expr>,
 ) -> Result<mdb::SearchClause> {
     Ok(mdb::SearchClause {
         binding_var: search.binding_var.clone(),
         spec: lower_search_spec(&search.binding_var, &search.spec)?,
         score_var: search.score_var.clone(),
-        complex_pattern: crate::validate::search_pattern_is_complex(pattern),
+        post_where,
     })
 }
 

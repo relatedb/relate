@@ -58,6 +58,13 @@ pub(super) fn check_match_clause(
     for p in patterns {
         check_path_exprs(env, is_write_procedure, p)?;
     }
+    // One MATCH's outer WHERE may arrive split in two (ADR-0678): the
+    // pattern half stays in `where_clause`, the score-referencing half
+    // rides the SEARCH clause's `post_where`. Both halves go through
+    // the same WHERE policy, stated once in [`check_match_where`].
+    let has_qpp = patterns
+        .iter()
+        .any(|pattern| pattern.elements.iter().any(element_has_qpp));
     if let Some(search) = search {
         // Every value expression of the (possibly nested, CIP-278) source
         // tree — the control slots and the CIP-240 decomposed predicates'
@@ -73,29 +80,43 @@ pub(super) fn check_match_clause(
         if let Some(score_var) = &search.score_var {
             env.insert_name(score_var.clone(), Binding::Value);
         }
+        // The score half of the split WHERE: checked after the score
+        // variable enters scope — its one defining read — under the
+        // same policy as the pattern half.
+        if let Some(post) = &search.post_where {
+            check_match_where(env, is_write_procedure, has_qpp, post)?;
+        }
     }
     if let Some(w) = where_clause {
-        let has_qpp = patterns
-            .iter()
-            .any(|pattern| pattern.elements.iter().any(element_has_qpp));
-        // the WHERE policy as one stated table over (has QPP, is an
-        // aggregation): aggregation is rejected outright unless a QPP
-        // is present, and the predicate is checked unless the QPP
-        // aggregation exemption applies
-        match (has_qpp, is_agg_expr(w)) {
-            // no QPP: aggregations never legal, the predicate checked
-            (false, _) => {
-                reject_agg_in_pred(w)?;
-                check_pred(env, is_write_procedure, w)?;
-            }
-            // QPP present, plain predicate: checked
-            (true, false) => check_pred(env, is_write_procedure, w)?,
-            // the QPP aggregation exemption: neither rule applies
-            (true, true) => {}
-        }
+        check_match_where(env, is_write_procedure, has_qpp, w)?;
     }
 
     Ok(())
+}
+
+/// The MATCH WHERE policy, one table over (has QPP, is an aggregation):
+/// aggregation is rejected outright unless a quantified path pattern is
+/// present, and the predicate is checked unless the QPP aggregation
+/// exemption applies. Every WHERE a MATCH carries goes through it — a
+/// plain MATCH's single WHERE and both halves of a SEARCH MATCH's split
+/// outer WHERE (ADR-0678) alike.
+fn check_match_where(
+    env: &mut Env,
+    is_write_procedure: &mut impl FnMut(&str) -> bool,
+    has_qpp: bool,
+    w: &Expr,
+) -> Result<()> {
+    match (has_qpp, is_agg_expr(w)) {
+        // no QPP: aggregations never legal, the predicate checked
+        (false, _) => {
+            reject_agg_in_pred(w)?;
+            check_pred(env, is_write_procedure, w)
+        }
+        // QPP present, plain predicate: checked
+        (true, false) => check_pred(env, is_write_procedure, w),
+        // the QPP aggregation exemption: neither rule applies
+        (true, true) => Ok(()),
+    }
 }
 
 pub(super) fn check_create_clause(

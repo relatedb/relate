@@ -447,6 +447,29 @@ fn is_bool_literal(e: &cl::Expr, want: bool) -> bool {
     matches!(e, cl::Expr::Literal(cl::LiteralValue::Bool(v)) if *v == want)
 }
 
+/// The top-level `AND` conjuncts of a boolean expression, flattened
+/// left-recursively and paren-transparent — the one spelling every
+/// AND-splitting reader of the parser AST calls (the SEARCH inner-WHERE
+/// grammar walk and the outer WHERE's window split alike, ADR-0678): a
+/// conjunct is either a top-level `AND` (both halves recurse) or the
+/// whole term, read through [`unparen`](crate::ast::tree::unparen) first
+/// so `(a AND s)` splits exactly like its paren-free spelling — the
+/// engine's WHERE evaluation is paren-transparent, and the two
+/// AND-splitting consumers must not diverge from it. Non-`AND`
+/// connectives stay whole. Beside [`bin_op`], the operator vocabulary it
+/// reads.
+pub(super) fn flatten_and<'a>(expr: &'a cl::Expr, out: &mut Vec<&'a cl::Expr>) {
+    let expr = crate::ast::tree::unparen(expr);
+    if let cl::Expr::Binary(b) = expr {
+        if matches!(bin_op(b.op), Ok(mdb::BinaryOp::And)) {
+            flatten_and(&b.left, out);
+            flatten_and(&b.right, out);
+            return;
+        }
+    }
+    out.push(expr);
+}
+
 pub(super) fn bin_op(op: &str) -> Result<mdb::BinaryOp> {
     Ok(match op {
         "OR" => mdb::BinaryOp::Or,

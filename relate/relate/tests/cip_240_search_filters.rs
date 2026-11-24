@@ -245,13 +245,13 @@ fn vector_to_string_uses_the_value_constructor() {
     );
 }
 
-/// The post-filtering rule: a *plain* SEARCH MATCH shape (the search
-/// element alone) keeps the `LIMIT` as a hard candidate window, so its
-/// outer `WHERE` — before or after the SEARCH — and the MATCH's label
-/// post-filter the window instead of widening it. Probed on live Neo4j
-/// 2026.10.1: `LIMIT 2` over Alpha (1950), Beta (2013) with
-/// `year < 2000` returns Alpha alone — the deeper Gamma (1995) never
-/// enters.
+/// The unified window rule (ADR-0678): a SEARCH's SKIP and LIMIT page
+/// over the entities the whole MATCH statement keeps — the pattern's
+/// labels and predicates, the outer `WHERE` before or after the SEARCH,
+/// a pre-bound binding — so a WHERE-passing candidate ranked below the
+/// raw top-K enters and the LIMIT counts survivors. The store's live
+/// probe was 2026.10.1's post-filter split; the corpus now pins the
+/// unified rule for every shape.
 fn post_filter_store() -> relate::Connection {
     let mut c = common::connection();
     c.query("CREATE VECTOR INDEX filmVectors FOR (f:Film) ON f.embedding")
@@ -267,7 +267,7 @@ fn post_filter_store() -> relate::Connection {
 }
 
 #[test]
-fn a_plain_search_shape_post_filters_its_outer_where() {
+fn a_plain_search_shape_restricts_candidates_before_the_window() {
     let mut c = post_filter_store();
     for query in [
         "MATCH (movie:Film) SEARCH movie IN (VECTOR INDEX filmVectors FOR [1.0, 0.0] \
@@ -278,18 +278,18 @@ fn a_plain_search_shape_post_filters_its_outer_where() {
     ] {
         assert_eq!(
             names(&c.query(query).unwrap()),
-            ["Alpha"],
-            "the WHERE post-filters the two-candidate window: {query}"
+            ["Alpha", "Gamma"],
+            "the LIMIT counts WHERE-passing entities: {query}"
         );
     }
 }
 
-/// The label restriction is a post-filter too: a multi-label index yields a
-/// candidate the MATCH's own label rejects, and the search does not widen
-/// past it (live Neo4j 2026.10.1: FulltextSearchAcceptance [37] "label
-/// filter applies after LIMIT" — its LIMIT 1 page holds no Movie at all).
+/// The label restriction restricts the same way: a multi-label index's
+/// candidate set narrows to the MATCH's own label before the window, so
+/// the deeper same-label candidates enter (the corpus's
+/// "MATCH constraints restrict candidates before SEARCH" rows).
 #[test]
-fn a_plain_search_shape_post_filters_the_match_label() {
+fn a_plain_search_shape_restricts_candidates_by_the_match_label() {
     let mut c = common::connection();
     c.query("CREATE VECTOR INDEX mediaVectors FOR (n:Alpha|Beta) ON n.embedding")
         .unwrap();
@@ -307,8 +307,22 @@ fn a_plain_search_shape_post_filters_the_match_label() {
             )
             .unwrap()
         ),
-        ["a1"],
-        "the Beta candidate consumes a window slot the label filter frees"
+        ["a1", "a2"],
+        "the window pages over Alpha entities only"
+    );
+    // A constraint the index definition implies restricts nothing: the
+    // union spelling keeps the unrestricted window (the corpus's
+    // "index-implied expressions retain the unrestricted results" rows).
+    assert_eq!(
+        names(
+            &c.query(
+                "MATCH (n:Alpha|Beta) SEARCH n IN (VECTOR INDEX mediaVectors FOR [1.0, 0.0] \
+                 LIMIT 2) RETURN n.id AS id"
+            )
+            .unwrap()
+        ),
+        ["a1", "b1"],
+        "the index's own label set filters no index member"
     );
 }
 

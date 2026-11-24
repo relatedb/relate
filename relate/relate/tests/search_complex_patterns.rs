@@ -1,23 +1,17 @@
-//! The `complex-search-patterns` preview gate, ENABLED side (ADR-0371):
-//! with `RELATE_PREVIEW=complex-search-patterns` a
-//! SEARCH clause's MATCH statement keeps its own pattern shape — several
+//! The graduated complex-pattern SEARCH surface (ADR-0678): a SEARCH
+//! clause's MATCH statement keeps its own pattern shape — several
 //! components, multi-hop and variable-length relationships, several bound
 //! variables, predicates outside the binding — for a FULLTEXT source
-//! exactly as for a VECTOR one (Neo4j's complex-pattern mode).
-//!
-//! `RELATE_PREVIEW` is process-global and read once per `Database::open`
-//! (ADR-0371), so the enabled and closed sides are separate test binaries:
-//! `complex_search_patterns_closed.rs` pins the pattern-shape rejections and must
-//! never share a process with this file.
+//! exactly as for a VECTOR one, under the default dialect (the corpus
+//! that pinned the shape rejections now expects their results).
 
 mod common;
 
-use common::{connection, first_column_strings, set_preview_once};
+use common::{connection, first_column_strings};
 
 /// Two FULLTEXT indexes over the corpus's shape: node bios and relationship
 /// notes, with the small graph the acceptance scenarios search.
 fn search_store() -> relate::Connection {
-    set_preview_once("complex-search-patterns");
     let mut c = connection();
     c.query(
         "CREATE FULLTEXT INDEX personBios IF NOT EXISTS \
@@ -117,7 +111,6 @@ fn the_plain_rule_0_shape_keeps_working() {
 /// best-scoring film the pattern rejects sits inside the window the LIMIT
 /// covers.
 fn top_k_store() -> relate::Connection {
-    set_preview_once("complex-search-patterns");
     let mut c = connection();
     c.query("CREATE VECTOR INDEX plotVectors FOR (m:Movie) ON m.embedding")
         .unwrap();
@@ -178,6 +171,41 @@ fn a_cross_component_predicate_does_not_shrink_the_top_k() {
     );
 }
 
+/// A pre-bound binding whose own candidate is consumed by the SKIP
+/// window: the binding appears once in its own ranking (a wider window
+/// only appends lower-ranked entities), so the row's verdict is final
+/// at that point — it emits nothing, and the growth loop ends there
+/// instead of widening to exhaustion.
+#[test]
+fn a_pre_bound_binding_consumed_by_the_skip_window_emits_nothing() {
+    let mut c = search_store();
+    // The positive control: without the SKIP the binding's own candidate
+    // is kept — the seeded Alice joins her KNOWS partner.
+    let result = c
+        .query(
+            "MATCH (a:Person {name: 'Alice'}) \
+             MATCH (a)-[r:KNOWS]->(other:Person) \
+             SEARCH a IN (FULLTEXT INDEX personBios \
+                          FOR 'brave OR quiet OR bold' LIMIT 3) \
+             RETURN other.name AS other",
+        )
+        .unwrap();
+    assert_eq!(first_column_strings(&result), vec!["Bob".to_string()]);
+    // SKIP 1 consumes the binding's own candidate — the only entity this
+    // row can ever keep (Bob and Carol are dropped before the MATCH, so
+    // they never reach the skip budget): no rows, and no further widening.
+    let result = c
+        .query(
+            "MATCH (a:Person {name: 'Alice'}) \
+             MATCH (a)-[r:KNOWS]->(other:Person) \
+             SEARCH a IN (FULLTEXT INDEX personBios \
+                          FOR 'brave OR quiet OR bold' SKIP 1 LIMIT 3) \
+             RETURN other.name AS other",
+        )
+        .unwrap();
+    assert_eq!(first_column_strings(&result), Vec::<String>::new());
+}
+
 /// A LIMIT-0 clause keeps nothing and terminates immediately: with a
 /// pre-bound binding under a complex pattern the growth loop's base was
 /// zero, so the window never widened and the loop spun forever (the
@@ -206,7 +234,6 @@ fn a_limit_zero_search_terminates_with_no_rows() {
 /// top-K rule is the authority).
 #[test]
 fn a_deferred_search_counts_only_surviving_candidates() {
-    set_preview_once("complex-search-patterns");
     let mut c = connection();
     c.query("CREATE VECTOR INDEX plotVectors FOR (m:Movie) ON m.embedding")
         .unwrap();
@@ -243,7 +270,6 @@ fn a_deferred_search_counts_only_surviving_candidates() {
 /// the LIMIT's only slot, so the window widens to Delta.
 #[test]
 fn a_deferred_search_where_rejection_frees_the_limit_slot() {
-    set_preview_once("complex-search-patterns");
     let mut c = connection();
     c.query("CREATE VECTOR INDEX plotVectors FOR (m:Movie) ON m.embedding")
         .unwrap();
@@ -271,7 +297,6 @@ fn a_deferred_search_where_rejection_frees_the_limit_slot() {
 /// falls with their distance from the query vector, the middle one with a
 /// born-1950 actor (`born < 1940` rejects it).
 fn relationship_top_k_store() -> relate::Connection {
-    set_preview_once("complex-search-patterns");
     let mut c = connection();
     c.query("CREATE VECTOR INDEX relVectors FOR ()-[r:ACTED_IN]->() ON r.vector")
         .unwrap();

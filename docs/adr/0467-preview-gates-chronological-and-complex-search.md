@@ -3,7 +3,8 @@ type: adr
 area: cypher
 claim: f5b3fd04abff664a96988c1ac9bce25e90d23284
 name: 0467-preview-gates-chronological-and-complex-search
-status: proposed
+status: superseded
+status_note: in part by [ADR-0678](./0678-search-complex-patterns-and-entity-constrained-window.md)
 tags:
   - dialect
 title: |-
@@ -132,3 +133,12 @@ off form is decided.
   temporal-fidelity rows — an out-of-range year literal and a DST-gap named
   zone — that fail identically before and after), and the disabled scenario
   passes again.
+
+## Later references
+
+- [ADR-0678](./0678-search-complex-patterns-and-entity-constrained-window.md)
+  graduates the `complex-search-patterns` row: the reference corpus's
+  2026-11-24 sync dropped the opt-in tag and rewrote the shape-rejection
+  scenarios to expect results, so the row's off state no longer models
+  anything. The `chronological-comparisons` row (decision 1) is untouched
+  and stands.

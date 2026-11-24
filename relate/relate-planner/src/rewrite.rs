@@ -157,7 +157,7 @@ fn commit_where_assignment(
         all.append(&mut incoming[i]);
         let where_clause = crossing_where_mut(&mut clauses[i])
             .expect("a participating clause is a crossing MATCH");
-        *where_clause = combine_and(all);
+        *where_clause = Expr::conjunction(all);
     }
 }
 
@@ -232,7 +232,7 @@ fn fold_where(
 ) -> Option<Expr> {
     // One conjunct list for the whole `AND` tree — the flattening this
     // used to do with a fresh `Vec` per leaf (and one per inner node's
-    // extend) drains into a single list, then `combine_and` re-associates
+    // extend) drains into a single list, then `Expr::conjunction` re-associates
     // the kept conjuncts exactly as before.
     let mut conjuncts = Vec::new();
     flatten_into(expr, &mut conjuncts);
@@ -256,7 +256,7 @@ fn fold_where(
             || !fold_conjunct(patterns, conjunct, bound, introduced)
     });
     conjuncts.retain(|conjunct| !fold_conjunct(patterns, conjunct, bound, introduced));
-    combine_and(conjuncts)
+    Expr::conjunction(conjuncts)
 }
 
 /// Flatten an owned `AND` tree into `out`, left to right — the conjunct
@@ -273,14 +273,6 @@ fn flatten_into(expr: Expr, out: &mut Vec<Expr>) {
         }
         other => out.push(other),
     }
-}
-
-fn combine_and(parts: Vec<Expr>) -> Option<Expr> {
-    parts.into_iter().reduce(|acc, p| Expr::Binary {
-        op: BinaryOp::And,
-        left: Box::new(acc),
-        right: Box::new(p),
-    })
 }
 
 fn fold_conjunct(

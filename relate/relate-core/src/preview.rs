@@ -181,17 +181,6 @@ preview_feature_registry! {
         &[GateSite::AstDetector]
     ),
     (
-        ComplexSearchPatterns,
-        "Neo4j's vector-search complex-pattern mode: \
-         a SEARCH clause's MATCH statement keeps its own pattern shape -- several components, \
-         variable-length hops, quantified and selected paths, several bound variables, \
-         predicates outside the binding -- instead of the floor's single node or \
-         single-hop relationship. Widens the front's SEARCH validation; disabled, every \
-         pattern-shape rejection keeps firing.",
-        "complex-search-patterns",
-        &[]
-    ),
-    (
         CollectionZip,
         "CIP-274: the `coll.zip` collection function, callable and \
          `SHOW`-listed only under this opt-in (ADR-0497). A live Neo4j probe \

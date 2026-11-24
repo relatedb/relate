@@ -21,7 +21,7 @@ use relate_parser::{
 };
 
 use super::naming::{effective_name, item_variable};
-use super::tree::walk_expr_with;
+use super::tree::{walk_expr_with, SubqueryDescent};
 use crate::show_columns::{catalog_output_names, is_catalog_clause};
 
 /// The pattern list a clause carries: `MATCH` and `CREATE` own a list,
@@ -155,23 +155,38 @@ pub(crate) fn distance_metric_arg_index(name: &str) -> Option<usize> {
 /// in the enclosing scope. Subquery bodies (`EXISTS`/`COUNT`/`COLLECT
 /// { … }`) are opaque leaves to the walker, as they were to the hand-rolled
 /// recursion.
+/// The reach-independent lexical-identity exclusions, one predicate: a
+/// dynamic property key (`n[<expr>]`) and the bare distance-metric
+/// keyword argument of `vector_distance`/`vector_norm` (see
+/// [`distance_metric_arg_index`]) both parse as variable references
+/// without *being* reads — every reach (the scope reach and the
+/// whole-tree mention reach) excludes them.
+fn lexical_identity_excluded(parent: &Expr, child: &Expr) -> bool {
+    match parent {
+        Expr::Property(p) => !std::ptr::eq(child, &p.expr),
+        Expr::FunctionCall(fc) => match fc.name.with_str(distance_metric_arg_index) {
+            Some(metric) => fc.args.get(metric).is_some_and(|a| std::ptr::eq(child, a)),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
 /// The edge filter of the scope-reach expression walk: whether a scope check
 /// descends from `parent` into `child` ([`collect_expr_variables`] and the
 /// post-projection subclause visibility rule both read the same reach, so a
 /// construct that binds its own variables cannot leak them as outer
 /// references).
 pub(crate) fn expr_child_reaches_scope(parent: &Expr, child: &Expr) -> bool {
+    if lexical_identity_excluded(parent, child) {
+        return false;
+    }
     match parent {
-        // A dynamic property key (`n[<expr>]`) is not descended into; the
-        // static value side always is.
-        Expr::Property(p) => std::ptr::eq(child, &p.expr),
-        // Skip the bare distance-metric keyword argument of
-        // `vector_distance`/`vector_norm` (see `distance_metric_arg_index`).
-        Expr::FunctionCall(fc) => match fc.name.with_str(distance_metric_arg_index) {
-            Some(metric) => fc.args.get(metric).is_none_or(|a| !std::ptr::eq(child, a)),
-            None => true,
-        },
-        Expr::Binary(_)
+        // The property's value side and a call's non-metric arguments —
+        // the children the lexical-identity predicate did not exclude.
+        Expr::Property(_)
+        | Expr::FunctionCall(_)
+        | Expr::Binary(_)
         | Expr::Comparison(_)
         | Expr::Unary(_)
         | Expr::List(_)
@@ -212,11 +227,36 @@ pub(crate) fn collect_expr_variables(expr: &Expr, vars: &mut IdentHashSet<SmallN
     // Infallible here: the visitor never fails, and every caller runs after
     // the whole-tree depth cap, so the walker's own cap cannot fire on
     // these trees (the hand-rolled recursion would have overflowed instead).
-    let result = walk_expr_with(expr, &mut visit, enter_child);
+    let result = walk_expr_with(expr, &mut visit, enter_child, SubqueryDescent::Opaque);
     debug_assert!(
         result.is_ok(),
         "collect_expr_variables walked a tree that already passed the depth cap"
     );
+}
+
+/// Whether an expression mentions `name` anywhere — the whole-tree
+/// reach over the one find-in-expression scaffolding
+/// ([`crate::ast::tree::expr_contains`] with `SubqueryDescent::Enter`,
+/// the lexical-identity exclusions kept, everything else entered):
+/// subquery bodies (`EXISTS`/`COUNT`/`COLLECT { … }`) and comprehension
+/// and quantifier bodies are walked, because a body can *read* an
+/// enclosing variable (a correlated reference) even though the
+/// variables *bound* there are not outer references — the score-half
+/// classification of a searching MATCH's outer WHERE needs exactly that
+/// question answered (ADR-0678's split: a score read inside a
+/// correlated body still makes the conjunct a post-filter, or the
+/// pattern-side probe evaluates it with no score binding at all). A
+/// body that *binds* a variable of the same name shadows the enclosing
+/// one for its own reads; such a conjunct classifies by the mention and
+/// still evaluates correctly (its own binding carries), it
+/// post-filters rather than window-restricting.
+pub(crate) fn expr_mentions_variable(expr: &Expr, name: &SmallName) -> bool {
+    crate::ast::tree::expr_contains(
+        expr,
+        |parent, child| !lexical_identity_excluded(parent, child),
+        |node| matches!(node, Expr::Variable(v) if v == name),
+        crate::ast::tree::SubqueryDescent::Enter,
+    )
 }
 
 /// Bind every variable a pattern introduces into `bound`: each path's own
@@ -304,6 +344,7 @@ pub(crate) fn check_expr_vars_defined(
         |parent, child| {
             expr_child_reaches_scope(parent, child) && !is_dead_boolean_operand(parent, child)
         },
+        SubqueryDescent::Opaque,
     )?;
     check_names_allowed(&vars, |v| scope.contains(v))
 }

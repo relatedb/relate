@@ -8,21 +8,22 @@ use relate_core::{Result, Value};
 use relate_ir::{Expr, MatchMode, PathPattern, SearchClause};
 use relate_model::EntityKind;
 
-use super::growth::{top_k_complete, top_k_grows, widen_extra};
+use super::growth::{top_k_complete, widen_extra};
 use super::{
-    attach_score, candidate_entity_id, check_binding_kind, search_spec_candidates, SearchEnv,
+    attach_score, candidate_entity_id, check_binding_kind, search_spec_candidates, Growth,
+    SearchEnv,
 };
 use crate::eval::where_clause_holds;
-use crate::exec::candidates::ranked_better_cmp;
+use crate::exec::candidates::TopWindow;
 use crate::exec::match_clause::match_clause;
 use crate::row::Row;
 
 /// The deferred shape: matching the pattern first and filtering each row's
-/// binding against its own candidate list. The same complex-pattern top-K
-/// rule applies — the LIMIT counts distinct candidates that have a row — so
-/// a window with too few surviving candidates is widened, and the LIMIT
-/// keeps the best-ranked survivors (every row of a kept candidate rides
-/// along).
+/// binding against its own candidate list. The window rule is the direct
+/// path's (ADR-0678): SKIP and LIMIT page over the entities whose rows
+/// survive, so a window with too few surviving candidates is widened, and
+/// the LIMIT keeps the best-ranked survivors (every row of a kept entity
+/// rides along).
 pub(super) fn deferred_search_rows(
     env: &SearchEnv<'_>,
     input: &Row,
@@ -33,11 +34,12 @@ pub(super) fn deferred_search_rows(
     search: &SearchClause,
 ) -> Result<Vec<Row>> {
     let ctx = env.ctx;
-    // The pattern matches WITHOUT the MATCH's outer WHERE: each row's
-    // binding and score are resolved from its own candidate list and the
-    // score attached before the WHERE runs — the direct path's order of
-    // operations, so a WHERE naming the SCORE AS variable behaves the
-    // same in both paths.
+    // The pattern matches WITHOUT the MATCH's outer WHERE: the entity-side
+    // conjuncts' verdict is evaluated and cached per matched row here
+    // (window-invariant, so one probe serves every growth round), while
+    // the score-referencing conjuncts post-filter once in
+    // `search_match_clause` — the ADR-0678 split, so this probe never
+    // sees a score and reads the plain row.
     let matched = match_clause(
         ctx,
         vec![input.clone()],
@@ -49,74 +51,97 @@ pub(super) fn deferred_search_rows(
         None,
         None,
     )?;
-    // The rows of a pre-bound binding already carry their only possible
-    // candidate, so no wider window can add a survivor ([`top_k_grows`]).
-    let binding_prebound = input.get_name(&search.binding_var).is_some();
-    let grows = top_k_grows(search, !binding_prebound);
+    // The clause's window, stated once from the input row (the window
+    // expressions never read a pattern binding — the front rejects that
+    // — so one statement serves every row and every growth round; see
+    // `spec_window`). The window stays in its named shape: `skip` and
+    // `limit` read as fields at their use sites, never re-packed.
+    let window = super::spec_window(env, input, &search.spec)?;
+    // The deferred scan always grows: a matched row's binding may sit
+    // arbitrarily deep in the ranking — pre-bound rows as much as
+    // pattern-matched ones — so a wider window can always surface a row's
+    // own candidate where a narrower one missed it. Termination is the
+    // index's (`may_widen`), never the shape's.
+    // The survivor count the growth loop needs before the window can
+    // page — loop-invariant (the window never changes), computed once
+    // beside the statement that owns it.
+    let needed = window.skip.saturating_add(window.limit);
     let mut extra = 0usize;
-    // Per matched row, the outer WHERE's verdict (cached at the row's first
-    // in-window resolution: the binding's rank and score in its own
-    // candidate list are window-invariant -- a wider window only appends
-    // lower-ranked candidates -- so the verdict cannot change between
-    // growth rounds) and the terminal round's binding and score for the
-    // emitted rows. One state per row, not parallel vectors.
-    let mut states = vec![RowState::default(); matched.len()];
+    // Each matched row travels with its own cached state — the outer
+    // WHERE's verdict (recorded at the row's first in-window resolution:
+    // the binding's rank and score in its own candidate list are
+    // window-invariant -- a wider window only appends lower-ranked
+    // candidates -- so the verdict cannot change between growth rounds)
+    // and the terminal round's binding and score for the emitted rows.
+    // One value per row; no parallel collections kept in lockstep.
+    let mut pairs: Vec<(Row, RowState)> = matched
+        .into_iter()
+        .map(|row| (row, RowState::default()))
+        .collect();
     loop {
         let mut round = DeferredRound::default();
-        for (row, state) in matched.iter().zip(states.iter_mut()) {
+        for (row, state) in pairs.iter_mut() {
             // One binding entry per matched row, by construction.
             let Some((id, rank, score)) =
-                deferred_row_binding(env, row, extra, binding_kind, search, &mut round)?
+                deferred_row_binding(env, row, window, extra, binding_kind, search, &mut round)?
             else {
                 continue;
             };
             let where_ok = match state.where_ok {
                 Some(verdict) => verdict,
                 None => {
-                    let mut scored = row.clone();
-                    attach_score(&mut scored, search.score_var.as_ref(), Value::Float(score));
                     // The canonical optional-WHERE gate (stellar round 2,
                     // F-2-22): the one spelling every other optional-WHERE
                     // site reads -- a non-boolean predicate is the typed
-                    // rejection, never a silent drop.
-                    let verdict = where_clause_holds(ctx.graph, &scored, where_clause, ctx.params)?;
+                    // rejection, never a silent drop. The entity-side WHERE
+                    // never reads the score (ADR-0678's split moved every
+                    // score-referencing conjunct to the post-filter), so
+                    // the probe is the plain row.
+                    let verdict = where_clause_holds(ctx.graph, row, where_clause, ctx.params)?;
                     state.where_ok = Some(verdict);
                     verdict
                 }
             };
-            state.resolved = Some((id, score));
             // Only a WHERE-passing row makes its candidate a survivor: the
-            // LIMIT counts candidates with a surviving row, as the direct
-            // path's per-candidate MATCH ... WHERE does.
+            // window pages over candidates with a surviving row, as the
+            // direct path's per-candidate MATCH ... WHERE does. The
+            // resolution is recorded beside the survival, so `resolved`
+            // means "this row survived" by construction — matching the
+            // fact the terminal pass below declares final.
             if where_ok {
+                state.resolved = Some((id, score));
                 round.survive(id, rank, score);
             }
         }
-        let needed = round.limit.unwrap_or(usize::MAX);
-        if !top_k_complete(grows, round.may_widen, round.survivors.len(), needed) {
+        // The survivors the SKIP and LIMIT windows page over: the loop
+        // widens until both windows are full, or the index is exhausted.
+        if !top_k_complete(round.may_widen, round.survivors.len(), needed) {
             extra = widen_extra(extra, needed);
             continue;
         }
-        // The clause's LIMIT keeps the best-ranked survivors -- the one
-        // canonical CIP-225 candidate order ([`ranked_better_cmp`] over
-        // score and id), the same order the candidate lists carry.
-        let mut kept: Vec<(i64, f64)> = round
-            .survivors
-            .iter()
-            .map(|(id, (_rank, score))| (*id, *score))
+        // The clause's window keeps the best-ranked survivors through the
+        // canonical bounded collector — [`TopWindow`]'s own contract
+        // (score descending, id ascending on ties, the SKIP page and the
+        // LIMIT page), the same order the candidate lists carry: one
+        // owner for the window instead of a hand-rolled sort + drain +
+        // truncate.
+        let mut top = TopWindow::new(window.skip, window.limit);
+        for (&id, (_rank, score)) in &round.survivors {
+            top.push(*score, id);
+        }
+        let kept: HashSet<i64> = top
+            .into_sorted_rows()
+            .into_iter()
+            .map(|(id, _)| id)
             .collect();
-        kept.sort_by(|a, b| ranked_better_cmp(b.1, b.0, a.1, a.0));
-        kept.truncate(needed);
-        let kept: HashSet<i64> = kept.into_iter().map(|(id, _)| id).collect();
         // The matched rows are consumed, not cloned: each emitted row is
         // moved out and carries the score its resolution recorded. A row
-        // rides along when its WHERE verdict is true and its candidate is
-        // among the kept survivors.
-        let mut out = Vec::with_capacity(matched.len());
-        for (state, mut row) in states.into_iter().zip(matched) {
-            if state.where_ok != Some(true) {
-                continue;
-            }
+        // rides along when its resolution survived — `resolved` is
+        // written only inside the WHERE-passing arm, so it is the one
+        // terminal survivor fact — and its candidate is among the kept
+        // survivors.
+        let mut out = Vec::with_capacity(pairs.len());
+        for (mut row, state) in pairs {
             let Some((id, score)) = state.resolved else {
                 continue;
             };
@@ -130,18 +155,14 @@ pub(super) fn deferred_search_rows(
     }
 }
 
-/// One deferred growth round's accumulator: the clause LIMIT (evaluated
-/// once — the LIMIT expression reads the input row, never a variable the
-/// MATCH's pattern newly binds, enforced at validation, so every matched
-/// row of one input row yields the same value; `None` until the first
-/// row states it, and an absent combined LIMIT stays `usize::MAX`
-/// without colliding with the sentinel), whether any row's scan could
-/// widen, and each WHERE-surviving candidate's best `(rank, score)` pair —
-/// replaced whole, so the score always travels with the ranking that
-/// kept it.
+/// One deferred growth round's accumulator: whether any row's scan could
+/// widen, and each WHERE-surviving candidate's best `(rank, score)` pair
+/// — replaced whole, so the score always travels with the ranking that
+/// kept it. The clause's window is not round state: it is stated once
+/// from the input row before the loop (`spec_window`) and read as the
+/// plain `skip`/`limit` locals.
 #[derive(Default)]
 struct DeferredRound {
-    limit: Option<usize>,
     may_widen: bool,
     survivors: HashMap<i64, (usize, f64)>,
 }
@@ -175,24 +196,28 @@ struct RowState {
 fn deferred_row_binding(
     env: &SearchEnv<'_>,
     row: &Row,
+    window: super::SearchWindow,
     extra: usize,
     binding_kind: Option<EntityKind>,
     search: &SearchClause,
     round: &mut DeferredRound,
 ) -> Result<Option<(i64, usize, f64)>> {
-    let Some(fetched) = search_spec_candidates(env, row, &search.spec, extra)? else {
+    let Some(fetched) =
+        search_spec_candidates(env, row, &search.spec, window, Growth::Widen(extra))?
+    else {
         return Ok(None);
     };
     check_binding_kind(binding_kind, fetched.kind)?;
-    if round.limit.is_none() {
-        // The first fetched row states the clause LIMIT for the whole
-        // round (every row's is the same; see DeferredRound).
-        round.limit = Some(fetched.limit);
-    }
     round.may_widen |= fetched.may_widen;
-    let Some(bound) = row.get_name(&search.binding_var) else {
-        return Ok(None);
-    };
+    // One binding entry per matched row, by construction: the front
+    // validates the binding variable as this MATCH's own pattern
+    // variable, and the pattern binds it in every row it emits (this
+    // scan's pattern match is non-optional, so no null-padded row rides
+    // here). A miss is that broken invariant, the enumerated-candidate
+    // contract's — a panic, never a silently short result set.
+    let bound = row
+        .get_name(&search.binding_var)
+        .expect("every matched row binds the SEARCH variable");
     let Some(rank) = fetched
         .candidates
         .iter()

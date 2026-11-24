@@ -41,12 +41,21 @@ fn resolve_clause(clause: &mut Clause, resolver: &dyn TokenResolver) {
         Clause::Match {
             patterns,
             where_clause,
+            search,
             ..
         } => {
             for pattern in patterns {
                 resolve_path(pattern, resolver);
             }
             resolve_opt_expr(where_clause.as_mut(), resolver);
+            // A searching MATCH's window split (ADR-0678): the score half
+            // rides the SEARCH clause, so its expression joins the same
+            // token-resolution pass the entity half takes — every
+            // property key the statement reads resolves, whichever side
+            // of the split it landed on.
+            if let Some(search) = search {
+                resolve_opt_expr(search.post_where.as_mut(), resolver);
+            }
         }
         Clause::With {
             group_by,

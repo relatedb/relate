@@ -114,7 +114,6 @@ pub(crate) use self::match_shape::validate_shortest_path_expr_shape;
 pub use self::page_bounds::validate_limit_skip;
 pub(crate) use self::safe_mode::validate_statement_shape;
 pub use self::scope::validate_variable_types;
-pub(crate) use self::search::search_pattern_is_complex;
 pub(crate) use self::search::validate_search_clauses;
 pub(crate) use self::self_reference::validate_create_self_reference_conservative;
 pub use self::show::{
@@ -133,10 +132,9 @@ pub(crate) use self::writes::{
     validate_expr_param_property_shorthand, validate_param_property_shorthand,
 };
 
-/// The store's resolved preview set, carried into validation so the gates
-/// that do not parse syntax can read it: today the `complex-search-patterns`
-/// opt-in, which lifts the SEARCH pattern-shape restriction,
-/// and the ADR-0497 function-name admission gate. The default is every gate
+/// The store's resolved preview set, carried into lowering so the gates
+/// that do not parse syntax can read it: today the ADR-0497
+/// function-name admission gate. The default is every gate
 /// closed -- the dialect floor. One struct so a nested or speculative
 /// lowering inherits its caller's dialect by plain field copy; a gate that
 /// only *detects* a construct (`chronological-comparisons`,
@@ -394,11 +392,7 @@ pub(crate) fn validate_scoped_dynamic_operands(
 /// top-level-only (FOREACH bodies, which share the enclosing scope, are
 /// reached by `validate_variable_types`'s own recursion instead).
 pub fn validate_statement_tree(stmt: &Statement) -> Result<(), EngineError> {
-    validate_statement_tree_with_options_and_policy(
-        stmt,
-        ValidateOptions::default(),
-        StatementPolicy::default(),
-    )
+    validate_statement_tree_with_policy(stmt, StatementPolicy::default())
 }
 
 /// [`validate_statement_tree`] with the store's resolved traversal-depth
@@ -408,11 +402,7 @@ pub fn validate_statement_tree_with_limits(
     stmt: &Statement,
     max_traversal_depth: u32,
 ) -> Result<(), EngineError> {
-    validate_statement_tree_with_options_and_policy(
-        stmt,
-        ValidateOptions::default(),
-        StatementPolicy::unsafened(max_traversal_depth),
-    )
+    validate_statement_tree_with_policy(stmt, StatementPolicy::unsafened(max_traversal_depth))
 }
 
 /// The rules every subquery body owns, named once: 42I39's shortest-path
@@ -450,14 +440,13 @@ pub(crate) fn parse_and_validate_tree(query: &str) -> Result<(), String> {
     validate_statement_tree(&stmt).map_err(|error| error.to_string())
 }
 
-/// The one implementation behind the entry points: the ADR-0371 validation
-/// gates, the LABS-610 traversal-depth admission limit, and the LABS-680
-/// safe-mode shape rules all ride the same battery. Crate-internal (every
-/// caller is inside `relate-front`); the historical public entries
+/// The one implementation behind the entry points: the LABS-610
+/// traversal-depth admission limit and the LABS-680 safe-mode shape rules
+/// ride the same battery. Crate-internal (every caller is inside
+/// `relate-front`); the historical public entries
 /// (`validate_statement_tree`) remain the public surface.
-pub(crate) fn validate_statement_tree_with_options_and_policy(
+pub(crate) fn validate_statement_tree_with_policy(
     stmt: &Statement,
-    options: ValidateOptions,
     policy: StatementPolicy,
 ) -> Result<(), EngineError> {
     validate_nesting_depth(stmt)?;
@@ -472,7 +461,7 @@ pub(crate) fn validate_statement_tree_with_options_and_policy(
     // so the historical first-error precedence is unchanged.
     walk_statement_tree_with_operands(
         stmt,
-        &mut |node| validate_statement_node(node, options, policy),
+        &mut |node| validate_statement_node(node, policy),
         // A subquery body is its own statement, so `validate_statement_node`
         // cannot tell it from a top-level one; the 42I39 mixing rule applies
         // only inside those bodies; separate top-level MATCH clauses stay
@@ -538,11 +527,7 @@ pub(crate) fn validate_statement_tree_with_options_and_policy(
 /// validators run their whole-chain scan at the chain's head only — the
 /// walk visits every link, and a non-head link's suffix re-scan was
 /// redundant (and quadratic on long chains).
-fn validate_statement_node(
-    stmt: StmtRef<'_>,
-    options: ValidateOptions,
-    policy: StatementPolicy,
-) -> Result<(), EngineError> {
+fn validate_statement_node(stmt: StmtRef<'_>, policy: StatementPolicy) -> Result<(), EngineError> {
     let clauses = stmt.clauses();
     validate_show_output_uniqueness(clauses)?;
     validate_param_property_shorthand(clauses)?;
@@ -561,7 +546,7 @@ fn validate_statement_node(
     validate_projection_names(clauses)?;
     validate_use_placement(stmt)?;
     validate_next_no_admin_commands(stmt)?;
-    validate_search_clauses(clauses, options)?;
+    validate_search_clauses(clauses)?;
     validate_static_operator_types(clauses)?;
     validate_static_call_types(clauses)?;
     validate_limit_skip(clauses)?;

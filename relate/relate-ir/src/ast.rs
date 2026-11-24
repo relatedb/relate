@@ -377,14 +377,15 @@ pub struct SearchClause {
     /// `COMBINE` of two or more weighted sources fused with WRRF.
     pub spec: SearchSpec,
     pub score_var: Option<SmallName>,
-    /// The MATCH's pattern goes beyond the plain shape (the
-    /// `complex-search-patterns` family) -- classified once at lowering by
-    /// the same shape test the preview gate rejects. The executor's top-K
-    /// rule keys on it: a plain pattern's `LIMIT` is a hard candidate
-    /// window, with the MATCH's outer `WHERE`, label or score predicate
-    /// post-filtering, while a complex pattern's `LIMIT` counts the
-    /// candidates the whole MATCH keeps.
-    pub complex_pattern: bool,
+    /// The outer WHERE's score-referencing conjuncts, split from the
+    /// MATCH's `where_clause` at lowering (ADR-0678's window rule): the
+    /// entity-side conjuncts stay in the MATCH's `where_clause` — they
+    /// restrict the candidate set the SKIP/LIMIT window pages over —
+    /// while these post-filter the kept rows, because the score is a
+    /// product of the ranking itself and cannot join the index-side
+    /// filter. `None` whenever the clause carries no score variable, or
+    /// a WHERE that never reads it.
+    pub post_where: Option<Expr>,
 }
 
 /// `DROP INDEX name` or `DROP INDEX ON :Label(prop)` (ADR-0040).

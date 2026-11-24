@@ -42,10 +42,11 @@ pub struct SearchIndexSpec {
 /// CIP-240: one decomposed inner-WHERE filter predicate. The front
 /// decomposes the grammar once at lowering (the `NOT <property>` ->
 /// `= FALSE` and flipped-operand rewrites applied) and the executor
-/// consumes this list without re-walking it. The five shapes are exactly
+/// consumes this list without re-walking it. The six shapes are exactly
 /// the accepted `VectorFilterExpression` forms: a property comparison, a
-/// property existence check, a property-in-set membership test, and the
-/// entity-set match filter (`<binding variable> IN <expr>`). The LHS
+/// property existence check, a property-in-set membership test, the
+/// entity-set match filter (`<binding variable> IN <expr>`), and its
+/// id-spelled twin (`id(<binding variable>) IN <expr>`). The LHS
 /// variable is not carried: lowering already enforced the
 /// binding-variable-only rule, and every predicate is evaluated against
 /// the candidate entity.
@@ -66,19 +67,26 @@ pub enum SearchFilterPred {
     /// `<binding variable> IN <rhs>`: the RHS evaluates to an entity set
     /// and the candidate must be a member of it.
     EntityInSet { rhs: Expr },
+    /// `id(<binding variable>) IN <rhs>`: the RHS evaluates to a list of
+    /// ids (or of entities, whose ids it reads) and the candidate's id
+    /// must be a member — the id-spelled twin of the entity-set match
+    /// filter, right-hand side a correlated `COLLECT` subquery included.
+    IdInSet { rhs: Expr },
 }
 
 impl SearchFilterPred {
     /// The indexed-property name this predicate reads, if it reads one.
-    /// [`SearchFilterPred::EntityInSet`] matches on candidate identity, so
-    /// it has no property (the index-property-membership check skips it).
+    /// [`SearchFilterPred::EntityInSet`] and
+    /// [`SearchFilterPred::IdInSet`] match on candidate identity, so
+    /// they have no property (the index-property-membership check skips
+    /// them).
     pub fn property_name(&self) -> Option<&str> {
         match self {
             SearchFilterPred::Comparison { property, .. }
             | SearchFilterPred::Exists { property }
             | SearchFilterPred::NotExists { property }
             | SearchFilterPred::InSet { property, .. } => Some(property),
-            SearchFilterPred::EntityInSet { .. } => None,
+            SearchFilterPred::EntityInSet { .. } | SearchFilterPred::IdInSet { .. } => None,
         }
     }
 
@@ -88,7 +96,8 @@ impl SearchFilterPred {
         match self {
             SearchFilterPred::Comparison { rhs, .. }
             | SearchFilterPred::InSet { rhs, .. }
-            | SearchFilterPred::EntityInSet { rhs } => Some(rhs),
+            | SearchFilterPred::EntityInSet { rhs }
+            | SearchFilterPred::IdInSet { rhs } => Some(rhs),
             SearchFilterPred::Exists { .. } | SearchFilterPred::NotExists { .. } => None,
         }
     }

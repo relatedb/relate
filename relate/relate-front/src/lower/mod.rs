@@ -85,7 +85,7 @@ fn validate_statement(
     // Validation runs once, up front, as a single walk over the whole
     // statement tree (LABS-70/LABS-81):
     //
-    // 1. `validate_statement_tree_with_options_and_policy` heads its
+    // 1. `validate_statement_tree_with_policy` heads its
     //    per-statement battery with the ADR-0257 nesting-depth guard
     //    (statement/structural nesting is capped at the lowering boundary;
     //    the parser caps expression nesting), so an over-nested query is a
@@ -96,7 +96,7 @@ fn validate_statement(
     //    a rule violation cannot hide inside nesting. The traversal-depth
     //    admission limit (LABS-610) and the safe-mode shape rules (LABS-680)
     //    ride the same battery.
-    crate::validate::validate_statement_tree_with_options_and_policy(stmt, options, policy)
+    crate::validate::validate_statement_tree_with_policy(stmt, policy)
         .map_err(front_validation_error)?;
     // 2. The scope-sensitive validators -- they track bindings across the
     //    clauses of one linear statement body, which a nested body cannot do

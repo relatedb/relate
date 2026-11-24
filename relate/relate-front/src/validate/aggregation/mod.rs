@@ -34,7 +34,7 @@ use relate_parser::{
 use crate::agg::contains_aggregation;
 use crate::ast::collect::{clause_introduced_names, collect_expr_variables, projected_names};
 use crate::ast::naming::effective_expr;
-use crate::ast::tree::{unparen, var_property, walk_expr_with};
+use crate::ast::tree::{unparen, var_property, walk_expr_with, SubqueryDescent};
 
 use crate::agg::SINGLE_INPUT_AGGREGATES;
 
@@ -103,7 +103,7 @@ fn check_agg_calls(
         }
         Ok(())
     };
-    walk_expr_with(expr, &mut visit, agg_enter_child)
+    walk_expr_with(expr, &mut visit, agg_enter_child, SubqueryDescent::Opaque)
 }
 
 /// The per-argument adapter of [`check_agg_calls`]: every argument of an
@@ -231,7 +231,7 @@ pub(super) fn contains_non_deterministic(expr: &Expr) -> bool {
     // Infallible here: the visitor never fails, and every caller runs after
     // the whole-tree depth cap, so the walker's own cap cannot fire on
     // these trees (the hand-rolled recursion would have overflowed instead).
-    let result = walk_expr_with(expr, &mut visit, enter_child);
+    let result = walk_expr_with(expr, &mut visit, enter_child, SubqueryDescent::Opaque);
     debug_assert!(
         result.is_ok(),
         "contains_non_deterministic walked a tree that already passed the depth cap"
@@ -262,7 +262,7 @@ fn collect_non_agg_variables(expr: &Expr, vars: &mut IdentHashSet<SmallName>) {
         _ => agg_enter_child(parent, child),
     };
     // Infallible for the same reason as `contains_non_deterministic`.
-    let result = walk_expr_with(expr, &mut visit, enter_child);
+    let result = walk_expr_with(expr, &mut visit, enter_child, SubqueryDescent::Opaque);
     debug_assert!(
         result.is_ok(),
         "collect_non_agg_variables walked a tree that already passed the depth cap"
