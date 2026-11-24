@@ -201,21 +201,19 @@ pub(crate) struct Memo<T: MemoTable> {
     reviewed: bool,
     /// This memo's share of the query's live memo bytes, returned on drop.
     reserved: u64,
-    live: Option<MemoLive>,
+    live: MemoLive,
     stats: MemoStats,
 }
 
 impl<T: MemoTable> Default for Memo<T> {
     fn default() -> Self {
-        Self::new(MemoPolicy::MODERATE, None)
+        Self::new(MemoPolicy::MODERATE, MemoLive::default())
     }
 }
 
 impl<T: MemoTable> Drop for Memo<T> {
     fn drop(&mut self) {
-        if let Some(live) = &self.live {
-            live.release(self.reserved);
-        }
+        self.release_reserved();
     }
 }
 
@@ -224,8 +222,8 @@ pub(crate) type NodeMemo = Memo<PagedBits>;
 
 impl<T: MemoTable> Memo<T> {
     /// A memo under `policy`, counting its bytes against the query's
-    /// shared `live` total when one is given.
-    pub(crate) fn new(policy: MemoPolicy, live: Option<MemoLive>) -> Self {
+    /// shared `live` total.
+    pub(crate) fn new(policy: MemoPolicy, live: MemoLive) -> Self {
         // A zero ceiling (a zero budget, ADR-0657) bypasses the memo from
         // the first input: no table is allocated and the function runs as
         // without a memo.
@@ -297,7 +295,7 @@ impl<T: MemoTable> Memo<T> {
     /// the table's growth to the meter, and freeze on a refusal (the
     /// overshoot is at most one page).
     fn remember(&mut self, meter: &impl MemoMeter, key: T::Key, value: T::Value) {
-        if matches!(self.phase, Phase::Frozen) || self.table.heap_bytes() >= self.policy.max_bytes {
+        if self.is_frozen() || self.table.heap_bytes() >= self.policy.max_bytes {
             self.stats.refused += 1;
             return;
         }
@@ -311,11 +309,9 @@ impl<T: MemoTable> Memo<T> {
         if meter.charge(&mut self.retained, grew).is_err() {
             self.phase = Phase::Frozen;
         }
-        if let Some(live) = &self.live {
-            self.reserved += grew;
-            if live.charge(grew) {
-                self.phase = Phase::Frozen;
-            }
+        self.reserved += grew;
+        if self.live.charge(grew) {
+            self.phase = Phase::Frozen;
         }
     }
 
@@ -332,10 +328,7 @@ impl<T: MemoTable> Memo<T> {
             self.table = T::default();
             self.retained = 0;
             self.phase = Phase::Disabled;
-            if let Some(live) = &self.live {
-                live.release(self.reserved);
-            }
-            self.reserved = 0;
+            self.release_reserved();
         }
     }
 
@@ -348,15 +341,25 @@ impl<T: MemoTable> Memo<T> {
         STATS_READS.with(|reads| reads.set(reads.get() + 1));
         MemoStats {
             bytes: self.table.heap_bytes() as u64,
-            disabled: matches!(self.phase, Phase::Disabled),
+            disabled: self.is_disabled(),
             ..self.stats
         }
     }
 
-    /// Whether the table has stopped growing (test introspection).
-    #[cfg(test)]
+    /// Whether the table has stopped growing.
     fn is_frozen(&self) -> bool {
         matches!(self.phase, Phase::Frozen)
+    }
+
+    /// Whether the memo bypasses itself (a zero ceiling or a failed review).
+    fn is_disabled(&self) -> bool {
+        matches!(self.phase, Phase::Disabled)
+    }
+
+    /// Return this memo's reserved share to the query's live total.
+    fn release_reserved(&mut self) {
+        self.live.release(self.reserved);
+        self.reserved = 0;
     }
 
     /// The table's exact allocation.
@@ -469,7 +472,7 @@ impl<P: NodePred> NodePred for Memoized<P> {
             inner: self.0.prepare(ctx)?,
             memo: {
                 let live = ctx.graph.memo_live();
-                NodeMemo::new(MemoPolicy::moderate(&live), Some(live))
+                NodeMemo::new(MemoPolicy::moderate(&live), live)
             },
         })
     }

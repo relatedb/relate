@@ -139,7 +139,7 @@ fn a_refusing_meter_freezes_the_table_without_failing() {
             window: u32::MAX,
             ..MemoPolicy::MODERATE
         },
-        None,
+        MemoLive::default(),
     );
     let meter = Capped(1100); // page + directory fit, a second page is refused
     let mut calls = 0;
@@ -194,7 +194,7 @@ fn a_memo_that_never_hits_disables_itself_and_returns_its_bytes() {
         min_hit_percent: 10,
         max_bytes: 1 << 20,
     };
-    let mut cold = Memo::<PagedBits>::new(policy, Some(live.clone()));
+    let mut cold = Memo::<PagedBits>::new(policy, live.clone());
     for id in 0..200i64 {
         cold.answer(&Unmetered, id * 5000, || Ok(true)).unwrap();
     }
@@ -212,7 +212,7 @@ fn a_memo_that_never_hits_disables_itself_and_returns_its_bytes() {
     }
     assert_eq!(calls, 3);
 
-    let mut hot = Memo::<PagedBits>::new(policy, Some(live.clone()));
+    let mut hot = Memo::<PagedBits>::new(policy, live.clone());
     for id in 0..200i64 {
         hot.answer(&Unmetered, id % 5, || Ok(true)).unwrap();
     }
@@ -231,7 +231,7 @@ fn the_query_budget_freezes_memos_in_total() {
         warm_up: 0,
         ..MemoPolicy::MODERATE
     };
-    let mut memo = Memo::<PagedBits>::new(policy, Some(live));
+    let mut memo = Memo::<PagedBits>::new(policy, live);
     memo.answer(&Unmetered, 1, || Ok(true)).unwrap();
     assert!(memo.is_frozen(), "the first page crosses the shared budget");
     memo.answer(&Unmetered, 99_999, || Ok(true)).unwrap();
@@ -243,7 +243,7 @@ fn the_query_budget_freezes_memos_in_total() {
 #[test]
 fn a_zero_budget_allocates_no_table_and_always_computes() {
     let live = MemoLive::new(0);
-    let mut memo = Memo::<PagedBits>::new(MemoPolicy::moderate(&live), Some(live.clone()));
+    let mut memo = Memo::<PagedBits>::new(MemoPolicy::moderate(&live), live.clone());
     let mut calls = 0;
     for id in 0..5000i64 {
         memo.answer(&Unmetered, id % 3, || {
@@ -283,7 +283,7 @@ fn the_review_window_keeps_a_memo_over_a_large_domain_that_repeats() {
     let probes = i64::from(MemoPolicy::MODERATE.window);
     let domain = 60_000i64;
     let run = |policy: MemoPolicy, keys: &dyn Fn(i64) -> i64| {
-        let mut memo = Memo::<PagedBits>::new(policy, None);
+        let mut memo = Memo::<PagedBits>::new(policy, MemoLive::default());
         for i in 0..(i64::from(policy.warm_up) + probes) {
             memo.answer(&Unmetered, keys(i), || Ok(true)).unwrap();
         }
@@ -354,7 +354,7 @@ fn a_disabled_memo_counts_once_in_the_sums() {
             min_hit_percent: 50,
             max_bytes: 1 << 20,
         },
-        None,
+        MemoLive::default(),
     );
     for node in 0..32 {
         memo.answer(&Unmetered, node, || Ok(true)).unwrap();

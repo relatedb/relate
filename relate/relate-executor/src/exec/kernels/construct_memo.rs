@@ -88,7 +88,7 @@ impl ConstructMemos {
 
     fn with_policy(policy: MemoPolicy, live: MemoLive) -> Self {
         Self {
-            datetime: RefCell::new(Table::new(policy, Some(live))),
+            datetime: RefCell::new(Table::new(policy, live)),
         }
     }
 

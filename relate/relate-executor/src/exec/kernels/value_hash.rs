@@ -449,7 +449,7 @@ mod tests {
             warm_up: 0,
             ..MemoPolicy::MODERATE
         };
-        let mut memo = Memo::<HashedValues<u64>>::new(policy, None);
+        let mut memo = Memo::<HashedValues<u64>>::new(policy, crate::overlay::MemoLive::default());
         let blob = map(&[("a", list(vec![Value::Int(1), s("two")]))]);
         let mut calls = 0;
         for _ in 0..5 {

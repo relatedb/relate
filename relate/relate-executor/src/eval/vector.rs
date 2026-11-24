@@ -128,7 +128,7 @@ pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
         let n = numbers
             .number_at(i)
             .ok_or_else(|| Error::ty("vector() coordinates must be numbers"))?;
-        values.push(coord_value(coord, n)?);
+        values.push(coord_value(n, coord)?);
     }
     Ok(Value::Vector {
         coord,
@@ -139,7 +139,7 @@ pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
 /// One `vector()` coordinate converted to `kind`: an integer kind
 /// truncates toward zero within the kind's width, a floating kind narrows
 /// to its precision.
-fn coord_value(kind: VectorCoordKind, n: f64) -> Result<Value> {
+fn coord_value(n: f64, kind: VectorCoordKind) -> Result<Value> {
     if kind.is_integer() {
         int_coord(n, kind)
     } else {
@@ -158,17 +158,16 @@ fn int_coord(n: f64, kind: VectorCoordKind) -> Result<Value> {
         return Err(Error::ty("vector() coordinates must be finite numbers"));
     }
     let truncated = n.trunc();
-    // `f64 as i64` saturates, so guard the cast before it: a truncated
-    // value outside INT64's range would clamp silently. `i64::MAX as f64`
-    // rounds up to 2^63, so the upper bound is inclusive at 2^63 — the one
-    // value past `i64::MAX`, which the saturating cast clamps to `i64::MAX`
-    // exactly as live Neo4j 2026.10 does. The kind's own width predicate
-    // then rejects the narrower kinds.
-    if truncated < i64::MIN as f64 || truncated > i64::MAX as f64 {
-        return Err(Error::ty("Overflow"));
-    }
+    // `f64 as i64` saturates, so the float-domain range test comes first: a
+    // truncated value outside INT64's range would clamp silently.
+    // `i64::MAX as f64` rounds up to 2^63, so the upper bound is inclusive
+    // at 2^63 — the one value past `i64::MAX`, which the saturating cast
+    // clamps to `i64::MAX` exactly as live Neo4j 2026.10 does. The kind's
+    // own width predicate then rejects the narrower kinds, so one test
+    // answers "does the truncated value fit this kind?".
+    let in_cast_range = truncated >= i64::MIN as f64 && truncated <= i64::MAX as f64;
     let value = truncated as i64;
-    if !kind.holds_int(value) {
+    if !(in_cast_range && kind.holds_int(value)) {
         return Err(Error::ty("Overflow"));
     }
     Ok(Value::Int(value))
