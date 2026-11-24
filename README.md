@@ -3,7 +3,7 @@
 **A graph database in a single binary — query it in Cypher, embed it anywhere, deploy nothing.**
 
 <p align="center">
-  <img src="img/relate-hex-ink.png" alt="Relate" width="800" />
+  <img src="img/relate-header.png" alt="Relate" width="800" />
 </p>
 
 Relate is an embedded, in-memory property-graph engine written in Rust, with a
