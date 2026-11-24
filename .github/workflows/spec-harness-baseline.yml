@@ -238,19 +238,37 @@ jobs:
           # writer script (the delta line); this step only files the
           # issue when new failures reached main. Counts and categories
           # only — this issue is on a public repository (ADR-0661 §4).
+          #
+          # One watchdog issue at a time (ADR-0661 §6, later reference):
+          # the first alarm opens the issue, an alarm while it is still
+          # open lands as a comment on it, and the next alarm after it
+          # is closed opens a fresh one. Unconditional `gh issue create`
+          # once filed one issue per merge — a day with four merges each
+          # landing new failing ids (corpus churn included) left four
+          # identical issues open, and the flaky-scenario round before
+          # that left five.
           delta=$(sed -n 's/^spec-harness-baseline: \(delta new=[0-9]* fixed=[0-9]* harness_moved=[01] new_categories=[^ ]*\)$/\1/p' "$RUNNER_TEMP/baseline.log" | tail -1)
           new=$(printf '%s\n' "$delta" | sed -n 's/delta new=\([0-9]*\).*/\1/p')
           if [ -n "$new" ] && [ "$new" != "0" ]; then
-            gh issue create \
-              --title "Spec gate: new failing scenarios landed on main" \
-              --body "The spec gate's merge-run watchdog (ADR-0661 §6): the baseline write after a merge to main found new failing scenarios.
+            alarm="The spec gate's merge-run watchdog (ADR-0661 §6): the baseline write after a merge to main found new failing scenarios.
 
           - $delta
           - engine: $GITHUB_SHA
           - The scenario ids live in the harness repository: diff the previous \`baselines/engine-main.json\` against the new one.
 
-          Counts and categories only (ADR-0661 §4 — this issue is public)." \
-              || echo "::warning::the watchdog issue could not be opened"
+          Counts and categories only (ADR-0661 §4 — this issue is public)."
+            open_watchdog=$(gh issue list --state open --limit 50 --json number,title \
+              --jq '[.[] | select(.title == "Spec gate: new failing scenarios landed on main") | .number][0] // empty' \
+              || true)
+            if [ -n "$open_watchdog" ]; then
+              gh issue comment "$open_watchdog" --body "$alarm" \
+                || echo "::warning::the watchdog comment on #$open_watchdog could not be posted"
+            else
+              gh issue create \
+                --title "Spec gate: new failing scenarios landed on main" \
+                --body "$alarm" \
+                || echo "::warning::the watchdog issue could not be opened"
+            fi
           fi
 
       - name: Disk headroom (telemetry)

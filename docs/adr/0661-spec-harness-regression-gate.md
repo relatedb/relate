@@ -115,3 +115,16 @@ corpus-derived IP: they can appear nowhere public.
   write token lands as a secret, the lane is dispatched once to write the
   first baseline, and the ruleset requires the check after one green
   gated PR.
+
+## Later references
+
+A follow-up tightened §6's filing: one watchdog issue is open at a time.
+The first alarm opens it, an alarm while it is still open lands as a
+comment on it — that merge's delta line and engine sha, nothing more —
+and the next alarm after it closes opens a fresh one. The maiden wording,
+"files an issue on the spot," read as one issue per alarm: a day of
+merges each landing new failing ids (the harness's 2026-11-24 suite
+re-sync alone measured 361 new) left four identical issues open, after a
+flaky docstring shape had already left five for a single scenario. The
+alarm semantics are unchanged — counts and categories only, corpus churn
+included, `harness_moved` still the triage fact.
