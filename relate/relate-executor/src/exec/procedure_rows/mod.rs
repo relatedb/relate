@@ -118,30 +118,35 @@ impl crate::procedure_registry::RowProducer {
         principal: Option<&str>,
         args: &BTreeMap<String, Value>,
     ) -> Result<Vec<BTreeMap<String, Value>>> {
-        match self {
-            Self::TxGetMetaData => Ok(tx_get_metadata_rows()),
-            Self::DbmsComponents => Ok(dbms_components_rows()),
-            Self::DbPing => Ok(ping_rows()),
-            Self::DbLabels => Ok(label_rows(graph)),
-            Self::DbRelationshipTypes => Ok(relationship_type_rows(graph)),
-            Self::DbPropertyKeys => Ok(property_key_rows(graph)),
-            Self::DbInfo => Ok(db_info_rows(graph)),
-            Self::DbmsInfo => Ok(dbms_info_rows()),
-            Self::DbmsShowCurrentUser => Ok(dbms_show_current_user_rows(principal)),
-            Self::DbmsConfig => Ok(dbms_config_rows()),
-            Self::DbmsLicenseAgreementDetails => Ok(dbms_license_agreement_rows()),
-            Self::DbmsListCapabilities => Ok(dbms_list_capabilities_rows(graph)),
-            Self::FulltextAnalyzers => Ok(fulltext_analyzer_rows()),
+        // Every producer but `db.stats.retrieve` is infallible; that one arm
+        // ends in `?` (its own section contract), so the match yields the rows
+        // and the single trailing `Ok` wraps them. A per-arm `Ok` would hide
+        // which arm is the fallible one.
+        let rows = match self {
+            Self::TxGetMetaData => tx_get_metadata_rows(),
+            Self::DbmsComponents => dbms_components_rows(),
+            Self::DbPing => ping_rows(),
+            Self::DbLabels => label_rows(graph),
+            Self::DbRelationshipTypes => relationship_type_rows(graph),
+            Self::DbPropertyKeys => property_key_rows(graph),
+            Self::DbInfo => db_info_rows(graph),
+            Self::DbmsInfo => dbms_info_rows(),
+            Self::DbmsShowCurrentUser => dbms_show_current_user_rows(principal),
+            Self::DbmsConfig => dbms_config_rows(),
+            Self::DbmsLicenseAgreementDetails => dbms_license_agreement_rows(),
+            Self::DbmsListCapabilities => dbms_list_capabilities_rows(graph),
+            Self::FulltextAnalyzers => fulltext_analyzer_rows(),
             Self::DbStatsRetrieve => stats::stats_retrieve_rows(
                 graph,
                 args.get("section")
                     .expect("db.stats.retrieve binds its required section before its rows")
                     .as_string(),
-            ),
-            Self::SchemaNodeTypeProperties => Ok(schema_node_type_rows(graph)),
-            Self::SchemaRelTypeProperties => Ok(schema_rel_type_rows(graph)),
-            Self::SchemaVisualization => Ok(schema_visualization_rows(graph, args.get("options"))),
-        }
+            )?,
+            Self::SchemaNodeTypeProperties => schema_node_type_rows(graph),
+            Self::SchemaRelTypeProperties => schema_rel_type_rows(graph),
+            Self::SchemaVisualization => schema_visualization_rows(graph, args.get("options")),
+        };
+        Ok(rows)
     }
 }
 
@@ -215,6 +220,12 @@ fn ping_rows() -> Vec<BTreeMap<String, Value>> {
 
 /// Rows for `db.index.fulltext.listAvailableAnalyzers`: one per analyzer the
 /// engine admits, from the one analyzer table.
+///
+/// The catalogue's item type stays unnameable outside `fulltext`: it is
+/// deliberately absent from that module's `pub(crate) use` list, so this
+/// producer reads each entry by inference through `analyzer_catalog()`
+/// instead of naming the type — a second export would be a second path to
+/// the same fact (the one-public-path rule).
 fn fulltext_analyzer_rows() -> Vec<BTreeMap<String, Value>> {
     crate::exec::fulltext::analyzer_catalog()
         .map(|entry| {

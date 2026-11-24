@@ -25,6 +25,10 @@ use crate::catalog_meta::{DeprecatedBy, ProcArgMeta};
 /// names no producer cannot be written without the table saying so, and the
 /// producer table cannot drift into a second name-keyed list.
 ///
+/// The variants are listed in the same order as their arms in the `produce`
+/// dispatch (`exec::procedure_rows`); keeping the two in step is a
+/// readability convention, not an enforced invariant.
+///
 /// Crate-internal: no reader outside this crate names a producer, matching
 /// `args`/`returns`.
 #[derive(Clone, Copy, Debug)]
@@ -39,9 +43,9 @@ pub(crate) enum RowProducer {
     DbmsInfo,
     DbmsShowCurrentUser,
     DbmsConfig,
-    FulltextAnalyzers,
     DbmsLicenseAgreementDetails,
     DbmsListCapabilities,
+    FulltextAnalyzers,
     DbStatsRetrieve,
     SchemaNodeTypeProperties,
     SchemaRelTypeProperties,
