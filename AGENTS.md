@@ -720,6 +720,20 @@ but still require `errors == 0` and logical bytes. `memory-shape-loadtest`
 fraud + identity only; the local target + freeze workflow remain,
 re-entry = future decision.
 
+The baseline images are **digest-pinned in one home**,
+`scripts/baseline-env.sh` (REL8-2081; read a pin by name with
+`baseline-env.sh --print-image build|run`): every lane path takes the pair
+from there, no other file spells an image reference, and the run image
+carries its dated tag beside the digest so a stale pin is visible on
+read. Pinning the *pair* matters — the class compares `build_image` and
+`run_image`, so a floating spelling on either side drifts it. Debian
+republishes `bookworm-slim` every 1–3 weeks, security-driven, so a drift
+is a re-pin candidate, not a failure: edit the home (keep the dated-tag
+form), dispatch `create-loadtest-baselines`, and land the re-pin and the
+re-frozen envelopes together — a pin without its re-freeze leaves every
+compare lane `INCOMPATIBLE`, and a re-freeze without the pin freezes the
+drifted class.
+
 `make query-latency` runs the timed 30-query SF0.1 suite in the same
 recipe with its own memory cap (`QUERY_LATENCY_MEMORY`, default `6g`,
 ADR-0245). The per-PR `query-latency` CI job runs it on

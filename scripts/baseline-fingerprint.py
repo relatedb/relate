@@ -96,9 +96,28 @@ def config_int(report: dict[str, Any], key: str) -> int | None:
     return int(raw)
 
 
+def _required_image(given: str | None, key: str, flag: str) -> str:
+    """The run's image reference: the flag, then the environment.
+
+    No fabricated default (REL8-2081): a floating tag here re-resolves on
+    every pull and drifts the ADR-0071 class on a Hub repush, the failure
+    the pins in scripts/baseline-env.sh exist to stop — that home exports
+    both names, so every baseline lane arrives with them set. A caller with
+    neither is a loud stop, never a guess.
+    """
+    value = given or os.environ.get(key)
+    if not value:
+        raise SystemExit(
+            f"baseline-fingerprint: {key} is not set — the pins live in "
+            f"scripts/baseline-env.sh (run through a baseline lane), or "
+            f"pass {flag}"
+        )
+    return value
+
+
 def discover_environment(report: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
-    build_image = args.build_image or os.environ.get("BASELINE_BUILD_IMAGE", "rust:1.99-bookworm")
-    run_image = args.run_image or os.environ.get("BASELINE_RUN_IMAGE", "debian:bookworm-slim")
+    build_image = args.build_image
+    run_image = args.run_image
     cpus = args.cpus if args.cpus is not None else int(os.environ.get("BASELINE_CPUS", "2"))
     period = (
         args.cpu_period_us
@@ -156,6 +175,16 @@ def main() -> int:
 
     args = p.parse_args()
     if args.cmd == "stamp":
+        # An image is demanded only when the stamp actually needs it: the
+        # build reference when its pin is absent, the run reference when its
+        # pin is absent OR no --arch was given (the arch is read out of the
+        # run image). Both pins plus --arch need neither reference.
+        if not args.build_image_pin:
+            args.build_image = _required_image(
+                args.build_image, "BASELINE_BUILD_IMAGE", "--build-image"
+            )
+        if not args.run_image_pin or not args.arch:
+            args.run_image = _required_image(args.run_image, "BASELINE_RUN_IMAGE", "--run-image")
         report = json.loads(args.report.read_text())
         env = discover_environment(report, args)
         stamp(args.report, env)

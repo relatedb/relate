@@ -12,7 +12,40 @@ DOCKER_ROOT="${ROOT}"
 case "${GITHUB_WORKSPACE:-}" in
   /*) DOCKER_ROOT="${GITHUB_WORKSPACE}" ;;
 esac
-usage="usage: baseline-env.sh pull | baseline-env.sh build|run <bin> [args...]"
+# Digest-pinned (2026-11-05, LABS-1039): a mutable tag re-resolves on every
+# pull, and Debian re-pushed bookworm-slim between a baseline freeze and a
+# PR compare the same morning - the ADR-0071 environment walk hard-fails on
+# the drifted run_image digest, red-ing the query-latency lane on every PR.
+# Pin both images so freeze and compare resolve identical bytes forever. The
+# run image's dated tag beside its digest makes a stale pin visible on read;
+# the digest is what docker enforces. A deliberate re-pin is an edit here
+# plus a re-freeze; scripts/baseline-image-drift.sh checks Docker Hub for a
+# moved tag on a daily cadence and files an issue (AGENTS.md).
+BASELINE_BUILD_IMAGE="${BASELINE_BUILD_IMAGE:-rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c}"
+BASELINE_RUN_IMAGE="${BASELINE_RUN_IMAGE:-debian:bookworm-20261123-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e}"
+# This script is the ONE home of the pinned spelling: export both so the
+# ceremony (baseline-container.sh) and the fingerprint stamp read the
+# resolved values. The Makefile deliberately does not define or export
+# the images — its unpinned tags used to defeat these pins on every
+# make-driven lane.
+export BASELINE_BUILD_IMAGE BASELINE_RUN_IMAGE
+# --print-image <build|run>: one resolved pin, named, for the readers that
+# cannot source this file (the ceremony's fallback when it runs outside make,
+# the drift check, the pins guard). Placed before the docker probe, so a read
+# never needs docker; an unknown name is a loud refusal, not an empty line.
+if [ "${1:-}" = "--print-image" ]; then
+	case "${2:-}" in
+		build) printf '%s\n' "${BASELINE_BUILD_IMAGE}" ;;
+		run) printf '%s\n' "${BASELINE_RUN_IMAGE}" ;;
+		*)
+			printf 'baseline-env.sh: --print-image takes build|run (got %s)\n' "${2:-}" >&2
+			exit 2
+			;;
+	esac
+	exit 0
+fi
+
+usage="usage: baseline-env.sh pull | baseline-env.sh build|run <bin> [args...] | baseline-env.sh --print-image build|run"
 MODE="${1:?$usage}"
 shift
 if [ "${MODE}" != pull ]; then
@@ -28,20 +61,6 @@ BASELINE_MEMORY="${BASELINE_MEMORY:-2g}"
 # spent budget freezes the run for <= 10 ms instead of <= 100 ms (ADR-0070).
 BASELINE_CPU_PERIOD_US="${BASELINE_CPU_PERIOD_US:-10000}"
 BASELINE_CPU_QUOTA_US="${BASELINE_CPU_QUOTA_US:-$((BASELINE_CPU_PERIOD_US * BASELINE_CPUS))}"
-# Digest-pinned (2026-11-05, LABS-1039): a mutable tag re-resolves on every
-# pull, and Debian re-pushed bookworm-slim between a baseline freeze and a
-# PR compare the same morning - the ADR-0071 environment walk hard-fails on
-# the drifted run_image digest, red-ing the query-latency lane on every PR.
-# Pin both images so freeze and compare resolve identical bytes forever; a
-# deliberate re-pin is an env override plus a re-freeze.
-BASELINE_BUILD_IMAGE="${BASELINE_BUILD_IMAGE:-rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c}"
-BASELINE_RUN_IMAGE="${BASELINE_RUN_IMAGE:-debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc}"
-# This script is the ONE home of the pinned spelling: export both so the
-# ceremony (baseline-container.sh) and the fingerprint stamp read the
-# resolved values. The Makefile deliberately does not define or export
-# the images — its unpinned tags used to defeat these pins on every
-# make-driven lane.
-export BASELINE_BUILD_IMAGE BASELINE_RUN_IMAGE
 VOLUME_NAME="${RELATE_BASELINE_VOLUME:-relate-baseline-work}"
 # Word-split like Make's CARGO_PROFILE (default `--release`).
 # shellcheck disable=SC2206

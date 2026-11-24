@@ -10,13 +10,14 @@
 # cache, full rebuild).
 # The one toolchain fact this file carries: the target-cache id keys on it,
 # so a bump (or a --build-arg override pinning a different Rust) moves the
-# image and the cache suffix together. The build image has no default on
-# purpose — its only builder (baseline-container.sh) always passes the
-# pinned BASELINE_BUILD_IMAGE, so a standalone build without it fails
-# loudly instead of resolving whatever `rust:…` tag a default would spell.
+# image and the cache suffix together. Neither image has a default on
+# purpose — their only builder (baseline-container.sh) always passes the
+# pair pinned in scripts/baseline-env.sh, so a standalone build without them
+# fails loudly instead of resolving whatever `rust:…`/`debian:…` tag a
+# default would spell (REL8-2081).
 ARG BASELINE_TOOLCHAIN=1.99
 ARG BASELINE_BUILD_IMAGE
-ARG BASELINE_RUN_IMAGE=debian:bookworm-slim
+ARG BASELINE_RUN_IMAGE
 FROM ${BASELINE_BUILD_IMAGE} AS build
 # The eMudhra CA break (2026-10): the crates.io TLS fetches ride this
 # image's CA bundle, so the current ca-certificates package is installed

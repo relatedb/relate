@@ -77,7 +77,6 @@ out (recorded as a Later-references note on ADR-0251, which is immutable):
   would let a regression land and be discovered a night later, after merge.
   ADR-0070's pinned environment and ADR-0071's freeze workflow are
   untouched.
-
 ## Runtime notes (the ≤ 60 s ambition)
 
 ADR-0251 Consequences sets ≤ 60 s per continuous suite as a design
