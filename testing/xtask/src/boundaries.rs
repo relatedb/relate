@@ -114,7 +114,9 @@ pub struct Report {
     pub violations: Vec<Violation>,
 }
 
-fn classify(dir: &str) -> Option<Group> {
+/// Where the package at `dir` sits, or `None` when it is not directly
+/// under one of the four groups (the group is `Placement::group`).
+fn classify(dir: &str) -> Option<Placement> {
     let mut parts = dir.split('/');
     let group = match parts.next()? {
         "relate" => Group::Engine,
@@ -124,7 +126,7 @@ fn classify(dir: &str) -> Option<Group> {
         _ => return None,
     };
     match (parts.next(), parts.next()) {
-        (Some(name), None) if !name.is_empty() => Some(group),
+        (Some(name), None) if !name.is_empty() => Some(Placement::of(group, dir)),
         _ => None,
     }
 }
@@ -215,8 +217,8 @@ pub fn check(packages: &[Package]) -> Report {
     let mut edges = BTreeSet::new();
 
     for package in packages {
-        let from_group = classify(&package.dir);
-        if from_group.is_none() {
+        let from_placement = classify(&package.dir);
+        if from_placement.is_none() {
             violations.push(Violation::Misplaced {
                 package: package.name.clone(),
                 dir: package.dir.clone(),
@@ -227,10 +229,10 @@ pub fn check(packages: &[Package]) -> Report {
                 continue;
             };
             if edges.insert((package.name.as_str(), target.name.as_str(), dep.kind)) {
-                let (Some(from), Some(to)) = (from_group, classify(&target.dir)) else {
+                let (Some(from), Some(to)) = (from_placement, classify(&target.dir)) else {
                     continue;
                 };
-                if let Some(rule) = rule_for(from, dep.kind, Placement::of(to, &target.dir)) {
+                if let Some(rule) = rule_for(from.group(), dep.kind, to) {
                     violations.push(Violation::Edge {
                         from: package.name.clone(),
                         to: target.name.clone(),

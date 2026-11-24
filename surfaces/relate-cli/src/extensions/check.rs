@@ -419,8 +419,11 @@ fn stage_tool_table(child: &mut Child, lines: &mut Vec<String>) -> Result<(), Fa
     Ok(())
 }
 
+/// The most post-handshake requests the tool-table stage serves.
+const TOOL_REQUEST_BUDGET: usize = 2;
+
 /// Serve the child's post-handshake requests the way the mount would, at
-/// most two: a child that asks for the table and then names its first
+/// most [`TOOL_REQUEST_BUDGET`] (two): a child that asks for the table and then names its first
 /// tool, or one that goes straight to the call. A child that asks for
 /// anything else, ends, or stalls has asked nothing more of the host — the
 /// mount would keep serving it, but the check's contract is the table, not
@@ -431,7 +434,7 @@ fn serve_tool_requests(
     table: &serde_json::Value,
     served: &[String],
 ) -> Result<Option<String>, Failure> {
-    for _ in 0..2 {
+    for _ in 0..TOOL_REQUEST_BUDGET {
         let request = match child.next() {
             None | Some(LineArrival::Eof) => return Ok(None),
             Some(LineArrival::Exceeded) => return Err(child.record_too_large(Stage::ToolTable)),
@@ -449,10 +452,11 @@ fn serve_tool_requests(
             Route::of(request).map_err(|error| Failure::at(Stage::ToolTable, error.to_string()))?;
         match route {
             // A notification asks nothing of the host.
-            Route::Notification { .. } => {}
-            Route::ToolsList { id } => child
-                .answer(&Response::success(id, table.clone()).to_line())
-                .map_err(|detail| Failure::at(Stage::ToolTable, detail))?,
+            Route::Notification => {}
+            Route::ToolsList { id } => child.answer_at(
+                Stage::ToolTable,
+                &Response::success(id, table.clone()).to_line(),
+            )?,
             Route::ToolsCall { params, .. } => {
                 let (name, _arguments) = tool_layer::call_parts(params.as_ref())
                     .map_err(|error| Failure::at(Stage::ToolTable, error.to_string()))?;
@@ -472,14 +476,18 @@ fn serve_tool_requests(
             // answer it too and keep the session.
             Route::Initialize { id, .. } => {
                 return child
-                    .answer(&McpRefusal::AlreadyInitialized.into_line(id))
-                    .map_err(|detail| Failure::at(Stage::ToolTable, detail))
+                    .answer_at(
+                        Stage::ToolTable,
+                        &McpRefusal::AlreadyInitialized.into_line(id),
+                    )
                     .map(|()| None)
             }
             Route::Unknown { id, method } => {
                 return child
-                    .answer(&McpRefusal::UnknownMethod { method }.into_line(id))
-                    .map_err(|detail| Failure::at(Stage::ToolTable, detail))
+                    .answer_at(
+                        Stage::ToolTable,
+                        &McpRefusal::UnknownMethod { method }.into_line(id),
+                    )
                     .map(|()| None)
             }
         }
@@ -622,10 +630,16 @@ fn pin_line(name: &str, package_dir: &Path, trust_file: Option<&Path>) -> String
             sanitize_error_text(name),
             pin_facts(installed)
         ),
-        PinStatus::NotGithub(tier) => tier.map_or("unmarked", Tier::as_str).to_string(),
+        PinStatus::NotGithub(tier) => tier_label(*tier).to_string(),
         PinStatus::Unknown(detail) => sanitize_error_text(detail),
     };
     format!("pin: {} ({detail})", status.as_str())
+}
+
+/// The tier label a package's provenance shows, `unmarked` when it carries
+/// no marker — the one spelling `extension check` and `extension list` share.
+pub(crate) fn tier_label(tier: Option<Tier>) -> &'static str {
+    tier.map_or("unmarked", Tier::as_str)
 }
 
 // ---------------------------------------------------------------------
@@ -711,6 +725,12 @@ impl Child {
             }
             .to_string(),
         )
+    }
+
+    /// [`Child::answer`] with its failure recorded at `stage`.
+    fn answer_at(&mut self, stage: Stage, line: &str) -> Result<(), Failure> {
+        self.answer(line)
+            .map_err(|detail| Failure::at(stage, detail))
     }
 
     /// Write one response line to the child — the mount's own write, so the

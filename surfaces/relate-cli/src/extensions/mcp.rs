@@ -164,7 +164,7 @@ impl McpRefusal {
 pub(crate) enum Route {
     /// A request without an id and a notification method: read, never
     /// answered.
-    Notification { method: String },
+    Notification,
     /// `initialize`.
     Initialize { id: Value, params: Option<Value> },
     /// `tools/list`.
@@ -182,9 +182,7 @@ impl Route {
     pub(crate) fn of(request: mcp::Request) -> Result<Self, McpError> {
         let Some(id) = request.id else {
             return if mcp::is_notification(&request.method) {
-                Ok(Self::Notification {
-                    method: request.method,
-                })
+                Ok(Self::Notification)
             } else {
                 Err(McpError::RequestWithoutId {
                     method: request.method,
@@ -208,15 +206,11 @@ impl Route {
         })
     }
 
-    /// The method this route was classified from, for error text.
-    fn method(&self) -> String {
-        match self {
-            Self::Notification { method } => method.clone(),
-            Self::Initialize { .. } => mcp::METHOD_INITIALIZE.to_string(),
-            Self::ToolsList { .. } => mcp::METHOD_TOOLS_LIST.to_string(),
-            Self::ToolsCall { .. } => mcp::METHOD_TOOLS_CALL.to_string(),
-            Self::Unknown { method, .. } => method.clone(),
-        }
+    /// Whether the route is served only after the handshake: everything
+    /// but the `initialize` that opens the session and the notifications
+    /// that are read and never answered.
+    fn requires_handshake(&self) -> bool {
+        !matches!(self, Self::Notification | Self::Initialize { .. })
     }
 }
 
@@ -605,19 +599,21 @@ impl<O: Write> Session<O> {
         };
         // Every arm renders its one response line here, so the write below
         // never re-serializes what was already measured against the cap.
+        // The method text a pre-handshake refusal names, taken before the
+        // route consumes the request.
+        let pre_handshake_method = (!self.initialized).then(|| request.method.clone());
         let route = Route::of(request)?;
+        if let Some(method) = pre_handshake_method {
+            // Served only after the handshake: the initialize arm below is
+            // the handshake's only owner.
+            if route.requires_handshake() {
+                return Err(McpError::InitializeNotFirst { method }.into());
+            }
+        }
         let response_line = match route {
             // A notification carries no id: nothing to answer.
-            Route::Notification { .. } => return Ok(()),
+            Route::Notification => return Ok(()),
             Route::Initialize { id, params } => self.initialize_line(store, id, params.as_ref())?,
-            // Every other method is served only after the handshake: the
-            // initialize arm above is the handshake's only owner.
-            other if !self.initialized => {
-                return Err(McpError::InitializeNotFirst {
-                    method: other.method(),
-                }
-                .into())
-            }
             // The mount's catalog is the wire kit's extension-mount rows —
             // the one tool table, no per-surface copy.
             Route::ToolsList { id } => Response::success(id, mcp::extension_tools_list()).to_line(),
@@ -641,14 +637,12 @@ impl<O: Write> Session<O> {
         if self.initialized {
             return Ok(McpRefusal::AlreadyInitialized.into_line(id));
         }
-        match require_protocol_version(params) {
-            Ok(_) => {
-                let facts = self.initialize_result(store)?;
-                self.initialized = true;
-                Ok(Response::success(id, facts).to_line())
-            }
-            Err(refusal) => Ok(refusal.into_line(id)),
+        if let Err(refusal) = require_protocol_version(params) {
+            return Ok(refusal.into_line(id));
         }
+        let facts = self.initialize_result(store)?;
+        self.initialized = true;
+        Ok(Response::success(id, facts).to_line())
     }
 
     /// The `initialize` result: the kit's typed [`ServerFacts`], so the

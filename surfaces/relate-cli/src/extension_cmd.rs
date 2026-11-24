@@ -523,7 +523,7 @@ fn list_row(entry: &crate::extensions::registry::ExtensionEntry) -> Result<Strin
         }) => {
             format!("{} {}", tier.as_str(), sanitize_error_text(&source))
         }
-        None => "unmarked".to_string(),
+        None => crate::extensions::check::tier_label(None).to_string(),
     };
     Ok(format!(
         "{} {} {}",
@@ -583,9 +583,12 @@ fn remove(name: &str, forget_pin: bool) -> Result<(), String> {
         .map_err(|e| format!("removing {}: {e}", entry.package_dir.display()))?;
     println!("removed extension {name} ({})", entry.package_dir.display());
     if let Some((store, cleared)) = forget {
-        store
-            .write()
-            .map_err(|e| format!("writing the extension trust store: {e}"))?;
+        store.write().map_err(|e| {
+            format!(
+                "the package was removed but writing the extension trust store failed \
+                     (the recorded pin is still held): {e}"
+            )
+        })?;
         if cleared {
             println!("forgot the recorded pin for {}", sanitize_error_text(name));
         }
