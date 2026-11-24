@@ -33,6 +33,15 @@ floor from its `readelf --version-info` symbol versions, fails the release
 when it exceeds `GLIBC_2.35`, and hands the derived value to the APT and
 RPM builders.
 
+The installers carry the same requirement: on a Linux whose glibc is below
+that floor — or that is not glibc-based (musl, where no glibc version can
+be determined) — `install.sh` refuses before downloading anything, printing
+the floor with the build-from-source and Python-wheel (`pip install
+relate-db`) alternatives, instead of installing a binary the dynamic loader
+refuses to start. The floor value is one literal in the installer, the
+release gate, and this section — held together by the installer harness's
+drift guard.
+
 The Debian/Ubuntu package declares that derived floor — `Depends: libc6
 (>= <the derived floor>)` — and is served from the signed APT repository at
 <https://relatedb.ai/apt> ([ADR-0659](../../adr/0659-package-manager-distribution-channels.md),
