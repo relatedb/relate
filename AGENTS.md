@@ -9,6 +9,13 @@
 **Workspace rename:** the Linear workspace `LABS` is now `REL8` — any old
 reference to `LABS-NNNN` means `REL8-NNNN`.
 
+**Public repo.** No internal references in code comments, commit
+messages, or PR text: no CIP ids, no ticket ids (REL8-…), no links to
+internal documents or private repositories. Describe a change in terms
+of the language behaviour; the provenance lives in Linear. (Older code
+carries CIP-id comments from before this rule; scrubbing them is its own
+decision.)
+
 Relate: embedded, in-memory property graph engine. Durable form: fsync'd
 local WAL + local Parquet (or JSON) checkpoints. Query contract: openCypher
 TCK. Remote access: Bolt. Clients wrap C ABI. Public Rust crate: `relate`
