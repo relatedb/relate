@@ -528,6 +528,17 @@ impl PageBounds {
             limit: Some(limit),
         }
     }
+
+    /// No page at all — the stage that already paged elsewhere reads this
+    /// third state by name, so no consumer re-spells the unpaged literal
+    /// (a near-miss `limit: Some(0)` is exactly the empty page
+    /// [`Self::answers_nothing`] names).
+    pub(crate) fn unpaged() -> Self {
+        Self {
+            skip: 0,
+            limit: None,
+        }
+    }
 }
 
 /// The paging stage: drop the first `bounds.skip` rows, keep at most

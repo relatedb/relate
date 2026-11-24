@@ -1,10 +1,9 @@
 //! The streamed `CALL { … }` forms (ADR-0555): the outer-rows × body-rows
 //! product as a [`FeedSource`] — the same feed spine `UNWIND`, `LOAD CSV`
-//! and the `CALL` composition park by. A consumer that folds rows as they
-//! arrive (the aggregation, or a clause that may take the ordered window —
-//! the `unwind_streams_into` admission) pulls one merged row at a time and
-//! the product is never held, so peak memory is bounded by **one** outer
-//! row's body result instead of the input-row count times it.
+//! and the `CALL` composition park by. A projection follower pulls one
+//! merged row at a time and the product is never held, so peak memory is
+//! bounded by **one** outer row's body result instead of the input-row
+//! count times it.
 //!
 //! Each outer row's body result is itself materialized — the nested clause
 //! boundary (`run_clauses: Vec<Row>`) is ADR-0555's recorded residual — but
@@ -245,4 +244,16 @@ pub(crate) fn call_subquery_feed<'a>(
 ) -> Result<StreamedFeed<'a>> {
     let source = SubquerySource::new(ctx.graph, spec, &rows, qctx)?;
     Ok(StreamedFeed::new(ctx, rows, Box::new(source), profiled))
+}
+
+/// The clause's materializing form: the feed spine's `materialize` for a
+/// consumer the product cannot be parked for (`exec_load_csv`'s shape) —
+/// every follower but a projection, and a writing body whatever follows.
+pub(crate) fn exec_call_subquery<'a>(
+    ctx: ExecCtx<'a>,
+    qctx: QueryCtx<'a>,
+    rows: Vec<Row>,
+    spec: SubquerySpec<'a>,
+) -> Result<Vec<Row>> {
+    call_subquery_feed(ctx, qctx, rows, spec, false)?.materialize()
 }

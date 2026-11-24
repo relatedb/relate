@@ -452,6 +452,50 @@ fn unwind_call_importing_form_bulk_create_commits_per_batch() {
     assert_eq!(rels, Value::Int(6));
 }
 
+/// A page stops the consumed rows, not the transactions (ADR-0660): a
+/// `LIMIT` smaller than the input count ends the rows there, but every
+/// `CALL { … } IN TRANSACTIONS` batch still runs — the materializing form
+/// ran them all, and the streamed form must too. The skipped batches'
+/// output rows are discarded, never their writes.
+#[test]
+fn a_page_stops_the_rows_not_the_transactions() {
+    let mut c = connection();
+    let result = c
+        .query(
+            "UNWIND range(1, 2500) AS x \
+             CALL (x) { CREATE (:N {i: x}) } IN TRANSACTIONS OF 1000 ROWS \
+             RETURN x LIMIT 1",
+        )
+        .unwrap();
+    assert_eq!(result.rows.len(), 1, "the page is one row");
+    assert_eq!(
+        scalar(&mut c, "MATCH (n:N) RETURN count(n)"),
+        Value::Int(2500),
+        "every batch ran; the page stopped only the rows"
+    );
+}
+
+/// The empty page is the same contract at its limit: `LIMIT 0` answers no
+/// rows but still runs every transaction — the completing stream is
+/// stopped, not dropped, so no durable write is silently lost.
+#[test]
+fn a_limit_zero_page_still_runs_the_transactions() {
+    let mut c = connection();
+    let result = c
+        .query(
+            "UNWIND range(1, 2500) AS x \
+             CALL (x) { CREATE (:N {i: x}) } IN TRANSACTIONS OF 1000 ROWS \
+             RETURN x LIMIT 0",
+        )
+        .unwrap();
+    assert_eq!(result.rows.len(), 0, "the page answers no rows");
+    assert_eq!(
+        scalar(&mut c, "MATCH (n:N) RETURN count(n)"),
+        Value::Int(2500),
+        "every batch ran; an empty page stops only the rows"
+    );
+}
+
 /// A failed batch under `ON ERROR CONTINUE` reports the **imported**
 /// bindings: `RETURN i AS k` still answers `k = i` on the failed row, while
 /// `j` — bound inside the rolled-back batch — reads null. The batch's

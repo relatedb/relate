@@ -3,6 +3,11 @@
 //! materializes memory proportional to output cardinality, so every such
 //! fn must be named in the committed allowlist with a reason; a stale
 //! allowlist entry fails too, so the list only shrinks.
+//!
+//! A fn returning the inter-clause stream (`RowStream`, ADR-0660) is
+//! caught by the same rule's other half: wrapping a container in
+//! `RowStream::held` means the fn built its output before handing the
+//! stream on, exactly the materialization the stream exists to avoid.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -210,7 +215,12 @@ fn mentions_row_vec(ty: &str) -> bool {
 
 /// Names of fns in `src` (outside `#[cfg(test)]`) whose return type
 /// contains `Vec<Row>` anywhere (`Option<Vec<Row>>`, `Result<(Vec<Row>, X)>`, ...) or names a
-/// [`ROW_VEC_CARRIERS`] type.
+/// [`ROW_VEC_CARRIERS`] type — or whose return type names `RowStream` and
+/// whose body wraps a container in `RowStream::held`.
+///
+/// shortcut: only the `RowStream::held` wrap is detected; a fn that
+/// collects and then calls `RowStream::emitting` evades the rule, upgrade
+/// it when a clause writes such a site.
 pub fn row_vec_fns(src: &str) -> BTreeSet<String> {
     let code = strip_cfg_test(&mask(src));
     let mut found = BTreeSet::new();
@@ -227,7 +237,10 @@ pub fn row_vec_fns(src: &str) -> BTreeSet<String> {
         let Some(ret) = return_type(&sig[name.len()..end]) else {
             continue;
         };
-        if mentions_row_vec(&ret) {
+        let held_container = mentions_word(&ret, "RowStream")
+            && sig[end..].starts_with('{')
+            && sig[end..skip_block(sig, end)].contains("RowStream::held(");
+        if mentions_row_vec(&ret) || held_container {
             found.insert(name);
         }
     }
@@ -283,9 +296,12 @@ pub fn parse_allowlist(text: &str) -> Result<BTreeSet<String>, String> {
 
 /// Violations: found-but-unlisted and listed-but-missing sites.
 pub fn diff(found: &BTreeSet<String>, allowed: &BTreeSet<String>) -> Vec<String> {
-    let new = found
-        .difference(allowed)
-        .map(|s| format!("{s}: returns Vec<Row> and is not in {ALLOWLIST} (ADR-0555)"));
+    let new = found.difference(allowed).map(|s| {
+        format!(
+            "{s}: materializes rows proportional to its output (a Vec<Row> return or a \
+             RowStream::held container) and is not in {ALLOWLIST} (ADR-0555, ADR-0660)"
+        )
+    });
     let stale = allowed
         .difference(found)
         .map(|s| format!("{s}: allowlisted in {ALLOWLIST} but no longer exists; remove it"));
@@ -349,6 +365,33 @@ fn fine4() -> Result<Vec<Rows>> { todo!() }
             row_vec_fns(src),
             set(["a", "b", "c", "d", "e", "g"].as_slice())
         );
+    }
+
+    /// ADR-0660: a fn that returns the inter-clause stream but wraps a
+    /// container in it built its output first — the hub join's former
+    /// `RowStream::held(out)` is the case that motivated the rule. A
+    /// stream producer over a sequence (`emitting`/`profiled`) and a fn
+    /// holding a container it was handed are not flagged.
+    #[test]
+    fn a_stream_returning_fn_wrapping_a_held_container_is_flagged() {
+        let src = "
+fn join(rows: &[(Row, Used)]) -> Result<Option<RowStream<'a>>> {
+    let mut out = Vec::new();
+    out.push(Row::new());
+    Ok(Some(RowStream::held(out)))
+}
+fn streams(rows: Vec<Row>) -> RowStream<'a> {
+    RowStream::emitting(rows.into_iter().map(Ok))
+}
+fn hands_back(rows: Vec<Row>) -> RowStream<'a> {
+    // RowStream::held(rows) in prose is not a call
+    RowStream::profiled(feed, None)
+}
+";
+        let found = row_vec_fns(src);
+        assert_eq!(found, set(["join"].as_slice()));
+        assert!(diff(&found, &set(["join"].as_slice())).is_empty());
+        assert_eq!(diff(&found, &set(&[])).len(), 1);
     }
 
     #[test]

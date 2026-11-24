@@ -66,6 +66,7 @@ use crate::row::Row;
 
 use super::aggregate::Aggregation;
 use super::classification::ProjectionClass;
+use super::feed::RowStream;
 use super::match_clause::{
     charge_finished_container, run_match_operator_ladder, LadderRun, MatchClauseInputs,
 };
@@ -79,8 +80,7 @@ use super::project::{
 use super::pushdown::{live_from, match_limit_cap, trim_rows};
 use super::scope::{carry_scope_bindings, ProjectionFields};
 use super::sink::{sinkable_projection, SinkProjection};
-use super::RowFeed;
-use super::StageDelta;
+use super::{RowFeed, StageDelta};
 
 /// The most rows a stage buffers before it runs its transform over them
 /// (ADR-0555: bounded batches, low hundreds by default).
@@ -442,7 +442,7 @@ impl<'a> Stage<'a> {
             Transform::With { spec, scope } => {
                 let mut rows = project_rows(
                     self.ctx,
-                    ProjectionInput::Feed(RowFeed::Held(batch)),
+                    ProjectionInput::Feed(RowFeed::Held(RowStream::held(batch))),
                     spec,
                     false,
                     *scope,

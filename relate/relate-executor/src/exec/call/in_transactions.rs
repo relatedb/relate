@@ -1,68 +1,204 @@
 //! `CALL { … } IN TRANSACTIONS`: batch boundaries, per-batch commit and
 //! rollback, and the `ON ERROR` / `REPORT STATUS` rows.
+//!
+//! The arm's disposition is `retain` (ADR-0660): its declared state is one
+//! batch's output, and it answers as the arm's [`RowStream`] — one batch
+//! runs, commits and is handed to the consumer before the next starts, so
+//! the statement's output is never accumulated (see [`InTransactionsRows`]
+//! and [`land_batch`]).
 
 use std::collections::BTreeMap;
 
+use relate_core::tokens::WorkspaceCharge;
 use relate_core::{Error, ErrorKind, Result, Value};
 use relate_ir::Query;
 
 use super::{call_subquery_row, empty_body_row, null_pad_call_row, scope_seed, SubquerySpec};
 use crate::ctx::QueryCtx;
 use crate::eval::eval;
-use crate::exec::constraint_validation::validate_constraints;
+use crate::exec::feed::RowStream;
 use crate::exec::scope::star_scope_names;
+use crate::metrics::PlanMetricsSite;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-pub(crate) fn exec_call_in_transactions(
-    graph: &ExecGraph<'_>,
-    rows: Vec<Row>,
-    spec: SubquerySpec<'_>,
-    tx: &relate_ir::InTransactions,
-    params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
-) -> Result<Vec<Row>> {
+pub(crate) fn exec_call_in_transactions<'a>(
+    graph: &'a ExecGraph<'a>,
+    rows: RowStream<'a>,
+    spec: SubquerySpec<'a>,
+    tx: &'a relate_ir::InTransactions,
+    params: &'a BTreeMap<String, Value>,
+    qctx: QueryCtx<'a>,
+    record: Option<(PlanMetricsSite<'a>, usize)>,
+) -> Result<RowStream<'a>> {
     let SubquerySpec {
         query,
         optional,
         scope,
     } = spec;
-    // No input rows: no batch runs, and the batch-size/concurrency
-    // expressions have no row to evaluate against — the call is a no-op
-    // (a fabricated empty row would silently read null; ADR-0335).
-    if rows.is_empty() {
-        return Ok(Vec::new());
-    }
-    let batch_size = resolve_batch_options(graph, &rows[0], tx, params)?;
     // The `REPORT STATUS AS <name>` column, resolved once: every status
     // value below is written through `BatchOutcome::stamp`, so "the call
     // reports a status" has a single spelling.
     // Text render: the status column feeds the String-keyed stamp.
     let status_name = tx.report_status.as_ref().map(|name| name.to_string());
-    let mut out = Vec::new();
-    let mut batches = rows.chunks(batch_size).enumerate();
-    for (batch_index, batch) in batches.by_ref() {
-        let snapshot = graph.scratch_snapshot();
+    Ok(RowStream::emitting_to_completion(
+        InTransactionsRows {
+            graph,
+            params,
+            qctx,
+            query,
+            scope,
+            optional,
+            tx,
+            // The input is a pull stream: the arm holds one batch's rows,
+            // never the statement's whole input (ADR-0660's retain
+            // disposition). An empty input resolves nothing and runs no
+            // batch — the batch-size/concurrency expressions have no row
+            // to evaluate against (a fabricated empty row would silently
+            // read null; ADR-0335).
+            input: rows,
+            batch_size: None,
+            batch_index: 0,
+            status_name,
+            pending: Vec::new().into_iter(),
+            // The installed batch's workspace reservation: the state and
+            // the charge that bounds it have one owner and one lifetime —
+            // resized when a batch is installed, released when the next
+            // replaces it — so the declared one-batch disposition is
+            // billed for as long as the consumer still holds its rows.
+            pending_charge: WorkspaceCharge::empty(),
+            breaking: false,
+            done: false,
+        },
+        record,
+    ))
+}
+
+/// The arm's emitted rows (ADR-0660): each pull runs the next
+/// `CALL { … } IN TRANSACTIONS` batch — its body, its commit, its
+/// `ON ERROR` rows — and hands that one batch's rows to the consumer
+/// before the next batch starts, so the statement's output is never
+/// accumulated.
+struct InTransactionsRows<'a> {
+    graph: &'a ExecGraph<'a>,
+    params: &'a BTreeMap<String, Value>,
+    qctx: QueryCtx<'a>,
+    query: &'a Query,
+    scope: &'a relate_ir::CallScope,
+    optional: bool,
+    tx: &'a relate_ir::InTransactions,
+    /// The input rows, pulled a batch at a time.
+    input: RowStream<'a>,
+    /// The resolved rows per transaction; resolved once, on the first
+    /// batch, from that batch's first row (`None` while no row has been
+    /// pulled, so an empty input never evaluates the option expressions).
+    batch_size: Option<usize>,
+    /// 0-based batch number, for the transaction id.
+    batch_index: usize,
+    /// The `REPORT STATUS AS <name>` column.
+    status_name: Option<String>,
+    /// The batch in hand: its rows are emitted before the next batch runs.
+    pending: std::vec::IntoIter<Row>,
+    /// The installed batch's workspace reservation, held beside `pending`
+    /// for exactly its lifetime.
+    pending_charge: WorkspaceCharge,
+    /// `ON ERROR BREAK`: the remaining input rows never started a
+    /// transaction, so each is emitted as a null-padded row, one per pull.
+    breaking: bool,
+    done: bool,
+}
+
+impl Iterator for InTransactionsRows<'_> {
+    type Item = Result<Row>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(row) = self.pending.next() {
+                return Some(Ok(row));
+            }
+            if self.done {
+                return None;
+            }
+            match self.advance() {
+                Ok(true) => {}
+                Ok(false) => return None,
+                Err(error) => {
+                    self.done = true;
+                    return Some(Err(error));
+                }
+            }
+        }
+    }
+}
+
+impl InTransactionsRows<'_> {
+    /// Run the next batch and put its output rows in hand; `false` once the
+    /// input is spent. A failed batch under `ON ERROR BREAK` puts the
+    /// remaining input rows in hand one at a time instead.
+    fn advance(&mut self) -> Result<bool> {
+        if self.breaking {
+            let Some(row) = self.input.next_row()? else {
+                return Ok(false);
+            };
+            let mut row = null_pad_call_row(self.graph, row, self.query, self.scope);
+            BatchOutcome::NeverStarted
+                .stamp(std::slice::from_mut(&mut row), self.status_name.as_deref());
+            charge_batch(&mut self.pending_charge, std::slice::from_ref(&row))?;
+            self.pending = vec![row].into_iter();
+            return Ok(true);
+        }
+        let Some(batch) = self.pull_batch()? else {
+            return Ok(false);
+        };
+        let batch_index = self.batch_index;
+        self.batch_index += 1;
+        let snapshot = self.graph.scratch_snapshot();
         let tx_id = format!("relate-inner-{}", batch_index + 1);
         let mut batch_out = Vec::new();
+        let mut out_charge = WorkspaceCharge::empty();
         let attempt = (|| -> Result<()> {
-            for row in batch {
-                let mut produced = call_subquery_row(graph, row, query, scope, params, qctx)?;
+            for row in &batch.rows {
+                let mut produced = call_subquery_row(
+                    self.graph,
+                    row,
+                    self.query,
+                    self.scope,
+                    self.params,
+                    self.qctx,
+                )?;
                 if produced.is_empty() {
-                    produced.extend(empty_body_row(graph, row.clone(), optional, query, scope));
+                    produced.extend(empty_body_row(
+                        self.graph,
+                        row.clone(),
+                        self.optional,
+                        self.query,
+                        self.scope,
+                    ));
                 }
                 batch_out.extend(produced);
+                // The batch's output is charged as it grows — the one
+                // spelling the input pull shares — so a batch size the
+                // statement's own `OF n ROWS` chose cannot hold an
+                // unbilled container on the workspace ledger.
+                charge_batch(&mut out_charge, &batch_out)?;
             }
             // The success status is batch-invariant, so one stamping pass
             // after the row loop covers every produced row.
             BatchOutcome::Committed { id: tx_id.clone() }
-                .stamp(&mut batch_out, status_name.as_deref());
+                .stamp(&mut batch_out, self.status_name.as_deref());
             // Each `CALL { ... } IN TRANSACTIONS` batch is its
             // own transaction boundary, so the property default values
             // land here -- after the batch's writes, before the batch's
             // constraint validation.
-            super::super::property_defaults::apply_property_defaults(graph)?;
-            validate_constraints(graph)?;
+            // The write boundary of this batch — the same stage the
+            // statement boundary closes with, named once in `exec/`.
+            crate::exec::close_write_boundary(self.graph)?;
+            // The output-size check runs inside the attempt, before the
+            // commit: a capacity refusal must take the same per-batch
+            // failure path as a body or constraint error — the batch is
+            // rolled back and reported — never fire on a batch already
+            // durably committed.
+            land_batch(self.graph, &batch_out)?;
             // ADR-0210: with a facade-injected sink (auto-commit write
             // path), each batch commits durably before the next starts
             // and the scratch rebase keeps live state bounded by one
@@ -75,57 +211,126 @@ pub(crate) fn exec_call_in_transactions(
             // `restore_scratch` rolls a failed batch back cleanly.
             // Without a sink (explicit transactions, nested execution)
             // the scratch accumulates to statement end, as before.
-            if let Some(sink) = qctx.batch_commit {
-                graph.commit_batch(sink)?;
+            if let Some(sink) = self.qctx.batch_commit {
+                self.graph.commit_batch(sink)?;
             }
             Ok(())
         })();
-        match attempt {
-            Ok(()) => out.extend(batch_out),
+        // The outcome decides which rows and charge are in hand; the
+        // installation itself has one tail below.
+        let (rows, charge) = match attempt {
+            Ok(()) => (batch_out, out_charge),
             Err(error) => {
-                graph.restore_scratch(snapshot);
+                self.graph.restore_scratch(snapshot);
                 // CALL IN TRANSACTIONS retry: not implemented — see the
                 // LABS-712 follow-up. The projection applies only a
                 // RETRY's explicit THEN fallback (the duration is
-                // deliberately unused), like a non-transient error.
-                let mode = tx.on_error.outcome();
-                if mode == relate_ir::RetryFallback::Fail {
-                    return Err(error);
-                }
+                // deliberately unused), like a non-transient error. One
+                // decode of the three-state outcome, all three named.
+                let mode = self.tx.on_error.outcome();
+                self.breaking = match mode {
+                    relate_ir::RetryFallback::Fail => return Err(error),
+                    relate_ir::RetryFallback::Continue => false,
+                    relate_ir::RetryFallback::Break => true,
+                };
                 // Report the failed batch (its own rows are gone with the
                 // rollback), and on BREAK every remaining row, where no
                 // transaction ever started and nothing was bound.
                 let mut failed_rows = Vec::new();
-                for row in batch {
-                    failed_rows.push(failed_batch_row(graph, row, query, scope, params)?);
+                let mut failed_charge = WorkspaceCharge::empty();
+                for row in &batch.rows {
+                    failed_rows.push(failed_batch_row(
+                        self.graph,
+                        row,
+                        self.query,
+                        self.scope,
+                        self.params,
+                    )?);
+                    charge_batch(&mut failed_charge, &failed_rows)?;
                 }
                 BatchOutcome::Failed {
                     id: tx_id.clone(),
                     error: transaction_error_message(&error),
                 }
-                .stamp(&mut failed_rows, status_name.as_deref());
-                out.extend(failed_rows);
-                if mode == relate_ir::RetryFallback::Break {
-                    let mut never_started_rows = Vec::new();
-                    for (_, batch) in batches.by_ref() {
-                        for row in batch {
-                            never_started_rows.push(null_pad_call_row(
-                                graph,
-                                row.clone(),
-                                query,
-                                scope,
-                            ));
-                        }
-                    }
-                    BatchOutcome::NeverStarted
-                        .stamp(&mut never_started_rows, status_name.as_deref());
-                    out.extend(never_started_rows);
-                    break;
-                }
+                .stamp(&mut failed_rows, self.status_name.as_deref());
+                land_batch(self.graph, &failed_rows)?;
+                (failed_rows, failed_charge)
             }
-        }
+        };
+        // The reservation moves with the rows: installing a batch replaces
+        // the previous charge (releasing it), so the consumer's held rows
+        // are billed across its pulls.
+        self.pending_charge = charge;
+        self.pending = rows.into_iter();
+        Ok(true)
     }
-    Ok(out)
+
+    /// Pull one transaction's input rows from the stream, charged as the
+    /// batch grows so an `OF n ROWS` the statement chose cannot hold an
+    /// unbilled container. The batch size is resolved once, on the first
+    /// row (its expressions are evaluated against it); an empty input
+    /// answers no batch and evaluates nothing.
+    fn pull_batch(&mut self) -> Result<Option<HeldBatch>> {
+        // No row at all is no batch — an absence, never a fabricated empty
+        // one — and that holds at every batch boundary, not just the
+        // first: the size is resolved after the first row any batch ever
+        // pulled, so a later batch that opens on an exhausted input
+        // answers `None` here, never an empty `Some`.
+        let Some(first) = self.input.next_row()? else {
+            return Ok(None);
+        };
+        // The size resolves once (from the first row any batch ever
+        // pulled) and is bound here for both uses below — the `None`
+        // state stays exactly "no row pulled yet", never a value the code
+        // re-reads from the cell it just wrote.
+        let size = match self.batch_size {
+            Some(size) => size,
+            None => {
+                let size = resolve_batch_options(self.graph, &first, self.tx, self.params)?;
+                self.batch_size = Some(size);
+                size
+            }
+        };
+        let mut batch = HeldBatch {
+            rows: Vec::new(),
+            charge: WorkspaceCharge::empty(),
+        };
+        batch.rows.push(first);
+        charge_batch(&mut batch.charge, &batch.rows)?;
+        while batch.rows.len() < size {
+            let Some(row) = self.input.next_row()? else {
+                break;
+            };
+            batch.rows.push(row);
+            charge_batch(&mut batch.charge, &batch.rows)?;
+        }
+        Ok(Some(batch))
+    }
+}
+
+/// One transaction's input batch with the reservation that must outlive it
+/// — the pair's invariant in its shape, so no `_`-prefixed binding can
+/// silently drop the charge while the rows are still live.
+struct HeldBatch {
+    rows: Vec<Row>,
+    charge: WorkspaceCharge,
+}
+
+/// Charge a growing batch against the workspace ledger — the one spelling
+/// the input pull and the batch's output share.
+fn charge_batch(charge: &mut WorkspaceCharge, rows: &[Row]) -> Result<()> {
+    charge.resize_with(|| crate::workspace::retained_rows_of(rows))
+}
+
+/// The stateless per-allocation size check on a batch about to be handed
+/// to the consumer (the expression cap's meter) — not the workspace
+/// reservation: that lives in the arm's `pending_charge`, resized when a
+/// batch is installed and held for exactly the rows' lifetime. The retain
+/// disposition's declared state is one batch (ADR-0660): a call of many
+/// batches holds and charges one batch's rows, never a running total of
+/// the statement's output.
+fn land_batch(graph: &ExecGraph<'_>, rows: &[Row]) -> Result<()> {
+    graph.check_expression_allocation(crate::workspace::retained_rows_of(rows))
 }
 
 /// Resolve the call's batch size (rows per transaction) and validate the

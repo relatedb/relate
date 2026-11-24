@@ -9,6 +9,8 @@ use std::rc::Rc;
 // same shim).
 use web_time::Instant;
 
+use relate_core::Result;
+
 use crate::eval::rows_logical_bytes;
 use crate::metrics::PlanMetricsSite;
 use crate::overlay::ExecGraph;
@@ -169,10 +171,15 @@ pub(crate) struct StreamedStats {
     /// Logical bytes of one generated row: the in-flight working set.
     row_bytes: Cell<u64>,
     time_ns: Cell<u128>,
+    /// The clock policy alone: whether `timed_step` reads a clock per
+    /// step. The row count and the first row's size are recorded whatever
+    /// this says — one walk on the first row, never a per-row cost.
     timed: bool,
 }
 
 impl StreamedStats {
+    /// `timed` is the PROFILE clock policy only — an untimed feed still
+    /// counts its rows and records the first row's size.
     pub(crate) fn new(timed: bool) -> Self {
         Self {
             timed,
@@ -197,7 +204,7 @@ impl StreamedStats {
     /// the feed's in-flight working set.
     pub(super) fn note_row(&self, row: &Row) {
         self.rows.set(self.rows.get() + 1);
-        if self.timed && self.rows.get() == 1 {
+        if self.rows.get() == 1 {
             self.row_bytes
                 .set(rows_logical_bytes(std::slice::from_ref(row)));
         }
@@ -217,39 +224,76 @@ impl StreamedStats {
             .set(self.time_ns.get() + started.elapsed().as_nanos());
         out
     }
+
+    /// Run one producer step under the PROFILE clock and record the row it
+    /// produced — the one counted-step wrap every timed producer shares,
+    /// the generator spine and the completing constructors alike.
+    pub(super) fn counted_step(
+        &self,
+        step: impl FnOnce() -> Result<Option<Row>>,
+    ) -> Result<Option<Row>> {
+        let out = self.timed_step(step);
+        if let Ok(Some(row)) = out.as_ref() {
+            self.note_row(row);
+        }
+        out
+    }
 }
 
 /// A streamed generator's PROFILE facts: the statistics its generator
-/// filled — the handle the feed itself owns, cloned off it when the feed
-/// is handed to its consumer — and the PROFILE position its facts are
-/// reported at. Read by [`finish_parked_feed`] alone.
+/// filled and the PROFILE position its facts are reported at. The stream
+/// owns them; a shared handle keeps them reachable after the stream is
+/// consumed, so the projection can exclude the generator's time from its
+/// own record.
 pub(super) struct ParkedFacts<'a> {
     stats: Rc<StreamedStats>,
-    record: Option<(PlanMetricsSite<'a>, usize)>,
+    record: (PlanMetricsSite<'a>, usize),
+    /// Reported once: the stream reports at drain, stop or error, and the
+    /// consumer's close reports again only to read the time it excludes.
+    reported: Cell<bool>,
 }
 
 impl<'a> ParkedFacts<'a> {
+    /// The facts both parked forms carry — the stats handle the feed owns
+    /// plus the PROFILE position — reported once. `None` for a stream with
+    /// no clause record: the one spelling of "this stream reports nothing",
+    /// so the constructors store the answer directly and `facts.is_some()`
+    /// states "this stream has a clause record".
     pub(super) fn new(
         stats: Rc<StreamedStats>,
         record: Option<(PlanMetricsSite<'a>, usize)>,
-    ) -> Self {
-        Self { stats, record }
+    ) -> Option<Rc<Self>> {
+        record.map(|record| {
+            Rc::new(Self {
+                stats,
+                record,
+                reported: Cell::new(false),
+            })
+        })
+    }
+
+    /// Report the generator's own clause record, once.
+    pub(super) fn report(&self) {
+        if self.reported.replace(true) {
+            return;
+        }
+        record_streamed_clause(Some(self.record), &self.stats);
     }
 }
 
 /// Close a fused generator after its consumer drained it: the consumer's
 /// clock excludes the generator's time, and the clause reports its own.
 pub(super) fn finish_parked_feed(
-    parked: Option<ParkedFacts<'_>>,
+    parked: Option<std::rc::Rc<ParkedFacts<'_>>>,
     tick: Option<&mut ProfileTick<'_>>,
 ) {
-    let Some(ParkedFacts { stats, record }) = parked else {
+    let Some(parked) = parked else {
         return;
     };
     if let Some(tick) = tick {
-        tick.excluded_ns = stats.time_ns();
+        tick.excluded_ns = parked.stats.time_ns();
     }
-    record_streamed_clause(record, &stats);
+    parked.report();
 }
 
 /// Report a streamed generator's PROFILE facts after its consumer drained

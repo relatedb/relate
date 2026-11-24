@@ -7,14 +7,12 @@
 //! produced nothing for the input row.
 //!
 //! The policy is a [`FeedSource`] (the feed spine in `feed.rs`, ADR-0555):
-//! a consumer that folds rows as they arrive — the aggregation, or a clause
-//! that may take the ordered window, the same `unwind_streams_into`
-//! admission `UNWIND` and `LOAD CSV` park by — pulls the composed rows one
-//! at a time and they are never held, so the input-rows × procedure-rows
-//! cross product costs constant memory however wide it is. The
-//! materializing form ([`ComposeSource::compose_into`]) charges each
-//! input row's production to the running total before its first row is
-//! built (ADR-0463).
+//! a projection follower — the same `projection_follows` guard `UNWIND` and
+//! `LOAD CSV` park by — pulls the composed rows one at a time and they are
+//! never held, so the input-rows × procedure-rows cross product costs
+//! constant memory however wide it is. The materializing form
+//! ([`ComposeSource::compose_into`]) charges each input row's production to
+//! the running total before its first row is built (ADR-0463).
 
 use std::collections::BTreeMap;
 use std::rc::Rc;

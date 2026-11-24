@@ -193,21 +193,20 @@ pub(crate) enum CallClauseOut<'a> {
 pub(crate) struct CallPipeline {
     /// A PROFILE sink is attached.
     pub(crate) profiled: bool,
-    /// The follower folds rows as they arrive — the same
-    /// `unwind_streams_into` admission the `LOAD CSV` and `UNWIND` guards
-    /// read.
-    pub(crate) folds: bool,
+    /// The follower is a projection, which takes the call's generator as a
+    /// feed — the same `projection_follows` guard the `LOAD CSV` and
+    /// `UNWIND` arms park by.
+    pub(crate) parks: bool,
     /// This clause is the part's last.
     pub(crate) terminal: bool,
 }
 
 /// The dispatcher's `CALL` arm (stellar round 2, F-2-2): resolve the call
-/// once, park its generator for a follower that folds rows as they arrive
-/// — the same `unwind_streams_into` admission `UNWIND` and `LOAD CSV` park
-/// by — or run the resolution's own materializing arms, complete the
-/// void-optional pad (the scope-name walk `scope_names` answers is paid
-/// only when a pad actually fired), and answer the terminal void call's
-/// empty unit result.
+/// once, park its generator for a projection follower — the same
+/// `projection_follows` guard `UNWIND` and `LOAD CSV` park by — or run the
+/// resolution's own materializing arms, complete the void-optional pad (the
+/// scope-name walk `scope_names` answers is paid only when a pad actually
+/// fired), and answer the terminal void call's empty unit result.
 pub(crate) fn exec_call_clause<'a>(
     ctx: ExecCtx<'a>,
     rows: Vec<Row>,
@@ -222,12 +221,11 @@ pub(crate) fn exec_call_clause<'a>(
     // read sites); the args, yields and WHERE keep the clause's own
     // borrow.
     let resolution = match resolve_call(ctx, call)? {
-        // A follower that folds rows as they arrive keeps the call's
-        // generator: the composed rows are never held (ADR-0555). A void
-        // call or the ontology divert — the resolution's other arms — is
-        // not a streamable row producer and falls to the materializing
-        // tail.
-        CallResolution::Compose(source) if pipeline.folds => {
+        // A projection follower keeps the call's generator: the composed
+        // rows are never held (ADR-0555). A void call or the ontology
+        // divert — the resolution's other arms — is not a streamable row
+        // producer and falls to the materializing tail.
+        CallResolution::Compose(source) if pipeline.parks => {
             return Ok(CallClauseOut::Parked(StreamedFeed::new(
                 ctx,
                 rows,

@@ -12,13 +12,12 @@ use crate::eval::{eval, expr_vars, is_agg_expr};
 use crate::overlay::{ExecGraph, MaterializeCache};
 use crate::row::Row;
 
-use super::aggregate::{aggregate_ex, Aggregation, WhereMode};
-use super::classification::{may_cut, ProjectionClass, ProjectionShape};
-use super::feed::{take_input, PendingFeed};
+use super::aggregate::{aggregate_ex, Aggregation};
+use super::classification::{ProjectionClass, ProjectionShape};
+use super::feed::RowStream;
 use super::order::{page, PageBounds};
 use super::pattern_policies::MatchFold;
 use super::post_merge::{adopt_rows, finish_projection, land_feed, Landed};
-use super::profile_tick::{finish_parked_feed, ProfileTick};
 use super::scope::{return_columns, star_scope_names, visible_keys, ProjectionFields};
 use super::{materialize_rows_strict, QueryResult, RowFeed};
 
@@ -83,10 +82,10 @@ pub(crate) fn maps_each_row(fields: &ProjectionFields<'_>) -> bool {
 }
 
 /// The next clause's projection fields and decided shape, when it is a
-/// `WITH`/`RETURN` at all — the prologue every follower-fold predicate
-/// reads. A shape [`ProjectionShape::decide`] rejects yields `None`: the
-/// clause never folds a feed, and the projection itself fails closed at
-/// the same decision when the clause reaches it.
+/// `WITH`/`RETURN` at all — the prologue the `MATCH` fold predicate reads.
+/// A shape [`ProjectionShape::decide`] rejects yields `None`: the clause
+/// never folds a feed, and the projection itself fails closed at the same
+/// decision when the clause reaches it.
 fn next_fold_shape<'a>(
     next: Option<&'a Clause>,
 ) -> Option<(ProjectionFields<'a>, ProjectionShape)> {
@@ -95,40 +94,13 @@ fn next_fold_shape<'a>(
     Some((fields, shape))
 }
 
-/// Whether the clause after an `UNWIND` or a `MATCH` consumes its rows as a
-/// stream: a `WITH` or `RETURN` whose projection folds an aggregation as rows
-/// arrive ([`ProjectionShape::streams`] — an aggregating shape with no `*`
-/// item, since a `*` groups by every carried variable and needs the rows'
-/// shape up front). Every other follower takes the rows as a held vector, as
-/// ever.
+/// Whether the clause after a `MATCH` consumes its rows as a stream: a
+/// `WITH` or `RETURN` whose projection folds an aggregation as rows arrive
+/// ([`ProjectionShape::streams`] — an aggregating shape with no `*` item,
+/// since a `*` groups by every carried variable and needs the rows' shape up
+/// front). Every other follower takes the rows as a held vector, as ever.
 pub(crate) fn streams_into_projection(next: Option<&Clause>) -> bool {
     next_fold_shape(next).is_some_and(|(_, shape)| shape.streams())
-}
-
-/// Whether the clause after a generator clause keeps its generator: a
-/// follower that folds rows as rows arrive — the aggregation, or a clause
-/// that *may* take the ordered window. Every other follower still takes the
-/// rows as a held vector. This is the one park admission of every
-/// always-generatable producer — `UNWIND` (its list elements), `LOAD CSV`
-/// (its records) and `CALL` (the composed procedure rows) each read it,
-/// the name keeping its first caller; a `MATCH` keeps
-/// [`streams_into_projection`], whose answer the match chain also reads for
-/// its stage runs.
-///
-/// Parking is deliberately the *static* half of the fold decision, answered
-/// from the clause's fields and shape alone: no page bounds are resolved
-/// here and no per-clause plan is built. The projection resolves the bounds
-/// once, from its own classification, and its `prepare_input` decides
-/// fold against collect — so a parked feed that resolves to no window (a
-/// zero page, an overflowing `skip + limit`) collects there, a
-/// nondeterministic bound is one draw rather than two, and the shapes that
-/// never fold (`DISTINCT`, `SKIP`-only, unordered) are not parked at all.
-///
-/// The window half is [`may_cut`], the classification's own bounds-free
-/// precondition — read here without its aggregating mask, so the park
-/// admits a superset of [`ProjectionClass::window_keep`] by construction.
-pub(crate) fn unwind_streams_into(next: Option<&Clause>) -> bool {
-    next_fold_shape(next).is_some_and(|(fields, shape)| shape.streams() || may_cut(&fields))
 }
 
 /// Open the aggregation a streamed `MATCH` folds into, for the
@@ -260,27 +232,21 @@ impl ProjectionInput<'_> {
             Self::SinkProjected(rows) => rows,
         }
     }
-}
 
-/// Run one `WITH`/`RETURN` projection over its input slot and close a fused
-/// generator it drained: the dispatcher's one delegation for both clauses,
-/// beside the projection that owns the input model. The projected rows land
-/// in the held `rows`.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn project_clause<'a>(
-    ctx: ExecCtx<'a>,
-    pending: &mut Option<PendingFeed<'a>>,
-    rows: &mut Vec<Row>,
-    fields: &ProjectionFields<'_>,
-    inflate: bool,
-    rows_from: RowSource,
-    scope: Option<&Row>,
-    tick: &mut Option<ProfileTick<'_>>,
-) -> Result<()> {
-    let (input, parked) = take_input(pending, rows, rows_from)?;
-    *rows = project_rows(ctx, input, fields, inflate, scope)?;
-    finish_parked_feed(parked, tick.as_mut());
-    Ok(())
+    /// Finish this input when the clause abandons it — a `LIMIT 0` answers
+    /// no rows, but it must not cancel the input's own work: a completing
+    /// stream (`CALL { … } IN TRANSACTIONS`) runs its remaining batches —
+    /// and reports its PROFILE facts — on `stop`, never on drop. The rule
+    /// lives on the input type, so a new input kind states its own contract
+    /// instead of inheriting "nothing to finish" by silence.
+    fn complete(&mut self) -> Result<()> {
+        // Exhaustive: every kind names its own answer, so a new input kind
+        // fails to compile until it states one.
+        match self {
+            Self::Feed(RowFeed::Held(stream)) => stream.stop(),
+            Self::Feed(RowFeed::Folded(_)) | Self::SinkProjected(_) => Ok(()),
+        }
+    }
 }
 
 pub(crate) fn project_rows(
@@ -306,7 +272,7 @@ pub(crate) fn project_rows(
 pub(super) fn project_classed(
     ctx: ExecCtx<'_>,
     class: &ProjectionClass<'_>,
-    input: ProjectionInput<'_>,
+    mut input: ProjectionInput<'_>,
     inflate: bool,
     scope: Option<&Row>,
 ) -> Result<Vec<Row>> {
@@ -323,23 +289,17 @@ pub(super) fn project_classed(
     // opened or any row is built: a `LIMIT 0` costs O(1) whatever the
     // input, and no merge path ever carries a zero-capacity container.
     if bounds.answers_nothing() {
+        // The empty page stops the rows, never the input's own work (the
+        // input type owns that rule).
+        input.complete()?;
         return Ok(Vec::new());
     }
-    let input = prepare_input(input, class, bounds)?;
-    // The windowed shape no longer reserves the sort's merged buffer — the
-    // window's own container is bounded — but the feed it drains is live for
-    // this whole call, and the producer releases its own reservation as it
-    // returns ([`UnwindFeed::materialize`]). Nothing else on the path prices
-    // it, so reserve it here for as long as this projection holds it: the
-    // admission pool then keeps pricing what the statement really holds,
-    // rather than only the `skip + limit` window it answers with.
-    let _held_feed = if class.window_keep(bounds).is_some() {
-        Some(relate_core::tokens::WorkspaceCharge::retain_with(|| {
-            crate::workspace::row_buffer_bytes(input.probe())
-        })?)
-    } else {
-        None
-    };
+    // The prepared input carries its own reservation: whatever container it
+    // hands back is priced for as long as this projection holds it — the
+    // charge's owner is the handoff, never a caller that happens to know the
+    // shape (the windowed shape's live feed was the one case priced here
+    // before; a held table is the same fact).
+    let (input, _input_charge) = prepare_input(input, class, bounds)?;
     // One cache for the whole projection: its expressions never write, so
     // the graph state, and with it each payload's refresh, is fixed here.
     let mut cache = MaterializeCache::default();
@@ -381,66 +341,113 @@ fn merge_rows(
         (ProjectionInput::SinkProjected(_), _) => Err(Error::internal(
             "a sink-projected feed reached a shape the sink never projects",
         )),
-        (ProjectionInput::Feed(feed), ProjectionShape::Star) => {
-            star_rows(graph, params, feed, class, refresh, bounds)
+        // The star and plain shapes consume the batch stream itself —
+        // their row assembly lands each pulled row — so the arm hands
+        // them the one input they can take, never a conversion that
+        // refuses a variant at runtime.
+        (ProjectionInput::Feed(RowFeed::Held(stream)), ProjectionShape::Star) => {
+            star_rows(graph, params, stream, class, refresh, bounds)
         }
         // The aggregating path lands no container: its charge lives in
         // the aggregation's own emission loop, and its rows are an
-        // unordered table the tail still sorts.
+        // unordered table the tail still sorts. It is also the one shape
+        // that finishes a folded feed.
         (ProjectionInput::Feed(feed), ProjectionShape::Aggregate { .. }) => Ok(Landed {
             rows: aggregate_rows(graph, params, feed, class, scope, refresh)?,
             windowed: false,
+            streamed_distinct: false,
+            funnel_filtered_where: false,
+            streamed_page: false,
         }),
-        (ProjectionInput::Feed(feed), ProjectionShape::Plain) => {
-            plain_rows(graph, params, feed, class, refresh, bounds)
+        (ProjectionInput::Feed(RowFeed::Held(stream)), ProjectionShape::Plain) => {
+            plain_rows(graph, params, stream, class, refresh, bounds)
         }
+        // The impossible pairing, stated once where the pairing is
+        // decided: a folded feed is finished by the aggregating shape
+        // alone (the streaming match sink builds one only for a folding
+        // consumer).
+        (
+            ProjectionInput::Feed(RowFeed::Folded(_)),
+            ProjectionShape::Star | ProjectionShape::Plain,
+        ) => Err(Error::internal(
+            "a folded feed reached a shape that cannot finish it",
+        )),
     }
 }
 
 /// The input as the merge paths consume it — the pipeline's
 /// materialization stage: a collected row vector, or — when the projection
 /// folds a generated feed ([`ProjectionClass::folds_feed`]: the
-/// aggregation, or the ordered window over its once-resolved bounds) — the
-/// rows still flowing. A parked feed that resolves to no window is
-/// collected here under the one retaining charge, and the eager
-/// pre-projection page applies at this stage, so a `LIMIT 1` must not
-/// evaluate a later row whose projection raises an error (CIP-27).
+/// aggregation, the ordered window over its once-resolved bounds, a
+/// pass-through, a DISTINCT first-seen pass) — the rows still flowing. A
+/// parked feed that resolves to no window is collected here under the one
+/// retaining charge, and the eager pre-projection page applies at this
+/// stage, so a `LIMIT 1` must not evaluate a later row whose projection
+/// raises an error (CIP-27).
 fn prepare_input<'a>(
     input: ProjectionInput<'a>,
     class: &ProjectionClass<'_>,
     bounds: PageBounds,
-) -> Result<ProjectionInput<'a>> {
-    // The collected rows and how they are handed back: a pre-projected
-    // input stays pre-projected, every collected feed becomes held rows.
+) -> Result<(ProjectionInput<'a>, relate_core::tokens::WorkspaceCharge)> {
+    // One exhaustive dispatch: every input kind states its own handoff, so
+    // a new kind fails to compile until it states one. The stream forms
+    // stay streams — a generated stream for the shapes that fold it as
+    // rows arrive ([`ProjectionClass::folds_feed`]): the window's `land`
+    // is a per-row fold, every row is evaluated to compare it, so the
+    // producer is never materialized on those shapes; a folded feed is
+    // already the producer's state, priced where it was built. Everything
+    // else is collected: a pre-projected input stays pre-projected, every
+    // collected feed becomes held rows.
     let (rows, wrap): (Vec<Row>, Rewrap<'a>) = match input {
         ProjectionInput::SinkProjected(rows) => (rows, ProjectionInput::SinkProjected),
-        ProjectionInput::Feed(RowFeed::Held(rows)) => (rows, held_input),
-        // A generated feed stays generated for the shapes that fold it as
-        // rows arrive — the aggregation and the ordered window
-        // ([`ProjectionClass::folds_feed`]): the window's `land` is a
-        // per-row fold, every row is evaluated to compare it, so the
-        // producer is never materialized on those shapes. The collecting
-        // shapes still land below.
-        ProjectionInput::Feed(generated @ RowFeed::Generated(_)) if class.folds_feed(bounds) => {
-            return Ok(ProjectionInput::Feed(generated));
+        ProjectionInput::Feed(RowFeed::Folded(folded)) => {
+            return Ok((
+                ProjectionInput::Feed(RowFeed::Folded(folded)),
+                relate_core::tokens::WorkspaceCharge::empty(),
+            ));
         }
-        ProjectionInput::Feed(folded @ RowFeed::Folded(_)) => {
-            return Ok(ProjectionInput::Feed(folded));
+        ProjectionInput::Feed(RowFeed::Held(stream))
+            if class.folds_feed(bounds) && !stream.is_held() =>
+        {
+            // A streamed feed is priced by its producer, never here: the
+            // guard already excluded the held container (the one source
+            // whose probe is non-empty), so this arm holds no reservation.
+            return Ok((
+                ProjectionInput::Feed(RowFeed::Held(stream)),
+                relate_core::tokens::WorkspaceCharge::empty(),
+            ));
         }
         // The generator's own materializing form — the one place a feed
         // that cannot fold becomes rows, so its charge cannot drift from
         // the one the clause arm pays.
-        ProjectionInput::Feed(RowFeed::Generated(generated)) => {
-            (generated.materialize()?, held_input)
-        }
+        ProjectionInput::Feed(RowFeed::Held(stream)) => (stream.materialize()?, held_input),
     };
     // The eager shape pages here, on the clause's one resolved bounds;
     // every other shape leaves the page to the finish tail.
-    Ok(wrap(if class.eager_paged {
+    let input = wrap(if class.eager_paged {
         page(rows, bounds)
     } else {
         rows
-    }))
+    });
+    let charge = if matches!(class.shape, ProjectionShape::Aggregate { .. }) {
+        // The aggregating shape's own input bill reserves these rows and
+        // releases them per landing (InputBill's measure is the same
+        // row walk) — a second reservation here would price one
+        // container twice and refuse statements whose real footprint
+        // fits the pool.
+        relate_core::tokens::WorkspaceCharge::empty()
+    } else {
+        held_charge(input.probe())?
+    };
+    Ok((input, charge))
+}
+
+/// The reservation for the container the projection is handed: the rows it
+/// holds for as long as it holds them (a streamed feed's rows belong to its
+/// producer and are priced there, so its probe is empty and this is a
+/// no-op).
+fn held_charge(rows: &[Row]) -> Result<relate_core::tokens::WorkspaceCharge> {
+    relate_core::tokens::WorkspaceCharge::retain_with(|| crate::workspace::row_buffer_bytes(rows))
 }
 
 /// How collected rows are handed back as the projection's input.
@@ -448,7 +455,7 @@ type Rewrap<'a> = fn(Vec<Row>) -> ProjectionInput<'a>;
 
 /// Collected rows as the projection's feed input.
 fn held_input(rows: Vec<Row>) -> ProjectionInput<'static> {
-    ProjectionInput::Feed(RowFeed::Held(rows))
+    ProjectionInput::Feed(RowFeed::Held(RowStream::held(rows)))
 }
 
 /// The `RETURN *` mode: the visible incoming bindings plus the explicit
@@ -456,7 +463,7 @@ fn held_input(rows: Vec<Row>) -> ProjectionInput<'static> {
 fn star_rows(
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
-    feed: RowFeed<'_>,
+    stream: RowStream<'_>,
     class: &ProjectionClass<'_>,
     refresh: &mut Refresh<'_>,
     bounds: PageBounds,
@@ -466,21 +473,32 @@ fn star_rows(
     // spent source row is dropped so `owned_heap` sees the output
     // container's real ownership. The ordered-window shape lands the same
     // built row into the bounded heap instead.
-    let built = |r: Row| -> Result<Row> {
-        let mut n = Row::new();
-        for (k, v) in &r {
-            if !graph.is_internal_key(k) {
-                n.insert(k.clone(), refresh.apply(graph, v.clone()));
-            }
+    let built = |row| star_output_row(graph, params, class, refresh, row);
+    land_feed(graph, params, class, bounds, stream, built)
+}
+
+/// The `*` shape's row assembly: the visible incoming bindings plus the
+/// explicit items. Shared by the collected landing ([`star_rows`]) and the
+/// pass-through page fold ([`land_feed`]).
+fn star_output_row(
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+    class: &ProjectionClass<'_>,
+    refresh: &mut Refresh<'_>,
+    r: Row,
+) -> Result<Row> {
+    let mut n = Row::new();
+    for (k, v) in &r {
+        if !graph.is_internal_key(k) {
+            n.insert(k.clone(), refresh.apply(graph, v.clone()));
         }
-        for (projection, name) in &class.value_items {
-            let value = eval(graph, &r, &projection.expr, params)?;
-            n.insert(name.clone(), refresh.apply(graph, value));
-        }
-        drop(r);
-        Ok(n)
-    };
-    land_feed(graph, params, class, bounds, feed, built)
+    }
+    for (projection, name) in &class.value_items {
+        let value = eval(graph, &r, &projection.expr, params)?;
+        n.insert(name.clone(), refresh.apply(graph, value));
+    }
+    drop(r);
+    Ok(n)
 }
 
 /// The aggregation mode: HAVING (the aggregate-call WHERE) is evaluated per
@@ -503,9 +521,11 @@ fn aggregate_rows(
     // aggregated row and fail.
     let mut agg = match feed {
         RowFeed::Folded(aggregation) => aggregation.finish(graph)?,
-        feed => aggregate_ex(
+        // The breaker answers its own batch stream (ADR-0660); the inflate
+        // refresh below rewrites each answered row in place.
+        RowFeed::Held(stream) => aggregate_ex(
             graph,
-            feed,
+            stream,
             class.fields.items,
             class.fields.group_by,
             params,
@@ -530,58 +550,74 @@ fn aggregate_rows(
 fn plain_rows(
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
-    feed: RowFeed<'_>,
+    stream: RowStream<'_>,
     class: &ProjectionClass<'_>,
     refresh: &mut Refresh<'_>,
     bounds: PageBounds,
 ) -> Result<Landed> {
-    let order_keys = &class.order_keys;
-    let where_mode = class.where_mode;
-    let mut keep = HashSet::new();
-    if let Some(w) = where_mode.and_then(WhereMode::plain) {
-        expr_vars(w, &mut keep);
-    }
-    for expr in order_keys.exprs() {
-        expr_vars(expr, &mut keep);
-    }
+    let keep = keep_bindings(class);
     // ADR-0463: the projected rows are one retaining container. Each output
     // row's payloads plus its buffers grow the running total; the
     // per-allocation checks alone cannot see a many-row result whose rows
     // each build a large but under-cap value. The ordered-window shape
     // (ADR-0555 §3) lands the same built row into the bounded top-k heap
     // instead, its plain WHERE read as each row arrives.
-    let built = |mut row: Row| -> Result<Row> {
-        // The item values first, against the incoming row, then the kept
-        // bindings (a `WITH` filter or an `ORDER BY` key may name one the
-        // projection does not produce), then the items over them — the
-        // projected row a key is evaluated against.
-        let projected: Vec<(String, Value)> = class
-            .value_items
-            .iter()
-            .map(|(projection, name)| {
-                let val = eval(graph, &row, &projection.expr, params)?;
-                Ok((name.clone(), refresh.apply(graph, val)))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let mut row2 = Row::new();
-        for (name, value) in row.iter_mut() {
-            if keep.contains(name.as_str()) {
-                row2.insert(name.clone(), std::mem::replace(value, Value::Null));
-            }
+    let built = |row| plain_output_row(graph, params, class, &keep, refresh, row);
+    land_feed(graph, params, class, bounds, stream, built)
+}
+
+/// The bindings a plain projection keeps from its incoming row: the ones a
+/// `WITH` filter or an `ORDER BY` key may name though the projection does
+/// not produce them. The one derivation, read by [`plain_rows`] and the
+/// pass-through page fold ([`land_feed`]).
+fn keep_bindings(class: &ProjectionClass<'_>) -> HashSet<String> {
+    let mut keep = HashSet::new();
+    if let Some(w) = class.plain_where() {
+        expr_vars(w, &mut keep);
+    }
+    for expr in class.order_keys.exprs() {
+        expr_vars(expr, &mut keep);
+    }
+    keep
+}
+
+/// The plain shape's row assembly: the item values first, against the
+/// incoming row, then the kept bindings, then the items over them — the
+/// projected row a key is evaluated against. Shared by the collected
+/// landing ([`plain_rows`]) and the pass-through page fold
+/// ([`land_feed`]).
+fn plain_output_row(
+    graph: &ExecGraph<'_>,
+    params: &BTreeMap<String, Value>,
+    class: &ProjectionClass<'_>,
+    keep: &HashSet<String>,
+    refresh: &mut Refresh<'_>,
+    mut row: Row,
+) -> Result<Row> {
+    let projected: Vec<(String, Value)> = class
+        .value_items
+        .iter()
+        .map(|(projection, name)| {
+            let val = eval(graph, &row, &projection.expr, params)?;
+            Ok((name.clone(), refresh.apply(graph, val)))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut row2 = Row::new();
+    for (name, value) in row.iter_mut() {
+        if keep.contains(name.as_str()) {
+            row2.insert(name.clone(), std::mem::replace(value, Value::Null));
         }
-        for (name, value) in projected {
-            row2.insert(name, value);
-        }
-        // The source row is spent — its kept bindings moved, the rest
-        // dropped — so the built row's values are the output container's
-        // own and `owned_heap` sees their real ownership: a projected
-        // variable read is a clone that shared the source row's `Arc`
-        // while it lived, and charging before the drop would skip its
-        // payload.
-        drop(row);
-        Ok(row2)
-    };
-    land_feed(graph, params, class, bounds, feed, built)
+    }
+    for (name, value) in projected {
+        row2.insert(name, value);
+    }
+    // The source row is spent — its kept bindings moved, the rest dropped —
+    // so the built row's values are the output container's own and
+    // `owned_heap` sees their real ownership: a projected variable read is
+    // a clone that shared the source row's `Arc` while it lived, and
+    // charging before the drop would skip its payload.
+    drop(row);
+    Ok(row2)
 }
 
 #[cfg(test)]

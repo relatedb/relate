@@ -12,7 +12,7 @@ use relate_core::{Error, Result, Value};
 use crate::eval::is_agg_expr;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
-use relate_ir::Projection;
+use relate_ir::{Expr, Projection};
 
 use super::aggregate::{GroupSubclauses, WhereMode};
 use super::order::{resolve_page_bounds, window_capacity, OrderKeys, PageBounds};
@@ -106,6 +106,16 @@ impl ProjectionShape {
         self.facts().aggregating
     }
 
+    /// Whether the shape passes its feed through row by row: a
+    /// non-aggregating shape with no `ORDER BY`. Each item is evaluated per
+    /// row, a post-projection `WHERE` filters per row, and `SKIP`/`LIMIT`
+    /// and `DISTINCT` apply on the stream, so the producer is never
+    /// materialized ([`ProjectionClass::streams_pass`] is the clause's
+    /// reading of the same fact).
+    pub(crate) fn passes_stream(&self, fields: &ProjectionFields<'_>) -> bool {
+        !self.aggregating() && fields.order.is_empty()
+    }
+
     /// Whether the projection carries a `*` item — the shape a `*` owns
     /// outright, or the aggregating form that groups by every carried
     /// variable.
@@ -185,12 +195,19 @@ pub(crate) fn pages_eagerly(fields: &ProjectionFields<'_>) -> bool {
 /// `LIMIT` to bound it, and no `DISTINCT` pass (which runs *after* the
 /// sort, so a pre-distinct cut would answer fewer rows than the distinct
 /// page deserves). The one home of these three facts —
-/// [`ProjectionClass::sort_cut`] reads them for the cutoff, and the
-/// dispatcher's `UNWIND` park reads them to decide whether the follower
-/// may open a window at all, so the two cannot disagree about which
-/// clauses earn one.
+/// [`ProjectionClass::sort_cut`] reads them for the cutoff.
 pub(crate) fn may_cut(fields: &ProjectionFields<'_>) -> bool {
     !fields.distinct && !fields.order.is_empty() && fields.limit.is_some()
+}
+
+/// Whether a projection's `DISTINCT` is the first-seen pass over its input
+/// stream (ADR-0660): the pass keeps only its charged seen-set, so it
+/// neither collects the input nor sorts it. A shape that aggregates, or an
+/// ordering (which runs on the distinct output), keeps the post-merge pass.
+/// The one home of the decision: the projection's own consumption
+/// ([`ProjectionClass::streams_distinct`]) reads it.
+pub(crate) fn streams_distinct(fields: &ProjectionFields<'_>, shape: ProjectionShape) -> bool {
+    fields.distinct && !shape.aggregating() && fields.order.is_empty()
 }
 
 impl<'a> ProjectionClass<'a> {
@@ -272,18 +289,43 @@ impl<'a> ProjectionClass<'a> {
         window_capacity(bounds.skip, bounds.limit).and_then(std::num::NonZeroUsize::new)
     }
 
-    /// Whether a *generated* feed reaching this projection stays generated:
-    /// the aggregation folds it into the group table, and the ordered
-    /// window folds it into the bounded heap — every row is evaluated to
-    /// compare it, so folding the generator changes no answer. This is the
-    /// projection's own decision over the bounds it resolved once; the
-    /// dispatcher's `UNWIND` arm parks on the static half only
-    /// ([`unwind_streams_into`][super::project::unwind_streams_into]), so a
-    /// parked feed that resolves to no window is collected, not folded.
-    /// [`prepare_input`][super::project::prepare_input] is its one
+    /// Whether a *generated* feed reaching this projection stays generated,
+    /// for exactly three reasons: the aggregation folds it into the group
+    /// table, the ordered window folds it into the bounded heap, and the
+    /// pass-through shape consumes it row by row ([`Self::streams_pass`],
+    /// whose `DISTINCT` first-seen pass — a non-aggregating, unordered
+    /// shape — keeps each row only long enough to decide it). Every row is
+    /// evaluated as it arrives, so folding the generator changes no answer.
+    /// This is the projection's own decision over the bounds it resolved
+    /// once: a parked feed that resolves to no window is collected, not
+    /// folded. [`prepare_input`][super::project::prepare_input] is its one
     /// reader.
     pub(crate) fn folds_feed(&self, bounds: PageBounds) -> bool {
-        self.shape.streams() || self.window_keep(bounds).is_some()
+        self.shape.streams() || self.streams_pass() || self.window_keep(bounds).is_some()
+    }
+
+    /// Whether the clause passes its input through as a stream: the shape's
+    /// own fact ([`ProjectionShape::passes_stream`]) over this clause's
+    /// fields. The landing funnel's page container
+    /// ([`land_feed`][super::post_merge::land_feed]) applies the page and
+    /// `DISTINCT` on the stream.
+    pub(crate) fn streams_pass(&self) -> bool {
+        self.shape.passes_stream(&self.fields)
+    }
+
+    /// Whether this clause's `DISTINCT` is the first-seen pass on its input
+    /// stream rather than the post-merge pass — the class's reading of
+    /// [`streams_distinct`].
+    pub(crate) fn streams_distinct(&self) -> bool {
+        streams_distinct(&self.fields, self.shape)
+    }
+
+    /// ADR-0453's plain `WHERE` on this clause — the predicate applied per
+    /// row on the stream or in the landing funnel. The one home of the
+    /// plain/HAVING split: every consumer of the fact reads it here, never
+    /// re-deriving it from `where_mode`.
+    pub(crate) fn plain_where(&self) -> Option<&'a Expr> {
+        self.where_mode.and_then(WhereMode::plain)
     }
 
     /// The bounded window this clause folds its producer into — its sort

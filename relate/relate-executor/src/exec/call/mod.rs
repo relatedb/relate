@@ -19,7 +19,7 @@ mod in_transactions;
 mod shared;
 
 pub(crate) use conditional::{conditional_produces_rows, exec_conditional};
-pub(crate) use feed::call_subquery_feed;
+pub(crate) use feed::{call_subquery_feed, exec_call_subquery};
 pub(crate) use in_transactions::exec_call_in_transactions;
 #[cfg(test)]
 pub(crate) use in_transactions::transaction_error_message;

@@ -39,7 +39,7 @@ pub(super) struct MatchArm<'a> {
     /// `MATCH` operator ran (a fold answered it).
     pub(super) ladder: Option<LadderFacts>,
     /// The aggregation a streamed `MATCH` fed, waiting for its consumer.
-    pub(super) pending_fold: Option<Aggregation<'a>>,
+    pub(super) folded: Option<Aggregation<'a>>,
     /// Whether the rows already carry the next projection's columns.
     pub(super) rows_source: RowSource,
     /// The whole fact a streamed consumer took as rows were emitted — the
@@ -84,36 +84,83 @@ pub(super) fn exec_match_arm<'a>(
         last_result: None,
         skip: 0,
         ladder: None,
-        pending_fold: None,
+        folded: None,
         rows_source: RowSource::Bindings,
         streamed: None,
     };
     if let Some(search) = search {
+        // The SEARCH walk takes the same consumer as the ladder's
+        // `MATCH`: a following aggregation (or a run of stages) folds
+        // each matched row as it is produced, so the clause's whole
+        // output is never held (ADR-0555, ADR-0660's `expand`
+        // disposition). An `OPTIONAL` SEARCH keeps the held path: its
+        // null row is the input row, which the consumer's landing does
+        // not carry.
+        let consumer = if optional {
+            None
+        } else {
+            open_match_consumer(
+                ctx,
+                &clauses[i..],
+                fold_class,
+                scope,
+                profile.map(|site| (site, i)),
+            )?
+        };
         rows = search_match_clause(
             ctx,
             rows,
-            optional,
-            match_mode,
-            patterns,
-            where_clause.as_ref(),
+            MatchClauseInputs {
+                optional,
+                match_mode,
+                patterns,
+                where_clause: where_clause.as_ref(),
+            },
             search,
+            consumer.as_ref().map(MatchConsumer::as_fold),
         )?;
         // A SEARCH MATCH resolves its candidate window from
         // the vector index and then walks the pattern with the
         // per-row `match_clause` directly (`exec/search.rs`),
         // never the ladder — its rung is the walker (LABS-1117).
         out.ladder = Some(LadderFacts::walker());
-        if let Some(live) = live_from(&clauses[i + 1..]) {
-            trim_rows(graph, &mut rows, &live);
+        if let Some(consumer) = consumer {
+            let (
+                observed,
+                Landing {
+                    offered,
+                    consumed,
+                    kind,
+                },
+            ) = consumer.finish(graph)?;
+            out.skip = consumed;
+            out.streamed = Some(StreamedClause {
+                rows: offered,
+                downstream: observed.unwrap_or_default(),
+            });
+            match kind {
+                LandingKind::Folded(aggregation) => out.folded = Some(*aggregation),
+                LandingKind::Rows {
+                    rows: landed,
+                    source,
+                } => {
+                    rows = landed;
+                    out.rows_source = source;
+                }
+            }
+        } else {
+            if let Some(live) = live_from(&clauses[i + 1..]) {
+                trim_rows(graph, &mut rows, &live);
+            }
+            // The same ADR-0463 (LABS-781) MATCH-container charge
+            // as the ladder landing below, through the one bulk
+            // spelling — the SEARCH arm's own ownership statement:
+            // it reports the walker's rung, but its walker runs
+            // are per-candidate, so the clause-level container is
+            // only whole — and only chargeable — here, and this
+            // arm charges it itself rather than arriving charged.
+            charge_finished_container(graph, &rows)?;
         }
-        // The same ADR-0463 (LABS-781) MATCH-container charge
-        // as the ladder landing below, through the one bulk
-        // spelling — the SEARCH arm's own ownership statement:
-        // it reports the walker's rung, but its walker runs
-        // are per-candidate, so the clause-level container is
-        // only whole — and only chargeable — here, and this
-        // arm charges it itself rather than arriving charged.
-        charge_finished_container(graph, &rows)?;
     } else {
         let folded = if !optional {
             try_match_folds(graph, &rows, &clauses[i..], params)?
@@ -218,7 +265,7 @@ pub(super) fn exec_match_arm<'a>(
                     });
                     match kind {
                         LandingKind::Folded(aggregation) => {
-                            out.pending_fold = Some(*aggregation);
+                            out.folded = Some(*aggregation);
                         }
                         LandingKind::Rows {
                             rows: landed,

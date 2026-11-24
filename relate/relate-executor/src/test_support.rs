@@ -67,6 +67,14 @@ pub(crate) fn refusing_ledger() -> TokenLedger {
     TokenLedger::new(0, 0, pool)
 }
 
+/// A ledger whose pool admits exactly `cap` bytes: the capped-pool pins'
+/// one construction, so the pool's size and the ledger's capacity are one
+/// fact — a pool wider than its ledger would admit rows the ledger
+/// refuses, and vice versa.
+pub(crate) fn capped_ledger(cap: u64) -> TokenLedger {
+    TokenLedger::new(cap, 0, Arc::new(PeakPoolDouble::new(cap)))
+}
+
 /// The layering guard of the charge-owning set modules: `source` (a module's
 /// own text) reaches neither the exec tree nor the pattern walker. Scans the
 /// code lines for the module names as path segments, so a grouped import

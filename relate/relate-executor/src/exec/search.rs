@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use relate_core::{expected_type_detail, value_type_name, Error, Result, Value};
 use relate_ir::{
-    Expr, MatchMode, PathPattern, PatternPayload, SearchClause, SearchCombineSpec, SearchIndexSpec,
+    Expr, PathPattern, PatternPayload, SearchClause, SearchCombineSpec, SearchIndexSpec,
     SearchKind, SearchSpec,
 };
 use relate_model::EntityKind;
@@ -27,7 +27,8 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 
 use super::fulltext;
-use super::match_clause::bind_pattern_nulls;
+use super::match_clause::{bind_pattern_nulls, MatchClauseInputs};
+use super::pattern_policies::RowFold;
 use super::vector::{vector_index_candidates, vector_operand, VectorSearchFilter};
 
 mod deferred;
@@ -165,17 +166,12 @@ struct SpecCandidates {
 }
 
 /// The OPTIONAL rule's null row for one input row: the pattern's bound
-/// variables nulled, the score column (if named) nulled, pushed once --
-/// the one shape both OPTIONAL sites in `search_match_clause` emit.
-fn push_optional_null_row(
-    mut row: Row,
-    patterns: &[PathPattern],
-    score_var: Option<&SmallName>,
-    out: &mut Vec<Row>,
-) {
+/// variables nulled, the score column (if named) nulled -- the one shape
+/// `search_match_clause` emits for an input row its sources left unmatched.
+fn optional_null_row(mut row: Row, patterns: &[PathPattern], score_var: Option<&SmallName>) -> Row {
     bind_pattern_nulls(&mut row, patterns);
     attach_score(&mut row, score_var, Value::Null);
-    out.push(row);
+    row
 }
 
 /// The candidates one `<source specification clause>` yields for
@@ -446,12 +442,16 @@ fn path_pattern_binding_kind(patterns: &[PathPattern], name: &str) -> Option<Ent
 pub(crate) fn search_match_clause(
     ctx: ExecCtx<'_>,
     rows: Vec<Row>,
-    optional: bool,
-    match_mode: MatchMode,
-    patterns: &[PathPattern],
-    where_clause: Option<&Expr>,
+    clause: MatchClauseInputs<'_>,
     search: &SearchClause,
+    fold: Option<&dyn RowFold>,
 ) -> Result<Vec<Row>> {
+    let MatchClauseInputs {
+        optional,
+        match_mode,
+        patterns,
+        where_clause,
+    } = clause;
     // The binding's own typed kind (stellar round 2, std-2): compare the
     // enum directly, no bool projection of either side. A pure function of
     // the pattern and the binding name -- loop-invariant, so it is resolved
@@ -493,10 +493,24 @@ pub(crate) fn search_match_clause(
         // The OPTIONAL null-row rule, stated once (stellar round 3): no
         // source match and no produced row both mean the input row rides
         // through with the score null.
-        if matched.is_empty() && optional {
-            push_optional_null_row(input, patterns, search.score_var.as_ref(), &mut out);
+        let matched = if matched.is_empty() && optional {
+            vec![optional_null_row(
+                input,
+                patterns,
+                search.score_var.as_ref(),
+            )]
         } else {
-            out.extend(matched);
+            matched
+        };
+        // A consumer that folds rows as they are produced (the following
+        // aggregation, a run of stages) takes each matched row as its
+        // input row's walk yields it: the clause's output is never held
+        // (ADR-0555, ADR-0660's `expand` disposition).
+        for row in matched {
+            match fold {
+                Some(fold) => fold.offer(env.ctx.graph, row)?,
+                None => out.push(row),
+            }
         }
     }
     Ok(out)
@@ -505,7 +519,12 @@ pub(crate) fn search_match_clause(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exec::test_support::named_node;
+    use crate::exec::test_support::{
+        exec_autocommit, exec_cypher, named_node, profiled, try_exec_cypher,
+    };
+    use crate::graph::Graph;
+    use crate::metrics::KernelRung;
+    use relate_core::CapacityKind;
     use relate_ir::{Direction, NodePattern, PatternElement, RelPattern};
 
     fn rel(variable: &str) -> RelPattern {
@@ -612,5 +631,86 @@ mod tests {
             Value::Null,
         );
         assert_eq!(nulled.get("score"), Some(&Value::Null));
+    }
+
+    /// Eight `Person`s with two-dimension embeddings indexed by `vidx`: a
+    /// four-entry SEARCH window has four candidates for every driving row.
+    fn vector_index_graph() -> Graph {
+        let g = Graph::default();
+        exec_autocommit(&g, "CREATE VECTOR INDEX vidx FOR (p:Person) ON p.embed").unwrap();
+        g.begin_write().unwrap();
+        for i in 0..8 {
+            g.create_node(
+                vec!["Person".into()],
+                BTreeMap::from([
+                    ("name".into(), Value::String(format!("p{i}").into())),
+                    (
+                        "embed".into(),
+                        Value::List(vec![Value::Float(1.0), Value::Float(i as f64)].into()),
+                    ),
+                ]),
+            )
+            .unwrap();
+        }
+        g.commit_write();
+        g
+    }
+
+    /// The driving-table statement: `driving` rows each SEARCHing a
+    /// four-entry window, with `tail` as the consumer.
+    fn search_over_driving(driving: usize, tail: &str) -> String {
+        format!(
+            "UNWIND range(1, {driving}) AS i \
+             MATCH (p:Person) \
+             SEARCH p IN (VECTOR INDEX vidx FOR [1.0, 0.0] LIMIT 4) {tail}"
+        )
+    }
+
+    /// ADR-0555/ADR-0660: a SEARCH MATCH feeding a folding consumer emits
+    /// each matched row as its walk produces it, so the clause holds nothing
+    /// that grows with the driving row count — 120,000 matched rows pass
+    /// under a 4 MiB expression cap. The same clause holding its output for a
+    /// plain `RETURN` is refused at the cap.
+    #[test]
+    fn a_search_match_feeding_a_fold_holds_no_rows() {
+        const DRIVING: usize = 30_000;
+        const CAP: u64 = 4 * 1024 * 1024;
+        let mut g = vector_index_graph();
+        g.configure_expression_memory_limit(Some(CAP));
+        let rows = exec_cypher(&g, &search_over_driving(DRIVING, "RETURN count(*) AS c")).rows;
+        assert_eq!(rows[0][0], Value::Int(4 * DRIVING as i64));
+        let error = try_exec_cypher(&g, &search_over_driving(DRIVING, "RETURN p.name AS name"))
+            .err()
+            .expect("the materializing form must be refused at the cap");
+        assert!(
+            matches!(
+                error,
+                Error::Capacity {
+                    kind: CapacityKind::Expression,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    /// PROFILE keeps reporting the SEARCH clause's own facts when its rows
+    /// stream: the walker rung that served it, the store reads its
+    /// per-candidate walks made, and the rows it emitted into the fold (a
+    /// streamed clause holds nothing).
+    #[test]
+    fn a_streamed_search_match_reports_the_walker_and_its_reads() {
+        let g = vector_index_graph();
+        let records = profiled(&g, &search_over_driving(3, "RETURN count(*) AS c"));
+        let record = records
+            .iter()
+            .find(|record| record.kernel.is_some())
+            .expect("the SEARCH MATCH records its rung");
+        assert_eq!(record.kernel, Some(KernelRung::Walker));
+        // Three driving rows × the four-entry window: one node-store read
+        // per candidate the walk examined, and one row emitted per candidate.
+        assert_eq!(record.reads.node_reads, 12, "{:?}", record.reads);
+        assert_eq!(record.rows, 12, "the rows the clause emitted into the fold");
+        assert_eq!(record.memory_bytes, 0, "a streamed clause holds nothing");
     }
 }

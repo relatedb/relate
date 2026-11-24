@@ -504,3 +504,43 @@ fn a_writing_body_never_parks_whatever_its_consumer() {
         .collect();
     assert_eq!(counts, vec![3, 3], "{:?}", result.rows);
 }
+
+/// ADR-0660's retain disposition, charged per batch (ADR-0463): each
+/// `CALL { … } IN TRANSACTIONS` batch's output is its own charged
+/// allocation, so a many-batch call is bounded by one batch's rows, not
+/// the accumulated product. The cap below sits between the two figures —
+/// one batch's output fits, every batch charged into one running total
+/// does not — and the folding consumer keeps the projection from charging
+/// rows of its own, so the accumulating form is what would refuse this
+/// call.
+#[test]
+fn the_in_transactions_output_is_charged_per_batch() {
+    const CAP: u64 = 64 * 1024;
+    const BATCHES: usize = 60;
+    const PER_BATCH: usize = 20;
+    // A batch's rows carry the imported `i` beside the exported `v`.
+    let one_batch = crate::workspace::retained_rows_bytes(PER_BATCH, 2);
+    let whole_product = crate::workspace::retained_rows_bytes(BATCHES * PER_BATCH, 2);
+    assert!(
+        one_batch < CAP && CAP < whole_product,
+        "the cap must admit one batch and refuse the accumulation: \
+         {one_batch} < {CAP} < {whole_product}"
+    );
+    let mut graph = Graph::default();
+    graph.configure_expression_memory_limit(Some(CAP));
+    let result = exec_autocommit(
+        &graph,
+        &format!(
+            "UNWIND range(1, {BATCHES}) AS i \
+             CALL (i) {{ WITH i UNWIND range(1, {PER_BATCH}) AS j \
+             RETURN i * 1000 + j AS v }} \
+             IN TRANSACTIONS OF 1 ROWS \
+             RETURN count(v) AS c"
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        result.rows,
+        vec![vec![Value::Int((BATCHES * PER_BATCH) as i64)]]
+    );
+}

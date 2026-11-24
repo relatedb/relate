@@ -34,6 +34,20 @@ fn tree_walks(node: &relate::PlanNode) -> u64 {
     common::tree_metric(node, |m| m.reads.neighbor_walks)
 }
 
+/// The rows one clause operator's PROFILE record reports — the one shape
+/// the streamed-clause pins share: run the PROFILE statement, find the
+/// operator's node ([`common::find_node`], ADR-0359's shared lookup), read
+/// its `metrics.rows`.
+fn clause_rows(conn: &mut relate::Connection, query: &str, operator: &str) -> u64 {
+    let result = common::run(conn, query);
+    let tree = plan(&result);
+    let node =
+        common::find_node(tree, operator).unwrap_or_else(|| panic!("the {operator} clause node"));
+    node.metrics
+        .unwrap_or_else(|| panic!("the {operator}'s metrics"))
+        .rows
+}
+
 #[test]
 fn profile_of_a_next_chain_carries_each_stages_own_metrics() {
     let mut conn = connection();
@@ -57,6 +71,65 @@ fn profile_of_a_next_chain_carries_each_stages_own_metrics() {
     let stage2 = next.children[0].metrics.expect("stage 2 root metrics");
     assert_eq!(stage2.rows, 1, "stage 2 produced the single count row");
     assert!(stage2.time_ns > 0, "{stage2:?}");
+}
+
+/// An `UNWIND` whose follower is not a projection emits its rows as the
+/// inter-clause stream; the clause reports the rows its generator produced
+/// once the follower drains it. A probe of the not-yet-pulled stream would
+/// report zero.
+#[test]
+fn profile_unwind_reports_the_rows_it_generated() {
+    let mut conn = connection();
+    let n = 5;
+    assert_eq!(
+        clause_rows(
+            &mut conn,
+            &format!("PROFILE UNWIND range(1, {n}) AS i CREATE (:P {{v: i}})"),
+            "Unwind"
+        ),
+        n
+    );
+}
+
+/// A `CALL { … } IN TRANSACTIONS` clause answers as a produced stream too:
+/// its batches report the rows they emitted, never the empty probe of a
+/// stream whose rows are not in hand.
+#[test]
+fn profile_in_transactions_reports_the_rows_its_batches_emitted() {
+    let mut conn = connection();
+    let n = 5;
+    assert_eq!(
+        clause_rows(
+            &mut conn,
+            &format!(
+                "PROFILE UNWIND range(1, {n}) AS i \
+                 CALL {{ WITH i CREATE (:T {{v: i}}) }} IN TRANSACTIONS OF 2 ROWS"
+            ),
+            "CallSubquery"
+        ),
+        n
+    );
+}
+
+/// A graph-sensitive `CREATE` (a property expression holding a subquery)
+/// resolves every row's patterns against the pre-write graph, so it takes
+/// the whole-input hold — and its held form still reports the rows it
+/// created, never a clause that looks like it never ran.
+#[test]
+fn profile_reports_a_graph_sensitive_creates_rows() {
+    let mut conn = connection();
+    let n = 5;
+    assert_eq!(
+        clause_rows(
+            &mut conn,
+            &format!(
+                "PROFILE UNWIND range(1, {n}) AS i \
+                 CREATE (:P {{v: i, c: COUNT {{ MATCH (m:P) }}}})"
+            ),
+            "Create"
+        ),
+        n
+    );
 }
 
 /// LABS-375: a node scan reads the node store once per candidate it

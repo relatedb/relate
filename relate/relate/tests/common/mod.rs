@@ -109,6 +109,57 @@ pub fn connection() -> relate::Connection {
     connection_in(relate::Namespace::Neo4j.as_str())
 }
 
+/// A fresh connection on a fresh in-memory store opened with `options`,
+/// through [`env_seam::open`] like every other connection constructor here,
+/// so the one documented test-store open path stays the only one.
+pub fn connection_with(options: relate::OpenOptions) -> relate::Connection {
+    env_seam::open(":memory:", options).connect().unwrap()
+}
+
+/// A fresh connection on a workspace-capped in-memory store — the one
+/// construction the pool-pin test files share, each filling only its own
+/// limit.
+pub fn workspace_capped(limit: u64) -> relate::Connection {
+    connection_with(relate::OpenOptions {
+        concurrent_logical_workspace_limit: Some(limit),
+        ..Default::default()
+    })
+}
+
+/// The one typed decode of "the refusal is the expression allocation
+/// cap": the statement must fail with the expression-capacity variant,
+/// never matched off the rendered text.
+pub fn refused_expression_cap(conn: &mut relate::Connection, statement: &str) -> relate::Error {
+    let error = refused_literal(conn, statement);
+    assert!(
+        matches!(
+            &error,
+            relate::Error::Capacity {
+                kind: relate::CapacityKind::Expression,
+                ..
+            }
+        ),
+        "the statement must be refused on the expression cap: {error}"
+    );
+    error
+}
+
+/// The one typed decode of "the refusal is the workspace pool": the
+/// statement must fail with the concurrent-logical-workspace limit, named
+/// by its constant — never matched off the rendered text.
+pub fn refused_workspace_limit(conn: &mut relate::Connection, statement: &str) -> relate::Error {
+    let error = refused_literal(conn, statement);
+    assert!(
+        matches!(
+            &error,
+            relate::Error::ResourceLimit { name, .. }
+                if *name == relate::Error::CONCURRENT_LOGICAL_WORKSPACE_LIMIT
+        ),
+        "the statement must be refused on the workspace pool: {error}"
+    );
+    error
+}
+
 /// The first column of every result row as a `String` — the shape the
 /// title/name/note assertions of the SEARCH and procedure test crates all
 /// spelled inline.

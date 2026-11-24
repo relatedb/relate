@@ -1,16 +1,16 @@
-//! ADR-0641: a `LOAD CSV` seeding a per-row-independent tail runs
+//! ADR-0641 + ADR-0660: a `LOAD CSV` seeding a per-row-independent tail runs
 //! batch-major inside one transaction — the generator's records are pulled
 //! in bounded batches and the tail runs once per batch, so the inter-clause
 //! boundary never holds the whole load.
 //!
-//! The discriminator is one shared workspace budget and two outcomes at it:
-//! the admitted `MATCH* CREATE` shape answers (its live charge is one batch
-//! of records plus the transaction's redo), while the shapes the classifier
-//! declines keep the holding path and refuse — the boundary plus the redo
-//! overflows the budget. The refused shapes are the classifier's own
-//! declines, so a regression that sent the admitted shape down the holding
-//! path would refuse too and fail the answering test: engagement of the
-//! batched driver is pinned behaviourally, not by a counter.
+//! The discriminator is one shared workspace budget: every shape here —
+//! admitted or declined by the batch-tail classifier — answers under it,
+//! because the clause arms themselves stream (ADR-0660's `pass` disposition:
+//! a `CREATE` runs through the write barrier one batch at a time, and a
+//! terminal `RETURN` pages the stream). What the declined shapes still pin
+//! is correctness: a read whose labels the write also creates answers once
+//! per record — the barrier's in-flight writes are invisible to the reads
+//! feeding it — and the terminal `RETURN` answers the whole record count.
 
 mod common;
 
@@ -90,23 +90,15 @@ fn run_load(c: &mut relate::Connection, src: &str) -> Result<relate::QueryResult
     c.query_with_params(LOAD, params(src))
 }
 
-/// Assert the statement refuses under the shared budget with the workspace
-/// charge — the holding path's signature.
-fn assert_refused(c: &mut relate::Connection, src: &str, query: &str) {
-    let error = c
-        .query_with_params(query, params(src))
-        .expect_err("the holding path refuses under the shared budget");
-    assert!(
-        error
-            .to_string()
-            .contains("concurrent-logical-workspace-limit"),
-        "the refusal is the workspace charge, not another error: {error}"
-    );
-}
-
-/// Assert `query` is admitted and creates `expected` nodes labelled
-/// `label` — the admitted-tail twin of [`assert_refused`].
-fn assert_admitted(c: &mut relate::Connection, src: &str, query: &str, label: &str, expected: i64) {
+/// Assert the tail answers under the shared budget and creates `expected`
+/// nodes labelled `label` — the admitted-tail twin of [`assert_refused`].
+fn assert_tail_creates(
+    c: &mut relate::Connection,
+    src: &str,
+    query: &str,
+    label: &str,
+    expected: i64,
+) {
     c.query_with_params(query, params(src))
         .expect("the admitted tail answers under the shared budget");
     let count = common::first_column(&common::run(
@@ -121,9 +113,10 @@ fn rel_count(c: &mut relate::Connection) -> Vec<Value> {
 }
 
 /// The batched load answers under the shared budget and creates exactly its
-/// record count in relationships. The two refusal tests below run the same
-/// family under the same budget and refuse — so this is the discriminator:
-/// the boundary is never held, only one batch of records and the redo are.
+/// record count in relationships. The declined-shape tests below run the
+/// same family under the same budget and answer too — ADR-0660's clause
+/// arms stream — so what they pin is the declined shapes' correctness, not
+/// a memory difference between the paths.
 #[test]
 fn a_bulk_load_answers_under_a_budget_the_held_path_refuses() {
     let dir = tempfile::tempdir().unwrap();
@@ -132,29 +125,35 @@ fn a_bulk_load_answers_under_a_budget_the_held_path_refuses() {
     assert_eq!(rel_count(&mut c), vec![Value::Int(RECORDS)]);
 }
 
-/// A terminal `RETURN` is ineligible — the page is the whole point of
-/// holding — so the statement keeps the ordinary path and its charge, which
-/// refuses under the shared budget.
+/// A terminal `RETURN` — ineligible for the batched driver, since its page
+/// is the whole point of collecting — still answers under the shared
+/// budget: ADR-0660's `CREATE` barrier holds one batch of the load at a
+/// time and the `RETURN` pages the stream, so the answer's size is the
+/// record count, not the input's held width.
 #[test]
-fn a_terminal_return_keeps_the_holding_path() {
+fn a_terminal_return_answers_under_the_shared_budget() {
     let dir = tempfile::tempdir().unwrap();
     let (mut c, src) = seeded(dir.path());
-    assert_refused(&mut c, &src, &format!("{LOAD} RETURN row.src AS src"));
+    let result = c
+        .query_with_params(&format!("{LOAD} RETURN row.src AS src"), params(&src))
+        .expect("the paged tail answers under the shared budget");
+    assert_eq!(result.rows.len(), RECORDS as usize);
 }
 
-/// A `CREATE` whose label the read patterns also match is ineligible — a
-/// later batch's read must not see an earlier batch's write — so it keeps
-/// the ordinary path and refuses under the shared budget. The `CREATE`
-/// carries no property, so the canonical admission does not decline it
-/// first: the disjointness gate is what refuses it.
+/// A `CREATE` whose label the read patterns also match is ineligible for
+/// the batched driver — a later batch's read must not see an earlier
+/// batch's write — but the dispatch-level write barrier keeps the same
+/// isolation: the reads feeding it are blind to its in-flight writes, so
+/// the statement answers under the shared budget with exactly one created
+/// node per record (the seeded users plus the load's own).
 #[test]
-fn a_create_matching_the_read_label_keeps_the_holding_path() {
+fn a_create_matching_the_read_label_answers_once_per_record() {
     let dir = tempfile::tempdir().unwrap();
     let (mut c, src) = seeded(dir.path());
     let query = "LOAD CSV WITH HEADERS FROM $src AS row \
                  MATCH (a:User {id: row.src}) \
                  CREATE (:User)";
-    assert_refused(&mut c, &src, query);
+    assert_tail_creates(&mut c, &src, query, "User", USERS + RECORDS);
 }
 
 /// A `CREATE` whose label no read pattern names is admitted — the
@@ -163,7 +162,7 @@ fn a_create_matching_the_read_label_keeps_the_holding_path() {
 fn a_disjoint_label_create_is_admitted() {
     let dir = tempfile::tempdir().unwrap();
     let (mut c, src) = seeded(dir.path());
-    assert_admitted(
+    assert_tail_creates(
         &mut c,
         &src,
         "LOAD CSV WITH HEADERS FROM $src AS row \
@@ -180,7 +179,7 @@ fn a_disjoint_label_create_is_admitted() {
 fn a_zero_match_tail_is_admitted() {
     let dir = tempfile::tempdir().unwrap();
     let (mut c, src) = seeded(dir.path());
-    assert_admitted(
+    assert_tail_creates(
         &mut c,
         &src,
         "LOAD CSV WITH HEADERS FROM $src AS row CREATE (:Widget)",

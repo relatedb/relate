@@ -2,12 +2,12 @@
 # Remove a line when its fn is gone or streams; never add one without a reason.
 eval_walk/pattern.rs::collect_pattern_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/agg_fold/one_hop.rs::finish # projection/filter stage materializes its rows; to be replaced by streaming
-exec/aggregate/group.rs::aggregate_ex # projection/filter stage materializes its rows; to be replaced by streaming
 exec/aggregate/group.rs::finish # emits one row per group, bounded by the group map the aggregation already holds and charges
+exec/aggregate/group.rs::aggregate_ex # the aggregate landing's group rows, bounded by the group map the aggregation already holds and charges
 exec/batch.rs::try_scan_filter_batch # batch rung result handed back to the ladder; to be replaced by streaming (ADR-0555 follow-up)
 exec/call/conditional.rs::exec_conditional # projection/filter stage materializes its rows; to be replaced by streaming
-exec/call/in_transactions.rs::exec_call_in_transactions # projection/filter stage materializes its rows; to be replaced by streaming
 exec/call/mod.rs::call_subquery_row # projection/filter stage materializes its rows; to be replaced by streaming
+exec/call/feed.rs::exec_call_subquery # the CALL product's materializing form for a consumer it cannot be parked for: the feed spine's `materialize` charges the staged rows, mirroring `exec_load_csv`
 exec/load_csv.rs::exec_load_csv # projection/filter stage materializes its rows; to be replaced by streaming
 exec/catalog.rs::compose_catalog_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/catalog.rs::execute_catalog # projection/filter stage materializes its rows; to be replaced by streaming
@@ -19,6 +19,10 @@ exec/catalog.rs::visible_catalog # projection/filter stage materializes its rows
 exec/procedures/mod.rs::exec_call_clause # the dispatcher's CALL arm: the parked form streams (ADR-0555); the Ran rows are the resolution's charged materializing run
 exec/procedures/ontology.rs::exec_ontology_write_call # the ontology writes' materializing run: the driving rows passed through, the one pad row (the read variant composes its source and streams)
 exec/compose.rs::compose_into # the CALL composition's materializing form over the feed spine: the consumer that cannot fold holds these rows, and ADR-0463 charges them
+exec/feed.rs::drain # the held stream's one handoff to a not-yet-migrated clause arm (ADR-0660 incremental migration); gone once the arms are transformers
+exec/feed.rs::held_or_stopped # the stopped-stream handoff's one reshape: collects the stream's own already-held rows (charged where they were held) for drain, materialize and into_held — a stopped stream answers an empty Vec, never the stopped rows; no new container
+exec/hub_join.rs::hub_join_answer # the join's reduced answer rows — the clause arm's materializing landing (match_paths' own); the fan-out itself streams batch by batch, only the reduced output collects
+exec/feed.rs::into_vec # moves the batch's own already-bounded rows out to the one consumer that needs the Vec (the write barrier): no new container, no copy
 exec/catalog_schema.rs::catalog_alter_database # bounded catalog/admin/procedure result, not graph-sized
 exec/catalog_schema.rs::catalog_create_constraint # bounded catalog/admin/procedure result, not graph-sized
 exec/catalog_schema.rs::catalog_create_index # bounded catalog/admin/procedure result, not graph-sized
@@ -39,7 +43,6 @@ exec/clause_arms.rs::exec_delete # clause arm materializes its output rows; to b
 exec/clause_arms.rs::exec_merge # clause arm materializes its output rows; to be replaced by streaming
 exec/clause_arms.rs::exec_remove # clause arm materializes its output rows; to be replaced by streaming
 exec/clause_arms.rs::exec_set # clause arm materializes its output rows; to be replaced by streaming
-exec/clause_arms.rs::exec_unwind # clause arm materializes its output rows; to be replaced by streaming
 exec/count_stats.rs::count_only_stats_result # bounded count-only result, one row per statement
 exec/stats_short_circuit.rs::stats_short_circuit # the one dispatch seam over the three statistics short-circuits, bounded by their own results (count-only: one row; label-set groups: ADR-0589; index aggregates: the final page of the charged group table, ADR-0611)
 exec/index_aggregates.rs::index_aggregates_result # the final page of the grouped answer, bounded by the charged first-seen group table (ADR-0611); the fold arm is one row
@@ -49,11 +52,11 @@ exec/shortcut_common.rs::into_rows # the charged CountedGroups table's emission:
 exec/dispatch.rs::run_clauses # clause driver hands its driving table to the next clause; to be replaced by streaming
 exec/dispatch.rs::run_clauses_mode # clause driver hands its driving table to the next clause; to be replaced by streaming
 exec/dispatch.rs::run_generator_batches # batch-major generator driver (ADR-0641): its rows are the empty terminal result of a write statement, never input-proportional
+exec/dispatch.rs::project_clause # the projection driver hands the rows its one input produced to the held stream; the same materializing tail `project_rows` is allowlisted for, to be replaced by streaming
 exec/dispatch.rs::run_nested_clauses # clause driver hands its driving table to the next clause; to be replaced by streaming
 exec/dispatch.rs::run_nested_clauses_scoped # clause driver hands its driving table to the next clause; to be replaced by streaming
 exec/graph_type_schema.rs::alter_current_graph_type # bounded catalog/admin/procedure result, not graph-sized
 exec/graph_type_schema.rs::catalog_create_graph_type # bounded catalog/admin/procedure result, not graph-sized
-exec/hub_join.rs::try_hub_join # kernel rung result handed back to the ladder; to be replaced by streaming (ADR-0555 follow-up)
 exec/kernels/chain.rs::emit_rows # clause arm materializes its output rows; to be replaced by streaming
 exec/kernels/frontier_run.rs::try_frontier_rows # rung result handed back to the ladder, bounded by the rung's own breaker; returns FrontierRows, a ROW_VEC_CARRIERS wrapper; ADR-0555 follow-up
 exec/kernels/mod.rs::try_match_kernel # kernel rung result handed back to the ladder; to be replaced by streaming (ADR-0555 follow-up)
@@ -73,14 +76,15 @@ exec/post_merge.rs::finish_projection # projection/filter stage materializes its
 exec/project.rs::project_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/project.rs::project_classed # projection/filter stage materializes its rows; the pre-classed body carved out of the allowlisted project_rows, to be replaced by streaming
 exec/post_merge.rs::retain_distinct # projection/filter stage materializes its rows; to be replaced by streaming
-exec/search.rs::search_match_clause # clause arm materializes its output rows; to be replaced by streaming
+exec/search.rs::search_match_clause # emits each matched row into a folding consumer; the returned vector is the un-streamed clause's held form (ADR-0660)
 exec/search/deferred.rs::deferred_search_rows # clause arm materializes its output rows; to be replaced by streaming
 exec/search/direct.rs::direct_search_rows # clause arm materializes its output rows; to be replaced by streaming
 exec/feed.rs::held_rows # the materializing drain both the feed's own form and the CALL composition share; the ADR-0463 charge guards it
 exec/feed.rs::materialize # the feed spine's materializing form: the consumer that cannot fold holds these rows, and ADR-0463 charges them
+exec/feed.rs::into_held # the held stream's container read for the sink-projected feed: the sink's own rows, charged where they were built
 show_catalog.rs::function_catalog_rows # bounded catalog/admin/procedure result, not graph-sized
 show_catalog.rs::procedure_catalog_rows # bounded catalog/admin/procedure result, not graph-sized
 exec/top_k.rs::finish # returns the ordered window's own rows — at most `skip + limit`, the bounded top-k container itself (ADR-0555 §3)
-exec/post_merge.rs::finish # the landing sink: the window's bounded rows on the ordered-LIMIT shape, the retaining Vec otherwise
+exec/post_merge.rs::finish # the landing sink: the window's bounded rows on the ordered-LIMIT shape, the pass-through's answered page, the retaining Vec otherwise
 exec/post_merge.rs::adopt # the same landing's container method, the body of that one entry point
 exec/call/feed.rs::rows_for # the shared body's merged view of ONE outer row — bounded by the single body result (ADR-0555)

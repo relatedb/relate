@@ -17,18 +17,6 @@ use relate::{Database, OpenOptions, Value};
 /// five retained rows, impossible for the full input at the sizes below.
 const BUDGET: u64 = 16 << 20;
 
-fn bounded_db() -> relate::Connection {
-    let db = Database::open_with(
-        ":memory:",
-        OpenOptions {
-            concurrent_logical_workspace_limit: Some(BUDGET),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    db.connect().unwrap()
-}
-
 /// Assert that every spelling of a zero page answers nothing — the one
 /// spelling of the check both zero-page tests read.
 fn assert_limit_zero_answers_nothing(c: &mut relate::Connection, queries: &[&str]) {
@@ -62,8 +50,8 @@ fn top_five(conn: &mut relate::Connection, n: i64) -> Vec<Value> {
 /// stops parking the generator) puts the input back on the pool and fails
 /// this test with a `concurrent-logical-workspace-limit` refusal.
 #[test]
-fn unwind_streams_into_the_window_whatever_the_input_count() {
-    let mut c = bounded_db();
+fn an_unwind_feed_streams_into_the_window_whatever_the_input_count() {
+    let mut c = common::workspace_capped(BUDGET);
     assert_eq!(
         top_five(&mut c, 2_000_000),
         vec![
@@ -107,11 +95,9 @@ fn a_held_feed_reserves_once_for_the_window() {
     let mut c = db.connect().unwrap();
     // The walk's whole 30k-row output is held before the projection runs,
     // and the window reserves it once — crossing the 2 MiB pool.
-    let error =
-        common::err_text(c.query("MATCH (n:N) WITH n.a AS a ORDER BY a DESC LIMIT 5 RETURN a"));
-    assert!(
-        error.contains("concurrent-logical-workspace-limit"),
-        "the held feed must be reserved against the admission pool: {error}"
+    common::refused_workspace_limit(
+        &mut c,
+        "MATCH (n:N) WITH n.a AS a ORDER BY a DESC LIMIT 5 RETURN a",
     );
     // A held feed a sixth the size answers under the same pool, so the
     // refusal is the reservation's boundary, not the walk's own charge.
@@ -138,15 +124,10 @@ fn a_held_feed_reserves_once_for_the_window() {
 /// container is the only thing that can cross the cap.
 #[test]
 fn a_large_ordered_window_is_refused_without_a_workspace_ledger() {
-    let db = Database::open_with(
-        ":memory:",
-        OpenOptions {
-            expression_memory_limit: Some(1 << 20),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let mut c = db.connect().unwrap();
+    let mut c = common::connection_with(OpenOptions {
+        expression_memory_limit: Some(1 << 20),
+        ..Default::default()
+    });
     // Each projected row carries one ~128 KB list — every single
     // allocation stays under the cap, so the only quantity that can cross
     // it is the window's live total over fifty entries.
@@ -154,11 +135,7 @@ fn a_large_ordered_window_is_refused_without_a_workspace_ledger() {
              WITH i, range(1, 8000) AS pad \
              ORDER BY i DESC LIMIT 50 \
              RETURN i";
-    let error = common::err_text(c.query(q));
-    assert!(
-        error.contains("tried to build"),
-        "the window's live total must be charged to the per-allocation cap: {error}"
-    );
+    common::refused_expression_cap(&mut c, q);
 }
 
 /// The selection answers what a full sort answers: mixed ASC/DESC keys,
@@ -209,7 +186,7 @@ fn order_by_limit_zero_answers_nothing() {
 /// paging, which the answer alone cannot.
 #[test]
 fn a_limit_zero_costs_nothing_whatever_the_input() {
-    let mut c = bounded_db();
+    let mut c = common::workspace_capped(BUDGET);
     // Every spelling that can carry a zero page, including the `SKIP` forms
     // whose capacity arithmetic (`skip + 0`) would otherwise still be
     // positive and build a window.

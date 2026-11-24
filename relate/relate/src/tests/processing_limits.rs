@@ -256,10 +256,11 @@ fn wal_commit_workspace_refusal_happens_before_commit() {
 fn cached_peak_is_reserved_and_a_commit_misses() {
     // The sort's real peak sits above the admit ceiling and inside the
     // pool, so the first run finishes by spending the tail and the retry
-    // is refused at the door. The sorted rows carry their parked
-    // `ORDER BY` key beside the projected value, which is what lifts the
-    // peak above the ceiling.
-    let capacity = 272 * Q;
+    // is refused at the door. Two charges lift it there: the sorted rows
+    // carry their parked `ORDER BY` key beside the projected value, and
+    // the projection's materialized input is priced for the call beside
+    // them — the assertion below prints the peak the calibration lands on.
+    let capacity = 384 * Q;
     let ceiling = capacity - capacity / 8;
     let db = open_tokens(capacity);
     let mut conn = db.connect().unwrap();

@@ -14,9 +14,9 @@ use crate::eval::{eval, is_agg_expr};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
+use super::super::feed::RowStream;
 use super::super::order::{park_order_keys, OrderKeys};
 use super::super::scope::visible_keys;
-use super::super::RowFeed;
 use super::bill::{GroupBill, InputBill};
 use super::eval::{agg_eval, AggScope};
 use super::key::KeyTuple;
@@ -233,6 +233,23 @@ impl<'a> Aggregation<'a> {
         self.bill.total()
     }
 
+    /// Fold the batch stream into the groups — the aggregation's
+    /// batch-consuming entry (ADR-0660): it pulls one bounded batch at a
+    /// time and holds only the group table, charged as each row lands
+    /// (ADR-0463). Nothing of the input is retained.
+    pub(crate) fn consume(
+        &mut self,
+        graph: &ExecGraph<'_>,
+        stream: &mut RowStream<'_>,
+    ) -> Result<()> {
+        while let Some(batch) = stream.next_batch()? {
+            for row in batch {
+                self.offer(graph, row)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Fold one input row into its group.
     pub(crate) fn offer(&mut self, graph: &ExecGraph<'_>, row: Row) -> Result<()> {
         let Self {
@@ -386,18 +403,23 @@ impl<'a> Aggregation<'a> {
     }
 }
 
-/// The loop over [`Aggregation`]: open, offer every row of the feed, finish.
+/// The loop over [`Aggregation`]: open over the stream's own shape, fold its
+/// batches, and answer the group rows.
 pub(crate) fn aggregate_ex<'a>(
     graph: &ExecGraph<'_>,
-    feed: RowFeed<'_>,
+    mut stream: RowStream<'a>,
     items: &'a [Projection],
     group_by: Option<&'a [Expr]>,
     params: &'a BTreeMap<String, Value>,
     subclauses: &GroupSubclauses<'a>,
 ) -> Result<Vec<Row>> {
+    // The shape (a `*` key's expansion, the held input vector's bill) is
+    // read from the rows already in hand before the walk starts; a produced
+    // source has none, and a `*` key never reaches it (a star aggregation
+    // takes no folded feed).
     let mut aggregation =
-        Aggregation::open(graph, feed.probe(), items, group_by, params, subclauses)?;
-    feed.try_for_each(|row| aggregation.offer(graph, row))?;
+        Aggregation::open(graph, stream.probe(), items, group_by, params, subclauses)?;
+    aggregation.consume(graph, &mut stream)?;
     aggregation.finish(graph)
 }
 

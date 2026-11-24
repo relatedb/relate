@@ -368,6 +368,16 @@ pub struct ReadAdmission<'a> {
     pub ontology_document: Option<&'a str>,
 }
 
+/// The write boundary a batch of writes closes with, in order: the graph
+/// type's property default values, then the constraint validation. One
+/// home beside the write pipeline — the statement boundary
+/// ([`execute`]) and the `CALL { … } IN TRANSACTIONS` batch attempt both
+/// call it, so the two cannot drift.
+pub(crate) fn close_write_boundary(graph: &ExecGraph<'_>) -> Result<()> {
+    property_defaults::apply_property_defaults(graph)?;
+    validate_constraints(graph)
+}
+
 /// Execute a write-capable plan, then validate the constraints against what
 /// it wrote (ADR-0172). Each call starts a fresh CSV memo even when `graph`
 /// is reused across statements.
@@ -379,8 +389,7 @@ pub fn execute(graph: &ExecGraph<'_>, request: &ExecRequest<'_>) -> Result<Query
     // the post-statement constraint validation sees the defaulted
     // properties like any other write. They are writes, so they land
     // before the effect's applied fact is read (below).
-    property_defaults::apply_property_defaults(graph)?;
-    validate_constraints(graph)?;
+    close_write_boundary(graph)?;
     finish_statement(result, graph, attempted)
 }
 
@@ -628,53 +637,32 @@ pub(crate) fn materialize_rows_strict(
     materialize_rows_with(rows, columns, Missing::Error)
 }
 
-/// The rows a projection consumes: held in a vector, or generated one at a
-/// time by a generator clause the projection is fused with — an `UNWIND`
-/// or a `LOAD CSV` (ADR-0555). The aggregation's offer walk
-/// (`aggregate_ex`) consumes either row-bearing form, so a fused generator
-/// never materializes the rows it feeds; a `Folded` feed holds rows its
-/// producer already folded, so its consumer finishes it (`aggregate_rows`)
-/// instead of walking it. The projection pipeline's input shape lives
-/// here — the seam the dispatcher (which builds a feed), the generator
-/// producers (which generate one) and the projection and aggregation
-/// consumers (which read one) all already reach, so no producer module
-/// carries the consumer-shared type; the feed machinery itself lives in
-/// [`feed`], beside this seam.
+/// The rows a projection consumes: the one inter-clause stream — a held
+/// container or a generator clause fused into the projection (ADR-0660) —
+/// or the aggregation a producer already folded the rows into. The stream
+/// is the only row-bearing form; a `Folded` feed holds no rows, so its
+/// consumer finishes it (`aggregate_rows`) instead of walking it. The
+/// projection pipeline's input shape lives here — the seam the dispatcher
+/// (which builds one), the generator producers (which feed one) and the
+/// projection and aggregation consumers (which read one) all already
+/// reach; the stream machinery itself lives in [`feed`], beside this seam.
 pub(crate) enum RowFeed<'a> {
-    Held(Vec<Row>),
-    /// A generator clause the projection is fused with — an `UNWIND` or a
-    /// `LOAD CSV` (ADR-0555): rows pulled one at a time over the
-    /// producer's [`FeedSource`](feed::FeedSource), never collected.
-    Generated(feed::StreamedFeed<'a>),
+    /// The one inter-clause stream: a held container, or a generator the
+    /// projection is fused with.
+    Held(feed::RowStream<'a>),
     /// Rows already folded into an [`aggregate::Aggregation`] by the
     /// producer: the projection only finishes it. Built by the streaming
     /// match sink.
     Folded(Box<aggregate::Aggregation<'a>>),
 }
 
-impl RowFeed<'_> {
+impl<'a> RowFeed<'a> {
     /// The rows already in hand, for the decisions that read the row shape
-    /// before the walk starts. A generated feed has none yet.
+    /// before the walk starts. A generated stream has none yet.
     pub(crate) fn probe(&self) -> &[Row] {
         match self {
-            RowFeed::Held(rows) => rows,
-            RowFeed::Generated(_) | RowFeed::Folded(_) => &[],
-        }
-    }
-
-    /// The feed's row walk: every row of the row-bearing forms, one at a
-    /// time and fallibly, folded through `offer`. A `Folded` feed offers
-    /// no rows (its producer already folded them): its consumer finishes
-    /// that variant without ever reaching this walk, so a folded feed
-    /// arriving here is an engine wiring error, reported loudly rather
-    /// than silently presented as an empty input.
-    pub(crate) fn try_for_each(self, mut offer: impl FnMut(Row) -> Result<()>) -> Result<()> {
-        match self {
-            RowFeed::Held(rows) => rows.into_iter().try_for_each(offer),
-            RowFeed::Generated(mut feed) => feed.try_for_each(|row| offer(row?)),
-            RowFeed::Folded(_) => Err(Error::internal(
-                "a folded feed is finished by its consumer, never re-offered",
-            )),
+            RowFeed::Held(stream) => stream.probe(),
+            RowFeed::Folded(_) => &[],
         }
     }
 }
@@ -869,6 +857,8 @@ mod aggregate_tests;
 mod batch_limit_tests;
 #[cfg(test)]
 mod batch_tests;
+#[cfg(test)]
+mod breaker_stream_tests;
 #[cfg(test)]
 mod chunk_tests;
 #[cfg(test)]

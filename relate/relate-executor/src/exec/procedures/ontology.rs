@@ -475,7 +475,7 @@ mod tests {
             call,
             super::super::CallPipeline {
                 profiled: false,
-                folds: false,
+                parks: false,
                 terminal: false,
             },
             Vec::new,

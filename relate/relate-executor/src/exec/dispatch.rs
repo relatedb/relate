@@ -13,30 +13,29 @@ use crate::metrics::PlanMetricsSite;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
+use super::aggregate::Aggregation;
 use super::batch_tail::{generator_seeded_tail, BatchTail, BATCH_ROWS};
 use super::call::{
-    call_subquery_feed, concluding_part_result, exec_call_in_transactions, exec_conditional,
-    query_writes, SubquerySpec,
+    call_subquery_feed, concluding_part_result, exec_call_in_transactions, exec_call_subquery,
+    exec_conditional, query_writes, SubquerySpec,
 };
 use super::catalog::{catalog_result, execute_catalog};
 use super::catalog_show::show_indexes_result;
 use super::classification::ProjectionClass;
-use super::clause_arms::{
-    exec_create, exec_delete, exec_merge, exec_remove, exec_set, exec_unwind,
-};
+use super::clause_arms::{create_from_stream, exec_delete, exec_merge, exec_remove, exec_set};
 use super::ddl::{exec_create_index, exec_drop_index};
-use super::feed::{park_generator, PendingFeed, StreamedFeed};
+use super::feed::{RowStream, StreamedFeed};
 use super::foreach::exec_foreach;
 use super::load_csv::{exec_load_csv, load_csv_feed, LoadCsvSpec};
 use super::match_arm::exec_match_arm;
 use super::match_clause::LadderFacts;
 use super::procedures::{exec_call_clause, CallClauseOut, CallPipeline, CallSpec};
-use super::profile_tick::{profile_tick, ProfileTick};
-use super::project::{project_clause, return_result, unwind_streams_into, RowSource};
+use super::profile_tick::{finish_parked_feed, profile_tick, ProfileTick};
+use super::project::{project_rows, return_result, ProjectionInput, RowSource};
 use super::scope::{carry_scope_bindings, star_scope_names, ProjectionFields};
 use super::stats_short_circuit::stats_short_circuit;
 use super::unwind::unwind_feed;
-use super::QueryResult;
+use super::{QueryResult, RowFeed};
 
 /// Read/write mode for the unified clause dispatcher. Both clause loops —
 /// the write-capable [`run_clauses`] and the read-only
@@ -130,7 +129,7 @@ fn run_clauses_mode(
     mode: ClauseMode,
     clauses: &[Clause],
     params: &BTreeMap<String, Value>,
-    mut rows: Vec<Row>,
+    rows: Vec<Row>,
     qctx: QueryCtx<'_>,
     profile: Option<PlanMetricsSite<'_>>,
     scope: Option<&Row>,
@@ -185,24 +184,30 @@ fn run_clauses_mode(
     // so a user alias can never forge this state; the dispatcher is its one
     // authority.
     let mut rows_source = RowSource::Bindings;
-    // An `UNWIND` whose follower folds rows as they arrive is not run as a
-    // clause of its own: its generator is parked here and the consumer pulls
-    // rows from it, so the rows are never held. The followers that fold are
-    // the ones `unwind_streams_into` admits — the aggregation, and a clause
-    // that may take the ordered window; a consumer that cannot fold says so
-    // by not being parked. The parked value carries the generator with its
-    // own statistics
-    // and PROFILE position, so each streamed generator (`UNWIND`, `LOAD
-    // CSV`) reports its own facts once the consumer has drained it.
-    // The one feed slot the next projection consumes — a parked generator
-    // (an `UNWIND` or a `LOAD CSV` fused into it) or the aggregation a
-    // streamed `MATCH` folded its rows into, never both: the slot is one
-    // value, so "one feed per projection" is the type's own fact. The
-    // `MATCH` consumer's `ORDER BY` plan is borrowed for as long as the
-    // fold lives, so the slot sits after the cell that holds it (dropped
-    // last): one streamed feed per part, any later one takes the held path.
+    // A generator clause (`UNWIND`, `LOAD CSV`, `CALL { … }`) whose follower
+    // is a `WITH`/`RETURN` is not run as a clause of its own: its generator
+    // becomes this loop's one stream slot, and the projection pulls rows
+    // from it, so the rows are never held. Every projection is such a
+    // consumer now — its own classification decides fold against collect —
+    // so the dispatcher reads only whether a projection follows, never
+    // which shape folds. The stream carries the generator's own statistics
+    // and PROFILE position, so each streamed generator reports its own facts
+    // once the consumer has drained it. A generator followed by any other
+    // clause emits its rows into the inter-clause stream instead.
+    //
+    // The one value the next projection can also consume is the aggregation
+    // a streamed `MATCH` already folded its rows into: not a row stream, so
+    // it has its own slot, filled only when the match sink answers with a
+    // fold. The `MATCH` consumer's `ORDER BY` plan is borrowed for as long
+    // as the fold lives, so the slot sits after the cell that holds it
+    // (dropped last).
     let fold_class: OnceCell<ProjectionClass<'_>> = OnceCell::new();
-    let mut pending: Option<PendingFeed<'_>> = None;
+    let mut folded: Option<Aggregation<'_>> = None;
+    // The one input the clause arms are threaded with (ADR-0660). The held
+    // container is the common producer form: each arm drains it through the
+    // batch protocol and hands its output back as the next stream — or
+    // parks a fused generator in this same slot.
+    let mut stream = RowStream::held(rows);
     while clause_i < clauses.len() {
         let i = clause_i;
         let clause = &clauses[i];
@@ -241,9 +246,9 @@ fn run_clauses_mode(
                 return Err(Error::semantic(reason));
             }
         }
-        match clause {
+        stream = match clause {
             Clause::Catalog(command) => {
-                rows = execute_catalog(graph, command, rows, params, qctx)?;
+                let rows = execute_catalog(graph, command, stream.drain()?, params, qctx)?;
                 // Only row-producing catalog commands (the SHOW family and
                 // TERMINATE TRANSACTIONS) project their rows — `catalog_result`
                 // returns `None` for schema/admin DDL, leaving `last_result`
@@ -252,9 +257,22 @@ fn run_clauses_mode(
                 if i + 1 == clauses.len() {
                     last_result = catalog_result(graph, &rows, command);
                 }
+                RowStream::held(rows)
             }
             Clause::Create { patterns } => {
-                rows = exec_create(graph, rows, patterns, params)?;
+                // The input policy (whole-input hold vs the barrier) lives
+                // in the create arm, beside the hoisting that needs it; the
+                // arm's own stream reports the clause's rows.
+                defer_produced(
+                    create_from_stream(
+                        graph,
+                        stream,
+                        patterns,
+                        params,
+                        profile.map(|site| (site, i)),
+                    )?,
+                    &mut metrics_tick,
+                )
             }
             Clause::CreateIndex {
                 name,
@@ -263,12 +281,18 @@ fn run_clauses_mode(
                 property,
             } => {
                 exec_create_index(graph, name.as_deref(), *if_not_exists, label, property)?;
+                stream
             }
             Clause::DropIndex { if_exists, target } => {
                 exec_drop_index(graph, *if_exists, target)?;
+                stream
             }
             Clause::ShowIndexes => {
                 last_result = Some(show_indexes_result(graph)?);
+                // A terminal that answers the part directly walks no rows:
+                // the input stream stops here.
+                stream.stop()?;
+                stream
             }
             Clause::Finish => {
                 last_result = Some(QueryResult::intermediate(
@@ -276,45 +300,54 @@ fn run_clauses_mode(
                     Vec::new(),
                     QueryStats::default(),
                 ));
+                stream.stop()?;
+                stream
             }
             // The same parking as a streamed `UNWIND`: a `LOAD CSV` whose
-            // follower folds rows as they arrive (the aggregation, or a
-            // clause that may take the ordered window — `unwind_streams_into`
-            // admits exactly those) has its generator parked and the consumer
-            // pulls one row per record, so neither the records nor the rows
-            // are ever held (ADR-0555).
+            // follower is a projection has its generator parked and the
+            // consumer pulls one row per record, so neither the records nor
+            // the rows are ever held (ADR-0555).
             Clause::LoadCsv {
                 with_headers,
                 url,
                 variable,
                 field_terminator,
-            } => {
+            } if projection_follows(clauses.get(i + 1)) => {
                 let spec = LoadCsvSpec {
                     with_headers: *with_headers,
                     url,
                     variable,
                     field_terminator: field_terminator.as_deref(),
                 };
-                if unwind_streams_into(clauses.get(i + 1)) {
-                    park_and_defer(
-                        load_csv_feed(ctx, std::mem::take(&mut rows), spec, profile.is_some())?,
-                        profile,
-                        i,
-                        &mut pending,
-                        &mut metrics_tick,
-                    );
-                } else {
-                    rows = exec_load_csv(ctx, rows, spec)?;
-                }
+                park_and_defer(
+                    load_csv_feed(ctx, stream.drain()?, spec, profile.is_some())?,
+                    profile.map(|site| (site, i)),
+                    &mut metrics_tick,
+                )
             }
+            Clause::LoadCsv {
+                with_headers,
+                url,
+                variable,
+                field_terminator,
+            } => RowStream::held(exec_load_csv(
+                ctx,
+                stream.drain()?,
+                LoadCsvSpec {
+                    with_headers: *with_headers,
+                    url,
+                    variable,
+                    field_terminator: field_terminator.as_deref(),
+                },
+            )?),
             // The `CALL { … }` product as the feed spine's one driver
             // (ADR-0555): `IN TRANSACTIONS` owns its batching and commits
-            // and stays materializing; otherwise a follower that folds
-            // rows as they arrive (`unwind_streams_into` admits exactly
-            // those) parks the product — the consumer pulls one merged row
-            // at a time, so peak memory is one outer row's body result,
-            // not the input count times it — and every other consumer
-            // holds it charged (ADR-0463).
+            // and emits its batches as its own stream (ADR-0660's `retain`
+            // disposition); otherwise a projection follower
+            // parks the product — the consumer pulls one merged row at a
+            // time, so peak memory is one outer row's body result, not the
+            // input count times it — and every other consumer holds it
+            // charged (ADR-0463).
             Clause::CallSubquery {
                 query,
                 optional,
@@ -327,112 +360,161 @@ fn run_clauses_mode(
                     scope,
                 };
                 if let Some(tx) = in_transactions.as_ref() {
-                    rows = exec_call_in_transactions(graph, rows, spec, tx, params, qctx)?;
+                    let out = exec_call_in_transactions(
+                        graph,
+                        stream,
+                        spec,
+                        tx,
+                        params,
+                        qctx,
+                        profile.map(|site| (site, i)),
+                    )?;
+                    // The stream reports the call's own PROFILE record
+                    // once its consumer drains or stops it, never a zero
+                    // probe at this tail.
+                    defer_produced(out, &mut metrics_tick)
                 } else if call_product_parks(clauses.get(i + 1), query) {
                     park_and_defer(
-                        call_subquery_feed(
-                            ctx,
-                            qctx,
-                            std::mem::take(&mut rows),
-                            spec,
-                            profile.is_some(),
-                        )?,
-                        profile,
-                        i,
-                        &mut pending,
+                        call_subquery_feed(ctx, qctx, stream.drain()?, spec, profile.is_some())?,
+                        profile.map(|site| (site, i)),
                         &mut metrics_tick,
-                    );
+                    )
                 } else {
-                    rows = call_subquery_feed(ctx, qctx, rows, spec, profile.is_some())?
-                        .materialize()?;
+                    RowStream::held(exec_call_subquery(ctx, qctx, stream.drain()?, spec)?)
                 }
             }
             Clause::Conditional {
                 branches,
                 else_query,
             } => {
-                let (new_rows, result) =
-                    exec_conditional(graph, rows, branches, else_query.as_deref(), params, qctx)?;
-                rows = new_rows;
+                let (new_rows, result) = exec_conditional(
+                    graph,
+                    stream.drain()?,
+                    branches,
+                    else_query.as_deref(),
+                    params,
+                    qctx,
+                )?;
                 last_result = Some(result);
+                RowStream::held(new_rows)
             }
             Clause::Foreach {
                 variable,
                 list,
                 clauses,
             } => {
-                exec_foreach(graph, &rows, variable, list, clauses, params, qctx)?;
+                // ADR-0660's `pass` disposition: the side effects apply one
+                // batch at a time and the batch's rows pass through
+                // unchanged, so the arm never holds the whole input.
+                write_and_defer(
+                    stream,
+                    profile.map(|site| (site, i)),
+                    |rows| {
+                        exec_foreach(graph, &rows, variable, list, clauses, params, qctx)?;
+                        Ok(rows)
+                    },
+                    &mut metrics_tick,
+                )?
             }
-            Clause::Use { .. } => {}
+            Clause::Use { .. } => stream,
             Clause::Match { .. } => {
                 let mut arm = exec_match_arm(
                     ctx,
-                    std::mem::take(&mut rows),
+                    stream.drain()?,
                     clauses,
                     i,
                     &fold_class,
                     scope,
                     profile,
                 )?;
-                rows = arm.rows;
                 last_result = arm.last_result.or(last_result);
                 skip = arm.skip;
                 clause_ladder = arm.ladder;
-                if let Some(fold) = arm.pending_fold.take() {
-                    // A parked generator is always consumed by the very
-                    // next clause (a `WITH`/`RETURN`, the only shapes the
-                    // park admits), so the slot is empty at a `MATCH`:
-                    // a fold meeting an occupied slot is an engine wiring
-                    // error, never a silent precedence.
-                    if pending.is_some() {
+                if let Some(fold) = arm.folded.take() {
+                    // A folded MATCH is always consumed by the very next
+                    // clause (a `WITH`/`RETURN`, the only shapes a fold
+                    // lands), so the slot is empty here: a fold meeting an
+                    // occupied slot is an engine wiring error, never a
+                    // silent precedence.
+                    if folded.is_some() {
                         return Err(Error::internal(
-                            "a folded MATCH met a parked feed that was never consumed",
+                            "a folded MATCH met a feed that was never consumed",
                         ));
                     }
-                    pending = Some(PendingFeed::Folded(Box::new(fold)));
+                    folded = Some(fold);
                 }
                 rows_source = arm.rows_source;
                 if let Some(tick) = metrics_tick.as_mut() {
                     tick.streamed = arm.streamed;
                 }
+                RowStream::held(arm.rows)
             }
             Clause::Merge {
                 pattern,
                 on_create,
                 on_match,
-            } => {
-                rows = exec_merge(graph, rows, pattern, on_create, on_match, params)?;
-            }
+            } => write_and_defer(
+                stream,
+                profile.map(|site| (site, i)),
+                |rows| exec_merge(graph, rows, pattern, on_create, on_match, params),
+                &mut metrics_tick,
+            )?,
             Clause::Delete {
                 detach,
                 expressions,
             } => {
-                rows = exec_delete(graph, rows, *detach, expressions, params)?;
+                // DELETE's rels-before-nodes is a whole-clause invariant: a
+                // row's relationship delete may be the one detaching a node
+                // a later row deletes (`DELETE r0, n`), so the arm holds its
+                // driving input and resolves every row's targets before the
+                // first node delete — one delete_values pass, never a
+                // per-batch split (ADR-0676; the spec corpus's Set pin). The
+                // held stream records through the shared clause-exit tail,
+                // the `Match` arm's shape.
+                RowStream::held(exec_delete(
+                    graph,
+                    stream.drain()?,
+                    *detach,
+                    expressions,
+                    params,
+                )?)
             }
-            Clause::Set { items } => {
-                rows = exec_set(graph, rows, items, params)?;
-            }
-            Clause::Remove { items } => {
-                rows = exec_remove(graph, rows, items, params)?;
-            }
-            Clause::Unwind { expression, alias } if unwind_streams_into(clauses.get(i + 1)) => {
-                park_and_defer(
-                    unwind_feed(
-                        ctx,
-                        &clauses[i + 1..],
-                        std::mem::take(&mut rows),
-                        expression,
-                        alias,
-                        profile.is_some(),
-                    ),
-                    profile,
-                    i,
-                    &mut pending,
-                    &mut metrics_tick,
-                );
-            }
+            Clause::Set { items } => write_and_defer(
+                stream,
+                profile.map(|site| (site, i)),
+                |rows| exec_set(graph, rows, items, params),
+                &mut metrics_tick,
+            )?,
+            Clause::Remove { items } => write_and_defer(
+                stream,
+                profile.map(|site| (site, i)),
+                |rows| exec_remove(graph, rows, items, params),
+                &mut metrics_tick,
+            )?,
             Clause::Unwind { expression, alias } => {
-                rows = exec_unwind(ctx, &clauses[i + 1..], rows, expression, alias)?;
+                let feed = unwind_feed(
+                    ctx,
+                    &clauses[i + 1..],
+                    stream.drain()?,
+                    expression,
+                    alias,
+                    profile.is_some(),
+                );
+                if projection_follows(clauses.get(i + 1)) {
+                    park_and_defer(feed, profile.map(|site| (site, i)), &mut metrics_tick)
+                } else {
+                    // The expanding form: a follower that is not a projection
+                    // pulls the generator's rows as it consumes them
+                    // (ADR-0660's `expand` disposition) instead of holding the
+                    // expansion. The stream carries the generator's facts, so
+                    // the clause reports the rows it produced when the
+                    // follower drains it — the tail must not record its zero
+                    // probe in the meantime.
+                    defer_produced(
+                        RowStream::expanding(feed, profile.map(|site| (site, i))),
+                        &mut metrics_tick,
+                    )
+                }
             }
             Clause::Call {
                 name,
@@ -446,14 +528,14 @@ fn run_clauses_mode(
                 // lives in the `procedures` directory module
                 // (`procedures::exec_call_clause`, beside `resolve_call`
                 // and the classification it reads; stellar round 2,
-                // F-2-2). A follower that folds rows as they arrive — the
-                // same `unwind_streams_into` admission `UNWIND` and `LOAD
-                // CSV` park by — keeps the call's generator instead of its
-                // rows: the composed input-rows × procedure-rows product
-                // is never held (ADR-0555).
+                // F-2-2). A projection follower — the same
+                // `projection_follows` guard `UNWIND` and `LOAD CSV` park
+                // by — keeps the call's generator instead of its rows: the
+                // composed input-rows × procedure-rows product is never
+                // held (ADR-0555).
                 match exec_call_clause(
                     ctx,
-                    std::mem::take(&mut rows),
+                    stream.drain()?,
                     CallSpec {
                         name,
                         source: args,
@@ -463,7 +545,7 @@ fn run_clauses_mode(
                     },
                     CallPipeline {
                         profiled: profile.is_some(),
-                        folds: unwind_streams_into(clauses.get(i + 1)),
+                        parks: projection_follows(clauses.get(i + 1)),
                         terminal: i + 1 == clauses.len(),
                     },
                     || star_scope_names(&clauses[..i]),
@@ -472,20 +554,20 @@ fn run_clauses_mode(
                         rows: call_rows,
                         result: call_result,
                     } => {
-                        rows = call_rows;
                         last_result = call_result.or(last_result);
+                        RowStream::held(call_rows)
                     }
                     CallClauseOut::Parked(feed) => {
-                        park_and_defer(feed, profile, i, &mut pending, &mut metrics_tick);
+                        park_and_defer(feed, profile.map(|site| (site, i)), &mut metrics_tick)
                     }
                 }
             }
             Clause::With { .. } => {
                 let spec = ProjectionFields::of_projection(clause)?;
-                project_clause(
+                let mut rows = project_clause(
                     ctx,
-                    &mut pending,
-                    &mut rows,
+                    stream,
+                    &mut folded,
                     &spec,
                     false,
                     rows_from,
@@ -498,13 +580,14 @@ fn run_clauses_mode(
                 if let Some(scope) = scope {
                     carry_scope_bindings(&mut rows, scope);
                 }
+                RowStream::held(rows)
             }
             Clause::Return { items, .. } => {
                 let spec = ProjectionFields::of_projection(clause)?;
-                project_clause(
+                let mut rows = project_clause(
                     ctx,
-                    &mut pending,
-                    &mut rows,
+                    stream,
+                    &mut folded,
                     &spec,
                     true,
                     rows_from,
@@ -520,8 +603,9 @@ fn run_clauses_mode(
                     tick.record(i, &rows, clause_ladder);
                 }
                 last_result = Some(return_result(graph, items, clauses, &mut rows)?);
+                RowStream::held(rows)
             }
-        }
+        };
         // ADR-0344 phase 2 + metric fields + ADR-0463: report one clause
         // operator's metrics — rows produced, store accesses and their read
         // kinds, phase times, expression bytes, row-materialization bytes,
@@ -531,11 +615,11 @@ fn run_clauses_mode(
         // read, the counter reads, and the row-size walk happen only on the
         // PROFILE path.
         if let Some(tick) = metrics_tick {
-            tick.record(i, &rows, clause_ladder);
+            tick.record(i, stream.probe(), clause_ladder);
         }
         clause_i = i + 1 + skip;
     }
-    Ok((rows, last_result))
+    Ok((stream.drain()?, last_result))
 }
 
 /// The ADR-0641 batch-major driver: pull the generator's records in bounded
@@ -578,29 +662,108 @@ fn run_generator_batches(
     Ok((Vec::new(), None))
 }
 
-/// The `CALL { … }` product's park admission — the one named predicate
-/// every sibling producer parks on (`unwind_streams_into` for the folding
-/// consumer), plus this clause's own fact: a writing body never parks
-/// (see [`query_writes`]), so its semantics never depend on when the
-/// consuming projection evaluates its items.
-fn call_product_parks(next: Option<&Clause>, query: &relate_ir::Query) -> bool {
-    unwind_streams_into(next) && !query_writes(query)
+/// Run one `WITH`/`RETURN` projection over the clause loop's one input —
+/// the stream slot, or the `MATCH`-folded aggregation — and close a fused
+/// generator it drained. The projection's other input, the `MATCH`-folded
+/// aggregation, is the one value that is not a row stream; it is never
+/// present beside a non-empty stream.
+#[allow(clippy::too_many_arguments)]
+fn project_clause<'a>(
+    ctx: ExecCtx<'a>,
+    stream: RowStream<'a>,
+    folded: &mut Option<Aggregation<'a>>,
+    spec: &ProjectionFields<'a>,
+    inflate: bool,
+    rows_from: RowSource,
+    scope: Option<&Row>,
+    tick: &mut Option<ProfileTick<'a>>,
+) -> Result<Vec<Row>> {
+    // The fused generator's facts must outlive the stream the projection
+    // consumes: the projection's own record excludes the generator's time,
+    // and the generator's clause record closes here.
+    let facts = stream.facts();
+    let input = match folded.take() {
+        Some(aggregation) => {
+            // The fold consumed every input row, so the stream beside it is
+            // the empty held container. Any other form is an engine wiring
+            // error that would drop rows silently.
+            if !stream.is_empty_held() {
+                return Err(Error::internal("a folded MATCH met a non-empty feed"));
+            }
+            ProjectionInput::Feed(RowFeed::Folded(Box::new(aggregation)))
+        }
+        // A pre-projected sink owns its rows, so it is taken off the stream;
+        // the one refusal of a produced stream lives in `into_held`.
+        None if matches!(rows_from, RowSource::SinkProjected) => {
+            ProjectionInput::SinkProjected(stream.into_held()?)
+        }
+        None => ProjectionInput::Feed(RowFeed::Held(stream)),
+    };
+    let rows = project_rows(ctx, input, spec, inflate, scope)?;
+    finish_parked_feed(facts, tick.as_mut());
+    Ok(rows)
 }
 
-/// Park a clause's generator for the folding consumer that follows and
-/// close its tick — the one epilogue every parking arm (LOAD CSV, UNWIND,
-/// CALL) runs: no arm ran, the consumer's own tick covers the work, and
-/// the parked clause reports its facts when that tick closes (the taken
-/// tick is what keeps the shared tail from recording it again).
+/// Whether the clause after a generator is the `WITH`/`RETURN` that consumes
+/// its feed (ADR-0660): every projection takes a generated feed, deciding
+/// fold against collect from its own resolved bounds, so the dispatcher
+/// reads only whether a projection follows — never which shape folds. The
+/// one predicate every generator arm (`UNWIND`, `LOAD CSV`, `CALL { … }`)
+/// parks by.
+fn projection_follows(next: Option<&Clause>) -> bool {
+    next.and_then(ProjectionFields::from_clause).is_some()
+}
+
+/// The `CALL { … }` product's park admission — [`projection_follows`],
+/// plus this clause's own fact: a writing body never parks (see
+/// [`query_writes`]), so its semantics never depend on when the consuming
+/// projection evaluates its items.
+fn call_product_parks(next: Option<&Clause>, query: &relate_ir::Query) -> bool {
+    projection_follows(next) && !query_writes(query)
+}
+
+/// Park a clause's generator in the loop's one stream slot for the
+/// projection that follows, and close its tick — the one epilogue every
+/// parking arm (LOAD CSV, UNWIND, CALL) runs: no arm ran, the consumer's
+/// own tick covers the work, and the parked clause reports its facts when
+/// that tick closes (the taken tick is what keeps the shared tail from
+/// recording it again).
 fn park_and_defer<'a>(
     feed: StreamedFeed<'a>,
-    profile: Option<PlanMetricsSite<'a>>,
-    index: usize,
-    pending: &mut Option<PendingFeed<'a>>,
+    record: Option<(PlanMetricsSite<'a>, usize)>,
     metrics_tick: &mut Option<ProfileTick<'a>>,
-) {
-    park_generator(feed, profile.map(|site| (site, index)), pending);
+) -> RowStream<'a> {
+    defer_produced(RowStream::profiled(feed, record), metrics_tick)
+}
+
+/// The write family's counterpart to the parking form: a write clause's
+/// rows cross the write barrier (ADR-0660's `pass` disposition — one batch
+/// written as it arrives, its rows handed to the consumer as the barrier's
+/// own stream), and the produced stream defers its PROFILE facts like
+/// every produced form. The one spelling of the two-layer handoff the
+/// write arms share.
+fn write_and_defer<'a>(
+    stream: RowStream<'a>,
+    record: Option<(PlanMetricsSite<'a>, usize)>,
+    write: impl FnMut(Vec<Row>) -> Result<Vec<Row>> + 'a,
+    metrics_tick: &mut Option<ProfileTick<'a>>,
+) -> Result<RowStream<'a>> {
+    Ok(defer_produced(
+        stream.write_barrier(write, record)?,
+        metrics_tick,
+    ))
+}
+
+/// The produced-stream epilogue: a stream that carries its own PROFILE
+/// facts reports the clause when its consumer drains or stops it, so the
+/// arm hands over its tick and the shared tail never records the empty
+/// probe. The one spelling of the deferral, beside the parking form.
+fn defer_produced<'a>(
+    stream: RowStream<'a>,
+    metrics_tick: &mut Option<ProfileTick<'a>>,
+) -> RowStream<'a> {
     drop(metrics_tick.take());
+    stream
 }
 
 pub(crate) fn execute_part_read_seeded(

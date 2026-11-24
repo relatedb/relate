@@ -81,6 +81,13 @@ pub(crate) fn retained_rows_bytes(count: usize, slots_per_row: usize) -> u64 {
     )
 }
 
+/// The retained figure of a held row slice — the count's bytes at the
+/// first row's width — the one width derivation every batch charge reads:
+/// an empty slice is zero, never a fabricated width.
+pub(crate) fn retained_rows_of(rows: &[Row]) -> u64 {
+    retained_rows_bytes(rows.len(), rows.first().map_or(0, Row::len))
+}
+
 /// The bytes one row adds to a container that holds it in a row vector:
 /// [`row_landing_bytes`] plus the row's slot in that vector. The one
 /// spelling of the whole-row charge — the retained total's `add_row` and

@@ -175,7 +175,8 @@ impl FeedSource for LoadCsvSource<'_> {
 }
 
 /// The clause's materializing form: the feed spine's `materialize` for a
-/// consumer that cannot fold rows as they arrive (`exec_unwind`'s shape).
+/// consumer that cannot fold rows as they arrive (the dispatcher's
+/// non-streaming clause path).
 pub(super) fn exec_load_csv(
     ctx: ExecCtx<'_>,
     rows: Vec<Row>,
@@ -539,7 +540,7 @@ mod tests {
         assert_eq!(result.rows, vec![vec![Value::Int(50_000)]]);
     }
 
-    /// The ordered window is a fold too (`unwind_streams_into`'s `may_cut`
+    /// The ordered window is a fold too (the classification's `may_cut`
     /// half): `ORDER BY ... LIMIT` over the file parks the generator and the
     /// bounded top-k heap folds the rows as the records are read, so the
     /// plain projection's refusal at the same lowered cap never fires —

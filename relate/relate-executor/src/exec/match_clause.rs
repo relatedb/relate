@@ -22,14 +22,19 @@ use crate::row::{Row, RowRung};
 use crate::UsedSet;
 
 use super::batch::try_scan_filter_batch;
-use super::hub_join::try_hub_join;
+use super::hub_join::hub_join_answer;
 use super::kernels;
 use super::kernels::frontier_run::FrontierRows;
 use super::one_path::{match_one_path, ResolvedPatterns};
-use super::pattern_policies::{reduce_row, MatchReduce, MatchTail, ReduceSink, RowFold};
+use super::pattern_policies::{MatchReduce, MatchTail, ReduceSink, RowFold};
 use super::pushdown::{flatten_and_owned, match_scope, MatchCap, Residual};
 use super::rider::Rider;
 use super::sink::{finish_match_row, SinkProjection};
+
+/// The pattern-0→pattern-1 boundary: the second pattern's turn in the loop
+/// is where the hub join is tried, with the loop's own pattern-0 rows as
+/// side A.
+const HUB_JOIN_BOUNDARY: usize = 1;
 
 /// Which operator took one `MATCH` clause down the ladder — the one
 /// operator-state vocabulary (LABS-1117). The two facts the dispatcher
@@ -433,22 +438,12 @@ pub(crate) fn match_paths(
         // construction. `base` is Some exactly when `hub_join` holds
         // (the guard above), the same fact the join's own first check
         // reads.
-        if let (1, Some(base)) = (pi, base.as_ref()) {
-            if let Some(rows) = try_hub_join(
-                ctx,
-                patterns,
-                match_mode,
-                base,
-                &current,
-                residual,
-                // A fold-only reduce rides the join: its rows take the same
-                // reduce below that the nested loop's rows take in the sink.
-                cap.is_none() && reduce.is_none_or(|r| r.sink.irrevocable()),
-            )? {
-                let mut out = Vec::with_capacity(rows.len());
-                for row in rows {
-                    out.extend(reduce_row(ctx.graph, row, reduce)?);
-                }
+        // The join runs uncapped (a cap rides the nested loop's per-row
+        // boundary instead) — the third fact of the boundary tuple.
+        if let (HUB_JOIN_BOUNDARY, Some(base), true) = (pi, base.as_ref(), cap.is_none()) {
+            if let Some(out) =
+                hub_join_answer(ctx, patterns, match_mode, base, &current, residual, reduce)?
+            {
                 return Ok(out);
             }
         }

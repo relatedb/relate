@@ -16,22 +16,20 @@ use crate::eval::{filter_rows_where, where_holds};
 use crate::overlay::{ExecGraph, RetainedTotal};
 use crate::row::{Row, RowNames};
 
-use super::aggregate::WhereMode;
 use super::classification::ProjectionClass;
+use super::feed::RowStream;
 use super::order::{
     page, park_order_keys, sort_rows_by_parked_keys, unpark_order_keys, PageBounds,
 };
 use super::scope::{visible_keys, ProjectionFields};
 use super::top_k::TopKWindow;
-use super::RowFeed;
 use super::{missing_column_error, read_declared_columns, take_declared_columns, Missing};
 
 /// The columns a DISTINCT keys, borrowed when the projection is one
 /// column wide (a one-element slice: no column clone, no row vector). The
-/// key set itself is resolved by the caller ([`finish_projection`]):
-/// visible keys for a `*` projection, output names otherwise. The arity-1
-/// *keying* lives in [`DistinctSet::insert_row`] alone; this is only the
-/// borrow.
+/// key set itself is resolved by [`DistinctPass`]: visible keys for a `*`
+/// projection, output names otherwise. The arity-1 *keying* lives in
+/// [`DistinctSet::insert_row`] alone; this is only the borrow.
 ///
 /// Both arms report a miss the way the output conversion does — the
 /// borrowed arm through [`missing_column_error`], the owned arm through the
@@ -51,48 +49,111 @@ fn distinct_columns<'r>(row: &'r Row, names: &[String]) -> Result<std::borrow::C
     }
 }
 
+/// The `DISTINCT` first-seen pass (ADR-0660): a row is kept only when its
+/// key columns are new, so the pass holds its charged seen-set
+/// ([`DistinctSet`]) and the answer, never the input population. The one
+/// spelling of the key read and the membership decision — the landing
+/// container's gate ([`land_feed`]) and the post-merge vector pass
+/// ([`retain_distinct`]) both keep rows through [`keep`][Self::keep]. The
+/// key columns are the
+/// projection's own output names, or — for a `*` shape — the first row's
+/// visible keys, resolved once because every row of one projection carries
+/// the same scope.
+struct DistinctPass<'a> {
+    class: &'a ProjectionClass<'a>,
+    seen: DistinctSet,
+    star_columns: Option<Vec<String>>,
+}
+
+impl<'a> DistinctPass<'a> {
+    fn new(class: &'a ProjectionClass<'a>) -> Self {
+        Self {
+            class,
+            seen: DistinctSet::default(),
+            star_columns: None,
+        }
+    }
+
+    /// Whether the row's key columns have not been seen before — the one
+    /// membership decision, whose charge the set owns.
+    fn keep(&mut self, graph: &ExecGraph<'_>, row: &Row) -> Result<bool> {
+        let keys = if self.class.shape.star() {
+            let columns = self
+                .star_columns
+                .get_or_insert_with(|| visible_keys(graph, row));
+            distinct_columns(row, columns)?
+        } else {
+            distinct_columns(row, &self.class.out_names)?
+        };
+        self.seen.insert_row(&keys)
+    }
+}
+
 /// The post-merge DISTINCT stage: first-seen keep over the merged rows,
-/// keyed by `key_columns`, resolved once by the caller (a `*` row keys its
-/// visible keys, a named projection its output columns). The returned
-/// charge is the reservation for the **pre-pass** input: the whole
-/// `merged` vector is alive for the duration of the pass, so the charge is
-/// taken from it before any row is dropped, and the caller resizes it down
-/// as the kept buffer and the later stages ([`page`], the output
-/// conversion) shrink. The set owns its own workspace charge and drops
-/// (releasing it) at the end of the pass.
+/// keyed through [`DistinctPass`] — the one first-seen helper, here over a
+/// vector rather than a stream. The returned charge is the reservation for
+/// the **pre-pass** input: the whole `merged` vector is alive for the
+/// duration of the pass, so the charge is taken from it before any row is
+/// dropped, and the caller resizes it down as the kept buffer and the later
+/// stages ([`page`], the output conversion) shrink. The set owns its own
+/// workspace charge and drops (releasing it) at the end of the pass.
 fn retain_distinct(
+    graph: &ExecGraph<'_>,
+    class: &ProjectionClass<'_>,
     merged: Vec<Row>,
-    key_columns: &[String],
 ) -> Result<(Vec<Row>, relate_core::tokens::WorkspaceCharge)> {
     let retained_rows = relate_core::tokens::WorkspaceCharge::retain_with(|| {
         crate::workspace::row_buffer_bytes(&merged)
     })?;
-    let mut seen = DistinctSet::default();
+    let mut distinct = DistinctPass::new(class);
     let mut kept = Vec::new();
     for row in merged {
-        if seen.insert_row(&distinct_columns(&row, key_columns)?)? {
+        if distinct.keep(graph, &row)? {
             kept.push(row);
         }
     }
-    drop(seen);
+    drop(distinct);
     Ok((kept, retained_rows))
 }
 
 /// The merged rows and how they were landed: the window shape's rows arrive
-/// ordered and bounded by the heap, every other shape's are an unordered
-/// table the tail still sorts and filters. The funnels report the container
-/// they built, so the tail reads what was landed rather than re-deriving
-/// the window decision from the classification.
+/// ordered and bounded by the heap, the page shape's are already filtered,
+/// deduplicated and paged, and every other shape's are an unordered table
+/// the tail still sorts and filters. The funnels report the container they
+/// built, so the tail reads what was landed rather than re-deriving the
+/// window decision from the classification.
 pub(crate) struct Landed {
     pub(crate) rows: Vec<Row>,
     pub(crate) windowed: bool,
+    /// The `DISTINCT` first-seen pass already ran on the landing stream
+    /// ([`DistinctPass`]), so the finish tail must not run it again.
+    pub(crate) streamed_distinct: bool,
+    /// The landing funnel already applied the plain `WHERE` — an explicit
+    /// fact the tail reads, never re-derived from the distinct flag above
+    /// (a shape that filters without distincting re-filtering, or one that
+    /// distincts without filtering skipping a filter it never ran, is a
+    /// wiring the type now states).
+    pub(crate) funnel_filtered_where: bool,
+    /// The landing container was the output page ([`OutputContainer::Page`]):
+    /// it filtered, deduplicated and paged each row as it arrived, so the
+    /// finish tail only converts the rows it answered.
+    pub(crate) streamed_page: bool,
+}
+
+/// What a landing container wants next: [`Land::More`] for another row,
+/// [`Land::Full`] when its output page is complete — the funnel then stops
+/// the producer instead of pulling a row nobody will answer with.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Land {
+    More,
+    Full,
 }
 
 /// The projection's output container — the one landing policy every merge
-/// path reads, as one of the two containers the clause can have. They are
+/// path reads, as one of the containers the clause can have. They are
 /// disjoint states, so they are variants rather than nullable fields: the
-/// window shape carries a heap and no `Vec`, the collected shape a `Vec`
-/// and no heap, and neither constructs the other's state.
+/// window shape carries a heap and no `Vec`, the collected and page shapes a
+/// `Vec` and no heap, and no arm constructs another's state.
 enum OutputContainer<'k, 'a> {
     /// ADR-0463's retaining `Vec`: each landed row grows a running charge
     /// and the buffer holds the projection's whole output.
@@ -117,6 +178,20 @@ enum OutputContainer<'k, 'a> {
         window: TopKWindow<'k, 'a>,
         predicate: Option<&'a Expr>,
     },
+    /// The pass-through's output page (ADR-0660): the plain WHERE, the
+    /// `DISTINCT` first-seen gate and the `SKIP`/`LIMIT` page apply to each
+    /// built row as it arrives, so the container holds only the answered
+    /// page (and, on a `DISTINCT` shape, the charged seen-set), never the
+    /// input population. [`Land::Full`] answers the page-full stop: the
+    /// funnel stops the producer there, so it generates nothing further.
+    Page {
+        retained: RetainedTotal,
+        out: Vec<Row>,
+        distinct: Option<DistinctPass<'k>>,
+        predicate: Option<&'a Expr>,
+        skip_left: usize,
+        limit_left: Option<usize>,
+    },
 }
 
 impl<'k, 'a> OutputContainer<'k, 'a> {
@@ -133,7 +208,7 @@ impl<'k, 'a> OutputContainer<'k, 'a> {
         Ok(match class.window_keep(bounds) {
             Some(keep) => OutputContainer::Window {
                 window: TopKWindow::new(&class.order_keys, keep),
-                predicate: class.where_mode.and_then(WhereMode::plain),
+                predicate: class.plain_where(),
             },
             None => OutputContainer::Collected {
                 retained: graph.retain_bytes(0)?,
@@ -142,29 +217,81 @@ impl<'k, 'a> OutputContainer<'k, 'a> {
         })
     }
 
+    /// The pass-through page's container: the filter, the charged seen-set
+    /// and the page's own counters, read from the classification and the
+    /// clause's bounds exactly as [`Self::open`] reads the others.
+    fn page(
+        graph: &ExecGraph<'_>,
+        class: &'k ProjectionClass<'a>,
+        bounds: PageBounds,
+    ) -> Result<Self>
+    where
+        'a: 'k,
+    {
+        Ok(OutputContainer::Page {
+            retained: graph.retain_bytes(0)?,
+            out: Vec::new(),
+            distinct: class.streams_distinct().then(|| DistinctPass::new(class)),
+            predicate: class.plain_where(),
+            skip_left: bounds.skip,
+            limit_left: bounds.limit,
+        })
+    }
+
     /// One built output row lands in its container. `graph` and `params`
-    /// are the row's evaluation environment — one input for both arms.
+    /// are the row's evaluation environment — one input for every arm.
     fn land(
         &mut self,
         graph: &ExecGraph<'_>,
         params: &BTreeMap<String, Value>,
         row: Row,
-    ) -> Result<()> {
+    ) -> Result<Land> {
         match self {
             OutputContainer::Window { window, predicate } => {
                 if let Some(predicate) = predicate {
                     if !where_holds(graph, params, &row, predicate)? {
-                        return Ok(());
+                        return Ok(Land::More);
                     }
                 }
-                window.push(graph, row)
+                window.push(graph, row)?;
             }
             OutputContainer::Collected { retained, out } => {
                 retained.add_row(graph, row.values())?;
                 out.push(row);
-                Ok(())
+            }
+            OutputContainer::Page {
+                retained,
+                out,
+                distinct,
+                predicate,
+                skip_left,
+                limit_left,
+            } => {
+                if let Some(predicate) = predicate {
+                    if !where_holds(graph, params, &row, predicate)? {
+                        return Ok(Land::More);
+                    }
+                }
+                if let Some(distinct) = distinct.as_mut() {
+                    if !distinct.keep(graph, &row)? {
+                        return Ok(Land::More);
+                    }
+                }
+                if *skip_left > 0 {
+                    *skip_left -= 1;
+                    return Ok(Land::More);
+                }
+                retained.add_row(graph, row.values())?;
+                out.push(row);
+                if let Some(left) = limit_left.as_mut() {
+                    *left -= 1;
+                    if *left == 0 {
+                        return Ok(Land::Full);
+                    }
+                }
             }
         }
+        Ok(Land::More)
     }
 
     /// Whether this container is the bounded window — the fact the finish
@@ -173,13 +300,20 @@ impl<'k, 'a> OutputContainer<'k, 'a> {
         matches!(self, OutputContainer::Window { .. })
     }
 
+    /// Whether this container is the pass-through page — the fact the finish
+    /// tail reads to skip its own filter, DISTINCT and page.
+    fn is_page(&self) -> bool {
+        matches!(self, OutputContainer::Page { .. })
+    }
+
     /// The container's rows: the window's best-first `skip + limit`, or the
-    /// `Vec`'s whole output. Neither arm can fail — the window's charge is
-    /// released with it, the `Vec` moves out.
+    /// `Vec`'s whole output. Neither arm can fail — the window's and the
+    /// page's charges are released with them, the `Vec` moves out.
     fn finish(self) -> Vec<Row> {
         match self {
             OutputContainer::Window { window, .. } => window.finish(),
             OutputContainer::Collected { out, .. } => out,
+            OutputContainer::Page { out, .. } => out,
         }
     }
 
@@ -188,28 +322,26 @@ impl<'k, 'a> OutputContainer<'k, 'a> {
     /// collected arm adopts it through this container's own reservation
     /// (ADR-0463), the same running charge [`Self::land`] grows, never a
     /// second buffer beside the input (ADR-0555) and never a second charge
-    /// owner; the window arm folds each row through the same landing policy
-    /// every other merge path uses, predicate included.
+    /// owner; every other container folds each row through the one landing
+    /// policy, predicate and page included.
     fn adopt(
         mut self,
         graph: &ExecGraph<'_>,
         params: &BTreeMap<String, Value>,
         rows: Vec<Row>,
     ) -> Result<Vec<Row>> {
-        match self {
-            OutputContainer::Collected { mut retained, .. } => {
-                for row in &rows {
-                    retained.add_row(graph, row.values())?;
-                }
-                Ok(rows)
+        if let OutputContainer::Collected { retained, .. } = &mut self {
+            for row in &rows {
+                retained.add_row(graph, row.values())?;
             }
-            OutputContainer::Window { .. } => {
-                for row in rows {
-                    self.land(graph, params, row)?;
-                }
-                Ok(self.finish())
+            return Ok(rows);
+        }
+        for row in rows {
+            if matches!(self.land(graph, params, row)?, Land::Full) {
+                break;
             }
         }
+        Ok(self.finish())
     }
 }
 
@@ -233,41 +365,100 @@ pub(crate) fn adopt_rows(
     Ok(Landed {
         rows: container.adopt(graph, params, rows)?,
         windowed,
+        streamed_distinct: false,
+        funnel_filtered_where: false,
+        streamed_page: false,
     })
 }
 
 /// The one merge funnel the two feed-shaped row-assembly paths end in:
 /// open the landing container from the classification and the clause's
-/// bounds (ADR-0463's retaining `Vec`, or the ordered window's bounded
-/// heap), fold the feed through it, and hand back the container's rows.
-/// The path supplies only its own row assembly. `aggregate_rows` does not
-/// land through a container — its charge lives in the aggregation's own
-/// emission loop — and the pass-through seeds its container instead
-/// ([`OutputContainer::adopt`]).
+/// bounds (ADR-0463's retaining `Vec`, the ordered window's bounded heap, or
+/// the pass-through's output page), pull the input's batches through it, and
+/// hand back the container's rows. The path supplies only its own row
+/// assembly. `aggregate_rows` does not land through a container — its charge
+/// lives in the aggregation's own emission loop — and the pass-through seeds
+/// its container instead ([`OutputContainer::adopt`]).
 pub(crate) fn land_feed(
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
     class: &ProjectionClass<'_>,
     bounds: PageBounds,
-    feed: RowFeed<'_>,
+    mut feed: RowStream<'_>,
     mut build: impl FnMut(Row) -> Result<Row>,
 ) -> Result<Landed> {
-    let mut landing = OutputContainer::open(graph, class, bounds)?;
+    // The pass-through page's container (ADR-0660): a *produced* feed whose
+    // clause filters, dedups or pages as rows arrive, so its producer must
+    // stop at the page. A held feed already took the eager page and pages
+    // in the finish tail, so it lands through the collected container
+    // instead. A plain `WHERE` counts: it filters per row on the stream
+    // (the `pass` disposition), never by landing the rows it is about to
+    // drop into the collected container.
+    let page = !feed.is_held()
+        && class.streams_pass()
+        && (class.streams_distinct()
+            || class.plain_where().is_some()
+            || bounds.skip > 0
+            || bounds.limit.is_some());
+    let mut landing = if page {
+        OutputContainer::page(graph, class, bounds)?
+    } else {
+        OutputContainer::open(graph, class, bounds)?
+    };
     let windowed = landing.is_window();
-    feed.try_for_each(|row| {
-        // The row-assembly closure builds the output row only; the clause's
-        // parked sort keys are the surface every merge path shares, so the
-        // funnel parks them — one spelling of the park step, and it runs
-        // after the closure has dropped the source row.
-        let mut row = build(row)?;
-        park_order_keys(&class.order_keys, &mut row, |expr, scope| {
-            eval(graph, scope, expr, params)
-        })?;
-        landing.land(graph, params, row)
-    })?;
+    let streamed_page = landing.is_page();
+    // The `DISTINCT` first-seen pass is the landing gate on this shape
+    // ([`ProjectionClass::streams_distinct`]): a row reaches the container
+    // only when its key columns are new, so the pass retains its seen-set
+    // and the answer, never the input. The clause's plain `WHERE` runs
+    // *before* it — the order the finish tail applies — because a
+    // predicate is not required to be constant across a key group (a
+    // nondeterministic one never is), so the funnel filters here whenever
+    // it gates and the tail then skips its own filter (reading the
+    // explicit `funnel_filtered_where` fact, never re-deriving it from the
+    // distinct pass). The page container owns its own
+    // predicate-then-gate order.
+    let mut distinct = (!page && class.streams_distinct()).then(|| DistinctPass::new(class));
+    let gated_where = if distinct.is_some() {
+        class.plain_where()
+    } else {
+        None
+    };
+    'batches: while let Some(batch) = feed.next_batch()? {
+        for row in batch {
+            // The row-assembly closure builds the output row only; the
+            // clause's parked sort keys are the surface every merge path
+            // shares, so the funnel parks them — one spelling of the park
+            // step, and it runs after the closure has dropped the source
+            // row.
+            let mut row = build(row)?;
+            park_order_keys(&class.order_keys, &mut row, |expr, scope| {
+                eval(graph, scope, expr, params)
+            })?;
+            if let Some(predicate) = gated_where {
+                if !where_holds(graph, params, &row, predicate)? {
+                    continue;
+                }
+            }
+            if let Some(distinct) = distinct.as_mut() {
+                if !distinct.keep(graph, &row)? {
+                    continue;
+                }
+            }
+            if matches!(landing.land(graph, params, row)?, Land::Full) {
+                // The page is satisfied: stop the producer, so it generates
+                // nothing further.
+                feed.stop()?;
+                break 'batches;
+            }
+        }
+    }
     Ok(Landed {
         rows: landing.finish(),
         windowed,
+        streamed_distinct: distinct.is_some(),
+        funnel_filtered_where: gated_where.is_some(),
+        streamed_page,
     })
 }
 
@@ -278,8 +469,9 @@ pub(crate) fn land_feed(
 /// for the shapes that merge unordered rows, the DISTINCT first-seen pass
 /// with its row-buffer charge re-measured at each shrink, the page
 /// itself), then the result extraction. The eager stop already paged on
-/// its own resolved bounds (`prepare_input`), so the tail pages only
-/// on the non-eager path.
+/// its own resolved bounds (`prepare_input`), and the page container applied
+/// its own filter, DISTINCT and page as rows arrived — so the tail pages
+/// only on the shapes that landed a table.
 pub(crate) fn finish_projection(
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
@@ -289,25 +481,36 @@ pub(crate) fn finish_projection(
 ) -> Result<Vec<Row>> {
     // The window shape is the container the merge path landed — read from
     // what was landed rather than re-derived here, so the WHERE-filter
-    // policy cannot disagree with the container the rows came out of.
-    let Landed { rows, windowed } = landed;
+    // policy cannot disagree with the container the rows came out of. A
+    // distinct the landing funnel already applied is not run again.
+    let Landed {
+        rows,
+        windowed,
+        streamed_distinct,
+        funnel_filtered_where,
+        streamed_page,
+    } = landed;
+    // The page container answered the whole tail on the stream; only the
+    // result extraction is left.
+    if streamed_page {
+        return output_rows(class, rows, None);
+    }
     let mut merged = rows;
     let ProjectionFields { distinct, .. } = class.fields;
     // The ordered-window shape filtered each row as it landed, before the
-    // selection; filtering again here would evaluate the predicate twice
-    // per surviving row (a nondeterministic predicate would flake).
-    if !windowed {
-        if let Some(w) = class.where_mode.and_then(WhereMode::plain) {
+    // selection, and the landing funnel filtered before its own DISTINCT
+    // gate — filtering again here would evaluate the predicate twice per
+    // surviving row (a nondeterministic predicate would flake). The skip
+    // reads the funnel's own filter fact, never the distinct flag.
+    if !windowed && !funnel_filtered_where {
+        if let Some(w) = class.plain_where() {
             merged = filter_rows_where(graph, params, w, merged)?;
         }
     }
     // The eager shape's feed already paged on these bounds; every other
     // shape pages here.
     let page_bounds = if class.eager_paged {
-        PageBounds {
-            skip: 0,
-            limit: None,
-        }
+        PageBounds::unpaged()
     } else {
         bounds
     };
@@ -317,26 +520,13 @@ pub(crate) fn finish_projection(
     if !windowed {
         sort_rows_by_parked_keys(&class.order_keys, &mut merged, class.sort_cut(bounds))?;
     }
-    // The DISTINCT key columns, resolved once rather than re-derived per
-    // row: a `*` projection keys its visible keys — read from the first
-    // merged row, so every row keys the same columns in the same order —
-    // and a named projection its output columns. An empty row set has no
-    // keys to compare, so the degenerate empty plan is never read.
-    let key_columns: Vec<String> = if class.shape.star() {
-        merged
-            .first()
-            .map(|row| visible_keys(graph, row))
-            .unwrap_or_default()
-    } else {
-        class.out_names.clone()
-    };
     // The DISTINCT pass's row-buffer charge: Option-held from
-    // [`retain_distinct`] — it exists only on the distinct shape, and
-    // every later re-measure (the page, the output conversion) walks the
-    // held charge instead of re-checking the mode beside an empty
-    // sentinel.
-    let mut retained_rows = if distinct {
-        let (kept, charge) = retain_distinct(merged, &key_columns)?;
+    // [`retain_distinct`] — it exists only on the shapes the landing funnel
+    // did not already dedup, and every later re-measure (the page, the
+    // output conversion) walks the held charge instead of re-checking the
+    // mode beside an empty sentinel.
+    let mut retained_rows = if distinct && !streamed_distinct {
+        let (kept, charge) = retain_distinct(graph, class, merged)?;
         merged = kept;
         Some(charge)
     } else {
