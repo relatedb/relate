@@ -13,7 +13,7 @@ use crate::eval;
 use crate::group_key::GroupKey;
 
 use super::DrainState;
-use crate::graph::index::UnpostedMark;
+use crate::graph::unposted::UnpostedMark;
 
 /// Node ids posted under one key. A unique value stays a single id; a
 /// second distinct id promotes the arm to a set.
