@@ -521,7 +521,7 @@ mod tests {
     fn scan_subjects_name_their_labels() {
         let labeled = compact(vec![node(Some("n"), &["Person"])], Vec::new());
         assert_eq!(
-            match_subject(&[labeled.clone()], false, None),
+            match_subject(std::slice::from_ref(&labeled), false, None),
             ("NodeByLabelScan".into(), "(n:Person)".to_string())
         );
         let bare = compact(vec![node(None, &[])], Vec::new());
@@ -538,7 +538,7 @@ mod tests {
             vec![rel(&["KNOWS"], 1, Some(2))],
         );
         assert_eq!(
-            match_subject(&[quantified.clone()], false, None),
+            match_subject(std::slice::from_ref(&quantified), false, None),
             (
                 "Expand".into(),
                 "(:Person)-[:KNOWS*1..2]->(:Person)".to_string()

@@ -87,7 +87,7 @@ def config_int(report: dict[str, Any], key: str) -> int | None:
 
 
 def discover_environment(report: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
-    build_image = args.build_image or os.environ.get("BASELINE_BUILD_IMAGE", "rust:1.88-bookworm")
+    build_image = args.build_image or os.environ.get("BASELINE_BUILD_IMAGE", "rust:1.99-bookworm")
     run_image = args.run_image or os.environ.get("BASELINE_RUN_IMAGE", "debian:bookworm-slim")
     cpus = args.cpus if args.cpus is not None else int(os.environ.get("BASELINE_CPUS", "2"))
     period = (

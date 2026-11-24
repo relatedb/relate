@@ -202,10 +202,10 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.sha }}
 
-      # Keep @rev in sync with rust-toolchain.toml (channel = "1.88.0") —
+      # Keep @rev in sync with rust-toolchain.toml (channel = "1.99.1") —
       # the release.yml note: the action installs the toolchain named by
       # @rev, including any components/targets.
-      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
+      - uses: dtolnay/rust-toolchain@263313d2989f864a2b8613f97277288638e7d8f8 # 1.99.1
 
       # Any test failure in the wire kit or a first-party child fails the
       # run here, before the tag. The crate list is every row of
@@ -245,10 +245,10 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.sha }}
 
-      # Keep @rev in sync with rust-toolchain.toml (channel = "1.88.0") —
+      # Keep @rev in sync with rust-toolchain.toml (channel = "1.99.1") —
       # the release.yml note: the action installs the toolchain named by
       # @rev, including any components/targets.
-      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
+      - uses: dtolnay/rust-toolchain@263313d2989f864a2b8613f97277288638e7d8f8 # 1.99.1
         with:
           targets: ${{ matrix.target }}
 

@@ -8,7 +8,7 @@
 # re-download dependencies -- but cargo still rebuild-verifies the unchanged
 # crates (the measured CI finding the main Dockerfile records: restored
 # cache, full rebuild).
-ARG BASELINE_BUILD_IMAGE=rust:1.88-bookworm
+ARG BASELINE_BUILD_IMAGE=rust:1.99-bookworm
 ARG BASELINE_RUN_IMAGE=debian:bookworm-slim
 FROM ${BASELINE_BUILD_IMAGE} AS build
 # The eMudhra CA break (2026-10): the crates.io TLS fetches ride this
@@ -25,7 +25,7 @@ WORKDIR /src
 COPY . /src
 RUN --mount=type=cache,id=relate-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=relate-cargo-git-${TARGETARCH},target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,id=relate-${LANE_CACHE_ID}-target-1.88-${TARGETARCH},target=/src/target,sharing=locked \
+    --mount=type=cache,id=relate-${LANE_CACHE_ID}-target-1.99-${TARGETARCH},target=/src/target,sharing=locked \
     set -eu; \
     if [ -z "${LANE_BINS}" ] || [ -z "${LANE_CACHE_ID}" ]; then \
       echo "LANE_BINS and LANE_CACHE_ID are required (see the header)" >&2; \

@@ -52,7 +52,7 @@ fn int_entry(rng: &mut Rng, k: u64) -> Entry {
     match rng.below(4) {
         0 | 1 => entry(format!("{i}"), format!("num:{i}")),
         2 => entry(format!("{i}.0"), format!("num:{i}")),
-        _ if i % 2 == 0 => entry("0.0", "num:0"),
+        _ if i.is_multiple_of(2) => entry("0.0", "num:0"),
         _ => entry("-0.0", "num:0"),
     }
 }
@@ -66,7 +66,10 @@ fn mixed_entry(rng: &mut Rng, k: u64) -> Entry {
         3 => entry("null", "null"),
         4 => nan(),
         5 => entry(format!("{i}.25"), format!("float:{i}.25")),
-        6 => entry(format!("{}", i % 2 == 0), format!("bool:{}", i % 2 == 0)),
+        6 => entry(
+            format!("{}", i.is_multiple_of(2)),
+            format!("bool:{}", i.is_multiple_of(2)),
+        ),
         7 => entry(format!("'s{}'", i % 23), format!("str:{}", i % 23)),
         8 => entry(
             format!("date('2020-01-{:02}')", i % 28 + 1),
@@ -80,7 +83,7 @@ fn mixed_entry(rng: &mut Rng, k: u64) -> Entry {
             format!("duration({{days: {}}})", i % 11),
             format!("dur:{}", i % 11),
         ),
-        11 if i % 2 == 0 => entry(DST_OVERLAP_FIRST, "dst:first"),
+        11 if i.is_multiple_of(2) => entry(DST_OVERLAP_FIRST, "dst:first"),
         11 => entry(DST_OVERLAP_SECOND, "dst:second"),
         _ => entry(
             format!("point({{x: {}, y: {}.0}})", i % 9, i % 2),

@@ -74,7 +74,7 @@ jobs:
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
+      - uses: dtolnay/rust-toolchain@263313d2989f864a2b8613f97277288638e7d8f8 # 1.99.1
       - name: Free runner disk (Linux)
         if: runner.os == 'Linux'
         run: scripts/free-disk.sh
@@ -319,7 +319,7 @@ jobs:
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
+      - uses: dtolnay/rust-toolchain@263313d2989f864a2b8613f97277288638e7d8f8 # 1.99.1
       - name: Free runner disk (Linux)
         if: runner.os == 'Linux'
         run: scripts/free-disk.sh
@@ -358,7 +358,7 @@ jobs:
           fi
           dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
+      - uses: dtolnay/rust-toolchain@263313d2989f864a2b8613f97277288638e7d8f8 # 1.99.1
         with:
           targets: wasm32-unknown-unknown
       - name: Free runner disk (Linux)
@@ -368,7 +368,7 @@ jobs:
         with:
           shared-key: wasm
       # ADR-0255: prebuilt wasm-pack binary (~2 s) instead of the ~2-4 min
-      # from-source `cargo install wasm-pack --version 0.13.1 --locked`;
+      # from-source `cargo install wasm-pack --version 0.15.1 --locked`;
       # same pinned version.
       - name: Install wasm-pack (pinned, for browser smoke test)
         run: bash scripts/install-wasm-pack.sh
@@ -409,7 +409,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
+      - uses: dtolnay/rust-toolchain@263313d2989f864a2b8613f97277288638e7d8f8 # 1.99.1
 
       # Same ImDisk ramdisk as ci.yml's Windows lanes (NTFS metadata I/O
       # dominates the Windows build/test wall-clock); macOS skips it.

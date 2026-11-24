@@ -57,7 +57,7 @@ default-members = [
 version = "1.2.1"
 edition = "2021"
 repository = "https://github.com/relatedb/relate"
-rust-version = "1.88"
+rust-version = "1.99"
 license = "Apache-2.0"
 
 [workspace.dependencies]
@@ -226,7 +226,7 @@ mimalloc = "0.1"
 # `"symbols"` stays off: rustc's `-C strip=symbols` runs llvm-objcopy,
 # which leaves the Mach-O __LINKEDIT string table 4-byte aligned; macOS 26+
 # dyld demands 8 and refuses to load the dylibs (rust-lang/rust#157750,
-# fixed in LLVM 23 — the 1.88 pin predates it). Debuginfo-only stripping
+# fixed in LLVM 23, which the 1.99 pin carries). Debuginfo-only stripping
 # never shrinks the symbol table, so dylibs stay loadable (verified on the
 # 1.88 pin: stroff mod 8 = 0, dlopen OK — and every pre-recipe release
 # shipped this way via the implicit default). ELF symbol tables and the

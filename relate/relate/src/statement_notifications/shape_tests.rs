@@ -394,7 +394,7 @@ fn complex_reference_requires_grouping_or_distinct() {
     observe_projection(
         &mut ShapeCtx::new(&mut plain, &mut WorkMeter::default()),
         std::slice::from_ref(&item),
-        &[order.clone()],
+        std::slice::from_ref(&order),
         None,
         false,
     );

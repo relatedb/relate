@@ -65,7 +65,7 @@
 ARG BINARY_SOURCE=build
 
 # --- build: musl-native Alpine, so the binaries are static by default ---------
-# rust:1.88-alpine's host triple IS x86_64-unknown-linux-musl — no
+# rust:1.99-alpine's host triple IS x86_64-unknown-linux-musl — no
 # cross-compiler needed (the zig-cc / musl-gcc cross routes both fight
 # ring's cc-rs: Debian's musl-gcc rejects cc-rs's -m64, and zig cc trips
 # cc-rs's compiler-family detection). build-base provides the C toolchain
@@ -73,7 +73,7 @@ ARG BINARY_SOURCE=build
 # --- chef base: toolchain + the two pinned build tools -----------------------
 # Base images are pinned to their multi-arch index digest so a re-pushed tag
 # can't change what the release builds; bump the tag and digest together.
-FROM rust:1.88-alpine@sha256:9dfaae478ecd298b6b5a039e1f2cc4fc040fc818a2de9aa78fa714dea036574d AS chef
+FROM rust:1.99-alpine@sha256:44819b27be4c97b0e4d7203bd2e02c4820f97700211b6a37fb4c246a2de59383 AS chef
 # xz unpacks the cargo-auditable release tarball in the install below.
 RUN apk add --no-cache build-base ca-certificates curl python3 xz
 # sccache wraps rustc and cache-keys on content hash — cargo's own

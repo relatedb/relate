@@ -136,11 +136,11 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
-      # Keep @rev in sync with rust-toolchain.toml (channel = "1.88.0"):
+      # Keep @rev in sync with rust-toolchain.toml (channel = "1.99.1"):
       # release-bump.sh runs `cargo metadata` while refreshing Cargo.lock,
       # and the pinned toolchain keeps that off the runner's preinstalled
       # cargo.
-      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
+      - uses: dtolnay/rust-toolchain@263313d2989f864a2b8613f97277288638e7d8f8 # 1.99.1
 
       # Self-contained step: the script self-checks consistency and restores
       # the files on failure, so a failed bump means no commit ever happens.
@@ -386,7 +386,7 @@ jobs:
   # The Linux x86-64 CLI is built in the pinned baseline container, not on
   # the ubuntu-latest runner: the runner's link environment puts x86-64-v2
   # and x86-64-v3 in the binary's ELF GNU property note ("x86 ISA needed"),
-  # which refuses older CPUs. rust:1.88-bookworm is the pinned build image
+  # which refuses older CPUs. rust:1.99-bookworm is the pinned build image
   # every baseline lane uses (Dockerfile.baseline, ADR-0495); its glibc
   # 2.36 caps the artifact's symbol floor. The gate steps derive both
   # properties from the built artifact, fail the release when the ISA level
@@ -397,7 +397,7 @@ jobs:
     name: CLI (x86_64-unknown-linux-gnu, baseline ISA)
     needs: [release-owner, version, swift-stamp]
     runs-on: ubuntu-latest
-    container: rust:1.88-bookworm
+    container: rust:1.99-bookworm
     outputs:
       glibc_floor: ${{ steps.glibc_floor.outputs.floor }}
     steps:
@@ -1249,11 +1249,11 @@ jobs:
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
 
-      # Keep @rev in sync with rust-toolchain.toml (channel = "1.88.0"):
+      # Keep @rev in sync with rust-toolchain.toml (channel = "1.99.1"):
       # the action installs the toolchain named by @rev, including any
       # components/targets; @stable would put them on a toolchain nothing
       # uses because cargo resolves rust-toolchain.toml instead.
-      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
+      - uses: dtolnay/rust-toolchain@263313d2989f864a2b8613f97277288638e7d8f8 # 1.99.1
         with:
           targets: wasm32-unknown-unknown
 
@@ -1574,10 +1574,10 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      # Keep @rev in sync with rust-toolchain.toml (channel = "1.88.0"):
+      # Keep @rev in sync with rust-toolchain.toml (channel = "1.99.1"):
       # scripts/release-bump.sh runs `cargo metadata` to refresh Cargo.lock
       # after the sweep rewrites the workspace version pins.
-      - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
+      - uses: dtolnay/rust-toolchain@263313d2989f864a2b8613f97277288638e7d8f8 # 1.99.1
 
       - name: Advance main to the next unreleased version
         env:

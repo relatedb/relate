@@ -17,7 +17,7 @@ pub(super) fn construct(graph: &ExecGraph<'_>, elements: Vec<Value>) -> Result<V
     if elements.iter().any(|v| matches!(v, Value::Null)) {
         return Ok(Value::Null);
     }
-    if elements.len() % 2 == 0 {
+    if elements.len().is_multiple_of(2) {
         return Err(Error::invalid_argument_type(ALTERNATING_LIST));
     }
     // ADR-0463: charge the element vectors before building them.

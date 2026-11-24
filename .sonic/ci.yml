@@ -14,8 +14,8 @@ audit:
 
 runners:
   docker-cli: docker.io/library/docker:27-cli
-  sonic-rust: localhost/relate-sonic-rust:1.88
-  sonic-polyglot: localhost/relate-sonic-polyglot:1.88
+  sonic-rust: localhost/relate-sonic-rust:1.99
+  sonic-polyglot: localhost/relate-sonic-polyglot:1.99
 
 matrix:
   shard:
@@ -74,7 +74,7 @@ actions:
     commands:
       - |
         set -eu
-        set -- build -t localhost/relate-sonic-rust:1.88 -f .sonic/docker/sonic-rust.Dockerfile --build-context scripts=scripts
+        set -- build -t localhost/relate-sonic-rust:1.99 -f .sonic/docker/sonic-rust.Dockerfile --build-context scripts=scripts
         if [ -n "${GITHUB_TOKEN:-}" ] && [ "$GITHUB_TOKEN" != "GITHUB_TOKEN" ]; then
           set -- "$@" --secret id=GITHUB_TOKEN,env=GITHUB_TOKEN
         fi
@@ -93,7 +93,7 @@ actions:
     environment:
       DOCKER_CONFIG: /tmp/docker-config
     commands:
-      - docker build --pull=false -t localhost/relate-sonic-polyglot:1.88 -f .sonic/docker/sonic-polyglot.Dockerfile .sonic/docker
+      - docker build --pull=false -t localhost/relate-sonic-polyglot:1.99 --build-arg RUST_IMAGE=localhost/relate-sonic-rust:1.99 -f .sonic/docker/sonic-polyglot.Dockerfile .sonic/docker
 
 suites:
   smoke-test:

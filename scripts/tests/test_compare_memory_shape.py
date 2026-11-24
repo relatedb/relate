@@ -37,13 +37,15 @@ KNOBS = {
     "range_indexes": 0,
 }
 
+# Matches freeze-memory-shape.py's TARGETS (the sealed ladder of REL8-280:
+# 77 groups × 1456 hops).
 COUNTS = (
     ("base", 0, 0),
     ("flat", 120_000, 0),
     ("fanout", 52_016, 52_000),
     ("ring", 46_000, 46_000),
     ("dense ring", 5_000, 100_000),
-    ("mid degree", 1_184, 113_664),
+    ("mid degree", 1_232, 112_112),
 )
 
 

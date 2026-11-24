@@ -118,7 +118,7 @@ fn run_budgeted(
 ) -> Result<bool> {
     let mut spent = 0u64;
     while cursor.next < total {
-        if cursor.next % CANCEL_CHECK_STRIDE == 0 {
+        if cursor.next.is_multiple_of(CANCEL_CHECK_STRIDE) {
             view.check_cancelled()?;
         }
         let work = step(cursor.next)?;

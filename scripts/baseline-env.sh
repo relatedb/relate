@@ -34,8 +34,14 @@ BASELINE_CPU_QUOTA_US="${BASELINE_CPU_QUOTA_US:-$((BASELINE_CPU_PERIOD_US * BASE
 # the drifted run_image digest, red-ing the query-latency lane on every PR.
 # Pin both images so freeze and compare resolve identical bytes forever; a
 # deliberate re-pin is an env override plus a re-freeze.
-BASELINE_BUILD_IMAGE="${BASELINE_BUILD_IMAGE:-rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0}"
+BASELINE_BUILD_IMAGE="${BASELINE_BUILD_IMAGE:-rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c}"
 BASELINE_RUN_IMAGE="${BASELINE_RUN_IMAGE:-debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc}"
+# This script is the ONE home of the pinned spelling: export both so the
+# ceremony (baseline-container.sh) and the fingerprint stamp read the
+# resolved values. The Makefile deliberately does not define or export
+# the images — its unpinned tags used to defeat these pins on every
+# make-driven lane.
+export BASELINE_BUILD_IMAGE BASELINE_RUN_IMAGE
 VOLUME_NAME="${RELATE_BASELINE_VOLUME:-relate-baseline-work}"
 # Word-split like Make's CARGO_PROFILE (default `--release`).
 # shellcheck disable=SC2206

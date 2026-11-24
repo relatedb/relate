@@ -116,11 +116,11 @@ runs:
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
         fi
 
-    # Keep @rev in sync with rust-toolchain.toml (channel = "1.88.0"): the
+    # Keep @rev in sync with rust-toolchain.toml (channel = "1.99.1"): the
     # action installs the toolchain named by @rev, including any
     # components/targets; @stable would put them on a toolchain nothing uses
     # because cargo resolves rust-toolchain.toml instead.
-    - uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88.0
+    - uses: dtolnay/rust-toolchain@263313d2989f864a2b8613f97277288638e7d8f8 # 1.99.1
       with:
         components: ${{ inputs.toolchain-components }}
         targets: ${{ inputs.toolchain-targets }}

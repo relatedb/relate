@@ -274,8 +274,10 @@ gate:
 BASELINE_ENV ?= docker
 BASELINE_CPUS ?= 2
 BASELINE_MEMORY ?= 2g
-BASELINE_BUILD_IMAGE ?= rust:1.88-bookworm
-BASELINE_RUN_IMAGE ?= debian:bookworm-slim
+# The ADR-0070 images are NOT spelled here: baseline-env.sh owns the
+# digest-pinned values (LABS-1039) and exports them, so a make-driven
+# lane cannot override the pins with mutable tags. Override via the env
+# (BASELINE_BUILD_IMAGE=… make …), which env.sh still honors.
 BASELINE_ENV_SH := $(CURDIR)/scripts/baseline-env.sh
 
 SCALE ?= 0.10
@@ -368,7 +370,7 @@ TEXT_INDEXES ?= 0
 POINT_INDEXES ?= 0
 RANGE_INDEXES ?= 0
 
-export BASELINE_CPUS BASELINE_MEMORY BASELINE_BUILD_IMAGE BASELINE_RUN_IMAGE CARGO_PROFILE
+export BASELINE_CPUS BASELINE_MEMORY CARGO_PROFILE
 
 ## fraud-loadtest: In-tree fraud mixed-payments loadtest (ADR-0070 Docker env)
 fraud-loadtest:

@@ -277,10 +277,11 @@ impl Graph {
             self.used_bytes.fetch_add(delta as u64, Ordering::Relaxed);
         } else if delta < 0 {
             let sub = (-delta) as u64;
-            atomic_fetch_update!(self.used_bytes, Ordering::Relaxed, Ordering::Relaxed, |u| {
-                Some(u.saturating_sub(sub))
-            })
-            .expect("the saturating-sub closure never rejects");
+            self.used_bytes
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |u| {
+                    Some(u.saturating_sub(sub))
+                })
+                .expect("the saturating-sub closure never rejects");
         }
     }
 

@@ -67,7 +67,7 @@ impl Rain {
 
     fn step(&mut self, frame: usize, rng: &mut Rng) {
         for d in &mut self.drops {
-            if frame % d.period == 0 {
+            if frame.is_multiple_of(d.period) {
                 d.head += 1;
             }
             if d.head - d.len > self.height as i64 {

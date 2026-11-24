@@ -109,7 +109,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The same Rust preamble the PR lane uses (toolchain 1.88,
+      # The same Rust preamble the PR lane uses (toolchain 1.99,
       # sccache, mold, rust-cache) with the PR lane's release-profile
       # cache key — the merge run shares the PR lane's artifact shape.
       - uses: ./.github/actions/setup-rust-ci

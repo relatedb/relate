@@ -243,7 +243,7 @@ pub fn q19(graph: &Graph, tag_first: bool) -> SolRows {
         .map(|(name, count)| (name.clone(), *count))
         .collect();
     // ORDER BY comment_count DESC; ties keep first-seen order.
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    ranked.sort_by_key(|a| std::cmp::Reverse(a.1));
 
     SolRows {
         columns: Q19_COLUMNS.iter().map(|c| c.to_string()).collect(),

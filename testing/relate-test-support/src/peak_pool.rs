@@ -31,7 +31,7 @@ impl FixedPool {
 impl PeakPool for FixedPool {
     fn try_grow(&self, extra: u64) -> bool {
         self.reserved
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
                 held.checked_add(extra)
                     .filter(|next| *next <= self.capacity)
             })

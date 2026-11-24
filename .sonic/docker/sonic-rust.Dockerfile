@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && git config --system --add safe.directory /workspace
 
-# Rust 1.88.0 matches rust-toolchain.toml. nextest is the CI test runner.
+# Rust 1.99.1 matches rust-toolchain.toml. nextest is the CI test runner.
 # The toolchain is installed outside /root so stages running as the host
 # uid can execute it. /cargo-home and /cargo-target are the cache mounts;
 # mode 1777 lets that uid write a volume Docker initialized as root.
@@ -45,7 +45,7 @@ RUN --mount=type=bind,from=scripts,source=github-download.sh,target=/tmp/github-
     && if [ -s /run/secrets/GITHUB_TOKEN ]; then export GITHUB_TOKEN="$(cat /run/secrets/GITHUB_TOKEN)"; fi \
     && export GITHUB_ACTIONS="${GITHUB_ACTIONS}" \
     && curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
-        | sh -s -- -y --default-toolchain 1.88.0 --profile minimal \
+        | sh -s -- -y --default-toolchain 1.99.1 --profile minimal \
             --component rustfmt,clippy \
     && sh /tmp/github-download.sh \
         --repo nextest-rs/nextest \

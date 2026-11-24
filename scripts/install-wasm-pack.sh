@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Install the pinned wasm-pack release into the cargo bin directory.
 # Replaces taiki-e/install-action, whose tarball GET is anonymous.
-# 0.13.1 publishes musl Linux (x86_64 and aarch64), Intel macOS, and
+# 0.15.1 publishes musl Linux (x86_64 and aarch64), Intel macOS, and
 # x86_64 Windows. Other hosts get a clear error.
 set -euo pipefail
 
-VERSION=0.13.1
+VERSION=0.15.1
 here="$(cd "$(dirname "$0")" && pwd)"
 
 case "$(uname -s)-$(uname -m)" in

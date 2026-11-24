@@ -606,10 +606,7 @@ fn fill_until_capacity(
     begin_phase(live, phase)?;
     let mut cursor = FillCursor::new(shape, attributes, indexes);
     let mut n = 0usize;
-    loop {
-        let Some(statement) = cursor.next_statement()? else {
-            break;
-        };
+    while let Some(statement) = cursor.next_statement()? {
         n += 1;
         match run_statement(&mut cursor, live, phase, n, &statement, &mut run_one)? {
             StatementOutcome::Acked => {

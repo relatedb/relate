@@ -638,7 +638,7 @@ CLI collects metrics; the embedded Rust and Python APIs do not. Full contract:
 
 ## Development
 
-Requires the Rust toolchain (MSRV 1.88, pinned in
+Requires the Rust toolchain (MSRV 1.99, pinned in
 [`rust-toolchain.toml`](rust-toolchain.toml)):
 
 ```bash

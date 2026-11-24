@@ -359,7 +359,7 @@ impl Graph {
             moments.sum_sq = moments
                 .sum_sq
                 .saturating_add(sum_sq)
-                .saturating_add(if nodes == 0 { 0 } else { cross_pairs / nodes });
+                .saturating_add(cross_pairs.checked_div(nodes).unwrap_or(0));
             // (A label with no live node left only has high-water
             // buckets: nothing is there to cross, so its term is zero.)
         }

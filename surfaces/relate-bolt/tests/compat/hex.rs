@@ -15,7 +15,7 @@ pub(crate) fn decode(text: &str) -> Result<Vec<u8>, String> {
             char::from(*bad)
         ));
     }
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         return Err(format!("odd number of hex digits in `{text}`"));
     }
     Ok(digits

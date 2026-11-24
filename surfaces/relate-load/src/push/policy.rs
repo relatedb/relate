@@ -93,10 +93,10 @@ impl PolicySpec {
             match item.split_once('=') {
                 None => {
                     let policy = UpdatePolicy::parse_word(item)?;
-                    if global.is_some() {
+                    if let Some(existing) = global.as_ref() {
                         return Err(format!(
                             "policy list has two global policies ({:?} twice)",
-                            global.expect("checked").as_str()
+                            existing.as_str()
                         ));
                     }
                     global = Some(policy);
