@@ -28,8 +28,8 @@ pub(crate) use profiling::{
 };
 #[cfg(test)]
 pub(crate) use profiling::{
-    disarm_store_profiling, take_frontier_counters, take_hop_expands, take_neighbor_walks,
-    take_node_reads, take_zone_skips,
+    disarm_store_profiling, memo_counters, take_frontier_counters, take_hop_expands,
+    take_neighbor_walks, take_node_reads, take_zone_skips,
 };
 
 pub(crate) mod agg_fold;

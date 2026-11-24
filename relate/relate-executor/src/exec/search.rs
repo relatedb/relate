@@ -381,10 +381,8 @@ pub(crate) fn search_match_clause(
     } else {
         direct_search_rows
     };
-    let env = SearchEnv {
-        ctx,
-        corpora: fulltext::CorpusMemo::default(),
-    };
+    let corpora = fulltext::CorpusMemo::new(ctx.graph);
+    let env = SearchEnv { ctx, corpora };
     let mut out = Vec::new();
     for input in rows {
         let mut matched = source(

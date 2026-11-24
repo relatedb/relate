@@ -8,7 +8,11 @@
 //! property). The docs family pins the analyzer-side semantics of
 //! ADR-0636 — an index's configured analyzer analyzes its stored tokens
 //! and its no-override queries (the reported repro: `refunds` finds
-//! `refund` on an `english` index) — rather than live probes.
+//! `refund` on an `english` index) — rather than live probes. The two
+//! ADR-0680 index-lifecycle pins live here too: the
+//! `awaitEventuallyConsistentIndexRefresh` call is a void no-op, and a
+//! SEARCH over an eventually-consistent index is the typed rejection
+//! the procedures are exempt from.
 
 mod common;
 
@@ -682,4 +686,73 @@ fn the_procedure_options_map_pages_the_ranking() {
         let error = common::refused_literal(&mut c, &statement);
         assert!(error.to_string().contains("option"), "{options}: {error}");
     }
+}
+
+/// FulltextSearchAcceptance's background step (ADR-0680): the eventually
+/// consistent refresh wait is a callable void no-op — the engine applies
+/// committed index updates synchronously at the apply point, so the wait
+/// is trivially complete, exactly like `db.awaitIndexes`.
+#[test]
+fn await_eventually_consistent_refresh_is_a_void_no_op() {
+    let mut c = connection();
+    common::run(
+        &mut c,
+        "CREATE FULLTEXT INDEX movieTitlesEventuallyConsistent \
+           FOR (m:Movie) ON EACH [m.title] \
+           OPTIONS {indexConfig: {`fulltext.eventually_consistent`: true}}",
+    );
+    common::run(&mut c, "CALL db.awaitIndexes()");
+    common::run(
+        &mut c,
+        "CREATE (:Movie {title: 'Snow White', plot: 'A gentle princess flees a jealous queen.'})",
+    );
+    let result = common::run(
+        &mut c,
+        "CALL db.index.fulltext.awaitEventuallyConsistentIndexRefresh()",
+    );
+    assert!(result.rows.is_empty());
+}
+
+/// FulltextSearchAcceptance [61]/[62] (ADR-0680): a SEARCH over an
+/// eventually-consistent fulltext index is the typed rejection — the
+/// procedures stay the supported surface for such an index.
+#[test]
+fn a_search_over_an_eventually_consistent_index_is_rejected() {
+    let mut c = connection();
+    common::run(
+        &mut c,
+        "CREATE FULLTEXT INDEX ecTitles FOR (m:Movie) ON EACH [m.title] \
+           OPTIONS {indexConfig: {`fulltext.eventually_consistent`: true}}",
+    );
+    common::run(
+        &mut c,
+        "CREATE FULLTEXT INDEX ecNotes FOR ()-[r:SIMILAR_TO]->() ON EACH [r.note] \
+           OPTIONS {indexConfig: {`fulltext.eventually_consistent`: true}}",
+    );
+    common::run(&mut c, "CALL db.awaitIndexes()");
+    common::run(
+        &mut c,
+        "CREATE (:Movie {title: 'Snow White'})-[:SIMILAR_TO {note: 'a royal story'}]->(:Movie)",
+    );
+    for query in [
+        "MATCH (m:Movie) SEARCH m IN (FULLTEXT INDEX ecTitles FOR 'snow' LIMIT 3) \
+             RETURN m.title AS title",
+        "MATCH ()-[r:SIMILAR_TO]->() \
+             SEARCH r IN (FULLTEXT INDEX ecNotes FOR 'royal' LIMIT 2) RETURN r.note AS note",
+    ] {
+        let error = common::refused_literal(&mut c, query);
+        assert!(
+            error
+                .to_string()
+                .contains("EventuallyConsistentIndexNotSupported"),
+            "{query}: {error}"
+        );
+    }
+    // The procedures remain the supported surface for the same index.
+    let result = common::run(
+        &mut c,
+        "CALL db.index.fulltext.queryNodes('ecTitles', 'snow') YIELD node \
+             RETURN node.title AS title",
+    );
+    assert_eq!(titles(&result), ["Snow White"]);
 }

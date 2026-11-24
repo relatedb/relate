@@ -214,7 +214,15 @@ Rules, matching Neo4j:
 - the index must exist and be of the matching kind (a full-text search over a
   vector index raises `WrongIndexType`); an index created inside the open
   transaction is still populating — searching it raises the transient
-  `IndexStillPopulating` rejection until the transaction ends
+  `IndexStillPopulating` rejection until the transaction ends; a
+  full-text index created eventually consistent (its
+  `fulltext.eventually_consistent` config) raises
+  `EventuallyConsistentIndexNotSupported` — the
+  `db.index.fulltext.query*` procedures remain the supported surface for
+  such an index, and `CALL
+  db.index.fulltext.awaitEventuallyConsistentIndexRefresh()` is the
+  void no-op that waits for nothing (committed updates apply
+  synchronously)
 - `WHERE` inside the search serves both index kinds; its predicates name the
   binding variable and may read the index's `WITH [...]`-declared properties
   (a vector source's declared set — a full-text source's inner WHERE reads

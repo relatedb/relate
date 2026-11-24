@@ -122,10 +122,13 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
     // No input
     // parameters, no return columns -- the reachable `::VOID`-
     // replacement (no suffix at all) case.
+    // The Cypher-25 fulltext acceptance suite calls it in its background
+    // (ADR-0680): the engine applies committed index updates
+    // synchronously at the apply point, so the wait is trivially
+    // complete — an executable void no-op, exactly like `db.awaitIndexes`.
     ProcSignature::read("db.index.fulltext.awaitEventuallyConsistentIndexRefresh")
         .works_on_system()
-        .described("Wait for the updates from recently committed transactions to be applied to any eventually-consistent full-text indexes.")
-        .executable(false),
+        .described("Wait for the updates from recently committed transactions to be applied to any eventually-consistent full-text indexes."),
     // A `LIST<STRING>` return
     // column (the old `LIST? OF STRING` -> `LIST<STRING>` rename).
     ProcSignature::read("db.index.fulltext.listAvailableAnalyzers")
